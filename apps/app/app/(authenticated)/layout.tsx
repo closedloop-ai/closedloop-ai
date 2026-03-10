@@ -6,12 +6,14 @@ import {
 import { secure } from "@repo/security";
 import { cookies } from "next/headers";
 import type { ReactNode } from "react";
+import { EngineerTransportBootstrap } from "@/components/engineer/engineer-transport-bootstrap";
 import { env } from "@/env";
 import { AuthGate } from "./components/auth-gate";
 import { CollaborationProviderWrapper } from "./components/collaboration-provider-wrapper";
 import { DragHandlerWrapper } from "./components/drag-handler-wrapper";
 import { NotificationsProvider } from "./components/notifications-provider";
 import { GlobalSidebar } from "./components/sidebar";
+import { SystemCheckBootstrap } from "./components/system-check-bootstrap";
 
 type AppLayoutProperties = {
   readonly children: ReactNode;
@@ -43,9 +45,13 @@ const AppLayout = async ({ children }: AppLayoutProperties) => {
           <SidebarProvider defaultOpen={sidebarDefaultOpen}>
             <GlobalSidebar>
               <AuthGate>
+                {/* Execution routing is app-wide because remote actions and
+                    system checks can now start outside /engineer. */}
+                <EngineerTransportBootstrap />
                 <div className="flex h-full max-h-full flex-col overflow-hidden">
                   {children}
                 </div>
+                <SystemCheckBootstrap />
               </AuthGate>
             </GlobalSidebar>
           </SidebarProvider>

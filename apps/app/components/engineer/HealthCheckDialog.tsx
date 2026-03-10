@@ -10,19 +10,11 @@ import {
   DialogTitle,
 } from "@repo/design-system/components/ui/dialog";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import {
-  AlertTriangle,
-  CheckCircle2,
-  Loader2,
-  RefreshCw,
-  Save,
-  Settings,
-  XCircle,
-} from "lucide-react";
+import { CheckCircle2, RefreshCw, Save, Settings } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { PathAutocomplete } from "@/components/engineer/PathAutocomplete";
-import type { CheckResult } from "@/lib/engineer/queries/health-check";
+import { SystemCheckResults } from "@/components/system-check/system-check-results";
 import { healthCheckOptions } from "@/lib/engineer/queries/health-check";
 import { queryKeys } from "@/lib/engineer/queries/keys";
 import { updateRepoSettings } from "@/lib/engineer/queries/repos";
@@ -189,9 +181,8 @@ export function HealthCheckDialog() {
     return null;
   }
 
-  const requiredChecks = data?.checks.filter((c) => c.required) ?? [];
-  const optionalChecks = data?.checks.filter((c) => !c.required) ?? [];
-  const requiredCount = requiredChecks.length;
+  const requiredCount =
+    data?.checks.filter((check) => check.required).length ?? 0;
 
   // worktree-dir check failed — show inline setup (only after it's revealed)
   const worktreeCheck = data?.checks.find((c) => c.id === "worktree-dir");
@@ -236,57 +227,23 @@ export function HealthCheckDialog() {
         ) : (
           <>
             <div className="space-y-4 py-2">
-              {/* Required section */}
-              <div>
-                <h4 className="mb-2 font-medium text-muted-foreground text-xs uppercase tracking-wider">
-                  Required
-                </h4>
-                <div className="space-y-1.5">
-                  {requiredChecks.map((check, i) => (
-                    <CheckRow
-                      check={check}
-                      key={check.id}
-                      revealed={revealedCount > i}
-                    />
-                  ))}
-                  {isLoading &&
-                    Array.from({ length: 6 }).map((_, i) => (
-                      <CheckRowSkeleton key={`req-skel-${String(i)}`} />
-                    ))}
-                </div>
-              </div>
-
-              {/* Inline worktree setup when that check fails */}
-              {showWorktreeSetup && (
-                <div className="fade-in slide-in-from-bottom-2 animate-in duration-300">
-                  <WorktreeInlineSetup
-                    onChange={setWorktreePath}
-                    onSave={handleSaveWorktree}
-                    saving={savingWorktree}
-                    value={worktreePath}
-                  />
-                </div>
-              )}
-
-              {/* Optional section */}
-              <div>
-                <h4 className="mb-2 font-medium text-muted-foreground text-xs uppercase tracking-wider">
-                  Optional
-                </h4>
-                <div className="space-y-1.5">
-                  {optionalChecks.map((check, i) => (
-                    <CheckRow
-                      check={check}
-                      key={check.id}
-                      revealed={revealedCount > requiredCount + i}
-                    />
-                  ))}
-                  {isLoading &&
-                    Array.from({ length: 2 }).map((_, i) => (
-                      <CheckRowSkeleton key={`opt-skel-${String(i)}`} />
-                    ))}
-                </div>
-              </div>
+              <SystemCheckResults
+                afterRequired={
+                  showWorktreeSetup ? (
+                    <div className="fade-in slide-in-from-bottom-2 animate-in duration-300">
+                      <WorktreeInlineSetup
+                        onChange={setWorktreePath}
+                        onSave={handleSaveWorktree}
+                        saving={savingWorktree}
+                        value={worktreePath}
+                      />
+                    </div>
+                  ) : undefined
+                }
+                checks={data?.checks}
+                isLoading={isLoading}
+                revealedCount={revealedCount}
+              />
             </div>
 
             <DialogFooter className="gap-2 sm:gap-0">
@@ -314,64 +271,6 @@ export function HealthCheckDialog() {
         )}
       </DialogContent>
     </Dialog>
-  );
-}
-
-function CheckRow({
-  check,
-  revealed,
-}: Readonly<{ check: CheckResult; revealed: boolean }>) {
-  if (!revealed) {
-    return <CheckRowSkeleton />;
-  }
-
-  return (
-    <div className="fade-in slide-in-from-left-3 animate-in space-y-0.5 duration-300">
-      <div className="flex items-center gap-2 text-sm">
-        <CheckIcon passed={check.passed} required={check.required} />
-        <span className="flex-1 truncate">{check.label}</span>
-        {check.passed && check.version && (
-          <span className="font-mono text-muted-foreground text-xs">
-            {check.version}
-          </span>
-        )}
-        {check.passed && !check.version && (
-          <CheckCircle2 className="size-3.5 shrink-0 text-emerald-500" />
-        )}
-        {!check.passed && (
-          <span className="text-muted-foreground text-xs">{check.error}</span>
-        )}
-      </div>
-      {!check.passed && check.remediation && (
-        <p className="pl-6 text-muted-foreground text-xs">
-          <span className="select-all font-mono text-[11px]">
-            {check.remediation}
-          </span>
-        </p>
-      )}
-    </div>
-  );
-}
-
-function CheckIcon({
-  passed,
-  required,
-}: Readonly<{ passed: boolean; required: boolean }>) {
-  if (passed) {
-    return <CheckCircle2 className="size-4 shrink-0 text-emerald-500" />;
-  }
-  if (required) {
-    return <XCircle className="size-4 shrink-0 text-destructive" />;
-  }
-  return <AlertTriangle className="size-4 shrink-0 text-amber-500" />;
-}
-
-function CheckRowSkeleton() {
-  return (
-    <div className="flex items-center gap-2 text-sm">
-      <Loader2 className="size-4 shrink-0 animate-spin text-muted-foreground" />
-      <div className="h-4 w-24 animate-pulse rounded bg-muted" />
-    </div>
   );
 }
 

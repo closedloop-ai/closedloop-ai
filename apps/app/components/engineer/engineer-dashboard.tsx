@@ -12,7 +12,6 @@ import {
 } from "react";
 import { toast } from "sonner";
 import { HeaderOverflowMenu } from "@/components/engineer/HeaderOverflowMenu";
-import { HealthCheckDialog } from "@/components/engineer/HealthCheckDialog";
 import { LearningsDialog } from "@/components/engineer/LearningsDialog";
 import { MCPConnectionStatus } from "@/components/engineer/MCPConnectionStatus";
 import { TerminalChatDialog } from "@/components/engineer/TerminalChatDialog";
@@ -351,7 +350,6 @@ export function EngineerDashboard() {
           />
         </main>
       </div>
-      <HealthCheckDialog />
       <LearningsDialog
         isProcessingLearnings={!!processingLearnings}
         onBatchProcessingComplete={handleBatchProcessingComplete}
