@@ -210,10 +210,19 @@ async function handleRelayRequest(request: NextRequest): Promise<Response> {
 
   if (isStreaming) {
     const stream = await relayClient.streamOperation(targetId, relayRequest);
+    // Body is NDJSON but we use text/event-stream so Vercel's CDN layer
+    // treats this as an SSE response and skips Brotli/gzip compression
+    // that would otherwise buffer the entire stream before delivery.
+    // The client reads the body generically via ReadableStream.getReader()
+    // and splits on newlines, so the Content-Type is irrelevant to parsing.
     return new Response(stream, {
       headers: {
-        "Content-Type": "application/x-ndjson",
+        "Content-Type": "text/event-stream; charset=utf-8",
         "Cache-Control": "no-cache, no-transform",
+        "Content-Encoding": "identity",
+        "X-Accel-Buffering": "no",
+        "X-Content-Type-Options": "nosniff",
+        Connection: "keep-alive",
       },
     });
   }
