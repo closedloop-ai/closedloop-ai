@@ -66,11 +66,13 @@ ARG GITHUB_TOKEN
 RUN git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf "https://github.com/" && \
     git config --global --add url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf "git@github.com:" && \
     claude plugin marketplace add closedloop-ai/claude-plugins && \
+    claude plugin marketplace add anthropics/claude-plugins-official && \
     claude plugin install code@closedloop-ai && \
     claude plugin install judges@closedloop-ai && \
     claude plugin install self-learning@closedloop-ai && \
     claude plugin install code-review@closedloop-ai && \
     claude plugin install platform@closedloop-ai && \
+    claude plugin install code-simplifier@claude-plugins-official && \
     (git config --global --unset-all url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf 2>/dev/null || true)
 
 # Enable weaker nested sandbox for Docker — the container IS the sandbox.
