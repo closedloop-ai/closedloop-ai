@@ -20,12 +20,14 @@ import ReactDiffViewerBase, {
 } from "react-diff-viewer-continued";
 import { CommitDialog } from "@/components/engineer/CommitDialog";
 import { useThemeContext } from "@/components/engineer/ThemeProvider";
+import { getWorktreePath } from "@/lib/engineer/chat-utils";
 import {
   type FileDiff,
   gitBranchDiffOptions,
   gitDiffOptions,
   gitStatusOptions,
 } from "@/lib/engineer/queries/git";
+import { reposOptions } from "@/lib/engineer/queries/repos";
 
 // react-diff-viewer-continued@4.1.2 ships a class component whose types are
 // incompatible with @types/react@19 JSX inference. Casting to ComponentType
@@ -41,15 +43,6 @@ type ChangedFilesViewerProps = {
   hideCommitButton?: boolean;
   onSelectedFileChange?: (file: string | null) => void;
 };
-
-/**
- * Construct worktree path from base repo path and ticket ID
- */
-function getWorktreePath(baseRepoPath: string, ticketId: string): string {
-  const repoName = baseRepoPath.split("/").pop() || "";
-  const sourceDir = baseRepoPath.replace(/\/[^/]+$/, "");
-  return `${sourceDir}/${repoName}-${ticketId}`;
-}
 
 /**
  * Custom styles for the diff viewer to match our dark theme
@@ -124,8 +117,12 @@ export function ChangedFilesViewer({
   const [diffMode, setDiffMode] = useState<DiffMode>("working");
   const [commitDialogOpen, setCommitDialogOpen] = useState(false);
   const [prevTicketId, setPrevTicketId] = useState(ticketId);
-  const worktreePath = getWorktreePath(repoPath, ticketId);
-
+  const { data: reposData } = useQuery(reposOptions());
+  const worktreePath = getWorktreePath(
+    repoPath,
+    ticketId,
+    reposData?.settings?.worktreeParentDir
+  );
   // Reset selected file when ticketId changes (render-time state adjustment)
   if (prevTicketId !== ticketId) {
     setPrevTicketId(ticketId);

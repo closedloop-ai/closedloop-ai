@@ -14,6 +14,7 @@ import {
 } from "@/lib/engineer/pr-comment-tracker";
 import { gitStatusOptions } from "@/lib/engineer/queries/git";
 import { queryKeys } from "@/lib/engineer/queries/keys";
+import { reposOptions } from "@/lib/engineer/queries/repos";
 import {
   type ChatMessage,
   commentChatHistoryOptions,
@@ -138,6 +139,8 @@ export function useCommentChat({
     null
   );
   const queryClient = useQueryClient();
+  const { data: reposData } = useQuery(reposOptions());
+  const worktreeParentDir = reposData?.settings?.worktreeParentDir;
 
   // Shared chat stream — manages streaming state, abort, and NDJSON parsing.
   const {
@@ -153,11 +156,18 @@ export function useCommentChat({
     contextPercent,
   } = useChatStream();
 
-  // worktreePath starts as a client-side guess; updated by the server's
-  // worktree_resolved event once the actual effective dir is known.
-  const [worktreePath, setWorktreePath] = useState(() =>
-    getWorktreePath(repoPath, ticketId)
+  // Client-side computed path (simple variable, no state needed).
+  const computedWorktreePath = getWorktreePath(
+    repoPath,
+    ticketId,
+    worktreeParentDir
   );
+  // Server-authoritative override — set only by the worktree_resolved event.
+  const [resolvedWorktreePath, setResolvedWorktreePath] = useState<
+    string | null
+  >(null);
+  const worktreePath = resolvedWorktreePath ?? computedWorktreePath;
+
   // Ref mirror so stale closures (e.g. memoized CommentMessageBubble
   // onSendResponse) always read the latest resolved path.
   const worktreePathRef = useRef(worktreePath);
@@ -389,7 +399,7 @@ export function useCommentChat({
               event.type === "worktree_resolved" &&
               typeof event.effectiveDir === "string"
             ) {
-              setWorktreePath(event.effectiveDir);
+              setResolvedWorktreePath(event.effectiveDir);
             }
           },
           onLearnings: () => pollLearningsStatus(),

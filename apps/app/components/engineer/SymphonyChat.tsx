@@ -81,6 +81,7 @@ import {
   readCodexStream,
 } from "@/lib/engineer/codex-stream";
 import { queryKeys } from "@/lib/engineer/queries/keys";
+import { reposOptions } from "@/lib/engineer/queries/repos";
 import {
   type PlanResponse,
   symphonyChatHistoryOptions,
@@ -164,6 +165,8 @@ export function SymphonyChat({
   const codexChatStream = useChatStream();
   const learnings = useLearnings({ ticketId, repoPath, activeTab });
   const { data: codexData } = useCodexAvailable();
+  const { data: reposData } = useQuery(reposOptions());
+  const worktreeParentDir = reposData?.settings?.worktreeParentDir;
 
   // Compute repos list for multi-repo file autocomplete
   const hasContextRepos = contextRepoPaths && contextRepoPaths.length > 0;
@@ -356,7 +359,7 @@ export function SymphonyChat({
     queryClient.invalidateQueries({
       queryKey: queryKeys.symphonyPlan(ticketId, repoPath),
     });
-    const worktreePath = getWorktreePath(repoPath, ticketId);
+    const worktreePath = getWorktreePath(repoPath, ticketId, worktreeParentDir);
     queryClient.invalidateQueries({
       queryKey: queryKeys.gitStatus(worktreePath),
     });
@@ -367,7 +370,7 @@ export function SymphonyChat({
     queryClient.invalidateQueries({
       queryKey: ["git-diff", worktreePath],
     });
-  }, [queryClient, ticketId, repoPath]);
+  }, [queryClient, ticketId, repoPath, worktreeParentDir]);
 
   // Handle /reflect command
   const handleReflect = useCallback(() => {

@@ -11,6 +11,7 @@ import {
 } from "@repo/design-system/components/ui/dialog";
 import { Input } from "@repo/design-system/components/ui/input";
 import { Textarea } from "@repo/design-system/components/ui/textarea";
+import { useQuery } from "@tanstack/react-query";
 import {
   ChevronDown,
   ChevronRight,
@@ -28,7 +29,9 @@ import {
   useState,
 } from "react";
 import { toast } from "sonner";
+import { getWorktreePath } from "@/lib/engineer/chat-utils";
 import { markTicketPushed } from "@/lib/engineer/push-tracker";
+import { reposOptions } from "@/lib/engineer/queries/repos";
 
 // Module-level cache: persists across dialog open/close, resets on page reload
 const commitMessageCache = new Map<
@@ -76,17 +79,13 @@ export function CommitDialog({
   const [files, setFiles] = useState<GitFiles | null>(null);
   const [filesExpanded, setFilesExpanded] = useState(true);
   const abortRef = useRef<AbortController | null>(null);
+  const { data: reposData } = useQuery(reposOptions());
 
-  // Construct the worktree path from base repo path and ticket ID
-  // e.g., ~/Source/claude_code + AI-117 -> ~/Source/claude_code-AI-117
-  const getWorktreePath = (baseRepoPath: string, ticket: string): string => {
-    // Extract repo name from path (e.g., "claude_code" from "~/Source/claude_code")
-    const repoName = baseRepoPath.split("/").pop() || "";
-    const sourceDir = baseRepoPath.replace(/\/[^/]+$/, ""); // Remove last segment
-    return `${sourceDir}/${repoName}-${ticket}`;
-  };
-
-  const worktreePath = getWorktreePath(repoPath, ticketId);
+  const worktreePath = getWorktreePath(
+    repoPath,
+    ticketId,
+    reposData?.settings?.worktreeParentDir
+  );
 
   const fetchGitStatus = useCallback(
     async (signal?: AbortSignal) => {

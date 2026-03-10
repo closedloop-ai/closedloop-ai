@@ -265,6 +265,9 @@ function isWorktreeOf(candidatePath: string, repoPath: string): boolean {
 export function isRepoAllowed(path: string): boolean {
   const config = loadReposConfig();
   const expandedPath = expandHome(path);
+  const worktreeParent = config.settings.worktreeParentDir
+    ? expandHome(config.settings.worktreeParentDir)
+    : null;
 
   return config.repos.some((repo) => {
     const repoExpanded = expandHome(repo.path);
@@ -278,10 +281,13 @@ export function isRepoAllowed(path: string): boolean {
       return true;
     }
 
-    // Worktree match: same parent dir, name prefix filter, then validate
-    // actual git worktree linkage via .git pointer file
+    // Worktree match: check parent dir (repo sibling OR configured worktreeParentDir),
+    // name prefix filter, then validate actual git worktree linkage via .git pointer file
+    const parentMatch =
+      pathParent === repoParent ||
+      (worktreeParent !== null && pathParent === worktreeParent);
     return (
-      pathParent === repoParent &&
+      parentMatch &&
       pathName.startsWith(`${repoName}-`) &&
       isWorktreeOf(expandedPath, repoExpanded)
     );
