@@ -261,16 +261,25 @@ async function handleCommandAck(
   // error event so SSE subscribers (Chrome) stop waiting and see the failure.
   if (!accepted) {
     log.warn("Command rejected by desktop", { commandId, reason, targetId });
-    await desktopCommandStore.ingestCommandEvent({
+    const errorData: JsonValue = {
+      terminal: true,
+      error: reason || "Command rejected by desktop",
+      code: "rejected",
+    } as unknown as JsonValue;
+    const result = await desktopCommandStore.ingestCommandEvent({
       commandId,
       eventType: "error",
-      data: {
-        terminal: true,
-        error: reason || "Command rejected by desktop",
-        code: "rejected",
-      } as unknown as JsonValue,
+      data: errorData,
       computeTargetId: targetId,
     });
+    if (result.accepted && !result.duplicate) {
+      await publishLegacyRelayEvent(commandId, {
+        commandId,
+        eventType: "error",
+        data: errorData,
+        sequence: result.sequence,
+      });
+    }
   }
 
   return { emit: [] };
