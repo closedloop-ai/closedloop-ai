@@ -1,48 +1,27 @@
 "use client";
 
-import { EngineerRoutingMode } from "@repo/api/src/types/relay";
 import { AlertCircle, Loader2 } from "lucide-react";
 import Link from "next/link";
 import { ComputeTargetSelector } from "@/components/engineer/compute-target-selector";
 import { EngineerDashboard } from "@/components/engineer/engineer-dashboard";
-import { useComputeTargets } from "@/hooks/queries/use-compute-targets";
 import { DESKTOP_SETUP_URL } from "@/lib/engineer/constants";
-import { useElectronDetection } from "@/lib/engineer/electron-detection";
-import { useEngineerRoutingSelection } from "@/lib/engineer/routing-store";
-import { appEnvironment } from "@/lib/environment";
+import { useSystemCheckEligibility } from "@/lib/system-check/use-system-check-eligibility";
 
 /**
  * Guards engineer access based on the currently selected routing target.
  * Hosted users must select an available execution target.
  */
 export function EngineerGuard() {
-  const detection = useElectronDetection();
-  const routing = useEngineerRoutingSelection();
-  const { data: targets = [], isLoading: targetsLoading } = useComputeTargets({
-    staleTime: 30_000,
-    refetchInterval: 30_000,
-  });
-
-  const selectedCloudTargetOnline =
-    routing.mode === EngineerRoutingMode.CloudRelay &&
-    routing.computeTargetId !== null &&
-    targets.some(
-      (target) => target.id === routing.computeTargetId && target.isOnline
-    );
-  const selectedLocalElectronReady =
-    routing.mode === EngineerRoutingMode.LocalElectron && detection.detected;
-  const selectedLocalDevReady =
-    routing.mode === EngineerRoutingMode.LocalDev && appEnvironment === "local";
-  const canAccess =
-    selectedCloudTargetOnline ||
-    selectedLocalElectronReady ||
-    selectedLocalDevReady;
+  // Engineer access intentionally reuses the same execution-readiness rules as
+  // the global system-check bootstrap.
+  const { isLoading, shouldRunSystemCheck: canAccess } =
+    useSystemCheckEligibility();
 
   if (canAccess) {
     return <EngineerDashboard />;
   }
 
-  if (detection.loading || targetsLoading) {
+  if (isLoading) {
     return (
       <div className="flex min-h-[60vh] items-center justify-center p-8">
         <div className="max-w-md space-y-4 text-center text-muted-foreground">
