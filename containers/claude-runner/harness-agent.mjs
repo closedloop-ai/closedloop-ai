@@ -1820,6 +1820,8 @@ async function uploadState(workDir, output, runDir) {
   );
   for (const file of artifactFiles) {
     if (fs.existsSync(file.path)) {
+      log("info", `Uploading artifact ${file.name} from ${file.path}`);
+
       try {
         const content = fs.readFileSync(file.path);
         await uploadFile(
@@ -1830,6 +1832,8 @@ async function uploadState(workDir, output, runDir) {
       } catch (err) {
         log("error", `Failed to upload artifact ${file.name}: ${err.message}`);
       }
+    } else {
+      log("info", `Artifact ${file.name} not found at ${file.path}`);
     }
   }
 
