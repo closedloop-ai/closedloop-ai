@@ -199,7 +199,7 @@ export function toWireCommandFromStore(command: {
 }): WireCommandPayload {
   return {
     commandId: command.commandId,
-    operationId: command.operationId,
+    operationId: resolveOperationId(command.path) ?? command.operationId,
     method: command.method,
     path: command.path,
     headers: command.headers,
@@ -235,9 +235,14 @@ export function toWireCommandFromRelayOperation(operation: {
     return null;
   }
 
+  // Resolve the semantic operationId that Electron expects from the path.
+  // The browser sends a random UUID as operationId, but Electron requires
+  // the resolved name (e.g. "health_check", "symphony_launch").
+  const operationId = resolveOperationId(path) ?? operation.operationId;
+
   return {
     commandId,
-    operationId: operation.operationId,
+    operationId,
     method,
     path,
     headers: toStringRecord(request.headers),
@@ -260,4 +265,72 @@ export function toWireCommandFromRelayOperation(operation: {
 
 export function emitCommand(socket: Socket, command: WireCommandPayload): void {
   socket.emit("desktop.command", toEnvelope(command));
+}
+
+/**
+ * Exact-match path → operationId.
+ * Must stay in sync with Electron's `resolveOperationId()` in
+ * `apps/desktop/src/main/app.ts`.
+ */
+const EXACT_OPERATION_IDS: Record<string, string> = {
+  "/api/engineer/symphony/launch": "symphony_launch",
+  "/api/engineer/symphony/kill": "symphony_kill",
+  "/api/engineer/symphony/sessions": "symphony_sessions",
+  "/api/engineer/terminal-chat": "terminal_chat",
+  "/api/engineer/ticket-chat": "ticket_chat",
+  "/api/engineer/run-viewer-chat": "run_viewer_chat",
+  "/api/engineer/health-check": "health_check",
+  "/api/engineer/repos": "repos_config",
+  "/api/engineer/learnings": "learnings",
+  "/api/engineer/directories": "filesystem",
+  "/api/engineer/files/search": "filesystem",
+  "/api/engineer/git/user": "git_pr",
+};
+
+/**
+ * Prefix-match path → operationId (checked in order, first match wins).
+ * Order matters: more-specific prefixes must come before less-specific ones.
+ */
+const PREFIX_OPERATION_IDS: [string, string][] = [
+  ["/api/engineer/symphony/status/", "symphony_status"],
+  ["/api/engineer/symphony/chat-history/", "symphony_chat_history"],
+  ["/api/engineer/symphony/chat/", "symphony_chat"],
+  ["/api/engineer/symphony/comment-chat/", "symphony_comment_chat"],
+  ["/api/engineer/symphony/commit-message/", "symphony_commit_message"],
+  ["/api/engineer/symphony/plan/", "symphony_plan"],
+  ["/api/engineer/symphony/judges/", "symphony_judges"],
+  ["/api/engineer/symphony/logs/", "symphony_logs"],
+  ["/api/engineer/symphony/pending-learnings", "learnings"],
+  ["/api/engineer/symphony/process-all-learnings", "learnings"],
+  ["/api/engineer/symphony/process-learnings", "learnings"],
+  ["/api/engineer/codex/argue/", "codex_argue"],
+  ["/api/engineer/codex/", "codex_review"],
+  ["/api/engineer/git/pr", "git_pr"],
+  ["/api/engineer/git", "git_action"],
+  ["/api/engineer/deploy", "deploy"],
+  ["/api/engineer/run-viewer-extract", "filesystem"],
+];
+
+/**
+ * Resolve the semantic operationId that Electron expects for a given
+ * `/api/engineer/*` path.  This must stay in sync with the Electron
+ * desktop app's `resolveOperationId()` in `apps/desktop/src/main/app.ts`.
+ */
+export function resolveOperationId(pathname: string): string | null {
+  if (!pathname.startsWith("/api/engineer/")) {
+    return null;
+  }
+
+  const exact = EXACT_OPERATION_IDS[pathname];
+  if (exact) {
+    return exact;
+  }
+
+  for (const [prefix, operationId] of PREFIX_OPERATION_IDS) {
+    if (pathname.startsWith(prefix)) {
+      return operationId;
+    }
+  }
+
+  return null;
 }
