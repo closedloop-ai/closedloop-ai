@@ -106,9 +106,12 @@ export function useUpdateIssue() {
       const { id, ...body } = input;
       return apiClient.put<IssueWithWorkstream>(`/issues/${id}`, body);
     },
-    onSuccess: (_, input) => {
+    onSuccess: (data, input) => {
       queryClient.invalidateQueries({
         queryKey: issueKeys.detail(input.id),
+      });
+      queryClient.invalidateQueries({
+        queryKey: issueKeys.bySlug(data.slug),
       });
       queryClient.invalidateQueries({ queryKey: issueKeys.lists() });
       queryClient.invalidateQueries({ queryKey: dashboardKeys.all });
