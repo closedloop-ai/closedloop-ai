@@ -178,6 +178,11 @@ export const enumOptionsService = {
   ): Promise<void> {
     const field = await verifyFieldOwnership(customFieldId, organizationId);
 
+    const uniqueIds = new Set(orderedOptionIds);
+    if (uniqueIds.size !== orderedOptionIds.length) {
+      throw new Error("Duplicate option IDs are not allowed in reorder list.");
+    }
+
     if (orderedOptionIds.length !== field.enumOptions.length) {
       throw new Error(
         `Expected ${field.enumOptions.length} option IDs but received ${orderedOptionIds.length}. All options must be included in the reorder list.`

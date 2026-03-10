@@ -1,9 +1,14 @@
 "use client";
 
-import type { CustomField } from "@repo/api/src/types/custom-field";
+import type {
+  CustomField,
+  CustomFieldWithOptions,
+} from "@repo/api/src/types/custom-field";
+import type { User } from "@repo/api/src/types/user";
 import {
   Avatar,
   AvatarFallback,
+  AvatarImage,
 } from "@repo/design-system/components/ui/avatar";
 import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
@@ -24,23 +29,34 @@ import {
   useCustomFields,
   useDeleteCustomField,
 } from "@/hooks/queries/use-custom-fields";
+import { useOrganizationUsers } from "@/hooks/queries/use-users";
+import { getUserDisplayName, getUserInitials } from "@/lib/user-utils";
 import { ENTITY_TYPE_LABELS, FIELD_TYPE_LABELS } from "./constants";
 import { CreateCustomFieldDialog } from "./create-custom-field-dialog";
 
-function CreatedByCell({ createdById }: { createdById: string | null }) {
-  if (!createdById) {
+function CreatedByCell({
+  createdById,
+  user,
+}: {
+  createdById: string | null;
+  user: User | undefined;
+}) {
+  if (!(createdById && user)) {
     return <span className="text-muted-foreground text-sm">—</span>;
   }
 
-  // Show last 4 chars of ID as abbreviated avatar until BasicUser is available
-  const abbreviated = createdById.slice(-4).toUpperCase();
+  const name = getUserDisplayName(user);
+  const initials = getUserInitials(user.firstName, user.lastName);
 
   return (
     <div className="flex items-center gap-2">
       <Avatar className="size-6">
-        <AvatarFallback className="text-[10px]">{abbreviated}</AvatarFallback>
+        {user.avatarUrl ? (
+          <AvatarImage alt={name} src={user.avatarUrl} />
+        ) : null}
+        <AvatarFallback className="text-[10px]">{initials}</AvatarFallback>
       </Avatar>
-      <span className="text-sm">{abbreviated}</span>
+      <span className="text-sm">{name}</span>
     </div>
   );
 }
@@ -76,7 +92,10 @@ function ActionsMenu({ field, onEdit, onDelete }: Readonly<ActionsMenuProps>) {
 
 export function CustomFieldsSettingsTab() {
   const { data: fields = [], isLoading } = useCustomFields();
+  const { data: users = [] } = useOrganizationUsers();
   const deleteCustomField = useDeleteCustomField();
+
+  const userMap = new Map(users.map((u) => [u.id, u]));
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editField, setEditField] = useState<CustomField | null>(null);
@@ -136,7 +155,12 @@ export function CustomFieldsSettingsTab() {
     {
       key: "createdById",
       header: "Created By",
-      render: (field) => <CreatedByCell createdById={field.createdById} />,
+      render: (field) => (
+        <CreatedByCell
+          createdById={field.createdById}
+          user={field.createdById ? userMap.get(field.createdById) : undefined}
+        />
+      ),
     },
     {
       key: "createdAt",
@@ -181,11 +205,10 @@ export function CustomFieldsSettingsTab() {
     );
   }
 
-  // CreateCustomFieldDialog requires CustomFieldWithOptions (which adds enumOptions).
-  // The list endpoint returns CustomFieldWithOptions at runtime; enumOptions populated
-  // lazily inside the dialog via EnumOptionBuilder in edit mode.
+  // useCustomFields returns CustomFieldWithOptions (includes enumOptions).
+  // Cast is safe since list endpoint includes enumOptions.
   const editFieldWithOptions = editField
-    ? { ...editField, enumOptions: [] as [] }
+    ? (editField as CustomFieldWithOptions)
     : undefined;
 
   return (

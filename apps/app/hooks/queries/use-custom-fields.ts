@@ -4,7 +4,6 @@ import type {
   AttachCustomFieldInput,
   CreateCustomFieldInput,
   CreateEnumOptionInput,
-  CustomField,
   CustomFieldEnumOption,
   CustomFieldSettingWithOptions,
   CustomFieldWithOptions,
@@ -41,13 +40,16 @@ export const customFieldKeys = {
 // Queries
 
 export function useCustomFields(
-  options?: Omit<UseQueryOptions<CustomField[]>, "queryKey" | "queryFn">
+  options?: Omit<
+    UseQueryOptions<CustomFieldWithOptions[]>,
+    "queryKey" | "queryFn"
+  >
 ) {
   const apiClient = useApiClient();
 
   return useQuery({
     queryKey: customFieldKeys.list({}),
-    queryFn: () => apiClient.get<CustomField[]>("/custom-fields"),
+    queryFn: () => apiClient.get<CustomFieldWithOptions[]>("/custom-fields"),
     ...options,
   });
 }
@@ -299,6 +301,26 @@ export function useUpdateEnumOption(fieldId: string) {
     onSuccess: () => {
       queryClient.invalidateQueries({
         queryKey: customFieldKeys.detail(fieldId),
+      });
+    },
+  });
+}
+
+export function useReorderEnumOptions(fieldId: string) {
+  const queryClient = useQueryClient();
+  const apiClient = useApiClient();
+
+  return useMutation({
+    mutationFn: (optionIds: string[]) =>
+      apiClient.post(`/custom-fields/${fieldId}/enum-options/reorder`, {
+        optionIds,
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: customFieldKeys.detail(fieldId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: customFieldKeys.enumOptions(fieldId),
       });
     },
   });

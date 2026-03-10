@@ -13,7 +13,7 @@ import {
 import type { BasicUser } from "@repo/api/src/types/user";
 import type { Prisma } from "@repo/database";
 import { withDb } from "@repo/database";
-import { computeDisplayValue } from "./utils";
+import { computeDisplayValue, validateValueType } from "./utils";
 
 /**
  * Thrown when the target entity is not found or does not belong to the organization.
@@ -268,6 +268,11 @@ export const customFieldValuesService = {
     if (!field) {
       throw new FieldNotFoundError(fieldId);
     }
+
+    validateValueType(
+      field.fieldType as (typeof CustomFieldType)[keyof typeof CustomFieldType],
+      rawValue
+    );
 
     const valuePayload = await buildValuePayload(
       field.fieldType,

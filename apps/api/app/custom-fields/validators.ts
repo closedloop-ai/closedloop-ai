@@ -1,6 +1,7 @@
 import {
   CustomFieldEntityType,
   CustomFieldType,
+  LabelPosition,
   NumberFormat,
 } from "@repo/api/src/types/custom-field";
 import { z } from "zod";
@@ -8,6 +9,7 @@ import { z } from "zod";
 const customFieldTypeEnum = z.enum(CustomFieldType);
 const numberFormatEnum = z.enum(NumberFormat);
 const entityTypeEnum = z.enum(CustomFieldEntityType);
+const labelPositionEnum = z.enum(LabelPosition);
 
 const CURRENCY_CODE_REGEX = /^[A-Z]{3}$/;
 
@@ -25,6 +27,8 @@ export const createCustomFieldValidator = z.object({
   precision: z.number().int().min(0).max(6).optional(),
   numberFormat: numberFormatEnum.optional(),
   currencyCode: z.string().length(3).regex(CURRENCY_CODE_REGEX).optional(),
+  customLabel: z.string().max(256).optional(),
+  customLabelPosition: labelPositionEnum.optional(),
   enumOptions: z.array(enumOptionSchema).optional(),
   entityTypes: z.array(entityTypeEnum).optional(),
   showInTable: z.boolean().optional(),
@@ -38,6 +42,8 @@ export const updateCustomFieldValidator = z.object({
   precision: z.number().int().min(0).max(6).optional(),
   numberFormat: numberFormatEnum.optional(),
   currencyCode: z.string().length(3).regex(CURRENCY_CODE_REGEX).optional(),
+  customLabel: z.string().max(256).optional(),
+  customLabelPosition: labelPositionEnum.optional(),
   entityTypes: z.array(entityTypeEnum).optional(),
   showInTable: z.boolean().optional(),
   isSearchable: z.boolean().optional(),

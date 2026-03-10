@@ -27,6 +27,7 @@ import { DndProvider } from "@/components/dnd/dnd-provider";
 import {
   useCreateEnumOption,
   useCustomFieldEnumOptions,
+  useReorderEnumOptions,
   useUpdateEnumOption,
 } from "@/hooks/queries/use-custom-fields";
 import type { ColorName } from "./color-picker";
@@ -324,6 +325,7 @@ function EditModeBuilder({ fieldId }: Readonly<EditModeProps>) {
   const { data: options = [] } = useCustomFieldEnumOptions(fieldId);
   const updateOption = useUpdateEnumOption(fieldId);
   const createOption = useCreateEnumOption(fieldId);
+  const reorderOptions = useReorderEnumOptions(fieldId);
 
   // Local reorder state: if null, use server order
   const [orderedIds, setOrderedIds] = useState<string[] | null>(null);
@@ -354,7 +356,9 @@ function EditModeBuilder({ fieldId }: Readonly<EditModeProps>) {
       return;
     }
     const reordered = arrayMove(displayOptions, oldIndex, newIndex);
-    setOrderedIds(reordered.map((o) => o.id));
+    const newIds = reordered.map((o) => o.id);
+    setOrderedIds(newIds);
+    reorderOptions.mutate(newIds);
   };
 
   const handleAddOption = () => {

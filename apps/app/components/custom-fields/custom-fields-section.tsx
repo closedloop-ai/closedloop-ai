@@ -43,7 +43,7 @@ export function CustomFieldsSection({
             isRequired: false,
             sortOrder: 0,
             createdAt: field.createdAt,
-            customField: { ...field, enumOptions: [] },
+            customField: field,
           }}
         />
       ))}
