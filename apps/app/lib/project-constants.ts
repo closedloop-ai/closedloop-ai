@@ -32,30 +32,30 @@ export const PRIORITY_COLORS: Record<Priority, string> = {
 // Artifact status configuration (uses API status directly — no display mapping)
 export const ARTIFACT_STATUS_LABELS: Record<ArtifactStatus, string> = {
   [ArtifactStatus.Draft]: "Draft",
+  [ArtifactStatus.ReadyForReview]: "Ready for Review",
   [ArtifactStatus.InReview]: "In Review",
   [ArtifactStatus.Approved]: "Approved",
-  [ArtifactStatus.Obsolete]: "Obsolete",
-  [ArtifactStatus.ReadyForReview]: "Ready for Review",
   [ArtifactStatus.Executed]: "Executed",
+  [ArtifactStatus.Obsolete]: "Obsolete",
 };
 
 export const ARTIFACT_STATUS_COLORS: Record<ArtifactStatus, string> = {
   [ArtifactStatus.Draft]: "text-muted-foreground",
+  [ArtifactStatus.ReadyForReview]: "text-yellow-600 dark:text-yellow-400",
   [ArtifactStatus.InReview]: "text-yellow-600 dark:text-yellow-400",
   [ArtifactStatus.Approved]: "text-green-600 dark:text-green-400",
-  [ArtifactStatus.Obsolete]: "text-muted-foreground",
-  [ArtifactStatus.ReadyForReview]: "text-yellow-600 dark:text-yellow-400",
   [ArtifactStatus.Executed]: "text-green-600 dark:text-green-400",
+  [ArtifactStatus.Obsolete]: "text-muted-foreground",
 };
 
 export const ARTIFACT_STATUS_TO_ICON: Record<ArtifactStatus, StatusIconStatus> =
   {
     [ArtifactStatus.Draft]: "todo",
+    [ArtifactStatus.ReadyForReview]: "in-progress",
     [ArtifactStatus.InReview]: "in-review",
     [ArtifactStatus.Approved]: "complete",
-    [ArtifactStatus.Obsolete]: "wont-do",
-    [ArtifactStatus.ReadyForReview]: "in-progress",
     [ArtifactStatus.Executed]: "complete",
+    [ArtifactStatus.Obsolete]: "wont-do",
   };
 
 // Artifact type icons

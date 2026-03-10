@@ -46,11 +46,11 @@ export function getRoutePrefixForType(type: string): string | null {
 // Artifact Status
 export const ArtifactStatus = {
   Draft: "DRAFT",
+  ReadyForReview: "READY_FOR_REVIEW",
   InReview: "IN_REVIEW",
   Approved: "APPROVED",
-  Obsolete: "OBSOLETE",
-  ReadyForReview: "READY_FOR_REVIEW",
   Executed: "EXECUTED",
+  Obsolete: "OBSOLETE",
 } as const;
 export type ArtifactStatus =
   (typeof ArtifactStatus)[keyof typeof ArtifactStatus];
