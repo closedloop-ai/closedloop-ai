@@ -21,8 +21,8 @@ pnpm install
 
 ### 2. Generate an API key
 
-1. Go to [app.closedloop.ai/settings?tab=integrations](https://app.closedloop.ai/settings?tab=integrations)
-2. Scroll to the **API Keys** section
+1. Go to [app.closedloop.ai/settings?tab=api-keys](https://app.closedloop.ai/settings?tab=api-keys)
+2. In the **API Keys** tab
 3. Create a new key with **read-write** scope
 4. Copy the key (`sk_live_...`) — you'll need it in the next step
 
@@ -76,7 +76,7 @@ The desktop app runs a local gateway server on port 19432 (falls back to 19433-1
 | "Onboarding not completed" errors | Open the desktop app window (click tray icon) and finish setup |
 | Port conflict on 19432 | The app auto-falls back to 19433-19435. Check if another instance is running. |
 | Commands rejected | Make sure your allowed directories include the repo path you're working in |
-| API key issues | Regenerate at Settings → Integrations → API Keys. Paste in desktop app settings. |
+| API key issues | Regenerate at Settings → API Keys. Paste in desktop app settings. |
 | Can't find `claude` command | Install Claude CLI and ensure it's in your PATH |
 
 
