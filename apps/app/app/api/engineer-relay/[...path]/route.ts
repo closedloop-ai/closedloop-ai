@@ -219,7 +219,7 @@ async function handleRelayRequest(request: NextRequest): Promise<Response> {
       headers: {
         "Content-Type": "text/event-stream; charset=utf-8",
         "Cache-Control": "no-cache, no-transform",
-        "Content-Encoding": "none",
+        "Content-Encoding": "identity",
         "X-Accel-Buffering": "no",
         "X-Content-Type-Options": "nosniff",
         Connection: "keep-alive",
