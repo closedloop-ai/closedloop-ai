@@ -37,10 +37,13 @@ export function useSystemCheckEligibility(): SystemCheckEligibility {
   // Electron detected but EngineerTransportBootstrap's auto-selection hasn't
   // updated the routing store yet.  Keep isLoading true to avoid flashing the
   // "no target" fallback for one frame before the mode switches.
+  // Skip when an online cloud target is already selected — the bootstrap won't
+  // override a valid cloud selection, so the pending state would never clear.
   const autoSelectionPending =
     detection.detected &&
     routing.source === "auto" &&
-    routing.mode !== EngineerRoutingMode.LocalElectron;
+    routing.mode !== EngineerRoutingMode.LocalElectron &&
+    !selectedCloudTargetOnline;
 
   // Only gate on Electron probing when it actually matters:
   //  - LocalElectron mode: need probe result to know if desktop is reachable

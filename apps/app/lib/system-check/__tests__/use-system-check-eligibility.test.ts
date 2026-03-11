@@ -177,6 +177,37 @@ describe("useSystemCheckEligibility", () => {
     expect(result.current.shouldRunSystemCheck).toBe(true);
   });
 
+  it("does not stay loading when auto-sourced CloudRelay has a valid target and Electron is also detected", () => {
+    // Regression: autoSelectionPending was true whenever Electron was detected
+    // with auto source + non-LocalElectron mode, even when a valid cloud target
+    // meant the bootstrap would never switch to LocalElectron.
+    mockUseEngineerRoutingSelection.mockReturnValue({
+      mode: EngineerRoutingMode.CloudRelay,
+      computeTargetId: "target-1",
+      source: "auto",
+      updatedAt: Date.now(),
+    });
+    mockUseComputeTargets.mockReturnValue({
+      data: [{ id: "target-1", machineName: "Desktop", isOnline: true }],
+      isLoading: false,
+    });
+    mockUseElectronDetection.mockReturnValue({
+      detected: true,
+      loading: false,
+      port: 19_432,
+      version: "1.0.0",
+      machineName: "desktop",
+      capabilities: {},
+      checkedAt: Date.now(),
+    });
+
+    const { result } = renderHook(() => useSystemCheckEligibility());
+
+    expect(result.current.isLoading).toBe(false);
+    expect(result.current.shouldRunSystemCheck).toBe(true);
+    expect(result.current.selectedCloudTargetOnline).toBe(true);
+  });
+
   it("does not report loading when user manually selected CloudRelay despite Electron being detected", () => {
     mockUseEngineerRoutingSelection.mockReturnValue({
       mode: EngineerRoutingMode.CloudRelay,
