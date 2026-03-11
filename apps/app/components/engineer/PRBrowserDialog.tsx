@@ -975,7 +975,7 @@ export function PRBrowserDialog({
           { method: "DELETE" }
         ).catch(() => {});
         fetch(
-          `/api/engineer/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(selectedRepo.path)}`,
+          `/api/engineer/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(selectedRepo.path)}&provider=${encodeURIComponent(provider)}`,
           { method: "DELETE" }
         ).catch(() => {});
       }
