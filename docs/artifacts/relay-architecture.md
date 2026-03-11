@@ -21,47 +21,42 @@ Source docs:
 
 ## 2. System Goals
 
-1. Preserve current local engineer workflow (Tier 1) with no behavior regression.
-2. Prefer direct local execution via Electron when available (Tier 2).
-3. Support hosted cross-device relay through API + desktop gateway (Tier 3).
-4. Keep browser stream parser compatibility (newline-delimited NDJSON).
-5. Maintain secure, user-owned compute target isolation.
+1. Prefer direct local execution via Electron when available (Tier 1).
+2. Support hosted cross-device relay through API + desktop gateway (Tier 2).
+3. Keep browser stream parser compatibility (newline-delimited NDJSON).
+4. Maintain secure, user-owned compute target isolation.
 
-## 3. Three-Tier Routing Model
+## 3. Two-Tier Routing Model
 
 | Tier | Name | Activation | Request Path | Primary Use |
 | --- | --- | --- | --- | --- |
-| 1 | Local Dev | App running on localhost, no selected relay target | Browser -> `apps/app` `/api/engineer/*` | Normal local development |
-| 2 | Local Electron | Electron detected on localhost probe | Browser rewrites `/api/engineer/*` -> `http://localhost:{port}/api/engineer/*` | Primary engineer path, lowest latency |
-| 3 | Cloud Relay | Hosted/browser on other device + selected online compute target | Browser -> `apps/app` -> `apps/api` -> desktop gateway socket | Remote operation/monitoring |
+| 1 | Local Electron | Electron detected on localhost probe | Browser rewrites `/api/engineer/*` -> `http://localhost:{port}/api/engineer/*` | Primary engineer path, lowest latency |
+| 2 | Cloud Relay | Hosted/browser on other device + selected online compute target | Browser -> `apps/app` -> `apps/api` -> desktop gateway socket | Remote operation/monitoring |
 
 ```mermaid
 graph TD
     REQ["Browser Request to /api/engineer/*"] --> CHK_HOST{Running on localhost?}
 
-    CHK_HOST -->|No| T3["Tier 3: Cloud Relay"]
+    CHK_HOST -->|No| T2["Tier 2: Cloud Relay"]
     CHK_HOST -->|Yes| CHK_ELEC{Electron detected on<br/>localhost probe?}
 
-    CHK_ELEC -->|Yes| T2["Tier 2: Local Electron"]
+    CHK_ELEC -->|Yes| T1["Tier 1: Local Electron"]
     CHK_ELEC -->|No| CHK_TARGET{Cloud compute<br/>target selected?}
 
-    CHK_TARGET -->|Yes| T3
-    CHK_TARGET -->|No| T1["Tier 1: Local Dev"]
+    CHK_TARGET -->|Yes| T2
+    CHK_TARGET -->|No| T2
 
-    T1 -.- T1D["apps/app /api/engineer/* routes"]
-    T2 -.- T2D["Rewrite to localhost:port"]
-    T3 -.- T3D["apps/app -> apps/api -> desktop socket"]
+    T1 -.- T1D["Rewrite to localhost:port"]
+    T2 -.- T2D["apps/app -> apps/api -> desktop socket"]
 
-    style T1 fill:#22c55e,color:#fff
-    style T2 fill:#3b82f6,color:#fff
-    style T3 fill:#a855f7,color:#fff
+    style T1 fill:#3b82f6,color:#fff
+    style T2 fill:#a855f7,color:#fff
 ```
 
 Key invariants:
 
-- Tier 1 behavior is preserved.
-- Tier 2 rewrites all `/api/engineer/*` calls to localhost when Electron is detected.
-- Tier 3 supports the full operation surface (not monitoring-only).
+- Tier 1 rewrites all `/api/engineer/*` calls to localhost when Electron is detected.
+- Tier 2 supports the full operation surface (not monitoring-only).
 - Browser-facing stream framing remains NDJSON lines.
 
 ## 4. High-Level Architecture
@@ -119,7 +114,7 @@ graph TB
 
 ## 5. Runtime Flows
 
-### 5.1 Tier 2 (Local Electron, direct)
+### 5.1 Tier 1 (Local Electron, direct)
 
 ```mermaid
 sequenceDiagram
@@ -141,7 +136,7 @@ sequenceDiagram
 3. Desktop executes operations locally and streams NDJSON back directly.
 4. Cloud relay stack is bypassed for those calls.
 
-### 5.2 Tier 3 (Hosted relay)
+### 5.2 Tier 2 (Hosted relay)
 
 ```mermaid
 sequenceDiagram
@@ -380,20 +375,12 @@ Terminal rules:
 
 ### 10.1 Engineer routing behavior
 
-- Localhost + no relay target => Tier 1 local handling.
-- Electron detected => Tier 2 rewrite of all `/api/engineer/*`.
-- Hosted + selected online target => Tier 3 relay via command APIs.
+- Electron detected => Tier 1 rewrite of all `/api/engineer/*`.
+- Hosted + selected online target => Tier 2 relay via command APIs.
 
-### 10.2 Hosted MCP bypass
-
-- Hosted (`stage/prod`) bypasses MCP sync/connection logic.
-- MCP-specific UI connection surfaces are hidden in hosted mode.
-- Local mode keeps existing MCP behavior.
-
-### 10.3 Compute target selector behavior
+### 10.2 Compute target selector behavior
 
 - Shows Local Electron only when local gateway is available.
-- Shows Local Dev Server on localhost.
 - Shows cloud targets with online/offline state.
 - Dedupe logic prevents duplicate display when a cloud target corresponds to Local Electron.
 
@@ -422,9 +409,8 @@ Risk considerations:
 
 From `docs/artifacts/relay-conformance.md`:
 
-- Tier 1 preservation: pass
-- Tier 2 rewrite behavior: pass
-- Tier 3 full operation relay: pass
+- Tier 1 rewrite behavior: pass
+- Tier 2 full operation relay: pass
 - Socket gateway contract implementation: pass
 - NDJSON parser compatibility: pass
 - Durable command/event persistence: pass
@@ -443,7 +429,7 @@ Known migration gap:
 
 ## 15. Quick Reference
 
-- Primary direct path: Tier 2 (local Electron rewrite)
-- Hosted remote path: Tier 3 (command APIs + socket dispatch)
+- Primary direct path: Tier 1 (local Electron rewrite)
+- Hosted remote path: Tier 2 (command APIs + socket dispatch)
 - Parser compatibility requirement: browser always receives NDJSON lines
 - Ownership requirement: compute targets are private to authenticated owner/org

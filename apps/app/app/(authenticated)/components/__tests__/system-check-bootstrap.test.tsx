@@ -1,3 +1,4 @@
+import { EngineerRoutingMode } from "@repo/api/src/types/relay";
 import { render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -24,7 +25,7 @@ describe("SystemCheckBootstrap", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockUseEngineerRoutingSelection.mockReturnValue({
-      mode: "local-dev",
+      mode: EngineerRoutingMode.CloudRelay,
       computeTargetId: null,
       source: "auto",
       updatedAt: Date.now(),
@@ -57,18 +58,6 @@ describe("SystemCheckBootstrap", () => {
     mockUseSystemCheckEligibility.mockReturnValue({
       shouldRunSystemCheck: true,
       isLoading: false,
-    });
-
-    render(<SystemCheckBootstrap />);
-
-    expect(screen.getByTestId("health-check-dialog")).toBeInTheDocument();
-  });
-
-  it("renders the dialog when localhost LocalDev is eligible", () => {
-    mockUseSystemCheckEligibility.mockReturnValue({
-      shouldRunSystemCheck: true,
-      isLoading: false,
-      selectedLocalDevReady: true,
     });
 
     render(<SystemCheckBootstrap />);

@@ -19,13 +19,11 @@
    - [PR Management](#11-pr-management)
    - [Deploy (Local Dev Server)](#12-deploy-local-dev-server)
    - [Learnings Pipeline](#13-learnings-pipeline)
-   - [MCP Client (ClosedLoop Platform)](#14-mcp-client-closedloop-platform)
    - [Repo Management](#15-repo-management)
    - [Health Check](#16-health-check)
    - [Commit Message Generation](#17-commit-message-generation)
    - [Version & Update Checker](#18-version--update-checker)
    - [File Search & Directory Browsing](#19-file-search--directory-browsing)
-   - [MCP Auth](#20-mcp-auth)
 5. [Remote Deployability — Original Assessment](#remote-deployability--original-assessment)
 6. [Remote Deployability — With Electron Shell Relay (Low-Level)](#remote-deployability--with-electron-shell-relay)
    - [Relay Primitive Catalog](#relay-primitive-catalog)
@@ -116,7 +114,6 @@ engineer/page.tsx
   └── EngineerGuard (localhost UX check)
        └── EngineerDashboard
             ├── HeaderOverflowMenu (theme, learnings, run viewer, PRs)
-            ├── MCPConnectionStatus
             └── TicketList (~2100 lines, central orchestrator)
                  ├── ActiveTicketCard (per active Symphony session)
                  │    ├── PlanViewer (sliding panel)
@@ -131,12 +128,10 @@ engineer/page.tsx
 
 Contexts:
   └── EngineerThemeProvider (CSS variable overrides)
-  └── EngineerMcpProvider (MCP client with auto-retry)
 
 Data Flow:
   UI Components → TanStack Query hooks → fetch() → /api/engineer/* routes
   Streaming:      useChatStream hook → fetch + ReadableStream → NDJSON parsing
-  MCP:            useMcpClient → StreamableHTTPClientTransport → closedloop MCP server
 ```
 
 ---
@@ -148,7 +143,7 @@ Data Flow:
 **What it does**: Main engineer view showing tickets organized into Active Work, Next Up (starred), Pending Work, and Done sections. Supports grid/list view modes. Auto-redirects ENGINEER-role users to `/engineer` on localhost.
 
 **UI Components**:
-- `EngineerDashboard` — shell with terminal-style header, status widget, MCP badge
+- `EngineerDashboard` — shell with terminal-style header, status widget
 - `TicketList` (~2100 lines) — central orchestrator managing all ticket state
 - `TicketCard` / `TicketListRow` — per-ticket display with workflow progress bar
 - `ActiveTicketCard` — expanded card for active Symphony sessions with sliding plan panel
@@ -158,7 +153,7 @@ Data Flow:
 |-------|--------|---------|
 | `/api/engineer/work-directory/[ticketId]` | GET | Check if worktree exists, return pendingClaudeMd, branchStatus |
 
-**Communication**: On mount, `TicketList` fires parallel GET requests to `work-directory` for each ticket to populate `workDirStatus`. Tickets come from MCP (see feature #14).
+**Communication**: On mount, `TicketList` fires parallel GET requests to `work-directory` for each ticket to populate `workDirStatus`. Tickets come from the API.
 
 **Local dependencies**: `work-directory` checks local filesystem for worktrees and runs `git status`, `git rev-parse`, `git ls-remote`, `git branch --merged`.
 
@@ -463,25 +458,6 @@ Data Flow:
 
 ---
 
-### 14. MCP Client (ClosedLoop Platform)
-
-**What it does**: Connects to the ClosedLoop Symphony platform via MCP. Fetches tickets, user info, provides write operations.
-
-**UI Components**: `MCPConnectionStatus`
-
-**Hooks**: `useMcpClient`, `useEngineerIssues`
-
-**API Routes**:
-| Route | Method | Purpose |
-|-------|--------|---------|
-| `/api/engineer/mcp-auth` | GET | Returns `CLOSEDLOOP_API_KEY` from env |
-
-**Communication**: Browser → `StreamableHTTPClientTransport` → `mcp.closedloop.ai/mcp`
-
-**Local dependencies**: NONE. Pure remote API calls.
-
----
-
 ### 15. Repo Management
 
 **What it does**: CRUD for `~/.claude/closedloop/repos.json`.
@@ -556,26 +532,13 @@ Data Flow:
 
 ---
 
-### 20. MCP Auth
-
-**What it does**: Returns `CLOSEDLOOP_API_KEY` env var to frontend.
-
-**API Routes**:
-| Route | Method | Purpose |
-|-------|--------|---------|
-| `/api/engineer/mcp-auth` | GET | Returns API key |
-
-**Local dependencies**: NONE. Just reads an env var.
-
----
-
 ## Remote Deployability — Original Assessment
 
 Without any relay mechanism, the vast majority of features are local-only:
 
 | # | Feature | Remote? | Reason if Local-Only |
 |---|---------|---------|---------------------|
-| 1 | Dashboard & Tickets | PARTIAL | Tickets from MCP = remote. Work-dir checks = local. |
+| 1 | Dashboard & Tickets | NO | Work-dir checks require local filesystem. |
 | 2 | Symphony Launch | NO | Spawns `run-loop.sh`, creates worktrees, process management |
 | 3 | Symphony Chat | NO | Spawns `claude` CLI, local worktree |
 | 4 | Codex Review | NO | Spawns `codex`/`claude` CLI, local git |
@@ -588,15 +551,13 @@ Without any relay mechanism, the vast majority of features are local-only:
 | 11 | PR Management | PARTIAL | `gh` CLI needs local auth + git context |
 | 12 | Deploy | NO | Local dev server process |
 | 13 | Learnings | NO | Spawns `claude` CLI, local files |
-| 14 | MCP Client | YES | Pure remote API calls |
 | 15 | Repo Management | NO | Local config file |
 | 16 | Health Check | NO | Local CLI tool checks |
 | 17 | Commit Message | NO | Local git + `claude` CLI |
 | 18 | Version/Update | PARTIAL | Git-specific deployment model |
 | 19 | File Search/Dirs | NO | Local filesystem |
-| 20 | MCP Auth | YES | Just returns env var |
 
-**Score: 2/20 fully remote, 3/20 partial, 15/20 local-only.**
+**Score: 0/18 fully remote, 3/18 partial, 15/18 local-only.**
 
 ---
 
@@ -634,7 +595,7 @@ Based on the route-by-route analysis, the Electron relay needs these primitives:
 #### 1. Dashboard & Ticket Management
 **Via relay?** YES
 
-The `work-directory` route needs: `exec` (git commands), `read_file` (sessions.json, repos.json), `exists` (worktree paths, CLAUDE.md). All expressible as relay primitives. Ticket data already comes from MCP (remote).
+The `work-directory` route needs: `exec` (git commands), `read_file` (sessions.json, repos.json), `exists` (worktree paths, CLAUDE.md). All expressible as relay primitives.
 
 **Relay operations per poll**: ~4 `exec` calls (git status, rev-parse, ls-remote, branch --merged) + 2 `read_file` + 1 `exists` per ticket.
 
@@ -766,13 +727,6 @@ All routes are `exec` (gh CLI commands). No streaming, no file I/O.
 
 ---
 
-#### 14. MCP Client
-**Via relay?** N/A — ALREADY REMOTE
-
-Browser connects directly to `mcp.closedloop.ai`. No relay needed.
-
----
-
 #### 15. Repo Management
 **Via relay?** YES
 
@@ -819,13 +773,6 @@ Browser connects directly to `mcp.closedloop.ai`. No relay needed.
 
 ---
 
-#### 20. MCP Auth
-**Via relay?** N/A — ALREADY REMOTE
-
-Returns server-side env var. No relay needed.
-
----
-
 ### Relay Feasibility Summary
 
 | # | Feature | Via Relay? | Complexity | Key Challenges |
@@ -843,13 +790,11 @@ Returns server-side env var. No relay needed.
 | 11 | PR Management | **YES** | Low | Pure gh CLI exec |
 | 12 | Deploy | **YES*** | High | Dev server only reachable on user's localhost |
 | 13 | Learnings | **YES** | Low | Fire-and-forget spawn + file I/O |
-| 14 | MCP Client | **N/A** | — | Already remote |
 | 15 | Repo Management | **YES** | Low | Pure file I/O |
 | 16 | Health Check | **YES** | Low | Batch exec calls |
 | 17 | Commit Message | **YES** | Low | exec + short spawn |
 | 18 | Version/Update | **YES** | Trivial | Two git commands |
 | 19 | File Search/Dirs | **YES** | Low | Filesystem queries |
-| 20 | MCP Auth | **N/A** | — | Already remote |
 
 ### Result: **18/18 local features become remotely feasible** via the Electron relay.
 
@@ -984,7 +929,7 @@ The relay essentially provides remote code execution on the user's machine. The 
 
 The low-level relay approach (Section 6) works but is chatty — a single Symphony chat turn requires ~8 filesystem reads, a process spawn, stdin write, stdout streaming, a kill timer, and a file write, each as a separate round-trip. The investigation revealed a critical insight:
 
-**Every single engineer API route has ZERO server-side dependencies.** No database access. No cloud API calls. No Clerk auth (except one route that can be dropped). The server inputs are just user messages, ticket data (already in the browser from MCP/Linear), model configs, and IDs/paths.
+**Every single engineer API route has ZERO server-side dependencies.** No database access. No cloud API calls. No Clerk auth (except one route that can be dropped). The server inputs are just user messages, ticket data (already in the browser from the API), model configs, and IDs/paths.
 
 This means the entire orchestration logic currently in `apps/app/app/api/engineer/` can move wholesale into the Claude Code plugin on the user's machine. The server becomes a thin pass-through: it receives a user action from the browser, sends a single high-level command to the Electron app, and the plugin handler does everything locally.
 
@@ -1119,7 +1064,7 @@ The data that flows from the remote server to the Electron app is remarkably sma
 
 **Server → Electron (commands):**
 - User's chat messages (plain text, < 10KB)
-- Ticket metadata from Linear/MCP (title, description, URL — already in the browser)
+- Ticket metadata (title, description, URL — already in the browser from the API)
 - Model/config preferences (string enums)
 - IDs and paths (strings)
 - PR comment context from GitHub (already fetched by the browser)
@@ -1130,7 +1075,7 @@ The data that flows from the remote server to the Electron app is remarkably sma
 - For status/git/config operations: single JSON response objects
 - For review operations: stream of output events
 
-**Nothing needs to change in the React UI or hooks.** The browser still calls `/api/engineer/*` on the remote server. The server routes become thin pass-throughs that forward to the Electron app and relay the response/stream back. The `useChatStream` hook, `readChatStream()` parser, and all TanStack Query options remain identical.
+**Nothing needs to change in the React UI or hooks.** The browser still calls `/api/engineer/*` on the remote server. The server routes become thin pass-throughs that forward to the Electron app and relay the response/stream back. The `useChatStream` hook, `readChatStream()` parser, and all TanStack Query options remain identical. Note: Claude CLI continues to use MCP independently for its own tool calls — this is unaffected by the relay architecture.
 
 ### What Stays Entirely Local
 
@@ -1227,13 +1172,6 @@ The dev server runs on `localhost:XXXX` on the user's machine. The remote server
 
 #### 6. Image Downloads in Launch
 `symphony_launch` downloads images from ticket descriptions (Linear URLs) and saves them locally. The Electron app needs internet access for this (it already has it), but the URLs come from the server as part of the ticket data. No issue.
-
-#### 7. MCP Auth
-Currently `/api/engineer/mcp-auth` returns `CLOSEDLOOP_API_KEY` from the server env. In the Electron model, this key could either:
-- Still come from the server (browser asks server, server returns it) — keeps the key server-side
-- Live in Electron's local config — simpler but key on user's machine
-
-Either works. The MCP client itself runs in the browser and connects directly to `mcp.closedloop.ai` — this doesn't change.
 
 ### Feasibility Assessment
 
@@ -1576,31 +1514,14 @@ Client                              API Route                    Filesystem
   | (repeat every 2-3s)               |                             |
 ```
 
-### Pattern 3: MCP Client (Platform Data)
-
-```
-Browser                    MCP SDK                  mcp.closedloop.ai
-  |                          |                             |
-  | useMcpClient()           |                             |
-  |─────────────────────────>|  StreamableHTTP connect     |
-  |                          |───────────────────────────>|
-  |                          |  tool list                   |
-  |                          |<───────────────────────────|
-  |  listIssues()            |                             |
-  |─────────────────────────>|  callTool("list-issues")   |
-  |                          |───────────────────────────>|
-  |  McpIssue[]              |  tool result                |
-  |<─────────────────────────|<───────────────────────────|
-```
-
-### Pattern 4: TanStack Query (Server State Management)
+### Pattern 3: TanStack Query (Server State Management)
 
 - **13 query domains**: symphony, git, deploy, repos, files, tickets, terminal, healthCheck, etc.
 - **Polling queries**: `symphonyStatus` (2-3s), `deployStatus` (2s), `codexReviewStatus` (2s), `deployHealth` (60s)
 - **One-shot queries**: `healthCheck`, `codexAvailable`, `githubUser` (all staleTime: Infinity)
 - **Cache invalidation**: `queryClient.invalidateQueries()` after mutations
 
-### Pattern 5: NDJSON Streaming via Relay (Proposed)
+### Pattern 4: NDJSON Streaming via Relay (Proposed)
 
 ```
 Browser          Remote Server           WebSocket          Electron App        CLI
@@ -1634,7 +1555,7 @@ Browser          Remote Server           WebSocket          Electron App        
 
 | Location | Scope | Contents |
 |----------|-------|----------|
-| `apps/app/types/engineer.ts` | UI-wide | `EngineerTicket`, `McpUser/Issue/Artifact`, status mappings |
+| `apps/app/types/engineer.ts` | UI-wide | `EngineerTicket`, status mappings |
 | `apps/app/types/repos.ts` | UI-wide | `ConfiguredRepo`, `RepoSettings`, `DeploymentConfig` |
 | `apps/app/types/run-viewer.ts` | Run viewer | `FileTreeNode`, `RunData` |
 | `apps/app/components/engineer/chat/types.ts` | Chat | `ChatMessage`, `ContentBlock` |

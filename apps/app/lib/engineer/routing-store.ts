@@ -7,7 +7,6 @@ import {
   removeStorageItem,
   setStorageItem,
 } from "@/lib/engineer/storage";
-import { appEnvironment } from "@/lib/environment";
 
 const STORAGE_KEY = "engineer-routing-selection:v1";
 
@@ -21,7 +20,7 @@ export type EngineerRoutingSelection = {
 };
 
 const DEFAULT_SELECTION: EngineerRoutingSelection = {
-  mode: EngineerRoutingMode.LocalDev,
+  mode: EngineerRoutingMode.CloudRelay,
   computeTargetId: null,
   source: "auto",
   updatedAt: 0,
@@ -29,10 +28,6 @@ const DEFAULT_SELECTION: EngineerRoutingSelection = {
 
 let snapshot: EngineerRoutingSelection = {
   ...DEFAULT_SELECTION,
-  mode:
-    appEnvironment === "local"
-      ? EngineerRoutingMode.LocalDev
-      : EngineerRoutingMode.CloudRelay,
 };
 
 let hydrated = false;
@@ -168,13 +163,7 @@ export function useEngineerRoutingSelection(): EngineerRoutingSelection {
 }
 
 export function resetEngineerRoutingSelectionForTests(): void {
-  snapshot = {
-    ...DEFAULT_SELECTION,
-    mode:
-      appEnvironment === "local"
-        ? EngineerRoutingMode.LocalDev
-        : EngineerRoutingMode.CloudRelay,
-  };
+  snapshot = { ...DEFAULT_SELECTION };
   hydrated = false;
   listeners.clear();
   removeStorageItem(STORAGE_KEY);

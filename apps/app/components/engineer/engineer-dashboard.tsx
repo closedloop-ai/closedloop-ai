@@ -13,56 +13,28 @@ import {
 import { toast } from "sonner";
 import { HeaderOverflowMenu } from "@/components/engineer/HeaderOverflowMenu";
 import { LearningsDialog } from "@/components/engineer/LearningsDialog";
-import { MCPConnectionStatus } from "@/components/engineer/MCPConnectionStatus";
 import { TerminalChatDialog } from "@/components/engineer/TerminalChatDialog";
 import { TicketList } from "@/components/engineer/TicketList";
-import { useOptionalEngineerMcp } from "@/contexts/engineer-mcp-context";
 import { useEngineerIssues } from "@/hooks/engineer/use-engineer-issues";
 import { useFeatureSeen } from "@/hooks/engineer/use-feature-seen";
 import { useTerminalStatus } from "@/hooks/engineer/useTerminalStatus";
-import { isEngineerMcpEnabled } from "@/lib/engineer/mcp-mode";
 import { terminalBus } from "@/lib/engineer/terminal-bus";
 import type { EngineerTicket } from "@/types/engineer";
 import { ComputeTargetSelector } from "./compute-target-selector";
 
 export function EngineerDashboard() {
   const router = useRouter();
-  const mcp = useOptionalEngineerMcp();
-  const showMcpUi = isEngineerMcpEnabled && mcp !== null;
   const {
     tickets,
     isLoading,
     isFetching,
     error,
-    isMcpFailed,
     user,
     updateTicketStatus,
     getFullTicket,
     postComment,
     refetch,
   } = useEngineerIssues();
-
-  // Debounce connection error display — transient SSE disconnects (React strict mode)
-  // shouldn't flash "connection failed" to the user.
-  const [showMcpStatus, setShowMcpStatus] = useState(false);
-  const mcpWasReadyRef = useRef(false);
-  useEffect(() => {
-    if (!(showMcpUi && mcp)) {
-      setShowMcpStatus(false);
-      return;
-    }
-
-    if (mcp.isReady) {
-      setShowMcpStatus(false);
-      if (!mcpWasReadyRef.current) {
-        mcpWasReadyRef.current = true;
-        terminalBus.send("mcp connected", { prefix: "ok", typewriter: true });
-      }
-      return;
-    }
-    const timer = setTimeout(() => setShowMcpStatus(true), 2000);
-    return () => clearTimeout(timer);
-  }, [showMcpUi, mcp?.isReady]);
 
   const [learningsOpen, setLearningsOpen] = useState(false);
   const [terminalChatOpen, setTerminalChatOpen] = useState(false);
@@ -232,22 +204,6 @@ export function EngineerDashboard() {
             </div>
           </div>
           <div className="ml-auto flex items-center gap-2">
-            {showMcpUi &&
-              mcp &&
-              showMcpStatus &&
-              !mcp.isReady &&
-              mcp.state !== "failed" && (
-                <MCPConnectionStatus
-                  error={mcp.error}
-                  onAuthenticate={mcp.authenticate}
-                  state={mcp.state}
-                />
-              )}
-            {showMcpUi && mcp && mcp.isReady && !mcp.hasWriteScope && (
-              <span className="rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-amber-500 text-xs">
-                read-only
-              </span>
-            )}
             <ComputeTargetSelector />
             <Button
               className="gap-2"
@@ -304,20 +260,8 @@ export function EngineerDashboard() {
           </div>
         </header>
 
-        {/* MCP unavailable notice — non-alarming hint for local dev */}
-        {isMcpFailed && (
-          <div className="mb-8 rounded-xl border border-border bg-muted/50 p-5">
-            <p className="font-medium text-muted-foreground text-sm">
-              MCP server not connected. Start with:{" "}
-              <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
-                pnpm turbo dev --filter=mcp
-              </code>
-            </p>
-          </div>
-        )}
-
-        {/* Error state with retry (non-MCP errors) */}
-        {error && !isMcpFailed && (
+        {/* Error state with retry */}
+        {error && (
           <div className="mb-8 rounded-xl border border-destructive/20 bg-destructive/10 p-5">
             <div className="flex items-start justify-between gap-4">
               <div className="text-destructive">

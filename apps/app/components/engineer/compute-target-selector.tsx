@@ -25,15 +25,10 @@ import {
   setEngineerRoutingManualSelection,
   useEngineerRoutingSelection,
 } from "@/lib/engineer/routing-store";
-import { appEnvironment } from "@/lib/environment";
 
 type LocalOption = {
-  id:
-    | typeof EngineerRoutingMode.LocalElectron
-    | typeof EngineerRoutingMode.LocalDev;
-  mode:
-    | typeof EngineerRoutingMode.LocalElectron
-    | typeof EngineerRoutingMode.LocalDev;
+  id: typeof EngineerRoutingMode.LocalElectron;
+  mode: typeof EngineerRoutingMode.LocalElectron;
   label: string;
   description: string;
 };
@@ -64,15 +59,6 @@ function buildOptions(
       mode: EngineerRoutingMode.LocalElectron,
       label: "Local (Electron)",
       description: "Direct localhost execution",
-    });
-  }
-
-  if (appEnvironment === "local") {
-    options.push({
-      id: EngineerRoutingMode.LocalDev,
-      mode: EngineerRoutingMode.LocalDev,
-      label: "Local (dev server)",
-      description: "Run on local Next.js server",
     });
   }
 
@@ -113,10 +99,7 @@ function resolveActiveOption(
     );
   }
 
-  if (
-    mode === EngineerRoutingMode.LocalElectron ||
-    mode === EngineerRoutingMode.LocalDev
-  ) {
+  if (mode === EngineerRoutingMode.LocalElectron) {
     return (
       options.find(
         (option) => !isCloudOption(option) && option.mode === mode
@@ -156,7 +139,6 @@ function isOnlineOption(option: SelectorOption): boolean {
     return option.target.isOnline;
   }
   // LocalElectron: detection.detected is guaranteed true when visible.
-  // LocalDev: always available in local environment.
   return true;
 }
 

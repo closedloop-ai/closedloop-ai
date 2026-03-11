@@ -11,12 +11,14 @@ import {
 import { cn } from "@repo/design-system/lib/utils";
 import { useQuery } from "@tanstack/react-query";
 import {
+  Check,
   ExternalLink,
   GitBranch,
   Loader2,
   MessageSquare,
   MessagesSquare,
   MoreHorizontal,
+  Play,
   Rocket,
   RotateCcw,
   Scale,
@@ -33,6 +35,8 @@ import {
   SymphonyChat,
 } from "@/components/engineer/SymphonyChat";
 import { TicketCard } from "@/components/engineer/TicketCard";
+import { usePlanActions } from "@/hooks/artifact-editing/use-plan-actions";
+import { useTicketPlanArtifact } from "@/hooks/engineer/use-ticket-plan-artifact";
 import {
   symphonyChatHistoryOptions,
   symphonyLogsOptions,
@@ -243,6 +247,10 @@ export function ActiveTicketCard({
     refetchInterval: showLogs ? 2000 : false,
   });
 
+  // Linked implementation plan artifact (for approve / execute buttons)
+  const { artifactId, isApproved, isExecuted, isStatusLoaded, hasLinkedPlan } =
+    useTicketPlanArtifact(ticket);
+
   // Overflow menu items visibility
   const isSymphonyActive = isExecuting || isLaunchingOrAccepting;
   const showCodexReview =
@@ -266,6 +274,16 @@ export function ActiveTicketCard({
       {/* Action buttons - show when there's an active session */}
       {hasActiveSession && (
         <div className="absolute top-3 right-3 z-20 flex items-center gap-1.5">
+          {/* Approve + Execute buttons (only mount when a plan is linked) */}
+          {hasLinkedPlan && artifactId && (
+            <PlanActionButtons
+              artifactId={artifactId}
+              isApproved={isApproved}
+              isExecuted={isExecuted}
+              isStatusLoaded={isStatusLoaded}
+            />
+          )}
+
           {/* Chat button */}
           <button
             className={cn(
@@ -607,4 +625,100 @@ function OverflowMenu({
       </DropdownMenuContent>
     </DropdownMenu>
   );
+}
+
+/**
+ * Approve + Execute buttons for a linked implementation plan.
+ * Rendered as a child component so usePlanActions mutation hooks are only
+ * instantiated when a plan is actually linked to the ticket.
+ */
+function PlanActionButtons({
+  artifactId,
+  isApproved,
+  isExecuted,
+  isStatusLoaded,
+}: Readonly<{
+  artifactId: string;
+  isApproved: boolean;
+  isExecuted: boolean;
+  isStatusLoaded: boolean;
+}>) {
+  const {
+    handleApprove,
+    handleExecute,
+    isApproving,
+    isExecuting,
+    isComputeModeLoading,
+  } = usePlanActions({ artifactId });
+
+  const showApproved = isApproved || isExecuted;
+
+  return (
+    <>
+      {/* Approve button — green checkmark when approved */}
+      {showApproved ? (
+        <span
+          className={cn(
+            ACTION_BUTTON_BASE,
+            "cursor-default border-emerald-500/30 text-emerald-500"
+          )}
+          title="Plan approved"
+        >
+          <Check className="size-3.5" />
+        </span>
+      ) : (
+        <button
+          className={cn(
+            ACTION_BUTTON_BASE,
+            "hover:border-emerald-500/30 hover:text-emerald-500"
+          )}
+          disabled={isApproving || !isStatusLoaded}
+          onClick={handleApprove}
+          title={isStatusLoaded ? "Approve plan" : "Loading plan status..."}
+        >
+          {isApproving ? (
+            <Loader2 className="size-3.5 animate-spin" />
+          ) : (
+            <Check className="size-3.5" />
+          )}
+        </button>
+      )}
+
+      {/* Execute button — disabled until approved and backend is resolved */}
+      <button
+        className={cn(
+          ACTION_BUTTON_BASE,
+          isApproved && !isComputeModeLoading
+            ? "hover:border-blue-500/30 hover:text-blue-500"
+            : "cursor-not-allowed opacity-40"
+        )}
+        disabled={!isApproved || isExecuting || isComputeModeLoading}
+        onClick={() => handleExecute()}
+        title={executeButtonTitle(isExecuted, isApproved, isComputeModeLoading)}
+      >
+        {isExecuting ? (
+          <Loader2 className="size-3.5 animate-spin" />
+        ) : (
+          <Play className="size-3.5" />
+        )}
+      </button>
+    </>
+  );
+}
+
+function executeButtonTitle(
+  isExecuted: boolean,
+  isApproved: boolean,
+  isComputeModeLoading: boolean
+): string {
+  if (isExecuted) {
+    return "Plan already executed";
+  }
+  if (isComputeModeLoading) {
+    return "Loading execution backend...";
+  }
+  if (isApproved) {
+    return "Execute plan";
+  }
+  return "Approve plan first to execute";
 }

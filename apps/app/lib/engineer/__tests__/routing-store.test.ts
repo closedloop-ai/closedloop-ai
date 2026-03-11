@@ -41,13 +41,20 @@ describe("routing-store", () => {
     expect(snapshot.source).toBe("auto");
   });
 
-  it("drops compute target id for non-cloud modes", () => {
+  it("falls back to CloudRelay when localStorage contains a legacy local-dev mode", () => {
     resetEngineerRoutingSelectionForTests();
 
-    setEngineerRoutingManualSelection(EngineerRoutingMode.LocalDev, "target-3");
+    globalThis.localStorage.setItem(
+      "engineer-routing-selection:v1",
+      JSON.stringify({
+        mode: "local-dev",
+        computeTargetId: null,
+        source: "auto",
+        updatedAt: 1,
+      })
+    );
 
     const snapshot = getEngineerRoutingSelection();
-    expect(snapshot.mode).toBe(EngineerRoutingMode.LocalDev);
-    expect(snapshot.computeTargetId).toBeNull();
+    expect(snapshot.mode).toBe(EngineerRoutingMode.CloudRelay);
   });
 });
