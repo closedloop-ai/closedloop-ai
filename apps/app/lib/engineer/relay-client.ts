@@ -369,8 +369,9 @@ export function isStreamingEngineerRequest(
 
 export class RelayClient {
   private readonly apiOrigin: string;
-  private readonly authToken: string;
+  private authToken: string;
   private readonly internalApiSecret?: string;
+  private refreshToken?: () => Promise<string | null>;
 
   constructor(
     apiOrigin: string,
@@ -380,6 +381,10 @@ export class RelayClient {
     this.apiOrigin = apiOrigin;
     this.authToken = authToken;
     this.internalApiSecret = internalApiSecret;
+  }
+
+  setRefreshToken(fn: () => Promise<string | null>): void {
+    this.refreshToken = fn;
   }
 
   private async createCommand(
@@ -504,7 +509,7 @@ export class RelayClient {
     const url = useInternalRoute
       ? `${this.apiOrigin}/internal/compute-targets/${encodeURIComponent(targetId)}/commands/${encodeURIComponent(commandId)}/events`
       : `${this.apiOrigin}/compute-targets/${encodeURIComponent(targetId)}/commands/${encodeURIComponent(commandId)}/events`;
-    const response = await fetch(url, {
+    let response = await fetch(url, {
       method: "GET",
       cache: "no-store",
       headers: {
@@ -515,7 +520,29 @@ export class RelayClient {
     });
 
     if (!response.ok) {
-      throw await parsePollError(response);
+      if (response.status === 401 && this.refreshToken && !useInternalRoute) {
+        let newToken: string | null = null;
+        try {
+          newToken = await this.refreshToken();
+        } catch {
+          throw await parsePollError(response);
+        }
+        if (!newToken) {
+          throw await parsePollError(response);
+        }
+        this.authToken = newToken;
+        const retryResponse = await fetch(url, {
+          method: "GET",
+          cache: "no-store",
+          headers: { Authorization: `Bearer ${this.authToken}` },
+        });
+        if (!retryResponse.ok) {
+          throw await parsePollError(retryResponse);
+        }
+        response = retryResponse;
+      } else {
+        throw await parsePollError(response);
+      }
     }
 
     const payload = (await response.json().catch(() => null)) as ApiResult<

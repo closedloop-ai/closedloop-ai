@@ -28,233 +28,6 @@ type TerminalChatDialogProps = {
   onOpenChange: (open: boolean) => void;
 };
 
-// An entry in the chat display
-type TerminalEntry = {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  timestamp: string;
-  mode: TerminalMessageMode;
-  blocks?: ContentBlock[];
-};
-
-// Active streaming state
-type ActiveStream = {
-  mode: TerminalMessageMode;
-  textContent: string;
-  blocks: ContentBlock[];
-  error?: string;
-};
-
-type PendingRemoteResponse = {
-  requestId: string;
-  startedAt: number;
-  initialAssistantCount: number;
-  requestPersistedAt: number | null;
-  expectedUserMessage: string;
-};
-
-/**
- * Detect the mode based on what the user is typing.
- * Claude is the default; @codex routes to Codex.
- */
-function detectInputMode(input: string): TerminalMessageMode {
-  const trimmed = input.trimStart();
-  if (trimmed.startsWith("@codex ") || trimmed === "@codex") {
-    return "codex";
-  }
-  return "claude";
-}
-
-/**
- * Convert history messages to display entries, filtering out legacy shell entries.
- */
-function historyToEntries(messages: TerminalMessage[]): TerminalEntry[] {
-  return messages
-    .filter((msg) => msg.role !== "shell")
-    .map((msg) => ({
-      id: msg.id,
-      role: msg.role as "user" | "assistant",
-      content: msg.content,
-      timestamp: msg.timestamp,
-      mode: msg.mode === "shell" ? "claude" : msg.mode || "claude",
-      blocks: msg.blocks,
-    }));
-}
-
-const LAYOUT_KEY = "terminalChatLayout";
-const DEFAULT_SIZE = { width: 768, height: 600 };
-const MIN_SIZE = { width: 400, height: 300 };
-const REMOTE_RESPONSE_POLL_INTERVAL_MS = 1500;
-const PENDING_STATUS_TICK_MS = 1000;
-const REMOTE_REQUEST_ACK_TIMEOUT_MS = 10_000;
-const REMOTE_RESPONSE_WAIT_TIMEOUT_MS = 90_000;
-
-type DialogLayout = { width: number; height: number; x: number; y: number };
-
-/**
- * Load persisted layout from localStorage and validate it against the current
- * viewport. Falls back to centered defaults if the saved layout doesn't fit
- * (e.g. browser window was resized smaller since last save).
- */
-function loadValidatedLayout(): DialogLayout {
-  const vw = globalThis.innerWidth || 1024;
-  const vh = globalThis.innerHeight || 768;
-  const maxW = vw - 40;
-  const maxH = vh - 40;
-
-  function centered(w: number, h: number): DialogLayout {
-    return {
-      width: w,
-      height: h,
-      x: Math.round((vw - w) / 2),
-      y: Math.round((vh - h) / 2),
-    };
-  }
-
-  try {
-    const raw = globalThis.localStorage?.getItem(LAYOUT_KEY);
-    if (!raw) {
-      return centered(
-        Math.min(DEFAULT_SIZE.width, maxW),
-        Math.min(DEFAULT_SIZE.height, maxH)
-      );
-    }
-
-    const saved = JSON.parse(raw);
-    const w = Number(saved.width) || DEFAULT_SIZE.width;
-    const h = Number(saved.height) || DEFAULT_SIZE.height;
-
-    // If saved size exceeds current viewport, use defaults
-    if (w > maxW || h > maxH) {
-      return centered(
-        Math.min(DEFAULT_SIZE.width, maxW),
-        Math.min(DEFAULT_SIZE.height, maxH)
-      );
-    }
-
-    const width = Math.max(MIN_SIZE.width, Math.min(w, maxW));
-    const height = Math.max(MIN_SIZE.height, Math.min(h, maxH));
-    const x = Number(saved.x);
-    const y = Number(saved.y);
-
-    // If position is invalid or dialog would be mostly off-screen, re-center
-    if (
-      Number.isNaN(x) ||
-      Number.isNaN(y) ||
-      x + width < 100 ||
-      x > vw - 100 ||
-      y < 0 ||
-      y > vh - 60
-    ) {
-      return centered(width, height);
-    }
-
-    return {
-      width,
-      height,
-      x: Math.max(0, Math.min(x, vw - 100)),
-      y: Math.max(0, Math.min(y, vh - 60)),
-    };
-  } catch {
-    return centered(
-      Math.min(DEFAULT_SIZE.width, maxW),
-      Math.min(DEFAULT_SIZE.height, maxH)
-    );
-  }
-}
-
-function saveLayout(layout: DialogLayout): void {
-  try {
-    globalThis.localStorage?.setItem(LAYOUT_KEY, JSON.stringify(layout));
-  } catch {
-    // Ignore storage errors
-  }
-}
-
-function isNetworkFetchFailure(error: unknown): boolean {
-  return (
-    error instanceof TypeError &&
-    /failed to fetch|networkerror/i.test(error.message)
-  );
-}
-
-function createRelayRequestId(): string {
-  if (
-    typeof crypto !== "undefined" &&
-    typeof crypto.randomUUID === "function"
-  ) {
-    return crypto.randomUUID();
-  }
-  return `relay-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-}
-
-function buildTerminalChatRequestPath(requestId: string): string {
-  return `/api/engineer/terminal-chat?__relayRid=${encodeURIComponent(requestId)}`;
-}
-
-async function resolveTerminalChatRequestUrl(
-  routingMode: string,
-  requestPath: string
-): Promise<string | null> {
-  if (routingMode !== EngineerRoutingMode.LocalElectron) {
-    return requestPath;
-  }
-
-  const detectionSnapshot = getElectronDetectionSnapshot();
-  const detection =
-    detectionSnapshot.checkedAt === null
-      ? await ensureElectronDetection()
-      : detectionSnapshot;
-
-  if (!(detection.detected && detection.port)) {
-    return null;
-  }
-
-  return new URL(requestPath, `http://localhost:${detection.port}`).toString();
-}
-
-function countAssistantMessages(
-  messages: TerminalMessage[] | undefined
-): number {
-  if (!messages) {
-    return 0;
-  }
-  return messages.filter((message) => message.role === "assistant").length;
-}
-
-function hasPersistedUserMessage(
-  messages: TerminalMessage[],
-  pending: PendingRemoteResponse
-): boolean {
-  const earliestExpectedTimestamp = pending.startedAt - 2000;
-  return messages.some((message) => {
-    if (message.role !== "user") {
-      return false;
-    }
-
-    const timestamp = Date.parse(message.timestamp);
-    if (Number.isNaN(timestamp) || timestamp < earliestExpectedTimestamp) {
-      return false;
-    }
-
-    return message.content.trim() === pending.expectedUserMessage;
-  });
-}
-
-function getInputPlaceholder(
-  isStreaming: boolean,
-  isPendingRemote: boolean
-): string {
-  if (isStreaming) {
-    return "Waiting for response...";
-  }
-  if (isPendingRemote) {
-    return "Waiting for local gateway response...";
-  }
-  return "Ask Claude anything, or @codex...";
-}
-
 /**
  * TerminalChatDialog - A chat interface with Claude (default) and @codex routing.
  */
@@ -722,21 +495,14 @@ export function TerminalChatDialog({
           return;
         }
 
-        const response = await fetch(requestUrl, {
-          method: "POST",
-          // Omit Content-Type for local-electron to keep CORS-simple (no preflight).
-          // For same-origin modes, set it so the body is correctly labelled.
-          headers:
-            routing.mode === EngineerRoutingMode.LocalElectron
-              ? {}
-              : { "Content-Type": "application/json" },
-          body: JSON.stringify({ message: trimmed }),
-          signal: abortController.signal,
-          credentials:
-            routing.mode === EngineerRoutingMode.LocalElectron
-              ? "omit"
-              : "same-origin",
-        });
+        const response = await fetch(
+          requestUrl,
+          buildFetchOptions(
+            routing.mode,
+            JSON.stringify({ message: trimmed }),
+            abortController.signal
+          )
+        );
 
         if (!response.ok) {
           const err = await response
@@ -762,20 +528,14 @@ export function TerminalChatDialog({
           )
         );
       } catch (err) {
-        if (err instanceof DOMException && err.name === "AbortError") {
-          // User cancelled
-        } else if (
-          routing.mode === EngineerRoutingMode.LocalElectron &&
-          isNetworkFetchFailure(err)
-        ) {
-          // Local Electron may have accepted the command while approval is still
-          // pending; avoid surfacing a hard send error for transient fetch
-          // failures here. Explicit deny/error responses are still shown from the
-          // stream or non-2xx API response path above.
-          if (!history?.messages) {
-            setRequestError("Failed to connect to local gateway.");
-            return;
-          }
+        const action = classifySendError(
+          err,
+          routing.mode,
+          !!history?.messages
+        );
+        if (action.kind === "error") {
+          setRequestError(action.message);
+        } else if (action.kind === "pending") {
           setPendingRemoteResponse({
             requestId,
             startedAt: Date.now(),
@@ -786,10 +546,6 @@ export function TerminalChatDialog({
           await queryClient.invalidateQueries({
             queryKey: queryKeys.terminalChatHistory(),
           });
-        } else {
-          setRequestError(
-            err instanceof Error ? err.message : "Connection failed"
-          );
         }
       } finally {
         setIsStreaming(false);
@@ -1274,6 +1030,233 @@ export function TerminalChatDialog({
   );
 }
 
+// An entry in the chat display
+type TerminalEntry = {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  timestamp: string;
+  mode: TerminalMessageMode;
+  blocks?: ContentBlock[];
+};
+
+// Active streaming state
+type ActiveStream = {
+  mode: TerminalMessageMode;
+  textContent: string;
+  blocks: ContentBlock[];
+  error?: string;
+};
+
+type PendingRemoteResponse = {
+  requestId: string;
+  startedAt: number;
+  initialAssistantCount: number;
+  requestPersistedAt: number | null;
+  expectedUserMessage: string;
+};
+
+/**
+ * Detect the mode based on what the user is typing.
+ * Claude is the default; @codex routes to Codex.
+ */
+function detectInputMode(input: string): TerminalMessageMode {
+  const trimmed = input.trimStart();
+  if (trimmed.startsWith("@codex ") || trimmed === "@codex") {
+    return "codex";
+  }
+  return "claude";
+}
+
+/**
+ * Convert history messages to display entries, filtering out legacy shell entries.
+ */
+function historyToEntries(messages: TerminalMessage[]): TerminalEntry[] {
+  return messages
+    .filter((msg) => msg.role !== "shell")
+    .map((msg) => ({
+      id: msg.id,
+      role: msg.role as "user" | "assistant",
+      content: msg.content,
+      timestamp: msg.timestamp,
+      mode: msg.mode === "shell" ? "claude" : msg.mode || "claude",
+      blocks: msg.blocks,
+    }));
+}
+
+const LAYOUT_KEY = "terminalChatLayout";
+const DEFAULT_SIZE = { width: 768, height: 600 };
+const MIN_SIZE = { width: 400, height: 300 };
+const REMOTE_RESPONSE_POLL_INTERVAL_MS = 1500;
+const PENDING_STATUS_TICK_MS = 1000;
+const REMOTE_REQUEST_ACK_TIMEOUT_MS = 10_000;
+const REMOTE_RESPONSE_WAIT_TIMEOUT_MS = 90_000;
+
+type DialogLayout = { width: number; height: number; x: number; y: number };
+
+/**
+ * Load persisted layout from localStorage and validate it against the current
+ * viewport. Falls back to centered defaults if the saved layout doesn't fit
+ * (e.g. browser window was resized smaller since last save).
+ */
+function loadValidatedLayout(): DialogLayout {
+  const vw = globalThis.innerWidth || 1024;
+  const vh = globalThis.innerHeight || 768;
+  const maxW = vw - 40;
+  const maxH = vh - 40;
+
+  function centered(w: number, h: number): DialogLayout {
+    return {
+      width: w,
+      height: h,
+      x: Math.round((vw - w) / 2),
+      y: Math.round((vh - h) / 2),
+    };
+  }
+
+  try {
+    const raw = globalThis.localStorage?.getItem(LAYOUT_KEY);
+    if (!raw) {
+      return centered(
+        Math.min(DEFAULT_SIZE.width, maxW),
+        Math.min(DEFAULT_SIZE.height, maxH)
+      );
+    }
+
+    const saved = JSON.parse(raw);
+    const w = Number(saved.width) || DEFAULT_SIZE.width;
+    const h = Number(saved.height) || DEFAULT_SIZE.height;
+
+    // If saved size exceeds current viewport, use defaults
+    if (w > maxW || h > maxH) {
+      return centered(
+        Math.min(DEFAULT_SIZE.width, maxW),
+        Math.min(DEFAULT_SIZE.height, maxH)
+      );
+    }
+
+    const width = Math.max(MIN_SIZE.width, Math.min(w, maxW));
+    const height = Math.max(MIN_SIZE.height, Math.min(h, maxH));
+    const x = Number(saved.x);
+    const y = Number(saved.y);
+
+    // If position is invalid or dialog would be mostly off-screen, re-center
+    if (
+      Number.isNaN(x) ||
+      Number.isNaN(y) ||
+      x + width < 100 ||
+      x > vw - 100 ||
+      y < 0 ||
+      y > vh - 60
+    ) {
+      return centered(width, height);
+    }
+
+    return {
+      width,
+      height,
+      x: Math.max(0, Math.min(x, vw - 100)),
+      y: Math.max(0, Math.min(y, vh - 60)),
+    };
+  } catch {
+    return centered(
+      Math.min(DEFAULT_SIZE.width, maxW),
+      Math.min(DEFAULT_SIZE.height, maxH)
+    );
+  }
+}
+
+function saveLayout(layout: DialogLayout): void {
+  try {
+    globalThis.localStorage?.setItem(LAYOUT_KEY, JSON.stringify(layout));
+  } catch {
+    // Ignore storage errors
+  }
+}
+
+function isNetworkFetchFailure(error: unknown): boolean {
+  return (
+    error instanceof TypeError &&
+    /failed to fetch|networkerror/i.test(error.message)
+  );
+}
+
+function createRelayRequestId(): string {
+  if (
+    typeof crypto !== "undefined" &&
+    typeof crypto.randomUUID === "function"
+  ) {
+    return crypto.randomUUID();
+  }
+  return `relay-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function buildTerminalChatRequestPath(requestId: string): string {
+  return `/api/engineer/terminal-chat?__relayRid=${encodeURIComponent(requestId)}`;
+}
+
+async function resolveTerminalChatRequestUrl(
+  routingMode: string,
+  requestPath: string
+): Promise<string | null> {
+  if (routingMode !== EngineerRoutingMode.LocalElectron) {
+    return requestPath;
+  }
+
+  const detectionSnapshot = getElectronDetectionSnapshot();
+  const detection =
+    detectionSnapshot.checkedAt === null
+      ? await ensureElectronDetection()
+      : detectionSnapshot;
+
+  if (!(detection.detected && detection.port)) {
+    return null;
+  }
+
+  return new URL(requestPath, `http://localhost:${detection.port}`).toString();
+}
+
+function countAssistantMessages(
+  messages: TerminalMessage[] | undefined
+): number {
+  if (!messages) {
+    return 0;
+  }
+  return messages.filter((message) => message.role === "assistant").length;
+}
+
+function hasPersistedUserMessage(
+  messages: TerminalMessage[],
+  pending: PendingRemoteResponse
+): boolean {
+  const earliestExpectedTimestamp = pending.startedAt - 2000;
+  return messages.some((message) => {
+    if (message.role !== "user") {
+      return false;
+    }
+
+    const timestamp = Date.parse(message.timestamp);
+    if (Number.isNaN(timestamp) || timestamp < earliestExpectedTimestamp) {
+      return false;
+    }
+
+    return message.content.trim() === pending.expectedUserMessage;
+  });
+}
+
+function getInputPlaceholder(
+  isStreaming: boolean,
+  isPendingRemote: boolean
+): string {
+  if (isStreaming) {
+    return "Waiting for response...";
+  }
+  if (isPendingRemote) {
+    return "Waiting for local gateway response...";
+  }
+  return "Ask Claude anything, or @codex...";
+}
+
 /**
  * Render a single chat entry (from history)
  */
@@ -1489,5 +1472,48 @@ function applyToolResult(
           }
         : block
     ),
+  };
+}
+
+function buildFetchOptions(
+  routingMode: string,
+  body: string,
+  signal: AbortSignal
+): RequestInit {
+  const isLocalElectron = routingMode === EngineerRoutingMode.LocalElectron;
+  return {
+    method: "POST",
+    headers: isLocalElectron ? {} : { "Content-Type": "application/json" },
+    body,
+    signal,
+    credentials: isLocalElectron ? "omit" : "same-origin",
+  };
+}
+
+type SendErrorAction =
+  | { kind: "abort" }
+  | { kind: "error"; message: string }
+  | { kind: "pending"; requestId: string; trimmed: string };
+
+function classifySendError(
+  err: unknown,
+  routingMode: string,
+  hasHistory: boolean
+): SendErrorAction {
+  if (err instanceof DOMException && err.name === "AbortError") {
+    return { kind: "abort" };
+  }
+  if (
+    routingMode === EngineerRoutingMode.LocalElectron &&
+    isNetworkFetchFailure(err)
+  ) {
+    if (!hasHistory) {
+      return { kind: "error", message: "Failed to connect to local gateway." };
+    }
+    return { kind: "pending", requestId: "", trimmed: "" };
+  }
+  return {
+    kind: "error",
+    message: err instanceof Error ? err.message : "Connection failed",
   };
 }
