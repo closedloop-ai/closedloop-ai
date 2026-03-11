@@ -14,6 +14,7 @@ import {
 import { formatDistanceToNow } from "date-fns";
 import { ChevronDownIcon, ChevronUpIcon, ExternalLinkIcon } from "lucide-react";
 import { useState } from "react";
+import { UserLink } from "@/components/user-link";
 
 type ActivityPanelProps = {
   activities: ActivityItem[];
@@ -90,8 +91,13 @@ export function ActivityPanel({ activities }: ActivityPanelProps) {
             <div className="min-w-0 flex-1">
               <p className="text-sm">
                 {activity.actor ? (
-                  <span className="font-medium">{activity.actor.name} </span>
-                ) : null}
+                  <UserLink
+                    className="font-medium hover:underline"
+                    userId={activity.actor.id}
+                  >
+                    {activity.actor.name}
+                  </UserLink>
+                ) : null}{" "}
                 {(activity.type === "GITHUB_PR_CREATED" ||
                   activity.type === "GITHUB_PR_MERGED") &&
                 activity.metadata?.prUrl ? (

@@ -20,6 +20,7 @@ import { Loader2Icon, RotateCcwIcon, SquareIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { LoopCommandBadge, LoopStatusBadge } from "@/components/status-badge";
+import { UserLink } from "@/components/user-link";
 import {
   useCancelLoop,
   useLoops,
@@ -69,9 +70,12 @@ const columns: Column<LoopWithUser>[] = [
     key: "user",
     header: "User",
     render: (loop) => (
-      <span className="text-muted-foreground text-sm">
+      <UserLink
+        className="text-muted-foreground text-sm hover:underline"
+        userId={loop.user.id}
+      >
         {getUserDisplayName(loop.user)}
-      </span>
+      </UserLink>
     ),
   },
   {

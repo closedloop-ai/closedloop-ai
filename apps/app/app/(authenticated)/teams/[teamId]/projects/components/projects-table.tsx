@@ -250,7 +250,10 @@ export function ProjectsTable({
                           className="-mx-1 flex items-center gap-2 rounded px-1 hover:bg-muted/50"
                           type="button"
                         >
-                          <AssigneeAvatar assignee={project.assignee} />
+                          <AssigneeAvatar
+                            assignee={project.assignee}
+                            disableLink
+                          />
                         </button>
                       }
                       users={orgUsers}

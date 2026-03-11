@@ -17,6 +17,7 @@ import {
   WorkstreamTypeBadge,
 } from "@/components/status-badge";
 import { TableErrorState, TableLoadingState } from "@/components/table-states";
+import { UserLink } from "@/components/user-link";
 import { useWorkstreams } from "@/hooks/queries/use-workstreams";
 import { useCustomFieldColumnVisibility } from "@/hooks/use-custom-field-column-visibility";
 import { deriveCustomFieldColumns } from "@/lib/custom-field-utils";
@@ -108,9 +109,13 @@ export function WorkstreamsList() {
                   <WorkstreamStateBadge state={workstream.state} />
                 </TableCell>
                 <TableCell className="text-muted-foreground text-sm">
-                  {workstream.createdBy
-                    ? getUserDisplayName(workstream.createdBy)
-                    : "-"}
+                  {workstream.createdBy ? (
+                    <UserLink userId={workstream.createdBy.id}>
+                      {getUserDisplayName(workstream.createdBy)}
+                    </UserLink>
+                  ) : (
+                    "-"
+                  )}
                 </TableCell>
                 <TableCell className="text-muted-foreground text-sm">
                   {formatRelativeTime(new Date(workstream.updatedAt))}

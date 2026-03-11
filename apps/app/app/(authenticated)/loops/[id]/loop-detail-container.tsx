@@ -35,7 +35,12 @@ import { useRouter } from "next/navigation";
 import { LoopAuditLog } from "@/components/loops/loop-audit-log";
 import { LoopProgressPanel } from "@/components/loops/loop-progress-panel";
 import { LoopCommandBadge, LoopStatusBadge } from "@/components/status-badge";
-import { useCancelLoop, useLoop, useResumeLoop } from "@/hooks/queries/use-loops";
+import { UserLink } from "@/components/user-link";
+import {
+  useCancelLoop,
+  useLoop,
+  useResumeLoop,
+} from "@/hooks/queries/use-loops";
 import { formatDateTime } from "@/lib/date-utils";
 import { formatDuration, formatTokenCount } from "@/lib/format-utils";
 import {
@@ -300,7 +305,12 @@ export function LoopDetailContainer({ id }: LoopDetailContainerProps) {
       <div className="flex flex-wrap items-center gap-4 text-muted-foreground text-sm">
         <div className="flex items-center gap-1.5">
           <UserIcon className="h-3.5 w-3.5" />
-          <span>User: {getUserDisplayName(loop.user)}</span>
+          <span>
+            User:{" "}
+            <UserLink userId={loop.user.id}>
+              {getUserDisplayName(loop.user)}
+            </UserLink>
+          </span>
         </div>
         <div className="flex items-center gap-1.5">
           <ClockIcon className="h-3.5 w-3.5" />
