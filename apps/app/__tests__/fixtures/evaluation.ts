@@ -82,6 +82,7 @@ export const createMockJudgeFeedbackItem = (
 ): JudgeFeedbackItem => ({
   judgeScoreId: "js-00000000-0000-0000-0000-000000000001",
   caseId: "test-judge",
+  metricName: "test-judge",
   score: 0.92,
   threshold: 0.8,
   justification: "Default test justification",

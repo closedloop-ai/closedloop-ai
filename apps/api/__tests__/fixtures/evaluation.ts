@@ -96,6 +96,7 @@ export function createMockJudgeScoreRow(overrides?: {
   evaluationId?: string;
   promptId?: string | null;
   caseId?: string;
+  metricName?: string;
   threshold?: number;
   score?: number;
   justification?: string;
@@ -108,6 +109,7 @@ export function createMockJudgeScoreRow(overrides?: {
     evaluationId: "eval-123",
     promptId: null,
     caseId: "test-judge",
+    metricName: "test-judge",
     threshold: 0.8,
     score: 0.92,
     justification: "Test justification",

@@ -73,7 +73,7 @@ describe("judgesAnalyticsService.getJudgeScores", () => {
     vi.clearAllMocks();
   });
 
-  it("returns null when no prompts match the promptName", async () => {
+  it("returns empty response when no scores match the metricName", async () => {
     mockDb([], []);
 
     const result = await judgesAnalyticsService.getJudgeScores(
@@ -84,7 +84,13 @@ describe("judgesAnalyticsService.getJudgeScores", () => {
       20
     );
 
-    expect(result).toBeNull();
+    expect(result).toEqual({
+      rows: [],
+      totalArtifacts: 0,
+      ratedArtifacts: 0,
+      coveragePct: 0,
+      pagination: { page: 1, pageSize: 20, totalRows: 0, totalPages: 0 },
+    });
   });
 
   it("returns empty response when prompt matches but no judge scores exist", async () => {
@@ -299,12 +305,10 @@ describe("judgesAnalyticsService.getJudgeScores", () => {
     });
   });
 
-  it("filters judge scores by promptId (relational)", async () => {
+  it("filters judge scores by metricName", async () => {
     const db = {
       prompt: {
-        findMany: vi
-          .fn()
-          .mockResolvedValue([{ id: "prompt-clarity", name: "clarity_judge" }]),
+        findMany: vi.fn().mockResolvedValue([]),
       },
       judgeScore: {
         findMany: vi.fn().mockResolvedValue([]),
@@ -321,9 +325,8 @@ describe("judgesAnalyticsService.getJudgeScores", () => {
     );
 
     const judgeScoreFindManyCall = db.judgeScore.findMany.mock.calls[0][0];
-    const promptIds: string[] = judgeScoreFindManyCall.where.promptId.in;
 
-    expect(promptIds).toContain("prompt-clarity");
-    expect(judgeScoreFindManyCall.where.caseId).toBeUndefined();
+    expect(judgeScoreFindManyCall.where.metricName).toBe("clarity");
+    expect(judgeScoreFindManyCall.where.promptId).toBeUndefined();
   });
 });

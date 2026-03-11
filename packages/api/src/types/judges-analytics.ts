@@ -25,6 +25,8 @@ export type JudgeAggregateStats = {
   judgeName: string;
   /** URL-safe normalized prompt name for navigation links. */
   promptName: string;
+  /** Metric name for this aggregate stats entry. Used for navigation and grouping. */
+  metricName: string;
   /** Latest prompt description from prompt registry for this judge, if available. */
   description?: string | null;
   artifactsEvaluated: number;
@@ -180,6 +182,8 @@ export type JudgeDetailResponse = {
 export type JudgeScoreRow = {
   /** Unique ID of the JudgeScore row; use for React keys when artifactId can repeat. */
   judgeScoreId: string;
+  /** Metric name for this score row. Used for display and filtering. */
+  metricName: string;
   artifactId: string;
   artifactType: ArtifactType;
   artifactTitle: string;
@@ -237,6 +241,8 @@ export type SubmitJudgeRatingResponse = {
   isUpdate: boolean;
   /** URL-safe normalized prompt name for targeted cache invalidation. Null when judge score has no linked prompt. */
   promptName?: string | null;
+  /** URL-safe normalized metric name for targeted cache invalidation. Null when judge score has no metric name. */
+  metricName?: string | null;
   /** Evaluation report type for targeted cache invalidation. */
   reportType?: EvaluationReportType | null;
 };
@@ -258,49 +264,4 @@ export type UserJudgeRating = {
  */
 export type UserJudgeRatingsResponse = {
   ratings: UserJudgeRating[];
-};
-
-export const PR_TIMELINE_GRANULARITY_OPTIONS = {
-  Week: "week",
-  Month: "month",
-} as const;
-
-export type PrTimelineGranularity =
-  (typeof PR_TIMELINE_GRANULARITY_OPTIONS)[keyof typeof PR_TIMELINE_GRANULARITY_OPTIONS];
-
-export const PR_TIMELINE_RANGE_OPTIONS = {
-  Days30: 30,
-  Days90: 90,
-  Days180: 180,
-} as const;
-
-export type PrTimelineRangeOption =
-  (typeof PR_TIMELINE_RANGE_OPTIONS)[keyof typeof PR_TIMELINE_RANGE_OPTIONS];
-
-/**
- * A single data point in the PR timeline, bucketed by a date period.
- * The `bucket` field is formatted as YYYY-MM-DD (start of the period).
- */
-export type PrTimelineDataPoint = {
-  /** Start of the period, formatted as YYYY-MM-DD. */
-  bucket: string;
-  openedCount: number;
-};
-
-/**
- * Aggregate PR health metrics for a project or team.
- *
- * Privacy invariant: this response contains only aggregate numeric data.
- * It must never include body text, authorLogin, or authorAvatarUrl.
- */
-export type PrHealthResponse = {
-  totalPrs: number;
-  openPrs: number;
-  avgCommentCount: number;
-  totalCommentCount: number;
-  /** Average hours from PR open to approval. Null when no approved PRs exist. */
-  avgApprovalHours: number | null;
-  approvalDistribution: Record<"lt1d" | "1to3d" | "3to7d" | "gt7d", number>;
-  timeline: PrTimelineDataPoint[];
-  confidenceNote: string;
 };

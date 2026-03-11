@@ -64,6 +64,8 @@ describe("judgesAnalyticsService reportType scoping", () => {
         findMany: vi.fn().mockResolvedValue([
           {
             caseId: "clarity-judge",
+            metricName: "clarity-judge",
+            promptId: null,
             score: 0.8,
             evaluation: {
               artifactId: "artifact-1",
@@ -72,6 +74,8 @@ describe("judgesAnalyticsService reportType scoping", () => {
           },
           {
             caseId: "unknown-judge",
+            metricName: "unknown-judge",
+            promptId: null,
             score: 0.7,
             evaluation: {
               artifactId: "artifact-1",

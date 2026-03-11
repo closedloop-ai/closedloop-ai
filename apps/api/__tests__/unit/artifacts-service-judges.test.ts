@@ -50,6 +50,7 @@ const EXPECTED_FEEDBACK_ITEMS: JudgeFeedbackItem[] = [
   {
     judgeScoreId: "judge-score-123",
     caseId: "test-judge",
+    metricName: "test-judge",
     score: 0.95,
     threshold: 0.8,
     justification: "Test justification",

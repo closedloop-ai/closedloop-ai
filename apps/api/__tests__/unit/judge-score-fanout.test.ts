@@ -108,6 +108,7 @@ describe("fanOutJudgeScores", () => {
       evaluationId: EVALUATION_ID,
       promptId: "prompt-clarity-v3",
       caseId: caseScoreA.case_id,
+      metricName: metricA.metric_name,
       threshold: metricA.threshold,
       score: metricA.score,
       justification: metricA.justification,
@@ -119,6 +120,7 @@ describe("fanOutJudgeScores", () => {
       evaluationId: EVALUATION_ID,
       promptId: null,
       caseId: caseScoreB.case_id,
+      metricName: metricB.metric_name,
       threshold: metricB.threshold,
       score: metricB.score,
       justification: metricB.justification,
@@ -259,14 +261,12 @@ describe("fanOutJudgeScores", () => {
   });
 
   // -------------------------------------------------------------------------
-  // Bug 1: Metric selected by normalized name match (not position)
+  // Multi-metric fan-out
   // -------------------------------------------------------------------------
 
-  it("selects metric by normalized name match, not by position", async () => {
-    // case_id = "clarity-judge" normalizes to "clarity"
-    // metrics[0] = "brevity_score" (does NOT match), metrics[1] = "clarity_score" (matches)
+  it("creates one JudgeScore row per metric in the CaseScore", async () => {
     const report: JudgesReport = {
-      report_id: "r-metric-match",
+      report_id: "r-multi",
       timestamp: "2026-02-25T00:00:00Z",
       stats: [
         {
@@ -274,8 +274,9 @@ describe("fanOutJudgeScores", () => {
           case_id: "clarity-judge",
           final_status: EvalStatus.Passed,
           metrics: [
-            buildMetric({ metric_name: "brevity_score", score: 0.5 }),
-            buildMetric({ metric_name: "clarity_score", score: 0.95 }),
+            buildMetric({ metric_name: "clarity_score", score: 0.9 }),
+            buildMetric({ metric_name: "brevity_score", score: 0.7 }),
+            buildMetric({ metric_name: "accuracy_score", score: 0.85 }),
           ],
         },
       ],
@@ -293,31 +294,43 @@ describe("fanOutJudgeScores", () => {
     const [call] = tx.judgeScore.createMany.mock.calls;
     const { data } = call[0];
 
-    expect(data).toHaveLength(1);
-    // Should pick clarity_score (0.95), NOT brevity_score (0.5)
+    expect(data).toHaveLength(3);
     expect(data[0]).toMatchObject({
       caseId: "clarity-judge",
-      score: 0.95,
+      metricName: "clarity_score",
+      score: 0.9,
+    });
+    expect(data[1]).toMatchObject({
+      caseId: "clarity-judge",
+      metricName: "brevity_score",
+      score: 0.7,
+    });
+    expect(data[2]).toMatchObject({
+      caseId: "clarity-judge",
+      metricName: "accuracy_score",
+      score: 0.85,
     });
   });
 
-  // -------------------------------------------------------------------------
-  // Bug 1 fallback: No metric name matches case_id → falls back to first
-  // -------------------------------------------------------------------------
-
-  it("falls back to first metric and logs warning when no metric name matches case_id", async () => {
+  it("produces sum of all metrics across all cases", async () => {
     const report: JudgesReport = {
-      report_id: "r-metric-fallback",
+      report_id: "r-multi-cases",
       timestamp: "2026-02-25T00:00:00Z",
       stats: [
         {
           type: "case_score",
-          case_id: "clarity-judge",
+          case_id: "judge-alpha",
           final_status: EvalStatus.Passed,
           metrics: [
-            buildMetric({ metric_name: "unrelated_metric", score: 0.6 }),
-            buildMetric({ metric_name: "another_metric", score: 0.7 }),
+            buildMetric({ metric_name: "metric_a", score: 0.9 }),
+            buildMetric({ metric_name: "metric_b", score: 0.8 }),
           ],
+        },
+        {
+          type: "case_score",
+          case_id: "judge-beta",
+          final_status: EvalStatus.NeedsImprovement,
+          metrics: [buildMetric({ metric_name: "metric_c", score: 0.5 })],
         },
       ],
     };
@@ -334,24 +347,16 @@ describe("fanOutJudgeScores", () => {
     const [call] = tx.judgeScore.createMany.mock.calls;
     const { data } = call[0];
 
-    // Falls back to first metric
-    expect(data[0]).toMatchObject({
-      caseId: "clarity-judge",
-      score: 0.6,
-    });
-
-    // Logs metric name mismatch warning
-    expect(mockLog.warn).toHaveBeenCalledWith(
-      "judge_metric_name_mismatch",
-      expect.objectContaining({
-        caseId: "clarity-judge",
-        availableMetrics: ["unrelated_metric", "another_metric"],
-      })
-    );
+    expect(data).toHaveLength(3); // 2 + 1
+    expect(data.map((r: { metricName: string }) => r.metricName)).toEqual([
+      "metric_a",
+      "metric_b",
+      "metric_c",
+    ]);
   });
 
   // -------------------------------------------------------------------------
-  // Bug 2: Prompt collision — highest version wins, warning logged
+  // Prompt collision — highest version wins, warning logged
   // -------------------------------------------------------------------------
 
   it("logs collision warning when multiple prompt names normalize to same key", async () => {

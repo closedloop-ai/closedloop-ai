@@ -1,51 +1,28 @@
 "use client";
 
 import { EvaluationReportType } from "@repo/api/src/types/evaluation";
-import {
-  PR_TIMELINE_GRANULARITY_OPTIONS,
-  PR_TIMELINE_RANGE_OPTIONS,
-  type PrTimelineGranularity,
-  type PrTimelineRangeOption,
-} from "@repo/api/src/types/judges-analytics";
 import { Skeleton } from "@repo/design-system/components/ui/skeleton";
 import { ArrowLeftIcon } from "lucide-react";
 import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
-import { useState } from "react";
-import {
-  useJudgeDetail,
-  usePrHealth,
-} from "@/hooks/queries/use-judges-analytics";
+import { useJudgeDetail } from "@/hooks/queries/use-judges-analytics";
 import { CharacteristicsPanel } from "./components/characteristics-panel";
-import { PrActivitySection } from "./components/pr-activity-section";
-import { PrTimelineChart } from "./components/pr-timeline-chart";
 import { PromptSection } from "./components/prompt-section";
 import { ScoreComparisonSection } from "./components/score-comparison-section";
 
 export default function JudgeDetailPage() {
-  const params = useParams<{ promptName: string }>();
+  const params = useParams<{ metricName: string }>();
   const searchParams = useSearchParams();
-  const promptName = decodeURIComponent(params.promptName);
+  const metricName = decodeURIComponent(params.metricName);
   const reportTypeParam = searchParams.get("reportType");
   const reportType =
     reportTypeParam === EvaluationReportType.Code
       ? EvaluationReportType.Code
       : EvaluationReportType.Plan;
-  const [rangeDays, setRangeDays] = useState<PrTimelineRangeOption>(
-    PR_TIMELINE_RANGE_OPTIONS.Days90
-  );
-  const [granularity, setGranularity] = useState<PrTimelineGranularity>(
-    PR_TIMELINE_GRANULARITY_OPTIONS.Week
-  );
   const { data, isLoading, isError, error } = useJudgeDetail(
-    promptName,
+    metricName,
     reportType
   );
-  const {
-    data: prHealthData,
-    isLoading: prHealthLoading,
-    isError: prHealthError,
-  } = usePrHealth(promptName, reportType, rangeDays, granularity);
 
   if (isLoading) {
     return (
@@ -104,27 +81,9 @@ export default function JudgeDetailPage() {
       <CharacteristicsPanel judge={judge} />
       <PromptSection judge={judge} />
       <ScoreComparisonSection
-        key={`${reportType}-${promptName}`}
-        promptName={promptName}
+        key={`${reportType}-${metricName}`}
+        promptName={metricName}
         reportType={reportType}
-      />
-      <PrActivitySection
-        data={prHealthData}
-        isError={prHealthError}
-        isLoading={prHealthLoading}
-        key={`pr-${reportType}-${promptName}`}
-        promptName={promptName}
-      />
-      <PrTimelineChart
-        data={prHealthData}
-        granularity={granularity}
-        isError={prHealthError}
-        isLoading={prHealthLoading}
-        key={`pr-timeline-${reportType}-${promptName}`}
-        onGranularityChange={setGranularity}
-        onRangeChange={setRangeDays}
-        promptName={promptName}
-        rangeDays={rangeDays}
       />
     </div>
   );

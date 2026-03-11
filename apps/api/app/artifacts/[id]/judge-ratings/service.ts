@@ -29,6 +29,7 @@ export function submitJudgeRating(
       select: {
         id: true,
         evaluationId: true,
+        metricName: true,
         evaluation: { select: { reportType: true } },
         prompt: { select: { name: true } },
       },
@@ -79,8 +80,9 @@ export function submitJudgeRating(
       ? normalizeJudgeName(judgeScore.prompt.name)
       : null;
     const reportType = judgeScore.evaluation.reportType;
+    const metricName = judgeScore.metricName;
 
-    return { rating, isUpdate, promptName, reportType };
+    return { rating, isUpdate, promptName, reportType, metricName };
   });
 }
 

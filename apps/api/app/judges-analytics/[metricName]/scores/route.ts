@@ -13,7 +13,7 @@ import { scoreComparisonQueryValidator } from "../../validators";
 
 export const GET = withAnyAuth<
   JudgeScoresResponse,
-  "/judges-analytics/[promptName]/scores"
+  "/judges-analytics/[metricName]/scores"
 >(async ({ user }, _request, params) => {
   try {
     const { params: query, errorResponse: queryErrorResponse } =
@@ -22,17 +22,17 @@ export const GET = withAnyAuth<
       return queryErrorResponse;
     }
 
-    const { promptName: rawPromptName } = await params;
-    const promptName = parsePromptNameParam(rawPromptName);
-    if (promptName === null) {
+    const { metricName: rawMetricName } = await params;
+    const metricName = parsePromptNameParam(rawMetricName);
+    if (metricName === null) {
       return badRequestResponse(
-        "Invalid promptName format: must be alphanumeric with underscores"
+        "Invalid metricName format: must be alphanumeric with underscores"
       );
     }
 
     const result = await judgesAnalyticsService.getJudgeScores(
       user.organizationId,
-      promptName,
+      metricName,
       query.reportType,
       query.page,
       query.pageSize

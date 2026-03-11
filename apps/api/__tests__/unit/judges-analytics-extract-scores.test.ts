@@ -31,10 +31,14 @@ function buildJudgeScoreInput(
   artifactId: string,
   type: ArtifactType,
   caseId: string,
-  score: number
+  score: number,
+  metricName?: string,
+  promptId?: string | null
 ): JudgeScoreInput {
   return {
     caseId,
+    metricName: metricName ?? caseId,
+    promptId: promptId ?? null,
     score,
     evaluation: {
       artifactId,

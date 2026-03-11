@@ -26,6 +26,7 @@ function makeJudge(
   return {
     judgeName: "gpt-4o",
     promptName: "gpt-4o",
+    metricName: "gpt-4o",
     description: null,
     artifactsEvaluated: 10,
     min: 0.15,
@@ -176,7 +177,7 @@ describe("JudgeAnalyticsTable - judge rows", () => {
     render(
       <JudgeAnalyticsTable
         data={[
-          makeJudge({ judgeName: "clarity-judge", promptName: "clarity" }),
+          makeJudge({ judgeName: "clarity-judge", metricName: "clarity" }),
         ]}
         reportType={EvaluationReportType.Code}
       />

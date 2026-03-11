@@ -1,8 +1,4 @@
-import {
-  EvalStatus,
-  type JudgesReport,
-  type MetricStatistics,
-} from "@repo/api/src/types/evaluation";
+import { EvalStatus, type JudgesReport } from "@repo/api/src/types/evaluation";
 import type { Prisma, TransactionClient } from "@repo/database";
 import { PromptType } from "@repo/database";
 import { log } from "@repo/observability/log";
@@ -11,13 +7,12 @@ import { normalizeJudgeName } from "./judge-name-utils";
 /**
  * Fan out judge scores from a JudgesReport into JudgeScore rows.
  *
- * For each case in report.stats, selects the metric whose normalized name matches
- * case_id (falling back to the first metric) and writes a JudgeScore row linked
- * to the ArtifactEvaluation. promptId is resolved by matching normalized judge
- * names to organization JUDGE prompts in prompt_registry.
+ * For each case in report.stats, creates one JudgeScore row per metric in the
+ * case's metrics array. promptId is resolved by matching normalized case_id to
+ * organization JUDGE prompts.
  *
  * @param params.evaluationId - The ArtifactEvaluation id to link scores to
- * @param params.organizationId - The org id (reserved for prompt lookup when PR 1 lands)
+ * @param params.organizationId - The org id used for prompt lookup
  * @param params.report - The parsed JudgesReport from judges.json
  * @param params.tx - Active transaction client
  */
@@ -50,9 +45,7 @@ export async function fanOutJudgeScores(params: {
   const rows: Prisma.JudgeScoreCreateManyInput[] = [];
 
   for (const caseScore of params.report.stats) {
-    const metric = selectMetricByCaseId(caseScore.case_id, caseScore.metrics);
-
-    if (metric === undefined) {
+    if (caseScore.metrics.length === 0) {
       continue;
     }
 
@@ -76,49 +69,23 @@ export async function fanOutJudgeScores(params: {
       });
     }
 
-    rows.push({
-      evaluationId: params.evaluationId,
-      promptId,
-      caseId: caseScore.case_id,
-      threshold: metric.threshold,
-      score: metric.score,
-      justification: metric.justification,
-      finalStatus,
-    });
+    for (const metric of caseScore.metrics) {
+      rows.push({
+        evaluationId: params.evaluationId,
+        promptId,
+        caseId: caseScore.case_id,
+        metricName: metric.metric_name,
+        threshold: metric.threshold,
+        score: metric.score,
+        justification: metric.justification,
+        finalStatus,
+      });
+    }
   }
 
   if (rows.length > 0) {
     await params.tx.judgeScore.createMany({ data: rows, skipDuplicates: true });
   }
-}
-
-/**
- * Select the metric whose normalized metric_name matches the normalized case_id.
- * Falls back to the first metric if no name match is found.
- */
-function selectMetricByCaseId(
-  caseId: string,
-  metrics: MetricStatistics[]
-): MetricStatistics | undefined {
-  if (metrics.length === 0) {
-    return undefined;
-  }
-
-  const normalizedCaseId = normalizeJudgeName(caseId);
-  const matched = metrics.find(
-    (m) => normalizeJudgeName(m.metric_name) === normalizedCaseId
-  );
-
-  if (matched) {
-    return matched;
-  }
-
-  log.warn("judge_metric_name_mismatch", {
-    caseId,
-    availableMetrics: metrics.map((m) => m.metric_name),
-  });
-
-  return metrics.at(0);
 }
 
 function buildPromptLookup(
