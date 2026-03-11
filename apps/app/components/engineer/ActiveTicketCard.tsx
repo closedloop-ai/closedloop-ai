@@ -1,5 +1,3 @@
-/* eslint-disable react-hooks/set-state-in-effect */
-
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   DropdownMenu,
@@ -26,7 +24,7 @@ import {
   Terminal,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { JudgesViewer } from "@/components/engineer/JudgesViewer";
 import { LogViewer } from "@/components/engineer/LogViewer";
 import { PlanViewer } from "@/components/engineer/PlanViewer";
@@ -36,12 +34,12 @@ import {
 } from "@/components/engineer/SymphonyChat";
 import { TicketCard } from "@/components/engineer/TicketCard";
 import { usePlanActions } from "@/hooks/artifact-editing/use-plan-actions";
+import { useActiveTicketStatus } from "@/hooks/engineer/use-active-ticket-status";
 import { useTicketPlanArtifact } from "@/hooks/engineer/use-ticket-plan-artifact";
 import {
   symphonyChatHistoryOptions,
   symphonyLogsOptions,
   symphonyPlanOptions,
-  symphonyStatusOptions,
 } from "@/lib/engineer/queries/symphony";
 import type { EngineerTicket } from "@/types/engineer";
 
@@ -150,57 +148,23 @@ export function ActiveTicketCard({
   onCodexReview,
 }: Readonly<ActiveTicketCardProps>) {
   const [isPlanOpen, setIsPlanOpen] = useState(false);
-  const [isAcceptingPlan, setIsAcceptingPlan] = useState(false);
 
-  // Track whether the user has accepted the plan for this ticket.
-  // Persisted in localStorage so it survives page refreshes and stop/resume cycles.
-  // IMPORTANT: Do NOT derive "isCoding" from planExists or symphony phase alone.
-  // During planning, plan.json may already exist on disk, and after a resume the
-  // symphony briefly re-enters "Phase 1: Planning" before moving to coding.
-  // The only reliable signal is that the user explicitly accepted the plan.
-  const planAcceptedKey = `plan-accepted:${ticket.identifier}`;
-  const [hasPlanAccepted, setHasPlanAccepted] = useState(() => {
-    if (globalThis.window === undefined) {
-      return false;
-    }
-    return localStorage.getItem(planAcceptedKey) === "true";
+  const {
+    isExecuting,
+    isCompleted,
+    isStopped,
+    isAwaitingUser,
+    isCoding,
+    isLaunchingOrAccepting,
+    setIsAcceptingPlan,
+    setHasPlanAccepted,
+    taskProgress,
+  } = useActiveTicketStatus({
+    ticketId: ticket.identifier,
+    repoPath,
+    isLaunching,
+    isResuming,
   });
-
-  // Poll Symphony status to check if it's actively executing
-  const { data: symphonyStatus } = useQuery({
-    ...symphonyStatusOptions(ticket.identifier, repoPath),
-    refetchInterval: 3000, // Poll every 3 seconds
-  });
-
-  // Symphony is executing if status is IN_PROGRESS
-  const isExecuting = symphonyStatus?.status === "IN_PROGRESS";
-
-  // Symphony is in the coding phase only if the user has explicitly accepted the plan.
-  const isCoding = isExecuting && hasPlanAccepted;
-
-  // Symphony code is fully completed (all phases done).
-  const isCompleted = symphonyStatus?.status === "COMPLETED";
-
-  // Symphony was stopped by the user.
-  const isStopped = symphonyStatus?.status === "STOPPED";
-
-  // Plan is ready for user review (not code-complete yet)
-  const isAwaitingUser = symphonyStatus?.status === "AWAITING_USER";
-
-  // Clear "accepting plan" state once Symphony starts executing, completes, or awaits user
-  useEffect(() => {
-    if (isExecuting || isCompleted || isAwaitingUser) {
-      setIsAcceptingPlan(false);
-    }
-  }, [isExecuting, isCompleted, isAwaitingUser]);
-
-  // Show launching state when: explicitly launching, accepting plan,
-  // or active session exists but Symphony hasn't reported any status yet (the gap
-  // between launch API returning and Symphony's first status poll)
-  const isWaitingForSymphony =
-    !!repoPath && !isExecuting && !isCompleted && !symphonyStatus?.status;
-  const isLaunchingOrAccepting =
-    isLaunching || isAcceptingPlan || isWaitingForSymphony || !!isResuming;
 
   const hasActiveSession = !!repoPath;
 
@@ -334,11 +298,11 @@ export function ActiveTicketCard({
               hasPostActionItems={hasPostActionItems}
               isDeploying={isDeploying}
               isResuming={isResuming}
+              onClearPlanAccepted={() => setHasPlanAccepted(false)}
               onClose={onClose}
               onCodexReview={onCodexReview}
               onDeploy={onDeploy}
               onResumeExecution={onResumeExecution}
-              planAcceptedKey={planAcceptedKey}
               setShowJudges={setShowJudges}
               setShowLogs={setShowLogs}
               showCodexReview={showCodexReview}
@@ -386,7 +350,7 @@ export function ActiveTicketCard({
         symphonyCompleted={isCompleted}
         symphonyExecuting={isCoding}
         symphonyStopped={isStopped}
-        taskProgress={symphonyStatus?.taskProgress}
+        taskProgress={taskProgress}
         ticket={ticket}
       />
 
@@ -466,7 +430,6 @@ export function ActiveTicketCard({
                       onClick={() => {
                         setIsAcceptingPlan(true);
                         setHasPlanAccepted(true);
-                        localStorage.setItem(planAcceptedKey, "true");
                         onResume();
                       }}
                       size="lg"
@@ -543,7 +506,7 @@ function OverflowMenu({
   onResumeExecution,
   onDeploy,
   onClose,
-  planAcceptedKey,
+  onClearPlanAccepted,
 }: Readonly<{
   hasPostActionItems: boolean;
   showCodexReview: boolean;
@@ -559,7 +522,7 @@ function OverflowMenu({
   onResumeExecution?: (ticketId: string) => void;
   onDeploy?: (ticketId: string) => void;
   onClose?: () => void;
-  planAcceptedKey: string;
+  onClearPlanAccepted: () => void;
 }>) {
   return (
     <DropdownMenu>
@@ -613,7 +576,7 @@ function OverflowMenu({
             <DropdownMenuSeparator />
             <DropdownMenuItem
               onClick={() => {
-                localStorage.removeItem(planAcceptedKey);
+                onClearPlanAccepted();
                 onClose();
               }}
             >
