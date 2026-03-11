@@ -164,4 +164,68 @@ describe("useActiveTicketStatus", () => {
 
     expect(result.current.taskProgress).toEqual(progress);
   });
+
+  it("resets status latch when repoPath changes (session boundary)", () => {
+    // First session: status arrives
+    mockUseQuery.mockReturnValue({ data: { status: "COMPLETED" } });
+    const props = { ...makeProps(), repoPath: "/repo-a" as string | null };
+
+    const { result, rerender } = renderHook(
+      (p: ReturnType<typeof makeProps>) => useActiveTicketStatus(p),
+      { initialProps: props }
+    );
+    expect(result.current.isWaitingForSymphony).toBe(false);
+
+    // Session cleared → new session with different repoPath, no status yet
+    mockUseQuery.mockReturnValue({ data: undefined });
+    rerender({ ...props, repoPath: "/repo-b" });
+
+    // Latch should have reset, so isWaitingForSymphony fires for the new session
+    expect(result.current.isWaitingForSymphony).toBe(true);
+  });
+
+  it("resets status latch when a new launch begins on the same session", () => {
+    // Initial: status was received (e.g. AWAITING_USER after planning)
+    mockUseQuery.mockReturnValue({ data: { status: "AWAITING_USER" } });
+    const props = makeProps({ isLaunching: false });
+
+    const { result, rerender } = renderHook(
+      (p: ReturnType<typeof makeProps>) => useActiveTicketStatus(p),
+      { initialProps: props }
+    );
+    expect(result.current.isWaitingForSymphony).toBe(false);
+
+    // User accepts plan → new launch starts, poll briefly returns no status
+    mockUseQuery.mockReturnValue({ data: undefined });
+    rerender({ ...props, isLaunching: true });
+
+    // isLaunching is true so isLaunchingOrAccepting is true regardless,
+    // but the latch itself should have reset
+    expect(result.current.isLaunchingOrAccepting).toBe(true);
+
+    // Launch completes, still no status from new run
+    rerender({ ...props, isLaunching: false });
+
+    // Without reset this would be false (stale latch); with reset it's true
+    expect(result.current.isWaitingForSymphony).toBe(true);
+  });
+
+  it("resets status latch when resume begins", () => {
+    mockUseQuery.mockReturnValue({ data: { status: "COMPLETED" } });
+    const props = makeProps({ isResuming: false });
+
+    const { result, rerender } = renderHook(
+      (p: ReturnType<typeof makeProps>) => useActiveTicketStatus(p),
+      { initialProps: props }
+    );
+    expect(result.current.isWaitingForSymphony).toBe(false);
+
+    // Resume starts, poll briefly empty
+    mockUseQuery.mockReturnValue({ data: undefined });
+    rerender({ ...props, isResuming: true });
+
+    // Resume ends, still waiting for first status
+    rerender({ ...props, isResuming: false });
+    expect(result.current.isWaitingForSymphony).toBe(true);
+  });
 });

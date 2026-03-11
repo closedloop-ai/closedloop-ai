@@ -13,7 +13,7 @@ type UseActiveTicketStatusInput = {
 
 export type ActiveTicketStatus = {
   /** Raw status string from the poll (e.g. "AWAITING_USER", "IN_PROGRESS") */
-  statusValue: string | null | undefined;
+  statusValue: string | null;
   isExecuting: boolean;
   isCompleted: boolean;
   isStopped: boolean;
@@ -76,10 +76,27 @@ export function useActiveTicketStatus({
     }
   }, [isExecuting, isCompleted, isAwaitingUser]);
 
-  // Track whether we've ever received a valid status for this session.
+  // Track whether we've ever received a valid status for this launch cycle.
   // Once true, transient poll failures (common in CloudRelay) won't
   // flash the "Launching" indicator.
+  // Reset on session boundary changes (repoPath) and when a new launch or
+  // resume begins on the same instance so the latch doesn't carry over.
   const hasReceivedStatus = useRef(false);
+  const prevRepoPath = useRef(repoPath);
+  const prevIsLaunching = useRef(isLaunching);
+  const prevIsResuming = useRef(!!isResuming);
+  if (prevRepoPath.current !== repoPath) {
+    prevRepoPath.current = repoPath;
+    hasReceivedStatus.current = false;
+  }
+  if (
+    (isLaunching && !prevIsLaunching.current) ||
+    (!!isResuming && !prevIsResuming.current)
+  ) {
+    hasReceivedStatus.current = false;
+  }
+  prevIsLaunching.current = isLaunching;
+  prevIsResuming.current = !!isResuming;
   if (statusValue) {
     hasReceivedStatus.current = true;
   }
