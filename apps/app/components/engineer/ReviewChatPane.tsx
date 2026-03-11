@@ -146,7 +146,7 @@ export function ReviewChatPane({
   });
 
   const { data: chatHistory } = useQuery({
-    ...symphonyChatHistoryOptions(ticketId, repoPath),
+    ...symphonyChatHistoryOptions(ticketId, repoPath, config.provider),
     enabled: review.reviewDone,
   });
 

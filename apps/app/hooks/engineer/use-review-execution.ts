@@ -264,7 +264,7 @@ export function useReviewExecution(
   ) {
     if (config.provider === "claude" && sessionIdRef.current) {
       fetch(
-        `/api/engineer/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
+        `/api/engineer/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=claude`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },

@@ -86,6 +86,63 @@ describe("isStreamingEngineerRequest", () => {
   });
 });
 
+describe("RelayClient.executeOperation preserves body fields", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn());
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+  });
+
+  it("preserves provider field in JSON body through relay encoding", async () => {
+    const fetchMock = vi.mocked(fetch);
+    // createCommand response
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        success: true,
+        data: { commandId: "cmd-body-test", status: "queued" },
+      })
+    );
+    // events stream returns a terminal result
+    const sseBody = `data: ${JSON.stringify({
+      commandId: "cmd-body-test",
+      sequence: 1,
+      eventType: "result",
+      data: { statusCode: 200, body: { ok: true } },
+      createdAt: "2026-03-11T00:00:00.000Z",
+    })}\n\n`;
+    fetchMock.mockResolvedValueOnce(
+      new Response(sseBody, {
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+      })
+    );
+
+    const client = new RelayClient("http://api.test", "token-123");
+    await client.executeOperation("target-1", {
+      method: "POST",
+      path: "/api/engineer/symphony/chat/pr-42?repo=%2Ftmp%2Frepo",
+      headers: { "content-type": "application/json" },
+      body: {
+        kind: "json",
+        value: { message: "hello", provider: "claude" },
+      },
+    });
+
+    // Verify the createCommand call includes the provider field in the body
+    const createCall = fetchMock.mock.calls[0];
+    const createBody = JSON.parse(createCall[1]?.body as string) as {
+      body: { message: string; provider: string };
+    };
+    expect(createBody.body).toEqual({
+      message: "hello",
+      provider: "claude",
+    });
+  });
+});
+
 describe("RelayClient.streamOperation", () => {
   beforeEach(() => {
     vi.useFakeTimers();

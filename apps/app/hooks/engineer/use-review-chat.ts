@@ -157,6 +157,7 @@ export function useReviewChat(
           message,
           activeTab: "plan",
           codexReview: { model: config.model },
+          provider: config.provider,
           ...(options?.displayContent
             ? { displayContent: options.displayContent }
             : {}),
@@ -173,7 +174,7 @@ export function useReviewChat(
     ]
   );
 
-  // Persist a message to chat-history.json
+  // Persist a message to chat-history.json (provider-scoped)
   const persistMessage = useCallback(
     (message: {
       id: string;
@@ -183,7 +184,7 @@ export function useReviewChat(
       sender?: string;
     }) =>
       fetch(
-        `/api/engineer/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
+        `/api/engineer/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${encodeURIComponent(config.provider)}`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -192,7 +193,7 @@ export function useReviewChat(
       ).catch(() => {
         // Non-critical — messages still show from streaming/query
       }),
-    [ticketId, repoPath]
+    [ticketId, repoPath, config.provider]
   );
 
   // Reset conferral state on fresh user interactions
@@ -265,7 +266,11 @@ export function useReviewChat(
             });
           }
           await queryClient.invalidateQueries({
-            queryKey: queryKeys.symphonyChatHistory(ticketId, repoPath),
+            queryKey: queryKeys.symphonyChatHistory(
+              ticketId,
+              repoPath,
+              config.provider
+            ),
           });
 
           // Conferral detection — no in-progress lock needed:

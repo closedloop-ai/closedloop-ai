@@ -47,10 +47,14 @@ type ChatHistory = {
 
 const ALLOWED_TOOLS = ENGINEER_CHAT_TOOLS;
 
+const VALID_PROVIDERS = new Set(["claude", "codex"]);
+
 /**
- * Get work directory paths for a ticket
+ * Get work directory paths for a ticket.
+ * When `provider` is specified (and valid), the history path uses a
+ * provider-scoped file so each ReviewChatPane gets its own transcript.
  */
-function getWorkPaths(ticketId: string, repoPath: string) {
+function getWorkPaths(ticketId: string, repoPath: string, provider?: string) {
   const expandedRepoPath = expandHome(repoPath);
 
   const sanitizedTicket = ticketId.replaceAll(/[^a-zA-Z0-9-_]/g, "_");
@@ -59,10 +63,15 @@ function getWorkPaths(ticketId: string, repoPath: string) {
   const worktreeDir = join(worktreeParentDir, `${repoName}-${sanitizedTicket}`);
   const claudeWorkDir = join(worktreeDir, ".claude", "work");
 
+  const historyFilename =
+    provider && VALID_PROVIDERS.has(provider)
+      ? `chat-history-${provider}.json`
+      : "chat-history.json";
+
   return {
     worktreeDir,
     claudeWorkDir,
-    historyPath: join(claudeWorkDir, "chat-history.json"),
+    historyPath: join(claudeWorkDir, historyFilename),
     planPath: join(claudeWorkDir, "plan.json"),
     prdPath: join(claudeWorkDir, "prd.md"),
   };
@@ -419,6 +428,7 @@ export async function POST(
     contextRepoPaths,
     codexReview,
     codexAvailable,
+    provider,
   } = body as {
     message: string;
     displayContent?: string;
@@ -426,7 +436,15 @@ export async function POST(
     contextRepoPaths?: string[];
     codexReview?: { model: string };
     codexAvailable?: boolean;
+    provider?: string;
   };
+
+  if (provider && !VALID_PROVIDERS.has(provider)) {
+    return new Response(JSON.stringify({ error: "unsupported provider" }), {
+      status: 400,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
 
   if (!message || typeof message !== "string") {
     return new Response(JSON.stringify({ error: "message is required" }), {
@@ -435,7 +453,7 @@ export async function POST(
     });
   }
 
-  const paths = getWorkPaths(ticketId, repoPath);
+  const paths = getWorkPaths(ticketId, repoPath, provider);
 
   // Check if worktree exists
   if (!existsSync(paths.worktreeDir)) {

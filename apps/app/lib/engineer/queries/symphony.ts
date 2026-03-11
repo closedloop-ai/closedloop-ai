@@ -125,13 +125,19 @@ export function symphonyPlanOptions(ticketId: string, repoPath: string) {
   });
 }
 
-export function symphonyChatHistoryOptions(ticketId: string, repoPath: string) {
+export function symphonyChatHistoryOptions(
+  ticketId: string,
+  repoPath: string,
+  provider?: string
+) {
   return queryOptions<ChatHistory>({
-    queryKey: queryKeys.symphonyChatHistory(ticketId, repoPath),
+    queryKey: queryKeys.symphonyChatHistory(ticketId, repoPath, provider),
     queryFn: async () => {
-      const response = await fetch(
-        `/api/engineer/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`
-      );
+      let url = `/api/engineer/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
+      if (provider) {
+        url += `&provider=${encodeURIComponent(provider)}`;
+      }
+      const response = await fetch(url);
       if (!response.ok) {
         throw new Error(`Failed to fetch chat history: ${response.status}`);
       }
