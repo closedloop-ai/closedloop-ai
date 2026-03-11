@@ -4,21 +4,19 @@ import { EngineerRoutingMode } from "@repo/api/src/types/relay";
 import { useComputeTargets } from "@/hooks/queries/use-compute-targets";
 import { useElectronDetection } from "@/lib/engineer/electron-detection";
 import { useEngineerRoutingSelection } from "@/lib/engineer/routing-store";
-import { appEnvironment } from "@/lib/environment";
 
 type SystemCheckEligibility = {
   shouldRunSystemCheck: boolean;
   isLoading: boolean;
   selectedCloudTargetOnline: boolean;
   selectedLocalElectronReady: boolean;
-  selectedLocalDevReady: boolean;
 };
 
 export function useSystemCheckEligibility(): SystemCheckEligibility {
   const routing = useEngineerRoutingSelection();
-  const detection = useElectronDetection(
-    routing.mode === EngineerRoutingMode.LocalElectron
-  );
+  // Always probe for Electron so the guard shows a loading state while
+  // auto-detection is in progress, regardless of the current routing mode.
+  const detection = useElectronDetection(true);
   const { data: targets = [], isLoading: targetsLoading } = useComputeTargets({
     staleTime: 30_000,
     refetchInterval: 30_000,
@@ -36,19 +34,31 @@ export function useSystemCheckEligibility(): SystemCheckEligibility {
   const selectedLocalElectronReady =
     routing.mode === EngineerRoutingMode.LocalElectron && detection.detected;
 
-  const selectedLocalDevReady =
-    routing.mode === EngineerRoutingMode.LocalDev && appEnvironment === "local";
+  // Electron detected but EngineerTransportBootstrap's auto-selection hasn't
+  // updated the routing store yet.  Keep isLoading true to avoid flashing the
+  // "no target" fallback for one frame before the mode switches.
+  const autoSelectionPending =
+    detection.detected &&
+    routing.source === "auto" &&
+    routing.mode !== EngineerRoutingMode.LocalElectron;
+
+  // Only gate on Electron probing when it actually matters:
+  //  - LocalElectron mode: need probe result to know if desktop is reachable
+  //  - Auto-selected default with no valid cloud target: probe determines
+  //    whether we'll auto-switch to LocalElectron
+  // Cloud users with a valid target should never wait on localhost probing.
+  const electronLoadingRelevant =
+    routing.mode === EngineerRoutingMode.LocalElectron ||
+    (!selectedCloudTargetOnline && routing.source === "auto");
 
   return {
     shouldRunSystemCheck:
-      selectedCloudTargetOnline ||
-      selectedLocalElectronReady ||
-      selectedLocalDevReady,
+      selectedCloudTargetOnline || selectedLocalElectronReady,
     isLoading:
       targetsLoading ||
-      (routing.mode === EngineerRoutingMode.LocalElectron && detection.loading),
+      (electronLoadingRelevant && detection.loading) ||
+      autoSelectionPending,
     selectedCloudTargetOnline,
     selectedLocalElectronReady,
-    selectedLocalDevReady,
   };
 }

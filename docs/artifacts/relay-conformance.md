@@ -23,18 +23,17 @@ Desktop dependency note:
 
 | Tier | Requirement | Evidence | Status |
 | --- | --- | --- | --- |
-| Tier 1 `local-dev` | Preserve existing localhost behavior | Fetch interceptor `local-dev` pass-through test; localhost bypass retained in `apps/app/proxy.ts` | Pass |
-| Tier 2 `local-electron` | Rewrite all `/api/engineer/*` to localhost when detected | Electron probe module + tests; fetch interceptor localhost rewrite test with auth-header stripping | Pass (routing) |
-| Tier 3 `cloud-relay` | Full operation surface via relay and NDJSON browser framing | Catch-all relay path (`/api/engineer-relay/[...path]`), mode-aware fetch rewrite, relay client NDJSON stream transcode, compute-target relay API tests, plus Desktop DG-004 finalized native parity | Pass |
+| Tier 1 `local-electron` | Rewrite all `/api/engineer/*` to localhost when detected | Electron probe module + tests; fetch interceptor localhost rewrite test with auth-header stripping | Pass (routing) |
+| Tier 2 `cloud-relay` | Full operation surface via relay and NDJSON browser framing | Catch-all relay path (`/api/engineer-relay/[...path]`), mode-aware fetch rewrite, relay client NDJSON stream transcode, compute-target relay API tests, plus Desktop DG-004 finalized native parity | Pass |
 
 ## R6 Desktop Sync Matrix
 
 | Desktop artifact | Needed for | Current status | Notes |
 | --- | --- | --- | --- |
-| `DG-001` `/health` contract | Tier 2 identity validation | Synced | Desktop marks finalized; app probe now validates `status: "ok"` and reported `port` identity |
-| `DG-002` port fallback/discovery | Tier 2 fallback order validation | Synced | Desktop marks finalized with same probe order `19432-19435` |
-| `DG-003` register/heartbeat contract | Tier 3 target registration compatibility | Synced | Desktop conformance marks PASS with live `POST /compute-targets/register` and heartbeat probes (`HTTP 200`) |
-| `DG-004` full operation parity matrix | Tier 3 live full-surface validation | Synced | Desktop contracts/conformance mark finalized PASS across mapped engineer route families |
+| `DG-001` `/health` contract | Tier 1 identity validation | Synced | Desktop marks finalized; app probe now validates `status: "ok"` and reported `port` identity |
+| `DG-002` port fallback/discovery | Tier 1 fallback order validation | Synced | Desktop marks finalized with same probe order `19432-19435` |
+| `DG-003` register/heartbeat contract | Tier 2 target registration compatibility | Synced | Desktop conformance marks PASS with live `POST /compute-targets/register` and heartbeat probes (`HTTP 200`) |
+| `DG-004` full operation parity matrix | Tier 2 live full-surface validation | Synced | Desktop contracts/conformance mark finalized PASS across mapped engineer route families |
 
 ## Gate Outcome
 

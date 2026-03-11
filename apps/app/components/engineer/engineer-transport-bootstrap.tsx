@@ -9,16 +9,10 @@ import { installEngineerFetchInterceptor } from "@/lib/engineer/engineer-fetch-i
 import {
   getEngineerRoutingSelection,
   setEngineerRoutingAutoSelection,
-  useEngineerRoutingSelection,
 } from "@/lib/engineer/routing-store";
-import { appEnvironment } from "@/lib/environment";
 
 export function EngineerTransportBootstrap() {
-  // Skip Electron detection probes in LocalDev mode — no Electron relay running.
-  const routing = useEngineerRoutingSelection();
-  const detection = useElectronDetection(
-    routing.mode !== EngineerRoutingMode.LocalDev
-  );
+  const detection = useElectronDetection(true);
   useComputeTargetStatusStream();
   const { data: targets = [] } = useComputeTargets({
     staleTime: 30_000,
@@ -38,8 +32,6 @@ export function EngineerTransportBootstrap() {
     const currentSelectionValid =
       (current.mode === EngineerRoutingMode.LocalElectron &&
         detection.detected) ||
-      (current.mode === EngineerRoutingMode.LocalDev &&
-        appEnvironment === "local") ||
       (current.mode === EngineerRoutingMode.CloudRelay &&
         current.computeTargetId !== null &&
         selectedTargetOnline);
@@ -52,13 +44,6 @@ export function EngineerTransportBootstrap() {
 
     if (detection.detected) {
       setEngineerRoutingAutoSelection(EngineerRoutingMode.LocalElectron, null, {
-        force: true,
-      });
-      return;
-    }
-
-    if (appEnvironment === "local") {
-      setEngineerRoutingAutoSelection(EngineerRoutingMode.LocalDev, null, {
         force: true,
       });
       return;

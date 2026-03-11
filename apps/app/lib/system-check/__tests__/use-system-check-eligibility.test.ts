@@ -19,10 +19,6 @@ vi.mock("@/lib/engineer/routing-store", () => ({
   useEngineerRoutingSelection: () => mockUseEngineerRoutingSelection(),
 }));
 
-vi.mock("@/lib/environment", () => ({
-  appEnvironment: "local",
-}));
-
 import { useSystemCheckEligibility } from "../use-system-check-eligibility";
 
 describe("useSystemCheckEligibility", () => {
@@ -77,7 +73,7 @@ describe("useSystemCheckEligibility", () => {
 
     expect(result.current.shouldRunSystemCheck).toBe(true);
     expect(result.current.selectedCloudTargetOnline).toBe(true);
-    expect(mockUseElectronDetection).toHaveBeenCalledWith(false);
+    expect(mockUseElectronDetection).toHaveBeenCalledWith(true);
   });
 
   it("runs when LocalElectron is selected and detected", () => {
@@ -104,21 +100,6 @@ describe("useSystemCheckEligibility", () => {
     expect(mockUseElectronDetection).toHaveBeenCalledWith(true);
   });
 
-  it("runs when LocalDev is selected on localhost", () => {
-    mockUseEngineerRoutingSelection.mockReturnValue({
-      mode: EngineerRoutingMode.LocalDev,
-      computeTargetId: null,
-      source: "manual",
-      updatedAt: Date.now(),
-    });
-
-    const { result } = renderHook(() => useSystemCheckEligibility());
-
-    expect(result.current.shouldRunSystemCheck).toBe(true);
-    expect(result.current.selectedLocalDevReady).toBe(true);
-    expect(mockUseElectronDetection).toHaveBeenCalledWith(false);
-  });
-
   it("stays disabled when the selected cloud target is offline", () => {
     mockUseEngineerRoutingSelection.mockReturnValue({
       mode: EngineerRoutingMode.CloudRelay,
@@ -139,6 +120,83 @@ describe("useSystemCheckEligibility", () => {
 
     const { result } = renderHook(() => useSystemCheckEligibility());
 
+    expect(result.current.shouldRunSystemCheck).toBe(false);
+  });
+
+  it("reports loading while Electron is detected but auto-selection has not settled", () => {
+    // Simulates the window between Electron detection completing and
+    // EngineerTransportBootstrap auto-selecting LocalElectron.  Without this,
+    // the guard would flash the "no target" fallback for one frame.
+    mockUseEngineerRoutingSelection.mockReturnValue({
+      mode: EngineerRoutingMode.CloudRelay,
+      computeTargetId: null,
+      source: "auto",
+      updatedAt: Date.now(),
+    });
+    mockUseElectronDetection.mockReturnValue({
+      detected: true,
+      loading: false,
+      port: 19_432,
+      version: "1.0.0",
+      machineName: "desktop",
+      capabilities: {},
+      checkedAt: Date.now(),
+    });
+
+    const { result } = renderHook(() => useSystemCheckEligibility());
+
+    expect(result.current.isLoading).toBe(true);
+    expect(result.current.shouldRunSystemCheck).toBe(false);
+  });
+
+  it("does not block on Electron probing when a valid cloud target is selected", () => {
+    // Cloud-only users should never wait on localhost probing (up to 8s).
+    mockUseEngineerRoutingSelection.mockReturnValue({
+      mode: EngineerRoutingMode.CloudRelay,
+      computeTargetId: "target-1",
+      source: "manual",
+      updatedAt: Date.now(),
+    });
+    mockUseComputeTargets.mockReturnValue({
+      data: [{ id: "target-1", machineName: "Desktop", isOnline: true }],
+      isLoading: false,
+    });
+    mockUseElectronDetection.mockReturnValue({
+      detected: false,
+      loading: true,
+      port: null,
+      version: null,
+      machineName: null,
+      capabilities: null,
+      checkedAt: null,
+    });
+
+    const { result } = renderHook(() => useSystemCheckEligibility());
+
+    expect(result.current.isLoading).toBe(false);
+    expect(result.current.shouldRunSystemCheck).toBe(true);
+  });
+
+  it("does not report loading when user manually selected CloudRelay despite Electron being detected", () => {
+    mockUseEngineerRoutingSelection.mockReturnValue({
+      mode: EngineerRoutingMode.CloudRelay,
+      computeTargetId: null,
+      source: "manual",
+      updatedAt: Date.now(),
+    });
+    mockUseElectronDetection.mockReturnValue({
+      detected: true,
+      loading: false,
+      port: 19_432,
+      version: "1.0.0",
+      machineName: "desktop",
+      capabilities: {},
+      checkedAt: Date.now(),
+    });
+
+    const { result } = renderHook(() => useSystemCheckEligibility());
+
+    expect(result.current.isLoading).toBe(false);
     expect(result.current.shouldRunSystemCheck).toBe(false);
   });
 });

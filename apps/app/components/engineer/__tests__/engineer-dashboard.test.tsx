@@ -21,10 +21,6 @@ vi.mock("@/components/engineer/LearningsDialog", () => ({
   LearningsDialog: () => <div data-testid="learnings-dialog" />,
 }));
 
-vi.mock("@/components/engineer/MCPConnectionStatus", () => ({
-  MCPConnectionStatus: () => <div data-testid="mcp-status" />,
-}));
-
 vi.mock("@/components/engineer/TerminalChatDialog", () => ({
   TerminalChatDialog: () => <div data-testid="terminal-chat-dialog" />,
 }));
@@ -37,17 +33,12 @@ vi.mock("@/components/engineer/compute-target-selector", () => ({
   ComputeTargetSelector: () => <div data-testid="compute-target-selector" />,
 }));
 
-vi.mock("@/contexts/engineer-mcp-context", () => ({
-  useOptionalEngineerMcp: () => null,
-}));
-
 vi.mock("@/hooks/engineer/use-engineer-issues", () => ({
   useEngineerIssues: () => ({
     tickets: [],
     isLoading: false,
     isFetching: false,
     error: null,
-    isMcpFailed: false,
     user: { name: "Test User", email: "test@example.com" },
     updateTicketStatus: vi.fn(),
     getFullTicket: vi.fn(),
@@ -71,10 +62,6 @@ vi.mock("@/hooks/engineer/useTerminalStatus", () => ({
     isTypewriter: false,
     persistentMsg: null,
   }),
-}));
-
-vi.mock("@/lib/engineer/mcp-mode", () => ({
-  isEngineerMcpEnabled: false,
 }));
 
 vi.mock("@/lib/engineer/terminal-bus", () => ({
