@@ -37,11 +37,13 @@ function makeJudgeScoreRecord(overrides?: {
   evaluationId?: string;
   evaluation?: { reportType: string };
   prompt?: { name: string } | null;
+  metricName?: string;
 }) {
   const defaultPrompt = { name: "Clarity-Judge" };
   return {
     id: JUDGE_SCORE_ID,
     evaluationId: overrides?.evaluationId ?? EVAL_ID,
+    metricName: overrides?.metricName ?? "clarity_score",
     evaluation: overrides?.evaluation ?? {
       reportType: EvaluationReportType.Plan,
     },
@@ -84,6 +86,7 @@ describe("submitJudgeRating", () => {
       rating: 0.8,
       isUpdate: false,
       promptName: "clarity",
+      metricName: "clarity",
       reportType: EvaluationReportType.Plan,
     });
   });
@@ -115,6 +118,7 @@ describe("submitJudgeRating", () => {
       rating: 0.6,
       isUpdate: true,
       promptName: "clarity",
+      metricName: "clarity",
       reportType: EvaluationReportType.Plan,
     });
   });
@@ -143,6 +147,7 @@ describe("submitJudgeRating", () => {
       rating: 0,
       isUpdate: false,
       promptName: "clarity",
+      metricName: "clarity",
       reportType: EvaluationReportType.Plan,
     });
   });
@@ -171,6 +176,7 @@ describe("submitJudgeRating", () => {
       rating: 1,
       isUpdate: false,
       promptName: "clarity",
+      metricName: "clarity",
       reportType: EvaluationReportType.Plan,
     });
   });
@@ -300,6 +306,7 @@ describe("submitJudgeRating", () => {
       rating: 0.5,
       isUpdate: false,
       promptName: null,
+      metricName: "clarity",
       reportType: EvaluationReportType.Plan,
     });
   });

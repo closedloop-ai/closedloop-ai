@@ -46,7 +46,8 @@ function makeJudgeScoreRow(
 
 function mockDb(
   promptNames: string[],
-  judgeScores: ReturnType<typeof makeJudgeScoreRow>[]
+  judgeScores: ReturnType<typeof makeJudgeScoreRow>[],
+  metricExistsInOrg = true
 ) {
   const db = {
     prompt: {
@@ -58,6 +59,9 @@ function mockDb(
     },
     judgeScore: {
       findMany: vi.fn().mockResolvedValue(judgeScores),
+      findFirst: vi
+        .fn()
+        .mockResolvedValue(metricExistsInOrg ? { id: "js-existing" } : null),
     },
   };
   mockWithDbCall(db);
@@ -73,8 +77,8 @@ describe("judgesAnalyticsService.getJudgeScores", () => {
     vi.clearAllMocks();
   });
 
-  it("returns empty response when no scores match the metricName", async () => {
-    mockDb([], []);
+  it("returns null when metricName does not exist in organization", async () => {
+    mockDb([], [], false);
 
     const result = await judgesAnalyticsService.getJudgeScores(
       ORG_ID,
@@ -84,13 +88,7 @@ describe("judgesAnalyticsService.getJudgeScores", () => {
       20
     );
 
-    expect(result).toEqual({
-      rows: [],
-      totalArtifacts: 0,
-      ratedArtifacts: 0,
-      coveragePct: 0,
-      pagination: { page: 1, pageSize: 20, totalRows: 0, totalPages: 0 },
-    });
+    expect(result).toBeNull();
   });
 
   it("returns empty response when prompt matches but no judge scores exist", async () => {
@@ -269,6 +267,7 @@ describe("judgesAnalyticsService.getJudgeScores", () => {
           .mockResolvedValue([{ id: "prompt-clarity", name: "clarity_judge" }]),
       },
       judgeScore: {
+        findFirst: vi.fn().mockResolvedValue({ id: "js-existing" }),
         findMany: vi.fn().mockResolvedValue([
           {
             id: "js-1",
@@ -311,6 +310,7 @@ describe("judgesAnalyticsService.getJudgeScores", () => {
         findMany: vi.fn().mockResolvedValue([]),
       },
       judgeScore: {
+        findFirst: vi.fn().mockResolvedValue({ id: "js-existing" }),
         findMany: vi.fn().mockResolvedValue([]),
       },
     };

@@ -74,7 +74,7 @@ export async function fanOutJudgeScores(params: {
         evaluationId: params.evaluationId,
         promptId,
         caseId: caseScore.case_id,
-        metricName: metric.metric_name,
+        metricName: normalizeJudgeName(metric.metric_name),
         threshold: metric.threshold,
         score: metric.score,
         justification: metric.justification,

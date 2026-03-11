@@ -419,7 +419,7 @@ function resolveAggregationKey(
   }
   const promptName = row.promptId
     ? (promptNameById.get(row.promptId) ?? row.metricName)
-    : row.metricName;
+    : "unknown";
   return `${promptName}-${row.metricName}`;
 }
 
@@ -697,10 +697,13 @@ function populateMetricDescriptionMap(
   map: Map<string, string>,
   judgeScores: JudgeScoreInput[],
   descriptionById: Map<string, string>,
-  judgeDescriptionByPromptName: Map<string, string>
+  judgeDescriptionByPromptName: Map<string, string>,
+  collisionMetrics: Set<string>,
+  promptNameById: Map<string, string>
 ): void {
   for (const js of judgeScores) {
-    if (map.has(js.metricName)) {
+    const key = resolveAggregationKey(js, collisionMetrics, promptNameById);
+    if (map.has(key)) {
       continue;
     }
     const description = resolveMetricDescription(
@@ -709,7 +712,7 @@ function populateMetricDescriptionMap(
       judgeDescriptionByPromptName
     );
     if (description) {
-      map.set(js.metricName, description);
+      map.set(key, description);
     }
   }
 }
@@ -762,7 +765,9 @@ function detectMetricCollisions(
  */
 async function buildMetricNameDescriptionMap(
   judgeScores: JudgeScoreInput[],
-  judgeDescriptionByPromptName: Map<string, string>
+  judgeDescriptionByPromptName: Map<string, string>,
+  collisionMetrics: Set<string>,
+  promptNameById: Map<string, string>
 ): Promise<Map<string, string>> {
   const promptIds = [
     ...new Set(
@@ -789,7 +794,9 @@ async function buildMetricNameDescriptionMap(
     map,
     judgeScores,
     descriptionById,
-    judgeDescriptionByPromptName
+    judgeDescriptionByPromptName,
+    collisionMetrics,
+    promptNameById
   );
 
   return map;
@@ -867,7 +874,9 @@ export const judgesAnalyticsService = {
     // Build metricName → description map for the description lookup in computeJudgeStats
     const judgeDescriptionByMetricName = await buildMetricNameDescriptionMap(
       judgeScores,
-      judgeDescriptionByPromptName
+      judgeDescriptionByPromptName,
+      collisionMetrics,
+      promptNameById
     );
 
     const types = Array.from(aggregator.keys());
@@ -1149,6 +1158,22 @@ export const judgesAnalyticsService = {
     );
 
     if (judgeScores.length === 0) {
+      const metricExistsInOrg = await withDb((db) =>
+        db.judgeScore.findFirst({
+          where: {
+            metricName,
+            evaluation: {
+              artifact: { organizationId },
+            },
+          },
+          select: { id: true },
+        })
+      );
+
+      if (metricExistsInOrg === null) {
+        return null;
+      }
+
       return {
         rows: [],
         totalArtifacts: 0,

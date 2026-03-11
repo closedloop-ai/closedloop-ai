@@ -91,7 +91,7 @@ export type JudgesReport = {
  * - justification: Explanation for the score
  * - finalStatus: Final evaluation status (FAILED | NEEDS_IMPROVEMENT | PASSED)
  * - promptName: Human-readable prompt name from the prompt registry, or null if not linked
- * - metricName: URL-safe metric name for navigation and grouping, or null if not linked
+ * - metricName: URL-safe metric name for navigation and grouping
  */
 export type JudgeFeedbackItem = {
   judgeScoreId: string;

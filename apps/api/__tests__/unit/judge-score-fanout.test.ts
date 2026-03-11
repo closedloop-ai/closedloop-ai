@@ -26,6 +26,7 @@ vi.mock("@repo/observability/log", () => ({
 
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
 import { EvalStatus } from "@repo/api/src/types/evaluation";
+import { normalizeJudgeName } from "@/lib/judge-name-utils";
 import { fanOutJudgeScores } from "@/lib/judge-score-fanout";
 import { buildCaseScore, buildMetric } from "../fixtures/evaluation";
 
@@ -108,7 +109,7 @@ describe("fanOutJudgeScores", () => {
       evaluationId: EVALUATION_ID,
       promptId: "prompt-clarity-v3",
       caseId: caseScoreA.case_id,
-      metricName: metricA.metric_name,
+      metricName: normalizeJudgeName(metricA.metric_name),
       threshold: metricA.threshold,
       score: metricA.score,
       justification: metricA.justification,
@@ -120,7 +121,7 @@ describe("fanOutJudgeScores", () => {
       evaluationId: EVALUATION_ID,
       promptId: null,
       caseId: caseScoreB.case_id,
-      metricName: metricB.metric_name,
+      metricName: normalizeJudgeName(metricB.metric_name),
       threshold: metricB.threshold,
       score: metricB.score,
       justification: metricB.justification,
@@ -297,17 +298,17 @@ describe("fanOutJudgeScores", () => {
     expect(data).toHaveLength(3);
     expect(data[0]).toMatchObject({
       caseId: "clarity-judge",
-      metricName: "clarity_score",
+      metricName: "clarity",
       score: 0.9,
     });
     expect(data[1]).toMatchObject({
       caseId: "clarity-judge",
-      metricName: "brevity_score",
+      metricName: "brevity",
       score: 0.7,
     });
     expect(data[2]).toMatchObject({
       caseId: "clarity-judge",
-      metricName: "accuracy_score",
+      metricName: "accuracy",
       score: 0.85,
     });
   });

@@ -80,7 +80,7 @@ export function submitJudgeRating(
       ? normalizeJudgeName(judgeScore.prompt.name)
       : null;
     const reportType = judgeScore.evaluation.reportType;
-    const metricName = judgeScore.metricName;
+    const metricName = normalizeJudgeName(judgeScore.metricName);
 
     return { rating, isUpdate, promptName, reportType, metricName };
   });
