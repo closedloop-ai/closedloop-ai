@@ -5,6 +5,7 @@ import type {
   PullRequestReopenedEvent,
   PullRequestSynchronizeEvent,
 } from "@octokit/webhooks-types";
+import { ArtifactStatus } from "@repo/api/src/types/artifact";
 import { ChecksStatus, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
@@ -173,6 +174,20 @@ export async function handlePullRequest(
             },
           },
         });
+
+        // When a PR is merged, mark the linked artifact as EXECUTED
+        if (isMerged && existingPr.artifactId) {
+          await tx.artifact.update({
+            where: { id: existingPr.artifactId },
+            data: { status: ArtifactStatus.Executed },
+          });
+          log.info(
+            "[handlePullRequest] Marked artifact as EXECUTED",
+            {
+              artifactId: existingPr.artifactId,
+            }
+          );
+        }
 
         log.info("[handlePullRequest] PR closed", {
           prNumber: pull_request.number,

@@ -50,6 +50,7 @@ vi.mock("@repo/database", () => {
 });
 
 // Import after mocking
+import { ArtifactStatus } from "@repo/api/src/types/artifact";
 import { withDb } from "@repo/database";
 import { handlePullRequest } from "@/app/webhooks/github/handlers/pull-request-handler";
 
@@ -202,6 +203,9 @@ describe("handlePullRequest", () => {
       workstreamEvent: {
         create: vi.fn(),
       },
+      artifact: {
+        update: vi.fn(),
+      },
     };
 
     // Mock withDb.tx — all reads and writes happen in a single transaction
@@ -253,6 +257,9 @@ describe("handlePullRequest", () => {
 
       // Mock event creation
       mockTx.workstreamEvent.create.mockResolvedValue({});
+
+      // Mock artifact status update
+      mockTx.artifact.update.mockResolvedValue({});
 
       await handlePullRequest(event);
 
@@ -308,6 +315,12 @@ describe("handlePullRequest", () => {
             mergeCommitSha: "def456",
           },
         },
+      });
+
+      // Verify linked artifact marked as EXECUTED
+      expect(mockTx.artifact.update).toHaveBeenCalledWith({
+        where: { id: "artifact-uuid-123" },
+        data: { status: ArtifactStatus.Executed },
       });
     });
   });
@@ -373,6 +386,9 @@ describe("handlePullRequest", () => {
           },
         },
       });
+
+      // Should NOT mark artifacts as EXECUTED when PR is closed without merge
+      expect(mockTx.artifact.update).not.toHaveBeenCalled();
     });
   });
 
@@ -728,6 +744,7 @@ describe("handlePullRequest", () => {
 
       mockTx.gitHubPullRequest.update.mockResolvedValue({});
       mockTx.workstreamEvent.create.mockResolvedValue({});
+      mockTx.artifact.update.mockResolvedValue({});
 
       await handlePullRequest(event);
 
@@ -740,6 +757,7 @@ describe("handlePullRequest", () => {
       expect(mockTx.gitHubPullRequest.findUnique).toHaveBeenCalled();
       expect(mockTx.gitHubPullRequest.update).toHaveBeenCalled();
       expect(mockTx.workstreamEvent.create).toHaveBeenCalled();
+      expect(mockTx.artifact.update).toHaveBeenCalled();
     });
   });
 });
