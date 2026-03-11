@@ -3,11 +3,11 @@
 import {
   type CreateEntityLinkInput,
   type EntityLink,
-  type EntityType,
+  EntityType,
   LinkDirection,
   type LinkedEntity,
   LinkQueryMode,
-  type LinkType,
+  LinkType,
 } from "@repo/api/src/types/entity-link";
 import {
   type UseQueryOptions,
@@ -211,6 +211,33 @@ export function useLinkedEntities(
     staleTime: 5 * 60 * 1000,
     ...queryOptions,
   });
+}
+
+/**
+ * Resolves the linked implementation plan artifact ID for an issue.
+ * Follows the Issue → EntityLink(PRODUCES) → Artifact lookup chain.
+ * Returns an empty string when no plan is linked.
+ */
+export function useLinkedPlanId(
+  issueId: string,
+  options?: Omit<UseQueryOptions<EntityLink[]>, "queryKey" | "queryFn">
+) {
+  const { data: targetLinks = [] } = useTargetLinks(
+    issueId,
+    EntityType.Issue,
+    LinkType.Produces,
+    options
+  );
+
+  const linkedPlanLink = targetLinks.find(
+    (link) => link.targetType === EntityType.Artifact
+  );
+
+  return {
+    targetLinks,
+    linkedPlanLink,
+    linkedPlanId: linkedPlanLink?.targetId ?? "",
+  };
 }
 
 // Mutations
