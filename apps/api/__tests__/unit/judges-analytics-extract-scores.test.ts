@@ -1,7 +1,7 @@
 /**
  * Unit tests for aggregateJudgeScoreRows -- the pure aggregation function that
  * converts JudgeScore rows into a nested Map keyed by
- * ArtifactType -> caseId -> { scores, artifactIds }.
+ * ArtifactType -> aggregationKey -> { scores, artifactIds, promptName, metricName }.
  *
  * Uses scenario-registry pattern with describe.each for parametrized execution.
  */
@@ -56,6 +56,8 @@ type FlatResult = {
   judgeName: string;
   scores: number[];
   artifactIds: string[];
+  promptName: string;
+  metricName: string;
 };
 
 /**
@@ -65,7 +67,15 @@ type FlatResult = {
 function flattenResults(
   map: Map<
     ArtifactType,
-    Map<string, { scores: number[]; artifactIds: Set<string> }>
+    Map<
+      string,
+      {
+        scores: number[];
+        artifactIds: Set<string>;
+        promptName: string;
+        metricName: string;
+      }
+    >
   >
 ): FlatResult[] {
   const flat: FlatResult[] = [];
@@ -76,6 +86,8 @@ function flattenResults(
         judgeName,
         scores: [...data.scores],
         artifactIds: [...data.artifactIds].sort(),
+        promptName: data.promptName,
+        metricName: data.metricName,
       });
     }
   }
@@ -119,6 +131,8 @@ const SCENARIO_REGISTRY: ScenarioConfig[] = [
         judgeName: "judge-A",
         scores: [0.85],
         artifactIds: ["a1"],
+        promptName: "judge_a",
+        metricName: "judge-A",
       },
     ],
   },
@@ -155,6 +169,8 @@ const SCENARIO_REGISTRY: ScenarioConfig[] = [
         judgeName: "judge-B",
         scores: [0.7, 0.9, 0.6],
         artifactIds: ["a1", "a2"],
+        promptName: "judge_b",
+        metricName: "judge-B",
       },
     ],
   },
@@ -180,18 +196,24 @@ const SCENARIO_REGISTRY: ScenarioConfig[] = [
         judgeName: "judge-A",
         scores: [0.9],
         artifactIds: ["a2"],
+        promptName: "judge_a",
+        metricName: "judge-A",
       },
       {
         type: ArtifactType.Prd,
         judgeName: "judge-A",
         scores: [0.8],
         artifactIds: ["a1"],
+        promptName: "judge_a",
+        metricName: "judge-A",
       },
       {
         type: ArtifactType.Prd,
         judgeName: "judge-B",
         scores: [0.75],
         artifactIds: ["a1"],
+        promptName: "judge_b",
+        metricName: "judge-B",
       },
     ],
   },
@@ -211,12 +233,16 @@ const SCENARIO_REGISTRY: ScenarioConfig[] = [
         judgeName: "dry-judge",
         scores: [0.92],
         artifactIds: ["a1"],
+        promptName: "dry",
+        metricName: "dry-judge",
       },
       {
         type: ArtifactType.Prd,
         judgeName: "solid-isp-dip-judge",
         scores: [0.87],
         artifactIds: ["a1"],
+        promptName: "solid_isp_dip",
+        metricName: "solid-isp-dip-judge",
       },
     ],
   },
@@ -252,6 +278,8 @@ const SCENARIO_REGISTRY: ScenarioConfig[] = [
         judgeName: "clarity-judge",
         scores: [0.8, 0.9, 0.7],
         artifactIds: ["a1", "a2", "a3"],
+        promptName: "clarity",
+        metricName: "clarity-judge",
       },
     ],
   },

@@ -370,15 +370,24 @@ export type JudgeScoreInput = {
 };
 
 /** Aggregates judge scores by artifact type and judge name. */
+type AggregatedJudgeData = {
+  scores: number[];
+  artifactIds: Set<string>;
+  promptName: string;
+  metricName: string;
+};
+
 class JudgeScoreAggregator {
   private readonly data = new Map<
     ArtifactType,
-    Map<string, { scores: number[]; artifactIds: Set<string> }>
+    Map<string, AggregatedJudgeData>
   >();
 
   addScore(
     artifactType: ArtifactType,
-    judgeName: string,
+    aggregationKey: string,
+    promptName: string,
+    metricName: string,
     score: number,
     artifactId: string
   ): void {
@@ -387,19 +396,21 @@ class JudgeScoreAggregator {
     }
 
     const judgeMap = this.data.get(artifactType)!;
-    if (!judgeMap.has(judgeName)) {
-      judgeMap.set(judgeName, { scores: [], artifactIds: new Set() });
+    if (!judgeMap.has(aggregationKey)) {
+      judgeMap.set(aggregationKey, {
+        scores: [],
+        artifactIds: new Set(),
+        promptName,
+        metricName,
+      });
     }
 
-    const judgeData = judgeMap.get(judgeName)!;
+    const judgeData = judgeMap.get(aggregationKey)!;
     judgeData.scores.push(score);
     judgeData.artifactIds.add(artifactId);
   }
 
-  getResults(): Map<
-    ArtifactType,
-    Map<string, { scores: number[]; artifactIds: Set<string> }>
-  > {
+  getResults(): Map<ArtifactType, Map<string, AggregatedJudgeData>> {
     return this.data;
   }
 }
@@ -423,6 +434,17 @@ function resolveAggregationKey(
   return `${promptName}-${row.metricName}`;
 }
 
+function resolvePromptRouteName(
+  row: JudgeScoreInput,
+  promptNameById: Map<string, string>
+): string {
+  if (row.promptId) {
+    return promptNameById.get(row.promptId) ?? normalizeJudgeName(row.caseId);
+  }
+
+  return normalizeJudgeName(row.caseId);
+}
+
 /**
  * Aggregates JudgeScore rows into a nested map keyed by artifact type and metricName.
  *
@@ -435,17 +457,21 @@ export function aggregateJudgeScoreRows(
   judgeScores: JudgeScoreInput[],
   collisionMetrics: Set<string> = new Set(),
   promptNameById: Map<string, string> = new Map()
-): Map<
-  ArtifactType,
-  Map<string, { scores: number[]; artifactIds: Set<string> }>
-> {
+): Map<ArtifactType, Map<string, AggregatedJudgeData>> {
   const aggregator = new JudgeScoreAggregator();
 
   for (const row of judgeScores) {
-    const key = resolveAggregationKey(row, collisionMetrics, promptNameById);
+    const aggregationKey = resolveAggregationKey(
+      row,
+      collisionMetrics,
+      promptNameById
+    );
+    const promptName = resolvePromptRouteName(row, promptNameById);
     aggregator.addScore(
       row.evaluation.artifact.type,
-      key,
+      aggregationKey,
+      promptName,
+      row.metricName,
       row.score,
       row.evaluation.artifactId
     );
@@ -456,10 +482,7 @@ export function aggregateJudgeScoreRows(
 
 /** Collects all unique artifact IDs from the aggregator across all types and judges. */
 function collectAllArtifactIds(
-  aggregator: Map<
-    ArtifactType,
-    Map<string, { scores: number[]; artifactIds: Set<string> }>
-  >
+  aggregator: Map<ArtifactType, Map<string, AggregatedJudgeData>>
 ): string[] {
   const allIds = new Set<string>();
   for (const judgeMap of aggregator.values()) {
@@ -474,8 +497,8 @@ function collectAllArtifactIds(
 
 /** Computes aggregate stats for a single judge given its scores and human ratings lookup. */
 function computeJudgeStats(
-  judgeName: string,
-  judgeData: { scores: number[]; artifactIds: Set<string> },
+  judgeDisplayName: string,
+  judgeData: AggregatedJudgeData,
   humanRatingsByArtifact: Map<string, number[]>,
   judgeDescriptionByMetricName: Map<string, string>
 ): JudgeAggregateStats | null {
@@ -501,10 +524,11 @@ function computeJudgeStats(
   }
 
   return {
-    judgeName,
-    promptName: normalizeJudgeName(judgeName),
-    metricName: normalizeJudgeName(judgeName),
-    description: judgeDescriptionByMetricName.get(judgeName) ?? null,
+    judgeName: judgeDisplayName,
+    promptName: judgeData.promptName,
+    metricName: judgeData.metricName,
+    displayMetricName: judgeDisplayName,
+    description: judgeDescriptionByMetricName.get(judgeDisplayName) ?? null,
     artifactsEvaluated: judgeData.artifactIds.size,
     min,
     mean,
@@ -983,18 +1007,18 @@ export const judgesAnalyticsService = {
   },
 
   /**
-   * Get detailed statistics for a single judge identified by normalized metric name.
+   * Get detailed statistics for a single judge identified by normalized prompt name.
    *
    * @param organizationId - Organization ID to scope the query
-   * @param metricName - URL-safe normalized metric name (e.g. "clarity")
+   * @param promptName - URL-safe normalized prompt name (e.g. "clarity")
    * @returns Full judge detail or null if not found
    */
   async getJudgeDetail(
     organizationId: string,
-    metricName: string,
+    promptName: string,
     reportType: EvaluationReportType
   ): Promise<JudgeDetailResponse | null> {
-    const resolved = await resolveJudgePromptIds(organizationId, metricName);
+    const resolved = await resolveJudgePromptIds(organizationId, promptName);
     if (resolved === null) {
       return null;
     }
@@ -1099,7 +1123,7 @@ export const judgesAnalyticsService = {
     return {
       judge: {
         reportType,
-        promptName: metricName,
+        promptName,
         displayName: latestPrompt.name,
         latestPromptId: latestPrompt.id,
         scoreCount,
@@ -1121,16 +1145,23 @@ export const judgesAnalyticsService = {
    */
   async getJudgeScores(
     organizationId: string,
-    metricName: string,
+    promptName: string,
     reportType: EvaluationReportType,
     page: number,
     pageSize: number
   ): Promise<JudgeScoresResponse | null> {
-    // Load judge scores by metricName, scoped to org and reportType
+    const resolved = await resolveJudgePromptIds(organizationId, promptName);
+    if (resolved === null) {
+      return null;
+    }
+
+    const { promptIds } = resolved;
+
+    // Load judge scores by prompt identity, scoped to org and reportType
     const judgeScores = await withDb((db) =>
       db.judgeScore.findMany({
         where: {
-          metricName,
+          promptId: { in: promptIds },
           evaluation: {
             reportType,
             artifact: { organizationId },
@@ -1158,11 +1189,12 @@ export const judgesAnalyticsService = {
     );
 
     if (judgeScores.length === 0) {
-      const metricExistsInOrg = await withDb((db) =>
+      const promptExistsInOrg = await withDb((db) =>
         db.judgeScore.findFirst({
           where: {
-            metricName,
+            promptId: { in: promptIds },
             evaluation: {
+              reportType,
               artifact: { organizationId },
             },
           },
@@ -1170,7 +1202,7 @@ export const judgesAnalyticsService = {
         })
       );
 
-      if (metricExistsInOrg === null) {
+      if (promptExistsInOrg === null) {
         return null;
       }
 

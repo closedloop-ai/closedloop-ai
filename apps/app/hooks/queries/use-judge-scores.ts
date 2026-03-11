@@ -12,15 +12,15 @@ import {
 // Query keys
 export const judgeScoreKeys = {
   all: ["judge-scores"] as const,
-  list: (metricName: string, reportType: EvaluationReportType) =>
-    [...judgeScoreKeys.all, metricName, reportType] as const,
-  page: (metricName: string, reportType: EvaluationReportType, page: number) =>
-    [...judgeScoreKeys.list(metricName, reportType), page] as const,
+  list: (promptName: string, reportType: EvaluationReportType) =>
+    [...judgeScoreKeys.all, promptName, reportType] as const,
+  page: (promptName: string, reportType: EvaluationReportType, page: number) =>
+    [...judgeScoreKeys.list(promptName, reportType), page] as const,
 };
 
 // Query hook
 export function useJudgeScores(
-  metricName: string,
+  promptName: string,
   reportType: EvaluationReportType,
   page = 1,
   options?: Omit<UseQueryOptions<JudgeScoresResponse>, "queryKey" | "queryFn">
@@ -28,17 +28,17 @@ export function useJudgeScores(
   const apiClient = useApiClient();
 
   return useQuery({
-    queryKey: judgeScoreKeys.page(metricName, reportType, page),
+    queryKey: judgeScoreKeys.page(promptName, reportType, page),
     queryFn: () => {
       const params = new URLSearchParams();
       params.set("reportType", reportType);
       params.set("page", String(page));
       params.set("pageSize", String(JUDGES_ANALYTICS_SCORE_PAGE_SIZE));
       return apiClient.get<JudgeScoresResponse>(
-        `/judges-analytics/${encodeURIComponent(metricName)}/scores?${params.toString()}`
+        `/judges-analytics/${encodeURIComponent(promptName)}/scores?${params.toString()}`
       );
     },
-    enabled: Boolean(metricName) && Boolean(reportType),
+    enabled: Boolean(promptName) && Boolean(reportType),
     staleTime: JUDGES_ANALYTICS_QUERY_STALE_TIME_MS,
     ...options,
   });

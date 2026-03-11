@@ -27,9 +27,9 @@ export const GET = withAnyAuth<
       return queryErrorResponse;
     }
 
-    const { metricName: rawMetricName } = await params;
-    const metricName = parsePromptNameParam(rawMetricName);
-    if (metricName === null) {
+    const { metricName: rawPromptName } = await params;
+    const promptName = parsePromptNameParam(rawPromptName);
+    if (promptName === null) {
       return badRequestResponse(
         "Invalid metricName format: must be alphanumeric with underscores"
       );
@@ -37,7 +37,7 @@ export const GET = withAnyAuth<
 
     const result = await judgesAnalyticsService.getJudgeDetail(
       user.organizationId,
-      metricName,
+      promptName,
       query.reportType
     );
 

@@ -177,7 +177,11 @@ describe("JudgeAnalyticsTable - judge rows", () => {
     render(
       <JudgeAnalyticsTable
         data={[
-          makeJudge({ judgeName: "clarity-judge", metricName: "clarity" }),
+          makeJudge({
+            judgeName: "clarity-judge",
+            promptName: "clarity",
+            metricName: "clarity_score",
+          }),
         ]}
         reportType={EvaluationReportType.Code}
       />

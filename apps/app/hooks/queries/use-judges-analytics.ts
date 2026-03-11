@@ -33,8 +33,8 @@ export const judgesAnalyticsKeys = {
       endDate,
       groupBy,
     ] as const,
-  detail: (metricName: string, reportType: EvaluationReportType) =>
-    [...judgesAnalyticsKeys.all, "detail", metricName, reportType] as const,
+  detail: (promptName: string, reportType: EvaluationReportType) =>
+    [...judgesAnalyticsKeys.all, "detail", promptName, reportType] as const,
 };
 
 // Query hook
@@ -92,22 +92,22 @@ export function useArtifactCounts(
 }
 
 export function useJudgeDetail(
-  metricName: string,
+  promptName: string,
   reportType: EvaluationReportType,
   options?: Omit<UseQueryOptions<JudgeDetailResponse>, "queryKey" | "queryFn">
 ) {
   const apiClient = useApiClient();
 
   return useQuery({
-    queryKey: judgesAnalyticsKeys.detail(metricName, reportType),
+    queryKey: judgesAnalyticsKeys.detail(promptName, reportType),
     queryFn: () => {
       const params = new URLSearchParams();
       params.set("reportType", reportType);
       return apiClient.get<JudgeDetailResponse>(
-        `/judges-analytics/${encodeURIComponent(metricName)}?${params.toString()}`
+        `/judges-analytics/${encodeURIComponent(promptName)}?${params.toString()}`
       );
     },
-    enabled: Boolean(metricName) && Boolean(reportType),
+    enabled: Boolean(promptName) && Boolean(reportType),
     staleTime: JUDGES_ANALYTICS_QUERY_STALE_TIME_MS,
     ...options,
   });

@@ -657,5 +657,8 @@ export async function stopRelayServer(): Promise<void> {
 }
 
 if (process.env.NODE_ENV !== "test") {
-  startRelayServer().catch(() => undefined);
+  startRelayServer().catch((error) => {
+    log.error("Failed to start relay server", { error });
+    process.exit(1);
+  });
 }

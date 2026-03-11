@@ -13,14 +13,14 @@ import { ScoreComparisonSection } from "./components/score-comparison-section";
 export default function JudgeDetailPage() {
   const params = useParams<{ metricName: string }>();
   const searchParams = useSearchParams();
-  const metricName = decodeURIComponent(params.metricName);
+  const promptName = decodeURIComponent(params.metricName);
   const reportTypeParam = searchParams.get("reportType");
   const reportType =
     reportTypeParam === EvaluationReportType.Code
       ? EvaluationReportType.Code
       : EvaluationReportType.Plan;
   const { data, isLoading, isError, error } = useJudgeDetail(
-    metricName,
+    promptName,
     reportType
   );
 
@@ -81,8 +81,8 @@ export default function JudgeDetailPage() {
       <CharacteristicsPanel judge={judge} />
       <PromptSection judge={judge} />
       <ScoreComparisonSection
-        key={`${reportType}-${metricName}`}
-        promptName={metricName}
+        key={`${reportType}-${promptName}`}
+        promptName={promptName}
         reportType={reportType}
       />
     </div>

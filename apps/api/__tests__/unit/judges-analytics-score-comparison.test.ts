@@ -304,10 +304,25 @@ describe("judgesAnalyticsService.getJudgeScores", () => {
     });
   });
 
-  it("filters judge scores by metricName", async () => {
+  it("filters judge scores by resolved prompt IDs", async () => {
     const db = {
       prompt: {
-        findMany: vi.fn().mockResolvedValue([]),
+        findMany: vi.fn().mockResolvedValue([
+          {
+            id: "prompt-1",
+            name: "clarity_judge",
+            version: 2,
+            content: "v2",
+            createdAt: new Date("2026-01-11T00:00:00.000Z"),
+          },
+          {
+            id: "prompt-2",
+            name: "clarity_judge",
+            version: 1,
+            content: "v1",
+            createdAt: new Date("2026-01-10T00:00:00.000Z"),
+          },
+        ]),
       },
       judgeScore: {
         findFirst: vi.fn().mockResolvedValue({ id: "js-existing" }),
@@ -326,7 +341,9 @@ describe("judgesAnalyticsService.getJudgeScores", () => {
 
     const judgeScoreFindManyCall = db.judgeScore.findMany.mock.calls[0][0];
 
-    expect(judgeScoreFindManyCall.where.metricName).toBe("clarity");
-    expect(judgeScoreFindManyCall.where.promptId).toBeUndefined();
+    expect(judgeScoreFindManyCall.where.promptId).toEqual({
+      in: ["prompt-1", "prompt-2"],
+    });
+    expect(judgeScoreFindManyCall.where.metricName).toBeUndefined();
   });
 });

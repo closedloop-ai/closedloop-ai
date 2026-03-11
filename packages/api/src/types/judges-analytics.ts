@@ -22,11 +22,17 @@ import type { EvaluationReportType } from "./evaluation";
  * are computed in frontend, not returned by API
  */
 export type JudgeAggregateStats = {
+  /** Collision-aware display label for the judge row. */
   judgeName: string;
-  /** URL-safe normalized prompt name for navigation links. */
+  /** URL-safe normalized prompt identity used for navigation and cache keys. */
   promptName: string;
-  /** Metric name for this aggregate stats entry. Used for navigation and grouping. */
+  /** Raw metric name from JudgeScore rows. Not used for detail routing. */
   metricName: string;
+  /**
+   * Optional explicit display label for metric disambiguation in UI.
+   * Falls back to judgeName when omitted.
+   */
+  displayMetricName?: string | null;
   /** Latest prompt description from prompt registry for this judge, if available. */
   description?: string | null;
   artifactsEvaluated: number;
