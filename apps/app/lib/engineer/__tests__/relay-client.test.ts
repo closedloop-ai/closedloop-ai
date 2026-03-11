@@ -202,6 +202,208 @@ describe("RelayClient.streamOperation", () => {
     );
   });
 
+  it("retries with refreshed token on 401", async () => {
+    const fetchMock = vi.mocked(fetch);
+    const refreshToken = vi.fn().mockResolvedValue("fresh-token");
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonResponse({
+          success: true,
+          data: { commandId: "cmd-refresh", status: "queued" },
+        })
+      )
+      // First poll returns 401
+      .mockResolvedValueOnce(
+        jsonResponse(
+          { success: false, error: "Token expired" },
+          { status: 401 }
+        )
+      )
+      // Retry with fresh token succeeds
+      .mockResolvedValueOnce(
+        jsonResponse({
+          success: true,
+          data: [
+            {
+              commandId: "cmd-refresh",
+              sequence: 1,
+              eventType: "done",
+              data: {},
+              createdAt: "2026-03-06T12:00:00.000Z",
+            },
+          ],
+        })
+      );
+
+    const client = new RelayClient("http://api.test", "expired-token");
+    client.setRefreshToken(refreshToken);
+    const stream = await client.streamOperation(
+      "target-1",
+      makeRelayRequest("/api/engineer/symphony/chat/ENG-123")
+    );
+
+    const outputPromise = readAllChunks(stream.getReader());
+    await vi.advanceTimersByTimeAsync(1000);
+    const output = await outputPromise;
+
+    expect(refreshToken).toHaveBeenCalledOnce();
+    // Retry fetch uses the fresh token
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      expect.any(String),
+      expect.objectContaining({
+        headers: { Authorization: "Bearer fresh-token" },
+      })
+    );
+    expect(output).toBe(`${JSON.stringify({ type: "done" })}\n`);
+  });
+
+  it("emits error when refresh returns null", async () => {
+    const fetchMock = vi.mocked(fetch);
+    const refreshToken = vi.fn().mockResolvedValue(null);
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonResponse({
+          success: true,
+          data: { commandId: "cmd-null", status: "queued" },
+        })
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(
+          { success: false, error: "Token expired" },
+          { status: 401 }
+        )
+      );
+
+    const client = new RelayClient("http://api.test", "expired-token");
+    client.setRefreshToken(refreshToken);
+    const stream = await client.streamOperation(
+      "target-1",
+      makeRelayRequest("/api/engineer/symphony/chat/ENG-123")
+    );
+
+    const outputPromise = readAllChunks(stream.getReader());
+    await vi.advanceTimersByTimeAsync(1000);
+    const output = await outputPromise;
+
+    expect(output).toBe(
+      `${JSON.stringify({ type: "error", error: "Token expired" })}\n`
+    );
+  });
+
+  it("emits error from retry response when retry fails", async () => {
+    const fetchMock = vi.mocked(fetch);
+    const refreshToken = vi.fn().mockResolvedValue("fresh-token");
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonResponse({
+          success: true,
+          data: { commandId: "cmd-retry-fail", status: "queued" },
+        })
+      )
+      // First poll returns 401
+      .mockResolvedValueOnce(
+        jsonResponse(
+          { success: false, error: "Token expired" },
+          { status: 401 }
+        )
+      )
+      // Retry also fails with 500
+      .mockResolvedValueOnce(
+        jsonResponse(
+          { success: false, error: "Internal server error" },
+          { status: 500 }
+        )
+      );
+
+    const client = new RelayClient("http://api.test", "expired-token");
+    client.setRefreshToken(refreshToken);
+    const stream = await client.streamOperation(
+      "target-1",
+      makeRelayRequest("/api/engineer/symphony/chat/ENG-123")
+    );
+
+    const outputPromise = readAllChunks(stream.getReader());
+    await vi.advanceTimersByTimeAsync(1000);
+    const output = await outputPromise;
+
+    // Error should come from the retry response (500), not the original 401
+    expect(output).toBe(
+      `${JSON.stringify({ type: "error", error: "Internal server error" })}\n`
+    );
+  });
+
+  it("emits error when refreshToken callback throws", async () => {
+    const fetchMock = vi.mocked(fetch);
+    const refreshToken = vi
+      .fn()
+      .mockRejectedValue(new Error("Clerk session expired"));
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonResponse({
+          success: true,
+          data: { commandId: "cmd-throw", status: "queued" },
+        })
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(
+          { success: false, error: "Token expired" },
+          { status: 401 }
+        )
+      );
+
+    const client = new RelayClient("http://api.test", "expired-token");
+    client.setRefreshToken(refreshToken);
+    const stream = await client.streamOperation(
+      "target-1",
+      makeRelayRequest("/api/engineer/symphony/chat/ENG-123")
+    );
+
+    const outputPromise = readAllChunks(stream.getReader());
+    await vi.advanceTimersByTimeAsync(1000);
+    const output = await outputPromise;
+
+    // Should emit the original 401 error, not the Clerk exception
+    expect(output).toBe(
+      `${JSON.stringify({ type: "error", error: "Token expired" })}\n`
+    );
+  });
+
+  it("does not call refreshToken when internal secret is configured", async () => {
+    const fetchMock = vi.mocked(fetch);
+    const refreshToken = vi.fn().mockResolvedValue("fresh-token");
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonResponse({
+          success: true,
+          data: { commandId: "cmd-internal", status: "queued" },
+        })
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({ success: false, error: "Unauthorized" }, { status: 401 })
+      );
+
+    const client = new RelayClient(
+      "http://api.test",
+      "token-123",
+      "internal-secret"
+    );
+    client.setRefreshToken(refreshToken);
+    const stream = await client.streamOperation(
+      "target-1",
+      makeRelayRequest("/api/engineer/symphony/chat/ENG-123")
+    );
+
+    const outputPromise = readAllChunks(stream.getReader());
+    await vi.advanceTimersByTimeAsync(1000);
+    const output = await outputPromise;
+
+    expect(refreshToken).not.toHaveBeenCalled();
+    expect(output).toBe(
+      `${JSON.stringify({ type: "error", error: "Unauthorized" })}\n`
+    );
+  });
+
   it("uses the internal events route when an internal secret is configured", async () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock

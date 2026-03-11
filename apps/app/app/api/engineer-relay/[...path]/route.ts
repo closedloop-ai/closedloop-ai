@@ -202,6 +202,7 @@ async function handleRelayRequest(request: NextRequest): Promise<Response> {
     token,
     env.INTERNAL_API_SECRET
   );
+  relayClient.setRefreshToken(getToken);
   const isStreaming = isStreamingEngineerRequest(
     request.method,
     path,
