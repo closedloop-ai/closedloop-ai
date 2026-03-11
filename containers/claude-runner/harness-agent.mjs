@@ -2123,7 +2123,7 @@ function prepareWorkspace(workDir) {
 let setupEnvVars = {};
 
 function runRepoSetup(workDir) {
-  const setupScript = path.join(workDir, ".closedloop", "loops-setup.sh");
+  const setupScript = path.join(workDir, ".closedloop-ai", "loops-setup.sh");
   if (!fs.existsSync(setupScript)) {
     log("info", "No .closedloop-ai/loops-setup.sh found — skipping repo bootstrap");
     return;
@@ -2131,7 +2131,7 @@ function runRepoSetup(workDir) {
 
   log("info", `Running repo bootstrap: ${setupScript}`);
   try {
-    spawnSync("bash", [setupScript], {
+    const result = spawnSync("bash", [setupScript], {
       cwd: workDir,
       stdio: "inherit",
       env: {
@@ -2140,14 +2140,18 @@ function runRepoSetup(workDir) {
       },
       timeout: 300_000, // 5 minute timeout for install
     });
-    log("info", "Repo bootstrap completed");
+    if (result.error || result.status !== 0) {
+      log("warn", `Repo bootstrap exited with status ${result.status}${result.error ? `: ${result.error.message}` : ""}`);
+    } else {
+      log("info", "Repo bootstrap completed");
+    }
   } catch (err) {
     // Non-fatal: log and continue. The LLM can still try to bootstrap itself.
     log("error", `Repo bootstrap failed: ${err.message}`);
   }
 
   // Read persisted env vars from the setup script (if written)
-  const envSetupFile = path.join(workDir, ".closedloop", ".env.setup");
+  const envSetupFile = path.join(workDir, ".closedloop-ai", ".env.setup");
   if (fs.existsSync(envSetupFile)) {
     const content = fs.readFileSync(envSetupFile, "utf-8");
     for (const line of content.split("\n")) {
