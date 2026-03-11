@@ -44,6 +44,7 @@ import Link from "next/link";
 import { type ReactNode, useEffect, useRef } from "react";
 import { useIsMounted } from "@/hooks/use-is-mounted";
 import { type AppEnvironment, appEnvironment } from "@/lib/environment";
+import { EngineerBadge } from "./engineer-badge";
 import { InboxBadge } from "./inbox-badge";
 import { Search } from "./search";
 import { SidebarFavorites } from "./sidebar-favorites";
@@ -284,6 +285,9 @@ export function GlobalSidebar({ children }: GlobalSidebarProperties) {
                         <item.icon />
                         <span>{item.title}</span>
                         {item.title === "Inbox" && <InboxBadge />}
+                        {item.title === engineerNavItem.title && (
+                          <EngineerBadge />
+                        )}
                       </Link>
                     )}
                   </SidebarMenuButton>
