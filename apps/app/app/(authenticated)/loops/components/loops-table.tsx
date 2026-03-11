@@ -17,14 +17,17 @@ import {
   SelectValue,
 } from "@repo/design-system/components/ui/select";
 import { toast } from "@repo/design-system/components/ui/sonner";
-import { Loader2Icon, RotateCcwIcon } from "lucide-react";
+import { Loader2Icon, RotateCcwIcon, SquareIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { LoopCommandBadge, LoopStatusBadge } from "@/components/status-badge";
-import { useLoops, useResumeLoop } from "@/hooks/queries/use-loops";
+import { useCancelLoop, useLoops, useResumeLoop } from "@/hooks/queries/use-loops";
 import { formatRelativeTime } from "@/lib/date-utils";
 import { formatDuration, formatTokenCount } from "@/lib/format-utils";
-import { RESTARTABLE_LOOP_STATUSES } from "@/lib/loop-constants";
+import {
+  CANCELLABLE_LOOP_STATUSES,
+  RESTARTABLE_LOOP_STATUSES,
+} from "@/lib/loop-constants";
 import { getUserDisplayName } from "@/lib/user-utils";
 
 function formatTokens(input: number, output: number): string {
@@ -112,7 +115,9 @@ export function LoopsTable() {
   const router = useRouter();
   const [commandFilter, setCommandFilter] = useState<string>("all");
   const resumeLoop = useResumeLoop();
+  const cancelLoop = useCancelLoop();
   const [pendingLoopId, setPendingLoopId] = useState<string | null>(null);
+  const [cancellingLoopId, setCancellingLoopId] = useState<string | null>(null);
 
   const filters: Record<string, string | undefined> = {};
   if (commandFilter !== "all") {
@@ -135,6 +140,18 @@ export function LoopsTable() {
       // Global QueryClient onError handler toasts the error
     } finally {
       setPendingLoopId(null);
+    }
+  };
+
+  const handleCancel = async (loopId: string) => {
+    setCancellingLoopId(loopId);
+    try {
+      await cancelLoop.mutateAsync(loopId);
+      toast.success("Loop cancelled");
+    } catch {
+      // Global QueryClient onError handler toasts the error
+    } finally {
+      setCancellingLoopId(null);
     }
   };
 
@@ -182,25 +199,48 @@ export function LoopsTable() {
         filterOptions={statusFilterOptions}
         onRowClick={handleRowClick}
         renderRowActions={(loop) => {
-          if (!RESTARTABLE_LOOP_STATUSES.has(loop.status)) {
+          const canCancel = CANCELLABLE_LOOP_STATUSES.has(loop.status);
+          const canRestart = RESTARTABLE_LOOP_STATUSES.has(loop.status);
+          if (!canCancel && !canRestart) {
             return null;
           }
           return (
-            <Button
-              aria-label="Restart loop"
-              disabled={pendingLoopId === loop.id}
-              onClick={async () => {
-                await handleRestart(loop.id);
-              }}
-              size="sm"
-              variant="ghost"
-            >
-              {pendingLoopId === loop.id ? (
-                <Loader2Icon className="h-4 w-4 animate-spin" />
-              ) : (
-                <RotateCcwIcon className="h-4 w-4" />
+            <div className="flex items-center gap-1">
+              {canCancel && (
+                <Button
+                  aria-label="Cancel loop"
+                  disabled={cancellingLoopId === loop.id}
+                  onClick={async () => {
+                    await handleCancel(loop.id);
+                  }}
+                  size="sm"
+                  variant="ghost"
+                >
+                  {cancellingLoopId === loop.id ? (
+                    <Loader2Icon className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <SquareIcon className="h-4 w-4" />
+                  )}
+                </Button>
               )}
-            </Button>
+              {canRestart && (
+                <Button
+                  aria-label="Restart loop"
+                  disabled={pendingLoopId === loop.id}
+                  onClick={async () => {
+                    await handleRestart(loop.id);
+                  }}
+                  size="sm"
+                  variant="ghost"
+                >
+                  {pendingLoopId === loop.id ? (
+                    <Loader2Icon className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <RotateCcwIcon className="h-4 w-4" />
+                  )}
+                </Button>
+              )}
+            </div>
           );
         }}
         sortOptions={sortOptions}

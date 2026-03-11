@@ -9,6 +9,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Must be declared before vi.mock factories reference them
 const mockMutateAsync = vi.fn();
+const mockCancelMutateAsync = vi.fn();
 const mockPush = vi.fn();
 
 vi.mock("next/navigation", () => ({
@@ -28,6 +29,10 @@ vi.mock("@/hooks/queries/use-loops", () => ({
     mutateAsync: mockMutateAsync,
     isPending: false,
   })),
+  useCancelLoop: vi.fn(() => ({
+    mutateAsync: mockCancelMutateAsync,
+    isPending: false,
+  })),
 }));
 
 vi.mock("@repo/design-system/components/ui/sonner", () => ({
@@ -36,7 +41,7 @@ vi.mock("@repo/design-system/components/ui/sonner", () => ({
 
 import { LoopsTable } from "@/app/(authenticated)/loops/components/loops-table";
 // Import after mocks
-import { useLoops, useResumeLoop } from "@/hooks/queries/use-loops";
+import { useCancelLoop, useLoops, useResumeLoop } from "@/hooks/queries/use-loops";
 import { createMockLoopWithUser } from "../fixtures/loops";
 
 // ---------------------------------------------------------------------------
@@ -203,5 +208,121 @@ describe("LoopsTable — restart button interaction", () => {
     });
 
     expect(mockPush).not.toHaveBeenCalledWith("/loops/loop-001");
+  });
+});
+
+describe("LoopsTable — cancel button visibility", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(useCancelLoop).mockReturnValue({
+      mutateAsync: mockCancelMutateAsync,
+      isPending: false,
+    } as unknown as ReturnType<typeof useCancelLoop>);
+    vi.mocked(useResumeLoop).mockReturnValue({
+      mutateAsync: mockMutateAsync,
+      isPending: false,
+    } as unknown as ReturnType<typeof useResumeLoop>);
+  });
+
+  it("renders a cancel button for a RUNNING loop", () => {
+    vi.mocked(useLoops).mockReturnValue({
+      data: [createMockLoopWithUser({ status: LoopStatus.Running })],
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoops>);
+
+    render(<LoopsTable />);
+
+    expect(
+      screen.getByRole("button", { name: "Cancel loop" })
+    ).toBeInTheDocument();
+  });
+
+  it("renders a cancel button for a PENDING loop", () => {
+    vi.mocked(useLoops).mockReturnValue({
+      data: [createMockLoopWithUser({ status: LoopStatus.Pending })],
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoops>);
+
+    render(<LoopsTable />);
+
+    expect(
+      screen.getByRole("button", { name: "Cancel loop" })
+    ).toBeInTheDocument();
+  });
+
+  it("renders a cancel button for a CLAIMED loop", () => {
+    vi.mocked(useLoops).mockReturnValue({
+      data: [createMockLoopWithUser({ status: LoopStatus.Claimed })],
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoops>);
+
+    render(<LoopsTable />);
+
+    expect(
+      screen.getByRole("button", { name: "Cancel loop" })
+    ).toBeInTheDocument();
+  });
+
+  it("does not render a cancel button for a COMPLETED loop", () => {
+    vi.mocked(useLoops).mockReturnValue({
+      data: [createMockLoopWithUser({ status: LoopStatus.Completed })],
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoops>);
+
+    render(<LoopsTable />);
+
+    expect(
+      screen.queryByRole("button", { name: "Cancel loop" })
+    ).not.toBeInTheDocument();
+  });
+
+  it("does not render a cancel button for a FAILED loop", () => {
+    vi.mocked(useLoops).mockReturnValue({
+      data: [createMockLoopWithUser({ status: LoopStatus.Failed })],
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoops>);
+
+    render(<LoopsTable />);
+
+    expect(
+      screen.queryByRole("button", { name: "Cancel loop" })
+    ).not.toBeInTheDocument();
+  });
+});
+
+describe("LoopsTable — cancel button interaction", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockCancelMutateAsync.mockResolvedValue({});
+    vi.mocked(useCancelLoop).mockReturnValue({
+      mutateAsync: mockCancelMutateAsync,
+      isPending: false,
+    } as unknown as ReturnType<typeof useCancelLoop>);
+    vi.mocked(useResumeLoop).mockReturnValue({
+      mutateAsync: mockMutateAsync,
+      isPending: false,
+    } as unknown as ReturnType<typeof useResumeLoop>);
+    vi.mocked(useLoops).mockReturnValue({
+      data: [
+        createMockLoopWithUser({ id: "loop-001", status: LoopStatus.Running }),
+      ],
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoops>);
+  });
+
+  it("calls mutateAsync with the loop id when the cancel button is clicked", async () => {
+    render(<LoopsTable />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel loop" }));
+
+    await waitFor(() => {
+      expect(mockCancelMutateAsync).toHaveBeenCalledWith("loop-001");
+    });
   });
 });

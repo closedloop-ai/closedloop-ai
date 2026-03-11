@@ -26,6 +26,7 @@ import {
   GitPullRequestIcon,
   Loader2Icon,
   RotateCcwIcon,
+  SquareIcon,
   TerminalIcon,
   UserIcon,
 } from "lucide-react";
@@ -34,10 +35,13 @@ import { useRouter } from "next/navigation";
 import { LoopAuditLog } from "@/components/loops/loop-audit-log";
 import { LoopProgressPanel } from "@/components/loops/loop-progress-panel";
 import { LoopCommandBadge, LoopStatusBadge } from "@/components/status-badge";
-import { useLoop, useResumeLoop } from "@/hooks/queries/use-loops";
+import { useCancelLoop, useLoop, useResumeLoop } from "@/hooks/queries/use-loops";
 import { formatDateTime } from "@/lib/date-utils";
 import { formatDuration, formatTokenCount } from "@/lib/format-utils";
-import { RESTARTABLE_LOOP_STATUSES } from "@/lib/loop-constants";
+import {
+  CANCELLABLE_LOOP_STATUSES,
+  RESTARTABLE_LOOP_STATUSES,
+} from "@/lib/loop-constants";
 import { getUserDisplayName } from "@/lib/user-utils";
 
 function formatModelName(model: string): string {
@@ -193,6 +197,7 @@ type LoopDetailContainerProps = {
 export function LoopDetailContainer({ id }: LoopDetailContainerProps) {
   const { data: loop, isLoading, error } = useLoop(id);
   const resumeLoop = useResumeLoop();
+  const cancelLoop = useCancelLoop();
   const router = useRouter();
 
   if (isLoading) {
@@ -234,6 +239,15 @@ export function LoopDetailContainer({ id }: LoopDetailContainerProps) {
     }
   };
 
+  const handleCancel = async () => {
+    try {
+      await cancelLoop.mutateAsync(loop.id);
+      toast.success("Loop cancelled");
+    } catch {
+      // Global QueryClient onError handler toasts the error
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* Back navigation */}
@@ -244,6 +258,23 @@ export function LoopDetailContainer({ id }: LoopDetailContainerProps) {
             Back to Loops
           </Link>
         </Button>
+        {CANCELLABLE_LOOP_STATUSES.has(loop.status) && (
+          <Button
+            disabled={cancelLoop.isPending}
+            onClick={async () => {
+              await handleCancel();
+            }}
+            size="sm"
+            variant="outline"
+          >
+            {cancelLoop.isPending ? (
+              <Loader2Icon className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <SquareIcon className="mr-2 h-4 w-4" />
+            )}
+            Cancel
+          </Button>
+        )}
         {RESTARTABLE_LOOP_STATUSES.has(loop.status) && (
           <Button
             disabled={resumeLoop.isPending}
