@@ -18,7 +18,14 @@ import {
   SelectValue,
 } from "./select";
 import { Button } from "./button";
-import { ChevronLeftIcon, ChevronRightIcon, SearchIcon } from "lucide-react";
+import {
+  ArrowDownIcon,
+  ArrowUpDownIcon,
+  ArrowUpIcon,
+  ChevronLeftIcon,
+  ChevronRightIcon,
+  SearchIcon,
+} from "lucide-react";
 import { cn } from "@repo/design-system/lib/utils";
 
 export type Column<T> = {
@@ -39,6 +46,24 @@ export type FilterOption = {
   value: string;
 };
 
+function SortIcon({
+  columnKey,
+  sortKey,
+  sortDir,
+}: {
+  columnKey: string;
+  sortKey: string | null;
+  sortDir: string | null;
+}) {
+  if (sortKey !== columnKey) {
+    return <ArrowUpDownIcon className="h-3.5 w-3.5 opacity-50" />;
+  }
+  if (sortDir === "asc") {
+    return <ArrowUpIcon className="h-3.5 w-3.5" />;
+  }
+  return <ArrowDownIcon className="h-3.5 w-3.5" />;
+}
+
 type DataTableProps<T> = {
   data: T[];
   columns: Column<T>[];
@@ -50,6 +75,7 @@ type DataTableProps<T> = {
   onRowClick?: (item: T) => void;
   renderRowActions?: (item: T) => React.ReactNode;
   pageSize?: number;
+  pageSizeOptions?: number[];
   emptyMessage?: string;
 };
 
@@ -63,13 +89,15 @@ export function DataTable<T extends { id: string }>({
   filterKey,
   onRowClick,
   renderRowActions,
-  pageSize = 10,
+  pageSize: initialPageSize = 10,
+  pageSizeOptions,
   emptyMessage = "No items found.",
 }: DataTableProps<T>) {
   const [search, setSearch] = React.useState("");
   const [sort, setSort] = React.useState(sortOptions?.[0]?.value ?? "");
   const [filter, setFilter] = React.useState("all");
   const [page, setPage] = React.useState(1);
+  const [pageSize, setPageSize] = React.useState(initialPageSize);
 
   // Filter data
   const filteredData = React.useMemo(() => {
@@ -132,10 +160,25 @@ export function DataTable<T extends { id: string }>({
     page * pageSize
   );
 
+  // Parse current sort into key and direction
+  const [sortKey, sortDir] = sort ? sort.split(":") : [null, null];
+
+  // Hide the sortOptions dropdown when any column has sortable headers,
+  // since column-header clicks and the dropdown share the same sort state.
+  const hasColumnSort = columns.some((c) => c.sortable);
+
+  const handleColumnSort = (columnKey: string) => {
+    if (sortKey === columnKey) {
+      setSort(`${columnKey}:${sortDir === "asc" ? "desc" : "asc"}`);
+    } else {
+      setSort(`${columnKey}:asc`);
+    }
+  };
+
   // Reset page when filters change
   React.useEffect(() => {
     setPage(1);
-  }, [search, filter, sort]);
+  }, [search, filter, sort, pageSize]);
 
   return (
     <div className="space-y-4">
@@ -154,7 +197,7 @@ export function DataTable<T extends { id: string }>({
         )}
 
         <div className="flex items-center gap-2 ml-auto">
-          {sortOptions && sortOptions.length > 0 && (
+          {sortOptions && sortOptions.length > 0 && !hasColumnSort && (
             <div className="flex items-center gap-2">
               <span className="text-sm text-muted-foreground">Sort:</span>
               <Select value={sort} onValueChange={setSort}>
@@ -200,7 +243,22 @@ export function DataTable<T extends { id: string }>({
             <TableRow>
               {columns.map((column) => (
                 <TableHead key={String(column.key)} className={column.className}>
-                  {column.header}
+                  {column.sortable ? (
+                    <button
+                      className="flex items-center gap-1 hover:text-foreground transition-colors"
+                      onClick={() => handleColumnSort(String(column.key))}
+                      type="button"
+                    >
+                      {column.header}
+                      <SortIcon
+                        columnKey={String(column.key)}
+                        sortDir={sortDir}
+                        sortKey={sortKey}
+                      />
+                    </button>
+                  ) : (
+                    column.header
+                  )}
                 </TableHead>
               ))}
               {renderRowActions && (
@@ -246,9 +304,34 @@ export function DataTable<T extends { id: string }>({
 
       {/* Pagination */}
       <div className="flex items-center justify-between">
-        <p className="text-sm text-muted-foreground">
-          {filteredData.length} document{filteredData.length !== 1 ? "s" : ""} total
-        </p>
+        <div className="flex items-center gap-4">
+          <p className="text-sm text-muted-foreground">
+            {filteredData.length} item{filteredData.length !== 1 ? "s" : ""} total
+          </p>
+          {pageSizeOptions && pageSizeOptions.length > 0 && (
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-muted-foreground">Show:</span>
+              <Select
+                onValueChange={(v) => {
+                  setPageSize(Number(v));
+                  setPage(1);
+                }}
+                value={String(pageSize)}
+              >
+                <SelectTrigger className="w-[80px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {pageSizeOptions.map((size) => (
+                    <SelectItem key={size} value={String(size)}>
+                      {size}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+        </div>
 
         {totalPages > 1 && (
           <div className="flex items-center gap-2">
