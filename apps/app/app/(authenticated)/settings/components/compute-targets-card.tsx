@@ -98,7 +98,7 @@ function getStatusDescription(
     return "Checks run automatically for the active execution target.";
   }
 
-  return "Select an online relay target or run on localhost to enable system checks.";
+  return "Select an online relay target or connect via the desktop client to enable system checks.";
 }
 
 function renderStatusIcon({
@@ -312,7 +312,7 @@ export function ComputeTargetsCard() {
                     <p className="text-muted-foreground text-sm">
                       {shouldRunSystemCheck
                         ? "Waiting for the first system check result."
-                        : "System checks are available when an online relay target is selected or when the app is running on localhost."}
+                        : "System checks are available when an online relay target is selected or when the desktop client is connected."}
                     </p>
                   )}
                 </div>

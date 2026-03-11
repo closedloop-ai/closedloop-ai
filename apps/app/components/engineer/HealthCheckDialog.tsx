@@ -70,7 +70,7 @@ export function HealthCheckDialog() {
   });
 
   // Auto-dismiss after all checks are revealed and all required pass
-  const allRevealed = data !== undefined && revealedCount >= data.checks.length;
+  const allRevealed = data?.checks && revealedCount >= data.checks.length;
   const hasRequiredFailure =
     data?.checks.some((c) => c.required && !c.passed) ?? false;
   const allRequiredPassed = allRevealed && !hasRequiredFailure;

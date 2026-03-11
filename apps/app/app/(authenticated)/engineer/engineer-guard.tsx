@@ -40,19 +40,16 @@ export function EngineerGuard() {
         <AlertCircle className="mx-auto size-12 text-muted-foreground" />
         <h2 className="font-semibold text-xl">Engineer View Not Available</h2>
         <p className="text-muted-foreground">
-          Select an execution target to continue. If your previously selected
-          target is offline, wait for it to come online or choose another
-          target.
+          No execution target available. Connect the desktop client or register
+          a compute target in Settings to get started. If your previously
+          selected target is offline, wait for it to come online or choose
+          another.
         </p>
         <div className="flex justify-center pt-1">
           <ComputeTargetSelector />
         </div>
         <p className="text-muted-foreground">
-          You can also run{" "}
-          <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-sm">
-            pnpm dev:engineer
-          </code>{" "}
-          on localhost for local-only development.
+          Install the Closedloop desktop client for local execution.
         </p>
         <p className="text-muted-foreground text-sm">
           Open{" "}

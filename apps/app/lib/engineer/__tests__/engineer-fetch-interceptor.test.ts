@@ -183,31 +183,6 @@ describe("engineer-fetch-interceptor", () => {
     uninstall();
   });
 
-  it("passes through unchanged when mode is local-dev", async () => {
-    const originalFetch = vi.fn().mockResolvedValue(new Response("ok"));
-    Object.defineProperty(globalThis, "fetch", {
-      configurable: true,
-      writable: true,
-      value: originalFetch,
-    });
-    mockGetEngineerRoutingSelection.mockReturnValue({
-      mode: EngineerRoutingMode.LocalDev,
-      computeTargetId: null,
-      source: "manual",
-      updatedAt: Date.now(),
-    });
-
-    const uninstall = installEngineerFetchInterceptor();
-    await fetch("/api/engineer/version");
-
-    const outboundRequest = originalFetch.mock.calls[0][0] as Request;
-    const outboundUrl = new URL(outboundRequest.url);
-    expect(outboundUrl.pathname).toBe("/api/engineer/version");
-    expect(mockEnsureElectronDetection).not.toHaveBeenCalled();
-
-    uninstall();
-  });
-
   it("preserves POST body when rewriting to local electron", async () => {
     const originalFetch = vi.fn().mockResolvedValue(new Response("ok"));
     Object.defineProperty(globalThis, "fetch", {

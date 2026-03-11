@@ -16,13 +16,8 @@ type InterceptorWindow = Window & {
 const ENGINEER_PREFIX = "/api/engineer/";
 const ENGINEER_RELAY_PREFIX = "/api/engineer-relay/";
 
-const RELAY_BYPASS_PATHS = new Set(["/api/engineer/mcp-auth"]);
-
 function isEngineerRequest(url: URL): boolean {
-  return (
-    url.pathname.startsWith(ENGINEER_PREFIX) &&
-    !RELAY_BYPASS_PATHS.has(url.pathname)
-  );
+  return url.pathname.startsWith(ENGINEER_PREFIX);
 }
 
 function stripAuthHeaders(headers: Headers): Headers {
