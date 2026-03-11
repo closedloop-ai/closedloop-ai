@@ -2115,6 +2115,55 @@ function prepareWorkspace(workDir) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Repository bootstrap (runs .closedloop-ai/loops-setup.sh if present)
+// ---------------------------------------------------------------------------
+// Environment variables exported by the setup script and persisted to
+// .closedloop-ai/.env.setup. These are merged into the Claude child process env.
+let setupEnvVars = {};
+
+function runRepoSetup(workDir) {
+  const setupScript = path.join(workDir, ".closedloop-ai", "loops-setup.sh");
+  if (!fs.existsSync(setupScript)) {
+    log("info", "No .closedloop-ai/loops-setup.sh found — skipping repo bootstrap");
+    return;
+  }
+
+  log("info", `Running repo bootstrap: ${setupScript}`);
+  try {
+    const result = spawnSync("bash", [setupScript], {
+      cwd: workDir,
+      stdio: "inherit",
+      env: {
+        ...process.env,
+        HOME: process.env.HOME || os.homedir(),
+      },
+      timeout: 300_000, // 5 minute timeout for install
+    });
+    if (result.error || result.status !== 0) {
+      log("warn", `Repo bootstrap exited with status ${result.status}${result.error ? `: ${result.error.message}` : ""}`);
+    } else {
+      log("info", "Repo bootstrap completed");
+    }
+  } catch (err) {
+    // Non-fatal: log and continue. The LLM can still try to bootstrap itself.
+    log("error", `Repo bootstrap failed: ${err.message}`);
+  }
+
+  // Read persisted env vars from the setup script (if written)
+  const envSetupFile = path.join(workDir, ".closedloop-ai", ".env.setup");
+  if (fs.existsSync(envSetupFile)) {
+    const content = fs.readFileSync(envSetupFile, "utf-8");
+    for (const line of content.split("\n")) {
+      const match = /^export\s+([A-Z_]+)="?(.*?)"?\s*$/.exec(line);
+      if (match) {
+        setupEnvVars[match[1]] = match[2];
+      }
+    }
+    log("info", `Loaded setup env vars: ${Object.keys(setupEnvVars).join(", ")}`);
+  }
+}
+
 function shouldCreateWorkingBranch() {
   return config.command === "EXECUTE";
 }
@@ -2553,6 +2602,13 @@ async function main() {
     // Step 3: Clone the target repository or prepare an empty workspace
     prepareWorkspace(workDir);
 
+    // Step 3-bootstrap: Run repo-level setup script if present.
+    // This installs dependencies (pnpm install), generates env stubs, sets
+    // NODE_OPTIONS, and runs prisma generate — saving the LLM from having to
+    // figure all this out on its own (wasting tokens and risking bad decisions
+    // like making env vars optional in source code).
+    runRepoSetup(workDir);
+
     // Step 3a: Restore prior run state from parent loop (if resuming).
     // This restores .claude/ and ~/.claude/ so run-loop can continue
     // where the parent left off.
@@ -2614,6 +2670,7 @@ async function main() {
 
     // Step 5: Build environment for the child process
     const childEnv = {
+      ...setupEnvVars, // env vars from .closedloop-ai/loops-setup.sh (NODE_OPTIONS, etc.)
       ANTHROPIC_API_KEY: config.anthropicApiKey,
       GITHUB_TOKEN: config.githubToken,
       GH_TOKEN: config.githubToken,

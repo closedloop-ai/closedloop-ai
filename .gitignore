@@ -271,7 +271,8 @@ $RECYCLE.BIN/
 
 # Symphony
 .symphony
-.closedloop-ai
+.closedloop-ai/*
+!.closedloop-ai/loops-setup.sh
 .agent-types
 CLAUDE.md.backup
 
