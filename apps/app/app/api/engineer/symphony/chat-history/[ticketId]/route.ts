@@ -11,6 +11,7 @@ import {
   deleteSharedCodexChatState,
   getCodexChatStatePath,
 } from "@/lib/engineer/codex-state";
+import { VALID_PROVIDERS } from "@/lib/engineer/constants";
 import { expandHome, getWorktreeParentDir } from "@/lib/engineer/repos";
 
 /**
@@ -31,8 +32,6 @@ type ChatHistory = {
   sessionId?: string;
   contextPercent?: number | null;
 };
-
-const VALID_PROVIDERS = new Set(["claude", "codex"]);
 
 /**
  * Get the chat history file path for a ticket.

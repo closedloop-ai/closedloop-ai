@@ -4,6 +4,7 @@ import { basename, join } from "node:path";
 import type { NextRequest } from "next/server";
 import simpleGit from "simple-git";
 import { ENGINEER_CHAT_TOOLS } from "@/lib/engineer/allowed-tools";
+import { VALID_PROVIDERS } from "@/lib/engineer/constants";
 import {
   getLearningAttributionInstruction,
   getLearningCaptureInstruction,
@@ -46,8 +47,6 @@ type ChatHistory = {
 };
 
 const ALLOWED_TOOLS = ENGINEER_CHAT_TOOLS;
-
-const VALID_PROVIDERS = new Set(["claude", "codex"]);
 
 /**
  * Get work directory paths for a ticket.
