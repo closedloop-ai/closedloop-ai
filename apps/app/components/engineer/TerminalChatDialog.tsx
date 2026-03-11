@@ -1493,7 +1493,7 @@ function buildFetchOptions(
 type SendErrorAction =
   | { kind: "abort" }
   | { kind: "error"; message: string }
-  | { kind: "pending"; requestId: string; trimmed: string };
+  | { kind: "pending" };
 
 function classifySendError(
   err: unknown,
@@ -1510,7 +1510,7 @@ function classifySendError(
     if (!hasHistory) {
       return { kind: "error", message: "Failed to connect to local gateway." };
     }
-    return { kind: "pending", requestId: "", trimmed: "" };
+    return { kind: "pending" };
   }
   return {
     kind: "error",
