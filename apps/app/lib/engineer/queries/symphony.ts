@@ -34,6 +34,7 @@ export type SymphonyStatusResponse = {
   taskProgress?: { pending: number; completed: number; total: number };
   pid?: number | null;
   processRunning?: boolean;
+  liveActivity?: string;
 };
 
 export type PlanResponse = {

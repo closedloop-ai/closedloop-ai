@@ -187,11 +187,17 @@ export function SymphonyStatus({
   const canStop = isInProgress && onStop;
   const canResume = status.status === "STOPPED" && onResume && !isResuming;
 
-  // Override display when resuming
+  // Override display when resuming; show live activity during STARTING phase
   const displayStatus = isResuming ? "STARTING" : status.status;
+  const showLiveActivity =
+    !isResuming &&
+    (status.status === "STARTING" || status.stateExists === false) &&
+    !!status.liveActivity;
   const displayPhase = isResuming
     ? "Resuming..."
-    : status.phase || "Initializing...";
+    : showLiveActivity
+      ? status.liveActivity
+      : status.phase || "Initializing...";
 
   return (
     <div

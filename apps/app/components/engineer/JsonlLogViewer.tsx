@@ -23,6 +23,12 @@ import {
   SubagentBlock,
 } from "@/components/engineer/chat";
 import { isTerminalOutput } from "@/lib/engineer/chat-utils";
+import {
+  type ContentBlock,
+  isToolResultEntry as isToolResultEntryShared,
+  type ParsedLogEntry,
+  parseJsonlLine,
+} from "@/lib/engineer/jsonl-parse";
 
 /**
  * Filter options for JSONL log entries
@@ -36,49 +42,16 @@ export type LogFilter =
   | "progress";
 
 /**
- * Parsed content block from a message
- */
-type ContentBlock = {
-  type: "text" | "tool_use" | "tool_result" | "thinking";
-  text?: string;
-  thinking?: string;
-  id?: string;
-  name?: string;
-  input?: unknown;
-  content?: string | unknown[];
-  is_error?: boolean;
-};
-
-/**
  * Message content type - can be a string, array of content blocks, or undefined
  */
 type MessageContent = string | ContentBlock[] | undefined;
 
 /**
- * Parsed JSONL log entry
+ * Viewer-specific log entry extending the shared ParsedLogEntry with UI fields
  */
-type LogEntry = {
+type LogEntry = ParsedLogEntry & {
   uuid: string;
-  type:
-    | "user"
-    | "assistant"
-    | "system"
-    | "progress"
-    | "queue-operation"
-    | "file-history-snapshot";
   timestamp: string;
-  parentToolUseId?: string;
-  message?: {
-    role?: string;
-    content?: string | ContentBlock[];
-  };
-  data?: {
-    type?: string;
-    subtype?: string;
-    hookEvent?: string;
-    hookName?: string;
-    command?: string;
-  };
   rawLine: string;
 };
 
@@ -115,51 +88,20 @@ type JsonlLogViewerProps = {
 };
 
 /**
- * Parse a JSONL line into a LogEntry
+ * Parse a JSONL line into a viewer-specific LogEntry (adds uuid, timestamp, rawLine)
  */
 function parseLogLine(line: string): LogEntry | null {
+  const base = parseJsonlLine(line);
+  if (!base) {
+    return null;
+  }
+
   try {
     const parsed = JSON.parse(line);
-    const entryType = parsed.type;
-
-    // Map system entries to progress so they render as system events
-    if (entryType === "system") {
-      return {
-        uuid: parsed.uuid || crypto.randomUUID(),
-        type: "system",
-        timestamp: parsed.timestamp || "",
-        parentToolUseId: parsed.parent_tool_use_id,
-        message: undefined,
-        data: {
-          type: entryType,
-          subtype: parsed.subtype,
-          hookEvent: parsed.hook_event,
-          hookName: parsed.hook_name,
-        },
-        rawLine: line,
-      };
-    }
-
-    // Skip unknown types (e.g. result, content_block_delta)
-    if (
-      ![
-        "user",
-        "assistant",
-        "progress",
-        "queue-operation",
-        "file-history-snapshot",
-      ].includes(entryType)
-    ) {
-      return null;
-    }
-
     return {
+      ...base,
       uuid: parsed.uuid || crypto.randomUUID(),
-      type: entryType,
       timestamp: parsed.timestamp || "",
-      parentToolUseId: parsed.parent_tool_use_id,
-      message: parsed.message,
-      data: parsed.data,
       rawLine: line,
     };
   } catch {
@@ -171,14 +113,7 @@ function parseLogLine(line: string): LogEntry | null {
  * Check if a user entry is a tool result (vs an actual user prompt)
  */
 function isToolResultEntry(entry: LogEntry): boolean {
-  if (entry.type !== "user") {
-    return false;
-  }
-  const content = entry.message?.content;
-  if (!Array.isArray(content)) {
-    return false;
-  }
-  return content.some((block) => block.type === "tool_result");
+  return isToolResultEntryShared(entry);
 }
 
 /**
