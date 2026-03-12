@@ -1,7 +1,22 @@
 import { execSync, spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, openSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  writeFileSync,
+} from "node:fs";
 import { basename, join } from "node:path";
 import { type NextRequest, NextResponse } from "next/server";
+import {
+  acquireLaunchLock,
+  cleanStaleLock,
+  isProcessRunning,
+  readLaunchMetadata,
+  readProcessPid,
+  releaseLaunchLock,
+  writeLaunchMetadata,
+} from "@/lib/engineer/process-utils";
 import {
   checkRequiredPlugins,
   expandHome,
@@ -9,6 +24,7 @@ import {
   getWorktreeParentDir,
   isRepoAllowed,
 } from "@/lib/engineer/repos";
+import { upsertSession } from "@/lib/engineer/sessions";
 import { addWorktree, fetchOrigin } from "@/lib/engineer/worktree";
 
 /**
@@ -331,6 +347,23 @@ function createGitWorktree(
 }
 
 /**
+ * Compute the lock directory for a given ticket/repo combination.
+ * Located under {worktreeParentDir}/.closedloop-ai/locks/{repoName}-{sanitizedTicket}/
+ */
+function getLockDir(
+  worktreeParentDir: string,
+  repoName: string,
+  sanitizedTicket: string
+): string {
+  return join(
+    worktreeParentDir,
+    ".closedloop-ai",
+    "locks",
+    `${repoName}-${sanitizedTicket}`
+  );
+}
+
+/**
  * API route to launch Symphony run-loop.sh script
  *
  * POST /api/engineer/symphony/launch
@@ -338,10 +371,12 @@ function createGitWorktree(
  *
  * This route:
  * 1. Validates the ticket identifier and repo path
- * 2. Creates a git worktree at ~/Source/{repoName}-{ticketId}
- * 3. Creates a PRD file from ticket details (if provided)
- * 4. Spawns the run-loop.sh process in the worktree directory
- * 5. Returns the process status
+ * 2. Checks if a process is already running (fast path → 200 with alreadyRunning)
+ * 3. Acquires an atomic lock to prevent duplicate launches
+ * 4. Creates a git worktree at ~/Source/{repoName}-{ticketId}
+ * 5. Creates a PRD file from ticket details (if provided)
+ * 6. Writes launch metadata, then spawns the process and writes PID
+ * 7. Returns the process status
  */
 export async function POST(request: NextRequest) {
   try {
@@ -355,11 +390,13 @@ export async function POST(request: NextRequest) {
     const sanitizedTicket = ticketIdentifier.replaceAll(/[^a-zA-Z0-9-_]/g, "_");
     const expandedRepoPath = expandHome(repoPath);
     const repoName = basename(expandedRepoPath);
+    const worktreeParentDir = getWorktreeParentDir();
     const worktreeDir = join(
-      getWorktreeParentDir(),
+      worktreeParentDir,
       `${repoName}-${sanitizedTicket}`
     );
     const branchName = `feature/${sanitizedTicket}`;
+    const lockDir = getLockDir(worktreeParentDir, repoName, sanitizedTicket);
 
     if (!existsSync(expandedRepoPath)) {
       return NextResponse.json(
@@ -368,58 +405,181 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Worktree already exists — update PRD and re-launch
+    // Fast path: if worktree exists and process is alive, return alreadyRunning
     if (existsSync(worktreeDir)) {
+      const pid = await readProcessPid(worktreeDir);
+      if (pid !== null && isProcessRunning(pid)) {
+        // Refresh PRD (harmless to running process)
+        if (ticket) {
+          await createPrdFile(worktreeDir, ticket, expandedRepoPath);
+        }
+
+        const meta = readLaunchMetadata(worktreeDir);
+        const logFile = join(
+          worktreeDir,
+          ".claude",
+          "work",
+          "closedloop-launch.log"
+        );
+
+        return NextResponse.json({
+          success: true,
+          ticketIdentifier,
+          workDir: worktreeDir,
+          pid,
+          logFile,
+          message: "ClosedLoop loop is already running",
+          baseBranch: meta?.baseBranch,
+          parentTicketId: meta?.parentTicketId,
+          alreadyRunning: true,
+        });
+      }
+    }
+
+    // Clean stale locks before acquiring
+    cleanStaleLock(lockDir);
+
+    // Acquire atomic lock to prevent duplicate launches
+    const lock = acquireLaunchLock(lockDir);
+    if (!lock) {
+      return NextResponse.json(
+        { error: "Launch already in progress" },
+        { status: 409 }
+      );
+    }
+
+    try {
+      // Worktree already exists — update PRD and re-launch
+      if (existsSync(worktreeDir)) {
+        if (ticket) {
+          await createPrdFile(worktreeDir, ticket, expandedRepoPath);
+        }
+
+        // Write metadata before PID (ordering guarantee).
+        // Merge preserves existing values when new ones are undefined.
+        writeLaunchMetadata(worktreeDir, {
+          baseBranch,
+          parentTicketId: undefined,
+        });
+
+        // Read back merged metadata so the response includes preserved values
+        const mergedMeta = readLaunchMetadata(worktreeDir);
+
+        const result = spawnSymphony(
+          worktreeDir,
+          sanitizedTicket,
+          getPrdFileIfExists(worktreeDir),
+          mergedMeta?.baseBranch,
+          mergedMeta?.parentTicketId
+        );
+        if (result instanceof NextResponse) {
+          return result;
+        }
+
+        // Write PID after metadata
+        if (result.pid) {
+          writeFileSync(
+            join(worktreeDir, ".claude", "work", "process.pid"),
+            String(result.pid)
+          );
+        }
+
+        // Persist session server-side so it survives client tab close.
+        // Non-fatal: the process is already running at this point.
+        try {
+          upsertSession({
+            ticketId: ticketIdentifier,
+            repoPath,
+            worktreePath: worktreeDir,
+            pid: result.pid,
+            contextRepoPaths: ticket?.contextRepoPaths,
+            baseBranch: mergedMeta?.baseBranch,
+            parentTicketId: mergedMeta?.parentTicketId,
+          });
+        } catch {
+          // Lock contention — client will persist via POST /sessions
+        }
+
+        return result.response;
+      }
+
+      // Worktrees require at least one commit — reject empty repos
+      const isEmptyRepo =
+        spawnSync("git", ["rev-parse", "HEAD"], {
+          cwd: expandedRepoPath,
+          stdio: "pipe",
+        }).status !== 0;
+
+      if (isEmptyRepo) {
+        return NextResponse.json(
+          {
+            error:
+              'This repository has no commits yet. Create an initial commit first (e.g. `git commit --allow-empty -m "Initial commit"`) and then try again.',
+          },
+          { status: 400 }
+        );
+      }
+
+      // Create a new git worktree
+      const worktreeResult = createGitWorktree(
+        expandedRepoPath,
+        worktreeDir,
+        branchName,
+        baseBranch
+      );
+      if (worktreeResult instanceof NextResponse) {
+        return worktreeResult;
+      }
+
       if (ticket) {
         await createPrdFile(worktreeDir, ticket, expandedRepoPath);
       }
-      return launchSymphony(
+
+      // Write metadata before PID (ordering guarantee)
+      writeLaunchMetadata(worktreeDir, {
+        baseBranch: worktreeResult.resolvedBaseBranch,
+        parentTicketId: worktreeResult.parentTicketId ?? undefined,
+      });
+
+      const result = spawnSymphony(
         worktreeDir,
         sanitizedTicket,
         getPrdFileIfExists(worktreeDir),
-        baseBranch
+        worktreeResult.resolvedBaseBranch,
+        worktreeResult.parentTicketId
       );
+      if (result instanceof NextResponse) {
+        return result;
+      }
+
+      // Write PID after metadata
+      if (result.pid) {
+        writeFileSync(
+          join(worktreeDir, ".claude", "work", "process.pid"),
+          String(result.pid)
+        );
+      }
+
+      // Persist session server-side so it survives client tab close.
+      // Non-fatal: the process is already running at this point.
+      try {
+        upsertSession({
+          ticketId: ticketIdentifier,
+          repoPath,
+          worktreePath: worktreeDir,
+          pid: result.pid,
+          contextRepoPaths: ticket?.contextRepoPaths,
+          baseBranch: worktreeResult.resolvedBaseBranch,
+          parentTicketId: worktreeResult.parentTicketId ?? undefined,
+        });
+      } catch {
+        // Lock contention — client will persist via POST /sessions
+      }
+
+      return result.response;
+    } finally {
+      releaseLaunchLock(lockDir, lock.fd);
     }
-
-    // Worktrees require at least one commit — reject empty repos with a helpful message
-    const isEmptyRepo =
-      spawnSync("git", ["rev-parse", "HEAD"], {
-        cwd: expandedRepoPath,
-        stdio: "pipe",
-      }).status !== 0;
-
-    if (isEmptyRepo) {
-      return NextResponse.json(
-        {
-          error:
-            'This repository has no commits yet. Create an initial commit first (e.g. `git commit --allow-empty -m "Initial commit"`) and then try again.',
-        },
-        { status: 400 }
-      );
-    }
-
-    // Create a new git worktree
-    const result = createGitWorktree(
-      expandedRepoPath,
-      worktreeDir,
-      branchName,
-      baseBranch
-    );
-    if (result instanceof NextResponse) {
-      return result;
-    }
-
-    if (ticket) {
-      await createPrdFile(worktreeDir, ticket, expandedRepoPath);
-    }
-
-    return launchSymphony(
-      worktreeDir,
-      sanitizedTicket,
-      getPrdFileIfExists(worktreeDir),
-      result.resolvedBaseBranch,
-      result.parentTicketId
-    );
   } catch (err) {
     return NextResponse.json(
       { error: `Failed to launch ClosedLoop: ${getErrorMessage(err)}` },
@@ -428,16 +588,22 @@ export async function POST(request: NextRequest) {
   }
 }
 
+type SpawnResult = {
+  response: NextResponse;
+  pid: number | undefined;
+};
+
 /**
- * Launch Symphony run-loop.sh in the given directory
+ * Spawn Symphony run-loop.sh in the given directory.
+ * Returns { response, pid } so the caller controls PID publication ordering.
  */
-function launchSymphony(
+function spawnSymphony(
   workDir: string,
   ticketIdentifier: string,
   prdFile?: string,
   baseBranch?: string,
   parentTicketId?: string | null
-) {
+): NextResponse | SpawnResult {
   // Check that all required plugins are installed before launching
   const pluginCheck = checkRequiredPlugins();
   if (!pluginCheck.allInstalled) {
@@ -503,22 +669,23 @@ function launchSymphony(
   // Unref the child process so the parent doesn't wait for it
   child.unref();
 
-  // Write PID to file for process lifecycle tracking
-  if (child.pid) {
-    writeFileSync(join(claudeWorkDir, "process.pid"), String(child.pid));
-  }
+  // Close parent's copy of the log fd — the child inherited it via spawn
+  closeSync(logFd);
 
-  // Return success response
-  return NextResponse.json({
-    success: true,
-    ticketIdentifier,
-    workDir,
+  // Return response and pid — caller writes PID to disk
+  return {
+    response: NextResponse.json({
+      success: true,
+      ticketIdentifier,
+      workDir,
+      pid: child.pid,
+      logFile,
+      message: "ClosedLoop loop launched successfully",
+      baseBranch,
+      parentTicketId: parentTicketId ?? undefined,
+    }),
     pid: child.pid,
-    logFile,
-    message: "ClosedLoop loop launched successfully",
-    baseBranch,
-    parentTicketId: parentTicketId ?? undefined,
-  });
+  };
 }
 
 function buildPluginInstallCommands(pluginKeys: string[]): string {

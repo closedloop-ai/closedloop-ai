@@ -873,28 +873,7 @@ export function TicketList({
 
     const ticket = tickets.find((t) => t.identifier === ticketIdentifier);
 
-    // Update ticket status to "In Progress" if not already
-    if (ticket && ticket.status.type !== "started" && onUpdateTicketStatus) {
-      try {
-        const updated = await onUpdateTicketStatus(
-          ticketIdentifier,
-          "In Progress"
-        );
-        if (updated) {
-          toast.success("Ticket moved to In Progress");
-        }
-      } catch (err) {
-        console.error("Failed to update ticket status:", err);
-      }
-    }
-
-    // Post comment: planning started (fire-and-forget)
-    onPostComment?.(
-      ticketIdentifier,
-      "Planning has started.\n\n-Closedloop.dev"
-    ).catch(() => {});
-
-    // Fetch full ticket details
+    // Fetch full ticket details (needed as launch arg)
     let fullTicket: FullTicketDetails | undefined;
     if (ticket) {
       try {
@@ -919,7 +898,35 @@ export function TicketList({
       }
     }
 
-    await launch(ticketIdentifier, repoPath, fullTicket, baseBranch);
+    const result = await launch(
+      ticketIdentifier,
+      repoPath,
+      fullTicket,
+      baseBranch
+    );
+
+    if (result.launched && !result.alreadyRunning) {
+      // Update ticket status to "In Progress" if not already
+      if (ticket && ticket.status.type !== "started" && onUpdateTicketStatus) {
+        try {
+          const updated = await onUpdateTicketStatus(
+            ticketIdentifier,
+            "In Progress"
+          );
+          if (updated) {
+            toast.success("Ticket moved to In Progress");
+          }
+        } catch (err) {
+          console.error("Failed to update ticket status:", err);
+        }
+      }
+
+      // Post comment: planning started (fire-and-forget)
+      onPostComment?.(
+        ticketIdentifier,
+        "Planning has started.\n\n-Closedloop.dev"
+      ).catch(() => {});
+    }
   };
 
   // Handler for commit & push button
@@ -1549,17 +1556,23 @@ export function TicketList({
                                 repoPath,
                               });
                               try {
-                                await launch(ticket.identifier, repoPath);
-                                onPostComment?.(
+                                const result = await launch(
                                   ticket.identifier,
-                                  "Plan has been accepted and coding has started.\n\n-Closedloop.dev"
-                                ).catch(() => {});
-                                toast.success(
-                                  "Closedloop.dev execution started",
-                                  {
-                                    description: "Check the logs for progress",
-                                  }
+                                  repoPath
                                 );
+                                if (result.launched && !result.alreadyRunning) {
+                                  onPostComment?.(
+                                    ticket.identifier,
+                                    "Plan has been accepted and coding has started.\n\n-Closedloop.dev"
+                                  ).catch(() => {});
+                                  toast.success(
+                                    "Closedloop.dev execution started",
+                                    {
+                                      description:
+                                        "Check the logs for progress",
+                                    }
+                                  );
+                                }
                               } catch (err) {
                                 toast.error("Failed to launch Closedloop.dev", {
                                   description:
@@ -1576,23 +1589,28 @@ export function TicketList({
                           ? async (ticketId) => {
                               setResumingTicketId(ticketId);
                               try {
-                                await launch(ticketId, repoPath);
+                                const result = await launch(ticketId, repoPath);
 
-                                queryClient.setQueryData(
-                                  queryKeys.symphonyStatus(ticketId, repoPath),
-                                  (
-                                    old: SymphonyStatusResponse | undefined
-                                  ) => ({
-                                    ...old,
-                                    exists: true,
-                                    status: "STARTING",
-                                  })
-                                );
+                                if (result.launched && !result.alreadyRunning) {
+                                  queryClient.setQueryData(
+                                    queryKeys.symphonyStatus(
+                                      ticketId,
+                                      repoPath
+                                    ),
+                                    (
+                                      old: SymphonyStatusResponse | undefined
+                                    ) => ({
+                                      ...old,
+                                      exists: true,
+                                      status: "STARTING",
+                                    })
+                                  );
 
-                                toast.success("Execution resumed", {
-                                  description:
-                                    "Closedloop.dev is re-running with updated plan",
-                                });
+                                  toast.success("Execution resumed", {
+                                    description:
+                                      "Closedloop.dev is re-running with updated plan",
+                                  });
+                                }
                               } catch (err) {
                                 toast.error("Failed to resume execution", {
                                   description:

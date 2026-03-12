@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 /**
  * Ticket details to pass to Symphony
@@ -49,7 +49,7 @@ export type UseSymphonyLaunchResult = {
     repoPath: string,
     ticket?: TicketDetails,
     baseBranch?: string
-  ) => Promise<void>;
+  ) => Promise<{ launched: boolean; alreadyRunning: boolean }>;
   clearSession: (ticketId: string) => void;
   clearAllSessions: () => void;
 
@@ -60,6 +60,8 @@ export type UseSymphonyLaunchResult = {
   // Error state
   error: string | null;
 };
+
+const POLL_INTERVAL_MS = 2000;
 
 /**
  * Hook to launch Symphony run-loop.sh script for tickets.
@@ -72,6 +74,9 @@ export function useSymphonyLaunch(): UseSymphonyLaunchResult {
     new Set()
   );
   const [error, setError] = useState<string | null>(null);
+
+  // Synchronous ref-based guard to block same-tick double invocations
+  const launchGuardRef = useRef(new Set<string>());
 
   // Load all sessions from API on mount
   useEffect(() => {
@@ -105,12 +110,18 @@ export function useSymphonyLaunch(): UseSymphonyLaunchResult {
       repoPath: string,
       ticket?: TicketDetails,
       baseBranch?: string
-    ) => {
+    ): Promise<{ launched: boolean; alreadyRunning: boolean }> => {
       console.log("[useSymphonyLaunch] launch called", {
         ticketIdentifier,
         repoPath,
         baseBranch,
       });
+
+      // Synchronous double-click guard (blocks same-tick duplicate calls)
+      if (launchGuardRef.current.has(ticketIdentifier)) {
+        return { launched: false, alreadyRunning: false };
+      }
+      launchGuardRef.current.add(ticketIdentifier);
 
       // Mark as launching
       setLaunchingTickets((prev) => new Set(prev).add(ticketIdentifier));
@@ -120,7 +131,9 @@ export function useSymphonyLaunch(): UseSymphonyLaunchResult {
         console.log(
           "[useSymphonyLaunch] Making POST to /api/engineer/symphony/launch"
         );
-        const response = await fetch("/api/engineer/symphony/launch", {
+
+        const url = "/api/engineer/symphony/launch";
+        const fetchOptions: RequestInit = {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -131,7 +144,22 @@ export function useSymphonyLaunch(): UseSymphonyLaunchResult {
             ticket,
             baseBranch,
           }),
-        });
+        };
+
+        let response = await fetch(url, fetchOptions);
+
+        // Handle 409 (lock contention) — poll until resolved, max ~60s
+        if (response.status === 409) {
+          const MAX_POLL_RETRIES = 30;
+          for (let retries = 0; retries < MAX_POLL_RETRIES; retries++) {
+            await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+            const retry = await fetch(url, fetchOptions);
+            if (retry.ok || retry.status !== 409) {
+              response = retry;
+              break;
+            }
+          }
+        }
 
         const data = await response.json();
         console.log("[useSymphonyLaunch] Response:", { ok: response.ok, data });
@@ -158,26 +186,37 @@ export function useSymphonyLaunch(): UseSymphonyLaunchResult {
           }),
         });
 
-        // Add to local state (or update if already exists)
-        const newSession: ActiveSession = {
-          ticketId: ticketIdentifier,
-          repoPath,
-          worktreePath: resolvedWorktreePath,
-          pid: data.pid,
-          contextRepoPaths,
-          baseBranch: data.baseBranch,
-          parentTicketId: data.parentTicketId,
-        };
+        // Add to local state using functional updater to avoid stale closures.
+        // For alreadyRunning responses, merge with existing session via prev.find()
+        // so undefined server fields fall back to locally-known values.
         setActiveSessions((prev) => {
-          const filtered = prev.filter((s) => s.ticketId !== ticketIdentifier);
-          return [...filtered, newSession];
+          const existing = prev.find((s) => s.ticketId === ticketIdentifier);
+          const newSession: ActiveSession = {
+            ticketId: ticketIdentifier,
+            repoPath,
+            worktreePath: resolvedWorktreePath,
+            pid: data.pid,
+            contextRepoPaths,
+            baseBranch: data.baseBranch ?? existing?.baseBranch,
+            parentTicketId: data.parentTicketId ?? existing?.parentTicketId,
+          };
+          return [
+            ...prev.filter((s) => s.ticketId !== ticketIdentifier),
+            newSession,
+          ];
         });
+
+        return {
+          launched: true,
+          alreadyRunning: data.alreadyRunning === true,
+        };
       } catch (err) {
         const errorMessage =
           err instanceof Error ? err.message : "Unknown error occurred";
         setError(errorMessage);
         throw err;
       } finally {
+        launchGuardRef.current.delete(ticketIdentifier);
         // Remove from launching set
         setLaunchingTickets((prev) => {
           const next = new Set(prev);
