@@ -485,6 +485,20 @@ export class RelayClient {
         }
 
         if (isEventTerminal(event)) {
+          // Terminal event without a result (e.g. bare "done") — the result
+          // event was likely lost during SSE delivery. Fall back to polling
+          // the DB for the full event log before giving up.
+          //
+          // Invariant: recoverMissedResult calls pollCommandEvents which does
+          // a direct DB read (GET .../events), NOT the SSE relay path. The
+          // desktop emits result→done sequentially via ingestCommandEvent(),
+          // so the result row is committed before done becomes observable.
+          // The retry loop is defensive margin for transient read failures,
+          // not a budget matching the gateway's 2s SSE cross-process poll.
+          const recovered = await this.recoverMissedResult(targetId, commandId);
+          if (recovered) {
+            return recovered;
+          }
           return {
             envelope: parseRelayResponseEnvelope(line),
             value: line,
@@ -496,7 +510,60 @@ export class RelayClient {
       abortController.abort();
     }
 
+    // SSE stream ended without any terminal event — poll as last resort
+    const recovered = await this.recoverMissedResult(targetId, commandId);
+    if (recovered) {
+      return recovered;
+    }
     throw new Error("Relay result stream ended without a terminal event");
+  }
+
+  /**
+   * Poll the DB for a missed `result` event when the SSE stream delivered a
+   * terminal event (done) without a preceding result. Returns the result
+   * envelope if found, or null to let the caller fall through to its default.
+   */
+  private async recoverMissedResult(
+    targetId: string,
+    commandId: string
+  ): Promise<{
+    envelope: RelayResponseEnvelope | null;
+    value: unknown;
+  } | null> {
+    // pollCommandEvents does a direct DB read (GET .../events), NOT the SSE
+    // relay path. By the time we see "done", the result row is almost certainly
+    // committed — both events go through ingestCommandEvent() sequentially.
+    // The retry loop covers edge cases like cold connection pools, DB failover,
+    // or Neon autoscale wake-up latency. 4 × 750ms ≈ 2.25s total budget.
+    const maxAttempts = 4;
+    const delayMs = 750;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const events = await this.pollCommandEvents(targetId, commandId);
+        const resultEvent = events.find((e) => e.eventType === "result");
+        if (resultEvent) {
+          const line = mapCommandEventToNdjsonLine(resultEvent);
+          log.info("Recovered missed result event via poll fallback", {
+            commandId,
+            attempt,
+          });
+          return {
+            envelope: parseRelayResponseEnvelope(line),
+            value: line,
+          };
+        }
+      } catch (err) {
+        log.warn("Poll fallback for missed result failed", {
+          commandId,
+          attempt,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      if (attempt < maxAttempts) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+    }
+    return null;
   }
 
   private async pollCommandEvents(

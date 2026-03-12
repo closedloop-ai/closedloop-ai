@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@repo/observability/log", () => ({
   log: {
     error: vi.fn(),
+    warn: vi.fn(),
+    info: vi.fn(),
   },
 }));
 
@@ -610,6 +612,339 @@ describe("RelayClient.streamOperation", () => {
       })
     );
     expect(output).toContain(`${JSON.stringify({ type: "done", _seq: 1 })}\n`);
+  });
+});
+
+describe("RelayClient.executeOperation — recoverMissedResult", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.stubGlobal("fetch", vi.fn());
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+  });
+
+  function makeResultEvent(commandId: string, sequence: number) {
+    return {
+      commandId,
+      sequence,
+      eventType: "result",
+      data: { statusCode: 200, body: { comments: [], prNumber: 1, prUrl: "" } },
+      createdAt: "2026-03-11T00:00:00.000Z",
+    };
+  }
+
+  function makeDoneEvent(commandId: string, sequence: number) {
+    return {
+      commandId,
+      sequence,
+      eventType: "done",
+      data: {},
+      createdAt: "2026-03-11T00:00:01.000Z",
+    };
+  }
+
+  function sseStream(events: unknown[]): Response {
+    const body = events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join("");
+    return new Response(body, {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    });
+  }
+
+  it("recovers result on first poll when done arrives without result via SSE", async () => {
+    const fetchMock = vi.mocked(fetch);
+    const cmdId = "cmd-recover-1";
+
+    // 1. createCommand
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        success: true,
+        data: { commandId: cmdId, status: "queued" },
+      })
+    );
+    // 2. SSE stream — only a bare "done", no result
+    fetchMock.mockResolvedValueOnce(sseStream([makeDoneEvent(cmdId, 1)]));
+    // 3. First poll fallback — result is available
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        success: true,
+        data: [makeResultEvent(cmdId, 1), makeDoneEvent(cmdId, 2)],
+      })
+    );
+
+    const client = new RelayClient("http://api.test", "token-123");
+    const resultPromise = client.executeOperation(
+      "target-1",
+      makeRelayRequest("/api/engineer/git/pr/comments")
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    const result = await resultPromise;
+
+    expect(result.envelope).toEqual({
+      status: 200,
+      body: { comments: [], prNumber: 1, prUrl: "" },
+    });
+    expect(log.info).toHaveBeenCalledWith(
+      "Recovered missed result event via poll fallback",
+      expect.objectContaining({ commandId: cmdId, attempt: 1 })
+    );
+    // createCommand + SSE + 1 poll = 3 fetches
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("recovers on second poll attempt when DB visibility is delayed", async () => {
+    const fetchMock = vi.mocked(fetch);
+    const cmdId = "cmd-recover-2";
+
+    // 1. createCommand
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        success: true,
+        data: { commandId: cmdId, status: "queued" },
+      })
+    );
+    // 2. SSE — bare done
+    fetchMock.mockResolvedValueOnce(sseStream([makeDoneEvent(cmdId, 1)]));
+    // 3. First poll — result not visible yet (only done)
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ success: true, data: [makeDoneEvent(cmdId, 1)] })
+    );
+    // 4. Second poll — result is now visible
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        success: true,
+        data: [makeResultEvent(cmdId, 1), makeDoneEvent(cmdId, 2)],
+      })
+    );
+
+    const client = new RelayClient("http://api.test", "token-123");
+    const resultPromise = client.executeOperation(
+      "target-1",
+      makeRelayRequest("/api/engineer/git/pr/comments")
+    );
+    // Tick through: SSE processing + first poll + 750ms delay + second poll
+    await vi.advanceTimersByTimeAsync(800);
+    const result = await resultPromise;
+
+    expect(result.envelope).toEqual({
+      status: 200,
+      body: { comments: [], prNumber: 1, prUrl: "" },
+    });
+    expect(log.info).toHaveBeenCalledWith(
+      "Recovered missed result event via poll fallback",
+      expect.objectContaining({ commandId: cmdId, attempt: 2 })
+    );
+    // createCommand + SSE + 2 polls = 4 fetches
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
+  it("recovers on fourth poll attempt (max configured retry budget)", async () => {
+    const fetchMock = vi.mocked(fetch);
+    const cmdId = "cmd-recover-4";
+
+    // 1. createCommand
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        success: true,
+        data: { commandId: cmdId, status: "queued" },
+      })
+    );
+    // 2. SSE — bare done
+    fetchMock.mockResolvedValueOnce(sseStream([makeDoneEvent(cmdId, 1)]));
+    // 3-5. First three polls — no result
+    for (let i = 0; i < 3; i++) {
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse({ success: true, data: [makeDoneEvent(cmdId, 1)] })
+      );
+    }
+    // 6. Fourth poll — result appears
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        success: true,
+        data: [makeResultEvent(cmdId, 1), makeDoneEvent(cmdId, 2)],
+      })
+    );
+
+    const client = new RelayClient("http://api.test", "token-123");
+    const resultPromise = client.executeOperation(
+      "target-1",
+      makeRelayRequest("/api/engineer/git/pr/comments")
+    );
+    // 3 × 750ms delays between attempts = 2250ms total budget
+    await vi.advanceTimersByTimeAsync(2300);
+    const result = await resultPromise;
+
+    expect(result.envelope).toEqual({
+      status: 200,
+      body: { comments: [], prNumber: 1, prUrl: "" },
+    });
+    expect(log.info).toHaveBeenCalledWith(
+      "Recovered missed result event via poll fallback",
+      expect.objectContaining({ commandId: cmdId, attempt: 4 })
+    );
+    // createCommand + SSE + 4 polls = 6 fetches
+    expect(fetchMock).toHaveBeenCalledTimes(6);
+  });
+
+  it("falls through when all 4 poll attempts find no result", async () => {
+    const fetchMock = vi.mocked(fetch);
+    const cmdId = "cmd-exhaust";
+
+    // 1. createCommand
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        success: true,
+        data: { commandId: cmdId, status: "queued" },
+      })
+    );
+    // 2. SSE — bare done
+    fetchMock.mockResolvedValueOnce(sseStream([makeDoneEvent(cmdId, 1)]));
+    // 3-6. All four polls return only the done event
+    for (let i = 0; i < 4; i++) {
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse({ success: true, data: [makeDoneEvent(cmdId, 1)] })
+      );
+    }
+
+    const client = new RelayClient("http://api.test", "token-123");
+    const resultPromise = client.executeOperation(
+      "target-1",
+      makeRelayRequest("/api/engineer/git/pr/comments")
+    );
+    await vi.advanceTimersByTimeAsync(2300);
+    const result = await resultPromise;
+
+    // Falls through to the bare done event — no recovery possible
+    expect(result.envelope).toBeNull();
+    expect(log.info).not.toHaveBeenCalledWith(
+      "Recovered missed result event via poll fallback",
+      expect.anything()
+    );
+    // createCommand + SSE + 4 polls = 6 fetches
+    expect(fetchMock).toHaveBeenCalledTimes(6);
+  });
+
+  it("continues retrying when intermediate poll throws a network error", async () => {
+    const fetchMock = vi.mocked(fetch);
+    const cmdId = "cmd-net-err";
+
+    // 1. createCommand
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        success: true,
+        data: { commandId: cmdId, status: "queued" },
+      })
+    );
+    // 2. SSE — bare done
+    fetchMock.mockResolvedValueOnce(sseStream([makeDoneEvent(cmdId, 1)]));
+    // 3. First poll — network error
+    fetchMock.mockRejectedValueOnce(new Error("fetch failed"));
+    // 4. Second poll — succeeds with result
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        success: true,
+        data: [makeResultEvent(cmdId, 1), makeDoneEvent(cmdId, 2)],
+      })
+    );
+
+    const client = new RelayClient("http://api.test", "token-123");
+    const resultPromise = client.executeOperation(
+      "target-1",
+      makeRelayRequest("/api/engineer/git/pr/comments")
+    );
+    await vi.advanceTimersByTimeAsync(800);
+    const result = await resultPromise;
+
+    expect(result.envelope).toEqual({
+      status: 200,
+      body: { comments: [], prNumber: 1, prUrl: "" },
+    });
+    expect(log.warn).toHaveBeenCalledWith(
+      "Poll fallback for missed result failed",
+      expect.objectContaining({ commandId: cmdId, attempt: 1 })
+    );
+    expect(log.info).toHaveBeenCalledWith(
+      "Recovered missed result event via poll fallback",
+      expect.objectContaining({ commandId: cmdId, attempt: 2 })
+    );
+  });
+
+  it("recovers when SSE stream ends without any terminal event", async () => {
+    const fetchMock = vi.mocked(fetch);
+    const cmdId = "cmd-no-terminal";
+
+    // 1. createCommand
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        success: true,
+        data: { commandId: cmdId, status: "queued" },
+      })
+    );
+    // 2. SSE — stream ends immediately (empty body, no events at all)
+    fetchMock.mockResolvedValueOnce(
+      new Response("", {
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+      })
+    );
+    // 3. First poll (from the post-loop fallback) — result available
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        success: true,
+        data: [makeResultEvent(cmdId, 1), makeDoneEvent(cmdId, 2)],
+      })
+    );
+
+    const client = new RelayClient("http://api.test", "token-123");
+    const resultPromise = client.executeOperation(
+      "target-1",
+      makeRelayRequest("/api/engineer/git/pr/comments")
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    const result = await resultPromise;
+
+    expect(result.envelope).toEqual({
+      status: 200,
+      body: { comments: [], prNumber: 1, prUrl: "" },
+    });
+  });
+
+  it("skips recovery and returns result directly when SSE delivers it", async () => {
+    const fetchMock = vi.mocked(fetch);
+    const cmdId = "cmd-normal";
+
+    // 1. createCommand
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        success: true,
+        data: { commandId: cmdId, status: "queued" },
+      })
+    );
+    // 2. SSE — result event arrives normally
+    fetchMock.mockResolvedValueOnce(sseStream([makeResultEvent(cmdId, 1)]));
+
+    const client = new RelayClient("http://api.test", "token-123");
+    const resultPromise = client.executeOperation(
+      "target-1",
+      makeRelayRequest("/api/engineer/git/pr/comments")
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    const result = await resultPromise;
+
+    expect(result.envelope).toEqual({
+      status: 200,
+      body: { comments: [], prNumber: 1, prUrl: "" },
+    });
+    // Only createCommand + SSE — no recovery polls
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(log.info).not.toHaveBeenCalledWith(
+      "Recovered missed result event via poll fallback",
+      expect.anything()
+    );
   });
 });
 

@@ -262,7 +262,11 @@ export function PRCommentsViewer({
     return <CommentsLoadingState />;
   }
 
-  if (error) {
+  // Only show error state when there's no cached data. During CloudRelay
+  // transient failures (e.g. missed relay result events), TanStack Query
+  // preserves the last successful data — prefer showing stale comments over
+  // flashing an error/empty state.
+  if (error && !commentsData) {
     return <CommentsErrorState error={error} onRetry={refetch} />;
   }
 
