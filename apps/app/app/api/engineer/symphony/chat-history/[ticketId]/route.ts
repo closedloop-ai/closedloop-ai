@@ -11,6 +11,7 @@ import {
   deleteSharedCodexChatState,
   getCodexChatStatePath,
 } from "@/lib/engineer/codex-state";
+import { VALID_PROVIDERS } from "@/lib/engineer/constants";
 import { expandHome, getWorktreeParentDir } from "@/lib/engineer/repos";
 
 /**
@@ -33,9 +34,16 @@ type ChatHistory = {
 };
 
 /**
- * Get the chat history file path for a ticket
+ * Get the chat history file path for a ticket.
+ * When `provider` is specified (and valid), returns a provider-scoped file
+ * (`chat-history-claude.json` / `chat-history-codex.json`) so that each
+ * ReviewChatPane gets its own transcript.
  */
-function getChatHistoryPath(ticketId: string, repoPath: string): string {
+function getChatHistoryPath(
+  ticketId: string,
+  repoPath: string,
+  provider?: string | null
+): string {
   const expandedRepoPath = expandHome(repoPath);
 
   const sanitizedTicket = ticketId.replaceAll(/[^a-zA-Z0-9-_]/g, "_");
@@ -43,7 +51,12 @@ function getChatHistoryPath(ticketId: string, repoPath: string): string {
   const worktreeParentDir = getWorktreeParentDir();
   const worktreeDir = join(worktreeParentDir, `${repoName}-${sanitizedTicket}`);
 
-  return join(worktreeDir, ".claude", "work", "chat-history.json");
+  const filename =
+    provider && VALID_PROVIDERS.has(provider)
+      ? `chat-history-${provider}.json`
+      : "chat-history.json";
+
+  return join(worktreeDir, ".claude", "work", filename);
 }
 
 /**
@@ -58,6 +71,7 @@ export async function GET(
   const { ticketId } = await params;
   const searchParams = request.nextUrl.searchParams;
   const repoPath = searchParams.get("repo");
+  const provider = searchParams.get("provider");
 
   if (!repoPath) {
     return NextResponse.json(
@@ -66,7 +80,14 @@ export async function GET(
     );
   }
 
-  const historyPath = getChatHistoryPath(ticketId, repoPath);
+  if (provider && !VALID_PROVIDERS.has(provider)) {
+    return NextResponse.json(
+      { error: "unsupported provider" },
+      { status: 400 }
+    );
+  }
+
+  const historyPath = getChatHistoryPath(ticketId, repoPath, provider);
 
   // Compute once before any early return — Codex review may have completed
   // even before any chat messages exist (no chat-history.json yet).
@@ -111,10 +132,18 @@ export async function POST(
   const { ticketId } = await params;
   const searchParams = request.nextUrl.searchParams;
   const repoPath = searchParams.get("repo");
+  const provider = searchParams.get("provider");
 
   if (!repoPath) {
     return NextResponse.json(
       { error: "repo parameter is required" },
+      { status: 400 }
+    );
+  }
+
+  if (provider && !VALID_PROVIDERS.has(provider)) {
+    return NextResponse.json(
+      { error: "unsupported provider" },
       { status: 400 }
     );
   }
@@ -125,7 +154,7 @@ export async function POST(
     sessionId?: string;
   };
 
-  const historyPath = getChatHistoryPath(ticketId, repoPath);
+  const historyPath = getChatHistoryPath(ticketId, repoPath, provider);
 
   // Ensure directory exists
   const historyDir = join(historyPath, "..");
@@ -198,6 +227,7 @@ export async function DELETE(
   const searchParams = request.nextUrl.searchParams;
   const repoPath = searchParams.get("repo");
   const indexParam = searchParams.get("index");
+  const provider = searchParams.get("provider");
 
   if (!repoPath) {
     return NextResponse.json(
@@ -206,14 +236,32 @@ export async function DELETE(
     );
   }
 
-  const historyPath = getChatHistoryPath(ticketId, repoPath);
+  if (provider && !VALID_PROVIDERS.has(provider)) {
+    return NextResponse.json(
+      { error: "unsupported provider" },
+      { status: 400 }
+    );
+  }
+
+  const historyPath = getChatHistoryPath(ticketId, repoPath, provider);
   const workDir = join(historyPath, "..");
 
   if (!existsSync(historyPath)) {
-    if (indexParam === null) {
+    if (indexParam === null && !provider) {
       // Even if no transcript exists yet, a review may have already seeded
       // shared-surface Codex session files. Clear them on full reset.
       deleteSharedCodexChatState(workDir);
+    }
+    if (indexParam === null && provider === "codex") {
+      // Also clean up the review-scoped Codex session file
+      const codexReviewPath = getCodexChatStatePath(workDir, "review");
+      if (existsSync(codexReviewPath)) {
+        try {
+          unlinkSync(codexReviewPath);
+        } catch {
+          /* best-effort */
+        }
+      }
     }
     return NextResponse.json({
       success: true,
@@ -226,10 +274,21 @@ export async function DELETE(
       // Clear entire chat - delete the file
       unlinkSync(historyPath);
 
-      // Clear shared-surface Codex chat session files (legacy + general + review)
-      // so the next @codex message starts a fresh session with full context.
-      // Comment-specific files are NOT deleted — they're scoped to comment-chat.
-      deleteSharedCodexChatState(workDir);
+      if (provider === "codex") {
+        // Only clean up the review-scoped Codex session file
+        const codexReviewPath = getCodexChatStatePath(workDir, "review");
+        if (existsSync(codexReviewPath)) {
+          try {
+            unlinkSync(codexReviewPath);
+          } catch {
+            /* best-effort */
+          }
+        }
+      } else if (!provider) {
+        // No provider specified (SymphonyChat full clear) — blanket cleanup
+        deleteSharedCodexChatState(workDir);
+      }
+      // provider=claude: do NOT touch any codex state files
 
       return NextResponse.json({
         success: true,

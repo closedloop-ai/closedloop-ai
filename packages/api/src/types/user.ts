@@ -66,3 +66,37 @@ export type UpdateUserProfileFromClerkInput = {
   avatarUrl?: string | null;
   phoneNumber?: string | null;
 };
+
+import type { ArtifactType } from "./artifact";
+
+/** Contribution count for a single day in the heatmap. */
+export type ContributionDay = {
+  date: string;
+  count: number;
+};
+
+/** Artifact counts grouped by type. */
+export type ArtifactsByType = {
+  type: ArtifactType;
+  count: number;
+};
+
+/** User profile statistics returned by GET /users/:id/stats. */
+export type UserProfileStats = {
+  /** Total artifacts created by this user. */
+  totalArtifacts: number;
+  /** Breakdown of artifacts by type. */
+  artifactsByType: ArtifactsByType[];
+  /** Total comments authored. */
+  totalComments: number;
+  /** Total PRs landed (merged). */
+  totalPRsLanded: number;
+  /** Total loops initiated. */
+  totalLoops: number;
+  /** Total workstreams created or assigned. */
+  totalWorkstreams: number;
+  /** Average concurrent active workstreams (assigned + open). */
+  avgConcurrency: number;
+  /** Daily contribution counts for the last 52 weeks (heatmap). */
+  contributionHeatmap: ContributionDay[];
+};

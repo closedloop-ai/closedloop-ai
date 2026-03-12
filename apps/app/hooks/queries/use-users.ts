@@ -1,6 +1,10 @@
 "use client";
 
-import type { UpdateUserInput, User } from "@repo/api/src/types/user";
+import type {
+  UpdateUserInput,
+  User,
+  UserProfileStats,
+} from "@repo/api/src/types/user";
 import {
   type UseQueryOptions,
   useMutation,
@@ -15,6 +19,8 @@ export const userKeys = {
   lists: () => [...userKeys.all, "list"] as const,
   organizationUsers: () => [...userKeys.lists(), "organization"] as const,
   currentUser: () => [...userKeys.all, "current"] as const,
+  detail: (userId: string) => [...userKeys.all, "detail", userId] as const,
+  stats: (userId: string) => [...userKeys.all, "stats", userId] as const,
 };
 
 // Queries
@@ -43,6 +49,35 @@ export function useOrganizationUsers(
   });
 }
 
+export function useUser(
+  userId: string,
+  options?: Omit<UseQueryOptions<User>, "queryKey" | "queryFn">
+) {
+  const apiClient = useApiClient();
+
+  return useQuery({
+    queryKey: userKeys.detail(userId),
+    queryFn: () => apiClient.get<User>(`/users/${userId}`),
+    enabled: !!userId,
+    ...options,
+  });
+}
+
+export function useUserStats(
+  userId: string,
+  options?: Omit<UseQueryOptions<UserProfileStats>, "queryKey" | "queryFn">
+) {
+  const apiClient = useApiClient();
+
+  return useQuery({
+    queryKey: userKeys.stats(userId),
+    queryFn: () => apiClient.get<UserProfileStats>(`/users/${userId}/stats`),
+    staleTime: 5 * 60 * 1000,
+    enabled: !!userId,
+    ...options,
+  });
+}
+
 // Mutations
 export function useUpdateUser() {
   const queryClient = useQueryClient();
@@ -53,9 +88,10 @@ export function useUpdateUser() {
       const { id, ...body } = input;
       return apiClient.put<User>(`/users/${id}`, body);
     },
-    onSuccess: () => {
+    onSuccess: (_data, input) => {
       queryClient.invalidateQueries({ queryKey: userKeys.organizationUsers() });
       queryClient.invalidateQueries({ queryKey: userKeys.currentUser() });
+      queryClient.invalidateQueries({ queryKey: userKeys.detail(input.id) });
     },
   });
 }

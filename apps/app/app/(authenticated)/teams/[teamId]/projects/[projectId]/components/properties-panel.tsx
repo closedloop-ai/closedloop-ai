@@ -35,7 +35,10 @@ import {
 import { useMemo, useState } from "react";
 import { useTeamMembers } from "@/hooks/use-team-members";
 import { ensureDate } from "@/lib/date-utils";
-import { PRIORITY_LABELS, PROJECT_STATUS_LABELS } from "@/lib/project-constants";
+import {
+  PRIORITY_LABELS,
+  PROJECT_STATUS_LABELS,
+} from "@/lib/project-constants";
 import { getUserDisplayName } from "@/lib/user-utils";
 import { CodebaseSummaryUpload } from "./codebase-summary-upload";
 import { DefaultRepositoryPicker } from "./default-repository-picker";

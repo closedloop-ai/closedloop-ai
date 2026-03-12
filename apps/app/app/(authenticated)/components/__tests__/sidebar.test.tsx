@@ -94,6 +94,10 @@ vi.mock("../inbox-badge", () => ({
   InboxBadge: () => null,
 }));
 
+vi.mock("../engineer-badge", () => ({
+  EngineerBadge: () => null,
+}));
+
 // Mock organization object matching Clerk's OrganizationResource shape
 const createMockOrganization = (overrides?: Record<string, unknown>) => ({
   id: "org-123",

@@ -17,6 +17,7 @@ import {
   TooltipTrigger,
 } from "@repo/design-system/components/ui/tooltip";
 import { cn } from "@repo/design-system/lib/utils";
+import { UserLink } from "@/components/user-link";
 import { formatDate } from "@/lib/date-utils";
 import { getUserDisplayName, getUserInitials } from "@/lib/user-utils";
 
@@ -178,14 +179,16 @@ function PeopleCell({ value }: Readonly<{ value: CustomFieldValueDetail }>) {
           return (
             <Tooltip key={user.id}>
               <TooltipTrigger asChild>
-                <Avatar className="size-6 border-2 border-background">
-                  {user.avatarUrl ? (
-                    <AvatarImage alt={name} src={user.avatarUrl} />
-                  ) : null}
-                  <AvatarFallback className="text-[10px]">
-                    {initials}
-                  </AvatarFallback>
-                </Avatar>
+                <UserLink className="rounded-full" userId={user.id}>
+                  <Avatar className="size-6 border-2 border-background">
+                    {user.avatarUrl ? (
+                      <AvatarImage alt={name} src={user.avatarUrl} />
+                    ) : null}
+                    <AvatarFallback className="text-[10px]">
+                      {initials}
+                    </AvatarFallback>
+                  </Avatar>
+                </UserLink>
               </TooltipTrigger>
               <TooltipContent>{name}</TooltipContent>
             </Tooltip>

@@ -3,6 +3,7 @@
 import { ClientSideSuspense } from "@liveblocks/react/suspense";
 import { useUnreadInboxNotificationsCount } from "@repo/collaboration/hooks";
 import { useLiveblocksAvailability } from "@repo/collaboration/liveblocks-error-boundary";
+import { SidebarCountBadge } from "./sidebar-count-badge";
 
 function InboxBadgeContent() {
   const { count } = useUnreadInboxNotificationsCount();
@@ -11,11 +12,7 @@ function InboxBadgeContent() {
     return null;
   }
 
-  return (
-    <span className="ml-auto flex h-5 w-5 items-center justify-center rounded-full bg-primary font-medium text-[10px] text-primary-foreground">
-      {count}
-    </span>
-  );
+  return <SidebarCountBadge count={count} />;
 }
 
 /**

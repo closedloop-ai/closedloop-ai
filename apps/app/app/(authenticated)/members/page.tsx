@@ -16,6 +16,7 @@ import {
 } from "@repo/design-system/components/ui/select";
 import { Separator } from "@repo/design-system/components/ui/separator";
 import { toast } from "sonner";
+import { UserLink } from "@/components/user-link";
 import { useOrganizationUsers, useUpdateUser } from "@/hooks/queries/use-users";
 
 const ROLE_LABELS: Record<string, string> = {
@@ -94,9 +95,12 @@ export default function MembersPage() {
                       </AvatarFallback>
                     </Avatar>
                     <div className="min-w-0">
-                      <p className="truncate font-medium text-sm">
+                      <UserLink
+                        className="truncate font-medium text-sm hover:underline"
+                        userId={user.id}
+                      >
                         {name || user.email}
-                      </p>
+                      </UserLink>
                       {name && (
                         <p className="truncate text-muted-foreground text-xs">
                           {user.email}

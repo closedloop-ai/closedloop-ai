@@ -9,7 +9,10 @@ import { withDb } from "@repo/database";
 import { basicUserSelect } from "@/lib/db-utils";
 
 const SEARCH_LIMIT = 25;
-const SEARCH_ORDER = { orderBy: { updatedAt: "desc" }, take: SEARCH_LIMIT } as const;
+const SEARCH_ORDER = {
+  orderBy: { updatedAt: "desc" },
+  take: SEARCH_LIMIT,
+} as const;
 
 function ilike(query: string) {
   return { contains: query, mode: "insensitive" } as const;

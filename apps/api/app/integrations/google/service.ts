@@ -55,7 +55,7 @@ export type ImportDocsResult =
  * This helper lives in the service layer (not packages/google) because it
  * requires database access for token updates.
  */
-async function ensureValidAccessToken(
+export async function ensureValidAccessToken(
   integration: GoogleIntegration,
   organizationId: string,
   logPrefix = "[google]"
@@ -141,6 +141,18 @@ function sanitizeErrorForClient(error: unknown): string {
  * Google integration service - handles all business logic and database operations
  */
 export const googleService = {
+  /**
+   * Fetch the Google integration record for an organization.
+   * Returns null if no integration exists.
+   */
+  getIntegration(organizationId: string) {
+    return withDb((db) =>
+      db.googleIntegration.findUnique({
+        where: { organizationId },
+      })
+    );
+  },
+
   /**
    * Complete the OAuth callback by exchanging code for tokens and storing the integration.
    * Called by the connect route after the app receives the OAuth callback.

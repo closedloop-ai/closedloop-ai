@@ -1,6 +1,9 @@
 "use client";
 
-import { type ArtifactType, getRoutePrefixForType } from "@repo/api/src/types/artifact";
+import {
+  type ArtifactType,
+  getRoutePrefixForType,
+} from "@repo/api/src/types/artifact";
 import type {
   ArtifactSearchResult,
   IssueSearchResult,
@@ -56,8 +59,8 @@ export function SearchResults() {
     <>
       <div className="mb-2">
         <p className="text-muted-foreground">
-          {totalResults} result{totalResults !== 1 ? "s" : ""} for
-          &quot;{query}&quot;
+          {totalResults} result{totalResults !== 1 ? "s" : ""} for &quot;{query}
+          &quot;
         </p>
       </div>
 
@@ -71,9 +74,7 @@ export function SearchResults() {
         <ArtifactsSection artifacts={data.artifacts} />
       )}
 
-      {data && data.issues.length > 0 && (
-        <IssuesSection issues={data.issues} />
-      )}
+      {data && data.issues.length > 0 && <IssuesSection issues={data.issues} />}
 
       {data && data.workstreams.length > 0 && (
         <WorkstreamsSection workstreams={data.workstreams} />
@@ -93,7 +94,7 @@ function SectionHeader({
   return (
     <h2 className="mt-6 mb-2 font-semibold text-lg">
       {title}{" "}
-      <span className="text-muted-foreground font-normal text-sm">
+      <span className="font-normal text-muted-foreground text-sm">
         ({count})
       </span>
     </h2>
@@ -168,9 +169,7 @@ function ArtifactsSection({
   );
 }
 
-function IssuesSection({
-  issues,
-}: Readonly<{ issues: IssueSearchResult[] }>) {
+function IssuesSection({ issues }: Readonly<{ issues: IssueSearchResult[] }>) {
   return (
     <section>
       <SectionHeader count={issues.length} title="Features" />
@@ -235,9 +234,7 @@ function WorkstreamsSection({
           {workstreams.map((ws) => (
             <TableRow key={ws.id}>
               <TableCell>
-                <TitleCell href={`/workstreams/${ws.id}`}>
-                  {ws.title}
-                </TitleCell>
+                <TitleCell href={`/workstreams/${ws.id}`}>{ws.title}</TitleCell>
               </TableCell>
               <TableCell>
                 <WorkstreamStateBadge state={ws.state} />

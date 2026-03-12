@@ -9,8 +9,11 @@ export const queryKeys = {
     ["symphony-status", ticketId, repoPath] as const,
   symphonyPlan: (ticketId: string, repoPath: string) =>
     ["symphony-plan", ticketId, repoPath] as const,
-  symphonyChatHistory: (ticketId: string, repoPath: string) =>
-    ["symphony-chat-history", ticketId, repoPath] as const,
+  symphonyChatHistory: (
+    ticketId: string,
+    repoPath: string,
+    provider?: string
+  ) => ["symphony-chat-history", ticketId, repoPath, provider ?? null] as const,
   symphonyLogs: (ticketId: string, repoPath: string) =>
     ["symphony-logs", ticketId, repoPath] as const,
   symphonyJudges: (ticketId: string, repoPath: string) =>

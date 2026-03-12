@@ -437,6 +437,134 @@ describe("readChatStream", () => {
   });
 });
 
+describe("readChatStream — reconnection support", () => {
+  it("resumes from initialContent without data loss", async () => {
+    const reader = createReader([
+      '{"type":"text","content":" continued"}\n',
+      '{"type":"done"}\n',
+    ]);
+    const onText = vi.fn();
+
+    const result = await readChatStream(
+      reader,
+      { onText, onError: vi.fn(), onComplete: vi.fn() },
+      { initialContent: "prior text" }
+    );
+
+    expect(result.accumulated).toBe("prior text continued");
+    expect(onText).toHaveBeenCalledWith("prior text continued");
+    expect(result.completed).toBe(true);
+  });
+
+  it("starts fresh when no initialContent provided (regression)", async () => {
+    const reader = createReader([
+      '{"type":"text","content":"fresh"}\n',
+      '{"type":"done"}\n',
+    ]);
+    const result = await readChatStream(reader, {
+      onText: vi.fn(),
+      onError: vi.fn(),
+      onComplete: vi.fn(),
+    });
+    expect(result.accumulated).toBe("fresh");
+  });
+
+  it("suppresses relay:true error events (not forwarded to onError)", async () => {
+    const reader = createReader([
+      '{"type":"text","content":"partial"}\n',
+      '{"type":"error","relay":true,"error":"Stream timed out after 270s"}\n',
+    ]);
+    const onError = vi.fn();
+
+    const result = await readChatStream(reader, {
+      onText: vi.fn(),
+      onError,
+      onComplete: vi.fn(),
+    });
+
+    expect(onError).not.toHaveBeenCalled();
+    expect(result.lastRelayError).toBe("Stream timed out after 270s");
+    expect(result.completed).toBe(false);
+  });
+
+  it("captures lastRelayError with fallback message when error field missing", async () => {
+    const reader = createReader(['{"type":"error","relay":true}\n']);
+
+    const result = await readChatStream(reader, {
+      onText: vi.fn(),
+      onError: vi.fn(),
+      onComplete: vi.fn(),
+    });
+
+    expect(result.lastRelayError).toBe("Relay connection lost");
+  });
+
+  it("sets terminalError on terminal:true error and forwards to onError", async () => {
+    const reader = createReader([
+      '{"type":"error","terminal":true,"error":"Process OOM killed"}\n',
+    ]);
+    const onError = vi.fn();
+
+    const result = await readChatStream(reader, {
+      onText: vi.fn(),
+      onError,
+      onComplete: vi.fn(),
+    });
+
+    expect(result.terminalError).toBe(true);
+    expect(onError).toHaveBeenCalledWith("Process OOM killed");
+    expect(result.completed).toBe(false);
+  });
+
+  it("tracks commandId from relay_meta events", async () => {
+    const reader = createReader([
+      '{"type":"relay_meta","commandId":"cmd-xyz"}\n',
+      '{"type":"done"}\n',
+    ]);
+
+    const result = await readChatStream(reader, {
+      onText: vi.fn(),
+      onError: vi.fn(),
+      onComplete: vi.fn(),
+    });
+
+    expect(result.commandId).toBe("cmd-xyz");
+  });
+
+  it("tracks lastSeq from _seq fields", async () => {
+    const reader = createReader([
+      '{"type":"text","content":"a","_seq":1}\n',
+      '{"type":"text","content":"b","_seq":7}\n',
+      '{"type":"done","_seq":8}\n',
+    ]);
+
+    const result = await readChatStream(reader, {
+      onText: vi.fn(),
+      onError: vi.fn(),
+      onComplete: vi.fn(),
+    });
+
+    expect(result.lastSeq).toBe(8);
+  });
+
+  it("dispatches regular errors normally (no terminal/relay flag)", async () => {
+    const reader = createReader([
+      '{"type":"error","error":"context limit exceeded"}\n',
+    ]);
+    const onError = vi.fn();
+
+    const result = await readChatStream(reader, {
+      onText: vi.fn(),
+      onError,
+      onComplete: vi.fn(),
+    });
+
+    expect(onError).toHaveBeenCalledWith("context limit exceeded");
+    expect(result.terminalError).toBe(false);
+    expect(result.lastRelayError).toBeUndefined();
+  });
+});
+
 describe("conferral integration", () => {
   it("parseConferralMention returns cleanContent suitable for context forwarding", () => {
     const accumulated =

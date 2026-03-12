@@ -183,6 +183,76 @@ describe("engineer-fetch-interceptor", () => {
     uninstall();
   });
 
+  it("preserves provider query param through local electron rewrite", async () => {
+    const originalFetch = vi.fn().mockResolvedValue(new Response("ok"));
+    Object.defineProperty(globalThis, "fetch", {
+      configurable: true,
+      writable: true,
+      value: originalFetch,
+    });
+    mockGetEngineerRoutingSelection.mockReturnValue({
+      mode: EngineerRoutingMode.LocalElectron,
+      computeTargetId: null,
+      source: "auto",
+      updatedAt: Date.now(),
+    });
+    mockGetElectronDetectionSnapshot.mockReturnValue({
+      detected: true,
+      loading: false,
+      port: 19_432,
+      version: "1.0.0",
+      machineName: "machine-1",
+      capabilities: {},
+      checkedAt: Date.now(),
+    });
+
+    const uninstall = installEngineerFetchInterceptor();
+    await fetch(
+      "/api/engineer/symphony/chat-history/pr-42?repo=%2Ftmp%2Frepo&provider=claude"
+    );
+
+    const outboundRequest = originalFetch.mock.calls[0][0] as Request;
+    const outboundUrl = new URL(outboundRequest.url);
+    expect(outboundUrl.pathname).toBe(
+      "/api/engineer/symphony/chat-history/pr-42"
+    );
+    expect(outboundUrl.searchParams.get("provider")).toBe("claude");
+    expect(outboundUrl.searchParams.get("repo")).toBe("/tmp/repo");
+
+    uninstall();
+  });
+
+  it("preserves provider query param through cloud relay rewrite", async () => {
+    const originalFetch = vi.fn().mockResolvedValue(new Response("ok"));
+    Object.defineProperty(globalThis, "fetch", {
+      configurable: true,
+      writable: true,
+      value: originalFetch,
+    });
+    mockGetEngineerRoutingSelection.mockReturnValue({
+      mode: EngineerRoutingMode.CloudRelay,
+      computeTargetId: "target-1",
+      source: "manual",
+      updatedAt: Date.now(),
+    });
+
+    const uninstall = installEngineerFetchInterceptor();
+    await fetch(
+      "/api/engineer/symphony/chat-history/pr-42?repo=%2Ftmp%2Frepo&provider=codex",
+      { method: "DELETE" }
+    );
+
+    const outboundRequest = originalFetch.mock.calls[0][0] as Request;
+    const outboundUrl = new URL(outboundRequest.url);
+    expect(outboundUrl.pathname).toBe(
+      "/api/engineer-relay/symphony/chat-history/pr-42"
+    );
+    expect(outboundUrl.searchParams.get("provider")).toBe("codex");
+    expect(outboundUrl.searchParams.get("repo")).toBe("/tmp/repo");
+
+    uninstall();
+  });
+
   it("preserves POST body when rewriting to local electron", async () => {
     const originalFetch = vi.fn().mockResolvedValue(new Response("ok"));
     Object.defineProperty(globalThis, "fetch", {

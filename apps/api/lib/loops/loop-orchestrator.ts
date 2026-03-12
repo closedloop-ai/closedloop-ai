@@ -621,8 +621,10 @@ async function handleLoopCompleted(
     ? await downloadMetadata(loop.s3StateKey)
     : null;
 
-  const tokensInput = metadata?.tokensInput ?? event.tokensUsed?.input ?? 0;
-  const tokensOutput = metadata?.tokensOutput ?? event.tokensUsed?.output ?? 0;
+  // Prefer the event's token data (validated at ingestion) over S3 metadata.
+  // S3 metadata may have stale zeros if uploaded before final counts.
+  const tokensInput = event.tokensUsed?.input || metadata?.tokensInput || 0;
+  const tokensOutput = event.tokensUsed?.output || metadata?.tokensOutput || 0;
   const tokensByModel: TokensByModel | null =
     event.tokensByModel ?? metadata?.tokensByModel ?? null;
 

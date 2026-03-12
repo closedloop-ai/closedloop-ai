@@ -1,13 +1,12 @@
 "use client";
 
-import type { LoopWithUser } from "@repo/api/src/types/loop";
+import type { LoopListFilters, LoopWithUser } from "@repo/api/src/types/loop";
 import { LoopCommand, LoopStatus } from "@repo/api/src/types/loop";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   type Column,
   DataTable,
   type FilterOption,
-  type SortOption,
 } from "@repo/design-system/components/ui/data-table";
 import {
   Select,
@@ -21,7 +20,12 @@ import { Loader2Icon, RotateCcwIcon, SquareIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { LoopCommandBadge, LoopStatusBadge } from "@/components/status-badge";
-import { useCancelLoop, useLoops, useResumeLoop } from "@/hooks/queries/use-loops";
+import { UserLink } from "@/components/user-link";
+import {
+  useCancelLoop,
+  useLoops,
+  useResumeLoop,
+} from "@/hooks/queries/use-loops";
 import { formatRelativeTime } from "@/lib/date-utils";
 import { formatDuration, formatTokenCount } from "@/lib/format-utils";
 import {
@@ -38,15 +42,19 @@ function formatTokens(input: number, output: number): string {
   return formatTokenCount(total);
 }
 
+const PAGE_SIZE_OPTIONS = [10, 25, 50, 100, 200];
+
 const columns: Column<LoopWithUser>[] = [
   {
     key: "status",
     header: "Status",
+    sortable: true,
     render: (loop) => <LoopStatusBadge status={loop.status} />,
   },
   {
     key: "command",
     header: "Command",
+    sortable: true,
     render: (loop) => <LoopCommandBadge command={loop.command} />,
   },
   {
@@ -62,14 +70,18 @@ const columns: Column<LoopWithUser>[] = [
     key: "user",
     header: "User",
     render: (loop) => (
-      <span className="text-muted-foreground text-sm">
+      <UserLink
+        className="text-muted-foreground text-sm hover:underline"
+        userId={loop.user.id}
+      >
         {getUserDisplayName(loop.user)}
-      </span>
+      </UserLink>
     ),
   },
   {
     key: "createdAt",
     header: "Created",
+    sortable: true,
     render: (loop) => (
       <span className="text-muted-foreground text-sm">
         {formatRelativeTime(loop.createdAt)}
@@ -88,6 +100,7 @@ const columns: Column<LoopWithUser>[] = [
   {
     key: "tokens",
     header: "Tokens",
+    sortable: true,
     render: (loop) => (
       <span className="font-mono text-muted-foreground text-sm">
         {formatTokens(loop.tokensInput, loop.tokensOutput)}
@@ -106,11 +119,6 @@ const statusFilterOptions: FilterOption[] = [
   { label: "Timed Out", value: LoopStatus.TimedOut },
 ];
 
-const sortOptions: SortOption[] = [
-  { label: "Newest First", value: "createdAt:desc" },
-  { label: "Oldest First", value: "createdAt:asc" },
-];
-
 export function LoopsTable() {
   const router = useRouter();
   const [commandFilter, setCommandFilter] = useState<string>("all");
@@ -119,9 +127,9 @@ export function LoopsTable() {
   const [pendingLoopId, setPendingLoopId] = useState<string | null>(null);
   const [cancellingLoopId, setCancellingLoopId] = useState<string | null>(null);
 
-  const filters: Record<string, string | undefined> = {};
+  const filters: LoopListFilters = { limit: 200 };
   if (commandFilter !== "all") {
-    filters.command = commandFilter;
+    filters.command = commandFilter as LoopListFilters["command"];
   }
 
   const { data: loops = [], isLoading, error } = useLoops(filters);
@@ -198,10 +206,11 @@ export function LoopsTable() {
         filterKey="status"
         filterOptions={statusFilterOptions}
         onRowClick={handleRowClick}
+        pageSizeOptions={PAGE_SIZE_OPTIONS}
         renderRowActions={(loop) => {
           const canCancel = CANCELLABLE_LOOP_STATUSES.has(loop.status);
           const canRestart = RESTARTABLE_LOOP_STATUSES.has(loop.status);
-          if (!canCancel && !canRestart) {
+          if (!(canCancel || canRestart)) {
             return null;
           }
           return (
@@ -243,7 +252,6 @@ export function LoopsTable() {
             </div>
           );
         }}
-        sortOptions={sortOptions}
       />
     </div>
   );

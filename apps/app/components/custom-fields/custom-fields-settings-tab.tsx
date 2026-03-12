@@ -25,6 +25,7 @@ import { formatDistanceToNow } from "date-fns";
 import { MoreHorizontalIcon, PlusIcon } from "lucide-react";
 import { useState } from "react";
 import { ConfirmationDialog } from "@/components/confirmation-dialog";
+import { UserLink } from "@/components/user-link";
 import {
   useCustomFields,
   useDeleteCustomField,
@@ -56,7 +57,9 @@ function CreatedByCell({
         ) : null}
         <AvatarFallback className="text-[10px]">{initials}</AvatarFallback>
       </Avatar>
-      <span className="text-sm">{name}</span>
+      <UserLink className="text-sm hover:underline" userId={user.id}>
+        {name}
+      </UserLink>
     </div>
   );
 }
