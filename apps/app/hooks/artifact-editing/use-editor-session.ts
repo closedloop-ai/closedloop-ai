@@ -3,17 +3,17 @@
 import type { ArtifactDetail } from "@repo/api/src/types/artifact";
 import { generateArtifactRoomId } from "@repo/collaboration/room-utils";
 import type { Editor, JSONContent } from "@tiptap/react";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { mergeCommentMarks } from "@/components/artifact-editor/merge-comment-marks";
 
 type UseEditorSessionConfig = {
   artifact: ArtifactDetail;
   currentVersion: number;
-  latestVersion: number;
-  content: {
+  contentCallbacks: {
     saveContent: () => void;
     discardChanges: () => void;
   };
+  onVersionChange: (version: number) => void;
 };
 
 /**
@@ -40,7 +40,8 @@ type UseEditorSessionConfig = {
  * ```
  */
 export function useEditorSession(config: UseEditorSessionConfig) {
-  const { artifact, currentVersion, latestVersion, content } = config;
+  const { artifact, currentVersion, contentCallbacks, onVersionChange } =
+    config;
 
   const [isEditing, setIsEditing] = useState(false);
   const [openThreadCount, setOpenThreadCount] = useState(0);
@@ -60,7 +61,7 @@ export function useEditorSession(config: UseEditorSessionConfig) {
     editorRef.current = editor;
   }, []);
 
-  const isViewingHistorical = currentVersion !== latestVersion;
+  const isViewingHistorical = currentVersion !== artifact.latestVersion;
 
   // Always connect Liveblocks for the latest version so the editor is pre-loaded
   // and ready when the user clicks to edit. Only skip for historical versions
@@ -89,10 +90,41 @@ export function useEditorSession(config: UseEditorSessionConfig) {
     setIsEditing(true);
   }, [artifact.version.content]);
 
+  const handleGenerationComplete = useCallback((newContent: string) => {
+    setContentResetValue(newContent);
+    setContentResetKey((key) => (key ?? 0) + 1);
+    setIsEditing(false);
+  }, []);
+
+  // Reset editor content when server-side generation produces a new version.
+  // The Liveblocks room is reset server-side, but active clients need a
+  // contentResetKey bump to overwrite the stale local Y.Doc.
+  const prevLatestVersionRef = useRef(artifact.latestVersion);
+  useEffect(() => {
+    if (artifact.latestVersion > prevLatestVersionRef.current) {
+      const wasViewingLatest = prevLatestVersionRef.current <= currentVersion;
+      prevLatestVersionRef.current = artifact.latestVersion;
+
+      // Navigate to the new version and reset editor content,
+      // but only if the user was viewing the (now-old) latest version.
+      // If they're browsing a historical version, leave them there.
+      if (wasViewingLatest) {
+        onVersionChange(artifact.latestVersion);
+        handleGenerationComplete(artifact.version.content ?? "");
+      }
+    }
+  }, [
+    currentVersion,
+    artifact.latestVersion,
+    artifact.version.content,
+    onVersionChange,
+    handleGenerationComplete,
+  ]);
+
   const handlePublish = useCallback(() => {
-    content.saveContent();
+    contentCallbacks.saveContent();
     exitEditMode();
-  }, [content, exitEditMode]);
+  }, [contentCallbacks, exitEditMode]);
 
   const handleDiscard = useCallback(() => {
     const snapshot = editorSnapshotRef.current;
@@ -119,16 +151,15 @@ export function useEditorSession(config: UseEditorSessionConfig) {
       setContentResetValue(artifact.version.content ?? "");
       setContentResetKey((key) => (key ?? 0) + 1);
     }
-    content.discardChanges();
+    contentCallbacks.discardChanges();
     editorSnapshotRef.current = null;
     setIsEditing(false);
-  }, [artifact.version.content, content]);
+  }, [artifact.version.content, contentCallbacks]);
 
   return {
     // Editing state
     isEditing,
     isViewingHistorical,
-    latestVersion,
     liveblocksRoomId,
     openThreadCount,
 

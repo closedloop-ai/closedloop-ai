@@ -1,6 +1,10 @@
 "use client";
 
-import type { Artifact } from "@repo/api/src/types/artifact";
+import {
+  type Artifact,
+  type GenerationStatus,
+  isActiveGenerationStatus,
+} from "@repo/api/src/types/artifact";
 import type { IssueWithWorkstream } from "@repo/api/src/types/issue";
 import { isDisplayableSlug } from "@repo/api/src/types/slug";
 import { Button } from "@repo/design-system/components/ui/button";
@@ -11,6 +15,7 @@ import Link from "next/link";
 import { useState } from "react";
 import { NewPlanModal } from "@/app/(authenticated)/implementation-plans/components/new-plan-modal";
 import { AssigneeAvatar } from "@/components/assignee-avatar";
+import { GenerationStatusIndicator } from "@/components/generation-status-indicator";
 import { useArtifact } from "@/hooks/queries/use-artifacts";
 import { useDeleteEntityLink } from "@/hooks/queries/use-entity-links";
 import { getArtifactRoute } from "@/lib/artifact-navigation";
@@ -28,12 +33,14 @@ type PlanSectionProps = {
   issue: IssueWithWorkstream;
   showGenerateModal: boolean;
   onGenerateModalChange: (open: boolean) => void;
+  generationStatus?: GenerationStatus;
 };
 
 export function PlanSection({
   issue,
   showGenerateModal,
   onGenerateModalChange,
+  generationStatus,
 }: Readonly<PlanSectionProps>) {
   const [showSelectModal, setShowSelectModal] = useState(false);
 
@@ -64,6 +71,9 @@ export function PlanSection({
   }
 
   const hasPlan = hasLink && !!plan;
+  const isGeneratingPlan =
+    generationStatus?.command === "plan" &&
+    isActiveGenerationStatus(generationStatus.status);
 
   return (
     <>
@@ -113,6 +123,11 @@ export function PlanSection({
                 </Button>
               </div>
             </div>
+          </div>
+        )}
+        {isGeneratingPlan && (
+          <div className="px-2 py-1">
+            <GenerationStatusIndicator generationStatus={generationStatus} />
           </div>
         )}
       </div>

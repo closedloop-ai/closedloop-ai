@@ -41,7 +41,6 @@ import { PlanMetadataPanel } from "./components/plan-metadata-panel";
 type PlanEditorProps = {
   plan: ArtifactDetail;
   currentVersion: number;
-  latestVersion: number;
   onVersionChange: (version: number) => void;
   showHeader?: boolean;
 };
@@ -49,15 +48,14 @@ type PlanEditorProps = {
 export function PlanEditor({
   plan,
   currentVersion,
-  latestVersion,
   onVersionChange,
   showHeader = true,
-}: PlanEditorProps) {
-  const content = useArtifactContent({
+}: Readonly<PlanEditorProps>) {
+  const contentController = useArtifactContent({
     artifact: plan,
     onVersionCreated: () => {
-      if (currentVersion !== latestVersion) {
-        onVersionChange(latestVersion);
+      if (currentVersion !== plan.latestVersion) {
+        onVersionChange(plan.latestVersion);
       }
     },
   });
@@ -65,8 +63,8 @@ export function PlanEditor({
   const session = useEditorSession({
     artifact: plan,
     currentVersion,
-    latestVersion,
-    content,
+    contentCallbacks: contentController,
+    onVersionChange,
   });
 
   const metadata = useArtifactMetadata({
@@ -99,10 +97,7 @@ export function PlanEditor({
     showExecuteModal,
     setShowExecuteModal,
     openExecuteModal,
-  } = uiState as Extract<
-    ReturnType<typeof useArtifactUIState>,
-    { showRequestChangesModal: boolean }
-  >;
+  } = uiState;
 
   // Move dialog state
   const [showMoveDialog, setShowMoveDialog] = useState(false);
@@ -153,7 +148,7 @@ export function PlanEditor({
   const isApproved = metadata.status === "APPROVED";
   const isReadOnly = session.isEditing || session.isViewingHistorical;
   const isPending =
-    content.isSaving ||
+    contentController.isSaving ||
     metadata.isUpdating ||
     actions.isDeleting ||
     planActions.isApproving ||
@@ -165,7 +160,7 @@ export function PlanEditor({
   const versionDisplay = (
     <VersionSelector
       currentVersion={currentVersion}
-      latestVersion={latestVersion}
+      latestVersion={plan.latestVersion}
       onVersionChange={(version) => {
         session.exitEditMode();
         onVersionChange(version);
@@ -216,8 +211,8 @@ export function PlanEditor({
                   )}
                   {versionDisplay}
                   <SaveIndicator
-                    isSaving={content.isSaving}
-                    lastSaved={content.lastSaved}
+                    isSaving={contentController.isSaving}
+                    lastSaved={contentController.lastSaved}
                   />
                 </>
               }
@@ -250,7 +245,9 @@ export function PlanEditor({
                         onClick={session.handlePublish}
                         size="sm"
                       >
-                        {content.isSaving ? "Publishing..." : "Publish"}
+                        {contentController.isSaving
+                          ? "Publishing..."
+                          : "Publish"}
                       </Button>
                     </>
                   ) : (
@@ -280,14 +277,14 @@ export function PlanEditor({
               <CollaborativeEditor
                 contentResetKey={session.contentResetKey}
                 contentResetValue={session.contentResetValue}
-                key={session.latestVersion}
+                key={currentVersion}
                 liveblocksRoomId={session.liveblocksRoomId}
-                onChange={content.updateContent}
+                onChange={contentController.updateContent}
                 onEditorInstance={session.handleEditorInstance}
                 onOpenThreadCountChange={session.handleThreadCountChange}
                 readOnly={!session.isEditing}
                 showComments={showComments}
-                value={content.content}
+                value={contentController.content}
               />
             </div>
           </OptionalArtifactRoom>

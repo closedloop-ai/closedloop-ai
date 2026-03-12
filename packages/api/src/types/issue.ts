@@ -36,10 +36,10 @@ export type IssueWithWorkstream = Issue & {
     title: string;
     state: string;
   } | null;
-  project?: {
+  project: {
     id: string;
     name: string;
-    teams?: { id: string; name: string }[];
+    teams: { id: string; name: string }[];
   } | null;
   /** Custom field values attached to this issue. Omitted when not requested. */
   customFields?: CustomFieldValueDetail[];

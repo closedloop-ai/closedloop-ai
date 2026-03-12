@@ -222,11 +222,7 @@ export type GenerationStatus = {
   } | null;
 };
 
-export const ACTIVE_GENERATION_STATUSES = [
-  "PENDING",
-  "QUEUED",
-  "RUNNING",
-] as const;
+const ACTIVE_GENERATION_STATUSES = ["PENDING", "QUEUED", "RUNNING"] as const;
 
 export function isActiveGenerationStatus(
   status: GenerationStatus["status"]

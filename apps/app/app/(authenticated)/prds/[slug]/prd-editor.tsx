@@ -37,14 +37,12 @@ import { PRDMetadataPanel } from "./components/prd-metadata-panel";
 type PRDEditorProps = {
   prd: ArtifactDetail;
   currentVersion: number;
-  latestVersion: number;
   onVersionChange: (version: number) => void;
 };
 
 export function PRDEditor({
   prd,
   currentVersion,
-  latestVersion,
   onVersionChange,
 }: Readonly<PRDEditorProps>) {
   // Move dialog state
@@ -60,11 +58,11 @@ export function PRDEditor({
     };
   }, [prd]);
 
-  const content = useArtifactContent({
+  const contentController = useArtifactContent({
     artifact: prd,
     onVersionCreated: () => {
-      if (currentVersion !== latestVersion) {
-        onVersionChange(latestVersion);
+      if (currentVersion !== prd.latestVersion) {
+        onVersionChange(prd.latestVersion);
       }
     },
   });
@@ -72,8 +70,8 @@ export function PRDEditor({
   const session = useEditorSession({
     artifact: prd,
     currentVersion,
-    latestVersion,
-    content,
+    contentCallbacks: contentController,
+    onVersionChange,
   });
   const prevThreadCount = useRef(session.openThreadCount);
 
@@ -156,7 +154,7 @@ export function PRDEditor({
 
   // Determine if any operation is pending
   const isPending =
-    content.isSaving ||
+    contentController.isSaving ||
     metadata.isUpdating ||
     actions.isDeleting ||
     actions.isRenaming;
@@ -165,7 +163,7 @@ export function PRDEditor({
   const versionDisplay = (
     <VersionSelector
       currentVersion={currentVersion}
-      latestVersion={latestVersion}
+      latestVersion={prd.latestVersion}
       onVersionChange={(version) => {
         session.exitEditMode();
         onVersionChange(version);
@@ -209,8 +207,8 @@ export function PRDEditor({
                   )}
                   {versionDisplay}
                   <SaveIndicator
-                    isSaving={content.isSaving}
-                    lastSaved={content.lastSaved}
+                    isSaving={contentController.isSaving}
+                    lastSaved={contentController.lastSaved}
                   />
                 </>
               }
@@ -243,7 +241,9 @@ export function PRDEditor({
                         onClick={session.handlePublish}
                         size="sm"
                       >
-                        {content.isSaving ? "Publishing..." : "Publish"}
+                        {contentController.isSaving
+                          ? "Publishing..."
+                          : "Publish"}
                       </Button>
                     </>
                   ) : (
@@ -281,14 +281,14 @@ export function PRDEditor({
               <CollaborativeEditor
                 contentResetKey={session.contentResetKey}
                 contentResetValue={session.contentResetValue}
-                key={session.latestVersion}
+                key={currentVersion}
                 liveblocksRoomId={session.liveblocksRoomId}
-                onChange={content.updateContent}
+                onChange={contentController.updateContent}
                 onEditorInstance={session.handleEditorInstance}
                 onOpenThreadCountChange={session.handleThreadCountChange}
                 readOnly={!session.isEditing}
                 showComments={showComments}
-                value={content.content}
+                value={contentController.content}
               />
             </div>
           </OptionalArtifactRoom>

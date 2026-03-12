@@ -36,22 +36,20 @@ import {
   issueStatusLabels,
 } from "@/components/status-badge";
 import { useUpdateIssue } from "@/hooks/queries/use-issues";
-import { useOrganizationUsers } from "@/hooks/queries/use-users";
+import { useTeamMembers } from "@/hooks/use-team-members";
 import { transformApiUserToSelectUser } from "@/lib/user-utils";
 
 type IssueMetadataPanelProps = {
   issue: IssueWithWorkstream;
+  teamIds: string[];
 };
 
 export function IssueMetadataPanel({
   issue,
+  teamIds,
 }: Readonly<IssueMetadataPanelProps>) {
   const updateIssue = useUpdateIssue();
-  const { data: orgUsers = [] } = useOrganizationUsers();
-  const transformedOrgUsers = useMemo(
-    () => orgUsers.map(transformApiUserToSelectUser),
-    [orgUsers]
-  );
+  const { members: teamMembers } = useTeamMembers({ teamIds });
 
   const assignee = useMemo(
     () =>
@@ -136,10 +134,10 @@ export function IssueMetadataPanel({
               <Label>Assignee</Label>
               <UserSelectPopover
                 className="w-full"
-                disabled={transformedOrgUsers.length === 0}
+                disabled={teamMembers.length === 0}
                 onSelect={handleAssigneeChange}
                 placeholder="Select assignee..."
-                users={transformedOrgUsers}
+                users={teamMembers}
                 value={assignee}
               />
             </div>

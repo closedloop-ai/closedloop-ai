@@ -40,6 +40,7 @@ export const artifactKeys = {
     [...artifactKeys.lists(), filters] as const,
   details: () => [...artifactKeys.all, "detail"] as const,
   detail: (id: string) => [...artifactKeys.details(), id] as const,
+  bySlugs: () => [...artifactKeys.all, "by-slug"] as const,
   bySlug: (slug: string) => [...artifactKeys.all, "by-slug", slug] as const,
   versions: (id: string) => [...artifactKeys.detail(id), "versions"] as const,
   version: (id: string, version: number) =>
@@ -172,6 +173,13 @@ export function useArtifactGenerationStatus(
     invalidateCache: () => {
       queryClient.invalidateQueries({
         queryKey: artifactKeys.detail(artifactId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: artifactKeys.versions(artifactId),
+      });
+      // Invalidate all bySlug queries. We only have the artifact ID, not the slug.
+      queryClient.invalidateQueries({
+        queryKey: artifactKeys.bySlugs(),
       });
     },
   };

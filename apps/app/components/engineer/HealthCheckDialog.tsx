@@ -72,7 +72,7 @@ export function HealthCheckDialog() {
   // Auto-dismiss after all checks are revealed and all required pass
   const allRevealed = data?.checks && revealedCount >= data.checks.length;
   const hasRequiredFailure =
-    data?.checks.some((c) => c.required && !c.passed) ?? false;
+    data?.checks?.some((c) => c.required && !c.passed) ?? false;
   const allRequiredPassed = allRevealed && !hasRequiredFailure;
 
   // Latch failureDetected — once a required failure is seen, open the dialog
@@ -84,7 +84,7 @@ export function HealthCheckDialog() {
 
   // Staggered reveal: only run when dialog is showing (failure detected)
   useEffect(() => {
-    if (!(failureDetected && data)) {
+    if (!(failureDetected && data?.checks)) {
       return;
     }
 
@@ -182,17 +182,17 @@ export function HealthCheckDialog() {
   }
 
   const requiredCount =
-    data?.checks.filter((check) => check.required).length ?? 0;
+    data?.checks?.filter((check) => check.required).length ?? 0;
 
   // worktree-dir check failed — show inline setup (only after it's revealed)
-  const worktreeCheck = data?.checks.find((c) => c.id === "worktree-dir");
+  const worktreeCheck = data?.checks?.find((c) => c.id === "worktree-dir");
   const showWorktreeSetup =
     worktreeCheck && !worktreeCheck.passed && revealedCount >= requiredCount;
 
   return (
     <Dialog open={dialogOpen}>
       <DialogContent
-        className="!max-w-md"
+        className="max-w-md!"
         onEscapeKeyDown={(e) => {
           if (!allRequiredPassed) {
             e.preventDefault();

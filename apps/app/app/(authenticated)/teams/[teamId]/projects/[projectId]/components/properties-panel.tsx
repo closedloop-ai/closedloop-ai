@@ -49,7 +49,6 @@ type PropertiesPanelProps = {
   onUpdateStatus?: (status: ProjectStatus) => void;
   onUpdateAssignee?: (assigneeId: string | null) => void;
   onUpdateTargetDate?: (date: Date | null) => void;
-  onUpdateTeams?: (teamIds: string[]) => void;
   onCodebaseSummaryUploaded?: (lastIndexedAt: Date) => void;
 };
 
@@ -60,7 +59,7 @@ export function PropertiesPanel({
   onUpdateAssignee,
   onUpdateTargetDate,
   onCodebaseSummaryUploaded,
-}: PropertiesPanelProps) {
+}: Readonly<PropertiesPanelProps>) {
   const [isOpen, setIsOpen] = useState(true);
 
   // Fetch members from all teams associated with the project

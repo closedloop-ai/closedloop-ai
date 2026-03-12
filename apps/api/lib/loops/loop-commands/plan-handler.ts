@@ -9,7 +9,7 @@ import {
 import { parsePromptsSnapshotFromMarkdownEntries } from "@repo/github/prompt-snapshot-parser";
 import { log } from "@repo/observability/log";
 import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
-import { updateArtifactRoomVersion } from "@/app/artifacts/room-utils";
+import { resetArtifactRoom } from "@/app/artifacts/room-utils";
 import { fanOutJudgeScores } from "@/lib/judge-score-fanout";
 import { parseJsonArtifact } from "@/lib/loops/loop-artifact-ingestion";
 import {
@@ -111,17 +111,19 @@ export async function ingestPlanArtifacts(
     db.artifact.update({
       where: { id: artifactId, organizationId },
       data: { status: "DRAFT" },
-      select: { slug: true, latestVersion: true },
+      select: {
+        id: true,
+        organizationId: true,
+        slug: true,
+        type: true,
+        latestVersion: true,
+      },
     })
   );
 
-  // Update the Liveblocks room metadata with the new version number.
+  // Reset the Liveblocks room so any stale Y.Doc content is cleared.
   if (updatedArtifact.slug) {
-    await updateArtifactRoomVersion(
-      organizationId,
-      updatedArtifact.slug,
-      updatedArtifact.latestVersion
-    );
+    await resetArtifactRoom(updatedArtifact);
   }
 
   // Persist prompt registry entries from snapshot (idempotent upsert)
