@@ -148,9 +148,10 @@ export function useSymphonyLaunch(): UseSymphonyLaunchResult {
 
         let response = await fetch(url, fetchOptions);
 
-        // Handle 409 (lock contention) — poll until resolved
+        // Handle 409 (lock contention) — poll until resolved, max ~60s
         if (response.status === 409) {
-          while (true) {
+          const MAX_POLL_RETRIES = 30;
+          for (let retries = 0; retries < MAX_POLL_RETRIES; retries++) {
             await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
             const retry = await fetch(url, fetchOptions);
             if (retry.ok || retry.status !== 409) {

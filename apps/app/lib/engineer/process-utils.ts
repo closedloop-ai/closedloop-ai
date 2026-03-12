@@ -190,8 +190,17 @@ export function cleanStaleLock(lockDir: string): void {
     }
 
     if (!isProcessRunning(pid)) {
-      // Owner is dead — remove stale lock
-      unlinkSync(lockPath);
+      // Owner is dead — re-read to avoid TOCTOU (another process may have
+      // acquired a new lock between our read and this unlink)
+      try {
+        const recheck = readFileSync(lockPath, "utf-8");
+        const reparsed = JSON.parse(recheck) as Record<string, unknown>;
+        if (reparsed.pid === pid) {
+          unlinkSync(lockPath);
+        }
+      } catch {
+        // Lock was already removed or replaced — nothing to do
+      }
     }
   } catch {
     // Malformed JSON or read error — only remove if old enough

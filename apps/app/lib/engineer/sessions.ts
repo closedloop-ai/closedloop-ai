@@ -82,8 +82,24 @@ function withSessionsLock<T>(fn: () => T): T {
     try {
       // biome-ignore lint/suspicious/noBitwiseOperators: file open flags require bitwise OR
       const flags = constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY;
-      lockFd = openSync(getSessionsLock(), flags);
-      writeSync(lockFd, Buffer.from(String(process.pid)));
+      const fd = openSync(getSessionsLock(), flags);
+      try {
+        writeSync(fd, Buffer.from(String(process.pid)));
+      } catch (writeErr) {
+        // Clean up fd and lock file if write fails (e.g. disk full)
+        try {
+          closeSync(fd);
+        } catch {
+          /* ignore */
+        }
+        try {
+          unlinkSync(getSessionsLock());
+        } catch {
+          /* ignore */
+        }
+        throw writeErr;
+      }
+      lockFd = fd;
       break;
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "EEXIST") {
@@ -155,7 +171,7 @@ export function loadSessions(): SessionsConfig {
   }
 }
 
-export function saveSessions(config: SessionsConfig): void {
+function saveSessions(config: SessionsConfig): void {
   ensureDir();
   writeFileSync(getSessionsFile(), JSON.stringify(config, null, 2));
 }
