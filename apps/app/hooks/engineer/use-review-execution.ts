@@ -420,6 +420,24 @@ export function useReviewExecution(
         let attempts = 0;
         while (attempts < MAX_RECONNECT_ATTEMPTS && !signal.aborted) {
           attempts++;
+
+          // Exponential backoff: 1s, 2s, 4s, ... capped at 30s
+          const delay = Math.min(1000 * 2 ** (attempts - 1), 30_000);
+          await new Promise<void>((resolve) => {
+            const timer = setTimeout(resolve, delay);
+            signal.addEventListener(
+              "abort",
+              () => {
+                clearTimeout(timer);
+                resolve();
+              },
+              { once: true }
+            );
+          });
+          if (signal.aborted) {
+            break;
+          }
+
           console.log(
             `[review-stream] Reconnect attempt ${attempts}/${MAX_RECONNECT_ATTEMPTS}`
           );
@@ -452,10 +470,6 @@ export function useReviewExecution(
               }
               continue;
             }
-
-            // Update commandId from reconnect response header
-            commandId ??=
-              reconnectResponse.headers.get("x-relay-command-id") ?? commandId;
 
             const reconnectReader = reconnectResponse.body?.getReader();
             if (!reconnectReader) {

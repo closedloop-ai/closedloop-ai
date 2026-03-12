@@ -203,6 +203,24 @@ export function useChatStream(): UseChatStreamReturn {
             !abortController.signal.aborted
           ) {
             attempts++;
+
+            // Exponential backoff: 1s, 2s, 4s, ... capped at 30s
+            const delay = Math.min(1000 * 2 ** (attempts - 1), 30_000);
+            await new Promise<void>((resolve) => {
+              const timer = setTimeout(resolve, delay);
+              abortController.signal.addEventListener(
+                "abort",
+                () => {
+                  clearTimeout(timer);
+                  resolve();
+                },
+                { once: true }
+              );
+            });
+            if (abortController.signal.aborted) {
+              break;
+            }
+
             console.log(
               `[chat-stream] Reconnect attempt ${attempts}/${MAX_RECONNECT_ATTEMPTS}`
             );
@@ -233,10 +251,6 @@ export function useChatStream(): UseChatStreamReturn {
                 continue;
               }
 
-              commandId ??=
-                reconnectResponse.headers.get("x-relay-command-id") ??
-                commandId;
-
               const reconnectReader = reconnectResponse.body?.getReader();
               if (!reconnectReader) {
                 break;
@@ -250,6 +264,7 @@ export function useChatStream(): UseChatStreamReturn {
               lastSeq = result.lastSeq ?? lastSeq;
 
               if (result.completed) {
+                setError(null);
                 const { learnings } = parseLearningsUsed(latestTextRef.current);
                 if (learnings.length > 0) {
                   callbacks?.onLearningsUsed?.(learnings);
@@ -272,7 +287,7 @@ export function useChatStream(): UseChatStreamReturn {
         }
 
         // Reconnect exhausted — surface error (chat has no poll fallback)
-        if (!result.completed) {
+        if (!(result.completed || abortController.signal.aborted)) {
           setError(
             result.lastRelayError ?? "Stream connection lost. Please try again."
           );

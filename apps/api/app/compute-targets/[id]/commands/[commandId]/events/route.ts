@@ -102,7 +102,7 @@ export async function GET(
             const events = await desktopCommandStore.getCommandEvents(
               target.id,
               commandId,
-              { afterSequence }
+              { afterSequence: lastSequence }
             );
             if (!events) {
               return;
