@@ -15,6 +15,10 @@ const RESTART_BUTTON_NAME = /restart/i;
 const CANCEL_BUTTON_NAME = /cancel/i;
 const USER_FULL_NAME = /Alice Smith/;
 const USER_ID = /user-1/;
+const MIKES_MACBOOK = /Mikes-MacBook/;
+const ONLINE = /online/;
+const TARGET_CLOUD = /Target: Cloud/;
+const TARGET_LABEL = /Target:/;
 
 vi.mock("next/navigation", () => ({
   useRouter: vi.fn(() => ({ push: mockPush, replace: vi.fn() })),
@@ -54,7 +58,11 @@ vi.mock("@/components/loops/loop-audit-log", () => ({
 
 import { LoopDetailContainer } from "@/app/(authenticated)/loops/[id]/loop-detail-container";
 // Import after mocks
-import { useCancelLoop, useLoop, useResumeLoop } from "@/hooks/queries/use-loops";
+import {
+  useCancelLoop,
+  useLoop,
+  useResumeLoop,
+} from "@/hooks/queries/use-loops";
 import { createMockLoopWithUser } from "../fixtures/loops";
 
 // ---------------------------------------------------------------------------
@@ -288,6 +296,71 @@ describe("LoopDetailContainer — cancel button visibility", () => {
     expect(
       screen.queryByRole("button", { name: CANCEL_BUTTON_NAME })
     ).not.toBeInTheDocument();
+  });
+});
+
+describe("LoopDetailContainer — compute target display", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(useResumeLoop).mockReturnValue({
+      mutateAsync: mockMutateAsync,
+      isPending: false,
+    } as unknown as ReturnType<typeof useResumeLoop>);
+    vi.mocked(useCancelLoop).mockReturnValue({
+      mutateAsync: mockCancelMutateAsync,
+      isPending: false,
+    } as unknown as ReturnType<typeof useCancelLoop>);
+  });
+
+  it("displays machine name and online status for a local loop", () => {
+    vi.mocked(useLoop).mockReturnValue({
+      data: createMockLoopWithUser({
+        status: LoopStatus.Running,
+        computeTarget: {
+          id: "ct-1",
+          machineName: "Mikes-MacBook",
+          isOnline: true,
+        },
+      }),
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoop>);
+
+    render(<LoopDetailContainer id="loop-001" />);
+
+    expect(screen.getByText(MIKES_MACBOOK)).toBeInTheDocument();
+    expect(screen.getByText(ONLINE)).toBeInTheDocument();
+  });
+
+  it("displays 'Cloud' for a cloud loop with containerId", () => {
+    vi.mocked(useLoop).mockReturnValue({
+      data: createMockLoopWithUser({
+        status: LoopStatus.Completed,
+        containerId: "arn:aws:ecs:us-east-1:123:task/abc",
+      }),
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoop>);
+
+    render(<LoopDetailContainer id="loop-002" />);
+
+    expect(screen.getByText(TARGET_CLOUD)).toBeInTheDocument();
+  });
+
+  it("does not display compute target for unknown (neither set)", () => {
+    vi.mocked(useLoop).mockReturnValue({
+      data: createMockLoopWithUser({
+        status: LoopStatus.Completed,
+        containerId: null,
+        computeTarget: null,
+      }),
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoop>);
+
+    render(<LoopDetailContainer id="loop-003" />);
+
+    expect(screen.queryByText(TARGET_LABEL)).not.toBeInTheDocument();
   });
 });
 

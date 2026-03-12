@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { JsonObject } from "@repo/api/src/types/common";
 import type {
+  ComputeTargetSummary,
   CreateLoopRequest,
   CreateLoopResponse,
   Loop,
@@ -119,6 +120,15 @@ function parseError(value: unknown): Loop["error"] {
   return null;
 }
 
+/** Select clause for eager-loading compute target summary fields. */
+const computeTargetSelect = {
+  select: {
+    id: true,
+    machineName: true,
+    isOnline: true,
+  },
+} as const;
+
 /**
  * Transform a Prisma loop record to the API Loop type.
  * Handles Decimal → number conversion for estimatedCost and
@@ -140,14 +150,19 @@ function toLoop(record: PrismaLoop): Loop {
 }
 
 /**
- * Transform a Prisma loop record (with included user) to the API LoopWithUser type.
+ * Transform a Prisma loop record (with included user and optional compute target)
+ * to the API LoopWithUser type.
  */
 function toLoopWithUser(
-  record: PrismaLoop & { user: LoopWithUser["user"] }
+  record: PrismaLoop & {
+    user: LoopWithUser["user"];
+    computeTarget?: ComputeTargetSummary | null;
+  }
 ): LoopWithUser {
   return {
     ...toLoop(record),
     user: record.user,
+    computeTarget: record.computeTarget ?? null,
   };
 }
 
@@ -237,6 +252,7 @@ export const loopsService = {
         where: { id, organizationId },
         include: {
           user: basicUserSelect,
+          computeTarget: computeTargetSelect,
         },
       })
     );
@@ -245,7 +261,12 @@ export const loopsService = {
       return null;
     }
 
-    return toLoopWithUser(loop as PrismaLoop & { user: LoopWithUser["user"] });
+    return toLoopWithUser(
+      loop as PrismaLoop & {
+        user: LoopWithUser["user"];
+        computeTarget: ComputeTargetSummary | null;
+      }
+    );
   },
 
   /**
@@ -261,6 +282,7 @@ export const loopsService = {
       command,
       artifactId,
       workstreamId,
+      projectId,
       userId,
       limit = 50,
       offset = 0,
@@ -274,10 +296,12 @@ export const loopsService = {
           ...(command ? { command } : {}),
           ...(artifactId ? { artifactId } : {}),
           ...(workstreamId ? { workstreamId } : {}),
+          ...(projectId ? { artifact: { projectId } } : {}),
           ...(userId ? { userId } : {}),
         },
         include: {
           user: basicUserSelect,
+          computeTarget: computeTargetSelect,
         },
         orderBy: { createdAt: "desc" },
         take: limit,
@@ -285,9 +309,12 @@ export const loopsService = {
       })
     );
 
-    return loops.map((l) =>
-      toLoopWithUser(l as PrismaLoop & { user: LoopWithUser["user"] })
-    );
+    type LoopWithIncludes = PrismaLoop & {
+      user: LoopWithUser["user"];
+      computeTarget: ComputeTargetSummary | null;
+    };
+
+    return loops.map((l) => toLoopWithUser(l as LoopWithIncludes));
   },
 
   /**

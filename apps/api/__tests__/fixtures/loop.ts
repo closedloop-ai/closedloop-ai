@@ -10,6 +10,7 @@ export function buildLoop(overrides: Partial<Loop> = {}): Loop {
     artifactId: "artifact-1",
     workstreamId: "ws-1",
     parentLoopId: null,
+    computeTargetId: null,
     prompt: null,
     repo: { fullName: "org/repo", branch: "main" },
     contextRefs: null,

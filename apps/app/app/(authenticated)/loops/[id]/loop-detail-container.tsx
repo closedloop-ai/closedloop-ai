@@ -1,6 +1,6 @@
 "use client";
 
-import { LoopStatus, type TokensByModel } from "@repo/api/src/types/loop";
+import type { TokensByModel } from "@repo/api/src/types/loop";
 import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
@@ -20,11 +20,13 @@ import {
   AlertCircleIcon,
   ArrowLeftIcon,
   ClockIcon,
+  CloudIcon,
   CoinsIcon,
   ExternalLinkIcon,
   GitBranchIcon,
   GitPullRequestIcon,
   Loader2Icon,
+  MonitorIcon,
   RotateCcwIcon,
   SquareIcon,
   TerminalIcon,
@@ -257,7 +259,7 @@ export function LoopDetailContainer({ id }: LoopDetailContainerProps) {
             Back to Loops
           </Link>
         </Button>
-        {CANCELLABLE_LOOP_STATUSES.has(loop.status) && (
+        {isActive && (
           <Button
             disabled={cancelLoop.isPending}
             onClick={async () => {
@@ -330,6 +332,7 @@ export function LoopDetailContainer({ id }: LoopDetailContainerProps) {
             </span>
           </div>
         )}
+        <ComputeTargetDetail loop={loop} />
       </div>
 
       {/* Artifact link */}
@@ -386,4 +389,31 @@ export function LoopDetailContainer({ id }: LoopDetailContainerProps) {
       </Tabs>
     </div>
   );
+}
+
+function ComputeTargetDetail({
+  loop,
+}: {
+  loop: NonNullable<Awaited<ReturnType<typeof useLoop>["data"]>>;
+}) {
+  if (loop.computeTarget) {
+    return (
+      <div className="flex items-center gap-1.5">
+        <MonitorIcon className="h-3.5 w-3.5" />
+        <span>
+          Target: {loop.computeTarget.machineName}
+          {loop.computeTarget.isOnline ? " (online)" : " (offline)"}
+        </span>
+      </div>
+    );
+  }
+  if (loop.containerId) {
+    return (
+      <div className="flex items-center gap-1.5">
+        <CloudIcon className="h-3.5 w-3.5" />
+        <span>Target: Cloud</span>
+      </div>
+    );
+  }
+  return null;
 }

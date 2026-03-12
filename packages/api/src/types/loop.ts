@@ -32,6 +32,13 @@ export type SourceContextType = (typeof EntityType)[keyof Pick<
   "Artifact" | "Issue"
 >];
 
+// Compute target summary (for loop list/detail views)
+export type ComputeTargetSummary = {
+  id: string;
+  machineName: string;
+  isOnline: boolean;
+};
+
 // Core Loop entity
 export type Loop = {
   id: string;
@@ -42,6 +49,7 @@ export type Loop = {
   artifactId: string | null;
   workstreamId: string | null;
   parentLoopId: string | null;
+  computeTargetId: string | null;
   prompt: string | null;
   repo: { fullName: string; branch: string } | null;
   contextRefs: Array<{
@@ -76,6 +84,7 @@ export type LoopWithUser = Loop & {
     avatarUrl: string | null;
     email: string;
   };
+  computeTarget: ComputeTargetSummary | null;
 };
 
 // Request/Response types
@@ -110,6 +119,7 @@ export type LoopListFilters = {
   command?: LoopCommand;
   artifactId?: string;
   workstreamId?: string;
+  projectId?: string;
   userId?: string;
   limit?: number;
   offset?: number;

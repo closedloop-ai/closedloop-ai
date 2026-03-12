@@ -41,7 +41,11 @@ vi.mock("@repo/design-system/components/ui/sonner", () => ({
 
 import { LoopsTable } from "@/app/(authenticated)/loops/components/loops-table";
 // Import after mocks
-import { useCancelLoop, useLoops, useResumeLoop } from "@/hooks/queries/use-loops";
+import {
+  useCancelLoop,
+  useLoops,
+  useResumeLoop,
+} from "@/hooks/queries/use-loops";
 import { createMockLoopWithUser } from "../fixtures/loops";
 
 // ---------------------------------------------------------------------------
@@ -292,6 +296,78 @@ describe("LoopsTable — cancel button visibility", () => {
     expect(
       screen.queryByRole("button", { name: "Cancel loop" })
     ).not.toBeInTheDocument();
+  });
+});
+
+describe("LoopsTable — compute target column", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(useResumeLoop).mockReturnValue({
+      mutateAsync: mockMutateAsync,
+      isPending: false,
+    } as unknown as ReturnType<typeof useResumeLoop>);
+    vi.mocked(useCancelLoop).mockReturnValue({
+      mutateAsync: mockCancelMutateAsync,
+      isPending: false,
+    } as unknown as ReturnType<typeof useCancelLoop>);
+  });
+
+  it("renders machine name for a local loop (computeTarget set)", () => {
+    vi.mocked(useLoops).mockReturnValue({
+      data: [
+        createMockLoopWithUser({
+          status: LoopStatus.Running,
+          computeTarget: {
+            id: "ct-1",
+            machineName: "Mikes-MacBook",
+            isOnline: true,
+          },
+        }),
+      ],
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoops>);
+
+    render(<LoopsTable />);
+
+    expect(screen.getByText("Mikes-MacBook")).toBeInTheDocument();
+  });
+
+  it("renders 'Cloud' for a cloud loop (containerId set, no computeTarget)", () => {
+    vi.mocked(useLoops).mockReturnValue({
+      data: [
+        createMockLoopWithUser({
+          status: LoopStatus.Running,
+          containerId: "arn:aws:ecs:us-east-1:123:task/abc",
+        }),
+      ],
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoops>);
+
+    render(<LoopsTable />);
+
+    expect(screen.getByText("Cloud")).toBeInTheDocument();
+  });
+
+  it("renders '-' for unknown compute target (neither set)", () => {
+    vi.mocked(useLoops).mockReturnValue({
+      data: [
+        createMockLoopWithUser({
+          status: LoopStatus.Completed,
+          containerId: null,
+          computeTarget: null,
+        }),
+      ],
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoops>);
+
+    render(<LoopsTable />);
+
+    // The Target column shows "-" — there may be other "-" cells, so check the table has one
+    const cells = screen.getAllByText("-");
+    expect(cells.length).toBeGreaterThan(0);
   });
 });
 

@@ -15,6 +15,7 @@ export function createMockLoop(overrides: Partial<Loop> = {}): Loop {
     artifactId: null,
     workstreamId: null,
     parentLoopId: null,
+    computeTargetId: null,
     prompt: "Do the thing",
     repo: null,
     contextRefs: null,
@@ -45,7 +46,7 @@ export function createMockLoop(overrides: Partial<Loop> = {}): Loop {
 export function createMockLoopWithUser(
   overrides: Partial<LoopWithUser> = {}
 ): LoopWithUser {
-  const { user, ...loopOverrides } = overrides;
+  const { user, computeTarget, ...loopOverrides } = overrides;
   return {
     ...createMockLoop(loopOverrides),
     user: {
@@ -56,6 +57,7 @@ export function createMockLoopWithUser(
       email: "alice@example.com",
       ...user,
     },
+    computeTarget: computeTarget ?? null,
     ...overrides,
   };
 }
