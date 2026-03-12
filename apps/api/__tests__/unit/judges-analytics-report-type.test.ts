@@ -260,7 +260,6 @@ describe("judgesAnalyticsService reportType scoping", () => {
 
   it("queries scores by resolved prompt IDs instead of metricName", async () => {
     const judgeScoreFindMany = vi.fn().mockResolvedValue([]);
-    const judgeScoreFindFirst = vi.fn().mockResolvedValue({ id: "js-1" });
     const mockDb = {
       prompt: {
         findMany: vi.fn().mockResolvedValue([
@@ -280,10 +279,7 @@ describe("judgesAnalyticsService reportType scoping", () => {
           },
         ]),
       },
-      judgeScore: {
-        findMany: judgeScoreFindMany,
-        findFirst: judgeScoreFindFirst,
-      },
+      judgeScore: { findMany: judgeScoreFindMany },
     };
 
     vi.mocked(withDb).mockImplementation((callback) =>
@@ -294,7 +290,7 @@ describe("judgesAnalyticsService reportType scoping", () => {
       )
     );
 
-    await judgesAnalyticsService.getJudgeScores(
+    const result = await judgesAnalyticsService.getJudgeScores(
       "org-1",
       "clarity",
       EvaluationReportType.Plan,
@@ -303,17 +299,18 @@ describe("judgesAnalyticsService reportType scoping", () => {
     );
 
     expect(judgeScoreFindMany).toHaveBeenCalledOnce();
-    expect(judgeScoreFindFirst).toHaveBeenCalledOnce();
     const [findManyCall] = judgeScoreFindMany.mock.calls;
-    const [findFirstCall] = judgeScoreFindFirst.mock.calls;
-
     expect(findManyCall[0].where.promptId).toEqual({
       in: ["prompt-1", "prompt-2"],
     });
     expect(findManyCall[0].where.metricName).toBeUndefined();
-    expect(findFirstCall[0].where.promptId).toEqual({
-      in: ["prompt-1", "prompt-2"],
-    });
-    expect(findFirstCall[0].where.metricName).toBeUndefined();
+    expect(result).toEqual(
+      expect.objectContaining({
+        rows: [],
+        totalArtifacts: 0,
+        ratedArtifacts: 0,
+        coveragePct: 0,
+      })
+    );
   });
 });

@@ -20,6 +20,10 @@ vi.mock("socket.io", () => {
       of() {
         return mockNamespace;
       }
+
+      close() {
+        return Promise.resolve();
+      }
     },
   };
 });

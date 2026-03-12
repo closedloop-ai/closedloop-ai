@@ -643,15 +643,10 @@ export async function stopRelayServer(): Promise<void> {
     return;
   }
 
-  await new Promise<void>((resolve, reject) => {
-    server.close((error) => {
-      if (error) {
-        reject(error);
-        return;
-      }
-      resolve();
-    });
-  });
+  // io.close() disconnects all Socket.IO clients first, then closes the HTTP server.
+  // Calling server.close() alone would wait for connections to drain; WebSocket
+  // connections are long-lived, so the promise may never resolve.
+  await io.close();
 
   relayServerStarted = false;
 }

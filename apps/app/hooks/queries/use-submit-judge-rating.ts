@@ -21,7 +21,7 @@ export function useSubmitJudgeRating(artifactId: string) {
         body
       ),
     onSuccess: (data) => {
-      const cacheKey = data.promptName ?? data.metricName;
+      const cacheKey = data.metricName ?? data.promptName;
       if (cacheKey != null && data.reportType != null) {
         queryClient.invalidateQueries({
           queryKey: judgeScoreKeys.list(cacheKey, data.reportType),

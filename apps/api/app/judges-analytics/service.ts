@@ -1189,23 +1189,6 @@ export const judgesAnalyticsService = {
     );
 
     if (judgeScores.length === 0) {
-      const promptExistsInOrg = await withDb((db) =>
-        db.judgeScore.findFirst({
-          where: {
-            promptId: { in: promptIds },
-            evaluation: {
-              reportType,
-              artifact: { organizationId },
-            },
-          },
-          select: { id: true },
-        })
-      );
-
-      if (promptExistsInOrg === null) {
-        return null;
-      }
-
       return {
         rows: [],
         totalArtifacts: 0,
