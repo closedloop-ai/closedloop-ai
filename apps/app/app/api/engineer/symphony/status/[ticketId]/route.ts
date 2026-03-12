@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { type NextRequest, NextResponse } from "next/server";
+import { readLiveActivity } from "@/lib/engineer/jsonl-activity";
 import {
   expandHome,
   getWorktreeParentDir,
@@ -326,6 +327,8 @@ export async function GET(
         });
       }
 
+      const liveActivity = await readLiveActivity(worktreeDir);
+
       return NextResponse.json({
         exists: true,
         stateExists: false,
@@ -334,6 +337,7 @@ export async function GET(
         pid,
         processRunning: pid !== null,
         message: "ClosedLoop is starting up...",
+        liveActivity,
       });
     }
 
