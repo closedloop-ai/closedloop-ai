@@ -25,6 +25,7 @@ import {
 } from "@/components/artifact-editor/metadata-panel";
 import { RatingSection } from "@/components/artifact-editor/rating-section";
 import { StatusMetadataSection } from "@/components/artifact-editor/status-metadata-section";
+import { TargetRepositoryFields } from "@/components/artifact-editor/target-repository-fields";
 import { CustomFieldsSection } from "@/components/custom-fields/custom-fields-section";
 import { ExecutionLogDialog } from "@/components/execution-log/execution-log-dialog";
 import { ExecutionLogSummary } from "@/components/execution-log/execution-log-summary";
@@ -58,6 +59,10 @@ export type PlanMetadataPanelProps = {
   onAssigneeChange: (user: User | null) => void;
   targetRepo: string;
   targetBranch: string;
+  onTargetRepoChange: (targetRepo: string) => void;
+  onTargetRepoBlur: (overrideValue?: string) => void;
+  onTargetBranchChange: (targetBranch: string) => void;
+  onTargetBranchBlur: (overrideValue?: string) => void;
 };
 
 export function PlanMetadataPanel({
@@ -78,6 +83,10 @@ export function PlanMetadataPanel({
   onAssigneeChange,
   targetRepo = "Inherited from project",
   targetBranch = "main",
+  onTargetRepoChange,
+  onTargetRepoBlur,
+  onTargetBranchChange,
+  onTargetBranchBlur,
 }: PlanMetadataPanelProps) {
   const { data: orgUsers = [] } = useOrganizationUsers();
   const transformedOrgUsers = useMemo(
@@ -119,19 +128,15 @@ export function PlanMetadataPanel({
               teamMembers={teamMembers}
             />
 
-            <MetadataSection separator>
-              <h4 className="font-medium text-sm">Target Repository</h4>
-              <div className="space-y-2">
-                <Label className="text-muted-foreground text-xs">
-                  Repository
-                </Label>
-                <p className="text-muted-foreground text-sm">{targetRepo}</p>
-              </div>
-              <div className="space-y-2">
-                <Label className="text-muted-foreground text-xs">Branch</Label>
-                <p className="text-muted-foreground text-sm">{targetBranch}</p>
-              </div>
-            </MetadataSection>
+            <TargetRepositoryFields
+              onTargetBranchBlur={onTargetBranchBlur}
+              onTargetBranchChange={onTargetBranchChange}
+              onTargetRepoBlur={onTargetRepoBlur}
+              onTargetRepoChange={onTargetRepoChange}
+              targetBranch={targetBranch}
+              targetRepo={targetRepo}
+              title="Target Repository"
+            />
 
             <SourceArtifactSection artifactId={plan.id} projectId={projectId} />
 

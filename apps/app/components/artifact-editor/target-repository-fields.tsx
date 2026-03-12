@@ -148,8 +148,13 @@ export function TargetRepositoryFields({
           <span className="text-muted-foreground text-xs">(owner/repo)</span>
         </Label>
         {githubStatus?.connected === false ? (
-          <div className="rounded-md border border-muted bg-muted/20 p-3 text-muted-foreground text-sm">
-            Connect GitHub to select a repository
+          <div className="space-y-1">
+            {targetRepo ? (
+              <p className="text-muted-foreground text-sm">{targetRepo}</p>
+            ) : null}
+            <div className="rounded-md border border-muted bg-muted/20 p-3 text-muted-foreground text-sm">
+              Connect GitHub to select a repository
+            </div>
           </div>
         ) : (
           <Select
@@ -189,23 +194,27 @@ export function TargetRepositoryFields({
 
       <div className="space-y-2">
         <Label>Target Branch</Label>
-        <Select
-          disabled={!selectedRepoId || isLoadingBranches}
-          onValueChange={handleBranchChange}
-          value={targetBranch}
-        >
-          <SelectTrigger>
-            <SelectValue placeholder={getBranchPlaceholder()} />
-          </SelectTrigger>
-          <SelectContent>
-            {branchesData?.branches.map((branch) => (
-              <SelectItem key={branch.name} value={branch.name}>
-                {branch.name}
-                {branch.isDefault ? " (default)" : ""}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        {githubStatus?.connected === false ? (
+          <p className="text-muted-foreground text-sm">{targetBranch || "—"}</p>
+        ) : (
+          <Select
+            disabled={!selectedRepoId || isLoadingBranches}
+            onValueChange={handleBranchChange}
+            value={targetBranch}
+          >
+            <SelectTrigger>
+              <SelectValue placeholder={getBranchPlaceholder()} />
+            </SelectTrigger>
+            <SelectContent>
+              {branchesData?.branches.map((branch) => (
+                <SelectItem key={branch.name} value={branch.name}>
+                  {branch.name}
+                  {branch.isDefault ? " (default)" : ""}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
       </div>
     </MetadataSection>
   );

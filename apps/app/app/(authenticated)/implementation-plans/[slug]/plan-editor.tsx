@@ -303,6 +303,10 @@ export function PlanEditor({
             onAssigneeChange={metadata.handleAssigneeChange}
             onPreviewRefresh={refetchPreviewLinks}
             onStatusChange={metadata.handleStatusChange}
+            onTargetBranchBlur={metadata.handleTargetBranchBlur}
+            onTargetBranchChange={metadata.handleTargetBranchChange}
+            onTargetRepoBlur={metadata.handleTargetRepoBlur}
+            onTargetRepoChange={metadata.handleTargetRepoChange}
             plan={plan}
             previewDeployment={previewDeployment}
             pullRequest={pullRequest ?? null}

@@ -15,11 +15,14 @@ export type TicketStatusType =
   | "completed"
   | "canceled";
 
+export const TicketSourceType = {
+  Issue: "Issue",
+  Prd: "PRD",
+  ImplementationPlan: "Implementation Plan",
+  Template: "Template",
+} as const;
 export type TicketSourceType =
-  | "Issue"
-  | "PRD"
-  | "Implementation Plan"
-  | "Template";
+  (typeof TicketSourceType)[keyof typeof TicketSourceType];
 
 export type EngineerTicket = {
   id: string;
@@ -170,12 +173,12 @@ export function artifactStatusDisplayName(status: ArtifactStatus): string {
 export function artifactTypeToSourceType(type: ArtifactType): TicketSourceType {
   switch (type) {
     case ArtifactType.Prd:
-      return "PRD";
+      return TicketSourceType.Prd;
     case ArtifactType.ImplementationPlan:
-      return "Implementation Plan";
+      return TicketSourceType.ImplementationPlan;
     case ArtifactType.Template:
-      return "Template";
+      return TicketSourceType.Template;
     default:
-      return "PRD";
+      return TicketSourceType.Prd;
   }
 }

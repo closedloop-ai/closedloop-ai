@@ -3,7 +3,7 @@
 import { ArtifactStatus } from "@repo/api/src/types/artifact";
 import { useArtifact } from "@/hooks/queries/use-artifacts";
 import { useLinkedPlanId } from "@/hooks/queries/use-entity-links";
-import type { EngineerTicket } from "@/types/engineer";
+import { type EngineerTicket, TicketSourceType } from "@/types/engineer";
 
 /**
  * Resolves the implementation plan artifact for an engineer ticket.
@@ -13,7 +13,8 @@ import type { EngineerTicket } from "@/types/engineer";
  * use the ticket's own ID directly.
  */
 export function useTicketPlanArtifact(ticket: EngineerTicket) {
-  const isDirectPlan = ticket.sourceType === "Implementation Plan";
+  const isDirectPlan =
+    ticket.sourceType === TicketSourceType.ImplementationPlan;
   const issueId = ticket.issueId ?? "";
 
   // For Issue-sourced tickets, resolve via entity link chain
