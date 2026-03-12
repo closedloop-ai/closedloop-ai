@@ -13,6 +13,8 @@ import {
   RelayRequestError,
 } from "@/lib/engineer/relay-client";
 
+export const maxDuration = 300; // 5 minutes — relay proxies long-running streams (reviews, chat)
+
 const ENGINEER_RELAY_PREFIX = "/api/engineer-relay/";
 const ENGINEER_PATH_PREFIX = "/api/engineer/";
 

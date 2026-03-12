@@ -582,6 +582,11 @@ export class RelayClient {
         const maxEmptyPolls =
           STREAM_INACTIVITY_TIMEOUT_MS / STREAM_POLL_INTERVAL_MS;
 
+        // Emit a keepalive so the HTTP response is flushed immediately.
+        // Without this, Vercel may kill the function before the first
+        // poll returns data. The client JSON.parse will skip this line.
+        controller.enqueue(encoder.encode('{"type":"keepalive"}\n'));
+
         try {
           while (!cancelled && consecutiveEmptyPolls < maxEmptyPolls) {
             await new Promise((resolve) =>

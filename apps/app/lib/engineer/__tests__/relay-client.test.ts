@@ -143,6 +143,8 @@ describe("RelayClient.executeOperation preserves body fields", () => {
   });
 });
 
+const KEEPALIVE = '{"type":"keepalive"}\n';
+
 describe("RelayClient.streamOperation", () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -214,7 +216,7 @@ describe("RelayClient.streamOperation", () => {
       })
     );
     expect(output).toBe(
-      `${JSON.stringify({ content: "hello", type: "text" })}\n${JSON.stringify({ type: "done" })}\n`
+      `${KEEPALIVE}${JSON.stringify({ content: "hello", type: "text" })}\n${JSON.stringify({ type: "done" })}\n`
     );
   });
 
@@ -248,7 +250,7 @@ describe("RelayClient.streamOperation", () => {
     const output = await outputPromise;
 
     expect(output).toBe(
-      `${JSON.stringify({ type: "error", error: "Forbidden" })}\n`
+      `${KEEPALIVE}${JSON.stringify({ type: "error", error: "Forbidden" })}\n`
     );
     expect(log.error).toHaveBeenCalledWith(
       "Relay command event polling failed",
@@ -312,7 +314,7 @@ describe("RelayClient.streamOperation", () => {
         headers: { Authorization: "Bearer fresh-token" },
       })
     );
-    expect(output).toBe(`${JSON.stringify({ type: "done" })}\n`);
+    expect(output).toBe(`${KEEPALIVE}${JSON.stringify({ type: "done" })}\n`);
   });
 
   it("emits error when refresh returns null", async () => {
@@ -344,7 +346,7 @@ describe("RelayClient.streamOperation", () => {
     const output = await outputPromise;
 
     expect(output).toBe(
-      `${JSON.stringify({ type: "error", error: "Token expired" })}\n`
+      `${KEEPALIVE}${JSON.stringify({ type: "error", error: "Token expired" })}\n`
     );
   });
 
@@ -386,7 +388,7 @@ describe("RelayClient.streamOperation", () => {
 
     // Error should come from the retry response (500), not the original 401
     expect(output).toBe(
-      `${JSON.stringify({ type: "error", error: "Internal server error" })}\n`
+      `${KEEPALIVE}${JSON.stringify({ type: "error", error: "Internal server error" })}\n`
     );
   });
 
@@ -422,7 +424,7 @@ describe("RelayClient.streamOperation", () => {
 
     // Should emit the original 401 error, not the Clerk exception
     expect(output).toBe(
-      `${JSON.stringify({ type: "error", error: "Token expired" })}\n`
+      `${KEEPALIVE}${JSON.stringify({ type: "error", error: "Token expired" })}\n`
     );
   });
 
@@ -457,7 +459,7 @@ describe("RelayClient.streamOperation", () => {
 
     expect(refreshToken).not.toHaveBeenCalled();
     expect(output).toBe(
-      `${JSON.stringify({ type: "error", error: "Unauthorized" })}\n`
+      `${KEEPALIVE}${JSON.stringify({ type: "error", error: "Unauthorized" })}\n`
     );
   });
 
@@ -510,6 +512,6 @@ describe("RelayClient.streamOperation", () => {
         },
       })
     );
-    expect(output).toBe(`${JSON.stringify({ type: "done" })}\n`);
+    expect(output).toBe(`${KEEPALIVE}${JSON.stringify({ type: "done" })}\n`);
   });
 });
