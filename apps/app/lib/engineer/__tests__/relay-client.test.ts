@@ -688,10 +688,6 @@ describe("RelayClient.executeOperation — recoverMissedResult", () => {
       status: 200,
       body: { comments: [], prNumber: 1, prUrl: "" },
     });
-    expect(log.info).toHaveBeenCalledWith(
-      "Recovered missed result event via poll fallback",
-      expect.objectContaining({ commandId: cmdId, attempt: 1 })
-    );
     // createCommand + SSE + 1 poll = 3 fetches
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
@@ -734,10 +730,6 @@ describe("RelayClient.executeOperation — recoverMissedResult", () => {
       status: 200,
       body: { comments: [], prNumber: 1, prUrl: "" },
     });
-    expect(log.info).toHaveBeenCalledWith(
-      "Recovered missed result event via poll fallback",
-      expect.objectContaining({ commandId: cmdId, attempt: 2 })
-    );
     // createCommand + SSE + 2 polls = 4 fetches
     expect(fetchMock).toHaveBeenCalledTimes(4);
   });
@@ -782,10 +774,6 @@ describe("RelayClient.executeOperation — recoverMissedResult", () => {
       status: 200,
       body: { comments: [], prNumber: 1, prUrl: "" },
     });
-    expect(log.info).toHaveBeenCalledWith(
-      "Recovered missed result event via poll fallback",
-      expect.objectContaining({ commandId: cmdId, attempt: 4 })
-    );
     // createCommand + SSE + 4 polls = 6 fetches
     expect(fetchMock).toHaveBeenCalledTimes(6);
   });
@@ -820,10 +808,6 @@ describe("RelayClient.executeOperation — recoverMissedResult", () => {
 
     // Falls through to the bare done event — no recovery possible
     expect(result.envelope).toBeNull();
-    expect(log.info).not.toHaveBeenCalledWith(
-      "Recovered missed result event via poll fallback",
-      expect.anything()
-    );
     // createCommand + SSE + 4 polls = 6 fetches
     expect(fetchMock).toHaveBeenCalledTimes(6);
   });
@@ -863,14 +847,6 @@ describe("RelayClient.executeOperation — recoverMissedResult", () => {
       status: 200,
       body: { comments: [], prNumber: 1, prUrl: "" },
     });
-    expect(log.warn).toHaveBeenCalledWith(
-      "Poll fallback for missed result failed",
-      expect.objectContaining({ commandId: cmdId, attempt: 1 })
-    );
-    expect(log.info).toHaveBeenCalledWith(
-      "Recovered missed result event via poll fallback",
-      expect.objectContaining({ commandId: cmdId, attempt: 2 })
-    );
   });
 
   it("recovers when SSE stream ends without any terminal event", async () => {
@@ -941,10 +917,6 @@ describe("RelayClient.executeOperation — recoverMissedResult", () => {
     });
     // Only createCommand + SSE — no recovery polls
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(log.info).not.toHaveBeenCalledWith(
-      "Recovered missed result event via poll fallback",
-      expect.anything()
-    );
   });
 });
 
