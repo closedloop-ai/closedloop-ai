@@ -446,7 +446,11 @@ export function useReviewExecution(
               console.log(
                 `[review-stream] Reconnect response: ${reconnectResponse.status}`
               );
-              break;
+              // 4xx = auth/client error, stop retrying; 5xx = transient, keep trying
+              if (reconnectResponse.status < 500) {
+                break;
+              }
+              continue;
             }
 
             // Update commandId from reconnect response header

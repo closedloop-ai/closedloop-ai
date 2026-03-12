@@ -226,7 +226,11 @@ export function useChatStream(): UseChatStreamReturn {
                 console.log(
                   `[chat-stream] Reconnect response: ${reconnectResponse.status}`
                 );
-                break;
+                // 4xx = auth/client error, stop retrying; 5xx = transient, keep trying
+                if (reconnectResponse.status < 500) {
+                  break;
+                }
+                continue;
               }
 
               commandId ??=
