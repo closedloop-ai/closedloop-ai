@@ -6,34 +6,39 @@ import { useLinkedPlanId } from "@/hooks/queries/use-entity-links";
 import type { EngineerTicket } from "@/types/engineer";
 
 /**
- * Resolves the linked implementation plan artifact for an engineer ticket.
+ * Resolves the implementation plan artifact for an engineer ticket.
  *
- * Follows the Issue → EntityLink(PRODUCES) → Artifact lookup chain.
- * Returns the artifact's approval status and ID so callers can drive
- * approve / execute buttons without knowing the entity-link plumbing.
+ * For Issue-sourced tickets: follows Issue → EntityLink(PRODUCES) → Artifact.
+ * For Implementation Plan tickets: the ticket itself IS the artifact, so we
+ * use the ticket's own ID directly.
  */
 export function useTicketPlanArtifact(ticket: EngineerTicket) {
+  const isDirectPlan = ticket.sourceType === "Implementation Plan";
   const issueId = ticket.issueId ?? "";
 
+  // For Issue-sourced tickets, resolve via entity link chain
   const { linkedPlanId } = useLinkedPlanId(issueId, {
-    enabled: !!issueId,
+    enabled: !!issueId && !isDirectPlan,
   });
 
+  // For Implementation Plan tickets, the ticket ID is the artifact ID
+  const resolvedArtifactId = isDirectPlan ? ticket.id : linkedPlanId;
+
   const { data: artifact, isLoading: isArtifactLoading } = useArtifact(
-    linkedPlanId,
+    resolvedArtifactId,
     undefined,
-    { enabled: !!linkedPlanId }
+    { enabled: !!resolvedArtifactId }
   );
 
   const isApproved = artifact?.status === ArtifactStatus.Approved;
   const isExecuted = artifact?.status === ArtifactStatus.Executed;
-  const isStatusLoaded = !!linkedPlanId && !isArtifactLoading;
+  const isStatusLoaded = !!resolvedArtifactId && !isArtifactLoading;
 
   return {
-    artifactId: linkedPlanId || null,
+    artifactId: resolvedArtifactId || null,
     isApproved,
     isExecuted,
     isStatusLoaded,
-    hasLinkedPlan: !!linkedPlanId,
+    hasLinkedPlan: !!resolvedArtifactId,
   };
 }
