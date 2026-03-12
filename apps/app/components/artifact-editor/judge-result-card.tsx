@@ -113,7 +113,7 @@ export function JudgeResultCard({ item, artifactId }: JudgeResultCardProps) {
 
   const isPassing = effectiveScore >= item.threshold;
   const config = getScoreConfig(isPassing);
-  const displayName = item.promptName ?? item.caseId;
+  const displayName = item.metricName || item.promptName || item.caseId;
 
   return (
     <Collapsible

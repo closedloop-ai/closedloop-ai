@@ -74,7 +74,7 @@ export function EvaluationSection({
                 <JudgeResultCard
                   artifactId={artifactId}
                   item={item}
-                  key={item.caseId}
+                  key={item.judgeScoreId}
                 />
               ))}
             </div>

@@ -675,24 +675,25 @@ model ArtifactEvaluation {
 // via the artifact FK chain: judgeScore.evaluationId → artifactEvaluation.artifactId → artifact.organizationId.
 // All read-path queries MUST join through ArtifactEvaluation → Artifact and filter by organizationId.
 model JudgeScore {
-  id           String   @id @default(uuid(7)) @db.Uuid
-  evaluationId String   @map("evaluation_id") @db.Uuid
-  promptId     String?  @map("prompt_id") @db.Uuid
-  caseId       String   @map("case_id")
-  threshold    Float
-  score        Float
-  justification String  @map("justification") @db.Text
-  finalStatus  EvalStatus @map("final_status")
-  createdAt    DateTime @default(now()) @map("created_at")
+  id            String     @id @default(uuid(7)) @db.Uuid
+  evaluationId  String     @map("evaluation_id") @db.Uuid
+  promptId      String?    @map("prompt_id") @db.Uuid
+  caseId        String     @map("case_id")
+  metricName    String     @map("metric_name")
+  threshold     Float
+  score         Float
+  justification String     @map("justification") @db.Text
+  finalStatus   EvalStatus @map("final_status")
+  createdAt     DateTime   @default(now()) @map("created_at")
 
   // Relations
   evaluation       ArtifactEvaluation @relation(fields: [evaluationId], references: [id], onDelete: Cascade)
   prompt           Prompt?            @relation(fields: [promptId], references: [id], onDelete: SetNull)
   judgeHumanScores JudgeHumanScore[]
 
-  @@unique([evaluationId, caseId])
+  @@unique([evaluationId, caseId, metricName])
   @@index([promptId])
-  @@index([caseId, createdAt])
+  @@index([metricName, createdAt])
   @@map("judge_scores")
 }
 

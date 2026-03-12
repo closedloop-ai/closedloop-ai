@@ -1651,6 +1651,7 @@ Please try again or contact support if the issue persists.`
       const data: JudgeFeedbackItem[] = evaluation.judgeScores.map((js) => ({
         judgeScoreId: js.id,
         caseId: js.caseId,
+        metricName: js.metricName,
         score: js.score,
         threshold: js.threshold,
         justification: js.justification,
@@ -1693,10 +1694,7 @@ Please try again or contact support if the issue persists.`
     );
 
     // Group by artifactId, keep only the latest evaluation per artifact
-    const latestByArtifact = new Map<
-      string,
-      (typeof evaluations)[number]
-    >();
+    const latestByArtifact = new Map<string, (typeof evaluations)[number]>();
     for (const evaluation of evaluations) {
       if (!latestByArtifact.has(evaluation.artifactId)) {
         latestByArtifact.set(evaluation.artifactId, evaluation);
@@ -1708,6 +1706,7 @@ Please try again or contact support if the issue persists.`
       result[artifactId] = evaluation.judgeScores.map((js) => ({
         judgeScoreId: js.id,
         caseId: js.caseId,
+        metricName: js.metricName,
         score: js.score,
         threshold: js.threshold,
         justification: js.justification,

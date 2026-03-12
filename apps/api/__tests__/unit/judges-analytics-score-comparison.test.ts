@@ -46,7 +46,8 @@ function makeJudgeScoreRow(
 
 function mockDb(
   promptNames: string[],
-  judgeScores: ReturnType<typeof makeJudgeScoreRow>[]
+  judgeScores: ReturnType<typeof makeJudgeScoreRow>[],
+  metricExistsInOrg = true
 ) {
   const db = {
     prompt: {
@@ -58,6 +59,9 @@ function mockDb(
     },
     judgeScore: {
       findMany: vi.fn().mockResolvedValue(judgeScores),
+      findFirst: vi
+        .fn()
+        .mockResolvedValue(metricExistsInOrg ? { id: "js-existing" } : null),
     },
   };
   mockWithDbCall(db);
@@ -73,8 +77,8 @@ describe("judgesAnalyticsService.getJudgeScores", () => {
     vi.clearAllMocks();
   });
 
-  it("returns null when no prompts match the promptName", async () => {
-    mockDb([], []);
+  it("returns null when metricName does not exist in organization", async () => {
+    mockDb([], [], false);
 
     const result = await judgesAnalyticsService.getJudgeScores(
       ORG_ID,
@@ -263,6 +267,7 @@ describe("judgesAnalyticsService.getJudgeScores", () => {
           .mockResolvedValue([{ id: "prompt-clarity", name: "clarity_judge" }]),
       },
       judgeScore: {
+        findFirst: vi.fn().mockResolvedValue({ id: "js-existing" }),
         findMany: vi.fn().mockResolvedValue([
           {
             id: "js-1",
@@ -299,14 +304,28 @@ describe("judgesAnalyticsService.getJudgeScores", () => {
     });
   });
 
-  it("filters judge scores by promptId (relational)", async () => {
+  it("filters judge scores by resolved prompt IDs", async () => {
     const db = {
       prompt: {
-        findMany: vi
-          .fn()
-          .mockResolvedValue([{ id: "prompt-clarity", name: "clarity_judge" }]),
+        findMany: vi.fn().mockResolvedValue([
+          {
+            id: "prompt-1",
+            name: "clarity_judge",
+            version: 2,
+            content: "v2",
+            createdAt: new Date("2026-01-11T00:00:00.000Z"),
+          },
+          {
+            id: "prompt-2",
+            name: "clarity_judge",
+            version: 1,
+            content: "v1",
+            createdAt: new Date("2026-01-10T00:00:00.000Z"),
+          },
+        ]),
       },
       judgeScore: {
+        findFirst: vi.fn().mockResolvedValue({ id: "js-existing" }),
         findMany: vi.fn().mockResolvedValue([]),
       },
     };
@@ -321,9 +340,10 @@ describe("judgesAnalyticsService.getJudgeScores", () => {
     );
 
     const judgeScoreFindManyCall = db.judgeScore.findMany.mock.calls[0][0];
-    const promptIds: string[] = judgeScoreFindManyCall.where.promptId.in;
 
-    expect(promptIds).toContain("prompt-clarity");
-    expect(judgeScoreFindManyCall.where.caseId).toBeUndefined();
+    expect(judgeScoreFindManyCall.where.promptId).toEqual({
+      in: ["prompt-1", "prompt-2"],
+    });
+    expect(judgeScoreFindManyCall.where.metricName).toBeUndefined();
   });
 });

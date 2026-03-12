@@ -1,7 +1,7 @@
 /**
  * Route handler tests for judge analytics score comparison and ratings submission.
  *
- * Tests GET /judges-analytics/[promptName]/scores and
+ * Tests GET /judges-analytics/[metricName]/scores and
  * POST /artifacts/[artifactId]/judge-ratings with mocked services.
  */
 import { ArtifactType } from "@repo/api/src/types/artifact";
@@ -15,7 +15,7 @@ import {
   getUserJudgeRatings,
   submitJudgeRating,
 } from "@/app/artifacts/[id]/judge-ratings/service";
-import { GET as scoresGET } from "@/app/judges-analytics/[promptName]/scores/route";
+import { GET as scoresGET } from "@/app/judges-analytics/[metricName]/scores/route";
 import { judgesAnalyticsService } from "@/app/judges-analytics/service";
 import type { AuthContext } from "@/lib/auth/with-auth";
 import {
@@ -70,10 +70,10 @@ function makeJudgeScoresResponse(overrides = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// GET /judges-analytics/[promptName]/scores
+// GET /judges-analytics/[metricName]/scores
 // ---------------------------------------------------------------------------
 
-describe("GET /api/judges-analytics/[promptName]/scores", () => {
+describe("GET /api/judges-analytics/[metricName]/scores", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockAuthContext = createTestAuthContext();
@@ -90,7 +90,7 @@ describe("GET /api/judges-analytics/[promptName]/scores", () => {
     });
     const response = await scoresGET(
       request,
-      createMockRouteContext({ promptName: "clarity" })
+      createMockRouteContext({ metricName: "clarity" })
     );
 
     expect(response.status).toBe(200);
@@ -113,7 +113,7 @@ describe("GET /api/judges-analytics/[promptName]/scores", () => {
     });
     const response = await scoresGET(
       request,
-      createMockRouteContext({ promptName: "clarity" })
+      createMockRouteContext({ metricName: "clarity" })
     );
 
     expect(response.status).toBe(400);
@@ -128,20 +128,20 @@ describe("GET /api/judges-analytics/[promptName]/scores", () => {
     });
     const response = await scoresGET(
       request,
-      createMockRouteContext({ promptName: "clarity" })
+      createMockRouteContext({ metricName: "clarity" })
     );
 
     expect(response.status).toBe(400);
     expect(judgesAnalyticsService.getJudgeScores).not.toHaveBeenCalled();
   });
 
-  it("returns 400 when promptName is not canonical (contains hyphens)", async () => {
+  it("returns 400 when metricName is not canonical (contains hyphens)", async () => {
     const request = createMockRequest({
       url: "http://localhost:3002/api/judges-analytics/clarity-judge/scores?reportType=PLAN",
     });
     const response = await scoresGET(
       request,
-      createMockRouteContext({ promptName: "clarity-judge" })
+      createMockRouteContext({ metricName: "clarity-judge" })
     );
 
     expect(response.status).toBe(400);
@@ -156,7 +156,7 @@ describe("GET /api/judges-analytics/[promptName]/scores", () => {
     });
     const response = await scoresGET(
       request,
-      createMockRouteContext({ promptName: "unknown_judge" })
+      createMockRouteContext({ metricName: "unknown_judge" })
     );
 
     expect(response.status).toBe(404);
@@ -175,7 +175,7 @@ describe("GET /api/judges-analytics/[promptName]/scores", () => {
     });
     const response = await scoresGET(
       request,
-      createMockRouteContext({ promptName: "clarity" })
+      createMockRouteContext({ metricName: "clarity" })
     );
 
     expect(response.status).toBe(200);
@@ -200,7 +200,7 @@ describe("GET /api/judges-analytics/[promptName]/scores", () => {
     });
     const response = await scoresGET(
       request,
-      createMockRouteContext({ promptName: "clarity" })
+      createMockRouteContext({ metricName: "clarity" })
     );
 
     expect(response.status).toBe(500);

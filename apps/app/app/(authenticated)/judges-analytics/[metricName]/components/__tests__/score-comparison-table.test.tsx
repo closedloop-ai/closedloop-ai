@@ -26,6 +26,7 @@ afterEach(() => {
 function makeRow(overrides?: Partial<JudgeScoreRow>): JudgeScoreRow {
   return {
     judgeScoreId: "js-1",
+    metricName: "my-implementation-plan",
     artifactId: "artifact-1",
     artifactType: "IMPLEMENTATION_PLAN",
     artifactTitle: "My Implementation Plan",

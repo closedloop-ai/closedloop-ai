@@ -610,6 +610,50 @@ namespace.on("connection", (socket) => {
 // Start
 // ---------------------------------------------------------------------------
 
-server.listen(RELAY_PORT, "0.0.0.0", () => {
+let relayServerStarted = false;
+
+export async function startRelayServer(host = "0.0.0.0"): Promise<void> {
+  if (relayServerStarted || server.listening) {
+    relayServerStarted = true;
+    return;
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    const onError = (error: Error) => {
+      server.off("listening", onListening);
+      reject(error);
+    };
+    const onListening = () => {
+      server.off("error", onError);
+      resolve();
+    };
+
+    server.once("error", onError);
+    server.once("listening", onListening);
+    server.listen(RELAY_PORT, host);
+  });
+
+  relayServerStarted = true;
   log.info(`Relay server listening on port ${RELAY_PORT}`);
-});
+}
+
+export async function stopRelayServer(): Promise<void> {
+  if (!(relayServerStarted && server.listening)) {
+    relayServerStarted = false;
+    return;
+  }
+
+  // io.close() disconnects all Socket.IO clients first, then closes the HTTP server.
+  // Calling server.close() alone would wait for connections to drain; WebSocket
+  // connections are long-lived, so the promise may never resolve.
+  await io.close();
+
+  relayServerStarted = false;
+}
+
+if (process.env.NODE_ENV !== "test") {
+  startRelayServer().catch((error) => {
+    log.error("Failed to start relay server", { error });
+    process.exit(1);
+  });
+}

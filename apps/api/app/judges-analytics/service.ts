@@ -4,25 +4,22 @@ import {
   type EvaluationReportType,
   EvaluationReportType as EvaluationReportTypeValues,
 } from "@repo/api/src/types/evaluation";
-import {
-  type ArtifactCountBucket,
-  type ArtifactCountsGroupBy,
-  type ArtifactCountsResponse,
-  type ArtifactTypeGroup,
-  type CharacteristicLabel,
-  type JudgeAggregateStats,
-  type JudgeDetailResponse,
-  type JudgePromptVersion,
-  type JudgeScoreRow,
-  type JudgeScoresResponse,
-  type JudgeStatsResponse,
-  PR_TIMELINE_GRANULARITY_OPTIONS,
-  type PrHealthResponse,
-  type PrTimelineGranularity,
-  type RadarAxes,
+import type {
+  ArtifactCountBucket,
+  ArtifactCountsGroupBy,
+  ArtifactCountsResponse,
+  ArtifactTypeGroup,
+  CharacteristicLabel,
+  JudgeAggregateStats,
+  JudgeDetailResponse,
+  JudgePromptVersion,
+  JudgeScoreRow,
+  JudgeScoresResponse,
+  JudgeStatsResponse,
+  RadarAxes,
 } from "@repo/api/src/types/judges-analytics";
 import { computeMean as computeMeanFromUtils } from "@repo/api/src/utils/math";
-import { GitHubPRState, PromptType, withDb } from "@repo/database";
+import { PromptType, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { normalizeJudgeName } from "@/lib/judge-name-utils";
 
@@ -39,10 +36,7 @@ function formatDateKey(year: number, month: number, day: number): string {
   return `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 }
 
-function bucketKey(
-  d: Date,
-  groupBy: ArtifactCountsGroupBy | PrTimelineGranularity
-): string {
+function bucketKey(d: Date, groupBy: ArtifactCountsGroupBy): string {
   const date = new Date(d);
   const y = date.getUTCFullYear();
   const m = date.getUTCMonth();
@@ -64,141 +58,6 @@ function bucketKey(
     default:
       throw new Error(`Unknown groupBy value: ${groupBy}`);
   }
-}
-
-type PrRow = {
-  id: string;
-  state: string;
-  createdAt: Date;
-  mergedAt: Date | null;
-  reviewCommentCount: number;
-};
-
-type JudgeScoreWithPrs = {
-  evaluation: {
-    artifact: {
-      pullRequests: Array<{
-        id: string;
-        state: string;
-        createdAt: Date;
-        mergedAt: Date | null;
-        reviewComments: Array<{ id: string }>;
-      }>;
-    };
-  };
-};
-
-function flattenJudgeScoresToPrs(judgeScores: JudgeScoreWithPrs[]): PrRow[] {
-  const prMap = new Map<string, PrRow>();
-  for (const js of judgeScores) {
-    for (const pr of js.evaluation.artifact.pullRequests) {
-      if (!prMap.has(pr.id)) {
-        prMap.set(pr.id, {
-          id: pr.id,
-          state: pr.state,
-          createdAt: pr.createdAt,
-          mergedAt: pr.mergedAt,
-          reviewCommentCount: pr.reviewComments.length,
-        });
-      }
-    }
-  }
-  return Array.from(prMap.values());
-}
-
-const MS_PER_HOUR = 3_600_000;
-
-function computeAvgApprovalHours(
-  mergedPrs: Array<{ mergedAt: Date; createdAt: Date }>
-): number | null {
-  if (mergedPrs.length === 0) {
-    return null;
-  }
-  const approvalHours = mergedPrs.map(
-    (pr) => (pr.mergedAt.getTime() - pr.createdAt.getTime()) / MS_PER_HOUR
-  );
-  return computeMean(approvalHours);
-}
-
-function computeApprovalDistribution(
-  mergedPrs: Array<{ mergedAt: Date; createdAt: Date }>
-): Record<"lt1d" | "1to3d" | "3to7d" | "gt7d", number> {
-  const dist = { lt1d: 0, "1to3d": 0, "3to7d": 0, gt7d: 0 };
-  for (const pr of mergedPrs) {
-    const hours =
-      (pr.mergedAt.getTime() - pr.createdAt.getTime()) / MS_PER_HOUR;
-    if (hours < 24) {
-      dist.lt1d++;
-    } else if (hours < 72) {
-      dist["1to3d"]++;
-    } else if (hours < 168) {
-      dist["3to7d"]++;
-    } else {
-      dist.gt7d++;
-    }
-  }
-  return dist;
-}
-
-function buildPrTimeline(
-  prs: PrRow[],
-  startDate: Date,
-  endDate: Date,
-  granularity: PrTimelineGranularity
-): Array<{ bucket: string; openedCount: number }> {
-  const allBucketKeys = generateBucketRange(startDate, endDate, granularity);
-  const timelineCounts = new Map<string, number>();
-  for (const key of allBucketKeys) {
-    timelineCounts.set(key, 0);
-  }
-  for (const pr of prs) {
-    if (pr.createdAt >= startDate && pr.createdAt <= endDate) {
-      const key = bucketKey(pr.createdAt, granularity);
-      timelineCounts.set(key, (timelineCounts.get(key) ?? 0) + 1);
-    }
-  }
-  return [...timelineCounts.entries()]
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([bucket, openedCount]) => ({ bucket, openedCount }));
-}
-
-/** Generates all bucket keys between startDate and endDate for the given granularity. */
-function generateBucketRange(
-  startDate: Date,
-  endDate: Date,
-  granularity: PrTimelineGranularity
-): string[] {
-  const keys: string[] = [];
-  const current = new Date(startDate);
-
-  if (granularity === PR_TIMELINE_GRANULARITY_OPTIONS.Week) {
-    // Align to week start
-    const weekStart = getISOWeekStartDate(current);
-    current.setUTCFullYear(weekStart.getUTCFullYear());
-    current.setUTCMonth(weekStart.getUTCMonth());
-    current.setUTCDate(weekStart.getUTCDate());
-    while (current <= endDate) {
-      keys.push(
-        formatDateKey(
-          current.getUTCFullYear(),
-          current.getUTCMonth(),
-          current.getUTCDate()
-        )
-      );
-      current.setUTCDate(current.getUTCDate() + 7);
-    }
-  } else {
-    // Month granularity — align to start of month
-    current.setUTCDate(1);
-    while (current <= endDate) {
-      keys.push(
-        formatDateKey(current.getUTCFullYear(), current.getUTCMonth(), 1)
-      );
-      current.setUTCMonth(current.getUTCMonth() + 1);
-    }
-  }
-
-  return keys;
 }
 
 function getISOWeekStartDate(date: Date): Date {
@@ -501,6 +360,8 @@ export async function getCodeHumanRatingsByArtifact(
 /** Shape of a JudgeScore row with evaluation and artifact relations for aggregation. */
 export type JudgeScoreInput = {
   caseId: string;
+  metricName: string;
+  promptId: string | null;
   score: number;
   evaluation: {
     artifactId: string;
@@ -509,15 +370,24 @@ export type JudgeScoreInput = {
 };
 
 /** Aggregates judge scores by artifact type and judge name. */
+type AggregatedJudgeData = {
+  scores: number[];
+  artifactIds: Set<string>;
+  promptName: string;
+  metricName: string;
+};
+
 class JudgeScoreAggregator {
   private readonly data = new Map<
     ArtifactType,
-    Map<string, { scores: number[]; artifactIds: Set<string> }>
+    Map<string, AggregatedJudgeData>
   >();
 
   addScore(
     artifactType: ArtifactType,
-    judgeName: string,
+    aggregationKey: string,
+    promptName: string,
+    metricName: string,
     score: number,
     artifactId: string
   ): void {
@@ -526,41 +396,82 @@ class JudgeScoreAggregator {
     }
 
     const judgeMap = this.data.get(artifactType)!;
-    if (!judgeMap.has(judgeName)) {
-      judgeMap.set(judgeName, { scores: [], artifactIds: new Set() });
+    if (!judgeMap.has(aggregationKey)) {
+      judgeMap.set(aggregationKey, {
+        scores: [],
+        artifactIds: new Set(),
+        promptName,
+        metricName,
+      });
     }
 
-    const judgeData = judgeMap.get(judgeName)!;
+    const judgeData = judgeMap.get(aggregationKey)!;
     judgeData.scores.push(score);
     judgeData.artifactIds.add(artifactId);
   }
 
-  getResults(): Map<
-    ArtifactType,
-    Map<string, { scores: number[]; artifactIds: Set<string> }>
-  > {
+  getResults(): Map<ArtifactType, Map<string, AggregatedJudgeData>> {
     return this.data;
   }
 }
 
 /**
- * Aggregates JudgeScore rows into a nested map keyed by artifact type and judge name.
+ * For each row, determine the aggregation key.
+ * If the same metricName appears from multiple distinct promptIds, use
+ * "{normalizedPromptName}-{metricName}" as the key to disambiguate.
+ */
+function resolveAggregationKey(
+  row: JudgeScoreInput,
+  collisionMetrics: Set<string>,
+  promptNameById: Map<string, string>
+): string {
+  if (!collisionMetrics.has(row.metricName)) {
+    return row.metricName;
+  }
+  const promptName = row.promptId
+    ? (promptNameById.get(row.promptId) ?? row.metricName)
+    : "unknown";
+  return `${promptName}-${row.metricName}`;
+}
+
+function resolvePromptRouteName(
+  row: JudgeScoreInput,
+  promptNameById: Map<string, string>
+): string {
+  if (row.promptId) {
+    return promptNameById.get(row.promptId) ?? normalizeJudgeName(row.caseId);
+  }
+
+  return normalizeJudgeName(row.caseId);
+}
+
+/**
+ * Aggregates JudgeScore rows into a nested map keyed by artifact type and metricName.
  *
  * @param judgeScores - Array of JudgeScore rows with evaluation and artifact relations
- * @returns Nested map structure: artifactType -> caseId -> { scores, artifactIds }
+ * @param collisionMetrics - Set of metricNames that appear from multiple distinct promptIds
+ * @param promptNameById - Map from promptId to normalized prompt name (for collision resolution)
+ * @returns Nested map structure: artifactType -> metricName -> { scores, artifactIds }
  */
 export function aggregateJudgeScoreRows(
-  judgeScores: JudgeScoreInput[]
-): Map<
-  ArtifactType,
-  Map<string, { scores: number[]; artifactIds: Set<string> }>
-> {
+  judgeScores: JudgeScoreInput[],
+  collisionMetrics: Set<string> = new Set(),
+  promptNameById: Map<string, string> = new Map()
+): Map<ArtifactType, Map<string, AggregatedJudgeData>> {
   const aggregator = new JudgeScoreAggregator();
 
   for (const row of judgeScores) {
+    const aggregationKey = resolveAggregationKey(
+      row,
+      collisionMetrics,
+      promptNameById
+    );
+    const promptName = resolvePromptRouteName(row, promptNameById);
     aggregator.addScore(
       row.evaluation.artifact.type,
-      row.caseId,
+      aggregationKey,
+      promptName,
+      row.metricName,
       row.score,
       row.evaluation.artifactId
     );
@@ -571,10 +482,7 @@ export function aggregateJudgeScoreRows(
 
 /** Collects all unique artifact IDs from the aggregator across all types and judges. */
 function collectAllArtifactIds(
-  aggregator: Map<
-    ArtifactType,
-    Map<string, { scores: number[]; artifactIds: Set<string> }>
-  >
+  aggregator: Map<ArtifactType, Map<string, AggregatedJudgeData>>
 ): string[] {
   const allIds = new Set<string>();
   for (const judgeMap of aggregator.values()) {
@@ -589,10 +497,10 @@ function collectAllArtifactIds(
 
 /** Computes aggregate stats for a single judge given its scores and human ratings lookup. */
 function computeJudgeStats(
-  judgeName: string,
-  judgeData: { scores: number[]; artifactIds: Set<string> },
+  judgeDisplayName: string,
+  judgeData: AggregatedJudgeData,
   humanRatingsByArtifact: Map<string, number[]>,
-  judgeDescriptionByPromptName: Map<string, string>
+  judgeDescriptionByMetricName: Map<string, string>
 ): JudgeAggregateStats | null {
   const scores = judgeData.scores;
   const count = scores.length;
@@ -616,10 +524,11 @@ function computeJudgeStats(
   }
 
   return {
-    judgeName,
-    promptName: normalizeJudgeName(judgeName),
-    description:
-      judgeDescriptionByPromptName.get(normalizeJudgeName(judgeName)) ?? null,
+    judgeName: judgeDisplayName,
+    promptName: judgeData.promptName,
+    metricName: judgeData.metricName,
+    displayMetricName: judgeDisplayName,
+    description: judgeDescriptionByMetricName.get(judgeDisplayName) ?? null,
     artifactsEvaluated: judgeData.artifactIds.size,
     min,
     mean,
@@ -786,10 +695,142 @@ async function getJudgeDescriptionByPromptName(
 }
 
 /**
+ * Returns the description for a single JudgeScoreInput row, consulting promptId first
+ * then falling back to the prompt-name-based map via caseId.
+ */
+function resolveMetricDescription(
+  js: JudgeScoreInput,
+  descriptionById: Map<string, string>,
+  judgeDescriptionByPromptName: Map<string, string>
+): string | undefined {
+  if (js.promptId) {
+    const description = descriptionById.get(js.promptId);
+    if (description) {
+      return description;
+    }
+  }
+  return judgeDescriptionByPromptName.get(normalizeJudgeName(js.caseId));
+}
+
+/**
+ * Populates a metricName → description map for a set of JudgeScoreInput rows.
+ * Uses the provided descriptionById map for promptId lookups, falling back to
+ * prompt-name-based descriptions via caseId.
+ */
+function populateMetricDescriptionMap(
+  map: Map<string, string>,
+  judgeScores: JudgeScoreInput[],
+  descriptionById: Map<string, string>,
+  judgeDescriptionByPromptName: Map<string, string>,
+  collisionMetrics: Set<string>,
+  promptNameById: Map<string, string>
+): void {
+  for (const js of judgeScores) {
+    const key = resolveAggregationKey(js, collisionMetrics, promptNameById);
+    if (map.has(key)) {
+      continue;
+    }
+    const description = resolveMetricDescription(
+      js,
+      descriptionById,
+      judgeDescriptionByPromptName
+    );
+    if (description) {
+      map.set(key, description);
+    }
+  }
+}
+
+type CollisionResolution = {
+  collisionMetrics: Set<string>;
+  promptNameById: Map<string, string>;
+};
+
+/**
+ * Detects metrics that appear from multiple distinct promptIds and builds
+ * a promptId → normalizedName map for disambiguation.
+ */
+function detectMetricCollisions(
+  judgeScores: JudgeScoreInput[]
+): CollisionResolution {
+  const metricNameToPromptIds = new Map<string, Set<string>>();
+  for (const row of judgeScores) {
+    if (row.promptId) {
+      const ids =
+        metricNameToPromptIds.get(row.metricName) ?? new Set<string>();
+      ids.add(row.promptId);
+      metricNameToPromptIds.set(row.metricName, ids);
+    }
+  }
+
+  const collisionMetrics = new Set<string>();
+  for (const [metricName, promptIds] of metricNameToPromptIds) {
+    if (promptIds.size > 1) {
+      collisionMetrics.add(metricName);
+    }
+  }
+
+  const promptNameById = new Map<string, string>();
+  if (collisionMetrics.size > 0) {
+    for (const row of judgeScores) {
+      if (row.promptId && !promptNameById.has(row.promptId)) {
+        promptNameById.set(row.promptId, normalizeJudgeName(row.caseId));
+      }
+    }
+  }
+
+  return { collisionMetrics, promptNameById };
+}
+
+/**
+ * Builds a metricName → description map by looking up prompt descriptions for each promptId
+ * found in the judge scores. Falls back to the prompt-name-based descriptions when a
+ * promptId is not present.
+ */
+async function buildMetricNameDescriptionMap(
+  judgeScores: JudgeScoreInput[],
+  judgeDescriptionByPromptName: Map<string, string>,
+  collisionMetrics: Set<string>,
+  promptNameById: Map<string, string>
+): Promise<Map<string, string>> {
+  const promptIds = [
+    ...new Set(
+      judgeScores
+        .map((js) => js.promptId)
+        .filter((id): id is string => id !== null)
+    ),
+  ];
+
+  const map = new Map<string, string>();
+  let descriptionById = new Map<string, string>();
+
+  if (promptIds.length > 0) {
+    const prompts = await withDb((db) =>
+      db.prompt.findMany({
+        where: { id: { in: promptIds } },
+        select: { id: true, description: true },
+      })
+    );
+    descriptionById = new Map(prompts.map((p) => [p.id, p.description]));
+  }
+
+  populateMetricDescriptionMap(
+    map,
+    judgeScores,
+    descriptionById,
+    judgeDescriptionByPromptName,
+    collisionMetrics,
+    promptNameById
+  );
+
+  return map;
+}
+
+/**
  * Aggregation service for judges analytics.
  *
  * Queries JudgeScore rows within a date range and computes aggregate statistics
- * (min, mean, max, stdDev) grouped by artifact type and judge name (caseId).
+ * (min, mean, max, stdDev) grouped by artifact type and metricName.
  */
 export const judgesAnalyticsService = {
   /**
@@ -821,6 +862,8 @@ export const judgesAnalyticsService = {
         },
         select: {
           caseId: true,
+          metricName: true,
+          promptId: true,
           score: true,
           evaluation: {
             select: {
@@ -841,8 +884,24 @@ export const judgesAnalyticsService = {
       });
     }
 
-    // Aggregate scores by artifact type and judge name (caseId)
-    const aggregator = aggregateJudgeScoreRows(judgeScores);
+    // Detect collisions: same metricName from multiple distinct promptIds
+    const { collisionMetrics, promptNameById } =
+      detectMetricCollisions(judgeScores);
+
+    // Aggregate scores by artifact type and metricName
+    const aggregator = aggregateJudgeScoreRows(
+      judgeScores,
+      collisionMetrics,
+      promptNameById
+    );
+
+    // Build metricName → description map for the description lookup in computeJudgeStats
+    const judgeDescriptionByMetricName = await buildMetricNameDescriptionMap(
+      judgeScores,
+      judgeDescriptionByPromptName,
+      collisionMetrics,
+      promptNameById
+    );
 
     const types = Array.from(aggregator.keys());
     const artifactIds = collectAllArtifactIds(aggregator);
@@ -875,7 +934,7 @@ export const judgesAnalyticsService = {
           judgeName,
           judgeData,
           humanRatingsByArtifact,
-          judgeDescriptionByPromptName
+          judgeDescriptionByMetricName
         );
         if (stats) {
           judges.push(stats);
@@ -951,7 +1010,7 @@ export const judgesAnalyticsService = {
    * Get detailed statistics for a single judge identified by normalized prompt name.
    *
    * @param organizationId - Organization ID to scope the query
-   * @param promptName - URL-safe normalized judge name (e.g. "clarity")
+   * @param promptName - URL-safe normalized prompt name (e.g. "clarity")
    * @returns Full judge detail or null if not found
    */
   async getJudgeDetail(
@@ -1098,7 +1157,7 @@ export const judgesAnalyticsService = {
 
     const { promptIds } = resolved;
 
-    // Load judge scores by promptId (relational), scoped to org and reportType
+    // Load judge scores by prompt identity, scoped to org and reportType
     const judgeScores = await withDb((db) =>
       db.judgeScore.findMany({
         where: {
@@ -1111,6 +1170,7 @@ export const judgesAnalyticsService = {
         select: {
           id: true,
           score: true,
+          metricName: true,
           createdAt: true,
           evaluation: {
             select: {
@@ -1149,6 +1209,7 @@ export const judgesAnalyticsService = {
 
       return {
         judgeScoreId: js.id,
+        metricName: js.metricName,
         artifactId: js.evaluation.artifact.id,
         artifactType: js.evaluation.artifact.type,
         artifactTitle: js.evaluation.artifact.title,
@@ -1187,97 +1248,6 @@ export const judgesAnalyticsService = {
       ratedArtifacts,
       coveragePct,
       pagination: { page, pageSize, totalRows, totalPages },
-    };
-  },
-
-  /**
-   * Get aggregate PR health metrics for a judge (prompt), filtered by report type and date range.
-   *
-   * Privacy invariant: response contains only aggregate numeric data — never body, authorLogin,
-   * or authorAvatarUrl fields from GitHubPRReviewComment.
-   *
-   * @param organizationId - Organization ID to scope the query
-   * @param promptName - URL-safe normalized judge name
-   * @param reportType - Evaluation report type filter
-   * @param startDate - Start date (inclusive)
-   * @param endDate - End date (inclusive)
-   * @param granularity - Timeline bucket: "week" or "month"
-   * @returns PrHealthResponse with aggregate metrics or null when no matching judge found
-   */
-  async getPrHealthMetrics(
-    organizationId: string,
-    promptName: string,
-    reportType: EvaluationReportType,
-    startDate: Date,
-    endDate: Date,
-    granularity: PrTimelineGranularity
-  ): Promise<PrHealthResponse | null> {
-    const resolved = await resolveJudgePromptIds(organizationId, promptName);
-    if (resolved === null) {
-      return null;
-    }
-
-    const judgeScores = await withDb((db) =>
-      db.judgeScore.findMany({
-        where: {
-          promptId: { in: resolved.promptIds },
-          evaluation: {
-            reportType,
-            artifact: { organizationId },
-            createdAt: { gte: startDate, lte: endDate },
-          },
-        },
-        select: {
-          evaluation: {
-            select: {
-              artifact: {
-                select: {
-                  pullRequests: {
-                    select: {
-                      id: true,
-                      state: true,
-                      createdAt: true,
-                      mergedAt: true,
-                      reviewComments: { select: { id: true } },
-                    },
-                  },
-                },
-              },
-            },
-          },
-        },
-      })
-    );
-
-    const prs = flattenJudgeScoresToPrs(judgeScores).filter(
-      (pr) => pr.createdAt >= startDate && pr.createdAt <= endDate
-    );
-    const totalPrs = prs.length;
-    const openPrs = prs.filter((pr) => pr.state === GitHubPRState.OPEN).length;
-    const totalCommentCount = prs.reduce(
-      (acc, pr) => acc + pr.reviewCommentCount,
-      0
-    );
-    const avgCommentCount =
-      totalPrs > 0 ? computeMean(prs.map((pr) => pr.reviewCommentCount)) : 0;
-
-    const mergedPrs = prs.filter(
-      (pr): pr is PrRow & { mergedAt: Date } =>
-        pr.mergedAt != null && pr.state === GitHubPRState.MERGED
-    );
-    const avgApprovalHours = computeAvgApprovalHours(mergedPrs);
-    const approvalDistribution = computeApprovalDistribution(mergedPrs);
-    const timeline = buildPrTimeline(prs, startDate, endDate, granularity);
-
-    return {
-      totalPrs,
-      openPrs,
-      avgCommentCount,
-      totalCommentCount,
-      avgApprovalHours,
-      approvalDistribution,
-      timeline,
-      confidenceNote: `Based on ${totalPrs} PRs`,
     };
   },
 };

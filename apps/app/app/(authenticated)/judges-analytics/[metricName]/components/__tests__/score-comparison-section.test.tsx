@@ -86,6 +86,7 @@ function makeRows(
 ): JudgeScoresResponse["rows"] {
   return Array.from({ length: count }, (_, index) => ({
     judgeScoreId: `js-artifact-${index + 1}`,
+    metricName: `metric-${index + 1}`,
     artifactId: `artifact-${index + 1}`,
     artifactType: "IMPLEMENTATION_PLAN",
     artifactTitle: `Artifact ${index + 1}`,

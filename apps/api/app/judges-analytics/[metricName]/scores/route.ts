@@ -1,4 +1,4 @@
-import type { PrHealthResponse } from "@repo/api/src/types/judges-analytics";
+import type { JudgeScoresResponse } from "@repo/api/src/types/judges-analytics";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { parsePromptNameParam } from "@/lib/judge-name-utils";
 import {
@@ -9,39 +9,33 @@ import {
   successResponse,
 } from "@/lib/route-utils";
 import { judgesAnalyticsService } from "../../service";
-import { parseDateRange, prHealthQueryValidator } from "../../validators";
+import { scoreComparisonQueryValidator } from "../../validators";
 
 export const GET = withAnyAuth<
-  PrHealthResponse,
-  "/judges-analytics/[promptName]/pr-health"
+  JudgeScoresResponse,
+  "/judges-analytics/[metricName]/scores"
 >(async ({ user }, _request, params) => {
   try {
     const { params: query, errorResponse: queryErrorResponse } =
-      parseQueryParams(_request, prHealthQueryValidator);
+      parseQueryParams(_request, scoreComparisonQueryValidator);
     if (queryErrorResponse) {
       return queryErrorResponse;
     }
 
-    const { promptName: rawPromptName } = await params;
+    const { metricName: rawPromptName } = await params;
     const promptName = parsePromptNameParam(rawPromptName);
     if (promptName === null) {
       return badRequestResponse(
-        "Invalid promptName format: must be alphanumeric with underscores"
+        "Invalid metricName format: must be alphanumeric with underscores"
       );
     }
 
-    const { startDate, endDate } = parseDateRange(
-      query.startDate,
-      query.endDate
-    );
-
-    const result = await judgesAnalyticsService.getPrHealthMetrics(
+    const result = await judgesAnalyticsService.getJudgeScores(
       user.organizationId,
       promptName,
       query.reportType,
-      startDate,
-      endDate,
-      query.granularity
+      query.page,
+      query.pageSize
     );
 
     if (!result) {
@@ -50,6 +44,6 @@ export const GET = withAnyAuth<
 
     return successResponse(result);
   } catch (error) {
-    return errorResponse("Failed to fetch PR health metrics", error);
+    return errorResponse("Failed to fetch judge scores", error);
   }
 });
