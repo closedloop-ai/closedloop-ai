@@ -5,7 +5,6 @@ import {
   openSync,
   readFileSync,
   rmSync,
-  utimesSync,
   writeFileSync,
   writeSync,
 } from "node:fs";
@@ -262,14 +261,12 @@ describe("sessions", () => {
       expect(existsSync(join(testDir, "sessions.json.lock"))).toBe(false);
     });
 
-    it("recovers from stale lock held by dead PID", () => {
-      // Pre-create a lock file with a dead PID and old timestamp
+    it("recovers from lock held by dead PID (regardless of age)", () => {
+      // Pre-create a recent lock file with a dead PID
       const lockPath = join(testDir, "sessions.json.lock");
       writeFileSync(lockPath, String(999_999_999));
-      const oldTime = new Date(Date.now() - 10_000);
-      utimesSync(lockPath, oldTime, oldTime);
 
-      // Should succeed — stale lock is cleaned up during backoff
+      // Should succeed — dead PID detected and lock removed
       upsertSession({
         ticketId: "AI-10",
         repoPath: "/repo",

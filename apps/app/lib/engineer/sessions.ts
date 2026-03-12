@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { migrateLegacySessions } from "@/lib/engineer/migrate-sessions";
 
 export type PersistedSession = {
   ticketId: string;
@@ -89,9 +90,23 @@ function withSessionsLock<T>(fn: () => T): T {
         throw err;
       }
 
-      // Clean stale locks (>5s old — owner likely crashed)
+      // Clean stale locks — only if owner PID is dead or lock is old+unreadable
       try {
-        if (Date.now() - statSync(getSessionsLock()).mtimeMs > LOCK_STALE_MS) {
+        const lockContent = readFileSync(getSessionsLock(), "utf-8").trim();
+        const ownerPid = Number.parseInt(lockContent, 10);
+        if (Number.isFinite(ownerPid)) {
+          try {
+            process.kill(ownerPid, 0);
+            // Owner is alive — leave the lock alone
+          } catch {
+            // Owner is dead — safe to remove
+            unlinkSync(getSessionsLock());
+          }
+        } else if (
+          Date.now() - statSync(getSessionsLock()).mtimeMs >
+          LOCK_STALE_MS
+        ) {
+          // Malformed content and old — remove
           unlinkSync(getSessionsLock());
         }
       } catch {
@@ -128,6 +143,7 @@ function withSessionsLock<T>(fn: () => T): T {
 
 export function loadSessions(): SessionsConfig {
   ensureDir();
+  migrateLegacySessions();
   if (!existsSync(getSessionsFile())) {
     return { sessions: [] };
   }

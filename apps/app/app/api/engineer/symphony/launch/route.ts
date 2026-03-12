@@ -484,16 +484,21 @@ export async function POST(request: NextRequest) {
           );
         }
 
-        // Persist session server-side so it survives client tab close
-        upsertSession({
-          ticketId: ticketIdentifier,
-          repoPath,
-          worktreePath: worktreeDir,
-          pid: result.pid,
-          contextRepoPaths: ticket?.contextRepoPaths,
-          baseBranch: mergedMeta?.baseBranch,
-          parentTicketId: mergedMeta?.parentTicketId,
-        });
+        // Persist session server-side so it survives client tab close.
+        // Non-fatal: the process is already running at this point.
+        try {
+          upsertSession({
+            ticketId: ticketIdentifier,
+            repoPath,
+            worktreePath: worktreeDir,
+            pid: result.pid,
+            contextRepoPaths: ticket?.contextRepoPaths,
+            baseBranch: mergedMeta?.baseBranch,
+            parentTicketId: mergedMeta?.parentTicketId,
+          });
+        } catch {
+          // Lock contention — client will persist via POST /sessions
+        }
 
         return result.response;
       }
@@ -555,16 +560,21 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      // Persist session server-side so it survives client tab close
-      upsertSession({
-        ticketId: ticketIdentifier,
-        repoPath,
-        worktreePath: worktreeDir,
-        pid: result.pid,
-        contextRepoPaths: ticket?.contextRepoPaths,
-        baseBranch: worktreeResult.resolvedBaseBranch,
-        parentTicketId: worktreeResult.parentTicketId ?? undefined,
-      });
+      // Persist session server-side so it survives client tab close.
+      // Non-fatal: the process is already running at this point.
+      try {
+        upsertSession({
+          ticketId: ticketIdentifier,
+          repoPath,
+          worktreePath: worktreeDir,
+          pid: result.pid,
+          contextRepoPaths: ticket?.contextRepoPaths,
+          baseBranch: worktreeResult.resolvedBaseBranch,
+          parentTicketId: worktreeResult.parentTicketId ?? undefined,
+        });
+      } catch {
+        // Lock contention — client will persist via POST /sessions
+      }
 
       return result.response;
     } finally {
