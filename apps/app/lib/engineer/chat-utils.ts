@@ -183,21 +183,75 @@ function dispatchStreamEvent(
   return accumulated;
 }
 
+export type ReadChatStreamResult = {
+  accumulated: string;
+  commandId?: string;
+  lastSeq?: number;
+  completed: boolean;
+  terminalError: boolean;
+  lastRelayError?: string;
+};
+
 export async function readChatStream(
   reader: ReadableStreamDefaultReader<Uint8Array>,
-  handlers: StreamEventHandlers
-): Promise<void> {
-  let accumulated = "";
+  handlers: StreamEventHandlers,
+  options?: { initialContent?: string }
+): Promise<ReadChatStreamResult> {
+  let accumulated = options?.initialContent ?? "";
+  let commandId: string | undefined;
+  let lastSeq: number | undefined;
+  let completed = false;
+  let terminalError = false;
+  let lastRelayError: string | undefined;
 
   for await (const line of readNdjsonLines(reader)) {
     try {
       const parsed = JSON.parse(line);
       handlers.onEvent?.(parsed);
+
+      // Track relay metadata
+      if (parsed.type === "relay_meta" && parsed.commandId) {
+        commandId = parsed.commandId;
+      }
+      if (typeof parsed._seq === "number") {
+        lastSeq = parsed._seq;
+      }
+
+      // Intercept error events to classify terminal vs relay
+      if (parsed.type === "error") {
+        if (parsed.terminal === true) {
+          terminalError = true;
+          handlers.onError(parsed.error ?? "Command failed");
+          continue;
+        }
+        if (parsed.relay === true) {
+          // Suppress relay transport errors — reconnect loop will handle
+          lastRelayError = parsed.error ?? "Relay connection lost";
+          continue;
+        }
+      }
+
+      // Track completion
+      if (parsed.type === "result" || parsed.type === "done") {
+        completed = true;
+      }
+
       accumulated = dispatchStreamEvent(parsed, handlers, accumulated);
     } catch {
       // Not JSON - ignore
     }
   }
+
+  // If stream ended without completion and we have a deferred relay error,
+  // it will be surfaced by the reconnect logic in the hook if exhausted.
+  return {
+    accumulated,
+    commandId,
+    lastSeq,
+    completed,
+    terminalError,
+    lastRelayError,
+  };
 }
 
 /**

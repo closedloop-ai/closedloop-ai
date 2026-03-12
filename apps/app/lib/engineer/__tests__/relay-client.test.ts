@@ -47,6 +47,10 @@ function makeRelayRequest(path: string): RelayHttpRequestPayload {
   };
 }
 
+function relayMeta(commandId: string): string {
+  return `${JSON.stringify({ type: "relay_meta", commandId })}\n`;
+}
+
 describe("isStreamingEngineerRequest", () => {
   it("identifies known streaming engineer endpoints", () => {
     expect(
@@ -157,6 +161,96 @@ describe("RelayClient.streamOperation", () => {
     vi.clearAllMocks();
   });
 
+  it("returns { stream, commandId } and emits relay_meta", async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonResponse({
+          success: true,
+          data: { commandId: "cmd-meta", status: "queued" },
+        })
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          success: true,
+          data: [
+            {
+              commandId: "cmd-meta",
+              sequence: 1,
+              eventType: "done",
+              data: {},
+              createdAt: "2026-03-06T12:00:00.000Z",
+            },
+          ],
+        })
+      );
+
+    const client = new RelayClient("http://api.test", "token-123");
+    const result = await client.streamOperation(
+      "target-1",
+      makeRelayRequest("/api/engineer/symphony/chat/ENG-123")
+    );
+
+    expect(result.commandId).toBe("cmd-meta");
+    expect(result.stream).toBeInstanceOf(ReadableStream);
+
+    const outputPromise = readAllChunks(result.stream.getReader());
+    await vi.advanceTimersByTimeAsync(1000);
+    const output = await outputPromise;
+
+    expect(output).toContain(KEEPALIVE);
+    expect(output).toContain(relayMeta("cmd-meta"));
+  });
+
+  it("embeds _seq in forwarded events", async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonResponse({
+          success: true,
+          data: { commandId: "cmd-seq", status: "queued" },
+        })
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          success: true,
+          data: [
+            {
+              commandId: "cmd-seq",
+              sequence: 1,
+              eventType: "chunk",
+              data: { content: "hello" },
+              createdAt: "2026-03-06T12:00:00.000Z",
+            },
+            {
+              commandId: "cmd-seq",
+              sequence: 2,
+              eventType: "done",
+              data: {},
+              createdAt: "2026-03-06T12:00:01.000Z",
+            },
+          ],
+        })
+      );
+
+    const client = new RelayClient("http://api.test", "token-123");
+    const { stream } = await client.streamOperation(
+      "target-1",
+      makeRelayRequest("/api/engineer/symphony/chat/ENG-123")
+    );
+
+    const outputPromise = readAllChunks(stream.getReader());
+    await vi.advanceTimersByTimeAsync(1000);
+    const output = await outputPromise;
+
+    const lines = output.trim().split("\n");
+    // Line 0: keepalive, Line 1: relay_meta, Line 2: chunk, Line 3: done
+    const chunkLine = JSON.parse(lines[2]);
+    expect(chunkLine._seq).toBe(1);
+    const doneLine = JSON.parse(lines[3]);
+    expect(doneLine._seq).toBe(2);
+  });
+
   it("polls command events with no-store caching disabled", async () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock
@@ -195,7 +289,7 @@ describe("RelayClient.streamOperation", () => {
       );
 
     const client = new RelayClient("http://api.test", "token-123");
-    const stream = await client.streamOperation(
+    const { stream } = await client.streamOperation(
       "target-1",
       makeRelayRequest("/api/engineer/symphony/chat/ENG-123")
     );
@@ -204,9 +298,10 @@ describe("RelayClient.streamOperation", () => {
     await vi.advanceTimersByTimeAsync(2000);
     const output = await outputPromise;
 
+    // Poll URL now includes afterSequence=0
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
-      "http://api.test/compute-targets/target-1/commands/cmd-1/events",
+      "http://api.test/compute-targets/target-1/commands/cmd-1/events?afterSequence=0",
       expect.objectContaining({
         method: "GET",
         cache: "no-store",
@@ -215,12 +310,14 @@ describe("RelayClient.streamOperation", () => {
         },
       })
     );
-    expect(output).toBe(
-      `${KEEPALIVE}${JSON.stringify({ content: "hello", type: "text" })}\n${JSON.stringify({ type: "done" })}\n`
+    expect(output).toContain(KEEPALIVE);
+    expect(output).toContain(
+      `${JSON.stringify({ content: "hello", type: "text", _seq: 1 })}\n`
     );
+    expect(output).toContain(`${JSON.stringify({ type: "done", _seq: 2 })}\n`);
   });
 
-  it("emits an error event when polling fails", async () => {
+  it("emits an error event with relay:true when polling fails", async () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock
       .mockResolvedValueOnce(
@@ -240,7 +337,7 @@ describe("RelayClient.streamOperation", () => {
       );
 
     const client = new RelayClient("http://api.test", "token-123");
-    const stream = await client.streamOperation(
+    const { stream } = await client.streamOperation(
       "target-1",
       makeRelayRequest("/api/engineer/symphony/chat/ENG-123")
     );
@@ -249,8 +346,8 @@ describe("RelayClient.streamOperation", () => {
     await vi.advanceTimersByTimeAsync(1000);
     const output = await outputPromise;
 
-    expect(output).toBe(
-      `${KEEPALIVE}${JSON.stringify({ type: "error", error: "Forbidden" })}\n`
+    expect(output).toContain(
+      `${JSON.stringify({ type: "error", error: "Forbidden", relay: true })}\n`
     );
     expect(log.error).toHaveBeenCalledWith(
       "Relay command event polling failed",
@@ -296,7 +393,7 @@ describe("RelayClient.streamOperation", () => {
 
     const client = new RelayClient("http://api.test", "expired-token");
     client.setRefreshToken(refreshToken);
-    const stream = await client.streamOperation(
+    const { stream } = await client.streamOperation(
       "target-1",
       makeRelayRequest("/api/engineer/symphony/chat/ENG-123")
     );
@@ -314,7 +411,7 @@ describe("RelayClient.streamOperation", () => {
         headers: { Authorization: "Bearer fresh-token" },
       })
     );
-    expect(output).toBe(`${KEEPALIVE}${JSON.stringify({ type: "done" })}\n`);
+    expect(output).toContain(`${JSON.stringify({ type: "done", _seq: 1 })}\n`);
   });
 
   it("emits error when refresh returns null", async () => {
@@ -336,7 +433,7 @@ describe("RelayClient.streamOperation", () => {
 
     const client = new RelayClient("http://api.test", "expired-token");
     client.setRefreshToken(refreshToken);
-    const stream = await client.streamOperation(
+    const { stream } = await client.streamOperation(
       "target-1",
       makeRelayRequest("/api/engineer/symphony/chat/ENG-123")
     );
@@ -345,8 +442,8 @@ describe("RelayClient.streamOperation", () => {
     await vi.advanceTimersByTimeAsync(1000);
     const output = await outputPromise;
 
-    expect(output).toBe(
-      `${KEEPALIVE}${JSON.stringify({ type: "error", error: "Token expired" })}\n`
+    expect(output).toContain(
+      `${JSON.stringify({ type: "error", error: "Token expired", relay: true })}\n`
     );
   });
 
@@ -377,7 +474,7 @@ describe("RelayClient.streamOperation", () => {
 
     const client = new RelayClient("http://api.test", "expired-token");
     client.setRefreshToken(refreshToken);
-    const stream = await client.streamOperation(
+    const { stream } = await client.streamOperation(
       "target-1",
       makeRelayRequest("/api/engineer/symphony/chat/ENG-123")
     );
@@ -387,8 +484,8 @@ describe("RelayClient.streamOperation", () => {
     const output = await outputPromise;
 
     // Error should come from the retry response (500), not the original 401
-    expect(output).toBe(
-      `${KEEPALIVE}${JSON.stringify({ type: "error", error: "Internal server error" })}\n`
+    expect(output).toContain(
+      `${JSON.stringify({ type: "error", error: "Internal server error", relay: true })}\n`
     );
   });
 
@@ -413,7 +510,7 @@ describe("RelayClient.streamOperation", () => {
 
     const client = new RelayClient("http://api.test", "expired-token");
     client.setRefreshToken(refreshToken);
-    const stream = await client.streamOperation(
+    const { stream } = await client.streamOperation(
       "target-1",
       makeRelayRequest("/api/engineer/symphony/chat/ENG-123")
     );
@@ -423,8 +520,8 @@ describe("RelayClient.streamOperation", () => {
     const output = await outputPromise;
 
     // Should emit the original 401 error, not the Clerk exception
-    expect(output).toBe(
-      `${KEEPALIVE}${JSON.stringify({ type: "error", error: "Token expired" })}\n`
+    expect(output).toContain(
+      `${JSON.stringify({ type: "error", error: "Token expired", relay: true })}\n`
     );
   });
 
@@ -448,7 +545,7 @@ describe("RelayClient.streamOperation", () => {
       "internal-secret"
     );
     client.setRefreshToken(refreshToken);
-    const stream = await client.streamOperation(
+    const { stream } = await client.streamOperation(
       "target-1",
       makeRelayRequest("/api/engineer/symphony/chat/ENG-123")
     );
@@ -458,8 +555,8 @@ describe("RelayClient.streamOperation", () => {
     const output = await outputPromise;
 
     expect(refreshToken).not.toHaveBeenCalled();
-    expect(output).toBe(
-      `${KEEPALIVE}${JSON.stringify({ type: "error", error: "Unauthorized" })}\n`
+    expect(output).toContain(
+      `${JSON.stringify({ type: "error", error: "Unauthorized", relay: true })}\n`
     );
   });
 
@@ -492,7 +589,7 @@ describe("RelayClient.streamOperation", () => {
       "token-123",
       "internal-secret"
     );
-    const stream = await client.streamOperation(
+    const { stream } = await client.streamOperation(
       "target-1",
       makeRelayRequest("/api/engineer/symphony/chat/ENG-123")
     );
@@ -503,7 +600,7 @@ describe("RelayClient.streamOperation", () => {
 
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
-      "http://api.test/internal/compute-targets/target-1/commands/cmd-3/events",
+      "http://api.test/internal/compute-targets/target-1/commands/cmd-3/events?afterSequence=0",
       expect.objectContaining({
         method: "GET",
         cache: "no-store",
@@ -512,6 +609,77 @@ describe("RelayClient.streamOperation", () => {
         },
       })
     );
-    expect(output).toBe(`${KEEPALIVE}${JSON.stringify({ type: "done" })}\n`);
+    expect(output).toContain(`${JSON.stringify({ type: "done", _seq: 1 })}\n`);
+  });
+});
+
+describe("RelayClient.resumeStream", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.stubGlobal("fetch", vi.fn());
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+  });
+
+  it("skips createCommand and polls from afterSequence", async () => {
+    const fetchMock = vi.mocked(fetch);
+    // No createCommand call — only poll
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        success: true,
+        data: [
+          {
+            commandId: "cmd-resume",
+            sequence: 6,
+            eventType: "chunk",
+            data: { content: "continued" },
+            createdAt: "2026-03-06T12:00:00.000Z",
+          },
+          {
+            commandId: "cmd-resume",
+            sequence: 7,
+            eventType: "done",
+            data: {},
+            createdAt: "2026-03-06T12:00:01.000Z",
+          },
+        ],
+      })
+    );
+
+    const client = new RelayClient("http://api.test", "token-123");
+    const { stream, commandId } = await client.resumeStream(
+      "target-1",
+      "cmd-resume",
+      5
+    );
+
+    expect(commandId).toBe("cmd-resume");
+
+    const outputPromise = readAllChunks(stream.getReader());
+    await vi.advanceTimersByTimeAsync(1000);
+    const output = await outputPromise;
+
+    // Should include afterSequence=5 in the poll URL
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://api.test/compute-targets/target-1/commands/cmd-resume/events?afterSequence=5",
+      expect.objectContaining({
+        method: "GET",
+        cache: "no-store",
+      })
+    );
+
+    // Only 1 fetch call — no createCommand
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    const lines = output.trim().split("\n");
+    // keepalive + relay_meta + chunk + done
+    expect(lines).toHaveLength(4);
+    const chunkLine = JSON.parse(lines[2]);
+    expect(chunkLine._seq).toBe(6);
+    expect(chunkLine.content).toBe("continued");
   });
 });

@@ -33,6 +33,8 @@ function collectRelayHeaders(request: NextRequest): Record<string, string> {
     "authorization",
     "cookie",
     "x-compute-target",
+    "x-relay-command-id",
+    "x-relay-after-sequence",
     "host",
     "content-length",
   ]);
@@ -212,7 +214,17 @@ async function handleRelayRequest(request: NextRequest): Promise<Response> {
   );
 
   if (isStreaming) {
-    const stream = await relayClient.streamOperation(targetId, relayRequest);
+    // Reconnect support: if the client provides a commandId, resume instead
+    // of creating a new command. The afterSequence tells us where to pick up.
+    const reconnectCommandId = request.headers.get("x-relay-command-id");
+    const afterSeqRaw = Number(request.headers.get("x-relay-after-sequence"));
+    const afterSequence =
+      Number.isInteger(afterSeqRaw) && afterSeqRaw >= 0 ? afterSeqRaw : 0;
+
+    const { stream, commandId } = reconnectCommandId
+      ? relayClient.resumeStream(targetId, reconnectCommandId, afterSequence)
+      : await relayClient.streamOperation(targetId, relayRequest);
+
     // Body is NDJSON but we use text/event-stream so Vercel's CDN layer
     // treats this as an SSE response and skips Brotli/gzip compression
     // that would otherwise buffer the entire stream before delivery.
@@ -226,6 +238,7 @@ async function handleRelayRequest(request: NextRequest): Promise<Response> {
         "X-Accel-Buffering": "no",
         "X-Content-Type-Options": "nosniff",
         Connection: "keep-alive",
+        "X-Relay-Command-Id": commandId,
       },
     });
   }

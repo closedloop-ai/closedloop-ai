@@ -7,7 +7,7 @@ import type {
 import { log } from "@repo/observability/log";
 
 const RESULT_STREAM_TIMEOUT_MS = 120_000;
-const STREAM_INACTIVITY_TIMEOUT_MS = 300_000;
+const STREAM_INACTIVITY_TIMEOUT_MS = 270_000; // Must be < maxDuration (300s) to allow error flush
 const STREAM_POLL_INTERVAL_MS = 1000;
 
 export type RelayEncodedBody =
@@ -501,14 +501,18 @@ export class RelayClient {
 
   private async pollCommandEvents(
     targetId: string,
-    commandId: string
+    commandId: string,
+    afterSequence?: number
   ): Promise<DesktopCommandEvent[]> {
     const useInternalRoute =
       typeof this.internalApiSecret === "string" &&
       this.internalApiSecret.length > 0;
-    const url = useInternalRoute
+    let url = useInternalRoute
       ? `${this.apiOrigin}/internal/compute-targets/${encodeURIComponent(targetId)}/commands/${encodeURIComponent(commandId)}/events`
       : `${this.apiOrigin}/compute-targets/${encodeURIComponent(targetId)}/commands/${encodeURIComponent(commandId)}/events`;
+    if (afterSequence != null) {
+      url += `?afterSequence=${afterSequence}`;
+    }
     let response = await fetch(url, {
       method: "GET",
       cache: "no-store",
@@ -558,34 +562,37 @@ export class RelayClient {
     return payload.data;
   }
 
-  async streamOperation(
+  /**
+   * Shared poll loop used by both `streamOperation` and `resumeStream`.
+   * Emits keepalive + relay_meta at start, then polls for events as NDJSON.
+   */
+  private _createPollingStream(
     targetId: string,
-    request: RelayHttpRequestPayload
-  ): Promise<ReadableStream<Uint8Array>> {
-    const operationId = crypto.randomUUID();
-    const commandInput = toDesktopCommandInput(operationId, request, true);
-    const { commandId } = await this.createCommand(targetId, commandInput);
-
+    commandId: string,
+    afterSequence: number
+  ): ReadableStream<Uint8Array> {
     const encoder = new TextEncoder();
     const self = this;
-
-    // Poll-based streaming — avoids SSE buffering issues in Next.js dev server.
-    // Events are polled from the DB every second and forwarded as NDJSON.
     let cancelled = false;
+
     return new ReadableStream({
       cancel() {
         cancelled = true;
       },
       async start(controller) {
-        let lastSequence = 0;
+        let lastSequence = afterSequence;
         let consecutiveEmptyPolls = 0;
         const maxEmptyPolls =
           STREAM_INACTIVITY_TIMEOUT_MS / STREAM_POLL_INTERVAL_MS;
 
-        // Emit a keepalive so the HTTP response is flushed immediately.
-        // Without this, Vercel may kill the function before the first
-        // poll returns data. The client JSON.parse will skip this line.
+        // Emit keepalive so the HTTP response is flushed immediately.
         controller.enqueue(encoder.encode('{"type":"keepalive"}\n'));
+        // Emit relay_meta with commandId so the client can reconnect.
+        controller.enqueue(
+          encoder.encode(
+            `${JSON.stringify({ type: "relay_meta", commandId })}\n`
+          )
+        );
 
         try {
           while (!cancelled && consecutiveEmptyPolls < maxEmptyPolls) {
@@ -593,7 +600,11 @@ export class RelayClient {
               setTimeout(resolve, STREAM_POLL_INTERVAL_MS)
             );
 
-            const events = await self.pollCommandEvents(targetId, commandId);
+            const events = await self.pollCommandEvents(
+              targetId,
+              commandId,
+              lastSequence
+            );
             if (cancelled) {
               break;
             }
@@ -607,6 +618,7 @@ export class RelayClient {
                 lastSequence = event.sequence;
                 foundNew = true;
                 const output = mapCommandEventToNdjsonLine(event);
+                output._seq = event.sequence;
                 controller.enqueue(
                   encoder.encode(`${JSON.stringify(output)}\n`)
                 );
@@ -628,7 +640,7 @@ export class RelayClient {
           // Inactivity timeout reached
           controller.enqueue(
             encoder.encode(
-              `${JSON.stringify({ type: "error", error: "Stream timed out due to inactivity" })}\n`
+              `${JSON.stringify({ type: "error", error: "Stream timed out due to inactivity", relay: true })}\n`
             )
           );
           controller.close();
@@ -647,6 +659,7 @@ export class RelayClient {
                     error instanceof Error
                       ? error.message
                       : "Relay command event polling failed",
+                  relay: true,
                 })}\n`
               )
             );
@@ -655,5 +668,29 @@ export class RelayClient {
         }
       },
     });
+  }
+
+  async streamOperation(
+    targetId: string,
+    request: RelayHttpRequestPayload
+  ): Promise<{ stream: ReadableStream<Uint8Array>; commandId: string }> {
+    const operationId = crypto.randomUUID();
+    const commandInput = toDesktopCommandInput(operationId, request, true);
+    const { commandId } = await this.createCommand(targetId, commandInput);
+    const stream = this._createPollingStream(targetId, commandId, 0);
+    return { stream, commandId };
+  }
+
+  resumeStream(
+    targetId: string,
+    commandId: string,
+    afterSequence: number
+  ): { stream: ReadableStream<Uint8Array>; commandId: string } {
+    const stream = this._createPollingStream(
+      targetId,
+      commandId,
+      afterSequence
+    );
+    return { stream, commandId };
   }
 }
