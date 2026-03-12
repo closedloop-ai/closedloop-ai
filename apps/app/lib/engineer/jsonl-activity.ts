@@ -3,6 +3,7 @@ import { join } from "node:path";
 import {
   type ContentBlock,
   isToolResultEntry,
+  LogEntryType,
   type ParsedLogEntry,
   parseJsonlLine,
 } from "./jsonl-parse";
@@ -60,7 +61,7 @@ function labelFromAssistant(blocks: ContentBlock[]): string {
  * Derive a user-facing activity label from a single parsed entry.
  */
 function labelFromEntry(entry: ParsedLogEntry): string {
-  if (entry.type === "assistant") {
+  if (entry.type === LogEntryType.Assistant) {
     const content = entry.message?.content;
     if (Array.isArray(content)) {
       return labelFromAssistant(content);
@@ -68,7 +69,7 @@ function labelFromEntry(entry: ParsedLogEntry): string {
     return "Processing...";
   }
 
-  if (entry.type === "user" && isToolResultEntry(entry)) {
+  if (entry.type === LogEntryType.User && isToolResultEntry(entry)) {
     return "Processing tool results...";
   }
 
@@ -131,12 +132,12 @@ export async function readLiveActivity(
       }
 
       // Skip file-history-snapshot (not meaningful for activity)
-      if (entry.type === "file-history-snapshot") {
+      if (entry.type === LogEntryType.FileHistorySnapshot) {
         continue;
       }
 
       // Skip real user prompts — only tool_result user entries are interesting
-      if (entry.type === "user" && !isToolResultEntry(entry)) {
+      if (entry.type === LogEntryType.User && !isToolResultEntry(entry)) {
         continue;
       }
 

@@ -21,19 +21,24 @@ export type ContentBlock = {
 /**
  * Entry types emitted by the Claude CLI JSONL output
  */
-export type LogEntryType =
-  | "user"
-  | "assistant"
-  | "system"
-  | "progress"
-  | "queue-operation"
-  | "file-history-snapshot";
+export const LogEntryType = {
+  User: "user",
+  Assistant: "assistant",
+  System: "system",
+  Progress: "progress",
+  QueueOperation: "queue-operation",
+  FileHistorySnapshot: "file-history-snapshot",
+} as const;
+
+export type LogEntryType = (typeof LogEntryType)[keyof typeof LogEntryType];
 
 /**
  * Lightweight parsed JSONL entry (no uuid/rawLine — those are viewer-only)
  */
 export type ParsedLogEntry = {
   type: LogEntryType;
+  uuid?: string;
+  timestamp?: string;
   parentToolUseId?: string;
   message?: {
     role?: string;
@@ -58,9 +63,11 @@ export function parseJsonlLine(line: string): ParsedLogEntry | null {
     const entryType = parsed.type;
 
     // Map system entries
-    if (entryType === "system") {
+    if (entryType === LogEntryType.System) {
       return {
-        type: "system",
+        type: LogEntryType.System,
+        uuid: parsed.uuid,
+        timestamp: parsed.timestamp || "",
         parentToolUseId: parsed.parent_tool_use_id,
         message: undefined,
         data: {
@@ -73,20 +80,14 @@ export function parseJsonlLine(line: string): ParsedLogEntry | null {
     }
 
     // Skip unknown types (e.g. result, content_block_delta)
-    if (
-      ![
-        "user",
-        "assistant",
-        "progress",
-        "queue-operation",
-        "file-history-snapshot",
-      ].includes(entryType)
-    ) {
+    if (!isSupportedLogEntryType(entryType)) {
       return null;
     }
 
     return {
       type: entryType,
+      uuid: parsed.uuid,
+      timestamp: parsed.timestamp || "",
       parentToolUseId: parsed.parent_tool_use_id,
       message: parsed.message,
       data: parsed.data,
@@ -100,7 +101,7 @@ export function parseJsonlLine(line: string): ParsedLogEntry | null {
  * Check if a parsed entry is a tool result (vs an actual user prompt).
  */
 export function isToolResultEntry(entry: ParsedLogEntry): boolean {
-  if (entry.type !== "user") {
+  if (entry.type !== LogEntryType.User) {
     return false;
   }
   const content = entry.message?.content;
@@ -108,4 +109,19 @@ export function isToolResultEntry(entry: ParsedLogEntry): boolean {
     return false;
   }
   return content.some((block) => block.type === "tool_result");
+}
+
+const SUPPORTED_LOG_ENTRY_TYPES = new Set<LogEntryType>([
+  LogEntryType.User,
+  LogEntryType.Assistant,
+  LogEntryType.Progress,
+  LogEntryType.QueueOperation,
+  LogEntryType.FileHistorySnapshot,
+]);
+
+function isSupportedLogEntryType(value: unknown): value is LogEntryType {
+  return (
+    typeof value === "string" &&
+    SUPPORTED_LOG_ENTRY_TYPES.has(value as LogEntryType)
+  );
 }

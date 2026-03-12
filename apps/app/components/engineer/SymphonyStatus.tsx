@@ -193,11 +193,12 @@ export function SymphonyStatus({
     !isResuming &&
     (status.status === "STARTING" || status.stateExists === false) &&
     !!status.liveActivity;
-  const displayPhase = isResuming
-    ? "Resuming..."
-    : showLiveActivity
-      ? status.liveActivity
-      : status.phase || "Initializing...";
+  let displayPhase = status.phase || "Initializing...";
+  if (isResuming) {
+    displayPhase = "Resuming...";
+  } else if (showLiveActivity) {
+    displayPhase = status.liveActivity ?? "Initializing...";
+  }
 
   return (
     <div

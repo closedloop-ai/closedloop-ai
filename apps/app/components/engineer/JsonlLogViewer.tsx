@@ -96,17 +96,12 @@ function parseLogLine(line: string): LogEntry | null {
     return null;
   }
 
-  try {
-    const parsed = JSON.parse(line);
-    return {
-      ...base,
-      uuid: parsed.uuid || crypto.randomUUID(),
-      timestamp: parsed.timestamp || "",
-      rawLine: line,
-    };
-  } catch {
-    return null;
-  }
+  return {
+    ...base,
+    uuid: base.uuid || crypto.randomUUID(),
+    timestamp: base.timestamp || "",
+    rawLine: line,
+  };
 }
 
 /**
