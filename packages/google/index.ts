@@ -335,6 +335,32 @@ export async function exportDocAsMarkdown(
 }
 
 /**
+ * Get the name of a Google Drive file by its ID.
+ * Returns the file name, or null if it cannot be retrieved.
+ */
+export async function getDocName(
+  docId: string,
+  accessToken: string
+): Promise<string | null> {
+  try {
+    const drive = google.drive({ version: "v3", auth: accessToken });
+
+    const response = await drive.files.get({
+      fileId: docId,
+      fields: "name",
+    });
+
+    return response.data.name ?? null;
+  } catch (error) {
+    log.error("[google/drive] Failed to get doc name", {
+      docId,
+      error: parseError(error),
+    });
+    return null;
+  }
+}
+
+/**
  * Get user information from Google OAuth.
  * Returns the user's email and optionally name/picture.
  */

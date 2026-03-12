@@ -11,10 +11,7 @@ export const searchKeys = {
 
 export function useGlobalSearch(
   query: string,
-  options?: Omit<
-    UseQueryOptions<GlobalSearchResponse>,
-    "queryKey" | "queryFn"
-  >
+  options?: Omit<UseQueryOptions<GlobalSearchResponse>, "queryKey" | "queryFn">
 ) {
   const apiClient = useApiClient();
   const trimmed = query.trim();

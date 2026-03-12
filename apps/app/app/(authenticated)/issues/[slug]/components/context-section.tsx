@@ -11,7 +11,7 @@ import { toast } from "@repo/design-system/components/ui/sonner";
 import { StatusIcon } from "@repo/design-system/components/ui/status-icon";
 import { PlusIcon } from "lucide-react";
 import Link from "next/link";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { AssigneeAvatar } from "@/components/assignee-avatar";
 import {
   useDeleteEntityLink,
@@ -25,9 +25,9 @@ import {
   ISSUE_ICON,
   ISSUE_STATUS_TO_ICON,
 } from "@/lib/project-constants";
+import { AddContextDialog } from "./add-context-dialog";
 import { OverflowMenu } from "./overflow-menu";
 import { SectionHeader } from "./section-header";
-import { SelectContextDialog } from "./select-context-dialog";
 
 type ContextSectionProps = {
   issueId: string;
@@ -63,7 +63,7 @@ export function ContextSection({
   );
 
   // Collect IDs of already-linked artifacts so the dialog can exclude them
-  const getLinkedArtifactIds = () => {
+  const linkedArtifactIds = useMemo(() => {
     const ids = new Set<string>();
     for (const linked of contextLinks) {
       if (linked.resolvedEntity?.type === EntityType.Artifact) {
@@ -71,7 +71,7 @@ export function ContextSection({
       }
     }
     return ids;
-  };
+  }, [contextLinks]);
 
   return (
     <>
@@ -116,8 +116,8 @@ export function ContextSection({
         )}
       </div>
 
-      <SelectContextDialog
-        excludeArtifactIds={getLinkedArtifactIds()}
+      <AddContextDialog
+        excludeArtifactIds={linkedArtifactIds}
         issueId={issueId}
         onOpenChange={setShowAddDialog}
         open={showAddDialog}

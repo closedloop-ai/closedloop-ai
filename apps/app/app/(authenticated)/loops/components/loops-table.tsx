@@ -98,8 +98,9 @@ const columns: Column<LoopWithUser>[] = [
     ),
   },
   {
-    key: "tokensInput",
+    key: "tokens",
     header: "Tokens",
+    sortable: true,
     render: (loop) => (
       <span className="font-mono text-muted-foreground text-sm">
         {formatTokens(loop.tokensInput, loop.tokensOutput)}

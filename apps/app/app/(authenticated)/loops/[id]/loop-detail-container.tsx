@@ -189,12 +189,6 @@ function MetadataCards({ loop, totalTokens }: MetadataCardsProps) {
   );
 }
 
-const ACTIVE_STATUSES: Set<string> = new Set([
-  LoopStatus.Pending,
-  LoopStatus.Claimed,
-  LoopStatus.Running,
-]);
-
 type LoopDetailContainerProps = {
   id: string;
 };
@@ -230,7 +224,7 @@ export function LoopDetailContainer({ id }: LoopDetailContainerProps) {
     );
   }
 
-  const isActive = ACTIVE_STATUSES.has(loop.status);
+  const isActive = CANCELLABLE_LOOP_STATUSES.has(loop.status);
   const totalTokens = loop.tokensInput + loop.tokensOutput;
   const defaultTab = isActive ? "live" : "audit-log";
 

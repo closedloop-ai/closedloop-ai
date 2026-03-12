@@ -6,6 +6,7 @@ import type {
   PullRequestSynchronizeEvent,
 } from "@octokit/webhooks-types";
 import { ArtifactStatus } from "@repo/api/src/types/artifact";
+import type { TransactionClient } from "@repo/database";
 import { ChecksStatus, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
@@ -134,154 +135,7 @@ export async function handlePullRequest(
       return;
     }
 
-    // Step 3: Update PR record and create workstream event
-    switch (action) {
-      case "closed": {
-        const closedEvent = event;
-        const isMerged = closedEvent.pull_request.merged;
-        const newState = isMerged ? "MERGED" : "CLOSED";
-
-        await tx.gitHubPullRequest.update({
-          where: { id: existingPr.id },
-          data: {
-            state: newState,
-            closedAt: parseDateOrNow(pull_request.closed_at),
-            mergedAt: pull_request.merged_at
-              ? new Date(pull_request.merged_at)
-              : null,
-            mergeCommitSha: pull_request.merge_commit_sha,
-          },
-        });
-
-        // Create workstream event
-        await tx.workstreamEvent.create({
-          data: {
-            workstreamId: existingPr.workstreamId,
-            type: isMerged ? "GITHUB_PR_MERGED" : "GITHUB_PR_CLOSED",
-            actorType: "system",
-            data: {
-              prNumber: pull_request.number,
-              prTitle: pull_request.title,
-              prUrl: pull_request.html_url,
-              artifactId: existingPr.artifactId,
-              slug: existingPr.artifact?.slug,
-              ...(isMerged
-                ? {
-                    mergedAt: pull_request.merged_at,
-                    mergeCommitSha: pull_request.merge_commit_sha,
-                  }
-                : {}),
-            },
-          },
-        });
-
-        // When a PR is merged, mark the linked artifact as EXECUTED
-        if (isMerged && existingPr.artifactId) {
-          await tx.artifact.update({
-            where: { id: existingPr.artifactId },
-            data: { status: ArtifactStatus.Executed },
-          });
-          log.info(
-            "[handlePullRequest] Marked artifact as EXECUTED",
-            {
-              artifactId: existingPr.artifactId,
-            }
-          );
-        }
-
-        log.info("[handlePullRequest] PR closed", {
-          prNumber: pull_request.number,
-          newState,
-          isMerged,
-        });
-        break;
-      }
-
-      case "reopened": {
-        await tx.gitHubPullRequest.update({
-          where: { id: existingPr.id },
-          data: {
-            state: "OPEN",
-            closedAt: null,
-          },
-        });
-
-        log.info("[handlePullRequest] PR reopened", {
-          prNumber: pull_request.number,
-        });
-        break;
-      }
-
-      case "synchronize": {
-        const syncEvent = event;
-        await tx.gitHubPullRequest.update({
-          where: { id: existingPr.id },
-          data: {
-            headSha: pull_request.head.sha,
-            checksStatus: ChecksStatus.PENDING,
-          },
-        });
-
-        // Create workstream event to signal CI status reset
-        await tx.workstreamEvent.create({
-          data: {
-            workstreamId: existingPr.workstreamId,
-            type: "GITHUB_CI_STATUS_CHANGED",
-            actorType: "system",
-            data: {
-              prNumber: pull_request.number,
-              prTitle: pull_request.title,
-              prUrl: pull_request.html_url,
-              artifactId: existingPr.artifactId,
-              slug: existingPr.artifact?.slug,
-              checksStatus: ChecksStatus.PENDING,
-              previousChecksStatus: existingPr.checksStatus,
-              headSha: pull_request.head.sha,
-            },
-          },
-        });
-
-        log.info("[handlePullRequest] PR synchronized", {
-          prNumber: pull_request.number,
-          before: syncEvent.before,
-          after: syncEvent.after,
-          newHeadSha: pull_request.head.sha,
-        });
-        break;
-      }
-
-      case "converted_to_draft": {
-        await tx.gitHubPullRequest.update({
-          where: { id: existingPr.id },
-          data: {
-            isDraft: true,
-          },
-        });
-
-        log.info("[handlePullRequest] PR converted to draft", {
-          prNumber: pull_request.number,
-        });
-        break;
-      }
-
-      case "ready_for_review": {
-        await tx.gitHubPullRequest.update({
-          where: { id: existingPr.id },
-          data: {
-            isDraft: false,
-          },
-        });
-
-        log.info("[handlePullRequest] PR ready for review", {
-          prNumber: pull_request.number,
-        });
-        break;
-      }
-
-      default:
-        // Unreachable: HANDLED_ACTIONS guard above filters unhandled actions
-        break;
-    }
+    await applyPrAction(tx, action, event, existingPr, pull_request);
   });
 
   log.info("[handlePullRequest] Successfully processed pull_request event", {
@@ -294,4 +148,155 @@ export async function handlePullRequest(
     message: "Event processed successfully",
     ok: true,
   });
+}
+
+type ExistingPr = {
+  id: string;
+  workstreamId: string;
+  artifactId: string | null;
+  checksStatus: string;
+  artifact: { slug: string } | null;
+};
+
+async function applyPrAction(
+  tx: TransactionClient,
+  action: string,
+  event: HandledPullRequestEvent,
+  existingPr: ExistingPr,
+  pull_request: HandledPullRequestEvent["pull_request"]
+): Promise<void> {
+  switch (action) {
+    case "closed": {
+      const isMerged = (event as PullRequestClosedEvent).pull_request.merged;
+      const newState = isMerged ? "MERGED" : "CLOSED";
+
+      await tx.gitHubPullRequest.update({
+        where: { id: existingPr.id },
+        data: {
+          state: newState,
+          closedAt: parseDateOrNow(pull_request.closed_at),
+          mergedAt: pull_request.merged_at
+            ? new Date(pull_request.merged_at)
+            : null,
+          mergeCommitSha: pull_request.merge_commit_sha,
+        },
+      });
+
+      await tx.workstreamEvent.create({
+        data: {
+          workstreamId: existingPr.workstreamId,
+          type: isMerged ? "GITHUB_PR_MERGED" : "GITHUB_PR_CLOSED",
+          actorType: "system",
+          data: {
+            prNumber: pull_request.number,
+            prTitle: pull_request.title,
+            prUrl: pull_request.html_url,
+            artifactId: existingPr.artifactId,
+            slug: existingPr.artifact?.slug,
+            ...(isMerged
+              ? {
+                  mergedAt: pull_request.merged_at,
+                  mergeCommitSha: pull_request.merge_commit_sha,
+                }
+              : {}),
+          },
+        },
+      });
+
+      if (isMerged && existingPr.artifactId) {
+        await tx.artifact.update({
+          where: { id: existingPr.artifactId },
+          data: { status: ArtifactStatus.Executed },
+        });
+        log.info("[handlePullRequest] Marked artifact as EXECUTED", {
+          artifactId: existingPr.artifactId,
+        });
+      }
+
+      log.info("[handlePullRequest] PR closed", {
+        prNumber: pull_request.number,
+        newState,
+        isMerged,
+      });
+      break;
+    }
+
+    case "reopened": {
+      await tx.gitHubPullRequest.update({
+        where: { id: existingPr.id },
+        data: {
+          state: "OPEN",
+          closedAt: null,
+        },
+      });
+
+      log.info("[handlePullRequest] PR reopened", {
+        prNumber: pull_request.number,
+      });
+      break;
+    }
+
+    case "synchronize": {
+      await tx.gitHubPullRequest.update({
+        where: { id: existingPr.id },
+        data: {
+          headSha: pull_request.head.sha,
+          checksStatus: ChecksStatus.PENDING,
+        },
+      });
+
+      await tx.workstreamEvent.create({
+        data: {
+          workstreamId: existingPr.workstreamId,
+          type: "GITHUB_CI_STATUS_CHANGED",
+          actorType: "system",
+          data: {
+            prNumber: pull_request.number,
+            prTitle: pull_request.title,
+            prUrl: pull_request.html_url,
+            artifactId: existingPr.artifactId,
+            slug: existingPr.artifact?.slug,
+            checksStatus: ChecksStatus.PENDING,
+            previousChecksStatus: existingPr.checksStatus,
+            headSha: pull_request.head.sha,
+          },
+        },
+      });
+
+      log.info("[handlePullRequest] PR synchronized", {
+        prNumber: pull_request.number,
+        before: (event as PullRequestSynchronizeEvent).before,
+        after: (event as PullRequestSynchronizeEvent).after,
+        newHeadSha: pull_request.head.sha,
+      });
+      break;
+    }
+
+    case "converted_to_draft": {
+      await tx.gitHubPullRequest.update({
+        where: { id: existingPr.id },
+        data: { isDraft: true },
+      });
+
+      log.info("[handlePullRequest] PR converted to draft", {
+        prNumber: pull_request.number,
+      });
+      break;
+    }
+
+    case "ready_for_review": {
+      await tx.gitHubPullRequest.update({
+        where: { id: existingPr.id },
+        data: { isDraft: false },
+      });
+
+      log.info("[handlePullRequest] PR ready for review", {
+        prNumber: pull_request.number,
+      });
+      break;
+    }
+
+    default:
+      break;
+  }
 }

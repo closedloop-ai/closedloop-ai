@@ -29,10 +29,7 @@ export const GET = withAnyAuth<GlobalSearchResponse, "/search">(
         return badRequestResponse("q must be 200 characters or fewer");
       }
 
-      const results = await searchService.search(
-        user.organizationId,
-        query
-      );
+      const results = await searchService.search(user.organizationId, query);
 
       return successResponse(results);
     } catch (error) {
