@@ -3,44 +3,12 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { type NextRequest, NextResponse } from "next/server";
 import { readLiveActivity } from "@/lib/engineer/jsonl-activity";
+import { isProcessRunning, readProcessPid } from "@/lib/engineer/process-utils";
 import {
   expandHome,
   getWorktreeParentDir,
   isRepoAllowed,
 } from "@/lib/engineer/repos";
-
-/**
- * Check if a process is running by sending signal 0.
- * This doesn't kill the process, just checks if it exists.
- */
-function isProcessRunning(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Read the PID from process.pid file if it exists.
- * Returns null if file doesn't exist or is invalid.
- */
-async function readProcessPid(worktreeDir: string): Promise<number | null> {
-  const pidPath = join(worktreeDir, ".claude", "work", "process.pid");
-
-  if (!existsSync(pidPath)) {
-    return null;
-  }
-
-  try {
-    const pidContent = await readFile(pidPath, "utf-8");
-    const pid = Number.parseInt(pidContent.trim(), 10);
-    return Number.isNaN(pid) ? null : pid;
-  } catch {
-    return null;
-  }
-}
 
 /**
  * Check if completion can be detected from logs when state.json appears stale.
