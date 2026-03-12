@@ -42,7 +42,7 @@ function formatTokens(input: number, output: number): string {
   return formatTokenCount(total);
 }
 
-const PAGE_SIZE_OPTIONS = [25, 50, 100, 200];
+const PAGE_SIZE_OPTIONS = [10, 25, 50, 100, 200];
 
 const columns: Column<LoopWithUser>[] = [
   {
@@ -205,7 +205,6 @@ export function LoopsTable() {
         filterKey="status"
         filterOptions={statusFilterOptions}
         onRowClick={handleRowClick}
-        pageSize={25}
         pageSizeOptions={PAGE_SIZE_OPTIONS}
         renderRowActions={(loop) => {
           const canCancel = CANCELLABLE_LOOP_STATUSES.has(loop.status);
