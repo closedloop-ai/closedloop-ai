@@ -146,6 +146,25 @@ export function useLoopUsage(
   });
 }
 
+export function useLoopsByProject(
+  projectId: string,
+  options?: Omit<UseQueryOptions<LoopWithUser[]>, "queryKey" | "queryFn">
+) {
+  const apiClient = useApiClient();
+
+  return useQuery({
+    queryKey: loopKeys.list({ projectId }),
+    queryFn: () => {
+      const params = new URLSearchParams();
+      params.set("projectId", projectId);
+      params.set("limit", "200");
+      return apiClient.get<LoopWithUser[]>(`/loops?${params.toString()}`);
+    },
+    enabled: !!projectId,
+    ...options,
+  });
+}
+
 // Mutations
 export function useCreateLoop() {
   const queryClient = useQueryClient();

@@ -245,6 +245,11 @@ export function ActiveTicketCard({
               isApproved={isApproved}
               isExecuted={isExecuted}
               isStatusLoaded={isStatusLoaded}
+              onLocalExecute={
+                onResumeExecution
+                  ? () => onResumeExecution(ticket.identifier)
+                  : undefined
+              }
             />
           )}
 
@@ -600,19 +605,15 @@ function PlanActionButtons({
   isApproved,
   isExecuted,
   isStatusLoaded,
+  onLocalExecute,
 }: Readonly<{
   artifactId: string;
   isApproved: boolean;
   isExecuted: boolean;
   isStatusLoaded: boolean;
+  onLocalExecute?: () => void;
 }>) {
-  const {
-    handleApprove,
-    handleExecute,
-    isApproving,
-    isExecuting,
-    isComputeModeLoading,
-  } = usePlanActions({ artifactId });
+  const { handleApprove, isApproving } = usePlanActions({ artifactId });
 
   const showApproved = isApproved || isExecuted;
 
@@ -647,23 +648,19 @@ function PlanActionButtons({
         </button>
       )}
 
-      {/* Execute button — disabled until approved and backend is resolved */}
+      {/* Execute button — disabled until approved */}
       <button
         className={cn(
           ACTION_BUTTON_BASE,
-          isApproved && !isComputeModeLoading
+          isApproved && onLocalExecute
             ? "hover:border-blue-500/30 hover:text-blue-500"
             : "cursor-not-allowed opacity-40"
         )}
-        disabled={!isApproved || isExecuting || isComputeModeLoading}
-        onClick={() => handleExecute()}
-        title={executeButtonTitle(isExecuted, isApproved, isComputeModeLoading)}
+        disabled={!(isApproved && onLocalExecute)}
+        onClick={onLocalExecute}
+        title={executeButtonTitle(isExecuted, isApproved, !!onLocalExecute)}
       >
-        {isExecuting ? (
-          <Loader2 className="size-3.5 animate-spin" />
-        ) : (
-          <Play className="size-3.5" />
-        )}
+        <Play className="size-3.5" />
       </button>
     </>
   );
@@ -672,16 +669,16 @@ function PlanActionButtons({
 function executeButtonTitle(
   isExecuted: boolean,
   isApproved: boolean,
-  isComputeModeLoading: boolean
+  hasLocalExecute: boolean
 ): string {
   if (isExecuted) {
     return "Plan already executed";
   }
-  if (isComputeModeLoading) {
-    return "Loading execution backend...";
+  if (isApproved && !hasLocalExecute) {
+    return "Local execution unavailable";
   }
   if (isApproved) {
-    return "Execute plan";
+    return "Execute plan locally";
   }
   return "Approve plan first to execute";
 }

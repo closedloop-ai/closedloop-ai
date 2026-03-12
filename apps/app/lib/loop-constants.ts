@@ -6,9 +6,12 @@ export const RESTARTABLE_LOOP_STATUSES = new Set<LoopStatus>([
   LoopStatus.TimedOut,
 ]);
 
-// Statuses that allow a loop to be cancelled (active/in-progress loops).
-export const CANCELLABLE_LOOP_STATUSES = new Set<LoopStatus>([
+// Statuses indicating a loop is currently in progress (not yet terminal).
+export const ACTIVE_LOOP_STATUSES = new Set<LoopStatus>([
   LoopStatus.Pending,
   LoopStatus.Claimed,
   LoopStatus.Running,
 ]);
+
+// Statuses that allow a loop to be cancelled (active/in-progress loops).
+export const CANCELLABLE_LOOP_STATUSES = ACTIVE_LOOP_STATUSES;

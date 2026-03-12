@@ -63,6 +63,7 @@ import {
 import { useTeam } from "@/hooks/queries/use-teams";
 import { useLocalStorageState } from "@/hooks/use-local-storage-state";
 import { useTabParam } from "@/hooks/use-tab-param";
+import { ActiveLoopsStatus } from "./components/active-loops-status";
 import { ActivityPanel } from "./components/activity-panel";
 import { ArtifactsTable } from "./components/artifacts-table";
 import { ArtifactsThreadedView } from "./components/artifacts-threaded-view";
@@ -318,6 +319,7 @@ export default function ProjectDetailPage() {
         </Button>
       </Header>
       <main className="flex-1 overflow-auto">
+        <ActiveLoopsStatus projectId={projectId} />
         <div className="flex h-full">
           {/* Main Content Area */}
           <Tabs

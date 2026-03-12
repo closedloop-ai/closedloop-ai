@@ -15,7 +15,7 @@ type PRDEditorContainerProps = {
 export function PRDEditorContainer({
   slug,
   version: initialVersion,
-}: PRDEditorContainerProps) {
+}: Readonly<PRDEditorContainerProps>) {
   // Manage selected version in client state (avoids page remounts on version switch)
   const [selectedVersion, setSelectedVersion] = useState<number | undefined>(
     initialVersion
@@ -44,12 +44,11 @@ export function PRDEditorContainer({
     notFound();
   }
 
-  const latestVersion = prd.latestVersion;
   const currentVersion = prd.version.version;
 
   const handleVersionChange = (version: number) => {
     // If selecting the latest version, clear the selection to use default (latest)
-    if (version === latestVersion) {
+    if (version === prd.latestVersion) {
       setSelectedVersion(undefined);
     } else {
       setSelectedVersion(version);
@@ -59,7 +58,6 @@ export function PRDEditorContainer({
   return (
     <PRDEditor
       currentVersion={currentVersion}
-      latestVersion={latestVersion}
       onVersionChange={handleVersionChange}
       prd={prd}
     />

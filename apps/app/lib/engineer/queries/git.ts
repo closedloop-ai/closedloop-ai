@@ -196,7 +196,13 @@ export function prCommentsOptions(prNumber: number, repoPath: string) {
         const errorData = await response.json();
         throw new Error(errorData.error || "Failed to fetch comments");
       }
-      return response.json();
+      const data = await response.json();
+      // Guard against relay returning non-envelope responses (e.g. {type:"done"})
+      // which lack the expected comments array.
+      if (!Array.isArray(data?.comments)) {
+        throw new Error("Invalid PR comments response");
+      }
+      return data as PRCommentsResponse;
     },
   });
 }

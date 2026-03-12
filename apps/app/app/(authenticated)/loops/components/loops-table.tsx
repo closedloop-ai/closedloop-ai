@@ -16,7 +16,13 @@ import {
   SelectValue,
 } from "@repo/design-system/components/ui/select";
 import { toast } from "@repo/design-system/components/ui/sonner";
-import { Loader2Icon, RotateCcwIcon, SquareIcon } from "lucide-react";
+import {
+  CloudIcon,
+  Loader2Icon,
+  MonitorIcon,
+  RotateCcwIcon,
+  SquareIcon,
+} from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { LoopCommandBadge, LoopStatusBadge } from "@/components/status-badge";
@@ -40,6 +46,26 @@ function formatTokens(input: number, output: number): string {
     return "-";
   }
   return formatTokenCount(total);
+}
+
+function ComputeTargetCell({ loop }: { loop: LoopWithUser }) {
+  if (loop.computeTarget) {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-muted-foreground text-sm">
+        <MonitorIcon className="h-3.5 w-3.5" />
+        <span>{loop.computeTarget.machineName}</span>
+      </span>
+    );
+  }
+  if (loop.containerId) {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-muted-foreground text-sm">
+        <CloudIcon className="h-3.5 w-3.5" />
+        <span>Cloud</span>
+      </span>
+    );
+  }
+  return <span className="text-muted-foreground text-sm">-</span>;
 }
 
 const PAGE_SIZE_OPTIONS = [10, 25, 50, 100, 200];
@@ -77,6 +103,11 @@ const columns: Column<LoopWithUser>[] = [
         {getUserDisplayName(loop.user)}
       </UserLink>
     ),
+  },
+  {
+    key: "computeTargetId",
+    header: "Target",
+    render: (loop) => <ComputeTargetCell loop={loop} />,
   },
   {
     key: "createdAt",

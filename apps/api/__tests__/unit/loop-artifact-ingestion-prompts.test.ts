@@ -49,7 +49,7 @@ vi.mock("@/app/artifacts/artifact-version-service", () => ({
 }));
 
 vi.mock("@/app/artifacts/room-utils", () => ({
-  updateArtifactRoomVersion: vi.fn().mockResolvedValue(undefined),
+  resetArtifactRoom: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("@/lib/judge-score-fanout", () => ({

@@ -1437,17 +1437,11 @@ export function TicketList({
             </h2>
           </div>
 
-          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-            {activeTickets.map((ticket) => {
-              const session = getSession(ticket.identifier);
-              const repoPath = session?.repoPath || null;
-              const isLaunching = launchingTickets.has(ticket.identifier);
-              const parentId = stackInfo.parentMap.get(ticket.identifier);
-              const childIds = stackInfo.childrenMap.get(ticket.identifier);
-
-              return (
+          {viewMode === "list" ? (
+            <div className="divide-y divide-border/50 overflow-hidden rounded-xl border border-border/50 bg-card">
+              {activeTickets.map((ticket) => (
                 <div
-                  key={ticket.identifier}
+                  key={ticket.id}
                   ref={(el) => {
                     if (el) {
                       ticketRefs.current.set(ticket.identifier, el);
@@ -1456,117 +1450,177 @@ export function TicketList({
                     }
                   }}
                 >
-                  <ActiveTicketCard
+                  <TicketListRow
                     branchMerged={
                       workDirStatus[ticket.identifier]?.branchStatus?.merged
                     }
-                    childTicketIds={childIds}
                     codexAvailable={codexAvailable}
-                    contextRepoPaths={session?.contextRepoPaths}
                     deployInfo={getDeployInfoProp(ticket.identifier)}
                     hasPushed={pushedStatus[ticket.identifier]}
                     hasWorkDirectory={workDirStatus[ticket.identifier]?.exists}
-                    isCreatingPR={creatingPR === ticket.identifier}
                     isDeployable={isTicketDeployable(ticket.identifier)}
                     isDeploying={
                       deployStatus[ticket.identifier]?.status === "deploying"
                     }
-                    isLaunching={isLaunching}
-                    isResuming={resumingTicketId === ticket.identifier}
-                    onClose={() => handleCloseTicket(ticket.identifier)}
+                    isLaunching={launchingTickets.has(ticket.identifier)}
+                    isRunning={!!getSession(ticket.identifier)?.pid}
+                    isStarred={starredSet.has(ticket.identifier)}
+                    onAskClaude={handleAskClaude}
                     onCodexReview={handleCodexReview}
-                    onCommitPush={(ticketId) =>
-                      handleCommitPush(ticketId, repoPath || undefined)
-                    }
-                    onCreatePR={
-                      repoPath
-                        ? (ticketId, rp) => handleCreatePR(ticketId, rp)
-                        : undefined
-                    }
+                    onDeleteWorktree={handleDeleteWorktree}
                     onDeploy={handleDeploy}
                     onLearningsClick={handleLearningsClick}
+                    onLinkPR={handleLinkPR}
                     onParentClick={handleParentClick}
-                    onResume={
-                      repoPath
-                        ? async () => {
-                            console.log("[TicketList] Accept Plan clicked", {
-                              ticketId: ticket.identifier,
-                              repoPath,
-                            });
-                            try {
-                              await launch(ticket.identifier, repoPath);
-                              // Post comment: plan accepted (fire-and-forget)
-                              onPostComment?.(
-                                ticket.identifier,
-                                "Plan has been accepted and coding has started.\n\n-Closedloop.dev"
-                              ).catch(() => {});
-                              toast.success(
-                                "Closedloop.dev execution started",
-                                {
-                                  description: "Check the logs for progress",
-                                }
-                              );
-                            } catch (err) {
-                              toast.error("Failed to launch Closedloop.dev", {
-                                description:
-                                  err instanceof Error
-                                    ? err.message
-                                    : "Unknown error",
-                              });
-                            }
-                          }
-                        : undefined
-                    }
-                    onResumeExecution={
-                      repoPath
-                        ? async (ticketId) => {
-                            setResumingTicketId(ticketId);
-                            try {
-                              await launch(ticketId, repoPath);
-
-                              // Optimistically set status to STARTING so UI shows launching state
-                              // immediately. The polling will replace this with real data once
-                              // Symphony writes its actual status.
-                              queryClient.setQueryData(
-                                queryKeys.symphonyStatus(ticketId, repoPath),
-                                (old: SymphonyStatusResponse | undefined) => ({
-                                  ...old,
-                                  exists: true,
-                                  status: "STARTING",
-                                })
-                              );
-
-                              toast.success("Execution resumed", {
-                                description:
-                                  "Closedloop.dev is re-running with updated plan",
-                              });
-                            } catch (err) {
-                              toast.error("Failed to resume execution", {
-                                description:
-                                  err instanceof Error
-                                    ? err.message
-                                    : "Unknown error",
-                              });
-                            } finally {
-                              setResumingTicketId(null);
-                            }
-                          }
-                        : undefined
-                    }
-                    onStopSymphony={handleStopSymphony}
+                    onStartPlanning={handleStartPlanning}
                     onTeardown={handleTeardown}
-                    parentTicketId={parentId}
+                    onToggleStar={handleToggleStar}
+                    onViewComments={handleViewComments}
+                    parentTicketId={stackInfo.parentMap.get(ticket.identifier)}
                     pendingClaudeMdPath={
                       workDirStatus[ticket.identifier]?.pendingClaudeMd
                     }
                     prInfo={prStatus[ticket.identifier] || null}
-                    repoPath={repoPath}
                     ticket={ticket}
+                    worktreePath={
+                      workDirStatus[ticket.identifier]?.path || null
+                    }
                   />
                 </div>
-              );
-            })}
-          </div>
+              ))}
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+              {activeTickets.map((ticket) => {
+                const session = getSession(ticket.identifier);
+                const repoPath = session?.repoPath || null;
+                const isLaunching = launchingTickets.has(ticket.identifier);
+                const parentId = stackInfo.parentMap.get(ticket.identifier);
+                const childIds = stackInfo.childrenMap.get(ticket.identifier);
+
+                return (
+                  <div
+                    key={ticket.identifier}
+                    ref={(el) => {
+                      if (el) {
+                        ticketRefs.current.set(ticket.identifier, el);
+                      } else {
+                        ticketRefs.current.delete(ticket.identifier);
+                      }
+                    }}
+                  >
+                    <ActiveTicketCard
+                      branchMerged={
+                        workDirStatus[ticket.identifier]?.branchStatus?.merged
+                      }
+                      childTicketIds={childIds}
+                      codexAvailable={codexAvailable}
+                      contextRepoPaths={session?.contextRepoPaths}
+                      deployInfo={getDeployInfoProp(ticket.identifier)}
+                      hasPushed={pushedStatus[ticket.identifier]}
+                      hasWorkDirectory={
+                        workDirStatus[ticket.identifier]?.exists
+                      }
+                      isCreatingPR={creatingPR === ticket.identifier}
+                      isDeployable={isTicketDeployable(ticket.identifier)}
+                      isDeploying={
+                        deployStatus[ticket.identifier]?.status === "deploying"
+                      }
+                      isLaunching={isLaunching}
+                      isResuming={resumingTicketId === ticket.identifier}
+                      onClose={() => handleCloseTicket(ticket.identifier)}
+                      onCodexReview={handleCodexReview}
+                      onCommitPush={(ticketId) =>
+                        handleCommitPush(ticketId, repoPath || undefined)
+                      }
+                      onCreatePR={
+                        repoPath
+                          ? (ticketId, rp) => handleCreatePR(ticketId, rp)
+                          : undefined
+                      }
+                      onDeploy={handleDeploy}
+                      onLearningsClick={handleLearningsClick}
+                      onParentClick={handleParentClick}
+                      onResume={
+                        repoPath
+                          ? async () => {
+                              console.log("[TicketList] Accept Plan clicked", {
+                                ticketId: ticket.identifier,
+                                repoPath,
+                              });
+                              try {
+                                await launch(ticket.identifier, repoPath);
+                                onPostComment?.(
+                                  ticket.identifier,
+                                  "Plan has been accepted and coding has started.\n\n-Closedloop.dev"
+                                ).catch(() => {});
+                                toast.success(
+                                  "Closedloop.dev execution started",
+                                  {
+                                    description: "Check the logs for progress",
+                                  }
+                                );
+                              } catch (err) {
+                                toast.error("Failed to launch Closedloop.dev", {
+                                  description:
+                                    err instanceof Error
+                                      ? err.message
+                                      : "Unknown error",
+                                });
+                              }
+                            }
+                          : undefined
+                      }
+                      onResumeExecution={
+                        repoPath
+                          ? async (ticketId) => {
+                              setResumingTicketId(ticketId);
+                              try {
+                                await launch(ticketId, repoPath);
+
+                                queryClient.setQueryData(
+                                  queryKeys.symphonyStatus(ticketId, repoPath),
+                                  (
+                                    old: SymphonyStatusResponse | undefined
+                                  ) => ({
+                                    ...old,
+                                    exists: true,
+                                    status: "STARTING",
+                                  })
+                                );
+
+                                toast.success("Execution resumed", {
+                                  description:
+                                    "Closedloop.dev is re-running with updated plan",
+                                });
+                              } catch (err) {
+                                toast.error("Failed to resume execution", {
+                                  description:
+                                    err instanceof Error
+                                      ? err.message
+                                      : "Unknown error",
+                                });
+                              } finally {
+                                setResumingTicketId(null);
+                              }
+                            }
+                          : undefined
+                      }
+                      onStopSymphony={handleStopSymphony}
+                      onTeardown={handleTeardown}
+                      parentTicketId={parentId}
+                      pendingClaudeMdPath={
+                        workDirStatus[ticket.identifier]?.pendingClaudeMd
+                      }
+                      prInfo={prStatus[ticket.identifier] || null}
+                      repoPath={repoPath}
+                      ticket={ticket}
+                    />
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </section>
       )}
 
@@ -1700,7 +1754,7 @@ export function TicketList({
                   isDeploying={
                     deployStatus[ticket.identifier]?.status === "deploying"
                   }
-                  isStarred={false}
+                  isStarred={starredSet.has(ticket.identifier)}
                   key={ticket.id}
                   onAskClaude={handleAskClaude}
                   onCodexReview={handleCodexReview}
@@ -1736,7 +1790,7 @@ export function TicketList({
                   isDeploying={
                     deployStatus[ticket.identifier]?.status === "deploying"
                   }
-                  isStarred={false}
+                  isStarred={starredSet.has(ticket.identifier)}
                   key={ticket.id}
                   onAskClaude={handleAskClaude}
                   onCodexReview={handleCodexReview}

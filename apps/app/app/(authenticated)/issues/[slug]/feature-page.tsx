@@ -1,5 +1,6 @@
 "use client";
 
+import { isActiveGenerationStatus } from "@repo/api/src/types/artifact";
 import type { IssueWithWorkstream } from "@repo/api/src/types/issue";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { useRouter } from "next/navigation";
@@ -7,6 +8,7 @@ import { useCallback, useState } from "react";
 import { ExecutePlanModal } from "@/app/(authenticated)/implementation-plans/components/execute-plan-modal";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { usePlanActions } from "@/hooks/artifact-editing/use-plan-actions";
+import { useArtifactGenerationStatus } from "@/hooks/queries/use-artifacts";
 import { useDeleteIssue } from "@/hooks/queries/use-issues";
 import { useLocalStorageState } from "@/hooks/use-local-storage-state";
 import { BranchesSection } from "./components/branches-section";
@@ -41,7 +43,21 @@ export function FeaturePage({ issue }: Readonly<FeaturePageProps>) {
     artifactId: linkedPlanId,
   });
 
-  const teamId = issue.project?.teams?.[0]?.id;
+  const { data: generationStatus } = useArtifactGenerationStatus(
+    linkedPlanId ?? "",
+    {
+      enabled: !!linkedPlanId,
+      refetchInterval: (query) => {
+        const status = query.state.data?.status;
+        if (status && isActiveGenerationStatus(status)) {
+          return 5000;
+        }
+        return false;
+      },
+    }
+  );
+
+  const teamId = issue.project?.teams.length ? issue.project.teams[0].id : null;
   const projectId = issue.project?.id;
 
   const handleDelete = useCallback(async (): Promise<boolean> => {
@@ -94,11 +110,13 @@ export function FeaturePage({ issue }: Readonly<FeaturePageProps>) {
                   projectId={issue.projectId ?? undefined}
                 />
                 <PlanSection
+                  generationStatus={generationStatus}
                   issue={issue}
                   onGenerateModalChange={setShowGenerateModal}
                   showGenerateModal={showGenerateModal}
                 />
                 <BranchesSection
+                  generationStatus={generationStatus}
                   hasPlan={hasPlan}
                   issueId={issue.id}
                   onStartBuild={() => setShowExecuteModal(true)}
@@ -109,7 +127,12 @@ export function FeaturePage({ issue }: Readonly<FeaturePageProps>) {
           </div>
 
           {/* Right Sidebar */}
-          {showMetadataPanel && <IssueMetadataPanel issue={issue} />}
+          {showMetadataPanel && (
+            <IssueMetadataPanel
+              issue={issue}
+              teamIds={issue.project?.teams.map((team) => team.id) ?? []}
+            />
+          )}
         </div>
       </main>
 

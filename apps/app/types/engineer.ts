@@ -134,7 +134,7 @@ export function mapArtifactStatusToType(
     case ArtifactStatus.InReview:
       return "started";
     case ArtifactStatus.Approved:
-      return "completed";
+      return "started";
     case ArtifactStatus.Obsolete:
       return "canceled";
     case ArtifactStatus.ReadyForReview:

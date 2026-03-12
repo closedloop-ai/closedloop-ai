@@ -1,16 +1,22 @@
 "use client";
 
+import {
+  type GenerationStatus,
+  isActiveGenerationStatus,
+} from "@repo/api/src/types/artifact";
 import type { LinkedEntity } from "@repo/api/src/types/entity-link";
 import {
   EntityType,
   LinkDirection,
   LinkQueryMode,
 } from "@repo/api/src/types/entity-link";
+import { ExternalLinkType } from "@repo/api/src/types/external-link";
 import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { cn } from "@repo/design-system/lib/utils";
 import { GitBranchIcon, PlayIcon, PlusIcon } from "lucide-react";
+import { GenerationStatusIndicator } from "@/components/generation-status-indicator";
 import {
   useDeleteEntityLink,
   useLinkedEntities,
@@ -27,6 +33,7 @@ type BranchesSectionProps = {
   hasPlan: boolean;
   onAdd?: () => void;
   onStartBuild?: () => void;
+  generationStatus?: GenerationStatus;
 };
 
 export function BranchesSection({
@@ -34,6 +41,7 @@ export function BranchesSection({
   hasPlan,
   onAdd,
   onStartBuild,
+  generationStatus,
 }: Readonly<BranchesSectionProps>) {
   const { data: linkedEntities = [] } = useLinkedEntities(
     issueId,
@@ -52,10 +60,15 @@ export function BranchesSection({
 
   // Filter to only external link entities (PRs, branches, etc.)
   const branchLinks = linkedEntities.filter(
-    (linked) => linked.resolvedEntity?.type === EntityType.ExternalLink
+    (linked) =>
+      linked.resolvedEntity?.type === EntityType.ExternalLink &&
+      linked.resolvedEntity.entity.type === ExternalLinkType.PullRequest
   );
 
   const hasBranches = branchLinks.length > 0;
+  const isExecutingPlan =
+    generationStatus?.command === "execute" &&
+    isActiveGenerationStatus(generationStatus.status);
 
   return (
     <div className="bg-background">
@@ -82,7 +95,12 @@ export function BranchesSection({
             </p>
             <div className="flex gap-4">
               {hasPlan ? (
-                <Button onClick={onStartBuild} size="sm" variant="default">
+                <Button
+                  disabled={isExecutingPlan}
+                  onClick={onStartBuild}
+                  size="sm"
+                  variant="default"
+                >
                   Start Building
                   <PlayIcon className="ml-1 h-4 w-4" />
                 </Button>
@@ -96,6 +114,11 @@ export function BranchesSection({
               </Button>
             </div>
           </div>
+        </div>
+      )}
+      {isExecutingPlan && (
+        <div className="px-2 py-1">
+          <GenerationStatusIndicator generationStatus={generationStatus} />
         </div>
       )}
     </div>

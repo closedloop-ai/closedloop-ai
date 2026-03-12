@@ -15,7 +15,7 @@ type PlanEditorContainerProps = {
 export function PlanEditorContainer({
   slug,
   version: initialVersion,
-}: PlanEditorContainerProps) {
+}: Readonly<PlanEditorContainerProps>) {
   // Manage selected version in client state (avoids page remounts on version switch)
   const [selectedVersion, setSelectedVersion] = useState<number | undefined>(
     initialVersion
@@ -44,12 +44,11 @@ export function PlanEditorContainer({
     notFound();
   }
 
-  const latestVersion = plan.latestVersion;
   const currentVersion = plan.version.version;
 
   const handleVersionChange = (version: number) => {
     // If selecting the latest version, clear the selection to use default (latest)
-    if (version === latestVersion) {
+    if (version === plan.latestVersion) {
       setSelectedVersion(undefined);
     } else {
       setSelectedVersion(version);
@@ -59,7 +58,6 @@ export function PlanEditorContainer({
   return (
     <PlanEditor
       currentVersion={currentVersion}
-      latestVersion={latestVersion}
       onVersionChange={handleVersionChange}
       plan={plan}
     />
