@@ -123,7 +123,16 @@ function toRelayHttpResponse(value: unknown): Response {
     return NextResponse.json(body, { status, headers });
   }
 
-  return NextResponse.json(value);
+  // Fallthrough: relay value lacks a proper response envelope (e.g. a bare
+  // "done" event whose result event was lost in transit). Return 502 so the
+  // client treats this as a transient error instead of empty success data.
+  log.warn("Relay response missing envelope", {
+    keys: Object.keys(record).join(","),
+  });
+  return NextResponse.json(
+    { error: "Relay response missing expected envelope" },
+    { status: 502 }
+  );
 }
 
 type TargetOwnershipCheck = {
