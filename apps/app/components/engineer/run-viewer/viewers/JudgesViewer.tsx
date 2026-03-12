@@ -2,13 +2,13 @@
 
 import { AlertCircle, CheckCircle, XCircle } from "lucide-react";
 import { useMemo, useState } from "react";
-import { formatScorePercent } from "@/lib/evaluation-utils";
 import {
   type CaseScore,
   EvalStatus,
   type EvaluationReport,
 } from "@/lib/engineer/queries/symphony";
 import { decodeText } from "@/lib/engineer/run-viewer-utils";
+import { formatScorePercent } from "@/lib/evaluation-utils";
 
 type JudgesViewerProps = {
   data: Uint8Array;
@@ -155,7 +155,9 @@ export function JudgesViewer({ data }: Readonly<JudgesViewerProps>) {
                 </span>
               </div>
               <span className="text-muted-foreground text-xs">
-                {getScore(score) !== null ? formatScorePercent(getScore(score)!) : "N/A"}
+                {getScore(score) !== null
+                  ? formatScorePercent(getScore(score)!)
+                  : "N/A"}
               </span>
             </button>
             {expandedScoreId === score.case_id && (
@@ -185,7 +187,10 @@ export function JudgesViewer({ data }: Readonly<JudgesViewerProps>) {
                             {metric.metric_name}
                           </span>
                           <span className="text-sm">
-                            Score: {metric.score != null ? formatScorePercent(metric.score) : "N/A"}
+                            Score:{" "}
+                            {metric.score != null
+                              ? formatScorePercent(metric.score)
+                              : "N/A"}
                           </span>
                         </div>
                         {metric.threshold !== null && (

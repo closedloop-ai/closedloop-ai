@@ -22,6 +22,7 @@ export const keys = () =>
         .string()
         .startsWith("/")
         .optional(),
+      NEXT_PUBLIC_LOGO_URL: z.string().url().optional(),
     },
     runtimeEnv: {
       CLERK_SECRET_KEY: process.env.CLERK_SECRET_KEY,
@@ -34,5 +35,6 @@ export const keys = () =>
         process.env.NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL,
       NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL:
         process.env.NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL,
+      NEXT_PUBLIC_LOGO_URL: process.env.NEXT_PUBLIC_LOGO_URL,
     },
   });

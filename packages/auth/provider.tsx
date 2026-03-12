@@ -5,17 +5,20 @@ import { dark } from "@clerk/themes";
 import type { Theme } from "@clerk/types";
 import { useTheme } from "next-themes";
 import type { ComponentProps } from "react";
+import { keys } from "./keys";
 
 type AuthProviderProperties = ComponentProps<typeof ClerkProvider> & {
   privacyUrl?: string;
   termsUrl?: string;
   helpUrl?: string;
+  logoUrl?: string;
 };
 
 export const AuthProvider = ({
   privacyUrl,
   termsUrl,
   helpUrl,
+  logoUrl,
   ...properties
 }: AuthProviderProperties) => {
   const { resolvedTheme } = useTheme();
@@ -51,6 +54,7 @@ export const AuthProvider = ({
   };
 
   const layout: Theme["layout"] = {
+    logoImageUrl: logoUrl ?? keys().NEXT_PUBLIC_LOGO_URL,
     privacyPageUrl: privacyUrl,
     termsPageUrl: termsUrl,
     helpPageUrl: helpUrl,

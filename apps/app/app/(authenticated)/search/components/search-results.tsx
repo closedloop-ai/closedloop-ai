@@ -59,8 +59,7 @@ export function SearchResults() {
     <>
       <div className="mb-2">
         <p className="text-muted-foreground">
-          {totalResults} result{totalResults !== 1 ? "s" : ""} for &quot;{query}
-          &quot;
+          {`${totalResults} result${totalResults !== 1 ? "s" : ""} for "${query}"`}
         </p>
       </div>
 

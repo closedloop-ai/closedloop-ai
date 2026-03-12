@@ -238,9 +238,15 @@ const BoxPlotTooltip: React.FC<{
         Eval
       </p>
       <TooltipRow label="Max:" value={formatScorePercent(data.upperWhisker)} />
-      <TooltipRow label="Mean + 1σ:" value={formatScorePercent(data.upperBox)} />
+      <TooltipRow
+        label="Mean + 1σ:"
+        value={formatScorePercent(data.upperBox)}
+      />
       <TooltipRow label="Mean:" value={formatScorePercent(data.median)} />
-      <TooltipRow label="Mean - 1σ:" value={formatScorePercent(data.lowerBox)} />
+      <TooltipRow
+        label="Mean - 1σ:"
+        value={formatScorePercent(data.lowerBox)}
+      />
       <TooltipRow label="Min:" value={formatScorePercent(data.lowerWhisker)} />
       {data.humanMedian !== null && (
         <>
@@ -250,17 +256,26 @@ const BoxPlotTooltip: React.FC<{
           >
             Human
           </p>
-          <TooltipRow label="Max:" value={formatScorePercent(data.humanUpperWhisker!)} />
+          <TooltipRow
+            label="Max:"
+            value={formatScorePercent(data.humanUpperWhisker!)}
+          />
           <TooltipRow
             label="Mean + 1σ:"
             value={formatScorePercent(data.humanUpperBox!)}
           />
-          <TooltipRow label="Mean:" value={formatScorePercent(data.humanMedian)} />
+          <TooltipRow
+            label="Mean:"
+            value={formatScorePercent(data.humanMedian)}
+          />
           <TooltipRow
             label="Mean - 1σ:"
             value={formatScorePercent(data.humanLowerBox!)}
           />
-          <TooltipRow label="Min:" value={formatScorePercent(data.humanLowerWhisker!)} />
+          <TooltipRow
+            label="Min:"
+            value={formatScorePercent(data.humanLowerWhisker!)}
+          />
         </>
       )}
       <div className="mt-1 flex justify-between gap-4 border-border/50 border-t pt-1">
