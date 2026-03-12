@@ -20,9 +20,19 @@ export async function GET(
     return notFoundResponse("Desktop command");
   }
 
+  const url = new URL(request.url);
+  const afterSequenceParam = url.searchParams.get("afterSequence");
+  const afterSequenceRaw =
+    afterSequenceParam !== null ? Number(afterSequenceParam) : Number.NaN;
+  const afterSequence =
+    Number.isInteger(afterSequenceRaw) && afterSequenceRaw >= 0
+      ? afterSequenceRaw
+      : undefined;
+
   const events = await desktopCommandStore.getCommandEvents(
     targetId,
-    commandId
+    commandId,
+    { afterSequence }
   );
   return successResponse(events ?? []);
 }

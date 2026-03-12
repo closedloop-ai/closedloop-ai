@@ -702,7 +702,8 @@ export const desktopCommandStore = {
 
   async getCommandEvents(
     computeTargetId: string,
-    commandId: string
+    commandId: string,
+    options?: { afterSequence?: number }
   ): Promise<DesktopCommandEvent[] | null> {
     const command = await this.getCommand(computeTargetId, commandId);
     if (!command) {
@@ -711,7 +712,12 @@ export const desktopCommandStore = {
 
     const events = await withDb((db) =>
       db.desktopCommandEvent.findMany({
-        where: { commandId },
+        where: {
+          commandId,
+          ...(options?.afterSequence != null
+            ? { sequence: { gt: options.afterSequence } }
+            : {}),
+        },
         orderBy: { sequence: "asc" },
       })
     );
@@ -731,7 +737,7 @@ export const desktopCommandStore = {
     computeTargetId: string,
     commandId: string,
     listener: EventSubscriber,
-    options?: { replay?: boolean }
+    options?: { replay?: boolean; afterSequence?: number }
   ): Promise<(() => void) | null> {
     const command = await this.getCommand(computeTargetId, commandId);
     if (!command) {
@@ -769,7 +775,9 @@ export const desktopCommandStore = {
 
     if (replayNeeded) {
       const replay =
-        (await this.getCommandEvents(computeTargetId, commandId)) ?? [];
+        (await this.getCommandEvents(computeTargetId, commandId, {
+          afterSequence: options?.afterSequence,
+        })) ?? [];
       for (const event of replay) {
         if (
           typeof event.sequence === "number" &&

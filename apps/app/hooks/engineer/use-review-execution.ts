@@ -25,9 +25,13 @@ import {
   type AnnotatedFinding,
   splitReviewOutput,
 } from "@/lib/engineer/review-split";
-import { streamReviewOutput } from "@/lib/engineer/review-stream";
+import {
+  type StreamReviewResult,
+  streamReviewOutput,
+} from "@/lib/engineer/review-stream";
 
 const TERMINAL_STATUSES = new Set(["completed", "failed", "stopped"]);
+const MAX_RECONNECT_ATTEMPTS = 10;
 
 type UseReviewExecutionParams = {
   ticketId: string;
@@ -288,6 +292,20 @@ export function useReviewExecution(
     }
   }
 
+  function buildReviewBody() {
+    return {
+      instructions: config.instructions || undefined,
+      model: config.model,
+      reasoningEffort: config.reasoningEffort,
+      reviewMode: config.reviewMode,
+      baseBranch: "main",
+      repoPath,
+      branchName,
+      provider: config.provider || "codex",
+      useBaseRepo: config.useBaseRepo || undefined,
+    };
+  }
+
   // eslint-disable-next-line @typescript-eslint/no-shadow -- startReview is hoisted and used in the mount effect
   async function startReview(signal: AbortSignal) {
     reviewStartedAtRef.current = new Date().toISOString();
@@ -321,17 +339,7 @@ export function useReviewExecution(
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            instructions: config.instructions || undefined,
-            model: config.model,
-            reasoningEffort: config.reasoningEffort,
-            reviewMode: config.reviewMode,
-            baseBranch: "main",
-            repoPath,
-            branchName,
-            provider: config.provider || "codex",
-            useBaseRepo: config.useBaseRepo || undefined,
-          }),
+          body: JSON.stringify(buildReviewBody()),
           signal,
         }
       );
@@ -357,13 +365,16 @@ export function useReviewExecution(
         );
       }
 
+      // Read commandId from response header (primary channel)
+      let commandId = response.headers.get("x-relay-command-id") ?? undefined;
+
       const reader = response.body?.getReader();
       if (!reader) {
         throw new Error("No response body");
       }
 
       console.log("[review-stream] Starting stream read");
-      const { text: accumulated, completed } = await streamReviewOutput(
+      let result: StreamReviewResult = await streamReviewOutput(
         reader,
         (text) => {
           accumulatedOutput = text;
@@ -375,25 +386,135 @@ export function useReviewExecution(
         setReviewCommand,
         setReviewContextPercent
       );
+      // In-band relay_meta as backup for commandId
+      commandId ??= result.commandId;
+      let lastSeq = result.lastSeq;
+
       console.log(
         "[review-stream] Stream ended, accumulated:",
-        accumulated.length,
-        "chars, completed:",
-        completed
+        result.text.length,
+        "chars, terminalState:",
+        result.terminalState
       );
 
-      if (!completed) {
-        console.log(
-          "[review-stream] Stream ended without done event — falling back to poll"
-        );
-        setReviewOutput(accumulated);
-        await pollRunningReview(signal);
+      if (result.terminalState === "done") {
+        const split = finalizeReviewOutput(result.text);
+        toast.success("Code review completed");
+        handlePostStreamActions(split);
         return;
       }
 
-      const split = finalizeReviewOutput(accumulated);
-      toast.success("Code review completed");
-      handlePostStreamActions(split);
+      if (result.terminalState === "terminal_error") {
+        toast.error("Review failed", {
+          description:
+            result.terminalError ??
+            "The review command encountered a terminal error",
+        });
+        setReviewDone(true);
+        onReviewCompleteRef.current?.(accumulatedOutput, 0);
+        return;
+      }
+
+      // Stream dropped without terminal event — try reconnect if relay mode
+      if (commandId) {
+        let attempts = 0;
+        while (attempts < MAX_RECONNECT_ATTEMPTS && !signal.aborted) {
+          attempts++;
+          console.log(
+            `[review-stream] Reconnect attempt ${attempts}/${MAX_RECONNECT_ATTEMPTS}`
+          );
+
+          try {
+            const reconnectHeaders: Record<string, string> = {
+              "Content-Type": "application/json",
+              "x-relay-after-sequence": String(lastSeq ?? 0),
+            };
+            if (commandId) {
+              reconnectHeaders["x-relay-command-id"] = commandId;
+            }
+            const reconnectResponse = await fetch(
+              `/api/engineer/codex/review/${encodeURIComponent(ticketId)}`,
+              {
+                method: "POST",
+                headers: reconnectHeaders,
+                body: JSON.stringify(buildReviewBody()),
+                signal,
+              }
+            );
+
+            if (!reconnectResponse.ok) {
+              console.log(
+                `[review-stream] Reconnect response: ${reconnectResponse.status}`
+              );
+              break;
+            }
+
+            // Update commandId from reconnect response header
+            commandId ??=
+              reconnectResponse.headers.get("x-relay-command-id") ?? commandId;
+
+            const reconnectReader = reconnectResponse.body?.getReader();
+            if (!reconnectReader) {
+              break;
+            }
+
+            result = await streamReviewOutput(
+              reconnectReader,
+              (text) => {
+                accumulatedOutput = text;
+                setReviewOutput(text);
+              },
+              (sid) => {
+                sessionIdRef.current = sid;
+              },
+              setReviewCommand,
+              setReviewContextPercent,
+              {
+                accumulated: accumulatedOutput,
+                commandId,
+                lastSeq,
+              }
+            );
+
+            // Preserve prior metadata across reconnects
+            commandId ??= result.commandId;
+            lastSeq = result.lastSeq ?? lastSeq;
+
+            if (result.terminalState === "done") {
+              const split = finalizeReviewOutput(result.text);
+              toast.success("Code review completed");
+              handlePostStreamActions(split);
+              return;
+            }
+
+            if (result.terminalState === "terminal_error") {
+              toast.error("Review failed", {
+                description:
+                  result.terminalError ??
+                  "The review command encountered a terminal error",
+              });
+              setReviewDone(true);
+              onReviewCompleteRef.current?.(accumulatedOutput, 0);
+              return;
+            }
+
+            // Stream dropped again — loop continues
+          } catch (err) {
+            if (err instanceof DOMException && err.name === "AbortError") {
+              throw err;
+            }
+            console.error("[review-stream] Reconnect error:", err);
+            break;
+          }
+        }
+      }
+
+      // Reconnect exhausted or no commandId — fall back to poll
+      console.log(
+        "[review-stream] Stream ended without done event — falling back to poll"
+      );
+      setReviewOutput(accumulatedOutput);
+      await pollRunningReview(signal);
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") {
         setReviewDone(true);

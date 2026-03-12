@@ -8,6 +8,8 @@ import type {
 import type { LearningUsed } from "@/lib/engineer/chat-utils";
 import { parseLearningsUsed, readChatStream } from "@/lib/engineer/chat-utils";
 
+const MAX_RECONNECT_ATTEMPTS = 10;
+
 export type UseChatStreamCallbacks = {
   /** Called when streaming completes. Receives the accumulated assistant text. */
   onComplete?: (accumulatedText: string) => void | Promise<void>;
@@ -97,7 +99,61 @@ export function useChatStream(): UseChatStreamReturn {
 
       const abortController = new AbortController();
       abortControllerRef.current = abortController;
-      let streamCompleted = false;
+
+      const streamHandlers = {
+        onText: (accumulated: string) => {
+          setStreamingContent(accumulated);
+          latestTextRef.current = accumulated;
+        },
+        onToolUse: (tool: { name: string; input: unknown; id: string }) => {
+          setStreamingBlocks((prev) => [
+            ...prev,
+            {
+              type: "tool_use" as const,
+              id: tool.id,
+              name: tool.name,
+              input: tool.input,
+            },
+          ]);
+        },
+        onToolResult: (result: {
+          id: string;
+          content: string;
+          is_error: boolean;
+        }) => {
+          setStreamingBlocks((prev) =>
+            prev.map((block) =>
+              block.id === result.id
+                ? {
+                    ...block,
+                    type: "tool_result" as const,
+                    content: result.content,
+                    is_error: result.is_error,
+                  }
+                : block
+            )
+          );
+        },
+        onThinking: (content: string) => {
+          setStreamingBlocks((prev) => [
+            ...prev,
+            {
+              type: "thinking" as const,
+              id: `thinking-${Date.now()}`,
+              thinking: content,
+            },
+          ]);
+        },
+        onError: (err: string) => setError(err),
+        onComplete: () => {
+          // Handled via result.completed
+        },
+        onPid: (pid: number) => callbacks?.onPid?.(pid),
+        onLearnings: () => callbacks?.onLearnings?.(),
+        onUsage: (pct: number) => setContextPercent(pct),
+        onEvent: (event: Record<string, unknown>) =>
+          callbacks?.onEvent?.(event),
+      };
 
       try {
         const response = await fetch(url, {
@@ -116,65 +172,106 @@ export function useChatStream(): UseChatStreamReturn {
           throw new Error("No response body");
         }
 
-        await readChatStream(reader, {
-          onText: (accumulated) => {
-            setStreamingContent(accumulated);
-            latestTextRef.current = accumulated;
-          },
-          onToolUse: (tool) => {
-            setStreamingBlocks((prev) => [
-              ...prev,
-              {
-                type: "tool_use",
-                id: tool.id,
-                name: tool.name,
-                input: tool.input,
-              },
-            ]);
-          },
-          onToolResult: (result) => {
-            setStreamingBlocks((prev) =>
-              prev.map((block) =>
-                block.id === result.id
-                  ? {
-                      ...block,
-                      type: "tool_result" as const,
-                      content: result.content,
-                      is_error: result.is_error,
-                    }
-                  : block
-              )
-            );
-          },
-          onThinking: (content) => {
-            setStreamingBlocks((prev) => [
-              ...prev,
-              {
-                type: "thinking",
-                id: `thinking-${Date.now()}`,
-                thinking: content,
-              },
-            ]);
-          },
-          onError: (err) => setError(err),
-          onComplete: () => {
-            streamCompleted = true;
-          },
-          onPid: (pid) => callbacks?.onPid?.(pid),
-          onLearnings: () => callbacks?.onLearnings?.(),
-          onUsage: (pct) => setContextPercent(pct),
-          onEvent: (event) => callbacks?.onEvent?.(event),
-        });
+        // Read commandId from response header (primary channel)
+        let commandId = response.headers.get("x-relay-command-id") ?? undefined;
 
-        // Await consumer cleanup (e.g. query invalidation) BEFORE finally
-        // clears streaming state, so the UI transitions seamlessly from
-        // streaming content to cached query data with no flash.
-        if (streamCompleted) {
+        let result = await readChatStream(reader, streamHandlers);
+
+        // In-band relay_meta as backup for commandId
+        commandId ??= result.commandId;
+        let lastSeq = result.lastSeq;
+
+        if (result.completed) {
           const { learnings } = parseLearningsUsed(latestTextRef.current);
           if (learnings.length > 0) {
             callbacks?.onLearningsUsed?.(learnings);
           }
           await callbacks?.onComplete?.(latestTextRef.current);
+          return;
+        }
+
+        if (result.terminalError) {
+          // Terminal command error — do NOT reconnect
+          return;
+        }
+
+        // Stream dropped without terminal event — try reconnect if relay mode
+        if (commandId) {
+          let attempts = 0;
+          while (
+            attempts < MAX_RECONNECT_ATTEMPTS &&
+            !abortController.signal.aborted
+          ) {
+            attempts++;
+            console.log(
+              `[chat-stream] Reconnect attempt ${attempts}/${MAX_RECONNECT_ATTEMPTS}`
+            );
+
+            try {
+              const reconnectHeaders: Record<string, string> = {
+                "Content-Type": "application/json",
+                "x-relay-after-sequence": String(lastSeq ?? 0),
+              };
+              if (commandId) {
+                reconnectHeaders["x-relay-command-id"] = commandId;
+              }
+              const reconnectResponse = await fetch(url, {
+                method: "POST",
+                headers: reconnectHeaders,
+                body: JSON.stringify(body),
+                signal: abortController.signal,
+              });
+
+              if (!reconnectResponse.ok) {
+                console.log(
+                  `[chat-stream] Reconnect response: ${reconnectResponse.status}`
+                );
+                break;
+              }
+
+              commandId ??=
+                reconnectResponse.headers.get("x-relay-command-id") ??
+                commandId;
+
+              const reconnectReader = reconnectResponse.body?.getReader();
+              if (!reconnectReader) {
+                break;
+              }
+
+              result = await readChatStream(reconnectReader, streamHandlers, {
+                initialContent: latestTextRef.current,
+              });
+
+              commandId ??= result.commandId;
+              lastSeq = result.lastSeq ?? lastSeq;
+
+              if (result.completed) {
+                const { learnings } = parseLearningsUsed(latestTextRef.current);
+                if (learnings.length > 0) {
+                  callbacks?.onLearningsUsed?.(learnings);
+                }
+                await callbacks?.onComplete?.(latestTextRef.current);
+                return;
+              }
+
+              if (result.terminalError) {
+                return;
+              }
+            } catch (err) {
+              if (err instanceof DOMException && err.name === "AbortError") {
+                throw err;
+              }
+              console.error("[chat-stream] Reconnect error:", err);
+              break;
+            }
+          }
+        }
+
+        // Reconnect exhausted — surface error (chat has no poll fallback)
+        if (!result.completed) {
+          setError(
+            result.lastRelayError ?? "Stream connection lost. Please try again."
+          );
         }
       } catch (err) {
         if (err instanceof DOMException && err.name === "AbortError") {

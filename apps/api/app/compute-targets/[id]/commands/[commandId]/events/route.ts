@@ -58,17 +58,26 @@ export async function GET(
       url.searchParams.get("stream") === "true" ||
       request.headers.get("accept")?.includes("text/event-stream") === true;
 
+    const afterSequenceParam = url.searchParams.get("afterSequence");
+    const afterSequenceRaw =
+      afterSequenceParam !== null ? Number(afterSequenceParam) : Number.NaN;
+    const afterSequence =
+      Number.isInteger(afterSequenceRaw) && afterSequenceRaw >= 0
+        ? afterSequenceRaw
+        : undefined;
+
     if (!streamRequested) {
       const events = await desktopCommandStore.getCommandEvents(
         target.id,
-        commandId
+        commandId,
+        { afterSequence }
       );
       return successResponse(events ?? []);
     }
 
     const stream = createSseStream(
       async ({ send, close }) => {
-        let lastSequence = 0;
+        let lastSequence = afterSequence ?? 0;
 
         const unsubscribe = await desktopCommandStore.subscribeCommandEvents(
           target.id,
@@ -82,7 +91,7 @@ export async function GET(
               close();
             }
           },
-          { replay: true }
+          { replay: true, afterSequence }
         );
 
         // Poll DB for events written by external processes (e.g., relay on ECS).
@@ -92,7 +101,8 @@ export async function GET(
           try {
             const events = await desktopCommandStore.getCommandEvents(
               target.id,
-              commandId
+              commandId,
+              { afterSequence }
             );
             if (!events) {
               return;
