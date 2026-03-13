@@ -10,7 +10,7 @@ import { cn } from "@repo/design-system/lib/utils";
 
 type MetadataPanelProps = {
   /**
-   * Optional title to display at the top of the panel
+   * Optional title to display at the top of the panel (sidebar only)
    */
   title?: string;
   /**
@@ -21,18 +21,24 @@ type MetadataPanelProps = {
    * Optional className for custom styling
    */
   className?: string;
+  /**
+   * Layout variant: "sidebar" = right gutter (w-80 border-l), "bar" = horizontal strip below title
+   */
+  variant?: "bar" | "sidebar";
 };
 
 /**
  * Base metadata panel component for artifact editors.
  * Provides consistent structure with slots for artifact-specific content.
+ * Use variant="bar" for horizontal metadata bar below artifact title; default "sidebar" for right gutter.
  *
  * Usage:
  * ```tsx
  * <MetadataPanel title="PRD Details">
  *   <StatusMetadataSection ... />
- *   <PRDSpecificFields ... />
- *   <ArtifactInfo ... />
+ * </MetadataPanel>
+ * <MetadataPanel variant="bar">
+ *   <StatusMetadataSection layout="horizontal" ... />
  * </MetadataPanel>
  * ```
  */
@@ -40,7 +46,20 @@ export function MetadataPanel({
   title,
   children,
   className,
+  variant = "sidebar",
 }: Readonly<MetadataPanelProps>) {
+  if (variant === "bar") {
+    return (
+      <div
+        className={cn(
+          "flex flex-wrap items-center gap-2 border-b bg-background py-2",
+          className
+        )}
+      >
+        {children}
+      </div>
+    );
+  }
   return (
     <div
       className={cn(
@@ -60,18 +79,22 @@ type MetadataSectionProps = {
    */
   children: React.ReactNode;
   /**
-   * Whether to show a border-top separator before this section
+   * Whether to show a border-top separator before this section (vertical layout only)
    */
   separator?: boolean;
   /**
    * Optional className for custom styling
    */
   className?: string;
+  /**
+   * Layout: "vertical" = stacked fields, "horizontal" = single row (for metadata bar)
+   */
+  layout?: "horizontal" | "vertical";
 };
 
 /**
  * Individual section within a metadata panel.
- * Used to group related metadata fields with consistent spacing and optional separators.
+ * Use layout="horizontal" inside MetadataPanel variant="bar" for pill-style row.
  *
  * Usage:
  * ```tsx
@@ -79,15 +102,28 @@ type MetadataSectionProps = {
  *   <Label>Field Name</Label>
  *   <Input ... />
  * </MetadataSection>
+ * <MetadataSection layout="horizontal">
+ *   <StatusSelect ... />
+ *   <AssigneePopover ... />
+ * </MetadataSection>
  * ```
  */
 export function MetadataSection({
   children,
   separator,
   className,
+  layout = "vertical",
 }: Readonly<MetadataSectionProps>) {
   return (
-    <div className={cn("space-y-2", separator && "border-t pt-4", className)}>
+    <div
+      className={cn(
+        layout === "horizontal"
+          ? "flex flex-wrap items-center gap-2"
+          : "space-y-2",
+        layout === "vertical" && separator && "border-t pt-4",
+        className
+      )}
+    >
       {children}
     </div>
   );

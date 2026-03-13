@@ -171,8 +171,10 @@ export function PRDEditorHeader({
       {overflowMenu}
 
       <Button
+        aria-label="Toggle chat panel"
         onClick={onToggleMetadataPanel}
         size="icon"
+        title="Toggle chat panel"
         variant={showMetadataPanel ? "secondary" : "ghost"}
       >
         <PanelRightIcon className="h-4 w-4" />

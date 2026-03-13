@@ -8,10 +8,13 @@ import { InlinePresence, OptionalArtifactRoom } from "@repo/collaboration";
 import { Button } from "@repo/design-system/components/ui/button";
 import { Toggle } from "@repo/design-system/components/ui/toggle";
 import { MessageSquareDotIcon } from "lucide-react";
-import { Suspense, useEffect, useRef, useState } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { ArtifactChatPanel } from "@/components/artifact-editor/artifact-chat-panel";
 import { CollaborativeEditor } from "@/components/artifact-editor/collaborative-editor";
 import { EditorToolbarRow } from "@/components/artifact-editor/editor-toolbar-row";
+import { MetadataPanel } from "@/components/artifact-editor/metadata-panel";
 import { SaveIndicator } from "@/components/artifact-editor/save-indicator";
+import { StatusMetadataSection } from "@/components/artifact-editor/status-metadata-section";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { GenerationStatusBanner } from "@/components/generation-status-banner";
 import { MoveArtifactDialog } from "@/components/move-artifact-dialog";
@@ -30,7 +33,9 @@ import {
   useCodeJudgesFeedback,
   useJudgesFeedback,
 } from "@/hooks/queries/use-judges";
+import { useOrganizationUsers } from "@/hooks/queries/use-users";
 import { usePreviewDeploymentPolling } from "@/hooks/use-preview-deployment-polling";
+import { transformApiUserToSelectUser } from "@/lib/user-utils";
 import { ExecutePlanModal } from "../components/execute-plan-modal";
 import { RequestChangesModal } from "../components/request-changes-modal";
 import { VersionSelector } from "../components/version-selector";
@@ -70,6 +75,11 @@ export function PlanEditor({
   const metadata = useArtifactMetadata({
     artifact: plan,
   });
+  const { data: orgUsers = [] } = useOrganizationUsers();
+  const transformedOrgUsers = useMemo(
+    () => orgUsers.map(transformApiUserToSelectUser),
+    [orgUsers]
+  );
 
   const actions = useArtifactActions({
     artifact: plan,
@@ -196,7 +206,22 @@ export function PlanEditor({
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       {header}
 
-      {/* Content area: toolbar + editor on left, metadata panel on right */}
+      {/* Metadata bar below header */}
+      <MetadataPanel className="pl-4" variant="bar">
+        <StatusMetadataSection
+          approver={metadata.approver}
+          assignee={metadata.assignee}
+          layout="horizontal"
+          onApproverSelect={metadata.handleApproverSelect}
+          onAssigneeChange={metadata.handleAssigneeChange}
+          onStatusChange={metadata.handleStatusChange}
+          orgUsers={transformedOrgUsers}
+          status={metadata.status}
+          teamMembers={metadata.teamMembers}
+        />
+      </MetadataPanel>
+
+      {/* Content area: main content + chat panel on right */}
       <div className="flex min-h-0 flex-1">
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
           <OptionalArtifactRoom roomId={session.liveblocksRoomId}>
@@ -287,34 +312,40 @@ export function PlanEditor({
                 value={contentController.content}
               />
             </div>
+
+            {/* Details section */}
+            <div className="border-t px-4 py-4">
+              <PlanMetadataPanel
+                approver={metadata.approver}
+                assignee={metadata.assignee}
+                codeJudgeItems={codeJudgesReport ?? null}
+                generationStatus={generationStatus ?? null}
+                isPreviewRefreshing={isRefreshingPreviewDeployment}
+                judgeItems={judgesReport ?? null}
+                onApproverSelect={metadata.handleApproverSelect}
+                onAssigneeChange={metadata.handleAssigneeChange}
+                onPreviewRefresh={refetchPreviewLinks}
+                onStatusChange={metadata.handleStatusChange}
+                onTargetBranchBlur={metadata.handleTargetBranchBlur}
+                onTargetBranchChange={metadata.handleTargetBranchChange}
+                onTargetRepoBlur={metadata.handleTargetRepoBlur}
+                onTargetRepoChange={metadata.handleTargetRepoChange}
+                plan={plan}
+                previewDeployment={previewDeployment}
+                pullRequest={pullRequest ?? null}
+                status={metadata.status}
+                targetBranch={metadata.targetBranch}
+                targetRepo={metadata.targetRepo}
+                teamMembers={metadata.teamMembers}
+                variant="detailsOnly"
+              />
+            </div>
           </OptionalArtifactRoom>
         </div>
 
-        {/* Metadata Panel — spans full height from header down */}
+        {/* Chat panel (replaces metadata sidebar) */}
         {uiState.showMetadataPanel ? (
-          <PlanMetadataPanel
-            approver={metadata.approver}
-            assignee={metadata.assignee}
-            codeJudgeItems={codeJudgesReport ?? null}
-            generationStatus={generationStatus ?? null}
-            isPreviewRefreshing={isRefreshingPreviewDeployment}
-            judgeItems={judgesReport ?? null}
-            onApproverSelect={metadata.handleApproverSelect}
-            onAssigneeChange={metadata.handleAssigneeChange}
-            onPreviewRefresh={refetchPreviewLinks}
-            onStatusChange={metadata.handleStatusChange}
-            onTargetBranchBlur={metadata.handleTargetBranchBlur}
-            onTargetBranchChange={metadata.handleTargetBranchChange}
-            onTargetRepoBlur={metadata.handleTargetRepoBlur}
-            onTargetRepoChange={metadata.handleTargetRepoChange}
-            plan={plan}
-            previewDeployment={previewDeployment}
-            pullRequest={pullRequest ?? null}
-            status={metadata.status}
-            targetBranch={metadata.targetBranch}
-            targetRepo={metadata.targetRepo}
-            teamMembers={metadata.teamMembers}
-          />
+          <ArtifactChatPanel artifactId={plan.id} artifactType="plan" />
         ) : null}
       </div>
 

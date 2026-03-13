@@ -162,7 +162,7 @@ export function TargetRepositoryFields({
             onValueChange={handleRepositoryChange}
             value={selectedRepoId}
           >
-            <SelectTrigger>
+            <SelectTrigger className="bg-transparent hover:bg-transparent dark:bg-transparent dark:hover:bg-transparent">
               <SelectValue
                 placeholder={
                   isLoadingGitHubStatus || isLoadingRepos
@@ -202,7 +202,7 @@ export function TargetRepositoryFields({
             onValueChange={handleBranchChange}
             value={targetBranch}
           >
-            <SelectTrigger>
+            <SelectTrigger className="bg-transparent hover:bg-transparent dark:bg-transparent dark:hover:bg-transparent">
               <SelectValue placeholder={getBranchPlaceholder()} />
             </SelectTrigger>
             <SelectContent>
