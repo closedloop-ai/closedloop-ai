@@ -6,10 +6,17 @@ type SessionState = {
   port: number;
 };
 
+type InflightExchange = {
+  port: number;
+  attemptId: number;
+  promise: Promise<SessionState | null>;
+};
+
 let cachedSession: SessionState | null = null;
-let inflightExchange: Promise<SessionState | null> | null = null;
+let inflightExchange: InflightExchange | null = null;
 export type ExchangeError = { message: string; statusCode: number };
 let lastExchangeError: ExchangeError | null = null;
+let latestExchangeAttemptId = 0;
 
 function isSessionValid(session: SessionState | null, port: number): boolean {
   if (!session) {
@@ -26,6 +33,7 @@ function isSessionValid(session: SessionState | null, port: number): boolean {
 export function invalidateLocalGatewaySession(): void {
   cachedSession = null;
   inflightExchange = null;
+  latestExchangeAttemptId += 1;
   lastExchangeError = null;
 }
 
@@ -38,11 +46,23 @@ export function getLastExchangeError(): ExchangeError | null {
   return lastExchangeError;
 }
 
+function setLastExchangeError(
+  exchangeError: ExchangeError | null,
+  attemptId: number
+): void {
+  if (attemptId === latestExchangeAttemptId) {
+    lastExchangeError = exchangeError;
+  }
+}
+
 /**
  * Fetch a challenge from the app server, exchange it with the local gateway,
  * and return a session token. Returns null if the flow fails.
  */
-async function performExchange(port: number): Promise<SessionState | null> {
+async function performExchange(
+  port: number,
+  attemptId: number
+): Promise<SessionState | null> {
   const origin = globalThis.location.origin;
 
   // Step 1: Obtain a challenge token from the app server
@@ -56,26 +76,28 @@ async function performExchange(port: number): Promise<SessionState | null> {
       credentials: "include",
     });
   } catch {
-    lastExchangeError = null;
+    setLastExchangeError(null, attemptId);
     return null;
   }
 
   if (!challengeResponse.ok) {
-    lastExchangeError = null;
+    setLastExchangeError(null, attemptId);
     return null;
   }
 
   try {
     const challengeData = (await challengeResponse.json()) as {
       challengeToken?: string;
+      data?: { challengeToken?: string };
     };
-    if (!challengeData.challengeToken) {
-      lastExchangeError = null;
+    challengeToken =
+      challengeData.challengeToken ?? challengeData.data?.challengeToken ?? "";
+    if (!challengeToken) {
+      setLastExchangeError(null, attemptId);
       return null;
     }
-    challengeToken = challengeData.challengeToken;
   } catch {
-    lastExchangeError = null;
+    setLastExchangeError(null, attemptId);
     return null;
   }
 
@@ -93,7 +115,7 @@ async function performExchange(port: number): Promise<SessionState | null> {
       }
     );
   } catch {
-    lastExchangeError = null;
+    setLastExchangeError(null, attemptId);
     return null;
   }
 
@@ -105,7 +127,10 @@ async function performExchange(port: number): Promise<SessionState | null> {
     } catch {
       message = `exchange failed (${exchangeResponse.status})`;
     }
-    lastExchangeError = { message, statusCode: exchangeResponse.status };
+    setLastExchangeError(
+      { message, statusCode: exchangeResponse.status },
+      attemptId
+    );
     return null;
   }
 
@@ -115,7 +140,7 @@ async function performExchange(port: number): Promise<SessionState | null> {
       expiresAt?: string;
     };
     if (!(exchangeData.sessionToken && exchangeData.expiresAt)) {
-      lastExchangeError = null;
+      setLastExchangeError(null, attemptId);
       return null;
     }
 
@@ -125,11 +150,10 @@ async function performExchange(port: number): Promise<SessionState | null> {
       port,
     };
 
-    cachedSession = session;
-    lastExchangeError = null;
+    setLastExchangeError(null, attemptId);
     return session;
   } catch {
-    lastExchangeError = null;
+    setLastExchangeError(null, attemptId);
     return null;
   }
 }
@@ -151,16 +175,43 @@ export async function ensureLocalGatewaySession(
   }
 
   if (inflightExchange) {
-    const result = await inflightExchange;
-    return result?.token ?? null;
+    if (inflightExchange.port !== port) {
+      inflightExchange = null;
+    } else {
+      const { attemptId: inflightAttemptId, promise: existingPromise } =
+        inflightExchange;
+      const result = await existingPromise;
+      if (
+        result &&
+        result.port === port &&
+        inflightAttemptId === latestExchangeAttemptId
+      ) {
+        cachedSession = result;
+        return result.token;
+      }
+      return null;
+    }
   }
 
-  inflightExchange = performExchange(port).finally(() => {
-    inflightExchange = null;
-  });
+  const attemptId = latestExchangeAttemptId + 1;
+  latestExchangeAttemptId = attemptId;
+  const promise = performExchange(port, attemptId);
+  inflightExchange = {
+    port,
+    attemptId,
+    promise: promise.finally(() => {
+      if (inflightExchange?.promise === promise) {
+        inflightExchange = null;
+      }
+    }),
+  };
 
-  const result = await inflightExchange;
-  return result?.token ?? null;
+  const result = await inflightExchange.promise;
+  if (result && result.port === port && attemptId === latestExchangeAttemptId) {
+    cachedSession = result;
+    return result?.token ?? null;
+  }
+  return null;
 }
 
 /** For tests only. */
@@ -168,4 +219,5 @@ export function resetLocalGatewaySessionForTests(): void {
   cachedSession = null;
   inflightExchange = null;
   lastExchangeError = null;
+  latestExchangeAttemptId = 0;
 }

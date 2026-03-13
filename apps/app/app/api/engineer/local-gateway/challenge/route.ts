@@ -3,6 +3,10 @@ import { log } from "@repo/observability/log";
 import { type NextRequest, NextResponse } from "next/server";
 import { resolveApiOrigin } from "@/lib/api-origin";
 
+type ChallengeApiResult =
+  | { success: true; data: { challengeToken: string; expiresAt: string } }
+  | { success: false; error: string };
+
 /**
  * POST /api/engineer/local-gateway/challenge
  *
@@ -55,12 +59,22 @@ export async function POST(request: NextRequest): Promise<Response> {
       }
     );
 
-    const data = await response.json();
+    const data = (await response.json()) as ChallengeApiResult;
 
-    return NextResponse.json(data, {
-      status: response.status,
-      headers: { "Cache-Control": "no-store" },
-    });
+    if (response.ok && data.success) {
+      return NextResponse.json(data.data, {
+        status: response.status,
+        headers: { "Cache-Control": "no-store" },
+      });
+    }
+
+    return NextResponse.json(
+      { error: data.success ? "Failed to obtain challenge token" : data.error },
+      {
+        status: response.status,
+        headers: { "Cache-Control": "no-store" },
+      }
+    );
   } catch (error) {
     log.error("Failed to fetch local gateway challenge", { error });
     return NextResponse.json(

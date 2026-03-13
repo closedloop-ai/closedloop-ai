@@ -7,69 +7,12 @@ import { z } from "zod";
 import {
   isLocalGatewayJwtConfigured,
   issueLocalGatewayChallenge,
+  LOCAL_GATEWAY_CHALLENGE_TTL_SECONDS,
 } from "@/lib/auth/local-gateway-jwt";
+import { isLocalGatewayOriginAllowed } from "@/lib/auth/local-gateway-origins";
 import { withAuth } from "@/lib/auth/with-auth";
 
-const TRAILING_SLASH_REGEX = /\/$/;
-const LEADING_DOT_REGEX = /^\./;
-const DEFAULT_PREVIEW_SUFFIX = "preview.closedloop-stage.ai";
-const LOCALHOST_ORIGIN_REGEX = /^http:\/\/localhost:\d+$/;
-const JTI_REDIS_TTL_SECONDS = 120;
-
-function getAllowedOrigins(): Set<string> {
-  const origins = new Set<string>(["http://localhost:3000"]);
-  const appUrl = process.env.NEXT_PUBLIC_APP_URL;
-  if (appUrl) {
-    origins.add(appUrl);
-    origins.add(appUrl.replace(TRAILING_SLASH_REGEX, ""));
-  }
-  const webUrl = process.env.NEXT_PUBLIC_WEB_URL;
-  if (webUrl) {
-    origins.add(webUrl);
-    origins.add(webUrl.replace(TRAILING_SLASH_REGEX, ""));
-  }
-  return origins;
-}
-
-function getPreviewSuffix(): string | null {
-  const suffix =
-    process.env.NEXT_PUBLIC_PREVIEW_DOMAIN ??
-    process.env.PREVIEW_DOMAIN ??
-    DEFAULT_PREVIEW_SUFFIX;
-  const normalized = suffix.replace(LEADING_DOT_REGEX, "").trim();
-  return normalized.length > 0 ? normalized : null;
-}
-
-function isOriginAllowed(origin: string): boolean {
-  let hostname: string;
-  try {
-    hostname = new URL(origin).hostname.toLowerCase();
-  } catch {
-    return false;
-  }
-
-  if (getAllowedOrigins().has(origin)) {
-    return true;
-  }
-
-  if (
-    process.env.NODE_ENV !== "production" &&
-    LOCALHOST_ORIGIN_REGEX.test(origin)
-  ) {
-    return true;
-  }
-
-  const suffix = getPreviewSuffix();
-  if (suffix && hostname.endsWith(suffix.toLowerCase())) {
-    return true;
-  }
-
-  if (hostname.endsWith(".vercel.app") && hostname.startsWith("app-")) {
-    return true;
-  }
-
-  return false;
-}
+const JTI_REDIS_TTL_SECONDS = LOCAL_GATEWAY_CHALLENGE_TTL_SECONDS + 10;
 
 const challengeRequestValidator = z.object({
   origin: z.string().min(1).max(2048),
@@ -87,7 +30,6 @@ export const POST = withAuth<
   if (!isLocalGatewayJwtConfigured()) {
     return NextResponse.json(failure("Local gateway auth is not configured"), {
       status: 503,
-      headers: { "Cache-Control": "no-store" },
     });
   }
 
@@ -96,16 +38,17 @@ export const POST = withAuth<
   if (!parseResult.success) {
     return NextResponse.json(
       failure("Invalid request body: origin is required"),
-      { status: 400, headers: { "Cache-Control": "no-store" } }
+      {
+        status: 400,
+      }
     );
   }
 
   const { origin } = parseResult.data;
 
-  if (!isOriginAllowed(origin)) {
+  if (!isLocalGatewayOriginAllowed(origin)) {
     return NextResponse.json(failure("Origin is not trusted"), {
       status: 400,
-      headers: { "Cache-Control": "no-store" },
     });
   }
 
@@ -120,7 +63,6 @@ export const POST = withAuth<
   });
 
   return NextResponse.json(
-    success({ challengeToken: jwt, expiresAt: expiresAt.toISOString() }),
-    { headers: { "Cache-Control": "no-store" } }
+    success({ challengeToken: jwt, expiresAt: expiresAt.toISOString() })
   );
 });

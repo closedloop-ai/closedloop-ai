@@ -32,7 +32,6 @@ export const POST = withApiKeyAuth<
   if (!isLocalGatewayJwtConfigured()) {
     return NextResponse.json(failure("Local gateway auth is not configured"), {
       status: 503,
-      headers: { "Cache-Control": "no-store" },
     });
   }
 
@@ -41,7 +40,6 @@ export const POST = withApiKeyAuth<
   if (!parseResult.success) {
     return NextResponse.json(failure("Invalid request body"), {
       status: 400,
-      headers: { "Cache-Control": "no-store" },
     });
   }
 
@@ -57,35 +55,7 @@ export const POST = withApiKeyAuth<
     });
     return NextResponse.json(failure("Invalid or expired challenge token"), {
       status: 401,
-      headers: { "Cache-Control": "no-store" },
     });
-  }
-
-  if (claims.userId !== user.id || claims.orgId !== user.organizationId) {
-    log.warn("Local gateway challenge verification failed: user/org mismatch", {
-      challengeUserId: claims.userId,
-      apiKeyUserId: user.id,
-      challengeOrgId: claims.orgId,
-      apiKeyOrgId: user.organizationId,
-      userAgent,
-    });
-    return NextResponse.json(
-      failure("Challenge was not issued for this API key owner"),
-      { status: 403, headers: { "Cache-Control": "no-store" } }
-    );
-  }
-
-  if (requestOrigin !== claims.origin) {
-    log.warn("Local gateway challenge verification failed: origin mismatch", {
-      requestOrigin,
-      challengeOrigin: claims.origin,
-      userId: user.id,
-      userAgent,
-    });
-    return NextResponse.json(
-      failure("Request origin does not match challenge origin"),
-      { status: 403, headers: { "Cache-Control": "no-store" } }
-    );
   }
 
   const prev = await redis.getdel(`local-auth:jti:${claims.jti}`);
@@ -100,7 +70,34 @@ export const POST = withApiKeyAuth<
     );
     return NextResponse.json(
       failure("Challenge has already been used or has expired"),
-      { status: 403, headers: { "Cache-Control": "no-store" } }
+      { status: 403 }
+    );
+  }
+
+  if (claims.userId !== user.id || claims.orgId !== user.organizationId) {
+    log.warn("Local gateway challenge verification failed: user/org mismatch", {
+      challengeUserId: claims.userId,
+      apiKeyUserId: user.id,
+      challengeOrgId: claims.orgId,
+      apiKeyOrgId: user.organizationId,
+      userAgent,
+    });
+    return NextResponse.json(
+      failure("Challenge was not issued for this API key owner"),
+      { status: 403 }
+    );
+  }
+
+  if (requestOrigin !== claims.origin) {
+    log.warn("Local gateway challenge verification failed: origin mismatch", {
+      requestOrigin,
+      challengeOrigin: claims.origin,
+      userId: user.id,
+      userAgent,
+    });
+    return NextResponse.json(
+      failure("Request origin does not match challenge origin"),
+      { status: 403 }
     );
   }
 
@@ -113,7 +110,6 @@ export const POST = withApiKeyAuth<
   });
 
   return NextResponse.json(
-    success({ ok: true as const, sessionTtlSeconds: SESSION_TTL_SECONDS }),
-    { headers: { "Cache-Control": "no-store" } }
+    success({ ok: true as const, sessionTtlSeconds: SESSION_TTL_SECONDS })
   );
 });

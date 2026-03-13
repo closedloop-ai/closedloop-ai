@@ -98,6 +98,24 @@ describe("local-gateway-jwt", () => {
     it("rejects a structurally invalid token string", async () => {
       await expect(verifyLocalGatewayChallenge("not.a.jwt")).rejects.toThrow();
     });
+
+    it("rejects tokens signed with a different algorithm", async () => {
+      const secret = new TextEncoder().encode(VALID_SECRET);
+      const hs512Jwt = await new SignJWT({
+        orgId: "org-1",
+        origin: "http://localhost:3000",
+      })
+        .setProtectedHeader({ alg: "HS512" })
+        .setSubject("user-1")
+        .setJti("hs512-jti")
+        .setAudience("desktop-local-gateway")
+        .setIssuer("closedloop-api")
+        .setIssuedAt(Math.floor(Date.now() / 1000))
+        .setExpirationTime(Math.floor(Date.now() / 1000) + 60)
+        .sign(secret);
+
+      await expect(verifyLocalGatewayChallenge(hs512Jwt)).rejects.toThrow();
+    });
   });
 
   describe("isLocalGatewayJwtConfigured", () => {

@@ -20,6 +20,19 @@ function mockChallengeOk(token = "challenge-jwt-abc") {
   });
 }
 
+function mockChallengeApiResultOk(token = "challenge-jwt-abc") {
+  return new Response(
+    JSON.stringify({
+      success: true,
+      data: { challengeToken: token, expiresAt: futureExpiry() },
+    }),
+    {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }
+  );
+}
+
 function mockExchangeOk(
   sessionToken = "session-tok-xyz",
   expiresAt = futureExpiry()
@@ -67,6 +80,16 @@ describe("local-gateway-session", () => {
     expect(String(exchangeCall[0])).toBe(
       `http://localhost:${PORT}/gateway-auth/exchange`
     );
+  });
+
+  it("accepts challenge responses wrapped in the ApiResult envelope", async () => {
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(mockChallengeApiResultOk("challenge-envelope"))
+      .mockResolvedValueOnce(mockExchangeOk("tok-envelope"));
+
+    const token = await ensureLocalGatewaySession(PORT);
+
+    expect(token).toBe("tok-envelope");
   });
 
   it("returns the cached token on subsequent calls without re-fetching", async () => {
@@ -171,6 +194,42 @@ describe("local-gateway-session", () => {
     // Only one challenge + one exchange should have been issued
     expect(challengeCallCount).toBe(1);
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not reuse an in-flight exchange result for a different port", async () => {
+    const nextPort = PORT + 1;
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "/api/engineer/local-gateway/challenge") {
+          return mockChallengeOk(`challenge-${Math.random()}`);
+        }
+
+        if (url === `http://localhost:${PORT}/gateway-auth/exchange`) {
+          await new Promise<void>((resolve) => setTimeout(resolve, 20));
+          return mockExchangeOk("tok-port-a");
+        }
+
+        if (url === `http://localhost:${nextPort}/gateway-auth/exchange`) {
+          return mockExchangeOk("tok-port-b");
+        }
+
+        throw new Error(`Unexpected fetch: ${url}`);
+      });
+
+    const firstAttempt = ensureLocalGatewaySession(PORT);
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+    const secondAttempt = await ensureLocalGatewaySession(nextPort);
+    const firstResult = await firstAttempt;
+
+    expect(secondAttempt).toBe("tok-port-b");
+    expect(firstResult).toBeNull();
+
+    const cachedSecondPortToken = await ensureLocalGatewaySession(nextPort);
+    expect(cachedSecondPortToken).toBe("tok-port-b");
+    expect(fetchMock).toHaveBeenCalledTimes(4);
   });
 
   // --- Fail-closed: missing API key error tracking ---

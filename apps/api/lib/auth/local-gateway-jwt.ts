@@ -5,7 +5,7 @@ const AUDIENCE = "desktop-local-gateway";
 const ISSUER = "closedloop-api";
 const MIN_SECRET_LENGTH = 32;
 const MIN_UNIQUE_SECRET_CHARS = 8;
-const CHALLENGE_TTL_SECONDS = 60;
+export const LOCAL_GATEWAY_CHALLENGE_TTL_SECONDS = 60;
 
 function getSecret(): Uint8Array {
   const secret = process.env.LOCAL_GATEWAY_JWT_SECRET;
@@ -49,7 +49,7 @@ export async function issueLocalGatewayChallenge(
 ): Promise<LocalGatewayChallengeToken> {
   const now = Math.floor(Date.now() / 1000);
   const jti = randomUUID();
-  const exp = now + CHALLENGE_TTL_SECONDS;
+  const exp = now + LOCAL_GATEWAY_CHALLENGE_TTL_SECONDS;
 
   const jwt = await new SignJWT({ orgId: claims.orgId, origin: claims.origin })
     .setProtectedHeader({ alg: "HS256" })
@@ -68,6 +68,7 @@ export async function verifyLocalGatewayChallenge(
   token: string
 ): Promise<VerifiedLocalGatewayChallenge> {
   const { payload } = await jwtVerify(token, getSecret(), {
+    algorithms: ["HS256"],
     audience: AUDIENCE,
     issuer: ISSUER,
   });
