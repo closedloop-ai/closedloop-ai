@@ -58,7 +58,7 @@ export const POST = withAuth<
     origin,
   });
 
-  registerJti(jti);
+  await registerJti(jti, expiresAt);
 
   return NextResponse.json(
     { challengeToken: jwt, expiresAt: expiresAt.toISOString() },

@@ -1366,6 +1366,15 @@ model OAuthRefreshToken {
   @@map("oauth_refresh_tokens")
 }
 
+model LocalGatewayChallengeJti {
+  jti       String   @id
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([expiresAt])
+  @@map("local_gateway_challenge_jtis")
+}
+
 // =============================================================================
 // CUSTOM FIELDS
 // =============================================================================

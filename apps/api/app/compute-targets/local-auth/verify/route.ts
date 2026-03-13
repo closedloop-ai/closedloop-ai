@@ -60,7 +60,7 @@ export const POST = withApiKeyAuth<
     });
   }
 
-  if (!consumeJti(claims.jti)) {
+  if (!(await consumeJti(claims.jti))) {
     log.warn(
       "Local gateway challenge verification failed: JTI already consumed or expired",
       {

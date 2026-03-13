@@ -61,7 +61,10 @@ describe("POST /compute-targets/local-auth/challenge", () => {
     } as never);
 
     expect(response.status).toBe(200);
-    expect(mockRegisterJti).toHaveBeenCalledWith("jti-123");
+    expect(mockRegisterJti).toHaveBeenCalledWith(
+      "jti-123",
+      new Date("2026-03-13T12:00:00.000Z")
+    );
 
     const json = await response.json();
     expect(json).toEqual({

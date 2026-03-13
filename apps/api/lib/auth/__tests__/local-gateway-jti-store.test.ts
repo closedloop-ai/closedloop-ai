@@ -1,37 +1,63 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const mocks = vi.hoisted(() => {
+  const mockDeleteMany = vi.fn();
+  const mockCreate = vi.fn();
+  const txClient = {
+    localGatewayChallengeJti: {
+      deleteMany: (...args: unknown[]) => mockDeleteMany(...args),
+      create: (...args: unknown[]) => mockCreate(...args),
+    },
+  };
+  const withDb = Object.assign(
+    vi.fn((fn: (db: typeof txClient) => unknown) => fn(txClient)),
+    {
+      tx: vi.fn((fn: (db: typeof txClient) => unknown) => fn(txClient)),
+    }
+  );
+
+  return { mockCreate, mockDeleteMany, withDb };
+});
+
+vi.mock("@repo/database", () => ({
+  withDb: mocks.withDb,
+}));
+
 import {
   consumeJti,
   registerJti,
   resetLocalGatewayJtiStoreForTests,
 } from "../local-gateway-jti-store";
-import { LOCAL_GATEWAY_CHALLENGE_TTL_SECONDS } from "../local-gateway-jwt";
-
-const JTI_TTL_MS = (LOCAL_GATEWAY_CHALLENGE_TTL_SECONDS + 10) * 1000;
 
 describe("local-gateway-jti-store", () => {
   beforeEach(() => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-03-13T12:00:00.000Z"));
-    resetLocalGatewayJtiStoreForTests();
+    vi.clearAllMocks();
+    mocks.mockDeleteMany.mockResolvedValue({ count: 0 });
+    mocks.mockCreate.mockResolvedValue(undefined);
   });
 
-  afterEach(() => {
-    resetLocalGatewayJtiStoreForTests();
-    vi.useRealTimers();
+  it("consumes a registered jti only once", async () => {
+    const expiresAt = new Date("2026-03-13T12:01:00.000Z");
+    mocks.mockDeleteMany
+      .mockResolvedValueOnce({ count: 0 })
+      .mockResolvedValueOnce({ count: 0 })
+      .mockResolvedValueOnce({ count: 1 })
+      .mockResolvedValueOnce({ count: 0 })
+      .mockResolvedValueOnce({ count: 0 });
+
+    await registerJti("jti-123", expiresAt);
+    await expect(consumeJti("jti-123")).resolves.toBe(true);
+    await expect(consumeJti("jti-123")).resolves.toBe(false);
+
+    expect(mocks.mockCreate).toHaveBeenCalledWith({
+      data: { jti: "jti-123", expiresAt },
+    });
   });
 
-  it("consumes a registered jti only once", () => {
-    registerJti("jti-123");
+  it("clears all JTIs in the test reset helper", async () => {
+    await resetLocalGatewayJtiStoreForTests();
 
-    expect(consumeJti("jti-123")).toBe(true);
-    expect(consumeJti("jti-123")).toBe(false);
-  });
-
-  it("expires a registered jti after the store ttl elapses", () => {
-    registerJti("jti-123");
-
-    vi.advanceTimersByTime(JTI_TTL_MS + 1);
-
-    expect(consumeJti("jti-123")).toBe(false);
+    expect(mocks.withDb).toHaveBeenCalledTimes(1);
+    expect(mocks.mockDeleteMany).toHaveBeenCalledWith();
   });
 });

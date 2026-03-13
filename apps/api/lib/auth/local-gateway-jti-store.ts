@@ -1,42 +1,43 @@
 import "server-only";
 
-import { LOCAL_GATEWAY_CHALLENGE_TTL_SECONDS } from "./local-gateway-jwt";
+import type { TransactionClient } from "@repo/database";
+import { withDb } from "@repo/database";
 
-const JTI_TTL_MS = (LOCAL_GATEWAY_CHALLENGE_TTL_SECONDS + 10) * 1000;
-
-// This is only safe while apps/api runs as a single long-lived instance.
-// If challenge + verify requests can hit different instances, replace this
-// process-local store with a shared one before scaling out.
-const jtiExpirations = new Map<string, number>();
-
-function cleanupExpiredJtis(now = Date.now()): void {
-  for (const [jti, expiresAt] of jtiExpirations) {
-    if (expiresAt <= now) {
-      jtiExpirations.delete(jti);
-    }
-  }
+async function cleanupExpiredJtis(
+  client: TransactionClient,
+  now: Date
+): Promise<void> {
+  await client.localGatewayChallengeJti.deleteMany({
+    where: { expiresAt: { lte: now } },
+  });
 }
 
-export function registerJti(jti: string): void {
-  const now = Date.now();
-  cleanupExpiredJtis(now);
-  jtiExpirations.set(jti, now + JTI_TTL_MS);
+export async function registerJti(jti: string, expiresAt: Date): Promise<void> {
+  const now = new Date();
+  await withDb.tx(async (tx) => {
+    await cleanupExpiredJtis(tx, now);
+    await tx.localGatewayChallengeJti.create({
+      data: { jti, expiresAt },
+    });
+  });
 }
 
-export function consumeJti(jti: string): boolean {
-  const now = Date.now();
-  cleanupExpiredJtis(now);
+export async function consumeJti(jti: string): Promise<boolean> {
+  const now = new Date();
+  const { count } = await withDb.tx(async (tx) => {
+    await cleanupExpiredJtis(tx, now);
+    return tx.localGatewayChallengeJti.deleteMany({
+      where: {
+        jti,
+        expiresAt: { gt: now },
+      },
+    });
+  });
 
-  const expiresAt = jtiExpirations.get(jti);
-  if (typeof expiresAt !== "number") {
-    return false;
-  }
-
-  jtiExpirations.delete(jti);
-  return expiresAt > now;
+  return count === 1;
 }
 
 /** For tests only. */
-export function resetLocalGatewayJtiStoreForTests(): void {
-  jtiExpirations.clear();
+export async function resetLocalGatewayJtiStoreForTests(): Promise<void> {
+  await withDb((db) => db.localGatewayChallengeJti.deleteMany());
 }
