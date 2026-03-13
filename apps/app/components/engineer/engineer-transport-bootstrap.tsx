@@ -18,7 +18,7 @@ import {
 export function EngineerTransportBootstrap() {
   const detection = useElectronDetection(true);
   useComputeTargetStatusStream(CLOUD_RELAY_ENABLED);
-  const { data: targets = [] } = useComputeTargets({
+  useComputeTargets({
     ...COMPUTE_TARGETS_QUERY_OPTIONS,
     enabled: CLOUD_RELAY_ENABLED,
   });
@@ -58,7 +58,7 @@ export function EngineerTransportBootstrap() {
     setEngineerRoutingAutoSelection(EngineerRoutingMode.CloudRelay, null, {
       force: true,
     });
-  }, [detection.detected, detection.loading, targets]);
+  }, [detection.detected, detection.loading]);
 
   useEffect(() => installEngineerFetchInterceptor(), []);
 

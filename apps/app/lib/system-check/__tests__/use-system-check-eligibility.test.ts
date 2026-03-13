@@ -190,7 +190,7 @@ describe("useSystemCheckEligibility", () => {
       expect(result.current.shouldRunSystemCheck).toBe(false);
     });
 
-    it("does not stay loading when auto-sourced CloudRelay has a valid target and Electron is also detected", () => {
+    it("stays loading when auto-sourced CloudRelay is selected and Electron is detected but cloud relay is disabled", () => {
       // Regression: autoSelectionPending was true whenever Electron was detected
       // with auto source + non-LocalElectron mode, even when a valid cloud target
       // meant the bootstrap would never switch to LocalElectron.
