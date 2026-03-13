@@ -15,7 +15,11 @@ import {
 import { apiKeyService } from "@/app/settings/api-key-service";
 import { issueLoopRunnerToken } from "@/lib/auth/loop-runner-jwt";
 import { getCommandHandler } from "./loop-commands";
-import { buildContextPack } from "./loop-context-pack";
+import {
+  buildContextPack,
+  buildContextPackInMemory,
+} from "./loop-context-pack";
+import { launchLoopOnDesktop, stopDesktopLoop } from "./loop-desktop";
 import { runEcsTask, stopLoopTask } from "./loop-ecs";
 import {
   downloadMetadata,
@@ -85,18 +89,29 @@ async function resolveParentLoopInfo(
   parentLoopId: string,
   organizationId: string
 ): Promise<
-  | { s3StateKey: string; sessionId: string | null; branchName: string | null }
+  | {
+      s3StateKey: string | null;
+      sessionId: string | null;
+      branchName: string | null;
+    }
   | undefined
 > {
   const parent = await loopsService.findById(parentLoopId, organizationId);
-  if (!parent?.s3StateKey) {
-    log.warn("[loop-orchestrator] Parent loop has no s3StateKey", {
-      parentLoopId,
-    });
+  if (!parent) {
+    log.warn("[loop-orchestrator] Parent loop not found", { parentLoopId });
+    return undefined;
+  }
+  if (!(parent.s3StateKey || parent.computeTargetId)) {
+    log.warn(
+      "[loop-orchestrator] Parent loop has no s3StateKey or computeTargetId",
+      {
+        parentLoopId,
+      }
+    );
     return undefined;
   }
   return {
-    s3StateKey: parent.s3StateKey,
+    s3StateKey: parent.s3StateKey ?? null,
     sessionId: parent.sessionId ?? null,
     branchName: parent.branchName ?? null,
   };
@@ -172,16 +187,44 @@ async function getPendingLoopOrThrow(
   return loop;
 }
 
+/**
+ * Scrub S3 context pack secrets in the runner-race path.
+ * Skipped for desktop loops (no S3 state key).
+ */
+async function tryScrubSecretsInRacePath(
+  loopId: string,
+  organizationId: string,
+  s3StateKey: string | null
+): Promise<void> {
+  if (!s3StateKey) {
+    return;
+  }
+  try {
+    await scrubContextPackSecrets(s3StateKey);
+  } catch (scrubError) {
+    log.error(
+      "[loop-orchestrator] Failed to scrub secrets in runner-race path",
+      {
+        loopId,
+        s3StateKey,
+        error:
+          scrubError instanceof Error ? scrubError.message : String(scrubError),
+      }
+    );
+    await recordScrubFailureWarning(loopId, organizationId);
+  }
+}
+
 async function claimOrPersistRunning(
   loopId: string,
   organizationId: string,
   taskArn: string,
-  s3StateKey: string
+  s3StateKey: string | null
 ): Promise<void> {
   try {
     await loopsService.updateStatus(loopId, organizationId, "CLAIMED", {
       containerId: taskArn,
-      s3StateKey,
+      s3StateKey: s3StateKey ?? undefined,
     });
     return;
   } catch (claimError) {
@@ -190,27 +233,9 @@ async function claimOrPersistRunning(
       if (currentLoop?.status === "RUNNING") {
         await loopsService.persistLaunchInfo(loopId, organizationId, {
           containerId: taskArn,
-          s3StateKey,
+          s3StateKey: s3StateKey ?? undefined,
         });
-        // The started-event handler scrubs secrets based on loop.s3StateKey,
-        // but it likely already fired before persistLaunchInfo wrote the key.
-        // Scrub now to close the window.
-        try {
-          await scrubContextPackSecrets(s3StateKey);
-        } catch (scrubError) {
-          log.error(
-            "[loop-orchestrator] Failed to scrub secrets in runner-race path",
-            {
-              loopId,
-              s3StateKey,
-              error:
-                scrubError instanceof Error
-                  ? scrubError.message
-                  : String(scrubError),
-            }
-          );
-          await recordScrubFailureWarning(loopId, organizationId);
-        }
+        await tryScrubSecretsInRacePath(loopId, organizationId, s3StateKey);
         log.info(
           "[loop-orchestrator] Loop already RUNNING (runner raced ahead), persisted launch info",
           { loopId, taskArn }
@@ -290,18 +315,53 @@ async function recordScrubFailureWarning(
 // ---------------------------------------------------------------------------
 
 /**
- * Launch a Loop as an ECS task via EC2 capacity provider.
+ * Resolve shared launch context needed by both ECS and desktop paths.
+ */
+async function resolveLoopLaunchContext(
+  loop: NonNullable<Awaited<ReturnType<typeof loopsService.findById>>>,
+  organizationId: string
+) {
+  const anthropicApiKey = await resolveAnthropicApiKey(
+    loop.userId,
+    organizationId
+  );
+
+  let githubToken: string | undefined;
+  if (loop.repo?.fullName) {
+    githubToken = await resolveGitHubToken(organizationId, loop.repo.fullName);
+  }
+
+  const committerInfo = await getCommitterInfo(loop.userId);
+  const committer = committerInfo
+    ? {
+        name: committerInfo.committerName,
+        email: committerInfo.committerEmail,
+      }
+    : undefined;
+
+  const closedLoopAuthToken = await issueLoopRunnerToken({
+    loopId: loop.id,
+    organizationId,
+  });
+
+  const parentInfo = loop.parentLoopId
+    ? await resolveParentLoopInfo(loop.parentLoopId, organizationId)
+    : undefined;
+
+  return {
+    anthropicApiKey,
+    githubToken,
+    committer,
+    closedLoopAuthToken,
+    parentInfo,
+  };
+}
+
+/**
+ * Launch a Loop — dispatches to either ECS (cloud) or desktop (local)
+ * based on the loop's computeTargetId.
  *
- * This is the main entry point called after loop creation.
- * Steps:
- * 1. Fetch the loop record
- * 2. Resolve Anthropic API key (user > org > throw)
- * 3. Resolve GitHub token for target repo (if repo is set)
- * 4. Build and upload context pack to S3
- * 5. Launch ECS RunTask with container overrides
- * 6. Update loop status to CLAIMED with containerId
- *
- * @returns The ECS task ARN
+ * @returns The ECS task ARN or desktop command ID
  */
 export async function launchLoop(
   loopId: string,
@@ -315,71 +375,126 @@ export async function launchLoop(
     repo: loop.repo,
     hasArtifact: !!loop.artifactId,
     hasParent: !!loop.parentLoopId,
+    computeTargetId: loop.computeTargetId,
   });
 
-  // Track taskArn in outer scope so catch block can stop an orphaned task
+  // Desktop path: dispatch to electron via desktop gateway
+  if (loop.computeTargetId) {
+    return launchLoopDesktop(loopId, organizationId, loop);
+  }
+
+  // ECS path: launch as container task
+  return launchLoopEcs(loopId, organizationId, loop);
+}
+
+/**
+ * Launch a loop on a desktop compute target.
+ * Builds the context pack in memory (no S3) and dispatches via gateway.
+ */
+async function launchLoopDesktop(
+  loopId: string,
+  organizationId: string,
+  loop: NonNullable<Awaited<ReturnType<typeof loopsService.findById>>>
+): Promise<string> {
+  let commandId: string | undefined;
+  try {
+    const ctx = await resolveLoopLaunchContext(loop, organizationId);
+
+    // Build context pack in memory (no S3 upload)
+    const contextPack = await buildContextPackInMemory(
+      loop,
+      organizationId,
+      { anthropicApiKey: ctx.anthropicApiKey, githubToken: ctx.githubToken },
+      ctx.committer
+    );
+
+    // Resolve API base URL for the electron to call back
+    const apiBaseUrl =
+      process.env.API_BASE_URL ?? process.env.LOOP_CALLBACK_URL;
+    if (!apiBaseUrl) {
+      throw new Error(
+        "Cannot launch desktop loop: neither API_BASE_URL nor LOOP_CALLBACK_URL is set"
+      );
+    }
+
+    commandId = await launchLoopOnDesktop({
+      loopId,
+      organizationId,
+      command: loop.command,
+      computeTargetId: loop.computeTargetId!,
+      closedLoopAuthToken: ctx.closedLoopAuthToken,
+      apiBaseUrl,
+      contextPack,
+      parentBranchName: ctx.parentInfo?.branchName ?? undefined,
+      parentSessionId: ctx.parentInfo?.sessionId ?? undefined,
+    });
+
+    // Use commandId as containerId for desktop loops, null s3StateKey
+    await claimOrPersistRunning(loopId, organizationId, commandId, null);
+
+    log.info("[loop-orchestrator] Desktop loop launched", {
+      loopId,
+      commandId,
+      computeTargetId: loop.computeTargetId,
+    });
+
+    return commandId;
+  } catch (error) {
+    const errorMessage =
+      error instanceof Error ? error.message : "Unknown launch error";
+    log.error("[loop-orchestrator] Failed to launch desktop loop", {
+      loopId,
+      error: errorMessage,
+    });
+    // Kill the desktop process if it was already dispatched
+    if (commandId) {
+      try {
+        await stopDesktopLoop(loopId, loop.computeTargetId!);
+      } catch (killError) {
+        log.warn("[loop-orchestrator] Failed to stop orphaned desktop loop", {
+          loopId,
+          killError,
+        });
+      }
+    }
+    await cancelLoopAfterLaunchFailure(loopId, organizationId);
+    throw error;
+  }
+}
+
+/**
+ * Launch a loop as an ECS task via EC2 capacity provider.
+ * Original cloud path — builds context pack, uploads to S3, launches ECS task.
+ */
+async function launchLoopEcs(
+  loopId: string,
+  organizationId: string,
+  loop: NonNullable<Awaited<ReturnType<typeof loopsService.findById>>>
+): Promise<string> {
   let taskArn: string | undefined;
   let s3StateKey: string | undefined;
 
   try {
-    // 2. Resolve Anthropic API key
-    const anthropicApiKey = await resolveAnthropicApiKey(
-      loop.userId,
-      organizationId
-    );
+    const ctx = await resolveLoopLaunchContext(loop, organizationId);
 
-    // 3. Resolve GitHub token (if repo is set)
-    let githubToken: string | undefined;
-    if (loop.repo?.fullName) {
-      githubToken = await resolveGitHubToken(
-        organizationId,
-        loop.repo.fullName
-      );
-    }
-
-    // 4. Resolve committer identity for git attribution on bot commits
-    const committerInfo = await getCommitterInfo(loop.userId);
-    const committer = committerInfo
-      ? {
-          name: committerInfo.committerName,
-          email: committerInfo.committerEmail,
-        }
-      : undefined;
-
-    // 5. Build context pack (including secrets + committer) and upload to S3
+    // Build context pack and upload to S3
     s3StateKey = getStateKeyPrefix(organizationId, loopId);
     const s3ContextKey = await buildContextPack(
       loop,
       organizationId,
       s3StateKey,
-      { anthropicApiKey, githubToken },
-      committer
+      { anthropicApiKey: ctx.anthropicApiKey, githubToken: ctx.githubToken },
+      ctx.committer
     );
 
-    // 6. Generate pre-signed GET URL for context pack so the container can
-    // download it without direct S3 credentials (multi-tenant isolation).
-    // Use a moderate TTL to tolerate ECS startup delays.
-    // This limits the exposure window for secrets in the context pack.
+    // Generate pre-signed GET URL for context pack
     const CONTEXT_PACK_URL_TTL_SECONDS = 1800; // 30 minutes
     const s3ContextUrl = await generateDownloadUrl(
       s3ContextKey,
       CONTEXT_PACK_URL_TTL_SECONDS
     );
 
-    // 7. Resolve parent state info for resume (if this is a child loop)
-    const parentInfo = loop.parentLoopId
-      ? await resolveParentLoopInfo(loop.parentLoopId, organizationId)
-      : undefined;
-
-    // 8. Launch ECS task
-    // CLOSEDLOOP_AUTH_TOKEN is intentionally passed as an env var, not in the
-    // context pack. The harness reads it but the sandboxed child process (Claude)
-    // cannot access parent env vars, making this more secure than the context
-    // pack which is fully visible to the child process via S3.
-    const closedLoopAuthToken = await issueLoopRunnerToken({
-      loopId,
-      organizationId,
-    });
+    // Launch ECS task
     taskArn = await runEcsTask({
       loopId,
       organizationId,
@@ -388,17 +503,17 @@ export async function launchLoop(
       s3ContextKey,
       s3ContextUrl,
       repo: loop.repo ?? undefined,
-      closedLoopAuthToken,
+      closedLoopAuthToken: ctx.closedLoopAuthToken,
       artifactId: loop.artifactId ?? undefined,
-      parentS3StateKey: parentInfo?.s3StateKey,
-      parentSessionId: parentInfo?.sessionId ?? undefined,
-      parentBranchName: parentInfo?.branchName ?? undefined,
+      parentS3StateKey: ctx.parentInfo?.s3StateKey ?? undefined,
+      parentSessionId: ctx.parentInfo?.sessionId ?? undefined,
+      parentBranchName: ctx.parentInfo?.branchName ?? undefined,
     });
 
-    // 9. Update loop status to CLAIMED (or persist metadata if runner raced ahead).
+    // Update loop status to CLAIMED
     await claimOrPersistRunning(loopId, organizationId, taskArn, s3StateKey);
 
-    log.info("[loop-orchestrator] Loop launched successfully", {
+    log.info("[loop-orchestrator] ECS loop launched", {
       loopId,
       taskArn,
     });
@@ -408,7 +523,7 @@ export async function launchLoop(
     const errorMessage =
       error instanceof Error ? error.message : "Unknown launch error";
 
-    log.error("[loop-orchestrator] Failed to launch loop", {
+    log.error("[loop-orchestrator] Failed to launch ECS loop", {
       loopId,
       error: errorMessage,
     });
@@ -607,6 +722,37 @@ export async function handleLoopEvent(
 }
 
 /**
+ * Ingest loop artifacts from the appropriate source (DB upload or S3).
+ * Throws if a desktop loop is missing uploadedArtifacts.
+ */
+async function ingestLoopArtifacts(
+  loop: NonNullable<Awaited<ReturnType<typeof loopsService.findById>>>,
+  organizationId: string
+): Promise<void> {
+  if (!loop.artifactId) {
+    return;
+  }
+  if (!(loop.s3StateKey || loop.computeTargetId)) {
+    return;
+  }
+
+  const handler = getCommandHandler(loop.command);
+  if (!handler) {
+    return;
+  }
+
+  if (loop.computeTargetId && loop.uploadedArtifacts) {
+    await handler.uploadAndIngest(loop.uploadedArtifacts, loop, organizationId);
+  } else if (loop.computeTargetId) {
+    throw new Error(
+      "Desktop loop completed but uploadedArtifacts not found — cannot ingest"
+    );
+  } else if (loop.s3StateKey) {
+    await handler.downloadAndIngest(loop.s3StateKey, loop, organizationId);
+  }
+}
+
+/**
  * Handle loop completion: download metadata from S3, update token counts.
  */
 async function handleLoopCompleted(
@@ -640,11 +786,8 @@ async function handleLoopCompleted(
   // If ingestion fails, the loop stays in its current status (e.g., RUNNING)
   // so the completed event can be replayed. Once a loop is COMPLETED the
   // status transition is irreversible, leaving no recovery path for the artifact.
-  if (loop?.s3StateKey && loop.artifactId) {
-    const handler = getCommandHandler(loop.command);
-    if (handler) {
-      await handler.downloadAndIngest(loop.s3StateKey, loop, organizationId);
-    }
+  if (loop) {
+    await ingestLoopArtifacts(loop, organizationId);
   }
 
   // Transition status after ingestion succeeds. If the loop is already

@@ -1,4 +1,4 @@
-import { Priority } from "@repo/api/src/types/common";
+import { type JsonObject, Priority } from "@repo/api/src/types/common";
 import { EntityType, LinkType } from "@repo/api/src/types/entity-link";
 import { IssueStatus } from "@repo/api/src/types/issue";
 import type {
@@ -145,6 +145,17 @@ async function ingestDecomposeArtifacts(
 }
 
 // ---------------------------------------------------------------------------
+// Upload-based loading (desktop path)
+// ---------------------------------------------------------------------------
+
+function decomposeArtifactsFromUpload(
+  uploaded: JsonObject
+): DecomposeArtifacts {
+  const result = (uploaded.features as DecomposeResult) ?? null;
+  return { result };
+}
+
+// ---------------------------------------------------------------------------
 // Handler
 // ---------------------------------------------------------------------------
 
@@ -156,6 +167,8 @@ export const decomposeHandler = defineHandler<DecomposeArtifacts>({
   downloadArtifacts(stateKeyPrefix: string) {
     return downloadDecomposeArtifacts(stateKeyPrefix);
   },
+
+  downloadFromUpload: decomposeArtifactsFromUpload,
 
   async ingest(
     loop: Loop,

@@ -1,3 +1,4 @@
+import type { JsonObject } from "@repo/api/src/types/common";
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
 import {
   ExternalLinkType,
@@ -345,6 +346,21 @@ export async function ingestExecutionArtifacts(
 }
 
 // ---------------------------------------------------------------------------
+// Upload-based loading (desktop path)
+// ---------------------------------------------------------------------------
+
+function executionArtifactsFromUpload(
+  uploaded: JsonObject
+): ExecutionArtifacts {
+  const executionResult = (uploaded.executionResult as ExecutionResult) ?? null;
+  const codeJudgesReport = (uploaded.codeJudges as JudgesReport) ?? null;
+  // Prompt snapshots not available in desktop upload path
+  const promptsSnapshot: PromptsSnapshot | null = null;
+
+  return { executionResult, codeJudgesReport, promptsSnapshot };
+}
+
+// ---------------------------------------------------------------------------
 // Handler
 // ---------------------------------------------------------------------------
 
@@ -356,6 +372,8 @@ export const executeHandler = defineHandler<ExecutionArtifacts>({
   downloadArtifacts(stateKeyPrefix: string) {
     return downloadExecutionArtifacts(stateKeyPrefix);
   },
+
+  downloadFromUpload: executionArtifactsFromUpload,
 
   async ingest(
     loop: Loop,

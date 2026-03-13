@@ -145,6 +145,8 @@ function toLoop(record: PrismaLoop): Loop {
     contextRefs: record.contextRefs as Loop["contextRefs"],
     error: parseError(record.error),
     metadata: (record.metadata ?? {}) as Loop["metadata"],
+    uploadedArtifacts:
+      (record.uploadedArtifacts as Loop["uploadedArtifacts"]) ?? null,
     tokensByModel: record.tokensByModel as Loop["tokensByModel"],
   };
 }
@@ -218,6 +220,7 @@ export const loopsService = {
           artifactId: input.artifactId ?? null,
           workstreamId: input.workstreamId ?? null,
           parentLoopId: input.parentLoopId ?? null,
+          computeTargetId: input.computeTargetId ?? null,
           prompt: input.prompt ?? null,
           repo: input.repo ?? undefined,
           contextRefs: input.contextRefs ?? undefined,
@@ -451,7 +454,7 @@ export const loopsService = {
   async persistLaunchInfo(
     id: string,
     organizationId: string,
-    data: { containerId: string; s3StateKey: string }
+    data: { containerId: string; s3StateKey?: string }
   ): Promise<void> {
     await withDb((db) =>
       db.loop.updateMany({
@@ -891,5 +894,49 @@ export const loopsService = {
     }
 
     return toLoop(loop);
+  },
+
+  /**
+   * Store uploaded artifacts from desktop harness on the loop record.
+   * Used by the upload-artifacts endpoint as an alternative to S3.
+   */
+  async updateUploadedArtifacts(
+    id: string,
+    organizationId: string,
+    uploadedArtifacts: JsonObject
+  ): Promise<number> {
+    const result = await withDb((db) =>
+      db.loop.updateMany({
+        where: {
+          id,
+          organizationId,
+          status: { in: ["PENDING", "CLAIMED", "RUNNING"] },
+        },
+        data: { uploadedArtifacts },
+      })
+    );
+    return result.count;
+  },
+
+  /**
+   * Replace loop metadata. Caller is responsible for merging with existing values.
+   * Returns the number of rows updated (0 if loop is already terminal).
+   */
+  async updateMetadata(
+    id: string,
+    organizationId: string,
+    metadata: JsonObject
+  ): Promise<number> {
+    const result = await withDb((db) =>
+      db.loop.updateMany({
+        where: {
+          id,
+          organizationId,
+          status: { in: ["PENDING", "CLAIMED", "RUNNING"] },
+        },
+        data: { metadata },
+      })
+    );
+    return result.count;
   },
 };

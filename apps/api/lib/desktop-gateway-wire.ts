@@ -275,6 +275,8 @@ export function emitCommand(socket: Socket, command: WireCommandPayload): void {
 const EXACT_OPERATION_IDS: Record<string, string> = {
   "/api/engineer/symphony/launch": "symphony_launch",
   "/api/engineer/symphony/kill": "symphony_kill",
+  "/api/engineer/symphony/loop": "symphony_loop",
+  "/api/engineer/symphony/loop/kill": "symphony_loop_kill",
   "/api/engineer/symphony/sessions": "symphony_sessions",
   "/api/engineer/terminal-chat": "terminal_chat",
   "/api/engineer/ticket-chat": "ticket_chat",

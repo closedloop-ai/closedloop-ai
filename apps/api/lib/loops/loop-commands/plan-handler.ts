@@ -1,4 +1,5 @@
 import type { PlanJson } from "@repo/api/src/types/artifact";
+import type { JsonObject } from "@repo/api/src/types/common";
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
 import type { Loop } from "@repo/api/src/types/loop";
 import type { PromptsSnapshot } from "@repo/api/src/types/prompt";
@@ -202,6 +203,26 @@ export async function ingestPlanArtifacts(
 }
 
 // ---------------------------------------------------------------------------
+// Upload-based loading (desktop path)
+// ---------------------------------------------------------------------------
+
+/**
+ * Extract plan artifacts from uploaded JSON (desktop harness).
+ * Mirrors downloadPlanArtifacts but reads from the DB-stored uploadedArtifacts.
+ */
+function planArtifactsFromUpload(uploaded: JsonObject): PlanArtifacts {
+  const plan = uploaded.plan as { content?: string; raw?: object } | undefined;
+  const planContent = plan?.content ?? null;
+  const questionsContent =
+    typeof uploaded.openQuestions === "string" ? uploaded.openQuestions : null;
+  const judgesReport = (uploaded.judges as JudgesReport) ?? null;
+  // Prompt snapshots not available in desktop upload path
+  const promptsSnapshot: PromptsSnapshot | null = null;
+
+  return { planContent, questionsContent, judgesReport, promptsSnapshot };
+}
+
+// ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
 
@@ -213,6 +234,8 @@ export const planHandler = defineHandler<PlanArtifacts>({
   downloadArtifacts(stateKeyPrefix: string) {
     return downloadPlanArtifacts(stateKeyPrefix);
   },
+
+  downloadFromUpload: planArtifactsFromUpload,
 
   async ingest(loop: Loop, organizationId: string, artifacts: PlanArtifacts) {
     await ingestPlanArtifacts(loop, organizationId, artifacts);
@@ -227,6 +250,8 @@ export const requestChangesHandler = defineHandler<PlanArtifacts>({
   downloadArtifacts(stateKeyPrefix: string) {
     return downloadPlanArtifacts(stateKeyPrefix);
   },
+
+  downloadFromUpload: planArtifactsFromUpload,
 
   async ingest(loop: Loop, organizationId: string, artifacts: PlanArtifacts) {
     await ingestPlanArtifacts(loop, organizationId, artifacts);

@@ -5,6 +5,7 @@ import {
   ArtifactType,
 } from "@repo/api/src/types/artifact";
 import { EntityType } from "@repo/api/src/types/entity-link";
+import { EngineerRoutingMode } from "@repo/api/src/types/relay";
 import { InlinePresence, OptionalArtifactRoom } from "@repo/collaboration";
 import { Button } from "@repo/design-system/components/ui/button";
 import { toast } from "@repo/design-system/components/ui/sonner";
@@ -30,6 +31,7 @@ import {
   useRegenerateArtifact,
 } from "@/hooks/queries/use-artifacts";
 import { useRunLoop } from "@/hooks/queries/use-loops";
+import { useEngineerRoutingSelection } from "@/lib/engineer/routing-store";
 import type { PlanSource } from "../../implementation-plans/components/plan-source";
 import { PRDEditorHeader } from "./components/prd-editor-header";
 import { PRDMetadataPanel } from "./components/prd-metadata-panel";
@@ -104,6 +106,11 @@ export function PRDEditor({
   const inlineGenerate = useInlineGeneratePRD();
   const deepGenerate = useRegenerateArtifact();
   const runLoop = useRunLoop();
+  const routing = useEngineerRoutingSelection();
+  const computeTargetId =
+    routing.mode === EngineerRoutingMode.CloudRelay
+      ? routing.computeTargetId
+      : null;
 
   const handleQuickGenerate = () => {
     inlineGenerate.mutate(
@@ -135,7 +142,7 @@ export function PRDEditor({
 
   const handleDecomposeFeatures = () => {
     runLoop.mutate(
-      { artifactId: prd.id, command: "decompose" },
+      { artifactId: prd.id, command: "decompose", computeTargetId },
       {
         onSuccess: () => {
           toast.success("Feature decomposition started");
