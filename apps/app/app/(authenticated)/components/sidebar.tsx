@@ -32,6 +32,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import type { LucideIcon } from "lucide-react";
 import {
   BarChart3,
+  Boxes,
   CodeIcon,
   InboxIcon,
   LifeBuoyIcon,
@@ -41,6 +42,7 @@ import {
   UsersIcon,
 } from "lucide-react";
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { type ReactNode, useEffect, useRef } from "react";
 import { useIsMounted } from "@/hooks/use-is-mounted";
 import { type AppEnvironment, appEnvironment } from "@/lib/environment";
@@ -120,6 +122,12 @@ const baseWorkspaceItems: NavItem[] = [
     disabled: false,
   },
   {
+    title: "My Tasks",
+    url: "/my-tasks",
+    icon: Boxes,
+    disabled: false,
+  },
+  {
     title: "Loops",
     url: "/loops",
     icon: RotateCcwIcon,
@@ -175,7 +183,12 @@ const data: {
   ],
 };
 
+function isNavItemActive(pathname: string, url: string): boolean {
+  return pathname === url || (url !== "/" && pathname.startsWith(`${url}/`));
+}
+
 export function GlobalSidebar({ children }: GlobalSidebarProperties) {
+  const pathname = usePathname();
   const sidebar = useSidebar();
   const { organization } = useOrganization();
   const queryClient = useQueryClient();
@@ -273,6 +286,10 @@ export function GlobalSidebar({ children }: GlobalSidebarProperties) {
                         ? "pointer-events-none cursor-not-allowed opacity-50"
                         : ""
                     )}
+                    isActive={
+                      !item.disabled &&
+                      isNavItemActive(pathname ?? "", item.url)
+                    }
                     tooltip={item.title}
                   >
                     {item.disabled ? (
@@ -312,6 +329,10 @@ export function GlobalSidebar({ children }: GlobalSidebarProperties) {
                           ? "pointer-events-none cursor-not-allowed opacity-50"
                           : ""
                       )}
+                      isActive={
+                        !item.disabled &&
+                        isNavItemActive(pathname ?? "", item.url)
+                      }
                     >
                       {item.disabled ? (
                         <span className="flex items-center gap-2">
