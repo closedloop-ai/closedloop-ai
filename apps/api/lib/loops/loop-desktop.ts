@@ -7,7 +7,6 @@ import type { JsonValue } from "@repo/api/src/types/common";
 import type { LoopCommand } from "@repo/api/src/types/loop";
 import { log } from "@repo/observability/log";
 import { toRelayOperation } from "@/app/compute-targets/relay-command-helpers";
-import { env } from "@/env";
 import { desktopCommandStore } from "@/lib/desktop-command-store";
 import { relayEventBus } from "@/lib/relay-event-bus";
 import type { ContextPack } from "./loop-state";
@@ -21,8 +20,8 @@ async function dispatchRelayOperation(
   relayOperation: ReturnType<typeof toRelayOperation>,
   context: { label: string; loopId: string; commandId: string }
 ): Promise<void> {
-  const relayApiUrl = env.RELAY_API_URL;
-  const internalSecret = env.INTERNAL_API_SECRET;
+  const relayApiUrl = process.env.RELAY_API_URL;
+  const internalSecret = process.env.INTERNAL_API_SECRET;
   if (relayApiUrl && internalSecret) {
     try {
       const response = await fetch(`${relayApiUrl}/dispatch`, {
