@@ -1,3 +1,4 @@
+import { NextRequest } from "next/server";
 import { vi } from "vitest";
 import { POST } from "@/app/compute-targets/local-auth/challenge/route";
 import type { AuthContext } from "@/lib/auth/with-auth";
@@ -66,6 +67,28 @@ describe("POST /compute-targets/local-auth/challenge", () => {
     expect(json).toEqual({
       challengeToken: "challenge-jwt",
       expiresAt: "2026-03-13T12:00:00.000Z",
+    });
+    expect(response.headers.get("cache-control")).toBe("no-store");
+  });
+
+  it("preserves no-store on invalid json parse errors", async () => {
+    const request = new NextRequest(
+      "http://localhost:3002/compute-targets/local-auth/challenge",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{",
+      }
+    );
+
+    const response = await POST(request, {
+      params: Promise.resolve({}),
+    } as never);
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      success: false,
+      error: "Invalid JSON body",
     });
     expect(response.headers.get("cache-control")).toBe("no-store");
   });

@@ -10,6 +10,7 @@ import {
 } from "@/lib/auth/local-gateway-jwt";
 import { isLocalGatewayOriginAllowed } from "@/lib/auth/local-gateway-origins";
 import { withAuth } from "@/lib/auth/with-auth";
+import { parseBody } from "@/lib/route-utils";
 
 const NO_STORE_HEADERS = { "Cache-Control": "no-store" };
 
@@ -33,19 +34,16 @@ export const POST = withAuth<
     });
   }
 
-  const rawBody = await request.json().catch(() => null);
-  const parseResult = challengeRequestValidator.safeParse(rawBody);
-  if (!parseResult.success) {
-    return NextResponse.json(
-      failure("Invalid request body: origin is required"),
-      {
-        status: 400,
-        headers: NO_STORE_HEADERS,
-      }
-    );
+  const { body, errorResponse: parseError } = await parseBody(
+    request,
+    challengeRequestValidator
+  );
+  if (parseError) {
+    parseError.headers.set("Cache-Control", "no-store");
+    return parseError;
   }
 
-  const { origin } = parseResult.data;
+  const { origin } = body;
 
   if (!isLocalGatewayOriginAllowed(origin)) {
     return NextResponse.json(failure("Origin is not trusted"), {

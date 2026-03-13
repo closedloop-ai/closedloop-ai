@@ -11,6 +11,7 @@ import {
   verifyLocalGatewayChallenge,
 } from "@/lib/auth/local-gateway-jwt";
 import { withApiKeyAuth } from "@/lib/auth/with-api-key-auth";
+import { parseBody } from "@/lib/route-utils";
 
 const SESSION_TTL_SECONDS = 600;
 
@@ -36,15 +37,15 @@ export const POST = withApiKeyAuth<
     });
   }
 
-  const rawBody = await request.json().catch(() => null);
-  const parseResult = verifyRequestValidator.safeParse(rawBody);
-  if (!parseResult.success) {
-    return NextResponse.json(failure("Invalid request body"), {
-      status: 400,
-    });
+  const { body, errorResponse: parseErrorResponse } = await parseBody(
+    request,
+    verifyRequestValidator
+  );
+  if (parseErrorResponse) {
+    return parseErrorResponse;
   }
 
-  const { challengeToken, requestOrigin, userAgent } = parseResult.data;
+  const { challengeToken, requestOrigin, userAgent } = body;
 
   let claims: Awaited<ReturnType<typeof verifyLocalGatewayChallenge>>;
   try {
