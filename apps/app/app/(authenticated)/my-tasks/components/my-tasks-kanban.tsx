@@ -235,61 +235,72 @@ function KanbanColumn({
   );
 }
 
-/** Card content only - used in DragOverlay so the dragging item doesn't affect layout */
-function KanbanCardPreview({
+/** Shared card body for kanban cards and overlay preview */
+function KanbanCardContent({
+  disableAvatarLink = false,
   issue,
-}: Readonly<{ issue: IssueWithWorkstream }>) {
+}: Readonly<{
+  disableAvatarLink?: boolean;
+  issue: IssueWithWorkstream;
+}>) {
   const workstreamOrProject =
     issue.workstream?.title ?? issue.project?.name ?? null;
 
   return (
-    <Card className="cursor-grabbing py-3 shadow-lg">
-      <div className="px-3 py-1">
-        <div className="flex min-w-0 items-start gap-2">
-          <BoxIcon className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-          <div className="min-w-0 flex-1">
-            <div className="flex min-w-0 items-baseline gap-1.5">
-              {isDisplayableSlug(issue.slug) && (
-                <span className="shrink-0 font-mono text-muted-foreground text-xs">
-                  {issue.slug}
-                </span>
-              )}
-              <p className="min-w-0 truncate font-medium text-sm">
-                {issue.title}
-              </p>
-            </div>
-          </div>
-        </div>
-        <div className="mt-1.5 flex items-center justify-between gap-2">
-          <div className="min-w-0 shrink-0">
-            {workstreamOrProject ? (
-              <Badge
-                className="rounded-md border-border px-2 py-1 font-normal text-muted-foreground"
-                variant="outline"
-              >
-                {workstreamOrProject}
-              </Badge>
-            ) : null}
-          </div>
-          <div className="flex shrink-0 items-center gap-1">
-            <div className="flex size-6 shrink-0 items-center justify-center">
-              <PriorityIcon priority={issue.priority} size={14} />
-            </div>
-            <div className="flex size-6 shrink-0 items-center justify-center">
-              <AssigneeAvatar
-                assignee={issue.assignee}
-                className="size-4 shrink-0"
-              />
-            </div>
-            <div className="flex size-6 shrink-0 items-center justify-center">
-              <StatusIcon
-                size={16}
-                status={ISSUE_STATUS_TO_ICON[issue.status]}
-              />
-            </div>
+    <div className="px-3 py-1">
+      <div className="flex min-w-0 items-start gap-2">
+        <BoxIcon className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 items-baseline gap-1.5">
+            {isDisplayableSlug(issue.slug) && (
+              <span className="shrink-0 font-mono text-muted-foreground text-xs">
+                {issue.slug}
+              </span>
+            )}
+            <p className="min-w-0 truncate font-medium text-sm">
+              {issue.title}
+            </p>
           </div>
         </div>
       </div>
+      <div className="mt-1.5 flex items-center justify-between gap-2">
+        <div className="min-w-0 shrink-0">
+          {workstreamOrProject ? (
+            <Badge
+              className="rounded-md border-border px-2 py-1 font-normal text-muted-foreground"
+              variant="outline"
+            >
+              {workstreamOrProject}
+            </Badge>
+          ) : null}
+        </div>
+        <div className="flex shrink-0 items-center gap-1">
+          <div className="flex size-6 shrink-0 items-center justify-center">
+            <PriorityIcon priority={issue.priority} size={14} />
+          </div>
+          <div className="flex size-6 shrink-0 items-center justify-center">
+            <AssigneeAvatar
+              assignee={issue.assignee}
+              className="size-4 shrink-0"
+              disableLink={disableAvatarLink}
+            />
+          </div>
+          <div className="flex size-6 shrink-0 items-center justify-center">
+            <StatusIcon size={16} status={ISSUE_STATUS_TO_ICON[issue.status]} />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Card for DragOverlay so the dragging item doesn't affect layout */
+function KanbanCardPreview({
+  issue,
+}: Readonly<{ issue: IssueWithWorkstream }>) {
+  return (
+    <Card className="cursor-grabbing py-3 shadow-lg">
+      <KanbanCardContent issue={issue} />
     </Card>
   );
 }
@@ -303,9 +314,6 @@ function MyTasksCard({
   issue,
   lastDraggedIssueIdRef,
 }: Readonly<MyTasksCardProps>) {
-  const workstreamOrProject =
-    issue.workstream?.title ?? issue.project?.name ?? null;
-
   const { attributes, isDragging, listeners, setNodeRef, transform } =
     useDraggable({ id: issue.id });
 
@@ -334,53 +342,7 @@ function MyTasksCard({
     >
       <Link href={`/issues/${issue.slug}`} onClick={handleLinkClick}>
         <Card className="py-3 transition-colors hover:bg-accent/50">
-          <div className="px-3 py-1">
-            <div className="flex min-w-0 items-start gap-2">
-              <BoxIcon className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-              <div className="min-w-0 flex-1">
-                <div className="flex min-w-0 items-baseline gap-1.5">
-                  {isDisplayableSlug(issue.slug) && (
-                    <span className="shrink-0 font-mono text-muted-foreground text-xs">
-                      {issue.slug}
-                    </span>
-                  )}
-                  <p className="min-w-0 truncate font-medium text-sm">
-                    {issue.title}
-                  </p>
-                </div>
-              </div>
-            </div>
-            <div className="mt-1.5 flex items-center justify-between gap-2">
-              <div className="min-w-0 shrink-0">
-                {workstreamOrProject ? (
-                  <Badge
-                    className="rounded-md border-border px-2 py-1 font-normal text-muted-foreground"
-                    variant="outline"
-                  >
-                    {workstreamOrProject}
-                  </Badge>
-                ) : null}
-              </div>
-              <div className="flex shrink-0 items-center gap-1">
-                <div className="flex size-6 shrink-0 items-center justify-center">
-                  <PriorityIcon priority={issue.priority} size={14} />
-                </div>
-                <div className="flex size-6 shrink-0 items-center justify-center">
-                  <AssigneeAvatar
-                    assignee={issue.assignee}
-                    className="size-4 shrink-0"
-                    disableLink
-                  />
-                </div>
-                <div className="flex size-6 shrink-0 items-center justify-center">
-                  <StatusIcon
-                    size={16}
-                    status={ISSUE_STATUS_TO_ICON[issue.status]}
-                  />
-                </div>
-              </div>
-            </div>
-          </div>
+          <KanbanCardContent disableAvatarLink issue={issue} />
         </Card>
       </Link>
     </div>

@@ -66,7 +66,7 @@ export function MyTasksList({
 
   const handleDelete = (id: string) => {
     return deleteIssueMutation.mutateAsync(id).then((result) => {
-      toast.success("Feature deleted");
+      toast.success("Issue deleted");
       return result.deleted;
     });
   };
@@ -146,7 +146,7 @@ export function MyTasksList({
         onConfirm={confirmDelete}
         onOpenChange={setDeleteOpen}
         open={isDeleteOpen}
-        title="Feature"
+        title="Issue"
       />
     </div>
   );
