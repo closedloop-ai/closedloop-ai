@@ -1,0 +1,23 @@
+# Repository Guidelines
+
+## Project Structure & Module Organization
+`apps/` contains deployable surfaces: `app` (product UI, port 3000), `api` (BFF/server, 3002), `web` (marketing, 3001), plus `docs`, `email`, `storybook`, `mcp`, `relay`, and `studio`. Shared code lives in `packages/*` and is imported as `@repo/<name>`; database schema and migrations live in `packages/database`. Repo documentation is in `docs/`, and CI/workflow automation is in `.github/`. `apps/api` is deployed on Vercel serverless functions, so route code must not rely on process-local memory, singleton state, or long-lived in-process caches for correctness. Keep data flow layered: `apps/app` should call `apps/api`, and only the API should touch `@repo/database`.
+
+## Build, Test, and Development Commands
+Use Node 20+ with `pnpm`.
+
+- `pnpm install` installs workspace dependencies and generates the Prisma client.
+- `docker compose up -d` starts local PostgreSQL; `just db-start` is the lightweight alternative.
+- `pnpm dev` runs the Turborepo dev graph; `just dev` starts the main local stack (`app`, `api`, `mcp`).
+- `pnpm turbo dev --filter=app --filter=api` focuses on the primary product surfaces.
+- `pnpm build`, `pnpm typecheck`, `pnpm lint`, and `pnpm test` run workspace-wide checks.
+- `pnpm migrate` or `just db-migrate name=my_change` creates/applies Prisma migrations.
+
+## Coding Style & Naming Conventions
+TypeScript and ESM are standard across the repo. Formatting and linting are enforced by Biome with Ultracite presets; run `pnpm lint:fix` before opening a PR. Follow the existing 2-space indentation, prefer `type` aliases when practical, and keep `@repo/*` imports ahead of local alias imports. File names are typically kebab-case (`pull-request-status-badge.tsx`), while exported React components and types use PascalCase. In `apps/api`, keep route handlers thin and move business logic into nearby `service.ts` modules.
+
+## Testing Guidelines
+Vitest is the default test runner across `apps/api`, `apps/app`, `apps/mcp`, `apps/relay`, and several packages. Name tests `*.test.ts` or `*.test.tsx`; place them beside the source or under `__tests__/`. No global coverage percentage is enforced, but new services, parsers, and utilities are expected to ship with focused tests. Use `pnpm test` before pushing, or a package-local command such as `pnpm -C apps/api test` while iterating.
+
+## Commit & Pull Request Guidelines
+Recent commits use ticket-prefixed, imperative subjects such as `FEAT-55: Add client-side auth bridge`. The repository’s `.gitmessage` template expects a short subject, bullet summary, and explicit `Testing:` and `Risks:` sections. Prefer branch names like `feat/*`, `fix/*`, `docs/*`, and `refactor/*`. PRs should follow `.github/pull_request_template.md`: summarize the change, link the related issue, confirm self-review and local test coverage, and attach screenshots for UI changes. Avoid force-pushing after review starts.

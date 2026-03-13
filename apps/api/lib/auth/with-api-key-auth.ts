@@ -1,7 +1,6 @@
 import "server-only";
 
 import type { ApiKeyScope } from "@repo/api/src/types/api-key";
-import type { ApiResult } from "@repo/api/src/types/common";
 import { failure } from "@repo/api/src/types/common";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
@@ -14,6 +13,7 @@ import { hasApiKeyScopes } from "./api-key-scopes";
 import type {
   AuthContext,
   AuthenticatedHandler,
+  AuthenticatedJsonResponse,
   RouteContext,
 } from "./with-auth";
 
@@ -40,11 +40,11 @@ export function withApiKeyAuth<TResponse, TRoute extends string = string>(
 ): (
   request: NextRequest,
   context: RouteContext<TRoute>
-) => Promise<NextResponse<ApiResult<TResponse>>> {
+) => Promise<AuthenticatedJsonResponse<TResponse>> {
   return async (
     request: NextRequest,
     routeContext: RouteContext<TRoute>
-  ): Promise<NextResponse<ApiResult<TResponse>>> => {
+  ): Promise<AuthenticatedJsonResponse<TResponse>> => {
     try {
       const authHeader = request.headers.get("authorization");
       const token = authHeader?.startsWith("Bearer ")

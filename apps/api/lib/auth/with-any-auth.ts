@@ -1,10 +1,12 @@
 import "server-only";
 
 import type { ApiKeyScope } from "@repo/api/src/types/api-key";
-import type { ApiResult } from "@repo/api/src/types/common";
-import type { NextRequest, NextResponse } from "next/server";
+import type { NextRequest } from "next/server";
 import { withApiKeyAuth } from "./with-api-key-auth";
-import type { AuthenticatedHandler } from "./with-auth";
+import type {
+  AuthenticatedHandler,
+  AuthenticatedJsonResponse,
+} from "./with-auth";
 import { withAuth } from "./with-auth";
 
 /**
@@ -27,11 +29,11 @@ export function withAnyAuth<TResponse, TRoute extends string = string>(
 ): (
   request: NextRequest,
   context: { params: Promise<Record<string, string>> }
-) => Promise<NextResponse<ApiResult<TResponse>>> {
+) => Promise<AuthenticatedJsonResponse<TResponse>> {
   return (
     request: NextRequest,
     context: { params: Promise<Record<string, string>> }
-  ): Promise<NextResponse<ApiResult<TResponse>>> => {
+  ): Promise<AuthenticatedJsonResponse<TResponse>> => {
     const authHeader = request.headers.get("authorization");
     const token = authHeader?.startsWith("Bearer ")
       ? authHeader.slice(7)

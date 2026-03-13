@@ -5,12 +5,23 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mockEnsureElectronDetection = vi.fn();
 const mockGetElectronDetectionSnapshot = vi.fn();
 const mockGetEngineerRoutingSelection = vi.fn();
+const mockEnsureLocalGatewaySession = vi.fn();
+const mockGetLastExchangeError = vi.fn();
 
 vi.mock("@/lib/engineer/electron-detection", () => ({
   ensureElectronDetection: (...args: unknown[]) =>
     mockEnsureElectronDetection(...args),
   getElectronDetectionSnapshot: (...args: unknown[]) =>
     mockGetElectronDetectionSnapshot(...args),
+  invalidateElectronDetectionCache: vi.fn(),
+}));
+
+vi.mock("@/lib/engineer/local-gateway-session", () => ({
+  ensureLocalGatewaySession: (...args: unknown[]) =>
+    mockEnsureLocalGatewaySession(...args),
+  invalidateLocalGatewaySession: vi.fn(),
+  getLastExchangeError: (...args: unknown[]) =>
+    mockGetLastExchangeError(...args),
 }));
 
 vi.mock("@/lib/engineer/routing-store", () => ({
@@ -37,6 +48,11 @@ describe("engineer-fetch-interceptor", () => {
     mockEnsureElectronDetection.mockReset();
     mockGetElectronDetectionSnapshot.mockReset();
     mockGetEngineerRoutingSelection.mockReset();
+    mockEnsureLocalGatewaySession.mockReset();
+    mockGetLastExchangeError.mockReset();
+    // Default: session available, no exchange errors
+    mockEnsureLocalGatewaySession.mockResolvedValue("test-session-token");
+    mockGetLastExchangeError.mockReturnValue(null);
   });
 
   afterEach(() => {
@@ -344,6 +360,14 @@ describe("engineer-fetch-interceptor (CLOUD_RELAY_ENABLED=true)", () => {
       ensureElectronDetection: vi.fn(),
       getElectronDetectionSnapshot: vi.fn(),
       invalidateElectronDetectionCache: vi.fn(),
+    }));
+
+    vi.doMock("@/lib/engineer/local-gateway-session", () => ({
+      ensureLocalGatewaySession: vi
+        .fn()
+        .mockResolvedValue("test-session-token"),
+      invalidateLocalGatewaySession: vi.fn(),
+      getLastExchangeError: vi.fn().mockReturnValue(null),
     }));
 
     const mod = await import("@/lib/engineer/engineer-fetch-interceptor");
