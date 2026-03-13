@@ -8,7 +8,6 @@ import { keys as linear } from "@repo/linear/keys";
 import { keys as core } from "@repo/next-config/keys";
 import { keys as observability } from "@repo/observability/keys";
 import { keys as payments } from "@repo/payments/keys";
-import { keys as rateLimit } from "@repo/rate-limit/keys";
 import { createEnv } from "@t3-oss/env-nextjs";
 import { z } from "zod";
 
@@ -28,7 +27,6 @@ export const env = createEnv({
     linear(),
     observability(),
     payments(),
-    rateLimit(),
   ],
   server: {
     INTERNAL_API_SECRET: z.string().min(1),

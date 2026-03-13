@@ -33,6 +33,10 @@ export type AuthContext = {
   apiKeyScopes?: ApiKeyScope[];
 };
 
+export type AuthenticatedJsonResponse<TResponse> = NextResponse<
+  TResponse | ApiResult<TResponse>
+>;
+
 /**
  * Route handler function type using Next.js RouteContext.
  *
@@ -43,7 +47,7 @@ export type AuthenticatedHandler<TResponse, TRoute extends string = string> = (
   context: AuthContext,
   request: NextRequest,
   params: RouteContext<TRoute>["params"]
-) => Promise<NextResponse<ApiResult<TResponse>>>;
+) => Promise<AuthenticatedJsonResponse<TResponse>>;
 
 /**
  * Higher-order function that wraps route handlers with authentication.
@@ -79,11 +83,11 @@ export function withAuth<TResponse, TRoute extends string = string>(
 ): (
   request: NextRequest,
   context: RouteContext<TRoute>
-) => Promise<NextResponse<ApiResult<TResponse>>> {
+) => Promise<AuthenticatedJsonResponse<TResponse>> {
   return async (
     request: NextRequest,
     routeContext: RouteContext<TRoute>
-  ): Promise<NextResponse<ApiResult<TResponse>>> => {
+  ): Promise<AuthenticatedJsonResponse<TResponse>> => {
     try {
       const { userId: clerkUserId, orgId: clerkOrgId, orgRole } = await auth();
 

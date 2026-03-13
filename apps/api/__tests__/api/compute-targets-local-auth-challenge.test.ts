@@ -6,7 +6,7 @@ import {
   createTestAuthContext,
 } from "../utils/auth-helpers";
 
-const mockRedisSet = vi.fn();
+const mockRegisterJti = vi.fn();
 const mockIssueLocalGatewayChallenge = vi.fn();
 const mockIsLocalGatewayJwtConfigured = vi.fn();
 const mockIsLocalGatewayOriginAllowed = vi.fn();
@@ -18,10 +18,8 @@ vi.mock("@/lib/auth/with-auth", () => ({
     handler(mockAuthContext, request, context?.params),
 }));
 
-vi.mock("@repo/rate-limit", () => ({
-  redis: {
-    set: (...args: unknown[]) => mockRedisSet(...args),
-  },
+vi.mock("@/lib/auth/local-gateway-jti-store", () => ({
+  registerJti: (...args: unknown[]) => mockRegisterJti(...args),
 }));
 
 vi.mock("@/lib/auth/local-gateway-jwt", () => ({
@@ -50,7 +48,7 @@ describe("POST /compute-targets/local-auth/challenge", () => {
     });
   });
 
-  it("stores the challenge jti with a TTL derived from the jwt lifetime", async () => {
+  it("registers the challenge jti for one-time use", async () => {
     const request = createMockRequest({
       method: "POST",
       url: "http://localhost:3002/compute-targets/local-auth/challenge",
@@ -62,16 +60,13 @@ describe("POST /compute-targets/local-auth/challenge", () => {
     } as never);
 
     expect(response.status).toBe(200);
-    expect(mockRedisSet).toHaveBeenCalledWith(
-      "local-auth:jti:jti-123",
-      "pending",
-      {
-        ex: 70,
-      }
-    );
+    expect(mockRegisterJti).toHaveBeenCalledWith("jti-123");
 
     const json = await response.json();
-    expect(json.success).toBe(true);
-    expect(json.data.challengeToken).toBe("challenge-jwt");
+    expect(json).toEqual({
+      challengeToken: "challenge-jwt",
+      expiresAt: "2026-03-13T12:00:00.000Z",
+    });
+    expect(response.headers.get("cache-control")).toBe("no-store");
   });
 });

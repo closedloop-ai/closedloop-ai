@@ -38,8 +38,8 @@ export function invalidateLocalGatewaySession(): void {
 }
 
 /**
- * Last error from a failed exchange attempt.
- * Non-null when the exchange route returned an error (e.g. missing API key).
+ * Last error from a failed local gateway auth bootstrap attempt.
+ * Non-null when challenge issuance or exchange returned an actionable error.
  * Cleared on successful exchange, session invalidation, or explicit reset.
  */
 export function getLastExchangeError(): ExchangeError | null {
@@ -53,6 +53,22 @@ function setLastExchangeError(
   if (attemptId === latestExchangeAttemptId) {
     lastExchangeError = exchangeError;
   }
+}
+
+async function readResponseError(
+  response: Response,
+  fallbackMessage: string
+): Promise<ExchangeError> {
+  try {
+    const data = (await response.json()) as { error?: string };
+    if (typeof data.error === "string" && data.error) {
+      return { message: data.error, statusCode: response.status };
+    }
+  } catch {
+    // Ignore invalid or non-JSON bodies and use the fallback message instead.
+  }
+
+  return { message: fallbackMessage, statusCode: response.status };
 }
 
 /**
@@ -81,7 +97,13 @@ async function performExchange(
   }
 
   if (!challengeResponse.ok) {
-    setLastExchangeError(null, attemptId);
+    setLastExchangeError(
+      await readResponseError(
+        challengeResponse,
+        `challenge failed (${challengeResponse.status})`
+      ),
+      attemptId
+    );
     return null;
   }
 
@@ -120,15 +142,11 @@ async function performExchange(
   }
 
   if (!exchangeResponse.ok) {
-    let message: string;
-    try {
-      const errData = (await exchangeResponse.json()) as { error?: string };
-      message = errData.error ?? `exchange failed (${exchangeResponse.status})`;
-    } catch {
-      message = `exchange failed (${exchangeResponse.status})`;
-    }
     setLastExchangeError(
-      { message, statusCode: exchangeResponse.status },
+      await readResponseError(
+        exchangeResponse,
+        `exchange failed (${exchangeResponse.status})`
+      ),
       attemptId
     );
     return null;

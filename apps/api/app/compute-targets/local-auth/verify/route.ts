@@ -1,11 +1,11 @@
 import "server-only";
 
-import { failure, success } from "@repo/api/src/types/common";
+import { failure } from "@repo/api/src/types/common";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
-import { redis } from "@repo/rate-limit";
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { consumeJti } from "@/lib/auth/local-gateway-jti-store";
 import {
   isLocalGatewayJwtConfigured,
   verifyLocalGatewayChallenge,
@@ -23,6 +23,7 @@ const verifyRequestValidator = z.object({
 type VerifyResponse = {
   ok: true;
   sessionTtlSeconds: number;
+  challengeExpiresAt: string;
 };
 
 export const POST = withApiKeyAuth<
@@ -58,8 +59,7 @@ export const POST = withApiKeyAuth<
     });
   }
 
-  const prev = await redis.getdel(`local-auth:jti:${claims.jti}`);
-  if (prev !== "pending") {
+  if (!consumeJti(claims.jti)) {
     log.warn(
       "Local gateway challenge verification failed: JTI already consumed or expired",
       {
@@ -109,7 +109,9 @@ export const POST = withApiKeyAuth<
     userAgent,
   });
 
-  return NextResponse.json(
-    success({ ok: true as const, sessionTtlSeconds: SESSION_TTL_SECONDS })
-  );
+  return NextResponse.json({
+    ok: true as const,
+    sessionTtlSeconds: SESSION_TTL_SECONDS,
+    challengeExpiresAt: claims.expiresAt,
+  });
 });

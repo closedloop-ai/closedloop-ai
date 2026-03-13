@@ -6,7 +6,7 @@ import {
   createTestAuthContext,
 } from "../utils/auth-helpers";
 
-const mockRedisGetDel = vi.fn();
+const mockConsumeJti = vi.fn();
 const mockVerifyLocalGatewayChallenge = vi.fn();
 const mockIsLocalGatewayJwtConfigured = vi.fn();
 
@@ -24,10 +24,8 @@ vi.mock("@/lib/auth/with-api-key-auth", () => ({
     handler(mockAuthContext, request, context?.params),
 }));
 
-vi.mock("@repo/rate-limit", () => ({
-  redis: {
-    getdel: (...args: unknown[]) => mockRedisGetDel(...args),
-  },
+vi.mock("@/lib/auth/local-gateway-jti-store", () => ({
+  consumeJti: (...args: unknown[]) => mockConsumeJti(...args),
 }));
 
 vi.mock("@/lib/auth/local-gateway-jwt", () => ({
@@ -42,15 +40,16 @@ describe("POST /compute-targets/local-auth/verify", () => {
     vi.clearAllMocks();
     mockAuthContext = createTestAuthContext();
     mockIsLocalGatewayJwtConfigured.mockReturnValue(true);
-    mockRedisGetDel.mockResolvedValue("pending");
+    mockConsumeJti.mockReturnValue(true);
   });
 
-  it("consumes the challenge jti before rejecting a user or org mismatch", async () => {
+  it("returns the raw verify contract payload on success", async () => {
     mockVerifyLocalGatewayChallenge.mockResolvedValue({
       jti: "jti-123",
-      userId: "different-user",
+      userId: mockAuthContext.user.id,
       orgId: mockAuthContext.user.organizationId,
       origin: "http://localhost:3000",
+      expiresAt: "2026-03-13T12:00:00.000Z",
     });
 
     const request = createMockRequest({
@@ -66,7 +65,37 @@ describe("POST /compute-targets/local-auth/verify", () => {
       params: Promise.resolve({}),
     } as never);
 
-    expect(mockRedisGetDel).toHaveBeenCalledWith("local-auth:jti:jti-123");
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      ok: true,
+      sessionTtlSeconds: 600,
+      challengeExpiresAt: "2026-03-13T12:00:00.000Z",
+    });
+  });
+
+  it("consumes the challenge jti before rejecting a user or org mismatch", async () => {
+    mockVerifyLocalGatewayChallenge.mockResolvedValue({
+      jti: "jti-123",
+      userId: "different-user",
+      orgId: mockAuthContext.user.organizationId,
+      origin: "http://localhost:3000",
+      expiresAt: "2026-03-13T12:00:00.000Z",
+    });
+
+    const request = createMockRequest({
+      method: "POST",
+      url: "http://localhost:3002/compute-targets/local-auth/verify",
+      body: {
+        challengeToken: "challenge-jwt",
+        requestOrigin: "http://localhost:3000",
+      },
+    });
+
+    const response = await POST(request, {
+      params: Promise.resolve({}),
+    } as never);
+
+    expect(mockConsumeJti).toHaveBeenCalledWith("jti-123");
     expect(response.status).toBe(403);
 
     const json = await response.json();

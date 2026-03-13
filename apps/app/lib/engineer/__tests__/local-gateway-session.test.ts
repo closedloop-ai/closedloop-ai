@@ -143,6 +143,25 @@ describe("local-gateway-session", () => {
     expect(token).toBeNull();
   });
 
+  it("captures challenge error with status code when the challenge route returns an actionable error", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ error: "Failed to obtain challenge token" }),
+        {
+          status: 502,
+          headers: { "Content-Type": "application/json" },
+        }
+      )
+    );
+
+    const token = await ensureLocalGatewaySession(PORT);
+    expect(token).toBeNull();
+    expect(getLastExchangeError()).toEqual({
+      message: "Failed to obtain challenge token",
+      statusCode: 502,
+    });
+  });
+
   it("returns null when the exchange endpoint fails", async () => {
     vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(mockChallengeOk())

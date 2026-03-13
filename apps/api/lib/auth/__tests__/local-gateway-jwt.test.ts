@@ -61,6 +61,7 @@ describe("local-gateway-jwt", () => {
       expect(verified.orgId).toBe("org-99");
       expect(verified.origin).toBe("http://localhost:3000");
       expect(verified.jti).toBe(issued.jti);
+      expect(verified.expiresAt).toBe(issued.expiresAt.toISOString());
     });
 
     it("rejects a jwt signed with a different secret", async () => {

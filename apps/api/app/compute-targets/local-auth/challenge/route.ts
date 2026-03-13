@@ -1,18 +1,17 @@
 import "server-only";
 
-import { failure, success } from "@repo/api/src/types/common";
-import { redis } from "@repo/rate-limit";
+import { failure } from "@repo/api/src/types/common";
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { registerJti } from "@/lib/auth/local-gateway-jti-store";
 import {
   isLocalGatewayJwtConfigured,
   issueLocalGatewayChallenge,
-  LOCAL_GATEWAY_CHALLENGE_TTL_SECONDS,
 } from "@/lib/auth/local-gateway-jwt";
 import { isLocalGatewayOriginAllowed } from "@/lib/auth/local-gateway-origins";
 import { withAuth } from "@/lib/auth/with-auth";
 
-const JTI_REDIS_TTL_SECONDS = LOCAL_GATEWAY_CHALLENGE_TTL_SECONDS + 10;
+const NO_STORE_HEADERS = { "Cache-Control": "no-store" };
 
 const challengeRequestValidator = z.object({
   origin: z.string().min(1).max(2048),
@@ -30,6 +29,7 @@ export const POST = withAuth<
   if (!isLocalGatewayJwtConfigured()) {
     return NextResponse.json(failure("Local gateway auth is not configured"), {
       status: 503,
+      headers: NO_STORE_HEADERS,
     });
   }
 
@@ -40,6 +40,7 @@ export const POST = withAuth<
       failure("Invalid request body: origin is required"),
       {
         status: 400,
+        headers: NO_STORE_HEADERS,
       }
     );
   }
@@ -49,6 +50,7 @@ export const POST = withAuth<
   if (!isLocalGatewayOriginAllowed(origin)) {
     return NextResponse.json(failure("Origin is not trusted"), {
       status: 400,
+      headers: NO_STORE_HEADERS,
     });
   }
 
@@ -58,11 +60,10 @@ export const POST = withAuth<
     origin,
   });
 
-  await redis.set(`local-auth:jti:${jti}`, "pending", {
-    ex: JTI_REDIS_TTL_SECONDS,
-  });
+  registerJti(jti);
 
   return NextResponse.json(
-    success({ challengeToken: jwt, expiresAt: expiresAt.toISOString() })
+    { challengeToken: jwt, expiresAt: expiresAt.toISOString() },
+    { headers: NO_STORE_HEADERS }
   );
 });

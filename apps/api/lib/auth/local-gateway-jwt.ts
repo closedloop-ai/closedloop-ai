@@ -42,6 +42,7 @@ export type VerifiedLocalGatewayChallenge = {
   userId: string;
   orgId: string;
   origin: string;
+  expiresAt: string;
 };
 
 export async function issueLocalGatewayChallenge(
@@ -79,6 +80,9 @@ export async function verifyLocalGatewayChallenge(
   if (!payload.jti || typeof payload.jti !== "string") {
     throw new Error("Invalid challenge token: missing jti");
   }
+  if (typeof payload.exp !== "number") {
+    throw new Error("Invalid challenge token: missing exp");
+  }
   const orgId = payload.orgId;
   if (!orgId || typeof orgId !== "string") {
     throw new Error("Invalid challenge token: missing orgId");
@@ -93,6 +97,7 @@ export async function verifyLocalGatewayChallenge(
     userId: payload.sub,
     orgId,
     origin,
+    expiresAt: new Date(payload.exp * 1000).toISOString(),
   };
 }
 
