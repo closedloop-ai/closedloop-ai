@@ -11,21 +11,25 @@ const VALID_CLAIMS: LocalGatewayChallengeClaims = {
 
 function loadModule(secret?: string) {
   vi.resetModules();
-  if (typeof secret === "string") {
-    process.env.LOCAL_GATEWAY_JWT_SECRET = secret;
-  } else {
-    Reflect.deleteProperty(process.env, "LOCAL_GATEWAY_JWT_SECRET");
-  }
+  vi.doMock("@/env", () => {
+    return {
+      env: {
+        LOCAL_GATEWAY_JWT_SECRET: secret,
+      },
+    };
+  });
+
   return import("../local-gateway-jwt");
 }
 
 describe("local-gateway-jwt", () => {
   beforeEach(() => {
-    process.env.LOCAL_GATEWAY_JWT_SECRET = VALID_SECRET;
+    vi.resetModules();
   });
 
   afterEach(() => {
-    Reflect.deleteProperty(process.env, "LOCAL_GATEWAY_JWT_SECRET");
+    vi.resetModules();
+    vi.unmock("@/env");
   });
 
   describe("issueLocalGatewayChallenge", () => {
@@ -146,16 +150,22 @@ describe("local-gateway-jwt", () => {
       });
     });
 
-    it("rejects an invalid short secret at env validation time", async () => {
-      await expect(loadModule("short-secret")).rejects.toThrow(
-        "Invalid environment variables"
+    it("rejects an invalid short secret", async () => {
+      const { issueLocalGatewayChallenge } = await loadModule("short-secret");
+
+      await expect(issueLocalGatewayChallenge(VALID_CLAIMS)).rejects.toThrow(
+        "LOCAL_GATEWAY_JWT_SECRET must be at least 32 characters"
       );
     });
 
-    it("rejects a weak secret at env validation time", async () => {
-      await expect(
-        loadModule("aaaaaaaabbbbbbbbccccccccaaaaaaaab")
-      ).rejects.toThrow("Invalid environment variables");
+    it("rejects a weak secret", async () => {
+      const { issueLocalGatewayChallenge } = await loadModule(
+        "aaaaaaaabbbbbbbbccccccccaaaaaaaab"
+      );
+
+      await expect(issueLocalGatewayChallenge(VALID_CLAIMS)).rejects.toThrow(
+        "LOCAL_GATEWAY_JWT_SECRET must include at least 8 unique characters"
+      );
     });
   });
 });
