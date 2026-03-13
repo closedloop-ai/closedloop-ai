@@ -5,7 +5,6 @@ import {
   ArtifactType,
 } from "@repo/api/src/types/artifact";
 import { EntityType } from "@repo/api/src/types/entity-link";
-import { EngineerRoutingMode } from "@repo/api/src/types/relay";
 import { InlinePresence, OptionalArtifactRoom } from "@repo/collaboration";
 import { Button } from "@repo/design-system/components/ui/button";
 import { toast } from "@repo/design-system/components/ui/sonner";
@@ -107,10 +106,10 @@ export function PRDEditor({
   const deepGenerate = useRegenerateArtifact();
   const runLoop = useRunLoop();
   const routing = useEngineerRoutingSelection();
-  const computeTargetId =
-    routing.mode === EngineerRoutingMode.CloudRelay
-      ? routing.computeTargetId
-      : null;
+  // Pass computeTargetId for both CloudRelay and LocalElectron modes.
+  // Loop dispatch always goes through the API → desktop gateway, which needs
+  // the compute target ID regardless of how the engineer dashboard proxies.
+  const computeTargetId = routing.computeTargetId;
 
   const handleQuickGenerate = () => {
     inlineGenerate.mutate(

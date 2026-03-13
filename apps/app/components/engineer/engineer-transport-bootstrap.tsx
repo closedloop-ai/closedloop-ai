@@ -18,10 +18,9 @@ import {
 export function EngineerTransportBootstrap() {
   const detection = useElectronDetection(true);
   useComputeTargetStatusStream(CLOUD_RELAY_ENABLED);
-  useComputeTargets({
-    ...COMPUTE_TARGETS_QUERY_OPTIONS,
-    enabled: CLOUD_RELAY_ENABLED,
-  });
+  // Always fetch compute targets so we can resolve the local electron's
+  // compute target ID for loop dispatch, even when CLOUD_RELAY_ENABLED=false.
+  const { data: targets } = useComputeTargets(COMPUTE_TARGETS_QUERY_OPTIONS);
 
   useEffect(() => {
     if (detection.loading) {
@@ -40,9 +39,19 @@ export function EngineerTransportBootstrap() {
     }
 
     if (detection.detected) {
-      setEngineerRoutingAutoSelection(EngineerRoutingMode.LocalElectron, null, {
-        force: true,
-      });
+      // Match the local electron's machine name to a registered compute target
+      // so loop dispatch has the compute target ID it needs.
+      const localTarget = targets?.find(
+        (t) =>
+          t.isOnline &&
+          detection.machineName &&
+          t.machineName === detection.machineName
+      );
+      setEngineerRoutingAutoSelection(
+        EngineerRoutingMode.LocalElectron,
+        localTarget?.id ?? null,
+        { force: true }
+      );
       return;
     }
 
@@ -58,7 +67,7 @@ export function EngineerTransportBootstrap() {
     setEngineerRoutingAutoSelection(EngineerRoutingMode.CloudRelay, null, {
       force: true,
     });
-  }, [detection.detected, detection.loading]);
+  }, [detection.detected, detection.loading, detection.machineName, targets]);
 
   useEffect(() => installEngineerFetchInterceptor(), []);
 

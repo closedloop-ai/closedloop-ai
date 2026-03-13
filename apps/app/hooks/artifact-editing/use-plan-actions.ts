@@ -1,6 +1,5 @@
 "use client";
 
-import { EngineerRoutingMode } from "@repo/api/src/types/relay";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { useCallback } from "react";
 import { useIsLoopsEnabledForArtifact } from "@/hooks/queries/use-artifact-execution-backend";
@@ -49,10 +48,10 @@ export function usePlanActions(config: UsePlanActionsConfig) {
   const { isLoopsEnabled: useLoops, isLoading: isComputeModeLoading } =
     useIsLoopsEnabledForArtifact(artifactId);
   const routing = useEngineerRoutingSelection();
-  const computeTargetId =
-    routing.mode === EngineerRoutingMode.CloudRelay
-      ? routing.computeTargetId
-      : null;
+  // Pass computeTargetId for both CloudRelay and LocalElectron modes.
+  // Loop dispatch always goes through the API → desktop gateway, which needs
+  // the compute target ID regardless of how the engineer dashboard proxies.
+  const computeTargetId = routing.computeTargetId;
 
   // TanStack Query mutations - GitHub Actions path
   const updateArtifact = useUpdateArtifact();
