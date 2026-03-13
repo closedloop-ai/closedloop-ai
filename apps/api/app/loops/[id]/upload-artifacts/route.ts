@@ -1,9 +1,6 @@
 import type { JsonObject } from "@repo/api/src/types/common";
 import { log } from "@repo/observability/log";
-import {
-  extractBearerToken,
-  verifyLoopRunnerToken,
-} from "@/lib/auth/loop-runner-jwt";
+import { authenticateLoopRunner } from "@/lib/auth/loop-runner-jwt";
 import { errorResponse, parseBody, successResponse } from "@/lib/route-utils";
 import { loopsService } from "../../service";
 import { uploadArtifactsSchema } from "./validators";
@@ -22,23 +19,9 @@ export async function POST(
   try {
     const { id: loopId } = await params;
 
-    const token = extractBearerToken(request);
-    if (token instanceof Response) {
-      return token;
-    }
-
-    let claims: Awaited<ReturnType<typeof verifyLoopRunnerToken>>;
-    try {
-      claims = await verifyLoopRunnerToken(token);
-    } catch (jwtError) {
-      return errorResponse("Invalid or expired runner token", jwtError, 401);
-    }
-    if (claims.loopId !== loopId) {
-      return errorResponse(
-        "Token does not match loop",
-        new Error("Forbidden"),
-        403
-      );
+    const auth = await authenticateLoopRunner(request, loopId);
+    if (!auth.ok) {
+      return auth.response;
     }
 
     const { body, errorResponse: parseError } = await parseBody(
@@ -52,7 +35,7 @@ export async function POST(
     // Store artifacts on the loop record
     const updatedCount = await loopsService.updateUploadedArtifacts(
       loopId,
-      claims.organizationId,
+      auth.claims.organizationId,
       body.artifacts as JsonObject
     );
     if (updatedCount === 0) {
@@ -63,7 +46,10 @@ export async function POST(
 
     // Merge metadata if provided
     if (body.metadata) {
-      const loop = await loopsService.findById(loopId, claims.organizationId);
+      const loop = await loopsService.findById(
+        loopId,
+        auth.claims.organizationId
+      );
       if (loop) {
         const mergedMetadata = {
           ...(loop.metadata ?? {}),
@@ -71,7 +57,7 @@ export async function POST(
         } as JsonObject;
         await loopsService.updateMetadata(
           loopId,
-          claims.organizationId,
+          auth.claims.organizationId,
           mergedMetadata
         );
       }

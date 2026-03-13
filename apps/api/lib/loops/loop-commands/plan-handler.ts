@@ -9,6 +9,7 @@ import {
 } from "@repo/database";
 import { parsePromptsSnapshotFromMarkdownEntries } from "@repo/github/prompt-snapshot-parser";
 import { log } from "@repo/observability/log";
+import { z } from "zod";
 import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
 import { resetArtifactRoom } from "@/app/artifacts/room-utils";
 import { fanOutJudgeScores } from "@/lib/judge-score-fanout";
@@ -206,16 +207,46 @@ export async function ingestPlanArtifacts(
 // Upload-based loading (desktop path)
 // ---------------------------------------------------------------------------
 
+const metricStatisticsSchema = z.object({
+  metric_name: z.string(),
+  threshold: z.number(),
+  score: z.number(),
+  justification: z.string(),
+});
+
+const judgesReportSchema = z.object({
+  report_id: z.string(),
+  timestamp: z.string(),
+  stats: z.array(
+    z.object({
+      type: z.literal("case_score"),
+      case_id: z.string(),
+      final_status: z.enum(["FAILED", "NEEDS_IMPROVEMENT", "PASSED"]),
+      metrics: z.array(metricStatisticsSchema),
+    })
+  ),
+});
+
+const planUploadSchema = z.object({
+  plan: z
+    .object({
+      content: z.string(),
+      raw: z.record(z.string(), z.unknown()).optional(),
+    })
+    .optional(),
+  openQuestions: z.string().optional(),
+  judges: judgesReportSchema.optional(),
+});
+
 /**
  * Extract plan artifacts from uploaded JSON (desktop harness).
  * Mirrors downloadPlanArtifacts but reads from the DB-stored uploadedArtifacts.
  */
 function planArtifactsFromUpload(uploaded: JsonObject): PlanArtifacts {
-  const plan = uploaded.plan as { content?: string; raw?: object } | undefined;
-  const planContent = plan?.content ?? null;
-  const questionsContent =
-    typeof uploaded.openQuestions === "string" ? uploaded.openQuestions : null;
-  const judgesReport = (uploaded.judges as JudgesReport) ?? null;
+  const parsed = planUploadSchema.parse(uploaded);
+  const planContent = parsed.plan?.content ?? null;
+  const questionsContent = parsed.openQuestions ?? null;
+  const judgesReport = (parsed.judges as JudgesReport) ?? null;
   // Prompt snapshots not available in desktop upload path
   const promptsSnapshot: PromptsSnapshot | null = null;
 
