@@ -70,9 +70,9 @@ export async function markReviewDeclined(
 
 export type ExistingReviewState =
   | { kind: "none" }
-  | { kind: "running"; log: string }
-  | { kind: "completed"; log: string }
-  | { kind: "terminal"; log: string };
+  | { kind: "running"; log: string; sessionId?: string }
+  | { kind: "completed"; log: string; sessionId?: string }
+  | { kind: "terminal"; log: string; sessionId?: string };
 
 export async function checkExistingReview(
   ticketId: string,
@@ -90,15 +90,16 @@ export async function checkExistingReview(
     }
 
     const log: string = data.log || "";
+    const sessionId: string | undefined = data.sessionId || undefined;
 
     if (data.status === "completed") {
-      return { kind: "completed", log };
+      return { kind: "completed", log, sessionId };
     }
     if (data.status === "running") {
-      return { kind: "running", log };
+      return { kind: "running", log, sessionId };
     }
     if (data.status === "failed" || data.status === "stopped") {
-      return { kind: "terminal", log };
+      return { kind: "terminal", log, sessionId };
     }
 
     return { kind: "none" };

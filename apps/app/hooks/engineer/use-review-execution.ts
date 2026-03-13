@@ -322,7 +322,11 @@ export function useReviewExecution(
       );
 
       if (existing.kind === "completed" || existing.kind === "terminal") {
-        finalizeReviewOutput(existing.log);
+        if (existing.sessionId) {
+          sessionIdRef.current = existing.sessionId;
+        }
+        const split = finalizeReviewOutput(existing.log);
+        handlePostStreamActions(split);
         return;
       }
 
