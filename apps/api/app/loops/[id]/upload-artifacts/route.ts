@@ -8,14 +8,6 @@ import { errorResponse, parseBody, successResponse } from "@/lib/route-utils";
 import { loopsService } from "../../service";
 import { uploadArtifactsSchema } from "./validators";
 
-export const config = {
-  api: {
-    bodyParser: {
-      sizeLimit: "10mb",
-    },
-  },
-};
-
 /**
  * POST /api/loops/:id/upload-artifacts
  *
@@ -35,7 +27,12 @@ export async function POST(
       return token;
     }
 
-    const claims = await verifyLoopRunnerToken(token);
+    let claims: Awaited<ReturnType<typeof verifyLoopRunnerToken>>;
+    try {
+      claims = await verifyLoopRunnerToken(token);
+    } catch (jwtError) {
+      return errorResponse("Invalid or expired runner token", jwtError, 401);
+    }
     if (claims.loopId !== loopId) {
       return errorResponse(
         "Token does not match loop",

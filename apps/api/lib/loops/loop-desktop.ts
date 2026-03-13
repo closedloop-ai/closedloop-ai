@@ -18,7 +18,8 @@ import type { ContextPack } from "./loop-state";
 async function dispatchRelayOperation(
   computeTargetId: string,
   relayOperation: ReturnType<typeof toRelayOperation>,
-  context: { label: string; loopId: string; commandId: string }
+  context: { label: string; loopId: string; commandId: string },
+  throwOnFailure = false
 ): Promise<void> {
   const relayApiUrl = process.env.RELAY_API_URL;
   const internalSecret = process.env.INTERNAL_API_SECRET;
@@ -44,6 +45,11 @@ async function dispatchRelayOperation(
           status: response.status,
           body,
         });
+        if (throwOnFailure) {
+          throw new Error(
+            `Relay dispatch failed with status ${response.status}`
+          );
+        }
       }
     } catch (dispatchError) {
       log.error(`[loop-desktop] ${context.label} failed to dispatch to relay`, {
@@ -51,6 +57,9 @@ async function dispatchRelayOperation(
         commandId: context.commandId,
         error: dispatchError,
       });
+      if (throwOnFailure) {
+        throw dispatchError;
+      }
     }
   } else {
     relayEventBus.publishOperation(computeTargetId, relayOperation);
@@ -116,11 +125,12 @@ export async function launchLoopOnDesktop(
 
   const relayOperation = toRelayOperation(commandId, input);
 
-  await dispatchRelayOperation(computeTargetId, relayOperation, {
-    label: "Launch",
-    loopId,
-    commandId,
-  });
+  await dispatchRelayOperation(
+    computeTargetId,
+    relayOperation,
+    { label: "Launch", loopId, commandId },
+    true
+  );
 
   log.info("[loop-desktop] Desktop loop command dispatched", {
     loopId,
