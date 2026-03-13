@@ -8,6 +8,10 @@ import type { LoopCommand } from "@repo/api/src/types/loop";
 import { log } from "@repo/observability/log";
 import { toRelayOperation } from "@/app/compute-targets/relay-command-helpers";
 import { desktopCommandStore } from "@/lib/desktop-command-store";
+import {
+  toEnvelope,
+  toWireCommandFromRelayOperation,
+} from "@/lib/desktop-gateway-wire";
 import { relayEventBus } from "@/lib/relay-event-bus";
 import type { ContextPack } from "./loop-state";
 
@@ -25,6 +29,23 @@ async function dispatchRelayOperation(
   const internalSecret = process.env.INTERNAL_API_SECRET;
   if (relayApiUrl && internalSecret) {
     try {
+      // Wrap in wire envelope format expected by relay server
+      const wireCommand = toWireCommandFromRelayOperation(relayOperation);
+      if (!wireCommand) {
+        const err = new Error(
+          "Failed to convert relay operation to wire command"
+        );
+        log.error(`[loop-desktop] ${context.label} wire conversion failed`, {
+          loopId: context.loopId,
+          commandId: context.commandId,
+        });
+        if (throwOnFailure) {
+          throw err;
+        }
+        return;
+      }
+      const envelopedCommand = toEnvelope(wireCommand);
+
       const response = await fetch(`${relayApiUrl}/dispatch`, {
         method: "POST",
         headers: {
@@ -33,7 +54,7 @@ async function dispatchRelayOperation(
         },
         body: JSON.stringify({
           targetId: computeTargetId,
-          operation: relayOperation,
+          operation: envelopedCommand,
         }),
         signal: AbortSignal.timeout(5000),
       });

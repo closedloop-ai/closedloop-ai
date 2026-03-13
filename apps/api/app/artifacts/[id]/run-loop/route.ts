@@ -16,10 +16,7 @@ import {
   parseBody,
 } from "@/lib/route-utils";
 import { artifactsService } from "../../service";
-import {
-  assertComputeTargetValid,
-  ComputeTargetValidationError,
-} from "./compute-target-validation";
+import { validateComputeTarget } from "./compute-target-validation";
 import { COMMAND_MAP, resolveLoopContext } from "./run-loop-helpers";
 import { runLoopSchema } from "./validators";
 
@@ -46,6 +43,11 @@ export const POST = withAuth<CreateLoopResponse, "/artifacts/[id]/run-loop">(
 
       const handler = getCommandHandler(COMMAND_MAP[body.command]);
 
+      // Guard: prevent launching a loop for artifacts originally planned via
+      // GH Actions. State cannot migrate between backends, so the earliest
+      // execution determines the canonical backend.
+      // Commands that build on prior state (requiresParent) are locked to
+      // the original backend. Fresh-start commands (like PLAN) are exempt.
       if (handler?.requiresParent) {
         const rejection = await artifactsService.assertLoopBackendAllowed(
           artifactId,
@@ -79,10 +81,18 @@ export const POST = withAuth<CreateLoopResponse, "/artifacts/[id]/run-loop">(
       }
 
       if (body.computeTargetId) {
-        await assertComputeTargetValid(
+        const ctResult = await validateComputeTarget(
           body.computeTargetId,
           user.organizationId
         );
+        if (!ctResult.valid) {
+          if (ctResult.reason === "not_found") {
+            return notFoundResponse("Compute target");
+          }
+          return badRequestResponse(
+            "Compute target is offline. Ensure the desktop app is running."
+          );
+        }
       }
 
       const command = COMMAND_MAP[body.command];
@@ -119,14 +129,6 @@ export const POST = withAuth<CreateLoopResponse, "/artifacts/[id]/run-loop">(
 
       return NextResponse.json(success(loopResponse));
     } catch (error) {
-      if (error instanceof ComputeTargetValidationError) {
-        if (error.reason === "not_found") {
-          return notFoundResponse("Compute target");
-        }
-        return badRequestResponse(
-          "Compute target is offline. Ensure the desktop app is running."
-        );
-      }
       return errorResponse("Failed to run loop", error);
     }
   }

@@ -1,30 +1,23 @@
 import { computeTargetsService } from "@/app/compute-targets/service";
 
-export class ComputeTargetValidationError extends Error {
-  readonly reason: "not_found" | "offline";
-  constructor(reason: "not_found" | "offline") {
-    super(
-      reason === "not_found"
-        ? "Compute target not found"
-        : "Compute target offline"
-    );
-    this.reason = reason;
-  }
-}
+type ComputeTargetValidationResult =
+  | { valid: true }
+  | { valid: false; reason: "not_found" | "offline" };
 
 /**
  * Validate a compute target: exists, belongs to org, and is online.
- * Throws on failure (caught by the route's try/catch).
+ * Returns a result object instead of throwing.
  */
-export async function assertComputeTargetValid(
+export async function validateComputeTarget(
   computeTargetId: string,
   organizationId: string
-): Promise<void> {
+): Promise<ComputeTargetValidationResult> {
   const target = await computeTargetsService.findById(computeTargetId);
   if (!target || target.organizationId !== organizationId) {
-    throw new ComputeTargetValidationError("not_found");
+    return { valid: false, reason: "not_found" };
   }
   if (!target.isOnline) {
-    throw new ComputeTargetValidationError("offline");
+    return { valid: false, reason: "offline" };
   }
+  return { valid: true };
 }
