@@ -2120,12 +2120,15 @@ function prepareWorkspace(workDir) {
 // ---------------------------------------------------------------------------
 // Environment variables exported by the setup script and persisted to
 // .closedloop-ai/.env.setup. These are merged into the Claude child process env.
-let setupEnvVars = {};
+const setupEnvVars = {};
 
 function runRepoSetup(workDir) {
   const setupScript = path.join(workDir, ".closedloop-ai", "loops-setup.sh");
   if (!fs.existsSync(setupScript)) {
-    log("info", "No .closedloop-ai/loops-setup.sh found — skipping repo bootstrap");
+    log(
+      "info",
+      "No .closedloop-ai/loops-setup.sh found — skipping repo bootstrap"
+    );
     return;
   }
 
@@ -2141,7 +2144,10 @@ function runRepoSetup(workDir) {
       timeout: 300_000, // 5 minute timeout for install
     });
     if (result.error || result.status !== 0) {
-      log("warn", `Repo bootstrap exited with status ${result.status}${result.error ? `: ${result.error.message}` : ""}`);
+      log(
+        "warn",
+        `Repo bootstrap exited with status ${result.status}${result.error ? `: ${result.error.message}` : ""}`
+      );
     } else {
       log("info", "Repo bootstrap completed");
     }
@@ -2160,7 +2166,10 @@ function runRepoSetup(workDir) {
         setupEnvVars[match[1]] = match[2];
       }
     }
-    log("info", `Loaded setup env vars: ${Object.keys(setupEnvVars).join(", ")}`);
+    log(
+      "info",
+      `Loaded setup env vars: ${Object.keys(setupEnvVars).join(", ")}`
+    );
   }
 }
 

@@ -33,7 +33,10 @@ import {
   useComputeTargets,
   useDeleteComputeTarget,
 } from "@/hooks/queries/use-compute-targets";
-import { DESKTOP_SETUP_URL } from "@/lib/engineer/constants";
+import {
+  COMPUTE_TARGETS_QUERY_OPTIONS,
+  DESKTOP_SETUP_URL,
+} from "@/lib/engineer/constants";
 import type { CheckResult } from "@/lib/engineer/queries/health-check";
 import { healthCheckOptions } from "@/lib/engineer/queries/health-check";
 import { queryKeys } from "@/lib/engineer/queries/keys";
@@ -130,8 +133,7 @@ function renderStatusIcon({
 export function ComputeTargetsCard() {
   const [systemCheckOpen, setSystemCheckOpen] = useState(false);
   const { data: targets = [], isLoading } = useComputeTargets({
-    staleTime: 30_000,
-    refetchInterval: 30_000,
+    ...COMPUTE_TARGETS_QUERY_OPTIONS,
   });
   const deleteTarget = useDeleteComputeTarget();
   const { isLoading: systemCheckLoading, shouldRunSystemCheck } =
@@ -312,7 +314,7 @@ export function ComputeTargetsCard() {
                     <p className="text-muted-foreground text-sm">
                       {shouldRunSystemCheck
                         ? "Waiting for the first system check result."
-                        : "System checks are available when an online relay target is selected or when the desktop client is connected."}
+                        : "System checks are available when the desktop client is connected."}
                     </p>
                   )}
                 </div>

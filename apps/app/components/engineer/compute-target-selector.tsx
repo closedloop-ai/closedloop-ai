@@ -2,6 +2,7 @@
 
 import type { ComputeTarget } from "@repo/api/src/types/compute-target";
 import { EngineerRoutingMode } from "@repo/api/src/types/relay";
+import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   Command,
@@ -20,6 +21,10 @@ import { Check, ChevronDown, Server } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useComputeTargets } from "@/hooks/queries/use-compute-targets";
 import { useIsMounted } from "@/hooks/use-is-mounted";
+import {
+  CLOUD_RELAY_ENABLED,
+  COMPUTE_TARGETS_QUERY_OPTIONS,
+} from "@/lib/engineer/constants";
 import { useElectronDetection } from "@/lib/engineer/electron-detection";
 import {
   setEngineerRoutingManualSelection,
@@ -127,8 +132,6 @@ function OptionIcon({ option }: { option: SelectorOption }) {
     return <TargetStatusDot online={option.target.isOnline} />;
   }
   if (option.mode === EngineerRoutingMode.LocalElectron) {
-    // LocalElectron routes directly to localhost — detection.detected is
-    // guaranteed true when this option is visible, so always show online.
     return <TargetStatusDot online />;
   }
   return <Server className="size-3.5 text-muted-foreground" />;
@@ -138,18 +141,30 @@ function isOnlineOption(option: SelectorOption): boolean {
   if (isCloudOption(option)) {
     return option.target.isOnline;
   }
-  // LocalElectron: detection.detected is guaranteed true when visible.
   return true;
 }
 
-export function ComputeTargetSelector() {
-  const mounted = useIsMounted();
+function LocalBadge({ machineName }: { machineName: string | null }) {
+  return (
+    <Badge variant="outline">
+      <span
+        aria-hidden
+        className="inline-block size-2 rounded-full bg-emerald-500"
+      />
+      {machineName ?? "Local"}
+    </Badge>
+  );
+}
+
+function TargetDropdown({
+  detection,
+}: {
+  detection: { detected: boolean; machineName: string | null };
+}) {
   const [open, setOpen] = useState(false);
-  const detection = useElectronDetection();
-  const { data: targets = [], isFetching } = useComputeTargets({
-    staleTime: 30_000,
-    refetchInterval: 30_000,
-  });
+  const { data: targets = [], isFetching } = useComputeTargets(
+    COMPUTE_TARGETS_QUERY_OPTIONS
+  );
   const routing = useEngineerRoutingSelection();
 
   const options = useMemo(
@@ -162,7 +177,7 @@ export function ComputeTargetSelector() {
     [options, routing.mode, routing.computeTargetId]
   );
 
-  if (!mounted || options.length === 0) {
+  if (options.length === 0) {
     return null;
   }
 
@@ -244,4 +259,23 @@ export function ComputeTargetSelector() {
       ) : null}
     </Popover>
   );
+}
+
+export function ComputeTargetSelector() {
+  const mounted = useIsMounted();
+  const detection = useElectronDetection();
+
+  if (!mounted) {
+    return null;
+  }
+
+  if (CLOUD_RELAY_ENABLED) {
+    return <TargetDropdown detection={detection} />;
+  }
+
+  if (!detection.detected) {
+    return null;
+  }
+
+  return <LocalBadge machineName={detection.machineName} />;
 }

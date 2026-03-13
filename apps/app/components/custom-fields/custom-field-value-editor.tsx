@@ -471,8 +471,8 @@ function PeopleFieldEditor({
   const initialPeopleKey = initialPeople.map((u) => u.id).join(",");
 
   // Sync from server when people change (use stable string key to avoid infinite re-renders)
+  // biome-ignore lint/correctness/useExhaustiveDependencies: initialPeople array ref changes each render; use stable key instead
   useEffect(() => {
-    // biome-ignore lint/correctness/useExhaustiveDependencies: initialPeople array ref changes each render; use stable key instead
     setSelected(initialPeople);
   }, [initialPeopleKey]);
 

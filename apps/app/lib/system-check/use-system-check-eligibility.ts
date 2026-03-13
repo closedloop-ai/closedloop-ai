@@ -2,6 +2,10 @@
 
 import { EngineerRoutingMode } from "@repo/api/src/types/relay";
 import { useComputeTargets } from "@/hooks/queries/use-compute-targets";
+import {
+  CLOUD_RELAY_ENABLED,
+  COMPUTE_TARGETS_QUERY_OPTIONS,
+} from "@/lib/engineer/constants";
 import { useElectronDetection } from "@/lib/engineer/electron-detection";
 import { useEngineerRoutingSelection } from "@/lib/engineer/routing-store";
 
@@ -18,11 +22,13 @@ export function useSystemCheckEligibility(): SystemCheckEligibility {
   // auto-detection is in progress, regardless of the current routing mode.
   const detection = useElectronDetection(true);
   const { data: targets = [], isLoading: targetsLoading } = useComputeTargets({
-    staleTime: 30_000,
-    refetchInterval: 30_000,
+    ...COMPUTE_TARGETS_QUERY_OPTIONS,
+    enabled: CLOUD_RELAY_ENABLED,
   });
 
+  /** Always false when CLOUD_RELAY_ENABLED === false. */
   const selectedCloudTargetOnline =
+    CLOUD_RELAY_ENABLED &&
     routing.mode === EngineerRoutingMode.CloudRelay &&
     routing.computeTargetId !== null &&
     targets.some(
@@ -45,6 +51,15 @@ export function useSystemCheckEligibility(): SystemCheckEligibility {
     routing.mode !== EngineerRoutingMode.LocalElectron &&
     !selectedCloudTargetOnline;
 
+  // When cloud relay is disabled but routing is still set to CloudRelay
+  // (either auto or manual), and Electron has been detected, the routing
+  // store needs to normalize away from CloudRelay.  Keep isLoading true
+  // until that normalization occurs so the UI doesn't flash a stale state.
+  const normalizationPending =
+    !CLOUD_RELAY_ENABLED &&
+    routing.mode === EngineerRoutingMode.CloudRelay &&
+    detection.detected;
+
   // Only gate on Electron probing when it actually matters:
   //  - LocalElectron mode: need probe result to know if desktop is reachable
   //  - Auto-selected default with no valid cloud target: probe determines
@@ -60,7 +75,8 @@ export function useSystemCheckEligibility(): SystemCheckEligibility {
     isLoading:
       targetsLoading ||
       (electronLoadingRelevant && detection.loading) ||
-      autoSelectionPending,
+      autoSelectionPending ||
+      normalizationPending,
     selectedCloudTargetOnline,
     selectedLocalElectronReady,
   };

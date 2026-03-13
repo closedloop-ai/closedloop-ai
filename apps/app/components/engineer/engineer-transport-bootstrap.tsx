@@ -4,6 +4,10 @@ import { EngineerRoutingMode } from "@repo/api/src/types/relay";
 import { useEffect } from "react";
 import { useComputeTargetStatusStream } from "@/hooks/queries/use-compute-target-status-stream";
 import { useComputeTargets } from "@/hooks/queries/use-compute-targets";
+import {
+  CLOUD_RELAY_ENABLED,
+  COMPUTE_TARGETS_QUERY_OPTIONS,
+} from "@/lib/engineer/constants";
 import { useElectronDetection } from "@/lib/engineer/electron-detection";
 import { installEngineerFetchInterceptor } from "@/lib/engineer/engineer-fetch-interceptor";
 import {
@@ -13,10 +17,10 @@ import {
 
 export function EngineerTransportBootstrap() {
   const detection = useElectronDetection(true);
-  useComputeTargetStatusStream();
-  const { data: targets = [] } = useComputeTargets({
-    staleTime: 30_000,
-    refetchInterval: 30_000,
+  useComputeTargetStatusStream(CLOUD_RELAY_ENABLED);
+  useComputeTargets({
+    ...COMPUTE_TARGETS_QUERY_OPTIONS,
+    enabled: CLOUD_RELAY_ENABLED,
   });
 
   useEffect(() => {
@@ -25,20 +29,13 @@ export function EngineerTransportBootstrap() {
     }
 
     const current = getEngineerRoutingSelection();
-    const onlineTargets = targets.filter((target) => target.isOnline);
-    const selectedTargetOnline =
-      current.computeTargetId !== null &&
-      onlineTargets.some((target) => target.id === current.computeTargetId);
-    const currentSelectionValid =
-      (current.mode === EngineerRoutingMode.LocalElectron &&
-        detection.detected) ||
-      (current.mode === EngineerRoutingMode.CloudRelay &&
-        current.computeTargetId !== null &&
-        selectedTargetOnline);
 
     // Always preserve manual selection, including offline targets that may come
     // online later.
-    if (current.source === "manual" || currentSelectionValid) {
+    if (
+      current.source === "manual" &&
+      (CLOUD_RELAY_ENABLED || current.mode !== EngineerRoutingMode.CloudRelay)
+    ) {
       return;
     }
 
@@ -46,6 +43,10 @@ export function EngineerTransportBootstrap() {
       setEngineerRoutingAutoSelection(EngineerRoutingMode.LocalElectron, null, {
         force: true,
       });
+      return;
+    }
+
+    if (!CLOUD_RELAY_ENABLED) {
       return;
     }
 
@@ -57,7 +58,7 @@ export function EngineerTransportBootstrap() {
     setEngineerRoutingAutoSelection(EngineerRoutingMode.CloudRelay, null, {
       force: true,
     });
-  }, [detection.detected, detection.loading, targets]);
+  }, [detection.detected, detection.loading]);
 
   useEffect(() => installEngineerFetchInterceptor(), []);
 
