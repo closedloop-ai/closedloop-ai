@@ -14,7 +14,7 @@ function loadModule(secret?: string) {
   if (typeof secret === "string") {
     process.env.LOCAL_GATEWAY_JWT_SECRET = secret;
   } else {
-    process.env.LOCAL_GATEWAY_JWT_SECRET = undefined;
+    Reflect.deleteProperty(process.env, "LOCAL_GATEWAY_JWT_SECRET");
   }
   return import("../local-gateway-jwt");
 }
@@ -25,7 +25,7 @@ describe("local-gateway-jwt", () => {
   });
 
   afterEach(() => {
-    process.env.LOCAL_GATEWAY_JWT_SECRET = undefined;
+    Reflect.deleteProperty(process.env, "LOCAL_GATEWAY_JWT_SECRET");
   });
 
   describe("issueLocalGatewayChallenge", () => {

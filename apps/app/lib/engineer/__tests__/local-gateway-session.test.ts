@@ -151,6 +151,17 @@ describe("local-gateway-session", () => {
     });
   });
 
+  it("returns null instead of rejecting when the auth token provider throws", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+    setLocalGatewayAuthTokenProvider(() =>
+      Promise.reject(new Error("auth bootstrap failed"))
+    );
+
+    await expect(ensureLocalGatewaySession(PORT)).resolves.toBeNull();
+    expect(getLastExchangeError()).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("returns null when the challenge fetch fails with a network error", async () => {
     vi.spyOn(globalThis, "fetch").mockRejectedValueOnce(
       new TypeError("network error")
@@ -230,6 +241,42 @@ describe("local-gateway-session", () => {
     expect(c).toBe("tok-dedup");
     expect(challengeCallCount).toBe(1);
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("ignores a cancelled in-flight exchange and starts a new bootstrap attempt", async () => {
+    let challengeCallCount = 0;
+    let exchangeCallCount = 0;
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === CHALLENGE_URL) {
+          challengeCallCount += 1;
+          return mockChallengeOk(`challenge-${challengeCallCount}`);
+        }
+
+        exchangeCallCount += 1;
+        if (exchangeCallCount === 1) {
+          await new Promise<void>((resolve) => setTimeout(resolve, 20));
+          return mockExchangeOk("tok-stale");
+        }
+
+        return mockExchangeOk("tok-fresh");
+      });
+
+    const firstAttempt = ensureLocalGatewaySession(PORT);
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+    invalidateLocalGatewaySession();
+
+    const secondAttempt = await ensureLocalGatewaySession(PORT);
+    const firstResult = await firstAttempt;
+
+    expect(firstResult).toBeNull();
+    expect(secondAttempt).toBe("tok-fresh");
+    expect(await ensureLocalGatewaySession(PORT)).toBe("tok-fresh");
+    expect(challengeCallCount).toBe(2);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
   });
 
   it("does not reuse an in-flight exchange result for a different port", async () => {

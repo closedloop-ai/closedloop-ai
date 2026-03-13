@@ -9,17 +9,21 @@ type SessionState = {
   port: number;
 };
 
+type ExchangeOutcome = {
+  session: SessionState | null;
+  error: ExchangeError | null;
+};
+
 type InflightExchange = {
   port: number;
-  attemptId: number;
-  promise: Promise<SessionState | null>;
+  cancelled: boolean;
+  promise: Promise<ExchangeOutcome>;
 };
 
 let cachedSession: SessionState | null = null;
 let inflightExchange: InflightExchange | null = null;
 export type ExchangeError = { message: string; statusCode: number };
 let lastExchangeError: ExchangeError | null = null;
-let latestExchangeAttemptId = 0;
 let authTokenProvider: (() => Promise<string | null>) | null = null;
 
 function isSessionValid(session: SessionState | null, port: number): boolean {
@@ -36,8 +40,10 @@ function isSessionValid(session: SessionState | null, port: number): boolean {
 /** Clear cached session and exchange error (on 401 or port change). */
 export function invalidateLocalGatewaySession(): void {
   cachedSession = null;
-  inflightExchange = null;
-  latestExchangeAttemptId += 1;
+  if (inflightExchange) {
+    inflightExchange.cancelled = true;
+    inflightExchange = null;
+  }
   lastExchangeError = null;
 }
 
@@ -54,15 +60,6 @@ export function setLocalGatewayAuthTokenProvider(
   provider: (() => Promise<string | null>) | null
 ): void {
   authTokenProvider = provider;
-}
-
-function setLastExchangeError(
-  exchangeError: ExchangeError | null,
-  attemptId: number
-): void {
-  if (attemptId === latestExchangeAttemptId) {
-    lastExchangeError = exchangeError;
-  }
 }
 
 async function readResponseError(
@@ -83,21 +80,25 @@ async function readResponseError(
 
 /**
  * Fetch a challenge from the API server, exchange it with the local gateway,
- * and return a session token. Returns null if the flow fails.
+ * and return the resulting session/error outcome.
  */
-async function performExchange(
-  port: number,
-  attemptId: number
-): Promise<SessionState | null> {
+async function performExchange(port: number): Promise<ExchangeOutcome> {
   const origin = globalThis.location.origin;
-  const authToken = authTokenProvider ? await authTokenProvider() : null;
+
+  let apiOrigin: string;
+  let authToken: string | null;
+  try {
+    apiOrigin = resolveApiOrigin();
+    authToken = authTokenProvider ? await authTokenProvider() : null;
+  } catch {
+    return { session: null, error: null };
+  }
 
   if (!authToken) {
-    setLastExchangeError(
-      { message: "Unauthorized", statusCode: 401 },
-      attemptId
-    );
-    return null;
+    return {
+      session: null,
+      error: { message: "Unauthorized", statusCode: 401 },
+    };
   }
 
   // Step 1: Obtain a challenge token from the API server
@@ -105,7 +106,7 @@ async function performExchange(
   let challengeResponse: Response;
   try {
     challengeResponse = await fetch(
-      `${resolveApiOrigin()}/compute-targets/local-auth/challenge`,
+      `${apiOrigin}/compute-targets/local-auth/challenge`,
       {
         method: "POST",
         headers: {
@@ -117,19 +118,17 @@ async function performExchange(
       }
     );
   } catch {
-    setLastExchangeError(null, attemptId);
-    return null;
+    return { session: null, error: null };
   }
 
   if (!challengeResponse.ok) {
-    setLastExchangeError(
-      await readResponseError(
+    return {
+      session: null,
+      error: await readResponseError(
         challengeResponse,
         `challenge failed (${challengeResponse.status})`
       ),
-      attemptId
-    );
-    return null;
+    };
   }
 
   try {
@@ -138,30 +137,27 @@ async function performExchange(
       expiresAt?: string;
     }>;
     if (!challengeData.success) {
-      setLastExchangeError(
-        {
+      return {
+        session: null,
+        error: {
           message: challengeData.error,
           statusCode: challengeResponse.status || 502,
         },
-        attemptId
-      );
-      return null;
+      };
     }
 
     challengeToken = challengeData.data.challengeToken ?? "";
     if (!challengeToken || typeof challengeData.data.expiresAt !== "string") {
-      setLastExchangeError(
-        {
+      return {
+        session: null,
+        error: {
           message: "Failed to obtain challenge token",
           statusCode: 502,
         },
-        attemptId
-      );
-      return null;
+      };
     }
   } catch {
-    setLastExchangeError(null, attemptId);
-    return null;
+    return { session: null, error: null };
   }
 
   // Step 2: Exchange the challenge with the local gateway
@@ -178,19 +174,17 @@ async function performExchange(
       }
     );
   } catch {
-    setLastExchangeError(null, attemptId);
-    return null;
+    return { session: null, error: null };
   }
 
   if (!exchangeResponse.ok) {
-    setLastExchangeError(
-      await readResponseError(
+    return {
+      session: null,
+      error: await readResponseError(
         exchangeResponse,
         `exchange failed (${exchangeResponse.status})`
       ),
-      attemptId
-    );
-    return null;
+    };
   }
 
   try {
@@ -199,22 +193,33 @@ async function performExchange(
       expiresAt?: string;
     };
     if (!(exchangeData.sessionToken && exchangeData.expiresAt)) {
-      setLastExchangeError(null, attemptId);
-      return null;
+      return { session: null, error: null };
     }
 
-    const session: SessionState = {
-      token: exchangeData.sessionToken,
-      expiresAt: new Date(exchangeData.expiresAt).getTime(),
-      port,
+    return {
+      session: {
+        token: exchangeData.sessionToken,
+        expiresAt: new Date(exchangeData.expiresAt).getTime(),
+        port,
+      },
+      error: null,
     };
-
-    setLastExchangeError(null, attemptId);
-    return session;
   } catch {
-    setLastExchangeError(null, attemptId);
+    return { session: null, error: null };
+  }
+}
+
+function applyExchangeOutcome(
+  exchange: InflightExchange,
+  outcome: ExchangeOutcome
+): string | null {
+  if (exchange.cancelled) {
     return null;
   }
+
+  lastExchangeError = outcome.error;
+  cachedSession = outcome.session;
+  return outcome.session?.token ?? null;
 }
 
 /**
@@ -235,43 +240,31 @@ export async function ensureLocalGatewaySession(
 
   if (inflightExchange) {
     if (inflightExchange.port !== port) {
+      inflightExchange.cancelled = true;
       inflightExchange = null;
     } else {
-      const { attemptId: inflightAttemptId, promise: existingPromise } =
-        inflightExchange;
-      const result = await existingPromise;
-      if (
-        result &&
-        result.port === port &&
-        inflightAttemptId === latestExchangeAttemptId
-      ) {
-        cachedSession = result;
-        return result.token;
-      }
-      return null;
+      return applyExchangeOutcome(
+        inflightExchange,
+        await inflightExchange.promise
+      );
     }
   }
 
-  const attemptId = latestExchangeAttemptId + 1;
-  latestExchangeAttemptId = attemptId;
-  const promise = performExchange(port, attemptId);
-  const inflightPromise = promise.finally(() => {
-    if (inflightExchange?.attemptId === attemptId) {
+  // Concurrent intercepted engineer requests can all need bootstrap at once,
+  // so collapse them into a single challenge/exchange flow per gateway port.
+  const exchange: InflightExchange = {
+    port,
+    cancelled: false,
+    promise: performExchange(port),
+  };
+  exchange.promise = exchange.promise.finally(() => {
+    if (inflightExchange === exchange) {
       inflightExchange = null;
     }
   });
-  inflightExchange = {
-    port,
-    attemptId,
-    promise: inflightPromise,
-  };
+  inflightExchange = exchange;
 
-  const result = await inflightExchange.promise;
-  if (result && result.port === port && attemptId === latestExchangeAttemptId) {
-    cachedSession = result;
-    return result?.token ?? null;
-  }
-  return null;
+  return applyExchangeOutcome(exchange, await exchange.promise);
 }
 
 /** For tests only. */
@@ -279,6 +272,5 @@ export function resetLocalGatewaySessionForTests(): void {
   cachedSession = null;
   inflightExchange = null;
   lastExchangeError = null;
-  latestExchangeAttemptId = 0;
   authTokenProvider = null;
 }
