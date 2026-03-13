@@ -200,6 +200,39 @@ describe("engineer-fetch-interceptor – auth integration", () => {
     uninstall();
   });
 
+  it("returns the exchange error when session refresh after a 401 fails", async () => {
+    mockEnsureLocalGatewaySession
+      .mockResolvedValueOnce("stale-tok")
+      .mockResolvedValueOnce(null);
+    mockGetLastExchangeError.mockReturnValue({
+      message: "Local gateway auth unavailable: API key required",
+      statusCode: 503,
+    });
+
+    const originalFetch = vi
+      .fn()
+      .mockResolvedValue(new Response("Unauthorized", { status: 401 }));
+
+    Object.defineProperty(globalThis, "fetch", {
+      configurable: true,
+      writable: true,
+      value: originalFetch,
+    });
+
+    const uninstall = installEngineerFetchInterceptor();
+    const response = await fetch("/api/engineer/git");
+
+    expect(originalFetch).toHaveBeenCalledTimes(1);
+    expect(mockInvalidateLocalGatewaySession).toHaveBeenCalledTimes(1);
+    expect(mockEnsureLocalGatewaySession).toHaveBeenCalledTimes(2);
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
+      error: "Local gateway auth unavailable: API key required",
+    });
+
+    uninstall();
+  });
+
   it("retries POST requests with body without throwing 'body already read'", async () => {
     mockEnsureLocalGatewaySession
       .mockResolvedValueOnce("stale-tok")

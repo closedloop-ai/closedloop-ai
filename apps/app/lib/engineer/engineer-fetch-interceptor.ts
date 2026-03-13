@@ -37,6 +37,16 @@ function methodAllowsBody(method: string): boolean {
   return method !== "GET" && method !== "HEAD";
 }
 
+function buildExchangeErrorResponse(exchangeError: {
+  message: string;
+  statusCode: number;
+}): Response {
+  return new Response(JSON.stringify({ error: exchangeError.message }), {
+    status: exchangeError.statusCode,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
 /**
  * Build a localhost-bound Request from the original request metadata and a
  * pre-materialized body buffer. The body must be materialized by the caller
@@ -168,10 +178,7 @@ function createFetchInterceptor(
     if (!sessionToken) {
       const exchangeError = getLastExchangeError();
       if (exchangeError) {
-        return new Response(JSON.stringify({ error: exchangeError.message }), {
-          status: exchangeError.statusCode,
-          headers: { "Content-Type": "application/json" },
-        });
+        return buildExchangeErrorResponse(exchangeError);
       }
     }
 
@@ -205,6 +212,11 @@ function createFetchInterceptor(
             bodyBuffer
           );
           return await originalFetch(retryRequest);
+        }
+
+        const exchangeError = getLastExchangeError();
+        if (exchangeError) {
+          return buildExchangeErrorResponse(exchangeError);
         }
       }
 

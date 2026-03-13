@@ -51,6 +51,7 @@ import { useGitHubUser } from "@/hooks/engineer/use-github-user";
 import { useLearnings } from "@/hooks/engineer/use-learnings";
 import type { LearningUsed } from "@/lib/engineer/chat-utils";
 import type { ReviewFinding } from "@/lib/engineer/codex-review-parser";
+import { normalizeReviewRestoreSeed } from "@/lib/engineer/pr-browser-review-state";
 import {
   markChatStarted,
   resetCommentStatus,
@@ -672,7 +673,9 @@ export function PRBrowserDialog({
           return;
         }
         if (data.status === "completed" || data.status === "running") {
-          setReviews((prev) => addReviewEntry(prev, provider, data));
+          setReviews((prev) =>
+            addReviewEntry(prev, provider, normalizeReviewRestoreSeed(data))
+          );
           setActiveReviewProvider((cur) => cur ?? provider);
         }
       } catch {
