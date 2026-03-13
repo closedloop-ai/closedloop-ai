@@ -8,7 +8,7 @@ const RE_SYSTEM_CHECK = /system check/i;
 const RE_RECHECK = /re-check/i;
 const RE_LAST_CHECKED = /Last checked /;
 const RE_SYSTEM_CHECKS_UNAVAILABLE =
-  /System checks are available when an online relay target is selected or when the desktop client is connected\./;
+  /System checks are available when the desktop client is connected\./;
 
 const mockUseComputeTargets = vi.fn();
 const mockUseDeleteComputeTarget = vi.fn();

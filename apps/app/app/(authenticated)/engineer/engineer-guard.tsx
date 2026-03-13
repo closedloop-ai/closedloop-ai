@@ -2,7 +2,6 @@
 
 import { AlertCircle, Loader2 } from "lucide-react";
 import Link from "next/link";
-import { ComputeTargetSelector } from "@/components/engineer/compute-target-selector";
 import { EngineerDashboard } from "@/components/engineer/engineer-dashboard";
 import { DESKTOP_SETUP_URL } from "@/lib/engineer/constants";
 import { useSystemCheckEligibility } from "@/lib/system-check/use-system-check-eligibility";
@@ -26,9 +25,7 @@ export function EngineerGuard() {
       <div className="flex min-h-[60vh] items-center justify-center p-8">
         <div className="max-w-md space-y-4 text-center text-muted-foreground">
           <Loader2 className="mx-auto size-8 animate-spin" />
-          <p className="text-sm">
-            Checking local Electron and compute targets...
-          </p>
+          <p className="text-sm">Connecting to desktop client...</p>
         </div>
       </div>
     );
@@ -40,16 +37,8 @@ export function EngineerGuard() {
         <AlertCircle className="mx-auto size-12 text-muted-foreground" />
         <h2 className="font-semibold text-xl">Engineer View Not Available</h2>
         <p className="text-muted-foreground">
-          No execution target available. Connect the desktop client or register
-          a compute target in Settings to get started. If your previously
-          selected target is offline, wait for it to come online or choose
-          another.
-        </p>
-        <div className="flex justify-center pt-1">
-          <ComputeTargetSelector />
-        </div>
-        <p className="text-muted-foreground">
-          Install the Closedloop desktop client for local execution.
+          No execution target available. Connect the Closedloop desktop client
+          to get started.
         </p>
         <p className="text-muted-foreground text-sm">
           Open{" "}

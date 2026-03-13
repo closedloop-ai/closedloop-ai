@@ -1,12 +1,12 @@
+import type {
+  CustomFieldEnumOption,
+  CustomFieldWithOptions,
+} from "@repo/api/src/types/custom-field";
 import {
   CustomFieldEntityType,
   CustomFieldType,
   LabelPosition,
   NumberFormat,
-} from "@repo/api/src/types/custom-field";
-import type {
-  CustomFieldEnumOption,
-  CustomFieldWithOptions,
 } from "@repo/api/src/types/custom-field";
 import { withDb } from "@repo/database";
 

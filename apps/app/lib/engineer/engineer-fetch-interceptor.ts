@@ -1,6 +1,7 @@
 "use client";
 
 import { EngineerRoutingMode } from "@repo/api/src/types/relay";
+import { CLOUD_RELAY_ENABLED } from "./constants";
 import {
   ensureElectronDetection,
   getElectronDetectionSnapshot,
@@ -93,6 +94,7 @@ function createFetchInterceptor(
     const routingSelection = getEngineerRoutingSelection();
 
     if (
+      CLOUD_RELAY_ENABLED &&
       routingSelection.mode === EngineerRoutingMode.CloudRelay &&
       routingSelection.computeTargetId
     ) {

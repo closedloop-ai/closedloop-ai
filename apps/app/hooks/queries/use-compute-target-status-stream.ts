@@ -70,11 +70,14 @@ async function openStatusStream(
  * invalidates the compute-targets list query whenever a target's
  * online state changes. Uses fetch (not EventSource) for Bearer auth.
  */
-export function useComputeTargetStatusStream() {
+export function useComputeTargetStatusStream(enabled = true) {
   const { getToken } = useAuth();
   const queryClient = useQueryClient();
 
   useEffect(() => {
+    if (!enabled) {
+      return;
+    }
     let cancelled = false;
     let abortController: AbortController | null = null;
     let reconnectAttempts = 0;
@@ -143,5 +146,5 @@ export function useComputeTargetStatusStream() {
         abortController = null;
       }
     };
-  }, [getToken, queryClient]);
+  }, [enabled, getToken, queryClient]);
 }

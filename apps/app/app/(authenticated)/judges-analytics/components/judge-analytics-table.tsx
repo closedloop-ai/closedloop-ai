@@ -18,8 +18,8 @@ import {
 } from "@repo/design-system/components/ui/tooltip";
 import Link from "next/link";
 import { useMemo } from "react";
-import { formatScorePercent } from "@/lib/evaluation-utils";
 import { useSortParams } from "@/hooks/use-sort-params";
+import { formatScorePercent } from "@/lib/evaluation-utils";
 import type { SortConfig } from "@/lib/table-utils";
 import { sortTableData } from "@/lib/table-utils";
 

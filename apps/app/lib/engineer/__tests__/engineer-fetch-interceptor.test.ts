@@ -1,4 +1,5 @@
 import { EngineerRoutingMode } from "@repo/api/src/types/relay";
+import type { Mock } from "vitest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockEnsureElectronDetection = vi.fn();
@@ -15,6 +16,13 @@ vi.mock("@/lib/engineer/electron-detection", () => ({
 vi.mock("@/lib/engineer/routing-store", () => ({
   getEngineerRoutingSelection: (...args: unknown[]) =>
     mockGetEngineerRoutingSelection(...args),
+}));
+
+vi.mock("@/lib/engineer/constants", () => ({
+  CLOUD_RELAY_ENABLED: false,
+  DESKTOP_SETUP_URL: "https://closedloop.so/desktop",
+  VALID_PROVIDERS: new Set(["claude", "codex"]),
+  COMPUTE_TARGETS_QUERY_OPTIONS: { staleTime: 30_000, refetchInterval: 30_000 },
 }));
 
 import {
@@ -80,7 +88,7 @@ describe("engineer-fetch-interceptor", () => {
     uninstall();
   });
 
-  it("routes engineer requests to relay endpoint when cloud target is selected", async () => {
+  it("does NOT rewrite to relay endpoint when CLOUD_RELAY_ENABLED=false and cloud target is selected", async () => {
     const originalFetch = vi.fn().mockResolvedValue(new Response("ok"));
     Object.defineProperty(globalThis, "fetch", {
       configurable: true,
@@ -100,8 +108,10 @@ describe("engineer-fetch-interceptor", () => {
 
     const outboundRequest = originalFetch.mock.calls[0][0] as Request;
     const outboundUrl = new URL(outboundRequest.url);
-    expect(outboundUrl.pathname).toBe("/api/engineer-relay/git");
-    expect(outboundRequest.headers.get("x-compute-target")).toBe("target-1");
+    // With CLOUD_RELAY_ENABLED=false, the relay rewrite branch is skipped.
+    // The catch-all sends the request as-is via originalFetch.
+    expect(outboundUrl.pathname.startsWith("/api/engineer-relay/")).toBe(false);
+    expect(outboundRequest.headers.get("x-compute-target")).toBeNull();
 
     uninstall();
   });
@@ -222,7 +232,7 @@ describe("engineer-fetch-interceptor", () => {
     uninstall();
   });
 
-  it("preserves provider query param through cloud relay rewrite", async () => {
+  it("passes request as-is for CloudRelay mode when CLOUD_RELAY_ENABLED=false (no relay rewrite)", async () => {
     const originalFetch = vi.fn().mockResolvedValue(new Response("ok"));
     Object.defineProperty(globalThis, "fetch", {
       configurable: true,
@@ -244,11 +254,15 @@ describe("engineer-fetch-interceptor", () => {
 
     const outboundRequest = originalFetch.mock.calls[0][0] as Request;
     const outboundUrl = new URL(outboundRequest.url);
+    // With CLOUD_RELAY_ENABLED=false, no relay rewrite occurs — the catch-all
+    // sends the request as-is via originalFetch.
+    expect(outboundUrl.pathname.startsWith("/api/engineer-relay/")).toBe(false);
     expect(outboundUrl.pathname).toBe(
-      "/api/engineer-relay/symphony/chat-history/pr-42"
+      "/api/engineer/symphony/chat-history/pr-42"
     );
     expect(outboundUrl.searchParams.get("provider")).toBe("codex");
     expect(outboundUrl.searchParams.get("repo")).toBe("/tmp/repo");
+    expect(outboundRequest.headers.get("x-compute-target")).toBeNull();
 
     uninstall();
   });
@@ -296,6 +310,109 @@ describe("engineer-fetch-interceptor", () => {
     );
     expect(outboundRequest.headers.get("authorization")).toBeNull();
     expect(outboundRequest.headers.get("cookie")).toBeNull();
+
+    uninstall();
+  });
+});
+
+describe("engineer-fetch-interceptor (CLOUD_RELAY_ENABLED=true)", () => {
+  let installInterceptor: typeof installEngineerFetchInterceptor;
+  let resetInterceptor: typeof resetEngineerFetchInterceptorForTests;
+  let mockRoutingSelection: Mock;
+
+  beforeEach(async () => {
+    vi.resetModules();
+
+    mockRoutingSelection = vi.fn();
+
+    vi.doMock("@/lib/engineer/constants", () => ({
+      CLOUD_RELAY_ENABLED: true,
+      DESKTOP_SETUP_URL: "https://closedloop.so/desktop",
+      VALID_PROVIDERS: new Set(["claude", "codex"]),
+      COMPUTE_TARGETS_QUERY_OPTIONS: {
+        staleTime: 30_000,
+        refetchInterval: 30_000,
+      },
+    }));
+
+    vi.doMock("@/lib/engineer/routing-store", () => ({
+      getEngineerRoutingSelection: (...args: unknown[]) =>
+        mockRoutingSelection(...args),
+    }));
+
+    vi.doMock("@/lib/engineer/electron-detection", () => ({
+      ensureElectronDetection: vi.fn(),
+      getElectronDetectionSnapshot: vi.fn(),
+      invalidateElectronDetectionCache: vi.fn(),
+    }));
+
+    const mod = await import("@/lib/engineer/engineer-fetch-interceptor");
+    installInterceptor = mod.installEngineerFetchInterceptor;
+    resetInterceptor = mod.resetEngineerFetchInterceptorForTests;
+
+    resetInterceptor();
+  });
+
+  afterEach(() => {
+    resetInterceptor();
+    vi.resetModules();
+  });
+
+  it("rewrites engineer requests to relay endpoint when cloud target is selected", async () => {
+    const originalFetch = vi.fn().mockResolvedValue(new Response("ok"));
+    Object.defineProperty(globalThis, "fetch", {
+      configurable: true,
+      writable: true,
+      value: originalFetch,
+    });
+    mockRoutingSelection.mockReturnValue({
+      mode: EngineerRoutingMode.CloudRelay,
+      computeTargetId: "target-1",
+      source: "manual",
+      updatedAt: Date.now(),
+    });
+
+    const uninstall = installInterceptor();
+
+    await fetch("/api/engineer/git", { method: "POST" });
+
+    const outboundRequest = originalFetch.mock.calls[0][0] as Request;
+    const outboundUrl = new URL(outboundRequest.url);
+    expect(outboundUrl.pathname).toBe("/api/engineer-relay/git");
+    expect(outboundRequest.headers.get("x-compute-target")).toBe("target-1");
+
+    uninstall();
+  });
+
+  it("preserves query params through relay rewrite when CLOUD_RELAY_ENABLED=true", async () => {
+    const originalFetch = vi.fn().mockResolvedValue(new Response("ok"));
+    Object.defineProperty(globalThis, "fetch", {
+      configurable: true,
+      writable: true,
+      value: originalFetch,
+    });
+    mockRoutingSelection.mockReturnValue({
+      mode: EngineerRoutingMode.CloudRelay,
+      computeTargetId: "target-2",
+      source: "manual",
+      updatedAt: Date.now(),
+    });
+
+    const uninstall = installInterceptor();
+
+    await fetch(
+      "/api/engineer/symphony/chat-history/pr-10?repo=%2Ftmp%2Frepo&provider=codex",
+      { method: "DELETE" }
+    );
+
+    const outboundRequest = originalFetch.mock.calls[0][0] as Request;
+    const outboundUrl = new URL(outboundRequest.url);
+    expect(outboundUrl.pathname).toBe(
+      "/api/engineer-relay/symphony/chat-history/pr-10"
+    );
+    expect(outboundUrl.searchParams.get("provider")).toBe("codex");
+    expect(outboundUrl.searchParams.get("repo")).toBe("/tmp/repo");
+    expect(outboundRequest.headers.get("x-compute-target")).toBe("target-2");
 
     uninstall();
   });

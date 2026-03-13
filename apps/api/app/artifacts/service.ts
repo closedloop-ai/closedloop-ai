@@ -1693,10 +1693,7 @@ Please try again or contact support if the issue persists.`
     );
 
     // Group by artifactId, keep only the latest evaluation per artifact
-    const latestByArtifact = new Map<
-      string,
-      (typeof evaluations)[number]
-    >();
+    const latestByArtifact = new Map<string, (typeof evaluations)[number]>();
     for (const evaluation of evaluations) {
       if (!latestByArtifact.has(evaluation.artifactId)) {
         latestByArtifact.set(evaluation.artifactId, evaluation);

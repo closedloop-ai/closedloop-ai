@@ -15,13 +15,13 @@ import {
   XCircle,
 } from "lucide-react";
 import { useState } from "react";
-import { formatScorePercent } from "@/lib/evaluation-utils";
 import {
   type CaseScore,
   EvalStatus,
   type EvaluationReport,
   symphonyJudgesOptions,
 } from "@/lib/engineer/queries/symphony";
+import { formatScorePercent } from "@/lib/evaluation-utils";
 
 type JudgesViewerProps = {
   /** Ticket ID for fetching judges data */
@@ -353,7 +353,9 @@ function CaseScoreRow({
           </span>
         </div>
         <span className="text-muted-foreground text-xs">
-          {getScore(score) !== null ? formatScorePercent(getScore(score)!) : "N/A"}
+          {getScore(score) !== null
+            ? formatScorePercent(getScore(score)!)
+            : "N/A"}
         </span>
       </button>
       {isExpanded && (
@@ -383,7 +385,10 @@ function CaseScoreRow({
                       {metric.metric_name}
                     </span>
                     <span className="text-sm">
-                      Score: {metric.score != null ? formatScorePercent(metric.score) : "N/A"}
+                      Score:{" "}
+                      {metric.score != null
+                        ? formatScorePercent(metric.score)
+                        : "N/A"}
                     </span>
                   </div>
                   {metric.threshold !== null && (
