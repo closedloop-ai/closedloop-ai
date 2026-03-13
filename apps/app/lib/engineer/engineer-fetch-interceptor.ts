@@ -21,14 +21,9 @@ type InterceptorWindow = Window & {
 
 const ENGINEER_PREFIX = "/api/engineer/";
 const ENGINEER_RELAY_PREFIX = "/api/engineer-relay/";
-const LOCAL_GATEWAY_CHALLENGE_PATH = "/api/engineer/local-gateway/challenge";
 
 function isEngineerRequest(url: URL): boolean {
   return url.pathname.startsWith(ENGINEER_PREFIX);
-}
-
-function isLocalGatewayChallengeRequest(url: URL): boolean {
-  return url.pathname === LOCAL_GATEWAY_CHALLENGE_PATH;
 }
 
 function stripAuthHeaders(headers: Headers): Headers {
@@ -107,10 +102,7 @@ function createFetchInterceptor(
             );
     const requestUrl = new URL(request.url, globalThis.location.origin);
 
-    if (
-      !isEngineerRequest(requestUrl) ||
-      isLocalGatewayChallengeRequest(requestUrl)
-    ) {
+    if (!isEngineerRequest(requestUrl)) {
       return originalFetch(request);
     }
 

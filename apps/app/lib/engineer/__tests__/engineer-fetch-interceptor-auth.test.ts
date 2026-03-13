@@ -145,31 +145,6 @@ describe("engineer-fetch-interceptor – auth integration", () => {
     uninstall();
   });
 
-  it("bypasses interception for the local-gateway challenge route", async () => {
-    const originalFetch = vi.fn().mockResolvedValue(new Response("ok"));
-    Object.defineProperty(globalThis, "fetch", {
-      configurable: true,
-      writable: true,
-      value: originalFetch,
-    });
-
-    const uninstall = installEngineerFetchInterceptor();
-    await fetch("/api/engineer/local-gateway/challenge", {
-      method: "POST",
-      body: JSON.stringify({ origin: "http://localhost:3000" }),
-    });
-
-    expect(mockEnsureLocalGatewaySession).not.toHaveBeenCalled();
-    expect(originalFetch).toHaveBeenCalledTimes(1);
-
-    const outgoing = originalFetch.mock.calls[0][0] as Request;
-    expect(new URL(outgoing.url).pathname).toBe(
-      "/api/engineer/local-gateway/challenge"
-    );
-
-    uninstall();
-  });
-
   it("does not attach x-desktop-session-token when session is unavailable (null)", async () => {
     mockEnsureLocalGatewaySession.mockResolvedValue(null);
 

@@ -34,7 +34,7 @@ export type AuthContext = {
 };
 
 export type AuthenticatedJsonResponse<TResponse> = NextResponse<
-  TResponse | ApiResult<TResponse>
+  ApiResult<TResponse>
 >;
 
 /**

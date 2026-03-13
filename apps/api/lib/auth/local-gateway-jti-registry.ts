@@ -38,6 +38,6 @@ export async function consumeJti(jti: string): Promise<boolean> {
 }
 
 /** For tests only. */
-export async function resetLocalGatewayJtiStoreForTests(): Promise<void> {
+export async function resetLocalGatewayJtiRegistryForTests(): Promise<void> {
   await withDb((db) => db.localGatewayChallengeJti.deleteMany());
 }

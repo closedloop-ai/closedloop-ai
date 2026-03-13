@@ -19,7 +19,7 @@ vi.mock("@/lib/auth/with-auth", () => ({
     handler(mockAuthContext, request, context?.params),
 }));
 
-vi.mock("@/lib/auth/local-gateway-jti-store", () => ({
+vi.mock("@/lib/auth/local-gateway-jti-registry", () => ({
   registerJti: (...args: unknown[]) => mockRegisterJti(...args),
 }));
 
@@ -68,8 +68,11 @@ describe("POST /compute-targets/local-auth/challenge", () => {
 
     const json = await response.json();
     expect(json).toEqual({
-      challengeToken: "challenge-jwt",
-      expiresAt: "2026-03-13T12:00:00.000Z",
+      success: true,
+      data: {
+        challengeToken: "challenge-jwt",
+        expiresAt: "2026-03-13T12:00:00.000Z",
+      },
     });
     expect(response.headers.get("cache-control")).toBe("no-store");
   });

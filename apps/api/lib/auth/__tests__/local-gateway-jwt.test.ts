@@ -1,12 +1,23 @@
 import { SignJWT } from "jose";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-  isLocalGatewayJwtConfigured,
-  issueLocalGatewayChallenge,
-  verifyLocalGatewayChallenge,
-} from "../local-gateway-jwt";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { LocalGatewayChallengeClaims } from "../local-gateway-jwt";
 
 const VALID_SECRET = "test-secret-with-minimum-32-chars-xyz";
+const VALID_CLAIMS: LocalGatewayChallengeClaims = {
+  userId: "user-1",
+  orgId: "org-1",
+  origin: "http://localhost:3000",
+};
+
+function loadModule(secret?: string) {
+  vi.resetModules();
+  if (typeof secret === "string") {
+    process.env.LOCAL_GATEWAY_JWT_SECRET = secret;
+  } else {
+    process.env.LOCAL_GATEWAY_JWT_SECRET = undefined;
+  }
+  return import("../local-gateway-jwt");
+}
 
 describe("local-gateway-jwt", () => {
   beforeEach(() => {
@@ -19,6 +30,7 @@ describe("local-gateway-jwt", () => {
 
   describe("issueLocalGatewayChallenge", () => {
     it("returns a jwt, jti, and a future expiresAt", async () => {
+      const { issueLocalGatewayChallenge } = await loadModule(VALID_SECRET);
       const before = new Date();
       const result = await issueLocalGatewayChallenge({
         userId: "user-1",
@@ -35,11 +47,8 @@ describe("local-gateway-jwt", () => {
     });
 
     it("issues a unique jti on each call", async () => {
-      const claims = {
-        userId: "user-1",
-        orgId: "org-1",
-        origin: "http://localhost:3000",
-      };
+      const { issueLocalGatewayChallenge } = await loadModule(VALID_SECRET);
+      const claims = VALID_CLAIMS;
       const a = await issueLocalGatewayChallenge(claims);
       const b = await issueLocalGatewayChallenge(claims);
 
@@ -49,6 +58,8 @@ describe("local-gateway-jwt", () => {
 
   describe("verifyLocalGatewayChallenge", () => {
     it("verifies a valid jwt and returns correct claims", async () => {
+      const { issueLocalGatewayChallenge, verifyLocalGatewayChallenge } =
+        await loadModule(VALID_SECRET);
       const issued = await issueLocalGatewayChallenge({
         userId: "user-42",
         orgId: "org-99",
@@ -65,19 +76,18 @@ describe("local-gateway-jwt", () => {
     });
 
     it("rejects a jwt signed with a different secret", async () => {
-      const issued = await issueLocalGatewayChallenge({
-        userId: "user-1",
-        orgId: "org-1",
-        origin: "http://localhost:3000",
-      });
+      const { issueLocalGatewayChallenge } = await loadModule(VALID_SECRET);
+      const issued = await issueLocalGatewayChallenge(VALID_CLAIMS);
 
-      process.env.LOCAL_GATEWAY_JWT_SECRET =
-        "different-secret-with-32-chars-abcde";
+      const { verifyLocalGatewayChallenge } = await loadModule(
+        "different-secret-with-32-chars-abcde"
+      );
 
       await expect(verifyLocalGatewayChallenge(issued.jwt)).rejects.toThrow();
     });
 
     it("rejects an expired jwt", async () => {
+      const { verifyLocalGatewayChallenge } = await loadModule(VALID_SECRET);
       // Build a token with exp in the past using jose directly
       const secret = new TextEncoder().encode(VALID_SECRET);
       const expiredJwt = await new SignJWT({
@@ -97,10 +107,12 @@ describe("local-gateway-jwt", () => {
     });
 
     it("rejects a structurally invalid token string", async () => {
+      const { verifyLocalGatewayChallenge } = await loadModule(VALID_SECRET);
       await expect(verifyLocalGatewayChallenge("not.a.jwt")).rejects.toThrow();
     });
 
     it("rejects tokens signed with a different algorithm", async () => {
+      const { verifyLocalGatewayChallenge } = await loadModule(VALID_SECRET);
       const secret = new TextEncoder().encode(VALID_SECRET);
       const hs512Jwt = await new SignJWT({
         orgId: "org-1",
@@ -121,25 +133,29 @@ describe("local-gateway-jwt", () => {
 
   describe("isLocalGatewayJwtConfigured", () => {
     it("returns true when secret is a valid 32+ char string with diverse characters", () => {
-      process.env.LOCAL_GATEWAY_JWT_SECRET = VALID_SECRET;
-      expect(isLocalGatewayJwtConfigured()).toBe(true);
+      return loadModule(VALID_SECRET).then(
+        ({ isLocalGatewayJwtConfigured }) => {
+          expect(isLocalGatewayJwtConfigured()).toBe(true);
+        }
+      );
     });
 
     it("returns false when secret is not set", () => {
-      process.env.LOCAL_GATEWAY_JWT_SECRET = undefined;
-      expect(isLocalGatewayJwtConfigured()).toBe(false);
+      return loadModule(undefined).then(({ isLocalGatewayJwtConfigured }) => {
+        expect(isLocalGatewayJwtConfigured()).toBe(false);
+      });
     });
 
-    it("returns false when secret is shorter than 32 characters", () => {
-      process.env.LOCAL_GATEWAY_JWT_SECRET = "short-secret";
-      expect(isLocalGatewayJwtConfigured()).toBe(false);
+    it("rejects an invalid short secret at env validation time", async () => {
+      await expect(loadModule("short-secret")).rejects.toThrow(
+        "Invalid environment variables"
+      );
     });
 
-    it("returns false when secret lacks character diversity (< 8 unique chars)", () => {
-      // 32 chars but only 3 unique characters
-      process.env.LOCAL_GATEWAY_JWT_SECRET =
-        "aaaaaaaabbbbbbbbccccccccaaaaaaaab";
-      expect(isLocalGatewayJwtConfigured()).toBe(false);
+    it("rejects a weak secret at env validation time", async () => {
+      await expect(
+        loadModule("aaaaaaaabbbbbbbbccccccccaaaaaaaab")
+      ).rejects.toThrow("Invalid environment variables");
     });
   });
 });

@@ -1,9 +1,9 @@
 import "server-only";
 
-import { failure } from "@repo/api/src/types/common";
+import { failure, success } from "@repo/api/src/types/common";
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { registerJti } from "@/lib/auth/local-gateway-jti-store";
+import { registerJti } from "@/lib/auth/local-gateway-jti-registry";
 import {
   isLocalGatewayJwtConfigured,
   issueLocalGatewayChallenge,
@@ -61,7 +61,10 @@ export const POST = withAuth<
   await registerJti(jti, expiresAt);
 
   return NextResponse.json(
-    { challengeToken: jwt, expiresAt: expiresAt.toISOString() },
+    success({
+      challengeToken: jwt,
+      expiresAt: expiresAt.toISOString(),
+    }),
     { headers: NO_STORE_HEADERS }
   );
 });

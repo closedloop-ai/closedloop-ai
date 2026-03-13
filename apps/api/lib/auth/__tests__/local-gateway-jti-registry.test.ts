@@ -26,10 +26,10 @@ vi.mock("@repo/database", () => ({
 import {
   consumeJti,
   registerJti,
-  resetLocalGatewayJtiStoreForTests,
-} from "../local-gateway-jti-store";
+  resetLocalGatewayJtiRegistryForTests,
+} from "../local-gateway-jti-registry";
 
-describe("local-gateway-jti-store", () => {
+describe("local-gateway-jti-registry", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.mockDeleteMany.mockResolvedValue({ count: 0 });
@@ -55,7 +55,7 @@ describe("local-gateway-jti-store", () => {
   });
 
   it("clears all JTIs in the test reset helper", async () => {
-    await resetLocalGatewayJtiStoreForTests();
+    await resetLocalGatewayJtiRegistryForTests();
 
     expect(mocks.withDb).toHaveBeenCalledTimes(1);
     expect(mocks.mockDeleteMany).toHaveBeenCalledWith();

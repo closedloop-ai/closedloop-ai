@@ -1,11 +1,11 @@
 import "server-only";
 
-import { failure } from "@repo/api/src/types/common";
+import { failure, success } from "@repo/api/src/types/common";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { consumeJti } from "@/lib/auth/local-gateway-jti-store";
+import { consumeJti } from "@/lib/auth/local-gateway-jti-registry";
 import {
   isLocalGatewayJwtConfigured,
   verifyLocalGatewayChallenge,
@@ -110,9 +110,11 @@ export const POST = withApiKeyAuth<
     userAgent,
   });
 
-  return NextResponse.json({
-    ok: true as const,
-    sessionTtlSeconds: SESSION_TTL_SECONDS,
-    challengeExpiresAt: claims.expiresAt,
-  });
+  return NextResponse.json(
+    success({
+      ok: true as const,
+      sessionTtlSeconds: SESSION_TTL_SECONDS,
+      challengeExpiresAt: claims.expiresAt,
+    })
+  );
 });

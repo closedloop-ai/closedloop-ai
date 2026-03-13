@@ -1,5 +1,8 @@
 "use client";
 
+import type { ApiResult } from "@repo/api/src/types/common";
+import { resolveApiOrigin } from "@/lib/api-origin";
+
 type SessionState = {
   token: string;
   expiresAt: number;
@@ -17,6 +20,7 @@ let inflightExchange: InflightExchange | null = null;
 export type ExchangeError = { message: string; statusCode: number };
 let lastExchangeError: ExchangeError | null = null;
 let latestExchangeAttemptId = 0;
+let authTokenProvider: (() => Promise<string | null>) | null = null;
 
 function isSessionValid(session: SessionState | null, port: number): boolean {
   if (!session) {
@@ -46,6 +50,12 @@ export function getLastExchangeError(): ExchangeError | null {
   return lastExchangeError;
 }
 
+export function setLocalGatewayAuthTokenProvider(
+  provider: (() => Promise<string | null>) | null
+): void {
+  authTokenProvider = provider;
+}
+
 function setLastExchangeError(
   exchangeError: ExchangeError | null,
   attemptId: number
@@ -72,7 +82,7 @@ async function readResponseError(
 }
 
 /**
- * Fetch a challenge from the app server, exchange it with the local gateway,
+ * Fetch a challenge from the API server, exchange it with the local gateway,
  * and return a session token. Returns null if the flow fails.
  */
 async function performExchange(
@@ -80,17 +90,32 @@ async function performExchange(
   attemptId: number
 ): Promise<SessionState | null> {
   const origin = globalThis.location.origin;
+  const authToken = authTokenProvider ? await authTokenProvider() : null;
 
-  // Step 1: Obtain a challenge token from the app server
+  if (!authToken) {
+    setLastExchangeError(
+      { message: "Unauthorized", statusCode: 401 },
+      attemptId
+    );
+    return null;
+  }
+
+  // Step 1: Obtain a challenge token from the API server
   let challengeToken: string;
   let challengeResponse: Response;
   try {
-    challengeResponse = await fetch("/api/engineer/local-gateway/challenge", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ origin }),
-      credentials: "include",
-    });
+    challengeResponse = await fetch(
+      `${resolveApiOrigin()}/compute-targets/local-auth/challenge`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({ origin }),
+        cache: "no-store",
+      }
+    );
   } catch {
     setLastExchangeError(null, attemptId);
     return null;
@@ -108,14 +133,30 @@ async function performExchange(
   }
 
   try {
-    const challengeData = (await challengeResponse.json()) as {
+    const challengeData = (await challengeResponse.json()) as ApiResult<{
       challengeToken?: string;
-      data?: { challengeToken?: string };
-    };
-    challengeToken =
-      challengeData.challengeToken ?? challengeData.data?.challengeToken ?? "";
-    if (!challengeToken) {
-      setLastExchangeError(null, attemptId);
+      expiresAt?: string;
+    }>;
+    if (!challengeData.success) {
+      setLastExchangeError(
+        {
+          message: challengeData.error,
+          statusCode: challengeResponse.status || 502,
+        },
+        attemptId
+      );
+      return null;
+    }
+
+    challengeToken = challengeData.data.challengeToken ?? "";
+    if (!challengeToken || typeof challengeData.data.expiresAt !== "string") {
+      setLastExchangeError(
+        {
+          message: "Failed to obtain challenge token",
+          statusCode: 502,
+        },
+        attemptId
+      );
       return null;
     }
   } catch {
@@ -214,14 +255,15 @@ export async function ensureLocalGatewaySession(
   const attemptId = latestExchangeAttemptId + 1;
   latestExchangeAttemptId = attemptId;
   const promise = performExchange(port, attemptId);
+  const inflightPromise = promise.finally(() => {
+    if (inflightExchange?.attemptId === attemptId) {
+      inflightExchange = null;
+    }
+  });
   inflightExchange = {
     port,
     attemptId,
-    promise: promise.finally(() => {
-      if (inflightExchange?.promise === promise) {
-        inflightExchange = null;
-      }
-    }),
+    promise: inflightPromise,
   };
 
   const result = await inflightExchange.promise;
@@ -238,4 +280,5 @@ export function resetLocalGatewaySessionForTests(): void {
   inflightExchange = null;
   lastExchangeError = null;
   latestExchangeAttemptId = 0;
+  authTokenProvider = null;
 }

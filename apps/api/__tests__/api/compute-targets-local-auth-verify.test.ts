@@ -24,7 +24,7 @@ vi.mock("@/lib/auth/with-api-key-auth", () => ({
     handler(mockAuthContext, request, context?.params),
 }));
 
-vi.mock("@/lib/auth/local-gateway-jti-store", () => ({
+vi.mock("@/lib/auth/local-gateway-jti-registry", () => ({
   consumeJti: (...args: unknown[]) => mockConsumeJti(...args),
 }));
 
@@ -43,7 +43,7 @@ describe("POST /compute-targets/local-auth/verify", () => {
     mockConsumeJti.mockReturnValue(true);
   });
 
-  it("returns the raw verify contract payload on success", async () => {
+  it("returns the ApiResult verify payload on success", async () => {
     mockVerifyLocalGatewayChallenge.mockResolvedValue({
       jti: "jti-123",
       userId: mockAuthContext.user.id,
@@ -67,9 +67,12 @@ describe("POST /compute-targets/local-auth/verify", () => {
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
-      ok: true,
-      sessionTtlSeconds: 600,
-      challengeExpiresAt: "2026-03-13T12:00:00.000Z",
+      success: true,
+      data: {
+        ok: true,
+        sessionTtlSeconds: 600,
+        challengeExpiresAt: "2026-03-13T12:00:00.000Z",
+      },
     });
   });
 

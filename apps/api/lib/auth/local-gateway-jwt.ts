@@ -1,25 +1,29 @@
 import { randomUUID } from "node:crypto";
 import { jwtVerify, SignJWT } from "jose";
+import { env } from "@/env";
+import {
+  hasStrongLocalGatewayJwtSecret,
+  LOCAL_GATEWAY_CHALLENGE_TTL_SECONDS,
+  LOCAL_GATEWAY_JWT_MIN_SECRET_LENGTH,
+  LOCAL_GATEWAY_JWT_MIN_UNIQUE_SECRET_CHARS,
+} from "./local-gateway-jwt-config";
 
 const AUDIENCE = "desktop-local-gateway";
 const ISSUER = "closedloop-api";
-const MIN_SECRET_LENGTH = 32;
-const MIN_UNIQUE_SECRET_CHARS = 8;
-export const LOCAL_GATEWAY_CHALLENGE_TTL_SECONDS = 60;
 
 function getSecret(): Uint8Array {
-  const secret = process.env.LOCAL_GATEWAY_JWT_SECRET;
+  const secret = env.LOCAL_GATEWAY_JWT_SECRET;
   if (!secret) {
     throw new Error("LOCAL_GATEWAY_JWT_SECRET is not configured");
   }
-  if (secret.length < MIN_SECRET_LENGTH) {
+  if (secret.length < LOCAL_GATEWAY_JWT_MIN_SECRET_LENGTH) {
     throw new Error(
-      `LOCAL_GATEWAY_JWT_SECRET must be at least ${MIN_SECRET_LENGTH} characters`
+      `LOCAL_GATEWAY_JWT_SECRET must be at least ${LOCAL_GATEWAY_JWT_MIN_SECRET_LENGTH} characters`
     );
   }
-  if (new Set(secret).size < MIN_UNIQUE_SECRET_CHARS) {
+  if (!hasStrongLocalGatewayJwtSecret(secret)) {
     throw new Error(
-      "LOCAL_GATEWAY_JWT_SECRET is too weak (not enough character diversity)"
+      `LOCAL_GATEWAY_JWT_SECRET must include at least ${LOCAL_GATEWAY_JWT_MIN_UNIQUE_SECRET_CHARS} unique characters`
     );
   }
   return new TextEncoder().encode(secret);
@@ -102,10 +106,8 @@ export async function verifyLocalGatewayChallenge(
 }
 
 export function isLocalGatewayJwtConfigured(): boolean {
-  const secret = process.env.LOCAL_GATEWAY_JWT_SECRET;
   return (
-    !!secret &&
-    secret.length >= MIN_SECRET_LENGTH &&
-    new Set(secret).size >= MIN_UNIQUE_SECRET_CHARS
+    typeof env.LOCAL_GATEWAY_JWT_SECRET === "string" &&
+    hasStrongLocalGatewayJwtSecret(env.LOCAL_GATEWAY_JWT_SECRET)
   );
 }

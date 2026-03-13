@@ -10,6 +10,11 @@ import { keys as observability } from "@repo/observability/keys";
 import { keys as payments } from "@repo/payments/keys";
 import { createEnv } from "@t3-oss/env-nextjs";
 import { z } from "zod";
+import {
+  hasStrongLocalGatewayJwtSecret,
+  LOCAL_GATEWAY_JWT_MIN_SECRET_LENGTH,
+  LOCAL_GATEWAY_JWT_MIN_UNIQUE_SECRET_CHARS,
+} from "@/lib/auth/local-gateway-jwt-config";
 
 // Note: @repo/github and @repo/aws keys are validated at runtime (not build time)
 // because they're optional integrations. See isGitHubConfigured() / isS3Configured().
@@ -30,12 +35,20 @@ export const env = createEnv({
   ],
   server: {
     INTERNAL_API_SECRET: z.string().min(1),
+    LOCAL_GATEWAY_JWT_SECRET: z
+      .string()
+      .min(LOCAL_GATEWAY_JWT_MIN_SECRET_LENGTH)
+      .refine(hasStrongLocalGatewayJwtSecret, {
+        message: `LOCAL_GATEWAY_JWT_SECRET must include at least ${LOCAL_GATEWAY_JWT_MIN_UNIQUE_SECRET_CHARS} unique characters`,
+      })
+      .optional(),
     RELAY_API_URL: z.url().optional(),
     SLACK_SIGNING_SECRET: z.string().optional(),
   },
   client: {},
   runtimeEnv: {
     INTERNAL_API_SECRET: process.env.INTERNAL_API_SECRET,
+    LOCAL_GATEWAY_JWT_SECRET: process.env.LOCAL_GATEWAY_JWT_SECRET,
     RELAY_API_URL: process.env.RELAY_API_URL,
     SLACK_SIGNING_SECRET: process.env.SLACK_SIGNING_SECRET,
   },
