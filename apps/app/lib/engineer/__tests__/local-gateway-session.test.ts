@@ -7,6 +7,10 @@ import {
   setLocalGatewayAuthTokenProvider,
 } from "../local-gateway-session";
 
+vi.mock("@/lib/api-origin", () => ({
+  resolveApiOrigin: () => "http://localhost:3002",
+}));
+
 const PORT = 19_432;
 const CHALLENGE_URL =
   "http://localhost:3002/compute-targets/local-auth/challenge";
