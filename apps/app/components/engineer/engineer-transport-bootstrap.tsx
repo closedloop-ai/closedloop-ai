@@ -41,12 +41,11 @@ export function EngineerTransportBootstrap() {
     if (detection.detected) {
       // Match the local electron's machine name to a registered compute target
       // so loop dispatch has the compute target ID it needs.
-      const localTarget = targets?.find(
-        (t) =>
-          t.isOnline &&
-          detection.machineName &&
-          t.machineName === detection.machineName
-      );
+      // Match by machine name. Don't require isOnline here — the API
+      // validates online status before dispatch and the socket may reconnect.
+      const localTarget = detection.machineName
+        ? targets?.find((t) => t.machineName === detection.machineName)
+        : undefined;
       setEngineerRoutingAutoSelection(
         EngineerRoutingMode.LocalElectron,
         localTarget?.id ?? null,

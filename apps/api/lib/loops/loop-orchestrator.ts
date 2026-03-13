@@ -319,15 +319,17 @@ async function recordScrubFailureWarning(
  */
 async function resolveLoopLaunchContext(
   loop: NonNullable<Awaited<ReturnType<typeof loopsService.findById>>>,
-  organizationId: string
+  organizationId: string,
+  options?: { skipSecrets?: boolean }
 ) {
-  const anthropicApiKey = await resolveAnthropicApiKey(
-    loop.userId,
-    organizationId
-  );
+  // Desktop loops don't need server-side secrets — the electron has its own
+  // Anthropic API key and gh CLI auth locally.
+  const anthropicApiKey = options?.skipSecrets
+    ? undefined
+    : await resolveAnthropicApiKey(loop.userId, organizationId);
 
   let githubToken: string | undefined;
-  if (loop.repo?.fullName) {
+  if (!options?.skipSecrets && loop.repo?.fullName) {
     githubToken = await resolveGitHubToken(organizationId, loop.repo.fullName);
   }
 
@@ -398,7 +400,9 @@ async function launchLoopDesktop(
 ): Promise<string> {
   let commandId: string | undefined;
   try {
-    const ctx = await resolveLoopLaunchContext(loop, organizationId);
+    const ctx = await resolveLoopLaunchContext(loop, organizationId, {
+      skipSecrets: true,
+    });
 
     // Build context pack in memory (no S3 upload)
     const contextPack = await buildContextPackInMemory(

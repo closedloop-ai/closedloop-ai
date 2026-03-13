@@ -214,7 +214,7 @@ function truncateForSummary(content: string, maxLength = 2000): string {
 export async function buildContextPackInMemory(
   loop: LoopForContextPack,
   organizationId: string,
-  secrets?: { anthropicApiKey: string; githubToken?: string },
+  secrets?: { anthropicApiKey?: string; githubToken?: string },
   committer?: { name: string; email: string }
 ): Promise<ContextPack> {
   const [primaryArtifacts, refArtifacts, priorLoopSummaries] =
@@ -254,7 +254,7 @@ export async function buildContextPack(
   loop: LoopForContextPack,
   organizationId: string,
   stateKeyPrefix: string,
-  secrets?: { anthropicApiKey: string; githubToken?: string },
+  secrets?: { anthropicApiKey?: string; githubToken?: string },
   committer?: { name: string; email: string }
 ): Promise<string> {
   const contextPack = await buildContextPackInMemory(

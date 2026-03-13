@@ -107,7 +107,7 @@ export type ContextPack = {
     email: string;
   };
   secrets?: {
-    anthropicApiKey: string;
+    anthropicApiKey?: string;
     githubToken?: string;
   };
 };
