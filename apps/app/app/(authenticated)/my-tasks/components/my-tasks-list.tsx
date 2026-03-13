@@ -2,7 +2,6 @@
 
 import type { CustomFieldValueDetail } from "@repo/api/src/types/custom-field";
 import type { IssueWithWorkstream } from "@repo/api/src/types/issue";
-import { IssueStatus } from "@repo/api/src/types/issue";
 import { isDisplayableSlug } from "@repo/api/src/types/slug";
 import { Badge } from "@repo/design-system/components/ui/badge";
 import {
@@ -37,47 +36,27 @@ import { useDeleteIssue, useIssues } from "@/hooks/queries/use-issues";
 import { useDeleteConfirmation } from "@/hooks/use-delete-confirmation";
 import { deriveCustomFieldColumns } from "@/lib/custom-field-utils";
 import { ISSUE_STATUS_TO_ICON } from "@/lib/project-constants";
-
-const DISPLAY_GROUPS: {
-  key: string;
-  label: string;
-  statuses: IssueStatus[];
-}[] = [
-  {
-    key: "in_progress",
-    label: "In Progress",
-    statuses: [IssueStatus.NotStarted, IssueStatus.InProgress],
-  },
-  {
-    key: "in_review",
-    label: "In Review",
-    statuses: [IssueStatus.InReview],
-  },
-  {
-    key: "completed",
-    label: "Completed",
-    statuses: [IssueStatus.Completed],
-  },
-  {
-    key: "obsolete",
-    label: "Obsolete",
-    statuses: [IssueStatus.Obsolete],
-  },
-];
+import type { MyTasksIssueFilters } from "../types";
+import { buildIssueListParams, DISPLAY_GROUPS } from "../utils";
 
 type MyTasksListProps = {
   assigneeId: string | null;
   isUserLoading: boolean;
+  issueFilters?: MyTasksIssueFilters;
 };
 
 export function MyTasksList({
   assigneeId,
   isUserLoading,
+  issueFilters,
 }: Readonly<MyTasksListProps>) {
-  const { data: issues = [], isLoading } = useIssues(
-    { assigneeId: assigneeId ?? undefined },
-    { enabled: !!assigneeId && !isUserLoading }
+  const listParams = useMemo(
+    () => buildIssueListParams(assigneeId, issueFilters),
+    [assigneeId, issueFilters]
   );
+  const { data: issues = [], isLoading } = useIssues(listParams, {
+    enabled: !!assigneeId && !isUserLoading,
+  });
   const deleteIssueMutation = useDeleteIssue();
 
   const customFieldColumns = useMemo(

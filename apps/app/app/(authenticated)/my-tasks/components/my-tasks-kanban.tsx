@@ -31,55 +31,33 @@ import {
   useUpdateIssue,
 } from "@/hooks/queries/use-issues";
 import { ISSUE_STATUS_TO_ICON } from "@/lib/project-constants";
+import type { MyTasksIssueFilters } from "../types";
+import { buildIssueListParams, DISPLAY_GROUPS } from "../utils";
 
 /** Map column (droppable) id to the status to set when an issue is dropped there */
 const COLUMN_TO_STATUS: Record<string, IssueStatus> = {
+  not_started: IssueStatus.NotStarted,
   in_progress: IssueStatus.InProgress,
   in_review: IssueStatus.InReview,
   completed: IssueStatus.Completed,
   obsolete: IssueStatus.Obsolete,
 };
 
-const DISPLAY_GROUPS: {
-  key: string;
-  label: string;
-  statuses: IssueStatus[];
-}[] = [
-  {
-    key: "in_progress",
-    label: "In progress",
-    statuses: [IssueStatus.NotStarted, IssueStatus.InProgress],
-  },
-  {
-    key: "in_review",
-    label: "In review",
-    statuses: [IssueStatus.InReview],
-  },
-  {
-    key: "completed",
-    label: "Completed",
-    statuses: [IssueStatus.Completed],
-  },
-  {
-    key: "obsolete",
-    label: "Obsolete",
-    statuses: [IssueStatus.Obsolete],
-  },
-];
-
 type MyTasksKanbanProps = {
   assigneeId: string | null;
   isUserLoading: boolean;
+  issueFilters?: MyTasksIssueFilters;
 };
 
 export function MyTasksKanban({
   assigneeId,
   isUserLoading,
+  issueFilters,
 }: Readonly<MyTasksKanbanProps>) {
   const queryClient = useQueryClient();
   const listFilters = useMemo(
-    () => ({ assigneeId: assigneeId ?? undefined }),
-    [assigneeId]
+    () => buildIssueListParams(assigneeId, issueFilters),
+    [assigneeId, issueFilters]
   );
   const { data: issues = [], isLoading } = useIssues(listFilters, {
     enabled: !!assigneeId && !isUserLoading,
@@ -195,7 +173,7 @@ export function MyTasksKanban({
       onDragStart={handleDragStart}
       sensors={sensors}
     >
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-4">
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-5">
         {DISPLAY_GROUPS.map((group) => {
           const items = grouped.get(group.key) ?? [];
           return (
