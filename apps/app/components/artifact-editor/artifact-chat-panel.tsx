@@ -13,7 +13,7 @@ const MAX_WIDTH = 560;
 const DEFAULT_WIDTH = 320;
 
 function getStoredWidth(): number {
-  if (typeof globalThis.localStorage === "undefined") {
+  if (globalThis.window === undefined) {
     return DEFAULT_WIDTH;
   }
   try {

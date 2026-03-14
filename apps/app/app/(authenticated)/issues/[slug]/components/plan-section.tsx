@@ -76,17 +76,26 @@ export function PlanSection({
     generationStatus?.command === "plan" &&
     isActiveGenerationStatus(generationStatus.status);
 
+  let progressBadgeLabel = "Need description";
+  if (isGeneratingPlan) {
+    progressBadgeLabel = "Generating…";
+  } else if (isReady) {
+    progressBadgeLabel = "Ready";
+  }
+
   return (
     <>
       <div className="bg-background">
         <SectionHeader title="Plan">
-          <Badge
-            className="gap-1.5 border border-[var(--progress-badge-border)] bg-[var(--progress-badge-bg)] px-2.5 py-1 text-[var(--progress-badge-text)]"
-            variant="secondary"
-          >
-            <BotIcon className="size-3.5" />
-            <span>Ready</span>
-          </Badge>
+          {hasPlan || isLoadingPlan ? null : (
+            <Badge
+              className="gap-1.5 border border-[var(--progress-badge-border)] bg-[var(--progress-badge-bg)] px-2.5 py-1 text-[var(--progress-badge-text)]"
+              variant="secondary"
+            >
+              <BotIcon className="size-3.5" />
+              <span>{progressBadgeLabel}</span>
+            </Badge>
+          )}
         </SectionHeader>
         {hasPlan ? (
           <PlanRow

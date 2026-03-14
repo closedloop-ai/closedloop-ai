@@ -51,7 +51,7 @@
   --thinking: oklch(0.547 0.245 275);
   --symphony-violet: oklch(0.61 0.256 285.5);
 
-  /* Progress badge (agent status pill): fill, stroke, text */
+  /* Progress badge (agent status pill): fill, stroke, text. Same in dark (cascade from :root). */
   --progress-badge-bg: #f4defc;
   --progress-badge-border: #b583ea;
   --progress-badge-text: #701a84;
@@ -102,9 +102,6 @@
   --progress-foreground: oklch(0.63 0.245 275);
   --thinking: oklch(0.63 0.245 275);
   --symphony-violet: oklch(0.61 0.256 285.5);
-  --progress-badge-bg: #f4defc;
-  --progress-badge-border: #b583ea;
-  --progress-badge-text: #701a84;
 }
 
 @theme inline {

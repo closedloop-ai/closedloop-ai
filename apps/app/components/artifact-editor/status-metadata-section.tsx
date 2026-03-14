@@ -96,6 +96,15 @@ export function StatusMetadataSection({
   className,
   layout = "vertical",
 }: Readonly<StatusMetadataSectionProps>) {
+  const statusOptions = ARTIFACT_STATUS_OPTIONS.map((statusOption) => (
+    <SelectItem key={statusOption} value={statusOption}>
+      <span className="inline-flex items-center gap-1.5">
+        <StatusIcon size={16} status={ARTIFACT_STATUS_TO_ICON[statusOption]} />
+        {artifactStatusLabels[statusOption] ?? statusOption}
+      </span>
+    </SelectItem>
+  ));
+
   const content =
     layout === "horizontal" ? (
       <>
@@ -106,19 +115,7 @@ export function StatusMetadataSection({
           <SelectTrigger className="h-8 min-w-0 justify-start gap-1 bg-transparent hover:bg-transparent dark:bg-transparent dark:hover:bg-transparent [&>:last-child]:hidden">
             <SelectValue />
           </SelectTrigger>
-          <SelectContent>
-            {ARTIFACT_STATUS_OPTIONS.map((statusOption) => (
-              <SelectItem key={statusOption} value={statusOption}>
-                <span className="inline-flex items-center gap-1.5">
-                  <StatusIcon
-                    size={16}
-                    status={ARTIFACT_STATUS_TO_ICON[statusOption]}
-                  />
-                  {artifactStatusLabels[statusOption] ?? statusOption}
-                </span>
-              </SelectItem>
-            ))}
-          </SelectContent>
+          <SelectContent>{statusOptions}</SelectContent>
         </Select>
         <UserSelectPopover
           className="w-auto min-w-[7rem] bg-transparent hover:bg-transparent dark:bg-transparent dark:hover:bg-transparent"
@@ -148,19 +145,7 @@ export function StatusMetadataSection({
             <SelectTrigger className="min-w-0 justify-start bg-transparent hover:bg-transparent dark:bg-transparent dark:hover:bg-transparent [&>:last-child]:hidden">
               <SelectValue />
             </SelectTrigger>
-            <SelectContent>
-              {ARTIFACT_STATUS_OPTIONS.map((statusOption) => (
-                <SelectItem key={statusOption} value={statusOption}>
-                  <span className="inline-flex items-center gap-1.5">
-                    <StatusIcon
-                      size={16}
-                      status={ARTIFACT_STATUS_TO_ICON[statusOption]}
-                    />
-                    {artifactStatusLabels[statusOption] ?? statusOption}
-                  </span>
-                </SelectItem>
-              ))}
-            </SelectContent>
+            <SelectContent>{statusOptions}</SelectContent>
           </Select>
         </div>
         <div className="space-y-2">

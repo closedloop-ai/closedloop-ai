@@ -87,65 +87,40 @@ export function IssueMetadataPanel({
     );
   };
 
-  const propertiesFields = (
-    <>
-      <div className="space-y-2">
-        <Label>Status</Label>
-        <Select
-          onValueChange={(v) => handleStatusChange(v as IssueStatus)}
-          value={issue.status}
-        >
-          <SelectTrigger className="min-w-0 justify-start bg-transparent hover:bg-transparent dark:bg-transparent dark:hover:bg-transparent [&>:last-child]:hidden">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {ISSUE_STATUS_OPTIONS.map((statusOption) => (
-              <SelectItem key={statusOption} value={statusOption}>
-                <span className="inline-flex items-center gap-1.5">
-                  <StatusIcon
-                    size={16}
-                    status={ISSUE_STATUS_TO_ICON[statusOption]}
-                  />
-                  {issueStatusLabels[statusOption] ?? statusOption}
-                </span>
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
-      <div className="space-y-2">
-        <Label>Priority</Label>
-        <Select
-          onValueChange={(v) => handlePriorityChange(v as PriorityType)}
-          value={issue.priority}
-        >
-          <SelectTrigger className="min-w-0 justify-start bg-transparent hover:bg-transparent dark:bg-transparent dark:hover:bg-transparent [&>:last-child]:hidden">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {Object.values(Priority).map((priorityOption) => (
-              <SelectItem key={priorityOption} value={priorityOption}>
-                <span className="inline-flex items-center gap-1.5">
-                  <PriorityIcon priority={priorityOption} />
-                  {issuePriorityLabels[priorityOption] ?? priorityOption}
-                </span>
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
-      <div className="space-y-2">
-        <Label>Assignee</Label>
-        <UserSelectPopover
-          className="w-full bg-transparent hover:bg-transparent dark:bg-transparent dark:hover:bg-transparent"
-          disabled={teamMembers.length === 0}
-          onSelect={handleAssigneeChange}
-          placeholder="Select assignee..."
-          users={teamMembers}
-          value={assignee}
-        />
-      </div>
-    </>
+  const statusSelectOptions = ISSUE_STATUS_OPTIONS.map((statusOption) => (
+    <SelectItem key={statusOption} value={statusOption}>
+      <span className="inline-flex items-center gap-1.5">
+        <StatusIcon size={16} status={ISSUE_STATUS_TO_ICON[statusOption]} />
+        {issueStatusLabels[statusOption] ?? statusOption}
+      </span>
+    </SelectItem>
+  ));
+
+  const prioritySelectOptions = Object.values(Priority).map(
+    (priorityOption) => (
+      <SelectItem key={priorityOption} value={priorityOption}>
+        <span className="inline-flex items-center gap-1.5">
+          <PriorityIcon priority={priorityOption} />
+          {issuePriorityLabels[priorityOption] ?? priorityOption}
+        </span>
+      </SelectItem>
+    )
+  );
+
+  const triggerClassCompact =
+    "h-8 min-w-0 justify-start gap-1 bg-transparent hover:bg-transparent dark:bg-transparent dark:hover:bg-transparent [&>:last-child]:hidden";
+  const triggerClassSidebar =
+    "min-w-0 justify-start bg-transparent hover:bg-transparent dark:bg-transparent dark:hover:bg-transparent [&>:last-child]:hidden";
+
+  const assigneePopover = (className: string) => (
+    <UserSelectPopover
+      className={className}
+      disabled={teamMembers.length === 0}
+      onSelect={handleAssigneeChange}
+      placeholder="Select assignee..."
+      users={teamMembers}
+      value={assignee}
+    />
   );
 
   if (variant === "bar") {
@@ -156,53 +131,62 @@ export function IssueMetadataPanel({
             onValueChange={(v) => handleStatusChange(v as IssueStatus)}
             value={issue.status}
           >
-            <SelectTrigger className="h-8 min-w-0 justify-start gap-1 bg-transparent hover:bg-transparent dark:bg-transparent dark:hover:bg-transparent [&>:last-child]:hidden">
+            <SelectTrigger className={triggerClassCompact}>
               <SelectValue />
             </SelectTrigger>
-            <SelectContent>
-              {ISSUE_STATUS_OPTIONS.map((statusOption) => (
-                <SelectItem key={statusOption} value={statusOption}>
-                  <span className="inline-flex items-center gap-1.5">
-                    <StatusIcon
-                      size={16}
-                      status={ISSUE_STATUS_TO_ICON[statusOption]}
-                    />
-                    {issueStatusLabels[statusOption] ?? statusOption}
-                  </span>
-                </SelectItem>
-              ))}
-            </SelectContent>
+            <SelectContent>{statusSelectOptions}</SelectContent>
           </Select>
           <Select
             onValueChange={(v) => handlePriorityChange(v as PriorityType)}
             value={issue.priority}
           >
-            <SelectTrigger className="h-8 min-w-0 justify-start gap-1 bg-transparent hover:bg-transparent dark:bg-transparent dark:hover:bg-transparent [&>:last-child]:hidden">
+            <SelectTrigger className={triggerClassCompact}>
               <SelectValue />
             </SelectTrigger>
-            <SelectContent>
-              {Object.values(Priority).map((priorityOption) => (
-                <SelectItem key={priorityOption} value={priorityOption}>
-                  <span className="inline-flex items-center gap-1.5">
-                    <PriorityIcon priority={priorityOption} />
-                    {issuePriorityLabels[priorityOption] ?? priorityOption}
-                  </span>
-                </SelectItem>
-              ))}
-            </SelectContent>
+            <SelectContent>{prioritySelectOptions}</SelectContent>
           </Select>
-          <UserSelectPopover
-            className="w-auto min-w-[7rem] bg-transparent hover:bg-transparent dark:bg-transparent dark:hover:bg-transparent"
-            disabled={teamMembers.length === 0}
-            onSelect={handleAssigneeChange}
-            placeholder="Select assignee..."
-            users={teamMembers}
-            value={assignee}
-          />
+          {assigneePopover(
+            "w-auto min-w-[7rem] bg-transparent hover:bg-transparent dark:bg-transparent dark:hover:bg-transparent"
+          )}
         </MetadataSection>
       </MetadataPanel>
     );
   }
+
+  const propertiesFields = (
+    <>
+      <div className="space-y-2">
+        <Label>Status</Label>
+        <Select
+          onValueChange={(v) => handleStatusChange(v as IssueStatus)}
+          value={issue.status}
+        >
+          <SelectTrigger className={triggerClassSidebar}>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>{statusSelectOptions}</SelectContent>
+        </Select>
+      </div>
+      <div className="space-y-2">
+        <Label>Priority</Label>
+        <Select
+          onValueChange={(v) => handlePriorityChange(v as PriorityType)}
+          value={issue.priority}
+        >
+          <SelectTrigger className={triggerClassSidebar}>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>{prioritySelectOptions}</SelectContent>
+        </Select>
+      </div>
+      <div className="space-y-2">
+        <Label>Assignee</Label>
+        {assigneePopover(
+          "w-full bg-transparent hover:bg-transparent dark:bg-transparent dark:hover:bg-transparent"
+        )}
+      </div>
+    </>
+  );
 
   if (variant === "detailsOnly") {
     return (
