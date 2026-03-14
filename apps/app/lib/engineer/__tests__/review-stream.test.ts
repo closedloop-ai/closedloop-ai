@@ -7,6 +7,10 @@ import {
 } from "../review-stream";
 import { createReader } from "./test-helpers";
 
+vi.mock("sonner", () => ({
+  toast: { error: vi.fn(), success: vi.fn(), info: vi.fn() },
+}));
+
 function makeState(overrides?: Partial<StreamState>): StreamState {
   return {
     accumulated: "",
