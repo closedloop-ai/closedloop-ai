@@ -1,4 +1,4 @@
-# Symphony - AI-Powered Software Delivery Platform
+# ClosedLoop - AI-Powered Software Delivery Platform
 
 <div>
   <img src="https://img.shields.io/badge/license-Apache%202.0-green" alt="License" />
@@ -13,19 +13,31 @@
 
 ## Overview
 
-Symphony is a SaaS platform where AI agents produce delivery artifacts (PRDs, implementation plans, code, test reports) while humans approve and refine them at every stage. It serves the entire software delivery team — product managers, designers, engineers, and QA — not just developers.
+ClosedLoop is a SaaS platform where AI agents produce delivery artifacts (PRDs, implementation plans, code, test reports) while humans approve and refine them at every stage. It serves the entire software delivery team — product managers, designers, engineers, and QA — not just developers.
 
-Built as a Next.js monorepo on the [next-forge](https://github.com/vercel/next-forge) template, Symphony follows a hybrid architecture: source code never leaves customer infrastructure (execution happens via GitHub Actions), while the cloud-based control plane orchestrates workflows, manages approvals, and integrates with tools teams already use.
+Built as a Next.js monorepo on the [next-forge](https://github.com/vercel/next-forge) template, ClosedLoop follows a hybrid architecture: source code never leaves customer infrastructure (execution happens via GitHub Actions), while the cloud-based control plane orchestrates workflows, manages approvals, and integrates with tools teams already use.
 
 ### What Problem Does This Solve?
 
-| Challenge | Symphony Approach |
+| Challenge | ClosedLoop Approach |
 |-----------|-------------------|
 | PRDs lack technical grounding | AI generates PRDs with full codebase context via conversational agent |
 | Plans drift from requirements | Implementation plans are generated from PRDs with traceability |
 | Handoffs lose context | Every artifact links to its parent — PRD to plan to PR |
 | Reviews happen too late | 13 quality judges evaluate plans before implementation begins |
 | Cross-team visibility is fragmented | Single platform for PM, design, engineering, and QA with Linear and Slack integration |
+
+### Legacy "Symphony" Identifiers
+
+The codebase contains references to "Symphony" in technical identifiers that predate the ClosedLoop rebrand. These do **not** affect the user-facing brand and are preserved intentionally to avoid breaking changes:
+
+- **GitHub Actions**: workflow name (`symphony.yml`), action names (`symphony-setup`, `symphony-artifact`, `symphony-post-results`)
+- **Component names**: `SymphonyChat`, `SymphonyStatus`, `useSymphonyLaunch`, and related React components in the Engineer feature
+- **API routes**: `/api/engineer/symphony/*` endpoints
+- **Bot/plugin names**: references in CI/CD and plugin configuration
+- **Repository name**: `symphony-alpha`
+
+These will be migrated in a future dedicated effort.
 
 ## Architecture
 
@@ -66,7 +78,7 @@ flowchart TD
 ```mermaid
 sequenceDiagram
     participant PM as Product Manager
-    participant App as Symphony App
+    participant App as ClosedLoop App
     participant API as BFF API
     participant GH as GitHub Actions
     participant Repo as Target Repository
@@ -137,7 +149,7 @@ Shared packages imported as `@repo/<package-name>`:
 
 ### Service Accounts
 
-Symphony integrates with several third-party services. At minimum you need accounts for:
+ClosedLoop integrates with several third-party services. At minimum you need accounts for:
 
 | Service | Required | Purpose | Setup |
 |---------|----------|---------|-------|

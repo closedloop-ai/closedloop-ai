@@ -1,11 +1,11 @@
 # GitHub App Setup Guide
 
-This guide covers setting up the Symphony GitHub App for development, staging, and production environments.
+This guide covers setting up the ClosedLoop GitHub App for development, staging, and production environments.
 
 ## Overview
 
-Symphony uses a **GitHub App** (not a standalone OAuth App) to:
-1. **Track installations** - Know which GitHub orgs have installed Symphony
+ClosedLoop uses a **GitHub App** (not a standalone OAuth App) to:
+1. **Track installations** - Know which GitHub orgs have installed ClosedLoop
 2. **Dispatch workflows** - Trigger GitHub Actions in customer repositories
 3. **Access repositories** - Read code and create PRs on behalf of the installation
 4. **Authenticate users** - Verify users have access to claimed installations via OAuth
@@ -22,36 +22,36 @@ Symphony uses a **GitHub App** (not a standalone OAuth App) to:
 ```mermaid
 sequenceDiagram
     participant User
-    participant Symphony
+    participant ClosedLoop
     participant GitHub
 
-    User->>Symphony: Click "Connect GitHub"
-    Symphony->>Symphony: Generate CSRF state token
-    Symphony->>GitHub: Redirect to install page with state
+    User->>ClosedLoop: Click "Connect GitHub"
+    ClosedLoop->>ClosedLoop: Generate CSRF state token
+    ClosedLoop->>GitHub: Redirect to install page with state
     User->>GitHub: Install app + authorize OAuth
 
     par Race Condition Handling
-        GitHub-->>Symphony: Webhook: installation.created
-        Note over Symphony: Creates record with PENDING_CLAIM<br/>(may arrive before or after OAuth)
+        GitHub-->>ClosedLoop: Webhook: installation.created
+        Note over ClosedLoop: Creates record with PENDING_CLAIM<br/>(may arrive before or after OAuth)
     and
-        GitHub->>Symphony: OAuth callback with code + installation_id + state
+        GitHub->>ClosedLoop: OAuth callback with code + installation_id + state
     end
 
-    Symphony->>Symphony: Validate state (CSRF protection)
-    Symphony->>GitHub: Exchange code for user token
-    Symphony->>GitHub: GET /user (fetch GitHub user info)
-    Symphony->>GitHub: GET /user/installations (verify access)
+    ClosedLoop->>ClosedLoop: Validate state (CSRF protection)
+    ClosedLoop->>GitHub: Exchange code for user token
+    ClosedLoop->>GitHub: GET /user (fetch GitHub user info)
+    ClosedLoop->>GitHub: GET /user/installations (verify access)
 
     alt Installation record exists (webhook arrived first)
-        Symphony->>Symphony: Update existing record
+        ClosedLoop->>ClosedLoop: Update existing record
     else Installation record missing (OAuth arrived first)
-        Symphony->>Symphony: Create record from GitHub API data
+        ClosedLoop->>ClosedLoop: Create record from GitHub API data
     end
 
-    Symphony->>Symphony: Set status=ACTIVE, link to org
-    Symphony->>GitHub: GET /user/installations/{id}/repositories
-    Symphony->>Symphony: Sync repositories
-    Symphony->>User: Connected!
+    ClosedLoop->>ClosedLoop: Set status=ACTIVE, link to org
+    ClosedLoop->>GitHub: GET /user/installations/{id}/repositories
+    ClosedLoop->>ClosedLoop: Sync repositories
+    ClosedLoop->>User: Connected!
 ```
 
 ### Disconnect Flow
@@ -59,23 +59,23 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     participant User
-    participant Symphony
+    participant ClosedLoop
     participant GitHub
 
-    User->>Symphony: Click "Disconnect GitHub"
-    Symphony->>Symphony: Show confirmation dialog
-    User->>Symphony: Confirm disconnect
+    User->>ClosedLoop: Click "Disconnect GitHub"
+    ClosedLoop->>ClosedLoop: Show confirmation dialog
+    User->>ClosedLoop: Confirm disconnect
 
-    Symphony->>GitHub: DELETE /app/installations/{id}
+    ClosedLoop->>GitHub: DELETE /app/installations/{id}
     Note over GitHub: Uninstalls app from GitHub side
 
     par Webhook may arrive
-        GitHub-->>Symphony: Webhook: installation.deleted
-        Note over Symphony: Sets status=UNINSTALLED,<br/>organizationId=null
+        GitHub-->>ClosedLoop: Webhook: installation.deleted
+        Note over ClosedLoop: Sets status=UNINSTALLED,<br/>organizationId=null
     end
 
-    Symphony->>Symphony: Update DB: status=UNINSTALLED,<br/>organizationId=null
-    Symphony->>User: Disconnected!
+    ClosedLoop->>ClosedLoop: Update DB: status=UNINSTALLED,<br/>organizationId=null
+    ClosedLoop->>User: Disconnected!
 
     Note over User,GitHub: User can now reconnect with fresh OAuth flow
 ```
@@ -120,7 +120,7 @@ When a user disconnects and then reconnects:
 | Field | Value |
 |-------|-------|
 | **GitHub App name** | `symphony-{env}` (e.g., `symphony-stage`, `symphony-prod`) |
-| **Description** | Symphony AI-powered software delivery platform |
+| **Description** | ClosedLoop AI-powered software delivery platform |
 | **Homepage URL** | `https://{your-domain}` |
 
 ### Step 3: Callback URLs
@@ -215,7 +215,7 @@ https://github.com/apps/closedloop-ai-stage
                         ^^^^^^^^^^^^^^^^^^^ This is the slug
 ```
 
-**Symphony's actual slugs:**
+**ClosedLoop's actual slugs:**
 | Environment | Slug | Install URL |
 |-------------|------|-------------|
 | Production | `closedloop-ai` | `https://github.com/apps/closedloop-ai` |
@@ -333,12 +333,12 @@ After setup, GitHub shows delivery status in **App Settings** > **Advanced** > *
 
 ### 2. Test Installation Flow
 
-1. Navigate to Settings > Integrations in Symphony
+1. Navigate to Settings > Integrations in ClosedLoop
 2. Click "Connect GitHub"
 3. Should redirect to GitHub App installation page
 4. Select an org/account and repositories
 5. Authorize OAuth (combined with installation)
-6. Should redirect back to Symphony with "Connected" status
+6. Should redirect back to ClosedLoop with "Connected" status
 
 ### 3. Test Webhook Events
 
@@ -356,7 +356,7 @@ Install/uninstall the app and check:
 
 ### "Not authenticated" error on callback
 
-- User wasn't signed into Symphony when GitHub redirected back
+- User wasn't signed into ClosedLoop when GitHub redirected back
 - Ensure user is signed in before clicking "Connect GitHub"
 
 ### Webhook not received

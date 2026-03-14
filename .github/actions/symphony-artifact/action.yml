@@ -1,5 +1,5 @@
 name: 'Symphony Artifact'
-description: 'Download or upload Symphony run artifacts'
+description: 'Download or upload ClosedLoop run artifacts'
 inputs:
   mode:
     description: 'Operation mode: download or upload'

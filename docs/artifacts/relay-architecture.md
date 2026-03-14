@@ -1,10 +1,10 @@
-# Symphony Relay Architecture
+# ClosedLoop Relay Architecture
 
 Last updated: 2026-02-27
 
 ## 1. Purpose
 
-This document is the single technical reference for Symphony Relay in `symphony-alpha`.
+This document is the single technical reference for ClosedLoop Relay in `symphony-alpha`.
 It consolidates:
 
 - PRD intent and tier model
@@ -14,7 +14,7 @@ It consolidates:
 
 Source docs:
 
-- PRD: Symphony Relay Integration (internal)
+- PRD: ClosedLoop Relay Integration (internal)
 - closedloop-electron repo: `docs/artifacts/api-server-socketio-handoff.md`
 - `docs/artifacts/relay-integration-contracts.md`
 - `docs/artifacts/relay-conformance.md`

@@ -136,7 +136,7 @@
           },
           {
             "name": "/code",
-            "description": "Begin a coding session with full Symphony orchestration"
+            "description": "Begin a coding session with full ClosedLoop orchestration"
           },
           {
             "name": "/code-review",

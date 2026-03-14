@@ -44,7 +44,7 @@ Repository: symphony-alpha (Next.js monorepo on next-forge template)
 
 ## System Overview
 
-Symphony is a human-governed, AI-centric software delivery platform built as a Next.js monorepo. The system serves the entire software delivery team -- product managers, designers, engineers, and QA -- by orchestrating AI agents to generate delivery artifacts (PRDs, implementation plans, code, test reports) while preserving human judgment through explicit approval gates at each stage.
+ClosedLoop is a human-governed, AI-centric software delivery platform built as a Next.js monorepo. The system serves the entire software delivery team -- product managers, designers, engineers, and QA -- by orchestrating AI agents to generate delivery artifacts (PRDs, implementation plans, code, test reports) while preserving human judgment through explicit approval gates at each stage.
 
 The platform follows a three-tier architecture: a React frontend (`apps/app`) communicates exclusively through a BFF API layer (`apps/api`) which handles authentication, business logic, and database operations. AI-powered execution happens off-platform through GitHub Actions workflows dispatched from the API, with results flowing back via GitHub webhooks. This hybrid architecture ensures source code never leaves customer infrastructure while the cloud-based control plane manages workflows and approvals.
 
@@ -269,8 +269,6 @@ The most distinctive integration pattern is the GitHub Actions-based execution p
 4. **Callback:** GitHub webhook (`workflow_run.completed`) hits `/webhooks/github` on `apps/api`
 5. **Processing:** API downloads workflow artifacts (zip files from GitHub Actions), parses plan content, uploads to S3, updates database
 6. **Notification:** Frontend polls `generation-status` endpoint and displays results
-
-This architecture ensures customer source code is processed within GitHub's infrastructure (or customer infrastructure), never passing through the Symphony control plane.
 
 ### Shared Dependencies
 
