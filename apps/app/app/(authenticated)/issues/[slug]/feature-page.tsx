@@ -6,6 +6,7 @@ import { toast } from "@repo/design-system/components/ui/sonner";
 import { useRouter } from "next/navigation";
 import { useCallback, useState } from "react";
 import { ExecutePlanModal } from "@/app/(authenticated)/implementation-plans/components/execute-plan-modal";
+import { ArtifactChatPanel } from "@/components/artifact-editor/artifact-chat-panel";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { usePlanActions } from "@/hooks/artifact-editing/use-plan-actions";
 import { useArtifactGenerationStatus } from "@/hooks/queries/use-artifacts";
@@ -91,12 +92,17 @@ export function FeaturePage({ issue }: Readonly<FeaturePageProps>) {
         <div className="flex min-h-full">
           {/* Main Content Area */}
           <div className="min-w-0 flex-1 overflow-x-hidden">
-            <div className="mx-auto flex max-w-[750px] flex-col py-8">
+            <div className="mx-auto flex max-w-[960px] flex-col py-8">
               <div className="flex flex-col gap-1.5">
                 <EditableIssueTitle
                   initialTitle={issue.title}
                   issueId={issue.id}
                   onTitleChange={setDisplayTitle}
+                />
+                <IssueMetadataPanel
+                  issue={issue}
+                  teamIds={issue.project?.teams.map((team) => team.id) ?? []}
+                  variant="bar"
                 />
                 <EditableIssueDescription
                   initialDescription={issue.description || ""}
@@ -123,15 +129,20 @@ export function FeaturePage({ issue }: Readonly<FeaturePageProps>) {
                 />
                 <PreviewSection issueId={issue.id} />
               </div>
+
+              <div className="border-t px-4 py-4">
+                <IssueMetadataPanel
+                  issue={issue}
+                  teamIds={issue.project?.teams.map((team) => team.id) ?? []}
+                  variant="detailsOnly"
+                />
+              </div>
             </div>
           </div>
 
-          {/* Right Sidebar */}
+          {/* Right gutter: chat panel when metadata toggle on */}
           {showMetadataPanel && (
-            <IssueMetadataPanel
-              issue={issue}
-              teamIds={issue.project?.teams.map((team) => team.id) ?? []}
-            />
+            <ArtifactChatPanel artifactId={issue.id} artifactType="issue" />
           )}
         </div>
       </main>

@@ -78,6 +78,11 @@ type PRDMetadataPanelProps = {
    * Handler called when target branch input loses focus
    */
   onTargetBranchBlur: (overrideValue?: string) => void;
+  /**
+   * When "detailsOnly", render only the details content (no sidebar wrapper, no status section).
+   * Used when metadata bar is below title and chat is in the right gutter.
+   */
+  variant?: "detailsOnly" | "sidebar";
 };
 
 /**
@@ -99,6 +104,7 @@ export function PRDMetadataPanel({
   onTargetRepoBlur,
   onTargetBranchChange,
   onTargetBranchBlur,
+  variant = "sidebar",
 }: PRDMetadataPanelProps) {
   const {
     dialogOpen,
@@ -108,75 +114,93 @@ export function PRDMetadataPanel({
     setDialogOpen,
   } = useExecutionLogDialog();
 
-  // Fetch org users for approver dropdown
+  // Fetch org users for approver dropdown (sidebar variant only)
   const { data: orgUsers = [] } = useOrganizationUsers();
   const transformedOrgUsers = useMemo(
     () => orgUsers.map(transformApiUserToSelectUser),
     [orgUsers]
   );
 
-  const [isPropertiesOpen, setIsPropertiesOpen] = useState(true);
+  const [isPropertiesOpen, setIsPropertiesOpen] = useState(false);
   const [isExecutionLogOpen, setIsExecutionLogOpen] = useState(false);
+
+  const detailsContent = (
+    <div className="space-y-6">
+      <CollapsibleSection
+        onOpenChange={setIsPropertiesOpen}
+        open={isPropertiesOpen}
+        title="Properties"
+      >
+        {variant === "sidebar" ? (
+          <StatusMetadataSection
+            approver={approver}
+            assignee={assignee}
+            onApproverSelect={onApproverSelect}
+            onAssigneeChange={onAssigneeChange}
+            onStatusChange={onStatusChange}
+            orgUsers={transformedOrgUsers}
+            status={status}
+            teamMembers={teamMembers}
+          />
+        ) : null}
+
+        <TargetRepositoryFields
+          onTargetBranchBlur={onTargetBranchBlur}
+          onTargetBranchChange={onTargetBranchChange}
+          onTargetRepoBlur={onTargetRepoBlur}
+          onTargetRepoChange={onTargetRepoChange}
+          targetBranch={targetBranch}
+          targetRepo={targetRepo}
+          title="Plan Generation"
+        />
+
+        <ArtifactVersionInfo
+          createdAt={prd.version.createdAt}
+          updatedAt={prd.updatedAt}
+          version={prd.version.version}
+        />
+      </CollapsibleSection>
+
+      <CollapsibleSection
+        onOpenChange={setIsExecutionLogOpen}
+        open={isExecutionLogOpen}
+        title="Execution Log"
+      >
+        <ExecutionLogSummary
+          artifactId={prd.id}
+          onViewFullTrace={handleViewFullTrace}
+        />
+      </CollapsibleSection>
+
+      <CommentsSection artifactId={prd.id} />
+
+      <AttachmentsSection artifactId={prd.id} />
+
+      <CustomFieldsSection
+        entityId={prd.id}
+        entityType={CustomFieldEntityType.Artifact}
+        values={prd.customFields}
+      />
+    </div>
+  );
+
+  if (variant === "detailsOnly") {
+    return (
+      <>
+        {detailsContent}
+        <ExecutionLogDialog
+          initialSessionId={selectedSessionId}
+          onOpenChange={setDialogOpen}
+          open={dialogOpen}
+          trace={dialogTrace}
+        />
+      </>
+    );
+  }
 
   return (
     <>
-      <MetadataPanel title="PRD Details">
-        <div className="space-y-6">
-          <CollapsibleSection
-            onOpenChange={setIsPropertiesOpen}
-            open={isPropertiesOpen}
-            title="Properties"
-          >
-            <StatusMetadataSection
-              approver={approver}
-              assignee={assignee}
-              onApproverSelect={onApproverSelect}
-              onAssigneeChange={onAssigneeChange}
-              onStatusChange={onStatusChange}
-              orgUsers={transformedOrgUsers}
-              status={status}
-              teamMembers={teamMembers}
-            />
-
-            <TargetRepositoryFields
-              onTargetBranchBlur={onTargetBranchBlur}
-              onTargetBranchChange={onTargetBranchChange}
-              onTargetRepoBlur={onTargetRepoBlur}
-              onTargetRepoChange={onTargetRepoChange}
-              targetBranch={targetBranch}
-              targetRepo={targetRepo}
-              title="Plan Generation"
-            />
-
-            <ArtifactVersionInfo
-              createdAt={prd.version.createdAt}
-              updatedAt={prd.updatedAt}
-              version={prd.version.version}
-            />
-          </CollapsibleSection>
-
-          <CollapsibleSection
-            onOpenChange={setIsExecutionLogOpen}
-            open={isExecutionLogOpen}
-            title="Execution Log"
-          >
-            <ExecutionLogSummary
-              artifactId={prd.id}
-              onViewFullTrace={handleViewFullTrace}
-            />
-          </CollapsibleSection>
-
-          <CommentsSection artifactId={prd.id} />
-
-          <AttachmentsSection artifactId={prd.id} />
-
-          <CustomFieldsSection
-            entityId={prd.id}
-            entityType={CustomFieldEntityType.Artifact}
-            values={prd.customFields}
-          />
-        </div>
-      </MetadataPanel>
+      <MetadataPanel title="PRD Details">{detailsContent}</MetadataPanel>
       <ExecutionLogDialog
         initialSessionId={selectedSessionId}
         onOpenChange={setDialogOpen}

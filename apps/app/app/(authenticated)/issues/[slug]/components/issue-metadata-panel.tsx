@@ -20,11 +20,12 @@ import {
   SelectValue,
 } from "@repo/design-system/components/ui/select";
 import { toast } from "@repo/design-system/components/ui/sonner";
+import { StatusIcon } from "@repo/design-system/components/ui/status-icon";
 import {
   type User,
   UserSelectPopover,
 } from "@repo/design-system/components/ui/user-select-popover";
-import { useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import { CollapsibleSection } from "@/components/artifact-editor/collapsible-section";
 import {
   MetadataPanel,
@@ -37,19 +38,28 @@ import {
 } from "@/components/status-badge";
 import { useUpdateIssue } from "@/hooks/queries/use-issues";
 import { useTeamMembers } from "@/hooks/use-team-members";
+import { ISSUE_STATUS_TO_ICON } from "@/lib/project-constants";
 import { transformApiUserToSelectUser } from "@/lib/user-utils";
 
 type IssueMetadataPanelProps = {
   issue: IssueWithWorkstream;
   teamIds: string[];
+  /**
+   * "sidebar" = right gutter panel, "bar" = horizontal bar below title, "detailsOnly" = dates + custom fields only
+   */
+  variant?: "bar" | "detailsOnly" | "sidebar";
 };
 
 export function IssueMetadataPanel({
   issue,
   teamIds,
+  variant = "sidebar",
 }: Readonly<IssueMetadataPanelProps>) {
   const updateIssue = useUpdateIssue();
   const { members: teamMembers } = useTeamMembers({ teamIds });
+
+  const statusId = useId();
+  const priorityId = useId();
 
   const assignee = useMemo(
     () =>
@@ -80,6 +90,139 @@ export function IssueMetadataPanel({
     );
   };
 
+  const statusSelectOptions = ISSUE_STATUS_OPTIONS.map((statusOption) => (
+    <SelectItem key={statusOption} value={statusOption}>
+      <span className="inline-flex items-center gap-1.5">
+        <StatusIcon size={16} status={ISSUE_STATUS_TO_ICON[statusOption]} />
+        {issueStatusLabels[statusOption] ?? statusOption}
+      </span>
+    </SelectItem>
+  ));
+
+  const prioritySelectOptions = Object.values(Priority).map(
+    (priorityOption) => (
+      <SelectItem key={priorityOption} value={priorityOption}>
+        <span className="inline-flex items-center gap-1.5">
+          <PriorityIcon priority={priorityOption} />
+          {issuePriorityLabels[priorityOption] ?? priorityOption}
+        </span>
+      </SelectItem>
+    )
+  );
+
+  const triggerClassCompact =
+    "min-w-0 justify-start gap-1 bg-transparent hover:bg-transparent dark:bg-transparent dark:hover:bg-transparent [&>:last-child]:hidden";
+  const triggerClassSidebar =
+    "min-w-0 justify-start bg-transparent hover:bg-transparent dark:bg-transparent dark:hover:bg-transparent [&>:last-child]:hidden";
+
+  const assigneePopover = (className: string) => (
+    <UserSelectPopover
+      className={className}
+      disabled={teamMembers.length === 0}
+      onSelect={handleAssigneeChange}
+      placeholder="Select assignee..."
+      users={teamMembers}
+      value={assignee}
+    />
+  );
+
+  if (variant === "bar") {
+    return (
+      <MetadataPanel variant="bar">
+        <MetadataSection layout="horizontal">
+          <Select
+            onValueChange={(v) => handleStatusChange(v as IssueStatus)}
+            value={issue.status}
+          >
+            <SelectTrigger className={triggerClassCompact} size="sm">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>{statusSelectOptions}</SelectContent>
+          </Select>
+          <Select
+            onValueChange={(v) => handlePriorityChange(v as PriorityType)}
+            value={issue.priority}
+          >
+            <SelectTrigger className={triggerClassCompact} size="sm">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>{prioritySelectOptions}</SelectContent>
+          </Select>
+          {assigneePopover(
+            "w-auto min-w-[7rem] bg-transparent hover:bg-transparent dark:bg-transparent dark:hover:bg-transparent"
+          )}
+        </MetadataSection>
+      </MetadataPanel>
+    );
+  }
+
+  const propertiesFields = (
+    <>
+      <div className="space-y-2">
+        <Label htmlFor={statusId}>Status</Label>
+        <Select
+          onValueChange={(v) => handleStatusChange(v as IssueStatus)}
+          value={issue.status}
+        >
+          <SelectTrigger className={triggerClassSidebar} id={statusId}>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>{statusSelectOptions}</SelectContent>
+        </Select>
+      </div>
+      <div className="space-y-2">
+        <Label htmlFor={priorityId}>Priority</Label>
+        <Select
+          onValueChange={(v) => handlePriorityChange(v as PriorityType)}
+          value={issue.priority}
+        >
+          <SelectTrigger className={triggerClassSidebar} id={priorityId}>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>{prioritySelectOptions}</SelectContent>
+        </Select>
+      </div>
+      <div className="space-y-2">
+        <Label>Assignee</Label>
+        {assigneePopover(
+          "w-full bg-transparent hover:bg-transparent dark:bg-transparent dark:hover:bg-transparent"
+        )}
+      </div>
+    </>
+  );
+
+  if (variant === "detailsOnly") {
+    return (
+      <div className="space-y-6">
+        <MetadataSection>
+          <div className="space-y-1 text-muted-foreground text-sm">
+            <p>
+              Created:{" "}
+              {new Date(issue.createdAt).toLocaleDateString(undefined, {
+                day: "numeric",
+                month: "short",
+                year: "numeric",
+              })}
+            </p>
+            <p>
+              Updated:{" "}
+              {new Date(issue.updatedAt).toLocaleDateString(undefined, {
+                day: "numeric",
+                month: "short",
+                year: "numeric",
+              })}
+            </p>
+          </div>
+        </MetadataSection>
+        <CustomFieldsSection
+          entityId={issue.id}
+          entityType={CustomFieldEntityType.Issue}
+          values={issue.customFields}
+        />
+      </div>
+    );
+  }
+
   return (
     <MetadataPanel className="self-stretch px-3 pr-4">
       <div className="space-y-6">
@@ -89,82 +232,29 @@ export function IssueMetadataPanel({
           title="Properties"
         >
           <MetadataSection className="space-y-4">
-            <div className="space-y-2">
-              <Label>Status</Label>
-              <Select
-                onValueChange={(v) => handleStatusChange(v as IssueStatus)}
-                value={issue.status}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {ISSUE_STATUS_OPTIONS.map((statusOption) => (
-                    <SelectItem key={statusOption} value={statusOption}>
-                      {issueStatusLabels[statusOption] ?? statusOption}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="space-y-2">
-              <Label>Priority</Label>
-              <Select
-                onValueChange={(v) => handlePriorityChange(v as PriorityType)}
-                value={issue.priority}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {Object.values(Priority).map((priorityOption) => (
-                    <SelectItem key={priorityOption} value={priorityOption}>
-                      <span className="inline-flex items-center gap-1.5">
-                        <PriorityIcon priority={priorityOption} />
-                        {issuePriorityLabels[priorityOption] ?? priorityOption}
-                      </span>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="space-y-2">
-              <Label>Assignee</Label>
-              <UserSelectPopover
-                className="w-full"
-                disabled={teamMembers.length === 0}
-                onSelect={handleAssigneeChange}
-                placeholder="Select assignee..."
-                users={teamMembers}
-                value={assignee}
-              />
-            </div>
+            {propertiesFields}
           </MetadataSection>
-
           <MetadataSection separator>
             <div className="space-y-1 text-muted-foreground text-sm">
               <p>
                 Created:{" "}
                 {new Date(issue.createdAt).toLocaleDateString(undefined, {
-                  year: "numeric",
-                  month: "short",
                   day: "numeric",
+                  month: "short",
+                  year: "numeric",
                 })}
               </p>
               <p>
                 Updated:{" "}
                 {new Date(issue.updatedAt).toLocaleDateString(undefined, {
-                  year: "numeric",
-                  month: "short",
                   day: "numeric",
+                  month: "short",
+                  year: "numeric",
                 })}
               </p>
             </div>
           </MetadataSection>
         </CollapsibleSection>
-
         <CustomFieldsSection
           entityId={issue.id}
           entityType={CustomFieldEntityType.Issue}

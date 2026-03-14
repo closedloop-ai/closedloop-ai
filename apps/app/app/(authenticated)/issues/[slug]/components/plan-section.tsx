@@ -7,10 +7,11 @@ import {
 } from "@repo/api/src/types/artifact";
 import type { IssueWithWorkstream } from "@repo/api/src/types/issue";
 import { isDisplayableSlug } from "@repo/api/src/types/slug";
+import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { StatusIcon } from "@repo/design-system/components/ui/status-icon";
-import { PlusIcon, SparklesIcon } from "lucide-react";
+import { BotIcon, SparklesIcon } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
 import { NewPlanModal } from "@/app/(authenticated)/implementation-plans/components/new-plan-modal";
@@ -75,18 +76,25 @@ export function PlanSection({
     generationStatus?.command === "plan" &&
     isActiveGenerationStatus(generationStatus.status);
 
+  let progressBadgeLabel = "Need description";
+  if (isGeneratingPlan) {
+    progressBadgeLabel = "Generating…";
+  } else if (isReady) {
+    progressBadgeLabel = "Ready";
+  }
+
   return (
     <>
       <div className="bg-background">
         <SectionHeader title="Plan">
           {hasPlan || isLoadingPlan ? null : (
-            <Button
-              onClick={() => setShowSelectModal(true)}
-              size="icon-sm"
-              variant="ghost"
+            <Badge
+              className="gap-1.5 border border-[var(--progress-badge-border)] bg-[var(--progress-badge-bg)] px-2.5 py-1 text-[var(--progress-badge-text)]"
+              variant="secondary"
             >
-              <PlusIcon className="h-4 w-4" />
-            </Button>
+              <BotIcon className="size-3.5" />
+              <span>{progressBadgeLabel}</span>
+            </Badge>
           )}
         </SectionHeader>
         {hasPlan ? (
