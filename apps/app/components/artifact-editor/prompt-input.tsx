@@ -1,5 +1,6 @@
 "use client";
 
+import { Button } from "@repo/design-system/components/ui/button";
 import { cn } from "@repo/design-system/lib/utils";
 import { ArrowUp } from "lucide-react";
 import { useEffect, useRef } from "react";
@@ -69,20 +70,17 @@ export function PromptInput({
           }}
           value={value}
         />
-        <button
-          className={cn(
-            "absolute right-0 bottom-2 flex size-8 shrink-0 items-center justify-center rounded-md transition-colors",
-            canSubmit
-              ? "bg-primary text-primary-foreground hover:bg-primary/90"
-              : "cursor-not-allowed bg-muted text-muted-foreground"
-          )}
+        <Button
+          className="absolute right-0 bottom-2 shrink-0 rounded-md"
           disabled={!canSubmit}
           onClick={onSubmit}
+          size="icon-sm"
           title="Send (Enter)"
           type="button"
+          variant={canSubmit ? "default" : "secondary"}
         >
           <ArrowUp className="size-4" />
-        </button>
+        </Button>
       </div>
     </div>
   );

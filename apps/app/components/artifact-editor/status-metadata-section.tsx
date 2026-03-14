@@ -17,6 +17,7 @@ import {
   type User,
   UserSelectPopover,
 } from "@repo/design-system/components/ui/user-select-popover";
+import { useId } from "react";
 import { artifactStatusLabels } from "@/components/status-badge";
 import { ARTIFACT_STATUS_TO_ICON } from "@/lib/project-constants";
 import { MetadataSection } from "./metadata-panel";
@@ -96,6 +97,8 @@ export function StatusMetadataSection({
   className,
   layout = "vertical",
 }: Readonly<StatusMetadataSectionProps>) {
+  const statusId = useId();
+
   const statusOptions = ARTIFACT_STATUS_OPTIONS.map((statusOption) => (
     <SelectItem key={statusOption} value={statusOption}>
       <span className="inline-flex items-center gap-1.5">
@@ -112,7 +115,10 @@ export function StatusMetadataSection({
           onValueChange={(v) => onStatusChange(v as ArtifactStatus)}
           value={status}
         >
-          <SelectTrigger className="h-8 min-w-0 justify-start gap-1 bg-transparent hover:bg-transparent dark:bg-transparent dark:hover:bg-transparent [&>:last-child]:hidden">
+          <SelectTrigger
+            className="min-w-0 justify-start gap-1 bg-transparent hover:bg-transparent dark:bg-transparent dark:hover:bg-transparent [&>:last-child]:hidden"
+            size="sm"
+          >
             <SelectValue />
           </SelectTrigger>
           <SelectContent>{statusOptions}</SelectContent>
@@ -137,12 +143,15 @@ export function StatusMetadataSection({
     ) : (
       <>
         <div className="space-y-2">
-          <Label>Status</Label>
+          <Label htmlFor={statusId}>Status</Label>
           <Select
             onValueChange={(v) => onStatusChange(v as ArtifactStatus)}
             value={status}
           >
-            <SelectTrigger className="min-w-0 justify-start bg-transparent hover:bg-transparent dark:bg-transparent dark:hover:bg-transparent [&>:last-child]:hidden">
+            <SelectTrigger
+              className="min-w-0 justify-start bg-transparent hover:bg-transparent dark:bg-transparent dark:hover:bg-transparent [&>:last-child]:hidden"
+              id={statusId}
+            >
               <SelectValue />
             </SelectTrigger>
             <SelectContent>{statusOptions}</SelectContent>

@@ -25,7 +25,7 @@ import {
   type User,
   UserSelectPopover,
 } from "@repo/design-system/components/ui/user-select-popover";
-import { useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import { CollapsibleSection } from "@/components/artifact-editor/collapsible-section";
 import {
   MetadataPanel,
@@ -57,6 +57,9 @@ export function IssueMetadataPanel({
 }: Readonly<IssueMetadataPanelProps>) {
   const updateIssue = useUpdateIssue();
   const { members: teamMembers } = useTeamMembers({ teamIds });
+
+  const statusId = useId();
+  const priorityId = useId();
 
   const assignee = useMemo(
     () =>
@@ -108,7 +111,7 @@ export function IssueMetadataPanel({
   );
 
   const triggerClassCompact =
-    "h-8 min-w-0 justify-start gap-1 bg-transparent hover:bg-transparent dark:bg-transparent dark:hover:bg-transparent [&>:last-child]:hidden";
+    "min-w-0 justify-start gap-1 bg-transparent hover:bg-transparent dark:bg-transparent dark:hover:bg-transparent [&>:last-child]:hidden";
   const triggerClassSidebar =
     "min-w-0 justify-start bg-transparent hover:bg-transparent dark:bg-transparent dark:hover:bg-transparent [&>:last-child]:hidden";
 
@@ -131,7 +134,7 @@ export function IssueMetadataPanel({
             onValueChange={(v) => handleStatusChange(v as IssueStatus)}
             value={issue.status}
           >
-            <SelectTrigger className={triggerClassCompact}>
+            <SelectTrigger className={triggerClassCompact} size="sm">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>{statusSelectOptions}</SelectContent>
@@ -140,7 +143,7 @@ export function IssueMetadataPanel({
             onValueChange={(v) => handlePriorityChange(v as PriorityType)}
             value={issue.priority}
           >
-            <SelectTrigger className={triggerClassCompact}>
+            <SelectTrigger className={triggerClassCompact} size="sm">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>{prioritySelectOptions}</SelectContent>
@@ -156,24 +159,24 @@ export function IssueMetadataPanel({
   const propertiesFields = (
     <>
       <div className="space-y-2">
-        <Label>Status</Label>
+        <Label htmlFor={statusId}>Status</Label>
         <Select
           onValueChange={(v) => handleStatusChange(v as IssueStatus)}
           value={issue.status}
         >
-          <SelectTrigger className={triggerClassSidebar}>
+          <SelectTrigger className={triggerClassSidebar} id={statusId}>
             <SelectValue />
           </SelectTrigger>
           <SelectContent>{statusSelectOptions}</SelectContent>
         </Select>
       </div>
       <div className="space-y-2">
-        <Label>Priority</Label>
+        <Label htmlFor={priorityId}>Priority</Label>
         <Select
           onValueChange={(v) => handlePriorityChange(v as PriorityType)}
           value={issue.priority}
         >
-          <SelectTrigger className={triggerClassSidebar}>
+          <SelectTrigger className={triggerClassSidebar} id={priorityId}>
             <SelectValue />
           </SelectTrigger>
           <SelectContent>{prioritySelectOptions}</SelectContent>
