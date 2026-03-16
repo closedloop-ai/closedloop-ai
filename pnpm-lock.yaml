@@ -83,6 +83,9 @@ importers:
       '@aws-sdk/s3-request-presigner':
         specifier: ^3.987.0
         version: 3.987.0
+      '@liveblocks/node':
+        specifier: ^3.14.0
+        version: 3.14.0(@types/json-schema@7.0.15)
       '@paralleldrive/cuid2':
         specifier: ^2.3.1
         version: 2.3.1

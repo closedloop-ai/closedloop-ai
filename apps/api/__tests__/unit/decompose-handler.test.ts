@@ -145,6 +145,7 @@ describe("decomposeHandler ingestion", () => {
     mockArtifactsService.findByIdSimple.mockResolvedValue({
       id: "prd-artifact-1",
       projectId: "project-1",
+      assigneeId: "assignee-user-1",
     });
     mockIssuesService.create
       .mockResolvedValueOnce({ id: "issue-1" })
@@ -153,7 +154,7 @@ describe("decomposeHandler ingestion", () => {
 
     await decomposeHandler.downloadAndIngest(loop.s3StateKey!, loop, "org-1");
 
-    // Creates one issue per feature with correct priority mapping
+    // Creates one issue per feature with correct priority mapping and PRD assignee
     expect(mockIssuesService.create).toHaveBeenCalledTimes(2);
     expect(mockIssuesService.create).toHaveBeenCalledWith("org-1", "user-1", {
       projectId: "project-1",
@@ -162,6 +163,7 @@ describe("decomposeHandler ingestion", () => {
         "Users can register with email and password.\n\n## User Stories\n\n### US-001: As a user, I want to register with my email so that I can access the platform\n\n- **AC-001.1:** User can register with valid email",
       priority: Priority.High,
       status: IssueStatus.NotStarted,
+      assigneeId: "assignee-user-1",
     });
 
     // Links each issue to the PRD via PRODUCES
@@ -198,6 +200,28 @@ describe("decomposeHandler ingestion", () => {
     await decomposeHandler.downloadAndIngest(loop.s3StateKey!, loop, "org-1");
 
     expect(mockIssuesService.create).not.toHaveBeenCalled();
+  });
+
+  it("does not set assigneeId when PRD has no assignee", async () => {
+    const loop = buildDecomposeLoop();
+    setupDownload({
+      features: [{ title: "Unassigned Feature", description: "desc" }],
+    });
+    mockArtifactsService.findByIdSimple.mockResolvedValue({
+      id: "prd-artifact-1",
+      projectId: "project-1",
+      assigneeId: null,
+    });
+    mockIssuesService.create.mockResolvedValue({ id: "issue-1" });
+    mockEntityLinksService.createLink.mockResolvedValue({ id: "link-1" });
+
+    await decomposeHandler.downloadAndIngest(loop.s3StateKey!, loop, "org-1");
+
+    expect(mockIssuesService.create).toHaveBeenCalledWith(
+      "org-1",
+      "user-1",
+      expect.not.objectContaining({ assigneeId: expect.anything() })
+    );
   });
 
   it("defaults priority to MEDIUM when not specified", async () => {

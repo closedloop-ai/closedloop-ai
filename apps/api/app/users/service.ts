@@ -233,21 +233,15 @@ export const usersService = {
             _count: { id: true },
           })
         ),
-        // Total comments authored (org-scoped via workstream IDs)
-        withDb(async (db) => {
-          const wsIds = await db.workstream
-            .findMany({
-              where: { organizationId },
-              select: { id: true },
-            })
-            .then((ws) => ws.map((w) => w.id));
-          return db.comment.count({
+        // Total comments authored (org-scoped via thread)
+        withDb((db) =>
+          db.comment.count({
             where: {
               authorId: userId,
-              workstreamId: { in: wsIds },
+              thread: { organizationId },
             },
-          });
-        }),
+          })
+        ),
         // Merged PRs (org-scoped via denormalized organizationId on PR model)
         withDb((db) =>
           db.gitHubPullRequest.count({

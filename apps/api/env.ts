@@ -1,6 +1,7 @@
 import { keys as ai } from "@repo/ai/keys";
 import { keys as analytics } from "@repo/analytics/keys";
 import { keys as auth } from "@repo/auth/keys";
+import { keys as collaboration } from "@repo/collaboration/keys";
 import { keys as database } from "@repo/database/keys";
 import { keys as email } from "@repo/email/keys";
 import { keys as google } from "@repo/google/keys";
@@ -25,6 +26,7 @@ export const env = createEnv({
     ai(),
     auth(),
     analytics(),
+    collaboration(),
     core(),
     database(),
     email(),

@@ -38,7 +38,7 @@ export function SelectContextDialog({
             sourceType: EntityType.Artifact,
             targetId: issueId,
             targetType: EntityType.Issue,
-            linkType: LinkType.RelatesTo,
+            linkType: LinkType.Produces,
           },
           { onSuccess: () => onOpenChange(false) }
         );

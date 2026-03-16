@@ -4,7 +4,7 @@ import { isActiveGenerationStatus } from "@repo/api/src/types/artifact";
 import type { IssueWithWorkstream } from "@repo/api/src/types/issue";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { useRouter } from "next/navigation";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useEffectEvent, useState } from "react";
 import { ExecutePlanModal } from "@/app/(authenticated)/implementation-plans/components/execute-plan-modal";
 import { ArtifactChatPanel } from "@/components/artifact-editor/artifact-chat-panel";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
@@ -44,9 +44,8 @@ export function FeaturePage({ issue }: Readonly<FeaturePageProps>) {
     artifactId: linkedPlanId,
   });
 
-  const { data: generationStatus } = useArtifactGenerationStatus(
-    linkedPlanId ?? "",
-    {
+  const { data: generationStatus, invalidateCache } =
+    useArtifactGenerationStatus(linkedPlanId ?? "", {
       enabled: !!linkedPlanId,
       refetchInterval: (query) => {
         const status = query.state.data?.status;
@@ -55,8 +54,15 @@ export function FeaturePage({ issue }: Readonly<FeaturePageProps>) {
         }
         return false;
       },
+    });
+
+  const handleGenerationSuccess = useEffectEvent(invalidateCache);
+
+  useEffect(() => {
+    if (generationStatus?.status === "SUCCESS") {
+      handleGenerationSuccess();
     }
-  );
+  }, [generationStatus?.status]);
 
   const teamId = issue.project?.teams.length ? issue.project.teams[0].id : null;
   const projectId = issue.project?.id;
