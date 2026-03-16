@@ -52,6 +52,24 @@ export const POST = withAuth<
     });
   }
 
+  const requestOrigin = request.headers.get("origin");
+  if (!(requestOrigin && isLocalGatewayOriginAllowed(requestOrigin))) {
+    return NextResponse.json(failure("Request origin is not trusted"), {
+      status: 400,
+      headers: NO_STORE_HEADERS,
+    });
+  }
+
+  if (origin !== requestOrigin) {
+    return NextResponse.json(
+      failure("Posted origin does not match request origin"),
+      {
+        status: 403,
+        headers: NO_STORE_HEADERS,
+      }
+    );
+  }
+
   const { jwt, jti, expiresAt } = await issueLocalGatewayChallenge({
     userId: user.id,
     orgId: user.organizationId,

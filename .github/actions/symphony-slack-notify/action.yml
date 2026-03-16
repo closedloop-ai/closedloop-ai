@@ -1,0 +1,45 @@
+name: 'Symphony Slack Notification'
+description: 'Send Symphony workflow notifications to Slack'
+inputs:
+  webhook_url:
+    description: 'Slack webhook URL'
+    required: true
+  message:
+    description: 'Pre-formatted message text (supports \n for newlines). Use {assignees} placeholder to insert parsed assignees.'
+    required: true
+  assignees_json:
+    description: 'JSON array of assignees (e.g., from toJson(github.event.issue.assignees)). Will replace {assignees} in message.'
+    required: false
+    default: ''
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Send Slack notification
+      env:
+        INPUT_ASSIGNEES_JSON: ${{ inputs.assignees_json }}
+        INPUT_MESSAGE: ${{ inputs.message }}
+        INPUT_WEBHOOK_URL: ${{ inputs.webhook_url }}
+      shell: bash
+      run: |
+        MESSAGE="$INPUT_MESSAGE"
+
+        # Parse assignees if provided
+        if [ -n "$INPUT_ASSIGNEES_JSON" ] && [ "$INPUT_ASSIGNEES_JSON" != '[]' ]; then
+          ASSIGNEES=$(printf '%s' "$INPUT_ASSIGNEES_JSON" | jq -r 'map(.login) | join(", ")')
+          if [ -z "$ASSIGNEES" ]; then
+            ASSIGNEES="None"
+          fi
+        else
+          ASSIGNEES="None"
+        fi
+
+        # Replace {assignees} placeholder
+        MESSAGE="${MESSAGE//\{assignees\}/$ASSIGNEES}"
+
+        # Build JSON payload with jq (handles escaping)
+        PAYLOAD=$(jq -n --arg text "$MESSAGE" '{text: $text}')
+
+        curl -X POST -H 'Content-type: application/json' \
+              --data "$PAYLOAD" \
+              "$INPUT_WEBHOOK_URL"

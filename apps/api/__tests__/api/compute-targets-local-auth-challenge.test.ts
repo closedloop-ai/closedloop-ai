@@ -41,7 +41,9 @@ describe("POST /compute-targets/local-auth/challenge", () => {
     vi.clearAllMocks();
     mockAuthContext = createTestAuthContext();
     mockIsLocalGatewayJwtConfigured.mockReturnValue(true);
-    mockIsLocalGatewayOriginAllowed.mockReturnValue(true);
+    mockIsLocalGatewayOriginAllowed.mockImplementation((origin) =>
+      Boolean(origin)
+    );
     mockIssueLocalGatewayChallenge.mockResolvedValue({
       jwt: "challenge-jwt",
       jti: "jti-123",
@@ -54,6 +56,7 @@ describe("POST /compute-targets/local-auth/challenge", () => {
       method: "POST",
       url: "http://localhost:3002/compute-targets/local-auth/challenge",
       body: { origin: "http://localhost:3000" },
+      headers: { origin: "http://localhost:3000" },
     });
 
     const response = await POST(request, {
@@ -74,6 +77,49 @@ describe("POST /compute-targets/local-auth/challenge", () => {
         expiresAt: "2026-03-13T12:00:00.000Z",
       },
     });
+    expect(response.headers.get("cache-control")).toBe("no-store");
+  });
+
+  it("rejects when the posted origin does not match the request origin header", async () => {
+    const request = createMockRequest({
+      method: "POST",
+      url: "http://localhost:3002/compute-targets/local-auth/challenge",
+      body: { origin: "https://app.closedloop.ai" },
+      headers: { origin: "https://app-stage.preview.closedloop-stage.ai" },
+    });
+
+    const response = await POST(request, {
+      params: Promise.resolve({}),
+    } as never);
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({
+      success: false,
+      error: "Posted origin does not match request origin",
+    });
+    expect(mockIssueLocalGatewayChallenge).not.toHaveBeenCalled();
+    expect(mockRegisterJti).not.toHaveBeenCalled();
+    expect(response.headers.get("cache-control")).toBe("no-store");
+  });
+
+  it("rejects when the request origin header is missing", async () => {
+    const request = createMockRequest({
+      method: "POST",
+      url: "http://localhost:3002/compute-targets/local-auth/challenge",
+      body: { origin: "http://localhost:3000" },
+    });
+
+    const response = await POST(request, {
+      params: Promise.resolve({}),
+    } as never);
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      success: false,
+      error: "Request origin is not trusted",
+    });
+    expect(mockIssueLocalGatewayChallenge).not.toHaveBeenCalled();
+    expect(mockRegisterJti).not.toHaveBeenCalled();
     expect(response.headers.get("cache-control")).toBe("no-store");
   });
 
