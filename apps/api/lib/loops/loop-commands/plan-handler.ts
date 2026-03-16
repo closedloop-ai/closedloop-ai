@@ -221,7 +221,9 @@ const judgesReportSchema = z.object({
     z.object({
       type: z.literal("case_score"),
       case_id: z.string(),
-      final_status: z.enum(["FAILED", "NEEDS_IMPROVEMENT", "PASSED"]),
+      // Accept strings and legacy numeric encodings (1/2/3) —
+      // normalizeFinalStatus() in judge-score-fanout handles conversion.
+      final_status: z.union([z.string(), z.number()]),
       metrics: z.array(metricStatisticsSchema),
     })
   ),

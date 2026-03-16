@@ -431,6 +431,7 @@ async function launchLoopDesktop(
       contextPack,
       parentBranchName: ctx.parentInfo?.branchName ?? undefined,
       parentSessionId: ctx.parentInfo?.sessionId ?? undefined,
+      sessionId: loop.sessionId ?? undefined,
     });
 
     // Use commandId as containerId for desktop loops, null s3StateKey

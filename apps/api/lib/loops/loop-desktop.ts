@@ -97,6 +97,8 @@ type LaunchDesktopOpts = {
   contextPack: ContextPack;
   parentBranchName?: string;
   parentSessionId?: string;
+  /** The loop's own session ID from a previous run (for --resume). */
+  sessionId?: string;
 };
 
 /**
@@ -118,6 +120,7 @@ export async function launchLoopOnDesktop(
     contextPack,
     parentBranchName,
     parentSessionId,
+    sessionId,
   } = opts;
 
   const input = {
@@ -135,6 +138,7 @@ export async function launchLoopOnDesktop(
       committer: contextPack.committer ?? null,
       parentBranchName: parentBranchName ?? null,
       parentSessionId: parentSessionId ?? null,
+      sessionId: sessionId ?? null,
     } as JsonValue,
   };
 
