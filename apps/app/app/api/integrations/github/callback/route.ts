@@ -130,9 +130,16 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       orgId,
     });
 
+    // Check if user should return to onboarding after OAuth
+    const onboardingReturn = cookieStore.get("onboarding_return")?.value;
+    const returnTo = onboardingReturn ? "/onboarding" : undefined;
+
     // Clear cookies and redirect using response object pattern (Next.js App Router best practice)
-    const response = NextResponse.redirect(getSuccessRedirectUrl());
+    const response = NextResponse.redirect(getSuccessRedirectUrl(returnTo));
     response.cookies.delete(GITHUB_OAUTH_STATE_COOKIE);
+    if (onboardingReturn) {
+      response.cookies.delete("onboarding_return");
+    }
     return response;
   } catch (error) {
     log.error("[github/callback] Failed to complete OAuth", { error });
