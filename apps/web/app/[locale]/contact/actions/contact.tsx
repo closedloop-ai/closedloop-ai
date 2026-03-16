@@ -10,8 +10,18 @@ import { env } from "@/env";
 function getClientIp(
   forwardedFor: string | null,
   realIp: string | null
-): string {
-  return forwardedFor?.split(",")[0]?.trim() || realIp?.trim() || "unknown";
+): string | null {
+  const trustedRealIp = realIp?.trim();
+  if (trustedRealIp) {
+    return trustedRealIp;
+  }
+
+  const forwardedIps = forwardedFor
+    ?.split(",")
+    .map((ip) => ip.trim())
+    .filter(Boolean);
+
+  return forwardedIps?.[forwardedIps.length - 1] ?? null;
 }
 
 export const contact = async (
@@ -23,24 +33,23 @@ export const contact = async (
 }> => {
   try {
     const requestHeaders = await headers();
+    const clientIp = getClientIp(
+      requestHeaders.get("x-forwarded-for"),
+      requestHeaders.get("x-real-ip")
+    );
 
-    try {
-      await rateLimit(
-        `contact_form_${getClientIp(
-          requestHeaders.get("x-forwarded-for"),
-          requestHeaders.get("x-real-ip")
-        )}`,
-        1,
-        "1d"
-      );
-    } catch (error) {
-      if (error instanceof Error && error.message === "Rate limit exceeded") {
-        throw new Error(
-          "You have reached your request limit. Please try again later."
-        );
+    if (clientIp) {
+      try {
+        await rateLimit(`contact_form_${clientIp}`, 1, "1d");
+      } catch (error) {
+        if (error instanceof Error && error.message === "Rate limit exceeded") {
+          throw new Error(
+            "You have reached your request limit. Please try again later."
+          );
+        }
+
+        throw error;
       }
-
-      throw error;
     }
 
     if (!env.RESEND_FROM) {

@@ -16,13 +16,17 @@ runs:
   using: 'composite'
   steps:
     - name: Send Slack notification
+      env:
+        INPUT_ASSIGNEES_JSON: ${{ inputs.assignees_json }}
+        INPUT_MESSAGE: ${{ inputs.message }}
+        INPUT_WEBHOOK_URL: ${{ inputs.webhook_url }}
       shell: bash
       run: |
-        MESSAGE="${{ inputs.message }}"
+        MESSAGE="$INPUT_MESSAGE"
 
         # Parse assignees if provided
-        if [ -n '${{ inputs.assignees_json }}' ] && [ '${{ inputs.assignees_json }}' != '[]' ]; then
-          ASSIGNEES=$(echo '${{ inputs.assignees_json }}' | jq -r 'map(.login) | join(", ")')
+        if [ -n "$INPUT_ASSIGNEES_JSON" ] && [ "$INPUT_ASSIGNEES_JSON" != '[]' ]; then
+          ASSIGNEES=$(printf '%s' "$INPUT_ASSIGNEES_JSON" | jq -r 'map(.login) | join(", ")')
           if [ -z "$ASSIGNEES" ]; then
             ASSIGNEES="None"
           fi
@@ -38,4 +42,4 @@ runs:
 
         curl -X POST -H 'Content-type: application/json' \
               --data "$PAYLOAD" \
-              "${{ inputs.webhook_url }}"
+              "$INPUT_WEBHOOK_URL"
