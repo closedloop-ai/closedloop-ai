@@ -1,5 +1,5 @@
 name: 'Validate Artifact Ownership'
-description: 'Validate that a Symphony artifact belongs to the expected issue'
+description: 'Validate that a ClosedLoop artifact belongs to the expected issue'
 inputs:
   run_dir:
     description: 'Path to the run directory from artifact download'

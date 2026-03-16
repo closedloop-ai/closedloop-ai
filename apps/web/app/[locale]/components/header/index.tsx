@@ -61,7 +61,7 @@ export function Header({ dictionary }: HeaderProps) {
         </div>
         <div className="flex items-center gap-2 lg:justify-center">
           <svg
-            className="h-[18px] w-[18px] -translate-y-[0.5px] fill-current text-symphony-violet"
+            className="h-[18px] w-[18px] -translate-y-[0.5px] fill-current text-closedloop-violet"
             fill="none"
             height="22"
             viewBox="0 0 235 203"

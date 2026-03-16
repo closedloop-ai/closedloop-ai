@@ -1,6 +1,6 @@
 # Local Development Setup Guide
 
-This guide walks you through setting up the Symphony application locally.
+This guide walks you through setting up the ClosedLoop application locally.
 
 ---
 

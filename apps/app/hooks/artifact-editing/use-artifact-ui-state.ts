@@ -87,7 +87,7 @@ export function useArtifactUIState(config: UseArtifactUIStateConfig) {
   // Common UI state
   const [showMetadataPanel, setShowMetadataPanel] = useLocalStorageState(
     `panel:metadata:${artifactType}`,
-    false
+    true
   );
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
 

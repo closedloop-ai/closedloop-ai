@@ -170,7 +170,7 @@ jobs:
           } > "$WORKDIR/prd.md"
           echo "PRD written to $WORKDIR/prd.md"
 
-      - name: Run Symphony Plan
+      - name: Run ClosedLoop Plan
         id: symphony
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY_NEW }}
@@ -234,14 +234,14 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-      - name: Verify Symphony Completion
+      - name: Verify ClosedLoop Completion
         id: verify_completion
         run: |
           WORKDIR="${{ steps.setup_workdir.outputs.workdir }}"
 
           # Check workdir exists
           if [ ! -d "$WORKDIR" ]; then
-            echo "::error::Symphony failed - workdir not found: $WORKDIR"
+            echo "::error::ClosedLoop failed - workdir not found: $WORKDIR"
             exit 1
           fi
 
@@ -261,11 +261,11 @@ jobs:
           if [ -f "$WORKDIR/plan.json" ]; then
             OPEN_QUESTIONS=$(jq '.openQuestions | length' "$WORKDIR/plan.json" 2>/dev/null || echo "0")
             if [ "$OPEN_QUESTIONS" -gt 0 ]; then
-              echo "::notice::Symphony generated $OPEN_QUESTIONS questions - awaiting user input"
+              echo "::notice::ClosedLoop generated $OPEN_QUESTIONS questions - awaiting user input"
             fi
           fi
 
-          echo "Symphony plan completed successfully"
+          echo "ClosedLoop plan completed successfully"
 
       - name: Handle AWAITING_USER Status
         if: steps.verify_completion.outputs.status == 'AWAITING_USER'
@@ -699,7 +699,7 @@ jobs:
           echo "$BODY" >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
 
-      - name: Run Symphony Implementation
+      - name: Run ClosedLoop Implementation
         id: symphony
         timeout-minutes: 120
         continue-on-error: false
@@ -990,7 +990,7 @@ jobs:
           echo "$COMMENT" >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
 
-      - name: Run Symphony Plan Amend
+      - name: Run ClosedLoop Plan Amend
         id: symphony_amend
         if: steps.context.outputs.has_plan == 'true'
         uses: anthropics/claude-code-action@v1
@@ -1115,7 +1115,7 @@ jobs:
           github_token: ${{ steps.token.outputs.token }}
           action_name: process amendment
 
-      - name: Run Symphony Chat
+      - name: Run ClosedLoop Chat
         id: symphony
         if: steps.context.outputs.has_plan != 'true'
         uses: anthropics/claude-code-action@v1

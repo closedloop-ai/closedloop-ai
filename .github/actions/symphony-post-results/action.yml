@@ -1,5 +1,5 @@
 name: 'Symphony Post Results'
-description: 'Post Symphony results (plan or questions) to a GitHub issue'
+description: 'Post ClosedLoop results (plan or questions) to a GitHub issue'
 inputs:
   issue_number:
     description: 'GitHub issue number'
@@ -15,7 +15,7 @@ inputs:
     required: false
     default: ''
   artifact_url:
-    description: 'URL of the Symphony artifact (optional)'
+    description: 'URL of the ClosedLoop artifact (optional)'
     required: false
     default: ''
   delete_old_comment:

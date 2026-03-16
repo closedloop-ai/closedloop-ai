@@ -3,7 +3,7 @@ import type {
   ArtifactStatus,
 } from "@repo/api/src/types/artifact";
 import type { JudgeFeedbackItem } from "@repo/api/src/types/evaluation";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   createMockArtifact,
@@ -379,27 +379,34 @@ describe("PlanMetadataPanel", () => {
       expect(screen.getByText("Comments")).toBeDefined();
     });
 
-    test("Properties section is expanded by default", () => {
+    test("Properties section is collapsed by default", () => {
       render(<PlanMetadataPanel {...defaultProps} />);
 
-      // Properties section content should be visible (StatusMetadataSection is rendered)
-      expect(screen.getByTestId("status-metadata-section")).toBeDefined();
+      // Properties section content should NOT be visible when collapsed
+      expect(screen.queryByTestId("status-metadata-section")).toBeNull();
     });
   });
 
   describe("Details tab content", () => {
-    test("renders StatusMetadataSection", () => {
+    function expandProperties() {
+      fireEvent.click(screen.getByText("Properties"));
+    }
+
+    test("renders StatusMetadataSection when Properties is expanded", () => {
       render(<PlanMetadataPanel {...defaultProps} />);
+      expandProperties();
       expect(screen.getByTestId("status-metadata-section")).toBeDefined();
     });
 
     test("displays version information", () => {
       render(<PlanMetadataPanel {...defaultProps} />);
+      expandProperties();
       expect(screen.getByText(VERSION_PATTERN)).toBeDefined();
     });
 
     test("displays created and updated dates", () => {
       render(<PlanMetadataPanel {...defaultProps} />);
+      expandProperties();
       expect(screen.getByText(CREATED_PATTERN)).toBeDefined();
       expect(screen.getByText(UPDATED_PATTERN)).toBeDefined();
     });
@@ -411,6 +418,7 @@ describe("PlanMetadataPanel", () => {
           generationStatus={createMockGenerationStatus()}
         />
       );
+      expandProperties();
       expect(screen.getByText(GITHUB_WORKFLOW_PATTERN)).toBeDefined();
     });
 
@@ -421,6 +429,7 @@ describe("PlanMetadataPanel", () => {
           pullRequest={createMockPullRequest()}
         />
       );
+      expandProperties();
       expect(screen.getByText(PR_NUMBER_PATTERN)).toBeDefined();
       expect(screen.getByText(PR_TITLE_PATTERN)).toBeDefined();
     });

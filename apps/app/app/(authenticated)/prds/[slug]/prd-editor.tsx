@@ -13,9 +13,12 @@ import { MessageSquareDotIcon } from "lucide-react";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { NewPlanModal } from "@/app/(authenticated)/implementation-plans/components/new-plan-modal";
 import { VersionSelector } from "@/app/(authenticated)/implementation-plans/components/version-selector";
+import { ArtifactChatPanel } from "@/components/artifact-editor/artifact-chat-panel";
 import { CollaborativeEditor } from "@/components/artifact-editor/collaborative-editor";
 import { EditorToolbarRow } from "@/components/artifact-editor/editor-toolbar-row";
+import { MetadataPanel } from "@/components/artifact-editor/metadata-panel";
 import { SaveIndicator } from "@/components/artifact-editor/save-indicator";
+import { StatusMetadataSection } from "@/components/artifact-editor/status-metadata-section";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { GenerationStatusBanner } from "@/components/generation-status-banner";
 import { MoveArtifactDialog } from "@/components/move-artifact-dialog";
@@ -30,7 +33,9 @@ import {
   useRegenerateArtifact,
 } from "@/hooks/queries/use-artifacts";
 import { useRunLoop } from "@/hooks/queries/use-loops";
+import { useOrganizationUsers } from "@/hooks/queries/use-users";
 import { useEngineerRoutingSelection } from "@/lib/engineer/routing-store";
+import { transformApiUserToSelectUser } from "@/lib/user-utils";
 import type { PlanSource } from "../../implementation-plans/components/plan-source";
 import { PRDEditorHeader } from "./components/prd-editor-header";
 import { PRDMetadataPanel } from "./components/prd-metadata-panel";
@@ -79,6 +84,11 @@ export function PRDEditor({
   const metadata = useArtifactMetadata({
     artifact: prd,
   });
+  const { data: orgUsers = [] } = useOrganizationUsers();
+  const transformedOrgUsers = useMemo(
+    () => orgUsers.map(transformApiUserToSelectUser),
+    [orgUsers]
+  );
 
   const actions = useArtifactActions({
     artifact: prd,
@@ -198,7 +208,22 @@ export function PRDEditor({
         showRestore={session.isViewingHistorical}
       />
 
-      {/* Content area: toolbar + editor on left, metadata panel on right */}
+      {/* Metadata bar below header */}
+      <MetadataPanel className="pl-4" variant="bar">
+        <StatusMetadataSection
+          approver={metadata.approver}
+          assignee={metadata.assignee}
+          layout="horizontal"
+          onApproverSelect={metadata.handleApproverSelect}
+          onAssigneeChange={metadata.handleAssigneeChange}
+          onStatusChange={metadata.handleStatusChange}
+          orgUsers={transformedOrgUsers}
+          status={metadata.status}
+          teamMembers={metadata.teamMembers}
+        />
+      </MetadataPanel>
+
+      {/* Content area: main content + chat panel on right */}
       <div className="flex min-h-0 flex-1">
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
           <OptionalArtifactRoom roomId={session.liveblocksRoomId}>
@@ -297,27 +322,33 @@ export function PRDEditor({
                 value={contentController.content}
               />
             </div>
+
+            {/* Details (target repo, version, execution log, comments, attachments) */}
+            <div className="border-t px-4 py-4">
+              <PRDMetadataPanel
+                approver={metadata.approver}
+                assignee={metadata.assignee}
+                onApproverSelect={metadata.handleApproverSelect}
+                onAssigneeChange={metadata.handleAssigneeChange}
+                onStatusChange={metadata.handleStatusChange}
+                onTargetBranchBlur={metadata.handleTargetBranchBlur}
+                onTargetBranchChange={metadata.handleTargetBranchChange}
+                onTargetRepoBlur={metadata.handleTargetRepoBlur}
+                onTargetRepoChange={metadata.handleTargetRepoChange}
+                prd={prd}
+                status={metadata.status}
+                targetBranch={metadata.targetBranch}
+                targetRepo={metadata.targetRepo}
+                teamMembers={metadata.teamMembers}
+                variant="detailsOnly"
+              />
+            </div>
           </OptionalArtifactRoom>
         </div>
 
-        {/* Metadata Panel — spans full height from header down */}
+        {/* Chat panel (replaces metadata sidebar) */}
         {uiState.showMetadataPanel ? (
-          <PRDMetadataPanel
-            approver={metadata.approver}
-            assignee={metadata.assignee}
-            onApproverSelect={metadata.handleApproverSelect}
-            onAssigneeChange={metadata.handleAssigneeChange}
-            onStatusChange={metadata.handleStatusChange}
-            onTargetBranchBlur={metadata.handleTargetBranchBlur}
-            onTargetBranchChange={metadata.handleTargetBranchChange}
-            onTargetRepoBlur={metadata.handleTargetRepoBlur}
-            onTargetRepoChange={metadata.handleTargetRepoChange}
-            prd={prd}
-            status={metadata.status}
-            targetBranch={metadata.targetBranch}
-            targetRepo={metadata.targetRepo}
-            teamMembers={metadata.teamMembers}
-          />
+          <ArtifactChatPanel artifactId={prd.id} artifactType="prd" />
         ) : null}
       </div>
 

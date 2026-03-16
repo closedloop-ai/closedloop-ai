@@ -9,7 +9,7 @@
 
 ## Summary
 
-Expose Claude Code's `/plan` and `/execute` command-line options as organization-level configuration defaults in Symphony Alpha. Allow users to override these defaults when creating individual Cycles (workflows). This enables teams to standardize their planning and execution behavior while maintaining flexibility for special cases.
+Expose Claude Code's `/plan` and `/execute` command-line options as organization-level configuration defaults in ClosedLoop Alpha. Allow users to override these defaults when creating individual Cycles (workflows). This enables teams to standardize their planning and execution behavior while maintaining flexibility for special cases.
 
 **Impact**: Engineering teams and product managers can configure their preferred workflow settings once at the org level, reducing cognitive overhead and ensuring consistency across projects. Advanced users retain full control via per-Cycle overrides.
 
@@ -19,7 +19,7 @@ Expose Claude Code's `/plan` and `/execute` command-line options as organization
 
 ### Problem
 
-Currently, Claude Code's planning and execution workflows (`/plan`, `/plan-exp`, `/execute`) support rich configuration through command-line flags. However, Symphony Alpha users must manually specify these options each time they create a Cycle. This leads to:
+Currently, Claude Code's planning and execution workflows (`/plan`, `/plan-exp`, `/execute`) support rich configuration through command-line flags. However, ClosedLoop Alpha users must manually specify these options each time they create a Cycle. This leads to:
 
 1. **Repetitive configuration** — Users repeatedly set the same preferences (e.g., `--interactive`, `--use-codex`)
 2. **Inconsistent workflows** — Teams lack a way to standardize behavior across projects
@@ -39,7 +39,7 @@ We will reduce configuration overhead, improve workflow consistency, and surface
 - Claude Code CLI supports 8+ configuration flags for `/plan` and `/plan-exp`
 - `/execute` has implicit configurability (test behavior, code review, max iterations)
 - Engineering teams in pre-PMF startups benefit from standardization with escape hatches
-- Current Symphony Alpha UI has no visibility into these options
+- Current ClosedLoop Alpha UI has no visibility into these options
 
 ### Personas
 
@@ -129,7 +129,7 @@ Add an optional "Advanced Configuration" section to the Cycle creation UI:
 - Per-Cycle overrides: Any user who can create Cycles
 
 **Dependencies**:
-- Requires Symphony Alpha to support org-level settings storage
+- Requires ClosedLoop Alpha to support org-level settings storage
 - Requires Cycle metadata schema to store per-Cycle overrides
 - May need to coordinate with Claude Code CLI versioning if flags change
 
@@ -143,7 +143,7 @@ Add an optional "Advanced Configuration" section to the Cycle creation UI:
 
 ## Analytics
 
-Track the following events using PostHog (following Symphony event instrumentation standards):
+Track the following events using PostHog (following ClosedLoop event instrumentation standards):
 
 ### Events
 
@@ -292,7 +292,7 @@ Track the following events using PostHog (following Symphony event instrumentati
 ### US-005: Reset Org Defaults to Recommended Values
 
 **As an** admin
-**I want to** reset org-level defaults to Symphony's recommended configuration
+**I want to** reset org-level defaults to ClosedLoop's recommended configuration
 **So that** I can recover from misconfiguration or start fresh
 
 **Acceptance Criteria**:

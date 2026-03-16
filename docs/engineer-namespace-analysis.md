@@ -7,8 +7,8 @@
 3. [Architecture Summary](#architecture-summary)
 4. [Feature Catalog](#feature-catalog)
    - [Dashboard & Ticket Management](#1-dashboard--ticket-management)
-   - [Symphony Launch & Orchestration](#2-symphony-launch--orchestration)
-   - [Symphony Chat](#3-symphony-chat)
+   - [ClosedLoop Launch & Orchestration](#2-closedloop-launch--orchestration)
+   - [ClosedLoop Chat](#3-closedloop-chat)
    - [Codex Review](#4-codex-review)
    - [Codex Debate (Claude vs Codex)](#5-codex-debate-claude-vs-codex)
    - [PR Comment Chat](#6-pr-comment-chat)
@@ -60,7 +60,7 @@
 
 ## Overview
 
-The Engineer namespace is a localhost-only AI coding assistant UI integrated into the Symphony platform. It occupies:
+The Engineer namespace is a localhost-only AI coding assistant UI integrated into the ClosedLoop platform. It occupies:
 
 - **UI**: `apps/app/app/(authenticated)/engineer/` (pages), `apps/app/components/engineer/` (~60+ components), `apps/app/hooks/engineer/` (~15 hooks)
 - **API**: `apps/app/app/api/engineer/` (~70+ route handlers) — all inside `apps/app`, NOT in `apps/api`
@@ -115,7 +115,7 @@ engineer/page.tsx
        └── EngineerDashboard
             ├── HeaderOverflowMenu (theme, learnings, run viewer, PRs)
             └── TicketList (~2100 lines, central orchestrator)
-                 ├── ActiveTicketCard (per active Symphony session)
+                 ├── ActiveTicketCard (per active ClosedLoop session)
                  │    ├── PlanViewer (sliding panel)
                  │    ├── SymphonyChat (tabbed: chat / changes / comments)
                  │    ├── SymphonyStatus (polling w/ agent timers)
@@ -146,7 +146,7 @@ Data Flow:
 - `EngineerDashboard` — shell with terminal-style header, status widget
 - `TicketList` (~2100 lines) — central orchestrator managing all ticket state
 - `TicketCard` / `TicketListRow` — per-ticket display with workflow progress bar
-- `ActiveTicketCard` — expanded card for active Symphony sessions with sliding plan panel
+- `ActiveTicketCard` — expanded card for active ClosedLoop sessions with sliding plan panel
 
 **API Routes**:
 | Route | Method | Purpose |
@@ -159,9 +159,9 @@ Data Flow:
 
 ---
 
-### 2. Symphony Launch & Orchestration
+### 2. ClosedLoop Launch & Orchestration
 
-**What it does**: Launches the Symphony AI coding loop (`run-loop.sh`) for a ticket, creating a git worktree, writing a `prd.md`, and spawning a detached process. Tracks active sessions. Supports killing running sessions.
+**What it does**: Launches the ClosedLoop AI coding loop (`run-loop.sh`) for a ticket, creating a git worktree, writing a `prd.md`, and spawning a detached process. Tracks active sessions. Supports killing running sessions.
 
 **UI Components**:
 - `RepoPickerDialog` — two-step: select repo, add context (with @-file autocomplete and branch picker)
@@ -192,9 +192,9 @@ Data Flow:
 
 ---
 
-### 3. Symphony Chat
+### 3. ClosedLoop Chat
 
-**What it does**: Interactive chat with Claude within an active Symphony session. Supports streaming responses with tool use visualization, thinking blocks, and context window usage tracking. Part of the `ActiveTicketCard` tabbed interface (Chat / Changes / Comments tabs).
+**What it does**: Interactive chat with Claude within an active ClosedLoop session. Supports streaming responses with tool use visualization, thinking blocks, and context window usage tracking. Part of the `ActiveTicketCard` tabbed interface (Chat / Changes / Comments tabs).
 
 **UI Components**:
 - `SymphonyChat` — full chat dialog with tabs
@@ -332,7 +332,7 @@ Data Flow:
 
 ### 8. Ticket Chat (Pre-Planning)
 
-**What it does**: Chat about a Linear ticket before any Symphony session is started. Uses read-only or web-only tools depending on whether a repo path is provided.
+**What it does**: Chat about a Linear ticket before any ClosedLoop session is started. Uses read-only or web-only tools depending on whether a repo path is provided.
 
 **UI Components**: `TicketChatDialog`
 
@@ -350,7 +350,7 @@ Data Flow:
 
 ### 9. Run Viewer Chat
 
-**What it does**: Chat about Symphony run artifacts (plan.json, logs, etc.) from the Run Viewer dialog.
+**What it does**: Chat about ClosedLoop run artifacts (plan.json, logs, etc.) from the Run Viewer dialog.
 
 **UI Components**: `RunViewerDialog`, `RunOverviewDashboard`, `RunViewerChatPanel`, `FileTreeSidebar`, `ContentViewer`
 
@@ -473,7 +473,7 @@ Data Flow:
 
 ### 16. Health Check
 
-**What it does**: Checks availability of `git`, `claude`, `gh`, `codex`, `python3` and Symphony plugin.
+**What it does**: Checks availability of `git`, `claude`, `gh`, `codex`, `python3` and ClosedLoop plugin.
 
 **API Routes**:
 | Route | Method | Purpose |
@@ -539,8 +539,8 @@ Without any relay mechanism, the vast majority of features are local-only:
 | # | Feature | Remote? | Reason if Local-Only |
 |---|---------|---------|---------------------|
 | 1 | Dashboard & Tickets | NO | Work-dir checks require local filesystem. |
-| 2 | Symphony Launch | NO | Spawns `run-loop.sh`, creates worktrees, process management |
-| 3 | Symphony Chat | NO | Spawns `claude` CLI, local worktree |
+| 2 | ClosedLoop Launch | NO | Spawns `run-loop.sh`, creates worktrees, process management |
+| 3 | ClosedLoop Chat | NO | Spawns `claude` CLI, local worktree |
 | 4 | Codex Review | NO | Spawns `codex`/`claude` CLI, local git |
 | 5 | Codex Debate | NO | Spawns both `codex` and `claude` CLI |
 | 6 | PR Comment Chat | NO | Spawns `claude` CLI, local worktree |
@@ -601,7 +601,7 @@ The `work-directory` route needs: `exec` (git commands), `read_file` (sessions.j
 
 ---
 
-#### 2. Symphony Launch & Orchestration
+#### 2. ClosedLoop Launch & Orchestration
 **Via relay?** YES
 
 - **Launch**: `exec` (git branch, worktree add, fetch), `write_file` (prd.md, attachments), `spawn_detached` (run-loop.sh → returns PID), `write_file` (process.pid)
@@ -613,7 +613,7 @@ The `work-directory` route needs: `exec` (git commands), `read_file` (sessions.j
 
 ---
 
-#### 3. Symphony Chat
+#### 3. ClosedLoop Chat
 **Via relay?** YES
 
 - **Chat POST**: `read_file` (chat-history.json, plan.json, prd.md, org-patterns.toon), `spawn_stream` (claude CLI with stdin prompt → stream stdout NDJSON back), `write_file` (chat-history.json with session ID + messages), `kill` (SIGTERM on cancel)
@@ -652,7 +652,7 @@ The `work-directory` route needs: `exec` (git commands), `read_file` (sessions.j
 #### 6. PR Comment Chat
 **Via relay?** YES
 
-Same pattern as Symphony Chat (#3) plus: `exec` (git worktree list, git worktree add for PR worktree resolution), `read_file`/`write_file` (comment chat JSON).
+Same pattern as ClosedLoop Chat (#3) plus: `exec` (git worktree list, git worktree add for PR worktree resolution), `read_file`/`write_file` (comment chat JSON).
 
 **Complexity**: Medium-High. The worktree resolution step (find or create a worktree for a PR) adds multi-step `exec` sequences before the streaming spawn.
 
@@ -778,8 +778,8 @@ All routes are `exec` (gh CLI commands). No streaming, no file I/O.
 | # | Feature | Via Relay? | Complexity | Key Challenges |
 |---|---------|-----------|------------|----------------|
 | 1 | Dashboard & Tickets | **YES** | Low | Multiple git exec calls per ticket |
-| 2 | Symphony Launch | **YES** | Medium | Process group kill needs -pid support |
-| 3 | Symphony Chat | **YES** | High | Real-time stdout streaming, kill timers, session ID ordering |
+| 2 | ClosedLoop Launch | **YES** | Medium | Process group kill needs -pid support |
+| 3 | ClosedLoop Chat | **YES** | High | Real-time stdout streaming, kill timers, session ID ordering |
 | 4 | Codex Review | **YES** | Very High | 8+ shell commands, detached+streaming, temp files, log appending |
 | 5 | Codex Debate | **YES** | Medium | Stale session auto-retry logic |
 | 6 | PR Comment Chat | **YES** | Medium-High | Worktree resolution + streaming |
@@ -905,7 +905,7 @@ Detached processes (symphony/launch, deploy) survive the relay connection. If th
 The `onSessionId` callback fires synchronously during stdout parsing. The relay must persist the session ID to disk *before* acknowledging it upstream, or a disconnect between `init` and `result` events loses the session forever. Mitigation: relay-side write-before-ack protocol.
 
 #### 6. User Approval UX
-If every command requires manual approval, the experience will be painfully slow — a single Symphony chat turn may invoke dozens of tool calls internally. Mitigation: approval categories ("Always allow `claude` CLI", "Always allow `git` in this repo"), session-level blanket approvals, or risk-tiered approval (auto-approve reads, prompt for writes/spawns).
+If every command requires manual approval, the experience will be painfully slow — a single ClosedLoop chat turn may invoke dozens of tool calls internally. Mitigation: approval categories ("Always allow `claude` CLI", "Always allow `git` in this repo"), session-level blanket approvals, or risk-tiered approval (auto-approve reads, prompt for writes/spawns).
 
 #### 7. Deploy Health Check
 The dev server runs on `localhost:3000` on the user's machine. The remote server can't reach it. Mitigation options:
@@ -927,7 +927,7 @@ The relay essentially provides remote code execution on the user's machine. The 
 
 ### Why High-Level Operations Win
 
-The low-level relay approach (Section 6) works but is chatty — a single Symphony chat turn requires ~8 filesystem reads, a process spawn, stdin write, stdout streaming, a kill timer, and a file write, each as a separate round-trip. The investigation revealed a critical insight:
+The low-level relay approach (Section 6) works but is chatty — a single ClosedLoop chat turn requires ~8 filesystem reads, a process spawn, stdin write, stdout streaming, a kill timer, and a file write, each as a separate round-trip. The investigation revealed a critical insight:
 
 **Every single engineer API route has ZERO server-side dependencies.** No database access. No cloud API calls. No Clerk auth (except one route that can be dropped). The server inputs are just user messages, ticket data (already in the browser from the API), model configs, and IDs/paths.
 
@@ -980,7 +980,7 @@ This means the entire orchestration logic currently in `apps/app/app/api/enginee
 │           └── ~/.claude/.learnings/                             │
 │                                                                 │
 │  ┌─ Approval UI ──────────────────────────────────────┐        │
-│  │  "Symphony Chat for AI-350"          [Allow] [Deny] │        │
+│  │  "ClosedLoop Chat for AI-350"         [Allow] [Deny] │        │
 │  │  "Create PR: Fix auth bug"    [Allow] [Always Allow]│        │
 │  └─────────────────────────────────────────────────────┘        │
 └─────────────────────────────────────────────────────────────────┘
@@ -1014,7 +1014,7 @@ The server never sees these 6 commands — it just says `{ operation: "codex_rev
 
 17 high-level operations replace ~70+ API routes:
 
-#### Symphony Operations
+#### ClosedLoop Operations
 
 | Operation | Current Route(s) | Server → Electron Input | Electron → Server Output |
 |-----------|-----------------|------------------------|--------------------------|
@@ -1131,9 +1131,9 @@ With high-level operations, the approval UI becomes natural and user-friendly:
 
 | Operation | Approval Prompt | Risk Level |
 |-----------|----------------|------------|
-| `symphony_launch` | "Launch Symphony for **AI-350** in **my-repo**?" | Medium (creates worktree, spawns process) |
+| `symphony_launch` | "Launch ClosedLoop for **AI-350** in **my-repo**?" | Medium (creates worktree, spawns process) |
 | `symphony_chat` | "Send message to Claude in **AI-350**?" | Low (within existing session) |
-| `symphony_kill` | "Stop Symphony for **AI-350**?" | Low (user-initiated) |
+| `symphony_kill` | "Stop ClosedLoop for **AI-350**?" | Low (user-initiated) |
 | `codex_review` | "Run code review on **AI-350** with **Claude**?" | Low (read-only analysis) |
 | `git_action:push` | "Push branch **ai-350-fix-auth** to origin?" | Medium (visible to team) |
 | `git_pr` | "Create PR: **Fix auth bug in login flow**?" | Medium (visible to team) |
@@ -1313,7 +1313,7 @@ This changes the product from a "CLI relay" to a **remote compute platform with 
 │  │  • Green/amber/red  │  │                                      │   │
 │  │    status dot        │  │  ┌─ Onboarding (first run) ───────┐ │   │
 │  │  • "Connected to    │  │  │  1. Sign in (OAuth)             │ │   │
-│  │    Symphony"         │  │  │  2. Add directories             │ │   │
+│  │    ClosedLoop"       │  │  │  2. Add directories             │ │   │
 │  │  • Quick actions:   │  │  │  3. Health check (CLIs)          │ │   │
 │  │    - Open window    │  │  │  4. Done                         │ │   │
 │  │    - Pause/Resume   │  │  └──────────────────────────────────┘ │   │
@@ -1324,7 +1324,7 @@ This changes the product from a "CLI relay" to a **remote compute platform with 
 │                           │  │  Pending Approvals: 1             │ │   │
 │                           │  │                                    │ │   │
 │                           │  │  [Job List]                        │ │   │
-│                           │  │   ✓ AI-350: Symphony running      │ │   │
+│                           │  │   ✓ AI-350: ClosedLoop running    │ │   │
 │                           │  │   ◐ AI-351: Awaiting approval     │ │   │
 │                           │  │   ✓ AI-352: Review complete       │ │   │
 │                           │  └──────────────────────────────────┘ │   │
@@ -1379,10 +1379,10 @@ Users can upgrade any tier to "Always Allow" from the approval dialog. Settings 
 Modeled after Tailscale's onboarding — minimal steps, immediate value:
 
 1. **Install & Launch**: DMG/MSI/AppImage → double-click → app opens
-2. **Sign In**: "Sign in with Symphony" button → system browser opens Clerk login → deep link back → authenticated
+2. **Sign In**: "Sign in with ClosedLoop" button → system browser opens Clerk login → deep link back → authenticated
 3. **Add Directories**: File picker or drag-and-drop to add code directories the app can access (security boundary)
 4. **Health Check**: Automatic — shows green/red for each CLI tool (claude, codex, git, gh). Links to install missing tools
-5. **Connected**: Tray icon turns green, "Connected to Symphony" — ready to receive jobs from the web UI
+5. **Connected**: Tray icon turns green, "Connected to ClosedLoop" — ready to receive jobs from the web UI
 
 Total time: ~2 minutes for an engineer, ~5 minutes for a PM (may need to install CLI tools).
 
@@ -1397,7 +1397,7 @@ Total time: ~2 minutes for an engineer, ~5 minutes for a PM (may need to install
 6. PM clicks [Approve]
 7. Desktop client executes symphony_launch locally (creates worktree, spawns run-loop.sh)
 8. Desktop client streams status back to server via WebSocket
-9. Server relays to web app → PM sees "Symphony running" with live status
+9. Server relays to web app → PM sees "ClosedLoop running" with live status
 10. PM can also see status in desktop client's dashboard
 ```
 

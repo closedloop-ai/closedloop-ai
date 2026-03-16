@@ -1,6 +1,7 @@
 "use client";
 
 import { EngineerRoutingMode } from "@repo/api/src/types/relay";
+import { useAuth } from "@repo/auth/client";
 import { useEffect } from "react";
 import { useComputeTargetStatusStream } from "@/hooks/queries/use-compute-target-status-stream";
 import { useComputeTargets } from "@/hooks/queries/use-compute-targets";
@@ -10,12 +11,14 @@ import {
 } from "@/lib/engineer/constants";
 import { useElectronDetection } from "@/lib/engineer/electron-detection";
 import { installEngineerFetchInterceptor } from "@/lib/engineer/engineer-fetch-interceptor";
+import { setLocalGatewayAuthTokenProvider } from "@/lib/engineer/local-gateway-session";
 import {
   getEngineerRoutingSelection,
   setEngineerRoutingAutoSelection,
 } from "@/lib/engineer/routing-store";
 
 export function EngineerTransportBootstrap() {
+  const { getToken } = useAuth();
   const detection = useElectronDetection(true);
   useComputeTargetStatusStream(CLOUD_RELAY_ENABLED);
   // Always fetch compute targets so we can resolve the local electron's
@@ -67,6 +70,11 @@ export function EngineerTransportBootstrap() {
       force: true,
     });
   }, [detection.detected, detection.loading, detection.machineName, targets]);
+
+  useEffect(() => {
+    setLocalGatewayAuthTokenProvider(getToken);
+    return () => setLocalGatewayAuthTokenProvider(null);
+  }, [getToken]);
 
   useEffect(() => installEngineerFetchInterceptor(), []);
 

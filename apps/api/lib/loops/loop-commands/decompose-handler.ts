@@ -125,6 +125,7 @@ async function ingestDecomposeArtifacts(
         description: buildFullDescription(feature),
         priority: PRIORITY_MAP[feature.priority ?? "MEDIUM"] ?? Priority.Medium,
         status: IssueStatus.NotStarted,
+        ...(prd.assigneeId ? { assigneeId: prd.assigneeId } : {}),
       });
 
       await entityLinksService.createLink(organizationId, {

@@ -94,7 +94,7 @@ No sycophantic language. Brief, factual — state what changed.
 Read `.gitmessage` first and follow its format.
 
 ## Background
-Symphony: human-governed, AI-centric software delivery platform. AI produces artifacts; humans review at milestones. Hybrid: source on customer infra, cloud control plane orchestrates. 'Workflow' = user-defined step sequences, NOT generated artifacts.
+ClosedLoop: human-governed, AI-centric software delivery platform. AI produces artifacts; humans review at milestones. Hybrid: source on customer infra, cloud control plane orchestrates. 'Workflow' = user-defined step sequences, NOT generated artifacts.
 
 ## Learned Patterns
 
@@ -123,7 +123,7 @@ Symphony: human-governed, AI-centric software delivery platform. AI produces art
 - **[pattern]**: Shared mappings for both server packages and frontend → `packages/api/src/types/` (server packages can't import from `apps/app/lib/`).
 - **[mistake]**: After rebase/dep updates, check Stripe apiVersion in `packages/payments/index.ts` matches installed stripe package.
 
-### Symphony CI/CD
+### ClosedLoop CI/CD
 - **[pattern]**: run-loop.sh state: `.closedloop-loop.local.md` with YAML frontmatter (active, iteration, max_iterations, etc.) — not state.json.
 - **[insight]**: run-loop.sh deletes state file on success. Check output artifacts (plan.json, plan.md) for success, not file existence.
 - **[convention]**: State file at `.claude/closedloop-loop.local.md` (repo root), NOT inside `.claude/runs/`. Not part of artifact bundle.

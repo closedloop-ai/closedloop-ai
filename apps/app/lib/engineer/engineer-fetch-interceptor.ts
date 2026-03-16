@@ -7,6 +7,11 @@ import {
   getElectronDetectionSnapshot,
   invalidateElectronDetectionCache,
 } from "./electron-detection";
+import {
+  ensureLocalGatewaySession,
+  getLastExchangeError,
+  invalidateLocalGatewaySession,
+} from "./local-gateway-session";
 import { getEngineerRoutingSelection } from "./routing-store";
 
 type InterceptorWindow = Window & {
@@ -32,11 +37,32 @@ function methodAllowsBody(method: string): boolean {
   return method !== "GET" && method !== "HEAD";
 }
 
-async function buildLocalhostRequest(
+function buildExchangeErrorResponse(exchangeError: {
+  message: string;
+  statusCode: number;
+}): Response {
+  return new Response(JSON.stringify({ error: exchangeError.message }), {
+    status: exchangeError.statusCode,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+/**
+ * Build a localhost-bound Request from the original request metadata and a
+ * pre-materialized body buffer. The body must be materialized by the caller
+ * (once) so retries can reuse the same buffer without hitting
+ * "Body has already been read."
+ */
+function buildLocalhostRequest(
   request: Request,
-  localhostUrl: URL
-): Promise<Request> {
+  localhostUrl: URL,
+  sessionToken: string | null,
+  bodyBuffer: ArrayBuffer | null
+): Request {
   const headers = stripAuthHeaders(request.headers);
+  if (sessionToken) {
+    headers.set("x-desktop-session-token", sessionToken);
+  }
 
   const init: RequestInit = {
     method: request.method,
@@ -52,9 +78,8 @@ async function buildLocalhostRequest(
     signal: request.signal,
   };
 
-  if (methodAllowsBody(request.method)) {
-    // Materialize body once to avoid stream cloning edge-cases across rewrites.
-    init.body = await request.arrayBuffer();
+  if (bodyBuffer !== null) {
+    init.body = bodyBuffer;
   }
 
   return new Request(localhostUrl.toString(), init);
@@ -139,17 +164,67 @@ function createFetchInterceptor(
       return originalFetch(request);
     }
 
+    const port = detection.port;
     const localhostUrl = new URL(
       `${requestUrl.pathname}${requestUrl.search}`,
-      `http://localhost:${detection.port}`
+      `http://localhost:${port}`
     );
 
-    const outgoing = await buildLocalhostRequest(request, localhostUrl);
+    const sessionToken = await ensureLocalGatewaySession(port);
+
+    // Short-circuit: if the session exchange failed with an actionable error
+    // (e.g. missing API key → 503), return a synthetic response immediately
+    // instead of sending a request that will always be rejected with a generic 401.
+    if (!sessionToken) {
+      const exchangeError = getLastExchangeError();
+      if (exchangeError) {
+        return buildExchangeErrorResponse(exchangeError);
+      }
+    }
+
+    // Materialize body once so retries can reuse the same buffer.
+    const bodyBuffer = methodAllowsBody(request.method)
+      ? await request.arrayBuffer()
+      : null;
+
+    const outgoing = buildLocalhostRequest(
+      request,
+      localhostUrl,
+      sessionToken,
+      bodyBuffer
+    );
     try {
-      return await originalFetch(outgoing);
+      const response = await originalFetch(outgoing);
+
+      // On 401, invalidate session, re-acquire, and retry once
+      if (response.status === 401 && sessionToken) {
+        invalidateLocalGatewaySession();
+        const freshToken = await ensureLocalGatewaySession(port);
+        if (freshToken) {
+          const retryUrl = new URL(
+            `${requestUrl.pathname}${requestUrl.search}`,
+            `http://localhost:${port}`
+          );
+          const retryRequest = buildLocalhostRequest(
+            request,
+            retryUrl,
+            freshToken,
+            bodyBuffer
+          );
+          return await originalFetch(retryRequest);
+        }
+
+        const exchangeError = getLastExchangeError();
+        if (exchangeError) {
+          return buildExchangeErrorResponse(exchangeError);
+        }
+      }
+
+      return response;
     } catch (error) {
       if (error instanceof TypeError) {
         invalidateElectronDetectionCache();
+        invalidateLocalGatewaySession();
       }
       throw error;
     }

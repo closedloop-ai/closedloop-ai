@@ -36,16 +36,14 @@ export const POST = withAnyAuth<{ created: boolean }, "/issues/[id]/comments">(
         return errorResponse("Issue not found", null, 404);
       }
 
-      // Only persist if the issue has a workstream (Comment requires workstreamId)
-      if (issue.workstreamId) {
-        await issueCommentsService.create(
-          issue.workstreamId,
-          user.id,
-          body.body
-        );
-      }
+      await issueCommentsService.create(
+        issue.organizationId,
+        user.id,
+        id,
+        body.body
+      );
 
-      return successResponse({ created: !!issue.workstreamId });
+      return successResponse({ created: true });
     } catch (error) {
       return errorResponse("Failed to create comment", error);
     }

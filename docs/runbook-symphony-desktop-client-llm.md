@@ -1,6 +1,6 @@
-# Symphony Desktop Client Setup Guide
+# ClosedLoop Desktop Client Setup Guide
 
-Get the Symphony /engineer feature running on your machine via the Electron desktop app.
+Get the ClosedLoop /engineer feature running on your machine via the Electron desktop app.
 
 ## Prerequisites
 

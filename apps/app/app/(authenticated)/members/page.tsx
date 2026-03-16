@@ -63,10 +63,10 @@ export default function MembersPage() {
           <Separator />
           <div>
             <h2 className="font-semibold text-lg tracking-tight">
-              Symphony Roles
+              ClosedLoop Roles
             </h2>
             <p className="text-muted-foreground text-sm">
-              Set the Symphony role for each member. Engineers will see the
+              Set the ClosedLoop role for each member. Engineers will see the
               Engineer view when running locally.
             </p>
           </div>

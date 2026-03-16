@@ -9,13 +9,13 @@
 
 ## Summary
 
-**What:** Enable engineering teams to execute Symphony implementation plans across multiple repositories simultaneously, creating PRs in parallel across their entire codebase from a single action in the Symphony Alpha UI.
+**What:** Enable engineering teams to execute ClosedLoop implementation plans across multiple repositories simultaneously, creating PRs in parallel across their entire codebase from a single action in the ClosedLoop Alpha UI.
 
-**Why:** Enterprise customers have monorepo and multi-repo architectures. Today, Symphony can only generate and execute plans for a single repository at a time. This forces teams to manually coordinate changes across multiple repos, losing the productivity benefits of AI-powered implementation.
+**Why:** Enterprise customers have monorepo and multi-repo architectures. Today, ClosedLoop can only generate and execute plans for a single repository at a time. This forces teams to manually coordinate changes across multiple repos, losing the productivity benefits of AI-powered implementation.
 
 **Who:** Engineering teams at organizations with multi-repo architectures (microservices, frontend/backend splits, shared libraries) who need coordinated feature delivery across codebases.
 
-**Impact:** Reduce time-to-PR for cross-repo features from hours of manual coordination to minutes of automated orchestration. Unlock Symphony for enterprise customers who can't adopt monorepos.
+**Impact:** Reduce time-to-PR for cross-repo features from hours of manual coordination to minutes of automated orchestration. Unlock ClosedLoop for enterprise customers who can't adopt monorepos.
 
 ---
 
@@ -25,7 +25,7 @@
 
 **Current pain:** When engineers need to implement features that span multiple repositories (e.g., API changes + frontend updates, or shared library updates + consumer updates), they must:
 
-1. Generate a plan for repo #1 in Symphony
+1. Generate a plan for repo #1 in ClosedLoop
 2. Execute and review PR for repo #1
 3. Generate a separate plan for repo #2
 4. Execute and review PR for repo #2
@@ -34,8 +34,8 @@
 This manual process is error-prone, time-consuming, and defeats the purpose of AI-powered development. Teams waste hours coordinating what should be an atomic change.
 
 **Evidence:**
-- Beta customer feedback: "We love Symphony but can't use it for most of our work because our architecture is split across 6 repos"
-- Support tickets from teams asking "How do I make Symphony work with microservices?"
+- Beta customer feedback: "We love ClosedLoop but can't use it for most of our work because our architecture is split across 6 repos"
+- Support tickets from teams asking "How do I make ClosedLoop work with microservices?"
 - Competitive gap: GitHub Copilot Workspace supports multi-file editing but not multi-repo coordination
 
 **Why now:**
@@ -45,7 +45,7 @@ This manual process is error-prone, time-consuming, and defeats the purpose of A
 
 ### Hypothesis
 
-**If** we enable users to select multiple repositories when creating an implementation plan, **then** they'll be able to coordinate cross-repo changes through Symphony instead of manual PR juggling, **resulting in** faster feature delivery and expanded TAM to enterprise customers with distributed architectures.
+**If** we enable users to select multiple repositories when creating an implementation plan, **then** they'll be able to coordinate cross-repo changes through ClosedLoop instead of manual PR juggling, **resulting in** faster feature delivery and expanded TAM to enterprise customers with distributed architectures.
 
 **Success looks like:**
 - 40%+ of implementation plans are scoped to 2+ repositories within 30 days of launch
@@ -108,7 +108,7 @@ This manual process is error-prone, time-consuming, and defeats the purpose of A
 - ❌ Consolidated PR that references all related PRs
 
 **Optimization (Future PRD):**
-- ❌ Codebase context caching on Symphony Alpha infrastructure
+- ❌ Codebase context caching on ClosedLoop Alpha infrastructure
 - ❌ Server-side plan generation (bypass GitHub Actions for faster iteration)
 - ❌ Differential plan generation per repository (V1 = same plan for all repos)
 
@@ -191,7 +191,7 @@ This manual process is error-prone, time-consuming, and defeats the purpose of A
 
 ### US-005: Multi-Tenant Security Enforcement
 
-**As a** Symphony Alpha platform operator
+**As a** ClosedLoop Alpha platform operator
 **I want** organization-level isolation enforced on all multi-repo operations
 **So that** customers can never see or execute workflows in other organizations' repositories
 
@@ -245,7 +245,7 @@ This manual process is error-prone, time-consuming, and defeats the purpose of A
 
 ### Workflow Registration & Validation
 
-- **Q-005**: Should Symphony validate that user repos have workflow files before execution?
+- **Q-005**: Should ClosedLoop validate that user repos have workflow files before execution?
   - **Current assumption:** No pre-flight validation. Execution fails with helpful error if workflow file missing (V1 MVP).
   - **Alternative:** GitHub API check for `.github/workflows/symphony-dispatch.yml` existence before dispatch (adds latency).
   - **Decision needed by:** Alpha testing (measure failure rate due to missing workflows)
@@ -293,7 +293,7 @@ This manual process is error-prone, time-consuming, and defeats the purpose of A
 
 ### Orphaned Workflow Runs
 
-**Risk:** If Symphony Alpha crashes or database transaction fails mid-dispatch, we could trigger GitHub workflows without corresponding GitHubActionRun records (zombie executions).
+**Risk:** If ClosedLoop Alpha crashes or database transaction fails mid-dispatch, we could trigger GitHub workflows without corresponding GitHubActionRun records (zombie executions).
 
 **Mitigation:**
 - Two-phase commit: Create all GitHubActionRun records BEFORE dispatching workflows
@@ -387,7 +387,7 @@ Track adoption of multi-repo feature:
 
 - **Web only** (Next.js static export)
 - **Tracking via:** PostHog SDK in `packages/analytics`
-- **No mobile instrumentation** (Symphony Alpha is web-only product)
+- **No mobile instrumentation** (ClosedLoop Alpha is web-only product)
 
 ---
 
@@ -511,7 +511,7 @@ These are explicitly out of scope for V1 but documented for roadmap planning:
 - **Value:** Higher quality implementations, better handling of polyglot repos
 
 ### Codebase Context Caching
-- Cache repository code context on Symphony Alpha infrastructure
+- Cache repository code context on ClosedLoop Alpha infrastructure
 - Run plan generation server-side without GitHub Actions (faster iteration)
 - **Value:** Reduce GitHub Actions costs, improve plan generation speed
 
@@ -532,7 +532,7 @@ These are explicitly out of scope for V1 but documented for roadmap planning:
 ### Glossary
 - **Plan Scope:** The set of repositories associated with an implementation plan
 - **Fan-Out Execution:** Parallel dispatch of workflows to multiple repositories
-- **Correlation ID:** Unique identifier linking workflow runs back to Symphony Alpha execution records
+- **Correlation ID:** Unique identifier linking workflow runs back to ClosedLoop Alpha execution records
 - **Multi-Tenant Isolation:** Ensuring Organization A cannot access Organization B's data
 - **Dead-Letter Queue:** Queue for webhook events that fail processing for retry/investigation
 

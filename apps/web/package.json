@@ -20,7 +20,6 @@
     "@repo/internationalization": "workspace:*",
     "@repo/next-config": "workspace:*",
     "@repo/observability": "workspace:*",
-    "@repo/rate-limit": "workspace:*",
     "@repo/security": "workspace:*",
     "@repo/seo": "workspace:*",
     "@rescale/nemo": "^2.1.1",

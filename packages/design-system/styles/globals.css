@@ -49,7 +49,12 @@
   --progress: oklch(0 0 0 / 0.09);
   --progress-foreground: oklch(0.547 0.245 275);
   --thinking: oklch(0.547 0.245 275);
-  --symphony-violet: oklch(0.61 0.256 285.5);
+  --closedloop-violet: oklch(0.61 0.256 285.5);
+
+  /* Progress badge (agent status pill): fill, stroke, text. Same in dark (cascade from :root). */
+  --progress-badge-bg: #f4defc;
+  --progress-badge-border: #b583ea;
+  --progress-badge-text: #701a84;
 
   --font-weight-bold: 600;
 }
@@ -96,7 +101,7 @@
   --progress: oklch(1 0 0 / 0.14);
   --progress-foreground: oklch(0.63 0.245 275);
   --thinking: oklch(0.63 0.245 275);
-  --symphony-violet: oklch(0.61 0.256 285.5);
+  --closedloop-violet: oklch(0.61 0.256 285.5);
 }
 
 @theme inline {
@@ -143,7 +148,7 @@
   --color-progress: var(--progress);
   --color-progress-foreground: var(--progress-foreground);
   --color-thinking: var(--thinking);
-  --color-symphony-violet: var(--symphony-violet);
+  --color-closedloop-violet: var(--closedloop-violet);
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);

@@ -63,6 +63,10 @@ export type PlanMetadataPanelProps = {
   onTargetRepoBlur: (overrideValue?: string) => void;
   onTargetBranchChange: (targetBranch: string) => void;
   onTargetBranchBlur: (overrideValue?: string) => void;
+  /**
+   * When "detailsOnly", render content without sidebar wrapper and without StatusMetadataSection.
+   */
+  variant?: "detailsOnly" | "sidebar";
 };
 
 export function PlanMetadataPanel({
@@ -87,6 +91,7 @@ export function PlanMetadataPanel({
   onTargetRepoBlur,
   onTargetBranchChange,
   onTargetBranchBlur,
+  variant = "sidebar",
 }: PlanMetadataPanelProps) {
   const { data: orgUsers = [] } = useOrganizationUsers();
   const transformedOrgUsers = useMemo(
@@ -102,112 +107,130 @@ export function PlanMetadataPanel({
     setDialogOpen,
   } = useExecutionLogDialog();
 
-  const [isPropertiesOpen, setIsPropertiesOpen] = useState(true);
+  const [isPropertiesOpen, setIsPropertiesOpen] = useState(false);
   const [isExecutionLogOpen, setIsExecutionLogOpen] = useState(false);
-  const [isRatingOpen, setIsRatingOpen] = useState(true);
+  const [isRatingOpen, setIsRatingOpen] = useState(false);
 
   const projectId = plan.projectId ?? plan.project?.id;
+
+  const detailsContent = (
+    <div className="space-y-6">
+      <CollapsibleSection
+        onOpenChange={setIsPropertiesOpen}
+        open={isPropertiesOpen}
+        title="Properties"
+      >
+        {variant === "sidebar" ? (
+          <StatusMetadataSection
+            approver={approver}
+            assignee={assignee}
+            onApproverSelect={onApproverSelect}
+            onAssigneeChange={onAssigneeChange}
+            onStatusChange={onStatusChange}
+            orgUsers={transformedOrgUsers}
+            status={status}
+            teamMembers={teamMembers}
+          />
+        ) : null}
+
+        <TargetRepositoryFields
+          onTargetBranchBlur={onTargetBranchBlur}
+          onTargetBranchChange={onTargetBranchChange}
+          onTargetRepoBlur={onTargetRepoBlur}
+          onTargetRepoChange={onTargetRepoChange}
+          targetBranch={targetBranch}
+          targetRepo={targetRepo}
+          title="Target Repository"
+        />
+
+        <SourceArtifactSection artifactId={plan.id} projectId={projectId} />
+
+        <GenerationSection generationStatus={generationStatus} />
+
+        {pullRequest ? <PullRequestSection pullRequest={pullRequest} /> : null}
+
+        {pullRequest ? (
+          <PullRequestFeedbackSection pullRequestId={pullRequest.id} />
+        ) : null}
+
+        {previewDeployment ? (
+          <PreviewDeploymentSection
+            isRefreshing={isPreviewRefreshing}
+            onRefresh={onPreviewRefresh}
+            previewDeployment={previewDeployment}
+          />
+        ) : null}
+
+        <ArtifactVersionInfo
+          createdAt={plan.version.createdAt}
+          updatedAt={plan.updatedAt}
+          version={plan.version.version}
+        />
+      </CollapsibleSection>
+
+      <CollapsibleSection
+        onOpenChange={setIsExecutionLogOpen}
+        open={isExecutionLogOpen}
+        title="Execution Log"
+      >
+        <ExecutionLogSummary
+          artifactId={plan.id}
+          onViewFullTrace={handleViewFullTrace}
+        />
+      </CollapsibleSection>
+
+      <EvaluationSection artifactId={plan.id} judgeItems={judgeItems} />
+
+      <EvaluationSection
+        artifactId={plan.id}
+        emptyMessage="Code judge feedback is not available yet"
+        judgeItems={codeJudgeItems}
+        title="Code Evaluation"
+      />
+
+      <PerformanceSection artifactId={plan.id} />
+
+      <CollapsibleSection
+        onOpenChange={setIsRatingOpen}
+        open={isRatingOpen}
+        title="Rating"
+      >
+        <RatingSection
+          artifactId={plan.id}
+          currentPlanVersion={plan.version.version}
+        />
+      </CollapsibleSection>
+
+      <CommentsSection artifactId={plan.id} />
+
+      <AttachmentsSection artifactId={plan.id} />
+
+      <CustomFieldsSection
+        entityId={plan.id}
+        entityType={CustomFieldEntityType.Artifact}
+        values={plan.customFields}
+      />
+    </div>
+  );
+
+  if (variant === "detailsOnly") {
+    return (
+      <>
+        {detailsContent}
+        <ExecutionLogDialog
+          initialSessionId={selectedSessionId}
+          onOpenChange={setDialogOpen}
+          open={dialogOpen}
+          trace={dialogTrace}
+        />
+      </>
+    );
+  }
 
   return (
     <>
       <MetadataPanel title="Implementation Plan Details">
-        <div className="space-y-6">
-          <CollapsibleSection
-            onOpenChange={setIsPropertiesOpen}
-            open={isPropertiesOpen}
-            title="Properties"
-          >
-            <StatusMetadataSection
-              approver={approver}
-              assignee={assignee}
-              onApproverSelect={onApproverSelect}
-              onAssigneeChange={onAssigneeChange}
-              onStatusChange={onStatusChange}
-              orgUsers={transformedOrgUsers}
-              status={status}
-              teamMembers={teamMembers}
-            />
-
-            <TargetRepositoryFields
-              onTargetBranchBlur={onTargetBranchBlur}
-              onTargetBranchChange={onTargetBranchChange}
-              onTargetRepoBlur={onTargetRepoBlur}
-              onTargetRepoChange={onTargetRepoChange}
-              targetBranch={targetBranch}
-              targetRepo={targetRepo}
-              title="Target Repository"
-            />
-
-            <SourceArtifactSection artifactId={plan.id} projectId={projectId} />
-
-            <GenerationSection generationStatus={generationStatus} />
-
-            {pullRequest ? (
-              <PullRequestSection pullRequest={pullRequest} />
-            ) : null}
-
-            {pullRequest ? (
-              <PullRequestFeedbackSection pullRequestId={pullRequest.id} />
-            ) : null}
-
-            {previewDeployment ? (
-              <PreviewDeploymentSection
-                isRefreshing={isPreviewRefreshing}
-                onRefresh={onPreviewRefresh}
-                previewDeployment={previewDeployment}
-              />
-            ) : null}
-
-            <ArtifactVersionInfo
-              createdAt={plan.version.createdAt}
-              updatedAt={plan.updatedAt}
-              version={plan.version.version}
-            />
-          </CollapsibleSection>
-
-          <CollapsibleSection
-            onOpenChange={setIsExecutionLogOpen}
-            open={isExecutionLogOpen}
-            title="Execution Log"
-          >
-            <ExecutionLogSummary
-              artifactId={plan.id}
-              onViewFullTrace={handleViewFullTrace}
-            />
-          </CollapsibleSection>
-
-          <EvaluationSection artifactId={plan.id} judgeItems={judgeItems} />
-
-          <EvaluationSection
-            artifactId={plan.id}
-            emptyMessage="Code judge feedback is not available yet"
-            judgeItems={codeJudgeItems}
-            title="Code Evaluation"
-          />
-
-          <PerformanceSection artifactId={plan.id} />
-
-          <CollapsibleSection
-            onOpenChange={setIsRatingOpen}
-            open={isRatingOpen}
-            title="Rating"
-          >
-            <RatingSection
-              artifactId={plan.id}
-              currentPlanVersion={plan.version.version}
-            />
-          </CollapsibleSection>
-
-          <CommentsSection artifactId={plan.id} />
-
-          <AttachmentsSection artifactId={plan.id} />
-
-          <CustomFieldsSection
-            entityId={plan.id}
-            entityType={CustomFieldEntityType.Artifact}
-            values={plan.customFields}
-          />
-        </div>
+        {detailsContent}
       </MetadataPanel>
       <ExecutionLogDialog
         initialSessionId={selectedSessionId}
