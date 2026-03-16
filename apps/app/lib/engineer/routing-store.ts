@@ -93,8 +93,14 @@ function normalizeSelection(
 ): EngineerRoutingSelection {
   return {
     mode,
+    // Preserve computeTargetId for both CloudRelay and LocalElectron modes.
+    // LocalElectron still needs a compute target ID for loop dispatch
+    // (loops go through the API → desktop gateway, not localhost proxy).
     computeTargetId:
-      mode === EngineerRoutingMode.CloudRelay ? computeTargetId : null,
+      mode === EngineerRoutingMode.CloudRelay ||
+      mode === EngineerRoutingMode.LocalElectron
+        ? computeTargetId
+        : null,
     source,
     updatedAt: Date.now(),
   };

@@ -1057,7 +1057,8 @@ model Loop {
   error Json? // { code: string, message: string }
 
   // Extensible metadata
-  metadata Json @default("{}") @map("metadata")
+  metadata           Json  @default("{}") @map("metadata")
+  uploadedArtifacts  Json? @map("uploaded_artifacts")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")

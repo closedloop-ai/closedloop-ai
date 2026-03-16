@@ -220,14 +220,17 @@ export function useRunLoop() {
       artifactId,
       command,
       prompt,
+      computeTargetId,
     }: {
       artifactId: string;
       command: "plan" | "execute" | "request_changes" | "decompose";
       prompt?: string;
+      computeTargetId?: string | null;
     }) =>
       apiClient.post<CreateLoopResponse>(`/artifacts/${artifactId}/run-loop`, {
         command,
         prompt,
+        ...(computeTargetId ? { computeTargetId } : {}),
       }),
     onSuccess: (_, { artifactId }) => {
       queryClient.invalidateQueries({ queryKey: loopKeys.lists() });

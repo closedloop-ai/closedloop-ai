@@ -208,6 +208,38 @@ function truncateForSummary(content: string, maxLength = 2000): string {
 // ---------------------------------------------------------------------------
 
 /**
+ * Build a ContextPack in memory without uploading to S3.
+ * Used for both S3 upload (ECS) and inline dispatch (desktop).
+ */
+export async function buildContextPackInMemory(
+  loop: LoopForContextPack,
+  organizationId: string,
+  secrets?: { anthropicApiKey?: string; githubToken?: string },
+  committer?: { name: string; email: string }
+): Promise<ContextPack> {
+  const [primaryArtifacts, refArtifacts, priorLoopSummaries] =
+    await Promise.all([
+      fetchPrimaryArtifact(loop, organizationId),
+      fetchContextRefArtifacts(loop, organizationId),
+      fetchParentLoopSummary(loop, organizationId),
+    ]);
+
+  // Context ref artifacts first (Issue/PRD), then primary artifact
+  const artifacts = [...refArtifacts, ...primaryArtifacts];
+
+  return {
+    command: loop.command,
+    prompt: loop.prompt ?? undefined,
+    artifacts,
+    repoInfo: loop.repo ?? undefined,
+    priorLoopSummaries:
+      priorLoopSummaries.length > 0 ? priorLoopSummaries : undefined,
+    committer,
+    secrets,
+  };
+}
+
+/**
  * Build and upload a ContextPack for the given loop.
  *
  * Assembles:
@@ -222,29 +254,15 @@ export async function buildContextPack(
   loop: LoopForContextPack,
   organizationId: string,
   stateKeyPrefix: string,
-  secrets?: { anthropicApiKey: string; githubToken?: string },
+  secrets?: { anthropicApiKey?: string; githubToken?: string },
   committer?: { name: string; email: string }
 ): Promise<string> {
-  const [primaryArtifacts, refArtifacts, priorLoopSummaries] =
-    await Promise.all([
-      fetchPrimaryArtifact(loop, organizationId),
-      fetchContextRefArtifacts(loop, organizationId),
-      fetchParentLoopSummary(loop, organizationId),
-    ]);
-
-  // Context ref artifacts first (Issue/PRD), then primary artifact
-  const artifacts = [...refArtifacts, ...primaryArtifacts];
-
-  const contextPack: ContextPack = {
-    command: loop.command,
-    prompt: loop.prompt ?? undefined,
-    artifacts,
-    repoInfo: loop.repo ?? undefined,
-    priorLoopSummaries:
-      priorLoopSummaries.length > 0 ? priorLoopSummaries : undefined,
-    committer,
+  const contextPack = await buildContextPackInMemory(
+    loop,
+    organizationId,
     secrets,
-  };
+    committer
+  );
 
   const s3Key = await uploadContextPack(stateKeyPrefix, contextPack);
   return s3Key;

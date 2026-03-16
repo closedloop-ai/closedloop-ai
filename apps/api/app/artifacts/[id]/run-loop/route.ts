@@ -1,8 +1,5 @@
 import { success } from "@repo/api/src/types/common";
-import type {
-  CreateLoopRequest,
-  CreateLoopResponse,
-} from "@repo/api/src/types/loop";
+import type { CreateLoopResponse } from "@repo/api/src/types/loop";
 import { log } from "@repo/observability/log";
 import { waitUntil } from "@vercel/functions";
 import { NextResponse } from "next/server";
@@ -19,24 +16,15 @@ import {
   parseBody,
 } from "@/lib/route-utils";
 import { artifactsService } from "../../service";
+import { validateComputeTarget } from "./compute-target-validation";
+import { COMMAND_MAP, resolveLoopContext } from "./run-loop-helpers";
 import { runLoopSchema } from "./validators";
-
-/**
- * Map route body commands to LoopCommand enum values.
- */
-const COMMAND_MAP = {
-  plan: "PLAN",
-  execute: "EXECUTE",
-  request_changes: "REQUEST_CHANGES",
-  decompose: "DECOMPOSE",
-} as const;
 
 export const POST = withAuth<CreateLoopResponse, "/artifacts/[id]/run-loop">(
   async ({ user }, request, params) => {
     try {
       const { id: artifactId } = await params;
 
-      // Parse and validate body
       const { body, errorResponse: parseError } = await parseBody(
         request,
         runLoopSchema
@@ -45,12 +33,10 @@ export const POST = withAuth<CreateLoopResponse, "/artifacts/[id]/run-loop">(
         return parseError;
       }
 
-      // Verify artifact exists and belongs to org
       const artifact = await artifactsService.findWithRegenerationContext(
         artifactId,
         user.organizationId
       );
-
       if (!artifact) {
         return notFoundResponse("Artifact");
       }
@@ -73,21 +59,20 @@ export const POST = withAuth<CreateLoopResponse, "/artifacts/[id]/run-loop">(
         }
       }
 
-      // Use findOrCreateWorkstream for robust source discovery via entity links,
-      // title matching, and auto-workstream creation — matching the pattern
-      // used by regenerate/requestChanges/executePlan service methods.
-      const { workstream: resolvedWorkstream, source } =
-        await artifactsService.findOrCreateWorkstream(
-          user.organizationId,
-          artifact,
-          user.id
-        );
-
-      const workstream = resolvedWorkstream ?? artifact.workstream;
-
-      // Resolve repo: body override → source → artifact fallback
-      const targetRepo =
-        body.repo?.fullName ?? source?.targetRepo ?? artifact.targetRepo;
+      const {
+        workstream,
+        targetRepo,
+        targetBranch,
+        contextRefs,
+        parentLoopId,
+      } = await resolveLoopContext(
+        artifact,
+        body,
+        handler,
+        user.organizationId,
+        user.id,
+        artifactId
+      );
 
       if (handler?.requiresRepo && !targetRepo) {
         return badRequestResponse(
@@ -95,40 +80,24 @@ export const POST = withAuth<CreateLoopResponse, "/artifacts/[id]/run-loop">(
         );
       }
 
-      const targetBranch =
-        body.repo?.branch ??
-        source?.targetBranch ??
-        artifact.targetBranch ??
-        "main";
-
-      // Build context refs based on source type
-      const contextRefs: NonNullable<CreateLoopRequest["contextRefs"]> = [];
-
-      if (source) {
-        contextRefs.push({
-          sourceId: source.id,
-          sourceType: source.type,
-          include: "full",
-        });
-      }
-
-      // Find parent loop when the command builds on prior state
-      let parentLoopId: string | undefined;
-      if (handler?.requiresParent) {
-        const parentLoop = await loopsService.findLatestCompletedForArtifact(
-          artifactId,
+      if (body.computeTargetId) {
+        const ctResult = await validateComputeTarget(
+          body.computeTargetId,
           user.organizationId
         );
-        parentLoopId = parentLoop?.id;
+        if (!ctResult.valid) {
+          if (ctResult.reason === "not_found") {
+            return notFoundResponse("Compute target");
+          }
+          return badRequestResponse(
+            "Compute target is offline. Ensure the desktop app is running."
+          );
+        }
       }
 
-      // For DECOMPOSE, use the system-provided instructions as the prompt.
-      // The harness writes this to .claude/context/prompt.md and passes it
-      // as the positional argument to the claude CLI.
       const command = COMMAND_MAP[body.command];
       const prompt = body.prompt || getDefaultPrompt(command);
 
-      // Create the Loop
       const loopResponse = await loopsService.create(
         user.organizationId,
         user.id,
@@ -137,6 +106,7 @@ export const POST = withAuth<CreateLoopResponse, "/artifacts/[id]/run-loop">(
           artifactId,
           workstreamId: workstream?.id,
           parentLoopId,
+          computeTargetId: body.computeTargetId,
           prompt,
           repo: targetRepo
             ? { fullName: targetRepo, branch: targetBranch }
@@ -145,9 +115,6 @@ export const POST = withAuth<CreateLoopResponse, "/artifacts/[id]/run-loop">(
         }
       );
 
-      // Launch the loop asynchronously. waitUntil() keeps the serverless
-      // function alive after the response is sent so a Vercel deployment
-      // (or idle timeout) doesn't kill the launch mid-flight.
       const launchPromise = launchLoop(
         loopResponse.loopId,
         user.organizationId

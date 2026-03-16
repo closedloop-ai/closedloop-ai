@@ -589,6 +589,7 @@ export function initDesktopGatewaySocketServer(
 
   const io = new Server(httpServer, {
     transports: ["websocket"],
+    maxHttpBufferSize: 10 * 1024 * 1024, // 10MB for large loop artifacts
     cors: {
       origin: true,
       credentials: true,
