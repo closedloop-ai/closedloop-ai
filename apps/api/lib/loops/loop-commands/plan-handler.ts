@@ -1,4 +1,5 @@
 import type { PlanJson } from "@repo/api/src/types/artifact";
+import type { JsonObject } from "@repo/api/src/types/common";
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
 import type { Loop } from "@repo/api/src/types/loop";
 import type { PromptsSnapshot } from "@repo/api/src/types/prompt";
@@ -8,6 +9,7 @@ import {
 } from "@repo/database";
 import { parsePromptsSnapshotFromMarkdownEntries } from "@repo/github/prompt-snapshot-parser";
 import { log } from "@repo/observability/log";
+import { z } from "zod";
 import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
 import { resetArtifactRoom } from "@/app/artifacts/room-utils";
 import { fanOutJudgeScores } from "@/lib/judge-score-fanout";
@@ -202,6 +204,58 @@ export async function ingestPlanArtifacts(
 }
 
 // ---------------------------------------------------------------------------
+// Upload-based loading (desktop path)
+// ---------------------------------------------------------------------------
+
+const metricStatisticsSchema = z.object({
+  metric_name: z.string(),
+  threshold: z.number(),
+  score: z.number(),
+  justification: z.string(),
+});
+
+const judgesReportSchema = z.object({
+  report_id: z.string(),
+  timestamp: z.string(),
+  stats: z.array(
+    z.object({
+      type: z.literal("case_score"),
+      case_id: z.string(),
+      // Accept strings and legacy numeric encodings (1/2/3) —
+      // normalizeFinalStatus() in judge-score-fanout handles conversion.
+      final_status: z.union([z.string(), z.number()]),
+      metrics: z.array(metricStatisticsSchema),
+    })
+  ),
+});
+
+const planUploadSchema = z.object({
+  plan: z
+    .object({
+      content: z.string(),
+      raw: z.record(z.string(), z.unknown()).optional(),
+    })
+    .optional(),
+  openQuestions: z.string().optional(),
+  judges: judgesReportSchema.optional(),
+});
+
+/**
+ * Extract plan artifacts from uploaded JSON (desktop harness).
+ * Mirrors downloadPlanArtifacts but reads from the DB-stored uploadedArtifacts.
+ */
+function planArtifactsFromUpload(uploaded: JsonObject): PlanArtifacts {
+  const parsed = planUploadSchema.parse(uploaded);
+  const planContent = parsed.plan?.content ?? null;
+  const questionsContent = parsed.openQuestions ?? null;
+  const judgesReport = (parsed.judges as JudgesReport) ?? null;
+  // Prompt snapshots not available in desktop upload path
+  const promptsSnapshot: PromptsSnapshot | null = null;
+
+  return { planContent, questionsContent, judgesReport, promptsSnapshot };
+}
+
+// ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
 
@@ -213,6 +267,8 @@ export const planHandler = defineHandler<PlanArtifacts>({
   downloadArtifacts(stateKeyPrefix: string) {
     return downloadPlanArtifacts(stateKeyPrefix);
   },
+
+  downloadFromUpload: planArtifactsFromUpload,
 
   async ingest(loop: Loop, organizationId: string, artifacts: PlanArtifacts) {
     await ingestPlanArtifacts(loop, organizationId, artifacts);
@@ -227,6 +283,8 @@ export const requestChangesHandler = defineHandler<PlanArtifacts>({
   downloadArtifacts(stateKeyPrefix: string) {
     return downloadPlanArtifacts(stateKeyPrefix);
   },
+
+  downloadFromUpload: planArtifactsFromUpload,
 
   async ingest(loop: Loop, organizationId: string, artifacts: PlanArtifacts) {
     await ingestPlanArtifacts(loop, organizationId, artifacts);

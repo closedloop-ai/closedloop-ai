@@ -2,10 +2,7 @@ import type {
   LoopEvent,
   LoopEventsPaginatedResponse,
 } from "@repo/api/src/types/loop";
-import {
-  extractBearerToken,
-  verifyLoopRunnerToken,
-} from "@/lib/auth/loop-runner-jwt";
+import { authenticateLoopRunner } from "@/lib/auth/loop-runner-jwt";
 import { withAuth } from "@/lib/auth/with-auth";
 import { loopEventBus } from "@/lib/loops/loop-event-bus";
 import { handleLoopEvent } from "@/lib/loops/loop-orchestrator";
@@ -151,19 +148,11 @@ export async function POST(
   try {
     const { id: loopId } = await params;
 
-    const token = extractBearerToken(request);
-    if (token instanceof Response) {
-      return token;
+    const auth = await authenticateLoopRunner(request, loopId);
+    if (!auth.ok) {
+      return auth.response;
     }
-
-    const claims = await verifyLoopRunnerToken(token);
-    if (claims.loopId !== loopId) {
-      return errorResponse(
-        "Token does not match loop",
-        new Error("Forbidden"),
-        403
-      );
-    }
+    const claims = auth.claims;
 
     const nonce = extractEventNonce(request);
     if (nonce instanceof Response) {

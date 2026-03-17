@@ -6,7 +6,7 @@ vi.mock("@/lib/auth/loop-runner-jwt", async () => {
   >("@/lib/auth/loop-runner-jwt");
   return {
     ...actual,
-    verifyLoopRunnerToken: vi.fn(),
+    authenticateLoopRunner: vi.fn(),
   };
 });
 
@@ -33,7 +33,7 @@ vi.mock("@/app/loops/service", async () => {
 
 import { POST } from "@/app/loops/[id]/events/route";
 import { loopsService, ReplayDetectedError } from "@/app/loops/service";
-import { verifyLoopRunnerToken } from "@/lib/auth/loop-runner-jwt";
+import { authenticateLoopRunner } from "@/lib/auth/loop-runner-jwt";
 import { handleLoopEvent } from "@/lib/loops/loop-orchestrator";
 
 describe("POST /api/loops/[id]/events replay handling", () => {
@@ -42,10 +42,13 @@ describe("POST /api/loops/[id]/events replay handling", () => {
   });
 
   it("returns 409 when replay is detected", async () => {
-    vi.mocked(verifyLoopRunnerToken).mockResolvedValue({
-      loopId: "loop-123",
-      organizationId: "org-123",
-      tokenId: "token-123",
+    vi.mocked(authenticateLoopRunner).mockResolvedValue({
+      ok: true,
+      claims: {
+        loopId: "loop-123",
+        organizationId: "org-123",
+        tokenId: "token-123",
+      },
     });
 
     vi.mocked(loopsService.findById).mockResolvedValue({

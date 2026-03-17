@@ -1,3 +1,4 @@
+import type { JsonObject } from "@repo/api/src/types/common";
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
 import {
   ExternalLinkType,
@@ -11,6 +12,7 @@ import {
 } from "@repo/database";
 import { parsePromptsSnapshotFromMarkdownEntries } from "@repo/github/prompt-snapshot-parser";
 import { log } from "@repo/observability/log";
+import { z } from "zod";
 import type { ExecutionResult } from "@/app/webhooks/github/types";
 import { fanOutJudgeScores } from "@/lib/judge-score-fanout";
 import { parseJsonArtifact } from "@/lib/loops/loop-artifact-ingestion";
@@ -345,6 +347,61 @@ export async function ingestExecutionArtifacts(
 }
 
 // ---------------------------------------------------------------------------
+// Upload-based loading (desktop path)
+// ---------------------------------------------------------------------------
+
+const executionResultSchema = z.object({
+  has_changes: z.boolean(),
+  pr_url: z.string(),
+  pr_number: z.union([z.string(), z.number()]),
+  pr_title: z.string().optional(),
+  branch_name: z.string(),
+  base_ref: z.string().optional(),
+  base_branch: z.string().optional(),
+  github_id: z.number().optional(),
+  commit_sha: z.string().optional(),
+});
+
+const codeJudgesReportSchema = z.object({
+  report_id: z.string(),
+  timestamp: z.string(),
+  stats: z.array(
+    z.object({
+      type: z.literal("case_score"),
+      case_id: z.string(),
+      // Accept strings and legacy numeric encodings (1/2/3) —
+      // normalizeFinalStatus() in judge-score-fanout handles conversion.
+      final_status: z.union([z.string(), z.number()]),
+      metrics: z.array(
+        z.object({
+          metric_name: z.string(),
+          threshold: z.number(),
+          score: z.number(),
+          justification: z.string(),
+        })
+      ),
+    })
+  ),
+});
+
+const executionUploadSchema = z.object({
+  executionResult: executionResultSchema.optional(),
+  codeJudges: codeJudgesReportSchema.optional(),
+});
+
+function executionArtifactsFromUpload(
+  uploaded: JsonObject
+): ExecutionArtifacts {
+  const parsed = executionUploadSchema.parse(uploaded);
+  const executionResult = (parsed.executionResult as ExecutionResult) ?? null;
+  const codeJudgesReport = (parsed.codeJudges as JudgesReport) ?? null;
+  // Prompt snapshots not available in desktop upload path
+  const promptsSnapshot: PromptsSnapshot | null = null;
+
+  return { executionResult, codeJudgesReport, promptsSnapshot };
+}
+
+// ---------------------------------------------------------------------------
 // Handler
 // ---------------------------------------------------------------------------
 
@@ -356,6 +413,8 @@ export const executeHandler = defineHandler<ExecutionArtifacts>({
   downloadArtifacts(stateKeyPrefix: string) {
     return downloadExecutionArtifacts(stateKeyPrefix);
   },
+
+  downloadFromUpload: executionArtifactsFromUpload,
 
   async ingest(
     loop: Loop,

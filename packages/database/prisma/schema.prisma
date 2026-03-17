@@ -251,6 +251,16 @@ enum LabelPosition {
   SUFFIX
 }
 
+enum ThreadSource {
+  NATIVE
+  LIVEBLOCKS
+}
+
+enum ThreadStatus {
+  OPEN
+  RESOLVED
+}
+
 // =============================================================================
 // CORE ENTITIES
 // =============================================================================
@@ -295,6 +305,7 @@ model Organization {
   computeTargets     ComputeTarget[]
   judgeHumanScores   JudgeHumanScore[]
   customFields       CustomField[]
+  commentThreads     CommentThread[]
 
   @@map("organizations")
 }
@@ -913,19 +924,89 @@ model Message {
   @@map("messages")
 }
 
-model Comment {
-  id           String   @id @default(uuid(7)) @db.Uuid
-  workstreamId String   @map("workstream_id") @db.Uuid
-  authorId     String   @map("author_id") @db.Uuid
-  content      String   @db.Text
-  artifactId   String?  @map("artifact_id") @db.Uuid
-  createdAt    DateTime @default(now()) @map("created_at")
-  updatedAt    DateTime @updatedAt @map("updated_at")
+// =============================================================================
+// COMMENT THREADS
+// =============================================================================
 
-  @@index([workstreamId, createdAt])
+model CommentThread {
+  id             String       @id @default(uuid(7)) @db.Uuid
+  organizationId String       @map("organization_id") @db.Uuid
+  source         ThreadSource @default(NATIVE)
+  externalId     String?      @map("external_id")
+  roomId         String?      @map("room_id")
+  entityId       String?      @map("entity_id") @db.Uuid
+  entityType     EntityType?  @map("entity_type")
+  status         ThreadStatus @default(OPEN)
+  metadata       Json?
+  resolvedAt     DateTime?    @map("resolved_at")
+  resolvedById   String?      @map("resolved_by_id") @db.Uuid
+  createdById    String?      @map("created_by_id") @db.Uuid
+  createdAt      DateTime     @default(now()) @map("created_at")
+  updatedAt      DateTime     @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  comments     Comment[]
+
+  @@unique([organizationId, externalId])
+  @@index([organizationId, entityId, entityType, status])
+  @@index([organizationId, roomId])
+  @@index([organizationId, status, updatedAt])
+  @@index([createdById])
+  @@map("comment_threads")
+}
+
+model Comment {
+  id         String    @id @default(uuid(7)) @db.Uuid
+  threadId   String    @map("thread_id") @db.Uuid
+  authorId   String    @map("author_id") @db.Uuid
+  body       Json
+  plainText  String?   @map("plain_text") @db.Text
+  externalId String?   @map("external_id")
+  editedAt   DateTime? @map("edited_at")
+  deletedAt  DateTime? @map("deleted_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+
+  thread      CommentThread       @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  reactions   CommentReaction[]
+  attachments CommentAttachment[]
+
+  @@unique([externalId])
+  @@index([threadId, createdAt])
   @@index([authorId])
-  @@index([artifactId])
+  @@index([deletedAt])
   @@map("comments")
+}
+
+model CommentAttachment {
+  id         String   @id @default(uuid(7)) @db.Uuid
+  commentId  String   @map("comment_id") @db.Uuid
+  externalId String?  @map("external_id")
+  name       String
+  size       Int?
+  mimeType   String?  @map("mime_type")
+  url        String?  @db.Text
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  comment Comment @relation(fields: [commentId], references: [id], onDelete: Cascade)
+
+  @@unique([externalId])
+  @@index([commentId])
+  @@map("comment_attachments")
+}
+
+model CommentReaction {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  commentId String   @map("comment_id") @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  emoji     String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  comment Comment @relation(fields: [commentId], references: [id], onDelete: Cascade)
+
+  @@unique([commentId, userId, emoji])
+  @@index([commentId])
+  @@map("comment_reactions")
 }
 
 // =============================================================================
@@ -976,7 +1057,8 @@ model Loop {
   error Json? // { code: string, message: string }
 
   // Extensible metadata
-  metadata Json @default("{}") @map("metadata")
+  metadata           Json  @default("{}") @map("metadata")
+  uploadedArtifacts  Json? @map("uploaded_artifacts")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")

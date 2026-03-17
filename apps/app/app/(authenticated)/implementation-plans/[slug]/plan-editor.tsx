@@ -223,7 +223,7 @@ export function PlanEditor({
 
       {/* Content area: main content + chat panel on right */}
       <div className="flex min-h-0 flex-1">
-        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+        <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
           <OptionalArtifactRoom roomId={session.liveblocksRoomId}>
             {/* Toolbar Row */}
             <EditorToolbarRow
@@ -295,7 +295,7 @@ export function PlanEditor({
             {/* biome-ignore lint/a11y/noNoninteractiveElementInteractions: wraps TipTap rich text editor */}
             {/* biome-ignore lint/a11y/noStaticElementInteractions: wraps TipTap rich text editor */}
             <div
-              className="flex min-h-0 flex-1 flex-col"
+              className="flex min-h-[65vh] flex-col"
               onClick={isReadOnly ? undefined : session.handleEdit}
               onKeyDown={isReadOnly ? undefined : session.handleEdit}
             >

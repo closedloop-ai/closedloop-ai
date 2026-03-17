@@ -33,6 +33,7 @@ export function createMockLoop(overrides: Partial<Loop> = {}): Loop {
     completedAt: null,
     error: null,
     metadata: {},
+    uploadedArtifacts: null,
     createdAt: new Date("2024-01-01T00:00:00Z"),
     updatedAt: new Date("2024-01-01T00:00:00Z"),
     ...overrides,

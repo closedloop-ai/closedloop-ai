@@ -23,6 +23,7 @@ import {
 import { useRef } from "react";
 import { useIsLoopsEnabled } from "@/hooks/queries/use-compute-mode";
 import { useApiClient } from "@/hooks/use-api-client";
+import { getEngineerRoutingSelection } from "@/lib/engineer/routing-store";
 import { dashboardKeys } from "./use-dashboard-stats";
 import { invalidateEntityLinkQueries } from "./use-entity-links";
 import { executionLogKeys } from "./use-execution-log";
@@ -377,8 +378,10 @@ export function useCreateAndGenerateArtifact() {
       // Then trigger generation via Loops or GitHub Actions
       try {
         if (useLoopsRef.current) {
+          const routing = getEngineerRoutingSelection();
           await apiClient.post(`/artifacts/${artifact.id}/run-loop`, {
             command: "plan",
+            computeTargetId: routing.computeTargetId,
           });
           return artifact;
         }

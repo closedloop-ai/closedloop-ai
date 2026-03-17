@@ -1,6 +1,7 @@
 import type { Loop, LoopEvent, LoopWithUser } from "@repo/api/src/types/loop";
 import { log } from "@repo/observability/log";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
+import { stopDesktopLoop } from "@/lib/loops/loop-desktop";
 import { stopLoopTask } from "@/lib/loops/loop-ecs";
 import { loopEventBus } from "@/lib/loops/loop-event-bus";
 import {
@@ -38,7 +39,18 @@ export const DELETE = withAnyAuth<Loop, "/loops/[id]">(
         return notFoundResponse("Loop");
       }
 
-      if (loop.containerId) {
+      if (loop.computeTargetId) {
+        // Desktop path: dispatch kill command to electron
+        try {
+          await stopDesktopLoop(id, loop.computeTargetId);
+        } catch (killError) {
+          log.warn("Failed to dispatch desktop kill command", {
+            loopId: id,
+            killError,
+          });
+        }
+      } else if (loop.containerId) {
+        // ECS path: stop the container task
         try {
           await stopLoopTask(loop.containerId, "Loop cancelled by user");
         } catch (stopError) {

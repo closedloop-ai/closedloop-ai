@@ -1,4 +1,4 @@
-import { Priority } from "@repo/api/src/types/common";
+import { type JsonObject, Priority } from "@repo/api/src/types/common";
 import { EntityType, LinkType } from "@repo/api/src/types/entity-link";
 import { IssueStatus } from "@repo/api/src/types/issue";
 import type {
@@ -9,6 +9,7 @@ import type {
 } from "@repo/api/src/types/loop";
 import { withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
+import { z } from "zod";
 import { artifactsService } from "@/app/artifacts/service";
 import { entityLinksService } from "@/app/entity-links/service";
 import { issuesService } from "@/app/issues/service";
@@ -124,6 +125,7 @@ async function ingestDecomposeArtifacts(
         description: buildFullDescription(feature),
         priority: PRIORITY_MAP[feature.priority ?? "MEDIUM"] ?? Priority.Medium,
         status: IssueStatus.NotStarted,
+        ...(prd.assigneeId ? { assigneeId: prd.assigneeId } : {}),
       });
 
       await entityLinksService.createLink(organizationId, {
@@ -145,6 +147,46 @@ async function ingestDecomposeArtifacts(
 }
 
 // ---------------------------------------------------------------------------
+// Upload-based loading (desktop path)
+// ---------------------------------------------------------------------------
+
+const decomposeUploadSchema = z.object({
+  features: z
+    .object({
+      features: z.array(
+        z.object({
+          title: z.string(),
+          description: z.string(),
+          priority: z.enum(["HIGH", "MEDIUM", "LOW"]).optional(),
+          userStories: z
+            .array(
+              z.object({
+                id: z.string(),
+                story: z.string(),
+                acceptanceCriteria: z.array(
+                  z.object({
+                    id: z.string(),
+                    criterion: z.string(),
+                  })
+                ),
+              })
+            )
+            .optional(),
+        })
+      ),
+    })
+    .optional(),
+});
+
+function decomposeArtifactsFromUpload(
+  uploaded: JsonObject
+): DecomposeArtifacts {
+  const parsed = decomposeUploadSchema.parse(uploaded);
+  const result = (parsed.features as DecomposeResult) ?? null;
+  return { result };
+}
+
+// ---------------------------------------------------------------------------
 // Handler
 // ---------------------------------------------------------------------------
 
@@ -156,6 +198,8 @@ export const decomposeHandler = defineHandler<DecomposeArtifacts>({
   downloadArtifacts(stateKeyPrefix: string) {
     return downloadDecomposeArtifacts(stateKeyPrefix);
   },
+
+  downloadFromUpload: decomposeArtifactsFromUpload,
 
   async ingest(
     loop: Loop,

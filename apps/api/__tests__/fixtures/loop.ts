@@ -28,6 +28,7 @@ export function buildLoop(overrides: Partial<Loop> = {}): Loop {
     completedAt: null,
     error: null,
     metadata: {},
+    uploadedArtifacts: null,
     createdAt: new Date("2026-02-25T00:00:00Z"),
     updatedAt: new Date("2026-02-25T00:00:00Z"),
     ...overrides,

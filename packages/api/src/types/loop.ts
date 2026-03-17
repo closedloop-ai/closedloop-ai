@@ -71,6 +71,7 @@ export type Loop = {
   completedAt: Date | null;
   error: { code: string; message: string } | null;
   metadata: JsonObject;
+  uploadedArtifacts: JsonObject | null;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -93,6 +94,7 @@ export type CreateLoopRequest = {
   artifactId?: string;
   workstreamId?: string;
   parentLoopId?: string;
+  computeTargetId?: string;
   prompt?: string;
   repo?: {
     fullName: string;

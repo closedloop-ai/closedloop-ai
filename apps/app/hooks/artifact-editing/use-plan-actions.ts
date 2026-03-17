@@ -10,6 +10,7 @@ import {
   useUpdateArtifact,
 } from "@/hooks/queries/use-artifacts";
 import { useRunLoop } from "@/hooks/queries/use-loops";
+import { useEngineerRoutingSelection } from "@/lib/engineer/routing-store";
 
 type UsePlanActionsConfig = {
   artifactId: string;
@@ -46,6 +47,11 @@ export function usePlanActions(config: UsePlanActionsConfig) {
   const { artifactId } = config;
   const { isLoopsEnabled: useLoops, isLoading: isComputeModeLoading } =
     useIsLoopsEnabledForArtifact(artifactId);
+  const routing = useEngineerRoutingSelection();
+  // Pass computeTargetId for both CloudRelay and LocalElectron modes.
+  // Loop dispatch always goes through the API → desktop gateway, which needs
+  // the compute target ID regardless of how the engineer dashboard proxies.
+  const computeTargetId = routing.computeTargetId;
 
   // TanStack Query mutations - GitHub Actions path
   const updateArtifact = useUpdateArtifact();
@@ -90,7 +96,7 @@ export function usePlanActions(config: UsePlanActionsConfig) {
   const handleRegenerate = useCallback(() => {
     if (useLoops) {
       runLoop.mutate(
-        { artifactId, command: "plan" },
+        { artifactId, command: "plan", computeTargetId },
         {
           onSuccess: () => toast.success("Plan regeneration started via Loop"),
         }
@@ -103,7 +109,7 @@ export function usePlanActions(config: UsePlanActionsConfig) {
         }
       );
     }
-  }, [artifactId, useLoops, runLoop, regenerateArtifact]);
+  }, [artifactId, useLoops, runLoop, regenerateArtifact, computeTargetId]);
 
   /**
    * Request changes to the implementation plan.
@@ -120,6 +126,7 @@ export function usePlanActions(config: UsePlanActionsConfig) {
               artifactId,
               command: "request_changes",
               prompt: changes,
+              computeTargetId,
             },
             {
               onSuccess: () => {
@@ -147,7 +154,7 @@ export function usePlanActions(config: UsePlanActionsConfig) {
       );
       return result.success ?? false;
     },
-    [artifactId, useLoops, runLoop, requestPlanChanges]
+    [artifactId, useLoops, runLoop, requestPlanChanges, computeTargetId]
   );
 
   /**
@@ -159,7 +166,7 @@ export function usePlanActions(config: UsePlanActionsConfig) {
     if (useLoops) {
       try {
         await runLoop.mutateAsync(
-          { artifactId, command: "execute" },
+          { artifactId, command: "execute", computeTargetId },
           {
             onSuccess: () => {
               toast.success(
@@ -180,7 +187,13 @@ export function usePlanActions(config: UsePlanActionsConfig) {
       },
     });
     return result.success ?? false;
-  }, [artifactId, useLoops, runLoop, executeImplementationPlan]);
+  }, [
+    artifactId,
+    useLoops,
+    runLoop,
+    executeImplementationPlan,
+    computeTargetId,
+  ]);
 
   return {
     // Action handlers

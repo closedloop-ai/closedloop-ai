@@ -1,3 +1,4 @@
+import type { JsonObject } from "@repo/api/src/types/common";
 import type { Loop } from "@repo/api/src/types/loop";
 
 /**
@@ -23,6 +24,16 @@ export type LoopCommandHandler = {
     loop: Loop,
     organizationId: string
   ) => Promise<void>;
+
+  /**
+   * Load artifacts from uploaded data (desktop path), then ingest.
+   * Used when loop.computeTargetId is set and uploadedArtifacts exist.
+   */
+  uploadAndIngest: (
+    uploadedArtifacts: JsonObject,
+    loop: Loop,
+    organizationId: string
+  ) => Promise<void>;
 };
 
 /**
@@ -31,12 +42,15 @@ export type LoopCommandHandler = {
  * `downloadArtifacts` returns T, `ingest` consumes T — the generic ensures
  * they agree. The returned handler exposes `downloadAndIngest` which
  * sequences them, so the orchestrator never touches the raw artifact type.
+ *
+ * `downloadFromUpload` extracts artifacts from the uploaded JSON (desktop path).
  */
 export function defineHandler<T>(config: {
   requiresRepo: boolean;
   requiresParent: boolean;
   includePrimaryArtifact: boolean;
   downloadArtifacts: (stateKeyPrefix: string) => Promise<T>;
+  downloadFromUpload?: (uploadedArtifacts: JsonObject) => T;
   ingest: (loop: Loop, organizationId: string, artifacts: T) => Promise<void>;
 }): LoopCommandHandler {
   return {
@@ -45,6 +59,15 @@ export function defineHandler<T>(config: {
     includePrimaryArtifact: config.includePrimaryArtifact,
     async downloadAndIngest(stateKeyPrefix, loop, organizationId) {
       const artifacts = await config.downloadArtifacts(stateKeyPrefix);
+      await config.ingest(loop, organizationId, artifacts);
+    },
+    async uploadAndIngest(uploadedArtifacts, loop, organizationId) {
+      if (!config.downloadFromUpload) {
+        throw new Error(
+          "Command handler does not support desktop upload ingestion"
+        );
+      }
+      const artifacts = config.downloadFromUpload(uploadedArtifacts);
       await config.ingest(loop, organizationId, artifacts);
     },
   };
