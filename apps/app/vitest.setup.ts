@@ -3,8 +3,6 @@ process.env.SKIP_ENV_VALIDATION = "true";
 
 // Set required environment variables for tests
 // This must run before any imports that depend on env vars
-process.env.NEXT_PUBLIC_POSTHOG_KEY = "phc_test_key";
-process.env.NEXT_PUBLIC_POSTHOG_HOST = "https://test.posthog.com";
 process.env.NEXT_PUBLIC_APP_URL = "http://localhost:3000";
 process.env.NEXT_PUBLIC_WEB_URL = "http://localhost:3001";
 process.env.NEXT_PUBLIC_DOCS_URL = "http://localhost:3004";

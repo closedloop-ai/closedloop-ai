@@ -5,7 +5,6 @@ import "./styles.css";
 import { AnalyticsProvider } from "@repo/analytics/provider";
 import { DesignSystemProvider } from "@repo/design-system";
 import { fonts } from "@repo/design-system/lib/fonts";
-import { Toolbar } from "@repo/feature-flags/components/toolbar";
 import type { Metadata } from "next";
 import { Silkscreen } from "next/font/google";
 import type { ReactNode } from "react";
@@ -35,7 +34,7 @@ const RootLayout = ({ children }: RootLayoutProperties) => (
   >
     <body className="overflow-hidden">
       <QueryProvider>
-        <AnalyticsProvider>
+        <AnalyticsProvider bootstrapFeatureFlags trackPageViews>
           <DesignSystemProvider
             helpUrl={env.NEXT_PUBLIC_DOCS_URL}
             privacyUrl={new URL(
@@ -51,7 +50,6 @@ const RootLayout = ({ children }: RootLayoutProperties) => (
           </DesignSystemProvider>
         </AnalyticsProvider>
       </QueryProvider>
-      <Toolbar />
     </body>
   </html>
 );

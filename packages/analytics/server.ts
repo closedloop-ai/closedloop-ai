@@ -6,7 +6,7 @@ const { NEXT_PUBLIC_POSTHOG_KEY, NEXT_PUBLIC_POSTHOG_HOST } = keys();
 
 // Create a no-op analytics client for placeholder credentials
 const createAnalytics = () => {
-  if (NEXT_PUBLIC_POSTHOG_KEY === "phc_placeholder") {
+  if (!NEXT_PUBLIC_POSTHOG_KEY) {
     return {
       capture: () => {},
       identify: () => {},

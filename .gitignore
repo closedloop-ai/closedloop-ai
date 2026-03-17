@@ -269,23 +269,24 @@ $RECYCLE.BIN/
 .cursor/
 .github/copilot-instructions.md
 
-# Symphony
-.symphony
+# ClosedLoop
+.closedloop
 .closedloop-ai/*
 !.closedloop-ai/loops-setup.sh
 .agent-types
 CLAUDE.md.backup
 
+# For local plans
+plan-docs
+
 # .claude
-.claude/*
+**/.claude/*
 !.claude/agents
 !.claude/commands
 !.claude/settings
 !.claude/scripts
 !.claude/skills
 !.claude/settings.json
-apps/*/.claude/
-
 
 # Database
 packages/database/generated
@@ -304,11 +305,6 @@ packages/database/generated
 # MCP local config
 .mcp.local.json
 
-# Claude Code
-.claude/.token-stats/
-.claude/work/
-.claude/closedloop-loop.local.md
-plan-docs
 
 # Review artifacts
 reviews/

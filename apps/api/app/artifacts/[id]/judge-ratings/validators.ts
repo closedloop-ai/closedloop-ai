@@ -2,7 +2,7 @@ import { hasAtMostDecimalPlaces } from "@repo/api/src/utils/math";
 import { z } from "zod";
 
 export const submitJudgeRatingValidator = z.object({
-  judgeScoreId: z.string().uuid(),
+  judgeScoreId: z.uuid(),
   rating: z
     .number()
     .min(0)

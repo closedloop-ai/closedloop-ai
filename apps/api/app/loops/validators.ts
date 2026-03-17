@@ -24,14 +24,14 @@ export const repoSchema = z.object({
 
 export const createLoopValidator = z.object({
   command: z.enum(["PLAN", "EXECUTE", "CHAT", "EXPLORE", "REQUEST_CHANGES"]),
-  artifactId: z.uuidv7().optional(),
-  workstreamId: z.uuidv7().optional(),
+  artifactId: z.uuid().optional(),
+  workstreamId: z.uuid().optional(),
   prompt: z.string().max(100_000).optional(),
   repo: repoSchema.optional(),
   contextRefs: z
     .array(
       z.object({
-        sourceId: z.uuidv7(),
+        sourceId: z.uuid(),
         sourceType: z.enum([EntityType.Artifact, EntityType.Issue]).optional(),
         include: z.enum(["full", "summary"]),
       })
@@ -157,9 +157,9 @@ export const listLoopsQueryValidator = z.object({
       "EVALUATE_PRD",
     ])
     .optional(),
-  artifactId: z.uuidv7().optional(),
-  workstreamId: z.uuidv7().optional(),
-  projectId: z.uuidv7().optional(),
+  artifactId: z.uuid().optional(),
+  workstreamId: z.uuid().optional(),
+  projectId: z.uuid().optional(),
   limit: z.coerce.number().min(1).max(200).default(50).optional(),
   offset: z.coerce.number().min(0).default(0).optional(),
 });

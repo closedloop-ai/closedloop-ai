@@ -1,67 +1,37 @@
+import { analyticsMiddleware } from "@repo/analytics/proxy";
 import { authMiddleware } from "@repo/auth/proxy";
-import {
-  noseconeOptions,
-  noseconeOptionsWithToolbar,
-  securityMiddleware,
-} from "@repo/security/proxy";
+import type { ClerkMiddlewareAuth } from "@repo/auth/server";
+import { noseconeOptions, securityMiddleware } from "@repo/security/proxy";
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
-import { env } from "./env";
 import { resolveApiOrigin } from "./lib/api-origin";
 
-const LOCALHOST_HOSTNAMES = new Set(["localhost", "127.0.0.1"]);
-const COMPUTE_TARGET_CACHE_TTL_MS = 30_000;
+// Clerk middleware wraps other middleware in its callback
+export default authMiddleware(async (auth, request) => {
+  const securityHeadersResponse = await securityHeaders();
 
-type ProxyAuth = () => Promise<{
-  userId: string | null;
-  orgId: string | null;
-  getToken: () => Promise<string | null>;
-}>;
-
-type CacheEntry = {
-  value: boolean;
-  expiresAt: number;
-};
-
-const computeTargetGuardCache = new Map<string, CacheEntry>();
-
-function isEngineerLocalPath(pathname: string): boolean {
-  return pathname.startsWith("/api/engineer/");
-}
-
-function isEngineerRelayPath(pathname: string): boolean {
-  return pathname.startsWith("/api/engineer-relay/");
-}
-
-function buildCacheKey(userId: string, orgId: string | null): string {
-  return `${orgId ?? "none"}:${userId}`;
-}
-
-async function fetchHasComputeTarget(
-  request: NextRequest,
-  token: string
-): Promise<boolean> {
-  const response = await fetch(`${resolveApiOrigin(request)}/compute-targets`, {
-    method: "GET",
-    headers: {
-      Authorization: `Bearer ${token}`,
-    },
-    cache: "no-store",
-  });
-
-  if (!response.ok) {
-    return false;
+  const guardResponse = await engineerGuard(auth, request);
+  if (guardResponse) {
+    applySecurityHeaders(guardResponse, securityHeadersResponse);
+    return guardResponse;
   }
 
-  const payload = (await response.json().catch(() => null)) as {
-    success: true;
-    data: unknown;
-  } | null;
+  const response = NextResponse.next();
+  const analyticsResponse = await analyticsMiddleware(response)(request);
+  applySecurityHeaders(analyticsResponse, securityHeadersResponse);
 
-  return Boolean(
-    payload?.success && Array.isArray(payload.data) && payload.data.length > 0
-  );
-}
+  return analyticsResponse;
+});
+
+export const config = {
+  matcher: [
+    // Skip Next.js internals and all static files, unless found in search params
+    // Do not use String.raw here! Next.js can't statically analyze String.raw, so this breaks the build.
+    "/((?!_next|[^?]*\\.(?:html?|css|js(?!on)|jpe?g|webp|png|gif|svg|ttf|woff2?|ico|csv|docx?|xlsx?|zip|webmanifest)).*)",
+    // Always run for API routes
+    "/(api|trpc)(.*)",
+  ],
+};
 
 /**
  * Guards engineer API routes to localhost or authenticated users with
@@ -74,7 +44,7 @@ async function fetchHasComputeTarget(
  * See CLAUDE.md "Engineer Feature — Architectural Exception" for full context.
  */
 async function engineerGuard(
-  auth: ProxyAuth,
+  auth: ClerkMiddlewareAuth,
   request: NextRequest
 ): Promise<NextResponse | null> {
   const pathname = request.nextUrl.pathname;
@@ -104,29 +74,11 @@ async function engineerGuard(
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const cacheKey = buildCacheKey(authState.userId, authState.orgId ?? null);
-  const cached = computeTargetGuardCache.get(cacheKey);
-  const now = Date.now();
-  if (cached && cached.expiresAt > now) {
-    if (cached.value) {
-      return null;
-    }
-    return NextResponse.json(
-      { error: "Engineer API requires a registered compute target" },
-      { status: 403 }
-    );
-  }
-
   const token = await authState.getToken();
   const hasComputeTarget =
     typeof token === "string" && token.length > 0
       ? await fetchHasComputeTarget(request, token).catch(() => false)
       : false;
-
-  computeTargetGuardCache.set(cacheKey, {
-    value: hasComputeTarget,
-    expiresAt: now + COMPUTE_TARGET_CACHE_TTL_MS,
-  });
 
   if (hasComputeTarget) {
     return null;
@@ -138,27 +90,53 @@ async function engineerGuard(
   );
 }
 
-const securityHeaders = env.FLAGS_SECRET
-  ? securityMiddleware(noseconeOptionsWithToolbar)
-  : securityMiddleware(noseconeOptions);
+const LOCALHOST_HOSTNAMES = new Set(["localhost", "127.0.0.1"]);
 
-// Clerk middleware wraps other middleware in its callback
-// For apps using Clerk, compose middleware inside authMiddleware callback
-// For apps without Clerk, use createNEMO for composition (see apps/web)
-export default authMiddleware(async (auth, request) => {
-  const guardResponse = await engineerGuard(auth as ProxyAuth, request);
-  if (guardResponse) {
-    return guardResponse;
+function isEngineerLocalPath(pathname: string): boolean {
+  return pathname.startsWith("/api/engineer/");
+}
+
+function isEngineerRelayPath(pathname: string): boolean {
+  return pathname.startsWith("/api/engineer-relay/");
+}
+
+async function fetchHasComputeTarget(
+  request: NextRequest,
+  token: string
+): Promise<boolean> {
+  const response = await fetch(`${resolveApiOrigin(request)}/compute-targets`, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+    cache: "no-store",
+  });
+
+  if (!response.ok) {
+    return false;
   }
-  return securityHeaders();
-});
 
-export const config = {
-  matcher: [
-    // Skip Next.js internals and all static files, unless found in search params
-    // Do not use String.raw here! Next.js can't statically analyze String.raw, so this breaks the build.
-    "/((?!_next|[^?]*\\.(?:html?|css|js(?!on)|jpe?g|webp|png|gif|svg|ttf|woff2?|ico|csv|docx?|xlsx?|zip|webmanifest)).*)",
-    // Always run for API routes
-    "/(api|trpc)(.*)",
-  ],
-};
+  const payload = (await response.json().catch(() => null)) as {
+    success: true;
+    data: unknown;
+  } | null;
+
+  return Boolean(
+    payload?.success && Array.isArray(payload.data) && payload.data.length > 0
+  );
+}
+
+const securityHeaders = securityMiddleware(noseconeOptions);
+
+function applySecurityHeaders(
+  target: NextResponse,
+  securityHeadersResponse: Response
+): void {
+  securityHeadersResponse.headers.forEach((value, key) => {
+    if (key.startsWith("x-middleware-")) {
+      return;
+    }
+
+    target.headers.set(key, value);
+  });
+}

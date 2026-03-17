@@ -12,18 +12,18 @@ export const createProjectValidator = z.object({
   description: z.string().optional(),
   priority: priorityEnum.optional(),
   status: projectStatusEnum.optional(),
-  assigneeId: z.uuidv7().nullable().optional(),
+  assigneeId: z.uuid().nullable().optional(),
   slug: z.string().nullable().optional(),
   targetDate: z.iso
     .datetime()
     .nullable()
     .optional()
     .transform(transformIsoDateTime),
-  teamIds: z.array(z.uuidv7()).optional(),
+  teamIds: z.array(z.uuid()).optional(),
 });
 
 export const reorderProjectsValidator = z.object({
-  projectIds: z.array(z.uuidv7()),
+  projectIds: z.array(z.uuid()),
 });
 
 export const updateProjectValidator = z.object({
@@ -31,14 +31,14 @@ export const updateProjectValidator = z.object({
   description: z.string().optional(),
   priority: priorityEnum.optional(),
   status: projectStatusEnum.optional(),
-  assigneeId: z.uuidv7().nullable().optional(),
+  assigneeId: z.uuid().nullable().optional(),
   slug: z.string().nullable().optional(),
   targetDate: z.iso
     .datetime()
     .nullable()
     .optional()
     .transform(transformIsoDateTime),
-  teamIds: z.array(z.uuidv7()).optional(),
+  teamIds: z.array(z.uuid()).optional(),
   settings: jsonObjectValidator.optional(),
   codebaseSummary: z.string().nullable().optional(),
   lastIndexedAt: z.iso
@@ -48,11 +48,11 @@ export const updateProjectValidator = z.object({
     .transform(transformIsoDateTime),
   customFields: z
     .record(
-      z.string().uuid(),
+      z.uuid(),
       z.union([
         z.string().max(10_000),
         z.number(),
-        z.array(z.string().uuid()).max(100),
+        z.array(z.uuid()).max(100),
         z.null(),
       ])
     )
