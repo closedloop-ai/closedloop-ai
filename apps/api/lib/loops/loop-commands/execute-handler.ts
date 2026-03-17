@@ -14,13 +14,16 @@ import { parsePromptsSnapshotFromMarkdownEntries } from "@repo/github/prompt-sna
 import { log } from "@repo/observability/log";
 import { z } from "zod";
 import type { ExecutionResult } from "@/app/webhooks/github/types";
-import { fanOutJudgeScores } from "@/lib/judge-score-fanout";
-import { parseJsonArtifact } from "@/lib/loops/loop-artifact-ingestion";
+import {
+  parseJsonArtifact,
+  upsertEvaluationWithJudgeScores,
+} from "@/lib/loops/loop-artifact-ingestion";
 import {
   downloadArtifactFile,
   downloadPromptSnapshotMarkdownEntries,
 } from "@/lib/loops/loop-state";
 import { upsertFromSnapshot } from "@/lib/prompts-service";
+import { judgesReportSchema } from "../judges-report-schema";
 import { defineHandler } from "./loop-command-handler";
 
 // ---------------------------------------------------------------------------
@@ -181,30 +184,11 @@ export async function ingestExecutionArtifacts(
     }
 
     if (artifacts.codeJudgesReport) {
-      const evaluation = await tx.artifactEvaluation.upsert({
-        where: {
-          artifactId_reportId: {
-            artifactId: loop.artifactId!,
-            reportId: artifacts.codeJudgesReport.report_id,
-          },
-        },
-        create: {
-          artifactId: loop.artifactId!,
-          loopId: loop.id,
-          reportType: PrismaEvaluationReportType.CODE,
-          reportId: artifacts.codeJudgesReport.report_id,
-          reportData: artifacts.codeJudgesReport,
-        },
-        update: {
-          loopId: loop.id,
-          reportType: PrismaEvaluationReportType.CODE,
-          reportData: artifacts.codeJudgesReport,
-        },
-      });
-
-      await fanOutJudgeScores({
-        evaluationId: evaluation.id,
+      await upsertEvaluationWithJudgeScores({
+        artifactId: loop.artifactId!,
+        loopId: loop.id,
         organizationId: loop.organizationId,
+        reportType: PrismaEvaluationReportType.CODE,
         report: artifacts.codeJudgesReport,
         tx,
       });
@@ -362,31 +346,9 @@ const executionResultSchema = z.object({
   commit_sha: z.string().optional(),
 });
 
-const codeJudgesReportSchema = z.object({
-  report_id: z.string(),
-  timestamp: z.string(),
-  stats: z.array(
-    z.object({
-      type: z.literal("case_score"),
-      case_id: z.string(),
-      // Accept strings and legacy numeric encodings (1/2/3) —
-      // normalizeFinalStatus() in judge-score-fanout handles conversion.
-      final_status: z.union([z.string(), z.number()]),
-      metrics: z.array(
-        z.object({
-          metric_name: z.string(),
-          threshold: z.number(),
-          score: z.number(),
-          justification: z.string(),
-        })
-      ),
-    })
-  ),
-});
-
 const executionUploadSchema = z.object({
   executionResult: executionResultSchema.optional(),
-  codeJudges: codeJudgesReportSchema.optional(),
+  codeJudges: judgesReportSchema.optional(),
 });
 
 function executionArtifactsFromUpload(

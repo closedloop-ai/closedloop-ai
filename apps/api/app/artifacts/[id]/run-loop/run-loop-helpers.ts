@@ -11,6 +11,7 @@ export const COMMAND_MAP = {
   execute: "EXECUTE",
   request_changes: "REQUEST_CHANGES",
   decompose: "DECOMPOSE",
+  evaluate_prd: "EVALUATE_PRD",
 } as const;
 
 /**

@@ -147,7 +147,15 @@ export const listLoopsQueryValidator = z.object({
     ])
     .optional(),
   command: z
-    .enum(["PLAN", "EXECUTE", "CHAT", "EXPLORE", "REQUEST_CHANGES"])
+    .enum([
+      "PLAN",
+      "EXECUTE",
+      "CHAT",
+      "EXPLORE",
+      "REQUEST_CHANGES",
+      "DECOMPOSE",
+      "EVALUATE_PRD",
+    ])
     .optional(),
   artifactId: z.uuid().optional(),
   workstreamId: z.uuid().optional(),

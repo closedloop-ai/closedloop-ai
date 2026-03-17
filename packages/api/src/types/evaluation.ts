@@ -23,6 +23,7 @@ export type EvalStatus = (typeof EvalStatus)[keyof typeof EvalStatus];
 export const EvaluationReportType = {
   Plan: "PLAN",
   Code: "CODE",
+  Prd: "PRD",
 } as const;
 
 export type EvaluationReportType =
@@ -32,6 +33,7 @@ export type EvaluationReportType =
 export const EVALUATION_REPORT_TYPE_OPTIONS = [
   EvaluationReportType.Plan,
   EvaluationReportType.Code,
+  EvaluationReportType.Prd,
 ] as const;
 
 /**

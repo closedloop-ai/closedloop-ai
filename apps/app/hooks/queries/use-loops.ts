@@ -223,7 +223,12 @@ export function useRunLoop() {
       computeTargetId,
     }: {
       artifactId: string;
-      command: "plan" | "execute" | "request_changes" | "decompose";
+      command:
+        | "plan"
+        | "execute"
+        | "request_changes"
+        | "decompose"
+        | "evaluate_prd";
       prompt?: string;
       computeTargetId?: string | null;
     }) =>
