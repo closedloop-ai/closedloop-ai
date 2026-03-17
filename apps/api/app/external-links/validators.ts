@@ -5,8 +5,8 @@ import { jsonObjectValidator } from "@/lib/validators/json";
 const externalLinkTypeEnum = z.enum(EXTERNAL_LINK_TYPE_OPTIONS);
 
 export const createExternalLinkValidator = z.object({
-  workstreamId: z.uuidv7().optional(),
-  projectId: z.uuidv7(),
+  workstreamId: z.uuid().optional(),
+  projectId: z.uuid(),
   type: externalLinkTypeEnum,
   title: z.string().min(1, "Title is required"),
   externalUrl: z.url(),
@@ -20,7 +20,7 @@ export const updateExternalLinkValidator = z.object({
 });
 
 export const findExternalLinksQueryValidator = z.object({
-  workstreamId: z.uuidv7().optional(),
-  projectId: z.uuidv7().optional(),
+  workstreamId: z.uuid().optional(),
+  projectId: z.uuid().optional(),
   type: externalLinkTypeEnum.optional(),
 });

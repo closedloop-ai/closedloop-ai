@@ -10,5 +10,5 @@ export const importGoogleDocsValidator = z.object({
   folderId: z
     .string()
     .regex(/^[a-zA-Z0-9_-]{28,40}$/, "Invalid Google Drive folder ID format"),
-  projectId: z.string().uuid("Valid project ID is required"),
+  projectId: z.uuid("Valid project ID is required"),
 });

@@ -14,5 +14,5 @@ export const updateEnumOptionValidator = z.object({
 });
 
 export const reorderEnumOptionsValidator = z.object({
-  optionIds: z.array(z.string().uuid()),
+  optionIds: z.array(z.uuid()),
 });

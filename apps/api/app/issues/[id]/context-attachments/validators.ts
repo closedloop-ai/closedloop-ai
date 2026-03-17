@@ -17,7 +17,7 @@ export const createContextAttachmentValidator = z.object({
     CONTEXT_ATTACHMENT_MIME_TYPES as unknown as [string, ...string[]]
   ),
   sizeBytes: z.number().int().positive().max(CONTEXT_ATTACHMENT_MAX_SIZE_BYTES),
-  projectId: z.string().uuid().optional(),
+  projectId: z.uuid().optional(),
 });
 
 export type CreateContextAttachmentInput = z.infer<
@@ -26,7 +26,7 @@ export type CreateContextAttachmentInput = z.infer<
 
 export const importGDriveContextValidator = z.object({
   docIds: z.array(z.string().min(1)).min(1).max(100),
-  projectId: z.string().uuid(),
+  projectId: z.uuid(),
 });
 
 export type ImportGDriveContextInput = z.infer<
