@@ -1,6 +1,6 @@
 /**
  * Unit tests for the unauthenticated AuthLayout component.
- * Verifies ClosedLoop branding, tagline, testimonial, and child rendering.
+ * Verifies ClosedLoop branding, logo rendering, and child rendering.
  */
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
@@ -12,17 +12,18 @@ vi.mock("@repo/design-system/components/ui/mode-toggle", () => ({
 import AuthLayout from "@/app/(unauthenticated)/layout";
 
 describe("AuthLayout — ClosedLoop branding", () => {
-  it("renders the ClosedLoop brand name", () => {
+  it("renders the logo images with correct alt text", () => {
     render(
       <AuthLayout>
         <div>child</div>
       </AuthLayout>
     );
 
-    expect(screen.getByText("ClosedLoop")).toBeInTheDocument();
+    const logos = screen.getAllByRole("img", { name: "ClosedLoop logo" });
+    expect(logos.length).toBe(2);
   });
 
-  it("renders the logo image with correct alt text", () => {
+  it("renders the mode toggle", () => {
     render(
       <AuthLayout>
         <div>child</div>
@@ -30,30 +31,8 @@ describe("AuthLayout — ClosedLoop branding", () => {
     );
 
     expect(
-      screen.getByRole("img", { name: "ClosedLoop logo" })
+      screen.getByRole("button", { name: "Toggle mode" })
     ).toBeInTheDocument();
-  });
-
-  it("renders the tagline", () => {
-    render(
-      <AuthLayout>
-        <div>child</div>
-      </AuthLayout>
-    );
-
-    // The tagline appears twice: once below the logo and once in the footer panel
-    const taglines = screen.getAllByText("Go fast AND go together.");
-    expect(taglines.length).toBeGreaterThanOrEqual(1);
-  });
-
-  it("renders the ClosedLoop.ai testimonial heading", () => {
-    render(
-      <AuthLayout>
-        <div>child</div>
-      </AuthLayout>
-    );
-
-    expect(screen.getByText("ClosedLoop.ai")).toBeInTheDocument();
   });
 
   it("renders children in the content area", () => {
