@@ -1,7 +1,26 @@
 import { authMiddleware } from "@repo/auth/proxy";
-import type { NextFetchEvent, NextRequest } from "next/server";
+import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { isTrustedOrigin } from "@/lib/trusted-origins";
+
+export default authMiddleware((_, request) => {
+  if (request.method === "OPTIONS") {
+    return handleOptions(request);
+  }
+
+  const response = NextResponse.next();
+  const origin = request.headers.get("origin");
+  return addCorsHeaders(response, origin);
+});
+
+export const config = {
+  matcher: [
+    // Run middleware on all routes except Next.js internals.
+    // /internal/* routes are excluded because they use secret-based auth
+    // validated directly in route handlers (not via Clerk session middleware).
+    "/((?!_next|internal).*)",
+  ],
+};
 
 function getCorsHeaders(origin: string | null): Record<string, string> {
   const headers: Record<string, string> = {
@@ -34,29 +53,4 @@ const handleOptions = (request: NextRequest) => {
     status: 204,
     headers: getCorsHeaders(origin),
   });
-};
-
-export default async function middleware(
-  request: NextRequest,
-  event: NextFetchEvent
-) {
-  if (request.method === "OPTIONS") {
-    return handleOptions(request);
-  }
-
-  const origin = request.headers.get("origin");
-
-  const response =
-    (await authMiddleware(() => NextResponse.next())(request, event)) ??
-    NextResponse.next();
-  return addCorsHeaders(response, origin);
-}
-
-export const config = {
-  matcher: [
-    // Run middleware on all routes except Next.js internals.
-    // /internal/* routes are excluded because they use secret-based auth
-    // validated directly in route handlers (not via Clerk session middleware).
-    "/((?!_next|internal).*)",
-  ],
 };

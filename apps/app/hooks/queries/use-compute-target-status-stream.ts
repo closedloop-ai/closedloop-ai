@@ -5,6 +5,7 @@ import type { QueryClient } from "@tanstack/react-query";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 import { resolveApiUrl } from "@/hooks/use-api-client";
+import { useWaitForAuthLoaded } from "@/hooks/use-wait-for-auth-loaded";
 import { computeTargetKeys } from "./use-compute-targets";
 
 const MAX_RECONNECT_ATTEMPTS = 3;
@@ -72,6 +73,7 @@ async function openStatusStream(
  */
 export function useComputeTargetStatusStream(enabled = true) {
   const { getToken } = useAuth();
+  const waitForAuthLoaded = useWaitForAuthLoaded();
   const queryClient = useQueryClient();
 
   useEffect(() => {
@@ -104,7 +106,8 @@ export function useComputeTargetStatusStream(enabled = true) {
 
       abortController = new AbortController();
 
-      getToken()
+      waitForAuthLoaded()
+        .then(() => getToken())
         .then(async (token) => {
           if (cancelled) {
             return;
@@ -146,5 +149,5 @@ export function useComputeTargetStatusStream(enabled = true) {
         abortController = null;
       }
     };
-  }, [enabled, getToken, queryClient]);
+  }, [enabled, getToken, queryClient, waitForAuthLoaded]);
 }
