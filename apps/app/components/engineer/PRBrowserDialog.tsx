@@ -52,10 +52,7 @@ import { useLearnings } from "@/hooks/engineer/use-learnings";
 import type { LearningUsed } from "@/lib/engineer/chat-utils";
 import type { ReviewFinding } from "@/lib/engineer/codex-review-parser";
 import { normalizeReviewRestoreSeed } from "@/lib/engineer/pr-browser-review-state";
-import {
-  markChatStarted,
-  resetCommentStatus,
-} from "@/lib/engineer/pr-comment-tracker";
+import { resetCommentStatus } from "@/lib/engineer/pr-comment-tracker";
 import { type PRListItem, prListOptions } from "@/lib/engineer/queries/git";
 import { queryKeys } from "@/lib/engineer/queries/keys";
 import { addRepo, reposOptions } from "@/lib/engineer/queries/repos";
@@ -1495,11 +1492,6 @@ export function PRBrowserDialog({
                     key={selectedPR.number}
                     onCommentDismissed={handleCommentDismissed}
                     onCommentSelected={handleCommentSelected}
-                    onReviewCodex={async (commentId) => {
-                      markChatStarted(selectedPR.number, commentId);
-                      incrementCommentStatusKey();
-                      await restoreOrShowSettings();
-                    }}
                     prNumber={selectedPR.number}
                     repoPath={selectedRepo.path}
                     selectedCommentId={selectedCommentId}

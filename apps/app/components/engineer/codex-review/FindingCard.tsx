@@ -7,7 +7,10 @@ import {
   MessageSquare,
 } from "lucide-react";
 import { MessageContent } from "@/components/engineer/chat/MessageContent";
-import type { ReviewFinding } from "@/lib/engineer/codex-review-parser";
+import {
+  parseFindingTitle,
+  type ReviewFinding,
+} from "@/lib/engineer/codex-review-parser";
 import { severityToPriority } from "./constants";
 import { PriorityBadge } from "./PriorityBadge";
 import { SeverityIcon } from "./SeverityIcon";
@@ -24,17 +27,6 @@ type FindingCardProps = {
   onOpenChat: (idx: number) => void;
   onSelectFinding: (idx: number) => void;
 };
-
-function parseFindingTitle(message: string) {
-  const parts = message.split(/\n/);
-  const titleRaw = parts[0];
-  const description = parts.slice(1).join(" ").trim();
-  const title = titleRaw
-    .replaceAll(/\s*—\s*\S+:\d+[-–]\d+/g, "")
-    .replaceAll(/\s*—\s*\S+:\d+/g, "")
-    .trim();
-  return { title, description };
-}
 
 export function FindingCard({
   finding,
@@ -76,9 +68,14 @@ export function FindingCard({
         onToggleExpand={onToggleExpand}
         title={title}
       />
-      {isFindingExpanded && description && (
-        <div className="px-3 pb-3 pl-12 text-muted-foreground text-sm">
-          <MessageContent content={description} />
+      {isFindingExpanded && (
+        <div className="mr-3 mb-3 ml-12 space-y-2">
+          <p className="font-semibold text-sm">{title}</p>
+          {description && (
+            <div className="text-muted-foreground text-xs leading-relaxed">
+              <MessageContent content={description} />
+            </div>
+          )}
         </div>
       )}
       {isFindingExpanded && finding.suggestion && (

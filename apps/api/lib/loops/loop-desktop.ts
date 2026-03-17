@@ -96,6 +96,8 @@ type LaunchDesktopOpts = {
   apiBaseUrl: string;
   contextPack: ContextPack;
   artifactSlug?: string;
+  parentLoopId?: string;
+  parentBranchName?: string;
   parentSessionId?: string;
 };
 
@@ -117,6 +119,8 @@ export async function launchLoopOnDesktop(
     apiBaseUrl,
     contextPack,
     artifactSlug,
+    parentLoopId,
+    parentBranchName,
     parentSessionId,
   } = opts;
 
@@ -134,6 +138,8 @@ export async function launchLoopOnDesktop(
       repo: contextPack.repoInfo ?? null,
       committer: contextPack.committer ?? null,
       artifactSlug: artifactSlug ?? null,
+      parentLoopId: parentLoopId ?? null,
+      parentBranchName: parentBranchName ?? null,
       parentSessionId: parentSessionId ?? null,
     } as JsonValue,
   };
