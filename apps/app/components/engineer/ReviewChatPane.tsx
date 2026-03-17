@@ -50,7 +50,10 @@ import {
   type SuggestedAction,
   stripProtocolMetadata,
 } from "@/lib/engineer/chat-utils";
-import type { ReviewFinding } from "@/lib/engineer/codex-review-parser";
+import {
+  parseFindingTitle,
+  type ReviewFinding,
+} from "@/lib/engineer/codex-review-parser";
 import { symphonyChatHistoryOptions } from "@/lib/engineer/queries/symphony";
 import { stripWorktreePath } from "@/lib/engineer/review-path-utils";
 import { formatReviewSummary } from "@/lib/engineer/review-split";
@@ -812,7 +815,10 @@ function FindingCard({
   const Icon = style.icon;
   const displayPath = finding.file ? stripWorktreePath(finding.file) : null;
   const showCommentButton = !isOwnPR;
-  const title = finding.message.split("\n")[0].slice(0, 100);
+  const { title: findingTitle, description: findingBody } = parseFindingTitle(
+    finding.message
+  );
+  const title = findingTitle.slice(0, 100);
 
   if (collapsed) {
     return (
@@ -910,13 +916,20 @@ function FindingCard({
           <ChevronRight className="size-3.5 rotate-90" />
         </button>
       </div>
-      <div className="pl-[34px] text-[12px] text-foreground/90 leading-relaxed">
-        <ReactMarkdown
-          components={chatMarkdownComponents}
-          remarkPlugins={[remarkGfm]}
-        >
-          {finding.message}
-        </ReactMarkdown>
+      <div className="space-y-2 pl-[34px]">
+        <p className="font-semibold text-[13px] text-foreground leading-snug">
+          {findingTitle}
+        </p>
+        {findingBody && (
+          <div className="text-[12px] text-foreground/70 leading-relaxed">
+            <ReactMarkdown
+              components={chatMarkdownComponents}
+              remarkPlugins={[remarkGfm]}
+            >
+              {findingBody}
+            </ReactMarkdown>
+          </div>
+        )}
       </div>
       <div className="flex items-center gap-2 pl-[34px]">
         {onChat && (

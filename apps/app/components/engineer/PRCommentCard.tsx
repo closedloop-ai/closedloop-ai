@@ -20,7 +20,6 @@ import {
   MessageCircle,
   MessageSquare,
   MoreVertical,
-  ScanEye,
   Sparkles,
   X,
 } from "lucide-react";
@@ -88,7 +87,6 @@ type PRCommentCardProps = {
   isSelected?: boolean;
   onProposeFix?: () => void;
   onProposeFixCodex?: () => void;
-  onReviewCodex?: () => void;
   onDismiss?: () => void;
   onViewChat?: () => void;
   onReopen?: () => void;
@@ -200,7 +198,6 @@ export function PRCommentCard({
   isSelected = false,
   onProposeFix,
   onProposeFixCodex,
-  onReviewCodex,
   onDismiss,
   onViewChat,
   onReopen,
@@ -378,7 +375,6 @@ export function PRCommentCard({
                 markOverflowSeen={markOverflowSeen}
                 onProposeFix={onProposeFix}
                 onProposeFixCodex={onProposeFixCodex}
-                onReviewCodex={onReviewCodex}
                 overflowSeen={overflowSeen}
               />
             </>
@@ -423,7 +419,7 @@ export function PRCommentCard({
 }
 
 /**
- * Overflow menu for pending comment cards — Fix with Claude/Codex, Review with Codex, View on GitHub
+ * Overflow menu for pending comment cards — Fix with Claude/Codex, View on GitHub
  */
 function PendingOverflowMenu({
   comment,
@@ -431,16 +427,14 @@ function PendingOverflowMenu({
   markOverflowSeen,
   onProposeFix,
   onProposeFixCodex,
-  onReviewCodex,
 }: Readonly<{
   comment: PRComment;
   overflowSeen: boolean;
   markOverflowSeen?: () => void;
   onProposeFix?: () => void;
   onProposeFixCodex?: () => void;
-  onReviewCodex?: () => void;
 }>) {
-  const hasFixItems = !!(onProposeFix || onProposeFixCodex || onReviewCodex);
+  const hasFixItems = !!(onProposeFix || onProposeFixCodex);
 
   return (
     <DropdownMenu
@@ -472,12 +466,6 @@ function PendingOverflowMenu({
           >
             <Cpu className="size-4" />
             Fix with Codex
-          </DropdownMenuItem>
-        )}
-        {onReviewCodex && (
-          <DropdownMenuItem className="cursor-pointer" onClick={onReviewCodex}>
-            <ScanEye className="size-4" />
-            Review with Codex
           </DropdownMenuItem>
         )}
         {hasFixItems && comment.url && <DropdownMenuSeparator />}
