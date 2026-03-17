@@ -353,21 +353,25 @@ export default function ProjectDetailPage() {
                     projectId={project.id}
                   />
                 </div>
-                <div className="mb-4 flex items-center justify-end">
-                  <ToggleGroup
-                    onValueChange={(value) => {
-                      if (value) {
-                        setViewMode(value as "type" | "threaded");
-                      }
-                    }}
-                    type="single"
-                    value={viewMode}
-                    variant="outline"
-                  >
-                    <ToggleGroupItem value="type">Type</ToggleGroupItem>
-                    <ToggleGroupItem value="threaded">Threaded</ToggleGroupItem>
-                  </ToggleGroup>
-                </div>
+                {artifacts.length > 0 && (
+                  <div className="mb-4 flex items-center justify-end">
+                    <ToggleGroup
+                      onValueChange={(value) => {
+                        if (value) {
+                          setViewMode(value as "type" | "threaded");
+                        }
+                      }}
+                      type="single"
+                      value={viewMode}
+                      variant="outline"
+                    >
+                      <ToggleGroupItem value="type">Type</ToggleGroupItem>
+                      <ToggleGroupItem value="threaded">
+                        Threaded
+                      </ToggleGroupItem>
+                    </ToggleGroup>
+                  </div>
+                )}
                 {artifacts.length > 0 && (
                   <div className="mb-4">
                     <div className="relative">
@@ -403,7 +407,10 @@ export default function ProjectDetailPage() {
                 )}
               </TabsContent>
               <TabsContent className="mt-0" value="features">
-                <FeaturesList projectId={projectId} />
+                <FeaturesList
+                  onCreateFeature={() => setCreateFeatureOpen(true)}
+                  projectId={projectId}
+                />
               </TabsContent>
               <TabsContent className="mt-0" value="workflows">
                 <div className="flex flex-1 items-center justify-center p-8 text-muted-foreground">

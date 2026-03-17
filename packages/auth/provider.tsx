@@ -64,6 +64,18 @@ export const AuthProvider = ({
     <ClerkProvider
       {...properties}
       appearance={{ layout, baseTheme, elements, variables }}
+      localization={{
+        signIn: {
+          start: {
+            title: "Sign in",
+          },
+        },
+        signUp: {
+          start: {
+            title: "Sign up",
+          },
+        },
+      }}
     />
   );
 };

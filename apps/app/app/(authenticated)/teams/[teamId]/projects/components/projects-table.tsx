@@ -7,6 +7,7 @@ import {
 import { Priority } from "@repo/api/src/types/common";
 import type { ProjectWithDetails } from "@repo/api/src/types/project";
 import { isDisplayableSlug } from "@repo/api/src/types/slug";
+import { Button } from "@repo/design-system/components/ui/button";
 import { DatePickerPopover } from "@repo/design-system/components/ui/date-picker-popover";
 import { HexagonProgress } from "@repo/design-system/components/ui/hexagon-progress";
 import { PriorityBadge } from "@repo/design-system/components/ui/priority-badge";
@@ -58,6 +59,7 @@ type ProjectsTableProps = {
   onUpdateAssignee?: (projectId: string, assigneeId: string | null) => void;
   onUpdateTargetDate?: (projectId: string, date: Date | null) => void;
   onDelete?: (projectId: string) => Promise<boolean>;
+  onCreateProject?: () => void;
 };
 
 export function ProjectsTable({
@@ -66,6 +68,7 @@ export function ProjectsTable({
   onUpdateAssignee,
   onUpdateTargetDate,
   onDelete,
+  onCreateProject,
 }: ProjectsTableProps) {
   const router = useRouter();
   const { data: usersResult } = useOrganizationUsers();
@@ -139,6 +142,11 @@ export function ProjectsTable({
   if (projects.length === 0) {
     return (
       <EmptyState
+        action={
+          onCreateProject ? (
+            <Button onClick={onCreateProject}>Create Project</Button>
+          ) : undefined
+        }
         description="Create your first project to get started."
         icon={FolderIcon}
         title="No projects yet"
