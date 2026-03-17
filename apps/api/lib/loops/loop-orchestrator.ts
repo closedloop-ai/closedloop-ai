@@ -429,7 +429,7 @@ async function launchLoopDesktop(
     if (loop.artifactId) {
       const artifact = await withDb((db) =>
         db.artifact.findUnique({
-          where: { id: loop.artifactId! },
+          where: { id: loop.artifactId!, organizationId },
           select: { slug: true },
         })
       );
@@ -445,6 +445,8 @@ async function launchLoopDesktop(
       apiBaseUrl,
       contextPack,
       artifactSlug,
+      parentLoopId: loop.parentLoopId ?? undefined,
+      parentBranchName: ctx.parentInfo?.branchName ?? undefined,
       parentSessionId: ctx.parentInfo?.sessionId ?? undefined,
     });
 
