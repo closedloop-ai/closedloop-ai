@@ -23,7 +23,7 @@ import {
 } from "./values-service";
 
 const attachCustomFieldSettingValidator = z.object({
-  customFieldId: z.string().uuid(),
+  customFieldId: z.uuid(),
   isImportant: z.boolean().optional(),
   isRequired: z.boolean().optional(),
   sortOrder: z.number().int().optional(),

@@ -5,7 +5,7 @@ export const runLoopSchema = z.object({
   command: z.enum(["plan", "execute", "request_changes", "decompose"]),
   prompt: z.string().optional(),
   repo: repoSchema.optional(),
-  computeTargetId: z.string().uuid().optional(),
+  computeTargetId: z.uuid().optional(),
 });
 
 export type RunLoopBody = z.infer<typeof runLoopSchema>;

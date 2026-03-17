@@ -46,10 +46,6 @@ generate_env_local() {
 # Dummy values that pass @t3-oss/env-nextjs Zod validators.
 # These are NOT real credentials — they exist only to satisfy build validation.
 
-# analytics (required: phc_ prefix, valid URL)
-NEXT_PUBLIC_POSTHOG_KEY=phc_loops_dummy_key
-NEXT_PUBLIC_POSTHOG_HOST=https://us.i.posthog.com
-
 # cms (required: bshb_pk_ prefix)
 BASEHUB_TOKEN=bshb_pk_loops_dummy_token
 

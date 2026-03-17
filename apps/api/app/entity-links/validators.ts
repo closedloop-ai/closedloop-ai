@@ -11,10 +11,10 @@ const entityTypeEnum = z.enum(EntityType);
 const linkTypeEnum = z.enum(LinkType);
 
 export const createEntityLinkValidator = z.object({
-  sourceId: z.uuidv7(),
+  sourceId: z.uuid(),
   sourceType: entityTypeEnum,
   sourceVersion: z.number().int().positive().optional(),
-  targetId: z.uuidv7(),
+  targetId: z.uuid(),
   targetType: entityTypeEnum,
   targetVersion: z.number().int().positive().optional(),
   linkType: linkTypeEnum,
@@ -22,7 +22,7 @@ export const createEntityLinkValidator = z.object({
 });
 
 export const findEntityLinksQueryValidator = z.object({
-  entityId: z.uuidv7(),
+  entityId: z.uuid(),
   entityType: entityTypeEnum,
   linkType: linkTypeEnum.optional(),
   direction: z.enum(LinkDirection).optional().default(LinkDirection.Both),

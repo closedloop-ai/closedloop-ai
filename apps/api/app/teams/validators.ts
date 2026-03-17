@@ -14,7 +14,7 @@ export const updateTeamValidator = z.object({
 });
 
 export const addMemberValidator = z.object({
-  userId: z.uuidv7(),
+  userId: z.uuid(),
   role: teamRoleSchema.optional(),
 });
 

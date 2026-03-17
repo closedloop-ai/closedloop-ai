@@ -6,13 +6,13 @@ const issueStatusEnum = z.enum(IssueStatus);
 const priorityEnum = z.enum(Priority);
 
 export const createIssueValidator = z.object({
-  workstreamId: z.uuidv7().optional(),
-  projectId: z.uuidv7(),
+  workstreamId: z.uuid().optional(),
+  projectId: z.uuid(),
   title: z.string().min(1, "Title is required"),
   description: z.string().optional(),
   status: issueStatusEnum.optional(),
   priority: priorityEnum.optional(),
-  assigneeId: z.uuidv7().optional(),
+  assigneeId: z.uuid().optional(),
 });
 
 export const updateIssueValidator = z.object({
@@ -20,15 +20,15 @@ export const updateIssueValidator = z.object({
   description: z.string().optional(),
   status: issueStatusEnum.optional(),
   priority: priorityEnum.optional(),
-  assigneeId: z.uuidv7().nullable().optional(),
-  projectId: z.uuidv7().optional(),
+  assigneeId: z.uuid().nullable().optional(),
+  projectId: z.uuid().optional(),
   customFields: z
     .record(
-      z.string().uuid(),
+      z.uuid(),
       z.union([
         z.string().max(10_000),
         z.number(),
-        z.array(z.string().uuid()).max(100),
+        z.array(z.uuid()).max(100),
         z.null(),
       ])
     )
@@ -36,9 +36,9 @@ export const updateIssueValidator = z.object({
 });
 
 export const findIssuesQueryValidator = z.object({
-  workstreamId: z.uuidv7().optional(),
-  projectId: z.uuidv7().optional(),
+  workstreamId: z.uuid().optional(),
+  projectId: z.uuid().optional(),
   status: issueStatusEnum.optional(),
   priority: priorityEnum.optional(),
-  assigneeId: z.uuidv7().optional(),
+  assigneeId: z.uuid().optional(),
 });

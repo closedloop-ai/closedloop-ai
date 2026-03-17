@@ -3,6 +3,7 @@
 import type { ApiResult } from "@repo/api/src/types/common";
 import { useAuth } from "@repo/auth/client";
 import { useMemo } from "react";
+import { useWaitForAuthLoaded } from "@/hooks/use-wait-for-auth-loaded";
 import { ApiError } from "@/lib/api-error";
 import { resolveApiOrigin } from "@/lib/api-origin";
 
@@ -14,30 +15,39 @@ import { resolveApiOrigin } from "@/lib/api-origin";
  */
 export function useApiClient() {
   const { getToken } = useAuth();
+  const waitForAuthLoaded = useWaitForAuthLoaded();
 
   return useMemo(
     () => ({
-      get: async <T>(path: string, options?: RequestInit) =>
-        apiFetch<T>(path, await getToken(), options),
+      get: async <T>(path: string, options?: RequestInit) => {
+        await waitForAuthLoaded();
+        return apiFetch<T>(path, await getToken(), options);
+      },
 
-      post: async <T>(path: string, data: unknown) =>
-        apiFetch<T>(path, await getToken(), {
+      post: async <T>(path: string, data: unknown) => {
+        await waitForAuthLoaded();
+        return apiFetch<T>(path, await getToken(), {
           method: "POST",
           body: JSON.stringify(data),
-        }),
+        });
+      },
 
-      put: async <T>(path: string, data: unknown) =>
-        apiFetch<T>(path, await getToken(), {
+      put: async <T>(path: string, data: unknown) => {
+        await waitForAuthLoaded();
+        return apiFetch<T>(path, await getToken(), {
           method: "PUT",
           body: JSON.stringify(data),
-        }),
+        });
+      },
 
-      delete: async <T>(path: string) =>
-        apiFetch<T>(path, await getToken(), {
+      delete: async <T>(path: string) => {
+        await waitForAuthLoaded();
+        return apiFetch<T>(path, await getToken(), {
           method: "DELETE",
-        }),
+        });
+      },
     }),
-    [getToken]
+    [getToken, waitForAuthLoaded]
   );
 }
 

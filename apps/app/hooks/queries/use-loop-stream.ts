@@ -5,6 +5,7 @@ import { useAuth } from "@repo/auth/client";
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { resolveApiUrl } from "@/hooks/use-api-client";
+import { useWaitForAuthLoaded } from "@/hooks/use-wait-for-auth-loaded";
 import { loopKeys } from "./use-loops";
 
 export type StreamStatus =
@@ -137,6 +138,7 @@ export function useLoopStream(
   options?: { enabled?: boolean }
 ) {
   const { getToken } = useAuth();
+  const waitForAuthLoaded = useWaitForAuthLoaded();
   const queryClient = useQueryClient();
 
   const [events, setEvents] = useState<LoopEvent[]>([]);
@@ -193,7 +195,8 @@ export function useLoopStream(
       abortRef.current = controller;
       setStatus("connecting");
 
-      getToken()
+      waitForAuthLoaded()
+        .then(() => getToken())
         .then((token) => {
           const url = `${resolveApiUrl()}/loops/${capturedLoopId}/stream`;
           return openSSEStream(url, token, controller.signal, callbacks);
@@ -267,7 +270,14 @@ export function useLoopStream(
       }
       disconnect();
     };
-  }, [loopId, enabled, getToken, disconnect, invalidateLoopCache]);
+  }, [
+    loopId,
+    enabled,
+    getToken,
+    disconnect,
+    invalidateLoopCache,
+    waitForAuthLoaded,
+  ]);
 
   return { events, status, lastEvent, isComplete };
 }

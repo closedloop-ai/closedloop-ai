@@ -35,7 +35,7 @@ const RootLayout = ({ children }: RootLayoutProperties) => (
   >
     <body className="overflow-hidden">
       <QueryProvider>
-        <AnalyticsProvider>
+        <AnalyticsProvider bootstrapFeatureFlags trackPageViews>
           <DesignSystemProvider
             helpUrl={env.NEXT_PUBLIC_DOCS_URL}
             privacyUrl={new URL(

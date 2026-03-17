@@ -1,3 +1,4 @@
+import { UserIdentifier } from "@repo/analytics/components/user-identifier";
 import { auth, currentUser } from "@repo/auth/server";
 import {
   SIDEBAR_COOKIE_NAME,
@@ -8,7 +9,6 @@ import { cookies } from "next/headers";
 import type { ReactNode } from "react";
 import { EngineerTransportBootstrap } from "@/components/engineer/engineer-transport-bootstrap";
 import { env } from "@/env";
-import { AuthGate } from "./components/auth-gate";
 import { CollaborationProviderWrapper } from "./components/collaboration-provider-wrapper";
 import { DragHandlerWrapper } from "./components/drag-handler-wrapper";
 import { NotificationsProvider } from "./components/notifications-provider";
@@ -45,17 +45,14 @@ const AppLayout = async ({ children }: AppLayoutProperties) => {
         <NotificationsProvider userId={user.id}>
           <SidebarProvider defaultOpen={sidebarDefaultOpen}>
             <GlobalSidebar>
-              <AuthGate>
-                <OnboardingGuard>
-                  {/* Execution routing is app-wide because remote actions and
-                      system checks can now start outside /engineer. */}
-                  <EngineerTransportBootstrap />
-                  <div className="flex h-full max-h-full flex-col overflow-hidden">
-                    {children}
-                  </div>
-                  <SystemCheckBootstrap />
-                </OnboardingGuard>
-              </AuthGate>
+              <OnboardingGuard>
+                <UserIdentifier />
+                <EngineerTransportBootstrap />
+                <SystemCheckBootstrap />
+                <div className="flex h-full max-h-full flex-col overflow-hidden">
+                  {children}
+                </div>
+              </OnboardingGuard>
             </GlobalSidebar>
           </SidebarProvider>
         </NotificationsProvider>

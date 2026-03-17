@@ -24,7 +24,7 @@ For database commands, see `packages/database/CLAUDE.md`.
 ### Apps (`/apps`)
 - **app** (:3000) — Main authenticated app
 - **web** (:3001) — Marketing site
-- **api** (:3002) — API server + Stripe webhooks
+- **api** (:3002) — REST API server + various webhooks
 - **docs** (:3004) — Mintlify docs
 - **email** (:3003) — Email preview (React Email)
 - **storybook** (:6006) — Component library
@@ -109,6 +109,7 @@ ClosedLoop: human-governed, AI-centric software delivery platform. AI produces a
 - **[insight]**: Subpath imports (`@repo/github/execution-log-parser`) resolve without explicit `exports` in package.json — pnpm workspace + TS handles it.
 - **[convention]**: Never use inline `import()` types. Always top-level imports.
 - **[pattern]**: ArtifactStatus has 4 synchronized layers — when adding values, update Prisma schema + TypeScript const (packages/api/src/types/artifact.ts); the Zod validator and status dropdown auto-derive from the const, but exhaustive Record<ArtifactStatus, string> maps in status-badge.tsx and project-constants.ts require manual updates. (context: typescript|enum|ArtifactStatus|record)
+- **[convention]**: use zod validators to validate object shape. do not "manually" validate unknown objects using `typeof` and other related checks. zod can be used to validate any object, not just in route handlers.
 
 ### React Query & Mutations
 - **[convention]**: Do not add `.catch()` error toasts when calling `mutateAsync`. The global `QueryClient` in `apps/app/lib/query-client.tsx` has a default `mutations.onError` handler that toasts the error message. Only catch rejections to suppress unhandled promise warnings or reset local state.
