@@ -24,8 +24,20 @@ export type OnboardingStatus = {
   checklist: OnboardingChecklistItem[];
 };
 
+export const ChecklistItemId = {
+  CreateTeam: "CREATE_TEAM",
+  CreateProject: "CREATE_PROJECT",
+  ConnectGitHub: "CONNECT_GITHUB",
+  AddAnthropicKey: "ADD_ANTHROPIC_KEY",
+  ConnectLinear: "CONNECT_LINEAR",
+  ConnectGoogle: "CONNECT_GOOGLE",
+  InviteMembers: "INVITE_MEMBERS",
+} as const;
+export type ChecklistItemId =
+  (typeof ChecklistItemId)[keyof typeof ChecklistItemId];
+
 export type OnboardingChecklistItem = {
-  id: string;
+  id: ChecklistItemId;
   label: string;
   description: string;
   completed: boolean;

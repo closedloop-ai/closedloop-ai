@@ -1,10 +1,12 @@
 import type { JsonObject } from "@repo/api/src/types/common";
-import type {
-  OnboardingChecklistItem,
-  OnboardingState,
-  OnboardingStatus,
+import {
+  ChecklistItemId,
+  type OnboardingChecklistItem,
+  type OnboardingState,
+  type OnboardingStatus,
 } from "@repo/api/src/types/onboarding";
 import { withDb } from "@repo/database";
+import { z } from "zod";
 
 const DEFAULT_ONBOARDING_STATE: OnboardingState = {
   wizardCompletedAt: null,
@@ -14,29 +16,23 @@ const DEFAULT_ONBOARDING_STATE: OnboardingState = {
   createdProjectId: null,
 };
 
+const onboardingStateSchema = z.object({
+  wizardCompletedAt: z.string().nullable().default(null),
+  wizardCompletedBy: z.string().nullable().default(null),
+  checklistDismissedAt: z.string().nullable().default(null),
+  createdTeamId: z.string().nullable().default(null),
+  createdProjectId: z.string().nullable().default(null),
+});
+
 /**
  * Safely extract onboarding state from Organization.settings JSON blob.
  */
 function getOnboardingState(settings: JsonObject): OnboardingState {
-  const raw = settings.onboarding;
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+  const result = onboardingStateSchema.safeParse(settings.onboarding);
+  if (!result.success) {
     return { ...DEFAULT_ONBOARDING_STATE };
   }
-  const obj = raw as JsonObject;
-  return {
-    wizardCompletedAt:
-      typeof obj.wizardCompletedAt === "string" ? obj.wizardCompletedAt : null,
-    wizardCompletedBy:
-      typeof obj.wizardCompletedBy === "string" ? obj.wizardCompletedBy : null,
-    checklistDismissedAt:
-      typeof obj.checklistDismissedAt === "string"
-        ? obj.checklistDismissedAt
-        : null,
-    createdTeamId:
-      typeof obj.createdTeamId === "string" ? obj.createdTeamId : null,
-    createdProjectId:
-      typeof obj.createdProjectId === "string" ? obj.createdProjectId : null,
-  };
+  return result.data;
 }
 
 /**
@@ -85,9 +81,7 @@ export const onboardingService = {
       withDb((db) => db.team.count({ where: { organizationId } })),
       withDb((db) =>
         db.project.count({
-          where: {
-            teams: { some: { team: { organizationId } } },
-          },
+          where: { organizationId },
         })
       ),
       withDb((db) =>
@@ -116,50 +110,54 @@ export const onboardingService = {
     const hasAnthropicKey =
       !!org?.claudeApiKeyEncrypted || !!org?.anthropicApiKey;
 
+    // Legacy orgs: if no wizard record but org already has teams+projects, treat as completed
+    const wizardCompleted =
+      state.wizardCompletedAt !== null || (teamCount > 0 && projectCount > 0);
+
     const checklist: OnboardingChecklistItem[] = [
       {
-        id: "create-team",
+        id: ChecklistItemId.CreateTeam,
         label: "Create a team",
         description: "Set up your first team to organize projects",
         completed: teamCount > 0,
         href: "/settings",
       },
       {
-        id: "create-project",
+        id: ChecklistItemId.CreateProject,
         label: "Create a project",
         description: "Start your first project within a team",
         completed: projectCount > 0,
       },
       {
-        id: "connect-github",
+        id: ChecklistItemId.ConnectGitHub,
         label: "Connect GitHub",
         description: "Link your repositories for code management",
         completed: githubInstallation !== null,
         href: "/settings?tab=integrations",
       },
       {
-        id: "add-anthropic-key",
+        id: ChecklistItemId.AddAnthropicKey,
         label: "Add Anthropic API key",
         description: "Required for AI-powered workflows",
         completed: hasAnthropicKey,
         href: "/settings?tab=integrations",
       },
       {
-        id: "connect-linear",
+        id: ChecklistItemId.ConnectLinear,
         label: "Connect Linear",
         description: "Sync issues and project tracking",
         completed: linearIntegration !== null,
         href: "/settings?tab=integrations",
       },
       {
-        id: "connect-google",
+        id: ChecklistItemId.ConnectGoogle,
         label: "Connect Google Drive",
         description: "Import documents and collaborate on files",
         completed: googleIntegration !== null,
         href: "/settings?tab=integrations",
       },
       {
-        id: "invite-members",
+        id: ChecklistItemId.InviteMembers,
         label: "Invite team members",
         description: "Add colleagues to your organization",
         completed: userCount > 1,
@@ -168,7 +166,7 @@ export const onboardingService = {
     ];
 
     return {
-      wizardCompleted: state.wizardCompletedAt !== null,
+      wizardCompleted,
       checklistDismissed: state.checklistDismissedAt !== null,
       checklist,
     };

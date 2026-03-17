@@ -15,15 +15,18 @@ type OnboardingGuardProps = {
  */
 export function OnboardingGuard({ children }: OnboardingGuardProps) {
   const router = useRouter();
-  const { data: status, isLoading } = useOnboardingStatus();
+  // Also check isFetching to avoid redirecting on stale cache during refetch
+  // (e.g. after completing the wizard, invalidateQueries triggers a refetch)
+  // TODO: Convert to server component guard for SSR — tracked for follow-up
+  const { data: status, isLoading, isFetching } = useOnboardingStatus();
 
   useEffect(() => {
-    if (!isLoading && status && !status.wizardCompleted) {
+    if (!(isLoading || isFetching) && status && !status.wizardCompleted) {
       router.replace("/onboarding");
     }
-  }, [isLoading, status, router]);
+  }, [isLoading, isFetching, status, router]);
 
-  if (isLoading) {
+  if (isLoading || isFetching) {
     return null;
   }
 
