@@ -95,6 +95,7 @@ type LaunchDesktopOpts = {
   closedLoopAuthToken: string;
   apiBaseUrl: string;
   contextPack: ContextPack;
+  parentLoopId?: string;
   parentBranchName?: string;
   parentSessionId?: string;
 };
@@ -116,6 +117,7 @@ export async function launchLoopOnDesktop(
     closedLoopAuthToken,
     apiBaseUrl,
     contextPack,
+    parentLoopId,
     parentBranchName,
     parentSessionId,
   } = opts;
@@ -133,6 +135,7 @@ export async function launchLoopOnDesktop(
       prompt: contextPack.prompt ?? null,
       repo: contextPack.repoInfo ?? null,
       committer: contextPack.committer ?? null,
+      parentLoopId: parentLoopId ?? null,
       parentBranchName: parentBranchName ?? null,
       parentSessionId: parentSessionId ?? null,
     } as JsonValue,

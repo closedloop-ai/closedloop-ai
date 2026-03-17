@@ -429,6 +429,7 @@ async function launchLoopDesktop(
       closedLoopAuthToken: ctx.closedLoopAuthToken,
       apiBaseUrl,
       contextPack,
+      parentLoopId: loop.parentLoopId ?? undefined,
       parentBranchName: ctx.parentInfo?.branchName ?? undefined,
       parentSessionId: ctx.parentInfo?.sessionId ?? undefined,
     });
