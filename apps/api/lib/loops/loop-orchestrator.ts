@@ -4,6 +4,7 @@ import type {
   TokensByModel,
 } from "@repo/api/src/types/loop";
 import { MODEL_PRICING } from "@repo/api/src/types/loop";
+import { withDb } from "@repo/database";
 import { getInstallationAccessToken } from "@repo/github";
 import { log } from "@repo/observability/log";
 import { getCommitterInfo } from "@/app/artifacts/service";
@@ -421,6 +422,20 @@ async function launchLoopDesktop(
       );
     }
 
+    // Resolve artifact slug for worktree/branch naming on desktop.
+    // All loops for the same artifact share a single worktree keyed by slug
+    // (e.g., symphony/PLAN-5), so PLAN → REQUEST_CHANGES → EXECUTE all reuse it.
+    let artifactSlug: string | undefined;
+    if (loop.artifactId) {
+      const artifact = await withDb((db) =>
+        db.artifact.findUnique({
+          where: { id: loop.artifactId! },
+          select: { slug: true },
+        })
+      );
+      artifactSlug = artifact?.slug;
+    }
+
     commandId = await launchLoopOnDesktop({
       loopId,
       organizationId,
@@ -429,7 +444,7 @@ async function launchLoopDesktop(
       closedLoopAuthToken: ctx.closedLoopAuthToken,
       apiBaseUrl,
       contextPack,
-      parentBranchName: ctx.parentInfo?.branchName ?? undefined,
+      artifactSlug,
       parentSessionId: ctx.parentInfo?.sessionId ?? undefined,
     });
 
