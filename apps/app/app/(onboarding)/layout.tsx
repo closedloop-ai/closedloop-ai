@@ -9,8 +9,7 @@ type OnboardingLayoutProps = {
 };
 
 const OnboardingLayout = async ({ children }: OnboardingLayoutProps) => {
-  const [, { redirectToSignIn }, user] = await Promise.all([
-    Promise.resolve(),
+  const [{ redirectToSignIn }, user] = await Promise.all([
     auth(),
     currentUser(),
   ]);

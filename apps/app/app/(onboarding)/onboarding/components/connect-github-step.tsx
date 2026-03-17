@@ -2,42 +2,44 @@
 
 import { Button } from "@repo/design-system/components/ui/button";
 import { Check, ExternalLink, Github, Loader2 } from "lucide-react";
-import { useSearchParams } from "next/navigation";
-import { useEffect } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { useEffect, useRef } from "react";
 import { toast } from "sonner";
 import {
   useGetGitHubConnectUrl,
   useGitHubIntegrationStatus,
 } from "@/hooks/queries/use-github-integration";
+import { setOnboardingReturnCookie } from "../lib/onboarding-constants";
 
 type ConnectGitHubStepProps = {
   readonly onNext: () => void;
 };
 
-/**
- * Set a cookie to indicate the user should return to onboarding after OAuth.
- */
-function setOnboardingReturnCookie() {
-  // biome-ignore lint/suspicious/noDocumentCookie: Cookie Store API not universally supported; simple cookie write is fine here
-  document.cookie = "onboarding_return=1; path=/; max-age=600; SameSite=Lax";
-}
-
 export function ConnectGitHubStep({ onNext }: ConnectGitHubStepProps) {
+  const router = useRouter();
   const searchParams = useSearchParams();
   const githubConnectUrl = useGetGitHubConnectUrl();
+  const toastedRef = useRef(false);
 
   const { data: githubStatus, isLoading } = useGitHubIntegrationStatus();
   const isConnected = githubStatus?.connected ?? false;
 
-  // Handle OAuth callback result via URL params
+  // Handle OAuth callback result via URL params (fire once, then strip params)
   useEffect(() => {
+    if (toastedRef.current) {
+      return;
+    }
     const github = searchParams.get("github");
     if (github === "connected") {
+      toastedRef.current = true;
       toast.success("GitHub connected successfully");
+      router.replace("/onboarding", { scroll: false });
     } else if (github === "error") {
+      toastedRef.current = true;
       toast.error("Failed to connect GitHub");
+      router.replace("/onboarding", { scroll: false });
     }
-  }, [searchParams]);
+  }, [searchParams, router]);
 
   const handleConnect = () => {
     setOnboardingReturnCookie();

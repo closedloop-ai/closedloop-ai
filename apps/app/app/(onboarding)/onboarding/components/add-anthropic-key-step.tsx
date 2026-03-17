@@ -28,7 +28,7 @@ export function AddAnthropicKeyStep({ onNext }: AddAnthropicKeyStepProps) {
       setKeyInput("");
       toast.success("API key saved and validated");
     } catch {
-      toast.error("Failed to save API key. Check that it's valid.");
+      // Global QueryClient onError handler already toasts the error
     }
   };
 

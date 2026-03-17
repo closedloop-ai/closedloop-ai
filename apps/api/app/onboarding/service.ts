@@ -62,7 +62,11 @@ export const onboardingService = {
     const org = await withDb((db) =>
       db.organization.findUnique({
         where: { id: organizationId },
-        select: { settings: true },
+        select: {
+          settings: true,
+          claudeApiKeyEncrypted: true,
+          anthropicApiKey: true,
+        },
       })
     );
 
@@ -74,7 +78,6 @@ export const onboardingService = {
       teamCount,
       projectCount,
       githubInstallation,
-      orgApiKeyInfo,
       linearIntegration,
       googleIntegration,
       userCount,
@@ -91,12 +94,6 @@ export const onboardingService = {
         db.gitHubInstallation.findFirst({
           where: { organizationId, status: { in: ["ACTIVE", "SUSPENDED"] } },
           select: { id: true },
-        })
-      ),
-      withDb((db) =>
-        db.organization.findUnique({
-          where: { id: organizationId },
-          select: { claudeApiKeyEncrypted: true, anthropicApiKey: true },
         })
       ),
       withDb((db) =>
@@ -117,8 +114,7 @@ export const onboardingService = {
     ]);
 
     const hasAnthropicKey =
-      !!orgApiKeyInfo?.claudeApiKeyEncrypted ||
-      !!orgApiKeyInfo?.anthropicApiKey;
+      !!org?.claudeApiKeyEncrypted || !!org?.anthropicApiKey;
 
     const checklist: OnboardingChecklistItem[] = [
       {

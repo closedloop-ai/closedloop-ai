@@ -1,7 +1,14 @@
 "use client";
 
 import { OnboardingStep } from "@repo/api/src/types/onboarding";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import {
+  clearWizardState,
+  loadWizardState,
+  ONBOARDING_STEPS,
+  saveWizardState,
+  type WizardState,
+} from "../lib/onboarding-constants";
 import { AddAnthropicKeyStep } from "./add-anthropic-key-step";
 import { CompleteStep } from "./complete-step";
 import { ConnectGitHubStep } from "./connect-github-step";
@@ -11,41 +18,32 @@ import { CreateTeamStep } from "./create-team-step";
 import { WelcomeStep } from "./welcome-step";
 import { WizardShell } from "./wizard-shell";
 
-const STEPS = [
-  OnboardingStep.Welcome,
-  OnboardingStep.CreateTeam,
-  OnboardingStep.CreateProject,
-  OnboardingStep.ConnectGitHub,
-  OnboardingStep.AddAnthropicKey,
-  OnboardingStep.ConnectOptionalIntegrations,
-  OnboardingStep.Complete,
-] as const;
-
-type WizardState = {
-  currentStep: OnboardingStep;
-  createdTeamId: string | null;
-  createdTeamName: string | null;
-  createdProjectId: string | null;
-  createdProjectName: string | null;
+const DEFAULT_STATE: WizardState = {
+  currentStep: OnboardingStep.Welcome,
+  createdTeamId: null,
+  createdTeamName: null,
+  createdProjectId: null,
+  createdProjectName: null,
 };
 
 export function OnboardingWizard() {
-  const [state, setState] = useState<WizardState>({
-    currentStep: OnboardingStep.Welcome,
-    createdTeamId: null,
-    createdTeamName: null,
-    createdProjectId: null,
-    createdProjectName: null,
+  const [state, setState] = useState<WizardState>(() => {
+    return loadWizardState() ?? DEFAULT_STATE;
   });
+
+  // Persist wizard state to sessionStorage on every change
+  useEffect(() => {
+    saveWizardState(state);
+  }, [state]);
 
   const goToStep = useCallback((step: OnboardingStep) => {
     setState((prev) => ({ ...prev, currentStep: step }));
   }, []);
 
   const goBack = useCallback(() => {
-    const currentIndex = STEPS.indexOf(state.currentStep);
+    const currentIndex = ONBOARDING_STEPS.indexOf(state.currentStep);
     if (currentIndex > 0) {
-      goToStep(STEPS[currentIndex - 1]);
+      goToStep(ONBOARDING_STEPS[currentIndex - 1]);
     }
   }, [state.currentStep, goToStep]);
 
@@ -70,6 +68,10 @@ export function OnboardingWizard() {
     []
   );
 
+  const handleComplete = useCallback(() => {
+    clearWizardState();
+  }, []);
+
   return (
     <WizardShell currentStep={state.currentStep} onBack={goBack}>
       {state.currentStep === OnboardingStep.Welcome && (
@@ -84,14 +86,15 @@ export function OnboardingWizard() {
         />
       )}
 
-      {state.currentStep === OnboardingStep.CreateProject && (
-        <CreateProjectStep
-          createdProjectId={state.createdProjectId}
-          createdProjectName={state.createdProjectName}
-          onNext={handleProjectCreated}
-          teamId={state.createdTeamId ?? ""}
-        />
-      )}
+      {state.currentStep === OnboardingStep.CreateProject &&
+        state.createdTeamId !== null && (
+          <CreateProjectStep
+            createdProjectId={state.createdProjectId}
+            createdProjectName={state.createdProjectName}
+            onNext={handleProjectCreated}
+            teamId={state.createdTeamId}
+          />
+        )}
 
       {state.currentStep === OnboardingStep.ConnectGitHub && (
         <ConnectGitHubStep
@@ -117,6 +120,7 @@ export function OnboardingWizard() {
           createdProjectName={state.createdProjectName}
           createdTeamId={state.createdTeamId}
           createdTeamName={state.createdTeamName}
+          onComplete={handleComplete}
         />
       )}
     </WizardShell>

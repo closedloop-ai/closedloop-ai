@@ -5,16 +5,7 @@ import { Button } from "@repo/design-system/components/ui/button";
 import { Card, CardContent } from "@repo/design-system/components/ui/card";
 import { ArrowLeft } from "lucide-react";
 import type { ReactNode } from "react";
-
-const STEPS = [
-  OnboardingStep.Welcome,
-  OnboardingStep.CreateTeam,
-  OnboardingStep.CreateProject,
-  OnboardingStep.ConnectGitHub,
-  OnboardingStep.AddAnthropicKey,
-  OnboardingStep.ConnectOptionalIntegrations,
-  OnboardingStep.Complete,
-] as const;
+import { ONBOARDING_STEPS } from "../lib/onboarding-constants";
 
 type WizardShellProps = {
   readonly currentStep: OnboardingStep;
@@ -27,7 +18,7 @@ export function WizardShell({
   onBack,
   children,
 }: WizardShellProps) {
-  const currentIndex = STEPS.indexOf(currentStep);
+  const currentIndex = ONBOARDING_STEPS.indexOf(currentStep);
   const showBack =
     currentStep !== OnboardingStep.Welcome &&
     currentStep !== OnboardingStep.Complete;
@@ -36,7 +27,7 @@ export function WizardShell({
     <div className="flex w-full max-w-xl flex-col items-center gap-6">
       {/* Progress dots */}
       <div className="flex items-center gap-2">
-        {STEPS.map((step, index) => (
+        {ONBOARDING_STEPS.map((step, index) => (
           <div
             className={`h-2 rounded-full transition-all ${
               index <= currentIndex

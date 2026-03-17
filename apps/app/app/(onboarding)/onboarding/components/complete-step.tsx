@@ -10,6 +10,7 @@ type CompleteStepProps = {
   readonly createdProjectName: string | null;
   readonly createdTeamId: string | null;
   readonly createdProjectId: string | null;
+  readonly onComplete?: () => void;
 };
 
 export function CompleteStep({
@@ -17,6 +18,7 @@ export function CompleteStep({
   createdProjectName,
   createdTeamId,
   createdProjectId,
+  onComplete,
 }: CompleteStepProps) {
   const router = useRouter();
   const completeWizard = useCompleteWizard();
@@ -26,6 +28,7 @@ export function CompleteStep({
       createdTeamId: createdTeamId ?? undefined,
       createdProjectId: createdProjectId ?? undefined,
     });
+    onComplete?.();
     router.push("/inbox");
   };
 

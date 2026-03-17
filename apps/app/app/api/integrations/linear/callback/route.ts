@@ -115,6 +115,10 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       }
     );
 
+    // Check if user should return to onboarding after OAuth
+    const onboardingReturn = cookieStore.get("onboarding_return")?.value;
+    const returnTo = onboardingReturn ? "/onboarding" : undefined;
+
     if (!apiResponse.ok) {
       const errorBody = await apiResponse.text();
       // Redact sensitive data from error logs - only log status and truncated message
@@ -125,19 +129,21 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
             ? "Internal server error"
             : errorBody.substring(0, 200),
       });
-      return NextResponse.redirect(
-        getErrorRedirectUrl(LINEAR_ERROR_CODES.CONNECTION_FAILED)
+      const errorResponse = NextResponse.redirect(
+        getErrorRedirectUrl(LINEAR_ERROR_CODES.CONNECTION_FAILED, returnTo)
       );
+      errorResponse.cookies.delete(LINEAR_OAUTH_STATE_COOKIE);
+      errorResponse.cookies.delete(LINEAR_PKCE_VERIFIER_COOKIE);
+      if (onboardingReturn) {
+        errorResponse.cookies.delete("onboarding_return");
+      }
+      return errorResponse;
     }
 
     log.info("[linear/callback] Linear connected successfully", {
       userId,
       orgId,
     });
-
-    // Check if user should return to onboarding after OAuth
-    const onboardingReturn = cookieStore.get("onboarding_return")?.value;
-    const returnTo = onboardingReturn ? "/onboarding" : undefined;
 
     // Clear cookies and redirect using response object pattern (Next.js App Router best practice)
     const response = NextResponse.redirect(getSuccessRedirectUrl(returnTo));

@@ -2,8 +2,8 @@
 
 import { Button } from "@repo/design-system/components/ui/button";
 import { Check, ExternalLink, Loader2 } from "lucide-react";
-import { useSearchParams } from "next/navigation";
-import { useEffect } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { useEffect, useRef } from "react";
 import { toast } from "sonner";
 import {
   getGoogleOAuthUrl,
@@ -13,46 +13,54 @@ import {
   getLinearOAuthUrl,
   useLinearIntegrationStatus,
 } from "@/hooks/queries/use-linear";
+import { setOnboardingReturnCookie } from "../lib/onboarding-constants";
 
 type ConnectOptionalIntegrationsStepProps = {
   readonly onNext: () => void;
 };
 
-/**
- * Set a cookie to indicate the user should return to onboarding after OAuth.
- */
-function setOnboardingReturnCookie() {
-  // biome-ignore lint/suspicious/noDocumentCookie: Cookie Store API not universally supported; simple cookie write is fine here
-  document.cookie = "onboarding_return=1; path=/; max-age=600; SameSite=Lax";
-}
-
 export function ConnectOptionalIntegrationsStep({
   onNext,
 }: ConnectOptionalIntegrationsStepProps) {
+  const router = useRouter();
   const searchParams = useSearchParams();
+  const toastedRef = useRef(false);
 
   const { data: linearStatus, isLoading: linearLoading } =
     useLinearIntegrationStatus();
   const { data: googleStatus, isLoading: googleLoading } =
     useGoogleIntegrationStatus();
 
-  // Handle OAuth callback results via URL params
+  // Handle OAuth callback results via URL params (fire once, then strip params)
   useEffect(() => {
+    if (toastedRef.current) {
+      return;
+    }
     const linear = searchParams.get("linear");
     const google = searchParams.get("google");
+    let fired = false;
 
     if (linear === "connected") {
       toast.success("Linear connected successfully");
+      fired = true;
     } else if (linear === "error") {
       toast.error("Failed to connect Linear");
+      fired = true;
     }
 
     if (google === "success") {
       toast.success("Google Drive connected successfully");
+      fired = true;
     } else if (google === "error") {
       toast.error("Failed to connect Google Drive");
+      fired = true;
     }
-  }, [searchParams]);
+
+    if (fired) {
+      toastedRef.current = true;
+      router.replace("/onboarding", { scroll: false });
+    }
+  }, [searchParams, router]);
 
   const handleConnect = (url: string) => {
     setOnboardingReturnCookie();
