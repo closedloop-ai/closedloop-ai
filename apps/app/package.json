@@ -21,7 +21,6 @@
     "@repo/auth": "workspace:*",
     "@repo/collaboration": "workspace:*",
     "@repo/design-system": "workspace:*",
-    "@repo/feature-flags": "workspace:*",
     "@repo/google": "workspace:*",
     "@repo/linear": "workspace:*",
     "@repo/next-config": "workspace:*",

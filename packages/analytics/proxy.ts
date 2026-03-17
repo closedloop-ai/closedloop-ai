@@ -1,9 +1,16 @@
 import { postHogMiddleware } from "@posthog/next";
-import type { NextResponse } from "next/server";
+import { NextResponse } from "next/server";
+import { keys } from "./keys";
 
-export function analyticsMiddleware(response?: NextResponse) {
-  return postHogMiddleware({
-    proxy: true,
-    response,
-  });
+const { NEXT_PUBLIC_POSTHOG_KEY } = keys();
+
+export function analyticsMiddleware(
+  response?: NextResponse
+): ReturnType<typeof postHogMiddleware> {
+  return NEXT_PUBLIC_POSTHOG_KEY
+    ? postHogMiddleware({
+        proxy: true,
+        response,
+      })
+    : () => Promise.resolve(response ?? NextResponse.next());
 }
