@@ -21,6 +21,7 @@ import fs from "node:fs";
 import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 // ---------------------------------------------------------------------------
 // AWS SDK v3 — loaded from the global install
@@ -205,8 +206,9 @@ function validateSecrets() {
   const requiredSecrets = ["anthropicApiKey"];
 
   // Repo commands need a GitHub token for clone/push operations.
+  // EVALUATE_PRD with a targetRepo also needs a GitHub token to fetch repo context.
   const repoCommands = new Set(["PLAN", "EXECUTE", "REQUEST_CHANGES"]);
-  if (repoCommands.has(config.command)) {
+  if (repoCommands.has(config.command) || (config.command === "EVALUATE_PRD" && config.targetRepo)) {
     requiredSecrets.push("githubToken");
   }
 
@@ -1738,6 +1740,24 @@ function normalizeModelName(rawName) {
 }
 
 // ---------------------------------------------------------------------------
+// Artifact file names uploaded from the run directory to S3 artifacts/
+// Defined at module level so tests can assert on the list without running
+// the full uploadState flow.
+// ---------------------------------------------------------------------------
+const CLAUDE_PLUGIN_ARTIFACT_FILE_NAMES = [
+  "plan.json",
+  "plan.md",
+  "implementation-plan.md",
+  "open-questions.md",
+  "execution-result.json",
+  "judges.json",
+  "code-judges.json",
+  "prd-judges.json",
+  "perf.jsonl",
+  "state.json",
+];
+
+// ---------------------------------------------------------------------------
 // State upload
 // ---------------------------------------------------------------------------
 async function uploadState(workDir, output, runDir) {
@@ -1797,17 +1817,6 @@ async function uploadState(workDir, output, runDir) {
   // ingestion pipeline can read them by name (e.g., artifacts/plan.json).
   // The full run directory is already captured in claude-state/ (step 2).
   const pluginArtifactDir = runDir ?? workDir;
-  const CLAUDE_PLUGIN_ARTIFACT_FILE_NAMES = [
-    "plan.json",
-    "plan.md",
-    "implementation-plan.md",
-    "open-questions.md",
-    "execution-result.json",
-    "judges.json",
-    "code-judges.json",
-    "perf.jsonl",
-    "state.json",
-  ];
   const NON_PLUGIN_ARTIFACT_FILE_NAMES = ["features.json"];
   const artifactFiles = CLAUDE_PLUGIN_ARTIFACT_FILE_NAMES.map((fileName) => ({
     name: fileName,
@@ -1935,6 +1944,7 @@ function buildRunLoopArgs(runLoopPath, workDir, prdPath) {
   return { cmd: "bash", args };
 }
 
+
 function buildClaudeDirectArgs(workDir, symphonyWD) {
   const args = [];
 
@@ -1990,6 +2000,21 @@ function buildClaudeDirectArgs(workDir, symphonyWD) {
         throw new Error(`No prompt found for ${config.command} command`);
       }
       args.push(prompt);
+      break;
+    }
+    case "EVALUATE_PRD": {
+      const contextDir = path.join(workDir, ".claude", "context");
+
+      // Build skill invocation with workDir containing PRD artifact
+      let skillCall = `/judges:run-judges --artifact-type prd --workDir "${contextDir}"`;
+
+      // Add optional codebase path if target repo exists
+      if (config.targetRepo) {
+        // Target repo is cloned to workDir during prepareWorkspace()
+        skillCall += ` --codebase "${workDir}"`;
+      }
+
+      args.push(skillCall);
       break;
     }
     default:
@@ -2277,6 +2302,12 @@ function validatePreRunInputs(command, contextPack) {
     throw new HarnessError(
       ERROR_CODES.preRunValidation,
       "Pre-run validation failed: REQUEST_CHANGES requires a non-empty prompt"
+    );
+  }
+  if (command === "EVALUATE_PRD" && !hasArtifacts) {
+    throw new HarnessError(
+      ERROR_CODES.preRunValidation,
+      "Pre-run validation failed: EVALUATE_PRD requires artifacts in context pack (PRD content)"
     );
   }
 }
@@ -2845,4 +2876,18 @@ async function main() {
   }
 }
 
-main();
+// ---------------------------------------------------------------------------
+// Exports — testable pure functions (no I/O side effects at import time)
+// ---------------------------------------------------------------------------
+export {
+  buildClaudeDirectArgs,
+  buildCommand, CLAUDE_PLUGIN_ARTIFACT_FILE_NAMES, config, ERROR_CODES,
+  HarnessError, validateConfig,
+  validatePreRunInputs,
+  validateSecrets
+};
+
+// Guard main() so the script does not execute when imported by tests.
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  main();
+}

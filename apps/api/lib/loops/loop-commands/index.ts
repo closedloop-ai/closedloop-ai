@@ -1,5 +1,6 @@
 import { LoopCommand } from "@repo/api/src/types/loop";
 import { decomposeHandler } from "./decompose-handler";
+import { evaluatePrdHandler } from "./evaluate-prd-handler";
 import { executeHandler } from "./execute-handler";
 import type { LoopCommandHandler } from "./loop-command-handler";
 import { planHandler, requestChangesHandler } from "./plan-handler";
@@ -19,4 +20,5 @@ const COMMAND_HANDLERS: Record<LoopCommand, LoopCommandHandler | undefined> = {
   [LoopCommand.Chat]: undefined,
   [LoopCommand.Explore]: undefined,
   [LoopCommand.Decompose]: decomposeHandler,
+  [LoopCommand.EvaluatePrd]: evaluatePrdHandler,
 };
