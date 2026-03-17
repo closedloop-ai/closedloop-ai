@@ -2006,12 +2006,12 @@ function buildClaudeDirectArgs(workDir, symphonyWD) {
       const contextDir = path.join(workDir, ".claude", "context");
 
       // Build skill invocation with workDir containing PRD artifact
-      let skillCall = `/judges:run-judges --artifact-type prd --workDir "${contextDir}"`;
+      let skillCall = `Activate judges:run-judges skill --artifact-type prd.\nCLOSEDLOOP_WORKDIR=${contextDir} (contains prd.md).\n`;
 
       // Add optional codebase path if target repo exists
       if (config.targetRepo) {
         // Target repo is cloned to workDir during prepareWorkspace()
-        skillCall += ` --codebase "${workDir}"`;
+        skillCall += `REPO_PATH=${workDir} (search here for relevant code).\n"`;
       }
 
       args.push(skillCall);
