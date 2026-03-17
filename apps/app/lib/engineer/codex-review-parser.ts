@@ -1,3 +1,21 @@
+/**
+ * Split a finding message into title (first line, with location annotations stripped)
+ * and description (remaining lines joined).
+ */
+export function parseFindingTitle(message: string): {
+  title: string;
+  description: string;
+} {
+  const parts = message.split(/\n/);
+  const titleRaw = parts[0];
+  const description = parts.slice(1).join(" ").trim();
+  const title = titleRaw
+    .replaceAll(/\s*—\s*\S+:\d+[-–]\d+/g, "")
+    .replaceAll(/\s*—\s*\S+:\d+/g, "")
+    .trim();
+  return { title, description };
+}
+
 export type ReviewFinding = {
   severity: "critical" | "warning" | "info" | "success";
   priority?: "P0" | "P1" | "P2" | "P3";

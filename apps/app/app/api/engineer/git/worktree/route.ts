@@ -200,6 +200,23 @@ function isRemoteBranchGone(mainRepoPath: string, branchRef: string): boolean {
 }
 
 /**
+ * Check if a worktree has review state files (indicating a review was run).
+ * These worktrees should be preserved by automatic cleanup; only manual
+ * deletion should remove them.
+ */
+function hasReviewState(worktreeDir: string): boolean {
+  const workDir = join(worktreeDir, ".claude", "work");
+  if (!existsSync(workDir)) {
+    return false;
+  }
+  try {
+    return readdirSync(workDir).some((f) => f.startsWith("codex-review-"));
+  } catch {
+    return false;
+  }
+}
+
+/**
  * POST /api/engineer/git/worktree
  *
  * Scans for stale PR worktrees (matching /-pr-\d+$/) and removes those
@@ -276,6 +293,12 @@ export function POST() {
       try {
         // Security: ensure path is inside worktreeParentDir
         if (!prDir.startsWith(worktreeParentDir + sep)) {
+          continue;
+        }
+
+        // Skip worktrees that have review state — a review was run here
+        if (hasReviewState(prDir)) {
+          kept.push(prDir);
           continue;
         }
 
