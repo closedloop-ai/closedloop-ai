@@ -83,49 +83,32 @@ test("buildCommand returns cmd=claude for EVALUATE_PRD", () => {
 });
 
 // ---------------------------------------------------------------------------
-// (b) buildClaudeDirectArgs with EVALUATE_PRD reads prompt.md from
-//     .claude/context/prompt.md and produces args including the prompt content
-//     (--artifact-type prd is inside the prompt string, not a separate argv)
+// (b) buildClaudeDirectArgs with EVALUATE_PRD produces a judges:run-judges
+//     skill invocation with --artifact-type prd embedded in the prompt string
 // ---------------------------------------------------------------------------
 
-test("buildClaudeDirectArgs with EVALUATE_PRD includes prompt content and no separate --artifact-type argv", () => {
+test("buildClaudeDirectArgs with EVALUATE_PRD invokes judges:run-judges with artifact-type prd", () => {
   const workDir = makeTempDir();
-  const promptText = "Evaluate this PRD content.";
-  writePromptFile(workDir, promptText);
   resetConfig({ command: "EVALUATE_PRD" });
 
   const { cmd, args } = buildClaudeDirectArgs(workDir, null);
 
   assert.equal(cmd, "claude");
 
+  const prompt = args.find((a) => typeof a === "string" && a.includes("judges:run-judges"));
   assert.ok(
-    args.includes(promptText),
-    `args must include the prompt text; got: ${JSON.stringify(args)}`
+    prompt !== undefined,
+    `args must contain a prompt referencing judges:run-judges; got: ${JSON.stringify(args)}`
+  );
+  assert.ok(
+    prompt.includes("--artifact-type prd"),
+    `prompt must contain --artifact-type prd; got: ${prompt}`
   );
   // --artifact-type prd is embedded in the prompt string, not a separate argv entry
   assert.equal(
     args.indexOf("--artifact-type"),
     -1,
     "args must NOT contain --artifact-type as a separate flag (it belongs inside the prompt)"
-  );
-});
-
-// ---------------------------------------------------------------------------
-// (c) buildClaudeDirectArgs with EVALUATE_PRD and missing prompt.md throws
-// ---------------------------------------------------------------------------
-
-test("buildClaudeDirectArgs with EVALUATE_PRD throws Error when prompt.md is absent", () => {
-  const workDir = makeTempDir();
-  // Intentionally do NOT write prompt.md
-  resetConfig({ command: "EVALUATE_PRD" });
-
-  assert.throws(
-    () => buildClaudeDirectArgs(workDir, null),
-    (err) => {
-      assert.ok(err instanceof Error, "must throw an Error");
-      assert.match(err.message, /No prompt found/i);
-      return true;
-    }
   );
 });
 
