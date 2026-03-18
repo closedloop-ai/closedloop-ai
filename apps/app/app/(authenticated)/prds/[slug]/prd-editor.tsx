@@ -33,6 +33,7 @@ import {
   useInlineGeneratePRD,
   useRegenerateArtifact,
 } from "@/hooks/queries/use-artifacts";
+import { usePrdJudgesFeedback } from "@/hooks/queries/use-judges";
 import { useRunLoop } from "@/hooks/queries/use-loops";
 import { useOrganizationUsers } from "@/hooks/queries/use-users";
 import { useEngineerRoutingSelection } from "@/lib/engineer/routing-store";
@@ -117,6 +118,7 @@ export function PRDEditor({
   const inlineGenerate = useInlineGeneratePRD();
   const deepGenerate = useRegenerateArtifact();
   const runLoop = useRunLoop();
+  const { data: judgesReport } = usePrdJudgesFeedback(prd.id);
   const routing = useEngineerRoutingSelection();
   // Pass computeTargetId for both CloudRelay and LocalElectron modes.
   // Loop dispatch always goes through the API → desktop gateway, which needs
@@ -331,6 +333,7 @@ export function PRDEditor({
               <PRDMetadataPanel
                 approver={metadata.approver}
                 assignee={metadata.assignee}
+                judgeItems={judgesReport ?? null}
                 onApproverSelect={metadata.handleApproverSelect}
                 onAssigneeChange={metadata.handleAssigneeChange}
                 onStatusChange={metadata.handleStatusChange}

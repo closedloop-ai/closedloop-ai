@@ -1,4 +1,5 @@
 import type { BatchJudgeScoresResponse } from "@repo/api/src/types/evaluation";
+import { EvaluationReportType } from "@repo/database";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import {
   badRequestResponse,
@@ -9,7 +10,8 @@ import { artifactsService } from "../service";
 
 /**
  * GET /artifacts/judge-scores?projectId=<id>
- * Batch-fetch the latest PLAN judge scores for all artifacts in a project.
+ * Batch-fetch the latest judge scores for all artifacts in a project,
+ * grouped by report type (PLAN, PRD, CODE).
  */
 export const GET = withAnyAuth<
   BatchJudgeScoresResponse,
@@ -25,7 +27,8 @@ export const GET = withAnyAuth<
 
     const result = await artifactsService.getBatchJudgeScores(
       projectId,
-      user.organizationId
+      user.organizationId,
+      Object.values(EvaluationReportType)
     );
 
     return successResponse(result);

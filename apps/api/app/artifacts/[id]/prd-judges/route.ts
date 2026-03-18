@@ -7,14 +7,14 @@ import { artifactsService } from "../../service";
 
 export const GET = withAuth<
   JudgesFeedbackResponse,
-  "/artifacts/[id]/code-judges"
+  "/artifacts/[id]/prd-judges"
 >(async ({ user }, _request, params) => {
   const { id } = await params;
 
   const result = await artifactsService.getEvaluationFeedback(
     id,
     user.organizationId,
-    EvaluationReportType.CODE
+    EvaluationReportType.PRD
   );
 
   return NextResponse.json(success(result));

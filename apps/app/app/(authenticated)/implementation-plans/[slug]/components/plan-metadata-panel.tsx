@@ -180,7 +180,11 @@ export function PlanMetadataPanel({
         />
       </CollapsibleSection>
 
-      <EvaluationSection artifactId={plan.id} judgeItems={judgeItems} />
+      <EvaluationSection
+        artifactId={plan.id}
+        judgeItems={judgeItems}
+        title="Plan Evaluation"
+      />
 
       <EvaluationSection
         artifactId={plan.id}

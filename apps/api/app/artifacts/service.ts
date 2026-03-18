@@ -1592,37 +1592,9 @@ Please try again or contact support if the issue persists.`
   },
 
   /**
-   * Get judges feedback for an artifact from its associated GitHub Action run.
-   * Downloads workflow artifacts and parses the judges.json report.
+   * Get evaluation feedback for an artifact by a specific report type.
+   * Returns the most recent evaluation of the given type.
    */
-  getJudgesFeedback(
-    artifactId: string,
-    organizationId: string
-  ): Promise<JudgesFeedbackResponse> {
-    return this.getEvaluationFeedback(
-      artifactId,
-      organizationId,
-      PrismaEvaluationReportType.PLAN
-    );
-  },
-
-  /**
-   * Get code judges feedback for an artifact — evaluations produced by execution
-   * (PR) runs, identified by a non-null actionRunId. Returns the most recent one
-   * when multiple PRs have been run against the same artifact.
-   */
-  getCodeJudgesFeedback(
-    artifactId: string,
-    organizationId: string
-  ): Promise<JudgesFeedbackResponse> {
-    return this.getEvaluationFeedback(
-      artifactId,
-      organizationId,
-      PrismaEvaluationReportType.CODE
-    );
-  },
-
-  /** Shared implementation for plan and code evaluation feedback. */
   async getEvaluationFeedback(
     artifactId: string,
     organizationId: string,
@@ -1648,17 +1620,7 @@ Please try again or contact support if the issue persists.`
         return { status: "not_found", data: null };
       }
 
-      const data: JudgeFeedbackItem[] = evaluation.judgeScores.map((js) => ({
-        judgeScoreId: js.id,
-        caseId: js.caseId,
-        metricName: js.metricName,
-        score: js.score,
-        threshold: js.threshold,
-        justification: js.justification,
-        finalStatus: js.finalStatus as EvalStatus,
-        promptName: js.prompt?.name ?? null,
-      }));
-
+      const data = evaluation.judgeScores.map(toJudgeFeedbackItem);
       return { status: "success", data };
     } catch (error) {
       log.error(`[artifacts-service] Failed to get ${reportType} feedback`, {
@@ -1672,18 +1634,20 @@ Please try again or contact support if the issue persists.`
   },
 
   /**
-   * Batch-fetch the latest PLAN judge scores for all artifacts in a project.
-   * Returns a map of artifactId → JudgeFeedbackItem[].
-   * Only includes artifacts that have at least one evaluation.
+   * Batch-fetch the latest judge scores for all artifacts in a project,
+   * restricted to the provided report types.
+   * Returns a map of artifactId → { plan, prd, code } where each value is the
+   * most recent evaluation of that report type, or null if none exists.
    */
   async getBatchJudgeScores(
     projectId: string,
-    organizationId: string
+    organizationId: string,
+    reportTypes: PrismaEvaluationReportType[]
   ): Promise<BatchJudgeScoresResponse> {
     const evaluations = await withDb((db) =>
       db.artifactEvaluation.findMany({
         where: {
-          reportType: PrismaEvaluationReportType.PLAN,
+          reportType: { in: reportTypes },
           artifact: { projectId, organizationId },
         },
         include: {
@@ -1693,26 +1657,30 @@ Please try again or contact support if the issue persists.`
       })
     );
 
-    // Group by artifactId, keep only the latest evaluation per artifact
-    const latestByArtifact = new Map<string, (typeof evaluations)[number]>();
+    // Group by (artifactId, reportType), keep only the latest per combination
+    const latestByArtifactAndType = new Map<
+      string,
+      (typeof evaluations)[number]
+    >();
     for (const evaluation of evaluations) {
-      if (!latestByArtifact.has(evaluation.artifactId)) {
-        latestByArtifact.set(evaluation.artifactId, evaluation);
+      const key = `${evaluation.artifactId}:${evaluation.reportType}`;
+      if (!latestByArtifactAndType.has(key)) {
+        latestByArtifactAndType.set(key, evaluation);
       }
     }
 
     const result: BatchJudgeScoresResponse = {};
-    for (const [artifactId, evaluation] of latestByArtifact) {
-      result[artifactId] = evaluation.judgeScores.map((js) => ({
-        judgeScoreId: js.id,
-        caseId: js.caseId,
-        metricName: js.metricName,
-        score: js.score,
-        threshold: js.threshold,
-        justification: js.justification,
-        finalStatus: js.finalStatus as EvalStatus,
-        promptName: js.prompt?.name ?? null,
-      }));
+    for (const evaluation of latestByArtifactAndType.values()) {
+      const { artifactId, reportType } = evaluation;
+      if (!result[artifactId]) {
+        result[artifactId] = {
+          [PrismaEvaluationReportType.PLAN]: null,
+          [PrismaEvaluationReportType.PRD]: null,
+          [PrismaEvaluationReportType.CODE]: null,
+        };
+      }
+      result[artifactId][reportType] =
+        evaluation.judgeScores.map(toJudgeFeedbackItem);
     }
 
     return result;
@@ -3275,5 +3243,28 @@ function toLoopGenerationStatus(
     source: "loop",
     loopId: loop.id,
     initiatedBy: loop.user,
+  };
+}
+
+/** Map a Prisma JudgeScore row (with prompt relation) to a JudgeFeedbackItem. */
+function toJudgeFeedbackItem(js: {
+  id: string;
+  caseId: string;
+  metricName: string;
+  score: number;
+  threshold: number;
+  justification: string;
+  finalStatus: string;
+  prompt: { name: string } | null;
+}): JudgeFeedbackItem {
+  return {
+    judgeScoreId: js.id,
+    caseId: js.caseId,
+    metricName: js.metricName,
+    score: js.score,
+    threshold: js.threshold,
+    justification: js.justification,
+    finalStatus: js.finalStatus as EvalStatus,
+    promptName: js.prompt?.name ?? null,
   };
 }
