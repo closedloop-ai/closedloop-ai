@@ -1,5 +1,6 @@
 "use client";
 
+import { useFeatureFlag } from "@repo/analytics/client";
 import type { LoopListFilters, LoopWithUser } from "@repo/api/src/types/loop";
 import { LoopCommand, LoopStatus } from "@repo/api/src/types/loop";
 import { Button } from "@repo/design-system/components/ui/button";
@@ -48,7 +49,7 @@ function formatTokens(input: number, output: number): string {
   return formatTokenCount(total);
 }
 
-function ComputeTargetCell({ loop }: { loop: LoopWithUser }) {
+function ComputeTargetCell({ loop }: Readonly<{ loop: LoopWithUser }>) {
   if (loop.computeTarget) {
     return (
       <span className="inline-flex items-center gap-1.5 text-muted-foreground text-sm">
@@ -152,6 +153,7 @@ const statusFilterOptions: FilterOption[] = [
 
 export function LoopsTable() {
   const router = useRouter();
+  const tokensFlag = useFeatureFlag("the-one-flag");
   const [commandFilter, setCommandFilter] = useState<string>("all");
   const resumeLoop = useResumeLoop();
   const cancelLoop = useCancelLoop();
@@ -210,6 +212,10 @@ export function LoopsTable() {
     );
   }
 
+  const filteredColumns = tokensFlag?.enabled
+    ? columns
+    : columns.filter((column) => column.key !== "tokens");
+
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-2">
@@ -231,7 +237,7 @@ export function LoopsTable() {
         </Select>
       </div>
       <DataTable
-        columns={columns}
+        columns={filteredColumns}
         data={loops}
         emptyMessage="No loops found. Loops are created when AI agents execute tasks."
         filterKey="status"

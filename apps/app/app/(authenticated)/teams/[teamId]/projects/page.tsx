@@ -3,6 +3,7 @@
 import type { CreateProjectInput } from "@repo/api/src/types/project";
 import { Loader2Icon } from "lucide-react";
 import { useParams, useRouter } from "next/navigation";
+import { useState } from "react";
 import { Header } from "@/app/(authenticated)/components/header";
 import {
   useCreateProject,
@@ -19,6 +20,7 @@ export default function TeamProjectsPage() {
   const params = useParams();
   const router = useRouter();
   const teamId = params.teamId as string;
+  const [createProjectOpen, setCreateProjectOpen] = useState(false);
 
   // Queries
   const {
@@ -92,6 +94,8 @@ export default function TeamProjectsPage() {
       >
         <CreateProjectModal
           onCreateProject={handleCreateProject}
+          onOpenChange={setCreateProjectOpen}
+          open={createProjectOpen}
           teamId={teamId}
           teamName={team.name}
         />
@@ -104,6 +108,7 @@ export default function TeamProjectsPage() {
           </p>
         </div>
         <ProjectsTable
+          onCreateProject={() => setCreateProjectOpen(true)}
           onDelete={handleDeleteProject}
           onUpdateAssignee={handleUpdateAssignee}
           onUpdateTargetDate={handleUpdateTargetDate}

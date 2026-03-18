@@ -1,5 +1,6 @@
 "use client";
 
+import { useFeatureFlag } from "@repo/analytics/client";
 import {
   type ArtifactDetail,
   ArtifactType,
@@ -56,6 +57,8 @@ export function PlanEditor({
   onVersionChange,
   showHeader = true,
 }: Readonly<PlanEditorProps>) {
+  const chatFlag = useFeatureFlag("the-one-flag");
+
   const contentController = useArtifactContent({
     artifact: plan,
     onVersionCreated: () => {
@@ -75,6 +78,7 @@ export function PlanEditor({
   const metadata = useArtifactMetadata({
     artifact: plan,
   });
+
   const { data: orgUsers = [] } = useOrganizationUsers();
   const transformedOrgUsers = useMemo(
     () => orgUsers.map(transformApiUserToSelectUser),
@@ -180,6 +184,7 @@ export function PlanEditor({
 
   const header = showHeader ? (
     <PlanEditorHeader
+      canShowPanel={chatFlag?.enabled}
       isApproved={isApproved}
       isDraft={isDraft}
       isExecuting={planActions.isExecuting}
@@ -344,9 +349,9 @@ export function PlanEditor({
         </div>
 
         {/* Chat panel (replaces metadata sidebar) */}
-        {uiState.showMetadataPanel ? (
+        {chatFlag?.enabled !== false && uiState.showMetadataPanel && (
           <ArtifactChatPanel artifactId={plan.id} artifactType="plan" />
-        ) : null}
+        )}
       </div>
 
       {/* Delete Confirmation Dialog */}

@@ -35,14 +35,20 @@ type CreateProjectModalProps = {
   teamId: string;
   teamName: string;
   onCreateProject?: (project: CreateProjectInput) => void;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 };
 
 export function CreateProjectModal({
   teamId,
   teamName,
   onCreateProject,
+  open: externalOpen,
+  onOpenChange: externalOnOpenChange,
 }: CreateProjectModalProps) {
-  const [open, setOpen] = useState(false);
+  const [internalOpen, setInternalOpen] = useState(false);
+  const open = externalOpen ?? internalOpen;
+  const setOpen = externalOnOpenChange ?? setInternalOpen;
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [priority, setPriority] = useState<Priority>(Priority.Medium);

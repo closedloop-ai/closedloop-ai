@@ -1,5 +1,6 @@
 "use client";
 
+import { FeatureFlagged } from "@repo/analytics/components/feature-flagged";
 import type {
   ArtifactDetail,
   ArtifactStatus,
@@ -172,7 +173,9 @@ export function PRDMetadataPanel({
         />
       </CollapsibleSection>
 
-      <CommentsSection artifactId={prd.id} />
+      <FeatureFlagged flag="the-one-flag">
+        <CommentsSection artifactId={prd.id} />
+      </FeatureFlagged>
 
       <AttachmentsSection artifactId={prd.id} />
 

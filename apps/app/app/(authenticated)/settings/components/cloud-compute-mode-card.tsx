@@ -1,6 +1,5 @@
 "use client";
 
-import { useOrganization } from "@repo/auth/client";
 import {
   Card,
   CardContent,
@@ -16,15 +15,18 @@ import {
   useComputeMode,
   useSetComputeMode,
 } from "@/hooks/queries/use-compute-mode";
-import { isAdminRole } from "@/lib/role-utils";
 
-export function ComputeModeCard() {
-  const { membership } = useOrganization();
-  const isAdmin = isAdminRole(membership?.role);
+type CloudComputeModeCardProperties = {
+  isAdmin: boolean;
+};
+
+export function CloudComputeModeCard({
+  isAdmin,
+}: CloudComputeModeCardProperties) {
   const { data, isLoading } = useComputeMode();
   const setComputeMode = useSetComputeMode();
 
-  const useLoops = data?.computeMode === "LOOPS";
+  const useLoops = data?.computeMode !== "GITHUB_ACTIONS";
 
   const handleToggle = async (checked: boolean) => {
     try {
@@ -42,12 +44,12 @@ export function ComputeModeCard() {
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
           <ContainerIcon className="h-5 w-5" />
-          Compute Mode
+          Cloud Compute Mode
         </CardTitle>
         <CardDescription>
-          Choose how AI agent loops are executed. GitHub Actions is the default;
-          container mode uses dedicated ECS containers for faster, isolated
-          execution.
+          Choose how AI agent jobs are executed in the cloud. Container mode is
+          the default, which leverages ClosedLoop infrastructure. GitHub Actions
+          is an alternative, which requires custom setup in your repositories.
         </CardDescription>
       </CardHeader>
       <CardContent>

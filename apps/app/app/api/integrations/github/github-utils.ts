@@ -48,13 +48,18 @@ export function getGitHubCallbackUrl(): string {
  * Get the error redirect URL for OAuth failures.
  * Uses error codes instead of free-form strings to prevent open redirect attacks.
  */
-export function getErrorRedirectUrl(errorCode: GitHubErrorCode): string {
-  return `${env.NEXT_PUBLIC_APP_URL}/settings?github=error&code=${errorCode}`;
+export function getErrorRedirectUrl(
+  errorCode: GitHubErrorCode,
+  returnTo?: string
+): string {
+  const base = returnTo ?? "/settings";
+  return `${env.NEXT_PUBLIC_APP_URL}${base}?github=error&code=${errorCode}`;
 }
 
 /**
  * Get the success redirect URL after OAuth completion.
  */
-export function getSuccessRedirectUrl(): string {
-  return `${env.NEXT_PUBLIC_APP_URL}/settings?github=connected`;
+export function getSuccessRedirectUrl(returnTo?: string): string {
+  const base = returnTo ?? "/settings";
+  return `${env.NEXT_PUBLIC_APP_URL}${base}?github=connected`;
 }

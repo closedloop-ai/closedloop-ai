@@ -51,6 +51,10 @@ export default defineConfig({
         import.meta.dirname,
         "./vitest-mocks/clerk-nextjs.ts"
       ),
+      "@posthog/next": path.resolve(
+        import.meta.dirname,
+        "./vitest-mocks/posthog-next.tsx"
+      ),
     },
   },
 });
