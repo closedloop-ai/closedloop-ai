@@ -1,5 +1,6 @@
 "use client";
 
+import { useFeatureFlag } from "@repo/analytics/client";
 import {
   type ArtifactDetail,
   ArtifactType,
@@ -51,9 +52,10 @@ export function PRDEditor({
   currentVersion,
   onVersionChange,
 }: Readonly<PRDEditorProps>) {
+  const chatFlag = useFeatureFlag("the-one-flag");
+
   // Move dialog state
   const [showMoveDialog, setShowMoveDialog] = useState(false);
-
   // Comments panel toggle state
   const [showComments, setShowComments] = useState(true);
 
@@ -191,6 +193,7 @@ export function PRDEditor({
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       {/* Header */}
       <PRDEditorHeader
+        canShowPanel={chatFlag?.enabled}
         isGenerating={inlineGenerate.isPending || deepGenerate.isPending}
         isPending={isPending}
         onDecomposeFeatures={handleDecomposeFeatures}
@@ -347,9 +350,9 @@ export function PRDEditor({
         </div>
 
         {/* Chat panel (replaces metadata sidebar) */}
-        {uiState.showMetadataPanel ? (
+        {chatFlag?.enabled !== false && uiState.showMetadataPanel && (
           <ArtifactChatPanel artifactId={prd.id} artifactType="prd" />
-        ) : null}
+        )}
       </div>
 
       {/* Rename Dialog */}

@@ -54,7 +54,7 @@ function formatLastSeen(value: Date): string {
 }
 
 function formatLastChecked(value: number): string {
-  if (!(value > 0)) {
+  if (value <= 0) {
     return "Not run yet";
   }
 
@@ -130,7 +130,7 @@ function renderStatusIcon({
   return <Info className="size-4 text-muted-foreground" />;
 }
 
-export function ComputeTargetsCard() {
+export function LocalComputeTargetsCard() {
   const [systemCheckOpen, setSystemCheckOpen] = useState(false);
   const { data: targets = [], isLoading } = useComputeTargets({
     ...COMPUTE_TARGETS_QUERY_OPTIONS,
@@ -256,10 +256,11 @@ export function ComputeTargetsCard() {
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
           <Laptop className="h-5 w-5" />
-          Compute Targets
+          Local Compute Targets
         </CardTitle>
         <CardDescription>
-          Manage desktop clients connected to your account for Engineer relay.
+          Manage desktop clients connected to your account for local agent job
+          execution.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">

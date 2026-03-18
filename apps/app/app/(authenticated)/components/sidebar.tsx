@@ -1,5 +1,6 @@
 "use client";
 
+import { FeatureFlagged } from "@repo/analytics/components/feature-flagged";
 import {
   OrganizationSwitcher,
   UserButton,
@@ -35,9 +36,7 @@ import {
   Boxes,
   CodeIcon,
   InboxIcon,
-  LifeBuoyIcon,
   RotateCcwIcon,
-  SendIcon,
   SettingsIcon,
   UsersIcon,
 } from "lucide-react";
@@ -45,7 +44,6 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { type ReactNode, useEffect, useRef } from "react";
 import { useIsMounted } from "@/hooks/use-is-mounted";
-import { type AppEnvironment, appEnvironment } from "@/lib/environment";
 import { EngineerBadge } from "./engineer-badge";
 import { InboxBadge } from "./inbox-badge";
 import { Search } from "./search";
@@ -97,14 +95,9 @@ const orgSwitcherAppearance = {
   },
 } as const;
 
-const envBadge: Record<AppEnvironment, string | null> = {
-  local: process.env.NEXT_PUBLIC_API_URL ?? "localhost",
-  stage: null,
-  prod: null,
-};
-
 type GlobalSidebarProperties = {
   readonly children: ReactNode;
+  readonly envBadge?: string | null;
 };
 
 type NavItem = {
@@ -112,6 +105,7 @@ type NavItem = {
   url: string;
   icon: LucideIcon;
   disabled: boolean;
+  featureFlag?: string;
 };
 
 const baseWorkspaceItems: NavItem[] = [
@@ -161,24 +155,13 @@ const data: {
       url: "/judges-analytics",
       icon: BarChart3,
       disabled: false,
+      featureFlag: "the-one-flag",
     },
     {
       title: "Settings",
       url: "/settings",
       icon: SettingsIcon,
       disabled: false,
-    },
-    {
-      title: "Support",
-      url: "#",
-      icon: LifeBuoyIcon,
-      disabled: true,
-    },
-    {
-      title: "Feedback",
-      url: "#",
-      icon: SendIcon,
-      disabled: true,
     },
   ],
 };
@@ -187,18 +170,16 @@ function isNavItemActive(pathname: string, url: string): boolean {
   return pathname === url || (url !== "/" && pathname.startsWith(`${url}/`));
 }
 
-export function GlobalSidebar({ children }: GlobalSidebarProperties) {
+export function GlobalSidebar({
+  children,
+  envBadge = null,
+}: GlobalSidebarProperties) {
   const pathname = usePathname();
   const sidebar = useSidebar();
   const { organization } = useOrganization();
   const queryClient = useQueryClient();
   const prevOrgIdRef = useRef<string | undefined>(undefined);
   const mounted = useIsMounted();
-  const isLocalhost =
-    mounted &&
-    (globalThis.location.hostname === "localhost" ||
-      globalThis.location.hostname === "127.0.0.1");
-  const activeEnvBadge = isLocalhost ? envBadge[appEnvironment] : null;
 
   // Clear cache when organization changes
   useEffect(() => {
@@ -226,20 +207,23 @@ export function GlobalSidebar({ children }: GlobalSidebarProperties) {
               <div
                 className={cn(
                   "flex overflow-hidden transition-all",
-                  sidebar.open && activeEnvBadge
+                  sidebar.open && envBadge
                     ? "flex-col items-start gap-1 px-2 py-1"
                     : "h-[36px] items-center gap-2",
                   !sidebar.open && "justify-center px-0",
-                  sidebar.open && !activeEnvBadge && "px-2"
+                  sidebar.open && !envBadge && "px-2"
                 )}
               >
-                {!mounted && (
-                  <div className="h-8 w-full animate-pulse rounded bg-muted" />
-                )}
-                {mounted && sidebar.open && (
+                {sidebar.open && (
                   <>
-                    <OrganizationSwitcher appearance={orgSwitcherAppearance} />
-                    {activeEnvBadge && (
+                    {mounted ? (
+                      <OrganizationSwitcher
+                        appearance={orgSwitcherAppearance}
+                      />
+                    ) : (
+                      <div className="h-8 w-full animate-pulse rounded bg-muted" />
+                    )}
+                    {envBadge && (
                       <div className="w-full rounded border border-amber-400/30 bg-amber-400/10 px-2 py-1.5 dark:border-amber-500/20 dark:bg-amber-500/10">
                         <div className="mb-0.5 flex items-center gap-1.5">
                           <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-amber-500" />
@@ -249,9 +233,9 @@ export function GlobalSidebar({ children }: GlobalSidebarProperties) {
                         </div>
                         <p
                           className="truncate font-mono text-[9px] text-amber-700/60 leading-tight dark:text-amber-400/60"
-                          title={activeEnvBadge}
+                          title={envBadge}
                         >
-                          {activeEnvBadge}
+                          {envBadge}
                         </p>
                       </div>
                     )}
@@ -277,50 +261,9 @@ export function GlobalSidebar({ children }: GlobalSidebarProperties) {
           <SidebarGroup>
             <SidebarGroupLabel>Workspace</SidebarGroupLabel>
             <SidebarMenu>
-              {data.workspace.map((item) => (
-                <SidebarMenuItem key={item.title}>
-                  <SidebarMenuButton
-                    asChild={!item.disabled}
-                    className={cn(
-                      item.disabled
-                        ? "pointer-events-none cursor-not-allowed opacity-50"
-                        : ""
-                    )}
-                    isActive={
-                      !item.disabled &&
-                      isNavItemActive(pathname ?? "", item.url)
-                    }
-                    tooltip={item.title}
-                  >
-                    {item.disabled ? (
-                      <span className="flex items-center gap-2">
-                        <item.icon className="size-4" />
-                        <span>{item.title}</span>
-                      </span>
-                    ) : (
-                      <Link href={item.url}>
-                        <item.icon />
-                        <span>{item.title}</span>
-                        {item.title === "Inbox" && <InboxBadge />}
-                        {item.title === engineerNavItem.title && (
-                          <EngineerBadge />
-                        )}
-                      </Link>
-                    )}
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              ))}
-            </SidebarMenu>
-          </SidebarGroup>
-
-          <SidebarFavorites />
-
-          <SidebarTeams />
-
-          <SidebarGroup className="mt-auto">
-            <SidebarGroupContent>
-              <SidebarMenu>
-                {data.navSecondary.map((item) => (
+              {data.workspace.map((item) =>
+                maybeFeatureFlagged(
+                  item,
                   <SidebarMenuItem key={item.title}>
                     <SidebarMenuButton
                       asChild={!item.disabled}
@@ -333,6 +276,7 @@ export function GlobalSidebar({ children }: GlobalSidebarProperties) {
                         !item.disabled &&
                         isNavItemActive(pathname ?? "", item.url)
                       }
+                      tooltip={item.title}
                     >
                       {item.disabled ? (
                         <span className="flex items-center gap-2">
@@ -343,11 +287,57 @@ export function GlobalSidebar({ children }: GlobalSidebarProperties) {
                         <Link href={item.url}>
                           <item.icon />
                           <span>{item.title}</span>
+                          {item.title === "Inbox" && <InboxBadge />}
+                          {item.title === engineerNavItem.title && (
+                            <EngineerBadge />
+                          )}
                         </Link>
                       )}
                     </SidebarMenuButton>
                   </SidebarMenuItem>
-                ))}
+                )
+              )}
+            </SidebarMenu>
+          </SidebarGroup>
+
+          <SidebarFavorites />
+
+          <SidebarTeams />
+
+          <SidebarGroup className="mt-auto">
+            <SidebarGroupContent>
+              <SidebarMenu>
+                {data.navSecondary.map((item) =>
+                  maybeFeatureFlagged(
+                    item,
+                    <SidebarMenuItem key={item.title}>
+                      <SidebarMenuButton
+                        asChild={!item.disabled}
+                        className={cn(
+                          item.disabled
+                            ? "pointer-events-none cursor-not-allowed opacity-50"
+                            : ""
+                        )}
+                        isActive={
+                          !item.disabled &&
+                          isNavItemActive(pathname ?? "", item.url)
+                        }
+                      >
+                        {item.disabled ? (
+                          <span className="flex items-center gap-2">
+                            <item.icon className="size-4" />
+                            <span>{item.title}</span>
+                          </span>
+                        ) : (
+                          <Link href={item.url}>
+                            <item.icon />
+                            <span>{item.title}</span>
+                          </Link>
+                        )}
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                  )
+                )}
               </SidebarMenu>
             </SidebarGroupContent>
           </SidebarGroup>
@@ -389,4 +379,15 @@ export function GlobalSidebar({ children }: GlobalSidebarProperties) {
       <SidebarInset>{children}</SidebarInset>
     </>
   );
+}
+
+function maybeFeatureFlagged(item: NavItem, children: ReactNode): ReactNode {
+  if (item.featureFlag) {
+    return (
+      <FeatureFlagged flag={item.featureFlag} key={item.title}>
+        {children}
+      </FeatureFlagged>
+    );
+  }
+  return children;
 }

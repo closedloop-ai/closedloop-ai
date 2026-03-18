@@ -1,5 +1,6 @@
 "use client";
 
+import { FeatureFlagged } from "@repo/analytics/components/feature-flagged";
 import type {
   ArtifactDetail,
   ArtifactStatus,
@@ -188,7 +189,9 @@ export function PlanMetadataPanel({
         title="Code Evaluation"
       />
 
-      <PerformanceSection artifactId={plan.id} />
+      <FeatureFlagged flag="the-one-flag">
+        <PerformanceSection artifactId={plan.id} />
+      </FeatureFlagged>
 
       <CollapsibleSection
         onOpenChange={setIsRatingOpen}
@@ -201,7 +204,9 @@ export function PlanMetadataPanel({
         />
       </CollapsibleSection>
 
-      <CommentsSection artifactId={plan.id} />
+      <FeatureFlagged flag="the-one-flag">
+        <CommentsSection artifactId={plan.id} />
+      </FeatureFlagged>
 
       <AttachmentsSection artifactId={plan.id} />
 

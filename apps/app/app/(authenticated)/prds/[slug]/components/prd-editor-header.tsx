@@ -36,6 +36,7 @@ import { ARTIFACT_TYPE_ICONS } from "@/lib/project-constants";
 type PRDEditorHeaderProps = {
   prd: ArtifactWithWorkstream;
   showMetadataPanel: boolean;
+  canShowPanel?: boolean;
   onToggleMetadataPanel: () => void;
   onDecomposeFeatures: () => void;
   onGeneratePlan: () => void;
@@ -54,6 +55,7 @@ type PRDEditorHeaderProps = {
 export function PRDEditorHeader({
   prd,
   showMetadataPanel,
+  canShowPanel = true,
   onToggleMetadataPanel,
   onDecomposeFeatures,
   onGeneratePlan,
@@ -67,7 +69,7 @@ export function PRDEditorHeader({
   onRestoreVersion,
   onDelete,
   isPending = false,
-}: PRDEditorHeaderProps) {
+}: Readonly<PRDEditorHeaderProps>) {
   const breadcrumbs: BreadcrumbEntry[] = prd.project?.teams?.[0]?.id
     ? [
         {
@@ -170,15 +172,17 @@ export function PRDEditorHeader({
 
       {overflowMenu}
 
-      <Button
-        aria-label="Toggle chat panel"
-        onClick={onToggleMetadataPanel}
-        size="icon"
-        title="Toggle chat panel"
-        variant={showMetadataPanel ? "secondary" : "ghost"}
-      >
-        <PanelRightIcon className="h-4 w-4" />
-      </Button>
+      {canShowPanel && (
+        <Button
+          aria-label="Toggle chat panel"
+          onClick={onToggleMetadataPanel}
+          size="icon"
+          title="Toggle chat panel"
+          variant={showMetadataPanel ? "secondary" : "ghost"}
+        >
+          <PanelRightIcon className="h-4 w-4" />
+        </Button>
+      )}
     </Header>
   );
 }

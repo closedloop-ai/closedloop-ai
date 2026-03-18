@@ -33,6 +33,7 @@ import {
 type PlanEditorHeaderProps = {
   plan: ArtifactWithWorkstream;
   showMetadataPanel: boolean;
+  canShowPanel?: boolean;
   isDraft: boolean;
   isApproved: boolean;
   pullRequest?: { htmlUrl: string; number: number } | null;
@@ -55,6 +56,7 @@ type PlanEditorHeaderProps = {
 export function PlanEditorHeader({
   plan,
   showMetadataPanel,
+  canShowPanel = true,
   isDraft,
   isApproved,
   pullRequest,
@@ -184,15 +186,17 @@ export function PlanEditorHeader({
 
       {overflowMenu}
 
-      <Button
-        aria-label="Toggle chat panel"
-        onClick={onToggleMetadataPanel}
-        size="icon"
-        title="Toggle chat panel"
-        variant={showMetadataPanel ? "secondary" : "ghost"}
-      >
-        <PanelRightIcon className="h-4 w-4" />
-      </Button>
+      {canShowPanel && (
+        <Button
+          aria-label="Toggle chat panel"
+          onClick={onToggleMetadataPanel}
+          size="icon"
+          title="Toggle chat panel"
+          variant={showMetadataPanel ? "secondary" : "ghost"}
+        >
+          <PanelRightIcon className="h-4 w-4" />
+        </Button>
+      )}
     </Header>
   );
 }

@@ -1,5 +1,6 @@
 "use client";
 
+import { FeatureFlagged } from "@repo/analytics/components/feature-flagged";
 import type { Priority } from "@repo/api/src/types/common";
 import type {
   ProjectStatus,
@@ -202,13 +203,15 @@ export function PropertiesPanel({
         </div>
 
         {/* Codebase Summary Upload */}
-        <div className="pt-2">
-          <CodebaseSummaryUpload
-            lastIndexedAt={project.lastIndexedAt}
-            onUploadSuccess={onCodebaseSummaryUploaded}
-            projectId={project.id}
-          />
-        </div>
+        <FeatureFlagged flag="the-one-flag">
+          <div className="pt-2">
+            <CodebaseSummaryUpload
+              lastIndexedAt={project.lastIndexedAt}
+              onUploadSuccess={onCodebaseSummaryUploaded}
+              projectId={project.id}
+            />
+          </div>
+        </FeatureFlagged>
       </CollapsibleContent>
     </Collapsible>
   );

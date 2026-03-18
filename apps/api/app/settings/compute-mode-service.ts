@@ -1,3 +1,4 @@
+import type { JsonObject } from "@repo/api/src/types/common";
 import type { ComputeMode } from "@repo/api/src/types/settings";
 
 export type { ComputeMode } from "@repo/api/src/types/settings";
@@ -19,14 +20,14 @@ export const computeModeService = {
       })
     );
 
-    const settings = (org?.settings ?? {}) as Record<string, unknown>;
+    const settings = (org?.settings ?? {}) as JsonObject;
     const mode = settings.computeMode;
 
     if (typeof mode === "string" && VALID_MODES.has(mode)) {
       return mode as ComputeMode;
     }
 
-    return "GITHUB_ACTIONS";
+    return "LOOPS";
   },
 
   /**

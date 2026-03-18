@@ -1,258 +1,39 @@
-"use client";
+import { auth } from "@repo/auth/server";
+import { SettingsPage } from "./components/settings-page";
 
-import {
-  OrganizationProfile,
-  OrganizationSwitcher,
-  Protect,
-  UserProfile,
-  useOrganization,
-} from "@repo/auth/client";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@repo/design-system/components/ui/card";
-import { Separator } from "@repo/design-system/components/ui/separator";
-import { toast } from "@repo/design-system/components/ui/sonner";
-import {
-  Tabs,
-  TabsContent,
-  TabsList,
-  TabsTrigger,
-} from "@repo/design-system/components/ui/tabs";
-import { useSearchParams } from "next/navigation";
-import { useEffect } from "react";
-import { CustomFieldsSettingsTab } from "@/components/custom-fields/custom-fields-settings-tab";
-import { isAdminRole } from "@/lib/role-utils";
-import { AnthropicApiKeyCard } from "./components/anthropic-api-key-card";
-import { ApiKeysSettingsPanel } from "./components/api-keys-settings-panel";
-import { ComputeModeCard } from "./components/compute-mode-card";
-import { ComputeTargetsCard } from "./components/compute-targets-card";
-import { GitHubIntegrationCard } from "./components/github-integration-card";
-import { GoogleIntegrationCard } from "./components/google-integration-card";
-import { LinearIntegrationCard } from "./components/linear-integration-card";
-import { PublicDashboardCard } from "./components/public-dashboard-card";
-
-/**
- * Error code to user-friendly message mapping for GitHub.
- * Must match GITHUB_ERROR_CODES from github-utils.ts
- */
-const GITHUB_ERROR_MESSAGES: Record<string, string> = {
-  not_authenticated: "Please sign in to connect GitHub.",
-  not_configured: "GitHub integration is not configured.",
-  missing_params: "Invalid authorization request. Please try again.",
-  invalid_state: "Security validation failed. Please try again.",
-  invalid_request: "Invalid authorization request. Please try again.",
-  connection_failed: "Failed to connect to GitHub. Please try again.",
-  oauth_failed: "Authorization failed. Please try again.",
-  token_exchange_failed: "Token exchange failed. Please try again.",
+export type SettingsPageProperties = {
+  searchParams: Promise<{
+    tab?: string | string[];
+  }>;
 };
 
-// Shared appearance config for Clerk components to match design system
-const clerkAppearance = {
-  elements: {
-    rootBox: "w-full",
-    cardBox: "bg-transparent shadow-none border rounded-lg border-border",
-    navbar: "border-r border-border",
-    navbarButton: "text-foreground hover:bg-muted",
-    navbarButtonIcon: "text-muted-foreground",
-    pageScrollBox: "p-4",
-    formButtonPrimary: "bg-primary text-primary-foreground hover:bg-primary/90",
-    formFieldInput: "bg-background border-border",
-    profileSectionPrimaryButton:
-      "bg-primary text-primary-foreground hover:bg-primary/90",
-    badge: "bg-muted text-muted-foreground",
-    membersPageInviteButton:
-      "bg-primary text-primary-foreground hover:bg-primary/90",
-  },
-};
+export default async function Page({
+  searchParams,
+}: Readonly<SettingsPageProperties>) {
+  const [{ has }, params] = await Promise.all([auth(), searchParams]);
+  const isAdmin = has({ role: "org:admin" }) || has({ role: "org:owner" });
+  const requestedTab = getRequestedTab(params.tab);
+  const allowedTabs = isAdmin ? [...BASE_TABS, ...ADMIN_TABS] : BASE_TABS;
+  const initialTab =
+    requestedTab && allowedTabs.includes(requestedTab)
+      ? requestedTab
+      : DEFAULT_TAB;
 
-export default function SettingsPage() {
-  const { membership } = useOrganization();
-  const isAdmin = isAdminRole(membership?.role);
-  const searchParams = useSearchParams();
+  return <SettingsPage initialTab={initialTab} isAdmin={isAdmin} />;
+}
 
-  // Handle OAuth callback results from URL params (GitHub + Google)
-  useEffect(() => {
-    const githubStatus = searchParams.get("github");
-    const errorCode = searchParams.get("code");
-    const googleStatus = searchParams.get("google");
+const DEFAULT_TAB = "profile";
+const BASE_TABS = ["profile", "organization", "integrations", "api-keys"];
+const ADMIN_TABS = ["admin", "custom-fields"];
 
-    if (githubStatus === "connected") {
-      toast.success("GitHub connected successfully");
-    } else if (githubStatus === "error" && errorCode) {
-      const message = GITHUB_ERROR_MESSAGES[errorCode] ?? "An error occurred.";
-      toast.error(message);
-    }
+function getRequestedTab(tab: string | string[] | undefined): string | null {
+  if (typeof tab === "string") {
+    return tab;
+  }
 
-    if (googleStatus === "success") {
-      toast.success("Google Drive connected successfully");
-    } else if (googleStatus === "error") {
-      toast.error("Failed to connect Google Drive");
-    }
+  if (Array.isArray(tab)) {
+    return tab[0] ?? null;
+  }
 
-    // Clean up URL params if any integration status was present
-    if (githubStatus || googleStatus) {
-      window.history.replaceState({}, "", window.location.pathname);
-    }
-  }, [searchParams]);
-
-  return (
-    <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-auto p-6">
-      <div>
-        <h1 className="font-semibold text-2xl tracking-tight">Settings</h1>
-        <p className="text-muted-foreground">
-          Manage your account settings and preferences.
-        </p>
-      </div>
-
-      <Separator />
-
-      <Tabs
-        className="flex-1"
-        defaultValue={searchParams.get("tab") ?? "profile"}
-      >
-        <TabsList className="h-auto rounded-none border-border border-b bg-transparent p-0">
-          <TabsTrigger
-            className="rounded-none border-transparent border-b-2 bg-transparent px-4 py-2 data-[state=active]:border-foreground data-[state=active]:bg-transparent"
-            value="profile"
-          >
-            Profile
-          </TabsTrigger>
-          <TabsTrigger
-            className="rounded-none border-transparent border-b-2 bg-transparent px-4 py-2 data-[state=active]:border-foreground data-[state=active]:bg-transparent"
-            value="organization"
-          >
-            Organization
-          </TabsTrigger>
-          {isAdmin ? (
-            <TabsTrigger
-              className="rounded-none border-transparent border-b-2 bg-transparent px-4 py-2 data-[state=active]:border-foreground data-[state=active]:bg-transparent"
-              value="admin"
-            >
-              Admin
-            </TabsTrigger>
-          ) : null}
-          {isAdmin ? (
-            <TabsTrigger
-              className="rounded-none border-transparent border-b-2 bg-transparent px-4 py-2 data-[state=active]:border-foreground data-[state=active]:bg-transparent"
-              value="custom-fields"
-            >
-              Custom Fields
-            </TabsTrigger>
-          ) : null}
-          <TabsTrigger
-            className="rounded-none border-transparent border-b-2 bg-transparent px-4 py-2 data-[state=active]:border-foreground data-[state=active]:bg-transparent"
-            value="integrations"
-          >
-            Integrations
-          </TabsTrigger>
-          <TabsTrigger
-            className="rounded-none border-transparent border-b-2 bg-transparent px-4 py-2 data-[state=active]:border-foreground data-[state=active]:bg-transparent"
-            value="api-keys"
-          >
-            API Keys
-          </TabsTrigger>
-        </TabsList>
-
-        <TabsContent className="mt-6 space-y-6" value="profile">
-          <UserProfile appearance={clerkAppearance} routing="hash" />
-        </TabsContent>
-
-        <TabsContent className="mt-6 space-y-6" value="organization">
-          <OrganizationProfile appearance={clerkAppearance} routing="hash" />
-        </TabsContent>
-
-        <TabsContent className="mt-6 space-y-6" value="admin">
-          <Protect
-            condition={(
-              has: (
-                params: { role: string } | { permission: string }
-              ) => boolean
-            ) => has({ role: "org:admin" }) || has({ role: "org:owner" })}
-            fallback={
-              <Card>
-                <CardHeader>
-                  <CardTitle>Access Denied</CardTitle>
-                  <CardDescription>
-                    You must be an organization admin or owner to view this
-                    section.
-                  </CardDescription>
-                </CardHeader>
-              </Card>
-            }
-          >
-            <Card>
-              <CardHeader>
-                <CardTitle>Organization Switcher</CardTitle>
-                <CardDescription>
-                  Switch between organizations you manage.
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <OrganizationSwitcher
-                  appearance={{
-                    elements: {
-                      rootBox: "w-full",
-                      organizationSwitcherTrigger: "w-full justify-between",
-                    },
-                  }}
-                />
-              </CardContent>
-            </Card>
-
-            <PublicDashboardCard />
-          </Protect>
-        </TabsContent>
-
-        <TabsContent className="mt-6 space-y-6" value="custom-fields">
-          <Protect
-            condition={(
-              has: (
-                params: { role: string } | { permission: string }
-              ) => boolean
-            ) => has({ role: "org:admin" }) || has({ role: "org:owner" })}
-            fallback={
-              <Card>
-                <CardHeader>
-                  <CardTitle>Access Denied</CardTitle>
-                  <CardDescription>
-                    You must be an organization admin or owner to view this
-                    section.
-                  </CardDescription>
-                </CardHeader>
-              </Card>
-            }
-          >
-            <CustomFieldsSettingsTab />
-          </Protect>
-        </TabsContent>
-
-        <TabsContent className="mt-6 space-y-6" value="integrations">
-          <ComputeModeCard />
-          <ComputeTargetsCard />
-          <AnthropicApiKeyCard />
-          <GitHubIntegrationCard />
-          <GoogleIntegrationCard />
-          <LinearIntegrationCard />
-
-          <Card>
-            <CardHeader>
-              <CardTitle>More Integrations</CardTitle>
-              <CardDescription>
-                Additional integrations will appear here as they become
-                available.
-              </CardDescription>
-            </CardHeader>
-          </Card>
-        </TabsContent>
-
-        <TabsContent className="mt-6 space-y-6" value="api-keys">
-          <ApiKeysSettingsPanel />
-        </TabsContent>
-      </Tabs>
-    </div>
-  );
+  return null;
 }
