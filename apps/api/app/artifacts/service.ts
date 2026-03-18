@@ -2,6 +2,7 @@ import { createId } from "@paralleldrive/cuid2";
 import { generateText, models } from "@repo/ai/server";
 import {
   type Artifact,
+  ArtifactStatus,
   type ArtifactTitleMap,
   ArtifactType,
   type ArtifactWithWorkstream,
@@ -54,6 +55,7 @@ import {
 import { generateArtifactSlug } from "@/lib/slug-generator";
 import { entityLinksService } from "../entity-links/service";
 import { issuesService } from "../issues/service";
+import { loopsService } from "../loops/service";
 import {
   ArtifactNotFoundError,
   artifactIncludeWithContext,
@@ -2661,7 +2663,253 @@ Please try again or contact support if the issue persists.`
 
     return pickBestStatus(ghStatus, loopStatus);
   },
+
+  /**
+   * Find or create an implementation-plan artifact for an issue, check for
+   * an active PLAN loop, and return the information needed for the route
+   * handler to launch a real PLAN loop.
+   *
+   * Called by POST /plans/start-loop-from-local (gateway-only route).
+   */
+  async startPlanLoopFromLocal(
+    organizationId: string,
+    userId: string,
+    input: {
+      issueId: string;
+      ticketTitle?: string;
+      computeTargetId: string;
+      localRepoPath: string;
+      repo?: { fullName: string; branch: string };
+      selectedArtifactId?: string;
+    }
+  ): Promise<StartPlanLoopFromLocalResult> {
+    const { issueId, ticketTitle, selectedArtifactId } = input;
+
+    const issue = await issuesService.findById(issueId, organizationId);
+    if (!issue) {
+      throw new Error(`Issue not found: ${issueId}`);
+    }
+
+    // Find existing ISSUE -> PRODUCES -> ARTIFACT (implementation-plan) entity links
+    const targetLinks = await entityLinksService.findTargetLinks(
+      organizationId,
+      issueId,
+      EntityType.Issue,
+      LinkType.PRODUCES
+    );
+
+    const linkedArtifactIds = targetLinks.map((l) => l.targetId);
+
+    let linkedPlans: { id: string; title: string }[] = [];
+    if (linkedArtifactIds.length > 0) {
+      const artifacts = await withDb((db) =>
+        db.artifact.findMany({
+          where: {
+            id: { in: linkedArtifactIds },
+            organizationId,
+            type: PrismaArtifactType.IMPLEMENTATION_PLAN,
+          },
+          select: { id: true, title: true },
+        })
+      );
+      linkedPlans = artifacts.map((a) => ({ id: a.id, title: a.title }));
+    }
+
+    const artifactIdResult = await resolveOrCreatePlanArtifact({
+      organizationId,
+      userId,
+      issueId,
+      issue,
+      linkedPlans,
+      selectedArtifactId,
+      ticketTitle,
+    });
+    if ("outcome" in artifactIdResult) {
+      return artifactIdResult;
+    }
+    const artifactId = artifactIdResult.artifactId;
+
+    // Check for an active PLAN loop on the artifact
+    const activeLoop = await loopsService.findActivePlanLoopForArtifact(
+      artifactId,
+      organizationId
+    );
+    if (activeLoop) {
+      const existingLocalRepoPath =
+        typeof activeLoop.metadata?.localRepoPath === "string"
+          ? activeLoop.metadata.localRepoPath
+          : null;
+
+      const slugResult = await withDb((db) =>
+        db.artifact.findUnique({
+          where: { id: artifactId, organizationId },
+          select: { slug: true },
+        })
+      );
+      const artifactSlug = slugResult?.slug ?? artifactId;
+      if (!existingLocalRepoPath) {
+        return { outcome: "error", reason: "missing-local-path" };
+      }
+      return {
+        outcome: "already-running",
+        loopId: activeLoop.id,
+        artifactId,
+        artifactSlug,
+        localRepoPath: existingLocalRepoPath,
+      };
+    }
+
+    const artifact = await this.findWithRegenerationContext(
+      artifactId,
+      organizationId
+    );
+    if (!artifact) {
+      throw new Error(`Artifact not found after create/find: ${artifactId}`);
+    }
+
+    return {
+      outcome: "ready-to-launch",
+      artifactId,
+      artifactSlug: artifact.slug,
+      artifact,
+    };
+  },
 };
+
+/**
+ * Resolve which implementation-plan artifact to use for a plan loop, creating
+ * one if none exist. Returns an early-exit result when the caller should
+ * return immediately, or `{ artifactId }` to continue.
+ */
+async function resolveOrCreatePlanArtifact(opts: {
+  organizationId: string;
+  userId: string;
+  issueId: string;
+  issue: { id: string; title: string; projectId?: string | null };
+  linkedPlans: { id: string; title: string }[];
+  selectedArtifactId?: string;
+  ticketTitle?: string;
+}): Promise<
+  | { outcome: "needs-selection"; artifacts: { id: string; title: string }[] }
+  | {
+      outcome: "invalid-artifact";
+      existingArtifacts: { id: string; title: string }[];
+    }
+  | { artifactId: string }
+> {
+  const {
+    organizationId,
+    userId,
+    issueId,
+    issue,
+    linkedPlans,
+    selectedArtifactId,
+    ticketTitle,
+  } = opts;
+
+  if (selectedArtifactId) {
+    // Select-artifact path: verify the selected artifact is in the linked set
+    const isValid = linkedPlans.some((a) => a.id === selectedArtifactId);
+    if (!isValid) {
+      return { outcome: "invalid-artifact", existingArtifacts: linkedPlans };
+    }
+
+    // Verify it's an implementation plan (type guard)
+    const artifact = await withDb((db) =>
+      db.artifact.findUnique({
+        where: { id: selectedArtifactId, organizationId },
+        select: { type: true },
+      })
+    );
+    if (artifact?.type !== PrismaArtifactType.IMPLEMENTATION_PLAN) {
+      return { outcome: "invalid-artifact", existingArtifacts: linkedPlans };
+    }
+
+    // Promote selected link so the issue points at exactly one plan.
+    const allLinkedPlanIds = linkedPlans.map((p) => p.id);
+    await withDb.tx(async (tx) => {
+      if (allLinkedPlanIds.length > 0) {
+        await tx.entityLink.deleteMany({
+          where: {
+            organizationId,
+            sourceId: issueId,
+            sourceType: EntityType.Issue,
+            targetId: { in: allLinkedPlanIds },
+            targetType: EntityType.Artifact,
+            linkType: LinkType.PRODUCES,
+          },
+        });
+      }
+
+      await tx.entityLink.create({
+        data: {
+          organizationId,
+          sourceId: issueId,
+          sourceType: EntityType.Issue,
+          targetId: selectedArtifactId,
+          targetType: EntityType.Artifact,
+          linkType: LinkType.PRODUCES,
+        },
+      });
+    });
+
+    return { artifactId: selectedArtifactId };
+  }
+
+  if (linkedPlans.length > 1) {
+    return { outcome: "needs-selection", artifacts: linkedPlans };
+  }
+
+  if (linkedPlans.length === 1) {
+    return { artifactId: linkedPlans[0].id };
+  }
+
+  // No linked plan — create one
+  const title = ticketTitle ? `Plan: ${ticketTitle}` : `Plan: ${issue.title}`;
+  const createInput: CreateArtifactInput = {
+    type: ArtifactType.ImplementationPlan,
+    title,
+    content: "",
+    sourceId: issueId,
+    sourceType: EntityType.Issue,
+    projectId: (issue.projectId ?? "") as string,
+    status: ArtifactStatus.Draft,
+  };
+  const newArtifact = await withDb.tx((tx) =>
+    createArtifactRecord(tx, organizationId, userId, createInput)
+  );
+  if (!newArtifact) {
+    throw new Error("Failed to create implementation plan artifact");
+  }
+  await createArtifactRoom(newArtifact);
+  return { artifactId: newArtifact.id };
+}
+
+// Artifact shape returned by findWithRegenerationContext (used by launch helpers)
+type ArtifactWithRegenerationContext = NonNullable<
+  Awaited<ReturnType<typeof artifactsService.findWithRegenerationContext>>
+>;
+
+export type StartPlanLoopFromLocalResult =
+  | { outcome: "needs-selection"; artifacts: { id: string; title: string }[] }
+  | {
+      outcome: "invalid-artifact";
+      existingArtifacts: { id: string; title: string }[];
+    }
+  | {
+      outcome: "already-running";
+      loopId: string;
+      artifactId: string;
+      artifactSlug: string;
+      localRepoPath: string;
+    }
+  | { outcome: "error"; reason: "missing-local-path" }
+  | {
+      outcome: "ready-to-launch";
+      artifactId: string;
+      artifactSlug: string;
+      artifact: ArtifactWithRegenerationContext;
+    };
 
 // Result types for service operations
 export type RegenerateResult =

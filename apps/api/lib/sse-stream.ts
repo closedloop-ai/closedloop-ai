@@ -75,6 +75,9 @@ export function createSseStream(
       };
 
       const send = (data: Uint8Array) => {
+        if (cleaned) {
+          return;
+        }
         try {
           controller.enqueue(data);
         } catch (error) {

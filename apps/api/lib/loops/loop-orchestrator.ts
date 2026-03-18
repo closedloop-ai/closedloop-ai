@@ -15,6 +15,7 @@ import {
 } from "@/app/loops/service";
 import { apiKeyService } from "@/app/settings/api-key-service";
 import { issueLoopRunnerToken } from "@/lib/auth/loop-runner-jwt";
+import { desktopCommandStore } from "@/lib/desktop-command-store";
 import { getCommandHandler } from "./loop-commands";
 import {
   buildContextPack,
@@ -436,6 +437,11 @@ async function launchLoopDesktop(
       artifactSlug = artifact?.slug;
     }
 
+    const localRepoPath =
+      typeof loop.metadata?.localRepoPath === "string"
+        ? loop.metadata.localRepoPath
+        : undefined;
+
     commandId = await launchLoopOnDesktop({
       loopId,
       organizationId,
@@ -448,6 +454,7 @@ async function launchLoopDesktop(
       parentLoopId: loop.parentLoopId ?? undefined,
       parentBranchName: ctx.parentInfo?.branchName ?? undefined,
       parentSessionId: ctx.parentInfo?.sessionId ?? undefined,
+      localRepoPath,
     });
 
     // Use commandId as containerId for desktop loops, null s3StateKey
@@ -467,8 +474,20 @@ async function launchLoopDesktop(
       loopId,
       error: errorMessage,
     });
-    // Kill the desktop process if it was already dispatched
+    // Expire the command record so it won't be replayed on reconnect
     if (commandId) {
+      try {
+        await desktopCommandStore.markCommandExpired(
+          commandId,
+          `Launch failed: ${errorMessage}`
+        );
+      } catch (expireError) {
+        log.warn("[loop-orchestrator] Failed to expire orphaned command", {
+          loopId,
+          commandId,
+          expireError,
+        });
+      }
       try {
         await stopDesktopLoop(loopId, loop.computeTargetId!);
       } catch (killError) {

@@ -1,3 +1,11 @@
+import { Button } from "@repo/design-system/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@repo/design-system/components/ui/dialog";
 import { cn } from "@repo/design-system/lib/utils";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronLeft, ChevronRight, FileText } from "lucide-react";
@@ -21,6 +29,7 @@ import {
 } from "@/components/engineer/TicketListRow";
 import { useCodexAvailable } from "@/hooks/engineer/use-codex-available";
 import type { FullTicketDetails } from "@/hooks/engineer/use-engineer-issues";
+import { useStartPlanLoop } from "@/hooks/engineer/use-start-plan-loop";
 import { useSymphonyLaunch } from "@/hooks/engineer/useSymphonyLaunch";
 import {
   clearDeployment,
@@ -42,8 +51,14 @@ import { queryKeys } from "@/lib/engineer/queries/keys";
 import { reposOptions } from "@/lib/engineer/queries/repos";
 import type { SymphonyStatusResponse } from "@/lib/engineer/queries/symphony";
 import { getChildTickets } from "@/lib/engineer/stack-utils";
-import type { EngineerTicket } from "@/types/engineer";
+import { deriveBaseRepoPath } from "@/lib/engineer/worktree-utils";
+import { type EngineerTicket, TicketSourceType } from "@/types/engineer";
 
+/**
+ * Derive the base repo path from a worktree directory path.
+ * Handles both ticket-based ({repoName}-{ticketId}) and
+ * loop-based ({repoName}-loop-{slug}) naming schemes.
+ */
 type TicketListProps = {
   tickets: EngineerTicket[];
   isLoading?: boolean;
@@ -75,10 +90,36 @@ export function TicketList({
     launchingTickets,
     launch,
     clearSession,
+    mergeSessionFields,
     isActive,
     getSession,
     error,
   } = useSymphonyLaunch();
+
+  const { startPlanLoop, pendingArtifacts, selectArtifact } = useStartPlanLoop(
+    async (ticketIdentifier, repoPath, worktreePath, loopId, artifactId) => {
+      // Persist loopId + artifactId in the session immediately so ActiveTicketCard
+      // can use them before the gateway process starts.
+      mergeSessionFields(ticketIdentifier, {
+        repoPath,
+        worktreePath,
+        loopId,
+        artifactId,
+      });
+      // Also persist to the sessions file via the API route
+      await fetch("/api/engineer/symphony/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ticketId: ticketIdentifier,
+          repoPath,
+          worktreePath,
+          loopId,
+          artifactId,
+        }),
+      });
+    }
+  );
   const [workDirStatus, setWorkDirStatus] = useState<
     Record<
       string,
@@ -817,21 +858,36 @@ export function TicketList({
     const existingWorktree = workDirStatus[ticketIdentifier];
 
     if (existingWorktree?.exists && existingWorktree.path) {
-      // Extract base repo path from worktree path
-      // Worktree pattern: {parentDir}/{repoName}-{ticketId} -> base repo: {parentDir}/{repoName}
       const worktreePath = existingWorktree.path;
-      const pathParts = worktreePath.split("/");
-      const worktreeDirName = pathParts.at(-1)!; // e.g., "claude_code-AI-128"
-      const parentDir = pathParts.slice(0, -1).join("/");
-      const sanitizedTicket = ticketIdentifier.replaceAll(
-        /[^a-zA-Z0-9-_]/g,
-        "_"
-      );
-      const repoName = worktreeDirName.replace(`-${sanitizedTicket}`, "");
-      const baseRepoPath = `${parentDir}/${repoName}`;
+      const baseRepoPath = deriveBaseRepoPath(worktreePath, ticketIdentifier);
 
       // Resume directly without showing repo picker
       const ticket = tickets.find((t) => t.identifier === ticketIdentifier);
+
+      // For issue-sourced tickets, use the real plan-loop flow even when
+      // resuming an existing worktree. This creates a Loop record and
+      // dispatches via the desktop gateway.
+      if (ticket?.issueId) {
+        console.log(
+          "[TicketList] calling startPlanLoop for issue-sourced ticket"
+        );
+        const result = await startPlanLoop(ticket, baseRepoPath);
+        if (
+          result.launched &&
+          !result.alreadyRunning &&
+          ticket.status.type !== "started" &&
+          onUpdateTicketStatus
+        ) {
+          try {
+            await onUpdateTicketStatus(ticketIdentifier, "In Progress");
+          } catch {
+            // Status update is best-effort
+          }
+        }
+        return;
+      }
+
+      // Artifact-sourced tickets: fall back to existing local launch path
       let fullTicket: FullTicketDetails | undefined;
       if (ticket) {
         try {
@@ -898,12 +954,13 @@ export function TicketList({
       }
     }
 
-    const result = await launch(
-      ticketIdentifier,
-      repoPath,
-      fullTicket,
-      baseBranch
-    );
+    // For issue-sourced tickets, use the real plan-loop flow which creates a Loop
+    // record and dispatches to the desktop gateway. For artifact-sourced tickets,
+    // fall back to the existing local launch path.
+    const isIssueTick = !!ticket?.issueId;
+    const result = isIssueTick
+      ? await startPlanLoop(ticket, repoPath, baseBranch)
+      : await launch(ticketIdentifier, repoPath, fullTicket, baseBranch);
 
     if (result.launched && !result.alreadyRunning) {
       // Update ticket status to "In Progress" if not already
@@ -1006,7 +1063,9 @@ export function TicketList({
         // No changes — clear UI immediately, remove worktree in background
         clearSession(ticketId);
         toast.success("Ticket closed", { description: "Worktree removed" });
-        removeWorktree(session.worktreePath);
+        if (session.worktreePath) {
+          removeWorktree(session.worktreePath);
+        }
       }
     } catch (err) {
       console.error("[TicketList] Error checking git status:", err);
@@ -1059,6 +1118,13 @@ export function TicketList({
     ticketId: string,
     worktreePath: string
   ) => {
+    if (!worktreePath) {
+      // Session has no worktreePath (e.g., plan-loop session created before
+      // the worktree path fix). Just clear the session.
+      clearSession(ticketId);
+      toast.success("Session cleared");
+      return;
+    }
     try {
       // Check git status of the worktree
       const response = await fetch("/api/engineer/git", {
@@ -1330,7 +1396,71 @@ export function TicketList({
       return;
     }
 
+    const session = getSession(ticketId);
+
     try {
+      // For sessions with a loopId (real plan-loop flow), cancel via the gateway.
+      // The gateway cancels the Loop record in the DB and kills the local process.
+      if (session?.loopId) {
+        const response = await fetch(
+          `/api/engineer/symphony/plan-loop/${encodeURIComponent(ticketId)}/cancel`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ repoPath, loopId: session.loopId }),
+          }
+        );
+
+        const data = (await response.json()) as {
+          cancelled?: boolean;
+          warning?: string;
+          error?: string;
+        };
+
+        if (data.cancelled) {
+          if (data.warning) {
+            // cancel-pending: process liveness uncertain. Keep session but clear
+            // loopId so the UI knows cancellation was requested. The session stays
+            // visible until status polling confirms processRunning === false.
+            // Persist to both in-memory state and sessions file so a page reload
+            // doesn't resurrect the old loopId.
+            mergeSessionFields(ticketId, { loopId: undefined });
+            // Persist the cleared loopId to the sessions file.
+            if (session.worktreePath) {
+              fetch("/api/engineer/symphony/sessions", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  ticketId,
+                  repoPath,
+                  worktreePath: session.worktreePath,
+                  loopId: "",
+                }),
+              }).catch(() => {
+                /* best-effort persist */
+              });
+            }
+            toast.success("Cancel requested", {
+              description:
+                "Loop cancelled in database. Waiting for local process to stop.",
+            });
+          } else {
+            // Clean cancel: process confirmed gone. Clear session entirely.
+            await clearSession(ticketId);
+            toast.success("Symphony process stopped");
+          }
+          queryClient.invalidateQueries({
+            queryKey: queryKeys.symphonyStatus(ticketId, repoPath),
+          });
+        } else {
+          toast.error("Failed to cancel loop", {
+            description: data.error || "Unknown error",
+          });
+        }
+        return;
+      }
+
+      // Legacy path: PID-only kill for non-loop sessions
       const response = await fetch("/api/engineer/symphony/kill", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1479,7 +1609,11 @@ export function TicketList({
                     onLearningsClick={handleLearningsClick}
                     onLinkPR={handleLinkPR}
                     onParentClick={handleParentClick}
-                    onStartPlanning={handleStartPlanning}
+                    onStartPlanning={
+                      ticket.sourceType !== TicketSourceType.ImplementationPlan
+                        ? handleStartPlanning
+                        : undefined
+                    }
                     onTeardown={handleTeardown}
                     onToggleStar={handleToggleStar}
                     onViewComments={handleViewComments}
@@ -1632,6 +1766,7 @@ export function TicketList({
                       }
                       prInfo={prStatus[ticket.identifier] || null}
                       repoPath={repoPath}
+                      sessionArtifactId={session?.artifactId}
                       ticket={ticket}
                     />
                   </div>
@@ -1673,7 +1808,11 @@ export function TicketList({
                   onDeploy={handleDeploy}
                   onLearningsClick={handleLearningsClick}
                   onLinkPR={handleLinkPR}
-                  onStartPlanning={handleStartPlanning}
+                  onStartPlanning={
+                    ticket.sourceType !== TicketSourceType.ImplementationPlan
+                      ? handleStartPlanning
+                      : undefined
+                  }
                   onTeardown={handleTeardown}
                   onToggleStar={handleToggleStar}
                   onViewComments={handleViewComments}
@@ -1709,7 +1848,11 @@ export function TicketList({
                   onDeploy={handleDeploy}
                   onLearningsClick={handleLearningsClick}
                   onLinkPR={handleLinkPR}
-                  onStartPlanning={handleStartPlanning}
+                  onStartPlanning={
+                    ticket.sourceType !== TicketSourceType.ImplementationPlan
+                      ? handleStartPlanning
+                      : undefined
+                  }
                   onTeardown={handleTeardown}
                   onToggleStar={handleToggleStar}
                   onViewComments={handleViewComments}
@@ -1780,7 +1923,11 @@ export function TicketList({
                   onDeploy={handleDeploy}
                   onLearningsClick={handleLearningsClick}
                   onLinkPR={handleLinkPR}
-                  onStartPlanning={handleStartPlanning}
+                  onStartPlanning={
+                    ticket.sourceType !== TicketSourceType.ImplementationPlan
+                      ? handleStartPlanning
+                      : undefined
+                  }
                   onTeardown={handleTeardown}
                   onToggleStar={handleToggleStar}
                   onViewComments={handleViewComments}
@@ -1816,7 +1963,11 @@ export function TicketList({
                   onDeploy={handleDeploy}
                   onLearningsClick={handleLearningsClick}
                   onLinkPR={handleLinkPR}
-                  onStartPlanning={handleStartPlanning}
+                  onStartPlanning={
+                    ticket.sourceType !== TicketSourceType.ImplementationPlan
+                      ? handleStartPlanning
+                      : undefined
+                  }
                   onTeardown={handleTeardown}
                   onToggleStar={handleToggleStar}
                   onViewComments={handleViewComments}
@@ -2064,6 +2215,38 @@ export function TicketList({
           ticketId={closeTicketId}
         />
       )}
+
+      <Dialog
+        onOpenChange={(open) => {
+          if (!open) {
+            // Dismissing clears picker state; user can retry Start Planning
+            selectArtifact("");
+          }
+        }}
+        open={pendingArtifacts !== null && pendingArtifacts.length > 0}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Select Implementation Plan</DialogTitle>
+            <DialogDescription>
+              This issue has multiple linked plans. Select which one to use for
+              planning.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            {pendingArtifacts?.map((artifact) => (
+              <Button
+                className="h-auto w-full justify-start whitespace-normal text-left"
+                key={artifact.id}
+                onClick={() => selectArtifact(artifact.id)}
+                variant="outline"
+              >
+                {artifact.title}
+              </Button>
+            ))}
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {ticketChatTicket && ticketChatRepoPath && (
         <TicketChatDialog

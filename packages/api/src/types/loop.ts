@@ -105,6 +105,7 @@ export type CreateLoopRequest = {
     sourceType?: SourceContextType;
     include: "full" | "summary";
   }>;
+  metadata?: JsonObject;
 };
 
 export type CreateLoopResponse = {
