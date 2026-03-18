@@ -1058,6 +1058,10 @@ model Loop {
   // Error info
   error Json? // { code: string, message: string }
 
+  // Artifact version at loop creation time — used to detect stale evaluations
+  // when a new artifact version is published while an evaluation is in flight.
+  artifactVersion Int? @map("artifact_version")
+
   // Extensible metadata
   metadata           Json  @default("{}") @map("metadata")
   uploadedArtifacts  Json? @map("uploaded_artifacts")

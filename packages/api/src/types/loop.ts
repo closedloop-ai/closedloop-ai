@@ -71,6 +71,7 @@ export type Loop = {
   startedAt: Date | null;
   completedAt: Date | null;
   error: { code: string; message: string } | null;
+  artifactVersion: number | null;
   metadata: JsonObject;
   uploadedArtifacts: JsonObject | null;
   createdAt: Date;
@@ -106,6 +107,7 @@ export type CreateLoopRequest = {
     sourceType?: SourceContextType;
     include: "full" | "summary";
   }>;
+  artifactVersion?: number;
 };
 
 export type CreateLoopResponse = {
