@@ -2011,7 +2011,7 @@ function buildClaudeDirectArgs(workDir, symphonyWD) {
       // Add optional codebase path if target repo exists
       if (config.targetRepo) {
         // Target repo is cloned to workDir during prepareWorkspace()
-        skillCall += `REPO_PATH=${workDir} (search here for relevant code).\n"`;
+        skillCall += `REPO_PATH=${workDir} (search here for relevant code).\n`;
       }
 
       args.push(skillCall);

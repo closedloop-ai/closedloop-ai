@@ -148,6 +148,7 @@ function toLoop(record: PrismaLoop): Loop {
     uploadedArtifacts:
       (record.uploadedArtifacts as Loop["uploadedArtifacts"]) ?? null,
     tokensByModel: record.tokensByModel as Loop["tokensByModel"],
+    artifactVersion: record.artifactVersion ?? null,
   };
 }
 
@@ -224,6 +225,7 @@ export const loopsService = {
           prompt: input.prompt ?? null,
           repo: input.repo ?? undefined,
           contextRefs: input.contextRefs ?? undefined,
+          artifactVersion: input.artifactVersion ?? null,
           status: "PENDING",
         },
       })
