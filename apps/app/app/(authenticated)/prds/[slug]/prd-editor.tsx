@@ -153,23 +153,35 @@ export function PRDEditor({
     );
   };
 
+  const [pendingCommand, setPendingCommand] = useState<string | null>(null);
+
   const handleDecomposeFeatures = () => {
+    setPendingCommand("decompose");
     runLoop.mutate(
       { artifactId: prd.id, command: "decompose", computeTargetId },
       {
         onSuccess: () => {
           toast.success("Feature decomposition started");
+          setPendingCommand(null);
+        },
+        onError: () => {
+          setPendingCommand(null);
         },
       }
     );
   };
 
   const handleEvaluatePrd = () => {
+    setPendingCommand("evaluate_prd");
     runLoop.mutate(
       { artifactId: prd.id, command: "evaluate_prd", computeTargetId },
       {
         onSuccess: () => {
           toast.success("PRD evaluation started");
+          setPendingCommand(null);
+        },
+        onError: () => {
+          setPendingCommand(null);
         },
       }
     );
@@ -207,7 +219,7 @@ export function PRDEditor({
       {/* Header */}
       <PRDEditorHeader
         canShowPanel={chatFlag?.enabled}
-        isEvaluating={runLoop.isPending}
+        isEvaluating={pendingCommand === "evaluate_prd"}
         isGenerating={inlineGenerate.isPending || deepGenerate.isPending}
         isPending={isPending}
         onDecomposeFeatures={handleDecomposeFeatures}

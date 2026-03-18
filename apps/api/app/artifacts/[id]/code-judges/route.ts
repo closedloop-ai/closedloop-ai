@@ -2,10 +2,10 @@ import { success } from "@repo/api/src/types/common";
 import type { JudgesFeedbackResponse } from "@repo/api/src/types/evaluation";
 import { EvaluationReportType } from "@repo/database";
 import { NextResponse } from "next/server";
-import { withAuth } from "@/lib/auth/with-auth";
+import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { artifactsService } from "../../service";
 
-export const GET = withAuth<
+export const GET = withAnyAuth<
   JudgesFeedbackResponse,
   "/artifacts/[id]/code-judges"
 >(async ({ user }, _request, params) => {
