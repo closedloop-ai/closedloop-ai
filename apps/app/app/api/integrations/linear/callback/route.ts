@@ -10,6 +10,7 @@ import {
   LINEAR_ERROR_CODES,
   LINEAR_OAUTH_STATE_COOKIE,
   LINEAR_PKCE_VERIFIER_COOKIE,
+  type LinearErrorCode,
 } from "../linear-utils";
 
 /**
@@ -30,6 +31,21 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       );
     }
 
+    // Read cookies early so onboarding return is available for all error redirects
+    const cookieStore = await cookies();
+    const onboardingReturn = cookieStore.get("onboarding_return")?.value;
+    const returnTo = onboardingReturn ? "/onboarding" : undefined;
+
+    const makeErrorRedirect = (code: LinearErrorCode): NextResponse => {
+      const response = NextResponse.redirect(
+        getErrorRedirectUrl(code, returnTo)
+      );
+      if (onboardingReturn) {
+        response.cookies.delete("onboarding_return");
+      }
+      return response;
+    };
+
     const { searchParams } = new URL(request.url);
 
     // Check for OAuth errors from Linear
@@ -40,9 +56,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
         error,
         errorDescription,
       });
-      return NextResponse.redirect(
-        getErrorRedirectUrl(LINEAR_ERROR_CODES.OAUTH_FAILED)
-      );
+      return makeErrorRedirect(LINEAR_ERROR_CODES.OAUTH_FAILED);
     }
 
     // Get code and state from URL
@@ -51,50 +65,29 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
 
     if (!(code && state)) {
       log.warn("[linear/callback] Missing code or state");
-      return NextResponse.redirect(
-        getErrorRedirectUrl(LINEAR_ERROR_CODES.MISSING_PARAMS)
-      );
+      return makeErrorRedirect(LINEAR_ERROR_CODES.MISSING_PARAMS);
     }
 
     // Verify state (CSRF protection)
-    const cookieStore = await cookies();
     const storedState = cookieStore.get(LINEAR_OAUTH_STATE_COOKIE)?.value;
     const codeVerifier = cookieStore.get(LINEAR_PKCE_VERIFIER_COOKIE)?.value;
 
     if (!storedState) {
       log.warn("[linear/callback] Missing stored state");
-      return NextResponse.redirect(
-        getErrorRedirectUrl(LINEAR_ERROR_CODES.INVALID_STATE)
-      );
+      return makeErrorRedirect(LINEAR_ERROR_CODES.INVALID_STATE);
     }
 
     // Timing-safe comparison (pad to equal length to avoid timing leak on length check)
-    const storedStateBuffer = Buffer.from(storedState, "utf8");
-    const stateBuffer = Buffer.from(state, "utf8");
-    const maxLength = Math.max(storedStateBuffer.length, stateBuffer.length);
+    const stateMatch = verifyTimingSafe(storedState, state);
 
-    // Pad buffers to equal length for constant-time comparison
-    const paddedStored = Buffer.alloc(maxLength);
-    const paddedState = Buffer.alloc(maxLength);
-    storedStateBuffer.copy(paddedStored);
-    stateBuffer.copy(paddedState);
-
-    // Check both length match AND content matches (constant-time)
-    const lengthsMatch = storedStateBuffer.length === stateBuffer.length;
-    const contentsMatch = timingSafeEqual(paddedStored, paddedState);
-
-    if (!(lengthsMatch && contentsMatch)) {
+    if (!stateMatch) {
       log.warn("[linear/callback] State mismatch");
-      return NextResponse.redirect(
-        getErrorRedirectUrl(LINEAR_ERROR_CODES.INVALID_STATE)
-      );
+      return makeErrorRedirect(LINEAR_ERROR_CODES.INVALID_STATE);
     }
 
     if (!codeVerifier) {
       log.warn("[linear/callback] Missing PKCE verifier");
-      return NextResponse.redirect(
-        getErrorRedirectUrl(LINEAR_ERROR_CODES.INVALID_REQUEST)
-      );
+      return makeErrorRedirect(LINEAR_ERROR_CODES.INVALID_REQUEST);
     }
 
     // Send code + verifier to API for token exchange
@@ -125,9 +118,12 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
             ? "Internal server error"
             : errorBody.substring(0, 200),
       });
-      return NextResponse.redirect(
-        getErrorRedirectUrl(LINEAR_ERROR_CODES.CONNECTION_FAILED)
+      const errorResponse = makeErrorRedirect(
+        LINEAR_ERROR_CODES.CONNECTION_FAILED
       );
+      errorResponse.cookies.delete(LINEAR_OAUTH_STATE_COOKIE);
+      errorResponse.cookies.delete(LINEAR_PKCE_VERIFIER_COOKIE);
+      return errorResponse;
     }
 
     log.info("[linear/callback] Linear connected successfully", {
@@ -136,9 +132,12 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     });
 
     // Clear cookies and redirect using response object pattern (Next.js App Router best practice)
-    const response = NextResponse.redirect(getSuccessRedirectUrl());
+    const response = NextResponse.redirect(getSuccessRedirectUrl(returnTo));
     response.cookies.delete(LINEAR_OAUTH_STATE_COOKIE);
     response.cookies.delete(LINEAR_PKCE_VERIFIER_COOKIE);
+    if (onboardingReturn) {
+      response.cookies.delete("onboarding_return");
+    }
     return response;
   } catch (error) {
     log.error("[linear/callback] Failed to complete OAuth", { error });
@@ -146,4 +145,23 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       getErrorRedirectUrl(LINEAR_ERROR_CODES.OAUTH_FAILED)
     );
   }
+}
+
+/**
+ * Timing-safe string comparison with padding to prevent timing attacks on length.
+ */
+function verifyTimingSafe(expected: string, actual: string): boolean {
+  const expectedBuffer = Buffer.from(expected, "utf8");
+  const actualBuffer = Buffer.from(actual, "utf8");
+  const maxLength = Math.max(expectedBuffer.length, actualBuffer.length);
+
+  const paddedExpected = Buffer.alloc(maxLength);
+  const paddedActual = Buffer.alloc(maxLength);
+  expectedBuffer.copy(paddedExpected);
+  actualBuffer.copy(paddedActual);
+
+  const lengthsMatch = expectedBuffer.length === actualBuffer.length;
+  const contentsMatch = timingSafeEqual(paddedExpected, paddedActual);
+
+  return lengthsMatch && contentsMatch;
 }

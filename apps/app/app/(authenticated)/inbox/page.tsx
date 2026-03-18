@@ -9,6 +9,7 @@ import {
 import { useInboxNotifications } from "@repo/collaboration/hooks";
 import { Separator } from "@repo/design-system/components/ui/separator";
 import { InboxIcon } from "lucide-react";
+import { OnboardingChecklist } from "../components/onboarding-checklist";
 
 type InboxEmptyStateProps = {
   title: string;
@@ -76,6 +77,8 @@ export default function InboxPage() {
       </div>
 
       <Separator />
+
+      <OnboardingChecklist />
 
       {isAvailable ? (
         <InboxWithSuspense />

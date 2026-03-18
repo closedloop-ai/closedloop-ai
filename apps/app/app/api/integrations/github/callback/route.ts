@@ -6,6 +6,7 @@ import { env } from "@/env";
 import {
   GITHUB_ERROR_CODES,
   GITHUB_OAUTH_STATE_COOKIE,
+  type GitHubErrorCode,
   getErrorRedirectUrl,
   getSuccessRedirectUrl,
   timingSafeCompare,
@@ -34,6 +35,21 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       );
     }
 
+    // Read cookies early so onboarding return is available for all error redirects
+    const cookieStore = await cookies();
+    const onboardingReturn = cookieStore.get("onboarding_return")?.value;
+    const returnTo = onboardingReturn ? "/onboarding" : undefined;
+
+    const makeErrorRedirect = (code: GitHubErrorCode): NextResponse => {
+      const response = NextResponse.redirect(
+        getErrorRedirectUrl(code, returnTo)
+      );
+      if (onboardingReturn) {
+        response.cookies.delete("onboarding_return");
+      }
+      return response;
+    };
+
     const { searchParams } = new URL(request.url);
 
     // Check for OAuth errors from GitHub
@@ -44,9 +60,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
         error,
         errorDescription,
       });
-      return NextResponse.redirect(
-        getErrorRedirectUrl(GITHUB_ERROR_CODES.OAUTH_FAILED)
-      );
+      return makeErrorRedirect(GITHUB_ERROR_CODES.OAUTH_FAILED);
     }
 
     // Get code, state, and installation_id from URL
@@ -68,28 +82,21 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
         hasState: !!state,
         hasInstallationId: !!installationId,
       });
-      return NextResponse.redirect(
-        getErrorRedirectUrl(GITHUB_ERROR_CODES.MISSING_PARAMS)
-      );
+      return makeErrorRedirect(GITHUB_ERROR_CODES.MISSING_PARAMS);
     }
 
     // Verify state (CSRF protection)
-    const cookieStore = await cookies();
     const storedState = cookieStore.get(GITHUB_OAUTH_STATE_COOKIE)?.value;
 
     if (!storedState) {
       log.warn("[github/callback] Missing stored state");
-      return NextResponse.redirect(
-        getErrorRedirectUrl(GITHUB_ERROR_CODES.INVALID_STATE)
-      );
+      return makeErrorRedirect(GITHUB_ERROR_CODES.INVALID_STATE);
     }
 
     // Timing-safe state comparison to prevent CSRF
     if (!timingSafeCompare(storedState, state)) {
       log.warn("[github/callback] State mismatch");
-      return NextResponse.redirect(
-        getErrorRedirectUrl(GITHUB_ERROR_CODES.INVALID_STATE)
-      );
+      return makeErrorRedirect(GITHUB_ERROR_CODES.INVALID_STATE);
     }
 
     // Send code + installationId to API for token exchange
@@ -120,9 +127,11 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
             ? "Internal server error"
             : errorBody.substring(0, 200),
       });
-      return NextResponse.redirect(
-        getErrorRedirectUrl(GITHUB_ERROR_CODES.CONNECTION_FAILED)
+      const errorResponse = makeErrorRedirect(
+        GITHUB_ERROR_CODES.CONNECTION_FAILED
       );
+      errorResponse.cookies.delete(GITHUB_OAUTH_STATE_COOKIE);
+      return errorResponse;
     }
 
     log.info("[github/callback] GitHub connected successfully", {
@@ -131,8 +140,11 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     });
 
     // Clear cookies and redirect using response object pattern (Next.js App Router best practice)
-    const response = NextResponse.redirect(getSuccessRedirectUrl());
+    const response = NextResponse.redirect(getSuccessRedirectUrl(returnTo));
     response.cookies.delete(GITHUB_OAUTH_STATE_COOKIE);
+    if (onboardingReturn) {
+      response.cookies.delete("onboarding_return");
+    }
     return response;
   } catch (error) {
     log.error("[github/callback] Failed to complete OAuth", { error });

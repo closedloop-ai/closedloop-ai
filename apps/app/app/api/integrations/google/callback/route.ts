@@ -138,12 +138,22 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       orgId,
     });
 
+    // Check if user should return to onboarding after OAuth
+    const onboardingReturn = cookieStore.get("onboarding_return")?.value;
+    const basePath = onboardingReturn
+      ? "/onboarding"
+      : "/settings?tab=integrations";
+
     // Clear cookies and redirect using response object pattern (Next.js App Router best practice)
+    const separator = basePath.includes("?") ? "&" : "?";
     const response = NextResponse.redirect(
-      `${env.NEXT_PUBLIC_APP_URL}/settings?tab=integrations&google=success`
+      `${env.NEXT_PUBLIC_APP_URL}${basePath}${separator}google=success`
     );
     response.cookies.delete(GOOGLE_STATE_COOKIE);
     response.cookies.delete(GOOGLE_VERIFIER_COOKIE);
+    if (onboardingReturn) {
+      response.cookies.delete("onboarding_return");
+    }
     return response;
   } catch (error) {
     log.error("[google/callback] Failed to complete OAuth", { error });
