@@ -22,15 +22,21 @@ export default function JudgesAnalyticsPage() {
     endDate,
     EvaluationReportType.Plan
   );
+  const prdQuery = useJudgesAnalytics(
+    startDate,
+    endDate,
+    EvaluationReportType.Prd
+  );
   const codeQuery = useJudgesAnalytics(
     startDate,
     endDate,
     EvaluationReportType.Code
   );
 
-  const isLoading = planQuery.isLoading || codeQuery.isLoading;
-  const isError = planQuery.isError || codeQuery.isError;
-  const error = planQuery.error ?? codeQuery.error;
+  const isLoading =
+    planQuery.isLoading || prdQuery.isLoading || codeQuery.isLoading;
+  const isError = planQuery.isError || prdQuery.isError || codeQuery.isError;
+  const error = planQuery.error ?? prdQuery.error ?? codeQuery.error;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-auto p-6">
@@ -74,8 +80,10 @@ export default function JudgesAnalyticsPage() {
       )}
 
       {planQuery.data &&
+        prdQuery.data &&
         codeQuery.data &&
         planQuery.data.groups.length === 0 &&
+        prdQuery.data.groups.length === 0 &&
         codeQuery.data.groups.length === 0 && (
           <div className="rounded-lg border border-border bg-muted/50 p-8 text-center">
             <p className="text-muted-foreground">
@@ -85,13 +93,19 @@ export default function JudgesAnalyticsPage() {
         )}
 
       {planQuery.data &&
+        prdQuery.data &&
         codeQuery.data &&
         (planQuery.data.groups.length > 0 ||
+          prdQuery.data.groups.length > 0 ||
           codeQuery.data.groups.length > 0) && (
           <div className="space-y-8">
             <ReportTypeSection
               groups={planQuery.data.groups}
               reportType={EvaluationReportType.Plan}
+            />
+            <ReportTypeSection
+              groups={prdQuery.data.groups}
+              reportType={EvaluationReportType.Prd}
             />
             <ReportTypeSection
               groups={codeQuery.data.groups}

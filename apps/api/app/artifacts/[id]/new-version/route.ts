@@ -1,11 +1,13 @@
-import type { Artifact } from "@repo/api/src/types/artifact";
 import { withAuth } from "@/lib/auth/with-auth";
+import { scheduleAutoEvaluatePrd } from "@/lib/loops/auto-evaluate-prd";
 import {
   errorResponse,
   notFoundResponse,
   parseBody,
   successResponse,
 } from "@/lib/route-utils";
+import type { Artifact } from "@repo/api/src/types/artifact";
+import { ArtifactType } from "@repo/api/src/types/artifact";
 import { ArtifactNotFoundError } from "../../artifact-utils";
 import { artifactsService } from "../../service";
 import { newVersionValidator } from "../../validators";
@@ -29,6 +31,10 @@ export const POST = withAuth<Artifact, "/artifacts/[id]/new-version">(
         user.id,
         body.content
       );
+
+      if (newVersion.type === ArtifactType.Prd) {
+        scheduleAutoEvaluatePrd(newVersion.id, user.organizationId, user.id);
+      }
 
       return successResponse(newVersion);
     } catch (error) {

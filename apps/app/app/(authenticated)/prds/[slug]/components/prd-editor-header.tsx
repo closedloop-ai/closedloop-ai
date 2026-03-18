@@ -20,6 +20,7 @@ import {
   ChevronDownIcon,
   DownloadIcon,
   FolderIcon,
+  GaugeIcon,
   MoreHorizontalIcon,
   PanelRightIcon,
   PencilIcon,
@@ -39,10 +40,12 @@ type PRDEditorHeaderProps = {
   canShowPanel?: boolean;
   onToggleMetadataPanel: () => void;
   onDecomposeFeatures: () => void;
+  onEvaluatePrd: () => void;
   onGeneratePlan: () => void;
   onQuickGenerate: () => void;
   onDeepGenerate: () => void;
   isGenerating?: boolean;
+  isEvaluating?: boolean;
   onRename: () => void;
   onExport: () => void;
   onMove: () => void;
@@ -58,10 +61,12 @@ export function PRDEditorHeader({
   canShowPanel = true,
   onToggleMetadataPanel,
   onDecomposeFeatures,
+  onEvaluatePrd,
   onGeneratePlan,
   onQuickGenerate,
   onDeepGenerate,
   isGenerating = false,
+  isEvaluating = false,
   onRename,
   onExport,
   onMove,
@@ -162,6 +167,10 @@ export function PRDEditorHeader({
           <DropdownMenuItem onClick={onDecomposeFeatures}>
             <BoxIcon className="mr-2 h-4 w-4" />
             Decompose into Features
+          </DropdownMenuItem>
+          <DropdownMenuItem disabled={isEvaluating} onClick={onEvaluatePrd}>
+            <GaugeIcon className="mr-2 h-4 w-4" />
+            {isEvaluating ? "Evaluating PRD..." : "Evaluate PRD"}
           </DropdownMenuItem>
           <DropdownMenuItem onClick={onGeneratePlan}>
             <PlanIcon className="mr-2 h-4 w-4" />

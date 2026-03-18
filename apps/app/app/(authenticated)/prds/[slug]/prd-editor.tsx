@@ -164,6 +164,17 @@ export function PRDEditor({
     );
   };
 
+  const handleEvaluatePrd = () => {
+    runLoop.mutate(
+      { artifactId: prd.id, command: "evaluate_prd", computeTargetId },
+      {
+        onSuccess: () => {
+          toast.success("PRD evaluation started");
+        },
+      }
+    );
+  };
+
   // Auto-reveal comments when threads reappear after being fully resolved
   useEffect(() => {
     if (prevThreadCount.current === 0 && session.openThreadCount > 0) {
@@ -196,11 +207,13 @@ export function PRDEditor({
       {/* Header */}
       <PRDEditorHeader
         canShowPanel={chatFlag?.enabled}
+        isEvaluating={runLoop.isPending}
         isGenerating={inlineGenerate.isPending || deepGenerate.isPending}
         isPending={isPending}
         onDecomposeFeatures={handleDecomposeFeatures}
         onDeepGenerate={handleDeepGenerate}
         onDelete={uiState.openDeleteDialog}
+        onEvaluatePrd={handleEvaluatePrd}
         onExport={actions.handleDownload}
         onGeneratePlan={openGeneratePlanModal}
         onMove={() => setShowMoveDialog(true)}
