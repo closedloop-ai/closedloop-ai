@@ -24,6 +24,7 @@ export const LoopCommand = {
   Explore: "EXPLORE",
   RequestChanges: "REQUEST_CHANGES",
   Decompose: "DECOMPOSE",
+  GeneratePrd: "GENERATE_PRD",
 } as const;
 export type LoopCommand = (typeof LoopCommand)[keyof typeof LoopCommand];
 
