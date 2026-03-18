@@ -208,10 +208,7 @@ function validateSecrets() {
   // Repo commands need a GitHub token for clone/push operations.
   // EVALUATE_PRD with a targetRepo also needs a GitHub token to fetch repo context.
   const repoCommands = new Set(["PLAN", "EXECUTE", "REQUEST_CHANGES"]);
-  if (
-    repoCommands.has(config.command) ||
-    (config.command === "EVALUATE_PRD" && config.targetRepo)
-  ) {
+  if (repoCommands.has(config.command) || (config.command === "EVALUATE_PRD" && config.targetRepo)) {
     requiredSecrets.push("githubToken");
   }
 
@@ -1946,6 +1943,7 @@ function buildRunLoopArgs(runLoopPath, workDir, prdPath) {
 
   return { cmd: "bash", args };
 }
+
 
 function buildClaudeDirectArgs(workDir, symphonyWD) {
   const args = [];
