@@ -1,3 +1,5 @@
+import type { Artifact } from "@repo/api/src/types/artifact";
+import { ArtifactType } from "@repo/api/src/types/artifact";
 import { withAuth } from "@/lib/auth/with-auth";
 import { scheduleAutoEvaluatePrd } from "@/lib/loops/auto-evaluate-prd";
 import {
@@ -6,8 +8,6 @@ import {
   parseBody,
   successResponse,
 } from "@/lib/route-utils";
-import type { Artifact } from "@repo/api/src/types/artifact";
-import { ArtifactType } from "@repo/api/src/types/artifact";
 import { ArtifactNotFoundError } from "../../artifact-utils";
 import { artifactsService } from "../../service";
 import { newVersionValidator } from "../../validators";
