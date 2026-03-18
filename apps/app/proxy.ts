@@ -1,14 +1,9 @@
 import { analyticsMiddleware } from "@repo/analytics/proxy";
 import { authMiddleware } from "@repo/auth/proxy";
 import type { ClerkMiddlewareAuth } from "@repo/auth/server";
-import {
-  noseconeOptions,
-  noseconeOptionsWithToolbar,
-  securityMiddleware,
-} from "@repo/security/proxy";
+import { noseconeOptions, securityMiddleware } from "@repo/security/proxy";
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
-import { env } from "./env";
 import { resolveApiOrigin } from "./lib/api-origin";
 
 // Clerk middleware wraps other middleware in its callback
@@ -131,9 +126,7 @@ async function fetchHasComputeTarget(
   );
 }
 
-const securityHeaders = env.FLAGS_SECRET
-  ? securityMiddleware(noseconeOptionsWithToolbar)
-  : securityMiddleware(noseconeOptions);
+const securityHeaders = securityMiddleware(noseconeOptions);
 
 function applySecurityHeaders(
   target: NextResponse,

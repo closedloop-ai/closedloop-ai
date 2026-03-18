@@ -1,6 +1,5 @@
 "use client";
 
-import { useOrganization } from "@repo/auth/client";
 import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
@@ -22,7 +21,6 @@ import {
   useSetOrgClaudeApiKey,
   useSetUserClaudeApiKey,
 } from "@/hooks/queries/use-claude-api-keys";
-import { isAdminRole } from "@/lib/role-utils";
 
 function KeyStatusRow({
   label,
@@ -71,10 +69,13 @@ function KeyStatusRow({
   );
 }
 
-export function AnthropicApiKeyCard() {
-  const { membership } = useOrganization();
-  const isAdmin = isAdminRole(membership?.role);
+type AnthropicApiKeyCardProperties = {
+  isAdmin: boolean;
+};
 
+export function AnthropicApiKeyCard({
+  isAdmin,
+}: AnthropicApiKeyCardProperties) {
   const { data: keyInfo, isLoading } = useClaudeApiKeyInfo();
   const setOrgKey = useSetOrgClaudeApiKey();
   const removeOrgKey = useRemoveOrgClaudeApiKey();

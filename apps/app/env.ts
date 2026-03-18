@@ -2,7 +2,6 @@ import { keys as analytics } from "@repo/analytics/keys";
 import { keys as auth } from "@repo/auth/keys";
 import { keys as collaboration } from "@repo/collaboration/keys";
 import { keys as email } from "@repo/email/keys";
-import { keys as flags } from "@repo/feature-flags/keys";
 import { clientKeys as github } from "@repo/github/keys";
 import { keys as google } from "@repo/google/keys";
 import { keys as linear } from "@repo/linear/keys";
@@ -21,7 +20,6 @@ export const env = createEnv({
     collaboration(),
     core(),
     email(),
-    flags(),
     github(),
     google(),
     linear(),

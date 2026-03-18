@@ -5,6 +5,7 @@ import type { Priority } from "@repo/api/src/types/common";
 import type {
   CreateProjectInput,
   FavoriteResponse,
+  ProjectStatus,
   ProjectWithDetails,
   UpdateProjectInput,
 } from "@repo/api/src/types/project";
@@ -236,6 +237,20 @@ export function useUpdateProjectPriority() {
       projectId: string;
       priority: Priority;
     }) => updateProject.mutateAsync({ id: projectId, priority }),
+  });
+}
+
+export function useUpdateProjectStatus() {
+  const updateProject = useUpdateProject();
+
+  return useMutation({
+    mutationFn: ({
+      projectId,
+      status,
+    }: {
+      projectId: string;
+      status: ProjectStatus;
+    }) => updateProject.mutateAsync({ id: projectId, status }),
   });
 }
 

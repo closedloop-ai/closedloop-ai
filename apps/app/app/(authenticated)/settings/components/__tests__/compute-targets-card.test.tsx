@@ -24,12 +24,12 @@ vi.mock("@/lib/system-check/use-system-check-eligibility", () => ({
   useSystemCheckEligibility: () => mockUseSystemCheckEligibility(),
 }));
 
-import { ComputeTargetsCard } from "../compute-targets-card";
+import { LocalComputeTargetsCard } from "../local-compute-targets-card";
 
 function renderWithClient(queryClient = createTestQueryClient()) {
   return render(
     <QueryClientProvider client={queryClient}>
-      <ComputeTargetsCard />
+      <LocalComputeTargetsCard />
     </QueryClientProvider>
   );
 }

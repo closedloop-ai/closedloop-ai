@@ -7,6 +7,7 @@ import {
 } from "@repo/api/src/types/artifact";
 import type { Priority } from "@repo/api/src/types/common";
 import { CustomFieldEntityType } from "@repo/api/src/types/custom-field";
+import type { ProjectStatus } from "@repo/api/src/types/project";
 import type { WorkstreamState } from "@repo/api/src/types/workstream";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
@@ -58,6 +59,7 @@ import {
   useToggleFavorite,
   useUpdateProjectAssignee,
   useUpdateProjectPriority,
+  useUpdateProjectStatus,
   useUpdateProjectTargetDate,
 } from "@/hooks/queries/use-projects";
 import { useTeam } from "@/hooks/queries/use-teams";
@@ -156,6 +158,7 @@ export default function ProjectDetailPage() {
   // Mutations
   const updatePriorityMutation = useUpdateProjectPriority();
   const updateAssigneeMutation = useUpdateProjectAssignee();
+  const updateStatusMutation = useUpdateProjectStatus();
   const updateTargetDateMutation = useUpdateProjectTargetDate();
   const updateArtifactMutation = useUpdateArtifact();
   const deleteArtifactMutation = useDeleteArtifact();
@@ -175,6 +178,16 @@ export default function ProjectDetailPage() {
       return;
     }
     updateAssigneeMutation.mutate({ projectId: project.id, assigneeId });
+  };
+
+  const handleUpdateStatus = (status: ProjectStatus) => {
+    if (!project) {
+      return;
+    }
+    updateStatusMutation.mutate({
+      projectId: project.id,
+      status,
+    });
   };
 
   const handleUpdateTargetDate = (date: Date | null) => {
@@ -428,10 +441,10 @@ export default function ProjectDetailPage() {
           {/* Right Sidebar */}
           {showPropertiesPanel ? (
             <div className="w-[300px] space-y-4 border-l p-4">
-              {/* TODO: Add the several missing event handlers for the properties panel */}
               <PropertiesPanel
                 onUpdateAssignee={handleUpdateAssignee}
                 onUpdatePriority={handleUpdatePriority}
+                onUpdateStatus={handleUpdateStatus}
                 onUpdateTargetDate={handleUpdateTargetDate}
                 project={project}
               />
