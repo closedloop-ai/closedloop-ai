@@ -17,7 +17,7 @@ import { Label } from "@repo/design-system/components/ui/label";
 import { Textarea } from "@repo/design-system/components/ui/textarea";
 import { LoaderIcon, PlusIcon, SparklesIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   useArtifacts,
   useCreateAndGenerateArtifact,
@@ -39,6 +39,23 @@ type NewPlanModalProps = {
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
 };
+
+function validateMissingRepo(
+  isLoadingProject: boolean,
+  targetRepo: string,
+  defaultRepoFullName: string | undefined
+): boolean {
+  return !(isLoadingProject || targetRepo || defaultRepoFullName);
+}
+
+function isCreateSubmitDisabled(
+  isSubmitting: boolean,
+  titleTrimmed: boolean,
+  selectedSource: PlanSource | undefined,
+  missingRepo: boolean
+): boolean {
+  return isSubmitting || !titleTrimmed || (!!selectedSource && missingRepo);
+}
 
 export function NewPlanModal({
   source,
@@ -69,11 +86,19 @@ export function NewPlanModal({
     () => source?.targetBranch ?? ""
   );
   const [selectedRepoId, setSelectedRepoId] = useState("");
+  const hasPrePopulated = useRef(false);
 
   // Fetch project details for default repository
   const effectiveProjectId = source?.projectId ?? selectedProjectId;
-  const { data: projectData } = useProject(effectiveProjectId ?? "");
+  const { data: projectData, isLoading: isLoadingProject } = useProject(
+    effectiveProjectId ?? ""
+  );
   const projectSettings = getProjectSettings(projectData?.settings ?? {});
+  const missingRepo = validateMissingRepo(
+    isLoadingProject,
+    targetRepo,
+    projectSettings.defaultRepository?.repoFullName
+  );
 
   // Fetch PRDs when modal opens (skip if we have a source)
   const { data: prds = [], isLoading: loadingPrds } = useArtifacts(
@@ -120,10 +145,16 @@ export function NewPlanModal({
   // Pre-populate from project default repository when modal opens
   useEffect(() => {
     const defaultRepo = projectSettings.defaultRepository;
-    if (open && !(source?.targetRepo || targetRepo) && defaultRepo) {
+    if (
+      open &&
+      !(source?.targetRepo || targetRepo) &&
+      defaultRepo &&
+      !hasPrePopulated.current
+    ) {
       setSelectedRepoId(defaultRepo.repoId);
       setTargetRepo(defaultRepo.repoFullName);
       setTargetBranch(defaultRepo.branch);
+      hasPrePopulated.current = true;
     }
   }, [open, projectSettings.defaultRepository, source?.targetRepo, targetRepo]);
 
@@ -146,6 +177,7 @@ export function NewPlanModal({
     setTargetBranch(source?.targetBranch ?? "");
     setSelectedRepoId("");
     setError(null);
+    hasPrePopulated.current = false;
   };
 
   const handleSubmit = () => {
@@ -322,6 +354,13 @@ export function NewPlanModal({
               value={content}
             />
           </div>
+
+          {missingRepo && selectedSource ? (
+            <p className="text-destructive text-sm">
+              No repository configured for this project. Select a repository
+              above or add a default repository in project settings.
+            </p>
+          ) : null}
         </div>
 
         <DialogFooter>
@@ -329,7 +368,12 @@ export function NewPlanModal({
             Cancel
           </Button>
           <Button
-            disabled={isSubmitting || !title.trim()}
+            disabled={isCreateSubmitDisabled(
+              isSubmitting,
+              title.trim().length > 0,
+              selectedSource,
+              missingRepo
+            )}
             onClick={handleSubmit}
           >
             {isSubmitting ? (
