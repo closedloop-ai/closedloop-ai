@@ -35,6 +35,9 @@ vi.mock("@/lib/auth/with-any-auth", () => ({
     handler(mockAuthContext, request, context.params),
 }));
 
+vi.mock("@/lib/identifier-utils", () => ({
+  resolveArtifactId: vi.fn(async (id: string) => id),
+}));
 vi.mock("@/app/judges-analytics/service");
 vi.mock("@/app/artifacts/[id]/judge-ratings/service");
 

@@ -24,7 +24,6 @@ import {
   type ApiKeyScope,
   type VerifiedApiKeyContext,
 } from "./api-key-contract.js";
-import { registerBatchCreateArtifacts } from "./tools/batch-create-artifacts.js";
 import { registerCreateArtifact } from "./tools/create-artifact.js";
 import { registerCreateArtifactVersion } from "./tools/create-artifact-version.js";
 import { registerCreateEntityLink } from "./tools/create-entity-link.js";
@@ -33,7 +32,6 @@ import { registerCreateIssue } from "./tools/create-issue.js";
 import { registerCreateIssueComment } from "./tools/create-issue-comment.js";
 import { registerCreateProject } from "./tools/create-project.js";
 import { registerCreateWorkstream } from "./tools/create-workstream.js";
-import { registerGeneratePlans } from "./tools/generate-plans.js";
 import { registerGetArtifact } from "./tools/get-artifact.js";
 import { registerGetDashboardStats } from "./tools/get-dashboard-stats.js";
 import { registerGetGithubStatus } from "./tools/get-github-status.js";
@@ -328,11 +326,6 @@ const TOOL_REGISTRATIONS: ToolRegistration[] = [
     requiresWrite: true,
   },
   {
-    name: "batch-create-artifacts",
-    register: registerBatchCreateArtifacts,
-    requiresWrite: true,
-  },
-  {
     name: "create-artifact-version",
     register: registerCreateArtifactVersion,
     requiresWrite: true,
@@ -389,11 +382,6 @@ const TOOL_REGISTRATIONS: ToolRegistration[] = [
   { name: "get-github-status", register: registerGetGithubStatus },
   { name: "get-linear-status", register: registerGetLinearStatus },
   { name: "get-google-status", register: registerGetGoogleStatus },
-  {
-    name: "generate-plans",
-    register: registerGeneratePlans,
-    requiresWrite: true,
-  },
 ];
 
 /**

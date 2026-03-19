@@ -31,7 +31,7 @@ For database commands, see `packages/database/CLAUDE.md`.
 - **studio** (:3005) — Prisma Studio
 
 ### Packages (`/packages`, imported as `@repo/<name>`)
-api (shared types) · database (Prisma, Neon/pg) · auth (Clerk) · design-system (Shadcn/Tailwind) · analytics (PostHog/GA) · payments (Stripe) · email (Resend) · observability (logging) · security (Arcjet)
+api (shared types) · database (Prisma, Neon/pg) · auth (Clerk) · design-system (Shadcn/Tailwind) · analytics (PostHog/GA) · payments (Stripe) · email (Resend) · observability (logging) · security (Nosecone)
 
 ### Environment Variables
 Each app has `.env.local`. Empty `""` fails validation for optional fields — comment out unused. Keys validated with prefixes (`sk_`, `phc_`). Schemas in `packages/*/keys.ts`.

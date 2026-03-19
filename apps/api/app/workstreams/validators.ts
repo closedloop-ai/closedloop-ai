@@ -4,13 +4,14 @@ import {
   WORKSTREAM_TYPE_OPTIONS,
 } from "@repo/api/src/types/workstream";
 import { z } from "zod";
+import { uuidOrSlug } from "@/lib/identifier-utils";
 
 const workstreamTypeEnum = z.enum(WORKSTREAM_TYPE_OPTIONS);
 const workstreamStateEnum = z.enum(WORKSTREAM_STATE_OPTIONS);
 const priorityEnum = z.enum(Priority);
 
 export const createWorkstreamValidator = z.object({
-  projectId: z.uuid(),
+  projectId: uuidOrSlug(),
   title: z.string().min(1, "Title is required"),
   description: z.string().optional(),
   type: workstreamTypeEnum.optional(),
@@ -27,7 +28,6 @@ export const updateWorkstreamValidator = z.object({
   type: workstreamTypeEnum.optional(),
   assigneeId: z.uuid().nullable().optional(),
   priority: priorityEnum.optional(),
-  slug: z.string().nullable().optional(),
   hasUIChanges: z.boolean().optional(),
   customFields: z
     .record(

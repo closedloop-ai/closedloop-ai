@@ -1,6 +1,7 @@
 import { CustomFieldEntityType } from "@repo/api/src/types/custom-field";
 import type { ProjectWithDetails } from "@repo/api/src/types/project";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
+import { resolveProjectId } from "@/lib/identifier-utils";
 
 import {
   deleteResponse,
@@ -23,7 +24,15 @@ export const GET = withAnyAuth<ProjectWithDetails, "/projects/[id]">(
   async ({ user }, _, params) => {
     try {
       const { id } = await params;
-      const project = await projectsService.findById(id, user.organizationId);
+      const resolvedId = await resolveProjectId(id, user.organizationId);
+      if (!resolvedId) {
+        return notFoundResponse("Project");
+      }
+
+      const project = await projectsService.findById(
+        resolvedId,
+        user.organizationId
+      );
 
       if (!project) {
         return notFoundResponse("Project");
@@ -49,6 +58,11 @@ export const PUT = withAnyAuth<ProjectWithDetails, "/projects/[id]">(
   async ({ user }, request, params) => {
     try {
       const { id } = await params;
+      const resolvedId = await resolveProjectId(id, user.organizationId);
+      if (!resolvedId) {
+        return notFoundResponse("Project");
+      }
+
       const { body, errorResponse: parseError } = await parseBody(
         request,
         updateProjectValidator
@@ -60,7 +74,7 @@ export const PUT = withAnyAuth<ProjectWithDetails, "/projects/[id]">(
       const { customFields, ...projectInput } = body;
 
       const updated = await projectsService.update(
-        id,
+        resolvedId,
         user.organizationId,
         projectInput
       );
@@ -72,7 +86,7 @@ export const PUT = withAnyAuth<ProjectWithDetails, "/projects/[id]">(
       if (customFields) {
         await applyCustomFieldsFromBody(
           customFields,
-          id,
+          resolvedId,
           CustomFieldEntityType.Project,
           user.organizationId
         );
@@ -80,7 +94,7 @@ export const PUT = withAnyAuth<ProjectWithDetails, "/projects/[id]">(
 
       // Fetch updated project with details
       const projectWithDetails = await projectsService.findById(
-        id,
+        resolvedId,
         user.organizationId
       );
 
@@ -106,8 +120,12 @@ export const DELETE = withAnyAuth<{ deleted: true }, "/projects/[id]">(
   async ({ user }, _, params) => {
     try {
       const { id } = await params;
+      const resolvedId = await resolveProjectId(id, user.organizationId);
+      if (!resolvedId) {
+        return notFoundResponse("Project");
+      }
 
-      await projectsService.delete(id, user.organizationId);
+      await projectsService.delete(resolvedId, user.organizationId);
       return deleteResponse();
     } catch (error) {
       return errorResponse("Failed to delete project", error);

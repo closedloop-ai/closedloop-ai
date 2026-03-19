@@ -1,5 +1,6 @@
 import type { Artifact } from "@repo/api/src/types/artifact";
 import { withAuth } from "@/lib/auth/with-auth";
+import { resolveArtifactId } from "@/lib/identifier-utils";
 import {
   errorResponse,
   notFoundResponse,
@@ -14,6 +15,10 @@ export const POST = withAuth<Artifact, "/artifacts/[id]/new-version">(
   async ({ user }, request, params) => {
     try {
       const { id } = await params;
+      const resolvedId = await resolveArtifactId(id, user.organizationId);
+      if (!resolvedId) {
+        return notFoundResponse("Artifact");
+      }
 
       const { body, errorResponse: parseError } = await parseBody(
         request,
@@ -24,7 +29,7 @@ export const POST = withAuth<Artifact, "/artifacts/[id]/new-version">(
       }
 
       const newVersion = await artifactsService.createNewVersion(
-        id,
+        resolvedId,
         user.organizationId,
         user.id,
         body.content

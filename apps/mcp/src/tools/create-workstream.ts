@@ -15,9 +15,7 @@ export function registerCreateWorkstream(
       description: "Create a new workstream (initiative) in a project",
       inputSchema: {
         title: z.string().describe("Title of the workstream"),
-        projectId: z
-          .string()
-          .describe("ID of the project to create the workstream in"),
+        projectId: z.string().describe("Project ID or slug"),
         description: z
           .string()
           .optional()

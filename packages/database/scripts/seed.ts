@@ -303,7 +303,6 @@ As a security-conscious user, I want to enable MFA so that my account is more se
 ## Technical Decisions
 - Use Clerk for managed auth
 - JWT for session tokens
-- Redis for session storage
 - bcrypt for password hashing
 
 ## Testing Strategy

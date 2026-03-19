@@ -5,6 +5,7 @@ import type {
   WorkstreamState,
 } from "@repo/api/src/types/workstream";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
+import { resolveProjectId } from "@/lib/identifier-utils";
 import {
   badRequestResponse,
   errorResponse,
@@ -36,8 +37,16 @@ export const GET = withAnyAuth<
       return badRequestResponse("projectId is required");
     }
 
-    const project = await projectsService.findById(
+    const resolvedProjectId = await resolveProjectId(
       projectId,
+      user.organizationId
+    );
+    if (!resolvedProjectId) {
+      return notFoundResponse("Project");
+    }
+
+    const project = await projectsService.findById(
+      resolvedProjectId,
       user.organizationId
     );
 
@@ -47,7 +56,7 @@ export const GET = withAnyAuth<
 
     const workstreams = await workstreamsService.findByProject({
       organizationId: user.organizationId,
-      projectId,
+      projectId: resolvedProjectId,
       state: state as WorkstreamState | undefined,
       search: search ?? undefined,
       limit: limit ? Number.parseInt(limit, 10) : undefined,
@@ -96,8 +105,16 @@ export const POST = withAnyAuth<Workstream, "/workstreams">(
         return parseError;
       }
 
-      const project = await projectsService.findById(
+      const resolvedProjectId = await resolveProjectId(
         body.projectId,
+        user.organizationId
+      );
+      if (!resolvedProjectId) {
+        return notFoundResponse("Project");
+      }
+
+      const project = await projectsService.findById(
+        resolvedProjectId,
         user.organizationId
       );
 
@@ -108,7 +125,7 @@ export const POST = withAnyAuth<Workstream, "/workstreams">(
       const workstream = await workstreamsService.create(
         user.organizationId,
         user.id,
-        body
+        { ...body, projectId: resolvedProjectId }
       );
 
       return successResponse(workstream);

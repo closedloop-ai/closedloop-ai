@@ -4,6 +4,7 @@ import type { ExecutionBackendResponse } from "@repo/api/src/types/settings";
 import { NextResponse } from "next/server";
 import { computeModeService } from "@/app/settings/compute-mode-service";
 import { withAuth } from "@/lib/auth/with-auth";
+import { resolveArtifactId } from "@/lib/identifier-utils";
 import { errorResponse, notFoundResponse } from "@/lib/route-utils";
 import { artifactsService } from "../../service";
 
@@ -17,7 +18,11 @@ export const GET = withAuth<
     params
   ): Promise<NextResponse<ApiResult<ExecutionBackendResponse>>> => {
     try {
-      const { id: artifactId } = await params;
+      const { id } = await params;
+      const artifactId = await resolveArtifactId(id, user.organizationId);
+      if (!artifactId) {
+        return notFoundResponse("Artifact");
+      }
 
       // Verify artifact exists and belongs to org
       const artifact = await artifactsService.findById(

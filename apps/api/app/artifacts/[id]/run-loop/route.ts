@@ -5,6 +5,7 @@ import { waitUntil } from "@vercel/functions";
 import { NextResponse } from "next/server";
 import { loopsService } from "@/app/loops/service";
 import { withAuth } from "@/lib/auth/with-auth";
+import { resolveArtifactId } from "@/lib/identifier-utils";
 import { getCommandHandler } from "@/lib/loops/loop-commands";
 import { launchLoop } from "@/lib/loops/loop-orchestrator";
 import { getDefaultPrompt } from "@/lib/loops/prompts";
@@ -23,7 +24,11 @@ import { runLoopSchema } from "./validators";
 export const POST = withAuth<CreateLoopResponse, "/artifacts/[id]/run-loop">(
   async ({ user }, request, params) => {
     try {
-      const { id: artifactId } = await params;
+      const { id } = await params;
+      const artifactId = await resolveArtifactId(id, user.organizationId);
+      if (!artifactId) {
+        return notFoundResponse("Artifact");
+      }
 
       const { body, errorResponse: parseError } = await parseBody(
         request,

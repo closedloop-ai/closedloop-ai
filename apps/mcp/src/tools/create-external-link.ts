@@ -14,14 +14,8 @@ export function registerCreateExternalLink(
       description:
         "Create an external link (PR, Figma, preview deployment) attached to a workstream or project",
       inputSchema: {
-        workstreamId: z
-          .string()
-          .optional()
-          .describe("ID of the workstream to attach the link to"),
-        projectId: z
-          .string()
-          .optional()
-          .describe("ID of the project to attach the link to"),
+        workstreamId: z.string().optional().describe("Workstream ID or slug"),
+        projectId: z.string().optional().describe("Project ID or slug"),
         externalUrl: z.url().describe("URL of the external link"),
         type: z.enum(ExternalLinkType).describe("Type of the external link"),
         title: z.string().describe("Display title for the external link"),

@@ -1,7 +1,7 @@
 import type { Artifact, ArtifactDetail } from "@repo/api/src/types/artifact";
 import { CustomFieldEntityType } from "@repo/api/src/types/custom-field";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
-
+import { resolveArtifactId, resolveProjectId } from "@/lib/identifier-utils";
 import {
   deleteResponse,
   errorResponse,
@@ -21,8 +21,15 @@ export const GET = withAnyAuth<ArtifactDetail, "/artifacts/[id]">(
   async ({ user }, request, params) => {
     try {
       const { id } = await params;
+      const resolvedId = await resolveArtifactId(id, user.organizationId);
+      if (!resolvedId) {
+        return notFoundResponse("Artifact");
+      }
 
-      const artifact = await artifactsService.findById(id, user.organizationId);
+      const artifact = await artifactsService.findById(
+        resolvedId,
+        user.organizationId
+      );
 
       if (!artifact) {
         return notFoundResponse("Artifact");
@@ -45,8 +52,8 @@ export const GET = withAnyAuth<ArtifactDetail, "/artifacts/[id]">(
       }
 
       const version = versionNumber
-        ? await artifactVersionService.getByVersion(id, versionNumber)
-        : await artifactVersionService.getLatest(id);
+        ? await artifactVersionService.getByVersion(resolvedId, versionNumber)
+        : await artifactVersionService.getLatest(resolvedId);
 
       if (!version) {
         return notFoundResponse(
@@ -71,6 +78,11 @@ export const PUT = withAnyAuth<Artifact, "/artifacts/[id]">(
   async ({ user }, request, params) => {
     try {
       const { id } = await params;
+      const resolvedId = await resolveArtifactId(id, user.organizationId);
+      if (!resolvedId) {
+        return notFoundResponse("Artifact");
+      }
+
       const { body, errorResponse: parseError } = await parseBody(
         request,
         updateArtifactValidator
@@ -81,8 +93,19 @@ export const PUT = withAnyAuth<Artifact, "/artifacts/[id]">(
 
       const { customFields, ...artifactInput } = body;
 
+      if (artifactInput.projectId) {
+        const pId = await resolveProjectId(
+          artifactInput.projectId,
+          user.organizationId
+        );
+        if (!pId) {
+          return notFoundResponse("Project");
+        }
+        artifactInput.projectId = pId;
+      }
+
       const artifact = await artifactsService.update(
-        id,
+        resolvedId,
         user.organizationId,
         artifactInput
       );
@@ -90,7 +113,7 @@ export const PUT = withAnyAuth<Artifact, "/artifacts/[id]">(
       if (customFields) {
         await applyCustomFieldsFromBody(
           customFields,
-          id,
+          resolvedId,
           CustomFieldEntityType.Artifact,
           user.organizationId
         );
@@ -108,7 +131,11 @@ export const DELETE = withAnyAuth<{ deleted: true }, "/artifacts/[id]">(
   async ({ user }, _, params) => {
     try {
       const { id } = await params;
-      await artifactsService.delete(id, user.organizationId);
+      const resolvedId = await resolveArtifactId(id, user.organizationId);
+      if (!resolvedId) {
+        return notFoundResponse("Artifact");
+      }
+      await artifactsService.delete(resolvedId, user.organizationId);
       return deleteResponse();
     } catch (error) {
       return errorResponse("Failed to delete artifact", error);

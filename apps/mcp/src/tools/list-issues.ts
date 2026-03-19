@@ -20,7 +20,10 @@ export function registerListIssues(
       description:
         "List issues with optional filters by project, status, assignee, or workstream",
       inputSchema: {
-        projectId: z.string().optional().describe("Filter by project ID"),
+        projectId: z
+          .string()
+          .optional()
+          .describe("Filter by project ID or slug"),
         status: z
           .enum(IssueStatus)
           .optional()
@@ -29,7 +32,10 @@ export function registerListIssues(
           .string()
           .optional()
           .describe("Filter by assignee user ID"),
-        workstreamId: z.string().optional().describe("Filter by workstream ID"),
+        workstreamId: z
+          .string()
+          .optional()
+          .describe("Filter by workstream ID or slug"),
         limit: z
           .number()
           .int()

@@ -63,7 +63,6 @@ export type UpdateProjectInput = {
   priority?: Priority;
   status?: ProjectStatus;
   assigneeId?: string | null;
-  slug?: string | null;
   targetDate?: Date | null;
   teamIds?: string[];
   settings?: JsonObject;
