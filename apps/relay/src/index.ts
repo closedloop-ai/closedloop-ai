@@ -91,13 +91,27 @@ async function validateApiKeyViaApi(apiKey: string): Promise<{
   ok: boolean;
   context?: { organizationId: string; userId: string };
 }> {
+  log.info("validateApiKeyViaApi: calling API", {
+    keyPrefix: `${apiKey.slice(0, 8)}...`,
+    url: `${VERCEL_API_URL}/internal/api-keys/verify`,
+  });
+
   const { ok, data, status, responseUrl, contentType, rawBody } =
     await callVercel("/internal/api-keys/verify", {
       key: apiKey,
     });
 
+  log.info("validateApiKeyViaApi: API response", {
+    ok,
+    status,
+    contentType,
+    responseUrl,
+    hasData: data !== null,
+    rawBodyPreview: rawBody.slice(0, 300),
+  });
+
   if (!(ok && data)) {
-    log.error("Vercel api-key verification failed", {
+    log.error("validateApiKeyViaApi: verification failed - bad response", {
       status,
       responseUrl,
       contentType,
@@ -114,13 +128,37 @@ async function validateApiKeyViaApi(apiKey: string): Promise<{
     typeof (payload as Record<string, unknown>).organizationId !== "string" ||
     typeof (payload as Record<string, unknown>).userId !== "string"
   ) {
+    log.warn("validateApiKeyViaApi: payload shape mismatch", {
+      success: data.success,
+      payloadType: typeof payload,
+      payloadKeys:
+        typeof payload === "object" && payload !== null
+          ? Object.keys(payload)
+          : [],
+      hasOrgId:
+        typeof payload === "object" &&
+        payload !== null &&
+        typeof (payload as Record<string, unknown>).organizationId === "string",
+      hasUserId:
+        typeof payload === "object" &&
+        payload !== null &&
+        typeof (payload as Record<string, unknown>).userId === "string",
+    });
     return { ok: false };
   }
 
   const scopes = (payload as Record<string, unknown>).scopes;
   if (!(Array.isArray(scopes) && scopes.includes("write"))) {
+    log.warn("validateApiKeyViaApi: missing write scope", {
+      scopes,
+    });
     return { ok: false };
   }
+
+  log.info("validateApiKeyViaApi: success", {
+    organizationId: (payload as Record<string, unknown>)
+      .organizationId as string,
+  });
 
   return {
     ok: true,
@@ -342,10 +380,19 @@ const namespace = io.of("/desktop-gateway");
 namespace.use((socket, next) => {
   // Extract API key from handshake
   let apiKey: string | null = null;
-  if (typeof socket.handshake.auth?.token === "string") {
-    apiKey = socket.handshake.auth.token;
-  } else if (typeof socket.handshake.auth?.apiKey === "string") {
-    apiKey = socket.handshake.auth.apiKey;
+  const authFields = socket.handshake.auth ?? {};
+  log.info("Socket auth middleware: handshake received", {
+    socketId: socket.id,
+    hasAuthToken: typeof authFields.token === "string",
+    hasAuthApiKey: typeof authFields.apiKey === "string",
+    hasAuthHeader: typeof socket.handshake.headers.authorization === "string",
+    authKeys: Object.keys(authFields),
+  });
+
+  if (typeof authFields.token === "string") {
+    apiKey = authFields.token;
+  } else if (typeof authFields.apiKey === "string") {
+    apiKey = authFields.apiKey;
   }
   if (!apiKey) {
     const authHeader = socket.handshake.headers.authorization;
@@ -355,14 +402,35 @@ namespace.use((socket, next) => {
   }
 
   if (!apiKey) {
+    log.warn("Socket auth middleware: no API key found in handshake", {
+      socketId: socket.id,
+    });
     next(new Error("Unauthorized"));
     return;
   }
 
+  log.info("Socket auth middleware: extracted API key, validating via API", {
+    socketId: socket.id,
+    keyPrefix: `${apiKey.slice(0, 8)}...`,
+    vercelUrl: VERCEL_API_URL,
+  });
+
   // Validate via Vercel
   forwardSocketEvent("_relay.validate", { apiKey })
     .then((result) => {
+      log.info("Socket auth middleware: validation response", {
+        socketId: socket.id,
+        disconnect: result.disconnect,
+        emitCount: result.emit.length,
+        emitEvents: result.emit.map((e) => e.event),
+      });
+
       if (result.disconnect || result.emit.length === 0) {
+        log.warn("Socket auth middleware: validation rejected", {
+          socketId: socket.id,
+          disconnect: result.disconnect,
+          emitCount: result.emit.length,
+        });
         next(new Error("Unauthorized"));
         return;
       }
@@ -372,11 +440,19 @@ namespace.use((socket, next) => {
         organizationId: string;
         userId: string;
       };
+      log.info("Socket auth middleware: authenticated", {
+        socketId: socket.id,
+        organizationId: authPayload.organizationId,
+        userId: authPayload.userId,
+      });
       socket.data.auth = authPayload;
       next();
     })
     .catch((error) => {
-      log.error("Socket auth validation failed", { error });
+      log.error("Socket auth middleware: validation threw", {
+        socketId: socket.id,
+        error,
+      });
       next(new Error("Unauthorized"));
     });
 });

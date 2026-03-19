@@ -110,15 +110,15 @@ type NavItem = {
 
 const baseWorkspaceItems: NavItem[] = [
   {
-    title: "Inbox",
-    url: "/inbox",
-    icon: InboxIcon,
-    disabled: false,
-  },
-  {
     title: "My Tasks",
     url: "/my-tasks",
     icon: Boxes,
+    disabled: false,
+  },
+  {
+    title: "Notifications",
+    url: "/inbox",
+    icon: InboxIcon,
     disabled: false,
   },
   {
@@ -287,7 +287,7 @@ export function GlobalSidebar({
                         <Link href={item.url}>
                           <item.icon />
                           <span>{item.title}</span>
-                          {item.title === "Inbox" && <InboxBadge />}
+                          {item.title === "Notifications" && <InboxBadge />}
                           {item.title === engineerNavItem.title && (
                             <EngineerBadge />
                           )}

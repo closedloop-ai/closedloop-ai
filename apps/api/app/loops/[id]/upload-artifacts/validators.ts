@@ -8,6 +8,7 @@ export const uploadArtifactsSchema = z.object({
         raw: z.record(z.string(), z.unknown()).optional(),
       })
       .optional(),
+    prd: z.object({ content: z.string() }).optional(),
     executionResult: z.record(z.string(), z.unknown()).optional(),
     features: z.record(z.string(), z.unknown()).optional(),
     judges: z.record(z.string(), z.unknown()).optional(),

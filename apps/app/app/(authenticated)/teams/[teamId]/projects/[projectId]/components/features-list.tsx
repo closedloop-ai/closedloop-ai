@@ -4,6 +4,7 @@ import type { CustomFieldValueDetail } from "@repo/api/src/types/custom-field";
 import type { IssueWithWorkstream } from "@repo/api/src/types/issue";
 import { IssueStatus } from "@repo/api/src/types/issue";
 import { isDisplayableSlug } from "@repo/api/src/types/slug";
+import { Button } from "@repo/design-system/components/ui/button";
 import {
   Collapsible,
   CollapsibleContent,
@@ -37,9 +38,13 @@ import { deriveCustomFieldColumns } from "@/lib/custom-field-utils";
 
 type FeaturesListProps = {
   projectId: string;
+  onCreateFeature?: () => void;
 };
 
-export function FeaturesList({ projectId }: Readonly<FeaturesListProps>) {
+export function FeaturesList({
+  projectId,
+  onCreateFeature,
+}: Readonly<FeaturesListProps>) {
   const { data: features = [], isLoading } = useIssues({ projectId });
   const deleteIssueMutation = useDeleteIssue();
 
@@ -89,6 +94,11 @@ export function FeaturesList({ projectId }: Readonly<FeaturesListProps>) {
   if (features.length === 0) {
     return (
       <EmptyState
+        action={
+          onCreateFeature ? (
+            <Button onClick={onCreateFeature}>Create Feature</Button>
+          ) : undefined
+        }
         description="Create a feature to start tracking work for this project."
         icon={InboxIcon}
         title="No features yet"

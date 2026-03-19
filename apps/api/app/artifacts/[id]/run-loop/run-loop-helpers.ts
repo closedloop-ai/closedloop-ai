@@ -1,4 +1,6 @@
+import type { JsonObject } from "@repo/api/src/types/common";
 import type { CreateLoopRequest } from "@repo/api/src/types/loop";
+import { getProjectSettings } from "@repo/api/src/types/project";
 import { loopsService } from "@/app/loops/service";
 import type { getCommandHandler } from "@/lib/loops/loop-commands";
 import { artifactsService } from "../../service";
@@ -11,6 +13,7 @@ export const COMMAND_MAP = {
   execute: "EXECUTE",
   request_changes: "REQUEST_CHANGES",
   decompose: "DECOMPOSE",
+  generate_prd: "GENERATE_PRD",
 } as const;
 
 /**
@@ -39,13 +42,21 @@ export async function resolveLoopContext(
 
   const workstream = resolvedWorkstream ?? artifact.workstream;
 
+  const projectSettings = getProjectSettings(
+    (workstream?.project?.settings ?? {}) as JsonObject
+  );
+
   const targetRepo =
-    body.repo?.fullName ?? source?.targetRepo ?? artifact.targetRepo;
+    body.repo?.fullName ??
+    source?.targetRepo ??
+    artifact.targetRepo ??
+    projectSettings.defaultRepository?.repoFullName;
 
   const targetBranch =
     body.repo?.branch ??
     source?.targetBranch ??
     artifact.targetBranch ??
+    projectSettings.defaultRepository?.branch ??
     "main";
 
   const contextRefs: NonNullable<CreateLoopRequest["contextRefs"]> = [];

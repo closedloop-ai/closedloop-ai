@@ -69,7 +69,7 @@ export default function InboxPage() {
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-auto p-6">
       <div>
-        <h1 className="font-semibold text-2xl tracking-tight">Inbox</h1>
+        <h1 className="font-semibold text-2xl tracking-tight">Notifications</h1>
         <p className="text-muted-foreground">
           View and manage your notifications.
         </p>
@@ -82,7 +82,7 @@ export default function InboxPage() {
       ) : (
         <InboxEmptyState
           description="Notifications are currently unavailable. Please try again later."
-          title="Inbox unavailable"
+          title="Notifications unavailable"
         />
       )}
     </div>

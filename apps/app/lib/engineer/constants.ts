@@ -8,9 +8,8 @@ export const VALID_PROVIDERS = new Set(["claude", "codex"]);
  * apps/app/components/engineer/compute-target-selector.tsx).
  * NOT related to loop dispatch — loop target resolution is handled server-side
  * by resolveComputeTarget in apps/api/lib/loops/compute-target-resolver.ts.
- * Set to true to expose the routing mode selector for /engineer fetch proxying.
  */
-export const CLOUD_RELAY_ENABLED: boolean = false;
+export const CLOUD_RELAY_ENABLED: boolean = true;
 
 export const COMPUTE_TARGETS_QUERY_OPTIONS = {
   staleTime: 30_000,

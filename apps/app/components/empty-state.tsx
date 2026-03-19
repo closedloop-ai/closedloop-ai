@@ -1,11 +1,13 @@
 import { cn } from "@repo/design-system/lib/utils";
 import type { LucideIcon } from "lucide-react";
+import type { ReactNode } from "react";
 
 type EmptyStateProps = {
   icon: LucideIcon;
   title: string;
   description?: string;
   className?: string;
+  action?: ReactNode;
 };
 
 /**
@@ -16,6 +18,7 @@ export function EmptyState({
   title,
   description,
   className,
+  action,
 }: EmptyStateProps) {
   return (
     <div
@@ -29,6 +32,7 @@ export function EmptyState({
       {description ? (
         <p className="mt-1 text-muted-foreground text-sm">{description}</p>
       ) : null}
+      {action ? <div className="mt-4">{action}</div> : null}
     </div>
   );
 }

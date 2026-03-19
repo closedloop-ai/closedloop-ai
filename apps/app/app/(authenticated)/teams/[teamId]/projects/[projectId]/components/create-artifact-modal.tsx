@@ -16,12 +16,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@repo/design-system/components/ui/dialog";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@repo/design-system/components/ui/dropdown-menu";
 import { Input } from "@repo/design-system/components/ui/input";
 import { Label } from "@repo/design-system/components/ui/label";
 import {
@@ -31,28 +25,19 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@repo/design-system/components/ui/select";
-import { toast } from "@repo/design-system/components/ui/sonner";
 import { Textarea } from "@repo/design-system/components/ui/textarea";
 import {
   type User,
   UserSelectPopover,
 } from "@repo/design-system/components/ui/user-select-popover";
-import {
-  ChevronDownIcon,
-  LoaderIcon,
-  SparklesIcon,
-  UploadIcon,
-} from "lucide-react";
+import { LoaderIcon, SparklesIcon, UploadIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   HiddenFileInput,
   type HiddenFileInputHandle,
 } from "@/components/hidden-file-input";
 import {
-  useArtifact,
   useArtifactsByProject,
-  useCreateAndGenerateArtifact,
-  useCreateAndInlineGeneratePRD,
   useCreateArtifact,
 } from "@/hooks/queries/use-artifacts";
 import {
@@ -60,194 +45,14 @@ import {
   useGitHubIntegrationStatus,
   useGitHubRepositories,
 } from "@/hooks/queries/use-github-integration";
+import { useRunLoop } from "@/hooks/queries/use-loops";
 import { useProject } from "@/hooks/queries/use-projects";
 import { useTeamMembers } from "@/hooks/queries/use-teams";
-import { useOrgTemplateByType } from "@/hooks/queries/use-templates";
+import { useEngineerRoutingSelection } from "@/lib/engineer/routing-store";
 import { ARTIFACT_TYPE_LABELS } from "@/lib/project-constants";
 import { transformApiUserToSelectUser } from "@/lib/user-utils";
 
-function PrdSelectContent({
-  loading,
-  prds,
-}: {
-  loading: boolean;
-  prds: ArtifactWithWorkstream[];
-}) {
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center p-2">
-        <LoaderIcon className="h-4 w-4 animate-spin" />
-      </div>
-    );
-  }
-  if (prds.length === 0) {
-    return (
-      <div className="p-2 text-center text-muted-foreground text-sm">
-        No PRDs in this project. Create a PRD first.
-      </div>
-    );
-  }
-  return (
-    <>
-      {prds.map((prd) => (
-        <SelectItem key={prd.id} value={prd.id}>
-          {prd.title}
-        </SelectItem>
-      ))}
-    </>
-  );
-}
-
-/**
- * Pre-populates form fields from a selected PRD.
- * Returns updated field values or null if PRD not found.
- */
-function populateFieldsFromPrd(
-  prdId: string,
-  prds: ArtifactWithWorkstream[],
-  repositories: Array<{ id: string; fullName: string }> | undefined,
-  transformedUsers: User[]
-): {
-  approver: User | null;
-  status: ArtifactStatus;
-  targetRepo: string;
-  targetBranch: string;
-  selectedRepoId: string;
-} | null {
-  const selectedPrd = prds.find((p) => p.id === prdId);
-  if (!selectedPrd) {
-    return null;
-  }
-
-  const matchingApprover = selectedPrd.approver
-    ? transformedUsers.find((u) => u.id === selectedPrd.approver?.id)
-    : null;
-
-  const basicFields = {
-    approver: matchingApprover || null,
-    status: (selectedPrd.status ?? "DRAFT") as ArtifactStatus,
-    targetRepo: selectedPrd.targetRepo ?? "",
-    targetBranch: selectedPrd.targetBranch ?? "main",
-  };
-
-  // Resolve selectedRepoId from PRD's targetRepo
-  let selectedRepoId = "";
-  if (selectedPrd.targetRepo && repositories) {
-    const matchingRepo = repositories.find(
-      (repo) => repo.fullName === selectedPrd.targetRepo
-    );
-    if (matchingRepo) {
-      selectedRepoId = matchingRepo.id;
-    }
-  }
-
-  return {
-    ...basicFields,
-    selectedRepoId,
-  };
-}
-
-function CreateArtifactFooter({
-  isPrd,
-  isSubmitting,
-  isSaving,
-  isGenerating,
-  canSubmit,
-  typeLabel,
-  onSubmit,
-  onQuickGenerate,
-  onDeepGenerate,
-  onCancel,
-}: {
-  isPrd: boolean;
-  isSubmitting: boolean;
-  isSaving: boolean;
-  isGenerating: boolean;
-  canSubmit: boolean;
-  typeLabel: string;
-  onSubmit: () => void;
-  onQuickGenerate: () => void;
-  onDeepGenerate: () => void;
-  onCancel: () => void;
-}) {
-  return (
-    <DialogFooter>
-      <Button onClick={onCancel} type="button" variant="outline">
-        Cancel
-      </Button>
-      {isPrd ? (
-        <>
-          <Button
-            disabled={isSubmitting || !canSubmit}
-            onClick={onSubmit}
-            variant="outline"
-          >
-            {isSaving ? (
-              <>
-                <LoaderIcon className="mr-2 h-4 w-4 animate-spin" />
-                Saving...
-              </>
-            ) : (
-              "Save"
-            )}
-          </Button>
-          {isGenerating ? (
-            <Button disabled>
-              <LoaderIcon className="mr-2 h-4 w-4 animate-spin" />
-              Generating...
-            </Button>
-          ) : (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button disabled={isSubmitting || !canSubmit}>
-                  <SparklesIcon className="mr-2 h-4 w-4" />
-                  Generate
-                  <ChevronDownIcon className="ml-2 h-4 w-4" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem onClick={onQuickGenerate}>
-                  <SparklesIcon className="mr-2 h-4 w-4" />
-                  Quick PRD
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={onDeepGenerate}>
-                  <SparklesIcon className="mr-2 h-4 w-4" />
-                  Deep PRD
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          )}
-        </>
-      ) : (
-        <Button disabled={isSubmitting || !canSubmit} onClick={onSubmit}>
-          {isSaving ? (
-            <>
-              <LoaderIcon className="mr-2 h-4 w-4 animate-spin" />
-              Creating...
-            </>
-          ) : (
-            `Create ${typeLabel}`
-          )}
-        </Button>
-      )}
-    </DialogFooter>
-  );
-}
-
-function getBranchPlaceholder(
-  selectedRepoId: string,
-  isLoadingBranches: boolean
-) {
-  if (!selectedRepoId) {
-    return "Select a repository first";
-  }
-  if (isLoadingBranches) {
-    return "Loading branches...";
-  }
-  return "Select a branch";
-}
-
-type CreateArtifactModalProps = {
+export type CreateArtifactModalProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   artifactType: ArtifactType;
@@ -256,7 +61,6 @@ type CreateArtifactModalProps = {
   onSuccess?: (artifact: Artifact) => void;
 };
 
-// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: complex form with multiple submission paths (save, quick generate, deep generate)
 export function CreateArtifactModal({
   open,
   onOpenChange,
@@ -264,7 +68,7 @@ export function CreateArtifactModal({
   projectId,
   teamId,
   onSuccess,
-}: CreateArtifactModalProps) {
+}: Readonly<CreateArtifactModalProps>) {
   const fileInputRef = useRef<HiddenFileInputHandle>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -283,9 +87,21 @@ export function CreateArtifactModal({
   // PRD selection for implementation plans
   const [selectedPrdId, setSelectedPrdId] = useState<string>("");
 
-  const { data: project } = useProject(projectId);
-  const projectSettings = getProjectSettings(project?.settings ?? {});
-  const defaultRepo = projectSettings.defaultRepository;
+  // Seed the default GH repository from the project settings
+  const { data: project } = useProject(projectId, {
+    enabled: open,
+  });
+  const hasSeededRepoRef = useRef(false);
+  if (project && !hasSeededRepoRef.current) {
+    const projectSettings = getProjectSettings(project.settings);
+    const defaultRepo = projectSettings.defaultRepository;
+    if (defaultRepo) {
+      setSelectedRepoId(defaultRepo.repoId);
+      setTargetRepo(defaultRepo.repoFullName);
+      setTargetBranch(defaultRepo.branch);
+    }
+    hasSeededRepoRef.current = true;
+  }
 
   const typeLabel = ARTIFACT_TYPE_LABELS[artifactType] ?? artifactType;
   const isImplementationPlan = artifactType === ArtifactType.ImplementationPlan;
@@ -311,14 +127,6 @@ export function CreateArtifactModal({
     [repositories]
   );
 
-  // Fetch template for PRD type (two-step: get template artifact, then fetch its content via detail)
-  const { data: template } = useOrgTemplateByType(isPrd ? artifactType : "", {
-    enabled: open && isPrd,
-  });
-  const { data: templateDetail } = useArtifact(template?.id ?? "", undefined, {
-    enabled: !!template?.id,
-  });
-
   // Fetch PRDs when modal opens for implementation plan
   const { data: artifacts = [], isLoading: loadingPrds } =
     useArtifactsByProject(projectId, {
@@ -343,8 +151,8 @@ export function CreateArtifactModal({
 
   // Create artifact mutations
   const createArtifact = useCreateArtifact();
-  const createAndInlineGenerate = useCreateAndInlineGeneratePRD();
-  const createAndDeepGenerate = useCreateAndGenerateArtifact();
+  const runLoop = useRunLoop();
+  const routing = useEngineerRoutingSelection();
 
   // Auto-select default branch only when no branch is selected yet
   useEffect(() => {
@@ -355,32 +163,6 @@ export function CreateArtifactModal({
       }
     }
   }, [branchesData, targetBranch]);
-
-  // Pre-populate from project default repository when modal opens
-  const defaultRepoId = defaultRepo?.repoId;
-  const defaultRepoFullName = defaultRepo?.repoFullName;
-  const defaultRepoBranch = defaultRepo?.branch;
-  useEffect(() => {
-    if (
-      open &&
-      defaultRepoId &&
-      defaultRepoFullName &&
-      defaultRepoBranch &&
-      !targetRepo &&
-      !selectedRepoId
-    ) {
-      setSelectedRepoId(defaultRepoId);
-      setTargetRepo(defaultRepoFullName);
-      setTargetBranch(defaultRepoBranch);
-    }
-  }, [
-    open,
-    defaultRepoId,
-    defaultRepoFullName,
-    defaultRepoBranch,
-    targetRepo,
-    selectedRepoId,
-  ]);
 
   // Pre-populate fields from selected PRD for implementation plans
   useEffect(() => {
@@ -409,14 +191,6 @@ export function CreateArtifactModal({
     repositories,
     transformedUsers,
   ]);
-
-  // Prefill content from template when loaded (only on initial load)
-  useEffect(() => {
-    const templateContent = templateDetail?.version?.content;
-    if (templateContent) {
-      setContent((current) => current || templateContent);
-    }
-  }, [templateDetail]);
 
   const branchPlaceholder = getBranchPlaceholder(
     selectedRepoId,
@@ -452,9 +226,6 @@ export function CreateArtifactModal({
     setContent("");
     setSelectedApprover(null);
     setStatus("DRAFT");
-    setTargetRepo(defaultRepo?.repoFullName ?? "");
-    setTargetBranch(defaultRepo?.branch ?? "main");
-    setSelectedRepoId(defaultRepo?.repoId ?? "");
     setSelectedPrdId("");
     setReverseSynthesisLink("");
     setError(null);
@@ -509,60 +280,52 @@ export function CreateArtifactModal({
     );
   };
 
-  const prdInput = {
-    projectId,
-    type: artifactType,
-    title: title.trim(),
-    fileName: fileName.trim() || undefined,
-    content: content.trim(),
-    approverId: selectedApprover?.id ?? undefined,
-    status,
-    targetRepo: targetRepo.trim() || undefined,
-    targetBranch: targetBranch.trim() || undefined,
-  };
-
-  const handleQuickGenerate = () => {
+  const handleGenerate = () => {
     setError(null);
     if (!title.trim()) {
       setError("Please enter a title");
       return;
     }
+    if (!targetRepo.trim()) {
+      setError("Please select a target repository for PRD generation");
+      return;
+    }
 
-    createAndInlineGenerate.mutate(
+    // Persist user content + source URL on the artifact itself.
+    // The context pack delivers artifact content to the agent as the
+    // primary artifact, so we do NOT send it as `prompt` (which would
+    // override GENERATE_PRD_INSTRUCTIONS).
+    const artifactContent = reverseSynthesisLink.trim()
+      ? `${content.trim()}\n\nSource URL for reference: ${reverseSynthesisLink.trim()}`
+      : content.trim();
+
+    createArtifact.mutate(
       {
-        input: prdInput,
-        reverseSynthesisLink: reverseSynthesisLink.trim() || undefined,
+        projectId,
+        type: artifactType,
+        title: title.trim(),
+        fileName: fileName.trim() || undefined,
+        content: artifactContent,
+        approverId: selectedApprover?.id ?? undefined,
+        status,
+        targetRepo: targetRepo.trim() || undefined,
+        targetBranch: targetBranch.trim() || undefined,
       },
       {
-        onSuccess: ({ artifact, generationError }) => {
+        onSuccess: (artifact) => {
+          runLoop.mutate({
+            artifactId: artifact.id,
+            command: "generate_prd",
+            computeTargetId: routing.computeTargetId,
+          });
           handleClose();
           onSuccess?.(artifact);
-          if (generationError) {
-            toast.error(`Quick PRD generation failed: ${generationError}`);
-          }
         },
       }
     );
   };
 
-  const handleDeepGenerate = () => {
-    setError(null);
-    if (!title.trim()) {
-      setError("Please enter a title");
-      return;
-    }
-
-    createAndDeepGenerate.mutate(prdInput, {
-      onSuccess: (artifact) => {
-        handleClose();
-        onSuccess?.(artifact);
-      },
-    });
-  };
-
-  const isGenerating =
-    createAndInlineGenerate.isPending || createAndDeepGenerate.isPending;
-  const isSubmitting = createArtifact.isPending || isGenerating;
+  const isSubmitting = createArtifact.isPending;
 
   return (
     <Dialog
@@ -658,68 +421,19 @@ export function CreateArtifactModal({
             />
           </div>
 
-          <div className="space-y-2">
-            <Label
-              className="font-normal text-muted-foreground text-xs"
-              htmlFor="artifact-target-repo"
-            >
-              Target Repository (for code generation)
-            </Label>
-            {githubStatus?.connected === false ? (
-              <div className="rounded-md border border-muted bg-muted/20 p-3 text-muted-foreground text-sm">
-                Connect GitHub to select a repository
-              </div>
-            ) : (
-              <Select
-                disabled={isLoadingGitHubStatus || isLoadingRepos}
-                onValueChange={handleRepositoryChange}
-                value={selectedRepoId}
-              >
-                <SelectTrigger id="artifact-target-repo">
-                  <SelectValue
-                    placeholder={
-                      isLoadingGitHubStatus || isLoadingRepos
-                        ? "Loading repositories..."
-                        : "Select a repository"
-                    }
-                  />
-                </SelectTrigger>
-                <SelectContent>
-                  {sortedRepositories.map((repo) => (
-                    <SelectItem key={repo.id} value={repo.id}>
-                      {repo.fullName}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            )}
-          </div>
-
-          <div className="space-y-2">
-            <Label
-              className="font-normal text-muted-foreground text-xs"
-              htmlFor="artifact-target-branch"
-            >
-              Target Branch
-            </Label>
-            <Select
-              disabled={!selectedRepoId || isLoadingBranches}
-              onValueChange={setTargetBranch}
-              value={targetBranch}
-            >
-              <SelectTrigger id="artifact-target-branch">
-                <SelectValue placeholder={branchPlaceholder} />
-              </SelectTrigger>
-              <SelectContent>
-                {branchesData?.branches.map((branch) => (
-                  <SelectItem key={branch.name} value={branch.name}>
-                    {branch.name}
-                    {branch.isDefault ? " (default)" : ""}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
+          <RepositoryBranchFields
+            branches={branchesData?.branches}
+            branchPlaceholder={branchPlaceholder}
+            githubConnected={githubStatus?.connected}
+            isLoadingBranches={isLoadingBranches}
+            isLoadingGitHubStatus={isLoadingGitHubStatus}
+            isLoadingRepos={isLoadingRepos}
+            onBranchChange={setTargetBranch}
+            onRepositoryChange={handleRepositoryChange}
+            selectedRepoId={selectedRepoId}
+            sortedRepositories={sortedRepositories}
+            targetBranch={targetBranch}
+          />
 
           <div className="space-y-2">
             <Label className="font-normal text-muted-foreground text-xs">
@@ -744,75 +458,366 @@ export function CreateArtifactModal({
           </div>
 
           {isPrd && (
-            <>
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <Label
-                    className="font-normal text-muted-foreground text-xs"
-                    htmlFor="artifact-content"
-                  >
-                    Content (optional)
-                  </Label>
-                  <Button
-                    onClick={() => fileInputRef.current?.open()}
-                    size="sm"
-                    type="button"
-                    variant="outline"
-                  >
-                    <UploadIcon className="mr-2 h-4 w-4" />
-                    Upload .md
-                  </Button>
-                </div>
-                <HiddenFileInput
-                  accept=".md"
-                  aria-label="Upload markdown file for artifact content"
-                  onError={setError}
-                  onFileRead={handleFileRead}
-                  ref={fileInputRef}
-                />
-                <Textarea
-                  className="min-h-[120px] font-mono text-sm"
-                  id="artifact-content"
-                  onChange={(e) => setContent(e.target.value)}
-                  placeholder="Paste markdown content or a prompt for AI generation..."
-                  value={content}
-                />
-              </div>
-
-              <div className="space-y-2">
-                <Label
-                  className="font-normal text-muted-foreground text-xs"
-                  htmlFor="reverse-synthesis-url"
-                >
-                  Source URL (optional)
-                </Label>
-                <Input
-                  id="reverse-synthesis-url"
-                  onChange={(e) => setReverseSynthesisLink(e.target.value)}
-                  placeholder="https://github.com/org/repo or documentation URL"
-                  value={reverseSynthesisLink}
-                />
-                <p className="text-muted-foreground text-xs">
-                  Provide a URL for the AI to reference when generating the PRD.
-                </p>
-              </div>
-            </>
+            <PrdContentFields
+              content={content}
+              fileInputRef={fileInputRef}
+              onContentChange={setContent}
+              onError={setError}
+              onFileRead={handleFileRead}
+              onReverseSynthesisLinkChange={setReverseSynthesisLink}
+              reverseSynthesisLink={reverseSynthesisLink}
+            />
           )}
         </div>
 
         <CreateArtifactFooter
+          canGenerate={!!title.trim()}
           canSubmit={!!title.trim()}
-          isGenerating={isGenerating}
+          isGenerating={false}
           isPrd={isPrd}
           isSaving={createArtifact.isPending}
           isSubmitting={isSubmitting}
           onCancel={handleClose}
-          onDeepGenerate={handleDeepGenerate}
-          onQuickGenerate={handleQuickGenerate}
+          onGenerate={handleGenerate}
           onSubmit={handleSubmit}
           typeLabel={typeLabel}
         />
       </DialogContent>
     </Dialog>
+  );
+}
+
+function PrdSelectContent({
+  loading,
+  prds,
+}: Readonly<{
+  loading: boolean;
+  prds: ArtifactWithWorkstream[];
+}>) {
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center p-2">
+        <LoaderIcon className="h-4 w-4 animate-spin" />
+      </div>
+    );
+  }
+  if (prds.length === 0) {
+    return (
+      <div className="p-2 text-center text-muted-foreground text-sm">
+        No PRDs in this project. Create a PRD first.
+      </div>
+    );
+  }
+  return (
+    <>
+      {prds.map((prd) => (
+        <SelectItem key={prd.id} value={prd.id}>
+          {prd.title}
+        </SelectItem>
+      ))}
+    </>
+  );
+}
+
+/**
+ * Pre-populates form fields from a selected PRD.
+ * Returns updated field values or null if PRD not found.
+ */
+function populateFieldsFromPrd(
+  prdId: string,
+  prds: ArtifactWithWorkstream[],
+  repositories: Array<{ id: string; fullName: string }> | undefined,
+  transformedUsers: User[]
+): {
+  approver: User | null;
+  status: ArtifactStatus;
+  targetRepo: string;
+  targetBranch: string;
+  selectedRepoId: string;
+} | null {
+  const selectedPrd = prds.find((p) => p.id === prdId);
+  if (!selectedPrd) {
+    return null;
+  }
+
+  const matchingApprover = selectedPrd.approver
+    ? transformedUsers.find((u) => u.id === selectedPrd.approver?.id)
+    : null;
+
+  const basicFields = {
+    approver: matchingApprover || null,
+    status: selectedPrd.status ?? ArtifactStatus.Draft,
+    targetRepo: selectedPrd.targetRepo ?? "",
+    targetBranch: selectedPrd.targetBranch ?? "main",
+  };
+
+  // Resolve selectedRepoId from PRD's targetRepo
+  let selectedRepoId = "";
+  if (selectedPrd.targetRepo && repositories) {
+    const matchingRepo = repositories.find(
+      (repo) => repo.fullName === selectedPrd.targetRepo
+    );
+    if (matchingRepo) {
+      selectedRepoId = matchingRepo.id;
+    }
+  }
+
+  return {
+    ...basicFields,
+    selectedRepoId,
+  };
+}
+
+function CreateArtifactFooter({
+  isPrd,
+  isSubmitting,
+  isSaving,
+  isGenerating,
+  canSubmit,
+  canGenerate,
+  typeLabel,
+  onSubmit,
+  onGenerate,
+  onCancel,
+}: Readonly<{
+  isPrd: boolean;
+  isSubmitting: boolean;
+  isSaving: boolean;
+  isGenerating: boolean;
+  canSubmit: boolean;
+  canGenerate: boolean;
+  typeLabel: string;
+  onSubmit: () => void;
+  onGenerate: () => void;
+  onCancel: () => void;
+}>) {
+  return (
+    <DialogFooter>
+      <Button onClick={onCancel} type="button" variant="outline">
+        Cancel
+      </Button>
+      {isPrd ? (
+        <>
+          <Button
+            disabled={isSubmitting || !canSubmit}
+            onClick={onSubmit}
+            variant="outline"
+          >
+            {isSaving ? (
+              <>
+                <LoaderIcon className="mr-2 h-4 w-4 animate-spin" />
+                Saving...
+              </>
+            ) : (
+              "Save"
+            )}
+          </Button>
+          <Button disabled={isSubmitting || !canGenerate} onClick={onGenerate}>
+            {isGenerating ? (
+              <>
+                <LoaderIcon className="mr-2 h-4 w-4 animate-spin" />
+                Generating...
+              </>
+            ) : (
+              <>
+                <SparklesIcon className="mr-2 h-4 w-4" />
+                Generate PRD
+              </>
+            )}
+          </Button>
+        </>
+      ) : (
+        <Button disabled={isSubmitting || !canSubmit} onClick={onSubmit}>
+          {isSaving ? (
+            <>
+              <LoaderIcon className="mr-2 h-4 w-4 animate-spin" />
+              Creating...
+            </>
+          ) : (
+            `Create ${typeLabel}`
+          )}
+        </Button>
+      )}
+    </DialogFooter>
+  );
+}
+
+function getBranchPlaceholder(
+  selectedRepoId: string,
+  isLoadingBranches: boolean
+) {
+  if (!selectedRepoId) {
+    return "Select a repository first";
+  }
+  if (isLoadingBranches) {
+    return "Loading branches...";
+  }
+  return "Select a branch";
+}
+
+function RepositoryBranchFields({
+  githubConnected,
+  isLoadingGitHubStatus,
+  isLoadingRepos,
+  isLoadingBranches,
+  selectedRepoId,
+  sortedRepositories,
+  onRepositoryChange,
+  targetBranch,
+  onBranchChange,
+  branches,
+  branchPlaceholder,
+}: Readonly<{
+  githubConnected: boolean | undefined;
+  isLoadingGitHubStatus: boolean;
+  isLoadingRepos: boolean;
+  isLoadingBranches: boolean;
+  selectedRepoId: string;
+  sortedRepositories: Array<{ id: string; fullName: string }>;
+  onRepositoryChange: (repoId: string) => void;
+  targetBranch: string;
+  onBranchChange: (branch: string) => void;
+  branches: Array<{ name: string; isDefault: boolean }> | undefined;
+  branchPlaceholder: string;
+}>) {
+  return (
+    <>
+      <div className="space-y-2">
+        <Label
+          className="font-normal text-muted-foreground text-xs"
+          htmlFor="artifact-target-repo"
+        >
+          Target Repository (for code generation)
+        </Label>
+        {githubConnected === false ? (
+          <div className="rounded-md border border-muted bg-muted/20 p-3 text-muted-foreground text-sm">
+            Connect GitHub to select a repository
+          </div>
+        ) : (
+          <Select
+            disabled={isLoadingGitHubStatus || isLoadingRepos}
+            onValueChange={onRepositoryChange}
+            value={selectedRepoId}
+          >
+            <SelectTrigger id="artifact-target-repo">
+              <SelectValue
+                placeholder={
+                  isLoadingGitHubStatus || isLoadingRepos
+                    ? "Loading repositories..."
+                    : "Select a repository"
+                }
+              />
+            </SelectTrigger>
+            <SelectContent>
+              {sortedRepositories.map((repo) => (
+                <SelectItem key={repo.id} value={repo.id}>
+                  {repo.fullName}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
+      </div>
+
+      <div className="space-y-2">
+        <Label
+          className="font-normal text-muted-foreground text-xs"
+          htmlFor="artifact-target-branch"
+        >
+          Target Branch
+        </Label>
+        <Select
+          disabled={!selectedRepoId || isLoadingBranches}
+          onValueChange={onBranchChange}
+          value={targetBranch}
+        >
+          <SelectTrigger id="artifact-target-branch">
+            <SelectValue placeholder={branchPlaceholder} />
+          </SelectTrigger>
+          <SelectContent>
+            {branches?.map((branch) => (
+              <SelectItem key={branch.name} value={branch.name}>
+                {branch.name}
+                {branch.isDefault ? " (default)" : ""}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+    </>
+  );
+}
+
+function PrdContentFields({
+  content,
+  onContentChange,
+  fileInputRef,
+  onError,
+  onFileRead,
+  reverseSynthesisLink,
+  onReverseSynthesisLinkChange,
+}: Readonly<{
+  content: string;
+  onContentChange: (value: string) => void;
+  fileInputRef: React.RefObject<HiddenFileInputHandle | null>;
+  onError: (error: string) => void;
+  onFileRead: (content: string) => void;
+  reverseSynthesisLink: string;
+  onReverseSynthesisLinkChange: (value: string) => void;
+}>) {
+  return (
+    <>
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <Label
+            className="font-normal text-muted-foreground text-xs"
+            htmlFor="artifact-content"
+          >
+            Content (optional)
+          </Label>
+          <Button
+            onClick={() => fileInputRef.current?.open()}
+            size="sm"
+            type="button"
+            variant="outline"
+          >
+            <UploadIcon className="mr-2 h-4 w-4" />
+            Upload .md
+          </Button>
+        </div>
+        <HiddenFileInput
+          accept=".md"
+          aria-label="Upload markdown file for artifact content"
+          onError={onError}
+          onFileRead={onFileRead}
+          ref={fileInputRef}
+        />
+        <Textarea
+          className="min-h-[120px] font-mono text-sm"
+          id="artifact-content"
+          onChange={(e) => onContentChange(e.target.value)}
+          placeholder="Paste or upload markdown content to create a PRD, or enter a prompt to generate a PRD using AI..."
+          value={content}
+        />
+      </div>
+
+      <div className="space-y-2">
+        <Label
+          className="font-normal text-muted-foreground text-xs"
+          htmlFor="reverse-synthesis-url"
+        >
+          Source URL (optional)
+        </Label>
+        <Input
+          id="reverse-synthesis-url"
+          onChange={(e) => onReverseSynthesisLinkChange(e.target.value)}
+          placeholder="https://github.com/org/repo or documentation URL"
+          value={reverseSynthesisLink}
+        />
+        <p className="text-muted-foreground text-xs">
+          Provide a URL for the AI to reference when generating the PRD.
+        </p>
+      </div>
+    </>
   );
 }

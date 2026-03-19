@@ -396,7 +396,6 @@ export function useCreateAndGenerateArtifact() {
         );
         return regenerated;
       } catch (error) {
-        // Toast the error here instead of relying on the global QueryClient onError handler.
         // This catch is inside mutationFn (not onError), so TanStack Query sees onSuccess —
         // intentionally, so the caller can navigate to the created artifact regardless of
         // whether generation succeeded.
@@ -406,10 +405,13 @@ export function useCreateAndGenerateArtifact() {
             availableTargets: conflict.availableTargets,
             pendingArtifactId: artifact.id,
           });
+          toast.info(
+            "Multiple compute targets are online. Select one to start generation."
+          );
           return artifact;
         }
         toast.error(
-          error instanceof Error ? error.message : "Failed to start generation"
+          error instanceof Error ? error.message : "Plan generation failed"
         );
         return artifact;
       }
@@ -449,89 +451,6 @@ export function useCreateAndGenerateArtifact() {
   );
 
   return { ...mutation, isComputeModeLoading, multiTargetState, selectTarget };
-}
-
-/**
- * Create an artifact and immediately generate PRD content inline using Sonnet.
- * Used for the "Save & Generate" button in the PRD creation modal.
- *
- * Returns `{ artifact, generationError }` — the artifact is always returned
- * (even if inline generation fails) so the caller can navigate to it.
- */
-export function useCreateAndInlineGeneratePRD() {
-  const queryClient = useQueryClient();
-  const apiClient = useApiClient();
-
-  return useMutation({
-    mutationFn: async ({
-      input,
-      reverseSynthesisLink,
-    }: {
-      input: CreateArtifactInput;
-      reverseSynthesisLink?: string;
-    }) => {
-      const artifact = await apiClient.post<Artifact>("/artifacts", input);
-
-      let generationError: string | null = null;
-      try {
-        await apiClient.post("/ai/prd/generate", {
-          artifactId: artifact.id,
-          reverseSynthesisLink,
-        });
-      } catch (err) {
-        generationError =
-          err instanceof Error
-            ? err.message
-            : "Unknown error during generation";
-      }
-
-      return { artifact, generationError };
-    },
-    onSuccess: ({ artifact }) => {
-      queryClient.invalidateQueries({ queryKey: artifactKeys.lists() });
-      queryClient.invalidateQueries({
-        queryKey: artifactKeys.detail(artifact.id),
-      });
-      queryClient.invalidateQueries({
-        queryKey: artifactKeys.versions(artifact.id),
-      });
-      queryClient.invalidateQueries({ queryKey: dashboardKeys.all });
-    },
-  });
-}
-
-/**
- * Generate PRD content inline for an existing artifact using Sonnet.
- * Used for the "Quick PRD" button on the PRD editor detail page.
- */
-export function useInlineGeneratePRD() {
-  const queryClient = useQueryClient();
-  const apiClient = useApiClient();
-
-  return useMutation({
-    mutationFn: async ({
-      artifactId,
-      reverseSynthesisLink,
-    }: {
-      artifactId: string;
-      reverseSynthesisLink?: string;
-    }) => {
-      await apiClient.post("/ai/prd/generate", {
-        artifactId,
-        reverseSynthesisLink,
-      });
-      return { artifactId };
-    },
-    onSuccess: (_, { artifactId }) => {
-      queryClient.invalidateQueries({
-        queryKey: artifactKeys.detail(artifactId),
-      });
-      queryClient.invalidateQueries({
-        queryKey: artifactKeys.versions(artifactId),
-      });
-      queryClient.invalidateQueries({ queryKey: artifactKeys.lists() });
-    },
-  });
 }
 
 type ExecuteResult = {
