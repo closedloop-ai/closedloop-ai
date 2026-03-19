@@ -222,7 +222,10 @@ function planArtifactsFromUpload(uploaded: JsonObject): PlanArtifacts {
 // ---------------------------------------------------------------------------
 
 export const planHandler = defineHandler<PlanArtifacts>({
-  requiresRepo: true,
+  // PLAN loop generates a text document and does not push code to a repository.
+  // Unlike requestChangesHandler, which pushes changes and legitimately requires a repo,
+  // this handler only produces plan artifacts (markdown/text) and must work without one.
+  requiresRepo: false,
   requiresParent: false,
   includePrimaryArtifact: false,
 
