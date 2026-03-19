@@ -47,7 +47,7 @@ import { evaluatePrdHandler } from "@/lib/loops/loop-commands/evaluate-prd-handl
 import { downloadArtifactFile } from "@/lib/loops/loop-state";
 import { buildCaseScore } from "../fixtures/evaluation";
 import { buildLoop } from "../fixtures/loop";
-import { mockWithDbCall, mockWithDbTx } from "../utils/db-helpers";
+import { mockWithDbTx } from "../utils/db-helpers";
 
 type MockFn = ReturnType<typeof vi.fn>;
 
@@ -87,11 +87,12 @@ function setupDownload(report: JudgesReport | null) {
   mockParseJsonArtifact.mockReturnValue(report);
 }
 
-function setupMockTx() {
+function setupMockTx(extra: Record<string, unknown> = {}) {
   const mockTx = {
     artifactEvaluation: {
       upsert: vi.fn(),
     },
+    ...extra,
   };
   mockWithDbTx(mockTx);
   return mockTx;
@@ -232,10 +233,9 @@ describe("evaluatePrdHandler downloadAndIngest", () => {
   it("skips ingestion when artifact.latestVersion is greater than loop.artifactVersion", async () => {
     const loop = buildEvaluatePrdLoop({ artifactVersion: 1 });
     setupDownload(PRD_REPORT);
-    mockWithDbCall({
+    setupMockTx({
       artifact: { findUnique: vi.fn().mockResolvedValue({ latestVersion: 2 }) },
     });
-    setupMockTx();
 
     await evaluatePrdHandler.downloadAndIngest(loop.s3StateKey!, loop, "org-1");
 
@@ -245,10 +245,9 @@ describe("evaluatePrdHandler downloadAndIngest", () => {
   it("proceeds with ingestion when artifact.latestVersion equals loop.artifactVersion", async () => {
     const loop = buildEvaluatePrdLoop({ artifactVersion: 2 });
     setupDownload(PRD_REPORT);
-    mockWithDbCall({
+    setupMockTx({
       artifact: { findUnique: vi.fn().mockResolvedValue({ latestVersion: 2 }) },
     });
-    setupMockTx();
 
     await evaluatePrdHandler.downloadAndIngest(loop.s3StateKey!, loop, "org-1");
 
@@ -268,10 +267,9 @@ describe("evaluatePrdHandler downloadAndIngest", () => {
   it("proceeds with ingestion when artifact is not found during version check (best effort)", async () => {
     const loop = buildEvaluatePrdLoop({ artifactVersion: 1 });
     setupDownload(PRD_REPORT);
-    mockWithDbCall({
+    setupMockTx({
       artifact: { findUnique: vi.fn().mockResolvedValue(null) },
     });
-    setupMockTx();
 
     await evaluatePrdHandler.downloadAndIngest(loop.s3StateKey!, loop, "org-1");
 

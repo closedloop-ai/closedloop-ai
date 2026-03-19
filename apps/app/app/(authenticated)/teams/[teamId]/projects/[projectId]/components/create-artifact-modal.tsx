@@ -6,6 +6,7 @@ import {
   ArtifactType,
   type ArtifactWithWorkstream,
 } from "@repo/api/src/types/artifact";
+import { RunLoopCommand } from "@repo/api/src/types/loop";
 import { getProjectSettings } from "@repo/api/src/types/project";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
@@ -315,7 +316,7 @@ export function CreateArtifactModal({
         onSuccess: (artifact) => {
           runLoop.mutate({
             artifactId: artifact.id,
-            command: "generate_prd",
+            command: RunLoopCommand.GeneratePrd,
             computeTargetId: routing.computeTargetId,
           });
           handleClose();

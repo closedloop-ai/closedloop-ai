@@ -199,7 +199,9 @@ export const loopsService = {
         where: {
           userId,
           organizationId,
-          status: { in: ["PENDING", "CLAIMED", "RUNNING"] },
+          status: {
+            in: [LoopStatus.Pending, LoopStatus.Claimed, LoopStatus.Running],
+          },
         },
       })
     );
@@ -467,7 +469,9 @@ export const loopsService = {
           // Only update loops that are still in a pre-terminal state.
           // Prevents overwriting metadata on already-completed/cancelled loops
           // if the launch path is delayed.
-          status: { in: ["PENDING", "CLAIMED", "RUNNING"] },
+          status: {
+            in: [LoopStatus.Pending, LoopStatus.Claimed, LoopStatus.Running],
+          },
         },
         data: {
           containerId: data.containerId,
@@ -570,7 +574,9 @@ export const loopsService = {
         where: {
           userId,
           organizationId,
-          status: { in: ["PENDING", "CLAIMED", "RUNNING"] },
+          status: {
+            in: [LoopStatus.Pending, LoopStatus.Claimed, LoopStatus.Running],
+          },
         },
       })
     );
@@ -913,7 +919,9 @@ export const loopsService = {
         where: {
           id,
           organizationId,
-          status: { in: ["PENDING", "CLAIMED", "RUNNING"] },
+          status: {
+            in: [LoopStatus.Pending, LoopStatus.Claimed, LoopStatus.Running],
+          },
         },
         data: { uploadedArtifacts },
       })
@@ -982,7 +990,9 @@ export const loopsService = {
         where: {
           userId,
           organizationId,
-          status: { in: ["PENDING", "CLAIMED", "RUNNING"] },
+          status: {
+            in: [LoopStatus.Pending, LoopStatus.Claimed, LoopStatus.Running],
+          },
         },
       })
     );
@@ -1041,7 +1051,9 @@ export const loopsService = {
         where: {
           id,
           organizationId,
-          status: { in: ["PENDING", "CLAIMED", "RUNNING"] },
+          status: {
+            in: [LoopStatus.Pending, LoopStatus.Claimed, LoopStatus.Running],
+          },
         },
         data: { metadata },
       })

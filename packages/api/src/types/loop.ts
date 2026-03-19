@@ -29,6 +29,18 @@ export const LoopCommand = {
 } as const;
 export type LoopCommand = (typeof LoopCommand)[keyof typeof LoopCommand];
 
+// Lowercase command keys accepted by the /artifacts/:id/run-loop endpoint.
+export const RunLoopCommand = {
+  Plan: "plan",
+  Execute: "execute",
+  RequestChanges: "request_changes",
+  Decompose: "decompose",
+  EvaluatePrd: "evaluate_prd",
+  GeneratePrd: "generate_prd",
+} as const;
+export type RunLoopCommand =
+  (typeof RunLoopCommand)[keyof typeof RunLoopCommand];
+
 export type SourceContextType = (typeof EntityType)[keyof Pick<
   typeof EntityType,
   "Artifact" | "Issue"
