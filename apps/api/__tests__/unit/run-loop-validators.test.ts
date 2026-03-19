@@ -87,6 +87,18 @@ describe("mapLoopCommand", () => {
     expect(mapLoopCommand("DECOMPOSE")).toBe("decompose");
   });
 
+  it('maps "CHAT" to "chat"', () => {
+    expect(mapLoopCommand("CHAT")).toBe("chat");
+  });
+
+  it('maps "EXPLORE" to "explore"', () => {
+    expect(mapLoopCommand("EXPLORE")).toBe("explore");
+  });
+
+  it('maps "REQUEST_CHANGES" to "request_changes"', () => {
+    expect(mapLoopCommand("REQUEST_CHANGES")).toBe("request_changes");
+  });
+
   it("returns null for an unknown command", () => {
     expect(mapLoopCommand("UNKNOWN_COMMAND")).toBeNull();
   });

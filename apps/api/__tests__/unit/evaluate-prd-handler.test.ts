@@ -35,6 +35,7 @@ vi.mock("@/lib/judge-score-fanout", () => ({
 // --- Imports (after mocks) ---
 
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
+import { LoopCommand } from "@repo/api/src/types/loop";
 import { EvaluationReportType as PrismaEvaluationReportType } from "@repo/database";
 import { beforeEach, describe, expect, it } from "vitest";
 import { fanOutJudgeScores } from "@/lib/judge-score-fanout";
@@ -68,7 +69,7 @@ const PRD_REPORT: JudgesReport = {
 
 function buildEvaluatePrdLoop(overrides: Record<string, unknown> = {}) {
   return buildLoop({
-    command: "EVALUATE_PRD" as "PLAN",
+    command: LoopCommand.EvaluatePrd,
     s3StateKey: "org/loops/loop-prd/run-1",
     artifactId: "prd-artifact-1",
     ...overrides,
