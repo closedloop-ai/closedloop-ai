@@ -2,7 +2,7 @@
  * Unit tests for planHandler and requestChangesHandler in plan-handler.ts.
  *
  * Key behaviors tested:
- * - planHandler.requiresRepo is false (PLAN loop does not need a repository)
+ * - planHandler.requiresRepo is true (PLAN loop needs codebase access)
  * - requestChangesHandler.requiresRepo is true (pushes code, requires a repo)
  * - Handler shape matches LoopCommandHandler contract
  */
@@ -61,12 +61,12 @@ import {
 } from "@/lib/loops/loop-commands/plan-handler";
 
 // ---------------------------------------------------------------------------
-// planHandler — requiresRepo must be false
+// planHandler — requiresRepo must be true (plans need codebase access)
 // ---------------------------------------------------------------------------
 
 describe("planHandler", () => {
-  it("has requiresRepo set to false", () => {
-    expect(planHandler.requiresRepo).toBe(false);
+  it("has requiresRepo set to true", () => {
+    expect(planHandler.requiresRepo).toBe(true);
   });
 
   it("has requiresParent set to false", () => {
@@ -113,12 +113,12 @@ describe("requestChangesHandler", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Contrast: planHandler vs requestChangesHandler differ on requiresRepo
+// Contrast: both planHandler and requestChangesHandler require a repo
 // ---------------------------------------------------------------------------
 
-describe("planHandler vs requestChangesHandler requiresRepo contrast", () => {
-  it("planHandler does not require a repo but requestChangesHandler does", () => {
-    expect(planHandler.requiresRepo).toBe(false);
+describe("planHandler vs requestChangesHandler requiresRepo", () => {
+  it("both require a repo", () => {
+    expect(planHandler.requiresRepo).toBe(true);
     expect(requestChangesHandler.requiresRepo).toBe(true);
   });
 });
