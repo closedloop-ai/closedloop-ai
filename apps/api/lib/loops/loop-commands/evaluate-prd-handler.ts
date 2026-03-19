@@ -89,7 +89,7 @@ export const evaluatePrdHandler = defineHandler<PrdJudgesArtifacts>({
     if (loop.artifactVersion != null) {
       const artifact = await withDb((db) =>
         db.artifact.findUnique({
-          where: { id: artifactId },
+          where: { id: artifactId, organizationId },
           select: { latestVersion: true },
         })
       );

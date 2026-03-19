@@ -977,6 +977,24 @@ export const loopsService = {
     userId: string,
     input: CreateLoopRequest & { artifactVersion: number }
   ): Promise<CreateLoopResponse | null> {
+    const activeCount = await withDb((db) =>
+      db.loop.count({
+        where: {
+          userId,
+          organizationId,
+          status: { in: ["PENDING", "CLAIMED", "RUNNING"] },
+        },
+      })
+    );
+
+    if (activeCount >= MAX_CONCURRENT_LOOPS_PER_USER) {
+      throw new Error(
+        `Too many active loops (${activeCount}). ` +
+          `Maximum ${MAX_CONCURRENT_LOOPS_PER_USER} concurrent loops allowed per user. ` +
+          "Wait for existing loops to complete or cancel them."
+      );
+    }
+
     const [loop] = await withDb((db) =>
       db.loop.createManyAndReturn({
         data: [
