@@ -2732,7 +2732,8 @@ Please try again or contact support if the issue persists.`
     // Check for an active PLAN loop on the artifact
     const activeLoop = await loopsService.findActivePlanLoopForArtifact(
       artifactId,
-      organizationId
+      organizationId,
+      input.computeTargetId
     );
     if (activeLoop) {
       const existingLocalRepoPath =

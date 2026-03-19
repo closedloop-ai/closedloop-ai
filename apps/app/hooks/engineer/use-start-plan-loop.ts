@@ -2,7 +2,7 @@
 
 import type { StartPlanLoopResponse } from "@repo/api/src/types/plan-loop";
 import { useQueryClient } from "@tanstack/react-query";
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { toast } from "sonner";
 import { artifactKeys } from "@/hooks/queries/use-artifacts";
 import { entityLinkKeys } from "@/hooks/queries/use-entity-links";
@@ -19,6 +19,8 @@ export type UseStartPlanLoopResult = {
     baseBranch?: string
   ) => Promise<{ launched: boolean; alreadyRunning: boolean }>;
   selectArtifact: (artifactId: string) => Promise<void>;
+  /** Dismiss the multi-plan picker without making an API call */
+  clearPendingArtifacts: () => void;
 };
 
 /** Result from the gateway prepare step (filesystem-only, no API call). */
@@ -82,6 +84,10 @@ export function useStartPlanLoop(
     },
     [queryClient]
   );
+
+  // Guard against double-clicks: prevent concurrent startPlanLoop calls
+  // from creating duplicate artifacts and loops for the same ticket.
+  const launchInFlightRef = useRef(false);
 
   /**
    * Phase 1: Call gateway prepare endpoint. Validates repoPath and resolves
@@ -212,91 +218,100 @@ export function useStartPlanLoop(
         throw new Error("startPlanLoop requires a ticket with issueId");
       }
 
-      const computeResult = getRequiredLoopComputeTargetId();
-      if (!computeResult.ok) {
-        toast.error(computeResult.error);
+      if (launchInFlightRef.current) {
         return { launched: false, alreadyRunning: false };
       }
+      launchInFlightRef.current = true;
 
-      // Phase 1: Gateway prepare -- filesystem-only, no API call
-      const prepareResult = await gatewayPrepare(
-        ticket.identifier,
-        repoPath,
-        baseBranch
-      );
-
-      // Phase 2: Direct browser-to-API call with Clerk token
-      const apiBody: Record<string, unknown> = {
-        issueId: ticket.issueId,
-        computeTargetId: computeResult.computeTargetId,
-        localRepoPath: prepareResult.repoPath,
-      };
-      if (ticket.title) {
-        apiBody.ticketTitle = ticket.title;
-      }
-      if (prepareResult.repo.fullName || prepareResult.repo.branch) {
-        apiBody.repo = prepareResult.repo;
-      }
-
-      const data = await apiClient.post<StartPlanLoopResponse>(
-        "/plans/start-loop-from-local",
-        apiBody
-      );
-
-      if (data.outcome === "launched" || data.outcome === "already-running") {
-        let canonicalRepoPath: string | undefined;
-        if (data.outcome === "already-running") {
-          canonicalRepoPath = data.localRepoPath;
+      try {
+        const computeResult = getRequiredLoopComputeTargetId();
+        if (!computeResult.ok) {
+          toast.error(computeResult.error);
+          return { launched: false, alreadyRunning: false };
         }
 
-        // Phase 3: Gateway confirm -- returns the actual loop-style worktreeDir
-        const confirmedWorktreeDir = await gatewayConfirm(
+        // Phase 1: Gateway prepare -- filesystem-only, no API call
+        const prepareResult = await gatewayPrepare(
           ticket.identifier,
-          canonicalRepoPath ?? prepareResult.repoPath,
-          data.loopId,
-          data.artifactId,
-          data.artifactSlug,
-          ticket.issueId,
-          ticket.title,
-          data.outcome
-        );
-
-        // Use the confirmed worktreeDir (matches what symphony-loop.ts creates).
-        // If confirm failed, leave worktreePath undefined rather than persisting
-        // the placeholder ticket-based path -- the status handler's JobStore
-        // fallback will find the correct path once the process spawns.
-        const worktreePath = confirmedWorktreeDir ?? "";
-
-        return handleSuccessfulLaunch(
-          data,
-          ticket,
           repoPath,
-          worktreePath,
-          canonicalRepoPath
+          baseBranch
         );
-      }
 
-      if (data.outcome === "needs-selection") {
-        setPendingArtifacts(data.artifacts);
-        setPendingContext({ ticket, repoPath, baseBranch, prepareResult });
-        return { launched: false, alreadyRunning: false };
-      }
+        // Phase 2: Direct browser-to-API call with Clerk token
+        const apiBody: Record<string, unknown> = {
+          issueId: ticket.issueId,
+          computeTargetId: computeResult.computeTargetId,
+          localRepoPath: prepareResult.repoPath,
+        };
+        if (ticket.title) {
+          apiBody.ticketTitle = ticket.title;
+        }
+        if (prepareResult.repo.fullName || prepareResult.repo.branch) {
+          apiBody.repo = prepareResult.repo;
+        }
 
-      if (data.outcome === "invalid-artifact") {
-        toast.error(
-          "The selected artifact is not a valid implementation plan."
+        const data = await apiClient.post<StartPlanLoopResponse>(
+          "/plans/start-loop-from-local",
+          apiBody
         );
-        return { launched: false, alreadyRunning: false };
-      }
 
-      if (data.outcome === "error") {
-        toast.error(
-          "Cannot resume: the existing loop is missing its local repo path. Stop the loop and try again."
-        );
-        return { launched: false, alreadyRunning: false };
-      }
+        if (data.outcome === "launched" || data.outcome === "already-running") {
+          let canonicalRepoPath: string | undefined;
+          if (data.outcome === "already-running") {
+            canonicalRepoPath = data.localRepoPath;
+          }
 
-      return { launched: false, alreadyRunning: false };
+          // Phase 3: Gateway confirm -- returns the actual loop-style worktreeDir
+          const confirmedWorktreeDir = await gatewayConfirm(
+            ticket.identifier,
+            canonicalRepoPath ?? prepareResult.repoPath,
+            data.loopId,
+            data.artifactId,
+            data.artifactSlug,
+            ticket.issueId,
+            ticket.title,
+            data.outcome
+          );
+
+          // Use the confirmed worktreeDir (matches what symphony-loop.ts creates).
+          // If confirm failed, leave worktreePath undefined rather than persisting
+          // the placeholder ticket-based path -- the status handler's JobStore
+          // fallback will find the correct path once the process spawns.
+          const worktreePath = confirmedWorktreeDir ?? "";
+
+          return handleSuccessfulLaunch(
+            data,
+            ticket,
+            repoPath,
+            worktreePath,
+            canonicalRepoPath
+          );
+        }
+
+        if (data.outcome === "needs-selection") {
+          setPendingArtifacts(data.artifacts);
+          setPendingContext({ ticket, repoPath, baseBranch, prepareResult });
+          return { launched: false, alreadyRunning: false };
+        }
+
+        if (data.outcome === "invalid-artifact") {
+          toast.error(
+            "The selected artifact is not a valid implementation plan."
+          );
+          return { launched: false, alreadyRunning: false };
+        }
+
+        if (data.outcome === "error") {
+          toast.error(
+            "Cannot resume: the existing loop is missing its local repo path. Stop the loop and try again."
+          );
+          return { launched: false, alreadyRunning: false };
+        }
+
+        return { launched: false, alreadyRunning: false };
+      } finally {
+        launchInFlightRef.current = false;
+      }
     },
     [apiClient, gatewayPrepare, gatewayConfirm, handleSuccessfulLaunch]
   );
@@ -384,5 +399,15 @@ export function useStartPlanLoop(
     [apiClient, pendingContext, gatewayConfirm, handleSuccessfulLaunch]
   );
 
-  return { pendingArtifacts, startPlanLoop, selectArtifact };
+  const clearPendingArtifacts = useCallback(() => {
+    setPendingArtifacts(null);
+    setPendingContext(null);
+  }, []);
+
+  return {
+    pendingArtifacts,
+    startPlanLoop,
+    selectArtifact,
+    clearPendingArtifacts,
+  };
 }

@@ -96,7 +96,12 @@ export function TicketList({
     error,
   } = useSymphonyLaunch();
 
-  const { startPlanLoop, pendingArtifacts, selectArtifact } = useStartPlanLoop(
+  const {
+    startPlanLoop,
+    pendingArtifacts,
+    selectArtifact,
+    clearPendingArtifacts,
+  } = useStartPlanLoop(
     async (ticketIdentifier, repoPath, worktreePath, loopId, artifactId) => {
       // Persist loopId + artifactId in the session immediately so ActiveTicketCard
       // can use them before the gateway process starts.
@@ -2220,7 +2225,7 @@ export function TicketList({
         onOpenChange={(open) => {
           if (!open) {
             // Dismissing clears picker state; user can retry Start Planning
-            selectArtifact("");
+            clearPendingArtifacts();
           }
         }}
         open={pendingArtifacts !== null && pendingArtifacts.length > 0}

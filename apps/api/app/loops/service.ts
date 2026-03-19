@@ -925,13 +925,16 @@ export const loopsService = {
    */
   async findActivePlanLoopForArtifact(
     artifactId: string,
-    organizationId: string
+    organizationId: string,
+    computeTargetId?: string
   ): Promise<Loop | null> {
     // RUNNING/CLAIMED with a containerId are genuinely active (dispatched
     // and acknowledged by the desktop). PENDING loops are only in-flight
     // briefly (<30s) while the API dispatches them. Older PENDING loops
     // without a containerId are stuck (relay failed) and must not block
     // new launches.
+    // Scope to the caller's compute target so a loop running on another
+    // user's desktop doesn't block this user's Start Planning.
     const stalenessThreshold = new Date(Date.now() - 30_000);
     const loop = await withDb((db) =>
       db.loop.findFirst({
@@ -939,6 +942,7 @@ export const loopsService = {
           artifactId,
           organizationId,
           command: "PLAN",
+          ...(computeTargetId ? { computeTargetId } : {}),
           OR: [
             { status: "RUNNING" },
             { status: "CLAIMED", containerId: { not: null } },
