@@ -29,6 +29,7 @@ export type LoopForContextPack = {
   command: LoopCommand;
   prompt: string | null;
   artifactId: string | null;
+  artifactVersion: number | null;
   parentLoopId: string | null;
   repo: { fullName: string; branch: string } | null;
   contextRefs: Array<{
@@ -69,14 +70,25 @@ async function fetchPrimaryArtifact(
     return [];
   }
 
-  const latestVersion = await artifactVersionService.getLatest(artifact.id);
+  // Use the pinned version when the loop was created with a specific artifact
+  // version (e.g. EVALUATE_PRD). This closes the TOCTOU window: if the PRD
+  // advances between loop creation and context-pack build, we still evaluate
+  // the version the loop was created for, so the stale-write guard in the
+  // ingest handler can accurately compare versions.
+  const artifactVersion =
+    loop.artifactVersion != null
+      ? await artifactVersionService.getByVersion(
+          artifact.id,
+          loop.artifactVersion
+        )
+      : await artifactVersionService.getLatest(artifact.id);
 
   return [
     {
       id: artifact.id,
       type: String(artifact.type),
       title: artifact.title,
-      content: latestVersion?.content ?? "",
+      content: artifactVersion?.content ?? "",
     },
   ];
 }
