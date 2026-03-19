@@ -1,9 +1,5 @@
 import type { WorkflowRunCompletedEvent } from "@octokit/webhooks-types";
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
-import {
-  ExternalLinkType,
-  type PreviewDeploymentMetadata,
-} from "@repo/api/src/types/external-link";
 import type { PromptsSnapshot } from "@repo/api/src/types/prompt";
 import {
   type Prisma,
@@ -15,6 +11,7 @@ import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
 import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
 import { fanOutJudgeScores } from "@/lib/judge-score-fanout";
+import { ensurePrLinkageRecords } from "@/lib/pr-linkage";
 import { upsertFromSnapshot } from "@/lib/prompts-service";
 import type { ExecutionResult, WorkflowContext } from "../types";
 import { findActionRunByCorrelationId } from "../webhook-service";
@@ -130,88 +127,87 @@ export async function handleExecutionSuccess(
       );
     }
 
-    // Create GitHubPullRequest record
-    await tx.gitHubPullRequest.create({
-      data: {
-        workstreamId,
-        organizationId: workstream.organizationId,
-        repositoryId,
-        artifactId: ctx.artifactId,
-        githubId: executionResult.github_id ?? prNumber,
-        number: prNumber,
-        title: prTitle,
-        htmlUrl: executionResult.pr_url,
-        headBranch: executionResult.branch_name,
-        baseBranch,
-        state: "OPEN",
+    // Check if a PR record already exists (may have been created by the
+    // pull_request webhook or loop execute handler racing with this handler).
+    const existingPr = await tx.gitHubPullRequest.findUnique({
+      where: {
+        repositoryId_number: {
+          repositoryId,
+          number: prNumber,
+        },
       },
+      select: { id: true, artifactId: true },
     });
 
-    // Create ExternalLink for the PR
-    const prLink = await tx.externalLink.create({
-      data: {
-        organizationId: planArtifact.organizationId,
-        workstreamId,
-        projectId: planArtifact.projectId!,
-        type: ExternalLinkType.PullRequest,
-        title: prTitle,
-        externalUrl: executionResult.pr_url,
-        metadata: {
-          number: prNumber,
+    // Determine the effective artifactId for linkage. If the PR row already
+    // exists with a different artifact, respect the existing link to avoid
+    // creating contradictory entity-link edges.
+    let effectiveArtifactId = ctx.artifactId;
+
+    if (existingPr) {
+      if (!existingPr.artifactId) {
+        // PR exists without an artifact link — claim it
+        await tx.gitHubPullRequest.update({
+          where: { id: existingPr.id },
+          data: { artifactId: ctx.artifactId },
+        });
+      } else if (existingPr.artifactId !== ctx.artifactId) {
+        // PR is already linked to a different artifact — don't overwrite
+        effectiveArtifactId = existingPr.artifactId;
+        log.warn(
+          "[handleExecutionSuccess] PR already linked to a different artifact",
+          {
+            existingArtifactId: existingPr.artifactId,
+            requestedArtifactId: ctx.artifactId,
+            prNumber,
+            correlationId,
+          }
+        );
+      }
+      log.info(
+        "[handleExecutionSuccess] PR already exists; skipping duplicate PR row create",
+        {
+          repositoryId,
+          prNumber,
+          pullRequestId: existingPr.id,
+          correlationId,
+        }
+      );
+    } else {
+      // Create GitHubPullRequest record
+      await tx.gitHubPullRequest.create({
+        data: {
+          workstreamId,
+          organizationId: workstream.organizationId,
+          repositoryId,
+          artifactId: ctx.artifactId,
           githubId: executionResult.github_id ?? prNumber,
+          number: prNumber,
+          title: prTitle,
+          htmlUrl: executionResult.pr_url,
           headBranch: executionResult.branch_name,
           baseBranch,
           state: "OPEN",
         },
-      },
+      });
+    }
+
+    // Create ExternalLink, EntityLink, and preview deployment records (with dedup)
+    await ensurePrLinkageRecords(tx, {
+      organizationId: workstream.organizationId,
+      workstreamId,
+      projectId: planArtifact.projectId!,
+      artifactId: effectiveArtifactId,
+      prUrl: executionResult.pr_url,
+      prTitle,
+      prNumber,
+      githubId: executionResult.github_id ?? prNumber,
+      headBranch: executionResult.branch_name,
+      baseBranch,
+      commitSha: executionResult.commit_sha ?? null,
     });
 
-    // Create EntityLink: plan artifact → PRODUCES → PR external link
-    await tx.entityLink.create({
-      data: {
-        organizationId: planArtifact.organizationId,
-        sourceId: ctx.artifactId,
-        sourceType: "ARTIFACT",
-        targetId: prLink.id,
-        targetType: "EXTERNAL_LINK",
-        linkType: "PRODUCES",
-      },
-    });
-
-    // Create skeleton ExternalLink for preview deployment
-    // This will be updated with the actual preview deployment information later
-    const metadata: PreviewDeploymentMetadata = {
-      ref: executionResult.branch_name,
-      sha: executionResult.commit_sha ?? null,
-      environment: "preview",
-      state: null,
-    };
-
-    const previewLink = await tx.externalLink.create({
-      data: {
-        organizationId: planArtifact.organizationId,
-        workstreamId,
-        projectId: planArtifact.projectId!,
-        type: ExternalLinkType.PreviewDeployment,
-        title: `Preview: ${executionResult.branch_name}`,
-        externalUrl: "",
-        metadata,
-      },
-    });
-
-    // Create EntityLink: PR → PRODUCES → preview deployment
-    await tx.entityLink.create({
-      data: {
-        organizationId: planArtifact.organizationId,
-        sourceId: prLink.id,
-        sourceType: "EXTERNAL_LINK",
-        targetId: previewLink.id,
-        targetType: "EXTERNAL_LINK",
-        linkType: "PRODUCES",
-      },
-    });
-
-    // Create workstream event
+    // Create workstream event (always — events are an append-only log)
     await tx.workstreamEvent.create({
       data: {
         workstreamId,

@@ -53,6 +53,10 @@ vi.mock("@/lib/loops/loop-artifact-ingestion", () => ({
   parseJsonArtifact: vi.fn(),
 }));
 
+vi.mock("@/lib/pr-linkage", () => ({
+  ensurePrLinkageRecords: vi.fn().mockResolvedValue(undefined),
+}));
+
 import { fanOutJudgeScores } from "@/lib/judge-score-fanout";
 import type { ExecutionArtifacts } from "@/lib/loops/loop-commands/execute-handler";
 import { ingestExecutionArtifacts } from "@/lib/loops/loop-commands/execute-handler";

@@ -2,9 +2,11 @@
  * Unit tests for GitHub pull_request webhook handler.
  *
  * Tests the handlePullRequest function which processes PR lifecycle events:
+ * - opened: Parse plan references from title/body, link PR to plan artifact
+ * - edited: Parse plan references from title/body, link PR to plan artifact (if not already linked)
  * - closed (merged=true) → Updates state to MERGED, sets mergedAt and mergeCommitSha
  * - closed (merged=false) → Updates state to CLOSED
- * - reopened → Updates state to OPEN
+ * - reopened → Updates state to OPEN, re-checks plan references
  * - synchronize → Updates headSha
  * - converted_to_draft → Sets isDraft=true
  * - ready_for_review → Sets isDraft=false
@@ -49,10 +51,24 @@ vi.mock("@repo/database", () => {
   };
 });
 
+vi.mock("@repo/github/plan-reference-parser", () => ({
+  parsePlanReferences: vi.fn().mockReturnValue([]),
+}));
+
+vi.mock("@/lib/slug-generator", () => ({
+  generateSlug: vi.fn().mockResolvedValue("WORK-99"),
+  SlugPrefix: { Workstream: "WORK" },
+}));
+
 // Import after mocking
-import { ArtifactStatus } from "@repo/api/src/types/artifact";
-import { withDb } from "@repo/database";
+import { ArtifactStatus, ArtifactType } from "@repo/api/src/types/artifact";
+import { EntityType, LinkType } from "@repo/api/src/types/entity-link";
+import { ExternalLinkType } from "@repo/api/src/types/external-link";
+import { GitHubPRState, withDb } from "@repo/database";
+import { parsePlanReferences } from "@repo/github/plan-reference-parser";
 import { handlePullRequest } from "@/app/webhooks/github/handlers/pull-request-handler";
+
+const mockParsePlanReferences = parsePlanReferences as Mock;
 
 // Type aliases for mocked functions
 const mockWithDb = withDb as unknown as Mock;
@@ -105,19 +121,21 @@ function createRepository(githubId: number) {
 function createPullRequest(partial: {
   number: number;
   title?: string;
+  body?: string | null;
   state?: string;
   draft?: boolean;
   merged?: boolean;
   closed_at?: string | null;
   merged_at?: string | null;
   merge_commit_sha?: string | null;
-  head?: { sha: string };
+  head?: { sha: string; ref?: string };
 }) {
   return {
     id: 1,
     node_id: "PR_1",
     number: partial.number,
     title: partial.title ?? "Test PR",
+    body: partial.body ?? null,
     user: {
       login: "test-user",
       id: 1,
@@ -144,7 +162,8 @@ function createPullRequest(partial: {
     closed_at: partial.closed_at ?? null,
     merged_at: partial.merged_at ?? null,
     merge_commit_sha: partial.merge_commit_sha ?? null,
-    head: partial.head ?? { sha: "abc123" },
+    head: { sha: "abc123", ref: "feature-branch", ...partial.head },
+    base: { ref: "main" },
     // Required fields for webhook type
     url: "",
     html_url: "https://github.com/owner/test-repo/pull/1",
@@ -191,6 +210,9 @@ describe("handlePullRequest", () => {
   beforeEach(() => {
     vi.clearAllMocks();
 
+    // Reset parser mock
+    mockParsePlanReferences.mockReturnValue([]);
+
     // Set up transaction mock
     mockTx = {
       gitHubInstallationRepository: {
@@ -199,12 +221,25 @@ describe("handlePullRequest", () => {
       gitHubPullRequest: {
         findUnique: vi.fn(),
         update: vi.fn(),
+        create: vi.fn(),
       },
       workstreamEvent: {
         create: vi.fn(),
       },
       artifact: {
+        findUnique: vi.fn(),
         update: vi.fn(),
+      },
+      workstream: {
+        create: vi.fn(),
+      },
+      externalLink: {
+        findFirst: vi.fn(),
+        create: vi.fn(),
+      },
+      entityLink: {
+        findFirst: vi.fn(),
+        create: vi.fn(),
       },
     };
 
@@ -242,6 +277,7 @@ describe("handlePullRequest", () => {
       // Mock repository lookup
       mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
         id: "repo-uuid-123",
+        installation: { organizationId: "org-uuid-123" },
       });
 
       // Mock PR lookup (includes artifact via relation)
@@ -268,7 +304,10 @@ describe("handlePullRequest", () => {
         mockTx.gitHubInstallationRepository.findFirst
       ).toHaveBeenCalledWith({
         where: { githubRepoId: 789 },
-        select: { id: true },
+        select: {
+          id: true,
+          installation: { select: { organizationId: true } },
+        },
       });
 
       // Verify PR lookup (includes artifact via relation and checksStatus for CI reset)
@@ -348,6 +387,7 @@ describe("handlePullRequest", () => {
 
       mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
         id: "repo-uuid-123",
+        installation: { organizationId: "org-uuid-123" },
       });
 
       mockTx.gitHubPullRequest.findUnique.mockResolvedValue({
@@ -411,6 +451,7 @@ describe("handlePullRequest", () => {
 
       mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
         id: "repo-uuid-456",
+        installation: { organizationId: "org-uuid-456" },
       });
 
       mockTx.gitHubPullRequest.findUnique.mockResolvedValue({
@@ -453,6 +494,7 @@ describe("handlePullRequest", () => {
 
       mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
         id: "repo-uuid-sync",
+        installation: { organizationId: "org-uuid-sync" },
       });
 
       mockTx.gitHubPullRequest.findUnique.mockResolvedValue({
@@ -497,6 +539,7 @@ describe("handlePullRequest", () => {
 
       mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
         id: "repo-uuid-sync",
+        installation: { organizationId: "org-uuid-sync" },
       });
 
       // Simulate a PR that currently has PASSING status
@@ -564,6 +607,7 @@ describe("handlePullRequest", () => {
 
       mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
         id: "repo-uuid-draft",
+        installation: { organizationId: "org-uuid-draft" },
       });
 
       mockTx.gitHubPullRequest.findUnique.mockResolvedValue({
@@ -603,6 +647,7 @@ describe("handlePullRequest", () => {
 
       mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
         id: "repo-uuid-ready",
+        installation: { organizationId: "org-uuid-ready" },
       });
 
       mockTx.gitHubPullRequest.findUnique.mockResolvedValue({
@@ -669,6 +714,7 @@ describe("handlePullRequest", () => {
       // Repository exists
       mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
         id: "repo-uuid-exists",
+        installation: { organizationId: "org-uuid-exists" },
       });
 
       // PR not found
@@ -686,12 +732,12 @@ describe("handlePullRequest", () => {
       const repository = createRepository(444);
       const pullRequest = createPullRequest({
         number: 52,
-        title: "Edited PR",
+        title: "Labeled PR",
       });
 
       // Create an event with unsupported action
       const event = {
-        action: "edited",
+        action: "labeled",
         number: pullRequest.number,
         pull_request: pullRequest,
         repository,
@@ -733,6 +779,7 @@ describe("handlePullRequest", () => {
 
       mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
         id: "repo-uuid-tx",
+        installation: { organizationId: "org-uuid-tx" },
       });
 
       mockTx.gitHubPullRequest.findUnique.mockResolvedValue({
@@ -758,6 +805,337 @@ describe("handlePullRequest", () => {
       expect(mockTx.gitHubPullRequest.update).toHaveBeenCalled();
       expect(mockTx.workstreamEvent.create).toHaveBeenCalled();
       expect(mockTx.artifact.update).toHaveBeenCalled();
+    });
+  });
+
+  describe("plan reference linkage", () => {
+    const ORG_ID = "org-uuid-link";
+    const REPO_ID = "repo-uuid-link";
+    const ARTIFACT_ID = "artifact-uuid-link";
+    const WORKSTREAM_ID = "ws-uuid-link";
+
+    function setupRepoMock() {
+      mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
+        id: REPO_ID,
+        installation: { organizationId: ORG_ID },
+      });
+    }
+
+    function setupArtifactMock(
+      overrides?: Partial<{
+        id: string;
+        type: string;
+        organizationId: string;
+        projectId: string | null;
+        workstreamId: string | null;
+        slug: string;
+      }>
+    ) {
+      mockTx.artifact.findUnique.mockResolvedValue({
+        id: ARTIFACT_ID,
+        type: ArtifactType.ImplementationPlan,
+        title: "Test Plan",
+        organizationId: ORG_ID,
+        projectId: "project-uuid-link",
+        workstreamId: WORKSTREAM_ID,
+        createdById: "user-uuid-link",
+        slug: "PLAN-42",
+        ...overrides,
+      });
+    }
+
+    function setupPlanRef(slug = "PLAN-42") {
+      mockParsePlanReferences.mockReturnValue([
+        { slug, matchType: "slug", source: "title" },
+      ]);
+    }
+
+    function setupLinkageMocks() {
+      mockTx.externalLink.findFirst.mockResolvedValue(null);
+      mockTx.externalLink.create.mockResolvedValue({ id: "ext-link-uuid" });
+      mockTx.entityLink.findFirst.mockResolvedValue(null);
+      mockTx.entityLink.create.mockResolvedValue({});
+      mockTx.workstreamEvent.create.mockResolvedValue({});
+    }
+
+    it("links PR opened with valid PLAN slug to artifact", async () => {
+      setupRepoMock();
+      setupPlanRef();
+      setupArtifactMock();
+      setupLinkageMocks();
+      mockTx.gitHubPullRequest.findUnique.mockResolvedValue(null);
+      mockTx.gitHubPullRequest.create.mockResolvedValue({});
+
+      const event = {
+        action: "opened",
+        number: 100,
+        pull_request: createPullRequest({
+          number: 100,
+          title: "PLAN-42: Add feature",
+        }),
+        repository: createRepository(789),
+        sender: createSender(),
+      } as any;
+
+      await handlePullRequest(event);
+
+      // Should create a new GitHubPullRequest record with artifactId
+      expect(mockTx.gitHubPullRequest.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          artifactId: ARTIFACT_ID,
+          workstreamId: WORKSTREAM_ID,
+          organizationId: ORG_ID,
+          repositoryId: REPO_ID,
+          number: 100,
+          state: GitHubPRState.OPEN,
+        }),
+      });
+
+      // Should create ExternalLink
+      expect(mockTx.externalLink.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          organizationId: ORG_ID,
+          type: ExternalLinkType.PullRequest,
+        }),
+      });
+
+      // Should create EntityLink
+      expect(mockTx.entityLink.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          sourceId: ARTIFACT_ID,
+          sourceType: EntityType.Artifact,
+          targetType: EntityType.ExternalLink,
+          linkType: LinkType.Produces,
+        }),
+      });
+
+      // Should create GITHUB_PR_LINKED workstream event
+      expect(mockTx.workstreamEvent.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          workstreamId: WORKSTREAM_ID,
+          type: "GITHUB_PR_LINKED",
+          data: expect.objectContaining({
+            artifactId: ARTIFACT_ID,
+            slug: "PLAN-42",
+          }),
+        }),
+      });
+    });
+
+    it("links PR edited to add plan reference retroactively", async () => {
+      setupRepoMock();
+      setupPlanRef();
+      setupArtifactMock();
+      setupLinkageMocks();
+
+      // Existing PR without artifactId
+      mockTx.gitHubPullRequest.findUnique.mockResolvedValue({
+        id: "pr-uuid-edit",
+        workstreamId: WORKSTREAM_ID,
+        artifactId: null,
+        checksStatus: "UNKNOWN",
+        artifact: null,
+      });
+      mockTx.gitHubPullRequest.update.mockResolvedValue({});
+
+      const event = {
+        action: "edited",
+        number: 101,
+        pull_request: createPullRequest({
+          number: 101,
+          title: "PLAN-42: Updated",
+        }),
+        repository: createRepository(789),
+        sender: createSender(),
+        changes: {},
+      } as any;
+
+      await handlePullRequest(event);
+
+      // Should update existing PR with artifactId
+      expect(mockTx.gitHubPullRequest.update).toHaveBeenCalledWith({
+        where: { id: "pr-uuid-edit" },
+        data: { artifactId: ARTIFACT_ID },
+      });
+
+      // Should create GITHUB_PR_LINKED event for edited action
+      expect(mockTx.workstreamEvent.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          type: "GITHUB_PR_LINKED",
+        }),
+      });
+    });
+
+    it("does not fail for invalid slug (returns 200)", async () => {
+      setupRepoMock();
+      setupPlanRef("PLAN-999");
+      mockTx.artifact.findUnique.mockResolvedValue(null); // Not found
+      mockTx.gitHubPullRequest.findUnique.mockResolvedValue(null);
+
+      const event = {
+        action: "opened",
+        number: 102,
+        pull_request: createPullRequest({
+          number: 102,
+          title: "PLAN-999: Missing",
+        }),
+        repository: createRepository(789),
+        sender: createSender(),
+      } as any;
+
+      const response = await handlePullRequest(event);
+      const json = await response.json();
+
+      expect(json.ok).toBe(true);
+      // Should not create any linkage records
+      expect(mockTx.externalLink.create).not.toHaveBeenCalled();
+      expect(mockTx.entityLink.create).not.toHaveBeenCalled();
+    });
+
+    it("does not link PRD-type artifact", async () => {
+      setupRepoMock();
+      setupPlanRef("PLAN-42");
+      setupArtifactMock({ type: ArtifactType.Prd });
+      mockTx.gitHubPullRequest.findUnique.mockResolvedValue(null);
+
+      const event = {
+        action: "opened",
+        number: 103,
+        pull_request: createPullRequest({
+          number: 103,
+          title: "PLAN-42: PRD ref",
+        }),
+        repository: createRepository(789),
+        sender: createSender(),
+      } as any;
+
+      await handlePullRequest(event);
+
+      expect(mockTx.externalLink.create).not.toHaveBeenCalled();
+      expect(mockTx.gitHubPullRequest.create).not.toHaveBeenCalled();
+    });
+
+    it("does not overwrite existing artifactId (AC-004)", async () => {
+      setupRepoMock();
+      setupPlanRef("PLAN-42");
+
+      // PR already linked to a different artifact
+      mockTx.gitHubPullRequest.findUnique.mockResolvedValue({
+        id: "pr-uuid-linked",
+        workstreamId: WORKSTREAM_ID,
+        artifactId: "existing-artifact-id",
+        checksStatus: "UNKNOWN",
+        artifact: { slug: "PLAN-1" },
+      });
+
+      const event = {
+        action: "edited",
+        number: 104,
+        pull_request: createPullRequest({
+          number: 104,
+          title: "PLAN-42: Override attempt",
+        }),
+        repository: createRepository(789),
+        sender: createSender(),
+        changes: {},
+      } as any;
+
+      await handlePullRequest(event);
+
+      // Should NOT look up artifact or create linkage
+      expect(mockTx.artifact.findUnique).not.toHaveBeenCalled();
+      expect(mockTx.externalLink.create).not.toHaveBeenCalled();
+    });
+
+    it("does not create duplicate EntityLink on repeated webhook delivery (AC-008)", async () => {
+      setupRepoMock();
+      setupPlanRef();
+      setupArtifactMock();
+
+      // Existing PR without artifactId
+      mockTx.gitHubPullRequest.findUnique.mockResolvedValue({
+        id: "pr-uuid-dup",
+        workstreamId: WORKSTREAM_ID,
+        artifactId: null,
+        checksStatus: "UNKNOWN",
+        artifact: null,
+      });
+      mockTx.gitHubPullRequest.update.mockResolvedValue({});
+
+      // ExternalLink already exists
+      mockTx.externalLink.findFirst.mockResolvedValue({
+        id: "existing-ext-link",
+      });
+
+      // EntityLink already exists
+      mockTx.entityLink.findFirst.mockResolvedValue({
+        id: "existing-entity-link",
+      });
+
+      mockTx.workstreamEvent.create.mockResolvedValue({});
+
+      const event = {
+        action: "reopened",
+        number: 105,
+        pull_request: createPullRequest({
+          number: 105,
+          title: "PLAN-42: Reopened",
+        }),
+        repository: createRepository(789),
+        sender: createSender(),
+      } as any;
+
+      await handlePullRequest(event);
+
+      // Should NOT create duplicate ExternalLink or EntityLink
+      expect(mockTx.externalLink.create).not.toHaveBeenCalled();
+      expect(mockTx.entityLink.create).not.toHaveBeenCalled();
+
+      // Should still create workstream event and update PR
+      expect(mockTx.workstreamEvent.create).toHaveBeenCalled();
+      expect(mockTx.gitHubPullRequest.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: { artifactId: ARTIFACT_ID },
+        })
+      );
+    });
+
+    it("PR merge with linked artifactId sets status to EXECUTED (existing behavior)", async () => {
+      setupRepoMock();
+
+      mockTx.gitHubPullRequest.findUnique.mockResolvedValue({
+        id: "pr-uuid-merge",
+        workstreamId: WORKSTREAM_ID,
+        artifactId: ARTIFACT_ID,
+        checksStatus: "PASSING",
+        artifact: { slug: "PLAN-42" },
+      });
+      mockTx.gitHubPullRequest.update.mockResolvedValue({});
+      mockTx.workstreamEvent.create.mockResolvedValue({});
+      mockTx.artifact.update.mockResolvedValue({});
+
+      const event: PullRequestClosedEvent = {
+        action: "closed",
+        number: 106,
+        pull_request: createPullRequest({
+          number: 106,
+          title: "PLAN-42: Feature",
+          state: "closed",
+          merged: true,
+          closed_at: "2026-03-01T12:00:00Z",
+          merged_at: "2026-03-01T12:00:00Z",
+          merge_commit_sha: "merge-sha",
+        }),
+        repository: createRepository(789),
+        sender: createSender(),
+      } as any;
+
+      await handlePullRequest(event);
+
+      expect(mockTx.artifact.update).toHaveBeenCalledWith({
+        where: { id: ARTIFACT_ID },
+        data: { status: ArtifactStatus.Executed },
+      });
     });
   });
 });

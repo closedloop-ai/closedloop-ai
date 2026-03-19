@@ -20,7 +20,7 @@ vi.mock("@octokit/auth-app", () => ({
   createAppAuth: vi.fn(() => async (_opts: unknown) => ({ token: "test" })),
 }));
 
-import { getLatestDeploymentStatusForRef } from "./index";
+import { getLatestDeploymentStatusForRef } from "../index";
 
 describe("getLatestDeploymentStatusForRef", () => {
   beforeAll(() => {
