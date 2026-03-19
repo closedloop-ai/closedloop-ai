@@ -10,9 +10,11 @@ export function registerGetIssue(
   server.registerTool(
     "get-issue",
     {
-      description: "Get a single issue by its ID",
+      description: "Get a single issue by its ID or slug",
       inputSchema: {
-        issueId: z.string().describe("ID of the issue to retrieve"),
+        issueId: z
+          .string()
+          .describe("ID or slug (e.g. FEAT-42) of the issue to retrieve"),
       },
     },
     ({ issueId }) =>

@@ -22,11 +22,11 @@ export function registerListExternalLinks(
         workstreamId: z
           .string()
           .optional()
-          .describe("ID of the workstream to list links for"),
+          .describe("Filter by workstream ID or slug"),
         projectId: z
           .string()
           .optional()
-          .describe("ID of the project to list links for"),
+          .describe("Filter by project ID or slug"),
         type: z
           .enum(ExternalLinkType)
           .optional()

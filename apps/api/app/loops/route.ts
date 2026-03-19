@@ -3,10 +3,11 @@ import type {
   LoopWithUser,
 } from "@repo/api/src/types/loop";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
-
+import { resolveArtifactId } from "@/lib/identifier-utils";
 import {
   badRequestResponse,
   errorResponse,
+  notFoundResponse,
   parseBody,
   successResponse,
 } from "@/lib/route-utils";
@@ -27,10 +28,20 @@ export const GET = withAnyAuth<LoopWithUser[], "/loops">(
         );
       }
 
-      const loops = await loopsService.findAll(
-        user.organizationId,
-        parseResult.data
-      );
+      const { artifactId, ...restQuery } = parseResult.data;
+      let resolvedArtifactId: string | undefined;
+      if (artifactId) {
+        const aId = await resolveArtifactId(artifactId, user.organizationId);
+        if (!aId) {
+          return notFoundResponse("Artifact");
+        }
+        resolvedArtifactId = aId;
+      }
+
+      const loops = await loopsService.findAll(user.organizationId, {
+        artifactId: resolvedArtifactId,
+        ...restQuery,
+      });
 
       return successResponse(loops);
     } catch (error) {

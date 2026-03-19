@@ -15,9 +15,10 @@ export function registerGetProjectStatus(
   server.registerTool(
     "get-project-status",
     {
-      description: "Deprecated alias of get-project. Returns project details.",
+      description:
+        "Deprecated alias of get-project. Returns project details by ID or slug.",
       inputSchema: {
-        projectId: z.string().describe("ID of the project to retrieve"),
+        projectId: z.string().describe("ID or slug of the project"),
       },
     },
     ({ projectId }) =>

@@ -3,6 +3,7 @@ import type { ExternalLink } from "@repo/api/src/types/external-link";
 import { NextResponse } from "next/server";
 import { externalLinksService } from "@/app/external-links/service";
 import { withAuth } from "@/lib/auth/with-auth";
+import { resolveArtifactId } from "@/lib/identifier-utils";
 import { errorResponse, notFoundResponse } from "@/lib/route-utils";
 import { artifactsService } from "../../service";
 
@@ -14,10 +15,14 @@ export const GET = withAuth<ExternalLink | null, "/artifacts/[id]">(
   async ({ user }, _request, params) => {
     try {
       const { id } = await params;
+      const resolvedId = await resolveArtifactId(id, user.organizationId);
+      if (!resolvedId) {
+        return notFoundResponse("Artifact");
+      }
 
       // Find the artifact to get its workstreamId
       const artifact = await artifactsService.findByIdSimple(
-        id,
+        resolvedId,
         user.organizationId
       );
       if (!artifact) {

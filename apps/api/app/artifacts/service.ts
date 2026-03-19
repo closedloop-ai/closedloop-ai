@@ -7,7 +7,6 @@ import {
   ArtifactType,
   type ArtifactWithWorkstream,
   BATCH_META_MAX_SLUGS,
-  type BatchCreateArtifactInput,
   type ChecksStatus,
   type CreateArtifactInput,
   type FindArtifactsOptions,
@@ -376,45 +375,6 @@ export const artifactsService = {
     }
 
     return createdArtifact;
-  },
-
-  /**
-   * Create multiple artifacts in a single transaction.
-   * All items are created atomically - if any fails, the entire batch is rolled back.
-   * Liveblocks rooms are created after the transaction completes.
-   *
-   * @param organizationId - Organization ID for all artifacts
-   * @param userId - User ID for authorship attribution
-   * @param input - Batch input with array of artifact creation inputs (1-50 items)
-   */
-  async batchCreate(
-    organizationId: string,
-    userId: string,
-    input: BatchCreateArtifactInput
-  ): Promise<Artifact[]> {
-    const createdArtifacts = await withDb.tx(async (tx) => {
-      const results: Artifact[] = [];
-      for (const item of input.items) {
-        const artifact = await createArtifactRecord(
-          tx,
-          organizationId,
-          userId,
-          item
-        );
-        if (!artifact) {
-          throw new Error(
-            `Failed to create artifact: workstream not found for item "${item.title}"`
-          );
-        }
-        results.push(artifact);
-      }
-      return results;
-    });
-
-    // Create Liveblocks rooms after transaction completes
-    await Promise.all(createdArtifacts.map((a) => createArtifactRoom(a)));
-
-    return createdArtifacts;
   },
 
   /**
@@ -2195,86 +2155,6 @@ Please try again or contact support if the issue persists.`
   },
 
   /**
-   * Batch-generate (or regenerate) implementation plans for all approved PRDs in a project.
-   * For each approved PRD:
-   * - If a linked IMPLEMENTATION_PLAN exists via PRODUCES link, regenerates it.
-   * - If no linked plan exists, creates a new IMPLEMENTATION_PLAN and triggers generation.
-   * Returns the count of triggered plans and their artifact IDs.
-   */
-  async batchRegenerateImplementationPlans(
-    projectId: string,
-    organizationId: string,
-    userId: string
-  ): Promise<{ triggered: number; artifactIds: string[] }> {
-    const prds = await this.findApprovedPrds(projectId, organizationId);
-
-    const artifactIds: string[] = [];
-    for (const prd of prds) {
-      // Find the implementation plan(s) that this PRD produced via PRODUCES links
-      const targetLinks = await entityLinksService.findTargetLinks(
-        organizationId,
-        prd.id,
-        "ARTIFACT",
-        LinkType.PRODUCES
-      );
-
-      if (targetLinks.length === 0) {
-        // No linked plan exists — create a new IMPLEMENTATION_PLAN from the PRD
-        const newPlan = await this.create(organizationId, userId, {
-          type: ArtifactType.ImplementationPlan,
-          title: `Plan: ${prd.title}`,
-          content: "",
-          sourceId: prd.id,
-          sourceType: "ARTIFACT",
-          sourceVersion: prd.latestVersion,
-          projectId: prd.projectId!,
-          workstreamId: prd.workstreamId ?? undefined,
-          targetRepo: prd.targetRepo ?? undefined,
-          targetBranch: prd.targetBranch ?? undefined,
-          status: "DRAFT",
-        });
-
-        if (newPlan) {
-          const result = await this.regenerateImplementationPlan(
-            newPlan.id,
-            organizationId,
-            userId
-          );
-          if (result.success) {
-            artifactIds.push(result.artifact.id);
-          }
-        }
-        continue;
-      }
-
-      // Look up the linked artifacts and find the IMPLEMENTATION_PLAN
-      const linkedArtifacts = await withDb((db) =>
-        db.artifact.findMany({
-          where: {
-            id: { in: targetLinks.map((l) => l.targetId) },
-            organizationId,
-            type: PrismaArtifactType.IMPLEMENTATION_PLAN,
-          },
-          select: { id: true },
-        })
-      );
-
-      for (const plan of linkedArtifacts) {
-        const result = await this.regenerateImplementationPlan(
-          plan.id,
-          organizationId,
-          userId
-        );
-        if (result.success) {
-          artifactIds.push(result.artifact.id);
-        }
-      }
-    }
-
-    return { triggered: artifactIds.length, artifactIds };
-  },
-
-  /**
    * Batch fetch artifact titles by slug (org-scoped).
    * Returns a map of slug -> title for all slugs found in the organization.
    * Slugs not found are omitted from the result.
@@ -3021,8 +2901,6 @@ async function findInstallationRepoId(
 
 /**
  * Create a single artifact record within an existing transaction.
- * Does NOT call withDb.tx internally - takes the tx parameter directly.
- * Used by both create() and batchCreate() to avoid code duplication.
  */
 async function createArtifactRecord(
   tx: TransactionClient,

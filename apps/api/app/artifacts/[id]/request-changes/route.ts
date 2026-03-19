@@ -2,7 +2,8 @@ import { failure, success } from "@repo/api/src/types/common";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { withAuth } from "@/lib/auth/with-auth";
-import { errorResponse } from "@/lib/route-utils";
+import { resolveArtifactId } from "@/lib/identifier-utils";
+import { errorResponse, notFoundResponse } from "@/lib/route-utils";
 import { artifactsService } from "../../service";
 
 const requestChangesSchema = z.object({
@@ -15,6 +16,11 @@ export const POST = withAuth<
 >(async ({ user }, request, params) => {
   try {
     const { id } = await params;
+    const resolvedId = await resolveArtifactId(id, user.organizationId);
+    if (!resolvedId) {
+      return notFoundResponse("Artifact");
+    }
+
     const body = await request.json();
 
     const parsed = requestChangesSchema.safeParse(body);
@@ -26,7 +32,7 @@ export const POST = withAuth<
     }
 
     const result = await artifactsService.requestPlanChanges(
-      id,
+      resolvedId,
       user.organizationId,
       user.id,
       parsed.data.changes

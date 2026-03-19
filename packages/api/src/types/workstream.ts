@@ -107,7 +107,6 @@ export type UpdateWorkstreamInput = {
   state?: WorkstreamState;
   assigneeId?: string | null;
   priority?: Priority;
-  slug?: string | null;
   hasUIChanges?: boolean;
 };
 

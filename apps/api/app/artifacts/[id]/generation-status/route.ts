@@ -3,6 +3,7 @@ import type { ApiResult } from "@repo/api/src/types/common";
 import { failure, success } from "@repo/api/src/types/common";
 import { NextResponse } from "next/server";
 import { withAuth } from "@/lib/auth/with-auth";
+import { resolveArtifactId } from "@/lib/identifier-utils";
 import { notFoundResponse } from "@/lib/route-utils";
 import { artifactsService } from "../../service";
 
@@ -16,10 +17,14 @@ export const GET = withAuth<
     params
   ): Promise<NextResponse<ApiResult<GenerationStatus>>> => {
     const { id } = await params;
+    const resolvedId = await resolveArtifactId(id, user.organizationId);
+    if (!resolvedId) {
+      return notFoundResponse("Artifact");
+    }
 
     try {
       const result = await artifactsService.getGenerationStatus(
-        id,
+        resolvedId,
         user.organizationId
       );
 

@@ -1,6 +1,7 @@
 import { CustomFieldEntityType } from "@repo/api/src/types/custom-field";
 import type { IssueWithWorkstream } from "@repo/api/src/types/issue";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
+import { resolveIssueId, resolveProjectId } from "@/lib/identifier-utils";
 
 import {
   deleteResponse,
@@ -20,8 +21,15 @@ export const GET = withAnyAuth<IssueWithWorkstream, "/issues/[id]">(
   async ({ user }, _, params) => {
     try {
       const { id } = await params;
+      const resolvedId = await resolveIssueId(id, user.organizationId);
+      if (!resolvedId) {
+        return notFoundResponse("Issue");
+      }
 
-      const issue = await issuesService.findById(id, user.organizationId);
+      const issue = await issuesService.findById(
+        resolvedId,
+        user.organizationId
+      );
 
       if (!issue) {
         return notFoundResponse("Issue");
@@ -44,6 +52,11 @@ export const PUT = withAnyAuth<IssueWithWorkstream, "/issues/[id]">(
   async ({ user }, request, params) => {
     try {
       const { id } = await params;
+      const resolvedId = await resolveIssueId(id, user.organizationId);
+      if (!resolvedId) {
+        return notFoundResponse("Issue");
+      }
+
       const { body, errorResponse: parseError } = await parseBody(
         request,
         updateIssueValidator
@@ -54,8 +67,19 @@ export const PUT = withAnyAuth<IssueWithWorkstream, "/issues/[id]">(
 
       const { customFields, ...issueInput } = body;
 
+      if (issueInput.projectId) {
+        const pId = await resolveProjectId(
+          issueInput.projectId,
+          user.organizationId
+        );
+        if (!pId) {
+          return notFoundResponse("Project");
+        }
+        issueInput.projectId = pId;
+      }
+
       const issue = await issuesService.update(
-        id,
+        resolvedId,
         user.organizationId,
         issueInput
       );
@@ -63,7 +87,7 @@ export const PUT = withAnyAuth<IssueWithWorkstream, "/issues/[id]">(
       if (customFields) {
         await applyCustomFieldsFromBody(
           customFields,
-          id,
+          resolvedId,
           CustomFieldEntityType.Issue,
           user.organizationId
         );
@@ -81,7 +105,12 @@ export const DELETE = withAnyAuth<{ deleted: true }, "/issues/[id]">(
   async ({ user }, _, params) => {
     try {
       const { id } = await params;
-      await issuesService.delete(id, user.organizationId);
+      const resolvedId = await resolveIssueId(id, user.organizationId);
+      if (!resolvedId) {
+        return notFoundResponse("Issue");
+      }
+
+      await issuesService.delete(resolvedId, user.organizationId);
       return deleteResponse();
     } catch (error) {
       return errorResponse("Failed to delete issue", error);

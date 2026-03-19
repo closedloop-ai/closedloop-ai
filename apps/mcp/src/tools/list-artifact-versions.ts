@@ -19,11 +19,9 @@ export function registerListArtifactVersions(
     "list-artifact-versions",
     {
       description:
-        "List all versions of an artifact with version numbers and timestamps",
+        "List all versions of an artifact by ID or slug with version numbers and timestamps",
       inputSchema: {
-        artifactId: z
-          .string()
-          .describe("ID of the artifact to list versions for"),
+        artifactId: z.string().describe("ID or slug of the artifact"),
         limit: z
           .number()
           .int()

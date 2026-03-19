@@ -10,9 +10,9 @@ export function registerCreateIssueComment(
   server.registerTool(
     "create-issue-comment",
     {
-      description: "Create a comment on an issue",
+      description: "Create a comment on an issue by ID or slug",
       inputSchema: {
-        issueId: z.string().describe("ID of the issue to comment on"),
+        issueId: z.string().describe("ID or slug of the issue"),
         body: z.string().min(1).describe("Comment body text"),
       },
     },

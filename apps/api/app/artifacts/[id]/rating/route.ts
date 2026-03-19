@@ -2,6 +2,7 @@ import { success } from "@repo/api/src/types/common";
 import type { ArtifactRatingSummary } from "@repo/api/src/types/rating";
 import { NextResponse } from "next/server";
 import { withAuth } from "@/lib/auth/with-auth";
+import { resolveArtifactId } from "@/lib/identifier-utils";
 import { errorResponse, notFoundResponse, parseBody } from "@/lib/route-utils";
 import { ArtifactNotFoundError } from "../../artifact-utils";
 import { artifactsService } from "../../service";
@@ -11,8 +12,12 @@ export const GET = withAuth<ArtifactRatingSummary, "/artifacts/[id]/rating">(
   async ({ user }, _request, params) => {
     try {
       const { id } = await params;
+      const resolvedId = await resolveArtifactId(id, user.organizationId);
+      if (!resolvedId) {
+        return notFoundResponse("Artifact");
+      }
       const summary = await artifactsService.getRating(
-        id,
+        resolvedId,
         user.id,
         user.organizationId
       );
@@ -29,6 +34,10 @@ export const GET = withAuth<ArtifactRatingSummary, "/artifacts/[id]/rating">(
 export const PUT = withAuth<ArtifactRatingSummary, "/artifacts/[id]/rating">(
   async ({ user }, request, params) => {
     const { id } = await params;
+    const resolvedId = await resolveArtifactId(id, user.organizationId);
+    if (!resolvedId) {
+      return notFoundResponse("Artifact");
+    }
 
     const { body, errorResponse: parseError } = await parseBody(
       request,
@@ -42,7 +51,7 @@ export const PUT = withAuth<ArtifactRatingSummary, "/artifacts/[id]/rating">(
 
     try {
       const summary = await artifactsService.upsertRating(
-        id,
+        resolvedId,
         user.id,
         user.organizationId,
         score,

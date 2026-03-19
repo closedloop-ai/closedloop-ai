@@ -16,6 +16,7 @@ import {
 } from "@/app/integrations/google/service";
 import { issuesService } from "@/app/issues/service";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
+import { resolveIssueId } from "@/lib/identifier-utils";
 import {
   errorResponse,
   notFoundResponse,
@@ -35,7 +36,11 @@ export const POST = withAnyAuth<
   ImportGDriveContextResponse,
   "/issues/[id]/context-attachments/gdrive"
 >(async ({ user }, request, params) => {
-  const { id: issueId } = await params;
+  const { id } = await params;
+  const issueId = await resolveIssueId(id, user.organizationId);
+  if (!issueId) {
+    return notFoundResponse("Issue");
+  }
 
   const { body, errorResponse: parseError } = await parseBody(
     request,

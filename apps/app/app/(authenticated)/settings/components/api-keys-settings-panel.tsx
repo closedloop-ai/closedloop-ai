@@ -147,7 +147,7 @@ function CreateApiKeyDialog({
                 value={scopePreset}
               >
                 <label
-                  className="flex cursor-pointer items-center gap-3 rounded-md border p-3 has-[[data-state=checked]]:border-primary"
+                  className="flex cursor-pointer items-center gap-3 rounded-md border p-3 has-data-[state=checked]:border-primary"
                   htmlFor="scope-read"
                 >
                   <RadioGroupItem id="scope-read" value="read" />
@@ -159,7 +159,7 @@ function CreateApiKeyDialog({
                   </div>
                 </label>
                 <label
-                  className="flex cursor-pointer items-center gap-3 rounded-md border p-3 has-[[data-state=checked]]:border-primary"
+                  className="flex cursor-pointer items-center gap-3 rounded-md border p-3 has-data-[state=checked]:border-primary"
                   htmlFor="scope-read-write"
                 >
                   <RadioGroupItem id="scope-read-write" value="read-write" />
@@ -205,11 +205,11 @@ function ApiKeysCardContent({
   isLoading,
   apiKeys,
   onRevoke,
-}: {
+}: Readonly<{
   isLoading: boolean;
   apiKeys: ApiKey[] | undefined;
   onRevoke: (key: ApiKey) => void;
-}) {
+}>) {
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-8">
@@ -301,7 +301,6 @@ const MCP_TOOL_GROUPS = [
       "get-artifact",
       "create-artifact",
       "update-artifact",
-      "batch-create-artifacts",
       "create-artifact-version",
       "list-artifact-versions",
       "get-related-artifacts",
@@ -335,7 +334,7 @@ const MCP_TOOL_GROUPS = [
   },
   {
     label: "Planning",
-    tools: ["generate-plans", "list-templates"],
+    tools: ["list-templates"],
   },
   {
     label: "Loops",
@@ -387,8 +386,7 @@ function QuickStartGuide() {
         <div className="space-y-2">
           <p className="font-medium text-sm">REST API</p>
           <pre className="overflow-x-auto rounded-md bg-muted p-3 font-mono text-xs">
-            {`curl https://api.closedloop.ai/artifacts \\
-  -H "Authorization: Bearer sk_live_YOUR_KEY"`}
+            {`curl https://api.closedloop.ai/artifacts -H "Authorization: Bearer sk_live_YOUR_KEY"`}
           </pre>
         </div>
         <div className="space-y-2">
