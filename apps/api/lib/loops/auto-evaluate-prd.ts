@@ -69,13 +69,13 @@ async function runAutoEvaluatePrd(
 
   const { loopId } = result;
 
-  await launchLoop(loopId, organizationId).catch((error) => {
+  await launchLoop(loopId, organizationId).catch(async (error) => {
     log.error("[auto-evaluate-prd] Failed to launch loop", {
       loopId,
       artifactId,
       error: error instanceof Error ? error.message : String(error),
     });
-    loopsService.cancel(loopId, organizationId).catch((cancelError) => {
+    await loopsService.cancel(loopId, organizationId).catch((cancelError) => {
       log.error(
         "[auto-evaluate-prd] Failed to cancel orphaned loop after launch failure",
         {
