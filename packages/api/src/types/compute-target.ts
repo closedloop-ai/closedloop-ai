@@ -118,3 +118,9 @@ export type DesktopCommandEvent = {
   data: JsonValue;
   createdAt: string;
 };
+
+export type ComputeTargetConflictBody = {
+  error: "multiple_targets";
+  message: string;
+  availableTargets: Array<{ id: string; machineName: string; status: string }>;
+};

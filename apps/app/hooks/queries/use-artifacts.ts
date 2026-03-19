@@ -12,18 +12,20 @@ import type {
   UpdateArtifactInput,
 } from "@repo/api/src/types/artifact";
 import type { ArtifactVersion } from "@repo/api/src/types/artifact-version";
+import type { ComputeTargetConflictBody } from "@repo/api/src/types/compute-target";
 import { EntityType } from "@repo/api/src/types/entity-link";
 import type { ExternalLink } from "@repo/api/src/types/external-link";
+import { toast } from "@repo/design-system/components/ui/sonner";
 import {
   type UseQueryOptions,
   useMutation,
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { useRef } from "react";
+import { useCallback, useRef, useState } from "react";
 import { useIsLoopsEnabled } from "@/hooks/queries/use-compute-mode";
 import { useApiClient } from "@/hooks/use-api-client";
-import { getEngineerRoutingSelection } from "@/lib/engineer/routing-store";
+import { parseComputeTargetConflict } from "@/lib/compute-target-conflict";
 import { dashboardKeys } from "./use-dashboard-stats";
 import { invalidateEntityLinkQueries } from "./use-entity-links";
 import { executionLogKeys } from "./use-execution-log";
@@ -371,6 +373,11 @@ export function useCreateAndGenerateArtifact() {
   const useLoopsRef = useRef(useLoops);
   useLoopsRef.current = useLoops;
 
+  const [multiTargetState, setMultiTargetState] = useState<{
+    availableTargets: ComputeTargetConflictBody["availableTargets"];
+    pendingArtifactId: string;
+  } | null>(null);
+
   const mutation = useMutation({
     mutationFn: async (input: CreateArtifactInput) => {
       const artifact = await apiClient.post<Artifact>("/artifacts", input);
@@ -378,10 +385,8 @@ export function useCreateAndGenerateArtifact() {
       // Then trigger generation via Loops or GitHub Actions
       try {
         if (useLoopsRef.current) {
-          const routing = getEngineerRoutingSelection();
           await apiClient.post(`/artifacts/${artifact.id}/run-loop`, {
             command: "plan",
-            computeTargetId: routing.computeTargetId,
           });
           return artifact;
         }
@@ -390,8 +395,22 @@ export function useCreateAndGenerateArtifact() {
           {}
         );
         return regenerated;
-      } catch {
-        // Return original artifact if generation fails - user can still navigate to it
+      } catch (error) {
+        // Toast the error here instead of relying on the global QueryClient onError handler.
+        // This catch is inside mutationFn (not onError), so TanStack Query sees onSuccess —
+        // intentionally, so the caller can navigate to the created artifact regardless of
+        // whether generation succeeded.
+        const conflict = parseComputeTargetConflict(error);
+        if (conflict !== null) {
+          setMultiTargetState({
+            availableTargets: conflict.availableTargets,
+            pendingArtifactId: artifact.id,
+          });
+          return artifact;
+        }
+        toast.error(
+          error instanceof Error ? error.message : "Failed to start generation"
+        );
         return artifact;
       }
     },
@@ -403,7 +422,33 @@ export function useCreateAndGenerateArtifact() {
     },
   });
 
-  return { ...mutation, isComputeModeLoading };
+  const selectTarget = useCallback(
+    async (targetId: string) => {
+      if (!multiTargetState) {
+        return;
+      }
+      const { pendingArtifactId } = multiTargetState;
+      setMultiTargetState(null);
+      try {
+        await apiClient.post(`/artifacts/${pendingArtifactId}/run-loop`, {
+          command: "plan",
+          computeTargetId: targetId,
+        });
+        queryClient.invalidateQueries({
+          queryKey: artifactKeys.generationStatus(pendingArtifactId),
+        });
+      } catch (retryError) {
+        toast.error(
+          retryError instanceof Error
+            ? retryError.message
+            : "Failed to start plan generation"
+        );
+      }
+    },
+    [multiTargetState, apiClient, queryClient]
+  );
+
+  return { ...mutation, isComputeModeLoading, multiTargetState, selectTarget };
 }
 
 /**

@@ -5,6 +5,7 @@ import {
   type ArtifactDetail,
   ArtifactType,
 } from "@repo/api/src/types/artifact";
+import type { ComputeTargetConflictBody } from "@repo/api/src/types/compute-target";
 import { EntityType } from "@repo/api/src/types/entity-link";
 import { InlinePresence, OptionalArtifactRoom } from "@repo/collaboration";
 import { Button } from "@repo/design-system/components/ui/button";
@@ -21,6 +22,7 @@ import { MetadataPanel } from "@/components/artifact-editor/metadata-panel";
 import { SaveIndicator } from "@/components/artifact-editor/save-indicator";
 import { StatusMetadataSection } from "@/components/artifact-editor/status-metadata-section";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
+import { LoopDispatchTargetSelector } from "@/components/engineer/LoopDispatchTargetSelector";
 import { GenerationStatusBanner } from "@/components/generation-status-banner";
 import { MoveArtifactDialog } from "@/components/move-artifact-dialog";
 import { RenameDialog } from "@/components/rename-dialog";
@@ -35,7 +37,7 @@ import {
 } from "@/hooks/queries/use-artifacts";
 import { useRunLoop } from "@/hooks/queries/use-loops";
 import { useOrganizationUsers } from "@/hooks/queries/use-users";
-import { useEngineerRoutingSelection } from "@/lib/engineer/routing-store";
+import { parseComputeTargetConflict } from "@/lib/compute-target-conflict";
 import { transformApiUserToSelectUser } from "@/lib/user-utils";
 import type { PlanSource } from "../../implementation-plans/components/plan-source";
 import { PRDEditorHeader } from "./components/prd-editor-header";
@@ -113,15 +115,14 @@ export function PRDEditor({
     openGeneratePlanModal,
   } = uiState;
 
+  const [decomposeTargetState, setDecomposeTargetState] = useState<{
+    availableTargets: ComputeTargetConflictBody["availableTargets"];
+  } | null>(null);
+
   // PRD generation mutations
   const inlineGenerate = useInlineGeneratePRD();
   const deepGenerate = useRegenerateArtifact();
   const runLoop = useRunLoop();
-  const routing = useEngineerRoutingSelection();
-  // Pass computeTargetId for both CloudRelay and LocalElectron modes.
-  // Loop dispatch always goes through the API → desktop gateway, which needs
-  // the compute target ID regardless of how the engineer dashboard proxies.
-  const computeTargetId = routing.computeTargetId;
 
   const handleQuickGenerate = () => {
     inlineGenerate.mutate(
@@ -151,15 +152,26 @@ export function PRDEditor({
     );
   };
 
-  const handleDecomposeFeatures = () => {
-    runLoop.mutate(
-      { artifactId: prd.id, command: "decompose", computeTargetId },
-      {
-        onSuccess: () => {
-          toast.success("Feature decomposition started");
-        },
+  const handleDecomposeFeatures = async () => {
+    try {
+      await runLoop.mutateAsync(
+        { artifactId: prd.id, command: "decompose" },
+        { onSuccess: () => toast.success("Feature decomposition started") }
+      );
+    } catch (error) {
+      const conflict = parseComputeTargetConflict(error);
+      if (conflict) {
+        setDecomposeTargetState({
+          availableTargets: conflict.availableTargets,
+        });
+      } else {
+        toast.error(
+          error instanceof Error
+            ? error.message
+            : "Failed to decompose features"
+        );
       }
-    );
+    }
   };
 
   // Auto-reveal comments when threads reappear after being fully resolved
@@ -354,6 +366,21 @@ export function PRDEditor({
           <ArtifactChatPanel artifactId={prd.id} artifactType="prd" />
         )}
       </div>
+
+      {/* Compute target selector for decompose command */}
+      {decomposeTargetState && (
+        <LoopDispatchTargetSelector
+          availableTargets={decomposeTargetState.availableTargets}
+          onSelect={(targetId) => {
+            setDecomposeTargetState(null);
+            runLoop.mutate({
+              artifactId: prd.id,
+              command: "decompose",
+              computeTargetId: targetId,
+            });
+          }}
+        />
+      )}
 
       {/* Rename Dialog */}
       <RenameDialog

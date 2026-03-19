@@ -1,10 +1,12 @@
 import { success } from "@repo/api/src/types/common";
+import type { ComputeTargetConflictBody } from "@repo/api/src/types/compute-target";
 import type { CreateLoopResponse } from "@repo/api/src/types/loop";
 import { log } from "@repo/observability/log";
 import { waitUntil } from "@vercel/functions";
 import { NextResponse } from "next/server";
 import { loopsService } from "@/app/loops/service";
 import { withAuth } from "@/lib/auth/with-auth";
+import { resolveComputeTarget } from "@/lib/loops/compute-target-resolver";
 import { getCommandHandler } from "@/lib/loops/loop-commands";
 import { launchLoop } from "@/lib/loops/loop-orchestrator";
 import { getDefaultPrompt } from "@/lib/loops/prompts";
@@ -16,11 +18,12 @@ import {
   parseBody,
 } from "@/lib/route-utils";
 import { artifactsService } from "../../service";
-import { validateComputeTarget } from "./compute-target-validation";
 import { COMMAND_MAP, resolveLoopContext } from "./run-loop-helpers";
 import { runLoopSchema } from "./validators";
 
-export const POST = withAuth<CreateLoopResponse, "/artifacts/[id]/run-loop">(
+type RunLoopResponse = CreateLoopResponse | ComputeTargetConflictBody;
+
+export const POST = withAuth<RunLoopResponse, "/artifacts/[id]/run-loop">(
   async ({ user }, request, params) => {
     try {
       const { id: artifactId } = await params;
@@ -80,17 +83,49 @@ export const POST = withAuth<CreateLoopResponse, "/artifacts/[id]/run-loop">(
         );
       }
 
-      if (body.computeTargetId) {
-        const ctResult = await validateComputeTarget(
-          body.computeTargetId,
-          user.organizationId
-        );
-        if (!ctResult.valid) {
-          if (ctResult.reason === "not_found") {
-            return notFoundResponse("Compute target");
-          }
+      const ctResult = await resolveComputeTarget(
+        user.organizationId,
+        user.id,
+        body.computeTargetId
+      );
+
+      let resolvedComputeTargetId: string | undefined;
+      switch (ctResult.reason) {
+        case "resolved":
+          resolvedComputeTargetId = ctResult.target.id;
+          break;
+        case "hint_not_found":
+          return notFoundResponse("Compute target");
+        case "hint_offline":
           return badRequestResponse(
             "Compute target is offline. Ensure the desktop app is running."
+          );
+        case "no_targets":
+          return badRequestResponse(
+            "No compute targets found. Ensure the desktop app is running."
+          );
+        case "no_online_targets":
+          return badRequestResponse(
+            "No compute targets are online. Ensure the desktop app is running."
+          );
+        case "multiple_targets": {
+          const conflictBody: ComputeTargetConflictBody = {
+            error: "multiple_targets",
+            message:
+              "Multiple compute targets are online. Specify a compute target ID.",
+            availableTargets: ctResult.targets.map((t) => ({
+              id: t.id,
+              machineName: t.machineName,
+              status: t.isOnline ? "online" : "offline",
+            })),
+          };
+          return NextResponse.json(success(conflictBody), { status: 409 });
+        }
+        default: {
+          const _exhaustive: never = ctResult;
+          return errorResponse(
+            "Unhandled compute target resolution result",
+            _exhaustive
           );
         }
       }
@@ -106,7 +141,7 @@ export const POST = withAuth<CreateLoopResponse, "/artifacts/[id]/run-loop">(
           artifactId,
           workstreamId: workstream?.id,
           parentLoopId,
-          computeTargetId: body.computeTargetId,
+          computeTargetId: resolvedComputeTargetId,
           prompt,
           repo: targetRepo
             ? { fullName: targetRepo, branch: targetBranch }
