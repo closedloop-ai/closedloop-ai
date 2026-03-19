@@ -2002,10 +2002,10 @@ function buildClaudeDirectArgs(workDir, symphonyWD) {
       // and uploadState() collects prd-judges.json from that same directory.
       // Use symphonyWD so the skill reads prd.md and writes prd-judges.json
       // to the correct location.
-      const runDir = symphonyWD;
+      const runDir = symphonyWD ?? workDir;
 
       // Build skill invocation with runDir containing PRD artifact
-      let skillCall = `Activate judges:run-judges skill --artifact-type prd.\nCLOSEDLOOP_WORKDIR=${runDir} (contains prd.md).\n`;
+      let skillCall = `Activate judges:run-judges skill --artifact-type prd --workdir ${runDir}.\n`;
 
       // Add optional codebase path if target repo exists
       if (config.targetRepo) {

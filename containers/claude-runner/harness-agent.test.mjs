@@ -104,6 +104,10 @@ test("buildClaudeDirectArgs with EVALUATE_PRD invokes judges:run-judges with art
     prompt.includes("--artifact-type prd"),
     `prompt must contain --artifact-type prd; got: ${prompt}`
   );
+  assert.ok(
+    prompt.includes(`--workdir ${workDir}`),
+    `prompt must contain --workdir <workDir>; got: ${prompt}`
+  );
   // --artifact-type prd is embedded in the prompt string, not a separate argv entry
   assert.equal(
     args.indexOf("--artifact-type"),
