@@ -10,9 +10,6 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
-  DropdownMenuSub,
-  DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@repo/design-system/components/ui/dropdown-menu";
 import {
@@ -25,7 +22,6 @@ import {
   PanelRightIcon,
   PencilIcon,
   RotateCcwIcon,
-  SparklesIcon,
   TrashIcon,
 } from "lucide-react";
 import {
@@ -42,8 +38,7 @@ type PRDEditorHeaderProps = {
   onDecomposeFeatures: () => void;
   onEvaluatePrd: () => void;
   onGeneratePlan: () => void;
-  onQuickGenerate: () => void;
-  onDeepGenerate: () => void;
+  onGeneratePrd: () => void;
   isGenerating?: boolean;
   isEvaluating?: boolean;
   onRename: () => void;
@@ -63,8 +58,7 @@ export function PRDEditorHeader({
   onDecomposeFeatures,
   onEvaluatePrd,
   onGeneratePlan,
-  onQuickGenerate,
-  onDeepGenerate,
+  onGeneratePrd,
   isGenerating = false,
   isEvaluating = false,
   onRename,
@@ -143,27 +137,10 @@ export function PRDEditorHeader({
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
-          {isGenerating ? (
-            <DropdownMenuItem disabled>
-              <SparklesIcon className="mr-2 h-4 w-4" />
-              Generating PRD...
-            </DropdownMenuItem>
-          ) : (
-            <DropdownMenuSub>
-              <DropdownMenuSubTrigger>
-                <PrdIcon className="mr-2 h-4 w-4" />
-                Generate PRD
-              </DropdownMenuSubTrigger>
-              <DropdownMenuSubContent>
-                <DropdownMenuItem onClick={onQuickGenerate}>
-                  Quick PRD
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={onDeepGenerate}>
-                  Deep PRD
-                </DropdownMenuItem>
-              </DropdownMenuSubContent>
-            </DropdownMenuSub>
-          )}
+          <DropdownMenuItem disabled={isGenerating} onClick={onGeneratePrd}>
+            <PrdIcon className="mr-2 h-4 w-4" />
+            {isGenerating ? "Generating PRD..." : "Generate PRD"}
+          </DropdownMenuItem>
           <DropdownMenuItem onClick={onDecomposeFeatures}>
             <BoxIcon className="mr-2 h-4 w-4" />
             Decompose into Features

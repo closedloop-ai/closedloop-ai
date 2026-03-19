@@ -12,6 +12,7 @@ export const COMMAND_MAP = {
   request_changes: "REQUEST_CHANGES",
   decompose: "DECOMPOSE",
   evaluate_prd: "EVALUATE_PRD",
+  generate_prd: "GENERATE_PRD",
 } as const;
 
 /**

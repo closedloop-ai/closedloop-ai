@@ -6,8 +6,9 @@
  * artifacts to include.
  */
 
+import { ArtifactType } from "@repo/api/src/types/artifact";
 import { EntityType } from "@repo/api/src/types/entity-link";
-import type { LoopCommand } from "@repo/api/src/types/loop";
+import { LoopCommand } from "@repo/api/src/types/loop";
 import { log } from "@repo/observability/log";
 import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
 import { artifactsService } from "@/app/artifacts/service";
@@ -26,9 +27,11 @@ import {
 
 export type LoopForContextPack = {
   id: string;
+  userId: string;
   command: LoopCommand;
   prompt: string | null;
   artifactId: string | null;
+  artifactVersion: number | null;
   parentLoopId: string | null;
   repo: { fullName: string; branch: string } | null;
   contextRefs: Array<{
@@ -69,14 +72,25 @@ async function fetchPrimaryArtifact(
     return [];
   }
 
-  const latestVersion = await artifactVersionService.getLatest(artifact.id);
+  // Use the pinned version when the loop was created with a specific artifact
+  // version (e.g. EVALUATE_PRD). This closes the TOCTOU window: if the PRD
+  // advances between loop creation and context-pack build, we still evaluate
+  // the version the loop was created for, so the stale-write guard in the
+  // ingest handler can accurately compare versions.
+  const artifactVersion =
+    loop.artifactVersion != null
+      ? await artifactVersionService.getByVersion(
+          artifact.id,
+          loop.artifactVersion
+        )
+      : await artifactVersionService.getLatest(artifact.id);
 
   return [
     {
       id: artifact.id,
       type: String(artifact.type),
       title: artifact.title,
-      content: latestVersion?.content ?? "",
+      content: artifactVersion?.content ?? "",
     },
   ];
 }
@@ -193,6 +207,49 @@ async function fetchParentLoopSummary(
 }
 
 /**
+ * Fetch the org's PRD template for GENERATE_PRD commands.
+ * Ensures the template exists (lazy-seeds if missing) and returns it as a
+ * context pack artifact so the agent can use it as a structural blueprint.
+ */
+async function fetchTemplateForCommand(
+  loop: LoopForContextPack,
+  organizationId: string
+): Promise<ContextPack["artifacts"]> {
+  if (loop.command !== LoopCommand.GeneratePrd) {
+    return [];
+  }
+
+  let template = await artifactsService.findOrgTemplate(
+    organizationId,
+    ArtifactType.Prd
+  );
+  if (!template) {
+    await artifactsService.ensureDefaultTemplates(organizationId, loop.userId);
+    template = await artifactsService.findOrgTemplate(
+      organizationId,
+      ArtifactType.Prd
+    );
+  }
+  if (!template) {
+    log.warn("[loop-context-pack] No PRD template found for org", {
+      loopId: loop.id,
+      organizationId,
+    });
+    return [];
+  }
+
+  const version = await artifactVersionService.getLatest(template.id);
+  return [
+    {
+      id: template.id,
+      type: ArtifactType.Template,
+      title: template.title,
+      content: version?.content ?? "",
+    },
+  ];
+}
+
+/**
  * Truncate content to a reasonable summary length.
  * Used when contextRefs specify include: "summary".
  */
@@ -217,15 +274,24 @@ export async function buildContextPackInMemory(
   secrets?: { anthropicApiKey?: string; githubToken?: string },
   committer?: { name: string; email: string }
 ): Promise<ContextPack> {
-  const [primaryArtifacts, refArtifacts, priorLoopSummaries] =
-    await Promise.all([
-      fetchPrimaryArtifact(loop, organizationId),
-      fetchContextRefArtifacts(loop, organizationId),
-      fetchParentLoopSummary(loop, organizationId),
-    ]);
+  const [
+    primaryArtifacts,
+    refArtifacts,
+    templateArtifacts,
+    priorLoopSummaries,
+  ] = await Promise.all([
+    fetchPrimaryArtifact(loop, organizationId),
+    fetchContextRefArtifacts(loop, organizationId),
+    fetchTemplateForCommand(loop, organizationId),
+    fetchParentLoopSummary(loop, organizationId),
+  ]);
 
-  // Context ref artifacts first (Issue/PRD), then primary artifact
-  const artifacts = [...refArtifacts, ...primaryArtifacts];
+  // Template first (structural blueprint), then context refs (Issue/PRD), then primary artifact
+  const artifacts = [
+    ...templateArtifacts,
+    ...refArtifacts,
+    ...primaryArtifacts,
+  ];
 
   return {
     command: loop.command,

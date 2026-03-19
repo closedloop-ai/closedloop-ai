@@ -223,6 +223,7 @@ enum LoopCommand {
   REQUEST_CHANGES
   DECOMPOSE
   EVALUATE_PRD
+  GENERATE_PRD
 }
 
 enum CustomFieldType {

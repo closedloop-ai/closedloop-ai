@@ -29,10 +29,6 @@ import { useArtifactContent } from "@/hooks/artifact-editing/use-artifact-conten
 import { useArtifactMetadata } from "@/hooks/artifact-editing/use-artifact-metadata";
 import { useArtifactUIState } from "@/hooks/artifact-editing/use-artifact-ui-state";
 import { useEditorSession } from "@/hooks/artifact-editing/use-editor-session";
-import {
-  useInlineGeneratePRD,
-  useRegenerateArtifact,
-} from "@/hooks/queries/use-artifacts";
 import { usePrdJudgesFeedback } from "@/hooks/queries/use-judges";
 import { useRunLoop } from "@/hooks/queries/use-loops";
 import { useOrganizationUsers } from "@/hooks/queries/use-users";
@@ -114,9 +110,7 @@ export function PRDEditor({
     openGeneratePlanModal,
   } = uiState;
 
-  // PRD generation mutations
-  const inlineGenerate = useInlineGeneratePRD();
-  const deepGenerate = useRegenerateArtifact();
+  // Loop-based actions (PRD generation, decompose)
   const runLoop = useRunLoop();
   const { data: judgesReport } = usePrdJudgesFeedback(prd.id);
   const routing = useEngineerRoutingSelection();
@@ -125,29 +119,12 @@ export function PRDEditor({
   // the compute target ID regardless of how the engineer dashboard proxies.
   const computeTargetId = routing.computeTargetId;
 
-  const handleQuickGenerate = () => {
-    inlineGenerate.mutate(
-      { artifactId: prd.id },
+  const handleGeneratePrd = () => {
+    runLoop.mutate(
+      { artifactId: prd.id, command: "generate_prd", computeTargetId },
       {
         onSuccess: () => {
-          toast.success("PRD generated successfully");
-        },
-        onError: (error) => {
-          toast.error(`PRD generation failed: ${error.message}`);
-        },
-      }
-    );
-  };
-
-  const handleDeepGenerate = () => {
-    deepGenerate.mutate(
-      { id: prd.id },
-      {
-        onSuccess: () => {
-          toast.success("PRD generation started — check the status banner");
-        },
-        onError: (error) => {
-          toast.error(`Failed to start PRD generation: ${error.message}`);
+          toast.success("PRD generation started");
         },
       }
     );
@@ -220,16 +197,15 @@ export function PRDEditor({
       <PRDEditorHeader
         canShowPanel={chatFlag?.enabled}
         isEvaluating={pendingCommand === "evaluate_prd"}
-        isGenerating={inlineGenerate.isPending || deepGenerate.isPending}
+        isGenerating={runLoop.isPending}
         isPending={isPending}
         onDecomposeFeatures={handleDecomposeFeatures}
-        onDeepGenerate={handleDeepGenerate}
         onDelete={uiState.openDeleteDialog}
         onEvaluatePrd={handleEvaluatePrd}
         onExport={actions.handleDownload}
         onGeneratePlan={openGeneratePlanModal}
+        onGeneratePrd={handleGeneratePrd}
         onMove={() => setShowMoveDialog(true)}
-        onQuickGenerate={handleQuickGenerate}
         onRename={openRenameDialog}
         onRestoreVersion={session.handleRestoreVersion}
         onToggleMetadataPanel={uiState.toggleMetadataPanel}

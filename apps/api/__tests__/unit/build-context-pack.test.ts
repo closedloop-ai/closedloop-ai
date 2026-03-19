@@ -1,4 +1,4 @@
-import { vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock all external dependencies before imports
 vi.mock("@repo/observability/log", () => ({
@@ -51,7 +51,6 @@ vi.mock("@/lib/loops/loop-event-bus", () => ({
 
 import { ArtifactType } from "@repo/api/src/types/artifact";
 import { EntityType } from "@repo/api/src/types/entity-link";
-import { beforeEach, describe, expect, it } from "vitest";
 import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
 import { artifactsService } from "@/app/artifacts/service";
 import { issuesService } from "@/app/issues/service";
@@ -88,9 +87,11 @@ describe("buildContextPack", () => {
     await buildContextPack(
       {
         id: "loop-1",
+        userId: "user-1",
         command: "PLAN",
         prompt: null,
         artifactId: "artifact-1",
+        artifactVersion: null,
         parentLoopId: null,
         repo: { fullName: "org/repo", branch: "main" },
         contextRefs: [
@@ -123,9 +124,11 @@ describe("buildContextPack", () => {
     await buildContextPack(
       {
         id: "loop-1",
+        userId: "user-1",
         command: "PLAN",
         prompt: null,
         artifactId: null,
+        artifactVersion: null,
         parentLoopId: null,
         repo: { fullName: "org/repo", branch: "main" },
         contextRefs: [],
@@ -145,9 +148,11 @@ describe("buildContextPack", () => {
     await buildContextPack(
       {
         id: "loop-1",
+        userId: "user-1",
         command: "PLAN",
         prompt: null,
         artifactId: null,
+        artifactVersion: null,
         parentLoopId: null,
         repo: { fullName: "org/repo", branch: "main" },
         contextRefs: null,
@@ -165,9 +170,11 @@ describe("buildContextPack", () => {
     await buildContextPack(
       {
         id: "loop-1",
+        userId: "user-1",
         command: "PLAN",
         prompt: null,
         artifactId: null,
+        artifactVersion: null,
         parentLoopId: null,
         repo: { fullName: "org/repo", branch: "main" },
         contextRefs: [
@@ -208,9 +215,11 @@ describe("buildContextPack", () => {
     await buildContextPack(
       {
         id: "loop-1",
+        userId: "user-1",
         command: "PLAN",
         prompt: null,
         artifactId: "artifact-1",
+        artifactVersion: null,
         parentLoopId: null,
         repo: { fullName: "org/repo", branch: "main" },
         contextRefs: [
@@ -251,9 +260,11 @@ describe("buildContextPack", () => {
     await buildContextPack(
       {
         id: "loop-1",
+        userId: "user-1",
         command: "PLAN",
         prompt: null,
         artifactId: "artifact-1",
+        artifactVersion: null,
         parentLoopId: null,
         repo: { fullName: "org/repo", branch: "main" },
         contextRefs: [{ sourceId: "prd-1", include: "full" as const }],
