@@ -8,6 +8,7 @@
  * parentLoopId lookup gating on handler.requiresParent.
  */
 
+import { ArtifactType } from "@repo/api/src/types/artifact";
 import { vi } from "vitest";
 
 // --- Mocks (must come before imports) ---
@@ -82,7 +83,7 @@ function buildSource(
 ) {
   return {
     id: "source-1",
-    type: "PRD",
+    type: ArtifactType.Prd,
     targetRepo: undefined as string | undefined,
     targetBranch: undefined as string | undefined,
     ...overrides,
@@ -361,7 +362,7 @@ describe("resolveLoopContext — contextRefs", () => {
     expect(result.contextRefs).toEqual([
       {
         sourceId: "source-1",
-        sourceType: "PRD",
+        sourceType: ArtifactType.Prd,
         include: "full",
       },
     ]);
