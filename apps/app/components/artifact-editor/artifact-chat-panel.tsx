@@ -1,6 +1,8 @@
 "use client";
 
+import { GitPullRequestArrow } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ConversationMessage } from "@/components/artifact-editor/conversation-message";
 import {
   type ConversationMessageItem,
   ConversationTranscript,
@@ -38,30 +40,55 @@ function setStoredWidth(w: number) {
   }
 }
 
+const MOCK_ARTIFACT_LABELS: Record<string, string> = {
+  branch: "this branch",
+  issue: "this issue",
+  plan: "this plan",
+  prd: "this PRD",
+};
+
 function getMockWelcomeMessage(artifactType: string): string {
-  let label = "this";
-  if (artifactType === "issue") {
-    label = "this issue";
-  } else if (artifactType === "prd") {
-    label = "this PRD";
-  } else if (artifactType === "plan") {
-    label = "this plan";
-  }
+  const label = MOCK_ARTIFACT_LABELS[artifactType] ?? "this";
   return `Ask me anything about ${label}. Chat isn’t connected yet—your messages will appear here.`;
 }
 
 type ArtifactChatPanelProps = {
   artifactType: string;
   artifactId: string;
+  /**
+   * When set (e.g. PR comment selected on branch view), shows a context card after the
+   * welcome message (design: secondary card, PR label, summary, muted body block).
+   */
+  contextSelection?: ArtifactChatContextSelection;
 };
 
-/**
- * Mocked chat panel for the right gutter. Uses conversation primitives and a
- * typeable prompt input; not connected to an LLM yet.
- */
+function PrCommentContextCard({
+  context,
+}: Readonly<{ context: ArtifactChatPrCommentContext }>) {
+  return (
+    <div className="flex flex-col gap-2 rounded-lg bg-secondary p-3">
+      <div className="flex items-center gap-1.5 text-muted-foreground">
+        <GitPullRequestArrow aria-hidden className="h-3.5 w-3.5 shrink-0" />
+        <span className="font-semibold text-[11px]">PR Comment Context</span>
+      </div>
+      {context.filePath ? (
+        <div className="rounded-md bg-muted px-2 py-2 font-mono text-[11px] text-foreground leading-snug">
+          {context.filePath}
+          {context.line != null ? `:${context.line}` : ""}
+        </div>
+      ) : null}
+      <div className="rounded-md bg-muted p-2 text-foreground text-xs leading-relaxed">
+        {context.body}
+      </div>
+    </div>
+  );
+}
+
+/** Mock chat gutter: transcript + prompt; optional PR comment context card. */
 export function ArtifactChatPanel({
   artifactId: _artifactId,
   artifactType,
+  contextSelection = null,
 }: Readonly<ArtifactChatPanelProps>) {
   const [width, setWidth] = useState(DEFAULT_WIDTH);
   const [inputValue, setInputValue] = useState("");
@@ -79,11 +106,11 @@ export function ArtifactChatPanel({
     setWidth(getStoredWidth());
   }, []);
 
-  // Scroll to bottom when new messages are added
-  // biome-ignore lint/correctness/useExhaustiveDependencies: messages is intentional
+  // Scroll to bottom when messages or injected PR context changes
+  // biome-ignore lint/correctness/useExhaustiveDependencies: messages + context id intentional
   useEffect(() => {
     transcriptEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  }, [messages, contextSelection?.id]);
 
   const handleSubmit = useCallback(() => {
     const trimmed = inputValue.trim();
@@ -150,8 +177,20 @@ export function ArtifactChatPanel({
         type="button"
       />
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-        <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-4">
-          <ConversationTranscript className="min-h-0" messages={messages} />
+        <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 py-3">
+          <ConversationMessage
+            content={messages[0].content}
+            role={messages[0].role}
+          />
+          {contextSelection ? (
+            <PrCommentContextCard context={contextSelection} />
+          ) : null}
+          {messages.length > 1 ? (
+            <ConversationTranscript
+              className="min-h-0"
+              messages={messages.slice(1)}
+            />
+          ) : null}
           <div ref={transcriptEndRef} />
         </div>
         <div className="shrink-0 border-t p-3">
@@ -166,3 +205,13 @@ export function ArtifactChatPanel({
     </div>
   );
 }
+
+/** PR comment context card payload for the branch-view chat gutter (stub). */
+export type ArtifactChatPrCommentContext = {
+  id: string;
+  filePath?: string;
+  line?: number;
+  body: string;
+};
+
+export type ArtifactChatContextSelection = ArtifactChatPrCommentContext | null;
