@@ -54,7 +54,7 @@ function log(level, ...args) {
 // ---------------------------------------------------------------------------
 const config = {
   loopId: process.env.LOOP_ID,
-  command: process.env.COMMAND?.toUpperCase(), // "PLAN" | "EXECUTE" | "CHAT" | "EXPLORE" | "REQUEST_CHANGES"
+  command: process.env.COMMAND?.toUpperCase(), // "PLAN" | "EXECUTE" | "CHAT" | "EXPLORE" | "REQUEST_CHANGES" | "GENERATE_PRD"
   anthropicApiKey: null, // Injected from S3 context pack (not env vars)
   githubToken: null, // Injected from S3 context pack (not env vars)
   committerName: null, // Injected from S3 context pack (triggering user's name)
@@ -157,7 +157,7 @@ function validateConfig() {
 
   // targetRepo is only required for commands that operate on a repository.
   // chat/explore can run prompt-only without a repo.
-  const repoCommands = new Set(["PLAN", "EXECUTE", "REQUEST_CHANGES"]);
+  const repoCommands = new Set(["PLAN", "EXECUTE", "REQUEST_CHANGES", "GENERATE_PRD"]);
   if (repoCommands.has(config.command)) {
     requiredEnv.push("targetRepo");
   }
@@ -205,7 +205,7 @@ function validateSecrets() {
   const requiredSecrets = ["anthropicApiKey"];
 
   // Repo commands need a GitHub token for clone/push operations.
-  const repoCommands = new Set(["PLAN", "EXECUTE", "REQUEST_CHANGES"]);
+  const repoCommands = new Set(["PLAN", "EXECUTE", "REQUEST_CHANGES", "GENERATE_PRD"]);
   if (repoCommands.has(config.command)) {
     requiredSecrets.push("githubToken");
   }
@@ -1808,7 +1808,7 @@ async function uploadState(workDir, output, runDir) {
     "perf.jsonl",
     "state.json",
   ];
-  const NON_PLUGIN_ARTIFACT_FILE_NAMES = ["features.json"];
+  const NON_PLUGIN_ARTIFACT_FILE_NAMES = ["features.json", "prd.md"];
   const artifactFiles = CLAUDE_PLUGIN_ARTIFACT_FILE_NAMES.map((fileName) => ({
     name: fileName,
     path: path.join(pluginArtifactDir, fileName),
@@ -1979,7 +1979,8 @@ function buildClaudeDirectArgs(workDir, symphonyWD) {
     }
     case "CHAT":
     case "EXPLORE":
-    case "DECOMPOSE": {
+    case "DECOMPOSE":
+    case "GENERATE_PRD": {
       const contextDir = path.join(workDir, ".claude", "context");
       const promptFile = path.join(contextDir, "prompt.md");
       let prompt = "";
