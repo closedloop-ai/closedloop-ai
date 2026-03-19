@@ -15,10 +15,12 @@ export default function JudgeDetailPage() {
   const searchParams = useSearchParams();
   const promptName = decodeURIComponent(params.metricName);
   const reportTypeParam = searchParams.get("reportType");
-  const reportType =
-    reportTypeParam === EvaluationReportType.Code
-      ? EvaluationReportType.Code
-      : EvaluationReportType.Plan;
+  let reportType: EvaluationReportType = EvaluationReportType.Plan;
+  if (reportTypeParam === EvaluationReportType.Code) {
+    reportType = EvaluationReportType.Code;
+  } else if (reportTypeParam === EvaluationReportType.Prd) {
+    reportType = EvaluationReportType.Prd;
+  }
   const { data, isLoading, isError, error } = useJudgeDetail(
     promptName,
     reportType
