@@ -75,5 +75,17 @@ async function runAutoEvaluatePrd(
       artifactId,
       error: error instanceof Error ? error.message : String(error),
     });
+    loopsService.cancel(loopId, organizationId).catch((cancelError) => {
+      log.error(
+        "[auto-evaluate-prd] Failed to cancel orphaned loop after launch failure",
+        {
+          loopId,
+          error:
+            cancelError instanceof Error
+              ? cancelError.message
+              : String(cancelError),
+        }
+      );
+    });
   });
 }
