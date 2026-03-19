@@ -43,6 +43,8 @@ export async function POST(request: NextRequest) {
     contextRepoPaths,
     baseBranch,
     parentTicketId,
+    loopId,
+    artifactId,
   } = body as Partial<PersistedSession>;
 
   if (!(ticketId && repoPath && worktreePath)) {
@@ -60,6 +62,8 @@ export async function POST(request: NextRequest) {
     contextRepoPaths,
     baseBranch,
     parentTicketId,
+    loopId,
+    artifactId,
   });
 
   return NextResponse.json({ success: true });

@@ -9,7 +9,6 @@ import {
 import { useInboxNotifications } from "@repo/collaboration/hooks";
 import { Separator } from "@repo/design-system/components/ui/separator";
 import { InboxIcon } from "lucide-react";
-import { OnboardingChecklist } from "../components/onboarding-checklist";
 
 type InboxEmptyStateProps = {
   title: string;
@@ -70,7 +69,7 @@ export default function InboxPage() {
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-auto p-6">
       <div>
-        <h1 className="font-semibold text-2xl tracking-tight">Inbox</h1>
+        <h1 className="font-semibold text-2xl tracking-tight">Notifications</h1>
         <p className="text-muted-foreground">
           View and manage your notifications.
         </p>
@@ -78,14 +77,12 @@ export default function InboxPage() {
 
       <Separator />
 
-      <OnboardingChecklist />
-
       {isAvailable ? (
         <InboxWithSuspense />
       ) : (
         <InboxEmptyState
           description="Notifications are currently unavailable. Please try again later."
-          title="Inbox unavailable"
+          title="Notifications unavailable"
         />
       )}
     </div>

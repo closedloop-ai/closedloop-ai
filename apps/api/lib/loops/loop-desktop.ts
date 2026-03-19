@@ -16,6 +16,30 @@ import { relayEventBus } from "@/lib/relay-event-bus";
 import type { ContextPack } from "./loop-state";
 
 /**
+ * Throws if the relay reported delivered: false (target offline/disconnected).
+ * Only called when throwOnFailure is true and the HTTP response was 2xx.
+ */
+async function assertDelivered(
+  response: Response,
+  context: { label: string; loopId: string; commandId: string }
+): Promise<void> {
+  const result = (await response.json().catch(() => null)) as {
+    delivered?: boolean;
+    reason?: string;
+  } | null;
+  if (result && result.delivered === false) {
+    log.error(`[loop-desktop] ${context.label} relay dispatch not delivered`, {
+      loopId: context.loopId,
+      commandId: context.commandId,
+      reason: result.reason,
+    });
+    throw new Error(
+      `Relay dispatch not delivered: ${result.reason ?? "target offline"}`
+    );
+  }
+}
+
+/**
  * Dispatch a relay operation to a desktop compute target.
  * Shared by launch and kill paths.
  */
@@ -71,6 +95,11 @@ async function dispatchRelayOperation(
             `Relay dispatch failed with status ${response.status}`
           );
         }
+      } else if (throwOnFailure) {
+        // Check the delivered flag -- a 200 with delivered: false means the
+        // target was offline or disconnected. Fail loudly so the caller
+        // does not report success for a loop that never reached the desktop.
+        await assertDelivered(response, context);
       }
     } catch (dispatchError) {
       log.error(`[loop-desktop] ${context.label} failed to dispatch to relay`, {
@@ -99,6 +128,7 @@ type LaunchDesktopOpts = {
   parentLoopId?: string;
   parentBranchName?: string;
   parentSessionId?: string;
+  localRepoPath?: string;
 };
 
 /**
@@ -122,6 +152,7 @@ export async function launchLoopOnDesktop(
     parentLoopId,
     parentBranchName,
     parentSessionId,
+    localRepoPath,
   } = opts;
 
   const input = {
@@ -141,6 +172,7 @@ export async function launchLoopOnDesktop(
       parentLoopId: parentLoopId ?? null,
       parentBranchName: parentBranchName ?? null,
       parentSessionId: parentSessionId ?? null,
+      localRepoPath: localRepoPath ?? null,
     } as JsonValue,
   };
 

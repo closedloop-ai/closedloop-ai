@@ -2,9 +2,9 @@
 default:
     @just --list
 
-# Start the main app and API
+# Start the main app, API, and relay
 dev:
-    pnpm turbo dev --filter=app --filter=api --filter=mcp
+    RELAY_API_URL=http://localhost:3020 pnpm turbo dev --filter=app --filter=api --filter=mcp --filter=relay
 
 # Start all apps (may fail if mintlify/stripe not installed)
 dev-all:
