@@ -975,7 +975,7 @@ export const loopsService = {
   async createIfNotExists(
     organizationId: string,
     userId: string,
-    input: CreateLoopRequest & { artifactVersion: number }
+    input: CreateLoopRequest & { artifactVersion: number; artifactId: string }
   ): Promise<CreateLoopResponse | null> {
     const activeCount = await withDb((db) =>
       db.loop.count({
