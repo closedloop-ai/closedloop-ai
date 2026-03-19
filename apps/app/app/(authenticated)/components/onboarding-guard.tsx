@@ -20,17 +20,19 @@ export function OnboardingGuard({ children }: OnboardingGuardProps) {
   // TODO: Convert to server component guard for SSR — tracked for follow-up
   const { data: status, isLoading, isFetching } = useOnboardingStatus();
 
+  const shouldRedirect = status !== undefined && !status.wizardCompleted;
+
   useEffect(() => {
-    if (!(isLoading || isFetching) && status && !status.wizardCompleted) {
+    if (!(isLoading || isFetching) && shouldRedirect) {
       router.replace("/onboarding");
     }
-  }, [isLoading, isFetching, status, router]);
+  }, [isLoading, isFetching, shouldRedirect, router]);
 
   if (isLoading || isFetching) {
     return null;
   }
 
-  if (status && !status.wizardCompleted) {
+  if (shouldRedirect) {
     return null;
   }
 

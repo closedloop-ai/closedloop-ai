@@ -30,6 +30,7 @@ export type FullTicketDetails = {
   title: string;
   description: string;
   url: string;
+  issueId?: string;
   additionalContext?: string;
   contextRepoPaths?: string[];
   mentionedFiles?: { repoPath: string; filePath: string }[];
@@ -234,6 +235,7 @@ export function useEngineerIssues(): EngineerIssuesResultWithUser {
           title: ticket.title,
           description: ticket.description || "",
           url: ticket.url,
+          issueId: ticket.issueId,
         };
       }
 
@@ -245,6 +247,7 @@ export function useEngineerIssues(): EngineerIssuesResultWithUser {
         title: issue.title,
         description: issue.description || "",
         url: `/issues/${issue.slug}`,
+        issueId: issue.id,
       };
     },
     [tickets, apiClient]

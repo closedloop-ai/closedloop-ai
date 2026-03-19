@@ -10,6 +10,7 @@ export type TicketDetails = {
   title: string;
   description?: string;
   url: string;
+  issueId?: string;
   additionalContext?: string;
   contextRepoPaths?: string[];
   mentionedFiles?: { repoPath: string; filePath: string }[];
@@ -30,6 +31,10 @@ export type ActiveSession = {
   parentTicketId?: string;
   startedAt?: string;
   lastAccessedAt?: string;
+  /** Loop ID for real plan loops (only set for issue-sourced tickets using the new plan-loop flow) */
+  loopId?: string;
+  /** Artifact ID for the linked implementation plan (only set for issue-sourced tickets using the new plan-loop flow) */
+  artifactId?: string;
 };
 
 /**
@@ -52,6 +57,17 @@ export type UseSymphonyLaunchResult = {
   ) => Promise<{ launched: boolean; alreadyRunning: boolean }>;
   clearSession: (ticketId: string) => void;
   clearAllSessions: () => void;
+  /**
+   * Merge new fields into an existing session (or create a minimal session).
+   * Used by the plan-loop flow to attach loopId/artifactId before the gateway
+   * process starts, so ActiveTicketCard can use them immediately.
+   */
+  mergeSessionFields: (
+    ticketId: string,
+    fields: Partial<
+      Pick<ActiveSession, "loopId" | "artifactId" | "worktreePath" | "repoPath">
+    >
+  ) => void;
 
   // Helpers
   isActive: (ticketId: string) => boolean;
@@ -291,6 +307,37 @@ export function useSymphonyLaunch(): UseSymphonyLaunchResult {
     setError(null);
   }, [activeSessions]);
 
+  // Merge new fields into an existing session (or create a minimal one)
+  const mergeSessionFields = useCallback(
+    (
+      ticketId: string,
+      fields: Partial<
+        Pick<
+          ActiveSession,
+          "loopId" | "artifactId" | "worktreePath" | "repoPath"
+        >
+      >
+    ) => {
+      setActiveSessions((prev) => {
+        const existing = prev.find((s) => s.ticketId === ticketId);
+        if (existing) {
+          return prev.map((s) =>
+            s.ticketId === ticketId ? { ...s, ...fields } : s
+          );
+        }
+        // Create a minimal placeholder session so the session is visible immediately
+        const placeholder: ActiveSession = {
+          ticketId,
+          repoPath: fields.repoPath ?? "",
+          worktreePath: fields.worktreePath ?? "",
+          ...fields,
+        };
+        return [...prev, placeholder];
+      });
+    },
+    []
+  );
+
   // Memoize the launchingTickets set to avoid creating new references
   const stableLaunchingTickets = useMemo(
     () => launchingTickets,
@@ -303,6 +350,7 @@ export function useSymphonyLaunch(): UseSymphonyLaunchResult {
     launch,
     clearSession,
     clearAllSessions,
+    mergeSessionFields,
     isActive,
     getSession,
     error,

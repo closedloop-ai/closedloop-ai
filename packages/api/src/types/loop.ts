@@ -109,6 +109,7 @@ export type CreateLoopRequest = {
     include: "full" | "summary";
   }>;
   artifactVersion?: number;
+  metadata?: JsonObject;
 };
 
 export type CreateLoopResponse = {

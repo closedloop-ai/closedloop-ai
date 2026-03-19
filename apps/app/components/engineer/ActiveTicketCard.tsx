@@ -1,3 +1,4 @@
+import { ArtifactStatus } from "@repo/api/src/types/artifact";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   DropdownMenu,
@@ -36,6 +37,7 @@ import { TicketCard } from "@/components/engineer/TicketCard";
 import { usePlanActions } from "@/hooks/artifact-editing/use-plan-actions";
 import { useActiveTicketStatus } from "@/hooks/engineer/use-active-ticket-status";
 import { useTicketPlanArtifact } from "@/hooks/engineer/use-ticket-plan-artifact";
+import { useArtifact } from "@/hooks/queries/use-artifacts";
 import {
   symphonyChatHistoryOptions,
   symphonyLogsOptions,
@@ -87,6 +89,12 @@ type ActiveTicketCardProps = {
   codexReviewRunning?: boolean;
   /** Handler to open Codex review dialog */
   onCodexReview?: (ticketId: string) => void;
+  /**
+   * Artifact ID from the session (set immediately when a real plan loop is started).
+   * Takes precedence over the artifact ID resolved via entity links, so generation
+   * status polling is loop-backed from the moment the loop is created.
+   */
+  sessionArtifactId?: string;
 };
 
 /**
@@ -146,6 +154,7 @@ export function ActiveTicketCard({
   codexAvailable,
   codexReviewRunning,
   onCodexReview,
+  sessionArtifactId,
 }: Readonly<ActiveTicketCardProps>) {
   const [isPlanOpen, setIsPlanOpen] = useState(false);
 
@@ -212,8 +221,33 @@ export function ActiveTicketCard({
   });
 
   // Linked implementation plan artifact (for approve / execute buttons)
-  const { artifactId, isApproved, isExecuted, isStatusLoaded, hasLinkedPlan } =
-    useTicketPlanArtifact(ticket);
+  // sessionArtifactId is set immediately when a real plan loop starts, so we
+  // use it as an override before the entity link query resolves.
+  const {
+    artifactId: linkedArtifactId,
+    isApproved: linkedIsApproved,
+    isExecuted: linkedIsExecuted,
+    isStatusLoaded: linkedIsStatusLoaded,
+    hasLinkedPlan,
+  } = useTicketPlanArtifact(ticket);
+  const artifactId = sessionArtifactId ?? linkedArtifactId;
+  // When sessionArtifactId diverges from linkedArtifactId, derive status from
+  // the effective artifact so PlanActionButtons reflects the right artifact.
+  const useSessionOverride =
+    !!sessionArtifactId && sessionArtifactId !== linkedArtifactId;
+  const { data: sessionArtifact, isLoading: isSessionArtifactLoading } =
+    useArtifact(sessionArtifactId ?? "", undefined, {
+      enabled: useSessionOverride,
+    });
+  const isApproved = useSessionOverride
+    ? sessionArtifact?.status === ArtifactStatus.Approved
+    : linkedIsApproved;
+  const isExecuted = useSessionOverride
+    ? sessionArtifact?.status === ArtifactStatus.Executed
+    : linkedIsExecuted;
+  const isStatusLoaded = useSessionOverride
+    ? !!sessionArtifactId && !isSessionArtifactLoading
+    : linkedIsStatusLoaded;
 
   // Overflow menu items visibility
   const isSymphonyActive = isExecuting || isLaunchingOrAccepting;
@@ -239,7 +273,7 @@ export function ActiveTicketCard({
       {hasActiveSession && (
         <div className="absolute top-3 right-3 z-20 flex items-center gap-1.5">
           {/* Approve + Execute buttons (only mount when a plan is linked) */}
-          {hasLinkedPlan && artifactId && (
+          {(hasLinkedPlan || !!sessionArtifactId) && artifactId && (
             <PlanActionButtons
               artifactId={artifactId}
               isApproved={isApproved}

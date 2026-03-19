@@ -12,7 +12,7 @@ export default function OnboardingPage() {
   // Redirect away if wizard is already completed
   useEffect(() => {
     if (status?.wizardCompleted) {
-      router.replace("/inbox");
+      router.replace("/my-tasks");
     }
   }, [status?.wizardCompleted, router]);
 

@@ -226,6 +226,7 @@ export const loopsService = {
           repo: input.repo ?? undefined,
           contextRefs: input.contextRefs ?? undefined,
           artifactVersion: input.artifactVersion ?? null,
+          metadata: input.metadata ?? undefined,
           status: "PENDING",
         },
       })
@@ -918,6 +919,50 @@ export const loopsService = {
       })
     );
     return result.count;
+  },
+
+  /**
+   * Find an active (PENDING/CLAIMED/RUNNING) PLAN loop for an artifact.
+   * Returns the most recently created one, or null if none exist.
+   */
+  async findActivePlanLoopForArtifact(
+    artifactId: string,
+    organizationId: string,
+    computeTargetId?: string
+  ): Promise<Loop | null> {
+    // RUNNING/CLAIMED with a containerId are genuinely active (dispatched
+    // and acknowledged by the desktop). PENDING loops are only in-flight
+    // briefly (<30s) while the API dispatches them. Older PENDING loops
+    // without a containerId are stuck (relay failed) and must not block
+    // new launches.
+    // Scope to the caller's compute target so a loop running on another
+    // user's desktop doesn't block this user's Start Planning.
+    const stalenessThreshold = new Date(Date.now() - 30_000);
+    const loop = await withDb((db) =>
+      db.loop.findFirst({
+        where: {
+          artifactId,
+          organizationId,
+          command: "PLAN",
+          ...(computeTargetId ? { computeTargetId } : {}),
+          OR: [
+            { status: "RUNNING" },
+            { status: "CLAIMED", containerId: { not: null } },
+            {
+              status: { in: ["PENDING", "CLAIMED"] },
+              createdAt: { gte: stalenessThreshold },
+            },
+          ],
+        },
+        orderBy: { createdAt: "desc" },
+      })
+    );
+
+    if (!loop) {
+      return null;
+    }
+
+    return toLoop(loop);
   },
 
   /**
