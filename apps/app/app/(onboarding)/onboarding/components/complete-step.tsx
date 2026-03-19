@@ -29,7 +29,7 @@ export function CompleteStep({
       createdProjectId: createdProjectId ?? undefined,
     });
     onComplete?.();
-    router.push("/inbox");
+    router.push("/my-tasks");
   };
 
   return (
@@ -72,7 +72,7 @@ export function CompleteStep({
         {completeWizard.isPending && (
           <Loader2 className="mr-2 h-4 w-4 animate-spin" />
         )}
-        Go to Inbox
+        Go to My Tasks
       </Button>
     </div>
   );
