@@ -126,7 +126,7 @@ export function SettingsPage({
 
         <TabsContent className="mt-3 space-y-6" value="organization">
           <OrganizationProfile appearance={clerkAppearance} routing="hash" />
-          {SHOW_CLOSEDLOOP_ROLES && <ClosedLoopRolesSection />}
+          {isAdmin && SHOW_CLOSEDLOOP_ROLES && <ClosedLoopRolesSection />}
         </TabsContent>
 
         <TabsContent className="mt-3 space-y-6" value="admin">
@@ -242,7 +242,7 @@ const GITHUB_ERROR_MESSAGES: Record<string, string> = {
 // Hidden until the roles feature is further defined.
 const SHOW_CLOSEDLOOP_ROLES = false;
 
-const ROLE_LABELS: Record<string, string> = {
+const ROLE_LABELS: Record<ApproverRole, string> = {
   [ApproverRole.Pm]: "PM",
   [ApproverRole.Designer]: "Designer",
   [ApproverRole.TechLead]: "Tech Lead",
@@ -315,7 +315,7 @@ function ClosedLoopRolesSection() {
                     {
                       onSuccess: () => {
                         toast.success(
-                          `Updated ${name || user.email} to ${ROLE_LABELS[value] ?? value}`
+                          `Updated ${name || user.email} to ${ROLE_LABELS[value as ApproverRole] ?? value}`
                         );
                       },
                     }
