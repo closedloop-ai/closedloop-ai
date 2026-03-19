@@ -14,7 +14,6 @@ import type {
 import type { ArtifactVersion } from "@repo/api/src/types/artifact-version";
 import { EntityType } from "@repo/api/src/types/entity-link";
 import type { ExternalLink } from "@repo/api/src/types/external-link";
-import { toast } from "@repo/design-system/components/ui/sonner";
 import {
   type UseQueryOptions,
   useMutation,
@@ -391,10 +390,9 @@ export function useCreateAndGenerateArtifact() {
           {}
         );
         return regenerated;
-      } catch (err) {
-        toast.error(
-          err instanceof Error ? err.message : "Plan generation failed"
-        );
+      } catch {
+        // Generation failed — return the created artifact so the user can retry.
+        // Error toast handled by global QueryClient onError handler.
         return artifact;
       }
     },
