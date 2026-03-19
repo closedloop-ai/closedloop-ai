@@ -228,7 +228,8 @@ export function useRunLoop() {
         | "execute"
         | "request_changes"
         | "decompose"
-        | "evaluate_prd";
+        | "evaluate_prd"
+        | "generate_prd";
       prompt?: string;
       computeTargetId?: string | null;
     }) =>

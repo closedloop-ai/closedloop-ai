@@ -55,7 +55,7 @@ function log(level, ...args) {
 // ---------------------------------------------------------------------------
 const config = {
   loopId: process.env.LOOP_ID,
-  command: process.env.COMMAND?.toUpperCase(), // "PLAN" | "EXECUTE" | "CHAT" | "EXPLORE" | "REQUEST_CHANGES"
+  command: process.env.COMMAND?.toUpperCase(), // "PLAN" | "EXECUTE" | "CHAT" | "EXPLORE" | "REQUEST_CHANGES" | "GENERATE_PRD"
   anthropicApiKey: null, // Injected from S3 context pack (not env vars)
   githubToken: null, // Injected from S3 context pack (not env vars)
   committerName: null, // Injected from S3 context pack (triggering user's name)
@@ -158,7 +158,7 @@ function validateConfig() {
 
   // targetRepo is only required for commands that operate on a repository.
   // chat/explore can run prompt-only without a repo.
-  const repoCommands = new Set(["PLAN", "EXECUTE", "REQUEST_CHANGES"]);
+  const repoCommands = new Set(["PLAN", "EXECUTE", "REQUEST_CHANGES", "GENERATE_PRD"]);
   if (repoCommands.has(config.command)) {
     requiredEnv.push("targetRepo");
   }
@@ -207,7 +207,7 @@ function validateSecrets() {
 
   // Repo commands need a GitHub token for clone/push operations.
   // EVALUATE_PRD with a targetRepo also needs a GitHub token to fetch repo context.
-  const repoCommands = new Set(["PLAN", "EXECUTE", "REQUEST_CHANGES"]);
+  const repoCommands = new Set(["PLAN", "EXECUTE", "REQUEST_CHANGES", "GENERATE_PRD"]);
   if (repoCommands.has(config.command) || (config.command === "EVALUATE_PRD" && config.targetRepo)) {
     requiredSecrets.push("githubToken");
   }
@@ -1740,24 +1740,6 @@ function normalizeModelName(rawName) {
 }
 
 // ---------------------------------------------------------------------------
-// Artifact file names uploaded from the run directory to S3 artifacts/
-// Defined at module level so tests can assert on the list without running
-// the full uploadState flow.
-// ---------------------------------------------------------------------------
-const CLAUDE_PLUGIN_ARTIFACT_FILE_NAMES = [
-  "plan.json",
-  "plan.md",
-  "implementation-plan.md",
-  "open-questions.md",
-  "execution-result.json",
-  "judges.json",
-  "code-judges.json",
-  "prd-judges.json",
-  "perf.jsonl",
-  "state.json",
-];
-
-// ---------------------------------------------------------------------------
 // State upload
 // ---------------------------------------------------------------------------
 async function uploadState(workDir, output, runDir) {
@@ -1817,7 +1799,19 @@ async function uploadState(workDir, output, runDir) {
   // ingestion pipeline can read them by name (e.g., artifacts/plan.json).
   // The full run directory is already captured in claude-state/ (step 2).
   const pluginArtifactDir = runDir ?? workDir;
-  const NON_PLUGIN_ARTIFACT_FILE_NAMES = ["features.json"];
+  const CLAUDE_PLUGIN_ARTIFACT_FILE_NAMES = [
+    "plan.json",
+    "plan.md",
+    "implementation-plan.md",
+    "open-questions.md",
+    "execution-result.json",
+    "judges.json",
+    "prd-judges.json",
+    "code-judges.json",
+    "perf.jsonl",
+    "state.json",
+  ];
+  const NON_PLUGIN_ARTIFACT_FILE_NAMES = ["features.json", "prd.md"];
   const artifactFiles = CLAUDE_PLUGIN_ARTIFACT_FILE_NAMES.map((fileName) => ({
     name: fileName,
     path: path.join(pluginArtifactDir, fileName),
@@ -1989,7 +1983,8 @@ function buildClaudeDirectArgs(workDir, symphonyWD) {
     }
     case "CHAT":
     case "EXPLORE":
-    case "DECOMPOSE": {
+    case "DECOMPOSE":
+    case "GENERATE_PRD": {
       const contextDir = path.join(workDir, ".claude", "context");
       const promptFile = path.join(contextDir, "prompt.md");
       let prompt = "";

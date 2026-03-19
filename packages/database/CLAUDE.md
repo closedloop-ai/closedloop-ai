@@ -4,16 +4,20 @@ Explicit migration files for all schema changes. **Never use `prisma db push` fo
 
 ## Quick Reference
 
-| Command | Use Case |
+Commands below use `pnpm exec` to pass flags directly to Prisma. From repo root, prefix with `pnpm --filter database`.
+
+| Command (from `packages/database`) | Use Case |
 |---------|----------|
 | `pnpm migrate` | Apply pending migrations + regenerate client |
 | `pnpm migrate:status` | Check pending migrations |
-| `pnpm migrate --name <name>` | Create + apply new migration |
-| `pnpm migrate --create-only --name <name>` | Create migration file only (for custom SQL edits) |
+| `pnpm exec prisma migrate dev --name <name>` | Create + apply new migration |
+| `pnpm exec prisma migrate dev --name <name> --create-only` | Create migration file only (for custom SQL edits) |
 | `pnpm prisma migrate resolve --applied <name>` | Mark as applied without running (baselining) |
 | `pnpm prisma migrate deploy` | Production (CI/CD) — applies pending without prompts |
 | `pnpm prisma generate` | Regenerate client after schema changes |
 | `pnpm prisma studio` | GUI for browsing/editing data |
+
+**From repo root:** `pnpm --filter database exec prisma migrate dev --name <name> [--create-only]`
 
 **Migration naming:** `add_user_preferences_table`, `add_index_on_artifact_status`, `rename_foo_to_bar`
 
@@ -21,11 +25,10 @@ Explicit migration files for all schema changes. **Never use `prisma db push` fo
 - Commit both schema changes AND generated migration files
 - Generated client: `packages/database/generated/` (configured in `prisma.config.ts`)
 - `prisma generate` must run after any schema change to update TypeScript types
-- **Never hand-write migration SQL files** — always let `prisma migrate dev` generate them. Hand-written migrations miss Prisma's drift detection, FK cleanup, and standard formatting. First update the schema, then run the migrate command and let Prisma diff the schema against the database.
+- **Never hand-write migration SQL files** — always let `prisma migrate dev` generate them. Hand-written migrations miss Prisma's drift detection, FK cleanup, and standard formatting. First update the schema, then run the migrate command and let Prisma diff the schema against the database. Hand-written migration files cause schema drift.
 - **relationMode = "prisma"** — no DB-level FK constraints. Cascade deletes only through Prisma client. Direct SQL deletes can orphan rows.
 
 ## Learned Patterns
-- **[pattern]**: Adding Prisma enum values in CI or environments without a live database connection — create the migration SQL file manually with ALTER TYPE ADD VALUE syntax, then run prisma generate to update the client. Use `pnpm migrate --create-only --name <name>` when a DB is available to let Prisma scaffold the file. (context: prisma|enum|migration|ci)
 - **[mistake]**: Typecheck "Property does not exist" on Prisma fields: run `pnpm install` + `just db-generate`. Verify fields exist in schema first — generated client may be stale.
 - **[convention]**: Verify Prisma enum values in `schema.prisma` — don't assume (e.g., `SUCCESS` not `COMPLETED`).
 - **[pattern]**: Filter Json fields: `{ path: ['key'], equals: value }` syntax, not dot notation.
