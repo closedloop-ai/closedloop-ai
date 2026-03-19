@@ -1081,6 +1081,10 @@ model Loop {
   evaluations   ArtifactEvaluation[]
   events        LoopEvent[]
 
+  // Prevents concurrent duplicate loops for the same artifact version and command.
+  // Only applies when both artifactId and artifactVersion are non-null (Postgres
+  // treats NULL != NULL in unique indexes, so nullable rows never conflict).
+  @@unique([artifactId, command, artifactVersion], name: "unique_loop_artifact_command_version")
   @@index([organizationId, status])
   @@index([organizationId, userId, createdAt])
   @@index([artifactId])

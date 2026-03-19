@@ -7,10 +7,9 @@ import { launchLoop } from "./loop-orchestrator";
 
 /**
  * Schedule an automatic EVALUATE_PRD loop for a PRD artifact via waitUntil().
- * Skips if an EVALUATE_PRD loop is already active for the same artifact version
- * or a newer one — prevents redundant evaluations for unchanged content.
- * When a newer version arrives while an older evaluation is in flight, a new
- * loop is created so the latest content is always evaluated.
+ * Skips if a loop already exists for the same (artifactId, artifactVersion,
+ * command) combination — the DB unique constraint makes this check atomic,
+ * preventing duplicate ECS containers from concurrent calls.
  * Intended to be called from route handlers after PRD creation or new version publish.
  */
 export function scheduleAutoEvaluatePrd(
@@ -50,40 +49,25 @@ async function runAutoEvaluatePrd(
 
   const latestVersion = artifact.latestVersion;
 
-  // Guard: skip if an EVALUATE_PRD loop is already active for this artifact
-  // version or newer. Allows a new loop when the active loop was created for
-  // an older version (version B arriving while version A's evaluation is running).
-  const activeLoop = await withDb((db) =>
-    db.loop.findFirst({
-      where: {
-        artifactId,
-        organizationId,
-        command: LoopCommand.EvaluatePrd,
-        status: { in: ["PENDING", "CLAIMED", "RUNNING"] },
-        artifactVersion: { gte: latestVersion },
-      },
-      select: { id: true, artifactVersion: true },
-    })
-  );
-
-  if (activeLoop) {
-    log.info(
-      "[auto-evaluate-prd] Skipping — active EVALUATE_PRD loop exists for this version or newer",
-      {
-        artifactId,
-        loopId: activeLoop.id,
-        activeLoopVersion: activeLoop.artifactVersion,
-        requestedVersion: latestVersion,
-      }
-    );
-    return;
-  }
-
-  const { loopId } = await loopsService.create(organizationId, userId, {
+  // Atomically create the loop only if no row exists for this
+  // (artifactId, command, artifactVersion) combination. The DB unique constraint
+  // on those three columns ensures two concurrent calls cannot both succeed —
+  // eliminating the TOCTOU window of the old findFirst → create pattern.
+  const result = await loopsService.createIfNotExists(organizationId, userId, {
     command: LoopCommand.EvaluatePrd,
     artifactId,
     artifactVersion: latestVersion,
   });
+
+  if (!result) {
+    log.info(
+      "[auto-evaluate-prd] Skipping — EVALUATE_PRD loop already exists for this version",
+      { artifactId, requestedVersion: latestVersion }
+    );
+    return;
+  }
+
+  const { loopId } = result;
 
   await launchLoop(loopId, organizationId).catch((error) => {
     log.error("[auto-evaluate-prd] Failed to launch loop", {

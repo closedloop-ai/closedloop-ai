@@ -966,6 +966,59 @@ export const loopsService = {
   },
 
   /**
+   * Create a loop only if no row already exists for the same
+   * (artifactId, command, artifactVersion) combination.
+   * Uses createManyAndReturn + skipDuplicates to push dedup atomically to the DB,
+   * eliminating the TOCTOU window in a plain findFirst → create sequence.
+   * Returns the new loop, or null if a duplicate was detected and skipped.
+   */
+  async createIfNotExists(
+    organizationId: string,
+    userId: string,
+    input: CreateLoopRequest
+  ): Promise<CreateLoopResponse | null> {
+    const [loop] = await withDb((db) =>
+      db.loop.createManyAndReturn({
+        data: [
+          {
+            organizationId,
+            userId,
+            command: input.command,
+            artifactId: input.artifactId ?? null,
+            workstreamId: input.workstreamId ?? null,
+            parentLoopId: input.parentLoopId ?? null,
+            computeTargetId: input.computeTargetId ?? null,
+            prompt: input.prompt ?? null,
+            repo: input.repo ?? undefined,
+            contextRefs: input.contextRefs ?? undefined,
+            artifactVersion: input.artifactVersion ?? null,
+            metadata: input.metadata ?? undefined,
+            status: "PENDING",
+          },
+        ],
+        skipDuplicates: true,
+        select: { id: true, status: true },
+      })
+    );
+
+    if (!loop) {
+      return null;
+    }
+
+    log.info("Loop created", {
+      loopId: loop.id,
+      organizationId,
+      userId,
+      command: input.command,
+    });
+
+    return {
+      loopId: loop.id,
+      status: loop.status as LoopStatus,
+    };
+  },
+
+  /**
    * Replace loop metadata. Caller is responsible for merging with existing values.
    * Returns the number of rows updated (0 if loop is already terminal).
    */
