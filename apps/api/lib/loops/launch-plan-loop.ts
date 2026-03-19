@@ -1,0 +1,118 @@
+/**
+ * Shared helper for launching a PLAN loop.
+ *
+ * Used by both the existing POST /artifacts/:id/run-loop route and
+ * the new POST /plans/start-loop-from-local route so that Start Planning
+ * and Generate Plan share the same loop creation and dispatch logic.
+ */
+
+import type { JsonObject } from "@repo/api/src/types/common";
+import type { CreateLoopResponse } from "@repo/api/src/types/loop";
+import { log } from "@repo/observability/log";
+import { validateComputeTarget } from "@/app/artifacts/[id]/run-loop/compute-target-validation";
+import {
+  COMMAND_MAP,
+  resolveLoopContext,
+} from "@/app/artifacts/[id]/run-loop/run-loop-helpers";
+import type { StartPlanLoopFromLocalResult } from "@/app/artifacts/service";
+import { loopsService } from "@/app/loops/service";
+import { launchLoop } from "./loop-orchestrator";
+import { getDefaultPrompt } from "./prompts";
+
+export type LaunchPlanLoopResult =
+  | { ok: true; loopResponse: CreateLoopResponse }
+  | {
+      ok: false;
+      error:
+        | "compute_target_not_found"
+        | "compute_target_offline"
+        | "launch_failed";
+    };
+
+type ArtifactWithRegenerationContext = Extract<
+  StartPlanLoopFromLocalResult,
+  { outcome: "ready-to-launch" }
+>["artifact"];
+
+export type LaunchPlanLoopOptions = {
+  artifact: ArtifactWithRegenerationContext;
+  organizationId: string;
+  userId: string;
+  artifactId: string;
+  computeTargetId: string;
+  repoOverride?: { fullName: string; branch: string };
+  metadata?: JsonObject;
+};
+
+/**
+ * Validate compute target, resolve loop context, create a PLAN loop record,
+ * and dispatch it via launchLoop(). Returns a result object so callers can
+ * convert failures to appropriate HTTP responses without catching exceptions.
+ *
+ * The launchLoop() call is awaited directly so the caller knows whether
+ * the relay dispatch succeeded before reporting success to the browser.
+ */
+export async function launchPlanLoop(
+  opts: LaunchPlanLoopOptions
+): Promise<LaunchPlanLoopResult> {
+  const {
+    artifact,
+    organizationId,
+    userId,
+    artifactId,
+    computeTargetId,
+    repoOverride,
+    metadata,
+  } = opts;
+
+  const ctResult = await validateComputeTarget(computeTargetId, organizationId);
+  if (!ctResult.valid) {
+    if (ctResult.reason === "not_found") {
+      return { ok: false, error: "compute_target_not_found" };
+    }
+    return { ok: false, error: "compute_target_offline" };
+  }
+
+  const { workstream, targetRepo, targetBranch, contextRefs } =
+    await resolveLoopContext(
+      artifact,
+      { repo: repoOverride, command: "plan" },
+      undefined,
+      organizationId,
+      userId,
+      artifactId
+    );
+
+  const command = COMMAND_MAP.plan;
+  const prompt = getDefaultPrompt(command);
+
+  const loopResponse = await loopsService.create(organizationId, userId, {
+    command,
+    artifactId,
+    workstreamId: workstream?.id,
+    computeTargetId,
+    prompt,
+    repo: targetRepo
+      ? { fullName: targetRepo, branch: targetBranch }
+      : undefined,
+    contextRefs: contextRefs.length > 0 ? contextRefs : undefined,
+    metadata,
+  });
+
+  // Await the dispatch instead of fire-and-forget. The browser is waiting
+  // for this response, and reporting "launched" before knowing the relay
+  // delivered the command causes false-success when the desktop is offline.
+  // Desktop context-pack building + relay dispatch is typically <5 seconds.
+  try {
+    await launchLoop(loopResponse.loopId, organizationId);
+  } catch (error) {
+    log.error("[launch-plan-loop] Failed to launch loop", {
+      loopId: loopResponse.loopId,
+      artifactId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return { ok: false, error: "launch_failed" as const };
+  }
+
+  return { ok: true, loopResponse };
+}

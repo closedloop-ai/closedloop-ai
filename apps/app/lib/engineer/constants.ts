@@ -3,7 +3,7 @@ export const DESKTOP_SETUP_URL =
 
 export const VALID_PROVIDERS = new Set(["claude", "codex"]);
 
-export const CLOUD_RELAY_ENABLED: boolean = false;
+export const CLOUD_RELAY_ENABLED: boolean = true;
 
 export const COMPUTE_TARGETS_QUERY_OPTIONS = {
   staleTime: 30_000,
