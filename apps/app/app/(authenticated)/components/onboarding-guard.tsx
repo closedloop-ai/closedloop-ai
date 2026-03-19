@@ -18,15 +18,9 @@ export function OnboardingGuard({ children }: OnboardingGuardProps) {
   // Also check isFetching to avoid redirecting on stale cache during refetch
   // (e.g. after completing the wizard, invalidateQueries triggers a refetch)
   // TODO: Convert to server component guard for SSR — tracked for follow-up
-  const {
-    data: status,
-    isLoading,
-    isFetching,
-    isError,
-  } = useOnboardingStatus();
+  const { data: status, isLoading, isFetching } = useOnboardingStatus();
 
-  const shouldRedirect =
-    isError || (status !== undefined && !status.wizardCompleted);
+  const shouldRedirect = status !== undefined && !status.wizardCompleted;
 
   useEffect(() => {
     if (!(isLoading || isFetching) && shouldRedirect) {

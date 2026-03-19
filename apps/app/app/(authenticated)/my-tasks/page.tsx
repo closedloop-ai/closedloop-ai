@@ -52,9 +52,12 @@ export default function MyTasksPage() {
     () => buildIssueListParams(assigneeId, filters),
     [assigneeId, filters]
   );
-  const { data: issues = [] } = useIssues(listParams, {
-    enabled: !!assigneeId && !isUserLoading,
-  });
+  const { data: issues = [], isLoading: isIssuesLoading } = useIssues(
+    listParams,
+    {
+      enabled: !!assigneeId && !isUserLoading,
+    }
+  );
 
   const hasTasks = issues.length > 0;
 
@@ -72,7 +75,7 @@ export default function MyTasksPage() {
         <div className="shrink-0 px-4 py-4">
           <OnboardingChecklist />
         </div>
-        {hasTasks && (
+        {(hasTasks || hasActiveFilters) && (
           <div className="flex shrink-0 items-center justify-between gap-2 border-b px-4 py-3">
             <h2 className="font-semibold text-lg tracking-tight">
               Pending Work
@@ -226,7 +229,9 @@ export default function MyTasksPage() {
           </div>
         )}
         <div className="p-4">
-          {!hasTasks && <MyTasksEmptyState projects={projects} />}
+          {!(hasTasks || isUserLoading || isIssuesLoading) && (
+            <MyTasksEmptyState projects={projects} />
+          )}
           {hasTasks && view === "list" && (
             <MyTasksList
               assigneeId={assigneeId}
