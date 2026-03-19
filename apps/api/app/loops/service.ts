@@ -1,21 +1,21 @@
 import { createHash } from "node:crypto";
 import type { JsonObject } from "@repo/api/src/types/common";
-import type {
-  ComputeTargetSummary,
-  CreateLoopRequest,
-  CreateLoopResponse,
-  Loop,
-  LoopEvent,
-  LoopEventsFilters,
-  LoopEventsPaginatedResponse,
-  LoopListFilters,
+import {
+  type ComputeTargetSummary,
+  type CreateLoopRequest,
+  type CreateLoopResponse,
+  type Loop,
+  LoopCommand,
+  type LoopEvent,
+  type LoopEventsFilters,
+  type LoopEventsPaginatedResponse,
+  type LoopListFilters,
   LoopStatus,
-  LoopUsageByCommand,
-  LoopUsageSummary,
-  LoopWithUser,
-  ResumeLoopRequest,
+  type LoopUsageByCommand,
+  type LoopUsageSummary,
+  type LoopWithUser,
+  type ResumeLoopRequest,
 } from "@repo/api/src/types/loop";
-import { LoopCommand } from "@repo/api/src/types/loop";
 import { type Loop as PrismaLoop, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { basicUserSelect } from "@/lib/db-utils";
@@ -963,6 +963,59 @@ export const loopsService = {
     }
 
     return toLoop(loop);
+  },
+
+  /**
+   * Create a loop only if no row already exists for the same
+   * (artifactId, command, artifactVersion) combination.
+   * Uses createManyAndReturn + skipDuplicates to push dedup atomically to the DB,
+   * eliminating the TOCTOU window in a plain findFirst → create sequence.
+   * Returns the new loop, or null if a duplicate was detected and skipped.
+   */
+  async createIfNotExists(
+    organizationId: string,
+    userId: string,
+    input: CreateLoopRequest & { artifactVersion: number }
+  ): Promise<CreateLoopResponse | null> {
+    const [loop] = await withDb((db) =>
+      db.loop.createManyAndReturn({
+        data: [
+          {
+            organizationId,
+            userId,
+            command: input.command,
+            artifactId: input.artifactId ?? null,
+            workstreamId: input.workstreamId ?? null,
+            parentLoopId: input.parentLoopId ?? null,
+            computeTargetId: input.computeTargetId ?? null,
+            prompt: input.prompt ?? null,
+            repo: input.repo ?? undefined,
+            contextRefs: input.contextRefs ?? undefined,
+            artifactVersion: input.artifactVersion ?? null,
+            metadata: input.metadata ?? undefined,
+            status: LoopStatus.Pending,
+          },
+        ],
+        skipDuplicates: true,
+        select: { id: true, status: true },
+      })
+    );
+
+    if (!loop) {
+      return null;
+    }
+
+    log.info("Loop created", {
+      loopId: loop.id,
+      organizationId,
+      userId,
+      command: input.command,
+    });
+
+    return {
+      loopId: loop.id,
+      status: loop.status as LoopStatus,
+    };
   },
 
   /**

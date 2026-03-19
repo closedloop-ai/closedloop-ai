@@ -17,7 +17,7 @@ import { fanOutJudgeScores } from "@/lib/judge-score-fanout";
 export function parseJsonArtifact<T>(
   buf: Buffer | null,
   artifactName: string,
-  extract: (parsed: T) => unknown = (r: unknown) => r as T
+  extract: (parsed: T) => unknown
 ): unknown {
   if (!buf) {
     return null;

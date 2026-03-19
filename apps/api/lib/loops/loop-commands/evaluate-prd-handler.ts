@@ -49,7 +49,8 @@ export const evaluatePrdHandler = defineHandler<PrdJudgesArtifacts>({
     const buf = await downloadArtifactFile(stateKeyPrefix, "prd-judges.json");
     const report = parseJsonArtifact<JudgesReport>(
       buf,
-      "prd-judges.json"
+      "prd-judges.json",
+      (r) => judgesReportSchema.parse(r)
     ) as JudgesReport | null;
     return { report };
   },
