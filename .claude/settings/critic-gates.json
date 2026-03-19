@@ -52,7 +52,7 @@
       "critics": ["design-system-expert", "react-component-architect"]
     },
     {
-      "patterns": ["database", "prisma", "cache", "storage", "redis"],
+      "patterns": ["database", "prisma", "cache", "storage"],
       "critics": ["database-architect", "caching-strategist"]
     },
     {
