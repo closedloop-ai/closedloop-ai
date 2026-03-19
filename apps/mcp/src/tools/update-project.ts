@@ -13,9 +13,9 @@ export function registerUpdateProject(
     "update-project",
     {
       description:
-        "Update an existing project's name, description, or priority",
+        "Update an existing project's name, description, or priority by ID or slug",
       inputSchema: {
-        projectId: z.string().describe("ID of the project to update"),
+        projectId: z.string().describe("ID or slug of the project to update"),
         name: z.string().optional().describe("New name for the project"),
         description: z
           .string()

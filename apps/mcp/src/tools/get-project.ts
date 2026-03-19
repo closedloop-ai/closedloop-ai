@@ -10,9 +10,12 @@ export function registerGetProject(
   server.registerTool(
     "get-project",
     {
-      description: "Get a project's detail with recent workstreams",
+      description:
+        "Get a project's detail by ID or slug with recent workstreams",
       inputSchema: {
-        projectId: z.string().describe("ID of the project to retrieve"),
+        projectId: z
+          .string()
+          .describe("ID or slug (e.g. PROJ-1) of the project to retrieve"),
       },
     },
     ({ projectId }) =>

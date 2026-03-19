@@ -20,7 +20,10 @@ export function registerListLoops(
       description:
         "List execution loops with optional filters by artifact or status",
       inputSchema: {
-        artifactId: z.string().optional().describe("Filter by artifact ID"),
+        artifactId: z
+          .string()
+          .optional()
+          .describe("Filter by artifact ID or slug (e.g. PRD-7)"),
         status: z.enum(LoopStatus).optional().describe("Filter by loop status"),
         limit: z
           .number()

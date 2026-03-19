@@ -3,6 +3,7 @@ import type {
   UserJudgeRatingsResponse,
 } from "@repo/api/src/types/judges-analytics";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
+import { resolveArtifactId } from "@/lib/identifier-utils";
 import {
   errorResponse,
   notFoundResponse,
@@ -18,7 +19,15 @@ export const GET = withAnyAuth<
 >(async ({ user }, _request, params) => {
   try {
     const { id } = await params;
-    const result = await getUserJudgeRatings(user.organizationId, user.id, id);
+    const resolvedId = await resolveArtifactId(id, user.organizationId);
+    if (!resolvedId) {
+      return notFoundResponse("Artifact");
+    }
+    const result = await getUserJudgeRatings(
+      user.organizationId,
+      user.id,
+      resolvedId
+    );
     return successResponse(result);
   } catch (error) {
     return errorResponse("Failed to fetch judge ratings", error);
@@ -31,6 +40,10 @@ export const POST = withAnyAuth<
 >(async ({ user }, request, params) => {
   try {
     const { id } = await params;
+    const resolvedId = await resolveArtifactId(id, user.organizationId);
+    if (!resolvedId) {
+      return notFoundResponse("Artifact");
+    }
 
     const { body, errorResponse: parseError } = await parseBody(
       request,
@@ -43,7 +56,7 @@ export const POST = withAnyAuth<
     const result = await submitJudgeRating(
       user.organizationId,
       user.id,
-      id,
+      resolvedId,
       body.judgeScoreId,
       body.rating
     );

@@ -1,6 +1,7 @@
 import { ArtifactStatus, ArtifactType } from "@repo/api/src/types/artifact";
 import { EntityType } from "@repo/api/src/types/entity-link";
 import { z } from "zod";
+import { uuidOrSlug } from "@/lib/identifier-utils";
 
 const artifactStatusEnum = z.enum(ArtifactStatus);
 const artifactTypeEnum = z.enum(ArtifactType);
@@ -10,9 +11,9 @@ const entityTypeEnum = z.enum(EntityType);
 const OWNER_REPO_REGEX = /^[^/]+\/[^/]+$/;
 
 export const createArtifactValidator = z.object({
-  workstreamId: z.uuid().optional(),
-  projectId: z.uuid(),
-  sourceId: z.uuid().optional(),
+  workstreamId: uuidOrSlug().optional(),
+  projectId: uuidOrSlug(),
+  sourceId: uuidOrSlug().optional(),
   sourceType: entityTypeEnum.optional(),
   sourceVersion: z.number().int().positive().optional(),
   type: artifactTypeEnum,
@@ -40,7 +41,7 @@ export const updateArtifactValidator = z.object({
     .nullable()
     .optional(),
   targetBranch: z.string().nullable().optional(),
-  projectId: z.uuid().optional(),
+  projectId: uuidOrSlug().optional(),
   assigneeId: z.uuid().nullable().optional(),
   sortOrder: z.number().nullable().optional(),
   customFields: z
@@ -62,8 +63,8 @@ export const newVersionValidator = z.object({
 
 export const findArtifactsQueryValidator = z.object({
   type: artifactTypeEnum.optional(),
-  workstreamId: z.uuid().optional(),
-  projectId: z.uuid().optional(),
+  workstreamId: uuidOrSlug().optional(),
+  projectId: uuidOrSlug().optional(),
   assigneeId: z.uuid().optional(),
 });
 
@@ -85,10 +86,3 @@ export const mergeArtifactsValidator = z
     message: "Primary and secondary artifact IDs must be different",
     path: ["secondaryArtifactId"],
   });
-
-export const batchCreateArtifactsValidator = z.object({
-  items: z
-    .array(createArtifactValidator)
-    .min(1, "At least one artifact required")
-    .max(50, "Maximum 50 artifacts per batch"),
-});

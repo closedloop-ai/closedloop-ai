@@ -24,9 +24,11 @@ export function registerGetArtifact(
   server.registerTool(
     "get-artifact",
     {
-      description: "Retrieve a single artifact by its ID",
+      description: "Retrieve a single artifact by its ID or slug",
       inputSchema: {
-        artifactId: z.string().describe("ID of the artifact to retrieve"),
+        artifactId: z
+          .string()
+          .describe("ID or slug (e.g. PRD-7) of the artifact to retrieve"),
         includeContent: z
           .boolean()
           .optional()

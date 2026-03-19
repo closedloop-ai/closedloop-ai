@@ -4,6 +4,7 @@ import type {
 } from "@repo/api/src/types/attachment";
 import { attachmentsService } from "@/app/artifacts/attachments-service";
 import { withAuth } from "@/lib/auth/with-auth";
+import { resolveArtifactId } from "@/lib/identifier-utils";
 import {
   errorResponse,
   notFoundResponse,
@@ -18,6 +19,10 @@ export const POST = withAuth<
 >(async ({ user }, request, params) => {
   try {
     const { id } = await params;
+    const resolvedId = await resolveArtifactId(id, user.organizationId);
+    if (!resolvedId) {
+      return notFoundResponse("Artifact");
+    }
 
     const { body, errorResponse: parseError } = await parseBody(
       request,
@@ -30,7 +35,7 @@ export const POST = withAuth<
     const { filename, mimeType, sizeBytes } = body;
 
     const result = await attachmentsService.requestUpload(
-      id,
+      resolvedId,
       user.organizationId,
       user.id,
       filename,
@@ -51,9 +56,13 @@ export const GET = withAuth<FileAttachment[], "/artifacts/[id]/attachments">(
   async ({ user }, _request, params) => {
     try {
       const { id } = await params;
+      const resolvedId = await resolveArtifactId(id, user.organizationId);
+      if (!resolvedId) {
+        return notFoundResponse("Artifact");
+      }
 
       const attachments = await attachmentsService.listByArtifact(
-        id,
+        resolvedId,
         user.organizationId
       );
 

@@ -1,7 +1,6 @@
 import type { ApiResult } from "@repo/api/src/types/common";
 import { success } from "@repo/api/src/types/common";
 import type { PublicDashboardResponse } from "@repo/api/src/types/dashboard";
-import { rateLimit } from "@repo/security";
 import { NextResponse } from "next/server";
 import { dashboardService } from "@/app/dashboard/service";
 import { errorResponse, notFoundResponse } from "@/lib/route-utils";
@@ -14,13 +13,6 @@ export async function GET(
 ): Promise<NextResponse<ApiResult<PublicDashboardResponse>>> {
   try {
     const { token } = await params;
-
-    await rateLimit(
-      `public_dashboard_${request.headers.get("x-forwarded-for") ?? "unknown"}`,
-      30,
-      "60s",
-      request
-    );
 
     const result = await dashboardService.getPublicDashboardByToken(token);
 

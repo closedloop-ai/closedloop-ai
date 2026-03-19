@@ -3,9 +3,11 @@ import {
   LinkQueryMode,
 } from "@repo/api/src/types/entity-link";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
+import { resolveEntityLinkIdentifier } from "@/lib/identifier-utils";
 import {
   errorResponse,
   forbiddenResponse,
+  notFoundResponse,
   parseBody,
   parseQueryParams,
   successResponse,
@@ -30,10 +32,19 @@ export const GET = withAnyAuth<EntityLink[], "/entity-links">(
       const { entityId, entityType, linkType, direction, mode, maxDepth } =
         params;
 
+      const resolvedEntityId = await resolveEntityLinkIdentifier(
+        entityId,
+        user.organizationId,
+        entityType
+      );
+      if (!resolvedEntityId) {
+        return notFoundResponse("Entity");
+      }
+
       if (mode === LinkQueryMode.Tree) {
         const annotatedLinks = await entityLinksService.findLinkTree(
           user.organizationId,
-          entityId,
+          resolvedEntityId,
           entityType,
           direction,
           maxDepth,
@@ -44,7 +55,7 @@ export const GET = withAnyAuth<EntityLink[], "/entity-links">(
 
       const links = await entityLinksService.findLinksByDirection(
         user.organizationId,
-        entityId,
+        resolvedEntityId,
         entityType,
         direction,
         linkType
@@ -68,10 +79,28 @@ export const POST = withAnyAuth<EntityLink, "/entity-links">(
         return parseError;
       }
 
-      const link = await entityLinksService.createLink(
+      const resolvedSourceId = await resolveEntityLinkIdentifier(
+        body.sourceId,
         user.organizationId,
-        body
+        body.sourceType
       );
+      if (!resolvedSourceId) {
+        return notFoundResponse("Source entity");
+      }
+      const resolvedTargetId = await resolveEntityLinkIdentifier(
+        body.targetId,
+        user.organizationId,
+        body.targetType
+      );
+      if (!resolvedTargetId) {
+        return notFoundResponse("Target entity");
+      }
+
+      const link = await entityLinksService.createLink(user.organizationId, {
+        ...body,
+        sourceId: resolvedSourceId,
+        targetId: resolvedTargetId,
+      });
 
       return successResponse(link);
     } catch (error) {

@@ -20,14 +20,8 @@ export function registerCreateArtifact(
       inputSchema: {
         title: z.string().describe("Title of the artifact"),
         type: z.enum(ArtifactType).describe("Type of the artifact"),
-        projectId: z
-          .string()
-          .optional()
-          .describe("ID of the project to associate with"),
-        workstreamId: z
-          .string()
-          .optional()
-          .describe("ID of the workstream to associate with"),
+        projectId: z.string().optional().describe("Project ID or slug"),
+        workstreamId: z.string().optional().describe("Workstream ID or slug"),
         content: z.string().describe("Content/body of the artifact"),
       },
     },

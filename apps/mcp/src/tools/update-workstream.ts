@@ -13,9 +13,11 @@ export function registerUpdateWorkstream(
     "update-workstream",
     {
       description:
-        "Update an existing workstream's title, description, state, or UI changes flag",
+        "Update an existing workstream's title, description, state, or UI changes flag by ID or slug",
       inputSchema: {
-        workstreamId: z.string().describe("ID of the workstream to update"),
+        workstreamId: z
+          .string()
+          .describe("ID or slug of the workstream to update"),
         title: z.string().optional().describe("New title for the workstream"),
         description: z
           .string()

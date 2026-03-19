@@ -29,7 +29,8 @@ runs:
 
         while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
           echo "Attempt $ATTEMPT of $MAX_ATTEMPTS: Installing Claude CLI..."
-          if curl -fsSL https://claude.ai/install.sh | bash; then
+          # claude.ai/install.sh redirects here; use direct URL to avoid Cloudflare bot challenge in CI
+          if curl -fsSL https://downloads.claude.ai/claude-code-releases/bootstrap.sh | bash; then
             echo "Claude CLI installed successfully"
             break
           else

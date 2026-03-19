@@ -28,8 +28,7 @@ Repository: symphony-alpha (Next.js monorepo on next-forge template)
 | **packages/collaboration** | Real-time collaboration on documents | Shared Library | Liveblocks, Yjs |
 | **packages/analytics** | Web and product analytics | Shared Library | PostHog, Google Analytics, Vercel Analytics |
 | **packages/observability** | Error tracking, logging | Shared Library | Custom (BetterStack) |
-| **packages/security** | Application security - bot detection, shield, rate limiting | Shared Library | Arcjet |
-| **packages/rate-limit** | Rate limiting | Shared Library | Upstash Redis |
+| **packages/security** | Application security - security headers | Shared Library | Nosecone |
 | **packages/aws** | AWS S3 operations for artifact storage | Shared Library | AWS SDK v3, S3, pre-signed URLs |
 | **packages/feature-flags** | Feature flag management | Shared Library | Vercel Flags, PostHog |
 | **packages/notifications** | In-app notification system | Shared Library | Knock |
@@ -296,8 +295,6 @@ The most distinctive integration pattern is the GitHub Actions-based execution p
 
 ### Application Security
 
-- **Arcjet** - Bot detection, shield (attack protection), rate limiting (LIVE mode)
-- **Upstash Redis** - Additional rate limiting layer
 - **Nosecone** - Security headers (via `@nosecone/next`)
 - **Webhook verification:** GitHub webhook signatures verified with HMAC SHA-256 (timing-safe comparison). Clerk webhooks verified via Svix. Stripe webhooks verified via Stripe SDK.
 - **Environment variable validation:** All env vars validated with Zod schemas via `@t3-oss/env-nextjs` at startup
@@ -345,8 +342,6 @@ The most distinctive integration pattern is the GitHub Actions-based execution p
 | **PostHog** | PostHog | Product analytics, feature flag evaluation | SDK (Client + Server) | Important |
 | **Knock** | Knock | In-app notifications | SDK (Client + Server) | Important |
 | **Resend** | Resend | Transactional email delivery | SDK | Nice-to-have |
-| **Arcjet** | Arcjet | Application security (bot detection, shield, rate limiting) | SDK | Important |
-| **Upstash Redis** | Upstash | Rate limiting backend | SDK | Nice-to-have |
 | **Vercel** | Vercel | Hosting, deployment, edge functions | Platform | Critical |
 | **BetterStack** | BetterStack | Logging and uptime monitoring | API | Nice-to-have |
 | **Google Analytics** | Google | Web analytics | Script tag | Nice-to-have |

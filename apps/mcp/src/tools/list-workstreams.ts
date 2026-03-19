@@ -22,7 +22,7 @@ export function registerListWorkstreams(
       inputSchema: {
         projectId: z
           .string()
-          .describe("ID of the project to list workstreams for"),
+          .describe("Filter by project ID or slug (required)"),
         state: z
           .enum(WORKSTREAM_STATE_OPTIONS)
           .optional()
