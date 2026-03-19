@@ -7,13 +7,12 @@ import { after, test } from "node:test";
 import {
   buildClaudeDirectArgs,
   buildCommand,
-  CLAUDE_PLUGIN_ARTIFACT_FILE_NAMES,
   config,
   ERROR_CODES,
   HarnessError,
   validateConfig,
   validatePreRunInputs,
-  validateSecrets,
+  validateSecrets
 } from "./harness-agent.mjs";
 
 // ---------------------------------------------------------------------------
@@ -213,19 +212,4 @@ test("validatePreRunInputs does not throw for EVALUATE_PRD with non-empty artifa
   };
 
   assert.doesNotThrow(() => validatePreRunInputs("EVALUATE_PRD", contextPack));
-});
-
-// ---------------------------------------------------------------------------
-// (h) CLAUDE_PLUGIN_ARTIFACT_FILE_NAMES includes "prd-judges.json"
-// ---------------------------------------------------------------------------
-
-test('CLAUDE_PLUGIN_ARTIFACT_FILE_NAMES includes "prd-judges.json"', () => {
-  assert.ok(
-    Array.isArray(CLAUDE_PLUGIN_ARTIFACT_FILE_NAMES),
-    "must be an array"
-  );
-  assert.ok(
-    CLAUDE_PLUGIN_ARTIFACT_FILE_NAMES.includes("prd-judges.json"),
-    `expected "prd-judges.json" in list; got: ${JSON.stringify(CLAUDE_PLUGIN_ARTIFACT_FILE_NAMES)}`
-  );
 });

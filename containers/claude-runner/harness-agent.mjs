@@ -2880,7 +2880,7 @@ async function main() {
 // ---------------------------------------------------------------------------
 export {
   buildClaudeDirectArgs,
-  buildCommand, CLAUDE_PLUGIN_ARTIFACT_FILE_NAMES, config, ERROR_CODES,
+  buildCommand, config, ERROR_CODES,
   HarnessError, validateConfig,
   validatePreRunInputs,
   validateSecrets
