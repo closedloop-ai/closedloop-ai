@@ -1,6 +1,10 @@
 /**
  * Unit tests for parseComputeTargetConflict utility.
  * Verifies correct extraction of ComputeTargetConflictBody from unknown errors.
+ *
+ * apiFetch sets ApiError.data to the full ApiResult object:
+ * { success: false, error: string, data: ComputeTargetConflictBody }
+ * so the conflict body is nested at error.data.data.
  */
 
 import { describe, expect, it } from "vitest";
@@ -14,6 +18,13 @@ const makeValidConflictBody = () => ({
     { id: "ct-1", machineName: "Mikes-MacBook", status: "online" },
     { id: "ct-2", machineName: "Office-Desktop", status: "offline" },
   ],
+});
+
+/** Wraps a conflict body in the ApiResult shape that apiFetch stores in ApiError.data */
+const wrapInApiResult = (conflictBody: unknown) => ({
+  success: false,
+  error: "Multiple compute targets are online.",
+  data: conflictBody,
 });
 
 describe("parseComputeTargetConflict", () => {
@@ -41,28 +52,43 @@ describe("parseComputeTargetConflict", () => {
     expect(parseComputeTargetConflict(error)).toBeNull();
   });
 
-  it("returns null for ApiError 409 where availableTargets is absent", () => {
-    const error = new ApiError("Conflict", 409, undefined, {
-      error: "multiple_targets",
-      message: "no targets field",
-    });
+  it("returns null for ApiError 409 where nested data has no availableTargets", () => {
+    const error = new ApiError(
+      "Conflict",
+      409,
+      undefined,
+      wrapInApiResult({
+        error: "multiple_targets",
+        message: "no targets field",
+      })
+    );
 
     expect(parseComputeTargetConflict(error)).toBeNull();
   });
 
   it("returns null for ApiError 409 where availableTargets is not an array", () => {
-    const error = new ApiError("Conflict", 409, undefined, {
-      error: "multiple_targets",
-      message: "bad shape",
-      availableTargets: "not-an-array",
-    });
+    const error = new ApiError(
+      "Conflict",
+      409,
+      undefined,
+      wrapInApiResult({
+        error: "multiple_targets",
+        message: "bad shape",
+        availableTargets: "not-an-array",
+      })
+    );
 
     expect(parseComputeTargetConflict(error)).toBeNull();
   });
 
   it("returns the conflict body for a valid 409 with availableTargets array", () => {
     const body = makeValidConflictBody();
-    const error = new ApiError("Conflict", 409, undefined, body);
+    const error = new ApiError(
+      "Conflict",
+      409,
+      undefined,
+      wrapInApiResult(body)
+    );
 
     const result = parseComputeTargetConflict(error);
 
@@ -75,7 +101,12 @@ describe("parseComputeTargetConflict", () => {
       message: "No targets online",
       availableTargets: [],
     };
-    const error = new ApiError("Conflict", 409, undefined, body);
+    const error = new ApiError(
+      "Conflict",
+      409,
+      undefined,
+      wrapInApiResult(body)
+    );
 
     const result = parseComputeTargetConflict(error);
 

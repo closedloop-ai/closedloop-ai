@@ -8,6 +8,7 @@ import { useCallback, useEffect, useEffectEvent, useState } from "react";
 import { ExecutePlanModal } from "@/app/(authenticated)/implementation-plans/components/execute-plan-modal";
 import { ArtifactChatPanel } from "@/components/artifact-editor/artifact-chat-panel";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
+import { LoopDispatchTargetSelector } from "@/components/engineer/LoopDispatchTargetSelector";
 import { usePlanActions } from "@/hooks/artifact-editing/use-plan-actions";
 import { useArtifactGenerationStatus } from "@/hooks/queries/use-artifacts";
 import { useDeleteIssue } from "@/hooks/queries/use-issues";
@@ -40,9 +41,10 @@ export function FeaturePage({ issue }: Readonly<FeaturePageProps>) {
   const [displayTitle, setDisplayTitle] = useState(issue.title);
 
   const { hasPlan, isReady, linkedPlanId } = useFeatureState(issue);
-  const { handleExecute, isExecuting } = usePlanActions({
-    artifactId: linkedPlanId,
-  });
+  const { handleExecute, isExecuting, multiTargetState, selectTarget } =
+    usePlanActions({
+      artifactId: linkedPlanId,
+    });
 
   const { data: generationStatus, invalidateCache } =
     useArtifactGenerationStatus(linkedPlanId ?? "", {
@@ -168,6 +170,18 @@ export function FeaturePage({ issue }: Readonly<FeaturePageProps>) {
         onOpenChange={setShowExecuteModal}
         open={showExecuteModal}
       />
+
+      {multiTargetState && (
+        <div className="fixed right-4 bottom-4 z-50 rounded-lg border bg-background p-4 shadow-lg">
+          <p className="mb-2 text-muted-foreground text-sm">
+            Multiple compute targets are online. Select one:
+          </p>
+          <LoopDispatchTargetSelector
+            availableTargets={multiTargetState.availableTargets}
+            onSelect={selectTarget}
+          />
+        </div>
+      )}
     </>
   );
 }

@@ -117,8 +117,6 @@ export function usePlanActions(config: UsePlanActionsConfig) {
 
         if (conflict) {
           setMultiTargetState({ availableTargets: conflict.availableTargets });
-        } else {
-          toast.error("Failed to start plan regeneration");
         }
       }
     } else {
@@ -171,8 +169,6 @@ export function usePlanActions(config: UsePlanActionsConfig) {
             setMultiTargetState({
               availableTargets: conflict.availableTargets,
             });
-          } else {
-            toast.error("Failed to submit change request");
           }
           return false;
         }
@@ -224,9 +220,8 @@ export function usePlanActions(config: UsePlanActionsConfig) {
 
         if (conflict) {
           setMultiTargetState({ availableTargets: conflict.availableTargets });
-        } else {
-          toast.error("Failed to start plan execution");
         }
+        // Non-conflict errors are toasted by the global QueryClient mutations.onError handler.
         return false;
       }
     }

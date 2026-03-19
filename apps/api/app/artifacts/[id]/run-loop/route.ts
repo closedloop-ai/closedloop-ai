@@ -6,7 +6,6 @@ import { waitUntil } from "@vercel/functions";
 import { NextResponse } from "next/server";
 import { loopsService } from "@/app/loops/service";
 import { withAuth } from "@/lib/auth/with-auth";
-import { resolveComputeTarget } from "@/lib/loops/compute-target-resolver";
 import { getCommandHandler } from "@/lib/loops/loop-commands";
 import { launchLoop } from "@/lib/loops/loop-orchestrator";
 import { getDefaultPrompt } from "@/lib/loops/prompts";
@@ -18,7 +17,11 @@ import {
   parseBody,
 } from "@/lib/route-utils";
 import { artifactsService } from "../../service";
-import { COMMAND_MAP, resolveLoopContext } from "./run-loop-helpers";
+import {
+  COMMAND_MAP,
+  resolveComputeTargetForRoute,
+  resolveLoopContext,
+} from "./run-loop-helpers";
 import { runLoopSchema } from "./validators";
 
 type RunLoopResponse = CreateLoopResponse | ComputeTargetConflictBody;
@@ -83,52 +86,15 @@ export const POST = withAuth<RunLoopResponse, "/artifacts/[id]/run-loop">(
         );
       }
 
-      const ctResult = await resolveComputeTarget(
+      const ctRouteResult = await resolveComputeTargetForRoute(
         user.organizationId,
         user.id,
         body.computeTargetId
       );
-
-      let resolvedComputeTargetId: string | undefined;
-      switch (ctResult.reason) {
-        case "resolved":
-          resolvedComputeTargetId = ctResult.target.id;
-          break;
-        case "hint_not_found":
-          return notFoundResponse("Compute target");
-        case "hint_offline":
-          return badRequestResponse(
-            "Compute target is offline. Ensure the desktop app is running."
-          );
-        case "no_targets":
-          return badRequestResponse(
-            "No compute targets found. Ensure the desktop app is running."
-          );
-        case "no_online_targets":
-          return badRequestResponse(
-            "No compute targets are online. Ensure the desktop app is running."
-          );
-        case "multiple_targets": {
-          const conflictBody: ComputeTargetConflictBody = {
-            error: "multiple_targets",
-            message:
-              "Multiple compute targets are online. Specify a compute target ID.",
-            availableTargets: ctResult.targets.map((t) => ({
-              id: t.id,
-              machineName: t.machineName,
-              status: t.isOnline ? "online" : "offline",
-            })),
-          };
-          return NextResponse.json(success(conflictBody), { status: 409 });
-        }
-        default: {
-          const _exhaustive: never = ctResult;
-          return errorResponse(
-            "Unhandled compute target resolution result",
-            _exhaustive
-          );
-        }
+      if ("errorResponse" in ctRouteResult) {
+        return ctRouteResult.errorResponse;
       }
+      const { computeTargetId: resolvedComputeTargetId } = ctRouteResult;
 
       const command = COMMAND_MAP[body.command];
       const prompt = body.prompt || getDefaultPrompt(command);

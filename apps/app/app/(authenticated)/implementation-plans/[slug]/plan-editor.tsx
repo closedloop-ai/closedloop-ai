@@ -17,6 +17,7 @@ import { MetadataPanel } from "@/components/artifact-editor/metadata-panel";
 import { SaveIndicator } from "@/components/artifact-editor/save-indicator";
 import { StatusMetadataSection } from "@/components/artifact-editor/status-metadata-section";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
+import { LoopDispatchTargetSelector } from "@/components/engineer/LoopDispatchTargetSelector";
 import { GenerationStatusBanner } from "@/components/generation-status-banner";
 import { MoveArtifactDialog } from "@/components/move-artifact-dialog";
 import { useArtifactActions } from "@/hooks/artifact-editing/use-artifact-actions";
@@ -392,6 +393,36 @@ export function PlanEditor({
         onConfirm={planActions.handleExecute}
         onOpenChange={setShowExecuteModal}
         open={showExecuteModal}
+      />
+
+      <FloatingTargetPicker
+        multiTargetState={planActions.multiTargetState}
+        onSelect={planActions.selectTarget}
+      />
+    </div>
+  );
+}
+
+function FloatingTargetPicker({
+  multiTargetState,
+  onSelect,
+}: {
+  multiTargetState: {
+    availableTargets: { id: string; machineName: string; status: string }[];
+  } | null;
+  onSelect: (targetId: string) => void;
+}) {
+  if (!multiTargetState) {
+    return null;
+  }
+  return (
+    <div className="fixed right-4 bottom-4 z-50 rounded-lg border bg-background p-4 shadow-lg">
+      <p className="mb-2 text-muted-foreground text-sm">
+        Multiple compute targets are online. Select one:
+      </p>
+      <LoopDispatchTargetSelector
+        availableTargets={multiTargetState.availableTargets}
+        onSelect={onSelect}
       />
     </div>
   );

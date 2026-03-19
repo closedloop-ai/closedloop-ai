@@ -141,12 +141,6 @@ export function PRDEditor({
         setDecomposeTargetState({
           availableTargets: conflict.availableTargets,
         });
-      } else {
-        toast.error(
-          error instanceof Error
-            ? error.message
-            : "Failed to decompose features"
-        );
       }
     }
   };
