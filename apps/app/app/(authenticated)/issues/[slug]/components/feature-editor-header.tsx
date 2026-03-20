@@ -70,7 +70,7 @@ export function FeatureEditorHeader({
         <DropdownMenuTrigger asChild>
           <Button size="sm">
             Actions
-            <ChevronDownIcon className="ml-2 h-4 w-4" />
+            <ChevronDownIcon className="h-4 w-4" />
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
@@ -78,11 +78,11 @@ export function FeatureEditorHeader({
             disabled={!isReady || hasPlan}
             onClick={onGeneratePlan}
           >
-            <SparklesIcon className="mr-2 h-4 w-4" />
+            <SparklesIcon className="h-4 w-4" />
             Generate Plan
           </DropdownMenuItem>
           <DropdownMenuItem disabled={!hasPlan} onClick={onStartBuild}>
-            <PlayIcon className="mr-2 h-4 w-4" />
+            <PlayIcon className="h-4 w-4" />
             Start Building
           </DropdownMenuItem>
         </DropdownMenuContent>
@@ -98,7 +98,7 @@ export function FeatureEditorHeader({
             className="text-destructive focus:text-destructive"
             onClick={onDelete}
           >
-            <TrashIcon className="mr-2 h-4 w-4" />
+            <TrashIcon className="h-4 w-4" />
             Delete
           </DropdownMenuItem>
         </DropdownMenuContent>

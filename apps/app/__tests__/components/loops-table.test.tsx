@@ -238,7 +238,7 @@ describe("LoopsTable — cancel button visibility", () => {
     render(<LoopsTable />);
 
     expect(
-      screen.getByRole("button", { name: "Cancel loop" })
+      screen.getByRole("button", { name: "Stop loop" })
     ).toBeInTheDocument();
   });
 
@@ -252,7 +252,7 @@ describe("LoopsTable — cancel button visibility", () => {
     render(<LoopsTable />);
 
     expect(
-      screen.getByRole("button", { name: "Cancel loop" })
+      screen.getByRole("button", { name: "Stop loop" })
     ).toBeInTheDocument();
   });
 
@@ -266,7 +266,7 @@ describe("LoopsTable — cancel button visibility", () => {
     render(<LoopsTable />);
 
     expect(
-      screen.getByRole("button", { name: "Cancel loop" })
+      screen.getByRole("button", { name: "Stop loop" })
     ).toBeInTheDocument();
   });
 
@@ -280,7 +280,7 @@ describe("LoopsTable — cancel button visibility", () => {
     render(<LoopsTable />);
 
     expect(
-      screen.queryByRole("button", { name: "Cancel loop" })
+      screen.queryByRole("button", { name: "Stop loop" })
     ).not.toBeInTheDocument();
   });
 
@@ -294,7 +294,7 @@ describe("LoopsTable — cancel button visibility", () => {
     render(<LoopsTable />);
 
     expect(
-      screen.queryByRole("button", { name: "Cancel loop" })
+      screen.queryByRole("button", { name: "Stop loop" })
     ).not.toBeInTheDocument();
   });
 });
@@ -392,10 +392,16 @@ describe("LoopsTable — cancel button interaction", () => {
     } as ReturnType<typeof useLoops>);
   });
 
-  it("calls mutateAsync with the loop id when the cancel button is clicked", async () => {
+  it("calls mutateAsync with the loop id after confirming the stop dialog", async () => {
     render(<LoopsTable />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Cancel loop" }));
+    fireEvent.click(screen.getByRole("button", { name: "Stop loop" }));
+
+    // Confirmation dialog should appear
+    const confirmButton = await screen.findByRole("button", {
+      name: "Stop Loop",
+    });
+    fireEvent.click(confirmButton);
 
     await waitFor(() => {
       expect(mockCancelMutateAsync).toHaveBeenCalledWith("loop-001");

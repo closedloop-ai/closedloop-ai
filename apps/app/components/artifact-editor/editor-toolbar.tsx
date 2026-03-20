@@ -172,7 +172,7 @@ export function EditorToolbar({
                       onClick={item.onClick}
                       variant={item.variant ?? "default"}
                     >
-                      {ItemIcon && <ItemIcon className="mr-2 h-4 w-4" />}
+                      {ItemIcon && <ItemIcon className="h-4 w-4" />}
                       {item.label}
                     </DropdownMenuItem>
                   </div>

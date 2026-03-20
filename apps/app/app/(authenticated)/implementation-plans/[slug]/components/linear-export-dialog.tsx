@@ -137,7 +137,7 @@ export function LinearExportDialog({
           <DialogFooter>
             <Button asChild variant="outline">
               <Link href="/settings">
-                <SettingsIcon className="mr-2 h-4 w-4" />
+                <SettingsIcon className="h-4 w-4" />
                 Go to Settings
               </Link>
             </Button>
@@ -177,7 +177,7 @@ export function LinearExportDialog({
                 <Button asChild size="sm" variant="ghost">
                   <a href={issue.url} rel="noopener noreferrer" target="_blank">
                     View
-                    <ExternalLinkIcon className="ml-2 h-3 w-3" />
+                    <ExternalLinkIcon className="h-3 w-3" />
                   </a>
                 </Button>
               </div>
@@ -232,7 +232,7 @@ export function LinearExportDialog({
           >
             {exportToLinear.isPending ? (
               <>
-                <Loader2Icon className="mr-2 h-4 w-4 animate-spin" />
+                <Loader2Icon className="h-4 w-4 animate-spin" />
                 Exporting...
               </>
             ) : (

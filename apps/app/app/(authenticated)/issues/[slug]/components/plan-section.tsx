@@ -120,7 +120,7 @@ export function PlanSection({
                   variant="default"
                 >
                   Generate Plan
-                  <SparklesIcon className="ml-1 h-4 w-4" />
+                  <SparklesIcon className="h-4 w-4" />
                 </Button>
                 <Button
                   onClick={() => setShowSelectModal(true)}

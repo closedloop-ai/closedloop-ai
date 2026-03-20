@@ -102,7 +102,7 @@ export function BranchesSection({
                   variant="default"
                 >
                   Start Building
-                  <PlayIcon className="ml-1 h-4 w-4" />
+                  <PlayIcon className="h-4 w-4" />
                 </Button>
               ) : (
                 <Button disabled size="sm" variant="secondary">

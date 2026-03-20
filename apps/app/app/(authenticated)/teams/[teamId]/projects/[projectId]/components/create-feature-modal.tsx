@@ -246,7 +246,7 @@ export function CreateFeatureModal({
                           key={artifact.id}
                           onSelect={() => handleAddArtifact(artifact)}
                         >
-                          <FileTextIcon className="mr-2 h-4 w-4 shrink-0" />
+                          <FileTextIcon className="h-4 w-4 shrink-0" />
                           <span className="flex-1 truncate">
                             {artifact.title}
                           </span>
@@ -353,7 +353,7 @@ export function CreateFeatureModal({
           >
             {isSubmitting ? (
               <>
-                <LoaderIcon className="mr-2 h-4 w-4 animate-spin" />
+                <LoaderIcon className="h-4 w-4 animate-spin" />
                 Creating...
               </>
             ) : (

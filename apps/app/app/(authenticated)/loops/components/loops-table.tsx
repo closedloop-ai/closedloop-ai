@@ -1,31 +1,40 @@
 "use client";
 
 import { useFeatureFlag } from "@repo/analytics/client";
-import type { LoopListFilters, LoopWithUser } from "@repo/api/src/types/loop";
+import type { LoopWithUser } from "@repo/api/src/types/loop";
 import { LoopCommand, LoopStatus } from "@repo/api/src/types/loop";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   type Column,
   DataTable,
-  type FilterOption,
 } from "@repo/design-system/components/ui/data-table";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@repo/design-system/components/ui/select";
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuTrigger,
+} from "@repo/design-system/components/ui/dropdown-menu";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@repo/design-system/components/ui/tooltip";
+import {
   CloudIcon,
+  FilterIcon,
   Loader2Icon,
   MonitorIcon,
   RotateCcwIcon,
   SquareIcon,
+  XIcon,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import { ConfirmStopLoopDialog } from "@/components/loops/confirm-stop-loop-dialog";
 import { LoopCommandBadge, LoopStatusBadge } from "@/components/status-badge";
 import { UserLink } from "@/components/user-link";
 import {
@@ -67,6 +76,20 @@ function ComputeTargetCell({ loop }: Readonly<{ loop: LoopWithUser }>) {
     );
   }
   return <span className="text-muted-foreground text-sm">-</span>;
+}
+
+function toggleSetValue(
+  set: Set<string>,
+  value: string,
+  add: boolean
+): Set<string> {
+  const next = new Set(set);
+  if (add) {
+    next.add(value);
+  } else {
+    next.delete(value);
+  }
+  return next;
 }
 
 const PAGE_SIZE_OPTIONS = [10, 25, 50, 100, 200];
@@ -141,7 +164,17 @@ const columns: Column<LoopWithUser>[] = [
   },
 ];
 
-const statusFilterOptions: FilterOption[] = [
+const COMMAND_OPTIONS = [
+  { label: "Plan", value: LoopCommand.Plan },
+  { label: "Execute", value: LoopCommand.Execute },
+  { label: "Chat", value: LoopCommand.Chat },
+  { label: "Explore", value: LoopCommand.Explore },
+  { label: "Request Changes", value: LoopCommand.RequestChanges },
+  { label: "Decompose", value: LoopCommand.Decompose },
+  { label: "Generate PRD", value: LoopCommand.GeneratePrd },
+];
+
+const STATUS_OPTIONS = [
   { label: "Pending", value: LoopStatus.Pending },
   { label: "Claimed", value: LoopStatus.Claimed },
   { label: "Running", value: LoopStatus.Running },
@@ -154,18 +187,32 @@ const statusFilterOptions: FilterOption[] = [
 export function LoopsTable() {
   const router = useRouter();
   const tokensFlag = useFeatureFlag("the-one-flag");
-  const [commandFilter, setCommandFilter] = useState<string>("all");
+  const [selectedCommands, setSelectedCommands] = useState<Set<string>>(
+    new Set()
+  );
+  const [selectedStatuses, setSelectedStatuses] = useState<Set<string>>(
+    new Set()
+  );
+  const [confirmCancelId, setConfirmCancelId] = useState<string | null>(null);
   const resumeLoop = useResumeLoop();
   const cancelLoop = useCancelLoop();
   const [pendingLoopId, setPendingLoopId] = useState<string | null>(null);
   const [cancellingLoopId, setCancellingLoopId] = useState<string | null>(null);
 
-  const filters: LoopListFilters = { limit: 200 };
-  if (commandFilter !== "all") {
-    filters.command = commandFilter as LoopListFilters["command"];
-  }
+  const { data: loops = [], isLoading, error } = useLoops({ limit: 200 });
 
-  const { data: loops = [], isLoading, error } = useLoops(filters);
+  const filteredLoops = useMemo(() => {
+    let result = loops;
+    if (selectedCommands.size > 0) {
+      result = result.filter((loop) => selectedCommands.has(loop.command));
+    }
+    if (selectedStatuses.size > 0) {
+      result = result.filter((loop) => selectedStatuses.has(loop.status));
+    }
+    return result;
+  }, [loops, selectedCommands, selectedStatuses]);
+
+  const activeFilterCount = selectedCommands.size + selectedStatuses.size;
 
   const handleRowClick = (loop: LoopWithUser) => {
     router.push(`/loops/${loop.id}`);
@@ -219,29 +266,77 @@ export function LoopsTable() {
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-2">
-        <span className="text-muted-foreground text-sm">Command:</span>
-        <Select onValueChange={setCommandFilter} value={commandFilter}>
-          <SelectTrigger className="w-[160px]">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All</SelectItem>
-            <SelectItem value={LoopCommand.Plan}>Plan</SelectItem>
-            <SelectItem value={LoopCommand.Execute}>Execute</SelectItem>
-            <SelectItem value={LoopCommand.Chat}>Chat</SelectItem>
-            <SelectItem value={LoopCommand.Explore}>Explore</SelectItem>
-            <SelectItem value={LoopCommand.RequestChanges}>
-              Request Changes
-            </SelectItem>
-          </SelectContent>
-        </Select>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button size="sm" variant="outline">
+              <FilterIcon className="h-4 w-4" />
+              Filter
+              {activeFilterCount > 0 && (
+                <span className="ml-1.5 flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1 text-primary-foreground text-xs">
+                  {activeFilterCount}
+                </span>
+              )}
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start">
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger>Command</DropdownMenuSubTrigger>
+              <DropdownMenuSubContent>
+                {COMMAND_OPTIONS.map((opt) => (
+                  <DropdownMenuCheckboxItem
+                    checked={selectedCommands.has(opt.value)}
+                    key={opt.value}
+                    onCheckedChange={(checked) =>
+                      setSelectedCommands((prev) =>
+                        toggleSetValue(prev, opt.value, checked === true)
+                      )
+                    }
+                    onSelect={(e) => e.preventDefault()}
+                  >
+                    {opt.label}
+                  </DropdownMenuCheckboxItem>
+                ))}
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger>Status</DropdownMenuSubTrigger>
+              <DropdownMenuSubContent>
+                {STATUS_OPTIONS.map((opt) => (
+                  <DropdownMenuCheckboxItem
+                    checked={selectedStatuses.has(opt.value)}
+                    key={opt.value}
+                    onCheckedChange={(checked) =>
+                      setSelectedStatuses((prev) =>
+                        toggleSetValue(prev, opt.value, checked === true)
+                      )
+                    }
+                    onSelect={(e) => e.preventDefault()}
+                  >
+                    {opt.label}
+                  </DropdownMenuCheckboxItem>
+                ))}
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+          </DropdownMenuContent>
+        </DropdownMenu>
+        {activeFilterCount > 0 && (
+          <Button
+            onClick={() => {
+              setSelectedCommands(new Set());
+              setSelectedStatuses(new Set());
+            }}
+            size="sm"
+            variant="ghost"
+          >
+            <XIcon className="h-3.5 w-3.5" />
+            Clear filters
+          </Button>
+        )}
       </div>
       <DataTable
         columns={filteredColumns}
-        data={loops}
+        data={filteredLoops}
         emptyMessage="No loops found. Loops are created when AI agents execute tasks."
-        filterKey="status"
-        filterOptions={statusFilterOptions}
         onRowClick={handleRowClick}
         pageSizeOptions={PAGE_SIZE_OPTIONS}
         renderRowActions={(loop) => {
@@ -253,42 +348,63 @@ export function LoopsTable() {
           return (
             <div className="flex items-center gap-1">
               {canCancel && (
-                <Button
-                  aria-label="Cancel loop"
-                  disabled={cancellingLoopId === loop.id}
-                  onClick={async () => {
-                    await handleCancel(loop.id);
-                  }}
-                  size="sm"
-                  variant="ghost"
-                >
-                  {cancellingLoopId === loop.id ? (
-                    <Loader2Icon className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <SquareIcon className="h-4 w-4" />
-                  )}
-                </Button>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      aria-label="Stop loop"
+                      disabled={cancellingLoopId === loop.id}
+                      onClick={() => setConfirmCancelId(loop.id)}
+                      size="sm"
+                      variant="ghost"
+                    >
+                      {cancellingLoopId === loop.id ? (
+                        <Loader2Icon className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <SquareIcon className="h-4 w-4" />
+                      )}
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>Stop loop</TooltipContent>
+                </Tooltip>
               )}
               {canRestart && (
-                <Button
-                  aria-label="Restart loop"
-                  disabled={pendingLoopId === loop.id}
-                  onClick={async () => {
-                    await handleRestart(loop.id);
-                  }}
-                  size="sm"
-                  variant="ghost"
-                >
-                  {pendingLoopId === loop.id ? (
-                    <Loader2Icon className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <RotateCcwIcon className="h-4 w-4" />
-                  )}
-                </Button>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      aria-label="Restart loop"
+                      disabled={pendingLoopId === loop.id}
+                      onClick={async () => {
+                        await handleRestart(loop.id);
+                      }}
+                      size="sm"
+                      variant="ghost"
+                    >
+                      {pendingLoopId === loop.id ? (
+                        <Loader2Icon className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <RotateCcwIcon className="h-4 w-4" />
+                      )}
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>Restart loop</TooltipContent>
+                </Tooltip>
               )}
             </div>
           );
         }}
+      />
+      <ConfirmStopLoopDialog
+        onConfirm={() => {
+          if (confirmCancelId) {
+            handleCancel(confirmCancelId);
+          }
+        }}
+        onOpenChange={(open) => {
+          if (!open) {
+            setConfirmCancelId(null);
+          }
+        }}
+        open={confirmCancelId !== null}
       />
     </div>
   );

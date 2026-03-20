@@ -34,15 +34,19 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { useState } from "react";
+import { ConfirmStopLoopDialog } from "@/components/loops/confirm-stop-loop-dialog";
 import { LoopAuditLog } from "@/components/loops/loop-audit-log";
 import { LoopProgressPanel } from "@/components/loops/loop-progress-panel";
 import { LoopCommandBadge, LoopStatusBadge } from "@/components/status-badge";
 import { UserLink } from "@/components/user-link";
+import { useArtifact } from "@/hooks/queries/use-artifacts";
 import {
   useCancelLoop,
   useLoop,
   useResumeLoop,
 } from "@/hooks/queries/use-loops";
+import { getArtifactRoute } from "@/lib/artifact-navigation";
 import { formatDateTime } from "@/lib/date-utils";
 import { formatDuration, formatTokenCount } from "@/lib/format-utils";
 import {
@@ -200,6 +204,7 @@ export function LoopDetailContainer({ id }: LoopDetailContainerProps) {
   const resumeLoop = useResumeLoop();
   const cancelLoop = useCancelLoop();
   const router = useRouter();
+  const [showCancelConfirm, setShowCancelConfirm] = useState(false);
 
   if (isLoading) {
     return (
@@ -255,23 +260,21 @@ export function LoopDetailContainer({ id }: LoopDetailContainerProps) {
       <div className="flex items-center gap-2">
         <Button asChild size="sm" variant="ghost">
           <Link href="/loops">
-            <ArrowLeftIcon className="mr-1 h-4 w-4" />
+            <ArrowLeftIcon className="h-4 w-4" />
             Back to Loops
           </Link>
         </Button>
         {isActive && (
           <Button
             disabled={cancelLoop.isPending}
-            onClick={async () => {
-              await handleCancel();
-            }}
+            onClick={() => setShowCancelConfirm(true)}
             size="sm"
             variant="outline"
           >
             {cancelLoop.isPending ? (
-              <Loader2Icon className="mr-2 h-4 w-4 animate-spin" />
+              <Loader2Icon className="h-4 w-4 animate-spin" />
             ) : (
-              <SquareIcon className="mr-2 h-4 w-4" />
+              <SquareIcon className="h-4 w-4" />
             )}
             Cancel
           </Button>
@@ -286,9 +289,9 @@ export function LoopDetailContainer({ id }: LoopDetailContainerProps) {
             variant="outline"
           >
             {resumeLoop.isPending ? (
-              <Loader2Icon className="mr-2 h-4 w-4 animate-spin" />
+              <Loader2Icon className="h-4 w-4 animate-spin" />
             ) : (
-              <RotateCcwIcon className="mr-2 h-4 w-4" />
+              <RotateCcwIcon className="h-4 w-4" />
             )}
             Restart
           </Button>
@@ -336,14 +339,7 @@ export function LoopDetailContainer({ id }: LoopDetailContainerProps) {
       </div>
 
       {/* Artifact link */}
-      {loop.artifactId && (
-        <div className="flex items-center gap-2">
-          <Badge variant="outline">Artifact</Badge>
-          <span className="text-muted-foreground text-sm">
-            {loop.artifactId}
-          </span>
-        </div>
-      )}
+      {loop.artifactId && <ArtifactLink artifactId={loop.artifactId} />}
 
       {/* Error display */}
       {loop.error && (
@@ -387,6 +383,12 @@ export function LoopDetailContainer({ id }: LoopDetailContainerProps) {
           <LoopAuditLog loopId={id} />
         </TabsContent>
       </Tabs>
+
+      <ConfirmStopLoopDialog
+        onConfirm={handleCancel}
+        onOpenChange={setShowCancelConfirm}
+        open={showCancelConfirm}
+      />
     </div>
   );
 }
@@ -416,4 +418,34 @@ function ComputeTargetDetail({
     );
   }
   return null;
+}
+
+function ArtifactLink({ artifactId }: { artifactId: string }) {
+  const { data: artifact } = useArtifact(artifactId);
+  const route = artifact ? getArtifactRoute(artifact) : null;
+
+  const renderLabel = () => {
+    if (!artifact) {
+      return (
+        <span className="text-muted-foreground text-sm">{artifactId}</span>
+      );
+    }
+    if (route) {
+      return (
+        <Link className="text-sm hover:underline" href={route}>
+          {artifact.title}
+        </Link>
+      );
+    }
+    return (
+      <span className="text-muted-foreground text-sm">{artifact.title}</span>
+    );
+  };
+
+  return (
+    <div className="flex items-center gap-2">
+      <Badge variant="outline">Artifact</Badge>
+      {renderLabel()}
+    </div>
+  );
 }

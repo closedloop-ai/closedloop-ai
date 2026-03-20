@@ -70,7 +70,7 @@ function SuspendedState({
         >
           {isDisconnecting ? (
             <>
-              <Loader2Icon className="mr-2 h-4 w-4 animate-spin" />
+              <Loader2Icon className="h-4 w-4 animate-spin" />
               Disconnecting...
             </>
           ) : (
@@ -169,7 +169,7 @@ function ConnectedState({
               rel="noopener noreferrer"
               target="_blank"
             >
-              <ExternalLinkIcon className="mr-1 h-3 w-3" />
+              <ExternalLinkIcon className="h-3 w-3" />
               Manage
             </a>
           </Button>
@@ -181,7 +181,7 @@ function ConnectedState({
           >
             {isDisconnecting ? (
               <>
-                <Loader2Icon className="mr-2 h-4 w-4 animate-spin" />
+                <Loader2Icon className="h-4 w-4 animate-spin" />
                 Disconnecting...
               </>
             ) : (
@@ -216,12 +216,12 @@ function DisconnectedState({
       <Button disabled={isConnecting} onClick={onConnect}>
         {isConnecting ? (
           <>
-            <Loader2Icon className="mr-2 h-4 w-4 animate-spin" />
+            <Loader2Icon className="h-4 w-4 animate-spin" />
             Connecting...
           </>
         ) : (
           <>
-            <ExternalLinkIcon className="mr-2 h-4 w-4" />
+            <ExternalLinkIcon className="h-4 w-4" />
             Connect GitHub
           </>
         )}

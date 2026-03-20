@@ -150,7 +150,7 @@ function LinkExistingTab({
         onClick={() => setSelectOpen(true)}
         variant="outline"
       >
-        <FileTextIcon className="mr-2 h-4 w-4" />
+        <FileTextIcon className="h-4 w-4" />
         Browse PRDs
       </Button>
       <SelectArtifactDialog
@@ -279,12 +279,12 @@ function UploadFileTab({
         >
           {createAttachment.isPending ? (
             <>
-              <Loader2Icon className="mr-2 h-4 w-4 animate-spin" />
+              <Loader2Icon className="h-4 w-4 animate-spin" />
               Uploading...
             </>
           ) : (
             <>
-              <UploadIcon className="mr-2 h-4 w-4" />
+              <UploadIcon className="h-4 w-4" />
               Upload
             </>
           )}
@@ -522,7 +522,7 @@ function ImportGoogleDocsTab({
         >
           {importMutation.isPending ? (
             <>
-              <Loader2Icon className="mr-2 h-4 w-4 animate-spin" />
+              <Loader2Icon className="h-4 w-4 animate-spin" />
               Importing...
             </>
           ) : (

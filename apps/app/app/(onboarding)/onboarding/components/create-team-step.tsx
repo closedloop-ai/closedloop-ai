@@ -81,9 +81,7 @@ export function CreateTeamStep({
           disabled={!name.trim() || createTeam.isPending}
           type="submit"
         >
-          {createTeam.isPending && (
-            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-          )}
+          {createTeam.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
           Create Team
         </Button>
       </form>

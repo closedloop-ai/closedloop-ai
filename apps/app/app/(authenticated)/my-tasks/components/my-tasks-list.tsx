@@ -283,7 +283,7 @@ function MyTasksRow({
               className="text-destructive focus:text-destructive"
               onClick={() => onRequestDelete(issue)}
             >
-              <TrashIcon className="mr-2 h-4 w-4" />
+              <TrashIcon className="h-4 w-4" />
               Delete
             </DropdownMenuItem>
           </DropdownMenuContent>

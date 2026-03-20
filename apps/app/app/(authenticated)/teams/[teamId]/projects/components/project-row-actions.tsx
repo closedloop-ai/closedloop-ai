@@ -36,7 +36,7 @@ export function ProjectRowActions({
           onClick={() => toggleFavorite.mutate({ projectId, isFavorite })}
         >
           <StarIcon
-            className={`mr-2 h-4 w-4 ${isFavorite ? "fill-yellow-400 text-yellow-400" : ""}`}
+            className={`h-4 w-4 ${isFavorite ? "fill-yellow-400 text-yellow-400" : ""}`}
           />
           {isFavorite ? "Remove from Favorites" : "Add to Favorites"}
         </DropdownMenuItem>
@@ -44,7 +44,7 @@ export function ProjectRowActions({
           className="text-destructive focus:bg-destructive/10 focus:text-destructive"
           onClick={onDelete}
         >
-          <TrashIcon className="mr-2 h-4 w-4 text-destructive" />
+          <TrashIcon className="h-4 w-4 text-destructive" />
           Delete project
         </DropdownMenuItem>
       </DropdownMenuContent>

@@ -187,7 +187,7 @@ function CreateApiKeyDialog({
             >
               {createApiKey.isPending ? (
                 <>
-                  <Loader2Icon className="mr-2 h-4 w-4 animate-spin" />
+                  <Loader2Icon className="h-4 w-4 animate-spin" />
                   Creating...
                 </>
               ) : (
@@ -445,7 +445,7 @@ export function ApiKeysSettingsPanel() {
             </CardDescription>
           </div>
           <Button onClick={() => setShowCreateDialog(true)} size="sm">
-            <PlusIcon className="mr-2 h-4 w-4" />
+            <PlusIcon className="h-4 w-4" />
             Create Key
           </Button>
         </CardHeader>
