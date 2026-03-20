@@ -1,6 +1,15 @@
-import type { FindIssuesOptions } from "@repo/api/src/types/issue";
+import type {
+  FindIssuesOptions,
+  IssueWithWorkstream,
+} from "@repo/api/src/types/issue";
 import { IssueStatus } from "@repo/api/src/types/issue";
 import type { MyTasksIssueFilters } from "./types";
+
+export const EMPTY_FILTERS: MyTasksIssueFilters = {
+  priorities: [],
+  projectIds: [],
+  statuses: [],
+};
 
 export const DISPLAY_GROUPS: {
   key: string;
@@ -22,21 +31,52 @@ export const DISPLAY_GROUPS: {
   { key: "obsolete", label: "Obsolete", statuses: [IssueStatus.Obsolete] },
 ];
 
+/**
+ * Build API query params. Only passes assigneeId to the API;
+ * all other filtering is done client-side via `applyClientFilters`.
+ */
 export function buildIssueListParams(
-  assigneeId: string | null,
-  issueFilters?: MyTasksIssueFilters
+  assigneeId: string | null
 ): FindIssuesOptions {
-  const params: FindIssuesOptions = {
+  return {
     assigneeId: assigneeId ?? undefined,
   };
-  if (issueFilters?.projectId) {
-    params.projectId = issueFilters.projectId;
-  }
-  if (issueFilters?.status) {
-    params.status = issueFilters.status;
-  }
-  if (issueFilters?.priority) {
-    params.priority = issueFilters.priority;
-  }
-  return params;
+}
+
+/**
+ * Apply all selected filters client-side.
+ */
+export function applyClientFilters(
+  issues: IssueWithWorkstream[],
+  filters: MyTasksIssueFilters
+): IssueWithWorkstream[] {
+  return issues.filter((issue) => {
+    if (
+      filters.projectIds.length > 0 &&
+      !filters.projectIds.includes(issue.projectId)
+    ) {
+      return false;
+    }
+    if (
+      filters.statuses.length > 0 &&
+      !filters.statuses.includes(issue.status)
+    ) {
+      return false;
+    }
+    if (
+      filters.priorities.length > 0 &&
+      !filters.priorities.includes(issue.priority)
+    ) {
+      return false;
+    }
+    return true;
+  });
+}
+
+export function hasActiveFilters(filters: MyTasksIssueFilters): boolean {
+  return (
+    filters.projectIds.length > 0 ||
+    filters.statuses.length > 0 ||
+    filters.priorities.length > 0
+  );
 }

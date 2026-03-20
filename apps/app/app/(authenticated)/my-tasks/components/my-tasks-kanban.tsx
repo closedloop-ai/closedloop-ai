@@ -32,7 +32,11 @@ import {
 } from "@/hooks/queries/use-issues";
 import { ISSUE_STATUS_TO_ICON } from "@/lib/project-constants";
 import type { MyTasksIssueFilters } from "../types";
-import { buildIssueListParams, DISPLAY_GROUPS } from "../utils";
+import {
+  applyClientFilters,
+  buildIssueListParams,
+  DISPLAY_GROUPS,
+} from "../utils";
 
 /** Map column (droppable) id to the status to set when an issue is dropped there */
 const COLUMN_TO_STATUS: Record<string, IssueStatus> = {
@@ -56,12 +60,17 @@ export function MyTasksKanban({
 }: Readonly<MyTasksKanbanProps>) {
   const queryClient = useQueryClient();
   const listFilters = useMemo(
-    () => buildIssueListParams(assigneeId, issueFilters),
-    [assigneeId, issueFilters]
+    () => buildIssueListParams(assigneeId),
+    [assigneeId]
   );
-  const { data: issues = [], isLoading } = useIssues(listFilters, {
+  const { data: rawIssues = [], isLoading } = useIssues(listFilters, {
     enabled: !!assigneeId && !isUserLoading,
   });
+  const issues = useMemo(
+    () =>
+      issueFilters ? applyClientFilters(rawIssues, issueFilters) : rawIssues,
+    [rawIssues, issueFilters]
+  );
   const updateIssueMutation = useUpdateIssue();
   const lastDraggedIssueIdRef = useRef<string | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);

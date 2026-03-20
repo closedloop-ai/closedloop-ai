@@ -3,21 +3,18 @@
 import type { Priority } from "@repo/api/src/types/common";
 import type { IssueStatus } from "@repo/api/src/types/issue";
 import { Button } from "@repo/design-system/components/ui/button";
-import { Label } from "@repo/design-system/components/ui/label";
 import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@repo/design-system/components/ui/popover";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@repo/design-system/components/ui/select";
-import { LayoutGridIcon, ListFilter, ListIcon } from "lucide-react";
-import { useMemo, useState } from "react";
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@repo/design-system/components/ui/dropdown-menu";
+import { LayoutGridIcon, ListFilter, ListIcon, XIcon } from "lucide-react";
+import { useCallback, useMemo, useState } from "react";
 import { Header } from "@/app/(authenticated)/components/header";
 import {
   issuePriorityLabels,
@@ -32,11 +29,22 @@ import { MyTasksEmptyState } from "./components/my-tasks-empty-state";
 import { MyTasksKanban } from "./components/my-tasks-kanban";
 import { MyTasksList } from "./components/my-tasks-list";
 import type { MyTasksIssueFilters } from "./types";
-import { buildIssueListParams } from "./utils";
+import {
+  applyClientFilters,
+  buildIssueListParams,
+  EMPTY_FILTERS,
+  hasActiveFilters,
+} from "./utils";
 
 const VIEW_KEY = "my-tasks-view";
 
-const FILTER_ALL = "all";
+function toggleArrayValue<T>(arr: T[], value: T): T[] {
+  return arr.includes(value) ? arr.filter((v) => v !== value) : [...arr, value];
+}
+
+const preventClose = (e: Event) => {
+  e.preventDefault();
+};
 
 export default function MyTasksPage() {
   const { data: currentUser, isLoading: isUserLoading } = useCurrentUser();
@@ -44,29 +52,52 @@ export default function MyTasksPage() {
     VIEW_KEY,
     "list"
   );
-  const [filters, setFilters] = useState<MyTasksIssueFilters>({});
+  const [filters, setFilters] = useState<MyTasksIssueFilters>(EMPTY_FILTERS);
   const { data: projects = [] } = useProjects();
 
   const assigneeId = currentUser?.id ?? null;
   const listParams = useMemo(
-    () => buildIssueListParams(assigneeId, filters),
-    [assigneeId, filters]
+    () => buildIssueListParams(assigneeId),
+    [assigneeId]
   );
-  const { data: issues = [], isLoading: isIssuesLoading } = useIssues(
+  const { data: rawIssues = [], isLoading: isIssuesLoading } = useIssues(
     listParams,
     {
       enabled: !!assigneeId && !isUserLoading,
     }
   );
 
+  const issues = useMemo(
+    () => applyClientFilters(rawIssues, filters),
+    [rawIssues, filters]
+  );
+
   const hasTasks = issues.length > 0;
 
   const isListView = view === "list";
 
-  const hasActiveFilters =
-    filters.projectId != null ||
-    filters.status != null ||
-    filters.priority != null;
+  const filtersActive = hasActiveFilters(filters);
+
+  const toggleProject = useCallback((id: string) => {
+    setFilters((prev) => ({
+      ...prev,
+      projectIds: toggleArrayValue(prev.projectIds, id),
+    }));
+  }, []);
+
+  const toggleStatus = useCallback((status: IssueStatus) => {
+    setFilters((prev) => ({
+      ...prev,
+      statuses: toggleArrayValue(prev.statuses, status),
+    }));
+  }, []);
+
+  const togglePriority = useCallback((priority: Priority) => {
+    setFilters((prev) => ({
+      ...prev,
+      priorities: toggleArrayValue(prev.priorities, priority),
+    }));
+  }, []);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -75,7 +106,7 @@ export default function MyTasksPage() {
         <div className="shrink-0 px-4 py-4">
           <OnboardingChecklist />
         </div>
-        {(hasTasks || hasActiveFilters) && (
+        {(hasTasks || filtersActive) && (
           <div className="flex shrink-0 items-center justify-between gap-2 border-b px-4 py-3">
             <h2 className="font-semibold text-lg tracking-tight">
               Pending Work
@@ -101,130 +132,82 @@ export default function MyTasksPage() {
                   </>
                 )}
               </Button>
-              <Popover>
-                <PopoverTrigger asChild>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
                   <Button
                     aria-label="Filter tasks"
-                    className={`border border-input bg-transparent ${hasActiveFilters ? "border-primary/50" : ""}`}
+                    className={`border border-input bg-transparent ${filtersActive ? "border-primary/50" : ""}`}
                     variant="ghost"
                   >
                     <ListFilter className="size-4" />
                     <span className="hidden sm:inline">Filter</span>
                   </Button>
-                </PopoverTrigger>
-                <PopoverContent align="end" className="w-56">
-                  <div className="space-y-3">
-                    <div className="space-y-1.5">
-                      <Label
-                        className="font-medium text-muted-foreground text-xs"
-                        htmlFor="my-tasks-filter-project"
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-56">
+                  <DropdownMenuGroup>
+                    <DropdownMenuLabel>Project</DropdownMenuLabel>
+                    {projects.map((p) => (
+                      <DropdownMenuCheckboxItem
+                        checked={filters.projectIds.includes(p.id)}
+                        key={p.id}
+                        onCheckedChange={() => toggleProject(p.id)}
+                        onSelect={preventClose}
                       >
-                        Project
-                      </Label>
-                      <Select
-                        onValueChange={(v) =>
-                          setFilters((prev) => ({
-                            ...prev,
-                            projectId: v === FILTER_ALL ? undefined : v,
-                          }))
+                        <span className="truncate">{p.name}</span>
+                      </DropdownMenuCheckboxItem>
+                    ))}
+                  </DropdownMenuGroup>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuGroup>
+                    <DropdownMenuLabel>Status</DropdownMenuLabel>
+                    {Object.entries(issueStatusLabels).map(([value, label]) => (
+                      <DropdownMenuCheckboxItem
+                        checked={filters.statuses.includes(
+                          value as IssueStatus
+                        )}
+                        key={value}
+                        onCheckedChange={() =>
+                          toggleStatus(value as IssueStatus)
                         }
-                        value={filters.projectId ?? FILTER_ALL}
+                        onSelect={preventClose}
                       >
-                        <SelectTrigger
-                          className="w-full"
-                          id="my-tasks-filter-project"
-                        >
-                          <SelectValue placeholder="All projects" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value={FILTER_ALL}>
-                            All projects
-                          </SelectItem>
-                          {projects.map((p) => (
-                            <SelectItem key={p.id} value={p.id}>
-                              {p.name}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div className="space-y-1.5">
-                      <Label
-                        className="font-medium text-muted-foreground text-xs"
-                        htmlFor="my-tasks-filter-status"
-                      >
-                        Status
-                      </Label>
-                      <Select
-                        onValueChange={(v) =>
-                          setFilters((prev) => ({
-                            ...prev,
-                            status:
-                              v === FILTER_ALL ? undefined : (v as IssueStatus),
-                          }))
-                        }
-                        value={filters.status ?? FILTER_ALL}
-                      >
-                        <SelectTrigger
-                          className="w-full"
-                          id="my-tasks-filter-status"
-                        >
-                          <SelectValue placeholder="All statuses" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value={FILTER_ALL}>
-                            All statuses
-                          </SelectItem>
-                          {Object.entries(issueStatusLabels).map(
-                            ([value, label]) => (
-                              <SelectItem key={value} value={value}>
-                                {label}
-                              </SelectItem>
-                            )
+                        {label}
+                      </DropdownMenuCheckboxItem>
+                    ))}
+                  </DropdownMenuGroup>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuGroup>
+                    <DropdownMenuLabel>Priority</DropdownMenuLabel>
+                    {Object.entries(issuePriorityLabels).map(
+                      ([value, label]) => (
+                        <DropdownMenuCheckboxItem
+                          checked={filters.priorities.includes(
+                            value as Priority
                           )}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div className="space-y-1.5">
-                      <Label
-                        className="font-medium text-muted-foreground text-xs"
-                        htmlFor="my-tasks-filter-priority"
-                      >
-                        Priority
-                      </Label>
-                      <Select
-                        onValueChange={(v) =>
-                          setFilters((prev) => ({
-                            ...prev,
-                            priority:
-                              v === FILTER_ALL ? undefined : (v as Priority),
-                          }))
-                        }
-                        value={filters.priority ?? FILTER_ALL}
-                      >
-                        <SelectTrigger
-                          className="w-full"
-                          id="my-tasks-filter-priority"
+                          key={value}
+                          onCheckedChange={() =>
+                            togglePriority(value as Priority)
+                          }
+                          onSelect={preventClose}
                         >
-                          <SelectValue placeholder="All priorities" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value={FILTER_ALL}>
-                            All priorities
-                          </SelectItem>
-                          {Object.entries(issuePriorityLabels).map(
-                            ([value, label]) => (
-                              <SelectItem key={value} value={value}>
-                                {label}
-                              </SelectItem>
-                            )
-                          )}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  </div>
-                </PopoverContent>
-              </Popover>
+                          {label}
+                        </DropdownMenuCheckboxItem>
+                      )
+                    )}
+                  </DropdownMenuGroup>
+                  {filtersActive && (
+                    <>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem
+                        onSelect={() => setFilters(EMPTY_FILTERS)}
+                      >
+                        <XIcon className="size-4" />
+                        Clear filters
+                      </DropdownMenuItem>
+                    </>
+                  )}
+                </DropdownMenuContent>
+              </DropdownMenu>
             </div>
           </div>
         )}
