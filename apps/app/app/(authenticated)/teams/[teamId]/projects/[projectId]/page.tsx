@@ -268,18 +268,18 @@ export default function ProjectDetailPage() {
           <DropdownMenuTrigger asChild>
             <Button>
               Actions
-              <ChevronDownIcon className="ml-2 h-4 w-4" />
+              <ChevronDownIcon className="h-4 w-4" />
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
             <DropdownMenuItem
               onClick={() => handleCreateArtifact(ArtifactType.Prd)}
             >
-              <FileIcon className="mr-2 h-4 w-4" />
+              <FileIcon className="h-4 w-4" />
               Create PRD
             </DropdownMenuItem>
             <DropdownMenuItem onClick={() => setCreateFeatureOpen(true)}>
-              <BoxIcon className="mr-2 h-4 w-4" />
+              <BoxIcon className="h-4 w-4" />
               Create Feature
             </DropdownMenuItem>
             <DropdownMenuItem
@@ -287,7 +287,7 @@ export default function ProjectDetailPage() {
                 handleCreateArtifact(ArtifactType.ImplementationPlan)
               }
             >
-              <FileCode2Icon className="mr-2 h-4 w-4" />
+              <FileCode2Icon className="h-4 w-4" />
               Create Implementation Plan
             </DropdownMenuItem>
           </DropdownMenuContent>
@@ -310,7 +310,7 @@ export default function ProjectDetailPage() {
               }
             >
               <StarIcon
-                className={`mr-2 h-4 w-4 ${isFavorite ? "fill-yellow-400 text-yellow-400" : ""}`}
+                className={`h-4 w-4 ${isFavorite ? "fill-yellow-400 text-yellow-400" : ""}`}
               />
               {isFavorite ? "Remove from Favorites" : "Add to Favorites"}
             </DropdownMenuItem>
@@ -318,7 +318,7 @@ export default function ProjectDetailPage() {
               className="text-destructive focus:bg-destructive/10 focus:text-destructive"
               onClick={() => setDeleteDialogOpen(true)}
             >
-              <TrashIcon className="mr-2 h-4 w-4 text-destructive" />
+              <TrashIcon className="h-4 w-4 text-destructive" />
               Delete
             </DropdownMenuItem>
           </DropdownMenuContent>

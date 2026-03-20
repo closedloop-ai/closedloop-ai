@@ -606,7 +606,7 @@ function CreateArtifactFooter({
           >
             {isSaving ? (
               <>
-                <LoaderIcon className="mr-2 h-4 w-4 animate-spin" />
+                <LoaderIcon className="h-4 w-4 animate-spin" />
                 Saving...
               </>
             ) : (
@@ -616,12 +616,12 @@ function CreateArtifactFooter({
           <Button disabled={isSubmitting || !canGenerate} onClick={onGenerate}>
             {isGenerating ? (
               <>
-                <LoaderIcon className="mr-2 h-4 w-4 animate-spin" />
+                <LoaderIcon className="h-4 w-4 animate-spin" />
                 Generating...
               </>
             ) : (
               <>
-                <SparklesIcon className="mr-2 h-4 w-4" />
+                <SparklesIcon className="h-4 w-4" />
                 Generate PRD
               </>
             )}
@@ -631,7 +631,7 @@ function CreateArtifactFooter({
         <Button disabled={isSubmitting || !canSubmit} onClick={onSubmit}>
           {isSaving ? (
             <>
-              <LoaderIcon className="mr-2 h-4 w-4 animate-spin" />
+              <LoaderIcon className="h-4 w-4 animate-spin" />
               Creating...
             </>
           ) : (
@@ -782,7 +782,7 @@ function PrdContentFields({
             type="button"
             variant="outline"
           >
-            <UploadIcon className="mr-2 h-4 w-4" />
+            <UploadIcon className="h-4 w-4" />
             Upload .md
           </Button>
         </div>

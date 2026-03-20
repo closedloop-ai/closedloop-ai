@@ -410,14 +410,14 @@ function ArtifactSection({
                               setMoveDialogOpen(true);
                             }}
                           >
-                            <FolderIcon className="mr-2 h-4 w-4" />
+                            <FolderIcon className="h-4 w-4" />
                             Move...
                           </DropdownMenuItem>
                           <DropdownMenuItem
                             className="text-destructive focus:bg-destructive/10 focus:text-destructive"
                             onClick={() => onRequestDelete(artifact)}
                           >
-                            <TrashIcon className="mr-2 h-4 w-4" />
+                            <TrashIcon className="h-4 w-4" />
                             Delete artifact
                           </DropdownMenuItem>
                         </DropdownMenuContent>

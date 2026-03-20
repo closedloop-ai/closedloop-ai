@@ -39,7 +39,7 @@ export function VersionSelector({
           <span className="font-mono text-muted-foreground">
             v{currentVersion}
           </span>
-          <ChevronDownIcon className="ml-1 h-3 w-3" />
+          <ChevronDownIcon className="h-3 w-3" />
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-[160px]">

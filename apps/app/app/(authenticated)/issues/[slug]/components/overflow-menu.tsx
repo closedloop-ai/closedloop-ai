@@ -29,7 +29,7 @@ export function OverflowMenu({
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
         <DropdownMenuItem onClick={() => onUnlink(linkId)}>
-          <Unlink2Icon className="mr-2 h-4 w-4" />
+          <Unlink2Icon className="h-4 w-4" />
           Unlink
         </DropdownMenuItem>
       </DropdownMenuContent>

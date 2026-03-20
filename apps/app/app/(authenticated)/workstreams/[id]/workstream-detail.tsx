@@ -38,7 +38,7 @@ export function WorkstreamDetail({
           <div className="flex items-center gap-4">
             <Link href="/workstreams">
               <Button size="sm" variant="ghost">
-                <ArrowLeftIcon className="mr-2 h-4 w-4" />
+                <ArrowLeftIcon className="h-4 w-4" />
                 Back
               </Button>
             </Link>

@@ -79,7 +79,7 @@ export function SelectArtifactDialog({
                   onSelect={() => onSelect(artifact)}
                   value={artifact.title}
                 >
-                  <Icon className="mr-2 h-4 w-4 shrink-0 text-muted-foreground" />
+                  <Icon className="h-4 w-4 shrink-0 text-muted-foreground" />
                   <span className="truncate">{artifact.title}</span>
                 </CommandItem>
               ))}

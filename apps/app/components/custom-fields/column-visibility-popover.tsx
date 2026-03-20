@@ -36,7 +36,7 @@ export function ColumnVisibilityPopover({
     <Popover>
       <PopoverTrigger asChild>
         <Button size="sm" variant="outline">
-          <SlidersHorizontalIcon className="mr-2 h-4 w-4" />
+          <SlidersHorizontalIcon className="h-4 w-4" />
           Columns
         </Button>
       </PopoverTrigger>

@@ -56,7 +56,7 @@ export function CodebaseSummaryUpload({
         onClick={() => fileInputRef.current?.open()}
         variant="outline"
       >
-        <UploadIcon className="mr-2 h-4 w-4" />
+        <UploadIcon className="h-4 w-4" />
         {uploadMutation.isPending ? "Uploading..." : "Upload Codebase Summary"}
       </Button>
       {lastIndexedAt ? (
