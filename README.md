@@ -127,7 +127,7 @@ Shared packages imported as `@repo/<package-name>`:
 | **payments** | Stripe subscription management |
 | **analytics** | PostHog + Google Analytics + Vercel Analytics |
 | **observability** | Error tracking and logging (BetterStack) |
-| **security** | Arcjet bot detection, shield, rate limiting |
+| **security** | Security headers via Nosecone |
 | **notifications** | In-app notifications via Knock |
 | **feature-flags** | Feature flag management (Vercel Flags + PostHog) |
 | **aws** | S3 artifact storage with presigned URLs |
@@ -165,7 +165,6 @@ ClosedLoop integrates with several third-party services. At minimum you need acc
 | **[Resend](https://resend.com)** | Optional | Transactional emails | Get API key |
 | **[Knock](https://knock.app)** | Optional | In-app notifications | Create account, get API + feed channel keys |
 | **[BaseHub](https://basehub.com)** | Optional | CMS for marketing site blog/docs | Get token |
-| **[Arcjet](https://arcjet.com)** | Optional | Bot detection, rate limiting, attack protection | Get API key |
 | **[Vercel](https://vercel.com)** | For deployment | Hosting, edge functions, blob storage, analytics | Connect repo |
 
 See **[docs/local_deployment.md](docs/local_deployment.md)** for step-by-step configuration of each service.

@@ -11,11 +11,9 @@ export function registerCreateArtifactVersion(
     "create-artifact-version",
     {
       description:
-        "Create a new version of an artifact. The previous version is preserved in history.",
+        "Create a new version of an artifact by ID or slug. The previous version is preserved in history.",
       inputSchema: {
-        artifactId: z
-          .string()
-          .describe("ID of the artifact to create a new version for"),
+        artifactId: z.string().describe("ID or slug of the artifact"),
         content: z.string().describe("Content for the new version"),
       },
     },

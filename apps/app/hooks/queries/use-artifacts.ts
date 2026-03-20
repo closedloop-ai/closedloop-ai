@@ -14,7 +14,7 @@ import type {
 import type { ArtifactVersion } from "@repo/api/src/types/artifact-version";
 import { EntityType } from "@repo/api/src/types/entity-link";
 import type { ExternalLink } from "@repo/api/src/types/external-link";
-import { toast } from "@repo/design-system/components/ui/sonner";
+import { RunLoopCommand } from "@repo/api/src/types/loop";
 import {
   type UseQueryOptions,
   useMutation,
@@ -381,7 +381,7 @@ export function useCreateAndGenerateArtifact() {
         if (useLoopsRef.current) {
           const routing = getEngineerRoutingSelection();
           await apiClient.post(`/artifacts/${artifact.id}/run-loop`, {
-            command: "plan",
+            command: RunLoopCommand.Plan,
             computeTargetId: routing.computeTargetId,
           });
           return artifact;
@@ -391,10 +391,9 @@ export function useCreateAndGenerateArtifact() {
           {}
         );
         return regenerated;
-      } catch (err) {
-        toast.error(
-          err instanceof Error ? err.message : "Plan generation failed"
-        );
+      } catch {
+        // Generation failed — return the created artifact so the user can retry.
+        // Error toast handled by global QueryClient onError handler.
         return artifact;
       }
     },

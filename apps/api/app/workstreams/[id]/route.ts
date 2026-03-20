@@ -1,6 +1,7 @@
 import { CustomFieldEntityType } from "@repo/api/src/types/custom-field";
 import type { Workstream } from "@repo/api/src/types/workstream";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
+import { resolveWorkstreamId } from "@/lib/identifier-utils";
 
 import {
   deleteResponse,
@@ -20,9 +21,13 @@ export const GET = withAnyAuth<Workstream, "/workstreams/[id]">(
   async ({ user }, _request, params) => {
     try {
       const { id } = await params;
+      const resolvedId = await resolveWorkstreamId(id, user.organizationId);
+      if (!resolvedId) {
+        return notFoundResponse("Workstream");
+      }
 
       const workstream = await workstreamsService.findById(
-        id,
+        resolvedId,
         user.organizationId
       );
 
@@ -47,9 +52,13 @@ export const PUT = withAnyAuth<Workstream, "/workstreams/[id]">(
   async ({ user }, request, params) => {
     try {
       const { id } = await params;
+      const resolvedId = await resolveWorkstreamId(id, user.organizationId);
+      if (!resolvedId) {
+        return notFoundResponse("Workstream");
+      }
 
       const existing = await workstreamsService.findById(
-        id,
+        resolvedId,
         user.organizationId
       );
 
@@ -68,7 +77,7 @@ export const PUT = withAnyAuth<Workstream, "/workstreams/[id]">(
       const { customFields, ...workstreamInput } = body;
 
       const workstream = await workstreamsService.update(
-        id,
+        resolvedId,
         user.organizationId,
         workstreamInput
       );
@@ -76,7 +85,7 @@ export const PUT = withAnyAuth<Workstream, "/workstreams/[id]">(
       if (customFields) {
         await applyCustomFieldsFromBody(
           customFields,
-          id,
+          resolvedId,
           CustomFieldEntityType.Workstream,
           user.organizationId
         );
@@ -94,8 +103,12 @@ export const DELETE = withAnyAuth<{ deleted: true }, "/workstreams/[id]">(
   async ({ user }, _request, params) => {
     try {
       const { id } = await params;
+      const resolvedId = await resolveWorkstreamId(id, user.organizationId);
+      if (!resolvedId) {
+        return notFoundResponse("Workstream");
+      }
 
-      await workstreamsService.delete(id, user.organizationId);
+      await workstreamsService.delete(resolvedId, user.organizationId);
 
       return deleteResponse();
     } catch (error) {

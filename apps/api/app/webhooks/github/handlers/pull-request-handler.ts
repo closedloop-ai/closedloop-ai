@@ -1,22 +1,39 @@
 import type {
   PullRequestClosedEvent,
   PullRequestConvertedToDraftEvent,
+  PullRequestEditedEvent,
+  PullRequestOpenedEvent,
   PullRequestReadyForReviewEvent,
   PullRequestReopenedEvent,
   PullRequestSynchronizeEvent,
 } from "@octokit/webhooks-types";
-import { ArtifactStatus } from "@repo/api/src/types/artifact";
+import {
+  type Artifact,
+  ArtifactStatus,
+  ArtifactType,
+} from "@repo/api/src/types/artifact";
+import { EntityType, LinkType } from "@repo/api/src/types/entity-link";
+import { ExternalLinkType } from "@repo/api/src/types/external-link";
 import type { TransactionClient } from "@repo/database";
-import { ChecksStatus, withDb } from "@repo/database";
+import {
+  ChecksStatus,
+  GitHubPRState,
+  WorkstreamType,
+  withDb,
+} from "@repo/database";
+import { parsePlanReferences } from "@repo/github/plan-reference-parser";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
+import { generateSlug, SlugPrefix } from "@/lib/slug-generator";
 
 /**
  * Actions this handler processes. All other actions are ignored with an early return.
- * GitHub sends many PR action types (edited, labeled, assigned, etc.)
+ * GitHub sends many PR action types (labeled, assigned, etc.)
  * that we don't process.
  */
 const HANDLED_ACTIONS = new Set([
+  "opened",
+  "edited",
   "closed",
   "reopened",
   "synchronize",
@@ -24,12 +41,15 @@ const HANDLED_ACTIONS = new Set([
   "ready_for_review",
 ]);
 
+/** Actions that trigger plan reference parsing and linkage. */
+const LINKAGE_ACTIONS = new Set(["opened", "edited", "reopened"]);
+
 /**
  * Union type for pull request events we handle.
- * Other PR action types (edited, labeled, assigned, review_requested, etc.)
- * are documented in the handlePullRequest function for future reference.
  */
 export type HandledPullRequestEvent =
+  | PullRequestOpenedEvent
+  | PullRequestEditedEvent
   | PullRequestClosedEvent
   | PullRequestReopenedEvent
   | PullRequestSynchronizeEvent
@@ -45,15 +65,15 @@ function parseDateOrNow(value: string | null): Date {
  * Handle GitHub pull_request webhook events.
  *
  * Supported lifecycle actions:
+ * - opened: Parse plan references from title/body, link PR to plan artifact
+ * - edited: Parse plan references from title/body, link PR to plan artifact (if not already linked)
  * - closed: Updates state to MERGED (if merged) or CLOSED, creates corresponding workstream event
- * - reopened: Updates state to OPEN, clears closedAt
+ * - reopened: Updates state to OPEN, clears closedAt; also re-checks plan references
  * - synchronize: Updates head SHA when PR is updated with new commits
  * - converted_to_draft: Sets isDraft to true
  * - ready_for_review: Sets isDraft to false
  *
  * Other GitHub PR action types (for future reference):
- * - opened: Initial PR creation (handled by execute workflow, not here)
- * - edited: Title/body/base branch changed
  * - labeled/unlabeled: Labels added/removed
  * - assigned/unassigned: Assignees changed
  * - review_requested/review_request_removed: Reviewers changed
@@ -90,12 +110,16 @@ export async function handlePullRequest(
     repositoryId: repository.id,
   });
 
-  // All reads and writes in a single transaction to avoid TOCTOU gaps
   await withDb.tx(async (tx) => {
     // Step 1: Find GitHubInstallationRepository by githubRepoId
     const repo = await tx.gitHubInstallationRepository.findFirst({
       where: { githubRepoId: repository.id },
-      select: { id: true },
+      select: {
+        id: true,
+        installation: {
+          select: { organizationId: true },
+        },
+      },
     });
 
     if (!repo) {
@@ -125,13 +149,20 @@ export async function handlePullRequest(
       },
     });
 
+    // For linkage actions, attempt plan reference linking even if PR doesn't exist yet
+    if (LINKAGE_ACTIONS.has(action)) {
+      await attemptPlanLinkage(tx, pull_request, repo, existingPr);
+    }
+
     if (!existingPr) {
-      log.warn("[handlePullRequest] Pull request not found in database", {
-        repositoryId: repo.id,
-        prNumber: pull_request.number,
-        action,
-        reason: "PR may have been created outside Symphony workflow",
-      });
+      if (!LINKAGE_ACTIONS.has(action)) {
+        log.warn("[handlePullRequest] Pull request not found in database", {
+          repositoryId: repo.id,
+          prNumber: pull_request.number,
+          action,
+          reason: "PR may have been created outside Symphony workflow",
+        });
+      }
       return;
     }
 
@@ -150,6 +181,11 @@ export async function handlePullRequest(
   });
 }
 
+type RepoWithInstallation = {
+  id: string;
+  installation: { organizationId: string | null };
+};
+
 type ExistingPr = {
   id: string;
   workstreamId: string;
@@ -157,6 +193,354 @@ type ExistingPr = {
   checksStatus: string;
   artifact: { slug: string } | null;
 };
+
+/**
+ * Attempt to link a PR to a plan artifact based on plan references in title/body.
+ * Handles both existing PRs (edit/reopen) and new PRs (opened).
+ */
+async function attemptPlanLinkage(
+  tx: TransactionClient,
+  pull_request: HandledPullRequestEvent["pull_request"],
+  repo: RepoWithInstallation,
+  existingPr: ExistingPr | null
+): Promise<void> {
+  if (existingPr?.artifactId) {
+    log.info(
+      "[handlePullRequest] PR already linked to artifact, skipping linkage",
+      {
+        prNumber: pull_request.number,
+        existingArtifactId: existingPr.artifactId,
+      }
+    );
+    return;
+  }
+
+  const organizationId = repo.installation.organizationId;
+  if (!organizationId) {
+    log.warn(
+      "[handlePullRequest] Installation has no organizationId, skipping linkage",
+      {
+        prNumber: pull_request.number,
+      }
+    );
+    return;
+  }
+
+  // Parse plan references from title and body
+  const appBaseUrl = process.env.NEXT_PUBLIC_APP_URL;
+  const refs = parsePlanReferences(
+    pull_request.title,
+    pull_request.body,
+    appBaseUrl
+  );
+
+  if (refs.length === 0) {
+    return;
+  }
+
+  // Use first match (title precedence, then first in body)
+  const firstRef = refs[0];
+
+  log.info("[handlePullRequest] Found plan reference in PR", {
+    prNumber: pull_request.number,
+    slug: firstRef.slug,
+    matchType: firstRef.matchType,
+    source: firstRef.source,
+  });
+
+  // Look up artifact by (organizationId, slug)
+  const artifact = await tx.artifact.findUnique({
+    where: {
+      organizationId_slug: {
+        organizationId,
+        slug: firstRef.slug,
+      },
+    },
+    select: {
+      id: true,
+      type: true,
+      title: true,
+      organizationId: true,
+      projectId: true,
+      workstreamId: true,
+      assigneeId: true,
+      createdById: true,
+      slug: true,
+    },
+  });
+
+  // AC-006: Invalid slug — do not fail, just skip
+  if (!artifact) {
+    log.warn("[handlePullRequest] Artifact not found for plan reference", {
+      prNumber: pull_request.number,
+      slug: firstRef.slug,
+      organizationId,
+    });
+    return;
+  }
+
+  // AC-007: Only link IMPLEMENTATION_PLAN artifacts
+  if (artifact.type !== ArtifactType.ImplementationPlan) {
+    log.info(
+      "[handlePullRequest] Artifact is not an implementation plan, skipping",
+      {
+        prNumber: pull_request.number,
+        slug: firstRef.slug,
+        artifactType: artifact.type,
+      }
+    );
+    return;
+  }
+
+  // Resolve workstreamId: prefer artifact's, then existing PR's, or auto-create
+  let workstreamId: string | null | undefined =
+    artifact.workstreamId ?? existingPr?.workstreamId;
+  if (!workstreamId) {
+    workstreamId = await autoCreateWorkstream(tx, artifact, organizationId);
+    if (!workstreamId) {
+      log.warn(
+        "[handlePullRequest] Cannot link PR — no workstreamId and cannot auto-create (missing projectId)",
+        {
+          prNumber: pull_request.number,
+          slug: firstRef.slug,
+          artifactId: artifact.id,
+        }
+      );
+      return;
+    }
+  }
+
+  if (existingPr) {
+    // Update existing PR with artifactId
+    await linkExistingPrToArtifact(
+      tx,
+      existingPr,
+      artifact,
+      workstreamId,
+      pull_request
+    );
+  } else {
+    // Create new PR record and link it
+    await createAndLinkPr(
+      tx,
+      repo,
+      artifact,
+      organizationId,
+      workstreamId,
+      pull_request
+    );
+  }
+}
+
+/**
+ * Auto-create a workstream for an artifact that lacks one.
+ * Follows the same pattern as artifactsService.findOrCreateWorkstream.
+ * Returns the new workstreamId, or null if the artifact has no projectId.
+ */
+async function autoCreateWorkstream(
+  tx: TransactionClient,
+  artifact: Pick<
+    Artifact,
+    | "id"
+    | "title"
+    | "organizationId"
+    | "projectId"
+    | "assigneeId"
+    | "createdById"
+    | "slug"
+  >,
+  organizationId: string
+): Promise<string | null> {
+  if (!artifact.projectId) {
+    return null;
+  }
+
+  const slug = await generateSlug(organizationId, SlugPrefix.Workstream);
+
+  const workstream = await tx.workstream.create({
+    data: {
+      organizationId,
+      projectId: artifact.projectId,
+      title: artifact.title,
+      description: `Auto-created for PR linkage: ${artifact.title}`,
+      type: WorkstreamType.FEATURE_DELIVERY,
+      createdById: artifact.assigneeId ?? artifact.createdById,
+      slug,
+    },
+  });
+
+  // Attach the artifact to the new workstream
+  await tx.artifact.update({
+    where: { id: artifact.id, organizationId },
+    data: { workstreamId: workstream.id },
+  });
+
+  log.info("[handlePullRequest] Auto-created workstream for artifact", {
+    workstreamId: workstream.id,
+    artifactId: artifact.id,
+    slug: artifact.slug,
+  });
+
+  return workstream.id;
+}
+
+/**
+ * Link an existing GitHubPullRequest record to a plan artifact.
+ * Creates ExternalLink, EntityLink, and WorkstreamEvent records.
+ */
+async function linkExistingPrToArtifact(
+  tx: TransactionClient,
+  existingPr: ExistingPr,
+  artifact: {
+    id: string;
+    organizationId: string;
+    projectId: string | null;
+    slug: string;
+  },
+  workstreamId: string,
+  pull_request: HandledPullRequestEvent["pull_request"]
+): Promise<void> {
+  // Update artifactId on the PR
+  await tx.gitHubPullRequest.update({
+    where: { id: existingPr.id },
+    data: { artifactId: artifact.id },
+  });
+
+  await createLinkageRecords(tx, artifact, workstreamId, pull_request);
+
+  log.info("[handlePullRequest] Linked existing PR to artifact", {
+    prId: existingPr.id,
+    artifactId: artifact.id,
+    slug: artifact.slug,
+  });
+}
+
+/**
+ * Create a new GitHubPullRequest record and link it to a plan artifact.
+ * Used for PRs opened outside Symphony that reference a plan slug.
+ */
+async function createAndLinkPr(
+  tx: TransactionClient,
+  repo: RepoWithInstallation,
+  artifact: Pick<Artifact, "id" | "organizationId" | "projectId" | "slug">,
+  organizationId: string,
+  workstreamId: string,
+  pull_request: HandledPullRequestEvent["pull_request"]
+): Promise<void> {
+  await tx.gitHubPullRequest.create({
+    data: {
+      workstreamId,
+      organizationId,
+      repositoryId: repo.id,
+      artifactId: artifact.id,
+      githubId: pull_request.id,
+      number: pull_request.number,
+      title: pull_request.title,
+      htmlUrl: pull_request.html_url,
+      headBranch: pull_request.head.ref,
+      baseBranch: pull_request.base.ref,
+      headSha: pull_request.head.sha,
+      state: GitHubPRState.OPEN,
+      isDraft: pull_request.draft ?? false,
+    },
+  });
+
+  await createLinkageRecords(tx, artifact, workstreamId, pull_request);
+
+  log.info("[handlePullRequest] Created and linked new PR to artifact", {
+    prNumber: pull_request.number,
+    artifactId: artifact.id,
+    slug: artifact.slug,
+  });
+}
+
+/**
+ * Create ExternalLink, EntityLink, and WorkstreamEvent records for a PR-to-plan link.
+ */
+async function createLinkageRecords(
+  tx: TransactionClient,
+  artifact: Pick<Artifact, "id" | "organizationId" | "projectId" | "slug">,
+  workstreamId: string,
+  pull_request: HandledPullRequestEvent["pull_request"]
+): Promise<void> {
+  // AC-008: Check for existing ExternalLink to prevent duplicates
+  const existingExternalLink = await tx.externalLink.findFirst({
+    where: {
+      organizationId: artifact.organizationId,
+      type: ExternalLinkType.PullRequest,
+      externalUrl: pull_request.html_url,
+    },
+    select: { id: true },
+  });
+
+  let externalLinkId: string;
+
+  if (existingExternalLink) {
+    externalLinkId = existingExternalLink.id;
+  } else {
+    const prLink = await tx.externalLink.create({
+      data: {
+        organizationId: artifact.organizationId,
+        workstreamId,
+        projectId: artifact.projectId!,
+        type: ExternalLinkType.PullRequest,
+        title: pull_request.title,
+        externalUrl: pull_request.html_url,
+        metadata: {
+          number: pull_request.number,
+          githubId: pull_request.id,
+          headBranch: pull_request.head.ref,
+          baseBranch: pull_request.base.ref,
+          state: GitHubPRState.OPEN,
+        },
+      },
+    });
+    externalLinkId = prLink.id;
+  }
+
+  // AC-008: Check for existing EntityLink to prevent duplicates
+  const existingEntityLink = await tx.entityLink.findFirst({
+    where: {
+      sourceId: artifact.id,
+      targetId: externalLinkId,
+      linkType: LinkType.Produces,
+    },
+    select: { id: true },
+  });
+
+  if (!existingEntityLink) {
+    await tx.entityLink.create({
+      data: {
+        organizationId: artifact.organizationId,
+        sourceId: artifact.id,
+        sourceType: EntityType.Artifact,
+        targetId: externalLinkId,
+        targetType: EntityType.ExternalLink,
+        linkType: LinkType.Produces,
+      },
+    });
+  }
+
+  // Create WorkstreamEvent — use GITHUB_PR_LINKED for all linkage actions
+  // (opened/edited/reopened all represent a PR being linked to a plan, not a comment)
+  const eventType = "GITHUB_PR_LINKED";
+
+  await tx.workstreamEvent.create({
+    data: {
+      workstreamId,
+      type: eventType,
+      actorType: "system",
+      data: {
+        prNumber: pull_request.number,
+        prUrl: pull_request.html_url,
+        prTitle: pull_request.title,
+        branch: pull_request.head.ref,
+        artifactId: artifact.id,
+        slug: artifact.slug,
+      },
+    },
+  });
+}
 
 async function applyPrAction(
   tx: TransactionClient,
@@ -168,7 +552,7 @@ async function applyPrAction(
   switch (action) {
     case "closed": {
       const isMerged = (event as PullRequestClosedEvent).pull_request.merged;
-      const newState = isMerged ? "MERGED" : "CLOSED";
+      const newState = isMerged ? GitHubPRState.MERGED : GitHubPRState.CLOSED;
 
       await tx.gitHubPullRequest.update({
         where: { id: existingPr.id },
@@ -225,7 +609,7 @@ async function applyPrAction(
       await tx.gitHubPullRequest.update({
         where: { id: existingPr.id },
         data: {
-          state: "OPEN",
+          state: GitHubPRState.OPEN,
           closedAt: null,
         },
       });

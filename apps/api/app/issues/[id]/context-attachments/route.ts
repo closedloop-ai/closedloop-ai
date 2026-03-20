@@ -6,6 +6,7 @@ import { artifactsService } from "@/app/artifacts/service";
 import { entityLinksService } from "@/app/entity-links/service";
 import { issuesService } from "@/app/issues/service";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
+import { resolveIssueId } from "@/lib/identifier-utils";
 import {
   badRequestResponse,
   errorResponse,
@@ -20,7 +21,11 @@ export const POST = withAnyAuth<
   "/issues/[id]/context-attachments"
 >(async ({ user }, request, params) => {
   try {
-    const { id: issueId } = await params;
+    const { id } = await params;
+    const issueId = await resolveIssueId(id, user.organizationId);
+    if (!issueId) {
+      return notFoundResponse("Issue");
+    }
 
     const { body, errorResponse: parseError } = await parseBody(
       request,

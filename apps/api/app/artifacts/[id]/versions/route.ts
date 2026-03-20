@@ -2,6 +2,7 @@ import type { Artifact } from "@repo/api/src/types/artifact";
 import { ArtifactType } from "@repo/api/src/types/artifact";
 import type { ArtifactVersion } from "@repo/api/src/types/artifact-version";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
+import { resolveArtifactId } from "@/lib/identifier-utils";
 import { scheduleAutoEvaluatePrd } from "@/lib/loops/auto-evaluate-prd";
 import {
   errorResponse,
@@ -23,17 +24,21 @@ export const GET = withAnyAuth<
 >(async ({ user }, _, params) => {
   try {
     const { id } = await params;
+    const resolvedId = await resolveArtifactId(id, user.organizationId);
+    if (!resolvedId) {
+      return notFoundResponse("Artifact");
+    }
 
     // Verify artifact exists and belongs to org
     const artifact = await artifactsService.findByIdSimple(
-      id,
+      resolvedId,
       user.organizationId
     );
     if (!artifact) {
       return notFoundResponse("Artifact");
     }
 
-    const versions = await artifactVersionService.listVersions(id);
+    const versions = await artifactVersionService.listVersions(resolvedId);
     return successResponse(versions);
   } catch (error) {
     return errorResponse("Failed to fetch artifact versions", error);
@@ -44,6 +49,10 @@ export const POST = withAnyAuth<Artifact, "/artifacts/[id]/versions">(
   async ({ user }, request, params) => {
     try {
       const { id } = await params;
+      const resolvedId = await resolveArtifactId(id, user.organizationId);
+      if (!resolvedId) {
+        return notFoundResponse("Artifact");
+      }
 
       const { body, errorResponse: parseError } = await parseBody(
         request,
@@ -55,7 +64,7 @@ export const POST = withAnyAuth<Artifact, "/artifacts/[id]/versions">(
 
       // This delegates to artifactVersionService which atomically increments latestVersion
       const updatedArtifact = await artifactsService.createNewVersion(
-        id,
+        resolvedId,
         user.organizationId,
         user.id,
         body.content

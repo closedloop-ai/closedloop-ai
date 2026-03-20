@@ -16,6 +16,9 @@ vi.mock("@/lib/auth/with-auth", () => ({
   withAuth: (handler: any) => async (request: any, context: any) =>
     handler(mockAuthContext, request, context.params),
 }));
+vi.mock("@/lib/identifier-utils", () => ({
+  resolveArtifactId: vi.fn(async (id: string) => id),
+}));
 vi.mock("@/app/artifacts/service");
 
 describe("GET /api/artifacts/[id]/rating", () => {

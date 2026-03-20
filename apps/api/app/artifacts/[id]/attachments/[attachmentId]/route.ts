@@ -1,6 +1,7 @@
 import type { AttachmentDownloadResponse } from "@repo/api/src/types/attachment";
 import { attachmentsService } from "@/app/artifacts/attachments-service";
 import { withAuth } from "@/lib/auth/with-auth";
+import { resolveArtifactId } from "@/lib/identifier-utils";
 import {
   deleteResponse,
   errorResponse,
@@ -14,9 +15,13 @@ export const GET = withAuth<
 >(async ({ user }, _request, params) => {
   try {
     const { id, attachmentId } = await params;
+    const resolvedId = await resolveArtifactId(id, user.organizationId);
+    if (!resolvedId) {
+      return notFoundResponse("Artifact");
+    }
 
     const result = await attachmentsService.getDownloadUrl(
-      id,
+      resolvedId,
       user.organizationId,
       attachmentId
     );
@@ -41,9 +46,13 @@ export const DELETE = withAuth<
 >(async ({ user }, _, params) => {
   try {
     const { id, attachmentId } = await params;
+    const resolvedId = await resolveArtifactId(id, user.organizationId);
+    if (!resolvedId) {
+      return notFoundResponse("Artifact");
+    }
 
     await attachmentsService.deleteAttachment(
-      id,
+      resolvedId,
       user.organizationId,
       attachmentId
     );

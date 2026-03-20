@@ -83,32 +83,31 @@ export const evaluatePrdHandler = defineHandler<PrdJudgesArtifacts>({
 
     const artifactId = loop.artifactId;
 
-    // Stale-write guard: if the artifact has advanced beyond the version this
-    // loop was created for, a newer evaluation loop has already run (or is
-    // in flight). Skip ingestion to prevent old scores from overwriting newer ones.
-    if (loop.artifactVersion != null) {
-      const artifact = await withDb((db) =>
-        db.artifact.findUnique({
-          where: { id: artifactId },
-          select: { latestVersion: true },
-        })
-      );
-
-      if (artifact && artifact.latestVersion > loop.artifactVersion) {
-        log.info(
-          "[loop-artifact-ingestion] Skipping PRD evaluation ingest — artifact has a newer version",
-          {
-            artifactId,
-            loopId: loop.id,
-            loopArtifactVersion: loop.artifactVersion,
-            currentArtifactVersion: artifact.latestVersion,
-          }
-        );
-        return;
-      }
-    }
-
     await withDb.tx(async (tx) => {
+      // Stale-write guard: if the artifact has advanced beyond the version this
+      // loop was created for, a newer evaluation loop has already run (or is
+      // in flight). Skip ingestion to prevent old scores from overwriting newer ones.
+      // Check is inside the transaction to avoid a TOCTOU race between read and write.
+      if (loop.artifactVersion != null) {
+        const artifact = await tx.artifact.findUnique({
+          where: { id: artifactId, organizationId },
+          select: { latestVersion: true },
+        });
+
+        if (artifact && artifact.latestVersion > loop.artifactVersion) {
+          log.info(
+            "[loop-artifact-ingestion] Skipping PRD evaluation ingest — artifact has a newer version",
+            {
+              artifactId,
+              loopId: loop.id,
+              loopArtifactVersion: loop.artifactVersion,
+              currentArtifactVersion: artifact.latestVersion,
+            }
+          );
+          return;
+        }
+      }
+
       await upsertEvaluationWithJudgeScores({
         artifactId,
         loopId: loop.id,

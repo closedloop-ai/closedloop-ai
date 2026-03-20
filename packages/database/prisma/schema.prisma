@@ -126,6 +126,7 @@ enum WorkstreamEventType {
   GITHUB_PR_CLOSED
   GITHUB_PR_REVIEW_SUBMITTED
   GITHUB_PR_COMMENT_ADDED
+  GITHUB_PR_LINKED
   GITHUB_ACTION_TRIGGERED
   GITHUB_ACTION_COMPLETED
   GITHUB_CI_STATUS_CHANGED
@@ -1081,10 +1082,15 @@ model Loop {
   evaluations   ArtifactEvaluation[]
   events        LoopEvent[]
 
-  // Prevents concurrent duplicate loops for the same artifact version and command.
+  // NOTE: A partial unique index on (artifact_id, command, artifact_version)
+  // WHERE status IN ('PENDING', 'CLAIMED', 'RUNNING') is maintained via raw migrations.
+  // Prisma cannot express partial indexes. Prisma 7.4+ falsely flags this as drift —
+  // we pin to 7.3.0 until resolved. Do NOT drop it.
   // Only applies when both artifactId and artifactVersion are non-null (Postgres
   // treats NULL != NULL in unique indexes, so nullable rows never conflict).
-  @@unique([artifactId, command, artifactVersion], name: "unique_loop_artifact_command_version")
+  // Terminal loops (COMPLETED/FAILED/CANCELLED/TIMED_OUT) allow re-runs of the same
+  // artifact+command+version without conflict.
+  @@index([artifactId, command, artifactVersion])
   @@index([organizationId, status])
   @@index([organizationId, userId, createdAt])
   @@index([artifactId])

@@ -1,5 +1,6 @@
 "use client";
 
+import { RunLoopCommand } from "@repo/api/src/types/loop";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { useCallback } from "react";
 import { useIsLoopsEnabledForArtifact } from "@/hooks/queries/use-artifact-execution-backend";
@@ -96,7 +97,7 @@ export function usePlanActions(config: UsePlanActionsConfig) {
   const handleRegenerate = useCallback(() => {
     if (useLoops) {
       runLoop.mutate(
-        { artifactId, command: "plan", computeTargetId },
+        { artifactId, command: RunLoopCommand.Plan, computeTargetId },
         {
           onSuccess: () => toast.success("Plan regeneration started via Loop"),
         }
@@ -124,7 +125,7 @@ export function usePlanActions(config: UsePlanActionsConfig) {
           await runLoop.mutateAsync(
             {
               artifactId,
-              command: "request_changes",
+              command: RunLoopCommand.RequestChanges,
               prompt: changes,
               computeTargetId,
             },
@@ -166,7 +167,7 @@ export function usePlanActions(config: UsePlanActionsConfig) {
     if (useLoops) {
       try {
         await runLoop.mutateAsync(
-          { artifactId, command: "execute", computeTargetId },
+          { artifactId, command: RunLoopCommand.Execute, computeTargetId },
           {
             onSuccess: () => {
               toast.success(

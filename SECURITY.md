@@ -28,8 +28,6 @@ Email: security@closedloop.ai
 
 ### Application Security
 
-- **Arcjet** — bot detection, shield (attack protection), rate limiting
-- **Upstash Redis** — additional rate limiting layer
 - **Nosecone** — security headers via `@nosecone/next`
 - **Webhook verification** — GitHub (HMAC SHA-256), Clerk (Svix), Stripe (SDK), all with timing-safe comparison
 - **Environment variable validation** — Zod schemas via `@t3-oss/env-nextjs` at startup

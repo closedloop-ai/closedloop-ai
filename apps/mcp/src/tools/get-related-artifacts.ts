@@ -10,11 +10,10 @@ export function registerGetRelatedArtifacts(
   server.registerTool(
     "get-related-artifacts",
     {
-      description: "Get artifacts related to a given artifact via entity links",
+      description:
+        "Get artifacts related to a given artifact by ID or slug via entity links",
       inputSchema: {
-        artifactId: z
-          .string()
-          .describe("ID of the artifact to find related artifacts for"),
+        artifactId: z.string().describe("ID or slug of the artifact"),
       },
     },
     ({ artifactId }) =>

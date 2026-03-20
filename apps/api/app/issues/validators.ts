@@ -1,13 +1,14 @@
 import { Priority } from "@repo/api/src/types/common";
 import { IssueStatus } from "@repo/api/src/types/issue";
 import { z } from "zod";
+import { uuidOrSlug } from "@/lib/identifier-utils";
 
 const issueStatusEnum = z.enum(IssueStatus);
 const priorityEnum = z.enum(Priority);
 
 export const createIssueValidator = z.object({
-  workstreamId: z.uuid().optional(),
-  projectId: z.uuid(),
+  workstreamId: uuidOrSlug().optional(),
+  projectId: uuidOrSlug(),
   title: z.string().min(1, "Title is required"),
   description: z.string().optional(),
   status: issueStatusEnum.optional(),
@@ -21,7 +22,7 @@ export const updateIssueValidator = z.object({
   status: issueStatusEnum.optional(),
   priority: priorityEnum.optional(),
   assigneeId: z.uuid().nullable().optional(),
-  projectId: z.uuid().optional(),
+  projectId: uuidOrSlug().optional(),
   customFields: z
     .record(
       z.uuid(),
@@ -36,8 +37,8 @@ export const updateIssueValidator = z.object({
 });
 
 export const findIssuesQueryValidator = z.object({
-  workstreamId: z.uuid().optional(),
-  projectId: z.uuid().optional(),
+  workstreamId: uuidOrSlug().optional(),
+  projectId: uuidOrSlug().optional(),
   status: issueStatusEnum.optional(),
   priority: priorityEnum.optional(),
   assigneeId: z.uuid().optional(),

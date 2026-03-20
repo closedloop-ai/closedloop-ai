@@ -37,6 +37,7 @@ function makeQueryClient() {
       queries: {
         staleTime: 60 * 1000, // 1 minute
         retry: false,
+        refetchOnWindowFocus: false,
       },
       mutations: {
         retry: false,

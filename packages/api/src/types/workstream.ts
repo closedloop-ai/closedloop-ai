@@ -48,6 +48,7 @@ export const WORKSTREAM_EVENT_TYPE_OPTIONS = [
   "GITHUB_PR_CLOSED",
   "GITHUB_PR_REVIEW_SUBMITTED",
   "GITHUB_PR_COMMENT_ADDED",
+  "GITHUB_PR_LINKED",
   "GITHUB_ACTION_TRIGGERED",
   "GITHUB_ACTION_COMPLETED",
   "GITHUB_CI_STATUS_CHANGED",
@@ -107,7 +108,6 @@ export type UpdateWorkstreamInput = {
   state?: WorkstreamState;
   assigneeId?: string | null;
   priority?: Priority;
-  slug?: string | null;
   hasUIChanges?: boolean;
 };
 

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   parsePromptFrontmatter,
   parsePromptsSnapshotFromMarkdownEntries,
-} from "./prompt-snapshot-parser";
+} from "../prompt-snapshot-parser";
 
 describe("prompt-snapshot-parser", () => {
   const MARKDOWN_PROMPT = `---

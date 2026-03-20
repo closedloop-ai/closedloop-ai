@@ -38,7 +38,6 @@ import type { JudgesReport } from "@repo/api/src/types/evaluation";
 import { LoopCommand } from "@repo/api/src/types/loop";
 import { EvaluationReportType as PrismaEvaluationReportType } from "@repo/database";
 import { beforeEach, describe, expect, it } from "vitest";
-import { fanOutJudgeScores } from "@/lib/judge-score-fanout";
 import {
   parseJsonArtifact,
   upsertEvaluationWithJudgeScores,
@@ -47,7 +46,7 @@ import { evaluatePrdHandler } from "@/lib/loops/loop-commands/evaluate-prd-handl
 import { downloadArtifactFile } from "@/lib/loops/loop-state";
 import { buildCaseScore } from "../fixtures/evaluation";
 import { buildLoop } from "../fixtures/loop";
-import { mockWithDbCall, mockWithDbTx } from "../utils/db-helpers";
+import { mockWithDbTx } from "../utils/db-helpers";
 
 type MockFn = ReturnType<typeof vi.fn>;
 
@@ -55,7 +54,6 @@ const mockDownloadArtifactFile = downloadArtifactFile as MockFn;
 const mockParseJsonArtifact = parseJsonArtifact as MockFn;
 const mockUpsertEvaluationWithJudgeScores =
   upsertEvaluationWithJudgeScores as MockFn;
-const mockFanOutJudgeScores = fanOutJudgeScores as MockFn;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -87,11 +85,12 @@ function setupDownload(report: JudgesReport | null) {
   mockParseJsonArtifact.mockReturnValue(report);
 }
 
-function setupMockTx() {
+function setupMockTx(extra: Record<string, unknown> = {}) {
   const mockTx = {
     artifactEvaluation: {
       upsert: vi.fn(),
     },
+    ...extra,
   };
   mockWithDbTx(mockTx);
   return mockTx;
@@ -105,7 +104,6 @@ describe("evaluatePrdHandler downloadAndIngest", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockUpsertEvaluationWithJudgeScores.mockResolvedValue(undefined);
-    mockFanOutJudgeScores.mockResolvedValue(undefined);
   });
 
   it("calls upsertEvaluationWithJudgeScores with PRD report type and correct identifiers", async () => {
@@ -142,40 +140,19 @@ describe("evaluatePrdHandler downloadAndIngest", () => {
     );
   });
 
-  // ---------------------------------------------------------------------------
-  // fanOutJudgeScores — called with correct evaluationId, organizationId, report
-  // ---------------------------------------------------------------------------
-
-  it("passes evaluationId, organizationId, and report to fanOutJudgeScores", async () => {
+  it("calls upsertEvaluationWithJudgeScores with correct artifactId, organizationId, reportType, and report", async () => {
     const loop = buildEvaluatePrdLoop();
-    const evaluationId = "eval-prd-42";
     setupMockTx();
     setupDownload(PRD_REPORT);
 
-    // Make upsertEvaluationWithJudgeScores invoke fanOutJudgeScores directly
-    // so we can verify the downstream call with the correct evaluationId.
-    mockUpsertEvaluationWithJudgeScores.mockImplementation(
-      async (params: {
-        organizationId: string;
-        report: JudgesReport;
-        tx: unknown;
-      }) => {
-        await fanOutJudgeScores({
-          evaluationId,
-          organizationId: params.organizationId,
-          report: params.report,
-          tx: params.tx as any,
-        });
-      }
-    );
-
     await evaluatePrdHandler.downloadAndIngest(loop.s3StateKey!, loop, "org-1");
 
-    expect(mockFanOutJudgeScores).toHaveBeenCalledOnce();
-    expect(mockFanOutJudgeScores).toHaveBeenCalledWith(
+    expect(mockUpsertEvaluationWithJudgeScores).toHaveBeenCalledOnce();
+    expect(mockUpsertEvaluationWithJudgeScores).toHaveBeenCalledWith(
       expect.objectContaining({
-        evaluationId,
+        artifactId: "prd-artifact-1",
         organizationId: "org-1",
+        reportType: PrismaEvaluationReportType.PRD,
         report: expect.objectContaining({ report_id: PRD_REPORT.report_id }),
       })
     );
@@ -231,10 +208,9 @@ describe("evaluatePrdHandler downloadAndIngest", () => {
   it("skips ingestion when artifact.latestVersion is greater than loop.artifactVersion", async () => {
     const loop = buildEvaluatePrdLoop({ artifactVersion: 1 });
     setupDownload(PRD_REPORT);
-    mockWithDbCall({
+    setupMockTx({
       artifact: { findUnique: vi.fn().mockResolvedValue({ latestVersion: 2 }) },
     });
-    setupMockTx();
 
     await evaluatePrdHandler.downloadAndIngest(loop.s3StateKey!, loop, "org-1");
 
@@ -244,10 +220,9 @@ describe("evaluatePrdHandler downloadAndIngest", () => {
   it("proceeds with ingestion when artifact.latestVersion equals loop.artifactVersion", async () => {
     const loop = buildEvaluatePrdLoop({ artifactVersion: 2 });
     setupDownload(PRD_REPORT);
-    mockWithDbCall({
+    setupMockTx({
       artifact: { findUnique: vi.fn().mockResolvedValue({ latestVersion: 2 }) },
     });
-    setupMockTx();
 
     await evaluatePrdHandler.downloadAndIngest(loop.s3StateKey!, loop, "org-1");
 
@@ -267,10 +242,9 @@ describe("evaluatePrdHandler downloadAndIngest", () => {
   it("proceeds with ingestion when artifact is not found during version check (best effort)", async () => {
     const loop = buildEvaluatePrdLoop({ artifactVersion: 1 });
     setupDownload(PRD_REPORT);
-    mockWithDbCall({
+    setupMockTx({
       artifact: { findUnique: vi.fn().mockResolvedValue(null) },
     });
-    setupMockTx();
 
     await evaluatePrdHandler.downloadAndIngest(loop.s3StateKey!, loop, "org-1");
 

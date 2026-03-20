@@ -199,7 +199,9 @@ export const loopsService = {
         where: {
           userId,
           organizationId,
-          status: { in: ["PENDING", "CLAIMED", "RUNNING"] },
+          status: {
+            in: [LoopStatus.Pending, LoopStatus.Claimed, LoopStatus.Running],
+          },
         },
       })
     );
@@ -467,7 +469,9 @@ export const loopsService = {
           // Only update loops that are still in a pre-terminal state.
           // Prevents overwriting metadata on already-completed/cancelled loops
           // if the launch path is delayed.
-          status: { in: ["PENDING", "CLAIMED", "RUNNING"] },
+          status: {
+            in: [LoopStatus.Pending, LoopStatus.Claimed, LoopStatus.Running],
+          },
         },
         data: {
           containerId: data.containerId,
@@ -570,7 +574,9 @@ export const loopsService = {
         where: {
           userId,
           organizationId,
-          status: { in: ["PENDING", "CLAIMED", "RUNNING"] },
+          status: {
+            in: [LoopStatus.Pending, LoopStatus.Claimed, LoopStatus.Running],
+          },
         },
       })
     );
@@ -913,7 +919,9 @@ export const loopsService = {
         where: {
           id,
           organizationId,
-          status: { in: ["PENDING", "CLAIMED", "RUNNING"] },
+          status: {
+            in: [LoopStatus.Pending, LoopStatus.Claimed, LoopStatus.Running],
+          },
         },
         data: { uploadedArtifacts },
       })
@@ -975,24 +983,35 @@ export const loopsService = {
   async createIfNotExists(
     organizationId: string,
     userId: string,
-    input: CreateLoopRequest & { artifactVersion: number }
+    input: CreateLoopRequest & { artifactVersion: number; artifactId: string }
   ): Promise<CreateLoopResponse | null> {
+    const activeCount = await withDb((db) =>
+      db.loop.count({
+        where: {
+          userId,
+          organizationId,
+          status: {
+            in: [LoopStatus.Pending, LoopStatus.Claimed, LoopStatus.Running],
+          },
+        },
+      })
+    );
+
+    if (activeCount >= MAX_CONCURRENT_LOOPS_PER_USER) {
+      throw new Error(
+        `Too many active loops (${activeCount}). ` +
+          `Maximum ${MAX_CONCURRENT_LOOPS_PER_USER} concurrent loops allowed per user. ` +
+          "Wait for existing loops to complete or cancel them."
+      );
+    }
+
     const [loop] = await withDb((db) =>
       db.loop.createManyAndReturn({
         data: [
           {
             organizationId,
             userId,
-            command: input.command,
-            artifactId: input.artifactId ?? null,
-            workstreamId: input.workstreamId ?? null,
-            parentLoopId: input.parentLoopId ?? null,
-            computeTargetId: input.computeTargetId ?? null,
-            prompt: input.prompt ?? null,
-            repo: input.repo ?? undefined,
-            contextRefs: input.contextRefs ?? undefined,
-            artifactVersion: input.artifactVersion ?? null,
-            metadata: input.metadata ?? undefined,
+            ...input,
             status: LoopStatus.Pending,
           },
         ],
@@ -1032,7 +1051,9 @@ export const loopsService = {
         where: {
           id,
           organizationId,
-          status: { in: ["PENDING", "CLAIMED", "RUNNING"] },
+          status: {
+            in: [LoopStatus.Pending, LoopStatus.Claimed, LoopStatus.Running],
+          },
         },
         data: { metadata },
       })

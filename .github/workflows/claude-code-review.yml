@@ -84,6 +84,30 @@ jobs:
         run: |
           git config --global url."https://x-access-token:${{ steps.generate_token.outputs.token }}@github.com/".insteadOf "https://github.com/"
 
+      - name: Install Claude CLI
+        shell: bash
+        run: |
+          set -e
+          # claude.ai/install.sh redirects here; use direct URL to avoid Cloudflare bot challenge in CI
+          for i in 1 2 3; do
+            echo "Attempt $i: Installing Claude CLI..."
+            if curl -fsSL https://downloads.claude.ai/claude-code-releases/bootstrap.sh | bash; then
+              break
+            fi
+            [ "$i" -eq 3 ] && { echo "::error::Failed to install Claude CLI"; exit 1; }
+            sleep 5
+          done
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Verify Claude CLI
+        shell: bash
+        run: |
+          if ! command -v claude &> /dev/null; then
+            echo "::error::Claude CLI not found in PATH"
+            exit 1
+          fi
+          claude --version
+
       - name: Run Claude Code Review
         id: claude-review
         continue-on-error: true
