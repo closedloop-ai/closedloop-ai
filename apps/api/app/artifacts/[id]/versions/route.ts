@@ -1,5 +1,6 @@
 import type { Artifact } from "@repo/api/src/types/artifact";
 import type { ArtifactVersion } from "@repo/api/src/types/artifact-version";
+import { log } from "@repo/observability/log";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { resolveArtifactId } from "@/lib/identifier-utils";
 import {
@@ -10,6 +11,7 @@ import {
 } from "@/lib/route-utils";
 import { ArtifactNotFoundError } from "../../artifact-utils";
 import { artifactVersionService } from "../../artifact-version-service";
+import { resetArtifactRoom } from "../../room-utils";
 import { artifactsService } from "../../service";
 import { newVersionValidator } from "../../validators";
 
@@ -67,6 +69,19 @@ export const POST = withAnyAuth<Artifact, "/artifacts/[id]/versions">(
         user.id,
         body.content
       );
+
+      // Reset the Liveblocks room so the collaborative editor picks up the
+      // new version content instead of serving the stale Y.Doc.
+      await resetArtifactRoom(updatedArtifact).catch((error) => {
+        log.error(
+          "[versions] Failed to reset Liveblocks room after version create",
+          {
+            artifactId: resolvedId,
+            version: updatedArtifact.latestVersion,
+            error: error instanceof Error ? error.message : String(error),
+          }
+        );
+      });
 
       return successResponse(updatedArtifact);
     } catch (error) {
