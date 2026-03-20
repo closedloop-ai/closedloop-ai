@@ -37,7 +37,11 @@ import { useDeleteConfirmation } from "@/hooks/use-delete-confirmation";
 import { deriveCustomFieldColumns } from "@/lib/custom-field-utils";
 import { ISSUE_STATUS_TO_ICON } from "@/lib/project-constants";
 import type { MyTasksIssueFilters } from "../types";
-import { buildIssueListParams, DISPLAY_GROUPS } from "../utils";
+import {
+  applyClientFilters,
+  buildIssueListParams,
+  DISPLAY_GROUPS,
+} from "../utils";
 
 type MyTasksListProps = {
   assigneeId: string | null;
@@ -54,9 +58,14 @@ export function MyTasksList({
     () => buildIssueListParams(assigneeId, issueFilters),
     [assigneeId, issueFilters]
   );
-  const { data: issues = [], isLoading } = useIssues(listParams, {
+  const { data: rawIssues = [], isLoading } = useIssues(listParams, {
     enabled: !!assigneeId && !isUserLoading,
   });
+  const issues = useMemo(
+    () =>
+      issueFilters ? applyClientFilters(rawIssues, issueFilters) : rawIssues,
+    [rawIssues, issueFilters]
+  );
   const deleteIssueMutation = useDeleteIssue();
 
   const customFieldColumns = useMemo(
