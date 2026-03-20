@@ -46,7 +46,7 @@ export const GET = withAnyAuth<
 });
 
 export const POST = withAnyAuth<Artifact, "/artifacts/[id]/versions">(
-  async ({ user }, request, params) => {
+  async ({ user, authMethod }, request, params) => {
     try {
       const { id } = await params;
       const resolvedId = await resolveArtifactId(id, user.organizationId);
@@ -70,18 +70,23 @@ export const POST = withAnyAuth<Artifact, "/artifacts/[id]/versions">(
         body.content
       );
 
-      // Reset the Liveblocks room so the collaborative editor picks up the
-      // new version content instead of serving the stale Y.Doc.
-      await resetArtifactRoom(updatedArtifact).catch((error) => {
-        log.error(
-          "[versions] Failed to reset Liveblocks room after version create",
-          {
-            artifactId: resolvedId,
-            version: updatedArtifact.latestVersion,
-            error: error instanceof Error ? error.message : String(error),
-          }
-        );
-      });
+      // Reset the Liveblocks room when the version was created out-of-band
+      // (MCP/API key) so the collaborative editor picks up the new content
+      // instead of serving the stale Y.Doc. Skip for browser sessions — the
+      // editor already has the Y.Doc in sync, and resetting would tear down
+      // the active collaboration session and drop comment/thread state.
+      if (authMethod === "api_key") {
+        await resetArtifactRoom(updatedArtifact).catch((error) => {
+          log.error(
+            "[versions] Failed to reset Liveblocks room after version create",
+            {
+              artifactId: resolvedId,
+              version: updatedArtifact.latestVersion,
+              error: error instanceof Error ? error.message : String(error),
+            }
+          );
+        });
+      }
 
       return successResponse(updatedArtifact);
     } catch (error) {
