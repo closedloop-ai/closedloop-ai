@@ -296,7 +296,7 @@ export function NewPlanModal({
               <span className="text-muted-foreground">(optional)</span>
             </Label>
             {source ? (
-              <div className="flex h-10 w-full items-center rounded-md border border-input bg-muted px-3 py-2 text-sm">
+              <div className="flex h-10 w-full items-center rounded-md border border-input-border bg-muted px-3 py-2 text-sm">
                 {source.title}
               </div>
             ) : (

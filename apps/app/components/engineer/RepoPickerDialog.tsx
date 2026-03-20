@@ -753,7 +753,7 @@ export function RepoPickerDialog({
                                         <Search className="absolute top-1/2 left-2 size-3.5 -translate-y-1/2 text-muted-foreground" />
                                         <input
                                           className={cn(
-                                            "w-full rounded-md border border-input py-1.5 pr-2 pl-7",
+                                            "w-full rounded-md border border-input-border py-1.5 pr-2 pl-7",
                                             "bg-transparent text-xs placeholder:text-muted-foreground",
                                             "focus:outline-none focus:ring-1 focus:ring-ring"
                                           )}
@@ -946,7 +946,7 @@ export function RepoPickerDialog({
                   </div>
                   <textarea
                     className={cn(
-                      "block min-h-[120px] w-full rounded-md border border-input px-3 py-2",
+                      "block min-h-[120px] w-full rounded-md border border-input-border px-3 py-2",
                       "relative bg-transparent text-sm placeholder:text-muted-foreground",
                       "focus:outline-none focus:ring-2 focus:ring-ring",
                       "resize-y"

@@ -159,7 +159,7 @@ export function GoogleImportModal({
               <span className="text-destructive"> *</span>
             </Label>
             {projectsLoading && (
-              <div className="flex items-center gap-2 rounded-md border border-input bg-background px-3 py-2">
+              <div className="flex items-center gap-2 rounded-md border border-input-border bg-background px-3 py-2">
                 <Loader2Icon className="h-4 w-4 animate-spin text-muted-foreground" />
                 <span className="text-muted-foreground text-sm">
                   Loading projects...

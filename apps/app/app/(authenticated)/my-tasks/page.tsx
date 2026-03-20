@@ -116,7 +116,7 @@ export default function MyTasksPage() {
                 aria-label={
                   isListView ? "Switch to card view" : "Switch to list view"
                 }
-                className="border border-input bg-transparent"
+                className="border border-input-border bg-transparent"
                 onClick={() => setView(isListView ? "card" : "list")}
                 variant="ghost"
               >
@@ -136,7 +136,7 @@ export default function MyTasksPage() {
                 <DropdownMenuTrigger asChild>
                   <Button
                     aria-label="Filter tasks"
-                    className={`border border-input bg-transparent ${filtersActive ? "border-primary/50" : ""}`}
+                    className={`border border-input-border bg-transparent ${filtersActive ? "border-primary/50" : ""}`}
                     variant="ghost"
                   >
                     <ListFilter className="size-4" />
