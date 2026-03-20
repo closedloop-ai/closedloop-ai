@@ -7,7 +7,7 @@ import {
   parseConversationJsonl,
   parseExecutionLogs,
   parseSessionIndex,
-} from "./execution-log-parser";
+} from "../execution-log-parser";
 
 // ---------- helpers ----------
 

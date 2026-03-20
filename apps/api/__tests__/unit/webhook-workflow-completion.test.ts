@@ -18,7 +18,6 @@ import {
   EvalStatus,
   EvaluationReportType,
 } from "@repo/api/src/types/evaluation";
-import { ExternalLinkType } from "@repo/api/src/types/external-link";
 import { type Mock, vi } from "vitest";
 import { buildZipWithEntries } from "../fixtures/zip-helpers";
 import {
@@ -71,6 +70,10 @@ vi.mock("@/lib/judge-score-fanout", () => ({
   fanOutJudgeScores: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock("@/lib/pr-linkage", () => ({
+  ensurePrLinkageRecords: vi.fn().mockResolvedValue(undefined),
+}));
+
 import { downloadWorkflowArtifacts } from "@repo/github";
 // Import after mocking
 import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
@@ -83,6 +86,7 @@ import {
 import type { WorkflowContext } from "@/app/webhooks/github/types";
 import { findActionRunByCorrelationId } from "@/app/webhooks/github/webhook-service";
 import { fanOutJudgeScores } from "@/lib/judge-score-fanout";
+import { ensurePrLinkageRecords } from "@/lib/pr-linkage";
 import { upsertFromSnapshot } from "@/lib/prompts-service";
 
 // Type aliases for mocked functions
@@ -95,6 +99,7 @@ const mockCreateVersion =
   artifactVersionService.createVersion as unknown as Mock;
 const mockUpsertFromSnapshot = upsertFromSnapshot as unknown as Mock;
 const mockFanOutJudgeScores = fanOutJudgeScores as unknown as Mock;
+const mockEnsurePrLinkageRecords = ensurePrLinkageRecords as unknown as Mock;
 
 describe("handleWorkflowSuccess", () => {
   beforeEach(() => {
@@ -850,6 +855,7 @@ describe("handleExecutionSuccess", () => {
         }),
       },
       gitHubPullRequest: {
+        findUnique: vi.fn().mockResolvedValue(null),
         create: vi.fn().mockResolvedValue({
           id: "pr-123",
           number: 42,
@@ -886,23 +892,21 @@ describe("handleExecutionSuccess", () => {
       },
     });
 
-    expect(mockTx.externalLink.create).toHaveBeenCalledWith({
-      data: {
+    expect(mockEnsurePrLinkageRecords).toHaveBeenCalledWith(
+      mockTx,
+      expect.objectContaining({
         organizationId: "org-123",
         workstreamId,
         projectId: "project-123",
-        type: ExternalLinkType.PullRequest,
-        title: executionResult.pr_title,
-        externalUrl: executionResult.pr_url,
-        metadata: {
-          number: 42,
-          githubId: executionResult.github_id,
-          headBranch: executionResult.branch_name,
-          baseBranch: executionResult.base_ref,
-          state: "OPEN",
-        },
-      },
-    });
+        artifactId: "plan-artifact-123",
+        prUrl: executionResult.pr_url,
+        prTitle: executionResult.pr_title,
+        prNumber: 42,
+        githubId: executionResult.github_id,
+        headBranch: executionResult.branch_name,
+        baseBranch: executionResult.base_ref,
+      })
+    );
 
     expect(mockTx.workstreamEvent.create).toHaveBeenCalledWith({
       data: {
@@ -954,6 +958,7 @@ describe("handleExecutionSuccess", () => {
         }),
       },
       gitHubPullRequest: {
+        findUnique: vi.fn().mockResolvedValue(null),
         create: vi.fn().mockResolvedValue({ id: "pr-456" }),
       },
       externalLink: {
@@ -1010,6 +1015,7 @@ describe("handleExecutionSuccess", () => {
         }),
       },
       gitHubPullRequest: {
+        findUnique: vi.fn().mockResolvedValue(null),
         create: vi.fn().mockResolvedValue({ id: "pr-789" }),
       },
       externalLink: {
@@ -1027,11 +1033,12 @@ describe("handleExecutionSuccess", () => {
 
     await handleExecutionSuccess(ctx, executionResult, null, null);
 
-    expect(mockTx.externalLink.create).toHaveBeenCalledWith({
-      data: expect.objectContaining({
-        title: "Symphony: symphony/no-title-feature",
-      }),
-    });
+    expect(mockEnsurePrLinkageRecords).toHaveBeenCalledWith(
+      mockTx,
+      expect.objectContaining({
+        prTitle: "Symphony: symphony/no-title-feature",
+      })
+    );
   });
 
   it("creates workstream event when execution has no changes", async () => {
@@ -1184,6 +1191,7 @@ describe("handleExecutionSuccess", () => {
         }),
       },
       gitHubPullRequest: {
+        findUnique: vi.fn().mockResolvedValue(null),
         create: vi.fn().mockResolvedValue({ id: "pr-prompts" }),
       },
       externalLink: {
@@ -1243,6 +1251,7 @@ describe("handleExecutionSuccess", () => {
         }),
       },
       gitHubPullRequest: {
+        findUnique: vi.fn().mockResolvedValue(null),
         create: vi.fn().mockResolvedValue({ id: "pr-null-prompts" }),
       },
       externalLink: {
@@ -1627,6 +1636,7 @@ describe("handleExecutionSuccess fan-out", () => {
         }),
       },
       gitHubPullRequest: {
+        findUnique: vi.fn().mockResolvedValue(null),
         create: vi.fn().mockResolvedValue({ id: "fanout-pr-code", number: 55 }),
       },
       externalLink: {
@@ -1700,6 +1710,7 @@ describe("handleExecutionSuccess fan-out", () => {
         }),
       },
       gitHubPullRequest: {
+        findUnique: vi.fn().mockResolvedValue(null),
         create: vi
           .fn()
           .mockResolvedValue({ id: "fanout-pr-no-code", number: 56 }),
@@ -2017,6 +2028,7 @@ describe("processWorkflowCompletion", () => {
         }),
       },
       gitHubPullRequest: {
+        findUnique: vi.fn().mockResolvedValue(null),
         create: vi.fn().mockResolvedValue({ id: "pr-exec" }),
       },
       externalLink: {
@@ -2041,11 +2053,12 @@ describe("processWorkflowCompletion", () => {
     const response = await processWorkflowCompletion(event, correlationId);
 
     expect(mockDb.gitHubPullRequest.create).toHaveBeenCalled();
-    expect(mockDb.externalLink.create).toHaveBeenCalledWith({
-      data: expect.objectContaining({
-        type: ExternalLinkType.PullRequest,
-      }),
-    });
+    expect(mockEnsurePrLinkageRecords).toHaveBeenCalledWith(
+      mockDb,
+      expect.objectContaining({
+        prUrl: "https://github.com/owner/repo/pull/75",
+      })
+    );
 
     const responseData = await response.json();
     expect(responseData).toEqual({ result: "processed", ok: true });

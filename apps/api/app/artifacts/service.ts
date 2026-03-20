@@ -16,12 +16,13 @@ import {
   ReviewDecision,
   type UpdateArtifactInput,
 } from "@repo/api/src/types/artifact";
-import { EntityType } from "@repo/api/src/types/entity-link";
-import type {
-  BatchJudgeScoresResponse,
-  EvalStatus,
-  JudgeFeedbackItem,
-  JudgesFeedbackResponse,
+import { EntityType, LinkType } from "@repo/api/src/types/entity-link";
+import {
+  type BatchJudgeScoresResponse,
+  type EvalStatus,
+  EvaluationReportType,
+  type JudgeFeedbackItem,
+  type JudgesFeedbackResponse,
 } from "@repo/api/src/types/evaluation";
 import type { ExecutionTrace } from "@repo/api/src/types/execution-log";
 import type { SourceContextType } from "@repo/api/src/types/loop";
@@ -29,9 +30,6 @@ import type { PerfSummary } from "@repo/api/src/types/performance";
 import type { ArtifactRatingSummary } from "@repo/api/src/types/rating";
 import type { ExecutionBackendResponse } from "@repo/api/src/types/settings";
 import {
-  LinkType,
-  ArtifactType as PrismaArtifactType,
-  EvaluationReportType as PrismaEvaluationReportType,
   type TransactionClient,
   type WorkstreamState,
   withDb,
@@ -248,7 +246,7 @@ export const artifactsService = {
    */
   async findOrgTemplate(
     organizationId: string,
-    templateForType: PrismaArtifactType
+    templateForType: ArtifactType
   ): Promise<Artifact | null> {
     const result = await withDb((db) =>
       db.artifact.findUnique({
@@ -277,12 +275,12 @@ export const artifactsService = {
         where: {
           organizationId_templateForType: {
             organizationId,
-            templateForType: PrismaArtifactType.PRD,
+            templateForType: ArtifactType.Prd,
           },
         },
         create: {
-          type: PrismaArtifactType.TEMPLATE,
-          templateForType: PrismaArtifactType.PRD,
+          type: ArtifactType.Template,
+          templateForType: ArtifactType.Prd,
           organizationId,
           createdById: userId,
           title: "Product Requirements Document Template",
@@ -464,7 +462,7 @@ export const artifactsService = {
               // Find the PRD in this workstream (source artifact for plan generation)
               artifacts: {
                 where: {
-                  type: PrismaArtifactType.PRD,
+                  type: ArtifactType.Prd,
                 },
                 take: 1,
               },
@@ -520,7 +518,7 @@ export const artifactsService = {
           where: {
             organizationId,
             projectId: artifact.projectId,
-            type: PrismaArtifactType.PRD,
+            type: ArtifactType.Prd,
             title: titleFallback,
           },
         })
@@ -545,7 +543,7 @@ export const artifactsService = {
           sourceType: "ARTIFACT",
           targetId: artifact.id,
           targetType: "ARTIFACT",
-          linkType: LinkType.PRODUCES,
+          linkType: LinkType.Produces,
         });
       }
     }
@@ -572,7 +570,7 @@ export const artifactsService = {
           include: {
             project: true,
             artifacts: {
-              where: { type: PrismaArtifactType.PRD },
+              where: { type: ArtifactType.Prd },
               take: 1,
             },
           },
@@ -624,7 +622,7 @@ export const artifactsService = {
         include: {
           project: true,
           artifacts: {
-            where: { type: PrismaArtifactType.PRD },
+            where: { type: ArtifactType.Prd },
             take: 1,
           },
         },
@@ -664,8 +662,8 @@ export const artifactsService = {
     const sourceLinks = await entityLinksService.findSourceLinks(
       artifact.organizationId,
       artifact.id,
-      "ARTIFACT",
-      LinkType.PRODUCES
+      EntityType.Artifact,
+      LinkType.Produces
     );
     if (!sourceLinks.length) {
       return null;
@@ -686,7 +684,7 @@ export const artifactsService = {
           where: {
             id: { in: artifactLinks.map((link) => link.sourceId) },
             organizationId: artifact.organizationId,
-            type: PrismaArtifactType.PRD,
+            type: ArtifactType.Prd,
           },
         })
       );
@@ -966,7 +964,7 @@ Analyze the content at this link and identify capabilities or features that coul
       return { success: false, error: "Artifact not found", status: 404 };
     }
 
-    if (artifact.type !== PrismaArtifactType.IMPLEMENTATION_PLAN) {
+    if (artifact.type !== ArtifactType.ImplementationPlan) {
       return {
         success: false,
         error: "Only implementation plans can be regenerated",
@@ -1127,7 +1125,7 @@ Analyze the content at this link and identify capabilities or features that coul
       return { success: false, error: "Artifact not found", status: 404 };
     }
 
-    if (artifact.type !== PrismaArtifactType.PRD) {
+    if (artifact.type !== ArtifactType.Prd) {
       return {
         success: false,
         error: "Only PRDs can be generated with this method",
@@ -1276,7 +1274,7 @@ Analyze the content at this link and identify capabilities or features that coul
       return { success: false, error: "Artifact not found", status: 404 };
     }
 
-    if (artifact.type !== PrismaArtifactType.IMPLEMENTATION_PLAN) {
+    if (artifact.type !== ArtifactType.ImplementationPlan) {
       return {
         success: false,
         error: "Only implementation plans can be amended",
@@ -1564,7 +1562,7 @@ Please try again or contact support if the issue persists.`
     return this.getEvaluationFeedback(
       artifactId,
       organizationId,
-      PrismaEvaluationReportType.PLAN
+      EvaluationReportType.Plan
     );
   },
 
@@ -1580,7 +1578,7 @@ Please try again or contact support if the issue persists.`
     return this.getEvaluationFeedback(
       artifactId,
       organizationId,
-      PrismaEvaluationReportType.CODE
+      EvaluationReportType.Code
     );
   },
 
@@ -1588,7 +1586,7 @@ Please try again or contact support if the issue persists.`
   async getEvaluationFeedback(
     artifactId: string,
     organizationId: string,
-    reportType: PrismaEvaluationReportType
+    reportType: EvaluationReportType
   ): Promise<JudgesFeedbackResponse> {
     try {
       const artifact = await this.findByIdSimple(artifactId, organizationId);
@@ -1645,7 +1643,7 @@ Please try again or contact support if the issue persists.`
     const evaluations = await withDb((db) =>
       db.artifactEvaluation.findMany({
         where: {
-          reportType: PrismaEvaluationReportType.PLAN,
+          reportType: EvaluationReportType.Plan,
           artifact: { projectId, organizationId },
         },
         include: {
@@ -1738,7 +1736,7 @@ Please try again or contact support if the issue persists.`
       return { success: false, error: "Artifact not found", status: 404 };
     }
 
-    if (artifact.type !== PrismaArtifactType.IMPLEMENTATION_PLAN) {
+    if (artifact.type !== ArtifactType.ImplementationPlan) {
       return {
         success: false,
         error: "Only implementation plans can be executed",
@@ -2145,7 +2143,7 @@ Please try again or contact support if the issue persists.`
         where: {
           projectId,
           organizationId,
-          type: PrismaArtifactType.PRD,
+          type: ArtifactType.Prd,
           status: "APPROVED",
         },
         include: artifactIncludeWithUser,
@@ -2224,8 +2222,8 @@ Please try again or contact support if the issue persists.`
 
     // 3. Neither can be TEMPLATE
     if (
-      primary.type === PrismaArtifactType.TEMPLATE ||
-      secondary.type === PrismaArtifactType.TEMPLATE
+      primary.type === ArtifactType.Template ||
+      secondary.type === ArtifactType.Template
     ) {
       throw new Error("Cannot merge TEMPLATE artifacts");
     }
@@ -2242,10 +2240,7 @@ Please try again or contact support if the issue persists.`
     // For cross-type merges, fetch the template for the primary type
     let templateContent: string | null | undefined;
     if (primary.type !== secondary.type) {
-      const template = await this.findOrgTemplate(
-        organizationId,
-        PrismaArtifactType[primary.type as keyof typeof PrismaArtifactType]
-      );
+      const template = await this.findOrgTemplate(organizationId, primary.type);
       if (template) {
         const templateVersion = await artifactVersionService.getLatest(
           template.id
@@ -2575,7 +2570,7 @@ Please try again or contact support if the issue persists.`
       organizationId,
       issueId,
       EntityType.Issue,
-      LinkType.PRODUCES
+      LinkType.Produces
     );
 
     const linkedArtifactIds = targetLinks.map((l) => l.targetId);
@@ -2587,7 +2582,7 @@ Please try again or contact support if the issue persists.`
           where: {
             id: { in: linkedArtifactIds },
             organizationId,
-            type: PrismaArtifactType.IMPLEMENTATION_PLAN,
+            type: ArtifactType.ImplementationPlan,
           },
           select: { id: true, title: true },
         })
@@ -2666,7 +2661,7 @@ async function resolveOrCreatePlanArtifact(opts: {
   organizationId: string;
   userId: string;
   issueId: string;
-  issue: { id: string; title: string; projectId?: string | null };
+  issue: { id: string; title: string; projectId: string };
   linkedPlans: { id: string; title: string }[];
   selectedArtifactId?: string;
   ticketTitle?: string;
@@ -2702,7 +2697,7 @@ async function resolveOrCreatePlanArtifact(opts: {
         select: { type: true },
       })
     );
-    if (artifact?.type !== PrismaArtifactType.IMPLEMENTATION_PLAN) {
+    if (artifact?.type !== ArtifactType.ImplementationPlan) {
       return { outcome: "invalid-artifact", existingArtifacts: linkedPlans };
     }
 
@@ -2717,7 +2712,7 @@ async function resolveOrCreatePlanArtifact(opts: {
             sourceType: EntityType.Issue,
             targetId: { in: allLinkedPlanIds },
             targetType: EntityType.Artifact,
-            linkType: LinkType.PRODUCES,
+            linkType: LinkType.Produces,
           },
         });
       }
@@ -2729,7 +2724,7 @@ async function resolveOrCreatePlanArtifact(opts: {
           sourceType: EntityType.Issue,
           targetId: selectedArtifactId,
           targetType: EntityType.Artifact,
-          linkType: LinkType.PRODUCES,
+          linkType: LinkType.Produces,
         },
       });
     });
@@ -2753,7 +2748,7 @@ async function resolveOrCreatePlanArtifact(opts: {
     content: "",
     sourceId: issueId,
     sourceType: EntityType.Issue,
-    projectId: (issue.projectId ?? "") as string,
+    projectId: issue.projectId,
     status: ArtifactStatus.Draft,
   };
   const newArtifact = await withDb.tx((tx) =>
@@ -2962,9 +2957,9 @@ async function createArtifactRecord(
         sourceType,
         sourceVersion,
         targetId: artifact.id,
-        targetType: "ARTIFACT",
+        targetType: EntityType.Artifact,
         targetVersion: artifact.latestVersion,
-        linkType: LinkType.PRODUCES,
+        linkType: LinkType.Produces,
       },
     });
   }

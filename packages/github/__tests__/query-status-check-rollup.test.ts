@@ -22,7 +22,7 @@ vi.mock("@repo/observability/log", () => ({
   },
 }));
 
-import { queryStatusCheckRollup } from "./index";
+import { queryStatusCheckRollup } from "../index";
 
 const VALID_SHA = "a".repeat(40);
 const INSTALLATION_ID = 12_345;

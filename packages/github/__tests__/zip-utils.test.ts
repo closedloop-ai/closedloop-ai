@@ -1,6 +1,6 @@
 import AdmZip from "adm-zip";
 import { describe, expect, it } from "vitest";
-import { extractInnerZips, SYMPHONY_RUN_ARTIFACT_PREFIXES } from "./zip-utils";
+import { extractInnerZips, SYMPHONY_RUN_ARTIFACT_PREFIXES } from "../zip-utils";
 
 function toBuffer(content: string): Buffer {
   return Buffer.from(content, "utf-8");
