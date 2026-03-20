@@ -1,11 +1,22 @@
-import type { JsonObject } from "@repo/api/src/types/common";
+import type { ApiResult, JsonObject } from "@repo/api/src/types/common";
+import type { ComputeTargetConflictBody } from "@repo/api/src/types/compute-target";
 import {
   type CreateLoopRequest,
   RunLoopCommand,
 } from "@repo/api/src/types/loop";
 import { getProjectSettings } from "@repo/api/src/types/project";
+import { NextResponse } from "next/server";
 import { loopsService } from "@/app/loops/service";
+import {
+  type ResolveComputeTargetResult,
+  resolveComputeTarget,
+} from "@/lib/loops/compute-target-resolver";
 import type { getCommandHandler } from "@/lib/loops/loop-commands";
+import {
+  badRequestResponse,
+  errorResponse,
+  notFoundResponse,
+} from "@/lib/route-utils";
 import { artifactsService } from "../../service";
 
 /**
@@ -89,4 +100,78 @@ export async function resolveLoopContext(
     parentLoopId,
     source,
   };
+}
+
+export type ComputeTargetRouteResult =
+  | { computeTargetId: string | undefined }
+  | { errorResponse: NextResponse<ApiResult<never>> };
+
+/**
+ * Resolve the compute target for a run-loop request, returning either the
+ * resolved target ID (possibly undefined for ECS fallback) or an error response.
+ */
+export async function resolveComputeTargetForRoute(
+  organizationId: string,
+  userId: string,
+  computeTargetIdHint?: string
+): Promise<ComputeTargetRouteResult> {
+  const ctResult = await resolveComputeTarget(
+    organizationId,
+    userId,
+    computeTargetIdHint
+  );
+
+  return mapComputeTargetResult(ctResult);
+}
+
+function mapComputeTargetResult(
+  ctResult: ResolveComputeTargetResult
+): ComputeTargetRouteResult {
+  switch (ctResult.reason) {
+    case "resolved":
+      return { computeTargetId: ctResult.target.id };
+    case "no_targets":
+      return { computeTargetId: undefined };
+    case "hint_not_found":
+      return { errorResponse: notFoundResponse("Compute target") };
+    case "hint_offline":
+      return {
+        errorResponse: badRequestResponse(
+          "Compute target is offline. Ensure the desktop app is running."
+        ),
+      };
+    case "no_online_targets":
+      return {
+        errorResponse: badRequestResponse(
+          "No compute targets are online. Ensure the desktop app is running."
+        ),
+      };
+    case "multiple_targets": {
+      const conflictBody: ComputeTargetConflictBody = {
+        error: "multiple_targets",
+        message:
+          "Multiple compute targets are online. Specify a compute target ID.",
+        availableTargets: ctResult.targets.map((t) => ({
+          id: t.id,
+          machineName: t.machineName,
+          status: t.isOnline ? "online" : "offline",
+        })),
+      };
+      return {
+        errorResponse: NextResponse.json(
+          { success: false, error: conflictBody.message, data: conflictBody },
+          { status: 409 }
+        ),
+      };
+    }
+    default: {
+      const _exhaustive: never = ctResult;
+      return {
+        errorResponse: errorResponse(
+          "Unhandled compute target resolution result",
+          _exhaustive
+        ),
+      };
+    }
+  }
 }

@@ -79,7 +79,7 @@ async function apiFetch<T>(
     const result: ApiResult<T> = await response.json();
 
     if (!result.success) {
-      throw new ApiError(result.error, response.status);
+      throw new ApiError(result.error, response.status, undefined, result);
     }
     if (!response.ok) {
       throw new ApiError(

@@ -1,4 +1,5 @@
 import { success } from "@repo/api/src/types/common";
+import type { ComputeTargetConflictBody } from "@repo/api/src/types/compute-target";
 import { EntityType } from "@repo/api/src/types/entity-link";
 import {
   type CreateLoopResponse,
@@ -22,11 +23,16 @@ import {
   parseBody,
 } from "@/lib/route-utils";
 import { artifactsService } from "../../service";
-import { validateComputeTarget } from "./compute-target-validation";
-import { COMMAND_MAP, resolveLoopContext } from "./run-loop-helpers";
+import {
+  COMMAND_MAP,
+  resolveComputeTargetForRoute,
+  resolveLoopContext,
+} from "./run-loop-helpers";
 import { runLoopSchema } from "./validators";
 
-export const POST = withAuth<CreateLoopResponse, "/artifacts/[id]/run-loop">(
+type RunLoopResponse = CreateLoopResponse | ComputeTargetConflictBody;
+
+export const POST = withAuth<RunLoopResponse, "/artifacts/[id]/run-loop">(
   async ({ user }, request, params) => {
     try {
       const { id } = await params;
@@ -91,20 +97,15 @@ export const POST = withAuth<CreateLoopResponse, "/artifacts/[id]/run-loop">(
         );
       }
 
-      if (body.computeTargetId) {
-        const ctResult = await validateComputeTarget(
-          body.computeTargetId,
-          user.organizationId
-        );
-        if (!ctResult.valid) {
-          if (ctResult.reason === "not_found") {
-            return notFoundResponse("Compute target");
-          }
-          return badRequestResponse(
-            "Compute target is offline. Ensure the desktop app is running."
-          );
-        }
+      const ctRouteResult = await resolveComputeTargetForRoute(
+        user.organizationId,
+        user.id,
+        body.computeTargetId
+      );
+      if ("errorResponse" in ctRouteResult) {
+        return ctRouteResult.errorResponse;
       }
+      const { computeTargetId: resolvedComputeTargetId } = ctRouteResult;
 
       const command = COMMAND_MAP[body.command];
       const prompt = body.prompt || getDefaultPrompt(command);
@@ -117,7 +118,7 @@ export const POST = withAuth<CreateLoopResponse, "/artifacts/[id]/run-loop">(
           artifactId,
           workstreamId: workstream?.id,
           parentLoopId,
-          computeTargetId: body.computeTargetId,
+          computeTargetId: resolvedComputeTargetId,
           prompt,
           repo: targetRepo
             ? { fullName: targetRepo, branch: targetBranch }

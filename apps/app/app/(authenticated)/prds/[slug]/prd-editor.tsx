@@ -5,6 +5,7 @@ import {
   type ArtifactDetail,
   ArtifactType,
 } from "@repo/api/src/types/artifact";
+import type { ComputeTargetConflictBody } from "@repo/api/src/types/compute-target";
 import { EntityType } from "@repo/api/src/types/entity-link";
 import { RunLoopCommand } from "@repo/api/src/types/loop";
 import { InlinePresence, OptionalArtifactRoom } from "@repo/collaboration";
@@ -22,6 +23,7 @@ import { MetadataPanel } from "@/components/artifact-editor/metadata-panel";
 import { SaveIndicator } from "@/components/artifact-editor/save-indicator";
 import { StatusMetadataSection } from "@/components/artifact-editor/status-metadata-section";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
+import { LoopDispatchTargetSelector } from "@/components/engineer/LoopDispatchTargetSelector";
 import { GenerationStatusBanner } from "@/components/generation-status-banner";
 import { MoveArtifactDialog } from "@/components/move-artifact-dialog";
 import { RenameDialog } from "@/components/rename-dialog";
@@ -33,6 +35,7 @@ import { useEditorSession } from "@/hooks/artifact-editing/use-editor-session";
 import { usePrdJudgesFeedback } from "@/hooks/queries/use-judges";
 import { useRunLoop } from "@/hooks/queries/use-loops";
 import { useOrganizationUsers } from "@/hooks/queries/use-users";
+import { parseComputeTargetConflict } from "@/lib/compute-target-conflict";
 import { useEngineerRoutingSelection } from "@/lib/engineer/routing-store";
 import { transformApiUserToSelectUser } from "@/lib/user-utils";
 import type { PlanSource } from "../../implementation-plans/components/plan-source";
@@ -111,6 +114,10 @@ export function PRDEditor({
     openGeneratePlanModal,
   } = uiState;
 
+  const [decomposeTargetState, setDecomposeTargetState] = useState<{
+    availableTargets: ComputeTargetConflictBody["availableTargets"];
+  } | null>(null);
+
   // Loop-based actions (PRD generation, decompose)
   const runLoop = useRunLoop();
   const { data: judgesReport } = usePrdJudgesFeedback(prd.id);
@@ -146,8 +153,14 @@ export function PRDEditor({
           toast.success("Feature decomposition started");
           setPendingCommand(null);
         },
-        onError: () => {
+        onError: (error) => {
           setPendingCommand(null);
+          const conflict = parseComputeTargetConflict(error);
+          if (conflict) {
+            setDecomposeTargetState({
+              availableTargets: conflict.availableTargets,
+            });
+          }
         },
       }
     );
@@ -363,6 +376,21 @@ export function PRDEditor({
           <ArtifactChatPanel artifactId={prd.id} artifactType="prd" />
         )}
       </div>
+
+      {/* Compute target selector for decompose command */}
+      {decomposeTargetState && (
+        <LoopDispatchTargetSelector
+          availableTargets={decomposeTargetState.availableTargets}
+          onSelect={(targetId) => {
+            setDecomposeTargetState(null);
+            runLoop.mutate({
+              artifactId: prd.id,
+              command: "decompose",
+              computeTargetId: targetId,
+            });
+          }}
+        />
+      )}
 
       {/* Rename Dialog */}
       <RenameDialog

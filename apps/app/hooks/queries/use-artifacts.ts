@@ -12,18 +12,21 @@ import type {
   UpdateArtifactInput,
 } from "@repo/api/src/types/artifact";
 import type { ArtifactVersion } from "@repo/api/src/types/artifact-version";
+import type { ComputeTargetConflictBody } from "@repo/api/src/types/compute-target";
 import { EntityType } from "@repo/api/src/types/entity-link";
 import type { ExternalLink } from "@repo/api/src/types/external-link";
 import { RunLoopCommand } from "@repo/api/src/types/loop";
+import { toast } from "@repo/design-system/components/ui/sonner";
 import {
   type UseQueryOptions,
   useMutation,
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { useRef } from "react";
+import { useCallback, useRef, useState } from "react";
 import { useIsLoopsEnabled } from "@/hooks/queries/use-compute-mode";
 import { useApiClient } from "@/hooks/use-api-client";
+import { parseComputeTargetConflict } from "@/lib/compute-target-conflict";
 import { getEngineerRoutingSelection } from "@/lib/engineer/routing-store";
 import { dashboardKeys } from "./use-dashboard-stats";
 import { invalidateEntityLinkQueries } from "./use-entity-links";
@@ -372,6 +375,11 @@ export function useCreateAndGenerateArtifact() {
   const useLoopsRef = useRef(useLoops);
   useLoopsRef.current = useLoops;
 
+  const [multiTargetState, setMultiTargetState] = useState<{
+    availableTargets: ComputeTargetConflictBody["availableTargets"];
+    pendingArtifactId: string;
+  } | null>(null);
+
   const mutation = useMutation({
     mutationFn: async (input: CreateArtifactInput) => {
       const artifact = await apiClient.post<Artifact>("/artifacts", input);
@@ -391,9 +399,18 @@ export function useCreateAndGenerateArtifact() {
           {}
         );
         return regenerated;
-      } catch {
-        // Generation failed — return the created artifact so the user can retry.
-        // Error toast handled by global QueryClient onError handler.
+      } catch (error) {
+        // This catch is inside mutationFn (not onError), so TanStack Query sees onSuccess —
+        // intentionally, so the caller can navigate to the created artifact regardless of
+        // whether generation succeeded.
+        const conflict = parseComputeTargetConflict(error);
+        if (conflict !== null) {
+          setMultiTargetState({
+            availableTargets: conflict.availableTargets,
+            pendingArtifactId: artifact.id,
+          });
+          return artifact;
+        }
         return artifact;
       }
     },
@@ -405,7 +422,33 @@ export function useCreateAndGenerateArtifact() {
     },
   });
 
-  return { ...mutation, isComputeModeLoading };
+  const selectTarget = useCallback(
+    async (targetId: string) => {
+      if (!multiTargetState) {
+        return;
+      }
+      const { pendingArtifactId } = multiTargetState;
+      setMultiTargetState(null);
+      try {
+        await apiClient.post(`/artifacts/${pendingArtifactId}/run-loop`, {
+          command: "plan",
+          computeTargetId: targetId,
+        });
+        queryClient.invalidateQueries({
+          queryKey: artifactKeys.generationStatus(pendingArtifactId),
+        });
+      } catch (retryError) {
+        toast.error(
+          retryError instanceof Error
+            ? retryError.message
+            : "Failed to start plan generation"
+        );
+      }
+    },
+    [multiTargetState, apiClient, queryClient]
+  );
+
+  return { ...mutation, isComputeModeLoading, multiTargetState, selectTarget };
 }
 
 type ExecuteResult = {
