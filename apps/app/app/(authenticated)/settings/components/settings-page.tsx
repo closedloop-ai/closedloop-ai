@@ -1,6 +1,7 @@
 "use client";
 
 import { FeatureFlagged } from "@repo/analytics/components/feature-flagged";
+import { APPROVER_ROLE_OPTIONS, ApproverRole } from "@repo/api/src/types/user";
 import {
   OrganizationProfile,
   OrganizationSwitcher,
@@ -8,12 +9,24 @@ import {
   UserProfile,
 } from "@repo/auth/client";
 import {
+  Avatar,
+  AvatarFallback,
+  AvatarImage,
+} from "@repo/design-system/components/ui/avatar";
+import {
   Card,
   CardContent,
   CardDescription,
   CardHeader,
   CardTitle,
 } from "@repo/design-system/components/ui/card";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@repo/design-system/components/ui/select";
 import { Separator } from "@repo/design-system/components/ui/separator";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import {
@@ -25,6 +38,8 @@ import {
 import { useSearchParams } from "next/navigation";
 import { useEffect } from "react";
 import { CustomFieldsSettingsTab } from "@/components/custom-fields/custom-fields-settings-tab";
+import { UserLink } from "@/components/user-link";
+import { useOrganizationUsers, useUpdateUser } from "@/hooks/queries/use-users";
 import { AnthropicApiKeyCard } from "./anthropic-api-key-card";
 import { ApiKeysSettingsPanel } from "./api-keys-settings-panel";
 import { CloudComputeModeCard } from "./cloud-compute-mode-card";
@@ -80,58 +95,41 @@ export function SettingsPage({
       <Separator />
 
       <Tabs className="flex-1" defaultValue={initialTab}>
-        <TabsList className="h-auto rounded-none border-border border-b bg-transparent p-0">
-          <TabsTrigger
-            className="rounded-none border-transparent border-b-2 bg-transparent px-4 py-2 data-[state=active]:border-foreground data-[state=active]:bg-transparent"
-            value="profile"
-          >
+        <TabsList>
+          <TabsTrigger className="flex-initial px-4" value="profile">
             Profile
           </TabsTrigger>
-          <TabsTrigger
-            className="rounded-none border-transparent border-b-2 bg-transparent px-4 py-2 data-[state=active]:border-foreground data-[state=active]:bg-transparent"
-            value="organization"
-          >
+          <TabsTrigger className="flex-initial px-4" value="organization">
             Organization
           </TabsTrigger>
           {isAdmin ? (
-            <TabsTrigger
-              className="rounded-none border-transparent border-b-2 bg-transparent px-4 py-2 data-[state=active]:border-foreground data-[state=active]:bg-transparent"
-              value="admin"
-            >
+            <TabsTrigger className="flex-initial px-4" value="admin">
               Admin
             </TabsTrigger>
           ) : null}
           {isAdmin ? (
-            <TabsTrigger
-              className="rounded-none border-transparent border-b-2 bg-transparent px-4 py-2 data-[state=active]:border-foreground data-[state=active]:bg-transparent"
-              value="custom-fields"
-            >
+            <TabsTrigger className="flex-initial px-4" value="custom-fields">
               Custom Fields
             </TabsTrigger>
           ) : null}
-          <TabsTrigger
-            className="rounded-none border-transparent border-b-2 bg-transparent px-4 py-2 data-[state=active]:border-foreground data-[state=active]:bg-transparent"
-            value="integrations"
-          >
+          <TabsTrigger className="flex-initial px-4" value="integrations">
             Integrations
           </TabsTrigger>
-          <TabsTrigger
-            className="rounded-none border-transparent border-b-2 bg-transparent px-4 py-2 data-[state=active]:border-foreground data-[state=active]:bg-transparent"
-            value="api-keys"
-          >
+          <TabsTrigger className="flex-initial px-4" value="api-keys">
             API Keys
           </TabsTrigger>
         </TabsList>
 
-        <TabsContent className="mt-6 space-y-6" value="profile">
+        <TabsContent className="mt-3 space-y-6" value="profile">
           <UserProfile appearance={clerkAppearance} routing="hash" />
         </TabsContent>
 
-        <TabsContent className="mt-6 space-y-6" value="organization">
+        <TabsContent className="mt-3 space-y-6" value="organization">
           <OrganizationProfile appearance={clerkAppearance} routing="hash" />
+          {isAdmin && SHOW_CLOSEDLOOP_ROLES && <ClosedLoopRolesSection />}
         </TabsContent>
 
-        <TabsContent className="mt-6 space-y-6" value="admin">
+        <TabsContent className="mt-3 space-y-6" value="admin">
           <Protect
             condition={(
               has: (
@@ -173,7 +171,7 @@ export function SettingsPage({
           </Protect>
         </TabsContent>
 
-        <TabsContent className="mt-6 space-y-6" value="custom-fields">
+        <TabsContent className="mt-3 space-y-6" value="custom-fields">
           <Protect
             condition={(
               has: (
@@ -196,7 +194,7 @@ export function SettingsPage({
           </Protect>
         </TabsContent>
 
-        <TabsContent className="mt-6 space-y-6" value="integrations">
+        <TabsContent className="mt-3 space-y-6" value="integrations">
           <FeatureFlagged flag="the-one-flag">
             <CloudComputeModeCard isAdmin={isAdmin} />
           </FeatureFlagged>
@@ -217,7 +215,7 @@ export function SettingsPage({
           </Card>
         </TabsContent>
 
-        <TabsContent className="mt-6 space-y-6" value="api-keys">
+        <TabsContent className="mt-3 space-y-6" value="api-keys">
           <ApiKeysSettingsPanel />
         </TabsContent>
       </Tabs>
@@ -240,10 +238,121 @@ const GITHUB_ERROR_MESSAGES: Record<string, string> = {
   token_exchange_failed: "Token exchange failed. Please try again.",
 };
 
+// Toggle to show ClosedLoop Roles section in the Organization tab.
+// Hidden until the roles feature is further defined.
+const SHOW_CLOSEDLOOP_ROLES = false;
+
+const ROLE_LABELS: Record<ApproverRole, string> = {
+  [ApproverRole.Pm]: "PM",
+  [ApproverRole.Designer]: "Designer",
+  [ApproverRole.TechLead]: "Tech Lead",
+  [ApproverRole.Engineer]: "Engineer",
+  [ApproverRole.Stakeholder]: "Stakeholder",
+};
+
+function ClosedLoopRolesSection() {
+  const { data: users = [] } = useOrganizationUsers();
+  const updateUser = useUpdateUser();
+
+  if (users.length === 0) {
+    return null;
+  }
+
+  return (
+    <>
+      <Separator />
+      <div>
+        <h2 className="font-semibold text-lg tracking-tight">
+          ClosedLoop Roles
+        </h2>
+        <p className="text-muted-foreground text-sm">
+          Set the ClosedLoop role for each member. Engineers will see the
+          Engineer view when running locally.
+        </p>
+      </div>
+      <div className="space-y-3">
+        {users.map((user) => {
+          const name = [user.firstName, user.lastName]
+            .filter(Boolean)
+            .join(" ");
+          return (
+            <div
+              className="flex items-center justify-between gap-4 rounded-lg border p-3"
+              key={user.id}
+            >
+              <div className="flex items-center gap-3">
+                <Avatar className="size-8">
+                  <AvatarImage alt={name} src={user.avatarUrl ?? undefined} />
+                  <AvatarFallback className="text-xs">
+                    {(
+                      user.firstName?.[0] ??
+                      user.email[0] ??
+                      "?"
+                    ).toUpperCase()}
+                  </AvatarFallback>
+                </Avatar>
+                <div className="min-w-0">
+                  <UserLink
+                    className="truncate font-medium text-sm hover:underline"
+                    userId={user.id}
+                  >
+                    {name || user.email}
+                  </UserLink>
+                  {name && (
+                    <p className="truncate text-muted-foreground text-xs">
+                      {user.email}
+                    </p>
+                  )}
+                </div>
+              </div>
+              <Select
+                onValueChange={(value) => {
+                  updateUser.mutate(
+                    {
+                      id: user.id,
+                      role: value as ApproverRole,
+                    },
+                    {
+                      onSuccess: () => {
+                        toast.success(
+                          `Updated ${name || user.email} to ${ROLE_LABELS[value as ApproverRole] ?? value}`
+                        );
+                      },
+                    }
+                  );
+                }}
+                value={user.role}
+              >
+                <SelectTrigger className="w-[140px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {APPROVER_ROLE_OPTIONS.map((role) => (
+                    <SelectItem key={role} value={role}>
+                      {ROLE_LABELS[role] ?? role}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          );
+        })}
+      </div>
+    </>
+  );
+}
+
 const clerkAppearance = {
   elements: {
     rootBox: "w-full",
-    cardBox: "bg-transparent shadow-none border rounded-lg border-border",
+    cardBox: {
+      backgroundColor: "transparent",
+      boxShadow: "none",
+      borderWidth: "1px",
+      borderStyle: "solid",
+      borderColor: "var(--border)",
+      borderRadius: "0.5rem",
+    },
     navbar: "border-r border-border",
     navbarButton: "text-foreground hover:bg-muted",
     navbarButtonIcon: "text-muted-foreground",
