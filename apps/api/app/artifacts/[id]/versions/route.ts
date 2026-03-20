@@ -1,5 +1,6 @@
 import type { Artifact } from "@repo/api/src/types/artifact";
 import type { ArtifactVersion } from "@repo/api/src/types/artifact-version";
+import { log } from "@repo/observability/log";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { resolveArtifactId } from "@/lib/identifier-utils";
 import {
@@ -10,6 +11,7 @@ import {
 } from "@/lib/route-utils";
 import { ArtifactNotFoundError } from "../../artifact-utils";
 import { artifactVersionService } from "../../artifact-version-service";
+import { resetArtifactRoom } from "../../room-utils";
 import { artifactsService } from "../../service";
 import { newVersionValidator } from "../../validators";
 
@@ -44,7 +46,7 @@ export const GET = withAnyAuth<
 });
 
 export const POST = withAnyAuth<Artifact, "/artifacts/[id]/versions">(
-  async ({ user }, request, params) => {
+  async ({ user, authMethod }, request, params) => {
     try {
       const { id } = await params;
       const resolvedId = await resolveArtifactId(id, user.organizationId);
@@ -67,6 +69,24 @@ export const POST = withAnyAuth<Artifact, "/artifacts/[id]/versions">(
         user.id,
         body.content
       );
+
+      // Reset the Liveblocks room when the version was created out-of-band
+      // (MCP/API key) so the collaborative editor picks up the new content
+      // instead of serving the stale Y.Doc. Skip for browser sessions — the
+      // editor already has the Y.Doc in sync, and resetting would tear down
+      // the active collaboration session and drop comment/thread state.
+      if (authMethod === "api_key") {
+        await resetArtifactRoom(updatedArtifact).catch((error) => {
+          log.error(
+            "[versions] Failed to reset Liveblocks room after version create",
+            {
+              artifactId: resolvedId,
+              version: updatedArtifact.latestVersion,
+              error: error instanceof Error ? error.message : String(error),
+            }
+          );
+        });
+      }
 
       return successResponse(updatedArtifact);
     } catch (error) {
