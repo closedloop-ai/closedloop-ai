@@ -22,7 +22,6 @@ import {
   type BatchJudgeScoresResponse,
   type EvalStatus,
   EvaluationReportType,
-  type JudgeFeedbackItem,
   type JudgesFeedbackResponse,
 } from "@repo/api/src/types/evaluation";
 import type { ExecutionTrace } from "@repo/api/src/types/execution-log";
@@ -1581,7 +1580,16 @@ Please try again or contact support if the issue persists.`
         return { status: "not_found", data: null };
       }
 
-      const data = evaluation.judgeScores.map(toJudgeFeedbackItem);
+      const data = evaluation.judgeScores.map((js) => ({
+        judgeScoreId: js.id,
+        caseId: js.caseId,
+        metricName: js.metricName,
+        score: js.score,
+        threshold: js.threshold,
+        justification: js.justification,
+        finalStatus: js.finalStatus as EvalStatus,
+        promptName: js.prompt?.name ?? null,
+      }));
       return { status: "success", data };
     } catch (error) {
       log.error(`[artifacts-service] Failed to get ${reportType} feedback`, {
@@ -1638,8 +1646,16 @@ Please try again or contact support if the issue persists.`
           Object.values(EvaluationReportType).map((t) => [t, null])
         ) as ArtifactJudgeScores;
       }
-      result[artifactId][reportType] =
-        evaluation.judgeScores.map(toJudgeFeedbackItem);
+      result[artifactId][reportType] = evaluation.judgeScores.map((js) => ({
+        judgeScoreId: js.id,
+        caseId: js.caseId,
+        metricName: js.metricName,
+        score: js.score,
+        threshold: js.threshold,
+        justification: js.justification,
+        finalStatus: js.finalStatus as EvalStatus,
+        promptName: js.prompt?.name ?? null,
+      }));
     }
 
     return result;
@@ -3364,28 +3380,5 @@ function toLoopGenerationStatus(
     source: "loop",
     loopId: loop.id,
     initiatedBy: loop.user,
-  };
-}
-
-/** Map a Prisma JudgeScore row (with prompt relation) to a JudgeFeedbackItem. */
-function toJudgeFeedbackItem(js: {
-  id: string;
-  caseId: string;
-  metricName: string;
-  score: number;
-  threshold: number;
-  justification: string;
-  finalStatus: string;
-  prompt: { name: string } | null;
-}): JudgeFeedbackItem {
-  return {
-    judgeScoreId: js.id,
-    caseId: js.caseId,
-    metricName: js.metricName,
-    score: js.score,
-    threshold: js.threshold,
-    justification: js.justification,
-    finalStatus: js.finalStatus as EvalStatus,
-    promptName: js.prompt?.name ?? null,
   };
 }
