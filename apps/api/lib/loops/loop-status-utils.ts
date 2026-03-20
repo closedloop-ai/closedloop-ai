@@ -49,6 +49,8 @@ export function mapLoopCommand(command: string): GenerationStatus["command"] {
       return "request_changes";
     case "DECOMPOSE":
       return "decompose";
+    case "EVALUATE_PRD":
+      return "evaluate_prd";
     default:
       return null;
   }

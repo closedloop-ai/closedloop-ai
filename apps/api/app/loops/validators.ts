@@ -1,4 +1,5 @@
 import { EntityType } from "@repo/api/src/types/entity-link";
+import { LoopCommand } from "@repo/api/src/types/loop";
 import { z } from "zod";
 import { uuidOrSlug } from "@/lib/identifier-utils";
 
@@ -148,7 +149,9 @@ export const listLoopsQueryValidator = z.object({
     ])
     .optional(),
   command: z
-    .enum(["PLAN", "EXECUTE", "CHAT", "EXPLORE", "REQUEST_CHANGES"])
+    .enum(
+      Object.values(LoopCommand) as unknown as [LoopCommand, ...LoopCommand[]]
+    )
     .optional(),
   artifactId: uuidOrSlug().optional(),
   workstreamId: z.uuid().optional(),

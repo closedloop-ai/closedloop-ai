@@ -21,6 +21,7 @@ import fs from "node:fs";
 import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 // ---------------------------------------------------------------------------
 // AWS SDK v3 — loaded from the global install
@@ -205,8 +206,9 @@ function validateSecrets() {
   const requiredSecrets = ["anthropicApiKey"];
 
   // Repo commands need a GitHub token for clone/push operations.
+  // EVALUATE_PRD with a targetRepo also needs a GitHub token to fetch repo context.
   const repoCommands = new Set(["PLAN", "EXECUTE", "REQUEST_CHANGES", "GENERATE_PRD"]);
-  if (repoCommands.has(config.command)) {
+  if (repoCommands.has(config.command) || (config.command === "EVALUATE_PRD" && config.targetRepo)) {
     requiredSecrets.push("githubToken");
   }
 
@@ -1804,6 +1806,7 @@ async function uploadState(workDir, output, runDir) {
     "open-questions.md",
     "execution-result.json",
     "judges.json",
+    "prd-judges.json",
     "code-judges.json",
     "perf.jsonl",
     "state.json",
@@ -1935,6 +1938,7 @@ function buildRunLoopArgs(runLoopPath, workDir, prdPath) {
   return { cmd: "bash", args };
 }
 
+
 function buildClaudeDirectArgs(workDir, symphonyWD) {
   const args = [];
 
@@ -1991,6 +1995,25 @@ function buildClaudeDirectArgs(workDir, symphonyWD) {
         throw new Error(`No prompt found for ${config.command} command`);
       }
       args.push(prompt);
+      break;
+    }
+    case "EVALUATE_PRD": {
+      // prd.md is written to symphonyWD (the run directory) by writePrdFile(),
+      // and uploadState() collects prd-judges.json from that same directory.
+      // Use symphonyWD so the skill reads prd.md and writes prd-judges.json
+      // to the correct location.
+      const runDir = symphonyWD ?? workDir;
+
+      // Build skill invocation with runDir containing PRD artifact
+      let skillCall = `Activate judges:run-judges skill --artifact-type prd --workdir ${runDir}.\n`;
+
+      // Add optional codebase path if target repo exists
+      if (config.targetRepo) {
+        // Target repo is cloned to workDir during prepareWorkspace()
+        skillCall += `REPO_PATH=${workDir} (search here for relevant code).\n`;
+      }
+
+      args.push(skillCall);
       break;
     }
     default:
@@ -2278,6 +2301,12 @@ function validatePreRunInputs(command, contextPack) {
     throw new HarnessError(
       ERROR_CODES.preRunValidation,
       "Pre-run validation failed: REQUEST_CHANGES requires a non-empty prompt"
+    );
+  }
+  if (command === "EVALUATE_PRD" && !hasArtifacts) {
+    throw new HarnessError(
+      ERROR_CODES.preRunValidation,
+      "Pre-run validation failed: EVALUATE_PRD requires artifacts in context pack (PRD content)"
     );
   }
 }
@@ -2846,4 +2875,18 @@ async function main() {
   }
 }
 
-main();
+// ---------------------------------------------------------------------------
+// Exports — testable pure functions (no I/O side effects at import time)
+// ---------------------------------------------------------------------------
+export {
+  buildClaudeDirectArgs,
+  buildCommand, config, ERROR_CODES,
+  HarnessError, validateConfig,
+  validatePreRunInputs,
+  validateSecrets
+};
+
+// Guard main() so the script does not execute when imported by tests.
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  main();
+}

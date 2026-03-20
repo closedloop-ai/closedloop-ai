@@ -49,9 +49,16 @@ vi.mock("@/lib/prompts-service", () => ({
   upsertFromSnapshot: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock("@/lib/loops/loop-artifact-ingestion", () => ({
-  parseJsonArtifact: vi.fn(),
-}));
+vi.mock("@/lib/loops/loop-artifact-ingestion", async (importOriginal) => {
+  const actual =
+    await importOriginal<
+      typeof import("@/lib/loops/loop-artifact-ingestion")
+    >();
+  return {
+    ...actual,
+    parseJsonArtifact: vi.fn(),
+  };
+});
 
 vi.mock("@/lib/pr-linkage", () => ({
   ensurePrLinkageRecords: vi.fn().mockResolvedValue(undefined),

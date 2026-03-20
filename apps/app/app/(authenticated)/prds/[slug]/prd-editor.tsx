@@ -6,6 +6,7 @@ import {
   ArtifactType,
 } from "@repo/api/src/types/artifact";
 import { EntityType } from "@repo/api/src/types/entity-link";
+import { RunLoopCommand } from "@repo/api/src/types/loop";
 import { InlinePresence, OptionalArtifactRoom } from "@repo/collaboration";
 import { Button } from "@repo/design-system/components/ui/button";
 import { toast } from "@repo/design-system/components/ui/sonner";
@@ -119,7 +120,11 @@ export function PRDEditor({
 
   const handleGeneratePrd = () => {
     runLoop.mutate(
-      { artifactId: prd.id, command: "generate_prd", computeTargetId },
+      {
+        artifactId: prd.id,
+        command: RunLoopCommand.GeneratePrd,
+        computeTargetId,
+      },
       {
         onSuccess: () => {
           toast.success("PRD generation started");

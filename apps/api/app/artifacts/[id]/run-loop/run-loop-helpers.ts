@@ -1,19 +1,23 @@
 import type { JsonObject } from "@repo/api/src/types/common";
-import type { CreateLoopRequest } from "@repo/api/src/types/loop";
+import {
+  type CreateLoopRequest,
+  RunLoopCommand,
+} from "@repo/api/src/types/loop";
 import { getProjectSettings } from "@repo/api/src/types/project";
 import { loopsService } from "@/app/loops/service";
 import type { getCommandHandler } from "@/lib/loops/loop-commands";
 import { artifactsService } from "../../service";
 
 /**
- * Map route body commands to LoopCommand enum values.
+ * Map route body commands (lowercase) to LoopCommand enum values (uppercase).
  */
 export const COMMAND_MAP = {
-  plan: "PLAN",
-  execute: "EXECUTE",
-  request_changes: "REQUEST_CHANGES",
-  decompose: "DECOMPOSE",
-  generate_prd: "GENERATE_PRD",
+  [RunLoopCommand.Plan]: "PLAN",
+  [RunLoopCommand.Execute]: "EXECUTE",
+  [RunLoopCommand.RequestChanges]: "REQUEST_CHANGES",
+  [RunLoopCommand.Decompose]: "DECOMPOSE",
+  [RunLoopCommand.EvaluatePrd]: "EVALUATE_PRD",
+  [RunLoopCommand.GeneratePrd]: "GENERATE_PRD",
 } as const;
 
 /**
