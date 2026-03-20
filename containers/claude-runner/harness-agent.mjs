@@ -2883,7 +2883,7 @@ export {
   buildCommand, config, ERROR_CODES,
   HarnessError, validateConfig,
   validatePreRunInputs,
-  validateSecrets
+  validateSecrets,
 };
 
 // Guard main() so the script does not execute when imported by tests.

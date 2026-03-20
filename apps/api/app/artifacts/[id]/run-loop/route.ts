@@ -1,11 +1,16 @@
 import { success } from "@repo/api/src/types/common";
-import type { CreateLoopResponse } from "@repo/api/src/types/loop";
+import { EntityType } from "@repo/api/src/types/entity-link";
+import {
+  type CreateLoopResponse,
+  RunLoopCommand,
+} from "@repo/api/src/types/loop";
 import { log } from "@repo/observability/log";
 import { waitUntil } from "@vercel/functions";
 import { NextResponse } from "next/server";
 import { loopsService } from "@/app/loops/service";
 import { withAuth } from "@/lib/auth/with-auth";
 import { resolveArtifactId } from "@/lib/identifier-utils";
+import { scheduleAutoEvaluatePrd } from "@/lib/loops/auto-evaluate-prd";
 import { getCommandHandler } from "@/lib/loops/loop-commands";
 import { launchLoop } from "@/lib/loops/loop-orchestrator";
 import { getDefaultPrompt } from "@/lib/loops/prompts";
@@ -70,6 +75,7 @@ export const POST = withAuth<CreateLoopResponse, "/artifacts/[id]/run-loop">(
         targetBranch,
         contextRefs,
         parentLoopId,
+        source,
       } = await resolveLoopContext(
         artifact,
         body,
@@ -119,6 +125,15 @@ export const POST = withAuth<CreateLoopResponse, "/artifacts/[id]/run-loop">(
           contextRefs: contextRefs.length > 0 ? contextRefs : undefined,
         }
       );
+
+      // Auto-evaluate the source PRD when the user triggers plan generation.
+      // Skipped if a loop already exists for that PRD's current version.
+      if (
+        body.command === RunLoopCommand.Plan &&
+        source?.type === EntityType.Artifact
+      ) {
+        scheduleAutoEvaluatePrd(source.id, user.organizationId, user.id);
+      }
 
       const launchPromise = launchLoop(
         loopResponse.loopId,

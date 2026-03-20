@@ -94,7 +94,9 @@ test("buildClaudeDirectArgs with EVALUATE_PRD invokes judges:run-judges with art
 
   assert.equal(cmd, "claude");
 
-  const prompt = args.find((a) => typeof a === "string" && a.includes("judges:run-judges"));
+  const prompt = args.find(
+    (a) => typeof a === "string" && a.includes("judges:run-judges")
+  );
   assert.ok(
     prompt !== undefined,
     `args must contain a prompt referencing judges:run-judges; got: ${JSON.stringify(args)}`

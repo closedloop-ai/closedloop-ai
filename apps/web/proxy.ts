@@ -2,7 +2,6 @@ import { authMiddleware } from "@repo/auth/proxy";
 import { internationalizationMiddleware } from "@repo/internationalization/proxy";
 import { noseconeOptions, securityMiddleware } from "@repo/security/proxy";
 import { createNEMO } from "@rescale/nemo";
-import { NextResponse } from "next/server";
 
 export const config = {
   // matcher tells Next.js which routes to run the middleware on. This runs the

@@ -7,6 +7,21 @@ type ReportTypeSectionProps = {
   groups: ArtifactTypeGroup[];
 };
 
+const REPORT_TYPE_LABEL: Record<EvaluationReportType, string> = {
+  [EvaluationReportType.Code]: "Code",
+  [EvaluationReportType.Prd]: "PRD",
+  [EvaluationReportType.Plan]: "Plan",
+};
+
+const REPORT_TYPE_DESCRIPTION: Record<EvaluationReportType, string> = {
+  [EvaluationReportType.Code]:
+    "LLM code-judge scores compared against pull request ratings.",
+  [EvaluationReportType.Prd]:
+    "LLM PRD-judge scores compared against artifact ratings.",
+  [EvaluationReportType.Plan]:
+    "LLM plan-judge scores compared against artifact ratings.",
+};
+
 export function ReportTypeSection({
   reportType,
   groups,
@@ -15,12 +30,10 @@ export function ReportTypeSection({
     <section className="space-y-4">
       <div>
         <h2 className="font-semibold text-xl">
-          {reportType === EvaluationReportType.Code ? "Code" : "Plan"}
+          {REPORT_TYPE_LABEL[reportType]}
         </h2>
         <p className="text-muted-foreground text-sm">
-          {reportType === EvaluationReportType.Code
-            ? "LLM code-judge scores compared against pull request ratings."
-            : "LLM plan-judge scores compared against artifact ratings."}
+          {REPORT_TYPE_DESCRIPTION[reportType]}
         </p>
       </div>
       {groups.length === 0 ? (

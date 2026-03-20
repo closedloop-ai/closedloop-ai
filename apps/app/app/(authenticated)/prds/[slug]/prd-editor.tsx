@@ -30,6 +30,7 @@ import { useArtifactContent } from "@/hooks/artifact-editing/use-artifact-conten
 import { useArtifactMetadata } from "@/hooks/artifact-editing/use-artifact-metadata";
 import { useArtifactUIState } from "@/hooks/artifact-editing/use-artifact-ui-state";
 import { useEditorSession } from "@/hooks/artifact-editing/use-editor-session";
+import { usePrdJudgesFeedback } from "@/hooks/queries/use-judges";
 import { useRunLoop } from "@/hooks/queries/use-loops";
 import { useOrganizationUsers } from "@/hooks/queries/use-users";
 import { useEngineerRoutingSelection } from "@/lib/engineer/routing-store";
@@ -112,6 +113,7 @@ export function PRDEditor({
 
   // Loop-based actions (PRD generation, decompose)
   const runLoop = useRunLoop();
+  const { data: judgesReport } = usePrdJudgesFeedback(prd.id);
   const routing = useEngineerRoutingSelection();
   // Pass computeTargetId for both CloudRelay and LocalElectron modes.
   // Loop dispatch always goes through the API → desktop gateway, which needs
@@ -133,12 +135,35 @@ export function PRDEditor({
     );
   };
 
+  const [pendingCommand, setPendingCommand] = useState<string | null>(null);
+
   const handleDecomposeFeatures = () => {
+    setPendingCommand("decompose");
     runLoop.mutate(
       { artifactId: prd.id, command: "decompose", computeTargetId },
       {
         onSuccess: () => {
           toast.success("Feature decomposition started");
+          setPendingCommand(null);
+        },
+        onError: () => {
+          setPendingCommand(null);
+        },
+      }
+    );
+  };
+
+  const handleEvaluatePrd = () => {
+    setPendingCommand("evaluate_prd");
+    runLoop.mutate(
+      { artifactId: prd.id, command: "evaluate_prd", computeTargetId },
+      {
+        onSuccess: () => {
+          toast.success("PRD evaluation started");
+          setPendingCommand(null);
+        },
+        onError: () => {
+          setPendingCommand(null);
         },
       }
     );
@@ -176,10 +201,12 @@ export function PRDEditor({
       {/* Header */}
       <PRDEditorHeader
         canShowPanel={chatFlag?.enabled}
+        isEvaluating={pendingCommand === "evaluate_prd"}
         isGenerating={runLoop.isPending}
         isPending={isPending}
         onDecomposeFeatures={handleDecomposeFeatures}
         onDelete={uiState.openDeleteDialog}
+        onEvaluatePrd={handleEvaluatePrd}
         onExport={actions.handleDownload}
         onGeneratePlan={openGeneratePlanModal}
         onGeneratePrd={handleGeneratePrd}
@@ -312,6 +339,7 @@ export function PRDEditor({
               <PRDMetadataPanel
                 approver={metadata.approver}
                 assignee={metadata.assignee}
+                judgeItems={judgesReport ?? null}
                 onApproverSelect={metadata.handleApproverSelect}
                 onAssigneeChange={metadata.handleAssigneeChange}
                 onStatusChange={metadata.handleStatusChange}

@@ -22,12 +22,7 @@ type AppLayoutProperties = {
 const AppLayout = async ({ children }: AppLayoutProperties) => {
   // Parallelize independent async operations to eliminate waterfalls
   const [{ redirectToSignIn }, user, cookieStore, headersList] =
-    await Promise.all([
-      auth(),
-      currentUser(),
-      cookies(),
-      headers(),
-    ]);
+    await Promise.all([auth(), currentUser(), cookies(), headers()]);
 
   if (!user) {
     return redirectToSignIn();

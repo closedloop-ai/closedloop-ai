@@ -202,7 +202,6 @@ describe("evaluatePrdHandler downloadAndIngest", () => {
   });
 
   // ---------------------------------------------------------------------------
-  // ---------------------------------------------------------------------------
   // Stale-write guard — version-aware ingestion skip
   // ---------------------------------------------------------------------------
 
@@ -252,6 +251,7 @@ describe("evaluatePrdHandler downloadAndIngest", () => {
     expect(mockUpsertEvaluationWithJudgeScores).toHaveBeenCalledOnce();
   });
 
+  // ---------------------------------------------------------------------------
   // Upsert idempotency — calling ingest twice does not throw
   // ---------------------------------------------------------------------------
 

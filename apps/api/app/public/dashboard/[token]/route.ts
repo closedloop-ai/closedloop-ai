@@ -8,7 +8,7 @@ import { errorResponse, notFoundResponse } from "@/lib/route-utils";
 type RouteParams = { params: Promise<{ token: string }> };
 
 export async function GET(
-  request: Request,
+  _request: Request,
   { params }: RouteParams
 ): Promise<NextResponse<ApiResult<PublicDashboardResponse>>> {
   try {
