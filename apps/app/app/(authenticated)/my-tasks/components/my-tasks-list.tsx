@@ -55,8 +55,8 @@ export function MyTasksList({
   issueFilters,
 }: Readonly<MyTasksListProps>) {
   const listParams = useMemo(
-    () => buildIssueListParams(assigneeId, issueFilters),
-    [assigneeId, issueFilters]
+    () => buildIssueListParams(assigneeId),
+    [assigneeId]
   );
   const { data: rawIssues = [], isLoading } = useIssues(listParams, {
     enabled: !!assigneeId && !isUserLoading,

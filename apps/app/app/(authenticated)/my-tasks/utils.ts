@@ -32,31 +32,19 @@ export const DISPLAY_GROUPS: {
 ];
 
 /**
- * Build API query params. The API only supports single-value filters,
- * so we only pass a filter when exactly one value is selected.
- * Multi-value filtering is handled client-side via `applyClientFilters`.
+ * Build API query params. Only passes assigneeId to the API;
+ * all other filtering is done client-side via `applyClientFilters`.
  */
 export function buildIssueListParams(
-  assigneeId: string | null,
-  issueFilters?: MyTasksIssueFilters
+  assigneeId: string | null
 ): FindIssuesOptions {
-  const params: FindIssuesOptions = {
+  return {
     assigneeId: assigneeId ?? undefined,
   };
-  if (issueFilters?.projectIds.length === 1) {
-    params.projectId = issueFilters.projectIds[0];
-  }
-  if (issueFilters?.statuses.length === 1) {
-    params.status = issueFilters.statuses[0];
-  }
-  if (issueFilters?.priorities.length === 1) {
-    params.priority = issueFilters.priorities[0];
-  }
-  return params;
 }
 
 /**
- * Apply multi-value filters client-side for dimensions with >1 selection.
+ * Apply all selected filters client-side.
  */
 export function applyClientFilters(
   issues: IssueWithWorkstream[],
@@ -64,19 +52,19 @@ export function applyClientFilters(
 ): IssueWithWorkstream[] {
   return issues.filter((issue) => {
     if (
-      filters.projectIds.length > 1 &&
+      filters.projectIds.length > 0 &&
       !filters.projectIds.includes(issue.projectId)
     ) {
       return false;
     }
     if (
-      filters.statuses.length > 1 &&
+      filters.statuses.length > 0 &&
       !filters.statuses.includes(issue.status)
     ) {
       return false;
     }
     if (
-      filters.priorities.length > 1 &&
+      filters.priorities.length > 0 &&
       !filters.priorities.includes(issue.priority)
     ) {
       return false;

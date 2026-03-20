@@ -57,8 +57,8 @@ export default function MyTasksPage() {
 
   const assigneeId = currentUser?.id ?? null;
   const listParams = useMemo(
-    () => buildIssueListParams(assigneeId, filters),
-    [assigneeId, filters]
+    () => buildIssueListParams(assigneeId),
+    [assigneeId]
   );
   const { data: rawIssues = [], isLoading: isIssuesLoading } = useIssues(
     listParams,

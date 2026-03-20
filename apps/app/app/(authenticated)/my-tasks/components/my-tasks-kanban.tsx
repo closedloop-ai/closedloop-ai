@@ -60,8 +60,8 @@ export function MyTasksKanban({
 }: Readonly<MyTasksKanbanProps>) {
   const queryClient = useQueryClient();
   const listFilters = useMemo(
-    () => buildIssueListParams(assigneeId, issueFilters),
-    [assigneeId, issueFilters]
+    () => buildIssueListParams(assigneeId),
+    [assigneeId]
   );
   const { data: rawIssues = [], isLoading } = useIssues(listFilters, {
     enabled: !!assigneeId && !isUserLoading,
