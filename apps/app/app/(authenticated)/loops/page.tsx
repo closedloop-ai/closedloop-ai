@@ -12,7 +12,7 @@ export default function LoopsPage() {
   return (
     <>
       <Header breadcrumbs={[{ label: "Loops" }]} />
-      <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-auto p-4 pt-0">
+      <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-auto p-6">
         <div className="flex items-start justify-between">
           <div>
             <h1 className="font-bold text-2xl">Loops</h1>

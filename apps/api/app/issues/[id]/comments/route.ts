@@ -1,6 +1,12 @@
 import { z } from "zod";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
-import { errorResponse, parseBody, successResponse } from "@/lib/route-utils";
+import { resolveIssueId } from "@/lib/identifier-utils";
+import {
+  errorResponse,
+  notFoundResponse,
+  parseBody,
+  successResponse,
+} from "@/lib/route-utils";
 import { issueCommentsService } from "./service";
 
 const createCommentValidator = z.object({
@@ -18,6 +24,11 @@ export const POST = withAnyAuth<{ created: boolean }, "/issues/[id]/comments">(
   async ({ user }, request, params) => {
     try {
       const { id } = await params;
+      const resolvedId = await resolveIssueId(id, user.organizationId);
+      if (!resolvedId) {
+        return notFoundResponse("Issue");
+      }
+
       const { body, errorResponse: parseError } = await parseBody(
         request,
         createCommentValidator
@@ -28,7 +39,7 @@ export const POST = withAnyAuth<{ created: boolean }, "/issues/[id]/comments">(
 
       // Look up the issue to get its workstreamId
       const issue = await issueCommentsService.findIssue(
-        id,
+        resolvedId,
         user.organizationId
       );
 
@@ -39,7 +50,7 @@ export const POST = withAnyAuth<{ created: boolean }, "/issues/[id]/comments">(
       await issueCommentsService.create(
         issue.organizationId,
         user.id,
-        id,
+        resolvedId,
         body.body
       );
 

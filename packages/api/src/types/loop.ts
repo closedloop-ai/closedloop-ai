@@ -24,9 +24,22 @@ export const LoopCommand = {
   Explore: "EXPLORE",
   RequestChanges: "REQUEST_CHANGES",
   Decompose: "DECOMPOSE",
+  EvaluatePrd: "EVALUATE_PRD",
   GeneratePrd: "GENERATE_PRD",
 } as const;
 export type LoopCommand = (typeof LoopCommand)[keyof typeof LoopCommand];
+
+// Lowercase command keys accepted by the /artifacts/:id/run-loop endpoint.
+export const RunLoopCommand = {
+  Plan: "plan",
+  Execute: "execute",
+  RequestChanges: "request_changes",
+  Decompose: "decompose",
+  EvaluatePrd: "evaluate_prd",
+  GeneratePrd: "generate_prd",
+} as const;
+export type RunLoopCommand =
+  (typeof RunLoopCommand)[keyof typeof RunLoopCommand];
 
 export type SourceContextType = (typeof EntityType)[keyof Pick<
   typeof EntityType,
@@ -71,6 +84,7 @@ export type Loop = {
   startedAt: Date | null;
   completedAt: Date | null;
   error: { code: string; message: string } | null;
+  artifactVersion: number | null;
   metadata: JsonObject;
   uploadedArtifacts: JsonObject | null;
   createdAt: Date;
@@ -106,6 +120,7 @@ export type CreateLoopRequest = {
     sourceType?: SourceContextType;
     include: "full" | "summary";
   }>;
+  artifactVersion?: number;
   metadata?: JsonObject;
 };
 

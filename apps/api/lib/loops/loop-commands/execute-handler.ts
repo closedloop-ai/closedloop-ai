@@ -1,9 +1,5 @@
 import type { JsonObject } from "@repo/api/src/types/common";
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
-import {
-  ExternalLinkType,
-  type PreviewDeploymentMetadata,
-} from "@repo/api/src/types/external-link";
 import type { Loop } from "@repo/api/src/types/loop";
 import type { PromptsSnapshot } from "@repo/api/src/types/prompt";
 import {
@@ -14,13 +10,17 @@ import { parsePromptsSnapshotFromMarkdownEntries } from "@repo/github/prompt-sna
 import { log } from "@repo/observability/log";
 import { z } from "zod";
 import type { ExecutionResult } from "@/app/webhooks/github/types";
-import { fanOutJudgeScores } from "@/lib/judge-score-fanout";
-import { parseJsonArtifact } from "@/lib/loops/loop-artifact-ingestion";
+import {
+  parseJsonArtifact,
+  upsertEvaluationWithJudgeScores,
+} from "@/lib/loops/loop-artifact-ingestion";
 import {
   downloadArtifactFile,
   downloadPromptSnapshotMarkdownEntries,
 } from "@/lib/loops/loop-state";
+import { ensurePrLinkageRecords } from "@/lib/pr-linkage";
 import { upsertFromSnapshot } from "@/lib/prompts-service";
+import { judgesReportSchema } from "../judges-report-schema";
 import { defineHandler } from "./loop-command-handler";
 
 // ---------------------------------------------------------------------------
@@ -181,30 +181,11 @@ export async function ingestExecutionArtifacts(
     }
 
     if (artifacts.codeJudgesReport) {
-      const evaluation = await tx.artifactEvaluation.upsert({
-        where: {
-          artifactId_reportId: {
-            artifactId: loop.artifactId!,
-            reportId: artifacts.codeJudgesReport.report_id,
-          },
-        },
-        create: {
-          artifactId: loop.artifactId!,
-          loopId: loop.id,
-          reportType: PrismaEvaluationReportType.CODE,
-          reportId: artifacts.codeJudgesReport.report_id,
-          reportData: artifacts.codeJudgesReport,
-        },
-        update: {
-          loopId: loop.id,
-          reportType: PrismaEvaluationReportType.CODE,
-          reportData: artifacts.codeJudgesReport,
-        },
-      });
-
-      await fanOutJudgeScores({
-        evaluationId: evaluation.id,
+      await upsertEvaluationWithJudgeScores({
+        artifactId: loop.artifactId!,
+        loopId: loop.id,
         organizationId: loop.organizationId,
+        reportType: PrismaEvaluationReportType.CODE,
         report: artifacts.codeJudgesReport,
         tx,
       });
@@ -217,6 +198,8 @@ export async function ingestExecutionArtifacts(
       });
     }
 
+    // Check if a PR record already exists (may have been created by the
+    // pull_request webhook or workflow-completion handler racing with this handler).
     const existingPr = await tx.gitHubPullRequest.findUnique({
       where: {
         repositoryId_number: {
@@ -224,12 +207,36 @@ export async function ingestExecutionArtifacts(
           number: prNumber,
         },
       },
-      select: { id: true },
+      select: { id: true, artifactId: true },
     });
 
+    // Determine the effective artifactId for linkage. If the PR row already
+    // exists with a different artifact, respect the existing link to avoid
+    // creating contradictory entity-link edges.
+    let effectiveArtifactId = loop.artifactId!;
+
     if (existingPr) {
+      if (!existingPr.artifactId) {
+        // PR exists without an artifact link — claim it
+        await tx.gitHubPullRequest.update({
+          where: { id: existingPr.id },
+          data: { artifactId: loop.artifactId! },
+        });
+      } else if (existingPr.artifactId !== loop.artifactId) {
+        // PR is already linked to a different artifact — don't overwrite
+        effectiveArtifactId = existingPr.artifactId;
+        log.warn(
+          "[loop-artifact-ingestion] PR already linked to a different artifact",
+          {
+            existingArtifactId: existingPr.artifactId,
+            requestedArtifactId: loop.artifactId,
+            loopId: loop.id,
+            prNumber,
+          }
+        );
+      }
       log.info(
-        "[loop-artifact-ingestion] PR already exists; skipping replayed execution artifact creates",
+        "[loop-artifact-ingestion] PR already exists; skipping duplicate PR row create",
         {
           loopId: loop.id,
           repositoryId: installationRepo.id,
@@ -237,87 +244,38 @@ export async function ingestExecutionArtifacts(
           pullRequestId: existingPr.id,
         }
       );
-      return;
-    }
-
-    // Create GitHubPullRequest record
-    await tx.gitHubPullRequest.create({
-      data: {
-        workstreamId: loop.workstreamId!,
-        organizationId: loop.organizationId,
-        repositoryId: installationRepo.id,
-        artifactId: loop.artifactId!,
-        githubId: executionResult.github_id ?? prNumber,
-        number: prNumber,
-        title: prTitle,
-        htmlUrl: executionResult.pr_url,
-        headBranch: executionResult.branch_name,
-        baseBranch,
-        state: "OPEN",
-      },
-    });
-
-    // Create ExternalLink for the PR
-    const prLink = await tx.externalLink.create({
-      data: {
-        organizationId: artifact.organizationId,
-        workstreamId: loop.workstreamId!,
-        projectId: artifact.projectId!,
-        type: ExternalLinkType.PullRequest,
-        title: prTitle,
-        externalUrl: executionResult.pr_url,
-        metadata: {
-          number: prNumber,
+    } else {
+      // Create GitHubPullRequest record
+      await tx.gitHubPullRequest.create({
+        data: {
+          workstreamId: loop.workstreamId!,
+          organizationId: loop.organizationId,
+          repositoryId: installationRepo.id,
+          artifactId: loop.artifactId!,
           githubId: executionResult.github_id ?? prNumber,
+          number: prNumber,
+          title: prTitle,
+          htmlUrl: executionResult.pr_url,
           headBranch: executionResult.branch_name,
           baseBranch,
           state: "OPEN",
         },
-      },
-    });
+      });
+    }
 
-    // Create EntityLink: artifact -> PRODUCES -> PR link
-    await tx.entityLink.create({
-      data: {
-        organizationId: artifact.organizationId,
-        sourceId: loop.artifactId!,
-        sourceType: "ARTIFACT",
-        targetId: prLink.id,
-        targetType: "EXTERNAL_LINK",
-        linkType: "PRODUCES",
-      },
-    });
-
-    // Create skeleton ExternalLink for preview deployment
-    const previewMetadata: PreviewDeploymentMetadata = {
-      ref: executionResult.branch_name,
-      sha: executionResult.commit_sha ?? null,
-      environment: "preview",
-      state: null,
-    };
-
-    const previewLink = await tx.externalLink.create({
-      data: {
-        organizationId: artifact.organizationId,
-        workstreamId: loop.workstreamId!,
-        projectId: artifact.projectId!,
-        type: ExternalLinkType.PreviewDeployment,
-        title: `Preview: ${executionResult.branch_name}`,
-        externalUrl: "",
-        metadata: previewMetadata,
-      },
-    });
-
-    // Create EntityLink: PR -> PRODUCES -> preview deployment
-    await tx.entityLink.create({
-      data: {
-        organizationId: artifact.organizationId,
-        sourceId: prLink.id,
-        sourceType: "EXTERNAL_LINK",
-        targetId: previewLink.id,
-        targetType: "EXTERNAL_LINK",
-        linkType: "PRODUCES",
-      },
+    // Create ExternalLink, EntityLink, and preview deployment records (with dedup)
+    await ensurePrLinkageRecords(tx, {
+      organizationId: artifact.organizationId,
+      workstreamId: loop.workstreamId!,
+      projectId: artifact.projectId!,
+      artifactId: effectiveArtifactId,
+      prUrl: executionResult.pr_url,
+      prTitle,
+      prNumber,
+      githubId: executionResult.github_id ?? prNumber,
+      headBranch: executionResult.branch_name,
+      baseBranch,
+      commitSha: executionResult.commit_sha ?? null,
     });
 
     // Create workstream event
@@ -362,31 +320,9 @@ const executionResultSchema = z.object({
   commit_sha: z.string().optional(),
 });
 
-const codeJudgesReportSchema = z.object({
-  report_id: z.string(),
-  timestamp: z.string(),
-  stats: z.array(
-    z.object({
-      type: z.literal("case_score"),
-      case_id: z.string(),
-      // Accept strings and legacy numeric encodings (1/2/3) —
-      // normalizeFinalStatus() in judge-score-fanout handles conversion.
-      final_status: z.union([z.string(), z.number()]),
-      metrics: z.array(
-        z.object({
-          metric_name: z.string(),
-          threshold: z.number(),
-          score: z.number(),
-          justification: z.string(),
-        })
-      ),
-    })
-  ),
-});
-
 const executionUploadSchema = z.object({
   executionResult: executionResultSchema.optional(),
-  codeJudges: codeJudgesReportSchema.optional(),
+  codeJudges: judgesReportSchema.optional(),
 });
 
 function executionArtifactsFromUpload(

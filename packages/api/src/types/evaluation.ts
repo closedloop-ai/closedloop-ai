@@ -23,6 +23,7 @@ export type EvalStatus = (typeof EvalStatus)[keyof typeof EvalStatus];
 export const EvaluationReportType = {
   Plan: "PLAN",
   Code: "CODE",
+  Prd: "PRD",
 } as const;
 
 export type EvaluationReportType =
@@ -32,17 +33,10 @@ export type EvaluationReportType =
 export const EVALUATION_REPORT_TYPE_OPTIONS = [
   EvaluationReportType.Plan,
   EvaluationReportType.Code,
+  EvaluationReportType.Prd,
 ] as const;
 
-/**
- * Statistics for a single metric (judge score).
- *
- * Attributes:
- * - metric_name: Name of the metric (judge display name)
- * - threshold: Pass/fail threshold for this metric
- * - score: The actual score value
- * - justification: Explanation for the score
- */
+/** Statistics for a single metric produced by a judge run. */
 export type MetricStatistics = {
   metric_name: string;
   threshold: number;
@@ -50,15 +44,7 @@ export type MetricStatistics = {
   justification: string;
 };
 
-/**
- * Per-case metric statistics report (individual judge result).
- *
- * Attributes:
- * - type: Discriminator field (always "case_score")
- * - case_id: Unique identifier for the evaluation case (judge name)
- * - final_status: Final evaluation status for this case
- * - metrics: Array of metric statistics for this case
- */
+/** Per-case metric statistics report (individual judge result). */
 export type CaseScore = {
   type: "case_score";
   case_id: string;
@@ -66,14 +52,7 @@ export type CaseScore = {
   metrics: MetricStatistics[];
 };
 
-/**
- * Top-level judges report structure.
- *
- * Attributes:
- * - report_id: Unique identifier for this report
- * - timestamp: ISO 8601 timestamp when the report was generated
- * - stats: Array of CaseScore entries (one per judge)
- */
+/** Top-level judges report structure matching the judges.json output schema. */
 export type JudgesReport = {
   report_id: string;
   timestamp: string;
@@ -83,15 +62,6 @@ export type JudgesReport = {
 /**
  * Single judge's feedback item in API responses.
  * Normalized from JudgeScore rows for use in judges feedback endpoints.
- *
- * Attributes:
- * - caseId: Judge identifier (maps to JudgeScore.caseId)
- * - score: The judge score value
- * - threshold: Pass/fail threshold
- * - justification: Explanation for the score
- * - finalStatus: Final evaluation status (FAILED | NEEDS_IMPROVEMENT | PASSED)
- * - promptName: Human-readable prompt name from the prompt registry, or null if not linked
- * - metricName: URL-safe metric name for navigation and grouping
  */
 export type JudgeFeedbackItem = {
   judgeScoreId: string;
@@ -115,7 +85,18 @@ export type JudgesFeedbackResponse =
   | { status: "error"; error: string };
 
 /**
- * Batch response mapping artifact IDs to their latest PLAN judge feedback items.
+ * Per-artifact judge scores keyed by report type.
+ * Each key corresponds to one EvaluationReportType value; null means no
+ * evaluation of that type exists for the artifact.
+ */
+export type ArtifactJudgeScores = Record<
+  EvaluationReportType,
+  JudgeFeedbackItem[] | null
+>;
+
+/**
+ * Batch response mapping artifact IDs to their latest judge feedback items,
+ * separated by report type.
  * Used by the artifacts table to show inline judge scores.
  */
-export type BatchJudgeScoresResponse = Record<string, JudgeFeedbackItem[]>;
+export type BatchJudgeScoresResponse = Record<string, ArtifactJudgeScores>;

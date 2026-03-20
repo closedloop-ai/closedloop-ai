@@ -88,6 +88,7 @@ enum ArtifactType {
 enum EvaluationReportType {
   PLAN
   CODE
+  PRD
 }
 
 enum EvalStatus {
@@ -125,6 +126,7 @@ enum WorkstreamEventType {
   GITHUB_PR_CLOSED
   GITHUB_PR_REVIEW_SUBMITTED
   GITHUB_PR_COMMENT_ADDED
+  GITHUB_PR_LINKED
   GITHUB_ACTION_TRIGGERED
   GITHUB_ACTION_COMPLETED
   GITHUB_CI_STATUS_CHANGED
@@ -221,6 +223,7 @@ enum LoopCommand {
   EXPLORE
   REQUEST_CHANGES
   DECOMPOSE
+  EVALUATE_PRD
   GENERATE_PRD
 }
 
@@ -1057,6 +1060,10 @@ model Loop {
   // Error info
   error Json? // { code: string, message: string }
 
+  // Artifact version at loop creation time — used to detect stale evaluations
+  // when a new artifact version is published while an evaluation is in flight.
+  artifactVersion Int? @map("artifact_version")
+
   // Extensible metadata
   metadata           Json  @default("{}") @map("metadata")
   uploadedArtifacts  Json? @map("uploaded_artifacts")
@@ -1075,6 +1082,15 @@ model Loop {
   evaluations   ArtifactEvaluation[]
   events        LoopEvent[]
 
+  // NOTE: A partial unique index on (artifact_id, command, artifact_version)
+  // WHERE status IN ('PENDING', 'CLAIMED', 'RUNNING') is maintained via raw migrations.
+  // Prisma cannot express partial indexes. Prisma 7.4+ falsely flags this as drift —
+  // we pin to 7.3.0 until resolved. Do NOT drop it.
+  // Only applies when both artifactId and artifactVersion are non-null (Postgres
+  // treats NULL != NULL in unique indexes, so nullable rows never conflict).
+  // Terminal loops (COMPLETED/FAILED/CANCELLED/TIMED_OUT) allow re-runs of the same
+  // artifact+command+version without conflict.
+  @@index([artifactId, command, artifactVersion])
   @@index([organizationId, status])
   @@index([organizationId, userId, createdAt])
   @@index([artifactId])

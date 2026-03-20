@@ -32,7 +32,6 @@ export const updateProjectValidator = z.object({
   priority: priorityEnum.optional(),
   status: projectStatusEnum.optional(),
   assigneeId: z.uuid().nullable().optional(),
-  slug: z.string().nullable().optional(),
   targetDate: z.iso
     .datetime()
     .nullable()

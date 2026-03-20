@@ -10,7 +10,11 @@ import type {
   ArtifactWithWorkstream,
 } from "@repo/api/src/types/artifact";
 import type { CustomFieldValueDetail } from "@repo/api/src/types/custom-field";
-import type { JudgeFeedbackItem } from "@repo/api/src/types/evaluation";
+import {
+  type BatchJudgeScoresResponse,
+  EvaluationReportType,
+  type JudgeFeedbackItem,
+} from "@repo/api/src/types/evaluation";
 import { isDisplayableSlug } from "@repo/api/src/types/slug";
 import { Button } from "@repo/design-system/components/ui/button";
 import { Checkbox } from "@repo/design-system/components/ui/checkbox";
@@ -108,6 +112,7 @@ const ARTIFACT_SECTIONS: {
   {
     title: "Documents",
     types: new Set<ArtifactType>(["PRD"]),
+    showJudgeScores: true,
   },
   {
     title: "Implementation Plans",
@@ -161,7 +166,7 @@ type ArtifactSectionProps = {
     checked: boolean
   ) => void;
   visibleCustomFieldColumns: CustomFieldValueDetail[];
-  judgeScoresMap?: Record<string, JudgeFeedbackItem[]>;
+  judgeScoresMap?: BatchJudgeScoresResponse;
 };
 
 function ArtifactSection({
@@ -369,7 +374,17 @@ function ArtifactSection({
                     </TableCell>
                     {judgeScoresMap && (
                       <TableCell onClick={(e) => e.stopPropagation()}>
-                        <JudgeScoreCell judges={judgeScoresMap[artifact.id]} />
+                        <JudgeScoreCell
+                          judges={
+                            artifact.type === "PRD"
+                              ? (judgeScoresMap[artifact.id]?.[
+                                  EvaluationReportType.Prd
+                                ] ?? undefined)
+                              : (judgeScoresMap[artifact.id]?.[
+                                  EvaluationReportType.Plan
+                                ] ?? undefined)
+                          }
+                        />
                       </TableCell>
                     )}
                     {visibleCustomFieldColumns.map((colDef) => {
@@ -410,14 +425,14 @@ function ArtifactSection({
                               setMoveDialogOpen(true);
                             }}
                           >
-                            <FolderIcon className="mr-2 h-4 w-4" />
+                            <FolderIcon className="h-4 w-4" />
                             Move...
                           </DropdownMenuItem>
                           <DropdownMenuItem
                             className="text-destructive focus:bg-destructive/10 focus:text-destructive"
                             onClick={() => onRequestDelete(artifact)}
                           >
-                            <TrashIcon className="mr-2 h-4 w-4" />
+                            <TrashIcon className="h-4 w-4" />
                             Delete artifact
                           </DropdownMenuItem>
                         </DropdownMenuContent>

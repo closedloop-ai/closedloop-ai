@@ -1,6 +1,7 @@
 "use client";
 
 import type { ComputeTargetConflictBody } from "@repo/api/src/types/compute-target";
+import { RunLoopCommand } from "@repo/api/src/types/loop";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { useCallback, useRef, useState } from "react";
 import { useIsLoopsEnabledForArtifact } from "@/hooks/queries/use-artifact-execution-backend";
@@ -12,6 +13,7 @@ import {
 } from "@/hooks/queries/use-artifacts";
 import { useRunLoop } from "@/hooks/queries/use-loops";
 import { parseComputeTargetConflict } from "@/lib/compute-target-conflict";
+import { useEngineerRoutingSelection } from "@/lib/engineer/routing-store";
 
 type UsePlanActionsConfig = {
   artifactId: string;
@@ -58,6 +60,10 @@ export function usePlanActions(config: UsePlanActionsConfig) {
   // TanStack Query mutation - Loops path
   const runLoop = useRunLoop();
 
+  const routing = useEngineerRoutingSelection();
+  // Pass computeTargetId for both CloudRelay and LocalElectron modes.
+  const computeTargetId = routing.computeTargetId;
+
   // Multi-target conflict state
   const [multiTargetState, setMultiTargetState] = useState<{
     availableTargets: ComputeTargetConflictBody["availableTargets"];
@@ -95,30 +101,29 @@ export function usePlanActions(config: UsePlanActionsConfig) {
    * When loops are enabled, creates a Loop with command="plan".
    * Otherwise, triggers the symphony-dispatch GitHub Actions workflow.
    */
-  const handleRegenerate = useCallback(async () => {
+  const handleRegenerate = useCallback(() => {
     if (useLoops) {
       pendingActionRef.current = (targetId: string) =>
         runLoop.mutateAsync({
           artifactId,
-          command: "plan",
+          command: RunLoopCommand.Plan,
           computeTargetId: targetId,
         });
 
-      try {
-        await runLoop.mutateAsync(
-          { artifactId, command: "plan" },
-          {
-            onSuccess: () =>
-              toast.success("Plan regeneration started via Loop"),
-          }
-        );
-      } catch (error) {
-        const conflict = parseComputeTargetConflict(error);
-
-        if (conflict) {
-          setMultiTargetState({ availableTargets: conflict.availableTargets });
+      runLoop.mutate(
+        { artifactId, command: RunLoopCommand.Plan, computeTargetId },
+        {
+          onSuccess: () => toast.success("Plan regeneration started via Loop"),
+          onError: (error) => {
+            const conflict = parseComputeTargetConflict(error);
+            if (conflict) {
+              setMultiTargetState({
+                availableTargets: conflict.availableTargets,
+              });
+            }
+          },
         }
-      }
+      );
     } else {
       regenerateArtifact.mutate(
         { id: artifactId },
@@ -127,7 +132,7 @@ export function usePlanActions(config: UsePlanActionsConfig) {
         }
       );
     }
-  }, [artifactId, useLoops, runLoop, regenerateArtifact]);
+  }, [artifactId, useLoops, runLoop, regenerateArtifact, computeTargetId]);
 
   /**
    * Request changes to the implementation plan.
@@ -141,7 +146,7 @@ export function usePlanActions(config: UsePlanActionsConfig) {
         pendingActionRef.current = (targetId: string) =>
           runLoop.mutateAsync({
             artifactId,
-            command: "request_changes",
+            command: RunLoopCommand.RequestChanges,
             prompt: changes,
             computeTargetId: targetId,
           });
@@ -150,8 +155,9 @@ export function usePlanActions(config: UsePlanActionsConfig) {
           await runLoop.mutateAsync(
             {
               artifactId,
-              command: "request_changes",
+              command: RunLoopCommand.RequestChanges,
               prompt: changes,
+              computeTargetId,
             },
             {
               onSuccess: () => {
@@ -186,7 +192,7 @@ export function usePlanActions(config: UsePlanActionsConfig) {
       );
       return result.success ?? false;
     },
-    [artifactId, useLoops, runLoop, requestPlanChanges]
+    [artifactId, useLoops, runLoop, requestPlanChanges, computeTargetId]
   );
 
   /**
@@ -199,13 +205,13 @@ export function usePlanActions(config: UsePlanActionsConfig) {
       pendingActionRef.current = (targetId: string) =>
         runLoop.mutateAsync({
           artifactId,
-          command: "execute",
+          command: RunLoopCommand.Execute,
           computeTargetId: targetId,
         });
 
       try {
         await runLoop.mutateAsync(
-          { artifactId, command: "execute" },
+          { artifactId, command: RunLoopCommand.Execute, computeTargetId },
           {
             onSuccess: () => {
               toast.success(
@@ -232,7 +238,13 @@ export function usePlanActions(config: UsePlanActionsConfig) {
       },
     });
     return result.success ?? false;
-  }, [artifactId, useLoops, runLoop, executeImplementationPlan]);
+  }, [
+    artifactId,
+    useLoops,
+    runLoop,
+    executeImplementationPlan,
+    computeTargetId,
+  ]);
 
   const selectTarget = useCallback((targetId: string) => {
     setMultiTargetState(null);

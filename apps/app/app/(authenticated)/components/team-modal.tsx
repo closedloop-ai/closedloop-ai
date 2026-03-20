@@ -308,7 +308,7 @@ export function TeamModal({ trigger, team, onSuccess }: TeamModalProps) {
       <DialogTrigger asChild>
         {trigger || (
           <Button>
-            <PlusIcon className="mr-2 h-4 w-4" />
+            <PlusIcon className="h-4 w-4" />
             Create Team
           </Button>
         )}
@@ -543,7 +543,7 @@ export function TeamModal({ trigger, team, onSuccess }: TeamModalProps) {
                 type="button"
                 variant="ghost"
               >
-                <TrashIcon className="mr-2 h-4 w-4" />
+                <TrashIcon className="h-4 w-4" />
                 Delete Team
               </Button>
             ) : null}

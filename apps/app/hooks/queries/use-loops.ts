@@ -11,6 +11,7 @@ import type {
   LoopUsageSummary,
   LoopWithUser,
   ResumeLoopRequest,
+  RunLoopCommand,
 } from "@repo/api/src/types/loop";
 import {
   type UseQueryOptions,
@@ -223,12 +224,7 @@ export function useRunLoop() {
       computeTargetId,
     }: {
       artifactId: string;
-      command:
-        | "plan"
-        | "execute"
-        | "request_changes"
-        | "decompose"
-        | "generate_prd";
+      command: RunLoopCommand;
       prompt?: string;
       computeTargetId?: string | null;
     }) =>

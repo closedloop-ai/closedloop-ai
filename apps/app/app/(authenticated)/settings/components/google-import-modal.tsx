@@ -247,7 +247,7 @@ export function GoogleImportModal({
           >
             {importMutation.isPending ? (
               <>
-                <Loader2Icon className="mr-2 h-4 w-4 animate-spin" />
+                <Loader2Icon className="h-4 w-4 animate-spin" />
                 Importing...
               </>
             ) : (

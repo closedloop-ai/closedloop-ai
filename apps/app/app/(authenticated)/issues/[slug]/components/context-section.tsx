@@ -108,7 +108,7 @@ export function ContextSection({
                   variant="outline"
                 >
                   Add Documents
-                  <PlusIcon className="ml-1 h-4 w-4" />
+                  <PlusIcon className="h-4 w-4" />
                 </Button>
               </div>
             </div>

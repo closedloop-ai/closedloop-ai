@@ -17,6 +17,7 @@ import {
   ChevronDownIcon,
   DownloadIcon,
   FolderIcon,
+  GaugeIcon,
   MoreHorizontalIcon,
   PanelRightIcon,
   PencilIcon,
@@ -35,9 +36,11 @@ type PRDEditorHeaderProps = {
   canShowPanel?: boolean;
   onToggleMetadataPanel: () => void;
   onDecomposeFeatures: () => void;
+  onEvaluatePrd: () => void;
   onGeneratePlan: () => void;
   onGeneratePrd: () => void;
   isGenerating?: boolean;
+  isEvaluating?: boolean;
   onRename: () => void;
   onExport: () => void;
   onMove: () => void;
@@ -53,9 +56,11 @@ export function PRDEditorHeader({
   canShowPanel = true,
   onToggleMetadataPanel,
   onDecomposeFeatures,
+  onEvaluatePrd,
   onGeneratePlan,
   onGeneratePrd,
   isGenerating = false,
+  isEvaluating = false,
   onRename,
   onExport,
   onMove,
@@ -90,20 +95,20 @@ export function PRDEditorHeader({
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-[160px]">
         <DropdownMenuItem onClick={onRename}>
-          <PencilIcon className="mr-2 h-4 w-4" />
+          <PencilIcon className="h-4 w-4" />
           Rename
         </DropdownMenuItem>
         <DropdownMenuItem onClick={onExport}>
-          <DownloadIcon className="mr-2 h-4 w-4" />
+          <DownloadIcon className="h-4 w-4" />
           Export .md
         </DropdownMenuItem>
         <DropdownMenuItem onClick={onMove}>
-          <FolderIcon className="mr-2 h-4 w-4" />
+          <FolderIcon className="h-4 w-4" />
           Move...
         </DropdownMenuItem>
         {showRestore ? (
           <DropdownMenuItem onClick={onRestoreVersion}>
-            <RotateCcwIcon className="mr-2 h-4 w-4" />
+            <RotateCcwIcon className="h-4 w-4" />
             Restore Version
           </DropdownMenuItem>
         ) : null}
@@ -112,7 +117,7 @@ export function PRDEditorHeader({
           className="text-destructive focus:text-destructive"
           onClick={onDelete}
         >
-          <TrashIcon className="mr-2 h-4 w-4" />
+          <TrashIcon className="h-4 w-4" />
           Delete
         </DropdownMenuItem>
       </DropdownMenuContent>
@@ -128,20 +133,24 @@ export function PRDEditorHeader({
         <DropdownMenuTrigger asChild>
           <Button disabled={isPending} size="sm">
             Actions
-            <ChevronDownIcon className="ml-2 h-4 w-4" />
+            <ChevronDownIcon className="h-4 w-4" />
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
           <DropdownMenuItem disabled={isGenerating} onClick={onGeneratePrd}>
-            <PrdIcon className="mr-2 h-4 w-4" />
+            <PrdIcon className="h-4 w-4" />
             {isGenerating ? "Generating PRD..." : "Generate PRD"}
           </DropdownMenuItem>
           <DropdownMenuItem onClick={onDecomposeFeatures}>
-            <BoxIcon className="mr-2 h-4 w-4" />
+            <BoxIcon className="h-4 w-4" />
             Decompose into Features
           </DropdownMenuItem>
+          <DropdownMenuItem disabled={isEvaluating} onClick={onEvaluatePrd}>
+            <GaugeIcon className="mr-2 h-4 w-4" />
+            {isEvaluating ? "Evaluating PRD..." : "Evaluate PRD"}
+          </DropdownMenuItem>
           <DropdownMenuItem onClick={onGeneratePlan}>
-            <PlanIcon className="mr-2 h-4 w-4" />
+            <PlanIcon className="h-4 w-4" />
             Generate Implementation Plan
           </DropdownMenuItem>
         </DropdownMenuContent>

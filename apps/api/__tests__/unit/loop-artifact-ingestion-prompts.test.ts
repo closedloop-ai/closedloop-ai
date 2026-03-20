@@ -61,6 +61,10 @@ vi.mock("@/lib/loops/loop-state", () => ({
   downloadPromptSnapshotMarkdownEntries: vi.fn(),
 }));
 
+vi.mock("@/lib/pr-linkage", () => ({
+  ensurePrLinkageRecords: vi.fn().mockResolvedValue(undefined),
+}));
+
 // --- Imports (after mocks) ---
 
 import { withDb } from "@repo/database";

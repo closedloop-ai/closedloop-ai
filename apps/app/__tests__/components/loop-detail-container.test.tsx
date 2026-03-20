@@ -47,6 +47,10 @@ vi.mock("@repo/design-system/components/ui/sonner", () => ({
   toast: { success: vi.fn(), error: vi.fn() },
 }));
 
+vi.mock("@/hooks/queries/use-artifacts", () => ({
+  useArtifact: vi.fn(() => ({ data: null })),
+}));
+
 // Mock heavy sub-components that would require extra providers or network calls
 vi.mock("@/components/loops/loop-progress-panel", () => ({
   LoopProgressPanel: () => <div data-testid="loop-progress-panel" />,
@@ -386,10 +390,15 @@ describe("LoopDetailContainer — cancel button interaction", () => {
     } as ReturnType<typeof useLoop>);
   });
 
-  it("calls mutateAsync with the loop id when the cancel button is clicked", async () => {
+  it("calls mutateAsync with the loop id after confirming the stop dialog", async () => {
     render(<LoopDetailContainer id="loop-001" />);
 
     fireEvent.click(screen.getByRole("button", { name: CANCEL_BUTTON_NAME }));
+
+    const confirmButton = await screen.findByRole("button", {
+      name: "Stop Loop",
+    });
+    fireEvent.click(confirmButton);
 
     await waitFor(() => {
       expect(mockCancelMutateAsync).toHaveBeenCalledWith("loop-001");
@@ -400,6 +409,11 @@ describe("LoopDetailContainer — cancel button interaction", () => {
     render(<LoopDetailContainer id="loop-001" />);
 
     fireEvent.click(screen.getByRole("button", { name: CANCEL_BUTTON_NAME }));
+
+    const confirmButton = await screen.findByRole("button", {
+      name: "Stop Loop",
+    });
+    fireEvent.click(confirmButton);
 
     await waitFor(() => {
       expect(mockCancelMutateAsync).toHaveBeenCalled();

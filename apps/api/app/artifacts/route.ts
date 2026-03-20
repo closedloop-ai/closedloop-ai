@@ -2,11 +2,19 @@ import type {
   Artifact,
   ArtifactWithWorkstream,
 } from "@repo/api/src/types/artifact";
+import { ArtifactType } from "@repo/api/src/types/artifact";
 import { CustomFieldEntityType } from "@repo/api/src/types/custom-field";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import {
+  resolveEntityLinkIdentifier,
+  resolveProjectId,
+  resolveWorkstreamId,
+} from "@/lib/identifier-utils";
+import { scheduleAutoEvaluatePrd } from "@/lib/loops/auto-evaluate-prd";
+import {
   badRequestResponse,
   errorResponse,
+  notFoundResponse,
   parseBody,
   successResponse,
 } from "@/lib/route-utils";
@@ -38,9 +46,32 @@ export const GET = withAnyAuth<ArtifactWithWorkstream[], "/artifacts">(
         );
       }
 
+      const { projectId, workstreamId, ...restQuery } = parseResult.data;
+      let resolvedProjectId: string | undefined;
+      if (projectId) {
+        const pId = await resolveProjectId(projectId, user.organizationId);
+        if (!pId) {
+          return notFoundResponse("Project");
+        }
+        resolvedProjectId = pId;
+      }
+      let resolvedWorkstreamId: string | undefined;
+      if (workstreamId) {
+        const wId = await resolveWorkstreamId(
+          workstreamId,
+          user.organizationId
+        );
+        if (!wId) {
+          return notFoundResponse("Workstream");
+        }
+        resolvedWorkstreamId = wId;
+      }
+
       const artifacts = await artifactsService.findAll({
         organizationId: user.organizationId,
-        ...parseResult.data,
+        projectId: resolvedProjectId,
+        workstreamId: resolvedWorkstreamId,
+        ...restQuery,
       });
 
       // Batch-load custom field values for all artifacts in a single query
@@ -87,13 +118,53 @@ export const POST = withAnyAuth<Artifact, "/artifacts">(
         return parseError;
       }
 
+      const resolvedProjectId = await resolveProjectId(
+        body.projectId,
+        user.organizationId
+      );
+      if (!resolvedProjectId) {
+        return notFoundResponse("Project");
+      }
+      let resolvedWorkstreamId: string | undefined;
+      if (body.workstreamId) {
+        const wId = await resolveWorkstreamId(
+          body.workstreamId,
+          user.organizationId
+        );
+        if (!wId) {
+          return notFoundResponse("Workstream");
+        }
+        resolvedWorkstreamId = wId;
+      }
+      let resolvedSourceId: string | undefined;
+      if (body.sourceId && body.sourceType) {
+        const sId = await resolveEntityLinkIdentifier(
+          body.sourceId,
+          user.organizationId,
+          body.sourceType
+        );
+        if (!sId) {
+          return notFoundResponse("Source entity");
+        }
+        resolvedSourceId = sId;
+      }
+
       const artifact = await artifactsService.create(
         user.organizationId,
         user.id,
-        body
+        {
+          ...body,
+          projectId: resolvedProjectId,
+          workstreamId: resolvedWorkstreamId,
+          sourceId: resolvedSourceId,
+        }
       );
       if (!artifact) {
         return badRequestResponse("Failed to create artifact");
+      }
+
+      if (artifact.type === ArtifactType.Prd) {
+        scheduleAutoEvaluatePrd(artifact.id, user.organizationId, user.id);
       }
 
       return successResponse(artifact);

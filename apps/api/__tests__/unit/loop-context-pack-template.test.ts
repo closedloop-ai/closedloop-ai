@@ -107,6 +107,7 @@ describe("context pack template injection", () => {
       parentLoopId: null,
       repo: null,
       contextRefs: null,
+      artifactVersion: null,
     };
 
     const pack = await buildContextPackInMemory(loop, "org-1");
@@ -144,6 +145,7 @@ describe("context pack template injection", () => {
       parentLoopId: null,
       repo: null,
       contextRefs: null,
+      artifactVersion: null,
     };
 
     const pack = await buildContextPackInMemory(loop, "org-1");
@@ -164,6 +166,7 @@ describe("context pack template injection", () => {
       parentLoopId: null,
       repo: null,
       contextRefs: null,
+      artifactVersion: null,
     };
 
     const pack = await buildContextPackInMemory(loop, "org-1");

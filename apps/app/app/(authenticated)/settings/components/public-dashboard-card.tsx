@@ -131,9 +131,9 @@ function CardContentBody({
             variant="outline"
           >
             {generate.isPending ? (
-              <Loader2Icon className="mr-2 h-4 w-4 animate-spin" />
+              <Loader2Icon className="h-4 w-4 animate-spin" />
             ) : (
-              <RefreshCwIcon className="mr-2 h-4 w-4" />
+              <RefreshCwIcon className="h-4 w-4" />
             )}
             Regenerate
           </Button>
@@ -144,9 +144,9 @@ function CardContentBody({
             variant="destructive"
           >
             {revoke.isPending ? (
-              <Loader2Icon className="mr-2 h-4 w-4 animate-spin" />
+              <Loader2Icon className="h-4 w-4 animate-spin" />
             ) : (
-              <TrashIcon className="mr-2 h-4 w-4" />
+              <TrashIcon className="h-4 w-4" />
             )}
             Revoke
           </Button>
@@ -166,9 +166,9 @@ function CardContentBody({
       </p>
       <Button disabled={generate.isPending} onClick={onGenerate}>
         {generate.isPending ? (
-          <Loader2Icon className="mr-2 h-4 w-4 animate-spin" />
+          <Loader2Icon className="h-4 w-4 animate-spin" />
         ) : (
-          <GlobeIcon className="mr-2 h-4 w-4" />
+          <GlobeIcon className="h-4 w-4" />
         )}
         Create Public Dashboard URL
       </Button>

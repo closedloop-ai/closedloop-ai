@@ -147,7 +147,7 @@ export function SourceArtifactSection({
                         onSelect={() => handleLinkSource(artifact.id)}
                         value={`${artifact.title} ${ARTIFACT_TYPE_LABELS[artifact.type] ?? artifact.type}`}
                       >
-                        <Icon className="mr-2 h-3.5 w-3.5 shrink-0" />
+                        <Icon className="h-3.5 w-3.5 shrink-0" />
                         <span className="truncate">{artifact.title}</span>
                         <span className="ml-auto shrink-0 text-muted-foreground text-xs">
                           {ARTIFACT_TYPE_LABELS[artifact.type] ?? artifact.type}

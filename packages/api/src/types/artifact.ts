@@ -206,6 +206,7 @@ export type GenerationStatus = {
     | "request_changes"
     | "explore"
     | "decompose"
+    | "evaluate_prd"
     | null;
   htmlUrl: string | null;
   startedAt: Date | null;

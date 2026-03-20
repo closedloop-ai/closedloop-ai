@@ -1,8 +1,10 @@
 import type { ExternalLink } from "@repo/api/src/types/external-link";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
+import { resolveProjectId, resolveWorkstreamId } from "@/lib/identifier-utils";
 import {
   badRequestResponse,
   errorResponse,
+  notFoundResponse,
   parseBody,
   successResponse,
 } from "@/lib/route-utils";
@@ -30,9 +32,32 @@ export const GET = withAnyAuth<ExternalLink[], "/external-links">(
         );
       }
 
+      const { projectId, workstreamId, ...restQuery } = parseResult.data;
+      let resolvedProjectId: string | undefined;
+      if (projectId) {
+        const pId = await resolveProjectId(projectId, user.organizationId);
+        if (!pId) {
+          return notFoundResponse("Project");
+        }
+        resolvedProjectId = pId;
+      }
+      let resolvedWorkstreamId: string | undefined;
+      if (workstreamId) {
+        const wId = await resolveWorkstreamId(
+          workstreamId,
+          user.organizationId
+        );
+        if (!wId) {
+          return notFoundResponse("Workstream");
+        }
+        resolvedWorkstreamId = wId;
+      }
+
       const externalLinks = await externalLinksService.findAll({
         organizationId: user.organizationId,
-        ...parseResult.data,
+        projectId: resolvedProjectId,
+        workstreamId: resolvedWorkstreamId,
+        ...restQuery,
       });
 
       return successResponse(externalLinks);
@@ -53,9 +78,32 @@ export const POST = withAnyAuth<ExternalLink, "/external-links">(
         return parseError;
       }
 
+      const resolvedProjectId = await resolveProjectId(
+        body.projectId,
+        user.organizationId
+      );
+      if (!resolvedProjectId) {
+        return notFoundResponse("Project");
+      }
+      let resolvedWorkstreamId: string | undefined;
+      if (body.workstreamId) {
+        const wId = await resolveWorkstreamId(
+          body.workstreamId,
+          user.organizationId
+        );
+        if (!wId) {
+          return notFoundResponse("Workstream");
+        }
+        resolvedWorkstreamId = wId;
+      }
+
       const externalLink = await externalLinksService.create(
         user.organizationId,
-        body
+        {
+          ...body,
+          projectId: resolvedProjectId,
+          workstreamId: resolvedWorkstreamId,
+        }
       );
 
       return successResponse(externalLink);

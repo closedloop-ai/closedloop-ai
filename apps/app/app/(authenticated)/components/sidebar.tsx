@@ -38,7 +38,6 @@ import {
   InboxIcon,
   RotateCcwIcon,
   SettingsIcon,
-  UsersIcon,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -125,12 +124,6 @@ const baseWorkspaceItems: NavItem[] = [
     title: "Loops",
     url: "/loops",
     icon: RotateCcwIcon,
-    disabled: false,
-  },
-  {
-    title: "Members",
-    url: "/members",
-    icon: UsersIcon,
     disabled: false,
   },
 ];

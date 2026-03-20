@@ -16,6 +16,7 @@ import { useApiClient } from "@/hooks/use-api-client";
 export const judgesKeys = {
   all: ["judges"] as const,
   detail: (id: string) => [...judgesKeys.all, "detail", id] as const,
+  prdDetail: (id: string) => [...judgesKeys.all, "prd-detail", id] as const,
   codeDetail: (id: string) => [...judgesKeys.all, "code-detail", id] as const,
   byProject: (projectId: string) =>
     [...judgesKeys.all, "by-project", projectId] as const,
@@ -42,8 +43,13 @@ function makeJudgesFeedbackHook(
 }
 
 export const useJudgesFeedback = makeJudgesFeedbackHook(
-  "/artifacts/:id/judges",
+  "/artifacts/:id/plan-judges",
   judgesKeys.detail
+);
+
+export const usePrdJudgesFeedback = makeJudgesFeedbackHook(
+  "/artifacts/:id/prd-judges",
+  judgesKeys.prdDetail
 );
 
 export const useCodeJudgesFeedback = makeJudgesFeedbackHook(

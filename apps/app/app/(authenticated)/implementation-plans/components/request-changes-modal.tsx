@@ -100,7 +100,7 @@ export function RequestChangesModal({
           >
             {isSubmitting ? (
               <>
-                <LoaderIcon className="mr-2 h-4 w-4 animate-spin" />
+                <LoaderIcon className="h-4 w-4 animate-spin" />
                 Submitting...
               </>
             ) : (

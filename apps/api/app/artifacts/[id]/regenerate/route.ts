@@ -4,7 +4,8 @@ import { ArtifactType as PrismaArtifactType } from "@repo/database";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { withAuth } from "@/lib/auth/with-auth";
-import { errorResponse } from "@/lib/route-utils";
+import { resolveArtifactId } from "@/lib/identifier-utils";
+import { errorResponse, notFoundResponse } from "@/lib/route-utils";
 import { artifactsService } from "../../service";
 
 const regenerateBodySchema = z
@@ -17,10 +18,14 @@ export const POST = withAuth<Artifact, "/artifacts/[id]/regenerate">(
   async ({ user }, request, params) => {
     try {
       const { id } = await params;
+      const resolvedId = await resolveArtifactId(id, user.organizationId);
+      if (!resolvedId) {
+        return notFoundResponse("Artifact");
+      }
 
       // Look up artifact to determine type-specific dispatch
       const artifact = await artifactsService.findByIdSimple(
-        id,
+        resolvedId,
         user.organizationId
       );
       if (!artifact) {
@@ -46,14 +51,14 @@ export const POST = withAuth<Artifact, "/artifacts/[id]/regenerate">(
 
       if (artifact.type === PrismaArtifactType.PRD) {
         result = await artifactsService.generatePRD(
-          id,
+          resolvedId,
           user.organizationId,
           user.id,
           body?.reverseSynthesisLink ?? null
         );
       } else {
         result = await artifactsService.regenerateImplementationPlan(
-          id,
+          resolvedId,
           user.organizationId,
           user.id
         );

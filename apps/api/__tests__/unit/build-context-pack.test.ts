@@ -91,6 +91,7 @@ describe("buildContextPack", () => {
         command: "PLAN",
         prompt: null,
         artifactId: "artifact-1",
+        artifactVersion: null,
         parentLoopId: null,
         repo: { fullName: "org/repo", branch: "main" },
         contextRefs: [
@@ -127,6 +128,7 @@ describe("buildContextPack", () => {
         command: "PLAN",
         prompt: null,
         artifactId: null,
+        artifactVersion: null,
         parentLoopId: null,
         repo: { fullName: "org/repo", branch: "main" },
         contextRefs: [],
@@ -150,6 +152,7 @@ describe("buildContextPack", () => {
         command: "PLAN",
         prompt: null,
         artifactId: null,
+        artifactVersion: null,
         parentLoopId: null,
         repo: { fullName: "org/repo", branch: "main" },
         contextRefs: null,
@@ -171,6 +174,7 @@ describe("buildContextPack", () => {
         command: "PLAN",
         prompt: null,
         artifactId: null,
+        artifactVersion: null,
         parentLoopId: null,
         repo: { fullName: "org/repo", branch: "main" },
         contextRefs: [
@@ -215,6 +219,7 @@ describe("buildContextPack", () => {
         command: "PLAN",
         prompt: null,
         artifactId: "artifact-1",
+        artifactVersion: null,
         parentLoopId: null,
         repo: { fullName: "org/repo", branch: "main" },
         contextRefs: [
@@ -259,6 +264,7 @@ describe("buildContextPack", () => {
         command: "PLAN",
         prompt: null,
         artifactId: "artifact-1",
+        artifactVersion: null,
         parentLoopId: null,
         repo: { fullName: "org/repo", branch: "main" },
         contextRefs: [{ sourceId: "prd-1", include: "full" as const }],

@@ -108,7 +108,7 @@ export function PlanEditorHeader({
                 rel="noopener noreferrer"
                 target="_blank"
               >
-                <GitPullRequestIcon className="mr-2 h-4 w-4" />
+                <GitPullRequestIcon className="h-4 w-4" />
                 PR #{pullRequest.number}
                 <ExternalLinkIcon className="ml-auto h-3 w-3" />
               </a>
@@ -117,24 +117,24 @@ export function PlanEditorHeader({
           </>
         ) : null}
         <DropdownMenuItem onClick={onExportMarkdown}>
-          <DownloadIcon className="mr-2 h-4 w-4" />
+          <DownloadIcon className="h-4 w-4" />
           Export Markdown
         </DropdownMenuItem>
         <DropdownMenuItem onClick={onExportToLinear}>
-          <ExternalLinkIcon className="mr-2 h-4 w-4" />
+          <ExternalLinkIcon className="h-4 w-4" />
           Export to Linear
         </DropdownMenuItem>
         <DropdownMenuItem onClick={onCopyMarkdown}>
-          <CopyIcon className="mr-2 h-4 w-4" />
+          <CopyIcon className="h-4 w-4" />
           Copy Markdown
         </DropdownMenuItem>
         <DropdownMenuItem onClick={onMove}>
-          <FolderIcon className="mr-2 h-4 w-4" />
+          <FolderIcon className="h-4 w-4" />
           Move...
         </DropdownMenuItem>
         {showRestore ? (
           <DropdownMenuItem onClick={onRestoreVersion}>
-            <RotateCcwIcon className="mr-2 h-4 w-4" />
+            <RotateCcwIcon className="h-4 w-4" />
             Restore Version
           </DropdownMenuItem>
         ) : null}
@@ -143,7 +143,7 @@ export function PlanEditorHeader({
           className="text-destructive focus:text-destructive"
           onClick={onDelete}
         >
-          <TrashIcon className="mr-2 h-4 w-4" />
+          <TrashIcon className="h-4 w-4" />
           Delete Plan
         </DropdownMenuItem>
       </DropdownMenuContent>
@@ -156,13 +156,13 @@ export function PlanEditorHeader({
         <DropdownMenuTrigger asChild>
           <Button disabled={isPending} size="sm">
             Actions
-            <ChevronDownIcon className="ml-2 h-4 w-4" />
+            <ChevronDownIcon className="h-4 w-4" />
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
           {isDraft ? (
             <DropdownMenuItem onClick={onApprove}>
-              <CheckIcon className="mr-2 h-4 w-4" />
+              <CheckIcon className="h-4 w-4" />
               Approve
             </DropdownMenuItem>
           ) : null}
@@ -170,15 +170,15 @@ export function PlanEditorHeader({
             disabled={!isApproved || isExecuting}
             onClick={onExecute}
           >
-            <PlayIcon className="mr-2 h-4 w-4" />
+            <PlayIcon className="h-4 w-4" />
             Execute
           </DropdownMenuItem>
           <DropdownMenuItem disabled={isPending} onClick={onRequestChanges}>
-            <MessageSquareIcon className="mr-2 h-4 w-4" />
+            <MessageSquareIcon className="h-4 w-4" />
             Request Changes
           </DropdownMenuItem>
           <DropdownMenuItem disabled={isPending} onClick={onRegenerate}>
-            <RefreshCwIcon className="mr-2 h-4 w-4" />
+            <RefreshCwIcon className="h-4 w-4" />
             Regenerate Plan
           </DropdownMenuItem>
         </DropdownMenuContent>

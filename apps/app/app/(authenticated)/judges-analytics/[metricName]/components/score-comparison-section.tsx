@@ -76,7 +76,7 @@ export function ScoreComparisonSection({
               size="sm"
               variant="outline"
             >
-              <ChevronLeftIcon className="mr-1 h-4 w-4" />
+              <ChevronLeftIcon className="h-4 w-4" />
               Previous
             </Button>
             <Button
@@ -86,7 +86,7 @@ export function ScoreComparisonSection({
               variant="outline"
             >
               Next
-              <ChevronRightIcon className="ml-1 h-4 w-4" />
+              <ChevronRightIcon className="h-4 w-4" />
             </Button>
           </div>
         </div>

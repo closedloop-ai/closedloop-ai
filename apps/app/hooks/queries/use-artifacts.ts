@@ -15,6 +15,7 @@ import type { ArtifactVersion } from "@repo/api/src/types/artifact-version";
 import type { ComputeTargetConflictBody } from "@repo/api/src/types/compute-target";
 import { EntityType } from "@repo/api/src/types/entity-link";
 import type { ExternalLink } from "@repo/api/src/types/external-link";
+import { RunLoopCommand } from "@repo/api/src/types/loop";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import {
   type UseQueryOptions,
@@ -26,6 +27,7 @@ import { useCallback, useRef, useState } from "react";
 import { useIsLoopsEnabled } from "@/hooks/queries/use-compute-mode";
 import { useApiClient } from "@/hooks/use-api-client";
 import { parseComputeTargetConflict } from "@/lib/compute-target-conflict";
+import { getEngineerRoutingSelection } from "@/lib/engineer/routing-store";
 import { dashboardKeys } from "./use-dashboard-stats";
 import { invalidateEntityLinkQueries } from "./use-entity-links";
 import { executionLogKeys } from "./use-execution-log";
@@ -385,8 +387,10 @@ export function useCreateAndGenerateArtifact() {
       // Then trigger generation via Loops or GitHub Actions
       try {
         if (useLoopsRef.current) {
+          const routing = getEngineerRoutingSelection();
           await apiClient.post(`/artifacts/${artifact.id}/run-loop`, {
-            command: "plan",
+            command: RunLoopCommand.Plan,
+            computeTargetId: routing.computeTargetId,
           });
           return artifact;
         }
@@ -405,14 +409,8 @@ export function useCreateAndGenerateArtifact() {
             availableTargets: conflict.availableTargets,
             pendingArtifactId: artifact.id,
           });
-          toast.info(
-            "Multiple compute targets are online. Select one to start generation."
-          );
           return artifact;
         }
-        toast.error(
-          error instanceof Error ? error.message : "Plan generation failed"
-        );
         return artifact;
       }
     },

@@ -65,12 +65,12 @@ export function ExecutePlanModal({
           <Button disabled={isLoading} onClick={handleConfirm}>
             {isLoading ? (
               <>
-                <LoaderIcon className="mr-2 h-4 w-4 animate-spin" />
+                <LoaderIcon className="h-4 w-4 animate-spin" />
                 Starting Execution...
               </>
             ) : (
               <>
-                <PlayIcon className="mr-2 h-4 w-4" />
+                <PlayIcon className="h-4 w-4" />
                 Execute Plan
               </>
             )}

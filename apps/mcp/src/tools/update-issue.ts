@@ -13,9 +13,9 @@ export function registerUpdateIssue(
     "update-issue",
     {
       description:
-        "Update an existing issue's title, description, status, priority, or assignee",
+        "Update an existing issue's title, description, status, priority, or assignee by ID or slug",
       inputSchema: {
-        issueId: z.string().describe("ID of the issue to update"),
+        issueId: z.string().describe("ID or slug of the issue to update"),
         title: z.string().optional().describe("New title for the issue"),
         description: z
           .string()

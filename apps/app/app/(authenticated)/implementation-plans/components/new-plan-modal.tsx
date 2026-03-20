@@ -237,7 +237,7 @@ export function NewPlanModal({
       {!isControlled && (
         <DialogTrigger asChild>
           <Button>
-            <PlusIcon className="mr-2 h-4 w-4" />
+            <PlusIcon className="h-4 w-4" />
             New Plan
           </Button>
         </DialogTrigger>
@@ -378,12 +378,12 @@ export function NewPlanModal({
           >
             {isSubmitting ? (
               <>
-                <LoaderIcon className="mr-2 h-4 w-4 animate-spin" />
+                <LoaderIcon className="h-4 w-4 animate-spin" />
                 Creating...
               </>
             ) : (
               <>
-                <SparklesIcon className="mr-2 h-4 w-4" />
+                <SparklesIcon className="h-4 w-4" />
                 {selectedSource ? "Generate Plan" : "Create Plan"}
               </>
             )}

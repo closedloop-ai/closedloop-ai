@@ -27,8 +27,14 @@ export function registerListArtifacts(
       description:
         "List artifacts with optional filters by projectId, type, workstreamId, and assigneeId",
       inputSchema: {
-        projectId: z.string().optional().describe("Filter by project ID"),
-        workstreamId: z.string().optional().describe("Filter by workstream ID"),
+        projectId: z
+          .string()
+          .optional()
+          .describe("Filter by project ID or slug (e.g. PROJ-1)"),
+        workstreamId: z
+          .string()
+          .optional()
+          .describe("Filter by workstream ID or slug (e.g. WORK-3)"),
         assigneeId: z
           .string()
           .optional()

@@ -139,12 +139,12 @@ export function GoogleIntegrationCard() {
                   <Button disabled={connecting} onClick={handleConnect}>
                     {connecting ? (
                       <>
-                        <Loader2Icon className="mr-2 h-4 w-4 animate-spin" />
+                        <Loader2Icon className="h-4 w-4 animate-spin" />
                         Connecting...
                       </>
                     ) : (
                       <>
-                        <ExternalLinkIcon className="mr-2 h-4 w-4" />
+                        <ExternalLinkIcon className="h-4 w-4" />
                         Connect Google Drive
                       </>
                     )}

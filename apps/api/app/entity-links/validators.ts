@@ -5,16 +5,17 @@ import {
   LinkType,
 } from "@repo/api/src/types/entity-link";
 import { z } from "zod";
+import { uuidOrSlug } from "@/lib/identifier-utils";
 import { jsonObjectValidator } from "@/lib/validators/json";
 
 const entityTypeEnum = z.enum(EntityType);
 const linkTypeEnum = z.enum(LinkType);
 
 export const createEntityLinkValidator = z.object({
-  sourceId: z.uuid(),
+  sourceId: uuidOrSlug(),
   sourceType: entityTypeEnum,
   sourceVersion: z.number().int().positive().optional(),
-  targetId: z.uuid(),
+  targetId: uuidOrSlug(),
   targetType: entityTypeEnum,
   targetVersion: z.number().int().positive().optional(),
   linkType: linkTypeEnum,
@@ -22,7 +23,7 @@ export const createEntityLinkValidator = z.object({
 });
 
 export const findEntityLinksQueryValidator = z.object({
-  entityId: z.uuid(),
+  entityId: uuidOrSlug(),
   entityType: entityTypeEnum,
   linkType: linkTypeEnum.optional(),
   direction: z.enum(LinkDirection).optional().default(LinkDirection.Both),

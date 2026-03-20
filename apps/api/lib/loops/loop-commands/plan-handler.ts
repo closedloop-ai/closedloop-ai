@@ -12,13 +12,16 @@ import { log } from "@repo/observability/log";
 import { z } from "zod";
 import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
 import { resetArtifactRoom } from "@/app/artifacts/room-utils";
-import { fanOutJudgeScores } from "@/lib/judge-score-fanout";
-import { parseJsonArtifact } from "@/lib/loops/loop-artifact-ingestion";
+import {
+  parseJsonArtifact,
+  upsertEvaluationWithJudgeScores,
+} from "@/lib/loops/loop-artifact-ingestion";
 import {
   downloadArtifactFile,
   downloadPromptSnapshotMarkdownEntries,
 } from "@/lib/loops/loop-state";
 import { upsertFromSnapshot } from "@/lib/prompts-service";
+import { judgesReportSchema } from "../judges-report-schema";
 import { defineHandler } from "./loop-command-handler";
 
 // ---------------------------------------------------------------------------
@@ -134,30 +137,11 @@ export async function ingestPlanArtifacts(
   // Persist judges report if available (upsert for idempotency)
   if (artifacts.judgesReport) {
     await withDb.tx(async (tx) => {
-      const evaluation = await tx.artifactEvaluation.upsert({
-        where: {
-          artifactId_reportId: {
-            artifactId,
-            reportId: artifacts.judgesReport!.report_id,
-          },
-        },
-        create: {
-          artifactId,
-          loopId: loop.id,
-          reportType: PrismaEvaluationReportType.PLAN,
-          reportId: artifacts.judgesReport!.report_id,
-          reportData: artifacts.judgesReport!,
-        },
-        update: {
-          loopId: loop.id,
-          reportType: PrismaEvaluationReportType.PLAN,
-          reportData: artifacts.judgesReport!,
-        },
-      });
-
-      await fanOutJudgeScores({
-        evaluationId: evaluation.id,
+      await upsertEvaluationWithJudgeScores({
+        artifactId,
+        loopId: loop.id,
         organizationId,
+        reportType: PrismaEvaluationReportType.PLAN,
         report: artifacts.judgesReport!,
         tx,
       });
@@ -207,28 +191,6 @@ export async function ingestPlanArtifacts(
 // Upload-based loading (desktop path)
 // ---------------------------------------------------------------------------
 
-const metricStatisticsSchema = z.object({
-  metric_name: z.string(),
-  threshold: z.number(),
-  score: z.number(),
-  justification: z.string(),
-});
-
-const judgesReportSchema = z.object({
-  report_id: z.string(),
-  timestamp: z.string(),
-  stats: z.array(
-    z.object({
-      type: z.literal("case_score"),
-      case_id: z.string(),
-      // Accept strings and legacy numeric encodings (1/2/3) —
-      // normalizeFinalStatus() in judge-score-fanout handles conversion.
-      final_status: z.union([z.string(), z.number()]),
-      metrics: z.array(metricStatisticsSchema),
-    })
-  ),
-});
-
 const planUploadSchema = z.object({
   plan: z
     .object({
@@ -260,10 +222,8 @@ function planArtifactsFromUpload(uploaded: JsonObject): PlanArtifacts {
 // ---------------------------------------------------------------------------
 
 export const planHandler = defineHandler<PlanArtifacts>({
-  // PLAN loop generates a text document and does not push code to a repository.
-  // Unlike requestChangesHandler, which pushes changes and legitimately requires a repo,
-  // this handler only produces plan artifacts (markdown/text) and must work without one.
-  requiresRepo: false,
+  // PLAN loops require a repo — Claude needs access to the codebase to generate plans.
+  requiresRepo: true,
   requiresParent: false,
   includePrimaryArtifact: false,
 

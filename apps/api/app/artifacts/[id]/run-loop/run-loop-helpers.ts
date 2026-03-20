@@ -1,6 +1,9 @@
 import type { ApiResult, JsonObject } from "@repo/api/src/types/common";
 import type { ComputeTargetConflictBody } from "@repo/api/src/types/compute-target";
-import type { CreateLoopRequest } from "@repo/api/src/types/loop";
+import {
+  type CreateLoopRequest,
+  RunLoopCommand,
+} from "@repo/api/src/types/loop";
 import { getProjectSettings } from "@repo/api/src/types/project";
 import { NextResponse } from "next/server";
 import { loopsService } from "@/app/loops/service";
@@ -17,14 +20,15 @@ import {
 import { artifactsService } from "../../service";
 
 /**
- * Map route body commands to LoopCommand enum values.
+ * Map route body commands (lowercase) to LoopCommand enum values (uppercase).
  */
 export const COMMAND_MAP = {
-  plan: "PLAN",
-  execute: "EXECUTE",
-  request_changes: "REQUEST_CHANGES",
-  decompose: "DECOMPOSE",
-  generate_prd: "GENERATE_PRD",
+  [RunLoopCommand.Plan]: "PLAN",
+  [RunLoopCommand.Execute]: "EXECUTE",
+  [RunLoopCommand.RequestChanges]: "REQUEST_CHANGES",
+  [RunLoopCommand.Decompose]: "DECOMPOSE",
+  [RunLoopCommand.EvaluatePrd]: "EVALUATE_PRD",
+  [RunLoopCommand.GeneratePrd]: "GENERATE_PRD",
 } as const;
 
 /**
@@ -88,7 +92,14 @@ export async function resolveLoopContext(
     parentLoopId = parentLoop?.id;
   }
 
-  return { workstream, targetRepo, targetBranch, contextRefs, parentLoopId };
+  return {
+    workstream,
+    targetRepo,
+    targetBranch,
+    contextRefs,
+    parentLoopId,
+    source,
+  };
 }
 
 export type ComputeTargetRouteResult =

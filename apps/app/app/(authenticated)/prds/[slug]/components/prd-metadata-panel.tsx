@@ -6,12 +6,14 @@ import type {
   ArtifactStatus,
 } from "@repo/api/src/types/artifact";
 import { CustomFieldEntityType } from "@repo/api/src/types/custom-field";
+import type { JudgeFeedbackItem } from "@repo/api/src/types/evaluation";
 import type { User } from "@repo/design-system/components/ui/user-select-popover";
 import { useMemo, useState } from "react";
 import { ArtifactVersionInfo } from "@/components/artifact-editor/artifact-version-info";
 import { AttachmentsSection } from "@/components/artifact-editor/attachments-section";
 import { CollapsibleSection } from "@/components/artifact-editor/collapsible-section";
 import { CommentsSection } from "@/components/artifact-editor/comments-section";
+import { EvaluationSection } from "@/components/artifact-editor/evaluation-section";
 import { MetadataPanel } from "@/components/artifact-editor/metadata-panel";
 import { StatusMetadataSection } from "@/components/artifact-editor/status-metadata-section";
 import { TargetRepositoryFields } from "@/components/artifact-editor/target-repository-fields";
@@ -80,6 +82,10 @@ type PRDMetadataPanelProps = {
    */
   onTargetBranchBlur: (overrideValue?: string) => void;
   /**
+   * Judge feedback items for the evaluation section
+   */
+  judgeItems?: JudgeFeedbackItem[] | null;
+  /**
    * When "detailsOnly", render only the details content (no sidebar wrapper, no status section).
    * Used when metadata bar is below title and chat is in the right gutter.
    */
@@ -98,6 +104,7 @@ export function PRDMetadataPanel({
   teamMembers,
   targetRepo,
   targetBranch,
+  judgeItems,
   onStatusChange,
   onApproverSelect,
   onAssigneeChange,
@@ -132,7 +139,7 @@ export function PRDMetadataPanel({
         open={isPropertiesOpen}
         title="Properties"
       >
-        {variant === "sidebar" ? (
+        {variant === "sidebar" && (
           <StatusMetadataSection
             approver={approver}
             assignee={assignee}
@@ -143,7 +150,7 @@ export function PRDMetadataPanel({
             status={status}
             teamMembers={teamMembers}
           />
-        ) : null}
+        )}
 
         <TargetRepositoryFields
           onTargetBranchBlur={onTargetBranchBlur}
@@ -173,6 +180,12 @@ export function PRDMetadataPanel({
         />
       </CollapsibleSection>
 
+      <EvaluationSection
+        artifactId={prd.id}
+        judgeItems={judgeItems ?? null}
+        title="PRD Evaluation"
+      />
+
       <FeatureFlagged flag="the-one-flag">
         <CommentsSection artifactId={prd.id} />
       </FeatureFlagged>
@@ -187,16 +200,20 @@ export function PRDMetadataPanel({
     </div>
   );
 
+  const executionLogDialog = (
+    <ExecutionLogDialog
+      initialSessionId={selectedSessionId}
+      onOpenChange={setDialogOpen}
+      open={dialogOpen}
+      trace={dialogTrace}
+    />
+  );
+
   if (variant === "detailsOnly") {
     return (
       <>
         {detailsContent}
-        <ExecutionLogDialog
-          initialSessionId={selectedSessionId}
-          onOpenChange={setDialogOpen}
-          open={dialogOpen}
-          trace={dialogTrace}
-        />
+        {executionLogDialog}
       </>
     );
   }
@@ -204,12 +221,7 @@ export function PRDMetadataPanel({
   return (
     <>
       <MetadataPanel title="PRD Details">{detailsContent}</MetadataPanel>
-      <ExecutionLogDialog
-        initialSessionId={selectedSessionId}
-        onOpenChange={setDialogOpen}
-        open={dialogOpen}
-        trace={dialogTrace}
-      />
+      {executionLogDialog}
     </>
   );
 }

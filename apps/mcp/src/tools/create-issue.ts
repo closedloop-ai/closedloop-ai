@@ -13,9 +13,7 @@ export function registerCreateIssue(
       description: "Create a new issue in a project",
       inputSchema: {
         title: z.string().describe("Title of the issue"),
-        projectId: z
-          .string()
-          .describe("ID of the project to create the issue in"),
+        projectId: z.string().describe("Project ID or slug"),
         description: z.string().optional().describe("Description of the issue"),
         priority: z
           .enum(["LOW", "MEDIUM", "HIGH", "URGENT"])

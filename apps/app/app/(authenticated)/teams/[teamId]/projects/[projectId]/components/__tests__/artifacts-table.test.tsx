@@ -1,4 +1,5 @@
 import type { ArtifactWithWorkstream } from "@repo/api/src/types/artifact";
+import { EvaluationReportType } from "@repo/api/src/types/evaluation";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
@@ -91,6 +92,30 @@ vi.mock("@/hooks/queries/use-artifacts", () => ({
   useMergeArtifacts: () => ({
     mutateAsync: mockMutateAsync,
     isPending: false,
+  }),
+}));
+
+// Mock useProjectJudgeScores
+vi.mock("@/hooks/queries/use-judges", () => ({
+  useProjectJudgeScores: () => ({
+    data: {
+      "prd-artifact-1": {
+        [EvaluationReportType.Plan]: null,
+        [EvaluationReportType.Prd]: [
+          {
+            judgeScoreId: "js-1",
+            caseId: "quality",
+            metricName: "quality",
+            score: 0.9,
+            threshold: 0.8,
+            justification: "Good",
+            finalStatus: "PASSED",
+            promptName: null,
+          },
+        ],
+        [EvaluationReportType.Code]: null,
+      },
+    },
   }),
 }));
 
@@ -844,5 +869,42 @@ describe("ArtifactsTable - Merge Selection", () => {
     expect(
       screen.queryByRole("button", { name: "Clear Selection" })
     ).not.toBeInTheDocument();
+  });
+});
+
+describe("ArtifactsTable - Judge Scores Display", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockUseRouter.mockReturnValue({ push: vi.fn() });
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  test("renders Judge Scores column header and score cell for PRD artifact", () => {
+    const artifacts: ArtifactWithWorkstream[] = [
+      createMockProjectArtifact({
+        id: "prd-artifact-1",
+        title: "Quality PRD",
+        type: "PRD",
+      }),
+    ];
+
+    renderWithProviders(
+      <ArtifactsTable
+        artifacts={artifacts}
+        filterText=""
+        projectId="test-project-id"
+      />
+    );
+
+    // Column header for judge scores should be present
+    expect(screen.getByText("Judges")).toBeInTheDocument();
+
+    // Score cell should show the formatted percentage for score 0.9
+    // (may appear in both the trigger span and tooltip content)
+    const scoreElements = screen.getAllByText("90%");
+    expect(scoreElements.length).toBeGreaterThan(0);
   });
 });

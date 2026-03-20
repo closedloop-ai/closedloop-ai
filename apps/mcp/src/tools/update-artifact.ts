@@ -12,9 +12,9 @@ export function registerUpdateArtifact(
     "update-artifact",
     {
       description:
-        "Update an existing artifact's metadata or status. For content changes, use create-artifact-version.",
+        "Update an existing artifact's metadata or status by ID or slug. For content changes, use create-artifact-version.",
       inputSchema: {
-        artifactId: z.string().describe("ID of the artifact to update"),
+        artifactId: z.string().describe("ID or slug of the artifact to update"),
         title: z.string().optional().describe("New title for the artifact"),
         status: z
           .enum(ArtifactStatus)

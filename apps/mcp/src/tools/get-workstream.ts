@@ -10,9 +10,12 @@ export function registerGetWorkstream(
   server.registerTool(
     "get-workstream",
     {
-      description: "Get a workstream's detail including state and artifacts",
+      description:
+        "Get a workstream's detail by ID or slug including state and artifacts",
       inputSchema: {
-        workstreamId: z.string().describe("ID of the workstream to retrieve"),
+        workstreamId: z
+          .string()
+          .describe("ID or slug (e.g. WORK-5) of the workstream to retrieve"),
       },
     },
     ({ workstreamId }) =>

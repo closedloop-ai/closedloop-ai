@@ -115,7 +115,7 @@ function GitHubAction({
 
   return (
     <Button onClick={onConnect} size="sm" variant="outline">
-      <ExternalLink className="mr-1 h-3 w-3" />
+      <ExternalLink className="h-3 w-3" />
       Connect
     </Button>
   );
