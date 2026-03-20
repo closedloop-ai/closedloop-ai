@@ -81,5 +81,12 @@ export async function resolveLoopContext(
     parentLoopId = parentLoop?.id;
   }
 
-  return { workstream, targetRepo, targetBranch, contextRefs, parentLoopId };
+  return {
+    workstream,
+    targetRepo,
+    targetBranch,
+    contextRefs,
+    parentLoopId,
+    source,
+  };
 }

@@ -1,8 +1,6 @@
 import type { Artifact } from "@repo/api/src/types/artifact";
-import { ArtifactType } from "@repo/api/src/types/artifact";
 import { withAuth } from "@/lib/auth/with-auth";
 import { resolveArtifactId } from "@/lib/identifier-utils";
-import { scheduleAutoEvaluatePrd } from "@/lib/loops/auto-evaluate-prd";
 import {
   errorResponse,
   notFoundResponse,
@@ -36,10 +34,6 @@ export const POST = withAuth<Artifact, "/artifacts/[id]/new-version">(
         user.id,
         body.content
       );
-
-      if (newVersion.type === ArtifactType.Prd) {
-        scheduleAutoEvaluatePrd(newVersion.id, user.organizationId, user.id);
-      }
 
       return successResponse(newVersion);
     } catch (error) {
