@@ -308,3 +308,4 @@ packages/database/generated
 
 # Review artifacts
 reviews/
+.dev-environment.json
