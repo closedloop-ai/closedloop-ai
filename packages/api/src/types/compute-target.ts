@@ -1,3 +1,5 @@
+import type { PreferredComputeMode } from "@repo/database";
+
 import type { JsonObject, JsonValue } from "./common";
 
 export type ComputeTarget = {
@@ -124,3 +126,60 @@ export type ComputeTargetConflictBody = {
   message: string;
   availableTargets: Array<{ id: string; machineName: string; status: string }>;
 };
+
+/**
+ * Discriminated union for 409 Conflict responses on compute-target mismatches.
+ *
+ * Each variant is identified by its `error` discriminant field:
+ * - `"multiple_targets"` (ComputeTargetConflictBody): multiple online targets ambiguously match
+ * - `"backend_mismatch"` (BackendMismatchBody): the resolved target differs from the backend
+ *   used by the artifact's last completed loop; caller may retry with `backendOverride: true`
+ *
+ * Future 409 variants should be added here and unioned into a shared
+ * `ComputeTargetConflict` type alias for exhaustive handling on the client.
+ */
+export type BackendMismatchBody = {
+  error: "backend_mismatch";
+  message: string;
+  originalComputeTargetId: string | null;
+  originalComputeTargetName: string | null;
+  preferredComputeTargetId: string | null;
+  artifactId: string;
+};
+
+// Compute preference
+
+export const ComputePreference = {
+  Local: "LOCAL",
+  Cloud: "CLOUD",
+} as const;
+
+export type ComputePreference =
+  (typeof ComputePreference)[keyof typeof ComputePreference];
+
+export type ComputePreferenceResponse = {
+  preferredComputeMode: ComputePreference;
+};
+
+export type SetComputePreferenceRequest = {
+  mode: ComputePreference;
+};
+
+/**
+ * Maps a Prisma PreferredComputeMode enum value to the API ComputePreference type.
+ *
+ * Type test below asserts that this mapping covers all PreferredComputeMode values,
+ * preventing drift when new enum values are added to the Prisma schema.
+ */
+export function toComputePreference(
+  mode: PreferredComputeMode
+): ComputePreference {
+  const mapping: Record<PreferredComputeMode, ComputePreference> = {
+    LOCAL: ComputePreference.Local,
+    CLOUD: ComputePreference.Cloud,
+  };
+  return mapping[mode];
+}
+
+// The Record<PreferredComputeMode, ComputePreference> type in toComputePreference
+// ensures the mapping covers all Prisma enum values at compile time.

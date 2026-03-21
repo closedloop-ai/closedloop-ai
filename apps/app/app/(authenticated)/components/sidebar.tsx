@@ -42,6 +42,7 @@ import {
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { type ReactNode, useEffect, useRef } from "react";
+import { ComputeTargetPopover } from "@/components/compute-target-popover";
 import { useIsMounted } from "@/hooks/use-is-mounted";
 import { EngineerBadge } from "./engineer-badge";
 import { InboxBadge } from "./inbox-badge";
@@ -337,6 +338,9 @@ export function GlobalSidebar({
         </SidebarContent>
         <SidebarFooter>
           <SidebarMenu>
+            <SidebarMenuItem>
+              <ComputeTargetPopover />
+            </SidebarMenuItem>
             <SidebarMenuItem className="flex items-center gap-2">
               <div className="h-8 w-full">
                 {mounted && (

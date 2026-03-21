@@ -148,7 +148,6 @@ vi.mock("@/hooks/queries/use-pull-request-rating", () => ({
 const VERSION_PATTERN = /version: v1/i;
 const CREATED_PATTERN = /created:/i;
 const UPDATED_PATTERN = /updated:/i;
-const GITHUB_WORKFLOW_PATTERN = /view github workflow/i;
 const PR_NUMBER_PATTERN = /#42:/i;
 const PR_TITLE_PATTERN = /add new feature/i;
 
@@ -411,15 +410,18 @@ describe("PlanMetadataPanel", () => {
       expect(screen.getByText(UPDATED_PATTERN)).toBeDefined();
     });
 
-    test("displays GitHub workflow link when generationStatus has htmlUrl", () => {
+    test("displays loop link when generationStatus has loop source", () => {
       render(
         <PlanMetadataPanel
           {...defaultProps}
-          generationStatus={createMockGenerationStatus()}
+          generationStatus={createMockGenerationStatus({
+            source: "loop",
+            loopId: "loop-abc",
+          })}
         />
       );
       expandProperties();
-      expect(screen.getByText(GITHUB_WORKFLOW_PATTERN)).toBeDefined();
+      expect(screen.getByText("View loop details")).toBeDefined();
     });
 
     test("displays pull request info when pullRequest is provided", () => {

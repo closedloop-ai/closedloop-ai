@@ -1,22 +1,25 @@
 "use client";
 
-import type { ComputeTargetConflictBody } from "@repo/api/src/types/compute-target";
+import type {
+  BackendMismatchBody,
+  ComputeTargetConflictBody,
+} from "@repo/api/src/types/compute-target";
 import { RunLoopCommand } from "@repo/api/src/types/loop";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { useCallback, useRef, useState } from "react";
-import { useIsLoopsEnabledForArtifact } from "@/hooks/queries/use-artifact-execution-backend";
-import {
-  useExecuteImplementationPlan,
-  useRegenerateArtifact,
-  useRequestPlanChanges,
-  useUpdateArtifact,
-} from "@/hooks/queries/use-artifacts";
+import { useUpdateArtifact } from "@/hooks/queries/use-artifacts";
 import { useRunLoop } from "@/hooks/queries/use-loops";
-import { parseComputeTargetConflict } from "@/lib/compute-target-conflict";
-import { useEngineerRoutingSelection } from "@/lib/engineer/routing-store";
+import { handleRunLoopResponse } from "@/lib/run-loop-response";
 
 type UsePlanActionsConfig = {
   artifactId: string;
+};
+
+type RunLoopParams = {
+  command: RunLoopCommand;
+  prompt?: string;
+  computeTargetId?: string;
+  backendOverride?: boolean;
 };
 
 /**
@@ -26,14 +29,14 @@ type UsePlanActionsConfig = {
  *
  * **What it provides:**
  * - Approve operation (updates status to APPROVED)
- * - Regenerate operation (triggers plan regeneration via GitHub Actions or Loops)
+ * - Regenerate operation (triggers plan regeneration via Loops)
  * - Request changes operation (submits feedback and triggers regeneration with changes)
  * - Execute operation (triggers implementation execution, creates PR)
  * - Loading states for each operation
  * - Multi-target state and selectTarget for compute target conflict resolution
  *
- * Routes regenerate/execute/request-changes operations to either Loops or GitHub Actions
- * based on the artifact's execution history, falling back to the org's compute mode setting.
+ * All regenerate/execute/request-changes operations route through the Loops run-loop endpoint.
+ * Compute target resolution is handled server-side.
  *
  * **Example usage:**
  * ```tsx
@@ -49,38 +52,68 @@ type UsePlanActionsConfig = {
  */
 export function usePlanActions(config: UsePlanActionsConfig) {
   const { artifactId } = config;
-  const { isLoopsEnabled: useLoops, isLoading: isComputeModeLoading } =
-    useIsLoopsEnabledForArtifact(artifactId);
-  // TanStack Query mutations - GitHub Actions path
+
+  // TanStack Query mutation for artifact approval
   const updateArtifact = useUpdateArtifact();
-  const regenerateArtifact = useRegenerateArtifact();
-  const requestPlanChanges = useRequestPlanChanges();
-  const executeImplementationPlan = useExecuteImplementationPlan();
 
-  // TanStack Query mutation - Loops path
+  // TanStack Query mutation — all plan operations route through run-loop
   const runLoop = useRunLoop();
-
-  const routing = useEngineerRoutingSelection();
-  // Pass computeTargetId for both CloudRelay and LocalElectron modes.
-  const computeTargetId = routing.computeTargetId;
 
   // Multi-target conflict state
   const [multiTargetState, setMultiTargetState] = useState<{
     availableTargets: ComputeTargetConflictBody["availableTargets"];
   } | null>(null);
+  // Backend mismatch state
+  const [backendMismatchState, setBackendMismatchState] =
+    useState<BackendMismatchBody | null>(null);
   const pendingActionRef = useRef<((targetId: string) => void) | null>(null);
+  const pendingMismatchActionRef = useRef<
+    ((targetId: string | null, backendOverride: boolean) => void) | null
+  >(null);
 
   // Derived state
   const isApproving = updateArtifact.isPending;
-  const isRegenerating = useLoops
-    ? runLoop.isPending
-    : regenerateArtifact.isPending;
-  const isRequestingChanges = useLoops
-    ? runLoop.isPending
-    : requestPlanChanges.isPending;
-  const isExecuting = useLoops
-    ? runLoop.isPending
-    : executeImplementationPlan.isPending;
+  const isRegenerating = runLoop.isPending;
+  const isRequestingChanges = runLoop.isPending;
+  const isExecuting = runLoop.isPending;
+
+  /**
+   * Set up pending-action refs so that selectTarget / confirmOriginalBackend /
+   * confirmPreferredBackend can replay the same command with the resolved target.
+   */
+  const prepareConflictRefs = useCallback(
+    (baseParams: RunLoopParams): void => {
+      pendingActionRef.current = (targetId: string) =>
+        runLoop.mutateAsync({
+          ...baseParams,
+          artifactId,
+          computeTargetId: targetId,
+        });
+      pendingMismatchActionRef.current = (
+        targetId: string | null,
+        backendOverride: boolean
+      ) =>
+        runLoop.mutateAsync({
+          ...baseParams,
+          artifactId,
+          computeTargetId: targetId ?? undefined,
+          backendOverride,
+        });
+    },
+    [artifactId, runLoop]
+  );
+
+  /** Route conflict errors (409) from a run-loop call to the appropriate state setter. */
+  const routeConflictError = useCallback((error: unknown): void => {
+    handleRunLoopResponse(error, {
+      onMultipleTargets: (conflict) =>
+        setMultiTargetState({ availableTargets: conflict.availableTargets }),
+      onBackendMismatch: (body) => setBackendMismatchState(body),
+      onSuccess: () => {
+        // unreachable: error handlers only receive thrown errors
+      },
+    });
+  }, []);
 
   /**
    * Approve the implementation plan.
@@ -97,158 +130,105 @@ export function usePlanActions(config: UsePlanActionsConfig) {
   }, [artifactId, updateArtifact]);
 
   /**
-   * Regenerate the implementation plan.
-   * When loops are enabled, creates a Loop with command="plan".
-   * Otherwise, triggers the symphony-dispatch GitHub Actions workflow.
+   * Regenerate the implementation plan via Loops.
+   * Creates a Loop with command="plan". Compute target is resolved server-side.
    */
   const handleRegenerate = useCallback(() => {
-    if (useLoops) {
-      pendingActionRef.current = (targetId: string) =>
-        runLoop.mutateAsync({
-          artifactId,
-          command: RunLoopCommand.Plan,
-          computeTargetId: targetId,
-        });
-
-      runLoop.mutate(
-        { artifactId, command: RunLoopCommand.Plan, computeTargetId },
-        {
-          onSuccess: () => toast.success("Plan regeneration started via Loop"),
-          onError: (error) => {
-            const conflict = parseComputeTargetConflict(error);
-            if (conflict) {
-              setMultiTargetState({
-                availableTargets: conflict.availableTargets,
-              });
-            }
-          },
-        }
-      );
-    } else {
-      regenerateArtifact.mutate(
-        { id: artifactId },
-        {
-          onSuccess: () => toast.success("Plan regeneration started"),
-        }
-      );
-    }
-  }, [artifactId, useLoops, runLoop, regenerateArtifact, computeTargetId]);
+    prepareConflictRefs({ command: RunLoopCommand.Plan });
+    runLoop.mutate(
+      { artifactId, command: RunLoopCommand.Plan },
+      {
+        onSuccess: () => toast.success("Plan regeneration started via Loop"),
+        onError: routeConflictError,
+      }
+    );
+  }, [artifactId, runLoop, prepareConflictRefs, routeConflictError]);
 
   /**
-   * Request changes to the implementation plan.
-   * When loops are enabled, creates a Loop with command="request_changes".
-   * Otherwise, submits feedback and triggers regeneration via GitHub Actions.
+   * Request changes to the implementation plan via Loops.
+   * Creates a Loop with command="request_changes". Compute target is resolved server-side.
    * Returns a promise that resolves to true on success, false on error.
    */
   const handleRequestChanges = useCallback(
     async (changes: string): Promise<boolean> => {
-      if (useLoops) {
-        pendingActionRef.current = (targetId: string) =>
-          runLoop.mutateAsync({
+      prepareConflictRefs({
+        command: RunLoopCommand.RequestChanges,
+        prompt: changes,
+      });
+      try {
+        await runLoop.mutateAsync(
+          {
             artifactId,
             command: RunLoopCommand.RequestChanges,
             prompt: changes,
-            computeTargetId: targetId,
-          });
-
-        try {
-          await runLoop.mutateAsync(
-            {
-              artifactId,
-              command: RunLoopCommand.RequestChanges,
-              prompt: changes,
-              computeTargetId,
-            },
-            {
-              onSuccess: () => {
-                toast.success(
-                  "Change request submitted via Loop - generating updated plan..."
-                );
-              },
-            }
-          );
-          return true;
-        } catch (error) {
-          const conflict = parseComputeTargetConflict(error);
-
-          if (conflict) {
-            setMultiTargetState({
-              availableTargets: conflict.availableTargets,
-            });
-          }
-          return false;
-        }
-      }
-
-      const result = await requestPlanChanges.mutateAsync(
-        { artifactId, changes },
-        {
-          onSuccess: () => {
-            toast.success(
-              "Change request submitted - generating updated plan..."
-            );
           },
-        }
-      );
-      return result.success ?? false;
-    },
-    [artifactId, useLoops, runLoop, requestPlanChanges, computeTargetId]
-  );
-
-  /**
-   * Execute the approved implementation plan.
-   * When loops are enabled, creates a Loop with command="execute".
-   * Otherwise, triggers the symphony-dispatch workflow with command="execute".
-   */
-  const handleExecute = useCallback(async (): Promise<boolean> => {
-    if (useLoops) {
-      pendingActionRef.current = (targetId: string) =>
-        runLoop.mutateAsync({
-          artifactId,
-          command: RunLoopCommand.Execute,
-          computeTargetId: targetId,
-        });
-
-      try {
-        await runLoop.mutateAsync(
-          { artifactId, command: RunLoopCommand.Execute, computeTargetId },
           {
             onSuccess: () => {
               toast.success(
-                "Plan execution started via Loop - a PR will be created shortly"
+                "Change request submitted via Loop - generating updated plan..."
               );
             },
           }
         );
         return true;
       } catch (error) {
-        const conflict = parseComputeTargetConflict(error);
-
-        if (conflict) {
-          setMultiTargetState({ availableTargets: conflict.availableTargets });
-        }
-        // Non-conflict errors are toasted by the global QueryClient mutations.onError handler.
+        routeConflictError(error);
         return false;
       }
-    }
+    },
+    [artifactId, runLoop, prepareConflictRefs, routeConflictError]
+  );
 
-    const result = await executeImplementationPlan.mutateAsync(artifactId, {
-      onSuccess: () => {
-        toast.success("Plan execution started - a PR will be created shortly");
-      },
-    });
-    return result.success ?? false;
-  }, [
-    artifactId,
-    useLoops,
-    runLoop,
-    executeImplementationPlan,
-    computeTargetId,
-  ]);
+  /**
+   * Execute the approved implementation plan via Loops.
+   * Creates a Loop with command="execute". Compute target is resolved server-side.
+   */
+  const handleExecute = useCallback(async (): Promise<boolean> => {
+    prepareConflictRefs({ command: RunLoopCommand.Execute });
+    try {
+      await runLoop.mutateAsync(
+        { artifactId, command: RunLoopCommand.Execute },
+        {
+          onSuccess: () => {
+            toast.success(
+              "Plan execution started via Loop - a PR will be created shortly"
+            );
+          },
+        }
+      );
+      return true;
+    } catch (error) {
+      routeConflictError(error);
+      // Non-conflict errors are toasted by the global QueryClient mutations.onError handler.
+      return false;
+    }
+  }, [artifactId, runLoop, prepareConflictRefs, routeConflictError]);
 
   const selectTarget = useCallback((targetId: string) => {
     setMultiTargetState(null);
     pendingActionRef.current?.(targetId);
+  }, []);
+
+  const confirmOriginalBackend = useCallback(() => {
+    if (!backendMismatchState) {
+      return;
+    }
+    const targetId = backendMismatchState.originalComputeTargetId;
+    setBackendMismatchState(null);
+    pendingMismatchActionRef.current?.(targetId, true);
+  }, [backendMismatchState]);
+
+  const confirmPreferredBackend = useCallback(() => {
+    if (!backendMismatchState) {
+      return;
+    }
+    const targetId = backendMismatchState.preferredComputeTargetId;
+    setBackendMismatchState(null);
+    pendingMismatchActionRef.current?.(targetId, true);
+  }, [backendMismatchState]);
+
+  const dismissBackendMismatch = useCallback(() => {
+    setBackendMismatchState(null);
   }, []);
 
   return {
@@ -258,15 +238,19 @@ export function usePlanActions(config: UsePlanActionsConfig) {
     handleRequestChanges,
     handleExecute,
     selectTarget,
+    confirmOriginalBackend,
+    confirmPreferredBackend,
+    dismissBackendMismatch,
 
     // Loading states
     isApproving,
     isRegenerating,
     isRequestingChanges,
     isExecuting,
-    isComputeModeLoading,
 
     // Multi-target conflict state
     multiTargetState,
+    // Backend mismatch state
+    backendMismatchState,
   };
 }

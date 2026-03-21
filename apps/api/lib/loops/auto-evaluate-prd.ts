@@ -3,6 +3,7 @@ import { withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { waitUntil } from "@vercel/functions";
 import { loopsService } from "@/app/loops/service";
+import { resolveComputeTarget } from "./compute-target-resolver";
 import { launchLoop } from "./loop-orchestrator";
 
 /**
@@ -49,6 +50,36 @@ async function runAutoEvaluatePrd(
 
   const latestVersion = artifact.latestVersion;
 
+  // Fetch the user's preferred compute mode to route to local vs cloud.
+  const user = await withDb((db) =>
+    db.user.findUnique({
+      where: { id: userId },
+      select: { preferredComputeMode: true },
+    })
+  );
+
+  const computeTargetResolution = await resolveComputeTarget(
+    organizationId,
+    userId,
+    undefined,
+    user?.preferredComputeMode,
+    true
+  );
+
+  let computeTargetId: string | undefined;
+
+  if (computeTargetResolution.reason === "resolved") {
+    computeTargetId = computeTargetResolution.target.id;
+  } else if (computeTargetResolution.reason === "cloud_resolved") {
+    computeTargetId = undefined;
+  } else if (computeTargetResolution.reason === "multiple_targets") {
+    log.warn(
+      "[auto-evaluate-prd] Multiple compute targets found, falling back to cloud",
+      { userId, organizationId }
+    );
+    computeTargetId = undefined;
+  }
+
   // Atomically create the loop only if no row exists for this
   // (artifactId, command, artifactVersion) combination. The DB unique constraint
   // on those three columns ensures two concurrent calls cannot both succeed —
@@ -57,6 +88,7 @@ async function runAutoEvaluatePrd(
     command: LoopCommand.EvaluatePrd,
     artifactId,
     artifactVersion: latestVersion,
+    computeTargetId,
   });
 
   if (!result) {

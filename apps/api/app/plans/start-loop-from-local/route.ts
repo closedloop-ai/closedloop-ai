@@ -115,6 +115,16 @@ export const POST = withAnyAuth<StartPlanLoopResponse>(
             null
           );
         }
+        if (launchResult.error === "no_online_targets") {
+          return badRequestResponse(
+            "No online compute targets found. Ensure the desktop app is running."
+          );
+        }
+        if (launchResult.error === "multiple_targets") {
+          return badRequestResponse(
+            "Multiple compute targets are online. Specify a computeTargetId to select one."
+          );
+        }
         return badRequestResponse(
           "Compute target is offline. Ensure the desktop app is running."
         );

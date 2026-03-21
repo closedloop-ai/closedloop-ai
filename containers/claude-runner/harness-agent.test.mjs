@@ -12,7 +12,7 @@ import {
   HarnessError,
   validateConfig,
   validatePreRunInputs,
-  validateSecrets
+  validateSecrets,
 } from "./harness-agent.mjs";
 
 // ---------------------------------------------------------------------------

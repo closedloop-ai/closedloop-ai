@@ -7,6 +7,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useEffectEvent, useState } from "react";
 import { ExecutePlanModal } from "@/app/(authenticated)/implementation-plans/components/execute-plan-modal";
 import { ArtifactChatPanel } from "@/components/artifact-editor/artifact-chat-panel";
+import { BackendMismatchModal } from "@/components/backend-mismatch-modal";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { LoopDispatchTargetSelector } from "@/components/engineer/LoopDispatchTargetSelector";
 import { usePlanActions } from "@/hooks/artifact-editing/use-plan-actions";
@@ -41,10 +42,18 @@ export function FeaturePage({ issue }: Readonly<FeaturePageProps>) {
   const [displayTitle, setDisplayTitle] = useState(issue.title);
 
   const { hasPlan, isReady, linkedPlanId } = useFeatureState(issue);
-  const { handleExecute, isExecuting, multiTargetState, selectTarget } =
-    usePlanActions({
-      artifactId: linkedPlanId,
-    });
+  const {
+    handleExecute,
+    isExecuting,
+    multiTargetState,
+    selectTarget,
+    backendMismatchState,
+    confirmOriginalBackend,
+    confirmPreferredBackend,
+    dismissBackendMismatch,
+  } = usePlanActions({
+    artifactId: linkedPlanId,
+  });
 
   const { data: generationStatus, invalidateCache } =
     useArtifactGenerationStatus(linkedPlanId ?? "", {
@@ -182,6 +191,18 @@ export function FeaturePage({ issue }: Readonly<FeaturePageProps>) {
           />
         </div>
       )}
+
+      <BackendMismatchModal
+        mismatchData={backendMismatchState}
+        onConfirmOriginal={confirmOriginalBackend}
+        onConfirmPreferred={confirmPreferredBackend}
+        onOpenChange={(open) => {
+          if (!open) {
+            dismissBackendMismatch();
+          }
+        }}
+        open={!!backendMismatchState}
+      />
     </>
   );
 }

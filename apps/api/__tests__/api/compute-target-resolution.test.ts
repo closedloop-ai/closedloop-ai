@@ -1,4 +1,5 @@
 import type { ComputeTarget } from "@repo/api/src/types/compute-target";
+import { PreferredComputeMode } from "@repo/database";
 import { vi } from "vitest";
 import { computeTargetsService } from "@/app/compute-targets/service";
 import { resolveComputeTarget } from "@/lib/loops/compute-target-resolver";
@@ -151,6 +152,114 @@ describe("resolveComputeTarget — with hint (computeTargetIdHint)", () => {
     expect(result).toEqual({ reason: "hint_not_found" });
     expect(computeTargetsService.findOwnedById).toHaveBeenCalledWith(
       "target-1",
+      ORG_ID,
+      "different-user"
+    );
+  });
+});
+
+describe("resolveComputeTarget — preferredComputeMode parameter", () => {
+  it("LOCAL + one online target -> resolved", async () => {
+    const target = makeTarget();
+    vi.mocked(computeTargetsService.listByOwner).mockResolvedValue([target]);
+
+    const result = await resolveComputeTarget(
+      ORG_ID,
+      USER_ID,
+      undefined,
+      PreferredComputeMode.LOCAL
+    );
+
+    expect(result).toEqual({ reason: "resolved", target });
+    expect(computeTargetsService.listByOwner).toHaveBeenCalledOnce();
+    expect(computeTargetsService.listByOwner).toHaveBeenCalledWith(
+      ORG_ID,
+      USER_ID
+    );
+  });
+
+  it("LOCAL + zero registered targets -> no_targets (fallbackToCloud does not apply to zero-registered case)", async () => {
+    vi.mocked(computeTargetsService.listByOwner).mockResolvedValue([]);
+
+    const result = await resolveComputeTarget(
+      ORG_ID,
+      USER_ID,
+      undefined,
+      PreferredComputeMode.LOCAL,
+      true
+    );
+
+    expect(result).toEqual({ reason: "no_targets" });
+    expect(computeTargetsService.listByOwner).toHaveBeenCalledOnce();
+  });
+
+  it("LOCAL + all offline + fallbackToCloud=true -> cloud_resolved", async () => {
+    const offlineTarget = makeTarget({ isOnline: false });
+    vi.mocked(computeTargetsService.listByOwner).mockResolvedValue([
+      offlineTarget,
+    ]);
+
+    const result = await resolveComputeTarget(
+      ORG_ID,
+      USER_ID,
+      undefined,
+      PreferredComputeMode.LOCAL,
+      true
+    );
+
+    expect(result).toEqual({ reason: "cloud_resolved" });
+    expect(computeTargetsService.listByOwner).toHaveBeenCalledOnce();
+  });
+
+  it("CLOUD preference -> cloud_resolved without querying targets", async () => {
+    const result = await resolveComputeTarget(
+      ORG_ID,
+      USER_ID,
+      undefined,
+      PreferredComputeMode.CLOUD
+    );
+
+    expect(result).toEqual({ reason: "cloud_resolved" });
+    expect(computeTargetsService.listByOwner).not.toHaveBeenCalled();
+    expect(computeTargetsService.findOwnedById).not.toHaveBeenCalled();
+  });
+
+  it("LOCAL + multiple online targets -> multiple_targets", async () => {
+    const target1 = makeTarget({ id: "target-1" });
+    const target2 = makeTarget({ id: "target-2", machineName: "Other-MBP" });
+    vi.mocked(computeTargetsService.listByOwner).mockResolvedValue([
+      target1,
+      target2,
+    ]);
+
+    const result = await resolveComputeTarget(
+      ORG_ID,
+      USER_ID,
+      undefined,
+      PreferredComputeMode.LOCAL
+    );
+
+    expect(result).toEqual({
+      reason: "multiple_targets",
+      targets: [target1, target2],
+    });
+    expect(computeTargetsService.listByOwner).toHaveBeenCalledOnce();
+  });
+
+  it("cross-user hint not owned by requesting user -> hint_not_found", async () => {
+    vi.mocked(computeTargetsService.findOwnedById).mockResolvedValue(null);
+
+    const result = await resolveComputeTarget(
+      ORG_ID,
+      "different-user",
+      "target-owned-by-other",
+      PreferredComputeMode.LOCAL
+    );
+
+    expect(result).toEqual({ reason: "hint_not_found" });
+    expect(computeTargetsService.findOwnedById).toHaveBeenCalledOnce();
+    expect(computeTargetsService.findOwnedById).toHaveBeenCalledWith(
+      "target-owned-by-other",
       ORG_ID,
       "different-user"
     );
