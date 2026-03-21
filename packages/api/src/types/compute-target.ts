@@ -1,5 +1,3 @@
-import type { PreferredComputeMode } from "@repo/database";
-
 import type { JsonObject, JsonValue } from "./common";
 
 export type ComputeTarget = {
@@ -164,22 +162,3 @@ export type ComputePreferenceResponse = {
 export type SetComputePreferenceRequest = {
   mode: ComputePreference;
 };
-
-/**
- * Maps a Prisma PreferredComputeMode enum value to the API ComputePreference type.
- *
- * Type test below asserts that this mapping covers all PreferredComputeMode values,
- * preventing drift when new enum values are added to the Prisma schema.
- */
-export function toComputePreference(
-  mode: PreferredComputeMode
-): ComputePreference {
-  const mapping: Record<PreferredComputeMode, ComputePreference> = {
-    LOCAL: ComputePreference.Local,
-    CLOUD: ComputePreference.Cloud,
-  };
-  return mapping[mode];
-}
-
-// The Record<PreferredComputeMode, ComputePreference> type in toComputePreference
-// ensures the mapping covers all Prisma enum values at compile time.

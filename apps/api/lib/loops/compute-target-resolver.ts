@@ -2,7 +2,6 @@ import {
   ComputePreference,
   type ComputeTarget,
 } from "@repo/api/src/types/compute-target";
-import type { PreferredComputeMode } from "@repo/database";
 import { computeTargetsService } from "@/app/compute-targets/service";
 
 export type ResolveComputeTargetResult =
@@ -53,10 +52,10 @@ export async function resolveComputeTarget(
   organizationId: string,
   userId: string,
   computeTargetIdHint?: string,
-  preferredComputeMode?: PreferredComputeMode | null,
+  preferredComputeMode?: string | null,
   fallbackToCloud?: boolean
 ): Promise<ResolveComputeTargetResult> {
-  if (preferredComputeMode === "CLOUD") {
+  if (preferredComputeMode === ComputePreference.Cloud) {
     return { reason: "cloud_resolved" };
   }
 

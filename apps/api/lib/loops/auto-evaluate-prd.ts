@@ -78,6 +78,12 @@ async function runAutoEvaluatePrd(
       { userId, organizationId }
     );
     computeTargetId = undefined;
+  } else {
+    log.info(
+      "[auto-evaluate-prd] No local compute target available, falling back to cloud",
+      { reason: computeTargetResolution.reason, userId, organizationId }
+    );
+    computeTargetId = undefined;
   }
 
   // Atomically create the loop only if no row exists for this

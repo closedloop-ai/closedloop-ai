@@ -3,8 +3,14 @@ import type {
   ComputeTargetConflictBody,
 } from "@repo/api/src/types/compute-target";
 import type { CreateLoopResponse } from "@repo/api/src/types/loop";
+import { z } from "zod";
 
 import { ApiError } from "@/lib/api-error";
+
+const createLoopResponseSchema = z.object({
+  loopId: z.string(),
+  status: z.string(),
+});
 
 type RunLoopResponseCallbacks = {
   onMultipleTargets: (targets: ComputeTargetConflictBody) => void;
@@ -58,10 +64,5 @@ export function handleRunLoopResponse(
 }
 
 function isCreateLoopResponse(value: unknown): value is CreateLoopResponse {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    "loopId" in value &&
-    "status" in value
-  );
+  return createLoopResponseSchema.safeParse(value).success;
 }

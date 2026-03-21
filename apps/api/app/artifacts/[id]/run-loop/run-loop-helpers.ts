@@ -8,7 +8,7 @@ import {
   RunLoopCommand,
 } from "@repo/api/src/types/loop";
 import { getProjectSettings } from "@repo/api/src/types/project";
-import { type PreferredComputeMode, withDb } from "@repo/database";
+import { withDb } from "@repo/database";
 import { NextResponse } from "next/server";
 import { computeTargetsService } from "@/app/compute-targets/service";
 import { loopsService } from "@/app/loops/service";
@@ -96,7 +96,9 @@ export async function resolveLoopContext(
       organizationId
     );
     parentLoopId = parentLoop?.id;
-    parentLoopComputeTargetId = parentLoop?.computeTargetId;
+    parentLoopComputeTargetId = parentLoop
+      ? (parentLoop.computeTargetId ?? null)
+      : undefined;
   }
 
   return {
@@ -127,7 +129,7 @@ export async function resolveComputeTargetForRoute(
   userId: string,
   computeTargetIdHint?: string
 ): Promise<ComputeTargetRouteResult> {
-  let preferredComputeMode: PreferredComputeMode | null | undefined;
+  let preferredComputeMode: string | null | undefined;
 
   if (!computeTargetIdHint) {
     const user = await withDb((db) =>
@@ -223,15 +225,26 @@ export async function checkBackendMismatch(
   data: BackendMismatchBody;
 }> | null> {
   let previousTargetId: string | null;
+  let hasPriorLoop: boolean;
   if (latestCompletedLoopComputeTargetId !== undefined) {
+    // Caller already resolved the parent loop: null = cloud, string = local target
     previousTargetId = latestCompletedLoopComputeTargetId ?? null;
+    hasPriorLoop = true;
   } else {
+    // Fallback: query the DB for the latest completed loop
     const latestLoop = await loopsService.findLatestCompletedForArtifact(
       artifactId,
       organizationId
     );
+    hasPriorLoop = latestLoop != null;
     previousTargetId = latestLoop?.computeTargetId ?? null;
   }
+
+  // No prior loops at all — nothing to mismatch against
+  if (!hasPriorLoop) {
+    return null;
+  }
+
   const currentTargetId = resolvedComputeTargetId ?? null;
 
   if (previousTargetId === currentTargetId) {

@@ -1,10 +1,24 @@
-import type { ComputePreferenceResponse } from "@repo/api/src/types/compute-target";
-import { toComputePreference } from "@repo/api/src/types/compute-target";
-import { withDb } from "@repo/database";
+import {
+  ComputePreference,
+  type ComputePreferenceResponse,
+} from "@repo/api/src/types/compute-target";
+import { type PreferredComputeMode, withDb } from "@repo/database";
 import { z } from "zod";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { resolveEffectiveComputePreference } from "@/lib/loops/compute-target-resolver";
 import { errorResponse, parseBody, successResponse } from "@/lib/route-utils";
+
+/**
+ * Maps a Prisma PreferredComputeMode enum value to the API ComputePreference type.
+ * The Record type ensures the mapping covers all Prisma enum values at compile time.
+ */
+function toComputePreference(mode: PreferredComputeMode): ComputePreference {
+  const mapping: Record<PreferredComputeMode, ComputePreference> = {
+    LOCAL: ComputePreference.Local,
+    CLOUD: ComputePreference.Cloud,
+  };
+  return mapping[mode];
+}
 
 const computePreferenceValidator = z.object({
   mode: z.enum(["LOCAL", "CLOUD"]),
