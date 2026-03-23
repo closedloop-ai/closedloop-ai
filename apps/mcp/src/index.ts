@@ -25,6 +25,7 @@ import {
   type VerifiedApiKeyContext,
 } from "./api-key-contract.js";
 import { registerCreateArtifact } from "./tools/create-artifact.js";
+import { registerCreateArtifactThread } from "./tools/create-artifact-thread.js";
 import { registerCreateArtifactVersion } from "./tools/create-artifact-version.js";
 import { registerCreateEntityLink } from "./tools/create-entity-link.js";
 import { registerCreateExternalLink } from "./tools/create-external-link.js";
@@ -318,6 +319,11 @@ const TOOL_REGISTRATIONS: ToolRegistration[] = [
   {
     name: "create-artifact",
     register: registerCreateArtifact,
+    requiresWrite: true,
+  },
+  {
+    name: "create-artifact-thread",
+    register: registerCreateArtifactThread,
     requiresWrite: true,
   },
   {

@@ -1,6 +1,7 @@
 import "server-only";
 import { Liveblocks } from "@liveblocks/node";
 import { keys } from "./keys";
+import type { CommentBody, ThreadData } from "./webhook";
 
 export type CreateRoomOptions = {
   roomId: string;
@@ -97,6 +98,42 @@ export async function updateRoomMetadata(
     const errorMessage = error instanceof Error ? error.message : String(error);
     return { success: false, error: errorMessage };
   }
+}
+
+export type CreateArtifactThreadOptions = {
+  roomId: string;
+  userId: string;
+  bodyText: string;
+};
+
+export async function createArtifactThread({
+  roomId,
+  userId,
+  bodyText,
+}: CreateArtifactThreadOptions): Promise<ThreadData> {
+  const liveblocks = getLiveblocksClient();
+
+  if (!liveblocks) {
+    throw new Error("LIVEBLOCKS_SECRET is not configured");
+  }
+
+  const body: CommentBody = {
+    version: 1,
+    content: [
+      {
+        type: "paragraph",
+        children: [{ text: bodyText }],
+      },
+    ],
+  };
+
+  return await liveblocks.createThread({
+    roomId,
+    data: {
+      comment: { userId, body },
+      metadata: { resolved: false },
+    },
+  });
 }
 
 /**
