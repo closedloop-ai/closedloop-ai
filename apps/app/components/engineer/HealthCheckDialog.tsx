@@ -28,6 +28,12 @@ const SUCCESS_DISMISS_DELAY = 1200;
 /** Duration of the Radix dialog exit animation (matches duration-200 on DialogContent) */
 const EXIT_ANIMATION_MS = 250;
 
+let shownThisPageLoad = false;
+
+export function resetHealthCheckDialogVisibilityForTests(): void {
+  shownThisPageLoad = false;
+}
+
 export function HealthCheckDialog() {
   const [mounted, setMounted] = useState(false);
   const [failureDetected, setFailureDetected] = useState(false);
@@ -38,6 +44,7 @@ export function HealthCheckDialog() {
   const [revealedCount, setRevealedCount] = useState(0);
   const [showSuccess, setShowSuccess] = useState(false);
   const revealTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const canOpenThisMount = useRef(!shownThisPageLoad);
   const queryClient = useQueryClient();
 
   // Client-only mount flag — avoids SSR/hydration mismatch
@@ -63,7 +70,7 @@ export function HealthCheckDialog() {
 
   const { data, isLoading, refetch, isFetching } = useQuery({
     ...healthCheckOptions(),
-    enabled: mounted,
+    enabled: mounted && canOpenThisMount.current,
     refetchOnMount: "always" as const,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
@@ -75,11 +82,25 @@ export function HealthCheckDialog() {
     data?.checks?.some((c) => c.required && !c.passed) ?? false;
   const allRequiredPassed = allRevealed && !hasRequiredFailure;
 
-  // Latch failureDetected — once a required failure is seen, open the dialog
+  // Latch failureDetected — once a required failure is seen, open the dialog.
+  // Defers the module-flag write so React StrictMode's throwaway mount
+  // cannot consume the one-shot flag.
   useEffect(() => {
-    if (hasRequiredFailure) {
-      setFailureDetected(true);
+    if (!canOpenThisMount.current) {
+      return;
     }
+
+    if (!hasRequiredFailure) {
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      shownThisPageLoad = true;
+    }, 0);
+
+    setFailureDetected(true);
+
+    return () => clearTimeout(timer);
   }, [hasRequiredFailure]);
 
   // Staggered reveal: only run when dialog is showing (failure detected)
@@ -177,7 +198,7 @@ export function HealthCheckDialog() {
     }
   }, [worktreePath, queryClient, refetch]);
 
-  if (!alive) {
+  if (!(alive && (canOpenThisMount.current || failureDetected))) {
     return null;
   }
 
@@ -193,16 +214,8 @@ export function HealthCheckDialog() {
     <Dialog open={dialogOpen}>
       <DialogContent
         className="max-w-md!"
-        onEscapeKeyDown={(e) => {
-          if (!allRequiredPassed) {
-            e.preventDefault();
-          }
-        }}
-        onInteractOutside={(e) => {
-          if (!allRequiredPassed) {
-            e.preventDefault();
-          }
-        }}
+        onEscapeKeyDown={() => handleContinue()}
+        onInteractOutside={() => handleContinue()}
         showCloseButton={false}
       >
         <DialogHeader>
@@ -246,7 +259,7 @@ export function HealthCheckDialog() {
               />
             </div>
 
-            <DialogFooter className="gap-2 sm:gap-0">
+            <DialogFooter className="gap-2">
               <Button
                 className="gap-1.5"
                 disabled={isFetching}
@@ -259,11 +272,7 @@ export function HealthCheckDialog() {
                 />
                 Re-check
               </Button>
-              <Button
-                disabled={!allRequiredPassed}
-                onClick={handleContinue}
-                size="sm"
-              >
+              <Button onClick={handleContinue} size="sm">
                 Continue
               </Button>
             </DialogFooter>
