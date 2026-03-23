@@ -10,6 +10,7 @@ import {
 } from "@/lib/engineer/learnings";
 import { migrateLegacyChatHistory } from "@/lib/engineer/migrate-chat-history";
 import { expandHome, loadReposConfig } from "@/lib/engineer/repos";
+import { getShellPathSync } from "@/lib/engineer/shell-path";
 import {
   type ContentBlock,
   createStreamState,
@@ -289,7 +290,7 @@ function handleClaude(
           cwd: homedir(),
           env: {
             ...process.env,
-            PATH: `${process.env.PATH}:/opt/homebrew/bin:/usr/local/bin`,
+            PATH: getShellPathSync(),
           },
           stdio: ["pipe", "pipe", "pipe"],
         });

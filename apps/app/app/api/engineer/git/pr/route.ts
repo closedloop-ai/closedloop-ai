@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { type NextRequest, NextResponse } from "next/server";
+import { getShellPathSync } from "@/lib/engineer/shell-path";
 
 const execFileAsync = promisify(execFile);
 
@@ -122,7 +123,7 @@ export async function POST(request: NextRequest) {
           cwd: expandedPath,
           env: {
             ...process.env,
-            PATH: `${process.env.PATH}:/opt/homebrew/bin:/usr/local/bin`,
+            PATH: getShellPathSync(),
           },
         }
       );
@@ -134,7 +135,7 @@ export async function POST(request: NextRequest) {
         cwd: expandedPath,
         env: {
           ...process.env,
-          PATH: `${process.env.PATH}:/opt/homebrew/bin:/usr/local/bin`,
+          PATH: getShellPathSync(),
         },
       });
 
@@ -155,7 +156,7 @@ export async function POST(request: NextRequest) {
         cwd: expandedPath,
         env: {
           ...process.env,
-          PATH: `${process.env.PATH}:/opt/homebrew/bin:/usr/local/bin`,
+          PATH: getShellPathSync(),
         },
       });
 
@@ -180,7 +181,7 @@ export async function POST(request: NextRequest) {
           cwd: expandedPath,
           env: {
             ...process.env,
-            PATH: `${process.env.PATH}:/opt/homebrew/bin:/usr/local/bin`,
+            PATH: getShellPathSync(),
           },
         }
       );
@@ -205,7 +206,7 @@ export async function POST(request: NextRequest) {
               cwd: expandedPath,
               env: {
                 ...process.env,
-                PATH: `${process.env.PATH}:/opt/homebrew/bin:/usr/local/bin`,
+                PATH: getShellPathSync(),
               },
             }
           );

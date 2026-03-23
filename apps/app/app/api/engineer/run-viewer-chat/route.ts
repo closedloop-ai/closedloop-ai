@@ -14,6 +14,7 @@ import {
   WEB_ONLY_TOOLS,
 } from "@/lib/engineer/allowed-tools";
 import { migrateLegacyChatHistory } from "@/lib/engineer/migrate-chat-history";
+import { getShellPathSync } from "@/lib/engineer/shell-path";
 import {
   type ContentBlock,
   createStreamState,
@@ -304,7 +305,7 @@ function spawnClaude(
           cwd: hasRunDir ? runDir : homedir(),
           env: {
             ...process.env,
-            PATH: `${process.env.PATH}:/opt/homebrew/bin:/usr/local/bin`,
+            PATH: getShellPathSync(),
           },
           stdio: ["pipe", "pipe", "pipe"],
         });

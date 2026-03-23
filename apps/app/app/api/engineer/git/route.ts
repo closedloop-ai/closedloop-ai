@@ -4,6 +4,7 @@ import { type NextRequest, NextResponse } from "next/server";
 import simpleGit, { type SimpleGit, type StatusResult } from "simple-git";
 import { withMcpTools } from "@/lib/engineer/allowed-tools";
 import { isRepoAllowed } from "@/lib/engineer/repos";
+import { getShellPathSync } from "@/lib/engineer/shell-path";
 
 /**
  * API route to perform git operations
@@ -514,7 +515,7 @@ Do NOT run git rebase --continue. Just resolve the files and stage them.`;
         cwd,
         env: {
           ...process.env,
-          PATH: `${process.env.PATH}:/opt/homebrew/bin:/usr/local/bin`,
+          PATH: getShellPathSync(),
         },
         stdio: ["ignore", "pipe", "pipe"],
       }

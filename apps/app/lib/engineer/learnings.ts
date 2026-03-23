@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { getShellPathSync } from "@/lib/engineer/shell-path";
 import { withMcpTools } from "./allowed-tools";
 import { parseToon } from "./toon-parser";
 
@@ -260,7 +261,7 @@ Be selective — only capture things that would help agents do better in the fut
         env: {
           ...process.env,
           CLOSEDLOOP_WORKDIR: symphonyWorkDir,
-          PATH: `${process.env.PATH}:/opt/homebrew/bin:/usr/local/bin`,
+          PATH: getShellPathSync(),
         },
         stdio: ["pipe", "ignore", "ignore"],
         detached: true,

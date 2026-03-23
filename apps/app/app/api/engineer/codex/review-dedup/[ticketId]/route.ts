@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import type { NextRequest } from "next/server";
 import { extractClaudeText } from "@/lib/engineer/claude-stream-utils";
 import { isRepoAllowed } from "@/lib/engineer/repos";
+import { getShellPathSync } from "@/lib/engineer/shell-path";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -117,7 +118,7 @@ function runHaikuClassification(prompt: string): Promise<string> {
         stdio: ["pipe", "pipe", "pipe"],
         env: {
           ...process.env,
-          PATH: `${process.env.PATH}:/opt/homebrew/bin:/usr/local/bin`,
+          PATH: getShellPathSync(),
         },
       }
     );

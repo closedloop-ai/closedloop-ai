@@ -30,6 +30,7 @@ import {
   getWorktreeParentDir,
   isRepoAllowed,
 } from "@/lib/engineer/repos";
+import { getShellPathSync } from "@/lib/engineer/shell-path";
 import { ensureWorktree } from "@/lib/engineer/worktree";
 
 export const dynamic = "force-dynamic";
@@ -189,7 +190,7 @@ function spawnClaudeReview(cwd: string, model: string): ChildProcess {
       stdio: ["pipe", "pipe", "pipe"],
       env: {
         ...process.env,
-        PATH: `${process.env.PATH}:/opt/homebrew/bin:/usr/local/bin`,
+        PATH: getShellPathSync(),
       },
     }
   );

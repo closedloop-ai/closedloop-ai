@@ -25,6 +25,7 @@ import {
   isRepoAllowed,
 } from "@/lib/engineer/repos";
 import { upsertSession } from "@/lib/engineer/sessions";
+import { getShellPathSync } from "@/lib/engineer/shell-path";
 import { addWorktree, fetchOrigin } from "@/lib/engineer/worktree";
 
 /**
@@ -662,8 +663,7 @@ function spawnSymphony(
     env: {
       ...process.env,
       CLOSEDLOOP_WORKDIR: claudeWorkDir,
-      // Ensure PATH includes common tool locations
-      PATH: `${process.env.PATH}:/opt/homebrew/bin:/usr/local/bin`,
+      PATH: getShellPathSync(),
     },
   });
 

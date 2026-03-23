@@ -16,6 +16,7 @@ import {
   getSelfLearningScriptPath,
   getWorktreesWithPendingLearnings,
 } from "@/lib/engineer/repos";
+import { getShellPathSync } from "@/lib/engineer/shell-path";
 
 const STATUS_DIR = join(homedir(), ".closedloop-ai", "learnings");
 const STATUS_PATH = join(STATUS_DIR, "batch-processing-status.json");
@@ -189,7 +190,7 @@ export function POST() {
       stdio: ["ignore", logFd, logFd],
       env: {
         ...process.env,
-        PATH: `${process.env.PATH}:/opt/homebrew/bin:/usr/local/bin`,
+        PATH: getShellPathSync(),
       },
     });
 

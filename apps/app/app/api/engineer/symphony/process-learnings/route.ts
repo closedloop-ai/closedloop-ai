@@ -14,6 +14,7 @@ import {
   getSelfLearningScriptPath,
   getWorktreeParentDir,
 } from "@/lib/engineer/repos";
+import { getShellPathSync } from "@/lib/engineer/shell-path";
 
 /**
  * GET /api/symphony/process-learnings?ticketId=...&repo=...
@@ -156,7 +157,7 @@ export async function POST(request: NextRequest) {
       env: {
         ...process.env,
         CLOSEDLOOP_WORKDIR: claudeWorkDir,
-        PATH: `${process.env.PATH}:/opt/homebrew/bin:/usr/local/bin`,
+        PATH: getShellPathSync(),
       },
     });
 
@@ -264,7 +265,7 @@ function spawnWaitingWrapper(
       env: {
         ...process.env,
         CLOSEDLOOP_WORKDIR: claudeWorkDir,
-        PATH: `${process.env.PATH}:/opt/homebrew/bin:/usr/local/bin`,
+        PATH: getShellPathSync(),
       },
     });
 

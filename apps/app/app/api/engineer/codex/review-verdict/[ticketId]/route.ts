@@ -8,6 +8,7 @@ import {
   getWorktreeParentDir,
   isRepoAllowed,
 } from "@/lib/engineer/repos";
+import { getShellPathSync } from "@/lib/engineer/shell-path";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 120;
@@ -217,7 +218,7 @@ function runClaudeVerdict(
         stdio: ["pipe", "pipe", "pipe"],
         env: {
           ...process.env,
-          PATH: `${process.env.PATH}:/opt/homebrew/bin:/usr/local/bin`,
+          PATH: getShellPathSync(),
         },
       }
     );

@@ -8,6 +8,7 @@ import {
   getWorktreeParentDir,
   isRepoAllowed,
 } from "@/lib/engineer/repos";
+import { getShellPathSync } from "@/lib/engineer/shell-path";
 
 const COMMIT_JSON_REGEX = /\{[\s\S]*"title"[\s\S]*"description"[\s\S]*\}/;
 
@@ -118,7 +119,7 @@ IMPORTANT: Do NOT include any references to AI, Claude, Opus, Sonnet, Haiku, Ant
       cwd: worktreeDir,
       env: {
         ...process.env,
-        PATH: `${process.env.PATH}:/opt/homebrew/bin:/usr/local/bin`,
+        PATH: getShellPathSync(),
       },
       stdio: ["ignore", "pipe", "pipe"],
     });

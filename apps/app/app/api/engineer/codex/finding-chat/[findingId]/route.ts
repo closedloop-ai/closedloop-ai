@@ -9,6 +9,7 @@ import {
   triggerAsyncLearningExtraction,
 } from "@/lib/engineer/learnings";
 import { expandHome, getWorktreeParentDir } from "@/lib/engineer/repos";
+import { getShellPathSync } from "@/lib/engineer/shell-path";
 import {
   type ContentBlock,
   createStreamState,
@@ -380,7 +381,7 @@ export async function POST(
           env: {
             ...process.env,
             CLOSEDLOOP_WORKDIR: paths.claudeWorkDir,
-            PATH: `${process.env.PATH}:/opt/homebrew/bin:/usr/local/bin`,
+            PATH: getShellPathSync(),
           },
           stdio: ["pipe", "pipe", "pipe"],
         });

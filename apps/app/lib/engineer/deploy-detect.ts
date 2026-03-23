@@ -1,6 +1,7 @@
 import { execSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { getShellPathSync } from "@/lib/engineer/shell-path";
 import type { DeploymentConfig } from "@/types/repos";
 
 /**
@@ -125,7 +126,7 @@ Return ONLY valid JSON with these fields:
         encoding: "utf-8",
         env: {
           ...process.env,
-          PATH: `${process.env.PATH}:/opt/homebrew/bin:/usr/local/bin`,
+          PATH: getShellPathSync(),
         },
       }
     );

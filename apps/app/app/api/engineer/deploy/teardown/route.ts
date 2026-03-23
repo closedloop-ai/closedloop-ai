@@ -1,6 +1,7 @@
 import { execSync } from "node:child_process";
 import { type NextRequest, NextResponse } from "next/server";
 import { expandHome, loadReposConfig } from "@/lib/engineer/repos";
+import { getShellPathSync } from "@/lib/engineer/shell-path";
 
 /**
  * API route to tear down a local dev server
@@ -108,7 +109,7 @@ function runTeardownCommand(command: string, worktreePath: string): boolean {
       stdio: "pipe",
       env: {
         ...process.env,
-        PATH: `${process.env.PATH}:/opt/homebrew/bin:/usr/local/bin`,
+        PATH: getShellPathSync(),
       },
     });
     return true;

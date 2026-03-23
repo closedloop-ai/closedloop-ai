@@ -6,6 +6,7 @@ import {
   getSymphonyScriptPath,
   loadReposConfig,
 } from "@/lib/engineer/repos";
+import { getShellPath } from "@/lib/engineer/shell-path";
 
 const execFileAsync = promisify(execFile);
 
@@ -26,9 +27,13 @@ type HealthCheckResponse = {
   allRequiredPassed: boolean;
 };
 
-/** Run a command with a 3-second timeout, returning stdout or throwing */
+/** Run a command with a 3-second timeout using the user's full shell PATH */
 async function runCommand(cmd: string, args: string[]): Promise<string> {
-  const { stdout } = await execFileAsync(cmd, args, { timeout: 3000 });
+  const shellPath = await getShellPath();
+  const { stdout } = await execFileAsync(cmd, args, {
+    timeout: 3000,
+    env: { ...process.env, PATH: shellPath },
+  });
   return stdout.trim();
 }
 

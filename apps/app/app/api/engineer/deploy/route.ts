@@ -9,6 +9,7 @@ import {
   loadReposConfig,
   saveReposConfig,
 } from "@/lib/engineer/repos";
+import { getShellPathSync } from "@/lib/engineer/shell-path";
 import { copyEnvLocalFiles } from "@/lib/engineer/worktree";
 
 /**
@@ -79,7 +80,7 @@ export async function POST(request: NextRequest) {
 
     // Pass minimal env vars - let the framework read .env files itself
     const spawnEnv: NodeJS.ProcessEnv = {
-      PATH: `${process.env.PATH}:/opt/homebrew/bin:/usr/local/bin`,
+      PATH: getShellPathSync(),
       HOME: process.env.HOME,
       USER: process.env.USER,
       SHELL: process.env.SHELL ?? "/bin/zsh",
