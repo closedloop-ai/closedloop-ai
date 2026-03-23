@@ -2,7 +2,7 @@
  * Unit tests for resolveLoopContext in run-loop-helpers.ts.
  *
  * Covers the targetRepo and targetBranch fallback chains added in this session:
- *   body.repo → source → artifact → projectSettings.defaultRepository
+ *   body.repo → artifact → source → projectSettings.defaultRepository
  *
  * Also verifies contextRefs construction, workstream resolution, and
  * parentLoopId lookup gating on handler.requiresParent.
@@ -136,7 +136,7 @@ describe("resolveLoopContext — targetRepo fallback chain", () => {
     expect(result.targetRepo).toBe("body/repo");
   });
 
-  it("falls back to source.targetRepo when body.repo.fullName is absent", async () => {
+  it("prefers artifact.targetRepo over source.targetRepo", async () => {
     const artifact = buildArtifact({ targetRepo: "artifact/repo" });
     mockArtifactsService.findOrCreateWorkstream.mockResolvedValue({
       workstream: buildWorkstream(),
@@ -152,14 +152,14 @@ describe("resolveLoopContext — targetRepo fallback chain", () => {
       "artifact-1"
     );
 
-    expect(result.targetRepo).toBe("source/repo");
+    expect(result.targetRepo).toBe("artifact/repo");
   });
 
-  it("falls back to artifact.targetRepo when source has no targetRepo", async () => {
-    const artifact = buildArtifact({ targetRepo: "artifact/repo" });
+  it("falls back to source.targetRepo when artifact has no targetRepo", async () => {
+    const artifact = buildArtifact({ targetRepo: null });
     mockArtifactsService.findOrCreateWorkstream.mockResolvedValue({
       workstream: buildWorkstream(),
-      source: buildSource(), // no targetRepo
+      source: buildSource({ targetRepo: "source/repo" }),
     });
 
     const result = await resolveLoopContext(
@@ -171,7 +171,7 @@ describe("resolveLoopContext — targetRepo fallback chain", () => {
       "artifact-1"
     );
 
-    expect(result.targetRepo).toBe("artifact/repo");
+    expect(result.targetRepo).toBe("source/repo");
   });
 
   it("falls back to projectSettings.defaultRepository.repoFullName when source and artifact have no targetRepo", async () => {
@@ -250,7 +250,7 @@ describe("resolveLoopContext — targetBranch fallback chain", () => {
     expect(result.targetBranch).toBe("body-branch");
   });
 
-  it("falls back to source.targetBranch when body.repo.branch is absent", async () => {
+  it("prefers artifact.targetBranch over source.targetBranch", async () => {
     const artifact = buildArtifact({ targetBranch: "artifact-branch" });
     mockArtifactsService.findOrCreateWorkstream.mockResolvedValue({
       workstream: buildWorkstream(),
@@ -266,14 +266,14 @@ describe("resolveLoopContext — targetBranch fallback chain", () => {
       "artifact-1"
     );
 
-    expect(result.targetBranch).toBe("source-branch");
+    expect(result.targetBranch).toBe("artifact-branch");
   });
 
-  it("falls back to artifact.targetBranch when source has no targetBranch", async () => {
-    const artifact = buildArtifact({ targetBranch: "artifact-branch" });
+  it("falls back to source.targetBranch when artifact has no targetBranch", async () => {
+    const artifact = buildArtifact({ targetBranch: null });
     mockArtifactsService.findOrCreateWorkstream.mockResolvedValue({
       workstream: buildWorkstream(),
-      source: buildSource(), // no targetBranch
+      source: buildSource({ targetBranch: "source-branch" }),
     });
 
     const result = await resolveLoopContext(
@@ -285,7 +285,7 @@ describe("resolveLoopContext — targetBranch fallback chain", () => {
       "artifact-1"
     );
 
-    expect(result.targetBranch).toBe("artifact-branch");
+    expect(result.targetBranch).toBe("source-branch");
   });
 
   it("falls back to projectSettings.defaultRepository.branch when source and artifact have no targetBranch", async () => {
