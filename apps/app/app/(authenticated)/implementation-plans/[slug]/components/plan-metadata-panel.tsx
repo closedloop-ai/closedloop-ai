@@ -12,7 +12,6 @@ import type { JudgeFeedbackItem } from "@repo/api/src/types/evaluation";
 import type { PreviewDeploymentInfo } from "@repo/api/src/types/external-link-utils";
 import { Label } from "@repo/design-system/components/ui/label";
 import type { User } from "@repo/design-system/components/ui/user-select-popover";
-import { ExternalLinkIcon } from "lucide-react";
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import { ArtifactVersionInfo } from "@/components/artifact-editor/artifact-version-info";
@@ -251,7 +250,7 @@ export function PlanMetadataPanel({
   );
 }
 
-/** Renders loop or GitHub Actions generation info in the metadata sidebar. */
+/** Renders loop generation info in the metadata sidebar. */
 function GenerationSection({
   generationStatus,
 }: {
@@ -278,23 +277,6 @@ function GenerationSection({
             View loop details
           </Link>
         </div>
-      </MetadataSection>
-    );
-  }
-
-  if (generationStatus?.htmlUrl) {
-    return (
-      <MetadataSection separator>
-        <Label className="text-muted-foreground text-xs">Generation</Label>
-        <a
-          className="flex items-center gap-1 text-primary text-sm hover:underline"
-          href={generationStatus.htmlUrl}
-          rel="noopener noreferrer"
-          target="_blank"
-        >
-          View GitHub Workflow
-          <ExternalLinkIcon className="h-3 w-3" />
-        </a>
       </MetadataSection>
     );
   }

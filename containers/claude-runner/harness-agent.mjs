@@ -158,7 +158,12 @@ function validateConfig() {
 
   // targetRepo is only required for commands that operate on a repository.
   // chat/explore can run prompt-only without a repo.
-  const repoCommands = new Set(["PLAN", "EXECUTE", "REQUEST_CHANGES", "GENERATE_PRD"]);
+  const repoCommands = new Set([
+    "PLAN",
+    "EXECUTE",
+    "REQUEST_CHANGES",
+    "GENERATE_PRD",
+  ]);
   if (repoCommands.has(config.command)) {
     requiredEnv.push("targetRepo");
   }
@@ -207,8 +212,16 @@ function validateSecrets() {
 
   // Repo commands need a GitHub token for clone/push operations.
   // EVALUATE_PRD with a targetRepo also needs a GitHub token to fetch repo context.
-  const repoCommands = new Set(["PLAN", "EXECUTE", "REQUEST_CHANGES", "GENERATE_PRD"]);
-  if (repoCommands.has(config.command) || (config.command === "EVALUATE_PRD" && config.targetRepo)) {
+  const repoCommands = new Set([
+    "PLAN",
+    "EXECUTE",
+    "REQUEST_CHANGES",
+    "GENERATE_PRD",
+  ]);
+  if (
+    repoCommands.has(config.command) ||
+    (config.command === "EVALUATE_PRD" && config.targetRepo)
+  ) {
     requiredSecrets.push("githubToken");
   }
 
@@ -1938,7 +1951,6 @@ function buildRunLoopArgs(runLoopPath, workDir, prdPath) {
   return { cmd: "bash", args };
 }
 
-
 function buildClaudeDirectArgs(workDir, symphonyWD) {
   const args = [];
 
@@ -2880,8 +2892,11 @@ async function main() {
 // ---------------------------------------------------------------------------
 export {
   buildClaudeDirectArgs,
-  buildCommand, config, ERROR_CODES,
-  HarnessError, validateConfig,
+  buildCommand,
+  config,
+  ERROR_CODES,
+  HarnessError,
+  validateConfig,
   validatePreRunInputs,
   validateSecrets,
 };

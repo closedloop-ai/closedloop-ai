@@ -9,13 +9,13 @@
 import type { JsonObject } from "@repo/api/src/types/common";
 import type { CreateLoopResponse } from "@repo/api/src/types/loop";
 import { log } from "@repo/observability/log";
-import { validateComputeTarget } from "@/app/artifacts/[id]/run-loop/compute-target-validation";
 import {
   COMMAND_MAP,
   resolveLoopContext,
 } from "@/app/artifacts/[id]/run-loop/run-loop-helpers";
 import type { StartPlanLoopFromLocalResult } from "@/app/artifacts/service";
 import { loopsService } from "@/app/loops/service";
+import { resolveComputeTarget } from "./compute-target-resolver";
 import { launchLoop } from "./loop-orchestrator";
 import { getDefaultPrompt } from "./prompts";
 
@@ -26,6 +26,8 @@ export type LaunchPlanLoopResult =
       error:
         | "compute_target_not_found"
         | "compute_target_offline"
+        | "no_online_targets"
+        | "multiple_targets"
         | "launch_failed";
     };
 
@@ -39,13 +41,13 @@ export type LaunchPlanLoopOptions = {
   organizationId: string;
   userId: string;
   artifactId: string;
-  computeTargetId: string;
+  computeTargetId?: string;
   repoOverride?: { fullName: string; branch: string };
   metadata?: JsonObject;
 };
 
 /**
- * Validate compute target, resolve loop context, create a PLAN loop record,
+ * Resolve compute target, resolve loop context, create a PLAN loop record,
  * and dispatch it via launchLoop(). Returns a result object so callers can
  * convert failures to appropriate HTTP responses without catching exceptions.
  *
@@ -65,11 +67,29 @@ export async function launchPlanLoop(
     metadata,
   } = opts;
 
-  const ctResult = await validateComputeTarget(computeTargetId, organizationId);
-  if (!ctResult.valid) {
-    if (ctResult.reason === "not_found") {
-      return { ok: false, error: "compute_target_not_found" };
-    }
+  const ctResult = await resolveComputeTarget(
+    organizationId,
+    userId,
+    computeTargetId ?? undefined
+  );
+
+  let resolvedComputeTargetId: string | undefined;
+
+  if (ctResult.reason === "resolved") {
+    resolvedComputeTargetId = ctResult.target.id;
+  } else if (ctResult.reason === "cloud_resolved") {
+    resolvedComputeTargetId = undefined;
+  } else if (ctResult.reason === "no_online_targets") {
+    return { ok: false, error: "no_online_targets" };
+  } else if (ctResult.reason === "multiple_targets") {
+    return { ok: false, error: "multiple_targets" };
+  } else if (
+    ctResult.reason === "hint_not_found" ||
+    ctResult.reason === "no_targets"
+  ) {
+    return { ok: false, error: "compute_target_not_found" };
+  } else {
+    // hint_offline
     return { ok: false, error: "compute_target_offline" };
   }
 
@@ -90,7 +110,7 @@ export async function launchPlanLoop(
     command,
     artifactId,
     workstreamId: workstream?.id,
-    computeTargetId,
+    computeTargetId: resolvedComputeTargetId,
     prompt,
     repo: targetRepo
       ? { fullName: targetRepo, branch: targetBranch }

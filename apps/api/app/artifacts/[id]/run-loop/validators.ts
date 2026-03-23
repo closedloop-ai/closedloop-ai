@@ -9,6 +9,7 @@ export const runLoopSchema = z.object({
   prompt: z.string().optional(),
   repo: repoSchema.optional(),
   computeTargetId: z.uuid().optional(),
+  backendOverride: z.boolean().optional(),
 });
 
 export type RunLoopBody = z.infer<typeof runLoopSchema>;

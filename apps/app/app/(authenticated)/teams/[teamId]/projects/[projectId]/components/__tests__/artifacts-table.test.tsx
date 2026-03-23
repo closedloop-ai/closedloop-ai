@@ -139,9 +139,8 @@ vi.mock("@repo/design-system/components/ui/tooltip", () => ({
   ),
 }));
 
-const GENERATING_PLAN_REGEX = /Generating\.\.\. - View workflow/i;
-const EXECUTING_PLAN_REGEX =
-  /Executing plan and creating PR\.\.\. - View workflow/i;
+const GENERATING_PLAN_REGEX = /Generating\.\.\./i;
+const EXECUTING_PLAN_REGEX = /Executing plan and creating PR\.\.\./i;
 const SELECT_ALL_IN_DOCUMENTS_REGEX = /select all in documents/i;
 const SELECTED_REGEX = /selected/;
 
@@ -348,7 +347,7 @@ describe("ArtifactsTable - Generation Status Display", () => {
     ).not.toBeInTheDocument();
   });
 
-  test("renders clickable link when htmlUrl is provided", () => {
+  test("renders status text (not a link) when htmlUrl is provided but source is not loop", () => {
     const artifacts: ArtifactWithWorkstream[] = [
       createMockProjectArtifact({
         id: "artifact-1",
@@ -373,15 +372,10 @@ describe("ArtifactsTable - Generation Status Display", () => {
       />
     );
 
-    const link = screen.getByRole("link", {
-      name: GENERATING_PLAN_REGEX,
-    });
-    expect(link).toBeInTheDocument();
-    expect(link).toHaveAttribute(
-      "href",
-      "https://github.com/org/repo/actions/runs/456"
-    );
-    expect(link).toHaveAttribute("target", "_blank");
+    expect(screen.getByText(GENERATING_PLAN_REGEX)).toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: GENERATING_PLAN_REGEX })
+    ).not.toBeInTheDocument();
   });
 
   test("status transitions from PENDING to SUCCESS", () => {
@@ -448,7 +442,7 @@ describe("ArtifactsTable - Generation Status Display", () => {
     expect(container?.querySelector(".text-green-600")).toBeInTheDocument();
   });
 
-  test("screen reader announcements via aria-label", () => {
+  test("renders loop source status as an internal link with aria-label", () => {
     const artifacts: ArtifactWithWorkstream[] = [
       createMockProjectArtifact({
         id: "artifact-1",
@@ -457,10 +451,12 @@ describe("ArtifactsTable - Generation Status Display", () => {
         generationStatus: {
           status: "RUNNING",
           command: "execute",
-          htmlUrl: "https://github.com/org/repo/actions/runs/999",
+          htmlUrl: null,
           startedAt: new Date(),
           completedAt: null,
           correlationId: "test-id",
+          source: "loop",
+          loopId: "loop-123",
         },
       }),
     ];

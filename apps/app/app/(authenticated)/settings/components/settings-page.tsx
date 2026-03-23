@@ -196,7 +196,7 @@ export function SettingsPage({
 
         <TabsContent className="mt-3 space-y-6" value="integrations">
           <FeatureFlagged flag="the-one-flag">
-            <CloudComputeModeCard isAdmin={isAdmin} />
+            <CloudComputeModeCard />
           </FeatureFlagged>
           <LocalComputeTargetsCard />
           <AnthropicApiKeyCard isAdmin={isAdmin} />

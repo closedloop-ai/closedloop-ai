@@ -1,11 +1,16 @@
 import type { ApiResult, JsonObject } from "@repo/api/src/types/common";
-import type { ComputeTargetConflictBody } from "@repo/api/src/types/compute-target";
+import type {
+  BackendMismatchBody,
+  ComputeTargetConflictBody,
+} from "@repo/api/src/types/compute-target";
 import {
   type CreateLoopRequest,
   RunLoopCommand,
 } from "@repo/api/src/types/loop";
 import { getProjectSettings } from "@repo/api/src/types/project";
+import { withDb } from "@repo/database";
 import { NextResponse } from "next/server";
+import { computeTargetsService } from "@/app/compute-targets/service";
 import { loopsService } from "@/app/loops/service";
 import {
   type ResolveComputeTargetResult,
@@ -84,12 +89,16 @@ export async function resolveLoopContext(
   }
 
   let parentLoopId: string | undefined;
+  let parentLoopComputeTargetId: string | null | undefined;
   if (handler?.requiresParent) {
     const parentLoop = await loopsService.findLatestCompletedForArtifact(
       artifactId,
       organizationId
     );
     parentLoopId = parentLoop?.id;
+    parentLoopComputeTargetId = parentLoop
+      ? (parentLoop.computeTargetId ?? null)
+      : undefined;
   }
 
   return {
@@ -98,6 +107,7 @@ export async function resolveLoopContext(
     targetBranch,
     contextRefs,
     parentLoopId,
+    parentLoopComputeTargetId,
     source,
   };
 }
@@ -109,16 +119,33 @@ export type ComputeTargetRouteResult =
 /**
  * Resolve the compute target for a run-loop request, returning either the
  * resolved target ID (possibly undefined for ECS fallback) or an error response.
+ *
+ * When no computeTargetIdHint is provided, reads user.preferredComputeMode
+ * and passes it to resolveComputeTarget so CLOUD-preferring users bypass
+ * local target resolution and get the cloud_resolved path immediately.
  */
 export async function resolveComputeTargetForRoute(
   organizationId: string,
   userId: string,
   computeTargetIdHint?: string
 ): Promise<ComputeTargetRouteResult> {
+  let preferredComputeMode: string | null | undefined;
+
+  if (!computeTargetIdHint) {
+    const user = await withDb((db) =>
+      db.user.findUnique({
+        where: { id: userId },
+        select: { preferredComputeMode: true },
+      })
+    );
+    preferredComputeMode = user?.preferredComputeMode ?? undefined;
+  }
+
   const ctResult = await resolveComputeTarget(
     organizationId,
     userId,
-    computeTargetIdHint
+    computeTargetIdHint,
+    preferredComputeMode
   );
 
   return mapComputeTargetResult(ctResult);
@@ -164,6 +191,8 @@ function mapComputeTargetResult(
         ),
       };
     }
+    case "cloud_resolved":
+      return { computeTargetId: undefined };
     default: {
       const _exhaustive: never = ctResult;
       return {
@@ -174,4 +203,72 @@ function mapComputeTargetResult(
       };
     }
   }
+}
+
+/**
+ * Check whether the resolved compute target differs from the backend used by
+ * the artifact's last completed loop. Returns a 409 NextResponse when a
+ * mismatch is detected, or null when the caller may proceed.
+ *
+ * Only applies to state-dependent commands (handler.requiresParent). Callers
+ * that have confirmed the switch is intentional should pass backendOverride
+ * so the check is skipped entirely.
+ */
+export async function checkBackendMismatch(
+  artifactId: string,
+  organizationId: string,
+  resolvedComputeTargetId: string | undefined,
+  latestCompletedLoopComputeTargetId?: string | null
+): Promise<NextResponse<{
+  success: false;
+  error: string;
+  data: BackendMismatchBody;
+}> | null> {
+  let previousTargetId: string | null;
+  let hasPriorLoop: boolean;
+  if (latestCompletedLoopComputeTargetId !== undefined) {
+    // Caller already resolved the parent loop: null = cloud, string = local target
+    previousTargetId = latestCompletedLoopComputeTargetId ?? null;
+    hasPriorLoop = true;
+  } else {
+    // Fallback: query the DB for the latest completed loop
+    const latestLoop = await loopsService.findLatestCompletedForArtifact(
+      artifactId,
+      organizationId
+    );
+    hasPriorLoop = latestLoop != null;
+    previousTargetId = latestLoop?.computeTargetId ?? null;
+  }
+
+  // No prior loops at all — nothing to mismatch against
+  if (!hasPriorLoop) {
+    return null;
+  }
+
+  const currentTargetId = resolvedComputeTargetId ?? null;
+
+  if (previousTargetId === currentTargetId) {
+    return null;
+  }
+
+  let originalComputeTargetName: string | null = null;
+  if (previousTargetId) {
+    const previousTarget =
+      await computeTargetsService.findById(previousTargetId);
+    originalComputeTargetName = previousTarget?.machineName ?? null;
+  }
+
+  const mismatchBody: BackendMismatchBody = {
+    error: "backend_mismatch",
+    message:
+      "The compute target has changed since the last completed loop. Pass backendOverride: true to proceed.",
+    originalComputeTargetId: previousTargetId,
+    originalComputeTargetName,
+    preferredComputeTargetId: currentTargetId,
+    artifactId,
+  };
+  return NextResponse.json(
+    { success: false, error: mismatchBody.message, data: mismatchBody },
+    { status: 409 }
+  );
 }

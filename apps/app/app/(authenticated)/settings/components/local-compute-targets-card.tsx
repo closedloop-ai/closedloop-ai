@@ -1,5 +1,6 @@
 "use client";
 
+import { useUser } from "@repo/auth/client";
 import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
@@ -131,11 +132,12 @@ function renderStatusIcon({
 }
 
 export function LocalComputeTargetsCard() {
+  const { user } = useUser();
   const [systemCheckOpen, setSystemCheckOpen] = useState(false);
   const { data: targets = [], isLoading } = useComputeTargets({
     ...COMPUTE_TARGETS_QUERY_OPTIONS,
   });
-  const deleteTarget = useDeleteComputeTarget();
+  const deleteTarget = useDeleteComputeTarget(user?.id ?? "");
   const { isLoading: systemCheckLoading, shouldRunSystemCheck } =
     useSystemCheckEligibility();
   const {

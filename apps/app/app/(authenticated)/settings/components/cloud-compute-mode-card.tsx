@@ -1,5 +1,7 @@
 "use client";
 
+import { ComputePreference } from "@repo/api/src/types/compute-target";
+import { useUser } from "@repo/auth/client";
 import {
   Card,
   CardContent,
@@ -8,48 +10,38 @@ import {
   CardTitle,
 } from "@repo/design-system/components/ui/card";
 import { Label } from "@repo/design-system/components/ui/label";
-import { toast } from "@repo/design-system/components/ui/sonner";
-import { Switch } from "@repo/design-system/components/ui/switch";
-import { ContainerIcon, GithubIcon, Loader2Icon } from "lucide-react";
 import {
-  useComputeMode,
-  useSetComputeMode,
-} from "@/hooks/queries/use-compute-mode";
+  RadioGroup,
+  RadioGroupItem,
+} from "@repo/design-system/components/ui/radio-group";
+import { CloudIcon, ContainerIcon, Loader2Icon } from "lucide-react";
+import {
+  useComputePreference,
+  useSetComputePreference,
+} from "@/hooks/queries/use-compute-preference";
 
-type CloudComputeModeCardProperties = {
-  isAdmin: boolean;
-};
+export function CloudComputeModeCard() {
+  const { user } = useUser();
+  const userId = user?.id ?? "";
+  const { data, isLoading } = useComputePreference(userId);
+  const setPreference = useSetComputePreference(userId);
 
-export function CloudComputeModeCard({
-  isAdmin,
-}: CloudComputeModeCardProperties) {
-  const { data, isLoading } = useComputeMode();
-  const setComputeMode = useSetComputeMode();
+  const currentMode = data?.preferredComputeMode ?? ComputePreference.Cloud;
 
-  const useLoops = data?.computeMode !== "GITHUB_ACTIONS";
-
-  const handleToggle = async (checked: boolean) => {
-    try {
-      await setComputeMode.mutateAsync(checked ? "LOOPS" : "GITHUB_ACTIONS");
-      toast.success(
-        checked ? "Switched to Container Mode" : "Switched to GitHub Actions"
-      );
-    } catch {
-      toast.error("Failed to update compute mode");
-    }
-  };
+  function handleChange(value: string): void {
+    setPreference.mutate(value as ComputePreference);
+  }
 
   return (
     <Card>
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
           <ContainerIcon className="h-5 w-5" />
-          Cloud Compute Mode
+          Compute Mode
         </CardTitle>
         <CardDescription>
-          Choose how AI agent jobs are executed in the cloud. Container mode is
-          the default, which leverages ClosedLoop infrastructure. GitHub Actions
-          is an alternative, which requires custom setup in your repositories.
+          Choose where AI agent jobs run. Cloud uses ClosedLoop infrastructure.
+          Local routes jobs to your registered desktop agent.
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -58,38 +50,49 @@ export function CloudComputeModeCard({
             <Loader2Icon className="h-6 w-6 animate-spin text-muted-foreground" />
           </div>
         ) : (
-          <>
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                {useLoops ? (
-                  <ContainerIcon className="h-5 w-5 text-blue-600" />
-                ) : (
-                  <GithubIcon className="h-5 w-5" />
-                )}
+          <RadioGroup
+            className="gap-3"
+            disabled={setPreference.isPending}
+            onValueChange={handleChange}
+            value={currentMode}
+          >
+            <div className="flex items-center gap-3">
+              <RadioGroupItem
+                id="compute-cloud"
+                value={ComputePreference.Cloud}
+              />
+              <Label
+                className="flex cursor-pointer items-center gap-2"
+                htmlFor="compute-cloud"
+              >
+                <CloudIcon className="h-4 w-4 text-blue-600" />
                 <div>
-                  <Label className="font-medium" htmlFor="compute-mode">
-                    {useLoops ? "Container Mode (Loops)" : "GitHub Actions"}
-                  </Label>
+                  <span className="font-medium">Cloud</span>
                   <p className="text-muted-foreground text-xs">
-                    {useLoops
-                      ? "Runs in dedicated ECS containers with real-time streaming"
-                      : "Runs via GitHub Actions workflows"}
+                    Runs in dedicated ECS containers with real-time streaming
                   </p>
                 </div>
-              </div>
-              <Switch
-                checked={useLoops}
-                disabled={!isAdmin || setComputeMode.isPending}
-                id="compute-mode"
-                onCheckedChange={handleToggle}
-              />
+              </Label>
             </div>
-            {!isAdmin && (
-              <p className="mt-2 text-muted-foreground text-xs">
-                Only organization admins and owners can change the compute mode.
-              </p>
-            )}
-          </>
+            <div className="flex items-center gap-3">
+              <RadioGroupItem
+                id="compute-local"
+                value={ComputePreference.Local}
+              />
+              <Label
+                className="flex cursor-pointer items-center gap-2"
+                htmlFor="compute-local"
+              >
+                <ContainerIcon className="h-4 w-4" />
+                <div>
+                  <span className="font-medium">Local</span>
+                  <p className="text-muted-foreground text-xs">
+                    Runs on your registered desktop agent
+                  </p>
+                </div>
+              </Label>
+            </div>
+          </RadioGroup>
         )}
       </CardContent>
     </Card>

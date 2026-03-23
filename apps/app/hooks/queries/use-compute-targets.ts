@@ -7,6 +7,7 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
+import { computePreferenceKeys } from "@/hooks/queries/use-compute-preference";
 import { useApiClient } from "@/hooks/use-api-client";
 
 type ComputeTargetWire = Omit<
@@ -48,7 +49,7 @@ export function useComputeTargets(
   });
 }
 
-export function useDeleteComputeTarget() {
+export function useDeleteComputeTarget(userId: string) {
   const queryClient = useQueryClient();
   const apiClient = useApiClient();
 
@@ -57,6 +58,9 @@ export function useDeleteComputeTarget() {
       apiClient.delete<{ deleted: true }>(`/compute-targets/${id}`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: computeTargetKeys.list() });
+      queryClient.invalidateQueries({
+        queryKey: computePreferenceKeys.detail(userId),
+      });
     },
   });
 }

@@ -16,6 +16,7 @@ import { EditorToolbarRow } from "@/components/artifact-editor/editor-toolbar-ro
 import { MetadataPanel } from "@/components/artifact-editor/metadata-panel";
 import { SaveIndicator } from "@/components/artifact-editor/save-indicator";
 import { StatusMetadataSection } from "@/components/artifact-editor/status-metadata-section";
+import { BackendMismatchModal } from "@/components/backend-mismatch-modal";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { LoopDispatchTargetSelector } from "@/components/engineer/LoopDispatchTargetSelector";
 import { GenerationStatusBanner } from "@/components/generation-status-banner";
@@ -168,8 +169,7 @@ export function PlanEditor({
     actions.isDeleting ||
     planActions.isApproving ||
     planActions.isRegenerating ||
-    planActions.isExecuting ||
-    planActions.isComputeModeLoading;
+    planActions.isExecuting;
 
   // Create version display component for header
   const versionDisplay = (
@@ -398,6 +398,18 @@ export function PlanEditor({
       <FloatingTargetPicker
         multiTargetState={planActions.multiTargetState}
         onSelect={planActions.selectTarget}
+      />
+
+      <BackendMismatchModal
+        mismatchData={planActions.backendMismatchState}
+        onConfirmOriginal={planActions.confirmOriginalBackend}
+        onConfirmPreferred={planActions.confirmPreferredBackend}
+        onOpenChange={(open) => {
+          if (!open) {
+            planActions.dismissBackendMismatch();
+          }
+        }}
+        open={!!planActions.backendMismatchState}
       />
     </div>
   );

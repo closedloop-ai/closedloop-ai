@@ -3,8 +3,7 @@ import { render, screen, within } from "@testing-library/react";
 import { describe, expect, test } from "vitest";
 import { GenerationStatusIndicator } from "../generation-status-indicator";
 
-const EXECUTING_PLAN_REGEX =
-  /Executing plan and creating PR\.\.\. - View workflow/i;
+const EXECUTING_PLAN_REGEX = /Executing plan and creating PR\.\.\./i;
 
 describe("GenerationStatusIndicator", () => {
   test("renders nothing when generationStatus is undefined", () => {
@@ -145,7 +144,7 @@ describe("GenerationStatusIndicator", () => {
     expect(screen.getByText("Generation failed")).toBeInTheDocument();
   });
 
-  test("creates clickable link when htmlUrl is provided", () => {
+  test("renders status text (not a link) when htmlUrl is provided but source is not loop", () => {
     const generationStatus: GenerationStatus = {
       status: "RUNNING",
       command: "execute",
@@ -158,14 +157,30 @@ describe("GenerationStatusIndicator", () => {
       <GenerationStatusIndicator generationStatus={generationStatus} />
     );
 
+    expect(container.querySelector("a")).not.toBeInTheDocument();
+    expect(
+      within(container).getByText("Executing plan and creating PR...")
+    ).toBeInTheDocument();
+  });
+
+  test("creates clickable internal link when source is loop with loopId", () => {
+    const generationStatus: GenerationStatus = {
+      status: "RUNNING",
+      command: "execute",
+      htmlUrl: null,
+      startedAt: new Date(),
+      completedAt: null,
+      correlationId: "test-123",
+      source: "loop",
+      loopId: "loop-xyz",
+    };
+    const { container } = render(
+      <GenerationStatusIndicator generationStatus={generationStatus} />
+    );
+
     const link = container.querySelector("a");
     expect(link).toBeInTheDocument();
-    expect(link).toHaveAttribute(
-      "href",
-      "https://github.com/test/workflow/123"
-    );
-    expect(link).toHaveAttribute("target", "_blank");
-    expect(link).toHaveAttribute("rel", "noopener noreferrer");
+    expect(link).toHaveAttribute("href", "/loops/loop-xyz");
     const ariaLabel = link?.getAttribute("aria-label");
     expect(ariaLabel).toMatch(EXECUTING_PLAN_REGEX);
   });

@@ -265,6 +265,11 @@ enum ThreadStatus {
   RESOLVED
 }
 
+enum PreferredComputeMode {
+  LOCAL
+  CLOUD
+}
+
 // =============================================================================
 // CORE ENTITIES
 // =============================================================================
@@ -288,7 +293,7 @@ model Organization {
   claudeApiKeyEncrypted String?   @map("claude_api_key_encrypted")
   claudeApiKeyLastFour  String?   @map("claude_api_key_last_four")
   claudeApiKeySetAt     DateTime? @map("claude_api_key_set_at")
-  settings              Json     @default("{}")
+  settings              Json     @default("{}") // settings.computeMode deprecated -- use User.preferredComputeMode instead
   publicDashboardToken  String?  @unique @map("public_dashboard_token")
   createdAt             DateTime @default(now()) @map("created_at")
   updatedAt       DateTime @updatedAt @map("updated_at")
@@ -332,6 +337,7 @@ model User {
   claudeApiKeyEncrypted String?   @map("claude_api_key_encrypted")
   claudeApiKeyLastFour  String?   @map("claude_api_key_last_four")
   claudeApiKeySetAt     DateTime? @map("claude_api_key_set_at")
+  preferredComputeMode  PreferredComputeMode? @map("preferred_compute_mode")
   createdAt       DateTime     @default(now()) @map("created_at")
   updatedAt       DateTime     @updatedAt @map("updated_at")
 

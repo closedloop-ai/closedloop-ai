@@ -5,12 +5,7 @@ import {
   isActiveGenerationStatus,
 } from "@repo/api/src/types/artifact";
 import { cn } from "@repo/design-system/lib/utils";
-import {
-  CheckCircle,
-  ExternalLinkIcon,
-  LoaderIcon,
-  XCircleIcon,
-} from "lucide-react";
+import { CheckCircle, LoaderIcon, XCircleIcon } from "lucide-react";
 import Link from "next/link";
 import { getStatusMessage } from "@/lib/generation-status-utils";
 
@@ -27,13 +22,11 @@ export function GenerationStatusIndicator({
     return null;
   }
 
-  const { status, command, htmlUrl, initiatedBy } = generationStatus;
+  const { status, command, initiatedBy } = generationStatus;
   const message = getStatusMessage(status, command, initiatedBy);
   const isActive = isActiveGenerationStatus(status);
   const isSuccess = status === "SUCCESS";
   const isFailure = status === "FAILURE";
-  const isLoop = generationStatus.source === "loop";
-
   // Pick icon based on status
   let icon: React.ReactNode;
   let colorClass: string;
@@ -52,7 +45,7 @@ export function GenerationStatusIndicator({
   }
 
   // Loop source: use internal Next.js Link to /loops/:id
-  if (isLoop && generationStatus.loopId) {
+  if (generationStatus.source === "loop" && generationStatus.loopId) {
     return (
       <Link
         aria-label={`${message} - View loop`}
@@ -66,27 +59,6 @@ export function GenerationStatusIndicator({
         {icon}
         <span>{message}</span>
       </Link>
-    );
-  }
-
-  // GitHub Actions source: use external <a> link
-  if (htmlUrl) {
-    return (
-      <a
-        aria-label={`${message} - View workflow`}
-        className={cn(
-          "inline-flex items-center gap-1 text-sm hover:underline",
-          colorClass,
-          className
-        )}
-        href={htmlUrl}
-        rel="noopener noreferrer"
-        target="_blank"
-      >
-        {icon}
-        <span>{message}</span>
-        <ExternalLinkIcon className="h-3 w-3" />
-      </a>
     );
   }
 

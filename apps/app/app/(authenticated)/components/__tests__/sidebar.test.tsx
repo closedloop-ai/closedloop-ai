@@ -98,6 +98,12 @@ vi.mock("../engineer-badge", () => ({
   EngineerBadge: () => null,
 }));
 
+vi.mock("@/components/compute-target-popover", () => ({
+  ComputeTargetPopover: () => (
+    <div data-testid="compute-target-popover">Compute Target</div>
+  ),
+}));
+
 // Mock organization object matching Clerk's OrganizationResource shape
 const createMockOrganization = (overrides?: Record<string, unknown>) => ({
   id: "org-123",

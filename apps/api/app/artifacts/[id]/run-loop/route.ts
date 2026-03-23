@@ -1,5 +1,8 @@
 import { success } from "@repo/api/src/types/common";
-import type { ComputeTargetConflictBody } from "@repo/api/src/types/compute-target";
+import type {
+  BackendMismatchBody,
+  ComputeTargetConflictBody,
+} from "@repo/api/src/types/compute-target";
 import { EntityType } from "@repo/api/src/types/entity-link";
 import {
   type CreateLoopResponse,
@@ -25,12 +28,16 @@ import {
 import { artifactsService } from "../../service";
 import {
   COMMAND_MAP,
+  checkBackendMismatch,
   resolveComputeTargetForRoute,
   resolveLoopContext,
 } from "./run-loop-helpers";
 import { runLoopSchema } from "./validators";
 
-type RunLoopResponse = CreateLoopResponse | ComputeTargetConflictBody;
+type RunLoopResponse =
+  | CreateLoopResponse
+  | ComputeTargetConflictBody
+  | BackendMismatchBody;
 
 export const POST = withAuth<RunLoopResponse, "/artifacts/[id]/run-loop">(
   async ({ user }, request, params) => {
@@ -81,6 +88,7 @@ export const POST = withAuth<RunLoopResponse, "/artifacts/[id]/run-loop">(
         targetBranch,
         contextRefs,
         parentLoopId,
+        parentLoopComputeTargetId,
         source,
       } = await resolveLoopContext(
         artifact,
@@ -106,6 +114,23 @@ export const POST = withAuth<RunLoopResponse, "/artifacts/[id]/run-loop">(
         return ctRouteResult.errorResponse;
       }
       const { computeTargetId: resolvedComputeTargetId } = ctRouteResult;
+
+      // Guard: detect backend mismatch for state-dependent commands.
+      // When the resolved compute target differs from the one used by the
+      // artifact's last completed loop, resuming would corrupt incremental
+      // state. Callers may override with backendOverride: true when they
+      // have confirmed the switch is intentional.
+      if (handler?.requiresParent && !body.backendOverride) {
+        const mismatch = await checkBackendMismatch(
+          artifactId,
+          user.organizationId,
+          resolvedComputeTargetId,
+          parentLoopComputeTargetId
+        );
+        if (mismatch) {
+          return mismatch;
+        }
+      }
 
       const command = COMMAND_MAP[body.command];
       const prompt = body.prompt || getDefaultPrompt(command);
