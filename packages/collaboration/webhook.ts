@@ -13,6 +13,7 @@ export type {
   CommentReactionRemoved,
   ThreadCreatedEvent,
   ThreadData,
+  ThreadDeletedEvent,
   ThreadMarkedAsResolvedEvent,
   ThreadMarkedAsUnresolvedEvent,
   WebhookEvent,

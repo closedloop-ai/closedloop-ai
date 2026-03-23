@@ -11,7 +11,11 @@ export const commentsService = {
    * Upsert a thread from Liveblocks webhook data.
    * Uses @@unique([organizationId, externalId]) for idempotent upserts.
    */
-  async upsertThreadFromLiveblocks(organizationId: string, thread: ThreadData) {
+  async upsertThreadFromLiveblocks(
+    organizationId: string,
+    thread: ThreadData,
+    createdBy?: string
+  ) {
     const entity = await findEntityForRoom(organizationId, thread.roomId);
     const metadata = thread.metadata ?? Prisma.JsonNull;
 
@@ -34,6 +38,7 @@ export const commentsService = {
           resolvedAt: thread.resolved ? thread.updatedAt : null,
           metadata,
           createdAt: thread.createdAt,
+          createdById: createdBy,
         },
         update: {
           roomId: thread.roomId,
@@ -42,6 +47,7 @@ export const commentsService = {
           status: thread.resolved ? ThreadStatus.Resolved : ThreadStatus.Open,
           resolvedAt: thread.resolved ? thread.updatedAt : null,
           metadata,
+          createdById: createdBy,
         },
       })
     );
@@ -187,6 +193,20 @@ export const commentsService = {
         data: {
           status: ThreadStatus.Resolved,
           resolvedAt,
+        },
+      })
+    );
+  },
+
+  /**
+   * Hard-delete a thread and all its comments (cascade).
+   */
+  deleteThread(organizationId: string, threadExternalId: string) {
+    return withDb((db) =>
+      db.commentThread.deleteMany({
+        where: {
+          organizationId,
+          externalId: threadExternalId,
         },
       })
     );

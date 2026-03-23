@@ -157,7 +157,7 @@ export async function ingestExecutionArtifacts(
 
   const prTitle =
     executionResult.pr_title ||
-    `Symphony: ${executionResult.branch_name || `PR #${prNumber}`}`;
+    `ClosedLoop: ${executionResult.branch_name || `PR #${prNumber}`}`;
   const baseBranch =
     executionResult.base_branch || executionResult.base_ref || "main";
 

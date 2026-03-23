@@ -12,6 +12,7 @@ import {
   handleCommentReactionAdded,
   handleCommentReactionRemoved,
   handleThreadCreated,
+  handleThreadDeleted,
   handleThreadResolved,
   handleThreadUnresolved,
 } from "./handlers";
@@ -65,6 +66,9 @@ export async function POST(request: Request): Promise<Response> {
         break;
       case "commentReactionRemoved":
         await handleCommentReactionRemoved(event);
+        break;
+      case "threadDeleted":
+        await handleThreadDeleted(event);
         break;
       case "threadMarkedAsResolved":
         await handleThreadResolved(event);

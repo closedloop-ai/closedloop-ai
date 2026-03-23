@@ -6,6 +6,7 @@ import type {
   CommentReactionAdded,
   CommentReactionRemoved,
   ThreadCreatedEvent,
+  ThreadDeletedEvent,
   ThreadMarkedAsResolvedEvent,
   ThreadMarkedAsUnresolvedEvent,
 } from "@repo/collaboration/webhook";
@@ -16,7 +17,7 @@ import { commentsService } from "../../comments/service";
 export async function handleThreadCreated(
   event: ThreadCreatedEvent
 ): Promise<void> {
-  const { roomId, threadId } = event.data;
+  const { roomId, threadId, createdBy } = event.data;
   const organizationId = getOrganizationId(roomId);
   if (!organizationId) {
     log.info("[webhook/liveblocks] Skipping non-artifact room", { roomId });
@@ -26,7 +27,11 @@ export async function handleThreadCreated(
   const client = requireApiClient();
   const thread = await client.getThread({ roomId, threadId });
 
-  await commentsService.upsertThreadFromLiveblocks(organizationId, thread);
+  await commentsService.upsertThreadFromLiveblocks(
+    organizationId,
+    thread,
+    createdBy
+  );
 
   for (const comment of thread.comments) {
     await commentsService.upsertCommentFromLiveblocks(
@@ -139,6 +144,23 @@ export async function handleCommentReactionRemoved(
     threadId,
     commentId,
   });
+}
+
+export async function handleThreadDeleted(
+  event: ThreadDeletedEvent
+): Promise<void> {
+  const { roomId, threadId } = event.data;
+  const organizationId = getOrganizationId(roomId);
+  if (!organizationId) {
+    log.info("[webhook/liveblocks] Skipping non-artifact room", { roomId });
+    return;
+  }
+
+  const { count } = await commentsService.deleteThread(
+    organizationId,
+    threadId
+  );
+  log.info("[webhook/liveblocks] Deleted thread", { threadId, count });
 }
 
 export async function handleThreadResolved(
