@@ -28,7 +28,7 @@ describe("authenticate", () => {
     // Setup default mock implementation
     mockPrepareSession.mockReturnValue({
       allow: mockAllow,
-      FULL_ACCESS: "full-access-constant",
+      FULL_ACCESS: ["room:write", "comments:write"],
       authorize: mockAuthorize,
     });
 
@@ -85,10 +85,12 @@ describe("authenticate", () => {
         },
       });
 
-      expect(mockAllow).toHaveBeenCalledWith(
-        "org-456:artifact:*",
-        "full-access-constant"
-      );
+      expect(mockAllow).toHaveBeenCalledWith("org-456:artifact:*", [
+        "room:write",
+        "comments:write",
+        "room:read",
+        "comments:read",
+      ]);
     });
   });
 
