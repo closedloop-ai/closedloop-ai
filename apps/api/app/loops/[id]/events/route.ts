@@ -66,6 +66,12 @@ function normalizeLoopEvent(body: unknown): LoopEvent {
 }
 
 function isIgnoredForTerminalLoop(status: string, eventType: string): boolean {
+  // A "completed" event from the runner always gets through — the runner is
+  // ground truth for whether work finished. The status machine allows
+  // TIMED_OUT/FAILED → COMPLETED so the transition will succeed.
+  if (eventType === "completed") {
+    return false;
+  }
   return TERMINAL_STATUSES.has(status) && !TERMINAL_EVENTS.has(eventType);
 }
 

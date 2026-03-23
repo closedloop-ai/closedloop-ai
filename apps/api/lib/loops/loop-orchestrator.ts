@@ -784,9 +784,27 @@ async function ingestLoopArtifacts(
   if (loop.computeTargetId && loop.uploadedArtifacts) {
     await handler.uploadAndIngest(loop.uploadedArtifacts, loop, organizationId);
   } else if (loop.computeTargetId) {
-    throw new Error(
-      "Desktop loop completed but uploadedArtifacts not found — cannot ingest"
-    );
+    // uploadedArtifacts missing — re-read in case the upload-artifacts request
+    // committed after our initial read.
+    const freshLoop = await loopsService.findById(loop.id, organizationId);
+    if (freshLoop?.uploadedArtifacts) {
+      log.info("[loop-orchestrator] uploadedArtifacts found on re-read", {
+        loopId: loop.id,
+      });
+      await handler.uploadAndIngest(
+        freshLoop.uploadedArtifacts,
+        freshLoop,
+        organizationId
+      );
+    } else {
+      log.error(
+        "[loop-orchestrator] Desktop loop completed but uploadedArtifacts not found — skipping ingestion",
+        {
+          loopId: loop.id,
+          loopStatus: loop.status,
+        }
+      );
+    }
   } else if (loop.s3StateKey) {
     await handler.downloadAndIngest(loop.s3StateKey, loop, organizationId);
   }
@@ -822,6 +840,16 @@ async function handleLoopCompleted(
     event as unknown as Record<string, unknown>
   );
 
+  // Log when the runner reports success but the loop was already marked terminal.
+  // The status machine allows TIMED_OUT/FAILED → COMPLETED because the runner
+  // is ground truth for whether work actually finished.
+  if (loop && loop.status !== "RUNNING" && loop.status !== "CLAIMED") {
+    log.info("[loop-orchestrator] Completed event overriding terminal status", {
+      loopId,
+      previousStatus: loop.status,
+    });
+  }
+
   // Ingest artifacts BEFORE marking the loop as COMPLETED.
   // If ingestion fails, the loop stays in its current status (e.g., RUNNING)
   // so the completed event can be replayed. Once a loop is COMPLETED the
@@ -830,9 +858,7 @@ async function handleLoopCompleted(
     await ingestLoopArtifacts(loop, organizationId);
   }
 
-  // Transition status after ingestion succeeds. If the loop is already
-  // terminal (e.g., timed out by cron), the transition throws and we avoid
-  // leaving an inconsistent timeline (terminal loop with a later completed event).
+  // Transition status after ingestion succeeds.
   await loopsService.updateStatus(loopId, organizationId, "COMPLETED", {
     completedAt: new Date(),
     tokensInput,
