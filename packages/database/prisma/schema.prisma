@@ -566,7 +566,7 @@ model Workstream {
   // Relations
   organization  Organization   @relation(fields: [organizationId], references: [id])
   project       Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  createdBy     User           @relation("WorkstreamCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  createdBy     User           @relation("WorkstreamCreatedBy", fields: [createdById], references: [id])
   assignee      User?          @relation("WorkstreamAssignee", fields: [assigneeId], references: [id])
   artifacts     Artifact[]
   issues        Issue[]
@@ -578,7 +578,6 @@ model Workstream {
   @@index([organizationId, projectId, state])
   @@index([organizationId, assigneeId])
   @@index([projectId])
-  @@index([createdById])
   @@map("workstreams")
 }
 
@@ -641,13 +640,11 @@ model Artifact {
 
   @@unique([organizationId, slug])
   @@unique([organizationId, templateForType])
+  @@index([organizationId, type])
   @@index([organizationId, workstreamId, type])
   @@index([organizationId, projectId, type])
   @@index([workstreamId])
   @@index([projectId])
-  @@index([assigneeId])
-  @@index([createdById])
-  @@index([approverId])
   @@map("artifacts")
 }
 

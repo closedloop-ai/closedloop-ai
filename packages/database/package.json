@@ -13,9 +13,9 @@
   },
   "dependencies": {
     "@aws-sdk/rds-signer": "^3.1003.0",
-    "@prisma/adapter-pg": "7.3.0",
-    "@prisma/client": "7.3.0",
-    "@prisma/client-runtime-utils": "7.3.0",
+    "@prisma/adapter-pg": "~7.5.0",
+    "@prisma/client": "~7.5.0",
+    "@prisma/client-runtime-utils": "~7.5.0",
     "@t3-oss/env-nextjs": "^0.13.10",
     "@vercel/functions": "^3.4.3",
     "pg": "^8.20.0",
@@ -25,10 +25,10 @@
   "devDependencies": {
     "@repo/typescript-config": "workspace:*",
     "@types/node": "^25.3.5",
-    "@types/pg": "^8.18.0",
+    "@types/pg": "8.11.11",
     "bufferutil": "^4.1.0",
     "dotenv": "^17.3.1",
-    "prisma": "7.3.0",
+    "prisma": "~7.5.0",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3"
   }

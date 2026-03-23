@@ -21,7 +21,7 @@
     "@aws-sdk/s3-request-presigner": "^3.987.0",
     "@liveblocks/node": "^3.14.0",
     "@paralleldrive/cuid2": "^2.3.1",
-    "@prisma/client": "^7.4.2",
+    "@prisma/client": "~7.5.0",
     "@repo/ai": "workspace:*",
     "@repo/analytics": "workspace:*",
     "@repo/api": "workspace:*",
