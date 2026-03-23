@@ -26,7 +26,7 @@ Commands below use `pnpm exec` to pass flags directly to Prisma. From repo root,
 - Generated client: `packages/database/generated/` (configured in `prisma.config.ts`)
 - `prisma generate` must run after any schema change to update TypeScript types
 - **Never hand-write migration SQL files** — always let `prisma migrate dev` generate them. Hand-written migrations miss Prisma's drift detection, FK cleanup, and standard formatting. First update the schema, then run the migrate command and let Prisma diff the schema against the database. Hand-written migration files cause schema drift.
-- **relationMode = "prisma"** — no DB-level FK constraints. Cascade deletes only through Prisma client. Direct SQL deletes can orphan rows.
+- **Foreign key mode** — DB-level FK constraints enforce referential integrity. Cascade deletes work both through Prisma client and direct SQL.
 
 ## Learned Patterns
 - **[mistake]**: Typecheck "Property does not exist" on Prisma fields: run `pnpm install` + `just db-generate`. Verify fields exist in schema first — generated client may be stale.

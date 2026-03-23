@@ -7,8 +7,7 @@ generator client {
 }
 
 datasource db {
-  provider     = "postgresql"
-  relationMode = "prisma"
+  provider = "postgresql"
 }
 
 // =============================================================================
@@ -433,7 +432,6 @@ model DesktopCommandEvent {
   command DesktopCommand @relation(fields: [commandId], references: [id], onDelete: Cascade)
 
   @@id([commandId, sequence])
-  @@index([commandId, createdAt])
   @@map("desktop_command_events")
 }
 
@@ -490,7 +488,6 @@ model Team {
   projects     ProjectTeam[]
 
   @@unique([organizationId, slug])
-  @@index([organizationId])
   @@map("teams")
 }
 
@@ -538,7 +535,6 @@ model FavoriteProject {
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
   @@unique([userId, projectId])
-  @@index([userId])
   @@index([projectId])
   @@map("favorite_projects")
 }
@@ -599,7 +595,6 @@ model WorkstreamEvent {
 
   @@index([workstreamId, type])
   @@index([workstreamId, createdAt])
-  @@index([type])
   @@map("workstream_events")
 }
 
@@ -648,7 +643,6 @@ model Artifact {
   @@unique([organizationId, templateForType])
   @@index([organizationId, workstreamId, type])
   @@index([organizationId, projectId, type])
-  @@index([organizationId, type, templateForType])
   @@index([workstreamId])
   @@index([projectId])
   @@index([assigneeId])
@@ -714,7 +708,6 @@ model JudgeScore {
 
   @@unique([evaluationId, caseId, metricName])
   @@index([promptId])
-  @@index([metricName, createdAt])
   @@map("judge_scores")
 }
 
@@ -737,7 +730,6 @@ model JudgeHumanScore {
 
   @@unique([judgeScoreId, userId, organizationId])
   @@index([evaluationId])
-  @@index([organizationId])
   @@index([organizationId, userId])
   @@map("judge_human_scores")
 }
@@ -764,7 +756,7 @@ model ArtifactRating {
   artifactId      String   @map("artifact_id") @db.Uuid
   userId          String   @map("user_id") @db.Uuid
   organizationId  String   @map("organization_id") @db.Uuid
-  // Score validation (1-5) enforced at API layer via Zod schema. Prisma relationMode = "prisma" doesn't support DB check constraints.
+  // Score validation (1-5) enforced at API layer via Zod schema.
   score           Int
   comment         String?  @db.VarChar(500)
   artifactVersion Int      @map("artifact_version")
@@ -984,7 +976,6 @@ model Comment {
   @@unique([externalId])
   @@index([threadId, createdAt])
   @@index([authorId])
-  @@index([deletedAt])
   @@map("comments")
 }
 
@@ -1015,7 +1006,6 @@ model CommentReaction {
   comment Comment @relation(fields: [commentId], references: [id], onDelete: Cascade)
 
   @@unique([commentId, userId, emoji])
-  @@index([commentId])
   @@map("comment_reactions")
 }
 
@@ -1099,7 +1089,6 @@ model Loop {
   @@index([artifactId, command, artifactVersion])
   @@index([organizationId, status])
   @@index([organizationId, userId, createdAt])
-  @@index([artifactId])
   @@index([workstreamId])
   @@index([parentLoopId])
   @@index([computeTargetId])
@@ -1234,7 +1223,6 @@ model GitHubInstallation {
   organization Organization?                  @relation(fields: [organizationId], references: [id])
   repositories GitHubInstallationRepository[]
 
-  @@index([organizationId])
   @@index([status])
   @@index([accountId])
   @@map("github_installations")
@@ -1521,7 +1509,6 @@ model CustomField {
   values       CustomFieldValue[]
 
   @@unique([organizationId, name])
-  @@index([organizationId])
   @@map("custom_fields")
 }
 

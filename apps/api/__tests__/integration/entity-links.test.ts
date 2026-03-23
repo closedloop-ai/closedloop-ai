@@ -2,7 +2,6 @@ import { ArtifactType } from "@repo/api/src/types/artifact";
 import { EntityType, LinkType } from "@repo/api/src/types/entity-link";
 import { ExternalLinkType } from "@repo/api/src/types/external-link";
 import { keys } from "@repo/database/keys";
-import { v7 as uuidv7 } from "uuid";
 import { artifactsService } from "@/app/artifacts/service";
 import { entityLinksService } from "@/app/entity-links/service";
 import { externalLinksService } from "@/app/external-links/service";
@@ -374,7 +373,7 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
         const strategy = await createArtifact(
           testOrgId,
           testUser.id,
-          uuidv7(),
+          testProjectId,
           { type: ArtifactType.Prd, title: "Strategy" }
         );
 
@@ -458,7 +457,7 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
           type: ArtifactType.ImplementationPlan,
           title: "B",
         });
-        const c = await createArtifact(testOrgId, testUser.id, uuidv7(), {
+        const c = await createArtifact(testOrgId, testUser.id, testProjectId, {
           type: ArtifactType.ImplementationPlan,
           title: "C",
         });
