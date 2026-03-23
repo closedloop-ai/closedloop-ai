@@ -343,7 +343,7 @@ export const loopsService = {
       tokensOutput: number;
       tokensByModel: Record<string, { input: number; output: number }>;
       estimatedCost: number;
-      error: { code: string; message: string };
+      error: { code: string; message: string } | null;
       s3StateKey: string;
       prUrl: string;
       prNumber: number;

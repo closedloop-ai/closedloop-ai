@@ -797,6 +797,13 @@ async function ingestLoopArtifacts(
         organizationId
       );
     } else {
+      // Skip ingestion rather than throw. Throwing would leave the loop in
+      // TIMED_OUT/FAILED permanently with no recovery path — the runner has
+      // already exited and won't retry. Allowing the COMPLETED transition
+      // without artifacts is the lesser evil: the loop shows as completed
+      // (matching reality — the runner finished) even if the plan content
+      // wasn't ingested. The upload-artifacts endpoint no longer filters by
+      // status, so this path should only trigger if the upload itself failed.
       log.error(
         "[loop-orchestrator] Desktop loop completed but uploadedArtifacts not found — skipping ingestion",
         {
@@ -859,12 +866,17 @@ async function handleLoopCompleted(
   }
 
   // Transition status after ingestion succeeds.
+  // Clear stale error details when overriding a TIMED_OUT/FAILED status so the
+  // loop detail page doesn't render a failure banner on a successfully recovered loop.
+  const isOverridingFailure =
+    loop && (loop.status === "TIMED_OUT" || loop.status === "FAILED");
   await loopsService.updateStatus(loopId, organizationId, "COMPLETED", {
     completedAt: new Date(),
     tokensInput,
     tokensOutput,
     tokensByModel: tokensByModel ?? undefined,
     estimatedCost,
+    ...(isOverridingFailure ? { error: null } : {}),
     ...prSession,
   });
 
