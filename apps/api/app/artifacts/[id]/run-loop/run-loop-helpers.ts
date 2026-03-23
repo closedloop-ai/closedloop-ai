@@ -68,14 +68,14 @@ export async function resolveLoopContext(
 
   const targetRepo =
     body.repo?.fullName ??
-    source?.targetRepo ??
     artifact.targetRepo ??
+    source?.targetRepo ??
     projectSettings.defaultRepository?.repoFullName;
 
   const targetBranch =
     body.repo?.branch ??
-    source?.targetBranch ??
     artifact.targetBranch ??
+    source?.targetBranch ??
     projectSettings.defaultRepository?.branch ??
     "main";
 
