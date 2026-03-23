@@ -5,7 +5,7 @@ import { useIsEditorReady, useLiveblocksExtension } from "@repo/collaboration";
 import { cn } from "@repo/design-system/lib/utils";
 import { RichTextEditor } from "@repo/rich-text";
 import type { Editor } from "@tiptap/react";
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 
 type EditorContentProps = {
   /**
@@ -25,6 +25,12 @@ type EditorContentProps = {
    * The callback is only called when liveblocks is enabled (liveblocksRoomId is not null).
    */
   onEditorReady?: (editor: Editor | null) => void;
+  /**
+   * Fired when the editor content is fully loaded and ready to display.
+   * For Liveblocks: fires after Y.Doc sync completes.
+   * For non-Liveblocks: fires immediately on editor creation.
+   */
+  onContentReady?: () => void;
   /**
    * Placeholder text when editor is empty
    */
@@ -61,6 +67,7 @@ export function EditorContent({
   onChange,
   liveblocksRoomId,
   onEditorReady,
+  onContentReady,
   placeholder,
   readOnly,
   className,
@@ -86,6 +93,7 @@ export function EditorContent({
           contentResetValue={contentResetValue}
           externalToolbar={externalToolbar}
           onChange={onChange}
+          onEditorReady={onEditorReady}
           placeholder={placeholder}
           readOnly={readOnly}
           scrollMode={scrollMode}
@@ -103,6 +111,7 @@ export function EditorContent({
       contentResetValue={contentResetValue}
       externalToolbar={externalToolbar}
       onChange={onChange}
+      onContentReady={onContentReady}
       onEditorReady={onEditorReady}
       placeholder={placeholder}
       readOnly={readOnly}
@@ -125,6 +134,7 @@ function EditorContentWithLiveblocks({
   value,
   onChange,
   onEditorReady,
+  onContentReady,
   placeholder,
   readOnly,
   className,
@@ -136,6 +146,15 @@ function EditorContentWithLiveblocks({
   const liveblocksExtension = useLiveblocksExtension();
   const isEditorReady = useIsEditorReady();
   const room = useRoom();
+
+  // Signal content readiness when Liveblocks Y.Doc sync completes
+  const hasSignalledReady = useRef(false);
+  useEffect(() => {
+    if (isEditorReady && !hasSignalledReady.current) {
+      hasSignalledReady.current = true;
+      onContentReady?.();
+    }
+  }, [isEditorReady, onContentReady]);
 
   // We need a key we can use with the rich text editor below, to force a remount when
   // the room changes. I am not really sure why this is necessary, but without it, the

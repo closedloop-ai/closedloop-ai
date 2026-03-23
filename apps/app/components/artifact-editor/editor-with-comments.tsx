@@ -17,6 +17,7 @@ export type EditorWithCommentsProps = {
   contentResetValue?: string;
   liveblocksRoomId?: string | null;
   onEditorInstance?: (editor: Editor | null) => void;
+  onContentReady?: () => void;
   placeholder?: string;
   readOnly?: boolean;
   scrollMode?: "inner" | "outer";
@@ -30,6 +31,7 @@ export function EditorWithComments({
   contentResetValue,
   liveblocksRoomId,
   onEditorInstance,
+  onContentReady,
   placeholder,
   readOnly,
   scrollMode = "outer",
@@ -83,6 +85,7 @@ export function EditorWithComments({
                 liveblocksEnabled ? liveblocksRoomId : undefined
               }
               onChange={onChange}
+              onContentReady={onContentReady}
               onEditorReady={setEditor}
               placeholder={placeholder}
               readOnly={readOnly}
