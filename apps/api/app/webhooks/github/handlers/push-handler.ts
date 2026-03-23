@@ -42,7 +42,11 @@ export async function handlePush(event: PushEvent): Promise<Response> {
       };
 
   const lastPushedAt = repository.pushed_at
-    ? new Date(repository.pushed_at)
+    ? new Date(
+        typeof repository.pushed_at === "number"
+          ? repository.pushed_at * 1000
+          : repository.pushed_at
+      )
     : new Date();
 
   const { count } = await withDb((db) =>

@@ -258,6 +258,30 @@ describe("handlePush", () => {
         data: { lastPushedAt: new Date("2024-06-15T10:30:00Z") },
       });
     });
+
+    it("correctly handles numeric pushed_at (Unix seconds) from GitHub", async () => {
+      const event = createPushEvent({
+        repositoryId: 123,
+        repositoryFullName: "owner/repo",
+      });
+
+      // GitHub sends pushed_at as Unix seconds (number), not ISO string
+      (event.repository as any).pushed_at = 1718444200;
+
+      mockDb.gitHubInstallationRepository.updateMany.mockResolvedValue({
+        count: 1,
+      });
+
+      await handlePush(event);
+
+      const calledWith =
+        mockDb.gitHubInstallationRepository.updateMany.mock.calls[0][0].data
+          .lastPushedAt as Date;
+
+      // Must be in 2024, not 1970 (the bug was treating seconds as milliseconds)
+      expect(calledWith.getFullYear()).toBe(2024);
+      expect(calledWith).toEqual(new Date(1718444200 * 1000));
+    });
   });
 
   describe("unknown repository", () => {
