@@ -1,8 +1,4 @@
 import { success } from "@repo/api/src/types/common";
-import { createArtifactThread } from "@repo/collaboration/room-management";
-import { generateArtifactRoomId } from "@repo/collaboration/room-utils";
-import type { ThreadData } from "@repo/collaboration/webhook";
-import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
@@ -43,73 +39,23 @@ export const POST = withAnyAuth<
       return parseError;
     }
 
-    const roomId = generateArtifactRoomId(user.organizationId, artifact.slug);
-
-    let threadData: ThreadData;
-    try {
-      threadData = await createArtifactThread({
-        roomId,
-        userId: user.id,
-        bodyText: body.body,
-      });
-    } catch (liveblocksError) {
-      const message =
-        liveblocksError instanceof Error
-          ? liveblocksError.message
-          : String(liveblocksError);
-
-      if (message.includes("not configured")) {
-        return errorResponse(
-          "Liveblocks is not configured",
-          liveblocksError,
-          503
-        );
-      }
-
-      const status =
-        liveblocksError != null &&
-        typeof liveblocksError === "object" &&
-        "status" in liveblocksError &&
-        typeof liveblocksError.status === "number"
-          ? liveblocksError.status
-          : 503;
-
-      return errorResponse("Failed to create thread", liveblocksError, status);
-    }
-
-    const firstComment = threadData.comments[0];
-    if (!firstComment) {
-      return errorResponse(
-        "Thread created but returned no comment",
-        new Error("Empty comments array"),
-        503
-      );
-    }
-
-    try {
-      await commentsService.upsertThreadFromLiveblocks(
-        user.organizationId,
-        threadData
-      );
-      await commentsService.upsertCommentFromLiveblocks(
-        user.organizationId,
-        threadData.id,
-        firstComment
-      );
-    } catch (dbError) {
-      log.error("Best-effort DB sync failed after thread creation", {
-        error: dbError instanceof Error ? dbError.message : String(dbError),
-        threadId: threadData.id,
-      });
-    }
-
-    return NextResponse.json(
-      success({
-        commentId: firstComment.id,
-        threadId: threadData.id,
-      })
+    const result = await commentsService.createAndPersistArtifactThread(
+      user.organizationId,
+      artifact.slug,
+      user.id,
+      body.body
     );
+
+    return NextResponse.json(success(result));
   } catch (error) {
-    return errorResponse("Failed to create thread", error);
+    const status =
+      error != null &&
+      typeof error === "object" &&
+      "status" in error &&
+      typeof error.status === "number"
+        ? error.status
+        : 500;
+
+    return errorResponse("Failed to create thread", error, status);
   }
 });
