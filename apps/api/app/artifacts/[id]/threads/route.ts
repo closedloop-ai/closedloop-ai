@@ -66,14 +66,24 @@ export const POST = withAnyAuth<
         );
       }
 
-      if (
-        message.toLowerCase().includes("not found") ||
-        message.toLowerCase().includes("does not exist")
-      ) {
-        return errorResponse("Liveblocks room not found", liveblocksError, 404);
-      }
+      const status =
+        liveblocksError != null &&
+        typeof liveblocksError === "object" &&
+        "status" in liveblocksError &&
+        typeof liveblocksError.status === "number"
+          ? liveblocksError.status
+          : 503;
 
-      return errorResponse("Failed to create thread", liveblocksError, 503);
+      return errorResponse("Failed to create thread", liveblocksError, status);
+    }
+
+    const firstComment = threadData.comments[0];
+    if (!firstComment) {
+      return errorResponse(
+        "Thread created but returned no comment",
+        new Error("Empty comments array"),
+        503
+      );
     }
 
     try {
@@ -84,7 +94,7 @@ export const POST = withAnyAuth<
       await commentsService.upsertCommentFromLiveblocks(
         user.organizationId,
         threadData.id,
-        threadData.comments[0]
+        firstComment
       );
     } catch (dbError) {
       log.error("Best-effort DB sync failed after thread creation", {
@@ -95,7 +105,7 @@ export const POST = withAnyAuth<
 
     return NextResponse.json(
       success({
-        commentId: threadData.comments[0].id,
+        commentId: firstComment.id,
         threadId: threadData.id,
       })
     );

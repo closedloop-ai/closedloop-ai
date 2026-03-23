@@ -160,21 +160,35 @@ describe("POST /artifacts/:id/threads", () => {
     expect(json.success).toBe(false);
   });
 
-  it("returns 404 when Liveblocks throws a room-not-found error", async () => {
+  it("forwards Liveblocks error status code (e.g. 404 for missing room)", async () => {
     vi.mocked(resolveArtifactId).mockResolvedValue("artifact-uuid");
     vi.mocked(artifactsService.findById).mockResolvedValue({
       slug: "PRD-7",
     } as never);
     vi.mocked(generateArtifactRoomId).mockReturnValue("org-1:artifact:PRD-7");
-    vi.mocked(createArtifactThread).mockRejectedValue(
-      new Error("Room does not exist")
-    );
+    const lbError = Object.assign(new Error("Room not found"), { status: 404 });
+    vi.mocked(createArtifactThread).mockRejectedValue(lbError);
 
     const response = await POST(makeRequest({ body: "Hello" }), makeParams());
     const json = await response.json();
 
     expect(response.status).toBe(404);
     expect(json.success).toBe(false);
+  });
+
+  it("defaults to 503 when Liveblocks error has no status code", async () => {
+    vi.mocked(resolveArtifactId).mockResolvedValue("artifact-uuid");
+    vi.mocked(artifactsService.findById).mockResolvedValue({
+      slug: "PRD-7",
+    } as never);
+    vi.mocked(generateArtifactRoomId).mockReturnValue("org-1:artifact:PRD-7");
+    vi.mocked(createArtifactThread).mockRejectedValue(
+      new Error("Unknown SDK error")
+    );
+
+    const response = await POST(makeRequest({ body: "Hello" }), makeParams());
+
+    expect(response.status).toBe(503);
   });
 
   it("ignores userId in request body and always uses authenticated user.id", async () => {
