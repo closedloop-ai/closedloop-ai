@@ -2,6 +2,7 @@ import { success } from "@repo/api/src/types/common";
 import { createArtifactThread } from "@repo/collaboration/room-management";
 import { generateArtifactRoomId } from "@repo/collaboration/room-utils";
 import type { ThreadData } from "@repo/collaboration/webhook";
+import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
@@ -75,15 +76,22 @@ export const POST = withAnyAuth<
       return errorResponse("Failed to create thread", liveblocksError, 503);
     }
 
-    await commentsService.upsertThreadFromLiveblocks(
-      user.organizationId,
-      threadData
-    );
-    await commentsService.upsertCommentFromLiveblocks(
-      user.organizationId,
-      threadData.id,
-      threadData.comments[0]
-    );
+    try {
+      await commentsService.upsertThreadFromLiveblocks(
+        user.organizationId,
+        threadData
+      );
+      await commentsService.upsertCommentFromLiveblocks(
+        user.organizationId,
+        threadData.id,
+        threadData.comments[0]
+      );
+    } catch (dbError) {
+      log.error("Best-effort DB sync failed after thread creation", {
+        error: dbError instanceof Error ? dbError.message : String(dbError),
+        threadId: threadData.id,
+      });
+    }
 
     return NextResponse.json(
       success({

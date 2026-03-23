@@ -75,9 +75,11 @@ function Threads({
   mode: CommentsMode;
 }>) {
   const { threads } = useThreads();
-  const hasThreads = threads.some((thread) => !thread.resolved);
 
   const anchoredThreadIds = getAnchoredThreadIds(editor);
+  const hasAnchoredThreads = threads.some(
+    (thread) => !thread.resolved && anchoredThreadIds.has(thread.id)
+  );
   const unanchoredThreads = threads.filter(
     (thread) => !(thread.resolved || anchoredThreadIds.has(thread.id))
   );
@@ -85,7 +87,7 @@ function Threads({
   if (mode === "anchored") {
     return (
       <>
-        {hasThreads ? (
+        {hasAnchoredThreads ? (
           <div className="pr-4 pl-2">
             <AnchoredThreads
               className="lb-collab-anchored-threads"
@@ -106,7 +108,7 @@ function Threads({
         editor={editor}
         threads={threads}
       />
-      <UnanchoredThreads threads={unanchoredThreads} />
+      <UnanchoredThreads floating threads={unanchoredThreads} />
     </>
   );
 }
@@ -114,14 +116,19 @@ function Threads({
 type ThreadDataItem = ReturnType<typeof useThreads>["threads"][number];
 
 function UnanchoredThreads({
+  floating,
   threads,
-}: Readonly<{ threads: ThreadDataItem[] }>) {
+}: Readonly<{ floating?: boolean; threads: ThreadDataItem[] }>) {
   if (threads.length === 0) {
     return null;
   }
 
+  const className = floating
+    ? "lb-collab-unanchored-threads lb-collab-unanchored-threads--floating"
+    : "lb-collab-unanchored-threads";
+
   return (
-    <div className="lb-collab-unanchored-threads">
+    <div className={className}>
       {threads.map((thread) => (
         <Thread key={thread.id} thread={thread} />
       ))}
