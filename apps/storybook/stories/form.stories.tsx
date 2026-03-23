@@ -55,7 +55,7 @@ const ProfileForm = (args: Story["args"]) => {
               <FormLabel>Username</FormLabel>
               <FormControl>
                 <input
-                  className="w-full rounded-md border border-input bg-background px-3 py-2"
+                  className="w-full rounded-md border border-input-border bg-background px-3 py-2"
                   placeholder="username"
                   {...field}
                 />

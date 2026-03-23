@@ -21,7 +21,7 @@ export default function LoopsPage() {
             </p>
           </div>
           <Link
-            className="inline-flex h-9 items-center justify-center rounded-md border border-input bg-background px-4 font-medium text-sm hover:bg-accent hover:text-accent-foreground"
+            className="inline-flex h-9 items-center justify-center rounded-md border border-input-border bg-background px-4 font-medium text-sm hover:bg-accent hover:text-accent-foreground"
             href="/loops/usage"
           >
             Usage
