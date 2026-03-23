@@ -77,7 +77,10 @@ describe("POST /artifacts/:id/threads", () => {
       { threadId: "th_123", commentId: "cm_456" }
     );
 
-    const response = await POST(makeRequest({ body: "Hello" }), makeParams());
+    const response = await POST(
+      makeRequest({ body: "Hello", anchorText: "Summary" }),
+      makeParams()
+    );
     const json = await response.json();
 
     expect(response.status).toBe(200);
@@ -90,14 +93,18 @@ describe("POST /artifacts/:id/threads", () => {
       "org-1",
       "PRD-7",
       "user-1",
-      "Hello"
+      "Hello",
+      "Summary"
     );
   });
 
   it("returns 404 when resolveArtifactId returns null", async () => {
     vi.mocked(resolveArtifactId).mockResolvedValue(null);
 
-    const response = await POST(makeRequest({ body: "Hello" }), makeParams());
+    const response = await POST(
+      makeRequest({ body: "Hello", anchorText: "Summary" }),
+      makeParams()
+    );
     const json = await response.json();
 
     expect(response.status).toBe(404);
@@ -114,7 +121,10 @@ describe("POST /artifacts/:id/threads", () => {
       lbError
     );
 
-    const response = await POST(makeRequest({ body: "Hello" }), makeParams());
+    const response = await POST(
+      makeRequest({ body: "Hello", anchorText: "Summary" }),
+      makeParams()
+    );
     const json = await response.json();
 
     expect(response.status).toBe(404);
@@ -130,7 +140,10 @@ describe("POST /artifacts/:id/threads", () => {
       new Error("Unknown error")
     );
 
-    const response = await POST(makeRequest({ body: "Hello" }), makeParams());
+    const response = await POST(
+      makeRequest({ body: "Hello", anchorText: "Summary" }),
+      makeParams()
+    );
 
     expect(response.status).toBe(500);
   });
@@ -145,7 +158,11 @@ describe("POST /artifacts/:id/threads", () => {
     );
 
     await POST(
-      makeRequest({ body: "Hello", userId: "attacker-id" }),
+      makeRequest({
+        body: "Hello",
+        anchorText: "Summary",
+        userId: "attacker-id",
+      }),
       makeParams()
     );
 
@@ -153,7 +170,41 @@ describe("POST /artifacts/:id/threads", () => {
       "org-1",
       "PRD-7",
       "user-1",
-      "Hello"
+      "Hello",
+      "Summary"
     );
+  });
+
+  it("returns 400 when anchorText is missing from request body", async () => {
+    vi.mocked(resolveArtifactId).mockResolvedValue("artifact-uuid");
+    vi.mocked(artifactsService.findById).mockResolvedValue({
+      slug: "PRD-7",
+    } as never);
+
+    const response = await POST(makeRequest({ body: "Hello" }), makeParams());
+    const json = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(json.success).toBe(false);
+  });
+
+  it("returns 400 when service throws anchor-not-found error", async () => {
+    vi.mocked(resolveArtifactId).mockResolvedValue("artifact-uuid");
+    vi.mocked(artifactsService.findById).mockResolvedValue({
+      slug: "PRD-7",
+    } as never);
+    vi.mocked(commentsService.createAndPersistArtifactThread).mockRejectedValue(
+      {
+        message: "Anchor text not found in document",
+        status: 400,
+      }
+    );
+
+    const response = await POST(
+      makeRequest({ body: "Hello", anchorText: "nonexistent" }),
+      makeParams()
+    );
+
+    expect(response.status).toBe(400);
   });
 });

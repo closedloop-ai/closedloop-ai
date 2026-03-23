@@ -228,7 +228,8 @@ async function createAndPersistArtifactThread(
   organizationId: string,
   artifactSlug: string,
   userId: string,
-  bodyText: string
+  bodyText: string,
+  anchorText: string
 ): Promise<{ threadId: string; commentId: string }> {
   const roomId = generateArtifactRoomId(organizationId, artifactSlug);
 
@@ -236,6 +237,7 @@ async function createAndPersistArtifactThread(
     roomId,
     userId,
     bodyText,
+    anchorText,
   });
 
   const firstComment = threadData.comments[0];

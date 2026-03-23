@@ -16,13 +16,19 @@ export function registerCreateArtifactThread(
           .string()
           .describe("ID or slug of the artifact (e.g., PRD-7)"),
         body: z.string().min(1).describe("Comment body text"),
+        anchorText: z
+          .string()
+          .min(1)
+          .describe(
+            "Exact text in the document to anchor this comment to. Case-sensitive. Must be unique within the document. May span inline formatting (bold/italic) within a single textblock (paragraph, heading, list item, etc.), but cannot cross textblock boundaries."
+          ),
       },
     },
-    ({ artifactId, body }) =>
+    ({ artifactId, body, anchorText }) =>
       withErrorHandling(async () => {
         const result = await apiClient.post<unknown>(
           `/artifacts/${encodePathSegment(artifactId)}/threads`,
-          { body }
+          { body, anchorText }
         );
         return {
           content: [

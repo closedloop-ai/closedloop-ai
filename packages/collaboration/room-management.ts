@@ -2,6 +2,7 @@ import "server-only";
 import { Liveblocks } from "@liveblocks/node";
 import { keys } from "./keys";
 import type { CommentBody, ThreadData } from "./webhook";
+import { anchorThreadToText, findAnchorText } from "./yjs-anchor";
 
 export type CreateRoomOptions = {
   roomId: string;
@@ -104,18 +105,23 @@ export type CreateArtifactThreadOptions = {
   roomId: string;
   userId: string;
   bodyText: string;
+  anchorText: string;
 };
 
 export async function createArtifactThread({
   roomId,
   userId,
   bodyText,
+  anchorText,
 }: CreateArtifactThreadOptions): Promise<ThreadData> {
   const liveblocks = getLiveblocksClient();
 
   if (!liveblocks) {
     throw new Error("LIVEBLOCKS_SECRET is not configured");
   }
+
+  // Pre-validate anchor text exists and is unique before creating thread
+  await findAnchorText(liveblocks, roomId, anchorText);
 
   const body: CommentBody = {
     version: 1,
@@ -127,13 +133,25 @@ export async function createArtifactThread({
     ],
   };
 
-  return await liveblocks.createThread({
+  const thread = await liveblocks.createThread({
     roomId,
     data: {
       comment: { userId, body },
       metadata: { resolved: false },
     },
   });
+
+  try {
+    await anchorThreadToText(liveblocks, roomId, thread.id, anchorText);
+  } catch (anchorError) {
+    // Best-effort rollback: delete the thread to avoid orphaned threads
+    await liveblocks
+      .deleteThread({ roomId, threadId: thread.id })
+      .catch(() => {});
+    throw anchorError;
+  }
+
+  return thread;
 }
 
 /**

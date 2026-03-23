@@ -9,6 +9,7 @@ import { artifactsService } from "../../service";
 
 const createThreadValidator = z.object({
   body: z.string().min(1),
+  anchorText: z.string().min(1),
 });
 
 export const POST = withAnyAuth<
@@ -43,7 +44,8 @@ export const POST = withAnyAuth<
       user.organizationId,
       artifact.slug,
       user.id,
-      body.body
+      body.body,
+      body.anchorText
     );
 
     return NextResponse.json(success(result));

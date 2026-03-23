@@ -936,12 +936,18 @@ importers:
       '@tiptap/react':
         specifier: ~3.19.0
         version: 3.19.0(@floating-ui/dom@1.7.5)(@tiptap/core@3.19.0(@tiptap/pm@3.19.0))(@tiptap/pm@3.19.0)(@types/react-dom@19.2.3(@types/react@19.2.13))(@types/react@19.2.13)(react-dom@19.2.1(react@19.2.1))(react@19.2.1)
+      lib0:
+        specifier: ^0.2.99
+        version: 0.2.117
       react:
         specifier: 19.2.1
         version: 19.2.1
       server-only:
         specifier: ^0.0.1
         version: 0.0.1
+      yjs:
+        specifier: ^13.6.27
+        version: 13.6.29
       zod:
         specifier: ^4.3.6
         version: 4.3.6
