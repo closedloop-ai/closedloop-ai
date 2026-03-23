@@ -66,9 +66,11 @@ const VALID_TRANSITIONS: Record<LoopStatus, Set<LoopStatus>> = {
   ]),
   RUNNING: new Set(["COMPLETED", "FAILED", "CANCELLED", "TIMED_OUT"]),
   COMPLETED: new Set(),
-  FAILED: new Set(),
+  // A successful completion from the runner overrides a prior failure or timeout.
+  // The runner is the ground truth for whether work actually finished.
+  FAILED: new Set(["COMPLETED"]),
   CANCELLED: new Set(),
-  TIMED_OUT: new Set(),
+  TIMED_OUT: new Set(["COMPLETED"]),
 };
 
 const TERMINAL_STATUSES = new Set<LoopStatus>([
@@ -341,7 +343,7 @@ export const loopsService = {
       tokensOutput: number;
       tokensByModel: Record<string, { input: number; output: number }>;
       estimatedCost: number;
-      error: { code: string; message: string };
+      error: { code: string; message: string } | null;
       s3StateKey: string;
       prUrl: string;
       prNumber: number;
@@ -914,15 +916,12 @@ export const loopsService = {
     organizationId: string,
     uploadedArtifacts: JsonObject
   ): Promise<number> {
+    // No status filter — the runner produced artifacts and the server should
+    // accept them regardless of the loop's current lifecycle state. A cron
+    // timeout or other status change should not block artifact storage.
     const result = await withDb((db) =>
       db.loop.updateMany({
-        where: {
-          id,
-          organizationId,
-          status: {
-            in: [LoopStatus.Pending, LoopStatus.Claimed, LoopStatus.Running],
-          },
-        },
+        where: { id, organizationId },
         data: { uploadedArtifacts },
       })
     );
