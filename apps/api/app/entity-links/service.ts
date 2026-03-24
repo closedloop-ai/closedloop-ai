@@ -10,6 +10,7 @@ import {
 import type { ExternalLink } from "@repo/api/src/types/external-link";
 import { Prisma, withDb } from "@repo/database";
 import { basicUserSelect } from "@/lib/db-utils";
+import { assertEntityInOrganization } from "@/lib/entity-validation";
 
 export const entityLinksService = {
   async createLink(
@@ -312,46 +313,7 @@ export const entityLinksService = {
   },
 };
 
-export class EntityOrganizationMismatchError extends Error {
-  constructor(entityType: EntityType, id: string) {
-    super(`${entityType} ${id} not found in the authenticated organization`);
-    this.name = "EntityOrganizationMismatchError";
-  }
-}
-
 export type AnnotatedLink = { link: EntityLink; fromEntityId: string };
-
-async function assertEntityInOrganization(
-  organizationId: string,
-  id: string,
-  entityType: EntityType
-): Promise<void> {
-  const exists = await withDb((db) => {
-    switch (entityType) {
-      case EntityType.Artifact:
-        return db.artifact.findFirst({
-          where: { id, organizationId },
-          select: { id: true },
-        });
-      case EntityType.Feature:
-        return db.feature.findFirst({
-          where: { id, organizationId },
-          select: { id: true },
-        });
-      case EntityType.ExternalLink:
-        return db.externalLink.findFirst({
-          where: { id, organizationId },
-          select: { id: true },
-        });
-      default:
-        return null;
-    }
-  });
-
-  if (!exists) {
-    throw new EntityOrganizationMismatchError(entityType, id);
-  }
-}
 
 type QueueEntry = { id: string; type: EntityType; depth: number };
 

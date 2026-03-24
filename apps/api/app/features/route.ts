@@ -124,11 +124,15 @@ export const POST = withAnyAuth<FeatureWithWorkstream, "/features">(
         resolvedWorkstreamId = wId;
       }
 
-      const feature = await featuresService.create(user.organizationId, user.id, {
-        ...body,
-        projectId: resolvedProjectId,
-        workstreamId: resolvedWorkstreamId,
-      });
+      const feature = await featuresService.create(
+        user.organizationId,
+        user.id,
+        {
+          ...body,
+          projectId: resolvedProjectId,
+          workstreamId: resolvedWorkstreamId,
+        }
+      );
       if (!feature) {
         return badRequestResponse("Failed to create feature");
       }

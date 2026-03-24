@@ -8,10 +8,12 @@
 
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
 import type {
+  EntityType,
   EvaluationReportType as PrismaEvaluationReportType,
   TransactionClient,
 } from "@repo/database";
 import { log } from "@repo/observability/log";
+import { assertEntityInOrganization } from "@/lib/entity-validation";
 import { fanOutJudgeScores } from "@/lib/judge-score-fanout";
 
 export function parseJsonArtifact<T>(
@@ -41,24 +43,40 @@ export function parseJsonArtifact<T>(
  * 2. Fanning out per-judge scores via fanOutJudgeScores
  */
 export async function upsertEvaluationWithJudgeScores(params: {
-  artifactId: string;
+  entityId: string;
+  entityType: EntityType;
+  artifactId?: string | null;
   loopId: string;
   organizationId: string;
   reportType: PrismaEvaluationReportType;
   report: JudgesReport;
   tx: TransactionClient;
 }): Promise<void> {
-  const { artifactId, loopId, organizationId, reportType, report, tx } = params;
+  const {
+    entityId,
+    entityType,
+    artifactId,
+    loopId,
+    organizationId,
+    reportType,
+    report,
+    tx,
+  } = params;
+
+  await assertEntityInOrganization(organizationId, entityId, entityType);
 
   const evaluation = await tx.artifactEvaluation.upsert({
     where: {
-      artifactId_reportId: {
-        artifactId,
+      entityId_reportId: {
+        entityId,
         reportId: report.report_id,
       },
     },
     create: {
-      artifactId,
+      organizationId,
+      entityId,
+      entityType,
+      artifactId: artifactId ?? null,
       loopId,
       reportType,
       reportId: report.report_id,

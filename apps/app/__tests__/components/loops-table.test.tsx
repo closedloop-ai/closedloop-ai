@@ -155,7 +155,6 @@ describe("LoopsTable — restart button visibility", () => {
       screen.queryByRole("button", { name: "Restart loop" })
     ).not.toBeInTheDocument();
   });
-
 });
 
 describe("LoopsTable — restart button interaction", () => {

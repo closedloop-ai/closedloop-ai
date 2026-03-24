@@ -3,6 +3,7 @@ import type { JudgesReport } from "@repo/api/src/types/evaluation";
 import type { Loop } from "@repo/api/src/types/loop";
 import type { PromptsSnapshot } from "@repo/api/src/types/prompt";
 import {
+  EntityType,
   EvaluationReportType as PrismaEvaluationReportType,
   withDb,
 } from "@repo/database";
@@ -182,6 +183,8 @@ export async function ingestExecutionArtifacts(
 
     if (artifacts.codeJudgesReport) {
       await upsertEvaluationWithJudgeScores({
+        entityId: loop.artifactId!,
+        entityType: EntityType.ARTIFACT,
         artifactId: loop.artifactId!,
         loopId: loop.id,
         organizationId: loop.organizationId,

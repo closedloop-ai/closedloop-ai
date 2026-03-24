@@ -19,7 +19,7 @@ import type {
   RadarAxes,
 } from "@repo/api/src/types/judges-analytics";
 import { computeMean as computeMeanFromUtils } from "@repo/api/src/utils/math";
-import { PromptType, withDb } from "@repo/database";
+import { EntityType, PromptType, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { normalizeJudgeName } from "@/lib/judge-name-utils";
 
@@ -364,8 +364,9 @@ export type JudgeScoreInput = {
   promptId: string | null;
   score: number;
   evaluation: {
-    artifactId: string;
-    artifact: { type: ArtifactType };
+    artifactId: string | null;
+    entityId: string;
+    artifactType: ArtifactType;
   };
 };
 
@@ -468,12 +469,12 @@ export function aggregateJudgeScoreRows(
     );
     const promptName = resolvePromptRouteName(row, promptNameById);
     aggregator.addScore(
-      row.evaluation.artifact.type,
+      row.evaluation.artifactType,
       aggregationKey,
       promptName,
       row.metricName,
       row.score,
-      row.evaluation.artifactId
+      row.evaluation.entityId
     );
   }
 
@@ -850,13 +851,14 @@ export const judgesAnalyticsService = {
     const judgeDescriptionByPromptName =
       await getJudgeDescriptionByPromptName(organizationId);
 
-    // Query JudgeScore rows joined through ArtifactEvaluation → Artifact
-    const judgeScores = await withDb((db) =>
+    // Query JudgeScore rows joined through ArtifactEvaluation
+    const rawJudgeScores = await withDb((db) =>
       db.judgeScore.findMany({
         where: {
           evaluation: {
             reportType,
-            artifact: { organizationId },
+            entityType: EntityType.ARTIFACT,
+            organizationId,
             createdAt: { gte: startDate, lte: endDate },
           },
         },
@@ -868,12 +870,42 @@ export const judgesAnalyticsService = {
           evaluation: {
             select: {
               artifactId: true,
-              artifact: { select: { type: true } },
+              entityId: true,
             },
           },
         },
       })
     );
+
+    // Batch-fetch artifact types by entityId to populate JudgeScoreInput
+    const evalEntityIds = [
+      ...new Set(rawJudgeScores.map((js) => js.evaluation.entityId)),
+    ];
+    const evalArtifactRows = await withDb((db) =>
+      db.artifact.findMany({
+        where: { id: { in: evalEntityIds }, organizationId },
+        select: { id: true, type: true },
+      })
+    );
+    const artifactTypeByEntityId = new Map(
+      evalArtifactRows.map((a) => [a.id, a.type])
+    );
+    const judgeScores: JudgeScoreInput[] = rawJudgeScores.flatMap((js) => {
+      const artifactType = artifactTypeByEntityId.get(js.evaluation.entityId);
+      if (!artifactType) {
+        return [];
+      }
+      return [
+        {
+          ...js,
+          evaluation: {
+            artifactId: js.evaluation.artifactId,
+            entityId: js.evaluation.entityId,
+            artifactType,
+          },
+        },
+      ];
+    });
 
     if (judgeScores.length === 0) {
       log.warn("No judge scores found for judges analytics query", {
@@ -1034,7 +1066,8 @@ export const judgesAnalyticsService = {
           promptId: { in: promptIds },
           evaluation: {
             reportType,
-            artifact: { organizationId },
+            entityType: EntityType.ARTIFACT,
+            organizationId,
           },
         },
         select: {
@@ -1164,7 +1197,8 @@ export const judgesAnalyticsService = {
           promptId: { in: promptIds },
           evaluation: {
             reportType,
-            artifact: { organizationId },
+            entityType: EntityType.ARTIFACT,
+            organizationId,
           },
         },
         select: {
@@ -1174,10 +1208,7 @@ export const judgesAnalyticsService = {
           createdAt: true,
           evaluation: {
             select: {
-              artifactId: true,
-              artifact: {
-                select: { id: true, type: true, title: true, slug: true },
-              },
+              entityId: true,
             },
           },
           judgeHumanScores: {
@@ -1187,6 +1218,18 @@ export const judgesAnalyticsService = {
         // TODO: Move sorting and pagination into SQL once score ordering is DB-backed.
       })
     );
+
+    // Batch-fetch artifact data by entityId
+    const entityIds = [
+      ...new Set(judgeScores.map((js) => js.evaluation.entityId)),
+    ];
+    const artifactRows = await withDb((db) =>
+      db.artifact.findMany({
+        where: { id: { in: entityIds }, organizationId },
+        select: { id: true, type: true, title: true, slug: true },
+      })
+    );
+    const artifactsByEntityId = new Map(artifactRows.map((a) => [a.id, a]));
 
     if (judgeScores.length === 0) {
       return {
@@ -1199,7 +1242,12 @@ export const judgesAnalyticsService = {
     }
 
     // 3. Build rows with concurrence default
-    const rows: JudgeScoreRow[] = judgeScores.map((js) => {
+    const rows: JudgeScoreRow[] = judgeScores.flatMap((js) => {
+      const artifact = artifactsByEntityId.get(js.evaluation.entityId);
+      if (!artifact) {
+        return [];
+      }
+
       const humanScores = js.judgeHumanScores.map((hs) => hs.score);
       const userRatingCount = humanScores.length;
       const avgUserRating =
@@ -1207,19 +1255,21 @@ export const judgesAnalyticsService = {
       const delta =
         userRatingCount > 0 ? Math.abs(avgUserRating - js.score) : 0;
 
-      return {
-        judgeScoreId: js.id,
-        metricName: js.metricName,
-        artifactId: js.evaluation.artifact.id,
-        artifactType: js.evaluation.artifact.type,
-        artifactTitle: js.evaluation.artifact.title,
-        artifactSlug: js.evaluation.artifact.slug,
-        judgeScore: js.score,
-        avgUserRating,
-        userRatingCount,
-        delta,
-        evaluatedAt: js.createdAt.toISOString(),
-      };
+      return [
+        {
+          judgeScoreId: js.id,
+          metricName: js.metricName,
+          artifactId: artifact.id,
+          artifactType: artifact.type,
+          artifactTitle: artifact.title,
+          artifactSlug: artifact.slug,
+          judgeScore: js.score,
+          avgUserRating,
+          userRatingCount,
+          delta,
+          evaluatedAt: js.createdAt.toISOString(),
+        },
+      ];
     });
 
     // 4. Sort: delta DESC, then judgeScore DESC (delta=0 rows last)
