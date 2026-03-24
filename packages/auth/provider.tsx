@@ -75,6 +75,9 @@ export const AuthProvider = ({
             title: "Sign up",
           },
         },
+        userButton: {
+          action__manageAccount: "Settings",
+        },
       }}
     />
   );
