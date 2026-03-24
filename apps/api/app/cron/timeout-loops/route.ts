@@ -149,9 +149,15 @@ export const GET = async (request: Request) => {
 
   // Find stuck loops across all three categories.
   // For RUNNING: purely activity-based — no events in 75 min = dead container.
+  //
+  // Desktop loops (computeTargetId IS NOT NULL) are excluded from the cron
+  // safety net. They are managed by the Electron harness's own timeout, and
+  // their progress events may flow through the desktop command channel rather
+  // than the LoopEvent table, causing false-positive reaping.
   const stuckLoops = await withDb((db) =>
     db.loop.findMany({
       where: {
+        computeTargetId: null,
         OR: [
           {
             status: "RUNNING",
@@ -179,7 +185,7 @@ export const GET = async (request: Request) => {
     return new Response("OK: no stuck loops", { status: 200 });
   }
 
-  log.info("[timeout-loops] Found stuck loops", {
+  log.info("[timeout-loops] Found stuck loops (cloud-only, desktop excluded)", {
     count: stuckLoops.length,
     ids: stuckLoops.map((l) => l.id),
     statuses: stuckLoops.map((l) => l.status),

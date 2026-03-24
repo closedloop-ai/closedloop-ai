@@ -12,11 +12,25 @@ export function getRequiredLoopComputeTargetId():
   | { ok: false; error: string } {
   const routing = getEngineerRoutingSelection();
 
+  console.debug("[engineer-debug] getRequiredLoopComputeTargetId", {
+    mode: routing.mode,
+    source: routing.source,
+    computeTargetId: routing.computeTargetId,
+  });
+
   if (
     routing.mode === EngineerRoutingMode.LocalElectron ||
     routing.mode === EngineerRoutingMode.CloudRelay
   ) {
     if (!routing.computeTargetId) {
+      console.warn(
+        "[engineer-debug] Loop compute target ID is null in routing store",
+        {
+          mode: routing.mode,
+          source: routing.source,
+          hint: "User may need to manually select a compute target in Engineer Settings when using hosted mode",
+        }
+      );
       return {
         ok: false,
         error:
@@ -27,6 +41,10 @@ export function getRequiredLoopComputeTargetId():
   }
 
   // Fallback for any future routing modes — require explicit configuration
+  console.warn(
+    "[engineer-debug] Unknown routing mode for loop compute target:",
+    routing.mode
+  );
   return {
     ok: false,
     error:

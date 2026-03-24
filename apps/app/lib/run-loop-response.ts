@@ -43,6 +43,16 @@ export function handleRunLoopResponse(
 
   // Error case: route 409 conflict responses by discriminant
   if (!(response instanceof ApiError) || response.status !== 409) {
+    if (response instanceof ApiError) {
+      console.warn(
+        "[engineer-debug] run-loop error not handled by handleRunLoopResponse",
+        {
+          status: response.status,
+          message: response.message,
+          data: response.data,
+        }
+      );
+    }
     return;
   }
 
