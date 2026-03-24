@@ -25,7 +25,7 @@ vi.mock("@repo/database", () => ({
   ArtifactType: {
     PRD: "PRD",
     IMPLEMENTATION_PLAN: "IMPLEMENTATION_PLAN",
-    ISSUE: "ISSUE",
+    FEATURE: "FEATURE",
   },
 }));
 vi.mock("@/app/artifacts/service");

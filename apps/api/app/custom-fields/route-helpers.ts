@@ -11,7 +11,7 @@ import { customFieldValuesService } from "./values-service";
  * with a `customFields` array (always present, never undefined).
  *
  * @param entity - The entity to merge custom fields into. Must have an `id` field.
- * @param entityType - The custom field entity type (Project, Workstream, Issue, Artifact).
+ * @param entityType - The custom field entity type (Project, Workstream, Feature, Artifact).
  * @param organizationId - The organization ID for scoping.
  * @returns The entity spread with `customFields: CustomFieldValueDetail[]`.
  */

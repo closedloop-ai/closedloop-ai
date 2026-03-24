@@ -51,7 +51,7 @@ import {
 } from "@/lib/loops/loop-status-utils";
 import { generateArtifactSlug } from "@/lib/slug-generator";
 import { entityLinksService } from "../entity-links/service";
-import { issuesService } from "../issues/service";
+import { featuresService } from "../features/service";
 import { loopsService } from "../loops/service";
 import {
   ArtifactNotFoundError,
@@ -596,13 +596,13 @@ export const artifactsService = {
         },
       });
 
-      if (foundSource.type === EntityType.Issue) {
-        // Source is an Issue — update the artifact and the issue separately
+      if (foundSource.type === EntityType.Feature) {
+        // Source is a Feature — update the artifact and the feature separately
         await tx.artifact.update({
           where: { id: artifact.id, organizationId },
           data: { workstreamId: newWorkstream.id },
         });
-        await tx.issue.update({
+        await tx.feature.update({
           where: { id: foundSource.id, organizationId },
           data: { workstreamId: newWorkstream.id },
         });
@@ -651,7 +651,7 @@ export const artifactsService = {
   },
 
   /**
-   * Find the source entity (PRD or Issue) for the artifact via entity links.
+   * Find the source entity (PRD or Feature) for the artifact via entity links.
    * Returns a SourceContext with the source's content, or null if none found.
    */
   async findSourceWithContent(
@@ -673,8 +673,8 @@ export const artifactsService = {
     const artifactLinks = sourceLinks.filter(
       (link) => link.sourceType === EntityType.Artifact
     );
-    const issueLinks = sourceLinks.filter(
-      (link) => link.sourceType === EntityType.Issue
+    const featureLinks = sourceLinks.filter(
+      (link) => link.sourceType === EntityType.Feature
     );
 
     // Try Artifact sources first (existing behavior — find PRD)
@@ -708,21 +708,21 @@ export const artifactsService = {
       }
     }
 
-    // Try Issue sources
-    if (issueLinks.length > 0) {
-      const issue = await issuesService.findById(
-        issueLinks[0].sourceId,
+    // Try Feature sources
+    if (featureLinks.length > 0) {
+      const feature = await featuresService.findById(
+        featureLinks[0].sourceId,
         artifact.organizationId
       );
-      if (issue) {
+      if (feature) {
         return {
-          id: issue.id,
-          type: EntityType.Issue,
-          title: issue.title,
-          content: issue.description,
+          id: feature.id,
+          type: EntityType.Feature,
+          title: feature.title,
+          content: feature.description,
           targetRepo: null,
           targetBranch: null,
-          workstreamId: issue.workstreamId,
+          workstreamId: feature.workstreamId,
         };
       }
     }
@@ -2523,7 +2523,7 @@ Please try again or contact support if the issue persists.`
   },
 
   /**
-   * Find or create an implementation-plan artifact for an issue, check for
+   * Find or create an implementation-plan artifact for a feature, check for
    * an active PLAN loop, and return the information needed for the route
    * handler to launch a real PLAN loop.
    *
@@ -2533,7 +2533,7 @@ Please try again or contact support if the issue persists.`
     organizationId: string,
     userId: string,
     input: {
-      issueId: string;
+      featureId: string;
       ticketTitle?: string;
       computeTargetId: string;
       localRepoPath: string;
@@ -2541,18 +2541,18 @@ Please try again or contact support if the issue persists.`
       selectedArtifactId?: string;
     }
   ): Promise<StartPlanLoopFromLocalResult> {
-    const { issueId, ticketTitle, selectedArtifactId } = input;
+    const { featureId, ticketTitle, selectedArtifactId } = input;
 
-    const issue = await issuesService.findById(issueId, organizationId);
-    if (!issue) {
-      throw new Error(`Issue not found: ${issueId}`);
+    const feature = await featuresService.findById(featureId, organizationId);
+    if (!feature) {
+      throw new Error(`Feature not found: ${featureId}`);
     }
 
-    // Find existing ISSUE -> PRODUCES -> ARTIFACT (implementation-plan) entity links
+    // Find existing FEATURE -> PRODUCES -> ARTIFACT (implementation-plan) entity links
     const targetLinks = await entityLinksService.findTargetLinks(
       organizationId,
-      issueId,
-      EntityType.Issue,
+      featureId,
+      EntityType.Feature,
       LinkType.Produces
     );
 
@@ -2576,8 +2576,8 @@ Please try again or contact support if the issue persists.`
     const artifactIdResult = await resolveOrCreatePlanArtifact({
       organizationId,
       userId,
-      issueId,
-      issue,
+      featureId,
+      feature,
       linkedPlans,
       selectedArtifactId,
       ticketTitle,
@@ -2643,8 +2643,8 @@ Please try again or contact support if the issue persists.`
 async function resolveOrCreatePlanArtifact(opts: {
   organizationId: string;
   userId: string;
-  issueId: string;
-  issue: { id: string; title: string; projectId: string };
+  featureId: string;
+  feature: { id: string; title: string; projectId: string };
   linkedPlans: { id: string; title: string }[];
   selectedArtifactId?: string;
   ticketTitle?: string;
@@ -2659,8 +2659,8 @@ async function resolveOrCreatePlanArtifact(opts: {
   const {
     organizationId,
     userId,
-    issueId,
-    issue,
+    featureId,
+    feature,
     linkedPlans,
     selectedArtifactId,
     ticketTitle,
@@ -2684,15 +2684,15 @@ async function resolveOrCreatePlanArtifact(opts: {
       return { outcome: "invalid-artifact", existingArtifacts: linkedPlans };
     }
 
-    // Promote selected link so the issue points at exactly one plan.
+    // Promote selected link so the feature points at exactly one plan.
     const allLinkedPlanIds = linkedPlans.map((p) => p.id);
     await withDb.tx(async (tx) => {
       if (allLinkedPlanIds.length > 0) {
         await tx.entityLink.deleteMany({
           where: {
             organizationId,
-            sourceId: issueId,
-            sourceType: EntityType.Issue,
+            sourceId: featureId,
+            sourceType: EntityType.Feature,
             targetId: { in: allLinkedPlanIds },
             targetType: EntityType.Artifact,
             linkType: LinkType.Produces,
@@ -2703,8 +2703,8 @@ async function resolveOrCreatePlanArtifact(opts: {
       await tx.entityLink.create({
         data: {
           organizationId,
-          sourceId: issueId,
-          sourceType: EntityType.Issue,
+          sourceId: featureId,
+          sourceType: EntityType.Feature,
           targetId: selectedArtifactId,
           targetType: EntityType.Artifact,
           linkType: LinkType.Produces,
@@ -2724,14 +2724,14 @@ async function resolveOrCreatePlanArtifact(opts: {
   }
 
   // No linked plan — create one
-  const title = ticketTitle ? `Plan: ${ticketTitle}` : `Plan: ${issue.title}`;
+  const title = ticketTitle ? `Plan: ${ticketTitle}` : `Plan: ${feature.title}`;
   const createInput: CreateArtifactInput = {
     type: ArtifactType.ImplementationPlan,
     title,
     content: "",
-    sourceId: issueId,
-    sourceType: EntityType.Issue,
-    projectId: issue.projectId,
+    sourceId: featureId,
+    sourceType: EntityType.Feature,
+    projectId: feature.projectId,
     status: ArtifactStatus.Draft,
   };
   const newArtifact = await withDb.tx((tx) =>

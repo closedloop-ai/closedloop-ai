@@ -25,7 +25,7 @@ describe("GET /api/dashboard/stats", () => {
   it("returns dashboard stats for authenticated user", async () => {
     const mockStats = {
       prds: { count: 5, trend: [{ date: "2025-01-20", count: 2 }] },
-      issues: { count: 10, trend: [{ date: "2025-01-20", count: 3 }] },
+      features: { count: 10, trend: [{ date: "2025-01-20", count: 3 }] },
       plans: { count: 3, trend: [{ date: "2025-01-20", count: 1 }] },
       landedCode: { count: 8, trend: [{ date: "2025-01-20", count: 4 }] },
       agenticWorkflows: {
@@ -56,7 +56,7 @@ describe("GET /api/dashboard/stats", () => {
 
     vi.mocked(dashboardService.getDashboardStats).mockResolvedValue({
       prds: { count: 0, trend: [] },
-      issues: { count: 0, trend: [] },
+      features: { count: 0, trend: [] },
       plans: { count: 0, trend: [] },
       landedCode: { count: 0, trend: [] },
       agenticWorkflows: { count: 0, trend: [] },
@@ -93,7 +93,7 @@ describe("GET /api/dashboard/stats", () => {
   it("returns stats with empty trends when no recent data", async () => {
     const mockStats = {
       prds: { count: 5, trend: [] },
-      issues: { count: 10, trend: [] },
+      features: { count: 10, trend: [] },
       plans: { count: 3, trend: [] },
       landedCode: { count: 0, trend: [] },
       agenticWorkflows: { count: 0, trend: [] },
@@ -117,7 +117,7 @@ describe("GET /api/dashboard/stats", () => {
   it("includes correct Content-Type header", async () => {
     vi.mocked(dashboardService.getDashboardStats).mockResolvedValue({
       prds: { count: 0, trend: [] },
-      issues: { count: 0, trend: [] },
+      features: { count: 0, trend: [] },
       plans: { count: 0, trend: [] },
       landedCode: { count: 0, trend: [] },
       agenticWorkflows: { count: 0, trend: [] },
@@ -136,7 +136,7 @@ describe("GET /api/dashboard/stats", () => {
   it("returns stats with placeholder counts as undefined", async () => {
     const mockStats = {
       prds: { count: 5, trend: [] },
-      issues: { count: 10, trend: [] },
+      features: { count: 10, trend: [] },
       plans: { count: 3, trend: [] },
       landedCode: { count: 8, trend: [] },
       agenticWorkflows: { count: 12, trend: [] },

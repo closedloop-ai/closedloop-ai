@@ -3,7 +3,10 @@
 import type { ArtifactWithWorkstream } from "@repo/api/src/types/artifact";
 import { Priority } from "@repo/api/src/types/common";
 import { EntityType, LinkType } from "@repo/api/src/types/entity-link";
-import { ISSUE_STATUS_OPTIONS, IssueStatus } from "@repo/api/src/types/issue";
+import {
+  FEATURE_STATUS_OPTIONS,
+  FeatureStatus,
+} from "@repo/api/src/types/feature";
 import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
@@ -45,12 +48,12 @@ import { ChevronDownIcon, FileTextIcon, LoaderIcon, XIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import {
-  issuePriorityLabels,
-  issueStatusLabels,
+  featurePriorityLabels,
+  featureStatusLabels,
 } from "@/components/status-badge";
 import { useArtifactsByProject } from "@/hooks/queries/use-artifacts";
 import { useCreateEntityLink } from "@/hooks/queries/use-entity-links";
-import { useCreateIssue } from "@/hooks/queries/use-issues";
+import { useCreateFeature } from "@/hooks/queries/use-features";
 import { useTeamMembers } from "@/hooks/queries/use-teams";
 import { ARTIFACT_TYPE_LABELS } from "@/lib/project-constants";
 import { transformApiUserToSelectUser } from "@/lib/user-utils";
@@ -77,7 +80,7 @@ export function CreateFeatureModal({
   >([]);
   const [selectedAssignee, setSelectedAssignee] = useState<User | null>(null);
   const [priority, setPriority] = useState<Priority>(Priority.Medium);
-  const [status, setStatus] = useState<IssueStatus>(IssueStatus.NotStarted);
+  const [status, setStatus] = useState<FeatureStatus>(FeatureStatus.NotStarted);
   const [error, setError] = useState<string | null>(null);
   const [relationshipsOpen, setRelationshipsOpen] = useState(false);
 
@@ -101,11 +104,11 @@ export function CreateFeatureModal({
   }, [artifacts, selectedArtifacts]);
 
   // Mutations
-  const createIssueMutation = useCreateIssue();
+  const createFeatureMutation = useCreateFeature();
   const createEntityLinkMutation = useCreateEntityLink();
 
   const isSubmitting =
-    createIssueMutation.isPending || createEntityLinkMutation.isPending;
+    createFeatureMutation.isPending || createEntityLinkMutation.isPending;
 
   const handleAddArtifact = (artifact: ArtifactWithWorkstream) => {
     setSelectedArtifacts((prev) => [...prev, artifact]);
@@ -121,7 +124,7 @@ export function CreateFeatureModal({
     setSelectedArtifacts([]);
     setSelectedAssignee(null);
     setPriority(Priority.Medium);
-    setStatus(IssueStatus.NotStarted);
+    setStatus(FeatureStatus.NotStarted);
     setError(null);
     setRelationshipsOpen(false);
   };
@@ -138,7 +141,7 @@ export function CreateFeatureModal({
       return;
     }
 
-    createIssueMutation.mutate(
+    createFeatureMutation.mutate(
       {
         projectId,
         title: title.trim(),
@@ -147,7 +150,7 @@ export function CreateFeatureModal({
         assigneeId: selectedAssignee?.id,
       },
       {
-        onSuccess: async (issue) => {
+        onSuccess: async (feature) => {
           if (selectedArtifacts.length > 0) {
             try {
               await Promise.all(
@@ -155,8 +158,8 @@ export function CreateFeatureModal({
                   createEntityLinkMutation.mutateAsync({
                     sourceId: artifact.id,
                     sourceType: EntityType.Artifact,
-                    targetId: issue.id,
-                    targetType: EntityType.Issue,
+                    targetId: feature.id,
+                    targetType: EntityType.Feature,
                     linkType: LinkType.RelatesTo,
                   })
                 )
@@ -168,7 +171,7 @@ export function CreateFeatureModal({
             }
           }
           handleClose();
-          router.push(`/issues/${issue.slug}`);
+          router.push(`/features/${feature.slug}`);
         },
         onError: () => {
           setError("Failed to create feature. Please try again.");
@@ -314,7 +317,7 @@ export function CreateFeatureModal({
               <SelectContent>
                 {Object.values(Priority).map((p) => (
                   <SelectItem key={p} value={p}>
-                    {issuePriorityLabels[p]}
+                    {featurePriorityLabels[p]}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -326,16 +329,16 @@ export function CreateFeatureModal({
               Status
             </Label>
             <Select
-              onValueChange={(v: IssueStatus) => setStatus(v)}
+              onValueChange={(v: FeatureStatus) => setStatus(v)}
               value={status}
             >
               <SelectTrigger>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {ISSUE_STATUS_OPTIONS.map((s) => (
+                {FEATURE_STATUS_OPTIONS.map((s) => (
                   <SelectItem key={s} value={s}>
-                    {issueStatusLabels[s]}
+                    {featureStatusLabels[s]}
                   </SelectItem>
                 ))}
               </SelectContent>

@@ -26,8 +26,8 @@ vi.mock("@/app/artifacts/service", () => ({
   getCommitterInfo: vi.fn(),
 }));
 
-vi.mock("@/app/issues/service", () => ({
-  issuesService: {
+vi.mock("@/app/features/service", () => ({
+  featuresService: {
     findById: vi.fn().mockResolvedValue(null),
   },
 }));
@@ -53,11 +53,11 @@ import { ArtifactType } from "@repo/api/src/types/artifact";
 import { EntityType } from "@repo/api/src/types/entity-link";
 import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
 import { artifactsService } from "@/app/artifacts/service";
-import { issuesService } from "@/app/issues/service";
+import { featuresService } from "@/app/features/service";
 import { buildContextPack } from "@/lib/loops/loop-context-pack";
 import { uploadContextPack } from "@/lib/loops/loop-state";
 
-const mockIssuesService = issuesService as unknown as {
+const mockFeaturesService = featuresService as unknown as {
   findById: ReturnType<typeof vi.fn>;
 };
 const mockArtifactsService = artifactsService as unknown as {
@@ -77,7 +77,7 @@ describe("buildContextPack", () => {
   });
 
   it("includes issue as FEATURE artifact via contextRef with sourceType ISSUE", async () => {
-    mockIssuesService.findById.mockResolvedValue({
+    mockFeaturesService.findById.mockResolvedValue({
       id: "issue-1",
       title: "User login flow",
       description: "Implement the user login flow with OAuth",
@@ -97,7 +97,7 @@ describe("buildContextPack", () => {
         contextRefs: [
           {
             sourceId: "issue-1",
-            sourceType: EntityType.Issue,
+            sourceType: EntityType.Feature,
             include: "full" as const,
           },
         ],
@@ -106,12 +106,15 @@ describe("buildContextPack", () => {
       "state-prefix"
     );
 
-    expect(mockIssuesService.findById).toHaveBeenCalledWith("issue-1", "org-1");
+    expect(mockFeaturesService.findById).toHaveBeenCalledWith(
+      "issue-1",
+      "org-1"
+    );
 
     const uploadCall = mockUploadContextPack.mock.calls[0];
     const contextPack = uploadCall[1];
 
-    // Issue artifact should be first in the array
+    // Feature artifact should be first in the array
     expect(contextPack.artifacts[0]).toEqual({
       id: "issue-1",
       type: "FEATURE",
@@ -137,7 +140,7 @@ describe("buildContextPack", () => {
       "state-prefix"
     );
 
-    expect(mockIssuesService.findById).not.toHaveBeenCalled();
+    expect(mockFeaturesService.findById).not.toHaveBeenCalled();
 
     const uploadCall = mockUploadContextPack.mock.calls[0];
     const contextPack = uploadCall[1];
@@ -161,11 +164,11 @@ describe("buildContextPack", () => {
       "state-prefix"
     );
 
-    expect(mockIssuesService.findById).not.toHaveBeenCalled();
+    expect(mockFeaturesService.findById).not.toHaveBeenCalled();
   });
 
   it("gracefully handles issue not found", async () => {
-    mockIssuesService.findById.mockResolvedValue(null);
+    mockFeaturesService.findById.mockResolvedValue(null);
 
     await buildContextPack(
       {
@@ -180,7 +183,7 @@ describe("buildContextPack", () => {
         contextRefs: [
           {
             sourceId: "nonexistent-issue",
-            sourceType: EntityType.Issue,
+            sourceType: EntityType.Feature,
             include: "full" as const,
           },
         ],
@@ -195,7 +198,7 @@ describe("buildContextPack", () => {
   });
 
   it("includes PRD from contextRefs alongside issue artifact", async () => {
-    mockIssuesService.findById.mockResolvedValue({
+    mockFeaturesService.findById.mockResolvedValue({
       id: "issue-1",
       title: "User login flow",
       description: "Implement the user login flow",
@@ -225,7 +228,7 @@ describe("buildContextPack", () => {
         contextRefs: [
           {
             sourceId: "issue-1",
-            sourceType: EntityType.Issue,
+            sourceType: EntityType.Feature,
             include: "full" as const,
           },
           { sourceId: "prd-1", include: "full" as const },
@@ -238,7 +241,7 @@ describe("buildContextPack", () => {
     const uploadCall = mockUploadContextPack.mock.calls[0];
     const contextPack = uploadCall[1];
 
-    // Issue artifact should come first, then PRD from contextRefs
+    // Feature artifact should come first, then PRD from contextRefs
     expect(contextPack.artifacts).toHaveLength(2);
     expect(contextPack.artifacts[0].type).toBe("FEATURE");
     expect(contextPack.artifacts[0].id).toBe("issue-1");

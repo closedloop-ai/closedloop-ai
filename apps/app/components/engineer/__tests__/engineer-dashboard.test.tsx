@@ -33,8 +33,8 @@ vi.mock("@/components/engineer/compute-target-selector", () => ({
   ComputeTargetSelector: () => <div data-testid="compute-target-selector" />,
 }));
 
-vi.mock("@/hooks/engineer/use-engineer-issues", () => ({
-  useEngineerIssues: () => ({
+vi.mock("@/hooks/engineer/use-engineer-features", () => ({
+  useEngineerFeatures: () => ({
     tickets: [],
     isLoading: false,
     isFetching: false,

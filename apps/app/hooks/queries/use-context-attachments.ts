@@ -25,7 +25,7 @@ export type ImportGDriveContextInput = {
 };
 
 export function useCreateContextAttachment(
-  issueId: string,
+  featureId: string,
   options?: UseMutationOptions<
     CreateContextAttachmentResponse,
     Error,
@@ -39,7 +39,7 @@ export function useCreateContextAttachment(
     ...options,
     mutationFn: (input: CreateContextAttachmentInput) =>
       apiClient.post<CreateContextAttachmentResponse>(
-        `/issues/${issueId}/context-attachments`,
+        `/features/${featureId}/context-attachments`,
         input
       ),
     onSuccess: (data, variables, onMutateResult, mutationContext) => {
@@ -50,7 +50,7 @@ export function useCreateContextAttachment(
 }
 
 export function useImportGDriveContext(
-  issueId: string,
+  featureId: string,
   options?: UseMutationOptions<
     ImportGDriveContextResponse,
     Error,
@@ -64,7 +64,7 @@ export function useImportGDriveContext(
     ...options,
     mutationFn: (input: ImportGDriveContextInput) =>
       apiClient.post<ImportGDriveContextResponse>(
-        `/issues/${issueId}/context-attachments/gdrive`,
+        `/features/${featureId}/context-attachments/gdrive`,
         input
       ),
     onSuccess: (data, variables, onMutateResult, mutationContext) => {

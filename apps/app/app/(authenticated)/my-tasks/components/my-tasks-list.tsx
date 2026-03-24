@@ -1,7 +1,7 @@
 "use client";
 
 import type { CustomFieldValueDetail } from "@repo/api/src/types/custom-field";
-import type { IssueWithWorkstream } from "@repo/api/src/types/issue";
+import type { FeatureWithWorkstream } from "@repo/api/src/types/feature";
 import { isDisplayableSlug } from "@repo/api/src/types/slug";
 import { Badge } from "@repo/design-system/components/ui/badge";
 import {
@@ -32,50 +32,50 @@ import { AssigneeAvatar } from "@/components/assignee-avatar";
 import { CustomFieldCell } from "@/components/custom-fields/custom-field-cell";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { EmptyState } from "@/components/empty-state";
-import { useDeleteIssue, useIssues } from "@/hooks/queries/use-issues";
+import { useDeleteFeature, useFeatures } from "@/hooks/queries/use-features";
 import { useDeleteConfirmation } from "@/hooks/use-delete-confirmation";
 import { deriveCustomFieldColumns } from "@/lib/custom-field-utils";
-import { ISSUE_STATUS_TO_ICON } from "@/lib/project-constants";
-import type { MyTasksIssueFilters } from "../types";
+import { FEATURE_STATUS_TO_ICON } from "@/lib/project-constants";
+import type { MyTasksFeatureFilters } from "../types";
 import {
   applyClientFilters,
-  buildIssueListParams,
+  buildFeatureListParams,
   DISPLAY_GROUPS,
 } from "../utils";
 
 type MyTasksListProps = {
   assigneeId: string | null;
   isUserLoading: boolean;
-  issueFilters?: MyTasksIssueFilters;
+  featureFilters?: MyTasksFeatureFilters;
 };
 
 export function MyTasksList({
   assigneeId,
   isUserLoading,
-  issueFilters,
+  featureFilters,
 }: Readonly<MyTasksListProps>) {
   const listParams = useMemo(
-    () => buildIssueListParams(assigneeId),
+    () => buildFeatureListParams(assigneeId),
     [assigneeId]
   );
-  const { data: rawIssues = [], isLoading } = useIssues(listParams, {
+  const { data: rawFeatures = [], isLoading } = useFeatures(listParams, {
     enabled: !!assigneeId && !isUserLoading,
   });
-  const issues = useMemo(
+  const features = useMemo(
     () =>
-      issueFilters ? applyClientFilters(rawIssues, issueFilters) : rawIssues,
-    [rawIssues, issueFilters]
+      featureFilters ? applyClientFilters(rawFeatures, featureFilters) : rawFeatures,
+    [rawFeatures, featureFilters]
   );
-  const deleteIssueMutation = useDeleteIssue();
+  const deleteFeatureMutation = useDeleteFeature();
 
   const customFieldColumns = useMemo(
-    () => deriveCustomFieldColumns(issues),
-    [issues]
+    () => deriveCustomFieldColumns(features),
+    [features]
   );
 
   const handleDelete = (id: string) => {
-    return deleteIssueMutation.mutateAsync(id).then((result) => {
-      toast.success("Issue deleted");
+    return deleteFeatureMutation.mutateAsync(id).then((result) => {
+      toast.success("Feature deleted");
       return result.deleted;
     });
   };
@@ -87,21 +87,23 @@ export function MyTasksList({
     itemToDelete,
     requestDelete,
     setOpen: setDeleteOpen,
-  } = useDeleteConfirmation<IssueWithWorkstream>({
-    getId: (issue) => issue.id,
+  } = useDeleteConfirmation<FeatureWithWorkstream>({
+    getId: (feature) => feature.id,
     onDelete: handleDelete,
   });
 
   const grouped = useMemo(() => {
-    const map = new Map<string, IssueWithWorkstream[]>();
+    const map = new Map<string, FeatureWithWorkstream[]>();
     for (const group of DISPLAY_GROUPS) {
-      const items = issues.filter((i) => group.statuses.includes(i.status));
+      const items = features.filter((i: FeatureWithWorkstream) =>
+        group.statuses.includes(i.status)
+      );
       if (items.length > 0) {
         map.set(group.key, items);
       }
     }
     return map;
-  }, [issues]);
+  }, [features]);
 
   if (isUserLoading || (assigneeId && isLoading)) {
     return (
@@ -121,7 +123,7 @@ export function MyTasksList({
     );
   }
 
-  if (issues.length === 0) {
+  if (features.length === 0) {
     return (
       <EmptyState
         description="Tasks assigned to you will appear here."
@@ -155,7 +157,7 @@ export function MyTasksList({
         onConfirm={confirmDelete}
         onOpenChange={setDeleteOpen}
         open={isDeleteOpen}
-        title="Issue"
+        title="Feature"
       />
     </div>
   );
@@ -163,9 +165,9 @@ export function MyTasksList({
 
 type MyTasksStatusSectionProps = {
   customFieldColumns: CustomFieldValueDetail[];
-  items: IssueWithWorkstream[];
+  items: FeatureWithWorkstream[];
   label: string;
-  onRequestDelete: (issue: IssueWithWorkstream) => void;
+  onRequestDelete: (feature: FeatureWithWorkstream) => void;
 };
 
 function MyTasksStatusSection({
@@ -197,11 +199,11 @@ function MyTasksStatusSection({
       </CollapsibleTrigger>
       <CollapsibleContent>
         <div className="flex flex-col">
-          {items.map((issue) => (
+          {items.map((feature) => (
             <MyTasksRow
               customFieldColumns={customFieldColumns}
-              issue={issue}
-              key={issue.id}
+              feature={feature}
+              key={feature.id}
               onRequestDelete={onRequestDelete}
             />
           ))}
@@ -213,31 +215,31 @@ function MyTasksStatusSection({
 
 type MyTasksRowProps = {
   customFieldColumns: CustomFieldValueDetail[];
-  issue: IssueWithWorkstream;
-  onRequestDelete: (issue: IssueWithWorkstream) => void;
+  feature: FeatureWithWorkstream;
+  onRequestDelete: (feature: FeatureWithWorkstream) => void;
 };
 
 function MyTasksRow({
-  issue,
+  feature,
   customFieldColumns,
   onRequestDelete,
 }: Readonly<MyTasksRowProps>) {
   const workstreamOrProject =
-    issue.workstream?.title ?? issue.project?.name ?? null;
+    feature.workstream?.title ?? feature.project?.name ?? null;
 
   return (
     <div className="flex items-center gap-4 border-b bg-background p-1.5">
       <Link
         className="flex min-w-0 flex-1 items-center gap-2.5 px-0 py-0"
-        href={`/issues/${issue.slug}`}
+        href={`/features/${feature.slug}`}
       >
         <BoxIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
-        {isDisplayableSlug(issue.slug) && (
+        {isDisplayableSlug(feature.slug) && (
           <span className="font-mono text-muted-foreground text-xs">
-            {issue.slug}
+            {feature.slug}
           </span>
         )}
-        <span className="truncate font-medium text-sm">{issue.title}</span>
+        <span className="truncate font-medium text-sm">{feature.title}</span>
       </Link>
       <div className="flex shrink-0 items-center gap-4">
         <div className="flex items-center gap-2.5">
@@ -250,8 +252,9 @@ function MyTasksRow({
             </Badge>
           ) : null}
           {customFieldColumns.map((colDef) => {
-            const fieldValue = issue.customFields?.find(
-              (f) => f.customFieldId === colDef.customFieldId
+            const fieldValue = feature.customFields?.find(
+              (f: CustomFieldValueDetail) =>
+                f.customFieldId === colDef.customFieldId
             );
             if (!fieldValue) {
               return null;
@@ -265,16 +268,19 @@ function MyTasksRow({
         </div>
         <div className="flex items-center gap-1">
           <div className="flex size-8 shrink-0 items-center justify-center">
-            <PriorityIcon priority={issue.priority} size={16} />
+            <PriorityIcon priority={feature.priority} size={16} />
           </div>
           <div className="flex size-8 shrink-0 items-center justify-center">
             <AssigneeAvatar
-              assignee={issue.assignee}
+              assignee={feature.assignee}
               className="size-5 shrink-0"
             />
           </div>
           <div className="flex size-8 shrink-0 items-center justify-center">
-            <StatusIcon size={20} status={ISSUE_STATUS_TO_ICON[issue.status]} />
+            <StatusIcon
+              size={20}
+              status={FEATURE_STATUS_TO_ICON[feature.status]}
+            />
           </div>
         </div>
         <DropdownMenu>
@@ -290,7 +296,7 @@ function MyTasksRow({
           <DropdownMenuContent align="end">
             <DropdownMenuItem
               className="text-destructive focus:text-destructive"
-              onClick={() => onRequestDelete(issue)}
+              onClick={() => onRequestDelete(feature)}
             >
               <TrashIcon className="h-4 w-4" />
               Delete

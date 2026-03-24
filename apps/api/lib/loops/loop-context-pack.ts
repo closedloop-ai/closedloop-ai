@@ -12,7 +12,7 @@ import { LoopCommand } from "@repo/api/src/types/loop";
 import { log } from "@repo/observability/log";
 import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
 import { artifactsService } from "@/app/artifacts/service";
-import { issuesService } from "@/app/issues/service";
+import { featuresService } from "@/app/features/service";
 import { loopsService } from "@/app/loops/service";
 import { getCommandHandler } from "./loop-commands";
 import {
@@ -106,13 +106,13 @@ async function fetchContextRefArtifacts(
   // Exclude the primary artifact from context refs to avoid duplication
   const refs = loop.contextRefs.filter(
     (ref) =>
-      ref.sourceId !== loop.artifactId || ref.sourceType === EntityType.Issue
+      ref.sourceId !== loop.artifactId || ref.sourceType === EntityType.Feature
   );
 
   const results = await Promise.all(
     refs.map((ref) => {
-      if (ref.sourceType === EntityType.Issue) {
-        return fetchIssueRef(ref, organizationId, loop.id);
+      if (ref.sourceType === EntityType.Feature) {
+        return fetchFeatureRef(ref, organizationId, loop.id);
       }
       return fetchArtifactRef(ref, organizationId, loop.id);
     })
@@ -123,26 +123,26 @@ async function fetchContextRefArtifacts(
   );
 }
 
-async function fetchIssueRef(
+async function fetchFeatureRef(
   ref: { sourceId: string; include: "full" | "summary" },
   organizationId: string,
   loopId: string
 ): Promise<ContextPack["artifacts"][number] | null> {
-  const issue = await issuesService.findById(ref.sourceId, organizationId);
-  if (!issue) {
-    log.warn("[loop-context-pack] Issue not found for context ref", {
+  const feature = await featuresService.findById(ref.sourceId, organizationId);
+  if (!feature) {
+    log.warn("[loop-context-pack] Feature not found for context ref", {
       loopId,
-      issueId: ref.sourceId,
+      featureId: ref.sourceId,
     });
     return null;
   }
 
-  const content = issue.description ?? "";
+  const content = feature.description ?? "";
 
   return {
-    id: issue.id,
+    id: feature.id,
     type: "FEATURE",
-    title: issue.title,
+    title: feature.title,
     content: ref.include === "summary" ? truncateForSummary(content) : content,
   };
 }
@@ -286,7 +286,7 @@ export async function buildContextPackInMemory(
     fetchParentLoopSummary(loop, organizationId),
   ]);
 
-  // Template first (structural blueprint), then context refs (Issue/PRD), then primary artifact
+  // Template first (structural blueprint), then context refs (Feature/PRD), then primary artifact
   const artifacts = [
     ...templateArtifacts,
     ...refArtifacts,

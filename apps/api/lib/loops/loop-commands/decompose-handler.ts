@@ -1,6 +1,6 @@
-import { type JsonObject, Priority } from "@repo/api/src/types/common";
+import { Priority } from "@repo/api/src/types/common";
 import { EntityType, LinkType } from "@repo/api/src/types/entity-link";
-import { IssueStatus } from "@repo/api/src/types/issue";
+import { FeatureStatus } from "@repo/api/src/types/feature";
 import type {
   DecomposeFeature,
   DecomposeResult,
@@ -9,10 +9,9 @@ import type {
 } from "@repo/api/src/types/loop";
 import { withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
-import { z } from "zod";
 import { artifactsService } from "@/app/artifacts/service";
 import { entityLinksService } from "@/app/entity-links/service";
-import { issuesService } from "@/app/issues/service";
+import { featuresService } from "@/app/features/service";
 import { parseJsonArtifact } from "@/lib/loops/loop-artifact-ingestion";
 import { downloadArtifactFile } from "@/lib/loops/loop-state";
 import { defineHandler } from "./loop-command-handler";
@@ -119,20 +118,24 @@ async function ingestDecomposeArtifacts(
 
   await withDb.tx(async () => {
     for (const feature of result.features) {
-      const issue = await issuesService.create(organizationId, loop.userId, {
-        projectId: prd.projectId!,
-        title: feature.title,
-        description: buildFullDescription(feature),
-        priority: PRIORITY_MAP[feature.priority ?? "MEDIUM"] ?? Priority.Medium,
-        status: IssueStatus.NotStarted,
-        ...(prd.assigneeId ? { assigneeId: prd.assigneeId } : {}),
-      });
+      const createdFeature = await featuresService.create(
+        organizationId,
+        loop.userId,
+        {
+          projectId: prd.projectId!,
+          title: feature.title,
+          description: buildFullDescription(feature),
+          priority:
+            PRIORITY_MAP[feature.priority ?? "MEDIUM"] ?? Priority.Medium,
+          status: FeatureStatus.NotStarted,
+        }
+      );
 
       await entityLinksService.createLink(organizationId, {
         sourceId: loop.artifactId!,
         sourceType: EntityType.Artifact,
-        targetId: issue.id,
-        targetType: EntityType.Issue,
+        targetId: createdFeature.id,
+        targetType: EntityType.Feature,
         linkType: LinkType.Produces,
       });
 
@@ -147,46 +150,6 @@ async function ingestDecomposeArtifacts(
 }
 
 // ---------------------------------------------------------------------------
-// Upload-based loading (desktop path)
-// ---------------------------------------------------------------------------
-
-const decomposeUploadSchema = z.object({
-  features: z
-    .object({
-      features: z.array(
-        z.object({
-          title: z.string(),
-          description: z.string(),
-          priority: z.enum(["HIGH", "MEDIUM", "LOW"]).optional(),
-          userStories: z
-            .array(
-              z.object({
-                id: z.string(),
-                story: z.string(),
-                acceptanceCriteria: z.array(
-                  z.object({
-                    id: z.string(),
-                    criterion: z.string(),
-                  })
-                ),
-              })
-            )
-            .optional(),
-        })
-      ),
-    })
-    .optional(),
-});
-
-function decomposeArtifactsFromUpload(
-  uploaded: JsonObject
-): DecomposeArtifacts {
-  const parsed = decomposeUploadSchema.parse(uploaded);
-  const result = (parsed.features as DecomposeResult) ?? null;
-  return { result };
-}
-
-// ---------------------------------------------------------------------------
 // Handler
 // ---------------------------------------------------------------------------
 
@@ -198,8 +161,6 @@ export const decomposeHandler = defineHandler<DecomposeArtifacts>({
   downloadArtifacts(stateKeyPrefix: string) {
     return downloadDecomposeArtifacts(stateKeyPrefix);
   },
-
-  downloadFromUpload: decomposeArtifactsFromUpload,
 
   async ingest(
     loop: Loop,

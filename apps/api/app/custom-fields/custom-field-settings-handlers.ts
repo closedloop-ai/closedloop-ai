@@ -35,7 +35,7 @@ const attachCustomFieldSettingValidator = z.object({
  * POST and DELETE are admin-only (withAuth + isOrgAdmin check).
  * GET uses withAnyAuth to support both API key and session clients.
  *
- * @param entityType - The entity type for the handler (Project, Workstream, Issue, Artifact).
+ * @param entityType - The entity type for the handler (Project, Workstream, Feature, Artifact).
  */
 export function makeCustomFieldSettingsHandlers(
   entityType: CustomFieldEntityType

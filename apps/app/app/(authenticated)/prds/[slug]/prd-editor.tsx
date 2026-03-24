@@ -104,7 +104,7 @@ export function PRDEditor({
     artifactType: ArtifactType.Prd,
   });
 
-  // Type assertion: useArtifactUIState returns a union; narrow to the PRD/Issue branch
+  // Type assertion: useArtifactUIState returns a union; narrow to the PRD/Feature branch
   const {
     showRenameDialog,
     setShowRenameDialog,

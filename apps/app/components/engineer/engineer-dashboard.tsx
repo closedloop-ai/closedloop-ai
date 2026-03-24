@@ -15,7 +15,7 @@ import { HeaderOverflowMenu } from "@/components/engineer/HeaderOverflowMenu";
 import { LearningsDialog } from "@/components/engineer/LearningsDialog";
 import { TerminalChatDialog } from "@/components/engineer/TerminalChatDialog";
 import { TicketList } from "@/components/engineer/TicketList";
-import { useEngineerIssues } from "@/hooks/engineer/use-engineer-issues";
+import { useEngineerFeatures } from "@/hooks/engineer/use-engineer-features";
 import { useFeatureSeen } from "@/hooks/engineer/use-feature-seen";
 import { useTerminalStatus } from "@/hooks/engineer/useTerminalStatus";
 import { terminalBus } from "@/lib/engineer/terminal-bus";
@@ -34,7 +34,7 @@ export function EngineerDashboard() {
     getFullTicket,
     postComment,
     refetch,
-  } = useEngineerIssues();
+  } = useEngineerFeatures();
 
   const [learningsOpen, setLearningsOpen] = useState(false);
   const [terminalChatOpen, setTerminalChatOpen] = useState(false);
@@ -218,12 +218,12 @@ export function EngineerDashboard() {
               className="size-10 cursor-pointer rounded-full"
               disabled={isLoading}
               onClick={async () => {
-                toast("Syncing issues...");
+                toast("Syncing features...");
                 await refetch();
-                toast.success("Issues refreshed");
+                toast.success("Features refreshed");
               }}
               size="icon"
-              title="Refresh issues"
+              title="Refresh features"
               variant="ghost"
             >
               <RefreshCw
@@ -265,7 +265,7 @@ export function EngineerDashboard() {
           <div className="mb-8 rounded-xl border border-destructive/20 bg-destructive/10 p-5">
             <div className="flex items-start justify-between gap-4">
               <div className="text-destructive">
-                <p className="font-semibold">Error loading issues</p>
+                <p className="font-semibold">Error loading features</p>
                 <p className="mt-1 text-sm opacity-80">{error.message}</p>
               </div>
               <Button
@@ -337,7 +337,7 @@ function TerminalStatus({
   } = useTerminalStatus();
 
   if (tickets.length === 0 && !user) {
-    return <div className="text-muted-foreground/60">$ loading issues...</div>;
+    return <div className="text-muted-foreground/60">$ loading features...</div>;
   }
 
   function statusClassName() {

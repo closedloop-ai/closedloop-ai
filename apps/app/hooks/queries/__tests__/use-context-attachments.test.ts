@@ -86,12 +86,12 @@ beforeEach(() => {
 });
 
 describe("useCreateContextAttachment", () => {
-  test("posts to the correct issue context-attachments URL", async () => {
+  test("posts to the correct feature context-attachments URL", async () => {
     const mockResponse = buildCreateResponse();
     mockApiClient.post.mockResolvedValueOnce(mockResponse);
 
     const { result } = renderHook(
-      () => useCreateContextAttachment("issue-123"),
+      () => useCreateContextAttachment("feature-123"),
       { wrapper: createWrapperWithClient(createTestQueryClient()) }
     );
 
@@ -100,7 +100,7 @@ describe("useCreateContextAttachment", () => {
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
     expect(mockApiClient.post).toHaveBeenCalledWith(
-      "/issues/issue-123/context-attachments",
+      "/features/feature-123/context-attachments",
       buildCreateInput()
     );
     expect(result.current.data).toEqual(mockResponse);
@@ -113,7 +113,7 @@ describe("useCreateContextAttachment", () => {
     mockApiClient.post.mockResolvedValueOnce(buildCreateResponse());
 
     const { result } = renderHook(
-      () => useCreateContextAttachment("issue-999"),
+      () => useCreateContextAttachment("feature-999"),
       { wrapper: createWrapperWithClient(createTestQueryClient()) }
     );
 
@@ -122,7 +122,7 @@ describe("useCreateContextAttachment", () => {
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
     expect(mockApiClient.post).toHaveBeenCalledWith(
-      "/issues/issue-999/context-attachments",
+      "/features/feature-999/context-attachments",
       input
     );
   });
@@ -134,7 +134,7 @@ describe("useCreateContextAttachment", () => {
     const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
 
     const { result } = renderHook(
-      () => useCreateContextAttachment("issue-123"),
+      () => useCreateContextAttachment("feature-123"),
       { wrapper: createWrapperWithClient(queryClient) }
     );
 
@@ -155,7 +155,7 @@ describe("useCreateContextAttachment", () => {
     );
 
     const { result } = renderHook(
-      () => useCreateContextAttachment("issue-123"),
+      () => useCreateContextAttachment("feature-123"),
       { wrapper: createWrapperWithClient(createTestQueryClient()) }
     );
 
@@ -174,7 +174,7 @@ describe("useCreateContextAttachment", () => {
     const onSuccess = vi.fn();
 
     const { result } = renderHook(
-      () => useCreateContextAttachment("issue-123", { onSuccess }),
+      () => useCreateContextAttachment("feature-123", { onSuccess }),
       { wrapper: createWrapperWithClient(createTestQueryClient()) }
     );
 
@@ -192,12 +192,12 @@ describe("useCreateContextAttachment", () => {
 });
 
 describe("useImportGDriveContext", () => {
-  test("posts to the correct issue gdrive URL", async () => {
+  test("posts to the correct feature gdrive URL", async () => {
     const input = buildImportInput();
     const mockResponse = buildImportResponse();
     mockApiClient.post.mockResolvedValueOnce(mockResponse);
 
-    const { result } = renderHook(() => useImportGDriveContext("issue-456"), {
+    const { result } = renderHook(() => useImportGDriveContext("feature-456"), {
       wrapper: createWrapperWithClient(createTestQueryClient()),
     });
 
@@ -206,7 +206,7 @@ describe("useImportGDriveContext", () => {
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
     expect(mockApiClient.post).toHaveBeenCalledWith(
-      "/issues/issue-456/context-attachments/gdrive",
+      "/features/feature-456/context-attachments/gdrive",
       input
     );
     expect(result.current.data).toEqual(mockResponse);
@@ -221,7 +221,7 @@ describe("useImportGDriveContext", () => {
     });
     mockApiClient.post.mockResolvedValueOnce(mockResponse);
 
-    const { result } = renderHook(() => useImportGDriveContext("issue-456"), {
+    const { result } = renderHook(() => useImportGDriveContext("feature-456"), {
       wrapper: createWrapperWithClient(createTestQueryClient()),
     });
 
@@ -246,7 +246,7 @@ describe("useImportGDriveContext", () => {
     const queryClient = createTestQueryClient();
     const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
 
-    const { result } = renderHook(() => useImportGDriveContext("issue-456"), {
+    const { result } = renderHook(() => useImportGDriveContext("feature-456"), {
       wrapper: createWrapperWithClient(queryClient),
     });
 
@@ -266,7 +266,7 @@ describe("useImportGDriveContext", () => {
       new Error("Google Drive not connected")
     );
 
-    const { result } = renderHook(() => useImportGDriveContext("issue-456"), {
+    const { result } = renderHook(() => useImportGDriveContext("feature-456"), {
       wrapper: createWrapperWithClient(createTestQueryClient()),
     });
 

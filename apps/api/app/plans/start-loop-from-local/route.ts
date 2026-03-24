@@ -18,7 +18,7 @@ import {
 // Parse the wider schema first; selectedArtifactId is optional.
 const bodySchema = z
   .object({
-    issueId: z.string().uuid(),
+    featureId: z.string().uuid(),
     ticketTitle: z.string().optional(),
     computeTargetId: z.string().uuid(),
     localRepoPath: z.string().min(1),
@@ -42,7 +42,7 @@ export const POST = withAnyAuth<StartPlanLoopResponse>(
         user.organizationId,
         user.id,
         {
-          issueId: body.issueId,
+          featureId: body.featureId,
           ticketTitle: body.ticketTitle,
           computeTargetId: body.computeTargetId,
           localRepoPath: body.localRepoPath,
@@ -101,7 +101,7 @@ export const POST = withAnyAuth<StartPlanLoopResponse>(
         metadata: {
           localRepoPath: body.localRepoPath,
           launchSource: "engineer_start_planning",
-          issueId: body.issueId,
+          featureId: body.featureId,
         },
       });
 
@@ -133,7 +133,7 @@ export const POST = withAnyAuth<StartPlanLoopResponse>(
       log.info("[start-loop-from-local] Plan loop launched", {
         loopId: launchResult.loopResponse.loopId,
         artifactId: result.artifactId,
-        issueId: body.issueId,
+        featureId: body.featureId,
       });
 
       return NextResponse.json(

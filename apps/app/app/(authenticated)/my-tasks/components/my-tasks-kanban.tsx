@@ -12,8 +12,8 @@ import {
   useSensors,
 } from "@dnd-kit/core";
 import { CSS } from "@dnd-kit/utilities";
-import type { IssueWithWorkstream } from "@repo/api/src/types/issue";
-import { IssueStatus } from "@repo/api/src/types/issue";
+import type { FeatureWithWorkstream } from "@repo/api/src/types/feature";
+import { FeatureStatus } from "@repo/api/src/types/feature";
 import { isDisplayableSlug } from "@repo/api/src/types/slug";
 import { Badge } from "@repo/design-system/components/ui/badge";
 import { Card } from "@repo/design-system/components/ui/card";
@@ -26,66 +26,68 @@ import { useCallback, useMemo, useRef, useState } from "react";
 import { AssigneeAvatar } from "@/components/assignee-avatar";
 import { EmptyState } from "@/components/empty-state";
 import {
-  issueKeys,
-  useIssues,
-  useUpdateIssue,
-} from "@/hooks/queries/use-issues";
-import { ISSUE_STATUS_TO_ICON } from "@/lib/project-constants";
-import type { MyTasksIssueFilters } from "../types";
+  featureKeys,
+  useFeatures,
+  useUpdateFeature,
+} from "@/hooks/queries/use-features";
+import { FEATURE_STATUS_TO_ICON } from "@/lib/project-constants";
+import type { MyTasksFeatureFilters } from "../types";
 import {
   applyClientFilters,
-  buildIssueListParams,
+  buildFeatureListParams,
   DISPLAY_GROUPS,
 } from "../utils";
 
-/** Map column (droppable) id to the status to set when an issue is dropped there */
-const COLUMN_TO_STATUS: Record<string, IssueStatus> = {
-  not_started: IssueStatus.NotStarted,
-  in_progress: IssueStatus.InProgress,
-  in_review: IssueStatus.InReview,
-  completed: IssueStatus.Completed,
-  obsolete: IssueStatus.Obsolete,
+/** Map column (droppable) id to the status to set when a feature is dropped there */
+const COLUMN_TO_STATUS: Record<string, FeatureStatus> = {
+  not_started: FeatureStatus.NotStarted,
+  in_progress: FeatureStatus.InProgress,
+  in_review: FeatureStatus.InReview,
+  completed: FeatureStatus.Completed,
+  obsolete: FeatureStatus.Obsolete,
 };
 
 type MyTasksKanbanProps = {
   assigneeId: string | null;
   isUserLoading: boolean;
-  issueFilters?: MyTasksIssueFilters;
+  featureFilters?: MyTasksFeatureFilters;
 };
 
 export function MyTasksKanban({
   assigneeId,
   isUserLoading,
-  issueFilters,
+  featureFilters,
 }: Readonly<MyTasksKanbanProps>) {
   const queryClient = useQueryClient();
   const listFilters = useMemo(
-    () => buildIssueListParams(assigneeId),
+    () => buildFeatureListParams(assigneeId),
     [assigneeId]
   );
-  const { data: rawIssues = [], isLoading } = useIssues(listFilters, {
+  const { data: rawFeatures = [], isLoading } = useFeatures(listFilters, {
     enabled: !!assigneeId && !isUserLoading,
   });
-  const issues = useMemo(
+  const features = useMemo(
     () =>
-      issueFilters ? applyClientFilters(rawIssues, issueFilters) : rawIssues,
-    [rawIssues, issueFilters]
+      featureFilters ? applyClientFilters(rawFeatures, featureFilters) : rawFeatures,
+    [rawFeatures, featureFilters]
   );
-  const updateIssueMutation = useUpdateIssue();
-  const lastDraggedIssueIdRef = useRef<string | null>(null);
+  const updateFeatureMutation = useUpdateFeature();
+  const lastDraggedFeatureIdRef = useRef<string | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
 
   const grouped = useMemo(() => {
-    const map = new Map<string, IssueWithWorkstream[]>();
+    const map = new Map<string, FeatureWithWorkstream[]>();
     for (const group of DISPLAY_GROUPS) {
-      const items = issues.filter((i) => group.statuses.includes(i.status));
+      const items = features.filter((i: FeatureWithWorkstream) =>
+        group.statuses.includes(i.status)
+      );
       map.set(group.key, items);
     }
     return map;
-  }, [issues]);
+  }, [features]);
 
   const handleDragStart = useCallback((event: DragStartEvent) => {
-    lastDraggedIssueIdRef.current = String(event.active.id);
+    lastDraggedFeatureIdRef.current = String(event.active.id);
     setActiveId(String(event.active.id));
   }, []);
 
@@ -93,7 +95,7 @@ export function MyTasksKanban({
     (event: DragEndEvent) => {
       const { active, over } = event;
       setTimeout(() => {
-        lastDraggedIssueIdRef.current = null;
+        lastDraggedFeatureIdRef.current = null;
       }, 250);
 
       if (!over || active.id === over.id) {
@@ -101,45 +103,49 @@ export function MyTasksKanban({
         return;
       }
       const overId = String(over.id);
-      let newStatus: IssueStatus | undefined = COLUMN_TO_STATUS[overId];
+      let newStatus: FeatureStatus | undefined = COLUMN_TO_STATUS[overId];
       if (!newStatus) {
-        const targetIssue = issues.find((i) => i.id === overId);
-        if (targetIssue) {
-          newStatus = targetIssue.status;
+        const targetFeature = features.find(
+          (i: FeatureWithWorkstream) => i.id === overId
+        );
+        if (targetFeature) {
+          newStatus = targetFeature.status;
         }
       }
       if (!newStatus) {
         setActiveId(null);
         return;
       }
-      const issueId = String(active.id);
-      const issue = issues.find((i) => i.id === issueId);
-      if (!issue || issue.status === newStatus) {
+      const featureId = String(active.id);
+      const feature = features.find(
+        (i: FeatureWithWorkstream) => i.id === featureId
+      );
+      if (!feature || feature.status === newStatus) {
         setActiveId(null);
         return;
       }
       queryClient.setQueryData(
-        issueKeys.list(listFilters),
-        (old: IssueWithWorkstream[] | undefined) => {
+        featureKeys.list(listFilters),
+        (old: FeatureWithWorkstream[] | undefined) => {
           if (!old) {
             return old;
           }
-          return old.map((i) =>
-            i.id === issueId ? { ...i, status: newStatus } : i
+          return old.map((i: FeatureWithWorkstream) =>
+            i.id === featureId ? { ...i, status: newStatus } : i
           );
         }
       );
       setActiveId(null);
-      updateIssueMutation.mutate(
-        { id: issueId, status: newStatus },
+      updateFeatureMutation.mutate(
+        { id: featureId, status: newStatus },
         {
           onError: () => {
-            queryClient.invalidateQueries({ queryKey: issueKeys.lists() });
+            queryClient.invalidateQueries({ queryKey: featureKeys.lists() });
           },
         }
       );
     },
-    [issues, listFilters, queryClient, updateIssueMutation]
+    [features, listFilters, queryClient, updateFeatureMutation]
   );
 
   const sensors = useSensors(
@@ -164,7 +170,7 @@ export function MyTasksKanban({
     );
   }
 
-  if (issues.length === 0) {
+  if (features.length === 0) {
     return (
       <EmptyState
         description="Tasks assigned to you will appear here."
@@ -174,7 +180,9 @@ export function MyTasksKanban({
     );
   }
 
-  const activeIssue = activeId ? issues.find((i) => i.id === activeId) : null;
+  const activeFeature = activeId
+    ? features.find((i: FeatureWithWorkstream) => i.id === activeId)
+    : null;
 
   return (
     <DndContext
@@ -191,13 +199,13 @@ export function MyTasksKanban({
               groupLabel={group.label}
               items={items}
               key={group.key}
-              lastDraggedIssueIdRef={lastDraggedIssueIdRef}
+              lastDraggedFeatureIdRef={lastDraggedFeatureIdRef}
             />
           );
         })}
       </div>
       <DragOverlay>
-        {activeIssue ? <KanbanCardPreview issue={activeIssue} /> : null}
+        {activeFeature ? <KanbanCardPreview feature={activeFeature} /> : null}
       </DragOverlay>
     </DndContext>
   );
@@ -206,15 +214,15 @@ export function MyTasksKanban({
 type KanbanColumnProps = {
   groupKey: string;
   groupLabel: string;
-  items: IssueWithWorkstream[];
-  lastDraggedIssueIdRef: React.MutableRefObject<string | null>;
+  items: FeatureWithWorkstream[];
+  lastDraggedFeatureIdRef: React.MutableRefObject<string | null>;
 };
 
 function KanbanColumn({
   groupKey,
   groupLabel,
   items,
-  lastDraggedIssueIdRef,
+  lastDraggedFeatureIdRef,
 }: Readonly<KanbanColumnProps>) {
   const { isOver, setNodeRef } = useDroppable({ id: groupKey });
 
@@ -232,11 +240,11 @@ function KanbanColumn({
       <div
         className={`flex flex-col gap-1.5 p-1.5 ${isOver ? "bg-accent/30" : ""}`}
       >
-        {items.map((issue) => (
+        {items.map((feature) => (
           <MyTasksCard
-            issue={issue}
-            key={issue.id}
-            lastDraggedIssueIdRef={lastDraggedIssueIdRef}
+            feature={feature}
+            key={feature.id}
+            lastDraggedFeatureIdRef={lastDraggedFeatureIdRef}
           />
         ))}
       </div>
@@ -247,13 +255,13 @@ function KanbanColumn({
 /** Shared card body for kanban cards and overlay preview */
 function KanbanCardContent({
   disableAvatarLink = false,
-  issue,
+  feature,
 }: Readonly<{
   disableAvatarLink?: boolean;
-  issue: IssueWithWorkstream;
+  feature: FeatureWithWorkstream;
 }>) {
   const workstreamOrProject =
-    issue.workstream?.title ?? issue.project?.name ?? null;
+    feature.workstream?.title ?? feature.project?.name ?? null;
 
   return (
     <div className="px-3 py-1">
@@ -261,13 +269,13 @@ function KanbanCardContent({
         <BoxIcon className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-baseline gap-1.5">
-            {isDisplayableSlug(issue.slug) && (
+            {isDisplayableSlug(feature.slug) && (
               <span className="shrink-0 font-mono text-muted-foreground text-xs">
-                {issue.slug}
+                {feature.slug}
               </span>
             )}
             <p className="min-w-0 truncate font-medium text-sm">
-              {issue.title}
+              {feature.title}
             </p>
           </div>
         </div>
@@ -285,17 +293,20 @@ function KanbanCardContent({
         </div>
         <div className="flex shrink-0 items-center gap-1">
           <div className="flex size-6 shrink-0 items-center justify-center">
-            <PriorityIcon priority={issue.priority} size={14} />
+            <PriorityIcon priority={feature.priority} size={14} />
           </div>
           <div className="flex size-6 shrink-0 items-center justify-center">
             <AssigneeAvatar
-              assignee={issue.assignee}
+              assignee={feature.assignee}
               className="size-4 shrink-0"
               disableLink={disableAvatarLink}
             />
           </div>
           <div className="flex size-6 shrink-0 items-center justify-center">
-            <StatusIcon size={16} status={ISSUE_STATUS_TO_ICON[issue.status]} />
+            <StatusIcon
+              size={16}
+              status={FEATURE_STATUS_TO_ICON[feature.status]}
+            />
           </div>
         </div>
       </div>
@@ -305,26 +316,26 @@ function KanbanCardContent({
 
 /** Card for DragOverlay so the dragging item doesn't affect layout */
 function KanbanCardPreview({
-  issue,
-}: Readonly<{ issue: IssueWithWorkstream }>) {
+  feature,
+}: Readonly<{ feature: FeatureWithWorkstream }>) {
   return (
     <Card className="cursor-grabbing py-3 shadow-lg">
-      <KanbanCardContent issue={issue} />
+      <KanbanCardContent feature={feature} />
     </Card>
   );
 }
 
 type MyTasksCardProps = {
-  issue: IssueWithWorkstream;
-  lastDraggedIssueIdRef: React.MutableRefObject<string | null>;
+  feature: FeatureWithWorkstream;
+  lastDraggedFeatureIdRef: React.MutableRefObject<string | null>;
 };
 
 function MyTasksCard({
-  issue,
-  lastDraggedIssueIdRef,
+  feature,
+  lastDraggedFeatureIdRef,
 }: Readonly<MyTasksCardProps>) {
   const { attributes, isDragging, listeners, setNodeRef, transform } =
-    useDraggable({ id: issue.id });
+    useDraggable({ id: feature.id });
 
   const style =
     !isDragging && transform
@@ -333,12 +344,12 @@ function MyTasksCard({
 
   const handleLinkClick = useCallback(
     (e: React.MouseEvent) => {
-      if (lastDraggedIssueIdRef.current === issue.id) {
+      if (lastDraggedFeatureIdRef.current === feature.id) {
         e.preventDefault();
-        lastDraggedIssueIdRef.current = null;
+        lastDraggedFeatureIdRef.current = null;
       }
     },
-    [issue.id, lastDraggedIssueIdRef]
+    [feature.id, lastDraggedFeatureIdRef]
   );
 
   return (
@@ -349,9 +360,9 @@ function MyTasksCard({
       {...attributes}
       {...listeners}
     >
-      <Link href={`/issues/${issue.slug}`} onClick={handleLinkClick}>
+      <Link href={`/features/${feature.slug}`} onClick={handleLinkClick}>
         <Card className="py-3 transition-colors hover:bg-accent/50">
-          <KanbanCardContent disableAvatarLink issue={issue} />
+          <KanbanCardContent disableAvatarLink feature={feature} />
         </Card>
       </Link>
     </div>

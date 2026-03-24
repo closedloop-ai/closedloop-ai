@@ -1,7 +1,7 @@
 import { ArtifactStatus, ArtifactType } from "@repo/api/src/types/artifact";
 import { Priority } from "@repo/api/src/types/common";
 import { ExternalLinkType } from "@repo/api/src/types/external-link";
-import { IssueStatus } from "@repo/api/src/types/issue";
+import { FeatureStatus } from "@repo/api/src/types/feature";
 import { ProjectStatus } from "@repo/api/src/types/project";
 import type { StatusIconStatus } from "@repo/design-system/components/ui/status-icon";
 import {
@@ -98,29 +98,29 @@ export const ARTIFACT_TYPE_BADGE_LABELS: Record<ArtifactType, string> = {
   [ArtifactType.Template]: "Template",
 };
 
-// Issue status labels and colors
-export const ISSUE_STATUS_LABELS: Record<IssueStatus, string> = {
-  [IssueStatus.NotStarted]: "Not Started",
-  [IssueStatus.InProgress]: "In Progress",
-  [IssueStatus.InReview]: "In Review",
-  [IssueStatus.Completed]: "Completed",
-  [IssueStatus.Obsolete]: "Obsolete",
+// Feature status labels and colors
+export const FEATURE_STATUS_LABELS: Record<FeatureStatus, string> = {
+  [FeatureStatus.NotStarted]: "Not Started",
+  [FeatureStatus.InProgress]: "In Progress",
+  [FeatureStatus.InReview]: "In Review",
+  [FeatureStatus.Completed]: "Completed",
+  [FeatureStatus.Obsolete]: "Obsolete",
 };
 
-export const ISSUE_STATUS_COLORS: Record<IssueStatus, string> = {
-  [IssueStatus.NotStarted]: "text-muted-foreground",
-  [IssueStatus.InProgress]: "text-blue-600 dark:text-blue-400",
-  [IssueStatus.InReview]: "text-yellow-600 dark:text-yellow-400",
-  [IssueStatus.Completed]: "text-green-600 dark:text-green-400",
-  [IssueStatus.Obsolete]: "text-muted-foreground",
+export const FEATURE_STATUS_COLORS: Record<FeatureStatus, string> = {
+  [FeatureStatus.NotStarted]: "text-muted-foreground",
+  [FeatureStatus.InProgress]: "text-blue-600 dark:text-blue-400",
+  [FeatureStatus.InReview]: "text-yellow-600 dark:text-yellow-400",
+  [FeatureStatus.Completed]: "text-green-600 dark:text-green-400",
+  [FeatureStatus.Obsolete]: "text-muted-foreground",
 };
 
-export const ISSUE_STATUS_TO_ICON: Record<IssueStatus, StatusIconStatus> = {
-  [IssueStatus.NotStarted]: "todo",
-  [IssueStatus.InProgress]: "in-progress",
-  [IssueStatus.InReview]: "in-review",
-  [IssueStatus.Completed]: "complete",
-  [IssueStatus.Obsolete]: "wont-do",
+export const FEATURE_STATUS_TO_ICON: Record<FeatureStatus, StatusIconStatus> = {
+  [FeatureStatus.NotStarted]: "todo",
+  [FeatureStatus.InProgress]: "in-progress",
+  [FeatureStatus.InReview]: "in-review",
+  [FeatureStatus.Completed]: "complete",
+  [FeatureStatus.Obsolete]: "wont-do",
 };
 
 // External link type icons
@@ -167,8 +167,8 @@ export const EXTERNAL_LINK_TYPE_BADGE_LABELS: Record<ExternalLinkType, string> =
     [ExternalLinkType.PreviewDeployment]: "Preview",
   };
 
-// Issue icon
-export const ISSUE_ICON: React.ElementType = BoxIcon;
+// Feature icon
+export const FEATURE_ICON: React.ElementType = BoxIcon;
 
 // Project status labels
 export const PROJECT_STATUS_LABELS: Record<ProjectStatus, string> = {

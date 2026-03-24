@@ -26,15 +26,17 @@ export const repoSchema = z.object({
 
 export const createLoopValidator = z.object({
   command: z.enum(["PLAN", "EXECUTE", "CHAT", "EXPLORE", "REQUEST_CHANGES"]),
-  artifactId: z.uuid().optional(),
-  workstreamId: z.uuid().optional(),
+  artifactId: z.uuidv7().optional(),
+  workstreamId: z.uuidv7().optional(),
   prompt: z.string().max(100_000).optional(),
   repo: repoSchema.optional(),
   contextRefs: z
     .array(
       z.object({
-        sourceId: z.uuid(),
-        sourceType: z.enum([EntityType.Artifact, EntityType.Issue]).optional(),
+        sourceId: z.uuidv7(),
+        sourceType: z
+          .enum([EntityType.Artifact, EntityType.Feature])
+          .optional(),
         include: z.enum(["full", "summary"]),
       })
     )

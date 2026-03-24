@@ -34,8 +34,8 @@ vi.mock("@/app/artifacts/service", () => ({
   },
 }));
 
-vi.mock("@/app/issues/service", () => ({
-  issuesService: {
+vi.mock("@/app/features/service", () => ({
+  featuresService: {
     findById: vi.fn(),
   },
 }));

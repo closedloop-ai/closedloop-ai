@@ -2,7 +2,7 @@ import { z } from "zod";
 import { repoSchema } from "@/app/loops/validators";
 
 const baseSchema = z.object({
-  issueId: z.string().uuid(),
+  featureId: z.string().uuid(),
   ticketTitle: z.string().optional(),
   computeTargetId: z.string().uuid(),
   localRepoPath: z.string().min(1),

@@ -8,18 +8,18 @@ import { type EngineerTicket, TicketSourceType } from "@/types/engineer";
 /**
  * Resolves the implementation plan artifact for an engineer ticket.
  *
- * For Issue-sourced tickets: follows Issue → EntityLink(PRODUCES) → Artifact.
+ * For Feature-sourced tickets: follows Feature → EntityLink(PRODUCES) → Artifact.
  * For Implementation Plan tickets: the ticket itself IS the artifact, so we
  * use the ticket's own ID directly.
  */
 export function useTicketPlanArtifact(ticket: EngineerTicket) {
   const isDirectPlan =
     ticket.sourceType === TicketSourceType.ImplementationPlan;
-  const issueId = ticket.issueId ?? "";
+  const featureId = ticket.featureId ?? "";
 
-  // For Issue-sourced tickets, resolve via entity link chain
-  const { linkedPlanId } = useLinkedPlanId(issueId, {
-    enabled: !!issueId && !isDirectPlan,
+  // For Feature-sourced tickets, resolve via entity link chain
+  const { linkedPlanId } = useLinkedPlanId(featureId, {
+    enabled: !!featureId && !isDirectPlan,
   });
 
   // For Implementation Plan tickets, the ticket ID is the artifact ID

@@ -41,12 +41,14 @@ enum WorkstreamState {
   CANCELLED
 }
 
-enum IssueStatus {
+enum FeatureStatus {
   NOT_STARTED
   IN_PROGRESS
   IN_REVIEW
   COMPLETED
   OBSOLETE
+
+  @@map("IssueStatus")
 }
 
 enum ExternalLinkType {
@@ -58,15 +60,15 @@ enum ExternalLinkType {
 // Entity types for polymorphic EntityLink
 enum EntityType {
   ARTIFACT
-  ISSUE
+  FEATURE @map("ISSUE")
   EXTERNAL_LINK
 }
 
 // Relationship types between entities (source → target, where source is the origin/cause)
 enum LinkType {
   PRODUCES // source produces target (PRD → Plan, Plan → PR, PR → Preview)
-  BLOCKS // source blocks target (Issue blocks Issue)
-  RELATES_TO // bidirectional association (Issue ↔ Issue)
+  BLOCKS // source blocks target (Feature blocks Feature)
+  RELATES_TO // bidirectional association (Feature ↔ Feature)
 }
 
 enum ArtifactStatus {
@@ -238,7 +240,7 @@ enum CustomFieldType {
 enum CustomFieldEntityType {
   PROJECT
   WORKSTREAM
-  ISSUE
+  FEATURE @map("ISSUE")
   ARTIFACT
 }
 
@@ -305,7 +307,7 @@ model Organization {
   projects           Project[]
   workstreams        Workstream[]
   artifacts          Artifact[]
-  issues             Issue[]
+  features           Feature[]
   externalLinks      ExternalLink[]
   githubInstallation GitHubInstallation?
   loops              Loop[]
@@ -350,8 +352,8 @@ model User {
   assignedArtifacts  Artifact[]   @relation("ArtifactAssignee")
   createdArtifacts   Artifact[]   @relation("ArtifactCreatedBy")
   approvedArtifacts  Artifact[]   @relation("ArtifactApprover")
-  assignedIssues     Issue[]      @relation("IssueAssignee")
-  createdIssues      Issue[]      @relation("IssueCreator")
+  assignedFeatures   Feature[]    @relation("FeatureAssignee")
+  createdFeatures    Feature[]    @relation("FeatureCreator")
   createdWorkstreams  Workstream[] @relation("WorkstreamCreatedBy")
   assignedWorkstreams Workstream[] @relation("WorkstreamAssignee")
   loops               Loop[]
@@ -459,7 +461,7 @@ model Project {
   createdBy     User           @relation("ProjectCreatedBy", fields: [createdById], references: [id])
   workstreams   Workstream[]
   artifacts     Artifact[]
-  issues        Issue[]
+  features      Feature[]
   externalLinks ExternalLink[]
   teams         ProjectTeam[]
   favoritedBy   FavoriteProject[]
@@ -569,7 +571,7 @@ model Workstream {
   createdBy     User           @relation("WorkstreamCreatedBy", fields: [createdById], references: [id])
   assignee      User?          @relation("WorkstreamAssignee", fields: [assigneeId], references: [id])
   artifacts     Artifact[]
-  issues        Issue[]
+  features      Feature[]
   externalLinks ExternalLink[]
   loops         Loop[]
   pullRequests  GitHubPullRequest[]
@@ -811,7 +813,7 @@ model PullRequestRating {
 // OTHER ENTITIES
 // =============================================================================
 
-model Issue {
+model Feature {
   id             String        @id @default(uuid(7)) @db.Uuid
   organizationId String        @map("organization_id") @db.Uuid
   workstreamId   String?       @map("workstream_id") @db.Uuid
@@ -819,7 +821,7 @@ model Issue {
   title          String
   slug           String
   description    String?       @db.Text
-  status         IssueStatus   @default(NOT_STARTED)
+  status         FeatureStatus @default(NOT_STARTED)
   priority       Priority      @default(MEDIUM)
   assigneeId     String?       @map("assignee_id") @db.Uuid
   createdById    String        @map("created_by_id") @db.Uuid
@@ -830,8 +832,8 @@ model Issue {
   organization Organization @relation(fields: [organizationId], references: [id])
   workstream   Workstream?  @relation(fields: [workstreamId], references: [id], onDelete: Cascade)
   project      Project?     @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  assignee     User?        @relation("IssueAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
-  createdBy    User         @relation("IssueCreator", fields: [createdById], references: [id])
+  assignee     User?        @relation("FeatureAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  createdBy    User         @relation("FeatureCreator", fields: [createdById], references: [id])
 
   @@unique([organizationId, slug])
   @@index([organizationId, workstreamId, status])

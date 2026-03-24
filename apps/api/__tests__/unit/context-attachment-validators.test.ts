@@ -4,7 +4,7 @@ import {
   CONTEXT_ATTACHMENT_MIME_TYPES,
   createContextAttachmentValidator,
   importGDriveContextValidator,
-} from "@/app/issues/[id]/context-attachments/validators";
+} from "@/app/features/[id]/context-attachments/validators";
 
 // ---------------------------------------------------------------------------
 // createContextAttachmentValidator

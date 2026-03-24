@@ -135,7 +135,7 @@ export function useStartPlanLoop(
       loopId: string,
       artifactId: string,
       artifactSlug: string,
-      issueId: string,
+      featureId: string,
       ticketTitle: string | undefined,
       outcome: "launched" | "already-running"
     ): Promise<string | null> => {
@@ -144,7 +144,7 @@ export function useStartPlanLoop(
         loopId,
         artifactId,
         artifactSlug,
-        issueId,
+        featureId,
         outcome,
       };
       if (ticketTitle) {
@@ -214,8 +214,8 @@ export function useStartPlanLoop(
       repoPath: string,
       baseBranch?: string
     ): Promise<{ launched: boolean; alreadyRunning: boolean }> => {
-      if (!ticket.issueId) {
-        throw new Error("startPlanLoop requires a ticket with issueId");
+      if (!ticket.featureId) {
+        throw new Error("startPlanLoop requires a ticket with featureId");
       }
 
       if (launchInFlightRef.current) {
@@ -239,7 +239,7 @@ export function useStartPlanLoop(
 
         // Phase 2: Direct browser-to-API call with Clerk token
         const apiBody: Record<string, unknown> = {
-          issueId: ticket.issueId,
+          featureId: ticket.featureId,
           computeTargetId: computeResult.computeTargetId,
           localRepoPath: prepareResult.repoPath,
         };
@@ -268,7 +268,7 @@ export function useStartPlanLoop(
             data.loopId,
             data.artifactId,
             data.artifactSlug,
-            ticket.issueId,
+            ticket.featureId,
             ticket.title,
             data.outcome
           );
@@ -324,7 +324,7 @@ export function useStartPlanLoop(
 
       const { ticket, repoPath, prepareResult } = pendingContext;
 
-      if (!ticket.issueId) {
+      if (!ticket.featureId) {
         return;
       }
 
@@ -336,7 +336,7 @@ export function useStartPlanLoop(
 
       // Phase 2: Direct browser-to-API call with selected artifact
       const apiBody: Record<string, unknown> = {
-        issueId: ticket.issueId,
+        featureId: ticket.featureId,
         selectedArtifactId: artifactId,
         computeTargetId: computeResult.computeTargetId,
         localRepoPath: prepareResult.repoPath,
@@ -369,7 +369,7 @@ export function useStartPlanLoop(
           data.loopId,
           data.artifactId,
           data.artifactSlug,
-          ticket.issueId,
+          ticket.featureId,
           ticket.title,
           data.outcome
         );

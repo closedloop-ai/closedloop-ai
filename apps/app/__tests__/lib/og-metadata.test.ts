@@ -68,20 +68,20 @@ describe("resolveOgMetadata", () => {
     });
   });
 
-  describe("issue handler", () => {
-    it("fetches metadata for issues/<slug>", async () => {
+  describe("feature handler", () => {
+    it("fetches metadata for features/<slug>", async () => {
       vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
         Response.json({ title: "Fix login bug", status: "IN_PROGRESS" })
       );
 
-      const metadata = await resolveOgMetadata("issues/fix-login-bug");
+      const metadata = await resolveOgMetadata("features/fix-login-bug");
 
       expect(fetch).toHaveBeenCalledWith(
-        "http://localhost:3002/issues/by-slug/fix-login-bug/meta",
+        "http://localhost:3002/features/by-slug/fix-login-bug/meta",
         expect.any(Object)
       );
       expect(metadata.title).toBe("Fix login bug | ClosedLoop.ai");
-      expect(metadata.description).toBe("Issue — In Progress");
+      expect(metadata.description).toBe("Feature — In Progress");
     });
   });
 

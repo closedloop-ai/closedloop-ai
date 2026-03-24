@@ -53,7 +53,7 @@ type TargetRepositoryFieldsProps = {
 
 /**
  * Shared component for target repository and branch input fields.
- * Used by PRD and Issue metadata panels.
+ * Used by PRD and Feature metadata panels.
  */
 export function TargetRepositoryFields({
   title,

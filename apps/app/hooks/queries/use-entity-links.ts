@@ -214,17 +214,17 @@ export function useLinkedEntities(
 }
 
 /**
- * Resolves the linked implementation plan artifact ID for an issue.
- * Follows the Issue → EntityLink(PRODUCES) → Artifact lookup chain.
+ * Resolves the linked implementation plan artifact ID for a feature.
+ * Follows the Feature → EntityLink(PRODUCES) → Artifact lookup chain.
  * Returns an empty string when no plan is linked.
  */
 export function useLinkedPlanId(
-  issueId: string,
+  featureId: string,
   options?: Omit<UseQueryOptions<EntityLink[]>, "queryKey" | "queryFn">
 ) {
   const { data: targetLinks = [] } = useTargetLinks(
-    issueId,
-    EntityType.Issue,
+    featureId,
+    EntityType.Feature,
     LinkType.Produces,
     options
   );

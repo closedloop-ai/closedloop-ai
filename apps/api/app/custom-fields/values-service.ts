@@ -50,7 +50,7 @@ export const customFieldValuesService = {
    * Attach a custom field to an entity by creating a CustomFieldSetting.
    *
    * For PROJECT entities, also cascades the setting to all direct child
-   * Workstreams and Issues within the same transaction.
+   * Workstreams and Features within the same transaction.
    *
    * Verifies:
    * - The entity exists and belongs to the organization.
@@ -85,14 +85,14 @@ export const customFieldValuesService = {
         include: SETTING_WITH_FIELD_INCLUDE,
       });
 
-      // Cascade to direct child Workstreams and Issues when attaching to a Project.
+      // Cascade to direct child Workstreams and Features when attaching to a Project.
       if (entityType === CustomFieldEntityType.Project) {
-        const [childWorkstreams, childIssues] = await Promise.all([
+        const [childWorkstreams, childFeatures] = await Promise.all([
           tx.workstream.findMany({
             where: { projectId: entityId, organizationId },
             select: { id: true },
           }),
-          tx.issue.findMany({
+          tx.feature.findMany({
             where: { projectId: entityId, organizationId },
             select: { id: true },
           }),
@@ -113,12 +113,12 @@ export const customFieldValuesService = {
           });
         }
 
-        for (const issue of childIssues) {
+        for (const feature of childFeatures) {
           childSettingsData.push({
             customFieldId: fieldId,
             organizationId,
-            entityType: CustomFieldEntityType.Issue,
-            entityId: issue.id,
+            entityType: CustomFieldEntityType.Feature,
+            entityId: feature.id,
             isImportant: input.isImportant ?? false,
             isRequired: input.isRequired ?? false,
             sortOrder: input.sortOrder ?? 0,
@@ -362,8 +362,8 @@ async function verifyEntityExists(
         });
         return record !== null;
       }
-      case CustomFieldEntityType.Issue: {
-        const record = await db.issue.findFirst({
+      case CustomFieldEntityType.Feature: {
+        const record = await db.feature.findFirst({
           where: { id: entityId, organizationId },
           select: { id: true },
         });

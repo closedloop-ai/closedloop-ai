@@ -1,8 +1,8 @@
 import { ArtifactType } from "@repo/api/src/types/artifact";
-import type { IssueStatus } from "@repo/api/src/types/issue";
+import type { FeatureStatus } from "@repo/api/src/types/feature";
 import type { Metadata } from "next";
 import { env } from "@/env";
-import { ISSUE_STATUS_LABELS } from "@/lib/project-constants";
+import { FEATURE_STATUS_LABELS } from "@/lib/project-constants";
 
 const ARTIFACT_TYPE_DISPLAY: Record<ArtifactType, string> = {
   [ArtifactType.Prd]: "PRD",
@@ -84,18 +84,18 @@ const handlers: OgHandler[] = [
     },
   },
   {
-    pattern: /^issues\/([^/]+)$/,
+    pattern: /^features\/([^/]+)$/,
     async resolve(match, apiUrl) {
       const slug = match[1];
-      const data = await fetchJson(`${apiUrl}/issues/by-slug/${slug}/meta`);
+      const data = await fetchJson(`${apiUrl}/features/by-slug/${slug}/meta`);
       if (!data) {
         return FALLBACK_METADATA;
       }
       const description =
-        ISSUE_STATUS_LABELS[data.status as IssueStatus] ??
+        FEATURE_STATUS_LABELS[data.status as FeatureStatus] ??
         data.status ??
-        "Issue";
-      return makeMetadata(data.title, `Issue — ${description}`);
+        "Feature";
+      return makeMetadata(data.title, `Feature — ${description}`);
     },
   },
 ];

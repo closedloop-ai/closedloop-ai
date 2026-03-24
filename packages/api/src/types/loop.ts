@@ -43,7 +43,7 @@ export type RunLoopCommand =
 
 export type SourceContextType = (typeof EntityType)[keyof Pick<
   typeof EntityType,
-  "Artifact" | "Issue"
+  "Artifact" | "Feature"
 >];
 
 // Compute target summary (for loop list/detail views)

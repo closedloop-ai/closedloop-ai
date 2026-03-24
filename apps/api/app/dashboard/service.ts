@@ -17,7 +17,7 @@ import { log } from "@repo/observability/log";
 export const dashboardService = {
   /**
    * Get dashboard statistics for an organization including counts and 14-day trends.
-   * Returns metrics for PRDs, issues, implementation plans, landed code, and agentic workflows.
+   * Returns metrics for PRDs, features, implementation plans, landed code, and agentic workflows.
    */
   async getDashboardStats(organizationId: string): Promise<DashboardStats> {
     try {
@@ -37,12 +37,12 @@ export const dashboardService = {
       // Execute all queries in parallel for performance
       const [
         prdsCount,
-        issuesCount,
+        featuresCount,
         plansCount,
         landedCodeCount,
         agenticWorkflowsCount,
         prdsTrendData,
-        issuesTrendData,
+        featuresTrendData,
         plansTrendData,
         landedCodeTrendData,
         agenticWorkflowsTrendData,
@@ -53,9 +53,9 @@ export const dashboardService = {
             where: { organizationId, type: ArtifactType.PRD },
           })
         ),
-        // Issues are a separate entity (Issue table)
+        // Features are a separate entity (Feature table)
         withDb((db) =>
-          db.issue.count({
+          db.feature.count({
             where: { organizationId },
           })
         ),
@@ -98,9 +98,9 @@ export const dashboardService = {
             select: { createdAt: true },
           })
         ),
-        // Issues trend from separate Issue table
+        // Features trend from separate Feature table
         withDb((db) =>
-          db.issue.findMany({
+          db.feature.findMany({
             where: {
               organizationId,
               createdAt: { gte: fourteenDaysAgo },
@@ -143,7 +143,7 @@ export const dashboardService = {
 
       // Transform trend data into DailyTrend arrays
       const prdsTrend = aggregateTrendData(prdsTrendData, "createdAt");
-      const issuesTrend = aggregateTrendData(issuesTrendData, "createdAt");
+      const featuresTrend = aggregateTrendData(featuresTrendData, "createdAt");
       const plansTrend = aggregateTrendData(plansTrendData, "createdAt");
       const landedCodeTrend = aggregateTrendData(
         landedCodeTrendData,
@@ -157,7 +157,7 @@ export const dashboardService = {
       // Return structured DashboardStats
       return {
         prds: { count: prdsCount, trend: prdsTrend },
-        issues: { count: issuesCount, trend: issuesTrend },
+        features: { count: featuresCount, trend: featuresTrend },
         plans: { count: plansCount, trend: plansTrend },
         landedCode: { count: landedCodeCount, trend: landedCodeTrend },
         agenticWorkflows: {

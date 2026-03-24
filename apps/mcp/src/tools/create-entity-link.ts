@@ -13,18 +13,18 @@ export function registerCreateEntityLink(
     "create-entity-link",
     {
       description:
-        "Create a link between two entities (e.g., artifact to issue, workstream to artifact)",
+        "Create a link between two entities (e.g., artifact to feature, workstream to artifact)",
       inputSchema: {
         sourceId: z
           .string()
           .describe(
-            "ID or slug of the source entity (slug supported for artifacts and issues only)"
+            "ID or slug of the source entity (slug supported for artifacts and features only)"
           ),
         sourceType: z.enum(EntityType).describe("Type of the source entity"),
         targetId: z
           .string()
           .describe(
-            "ID or slug of the target entity (slug supported for artifacts and issues only)"
+            "ID or slug of the target entity (slug supported for artifacts and features only)"
           ),
         targetType: z.enum(EntityType).describe("Type of the target entity"),
         linkType: z.enum(LINK_TYPE_VALUES).describe("Type of the link"),

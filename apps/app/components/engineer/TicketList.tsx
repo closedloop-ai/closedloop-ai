@@ -28,7 +28,7 @@ import {
   TicketListRowSkeleton,
 } from "@/components/engineer/TicketListRow";
 import { useCodexAvailable } from "@/hooks/engineer/use-codex-available";
-import type { FullTicketDetails } from "@/hooks/engineer/use-engineer-issues";
+import type { FullTicketDetails } from "@/hooks/engineer/use-engineer-features";
 import { useStartPlanLoop } from "@/hooks/engineer/use-start-plan-loop";
 import { useSymphonyLaunch } from "@/hooks/engineer/useSymphonyLaunch";
 import {
@@ -869,12 +869,12 @@ export function TicketList({
       // Resume directly without showing repo picker
       const ticket = tickets.find((t) => t.identifier === ticketIdentifier);
 
-      // For issue-sourced tickets, use the real plan-loop flow even when
+      // For feature-sourced tickets, use the real plan-loop flow even when
       // resuming an existing worktree. This creates a Loop record and
       // dispatches via the desktop gateway.
-      if (ticket?.issueId) {
+      if (ticket?.featureId) {
         console.log(
-          "[TicketList] calling startPlanLoop for issue-sourced ticket"
+          "[TicketList] calling startPlanLoop for feature-sourced ticket"
         );
         const result = await startPlanLoop(ticket, baseRepoPath);
         if (
@@ -959,11 +959,11 @@ export function TicketList({
       }
     }
 
-    // For issue-sourced tickets, use the real plan-loop flow which creates a Loop
+    // For feature-sourced tickets, use the real plan-loop flow which creates a Loop
     // record and dispatches to the desktop gateway. For artifact-sourced tickets,
     // fall back to the existing local launch path.
-    const isIssueTick = !!ticket?.issueId;
-    const result = isIssueTick
+    const isFeatureTick = !!ticket?.featureId;
+    const result = isFeatureTick
       ? await startPlanLoop(ticket, repoPath, baseBranch)
       : await launch(ticketIdentifier, repoPath, fullTicket, baseBranch);
 
@@ -2234,7 +2234,7 @@ export function TicketList({
           <DialogHeader>
             <DialogTitle>Select Implementation Plan</DialogTitle>
             <DialogDescription>
-              This issue has multiple linked plans. Select which one to use for
+              This feature has multiple linked plans. Select which one to use for
               planning.
             </DialogDescription>
           </DialogHeader>

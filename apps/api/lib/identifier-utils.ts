@@ -64,7 +64,7 @@ export async function resolveArtifactId(
   return row?.id ?? null;
 }
 
-export async function resolveIssueId(
+export async function resolveFeatureId(
   id: string,
   organizationId: string
 ): Promise<string | null> {
@@ -72,7 +72,7 @@ export async function resolveIssueId(
     return id;
   }
   const row = await withDb((db) =>
-    db.issue.findUnique({
+    db.feature.findUnique({
       where: { organizationId_slug: { organizationId, slug: id } },
       select: { id: true },
     })
@@ -114,7 +114,7 @@ export async function resolveWorkstreamId(
 
 /**
  * Entity-type-aware resolver for entity-link params.
- * Supports slug resolution for ARTIFACT and ISSUE only.
+ * Supports slug resolution for ARTIFACT and FEATURE only.
  * EXTERNAL_LINK has no slug field — non-UUID input returns null immediately.
  */
 export function resolveEntityLinkIdentifier(
@@ -125,8 +125,8 @@ export function resolveEntityLinkIdentifier(
   switch (entityType) {
     case EntityType.Artifact:
       return resolveArtifactId(id, organizationId);
-    case EntityType.Issue:
-      return resolveIssueId(id, organizationId);
+    case EntityType.Feature:
+      return resolveFeatureId(id, organizationId);
     case EntityType.ExternalLink:
       return Promise.resolve(isUuid(id) ? id : null);
     default:

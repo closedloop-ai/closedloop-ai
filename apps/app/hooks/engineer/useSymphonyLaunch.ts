@@ -10,7 +10,7 @@ export type TicketDetails = {
   title: string;
   description?: string;
   url: string;
-  issueId?: string;
+  featureId?: string;
   additionalContext?: string;
   contextRepoPaths?: string[];
   mentionedFiles?: { repoPath: string; filePath: string }[];

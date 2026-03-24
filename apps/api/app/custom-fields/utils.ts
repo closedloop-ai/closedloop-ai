@@ -371,7 +371,7 @@ const RESERVED_NAMES_BY_ENTITY_TYPE: Record<
     "assignee",
     "slug",
   ]),
-  [CustomFieldEntityType.Issue]: new Set([
+  [CustomFieldEntityType.Feature]: new Set([
     "title",
     "description",
     "status",
@@ -397,8 +397,8 @@ const RESERVED_NAMES_BY_ENTITY_TYPE: Record<
 /** Friendly display labels for entity types shown in error messages. */
 const ENTITY_TYPE_DISPLAY_NAMES: Record<CustomFieldEntityType, string> = {
   [CustomFieldEntityType.Project]: "Project",
-  [CustomFieldEntityType.Workstream]: "Feature",
-  [CustomFieldEntityType.Issue]: "Issue",
+  [CustomFieldEntityType.Workstream]: "Workstream",
+  [CustomFieldEntityType.Feature]: "Feature",
   [CustomFieldEntityType.Artifact]: "Artifact",
 };
 

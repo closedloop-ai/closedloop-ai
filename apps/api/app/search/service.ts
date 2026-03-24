@@ -1,7 +1,7 @@
 import type {
   ArtifactSearchResult,
+  FeatureSearchResult,
   GlobalSearchResponse,
-  IssueSearchResult,
   ProjectSearchResult,
   WorkstreamSearchResult,
 } from "@repo/api/src/types/search";
@@ -23,14 +23,14 @@ export const searchService = {
     organizationId: string,
     query: string
   ): Promise<GlobalSearchResponse> {
-    const [artifacts, issues, workstreams, projects] = await Promise.all([
+    const [artifacts, features, workstreams, projects] = await Promise.all([
       searchArtifacts(organizationId, query),
-      searchIssues(organizationId, query),
+      searchFeatures(organizationId, query),
       searchWorkstreams(organizationId, query),
       searchProjects(organizationId, query),
     ]);
 
-    return { query, artifacts, issues, workstreams, projects };
+    return { query, artifacts, features, workstreams, projects };
   },
 };
 
@@ -72,12 +72,12 @@ async function searchArtifacts(
   }));
 }
 
-async function searchIssues(
+async function searchFeatures(
   organizationId: string,
   query: string
-): Promise<IssueSearchResult[]> {
+): Promise<FeatureSearchResult[]> {
   const rows = await withDb((db) =>
-    db.issue.findMany({
+    db.feature.findMany({
       where: {
         organizationId,
         OR: [

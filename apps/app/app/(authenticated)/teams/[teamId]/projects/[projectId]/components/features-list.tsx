@@ -1,8 +1,8 @@
 "use client";
 
 import type { CustomFieldValueDetail } from "@repo/api/src/types/custom-field";
-import type { IssueWithWorkstream } from "@repo/api/src/types/issue";
-import { IssueStatus } from "@repo/api/src/types/issue";
+import type { FeatureWithWorkstream } from "@repo/api/src/types/feature";
+import { FeatureStatus } from "@repo/api/src/types/feature";
 import { isDisplayableSlug } from "@repo/api/src/types/slug";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
@@ -31,8 +31,11 @@ import { AssigneeAvatar } from "@/components/assignee-avatar";
 import { CustomFieldCell } from "@/components/custom-fields/custom-field-cell";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { EmptyState } from "@/components/empty-state";
-import { IssueStatusBadge, issueStatusLabels } from "@/components/status-badge";
-import { useDeleteIssue, useIssues } from "@/hooks/queries/use-issues";
+import {
+  FeatureStatusBadge,
+  featureStatusLabels,
+} from "@/components/status-badge";
+import { useDeleteFeature, useFeatures } from "@/hooks/queries/use-features";
 import { useDeleteConfirmation } from "@/hooks/use-delete-confirmation";
 import { deriveCustomFieldColumns } from "@/lib/custom-field-utils";
 
@@ -45,8 +48,8 @@ export function FeaturesList({
   projectId,
   onCreateFeature,
 }: Readonly<FeaturesListProps>) {
-  const { data: features = [], isLoading } = useIssues({ projectId });
-  const deleteIssueMutation = useDeleteIssue();
+  const { data: features = [], isLoading } = useFeatures({ projectId });
+  const deleteFeatureMutation = useDeleteFeature();
 
   const customFieldColumns = useMemo(
     () => deriveCustomFieldColumns(features),
@@ -54,7 +57,7 @@ export function FeaturesList({
   );
 
   const handleDelete = (id: string) => {
-    return deleteIssueMutation.mutateAsync(id).then((result) => {
+    return deleteFeatureMutation.mutateAsync(id).then((result) => {
       toast.success("Feature deleted");
       return result.deleted;
     });
@@ -67,13 +70,13 @@ export function FeaturesList({
     requestDelete,
     confirmDelete,
     setOpen: setDeleteOpen,
-  } = useDeleteConfirmation<IssueWithWorkstream>({
+  } = useDeleteConfirmation<FeatureWithWorkstream>({
     onDelete: handleDelete,
-    getId: (issue) => issue.id,
+    getId: (feature) => feature.id,
   });
 
   const groupedFeatures = useMemo(() => {
-    const groups = new Map<IssueStatus, IssueWithWorkstream[]>();
+    const groups = new Map<FeatureStatus, FeatureWithWorkstream[]>();
     for (const status of STATUS_ORDER) {
       const items = features.filter((f) => f.status === status);
       if (items.length > 0) {
@@ -137,9 +140,9 @@ export function FeaturesList({
 }
 
 type FeatureStatusSectionProps = {
-  status: IssueStatus;
-  items: IssueWithWorkstream[];
-  onRequestDelete: (issue: IssueWithWorkstream) => void;
+  status: FeatureStatus;
+  items: FeatureWithWorkstream[];
+  onRequestDelete: (feature: FeatureWithWorkstream) => void;
   customFieldColumns: CustomFieldValueDetail[];
 };
 
@@ -157,7 +160,7 @@ function FeatureStatusSection({
         <div className="flex w-full items-center gap-1 border-b bg-muted py-2 pr-1 pl-2.5 text-left">
           <span className="flex flex-1 items-center gap-2">
             <span className="text-muted-foreground text-xs">
-              {issueStatusLabels[status]}
+              {featureStatusLabels[status]}
             </span>
             <span className="font-medium text-xs leading-4">
               {items.length}
@@ -172,11 +175,11 @@ function FeatureStatusSection({
       </CollapsibleTrigger>
       <CollapsibleContent>
         <div className="flex flex-col">
-          {items.map((issue) => (
+          {items.map((feature) => (
             <FeatureRow
               customFieldColumns={customFieldColumns}
-              issue={issue}
-              key={issue.id}
+              feature={feature}
+              key={feature.id}
               onRequestDelete={onRequestDelete}
             />
           ))}
@@ -186,22 +189,22 @@ function FeatureStatusSection({
   );
 }
 
-const STATUS_ORDER: IssueStatus[] = [
-  IssueStatus.NotStarted,
-  IssueStatus.InProgress,
-  IssueStatus.InReview,
-  IssueStatus.Completed,
-  IssueStatus.Obsolete,
+const STATUS_ORDER: FeatureStatus[] = [
+  FeatureStatus.NotStarted,
+  FeatureStatus.InProgress,
+  FeatureStatus.InReview,
+  FeatureStatus.Completed,
+  FeatureStatus.Obsolete,
 ];
 
 type FeatureRowProps = {
-  issue: IssueWithWorkstream;
-  onRequestDelete: (issue: IssueWithWorkstream) => void;
+  feature: FeatureWithWorkstream;
+  onRequestDelete: (feature: FeatureWithWorkstream) => void;
   customFieldColumns: CustomFieldValueDetail[];
 };
 
 function FeatureRow({
-  issue,
+  feature,
   onRequestDelete,
   customFieldColumns,
 }: Readonly<FeatureRowProps>) {
@@ -209,19 +212,19 @@ function FeatureRow({
     <div className="flex items-center gap-4 border-b bg-background p-1.5">
       <Link
         className="flex min-w-0 flex-1 items-center gap-2.5 px-0 py-0"
-        href={`/issues/${issue.slug}`}
+        href={`/features/${feature.slug}`}
       >
         <BoxIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
-        {isDisplayableSlug(issue.slug) && (
+        {isDisplayableSlug(feature.slug) && (
           <span className="font-mono text-muted-foreground text-xs">
-            {issue.slug}
+            {feature.slug}
           </span>
         )}
-        <span className="truncate font-medium text-sm">{issue.title}</span>
+        <span className="truncate font-medium text-sm">{feature.title}</span>
       </Link>
       <div className="flex shrink-0 items-center gap-2.5">
         {customFieldColumns.map((colDef) => {
-          const fieldValue = issue.customFields?.find(
+          const fieldValue = feature.customFields?.find(
             (f) => f.customFieldId === colDef.customFieldId
           );
           if (!fieldValue) {
@@ -233,9 +236,9 @@ function FeatureRow({
             </div>
           );
         })}
-        <PriorityBadge priority={issue.priority} />
-        <AssigneeAvatar assignee={issue.assignee} />
-        <IssueStatusBadge status={issue.status} />
+        <PriorityBadge priority={feature.priority} />
+        <AssigneeAvatar assignee={feature.assignee} />
+        <FeatureStatusBadge status={feature.status} />
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button
@@ -249,7 +252,7 @@ function FeatureRow({
           <DropdownMenuContent align="end">
             <DropdownMenuItem
               className="text-destructive focus:text-destructive"
-              onClick={() => onRequestDelete(issue)}
+              onClick={() => onRequestDelete(feature)}
             >
               <TrashIcon className="h-4 w-4" />
               Delete

@@ -6,7 +6,7 @@ import {
 } from "@repo/api/src/types/artifact";
 import type {
   ArtifactSearchResult,
-  IssueSearchResult,
+  FeatureSearchResult,
   ProjectSearchResult,
   WorkstreamSearchResult,
 } from "@repo/api/src/types/search";
@@ -23,8 +23,8 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import {
   ArtifactStatusBadge,
-  IssuePriorityBadge,
-  IssueStatusBadge,
+  FeaturePriorityBadge,
+  FeatureStatusBadge,
   WorkstreamStateBadge,
 } from "@/components/status-badge";
 import { useGlobalSearch } from "@/hooks/queries/use-search";
@@ -50,7 +50,7 @@ export function SearchResults() {
 
   const totalResults = data
     ? data.artifacts.length +
-      data.issues.length +
+      data.features.length +
       data.workstreams.length +
       data.projects.length
     : 0;
@@ -73,7 +73,9 @@ export function SearchResults() {
         <ArtifactsSection artifacts={data.artifacts} />
       )}
 
-      {data && data.issues.length > 0 && <IssuesSection issues={data.issues} />}
+      {data && data.features.length > 0 && (
+        <FeaturesSection features={data.features} />
+      )}
 
       {data && data.workstreams.length > 0 && (
         <WorkstreamsSection workstreams={data.workstreams} />
@@ -168,10 +170,12 @@ function ArtifactsSection({
   );
 }
 
-function IssuesSection({ issues }: Readonly<{ issues: IssueSearchResult[] }>) {
+function FeaturesSection({
+  features,
+}: Readonly<{ features: FeatureSearchResult[] }>) {
   return (
     <section>
-      <SectionHeader count={issues.length} title="Features" />
+      <SectionHeader count={features.length} title="Features" />
       <Table>
         <TableHeader>
           <TableRow>
@@ -184,27 +188,27 @@ function IssuesSection({ issues }: Readonly<{ issues: IssueSearchResult[] }>) {
           </TableRow>
         </TableHeader>
         <TableBody>
-          {issues.map((issue) => (
-            <TableRow key={issue.id}>
+          {features.map((feature) => (
+            <TableRow key={feature.id}>
               <TableCell>
-                <TitleCell href={`/issues/${issue.slug}`}>
-                  {issue.title}
+                <TitleCell href={`/features/${feature.slug}`}>
+                  {feature.title}
                 </TitleCell>
               </TableCell>
               <TableCell>
-                <IssueStatusBadge status={issue.status} />
+                <FeatureStatusBadge status={feature.status} />
               </TableCell>
               <TableCell>
-                <IssuePriorityBadge priority={issue.priority} />
+                <FeaturePriorityBadge priority={feature.priority} />
               </TableCell>
               <TableCell className="text-muted-foreground">
-                {issue.projectName ?? "-"}
+                {feature.projectName ?? "-"}
               </TableCell>
               <TableCell className="text-muted-foreground">
-                {issue.workstreamTitle ?? "-"}
+                {feature.workstreamTitle ?? "-"}
               </TableCell>
               <TableCell className="text-muted-foreground">
-                {formatDate(issue.updatedAt)}
+                {formatDate(feature.updatedAt)}
               </TableCell>
             </TableRow>
           ))}
@@ -283,7 +287,7 @@ function ProjectsSection({
                   {PROJECT_STATUS_LABELS[project.status] ?? project.status}
                 </TableCell>
                 <TableCell>
-                  <IssuePriorityBadge priority={project.priority} />
+                  <FeaturePriorityBadge priority={project.priority} />
                 </TableCell>
                 <TableCell className="text-muted-foreground">
                   {project.teamName ?? "-"}

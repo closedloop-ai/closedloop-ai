@@ -316,8 +316,8 @@ const MCP_TOOL_GROUPS = [
     ],
   },
   {
-    label: "Issues",
-    tools: ["list-issues", "get-issue", "create-issue", "update-issue"],
+    label: "Features",
+    tools: ["list-features", "get-feature", "create-feature", "update-feature"],
   },
   {
     label: "Links",

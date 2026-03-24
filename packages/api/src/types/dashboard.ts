@@ -25,8 +25,8 @@ export type MetricWithTrend = {
 export type DashboardStats = {
   /** Total number of PRDs */
   prds: MetricWithTrend;
-  /** Total number of issues */
-  issues: MetricWithTrend;
+  /** Total number of features */
+  features: MetricWithTrend;
   /** Total number of implementation plans */
   plans: MetricWithTrend;
   /** Number of landed code (merged PRs) */

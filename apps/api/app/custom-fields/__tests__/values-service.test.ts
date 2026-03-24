@@ -5,7 +5,7 @@
  * (c) setValueForEntity rejects enumValueId not belonging to the specific customFieldId (cross-field injection)
  * (d) setValueForEntity rejects a disabled enum option
  * (e) setValueForEntity rejects peopleValueIds not in org (returned count < input count)
- * (g) attachField to a Project cascades settings to child Workstreams and Issues with skipDuplicates: true
+ * (g) attachField to a Project cascades settings to child Workstreams and Features with skipDuplicates: true
  */
 import { type Mock, vi } from "vitest";
 
@@ -29,7 +29,7 @@ const mockWithDb = withDb as unknown as Mock;
 
 const TEST_ORG_ID = "org-111";
 const TEST_FIELD_ID = "field-abc";
-const TEST_ENTITY_ID = "issue-xyz";
+const TEST_ENTITY_ID = "feature-xyz";
 const TEST_OPTION_ID = "opt-1";
 
 /** Builds the Prisma field record (with enumOptions relation) returned from withDb. */
@@ -69,7 +69,7 @@ describe("customFieldValuesService.setValueForEntity — ENUM validation", () =>
 
   /**
    * Sets up withDb so that:
-   * - verifyEntityExists → db.issue.findFirst returns a record (entity exists)
+   * - verifyEntityExists → db.feature.findFirst returns a record (entity exists)
    * - field lookup → db.customField.findFirst returns fieldRow
    * - validateEnumOptionExists → db.customFieldEnumOption.findFirst returns enumOptionRow
    */
@@ -79,7 +79,7 @@ describe("customFieldValuesService.setValueForEntity — ENUM validation", () =>
   ) {
     mockWithDb.mockImplementation((callback: any) => {
       const db = {
-        issue: {
+        feature: {
           findFirst: vi.fn().mockResolvedValue({ id: TEST_ENTITY_ID }),
         },
         customField: {
@@ -93,7 +93,7 @@ describe("customFieldValuesService.setValueForEntity — ENUM validation", () =>
             id: "cfv-1",
             customFieldId: TEST_FIELD_ID,
             organizationId: TEST_ORG_ID,
-            entityType: CustomFieldEntityType.Issue,
+            entityType: CustomFieldEntityType.Feature,
             entityId: TEST_ENTITY_ID,
             textValue: null,
             numberValue: null,
@@ -131,7 +131,7 @@ describe("customFieldValuesService.setValueForEntity — ENUM validation", () =>
     await expect(
       customFieldValuesService.setValueForEntity(
         TEST_FIELD_ID,
-        CustomFieldEntityType.Issue,
+        CustomFieldEntityType.Feature,
         TEST_ENTITY_ID,
         TEST_ORG_ID,
         "opt-belongs-to-other-field"
@@ -161,7 +161,7 @@ describe("customFieldValuesService.setValueForEntity — ENUM validation", () =>
     await expect(
       customFieldValuesService.setValueForEntity(
         TEST_FIELD_ID,
-        CustomFieldEntityType.Issue,
+        CustomFieldEntityType.Feature,
         TEST_ENTITY_ID,
         TEST_ORG_ID,
         TEST_OPTION_ID
@@ -194,7 +194,7 @@ describe("customFieldValuesService.setValueForEntity — PEOPLE validation", () 
 
     mockWithDb.mockImplementation((callback: any) => {
       const db = {
-        issue: {
+        feature: {
           findFirst: vi.fn().mockResolvedValue({ id: TEST_ENTITY_ID }),
         },
         customField: {
@@ -212,7 +212,7 @@ describe("customFieldValuesService.setValueForEntity — PEOPLE validation", () 
     await expect(
       customFieldValuesService.setValueForEntity(
         TEST_FIELD_ID,
-        CustomFieldEntityType.Issue,
+        CustomFieldEntityType.Feature,
         TEST_ENTITY_ID,
         TEST_ORG_ID,
         ["user-known", "user-unknown"]
@@ -236,7 +236,7 @@ describe("customFieldValuesService.attachField — Project cascade", () => {
     vi.restoreAllMocks();
   });
 
-  it("cascades settings to child Workstreams and Issues with skipDuplicates: true when attaching to a Project", async () => {
+  it("cascades settings to child Workstreams and Features with skipDuplicates: true when attaching to a Project", async () => {
     // Arrange
     const TEST_PROJECT_ID = "project-1";
 
@@ -295,7 +295,7 @@ describe("customFieldValuesService.attachField — Project cascade", () => {
         workstream: {
           findMany: vi.fn().mockResolvedValue([{ id: "ws-1" }, { id: "ws-2" }]),
         },
-        issue: {
+        feature: {
           findMany: vi.fn().mockResolvedValue([{ id: "iss-1" }]),
         },
       };
@@ -319,25 +319,25 @@ describe("customFieldValuesService.attachField — Project cascade", () => {
 
     const createManyArgs = mockCreateMany.mock.calls[0][0];
 
-    // 2 workstreams + 1 issue = 3 child setting records
+    // 2 workstreams + 1 feature = 3 child setting records
     expect(createManyArgs.data).toHaveLength(3);
 
     const workstreamRecords = createManyArgs.data.filter(
       (d: any) => d.entityType === CustomFieldEntityType.Workstream
     );
-    const issueRecords = createManyArgs.data.filter(
-      (d: any) => d.entityType === CustomFieldEntityType.Issue
+    const featureRecords = createManyArgs.data.filter(
+      (d: any) => d.entityType === CustomFieldEntityType.Feature
     );
 
     expect(workstreamRecords).toHaveLength(2);
     expect(workstreamRecords.map((r: any) => r.entityId)).toEqual(
       expect.arrayContaining(["ws-1", "ws-2"])
     );
-    expect(issueRecords).toHaveLength(1);
-    expect(issueRecords[0].entityId).toBe("iss-1");
+    expect(featureRecords).toHaveLength(1);
+    expect(featureRecords[0].entityId).toBe("iss-1");
   });
 
-  it("does not call createMany when the Project has no child Workstreams or Issues", async () => {
+  it("does not call createMany when the Project has no child Workstreams or Features", async () => {
     // Arrange
     const TEST_PROJECT_ID = "project-empty";
 
@@ -394,7 +394,7 @@ describe("customFieldValuesService.attachField — Project cascade", () => {
         workstream: {
           findMany: vi.fn().mockResolvedValue([]),
         },
-        issue: {
+        feature: {
           findMany: vi.fn().mockResolvedValue([]),
         },
       };

@@ -1,14 +1,14 @@
 // EntityLink types for API contract
-// Polymorphic relationships between Artifact, Issue, and ExternalLink entities.
+// Polymorphic relationships between Artifact, Feature, and ExternalLink entities.
 
 import type { Artifact } from "./artifact";
 import type { JsonObject } from "./common";
 import type { ExternalLink } from "./external-link";
-import type { Issue } from "./issue";
+import type { Feature } from "./feature";
 
 export const EntityType = {
   Artifact: "ARTIFACT",
-  Issue: "ISSUE",
+  Feature: "FEATURE",
   ExternalLink: "EXTERNAL_LINK",
 } as const;
 export type EntityType = (typeof EntityType)[keyof typeof EntityType];
@@ -61,7 +61,7 @@ export type CreateEntityLinkInput = {
 /** A hydrated entity resolved from an EntityLink source or target. */
 export type ResolvedEntity =
   | { type: "ARTIFACT"; entity: Artifact }
-  | { type: "ISSUE"; entity: Issue }
+  | { type: "FEATURE"; entity: Feature }
   | { type: "EXTERNAL_LINK"; entity: ExternalLink };
 
 /** An EntityLink with the "other" entity (opposite end from the queried entity) resolved. */

@@ -1,11 +1,11 @@
 /**
  * Engineer ticket types — adapted from closedloop-dev's EngineerTicket.
- * Maps Symphony IssueWithWorkstream to the shape closedloop-dev components expect.
+ * Maps Symphony FeatureWithWorkstream to the shape closedloop-dev components expect.
  */
 
 import { ArtifactStatus, ArtifactType } from "@repo/api/src/types/artifact";
 import { Priority } from "@repo/api/src/types/common";
-import { IssueStatus } from "@repo/api/src/types/issue";
+import { FeatureStatus } from "@repo/api/src/types/feature";
 
 export type TicketStatusType =
   | "triage"
@@ -16,7 +16,7 @@ export type TicketStatusType =
   | "canceled";
 
 export const TicketSourceType = {
-  Issue: "Issue",
+  Feature: "Feature",
   Prd: "PRD",
   ImplementationPlan: "Implementation Plan",
   Template: "Template",
@@ -26,7 +26,7 @@ export type TicketSourceType =
 
 export type EngineerTicket = {
   id: string;
-  identifier: string; // issue slug (replaces Linear's "CHC-1234" format)
+  identifier: string; // feature slug (replaces Linear's "CHC-1234" format)
   title: string;
   description?: string;
   sourceType: TicketSourceType;
@@ -45,9 +45,9 @@ export type EngineerTicket = {
   priorityLabel: string;
   createdAt: string;
   updatedAt: string;
-  url: string; // Link to the issue in Symphony
+  url: string; // Link to the feature in Symphony
   // Symphony-specific fields
-  issueId?: string; // The actual Symphony issue UUID (only set for Issue-sourced tickets)
+  featureId?: string; // The actual Symphony feature UUID (only set for Feature-sourced tickets)
   projectName?: string;
   workstreamTitle?: string;
 };
@@ -59,43 +59,45 @@ export type EngineerTicketsResult = {
   refetch: () => Promise<unknown>;
 };
 
-/** Map Symphony IssueStatus to closedloop-dev status type */
-export function mapIssueStatusToType(status: IssueStatus): TicketStatusType {
+/** Map Symphony FeatureStatus to closedloop-dev status type */
+export function mapFeatureStatusToType(
+  status: FeatureStatus
+): TicketStatusType {
   switch (status) {
-    case IssueStatus.NotStarted:
+    case FeatureStatus.NotStarted:
       return "unstarted";
-    case IssueStatus.InProgress:
+    case FeatureStatus.InProgress:
       return "started";
-    case IssueStatus.InReview:
+    case FeatureStatus.InReview:
       return "started";
-    case IssueStatus.Completed:
+    case FeatureStatus.Completed:
       return "completed";
-    case IssueStatus.Obsolete:
+    case FeatureStatus.Obsolete:
       return "canceled";
     default:
       return "unstarted";
   }
 }
 
-/** Map Symphony IssueStatus to display name */
-export function statusDisplayName(status: IssueStatus): string {
+/** Map Symphony FeatureStatus to display name */
+export function statusDisplayName(status: FeatureStatus): string {
   switch (status) {
-    case IssueStatus.NotStarted:
+    case FeatureStatus.NotStarted:
       return "Not Started";
-    case IssueStatus.InProgress:
+    case FeatureStatus.InProgress:
       return "In Progress";
-    case IssueStatus.InReview:
+    case FeatureStatus.InReview:
       return "In Review";
-    case IssueStatus.Completed:
+    case FeatureStatus.Completed:
       return "Done";
-    case IssueStatus.Obsolete:
+    case FeatureStatus.Obsolete:
       return "Obsolete";
     default:
       return status;
   }
 }
 
-/** Map Symphony IssuePriority to numeric value (higher = more urgent) */
+/** Map Symphony FeaturePriority to numeric value (higher = more urgent) */
 export function priorityToNumber(priority: Priority): number {
   switch (priority) {
     case Priority.Urgent:
@@ -111,7 +113,7 @@ export function priorityToNumber(priority: Priority): number {
   }
 }
 
-/** Map Symphony IssuePriority to display label */
+/** Map Symphony FeaturePriority to display label */
 export function priorityToLabel(priority: Priority): string {
   switch (priority) {
     case Priority.Urgent:

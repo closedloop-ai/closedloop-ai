@@ -2,7 +2,7 @@
 
 import { ArtifactStatus } from "@repo/api/src/types/artifact";
 import { Priority } from "@repo/api/src/types/common";
-import { IssueStatus } from "@repo/api/src/types/issue";
+import { FeatureStatus } from "@repo/api/src/types/feature";
 import { LoopCommand, LoopStatus } from "@repo/api/src/types/loop";
 import type {
   WorkstreamState,
@@ -134,36 +134,36 @@ export const PrdStatusBadge = ArtifactStatusBadge;
 // Alias for Implementation Plans
 export const ImplementationPlanStatusBadge = ArtifactStatusBadge;
 
-// Issue status colors
-export const issueStatusColors: Record<IssueStatus, string> = {
-  [IssueStatus.NotStarted]: "bg-muted text-muted-foreground border-muted",
-  [IssueStatus.InProgress]:
+// Feature status colors
+export const featureStatusColors: Record<FeatureStatus, string> = {
+  [FeatureStatus.NotStarted]: "bg-muted text-muted-foreground border-muted",
+  [FeatureStatus.InProgress]:
     "bg-blue-100 text-blue-800 border-blue-200 dark:bg-blue-900/30 dark:text-blue-400 dark:border-blue-800",
-  [IssueStatus.InReview]:
+  [FeatureStatus.InReview]:
     "bg-yellow-100 text-yellow-800 border-yellow-200 dark:bg-yellow-900/30 dark:text-yellow-400 dark:border-yellow-800",
-  [IssueStatus.Completed]:
+  [FeatureStatus.Completed]:
     "bg-green-100 text-green-800 border-green-200 dark:bg-green-900/30 dark:text-green-400 dark:border-green-800",
-  [IssueStatus.Obsolete]:
+  [FeatureStatus.Obsolete]:
     "bg-gray-100 text-gray-600 border-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-700",
 };
 
-export const issueStatusLabels: Record<IssueStatus, string> = {
-  [IssueStatus.NotStarted]: "Not Started",
-  [IssueStatus.InProgress]: "In Progress",
-  [IssueStatus.InReview]: "In Review",
-  [IssueStatus.Completed]: "Completed",
-  [IssueStatus.Obsolete]: "Obsolete",
+export const featureStatusLabels: Record<FeatureStatus, string> = {
+  [FeatureStatus.NotStarted]: "Not Started",
+  [FeatureStatus.InProgress]: "In Progress",
+  [FeatureStatus.InReview]: "In Review",
+  [FeatureStatus.Completed]: "Completed",
+  [FeatureStatus.Obsolete]: "Obsolete",
 };
 
-export function IssueStatusBadge({
+export function FeatureStatusBadge({
   status,
-}: Readonly<{ status: IssueStatus }>) {
-  const displayStatus = issueStatusLabels[status] ?? status;
+}: Readonly<{ status: FeatureStatus }>) {
+  const displayStatus = featureStatusLabels[status] ?? status;
   return (
     <Badge
       className={cn(
         "font-medium",
-        issueStatusColors[status] ?? issueStatusColors.NOT_STARTED
+        featureStatusColors[status] ?? featureStatusColors.NOT_STARTED
       )}
       variant="outline"
     >
@@ -172,8 +172,8 @@ export function IssueStatusBadge({
   );
 }
 
-// Issue priority colors
-export const issuePriorityColors: Record<Priority, string> = {
+// Feature priority colors
+export const featurePriorityColors: Record<Priority, string> = {
   [Priority.Low]:
     "bg-gray-100 text-gray-600 border-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-700",
   [Priority.Medium]:
@@ -184,22 +184,22 @@ export const issuePriorityColors: Record<Priority, string> = {
     "bg-red-100 text-red-800 border-red-200 dark:bg-red-900/30 dark:text-red-400 dark:border-red-800",
 };
 
-export const issuePriorityLabels: Record<Priority, string> = {
+export const featurePriorityLabels: Record<Priority, string> = {
   [Priority.Low]: "Low",
   [Priority.Medium]: "Medium",
   [Priority.High]: "High",
   [Priority.Urgent]: "Urgent",
 };
 
-export function IssuePriorityBadge({
+export function FeaturePriorityBadge({
   priority,
 }: Readonly<{ priority: Priority }>) {
-  const displayPriority = issuePriorityLabels[priority] ?? priority;
+  const displayPriority = featurePriorityLabels[priority] ?? priority;
   return (
     <Badge
       className={cn(
         "font-medium",
-        issuePriorityColors[priority] ?? issuePriorityColors.LOW
+        featurePriorityColors[priority] ?? featurePriorityColors.LOW
       )}
       variant="outline"
     >

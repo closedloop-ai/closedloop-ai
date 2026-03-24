@@ -138,9 +138,9 @@ export const entityLinksService = {
         }
         return { type: EntityType.Artifact, entity: artifact };
       }
-      case EntityType.Issue: {
-        const issue = await withDb((db) =>
-          db.issue.findUnique({
+      case EntityType.Feature: {
+        const feature = await withDb((db) =>
+          db.feature.findUnique({
             where: { id, organizationId },
             include: {
               assignee: basicUserSelect,
@@ -148,10 +148,10 @@ export const entityLinksService = {
             },
           })
         );
-        if (!issue) {
+        if (!feature) {
           return null;
         }
-        return { type: EntityType.Issue, entity: issue };
+        return { type: EntityType.Feature, entity: feature };
       }
       case EntityType.ExternalLink: {
         const link = await withDb((db) =>
@@ -333,8 +333,8 @@ async function assertEntityInOrganization(
           where: { id, organizationId },
           select: { id: true },
         });
-      case EntityType.Issue:
-        return db.issue.findFirst({
+      case EntityType.Feature:
+        return db.feature.findFirst({
           where: { id, organizationId },
           select: { id: true },
         });

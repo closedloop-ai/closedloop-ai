@@ -16,9 +16,9 @@ export function DashboardStatCards({ stats }: Props) {
         value={stats.prds.count}
       />
       <StatCard
-        label="Issues"
-        trendData={stats.issues.trend}
-        value={stats.issues.count}
+        label="Features"
+        trendData={stats.features.trend}
+        value={stats.features.count}
       />
       <StatCard
         label="Implementation Plans"

@@ -1,8 +1,8 @@
 import type { Priority } from "@repo/api/src/types/common";
-import type { IssueStatus } from "@repo/api/src/types/issue";
+import type { FeatureStatus } from "@repo/api/src/types/feature";
 
-export type MyTasksIssueFilters = {
+export type MyTasksFeatureFilters = {
   priorities: Priority[];
   projectIds: string[];
-  statuses: IssueStatus[];
+  statuses: FeatureStatus[];
 };

@@ -221,11 +221,11 @@ describe("entityLinksService", () => {
       });
     });
 
-    it("resolves ISSUE with assignee/createdBy includes", async () => {
-      const mockIssue = { id: "i-1", title: "Bug report" };
+    it("resolves FEATURE with assignee/createdBy includes", async () => {
+      const mockFeature = { id: "i-1", title: "Bug report" };
       const mockDb = {
-        issue: {
-          findUnique: vi.fn().mockResolvedValue(mockIssue),
+        feature: {
+          findUnique: vi.fn().mockResolvedValue(mockFeature),
         },
       };
       mockWithDbCall(mockDb);
@@ -233,11 +233,11 @@ describe("entityLinksService", () => {
       const result = await entityLinksService.resolveEntity(
         ORG_ID,
         "i-1",
-        "ISSUE"
+        "FEATURE"
       );
 
-      expect(result).toEqual({ type: "ISSUE", entity: mockIssue });
-      expect(mockDb.issue.findUnique).toHaveBeenCalledWith({
+      expect(result).toEqual({ type: "FEATURE", entity: mockFeature });
+      expect(mockDb.feature.findUnique).toHaveBeenCalledWith({
         where: { id: "i-1", organizationId: ORG_ID },
         include: {
           assignee: {
@@ -316,11 +316,11 @@ describe("entityLinksService", () => {
 
   describe("resolveLinkedEntities", () => {
     it("resolves the 'other' entity on each link", async () => {
-      const linkAB = makeLink("l1", "a", "ARTIFACT", "b", "ISSUE");
-      const mockIssue = { id: "b", title: "Bug report" };
+      const linkAB = makeLink("l1", "a", "ARTIFACT", "b", "FEATURE");
+      const mockFeature = { id: "b", title: "Bug report" };
       const mockDb = {
-        issue: {
-          findUnique: vi.fn().mockResolvedValue(mockIssue),
+        feature: {
+          findUnique: vi.fn().mockResolvedValue(mockFeature),
         },
       };
       mockWithDbCall(mockDb);
@@ -331,13 +331,13 @@ describe("entityLinksService", () => {
 
       expect(result).toHaveLength(1);
       expect(result[0].resolvedEntity).toEqual({
-        type: "ISSUE",
-        entity: mockIssue,
+        type: "FEATURE",
+        entity: mockFeature,
       });
     });
 
     it("resolves source when known entity is on the target side", async () => {
-      const link = makeLink("l1", "a", "ARTIFACT", "b", "ISSUE");
+      const link = makeLink("l1", "a", "ARTIFACT", "b", "FEATURE");
       const mockArtifact = { id: "a", title: "My PRD" };
       const mockDb = {
         artifact: {
@@ -358,12 +358,12 @@ describe("entityLinksService", () => {
     });
 
     it("deduplicates entities appearing in multiple links", async () => {
-      const link1 = makeLink("l1", "a", "ARTIFACT", "b", "ISSUE");
-      const link2 = makeLink("l2", "c", "ARTIFACT", "b", "ISSUE");
-      const mockIssue = { id: "b", title: "Shared issue" };
+      const link1 = makeLink("l1", "a", "ARTIFACT", "b", "FEATURE");
+      const link2 = makeLink("l2", "c", "ARTIFACT", "b", "FEATURE");
+      const mockFeature = { id: "b", title: "Shared feature" };
       const mockDb = {
-        issue: {
-          findUnique: vi.fn().mockResolvedValue(mockIssue),
+        feature: {
+          findUnique: vi.fn().mockResolvedValue(mockFeature),
         },
         artifact: {
           findUnique: vi.fn().mockResolvedValue({ id: "c", title: "Other" }),
@@ -377,14 +377,14 @@ describe("entityLinksService", () => {
       ]);
 
       expect(result).toHaveLength(2);
-      // b:ISSUE should only be resolved once
-      expect(mockDb.issue.findUnique).toHaveBeenCalledTimes(1);
+      // b:FEATURE should only be resolved once
+      expect(mockDb.feature.findUnique).toHaveBeenCalledTimes(1);
     });
 
     it("returns null for missing entities", async () => {
-      const link = makeLink("l1", "a", "ARTIFACT", "b", "ISSUE");
+      const link = makeLink("l1", "a", "ARTIFACT", "b", "FEATURE");
       const mockDb = {
-        issue: {
+        feature: {
           findUnique: vi.fn().mockResolvedValue(null),
         },
       };
@@ -401,15 +401,15 @@ describe("entityLinksService", () => {
     it("resolves correct entity at each hop in a tree traversal", async () => {
       // Chain: A→B→C. fromEntityId tracks which BFS node found each link.
       const linkAB = makeLink("l1", "a", "ARTIFACT", "b", "ARTIFACT");
-      const linkBC = makeLink("l2", "b", "ARTIFACT", "c", "ISSUE");
+      const linkBC = makeLink("l2", "b", "ARTIFACT", "c", "FEATURE");
       const mockArtifactB = { id: "b", title: "Plan" };
-      const mockIssueC = { id: "c", title: "Bug" };
+      const mockFeatureC = { id: "c", title: "Bug" };
       const mockDb = {
         artifact: {
           findUnique: vi.fn().mockResolvedValue(mockArtifactB),
         },
-        issue: {
-          findUnique: vi.fn().mockResolvedValue(mockIssueC),
+        feature: {
+          findUnique: vi.fn().mockResolvedValue(mockFeatureC),
         },
       };
       mockWithDbCall(mockDb);
@@ -425,8 +425,8 @@ describe("entityLinksService", () => {
         entity: mockArtifactB,
       });
       expect(result[1].resolvedEntity).toEqual({
-        type: "ISSUE",
-        entity: mockIssueC,
+        type: "FEATURE",
+        entity: mockFeatureC,
       });
     });
   });
@@ -535,12 +535,18 @@ describe("entityLinksService", () => {
     });
 
     it("traverses across entity types", async () => {
-      const linkArtIssue = makeLink("l1", "a", "ARTIFACT", "i", "ISSUE");
-      const linkIssueExt = makeLink("l2", "i", "ISSUE", "e", "EXTERNAL_LINK");
+      const linkArtFeature = makeLink("l1", "a", "ARTIFACT", "i", "FEATURE");
+      const linkFeatureExt = makeLink(
+        "l2",
+        "i",
+        "FEATURE",
+        "e",
+        "EXTERNAL_LINK"
+      );
 
       spy
-        .mockResolvedValueOnce([linkArtIssue]) // query from ARTIFACT a
-        .mockResolvedValueOnce([linkIssueExt]) // query from ISSUE i
+        .mockResolvedValueOnce([linkArtFeature]) // query from ARTIFACT a
+        .mockResolvedValueOnce([linkFeatureExt]) // query from FEATURE i
         .mockResolvedValueOnce([]); // query from EXTERNAL_LINK e
 
       const result = await entityLinksService.findLinkTree(
@@ -552,8 +558,8 @@ describe("entityLinksService", () => {
       );
 
       expect(result).toEqual([
-        { link: linkArtIssue, fromEntityId: "a" },
-        { link: linkIssueExt, fromEntityId: "i" },
+        { link: linkArtFeature, fromEntityId: "a" },
+        { link: linkFeatureExt, fromEntityId: "i" },
       ]);
     });
 

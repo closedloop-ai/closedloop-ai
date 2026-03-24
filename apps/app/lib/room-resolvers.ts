@@ -7,7 +7,7 @@ import type { RoomInfo } from "@repo/collaboration/top-level-collaboration-provi
  *
  * Calls the server-side /api/collaboration/rooms/resolve endpoint which reads
  * Liveblocks room metadata (artifactType) to build correct type-specific URLs
- * (e.g., /prds/slug, /issues/slug). Falls back to slug-based names on error.
+ * (e.g., /prds/slug, /features/slug). Falls back to slug-based names on error.
  */
 export function createResolveRoomsInfo(organizationId: string) {
   return async ({

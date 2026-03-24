@@ -17,8 +17,8 @@ function buildLinkedEntity(
   return {
     id: "link-1",
     organizationId: "org-1",
-    sourceId: "issue-1",
-    sourceType: EntityType.Issue,
+    sourceId: "feature-1",
+    sourceType: EntityType.Feature,
     sourceVersion: null,
     targetId: "artifact-1",
     targetType: EntityType.Artifact,
@@ -61,15 +61,15 @@ function isQueryStale(
 describe("invalidateEntityLinkQueries", () => {
   test("invalidates query whose cached data contains entity as source", () => {
     const filters = {
-      entityId: "issue-1",
-      entityType: EntityType.Issue,
+      entityId: "feature-1",
+      entityType: EntityType.Feature,
       direction: "both",
       resolved: true,
     };
     const data = [
       buildLinkedEntity({
-        sourceId: "issue-1",
-        sourceType: EntityType.Issue,
+        sourceId: "feature-1",
+        sourceType: EntityType.Feature,
         targetId: "artifact-1",
         targetType: EntityType.Artifact,
       }),
@@ -77,22 +77,22 @@ describe("invalidateEntityLinkQueries", () => {
 
     const queryClient = seedResolvedQuery(filters, data);
 
-    invalidateEntityLinkQueries(queryClient, "issue-1", EntityType.Issue);
+    invalidateEntityLinkQueries(queryClient, "feature-1", EntityType.Feature);
 
     expect(isQueryStale(queryClient, filters)).toBe(true);
   });
 
   test("invalidates query whose cached data contains entity as target", () => {
     const filters = {
-      entityId: "issue-1",
-      entityType: EntityType.Issue,
+      entityId: "feature-1",
+      entityType: EntityType.Feature,
       direction: "both",
       resolved: true,
     };
     const data = [
       buildLinkedEntity({
-        sourceId: "issue-1",
-        sourceType: EntityType.Issue,
+        sourceId: "feature-1",
+        sourceType: EntityType.Feature,
         targetId: "artifact-99",
         targetType: EntityType.Artifact,
       }),
@@ -111,15 +111,15 @@ describe("invalidateEntityLinkQueries", () => {
 
   test("does not invalidate query when entity is not in cached data", () => {
     const filters = {
-      entityId: "issue-1",
-      entityType: EntityType.Issue,
+      entityId: "feature-1",
+      entityType: EntityType.Feature,
       direction: "both",
       resolved: true,
     };
     const data = [
       buildLinkedEntity({
-        sourceId: "issue-1",
-        sourceType: EntityType.Issue,
+        sourceId: "feature-1",
+        sourceType: EntityType.Feature,
         targetId: "artifact-1",
         targetType: EntityType.Artifact,
       }),
@@ -130,7 +130,7 @@ describe("invalidateEntityLinkQueries", () => {
     invalidateEntityLinkQueries(
       queryClient,
       "unrelated-entity",
-      EntityType.Issue
+      EntityType.Feature
     );
 
     expect(isQueryStale(queryClient, filters)).toBe(false);
@@ -138,15 +138,15 @@ describe("invalidateEntityLinkQueries", () => {
 
   test("does not invalidate query with matching id but wrong entity type", () => {
     const filters = {
-      entityId: "issue-1",
-      entityType: EntityType.Issue,
+      entityId: "feature-1",
+      entityType: EntityType.Feature,
       direction: "both",
       resolved: true,
     };
     const data = [
       buildLinkedEntity({
-        sourceId: "issue-1",
-        sourceType: EntityType.Issue,
+        sourceId: "feature-1",
+        sourceType: EntityType.Feature,
         targetId: "artifact-1",
         targetType: EntityType.Artifact,
       }),
@@ -154,10 +154,10 @@ describe("invalidateEntityLinkQueries", () => {
 
     const queryClient = seedResolvedQuery(filters, data);
 
-    // Same id "issue-1" but wrong type — should NOT match
+    // Same id "feature-1" but wrong type — should NOT match
     invalidateEntityLinkQueries(
       queryClient,
-      "issue-1",
+      "feature-1",
       EntityType.ExternalLink
     );
 
@@ -166,20 +166,20 @@ describe("invalidateEntityLinkQueries", () => {
 
   test("skips non-resolved queries (no resolved flag in filters)", () => {
     const resolvedFilters = {
-      entityId: "issue-1",
-      entityType: EntityType.Issue,
+      entityId: "feature-1",
+      entityType: EntityType.Feature,
       direction: "both",
       resolved: true,
     };
     const nonResolvedFilters = {
-      entityId: "issue-1",
-      entityType: EntityType.Issue,
+      entityId: "feature-1",
+      entityType: EntityType.Feature,
       direction: "both",
     };
     const data = [
       buildLinkedEntity({
-        sourceId: "issue-1",
-        sourceType: EntityType.Issue,
+        sourceId: "feature-1",
+        sourceType: EntityType.Feature,
         targetId: "artifact-1",
         targetType: EntityType.Artifact,
       }),
@@ -190,7 +190,7 @@ describe("invalidateEntityLinkQueries", () => {
     // Seed a non-resolved query with same data shape
     queryClient.setQueryData(entityLinkKeys.list(nonResolvedFilters), data);
 
-    invalidateEntityLinkQueries(queryClient, "issue-1", EntityType.Issue);
+    invalidateEntityLinkQueries(queryClient, "feature-1", EntityType.Feature);
 
     expect(isQueryStale(queryClient, resolvedFilters)).toBe(true);
     expect(isQueryStale(queryClient, nonResolvedFilters)).toBe(false);
@@ -201,40 +201,40 @@ describe("invalidateEntityLinkQueries", () => {
     // No data seeded — query cache is empty
 
     // Should not throw
-    invalidateEntityLinkQueries(queryClient, "issue-1", EntityType.Issue);
+    invalidateEntityLinkQueries(queryClient, "feature-1", EntityType.Feature);
 
     expect(queryClient.getQueryCache().getAll()).toHaveLength(0);
   });
 
   test("invalidates multiple queries that reference the same entity", () => {
     const filtersA = {
-      entityId: "issue-1",
-      entityType: EntityType.Issue,
+      entityId: "feature-1",
+      entityType: EntityType.Feature,
       direction: "both",
       resolved: true,
     };
     const filtersB = {
-      entityId: "issue-2",
-      entityType: EntityType.Issue,
+      entityId: "feature-2",
+      entityType: EntityType.Feature,
       direction: "both",
       resolved: true,
     };
     const filtersC = {
-      entityId: "issue-3",
-      entityType: EntityType.Issue,
+      entityId: "feature-3",
+      entityType: EntityType.Feature,
       direction: "both",
       resolved: true,
     };
 
     const sharedArtifact = buildLinkedEntity({
-      sourceId: "issue-1",
-      sourceType: EntityType.Issue,
+      sourceId: "feature-1",
+      sourceType: EntityType.Feature,
       targetId: "artifact-shared",
       targetType: EntityType.Artifact,
     });
     const unrelatedLink = buildLinkedEntity({
-      sourceId: "issue-3",
-      sourceType: EntityType.Issue,
+      sourceId: "feature-3",
+      sourceType: EntityType.Feature,
       targetId: "artifact-other",
       targetType: EntityType.Artifact,
     });
@@ -243,8 +243,8 @@ describe("invalidateEntityLinkQueries", () => {
     queryClient.setQueryData(entityLinkKeys.list(filtersA), [sharedArtifact]);
     queryClient.setQueryData(entityLinkKeys.list(filtersB), [
       buildLinkedEntity({
-        sourceId: "issue-2",
-        sourceType: EntityType.Issue,
+        sourceId: "feature-2",
+        sourceType: EntityType.Feature,
         targetId: "artifact-shared",
         targetType: EntityType.Artifact,
       }),

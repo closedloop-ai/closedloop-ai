@@ -1,11 +1,11 @@
 import type {
-  FindIssuesOptions,
-  IssueWithWorkstream,
-} from "@repo/api/src/types/issue";
-import { IssueStatus } from "@repo/api/src/types/issue";
-import type { MyTasksIssueFilters } from "./types";
+  FindFeaturesOptions,
+  FeatureWithWorkstream,
+} from "@repo/api/src/types/feature";
+import { FeatureStatus } from "@repo/api/src/types/feature";
+import type { MyTasksFeatureFilters } from "./types";
 
-export const EMPTY_FILTERS: MyTasksIssueFilters = {
+export const EMPTY_FILTERS: MyTasksFeatureFilters = {
   priorities: [],
   projectIds: [],
   statuses: [],
@@ -14,30 +14,30 @@ export const EMPTY_FILTERS: MyTasksIssueFilters = {
 export const DISPLAY_GROUPS: {
   key: string;
   label: string;
-  statuses: IssueStatus[];
+  statuses: FeatureStatus[];
 }[] = [
   {
     key: "not_started",
     label: "Not started",
-    statuses: [IssueStatus.NotStarted],
+    statuses: [FeatureStatus.NotStarted],
   },
   {
     key: "in_progress",
     label: "In progress",
-    statuses: [IssueStatus.InProgress],
+    statuses: [FeatureStatus.InProgress],
   },
-  { key: "in_review", label: "In review", statuses: [IssueStatus.InReview] },
-  { key: "completed", label: "Completed", statuses: [IssueStatus.Completed] },
-  { key: "obsolete", label: "Obsolete", statuses: [IssueStatus.Obsolete] },
+  { key: "in_review", label: "In review", statuses: [FeatureStatus.InReview] },
+  { key: "completed", label: "Completed", statuses: [FeatureStatus.Completed] },
+  { key: "obsolete", label: "Obsolete", statuses: [FeatureStatus.Obsolete] },
 ];
 
 /**
  * Build API query params. Only passes assigneeId to the API;
  * all other filtering is done client-side via `applyClientFilters`.
  */
-export function buildIssueListParams(
+export function buildFeatureListParams(
   assigneeId: string | null
-): FindIssuesOptions {
+): FindFeaturesOptions {
   return {
     assigneeId: assigneeId ?? undefined,
   };
@@ -47,25 +47,25 @@ export function buildIssueListParams(
  * Apply all selected filters client-side.
  */
 export function applyClientFilters(
-  issues: IssueWithWorkstream[],
-  filters: MyTasksIssueFilters
-): IssueWithWorkstream[] {
-  return issues.filter((issue) => {
+  features: FeatureWithWorkstream[],
+  filters: MyTasksFeatureFilters
+): FeatureWithWorkstream[] {
+  return features.filter((feature) => {
     if (
       filters.projectIds.length > 0 &&
-      !filters.projectIds.includes(issue.projectId)
+      !filters.projectIds.includes(feature.projectId)
     ) {
       return false;
     }
     if (
       filters.statuses.length > 0 &&
-      !filters.statuses.includes(issue.status)
+      !filters.statuses.includes(feature.status)
     ) {
       return false;
     }
     if (
       filters.priorities.length > 0 &&
-      !filters.priorities.includes(issue.priority)
+      !filters.priorities.includes(feature.priority)
     ) {
       return false;
     }
@@ -73,7 +73,7 @@ export function applyClientFilters(
   });
 }
 
-export function hasActiveFilters(filters: MyTasksIssueFilters): boolean {
+export function hasActiveFilters(filters: MyTasksFeatureFilters): boolean {
   return (
     filters.projectIds.length > 0 ||
     filters.statuses.length > 0 ||

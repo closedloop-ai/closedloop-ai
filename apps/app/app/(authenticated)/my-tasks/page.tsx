@@ -1,7 +1,7 @@
 "use client";
 
 import type { Priority } from "@repo/api/src/types/common";
-import type { IssueStatus } from "@repo/api/src/types/issue";
+import type { FeatureStatus } from "@repo/api/src/types/feature";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   DropdownMenu,
@@ -17,10 +17,10 @@ import { LayoutGridIcon, ListFilter, ListIcon, XIcon } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
 import { Header } from "@/app/(authenticated)/components/header";
 import {
-  issuePriorityLabels,
-  issueStatusLabels,
+  featurePriorityLabels,
+  featureStatusLabels,
 } from "@/components/status-badge";
-import { useIssues } from "@/hooks/queries/use-issues";
+import { useFeatures } from "@/hooks/queries/use-features";
 import { useProjects } from "@/hooks/queries/use-projects";
 import { useCurrentUser } from "@/hooks/queries/use-users";
 import { useLocalStorageState } from "@/hooks/use-local-storage-state";
@@ -28,10 +28,10 @@ import { OnboardingChecklist } from "../components/onboarding-checklist";
 import { MyTasksEmptyState } from "./components/my-tasks-empty-state";
 import { MyTasksKanban } from "./components/my-tasks-kanban";
 import { MyTasksList } from "./components/my-tasks-list";
-import type { MyTasksIssueFilters } from "./types";
+import type { MyTasksFeatureFilters } from "./types";
 import {
   applyClientFilters,
-  buildIssueListParams,
+  buildFeatureListParams,
   EMPTY_FILTERS,
   hasActiveFilters,
 } from "./utils";
@@ -52,27 +52,27 @@ export default function MyTasksPage() {
     VIEW_KEY,
     "list"
   );
-  const [filters, setFilters] = useState<MyTasksIssueFilters>(EMPTY_FILTERS);
+  const [filters, setFilters] = useState<MyTasksFeatureFilters>(EMPTY_FILTERS);
   const { data: projects = [] } = useProjects();
 
   const assigneeId = currentUser?.id ?? null;
   const listParams = useMemo(
-    () => buildIssueListParams(assigneeId),
+    () => buildFeatureListParams(assigneeId),
     [assigneeId]
   );
-  const { data: rawIssues = [], isLoading: isIssuesLoading } = useIssues(
+  const { data: rawFeatures = [], isLoading: isFeaturesLoading } = useFeatures(
     listParams,
     {
       enabled: !!assigneeId && !isUserLoading,
     }
   );
 
-  const issues = useMemo(
-    () => applyClientFilters(rawIssues, filters),
-    [rawIssues, filters]
+  const features = useMemo(
+    () => applyClientFilters(rawFeatures, filters),
+    [rawFeatures, filters]
   );
 
-  const hasTasks = issues.length > 0;
+  const hasTasks = features.length > 0;
 
   const isListView = view === "list";
 
@@ -85,7 +85,7 @@ export default function MyTasksPage() {
     }));
   }, []);
 
-  const toggleStatus = useCallback((status: IssueStatus) => {
+  const toggleStatus = useCallback((status: FeatureStatus) => {
     setFilters((prev) => ({
       ...prev,
       statuses: toggleArrayValue(prev.statuses, status),
@@ -160,14 +160,14 @@ export default function MyTasksPage() {
                   <DropdownMenuSeparator />
                   <DropdownMenuGroup>
                     <DropdownMenuLabel>Status</DropdownMenuLabel>
-                    {Object.entries(issueStatusLabels).map(([value, label]) => (
+                    {Object.entries(featureStatusLabels).map(([value, label]) => (
                       <DropdownMenuCheckboxItem
                         checked={filters.statuses.includes(
-                          value as IssueStatus
+                          value as FeatureStatus
                         )}
                         key={value}
                         onCheckedChange={() =>
-                          toggleStatus(value as IssueStatus)
+                          toggleStatus(value as FeatureStatus)
                         }
                         onSelect={preventClose}
                       >
@@ -178,7 +178,7 @@ export default function MyTasksPage() {
                   <DropdownMenuSeparator />
                   <DropdownMenuGroup>
                     <DropdownMenuLabel>Priority</DropdownMenuLabel>
-                    {Object.entries(issuePriorityLabels).map(
+                    {Object.entries(featurePriorityLabels).map(
                       ([value, label]) => (
                         <DropdownMenuCheckboxItem
                           checked={filters.priorities.includes(
@@ -212,20 +212,20 @@ export default function MyTasksPage() {
           </div>
         )}
         <div className="p-4">
-          {!(hasTasks || isUserLoading || isIssuesLoading) && (
+          {!(hasTasks || isUserLoading || isFeaturesLoading) && (
             <MyTasksEmptyState projects={projects} />
           )}
           {hasTasks && view === "list" && (
             <MyTasksList
               assigneeId={assigneeId}
-              issueFilters={filters}
+              featureFilters={filters}
               isUserLoading={isUserLoading}
             />
           )}
           {hasTasks && view !== "list" && (
             <MyTasksKanban
               assigneeId={assigneeId}
-              issueFilters={filters}
+              featureFilters={filters}
               isUserLoading={isUserLoading}
             />
           )}

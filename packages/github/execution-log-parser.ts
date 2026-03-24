@@ -299,7 +299,7 @@ export function deriveAgentLabel(firstPrompt: string): string {
       "implementation-subagent": "Implementation",
       "verification-subagent": "Verification",
       "prd-writer": "PRD Writer",
-      "issue-writer": "Issue Writer",
+      "issue-writer": "Feature Writer",
     };
 
     return labelMap[commandName] || commandName;

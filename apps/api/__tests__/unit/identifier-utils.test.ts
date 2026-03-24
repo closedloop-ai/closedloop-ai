@@ -12,7 +12,7 @@ import {
   isUuid,
   resolveArtifactId,
   resolveEntityLinkIdentifier,
-  resolveIssueId,
+  resolveFeatureId,
   resolveProjectId,
   resolveWorkstreamId,
   uuidOrSlug,
@@ -143,27 +143,27 @@ describe("resolveArtifactId", () => {
   });
 });
 
-describe("resolveIssueId", () => {
+describe("resolveFeatureId", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
   it("returns UUID directly when input is a UUID", async () => {
     const uuid = "01932b3a-7e4d-7c8f-9a1b-2c3d4e5f6a7b";
-    const result = await resolveIssueId(uuid, "org-1");
+    const result = await resolveFeatureId(uuid, "org-1");
     expect(result).toBe(uuid);
   });
 
   it("queries by slug when input is not a UUID", async () => {
     const mockDb = {
-      issue: {
-        findUnique: vi.fn().mockResolvedValue({ id: "issue-uuid" }),
+      feature: {
+        findUnique: vi.fn().mockResolvedValue({ id: "feature-uuid" }),
       },
     };
     mockWithDbCall(mockDb);
 
-    const result = await resolveIssueId("FEAT-42", "org-1");
-    expect(result).toBe("issue-uuid");
+    const result = await resolveFeatureId("FEAT-42", "org-1");
+    expect(result).toBe("feature-uuid");
   });
 });
 
@@ -236,10 +236,10 @@ describe("resolveEntityLinkIdentifier", () => {
     expect(result).toBe("art-uuid");
   });
 
-  it("resolves issue slug via resolveIssueId", async () => {
+  it("resolves feature slug via resolveFeatureId", async () => {
     const mockDb = {
-      issue: {
-        findUnique: vi.fn().mockResolvedValue({ id: "issue-uuid" }),
+      feature: {
+        findUnique: vi.fn().mockResolvedValue({ id: "feature-uuid" }),
       },
     };
     mockWithDbCall(mockDb);
@@ -247,9 +247,9 @@ describe("resolveEntityLinkIdentifier", () => {
     const result = await resolveEntityLinkIdentifier(
       "FEAT-42",
       "org-1",
-      EntityType.Issue
+      EntityType.Feature
     );
-    expect(result).toBe("issue-uuid");
+    expect(result).toBe("feature-uuid");
   });
 
   it("returns UUID directly for ExternalLink when input is a UUID", async () => {

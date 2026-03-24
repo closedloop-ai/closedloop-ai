@@ -18,12 +18,12 @@ export function registerListEntityLinks(
     "list-entity-links",
     {
       description:
-        "List links between entities (artifacts, issues, workstreams, etc.)",
+        "List links between entities (artifacts, features, workstreams, etc.)",
       inputSchema: {
         entityId: z
           .string()
           .describe(
-            "ID or slug of the entity (slug supported for artifacts and issues only)"
+            "ID or slug of the entity (slug supported for artifacts and features only)"
           ),
         entityType: z.enum(ENTITY_TYPE_VALUES).describe("Type of the entity"),
         linkType: z

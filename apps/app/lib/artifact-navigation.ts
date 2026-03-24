@@ -1,7 +1,7 @@
 import { type Artifact, ArtifactType } from "@repo/api/src/types/artifact";
-import type { Issue } from "@repo/api/src/types/issue";
+import type { Feature } from "@repo/api/src/types/feature";
 
-const ISSUE_ROUTE_PREFIX = "issues";
+const FEATURE_ROUTE_PREFIX = "features";
 
 /**
  * Artifact types that support internal navigation to an editor/detail page.
@@ -31,8 +31,8 @@ export function getArtifactRoute(artifact: Artifact): string | null {
 }
 
 /**
- * Get the route to navigate to for viewing/editing an issue.
+ * Get the route to navigate to for viewing/editing a feature.
  */
-export function getIssueRoute(issue: Issue): string {
-  return `/${ISSUE_ROUTE_PREFIX}/${issue.slug}`;
+export function getFeatureRoute(feature: Feature): string {
+  return `/${FEATURE_ROUTE_PREFIX}/${feature.slug}`;
 }

@@ -12,7 +12,7 @@ import {
   useUpdateCustomField,
   useUpdateCustomFieldValue,
 } from "../use-custom-fields";
-import { issueKeys } from "../use-issues";
+import { featureKeys } from "../use-features";
 import { projectKeys } from "../use-projects";
 import { workstreamKeys } from "../use-workstreams";
 import {
@@ -283,14 +283,14 @@ describe("useUpdateCustomFieldValue", () => {
     );
   });
 
-  test("onSuccess invalidates issueKeys.detail when entityType is Issue", async () => {
+  test("onSuccess invalidates featureKeys.detail when entityType is Feature", async () => {
     mockApiClient.put.mockResolvedValueOnce({});
 
     const queryClient = createTestQueryClient();
     const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
 
     const { result } = renderHook(
-      () => useUpdateCustomFieldValue(CustomFieldEntityType.Issue, "issue-1"),
+      () => useUpdateCustomFieldValue(CustomFieldEntityType.Feature, "issue-1"),
       { wrapper: createWrapperWithClient(queryClient) }
     );
 
@@ -299,7 +299,7 @@ describe("useUpdateCustomFieldValue", () => {
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
     expect(invalidateSpy).toHaveBeenCalledWith(
-      expect.objectContaining({ queryKey: issueKeys.detail("issue-1") })
+      expect.objectContaining({ queryKey: featureKeys.detail("issue-1") })
     );
   });
 

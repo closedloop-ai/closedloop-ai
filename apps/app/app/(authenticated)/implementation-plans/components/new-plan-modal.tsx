@@ -251,7 +251,7 @@ export function NewPlanModal({
             </div>
           </DialogTitle>
           <DialogDescription className="sr-only">
-            Create an implementation plan from a PRD or Issue.
+            Create an implementation plan from a PRD or Feature.
           </DialogDescription>
         </DialogHeader>
 

@@ -28,15 +28,15 @@ import { registerCreateArtifact } from "./tools/create-artifact.js";
 import { registerCreateArtifactVersion } from "./tools/create-artifact-version.js";
 import { registerCreateEntityLink } from "./tools/create-entity-link.js";
 import { registerCreateExternalLink } from "./tools/create-external-link.js";
-import { registerCreateIssue } from "./tools/create-issue.js";
-import { registerCreateIssueComment } from "./tools/create-issue-comment.js";
+import { registerCreateFeature } from "./tools/create-feature.js";
+import { registerCreateFeatureComment } from "./tools/create-feature-comment.js";
 import { registerCreateProject } from "./tools/create-project.js";
 import { registerCreateWorkstream } from "./tools/create-workstream.js";
 import { registerGetArtifact } from "./tools/get-artifact.js";
 import { registerGetDashboardStats } from "./tools/get-dashboard-stats.js";
+import { registerGetFeature } from "./tools/get-feature.js";
 import { registerGetGithubStatus } from "./tools/get-github-status.js";
 import { registerGetGoogleStatus } from "./tools/get-google-status.js";
-import { registerGetIssue } from "./tools/get-issue.js";
 import { registerGetLinearStatus } from "./tools/get-linear-status.js";
 import { registerGetLoop } from "./tools/get-loop.js";
 import { registerGetMe } from "./tools/get-me.js";
@@ -48,14 +48,14 @@ import { registerListArtifactVersions } from "./tools/list-artifact-versions.js"
 import { registerListArtifacts } from "./tools/list-artifacts.js";
 import { registerListEntityLinks } from "./tools/list-entity-links.js";
 import { registerListExternalLinks } from "./tools/list-external-links.js";
-import { registerListIssues } from "./tools/list-issues.js";
+import { registerListFeatures } from "./tools/list-features.js";
 import { registerListLoops } from "./tools/list-loops.js";
 import { registerListProjects } from "./tools/list-projects.js";
 import { registerListTemplates } from "./tools/list-templates.js";
 import { registerListUsers } from "./tools/list-users.js";
 import { registerListWorkstreams } from "./tools/list-workstreams.js";
 import { registerUpdateArtifact } from "./tools/update-artifact.js";
-import { registerUpdateIssue } from "./tools/update-issue.js";
+import { registerUpdateFeature } from "./tools/update-feature.js";
 import { registerUpdateProject } from "./tools/update-project.js";
 import { registerUpdateWorkstream } from "./tools/update-workstream.js";
 
@@ -332,21 +332,21 @@ const TOOL_REGISTRATIONS: ToolRegistration[] = [
   },
   { name: "list-artifact-versions", register: registerListArtifactVersions },
   { name: "get-related-artifacts", register: registerGetRelatedArtifacts },
-  { name: "list-issues", register: registerListIssues },
-  { name: "get-issue", register: registerGetIssue },
+  { name: "list-features", register: registerListFeatures },
+  { name: "get-feature", register: registerGetFeature },
   {
-    name: "create-issue",
-    register: registerCreateIssue,
+    name: "create-feature",
+    register: registerCreateFeature,
     requiresWrite: true,
   },
   {
-    name: "update-issue",
-    register: registerUpdateIssue,
+    name: "update-feature",
+    register: registerUpdateFeature,
     requiresWrite: true,
   },
   {
-    name: "create-issue-comment",
-    register: registerCreateIssueComment,
+    name: "create-feature-comment",
+    register: registerCreateFeatureComment,
     requiresWrite: true,
   },
   { name: "get-me", register: registerGetMe },

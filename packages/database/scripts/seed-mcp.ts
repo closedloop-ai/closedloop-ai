@@ -6,7 +6,7 @@
  * - 2 Projects with different priorities
  * - 2 Workstreams across projects
  * - 5 Artifacts (PRD, Plan, Template) with versions
- * - 3 Issues across projects/workstreams
+ * - 3 Features across projects/workstreams
  * - 2 Loops (one completed, one running)
  * - Entity links between artifacts
  * - External links on workstreams
@@ -344,10 +344,10 @@ async function main() {
       ],
     });
 
-    // 6. Create issues
-    console.log("\n--- Issues ---");
+    // 6. Create features
+    console.log("\n--- Features ---");
 
-    async function upsertIssue(data: {
+    async function upsertFeature(data: {
       slug: string;
       title: string;
       description: string;
@@ -361,16 +361,16 @@ async function main() {
         | "OBSOLETE";
       priority: "LOW" | "MEDIUM" | "HIGH" | "URGENT";
     }) {
-      let issue = await prisma.issue.findFirst({
+      let feature = await prisma.feature.findFirst({
         where: { organizationId, slug: data.slug },
       });
 
-      if (issue) {
-        console.log(`  Issue exists: ${data.slug} (${issue.id})`);
-        return issue;
+      if (feature) {
+        console.log(`  Feature exists: ${data.slug} (${feature.id})`);
+        return feature;
       }
 
-      issue = await prisma.issue.create({
+      feature = await prisma.feature.create({
         data: {
           organizationId,
           projectId: data.projectId,
@@ -384,11 +384,11 @@ async function main() {
           assigneeId: userId,
         },
       });
-      console.log(`  Issue: ${data.slug} (${issue.id})`);
-      return issue;
+      console.log(`  Feature: ${data.slug} (${feature.id})`);
+      return feature;
     }
 
-    const issue1 = await upsertIssue({
+    const feature1 = await upsertFeature({
       slug: "mcp-test-issue-stripe-webhook",
       title: "Implement Stripe webhook handler",
       description:
@@ -399,7 +399,7 @@ async function main() {
       priority: "HIGH",
     });
 
-    const issue2 = await upsertIssue({
+    const feature2 = await upsertFeature({
       slug: "mcp-test-issue-email-template",
       title: "Design email notification templates",
       description:
@@ -410,7 +410,7 @@ async function main() {
       priority: "MEDIUM",
     });
 
-    const issue3 = await upsertIssue({
+    const feature3 = await upsertFeature({
       slug: "mcp-test-issue-checkout-ui",
       title: "Build checkout page UI",
       description:
@@ -484,8 +484,8 @@ async function main() {
     async function upsertEntityLink(data: {
       sourceId: string;
       targetId: string;
-      sourceType: "ARTIFACT" | "ISSUE" | "EXTERNAL_LINK";
-      targetType: "ARTIFACT" | "ISSUE" | "EXTERNAL_LINK";
+      sourceType: "ARTIFACT" | "FEATURE" | "EXTERNAL_LINK";
+      targetType: "ARTIFACT" | "FEATURE" | "EXTERNAL_LINK";
       linkType: "PRODUCES" | "BLOCKS" | "RELATES_TO";
     }) {
       const existing = await prisma.entityLink.findFirst({
@@ -538,12 +538,12 @@ async function main() {
       linkType: "PRODUCES",
     });
 
-    // Issue relates to issue
+    // Feature relates to feature
     await upsertEntityLink({
-      sourceId: issue1.id,
-      targetId: issue3.id,
-      sourceType: "ISSUE",
-      targetType: "ISSUE",
+      sourceId: feature1.id,
+      targetId: feature3.id,
+      sourceType: "FEATURE",
+      targetType: "FEATURE",
       linkType: "RELATES_TO",
     });
 
@@ -613,7 +613,9 @@ async function main() {
     console.log(
       `  Artifacts:      ${prd1.id}, ${plan1.id}, ${prd2.id}, ${plan2.id}, ${template1.id}`
     );
-    console.log(`  Issues:         ${issue1.id}, ${issue2.id}, ${issue3.id}`);
+    console.log(
+      `  Features:       ${feature1.id}, ${feature2.id}, ${feature3.id}`
+    );
     console.log(`  Loops:          ${loop1.id}, ${loop2.id}`);
     console.log("  Entity Links:   3");
     console.log(`  External Links: ${extLink1.id}, ${extLink2.id}\n`);

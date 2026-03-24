@@ -15,6 +15,6 @@ export const FIELD_TYPE_LABELS: Record<CustomFieldType, string> = {
 export const ENTITY_TYPE_LABELS: Record<CustomFieldEntityType, string> = {
   [CustomFieldEntityType.Project]: "Projects",
   [CustomFieldEntityType.Artifact]: "Artifacts",
-  [CustomFieldEntityType.Issue]: "Issues",
-  [CustomFieldEntityType.Workstream]: "Features",
+  [CustomFieldEntityType.Feature]: "Features",
+  [CustomFieldEntityType.Workstream]: "Workstreams",
 };
