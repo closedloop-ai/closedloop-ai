@@ -8,12 +8,33 @@
 export type FileAttachment = {
   id: string;
   artifactId: string;
+  featureId?: string;
   filename: string;
   mimeType: string;
   sizeBytes: number;
   createdAt: string;
   createdById: string;
+  /** Presigned inline URL for image previews. Only present for image/* mime types. */
+  previewUrl?: string;
 };
+
+const IMAGE_MIME_TYPES = ["image/jpeg", "image/png", "image/gif", "image/webp"] as const;
+
+export function isImageMimeType(mimeType: string): boolean {
+  return IMAGE_MIME_TYPES.some((t) => mimeType === t);
+}
+
+const DOCUMENT_MIME_TYPES = [
+  "application/pdf",
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "text/markdown",
+  "text/html",
+] as const;
+
+export function isDocumentMimeType(mimeType: string): boolean {
+  return DOCUMENT_MIME_TYPES.some((t) => mimeType === t);
+}
 
 /**
  * Response returned after initiating a file upload.

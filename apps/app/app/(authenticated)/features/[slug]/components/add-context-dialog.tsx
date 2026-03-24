@@ -25,6 +25,7 @@ import {
   UploadIcon,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { attachmentKeys } from "@/hooks/queries/use-attachments";
 import {
   useCreateContextAttachment,
   useImportGDriveContext,
@@ -35,6 +36,7 @@ import {
   useGDriveFolderFiles,
   useGoogleIntegrationStatus,
 } from "@/hooks/queries/use-google-integration";
+import { useQueryClient } from "@tanstack/react-query";
 import { uploadToS3 } from "@/lib/s3-upload";
 import { SelectArtifactDialog } from "./select-artifact-dialog";
 
@@ -207,6 +209,7 @@ function UploadFileTab({
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [uploadError, setUploadError] = useState<string>("");
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const queryClient = useQueryClient();
   const createAttachment = useCreateContextAttachment(featureId);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -241,6 +244,7 @@ function UploadFileTab({
         return;
       }
 
+      queryClient.invalidateQueries({ queryKey: attachmentKeys.issueList(featureId) });
       toast.success("File uploaded as context");
       onOpenChange(false);
     } catch {
