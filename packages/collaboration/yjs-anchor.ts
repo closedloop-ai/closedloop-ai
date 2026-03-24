@@ -1,3 +1,4 @@
+import type { Liveblocks } from "@liveblocks/node";
 // biome-ignore lint/performance/noNamespaceImport: lib0 modules are designed for namespace import
 import * as buf from "lib0/buffer";
 // biome-ignore lint/performance/noNamespaceImport: lib0 modules are designed for namespace import
@@ -12,11 +13,6 @@ import {
   type XmlHook,
   XmlText,
 } from "yjs";
-
-type LiveblocksClient = {
-  getYjsDocumentAsBinaryUpdate(roomId: string): Promise<ArrayBuffer>;
-  sendYjsBinaryUpdate(roomId: string, update: Uint8Array): Promise<void>;
-};
 
 type MatchRecord = {
   block: XmlElement;
@@ -45,7 +41,7 @@ export const hashOfJSON = (json: unknown): string => {
  * Returns void on success.
  */
 export async function findAnchorText(
-  liveblocks: LiveblocksClient,
+  liveblocks: Liveblocks,
   roomId: string,
   anchorText: string
 ): Promise<void> {
@@ -61,7 +57,7 @@ export async function findAnchorText(
  * Throws `{ message, status: 400 }` if text is not found or is ambiguous.
  */
 export async function anchorThreadToText(
-  liveblocks: LiveblocksClient,
+  liveblocks: Liveblocks,
   roomId: string,
   threadId: string,
   anchorText: string
@@ -108,10 +104,7 @@ function convolute(digest: Uint8Array): Uint8Array {
 }
 
 /** Fetch a Yjs document from Liveblocks and reconstruct it in memory. */
-async function fetchYDoc(
-  liveblocks: LiveblocksClient,
-  roomId: string
-): Promise<Doc> {
+async function fetchYDoc(liveblocks: Liveblocks, roomId: string): Promise<Doc> {
   const binary = await liveblocks.getYjsDocumentAsBinaryUpdate(roomId);
   const ydoc = new Doc();
   applyUpdate(ydoc, new Uint8Array(binary));

@@ -1,3 +1,4 @@
+import type { Liveblocks } from "@liveblocks/node";
 import { describe, expect, it, vi } from "vitest";
 import {
   applyUpdate,
@@ -38,18 +39,15 @@ function createMockLiveblocks(ydoc: Doc) {
   return {
     getYjsDocumentAsBinaryUpdate: vi.fn().mockResolvedValue(binary.buffer),
     sendYjsBinaryUpdate: vi.fn().mockResolvedValue(undefined),
-  };
+  } as unknown as Liveblocks;
 }
 
 /**
  * Apply the diff sent to sendYjsBinaryUpdate on top of the original doc state
  * and return the resulting document for inspection.
  */
-function applyDiff(
-  originalDoc: Doc,
-  mockLiveblocks: ReturnType<typeof createMockLiveblocks>
-): Doc {
-  const sentUpdate = mockLiveblocks.sendYjsBinaryUpdate.mock
+function applyDiff(originalDoc: Doc, mockLiveblocks: Liveblocks): Doc {
+  const sentUpdate = vi.mocked(mockLiveblocks.sendYjsBinaryUpdate).mock
     .calls[0][1] as Uint8Array;
   const resultDoc = new Doc();
   applyUpdate(resultDoc, encodeStateAsUpdate(originalDoc));
