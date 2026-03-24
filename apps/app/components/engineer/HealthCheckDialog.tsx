@@ -28,13 +28,15 @@ const SUCCESS_DISMISS_DELAY = 1200;
 /** Duration of the Radix dialog exit animation (matches duration-200 on DialogContent) */
 const EXIT_ANIMATION_MS = 250;
 
-let shownThisPageLoad = false;
+const shownTargetKeys = new Set<string>();
 
 export function resetHealthCheckDialogVisibilityForTests(): void {
-  shownThisPageLoad = false;
+  shownTargetKeys.clear();
 }
 
-export function HealthCheckDialog() {
+export function HealthCheckDialog({
+  targetKey = "default",
+}: Readonly<{ targetKey?: string }>) {
   const [mounted, setMounted] = useState(false);
   const [failureDetected, setFailureDetected] = useState(false);
   const [closing, setClosing] = useState(false);
@@ -44,7 +46,7 @@ export function HealthCheckDialog() {
   const [revealedCount, setRevealedCount] = useState(0);
   const [showSuccess, setShowSuccess] = useState(false);
   const revealTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
-  const canOpenThisMount = useRef(!shownThisPageLoad);
+  const canOpenThisMount = useRef(!shownTargetKeys.has(targetKey));
   const queryClient = useQueryClient();
 
   // Client-only mount flag — avoids SSR/hydration mismatch
@@ -95,7 +97,7 @@ export function HealthCheckDialog() {
     }
 
     const timer = setTimeout(() => {
-      shownThisPageLoad = true;
+      shownTargetKeys.add(targetKey);
     }, 0);
 
     setFailureDetected(true);

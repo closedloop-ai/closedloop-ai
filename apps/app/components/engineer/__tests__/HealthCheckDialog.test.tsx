@@ -98,7 +98,7 @@ describe("Dismissal behavior", () => {
 
     // Flush mount effects (setMounted + useEffect for failure detection)
     await act(async () => {});
-    // Fire the deferred setTimeout(0) that commits shownThisPageLoad
+    // Fire the deferred setTimeout(0) that commits shownTargetKeys
     act(() => {
       vi.advanceTimersByTime(1);
     });
@@ -109,13 +109,15 @@ describe("Dismissal behavior", () => {
 
     expect(screen.queryByText("System Check")).not.toBeNull();
 
-    document.dispatchEvent(
-      new KeyboardEvent("keydown", {
-        key: "Escape",
-        bubbles: true,
-        cancelable: true,
-      })
-    );
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Escape",
+          bubbles: true,
+          cancelable: true,
+        })
+      );
+    });
 
     act(() => {
       vi.advanceTimersByTime(EXIT_ANIMATION_MS + 50);
@@ -142,9 +144,11 @@ describe("Dismissal behavior", () => {
 
     expect(screen.queryByText("System Check")).not.toBeNull();
 
-    document.dispatchEvent(
-      new PointerEvent("pointerdown", { bubbles: true, cancelable: true })
-    );
+    act(() => {
+      document.dispatchEvent(
+        new PointerEvent("pointerdown", { bubbles: true, cancelable: true })
+      );
+    });
 
     act(() => {
       vi.advanceTimersByTime(EXIT_ANIMATION_MS + 50);
@@ -172,7 +176,9 @@ describe("Dismissal behavior", () => {
     const continueButton = screen.getByRole("button", { name: /continue/i });
     expect(continueButton).not.toBeDisabled();
 
-    continueButton.click();
+    act(() => {
+      continueButton.click();
+    });
 
     act(() => {
       vi.advanceTimersByTime(EXIT_ANIMATION_MS + 50);
@@ -210,7 +216,7 @@ describe("Show-once behavior", () => {
       vi.advanceTimersByTime(1);
     });
     // Second advance fires the deferred setTimeout(0), committing
-    // shownThisPageLoad = true BEFORE unmount's cleanup can cancel it
+    // shownTargetKeys = true BEFORE unmount's cleanup can cancel it
     act(() => {
       vi.advanceTimersByTime(1);
     });
@@ -219,7 +225,7 @@ describe("Show-once behavior", () => {
 
     unmount();
 
-    // Second mount — shownThisPageLoad is now true
+    // Second mount — shownTargetKeys is now true
     const Wrapper2 = createWrapper();
     render(
       <Wrapper2>
@@ -232,7 +238,7 @@ describe("Show-once behavior", () => {
     expect(screen.queryByText("System Check")).toBeNull();
   });
 
-  it("After first failing mount sets shownThisPageLoad, second mount does not issue another health-check query", async () => {
+  it("After first failing mount sets shownTargetKeys, second mount does not issue another health-check query", async () => {
     const Wrapper = createWrapper();
     const { unmount } = render(
       <Wrapper>
@@ -245,7 +251,7 @@ describe("Show-once behavior", () => {
     act(() => {
       vi.advanceTimersByTime(1);
     });
-    // Second advance: fires deferred setTimeout(0) → shownThisPageLoad = true
+    // Second advance: fires deferred setTimeout(0) → shownTargetKeys = true
     act(() => {
       vi.advanceTimersByTime(1);
     });
@@ -299,7 +305,7 @@ describe("Show-once behavior", () => {
     unmount();
 
     // Step 2: Do NOT call resetHealthCheckDialogVisibilityForTests —
-    // the stable mount must have committed shownThisPageLoad = true.
+    // the stable mount must have committed shownTargetKeys = true.
     const Wrapper2 = createWrapper();
     render(
       <Wrapper2>
@@ -309,7 +315,7 @@ describe("Show-once behavior", () => {
 
     await act(async () => {});
 
-    // Second mount sees shownThisPageLoad = true and returns null
+    // Second mount sees shownTargetKeys = true and returns null
     expect(screen.queryByText("System Check")).toBeNull();
   });
 });
