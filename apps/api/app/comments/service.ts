@@ -1,6 +1,10 @@
 import { ThreadSource, ThreadStatus } from "@repo/api/src/types/comment";
 import { EntityType } from "@repo/api/src/types/entity-link";
-import { parseArtifactRoomId } from "@repo/collaboration/room-utils";
+import { createArtifactThread as createLiveblocksThread } from "@repo/collaboration/room-management";
+import {
+  generateArtifactRoomId,
+  parseArtifactRoomId,
+} from "@repo/collaboration/room-utils";
 import type { CommentData, ThreadData } from "@repo/collaboration/webhook";
 import { Prisma, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
@@ -231,7 +235,55 @@ export const commentsService = {
       })
     );
   },
+
+  createArtifactThread,
 };
+
+/**
+ * Create a Liveblocks thread on an artifact and persist to DB (best-effort).
+ * Encapsulates room ID computation, Liveblocks SDK call, and DB sync.
+ * Throws on Liveblocks errors; DB failures are logged but do not throw.
+ */
+async function createArtifactThread(
+  organizationId: string,
+  artifactSlug: string,
+  userId: string,
+  bodyText: string,
+  anchorText: string
+): Promise<{ threadId: string; commentId: string }> {
+  const roomId = generateArtifactRoomId(organizationId, artifactSlug);
+
+  const threadData = await createLiveblocksThread({
+    roomId,
+    userId,
+    bodyText,
+    anchorText,
+  });
+
+  const firstComment = threadData.comments[0];
+  if (!firstComment) {
+    throw new Error("Thread created but returned no comment");
+  }
+
+  try {
+    await commentsService.upsertThreadFromLiveblocks(
+      organizationId,
+      threadData
+    );
+    await commentsService.upsertCommentFromLiveblocks(
+      organizationId,
+      threadData.id,
+      firstComment
+    );
+  } catch (dbError) {
+    log.warn("Best-effort DB sync failed after thread creation", {
+      error: dbError instanceof Error ? dbError.message : String(dbError),
+      threadId: threadData.id,
+    });
+  }
+
+  return { threadId: threadData.id, commentId: firstComment.id };
+}
 
 /**
  * Parse roomId to find the associated artifact entity.
