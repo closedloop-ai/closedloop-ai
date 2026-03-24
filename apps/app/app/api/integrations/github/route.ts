@@ -1,32 +1,30 @@
 import { auth } from "@repo/auth/server";
 import { log } from "@repo/observability/log";
 import { cookies } from "next/headers";
-import { NextResponse } from "next/server";
+import { type NextRequest, NextResponse } from "next/server";
 import { env } from "@/env";
 import {
   GITHUB_ERROR_CODES,
   GITHUB_OAUTH_STATE_COOKIE,
   getErrorRedirectUrl,
+  getGitHubCallbackUrl,
 } from "./github-utils";
 
 /**
  * GET /api/integrations/github
  *
- * Initiates GitHub App installation flow with OAuth authorization.
- * Uses GitHub's "OAuth during installation" golden standard pattern.
+ * Initiates GitHub OAuth authorization or App installation flow.
  *
- * Flow:
- * 1. Generate CSRF state token
- * 2. Store state in HTTP-only cookie (10 min expiry)
- * 3. Redirect to GitHub App install page with state param
- * 4. GitHub combines installation + OAuth authorization
- * 5. GitHub redirects to callback with code + installation_id + state
+ * Two modes:
+ * - Standard OAuth (default): Uses /login/oauth/authorize — works when the app
+ *   is already installed. Requires GITHUB_APP_CLIENT_ID.
+ * - Installation flow (?install=true): Uses /installations/new — combines
+ *   installation + OAuth for first-time setup. Requires NEXT_PUBLIC_GITHUB_APP_SLUG.
  *
- * Note: We don't use PKCE here because the GitHub App installation URL doesn't
- * support passing code_challenge. PKCE would only work with the standard OAuth
- * authorization URL, not the App installation flow.
+ * Falls back to installation flow when only NEXT_PUBLIC_GITHUB_APP_SLUG is set
+ * (backward compatible with deployments that haven't added the client ID yet).
  */
-export async function GET(): Promise<NextResponse> {
+export async function GET(request: NextRequest): Promise<NextResponse> {
   try {
     const { userId, orgId } = await auth();
 
@@ -37,8 +35,10 @@ export async function GET(): Promise<NextResponse> {
       );
     }
 
-    // Check if GitHub App is configured
-    if (!env.NEXT_PUBLIC_GITHUB_APP_SLUG) {
+    const clientId = env.GITHUB_APP_CLIENT_ID;
+    const appSlug = env.NEXT_PUBLIC_GITHUB_APP_SLUG;
+
+    if (!(clientId || appSlug)) {
       log.warn("[github/oauth] GitHub App not configured");
       return NextResponse.redirect(
         getErrorRedirectUrl(GITHUB_ERROR_CODES.NOT_CONFIGURED)
@@ -61,19 +61,41 @@ export async function GET(): Promise<NextResponse> {
 
     cookieStore.set(GITHUB_OAUTH_STATE_COOKIE, state, cookieOptions);
 
-    // Build GitHub App installation URL with state param
-    // GitHub's "OAuth during installation" mode will combine authorization with installation
-    // and redirect to callback with code + installation_id + state
-    const githubUrl = `https://github.com/apps/${env.NEXT_PUBLIC_GITHUB_APP_SLUG}/installations/new?state=${state}`;
+    // Determine which flow to use:
+    // 1. ?install=true forces the /installations/new flow (first-time setup)
+    // 2. Default: standard OAuth URL if client_id is available (works for existing installs)
+    // 3. Fallback: /installations/new if only slug is configured (backward compat)
+    const forceInstall = request.nextUrl.searchParams.get("install") === "true";
+    const useInstallFlow = forceInstall ? !!appSlug : !clientId && !!appSlug;
 
-    log.info("[github/oauth] Redirecting to GitHub App installation", {
+    if (useInstallFlow) {
+      // Installation flow: combines GitHub App install + OAuth in one step.
+      // Only works for NEW installations -- if the app is already installed,
+      // GitHub redirects to the settings page instead of completing OAuth.
+      const githubUrl = `https://github.com/apps/${appSlug}/installations/new?state=${state}`;
+
+      log.info("[github/oauth] Redirecting to GitHub App installation", {
+        userId,
+        orgId,
+      });
+
+      return NextResponse.redirect(githubUrl);
+    }
+
+    // Standard OAuth: always triggers authorization regardless of install status.
+    const githubUrl = new URL("https://github.com/login/oauth/authorize");
+    githubUrl.searchParams.set("client_id", clientId as string);
+    githubUrl.searchParams.set("redirect_uri", getGitHubCallbackUrl());
+    githubUrl.searchParams.set("state", state);
+
+    log.info("[github/oauth] Redirecting to GitHub OAuth authorization", {
       userId,
       orgId,
     });
 
-    return NextResponse.redirect(githubUrl);
+    return NextResponse.redirect(githubUrl.toString());
   } catch (error) {
-    log.error("[github/oauth] Failed to initiate GitHub App installation", {
+    log.error("[github/oauth] Failed to initiate GitHub OAuth flow", {
       error,
     });
     return NextResponse.redirect(
