@@ -7,7 +7,7 @@ import {
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { log } from "@repo/observability/log";
-import { getAwsCredentials } from "@/lib/aws-credentials";
+import { getAwsCredentials } from "@repo/aws/credentials";
 
 /**
  * S3 key structure for Loop state:

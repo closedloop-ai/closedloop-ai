@@ -11,7 +11,7 @@ import {
   StopTaskCommand,
 } from "@aws-sdk/client-ecs";
 import { log } from "@repo/observability/log";
-import { getAwsCredentials } from "@/lib/aws-credentials";
+import { getAwsCredentials } from "@repo/aws/credentials";
 
 // ---------------------------------------------------------------------------
 // Configuration

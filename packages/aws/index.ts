@@ -1,4 +1,5 @@
 import "server-only";
+import type { S3ClientConfig } from "@aws-sdk/client-s3";
 import {
   DeleteObjectCommand,
   GetObjectCommand,
@@ -6,19 +7,26 @@ import {
   S3Client,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl as s3GetSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { getAwsCredentials } from "./credentials";
 import { keys } from "./keys";
 
 const config = keys();
 
+function resolveCredentials(): S3ClientConfig["credentials"] {
+  // Explicit access keys take precedence (local dev)
+  if (config.AWS_ACCESS_KEY_ID && config.AWS_SECRET_ACCESS_KEY) {
+    return {
+      accessKeyId: config.AWS_ACCESS_KEY_ID,
+      secretAccessKey: config.AWS_SECRET_ACCESS_KEY,
+    };
+  }
+  // Vercel OIDC or default credential chain (ECS task role, etc.)
+  return getAwsCredentials();
+}
+
 const s3Client = new S3Client({
   region: config.AWS_REGION,
-  ...(config.AWS_ACCESS_KEY_ID &&
-    config.AWS_SECRET_ACCESS_KEY && {
-      credentials: {
-        accessKeyId: config.AWS_ACCESS_KEY_ID,
-        secretAccessKey: config.AWS_SECRET_ACCESS_KEY,
-      },
-    }),
+  credentials: resolveCredentials(),
 });
 
 /**

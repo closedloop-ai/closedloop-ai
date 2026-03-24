@@ -6,9 +6,9 @@
  * (env vars, instance profile), this falls back gracefully.
  */
 
-import type { KMSClientConfig } from "@aws-sdk/client-kms";
+import type { S3ClientConfig } from "@aws-sdk/client-s3";
 
-type CredentialsProvider = KMSClientConfig["credentials"];
+type CredentialsProvider = S3ClientConfig["credentials"];
 
 let _credentials: CredentialsProvider;
 
