@@ -1,6 +1,7 @@
 "use client";
 
 import { EngineerRoutingMode } from "@repo/api/src/types/relay";
+import { log } from "@repo/observability/log";
 import { CLOUD_RELAY_ENABLED } from "./constants";
 import {
   ensureElectronDetection,
@@ -118,7 +119,7 @@ function createFetchInterceptor(
 
     const routingSelection = getEngineerRoutingSelection();
 
-    console.debug("[engineer-debug] Fetch interceptor routing", {
+    log.debug("[engineer-debug] Fetch interceptor routing", {
       url: requestUrl.pathname,
       mode: routingSelection.mode,
       computeTargetId: routingSelection.computeTargetId,
@@ -158,7 +159,7 @@ function createFetchInterceptor(
     }
 
     if (routingSelection.mode !== EngineerRoutingMode.LocalElectron) {
-      console.warn(
+      log.warn(
         "[engineer-debug] Engineer request falling through to original fetch (will hit proxy guard)",
         {
           url: requestUrl.pathname,

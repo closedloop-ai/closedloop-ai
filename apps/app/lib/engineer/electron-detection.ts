@@ -1,5 +1,6 @@
 "use client";
 
+import { log } from "@repo/observability/log";
 import { useEffect, useSyncExternalStore } from "react";
 
 export type ElectronDetectionState = {
@@ -141,7 +142,7 @@ export function ensureElectronDetection(options?: {
   inFlight = probeElectron()
     .then((result) => {
       const checkedAt = Date.now();
-      console.debug("[engineer-debug] Electron probe result", {
+      log.debug("[engineer-debug] Electron probe result", {
         detected: result.detected,
         port: result.port,
         machineName: result.machineName,
@@ -158,7 +159,7 @@ export function ensureElectronDetection(options?: {
     })
     .catch((err) => {
       const checkedAt = Date.now();
-      console.debug("[engineer-debug] Electron probe failed", {
+      log.debug("[engineer-debug] Electron probe failed", {
         error: err instanceof Error ? err.message : String(err),
         origin: globalThis.location?.origin,
       });

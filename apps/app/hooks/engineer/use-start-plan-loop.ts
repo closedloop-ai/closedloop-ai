@@ -1,6 +1,7 @@
 "use client";
 
 import type { StartPlanLoopResponse } from "@repo/api/src/types/plan-loop";
+import { log } from "@repo/observability/log";
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -226,7 +227,7 @@ export function useStartPlanLoop(
       try {
         const computeResult = getRequiredLoopComputeTargetId();
         if (!computeResult.ok) {
-          console.warn(
+          log.warn(
             "[engineer-debug] startPlanLoop aborted: no compute target",
             { error: computeResult.error, ticketId: ticket.identifier }
           );
@@ -234,7 +235,7 @@ export function useStartPlanLoop(
           return { launched: false, alreadyRunning: false };
         }
 
-        console.debug("[engineer-debug] startPlanLoop Phase 1: prepare", {
+        log.debug("[engineer-debug] startPlanLoop Phase 1: prepare", {
           ticketId: ticket.identifier,
           computeTargetId: computeResult.computeTargetId,
           repoPath,
@@ -247,7 +248,7 @@ export function useStartPlanLoop(
           baseBranch
         );
 
-        console.debug("[engineer-debug] startPlanLoop Phase 2: API call", {
+        log.debug("[engineer-debug] startPlanLoop Phase 2: API call", {
           ticketId: ticket.identifier,
           prepareResult,
         });

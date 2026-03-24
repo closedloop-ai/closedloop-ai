@@ -2,6 +2,7 @@
 
 import { EngineerRoutingMode } from "@repo/api/src/types/relay";
 import { useAuth } from "@repo/auth/client";
+import { log } from "@repo/observability/log";
 import { useEffect } from "react";
 import { useComputeTargetStatusStream } from "@/hooks/queries/use-compute-target-status-stream";
 import { useComputeTargets } from "@/hooks/queries/use-compute-targets";
@@ -32,7 +33,7 @@ export function EngineerTransportBootstrap() {
 
     const current = getEngineerRoutingSelection();
 
-    console.debug("[engineer-debug] Transport bootstrap routing decision", {
+    log.debug("[engineer-debug] Transport bootstrap routing decision", {
       electronDetected: detection.detected,
       electronPort: detection.port,
       electronMachineName: detection.machineName,
@@ -53,7 +54,7 @@ export function EngineerTransportBootstrap() {
       current.source === "manual" &&
       (CLOUD_RELAY_ENABLED || current.mode !== EngineerRoutingMode.CloudRelay)
     ) {
-      console.debug(
+      log.debug(
         "[engineer-debug] Preserving manual routing selection:",
         current.mode,
         current.computeTargetId
@@ -69,7 +70,7 @@ export function EngineerTransportBootstrap() {
       const localTarget = detection.machineName
         ? targets?.find((t) => t.machineName === detection.machineName)
         : undefined;
-      console.debug(
+      log.debug(
         "[engineer-debug] Electron detected, setting LocalElectron mode",
         {
           machineName: detection.machineName,
@@ -85,7 +86,7 @@ export function EngineerTransportBootstrap() {
     }
 
     if (!CLOUD_RELAY_ENABLED) {
-      console.debug(
+      log.debug(
         "[engineer-debug] Electron not detected and cloud relay disabled -- no routing change"
       );
       return;
@@ -93,14 +94,14 @@ export function EngineerTransportBootstrap() {
 
     // Hosted fallback: do not auto-select a cloud target. Users must choose one.
     if (current.mode === EngineerRoutingMode.CloudRelay) {
-      console.debug(
+      log.debug(
         "[engineer-debug] Already in CloudRelay mode, computeTargetId:",
         current.computeTargetId
       );
       return;
     }
 
-    console.debug(
+    log.debug(
       "[engineer-debug] Electron not detected from hosted origin -- falling back to CloudRelay with null computeTargetId"
     );
     setEngineerRoutingAutoSelection(EngineerRoutingMode.CloudRelay, null, {

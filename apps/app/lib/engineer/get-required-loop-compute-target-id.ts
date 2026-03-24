@@ -1,4 +1,5 @@
 import { EngineerRoutingMode } from "@repo/api/src/types/relay";
+import { log } from "@repo/observability/log";
 import { getEngineerRoutingSelection } from "@/lib/engineer/routing-store";
 
 /**
@@ -12,7 +13,7 @@ export function getRequiredLoopComputeTargetId():
   | { ok: false; error: string } {
   const routing = getEngineerRoutingSelection();
 
-  console.debug("[engineer-debug] getRequiredLoopComputeTargetId", {
+  log.debug("[engineer-debug] getRequiredLoopComputeTargetId", {
     mode: routing.mode,
     source: routing.source,
     computeTargetId: routing.computeTargetId,
@@ -23,7 +24,7 @@ export function getRequiredLoopComputeTargetId():
     routing.mode === EngineerRoutingMode.CloudRelay
   ) {
     if (!routing.computeTargetId) {
-      console.warn(
+      log.warn(
         "[engineer-debug] Loop compute target ID is null in routing store",
         {
           mode: routing.mode,
@@ -41,7 +42,7 @@ export function getRequiredLoopComputeTargetId():
   }
 
   // Fallback for any future routing modes — require explicit configuration
-  console.warn(
+  log.warn(
     "[engineer-debug] Unknown routing mode for loop compute target:",
     routing.mode
   );
