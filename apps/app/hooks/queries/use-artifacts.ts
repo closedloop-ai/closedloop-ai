@@ -385,17 +385,7 @@ export function useCreateAndGenerateArtifact() {
         // This catch is inside mutationFn (not onError), so TanStack Query sees onSuccess —
         // intentionally, so the caller can navigate to the created artifact regardless of
         // whether generation succeeded.
-        console.warn(
-          "[engineer-debug] run-loop failed after artifact creation",
-          {
-            artifactId: artifact.id,
-            error: error instanceof Error ? error.message : String(error),
-            status:
-              error && typeof error === "object" && "status" in error
-                ? (error as { status: number }).status
-                : undefined,
-          }
-        );
+        // Unhandled error types are logged inside handleRunLoopResponse.
         handleRunLoopResponse(error, {
           onMultipleTargets: (conflict) =>
             setMultiTargetState({
