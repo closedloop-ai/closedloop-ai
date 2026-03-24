@@ -26,11 +26,7 @@ export async function authenticate({
     tenantId: organizationId,
   });
 
-  session.allow(`${organizationId}:artifact:*`, [
-    ...session.FULL_ACCESS,
-    "room:read",
-    "comments:read",
-  ]);
+  session.allow(`${organizationId}:artifact:*`, session.FULL_ACCESS);
 
   const { status, body } = await session.authorize();
   return { token: body, status };
