@@ -563,10 +563,15 @@ export const loopsService = {
       throw new Error("You can only resume your own loops");
     }
 
-    const resumableStatuses = new Set(["COMPLETED", "FAILED", "TIMED_OUT"]);
+    const resumableStatuses = new Set([
+      "CANCELLED",
+      "COMPLETED",
+      "FAILED",
+      "TIMED_OUT",
+    ]);
     if (!resumableStatuses.has(parent.status)) {
       throw new Error(
-        `Cannot resume loop in ${parent.status} status. Only COMPLETED, FAILED, or TIMED_OUT loops can be resumed.`
+        `Cannot resume loop in ${parent.status} status. Only CANCELLED, COMPLETED, FAILED, or TIMED_OUT loops can be resumed.`
       );
     }
 

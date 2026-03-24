@@ -95,6 +95,25 @@ describe("LoopsTable — restart button visibility", () => {
     ).toBeInTheDocument();
   });
 
+  it("renders a restart button for a CANCELLED loop", () => {
+    vi.mocked(useLoops).mockReturnValue({
+      data: [
+        createMockLoopWithUser({
+          id: "loop-003",
+          status: LoopStatus.Cancelled,
+        }),
+      ],
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoops>);
+
+    render(<LoopsTable />);
+
+    expect(
+      screen.getByRole("button", { name: "Restart loop" })
+    ).toBeInTheDocument();
+  });
+
   it("does not render a restart button for a COMPLETED loop", () => {
     vi.mocked(useLoops).mockReturnValue({
       data: [createMockLoopWithUser({ status: LoopStatus.Completed })],
@@ -137,19 +156,6 @@ describe("LoopsTable — restart button visibility", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("does not render a restart button for a CANCELLED loop", () => {
-    vi.mocked(useLoops).mockReturnValue({
-      data: [createMockLoopWithUser({ status: LoopStatus.Cancelled })],
-      isLoading: false,
-      error: null,
-    } as ReturnType<typeof useLoops>);
-
-    render(<LoopsTable />);
-
-    expect(
-      screen.queryByRole("button", { name: "Restart loop" })
-    ).not.toBeInTheDocument();
-  });
 });
 
 describe("LoopsTable — restart button interaction", () => {

@@ -114,6 +114,20 @@ describe("LoopDetailContainer — restart button visibility", () => {
     ).toBeInTheDocument();
   });
 
+  it("renders the restart button for a CANCELLED loop", () => {
+    vi.mocked(useLoop).mockReturnValue({
+      data: createMockLoopWithUser({ status: LoopStatus.Cancelled }),
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoop>);
+
+    render(<LoopDetailContainer id="loop-006" />);
+
+    expect(
+      screen.getByRole("button", { name: RESTART_BUTTON_NAME })
+    ).toBeInTheDocument();
+  });
+
   it("does not render the restart button for a COMPLETED loop", () => {
     vi.mocked(useLoop).mockReturnValue({
       data: createMockLoopWithUser({ status: LoopStatus.Completed }),

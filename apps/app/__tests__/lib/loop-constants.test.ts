@@ -26,16 +26,16 @@ describe("RESTARTABLE_LOOP_STATUSES", () => {
     expect(RESTARTABLE_LOOP_STATUSES.has(LoopStatus.Running)).toBe(false);
   });
 
-  it("does not contain Cancelled", () => {
-    expect(RESTARTABLE_LOOP_STATUSES.has(LoopStatus.Cancelled)).toBe(false);
+  it("contains Cancelled", () => {
+    expect(RESTARTABLE_LOOP_STATUSES.has(LoopStatus.Cancelled)).toBe(true);
   });
 
   it("does not contain Claimed", () => {
     expect(RESTARTABLE_LOOP_STATUSES.has(LoopStatus.Claimed)).toBe(false);
   });
 
-  it("has exactly two members", () => {
-    expect(RESTARTABLE_LOOP_STATUSES.size).toBe(2);
+  it("has exactly three members", () => {
+    expect(RESTARTABLE_LOOP_STATUSES.size).toBe(3);
   });
 });
 
