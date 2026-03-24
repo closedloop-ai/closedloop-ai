@@ -1,6 +1,6 @@
 import { ThreadSource, ThreadStatus } from "@repo/api/src/types/comment";
 import { EntityType } from "@repo/api/src/types/entity-link";
-import { createArtifactThread } from "@repo/collaboration/room-management";
+import { createArtifactThread as createLiveblocksThread } from "@repo/collaboration/room-management";
 import {
   generateArtifactRoomId,
   parseArtifactRoomId,
@@ -216,7 +216,7 @@ export const commentsService = {
     );
   },
 
-  createAndPersistArtifactThread,
+  createArtifactThread,
 };
 
 /**
@@ -224,7 +224,7 @@ export const commentsService = {
  * Encapsulates room ID computation, Liveblocks SDK call, and DB sync.
  * Throws on Liveblocks errors; DB failures are logged but do not throw.
  */
-async function createAndPersistArtifactThread(
+async function createArtifactThread(
   organizationId: string,
   artifactSlug: string,
   userId: string,
@@ -233,7 +233,7 @@ async function createAndPersistArtifactThread(
 ): Promise<{ threadId: string; commentId: string }> {
   const roomId = generateArtifactRoomId(organizationId, artifactSlug);
 
-  const threadData = await createArtifactThread({
+  const threadData = await createLiveblocksThread({
     roomId,
     userId,
     bodyText,

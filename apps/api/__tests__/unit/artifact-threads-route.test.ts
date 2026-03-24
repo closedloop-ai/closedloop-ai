@@ -28,7 +28,7 @@ vi.mock("@/app/artifacts/service", () => ({
 
 vi.mock("@/app/comments/service", () => ({
   commentsService: {
-    createAndPersistArtifactThread: vi.fn(),
+    createArtifactThread: vi.fn(),
   },
 }));
 
@@ -73,9 +73,10 @@ describe("POST /artifacts/:id/threads", () => {
     vi.mocked(artifactsService.findById).mockResolvedValue({
       slug: "PRD-7",
     } as never);
-    vi.mocked(commentsService.createAndPersistArtifactThread).mockResolvedValue(
-      { threadId: "th_123", commentId: "cm_456" }
-    );
+    vi.mocked(commentsService.createArtifactThread).mockResolvedValue({
+      threadId: "th_123",
+      commentId: "cm_456",
+    });
 
     const response = await POST(
       makeRequest({ body: "Hello", anchorText: "Summary" }),
@@ -89,7 +90,7 @@ describe("POST /artifacts/:id/threads", () => {
       data: { threadId: "th_123", commentId: "cm_456" },
     });
 
-    expect(commentsService.createAndPersistArtifactThread).toHaveBeenCalledWith(
+    expect(commentsService.createArtifactThread).toHaveBeenCalledWith(
       "org-1",
       "PRD-7",
       "user-1",
@@ -117,9 +118,7 @@ describe("POST /artifacts/:id/threads", () => {
       slug: "PRD-7",
     } as never);
     const lbError = Object.assign(new Error("Room not found"), { status: 404 });
-    vi.mocked(commentsService.createAndPersistArtifactThread).mockRejectedValue(
-      lbError
-    );
+    vi.mocked(commentsService.createArtifactThread).mockRejectedValue(lbError);
 
     const response = await POST(
       makeRequest({ body: "Hello", anchorText: "Summary" }),
@@ -136,7 +135,7 @@ describe("POST /artifacts/:id/threads", () => {
     vi.mocked(artifactsService.findById).mockResolvedValue({
       slug: "PRD-7",
     } as never);
-    vi.mocked(commentsService.createAndPersistArtifactThread).mockRejectedValue(
+    vi.mocked(commentsService.createArtifactThread).mockRejectedValue(
       new Error("Unknown error")
     );
 
@@ -153,9 +152,10 @@ describe("POST /artifacts/:id/threads", () => {
     vi.mocked(artifactsService.findById).mockResolvedValue({
       slug: "PRD-7",
     } as never);
-    vi.mocked(commentsService.createAndPersistArtifactThread).mockResolvedValue(
-      { threadId: "th_123", commentId: "cm_456" }
-    );
+    vi.mocked(commentsService.createArtifactThread).mockResolvedValue({
+      threadId: "th_123",
+      commentId: "cm_456",
+    });
 
     await POST(
       makeRequest({
@@ -166,7 +166,7 @@ describe("POST /artifacts/:id/threads", () => {
       makeParams()
     );
 
-    expect(commentsService.createAndPersistArtifactThread).toHaveBeenCalledWith(
+    expect(commentsService.createArtifactThread).toHaveBeenCalledWith(
       "org-1",
       "PRD-7",
       "user-1",
@@ -193,12 +193,10 @@ describe("POST /artifacts/:id/threads", () => {
     vi.mocked(artifactsService.findById).mockResolvedValue({
       slug: "PRD-7",
     } as never);
-    vi.mocked(commentsService.createAndPersistArtifactThread).mockRejectedValue(
-      {
-        message: "Anchor text not found in document",
-        status: 400,
-      }
-    );
+    vi.mocked(commentsService.createArtifactThread).mockRejectedValue({
+      message: "Anchor text not found in document",
+      status: 400,
+    });
 
     const response = await POST(
       makeRequest({ body: "Hello", anchorText: "nonexistent" }),

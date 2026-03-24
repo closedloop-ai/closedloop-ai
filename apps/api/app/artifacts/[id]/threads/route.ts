@@ -40,7 +40,7 @@ export const POST = withAnyAuth<
       return parseError;
     }
 
-    const result = await commentsService.createAndPersistArtifactThread(
+    const result = await commentsService.createArtifactThread(
       user.organizationId,
       artifact.slug,
       user.id,
