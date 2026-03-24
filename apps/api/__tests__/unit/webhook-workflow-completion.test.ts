@@ -882,7 +882,7 @@ describe("handleExecutionSuccess", () => {
         organizationId: "org-123",
         repositoryId,
         artifactId: "plan-artifact-123",
-        githubId: executionResult.github_id,
+        githubId: String(executionResult.github_id),
         number: 42,
         title: executionResult.pr_title,
         htmlUrl: executionResult.pr_url,
@@ -902,7 +902,7 @@ describe("handleExecutionSuccess", () => {
         prUrl: executionResult.pr_url,
         prTitle: executionResult.pr_title,
         prNumber: 42,
-        githubId: executionResult.github_id,
+        githubId: String(executionResult.github_id),
         headBranch: executionResult.branch_name,
         baseBranch: executionResult.base_ref,
       })
@@ -980,7 +980,7 @@ describe("handleExecutionSuccess", () => {
       data: expect.objectContaining({
         organizationId: "org-456",
         number: 99, // Converted to number
-        githubId: 99,
+        githubId: "99",
       }),
     });
   });

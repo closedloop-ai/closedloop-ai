@@ -17,7 +17,7 @@ import { log } from "@repo/observability/log";
  * Input type for upserting installation repositories
  */
 export type RepositoryInput = {
-  githubRepoId: number;
+  githubRepoId: string;
   fullName: string;
   name: string;
   owner: string;
@@ -376,7 +376,7 @@ export const githubService = {
           await this.syncRepositories(
             installation.id,
             reposData.repositories.map((repo) => ({
-              githubRepoId: repo.id,
+              githubRepoId: String(repo.id),
               fullName: repo.full_name,
               name: repo.name,
               owner: repo.owner.login,
@@ -686,7 +686,7 @@ export const githubService = {
    */
   async removeRepositories(
     installationId: string,
-    githubRepoIds: number[]
+    githubRepoIds: string[]
   ): Promise<void> {
     if (githubRepoIds.length === 0) {
       log.info("[github] No repositories to remove");

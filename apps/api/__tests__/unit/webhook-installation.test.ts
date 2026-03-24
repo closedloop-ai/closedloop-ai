@@ -450,7 +450,7 @@ describe("toRepositoryInput", () => {
     const result = toRepositoryInput(repo, "fallback-owner");
 
     expect(result).toEqual({
-      githubRepoId: 123,
+      githubRepoId: "123",
       fullName: "owner/repo",
       name: "repo",
       owner: "owner",
@@ -471,7 +471,7 @@ describe("toRepositoryInput", () => {
     // When full_name has no slash, split("/") returns ["repo"]
     // so owner becomes "repo", not the fallback
     expect(result).toEqual({
-      githubRepoId: 456,
+      githubRepoId: "456",
       fullName: "repo",
       name: "repo",
       owner: "repo",
@@ -527,7 +527,7 @@ describe("handleInstallationCreated", () => {
     });
     expect(mockSyncRepositories).toHaveBeenCalledWith("installation-uuid", [
       {
-        githubRepoId: 1,
+        githubRepoId: "1",
         fullName: "new-org/repo1",
         name: "repo1",
         owner: "new-org",
@@ -644,14 +644,14 @@ describe("handleInstallationCreated", () => {
 
     expect(mockSyncRepositories).toHaveBeenCalledWith("installation-uuid", [
       {
-        githubRepoId: 1,
+        githubRepoId: "1",
         fullName: "org/repo1",
         name: "repo1",
         owner: "org",
         private: false,
       },
       {
-        githubRepoId: 2,
+        githubRepoId: "2",
         fullName: "org/repo2",
         name: "repo2",
         owner: "org",

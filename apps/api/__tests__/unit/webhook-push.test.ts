@@ -228,7 +228,7 @@ describe("handlePush", () => {
         mockDb.gitHubInstallationRepository.updateMany
       ).toHaveBeenCalledWith({
         where: {
-          githubRepoId: 123,
+          githubRepoId: "123",
           installation: { installationId: 123_456 },
         },
         data: { lastPushedAt: new Date("2024-06-15T10:30:00Z") },
@@ -252,7 +252,7 @@ describe("handlePush", () => {
         mockDb.gitHubInstallationRepository.updateMany
       ).toHaveBeenCalledWith({
         where: {
-          githubRepoId: 456,
+          githubRepoId: "456",
           installation: { installationId: 123_456 },
         },
         data: { lastPushedAt: new Date("2024-06-15T10:30:00Z") },
@@ -266,7 +266,7 @@ describe("handlePush", () => {
       });
 
       // GitHub sends pushed_at as Unix seconds (number), not ISO string
-      (event.repository as any).pushed_at = 1718444200;
+      (event.repository as any).pushed_at = 1_718_444_200;
 
       mockDb.gitHubInstallationRepository.updateMany.mockResolvedValue({
         count: 1,
@@ -274,13 +274,12 @@ describe("handlePush", () => {
 
       await handlePush(event);
 
-      const calledWith =
-        mockDb.gitHubInstallationRepository.updateMany.mock.calls[0][0].data
-          .lastPushedAt as Date;
+      const calledWith = mockDb.gitHubInstallationRepository.updateMany.mock
+        .calls[0][0].data.lastPushedAt as Date;
 
       // Must be in 2024, not 1970 (the bug was treating seconds as milliseconds)
       expect(calledWith.getFullYear()).toBe(2024);
-      expect(calledWith).toEqual(new Date(1718444200 * 1000));
+      expect(calledWith).toEqual(new Date(1_718_444_200 * 1000));
     });
   });
 
@@ -363,7 +362,7 @@ describe("handlePush", () => {
         mockDb.gitHubInstallationRepository.updateMany
       ).toHaveBeenCalledWith({
         where: {
-          githubRepoId: 789,
+          githubRepoId: "789",
           installation: { installationId: 123_456 },
         },
         data: { lastPushedAt: new Date("2024-06-15T10:30:00Z") },
@@ -388,7 +387,7 @@ describe("handlePush", () => {
       expect(
         mockDb.gitHubInstallationRepository.updateMany
       ).toHaveBeenCalledWith({
-        where: { githubRepoId: 789 },
+        where: { githubRepoId: "789" },
         data: { lastPushedAt: new Date("2024-06-15T10:30:00Z") },
       });
     });

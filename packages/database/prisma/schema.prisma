@@ -1234,7 +1234,7 @@ model GitHubInstallation {
 model GitHubInstallationRepository {
   id             String    @id @default(uuid(7)) @db.Uuid
   installationId String    @map("installation_id") @db.Uuid
-  githubRepoId   Int       @map("github_repo_id")
+  githubRepoId   String    @map("github_repo_id")
   fullName       String    @map("full_name")
   name           String
   owner          String
@@ -1256,7 +1256,7 @@ model GitHubPullRequest {
   organizationId String        @map("organization_id") @db.Uuid // Denormalized from workstream for defense-in-depth (org-scoped queries)
   repositoryId   String        @map("repository_id") @db.Uuid
   artifactId     String?       @map("artifact_id") @db.Uuid
-  githubId       Int           @map("github_id")
+  githubId       String        @map("github_id")
   number         Int
   title          String
   body           String?         @db.Text

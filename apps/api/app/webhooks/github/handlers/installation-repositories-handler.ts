@@ -79,7 +79,7 @@ export async function handleInstallationRepositoriesRemoved(
     return;
   }
 
-  const githubRepoIds = repositories_removed.map((repo) => repo.id);
+  const githubRepoIds = repositories_removed.map((repo) => String(repo.id));
   await githubService.removeRepositories(
     existingInstallation.id,
     githubRepoIds
