@@ -2,6 +2,7 @@ import {
   ComputePreference,
   type ComputeTarget,
 } from "@repo/api/src/types/compute-target";
+import { log } from "@repo/observability/log";
 import { computeTargetsService } from "@/app/compute-targets/service";
 
 export type ResolveComputeTargetResult =
@@ -55,7 +56,16 @@ export async function resolveComputeTarget(
   preferredComputeMode?: string | null,
   fallbackToCloud?: boolean
 ): Promise<ResolveComputeTargetResult> {
+  log.info("[compute-target-resolver] Resolving compute target", {
+    organizationId,
+    userId,
+    hasHint: !!computeTargetIdHint,
+    preferredComputeMode: preferredComputeMode ?? "none",
+    fallbackToCloud,
+  });
+
   if (preferredComputeMode === ComputePreference.Cloud) {
+    log.info("[compute-target-resolver] Resolved: cloud (user preference)");
     return { reason: "cloud_resolved" };
   }
 
@@ -90,14 +100,29 @@ export async function resolveComputeTarget(
 
   if (onlineTargets.length === 0) {
     if (fallbackToCloud) {
+      log.info(
+        "[compute-target-resolver] No online targets, falling back to cloud"
+      );
       return { reason: "cloud_resolved" };
     }
+    log.warn("[compute-target-resolver] No online targets found", {
+      totalTargets: targets.length,
+      targetIds: targets.map((t) => t.id),
+    });
     return { reason: "no_online_targets" };
   }
 
   if (onlineTargets.length > 1) {
+    log.info("[compute-target-resolver] Multiple online targets", {
+      count: onlineTargets.length,
+      targetIds: onlineTargets.map((t) => t.id),
+    });
     return { reason: "multiple_targets", targets: onlineTargets };
   }
 
+  log.info("[compute-target-resolver] Resolved to single online target", {
+    targetId: onlineTargets[0].id,
+    machineName: onlineTargets[0].machineName,
+  });
   return { reason: "resolved", target: onlineTargets[0] };
 }
