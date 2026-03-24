@@ -121,7 +121,15 @@ export async function createArtifactThread({
   }
 
   // Pre-validate anchor text exists and is unique before creating thread
-  await findAnchorText(liveblocks, roomId, anchorText);
+  try {
+    await findAnchorText(liveblocks, roomId, anchorText);
+  } catch (error) {
+    // Re-throw structured 400 errors (anchor not found / duplicate) as-is
+    if (error != null && typeof error === "object" && "status" in error) {
+      throw error;
+    }
+    throw new Error("Failed to validate anchor text", { cause: error });
+  }
 
   const body: CommentBody = {
     version: 1,
