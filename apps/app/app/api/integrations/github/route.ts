@@ -66,6 +66,15 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     // 2. Default: standard OAuth URL if client_id is available (works for existing installs)
     // 3. Fallback: /installations/new if only slug is configured (backward compat)
     const forceInstall = request.nextUrl.searchParams.get("install") === "true";
+
+    // Explicit error when install is requested but slug is not configured
+    if (forceInstall && !appSlug) {
+      log.warn("[github/oauth] Install flow requested but slug not configured");
+      return NextResponse.redirect(
+        getErrorRedirectUrl(GITHUB_ERROR_CODES.NOT_CONFIGURED)
+      );
+    }
+
     const useInstallFlow = forceInstall ? !!appSlug : !clientId && !!appSlug;
 
     if (useInstallFlow) {
@@ -83,8 +92,17 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     }
 
     // Standard OAuth: always triggers authorization regardless of install status.
+    // clientId is guaranteed non-null here: useInstallFlow is false means clientId is truthy
+    // (the only way useInstallFlow=false with !clientId is if !appSlug too, caught by the
+    // not-configured check above).
+    if (!clientId) {
+      return NextResponse.redirect(
+        getErrorRedirectUrl(GITHUB_ERROR_CODES.NOT_CONFIGURED)
+      );
+    }
+
     const githubUrl = new URL("https://github.com/login/oauth/authorize");
-    githubUrl.searchParams.set("client_id", clientId as string);
+    githubUrl.searchParams.set("client_id", clientId);
     githubUrl.searchParams.set("redirect_uri", getGitHubCallbackUrl());
     githubUrl.searchParams.set("state", state);
 

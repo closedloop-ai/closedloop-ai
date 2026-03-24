@@ -116,6 +116,19 @@ describe("GET /api/integrations/github", () => {
     expect(location).toContain("code=not_configured");
   });
 
+  test("returns not_configured when ?install=true but slug is not set", async () => {
+    mockEnv = {
+      GITHUB_APP_CLIENT_ID: "test-client-id",
+      NEXT_PUBLIC_GITHUB_APP_SLUG: undefined,
+      NEXT_PUBLIC_APP_URL: "http://localhost:3000",
+    };
+
+    const response = await GET(createRequest({ install: "true" }));
+    const location = response.headers.get("location") ?? "";
+
+    expect(location).toContain("code=not_configured");
+  });
+
   test("returns not_authenticated when user has no session", async () => {
     mockAuth.mockResolvedValue({ userId: null, orgId: null });
 

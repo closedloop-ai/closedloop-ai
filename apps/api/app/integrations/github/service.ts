@@ -78,7 +78,7 @@ function validateInstallationClaim(
   return null;
 }
 
-type GitHubInstallationInfo = {
+type GitHubRawInstallation = {
   id: number;
   account: { id: number; login: string; type: string };
   permissions: unknown;
@@ -154,7 +154,7 @@ export async function resolveInstallation(
   installationId: string | undefined,
   userId: string
 ): Promise<
-  | { success: true; id: number; info: GitHubInstallationInfo }
+  | { success: true; id: number; info: GitHubRawInstallation }
   | { success: false; error: string }
 > {
   const installationsResponse = await fetch(
@@ -176,7 +176,7 @@ export async function resolveInstallation(
   }
 
   const installationsData = (await installationsResponse.json()) as {
-    installations?: GitHubInstallationInfo[];
+    installations?: GitHubRawInstallation[];
   };
 
   const userInstallations = installationsData.installations ?? [];
@@ -209,27 +209,22 @@ export async function resolveInstallation(
     };
   }
 
+  const selected = userInstallations[0];
+
   if (userInstallations.length > 1) {
+    // Multiple installations found. Pick the first one and rely on
+    // validateInstallationClaim downstream to block cross-org claims.
     log.warn(
-      "[github/oauth] Multiple installations found, cannot auto-select",
+      "[github/oauth] Multiple installations found, using first. Use ?install=true for explicit selection.",
       {
         userId,
         installationCount: userInstallations.length,
-        installationIds: userInstallations.map((i) => i.id),
+        selectedInstallationId: selected.id,
       }
     );
-    return {
-      success: false,
-      error:
-        "Multiple GitHub App installations found. Please use the installation flow to select which organization to connect.",
-    };
   }
 
-  return {
-    success: true,
-    id: userInstallations[0].id,
-    info: userInstallations[0],
-  };
+  return { success: true, id: selected.id, info: selected };
 }
 
 /**

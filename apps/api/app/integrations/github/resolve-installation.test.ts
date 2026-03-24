@@ -65,15 +65,16 @@ describe("resolveInstallation", () => {
     }
   });
 
-  it("fails when multiple installations exist (no installationId provided)", async () => {
+  it("picks first installation when multiple exist (no installationId provided)", async () => {
     mockInstallationsResponse([INSTALLATION_A, INSTALLATION_B]);
 
     const result = await resolveInstallation("token", undefined, "user-1");
 
-    expect(result.success).toBe(false);
-    if (!result.success) {
-      expect(result.error).toContain("Multiple GitHub App installations");
-    }
+    expect(result).toEqual({
+      success: true,
+      id: INSTALLATION_A.id,
+      info: INSTALLATION_A,
+    });
   });
 
   it("succeeds when installationId is provided and matches", async () => {
