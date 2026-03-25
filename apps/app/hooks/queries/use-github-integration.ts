@@ -97,9 +97,16 @@ export function useDisconnectGitHub() {
 
 /**
  * Get the GitHub OAuth URL for connecting.
- * Returns the app's OAuth route which initiates the OAuth flow with CSRF state,
- * then redirects to the GitHub App installation page.
+ * Returns the app's OAuth route which initiates the OAuth flow with CSRF state.
+ *
+ * @param mode - "authorize" (default) uses standard OAuth for existing installs;
+ *               "install" uses /installations/new for first-time setup.
  */
-export function useGetGitHubConnectUrl(): string {
+export function useGetGitHubConnectUrl(
+  mode: "authorize" | "install" = "authorize"
+): string {
+  if (mode === "install") {
+    return "/api/integrations/github?install=true";
+  }
   return "/api/integrations/github";
 }

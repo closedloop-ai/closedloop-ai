@@ -18,7 +18,7 @@ type ConnectGitHubStepProps = {
 export function ConnectGitHubStep({ onNext }: ConnectGitHubStepProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const githubConnectUrl = useGetGitHubConnectUrl();
+  const githubConnectUrl = useGetGitHubConnectUrl("install");
   const toastedRef = useRef(false);
 
   const { data: githubStatus, isLoading } = useGitHubIntegrationStatus();
