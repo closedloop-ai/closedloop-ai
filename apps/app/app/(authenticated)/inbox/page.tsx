@@ -6,9 +6,14 @@ import {
   InboxNotificationList,
   useLiveblocksAvailability,
 } from "@repo/collaboration";
-import { useInboxNotifications } from "@repo/collaboration/hooks";
+import {
+  useInboxNotifications,
+  useMarkAllInboxNotificationsAsRead,
+  useUnreadInboxNotificationsCount,
+} from "@repo/collaboration/hooks";
+import { Button } from "@repo/design-system/components/ui/button";
 import { Separator } from "@repo/design-system/components/ui/separator";
-import { InboxIcon } from "lucide-react";
+import { CheckCheckIcon, InboxIcon } from "lucide-react";
 
 type InboxEmptyStateProps = {
   title: string;
@@ -27,6 +32,8 @@ function InboxEmptyState({ title, description }: InboxEmptyStateProps) {
 
 function InboxContent() {
   const { inboxNotifications } = useInboxNotifications();
+  const markAllAsRead = useMarkAllInboxNotificationsAsRead();
+  const { count: unreadCount } = useUnreadInboxNotificationsCount();
 
   if (inboxNotifications.length === 0) {
     return (
@@ -38,14 +45,27 @@ function InboxContent() {
   }
 
   return (
-    <InboxNotificationList>
-      {inboxNotifications.map((notification) => (
-        <InboxNotification
-          inboxNotification={notification}
-          key={notification.id}
-        />
-      ))}
-    </InboxNotificationList>
+    <div className="flex flex-col gap-2">
+      <div className="flex justify-end">
+        <Button
+          disabled={unreadCount === 0}
+          onClick={markAllAsRead}
+          size="sm"
+          variant="ghost"
+        >
+          <CheckCheckIcon className="h-4 w-4" />
+          Mark all as read
+        </Button>
+      </div>
+      <InboxNotificationList>
+        {inboxNotifications.map((notification) => (
+          <InboxNotification
+            inboxNotification={notification}
+            key={notification.id}
+          />
+        ))}
+      </InboxNotificationList>
+    </div>
   );
 }
 
