@@ -117,8 +117,10 @@ export async function runEcsTask(opts: RunEcsTaskOptions): Promise<string> {
   }
 
   if (opts.repo) {
-    environment.push({ name: "TARGET_REPO", value: opts.repo.fullName });
-    environment.push({ name: "TARGET_BRANCH", value: opts.repo.branch });
+    environment.push(
+      { name: "TARGET_REPO", value: opts.repo.fullName },
+      { name: "TARGET_BRANCH", value: opts.repo.branch }
+    );
   }
 
   // Parent state for resume: lets the container download prior run state

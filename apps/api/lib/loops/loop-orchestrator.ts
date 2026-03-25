@@ -3,7 +3,7 @@ import type {
   LoopEventCompleted,
   TokensByModel,
 } from "@repo/api/src/types/loop";
-import { MODEL_PRICING } from "@repo/api/src/types/loop";
+import { LoopStatus, MODEL_PRICING } from "@repo/api/src/types/loop";
 import { withDb } from "@repo/database";
 import { getInstallationAccessToken } from "@repo/github";
 import { log } from "@repo/observability/log";
@@ -21,7 +21,11 @@ import {
   buildContextPack,
   buildContextPackInMemory,
 } from "./loop-context-pack";
-import { launchLoopOnDesktop, stopDesktopLoop } from "./loop-desktop";
+import {
+  isDispatchError,
+  launchLoopOnDesktop,
+  stopDesktopLoop,
+} from "./loop-desktop";
 import { runEcsTask, stopLoopTask } from "./loop-ecs";
 import {
   downloadMetadata,
@@ -106,9 +110,7 @@ async function resolveParentLoopInfo(
   if (!(parent.s3StateKey || parent.computeTargetId)) {
     log.warn(
       "[loop-orchestrator] Parent loop has no s3StateKey or computeTargetId",
-      {
-        parentLoopId,
-      }
+      { parentLoopId }
     );
     return undefined;
   }
@@ -181,7 +183,7 @@ async function getPendingLoopOrThrow(
   if (!loop) {
     throw new Error(`Loop not found: ${loopId}`);
   }
-  if (loop.status !== "PENDING") {
+  if (loop.status !== LoopStatus.Pending) {
     throw new Error(
       `Cannot launch loop in ${loop.status} status. Only PENDING loops can be launched.`
     );
@@ -224,15 +226,20 @@ async function claimOrPersistRunning(
   s3StateKey: string | null
 ): Promise<void> {
   try {
-    await loopsService.updateStatus(loopId, organizationId, "CLAIMED", {
-      containerId: taskArn,
-      s3StateKey: s3StateKey ?? undefined,
-    });
+    await loopsService.updateStatus(
+      loopId,
+      organizationId,
+      LoopStatus.Claimed,
+      {
+        containerId: taskArn,
+        s3StateKey: s3StateKey ?? undefined,
+      }
+    );
     return;
   } catch (claimError) {
     if (isInvalidStatusTransitionError(claimError)) {
       const currentLoop = await loopsService.findById(loopId, organizationId);
-      if (currentLoop?.status === "RUNNING") {
+      if (currentLoop?.status === LoopStatus.Running) {
         await loopsService.persistLaunchInfo(loopId, organizationId, {
           containerId: taskArn,
           s3StateKey: s3StateKey ?? undefined,
@@ -272,6 +279,38 @@ async function stopOrphanedTaskIfNeeded(
   }
 }
 
+/**
+ * Expire an orphaned desktop command and send a kill signal.
+ * Called when launchLoopDesktop fails after a command was created.
+ */
+async function cleanupOrphanedDesktopCommand(
+  orphanedCommandId: string,
+  loopId: string,
+  computeTargetId: string,
+  errorMessage: string
+): Promise<void> {
+  try {
+    await desktopCommandStore.markCommandExpired(
+      orphanedCommandId,
+      `Launch failed: ${errorMessage}`
+    );
+  } catch (expireError) {
+    log.warn("[loop-orchestrator] Failed to expire orphaned command", {
+      loopId,
+      commandId: orphanedCommandId,
+      expireError,
+    });
+  }
+  try {
+    await stopDesktopLoop(loopId, computeTargetId);
+  } catch (killError) {
+    log.warn("[loop-orchestrator] Failed to stop orphaned desktop loop", {
+      loopId,
+      killError,
+    });
+  }
+}
+
 async function cancelLoopAfterLaunchFailure(
   loopId: string,
   organizationId: string
@@ -279,10 +318,20 @@ async function cancelLoopAfterLaunchFailure(
   try {
     await loopsService.cancel(loopId, organizationId);
   } catch (cancelError) {
-    log.error("[loop-orchestrator] Failed to cancel loop after launch error", {
-      loopId,
-      cancelError,
-    });
+    if (isInvalidStatusTransitionError(cancelError)) {
+      log.warn(
+        "[loop-orchestrator] Cancel-after-launch-failure skipped — loop already in terminal status (cancel-after-complete race)",
+        { loopId }
+      );
+    } else {
+      log.error(
+        "[loop-orchestrator] Failed to cancel loop after launch error",
+        {
+          loopId,
+          cancelError,
+        }
+      );
+    }
   }
 }
 
@@ -475,27 +524,20 @@ async function launchLoopDesktop(
       error: errorMessage,
     });
     // Expire the command record so it won't be replayed on reconnect
-    if (commandId) {
-      try {
-        await desktopCommandStore.markCommandExpired(
-          commandId,
-          `Launch failed: ${errorMessage}`
-        );
-      } catch (expireError) {
-        log.warn("[loop-orchestrator] Failed to expire orphaned command", {
-          loopId,
-          commandId,
-          expireError,
-        });
-      }
-      try {
-        await stopDesktopLoop(loopId, loop.computeTargetId!);
-      } catch (killError) {
-        log.warn("[loop-orchestrator] Failed to stop orphaned desktop loop", {
-          loopId,
-          killError,
-        });
-      }
+    const orphanedCommandId =
+      commandId ?? (isDispatchError(error) ? error.commandId : undefined);
+    if (orphanedCommandId) {
+      await cleanupOrphanedDesktopCommand(
+        orphanedCommandId,
+        loopId,
+        loop.computeTargetId!,
+        errorMessage
+      );
+    } else {
+      log.warn(
+        "[loop-orchestrator] Desktop launch failed with no recoverable commandId -- orphaned command may persist",
+        { loopId, errorType: describeErrorType(error) }
+      );
     }
     await cancelLoopAfterLaunchFailure(loopId, organizationId);
     throw error;
@@ -626,10 +668,15 @@ export async function handleLoopEvent(
           ? startedData.sessionId
           : undefined;
 
-      await loopsService.updateStatus(loopId, organizationId, "RUNNING", {
-        startedAt: new Date(),
-        ...(startSessionId ? { sessionId: startSessionId } : {}),
-      });
+      await loopsService.updateStatus(
+        loopId,
+        organizationId,
+        LoopStatus.Running,
+        {
+          startedAt: new Date(),
+          ...(startSessionId ? { sessionId: startSessionId } : {}),
+        }
+      );
       await loopsService.addEvent(
         loopId,
         organizationId,
@@ -736,13 +783,7 @@ export async function handleLoopEvent(
     }
 
     case "error": {
-      const canonicalEvents = await handleLoopError(
-        loopId,
-        organizationId,
-        event,
-        replayContext
-      );
-      return canonicalEvents;
+      return handleLoopError(loopId, organizationId, event, replayContext);
     }
 
     default: {
@@ -850,7 +891,11 @@ async function handleLoopCompleted(
   // Log when the runner reports success but the loop was already marked terminal.
   // The status machine allows TIMED_OUT/FAILED → COMPLETED because the runner
   // is ground truth for whether work actually finished.
-  if (loop && loop.status !== "RUNNING" && loop.status !== "CLAIMED") {
+  if (
+    loop &&
+    loop.status !== LoopStatus.Running &&
+    loop.status !== LoopStatus.Claimed
+  ) {
     log.info("[loop-orchestrator] Completed event overriding terminal status", {
       loopId,
       previousStatus: loop.status,
@@ -866,19 +911,38 @@ async function handleLoopCompleted(
   }
 
   // Transition status after ingestion succeeds.
-  // Clear stale error details when overriding a TIMED_OUT/FAILED status so the
+  // Clear stale error details when overriding a TIMED_OUT, FAILED, or CANCELLED status so the
   // loop detail page doesn't render a failure banner on a successfully recovered loop.
+  // isOverridingFailure is derived from a pre-updateStatus read -- it is advisory only;
+  // the atomic updateStatus WHERE clause is the authoritative gate for the transition.
   const isOverridingFailure =
-    loop && (loop.status === "TIMED_OUT" || loop.status === "FAILED");
-  await loopsService.updateStatus(loopId, organizationId, "COMPLETED", {
-    completedAt: new Date(),
-    tokensInput,
-    tokensOutput,
-    tokensByModel: tokensByModel ?? undefined,
-    estimatedCost,
-    ...(isOverridingFailure ? { error: null } : {}),
-    ...prSession,
-  });
+    loop &&
+    (loop.status === LoopStatus.TimedOut ||
+      loop.status === LoopStatus.Failed ||
+      loop.status === LoopStatus.Cancelled);
+  if (isOverridingFailure) {
+    log.warn(
+      "[loop-orchestrator] Overriding terminal status to COMPLETED, clearing stale error",
+      {
+        loopId: loop.id,
+        previousStatus: loop.status,
+      }
+    );
+  }
+  await loopsService.updateStatus(
+    loopId,
+    organizationId,
+    LoopStatus.Completed,
+    {
+      completedAt: new Date(),
+      tokensInput,
+      tokensOutput,
+      tokensByModel: tokensByModel ?? undefined,
+      estimatedCost,
+      ...(isOverridingFailure ? { error: null } : {}),
+      ...prSession,
+    }
+  );
 
   // Persist the completion event only after transition succeeds
   await loopsService.addEvent(
@@ -942,16 +1006,11 @@ function extractPrSessionInfo(event: Record<string, unknown>): {
     return undefined;
   }
 
-  const prUrl = pickString("prUrl");
-  const prNumber = pickNumber("prNumber");
-  const branchName = pickString("branchName");
-  const sessionId = pickString("sessionId");
-
   return {
-    ...(prUrl ? { prUrl } : {}),
-    ...(prNumber ? { prNumber } : {}),
-    ...(branchName ? { branchName } : {}),
-    ...(sessionId ? { sessionId } : {}),
+    prUrl: pickString("prUrl"),
+    prNumber: pickNumber("prNumber"),
+    branchName: pickString("branchName"),
+    sessionId: pickString("sessionId"),
   };
 }
 
@@ -985,10 +1044,15 @@ async function handleLoopError(
     );
 
     const loop = await loopsService.findById(loopId, organizationId);
-    if (loop && loop.status !== "CANCELLED") {
-      await loopsService.updateStatus(loopId, organizationId, "CANCELLED", {
-        completedAt: new Date(),
-      });
+    if (loop && loop.status !== LoopStatus.Cancelled) {
+      await loopsService.updateStatus(
+        loopId,
+        organizationId,
+        LoopStatus.Cancelled,
+        {
+          completedAt: new Date(),
+        }
+      );
     }
 
     log.info("[loop-orchestrator] Loop cancelled", {
@@ -1001,11 +1065,16 @@ async function handleLoopError(
   if (event.code === "TIMED_OUT") {
     const prSession = extractPrSessionInfo(event as Record<string, unknown>);
 
-    await loopsService.updateStatus(loopId, organizationId, "TIMED_OUT", {
-      completedAt: new Date(),
-      error: { code: event.code, message: event.message },
-      ...prSession,
-    });
+    await loopsService.updateStatus(
+      loopId,
+      organizationId,
+      LoopStatus.TimedOut,
+      {
+        completedAt: new Date(),
+        error: { code: event.code, message: event.message },
+        ...prSession,
+      }
+    );
 
     await loopsService.addEvent(
       loopId,
@@ -1031,7 +1100,7 @@ async function handleLoopError(
   // Extract PR/session info from error event (harness includes these even on failure)
   const prSession = extractPrSessionInfo(event as Record<string, unknown>);
 
-  await loopsService.updateStatus(loopId, organizationId, "FAILED", {
+  await loopsService.updateStatus(loopId, organizationId, LoopStatus.Failed, {
     completedAt: new Date(),
     error: { code: event.code, message: event.message },
     ...prSession,
@@ -1059,4 +1128,15 @@ async function handleLoopError(
   });
 
   return [event as unknown as LoopEvent];
+}
+
+/**
+ * Describe the error type for structured logging.
+ * Returns the constructor name for Error subclasses, or the typeof for non-Error values.
+ */
+function describeErrorType(error: unknown): string {
+  if (error instanceof Error) {
+    return error.constructor.name;
+  }
+  return typeof error;
 }
