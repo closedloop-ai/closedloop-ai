@@ -3,6 +3,7 @@ import type { JudgesReport } from "@repo/api/src/types/evaluation";
 import type { Loop } from "@repo/api/src/types/loop";
 import type { PromptsSnapshot } from "@repo/api/src/types/prompt";
 import {
+  EntityType,
   EvaluationReportType as PrismaEvaluationReportType,
   withDb,
 } from "@repo/database";
@@ -182,6 +183,8 @@ export async function ingestExecutionArtifacts(
 
     if (artifacts.codeJudgesReport) {
       await upsertEvaluationWithJudgeScores({
+        entityId: loop.artifactId!,
+        entityType: EntityType.ARTIFACT,
         artifactId: loop.artifactId!,
         loopId: loop.id,
         organizationId: loop.organizationId,
@@ -252,7 +255,7 @@ export async function ingestExecutionArtifacts(
           organizationId: loop.organizationId,
           repositoryId: installationRepo.id,
           artifactId: loop.artifactId!,
-          githubId: executionResult.github_id ?? prNumber,
+          githubId: String(executionResult.github_id ?? prNumber),
           number: prNumber,
           title: prTitle,
           htmlUrl: executionResult.pr_url,
@@ -272,7 +275,7 @@ export async function ingestExecutionArtifacts(
       prUrl: executionResult.pr_url,
       prTitle,
       prNumber,
-      githubId: executionResult.github_id ?? prNumber,
+      githubId: String(executionResult.github_id ?? prNumber),
       headBranch: executionResult.branch_name,
       baseBranch,
       commitSha: executionResult.commit_sha ?? null,

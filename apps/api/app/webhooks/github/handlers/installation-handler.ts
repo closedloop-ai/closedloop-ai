@@ -16,7 +16,7 @@ export function toRepositoryInput(
   repo: { id: number; full_name: string; name: string; private: boolean },
   fallbackOwner: string
 ): {
-  githubRepoId: number;
+  githubRepoId: string;
   fullName: string;
   name: string;
   owner: string;
@@ -24,7 +24,7 @@ export function toRepositoryInput(
 } {
   const [owner] = repo.full_name.split("/");
   return {
-    githubRepoId: repo.id,
+    githubRepoId: String(repo.id),
     fullName: repo.full_name,
     name: repo.name,
     owner: owner || fallbackOwner,

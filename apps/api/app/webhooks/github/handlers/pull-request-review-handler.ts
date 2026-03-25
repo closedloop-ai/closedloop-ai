@@ -329,7 +329,7 @@ export async function handlePullRequestReview(
   // All reads and writes in a single transaction to avoid TOCTOU gaps
   await withDb.tx(async (tx) => {
     const repo = await tx.gitHubInstallationRepository.findFirst({
-      where: { githubRepoId: repository.id },
+      where: { githubRepoId: String(repository.id) },
       select: { id: true },
     });
 

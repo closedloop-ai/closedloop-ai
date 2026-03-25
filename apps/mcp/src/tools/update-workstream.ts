@@ -3,7 +3,11 @@ import { Priority } from "@repo/api/src/types/common.js";
 import { WORKSTREAM_STATE_OPTIONS } from "@repo/api/src/types/workstream.js";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
-import { encodePathSegment, withErrorHandling } from "./tool-utils.js";
+import {
+  describeIdOrSlug,
+  encodePathSegment,
+  withErrorHandling,
+} from "./tool-utils.js";
 
 export function registerUpdateWorkstream(
   server: McpServer,
@@ -12,12 +16,11 @@ export function registerUpdateWorkstream(
   server.registerTool(
     "update-workstream",
     {
-      description:
-        "Update an existing workstream's title, description, state, or UI changes flag by ID or slug",
+      description: "Update a workstream, meaning an initiative, by ID or slug.",
       inputSchema: {
         workstreamId: z
           .string()
-          .describe("ID or slug of the workstream to update"),
+          .describe(describeIdOrSlug("Workstream", "WORK-5")),
         title: z.string().optional().describe("New title for the workstream"),
         description: z
           .string()

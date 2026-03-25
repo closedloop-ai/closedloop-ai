@@ -5,6 +5,7 @@ import type { ApiClient } from "../api-client.js";
 import {
   asRecord,
   buildPaginatedPayload,
+  describeIdOrSlug,
   MAX_PAGE_LIMIT,
   readString,
   withErrorHandling,
@@ -18,12 +19,12 @@ export function registerListLoops(
     "list-loops",
     {
       description:
-        "List execution loops with optional filters by artifact or status",
+        "List automation runs, called loops, with optional filters by artifact or status.",
       inputSchema: {
         artifactId: z
           .string()
           .optional()
-          .describe("Filter by artifact ID or slug (e.g. PRD-7)"),
+          .describe(describeIdOrSlug("Artifact", ["PRD-7", "PLAN-12"])),
         status: z.enum(LoopStatus).optional().describe("Filter by loop status"),
         limit: z
           .number()

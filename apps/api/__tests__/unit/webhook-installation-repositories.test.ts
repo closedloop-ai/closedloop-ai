@@ -275,14 +275,14 @@ describe("handleInstallationRepositoriesAdded", () => {
     expect(mockFindInstallationByInstallationId).toHaveBeenCalledWith(123_456);
     expect(mockAddRepositories).toHaveBeenCalledWith("inst-uuid-123", [
       {
-        githubRepoId: 101,
+        githubRepoId: "101",
         fullName: "owner/repo1",
         name: "repo1",
         owner: "owner",
         private: false,
       },
       {
-        githubRepoId: 102,
+        githubRepoId: "102",
         fullName: "owner/repo2",
         name: "repo2",
         owner: "owner",
@@ -324,7 +324,7 @@ describe("handleInstallationRepositoriesAdded", () => {
 
     expect(mockAddRepositories).toHaveBeenCalledWith("inst-uuid-123", [
       {
-        githubRepoId: 201,
+        githubRepoId: "201",
         fullName: "different-owner/special-repo",
         name: "special-repo",
         owner: "different-owner",
@@ -361,7 +361,7 @@ describe("handleInstallationRepositoriesAdded", () => {
     // Should use event.installation.account.login as fallback when split results in empty string
     expect(mockAddRepositories).toHaveBeenCalledWith("inst-uuid-123", [
       {
-        githubRepoId: 301,
+        githubRepoId: "301",
         fullName: "/repo-no-owner",
         name: "repo-no-owner",
         owner: "test-owner",
@@ -408,21 +408,21 @@ describe("handleInstallationRepositoriesAdded", () => {
 
     expect(mockAddRepositories).toHaveBeenCalledWith("inst-uuid-123", [
       {
-        githubRepoId: 401,
+        githubRepoId: "401",
         fullName: "multi-owner/public-repo",
         name: "public-repo",
         owner: "multi-owner",
         private: false,
       },
       {
-        githubRepoId: 402,
+        githubRepoId: "402",
         fullName: "multi-owner/private-repo",
         name: "private-repo",
         owner: "multi-owner",
         private: true,
       },
       {
-        githubRepoId: 403,
+        githubRepoId: "403",
         fullName: "multi-owner/another-public",
         name: "another-public",
         owner: "multi-owner",
@@ -493,10 +493,10 @@ describe("handleInstallationRepositoriesRemoved", () => {
     await handleInstallationRepositoriesRemoved(event);
 
     expect(mockFindInstallationByInstallationId).toHaveBeenCalledWith(123_456);
-    expect(mockRemoveRepositories).toHaveBeenCalledWith(
-      "inst-uuid-123",
-      [101, 102]
-    );
+    expect(mockRemoveRepositories).toHaveBeenCalledWith("inst-uuid-123", [
+      "101",
+      "102",
+    ]);
     expect(log.info).toHaveBeenCalledWith(
       "[handleInstallationRepositoriesRemoved] Processing repositories removed",
       {
@@ -543,10 +543,11 @@ describe("handleInstallationRepositoriesRemoved", () => {
     await handleInstallationRepositoriesRemoved(event);
 
     // Should pass only IDs, not full repository objects
-    expect(mockRemoveRepositories).toHaveBeenCalledWith(
-      "inst-uuid-456",
-      [201, 202, 203]
-    );
+    expect(mockRemoveRepositories).toHaveBeenCalledWith("inst-uuid-456", [
+      "201",
+      "202",
+      "203",
+    ]);
   });
 
   it("handles single repository removal", async () => {
@@ -573,7 +574,9 @@ describe("handleInstallationRepositoriesRemoved", () => {
 
     await handleInstallationRepositoriesRemoved(event);
 
-    expect(mockRemoveRepositories).toHaveBeenCalledWith("inst-uuid-789", [999]);
+    expect(mockRemoveRepositories).toHaveBeenCalledWith("inst-uuid-789", [
+      "999",
+    ]);
     expect(log.info).toHaveBeenCalledWith(
       "[handleInstallationRepositoriesRemoved] Processing repositories removed",
       {
@@ -623,14 +626,14 @@ describe("integration scenarios", () => {
 
     expect(mockAddRepositories).toHaveBeenCalledWith("inst-uuid-integration", [
       {
-        githubRepoId: 1001,
+        githubRepoId: "1001",
         fullName: "integration-owner/new-repo-1",
         name: "new-repo-1",
         owner: "integration-owner",
         private: false,
       },
       {
-        githubRepoId: 1002,
+        githubRepoId: "1002",
         fullName: "integration-owner/new-repo-2",
         name: "new-repo-2",
         owner: "integration-owner",
@@ -654,7 +657,7 @@ describe("integration scenarios", () => {
 
     expect(mockRemoveRepositories).toHaveBeenCalledWith(
       "inst-uuid-integration",
-      [1001]
+      ["1001"]
     );
   });
 

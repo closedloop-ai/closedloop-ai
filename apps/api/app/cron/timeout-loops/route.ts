@@ -159,8 +159,13 @@ export const GET = async (request: Request): Promise<Response> => {
   const pendingCutoff = new Date(now.getTime() - 30 * 60 * 1000);
 
   // Find stuck loops across all three categories.
-  // computeTargetId: null restricts to cloud/ECS loops only (excludes loops
-  // dispatched to a local ComputeTarget).
+  // For RUNNING: purely activity-based — no events in 75 min = dead container.
+  //
+  // Desktop loops (computeTargetId IS NOT NULL) are excluded from the
+  // RUNNING inactivity check only. Their progress events flow through the
+  // desktop command channel rather than the LoopEvent table, causing
+  // false-positive reaping. PENDING/CLAIMED desktop loops can still get
+  // stranded (e.g., dispatch fails) and should be reaped normally.
   const stuckLoops = await withDb((db) =>
     db.loop.findMany({
       where: {

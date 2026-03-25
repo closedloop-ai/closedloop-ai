@@ -1,6 +1,7 @@
 "use client";
 
 import type { Artifact } from "@repo/api/src/types/artifact";
+import type { FileAttachment } from "@repo/api/src/types/attachment";
 import type { LinkedEntity } from "@repo/api/src/types/entity-link";
 import { EntityType, LinkDirection } from "@repo/api/src/types/entity-link";
 import type { Feature } from "@repo/api/src/types/feature";
@@ -9,10 +10,14 @@ import { Button } from "@repo/design-system/components/ui/button";
 import { PriorityIcon } from "@repo/design-system/components/ui/priority-icon";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { StatusIcon } from "@repo/design-system/components/ui/status-icon";
-import { PlusIcon } from "lucide-react";
+import { FileIcon, PlusIcon, Trash2Icon } from "lucide-react";
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import { AssigneeAvatar } from "@/components/assignee-avatar";
+import {
+  useDeleteFeatureAttachment,
+  useFeatureAttachments,
+} from "@/hooks/queries/use-attachments";
 import {
   useDeleteEntityLink,
   useLinkedEntities,
@@ -45,6 +50,8 @@ export function ContextSection({
     EntityType.Feature,
     { direction: LinkDirection.Source }
   );
+  const { data: featureAttachments = [] } = useFeatureAttachments(featureId);
+  const deleteFeatureAttachment = useDeleteFeatureAttachment(featureId);
   const deleteLink = useDeleteEntityLink();
 
   function handleUnlink(linkId: string) {
@@ -85,13 +92,20 @@ export function ContextSection({
             <PlusIcon className="h-4 w-4" />
           </Button>
         </SectionHeader>
-        {contextLinks.length > 0 ? (
+        {contextLinks.length > 0 || featureAttachments.length > 0 ? (
           <div className="flex flex-col">
             {contextLinks.map((linked) => (
               <ContextRow
                 key={linked.id}
                 linked={linked}
                 onUnlink={handleUnlink}
+              />
+            ))}
+            {featureAttachments.map((attachment) => (
+              <AttachmentRow
+                attachment={attachment}
+                key={attachment.id}
+                onDelete={() => deleteFeatureAttachment.mutate(attachment.id)}
               />
             ))}
           </div>
@@ -237,6 +251,50 @@ function FeatureRow({ feature, linkId, onUnlink }: Readonly<FeatureRowProps>) {
         <StatusIcon size={20} status={statusIconStatus} />
         <OverflowMenu linkId={linkId} onUnlink={onUnlink} />
       </div>
+    </div>
+  );
+}
+
+function AttachmentRow({
+  attachment,
+  onDelete,
+}: Readonly<{ attachment: FileAttachment; onDelete: () => void }>) {
+  const sizeLabel =
+    attachment.sizeBytes < 1024 * 1024
+      ? `${Math.ceil(attachment.sizeBytes / 1024)} KB`
+      : `${(attachment.sizeBytes / (1024 * 1024)).toFixed(1)} MB`;
+
+  return (
+    <div className="group flex items-center px-2 py-1">
+      <div className="flex min-w-0 flex-1 items-center gap-2 rounded-md">
+        {attachment.previewUrl ? (
+          /* biome-ignore lint/performance/noImgElement: S3 presigned URLs are external/dynamic */
+          /* biome-ignore lint/correctness/useImageSize: dimensions set via CSS */
+          <img
+            alt={attachment.filename}
+            className="h-8 w-8 shrink-0 rounded object-cover"
+            src={attachment.previewUrl}
+          />
+        ) : (
+          <div className="flex shrink-0 items-center p-1">
+            <FileIcon className="h-4 w-4 text-muted-foreground" />
+          </div>
+        )}
+        <span className="truncate px-1 font-medium text-sm">
+          {attachment.filename}
+        </span>
+        <span className="shrink-0 text-muted-foreground text-xs">
+          {sizeLabel}
+        </span>
+      </div>
+      <Button
+        className="opacity-0 group-hover:opacity-100"
+        onClick={onDelete}
+        size="icon-sm"
+        variant="ghost"
+      >
+        <Trash2Icon className="h-3.5 w-3.5 text-muted-foreground" />
+      </Button>
     </div>
   );
 }

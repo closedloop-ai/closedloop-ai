@@ -34,6 +34,11 @@ vi.mock("@repo/database", () => ({
     PLAN: "PLAN",
     CODE: "CODE",
   },
+  EntityType: {
+    ARTIFACT: "ARTIFACT",
+    FEATURE: "FEATURE",
+    EXTERNAL_LINK: "EXTERNAL_LINK",
+  },
   PromptType: {
     AGENT: "AGENT",
     JUDGE: "JUDGE",
@@ -364,14 +369,19 @@ describe("handleWorkflowSuccess", () => {
       where: { id: workstreamId },
       select: { organizationId: true },
     });
+    // SS8.3 scenario 2: where clause uses entityId_reportId
+    // SS8.3 scenario 1: create block sets entityId, entityType=ARTIFACT, organizationId
     expect(mockDb.artifactEvaluation.upsert).toHaveBeenCalledWith({
       where: {
-        artifactId_reportId: {
-          artifactId,
+        entityId_reportId: {
+          entityId: artifactId,
           reportId: judgesReport.report_id,
         },
       },
       create: {
+        organizationId: "test-org-id",
+        entityId: artifactId,
+        entityType: "ARTIFACT",
         artifactId,
         actionRunId,
         reportType: EvaluationReportType.Plan,
@@ -882,7 +892,7 @@ describe("handleExecutionSuccess", () => {
         organizationId: "org-123",
         repositoryId,
         artifactId: "plan-artifact-123",
-        githubId: executionResult.github_id,
+        githubId: String(executionResult.github_id),
         number: 42,
         title: executionResult.pr_title,
         htmlUrl: executionResult.pr_url,
@@ -902,7 +912,7 @@ describe("handleExecutionSuccess", () => {
         prUrl: executionResult.pr_url,
         prTitle: executionResult.pr_title,
         prNumber: 42,
-        githubId: executionResult.github_id,
+        githubId: String(executionResult.github_id),
         headBranch: executionResult.branch_name,
         baseBranch: executionResult.base_ref,
       })
@@ -980,7 +990,7 @@ describe("handleExecutionSuccess", () => {
       data: expect.objectContaining({
         organizationId: "org-456",
         number: 99, // Converted to number
-        githubId: 99,
+        githubId: "99",
       }),
     });
   });
@@ -1547,12 +1557,15 @@ describe("handleWorkflowSuccess fan-out", () => {
 
     expect(mockDb.artifactEvaluation.upsert).toHaveBeenCalledWith({
       where: {
-        artifactId_reportId: {
-          artifactId,
+        entityId_reportId: {
+          entityId: artifactId,
           reportId: judgesReport.report_id,
         },
       },
       create: {
+        organizationId: "fanout-org-plan-2",
+        entityId: artifactId,
+        entityType: "ARTIFACT",
         artifactId,
         actionRunId,
         reportType: EvaluationReportType.Plan,
@@ -1731,6 +1744,446 @@ describe("handleExecutionSuccess fan-out", () => {
     await handleExecutionSuccess(ctx, executionResult, null, null);
 
     expect(mockFanOutJudgeScores).not.toHaveBeenCalled();
+  });
+
+  // SS8.2: handleExecutionSuccess CODE upsert polymorphic write scenarios
+  it("SS8.2/1: CODE upsert sets entityId=ctx.artifactId, entityType=ARTIFACT, organizationId", async () => {
+    const artifactId = "ss82-artifact-code";
+    const workstreamId = "ss82-ws-code";
+    const repositoryId = "ss82-repo-code";
+    const actionRunId = "ss82-action-run-code";
+
+    const ctx: WorkflowContext = {
+      correlationId: "ss82-correlation-1",
+      artifactId,
+      workstreamId,
+      repositoryId,
+      runId: 8_200_001_001,
+      actionRunId,
+      command: "execute",
+    };
+
+    const codeJudgesReport: JudgesReport = {
+      report_id: "ss82-report-1",
+      timestamp: "2026-03-24T00:00:00Z",
+      stats: [
+        {
+          type: "case_score",
+          case_id: "test-case",
+          final_status: EvalStatus.Passed,
+          metrics: [
+            {
+              metric_name: "score",
+              threshold: 0.7,
+              score: 0.9,
+              justification: "OK",
+            },
+          ],
+        },
+      ],
+    };
+
+    const executionResult = {
+      has_changes: true,
+      pr_url: "https://github.com/owner/repo/pull/101",
+      pr_number: "101",
+      pr_title: "Symphony: SS8.2 test",
+      branch_name: "symphony/ss82-feature",
+      base_ref: "main",
+      github_id: 101_001,
+    };
+
+    const mockTx = {
+      workstream: {
+        findUnique: vi.fn().mockResolvedValue({ organizationId: "ss82-org" }),
+      },
+      artifact: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: artifactId,
+          organizationId: "ss82-org",
+          projectId: "ss82-project",
+          slug: undefined,
+        }),
+      },
+      gitHubPullRequest: {
+        findUnique: vi.fn().mockResolvedValue(null),
+        create: vi.fn().mockResolvedValue({ id: "ss82-pr", number: 101 }),
+      },
+      externalLink: { create: vi.fn().mockResolvedValue({ id: "ss82-ext" }) },
+      entityLink: { create: vi.fn().mockResolvedValue({ id: "ss82-el" }) },
+      workstreamEvent: {
+        create: vi.fn().mockResolvedValue({ id: "ss82-evt" }),
+      },
+      artifactEvaluation: {
+        upsert: vi.fn().mockResolvedValue({ id: "ss82-eval" }),
+      },
+    };
+
+    mockWithDbTx(mockTx);
+
+    await handleExecutionSuccess(ctx, executionResult, codeJudgesReport, null);
+
+    const upsertCall = mockTx.artifactEvaluation.upsert.mock.calls[0][0];
+    expect(upsertCall.create).toMatchObject({
+      entityId: artifactId,
+      entityType: "ARTIFACT",
+      organizationId: "ss82-org",
+    });
+  });
+
+  it("SS8.2/2: CODE upsert where clause uses entityId_reportId", async () => {
+    const artifactId = "ss82-artifact-code-2";
+    const workstreamId = "ss82-ws-code-2";
+    const repositoryId = "ss82-repo-code-2";
+    const actionRunId = "ss82-action-run-code-2";
+
+    const ctx: WorkflowContext = {
+      correlationId: "ss82-correlation-2",
+      artifactId,
+      workstreamId,
+      repositoryId,
+      runId: 8_200_001_002,
+      actionRunId,
+      command: "execute",
+    };
+
+    const codeJudgesReport: JudgesReport = {
+      report_id: "ss82-report-2",
+      timestamp: "2026-03-24T00:00:00Z",
+      stats: [
+        {
+          type: "case_score",
+          case_id: "test-case-2",
+          final_status: EvalStatus.Passed,
+          metrics: [
+            {
+              metric_name: "score",
+              threshold: 0.7,
+              score: 0.85,
+              justification: "OK",
+            },
+          ],
+        },
+      ],
+    };
+
+    const executionResult = {
+      has_changes: true,
+      pr_url: "https://github.com/owner/repo/pull/102",
+      pr_number: "102",
+      pr_title: "Symphony: SS8.2 where test",
+      branch_name: "symphony/ss82-where",
+      base_ref: "main",
+      github_id: 101_002,
+    };
+
+    const mockTx = {
+      workstream: {
+        findUnique: vi.fn().mockResolvedValue({ organizationId: "ss82-org-2" }),
+      },
+      artifact: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: artifactId,
+          organizationId: "ss82-org-2",
+          projectId: "ss82-project-2",
+          slug: undefined,
+        }),
+      },
+      gitHubPullRequest: {
+        findUnique: vi.fn().mockResolvedValue(null),
+        create: vi.fn().mockResolvedValue({ id: "ss82-pr-2", number: 102 }),
+      },
+      externalLink: { create: vi.fn().mockResolvedValue({ id: "ss82-ext-2" }) },
+      entityLink: { create: vi.fn().mockResolvedValue({ id: "ss82-el-2" }) },
+      workstreamEvent: {
+        create: vi.fn().mockResolvedValue({ id: "ss82-evt-2" }),
+      },
+      artifactEvaluation: {
+        upsert: vi.fn().mockResolvedValue({ id: "ss82-eval-2" }),
+      },
+    };
+
+    mockWithDbTx(mockTx);
+
+    await handleExecutionSuccess(ctx, executionResult, codeJudgesReport, null);
+
+    expect(mockTx.artifactEvaluation.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          entityId_reportId: {
+            entityId: artifactId,
+            reportId: codeJudgesReport.report_id,
+          },
+        },
+      })
+    );
+  });
+
+  it("SS8.2/3: CODE upsert artifactId FK equals entityId", async () => {
+    const artifactId = "ss82-artifact-code-3";
+    const workstreamId = "ss82-ws-code-3";
+    const repositoryId = "ss82-repo-code-3";
+    const actionRunId = "ss82-action-run-code-3";
+
+    const ctx: WorkflowContext = {
+      correlationId: "ss82-correlation-3",
+      artifactId,
+      workstreamId,
+      repositoryId,
+      runId: 8_200_001_003,
+      actionRunId,
+      command: "execute",
+    };
+
+    const codeJudgesReport: JudgesReport = {
+      report_id: "ss82-report-3",
+      timestamp: "2026-03-24T00:00:00Z",
+      stats: [
+        {
+          type: "case_score",
+          case_id: "test-case-3",
+          final_status: EvalStatus.Passed,
+          metrics: [
+            {
+              metric_name: "score",
+              threshold: 0.7,
+              score: 0.92,
+              justification: "OK",
+            },
+          ],
+        },
+      ],
+    };
+
+    const executionResult = {
+      has_changes: true,
+      pr_url: "https://github.com/owner/repo/pull/103",
+      pr_number: "103",
+      pr_title: "Symphony: SS8.2 FK test",
+      branch_name: "symphony/ss82-fk",
+      base_ref: "main",
+      github_id: 101_003,
+    };
+
+    const mockTx = {
+      workstream: {
+        findUnique: vi.fn().mockResolvedValue({ organizationId: "ss82-org-3" }),
+      },
+      artifact: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: artifactId,
+          organizationId: "ss82-org-3",
+          projectId: "ss82-project-3",
+          slug: undefined,
+        }),
+      },
+      gitHubPullRequest: {
+        findUnique: vi.fn().mockResolvedValue(null),
+        create: vi.fn().mockResolvedValue({ id: "ss82-pr-3", number: 103 }),
+      },
+      externalLink: { create: vi.fn().mockResolvedValue({ id: "ss82-ext-3" }) },
+      entityLink: { create: vi.fn().mockResolvedValue({ id: "ss82-el-3" }) },
+      workstreamEvent: {
+        create: vi.fn().mockResolvedValue({ id: "ss82-evt-3" }),
+      },
+      artifactEvaluation: {
+        upsert: vi.fn().mockResolvedValue({ id: "ss82-eval-3" }),
+      },
+    };
+
+    mockWithDbTx(mockTx);
+
+    await handleExecutionSuccess(ctx, executionResult, codeJudgesReport, null);
+
+    const upsertCall = mockTx.artifactEvaluation.upsert.mock.calls[0][0];
+    // artifactId FK (denormalized) must equal entityId
+    expect(upsertCall.create.artifactId).toBe(artifactId);
+    expect(upsertCall.create.entityId).toBe(artifactId);
+    expect(upsertCall.create.artifactId).toBe(upsertCall.create.entityId);
+  });
+});
+
+describe("handleWorkflowSuccess — PLAN upsert (SS8.3)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("SS8.3/1: PLAN upsert sets entityId, entityType=ARTIFACT, and organizationId", async () => {
+    const artifactId = "ss83-artifact-plan";
+    const workstreamId = "ss83-ws-plan";
+    const actionRunId = "ss83-action-run-plan";
+    const runId = 8_300_001_001;
+
+    const ctx: WorkflowContext = {
+      correlationId: "ss83-correlation-1",
+      artifactId,
+      workstreamId,
+      runId,
+      actionRunId,
+    };
+
+    const judgesReport: JudgesReport = {
+      report_id: "ss83-report-1",
+      timestamp: "2026-03-24T00:00:00Z",
+      stats: [
+        {
+          type: "case_score",
+          case_id: "ss83-case",
+          final_status: EvalStatus.Passed,
+          metrics: [
+            {
+              metric_name: "score",
+              threshold: 0.8,
+              score: 0.95,
+              justification: "Good",
+            },
+          ],
+        },
+      ],
+    };
+
+    const zipBuffer = buildZipWithEntries([
+      {
+        name: "plan.json",
+        content: JSON.stringify({
+          content: "# SS8.3 Plan",
+          acceptanceCriteria: [],
+          pendingTasks: [],
+          completedTasks: [],
+          openQuestions: [],
+          answeredQuestions: [],
+          gaps: [],
+        }),
+      },
+      { name: "judges.json", content: JSON.stringify(judgesReport) },
+    ]);
+
+    mockDownloadWorkflowArtifacts.mockResolvedValue([
+      { name: "artifact.zip", data: zipBuffer },
+    ]);
+
+    const mockDb = {
+      workstream: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: workstreamId,
+          organizationId: "ss83-org",
+        }),
+      },
+      artifact: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: artifactId,
+          latestVersion: 1,
+          organizationId: "ss83-org",
+        }),
+        update: vi.fn().mockResolvedValue({ id: artifactId, status: "DRAFT" }),
+      },
+      workstreamEvent: {
+        create: vi.fn().mockResolvedValue({ id: "ss83-evt" }),
+      },
+      artifactEvaluation: {
+        upsert: vi.fn().mockResolvedValue({ id: "ss83-eval" }),
+      },
+    };
+
+    await handleWorkflowSuccess(asTx(mockDb), ctx);
+
+    const upsertCall = mockDb.artifactEvaluation.upsert.mock.calls[0][0];
+    expect(upsertCall.create).toMatchObject({
+      entityId: artifactId,
+      entityType: "ARTIFACT",
+      organizationId: "ss83-org",
+    });
+  });
+
+  it("SS8.3/2: PLAN upsert where clause uses entityId_reportId", async () => {
+    const artifactId = "ss83-artifact-plan-2";
+    const workstreamId = "ss83-ws-plan-2";
+    const actionRunId = "ss83-action-run-plan-2";
+    const runId = 8_300_001_002;
+
+    const ctx: WorkflowContext = {
+      correlationId: "ss83-correlation-2",
+      artifactId,
+      workstreamId,
+      runId,
+      actionRunId,
+    };
+
+    const judgesReport: JudgesReport = {
+      report_id: "ss83-report-2",
+      timestamp: "2026-03-24T00:00:00Z",
+      stats: [
+        {
+          type: "case_score",
+          case_id: "ss83-case-2",
+          final_status: EvalStatus.Passed,
+          metrics: [
+            {
+              metric_name: "score",
+              threshold: 0.8,
+              score: 0.9,
+              justification: "Good",
+            },
+          ],
+        },
+      ],
+    };
+
+    const zipBuffer = buildZipWithEntries([
+      {
+        name: "plan.json",
+        content: JSON.stringify({
+          content: "# SS8.3 Plan 2",
+          acceptanceCriteria: [],
+          pendingTasks: [],
+          completedTasks: [],
+          openQuestions: [],
+          answeredQuestions: [],
+          gaps: [],
+        }),
+      },
+      { name: "judges.json", content: JSON.stringify(judgesReport) },
+    ]);
+
+    mockDownloadWorkflowArtifacts.mockResolvedValue([
+      { name: "artifact.zip", data: zipBuffer },
+    ]);
+
+    const mockDb = {
+      workstream: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: workstreamId,
+          organizationId: "ss83-org-2",
+        }),
+      },
+      artifact: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: artifactId,
+          latestVersion: 1,
+          organizationId: "ss83-org-2",
+        }),
+        update: vi.fn().mockResolvedValue({ id: artifactId, status: "DRAFT" }),
+      },
+      workstreamEvent: {
+        create: vi.fn().mockResolvedValue({ id: "ss83-evt-2" }),
+      },
+      artifactEvaluation: {
+        upsert: vi.fn().mockResolvedValue({ id: "ss83-eval-2" }),
+      },
+    };
+
+    await handleWorkflowSuccess(asTx(mockDb), ctx);
+
+    expect(mockDb.artifactEvaluation.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          entityId_reportId: {
+            entityId: artifactId,
+            reportId: judgesReport.report_id,
+          },
+        },
+      })
+    );
   });
 });
 

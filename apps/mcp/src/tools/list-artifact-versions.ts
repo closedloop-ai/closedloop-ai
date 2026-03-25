@@ -4,6 +4,7 @@ import type { ApiClient } from "../api-client.js";
 import {
   asRecord,
   buildPaginatedPayload,
+  describeIdOrSlug,
   encodePathSegment,
   MAX_PAGE_LIMIT,
   readNumber,
@@ -19,9 +20,11 @@ export function registerListArtifactVersions(
     "list-artifact-versions",
     {
       description:
-        "List all versions of an artifact by ID or slug with version numbers and timestamps",
+        "List saved versions for an artifact document by ID or slug.",
       inputSchema: {
-        artifactId: z.string().describe("ID or slug of the artifact"),
+        artifactId: z
+          .string()
+          .describe(describeIdOrSlug("Artifact", ["PRD-7", "PLAN-12"])),
         limit: z
           .number()
           .int()

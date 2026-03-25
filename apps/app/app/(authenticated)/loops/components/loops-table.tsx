@@ -42,6 +42,7 @@ import {
   useLoops,
   useResumeLoop,
 } from "@/hooks/queries/use-loops";
+import { useLocalStorageState } from "@/hooks/use-local-storage-state";
 import { formatRelativeTime } from "@/lib/date-utils";
 import { formatDuration, formatTokenCount } from "@/lib/format-utils";
 import {
@@ -184,9 +185,15 @@ const STATUS_OPTIONS = [
   { label: "Timed Out", value: LoopStatus.TimedOut },
 ];
 
+const DEFAULT_PAGE_SIZE = 10;
+
 export function LoopsTable() {
   const router = useRouter();
   const tokensFlag = useFeatureFlag("the-one-flag");
+  const [pageSize, setPageSize] = useLocalStorageState(
+    "loops:table:pageSize",
+    DEFAULT_PAGE_SIZE
+  );
   const [selectedCommands, setSelectedCommands] = useState<Set<string>>(
     new Set()
   );
@@ -337,7 +344,9 @@ export function LoopsTable() {
         columns={filteredColumns}
         data={filteredLoops}
         emptyMessage="No loops found. Loops are created when AI agents execute tasks."
+        onPageSizeChange={setPageSize}
         onRowClick={handleRowClick}
+        pageSize={pageSize}
         pageSizeOptions={PAGE_SIZE_OPTIONS}
         renderRowActions={(loop) => {
           const canCancel = CANCELLABLE_LOOP_STATUSES.has(loop.status);

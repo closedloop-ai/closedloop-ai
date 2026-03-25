@@ -1,7 +1,11 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
-import { encodePathSegment, withErrorHandling } from "./tool-utils.js";
+import {
+  describeIdOrSlug,
+  encodePathSegment,
+  withErrorHandling,
+} from "./tool-utils.js";
 
 export function registerGetFeature(
   server: McpServer,
@@ -10,11 +14,10 @@ export function registerGetFeature(
   server.registerTool(
     "get-feature",
     {
-      description: "Get a single feature by its ID or slug",
+      description:
+        "Get one feature, meaning an issue or work item, by ID or slug.",
       inputSchema: {
-        featureId: z
-          .string()
-          .describe("ID or slug (e.g. FEAT-42) of the feature to retrieve"),
+        featureId: z.string().describe(describeIdOrSlug("Feature", "FEAT-42")),
       },
     },
     ({ featureId }) =>

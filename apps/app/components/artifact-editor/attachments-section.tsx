@@ -72,39 +72,52 @@ export function AttachmentsSection({ artifactId }: { artifactId: string }) {
         {attachments && attachments.length > 0 ? (
           attachments.map((attachment) => (
             <div
-              className="flex items-center justify-between rounded-md border px-3 py-2 text-sm"
+              className="flex flex-col gap-2 rounded-md border px-3 py-2 text-sm"
               key={attachment.id}
             >
-              <div className="min-w-0 flex-1">
-                <p className="truncate font-medium">{attachment.filename}</p>
-                <p className="text-muted-foreground text-xs">
-                  {Math.ceil(attachment.sizeBytes / 1024)} KB
-                </p>
-              </div>
-              <div className="flex shrink-0 gap-1">
-                <Button
-                  onClick={() =>
-                    downloadAttachment.mutate(
-                      { artifactId, attachmentId: attachment.id },
-                      { onError: () => toast.error("Download failed") }
-                    )
-                  }
-                  size="icon"
-                  variant="ghost"
-                >
-                  <DownloadIcon className="h-4 w-4" />
-                </Button>
-                <Button
-                  onClick={() =>
-                    deleteAttachment.mutate(attachment.id, {
-                      onError: () => toast.error("Delete failed"),
-                    })
-                  }
-                  size="icon"
-                  variant="ghost"
-                >
-                  <Trash2Icon className="h-4 w-4" />
-                </Button>
+              {attachment.previewUrl ? (
+                /* biome-ignore lint/performance/noImgElement: S3 presigned URLs are external/dynamic */
+                /* biome-ignore lint/correctness/useImageSize: dimensions set via CSS */
+                <img
+                  alt={attachment.filename}
+                  className="max-h-48 w-full rounded object-contain"
+                  src={attachment.previewUrl}
+                />
+              ) : null}
+              <div className="flex items-center justify-between">
+                <div className="min-w-0 flex-1">
+                  <p className="truncate font-medium">{attachment.filename}</p>
+                  <p className="text-muted-foreground text-xs">
+                    {Math.ceil(attachment.sizeBytes / 1024)} KB
+                  </p>
+                </div>
+                <div className="flex shrink-0 gap-1">
+                  {attachment.previewUrl ? null : (
+                    <Button
+                      onClick={() =>
+                        downloadAttachment.mutate(
+                          { artifactId, attachmentId: attachment.id },
+                          { onError: () => toast.error("Download failed") }
+                        )
+                      }
+                      size="icon"
+                      variant="ghost"
+                    >
+                      <DownloadIcon className="h-4 w-4" />
+                    </Button>
+                  )}
+                  <Button
+                    onClick={() =>
+                      deleteAttachment.mutate(attachment.id, {
+                        onError: () => toast.error("Delete failed"),
+                      })
+                    }
+                    size="icon"
+                    variant="ghost"
+                  >
+                    <Trash2Icon className="h-4 w-4" />
+                  </Button>
+                </div>
               </div>
             </div>
           ))

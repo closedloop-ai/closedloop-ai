@@ -2,7 +2,9 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
 import {
+  ARTIFACT_DOC_HELP,
   asRecord,
+  describeIdOrSlug,
   encodePathSegment,
   readNumber,
   readString,
@@ -24,16 +26,17 @@ export function registerGetArtifact(
   server.registerTool(
     "get-artifact",
     {
-      description: "Retrieve a single artifact by its ID or slug",
+      description:
+        "Get one artifact document, such as a PRD, implementation plan, or template, by ID or slug.",
       inputSchema: {
         artifactId: z
           .string()
-          .describe("ID or slug (e.g. PRD-7) of the artifact to retrieve"),
+          .describe(describeIdOrSlug("Artifact", ["PRD-7", "PLAN-12"])),
         includeContent: z
           .boolean()
           .optional()
           .describe(
-            "Whether to include artifact version content in the response (default false)"
+            `Include the latest version content in the response. ${ARTIFACT_DOC_HELP} Default false.`
           ),
         contentMaxChars: z
           .number()

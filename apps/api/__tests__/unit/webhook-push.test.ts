@@ -228,7 +228,7 @@ describe("handlePush", () => {
         mockDb.gitHubInstallationRepository.updateMany
       ).toHaveBeenCalledWith({
         where: {
-          githubRepoId: 123,
+          githubRepoId: "123",
           installation: { installationId: 123_456 },
         },
         data: { lastPushedAt: new Date("2024-06-15T10:30:00Z") },
@@ -252,7 +252,7 @@ describe("handlePush", () => {
         mockDb.gitHubInstallationRepository.updateMany
       ).toHaveBeenCalledWith({
         where: {
-          githubRepoId: 456,
+          githubRepoId: "456",
           installation: { installationId: 123_456 },
         },
         data: { lastPushedAt: new Date("2024-06-15T10:30:00Z") },
@@ -362,7 +362,7 @@ describe("handlePush", () => {
         mockDb.gitHubInstallationRepository.updateMany
       ).toHaveBeenCalledWith({
         where: {
-          githubRepoId: 789,
+          githubRepoId: "789",
           installation: { installationId: 123_456 },
         },
         data: { lastPushedAt: new Date("2024-06-15T10:30:00Z") },
@@ -387,7 +387,7 @@ describe("handlePush", () => {
       expect(
         mockDb.gitHubInstallationRepository.updateMany
       ).toHaveBeenCalledWith({
-        where: { githubRepoId: 789 },
+        where: { githubRepoId: "789" },
         data: { lastPushedAt: new Date("2024-06-15T10:30:00Z") },
       });
     });

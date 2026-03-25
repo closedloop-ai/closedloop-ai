@@ -2,6 +2,7 @@ import type { WorkflowRunCompletedEvent } from "@octokit/webhooks-types";
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
 import type { PromptsSnapshot } from "@repo/api/src/types/prompt";
 import {
+  EntityType,
   type Prisma,
   EvaluationReportType as PrismaEvaluationReportType,
   type TransactionClient,
@@ -181,7 +182,7 @@ export async function handleExecutionSuccess(
           organizationId: workstream.organizationId,
           repositoryId,
           artifactId: ctx.artifactId,
-          githubId: executionResult.github_id ?? prNumber,
+          githubId: String(executionResult.github_id ?? prNumber),
           number: prNumber,
           title: prTitle,
           htmlUrl: executionResult.pr_url,
@@ -201,7 +202,7 @@ export async function handleExecutionSuccess(
       prUrl: executionResult.pr_url,
       prTitle,
       prNumber,
-      githubId: executionResult.github_id ?? prNumber,
+      githubId: String(executionResult.github_id ?? prNumber),
       headBranch: executionResult.branch_name,
       baseBranch,
       commitSha: executionResult.commit_sha ?? null,
@@ -231,12 +232,15 @@ export async function handleExecutionSuccess(
     if (codeJudgesReport && ctx.actionRunId) {
       const evaluation = await tx.artifactEvaluation.upsert({
         where: {
-          artifactId_reportId: {
-            artifactId: ctx.artifactId,
+          entityId_reportId: {
+            entityId: ctx.artifactId,
             reportId: codeJudgesReport.report_id,
           },
         },
         create: {
+          organizationId: workstream.organizationId,
+          entityId: ctx.artifactId,
+          entityType: EntityType.ARTIFACT,
           artifactId: ctx.artifactId,
           actionRunId: ctx.actionRunId,
           reportType: PrismaEvaluationReportType.CODE,
@@ -394,12 +398,15 @@ export async function handleWorkflowSuccess(
   if (judgesReport && ctx.actionRunId) {
     const evaluation = await tx.artifactEvaluation.upsert({
       where: {
-        artifactId_reportId: {
-          artifactId,
+        entityId_reportId: {
+          entityId: artifactId,
           reportId: judgesReport.report_id,
         },
       },
       create: {
+        organizationId: workstream.organizationId,
+        entityId: artifactId,
+        entityType: EntityType.ARTIFACT,
         artifactId,
         actionRunId: ctx.actionRunId,
         reportType: PrismaEvaluationReportType.PLAN,

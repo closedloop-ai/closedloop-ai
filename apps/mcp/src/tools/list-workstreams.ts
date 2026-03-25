@@ -5,6 +5,7 @@ import type { ApiClient } from "../api-client.js";
 import {
   asRecord,
   buildPaginatedPayload,
+  describeIdOrSlug,
   MAX_PAGE_LIMIT,
   readString,
   withErrorHandling,
@@ -18,11 +19,9 @@ export function registerListWorkstreams(
     "list-workstreams",
     {
       description:
-        "List workstreams (initiatives) for a project with optional filters",
+        "List workstreams, meaning initiatives or tracks of work, for a project. Supports state and title search filters.",
       inputSchema: {
-        projectId: z
-          .string()
-          .describe("Filter by project ID or slug (required)"),
+        projectId: z.string().describe(describeIdOrSlug("Project", "PROJ-7")),
         state: z
           .enum(WORKSTREAM_STATE_OPTIONS)
           .optional()
