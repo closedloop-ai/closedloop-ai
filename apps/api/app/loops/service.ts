@@ -27,7 +27,9 @@ export class ReplayDetectedError extends Error {
   }
 }
 
-export function isReplayDetectedError(error: unknown): boolean {
+export function isReplayDetectedError(
+  error: unknown
+): error is ReplayDetectedError {
   return error instanceof ReplayDetectedError;
 }
 
@@ -42,7 +44,9 @@ export class InvalidStatusTransitionError extends Error {
   }
 }
 
-export function isInvalidStatusTransitionError(error: unknown): boolean {
+export function isInvalidStatusTransitionError(
+  error: unknown
+): error is InvalidStatusTransitionError {
   return error instanceof InvalidStatusTransitionError;
 }
 
@@ -53,31 +57,42 @@ export function isInvalidStatusTransitionError(error: unknown): boolean {
 const VALID_TRANSITIONS: Record<LoopStatus, Set<LoopStatus>> = {
   // PENDING → RUNNING covers the race where the container sends "started"
   // before the backend has finished transitioning to CLAIMED.
-  PENDING: new Set(["CLAIMED", "RUNNING", "CANCELLED"]),
+  PENDING: new Set<LoopStatus>([
+    LoopStatus.Claimed,
+    LoopStatus.Running,
+    LoopStatus.Cancelled,
+  ]),
   // CLAIMED → terminal states covers the case where the "started" event was
   // dropped (network issue, transient failure). Without this, a lost "started"
   // event would strand the loop in CLAIMED until the cron timeout safety net.
-  CLAIMED: new Set([
-    "RUNNING",
-    "COMPLETED",
-    "FAILED",
-    "CANCELLED",
-    "TIMED_OUT",
+  CLAIMED: new Set<LoopStatus>([
+    LoopStatus.Running,
+    LoopStatus.Completed,
+    LoopStatus.Failed,
+    LoopStatus.Cancelled,
+    LoopStatus.TimedOut,
   ]),
-  RUNNING: new Set(["COMPLETED", "FAILED", "CANCELLED", "TIMED_OUT"]),
-  COMPLETED: new Set(),
+  RUNNING: new Set<LoopStatus>([
+    LoopStatus.Completed,
+    LoopStatus.Failed,
+    LoopStatus.Cancelled,
+    LoopStatus.TimedOut,
+  ]),
+  COMPLETED: new Set<LoopStatus>(),
   // A successful completion from the runner overrides a prior failure or timeout.
   // The runner is the ground truth for whether work actually finished.
-  FAILED: new Set(["COMPLETED"]),
-  CANCELLED: new Set(),
-  TIMED_OUT: new Set(["COMPLETED"]),
+  FAILED: new Set<LoopStatus>([LoopStatus.Completed]),
+  // A successful completion from the runner overrides a prior cancellation.
+  // The runner is the ground truth for whether work actually finished.
+  CANCELLED: new Set<LoopStatus>([LoopStatus.Completed]),
+  TIMED_OUT: new Set<LoopStatus>([LoopStatus.Completed]),
 };
 
 const TERMINAL_STATUSES = new Set<LoopStatus>([
-  "COMPLETED",
-  "FAILED",
-  "CANCELLED",
-  "TIMED_OUT",
+  LoopStatus.Completed,
+  LoopStatus.Failed,
+  LoopStatus.Cancelled,
+  LoopStatus.TimedOut,
 ]);
 
 /**
@@ -491,7 +506,7 @@ export const loopsService = {
   async cancel(id: string, organizationId: string): Promise<Loop> {
     // Compute valid source statuses for CANCELLED transition
     const validFromStatuses = Object.entries(VALID_TRANSITIONS)
-      .filter(([, allowed]) => allowed.has("CANCELLED"))
+      .filter(([, allowed]) => allowed.has(LoopStatus.Cancelled))
       .map(([from]) => from as LoopStatus);
 
     // Atomic conditional update: only transitions from a valid source status.
@@ -503,7 +518,7 @@ export const loopsService = {
           status: { in: validFromStatuses },
         },
         data: {
-          status: "CANCELLED",
+          status: LoopStatus.Cancelled,
           completedAt: new Date(),
         },
       })
@@ -521,7 +536,10 @@ export const loopsService = {
         throw new Error(`Loop not found: ${id}`);
       }
 
-      throw new InvalidStatusTransitionError(current.status, "CANCELLED");
+      throw new InvalidStatusTransitionError(
+        current.status,
+        LoopStatus.Cancelled
+      );
     }
 
     log.info("Loop cancelled", { loopId: id });
@@ -563,11 +581,11 @@ export const loopsService = {
       throw new Error("You can only resume your own loops");
     }
 
-    const resumableStatuses = new Set([
-      "CANCELLED",
-      "COMPLETED",
-      "FAILED",
-      "TIMED_OUT",
+    const resumableStatuses = new Set<LoopStatus>([
+      LoopStatus.Cancelled,
+      LoopStatus.Completed,
+      LoopStatus.Failed,
+      LoopStatus.TimedOut,
     ]);
     if (!resumableStatuses.has(parent.status)) {
       throw new Error(
