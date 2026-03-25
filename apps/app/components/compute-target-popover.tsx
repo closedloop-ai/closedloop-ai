@@ -129,6 +129,8 @@ export function ComputeTargetPopover({
   const isDegraded = isStreamDegraded(streamReconnectAttempts);
   const currentPreference =
     preferenceData?.preferredComputeMode ?? ComputePreference.Cloud;
+  const ownTargets = targets.filter((t) => !t.ownerName);
+  const sharedTargets = targets.filter((t) => !!t.ownerName);
   const onlineTargets = targets.filter((t) => t.isOnline);
   const hasMultipleTargets = onlineTargets.length > 1;
   const isLocal = currentPreference === ComputePreference.Local;
@@ -312,7 +314,7 @@ export function ComputeTargetPopover({
             />
           )}
 
-          {targets.map((target) => (
+          {ownTargets.map((target) => (
             <TargetOption
               description={
                 target.isOnline
@@ -342,6 +344,47 @@ export function ComputeTargetPopover({
               onClick={() => handleSelectLocal(target.id)}
             />
           ))}
+
+          {sharedTargets.length > 0 && (
+            <>
+              <div className="mt-2 mb-1 px-3">
+                <p className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
+                  Shared by team
+                </p>
+              </div>
+              {sharedTargets.map((target) => (
+                <TargetOption
+                  description={
+                    target.isOnline
+                      ? `${target.ownerName ?? "Teammate"} · ${target.platform} · Online`
+                      : `${target.ownerName ?? "Teammate"} · ${target.platform} · Offline`
+                  }
+                  icon={
+                    <LaptopIcon
+                      className={cn(
+                        "size-4",
+                        target.isOnline
+                          ? "text-emerald-500"
+                          : "text-muted-foreground"
+                      )}
+                    />
+                  }
+                  isLoading={
+                    setPreference.isPending &&
+                    currentPreference !== ComputePreference.Local &&
+                    target.isOnline
+                  }
+                  isSelected={
+                    currentPreference === ComputePreference.Local &&
+                    target.isOnline
+                  }
+                  key={target.id}
+                  label={target.machineName}
+                  onClick={() => handleSelectLocal(target.id)}
+                />
+              ))}
+            </>
+          )}
         </div>
 
         {/* T-4.4: download prompt -- popover stays open, preference NOT changed */}

@@ -18,6 +18,7 @@ const mockDeleteMutate = vi.fn();
 vi.mock("@/hooks/queries/use-compute-targets", () => ({
   useComputeTargets: (...args: unknown[]) => mockUseComputeTargets(...args),
   useDeleteComputeTarget: () => mockUseDeleteComputeTarget(),
+  useToggleComputeTargetSharing: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 
 vi.mock("@/lib/system-check/use-system-check-eligibility", () => ({

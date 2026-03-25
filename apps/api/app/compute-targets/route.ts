@@ -6,22 +6,22 @@ import { computeTargetsService } from "./service";
 
 /**
  * GET /compute-targets
- * Lists compute targets owned by the authenticated user.
+ * Lists compute targets available to the authenticated user (own + org-shared).
  */
 export const GET = withAnyAuth<ComputeTarget[], "/compute-targets">(
   async ({ user }) => {
     try {
-      // Staleness safety-net: ensure old heartbeats do not remain online forever.
+      // Staleness safety-net: sweep the entire org so shared targets
+      // from teammates are also marked offline when heartbeats expire.
       waitUntil(
         computeTargetsService
           .markStaleTargetsOffline({
             organizationId: user.organizationId,
-            userId: user.id,
           })
           .catch(() => {})
       );
 
-      const targets = await computeTargetsService.listByOwner(
+      const targets = await computeTargetsService.listAvailableForOrg(
         user.organizationId,
         user.id
       );

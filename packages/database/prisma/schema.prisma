@@ -381,6 +381,7 @@ model ComputeTarget {
   supportedOperations Json     @default("[]") @map("supported_operations")
   lastSeenAt          DateTime @default(now()) @map("last_seen_at")
   isOnline            Boolean  @default(false) @map("is_online")
+  isSharedWithOrg     Boolean  @default(false) @map("is_shared_with_org")
   createdAt           DateTime @default(now()) @map("created_at")
   updatedAt           DateTime @updatedAt @map("updated_at")
 
@@ -392,6 +393,7 @@ model ComputeTarget {
   @@unique([userId, machineName])
   @@index([organizationId, userId])
   @@index([userId, isOnline])
+  @@index([organizationId, isSharedWithOrg])
   @@map("compute_targets")
 }
 
