@@ -253,12 +253,24 @@ export type LoopUsageByCommand = {
   estimatedCost: number;
 };
 
+export type LoopUsageByUser = {
+  userId: string;
+  userName: string;
+  userEmail: string;
+  userAvatarUrl: string | null;
+  loopCount: number;
+  tokensInput: number;
+  tokensOutput: number;
+  estimatedCost: number;
+};
+
 export type LoopUsageSummary = {
   totalLoops: number;
   totalTokensInput: number;
   totalTokensOutput: number;
   totalEstimatedCost: number;
   byCommand: LoopUsageByCommand[];
+  byUser: LoopUsageByUser[];
 };
 
 // Feature decomposition types (output of DECOMPOSE command)

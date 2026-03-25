@@ -12,6 +12,7 @@ import {
   type LoopListFilters,
   LoopStatus,
   type LoopUsageByCommand,
+  type LoopUsageByUser,
   type LoopUsageSummary,
   type LoopWithUser,
   type ResumeLoopRequest,
@@ -838,7 +839,7 @@ export const loopsService = {
         : {}),
     };
 
-    const [aggregate, groupByCommand] = await Promise.all([
+    const [aggregate, groupByCommand, groupByUser] = await Promise.all([
       withDb((db) =>
         db.loop.aggregate({
           where,
@@ -862,6 +863,18 @@ export const loopsService = {
           },
         })
       ),
+      withDb((db) =>
+        db.loop.groupBy({
+          by: ["userId"],
+          where,
+          _count: true,
+          _sum: {
+            tokensInput: true,
+            tokensOutput: true,
+            estimatedCost: true,
+          },
+        })
+      ),
     ]);
 
     const byCommand: LoopUsageByCommand[] = groupByCommand.map((g) => ({
@@ -872,12 +885,42 @@ export const loopsService = {
       estimatedCost: Number(g._sum.estimatedCost ?? 0),
     }));
 
+    // Resolve user details for the by-user breakdown
+    const userIds = groupByUser.map((g) => g.userId);
+    const users =
+      userIds.length > 0
+        ? await withDb((db) =>
+            db.user.findMany({
+              where: { id: { in: userIds } },
+              ...basicUserSelect,
+            })
+          )
+        : [];
+    const userMap = new Map(users.map((u) => [u.id, u]));
+
+    const byUser: LoopUsageByUser[] = groupByUser.map((g) => {
+      const u = userMap.get(g.userId);
+      return {
+        userId: g.userId,
+        userName: u
+          ? [u.firstName, u.lastName].filter(Boolean).join(" ") || u.email
+          : "Unknown",
+        userEmail: u?.email ?? "",
+        userAvatarUrl: u?.avatarUrl ?? null,
+        loopCount: g._count,
+        tokensInput: g._sum.tokensInput ?? 0,
+        tokensOutput: g._sum.tokensOutput ?? 0,
+        estimatedCost: Number(g._sum.estimatedCost ?? 0),
+      };
+    });
+
     return {
       totalLoops: aggregate._count,
       totalTokensInput: aggregate._sum.tokensInput ?? 0,
       totalTokensOutput: aggregate._sum.tokensOutput ?? 0,
       totalEstimatedCost: Number(aggregate._sum.estimatedCost ?? 0),
       byCommand,
+      byUser,
     };
   },
 

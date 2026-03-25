@@ -1,6 +1,9 @@
 "use client";
 
-import type { LoopUsageByCommand } from "@repo/api/src/types/loop";
+import type {
+  LoopUsageByCommand,
+  LoopUsageByUser,
+} from "@repo/api/src/types/loop";
 import {
   Card,
   CardContent,
@@ -25,8 +28,10 @@ import {
   TableHeader,
   TableRow,
 } from "@repo/design-system/components/ui/table";
+import Image from "next/image";
 import { useMemo, useState } from "react";
 import { type LoopUsageFilters, useLoopUsage } from "@/hooks/queries/use-loops";
+import { formatTokenCount } from "@/lib/format-utils";
 
 type DateRange = "7d" | "30d" | "90d" | "all";
 
@@ -43,16 +48,6 @@ function getStartDateForRange(range: DateRange): string | undefined {
   const date = new Date();
   date.setDate(date.getDate() - days);
   return date.toISOString();
-}
-
-function formatTokens(count: number): string {
-  if (count >= 1_000_000) {
-    return `${(count / 1_000_000).toFixed(1)}M`;
-  }
-  if (count >= 1000) {
-    return `${(count / 1000).toFixed(1)}k`;
-  }
-  return count.toLocaleString();
 }
 
 function formatCost(cost: number): string {
@@ -145,10 +140,75 @@ function CommandBreakdownTable({ data }: { data: LoopUsageByCommand[] }) {
               {row.loopCount.toLocaleString()}
             </TableCell>
             <TableCell className="text-right">
-              {formatTokens(row.tokensInput)}
+              {formatTokenCount(row.tokensInput)}
             </TableCell>
             <TableCell className="text-right">
-              {formatTokens(row.tokensOutput)}
+              {formatTokenCount(row.tokensOutput)}
+            </TableCell>
+            <TableCell className="text-right">
+              {formatCost(row.estimatedCost)}
+            </TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
+  );
+}
+
+function UserBreakdownTable({ data }: { data: LoopUsageByUser[] }) {
+  const sorted = useMemo(
+    () => [...data].sort((a, b) => b.estimatedCost - a.estimatedCost),
+    [data]
+  );
+
+  if (sorted.length === 0) {
+    return (
+      <div className="py-8 text-center text-muted-foreground text-sm">
+        No user data for the selected period.
+      </div>
+    );
+  }
+
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead>User</TableHead>
+          <TableHead className="text-right">Loops</TableHead>
+          <TableHead className="text-right">Input Tokens</TableHead>
+          <TableHead className="text-right">Output Tokens</TableHead>
+          <TableHead className="text-right">Est. Cost</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {sorted.map((row) => (
+          <TableRow key={row.userId}>
+            <TableCell>
+              <div className="flex items-center gap-2">
+                {row.userAvatarUrl ? (
+                  <Image
+                    alt=""
+                    className="rounded-full"
+                    height={24}
+                    src={row.userAvatarUrl}
+                    width={24}
+                  />
+                ) : (
+                  <div className="flex h-6 w-6 items-center justify-center rounded-full bg-muted text-muted-foreground text-xs">
+                    {row.userName.charAt(0)}
+                  </div>
+                )}
+                <span className="font-medium">{row.userName}</span>
+              </div>
+            </TableCell>
+            <TableCell className="text-right">
+              {row.loopCount.toLocaleString()}
+            </TableCell>
+            <TableCell className="text-right">
+              {formatTokenCount(row.tokensInput)}
+            </TableCell>
+            <TableCell className="text-right">
+              {formatTokenCount(row.tokensOutput)}
             </TableCell>
             <TableCell className="text-right">
               {formatCost(row.estimatedCost)}
@@ -220,12 +280,12 @@ export default function LoopUsagePage() {
             <SummaryCard
               description={`${(usage?.totalTokensInput ?? 0).toLocaleString()} tokens`}
               title="Input Tokens"
-              value={formatTokens(usage?.totalTokensInput ?? 0)}
+              value={formatTokenCount(usage?.totalTokensInput ?? 0)}
             />
             <SummaryCard
               description={`${(usage?.totalTokensOutput ?? 0).toLocaleString()} tokens`}
               title="Output Tokens"
-              value={formatTokens(usage?.totalTokensOutput ?? 0)}
+              value={formatTokenCount(usage?.totalTokensOutput ?? 0)}
             />
             <SummaryCard
               title="Estimated Cost"
@@ -252,6 +312,27 @@ export default function LoopUsagePage() {
             </div>
           ) : (
             <CommandBreakdownTable data={usage?.byCommand ?? []} />
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Breakdown by user */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Breakdown by User</CardTitle>
+          <CardDescription>
+            Token usage and costs per team member.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {isLoading ? (
+            <div className="space-y-3">
+              <Skeleton className="h-10 w-full" />
+              <Skeleton className="h-10 w-full" />
+              <Skeleton className="h-10 w-full" />
+            </div>
+          ) : (
+            <UserBreakdownTable data={usage?.byUser ?? []} />
           )}
         </CardContent>
       </Card>

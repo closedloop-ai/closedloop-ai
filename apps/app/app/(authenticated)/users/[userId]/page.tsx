@@ -6,6 +6,7 @@ import { Skeleton } from "@repo/design-system/components/ui/skeleton";
 import dynamic from "next/dynamic";
 import { use } from "react";
 import { useUser, useUserStats } from "@/hooks/queries/use-users";
+import { formatTokenCount } from "@/lib/format-utils";
 import { Header } from "../../components/header";
 import { ArtifactsByTypeChart } from "./components/artifacts-by-type-chart";
 import { UserProfileHeader } from "./components/user-profile-header";
@@ -22,7 +23,7 @@ type PageProps = {
   params: Promise<{ userId: string }>;
 };
 
-const SKELETON_KEYS = ["s1", "s2", "s3", "s4", "s5", "s6"];
+const SKELETON_KEYS = ["s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9"];
 
 export default function UserProfilePage({ params }: PageProps) {
   const { userId } = use(params);
@@ -104,7 +105,19 @@ function StatsSection({
         <StatTile label="Comments" value={stats.totalComments} />
         <StatTile label="Loops Initiated" value={stats.totalLoops} />
         <StatTile label="Workstreams" value={stats.totalWorkstreams} />
-        <StatTile label="Avg Concurrency" value={stats.avgConcurrency} />
+        <StatTile label="Avg Loop Concurrency" value={stats.avgConcurrency} />
+        <StatTile
+          label="Input Tokens"
+          value={formatTokenCount(stats.totalTokensInput)}
+        />
+        <StatTile
+          label="Output Tokens"
+          value={formatTokenCount(stats.totalTokensOutput)}
+        />
+        <StatTile
+          label="Estimated Cost"
+          value={`$${stats.totalEstimatedCost.toFixed(2)}`}
+        />
       </div>
 
       {/* Contribution Heatmap */}
@@ -126,7 +139,8 @@ function StatsSection({
   );
 }
 
-function StatTile({ label, value }: { label: string; value: number }) {
+function StatTile({ label, value }: { label: string; value: string | number }) {
+  const display = typeof value === "string" ? value : value.toLocaleString();
   return (
     <Card
       className="p-6"
@@ -135,7 +149,7 @@ function StatTile({ label, value }: { label: string; value: number }) {
           "linear-gradient(to bottom right, hsl(var(--card)), hsl(var(--muted)))",
       }}
     >
-      <div className="font-bold text-4xl">{value.toLocaleString()}</div>
+      <div className="font-bold text-4xl">{display}</div>
       <p className="mt-1 text-muted-foreground text-sm">{label}</p>
     </Card>
   );
