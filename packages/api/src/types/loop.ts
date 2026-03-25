@@ -131,6 +131,7 @@ export type CreateLoopResponse = {
 
 export type ResumeLoopRequest = {
   prompt?: string;
+  computeTargetId?: string;
 };
 
 export type LoopListFilters = {

@@ -273,7 +273,9 @@ function AttachmentRow({
           <img
             alt={attachment.filename}
             className="h-8 w-8 shrink-0 rounded object-cover"
+            height={8}
             src={attachment.previewUrl}
+            width={8}
           />
         ) : (
           <div className="flex shrink-0 items-center p-1">

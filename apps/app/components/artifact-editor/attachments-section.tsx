@@ -81,7 +81,9 @@ export function AttachmentsSection({ artifactId }: { artifactId: string }) {
                 <img
                   alt={attachment.filename}
                   className="max-h-48 w-full rounded object-contain"
+                  height={192}
                   src={attachment.previewUrl}
+                  width={384}
                 />
               ) : null}
               <div className="flex items-center justify-between">

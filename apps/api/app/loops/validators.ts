@@ -44,6 +44,7 @@ export const createLoopValidator = z.object({
 });
 
 export const resumeLoopValidator = z.object({
+  computeTargetId: z.uuid().optional(),
   prompt: z.string().max(100_000).optional(),
 });
 
