@@ -6,9 +6,9 @@
  * - execute-handler.ts (EXECUTE)
  */
 
+import type { EntityType } from "@repo/api/src/types/entity-link";
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
 import type {
-  EntityType,
   EvaluationReportType as PrismaEvaluationReportType,
   TransactionClient,
 } from "@repo/database";

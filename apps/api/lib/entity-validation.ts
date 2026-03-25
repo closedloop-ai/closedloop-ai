@@ -1,4 +1,5 @@
-import { EntityType, withDb } from "@repo/database";
+import { EntityType } from "@repo/api/src/types/entity-link";
+import { withDb } from "@repo/database";
 
 export class EntityOrganizationMismatchError extends Error {
   constructor(entityType: string, id: string) {
@@ -18,17 +19,17 @@ export async function assertEntityInOrganization(
 ): Promise<void> {
   const exists = await withDb((db) => {
     switch (entityType) {
-      case EntityType.ARTIFACT:
+      case EntityType.Artifact:
         return db.artifact.findFirst({
           where: { id: entityId, organizationId },
           select: { id: true },
         });
-      case EntityType.FEATURE:
+      case EntityType.Feature:
         return db.feature.findFirst({
           where: { id: entityId, organizationId },
           select: { id: true },
         });
-      case EntityType.EXTERNAL_LINK:
+      case EntityType.ExternalLink:
         return db.externalLink.findFirst({
           where: { id: entityId, organizationId },
           select: { id: true },

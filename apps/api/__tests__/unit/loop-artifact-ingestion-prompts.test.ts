@@ -76,7 +76,8 @@ vi.mock("@/lib/entity-validation", () => ({
 
 // --- Imports (after mocks) ---
 
-import { EntityType, withDb } from "@repo/database";
+import { EntityType } from "@repo/api/src/types/entity-link";
+import { withDb } from "@repo/database";
 import type { Mock } from "vitest";
 import { assertEntityInOrganization } from "@/lib/entity-validation";
 import { fanOutJudgeScores } from "@/lib/judge-score-fanout";
@@ -516,7 +517,7 @@ describe("upsertEvaluationWithJudgeScores", () => {
     return {
       params: {
         entityId: ARTIFACT_ID,
-        entityType: EntityType.ARTIFACT,
+        entityType: EntityType.Artifact,
         artifactId: ARTIFACT_ID,
         loopId: LOOP_ID,
         organizationId: ORG_ID,
@@ -540,7 +541,7 @@ describe("upsertEvaluationWithJudgeScores", () => {
       expect.objectContaining({
         create: expect.objectContaining({
           entityId: ARTIFACT_ID,
-          entityType: EntityType.ARTIFACT,
+          entityType: EntityType.Artifact,
           organizationId: ORG_ID,
           artifactId: ARTIFACT_ID,
         }),
@@ -574,7 +575,7 @@ describe("upsertEvaluationWithJudgeScores", () => {
     const mockTx = { artifactEvaluation: { upsert: mockUpsert } };
     const sharedParams = {
       entityId: ARTIFACT_ID,
-      entityType: EntityType.ARTIFACT,
+      entityType: EntityType.Artifact,
       artifactId: ARTIFACT_ID,
       loopId: LOOP_ID,
       organizationId: ORG_ID,
@@ -631,7 +632,7 @@ describe("upsertEvaluationWithJudgeScores", () => {
     const mockTx = { artifactEvaluation: { upsert: mockUpsert } };
     const params = {
       entityId: ARTIFACT_ID,
-      entityType: EntityType.ARTIFACT,
+      entityType: EntityType.Artifact,
       artifactId: ARTIFACT_ID,
       loopId: LOOP_ID,
       organizationId: ORG_ID,
