@@ -12,6 +12,7 @@ import { mockWithDbCall } from "../utils/db-helpers";
 vi.mock("@repo/database", () => ({
   withDb: vi.fn(),
   PromptType: { JUDGE: "JUDGE" },
+  EntityType: { ARTIFACT: "ARTIFACT" },
 }));
 
 import { judgesAnalyticsService } from "@/app/judges-analytics/service";

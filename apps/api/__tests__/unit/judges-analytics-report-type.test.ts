@@ -7,6 +7,7 @@ import { judgesAnalyticsService } from "@/app/judges-analytics/service";
 vi.mock("@repo/database", () => ({
   withDb: vi.fn(),
   PromptType: { JUDGE: "JUDGE" },
+  EntityType: { ARTIFACT: "ARTIFACT" },
 }));
 
 describe("judgesAnalyticsService reportType scoping", () => {
