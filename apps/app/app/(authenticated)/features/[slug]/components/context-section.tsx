@@ -11,7 +11,6 @@ import { PriorityIcon } from "@repo/design-system/components/ui/priority-icon";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { StatusIcon } from "@repo/design-system/components/ui/status-icon";
 import { FileIcon, PlusIcon, Trash2Icon } from "lucide-react";
-import Image from "next/image";
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import { AssigneeAvatar } from "@/components/assignee-avatar";
@@ -269,7 +268,9 @@ function AttachmentRow({
     <div className="group flex items-center px-2 py-1">
       <div className="flex min-w-0 flex-1 items-center gap-2 rounded-md">
         {attachment.previewUrl ? (
-          <Image
+          /* biome-ignore lint/performance/noImgElement: S3 presigned URLs are external/dynamic */
+          /* biome-ignore lint/correctness/useImageSize: dimensions set via CSS */
+          <img
             alt={attachment.filename}
             className="h-8 w-8 shrink-0 rounded object-cover"
             height={8}

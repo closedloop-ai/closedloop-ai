@@ -16,7 +16,8 @@ export function registerListUsers(
   server.registerTool(
     "list-users",
     {
-      description: "List all users in the organization",
+      description:
+        "List organization users available for assignment or lookup.",
       inputSchema: {
         limit: z
           .number()

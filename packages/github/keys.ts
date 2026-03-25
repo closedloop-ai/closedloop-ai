@@ -32,16 +32,24 @@ export const keys = () =>
   });
 
 /**
- * Client-side GitHub keys - safe to extend in frontend apps.
- * These are optional and don't require server-side secrets.
+ * App-safe GitHub keys - extended via createEnv in apps/app.
+ * Optional because GitHub is an optional integration.
+ *
+ * - GITHUB_APP_CLIENT_ID: Needed by both app (OAuth initiation) and API (token exchange)
+ *   Follows the Google/Linear pattern of server-side optional keys.
  */
 export const clientKeys = () =>
   createEnv({
+    server: {
+      // GitHub App client ID for OAuth authorize URL - optional since GitHub integration is optional
+      GITHUB_APP_CLIENT_ID: z.string().min(1).optional(),
+    },
     client: {
       // GitHub App slug for install URL - optional since GitHub integration is optional
       NEXT_PUBLIC_GITHUB_APP_SLUG: z.string().min(1).optional(),
     },
     runtimeEnv: {
+      GITHUB_APP_CLIENT_ID: process.env.GITHUB_APP_CLIENT_ID,
       NEXT_PUBLIC_GITHUB_APP_SLUG: process.env.NEXT_PUBLIC_GITHUB_APP_SLUG,
     },
   });

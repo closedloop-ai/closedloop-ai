@@ -4,7 +4,6 @@ import { ALLOWED_EXTENSIONS } from "@repo/api/src/types/attachment";
 import { Button } from "@repo/design-system/components/ui/button";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { DownloadIcon, Loader2Icon, Trash2Icon } from "lucide-react";
-import Image from "next/image";
 import { useRef, useState } from "react";
 import {
   useAttachments,
@@ -77,7 +76,9 @@ export function AttachmentsSection({ artifactId }: { artifactId: string }) {
               key={attachment.id}
             >
               {attachment.previewUrl ? (
-                <Image
+                /* biome-ignore lint/performance/noImgElement: S3 presigned URLs are external/dynamic */
+                /* biome-ignore lint/correctness/useImageSize: dimensions set via CSS */
+                <img
                   alt={attachment.filename}
                   className="max-h-48 w-full rounded object-contain"
                   height={192}

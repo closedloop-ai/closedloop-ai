@@ -5,6 +5,7 @@ import { ENTITY_TYPE_VALUES, LINK_TYPE_VALUES } from "../tool-enums.js";
 import {
   asRecord,
   buildPaginatedPayload,
+  ENTITY_LINK_SLUG_HELP,
   MAX_PAGE_LIMIT,
   readString,
   withErrorHandling,
@@ -18,13 +19,9 @@ export function registerListEntityLinks(
     "list-entity-links",
     {
       description:
-        "List links between entities (artifacts, features, workstreams, etc.)",
+        "List typed relationships for an entity, such as PRD-to-plan or feature-to-feature.",
       inputSchema: {
-        entityId: z
-          .string()
-          .describe(
-            "ID or slug of the entity (slug supported for artifacts and features only)"
-          ),
+        entityId: z.string().describe(`Entity ID. ${ENTITY_LINK_SLUG_HELP}`),
         entityType: z.enum(ENTITY_TYPE_VALUES).describe("Type of the entity"),
         linkType: z
           .enum(LINK_TYPE_VALUES)

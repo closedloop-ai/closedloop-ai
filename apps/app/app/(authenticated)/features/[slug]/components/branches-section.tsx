@@ -16,6 +16,7 @@ import { Button } from "@repo/design-system/components/ui/button";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { cn } from "@repo/design-system/lib/utils";
 import { GitBranchIcon, PlayIcon, PlusIcon } from "lucide-react";
+import { useState } from "react";
 import { GenerationStatusIndicator } from "@/components/generation-status-indicator";
 import {
   useDeleteEntityLink,
@@ -27,22 +28,24 @@ import {
 } from "@/lib/project-constants";
 import { OverflowMenu } from "./overflow-menu";
 import { SectionHeader } from "./section-header";
+import { SelectPullRequestDialog } from "./select-pr-dialog";
 
 type BranchesSectionProps = {
   featureId: string;
+  projectId: string;
   hasPlan: boolean;
-  onAdd?: () => void;
   onStartBuild?: () => void;
   generationStatus?: GenerationStatus;
 };
 
 export function BranchesSection({
   featureId,
+  projectId,
   hasPlan,
-  onAdd,
   onStartBuild,
   generationStatus,
 }: Readonly<BranchesSectionProps>) {
+  const [showSelectPr, setShowSelectPr] = useState(false);
   const { data: linkedEntities = [] } = useLinkedEntities(
     featureId,
     EntityType.Feature,
@@ -73,7 +76,11 @@ export function BranchesSection({
   return (
     <div className="bg-background">
       <SectionHeader title="Build">
-        <Button onClick={onAdd} size="icon-sm" variant="ghost">
+        <Button
+          onClick={() => setShowSelectPr(true)}
+          size="icon-sm"
+          variant="ghost"
+        >
           <PlusIcon className="h-4 w-4" />
         </Button>
       </SectionHeader>
@@ -109,7 +116,11 @@ export function BranchesSection({
                   Need approved plan to build
                 </Button>
               )}
-              <Button onClick={onAdd} size="sm" variant="outline">
+              <Button
+                onClick={() => setShowSelectPr(true)}
+                size="sm"
+                variant="outline"
+              >
                 Select Existing PR
               </Button>
             </div>
@@ -121,6 +132,12 @@ export function BranchesSection({
           <GenerationStatusIndicator generationStatus={generationStatus} />
         </div>
       )}
+      <SelectPullRequestDialog
+        featureId={featureId}
+        onOpenChange={setShowSelectPr}
+        open={showSelectPr}
+        projectId={projectId}
+      />
     </div>
   );
 }

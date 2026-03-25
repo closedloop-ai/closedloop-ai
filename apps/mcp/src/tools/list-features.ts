@@ -5,6 +5,7 @@ import type { ApiClient } from "../api-client.js";
 import {
   asRecord,
   buildPaginatedPayload,
+  describeIdOrSlug,
   MAX_PAGE_LIMIT,
   readString,
   withErrorHandling,
@@ -18,12 +19,12 @@ export function registerListFeatures(
     "list-features",
     {
       description:
-        "List features with optional filters by project, status, assignee, or workstream",
+        "List features, which are issue-like work items, with optional filters by project, workstream, assignee, or status.",
       inputSchema: {
         projectId: z
           .string()
           .optional()
-          .describe("Filter by project ID or slug"),
+          .describe(describeIdOrSlug("Project", "PROJ-7")),
         status: z
           .enum(FeatureStatus)
           .optional()
@@ -35,7 +36,7 @@ export function registerListFeatures(
         workstreamId: z
           .string()
           .optional()
-          .describe("Filter by workstream ID or slug"),
+          .describe(describeIdOrSlug("Workstream", "WORK-3")),
         limit: z
           .number()
           .int()

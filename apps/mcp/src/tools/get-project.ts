@@ -1,7 +1,11 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
-import { encodePathSegment, withErrorHandling } from "./tool-utils.js";
+import {
+  describeIdOrSlug,
+  encodePathSegment,
+  withErrorHandling,
+} from "./tool-utils.js";
 
 export function registerGetProject(
   server: McpServer,
@@ -11,11 +15,9 @@ export function registerGetProject(
     "get-project",
     {
       description:
-        "Get a project's detail by ID or slug with recent workstreams",
+        "Get one project by ID or slug, including recent workstreams.",
       inputSchema: {
-        projectId: z
-          .string()
-          .describe("ID or slug (e.g. PROJ-1) of the project to retrieve"),
+        projectId: z.string().describe(describeIdOrSlug("Project", "PROJ-7")),
       },
     },
     ({ projectId }) =>

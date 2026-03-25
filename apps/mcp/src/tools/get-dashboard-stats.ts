@@ -10,7 +10,7 @@ export function registerGetDashboardStats(
     "get-dashboard-stats",
     {
       description:
-        "Get artifact counts and workstream metrics for the organization dashboard",
+        "Get organization-level counts for artifacts and workstreams.",
     },
     () =>
       withErrorHandling(async () => {

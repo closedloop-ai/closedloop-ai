@@ -58,3 +58,21 @@ export type GitHubBranch = {
 export type GetBranchesResponse = {
   branches: GitHubBranch[];
 };
+
+export type GitHubPullRequestSummary = {
+  number: number;
+  title: string;
+  htmlUrl: string;
+  headBranch: string;
+  baseBranch: string;
+  state: "OPEN" | "MERGED" | "CLOSED";
+  isDraft: boolean;
+  updatedAt: string;
+  author: string;
+};
+
+export type GetPullRequestsResponse = {
+  pullRequests: GitHubPullRequestSummary[];
+  /** externalUrl values of PRs from this repo already tracked as ExternalLinks */
+  trackedPrUrls: string[];
+};

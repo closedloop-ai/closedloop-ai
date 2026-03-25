@@ -1,7 +1,11 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
-import { encodePathSegment, withErrorHandling } from "./tool-utils.js";
+import {
+  describeIdOrSlug,
+  encodePathSegment,
+  withErrorHandling,
+} from "./tool-utils.js";
 
 export function registerCreateArtifactVersion(
   server: McpServer,
@@ -11,10 +15,12 @@ export function registerCreateArtifactVersion(
     "create-artifact-version",
     {
       description:
-        "Create a new version of an artifact by ID or slug. The previous version is preserved in history.",
+        "Append a new version to an artifact document by ID or slug. Older versions stay in history.",
       inputSchema: {
-        artifactId: z.string().describe("ID or slug of the artifact"),
-        content: z.string().describe("Content for the new version"),
+        artifactId: z
+          .string()
+          .describe(describeIdOrSlug("Artifact", ["PRD-7", "PLAN-12"])),
+        content: z.string().describe("Full content for the new version"),
       },
     },
     ({ artifactId, content }) =>

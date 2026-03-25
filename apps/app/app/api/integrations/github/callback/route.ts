@@ -63,7 +63,9 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       return makeErrorRedirect(GITHUB_ERROR_CODES.OAUTH_FAILED);
     }
 
-    // Get code, state, and installation_id from URL
+    // Get code, state, and optional installation_id from URL
+    // installation_id is present in the /installations/new flow but absent
+    // in the standard OAuth authorize flow (when app is already installed)
     const code = searchParams.get("code");
     const state = searchParams.get("state");
     const installationId = searchParams.get("installation_id");
@@ -76,7 +78,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       installationId,
     });
 
-    if (!(code && state && installationId)) {
+    if (!(code && state)) {
       log.warn("[github/callback] Missing required params", {
         hasCode: !!code,
         hasState: !!state,
@@ -112,7 +114,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
         },
         body: JSON.stringify({
           code,
-          installationId,
+          ...(installationId && { installationId }),
         }),
       }
     );

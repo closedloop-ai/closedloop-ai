@@ -7,7 +7,7 @@ export function registerGetLoop(server: McpServer, apiClient: ApiClient): void {
   server.registerTool(
     "get-loop",
     {
-      description: "Get a loop execution's detail by its ID",
+      description: "Get one automation run, called a loop, by ID.",
       inputSchema: {
         loopId: z.string().describe("ID of the loop to retrieve"),
       },

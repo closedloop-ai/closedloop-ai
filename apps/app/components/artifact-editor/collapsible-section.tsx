@@ -39,16 +39,16 @@ export function CollapsibleSection({
   open,
   onOpenChange,
   children,
-  contentClassName = "space-y-4 px-3 pb-3",
+  contentClassName = "space-y-4 px-3 pt-3 pb-3",
 }: Readonly<CollapsibleSectionProps>) {
   return (
     <Collapsible onOpenChange={onOpenChange} open={open}>
-      <CollapsibleTrigger className="flex w-full items-center justify-between rounded-lg p-3 font-medium text-sm transition-colors hover:bg-accent">
-        <span>{title}</span>
+      <CollapsibleTrigger className="flex h-12 w-full items-center justify-between border-b py-2 transition-colors">
+        <span className="font-semibold text-lg">{title}</span>
         {open ? (
-          <ChevronUpIcon className="h-4 w-4" />
+          <ChevronUpIcon className="h-4 w-4 text-muted-foreground" />
         ) : (
-          <ChevronDownIcon className="h-4 w-4" />
+          <ChevronDownIcon className="h-4 w-4 text-muted-foreground" />
         )}
       </CollapsibleTrigger>
       <CollapsibleContent className={contentClassName}>

@@ -42,7 +42,8 @@ function buildJudgeScoreInput(
     score,
     evaluation: {
       artifactId,
-      artifact: { type },
+      entityId: artifactId,
+      artifactType: type,
     },
   };
 }

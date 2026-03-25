@@ -1,7 +1,11 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
-import { encodePathSegment, withErrorHandling } from "./tool-utils.js";
+import {
+  describeIdOrSlug,
+  encodePathSegment,
+  withErrorHandling,
+} from "./tool-utils.js";
 
 export function registerGetWorkstream(
   server: McpServer,
@@ -11,11 +15,11 @@ export function registerGetWorkstream(
     "get-workstream",
     {
       description:
-        "Get a workstream's detail by ID or slug including state and artifacts",
+        "Get one workstream, meaning an initiative, by ID or slug, including state and artifacts.",
       inputSchema: {
         workstreamId: z
           .string()
-          .describe("ID or slug (e.g. WORK-5) of the workstream to retrieve"),
+          .describe(describeIdOrSlug("Workstream", "WORK-5")),
       },
     },
     ({ workstreamId }) =>

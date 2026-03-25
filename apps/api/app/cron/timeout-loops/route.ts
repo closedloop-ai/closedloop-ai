@@ -1,10 +1,15 @@
 import { timingSafeEqual } from "node:crypto";
-import { withDb } from "@repo/database";
+import { LoopStatus, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { loopsService } from "@/app/loops/service";
 import { stopLoopTask } from "@/lib/loops/loop-ecs";
 import { scrubContextPackSecrets } from "@/lib/loops/loop-state";
 
+// NOTE: computeTargetId is used in the WHERE clause only (to restrict to
+// cloud/ECS loops — null means no local ComputeTarget, i.e. dispatched to ECS)
+// and is intentionally absent from the select below. If observability of
+// skipped loops is ever needed, add computeTargetId to both the select and
+// this type simultaneously.
 type StuckLoop = {
   id: string;
   organizationId: string;
@@ -46,10 +51,12 @@ async function timeoutLoop(loop: StuckLoop, now: Date): Promise<boolean> {
       where: {
         id: loop.id,
         organizationId: loop.organizationId,
-        status: { in: ["PENDING", "CLAIMED", "RUNNING"] },
+        status: {
+          in: [LoopStatus.PENDING, LoopStatus.CLAIMED, LoopStatus.RUNNING],
+        },
       },
       data: {
-        status: "TIMED_OUT",
+        status: LoopStatus.TIMED_OUT,
         completedAt: now,
         error: { code: "TIMED_OUT", message: timeoutMessage },
       },
@@ -57,6 +64,10 @@ async function timeoutLoop(loop: StuckLoop, now: Date): Promise<boolean> {
   );
 
   if (result.count === 0) {
+    log.warn(
+      "[timeout-loops] timeoutLoop: updateMany returned count 0 -- loop may have already transitioned",
+      { loopId: loop.id }
+    );
     return false;
   }
 
@@ -116,7 +127,7 @@ async function timeoutLoop(loop: StuckLoop, now: Date): Promise<boolean> {
  * - CLAIMED: createdAt > 90 minutes ago (container never reported "started")
  * - PENDING: createdAt > 30 minutes ago (never picked up by a container)
  */
-export const GET = async (request: Request) => {
+export const GET = async (request: Request): Promise<Response> => {
   const cronSecret = process.env.CRON_SECRET;
   if (!cronSecret) {
     log.error("[timeout-loops] CRON_SECRET is not configured");
@@ -160,7 +171,7 @@ export const GET = async (request: Request) => {
       where: {
         OR: [
           {
-            status: "RUNNING",
+            status: LoopStatus.RUNNING,
             computeTargetId: null,
             events: {
               none: {
@@ -168,8 +179,16 @@ export const GET = async (request: Request) => {
               },
             },
           },
-          { status: "CLAIMED", createdAt: { lt: claimedCutoff } },
-          { status: "PENDING", createdAt: { lt: pendingCutoff } },
+          {
+            status: LoopStatus.CLAIMED,
+            computeTargetId: null,
+            createdAt: { lt: claimedCutoff },
+          },
+          {
+            status: LoopStatus.PENDING,
+            computeTargetId: null,
+            createdAt: { lt: pendingCutoff },
+          },
         ],
       },
       select: {
@@ -194,8 +213,7 @@ export const GET = async (request: Request) => {
 
   let timedOutCount = 0;
   for (const loop of stuckLoops) {
-    const didTimeout = await timeoutLoop(loop, now);
-    if (didTimeout) {
+    if (await timeoutLoop(loop, now)) {
       timedOutCount++;
     }
   }

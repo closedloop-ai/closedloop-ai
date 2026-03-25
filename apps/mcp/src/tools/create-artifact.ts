@@ -2,7 +2,11 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ArtifactType } from "@repo/api/src/types/artifact.js";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
-import { withErrorHandling } from "./tool-utils.js";
+import {
+  ARTIFACT_DOC_HELP,
+  describeIdOrSlug,
+  withErrorHandling,
+} from "./tool-utils.js";
 
 /**
  * Register the create-artifact tool on the given MCP server.
@@ -16,13 +20,21 @@ export function registerCreateArtifact(
     "create-artifact",
     {
       description:
-        "Create a new artifact with the given title, type, content, and project/workstream association",
+        "Create an artifact document, such as a PRD, implementation plan, or template, and attach it to a project or workstream.",
       inputSchema: {
         title: z.string().describe("Title of the artifact"),
-        type: z.enum(ArtifactType).describe("Type of the artifact"),
-        projectId: z.string().optional().describe("Project ID or slug"),
-        workstreamId: z.string().optional().describe("Workstream ID or slug"),
-        content: z.string().describe("Content/body of the artifact"),
+        type: z
+          .enum(ArtifactType)
+          .describe(`${ARTIFACT_DOC_HELP} Choose the artifact type.`),
+        projectId: z
+          .string()
+          .optional()
+          .describe(describeIdOrSlug("Project", "PROJ-7")),
+        workstreamId: z
+          .string()
+          .optional()
+          .describe(describeIdOrSlug("Workstream", "WORK-3")),
+        content: z.string().describe("Initial document content/body"),
       },
     },
     ({ title, type, projectId, workstreamId, content }) =>
