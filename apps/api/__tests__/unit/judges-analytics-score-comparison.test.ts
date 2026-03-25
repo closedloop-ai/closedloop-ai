@@ -12,6 +12,7 @@ import { mockWithDbCall } from "../utils/db-helpers";
 vi.mock("@repo/database", () => ({
   withDb: vi.fn(),
   PromptType: { JUDGE: "JUDGE" },
+  EntityType: { ARTIFACT: "ARTIFACT" },
 }));
 
 import { judgesAnalyticsService } from "@/app/judges-analytics/service";
@@ -30,17 +31,21 @@ function makeJudgeScoreRow(
   return {
     id: `js-${id}`,
     score,
+    metricName: "clarity",
     createdAt: new Date("2026-01-15T00:00:00Z"),
     evaluation: {
-      artifactId: id,
-      artifact: {
-        id,
-        type: ArtifactType.ImplementationPlan,
-        title: `Artifact ${id}`,
-        slug: id,
-      },
+      entityId: id,
     },
     judgeHumanScores: humanScores.map((s) => ({ score: s })),
+  };
+}
+
+function makeArtifactRow(id: string) {
+  return {
+    id,
+    type: ArtifactType.ImplementationPlan,
+    title: `Artifact ${id}`,
+    slug: id,
   };
 }
 
@@ -49,19 +54,24 @@ function mockDb(
   judgeScores: ReturnType<typeof makeJudgeScoreRow>[],
   metricExistsInOrg = true
 ) {
+  const artifactIds = [
+    ...new Set(judgeScores.map((js) => js.evaluation.entityId)),
+  ];
   const db = {
     prompt: {
       findMany: vi
         .fn()
         .mockResolvedValue(
-          promptNames.map((name, i) => ({ id: `prompt-${i}`, name }))
+          metricExistsInOrg && promptNames.length > 0
+            ? promptNames.map((name, i) => ({ id: `prompt-${i}`, name }))
+            : []
         ),
     },
     judgeScore: {
       findMany: vi.fn().mockResolvedValue(judgeScores),
-      findFirst: vi
-        .fn()
-        .mockResolvedValue(metricExistsInOrg ? { id: "js-existing" } : null),
+    },
+    artifact: {
+      findMany: vi.fn().mockResolvedValue(artifactIds.map(makeArtifactRow)),
     },
   };
   mockWithDbCall(db);
@@ -267,22 +277,25 @@ describe("judgesAnalyticsService.getJudgeScores", () => {
           .mockResolvedValue([{ id: "prompt-clarity", name: "clarity_judge" }]),
       },
       judgeScore: {
-        findFirst: vi.fn().mockResolvedValue({ id: "js-existing" }),
         findMany: vi.fn().mockResolvedValue([
           {
             id: "js-1",
             score: 0.7,
             createdAt: evaluatedAt,
             evaluation: {
-              artifactId: "a1",
-              artifact: {
-                id: "a1",
-                type: ArtifactType.ImplementationPlan,
-                title: "A1",
-                slug: "a1",
-              },
+              entityId: "a1",
             },
             judgeHumanScores: [],
+          },
+        ]),
+      },
+      artifact: {
+        findMany: vi.fn().mockResolvedValue([
+          {
+            id: "a1",
+            type: ArtifactType.ImplementationPlan,
+            title: "A1",
+            slug: "a1",
           },
         ]),
       },
@@ -325,7 +338,9 @@ describe("judgesAnalyticsService.getJudgeScores", () => {
         ]),
       },
       judgeScore: {
-        findFirst: vi.fn().mockResolvedValue({ id: "js-existing" }),
+        findMany: vi.fn().mockResolvedValue([]),
+      },
+      artifact: {
         findMany: vi.fn().mockResolvedValue([]),
       },
     };

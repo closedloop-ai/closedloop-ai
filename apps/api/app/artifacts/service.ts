@@ -1561,14 +1561,14 @@ Please try again or contact support if the issue persists.`
     reportType: EvaluationReportType
   ): Promise<JudgesFeedbackResponse> {
     try {
-      const artifact = await this.findByIdSimple(artifactId, organizationId);
-      if (!artifact) {
-        return { status: "not_found", data: null };
-      }
-
       const evaluation = await withDb((db) =>
         db.artifactEvaluation.findFirst({
-          where: { artifactId, reportType },
+          where: {
+            entityId: artifactId,
+            entityType: EntityType.Artifact,
+            organizationId,
+            reportType,
+          },
           include: {
             judgeScores: { include: { prompt: { select: { name: true } } } },
           },
@@ -1613,11 +1613,20 @@ Please try again or contact support if the issue persists.`
     organizationId: string,
     reportTypes: EvaluationReportType[]
   ): Promise<BatchJudgeScoresResponse> {
+    const projectArtifacts = await withDb((db) =>
+      db.artifact.findMany({
+        where: { projectId, organizationId },
+        select: { id: true },
+      })
+    );
+
     const evaluations = await withDb((db) =>
       db.artifactEvaluation.findMany({
         where: {
+          organizationId,
+          entityType: EntityType.Artifact,
+          entityId: { in: projectArtifacts.map((a) => a.id) },
           reportType: { in: reportTypes },
-          artifact: { projectId, organizationId },
         },
         include: {
           judgeScores: { include: { prompt: { select: { name: true } } } },
@@ -1626,13 +1635,13 @@ Please try again or contact support if the issue persists.`
       })
     );
 
-    // Group by (artifactId, reportType), keep only the latest per combination
+    // Group by (entityId, reportType), keep only the latest per combination
     const latestByArtifactAndType = new Map<
       string,
       (typeof evaluations)[number]
     >();
     for (const evaluation of evaluations) {
-      const key = `${evaluation.artifactId}:${evaluation.reportType}`;
+      const key = `${evaluation.entityId}:${evaluation.reportType}`;
       if (!latestByArtifactAndType.has(key)) {
         latestByArtifactAndType.set(key, evaluation);
       }
@@ -1640,13 +1649,13 @@ Please try again or contact support if the issue persists.`
 
     const result: BatchJudgeScoresResponse = {};
     for (const evaluation of latestByArtifactAndType.values()) {
-      const { artifactId, reportType } = evaluation;
-      if (!result[artifactId]) {
-        result[artifactId] = Object.fromEntries(
+      const { entityId, reportType } = evaluation;
+      if (!result[entityId]) {
+        result[entityId] = Object.fromEntries(
           Object.values(EvaluationReportType).map((t) => [t, null])
         ) as ArtifactJudgeScores;
       }
-      result[artifactId][reportType] = evaluation.judgeScores.map((js) => ({
+      result[entityId][reportType] = evaluation.judgeScores.map((js) => ({
         judgeScoreId: js.id,
         caseId: js.caseId,
         metricName: js.metricName,

@@ -85,9 +85,9 @@ export type JudgesFeedbackResponse =
   | { status: "error"; error: string };
 
 /**
- * Per-artifact judge scores keyed by report type.
+ * Per-entity judge scores keyed by report type.
  * Each key corresponds to one EvaluationReportType value; null means no
- * evaluation of that type exists for the artifact.
+ * evaluation of that type exists for the entity.
  */
 export type ArtifactJudgeScores = Record<
   EvaluationReportType,
@@ -95,8 +95,10 @@ export type ArtifactJudgeScores = Record<
 >;
 
 /**
- * Batch response mapping artifact IDs to their latest judge feedback items,
+ * Batch response mapping entity IDs to their latest judge feedback items,
  * separated by report type.
+ * The map key is entityId (equals artifactId for all existing ARTIFACT-type
+ * rows, so callers are unaffected by this naming).
  * Used by the artifacts table to show inline judge scores.
  */
 export type BatchJudgeScoresResponse = Record<string, ArtifactJudgeScores>;

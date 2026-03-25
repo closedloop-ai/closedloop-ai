@@ -2,7 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ExternalLinkType } from "@repo/api/src/types/external-link.js";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
-import { withErrorHandling } from "./tool-utils.js";
+import { describeIdOrSlug, withErrorHandling } from "./tool-utils.js";
 
 export function registerCreateExternalLink(
   server: McpServer,
@@ -12,10 +12,16 @@ export function registerCreateExternalLink(
     "create-external-link",
     {
       description:
-        "Create an external link (PR, Figma, preview deployment) attached to a workstream or project",
+        "Attach an external resource, such as a pull request, Figma file, or preview deployment, to a project or workstream.",
       inputSchema: {
-        workstreamId: z.string().optional().describe("Workstream ID or slug"),
-        projectId: z.string().optional().describe("Project ID or slug"),
+        workstreamId: z
+          .string()
+          .optional()
+          .describe(describeIdOrSlug("Workstream", "WORK-3")),
+        projectId: z
+          .string()
+          .optional()
+          .describe(describeIdOrSlug("Project", "PROJ-7")),
         externalUrl: z.url().describe("URL of the external link"),
         type: z.enum(ExternalLinkType).describe("Type of the external link"),
         title: z.string().describe("Display title for the external link"),
