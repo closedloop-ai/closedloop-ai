@@ -3,6 +3,7 @@
 import type {
   DisconnectGitHubResponse,
   GetBranchesResponse,
+  GetPullRequestsResponse,
   GetRepositoriesResponse,
   GitHubIntegrationStatus,
 } from "@repo/api/src/types/github";
@@ -21,6 +22,8 @@ export const githubKeys = {
   repositories: () => [...githubKeys.all, "repositories"] as const,
   branches: (repoId: string, limit?: number) =>
     [...githubKeys.all, "branches", repoId, ...(limit ? [limit] : [])] as const,
+  pullRequests: (repoId: string, projectId?: string) =>
+    [...githubKeys.all, "pull-requests", repoId, projectId] as const,
 };
 
 // Queries
@@ -78,6 +81,28 @@ export function useGitHubBranches(
         `/integrations/github/repositories/${repositoryId}/branches${searchParams}`
       ),
     enabled: !!repositoryId && options?.enabled !== false,
+  });
+}
+
+export function useGitHubPullRequests(
+  repositoryId: string,
+  projectId?: string,
+  options?: Omit<
+    UseQueryOptions<GetPullRequestsResponse>,
+    "queryKey" | "queryFn"
+  >
+) {
+  const apiClient = useApiClient();
+  const params = projectId ? `?projectId=${projectId}` : "";
+
+  return useQuery({
+    queryKey: githubKeys.pullRequests(repositoryId, projectId),
+    queryFn: () =>
+      apiClient.get<GetPullRequestsResponse>(
+        `/integrations/github/repositories/${repositoryId}/pull-requests${params}`
+      ),
+    enabled: !!repositoryId && options?.enabled !== false,
+    ...options,
   });
 }
 

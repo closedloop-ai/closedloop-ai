@@ -6,7 +6,6 @@ import { toast } from "@repo/design-system/components/ui/sonner";
 import { useRouter } from "next/navigation";
 import { useCallback, useState } from "react";
 import { ExecutePlanModal } from "@/app/(authenticated)/implementation-plans/components/execute-plan-modal";
-import { ArtifactChatPanel } from "@/components/artifact-editor/artifact-chat-panel";
 import { BackendMismatchModal } from "@/components/backend-mismatch-modal";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { LoopDispatchTargetSelector } from "@/components/engineer/LoopDispatchTargetSelector";
@@ -134,6 +133,7 @@ export function FeaturePage({ feature }: Readonly<FeaturePageProps>) {
                   generationStatus={generationStatus}
                   hasPlan={hasPlan}
                   onStartBuild={() => setShowExecuteModal(true)}
+                  projectId={feature.projectId ?? ""}
                 />
                 <PreviewSection featureId={feature.id} />
               </div>
