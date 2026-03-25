@@ -68,7 +68,9 @@ export function MyTasksKanban({
   });
   const features = useMemo(
     () =>
-      featureFilters ? applyClientFilters(rawFeatures, featureFilters) : rawFeatures,
+      featureFilters
+        ? applyClientFilters(rawFeatures, featureFilters)
+        : rawFeatures,
     [rawFeatures, featureFilters]
   );
   const updateFeatureMutation = useUpdateFeature();

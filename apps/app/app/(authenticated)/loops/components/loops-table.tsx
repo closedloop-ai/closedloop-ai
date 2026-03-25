@@ -372,7 +372,9 @@ export function LoopsTable() {
                   <TooltipTrigger asChild>
                     <Button
                       aria-label="Restart loop"
-                      disabled={pendingLoopId === loop.id}
+                      disabled={
+                        pendingLoopId === loop.id || resumeLoop.isPending
+                      }
                       onClick={async () => {
                         await handleRestart(loop.id);
                       }}

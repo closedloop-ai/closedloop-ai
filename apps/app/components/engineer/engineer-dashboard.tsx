@@ -337,7 +337,9 @@ function TerminalStatus({
   } = useTerminalStatus();
 
   if (tickets.length === 0 && !user) {
-    return <div className="text-muted-foreground/60">$ loading features...</div>;
+    return (
+      <div className="text-muted-foreground/60">$ loading features...</div>
+    );
   }
 
   function statusClassName() {

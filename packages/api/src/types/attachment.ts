@@ -18,7 +18,12 @@ export type FileAttachment = {
   previewUrl?: string;
 };
 
-const IMAGE_MIME_TYPES = ["image/jpeg", "image/png", "image/gif", "image/webp"] as const;
+const IMAGE_MIME_TYPES = [
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+] as const;
 
 export function isImageMimeType(mimeType: string): boolean {
   return IMAGE_MIME_TYPES.some((t) => mimeType === t);

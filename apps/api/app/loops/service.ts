@@ -546,7 +546,8 @@ export const loopsService = {
     parentLoopId: string,
     organizationId: string,
     userId: string,
-    input: ResumeLoopRequest
+    input: ResumeLoopRequest,
+    computeTargetId?: string
   ): Promise<CreateLoopResponse> {
     const parent = await withDb((db) =>
       db.loop.findUnique({
@@ -563,13 +564,13 @@ export const loopsService = {
       throw new Error("You can only resume your own loops");
     }
 
-    const resumableStatuses = new Set([
-      "CANCELLED",
-      "COMPLETED",
-      "FAILED",
-      "TIMED_OUT",
+    const resumableStatuses = new Set<LoopStatus>([
+      LoopStatus.Cancelled,
+      LoopStatus.Completed,
+      LoopStatus.Failed,
+      LoopStatus.TimedOut,
     ]);
-    if (!resumableStatuses.has(parent.status)) {
+    if (!resumableStatuses.has(parent.status as LoopStatus)) {
       throw new Error(
         `Cannot resume loop in ${parent.status} status. Only CANCELLED, COMPLETED, FAILED, or TIMED_OUT loops can be resumed.`
       );
@@ -608,7 +609,7 @@ export const loopsService = {
           prompt: input.prompt ?? parent.prompt,
           repo: parent.repo ?? undefined,
           contextRefs: parent.contextRefs ?? undefined,
-          s3StateKey: parent.s3StateKey,
+          computeTargetId: computeTargetId ?? null,
           status: "PENDING",
         },
       })
