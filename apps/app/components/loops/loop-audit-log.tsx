@@ -282,7 +282,7 @@ export function LoopAuditLog({ loopId }: Readonly<LoopAuditLogProps>) {
       ) : (
         <div className="max-h-[500px] overflow-auto rounded-md border">
           <Table>
-            <TableHeader>
+            <TableHeader className="sticky top-0 z-10 bg-background">
               <TableRow>
                 <TableHead className="w-[140px]">Timestamp</TableHead>
                 <TableHead className="w-[160px]">Event Type</TableHead>

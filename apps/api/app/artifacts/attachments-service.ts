@@ -161,7 +161,7 @@ export const attachmentsService = {
    */
   async listByFeature(
     featureId: string,
-    organizationId: string
+    _organizationId: string
   ): Promise<FileAttachment[]> {
     const records = await withDb((db) =>
       db.fileAttachment.findMany({
@@ -178,7 +178,9 @@ export const attachmentsService = {
       const previewUrls = await Promise.all(
         imageRecords.map(async (r) => ({
           id: r.id,
-          url: await getSignedDownloadUrl(r.key, 3600, r.bucket).catch(() => undefined),
+          url: await getSignedDownloadUrl(r.key, 3600, r.bucket).catch(
+            () => undefined
+          ),
         }))
       );
       const urlMap = new Map(
@@ -219,7 +221,9 @@ export const attachmentsService = {
       const previewUrls = await Promise.all(
         imageRecords.map(async (r) => ({
           id: r.id,
-          url: await getSignedDownloadUrl(r.key, 3600, r.bucket).catch(() => undefined),
+          url: await getSignedDownloadUrl(r.key, 3600, r.bucket).catch(
+            () => undefined
+          ),
         }))
       );
       const urlMap = new Map(
