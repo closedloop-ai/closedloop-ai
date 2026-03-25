@@ -84,7 +84,7 @@ beforeEach(() => {
 });
 
 describe("POST /loops/[id]/resume", () => {
-  it("calls resolveComputeTargetForRoute with (organizationId, userId, undefined) when no body", async () => {
+  it("does not call resolveComputeTargetForRoute when no computeTargetId in body", async () => {
     const response = await POST(
       createMockRequest({
         url: `http://localhost:3002/loops/${LOOP_ID}/resume`,
@@ -95,11 +95,7 @@ describe("POST /loops/[id]/resume", () => {
     );
 
     expect(response.status).toBe(200);
-    expect(resolveComputeTargetForRoute).toHaveBeenCalledWith(
-      ORG_ID,
-      USER_ID,
-      undefined
-    );
+    expect(resolveComputeTargetForRoute).not.toHaveBeenCalled();
   });
 
   it("returns HTTP 400 when computeTargetId is not a valid UUID", async () => {

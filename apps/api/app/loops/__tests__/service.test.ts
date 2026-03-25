@@ -86,7 +86,7 @@ describe("loopsService.resume", () => {
     });
   });
 
-  it("does not include s3StateKey in db.loop.create even when parent has a non-null s3StateKey", async () => {
+  it("propagates parent s3StateKey to the resumed loop", async () => {
     const parentWithS3 = makeParentFixture({ s3StateKey: "s3://bucket/key" });
     const mockFindUnique = vi.fn().mockResolvedValue(parentWithS3);
     const mockCount = vi.fn().mockResolvedValue(0);
@@ -111,7 +111,37 @@ describe("loopsService.resume", () => {
     );
 
     const createCall = mockCreate.mock.calls[0][0];
-    expect(createCall.data).not.toHaveProperty("s3StateKey");
+    expect(createCall.data.s3StateKey).toBe("s3://bucket/key");
+  });
+
+  it("falls back to parent computeTargetId when none provided", async () => {
+    const parentWithTarget = makeParentFixture({
+      computeTargetId: "parent-target-id",
+    });
+    const mockFindUnique = vi.fn().mockResolvedValue(parentWithTarget);
+    const mockCount = vi.fn().mockResolvedValue(0);
+    const mockCreate = vi.fn().mockResolvedValue(NEW_LOOP_FIXTURE);
+
+    mockWithDb.mockImplementation((callback: (db: unknown) => unknown) => {
+      const mockDb = {
+        loop: {
+          findUnique: mockFindUnique,
+          count: mockCount,
+          create: mockCreate,
+        },
+      };
+      return callback(mockDb);
+    });
+
+    await loopsService.resume(
+      TEST_PARENT_LOOP_ID,
+      TEST_ORG_ID,
+      TEST_USER_ID,
+      {}
+    );
+
+    const createCall = mockCreate.mock.calls[0][0];
+    expect(createCall.data.computeTargetId).toBe("parent-target-id");
   });
 
   it("accepts a loop with status Failed as resumable without throwing", async () => {

@@ -21,15 +21,21 @@ export const POST = withAnyAuth<CreateLoopResponse, "/loops/[id]/resume">(
         return parseError;
       }
 
-      // resolveComputeTargetForRoute already validates ownership via
-      // findOwnedById when a hint is provided — no separate check needed.
-      const ctResult = await resolveComputeTargetForRoute(
-        user.organizationId,
-        user.id,
-        body.computeTargetId
-      );
-      if ("errorResponse" in ctResult) {
-        return ctResult.errorResponse;
+      // Only resolve a fresh compute target when the client explicitly
+      // provides one. Otherwise the service falls back to the parent loop's
+      // computeTargetId so resumed loops stay on the same backend that has
+      // the prior .claude/worktree state.
+      let resolvedComputeTargetId: string | undefined;
+      if (body.computeTargetId) {
+        const ctResult = await resolveComputeTargetForRoute(
+          user.organizationId,
+          user.id,
+          body.computeTargetId
+        );
+        if ("errorResponse" in ctResult) {
+          return ctResult.errorResponse;
+        }
+        resolvedComputeTargetId = ctResult.computeTargetId;
       }
 
       const result = await loopsService.resume(
@@ -37,7 +43,7 @@ export const POST = withAnyAuth<CreateLoopResponse, "/loops/[id]/resume">(
         user.organizationId,
         user.id,
         body,
-        ctResult.computeTargetId
+        resolvedComputeTargetId
       );
 
       // Launch the resumed loop asynchronously. waitUntil() keeps the

@@ -628,7 +628,8 @@ export const loopsService = {
           prompt: input.prompt ?? parent.prompt,
           repo: parent.repo ?? undefined,
           contextRefs: parent.contextRefs ?? undefined,
-          computeTargetId: computeTargetId ?? null,
+          computeTargetId: computeTargetId ?? parent.computeTargetId ?? null,
+          s3StateKey: parent.s3StateKey ?? undefined,
           status: "PENDING",
         },
       })
