@@ -75,6 +75,46 @@ async function downloadExecutionArtifacts(
 }
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Create a GitHubPullRequest row, tolerating a concurrent insert from a
+ * webhook or workflow-completion handler (P2002 unique constraint).
+ */
+async function createPrRowOrSkipDuplicate(
+  tx: Parameters<Parameters<typeof withDb.tx>[0]>[0],
+  data: {
+    workstreamId: string;
+    organizationId: string;
+    repositoryId: string;
+    artifactId: string;
+    githubId: string;
+    number: number;
+    title: string;
+    htmlUrl: string;
+    headBranch: string;
+    baseBranch: string;
+  },
+  loopId: string
+): Promise<void> {
+  try {
+    await tx.gitHubPullRequest.create({
+      data: { ...data, state: "OPEN" },
+    });
+  } catch (error) {
+    if ((error as { code?: string }).code === "P2002") {
+      log.warn(
+        "[loop-artifact-ingestion] PR row created by concurrent handler; skipping duplicate",
+        { loopId, repositoryId: data.repositoryId, prNumber: data.number }
+      );
+    } else {
+      throw error;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Ingestion
 // ---------------------------------------------------------------------------
 
@@ -248,9 +288,9 @@ export async function ingestExecutionArtifacts(
         }
       );
     } else {
-      // Create GitHubPullRequest record
-      await tx.gitHubPullRequest.create({
-        data: {
+      await createPrRowOrSkipDuplicate(
+        tx,
+        {
           workstreamId: loop.workstreamId!,
           organizationId: loop.organizationId,
           repositoryId: installationRepo.id,
@@ -261,9 +301,9 @@ export async function ingestExecutionArtifacts(
           htmlUrl: executionResult.pr_url,
           headBranch: executionResult.branch_name,
           baseBranch,
-          state: "OPEN",
         },
-      });
+        loop.id
+      );
     }
 
     // Create ExternalLink, EntityLink, and preview deployment records (with dedup)
