@@ -1,5 +1,6 @@
 import type {
   GetBranchesResponse,
+  GetPullRequestsResponse,
   GitHubIntegrationStatus,
 } from "@repo/api/src/types/github";
 import type {
@@ -8,7 +9,11 @@ import type {
   GitHubInstallationStatus,
 } from "@repo/database";
 import { withDb } from "@repo/database";
-import { deleteInstallation, getRepositoryBranches } from "@repo/github";
+import {
+  deleteInstallation,
+  getRepositoryBranches,
+  getRepositoryPullRequests,
+} from "@repo/github";
 import { keys } from "@repo/github/keys";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
@@ -879,6 +884,76 @@ export const githubService = {
         error: parseError(error),
       });
       throw new Error("Failed to fetch branches from GitHub");
+    }
+  },
+
+  /**
+   * Fetch pull requests from GitHub for a repository.
+   * Also returns which PR URLs are already tracked as ExternalLinks in the given project.
+   */
+  async getPullRequests(
+    repositoryId: string,
+    organizationId: string,
+    projectId: string | null,
+    options?: { limit?: number }
+  ): Promise<GetPullRequestsResponse> {
+    const repository = await withDb((db) =>
+      db.gitHubInstallationRepository.findFirst({
+        where: { id: repositoryId },
+        include: { installation: true },
+      })
+    );
+
+    if (!repository) {
+      throw new Error("Repository not found");
+    }
+
+    if (repository.installation.organizationId !== organizationId) {
+      throw new Error("Repository does not belong to organization");
+    }
+
+    const [owner, name] = repository.fullName.split("/");
+
+    if (!(owner && name)) {
+      throw new Error("Invalid repository fullName format");
+    }
+
+    try {
+      const pullRequests = await getRepositoryPullRequests(
+        repository.installation.installationId,
+        owner,
+        name,
+        { state: "all", limit: options?.limit ?? 30 }
+      );
+
+      // Find which PR URLs are already tracked as ExternalLinks in this project
+      let trackedPrUrls: string[] = [];
+      if (projectId) {
+        const existingLinks = await withDb((db) =>
+          db.externalLink.findMany({
+            where: {
+              organizationId,
+              projectId,
+              type: "PULL_REQUEST",
+            },
+            select: { externalUrl: true },
+          })
+        );
+
+        const repoPrefix = `https://github.com/${owner}/${name}/pull/`;
+        trackedPrUrls = existingLinks
+          .map((el) => el.externalUrl)
+          .filter((url) => url.startsWith(repoPrefix));
+      }
+
+      return { pullRequests, trackedPrUrls };
+    } catch (error) {
+      log.error("[github/service] Failed to fetch pull requests", {
+        repositoryId,
+        organizationId,
+        error: parseError(error),
+      });
+      throw new Error("Failed to fetch pull requests from GitHub");
     }
   },
 };
