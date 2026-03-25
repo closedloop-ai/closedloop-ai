@@ -52,5 +52,14 @@ CREATE INDEX "artifact_evaluations_organization_id_entity_type_created_at_idx" O
 -- CreateIndex
 CREATE UNIQUE INDEX "artifact_evaluations_entity_id_report_id_key" ON "artifact_evaluations"("entity_id", "report_id");
 
--- AddForeignKey
-ALTER TABLE "file_attachments" ADD CONSTRAINT "file_attachments_issue_id_fkey" FOREIGN KEY ("issue_id") REFERENCES "issues"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+-- AddForeignKey (idempotent: constraint may already exist, scoped to current schema)
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint c
+    JOIN pg_namespace n ON n.oid = c.connamespace
+    WHERE c.conname = 'file_attachments_issue_id_fkey'
+      AND n.nspname = current_schema()
+  ) THEN
+    ALTER TABLE "file_attachments" ADD CONSTRAINT "file_attachments_issue_id_fkey" FOREIGN KEY ("issue_id") REFERENCES "issues"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+  END IF;
+END $$;
