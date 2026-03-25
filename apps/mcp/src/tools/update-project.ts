@@ -3,7 +3,11 @@ import { Priority } from "@repo/api/src/types/common.js";
 import { ProjectStatus } from "@repo/api/src/types/project.js";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
-import { encodePathSegment, withErrorHandling } from "./tool-utils.js";
+import {
+  describeIdOrSlug,
+  encodePathSegment,
+  withErrorHandling,
+} from "./tool-utils.js";
 
 export function registerUpdateProject(
   server: McpServer,
@@ -12,10 +16,9 @@ export function registerUpdateProject(
   server.registerTool(
     "update-project",
     {
-      description:
-        "Update an existing project's name, description, or priority by ID or slug",
+      description: "Update a project's metadata or status by ID or slug.",
       inputSchema: {
-        projectId: z.string().describe("ID or slug of the project to update"),
+        projectId: z.string().describe(describeIdOrSlug("Project", "PROJ-7")),
         name: z.string().optional().describe("New name for the project"),
         description: z
           .string()

@@ -1,7 +1,11 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
-import { encodePathSegment, withErrorHandling } from "./tool-utils.js";
+import {
+  describeIdOrSlug,
+  encodePathSegment,
+  withErrorHandling,
+} from "./tool-utils.js";
 
 export function registerCreateArtifactThread(
   server: McpServer,
@@ -10,11 +14,12 @@ export function registerCreateArtifactThread(
   server.registerTool(
     "create-artifact-thread",
     {
-      description: "Create a comment thread on an artifact by ID or slug",
+      description:
+        "Create a comment thread on an artifact document by ID or slug.",
       inputSchema: {
         artifactId: z
           .string()
-          .describe("ID or slug of the artifact (e.g., PRD-7)"),
+          .describe(describeIdOrSlug("Artifact", ["PRD-7", "PLAN-12"])),
         body: z.string().min(1).describe("Comment body text"),
         anchorText: z
           .string()

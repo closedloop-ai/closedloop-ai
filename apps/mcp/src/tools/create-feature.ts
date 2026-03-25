@@ -1,7 +1,11 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
-import { withErrorHandling } from "./tool-utils.js";
+import {
+  describeIdOrSlug,
+  FEATURE_HELP,
+  withErrorHandling,
+} from "./tool-utils.js";
 
 export function registerCreateFeature(
   server: McpServer,
@@ -10,11 +14,15 @@ export function registerCreateFeature(
   server.registerTool(
     "create-feature",
     {
-      description: "Create a new feature in a project",
+      description:
+        "Create a feature, which represents an issue or work item in a project.",
       inputSchema: {
-        title: z.string().describe("Title of the feature"),
-        projectId: z.string().describe("Project ID or slug"),
-        description: z.string().optional().describe("Description of the feature"),
+        title: z.string().describe("Feature or issue title"),
+        projectId: z.string().describe(describeIdOrSlug("Project", "PROJ-7")),
+        description: z
+          .string()
+          .optional()
+          .describe(`${FEATURE_HELP} Optional description.`),
         priority: z
           .enum(["LOW", "MEDIUM", "HIGH", "URGENT"])
           .optional()

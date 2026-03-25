@@ -3,7 +3,11 @@ import { Priority } from "@repo/api/src/types/common.js";
 import { WORKSTREAM_TYPE_OPTIONS } from "@repo/api/src/types/workstream";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
-import { withErrorHandling } from "./tool-utils.js";
+import {
+  describeIdOrSlug,
+  WORKSTREAM_HELP,
+  withErrorHandling,
+} from "./tool-utils.js";
 
 export function registerCreateWorkstream(
   server: McpServer,
@@ -12,10 +16,11 @@ export function registerCreateWorkstream(
   server.registerTool(
     "create-workstream",
     {
-      description: "Create a new workstream (initiative) in a project",
+      description:
+        "Create a workstream, an initiative or track of work within a project.",
       inputSchema: {
         title: z.string().describe("Title of the workstream"),
-        projectId: z.string().describe("Project ID or slug"),
+        projectId: z.string().describe(describeIdOrSlug("Project", "PROJ-7")),
         description: z
           .string()
           .optional()
@@ -23,7 +28,7 @@ export function registerCreateWorkstream(
         type: z
           .enum(WORKSTREAM_TYPE_OPTIONS)
           .optional()
-          .describe("Type of the workstream"),
+          .describe(`${WORKSTREAM_HELP} Choose the workstream type.`),
         priority: z
           .enum(Priority)
           .optional()
