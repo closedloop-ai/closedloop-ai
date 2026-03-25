@@ -62,7 +62,7 @@ export async function handlePullRequestReviewComment(
   await withDb.tx(async (tx) => {
     // Step 1: Find GitHubInstallationRepository by githubRepoId
     const repo = await tx.gitHubInstallationRepository.findFirst({
-      where: { githubRepoId: repository.id },
+      where: { githubRepoId: String(repository.id) },
       select: { id: true },
     });
 

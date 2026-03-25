@@ -3,6 +3,7 @@ import type {
   ComputeTargetConflictBody,
 } from "@repo/api/src/types/compute-target";
 import type { CreateLoopResponse } from "@repo/api/src/types/loop";
+import { log } from "@repo/observability/log";
 import { z } from "zod";
 
 import { ApiError } from "@/lib/api-error";
@@ -43,6 +44,16 @@ export function handleRunLoopResponse(
 
   // Error case: route 409 conflict responses by discriminant
   if (!(response instanceof ApiError) || response.status !== 409) {
+    if (response instanceof ApiError) {
+      log.warn(
+        "[engineer-debug] run-loop error not handled by handleRunLoopResponse",
+        {
+          status: response.status,
+          message: response.message,
+          data: response.data,
+        }
+      );
+    }
     return;
   }
 

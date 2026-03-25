@@ -19,7 +19,7 @@ type PrLinkageInput = {
   prUrl: string;
   prTitle: string;
   prNumber: number;
-  githubId: number;
+  githubId: string;
   headBranch: string;
   baseBranch: string;
   commitSha: string | null;

@@ -359,8 +359,8 @@ importers:
         specifier: 8.0.1
         version: 8.0.1
       simple-git:
-        specifier: ^3.31.1
-        version: 3.31.1
+        specifier: ^3.32.3
+        version: 3.32.3
       sonner:
         specifier: ^2.0.7
         version: 2.0.7(react-dom@19.2.1(react@19.2.1))(react@19.2.1)
@@ -940,12 +940,18 @@ importers:
       '@tiptap/react':
         specifier: ~3.19.0
         version: 3.19.0(@floating-ui/dom@1.7.5)(@tiptap/core@3.19.0(@tiptap/pm@3.19.0))(@tiptap/pm@3.19.0)(@types/react-dom@19.2.3(@types/react@19.2.13))(@types/react@19.2.13)(react-dom@19.2.1(react@19.2.1))(react@19.2.1)
+      lib0:
+        specifier: ^0.2.99
+        version: 0.2.117
       react:
         specifier: 19.2.1
         version: 19.2.1
       server-only:
         specifier: ^0.0.1
         version: 0.0.1
+      yjs:
+        specifier: ^13.6.27
+        version: 13.6.29
       zod:
         specifier: ^4.3.6
         version: 4.3.6
@@ -10520,6 +10526,11 @@ packages:
     engines: {node: ^18 || >=20}
     hasBin: true
 
+  nanoid@5.1.7:
+    resolution: {integrity: sha512-ua3NDgISf6jdwezAheMOk4mbE1LXjm1DfMUDMuJf4AqxLFK3ccGpgWizwa5YV7Yz9EpXwEaWoRXSb/BnV0t5dQ==}
+    engines: {node: ^18 || >=20}
+    hasBin: true
+
   negotiator@0.6.3:
     resolution: {integrity: sha512-+EUsqGPLsM+j/zdChZjsnX51g4XrHFOIXwfnCVPGlQk/k5giakcKsuxCObBRu6DSm9opw/O6slWbJdghQM4bBg==}
     engines: {node: '>= 0.6'}
@@ -12010,8 +12021,8 @@ packages:
     resolution: {integrity: sha512-iuh+gPf28RkltuJC7W5MRi6XAjTDCAPC/prJUpQoG4vIP3MJZ+GTydVnodXA7pwvTKb2cA0m9OFZW/cdWy/I/w==}
     engines: {node: '>=6'}
 
-  simple-git@3.31.1:
-    resolution: {integrity: sha512-oiWP4Q9+kO8q9hHqkX35uuHmxiEbZNTrZ5IPxgMGrJwN76pzjm/jabkZO0ItEcqxAincqGAzL3QHSaHt4+knBg==}
+  simple-git@3.32.3:
+    resolution: {integrity: sha512-56a5oxFdWlsGygOXHWrG+xjj5w9ZIt2uQbzqiIGdR/6i5iococ7WQ/bNPzWxCJdEUGUCmyMH0t9zMpRJTaKxmw==}
 
   simple-wcswidth@1.1.2:
     resolution: {integrity: sha512-j7piyCjAeTDSjzTSQ7DokZtMNwNlEAyxqSZeCS+CXH7fJ4jx3FuJ/mTW3mE+6JLs4VJBbcll0Kjn+KXI5t21Iw==}
@@ -20636,7 +20647,7 @@ snapshots:
       '@modelcontextprotocol/sdk': 1.27.1(@cfworker/json-schema@4.1.1)(zod@3.25.76)
       ai: 4.3.19(react@19.2.1)(zod@3.25.76)
       cron-schedule: 5.0.4
-      nanoid: 5.1.6
+      nanoid: 5.1.7
       partyserver: 0.0.71(@cloudflare/workers-types@4.20260210.0)
       partysocket: 1.1.4
       react: 19.2.1
@@ -24674,6 +24685,8 @@ snapshots:
 
   nanoid@5.1.6: {}
 
+  nanoid@5.1.7: {}
+
   negotiator@0.6.3: {}
 
   negotiator@1.0.0: {}
@@ -25075,7 +25088,7 @@ snapshots:
   partyserver@0.0.71(@cloudflare/workers-types@4.20260210.0):
     dependencies:
       '@cloudflare/workers-types': 4.20260210.0
-      nanoid: 5.1.6
+      nanoid: 5.1.7
 
   partysocket@1.1.4:
     dependencies:
@@ -26580,7 +26593,7 @@ snapshots:
       figures: 2.0.0
       pkg-conf: 2.1.0
 
-  simple-git@3.31.1:
+  simple-git@3.32.3:
     dependencies:
       '@kwsites/file-exists': 1.1.1
       '@kwsites/promise-deferred': 1.1.1

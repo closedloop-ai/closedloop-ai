@@ -208,7 +208,7 @@ describe("handleCheckRun", () => {
       expect(
         mockDb.gitHubInstallationRepository.findFirst
       ).toHaveBeenCalledWith({
-        where: { githubRepoId: event.repository.id },
+        where: { githubRepoId: String(event.repository.id) },
         select: { id: true, owner: true, name: true },
       });
       expect(mockQueryStatusCheckRollup).not.toHaveBeenCalled();

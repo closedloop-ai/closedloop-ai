@@ -43,7 +43,7 @@ export type GitHubRepository = {
   name: string;
   owner: string;
   private: boolean;
-  githubRepoId: number;
+  githubRepoId: string;
   lastPushedAt: string | null;
 };
 

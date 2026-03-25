@@ -385,6 +385,7 @@ export function useCreateAndGenerateArtifact() {
         // This catch is inside mutationFn (not onError), so TanStack Query sees onSuccess —
         // intentionally, so the caller can navigate to the created artifact regardless of
         // whether generation succeeded.
+        // Unhandled error types are logged inside handleRunLoopResponse.
         handleRunLoopResponse(error, {
           onMultipleTargets: (conflict) =>
             setMultiTargetState({

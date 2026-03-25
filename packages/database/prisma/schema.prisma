@@ -777,7 +777,8 @@ model ArtifactRating {
 
 model FileAttachment {
   id          String   @id @default(uuid(7)) @db.Uuid
-  artifactId  String   @map("artifact_id") @db.Uuid
+  artifactId  String?  @map("artifact_id") @db.Uuid
+  featureId   String?  @map("issue_id") @db.Uuid
   bucket      String
   key         String
   filename    String
@@ -787,9 +788,11 @@ model FileAttachment {
   createdById String   @map("created_by_id") @db.Uuid
 
   // Relations
-  artifact Artifact @relation(fields: [artifactId], references: [id], onDelete: Cascade)
+  artifact Artifact? @relation(fields: [artifactId], references: [id], onDelete: Cascade)
+  feature  Feature?  @relation(fields: [featureId], references: [id], onDelete: Cascade)
 
   @@index([artifactId])
+  @@index([featureId])
   @@map("file_attachments")
 }
 
@@ -839,6 +842,7 @@ model Feature {
   project      Project?     @relation(fields: [projectId], references: [id], onDelete: Cascade)
   assignee     User?        @relation("FeatureAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
   createdBy    User         @relation("FeatureCreator", fields: [createdById], references: [id])
+  attachments  FileAttachment[]
 
   @@unique([organizationId, slug])
   @@index([organizationId, workstreamId, status])
@@ -1235,7 +1239,7 @@ model GitHubInstallation {
 model GitHubInstallationRepository {
   id             String    @id @default(uuid(7)) @db.Uuid
   installationId String    @map("installation_id") @db.Uuid
-  githubRepoId   Int       @map("github_repo_id")
+  githubRepoId   String    @map("github_repo_id")
   fullName       String    @map("full_name")
   name           String
   owner          String
@@ -1257,7 +1261,7 @@ model GitHubPullRequest {
   organizationId String        @map("organization_id") @db.Uuid // Denormalized from workstream for defense-in-depth (org-scoped queries)
   repositoryId   String        @map("repository_id") @db.Uuid
   artifactId     String?       @map("artifact_id") @db.Uuid
-  githubId       Int           @map("github_id")
+  githubId       String        @map("github_id")
   number         Int
   title          String
   body           String?         @db.Text

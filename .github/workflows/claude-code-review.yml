@@ -7,11 +7,6 @@ on:
     types: [opened]
   workflow_dispatch:
 
-# Cancel in-progress runs for the same PR to prevent duplicate reviews
-concurrency:
-  group: claude-review-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
-
 jobs:
   claude-review:
     # Filter by PR author or allow bot actors like Dependabot
