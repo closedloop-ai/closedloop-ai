@@ -63,7 +63,9 @@ export function MyTasksList({
   });
   const features = useMemo(
     () =>
-      featureFilters ? applyClientFilters(rawFeatures, featureFilters) : rawFeatures,
+      featureFilters
+        ? applyClientFilters(rawFeatures, featureFilters)
+        : rawFeatures,
     [rawFeatures, featureFilters]
   );
   const deleteFeatureMutation = useDeleteFeature();
