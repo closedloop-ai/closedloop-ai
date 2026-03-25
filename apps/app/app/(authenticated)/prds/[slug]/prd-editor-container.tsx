@@ -34,7 +34,7 @@ export function PRDEditorContainer({
 
   if (isLoading) {
     return (
-      <div className="flex h-full items-center justify-center">
+      <div className="flex h-full items-center justify-center bg-background">
         <Loader2Icon className="h-6 w-6 animate-spin text-muted-foreground" />
       </div>
     );

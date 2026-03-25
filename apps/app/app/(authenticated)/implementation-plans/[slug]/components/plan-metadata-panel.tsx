@@ -138,6 +138,7 @@ export function PlanMetadataPanel({
           onTargetBranchChange={onTargetBranchChange}
           onTargetRepoBlur={onTargetRepoBlur}
           onTargetRepoChange={onTargetRepoChange}
+          separator={variant === "sidebar"}
           targetBranch={targetBranch}
           targetRepo={targetRepo}
           title="Target Repository"

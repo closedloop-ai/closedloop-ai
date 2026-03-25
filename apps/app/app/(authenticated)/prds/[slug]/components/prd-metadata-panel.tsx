@@ -157,6 +157,7 @@ export function PRDMetadataPanel({
           onTargetBranchChange={onTargetBranchChange}
           onTargetRepoBlur={onTargetRepoBlur}
           onTargetRepoChange={onTargetRepoChange}
+          separator={variant === "sidebar"}
           targetBranch={targetBranch}
           targetRepo={targetRepo}
           title="Plan Generation"
