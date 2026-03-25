@@ -877,6 +877,16 @@ export const judgesAnalyticsService = {
       })
     );
 
+    if (rawJudgeScores.length === 0) {
+      log.warn("No judge scores found for judges analytics query", {
+        organizationId,
+        startDate: startDate.toISOString(),
+        endDate: endDate.toISOString(),
+        reportType,
+      });
+      return { reportType, groups: [] };
+    }
+
     // Batch-fetch artifact types by entityId to populate JudgeScoreInput
     const evalEntityIds = [
       ...new Set(rawJudgeScores.map((js) => js.evaluation.entityId)),
@@ -906,15 +916,6 @@ export const judgesAnalyticsService = {
         },
       ];
     });
-
-    if (judgeScores.length === 0) {
-      log.warn("No judge scores found for judges analytics query", {
-        organizationId,
-        startDate: startDate.toISOString(),
-        endDate: endDate.toISOString(),
-        reportType,
-      });
-    }
 
     // Detect collisions: same metricName from multiple distinct promptIds
     const { collisionMetrics, promptNameById } =
@@ -1219,6 +1220,16 @@ export const judgesAnalyticsService = {
       })
     );
 
+    if (judgeScores.length === 0) {
+      return {
+        rows: [],
+        totalArtifacts: 0,
+        ratedArtifacts: 0,
+        coveragePct: 0,
+        pagination: { page, pageSize, totalRows: 0, totalPages: 0 },
+      };
+    }
+
     // Batch-fetch artifact data by entityId
     const entityIds = [
       ...new Set(judgeScores.map((js) => js.evaluation.entityId)),
@@ -1230,16 +1241,6 @@ export const judgesAnalyticsService = {
       })
     );
     const artifactsByEntityId = new Map(artifactRows.map((a) => [a.id, a]));
-
-    if (judgeScores.length === 0) {
-      return {
-        rows: [],
-        totalArtifacts: 0,
-        ratedArtifacts: 0,
-        coveragePct: 0,
-        pagination: { page, pageSize, totalRows: 0, totalPages: 0 },
-      };
-    }
 
     // 3. Build rows with concurrence default
     const rows: JudgeScoreRow[] = judgeScores.flatMap((js) => {
