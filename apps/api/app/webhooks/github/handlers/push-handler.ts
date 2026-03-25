@@ -34,11 +34,11 @@ export async function handlePush(event: PushEvent): Promise<Response> {
   // which we filter via the nested relation to GitHubInstallation.
   const whereClause = installationId
     ? {
-        githubRepoId: repository.id,
+        githubRepoId: String(repository.id),
         installation: { installationId },
       }
     : {
-        githubRepoId: repository.id,
+        githubRepoId: String(repository.id),
       };
 
   const lastPushedAt = repository.pushed_at

@@ -5,7 +5,7 @@ import { asRecord, withErrorHandling } from "./tool-utils.js";
 export function registerGetMe(server: McpServer, apiClient: ApiClient): void {
   server.registerTool(
     "get-me",
-    { description: "Get the authenticated user's profile" },
+    { description: "Get the authenticated user's profile and identity." },
     () =>
       withErrorHandling(async () => {
         const response = await apiClient.get<unknown>("/me");

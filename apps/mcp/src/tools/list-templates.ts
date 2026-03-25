@@ -16,7 +16,8 @@ export function registerListTemplates(
   server.registerTool(
     "list-templates",
     {
-      description: "List available artifact templates for the organization",
+      description:
+        "List template artifacts, which are reusable document blueprints for PRDs or implementation plans.",
       inputSchema: {
         limit: z
           .number()

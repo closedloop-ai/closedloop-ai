@@ -133,6 +133,7 @@ export function FeaturePage({ feature }: Readonly<FeaturePageProps>) {
                   generationStatus={generationStatus}
                   hasPlan={hasPlan}
                   onStartBuild={() => setShowExecuteModal(true)}
+                  projectId={feature.projectId ?? ""}
                 />
                 <PreviewSection featureId={feature.id} />
               </div>

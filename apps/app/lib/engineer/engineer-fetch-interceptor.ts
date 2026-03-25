@@ -1,6 +1,7 @@
 "use client";
 
 import { EngineerRoutingMode } from "@repo/api/src/types/relay";
+import { log } from "@repo/observability/log";
 import { CLOUD_RELAY_ENABLED } from "./constants";
 import {
   ensureElectronDetection,
@@ -118,6 +119,13 @@ function createFetchInterceptor(
 
     const routingSelection = getEngineerRoutingSelection();
 
+    log.debug("[engineer-debug] Fetch interceptor routing", {
+      url: requestUrl.pathname,
+      mode: routingSelection.mode,
+      computeTargetId: routingSelection.computeTargetId,
+      cloudRelayEnabled: CLOUD_RELAY_ENABLED,
+    });
+
     if (
       CLOUD_RELAY_ENABLED &&
       routingSelection.mode === EngineerRoutingMode.CloudRelay &&
@@ -151,6 +159,18 @@ function createFetchInterceptor(
     }
 
     if (routingSelection.mode !== EngineerRoutingMode.LocalElectron) {
+      log.warn(
+        "[engineer-debug] Engineer request falling through to original fetch (will hit proxy guard)",
+        {
+          url: requestUrl.pathname,
+          mode: routingSelection.mode,
+          computeTargetId: routingSelection.computeTargetId,
+          reason:
+            routingSelection.mode === EngineerRoutingMode.CloudRelay
+              ? "CloudRelay mode but no computeTargetId -- request will be sent to Next.js app server (403 if hosted)"
+              : "Not in LocalElectron mode",
+        }
+      );
       return originalFetch(request);
     }
 

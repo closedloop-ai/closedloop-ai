@@ -6,12 +6,11 @@ import {
   ArtifactType,
 } from "@repo/api/src/types/artifact";
 import { InlinePresence, OptionalArtifactRoom } from "@repo/collaboration";
-import { Button } from "@repo/design-system/components/ui/button";
-import { Toggle } from "@repo/design-system/components/ui/toggle";
-import { MessageSquareDotIcon } from "lucide-react";
+import { Loader2Icon } from "lucide-react";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { ArtifactChatPanel } from "@/components/artifact-editor/artifact-chat-panel";
 import { CollaborativeEditor } from "@/components/artifact-editor/collaborative-editor";
+import { EditorToolbarActions } from "@/components/artifact-editor/editor-toolbar-actions";
 import { EditorToolbarRow } from "@/components/artifact-editor/editor-toolbar-row";
 import { MetadataPanel } from "@/components/artifact-editor/metadata-panel";
 import { SaveIndicator } from "@/components/artifact-editor/save-indicator";
@@ -183,6 +182,38 @@ export function PlanEditor({
     />
   );
 
+  const editClickHandler = isReadOnly ? undefined : session.handleEdit;
+
+  const toolbarLeftContent = (
+    <>
+      {session.isEditing && session.liveblocksRoomId && (
+        <Suspense fallback={null}>
+          <InlinePresence />
+        </Suspense>
+      )}
+      {versionDisplay}
+      <SaveIndicator
+        isSaving={contentController.isSaving}
+        lastSaved={contentController.lastSaved}
+      />
+    </>
+  );
+
+  const toolbarRightContent = (
+    <EditorToolbarActions
+      isEditing={session.isEditing}
+      isPending={isPending}
+      isSaving={contentController.isSaving}
+      isViewingHistorical={session.isViewingHistorical}
+      onDiscard={session.handleDiscard}
+      onEdit={session.handleEdit}
+      onPublish={session.handlePublish}
+      onToggleComments={setShowComments}
+      openThreadCount={session.openThreadCount}
+      showComments={showComments}
+    />
+  );
+
   const header = showHeader ? (
     <PlanEditorHeader
       canShowPanel={chatFlag?.enabled}
@@ -209,7 +240,7 @@ export function PlanEditor({
   ) : null;
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+    <>
       {header}
 
       {/* Metadata bar below header */}
@@ -229,122 +260,85 @@ export function PlanEditor({
 
       {/* Content area: main content + chat panel on right */}
       <div className="flex min-h-0 flex-1">
-        <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+        <div className="min-w-0 flex-1 overflow-y-auto overflow-x-hidden bg-background">
           <OptionalArtifactRoom roomId={session.liveblocksRoomId}>
-            {/* Toolbar Row */}
-            <EditorToolbarRow
-              leftContent={
-                <>
-                  {session.isEditing && session.liveblocksRoomId && (
-                    <Suspense fallback={null}>
-                      <InlinePresence />
-                    </Suspense>
-                  )}
-                  {versionDisplay}
-                  <SaveIndicator
-                    isSaving={contentController.isSaving}
-                    lastSaved={contentController.lastSaved}
-                  />
-                </>
-              }
-              rightContent={
-                <>
-                  {session.openThreadCount > 0 && (
-                    <Toggle
-                      className="px-3"
-                      onPressedChange={setShowComments}
-                      pressed={showComments}
-                      size="sm"
-                      variant="outline"
-                    >
-                      <MessageSquareDotIcon className="h-4 w-4" />
-                      {session.openThreadCount}
-                    </Toggle>
-                  )}
-                  {session.isEditing ? (
-                    <>
-                      <Button
-                        disabled={isPending}
-                        onClick={session.handleDiscard}
-                        size="sm"
-                        variant="outline"
-                      >
-                        Discard
-                      </Button>
-                      <Button
-                        disabled={isPending}
-                        onClick={session.handlePublish}
-                        size="sm"
-                      >
-                        {contentController.isSaving
-                          ? "Publishing..."
-                          : "Publish"}
-                      </Button>
-                    </>
-                  ) : (
-                    <Button
-                      disabled={session.isViewingHistorical}
-                      onClick={session.handleEdit}
-                      size="sm"
-                      variant="secondary"
-                    >
-                      Edit
-                    </Button>
-                  )}
-                </>
-              }
-            />
-
-            {/* Generation Status Banner */}
-            <GenerationStatusBanner artifactId={plan.id} />
-
-            {/* biome-ignore lint/a11y/noNoninteractiveElementInteractions: wraps TipTap rich text editor */}
-            {/* biome-ignore lint/a11y/noStaticElementInteractions: wraps TipTap rich text editor */}
+            {/* Loading spinner — visible until editor content is fully loaded */}
             <div
-              className="flex min-h-[65vh] flex-col"
-              onClick={isReadOnly ? undefined : session.handleEdit}
-              onKeyDown={isReadOnly ? undefined : session.handleEdit}
+              className={
+                session.isContentReady
+                  ? "hidden"
+                  : "flex flex-1 items-center justify-center py-24"
+              }
             >
-              <CollaborativeEditor
-                contentResetKey={session.contentResetKey}
-                contentResetValue={session.contentResetValue}
-                key={currentVersion}
-                liveblocksRoomId={session.liveblocksRoomId}
-                onChange={contentController.updateContent}
-                onEditorInstance={session.handleEditorInstance}
-                onOpenThreadCountChange={session.handleThreadCountChange}
-                readOnly={!session.isEditing}
-                showComments={showComments}
-                value={contentController.content}
-              />
+              <Loader2Icon className="h-6 w-6 animate-spin text-muted-foreground" />
             </div>
 
-            {/* Details section */}
-            <div className="border-t px-4 py-4">
-              <PlanMetadataPanel
-                approver={metadata.approver}
-                assignee={metadata.assignee}
-                codeJudgeItems={codeJudgesReport ?? null}
-                generationStatus={generationStatus ?? null}
-                isPreviewRefreshing={isRefreshingPreviewDeployment}
-                judgeItems={judgesReport ?? null}
-                onApproverSelect={metadata.handleApproverSelect}
-                onAssigneeChange={metadata.handleAssigneeChange}
-                onPreviewRefresh={refetchPreviewLinks}
-                onStatusChange={metadata.handleStatusChange}
-                onTargetBranchBlur={metadata.handleTargetBranchBlur}
-                onTargetBranchChange={metadata.handleTargetBranchChange}
-                onTargetRepoBlur={metadata.handleTargetRepoBlur}
-                onTargetRepoChange={metadata.handleTargetRepoChange}
-                plan={plan}
-                previewDeployment={previewDeployment}
-                pullRequest={pullRequest ?? null}
-                status={metadata.status}
-                targetBranch={metadata.targetBranch}
-                targetRepo={metadata.targetRepo}
-                teamMembers={metadata.teamMembers}
-                variant="detailsOnly"
+            {/* Content wrapper — hidden until Liveblocks Y.Doc sync completes */}
+            <div
+              className={
+                session.isContentReady
+                  ? undefined
+                  : "invisible h-0 overflow-hidden"
+              }
+            >
+              {/* Toolbar Row */}
+              <EditorToolbarRow
+                leftContent={toolbarLeftContent}
+                rightContent={toolbarRightContent}
               />
+
+              {/* Generation Status Banner */}
+              <GenerationStatusBanner artifactId={plan.id} />
+
+              {/* biome-ignore lint/a11y/noNoninteractiveElementInteractions: wraps TipTap rich text editor */}
+              {/* biome-ignore lint/a11y/noStaticElementInteractions: wraps TipTap rich text editor */}
+              <div
+                className="flex min-h-[200px] flex-col"
+                onClick={editClickHandler}
+                onKeyDown={editClickHandler}
+              >
+                <CollaborativeEditor
+                  contentResetKey={session.contentResetKey}
+                  contentResetValue={session.contentResetValue}
+                  key={currentVersion}
+                  liveblocksRoomId={session.liveblocksRoomId}
+                  onChange={contentController.updateContent}
+                  onContentReady={session.handleContentReady}
+                  onEditorInstance={session.handleEditorInstance}
+                  onOpenThreadCountChange={session.handleThreadCountChange}
+                  readOnly={!session.isEditing}
+                  showComments={showComments}
+                  value={contentController.content}
+                />
+              </div>
+
+              {/* Details section */}
+              <div className="border-t px-4 py-4">
+                <PlanMetadataPanel
+                  approver={metadata.approver}
+                  assignee={metadata.assignee}
+                  codeJudgeItems={codeJudgesReport ?? null}
+                  generationStatus={generationStatus ?? null}
+                  isPreviewRefreshing={isRefreshingPreviewDeployment}
+                  judgeItems={judgesReport ?? null}
+                  onApproverSelect={metadata.handleApproverSelect}
+                  onAssigneeChange={metadata.handleAssigneeChange}
+                  onPreviewRefresh={refetchPreviewLinks}
+                  onStatusChange={metadata.handleStatusChange}
+                  onTargetBranchBlur={metadata.handleTargetBranchBlur}
+                  onTargetBranchChange={metadata.handleTargetBranchChange}
+                  onTargetRepoBlur={metadata.handleTargetRepoBlur}
+                  onTargetRepoChange={metadata.handleTargetRepoChange}
+                  plan={plan}
+                  previewDeployment={previewDeployment}
+                  pullRequest={pullRequest ?? null}
+                  status={metadata.status}
+                  targetBranch={metadata.targetBranch}
+                  targetRepo={metadata.targetRepo}
+                  teamMembers={metadata.teamMembers}
+                  variant="detailsOnly"
+                />
+              </div>
             </div>
           </OptionalArtifactRoom>
         </div>
@@ -411,7 +405,7 @@ export function PlanEditor({
         }}
         open={!!planActions.backendMismatchState}
       />
-    </div>
+    </>
   );
 }
 

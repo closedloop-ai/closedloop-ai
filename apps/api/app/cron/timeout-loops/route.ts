@@ -149,12 +149,19 @@ export const GET = async (request: Request) => {
 
   // Find stuck loops across all three categories.
   // For RUNNING: purely activity-based — no events in 75 min = dead container.
+  //
+  // Desktop loops (computeTargetId IS NOT NULL) are excluded from the
+  // RUNNING inactivity check only. Their progress events flow through the
+  // desktop command channel rather than the LoopEvent table, causing
+  // false-positive reaping. PENDING/CLAIMED desktop loops can still get
+  // stranded (e.g., dispatch fails) and should be reaped normally.
   const stuckLoops = await withDb((db) =>
     db.loop.findMany({
       where: {
         OR: [
           {
             status: "RUNNING",
+            computeTargetId: null,
             events: {
               none: {
                 createdAt: { gte: activityCutoff },

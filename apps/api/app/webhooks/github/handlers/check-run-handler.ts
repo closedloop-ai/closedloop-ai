@@ -93,7 +93,7 @@ export async function handleCheckRun(event: CheckRunEvent): Promise<Response> {
   // but the first match suffices for owner/name needed by the GraphQL call.
   const { repo, pr } = await withDb(async (db) => {
     const foundRepo = await db.gitHubInstallationRepository.findFirst({
-      where: { githubRepoId: event.repository.id },
+      where: { githubRepoId: String(event.repository.id) },
       select: { id: true, owner: true, name: true },
     });
 

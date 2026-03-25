@@ -4,7 +4,7 @@ vi.mock("@repo/database", () => ({
   withDb: vi.fn(),
 }));
 
-// Transitive dependencies required by loop-orchestrator (for test d)
+// Transitive dependencies required by loopsService (service.ts imports modules that pull in these)
 vi.mock("@aws-sdk/client-ecs", () => ({
   ECSClient: vi.fn(),
   RunTaskCommand: vi.fn(),
@@ -92,7 +92,7 @@ describe("loopsService.updateStatus transitions", () => {
     for (const [callbackFn] of updateManyCalls) {
       const mockUpdateMany = vi.fn().mockResolvedValue({ count: 1 });
       const mockFindUnique = vi.fn().mockResolvedValue(updatedLoop);
-      callbackFn({
+      await callbackFn({
         loop: { updateMany: mockUpdateMany, findUnique: mockFindUnique },
       });
       if (mockUpdateMany.mock.calls.length > 0) {

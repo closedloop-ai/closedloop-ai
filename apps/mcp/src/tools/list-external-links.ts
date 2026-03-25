@@ -5,6 +5,7 @@ import type { ApiClient } from "../api-client.js";
 import {
   asRecord,
   buildPaginatedPayload,
+  describeIdOrSlug,
   MAX_PAGE_LIMIT,
   readString,
   withErrorHandling,
@@ -17,16 +18,17 @@ export function registerListExternalLinks(
   server.registerTool(
     "list-external-links",
     {
-      description: "List external links filtered by workstream or project",
+      description:
+        "List external resources attached to a project or workstream.",
       inputSchema: {
         workstreamId: z
           .string()
           .optional()
-          .describe("Filter by workstream ID or slug"),
+          .describe(describeIdOrSlug("Workstream", "WORK-3")),
         projectId: z
           .string()
           .optional()
-          .describe("Filter by project ID or slug"),
+          .describe(describeIdOrSlug("Project", "PROJ-7")),
         type: z
           .enum(ExternalLinkType)
           .optional()

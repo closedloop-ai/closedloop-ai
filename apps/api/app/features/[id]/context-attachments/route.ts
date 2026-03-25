@@ -1,4 +1,5 @@
 import { ArtifactStatus, ArtifactType } from "@repo/api/src/types/artifact";
+import { isDocumentMimeType } from "@repo/api/src/types/attachment";
 import type { CreateContextAttachmentResponse } from "@repo/api/src/types/context-attachment";
 import { EntityType, LinkType } from "@repo/api/src/types/entity-link";
 import { attachmentsService } from "@/app/artifacts/attachments-service";
@@ -43,68 +44,104 @@ export const POST = withAnyAuth<
       return notFoundResponse("Feature");
     }
 
-    const projectId = body.projectId ?? feature.projectId;
-    if (!(projectId || feature.workstreamId)) {
-      return badRequestResponse(
-        "Either projectId or workstreamId is required to attach context"
-      );
+    // Document types (md, pdf, doc, docx, html) → create a PRD artifact + entity link
+    // Non-document types (images, video, spreadsheets) → attach directly to the feature
+    if (isDocumentMimeType(body.mimeType)) {
+      return handleDocumentUpload(user, feature, featureId, body);
     }
-
-    const artifact = await artifactsService.create(
-      user.organizationId,
-      user.id,
-      {
-        title: body.filename,
-        type: ArtifactType.Prd,
-        status: ArtifactStatus.Draft,
-        projectId,
-        content: "",
-      }
-    );
-
-    if (!artifact) {
-      return errorResponse(
-        "Failed to create artifact for context attachment",
-        null
-      );
-    }
-
-    let uploadResult: Awaited<
-      ReturnType<typeof attachmentsService.requestUpload>
-    >;
-    try {
-      uploadResult = await attachmentsService.requestUpload(
-        artifact.id,
-        user.organizationId,
-        user.id,
-        body.filename,
-        body.mimeType,
-        body.sizeBytes
-      );
-    } catch (uploadError) {
-      await artifactsService.delete(artifact.id, user.organizationId);
-      return errorResponse("Failed to request upload", uploadError);
-    }
-
-    try {
-      await entityLinksService.createLink(user.organizationId, {
-        sourceId: artifact.id,
-        sourceType: EntityType.Artifact,
-        targetId: featureId,
-        targetType: EntityType.Feature,
-        linkType: LinkType.RelatesTo,
-      });
-    } catch (linkError) {
-      await artifactsService.delete(artifact.id, user.organizationId);
-      return errorResponse("Failed to link artifact to feature", linkError);
-    }
-
-    return successResponse({
-      uploadUrl: uploadResult.uploadUrl,
-      artifactId: artifact.id,
-      attachmentId: uploadResult.attachmentId,
-    });
+    return handleDirectAttachment(user, featureId, body);
   } catch (error) {
     return errorResponse("Failed to create context attachment", error);
   }
 });
+
+async function handleDocumentUpload(
+  user: { organizationId: string; id: string },
+  feature: { projectId: string; workstreamId: string | null },
+  featureId: string,
+  body: {
+    filename: string;
+    mimeType: string;
+    sizeBytes: number;
+    projectId?: string;
+  }
+) {
+  const projectId = body.projectId ?? feature.projectId;
+  if (!(projectId || feature.workstreamId)) {
+    return badRequestResponse(
+      "Either projectId or workstreamId is required to attach context"
+    );
+  }
+
+  const artifact = await artifactsService.create(user.organizationId, user.id, {
+    title: body.filename,
+    type: ArtifactType.Prd,
+    status: ArtifactStatus.Draft,
+    projectId,
+    content: "",
+  });
+
+  if (!artifact) {
+    return errorResponse(
+      "Failed to create artifact for context attachment",
+      null
+    );
+  }
+
+  let uploadResult: Awaited<
+    ReturnType<typeof attachmentsService.requestUpload>
+  >;
+  try {
+    uploadResult = await attachmentsService.requestUpload(
+      artifact.id,
+      user.organizationId,
+      user.id,
+      body.filename,
+      body.mimeType,
+      body.sizeBytes
+    );
+  } catch (uploadError) {
+    await artifactsService.delete(artifact.id, user.organizationId);
+    return errorResponse("Failed to request upload", uploadError);
+  }
+
+  try {
+    await entityLinksService.createLink(user.organizationId, {
+      sourceId: artifact.id,
+      sourceType: EntityType.Artifact,
+      targetId: featureId,
+      targetType: EntityType.Feature,
+      linkType: LinkType.RelatesTo,
+    });
+  } catch (linkError) {
+    await artifactsService.delete(artifact.id, user.organizationId);
+    return errorResponse("Failed to link artifact to feature", linkError);
+  }
+
+  return successResponse({
+    uploadUrl: uploadResult.uploadUrl,
+    artifactId: artifact.id,
+    attachmentId: uploadResult.attachmentId,
+  });
+}
+
+async function handleDirectAttachment(
+  user: { organizationId: string; id: string },
+  featureId: string,
+  body: { filename: string; mimeType: string; sizeBytes: number }
+) {
+  const uploadResult = await attachmentsService.requestFeatureUpload(
+    featureId,
+    user.organizationId,
+    user.id,
+    body.filename,
+    body.mimeType,
+    body.sizeBytes
+  );
+
+  return successResponse({
+    uploadUrl: uploadResult.uploadUrl,
+    artifactId: "",
+    attachmentId: uploadResult.attachmentId,
+  });
+}

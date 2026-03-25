@@ -3,7 +3,7 @@ import type {
   UserJudgeRating,
   UserJudgeRatingsResponse,
 } from "@repo/api/src/types/judges-analytics";
-import { withDb } from "@repo/database";
+import { EntityType, withDb } from "@repo/database";
 import { normalizeJudgeName } from "@/lib/judge-name-utils";
 
 /**
@@ -22,8 +22,9 @@ export function submitJudgeRating(
       where: {
         id: judgeScoreId,
         evaluation: {
-          artifactId,
-          artifact: { organizationId },
+          entityId: artifactId,
+          entityType: EntityType.ARTIFACT,
+          organizationId,
         },
       },
       select: {
@@ -101,7 +102,8 @@ export async function getUserJudgeRatings(
         organizationId,
         userId,
         evaluation: {
-          artifactId,
+          entityId: artifactId,
+          entityType: EntityType.ARTIFACT,
         },
       },
       select: {

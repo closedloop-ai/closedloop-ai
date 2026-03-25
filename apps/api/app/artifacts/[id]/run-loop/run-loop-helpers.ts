@@ -9,6 +9,7 @@ import {
 } from "@repo/api/src/types/loop";
 import { getProjectSettings } from "@repo/api/src/types/project";
 import { withDb } from "@repo/database";
+import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
 import { computeTargetsService } from "@/app/compute-targets/service";
 import { loopsService } from "@/app/loops/service";
@@ -148,7 +149,17 @@ export async function resolveComputeTargetForRoute(
     preferredComputeMode
   );
 
-  return mapComputeTargetResult(ctResult);
+  const routeResult = mapComputeTargetResult(ctResult);
+  log.info("[run-loop] Compute target resolution", {
+    reason: ctResult.reason,
+    resolvedTargetId:
+      "computeTargetId" in routeResult
+        ? (routeResult.computeTargetId ?? "cloud/ecs")
+        : "error",
+    hasError: "errorResponse" in routeResult,
+  });
+
+  return routeResult;
 }
 
 function mapComputeTargetResult(

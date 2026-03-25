@@ -15,9 +15,6 @@ export function SystemCheckBootstrap() {
   // Key forces HealthCheckDialog to remount (and re-run checks) when the
   // execution target changes — preserving the per-context freshness that the
   // previous per-/engineer-page mount provided.
-  return (
-    <HealthCheckDialog
-      key={`${routing.mode}-${routing.computeTargetId ?? "none"}`}
-    />
-  );
+  const targetKey = `${routing.mode}-${routing.computeTargetId ?? "none"}`;
+  return <HealthCheckDialog key={targetKey} targetKey={targetKey} />;
 }

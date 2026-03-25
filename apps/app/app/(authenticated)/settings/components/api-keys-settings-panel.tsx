@@ -286,13 +286,7 @@ function ApiKeysCardContent({
 const MCP_TOOL_GROUPS = [
   {
     label: "Projects",
-    tools: [
-      "list-projects",
-      "get-project",
-      "create-project",
-      "update-project",
-      "get-project-status",
-    ],
+    tools: ["list-projects", "get-project", "create-project", "update-project"],
   },
   {
     label: "Artifacts",

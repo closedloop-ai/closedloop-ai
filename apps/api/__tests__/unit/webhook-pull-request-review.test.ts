@@ -263,7 +263,7 @@ describe("handlePullRequestReview", () => {
       expect(
         mockTx.gitHubInstallationRepository.findFirst
       ).toHaveBeenCalledWith({
-        where: { githubRepoId: 789 },
+        where: { githubRepoId: "789" },
         select: { id: true },
       });
 

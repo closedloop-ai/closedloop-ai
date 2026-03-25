@@ -76,6 +76,7 @@ type DataTableProps<T> = {
   renderRowActions?: (item: T) => React.ReactNode;
   pageSize?: number;
   pageSizeOptions?: number[];
+  onPageSizeChange?: (pageSize: number) => void;
   emptyMessage?: string;
 };
 
@@ -91,13 +92,20 @@ export function DataTable<T extends { id: string }>({
   renderRowActions,
   pageSize: initialPageSize = 10,
   pageSizeOptions,
+  onPageSizeChange,
   emptyMessage = "No items found.",
 }: DataTableProps<T>) {
   const [search, setSearch] = React.useState("");
   const [sort, setSort] = React.useState(sortOptions?.[0]?.value ?? "");
   const [filter, setFilter] = React.useState("all");
   const [page, setPage] = React.useState(1);
-  const [pageSize, setPageSize] = React.useState(initialPageSize);
+  const [internalPageSize, setInternalPageSize] =
+    React.useState(initialPageSize);
+  // Keep internal state in sync when parent controls the value
+  const pageSize = onPageSizeChange ? initialPageSize : internalPageSize;
+  const setPageSize = onPageSizeChange
+    ? (size: number) => onPageSizeChange(size)
+    : setInternalPageSize;
 
   // Filter data
   const filteredData = React.useMemo(() => {

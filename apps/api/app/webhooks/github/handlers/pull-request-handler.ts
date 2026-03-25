@@ -113,7 +113,7 @@ export async function handlePullRequest(
   await withDb.tx(async (tx) => {
     // Step 1: Find GitHubInstallationRepository by githubRepoId
     const repo = await tx.gitHubInstallationRepository.findFirst({
-      where: { githubRepoId: repository.id },
+      where: { githubRepoId: String(repository.id) },
       select: {
         id: true,
         installation: {
@@ -433,7 +433,7 @@ async function createAndLinkPr(
       organizationId,
       repositoryId: repo.id,
       artifactId: artifact.id,
-      githubId: pull_request.id,
+      githubId: String(pull_request.id),
       number: pull_request.number,
       title: pull_request.title,
       htmlUrl: pull_request.html_url,
@@ -488,7 +488,7 @@ async function createLinkageRecords(
         externalUrl: pull_request.html_url,
         metadata: {
           number: pull_request.number,
-          githubId: pull_request.id,
+          githubId: String(pull_request.id),
           headBranch: pull_request.head.ref,
           baseBranch: pull_request.base.ref,
           state: GitHubPRState.OPEN,

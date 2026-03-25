@@ -12,6 +12,11 @@ vi.mock("@repo/database", () => ({
   EvaluationReportType: {
     PRD: "PRD",
   },
+  EntityType: {
+    ARTIFACT: "ARTIFACT",
+    FEATURE: "FEATURE",
+    EXTERNAL_LINK: "EXTERNAL_LINK",
+  },
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
 }));
 
@@ -36,7 +41,10 @@ vi.mock("@/lib/judge-score-fanout", () => ({
 
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
 import { LoopCommand } from "@repo/api/src/types/loop";
-import { EvaluationReportType as PrismaEvaluationReportType } from "@repo/database";
+import {
+  EntityType,
+  EvaluationReportType as PrismaEvaluationReportType,
+} from "@repo/database";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   parseJsonArtifact,
@@ -116,6 +124,8 @@ describe("evaluatePrdHandler downloadAndIngest", () => {
     expect(mockUpsertEvaluationWithJudgeScores).toHaveBeenCalledOnce();
     expect(mockUpsertEvaluationWithJudgeScores).toHaveBeenCalledWith(
       expect.objectContaining({
+        entityId: "prd-artifact-1",
+        entityType: EntityType.ARTIFACT,
         artifactId: "prd-artifact-1",
         loopId: loop.id,
         organizationId: "org-1",
@@ -150,6 +160,8 @@ describe("evaluatePrdHandler downloadAndIngest", () => {
     expect(mockUpsertEvaluationWithJudgeScores).toHaveBeenCalledOnce();
     expect(mockUpsertEvaluationWithJudgeScores).toHaveBeenCalledWith(
       expect.objectContaining({
+        entityId: "prd-artifact-1",
+        entityType: EntityType.ARTIFACT,
         artifactId: "prd-artifact-1",
         organizationId: "org-1",
         reportType: PrismaEvaluationReportType.PRD,
@@ -271,13 +283,17 @@ describe("evaluatePrdHandler downloadAndIngest", () => {
     const [firstCall, secondCall] =
       mockUpsertEvaluationWithJudgeScores.mock.calls;
 
-    // Both calls carry identical artifactId + reportType — the upsert composite key.
+    // Both calls carry identical entityId + entityType + artifactId + reportType — the upsert composite key.
     expect(firstCall[0]).toMatchObject({
+      entityId: "prd-artifact-1",
+      entityType: EntityType.ARTIFACT,
       artifactId: "prd-artifact-1",
       reportType: PrismaEvaluationReportType.PRD,
       report: expect.objectContaining({ report_id: PRD_REPORT.report_id }),
     });
     expect(secondCall[0]).toMatchObject({
+      entityId: "prd-artifact-1",
+      entityType: EntityType.ARTIFACT,
       artifactId: "prd-artifact-1",
       reportType: PrismaEvaluationReportType.PRD,
       report: expect.objectContaining({ report_id: PRD_REPORT.report_id }),

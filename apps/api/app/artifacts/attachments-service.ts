@@ -6,8 +6,10 @@ import type {
   CreateAttachmentResponse,
   FileAttachment,
 } from "@repo/api/src/types/attachment";
+import { isImageMimeType } from "@repo/api/src/types/attachment";
 import {
   deleteArtifact,
+  getSignedDownloadUrl,
   getSignedDownloadUrlWithDisposition,
   getSignedUploadUrl,
 } from "@repo/aws";
@@ -21,7 +23,8 @@ import { log } from "@repo/observability/log";
  */
 function toFileAttachment(record: {
   id: string;
-  artifactId: string;
+  artifactId: string | null;
+  featureId?: string | null;
   filename: string;
   mimeType: string;
   sizeBytes: number;
@@ -30,7 +33,8 @@ function toFileAttachment(record: {
 }): FileAttachment {
   return {
     id: record.id,
-    artifactId: record.artifactId,
+    artifactId: record.artifactId ?? "",
+    featureId: record.featureId ?? undefined,
     filename: record.filename,
     mimeType: record.mimeType,
     sizeBytes: record.sizeBytes,
@@ -109,6 +113,91 @@ export const attachmentsService = {
   },
 
   /**
+   * Initiate a file upload attached directly to a feature (not an artifact).
+   * Used for non-document context attachments (images, video, etc.).
+   */
+  async requestFeatureUpload(
+    featureId: string,
+    organizationId: string,
+    userId: string,
+    filename: string,
+    mimeType: string,
+    sizeBytes: number
+  ): Promise<CreateAttachmentResponse> {
+    const bucket = awsKeys().FILE_ATTACHMENTS_BUCKET;
+    if (!bucket) {
+      throw new Error("FILE_ATTACHMENTS_BUCKET is not configured");
+    }
+
+    const key = `attachments/${organizationId}/features/${featureId}/${createId()}`;
+
+    const uploadUrl = await getSignedUploadUrl(
+      key,
+      mimeType,
+      900,
+      bucket,
+      sizeBytes
+    );
+
+    const created = await withDb((db) =>
+      db.fileAttachment.create({
+        data: {
+          featureId,
+          bucket,
+          key,
+          filename,
+          mimeType,
+          sizeBytes,
+          createdById: userId,
+        },
+      })
+    );
+
+    return { attachmentId: created.id, uploadUrl, key };
+  },
+
+  /**
+   * List all attachments for a feature (org-scoped, newest first).
+   */
+  async listByFeature(
+    featureId: string,
+    _organizationId: string
+  ): Promise<FileAttachment[]> {
+    const records = await withDb((db) =>
+      db.fileAttachment.findMany({
+        where: { featureId },
+        orderBy: { createdAt: "desc" },
+      })
+    );
+
+    const attachments = records.map(toFileAttachment);
+
+    // Generate inline preview URLs for image attachments
+    const imageRecords = records.filter((r) => isImageMimeType(r.mimeType));
+    if (imageRecords.length > 0) {
+      const previewUrls = await Promise.all(
+        imageRecords.map(async (r) => ({
+          id: r.id,
+          url: await getSignedDownloadUrl(r.key, 3600, r.bucket).catch(
+            () => undefined
+          ),
+        }))
+      );
+      const urlMap = new Map(
+        previewUrls.filter((p) => p.url).map((p) => [p.id, p.url])
+      );
+      for (const attachment of attachments) {
+        const url = urlMap.get(attachment.id);
+        if (url) {
+          attachment.previewUrl = url;
+        }
+      }
+    }
+
+    return attachments;
+  },
+
+  /**
    * List all attachments for an artifact (org-scoped, newest first).
    */
   async listByArtifact(
@@ -124,7 +213,31 @@ export const attachmentsService = {
       })
     );
 
-    return records.map(toFileAttachment);
+    const attachments = records.map(toFileAttachment);
+
+    // Generate inline preview URLs for image attachments
+    const imageRecords = records.filter((r) => isImageMimeType(r.mimeType));
+    if (imageRecords.length > 0) {
+      const previewUrls = await Promise.all(
+        imageRecords.map(async (r) => ({
+          id: r.id,
+          url: await getSignedDownloadUrl(r.key, 3600, r.bucket).catch(
+            () => undefined
+          ),
+        }))
+      );
+      const urlMap = new Map(
+        previewUrls.filter((p) => p.url).map((p) => [p.id, p.url])
+      );
+      for (const attachment of attachments) {
+        const url = urlMap.get(attachment.id);
+        if (url) {
+          attachment.previewUrl = url;
+        }
+      }
+    }
+
+    return attachments;
   },
 
   /**
@@ -173,6 +286,37 @@ export const attachmentsService = {
     const attachment = await withDb.tx(async (tx) => {
       const record = await tx.fileAttachment.findUnique({
         where: { id: attachmentId, artifactId },
+        select: { bucket: true, key: true },
+      });
+
+      if (!record) {
+        throw new Error("Attachment not found");
+      }
+
+      await tx.fileAttachment.delete({ where: { id: attachmentId } });
+      return record;
+    });
+
+    try {
+      await deleteArtifact(attachment.key, attachment.bucket);
+    } catch (error) {
+      log.error("[attachments-service] Failed to delete S3 object", {
+        key: attachment.key,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  },
+
+  /**
+   * Delete a feature attachment from the database and S3.
+   */
+  async deleteFeatureAttachment(
+    featureId: string,
+    attachmentId: string
+  ): Promise<void> {
+    const attachment = await withDb.tx(async (tx) => {
+      const record = await tx.fileAttachment.findUnique({
+        where: { id: attachmentId, featureId },
         select: { bucket: true, key: true },
       });
 

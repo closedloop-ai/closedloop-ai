@@ -18,6 +18,7 @@ import {
   TabsList,
   TabsTrigger,
 } from "@repo/design-system/components/ui/tabs";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   AlertCircleIcon,
   FileTextIcon,
@@ -25,6 +26,7 @@ import {
   UploadIcon,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { attachmentKeys } from "@/hooks/queries/use-attachments";
 import {
   useCreateContextAttachment,
   useImportGDriveContext,
@@ -207,6 +209,7 @@ function UploadFileTab({
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [uploadError, setUploadError] = useState<string>("");
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const queryClient = useQueryClient();
   const createAttachment = useCreateContextAttachment(featureId);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -241,6 +244,9 @@ function UploadFileTab({
         return;
       }
 
+      queryClient.invalidateQueries({
+        queryKey: attachmentKeys.issueList(featureId),
+      });
       toast.success("File uploaded as context");
       onOpenChange(false);
     } catch {
