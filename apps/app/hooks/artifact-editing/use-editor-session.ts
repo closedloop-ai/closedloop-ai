@@ -57,7 +57,6 @@ export function useEditorSession(config: UseEditorSessionConfig) {
 
   const editorRef = useRef<Editor | null>(null);
   const editorSnapshotRef = useRef<JSONContent | null>(null);
-  const [isEditorReady, setIsEditorReady] = useState(false);
   const [isContentReady, setIsContentReady] = useState(false);
 
   const isViewingHistorical = currentVersion !== artifact.latestVersion;
@@ -73,7 +72,6 @@ export function useEditorSession(config: UseEditorSessionConfig) {
   const handleEditorInstance = useCallback(
     (editor: Editor | null) => {
       editorRef.current = editor;
-      setIsEditorReady(editor !== null);
       if (editor === null) {
         // Editor unmounting (e.g. version change via key remount) — reset
         // content readiness so the loading spinner reappears.
@@ -178,7 +176,6 @@ export function useEditorSession(config: UseEditorSessionConfig) {
   return {
     // Editing state
     isEditing,
-    isEditorReady,
     isContentReady,
     isViewingHistorical,
     liveblocksRoomId,

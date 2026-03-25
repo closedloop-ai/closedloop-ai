@@ -147,7 +147,8 @@ function EditorContentWithLiveblocks({
   const isEditorReady = useIsEditorReady();
   const room = useRoom();
 
-  // Signal content readiness when Liveblocks Y.Doc sync completes
+  // Liveblocks TipTap exposes Y.Doc sync via useIsEditorReady (not a suspending hook), so we
+  // notify the parent with onContentReady instead of relying on Suspense for this stage.
   const hasSignalledReady = useRef(false);
   useEffect(() => {
     if (isEditorReady && !hasSignalledReady.current) {
@@ -165,6 +166,7 @@ function EditorContentWithLiveblocks({
   if (prevRoomRef.current !== room) {
     prevRoomRef.current = room;
     editorKeyRef.current += 1;
+    hasSignalledReady.current = false;
   }
 
   return (

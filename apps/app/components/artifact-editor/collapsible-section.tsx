@@ -39,7 +39,7 @@ export function CollapsibleSection({
   open,
   onOpenChange,
   children,
-  contentClassName = "space-y-4 px-3 pt-3 pb-3 [&>*:first-child]:border-t-0 [&>*:first-child]:pt-0",
+  contentClassName = "space-y-4 px-3 pt-3 pb-3",
 }: Readonly<CollapsibleSectionProps>) {
   return (
     <Collapsible onOpenChange={onOpenChange} open={open}>
