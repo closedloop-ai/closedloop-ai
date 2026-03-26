@@ -37,6 +37,14 @@ type TerminalChatHistory = {
 
 const HISTORY_PATH = join(
   homedir(),
+  ".closedloop-ai",
+  "chats",
+  "_terminal",
+  "chat-history.json"
+);
+
+const CLOSEDLOOP_HISTORY_PATH = join(
+  homedir(),
   ".claude",
   ".closedloop",
   "chats",
@@ -54,7 +62,13 @@ const LEGACY_HISTORY_PATH = join(
 );
 
 function loadChatHistory(): TerminalChatHistory {
-  migrateLegacyChatHistory(LEGACY_HISTORY_PATH, HISTORY_PATH);
+  if (existsSync(HISTORY_PATH)) {
+    // already at new location
+  } else if (existsSync(CLOSEDLOOP_HISTORY_PATH)) {
+    migrateLegacyChatHistory(CLOSEDLOOP_HISTORY_PATH, HISTORY_PATH);
+  } else if (existsSync(LEGACY_HISTORY_PATH)) {
+    migrateLegacyChatHistory(LEGACY_HISTORY_PATH, HISTORY_PATH);
+  }
   if (!existsSync(HISTORY_PATH)) {
     return { messages: [] };
   }

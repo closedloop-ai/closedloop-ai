@@ -15,6 +15,10 @@ import {
   MODEL_ERROR_REGEX,
 } from "@/lib/engineer/codex-models";
 import { getCodexChatStatePath } from "@/lib/engineer/codex-state";
+import {
+  checkLegacyProcessAndMigrate,
+  findFirstExistingPath,
+} from "@/lib/engineer/process-utils";
 import { expandHome, getWorktreeParentDir } from "@/lib/engineer/repos";
 import { resolveWorktreeForPR } from "@/lib/engineer/worktree";
 
@@ -80,13 +84,37 @@ function getWorktreeDir(
 }
 
 function getWorkPaths(worktreeDir: string, chatContextId?: string) {
-  const claudeWorkDir = join(worktreeDir, ".claude", "work");
+  const claudeWorkDir = join(worktreeDir, ".closedloop-ai", "work");
+  const legacyWorkDir = join(worktreeDir, ".claude", "work");
+
+  // Resolve plan and PRD per-file so legacy worktrees are readable
+  const planPath =
+    findFirstExistingPath(
+      join(claudeWorkDir, "plan.json"),
+      join(legacyWorkDir, "plan.json")
+    ) ?? join(claudeWorkDir, "plan.json");
+  const prdPath =
+    findFirstExistingPath(
+      join(claudeWorkDir, "prd.md"),
+      join(legacyWorkDir, "prd.md")
+    ) ?? join(claudeWorkDir, "prd.md");
+
+  // Resolve chatStatePath per-file for reads; writes go to new canonical location
+  const newChatStatePath = getCodexChatStatePath(claudeWorkDir, chatContextId);
+  const legacyChatStatePath = getCodexChatStatePath(
+    legacyWorkDir,
+    chatContextId
+  );
+  const chatStatePath =
+    findFirstExistingPath(newChatStatePath, legacyChatStatePath) ??
+    newChatStatePath;
+
   return {
     worktreeDir,
     claudeWorkDir,
-    planPath: join(claudeWorkDir, "plan.json"),
-    prdPath: join(claudeWorkDir, "prd.md"),
-    chatStatePath: getCodexChatStatePath(claudeWorkDir, chatContextId),
+    planPath,
+    prdPath,
+    chatStatePath,
   };
 }
 
@@ -536,6 +564,17 @@ export async function POST(
     return Response.json(
       { error: "Work directory not found" },
       { status: 404 }
+    );
+  }
+
+  const preflightResult = checkLegacyProcessAndMigrate(worktreeDir);
+  if (preflightResult === "live-process-blocking") {
+    return Response.json(
+      {
+        error:
+          "A job started before the .closedloop-ai migration is still running. Stop it first, then retry.",
+      },
+      { status: 409 }
     );
   }
 

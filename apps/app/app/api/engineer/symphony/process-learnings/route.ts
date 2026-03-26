@@ -10,6 +10,10 @@ import {
 import { basename, join } from "node:path";
 import type { NextRequest } from "next/server";
 import {
+  checkLegacyProcessAndMigrate,
+  findFirstExistingPath,
+} from "@/lib/engineer/process-utils";
+import {
   expandHome,
   getSelfLearningScriptPath,
   getWorktreeParentDir,
@@ -41,15 +45,18 @@ export function GET(request: NextRequest) {
   const repoName = basename(expandedRepoPath);
   const worktreeParentDir = getWorktreeParentDir();
   const worktreeDir = join(worktreeParentDir, `${repoName}-${sanitizedTicket}`);
-  const statusPath = join(
-    worktreeDir,
-    ".claude",
-    "work",
-    ".learnings",
-    "processing-status.json"
+  const statusPath = findFirstExistingPath(
+    join(
+      worktreeDir,
+      ".closedloop-ai",
+      "work",
+      ".learnings",
+      "processing-status.json"
+    ),
+    join(worktreeDir, ".claude", "work", ".learnings", "processing-status.json")
   );
 
-  if (!existsSync(statusPath)) {
+  if (!statusPath) {
     return Response.json({ status: "none" });
   }
 
@@ -92,8 +99,8 @@ export async function POST(request: NextRequest) {
   const repoName = basename(expandedRepoPath);
   const worktreeParentDir = getWorktreeParentDir();
   const worktreeDir = join(worktreeParentDir, `${repoName}-${sanitizedTicket}`);
-  const claudeWorkDir = join(worktreeDir, ".claude", "work");
-  const pendingDir = join(claudeWorkDir, ".learnings", "pending");
+  const newWorkDir = join(worktreeDir, ".closedloop-ai", "work");
+  const oldWorkDir = join(worktreeDir, ".claude", "work");
 
   if (!existsSync(worktreeDir)) {
     return new Response(JSON.stringify({ error: "Work directory not found" }), {
@@ -101,6 +108,25 @@ export async function POST(request: NextRequest) {
       headers: { "Content-Type": "application/json" },
     });
   }
+
+  const preflightResult = checkLegacyProcessAndMigrate(worktreeDir);
+  if (preflightResult === "live-process-blocking") {
+    return new Response(
+      JSON.stringify({
+        error:
+          "A job started before the .closedloop-ai migration is still running. Stop it first, then retry.",
+      }),
+      { status: 409, headers: { "Content-Type": "application/json" } }
+    );
+  }
+
+  const claudeWorkDir = newWorkDir;
+  // Resolve pendingDir per-file: check new path first, fall back to legacy
+  const pendingDir =
+    findFirstExistingPath(
+      join(claudeWorkDir, ".learnings", "pending"),
+      join(oldWorkDir, ".learnings", "pending")
+    ) ?? join(claudeWorkDir, ".learnings", "pending");
 
   // When extraction is still in flight, spawn a wrapper that polls until it completes
   if (waitForExtraction) {

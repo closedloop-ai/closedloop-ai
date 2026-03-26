@@ -4,6 +4,8 @@ import {
   existsSync,
   mkdirSync,
   openSync,
+  readFileSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { basename, join } from "node:path";
@@ -12,6 +14,7 @@ import {
   acquireLaunchLock,
   cleanStaleLock,
   isProcessRunning,
+  migrateWorkDirIfNeeded,
   readLaunchMetadata,
   readProcessPid,
   releaseLaunchLock,
@@ -106,7 +109,7 @@ async function createPrdFile(
   ticket: TicketDetails,
   primaryRepoPath: string
 ): Promise<void> {
-  const claudeWorkDir = join(workDir, ".claude", "work");
+  const claudeWorkDir = join(workDir, ".closedloop-ai", "work");
   const attachmentsDir = join(claudeWorkDir, "attachments");
 
   // Ensure directories exist
@@ -242,7 +245,7 @@ function getErrorMessage(err: unknown): string {
 }
 
 function getPrdFileIfExists(worktreeDir: string): string | undefined {
-  const prdFile = join(worktreeDir, ".claude", "work", "prd.md");
+  const prdFile = join(worktreeDir, ".closedloop-ai", "work", "prd.md");
   return existsSync(prdFile) ? prdFile : undefined;
 }
 
@@ -407,6 +410,66 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Force-kill any legacy process still writing to .claude/work
+    const legacyPidPath = join(worktreeDir, ".claude", "work", "process.pid");
+    if (existsSync(legacyPidPath)) {
+      let rawPid: string;
+      try {
+        rawPid = readFileSync(legacyPidPath, "utf-8").trim();
+      } catch {
+        // TOCTOU: PID file removed between check and read -- treat as dead
+        rawPid = "";
+      }
+      const legacyPid = Number.parseInt(rawPid, 10);
+      if (!Number.isNaN(legacyPid) && isProcessRunning(legacyPid)) {
+        // Kill individual process first, then try the group
+        try {
+          process.kill(legacyPid, "SIGTERM");
+        } catch {
+          /* already dead */
+        }
+        try {
+          process.kill(-legacyPid, "SIGTERM");
+        } catch {
+          /* no group */
+        }
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        if (isProcessRunning(legacyPid)) {
+          try {
+            process.kill(legacyPid, "SIGKILL");
+          } catch {
+            /* already dead */
+          }
+          try {
+            process.kill(-legacyPid, "SIGKILL");
+          } catch {
+            /* no group */
+          }
+        }
+        try {
+          unlinkSync(legacyPidPath);
+        } catch {
+          // Best effort
+        }
+        return NextResponse.json(
+          {
+            error:
+              "A job started before the .closedloop-ai migration is still running. It has been stopped -- please re-launch.",
+          },
+          { status: 409 }
+        );
+      }
+      // Dead legacy PID — clean up stale file
+      try {
+        unlinkSync(legacyPidPath);
+      } catch {
+        // Best effort
+      }
+    }
+
+    // Migrate stopped worktree state from .claude/work to .closedloop-ai/work
+    migrateWorkDirIfNeeded(worktreeDir);
+
     // Fast path: if worktree exists and process is alive, return alreadyRunning
     if (existsSync(worktreeDir)) {
       const pid = await readProcessPid(worktreeDir);
@@ -419,7 +482,7 @@ export async function POST(request: NextRequest) {
         const meta = readLaunchMetadata(worktreeDir);
         const logFile = join(
           worktreeDir,
-          ".claude",
+          ".closedloop-ai",
           "work",
           "closedloop-launch.log"
         );
@@ -481,7 +544,7 @@ export async function POST(request: NextRequest) {
         // Write PID after metadata
         if (result.pid) {
           writeFileSync(
-            join(worktreeDir, ".claude", "work", "process.pid"),
+            join(worktreeDir, ".closedloop-ai", "work", "process.pid"),
             String(result.pid)
           );
         }
@@ -557,7 +620,7 @@ export async function POST(request: NextRequest) {
       // Write PID after metadata
       if (result.pid) {
         writeFileSync(
-          join(worktreeDir, ".claude", "work", "process.pid"),
+          join(worktreeDir, ".closedloop-ai", "work", "process.pid"),
           String(result.pid)
         );
       }
@@ -638,11 +701,11 @@ function spawnSymphony(
     );
   }
 
-  // Symphony workdir is .claude/work within the worktree
-  const claudeWorkDir = join(workDir, ".claude", "work");
+  // Symphony workdir is .closedloop-ai/work within the worktree
+  const claudeWorkDir = join(workDir, ".closedloop-ai", "work");
   mkdirSync(claudeWorkDir, { recursive: true });
 
-  // Build arguments - pass .claude/work as the workdir to run-loop.sh
+  // Build arguments - pass .closedloop-ai/work as the workdir to run-loop.sh
   const args = [claudeWorkDir];
   if (prdFile) {
     args.push("--prd", prdFile);

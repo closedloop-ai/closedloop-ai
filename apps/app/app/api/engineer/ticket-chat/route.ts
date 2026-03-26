@@ -54,8 +54,7 @@ function getChatHistoryPath(ticketId: string): string {
   const sanitizedTicket = ticketId.replaceAll(/[^a-zA-Z0-9-_]/g, "_");
   return join(
     homedir(),
-    ".claude",
-    ".closedloop",
+    ".closedloop-ai",
     "chats",
     sanitizedTicket,
     "chat-history.json"
@@ -70,6 +69,14 @@ function loadChatHistory(
   ticketId: string
 ): TicketChatHistory {
   const sanitizedTicket = ticketId.replaceAll(/[^a-zA-Z0-9-_]/g, "_");
+  const closedloopPath = join(
+    homedir(),
+    ".claude",
+    ".closedloop",
+    "chats",
+    sanitizedTicket,
+    "chat-history.json"
+  );
   const legacyPath = join(
     homedir(),
     ".claude",
@@ -78,7 +85,16 @@ function loadChatHistory(
     sanitizedTicket,
     "chat-history.json"
   );
-  migrateLegacyChatHistory(legacyPath, historyPath);
+
+  // Precedence: new path wins; if absent check .closedloop; if absent check .symphony
+  if (existsSync(historyPath)) {
+    // already at new location
+  } else if (existsSync(closedloopPath)) {
+    migrateLegacyChatHistory(closedloopPath, historyPath);
+  } else if (existsSync(legacyPath)) {
+    migrateLegacyChatHistory(legacyPath, historyPath);
+  }
+
   if (!existsSync(historyPath)) {
     return { messages: [], ticketId };
   }

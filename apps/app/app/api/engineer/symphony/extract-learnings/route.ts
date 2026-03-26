@@ -2,7 +2,15 @@ import { existsSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { NextRequest } from "next/server";
 import { triggerAsyncLearningExtraction } from "@/lib/engineer/learnings";
-import { expandHome, getWorktreeParentDir } from "@/lib/engineer/repos";
+import {
+  checkLegacyProcessAndMigrate,
+  findFirstExistingPath,
+} from "@/lib/engineer/process-utils";
+import {
+  expandHome,
+  getWorktreeParentDir,
+  isRepoAllowed,
+} from "@/lib/engineer/repos";
 
 /**
  * POST /api/engineer/symphony/extract-learnings
@@ -32,13 +40,20 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  if (!isRepoAllowed(repoPath)) {
+    return new Response(
+      JSON.stringify({ error: `Repository not allowed: ${repoPath}` }),
+      { status: 403, headers: { "Content-Type": "application/json" } }
+    );
+  }
+
   const expandedRepoPath = expandHome(repoPath);
   const sanitizedTicket = ticketId.replaceAll(/[^a-zA-Z0-9-_]/g, "_");
   const repoName = basename(expandedRepoPath);
   const worktreeParentDir = getWorktreeParentDir();
   const worktreeDir = join(worktreeParentDir, `${repoName}-${sanitizedTicket}`);
-  const claudeWorkDir = join(worktreeDir, ".claude", "work");
-  const chatHistoryPath = join(claudeWorkDir, chatFile || "chat-history.json");
+  const newWorkDir = join(worktreeDir, ".closedloop-ai", "work");
+  const oldWorkDir = join(worktreeDir, ".claude", "work");
 
   if (!existsSync(worktreeDir)) {
     return new Response(JSON.stringify({ error: "Work directory not found" }), {
@@ -47,11 +62,32 @@ export async function POST(request: NextRequest) {
     });
   }
 
+  const preflightResult = checkLegacyProcessAndMigrate(worktreeDir);
+  if (preflightResult === "live-process-blocking") {
+    return new Response(
+      JSON.stringify({
+        error:
+          "A job started before the .closedloop-ai migration is still running. Stop it first, then retry.",
+      }),
+      { status: 409, headers: { "Content-Type": "application/json" } }
+    );
+  }
+
+  const claudeWorkDir = newWorkDir;
+  const chatFilename = chatFile || "chat-history.json";
+
+  // Resolve the chat file independently: check new path first, fall back to legacy
+  const chatHistoryPath =
+    findFirstExistingPath(
+      join(claudeWorkDir, chatFilename),
+      join(oldWorkDir, chatFilename)
+    ) ?? join(claudeWorkDir, chatFilename);
+
   if (!existsSync(chatHistoryPath)) {
     return new Response(
       JSON.stringify({
         error: "No chat history found",
-        path: chatFile || "chat-history.json",
+        path: chatFilename,
       }),
       { status: 404, headers: { "Content-Type": "application/json" } }
     );
