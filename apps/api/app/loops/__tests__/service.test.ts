@@ -1,7 +1,7 @@
 /**
  * Unit tests for loopsService.resume method.
  *
- * Tests computeTargetId propagation, s3StateKey exclusion from new loops,
+ * Tests computeTargetId propagation, s3StateKey exclusion from resumed loops,
  * and resumable-status validation.
  */
 import { LoopStatus } from "@repo/api/src/types/loop";

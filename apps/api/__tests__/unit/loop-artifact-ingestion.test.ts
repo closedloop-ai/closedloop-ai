@@ -302,6 +302,9 @@ describe("ingestExecutionArtifacts", () => {
       gitHubPullRequest: {
         findUnique: vi.fn().mockResolvedValue(null),
         create: vi.fn().mockResolvedValue({ id: "pr-1" }),
+        upsert: vi
+          .fn()
+          .mockResolvedValue({ id: "pr-1", artifactId: loop.artifactId }),
       },
       externalLink: {
         create: vi.fn().mockResolvedValue({ id: "ext-link-1" }),
@@ -359,6 +362,9 @@ describe("ingestExecutionArtifacts", () => {
       gitHubPullRequest: {
         findUnique: vi.fn().mockResolvedValue(null),
         create: vi.fn().mockResolvedValue({ id: "pr-2" }),
+        upsert: vi
+          .fn()
+          .mockResolvedValue({ id: "pr-2", artifactId: loop.artifactId }),
       },
       externalLink: {
         create: vi.fn().mockResolvedValue({ id: "ext-link-2" }),
