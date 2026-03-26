@@ -159,6 +159,7 @@ export function usePlanActions(config: UsePlanActionsConfig) {
       onSuccess: () => {
         // unreachable: error handlers only receive thrown errors
       },
+      onRateLimited: (message) => toast.error(message),
     });
   }, []);
 

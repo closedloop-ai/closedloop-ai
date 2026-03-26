@@ -21,6 +21,23 @@ import { type Loop as PrismaLoop, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { basicUserSelect } from "@/lib/db-utils";
 
+/**
+ * Fetch the effective concurrent loop limit for an organization from the DB.
+ * Reads Organization.settings.maxConcurrentLoops and falls back to
+ * DEFAULT_MAX_CONCURRENT_LOOPS for missing or invalid values.
+ */
+export async function fetchOrgLoopLimit(
+  organizationId: string
+): Promise<number> {
+  const org = await withDb((db) =>
+    db.organization.findUnique({
+      where: { id: organizationId },
+      select: { settings: true },
+    })
+  );
+  return resolveOrgLoopLimit(org?.settings);
+}
+
 export class ReplayDetectedError extends Error {
   constructor(message = "Replay detected") {
     super(message);
@@ -49,6 +66,31 @@ export function isInvalidStatusTransitionError(
   error: unknown
 ): error is InvalidStatusTransitionError {
   return error instanceof InvalidStatusTransitionError;
+}
+
+export class ConcurrentLoopLimitError extends Error {
+  readonly activeCount: number;
+  readonly limit: number;
+  constructor(activeCount: number, limit: number) {
+    super(
+      "Too many active loops (" +
+        activeCount +
+        "). " +
+        "Maximum " +
+        limit +
+        " concurrent loops allowed. " +
+        "Wait for existing loops to complete or cancel them."
+    );
+    this.name = "ConcurrentLoopLimitError";
+    this.activeCount = activeCount;
+    this.limit = limit;
+  }
+}
+
+export function isConcurrentLoopLimitError(
+  error: unknown
+): error is ConcurrentLoopLimitError {
+  return error instanceof ConcurrentLoopLimitError;
 }
 
 /**
@@ -188,10 +230,28 @@ function toLoopWithUser(
 }
 
 /**
- * Maximum concurrent active (PENDING/CLAIMED/RUNNING) loops per user.
+ * Default maximum concurrent active (PENDING/CLAIMED/RUNNING) loops per user.
  * Prevents resource exhaustion via rapid loop creation.
+ * Can be overridden per organization via Organization.settings.maxConcurrentLoops.
  */
-const MAX_CONCURRENT_LOOPS_PER_USER = 5;
+export const DEFAULT_MAX_CONCURRENT_LOOPS = 5;
+
+/**
+ * Resolve the effective concurrent loop limit for an organization.
+ * Reads Organization.settings.maxConcurrentLoops and validates it is a positive
+ * integer. Falls back to DEFAULT_MAX_CONCURRENT_LOOPS for null, missing key,
+ * non-integer, zero, or negative values.
+ */
+export function resolveOrgLoopLimit(rawSettings: unknown): number {
+  if (rawSettings == null || typeof rawSettings !== "object") {
+    return DEFAULT_MAX_CONCURRENT_LOOPS;
+  }
+  const val = (rawSettings as Record<string, unknown>).maxConcurrentLoops;
+  if (Number.isInteger(val) && (val as number) > 0) {
+    return val as number;
+  }
+  return DEFAULT_MAX_CONCURRENT_LOOPS;
+}
 
 /**
  * Loops service - handles database operations for loop management.
@@ -210,8 +270,9 @@ export const loopsService = {
     // Enforce per-user concurrency limit.
     // NOTE: This is a soft limit with a known TOCTOU window — two concurrent
     // requests could both read count=4 and both proceed. The risk is low
-    // (same user, tight race window, generous limit of 5) so a DB-level
-    // INSERT ... WHERE (SELECT count) < 5 is overkill for V1.
+    // (same user, tight race window, org-configurable limit) so a DB-level
+    // INSERT ... WHERE (SELECT count) < limit is overkill for V1.
+    const maxConcurrentLoops = await fetchOrgLoopLimit(organizationId);
     const activeCount = await withDb((db) =>
       db.loop.count({
         where: {
@@ -224,12 +285,8 @@ export const loopsService = {
       })
     );
 
-    if (activeCount >= MAX_CONCURRENT_LOOPS_PER_USER) {
-      throw new Error(
-        `Too many active loops (${activeCount}). ` +
-          `Maximum ${MAX_CONCURRENT_LOOPS_PER_USER} concurrent loops allowed per user. ` +
-          "Wait for existing loops to complete or cancel them."
-      );
+    if (activeCount >= maxConcurrentLoops) {
+      throw new ConcurrentLoopLimitError(activeCount, maxConcurrentLoops);
     }
 
     const loop = await withDb((db) =>
@@ -596,6 +653,7 @@ export const loopsService = {
     }
 
     // Enforce per-user concurrency limit (same as create())
+    const maxConcurrentLoops = await fetchOrgLoopLimit(organizationId);
     const activeCount = await withDb((db) =>
       db.loop.count({
         where: {
@@ -608,12 +666,8 @@ export const loopsService = {
       })
     );
 
-    if (activeCount >= MAX_CONCURRENT_LOOPS_PER_USER) {
-      throw new Error(
-        `Too many active loops (${activeCount}). ` +
-          `Maximum ${MAX_CONCURRENT_LOOPS_PER_USER} concurrent loops allowed per user. ` +
-          "Wait for existing loops to complete or cancel them."
-      );
+    if (activeCount >= maxConcurrentLoops) {
+      throw new ConcurrentLoopLimitError(activeCount, maxConcurrentLoops);
     }
 
     // Do NOT copy parent.s3StateKey — the child loop gets its own key when
@@ -1054,6 +1108,7 @@ export const loopsService = {
     userId: string,
     input: CreateLoopRequest & { artifactVersion: number; artifactId: string }
   ): Promise<CreateLoopResponse | null> {
+    const maxConcurrentLoops = await fetchOrgLoopLimit(organizationId);
     const activeCount = await withDb((db) =>
       db.loop.count({
         where: {
@@ -1066,12 +1121,8 @@ export const loopsService = {
       })
     );
 
-    if (activeCount >= MAX_CONCURRENT_LOOPS_PER_USER) {
-      throw new Error(
-        `Too many active loops (${activeCount}). ` +
-          `Maximum ${MAX_CONCURRENT_LOOPS_PER_USER} concurrent loops allowed per user. ` +
-          "Wait for existing loops to complete or cancel them."
-      );
+    if (activeCount >= maxConcurrentLoops) {
+      throw new ConcurrentLoopLimitError(activeCount, maxConcurrentLoops);
     }
 
     const [loop] = await withDb((db) =>
