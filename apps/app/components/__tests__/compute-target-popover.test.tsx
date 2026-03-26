@@ -18,6 +18,11 @@ const mockUseSetComputePreference = vi.fn();
 const mockMutate = vi.fn();
 const mockUseComputeTargetStatusStream = vi.fn();
 
+// Regex patterns at top level to avoid performance issues
+const SELECT_NEWER_MAC_PATTERN = /Select newer-mac compute target/i;
+const SELECT_OLDER_MAC_PATTERN = /Select older-mac compute target/i;
+const AVAILABLE_TARGETS_PATTERN = /Available compute targets/i;
+
 vi.mock("@repo/auth/client", () => ({
   useUser: () => mockUseUser(),
 }));
@@ -231,7 +236,7 @@ describe("ComputeTargetPopover", () => {
 
       await user.click(screen.getByRole("button", { name: RE_SELECT_CLOUD }));
 
-      expect(mockMutate).toHaveBeenCalledWith("CLOUD");
+      expect(mockMutate).toHaveBeenCalledWith({ mode: "CLOUD" });
     });
 
     it("clicking an online local target calls mutate with LOCAL", async () => {
@@ -249,7 +254,10 @@ describe("ComputeTargetPopover", () => {
 
       await user.click(screen.getByRole("button", { name: RE_SELECT_MY_MAC }));
 
-      expect(mockMutate).toHaveBeenCalledWith("LOCAL");
+      expect(mockMutate).toHaveBeenCalledWith({
+        mode: "LOCAL",
+        computeTargetId: "ct-local",
+      });
     });
   });
 
@@ -309,6 +317,129 @@ describe("ComputeTargetPopover", () => {
       render(<ComputeTargetPopover />);
 
       expect(screen.queryByText(RE_DESKTOP_OFFLINE)).toBeNull();
+    });
+  });
+
+  describe("checkmark: only one target selected when multiple are online", () => {
+    const olderOnlineTarget = {
+      ...onlineTarget,
+      id: "ct-older",
+      machineName: "older-mac",
+      lastSeenAt: new Date("2024-01-01T00:00:00Z"),
+    };
+    const newerOnlineTarget = {
+      ...onlineTarget,
+      id: "ct-newer",
+      machineName: "newer-mac",
+      lastSeenAt: new Date("2024-06-01T00:00:00Z"),
+    };
+
+    it("selects the most-recently-active target when no computeTargetId is persisted", () => {
+      mockUseComputeTargets.mockReturnValue({
+        data: [olderOnlineTarget, newerOnlineTarget],
+        isLoading: false,
+      });
+      mockUseComputePreference.mockReturnValue({
+        data: { preferredComputeMode: "LOCAL" },
+        isLoading: false,
+      });
+
+      render(<ComputeTargetPopover />);
+
+      const newerButton = screen.getByRole("button", {
+        name: SELECT_NEWER_MAC_PATTERN,
+      });
+      const olderButton = screen.getByRole("button", {
+        name: SELECT_OLDER_MAC_PATTERN,
+      });
+
+      expect(newerButton).toHaveAttribute("aria-pressed", "true");
+      expect(olderButton).toHaveAttribute("aria-pressed", "false");
+    });
+
+    it("exactly one target has aria-pressed true when multiple are online", () => {
+      mockUseComputeTargets.mockReturnValue({
+        data: [olderOnlineTarget, newerOnlineTarget],
+        isLoading: false,
+      });
+      mockUseComputePreference.mockReturnValue({
+        data: { preferredComputeMode: "LOCAL" },
+        isLoading: false,
+      });
+
+      render(<ComputeTargetPopover />);
+
+      // All TargetOption buttons within the listbox
+      const listbox = screen.getByRole("listbox", {
+        name: AVAILABLE_TARGETS_PATTERN,
+      });
+      const allButtons = Array.from(
+        listbox.querySelectorAll("button[aria-pressed]")
+      );
+      const selectedButtons = allButtons.filter(
+        (btn) => btn.getAttribute("aria-pressed") === "true"
+      );
+
+      expect(selectedButtons).toHaveLength(1);
+    });
+
+    it("selects the persisted computeTargetId even when a newer target exists", () => {
+      mockUseComputeTargets.mockReturnValue({
+        data: [olderOnlineTarget, newerOnlineTarget],
+        isLoading: false,
+      });
+      mockUseComputePreference.mockReturnValue({
+        data: {
+          preferredComputeMode: "LOCAL",
+          computeTargetId: "ct-older",
+        },
+        isLoading: false,
+      });
+
+      render(<ComputeTargetPopover />);
+
+      const olderButton = screen.getByRole("button", {
+        name: SELECT_OLDER_MAC_PATTERN,
+      });
+      const newerButton = screen.getByRole("button", {
+        name: SELECT_NEWER_MAC_PATTERN,
+      });
+
+      expect(olderButton).toHaveAttribute("aria-pressed", "true");
+      expect(newerButton).toHaveAttribute("aria-pressed", "false");
+    });
+
+    it("falls back to most-recently-active when persisted target is offline", () => {
+      const offlineTarget = {
+        ...onlineTarget,
+        id: "ct-offline",
+        machineName: "offline-mac",
+        isOnline: false,
+        lastSeenAt: new Date("2023-01-01T00:00:00Z"),
+      };
+      mockUseComputeTargets.mockReturnValue({
+        data: [offlineTarget, olderOnlineTarget, newerOnlineTarget],
+        isLoading: false,
+      });
+      mockUseComputePreference.mockReturnValue({
+        data: {
+          preferredComputeMode: "LOCAL",
+          computeTargetId: "ct-offline",
+        },
+        isLoading: false,
+      });
+
+      render(<ComputeTargetPopover />);
+
+      const newerButton = screen.getByRole("button", {
+        name: SELECT_NEWER_MAC_PATTERN,
+      });
+      const olderButton = screen.getByRole("button", {
+        name: SELECT_OLDER_MAC_PATTERN,
+      });
+
+      expect(newerButton).toHaveAttribute("aria-pressed", "true");
+      expect(olderButton).toHaveAttribute("aria-pressed", "false");
     });
   });
 

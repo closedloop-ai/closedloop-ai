@@ -29,7 +29,7 @@ export function CloudComputeModeCard() {
   const currentMode = data?.preferredComputeMode ?? ComputePreference.Cloud;
 
   function handleChange(value: string): void {
-    setPreference.mutate(value as ComputePreference);
+    setPreference.mutate({ mode: value as ComputePreference });
   }
 
   return (

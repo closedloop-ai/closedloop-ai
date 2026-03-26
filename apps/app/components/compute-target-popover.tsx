@@ -29,6 +29,7 @@ import {
 } from "@/hooks/queries/use-compute-preference";
 import { useComputeTargetStatusStream } from "@/hooks/queries/use-compute-target-status-stream";
 import { useComputeTargets } from "@/hooks/queries/use-compute-targets";
+import { sortByDateDesc } from "@/lib/table-utils";
 
 // Mirrors the internal MAX_RECONNECT_ATTEMPTS in use-compute-target-status-stream.ts
 const SSE_MAX_RECONNECT_ATTEMPTS = 3;
@@ -132,9 +133,23 @@ export function ComputeTargetPopover({
   const ownTargets = targets.filter((t) => !t.ownerName);
   const sharedTargets = targets.filter((t) => !!t.ownerName);
   const onlineTargets = targets.filter((t) => t.isOnline);
-  const hasMultipleTargets = onlineTargets.length > 1;
   const isLocal = currentPreference === ComputePreference.Local;
-  const activeLocalTarget = isLocal ? onlineTargets[0] : null;
+
+  // Only use persisted target if it is currently online; otherwise fall back to
+  // the most recently active online target so the UI matches backend dispatch.
+  const persistedTargetId = preferenceData?.computeTargetId;
+  const persistedIsOnline =
+    persistedTargetId != null &&
+    onlineTargets.some((t) => t.id === persistedTargetId);
+  const defaultActiveTargetId = persistedIsOnline
+    ? persistedTargetId
+    : sortByDateDesc(onlineTargets, "lastSeenAt")[0]?.id;
+
+  const activeLocalTarget = isLocal
+    ? (targets.find((t) => t.id === defaultActiveTargetId) ??
+      onlineTargets[0] ??
+      null)
+    : null;
 
   // T-4.4: no registered targets at all
   const notInstalled = !targetsLoading && targets.length === 0;
@@ -171,7 +186,7 @@ export function ComputeTargetPopover({
   }
 
   function handleSelectCloud(): void {
-    setPreference.mutate(ComputePreference.Cloud);
+    setPreference.mutate({ mode: ComputePreference.Cloud });
     setShowDownloadPrompt(false);
     setOpen(false);
   }
@@ -182,7 +197,10 @@ export function ComputeTargetPopover({
       return;
     }
     setShowDownloadPrompt(false);
-    setPreference.mutate(ComputePreference.Local);
+    setPreference.mutate({
+      mode: ComputePreference.Local,
+      computeTargetId: targetId,
+    });
     setOpen(false);
   }
 
@@ -337,7 +355,8 @@ export function ComputeTargetPopover({
                 target.isOnline
               }
               isSelected={
-                currentPreference === ComputePreference.Local && target.isOnline
+                currentPreference === ComputePreference.Local &&
+                target.id === defaultActiveTargetId
               }
               key={target.id}
               label={target.machineName}
@@ -376,7 +395,7 @@ export function ComputeTargetPopover({
                   }
                   isSelected={
                     currentPreference === ComputePreference.Local &&
-                    target.isOnline
+                    target.id === defaultActiveTargetId
                   }
                   key={target.id}
                   label={target.machineName}
@@ -407,15 +426,6 @@ export function ComputeTargetPopover({
               <DownloadIcon className="size-3 shrink-0" />
               Download ClosedLoop Desktop
             </Button>
-          </div>
-        )}
-
-        {hasMultipleTargets && (
-          <div className="mt-2 border-t px-3 pt-2 pb-1">
-            <p className="text-muted-foreground text-xs">
-              Multiple local targets detected. The most recently active target
-              will be used for local execution.
-            </p>
           </div>
         )}
       </PopoverContent>
