@@ -77,9 +77,14 @@ export function usePlanActions(config: UsePlanActionsConfig) {
   // Backend mismatch state
   const [backendMismatchState, setBackendMismatchState] =
     useState<BackendMismatchBody | null>(null);
-  const pendingActionRef = useRef<((targetId: string) => void) | null>(null);
+  /** Command last passed to `prepareConflictRefs` — used to restore evaluate loading state on conflict replay. */
+  const pendingConflictCommandRef = useRef<RunLoopCommand | null>(null);
+  const pendingActionRef = useRef<((targetId: string) => Promise<void>) | null>(
+    null
+  );
   const pendingMismatchActionRef = useRef<
-    ((targetId: string | null, backendOverride: boolean) => void) | null
+    | ((targetId: string | null, backendOverride: boolean) => Promise<void>)
+    | null
   >(null);
 
   // Derived state
@@ -94,28 +99,58 @@ export function usePlanActions(config: UsePlanActionsConfig) {
     activeCommandRef.current === RunLoopCommand.EvaluateCode &&
     runLoop.isPending;
 
+  const restoreEvaluateActiveCommandBeforeReplay = useCallback((): void => {
+    const pendingCommand = pendingConflictCommandRef.current;
+    if (
+      pendingCommand === RunLoopCommand.EvaluatePlan ||
+      pendingCommand === RunLoopCommand.EvaluateCode
+    ) {
+      activeCommandRef.current = pendingCommand;
+    }
+  }, []);
+
   /**
    * Set up pending-action refs so that selectTarget / confirmOriginalBackend /
    * confirmPreferredBackend can replay the same command with the resolved target.
    */
   const prepareConflictRefs = useCallback(
     (baseParams: RunLoopParams): void => {
-      pendingActionRef.current = (targetId: string) =>
-        runLoop.mutateAsync({
-          ...baseParams,
-          artifactId,
-          computeTargetId: targetId,
-        });
-      pendingMismatchActionRef.current = (
+      pendingConflictCommandRef.current = baseParams.command;
+      const { command } = baseParams;
+      const clearEvaluateActiveCommandAfterReplay = (): void => {
+        if (
+          command === RunLoopCommand.EvaluatePlan ||
+          command === RunLoopCommand.EvaluateCode
+        ) {
+          activeCommandRef.current = null;
+        }
+      };
+      pendingActionRef.current = async (targetId: string) => {
+        try {
+          await runLoop.mutateAsync({
+            ...baseParams,
+            artifactId,
+            computeTargetId: targetId,
+          });
+        } finally {
+          clearEvaluateActiveCommandAfterReplay();
+        }
+      };
+      pendingMismatchActionRef.current = async (
         targetId: string | null,
         backendOverride: boolean
-      ) =>
-        runLoop.mutateAsync({
-          ...baseParams,
-          artifactId,
-          computeTargetId: targetId ?? undefined,
-          backendOverride,
-        });
+      ) => {
+        try {
+          await runLoop.mutateAsync({
+            ...baseParams,
+            artifactId,
+            computeTargetId: targetId ?? undefined,
+            backendOverride,
+          });
+        } finally {
+          clearEvaluateActiveCommandAfterReplay();
+        }
+      };
     },
     [artifactId, runLoop]
   );
@@ -286,10 +321,14 @@ export function usePlanActions(config: UsePlanActionsConfig) {
     [artifactId, queryClient, runLoop, prepareConflictRefs, routeConflictError]
   );
 
-  const selectTarget = useCallback((targetId: string) => {
-    setMultiTargetState(null);
-    pendingActionRef.current?.(targetId);
-  }, []);
+  const selectTarget = useCallback(
+    (targetId: string) => {
+      setMultiTargetState(null);
+      restoreEvaluateActiveCommandBeforeReplay();
+      pendingActionRef.current?.(targetId);
+    },
+    [restoreEvaluateActiveCommandBeforeReplay]
+  );
 
   const confirmOriginalBackend = useCallback(() => {
     if (!backendMismatchState) {
@@ -297,8 +336,9 @@ export function usePlanActions(config: UsePlanActionsConfig) {
     }
     const targetId = backendMismatchState.originalComputeTargetId;
     setBackendMismatchState(null);
+    restoreEvaluateActiveCommandBeforeReplay();
     pendingMismatchActionRef.current?.(targetId, true);
-  }, [backendMismatchState]);
+  }, [backendMismatchState, restoreEvaluateActiveCommandBeforeReplay]);
 
   const confirmPreferredBackend = useCallback(() => {
     if (!backendMismatchState) {
@@ -306,8 +346,9 @@ export function usePlanActions(config: UsePlanActionsConfig) {
     }
     const targetId = backendMismatchState.preferredComputeTargetId;
     setBackendMismatchState(null);
+    restoreEvaluateActiveCommandBeforeReplay();
     pendingMismatchActionRef.current?.(targetId, true);
-  }, [backendMismatchState]);
+  }, [backendMismatchState, restoreEvaluateActiveCommandBeforeReplay]);
 
   const dismissBackendMismatch = useCallback(() => {
     setBackendMismatchState(null);
