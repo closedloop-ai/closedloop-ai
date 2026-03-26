@@ -25,7 +25,7 @@ import {
   isRepoAllowed,
 } from "@/lib/engineer/repos";
 import { upsertSession } from "@/lib/engineer/sessions";
-import { getShellPathSync } from "@/lib/engineer/shell-path";
+import { getShellPath } from "@/lib/engineer/shell-path";
 import { addWorktree, fetchOrigin } from "@/lib/engineer/worktree";
 
 /**
@@ -467,9 +467,11 @@ export async function POST(request: NextRequest) {
         // Read back merged metadata so the response includes preserved values
         const mergedMeta = readLaunchMetadata(worktreeDir);
 
+        const resolvedPath = await getShellPath();
         const result = spawnSymphony(
           worktreeDir,
           sanitizedTicket,
+          resolvedPath,
           getPrdFileIfExists(worktreeDir),
           mergedMeta?.baseBranch,
           mergedMeta?.parentTicketId
@@ -543,9 +545,11 @@ export async function POST(request: NextRequest) {
         parentTicketId: worktreeResult.parentTicketId ?? undefined,
       });
 
+      const resolvedPath = await getShellPath();
       const result = spawnSymphony(
         worktreeDir,
         sanitizedTicket,
+        resolvedPath,
         getPrdFileIfExists(worktreeDir),
         worktreeResult.resolvedBaseBranch,
         worktreeResult.parentTicketId
@@ -602,6 +606,7 @@ type SpawnResult = {
 function spawnSymphony(
   workDir: string,
   ticketIdentifier: string,
+  shellPath: string,
   prdFile?: string,
   baseBranch?: string,
   parentTicketId?: string | null
@@ -663,7 +668,7 @@ function spawnSymphony(
     env: {
       ...process.env,
       CLOSEDLOOP_WORKDIR: claudeWorkDir,
-      PATH: getShellPathSync(),
+      PATH: shellPath,
     },
   });
 
