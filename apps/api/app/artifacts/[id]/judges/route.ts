@@ -1,6 +1,6 @@
 import { success } from "@repo/api/src/types/common";
 import type { JudgesFeedbackResponse } from "@repo/api/src/types/evaluation";
-import { EvaluationReportType } from "@repo/database";
+import { EvaluationReportType } from "@repo/api/src/types/evaluation";
 import { NextResponse } from "next/server";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { resolveArtifactId } from "@/lib/identifier-utils";
@@ -20,7 +20,7 @@ export const GET = withAnyAuth<
   const result = await artifactsService.getEvaluationFeedback(
     resolvedId,
     user.organizationId,
-    EvaluationReportType.PLAN
+    EvaluationReportType.Plan
   );
 
   return NextResponse.json(success(result));

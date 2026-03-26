@@ -1,5 +1,7 @@
-import type { BatchJudgeScoresResponse } from "@repo/api/src/types/evaluation";
-import { EvaluationReportType } from "@repo/database";
+import {
+  type BatchJudgeScoresResponse,
+  EvaluationReportType,
+} from "@repo/api/src/types/evaluation";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import {
   badRequestResponse,

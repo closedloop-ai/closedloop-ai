@@ -7,11 +7,11 @@
  */
 
 import type { EntityType } from "@repo/api/src/types/entity-link";
-import type { JudgesReport } from "@repo/api/src/types/evaluation";
 import type {
-  EvaluationReportType as PrismaEvaluationReportType,
-  TransactionClient,
-} from "@repo/database";
+  EvaluationReportType,
+  JudgesReport,
+} from "@repo/api/src/types/evaluation";
+import type { TransactionClient } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { assertEntityInOrganization } from "@/lib/entity-validation";
 import { fanOutJudgeScores } from "@/lib/judge-score-fanout";
@@ -48,7 +48,7 @@ export async function upsertEvaluationWithJudgeScores(params: {
   artifactId?: string | null;
   loopId: string;
   organizationId: string;
-  reportType: PrismaEvaluationReportType;
+  reportType: EvaluationReportType;
   report: JudgesReport;
   tx: TransactionClient;
 }): Promise<void> {

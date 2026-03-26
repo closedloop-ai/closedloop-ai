@@ -1,3 +1,7 @@
+import {
+  type PullRequestInfo,
+  PullRequestState,
+} from "@repo/api/src/types/artifact";
 import type { JsonObject } from "@repo/api/src/types/common";
 import type { BackendMismatchBody } from "@repo/api/src/types/compute-target";
 import {
@@ -13,6 +17,7 @@ import {
   resolveComputeTargetForRoute,
 } from "@/lib/loops/compute-target-route-helpers";
 import type { getCommandHandler } from "@/lib/loops/loop-commands";
+import { badRequestResponse } from "@/lib/route-utils";
 import { artifactsService } from "../../service";
 
 /**
@@ -25,7 +30,57 @@ export const COMMAND_MAP = {
   [RunLoopCommand.Decompose]: "DECOMPOSE",
   [RunLoopCommand.EvaluatePrd]: "EVALUATE_PRD",
   [RunLoopCommand.GeneratePrd]: "GENERATE_PRD",
+  [RunLoopCommand.EvaluatePlan]: "EVALUATE_PLAN",
+  [RunLoopCommand.EvaluateCode]: "EVALUATE_CODE",
 } as const;
+
+/**
+ * For EVALUATE_CODE loops: require an open PR linked to the artifact workstream
+ * and return its head branch for the harness clone target.
+ */
+export function resolveEvaluateCodeTargetBranch(
+  pr: PullRequestInfo | null
+): { ok: true; branch: string } | { ok: false; message: string } {
+  if (!pr || pr.state !== PullRequestState.Open) {
+    return {
+      ok: false,
+      message:
+        "No open pull request found. Execute the plan first to create a PR.",
+    };
+  }
+  if (!pr.headBranch) {
+    return { ok: false, message: "Pull request has no head branch." };
+  }
+  return { ok: true, branch: pr.headBranch };
+}
+
+/**
+ * For `evaluate_code` only: load the artifact's open PR and return its head branch
+ * for the harness. Other commands return `fallbackBranch` unchanged.
+ */
+export async function resolveEvaluateCodeBranchForRunLoop(
+  command: keyof typeof COMMAND_MAP,
+  artifactId: string,
+  organizationId: string,
+  fallbackBranch: string
+): Promise<
+  | { ok: true; branch: string }
+  | { ok: false; response: ReturnType<typeof badRequestResponse> }
+> {
+  if (command !== RunLoopCommand.EvaluateCode) {
+    return { ok: true, branch: fallbackBranch };
+  }
+
+  const pr = await artifactsService.getArtifactPullRequest(
+    artifactId,
+    organizationId
+  );
+  const evaluateBranch = resolveEvaluateCodeTargetBranch(pr);
+  if (!evaluateBranch.ok) {
+    return { ok: false, response: badRequestResponse(evaluateBranch.message) };
+  }
+  return { ok: true, branch: evaluateBranch.branch };
+}
 
 /**
  * Resolve workstream, repo, branch, context refs, and parent loop for a

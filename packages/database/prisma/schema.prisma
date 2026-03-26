@@ -226,6 +226,8 @@ enum LoopCommand {
   DECOMPOSE
   EVALUATE_PRD
   GENERATE_PRD
+  EVALUATE_PLAN
+  EVALUATE_CODE
 }
 
 enum CustomFieldType {
