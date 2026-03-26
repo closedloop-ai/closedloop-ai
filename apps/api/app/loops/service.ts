@@ -265,14 +265,14 @@ export const loopsService = {
   async create(
     organizationId: string,
     userId: string,
-    input: CreateLoopRequest,
-    maxConcurrentLoops = DEFAULT_MAX_CONCURRENT_LOOPS
+    input: CreateLoopRequest
   ): Promise<CreateLoopResponse> {
     // Enforce per-user concurrency limit.
     // NOTE: This is a soft limit with a known TOCTOU window — two concurrent
     // requests could both read count=4 and both proceed. The risk is low
     // (same user, tight race window, org-configurable limit) so a DB-level
     // INSERT ... WHERE (SELECT count) < limit is overkill for V1.
+    const maxConcurrentLoops = await fetchOrgLoopLimit(organizationId);
     const activeCount = await withDb((db) =>
       db.loop.count({
         where: {
@@ -623,7 +623,6 @@ export const loopsService = {
     organizationId: string,
     userId: string,
     input: ResumeLoopRequest,
-    maxConcurrentLoops = DEFAULT_MAX_CONCURRENT_LOOPS,
     computeTargetId?: string
   ): Promise<CreateLoopResponse> {
     const parent = await withDb((db) =>
@@ -654,6 +653,7 @@ export const loopsService = {
     }
 
     // Enforce per-user concurrency limit (same as create())
+    const maxConcurrentLoops = await fetchOrgLoopLimit(organizationId);
     const activeCount = await withDb((db) =>
       db.loop.count({
         where: {
@@ -1101,15 +1101,14 @@ export const loopsService = {
    * (artifactId, command, artifactVersion) combination.
    * Uses createManyAndReturn + skipDuplicates to push dedup atomically to the DB,
    * eliminating the TOCTOU window in a plain findFirst → create sequence.
-   * Accepts an optional maxConcurrentLoops override for org-configurable limits.
    * Returns the new loop, or null if a duplicate was detected and skipped.
    */
   async createIfNotExists(
     organizationId: string,
     userId: string,
-    input: CreateLoopRequest & { artifactVersion: number; artifactId: string },
-    maxConcurrentLoops = DEFAULT_MAX_CONCURRENT_LOOPS
+    input: CreateLoopRequest & { artifactVersion: number; artifactId: string }
   ): Promise<CreateLoopResponse | null> {
+    const maxConcurrentLoops = await fetchOrgLoopLimit(organizationId);
     const activeCount = await withDb((db) =>
       db.loop.count({
         where: {

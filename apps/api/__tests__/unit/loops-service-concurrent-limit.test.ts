@@ -40,6 +40,7 @@ const mockCreate = vi.fn().mockResolvedValue({
 const mockCreateManyAndReturn = vi
   .fn()
   .mockResolvedValue([{ id: "loop-new", status: "PENDING" }]);
+const mockOrgFindUnique = vi.fn().mockResolvedValue({ settings: null });
 
 vi.mock("@repo/database", () => ({
   withDb: Object.assign(
@@ -56,6 +57,9 @@ vi.mock("@repo/database", () => ({
         loopEvent: {
           findMany: vi.fn().mockResolvedValue([]),
           count: vi.fn().mockResolvedValue(0),
+        },
+        organization: {
+          findUnique: mockOrgFindUnique,
         },
       })
     ),
@@ -152,12 +156,15 @@ describe("loopsService.create — concurrent loop limit enforcement", () => {
     expect(limitError.activeCount).toBe(5);
   });
 
-  it("does NOT throw when active count is below a custom limit", async () => {
+  it("does NOT throw when active count is below a custom org limit", async () => {
     mockCount.mockResolvedValue(5);
+    mockOrgFindUnique.mockResolvedValueOnce({
+      settings: { maxConcurrentLoops: 10 },
+    });
 
-    // Should not throw — 5 active loops is below the limit of 10
+    // Should not throw — 5 active loops is below the org limit of 10
     await expect(
-      loopsService.create("org-1", "user-1", baseInput, 10)
+      loopsService.create("org-1", "user-1", baseInput)
     ).resolves.toBeDefined();
 
     // Verify that db.loop.create was actually called (loop was created)

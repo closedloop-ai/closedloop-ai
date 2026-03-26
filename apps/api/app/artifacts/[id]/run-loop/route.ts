@@ -11,11 +11,7 @@ import {
 import { log } from "@repo/observability/log";
 import { waitUntil } from "@vercel/functions";
 import { NextResponse } from "next/server";
-import {
-  fetchOrgLoopLimit,
-  isConcurrentLoopLimitError,
-  loopsService,
-} from "@/app/loops/service";
+import { isConcurrentLoopLimitError, loopsService } from "@/app/loops/service";
 import { withAuth } from "@/lib/auth/with-auth";
 import { resolveArtifactId } from "@/lib/identifier-utils";
 import { scheduleAutoEvaluatePrd } from "@/lib/loops/auto-evaluate-prd";
@@ -146,8 +142,6 @@ export const POST = withAuth<RunLoopResponse, "/artifacts/[id]/run-loop">(
       const command = COMMAND_MAP[body.command];
       const prompt = body.prompt || getDefaultPrompt(command);
 
-      const maxConcurrentLoops = await fetchOrgLoopLimit(user.organizationId);
-
       const loopResponse = await loopsService.create(
         user.organizationId,
         user.id,
@@ -162,8 +156,7 @@ export const POST = withAuth<RunLoopResponse, "/artifacts/[id]/run-loop">(
             ? { fullName: targetRepo, branch: targetBranch }
             : undefined,
           contextRefs: contextRefs.length > 0 ? contextRefs : undefined,
-        },
-        maxConcurrentLoops
+        }
       );
 
       // Auto-evaluate the source PRD when the user triggers plan generation.

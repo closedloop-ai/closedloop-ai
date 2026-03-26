@@ -5,11 +5,7 @@ import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { resolveComputeTargetForRoute } from "@/lib/loops/compute-target-route-helpers";
 import { launchLoop } from "@/lib/loops/loop-orchestrator";
 import { errorResponse, parseBody, successResponse } from "@/lib/route-utils";
-import {
-  fetchOrgLoopLimit,
-  isConcurrentLoopLimitError,
-  loopsService,
-} from "../../service";
+import { isConcurrentLoopLimitError, loopsService } from "../../service";
 import { resumeLoopValidator } from "../../validators";
 
 export const POST = withAnyAuth<CreateLoopResponse, "/loops/[id]/resume">(
@@ -24,8 +20,6 @@ export const POST = withAnyAuth<CreateLoopResponse, "/loops/[id]/resume">(
       if (parseError) {
         return parseError;
       }
-
-      const maxConcurrentLoops = await fetchOrgLoopLimit(user.organizationId);
 
       // Always validate the compute target — whether explicitly provided or
       // inherited from the parent. An inherited target may have been unshared
@@ -69,7 +63,6 @@ export const POST = withAnyAuth<CreateLoopResponse, "/loops/[id]/resume">(
         user.organizationId,
         user.id,
         body,
-        maxConcurrentLoops,
         resolvedComputeTargetId
       );
 

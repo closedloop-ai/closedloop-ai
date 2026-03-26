@@ -2,11 +2,7 @@ import { LoopCommand } from "@repo/api/src/types/loop";
 import { withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { waitUntil } from "@vercel/functions";
-import {
-  fetchOrgLoopLimit,
-  isConcurrentLoopLimitError,
-  loopsService,
-} from "@/app/loops/service";
+import { isConcurrentLoopLimitError, loopsService } from "@/app/loops/service";
 import { resolveComputeTarget } from "./compute-target-resolver";
 import { launchLoop } from "./loop-orchestrator";
 
@@ -101,23 +97,16 @@ async function runAutoEvaluatePrd(
     computeTargetId = undefined;
   }
 
-  const maxConcurrentLoops = await fetchOrgLoopLimit(organizationId);
-
   // Atomically create the loop only if no row exists for this
   // (artifactId, command, artifactVersion) combination. The DB unique constraint
   // on those three columns ensures two concurrent calls cannot both succeed —
   // eliminating the TOCTOU window of the old findFirst → create pattern.
-  const result = await loopsService.createIfNotExists(
-    organizationId,
-    userId,
-    {
-      command: LoopCommand.EvaluatePrd,
-      artifactId,
-      artifactVersion: latestVersion,
-      computeTargetId,
-    },
-    maxConcurrentLoops
-  );
+  const result = await loopsService.createIfNotExists(organizationId, userId, {
+    command: LoopCommand.EvaluatePrd,
+    artifactId,
+    artifactVersion: latestVersion,
+    computeTargetId,
+  });
 
   if (!result) {
     log.info(
