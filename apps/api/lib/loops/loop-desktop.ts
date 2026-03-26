@@ -5,6 +5,7 @@
 
 import type { JsonValue } from "@repo/api/src/types/common";
 import type { LoopCommand } from "@repo/api/src/types/loop";
+import type { SymphonyLoopBody } from "@repo/api/src/types/symphony-loop-body";
 import { log } from "@repo/observability/log";
 import { toRelayOperation } from "@/app/compute-targets/relay-command-helpers";
 import { desktopCommandStore } from "@/lib/desktop-command-store";
@@ -173,7 +174,8 @@ export async function launchLoopOnDesktop(
       parentBranchName: parentBranchName ?? null,
       parentSessionId: parentSessionId ?? null,
       localRepoPath: localRepoPath ?? null,
-    } as JsonValue,
+      userContext: contextPack.userContext,
+    } satisfies SymphonyLoopBody as JsonValue,
   };
 
   const createResult = await desktopCommandStore.createCommand(

@@ -2234,8 +2234,8 @@ export function TicketList({
           <DialogHeader>
             <DialogTitle>Select Implementation Plan</DialogTitle>
             <DialogDescription>
-              This feature has multiple linked plans. Select which one to use for
-              planning.
+              This feature has multiple linked plans. Select which one to use
+              for planning.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2">

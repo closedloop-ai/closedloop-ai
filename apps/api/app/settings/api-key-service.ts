@@ -1,7 +1,7 @@
 import { DecryptCommand, EncryptCommand, KMSClient } from "@aws-sdk/client-kms";
+import { getAwsCredentials } from "@repo/aws/credentials";
 import { withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
-import { getAwsCredentials } from "@repo/aws/credentials";
 
 const ENCRYPTION_CONTEXT = { purpose: "claude-api-key" } as const;
 

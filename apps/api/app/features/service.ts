@@ -5,7 +5,12 @@ import type {
   UpdateFeatureInput,
 } from "@repo/api/src/types/feature";
 import type { BasicUser } from "@repo/api/src/types/user";
-import { EntityType, type FeatureStatus, type Priority, withDb } from "@repo/database";
+import {
+  EntityType,
+  type FeatureStatus,
+  type Priority,
+  withDb,
+} from "@repo/database";
 import {
   generateSlug as generateTypedSlug,
   SlugPrefix,

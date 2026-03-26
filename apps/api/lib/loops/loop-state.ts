@@ -6,8 +6,8 @@ import {
   S3Client,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-import { log } from "@repo/observability/log";
 import { getAwsCredentials } from "@repo/aws/credentials";
+import { log } from "@repo/observability/log";
 
 /**
  * S3 key structure for Loop state:
@@ -110,6 +110,14 @@ export type ContextPack = {
     anthropicApiKey?: string;
     githubToken?: string;
   };
+  /**
+   * User-supplied Additional Context from ArtifactVersion v1.
+   * Carries free-form text the user entered alongside the artifact when
+   * dispatching the loop. scrubContextPackSecrets preserves this field
+   * intentionally — it contains no secrets and is needed by the container
+   * throughout the run.
+   */
+  userContext?: string;
 };
 
 export async function uploadContextPack(

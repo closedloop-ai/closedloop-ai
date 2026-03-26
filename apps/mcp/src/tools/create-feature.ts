@@ -14,7 +14,10 @@ export function registerCreateFeature(
       inputSchema: {
         title: z.string().describe("Title of the feature"),
         projectId: z.string().describe("Project ID or slug"),
-        description: z.string().optional().describe("Description of the feature"),
+        description: z
+          .string()
+          .optional()
+          .describe("Description of the feature"),
         priority: z
           .enum(["LOW", "MEDIUM", "HIGH", "URGENT"])
           .optional()

@@ -260,6 +260,39 @@ function truncateForSummary(content: string, maxLength = 2000): string {
   return `${content.slice(0, maxLength)}\n\n[... truncated for summary ...]`;
 }
 
+/**
+ * Fetch user-supplied additional context from ArtifactVersion v1.
+ * Only fetched when the loop command is PLAN and an artifactId is present.
+ */
+async function fetchUserContext(
+  loop: LoopForContextPack
+): Promise<string | undefined> {
+  if (loop.command !== LoopCommand.Plan || !loop.artifactId) {
+    return undefined;
+  }
+
+  // Version 1 is intentionally hardcoded here: it captures the user's original
+  // context as entered at plan creation time. This differs from loop.artifactVersion
+  // used elsewhere (which tracks the artifact's current revision for TOCTOU safety).
+  const version = await artifactVersionService.getByVersion(loop.artifactId, 1);
+  const content = version?.content;
+
+  if (!content?.trim()) {
+    return undefined;
+  }
+
+  const USER_CONTEXT_MAX_LENGTH = 16_000;
+  if (content.length > USER_CONTEXT_MAX_LENGTH) {
+    log.warn("[loop-context-pack] User context truncated", {
+      artifactId: loop.artifactId,
+      originalLength: content.length,
+    });
+    return content.slice(0, USER_CONTEXT_MAX_LENGTH);
+  }
+
+  return content;
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -279,11 +312,13 @@ export async function buildContextPackInMemory(
     refArtifacts,
     templateArtifacts,
     priorLoopSummaries,
+    userContext,
   ] = await Promise.all([
     fetchPrimaryArtifact(loop, organizationId),
     fetchContextRefArtifacts(loop, organizationId),
     fetchTemplateForCommand(loop, organizationId),
     fetchParentLoopSummary(loop, organizationId),
+    fetchUserContext(loop),
   ]);
 
   // Template first (structural blueprint), then context refs (Feature/PRD), then primary artifact
@@ -302,6 +337,7 @@ export async function buildContextPackInMemory(
       priorLoopSummaries.length > 0 ? priorLoopSummaries : undefined,
     committer,
     secrets,
+    userContext,
   };
 }
 

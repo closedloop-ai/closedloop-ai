@@ -1,0 +1,11 @@
+{
+  "what_happened": "Test failed with TypeError: artifactVersionService.getByVersion is not a function",
+  "why": "The vi.mock() for artifact-version-service only included getLatest. New code in loop-context-pack.ts called getByVersion, which was absent from the mock factory, so vitest returned undefined instead of a mock function.",
+  "fix_applied": "Added getByVersion: vi.fn().mockResolvedValue(null) to the artifactVersionService mock factory and to the typed mock helper object.",
+  "pattern_to_remember": "When adding new methods to a service used in tests, also add them to the corresponding vi.mock() factory — every method the code under test calls must exist in the mock or vitest throws TypeError at runtime.",
+  "applies_to": ["implementation-subagent"],
+  "context": {
+    "file": "apps/api/__tests__/unit/build-context-pack.test.ts",
+    "line": 16
+  }
+}
