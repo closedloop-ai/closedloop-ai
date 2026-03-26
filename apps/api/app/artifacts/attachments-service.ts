@@ -63,6 +63,58 @@ async function requireArtifact(
   }
 }
 
+/**
+ * Verify a feature exists and belongs to the given org.
+ * Throws "Feature not found" if missing or org-mismatched.
+ */
+async function requireFeature(
+  featureId: string,
+  organizationId: string
+): Promise<void> {
+  const feature = await withDb((db) =>
+    db.feature.findUnique({
+      where: { id: featureId, organizationId },
+      select: { id: true },
+    })
+  );
+
+  if (!feature) {
+    throw new Error("Feature not found");
+  }
+}
+
+/**
+ * Populate inline preview URLs on image attachments in-place.
+ * Non-image attachments and S3 errors are silently skipped.
+ */
+async function populatePreviewUrls(
+  records: Array<{ id: string; mimeType: string; key: string; bucket: string }>,
+  attachments: FileAttachment[]
+): Promise<void> {
+  const imageRecords = records.filter((r) => isImageMimeType(r.mimeType));
+  if (imageRecords.length === 0) {
+    return;
+  }
+
+  const previewUrls = await Promise.all(
+    imageRecords.map(async (r) => ({
+      id: r.id,
+      url: await getSignedDownloadUrl(r.key, 3600, r.bucket).catch(
+        () => undefined
+      ),
+    }))
+  );
+  const urlMap = new Map(
+    previewUrls.filter((p) => p.url).map((p) => [p.id, p.url])
+  );
+  for (const attachment of attachments) {
+    const url = urlMap.get(attachment.id);
+    if (url) {
+      attachment.previewUrl = url;
+    }
+  }
+}
+
 export const attachmentsService = {
   /**
    * Initiate a file upload for an artifact.
@@ -163,6 +215,8 @@ export const attachmentsService = {
     featureId: string,
     organizationId: string
   ): Promise<FileAttachment[]> {
+    await requireFeature(featureId, organizationId);
+
     const records = await withDb((db) =>
       db.fileAttachment.findMany({
         where: { featureId, feature: { organizationId } },
@@ -171,29 +225,7 @@ export const attachmentsService = {
     );
 
     const attachments = records.map(toFileAttachment);
-
-    // Generate inline preview URLs for image attachments
-    const imageRecords = records.filter((r) => isImageMimeType(r.mimeType));
-    if (imageRecords.length > 0) {
-      const previewUrls = await Promise.all(
-        imageRecords.map(async (r) => ({
-          id: r.id,
-          url: await getSignedDownloadUrl(r.key, 3600, r.bucket).catch(
-            () => undefined
-          ),
-        }))
-      );
-      const urlMap = new Map(
-        previewUrls.filter((p) => p.url).map((p) => [p.id, p.url])
-      );
-      for (const attachment of attachments) {
-        const url = urlMap.get(attachment.id);
-        if (url) {
-          attachment.previewUrl = url;
-        }
-      }
-    }
-
+    await populatePreviewUrls(records, attachments);
     return attachments;
   },
 
@@ -214,29 +246,7 @@ export const attachmentsService = {
     );
 
     const attachments = records.map(toFileAttachment);
-
-    // Generate inline preview URLs for image attachments
-    const imageRecords = records.filter((r) => isImageMimeType(r.mimeType));
-    if (imageRecords.length > 0) {
-      const previewUrls = await Promise.all(
-        imageRecords.map(async (r) => ({
-          id: r.id,
-          url: await getSignedDownloadUrl(r.key, 3600, r.bucket).catch(
-            () => undefined
-          ),
-        }))
-      );
-      const urlMap = new Map(
-        previewUrls.filter((p) => p.url).map((p) => [p.id, p.url])
-      );
-      for (const attachment of attachments) {
-        const url = urlMap.get(attachment.id);
-        if (url) {
-          attachment.previewUrl = url;
-        }
-      }
-    }
-
+    await populatePreviewUrls(records, attachments);
     return attachments;
   },
 

@@ -83,20 +83,24 @@ describe("resolveComputeTarget — no hint (auto-select)", () => {
     expect(computeTargetsService.listAvailableForOrg).toHaveBeenCalledOnce();
   });
 
-  it("returns multiple_targets when more than one online target exists", async () => {
-    const target1 = makeTarget({ id: "target-1" });
-    const target2 = makeTarget({ id: "target-2", machineName: "Other-MBP" });
+  it("auto-selects most recently active target when multiple online and no preferred target set", async () => {
+    const older = makeTarget({
+      id: "target-1",
+      lastSeenAt: new Date("2024-01-01T10:00:00Z"),
+    });
+    const newer = makeTarget({
+      id: "target-2",
+      machineName: "Other-MBP",
+      lastSeenAt: new Date("2024-01-02T10:00:00Z"),
+    });
     vi.mocked(computeTargetsService.listAvailableForOrg).mockResolvedValue([
-      target1,
-      target2,
+      older,
+      newer,
     ]);
 
     const result = await resolveComputeTarget(ORG_ID, USER_ID);
 
-    expect(result).toEqual({
-      reason: "multiple_targets",
-      targets: [target1, target2],
-    });
+    expect(result).toEqual({ reason: "resolved", target: newer });
     expect(computeTargetsService.listAvailableForOrg).toHaveBeenCalledOnce();
   });
 });
@@ -252,12 +256,19 @@ describe("resolveComputeTarget — preferredComputeMode parameter", () => {
     expect(computeTargetsService.findOwnedById).not.toHaveBeenCalled();
   });
 
-  it("LOCAL + multiple online targets -> multiple_targets", async () => {
-    const target1 = makeTarget({ id: "target-1" });
-    const target2 = makeTarget({ id: "target-2", machineName: "Other-MBP" });
+  it("LOCAL + multiple online targets -> auto-selects most recently active", async () => {
+    const older = makeTarget({
+      id: "target-1",
+      lastSeenAt: new Date("2024-01-01T10:00:00Z"),
+    });
+    const newer = makeTarget({
+      id: "target-2",
+      machineName: "Other-MBP",
+      lastSeenAt: new Date("2024-01-02T10:00:00Z"),
+    });
     vi.mocked(computeTargetsService.listAvailableForOrg).mockResolvedValue([
-      target1,
-      target2,
+      older,
+      newer,
     ]);
 
     const result = await resolveComputeTarget(
@@ -267,10 +278,7 @@ describe("resolveComputeTarget — preferredComputeMode parameter", () => {
       PreferredComputeMode.LOCAL
     );
 
-    expect(result).toEqual({
-      reason: "multiple_targets",
-      targets: [target1, target2],
-    });
+    expect(result).toEqual({ reason: "resolved", target: newer });
     expect(computeTargetsService.listAvailableForOrg).toHaveBeenCalledOnce();
   });
 
@@ -288,6 +296,93 @@ describe("resolveComputeTarget — preferredComputeMode parameter", () => {
     expect(result).toEqual({ reason: "hint_not_found" });
     expect(computeTargetsService.findOwnedById).toHaveBeenCalledOnce();
     expect(computeTargetsService.findAccessibleById).toHaveBeenCalledOnce();
+  });
+});
+
+describe("resolveComputeTarget — preferredComputeTargetId parameter", () => {
+  it("auto-selects preferred target when multiple online and preferred target is online", async () => {
+    const preferred = makeTarget({
+      id: "preferred-target",
+      machineName: "Preferred-MBP",
+      lastSeenAt: new Date("2024-01-01T10:00:00Z"),
+    });
+    const other = makeTarget({
+      id: "other-target",
+      machineName: "Other-MBP",
+      lastSeenAt: new Date("2024-01-02T10:00:00Z"),
+    });
+    vi.mocked(computeTargetsService.listAvailableForOrg).mockResolvedValue([
+      preferred,
+      other,
+    ]);
+
+    const result = await resolveComputeTarget(
+      ORG_ID,
+      USER_ID,
+      undefined,
+      undefined,
+      undefined,
+      "preferred-target"
+    );
+
+    expect(result).toEqual({ reason: "resolved", target: preferred });
+    expect(computeTargetsService.listAvailableForOrg).toHaveBeenCalledOnce();
+  });
+
+  it("falls back to lastSeenAt sort when preferred target is not among online targets", async () => {
+    const older = makeTarget({
+      id: "target-1",
+      lastSeenAt: new Date("2024-01-01T10:00:00Z"),
+    });
+    const newer = makeTarget({
+      id: "target-2",
+      machineName: "Other-MBP",
+      lastSeenAt: new Date("2024-01-02T10:00:00Z"),
+    });
+    vi.mocked(computeTargetsService.listAvailableForOrg).mockResolvedValue([
+      older,
+      newer,
+    ]);
+
+    const result = await resolveComputeTarget(
+      ORG_ID,
+      USER_ID,
+      undefined,
+      undefined,
+      undefined,
+      "offline-or-absent-target"
+    );
+
+    expect(result).toEqual({ reason: "resolved", target: newer });
+    expect(computeTargetsService.listAvailableForOrg).toHaveBeenCalledOnce();
+  });
+
+  it("falls back to lastSeenAt sort when no preferred target set and multiple online", async () => {
+    const older = makeTarget({
+      id: "target-1",
+      lastSeenAt: new Date("2024-01-01T10:00:00Z"),
+    });
+    const newer = makeTarget({
+      id: "target-2",
+      machineName: "Other-MBP",
+      lastSeenAt: new Date("2024-01-02T10:00:00Z"),
+    });
+    vi.mocked(computeTargetsService.listAvailableForOrg).mockResolvedValue([
+      older,
+      newer,
+    ]);
+
+    const result = await resolveComputeTarget(
+      ORG_ID,
+      USER_ID,
+      undefined,
+      undefined,
+      undefined,
+      undefined
+    );
+
+    expect(result).toEqual({ reason: "resolved", target: newer });
+    expect(computeTargetsService.listAvailableForOrg).toHaveBeenCalledOnce();
   });
 });
 

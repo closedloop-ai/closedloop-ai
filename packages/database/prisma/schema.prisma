@@ -340,12 +340,14 @@ model User {
   claudeApiKeyEncrypted String?   @map("claude_api_key_encrypted")
   claudeApiKeyLastFour  String?   @map("claude_api_key_last_four")
   claudeApiKeySetAt     DateTime? @map("claude_api_key_set_at")
-  preferredComputeMode  PreferredComputeMode? @map("preferred_compute_mode")
+  preferredComputeMode     PreferredComputeMode? @map("preferred_compute_mode")
+  preferredComputeTargetId String?               @map("preferred_compute_target_id") @db.Uuid
   createdAt       DateTime     @default(now()) @map("created_at")
   updatedAt       DateTime     @updatedAt @map("updated_at")
 
   // Relations
-  organization       Organization     @relation(fields: [organizationId], references: [id])
+  organization              Organization   @relation(fields: [organizationId], references: [id])
+  preferredComputeTarget    ComputeTarget? @relation("UserPreferredComputeTarget", fields: [preferredComputeTargetId], references: [id])
   teamMemberships    TeamMember[]
   pullRequestRatings PullRequestRating[]
   favoriteProjects   FavoriteProject[]
@@ -389,6 +391,7 @@ model ComputeTarget {
 
   organization    Organization     @relation(fields: [organizationId], references: [id])
   user            User             @relation(fields: [userId], references: [id])
+  preferringUsers User[]           @relation("UserPreferredComputeTarget")
   desktopCommands DesktopCommand[]
   loops           Loop[]
 
