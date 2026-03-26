@@ -115,6 +115,7 @@ function getWorkPaths(worktreeDir: string, chatContextId?: string) {
     planPath,
     prdPath,
     chatStatePath,
+    chatStateWritePath: newChatStatePath,
   };
 }
 
@@ -650,14 +651,14 @@ export async function POST(
           resumeArgs,
           worktreeDir,
           chatState,
-          paths.chatStatePath,
+          paths.chatStateWritePath,
           enqueue
         );
 
         // If resume succeeded (exit 0, or produced output), we're done
         if (result.exitCode === 0 || result.accumulated.trim()) {
           chatState.messageCount += 1;
-          saveChatState(paths.chatStatePath, chatState);
+          saveChatState(paths.chatStateWritePath, chatState);
           enqueue(
             JSON.stringify({
               type: "done",
@@ -676,6 +677,11 @@ export async function POST(
         );
         try {
           unlinkSync(paths.chatStatePath);
+        } catch {
+          /* already gone */
+        }
+        try {
+          unlinkSync(paths.chatStateWritePath);
         } catch {
           /* already gone */
         }
@@ -704,7 +710,7 @@ export async function POST(
         buildNewArgs(codexModel),
         worktreeDir,
         chatState,
-        paths.chatStatePath,
+        paths.chatStateWritePath,
         enqueue
       );
 
@@ -736,7 +742,7 @@ export async function POST(
       }
 
       chatState.messageCount += 1;
-      saveChatState(paths.chatStatePath, chatState);
+      saveChatState(paths.chatStateWritePath, chatState);
 
       if (result.exitCode !== 0 && !result.accumulated.trim()) {
         // Filter out Codex internal bookkeeping warnings (stale rollout entries etc.)

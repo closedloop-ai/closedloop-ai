@@ -9,7 +9,6 @@ import {
 import { basename, join } from "node:path";
 import { type NextRequest, NextResponse } from "next/server";
 import {
-  checkLegacyProcessAndMigrate,
   findFirstExistingPath,
   isProcessRunning,
 } from "@/lib/engineer/process-utils";
@@ -173,10 +172,9 @@ function clearAgentTypes(worktreeDir: string): void {
  * Update state.json to mark status as STOPPED.
  */
 function markStateAsStopped(worktreeDir: string): void {
-  const preflightResult = checkLegacyProcessAndMigrate(worktreeDir);
-  if (preflightResult === "live-process-blocking") {
-    return; // Legacy job still running -- don't clobber its state
-  }
+  // Always write STOPPED -- the kill route is explicitly stopping a job.
+  // Don't use checkLegacyProcessAndMigrate since that could skip the write
+  // when a codex review PID is alive (but we still want state marked STOPPED).
   const newWorkDir = join(worktreeDir, ".closedloop-ai", "work");
   const oldWorkDir = join(worktreeDir, ".claude", "work");
   const statePath = join(newWorkDir, "state.json");

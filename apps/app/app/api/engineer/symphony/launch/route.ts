@@ -13,6 +13,7 @@ import { type NextRequest, NextResponse } from "next/server";
 import {
   acquireLaunchLock,
   cleanStaleLock,
+  findFirstExistingPath,
   isProcessRunning,
   migrateWorkDirIfNeeded,
   readLaunchMetadata,
@@ -245,8 +246,12 @@ function getErrorMessage(err: unknown): string {
 }
 
 function getPrdFileIfExists(worktreeDir: string): string | undefined {
-  const prdFile = join(worktreeDir, ".closedloop-ai", "work", "prd.md");
-  return existsSync(prdFile) ? prdFile : undefined;
+  return (
+    findFirstExistingPath(
+      join(worktreeDir, ".closedloop-ai", "work", "prd.md"),
+      join(worktreeDir, ".claude", "work", "prd.md")
+    ) ?? undefined
+  );
 }
 
 function validateLaunchBody(

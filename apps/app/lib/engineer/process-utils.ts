@@ -286,9 +286,15 @@ export function migrateWorkDirIfNeeded(worktreeDir: string): void {
 
 /**
  * Write-handler preflight: check for a live legacy process before migrating.
- * Returns "migrated" if the old dir was successfully migrated (or didn't exist),
- * "live-process-blocking" if a live process is still writing to .claude/work,
- * or "nothing-to-migrate" if only the new dir exists.
+ * Returns:
+ * - "migrated" if .claude/work was renamed to .closedloop-ai/work
+ * - "live-process-blocking" if a live process (symphony or codex review)
+ *   is still writing to .claude/work
+ * - "nothing-to-migrate" if .claude/work does not exist, OR if
+ *   .closedloop-ai/work already exists (with no live legacy process)
+ *
+ * Checks process.pid AND codex-review-{claude,codex}.pid in .claude/work.
+ * Even in split-root state (both dirs exist), still checks legacy PIDs.
  */
 export function checkLegacyProcessAndMigrate(
   worktreeDir: string
