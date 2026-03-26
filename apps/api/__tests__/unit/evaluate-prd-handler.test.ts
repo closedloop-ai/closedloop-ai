@@ -40,12 +40,13 @@ vi.mock("@/lib/judge-score-fanout", () => ({
 // --- Imports (after mocks) ---
 
 import { LoopCommand } from "@repo/api/src/types/loop";
+import { EvaluationReportType } from "@repo/database";
 import { evaluatePrdHandler } from "@/lib/loops/loop-commands/evaluate-prd-handler";
 import { registerEvaluationHandlerTests } from "../utils/evaluation-handler-test-factory";
 
 registerEvaluationHandlerTests({
   handler: evaluatePrdHandler,
-  reportType: "PRD",
+  reportType: EvaluationReportType.PRD,
   artifactId: "prd-artifact-1",
   fileName: "prd-judges.json",
   reportId: "prd-report-1",

@@ -40,12 +40,13 @@ vi.mock("@/lib/judge-score-fanout", () => ({
 // --- Imports (after mocks) ---
 
 import { LoopCommand } from "@repo/api/src/types/loop";
+import { EvaluationReportType } from "@repo/database";
 import { evaluateCodeHandler } from "@/lib/loops/loop-commands/evaluate-code-handler";
 import { registerEvaluationHandlerTests } from "../utils/evaluation-handler-test-factory";
 
 registerEvaluationHandlerTests({
   handler: evaluateCodeHandler,
-  reportType: "CODE",
+  reportType: EvaluationReportType.CODE,
   artifactId: "code-artifact-1",
   fileName: "code-judges.json",
   reportId: "code-report-1",
