@@ -1,7 +1,9 @@
 import type { JsonObject } from "@repo/api/src/types/common";
-import type { JudgesReport } from "@repo/api/src/types/evaluation";
+import type {
+  EvaluationReportType,
+  JudgesReport,
+} from "@repo/api/src/types/evaluation";
 import type { Loop } from "@repo/api/src/types/loop";
-import type { EvaluationReportType } from "@repo/database";
 import { EntityType, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import {
@@ -26,7 +28,7 @@ type EvaluationHandlerConfig = {
   fileName: string;
   /** The key in the uploaded JSON payload (e.g. "planJudges"). */
   uploadKey: string;
-  /** The Prisma EvaluationReportType enum value. */
+  /** Persisted report type discriminator (PLAN, CODE, or PRD). */
   reportType: EvaluationReportType;
   /** Whether the command requires a target repo. */
   requiresRepo: boolean;

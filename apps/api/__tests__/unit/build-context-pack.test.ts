@@ -9,15 +9,6 @@ vi.mock("@repo/observability/log", () => ({
   },
 }));
 
-vi.mock("@repo/database", () => ({
-  withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
-  EvaluationReportType: {
-    PLAN: "PLAN",
-    CODE: "CODE",
-    PRD: "PRD",
-  },
-}));
-
 vi.mock("@/app/artifacts/artifact-version-service", () => ({
   artifactVersionService: {
     getLatest: vi.fn().mockResolvedValue(null),

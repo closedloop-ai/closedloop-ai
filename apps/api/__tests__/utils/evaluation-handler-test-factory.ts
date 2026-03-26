@@ -11,12 +11,12 @@
  *   registerEvaluationHandlerTests({ handler: evaluatePrdHandler, ... });
  */
 
-import type { JudgesReport } from "@repo/api/src/types/evaluation";
+import type {
+  EvaluationReportType as EvaluationReportTypeValue,
+  JudgesReport,
+} from "@repo/api/src/types/evaluation";
 import type { Loop, LoopCommand } from "@repo/api/src/types/loop";
-import {
-  EntityType,
-  EvaluationReportType as PrismaEvaluationReportType,
-} from "@repo/database";
+import { EntityType } from "@repo/database";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   parseJsonArtifact,
@@ -37,7 +37,8 @@ type EvaluationHandlerTestConfig = {
       orgId: string
     ) => Promise<void>;
   };
-  reportType: keyof typeof PrismaEvaluationReportType;
+  /** Persisted discriminator — use e.g. `EvaluationReportType.Prd`. */
+  reportType: EvaluationReportTypeValue;
   artifactId: string;
   fileName: string;
   reportId: string;
@@ -131,7 +132,7 @@ export function registerEvaluationHandlerTests(
           artifactId,
           loopId: loop.id,
           organizationId: "org-1",
-          reportType: PrismaEvaluationReportType[reportType],
+          reportType,
           report: expect.objectContaining({ report_id: reportId }),
         })
       );

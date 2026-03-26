@@ -1,10 +1,10 @@
-import { EvaluationReportType } from "@repo/database";
+import { EvaluationReportType } from "@repo/api/src/types/evaluation";
 import { createEvaluationHandler } from "./create-evaluation-handler";
 
 export const evaluateCodeHandler = createEvaluationHandler({
   fileName: "code-judges.json",
   uploadKey: "codeJudges",
-  reportType: EvaluationReportType.CODE,
+  reportType: EvaluationReportType.Code,
   requiresRepo: true,
   label: "code",
 });
