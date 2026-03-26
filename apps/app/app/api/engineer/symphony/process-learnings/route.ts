@@ -14,7 +14,7 @@ import {
   getSelfLearningScriptPath,
   getWorktreeParentDir,
 } from "@/lib/engineer/repos";
-import { getShellPathSync } from "@/lib/engineer/shell-path";
+import { getShellPath } from "@/lib/engineer/shell-path";
 
 /**
  * GET /api/symphony/process-learnings?ticketId=...&repo=...
@@ -104,7 +104,7 @@ export async function POST(request: NextRequest) {
 
   // When extraction is still in flight, spawn a wrapper that polls until it completes
   if (waitForExtraction) {
-    return spawnWaitingWrapper(claudeWorkDir, worktreeDir);
+    return await spawnWaitingWrapper(claudeWorkDir, worktreeDir);
   }
 
   // Check if there are actually pending learnings to process
@@ -149,6 +149,7 @@ export async function POST(request: NextRequest) {
   const logFile = join(claudeWorkDir, "process-learnings.log");
   const logFd = openSync(logFile, "a");
 
+  const shellPath = await getShellPath();
   try {
     const child = spawn(scriptPath, [claudeWorkDir], {
       detached: true,
@@ -157,7 +158,7 @@ export async function POST(request: NextRequest) {
       env: {
         ...process.env,
         CLOSEDLOOP_WORKDIR: claudeWorkDir,
-        PATH: getShellPathSync(),
+        PATH: shellPath,
       },
     });
 
@@ -184,10 +185,10 @@ export async function POST(request: NextRequest) {
  * Spawn a detached bash wrapper that polls the extraction status file
  * until it completes (or errors/times out), then runs process-chat-learnings.sh.
  */
-function spawnWaitingWrapper(
+async function spawnWaitingWrapper(
   claudeWorkDir: string,
   worktreeDir: string
-): Response {
+): Promise<Response> {
   const scriptPath = getSelfLearningScriptPath();
   if (!scriptPath) {
     return new Response(
@@ -257,6 +258,7 @@ function spawnWaitingWrapper(
     'echo "[wait-wrapper] Timeout with no pending files. Exiting."',
   ].join("\n");
 
+  const shellPath = await getShellPath();
   try {
     const child = spawn("bash", ["-c", wrapperScript], {
       detached: true,
@@ -265,7 +267,7 @@ function spawnWaitingWrapper(
       env: {
         ...process.env,
         CLOSEDLOOP_WORKDIR: claudeWorkDir,
-        PATH: getShellPathSync(),
+        PATH: shellPath,
       },
     });
 

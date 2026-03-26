@@ -8,7 +8,7 @@ import {
   WEB_ONLY_TOOLS,
 } from "@/lib/engineer/allowed-tools";
 import { migrateLegacyChatHistory } from "@/lib/engineer/migrate-chat-history";
-import { getShellPathSync } from "@/lib/engineer/shell-path";
+import { getShellPath } from "@/lib/engineer/shell-path";
 import {
   type ContentBlock,
   createStreamState,
@@ -232,6 +232,7 @@ export async function POST(request: NextRequest) {
   // Hoisted so the cancel callback can kill the process
   let claudeProcess: ReturnType<typeof spawn> | null = null;
 
+  const shellPath = await getShellPath();
   const stream = new ReadableStream({
     start(controller) {
       const streamState = createStreamState(
@@ -290,7 +291,7 @@ export async function POST(request: NextRequest) {
           cwd: expandedRepoPath || homedir(),
           env: {
             ...process.env,
-            PATH: getShellPathSync(),
+            PATH: shellPath,
           },
           stdio: ["pipe", "pipe", "pipe"],
         });

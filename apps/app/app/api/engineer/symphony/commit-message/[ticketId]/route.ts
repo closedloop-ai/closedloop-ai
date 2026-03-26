@@ -8,7 +8,7 @@ import {
   getWorktreeParentDir,
   isRepoAllowed,
 } from "@/lib/engineer/repos";
-import { getShellPathSync } from "@/lib/engineer/shell-path";
+import { getShellPath } from "@/lib/engineer/shell-path";
 
 const COMMIT_JSON_REGEX = /\{[\s\S]*"title"[\s\S]*"description"[\s\S]*\}/;
 
@@ -78,12 +78,13 @@ async function readGitMessageTemplate(
 /**
  * Run claude to generate a commit message from pre-computed diff (fast, no tools)
  */
-function generateWithClaude(
+async function generateWithClaude(
   worktreeDir: string,
   ticketId: string,
   template: string | null,
   diff: string
 ): Promise<{ title: string; description: string }> {
+  const shellPath = await getShellPath();
   return new Promise((resolve, reject) => {
     let prompt = `Generate a git commit message for ticket ${ticketId}.
 
@@ -119,7 +120,7 @@ IMPORTANT: Do NOT include any references to AI, Claude, Opus, Sonnet, Haiku, Ant
       cwd: worktreeDir,
       env: {
         ...process.env,
-        PATH: getShellPathSync(),
+        PATH: shellPath,
       },
       stdio: ["ignore", "pipe", "pipe"],
     });

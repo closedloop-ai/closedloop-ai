@@ -1,7 +1,7 @@
 import { execSync } from "node:child_process";
 import { type NextRequest, NextResponse } from "next/server";
 import { expandHome, loadReposConfig } from "@/lib/engineer/repos";
-import { getShellPathSync } from "@/lib/engineer/shell-path";
+import { getShellPath } from "@/lib/engineer/shell-path";
 
 /**
  * API route to tear down a local dev server
@@ -52,7 +52,7 @@ export async function POST(request: NextRequest) {
     }
     if (
       deployConfig?.teardownCommand &&
-      runTeardownCommand(deployConfig.teardownCommand, worktreePath)
+      (await runTeardownCommand(deployConfig.teardownCommand, worktreePath))
     ) {
       return NextResponse.json({ success: true });
     }
@@ -100,7 +100,8 @@ function killByPorts(primaryPort: number, additionalPorts?: number[]): boolean {
 /**
  * Strategy 3: Run a configured teardown command in the worktree.
  */
-function runTeardownCommand(command: string, worktreePath: string): boolean {
+async function runTeardownCommand(command: string, worktreePath: string): Promise<boolean> {
+  const shellPath = await getShellPath();
   try {
     execSync(command, {
       cwd: expandHome(worktreePath),
@@ -109,7 +110,7 @@ function runTeardownCommand(command: string, worktreePath: string): boolean {
       stdio: "pipe",
       env: {
         ...process.env,
-        PATH: getShellPathSync(),
+        PATH: shellPath,
       },
     });
     return true;

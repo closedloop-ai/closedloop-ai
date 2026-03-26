@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { getShellPathSync } from "@/lib/engineer/shell-path";
+import { getShellPath } from "@/lib/engineer/shell-path";
 import { withMcpTools } from "./allowed-tools";
 import { parseToon } from "./toon-parser";
 
@@ -151,9 +151,20 @@ type ExtractionOptions = {
  * Fire-and-forget async learning extraction from a chat session.
  * Spawns a detached Claude process to analyze the chat history and extract learnings.
  */
-export function triggerAsyncLearningExtraction(opts: ExtractionOptions): void {
+export async function triggerAsyncLearningExtraction(opts: ExtractionOptions): Promise<void> {
+  try {
+    return await triggerAsyncLearningExtractionInner(opts);
+  } catch (err) {
+    console.error("[Learnings] Unhandled error in extraction:", err);
+  }
+}
+
+async function triggerAsyncLearningExtractionInner(opts: ExtractionOptions): Promise<void> {
   const { symphonyWorkDir, worktreeDir, chatHistoryPath, activeTab, ticketId } =
     opts;
+
+  // Resolve PATH eagerly so the spawn below is synchronous
+  const shellPath = await getShellPath();
 
   const learningsDir = join(symphonyWorkDir, ".learnings");
   const pendingDir = join(learningsDir, "pending");
@@ -261,7 +272,7 @@ Be selective — only capture things that would help agents do better in the fut
         env: {
           ...process.env,
           CLOSEDLOOP_WORKDIR: symphonyWorkDir,
-          PATH: getShellPathSync(),
+          PATH: shellPath,
         },
         stdio: ["pipe", "ignore", "ignore"],
         detached: true,
