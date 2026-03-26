@@ -7,10 +7,8 @@ import type {
 import type { CreateLoopRequest } from "@repo/api/src/types/loop";
 import { RunLoopCommand } from "@repo/api/src/types/loop";
 import { toast } from "@repo/design-system/components/ui/sonner";
-import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useRef, useState } from "react";
 import { useUpdateArtifact } from "@/hooks/queries/use-artifacts";
-import { judgesKeys } from "@/hooks/queries/use-judges";
 import { useRunLoop } from "@/hooks/queries/use-loops";
 import { handleRunLoopResponse } from "@/lib/run-loop-response";
 
@@ -57,9 +55,6 @@ type RunLoopParams = {
  */
 export function usePlanActions(config: UsePlanActionsConfig) {
   const { artifactId } = config;
-
-  // TanStack Query client for cache invalidation
-  const queryClient = useQueryClient();
 
   // TanStack Query mutation for artifact approval
   const updateArtifact = useUpdateArtifact();
@@ -267,9 +262,6 @@ export function usePlanActions(config: UsePlanActionsConfig) {
       { artifactId, command: RunLoopCommand.EvaluatePlan },
       {
         onSuccess: () => {
-          queryClient.invalidateQueries({
-            queryKey: judgesKeys.detail(artifactId),
-          });
           toast.success("Plan evaluation started via Loop");
         },
         onError: routeConflictError,
@@ -278,13 +270,7 @@ export function usePlanActions(config: UsePlanActionsConfig) {
         },
       }
     );
-  }, [
-    artifactId,
-    queryClient,
-    runLoop,
-    prepareConflictRefs,
-    routeConflictError,
-  ]);
+  }, [artifactId, runLoop, prepareConflictRefs, routeConflictError]);
 
   /**
    * Evaluate the implementation code on the open PR branch via Loops.
@@ -306,9 +292,6 @@ export function usePlanActions(config: UsePlanActionsConfig) {
         },
         {
           onSuccess: () => {
-            queryClient.invalidateQueries({
-              queryKey: judgesKeys.codeDetail(artifactId),
-            });
             toast.success("PR evaluation started via Loop");
           },
           onError: routeConflictError,
@@ -318,7 +301,7 @@ export function usePlanActions(config: UsePlanActionsConfig) {
         }
       );
     },
-    [artifactId, queryClient, runLoop, prepareConflictRefs, routeConflictError]
+    [artifactId, runLoop, prepareConflictRefs, routeConflictError]
   );
 
   const selectTarget = useCallback(
