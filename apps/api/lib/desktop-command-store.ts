@@ -9,6 +9,15 @@ import type {
   RelayOperationDispatchRequest,
 } from "@repo/api/src/types/compute-target";
 import { type Prisma, type TransactionClient, withDb } from "@repo/database";
+import { log } from "@repo/observability/log";
+import { emitCommandLifecycleEvent } from "@repo/observability/telemetry/emitter";
+import { emitQueueMetric } from "@repo/observability/telemetry/metrics";
+import type { TelemetryTraceContext } from "@repo/observability/telemetry/schema";
+import {
+  ErrorClass,
+  TelemetryCategory,
+  TelemetrySeverity,
+} from "@repo/observability/telemetry/schema";
 import { BoundedCache } from "@/lib/bounded-cache";
 import { isRecord } from "@/lib/type-guards";
 
@@ -54,6 +63,10 @@ type IngestCommandEventInput = {
   sequence?: number;
   /** When provided, the command must belong to this target or the event is rejected. */
   computeTargetId?: string;
+  /** Optional telemetry trace context for emitting command lifecycle events.
+   *  gatewaySessionId and schemaVersion are required for successful emission. */
+  context?: Pick<TelemetryTraceContext, "gatewaySessionId" | "schemaVersion"> &
+    Partial<TelemetryTraceContext>;
 };
 
 type IngestCommandEventResult =
@@ -378,10 +391,23 @@ async function recoverDuplicateCommand(
     })
   );
   if (!winner) {
+    log.warn("recoverDuplicateCommand: no winner found for idempotency key", {
+      computeTargetId,
+      idempotencyKey,
+      errorClass: ErrorClass.Protocol,
+    });
     throw new IdempotencyConflictError();
   }
   const winnerCommand = toStoredCommand(winner as StoredCommandRow);
   if (winnerCommand.requestFingerprint !== fingerprint) {
+    log.warn(
+      "recoverDuplicateCommand: fingerprint mismatch on idempotency key",
+      {
+        computeTargetId,
+        idempotencyKey,
+        errorClass: ErrorClass.Protocol,
+      }
+    );
     throw new IdempotencyConflictError();
   }
   return { command: winnerCommand, deduped: true };
@@ -409,10 +435,99 @@ async function createEventRow(
   }
 }
 
+async function resolveIdempotentCommand(
+  computeTargetId: string,
+  idempotencyKey: string,
+  fingerprint: string
+): Promise<CreateCommandResult | null> {
+  const cacheKey = `${computeTargetId}:${idempotencyKey}`;
+  const cached = idempotencyCache.get(cacheKey);
+  if (cached) {
+    if (cached.fingerprint !== fingerprint) {
+      log.warn(
+        "resolveIdempotentCommand: cache fingerprint mismatch on idempotency key",
+        {
+          computeTargetId,
+          idempotencyKey,
+          errorClass: ErrorClass.Protocol,
+        }
+      );
+      throw new IdempotencyConflictError();
+    }
+    const existing = await findCommandById(cached.commandId);
+    if (existing) {
+      return { command: existing, deduped: true };
+    }
+  }
+
+  const existing = await withDb((db) =>
+    db.desktopCommand.findFirst({
+      where: { computeTargetId, idempotencyKey },
+      orderBy: { createdAt: "desc" },
+    })
+  );
+
+  if (!existing) {
+    return null;
+  }
+
+  const existingCommand = toStoredCommand(existing as StoredCommandRow);
+  if (existingCommand.requestFingerprint !== fingerprint) {
+    log.warn(
+      "resolveIdempotentCommand: db fingerprint mismatch on idempotency key",
+      {
+        computeTargetId,
+        idempotencyKey,
+        errorClass: ErrorClass.Protocol,
+      }
+    );
+    throw new IdempotencyConflictError();
+  }
+  idempotencyCache.set(cacheKey, {
+    commandId: existingCommand.commandId,
+    fingerprint,
+  });
+  operationIdCache.set(existingCommand.operationId, existingCommand.commandId);
+  return { command: existingCommand, deduped: true };
+}
+
+function emitCommandLifecycleEventForStatus(
+  status: DesktopCommandStatus,
+  commandId: string,
+  operationId: string,
+  computeTargetId: string,
+  context: Pick<TelemetryTraceContext, "gatewaySessionId" | "schemaVersion"> &
+    Partial<TelemetryTraceContext>
+): void {
+  const trace: Partial<TelemetryTraceContext> = {
+    commandId,
+    operationId,
+    computeTargetId,
+    ...context,
+  };
+
+  if (status === "done") {
+    emitCommandLifecycleEvent(TelemetryCategory.CommandCompleted, trace);
+  } else if (status === "failed") {
+    emitCommandLifecycleEvent(TelemetryCategory.CommandFailed, trace, {
+      severity: TelemetrySeverity.Error,
+    });
+  } else if (status === "expired") {
+    emitCommandLifecycleEvent(TelemetryCategory.CommandTimedOut, trace, {
+      severity: TelemetrySeverity.Warn,
+    });
+  }
+}
+
 export const desktopCommandStore = {
   async createCommand(
     computeTargetId: string,
-    input: CreateDesktopCommandInput
+    input: CreateDesktopCommandInput,
+    context?: Pick<
+      TelemetryTraceContext,
+      "gatewaySessionId" | "schemaVersion"
+    > &
+      Partial<TelemetryTraceContext>
   ): Promise<CreateCommandResult> {
     const idempotencyKey = input.idempotencyKey?.trim() || undefined;
     // Fingerprint with the trimmed key so " key " and "key" produce the
@@ -420,42 +535,13 @@ export const desktopCommandStore = {
     const fingerprint = fingerprintCommand({ ...input, idempotencyKey });
 
     if (idempotencyKey) {
-      const cacheKey = `${computeTargetId}:${idempotencyKey}`;
-      const cached = idempotencyCache.get(cacheKey);
-      if (cached) {
-        if (cached.fingerprint !== fingerprint) {
-          throw new IdempotencyConflictError();
-        }
-        const existing = await findCommandById(cached.commandId);
-        if (existing) {
-          return { command: existing, deduped: true };
-        }
-      }
-
-      const existing = await withDb((db) =>
-        db.desktopCommand.findFirst({
-          where: {
-            computeTargetId,
-            idempotencyKey,
-          },
-          orderBy: { createdAt: "desc" },
-        })
+      const deduped = await resolveIdempotentCommand(
+        computeTargetId,
+        idempotencyKey,
+        fingerprint
       );
-
-      if (existing) {
-        const existingCommand = toStoredCommand(existing as StoredCommandRow);
-        if (existingCommand.requestFingerprint !== fingerprint) {
-          throw new IdempotencyConflictError();
-        }
-        idempotencyCache.set(cacheKey, {
-          commandId: existingCommand.commandId,
-          fingerprint,
-        });
-        operationIdCache.set(
-          existingCommand.operationId,
-          existingCommand.commandId
-        );
-        return { command: existingCommand, deduped: true };
+      if (deduped) {
+        return deduped;
       }
     }
 
@@ -494,15 +580,29 @@ export const desktopCommandStore = {
       });
     }
 
+    if (context) {
+      emitCommandLifecycleEvent(TelemetryCategory.CommandQueued, {
+        commandId: command.commandId,
+        operationId: command.operationId,
+        computeTargetId,
+        ...context,
+      });
+    }
+
     return { command, deduped: false };
   },
 
   createFromRelayOperation(
     computeTargetId: string,
-    operation: RelayOperationDispatchRequest
+    operation: RelayOperationDispatchRequest,
+    context?: Pick<
+      TelemetryTraceContext,
+      "gatewaySessionId" | "schemaVersion"
+    > &
+      Partial<TelemetryTraceContext>
   ): Promise<CreateCommandResult> {
     const input = mapRelayPayloadToCommandInput(operation);
-    return this.createCommand(computeTargetId, input);
+    return this.createCommand(computeTargetId, input, context);
   },
 
   async acknowledgeCommand(
@@ -564,6 +664,17 @@ export const desktopCommandStore = {
       return current ? toSummary(current) : null;
     }
 
+    const toStatus = (data as { status?: string }).status;
+    if (toStatus) {
+      emitQueueMetric({
+        metric: "command_state_transition",
+        fromStatus: command.status,
+        toStatus,
+        commandId,
+        computeTargetId: computeTargetId ?? command.computeTargetId,
+      });
+    }
+
     const updated = await findCommandByIdScoped(commandId, computeTargetId);
     return updated ? toSummary(updated) : null;
   },
@@ -583,6 +694,11 @@ export const desktopCommandStore = {
             where: { id: input.commandId },
           });
       if (!row) {
+        log.warn("ingestCommandEvent: unknown command", {
+          commandId: input.commandId,
+          computeTargetId: input.computeTargetId,
+          errorClass: ErrorClass.Execution,
+        });
         return { accepted: false, reason: "unknown_command" } as const;
       }
 
@@ -598,6 +714,12 @@ export const desktopCommandStore = {
         } as const;
       }
       if (sequence > expected) {
+        log.warn("ingestCommandEvent: sequence gap detected", {
+          commandId: input.commandId,
+          sequence,
+          expected,
+          errorClass: ErrorClass.Protocol,
+        });
         return {
           accepted: false,
           reason: "sequence_gap",
@@ -632,6 +754,10 @@ export const desktopCommandStore = {
         duplicate: false,
         sequence,
         createdAt: createdEvent.createdAt,
+        nextStatus: nextState.status,
+        prevStatus: command.status,
+        operationId: command.operationId,
+        computeTargetId: command.computeTargetId,
       } as const;
     });
 
@@ -645,6 +771,26 @@ export const desktopCommandStore = {
           result.createdAt
         )
       );
+
+      if (result.nextStatus) {
+        emitQueueMetric({
+          metric: "command_state_transition",
+          fromStatus: result.prevStatus,
+          toStatus: result.nextStatus,
+          commandId: input.commandId,
+          computeTargetId: result.computeTargetId,
+        });
+      }
+
+      if (result.nextStatus && input.context) {
+        emitCommandLifecycleEventForStatus(
+          result.nextStatus,
+          input.commandId,
+          result.operationId,
+          result.computeTargetId,
+          input.context
+        );
+      }
     }
 
     return result;
@@ -841,8 +987,16 @@ export const desktopCommandStore = {
     return commands.map((row) => toDispatchableCommand(toStoredCommand(row)));
   },
 
-  async markCommandExpired(commandId: string, reason?: string): Promise<void> {
-    await withDb((db) =>
+  async markCommandExpired(
+    commandId: string,
+    reason?: string,
+    context?: Pick<
+      TelemetryTraceContext,
+      "gatewaySessionId" | "schemaVersion"
+    > &
+      Partial<TelemetryTraceContext>
+  ): Promise<void> {
+    const { count } = await withDb((db) =>
       db.desktopCommand.updateMany({
         where: {
           id: commandId,
@@ -855,6 +1009,28 @@ export const desktopCommandStore = {
         },
       })
     );
+
+    if (count > 0) {
+      emitQueueMetric({
+        metric: "command_state_transition",
+        toStatus: "expired",
+        commandId,
+      });
+
+      if (context) {
+        emitCommandLifecycleEvent(
+          TelemetryCategory.CommandTimedOut,
+          {
+            commandId,
+            ...context,
+          },
+          {
+            severity: TelemetrySeverity.Warn,
+            message: reason,
+          }
+        );
+      }
+    }
   },
 
   __resetForTests(): void {

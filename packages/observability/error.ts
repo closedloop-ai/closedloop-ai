@@ -1,7 +1,5 @@
-import { log } from "./log";
-
 export const parseError = (error: unknown): string => {
-  let message = "An error occurred";
+  let message: string;
 
   if (error instanceof Error) {
     message = error.message;
@@ -9,12 +7,6 @@ export const parseError = (error: unknown): string => {
     message = error.message as string;
   } else {
     message = String(error);
-  }
-
-  try {
-    log.error(`Parsing error: ${message}`);
-  } catch (newError) {
-    console.error("Error parsing error:", newError);
   }
 
   return message;

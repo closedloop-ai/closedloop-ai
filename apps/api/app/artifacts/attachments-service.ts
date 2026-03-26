@@ -161,11 +161,11 @@ export const attachmentsService = {
    */
   async listByFeature(
     featureId: string,
-    _organizationId: string
+    organizationId: string
   ): Promise<FileAttachment[]> {
     const records = await withDb((db) =>
       db.fileAttachment.findMany({
-        where: { featureId },
+        where: { featureId, feature: { organizationId } },
         orderBy: { createdAt: "desc" },
       })
     );
