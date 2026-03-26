@@ -107,7 +107,9 @@ function getWorkPaths(ticketId: string, repoPath: string, provider?: string) {
   return {
     worktreeDir,
     claudeWorkDir,
-    historyPath: newHistoryPath,
+    historyPath:
+      findFirstExistingPath(newHistoryPath, legacyHistoryPath) ??
+      newHistoryPath,
     legacyHistoryPath,
     planPath,
     prdPath,

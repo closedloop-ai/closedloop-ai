@@ -131,7 +131,9 @@ function getWorkPaths(
     effectiveDir,
     claudeWorkDir,
     commentChatsDir,
-    historyPath: newHistoryPath,
+    historyPath:
+      findFirstExistingPath(newHistoryPath, legacyHistoryPath) ??
+      newHistoryPath,
     legacyHistoryPath,
     planPath,
     prdPath,

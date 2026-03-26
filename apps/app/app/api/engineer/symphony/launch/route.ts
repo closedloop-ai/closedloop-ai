@@ -421,7 +421,7 @@ export async function POST(request: NextRequest) {
         rawPid = "";
       }
       const legacyPid = Number.parseInt(rawPid, 10);
-      if (!Number.isNaN(legacyPid) && isProcessRunning(legacyPid)) {
+      if (legacyPid > 0 && isProcessRunning(legacyPid)) {
         // Kill individual process first, then try the group
         try {
           process.kill(legacyPid, "SIGTERM");

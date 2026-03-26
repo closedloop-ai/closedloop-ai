@@ -101,7 +101,9 @@ function getWorkPaths(ticketId: string, repoPath: string, findingId: string) {
     worktreeDir,
     claudeWorkDir,
     findingChatsDir,
-    historyPath: newHistoryPath,
+    historyPath:
+      findFirstExistingPath(newHistoryPath, legacyHistoryPath) ??
+      newHistoryPath,
     legacyHistoryPath,
     planPath,
     prdPath,
