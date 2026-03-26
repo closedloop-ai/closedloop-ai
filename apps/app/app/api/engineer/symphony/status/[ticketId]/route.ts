@@ -3,7 +3,11 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { type NextRequest, NextResponse } from "next/server";
 import { readLiveActivity } from "@/lib/engineer/jsonl-activity";
-import { isProcessRunning, readProcessPid } from "@/lib/engineer/process-utils";
+import {
+  findFirstExistingPath,
+  isProcessRunning,
+  readProcessPid,
+} from "@/lib/engineer/process-utils";
 import {
   expandHome,
   getWorktreeParentDir,
@@ -18,9 +22,12 @@ import {
 async function detectCompletionFromLogs(
   worktreeDir: string
 ): Promise<{ completed: boolean; awaitingUser: boolean; timestamp?: string }> {
-  const logPath = join(worktreeDir, ".claude", "work", "closedloop-launch.log");
+  const logPath = findFirstExistingPath(
+    join(worktreeDir, ".closedloop-ai", "work", "closedloop-launch.log"),
+    join(worktreeDir, ".claude", "work", "closedloop-launch.log")
+  );
 
-  if (!existsSync(logPath)) {
+  if (!logPath) {
     return { completed: false, awaitingUser: false };
   }
 
@@ -88,15 +95,27 @@ async function resolveEffectiveState(
   }
 
   // If the loop lock file exists, the loop is actively running — trust state.json
-  const lockPath = join(worktreeDir, ".claude", "work", ".learnings", ".lock");
-  if (existsSync(lockPath)) {
+  const lockPath = findFirstExistingPath(
+    join(worktreeDir, ".closedloop-ai", "work", ".learnings", ".lock"),
+    join(worktreeDir, ".claude", "work", ".learnings", ".lock")
+  );
+  if (lockPath) {
     return { status, phase, fallbackDetected: false, ...base };
   }
 
   // Check if state.json was updated recently (within last 2 minutes)
-  const statePath = join(worktreeDir, ".claude", "work", "state.json");
-  const stateStats = await stat(statePath);
-  const stateAge = Date.now() - stateStats.mtime.getTime();
+  const statePath =
+    findFirstExistingPath(
+      join(worktreeDir, ".closedloop-ai", "work", "state.json"),
+      join(worktreeDir, ".claude", "work", "state.json")
+    ) ?? join(worktreeDir, ".closedloop-ai", "work", "state.json");
+  let stateAge = Number.POSITIVE_INFINITY;
+  try {
+    const stateStats = await stat(statePath);
+    stateAge = Date.now() - stateStats.mtime.getTime();
+  } catch {
+    // state.json removed by concurrent kill -- treat as stale
+  }
   if (stateAge <= 2 * 60 * 1000) {
     return { status, phase, fallbackDetected: false, ...base };
   }
@@ -174,44 +193,66 @@ type ActiveAgent = {
  * Read active agents from the .agent-types directory.
  * Each file (named by UUID) contains: agent_type|agent_short_name|started_at
  * Skip retry-tracking files (filenames containing "-").
+ *
+ * Checks both .closedloop-ai/work and .claude/work and merges results,
+ * deduplicating by agentId so a file present in both dirs only appears once.
  */
 async function readActiveAgents(worktreeDir: string): Promise<ActiveAgent[]> {
-  const agentTypesDir = join(worktreeDir, ".claude", "work", ".agent-types");
+  const newAgentTypesDir = join(
+    worktreeDir,
+    ".closedloop-ai",
+    "work",
+    ".agent-types"
+  );
+  const oldAgentTypesDir = join(worktreeDir, ".claude", "work", ".agent-types");
 
-  if (!existsSync(agentTypesDir)) {
+  const dirsToCheck = [newAgentTypesDir, oldAgentTypesDir].filter((d) =>
+    existsSync(d)
+  );
+
+  if (dirsToCheck.length === 0) {
     return [];
   }
 
-  try {
-    const files = await readdir(agentTypesDir);
-    const agents: ActiveAgent[] = [];
+  const seen = new Set<string>();
+  const agents: ActiveAgent[] = [];
 
-    for (const file of files) {
-      // Skip retry-tracking files (contain "-" which UUIDs don't have in the filename)
-      if (file.includes("-")) {
-        continue;
-      }
+  for (const agentTypesDir of dirsToCheck) {
+    try {
+      const files = await readdir(agentTypesDir);
 
-      try {
-        const content = await readFile(join(agentTypesDir, file), "utf-8");
-        const [agentType, agentName, startedAt] = content.trim().split("|");
-        if (agentType && agentName) {
-          agents.push({
-            agentId: file,
-            agentType,
-            agentName,
-            startedAt: startedAt || "",
-          });
+      for (const file of files) {
+        // Skip retry-tracking files (contain "-" which UUIDs don't have in the filename)
+        if (file.includes("-")) {
+          continue;
         }
-      } catch {
-        // Skip unreadable files
-      }
-    }
+        // Deduplicate by agentId across dirs
+        if (seen.has(file)) {
+          continue;
+        }
+        seen.add(file);
 
-    return agents;
-  } catch {
-    return [];
+        try {
+          const content = await readFile(join(agentTypesDir, file), "utf-8");
+          const [agentType, agentName, startedAt] = content.trim().split("|");
+          if (agentType && agentName) {
+            agents.push({
+              agentId: file,
+              agentType,
+              agentName,
+              startedAt: startedAt || "",
+            });
+          }
+        } catch {
+          // Skip unreadable files
+        }
+      }
+    } catch {
+      // Skip unreadable dirs
+    }
   }
+
+  return agents;
 }
 
 /**
@@ -264,7 +305,10 @@ export async function GET(
       worktreeParentDir,
       `${repoName}-${sanitizedTicket}`
     );
-    const statePath = join(worktreeDir, ".claude", "work", "state.json");
+    const statePath = findFirstExistingPath(
+      join(worktreeDir, ".closedloop-ai", "work", "state.json"),
+      join(worktreeDir, ".claude", "work", "state.json")
+    );
 
     // Check if worktree exists
     if (!existsSync(worktreeDir)) {
@@ -277,7 +321,7 @@ export async function GET(
     }
 
     // Check if state.json exists
-    if (!existsSync(statePath)) {
+    if (!statePath) {
       const pid = await readProcessPid(worktreeDir);
       const processRunning = pid !== null && isProcessRunning(pid);
 
@@ -317,7 +361,11 @@ export async function GET(
     const effective = await resolveEffectiveState(worktreeDir, state);
 
     // Read task progress from plan.json
-    const planPath = join(worktreeDir, ".claude", "work", "plan.json");
+    const planPath =
+      findFirstExistingPath(
+        join(worktreeDir, ".closedloop-ai", "work", "plan.json"),
+        join(worktreeDir, ".claude", "work", "plan.json")
+      ) ?? join(worktreeDir, ".closedloop-ai", "work", "plan.json");
     const planExists = existsSync(planPath);
     const { taskProgress, currentTaskId } = await readPlanProgress(planPath);
 

@@ -3,6 +3,7 @@
 import type {
   DisconnectGitHubResponse,
   GetBranchesResponse,
+  GetPullRequestsResponse,
   GetRepositoriesResponse,
   GitHubIntegrationStatus,
 } from "@repo/api/src/types/github";
@@ -21,6 +22,8 @@ export const githubKeys = {
   repositories: () => [...githubKeys.all, "repositories"] as const,
   branches: (repoId: string, limit?: number) =>
     [...githubKeys.all, "branches", repoId, ...(limit ? [limit] : [])] as const,
+  pullRequests: (repoId: string, projectId?: string) =>
+    [...githubKeys.all, "pull-requests", repoId, projectId] as const,
 };
 
 // Queries
@@ -81,6 +84,28 @@ export function useGitHubBranches(
   });
 }
 
+export function useGitHubPullRequests(
+  repositoryId: string,
+  projectId?: string,
+  options?: Omit<
+    UseQueryOptions<GetPullRequestsResponse>,
+    "queryKey" | "queryFn"
+  >
+) {
+  const apiClient = useApiClient();
+  const params = projectId ? `?projectId=${projectId}` : "";
+
+  return useQuery({
+    queryKey: githubKeys.pullRequests(repositoryId, projectId),
+    queryFn: () =>
+      apiClient.get<GetPullRequestsResponse>(
+        `/integrations/github/repositories/${repositoryId}/pull-requests${params}`
+      ),
+    enabled: !!repositoryId && options?.enabled !== false,
+    ...options,
+  });
+}
+
 // Mutations
 export function useDisconnectGitHub() {
   const queryClient = useQueryClient();
@@ -97,9 +122,16 @@ export function useDisconnectGitHub() {
 
 /**
  * Get the GitHub OAuth URL for connecting.
- * Returns the app's OAuth route which initiates the OAuth flow with CSRF state,
- * then redirects to the GitHub App installation page.
+ * Returns the app's OAuth route which initiates the OAuth flow with CSRF state.
+ *
+ * @param mode - "authorize" (default) uses standard OAuth for existing installs;
+ *               "install" uses /installations/new for first-time setup.
  */
-export function useGetGitHubConnectUrl(): string {
+export function useGetGitHubConnectUrl(
+  mode: "authorize" | "install" = "authorize"
+): string {
+  if (mode === "install") {
+    return "/api/integrations/github?install=true";
+  }
   return "/api/integrations/github";
 }

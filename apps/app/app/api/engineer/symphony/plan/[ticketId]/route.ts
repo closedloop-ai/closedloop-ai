@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { type NextRequest, NextResponse } from "next/server";
+import { findFirstExistingPath } from "@/lib/engineer/process-utils";
 import {
   expandHome,
   getWorktreeParentDir,
@@ -135,7 +136,10 @@ export async function GET(
       worktreeParentDir,
       `${repoName}-${sanitizedTicket}`
     );
-    const planPath = join(worktreeDir, ".claude", "work", "plan.json");
+    const planPath = findFirstExistingPath(
+      join(worktreeDir, ".closedloop-ai", "work", "plan.json"),
+      join(worktreeDir, ".claude", "work", "plan.json")
+    );
 
     // Check if worktree exists
     if (!existsSync(worktreeDir)) {
@@ -146,7 +150,7 @@ export async function GET(
     }
 
     // Check if plan.json exists
-    if (!existsSync(planPath)) {
+    if (!planPath) {
       return NextResponse.json(
         { error: "Plan not found yet", exists: false, planExists: false },
         { status: 404 }
@@ -176,8 +180,11 @@ export async function GET(
 
     // Fallback: try plan.md if content field is empty
     if (!markdownContent) {
-      const planMdPath = join(worktreeDir, ".claude", "work", "plan.md");
-      if (existsSync(planMdPath)) {
+      const planMdPath = findFirstExistingPath(
+        join(worktreeDir, ".closedloop-ai", "work", "plan.md"),
+        join(worktreeDir, ".claude", "work", "plan.md")
+      );
+      if (planMdPath) {
         const planMd = await readFile(planMdPath, "utf-8");
         // Only use plan.md if it looks related to the same plan (title appears in first few lines)
         const planTitle = String(plan.title ?? "");

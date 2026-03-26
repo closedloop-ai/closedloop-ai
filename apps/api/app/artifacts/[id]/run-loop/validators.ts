@@ -8,7 +8,7 @@ export const runLoopSchema = z.object({
   command: z.enum(loopCommands),
   prompt: z.string().optional(),
   repo: repoSchema.optional(),
-  computeTargetId: z.uuid().optional(),
+  computeTargetId: z.uuid().nullable().optional(),
   backendOverride: z.boolean().optional(),
 });
 

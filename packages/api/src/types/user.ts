@@ -95,8 +95,14 @@ export type UserProfileStats = {
   totalLoops: number;
   /** Total workstreams created or assigned. */
   totalWorkstreams: number;
-  /** Average concurrent active workstreams (assigned + open). */
+  /** Average concurrent running loops (when loops are active). */
   avgConcurrency: number;
   /** Daily contribution counts for the last 52 weeks (heatmap). */
   contributionHeatmap: ContributionDay[];
+  /** Total input tokens consumed by this user's loops. */
+  totalTokensInput: number;
+  /** Total output tokens consumed by this user's loops. */
+  totalTokensOutput: number;
+  /** Total estimated cost of this user's loops (USD). */
+  totalEstimatedCost: number;
 };

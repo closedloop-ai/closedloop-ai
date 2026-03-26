@@ -2,7 +2,11 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ArtifactStatus } from "@repo/api/src/types/artifact.js";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
-import { encodePathSegment, withErrorHandling } from "./tool-utils.js";
+import {
+  describeIdOrSlug,
+  encodePathSegment,
+  withErrorHandling,
+} from "./tool-utils.js";
 
 export function registerUpdateArtifact(
   server: McpServer,
@@ -12,9 +16,11 @@ export function registerUpdateArtifact(
     "update-artifact",
     {
       description:
-        "Update an existing artifact's metadata or status by ID or slug. For content changes, use create-artifact-version.",
+        "Update an artifact document's title or status by ID or slug. Use create-artifact-version for content edits.",
       inputSchema: {
-        artifactId: z.string().describe("ID or slug of the artifact to update"),
+        artifactId: z
+          .string()
+          .describe(describeIdOrSlug("Artifact", ["PRD-7", "PLAN-12"])),
         title: z.string().optional().describe("New title for the artifact"),
         status: z
           .enum(ArtifactStatus)

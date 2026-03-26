@@ -15,6 +15,10 @@ import {
   MODEL_ERROR_REGEX,
 } from "@/lib/engineer/codex-models";
 import { getCodexChatStatePath } from "@/lib/engineer/codex-state";
+import {
+  checkLegacyProcessAndMigrate,
+  findFirstExistingPath,
+} from "@/lib/engineer/process-utils";
 import { expandHome, getWorktreeParentDir } from "@/lib/engineer/repos";
 import { resolveWorktreeForPR } from "@/lib/engineer/worktree";
 
@@ -80,13 +84,38 @@ function getWorktreeDir(
 }
 
 function getWorkPaths(worktreeDir: string, chatContextId?: string) {
-  const claudeWorkDir = join(worktreeDir, ".claude", "work");
+  const claudeWorkDir = join(worktreeDir, ".closedloop-ai", "work");
+  const legacyWorkDir = join(worktreeDir, ".claude", "work");
+
+  // Resolve plan and PRD per-file so legacy worktrees are readable
+  const planPath =
+    findFirstExistingPath(
+      join(claudeWorkDir, "plan.json"),
+      join(legacyWorkDir, "plan.json")
+    ) ?? join(claudeWorkDir, "plan.json");
+  const prdPath =
+    findFirstExistingPath(
+      join(claudeWorkDir, "prd.md"),
+      join(legacyWorkDir, "prd.md")
+    ) ?? join(claudeWorkDir, "prd.md");
+
+  // Resolve chatStatePath per-file for reads; writes go to new canonical location
+  const newChatStatePath = getCodexChatStatePath(claudeWorkDir, chatContextId);
+  const legacyChatStatePath = getCodexChatStatePath(
+    legacyWorkDir,
+    chatContextId
+  );
+  const chatStatePath =
+    findFirstExistingPath(newChatStatePath, legacyChatStatePath) ??
+    newChatStatePath;
+
   return {
     worktreeDir,
     claudeWorkDir,
-    planPath: join(claudeWorkDir, "plan.json"),
-    prdPath: join(claudeWorkDir, "prd.md"),
-    chatStatePath: getCodexChatStatePath(claudeWorkDir, chatContextId),
+    planPath,
+    prdPath,
+    chatStatePath,
+    chatStateWritePath: newChatStatePath,
   };
 }
 
@@ -539,6 +568,17 @@ export async function POST(
     );
   }
 
+  const preflightResult = checkLegacyProcessAndMigrate(worktreeDir);
+  if (preflightResult === "live-process-blocking") {
+    return Response.json(
+      {
+        error:
+          "A job started before the .closedloop-ai migration is still running. Stop it first, then retry.",
+      },
+      { status: 409 }
+    );
+  }
+
   const paths = getWorkPaths(worktreeDir, chatContextId);
   const chatState = loadChatState(paths.chatStatePath);
 
@@ -611,14 +651,14 @@ export async function POST(
           resumeArgs,
           worktreeDir,
           chatState,
-          paths.chatStatePath,
+          paths.chatStateWritePath,
           enqueue
         );
 
         // If resume succeeded (exit 0, or produced output), we're done
         if (result.exitCode === 0 || result.accumulated.trim()) {
           chatState.messageCount += 1;
-          saveChatState(paths.chatStatePath, chatState);
+          saveChatState(paths.chatStateWritePath, chatState);
           enqueue(
             JSON.stringify({
               type: "done",
@@ -637,6 +677,11 @@ export async function POST(
         );
         try {
           unlinkSync(paths.chatStatePath);
+        } catch {
+          /* already gone */
+        }
+        try {
+          unlinkSync(paths.chatStateWritePath);
         } catch {
           /* already gone */
         }
@@ -665,7 +710,7 @@ export async function POST(
         buildNewArgs(codexModel),
         worktreeDir,
         chatState,
-        paths.chatStatePath,
+        paths.chatStateWritePath,
         enqueue
       );
 
@@ -697,7 +742,7 @@ export async function POST(
       }
 
       chatState.messageCount += 1;
-      saveChatState(paths.chatStatePath, chatState);
+      saveChatState(paths.chatStateWritePath, chatState);
 
       if (result.exitCode !== 0 && !result.accumulated.trim()) {
         // Filter out Codex internal bookkeeping warnings (stale rollout entries etc.)

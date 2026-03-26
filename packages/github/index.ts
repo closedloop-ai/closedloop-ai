@@ -564,6 +564,89 @@ export async function getRepositoryBranches(
   }
 }
 
+/**
+ * Fetch pull requests for a repository via REST API.
+ * Returns PRs sorted by most recently updated.
+ */
+export async function getRepositoryPullRequests(
+  installationId: number,
+  owner: string,
+  name: string,
+  options?: { state?: "open" | "closed" | "all"; limit?: number }
+): Promise<
+  Array<{
+    number: number;
+    title: string;
+    htmlUrl: string;
+    headBranch: string;
+    baseBranch: string;
+    state: "OPEN" | "MERGED" | "CLOSED";
+    isDraft: boolean;
+    updatedAt: string;
+    author: string;
+  }>
+> {
+  const config = getConfig();
+  const limit = options?.limit ?? 30;
+  const state = options?.state ?? "all";
+
+  try {
+    const auth = createAppAuth({
+      appId: config.GITHUB_APP_ID,
+      privateKey: config.GITHUB_APP_PRIVATE_KEY,
+    });
+
+    const installationAuth = await auth({
+      type: "installation",
+      installationId,
+    });
+
+    const octokit = new Octokit({
+      auth: installationAuth.token,
+    });
+
+    const { data: pulls } = await octokit.pulls.list({
+      owner,
+      repo: name,
+      state,
+      sort: "updated",
+      direction: "desc",
+      per_page: Math.min(limit, 100),
+    });
+
+    return pulls.map((pr) => {
+      let prState: "OPEN" | "MERGED" | "CLOSED" = "OPEN";
+      if (pr.merged_at) {
+        prState = "MERGED";
+      } else if (pr.state === "closed") {
+        prState = "CLOSED";
+      }
+
+      return {
+        number: pr.number,
+        title: pr.title,
+        htmlUrl: pr.html_url,
+        headBranch: pr.head.ref,
+        baseBranch: pr.base.ref,
+        state: prState,
+        isDraft: pr.draft ?? false,
+        updatedAt: pr.updated_at,
+        author: pr.user?.login ?? "unknown",
+      };
+    });
+  } catch (error) {
+    const errorMessage =
+      error instanceof Error ? error.message : "Unknown error";
+    log.error("[github/pull-requests] Failed to fetch pull requests", {
+      installationId,
+      owner,
+      name,
+      error: errorMessage,
+    });
+    throw new Error(`Failed to fetch pull requests: ${errorMessage}`);
+  }
+}
+
 type StatusCheckRollupState =
   | "SUCCESS"
   | "FAILURE"

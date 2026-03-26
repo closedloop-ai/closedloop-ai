@@ -30,7 +30,6 @@ import { registerCreateArtifactVersion } from "./tools/create-artifact-version.j
 import { registerCreateEntityLink } from "./tools/create-entity-link.js";
 import { registerCreateExternalLink } from "./tools/create-external-link.js";
 import { registerCreateFeature } from "./tools/create-feature.js";
-import { registerCreateFeatureComment } from "./tools/create-feature-comment.js";
 import { registerCreateProject } from "./tools/create-project.js";
 import { registerCreateWorkstream } from "./tools/create-workstream.js";
 import { registerGetArtifact } from "./tools/get-artifact.js";
@@ -42,7 +41,6 @@ import { registerGetLinearStatus } from "./tools/get-linear-status.js";
 import { registerGetLoop } from "./tools/get-loop.js";
 import { registerGetMe } from "./tools/get-me.js";
 import { registerGetProject } from "./tools/get-project.js";
-import { registerGetProjectStatus } from "./tools/get-project-status.js";
 import { registerGetRelatedArtifacts } from "./tools/get-related-artifacts.js";
 import { registerGetWorkstream } from "./tools/get-workstream.js";
 import { registerListArtifactVersions } from "./tools/list-artifact-versions.js";
@@ -313,7 +311,6 @@ const TOOL_REGISTRATIONS: ToolRegistration[] = [
     register: registerUpdateProject,
     requiresWrite: true,
   },
-  { name: "get-project-status", register: registerGetProjectStatus },
   { name: "list-artifacts", register: registerListArtifacts },
   { name: "get-artifact", register: registerGetArtifact },
   {
@@ -348,11 +345,6 @@ const TOOL_REGISTRATIONS: ToolRegistration[] = [
   {
     name: "update-feature",
     register: registerUpdateFeature,
-    requiresWrite: true,
-  },
-  {
-    name: "create-feature-comment",
-    register: registerCreateFeatureComment,
     requiresWrite: true,
   },
   { name: "get-me", register: registerGetMe },

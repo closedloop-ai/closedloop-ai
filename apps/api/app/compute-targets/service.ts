@@ -19,8 +19,10 @@ type ComputeTargetRecord = {
   supportedOperations: unknown;
   lastSeenAt: Date;
   isOnline: boolean;
+  isSharedWithOrg: boolean;
   createdAt: Date;
   updatedAt: Date;
+  user?: { firstName: string | null; lastName: string | null } | null;
 };
 
 function toJsonObject(value: unknown): JsonObject {
@@ -34,12 +36,26 @@ function toStringArray(value: unknown): string[] {
   return value.filter((entry): entry is string => typeof entry === "string");
 }
 
+function formatOwnerName(
+  user: { firstName: string | null; lastName: string | null } | null | undefined
+): string {
+  if (!user) {
+    return "Teammate";
+  }
+  const parts = [user.firstName, user.lastName].filter(Boolean);
+  return parts.length > 0 ? parts.join(" ") : "Teammate";
+}
+
 function toComputeTarget(
-  target: ComputeTargetRecord | null
+  target: ComputeTargetRecord | null,
+  /** When set, ownerName is populated for targets not owned by this user. */
+  viewerUserId?: string
 ): ComputeTarget | null {
   if (!target) {
     return null;
   }
+
+  const isOwnedByViewer = viewerUserId ? target.userId === viewerUserId : true;
 
   return {
     id: target.id,
@@ -51,14 +67,19 @@ function toComputeTarget(
     supportedOperations: toStringArray(target.supportedOperations),
     lastSeenAt: target.lastSeenAt,
     isOnline: target.isOnline,
+    isSharedWithOrg: target.isSharedWithOrg,
+    ownerName: isOwnedByViewer ? undefined : formatOwnerName(target.user),
     createdAt: target.createdAt,
     updatedAt: target.updatedAt,
   };
 }
 
-function toComputeTargetList(targets: ComputeTargetRecord[]): ComputeTarget[] {
+function toComputeTargetList(
+  targets: ComputeTargetRecord[],
+  viewerUserId?: string
+): ComputeTarget[] {
   return targets.flatMap((target) => {
-    const mapped = toComputeTarget(target);
+    const mapped = toComputeTarget(target, viewerUserId);
     return mapped ? [mapped] : [];
   });
 }
@@ -294,5 +315,74 @@ export const computeTargetsService = {
       })
     );
     return new Map(targets.map((t) => [t.id, t.isOnline]));
+  },
+
+  /**
+   * Returns the user's own targets plus any shared targets from other org members.
+   * Shared targets include the owner's name for display.
+   */
+  async listAvailableForOrg(
+    organizationId: string,
+    userId: string
+  ): Promise<ComputeTarget[]> {
+    const targets = await withDb((db) =>
+      db.computeTarget.findMany({
+        where: {
+          organizationId,
+          OR: [{ userId }, { isSharedWithOrg: true }],
+        },
+        include: {
+          user: { select: { firstName: true, lastName: true } },
+        },
+        orderBy: [{ isOnline: "desc" }, { updatedAt: "desc" }],
+      })
+    );
+
+    return toComputeTargetList(targets as ComputeTargetRecord[], userId);
+  },
+
+  /**
+   * Finds a compute target by ID within the org — either owned by the user
+   * or shared with the org. Used for dispatch to shared targets.
+   */
+  async findAccessibleById(
+    id: string,
+    organizationId: string,
+    userId: string
+  ): Promise<ComputeTarget | null> {
+    const target = await withDb((db) =>
+      db.computeTarget.findFirst({
+        where: {
+          id,
+          organizationId,
+          OR: [{ userId }, { isSharedWithOrg: true }],
+        },
+      })
+    );
+
+    return toComputeTarget(target as ComputeTargetRecord | null);
+  },
+
+  async setSharing(
+    id: string,
+    organizationId: string,
+    userId: string,
+    isSharedWithOrg: boolean
+  ): Promise<{ id: string; isSharedWithOrg: boolean } | null> {
+    try {
+      const updated = await withDb((db) =>
+        db.computeTarget.update({
+          where: { id, organizationId, userId },
+          data: { isSharedWithOrg },
+          select: { id: true, isSharedWithOrg: true },
+        })
+      );
+      return updated;
+    } catch (error) {
+      if ((error as { code?: string }).code === "P2025") {
+        return null;
+      }
+      throw error;
+    }
   },
 };

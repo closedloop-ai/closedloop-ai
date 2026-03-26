@@ -2,6 +2,10 @@ import type {
   CreateDesktopCommandInput,
   RelayOperationDispatchRequest,
 } from "@repo/api/src/types/compute-target";
+import type {
+  WireCommandPayload,
+  WithCorrelation,
+} from "@/lib/desktop-gateway-types";
 
 export function appendQuery(
   path: string,
@@ -46,5 +50,31 @@ export function toRelayOperation(
       approvalReason: input.approvalReason ?? null,
     },
     streaming: input.streaming ?? false,
+  };
+}
+
+/**
+ * Attach correlation context to a wire command payload for end-to-end tracing
+ * across the relay pipeline. Returns a new object without mutating the source.
+ */
+export function withCorrelationContext(
+  wireCommand: WireCommandPayload,
+  correlation: {
+    requestId?: string;
+    gatewaySessionId?: string;
+    computeTargetId?: string;
+  }
+): WithCorrelation<WireCommandPayload> {
+  return {
+    ...wireCommand,
+    ...(correlation.requestId !== undefined && {
+      requestId: correlation.requestId,
+    }),
+    ...(correlation.gatewaySessionId !== undefined && {
+      gatewaySessionId: correlation.gatewaySessionId,
+    }),
+    ...(correlation.computeTargetId !== undefined && {
+      computeTargetId: correlation.computeTargetId,
+    }),
   };
 }

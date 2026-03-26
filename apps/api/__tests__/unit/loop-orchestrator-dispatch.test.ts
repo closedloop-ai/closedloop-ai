@@ -46,6 +46,7 @@ vi.mock("@/app/loops/service", () => ({
     updateStatus: vi.fn().mockResolvedValue(undefined),
     addEvent: vi.fn().mockResolvedValue(undefined),
     persistLaunchInfo: vi.fn(),
+    cancel: vi.fn().mockResolvedValue(undefined),
   },
   isInvalidStatusTransitionError: vi.fn(),
 }));
@@ -120,20 +121,73 @@ vi.mock("@/lib/loops/loop-commands", () => {
   };
 });
 
+vi.mock("@/lib/loops/loop-ecs", () => ({
+  runEcsTask: vi.fn().mockResolvedValue("ecs-task-arn"),
+  stopLoopTask: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("@/lib/loops/loop-context-pack", () => ({
+  buildContextPack: vi.fn().mockResolvedValue("s3://mock-context-key"),
+  buildContextPackInMemory: vi.fn().mockResolvedValue({
+    artifacts: [],
+    prompt: null,
+    repoInfo: null,
+    committer: null,
+  }),
+}));
+
+vi.mock("@/lib/desktop-command-store", () => ({
+  desktopCommandStore: {
+    createCommand: vi.fn().mockResolvedValue({
+      command: { commandId: "cmd-orphan-1" },
+    }),
+    markCommandExpired: vi.fn().mockResolvedValue(undefined),
+  },
+}));
+
+vi.mock("@/lib/loops/loop-desktop", async (importActual) => {
+  const actual =
+    await importActual<typeof import("@/lib/loops/loop-desktop")>();
+  return {
+    DispatchError: actual.DispatchError,
+    isDispatchError: actual.isDispatchError,
+    launchLoopOnDesktop: vi.fn().mockResolvedValue("cmd-default"),
+    stopDesktopLoop: vi.fn().mockResolvedValue(undefined),
+  };
+});
+
 // --- Imports (after mocks) ---
 
-import { beforeEach, describe, expect, it } from "vitest";
+import type { LoopWithUser } from "@repo/api/src/types/loop";
+import { withDb } from "@repo/database";
+import { afterEach, beforeEach, describe, expect, it, type Mock } from "vitest";
 import { loopsService } from "@/app/loops/service";
-import { handleLoopEvent } from "@/lib/loops/loop-orchestrator";
+import { desktopCommandStore } from "@/lib/desktop-command-store";
+import {
+  DispatchError,
+  launchLoopOnDesktop,
+  stopDesktopLoop,
+} from "@/lib/loops/loop-desktop";
+import { handleLoopEvent, launchLoop } from "@/lib/loops/loop-orchestrator";
 import { buildLoop } from "../fixtures/loop";
 
 type MockFn = ReturnType<typeof vi.fn>;
+
+const mockWithDb = withDb as unknown as Mock;
 
 const mockLoopsService = loopsService as unknown as {
   findById: MockFn;
   updateStatus: MockFn;
   addEvent: MockFn;
+  cancel: MockFn;
 };
+
+const mockDesktopCommandStore = desktopCommandStore as unknown as {
+  markCommandExpired: MockFn;
+};
+
+const mockLaunchLoopOnDesktop = launchLoopOnDesktop as unknown as MockFn;
+const mockStopDesktopLoop = stopDesktopLoop as unknown as MockFn;
 
 // ---------------------------------------------------------------------------
 // handleLoopCompleted — command-specific artifact ingestion dispatch
@@ -233,5 +287,99 @@ describe("handleLoopCompleted command dispatch", () => {
     await handleLoopEvent("loop-1", "org-1", completedEvent);
 
     expect(mockPlanDownloadAndIngest).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// launchLoop — orphaned desktop command cleanup on relay failure
+// ---------------------------------------------------------------------------
+
+describe("launchLoop orphaned command cleanup on relay failure", () => {
+  const originalEnv = { ...process.env };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // launchLoopDesktop checks for API_BASE_URL before calling launchLoopOnDesktop
+    process.env.API_BASE_URL = "https://api.test";
+  });
+
+  afterEach(() => {
+    process.env.API_BASE_URL = originalEnv.API_BASE_URL;
+  });
+
+  it("expires the orphaned command and cancels the loop when launchLoopOnDesktop throws a DispatchError", async () => {
+    const loop = buildLoop({
+      status: "PENDING",
+      computeTargetId: "target-1",
+    });
+    mockLoopsService.findById.mockResolvedValue(loop);
+
+    // Configure launchLoopOnDesktop to throw a DispatchError carrying the orphaned commandId.
+    // The mock's isDispatchError uses a structural check so this instance is recognized.
+    const dispatchError = new DispatchError(
+      "relay unreachable",
+      "cmd-orphan-1"
+    );
+    mockLaunchLoopOnDesktop.mockRejectedValue(dispatchError);
+    mockStopDesktopLoop.mockResolvedValue(undefined);
+    mockDesktopCommandStore.markCommandExpired.mockResolvedValue(undefined);
+    mockLoopsService.cancel.mockResolvedValue(undefined);
+
+    await expect(launchLoop("loop-1", "org-1")).rejects.toThrow(
+      "relay unreachable"
+    );
+
+    expect(mockDesktopCommandStore.markCommandExpired).toHaveBeenCalledWith(
+      "cmd-orphan-1",
+      expect.any(String)
+    );
+
+    expect(mockLoopsService.cancel).toHaveBeenCalledWith("loop-1", "org-1");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// handleLoopEvent — isOverridingFailure for CANCELLED loops
+// ---------------------------------------------------------------------------
+
+describe("handleLoopEvent isOverridingFailure for CANCELLED loops", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Safety net: ensure withDb resolves without hanging if called unexpectedly
+    // NOTE: vi.spyOn below depends on object reference equality — loopsService
+    // must be the same object instance imported here and in loop-orchestrator.ts.
+    // Because @/app/loops/service is vi.mock'd at the top of this file, the
+    // imported loopsService IS the mock object used by the module under test.
+    mockWithDb.mockResolvedValue(undefined);
+  });
+
+  it("passes error: null to updateStatus when overriding a CANCELLED loop with a completed event", async () => {
+    const cancelledLoop = buildLoop({ status: "CANCELLED", s3StateKey: null });
+    const completedLoop = buildLoop({ status: "COMPLETED" });
+
+    const updateStatusSpy = vi
+      .spyOn(loopsService, "updateStatus")
+      .mockResolvedValue(completedLoop);
+    vi.spyOn(loopsService, "findById").mockResolvedValue(
+      cancelledLoop as LoopWithUser
+    );
+    vi.spyOn(loopsService, "addEvent").mockResolvedValue(true);
+
+    const completedEvent = {
+      type: "completed" as const,
+      loopId: "loop-1",
+      timestamp: "2026-02-17T00:00:00.000Z",
+      result: {},
+      tokensUsed: { input: 0, output: 0 },
+    };
+
+    await handleLoopEvent("loop-1", "org-1", completedEvent);
+
+    expect(updateStatusSpy).toHaveBeenCalledWith(
+      "loop-1",
+      "org-1",
+      "COMPLETED",
+      expect.objectContaining({ error: null })
+    );
   });
 });

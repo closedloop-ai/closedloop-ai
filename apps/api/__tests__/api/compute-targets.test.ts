@@ -26,10 +26,12 @@ vi.mock("@/app/compute-targets/service", async (importOriginal) => {
     computeTargetsService: {
       register: vi.fn(),
       listByOwner: vi.fn(),
+      listAvailableForOrg: vi.fn(),
       heartbeat: vi.fn(),
       updateOwned: vi.fn(),
       deleteOwned: vi.fn(),
       markStaleTargetsOffline: vi.fn(),
+      setSharing: vi.fn(),
     },
   };
 });
@@ -44,6 +46,7 @@ const mockTarget = {
   supportedOperations: ["symphony_chat"],
   lastSeenAt: new Date(),
   isOnline: true,
+  isSharedWithOrg: false,
   createdAt: new Date(),
   updatedAt: new Date(),
 };
@@ -63,7 +66,7 @@ describe("GET /compute-targets", () => {
     vi.mocked(computeTargetsService.markStaleTargetsOffline).mockResolvedValue(
       0
     );
-    vi.mocked(computeTargetsService.listByOwner).mockResolvedValue([
+    vi.mocked(computeTargetsService.listAvailableForOrg).mockResolvedValue([
       mockTarget,
     ]);
 
@@ -78,9 +81,8 @@ describe("GET /compute-targets", () => {
     expect(json.data).toHaveLength(1);
     expect(computeTargetsService.markStaleTargetsOffline).toHaveBeenCalledWith({
       organizationId: "org-1",
-      userId: "user-1",
     });
-    expect(computeTargetsService.listByOwner).toHaveBeenCalledWith(
+    expect(computeTargetsService.listAvailableForOrg).toHaveBeenCalledWith(
       "org-1",
       "user-1"
     );

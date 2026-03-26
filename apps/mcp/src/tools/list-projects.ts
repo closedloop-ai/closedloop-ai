@@ -20,7 +20,8 @@ export function registerListProjects(
   server.registerTool(
     "list-projects",
     {
-      description: "List all projects accessible to the authenticated user",
+      description:
+        "List projects available to the authenticated user. Returned slugs are the preferred user-facing handles.",
       inputSchema: {
         limit: z
           .number()

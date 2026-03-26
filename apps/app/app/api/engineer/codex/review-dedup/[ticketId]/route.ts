@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import type { NextRequest } from "next/server";
 import { extractClaudeText } from "@/lib/engineer/claude-stream-utils";
 import { isRepoAllowed } from "@/lib/engineer/repos";
-import { getShellPathSync } from "@/lib/engineer/shell-path";
+import { getShellPath } from "@/lib/engineer/shell-path";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -103,7 +103,8 @@ Set B (${providerB}):
 ${listB}`;
 }
 
-function runHaikuClassification(prompt: string): Promise<string> {
+async function runHaikuClassification(prompt: string): Promise<string> {
+  const shellPath = await getShellPath();
   return new Promise((resolve, reject) => {
     const child = spawn(
       "claude",
@@ -118,7 +119,7 @@ function runHaikuClassification(prompt: string): Promise<string> {
         stdio: ["pipe", "pipe", "pipe"],
         env: {
           ...process.env,
-          PATH: getShellPathSync(),
+          PATH: shellPath,
         },
       }
     );

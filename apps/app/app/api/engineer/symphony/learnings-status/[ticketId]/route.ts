@@ -1,6 +1,7 @@
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { NextRequest } from "next/server";
+import { findFirstExistingPath } from "@/lib/engineer/process-utils";
 import { expandHome, getWorktreeParentDir } from "@/lib/engineer/repos";
 
 /**
@@ -31,15 +32,24 @@ export async function GET(
   const repoName = basename(expandedRepoPath);
   const worktreeParentDir = getWorktreeParentDir();
   const worktreeDir = join(worktreeParentDir, `${repoName}-${sanitizedTicket}`);
-  const statusPath = join(
-    worktreeDir,
-    ".claude",
-    "work",
-    ".learnings",
-    "chat-extraction-status.json"
+  const statusPath = findFirstExistingPath(
+    join(
+      worktreeDir,
+      ".closedloop-ai",
+      "work",
+      ".learnings",
+      "chat-extraction-status.json"
+    ),
+    join(
+      worktreeDir,
+      ".claude",
+      "work",
+      ".learnings",
+      "chat-extraction-status.json"
+    )
   );
 
-  if (!existsSync(statusPath)) {
+  if (!statusPath) {
     return Response.json({ status: "none", count: 0 });
   }
 

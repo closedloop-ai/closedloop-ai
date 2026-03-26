@@ -1,4 +1,3 @@
-import type { HomePage } from "@repo/cms";
 import {
   Accordion,
   AccordionContent,
@@ -11,17 +10,14 @@ import { PhoneCall } from "lucide-react";
 import Link from "next/link";
 
 type FAQProps = {
-  cmsData?: HomePage["faq"] | null;
   dictionary: Dictionary;
 };
 
-export const FAQ = ({ cmsData, dictionary }: FAQProps) => {
-  // Use CMS data if available, otherwise fall back to dictionary
-  const title = cmsData?.title ?? dictionary.web.home.faq.title;
-  const description =
-    cmsData?.description ?? dictionary.web.home.faq.description;
-  const ctaText = cmsData?.ctaText ?? dictionary.web.home.faq.cta;
-  const items = cmsData?.items?.items ?? dictionary.web.home.faq.items;
+export const FAQ = ({ dictionary }: FAQProps) => {
+  const title = dictionary.web.home.faq.title;
+  const description = dictionary.web.home.faq.description;
+  const ctaText = dictionary.web.home.faq.cta;
+  const items = dictionary.web.home.faq.items;
 
   return (
     <div className="w-full py-20 lg:py-40">
@@ -47,7 +43,6 @@ export const FAQ = ({ cmsData, dictionary }: FAQProps) => {
             </div>
           </div>
           <Accordion className="w-full" collapsible type="single">
-            {/* @ts-expect-error - Types will be inferred once BaseHub schema is created */}
             {items.map((item, index) => (
               // biome-ignore lint/suspicious/noArrayIndexKey: Pre-existing pattern, items are static
               <AccordionItem key={index} value={`index-${index}`}>

@@ -4,7 +4,7 @@ import { type NextRequest, NextResponse } from "next/server";
 import simpleGit, { type SimpleGit, type StatusResult } from "simple-git";
 import { withMcpTools } from "@/lib/engineer/allowed-tools";
 import { isRepoAllowed } from "@/lib/engineer/repos";
-import { getShellPathSync } from "@/lib/engineer/shell-path";
+import { getShellPath } from "@/lib/engineer/shell-path";
 
 /**
  * API route to perform git operations
@@ -479,7 +479,7 @@ async function getConflictedFiles(git: SimpleGit): Promise<string[]> {
  * Invoke Claude CLI to resolve rebase conflict markers in the given files.
  * Returns true if all conflicts were resolved, false otherwise.
  */
-function resolveConflictsWithLLM(
+async function resolveConflictsWithLLM(
   git: SimpleGit,
   cwd: string,
   conflictedFiles: string[]
@@ -498,6 +498,7 @@ For each file:
 
 Do NOT run git rebase --continue. Just resolve the files and stage them.`;
 
+  const shellPath = await getShellPath();
   return new Promise((resolve) => {
     const claude = spawn(
       "claude",
@@ -515,7 +516,7 @@ Do NOT run git rebase --continue. Just resolve the files and stage them.`;
         cwd,
         env: {
           ...process.env,
-          PATH: getShellPathSync(),
+          PATH: shellPath,
         },
         stdio: ["ignore", "pipe", "pipe"],
       }

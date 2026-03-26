@@ -1,3 +1,4 @@
+import { LoopStatus } from "@repo/api/src/types/loop";
 import type {
   ArtifactsByType,
   ContributionDay,
@@ -6,7 +7,7 @@ import type {
   UpdateUserProfileFromClerkInput,
   UserProfileStats,
 } from "@repo/api/src/types/user";
-import { GitHubPRState, WorkstreamState, withDb } from "@repo/database";
+import { GitHubPRState, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 
 /**
@@ -217,7 +218,8 @@ export const usersService = {
         totalLoops,
         totalWorkstreams,
         contributionData,
-        concurrencyData,
+        loopConcurrencyData,
+        loopTokenAggregate,
       ] = await Promise.all([
         // Total artifacts created
         withDb((db) =>
@@ -278,14 +280,26 @@ export const usersService = {
             select: { createdAt: true },
           })
         ),
-        // Concurrency: assigned workstreams with their active date ranges
+        // Loop concurrency: loops with timing data
         withDb((db) =>
-          db.workstream.findMany({
+          db.loop.findMany({
             where: {
+              userId,
               organizationId,
-              assigneeId: userId,
+              startedAt: { not: null },
             },
-            select: { createdAt: true, updatedAt: true, state: true },
+            select: { startedAt: true, completedAt: true, status: true },
+          })
+        ),
+        // Loop token/cost totals
+        withDb((db) =>
+          db.loop.aggregate({
+            where: { userId, organizationId },
+            _sum: {
+              tokensInput: true,
+              tokensOutput: true,
+              estimatedCost: true,
+            },
           })
         ),
       ]);
@@ -298,7 +312,7 @@ export const usersService = {
       );
 
       const contributionHeatmap = buildContributionHeatmap(contributionData);
-      const avgConcurrency = computeAvgConcurrency(concurrencyData);
+      const avgConcurrency = computeAvgLoopConcurrency(loopConcurrencyData);
 
       return {
         totalArtifacts,
@@ -309,6 +323,9 @@ export const usersService = {
         totalWorkstreams,
         avgConcurrency,
         contributionHeatmap,
+        totalTokensInput: loopTokenAggregate._sum.tokensInput ?? 0,
+        totalTokensOutput: loopTokenAggregate._sum.tokensOutput ?? 0,
+        totalEstimatedCost: Number(loopTokenAggregate._sum.estimatedCost ?? 0),
       };
     } catch (error) {
       log.error("[users-service] Failed to get user stats", {
@@ -349,47 +366,52 @@ function buildContributionHeatmap(
 }
 
 /**
- * Compute average number of concurrent assigned workstreams.
- * Uses a simplified model: count workstreams whose active period overlaps
- * each week in the last 12 weeks, then average.
+ * Compute average loop concurrency: when this user has a loop running,
+ * how many loops are they running simultaneously on average?
+ *
+ * For each loop's start time, counts how many other loops overlapped,
+ * then averages those counts.
  */
-const TERMINAL_STATES = new Set<string>([
-  WorkstreamState.COMPLETED,
-  WorkstreamState.CANCELLED,
+const TERMINAL_LOOP_STATUSES = new Set<string>([
+  LoopStatus.Completed,
+  LoopStatus.Failed,
+  LoopStatus.Cancelled,
+  LoopStatus.TimedOut,
 ]);
 
-function computeAvgConcurrency(
-  workstreams: {
-    createdAt: Date;
-    updatedAt: Date;
-    state: WorkstreamState;
+function computeAvgLoopConcurrency(
+  loops: {
+    startedAt: Date | null;
+    completedAt: Date | null;
+    status: string;
   }[]
 ): number {
-  if (workstreams.length === 0) {
+  const now = new Date();
+
+  const intervals = loops
+    .filter((l): l is typeof l & { startedAt: Date } => l.startedAt !== null)
+    .map((l) => ({
+      start: l.startedAt,
+      end:
+        TERMINAL_LOOP_STATUSES.has(l.status) && l.completedAt
+          ? l.completedAt
+          : now,
+    }));
+
+  if (intervals.length === 0) {
     return 0;
   }
 
-  const weeks = 12;
-  const now = new Date();
   let totalConcurrent = 0;
-
-  for (let w = 0; w < weeks; w++) {
-    const weekStart = new Date(now);
-    weekStart.setDate(weekStart.getDate() - (w + 1) * 7);
-    const weekEnd = new Date(now);
-    weekEnd.setDate(weekEnd.getDate() - w * 7);
-
+  for (const point of intervals) {
     let concurrent = 0;
-    for (const ws of workstreams) {
-      const started = ws.createdAt;
-      // Active workstreams: use updatedAt as a proxy for "still active" period
-      const ended = TERMINAL_STATES.has(ws.state) ? ws.updatedAt : now;
-      if (started <= weekEnd && ended >= weekStart) {
+    for (const interval of intervals) {
+      if (interval.start <= point.start && interval.end >= point.start) {
         concurrent++;
       }
     }
     totalConcurrent += concurrent;
   }
 
-  return Math.round((totalConcurrent / weeks) * 10) / 10;
+  return Math.round((totalConcurrent / intervals.length) * 10) / 10;
 }

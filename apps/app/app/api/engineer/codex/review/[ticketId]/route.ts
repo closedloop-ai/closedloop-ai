@@ -26,11 +26,15 @@ import {
 } from "@/lib/engineer/codex-models";
 import { getCodexChatStatePath } from "@/lib/engineer/codex-state";
 import {
+  checkLegacyProcessAndMigrate,
+  resolveReviewReadPaths,
+} from "@/lib/engineer/process-utils";
+import {
   expandHome,
   getWorktreeParentDir,
   isRepoAllowed,
 } from "@/lib/engineer/repos";
-import { getShellPathSync } from "@/lib/engineer/shell-path";
+import { getShellPath } from "@/lib/engineer/shell-path";
 import { ensureWorktree } from "@/lib/engineer/worktree";
 
 export const dynamic = "force-dynamic";
@@ -79,7 +83,7 @@ function getWorktreeDir(repoPath: string, ticketId: string): string {
 }
 
 function getReviewPaths(worktreeDir: string, provider: string) {
-  const workDir = join(worktreeDir, ".claude", "work");
+  const workDir = join(worktreeDir, ".closedloop-ai", "work");
   return {
     workDir,
     worktreeDir,
@@ -169,7 +173,11 @@ const REVIEW_SYSTEM_PROMPT = [
   "If you initially suspect an issue but upon further analysis determine it is not actually a problem, omit it from the findings entirely. Only include confirmed issues.",
 ].join(" ");
 
-function spawnClaudeReview(cwd: string, model: string): ChildProcess {
+async function spawnClaudeReview(
+  cwd: string,
+  model: string
+): Promise<ChildProcess> {
+  const shellPath = await getShellPath();
   return spawn(
     "claude",
     [
@@ -190,7 +198,7 @@ function spawnClaudeReview(cwd: string, model: string): ChildProcess {
       stdio: ["pipe", "pipe", "pipe"],
       env: {
         ...process.env,
-        PATH: getShellPathSync(),
+        PATH: shellPath,
       },
     }
   );
@@ -293,7 +301,7 @@ function setupProcessLifecycle(
 
     // Persist Codex session ID to codex-chat-review.json so the chat route can resume it
     if (provider === "codex" && sessionIdHolder.value) {
-      const workDir = join(worktreeDir, ".claude", "work");
+      const workDir = join(worktreeDir, ".closedloop-ai", "work");
       const chatStatePath = getCodexChatStatePath(workDir, "review");
       await mkdir(workDir, { recursive: true });
       await writeFile(
@@ -546,7 +554,7 @@ async function resolveClaudeReviewProcess(
   stateDir: string,
   provider: string
 ): Promise<{ process: ChildProcess; command: string }> {
-  const first = spawnClaudeReview(cwd, model);
+  const first = await spawnClaudeReview(cwd, model);
   first.stdin?.write("/code-review:start");
   first.stdin?.end();
   console.log(`[codex-review] Trying /code-review:start (pid: ${first.pid})`);
@@ -623,7 +631,7 @@ async function resolveClaudeReviewProcess(
   );
   await clearReviewLog(stateDir, provider);
 
-  const fallback = spawnClaudeReview(cwd, model);
+  const fallback = await spawnClaudeReview(cwd, model);
   fallback.stdin?.write(`/review ${prNum}`);
   fallback.stdin?.end();
   console.log(`[codex-review] Fallback /review spawned (pid: ${fallback.pid})`);
@@ -686,9 +694,24 @@ export async function POST(
     return worktreeError;
   }
 
-  // Check if a review is already running for this provider
-  const { statePath, pidPath } = getReviewPaths(worktreeDir, provider);
-  if (await checkForRunningReview(statePath)) {
+  const preflightResult = checkLegacyProcessAndMigrate(worktreeDir);
+  if (preflightResult === "live-process-blocking") {
+    return Response.json(
+      {
+        error:
+          "A job started before the .closedloop-ai migration is still running. Stop it first, then retry.",
+      },
+      { status: 409 }
+    );
+  }
+
+  // Check if a review is already running for this provider in EITHER work dir
+  const { pidPath } = getReviewPaths(worktreeDir, provider);
+  const { statePath: readStatePath } = resolveReviewReadPaths(
+    worktreeDir,
+    provider
+  );
+  if (await checkForRunningReview(readStatePath)) {
     return Response.json(
       {
         error:
@@ -799,7 +822,9 @@ export async function POST(
           );
           // Synchronous writes to close the race window with the status poller
           // and ensure the log is clean before the fallback process starts writing
-          mkdirSync(join(worktreeDir, ".claude", "work"), { recursive: true });
+          mkdirSync(join(worktreeDir, ".closedloop-ai", "work"), {
+            recursive: true,
+          });
           writeFileSync(
             reviewLogPath,
             `[Model ${model} unavailable — fell back to ${DEFAULT_CODEX_MODEL}]\n\n`

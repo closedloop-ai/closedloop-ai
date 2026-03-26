@@ -20,6 +20,11 @@ import { MetadataSection } from "./metadata-panel";
 
 type TargetRepositoryFieldsProps = {
   /**
+   * When false, omits the top border/padding used to separate this block from content above.
+   * Use false when this section is first inside a collapsible (trigger already has a bottom border).
+   */
+  separator?: boolean;
+  /**
    * Section title (e.g., "Plan Generation" or "Repository Settings")
    */
   title: string;
@@ -56,6 +61,7 @@ type TargetRepositoryFieldsProps = {
  * Used by PRD and Feature metadata panels.
  */
 export function TargetRepositoryFields({
+  separator = true,
   title,
   targetRepo,
   targetBranch,
@@ -139,7 +145,7 @@ export function TargetRepositoryFields({
   };
 
   return (
-    <MetadataSection separator>
+    <MetadataSection separator={separator}>
       <h4 className="font-medium text-sm">{title}</h4>
 
       <div className="space-y-2">

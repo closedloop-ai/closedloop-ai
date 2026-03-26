@@ -61,7 +61,11 @@ vi.mock("@/lib/desktop-gateway-wire", () => ({
 // --- Imports (after mocks) ---
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { launchLoopOnDesktop } from "@/lib/loops/loop-desktop";
+import {
+  DispatchError,
+  isDispatchError,
+  launchLoopOnDesktop,
+} from "@/lib/loops/loop-desktop";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -180,5 +184,37 @@ describe("dispatchRelayOperation (via launchLoopOnDesktop)", () => {
     const { stopDesktopLoop } = await import("@/lib/loops/loop-desktop");
 
     await expect(stopDesktopLoop("loop-1", "ct-1")).resolves.toBeUndefined();
+  });
+});
+
+describe("DispatchError", () => {
+  const originalEnv = { ...process.env };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.RELAY_API_URL = "http://relay.test";
+    process.env.INTERNAL_API_SECRET = "secret";
+  });
+
+  afterEach(() => {
+    process.env.RELAY_API_URL = originalEnv.RELAY_API_URL;
+    process.env.INTERNAL_API_SECRET = originalEnv.INTERNAL_API_SECRET;
+  });
+
+  it("rejects with a DispatchError carrying the commandId when relay returns { delivered: false }", async () => {
+    vi.spyOn(globalThis, "fetch").mockReturnValue(
+      mockResponse(200, { delivered: false, reason: "target_not_connected" })
+    );
+
+    let caught: unknown;
+    try {
+      await launchLoopOnDesktop(VALID_LAUNCH_OPTS);
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeInstanceOf(DispatchError);
+    expect(isDispatchError(caught)).toBe(true);
+    expect((caught as DispatchError).commandId).toBe("cmd-test-1");
   });
 });

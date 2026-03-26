@@ -16,7 +16,7 @@ import {
   getSelfLearningScriptPath,
   getWorktreesWithPendingLearnings,
 } from "@/lib/engineer/repos";
-import { getShellPathSync } from "@/lib/engineer/shell-path";
+import { getShellPath } from "@/lib/engineer/shell-path";
 
 const STATUS_DIR = join(homedir(), ".closedloop-ai", "learnings");
 const STATUS_PATH = join(STATUS_DIR, "batch-processing-status.json");
@@ -104,7 +104,7 @@ export function GET() {
  * Spawns a detached bash wrapper that runs process-chat-learnings.sh
  * for each worktree sequentially.
  */
-export function POST() {
+export async function POST() {
   migrateLegacyLearningsDir();
 
   // Concurrency guard: return early if a batch job is already running
@@ -184,13 +184,14 @@ export function POST() {
   const logFile = join(logDir, "batch-process-learnings.log");
   const logFd = openSync(logFile, "a");
 
+  const shellPath = await getShellPath();
   try {
     const child = spawn("bash", ["-c", wrapperScript], {
       detached: true,
       stdio: ["ignore", logFd, logFd],
       env: {
         ...process.env,
-        PATH: getShellPathSync(),
+        PATH: shellPath,
       },
     });
 

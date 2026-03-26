@@ -77,15 +77,17 @@ function getEventDetails(event: LoopEvent): string {
     case "started":
       return `Loop ${event.loopId} started`;
     case "output":
-      return event.chunk;
+      return event.chunk ?? "";
     case "progress":
       return `${event.stage}${event.percent > 0 ? ` (${event.percent}%)` : ""}`;
     case "tool_call":
       return `${event.tool} - ${event.status}`;
     case "artifact_created":
       return `Created ${event.artifactType} (${event.artifactId})`;
-    case "completed":
-      return `Tokens: ${event.tokensUsed.input} in / ${event.tokensUsed.output} out`;
+    case "completed": {
+      const tokens = event.tokensUsed ?? { input: 0, output: 0 };
+      return `Tokens: ${tokens.input} in / ${tokens.output} out`;
+    }
     case "error":
       return `${event.code}: ${event.message}`;
     case "cancelled":
@@ -96,7 +98,7 @@ function getEventDetails(event: LoopEvent): string {
 }
 
 function isExpandableEvent(event: LoopEvent): boolean {
-  if (event.type === "output" && event.chunk.length > 100) {
+  if (event.type === "output" && event.chunk && event.chunk.length > 100) {
     return true;
   }
   if (event.type === "tool_call" && (event.input || event.output)) {
@@ -114,7 +116,7 @@ function isExpandableEvent(event: LoopEvent): boolean {
 function getExpandedContent(event: LoopEvent): string | null {
   switch (event.type) {
     case "output":
-      return event.chunk;
+      return event.chunk ?? "";
     case "tool_call": {
       const parts: string[] = [];
       if (event.input) {
@@ -278,9 +280,9 @@ export function LoopAuditLog({ loopId }: Readonly<LoopAuditLogProps>) {
           </p>
         </div>
       ) : (
-        <div className="rounded-md border">
+        <div className="max-h-[500px] overflow-auto rounded-md border">
           <Table>
-            <TableHeader>
+            <TableHeader className="sticky top-0 z-10 bg-background">
               <TableRow>
                 <TableHead className="w-[140px]">Timestamp</TableHead>
                 <TableHead className="w-[160px]">Event Type</TableHead>

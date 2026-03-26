@@ -33,8 +33,8 @@ import { artifactsService } from "../../service";
 import {
   COMMAND_MAP,
   checkBackendMismatch,
-  resolveComputeTargetForRoute,
   resolveLoopContext,
+  resolveRunLoopComputeTarget,
 } from "./run-loop-helpers";
 import { runLoopSchema } from "./validators";
 
@@ -116,7 +116,7 @@ export const POST = withAuth<RunLoopResponse, "/artifacts/[id]/run-loop">(
         );
       }
 
-      const ctRouteResult = await resolveComputeTargetForRoute(
+      const ctRouteResult = await resolveRunLoopComputeTarget(
         user.organizationId,
         user.id,
         body.computeTargetId

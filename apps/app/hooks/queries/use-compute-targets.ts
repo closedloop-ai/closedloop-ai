@@ -1,6 +1,9 @@
 "use client";
 
-import type { ComputeTarget } from "@repo/api/src/types/compute-target";
+import type {
+  ComputeTarget,
+  SetComputeTargetSharingResponse,
+} from "@repo/api/src/types/compute-target";
 import {
   type UseQueryOptions,
   useMutation,
@@ -61,6 +64,28 @@ export function useDeleteComputeTarget(userId: string) {
       queryClient.invalidateQueries({
         queryKey: computePreferenceKeys.detail(userId),
       });
+    },
+  });
+}
+
+export function useToggleComputeTargetSharing() {
+  const queryClient = useQueryClient();
+  const apiClient = useApiClient();
+
+  return useMutation({
+    mutationFn: ({
+      id,
+      isSharedWithOrg,
+    }: {
+      id: string;
+      isSharedWithOrg: boolean;
+    }) =>
+      apiClient.patch<SetComputeTargetSharingResponse>(
+        `/compute-targets/${id}/sharing`,
+        { isSharedWithOrg }
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: computeTargetKeys.list() });
     },
   });
 }

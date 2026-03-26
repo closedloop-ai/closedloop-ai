@@ -1,10 +1,13 @@
 import { execSync, spawnSync } from "node:child_process";
 import {
   copyFileSync,
+  cpSync,
   existsSync,
+  mkdirSync,
   readdirSync,
   renameSync,
   rmSync,
+  statSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
@@ -74,43 +77,97 @@ export function fetchOrigin(repoPath: string): void {
   }
 }
 
+type SavedWorktreeState = {
+  claudeDir: string | null;
+  closedloopAiDir: string | null;
+};
+
 /**
- * Save .claude/ from a non-git directory to a temp location.
- * Returns the temp path, or null if there was nothing to save.
+ * Save .claude/ and .closedloop-ai/ from a non-git directory to temp locations.
+ * Returns saved temp paths (null for each if the directory did not exist).
  */
-function saveClaudeState(worktreeDir: string): string | null {
+function saveWorktreeState(worktreeDir: string): SavedWorktreeState {
+  const ts = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
   const claudeDir = join(worktreeDir, ".claude");
-  if (!existsSync(claudeDir)) {
-    return null;
+  let savedClaudeDir: string | null = null;
+  if (existsSync(claudeDir)) {
+    savedClaudeDir = join(tmpdir(), `worktree-claude-${ts}`);
+    renameSync(claudeDir, savedClaudeDir);
   }
-  const saved = join(tmpdir(), `worktree-claude-${Date.now()}`);
-  renameSync(claudeDir, saved);
-  return saved;
+
+  const closedloopAiDir = join(worktreeDir, ".closedloop-ai");
+  let savedClosedloopAiDir: string | null = null;
+  if (existsSync(closedloopAiDir)) {
+    savedClosedloopAiDir = join(tmpdir(), `worktree-closedloop-ai-${ts}`);
+    renameSync(closedloopAiDir, savedClosedloopAiDir);
+  }
+
+  return { claudeDir: savedClaudeDir, closedloopAiDir: savedClosedloopAiDir };
 }
 
 /**
- * Restore previously saved .claude/ state files into worktreeDir.
- * Merges work files if .claude/ already exists (created by git worktree add).
+ * Restore previously saved .claude/ and .closedloop-ai/ state into worktreeDir.
+ *
+ * For .claude/: If absent in new worktree, rename saved dir straight in.
+ * If .claude/ already exists (git recreated tracked files), do a
+ * destination-precedence merge: for each child of the saved dir, if that
+ * child is ABSENT in destination, restore it.
+ *
+ * For .closedloop-ai/: Always merge using cpSync (destination-precedence is
+ * not needed here since git never creates this directory).
  */
-function restoreClaudeState(savedDir: string, worktreeDir: string): void {
-  const destClaude = join(worktreeDir, ".claude");
-  if (!existsSync(destClaude)) {
-    renameSync(savedDir, destClaude);
-    return;
-  }
-  // Merge: copy saved work files into the new worktree's .claude/work
-  const savedWork = join(savedDir, "work");
-  if (existsSync(savedWork)) {
-    const destWork = join(destClaude, "work");
-    for (const file of readdirSync(savedWork)) {
-      try {
-        copyFileSync(join(savedWork, file), join(destWork, file));
-      } catch {
-        // Best effort
+function restoreWorktreeState(
+  saved: SavedWorktreeState,
+  worktreeDir: string
+): void {
+  const { claudeDir: savedClaudeDir, closedloopAiDir: savedClosedloopAiDir } =
+    saved;
+
+  if (savedClaudeDir) {
+    const destClaude = join(worktreeDir, ".claude");
+    if (existsSync(destClaude)) {
+      // Destination-precedence merge: restore only children absent in dest
+      let allCopied = true;
+      for (const child of readdirSync(savedClaudeDir)) {
+        const srcChild = join(savedClaudeDir, child);
+        const destChild = join(destClaude, child);
+        if (!existsSync(destChild)) {
+          try {
+            let isDir = false;
+            try {
+              isDir = statSync(srcChild).isDirectory();
+            } catch {
+              // If stat fails, treat as file
+            }
+            if (isDir) {
+              cpSync(srcChild, destChild, { recursive: true });
+            } else {
+              copyFileSync(srcChild, destChild);
+            }
+          } catch {
+            allCopied = false;
+          }
+        }
       }
+      // Only delete backup if all children were restored; preserve on partial failure
+      if (allCopied) {
+        rmSync(savedClaudeDir, { recursive: true, force: true });
+      }
+    } else {
+      renameSync(savedClaudeDir, destClaude);
     }
   }
-  rmSync(savedDir, { recursive: true, force: true });
+
+  if (savedClosedloopAiDir) {
+    const destClosedloopAi = join(worktreeDir, ".closedloop-ai");
+    try {
+      cpSync(savedClosedloopAiDir, destClosedloopAi, { recursive: true });
+      rmSync(savedClosedloopAiDir, { recursive: true, force: true });
+    } catch {
+      // Best effort -- backup preserved at savedClosedloopAiDir if cpSync failed
+    }
+  }
 }
 
 /**
@@ -124,10 +181,10 @@ export function addWorktree(
 ): void {
   // If the directory exists but isn't a git worktree (e.g. state files were
   // written there by a "use base repo" review), remove it so git worktree add
-  // can create it cleanly. Preserve .claude/ (review state files).
-  let savedClaudeDir: string | null = null;
+  // can create it cleanly. Preserve .claude/ and .closedloop-ai/ (review state files).
+  let savedState: SavedWorktreeState | null = null;
   if (existsSync(worktreeDir) && !existsSync(join(worktreeDir, ".git"))) {
-    savedClaudeDir = saveClaudeState(worktreeDir);
+    savedState = saveWorktreeState(worktreeDir);
     rmSync(worktreeDir, { recursive: true, force: true });
   }
 
@@ -142,14 +199,27 @@ export function addWorktree(
     // Best effort
   }
 
-  execSync(`git worktree add "${worktreeDir}" "${ref}"`, {
-    cwd: repoPath,
-    stdio: "pipe",
-    timeout: NETWORK_GIT_TIMEOUT,
-  });
+  try {
+    execSync(`git worktree add "${worktreeDir}" "${ref}"`, {
+      cwd: repoPath,
+      stdio: "pipe",
+      timeout: NETWORK_GIT_TIMEOUT,
+    });
+  } catch (err) {
+    // Restore saved state before propagating -- prevents stranding in /tmp
+    if (savedState) {
+      try {
+        mkdirSync(worktreeDir, { recursive: true });
+        restoreWorktreeState(savedState, worktreeDir);
+      } catch {
+        // Best effort -- don't mask the original git error
+      }
+    }
+    throw err;
+  }
 
-  if (savedClaudeDir) {
-    restoreClaudeState(savedClaudeDir, worktreeDir);
+  if (savedState) {
+    restoreWorktreeState(savedState, worktreeDir);
   }
 
   copyEnvLocalFiles(repoPath, worktreeDir);

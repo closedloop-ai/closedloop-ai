@@ -43,6 +43,10 @@ export const relayResultIngestValidator = z.union([
   }),
 ]);
 
+export const setSharingValidator = z.object({
+  isSharedWithOrg: z.boolean(),
+});
+
 export const createDesktopCommandValidator = z.object({
   operationId: z.string().trim().min(1),
   method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]),

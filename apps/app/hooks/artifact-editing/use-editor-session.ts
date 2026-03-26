@@ -57,9 +57,7 @@ export function useEditorSession(config: UseEditorSessionConfig) {
 
   const editorRef = useRef<Editor | null>(null);
   const editorSnapshotRef = useRef<JSONContent | null>(null);
-  const handleEditorInstance = useCallback((editor: Editor | null) => {
-    editorRef.current = editor;
-  }, []);
+  const [isContentReady, setIsContentReady] = useState(false);
 
   const isViewingHistorical = currentVersion !== artifact.latestVersion;
 
@@ -70,6 +68,25 @@ export function useEditorSession(config: UseEditorSessionConfig) {
     !isViewingHistorical && artifact.slug
       ? generateArtifactRoomId(artifact.organizationId, artifact.slug)
       : null;
+
+  const handleEditorInstance = useCallback(
+    (editor: Editor | null) => {
+      editorRef.current = editor;
+      if (editor === null) {
+        // Editor unmounting (e.g. version change via key remount) — reset
+        // content readiness so the loading spinner reappears.
+        setIsContentReady(false);
+      } else if (!liveblocksRoomId) {
+        // For non-Liveblocks (historical versions), content is set synchronously
+        // from the value prop, so the editor is content-ready on creation.
+        setIsContentReady(true);
+      }
+    },
+    [liveblocksRoomId]
+  );
+  const handleContentReady = useCallback(() => {
+    setIsContentReady(true);
+  }, []);
 
   const exitEditMode = useCallback(() => {
     setIsEditing(false);
@@ -159,6 +176,7 @@ export function useEditorSession(config: UseEditorSessionConfig) {
   return {
     // Editing state
     isEditing,
+    isContentReady,
     isViewingHistorical,
     liveblocksRoomId,
     openThreadCount,
@@ -169,6 +187,7 @@ export function useEditorSession(config: UseEditorSessionConfig) {
 
     // Editor instance management
     handleEditorInstance,
+    handleContentReady,
 
     // Thread count
     handleThreadCountChange,
