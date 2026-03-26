@@ -417,12 +417,12 @@ function createMockInstallation(
 ): GitHubInstallation {
   return {
     id: "installation-uuid",
-    installationId: 123_456,
-    accountId: 12_345,
+    installationId: "123456",
+    accountId: "12345",
     accountLogin: "test-org",
     accountType: "Organization",
     senderLogin: "test-user",
-    senderId: 1,
+    senderId: "1",
     status: GitHubInstallationStatus.ACTIVE,
     permissions: {},
     events: [],
@@ -503,7 +503,7 @@ describe("handleInstallationCreated", () => {
     mockFindInstallation.mockResolvedValue(null);
     mockUpsertInstallation.mockResolvedValue(
       createMockInstallation({
-        installationId: 123_456,
+        installationId: "123456",
         status: GitHubInstallationStatus.PENDING_CLAIM,
         organizationId: null,
       })
@@ -512,13 +512,13 @@ describe("handleInstallationCreated", () => {
 
     await handleInstallationCreated(event);
 
-    expect(mockFindInstallation).toHaveBeenCalledWith(123_456);
-    expect(mockUpsertInstallation).toHaveBeenCalledWith(123_456, {
-      accountId: 12_345,
+    expect(mockFindInstallation).toHaveBeenCalledWith("123456");
+    expect(mockUpsertInstallation).toHaveBeenCalledWith("123456", {
+      accountId: "12345",
       accountLogin: "new-org",
       accountType: "Organization",
       senderLogin: "test-user",
-      senderId: 1,
+      senderId: "1",
       status: "PENDING_CLAIM",
       permissions: { metadata: "read" },
       events: ["push", "pull_request"],
@@ -540,7 +540,7 @@ describe("handleInstallationCreated", () => {
     const event = createInstallationCreatedEvent(123_456, "existing-org");
 
     const existingInstallation = createMockInstallation({
-      installationId: 123_456,
+      installationId: "123456",
       status: GitHubInstallationStatus.ACTIVE,
       organizationId: "org-uuid",
     });
@@ -552,7 +552,7 @@ describe("handleInstallationCreated", () => {
     await handleInstallationCreated(event);
 
     expect(mockUpsertInstallation).toHaveBeenCalledWith(
-      123_456,
+      "123456",
       expect.objectContaining({
         status: undefined, // Should not set status when preserving org
         organizationId: "org-uuid",
@@ -564,7 +564,7 @@ describe("handleInstallationCreated", () => {
     const event = createInstallationCreatedEvent(123_456, "suspended-org");
 
     const existingInstallation = createMockInstallation({
-      installationId: 123_456,
+      installationId: "123456",
       status: GitHubInstallationStatus.SUSPENDED,
       organizationId: "org-uuid",
     });
@@ -576,7 +576,7 @@ describe("handleInstallationCreated", () => {
     await handleInstallationCreated(event);
 
     expect(mockUpsertInstallation).toHaveBeenCalledWith(
-      123_456,
+      "123456",
       expect.objectContaining({
         status: undefined,
         organizationId: "org-uuid",
@@ -588,7 +588,7 @@ describe("handleInstallationCreated", () => {
     const event = createInstallationCreatedEvent(123_456, "uninstalled-org");
 
     const existingInstallation = createMockInstallation({
-      installationId: 123_456,
+      installationId: "123456",
       status: GitHubInstallationStatus.UNINSTALLED,
       organizationId: null,
     });
@@ -605,7 +605,7 @@ describe("handleInstallationCreated", () => {
     await handleInstallationCreated(event);
 
     expect(mockUpsertInstallation).toHaveBeenCalledWith(
-      123_456,
+      "123456",
       expect.objectContaining({
         status: "PENDING_CLAIM",
         organizationId: undefined,
@@ -634,7 +634,7 @@ describe("handleInstallationCreated", () => {
 
     mockFindInstallation.mockResolvedValue(null);
     const newInstallation = createMockInstallation({
-      installationId: 123_456,
+      installationId: "123456",
       status: GitHubInstallationStatus.PENDING_CLAIM,
     });
     mockUpsertInstallation.mockResolvedValue(newInstallation);
@@ -666,7 +666,7 @@ describe("handleInstallationCreated", () => {
     mockFindInstallation.mockResolvedValue(null);
     mockUpsertInstallation.mockResolvedValue(
       createMockInstallation({
-        installationId: 123_456,
+        installationId: "123456",
       })
     );
 
@@ -689,7 +689,7 @@ describe("handleInstallationDeleted", () => {
     const event = createInstallationDeletedEvent(123_456, "test-org");
     const existingInstallation = createMockInstallation({
       id: "installation-uuid",
-      installationId: 123_456,
+      installationId: "123456",
       status: GitHubInstallationStatus.ACTIVE,
       organizationId: "org-uuid",
     });
@@ -699,7 +699,7 @@ describe("handleInstallationDeleted", () => {
 
     await handleInstallationDeleted(event);
 
-    expect(mockFindInstallation).toHaveBeenCalledWith(123_456);
+    expect(mockFindInstallation).toHaveBeenCalledWith("123456");
     expect(mockWithDb).toHaveBeenCalled();
     expect(mockDb.gitHubInstallation.update).toHaveBeenCalledWith({
       where: { id: "installation-uuid" },
@@ -717,7 +717,7 @@ describe("handleInstallationDeleted", () => {
 
     await handleInstallationDeleted(event);
 
-    expect(mockFindInstallation).toHaveBeenCalledWith(123_456);
+    expect(mockFindInstallation).toHaveBeenCalledWith("123456");
     expect(mockDb.gitHubInstallation.update).not.toHaveBeenCalled();
   });
 
@@ -725,7 +725,7 @@ describe("handleInstallationDeleted", () => {
     const event = createInstallationDeletedEvent(123_456, "test-org");
     const existingInstallation = createMockInstallation({
       id: "installation-uuid",
-      installationId: 123_456,
+      installationId: "123456",
       status: GitHubInstallationStatus.SUSPENDED,
       organizationId: "org-uuid",
     });
@@ -762,7 +762,7 @@ describe("handleInstallationSuspended", () => {
     );
     const existingInstallation = createMockInstallation({
       id: "installation-uuid",
-      installationId: 123_456,
+      installationId: "123456",
       status: GitHubInstallationStatus.ACTIVE,
     });
 
@@ -771,7 +771,7 @@ describe("handleInstallationSuspended", () => {
 
     await handleInstallationSuspended(event);
 
-    expect(mockFindInstallation).toHaveBeenCalledWith(123_456);
+    expect(mockFindInstallation).toHaveBeenCalledWith("123456");
     expect(mockUpdateInstallationStatus).toHaveBeenCalledWith(
       "installation-uuid",
       GitHubInstallationStatus.SUSPENDED,
@@ -793,7 +793,7 @@ describe("handleInstallationSuspended", () => {
 
     await handleInstallationSuspended(event);
 
-    expect(mockFindInstallation).toHaveBeenCalledWith(123_456);
+    expect(mockFindInstallation).toHaveBeenCalledWith("123456");
     expect(mockUpdateInstallationStatus).not.toHaveBeenCalled();
   });
 });
@@ -811,7 +811,7 @@ describe("handleInstallationUnsuspended", () => {
     const event = createInstallationUnsuspendEvent(123_456, "test-org");
     const existingInstallation = createMockInstallation({
       id: "installation-uuid",
-      installationId: 123_456,
+      installationId: "123456",
       status: GitHubInstallationStatus.SUSPENDED,
       organizationId: "org-uuid",
     });
@@ -821,7 +821,7 @@ describe("handleInstallationUnsuspended", () => {
 
     await handleInstallationUnsuspended(event);
 
-    expect(mockFindInstallation).toHaveBeenCalledWith(123_456);
+    expect(mockFindInstallation).toHaveBeenCalledWith("123456");
     expect(mockUpdateInstallationStatus).toHaveBeenCalledWith(
       "installation-uuid",
       GitHubInstallationStatus.ACTIVE,
@@ -836,7 +836,7 @@ describe("handleInstallationUnsuspended", () => {
     const event = createInstallationUnsuspendEvent(123_456, "test-org");
     const existingInstallation = createMockInstallation({
       id: "installation-uuid",
-      installationId: 123_456,
+      installationId: "123456",
       status: GitHubInstallationStatus.SUSPENDED,
       organizationId: null,
     });
@@ -860,7 +860,7 @@ describe("handleInstallationUnsuspended", () => {
     const event = createInstallationUnsuspendEvent(123_456, "test-org");
     const existingInstallation = createMockInstallation({
       id: "installation-uuid",
-      installationId: 123_456,
+      installationId: "123456",
       status: GitHubInstallationStatus.UNINSTALLED,
       organizationId: null,
     });
@@ -887,7 +887,7 @@ describe("handleInstallationUnsuspended", () => {
 
     await handleInstallationUnsuspended(event);
 
-    expect(mockFindInstallation).toHaveBeenCalledWith(123_456);
+    expect(mockFindInstallation).toHaveBeenCalledWith("123456");
     expect(mockUpdateInstallationStatus).not.toHaveBeenCalled();
   });
 
@@ -895,7 +895,7 @@ describe("handleInstallationUnsuspended", () => {
     const event = createInstallationUnsuspendEvent(123_456, "test-org");
     const existingInstallation = createMockInstallation({
       id: "installation-uuid",
-      installationId: 123_456,
+      installationId: "123456",
       status: GitHubInstallationStatus.SUSPENDED,
       organizationId: "org-uuid",
       suspendedAt: new Date(),
@@ -949,7 +949,7 @@ describe("integration scenarios", () => {
     mockFindInstallation.mockResolvedValue(null);
     const newInstallation = createMockInstallation({
       id: "installation-uuid",
-      installationId,
+      installationId: String(installationId),
       status: GitHubInstallationStatus.PENDING_CLAIM,
       organizationId: null,
     });
@@ -959,7 +959,7 @@ describe("integration scenarios", () => {
     await handleInstallationCreated(createdEvent);
 
     expect(mockUpsertInstallation).toHaveBeenCalledWith(
-      installationId,
+      String(installationId),
       expect.objectContaining({
         status: "PENDING_CLAIM",
       })
@@ -976,7 +976,7 @@ describe("integration scenarios", () => {
 
     const activeInstallation = createMockInstallation({
       id: "installation-uuid",
-      installationId,
+      installationId: String(installationId),
       status: GitHubInstallationStatus.ACTIVE,
       organizationId: "org-uuid",
     });
@@ -1003,7 +1003,7 @@ describe("integration scenarios", () => {
 
     const suspendedInstallation = createMockInstallation({
       id: "installation-uuid",
-      installationId,
+      installationId: String(installationId),
       status: GitHubInstallationStatus.SUSPENDED,
       organizationId: "org-uuid",
     });
@@ -1049,7 +1049,7 @@ describe("integration scenarios", () => {
 
     // First, installation is deleted
     const deletedInstallation = createMockInstallation({
-      installationId,
+      installationId: String(installationId),
       status: GitHubInstallationStatus.UNINSTALLED,
       organizationId: null,
     });
@@ -1063,7 +1063,7 @@ describe("integration scenarios", () => {
     mockFindInstallation.mockResolvedValue(deletedInstallation);
     mockUpsertInstallation.mockResolvedValue(
       createMockInstallation({
-        installationId,
+        installationId: String(installationId),
         status: GitHubInstallationStatus.PENDING_CLAIM,
         organizationId: null,
       })
@@ -1073,7 +1073,7 @@ describe("integration scenarios", () => {
     await handleInstallationCreated(reinstallEvent);
 
     expect(mockUpsertInstallation).toHaveBeenCalledWith(
-      installationId,
+      String(installationId),
       expect.objectContaining({
         status: "PENDING_CLAIM",
         organizationId: undefined,
@@ -1097,7 +1097,7 @@ describe("handleInstallation (orchestrator)", () => {
     mockFindInstallation.mockResolvedValue(null);
     mockUpsertInstallation.mockResolvedValue(
       createMockInstallation({
-        installationId: 123_456,
+        installationId: "123456",
         status: GitHubInstallationStatus.PENDING_CLAIM,
         organizationId: null,
       })

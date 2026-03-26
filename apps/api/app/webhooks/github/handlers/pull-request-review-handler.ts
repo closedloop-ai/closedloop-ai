@@ -146,7 +146,7 @@ async function handleSubmittedReview(
     },
     create: {
       pullRequestId: existingPr.id,
-      githubReviewId: BigInt(review.id),
+      githubReviewId: String(review.id),
       authorLogin: reviewerLogin,
       authorAvatarUrl: review.user?.avatar_url ?? null,
       state: reviewDecision,
@@ -157,7 +157,7 @@ async function handleSubmittedReview(
         : new Date(),
     },
     update: {
-      githubReviewId: BigInt(review.id),
+      githubReviewId: String(review.id),
       authorAvatarUrl: review.user?.avatar_url ?? null,
       state: reviewDecision,
       body: review.body ?? null,
@@ -235,7 +235,7 @@ async function handleDismissedReview(
       },
       create: {
         pullRequestId: existingPr.id,
-        githubReviewId: BigInt(review.id),
+        githubReviewId: String(review.id),
         authorLogin: reviewerLogin,
         authorAvatarUrl: review.user?.avatar_url ?? null,
         state: ReviewDecision.Dismissed,

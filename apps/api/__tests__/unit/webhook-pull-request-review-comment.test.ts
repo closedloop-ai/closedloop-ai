@@ -4,8 +4,8 @@
  * Tests the handlePullRequestReviewComment function which processes review comment events:
  * - created → Upserts GitHubPRReviewComment record + GITHUB_PR_COMMENT_ADDED workstream event (idempotent)
  * - created with null reviewId → Handles missing pull_request_review_id
- * - edited → Updates body field via updateMany with BigInt key
- * - deleted → Deletes record via deleteMany with BigInt key
+ * - edited → Updates body field via updateMany with String key
+ * - deleted → Deletes record via deleteMany with String key
  * - Unknown repository/PR → Graceful early exit
  * - Unsupported actions → Skips before DB queries
  */
@@ -226,7 +226,7 @@ describe("handlePullRequestReviewComment", () => {
   });
 
   describe("created action", () => {
-    it("creates GitHubPRReviewComment with BigInt for githubCommentId and creates GITHUB_PR_COMMENT_ADDED event", async () => {
+    it("creates GitHubPRReviewComment with String for githubCommentId and creates GITHUB_PR_COMMENT_ADDED event", async () => {
       const repository = createRepository(789);
       const pullRequest = createPullRequest({
         number: 42,
@@ -294,13 +294,13 @@ describe("handlePullRequestReviewComment", () => {
         },
       });
 
-      // Verify comment upsert with BigInt (idempotent for webhook retries)
+      // Verify comment upsert with String (idempotent for webhook retries)
       expect(mockTx.gitHubPRReviewComment.upsert).toHaveBeenCalledWith({
-        where: { githubCommentId: BigInt(123_456_789) },
+        where: { githubCommentId: String(123_456_789) },
         create: {
           pullRequestId: "pr-uuid-456",
-          githubCommentId: BigInt(123_456_789),
-          reviewId: BigInt(555),
+          githubCommentId: String(123_456_789),
+          reviewId: "555",
           body: "This looks good!",
           path: "src/feature.ts",
           line: 15,
@@ -314,7 +314,7 @@ describe("handlePullRequestReviewComment", () => {
           body: "This looks good!",
           path: "src/feature.ts",
           line: 15,
-          reviewId: BigInt(555),
+          reviewId: "555",
         },
       });
 
@@ -429,10 +429,10 @@ describe("handlePullRequestReviewComment", () => {
 
       await handlePullRequestReviewComment(event);
 
-      // Verify updateMany was called with BigInt githubCommentId
+      // Verify updateMany was called with String githubCommentId
       expect(mockTx.gitHubPRReviewComment.updateMany).toHaveBeenCalledWith({
         where: {
-          githubCommentId: BigInt(222_333_444),
+          githubCommentId: String(222_333_444),
         },
         data: {
           body: "Updated comment text",
@@ -480,10 +480,10 @@ describe("handlePullRequestReviewComment", () => {
 
       await handlePullRequestReviewComment(event);
 
-      // Verify deleteMany was called with BigInt githubCommentId
+      // Verify deleteMany was called with String githubCommentId
       expect(mockTx.gitHubPRReviewComment.deleteMany).toHaveBeenCalledWith({
         where: {
-          githubCommentId: BigInt(555_666_777),
+          githubCommentId: String(555_666_777),
         },
       });
 

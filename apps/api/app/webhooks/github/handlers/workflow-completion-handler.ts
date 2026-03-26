@@ -32,7 +32,7 @@ type PrEventMetadata = {
   branch: string;
   prNumber: number;
   correlationId: string;
-  runId: number;
+  runId: string;
 };
 
 /**
@@ -508,7 +508,7 @@ export async function processWorkflowCompletion(
   event: WorkflowRunCompletedEvent,
   correlationId: string
 ): Promise<Response> {
-  const runId = event.workflow_run.id;
+  const runId = String(event.workflow_run.id);
 
   // Find GitHubActionRun by correlation ID in triggerData
   // Use activeOnly=false to support replay of completed events (idempotent processing)
@@ -565,7 +565,7 @@ export async function processWorkflowCompletion(
     await tx.gitHubActionRun.update({
       where: { id: actionRun.id },
       data: {
-        runId: BigInt(runId),
+        runId: String(runId),
         status: conclusion === "success" ? "SUCCESS" : "FAILURE",
         conclusion,
         htmlUrl: event.workflow_run.html_url,

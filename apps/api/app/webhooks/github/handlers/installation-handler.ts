@@ -53,7 +53,9 @@ export async function handleInstallationCreated(
   // On reinstall, preserve organizationId only if the installation is still ACTIVE (Q-003)
   // If the installation was UNINSTALLED (user disconnected), we need fresh claim via OAuth
   const existingInstallation =
-    await githubService.findInstallationByInstallationId(installation.id);
+    await githubService.findInstallationByInstallationId(
+      String(installation.id)
+    );
 
   // Only preserve org link if the installation was ACTIVE or SUSPENDED (not UNINSTALLED)
   const shouldPreserveOrg =
@@ -61,13 +63,13 @@ export async function handleInstallationCreated(
     existingInstallation.status !== GitHubInstallationStatus.UNINSTALLED;
 
   const upsertedInstallation = await githubService.upsertInstallation(
-    installation.id,
+    String(installation.id),
     {
-      accountId: installation.account.id,
+      accountId: String(installation.account.id),
       accountLogin: installation.account.login,
       accountType: installation.target_type,
       senderLogin: sender.login,
-      senderId: sender.id,
+      senderId: String(sender.id),
       // Set PENDING_CLAIM if not preserving org link
       status: shouldPreserveOrg ? undefined : "PENDING_CLAIM",
       permissions: installation.permissions,
@@ -114,7 +116,9 @@ export async function handleInstallationDeleted(
   });
 
   const existingInstallation =
-    await githubService.findInstallationByInstallationId(installation.id);
+    await githubService.findInstallationByInstallationId(
+      String(installation.id)
+    );
 
   if (!existingInstallation) {
     log.warn("[handleInstallationDeleted] Installation not found", {
@@ -156,7 +160,9 @@ export async function handleInstallationSuspended(
   });
 
   const existingInstallation =
-    await githubService.findInstallationByInstallationId(installation.id);
+    await githubService.findInstallationByInstallationId(
+      String(installation.id)
+    );
 
   if (!existingInstallation) {
     log.warn("[handleInstallationSuspended] Installation not found", {
@@ -193,7 +199,9 @@ export async function handleInstallationUnsuspended(
   );
 
   const existingInstallation =
-    await githubService.findInstallationByInstallationId(installation.id);
+    await githubService.findInstallationByInstallationId(
+      String(installation.id)
+    );
 
   if (!existingInstallation) {
     log.warn("[handleInstallationUnsuspended] Installation not found", {

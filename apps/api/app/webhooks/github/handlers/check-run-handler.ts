@@ -149,7 +149,7 @@ export async function handleCheckRun(event: CheckRunEvent): Promise<Response> {
 
   // (4) External call - query GitHub GraphQL statusCheckRollup outside any transaction
   const rollupState = await queryStatusCheckRollup(
-    installationId,
+    String(installationId),
     repo.owner,
     repo.name,
     headSha

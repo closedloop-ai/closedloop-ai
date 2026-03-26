@@ -25,7 +25,7 @@ vi.mock("@repo/observability/log", () => ({
 import { queryStatusCheckRollup } from "../index";
 
 const VALID_SHA = "a".repeat(40);
-const INSTALLATION_ID = 12_345;
+const INSTALLATION_ID = "12345";
 const OWNER = "acme";
 const REPO = "my-repo";
 
