@@ -10,6 +10,9 @@ export type ComputeTarget = {
   supportedOperations: string[];
   lastSeenAt: Date;
   isOnline: boolean;
+  isSharedWithOrg: boolean;
+  /** Present when the target belongs to another user (shared target). */
+  ownerName?: string;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -157,8 +160,19 @@ export type ComputePreference =
 
 export type ComputePreferenceResponse = {
   preferredComputeMode: ComputePreference;
+  computeTargetId?: string;
 };
 
 export type SetComputePreferenceRequest = {
   mode: ComputePreference;
+  computeTargetId?: string;
+};
+
+export type SetComputeTargetSharingRequest = {
+  isSharedWithOrg: boolean;
+};
+
+export type SetComputeTargetSharingResponse = {
+  id: string;
+  isSharedWithOrg: boolean;
 };

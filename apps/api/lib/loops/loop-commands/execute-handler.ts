@@ -3,6 +3,7 @@ import type { JudgesReport } from "@repo/api/src/types/evaluation";
 import type { Loop } from "@repo/api/src/types/loop";
 import type { PromptsSnapshot } from "@repo/api/src/types/prompt";
 import {
+  EntityType,
   EvaluationReportType as PrismaEvaluationReportType,
   withDb,
 } from "@repo/database";
@@ -71,6 +72,61 @@ async function downloadExecutionArtifacts(
     );
 
   return { executionResult, codeJudgesReport, promptsSnapshot };
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Upsert a GitHubPullRequest row, returning the effective row so the caller
+ * always has the correct artifactId for linkage — even if a concurrent
+ * webhook or workflow-completion handler won the insert race.
+ */
+async function upsertPrRow(
+  tx: Parameters<Parameters<typeof withDb.tx>[0]>[0],
+  data: {
+    workstreamId: string;
+    organizationId: string;
+    repositoryId: string;
+    artifactId: string;
+    githubId: string;
+    number: number;
+    title: string;
+    htmlUrl: string;
+    headBranch: string;
+    baseBranch: string;
+  },
+  loopId: string
+): Promise<{ id: string; artifactId: string | null }> {
+  const row = await tx.gitHubPullRequest.upsert({
+    where: {
+      repositoryId_number: {
+        repositoryId: data.repositoryId,
+        number: data.number,
+      },
+    },
+    create: { ...data, state: "OPEN" },
+    // Don't overwrite fields that a concurrent handler may have set
+    // more accurately (e.g. state from a webhook).
+    update: {},
+    select: { id: true, artifactId: true },
+  });
+
+  if (row.artifactId && row.artifactId !== data.artifactId) {
+    log.warn(
+      "[loop-artifact-ingestion] PR row already linked to a different artifact via upsert race",
+      {
+        loopId,
+        repositoryId: data.repositoryId,
+        prNumber: data.number,
+        existingArtifactId: row.artifactId,
+        requestedArtifactId: data.artifactId,
+      }
+    );
+  }
+
+  return row;
 }
 
 // ---------------------------------------------------------------------------
@@ -182,6 +238,8 @@ export async function ingestExecutionArtifacts(
 
     if (artifacts.codeJudgesReport) {
       await upsertEvaluationWithJudgeScores({
+        entityId: loop.artifactId!,
+        entityType: EntityType.ARTIFACT,
         artifactId: loop.artifactId!,
         loopId: loop.id,
         organizationId: loop.organizationId,
@@ -245,9 +303,9 @@ export async function ingestExecutionArtifacts(
         }
       );
     } else {
-      // Create GitHubPullRequest record
-      await tx.gitHubPullRequest.create({
-        data: {
+      const upsertedPr = await upsertPrRow(
+        tx,
+        {
           workstreamId: loop.workstreamId!,
           organizationId: loop.organizationId,
           repositoryId: installationRepo.id,
@@ -258,9 +316,14 @@ export async function ingestExecutionArtifacts(
           htmlUrl: executionResult.pr_url,
           headBranch: executionResult.branch_name,
           baseBranch,
-          state: "OPEN",
         },
-      });
+        loop.id
+      );
+      // If the row already existed with a different artifact, use that
+      // to avoid contradictory linkage records.
+      if (upsertedPr.artifactId && upsertedPr.artifactId !== loop.artifactId) {
+        effectiveArtifactId = upsertedPr.artifactId;
+      }
     }
 
     // Create ExternalLink, EntityLink, and preview deployment records (with dedup)

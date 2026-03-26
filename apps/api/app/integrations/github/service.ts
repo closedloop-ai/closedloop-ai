@@ -1,5 +1,6 @@
 import type {
   GetBranchesResponse,
+  GetPullRequestsResponse,
   GitHubIntegrationStatus,
 } from "@repo/api/src/types/github";
 import type {
@@ -8,7 +9,11 @@ import type {
   GitHubInstallationStatus,
 } from "@repo/database";
 import { withDb } from "@repo/database";
-import { deleteInstallation, getRepositoryBranches } from "@repo/github";
+import {
+  deleteInstallation,
+  getRepositoryBranches,
+  getRepositoryPullRequests,
+} from "@repo/github";
 import { keys } from "@repo/github/keys";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
@@ -78,6 +83,155 @@ function validateInstallationClaim(
   return null;
 }
 
+type GitHubRawInstallation = {
+  id: number;
+  account: { id: number; login: string; type: string };
+  permissions: unknown;
+  events: unknown;
+  repository_selection: string;
+};
+
+/**
+ * Exchange an OAuth authorization code for a user access token.
+ */
+async function exchangeCodeForToken(
+  code: string,
+  redirectUri: string,
+  config: { GITHUB_APP_CLIENT_ID: string; GITHUB_APP_CLIENT_SECRET: string }
+): Promise<
+  { success: true; token: string } | { success: false; error: string }
+> {
+  const tokenResponse = await fetch(
+    "https://github.com/login/oauth/access_token",
+    {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        client_id: config.GITHUB_APP_CLIENT_ID,
+        client_secret: config.GITHUB_APP_CLIENT_SECRET,
+        code,
+        redirect_uri: redirectUri,
+      }),
+    }
+  );
+
+  if (!tokenResponse.ok) {
+    log.error("[github/oauth] Failed to exchange code for token", {
+      status: tokenResponse.status,
+      statusText: tokenResponse.statusText,
+    });
+    return {
+      success: false,
+      error: "Failed to exchange authorization code for token",
+    };
+  }
+
+  const tokenData = (await tokenResponse.json()) as {
+    access_token?: string;
+    error?: string;
+    error_description?: string;
+  };
+
+  if (tokenData.error || !tokenData.access_token) {
+    log.error("[github/oauth] Token exchange returned error", {
+      error: tokenData.error,
+      description: tokenData.error_description,
+    });
+    return {
+      success: false,
+      error: tokenData.error_description || "Failed to obtain access token",
+    };
+  }
+
+  return { success: true, token: tokenData.access_token };
+}
+
+/**
+ * Fetch the user's GitHub App installations and resolve which one to use.
+ * When installationId is provided, verifies the user has access.
+ * When absent (standard OAuth flow), picks from the user's installation list.
+ */
+export async function resolveInstallation(
+  userAccessToken: string,
+  installationId: string | undefined,
+  userId: string
+): Promise<
+  | { success: true; id: number; info: GitHubRawInstallation }
+  | { success: false; error: string }
+> {
+  const installationsResponse = await fetch(
+    "https://api.github.com/user/installations",
+    {
+      headers: {
+        Accept: "application/vnd.github+json",
+        Authorization: `Bearer ${userAccessToken}`,
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+    }
+  );
+
+  if (!installationsResponse.ok) {
+    log.error("[github/oauth] Failed to fetch user installations", {
+      status: installationsResponse.status,
+    });
+    return { success: false, error: "Failed to verify installation access" };
+  }
+
+  const installationsData = (await installationsResponse.json()) as {
+    installations?: GitHubRawInstallation[];
+  };
+
+  const userInstallations = installationsData.installations ?? [];
+
+  if (installationId) {
+    const targetId = Number.parseInt(installationId, 10);
+    const match = userInstallations.find((inst) => inst.id === targetId);
+
+    if (!match) {
+      log.warn("[github/oauth] User does not have access to installation", {
+        installationId,
+        userId,
+      });
+      return {
+        success: false,
+        error: "You do not have access to this installation",
+      };
+    }
+
+    return { success: true, id: targetId, info: match };
+  }
+
+  // Standard OAuth flow -- no installation_id in the callback
+  if (userInstallations.length === 0) {
+    log.warn("[github/oauth] No installations found for user", { userId });
+    return {
+      success: false,
+      error:
+        "No GitHub App installation found. Please install the GitHub App on your organization first.",
+    };
+  }
+
+  const selected = userInstallations[0];
+
+  if (userInstallations.length > 1) {
+    // Multiple installations found. Pick the first one and rely on
+    // validateInstallationClaim downstream to block cross-org claims.
+    log.warn(
+      "[github/oauth] Multiple installations found, using first. Use ?install=true for explicit selection.",
+      {
+        userId,
+        installationCount: userInstallations.length,
+        selectedInstallationId: selected.id,
+      }
+    );
+  }
+
+  return { success: true, id: selected.id, info: selected };
+}
+
 /**
  * GitHub integration service - handles all business logic and database operations
  */
@@ -129,14 +283,14 @@ export const githubService = {
    * and syncing repositories.
    *
    * @param code - OAuth authorization code from GitHub
-   * @param installationId - GitHub installation ID (as string from URL params)
+   * @param installationId - GitHub installation ID (as string from URL params), or undefined in standard OAuth flow
    * @param redirectUri - Must match the redirect_uri used in OAuth initiation
    * @param organizationId - Our organization ID to claim the installation
    * @param userId - User ID who is claiming the installation
    */
   async completeOAuthCallback(
     code: string,
-    installationId: string,
+    installationId: string | undefined,
     redirectUri: string,
     organizationId: string,
     userId: string
@@ -145,176 +299,54 @@ export const githubService = {
       const config = keys();
 
       // Exchange authorization code for user access token
-      const tokenResponse = await fetch(
-        "https://github.com/login/oauth/access_token",
-        {
-          method: "POST",
-          headers: {
-            Accept: "application/json",
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            client_id: config.GITHUB_APP_CLIENT_ID,
-            client_secret: config.GITHUB_APP_CLIENT_SECRET,
-            code,
-            redirect_uri: redirectUri,
-          }),
-        }
-      );
-
-      if (!tokenResponse.ok) {
-        log.error("[github/oauth] Failed to exchange code for token", {
-          status: tokenResponse.status,
-          statusText: tokenResponse.statusText,
-        });
-        return {
-          success: false,
-          error: "Failed to exchange authorization code for token",
-        };
+      const tokenResult = await exchangeCodeForToken(code, redirectUri, config);
+      if (!tokenResult.success) {
+        return tokenResult;
       }
-
-      const tokenData = (await tokenResponse.json()) as {
-        access_token?: string;
-        error?: string;
-        error_description?: string;
-      };
-
-      if (tokenData.error || !tokenData.access_token) {
-        log.error("[github/oauth] Token exchange returned error", {
-          error: tokenData.error,
-          description: tokenData.error_description,
-        });
-        return {
-          success: false,
-          error: tokenData.error_description || "Failed to obtain access token",
-        };
-      }
-
-      const userAccessToken = tokenData.access_token;
+      const userAccessToken = tokenResult.token;
 
       // Fetch the authenticated GitHub user's info (for sender fields if we create the record)
       const githubUser = await fetchGitHubUser(userAccessToken);
 
-      // Verify user has access to the installation
-      const installationsResponse = await fetch(
-        "https://api.github.com/user/installations",
-        {
-          headers: {
-            Accept: "application/vnd.github+json",
-            Authorization: `Bearer ${userAccessToken}`,
-            "X-GitHub-Api-Version": "2022-11-28",
-          },
-        }
+      // Resolve installation: verify the provided ID, or pick from user's list
+      const resolved = await resolveInstallation(
+        userAccessToken,
+        installationId,
+        userId
       );
-
-      if (!installationsResponse.ok) {
-        log.error("[github/oauth] Failed to fetch user installations", {
-          status: installationsResponse.status,
-        });
-        return {
-          success: false,
-          error: "Failed to verify installation access",
-        };
+      if (!resolved.success) {
+        return resolved;
       }
-
-      const installationsData = (await installationsResponse.json()) as {
-        installations?: Array<{ id: number }>;
-      };
-
-      const installationIdNumber = Number.parseInt(installationId, 10);
-      const hasAccess = installationsData.installations?.some(
-        (inst) => inst.id === installationIdNumber
-      );
-
-      if (!hasAccess) {
-        log.warn("[github/oauth] User does not have access to installation", {
-          installationId,
-          userId,
-        });
-        return {
-          success: false,
-          error: "You do not have access to this installation",
-        };
-      }
+      const resolvedInstallationId = resolved.id;
 
       // Find the installation record, or create it if the webhook hasn't arrived yet
       // This handles the race condition where OAuth callback arrives before webhook
-      let installation =
-        await this.findInstallationByInstallationId(installationIdNumber);
+      let installation = await this.findInstallationByInstallationId(
+        resolvedInstallationId
+      );
 
       if (!installation) {
         log.info(
-          "[github/oauth] Installation record not found, fetching from GitHub API",
-          { installationId }
+          "[github/oauth] Installation record not found, creating from GitHub API data",
+          { installationId: resolvedInstallationId }
         );
-
-        // Fetch installation details from GitHub API using user token
-        const installationResponse = await fetch(
-          "https://api.github.com/user/installations",
-          {
-            headers: {
-              Accept: "application/vnd.github+json",
-              Authorization: `Bearer ${userAccessToken}`,
-              "X-GitHub-Api-Version": "2022-11-28",
-            },
-          }
-        );
-
-        if (!installationResponse.ok) {
-          log.error("[github/oauth] Failed to fetch installation details", {
-            status: installationResponse.status,
-            installationId,
-          });
-          return {
-            success: false,
-            error: "Failed to fetch installation details",
-          };
-        }
-
-        const installationsData = (await installationResponse.json()) as {
-          installations?: Array<{
-            id: number;
-            account: { id: number; login: string; type: string };
-            permissions: unknown;
-            events: unknown;
-            repository_selection: string;
-          }>;
-        };
-
-        const githubInstallation = installationsData.installations?.find(
-          (inst) => inst.id === installationIdNumber
-        );
-
-        if (!githubInstallation) {
-          log.error(
-            "[github/oauth] Installation not found in user's installations",
-            {
-              installationId,
-            }
-          );
-          return {
-            success: false,
-            error: "Installation not found",
-          };
-        }
 
         // Create the installation record (webhook will upsert if it arrives later)
-        // Use the authenticated GitHub user as the sender since they initiated the OAuth flow
-        installation = await this.upsertInstallation(installationIdNumber, {
-          accountId: githubInstallation.account.id,
-          accountLogin: githubInstallation.account.login,
-          accountType: githubInstallation.account.type,
+        installation = await this.upsertInstallation(resolvedInstallationId, {
+          accountId: resolved.info.account.id,
+          accountLogin: resolved.info.account.login,
+          accountType: resolved.info.account.type,
           senderLogin: githubUser?.login ?? "oauth",
           senderId: githubUser?.id ?? 0,
           status: "PENDING_CLAIM", // Will be set to ACTIVE below
-          permissions: githubInstallation.permissions,
-          events: githubInstallation.events,
-          repositorySelection: githubInstallation.repository_selection,
+          permissions: resolved.info.permissions,
+          events: resolved.info.events,
+          repositorySelection: resolved.info.repository_selection,
         });
 
         log.info("[github/oauth] Created installation record from OAuth flow", {
           installationId: installation.id,
-          githubInstallationId: installationIdNumber,
+          githubInstallationId: resolvedInstallationId,
         });
       }
 
@@ -351,7 +383,7 @@ export const githubService = {
 
       // Fetch and sync repositories
       const reposResponse = await fetch(
-        `https://api.github.com/user/installations/${installationId}/repositories`,
+        `https://api.github.com/user/installations/${resolvedInstallationId}/repositories`,
         {
           headers: {
             Accept: "application/vnd.github+json",
@@ -387,12 +419,12 @@ export const githubService = {
       } else {
         log.warn("[github/oauth] Failed to fetch repositories", {
           status: reposResponse.status,
-          installationId,
+          installationId: resolvedInstallationId,
         });
       }
 
       log.info("[github/oauth] Successfully connected GitHub installation", {
-        installationId,
+        installationId: resolvedInstallationId,
         organizationId,
         userId,
       });
@@ -852,6 +884,76 @@ export const githubService = {
         error: parseError(error),
       });
       throw new Error("Failed to fetch branches from GitHub");
+    }
+  },
+
+  /**
+   * Fetch pull requests from GitHub for a repository.
+   * Also returns which PR URLs are already tracked as ExternalLinks in the given project.
+   */
+  async getPullRequests(
+    repositoryId: string,
+    organizationId: string,
+    projectId: string | null,
+    options?: { limit?: number }
+  ): Promise<GetPullRequestsResponse> {
+    const repository = await withDb((db) =>
+      db.gitHubInstallationRepository.findFirst({
+        where: { id: repositoryId },
+        include: { installation: true },
+      })
+    );
+
+    if (!repository) {
+      throw new Error("Repository not found");
+    }
+
+    if (repository.installation.organizationId !== organizationId) {
+      throw new Error("Repository does not belong to organization");
+    }
+
+    const [owner, name] = repository.fullName.split("/");
+
+    if (!(owner && name)) {
+      throw new Error("Invalid repository fullName format");
+    }
+
+    try {
+      const pullRequests = await getRepositoryPullRequests(
+        repository.installation.installationId,
+        owner,
+        name,
+        { state: "all", limit: options?.limit ?? 30 }
+      );
+
+      // Find which PR URLs are already tracked as ExternalLinks in this project
+      let trackedPrUrls: string[] = [];
+      if (projectId) {
+        const existingLinks = await withDb((db) =>
+          db.externalLink.findMany({
+            where: {
+              organizationId,
+              projectId,
+              type: "PULL_REQUEST",
+            },
+            select: { externalUrl: true },
+          })
+        );
+
+        const repoPrefix = `https://github.com/${owner}/${name}/pull/`;
+        trackedPrUrls = existingLinks
+          .map((el) => el.externalUrl)
+          .filter((url) => url.startsWith(repoPrefix));
+      }
+
+      return { pullRequests, trackedPrUrls };
+    } catch (error) {
+      log.error("[github/service] Failed to fetch pull requests", {
+        repositoryId,
+        organizationId,
+        error: parseError(error),
+      });
+      throw new Error("Failed to fetch pull requests from GitHub");
     }
   },
 };

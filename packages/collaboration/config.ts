@@ -42,6 +42,16 @@ declare global {
       name: string;
       url?: string;
     };
+
+    // Custom activities data for inbox notifications
+    ActivitiesData: {
+      $assignment: {
+        entityType: string;
+        entityTitle: string;
+        entityUrl: string;
+        actorId: string;
+      };
+    };
   }
 }
 

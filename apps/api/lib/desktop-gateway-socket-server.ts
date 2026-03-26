@@ -2,14 +2,12 @@ import { randomUUID } from "node:crypto";
 import type { Server as HttpServer } from "node:http";
 import { log } from "@repo/observability/log";
 import { Server, type Socket } from "socket.io";
-import { isRecord } from "@/lib/type-guards";
 import { apiKeysService } from "../app/api-keys/service";
 import { computeTargetsService } from "../app/compute-targets/service";
 import { usersService } from "../app/users/service";
 import { desktopCommandStore } from "./desktop-command-store";
 import {
   type DesktopAuthContext,
-  type DesktopCommandEventPayload,
   type DesktopGatewaySocketServer,
   type GatewaySocketData,
   PROTOCOL_VERSION,
@@ -17,7 +15,6 @@ import {
 } from "./desktop-gateway-types";
 import {
   emitCommand,
-  isTerminalEventData,
   parseCommandAckPayload,
   parseCommandEventPayload,
   parseHelloPayload,
@@ -25,6 +22,8 @@ import {
   toWireCommandFromRelayOperation,
   toWireCommandFromStore,
 } from "./desktop-gateway-wire";
+import { publishLegacyRelayEvent } from "./desktop-relay-event-bridge";
+import { handleTelemetryEvent } from "./desktop-telemetry-handler";
 import { relayEventBus } from "./relay-event-bus";
 
 const SOCKET_NAMESPACE = "/desktop-gateway";
@@ -115,58 +114,6 @@ async function resolveDesktopAuthContext(
     organizationId: keyContext.organizationId,
     userId: keyContext.userId,
   };
-}
-
-async function publishLegacyRelayEvent(
-  commandId: string,
-  event: DesktopCommandEventPayload
-): Promise<void> {
-  const command = await desktopCommandStore.getCommandById(commandId);
-  if (!command) {
-    return;
-  }
-
-  if (event.eventType === "result" && isTerminalEventData(event.data)) {
-    relayEventBus.publishResult(command.operationId, {
-      operationId: command.operationId,
-      result: event.data,
-      done: true,
-      sequence: event.sequence,
-    });
-    return;
-  }
-
-  if (event.eventType === "done") {
-    relayEventBus.publishResult(command.operationId, {
-      operationId: command.operationId,
-      event: event.data,
-      done: true,
-      sequence: event.sequence,
-    });
-    return;
-  }
-
-  if (event.eventType === "error") {
-    const error =
-      isRecord(event.data) && typeof event.data.error === "string"
-        ? event.data.error
-        : "Command failed";
-    relayEventBus.publishResult(command.operationId, {
-      operationId: command.operationId,
-      event: event.data,
-      done: isTerminalEventData(event.data),
-      error,
-      sequence: event.sequence,
-    });
-    return;
-  }
-
-  relayEventBus.publishResult(command.operationId, {
-    operationId: command.operationId,
-    event: event.data,
-    done: false,
-    sequence: event.sequence,
-  });
 }
 
 function removeSocketFromTarget(targetId: string, socketId: string): boolean {
@@ -283,6 +230,7 @@ async function handleSocketHello(
     organizationId: authContext.organizationId,
     userId: authContext.userId,
     sessionId,
+    pluginVersion: payload.pluginVersion,
     unsubscribeOperations,
     unsubscribeConnectionClose,
     heartbeatTimer,
@@ -567,6 +515,32 @@ function handleSocketConnection(socket: Socket): void {
         });
       }
     });
+  });
+
+  socket.on("desktop.telemetry", (rawPayload: unknown) => {
+    const context = contextsBySocketId.get(socket.id);
+    if (!context) {
+      return;
+    }
+
+    try {
+      const result = handleTelemetryEvent(rawPayload, {
+        authenticatedTargetId: context.targetId,
+        pluginVersion: context.pluginVersion,
+        gatewaySessionId: context.sessionId,
+      });
+      if (!result.ok) {
+        for (const emit of result.emits) {
+          socket.emit(emit.event, emit.payload);
+        }
+      }
+    } catch (error) {
+      log.error("Failed handling desktop.telemetry", {
+        socketId: socket.id,
+        targetId: context.targetId,
+        error,
+      });
+    }
   });
 
   socket.on("disconnect", () => {

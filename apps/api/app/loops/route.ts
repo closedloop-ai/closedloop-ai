@@ -11,7 +11,7 @@ import {
   parseBody,
   successResponse,
 } from "@/lib/route-utils";
-import { loopsService } from "./service";
+import { isConcurrentLoopLimitError, loopsService } from "./service";
 import { createLoopValidator, listLoopsQueryValidator } from "./validators";
 
 export const GET = withAnyAuth<LoopWithUser[], "/loops">(
@@ -73,6 +73,9 @@ export const POST = withAnyAuth<CreateLoopResponse, "/loops">(
 
       return successResponse(result);
     } catch (error) {
+      if (isConcurrentLoopLimitError(error)) {
+        return errorResponse(error.message, error, 429);
+      }
       return errorResponse("Failed to create loop", error);
     }
   },

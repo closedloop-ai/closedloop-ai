@@ -117,6 +117,19 @@ async function dispatchRelayOperation(
   }
 }
 
+export class DispatchError extends Error {
+  readonly commandId: string;
+  constructor(message: string, commandId: string) {
+    super(message);
+    this.name = "DispatchError";
+    this.commandId = commandId;
+  }
+}
+
+export function isDispatchError(error: unknown): error is DispatchError {
+  return error instanceof DispatchError;
+}
+
 type LaunchDesktopOpts = {
   loopId: string;
   organizationId: string;
@@ -186,12 +199,19 @@ export async function launchLoopOnDesktop(
 
   const relayOperation = toRelayOperation(commandId, input);
 
-  await dispatchRelayOperation(
-    computeTargetId,
-    relayOperation,
-    { label: "Launch", loopId, commandId },
-    true
-  );
+  try {
+    await dispatchRelayOperation(
+      computeTargetId,
+      relayOperation,
+      { label: "Launch", loopId, commandId },
+      true
+    );
+  } catch (err) {
+    throw new DispatchError(
+      err instanceof Error ? err.message : String(err),
+      commandId
+    );
+  }
 
   log.info("[loop-desktop] Desktop loop command dispatched", {
     loopId,

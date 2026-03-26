@@ -15,7 +15,10 @@ import {
 } from "@/app/artifacts/[id]/run-loop/run-loop-helpers";
 import type { StartPlanLoopFromLocalResult } from "@/app/artifacts/service";
 import { loopsService } from "@/app/loops/service";
-import { resolveComputeTarget } from "./compute-target-resolver";
+import {
+  fetchUserComputePreferences,
+  resolveComputeTarget,
+} from "./compute-target-resolver";
 import { launchLoop } from "./loop-orchestrator";
 import { getDefaultPrompt } from "./prompts";
 
@@ -67,10 +70,22 @@ export async function launchPlanLoop(
     metadata,
   } = opts;
 
+  let preferredComputeMode: string | undefined;
+  let preferredComputeTargetId: string | undefined;
+
+  if (!computeTargetId) {
+    const prefs = await fetchUserComputePreferences(userId);
+    preferredComputeMode = prefs.preferredComputeMode;
+    preferredComputeTargetId = prefs.preferredComputeTargetId;
+  }
+
   const ctResult = await resolveComputeTarget(
     organizationId,
     userId,
-    computeTargetId ?? undefined
+    computeTargetId ?? undefined,
+    preferredComputeMode,
+    undefined,
+    preferredComputeTargetId
   );
 
   let resolvedComputeTargetId: string | undefined;

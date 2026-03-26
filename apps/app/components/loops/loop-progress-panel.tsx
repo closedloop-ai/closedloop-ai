@@ -219,10 +219,8 @@ function StartedEvent({ timestamp }: { timestamp: string }) {
 
 function OutputEvent({ event }: { event: LoopEventOutput }) {
   const [isOpen, setIsOpen] = useState(false);
-  const preview =
-    event.chunk.length > 120
-      ? `${event.chunk.substring(0, 120)}...`
-      : event.chunk;
+  const chunk = event.chunk ?? "";
+  const preview = chunk.length > 120 ? `${chunk.substring(0, 120)}...` : chunk;
 
   return (
     <div className="flex items-start gap-3">
@@ -247,7 +245,7 @@ function OutputEvent({ event }: { event: LoopEventOutput }) {
           </CollapsibleTrigger>
           <CollapsibleContent className="mt-2">
             <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-md bg-muted/50 p-3 text-xs">
-              {event.chunk}
+              {chunk}
             </pre>
           </CollapsibleContent>
         </Collapsible>
@@ -329,9 +327,10 @@ function ArtifactCreatedEvent({ event }: { event: LoopEventArtifactCreated }) {
 
 function CompletedEvent({ event }: { event: LoopEventCompleted }) {
   // Extract PR info from event.result (typed as JsonObject)
-  const result = event.result as Record<string, unknown>;
+  const result = (event.result ?? {}) as Record<string, unknown>;
   const prUrl = typeof result.prUrl === "string" ? result.prUrl : null;
   const prNumber = typeof result.prNumber === "number" ? result.prNumber : null;
+  const tokensUsed = event.tokensUsed ?? { input: 0, output: 0 };
 
   return (
     <div className="flex items-start gap-3">
@@ -356,8 +355,8 @@ function CompletedEvent({ event }: { event: LoopEventCompleted }) {
         )}
         <div className="mt-1 text-muted-foreground text-xs">
           {formatTimestamp(event.timestamp)} | Tokens:{" "}
-          {formatTokenCount(event.tokensUsed.input)} in /{" "}
-          {formatTokenCount(event.tokensUsed.output)} out
+          {formatTokenCount(tokensUsed.input)} in /{" "}
+          {formatTokenCount(tokensUsed.output)} out
         </div>
       </div>
     </div>
@@ -475,8 +474,8 @@ export function LoopProgressPanel({
   const completedEvent = events.find(
     (e): e is LoopEventCompleted => e.type === "completed"
   );
-  const tokensInput = completedEvent?.tokensUsed.input ?? 0;
-  const tokensOutput = completedEvent?.tokensUsed.output ?? 0;
+  const tokensInput = completedEvent?.tokensUsed?.input ?? 0;
+  const tokensOutput = completedEvent?.tokensUsed?.output ?? 0;
 
   // Derive start timestamp from first event
   const startTimestamp = events.length > 0 ? events[0].timestamp : null;

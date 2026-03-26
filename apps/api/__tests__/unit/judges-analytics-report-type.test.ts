@@ -7,6 +7,7 @@ import { judgesAnalyticsService } from "@/app/judges-analytics/service";
 vi.mock("@repo/database", () => ({
   withDb: vi.fn(),
   PromptType: { JUDGE: "JUDGE" },
+  EntityType: { ARTIFACT: "ARTIFACT" },
 }));
 
 describe("judgesAnalyticsService reportType scoping", () => {
@@ -21,6 +22,9 @@ describe("judgesAnalyticsService reportType scoping", () => {
         findMany: vi.fn().mockResolvedValue([]),
       },
       judgeScore: { findMany: judgeScoreFindMany },
+      artifact: {
+        findMany: vi.fn().mockResolvedValue([]),
+      },
     };
 
     vi.mocked(withDb).mockImplementation((callback) =>
@@ -69,7 +73,7 @@ describe("judgesAnalyticsService reportType scoping", () => {
             score: 0.8,
             evaluation: {
               artifactId: "artifact-1",
-              artifact: { type: ArtifactType.ImplementationPlan },
+              entityId: "artifact-1",
             },
           },
           {
@@ -79,7 +83,7 @@ describe("judgesAnalyticsService reportType scoping", () => {
             score: 0.7,
             evaluation: {
               artifactId: "artifact-1",
-              artifact: { type: ArtifactType.ImplementationPlan },
+              entityId: "artifact-1",
             },
           },
         ]),
@@ -197,7 +201,7 @@ describe("judgesAnalyticsService reportType scoping", () => {
             score: 0.8,
             evaluation: {
               artifactId: "artifact-1",
-              artifact: { type: ArtifactType.ImplementationPlan },
+              entityId: "artifact-1",
             },
           },
           {
@@ -207,7 +211,7 @@ describe("judgesAnalyticsService reportType scoping", () => {
             score: 0.7,
             evaluation: {
               artifactId: "artifact-2",
-              artifact: { type: ArtifactType.ImplementationPlan },
+              entityId: "artifact-2",
             },
           },
         ]),
@@ -280,6 +284,9 @@ describe("judgesAnalyticsService reportType scoping", () => {
         ]),
       },
       judgeScore: { findMany: judgeScoreFindMany },
+      artifact: {
+        findMany: vi.fn().mockResolvedValue([]),
+      },
     };
 
     vi.mocked(withDb).mockImplementation((callback) =>

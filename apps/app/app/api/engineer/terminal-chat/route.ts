@@ -10,7 +10,7 @@ import {
 } from "@/lib/engineer/learnings";
 import { migrateLegacyChatHistory } from "@/lib/engineer/migrate-chat-history";
 import { expandHome, loadReposConfig } from "@/lib/engineer/repos";
-import { getShellPathSync } from "@/lib/engineer/shell-path";
+import { getShellPath } from "@/lib/engineer/shell-path";
 import {
   type ContentBlock,
   createStreamState,
@@ -37,6 +37,14 @@ type TerminalChatHistory = {
 
 const HISTORY_PATH = join(
   homedir(),
+  ".closedloop-ai",
+  "chats",
+  "_terminal",
+  "chat-history.json"
+);
+
+const CLOSEDLOOP_HISTORY_PATH = join(
+  homedir(),
   ".claude",
   ".closedloop",
   "chats",
@@ -54,7 +62,13 @@ const LEGACY_HISTORY_PATH = join(
 );
 
 function loadChatHistory(): TerminalChatHistory {
-  migrateLegacyChatHistory(LEGACY_HISTORY_PATH, HISTORY_PATH);
+  if (existsSync(HISTORY_PATH)) {
+    // already at new location
+  } else if (existsSync(CLOSEDLOOP_HISTORY_PATH)) {
+    migrateLegacyChatHistory(CLOSEDLOOP_HISTORY_PATH, HISTORY_PATH);
+  } else if (existsSync(LEGACY_HISTORY_PATH)) {
+    migrateLegacyChatHistory(LEGACY_HISTORY_PATH, HISTORY_PATH);
+  }
   if (!existsSync(HISTORY_PATH)) {
     return { messages: [] };
   }
@@ -240,14 +254,15 @@ function buildClaudeSystemPrompt(): string {
 /**
  * Handle Claude messages — spawn Claude CLI
  */
-function handleClaude(
+async function handleClaude(
   message: string,
   history: TerminalChatHistory,
   encoder: TextEncoder
-): ReadableStream {
+): Promise<ReadableStream> {
   const isResuming = !!history.claudeSessionId;
   let claudeProcess: ReturnType<typeof spawn> | null = null;
 
+  const shellPath = await getShellPath();
   return new ReadableStream({
     start(controller) {
       const streamState = createStreamState(
@@ -290,7 +305,7 @@ function handleClaude(
           cwd: homedir(),
           env: {
             ...process.env,
-            PATH: getShellPathSync(),
+            PATH: shellPath,
           },
           stdio: ["pipe", "pipe", "pipe"],
         });
@@ -684,7 +699,7 @@ export async function POST(request: NextRequest) {
   const stream =
     mode === "codex"
       ? handleCodex(cleanMessage, history, encoder)
-      : handleClaude(cleanMessage, history, encoder);
+      : await handleClaude(cleanMessage, history, encoder);
 
   return new Response(stream, {
     headers: {

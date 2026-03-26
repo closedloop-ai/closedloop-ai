@@ -3,7 +3,11 @@ import { Priority } from "@repo/api/src/types/common.js";
 import { FeatureStatus } from "@repo/api/src/types/feature.js";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
-import { encodePathSegment, withErrorHandling } from "./tool-utils.js";
+import {
+  describeIdOrSlug,
+  encodePathSegment,
+  withErrorHandling,
+} from "./tool-utils.js";
 
 export function registerUpdateFeature(
   server: McpServer,
@@ -13,9 +17,9 @@ export function registerUpdateFeature(
     "update-feature",
     {
       description:
-        "Update an existing feature's title, description, status, priority, or assignee by ID or slug",
+        "Update a feature, meaning an issue or work item, by ID or slug.",
       inputSchema: {
-        featureId: z.string().describe("ID or slug of the feature to update"),
+        featureId: z.string().describe(describeIdOrSlug("Feature", "FEAT-42")),
         title: z.string().optional().describe("New title for the feature"),
         description: z
           .string()

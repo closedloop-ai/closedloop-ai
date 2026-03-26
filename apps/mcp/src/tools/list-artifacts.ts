@@ -6,8 +6,10 @@ import {
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
 import {
+  ARTIFACT_DOC_HELP,
   asRecord,
   buildPaginatedPayload,
+  describeIdOrSlug,
   MAX_PAGE_LIMIT,
   readString,
   withErrorHandling,
@@ -25,16 +27,16 @@ export function registerListArtifacts(
     "list-artifacts",
     {
       description:
-        "List artifacts with optional filters by projectId, type, workstreamId, and assigneeId",
+        "List artifact documents: PRDs, implementation plans, and templates. Filter by project, workstream, type, or assignee.",
       inputSchema: {
         projectId: z
           .string()
           .optional()
-          .describe("Filter by project ID or slug (e.g. PROJ-1)"),
+          .describe(describeIdOrSlug("Project", "PROJ-7")),
         workstreamId: z
           .string()
           .optional()
-          .describe("Filter by workstream ID or slug (e.g. WORK-3)"),
+          .describe(describeIdOrSlug("Workstream", "WORK-3")),
         assigneeId: z
           .string()
           .optional()
@@ -42,7 +44,7 @@ export function registerListArtifacts(
         type: z
           .enum(ArtifactType)
           .optional()
-          .describe("Filter by artifact type"),
+          .describe(`${ARTIFACT_DOC_HELP} Filter by type.`),
         limit: z
           .number()
           .int()

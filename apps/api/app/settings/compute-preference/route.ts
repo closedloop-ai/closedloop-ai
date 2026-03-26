@@ -22,6 +22,7 @@ function toComputePreference(mode: PreferredComputeMode): ComputePreference {
 
 const computePreferenceValidator = z.object({
   mode: z.enum(["LOCAL", "CLOUD"]),
+  computeTargetId: z.string().uuid().optional(),
 });
 
 /**
@@ -39,13 +40,16 @@ export const GET = withAnyAuth<
     const dbUser = await withDb((db) =>
       db.user.findUnique({
         where: { id: user.id },
-        select: { preferredComputeMode: true },
+        select: { preferredComputeMode: true, preferredComputeTargetId: true },
       })
     );
 
     if (dbUser?.preferredComputeMode != null) {
       return successResponse({
         preferredComputeMode: toComputePreference(dbUser.preferredComputeMode),
+        ...(dbUser.preferredComputeTargetId != null && {
+          computeTargetId: dbUser.preferredComputeTargetId,
+        }),
       });
     }
 
@@ -81,12 +85,20 @@ export const PUT = withAnyAuth<
     await withDb((db) =>
       db.user.update({
         where: { id: user.id, organizationId: user.organizationId },
-        data: { preferredComputeMode: body.mode },
+        data: {
+          preferredComputeMode: body.mode,
+          ...(body.computeTargetId !== undefined && {
+            preferredComputeTargetId: body.computeTargetId,
+          }),
+        },
       })
     );
 
     return successResponse({
       preferredComputeMode: toComputePreference(body.mode),
+      ...(body.computeTargetId !== undefined && {
+        computeTargetId: body.computeTargetId,
+      }),
     });
   } catch (error) {
     return errorResponse("Failed to update compute preference", error);

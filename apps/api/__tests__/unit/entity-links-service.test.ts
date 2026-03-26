@@ -9,6 +9,11 @@ import { mockWithDbCall } from "../utils/db-helpers";
 vi.mock("@repo/database", () => ({
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
   Prisma: { DbNull: "DbNull" },
+  EntityType: {
+    ARTIFACT: "ARTIFACT",
+    FEATURE: "FEATURE",
+    EXTERNAL_LINK: "EXTERNAL_LINK",
+  },
 }));
 
 import { entityLinksService } from "@/app/entity-links/service";

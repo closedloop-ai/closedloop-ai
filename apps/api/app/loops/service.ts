@@ -12,6 +12,7 @@ import {
   type LoopListFilters,
   LoopStatus,
   type LoopUsageByCommand,
+  type LoopUsageByUser,
   type LoopUsageSummary,
   type LoopWithUser,
   type ResumeLoopRequest,
@@ -20,6 +21,23 @@ import { type Loop as PrismaLoop, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { basicUserSelect } from "@/lib/db-utils";
 
+/**
+ * Fetch the effective concurrent loop limit for an organization from the DB.
+ * Reads Organization.settings.maxConcurrentLoops and falls back to
+ * DEFAULT_MAX_CONCURRENT_LOOPS for missing or invalid values.
+ */
+export async function fetchOrgLoopLimit(
+  organizationId: string
+): Promise<number> {
+  const org = await withDb((db) =>
+    db.organization.findUnique({
+      where: { id: organizationId },
+      select: { settings: true },
+    })
+  );
+  return resolveOrgLoopLimit(org?.settings);
+}
+
 export class ReplayDetectedError extends Error {
   constructor(message = "Replay detected") {
     super(message);
@@ -27,7 +45,9 @@ export class ReplayDetectedError extends Error {
   }
 }
 
-export function isReplayDetectedError(error: unknown): boolean {
+export function isReplayDetectedError(
+  error: unknown
+): error is ReplayDetectedError {
   return error instanceof ReplayDetectedError;
 }
 
@@ -42,8 +62,35 @@ export class InvalidStatusTransitionError extends Error {
   }
 }
 
-export function isInvalidStatusTransitionError(error: unknown): boolean {
+export function isInvalidStatusTransitionError(
+  error: unknown
+): error is InvalidStatusTransitionError {
   return error instanceof InvalidStatusTransitionError;
+}
+
+export class ConcurrentLoopLimitError extends Error {
+  readonly activeCount: number;
+  readonly limit: number;
+  constructor(activeCount: number, limit: number) {
+    super(
+      "Too many active loops (" +
+        activeCount +
+        "). " +
+        "Maximum " +
+        limit +
+        " concurrent loops allowed. " +
+        "Wait for existing loops to complete or cancel them."
+    );
+    this.name = "ConcurrentLoopLimitError";
+    this.activeCount = activeCount;
+    this.limit = limit;
+  }
+}
+
+export function isConcurrentLoopLimitError(
+  error: unknown
+): error is ConcurrentLoopLimitError {
+  return error instanceof ConcurrentLoopLimitError;
 }
 
 /**
@@ -53,31 +100,42 @@ export function isInvalidStatusTransitionError(error: unknown): boolean {
 const VALID_TRANSITIONS: Record<LoopStatus, Set<LoopStatus>> = {
   // PENDING → RUNNING covers the race where the container sends "started"
   // before the backend has finished transitioning to CLAIMED.
-  PENDING: new Set(["CLAIMED", "RUNNING", "CANCELLED"]),
+  PENDING: new Set<LoopStatus>([
+    LoopStatus.Claimed,
+    LoopStatus.Running,
+    LoopStatus.Cancelled,
+  ]),
   // CLAIMED → terminal states covers the case where the "started" event was
   // dropped (network issue, transient failure). Without this, a lost "started"
   // event would strand the loop in CLAIMED until the cron timeout safety net.
-  CLAIMED: new Set([
-    "RUNNING",
-    "COMPLETED",
-    "FAILED",
-    "CANCELLED",
-    "TIMED_OUT",
+  CLAIMED: new Set<LoopStatus>([
+    LoopStatus.Running,
+    LoopStatus.Completed,
+    LoopStatus.Failed,
+    LoopStatus.Cancelled,
+    LoopStatus.TimedOut,
   ]),
-  RUNNING: new Set(["COMPLETED", "FAILED", "CANCELLED", "TIMED_OUT"]),
-  COMPLETED: new Set(),
+  RUNNING: new Set<LoopStatus>([
+    LoopStatus.Completed,
+    LoopStatus.Failed,
+    LoopStatus.Cancelled,
+    LoopStatus.TimedOut,
+  ]),
+  COMPLETED: new Set<LoopStatus>(),
   // A successful completion from the runner overrides a prior failure or timeout.
   // The runner is the ground truth for whether work actually finished.
-  FAILED: new Set(["COMPLETED"]),
-  CANCELLED: new Set(),
-  TIMED_OUT: new Set(["COMPLETED"]),
+  FAILED: new Set<LoopStatus>([LoopStatus.Completed]),
+  // A successful completion from the runner overrides a prior cancellation.
+  // The runner is the ground truth for whether work actually finished.
+  CANCELLED: new Set<LoopStatus>([LoopStatus.Completed]),
+  TIMED_OUT: new Set<LoopStatus>([LoopStatus.Completed]),
 };
 
 const TERMINAL_STATUSES = new Set<LoopStatus>([
-  "COMPLETED",
-  "FAILED",
-  "CANCELLED",
-  "TIMED_OUT",
+  LoopStatus.Completed,
+  LoopStatus.Failed,
+  LoopStatus.Cancelled,
+  LoopStatus.TimedOut,
 ]);
 
 /**
@@ -172,10 +230,28 @@ function toLoopWithUser(
 }
 
 /**
- * Maximum concurrent active (PENDING/CLAIMED/RUNNING) loops per user.
+ * Default maximum concurrent active (PENDING/CLAIMED/RUNNING) loops per user.
  * Prevents resource exhaustion via rapid loop creation.
+ * Can be overridden per organization via Organization.settings.maxConcurrentLoops.
  */
-const MAX_CONCURRENT_LOOPS_PER_USER = 5;
+export const DEFAULT_MAX_CONCURRENT_LOOPS = 5;
+
+/**
+ * Resolve the effective concurrent loop limit for an organization.
+ * Reads Organization.settings.maxConcurrentLoops and validates it is a positive
+ * integer. Falls back to DEFAULT_MAX_CONCURRENT_LOOPS for null, missing key,
+ * non-integer, zero, or negative values.
+ */
+export function resolveOrgLoopLimit(rawSettings: unknown): number {
+  if (rawSettings == null || typeof rawSettings !== "object") {
+    return DEFAULT_MAX_CONCURRENT_LOOPS;
+  }
+  const val = (rawSettings as Record<string, unknown>).maxConcurrentLoops;
+  if (Number.isInteger(val) && (val as number) > 0) {
+    return val as number;
+  }
+  return DEFAULT_MAX_CONCURRENT_LOOPS;
+}
 
 /**
  * Loops service - handles database operations for loop management.
@@ -194,8 +270,9 @@ export const loopsService = {
     // Enforce per-user concurrency limit.
     // NOTE: This is a soft limit with a known TOCTOU window — two concurrent
     // requests could both read count=4 and both proceed. The risk is low
-    // (same user, tight race window, generous limit of 5) so a DB-level
-    // INSERT ... WHERE (SELECT count) < 5 is overkill for V1.
+    // (same user, tight race window, org-configurable limit) so a DB-level
+    // INSERT ... WHERE (SELECT count) < limit is overkill for V1.
+    const maxConcurrentLoops = await fetchOrgLoopLimit(organizationId);
     const activeCount = await withDb((db) =>
       db.loop.count({
         where: {
@@ -208,12 +285,8 @@ export const loopsService = {
       })
     );
 
-    if (activeCount >= MAX_CONCURRENT_LOOPS_PER_USER) {
-      throw new Error(
-        `Too many active loops (${activeCount}). ` +
-          `Maximum ${MAX_CONCURRENT_LOOPS_PER_USER} concurrent loops allowed per user. ` +
-          "Wait for existing loops to complete or cancel them."
-      );
+    if (activeCount >= maxConcurrentLoops) {
+      throw new ConcurrentLoopLimitError(activeCount, maxConcurrentLoops);
     }
 
     const loop = await withDb((db) =>
@@ -491,7 +564,7 @@ export const loopsService = {
   async cancel(id: string, organizationId: string): Promise<Loop> {
     // Compute valid source statuses for CANCELLED transition
     const validFromStatuses = Object.entries(VALID_TRANSITIONS)
-      .filter(([, allowed]) => allowed.has("CANCELLED"))
+      .filter(([, allowed]) => allowed.has(LoopStatus.Cancelled))
       .map(([from]) => from as LoopStatus);
 
     // Atomic conditional update: only transitions from a valid source status.
@@ -503,7 +576,7 @@ export const loopsService = {
           status: { in: validFromStatuses },
         },
         data: {
-          status: "CANCELLED",
+          status: LoopStatus.Cancelled,
           completedAt: new Date(),
         },
       })
@@ -521,7 +594,10 @@ export const loopsService = {
         throw new Error(`Loop not found: ${id}`);
       }
 
-      throw new InvalidStatusTransitionError(current.status, "CANCELLED");
+      throw new InvalidStatusTransitionError(
+        current.status,
+        LoopStatus.Cancelled
+      );
     }
 
     log.info("Loop cancelled", { loopId: id });
@@ -546,7 +622,8 @@ export const loopsService = {
     parentLoopId: string,
     organizationId: string,
     userId: string,
-    input: ResumeLoopRequest
+    input: ResumeLoopRequest,
+    computeTargetId?: string
   ): Promise<CreateLoopResponse> {
     const parent = await withDb((db) =>
       db.loop.findUnique({
@@ -563,19 +640,20 @@ export const loopsService = {
       throw new Error("You can only resume your own loops");
     }
 
-    const resumableStatuses = new Set([
-      "CANCELLED",
-      "COMPLETED",
-      "FAILED",
-      "TIMED_OUT",
+    const resumableStatuses = new Set<LoopStatus>([
+      LoopStatus.Cancelled,
+      LoopStatus.Completed,
+      LoopStatus.Failed,
+      LoopStatus.TimedOut,
     ]);
-    if (!resumableStatuses.has(parent.status)) {
+    if (!resumableStatuses.has(parent.status as LoopStatus)) {
       throw new Error(
         `Cannot resume loop in ${parent.status} status. Only CANCELLED, COMPLETED, FAILED, or TIMED_OUT loops can be resumed.`
       );
     }
 
     // Enforce per-user concurrency limit (same as create())
+    const maxConcurrentLoops = await fetchOrgLoopLimit(organizationId);
     const activeCount = await withDb((db) =>
       db.loop.count({
         where: {
@@ -588,14 +666,13 @@ export const loopsService = {
       })
     );
 
-    if (activeCount >= MAX_CONCURRENT_LOOPS_PER_USER) {
-      throw new Error(
-        `Too many active loops (${activeCount}). ` +
-          `Maximum ${MAX_CONCURRENT_LOOPS_PER_USER} concurrent loops allowed per user. ` +
-          "Wait for existing loops to complete or cancel them."
-      );
+    if (activeCount >= maxConcurrentLoops) {
+      throw new ConcurrentLoopLimitError(activeCount, maxConcurrentLoops);
     }
 
+    // Do NOT copy parent.s3StateKey — the child loop gets its own key when
+    // launched (via ECS claim or desktop persistence). Copying the parent's
+    // key creates a window where the child reads/writes the parent's storage.
     const loop = await withDb((db) =>
       db.loop.create({
         data: {
@@ -608,7 +685,7 @@ export const loopsService = {
           prompt: input.prompt ?? parent.prompt,
           repo: parent.repo ?? undefined,
           contextRefs: parent.contextRefs ?? undefined,
-          s3StateKey: parent.s3StateKey,
+          computeTargetId: computeTargetId ?? null,
           status: "PENDING",
         },
       })
@@ -838,7 +915,7 @@ export const loopsService = {
         : {}),
     };
 
-    const [aggregate, groupByCommand] = await Promise.all([
+    const [aggregate, groupByCommand, groupByUser] = await Promise.all([
       withDb((db) =>
         db.loop.aggregate({
           where,
@@ -862,6 +939,18 @@ export const loopsService = {
           },
         })
       ),
+      withDb((db) =>
+        db.loop.groupBy({
+          by: ["userId"],
+          where,
+          _count: true,
+          _sum: {
+            tokensInput: true,
+            tokensOutput: true,
+            estimatedCost: true,
+          },
+        })
+      ),
     ]);
 
     const byCommand: LoopUsageByCommand[] = groupByCommand.map((g) => ({
@@ -872,12 +961,42 @@ export const loopsService = {
       estimatedCost: Number(g._sum.estimatedCost ?? 0),
     }));
 
+    // Resolve user details for the by-user breakdown
+    const userIds = groupByUser.map((g) => g.userId);
+    const users =
+      userIds.length > 0
+        ? await withDb((db) =>
+            db.user.findMany({
+              where: { id: { in: userIds } },
+              ...basicUserSelect,
+            })
+          )
+        : [];
+    const userMap = new Map(users.map((u) => [u.id, u]));
+
+    const byUser: LoopUsageByUser[] = groupByUser.map((g) => {
+      const u = userMap.get(g.userId);
+      return {
+        userId: g.userId,
+        userName: u
+          ? [u.firstName, u.lastName].filter(Boolean).join(" ") || u.email
+          : "Unknown",
+        userEmail: u?.email ?? "",
+        userAvatarUrl: u?.avatarUrl ?? null,
+        loopCount: g._count,
+        tokensInput: g._sum.tokensInput ?? 0,
+        tokensOutput: g._sum.tokensOutput ?? 0,
+        estimatedCost: Number(g._sum.estimatedCost ?? 0),
+      };
+    });
+
     return {
       totalLoops: aggregate._count,
       totalTokensInput: aggregate._sum.tokensInput ?? 0,
       totalTokensOutput: aggregate._sum.tokensOutput ?? 0,
       totalEstimatedCost: Number(aggregate._sum.estimatedCost ?? 0),
       byCommand,
+      byUser,
     };
   },
 
@@ -989,6 +1108,7 @@ export const loopsService = {
     userId: string,
     input: CreateLoopRequest & { artifactVersion: number; artifactId: string }
   ): Promise<CreateLoopResponse | null> {
+    const maxConcurrentLoops = await fetchOrgLoopLimit(organizationId);
     const activeCount = await withDb((db) =>
       db.loop.count({
         where: {
@@ -1001,12 +1121,8 @@ export const loopsService = {
       })
     );
 
-    if (activeCount >= MAX_CONCURRENT_LOOPS_PER_USER) {
-      throw new Error(
-        `Too many active loops (${activeCount}). ` +
-          `Maximum ${MAX_CONCURRENT_LOOPS_PER_USER} concurrent loops allowed per user. ` +
-          "Wait for existing loops to complete or cancel them."
-      );
+    if (activeCount >= maxConcurrentLoops) {
+      throw new ConcurrentLoopLimitError(activeCount, maxConcurrentLoops);
     }
 
     const [loop] = await withDb((db) =>

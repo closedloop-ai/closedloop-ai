@@ -46,9 +46,6 @@ generate_env_local() {
 # Dummy values that pass @t3-oss/env-nextjs Zod validators.
 # These are NOT real credentials — they exist only to satisfy build validation.
 
-# cms (required: bshb_pk_ prefix)
-BASEHUB_TOKEN=bshb_pk_loops_dummy_token
-
 # payments (required: sk_ prefix)
 STRIPE_SECRET_KEY=sk_test_loops_dummy_key_1234567890
 

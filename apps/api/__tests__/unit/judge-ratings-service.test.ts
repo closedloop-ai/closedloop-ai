@@ -15,6 +15,11 @@ import {
 
 vi.mock("@repo/database", () => ({
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
+  EntityType: {
+    ARTIFACT: "ARTIFACT",
+    FEATURE: "FEATURE",
+    WORKSTREAM: "WORKSTREAM",
+  },
 }));
 
 import {
@@ -219,8 +224,8 @@ describe("submitJudgeRating", () => {
         where: expect.objectContaining({
           id: JUDGE_SCORE_ID,
           evaluation: expect.objectContaining({
-            artifactId: ARTIFACT_ID,
-            artifact: { organizationId: ORG_ID },
+            entityId: ARTIFACT_ID,
+            organizationId: ORG_ID,
           }),
         }),
       })
@@ -246,7 +251,7 @@ describe("submitJudgeRating", () => {
       expect.objectContaining({
         where: expect.objectContaining({
           evaluation: expect.objectContaining({
-            artifact: { organizationId: ORG_ID },
+            organizationId: ORG_ID,
           }),
         }),
       })
@@ -366,7 +371,7 @@ describe("getUserJudgeRatings", () => {
         where: expect.objectContaining({
           organizationId: ORG_ID,
           userId: USER_ID,
-          evaluation: { artifactId: ARTIFACT_ID },
+          evaluation: { entityId: ARTIFACT_ID, entityType: "ARTIFACT" },
         }),
       })
     );

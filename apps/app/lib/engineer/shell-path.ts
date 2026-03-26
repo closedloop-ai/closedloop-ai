@@ -9,7 +9,7 @@
  * already has the resolved PATH available.
  */
 
-import { execFile, execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { platform } from "node:os";
 import { promisify } from "node:util";
@@ -38,35 +38,6 @@ export async function getShellPath(): Promise<string> {
   cachedPath = await resolvePromise;
   resolvePromise = null;
   return cachedPath;
-}
-
-/**
- * Get the cached shell PATH synchronously.
- * Returns the resolved path if available, otherwise the platform fallback.
- */
-export function getShellPathSync(): string {
-  if (cachedPath) {
-    return cachedPath;
-  }
-  // Cache not ready yet — try synchronous resolution as one-shot
-  try {
-    const shell = findShell();
-    if (shell) {
-      const stdout = execFileSync(shell, ["-ilc", "echo $PATH"], {
-        timeout: 3000,
-        encoding: "utf-8",
-        env: { ...process.env },
-      });
-      const resolved = extractPathFromOutput(stdout);
-      if (resolved) {
-        cachedPath = resolved;
-        return resolved;
-      }
-    }
-  } catch {
-    // Fall through to platform fallback
-  }
-  return buildFallbackPath();
 }
 
 // ---------------------------------------------------------------------------
@@ -158,6 +129,6 @@ async function resolveShellPath(): Promise<string> {
   return buildFallbackPath();
 }
 
-// Warm the cache eagerly on import so getShellPathSync() has the
-// resolved PATH available before the first spawn call.
+// Warm the cache eagerly on import so the first getShellPath() call
+// returns immediately from cache.
 getShellPath().catch(() => {});

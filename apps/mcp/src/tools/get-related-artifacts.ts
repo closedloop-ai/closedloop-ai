@@ -1,7 +1,11 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
-import { encodePathSegment, withErrorHandling } from "./tool-utils.js";
+import {
+  describeIdOrSlug,
+  encodePathSegment,
+  withErrorHandling,
+} from "./tool-utils.js";
 
 export function registerGetRelatedArtifacts(
   server: McpServer,
@@ -11,9 +15,11 @@ export function registerGetRelatedArtifacts(
     "get-related-artifacts",
     {
       description:
-        "Get artifacts related to a given artifact by ID or slug via entity links",
+        "List artifact documents linked to an artifact, such as PRD-to-plan relationships.",
       inputSchema: {
-        artifactId: z.string().describe("ID or slug of the artifact"),
+        artifactId: z
+          .string()
+          .describe(describeIdOrSlug("Artifact", ["PRD-7", "PLAN-12"])),
       },
     },
     ({ artifactId }) =>

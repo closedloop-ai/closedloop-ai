@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { type NextRequest, NextResponse } from "next/server";
+import { findFirstExistingPath } from "@/lib/engineer/process-utils";
 import type { EvaluationReport } from "@/lib/engineer/queries/symphony";
 import {
   expandHome,
@@ -59,7 +60,10 @@ export async function GET(
       worktreeParentDir,
       `${repoName}-${sanitizedTicket}`
     );
-    const judgesPath = join(worktreeDir, ".claude", "work", "judges.json");
+    const judgesPath = findFirstExistingPath(
+      join(worktreeDir, ".closedloop-ai", "work", "judges.json"),
+      join(worktreeDir, ".claude", "work", "judges.json")
+    );
 
     // Check if worktree exists
     if (!existsSync(worktreeDir)) {
@@ -70,7 +74,7 @@ export async function GET(
     }
 
     // Try to read judges.json from worktree
-    if (existsSync(judgesPath)) {
+    if (judgesPath) {
       try {
         const judgesContent = await readFile(judgesPath, "utf-8");
         let data: EvaluationReport;

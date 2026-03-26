@@ -2,6 +2,7 @@ import type { JsonObject } from "@repo/api/src/types/common";
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
 import type { Loop } from "@repo/api/src/types/loop";
 import {
+  EntityType,
   EvaluationReportType as PrismaEvaluationReportType,
   withDb,
 } from "@repo/database";
@@ -109,6 +110,8 @@ export const evaluatePrdHandler = defineHandler<PrdJudgesArtifacts>({
       }
 
       await upsertEvaluationWithJudgeScores({
+        entityId: artifactId,
+        entityType: EntityType.ARTIFACT,
         artifactId,
         loopId: loop.id,
         organizationId,

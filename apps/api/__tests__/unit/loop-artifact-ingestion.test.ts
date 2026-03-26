@@ -21,6 +21,11 @@ vi.mock("@repo/database", () => ({
     PLAN: "PLAN",
     CODE: "CODE",
   },
+  EntityType: {
+    ARTIFACT: "ARTIFACT",
+    FEATURE: "FEATURE",
+    WORKSTREAM: "WORKSTREAM",
+  },
 }));
 
 vi.mock("@repo/observability/log", () => ({
@@ -182,12 +187,13 @@ describe("ingestPlanArtifacts", () => {
     };
     mockWithDbTx(mockTx);
 
-    // withDb (non-transactional) used for artifact.update and workstreamEvent checks
+    // withDb (non-transactional) used for artifact.update, entity validation, and workstreamEvent checks
     const mockDb = {
       artifact: {
         update: vi
           .fn()
           .mockResolvedValue({ slug: "my-artifact", latestVersion: 2 }),
+        findFirst: vi.fn().mockResolvedValue({ id: loop.artifactId }),
       },
       workstreamEvent: {
         findFirst: vi.fn().mockResolvedValue(null),
@@ -226,6 +232,7 @@ describe("ingestPlanArtifacts", () => {
         update: vi
           .fn()
           .mockResolvedValue({ slug: "my-artifact", latestVersion: 2 }),
+        findFirst: vi.fn().mockResolvedValue({ id: loop.artifactId }),
       },
       workstreamEvent: {
         findFirst: vi.fn().mockResolvedValue(null),
@@ -265,10 +272,13 @@ describe("ingestExecutionArtifacts", () => {
     });
     const evaluationId = "eval-code-1";
 
-    // withDb (non-transactional) used for gitHubInstallationRepository.findFirst
+    // withDb (non-transactional) used for gitHubInstallationRepository.findFirst and entity validation
     const mockDb = {
       gitHubInstallationRepository: {
         findFirst: vi.fn().mockResolvedValue({ id: "install-repo-1" }),
+      },
+      artifact: {
+        findFirst: vi.fn().mockResolvedValue({ id: loop.artifactId }),
       },
     };
     mockWithDbCall(mockDb);
@@ -292,6 +302,9 @@ describe("ingestExecutionArtifacts", () => {
       gitHubPullRequest: {
         findUnique: vi.fn().mockResolvedValue(null),
         create: vi.fn().mockResolvedValue({ id: "pr-1" }),
+        upsert: vi
+          .fn()
+          .mockResolvedValue({ id: "pr-1", artifactId: loop.artifactId }),
       },
       externalLink: {
         create: vi.fn().mockResolvedValue({ id: "ext-link-1" }),
@@ -325,6 +338,9 @@ describe("ingestExecutionArtifacts", () => {
       gitHubInstallationRepository: {
         findFirst: vi.fn().mockResolvedValue({ id: "install-repo-2" }),
       },
+      artifact: {
+        findFirst: vi.fn().mockResolvedValue({ id: loop.artifactId }),
+      },
     };
     mockWithDbCall(mockDb);
 
@@ -346,6 +362,9 @@ describe("ingestExecutionArtifacts", () => {
       gitHubPullRequest: {
         findUnique: vi.fn().mockResolvedValue(null),
         create: vi.fn().mockResolvedValue({ id: "pr-2" }),
+        upsert: vi
+          .fn()
+          .mockResolvedValue({ id: "pr-2", artifactId: loop.artifactId }),
       },
       externalLink: {
         create: vi.fn().mockResolvedValue({ id: "ext-link-2" }),

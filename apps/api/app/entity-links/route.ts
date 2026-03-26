@@ -3,6 +3,7 @@ import {
   LinkQueryMode,
 } from "@repo/api/src/types/entity-link";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
+import { EntityOrganizationMismatchError } from "@/lib/entity-validation";
 import { resolveEntityLinkIdentifier } from "@/lib/identifier-utils";
 import {
   errorResponse,
@@ -12,7 +13,7 @@ import {
   parseQueryParams,
   successResponse,
 } from "@/lib/route-utils";
-import { EntityOrganizationMismatchError, entityLinksService } from "./service";
+import { entityLinksService } from "./service";
 import {
   createEntityLinkValidator,
   findEntityLinksQueryValidator,

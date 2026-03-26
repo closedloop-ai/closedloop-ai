@@ -6,6 +6,7 @@ import {
   type JudgesReport,
   type MetricStatistics,
 } from "@repo/api/src/types/evaluation";
+import { EntityType } from "@repo/database";
 import { normalizeJudgeName } from "@/lib/judge-name-utils";
 
 /** Builds a MetricStatistics entry for tests. */
@@ -60,7 +61,10 @@ export function buildCaseScore(
  */
 export function createMockEvaluationRow(overrides?: {
   id?: string;
-  artifactId?: string;
+  entityId?: string;
+  entityType?: EntityType;
+  organizationId?: string;
+  artifactId?: string | null;
   actionRunId?: string;
   reportType?: EvaluationReportType;
   reportId?: string;
@@ -73,9 +77,14 @@ export function createMockEvaluationRow(overrides?: {
     stats: [],
   };
 
+  const entityId = overrides?.entityId ?? "artifact-123";
+
   return {
     id: "eval-123",
-    artifactId: "artifact-123",
+    entityId,
+    entityType: EntityType.ARTIFACT,
+    organizationId: "org-123",
+    artifactId: entityId,
     actionRunId: "action-run-123",
     reportType: EvaluationReportTypeValue.Plan,
     reportId: "test-report",

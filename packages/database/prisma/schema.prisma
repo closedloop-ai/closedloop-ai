@@ -338,12 +338,14 @@ model User {
   claudeApiKeyEncrypted String?   @map("claude_api_key_encrypted")
   claudeApiKeyLastFour  String?   @map("claude_api_key_last_four")
   claudeApiKeySetAt     DateTime? @map("claude_api_key_set_at")
-  preferredComputeMode  PreferredComputeMode? @map("preferred_compute_mode")
+  preferredComputeMode     PreferredComputeMode? @map("preferred_compute_mode")
+  preferredComputeTargetId String?               @map("preferred_compute_target_id") @db.Uuid
   createdAt       DateTime     @default(now()) @map("created_at")
   updatedAt       DateTime     @updatedAt @map("updated_at")
 
   // Relations
-  organization       Organization     @relation(fields: [organizationId], references: [id])
+  organization              Organization   @relation(fields: [organizationId], references: [id])
+  preferredComputeTarget    ComputeTarget? @relation("UserPreferredComputeTarget", fields: [preferredComputeTargetId], references: [id])
   teamMemberships    TeamMember[]
   pullRequestRatings PullRequestRating[]
   favoriteProjects   FavoriteProject[]
@@ -381,17 +383,20 @@ model ComputeTarget {
   supportedOperations Json     @default("[]") @map("supported_operations")
   lastSeenAt          DateTime @default(now()) @map("last_seen_at")
   isOnline            Boolean  @default(false) @map("is_online")
+  isSharedWithOrg     Boolean  @default(false) @map("is_shared_with_org")
   createdAt           DateTime @default(now()) @map("created_at")
   updatedAt           DateTime @updatedAt @map("updated_at")
 
   organization    Organization     @relation(fields: [organizationId], references: [id])
   user            User             @relation(fields: [userId], references: [id])
+  preferringUsers User[]           @relation("UserPreferredComputeTarget")
   desktopCommands DesktopCommand[]
   loops           Loop[]
 
   @@unique([userId, machineName])
   @@index([organizationId, userId])
   @@index([userId, isOnline])
+  @@index([organizationId, isSharedWithOrg])
   @@map("compute_targets")
 }
 
@@ -666,28 +671,33 @@ model ArtifactVersion {
 }
 
 model ArtifactEvaluation {
-  id          String   @id @default(uuid(7)) @db.Uuid
-  artifactId  String   @map("artifact_id") @db.Uuid
-  actionRunId String?  @map("action_run_id") @db.Uuid
-  loopId      String?  @map("loop_id") @db.Uuid
-  reportType  EvaluationReportType @map("report_type")
-  reportId    String   @map("report_id")
-  reportData  Json?    @map("report_data")
-  createdAt   DateTime @default(now()) @map("created_at")
+  id             String               @id @default(uuid(7)) @db.Uuid
+  organizationId String               @map("organization_id") @db.Uuid
+  entityId       String               @map("entity_id") @db.Uuid
+  entityType     EntityType           @map("entity_type")
+  artifactId     String?              @map("artifact_id") @db.Uuid
+  actionRunId    String?              @map("action_run_id") @db.Uuid
+  loopId         String?              @map("loop_id") @db.Uuid
+  reportType     EvaluationReportType @map("report_type")
+  reportId       String               @map("report_id")
+  reportData     Json?                @map("report_data")
+  createdAt      DateTime             @default(now()) @map("created_at")
 
-  artifact         Artifact          @relation(fields: [artifactId], references: [id], onDelete: Cascade)
+  artifact         Artifact?         @relation(fields: [artifactId], references: [id], onDelete: Cascade)
   loop             Loop?             @relation(fields: [loopId], references: [id], onDelete: SetNull)
   judgeScores      JudgeScore[]
   judgeHumanScores JudgeHumanScore[]
 
-  @@unique([artifactId, reportId])
-  @@index([artifactId, createdAt])
+  @@unique([entityId, reportId])
+  @@index([entityId, createdAt])
+  @@index([organizationId, entityType, createdAt])
   @@map("artifact_evaluations")
 }
 
-// SECURITY: No organizationId column — org isolation is enforced exclusively
-// via the artifact FK chain: judgeScore.evaluationId → artifactEvaluation.artifactId → artifact.organizationId.
-// All read-path queries MUST join through ArtifactEvaluation → Artifact and filter by organizationId.
+// SECURITY: No organizationId column — org isolation is enforced via ArtifactEvaluation.organizationId.
+// JudgeScore rows are scoped to an org through the evaluationId FK:
+// judgeScore.evaluationId → ArtifactEvaluation.organizationId.
+// All read-path queries MUST join through ArtifactEvaluation and filter by organizationId directly.
 model JudgeScore {
   id            String     @id @default(uuid(7)) @db.Uuid
   evaluationId  String     @map("evaluation_id") @db.Uuid

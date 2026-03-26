@@ -8,7 +8,7 @@ import {
   getWorktreeParentDir,
   isRepoAllowed,
 } from "@/lib/engineer/repos";
-import { getShellPathSync } from "@/lib/engineer/shell-path";
+import { getShellPath } from "@/lib/engineer/shell-path";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 120;
@@ -195,10 +195,11 @@ function runCodexVerdict(
   });
 }
 
-function runClaudeVerdict(
+async function runClaudeVerdict(
   worktreeDir: string,
   sessionId: string
 ): Promise<string> {
+  const shellPath = await getShellPath();
   return new Promise((resolve, reject) => {
     const child = spawn(
       "claude",
@@ -218,7 +219,7 @@ function runClaudeVerdict(
         stdio: ["pipe", "pipe", "pipe"],
         env: {
           ...process.env,
-          PATH: getShellPathSync(),
+          PATH: shellPath,
         },
       }
     );

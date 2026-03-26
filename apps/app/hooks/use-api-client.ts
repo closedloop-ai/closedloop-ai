@@ -40,6 +40,14 @@ export function useApiClient() {
         });
       },
 
+      patch: async <T>(path: string, data: unknown) => {
+        await waitForAuthLoaded();
+        return apiFetch<T>(path, await getToken(), {
+          method: "PATCH",
+          body: JSON.stringify(data),
+        });
+      },
+
       delete: async <T>(path: string) => {
         await waitForAuthLoaded();
         return apiFetch<T>(path, await getToken(), {

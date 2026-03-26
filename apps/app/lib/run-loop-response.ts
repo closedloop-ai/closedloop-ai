@@ -17,6 +17,7 @@ type RunLoopResponseCallbacks = {
   onMultipleTargets: (targets: ComputeTargetConflictBody) => void;
   onBackendMismatch: (body: BackendMismatchBody) => void;
   onSuccess: (response: CreateLoopResponse) => void;
+  onRateLimited?: (message: string) => void;
 };
 
 /**
@@ -39,6 +40,12 @@ export function handleRunLoopResponse(
   // Success case: response is a CreateLoopResponse (has loopId + status)
   if (isCreateLoopResponse(response)) {
     callbacks.onSuccess(response);
+    return;
+  }
+
+  // 429 rate limit: concurrent loop limit exceeded
+  if (response instanceof ApiError && response.status === 429) {
+    callbacks.onRateLimited?.(response.message);
     return;
   }
 

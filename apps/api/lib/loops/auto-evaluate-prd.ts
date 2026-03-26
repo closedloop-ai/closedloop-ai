@@ -2,7 +2,7 @@ import { LoopCommand } from "@repo/api/src/types/loop";
 import { withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { waitUntil } from "@vercel/functions";
-import { loopsService } from "@/app/loops/service";
+import { isConcurrentLoopLimitError, loopsService } from "@/app/loops/service";
 import { resolveComputeTarget } from "./compute-target-resolver";
 import { launchLoop } from "./loop-orchestrator";
 
@@ -20,6 +20,17 @@ export function scheduleAutoEvaluatePrd(
 ): void {
   waitUntil(
     runAutoEvaluatePrd(artifactId, organizationId, userId).catch((error) => {
+      if (isConcurrentLoopLimitError(error)) {
+        log.info(
+          "[auto-evaluate-prd] Skipping — concurrent loop limit reached (rate-limited background evaluation)",
+          {
+            artifactId,
+            activeCount: error.activeCount,
+            limit: error.limit,
+          }
+        );
+        return;
+      }
       log.error("[auto-evaluate-prd] Failed to schedule PRD evaluation", {
         artifactId,
         error: error instanceof Error ? error.message : String(error),

@@ -16,6 +16,7 @@ import {
   CollapsibleTrigger,
 } from "@repo/design-system/components/ui/collapsible";
 import { toast } from "@repo/design-system/components/ui/sonner";
+import { Switch } from "@repo/design-system/components/ui/switch";
 import { useIsFetching, useQuery } from "@tanstack/react-query";
 import {
   AlertCircle,
@@ -33,6 +34,7 @@ import { SystemCheckResults } from "@/components/system-check/system-check-resul
 import {
   useComputeTargets,
   useDeleteComputeTarget,
+  useToggleComputeTargetSharing,
 } from "@/hooks/queries/use-compute-targets";
 import {
   COMPUTE_TARGETS_QUERY_OPTIONS,
@@ -138,6 +140,7 @@ export function LocalComputeTargetsCard() {
     ...COMPUTE_TARGETS_QUERY_OPTIONS,
   });
   const deleteTarget = useDeleteComputeTarget(user?.id ?? "");
+  const toggleSharing = useToggleComputeTargetSharing();
   const { isLoading: systemCheckLoading, shouldRunSystemCheck } =
     useSystemCheckEligibility();
   const {
@@ -211,42 +214,69 @@ export function LocalComputeTargetsCard() {
       </div>
     );
   } else {
+    // Only show the user's own targets in settings (not shared targets from others)
+    const ownTargets = targets.filter((t) => !t.ownerName);
     content = (
       <div className="space-y-3">
-        {targets.map((target) => (
-          <div
-            className="flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3"
-            key={target.id}
-          >
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2">
-                <p className="truncate font-medium">{target.machineName}</p>
-                <Badge
-                  className="capitalize"
-                  variant={target.isOnline ? "default" : "secondary"}
-                >
-                  {target.isOnline ? "online" : "offline"}
-                </Badge>
+        {ownTargets.map((target) => (
+          <div className="rounded-lg border p-3" key={target.id}>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <p className="truncate font-medium">{target.machineName}</p>
+                  <Badge
+                    className="capitalize"
+                    variant={target.isOnline ? "default" : "secondary"}
+                  >
+                    {target.isOnline ? "online" : "offline"}
+                  </Badge>
+                </div>
+                <p className="text-muted-foreground text-xs">
+                  {target.platform} - Last seen{" "}
+                  {formatLastSeen(target.lastSeenAt)}
+                </p>
               </div>
-              <p className="text-muted-foreground text-xs">
-                {target.platform} - Last seen{" "}
-                {formatLastSeen(target.lastSeenAt)}
-              </p>
+
+              <Button
+                disabled={deleteTarget.isPending}
+                onClick={() => handleDelete(target.id, target.machineName)}
+                size="sm"
+                variant="outline"
+              >
+                {deleteTarget.isPending ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Trash2 className="h-4 w-4" />
+                )}
+                Delete
+              </Button>
             </div>
 
-            <Button
-              disabled={deleteTarget.isPending}
-              onClick={() => handleDelete(target.id, target.machineName)}
-              size="sm"
-              variant="outline"
-            >
-              {deleteTarget.isPending ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Trash2 className="h-4 w-4" />
-              )}
-              Delete
-            </Button>
+            <div className="mt-2 flex items-center justify-between border-t pt-2">
+              <div>
+                <p className="text-sm">Share with team</p>
+                <p className="text-muted-foreground text-xs">
+                  Allow anyone in your org to run jobs on this machine
+                </p>
+              </div>
+              <Switch
+                checked={target.isSharedWithOrg}
+                disabled={toggleSharing.isPending}
+                onCheckedChange={(checked) =>
+                  toggleSharing.mutate(
+                    { id: target.id, isSharedWithOrg: checked },
+                    {
+                      onSuccess: () =>
+                        toast.success(
+                          checked
+                            ? `${target.machineName} is now shared with your org`
+                            : `${target.machineName} is no longer shared`
+                        ),
+                    }
+                  )
+                }
+              />
+            </div>
           </div>
         ))}
       </div>

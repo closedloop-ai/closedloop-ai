@@ -22,6 +22,11 @@ vi.mock("@repo/database", () => ({
     PLAN: "PLAN",
     CODE: "CODE",
   },
+  EntityType: {
+    ARTIFACT: "ARTIFACT",
+    FEATURE: "FEATURE",
+    EXTERNAL_LINK: "EXTERNAL_LINK",
+  },
   Prisma: {
     sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({
       strings,
@@ -65,11 +70,18 @@ vi.mock("@/lib/pr-linkage", () => ({
   ensurePrLinkageRecords: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock("@/lib/entity-validation", () => ({
+  assertEntityInOrganization: vi.fn().mockResolvedValue(undefined),
+}));
+
 // --- Imports (after mocks) ---
 
+import { EntityType } from "@repo/api/src/types/entity-link";
 import { withDb } from "@repo/database";
 import type { Mock } from "vitest";
+import { assertEntityInOrganization } from "@/lib/entity-validation";
 import { fanOutJudgeScores } from "@/lib/judge-score-fanout";
+import { upsertEvaluationWithJudgeScores } from "@/lib/loops/loop-artifact-ingestion";
 import { ingestExecutionArtifacts } from "@/lib/loops/loop-commands/execute-handler";
 import {
   downloadPlanArtifacts,
@@ -88,6 +100,8 @@ const mockDownloadPromptSnapshotMarkdownEntries =
 const mockFanOutJudgeScores = fanOutJudgeScores as unknown as Mock;
 const mockUpsertFromSnapshot = upsertFromSnapshot as unknown as Mock;
 const mockWithDb = withDb as unknown as Mock & { tx: Mock };
+const mockAssertEvaluationEntityInOrganization =
+  assertEntityInOrganization as unknown as Mock;
 
 // ---------------------------------------------------------------------------
 // Shared test fixtures
@@ -363,6 +377,9 @@ describe("ingestExecutionArtifacts — upsertFromSnapshot ordering", () => {
           gitHubPullRequest: {
             findUnique: vi.fn().mockResolvedValue(null),
             create: vi.fn().mockResolvedValue({ id: "pr-1" }),
+            upsert: vi
+              .fn()
+              .mockResolvedValue({ id: "pr-1", artifactId: ARTIFACT_ID }),
           },
           externalLink: {
             create: vi.fn().mockResolvedValue({ id: "ext-link-1" }),
@@ -445,6 +462,9 @@ describe("ingestExecutionArtifacts — upsertFromSnapshot ordering", () => {
           gitHubPullRequest: {
             findUnique: vi.fn().mockResolvedValue(null),
             create: vi.fn().mockResolvedValue({ id: "pr-1" }),
+            upsert: vi
+              .fn()
+              .mockResolvedValue({ id: "pr-1", artifactId: ARTIFACT_ID }),
           },
           externalLink: {
             create: vi.fn().mockResolvedValue({ id: "ext-link-1" }),
@@ -481,5 +501,161 @@ describe("ingestExecutionArtifacts — upsertFromSnapshot ordering", () => {
     ).resolves.toBeUndefined();
 
     expect(mockUpsertFromSnapshot).toHaveBeenCalledWith(ORG_ID, null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// upsertEvaluationWithJudgeScores — direct unit tests (PRD SS8.1)
+// ---------------------------------------------------------------------------
+
+describe("upsertEvaluationWithJudgeScores", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    mockAssertEvaluationEntityInOrganization.mockResolvedValue(undefined);
+  });
+
+  function makeUpsertParams(overrides: Record<string, unknown> = {}) {
+    const mockTx = {
+      artifactEvaluation: {
+        upsert: vi.fn().mockResolvedValue({ id: "eval-upsert-1" }),
+      },
+    };
+    return {
+      params: {
+        entityId: ARTIFACT_ID,
+        entityType: EntityType.Artifact,
+        artifactId: ARTIFACT_ID,
+        loopId: LOOP_ID,
+        organizationId: ORG_ID,
+        reportType: "PLAN",
+        report: makeJudgesReport("report-direct-1"),
+        tx: mockTx,
+        ...overrides,
+      },
+      mockTx,
+    };
+  }
+
+  it("create block has correct entityId, entityType, organizationId, and artifactId", async () => {
+    const { params, mockTx } = makeUpsertParams();
+
+    await upsertEvaluationWithJudgeScores(
+      params as unknown as Parameters<typeof upsertEvaluationWithJudgeScores>[0]
+    );
+
+    expect(mockTx.artifactEvaluation.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          entityId: ARTIFACT_ID,
+          entityType: EntityType.Artifact,
+          organizationId: ORG_ID,
+          artifactId: ARTIFACT_ID,
+        }),
+      })
+    );
+  });
+
+  it("where clause uses entityId_reportId composite key", async () => {
+    const report = makeJudgesReport("report-where-key");
+    const { params, mockTx } = makeUpsertParams({ report });
+
+    await upsertEvaluationWithJudgeScores(
+      params as unknown as Parameters<typeof upsertEvaluationWithJudgeScores>[0]
+    );
+
+    expect(mockTx.artifactEvaluation.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          entityId_reportId: {
+            entityId: ARTIFACT_ID,
+            reportId: report.report_id,
+          },
+        },
+      })
+    );
+  });
+
+  it("re-upsert with same entityId and reportId updates without duplicate (idempotent)", async () => {
+    const report = makeJudgesReport("report-idempotent");
+    const mockUpsert = vi.fn().mockResolvedValue({ id: "eval-idempotent-1" });
+    const mockTx = { artifactEvaluation: { upsert: mockUpsert } };
+    const sharedParams = {
+      entityId: ARTIFACT_ID,
+      entityType: EntityType.Artifact,
+      artifactId: ARTIFACT_ID,
+      loopId: LOOP_ID,
+      organizationId: ORG_ID,
+      reportType: "PLAN",
+      report,
+      tx: mockTx,
+    };
+
+    await upsertEvaluationWithJudgeScores(
+      sharedParams as unknown as Parameters<
+        typeof upsertEvaluationWithJudgeScores
+      >[0]
+    );
+    await upsertEvaluationWithJudgeScores(
+      sharedParams as unknown as Parameters<
+        typeof upsertEvaluationWithJudgeScores
+      >[0]
+    );
+
+    expect(mockUpsert).toHaveBeenCalledTimes(2);
+    const [firstArgs, secondArgs] = mockUpsert.mock.calls;
+    // Both calls carry the same entityId + reportId where key
+    expect(firstArgs[0].where).toEqual(secondArgs[0].where);
+    expect(firstArgs[0].where).toEqual({
+      entityId_reportId: {
+        entityId: ARTIFACT_ID,
+        reportId: report.report_id,
+      },
+    });
+  });
+
+  it("create block includes organizationId from params", async () => {
+    const customOrgId = "org-custom-456";
+    const { params, mockTx } = makeUpsertParams({
+      organizationId: customOrgId,
+    });
+
+    await upsertEvaluationWithJudgeScores(
+      params as unknown as Parameters<typeof upsertEvaluationWithJudgeScores>[0]
+    );
+
+    expect(mockTx.artifactEvaluation.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          organizationId: customOrgId,
+        }),
+      })
+    );
+  });
+
+  it("calls fanOutJudgeScores with correct evaluationId, organizationId, report, and tx", async () => {
+    const report = makeJudgesReport("report-fanout");
+    const mockUpsert = vi.fn().mockResolvedValue({ id: "eval-fanout-1" });
+    const mockTx = { artifactEvaluation: { upsert: mockUpsert } };
+    const params = {
+      entityId: ARTIFACT_ID,
+      entityType: EntityType.Artifact,
+      artifactId: ARTIFACT_ID,
+      loopId: LOOP_ID,
+      organizationId: ORG_ID,
+      reportType: "PLAN",
+      report,
+      tx: mockTx,
+    };
+
+    await upsertEvaluationWithJudgeScores(
+      params as unknown as Parameters<typeof upsertEvaluationWithJudgeScores>[0]
+    );
+
+    expect(mockFanOutJudgeScores).toHaveBeenCalledWith({
+      evaluationId: "eval-fanout-1",
+      organizationId: ORG_ID,
+      report,
+      tx: mockTx,
+    });
   });
 });

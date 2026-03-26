@@ -4,7 +4,8 @@
   "private": true,
   "scripts": {
     "clean": "git clean -xdf .cache .turbo dist node_modules",
-    "typecheck": "tsc --noEmit --emitDeclarationOnly false"
+    "typecheck": "tsc --noEmit --emitDeclarationOnly false",
+    "test": "vitest run"
   },
   "dependencies": {
     "@t3-oss/env-nextjs": "^0.13.10",
@@ -17,6 +18,7 @@
     "@types/node": "^25.3.5",
     "@types/react": "^19.2.13",
     "@types/react-dom": "19.2.3",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.18"
   }
 }

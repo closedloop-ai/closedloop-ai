@@ -12,7 +12,8 @@ export function registerCreateProject(
   server.registerTool(
     "create-project",
     {
-      description: "Create a new project",
+      description:
+        "Create a project, the top-level container for workstreams, features, and artifacts.",
       inputSchema: {
         name: z.string().describe("Name of the project"),
         description: z
