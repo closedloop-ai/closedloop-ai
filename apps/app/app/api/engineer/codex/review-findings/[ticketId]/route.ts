@@ -1,7 +1,11 @@
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { type NextRequest, NextResponse } from "next/server";
+import {
+  checkLegacyProcessAndMigrate,
+  findFirstExistingPath,
+} from "@/lib/engineer/process-utils";
 import {
   expandHome,
   getWorktreeParentDir,
@@ -28,19 +32,40 @@ type FindingsFile = {
   declineReason?: string;
 };
 
-function getFindingsPath(
-  ticketId: string,
-  repoPath: string,
-  provider: string
-): string {
+function getWorktreeDir(ticketId: string, repoPath: string): string {
   const sanitizedTicket = ticketId.replaceAll(/[^a-zA-Z0-9-_]/g, "_");
   const expandedRepoPath = expandHome(repoPath);
   const repoName = basename(expandedRepoPath);
   const worktreeParentDir = getWorktreeParentDir();
+  return join(worktreeParentDir, `${repoName}-${sanitizedTicket}`);
+}
+
+function getFindingsReadPath(
+  ticketId: string,
+  repoPath: string,
+  provider: string
+): string | null {
+  const worktreeDir = getWorktreeDir(ticketId, repoPath);
+  return findFirstExistingPath(
+    join(
+      worktreeDir,
+      ".closedloop-ai",
+      "work",
+      `review-findings-${provider}.json`
+    ),
+    join(worktreeDir, ".claude", "work", `review-findings-${provider}.json`)
+  );
+}
+
+function getFindingsWritePath(
+  ticketId: string,
+  repoPath: string,
+  provider: string
+): string {
+  const worktreeDir = getWorktreeDir(ticketId, repoPath);
   return join(
-    worktreeParentDir,
-    `${repoName}-${sanitizedTicket}`,
-    ".claude",
+    worktreeDir,
+    ".closedloop-ai",
     "work",
     `review-findings-${provider}.json`
   );
@@ -73,9 +98,9 @@ export async function GET(
     );
   }
 
-  const findingsPath = getFindingsPath(ticketId, repoPath, provider);
+  const findingsPath = getFindingsReadPath(ticketId, repoPath, provider);
 
-  if (!existsSync(findingsPath)) {
+  if (!(findingsPath && existsSync(findingsPath))) {
     return NextResponse.json({ findings: [] });
   }
 
@@ -118,26 +143,51 @@ export async function POST(
     );
   }
 
-  const findingsPath = getFindingsPath(ticketId, repoPath, provider);
+  const worktreeDir = getWorktreeDir(ticketId, repoPath);
+  const preflightResult = checkLegacyProcessAndMigrate(worktreeDir);
+  if (preflightResult === "live-process-blocking") {
+    return NextResponse.json(
+      {
+        error:
+          "A job started before the .closedloop-ai migration is still running. Stop it first, then retry.",
+      },
+      { status: 409 }
+    );
+  }
+
+  const findingsReadPath = getFindingsReadPath(ticketId, repoPath, provider);
+  const findingsWritePath = getFindingsWritePath(ticketId, repoPath, provider);
   const body = await request.json();
 
   if (typeof body.commentedIndex === "number") {
-    return markFindingCommented(findingsPath, body.commentedIndex);
+    return markFindingCommented(
+      findingsReadPath,
+      findingsWritePath,
+      body.commentedIndex
+    );
   }
 
   if (body.declined === true && typeof body.declineReason === "string") {
-    return markDeclined(findingsPath, body.declineReason);
+    return markDeclined(
+      findingsReadPath,
+      findingsWritePath,
+      body.declineReason
+    );
   }
 
   if (body.findings && Array.isArray(body.findings)) {
-    return saveFindings(findingsPath, body);
+    return saveFindings(findingsWritePath, body);
   }
 
   return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
 }
 
-async function markFindingCommented(findingsPath: string, index: number) {
-  if (!existsSync(findingsPath)) {
+async function markFindingCommented(
+  readPath: string | null,
+  writePath: string,
+  index: number
+) {
+  if (!(readPath && existsSync(readPath))) {
     return NextResponse.json(
       { error: "No findings file found" },
       { status: 404 }
@@ -145,7 +195,7 @@ async function markFindingCommented(findingsPath: string, index: number) {
   }
 
   try {
-    const content = await readFile(findingsPath, "utf-8");
+    const content = await readFile(readPath, "utf-8");
     const data: FindingsFile = JSON.parse(content);
 
     if (index < 0 || index >= data.findings.length) {
@@ -156,7 +206,19 @@ async function markFindingCommented(findingsPath: string, index: number) {
     }
 
     data.findings[index].commented = true;
-    await writeFile(findingsPath, JSON.stringify(data, null, 2));
+    const dir = join(writePath, "..");
+    if (!existsSync(dir)) {
+      await mkdir(dir, { recursive: true });
+    }
+    await writeFile(writePath, JSON.stringify(data, null, 2));
+    // Clean up stale legacy copy if we diverged read/write paths
+    if (readPath !== writePath) {
+      try {
+        await unlink(readPath);
+      } catch {
+        /* best effort */
+      }
+    }
     return NextResponse.json({ success: true });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
@@ -167,8 +229,12 @@ async function markFindingCommented(findingsPath: string, index: number) {
   }
 }
 
-async function markDeclined(findingsPath: string, reason: string) {
-  if (!existsSync(findingsPath)) {
+async function markDeclined(
+  readPath: string | null,
+  writePath: string,
+  reason: string
+) {
+  if (!(readPath && existsSync(readPath))) {
     return NextResponse.json(
       { error: "No findings file found" },
       { status: 404 }
@@ -176,11 +242,22 @@ async function markDeclined(findingsPath: string, reason: string) {
   }
 
   try {
-    const content = await readFile(findingsPath, "utf-8");
+    const content = await readFile(readPath, "utf-8");
     const data: FindingsFile = JSON.parse(content);
     data.declined = true;
     data.declineReason = reason;
-    await writeFile(findingsPath, JSON.stringify(data, null, 2));
+    const dir = join(writePath, "..");
+    if (!existsSync(dir)) {
+      await mkdir(dir, { recursive: true });
+    }
+    await writeFile(writePath, JSON.stringify(data, null, 2));
+    if (readPath !== writePath) {
+      try {
+        await unlink(readPath);
+      } catch {
+        /* best effort */
+      }
+    }
     return NextResponse.json({ success: true });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";

@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { basename, extname, join } from "node:path";
 import { type NextRequest, NextResponse } from "next/server";
+import { checkLegacyProcessAndMigrate } from "@/lib/engineer/process-utils";
 import { expandHome, getWorktreeParentDir } from "@/lib/engineer/repos";
 
 const ALLOWED_TYPES = new Set([
@@ -53,7 +54,19 @@ export async function POST(
     );
   }
 
-  const attachmentsDir = join(worktreeDir, ".claude", "work", "attachments");
+  const preflightResult = checkLegacyProcessAndMigrate(worktreeDir);
+  if (preflightResult === "live-process-blocking") {
+    return NextResponse.json(
+      {
+        error:
+          "A job started before the .closedloop-ai migration is still running. Stop it first, then retry.",
+      },
+      { status: 409 }
+    );
+  }
+
+  const newWorkDir = join(worktreeDir, ".closedloop-ai", "work");
+  const attachmentsDir = join(newWorkDir, "attachments");
   if (!existsSync(attachmentsDir)) {
     mkdirSync(attachmentsDir, { recursive: true });
   }

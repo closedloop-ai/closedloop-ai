@@ -1,4 +1,5 @@
 import {
+  copyFileSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -12,6 +13,10 @@ import {
   getCodexChatStatePath,
 } from "@/lib/engineer/codex-state";
 import { VALID_PROVIDERS } from "@/lib/engineer/constants";
+import {
+  checkLegacyProcessAndMigrate,
+  findFirstExistingPath,
+} from "@/lib/engineer/process-utils";
 import { expandHome, getWorktreeParentDir } from "@/lib/engineer/repos";
 
 /**
@@ -33,8 +38,22 @@ type ChatHistory = {
   contextPercent?: number | null;
 };
 
+function resolveWorktreeDir(ticketId: string, repoPath: string): string {
+  const expandedRepoPath = expandHome(repoPath);
+  const sanitizedTicket = ticketId.replaceAll(/[^a-zA-Z0-9-_]/g, "_");
+  const repoName = basename(expandedRepoPath);
+  const worktreeParentDir = getWorktreeParentDir();
+  return join(worktreeParentDir, `${repoName}-${sanitizedTicket}`);
+}
+
+function chatHistoryFilename(provider?: string | null): string {
+  return provider && VALID_PROVIDERS.has(provider)
+    ? `chat-history-${provider}.json`
+    : "chat-history.json";
+}
+
 /**
- * Get the chat history file path for a ticket.
+ * Get the canonical (new) chat history file path for a ticket.
  * When `provider` is specified (and valid), returns a provider-scoped file
  * (`chat-history-claude.json` / `chat-history-codex.json`) so that each
  * ReviewChatPane gets its own transcript.
@@ -44,19 +63,40 @@ function getChatHistoryPath(
   repoPath: string,
   provider?: string | null
 ): string {
-  const expandedRepoPath = expandHome(repoPath);
+  const worktreeDir = resolveWorktreeDir(ticketId, repoPath);
+  return join(
+    worktreeDir,
+    ".closedloop-ai",
+    "work",
+    chatHistoryFilename(provider)
+  );
+}
 
-  const sanitizedTicket = ticketId.replaceAll(/[^a-zA-Z0-9-_]/g, "_");
-  const repoName = basename(expandedRepoPath);
-  const worktreeParentDir = getWorktreeParentDir();
-  const worktreeDir = join(worktreeParentDir, `${repoName}-${sanitizedTicket}`);
+/**
+ * Get the legacy (.claude/work) chat history file path for a ticket.
+ */
+function getLegacyHistoryPath(
+  ticketId: string,
+  repoPath: string,
+  provider?: string | null
+): string {
+  const worktreeDir = resolveWorktreeDir(ticketId, repoPath);
+  return join(worktreeDir, ".claude", "work", chatHistoryFilename(provider));
+}
 
-  const filename =
-    provider && VALID_PROVIDERS.has(provider)
-      ? `chat-history-${provider}.json`
-      : "chat-history.json";
-
-  return join(worktreeDir, ".claude", "work", filename);
+/**
+ * Like getChatHistoryPath but returns the first path that exists on disk,
+ * checking the new location first and falling back to the legacy location.
+ * Returns the new path as default when neither exists (for consistent writes).
+ */
+function findChatHistoryPath(
+  ticketId: string,
+  repoPath: string,
+  provider?: string | null
+): string {
+  const newPath = getChatHistoryPath(ticketId, repoPath, provider);
+  const legacyPath = getLegacyHistoryPath(ticketId, repoPath, provider);
+  return findFirstExistingPath(newPath, legacyPath) ?? newPath;
 }
 
 /**
@@ -87,7 +127,7 @@ export async function GET(
     );
   }
 
-  const historyPath = getChatHistoryPath(ticketId, repoPath, provider);
+  const historyPath = findChatHistoryPath(ticketId, repoPath, provider);
 
   // Compute once before any early return — Codex review may have completed
   // even before any chat messages exist (no chat-history.json yet).
@@ -155,9 +195,34 @@ export async function POST(
   };
 
   const historyPath = getChatHistoryPath(ticketId, repoPath, provider);
+  const legacyHistoryPath = getLegacyHistoryPath(ticketId, repoPath, provider);
+  const worktreeDir = resolveWorktreeDir(ticketId, repoPath);
 
-  // Ensure directory exists
+  const preflightResult = checkLegacyProcessAndMigrate(worktreeDir);
+  if (preflightResult === "live-process-blocking") {
+    return NextResponse.json(
+      {
+        error:
+          "A job started before the .closedloop-ai migration is still running. Stop it first, then retry.",
+      },
+      { status: 409 }
+    );
+  }
+
+  // Migrate legacy chat history AFTER preflight so the new dir creation
+  // doesn't bypass the live-legacy-process guard above
   const historyDir = join(historyPath, "..");
+  if (!existsSync(historyPath) && existsSync(legacyHistoryPath)) {
+    if (!existsSync(historyDir)) {
+      mkdirSync(historyDir, { recursive: true });
+    }
+    copyFileSync(legacyHistoryPath, historyPath);
+    try {
+      unlinkSync(legacyHistoryPath);
+    } catch {
+      /* best effort */
+    }
+  }
   if (!existsSync(historyDir)) {
     mkdirSync(historyDir, { recursive: true });
   }
@@ -243,19 +308,24 @@ export async function DELETE(
     );
   }
 
-  const historyPath = getChatHistoryPath(ticketId, repoPath, provider);
-  const workDir = join(historyPath, "..");
+  const historyPath = findChatHistoryPath(ticketId, repoPath, provider);
+  const legacyPath = getLegacyHistoryPath(ticketId, repoPath, provider);
+  const canonicalPath = getChatHistoryPath(ticketId, repoPath, provider);
+  const worktreeDir = resolveWorktreeDir(ticketId, repoPath);
+  const workDirs = [
+    join(worktreeDir, ".closedloop-ai", "work"),
+    join(worktreeDir, ".claude", "work"),
+  ];
 
   if (!existsSync(historyPath)) {
     if (indexParam === null && !provider) {
-      // Even if no transcript exists yet, a review may have already seeded
-      // shared-surface Codex session files. Clear them on full reset.
-      deleteSharedCodexChatState(workDir);
+      for (const wd of workDirs) {
+        deleteSharedCodexChatState(wd);
+      }
     }
     if (indexParam === null && provider === "codex") {
-      // Also clean up the review-scoped Codex session file
-      const codexReviewPath = getCodexChatStatePath(workDir, "review");
-      if (existsSync(codexReviewPath)) {
+      for (const wd of workDirs) {
+        const codexReviewPath = getCodexChatStatePath(wd, "review");
         try {
           unlinkSync(codexReviewPath);
         } catch {
@@ -271,22 +341,27 @@ export async function DELETE(
 
   try {
     if (indexParam === null) {
-      // Clear entire chat - delete the file
-      unlinkSync(historyPath);
+      // Clear entire chat - delete from both roots to prevent resurrection
+      for (const p of [canonicalPath, legacyPath]) {
+        try {
+          unlinkSync(p);
+        } catch {
+          /* best effort */
+        }
+      }
 
       if (provider === "codex") {
-        // Only clean up the review-scoped Codex session file
-        const codexReviewPath = getCodexChatStatePath(workDir, "review");
-        if (existsSync(codexReviewPath)) {
+        for (const wd of workDirs) {
           try {
-            unlinkSync(codexReviewPath);
+            unlinkSync(getCodexChatStatePath(wd, "review"));
           } catch {
             /* best-effort */
           }
         }
       } else if (!provider) {
-        // No provider specified (SymphonyChat full clear) — blanket cleanup
-        deleteSharedCodexChatState(workDir);
+        for (const wd of workDirs) {
+          deleteSharedCodexChatState(wd);
+        }
       }
       // provider=claude: do NOT touch any codex state files
 

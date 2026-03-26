@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { basename, extname, join, sep } from "node:path";
 import { type NextRequest, NextResponse } from "next/server";
+import { findFirstExistingPath } from "@/lib/engineer/process-utils";
 import { expandHome, getWorktreeParentDir } from "@/lib/engineer/repos";
 
 /**
@@ -34,21 +35,28 @@ export async function GET(
   const worktreeParentDir = getWorktreeParentDir();
   const worktreeDir = join(worktreeParentDir, `${repoName}-${sanitizedTicket}`);
 
-  // Build the file path from segments
+  // Build the file path from segments — resolve per-file across both dirs
   const filename = pathSegments.join("/");
-  const filePath = join(
+  const newAttachmentsDir = join(
     worktreeDir,
-    ".claude",
+    ".closedloop-ai",
     "work",
-    "attachments",
-    filename
+    "attachments"
   );
+  const oldAttachmentsDir = join(worktreeDir, ".claude", "work", "attachments");
+  const filePath =
+    findFirstExistingPath(
+      join(newAttachmentsDir, filename),
+      join(oldAttachmentsDir, filename)
+    ) ?? join(newAttachmentsDir, filename);
 
-  // Security check: ensure the path stays within attachments directory.
-  // Use attachmentsDir + sep to prevent prefix-collision bypass where a path
-  // like /path/to/attachments-private/file satisfies startsWith("/path/to/attachments").
-  const attachmentsDir = join(worktreeDir, ".claude", "work", "attachments");
-  if (!filePath.startsWith(attachmentsDir + sep)) {
+  // Security check: ensure the path stays within one of the allowed attachments directories.
+  const attachmentsDir = filePath.startsWith(newAttachmentsDir + sep)
+    ? newAttachmentsDir
+    : filePath.startsWith(oldAttachmentsDir + sep)
+      ? oldAttachmentsDir
+      : null;
+  if (!attachmentsDir) {
     return NextResponse.json({ error: "Invalid path" }, { status: 403 });
   }
 

@@ -11,7 +11,9 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   acquireLaunchLock,
   cleanStaleLock,
+  findFirstExistingPath,
   isProcessRunning,
+  migrateWorkDirIfNeeded,
   readLaunchMetadata,
   readProcessPid,
   releaseLaunchLock,
@@ -40,19 +42,84 @@ describe("process-utils", () => {
     });
 
     it("returns parsed PID from valid file", async () => {
-      const claudeWorkDir = join(testDir, ".claude", "work");
-      mkdirSync(claudeWorkDir, { recursive: true });
-      writeFileSync(join(claudeWorkDir, "process.pid"), "12345");
+      const workDir = join(testDir, ".closedloop-ai", "work");
+      mkdirSync(workDir, { recursive: true });
+      writeFileSync(join(workDir, "process.pid"), "12345");
 
       const pid = await readProcessPid(testDir);
       expect(pid).toBe(12_345);
     });
 
     it("returns null for non-numeric content", async () => {
-      const claudeWorkDir = join(testDir, ".claude", "work");
-      mkdirSync(claudeWorkDir, { recursive: true });
-      writeFileSync(join(claudeWorkDir, "process.pid"), "not-a-pid");
+      const workDir = join(testDir, ".closedloop-ai", "work");
+      mkdirSync(workDir, { recursive: true });
+      writeFileSync(join(workDir, "process.pid"), "not-a-pid");
 
+      const pid = await readProcessPid(testDir);
+      expect(pid).toBeNull();
+    });
+
+    it("legacy-aware: PID at old .claude/work path only -> returns PID", async () => {
+      const oldWorkDir = join(testDir, ".claude", "work");
+      mkdirSync(oldWorkDir, { recursive: true });
+      writeFileSync(join(oldWorkDir, "process.pid"), "11111");
+
+      const pid = await readProcessPid(testDir);
+      expect(pid).toBe(11_111);
+    });
+
+    it("legacy-aware: PID at new .closedloop-ai/work path only -> returns PID", async () => {
+      const newWorkDir = join(testDir, ".closedloop-ai", "work");
+      mkdirSync(newWorkDir, { recursive: true });
+      writeFileSync(join(newWorkDir, "process.pid"), "22222");
+
+      const pid = await readProcessPid(testDir);
+      expect(pid).toBe(22_222);
+    });
+
+    it("legacy-aware: both paths exist, both stale -> returns new path PID (first stale fallback)", async () => {
+      const newWorkDir = join(testDir, ".closedloop-ai", "work");
+      mkdirSync(newWorkDir, { recursive: true });
+      writeFileSync(join(newWorkDir, "process.pid"), "999999998");
+
+      const oldWorkDir = join(testDir, ".claude", "work");
+      mkdirSync(oldWorkDir, { recursive: true });
+      writeFileSync(join(oldWorkDir, "process.pid"), "999999997");
+
+      const pid = await readProcessPid(testDir);
+      expect(pid).toBe(999_999_998);
+    });
+
+    it("liveness-aware: stale new PID + live old PID -> returns live old PID", async () => {
+      // Use current process PID as the "live" PID at the legacy path
+      const newWorkDir = join(testDir, ".closedloop-ai", "work");
+      mkdirSync(newWorkDir, { recursive: true });
+      writeFileSync(join(newWorkDir, "process.pid"), "999999999"); // stale
+
+      const oldWorkDir = join(testDir, ".claude", "work");
+      mkdirSync(oldWorkDir, { recursive: true });
+      writeFileSync(join(oldWorkDir, "process.pid"), String(process.pid)); // live
+
+      const pid = await readProcessPid(testDir);
+      expect(pid).toBe(process.pid);
+    });
+
+    it("liveness-aware: both live, new PID preferred (checked first)", async () => {
+      // Use distinct live PIDs: process.pid for new, process.ppid for old
+      const newWorkDir = join(testDir, ".closedloop-ai", "work");
+      mkdirSync(newWorkDir, { recursive: true });
+      writeFileSync(join(newWorkDir, "process.pid"), String(process.pid));
+
+      const oldWorkDir = join(testDir, ".claude", "work");
+      mkdirSync(oldWorkDir, { recursive: true });
+      writeFileSync(join(oldWorkDir, "process.pid"), String(process.ppid));
+
+      const pid = await readProcessPid(testDir);
+      // New path checked first, its PID is live, so it wins
+      expect(pid).toBe(process.pid);
+    });
+
+    it("legacy-aware: neither path exists -> null", async () => {
       const pid = await readProcessPid(testDir);
       expect(pid).toBeNull();
     });
@@ -75,10 +142,10 @@ describe("process-utils", () => {
     });
 
     it("returns baseBranch and parentTicketId from valid file", () => {
-      const claudeWorkDir = join(testDir, ".claude", "work");
-      mkdirSync(claudeWorkDir, { recursive: true });
+      const workDir = join(testDir, ".closedloop-ai", "work");
+      mkdirSync(workDir, { recursive: true });
       writeFileSync(
-        join(claudeWorkDir, "launch-metadata.json"),
+        join(workDir, "launch-metadata.json"),
         JSON.stringify({ baseBranch: "main", parentTicketId: "AI-100" })
       );
 
@@ -87,9 +154,9 @@ describe("process-utils", () => {
     });
 
     it("returns null for malformed JSON", () => {
-      const claudeWorkDir = join(testDir, ".claude", "work");
-      mkdirSync(claudeWorkDir, { recursive: true });
-      writeFileSync(join(claudeWorkDir, "launch-metadata.json"), "not json");
+      const workDir = join(testDir, ".closedloop-ai", "work");
+      mkdirSync(workDir, { recursive: true });
+      writeFileSync(join(workDir, "launch-metadata.json"), "not json");
 
       const meta = readLaunchMetadata(testDir);
       expect(meta).toBeNull();
@@ -97,10 +164,15 @@ describe("process-utils", () => {
   });
 
   describe("writeLaunchMetadata", () => {
-    it("writes launch-metadata.json and creates .claude/work dir if needed", () => {
+    it("writes launch-metadata.json and creates .closedloop-ai/work dir if needed", () => {
       writeLaunchMetadata(testDir, { baseBranch: "develop" });
 
-      const metaPath = join(testDir, ".claude", "work", "launch-metadata.json");
+      const metaPath = join(
+        testDir,
+        ".closedloop-ai",
+        "work",
+        "launch-metadata.json"
+      );
       expect(existsSync(metaPath)).toBe(true);
       const content = JSON.parse(readFileSync(metaPath, "utf-8"));
       expect(content.baseBranch).toBe("develop");
@@ -287,6 +359,71 @@ describe("process-utils", () => {
       cleanStaleLock(lockDir);
       // Lock should still be present because the PID is alive
       expect(existsSync(join(lockDir, "launch.lock"))).toBe(true);
+    });
+  });
+
+  describe("migrateWorkDirIfNeeded", () => {
+    it("migrates .claude/work to .closedloop-ai/work when only old dir exists", () => {
+      const oldDir = join(testDir, ".claude", "work");
+      mkdirSync(oldDir, { recursive: true });
+      writeFileSync(join(oldDir, "process.pid"), "9999");
+
+      migrateWorkDirIfNeeded(testDir);
+
+      const newDir = join(testDir, ".closedloop-ai", "work");
+      expect(existsSync(newDir)).toBe(true);
+      expect(existsSync(join(newDir, "process.pid"))).toBe(true);
+      expect(existsSync(oldDir)).toBe(false);
+    });
+
+    it("no-op when .closedloop-ai/work already exists", () => {
+      const newDir = join(testDir, ".closedloop-ai", "work");
+      mkdirSync(newDir, { recursive: true });
+      writeFileSync(join(newDir, "state.json"), '{"status":"IN_PROGRESS"}');
+
+      const oldDir = join(testDir, ".claude", "work");
+      mkdirSync(oldDir, { recursive: true });
+      writeFileSync(join(oldDir, "process.pid"), "1234");
+
+      migrateWorkDirIfNeeded(testDir);
+
+      // New dir unchanged, old dir still present
+      expect(existsSync(join(newDir, "state.json"))).toBe(true);
+      expect(existsSync(oldDir)).toBe(true);
+    });
+
+    it("no error when neither directory exists", () => {
+      expect(() => migrateWorkDirIfNeeded(testDir)).not.toThrow();
+      expect(existsSync(join(testDir, ".closedloop-ai", "work"))).toBe(false);
+    });
+  });
+
+  describe("findFirstExistingPath", () => {
+    it("returns the first path that exists", () => {
+      const pathA = join(testDir, "a.txt");
+      const pathB = join(testDir, "b.txt");
+      writeFileSync(pathB, "hello");
+
+      const result = findFirstExistingPath(pathA, pathB);
+      expect(result).toBe(pathB);
+    });
+
+    it("returns the first path when multiple exist", () => {
+      const pathA = join(testDir, "a.txt");
+      const pathB = join(testDir, "b.txt");
+      writeFileSync(pathA, "first");
+      writeFileSync(pathB, "second");
+
+      const result = findFirstExistingPath(pathA, pathB);
+      expect(result).toBe(pathA);
+    });
+
+    it("returns null when no paths exist", () => {
+      const pathA = join(testDir, "nonexistent-a.txt");
+      const pathB = join(testDir, "nonexistent-b.txt");
+
+      const result = findFirstExistingPath(pathA, pathB);
+      expect(result).toBeNull();
     });
   });
 });
