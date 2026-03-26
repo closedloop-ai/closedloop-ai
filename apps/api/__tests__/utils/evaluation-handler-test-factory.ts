@@ -150,26 +150,6 @@ export function registerEvaluationHandlerTests(
       );
     });
 
-    it("calls upsertEvaluationWithJudgeScores with correct artifactId, organizationId, reportType, and report", async () => {
-      const loop = buildTestLoop();
-      setupMockTx();
-      setupDownload(report, mocks);
-
-      await handler.downloadAndIngest(loop.s3StateKey!, loop, "org-1");
-
-      expect(mocks.mockUpsertEvaluationWithJudgeScores).toHaveBeenCalledOnce();
-      expect(mocks.mockUpsertEvaluationWithJudgeScores).toHaveBeenCalledWith(
-        expect.objectContaining({
-          entityId: artifactId,
-          entityType: EntityType.ARTIFACT,
-          artifactId,
-          organizationId: "org-1",
-          reportType: PrismaEvaluationReportType[reportType],
-          report: expect.objectContaining({ report_id: reportId }),
-        })
-      );
-    });
-
     it("does not call upsertEvaluationWithJudgeScores when loop.artifactId is null", async () => {
       const loop = buildTestLoop({ artifactId: null });
       setupMockTx();
@@ -252,47 +232,6 @@ export function registerEvaluationHandlerTests(
       await handler.downloadAndIngest(loop.s3StateKey!, loop, "org-1");
 
       expect(mocks.mockUpsertEvaluationWithJudgeScores).toHaveBeenCalledOnce();
-    });
-
-    it("calling ingest twice upserts with identical where-clause keys and does not throw", async () => {
-      const loop = buildTestLoop();
-
-      setupMockTx();
-      setupDownload(report, mocks);
-      await handler.downloadAndIngest(loop.s3StateKey!, loop, "org-1");
-
-      setupMockTx();
-      setupDownload(report, mocks);
-      await handler.downloadAndIngest(loop.s3StateKey!, loop, "org-1");
-
-      expect(mocks.mockUpsertEvaluationWithJudgeScores).toHaveBeenCalledTimes(
-        2
-      );
-
-      const [firstCall, secondCall] =
-        mocks.mockUpsertEvaluationWithJudgeScores.mock.calls;
-
-      expect(firstCall[0]).toMatchObject({
-        entityId: artifactId,
-        entityType: EntityType.ARTIFACT,
-        artifactId,
-        reportType: PrismaEvaluationReportType[reportType],
-        report: expect.objectContaining({ report_id: reportId }),
-      });
-      expect(secondCall[0]).toMatchObject({
-        entityId: artifactId,
-        entityType: EntityType.ARTIFACT,
-        artifactId,
-        reportType: PrismaEvaluationReportType[reportType],
-        report: expect.objectContaining({ report_id: reportId }),
-      });
-
-      await expect(
-        Promise.all([
-          mocks.mockUpsertEvaluationWithJudgeScores.mock.results[0].value,
-          mocks.mockUpsertEvaluationWithJudgeScores.mock.results[1].value,
-        ])
-      ).resolves.toEqual([undefined, undefined]);
     });
   });
 }

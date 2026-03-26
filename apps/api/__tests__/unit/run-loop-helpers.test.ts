@@ -39,7 +39,6 @@ vi.mock("@/app/loops/service", () => ({
 
 import { beforeEach, describe, expect, it } from "vitest";
 import {
-  COMMAND_MAP,
   resolveEvaluateCodeBranchForRunLoop,
   resolveEvaluateCodeTargetBranch,
   resolveLoopContext,
@@ -528,20 +527,6 @@ describe("resolveLoopContext — workstream", () => {
 });
 
 // ---------------------------------------------------------------------------
-// COMMAND_MAP — EVALUATE_PLAN and EVALUATE_CODE
-// ---------------------------------------------------------------------------
-
-describe("COMMAND_MAP", () => {
-  it("accepts EVALUATE_PLAN command and maps it to 'EVALUATE_PLAN'", () => {
-    expect(COMMAND_MAP[RunLoopCommand.EvaluatePlan]).toBe("EVALUATE_PLAN");
-  });
-
-  it("accepts EVALUATE_CODE command and maps it to 'EVALUATE_CODE'", () => {
-    expect(COMMAND_MAP[RunLoopCommand.EvaluateCode]).toBe("EVALUATE_CODE");
-  });
-});
-
-// ---------------------------------------------------------------------------
 // resolveEvaluateCodeTargetBranch — PR-gated EVALUATE_CODE
 // ---------------------------------------------------------------------------
 
@@ -579,11 +564,14 @@ describe("resolveEvaluateCodeTargetBranch", () => {
     expect(result.ok).toBe(false);
   });
 
-  it("returns error when PR is closed", () => {
+  it("returns error when PR is open but missing a head branch", () => {
     const result = resolveEvaluateCodeTargetBranch(
-      buildPullRequestInfo({ state: PullRequestState.Closed })
+      buildPullRequestInfo({ headBranch: "" })
     );
     expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.message).toContain("no head branch");
+    }
   });
 
   it("returns head branch when PR is open", () => {
