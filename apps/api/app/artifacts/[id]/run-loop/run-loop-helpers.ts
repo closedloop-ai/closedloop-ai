@@ -48,6 +48,9 @@ export function resolveEvaluateCodeTargetBranch(
         "No open pull request found. Execute the plan first to create a PR.",
     };
   }
+  if (!pr.headBranch) {
+    return { ok: false, message: "Pull request has no head branch." };
+  }
   return { ok: true, branch: pr.headBranch };
 }
 
