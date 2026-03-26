@@ -163,6 +163,8 @@ function validateConfig() {
     "EXECUTE",
     "REQUEST_CHANGES",
     "GENERATE_PRD",
+    "EVALUATE_PLAN",
+    "EVALUATE_CODE",
   ]);
   if (repoCommands.has(config.command)) {
     requiredEnv.push("targetRepo");
@@ -212,11 +214,14 @@ function validateSecrets() {
 
   // Repo commands need a GitHub token for clone/push operations.
   // EVALUATE_PRD with a targetRepo also needs a GitHub token to fetch repo context.
+  // EVALUATE_PLAN and EVALUATE_CODE always need a GitHub token (unconditional).
   const repoCommands = new Set([
     "PLAN",
     "EXECUTE",
     "REQUEST_CHANGES",
     "GENERATE_PRD",
+    "EVALUATE_PLAN",
+    "EVALUATE_CODE",
   ]);
   if (
     repoCommands.has(config.command) ||
@@ -2028,6 +2033,36 @@ function buildClaudeDirectArgs(workDir, symphonyWD) {
       args.push(skillCall);
       break;
     }
+    case "EVALUATE_PLAN": {
+      // plan.json is written to symphonyWD (the run directory).
+      // Use symphonyWD so the skill reads plan artifacts and writes plan-judges.json
+      // to the correct location.
+      const runDir = symphonyWD ?? workDir;
+
+      // Build skill invocation with runDir containing plan artifact
+      // REPO_PATH is mandatory for plan evaluation (codebase context)
+      const skillCall =
+        `Activate judges:run-judges skill --artifact-type plan --workdir ${runDir}.\n` +
+        `REPO_PATH=${workDir} (search here for relevant code).\n`;
+
+      args.push(skillCall);
+      break;
+    }
+    case "EVALUATE_CODE": {
+      // Code artifacts are written to symphonyWD (the run directory).
+      // Use symphonyWD so the skill reads code artifacts and writes code-judges.json
+      // to the correct location.
+      const runDir = symphonyWD ?? workDir;
+
+      // Build skill invocation with runDir containing code artifact
+      // REPO_PATH is mandatory for code evaluation (codebase context)
+      const skillCall =
+        `Activate judges:run-judges skill --artifact-type code --workdir ${runDir}.\n` +
+        `REPO_PATH=${workDir} (search here for relevant code).\n`;
+
+      args.push(skillCall);
+      break;
+    }
     default:
       throw new Error(
         `Unexpected command for direct claude invocation: ${config.command}`
@@ -2319,6 +2354,18 @@ function validatePreRunInputs(command, contextPack) {
     throw new HarnessError(
       ERROR_CODES.preRunValidation,
       "Pre-run validation failed: EVALUATE_PRD requires artifacts in context pack (PRD content)"
+    );
+  }
+  if (command === "EVALUATE_PLAN" && !hasArtifacts) {
+    throw new HarnessError(
+      ERROR_CODES.preRunValidation,
+      "Pre-run validation failed: EVALUATE_PLAN requires artifacts in context pack (plan content)"
+    );
+  }
+  if (command === "EVALUATE_CODE" && !hasArtifacts) {
+    throw new HarnessError(
+      ERROR_CODES.preRunValidation,
+      "Pre-run validation failed: EVALUATE_CODE requires artifacts in context pack (implementation artifacts)"
     );
   }
 }

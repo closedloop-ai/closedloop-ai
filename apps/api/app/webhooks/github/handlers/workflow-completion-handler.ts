@@ -1,10 +1,12 @@
 import type { WorkflowRunCompletedEvent } from "@octokit/webhooks-types";
-import type { JudgesReport } from "@repo/api/src/types/evaluation";
+import {
+  EvaluationReportType,
+  type JudgesReport,
+} from "@repo/api/src/types/evaluation";
 import type { PromptsSnapshot } from "@repo/api/src/types/prompt";
 import {
   EntityType,
   type Prisma,
-  EvaluationReportType as PrismaEvaluationReportType,
   type TransactionClient,
   withDb,
 } from "@repo/database";
@@ -243,12 +245,12 @@ export async function handleExecutionSuccess(
           entityType: EntityType.ARTIFACT,
           artifactId: ctx.artifactId,
           actionRunId: ctx.actionRunId,
-          reportType: PrismaEvaluationReportType.CODE,
+          reportType: EvaluationReportType.Code,
           reportId: codeJudgesReport.report_id,
           reportData: codeJudgesReport,
         },
         update: {
-          reportType: PrismaEvaluationReportType.CODE,
+          reportType: EvaluationReportType.Code,
           reportData: codeJudgesReport,
         },
       });
@@ -409,12 +411,12 @@ export async function handleWorkflowSuccess(
         entityType: EntityType.ARTIFACT,
         artifactId,
         actionRunId: ctx.actionRunId,
-        reportType: PrismaEvaluationReportType.PLAN,
+        reportType: EvaluationReportType.Plan,
         reportId: judgesReport.report_id,
         reportData: judgesReport,
       },
       update: {
-        reportType: PrismaEvaluationReportType.PLAN,
+        reportType: EvaluationReportType.Plan,
         reportData: judgesReport,
       },
     });

@@ -1,12 +1,11 @@
 import type { JsonObject } from "@repo/api/src/types/common";
-import type { JudgesReport } from "@repo/api/src/types/evaluation";
+import {
+  EvaluationReportType,
+  type JudgesReport,
+} from "@repo/api/src/types/evaluation";
 import type { Loop } from "@repo/api/src/types/loop";
 import type { PromptsSnapshot } from "@repo/api/src/types/prompt";
-import {
-  EntityType,
-  EvaluationReportType as PrismaEvaluationReportType,
-  withDb,
-} from "@repo/database";
+import { EntityType, withDb } from "@repo/database";
 import { parsePromptsSnapshotFromMarkdownEntries } from "@repo/github/prompt-snapshot-parser";
 import { log } from "@repo/observability/log";
 import { z } from "zod";
@@ -243,7 +242,7 @@ export async function ingestExecutionArtifacts(
         artifactId: loop.artifactId!,
         loopId: loop.id,
         organizationId: loop.organizationId,
-        reportType: PrismaEvaluationReportType.CODE,
+        reportType: EvaluationReportType.Code,
         report: artifacts.codeJudgesReport,
         tx,
       });

@@ -29,6 +29,7 @@ import { artifactsService } from "../../service";
 import {
   COMMAND_MAP,
   checkBackendMismatch,
+  resolveEvaluateCodeBranchForRunLoop,
   resolveLoopContext,
   resolveRunLoopComputeTarget,
 } from "./run-loop-helpers";
@@ -92,7 +93,7 @@ export const POST = withAuth<RunLoopResponse, "/artifacts/[id]/run-loop">(
       const {
         workstream,
         targetRepo,
-        targetBranch,
+        targetBranch: resolvedTargetBranch,
         contextRefs,
         parentLoopId,
         parentLoopComputeTargetId,
@@ -106,11 +107,24 @@ export const POST = withAuth<RunLoopResponse, "/artifacts/[id]/run-loop">(
         artifactId
       );
 
+      let targetBranch = resolvedTargetBranch;
+
       if (handler?.requiresRepo && !targetRepo) {
         return badRequestResponse(
           "No repository configured. Link a repository to the project or set a target repo on the artifact."
         );
       }
+
+      const evaluateBranchResult = await resolveEvaluateCodeBranchForRunLoop(
+        body.command,
+        artifactId,
+        user.organizationId,
+        targetBranch
+      );
+      if (!evaluateBranchResult.ok) {
+        return evaluateBranchResult.response;
+      }
+      targetBranch = evaluateBranchResult.branch;
 
       const ctRouteResult = await resolveRunLoopComputeTarget(
         user.organizationId,

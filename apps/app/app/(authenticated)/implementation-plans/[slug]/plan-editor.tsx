@@ -4,10 +4,18 @@ import { useFeatureFlag } from "@repo/analytics/client";
 import {
   type ArtifactDetail,
   ArtifactType,
+  PullRequestState,
 } from "@repo/api/src/types/artifact";
 import { InlinePresence, OptionalArtifactRoom } from "@repo/collaboration";
 import { Loader2Icon } from "lucide-react";
-import { Suspense, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { ArtifactChatPanel } from "@/components/artifact-editor/artifact-chat-panel";
 import { CollaborativeEditor } from "@/components/artifact-editor/collaborative-editor";
 import { EditorToolbarActions } from "@/components/artifact-editor/editor-toolbar-actions";
@@ -168,7 +176,26 @@ export function PlanEditor({
     actions.isDeleting ||
     planActions.isApproving ||
     planActions.isRegenerating ||
-    planActions.isExecuting;
+    planActions.isExecuting ||
+    planActions.isEvaluatingPlan ||
+    planActions.isEvaluatingCode;
+
+  const canEvaluateCode =
+    pullRequest !== undefined &&
+    pullRequest !== null &&
+    pullRequest.state === PullRequestState.Open &&
+    pullRequest.headBranch.length > 0;
+  const evaluateCodeHandler = useCallback(() => {
+    if (!canEvaluateCode || pullRequest === undefined || pullRequest === null) {
+      return;
+    }
+    planActions.handleEvaluateCode(pullRequest.headBranch, plan.targetRepo);
+  }, [
+    canEvaluateCode,
+    pullRequest,
+    plan.targetRepo,
+    planActions.handleEvaluateCode,
+  ]);
 
   // Create version display component for header
   const versionDisplay = (
@@ -224,6 +251,8 @@ export function PlanEditor({
       onApprove={planActions.handleApprove}
       onCopyMarkdown={actions.handleCopy}
       onDelete={uiState.openDeleteDialog}
+      onEvaluateCode={canEvaluateCode ? evaluateCodeHandler : undefined}
+      onEvaluatePlan={planActions.handleEvaluatePlan}
       onExecute={openExecuteModal}
       onExportMarkdown={actions.handleDownload}
       onExportToLinear={openLinearExportDialog}
