@@ -26,6 +26,10 @@ import {
 } from "@/lib/engineer/codex-models";
 import { getCodexChatStatePath } from "@/lib/engineer/codex-state";
 import {
+  checkLegacyProcessAndMigrate,
+  resolveReviewReadPaths,
+} from "@/lib/engineer/process-utils";
+import {
   expandHome,
   getWorktreeParentDir,
   isRepoAllowed,
@@ -79,7 +83,7 @@ function getWorktreeDir(repoPath: string, ticketId: string): string {
 }
 
 function getReviewPaths(worktreeDir: string, provider: string) {
-  const workDir = join(worktreeDir, ".claude", "work");
+  const workDir = join(worktreeDir, ".closedloop-ai", "work");
   return {
     workDir,
     worktreeDir,
@@ -297,7 +301,7 @@ function setupProcessLifecycle(
 
     // Persist Codex session ID to codex-chat-review.json so the chat route can resume it
     if (provider === "codex" && sessionIdHolder.value) {
-      const workDir = join(worktreeDir, ".claude", "work");
+      const workDir = join(worktreeDir, ".closedloop-ai", "work");
       const chatStatePath = getCodexChatStatePath(workDir, "review");
       await mkdir(workDir, { recursive: true });
       await writeFile(
@@ -690,9 +694,24 @@ export async function POST(
     return worktreeError;
   }
 
-  // Check if a review is already running for this provider
-  const { statePath, pidPath } = getReviewPaths(worktreeDir, provider);
-  if (await checkForRunningReview(statePath)) {
+  const preflightResult = checkLegacyProcessAndMigrate(worktreeDir);
+  if (preflightResult === "live-process-blocking") {
+    return Response.json(
+      {
+        error:
+          "A job started before the .closedloop-ai migration is still running. Stop it first, then retry.",
+      },
+      { status: 409 }
+    );
+  }
+
+  // Check if a review is already running for this provider in EITHER work dir
+  const { pidPath } = getReviewPaths(worktreeDir, provider);
+  const { statePath: readStatePath } = resolveReviewReadPaths(
+    worktreeDir,
+    provider
+  );
+  if (await checkForRunningReview(readStatePath)) {
     return Response.json(
       {
         error:
@@ -803,7 +822,9 @@ export async function POST(
           );
           // Synchronous writes to close the race window with the status poller
           // and ensure the log is clean before the fallback process starts writing
-          mkdirSync(join(worktreeDir, ".claude", "work"), { recursive: true });
+          mkdirSync(join(worktreeDir, ".closedloop-ai", "work"), {
+            recursive: true,
+          });
           writeFileSync(
             reviewLogPath,
             `[Model ${model} unavailable — fell back to ${DEFAULT_CODEX_MODEL}]\n\n`

@@ -1,5 +1,12 @@
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { basename, join } from "node:path";
 import type { NextRequest } from "next/server";
 import simpleGit from "simple-git";
@@ -11,6 +18,10 @@ import {
   getOrgPatternsContext,
   triggerAsyncLearningExtraction,
 } from "@/lib/engineer/learnings";
+import {
+  checkLegacyProcessAndMigrate,
+  findFirstExistingPath,
+} from "@/lib/engineer/process-utils";
 import { expandHome, getWorktreeParentDir } from "@/lib/engineer/repos";
 import { getShellPath } from "@/lib/engineer/shell-path";
 import {
@@ -53,6 +64,11 @@ const ALLOWED_TOOLS = ENGINEER_CHAT_TOOLS;
  * Get work directory paths for a ticket.
  * When `provider` is specified (and valid), the history path uses a
  * provider-scoped file so each ReviewChatPane gets its own transcript.
+ *
+ * claudeWorkDir always points to .closedloop-ai/work (canonical write target).
+ * historyPath resolves per-file: checks new path first, falls back to legacy.
+ * If the legacy path exists but the new path does not, the file is migrated
+ * to the new path so subsequent writes append to the existing transcript.
  */
 function getWorkPaths(ticketId: string, repoPath: string, provider?: string) {
   const expandedRepoPath = expandHome(repoPath);
@@ -61,19 +77,42 @@ function getWorkPaths(ticketId: string, repoPath: string, provider?: string) {
   const repoName = basename(expandedRepoPath);
   const worktreeParentDir = getWorktreeParentDir();
   const worktreeDir = join(worktreeParentDir, `${repoName}-${sanitizedTicket}`);
-  const claudeWorkDir = join(worktreeDir, ".claude", "work");
+  const claudeWorkDir = join(worktreeDir, ".closedloop-ai", "work");
 
   const historyFilename =
     provider && VALID_PROVIDERS.has(provider)
       ? `chat-history-${provider}.json`
       : "chat-history.json";
 
+  const newHistoryPath = join(claudeWorkDir, historyFilename);
+  const legacyHistoryPath = join(
+    worktreeDir,
+    ".claude",
+    "work",
+    historyFilename
+  );
+
+  // Resolve plan/prd per-file across both dirs
+  const planPath =
+    findFirstExistingPath(
+      join(claudeWorkDir, "plan.json"),
+      join(worktreeDir, ".claude", "work", "plan.json")
+    ) ?? join(claudeWorkDir, "plan.json");
+  const prdPath =
+    findFirstExistingPath(
+      join(claudeWorkDir, "prd.md"),
+      join(worktreeDir, ".claude", "work", "prd.md")
+    ) ?? join(claudeWorkDir, "prd.md");
+
   return {
     worktreeDir,
     claudeWorkDir,
-    historyPath: join(claudeWorkDir, historyFilename),
-    planPath: join(claudeWorkDir, "plan.json"),
-    prdPath: join(claudeWorkDir, "prd.md"),
+    historyPath:
+      findFirstExistingPath(newHistoryPath, legacyHistoryPath) ??
+      newHistoryPath,
+    legacyHistoryPath,
+    planPath,
+    prdPath,
   };
 }
 
@@ -461,6 +500,29 @@ export async function POST(
       status: 404,
       headers: { "Content-Type": "application/json" },
     });
+  }
+
+  const preflightResult = checkLegacyProcessAndMigrate(paths.worktreeDir);
+  if (preflightResult === "live-process-blocking") {
+    return new Response(
+      JSON.stringify({
+        error:
+          "A job started before the .closedloop-ai migration is still running. Stop it first, then retry.",
+      }),
+      { status: 409, headers: { "Content-Type": "application/json" } }
+    );
+  }
+
+  // Migrate legacy chat history AFTER preflight so the new dir creation
+  // doesn't bypass the live-legacy-process guard above
+  if (!existsSync(paths.historyPath) && existsSync(paths.legacyHistoryPath)) {
+    mkdirSync(paths.claudeWorkDir, { recursive: true });
+    copyFileSync(paths.legacyHistoryPath, paths.historyPath);
+    try {
+      unlinkSync(paths.legacyHistoryPath);
+    } catch {
+      /* best effort */
+    }
   }
 
   // Load chat history and determine session state
