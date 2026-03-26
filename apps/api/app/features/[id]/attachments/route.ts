@@ -24,6 +24,9 @@ export const GET = withAnyAuth<FileAttachment[], "/features/[id]/attachments">(
 
       return successResponse(attachments);
     } catch (error) {
+      if (error instanceof Error && error.message === "Feature not found") {
+        return notFoundResponse("Feature");
+      }
       return errorResponse("Failed to list feature attachments", error);
     }
   }

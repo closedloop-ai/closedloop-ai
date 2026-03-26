@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { type NextRequest, NextResponse } from "next/server";
-import { getShellPathSync } from "@/lib/engineer/shell-path";
+import { getShellPath } from "@/lib/engineer/shell-path";
 
 const execFileAsync = promisify(execFile);
 
@@ -114,6 +114,8 @@ export async function POST(request: NextRequest) {
       fullBody = `${fullBody}\n\n---\nLinear: ${ticketUrl}`.trim();
     }
 
+    const shellPath = await getShellPath();
+
     try {
       // Get current branch name
       const { stdout: branchOutput } = await execFileAsync(
@@ -123,7 +125,7 @@ export async function POST(request: NextRequest) {
           cwd: expandedPath,
           env: {
             ...process.env,
-            PATH: getShellPathSync(),
+            PATH: shellPath,
           },
         }
       );
@@ -135,7 +137,7 @@ export async function POST(request: NextRequest) {
         cwd: expandedPath,
         env: {
           ...process.env,
-          PATH: getShellPathSync(),
+          PATH: shellPath,
         },
       });
 
@@ -156,7 +158,7 @@ export async function POST(request: NextRequest) {
         cwd: expandedPath,
         env: {
           ...process.env,
-          PATH: getShellPathSync(),
+          PATH: shellPath,
         },
       });
 
@@ -181,7 +183,7 @@ export async function POST(request: NextRequest) {
           cwd: expandedPath,
           env: {
             ...process.env,
-            PATH: getShellPathSync(),
+            PATH: shellPath,
           },
         }
       );
@@ -206,7 +208,7 @@ export async function POST(request: NextRequest) {
               cwd: expandedPath,
               env: {
                 ...process.env,
-                PATH: getShellPathSync(),
+                PATH: shellPath,
               },
             }
           );

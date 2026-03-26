@@ -21,6 +21,7 @@ vi.mock("../../service", async () => {
     loopsService: {
       ...actual.loopsService,
       resume: vi.fn(),
+      findById: vi.fn(),
     },
   };
 });
@@ -73,6 +74,13 @@ beforeEach(() => {
     computeTargetId: undefined,
   });
 
+  // Default: loopsService.findById returns a parent loop (no desktop target)
+  vi.mocked(loopsService.findById).mockResolvedValue({
+    id: LOOP_ID,
+    computeTargetId: null,
+    s3StateKey: null,
+  } as any);
+
   // Default: loopsService.resume returns a new loop
   vi.mocked(loopsService.resume).mockResolvedValue({
     loopId: "new-id",
@@ -84,7 +92,12 @@ beforeEach(() => {
 });
 
 describe("POST /loops/[id]/resume", () => {
-  it("does not call resolveComputeTargetForRoute when no computeTargetId in body", async () => {
+  it("does not call resolveComputeTargetForRoute when parent has no compute target", async () => {
+    vi.mocked(loopsService.findById).mockResolvedValue({
+      id: LOOP_ID,
+      computeTargetId: null,
+    } as any);
+
     const response = await POST(
       createMockRequest({
         url: `http://localhost:3002/loops/${LOOP_ID}/resume`,
@@ -96,6 +109,71 @@ describe("POST /loops/[id]/resume", () => {
 
     expect(response.status).toBe(200);
     expect(resolveComputeTargetForRoute).not.toHaveBeenCalled();
+  });
+
+  it("validates inherited compute target and passes it to resume", async () => {
+    vi.mocked(loopsService.findById).mockResolvedValue({
+      id: LOOP_ID,
+      computeTargetId: VALID_COMPUTE_TARGET_UUID,
+    } as any);
+    vi.mocked(resolveComputeTargetForRoute).mockResolvedValue({
+      computeTargetId: VALID_COMPUTE_TARGET_UUID,
+    });
+
+    const response = await POST(
+      createMockRequest({
+        url: `http://localhost:3002/loops/${LOOP_ID}/resume`,
+        method: "POST",
+        body: {},
+      }),
+      createMockRouteContext({ id: LOOP_ID })
+    );
+
+    expect(response.status).toBe(200);
+    expect(resolveComputeTargetForRoute).toHaveBeenCalledWith(
+      ORG_ID,
+      USER_ID,
+      VALID_COMPUTE_TARGET_UUID
+    );
+    expect(loopsService.resume).toHaveBeenCalledWith(
+      LOOP_ID,
+      ORG_ID,
+      USER_ID,
+      {},
+      VALID_COMPUTE_TARGET_UUID
+    );
+  });
+
+  it("falls back to cloud when inherited compute target is no longer accessible", async () => {
+    vi.mocked(loopsService.findById).mockResolvedValue({
+      id: LOOP_ID,
+      computeTargetId: VALID_COMPUTE_TARGET_UUID,
+    } as any);
+    vi.mocked(resolveComputeTargetForRoute).mockResolvedValue({
+      errorResponse: NextResponse.json(
+        { success: false, error: "Compute target is offline" },
+        { status: 400 }
+      ),
+    });
+
+    const response = await POST(
+      createMockRequest({
+        url: `http://localhost:3002/loops/${LOOP_ID}/resume`,
+        method: "POST",
+        body: {},
+      }),
+      createMockRouteContext({ id: LOOP_ID })
+    );
+
+    // Should succeed with cloud fallback, not return the 400
+    expect(response.status).toBe(200);
+    expect(loopsService.resume).toHaveBeenCalledWith(
+      LOOP_ID,
+      ORG_ID,
+      USER_ID,
+      {},
+      undefined
+    );
   });
 
   it("returns HTTP 400 when computeTargetId is not a valid UUID", async () => {

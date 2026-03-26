@@ -1,9 +1,9 @@
 import type { ApiResult } from "@repo/api/src/types/common";
 import type { ComputeTargetConflictBody } from "@repo/api/src/types/compute-target";
-import { withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
 import {
+  fetchUserComputePreferences,
   type ResolveComputeTargetResult,
   resolveComputeTarget,
 } from "@/lib/loops/compute-target-resolver";
@@ -31,22 +31,21 @@ export async function resolveComputeTargetForRoute(
   computeTargetIdHint?: string
 ): Promise<ComputeTargetRouteResult> {
   let preferredComputeMode: string | undefined;
+  let preferredComputeTargetId: string | undefined;
 
   if (!computeTargetIdHint) {
-    const user = await withDb((db) =>
-      db.user.findUnique({
-        where: { id: userId },
-        select: { preferredComputeMode: true },
-      })
-    );
-    preferredComputeMode = user?.preferredComputeMode ?? undefined;
+    const prefs = await fetchUserComputePreferences(userId);
+    preferredComputeMode = prefs.preferredComputeMode;
+    preferredComputeTargetId = prefs.preferredComputeTargetId;
   }
 
   const ctResult = await resolveComputeTarget(
     organizationId,
     userId,
     computeTargetIdHint,
-    preferredComputeMode
+    preferredComputeMode,
+    undefined,
+    preferredComputeTargetId
   );
 
   const routeResult = mapComputeTargetResult(ctResult);

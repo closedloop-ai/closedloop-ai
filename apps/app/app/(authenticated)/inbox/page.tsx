@@ -6,6 +6,7 @@ import {
   InboxNotificationList,
   useLiveblocksAvailability,
 } from "@repo/collaboration";
+import { AssignmentNotification } from "@repo/collaboration/assignment-notification";
 import {
   useInboxNotifications,
   useMarkAllInboxNotificationsAsRead,
@@ -62,6 +63,9 @@ function InboxContent() {
           <InboxNotification
             inboxNotification={notification}
             key={notification.id}
+            kinds={{
+              $assignment: AssignmentNotification,
+            }}
           />
         ))}
       </InboxNotificationList>

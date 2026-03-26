@@ -12,7 +12,7 @@ set -euo pipefail
 #   ./scripts/claude-worktree.sh my-feature --model sonnet
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-WORKTREE_DIR="$REPO_ROOT/.claude/worktrees"
+WORKTREE_DIR="$REPO_ROOT/.closedloop-ai/worktrees"
 
 if [[ $# -lt 1 ]]; then
   echo "Usage: $0 <worktree-name> [claude args...]"
@@ -48,6 +48,7 @@ fi
 echo "Symlinking environment files..."
 find "$REPO_ROOT" -maxdepth 4 \
   -path "$REPO_ROOT/node_modules" -prune -o \
+  -path "$REPO_ROOT/.closedloop-ai" -prune -o \
   -path "$REPO_ROOT/.claude" -prune -o \
   \( -name ".env" -o -name ".env.local" \) -type f -print0 \
   | while IFS= read -r -d '' src; do

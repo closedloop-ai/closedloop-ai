@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { type NextRequest, NextResponse } from "next/server";
+import { findFirstExistingPath } from "@/lib/engineer/process-utils";
 import { expandHome, getWorktreeParentDir } from "@/lib/engineer/repos";
 
 function readJsonFile<T>(path: string): T | null {
@@ -97,15 +98,29 @@ export async function GET(
       getWorktreeParentDir(),
       `${repoName}-${sanitizedTicket}`
     );
-    const claudeWorkDir = join(worktreeDir, ".claude", "work");
+    const deployLogPath =
+      findFirstExistingPath(
+        join(worktreeDir, ".closedloop-ai", "work", "deploy.log"),
+        join(worktreeDir, ".claude", "work", "deploy.log")
+      ) ?? join(worktreeDir, ".closedloop-ai", "work", "deploy.log");
+    const deployExitPath =
+      findFirstExistingPath(
+        join(worktreeDir, ".closedloop-ai", "work", "deploy-exit.json"),
+        join(worktreeDir, ".claude", "work", "deploy-exit.json")
+      ) ?? join(worktreeDir, ".closedloop-ai", "work", "deploy-exit.json");
+    const deployResultPath =
+      findFirstExistingPath(
+        join(worktreeDir, ".closedloop-ai", "work", "deploy-result.json"),
+        join(worktreeDir, ".claude", "work", "deploy-result.json")
+      ) ?? join(worktreeDir, ".closedloop-ai", "work", "deploy-result.json");
 
-    const logs = readTextFile(join(claudeWorkDir, "deploy.log"));
+    const logs = readTextFile(deployLogPath);
     const processAlive = isProcessAlive(pidStr);
     const exitInfo = readJsonFile<{ exitCode: number; failedCommand: string }>(
-      join(claudeWorkDir, "deploy-exit.json")
+      deployExitPath
     );
     const deployResult = readJsonFile<{ url?: string; serviceId?: string }>(
-      join(claudeWorkDir, "deploy-result.json")
+      deployResultPath
     );
 
     const status = determineStatus(

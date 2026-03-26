@@ -203,8 +203,9 @@ function transformImageSrc(
   ticketId: string,
   repoPath: string
 ): string {
-  // Match full path (.claude/work/attachments/...) or relative path (attachments/...)
-  const attachmentsMatch = /(?:\.claude\/work\/)?attachments\/(.+)$/.exec(src);
+  // Match full path (.claude/work/attachments/..., .closedloop-ai/work/attachments/...) or relative path (attachments/...)
+  const attachmentsMatch =
+    /(?:\.claude\/work\/|\.closedloop-ai\/work\/)?attachments\/(.+)$/.exec(src);
   if (attachmentsMatch) {
     const filename = attachmentsMatch[1];
     return `/api/engineer/symphony/attachments/${encodeURIComponent(ticketId)}/${encodeURIComponent(filename)}?repo=${encodeURIComponent(repoPath)}`;

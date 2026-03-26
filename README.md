@@ -164,7 +164,6 @@ ClosedLoop integrates with several third-party services. At minimum you need acc
 | **[Linear](https://linear.app)** | Optional | Issue sync, task export | OAuth setup |
 | **[Resend](https://resend.com)** | Optional | Transactional emails | Get API key |
 | **[Knock](https://knock.app)** | Optional | In-app notifications | Create account, get API + feed channel keys |
-| **[BaseHub](https://basehub.com)** | Optional | CMS for marketing site blog/docs | Get token |
 | **[Vercel](https://vercel.com)** | For deployment | Hosting, edge functions, blob storage, analytics | Connect repo |
 
 See **[docs/local_deployment.md](docs/local_deployment.md)** for step-by-step configuration of each service.

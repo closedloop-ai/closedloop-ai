@@ -160,10 +160,12 @@ export type ComputePreference =
 
 export type ComputePreferenceResponse = {
   preferredComputeMode: ComputePreference;
+  computeTargetId?: string;
 };
 
 export type SetComputePreferenceRequest = {
   mode: ComputePreference;
+  computeTargetId?: string;
 };
 
 export type SetComputeTargetSharingRequest = {

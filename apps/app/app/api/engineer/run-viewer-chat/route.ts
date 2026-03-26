@@ -14,7 +14,7 @@ import {
   WEB_ONLY_TOOLS,
 } from "@/lib/engineer/allowed-tools";
 import { migrateLegacyChatHistory } from "@/lib/engineer/migrate-chat-history";
-import { getShellPathSync } from "@/lib/engineer/shell-path";
+import { getShellPath } from "@/lib/engineer/shell-path";
 import {
   type ContentBlock,
   createStreamState,
@@ -37,6 +37,14 @@ type ChatHistory = {
 
 const HISTORY_PATH = join(
   homedir(),
+  ".closedloop-ai",
+  "chats",
+  "_run-viewer",
+  "chat-history.json"
+);
+
+const CLOSEDLOOP_HISTORY_PATH = join(
+  homedir(),
   ".claude",
   ".closedloop",
   "chats",
@@ -54,7 +62,13 @@ const LEGACY_HISTORY_PATH = join(
 );
 
 function loadChatHistory(): ChatHistory {
-  migrateLegacyChatHistory(LEGACY_HISTORY_PATH, HISTORY_PATH);
+  if (existsSync(HISTORY_PATH)) {
+    // already at new location
+  } else if (existsSync(CLOSEDLOOP_HISTORY_PATH)) {
+    migrateLegacyChatHistory(CLOSEDLOOP_HISTORY_PATH, HISTORY_PATH);
+  } else if (existsSync(LEGACY_HISTORY_PATH)) {
+    migrateLegacyChatHistory(LEGACY_HISTORY_PATH, HISTORY_PATH);
+  }
   if (!existsSync(HISTORY_PATH)) {
     return { messages: [] };
   }
@@ -208,7 +222,7 @@ export async function POST(request: NextRequest) {
   saveChatHistory(history);
 
   const encoder = new TextEncoder();
-  const stream = spawnClaude(
+  const stream = await spawnClaude(
     message,
     fileContext,
     validatedRunDir,
@@ -245,13 +259,13 @@ export function DELETE() {
   return Response.json({ success: true });
 }
 
-function spawnClaude(
+async function spawnClaude(
   message: string,
   fileContext: { path: string; contentPreview: string } | undefined,
   runDir: string | undefined,
   history: ChatHistory,
   encoder: TextEncoder
-): ReadableStream {
+): Promise<ReadableStream> {
   const isResuming = !!history.claudeSessionId;
   const systemPrompt = buildSystemPrompt(fileContext, runDir);
   const prompt = isResuming
@@ -262,6 +276,7 @@ function spawnClaude(
   // Hoisted so the cancel callback can kill the process
   let claudeProcess: ReturnType<typeof spawn> | null = null;
 
+  const shellPath = await getShellPath();
   return new ReadableStream({
     start(controller) {
       const streamState = createStreamState(
@@ -305,7 +320,7 @@ function spawnClaude(
           cwd: hasRunDir ? runDir : homedir(),
           env: {
             ...process.env,
-            PATH: getShellPathSync(),
+            PATH: shellPath,
           },
           stdio: ["pipe", "pipe", "pipe"],
         });

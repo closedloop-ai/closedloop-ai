@@ -21,10 +21,9 @@ export const POST = withAnyAuth<CreateLoopResponse, "/loops/[id]/resume">(
         return parseError;
       }
 
-      // Only resolve a fresh compute target when the client explicitly
-      // provides one. Otherwise the service validates and inherits the
-      // parent's computeTargetId (if still accessible) so resumed loops
-      // stay on the same backend that has the prior .claude/worktree state.
+      // Always validate the compute target — whether explicitly provided or
+      // inherited from the parent. An inherited target may have been unshared
+      // or gone offline since the parent ran; soft-fail to cloud in that case.
       let resolvedComputeTargetId: string | undefined;
       if (body.computeTargetId) {
         const ctResult = await resolveComputeTargetForRoute(
@@ -36,6 +35,27 @@ export const POST = withAnyAuth<CreateLoopResponse, "/loops/[id]/resume">(
           return ctResult.errorResponse;
         }
         resolvedComputeTargetId = ctResult.computeTargetId;
+      } else {
+        // No explicit target — validate the parent's target if it had one.
+        const parentLoop = await loopsService.findById(id, user.organizationId);
+        if (parentLoop?.computeTargetId) {
+          const ctResult = await resolveComputeTargetForRoute(
+            user.organizationId,
+            user.id,
+            parentLoop.computeTargetId
+          );
+          if ("errorResponse" in ctResult) {
+            log.warn(
+              "[resume] Parent compute target no longer accessible, falling back to cloud",
+              {
+                parentLoopId: id,
+                parentComputeTargetId: parentLoop.computeTargetId,
+              }
+            );
+          } else {
+            resolvedComputeTargetId = ctResult.computeTargetId;
+          }
+        }
       }
 
       const result = await loopsService.resume(

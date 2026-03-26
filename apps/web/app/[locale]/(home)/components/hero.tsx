@@ -1,4 +1,3 @@
-import type { HomePage } from "@repo/cms";
 import { Button } from "@repo/design-system/components/ui/button";
 import type { Dictionary } from "@repo/internationalization";
 import { MoveRight, PhoneCall } from "lucide-react";
@@ -6,20 +5,16 @@ import Link from "next/link";
 import { env } from "@/env";
 
 type HeroProps = {
-  cmsData?: HomePage["hero"] | null;
   dictionary: Dictionary;
 };
 
-export const Hero = ({ cmsData, dictionary }: HeroProps) => {
-  // Use CMS data if available, otherwise fall back to dictionary
-  const title = cmsData?.title ?? dictionary.web.home.meta.title;
-  const description =
-    cmsData?.description ?? dictionary.web.home.meta.description;
-  const primaryButtonText = cmsData?.primaryButtonText ?? "Get in touch";
-  const primaryButtonHref = cmsData?.primaryButtonHref ?? "/contact";
-  const secondaryButtonText = cmsData?.secondaryButtonText ?? "Sign up";
-  const secondaryButtonHref =
-    cmsData?.secondaryButtonHref ?? env.NEXT_PUBLIC_APP_URL;
+export const Hero = ({ dictionary }: HeroProps) => {
+  const title = dictionary.web.home.meta.title;
+  const description = dictionary.web.home.meta.description;
+  const primaryButtonText = "Get in touch";
+  const primaryButtonHref = "/contact";
+  const secondaryButtonText = "Sign up";
+  const secondaryButtonHref = env.NEXT_PUBLIC_APP_URL;
 
   return (
     <div className="w-full">

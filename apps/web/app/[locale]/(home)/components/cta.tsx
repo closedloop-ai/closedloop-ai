@@ -1,4 +1,3 @@
-import type { HomePage } from "@repo/cms";
 import { Button } from "@repo/design-system/components/ui/button";
 import type { Dictionary } from "@repo/internationalization";
 import { MoveRight, PhoneCall } from "lucide-react";
@@ -6,22 +5,16 @@ import Link from "next/link";
 import { env } from "@/env";
 
 type CTAProps = {
-  cmsData?: HomePage["cta"] | null;
   dictionary: Dictionary;
 };
 
-export const CTA = ({ cmsData, dictionary }: CTAProps) => {
-  // Use CMS data if available, otherwise fall back to dictionary
-  const title = cmsData?.title ?? dictionary.web.home.cta.title;
-  const description =
-    cmsData?.description ?? dictionary.web.home.cta.description;
-  const primaryButtonText =
-    cmsData?.primaryButtonText ?? dictionary.web.global.primaryCta;
-  const primaryButtonHref = cmsData?.primaryButtonHref ?? "/contact";
-  const secondaryButtonText =
-    cmsData?.secondaryButtonText ?? dictionary.web.global.secondaryCta;
-  const secondaryButtonHref =
-    cmsData?.secondaryButtonHref ?? env.NEXT_PUBLIC_APP_URL;
+export const CTA = ({ dictionary }: CTAProps) => {
+  const title = dictionary.web.home.cta.title;
+  const description = dictionary.web.home.cta.description;
+  const primaryButtonText = dictionary.web.global.primaryCta;
+  const primaryButtonHref = "/contact";
+  const secondaryButtonText = dictionary.web.global.secondaryCta;
+  const secondaryButtonHref = env.NEXT_PUBLIC_APP_URL;
 
   return (
     <div className="w-full py-20 lg:py-40">
