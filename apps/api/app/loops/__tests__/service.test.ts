@@ -86,7 +86,7 @@ describe("loopsService.resume", () => {
     });
   });
 
-  it("propagates parent s3StateKey to the resumed loop", async () => {
+  it("does not copy parent s3StateKey to the resumed loop", async () => {
     const parentWithS3 = makeParentFixture({ s3StateKey: "s3://bucket/key" });
     const mockFindUnique = vi.fn().mockResolvedValue(parentWithS3);
     const mockCount = vi.fn().mockResolvedValue(0);
@@ -111,10 +111,12 @@ describe("loopsService.resume", () => {
     );
 
     const createCall = mockCreate.mock.calls[0][0];
-    expect(createCall.data.s3StateKey).toBe("s3://bucket/key");
+    // s3StateKey is no longer copied from parent — the child gets its own
+    // during launch (ECS generates one, desktop has none)
+    expect(createCall.data.s3StateKey).toBeUndefined();
   });
 
-  it("falls back to parent computeTargetId when none provided", async () => {
+  it("does not inherit parent computeTargetId when none provided", async () => {
     const parentWithTarget = makeParentFixture({
       computeTargetId: "parent-target-id",
     });
@@ -141,7 +143,9 @@ describe("loopsService.resume", () => {
     );
 
     const createCall = mockCreate.mock.calls[0][0];
-    expect(createCall.data.computeTargetId).toBe("parent-target-id");
+    // computeTargetId is no longer inherited from parent — the route now
+    // validates and passes the resolved target explicitly
+    expect(createCall.data.computeTargetId).toBeNull();
   });
 
   it("accepts a loop with status Failed as resumable without throwing", async () => {
