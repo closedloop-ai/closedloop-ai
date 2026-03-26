@@ -173,7 +173,10 @@ const REVIEW_SYSTEM_PROMPT = [
   "If you initially suspect an issue but upon further analysis determine it is not actually a problem, omit it from the findings entirely. Only include confirmed issues.",
 ].join(" ");
 
-async function spawnClaudeReview(cwd: string, model: string): Promise<ChildProcess> {
+async function spawnClaudeReview(
+  cwd: string,
+  model: string
+): Promise<ChildProcess> {
   const shellPath = await getShellPath();
   return spawn(
     "claude",

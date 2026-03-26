@@ -616,6 +616,9 @@ export const loopsService = {
       );
     }
 
+    // Do NOT copy parent.s3StateKey — the child loop gets its own key when
+    // launched (via ECS claim or desktop persistence). Copying the parent's
+    // key creates a window where the child reads/writes the parent's storage.
     const loop = await withDb((db) =>
       db.loop.create({
         data: {

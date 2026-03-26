@@ -81,26 +81,20 @@ function flushToDatadog(): Promise<void> {
 
   const batch = buffer.splice(0, MAX_BATCH_SIZE);
 
-  flushInProgress = fetch(
-    `https://http-intake.logs.${DD.site}/api/v2/logs`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "DD-API-KEY": DD.apiKey,
-      },
-      body: JSON.stringify(batch),
-      signal: AbortSignal.timeout(10_000),
-    }
-  )
+  flushInProgress = fetch(`https://http-intake.logs.${DD.site}/api/v2/logs`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "DD-API-KEY": DD.apiKey,
+    },
+    body: JSON.stringify(batch),
+    signal: AbortSignal.timeout(10_000),
+  })
     .then(() => {
       retryCount = 0;
     })
     .catch((error) => {
-      console.error(
-        "[observability] Failed to flush logs to Datadog:",
-        error
-      );
+      console.error("[observability] Failed to flush logs to Datadog:", error);
       // Re-enqueue only if under retry limit; drop the batch otherwise
       if (retryCount < MAX_RETRY_COUNT) {
         retryCount++;
