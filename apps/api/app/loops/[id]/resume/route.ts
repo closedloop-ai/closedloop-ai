@@ -4,7 +4,11 @@ import { waitUntil } from "@vercel/functions";
 import { withAuth } from "@/lib/auth/with-auth";
 import { launchLoop } from "@/lib/loops/loop-orchestrator";
 import { errorResponse, parseBody, successResponse } from "@/lib/route-utils";
-import { loopsService } from "../../service";
+import {
+  fetchOrgLoopLimit,
+  isConcurrentLoopLimitError,
+  loopsService,
+} from "../../service";
 import { resumeLoopValidator } from "../../validators";
 
 export const POST = withAuth<CreateLoopResponse, "/loops/[id]/resume">(
@@ -20,11 +24,14 @@ export const POST = withAuth<CreateLoopResponse, "/loops/[id]/resume">(
         return parseError;
       }
 
+      const maxConcurrentLoops = await fetchOrgLoopLimit(user.organizationId);
+
       const result = await loopsService.resume(
         id,
         user.organizationId,
         user.id,
-        body
+        body,
+        maxConcurrentLoops
       );
 
       // Launch the resumed loop asynchronously. waitUntil() keeps the
@@ -43,6 +50,9 @@ export const POST = withAuth<CreateLoopResponse, "/loops/[id]/resume">(
 
       return successResponse(result);
     } catch (error) {
+      if (isConcurrentLoopLimitError(error)) {
+        return errorResponse(error.message, error, 429);
+      }
       return errorResponse("Failed to resume loop", error);
     }
   }

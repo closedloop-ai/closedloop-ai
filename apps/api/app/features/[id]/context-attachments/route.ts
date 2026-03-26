@@ -59,7 +59,12 @@ async function handleDocumentUpload(
   user: { organizationId: string; id: string },
   feature: { projectId: string; workstreamId: string | null },
   featureId: string,
-  body: { filename: string; mimeType: string; sizeBytes: number; projectId?: string }
+  body: {
+    filename: string;
+    mimeType: string;
+    sizeBytes: number;
+    projectId?: string;
+  }
 ) {
   const projectId = body.projectId ?? feature.projectId;
   if (!(projectId || feature.workstreamId)) {
@@ -68,17 +73,13 @@ async function handleDocumentUpload(
     );
   }
 
-  const artifact = await artifactsService.create(
-    user.organizationId,
-    user.id,
-    {
-      title: body.filename,
-      type: ArtifactType.Prd,
-      status: ArtifactStatus.Draft,
-      projectId,
-      content: "",
-    }
-  );
+  const artifact = await artifactsService.create(user.organizationId, user.id, {
+    title: body.filename,
+    type: ArtifactType.Prd,
+    status: ArtifactStatus.Draft,
+    projectId,
+    content: "",
+  });
 
   if (!artifact) {
     return errorResponse(

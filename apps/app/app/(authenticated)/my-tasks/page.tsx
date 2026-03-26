@@ -160,20 +160,22 @@ export default function MyTasksPage() {
                   <DropdownMenuSeparator />
                   <DropdownMenuGroup>
                     <DropdownMenuLabel>Status</DropdownMenuLabel>
-                    {Object.entries(featureStatusLabels).map(([value, label]) => (
-                      <DropdownMenuCheckboxItem
-                        checked={filters.statuses.includes(
-                          value as FeatureStatus
-                        )}
-                        key={value}
-                        onCheckedChange={() =>
-                          toggleStatus(value as FeatureStatus)
-                        }
-                        onSelect={preventClose}
-                      >
-                        {label}
-                      </DropdownMenuCheckboxItem>
-                    ))}
+                    {Object.entries(featureStatusLabels).map(
+                      ([value, label]) => (
+                        <DropdownMenuCheckboxItem
+                          checked={filters.statuses.includes(
+                            value as FeatureStatus
+                          )}
+                          key={value}
+                          onCheckedChange={() =>
+                            toggleStatus(value as FeatureStatus)
+                          }
+                          onSelect={preventClose}
+                        >
+                          {label}
+                        </DropdownMenuCheckboxItem>
+                      )
+                    )}
                   </DropdownMenuGroup>
                   <DropdownMenuSeparator />
                   <DropdownMenuGroup>

@@ -1,0 +1,4 @@
+{
+  "no_learnings": true,
+  "reason": "Plan is entirely within a monorepo (apps/api and apps/app) \u2014 no external peer repositories required. Discovered sibling repos were unrelated library repos irrelevant to the plan."
+}

@@ -11,7 +11,11 @@ import {
   parseBody,
   successResponse,
 } from "@/lib/route-utils";
-import { loopsService } from "./service";
+import {
+  fetchOrgLoopLimit,
+  isConcurrentLoopLimitError,
+  loopsService,
+} from "./service";
 import { createLoopValidator, listLoopsQueryValidator } from "./validators";
 
 export const GET = withAnyAuth<LoopWithUser[], "/loops">(
@@ -65,14 +69,20 @@ export const POST = withAnyAuth<CreateLoopResponse, "/loops">(
         return parseError;
       }
 
+      const maxConcurrentLoops = await fetchOrgLoopLimit(user.organizationId);
+
       const result = await loopsService.create(
         user.organizationId,
         user.id,
-        body
+        body,
+        maxConcurrentLoops
       );
 
       return successResponse(result);
     } catch (error) {
+      if (isConcurrentLoopLimitError(error)) {
+        return errorResponse(error.message, error, 429);
+      }
       return errorResponse("Failed to create loop", error);
     }
   },

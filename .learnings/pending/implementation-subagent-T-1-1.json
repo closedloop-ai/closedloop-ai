@@ -1,0 +1,4 @@
+{
+  "no_learnings": true,
+  "reason": "Straightforward error class addition following the existing InvalidStatusTransitionError pattern already in service.ts. No new patterns discovered."
+}

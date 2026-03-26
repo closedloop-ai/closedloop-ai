@@ -13,6 +13,7 @@ import type {
   ResumeLoopRequest,
   RunLoopCommand,
 } from "@repo/api/src/types/loop";
+import { toast } from "@repo/design-system/components/ui/sonner";
 import {
   type UseQueryOptions,
   useMutation,
@@ -20,6 +21,7 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { useApiClient } from "@/hooks/use-api-client";
+import { ApiError } from "@/lib/api-error";
 import { buildSearchParams } from "@/lib/format-utils";
 
 // Query keys
@@ -203,6 +205,12 @@ export function useResumeLoop() {
     onSuccess: (_, { id }) => {
       queryClient.invalidateQueries({ queryKey: loopKeys.detail(id) });
       queryClient.invalidateQueries({ queryKey: loopKeys.lists() });
+    },
+    onError: (error) => {
+      if (error instanceof ApiError && error.status === 429) {
+        toast.error(error.message);
+      }
+      // Non-429 errors handled by global QueryClient mutations.onError
     },
   });
 }
