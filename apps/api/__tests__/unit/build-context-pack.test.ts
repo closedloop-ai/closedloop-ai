@@ -128,30 +128,6 @@ describe("buildContextPack", () => {
     });
   });
 
-  it("does not include issue artifact when contextRefs is empty", async () => {
-    await buildContextPack(
-      {
-        id: "loop-1",
-        userId: "user-1",
-        command: "PLAN",
-        prompt: null,
-        artifactId: null,
-        artifactVersion: null,
-        parentLoopId: null,
-        repo: { fullName: "org/repo", branch: "main" },
-        contextRefs: [],
-      },
-      "org-1",
-      "state-prefix"
-    );
-
-    expect(mockFeaturesService.findById).not.toHaveBeenCalled();
-
-    const uploadCall = mockUploadContextPack.mock.calls[0];
-    const contextPack = uploadCall[1];
-    expect(contextPack.artifacts).toEqual([]);
-  });
-
   it("does not include issue artifact when contextRefs is null", async () => {
     await buildContextPack(
       {

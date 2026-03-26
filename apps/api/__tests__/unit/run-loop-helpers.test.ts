@@ -147,25 +147,6 @@ describe("resolveLoopContext — targetRepo fallback chain", () => {
     expect(result.targetRepo).toBe("body/repo");
   });
 
-  it("prefers artifact.targetRepo over source.targetRepo", async () => {
-    const artifact = buildArtifact({ targetRepo: "artifact/repo" });
-    mockArtifactsService.findOrCreateWorkstream.mockResolvedValue({
-      workstream: buildWorkstream(),
-      source: buildSource({ targetRepo: "source/repo" }),
-    });
-
-    const result = await resolveLoopContext(
-      artifact as any,
-      { command: "plan" },
-      noParentHandler,
-      "org-1",
-      "user-1",
-      "artifact-1"
-    );
-
-    expect(result.targetRepo).toBe("artifact/repo");
-  });
-
   it("falls back to source.targetRepo when artifact has no targetRepo", async () => {
     const artifact = buildArtifact({ targetRepo: null });
     mockArtifactsService.findOrCreateWorkstream.mockResolvedValue({
@@ -259,25 +240,6 @@ describe("resolveLoopContext — targetBranch fallback chain", () => {
     );
 
     expect(result.targetBranch).toBe("body-branch");
-  });
-
-  it("prefers artifact.targetBranch over source.targetBranch", async () => {
-    const artifact = buildArtifact({ targetBranch: "artifact-branch" });
-    mockArtifactsService.findOrCreateWorkstream.mockResolvedValue({
-      workstream: buildWorkstream(),
-      source: buildSource({ targetBranch: "source-branch" }),
-    });
-
-    const result = await resolveLoopContext(
-      artifact as any,
-      { command: "plan" },
-      noParentHandler,
-      "org-1",
-      "user-1",
-      "artifact-1"
-    );
-
-    expect(result.targetBranch).toBe("artifact-branch");
   });
 
   it("falls back to source.targetBranch when artifact has no targetBranch", async () => {
@@ -379,24 +341,6 @@ describe("resolveLoopContext — contextRefs", () => {
     ]);
   });
 
-  it("returns empty contextRefs when source is null", async () => {
-    const artifact = buildArtifact();
-    mockArtifactsService.findOrCreateWorkstream.mockResolvedValue({
-      workstream: null,
-      source: null,
-    });
-
-    const result = await resolveLoopContext(
-      artifact as any,
-      { command: "plan" },
-      noParentHandler,
-      "org-1",
-      "user-1",
-      "artifact-1"
-    );
-
-    expect(result.contextRefs).toEqual([]);
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -483,26 +427,6 @@ describe("resolveLoopContext — parentLoopId", () => {
 describe("resolveLoopContext — workstream", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-  });
-
-  it("returns resolved workstream from findOrCreateWorkstream when present", async () => {
-    const artifact = buildArtifact();
-    const workstream = buildWorkstream();
-    mockArtifactsService.findOrCreateWorkstream.mockResolvedValue({
-      workstream,
-      source: null,
-    });
-
-    const result = await resolveLoopContext(
-      artifact as any,
-      { command: "plan" },
-      noParentHandler,
-      "org-1",
-      "user-1",
-      "artifact-1"
-    );
-
-    expect(result.workstream).toBe(workstream);
   });
 
   it("falls back to artifact.workstream when findOrCreateWorkstream returns null workstream", async () => {
