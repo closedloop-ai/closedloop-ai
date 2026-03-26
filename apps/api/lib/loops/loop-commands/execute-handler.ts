@@ -79,10 +79,11 @@ async function downloadExecutionArtifacts(
 // ---------------------------------------------------------------------------
 
 /**
- * Create a GitHubPullRequest row, tolerating a concurrent insert from a
- * webhook or workflow-completion handler (P2002 unique constraint).
+ * Upsert a GitHubPullRequest row, returning the effective row so the caller
+ * always has the correct artifactId for linkage — even if a concurrent
+ * webhook or workflow-completion handler won the insert race.
  */
-async function createPrRowOrSkipDuplicate(
+async function upsertPrRow(
   tx: Parameters<Parameters<typeof withDb.tx>[0]>[0],
   data: {
     workstreamId: string;
@@ -97,21 +98,35 @@ async function createPrRowOrSkipDuplicate(
     baseBranch: string;
   },
   loopId: string
-): Promise<void> {
-  try {
-    await tx.gitHubPullRequest.create({
-      data: { ...data, state: "OPEN" },
-    });
-  } catch (error) {
-    if ((error as { code?: string }).code === "P2002") {
-      log.warn(
-        "[loop-artifact-ingestion] PR row created by concurrent handler; skipping duplicate",
-        { loopId, repositoryId: data.repositoryId, prNumber: data.number }
-      );
-    } else {
-      throw error;
-    }
+): Promise<{ id: string; artifactId: string | null }> {
+  const row = await tx.gitHubPullRequest.upsert({
+    where: {
+      repositoryId_number: {
+        repositoryId: data.repositoryId,
+        number: data.number,
+      },
+    },
+    create: { ...data, state: "OPEN" },
+    // Don't overwrite fields that a concurrent handler may have set
+    // more accurately (e.g. state from a webhook).
+    update: {},
+    select: { id: true, artifactId: true },
+  });
+
+  if (row.artifactId && row.artifactId !== data.artifactId) {
+    log.warn(
+      "[loop-artifact-ingestion] PR row already linked to a different artifact via upsert race",
+      {
+        loopId,
+        repositoryId: data.repositoryId,
+        prNumber: data.number,
+        existingArtifactId: row.artifactId,
+        requestedArtifactId: data.artifactId,
+      }
+    );
   }
+
+  return row;
 }
 
 // ---------------------------------------------------------------------------
@@ -288,7 +303,7 @@ export async function ingestExecutionArtifacts(
         }
       );
     } else {
-      await createPrRowOrSkipDuplicate(
+      const upsertedPr = await upsertPrRow(
         tx,
         {
           workstreamId: loop.workstreamId!,
@@ -304,6 +319,11 @@ export async function ingestExecutionArtifacts(
         },
         loop.id
       );
+      // If the row already existed with a different artifact, use that
+      // to avoid contradictory linkage records.
+      if (upsertedPr.artifactId && upsertedPr.artifactId !== loop.artifactId) {
+        effectiveArtifactId = upsertedPr.artifactId;
+      }
     }
 
     // Create ExternalLink, EntityLink, and preview deployment records (with dedup)

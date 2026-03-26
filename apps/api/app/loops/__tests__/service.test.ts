@@ -1,8 +1,8 @@
 /**
  * Unit tests for loopsService.resume method.
  *
- * Tests computeTargetId propagation, s3StateKey exclusion from new loops,
- * and resumable-status validation.
+ * Tests computeTargetId propagation with access validation,
+ * s3StateKey exclusion from resumed loops, and resumable-status validation.
  */
 import { LoopStatus } from "@repo/api/src/types/loop";
 import { type Mock, vi } from "vitest";
@@ -12,12 +12,21 @@ vi.mock("@repo/database", () => ({
   withDb: vi.fn(),
 }));
 
+vi.mock("@/app/compute-targets/service", () => ({
+  computeTargetsService: {
+    findAccessibleById: vi.fn(),
+  },
+}));
+
 // Import after mocking
 import { withDb } from "@repo/database";
+import { computeTargetsService } from "@/app/compute-targets/service";
 import { loopsService } from "../service";
 
-// Type alias for mocked function
+// Type aliases for mocked functions
 const mockWithDb = withDb as unknown as Mock;
+const mockFindAccessibleById =
+  computeTargetsService.findAccessibleById as unknown as Mock;
 
 const TEST_ORG_ID = "org-123";
 const TEST_USER_ID = "user-456";
@@ -86,7 +95,7 @@ describe("loopsService.resume", () => {
     });
   });
 
-  it("propagates parent s3StateKey to the resumed loop", async () => {
+  it("does NOT copy parent s3StateKey to the resumed loop", async () => {
     const parentWithS3 = makeParentFixture({ s3StateKey: "s3://bucket/key" });
     const mockFindUnique = vi.fn().mockResolvedValue(parentWithS3);
     const mockCount = vi.fn().mockResolvedValue(0);
@@ -111,10 +120,10 @@ describe("loopsService.resume", () => {
     );
 
     const createCall = mockCreate.mock.calls[0][0];
-    expect(createCall.data.s3StateKey).toBe("s3://bucket/key");
+    expect(createCall.data.s3StateKey).toBeUndefined();
   });
 
-  it("falls back to parent computeTargetId when none provided", async () => {
+  it("inherits parent computeTargetId when still accessible", async () => {
     const parentWithTarget = makeParentFixture({
       computeTargetId: "parent-target-id",
     });
@@ -133,6 +142,9 @@ describe("loopsService.resume", () => {
       return callback(mockDb);
     });
 
+    // Parent's target is still accessible
+    mockFindAccessibleById.mockResolvedValue({ id: "parent-target-id" });
+
     await loopsService.resume(
       TEST_PARENT_LOOP_ID,
       TEST_ORG_ID,
@@ -142,6 +154,44 @@ describe("loopsService.resume", () => {
 
     const createCall = mockCreate.mock.calls[0][0];
     expect(createCall.data.computeTargetId).toBe("parent-target-id");
+    expect(mockFindAccessibleById).toHaveBeenCalledWith(
+      "parent-target-id",
+      TEST_ORG_ID,
+      TEST_USER_ID
+    );
+  });
+
+  it("drops parent computeTargetId when no longer accessible", async () => {
+    const parentWithTarget = makeParentFixture({
+      computeTargetId: "parent-target-id",
+    });
+    const mockFindUnique = vi.fn().mockResolvedValue(parentWithTarget);
+    const mockCount = vi.fn().mockResolvedValue(0);
+    const mockCreate = vi.fn().mockResolvedValue(NEW_LOOP_FIXTURE);
+
+    mockWithDb.mockImplementation((callback: (db: unknown) => unknown) => {
+      const mockDb = {
+        loop: {
+          findUnique: mockFindUnique,
+          count: mockCount,
+          create: mockCreate,
+        },
+      };
+      return callback(mockDb);
+    });
+
+    // Parent's target is no longer accessible
+    mockFindAccessibleById.mockResolvedValue(null);
+
+    await loopsService.resume(
+      TEST_PARENT_LOOP_ID,
+      TEST_ORG_ID,
+      TEST_USER_ID,
+      {}
+    );
+
+    const createCall = mockCreate.mock.calls[0][0];
+    expect(createCall.data.computeTargetId).toBeNull();
   });
 
   it("accepts a loop with status Failed as resumable without throwing", async () => {

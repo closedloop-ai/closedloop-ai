@@ -22,9 +22,9 @@ export const POST = withAnyAuth<CreateLoopResponse, "/loops/[id]/resume">(
       }
 
       // Only resolve a fresh compute target when the client explicitly
-      // provides one. Otherwise the service falls back to the parent loop's
-      // computeTargetId so resumed loops stay on the same backend that has
-      // the prior .claude/worktree state.
+      // provides one. Otherwise the service validates and inherits the
+      // parent's computeTargetId (if still accessible) so resumed loops
+      // stay on the same backend that has the prior .claude/worktree state.
       let resolvedComputeTargetId: string | undefined;
       if (body.computeTargetId) {
         const ctResult = await resolveComputeTargetForRoute(

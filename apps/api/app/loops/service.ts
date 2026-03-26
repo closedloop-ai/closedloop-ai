@@ -19,6 +19,7 @@ import {
 } from "@repo/api/src/types/loop";
 import { type Loop as PrismaLoop, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
+import { computeTargetsService } from "@/app/compute-targets/service";
 import { basicUserSelect } from "@/lib/db-utils";
 
 export class ReplayDetectedError extends Error {
@@ -616,6 +617,33 @@ export const loopsService = {
       );
     }
 
+    // When no explicit compute target was provided, validate the parent's
+    // target is still accessible before inheriting it. The target may have
+    // been unshared or gone offline since the parent loop ran.
+    let effectiveComputeTargetId = computeTargetId ?? null;
+    if (!effectiveComputeTargetId && parent.computeTargetId) {
+      const parentTarget = await computeTargetsService.findAccessibleById(
+        parent.computeTargetId,
+        organizationId,
+        userId
+      );
+      if (parentTarget) {
+        effectiveComputeTargetId = parent.computeTargetId;
+      } else {
+        log.warn(
+          "Parent compute target no longer accessible; child will resolve its own",
+          {
+            parentLoopId,
+            parentComputeTargetId: parent.computeTargetId,
+            userId,
+          }
+        );
+      }
+    }
+
+    // Do NOT copy parent.s3StateKey — the child loop gets its own key when
+    // launched (via ECS claim or desktop persistence). Copying the parent's
+    // key creates a window where the child reads/writes the parent's storage.
     const loop = await withDb((db) =>
       db.loop.create({
         data: {
@@ -628,8 +656,7 @@ export const loopsService = {
           prompt: input.prompt ?? parent.prompt,
           repo: parent.repo ?? undefined,
           contextRefs: parent.contextRefs ?? undefined,
-          computeTargetId: computeTargetId ?? parent.computeTargetId ?? null,
-          s3StateKey: parent.s3StateKey ?? undefined,
+          computeTargetId: effectiveComputeTargetId,
           status: "PENDING",
         },
       })
