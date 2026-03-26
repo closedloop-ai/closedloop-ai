@@ -9,7 +9,7 @@ import {
   triggerAsyncLearningExtraction,
 } from "@/lib/engineer/learnings";
 import { expandHome, getWorktreeParentDir } from "@/lib/engineer/repos";
-import { getShellPathSync } from "@/lib/engineer/shell-path";
+import { getShellPath } from "@/lib/engineer/shell-path";
 import {
   type ContentBlock,
   createStreamState,
@@ -330,6 +330,7 @@ export async function POST(
   // Hoisted so the cancel callback can kill the process
   let claudeProcess: ReturnType<typeof spawn> | null = null;
 
+  const shellPath = await getShellPath();
   const stream = new ReadableStream({
     start(controller) {
       const streamState = createStreamState(
@@ -381,7 +382,7 @@ export async function POST(
           env: {
             ...process.env,
             CLOSEDLOOP_WORKDIR: paths.claudeWorkDir,
-            PATH: getShellPathSync(),
+            PATH: shellPath,
           },
           stdio: ["pipe", "pipe", "pipe"],
         });

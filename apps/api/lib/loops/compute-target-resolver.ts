@@ -23,7 +23,7 @@ export async function resolveEffectiveComputePreference(
   userId: string,
   organizationId: string
 ): Promise<ComputePreference> {
-  const targets = await computeTargetsService.listByOwner(
+  const targets = await computeTargetsService.listAvailableForOrg(
     organizationId,
     userId
   );
@@ -70,11 +70,18 @@ export async function resolveComputeTarget(
   }
 
   if (computeTargetIdHint) {
-    const target = await computeTargetsService.findOwnedById(
-      computeTargetIdHint,
-      organizationId,
-      userId
-    );
+    // Check owned targets first, then shared targets in the org
+    const target =
+      (await computeTargetsService.findOwnedById(
+        computeTargetIdHint,
+        organizationId,
+        userId
+      )) ??
+      (await computeTargetsService.findAccessibleById(
+        computeTargetIdHint,
+        organizationId,
+        userId
+      ));
 
     if (!target) {
       return { reason: "hint_not_found" };
@@ -87,7 +94,7 @@ export async function resolveComputeTarget(
     return { reason: "resolved", target };
   }
 
-  const targets = await computeTargetsService.listByOwner(
+  const targets = await computeTargetsService.listAvailableForOrg(
     organizationId,
     userId
   );

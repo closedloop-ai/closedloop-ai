@@ -235,7 +235,7 @@ export function useRunLoop() {
       apiClient.post<CreateLoopResponse>(`/artifacts/${artifactId}/run-loop`, {
         command,
         prompt,
-        ...(computeTargetId ? { computeTargetId } : {}),
+        ...(computeTargetId !== undefined ? { computeTargetId } : {}),
         ...(backendOverride ? { backendOverride } : {}),
         ...(repo ? { repo } : {}),
       }),

@@ -11,12 +11,13 @@ vi.mock("@/app/compute-targets/service", async (importOriginal) => {
     ...original,
     computeTargetsService: {
       register: vi.fn(),
-      listByOwner: vi.fn(),
+      listAvailableForOrg: vi.fn(),
       heartbeat: vi.fn(),
       updateOwned: vi.fn(),
       deleteOwned: vi.fn(),
       markStaleTargetsOffline: vi.fn(),
       findOwnedById: vi.fn(),
+      findAccessibleById: vi.fn(),
     },
   };
 });
@@ -31,6 +32,7 @@ const makeTarget = (overrides: Partial<ComputeTarget> = {}): ComputeTarget => ({
   supportedOperations: ["symphony_chat"],
   lastSeenAt: new Date(),
   isOnline: true,
+  isSharedWithOrg: false,
   createdAt: new Date(),
   updatedAt: new Date(),
   ...overrides,
@@ -46,43 +48,45 @@ beforeEach(() => {
 describe("resolveComputeTarget — no hint (auto-select)", () => {
   it("returns resolved with the single online target", async () => {
     const target = makeTarget();
-    vi.mocked(computeTargetsService.listByOwner).mockResolvedValue([target]);
+    vi.mocked(computeTargetsService.listAvailableForOrg).mockResolvedValue([
+      target,
+    ]);
 
     const result = await resolveComputeTarget(ORG_ID, USER_ID);
 
     expect(result).toEqual({ reason: "resolved", target });
-    expect(computeTargetsService.listByOwner).toHaveBeenCalledOnce();
-    expect(computeTargetsService.listByOwner).toHaveBeenCalledWith(
+    expect(computeTargetsService.listAvailableForOrg).toHaveBeenCalledOnce();
+    expect(computeTargetsService.listAvailableForOrg).toHaveBeenCalledWith(
       ORG_ID,
       USER_ID
     );
   });
 
   it("returns no_targets when owner has no compute targets", async () => {
-    vi.mocked(computeTargetsService.listByOwner).mockResolvedValue([]);
+    vi.mocked(computeTargetsService.listAvailableForOrg).mockResolvedValue([]);
 
     const result = await resolveComputeTarget(ORG_ID, USER_ID);
 
     expect(result).toEqual({ reason: "no_targets" });
-    expect(computeTargetsService.listByOwner).toHaveBeenCalledOnce();
+    expect(computeTargetsService.listAvailableForOrg).toHaveBeenCalledOnce();
   });
 
   it("returns no_online_targets (ECS fallback signal) when all targets are offline", async () => {
     const offlineTarget = makeTarget({ isOnline: false });
-    vi.mocked(computeTargetsService.listByOwner).mockResolvedValue([
+    vi.mocked(computeTargetsService.listAvailableForOrg).mockResolvedValue([
       offlineTarget,
     ]);
 
     const result = await resolveComputeTarget(ORG_ID, USER_ID);
 
     expect(result).toEqual({ reason: "no_online_targets" });
-    expect(computeTargetsService.listByOwner).toHaveBeenCalledOnce();
+    expect(computeTargetsService.listAvailableForOrg).toHaveBeenCalledOnce();
   });
 
   it("returns multiple_targets when more than one online target exists", async () => {
     const target1 = makeTarget({ id: "target-1" });
     const target2 = makeTarget({ id: "target-2", machineName: "Other-MBP" });
-    vi.mocked(computeTargetsService.listByOwner).mockResolvedValue([
+    vi.mocked(computeTargetsService.listAvailableForOrg).mockResolvedValue([
       target1,
       target2,
     ]);
@@ -93,7 +97,7 @@ describe("resolveComputeTarget — no hint (auto-select)", () => {
       reason: "multiple_targets",
       targets: [target1, target2],
     });
-    expect(computeTargetsService.listByOwner).toHaveBeenCalledOnce();
+    expect(computeTargetsService.listAvailableForOrg).toHaveBeenCalledOnce();
   });
 });
 
@@ -127,6 +131,7 @@ describe("resolveComputeTarget — with hint (computeTargetIdHint)", () => {
 
   it("returns hint_not_found when the hinted target does not exist", async () => {
     vi.mocked(computeTargetsService.findOwnedById).mockResolvedValue(null);
+    vi.mocked(computeTargetsService.findAccessibleById).mockResolvedValue(null);
 
     const result = await resolveComputeTarget(
       ORG_ID,
@@ -136,12 +141,33 @@ describe("resolveComputeTarget — with hint (computeTargetIdHint)", () => {
 
     expect(result).toEqual({ reason: "hint_not_found" });
     expect(computeTargetsService.findOwnedById).toHaveBeenCalledOnce();
+    expect(computeTargetsService.findAccessibleById).toHaveBeenCalledOnce();
   });
 
-  it("returns hint_not_found for same-org different-userId (cross-user dispatch rejected)", async () => {
-    // findOwnedById enforces userId ownership — a target belonging to another user
-    // in the same org returns null, preventing cross-user dispatch.
+  it("resolves shared target when not owned but shared with org", async () => {
+    const sharedTarget = makeTarget({
+      id: "shared-target",
+      userId: "other-user",
+      isSharedWithOrg: true,
+    });
     vi.mocked(computeTargetsService.findOwnedById).mockResolvedValue(null);
+    vi.mocked(computeTargetsService.findAccessibleById).mockResolvedValue(
+      sharedTarget
+    );
+
+    const result = await resolveComputeTarget(ORG_ID, USER_ID, "shared-target");
+
+    expect(result).toEqual({ reason: "resolved", target: sharedTarget });
+    expect(computeTargetsService.findAccessibleById).toHaveBeenCalledWith(
+      "shared-target",
+      ORG_ID,
+      USER_ID
+    );
+  });
+
+  it("returns hint_not_found for unshared cross-user target", async () => {
+    vi.mocked(computeTargetsService.findOwnedById).mockResolvedValue(null);
+    vi.mocked(computeTargetsService.findAccessibleById).mockResolvedValue(null);
 
     const result = await resolveComputeTarget(
       ORG_ID,
@@ -161,7 +187,9 @@ describe("resolveComputeTarget — with hint (computeTargetIdHint)", () => {
 describe("resolveComputeTarget — preferredComputeMode parameter", () => {
   it("LOCAL + one online target -> resolved", async () => {
     const target = makeTarget();
-    vi.mocked(computeTargetsService.listByOwner).mockResolvedValue([target]);
+    vi.mocked(computeTargetsService.listAvailableForOrg).mockResolvedValue([
+      target,
+    ]);
 
     const result = await resolveComputeTarget(
       ORG_ID,
@@ -171,15 +199,15 @@ describe("resolveComputeTarget — preferredComputeMode parameter", () => {
     );
 
     expect(result).toEqual({ reason: "resolved", target });
-    expect(computeTargetsService.listByOwner).toHaveBeenCalledOnce();
-    expect(computeTargetsService.listByOwner).toHaveBeenCalledWith(
+    expect(computeTargetsService.listAvailableForOrg).toHaveBeenCalledOnce();
+    expect(computeTargetsService.listAvailableForOrg).toHaveBeenCalledWith(
       ORG_ID,
       USER_ID
     );
   });
 
   it("LOCAL + zero registered targets -> no_targets (fallbackToCloud does not apply to zero-registered case)", async () => {
-    vi.mocked(computeTargetsService.listByOwner).mockResolvedValue([]);
+    vi.mocked(computeTargetsService.listAvailableForOrg).mockResolvedValue([]);
 
     const result = await resolveComputeTarget(
       ORG_ID,
@@ -190,12 +218,12 @@ describe("resolveComputeTarget — preferredComputeMode parameter", () => {
     );
 
     expect(result).toEqual({ reason: "no_targets" });
-    expect(computeTargetsService.listByOwner).toHaveBeenCalledOnce();
+    expect(computeTargetsService.listAvailableForOrg).toHaveBeenCalledOnce();
   });
 
   it("LOCAL + all offline + fallbackToCloud=true -> cloud_resolved", async () => {
     const offlineTarget = makeTarget({ isOnline: false });
-    vi.mocked(computeTargetsService.listByOwner).mockResolvedValue([
+    vi.mocked(computeTargetsService.listAvailableForOrg).mockResolvedValue([
       offlineTarget,
     ]);
 
@@ -208,7 +236,7 @@ describe("resolveComputeTarget — preferredComputeMode parameter", () => {
     );
 
     expect(result).toEqual({ reason: "cloud_resolved" });
-    expect(computeTargetsService.listByOwner).toHaveBeenCalledOnce();
+    expect(computeTargetsService.listAvailableForOrg).toHaveBeenCalledOnce();
   });
 
   it("CLOUD preference -> cloud_resolved without querying targets", async () => {
@@ -220,14 +248,14 @@ describe("resolveComputeTarget — preferredComputeMode parameter", () => {
     );
 
     expect(result).toEqual({ reason: "cloud_resolved" });
-    expect(computeTargetsService.listByOwner).not.toHaveBeenCalled();
+    expect(computeTargetsService.listAvailableForOrg).not.toHaveBeenCalled();
     expect(computeTargetsService.findOwnedById).not.toHaveBeenCalled();
   });
 
   it("LOCAL + multiple online targets -> multiple_targets", async () => {
     const target1 = makeTarget({ id: "target-1" });
     const target2 = makeTarget({ id: "target-2", machineName: "Other-MBP" });
-    vi.mocked(computeTargetsService.listByOwner).mockResolvedValue([
+    vi.mocked(computeTargetsService.listAvailableForOrg).mockResolvedValue([
       target1,
       target2,
     ]);
@@ -243,11 +271,12 @@ describe("resolveComputeTarget — preferredComputeMode parameter", () => {
       reason: "multiple_targets",
       targets: [target1, target2],
     });
-    expect(computeTargetsService.listByOwner).toHaveBeenCalledOnce();
+    expect(computeTargetsService.listAvailableForOrg).toHaveBeenCalledOnce();
   });
 
-  it("cross-user hint not owned by requesting user -> hint_not_found", async () => {
+  it("cross-user hint not owned or shared -> hint_not_found", async () => {
     vi.mocked(computeTargetsService.findOwnedById).mockResolvedValue(null);
+    vi.mocked(computeTargetsService.findAccessibleById).mockResolvedValue(null);
 
     const result = await resolveComputeTarget(
       ORG_ID,
@@ -258,30 +287,28 @@ describe("resolveComputeTarget — preferredComputeMode parameter", () => {
 
     expect(result).toEqual({ reason: "hint_not_found" });
     expect(computeTargetsService.findOwnedById).toHaveBeenCalledOnce();
-    expect(computeTargetsService.findOwnedById).toHaveBeenCalledWith(
-      "target-owned-by-other",
-      ORG_ID,
-      "different-user"
-    );
+    expect(computeTargetsService.findAccessibleById).toHaveBeenCalledOnce();
   });
 });
 
 describe("resolveComputeTarget — service call counts", () => {
-  it("calls listByOwner exactly once and never findOwnedById when no hint provided", async () => {
-    vi.mocked(computeTargetsService.listByOwner).mockResolvedValue([]);
+  it("calls listAvailableForOrg exactly once and never findOwnedById when no hint provided", async () => {
+    vi.mocked(computeTargetsService.listAvailableForOrg).mockResolvedValue([]);
 
     await resolveComputeTarget(ORG_ID, USER_ID);
 
-    expect(computeTargetsService.listByOwner).toHaveBeenCalledOnce();
+    expect(computeTargetsService.listAvailableForOrg).toHaveBeenCalledOnce();
     expect(computeTargetsService.findOwnedById).not.toHaveBeenCalled();
   });
 
-  it("calls findOwnedById exactly once and never listByOwner when hint provided", async () => {
+  it("calls findOwnedById then findAccessibleById when hint provided and not owned", async () => {
     vi.mocked(computeTargetsService.findOwnedById).mockResolvedValue(null);
+    vi.mocked(computeTargetsService.findAccessibleById).mockResolvedValue(null);
 
     await resolveComputeTarget(ORG_ID, USER_ID, "target-1");
 
     expect(computeTargetsService.findOwnedById).toHaveBeenCalledOnce();
-    expect(computeTargetsService.listByOwner).not.toHaveBeenCalled();
+    expect(computeTargetsService.findAccessibleById).toHaveBeenCalledOnce();
+    expect(computeTargetsService.listAvailableForOrg).not.toHaveBeenCalled();
   });
 });

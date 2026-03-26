@@ -1,13 +1,14 @@
 import type { CreateLoopResponse } from "@repo/api/src/types/loop";
 import { log } from "@repo/observability/log";
 import { waitUntil } from "@vercel/functions";
-import { withAuth } from "@/lib/auth/with-auth";
+import { withAnyAuth } from "@/lib/auth/with-any-auth";
+import { resolveComputeTargetForRoute } from "@/lib/loops/compute-target-route-helpers";
 import { launchLoop } from "@/lib/loops/loop-orchestrator";
 import { errorResponse, parseBody, successResponse } from "@/lib/route-utils";
 import { loopsService } from "../../service";
 import { resumeLoopValidator } from "../../validators";
 
-export const POST = withAuth<CreateLoopResponse, "/loops/[id]/resume">(
+export const POST = withAnyAuth<CreateLoopResponse, "/loops/[id]/resume">(
   async ({ user }, request, params) => {
     try {
       const { id } = await params;
@@ -20,11 +21,23 @@ export const POST = withAuth<CreateLoopResponse, "/loops/[id]/resume">(
         return parseError;
       }
 
+      // resolveComputeTargetForRoute already validates ownership via
+      // findOwnedById when a hint is provided — no separate check needed.
+      const ctResult = await resolveComputeTargetForRoute(
+        user.organizationId,
+        user.id,
+        body.computeTargetId
+      );
+      if ("errorResponse" in ctResult) {
+        return ctResult.errorResponse;
+      }
+
       const result = await loopsService.resume(
         id,
         user.organizationId,
         user.id,
-        body
+        body,
+        ctResult.computeTargetId
       );
 
       // Launch the resumed loop asynchronously. waitUntil() keeps the
@@ -45,5 +58,6 @@ export const POST = withAuth<CreateLoopResponse, "/loops/[id]/resume">(
     } catch (error) {
       return errorResponse("Failed to resume loop", error);
     }
-  }
+  },
+  { requiredScopes: ["write"] }
 );

@@ -1,7 +1,7 @@
 import { execSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { getShellPathSync } from "@/lib/engineer/shell-path";
+import { getShellPath } from "@/lib/engineer/shell-path";
 import type { DeploymentConfig } from "@/types/repos";
 
 /**
@@ -77,9 +77,9 @@ export function detectDeployment(repoPath: string): DeploymentConfig | null {
  * Detect deployment configuration using an LLM (Haiku) as fallback
  * when heuristic port extraction fails.
  */
-export function detectDeploymentWithLLM(
+export async function detectDeploymentWithLLM(
   repoPath: string
-): DeploymentConfig | null {
+): Promise<DeploymentConfig | null> {
   let context = "";
 
   // Gather justfile content
@@ -126,7 +126,7 @@ Return ONLY valid JSON with these fields:
         encoding: "utf-8",
         env: {
           ...process.env,
-          PATH: getShellPathSync(),
+          PATH: await getShellPath(),
         },
       }
     );

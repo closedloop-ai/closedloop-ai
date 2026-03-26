@@ -44,11 +44,13 @@ vi.mock("@/app/compute-targets/service", async (importOriginal) => {
     computeTargetsService: {
       register: vi.fn(),
       listByOwner: vi.fn(),
+      listAvailableForOrg: vi.fn(),
       heartbeat: vi.fn(),
       updateOwned: vi.fn(),
       deleteOwned: vi.fn(),
       markStaleTargetsOffline: vi.fn(),
       findOwnedById: vi.fn(),
+      findAccessibleById: vi.fn(),
     },
   };
 });
@@ -79,6 +81,7 @@ const makeTarget = (overrides: Partial<ComputeTarget> = {}): ComputeTarget => ({
   supportedOperations: [],
   lastSeenAt: new Date(),
   isOnline: true,
+  isSharedWithOrg: false,
   createdAt: new Date(),
   updatedAt: new Date(),
   ...overrides,
@@ -110,7 +113,7 @@ describe("GET /settings/compute-preference — fast-path (explicit preference se
     expect(json.success).toBe(true);
     expect(json.data.preferredComputeMode).toBe("LOCAL");
     // Fast-path: should not call the targets service
-    expect(computeTargetsService.listByOwner).not.toHaveBeenCalled();
+    expect(computeTargetsService.listAvailableForOrg).not.toHaveBeenCalled();
   });
 
   it("returns CLOUD immediately when user.preferredComputeMode is CLOUD", async () => {
@@ -128,14 +131,14 @@ describe("GET /settings/compute-preference — fast-path (explicit preference se
     expect(json.success).toBe(true);
     expect(json.data.preferredComputeMode).toBe("CLOUD");
     // Fast-path: should not call the targets service
-    expect(computeTargetsService.listByOwner).not.toHaveBeenCalled();
+    expect(computeTargetsService.listAvailableForOrg).not.toHaveBeenCalled();
   });
 });
 
 describe("GET /settings/compute-preference — NULL-fallback (delegates to resolveEffectiveComputePreference)", () => {
   it("returns LOCAL when user has no preference but has online compute targets", async () => {
     mockUserFindUnique.mockResolvedValue({ preferredComputeMode: null });
-    vi.mocked(computeTargetsService.listByOwner).mockResolvedValue([
+    vi.mocked(computeTargetsService.listAvailableForOrg).mockResolvedValue([
       makeTarget({ isOnline: true }),
     ]);
 
@@ -150,7 +153,7 @@ describe("GET /settings/compute-preference — NULL-fallback (delegates to resol
     const json = await response.json();
     expect(json.success).toBe(true);
     expect(json.data.preferredComputeMode).toBe("LOCAL");
-    expect(computeTargetsService.listByOwner).toHaveBeenCalledWith(
+    expect(computeTargetsService.listAvailableForOrg).toHaveBeenCalledWith(
       "org-1",
       "user-1"
     );
@@ -158,7 +161,7 @@ describe("GET /settings/compute-preference — NULL-fallback (delegates to resol
 
   it("returns CLOUD when user has no preference and has no online compute targets", async () => {
     mockUserFindUnique.mockResolvedValue({ preferredComputeMode: null });
-    vi.mocked(computeTargetsService.listByOwner).mockResolvedValue([]);
+    vi.mocked(computeTargetsService.listAvailableForOrg).mockResolvedValue([]);
 
     const response = await GET(
       createMockRequest({
@@ -171,7 +174,7 @@ describe("GET /settings/compute-preference — NULL-fallback (delegates to resol
     const json = await response.json();
     expect(json.success).toBe(true);
     expect(json.data.preferredComputeMode).toBe("CLOUD");
-    expect(computeTargetsService.listByOwner).toHaveBeenCalledWith(
+    expect(computeTargetsService.listAvailableForOrg).toHaveBeenCalledWith(
       "org-1",
       "user-1"
     );
@@ -179,7 +182,7 @@ describe("GET /settings/compute-preference — NULL-fallback (delegates to resol
 
   it("returns CLOUD when user record is not found (NULL-fallback with empty target list)", async () => {
     mockUserFindUnique.mockResolvedValue(null);
-    vi.mocked(computeTargetsService.listByOwner).mockResolvedValue([]);
+    vi.mocked(computeTargetsService.listAvailableForOrg).mockResolvedValue([]);
 
     const response = await GET(
       createMockRequest({

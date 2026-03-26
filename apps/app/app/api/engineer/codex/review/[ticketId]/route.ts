@@ -30,7 +30,7 @@ import {
   getWorktreeParentDir,
   isRepoAllowed,
 } from "@/lib/engineer/repos";
-import { getShellPathSync } from "@/lib/engineer/shell-path";
+import { getShellPath } from "@/lib/engineer/shell-path";
 import { ensureWorktree } from "@/lib/engineer/worktree";
 
 export const dynamic = "force-dynamic";
@@ -169,7 +169,11 @@ const REVIEW_SYSTEM_PROMPT = [
   "If you initially suspect an issue but upon further analysis determine it is not actually a problem, omit it from the findings entirely. Only include confirmed issues.",
 ].join(" ");
 
-function spawnClaudeReview(cwd: string, model: string): ChildProcess {
+async function spawnClaudeReview(
+  cwd: string,
+  model: string
+): Promise<ChildProcess> {
+  const shellPath = await getShellPath();
   return spawn(
     "claude",
     [
@@ -190,7 +194,7 @@ function spawnClaudeReview(cwd: string, model: string): ChildProcess {
       stdio: ["pipe", "pipe", "pipe"],
       env: {
         ...process.env,
-        PATH: getShellPathSync(),
+        PATH: shellPath,
       },
     }
   );
@@ -546,7 +550,7 @@ async function resolveClaudeReviewProcess(
   stateDir: string,
   provider: string
 ): Promise<{ process: ChildProcess; command: string }> {
-  const first = spawnClaudeReview(cwd, model);
+  const first = await spawnClaudeReview(cwd, model);
   first.stdin?.write("/code-review:start");
   first.stdin?.end();
   console.log(`[codex-review] Trying /code-review:start (pid: ${first.pid})`);
@@ -623,7 +627,7 @@ async function resolveClaudeReviewProcess(
   );
   await clearReviewLog(stateDir, provider);
 
-  const fallback = spawnClaudeReview(cwd, model);
+  const fallback = await spawnClaudeReview(cwd, model);
   fallback.stdin?.write(`/review ${prNum}`);
   fallback.stdin?.end();
   console.log(`[codex-review] Fallback /review spawned (pid: ${fallback.pid})`);

@@ -12,6 +12,7 @@ import {
   type LoopListFilters,
   LoopStatus,
   type LoopUsageByCommand,
+  type LoopUsageByUser,
   type LoopUsageSummary,
   type LoopWithUser,
   type ResumeLoopRequest,
@@ -27,7 +28,9 @@ export class ReplayDetectedError extends Error {
   }
 }
 
-export function isReplayDetectedError(error: unknown): boolean {
+export function isReplayDetectedError(
+  error: unknown
+): error is ReplayDetectedError {
   return error instanceof ReplayDetectedError;
 }
 
@@ -42,7 +45,9 @@ export class InvalidStatusTransitionError extends Error {
   }
 }
 
-export function isInvalidStatusTransitionError(error: unknown): boolean {
+export function isInvalidStatusTransitionError(
+  error: unknown
+): error is InvalidStatusTransitionError {
   return error instanceof InvalidStatusTransitionError;
 }
 
@@ -53,31 +58,42 @@ export function isInvalidStatusTransitionError(error: unknown): boolean {
 const VALID_TRANSITIONS: Record<LoopStatus, Set<LoopStatus>> = {
   // PENDING → RUNNING covers the race where the container sends "started"
   // before the backend has finished transitioning to CLAIMED.
-  PENDING: new Set(["CLAIMED", "RUNNING", "CANCELLED"]),
+  PENDING: new Set<LoopStatus>([
+    LoopStatus.Claimed,
+    LoopStatus.Running,
+    LoopStatus.Cancelled,
+  ]),
   // CLAIMED → terminal states covers the case where the "started" event was
   // dropped (network issue, transient failure). Without this, a lost "started"
   // event would strand the loop in CLAIMED until the cron timeout safety net.
-  CLAIMED: new Set([
-    "RUNNING",
-    "COMPLETED",
-    "FAILED",
-    "CANCELLED",
-    "TIMED_OUT",
+  CLAIMED: new Set<LoopStatus>([
+    LoopStatus.Running,
+    LoopStatus.Completed,
+    LoopStatus.Failed,
+    LoopStatus.Cancelled,
+    LoopStatus.TimedOut,
   ]),
-  RUNNING: new Set(["COMPLETED", "FAILED", "CANCELLED", "TIMED_OUT"]),
-  COMPLETED: new Set(),
+  RUNNING: new Set<LoopStatus>([
+    LoopStatus.Completed,
+    LoopStatus.Failed,
+    LoopStatus.Cancelled,
+    LoopStatus.TimedOut,
+  ]),
+  COMPLETED: new Set<LoopStatus>(),
   // A successful completion from the runner overrides a prior failure or timeout.
   // The runner is the ground truth for whether work actually finished.
-  FAILED: new Set(["COMPLETED"]),
-  CANCELLED: new Set(),
-  TIMED_OUT: new Set(["COMPLETED"]),
+  FAILED: new Set<LoopStatus>([LoopStatus.Completed]),
+  // A successful completion from the runner overrides a prior cancellation.
+  // The runner is the ground truth for whether work actually finished.
+  CANCELLED: new Set<LoopStatus>([LoopStatus.Completed]),
+  TIMED_OUT: new Set<LoopStatus>([LoopStatus.Completed]),
 };
 
 const TERMINAL_STATUSES = new Set<LoopStatus>([
-  "COMPLETED",
-  "FAILED",
-  "CANCELLED",
-  "TIMED_OUT",
+  LoopStatus.Completed,
+  LoopStatus.Failed,
+  LoopStatus.Cancelled,
+  LoopStatus.TimedOut,
 ]);
 
 /**
@@ -491,7 +507,7 @@ export const loopsService = {
   async cancel(id: string, organizationId: string): Promise<Loop> {
     // Compute valid source statuses for CANCELLED transition
     const validFromStatuses = Object.entries(VALID_TRANSITIONS)
-      .filter(([, allowed]) => allowed.has("CANCELLED"))
+      .filter(([, allowed]) => allowed.has(LoopStatus.Cancelled))
       .map(([from]) => from as LoopStatus);
 
     // Atomic conditional update: only transitions from a valid source status.
@@ -503,7 +519,7 @@ export const loopsService = {
           status: { in: validFromStatuses },
         },
         data: {
-          status: "CANCELLED",
+          status: LoopStatus.Cancelled,
           completedAt: new Date(),
         },
       })
@@ -521,7 +537,10 @@ export const loopsService = {
         throw new Error(`Loop not found: ${id}`);
       }
 
-      throw new InvalidStatusTransitionError(current.status, "CANCELLED");
+      throw new InvalidStatusTransitionError(
+        current.status,
+        LoopStatus.Cancelled
+      );
     }
 
     log.info("Loop cancelled", { loopId: id });
@@ -546,7 +565,8 @@ export const loopsService = {
     parentLoopId: string,
     organizationId: string,
     userId: string,
-    input: ResumeLoopRequest
+    input: ResumeLoopRequest,
+    computeTargetId?: string
   ): Promise<CreateLoopResponse> {
     const parent = await withDb((db) =>
       db.loop.findUnique({
@@ -563,13 +583,13 @@ export const loopsService = {
       throw new Error("You can only resume your own loops");
     }
 
-    const resumableStatuses = new Set([
-      "CANCELLED",
-      "COMPLETED",
-      "FAILED",
-      "TIMED_OUT",
+    const resumableStatuses = new Set<LoopStatus>([
+      LoopStatus.Cancelled,
+      LoopStatus.Completed,
+      LoopStatus.Failed,
+      LoopStatus.TimedOut,
     ]);
-    if (!resumableStatuses.has(parent.status)) {
+    if (!resumableStatuses.has(parent.status as LoopStatus)) {
       throw new Error(
         `Cannot resume loop in ${parent.status} status. Only CANCELLED, COMPLETED, FAILED, or TIMED_OUT loops can be resumed.`
       );
@@ -608,7 +628,7 @@ export const loopsService = {
           prompt: input.prompt ?? parent.prompt,
           repo: parent.repo ?? undefined,
           contextRefs: parent.contextRefs ?? undefined,
-          s3StateKey: parent.s3StateKey,
+          computeTargetId: computeTargetId ?? null,
           status: "PENDING",
         },
       })
@@ -838,7 +858,7 @@ export const loopsService = {
         : {}),
     };
 
-    const [aggregate, groupByCommand] = await Promise.all([
+    const [aggregate, groupByCommand, groupByUser] = await Promise.all([
       withDb((db) =>
         db.loop.aggregate({
           where,
@@ -862,6 +882,18 @@ export const loopsService = {
           },
         })
       ),
+      withDb((db) =>
+        db.loop.groupBy({
+          by: ["userId"],
+          where,
+          _count: true,
+          _sum: {
+            tokensInput: true,
+            tokensOutput: true,
+            estimatedCost: true,
+          },
+        })
+      ),
     ]);
 
     const byCommand: LoopUsageByCommand[] = groupByCommand.map((g) => ({
@@ -872,12 +904,42 @@ export const loopsService = {
       estimatedCost: Number(g._sum.estimatedCost ?? 0),
     }));
 
+    // Resolve user details for the by-user breakdown
+    const userIds = groupByUser.map((g) => g.userId);
+    const users =
+      userIds.length > 0
+        ? await withDb((db) =>
+            db.user.findMany({
+              where: { id: { in: userIds } },
+              ...basicUserSelect,
+            })
+          )
+        : [];
+    const userMap = new Map(users.map((u) => [u.id, u]));
+
+    const byUser: LoopUsageByUser[] = groupByUser.map((g) => {
+      const u = userMap.get(g.userId);
+      return {
+        userId: g.userId,
+        userName: u
+          ? [u.firstName, u.lastName].filter(Boolean).join(" ") || u.email
+          : "Unknown",
+        userEmail: u?.email ?? "",
+        userAvatarUrl: u?.avatarUrl ?? null,
+        loopCount: g._count,
+        tokensInput: g._sum.tokensInput ?? 0,
+        tokensOutput: g._sum.tokensOutput ?? 0,
+        estimatedCost: Number(g._sum.estimatedCost ?? 0),
+      };
+    });
+
     return {
       totalLoops: aggregate._count,
       totalTokensInput: aggregate._sum.tokensInput ?? 0,
       totalTokensOutput: aggregate._sum.tokensOutput ?? 0,
       totalEstimatedCost: Number(aggregate._sum.estimatedCost ?? 0),
       byCommand,
+      byUser,
     };
   },
 

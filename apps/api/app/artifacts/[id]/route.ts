@@ -1,5 +1,7 @@
 import type { Artifact, ArtifactDetail } from "@repo/api/src/types/artifact";
 import { CustomFieldEntityType } from "@repo/api/src/types/custom-field";
+import { AssignmentEntityType } from "@repo/collaboration/inbox-notifications";
+import { dispatchAssignmentNotification } from "@/lib/assignment-notifications";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { resolveArtifactId, resolveProjectId } from "@/lib/identifier-utils";
 import {
@@ -104,11 +106,30 @@ export const PUT = withAnyAuth<Artifact, "/artifacts/[id]">(
         artifactInput.projectId = pId;
       }
 
+      const existing = await artifactsService.findById(
+        resolvedId,
+        user.organizationId
+      );
+      if (!existing) {
+        return notFoundResponse("Artifact");
+      }
+
       const artifact = await artifactsService.update(
         resolvedId,
         user.organizationId,
         artifactInput
       );
+
+      dispatchAssignmentNotification({
+        previousAssigneeId: existing.assigneeId,
+        newAssigneeId: artifactInput.assigneeId,
+        actorUserId: user.id,
+        organizationId: user.organizationId,
+        entityType: AssignmentEntityType.Artifact,
+        entityTitle: artifact.title,
+        entityUrl: `/artifacts/${artifact.slug}`,
+        subjectId: artifact.id,
+      });
 
       if (customFields) {
         await applyCustomFieldsFromBody(
