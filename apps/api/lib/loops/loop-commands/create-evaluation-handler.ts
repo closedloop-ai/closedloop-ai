@@ -23,7 +23,7 @@ type JudgesArtifacts = {
   report: JudgesReport | null;
 };
 
-type EvaluationHandlerConfig = {
+export type EvaluationHandlerConfig = {
   /** The S3 filename for the judges report (e.g. "plan-judges.json"). */
   fileName: string;
   /** The key in the uploaded JSON payload (e.g. "planJudges"). */
@@ -40,7 +40,7 @@ type EvaluationHandlerConfig = {
 // Factory
 // ---------------------------------------------------------------------------
 
-function createEvaluationHandler(
+export function createEvaluationHandler(
   config: EvaluationHandlerConfig
 ): LoopCommandHandler {
   const { fileName, uploadKey, reportType, requiresRepo, label } = config;
@@ -130,6 +130,3 @@ function createEvaluationHandler(
     },
   });
 }
-
-export { createEvaluationHandler };
-export type { EvaluationHandlerConfig };
