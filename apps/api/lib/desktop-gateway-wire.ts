@@ -10,6 +10,7 @@ import {
   type Envelope,
   PROTOCOL_VERSION,
   type WireCommandPayload,
+  type WithCorrelation,
 } from "./desktop-gateway-types";
 
 export function isStringArray(value: unknown): value is string[] {
@@ -263,7 +264,10 @@ export function toWireCommandFromRelayOperation(operation: {
   };
 }
 
-export function emitCommand(socket: Socket, command: WireCommandPayload): void {
+export function emitCommand(
+  socket: Socket,
+  command: WithCorrelation<WireCommandPayload>
+): void {
   socket.emit("desktop.command", toEnvelope(command));
 }
 

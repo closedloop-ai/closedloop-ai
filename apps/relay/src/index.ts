@@ -5,7 +5,13 @@ import {
   type ServerResponse,
 } from "node:http";
 import { log } from "@repo/observability/log";
+import { emitProtocolMetric } from "@repo/observability/telemetry/metrics";
+import {
+  ErrorClass,
+  TelemetryCategory,
+} from "@repo/observability/telemetry/schema";
 import { Server, type Socket } from "socket.io";
+import { isRateLimited, remove as removeRateLimit } from "./rate-limiter";
 
 const RELAY_PORT = Number(
   process.env.RELAY_PORT ?? process.env.MCP_PORT ?? "3020"
@@ -17,6 +23,10 @@ if (!Number.isInteger(RELAY_PORT) || RELAY_PORT < 1 || RELAY_PORT > 65_535) {
 const INTERNAL_API_SECRET = process.env.INTERNAL_API_SECRET;
 const VERCEL_API_URL = process.env.CLOSEDLOOP_API_URL;
 const HEARTBEAT_INTERVAL_MS = 30_000;
+const HEARTBEAT_DEGRADED_THRESHOLD_MS = Number(
+  process.env.HEARTBEAT_DEGRADED_THRESHOLD_MS ??
+    String(HEARTBEAT_INTERVAL_MS * 2)
+);
 const MAX_BODY_SIZE = 1_048_576; // 1 MB
 
 if (!INTERNAL_API_SECRET) {
@@ -38,11 +48,26 @@ type WorkerContext = {
   targetId: string;
   organizationId: string;
   userId: string;
-  heartbeatTimer: ReturnType<typeof setInterval>;
+  heartbeatTimer: ReturnType<typeof setInterval> | null;
+  degradedTimer: ReturnType<typeof setTimeout> | null;
+  gatewaySessionId?: string;
+  pluginVersion?: string;
 };
 
 const workersByTargetId = new Map<string, WorkerContext>();
 const socketToTarget = new Map<string, string>();
+
+// ---------------------------------------------------------------------------
+// Connection churn / reconnect / heartbeat-freshness counters
+// Relay is a long-lived process; counters are monotonically increasing and
+// reported as windowed rates in the emitted metric log lines.
+// ---------------------------------------------------------------------------
+
+let connectCount = 0;
+let disconnectCount = 0;
+let reconnectCount = 0;
+// Per-target timestamp of last successful heartbeat ack (ms since epoch).
+const lastHeartbeatAckAt = new Map<string, number>();
 
 // ---------------------------------------------------------------------------
 // Vercel API client
@@ -116,6 +141,7 @@ async function validateApiKeyViaApi(apiKey: string): Promise<{
       responseUrl,
       contentType,
       response: data ?? rawBody.slice(0, 500),
+      errorClass: ErrorClass.Connection,
     });
     return { ok: false };
   }
@@ -143,6 +169,7 @@ async function validateApiKeyViaApi(apiKey: string): Promise<{
         typeof payload === "object" &&
         payload !== null &&
         typeof (payload as Record<string, unknown>).userId === "string",
+      errorClass: ErrorClass.Connection,
     });
     return { ok: false };
   }
@@ -151,6 +178,7 @@ async function validateApiKeyViaApi(apiKey: string): Promise<{
   if (!(Array.isArray(scopes) && scopes.includes("write"))) {
     log.warn("validateApiKeyViaApi: missing write scope", {
       scopes,
+      errorClass: ErrorClass.Connection,
     });
     return { ok: false };
   }
@@ -174,9 +202,11 @@ async function forwardSocketEvent(
   event: string,
   payload: unknown,
   auth?: { organizationId: string; userId: string },
-  targetId?: string
+  targetId?: string,
+  gatewaySessionId?: string
 ): Promise<{
   targetId?: string;
+  gatewaySessionId?: string;
   emit: Array<{ event: string; payload: unknown }>;
   disconnect?: boolean;
 }> {
@@ -213,14 +243,18 @@ async function forwardSocketEvent(
       payload,
       auth,
       targetId,
+      gatewaySessionId,
     });
   if (!(ok && data)) {
     log.error("Vercel socket-event call failed", {
       event,
+      targetId,
+      gatewaySessionId,
       status,
       responseUrl,
       contentType,
       response: data ?? rawBody.slice(0, 500),
+      errorClass: ErrorClass.Protocol,
     });
     return { emit: [] };
   }
@@ -228,12 +262,16 @@ async function forwardSocketEvent(
   if (!Array.isArray(result.emit)) {
     log.error("forwardSocketEvent: expected data.emit to be an array", {
       event,
+      targetId,
+      gatewaySessionId,
       emit: result.emit,
+      errorClass: ErrorClass.Protocol,
     });
     return { emit: [] };
   }
   return result as {
     targetId?: string;
+    gatewaySessionId?: string;
     emit: Array<{ event: string; payload: unknown }>;
     disconnect?: boolean;
   };
@@ -404,6 +442,7 @@ namespace.use((socket, next) => {
   if (!apiKey) {
     log.warn("Socket auth middleware: no API key found in handshake", {
       socketId: socket.id,
+      errorClass: ErrorClass.Connection,
     });
     next(new Error("Unauthorized"));
     return;
@@ -430,6 +469,7 @@ namespace.use((socket, next) => {
           socketId: socket.id,
           disconnect: result.disconnect,
           emitCount: result.emit.length,
+          errorClass: ErrorClass.Connection,
         });
         next(new Error("Unauthorized"));
         return;
@@ -446,11 +486,20 @@ namespace.use((socket, next) => {
         userId: authPayload.userId,
       });
       socket.data.auth = authPayload;
+      log.info(
+        JSON.stringify({
+          category: TelemetryCategory.ConnectionSocketAccepted,
+          timestamp: new Date().toISOString(),
+          socketId: socket.id,
+          organizationId: authPayload.organizationId,
+        })
+      );
       next();
     })
     .catch((error) => {
       log.error("Socket auth middleware: validation threw", {
         socketId: socket.id,
+        errorClass: ErrorClass.Connection,
         error,
       });
       next(new Error("Unauthorized"));
@@ -460,14 +509,21 @@ namespace.use((socket, next) => {
 function registerWorker(
   socket: Socket,
   targetId: string,
-  auth: { organizationId: string; userId: string }
+  auth: { organizationId: string; userId: string },
+  gatewaySessionId?: string,
+  pluginVersion?: string
 ): void {
   // Clean up if this socket was previously registered for a different target
   const oldTargetId = socketToTarget.get(socket.id);
   if (oldTargetId && oldTargetId !== targetId) {
     const oldWorker = workersByTargetId.get(oldTargetId);
     if (oldWorker?.socket.id === socket.id) {
-      clearInterval(oldWorker.heartbeatTimer);
+      if (oldWorker.heartbeatTimer !== null) {
+        clearInterval(oldWorker.heartbeatTimer);
+      }
+      if (oldWorker.degradedTimer !== null) {
+        clearTimeout(oldWorker.degradedTimer);
+      }
       workersByTargetId.delete(oldTargetId);
     }
   }
@@ -475,26 +531,120 @@ function registerWorker(
   // Clean up if a different socket was previously registered for this target
   const existingWorker = workersByTargetId.get(targetId);
   if (existingWorker && existingWorker.socket.id !== socket.id) {
-    clearInterval(existingWorker.heartbeatTimer);
+    if (existingWorker.heartbeatTimer !== null) {
+      clearInterval(existingWorker.heartbeatTimer);
+    }
+    if (existingWorker.degradedTimer !== null) {
+      clearTimeout(existingWorker.degradedTimer);
+    }
     socketToTarget.delete(existingWorker.socket.id);
+    // Emit reconnecting event — a new socket is taking over for an existing target
+    log.info(
+      JSON.stringify({
+        category: TelemetryCategory.ConnectionReconnecting,
+        timestamp: new Date().toISOString(),
+        computeTargetId: targetId,
+        gatewaySessionId: gatewaySessionId ?? null,
+        socketId: socket.id,
+        previousSocketId: existingWorker.socket.id,
+      })
+    );
+    reconnectCount += 1;
+    emitProtocolMetric({
+      metric: "reconnect_frequency",
+      count: reconnectCount,
+      computeTargetId: targetId,
+      gatewaySessionId: gatewaySessionId ?? undefined,
+      timestamp: new Date().toISOString(),
+    });
   }
 
-  const heartbeatTimer = setInterval(() => {
-    forwardSocketEvent("desktop.presence", undefined, auth, targetId).catch(
-      (error) => {
-        log.error("Heartbeat failed", { targetId, error });
-      }
-    );
-  }, HEARTBEAT_INTERVAL_MS);
-
-  workersByTargetId.set(targetId, {
+  // Worker context object created first so heartbeat closure can reference it
+  const workerContext: WorkerContext = {
     socket,
     targetId,
     organizationId: auth.organizationId,
     userId: auth.userId,
-    heartbeatTimer,
-  });
+    heartbeatTimer: null,
+    degradedTimer: null,
+    gatewaySessionId,
+    pluginVersion,
+  };
+
+  let lastHeartbeatSuccess = Date.now();
+
+  const heartbeatTimer = setInterval(() => {
+    const heartbeatSentAt = Date.now();
+    forwardSocketEvent(
+      "desktop.presence",
+      undefined,
+      auth,
+      targetId,
+      gatewaySessionId
+    )
+      .then(() => {
+        const now = Date.now();
+        const prev = lastHeartbeatAckAt.get(targetId);
+        lastHeartbeatSuccess = now;
+        lastHeartbeatAckAt.set(targetId, now);
+        // heartbeat_freshness = elapsed ms since previous successful ack.
+        // Only emit once we have a previous ack to compare against.
+        if (prev !== undefined) {
+          emitProtocolMetric({
+            metric: "heartbeat_freshness",
+            value: now - prev,
+            computeTargetId: targetId,
+            gatewaySessionId: gatewaySessionId ?? undefined,
+            timestamp: new Date(now).toISOString(),
+          });
+        }
+        // Cancel any pending degraded timer on success
+        if (workerContext.degradedTimer !== null) {
+          clearTimeout(workerContext.degradedTimer);
+          workerContext.degradedTimer = null;
+        }
+      })
+      .catch((error) => {
+        log.error("Heartbeat failed", { targetId, gatewaySessionId, error });
+        const heartbeatFreshness = heartbeatSentAt - lastHeartbeatSuccess;
+        log.warn(
+          JSON.stringify({
+            category: TelemetryCategory.ConnectionStaleHeartbeat,
+            timestamp: new Date().toISOString(),
+            computeTargetId: targetId,
+            gatewaySessionId: gatewaySessionId ?? null,
+            heartbeatFreshness,
+          })
+        );
+        // Schedule a degraded event if not already pending
+        workerContext.degradedTimer ??= setTimeout(() => {
+          workerContext.degradedTimer = null;
+          const freshness = Date.now() - lastHeartbeatSuccess;
+          log.warn(
+            JSON.stringify({
+              category: TelemetryCategory.ConnectionDegraded,
+              timestamp: new Date().toISOString(),
+              computeTargetId: targetId,
+              gatewaySessionId: gatewaySessionId ?? null,
+              heartbeatFreshness: freshness,
+            })
+          );
+        }, HEARTBEAT_DEGRADED_THRESHOLD_MS);
+      });
+  }, HEARTBEAT_INTERVAL_MS);
+
+  workerContext.heartbeatTimer = heartbeatTimer;
+
+  workersByTargetId.set(targetId, workerContext);
   socketToTarget.set(socket.id, targetId);
+
+  log.info("Worker registered", {
+    socketId: socket.id,
+    targetId,
+    gatewaySessionId,
+    organizationId: auth.organizationId,
+    userId: auth.userId,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -518,18 +668,35 @@ namespace.on("connection", (socket) => {
     userId: string;
   };
 
+  connectCount += 1;
+  emitProtocolMetric({
+    metric: "connection_churn_rate",
+    count: connectCount,
+    timestamp: new Date().toISOString(),
+  });
+
   log.info("Worker socket connected", {
     socketId: socket.id,
     organizationId: auth.organizationId,
     userId: auth.userId,
+    transport: socket.conn.transport.name,
   });
 
   // Handle desktop.hello — registers target, returns pending commands
   socket.on("desktop.hello", async (payload: unknown) => {
+    log.info("Received desktop.hello", {
+      socketId: socket.id,
+      organizationId: auth.organizationId,
+      userId: auth.userId,
+    });
+
     try {
       const result = await forwardSocketEvent("desktop.hello", payload, auth);
 
       if (result.disconnect) {
+        log.warn("desktop.hello rejected by API, disconnecting", {
+          socketId: socket.id,
+        });
         socket.disconnect(true);
         return;
       }
@@ -539,13 +706,31 @@ namespace.on("connection", (socket) => {
         return;
       }
 
+      // Capture gatewaySessionId from the hello.ack response
+      const gatewaySessionId = result.gatewaySessionId;
+
+      // Extract pluginVersion from the hello payload sent by the desktop client
+      const pluginVersion =
+        typeof payload === "object" && payload !== null
+          ? ((payload as Record<string, unknown>).pluginVersion as
+              | string
+              | undefined)
+          : undefined;
+
       if (result.targetId) {
-        registerWorker(socket, result.targetId, auth);
+        registerWorker(
+          socket,
+          result.targetId,
+          auth,
+          gatewaySessionId,
+          pluginVersion
+        );
       }
 
-      log.info("Hello result", {
+      log.info("desktop.hello processed", {
         socketId: socket.id,
         targetId: result.targetId,
+        gatewaySessionId,
         emitCount: result.emit.length,
         events: result.emit.map((e) => e.event),
       });
@@ -557,6 +742,8 @@ namespace.on("connection", (socket) => {
     } catch (error) {
       log.error("Failed processing desktop.hello", {
         socketId: socket.id,
+        organizationId: auth.organizationId,
+        userId: auth.userId,
         error,
       });
       socket.disconnect(true);
@@ -574,13 +761,23 @@ namespace.on("connection", (socket) => {
       return;
     }
 
+    const worker = workersByTargetId.get(targetId);
+    const gatewaySessionId = worker?.gatewaySessionId;
+    const commandId =
+      typeof payload === "object" && payload !== null
+        ? (payload as Record<string, unknown>).commandId
+        : undefined;
+    const computeTargetId =
+      typeof payload === "object" && payload !== null
+        ? (payload as Record<string, unknown>).computeTargetId
+        : undefined;
+
     log.info("Forwarding desktop.command.event", {
       socketId: socket.id,
       targetId,
-      commandId:
-        typeof payload === "object" && payload !== null
-          ? (payload as Record<string, unknown>).commandId
-          : undefined,
+      gatewaySessionId,
+      commandId,
+      computeTargetId,
     });
 
     enqueueForSocket(socket.id, async () => {
@@ -589,7 +786,8 @@ namespace.on("connection", (socket) => {
           "desktop.command.event",
           payload,
           auth,
-          targetId
+          targetId,
+          gatewaySessionId
         );
         for (const { event, payload: eventPayload } of result.emit) {
           socket.emit(event, eventPayload);
@@ -598,6 +796,9 @@ namespace.on("connection", (socket) => {
         log.error("Failed forwarding command event", {
           socketId: socket.id,
           targetId,
+          gatewaySessionId,
+          commandId,
+          computeTargetId,
           error,
         });
       }
@@ -614,24 +815,92 @@ namespace.on("connection", (socket) => {
       return;
     }
 
+    const worker = workersByTargetId.get(targetId);
+    const gatewaySessionId = worker?.gatewaySessionId;
+    const commandId =
+      typeof payload === "object" && payload !== null
+        ? (payload as Record<string, unknown>).commandId
+        : undefined;
+    const computeTargetId =
+      typeof payload === "object" && payload !== null
+        ? (payload as Record<string, unknown>).computeTargetId
+        : undefined;
+
     log.info("Forwarding desktop.command.ack", {
       socketId: socket.id,
       targetId,
-      commandId:
-        typeof payload === "object" && payload !== null
-          ? (payload as Record<string, unknown>).commandId
-          : undefined,
+      gatewaySessionId,
+      commandId,
+      computeTargetId,
     });
 
     try {
-      await forwardSocketEvent("desktop.command.ack", payload, auth, targetId);
+      await forwardSocketEvent(
+        "desktop.command.ack",
+        payload,
+        auth,
+        targetId,
+        gatewaySessionId
+      );
     } catch (error) {
       log.error("Failed forwarding command ack", {
         socketId: socket.id,
         targetId,
+        gatewaySessionId,
+        commandId,
+        computeTargetId,
         error,
       });
     }
+  });
+
+  // Handle telemetry events — forward to Vercel with rate limiting.
+  socket.on("desktop.telemetry", (payload: unknown) => {
+    const targetId = socketToTarget.get(socket.id);
+    if (!targetId) {
+      log.warn("Received desktop.telemetry but no targetId for socket", {
+        socketId: socket.id,
+      });
+      return;
+    }
+
+    if (isRateLimited(socket.id)) {
+      log.info("desktop.telemetry rate_limited", {
+        socketId: socket.id,
+        targetId,
+      });
+      return;
+    }
+
+    const worker = workersByTargetId.get(targetId);
+    const gatewaySessionId = worker?.gatewaySessionId;
+    const pluginVersion = worker?.pluginVersion;
+
+    const enrichedPayload =
+      typeof payload === "object" && payload !== null
+        ? { ...(payload as Record<string, unknown>), pluginVersion }
+        : { pluginVersion };
+
+    forwardSocketEvent(
+      "desktop.telemetry",
+      enrichedPayload,
+      auth,
+      targetId,
+      gatewaySessionId
+    )
+      .then((result) => {
+        for (const { event, payload: ep } of result.emit) {
+          socket.emit(event, ep);
+        }
+      })
+      .catch((err) => {
+        log.error("Failed forwarding desktop.telemetry", {
+          socketId: socket.id,
+          targetId,
+          gatewaySessionId,
+          error: err,
+        });
+      });
   });
 
   // Handle presence — forward to Vercel for heartbeat
@@ -641,20 +910,32 @@ namespace.on("connection", (socket) => {
       return;
     }
 
+    const worker = workersByTargetId.get(targetId);
+    const gatewaySessionId = worker?.gatewaySessionId;
+
     try {
-      await forwardSocketEvent("desktop.presence", undefined, auth, targetId);
+      await forwardSocketEvent(
+        "desktop.presence",
+        undefined,
+        auth,
+        targetId,
+        gatewaySessionId
+      );
     } catch (error) {
       log.error("Failed forwarding presence", {
         socketId: socket.id,
         targetId,
+        gatewaySessionId,
         error,
       });
     }
   });
 
   // Handle disconnect — notify Vercel, clean up local state
-  socket.on("disconnect", () => {
+  socket.on("disconnect", (reason: string) => {
     socketEventQueues.delete(socket.id);
+    removeRateLimit(socket.id);
+
     const targetId = socketToTarget.get(socket.id);
     socketToTarget.delete(socket.id);
 
@@ -662,22 +943,72 @@ namespace.on("connection", (socket) => {
       const worker = workersByTargetId.get(targetId);
       const isCurrentOwner = worker?.socket.id === socket.id;
       if (isCurrentOwner) {
-        clearInterval(worker.heartbeatTimer);
+        const gatewaySessionId = worker.gatewaySessionId;
+        if (worker.heartbeatTimer !== null) {
+          clearInterval(worker.heartbeatTimer);
+        }
+        if (worker.degradedTimer !== null) {
+          clearTimeout(worker.degradedTimer);
+        }
         workersByTargetId.delete(targetId);
+        lastHeartbeatAckAt.delete(targetId);
+
+        disconnectCount += 1;
+        emitProtocolMetric({
+          metric: "connection_churn_rate",
+          count: disconnectCount,
+          computeTargetId: targetId,
+          gatewaySessionId: gatewaySessionId ?? undefined,
+          timestamp: new Date().toISOString(),
+        });
 
         // Only notify Vercel of disconnect if this socket is still the owner.
         // If another socket has taken over, Vercel already knows via its hello.
-        forwardSocketEvent("disconnect", undefined, auth, targetId).catch(
-          (error) => {
-            log.error("Failed forwarding disconnect", { targetId, error });
-          }
+        forwardSocketEvent(
+          "disconnect",
+          undefined,
+          auth,
+          targetId,
+          gatewaySessionId
+        ).catch((error) => {
+          log.error("Failed forwarding disconnect", {
+            socketId: socket.id,
+            targetId,
+            gatewaySessionId,
+            organizationId: auth.organizationId,
+            userId: auth.userId,
+            errorClass: ErrorClass.Connection,
+            error,
+          });
+        });
+
+        log.info(
+          JSON.stringify({
+            category: TelemetryCategory.ConnectionDisconnected,
+            timestamp: new Date().toISOString(),
+            computeTargetId: targetId,
+            gatewaySessionId: gatewaySessionId ?? null,
+            reason,
+          })
         );
+        log.info("Worker socket disconnected", {
+          socketId: socket.id,
+          targetId,
+          gatewaySessionId,
+          organizationId: auth.organizationId,
+          userId: auth.userId,
+          reason,
+        });
+        return;
       }
     }
 
     log.info("Worker socket disconnected", {
       socketId: socket.id,
       targetId,
+      organizationId: auth.organizationId,
+      userId: auth.userId,
+      reason,
     });
   });
 });
