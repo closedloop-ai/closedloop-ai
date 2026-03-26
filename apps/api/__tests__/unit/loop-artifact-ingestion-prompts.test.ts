@@ -377,6 +377,9 @@ describe("ingestExecutionArtifacts — upsertFromSnapshot ordering", () => {
           gitHubPullRequest: {
             findUnique: vi.fn().mockResolvedValue(null),
             create: vi.fn().mockResolvedValue({ id: "pr-1" }),
+            upsert: vi
+              .fn()
+              .mockResolvedValue({ id: "pr-1", artifactId: ARTIFACT_ID }),
           },
           externalLink: {
             create: vi.fn().mockResolvedValue({ id: "ext-link-1" }),
@@ -459,6 +462,9 @@ describe("ingestExecutionArtifacts — upsertFromSnapshot ordering", () => {
           gitHubPullRequest: {
             findUnique: vi.fn().mockResolvedValue(null),
             create: vi.fn().mockResolvedValue({ id: "pr-1" }),
+            upsert: vi
+              .fn()
+              .mockResolvedValue({ id: "pr-1", artifactId: ARTIFACT_ID }),
           },
           externalLink: {
             create: vi.fn().mockResolvedValue({ id: "ext-link-1" }),
