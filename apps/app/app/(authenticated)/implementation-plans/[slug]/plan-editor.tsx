@@ -7,9 +7,15 @@ import {
   PullRequestState,
 } from "@repo/api/src/types/artifact";
 import { InlinePresence, OptionalArtifactRoom } from "@repo/collaboration";
-import { log } from "@repo/observability/log";
 import { Loader2Icon } from "lucide-react";
-import { Suspense, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { ArtifactChatPanel } from "@/components/artifact-editor/artifact-chat-panel";
 import { CollaborativeEditor } from "@/components/artifact-editor/collaborative-editor";
 import { EditorToolbarActions } from "@/components/artifact-editor/editor-toolbar-actions";
@@ -174,34 +180,22 @@ export function PlanEditor({
     planActions.isEvaluatingPlan ||
     planActions.isEvaluatingCode;
 
-  const evaluateCodeHandler = useMemo((): (() => void) | undefined => {
-    if (pullRequest === undefined || pullRequest === null) {
-      return undefined;
+  const canEvaluateCode =
+    pullRequest !== undefined &&
+    pullRequest !== null &&
+    pullRequest.state === PullRequestState.Open &&
+    pullRequest.headBranch.length > 0;
+  const evaluateCodeHandler = useCallback(() => {
+    if (!canEvaluateCode || pullRequest === undefined || pullRequest === null) {
+      return;
     }
-    if (pullRequest.state !== PullRequestState.Open) {
-      log.debug("[plan-editor] Evaluate PR action not available: PR not open", {
-        artifactId: plan.id,
-        prNumber: pullRequest.number,
-        prState: pullRequest.state,
-      });
-      return undefined;
-    }
-    if (pullRequest.headBranch.length === 0) {
-      log.warn(
-        "[plan-editor] Evaluate PR action not available: empty headBranch",
-        {
-          artifactId: plan.id,
-          prNumber: pullRequest.number,
-        }
-      );
-      return undefined;
-    }
-    const headBranch = pullRequest.headBranch;
-    const targetRepo = plan.targetRepo;
-    return () => {
-      planActions.handleEvaluateCode(headBranch, targetRepo);
-    };
-  }, [plan.id, pullRequest, plan.targetRepo, planActions.handleEvaluateCode]);
+    planActions.handleEvaluateCode(pullRequest.headBranch, plan.targetRepo);
+  }, [
+    canEvaluateCode,
+    pullRequest,
+    plan.targetRepo,
+    planActions.handleEvaluateCode,
+  ]);
 
   // Create version display component for header
   const versionDisplay = (
@@ -257,7 +251,7 @@ export function PlanEditor({
       onApprove={planActions.handleApprove}
       onCopyMarkdown={actions.handleCopy}
       onDelete={uiState.openDeleteDialog}
-      onEvaluateCode={evaluateCodeHandler}
+      onEvaluateCode={canEvaluateCode ? evaluateCodeHandler : undefined}
       onEvaluatePlan={planActions.handleEvaluatePlan}
       onExecute={openExecuteModal}
       onExportMarkdown={actions.handleDownload}
