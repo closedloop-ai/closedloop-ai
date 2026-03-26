@@ -106,8 +106,7 @@
       "!docs/lib",
       "!docs/hooks",
       "!apps/docs/**/*.json",
-      "!apps/email/.react-email",
-      "!packages/cms/basehub-types.d.ts"
+      "!apps/email/.react-email"
     ]
   }
 }

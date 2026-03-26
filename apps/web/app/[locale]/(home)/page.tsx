@@ -1,4 +1,3 @@
-import { marketing } from "@repo/cms";
 import { getDictionary } from "@repo/internationalization";
 import { createMetadata } from "@repo/seo/metadata";
 import type { Metadata } from "next";
@@ -26,15 +25,12 @@ const Home = async ({ params }: HomeProps) => {
   const { locale } = await params;
   const dictionary = await getDictionary(locale);
 
-  // Try to fetch CMS content, fall back to null if it fails
-  const cmsHome = await marketing.getHomePage().catch(() => null);
-
   return (
     <>
-      <Hero cmsData={cmsHome?.hero} dictionary={dictionary} />
-      <Features cmsData={cmsHome?.features} dictionary={dictionary} />
-      <FAQ cmsData={cmsHome?.faq} dictionary={dictionary} />
-      <CTA cmsData={cmsHome?.cta} dictionary={dictionary} />
+      <Hero dictionary={dictionary} />
+      <Features dictionary={dictionary} />
+      <FAQ dictionary={dictionary} />
+      <CTA dictionary={dictionary} />
     </>
   );
 };
