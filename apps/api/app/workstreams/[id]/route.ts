@@ -1,5 +1,7 @@
 import { CustomFieldEntityType } from "@repo/api/src/types/custom-field";
 import type { Workstream } from "@repo/api/src/types/workstream";
+import { AssignmentEntityType } from "@repo/collaboration/inbox-notifications";
+import { dispatchAssignmentNotification } from "@/lib/assignment-notifications";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { resolveWorkstreamId } from "@/lib/identifier-utils";
 
@@ -81,6 +83,17 @@ export const PUT = withAnyAuth<Workstream, "/workstreams/[id]">(
         user.organizationId,
         workstreamInput
       );
+
+      dispatchAssignmentNotification({
+        previousAssigneeId: existing.assigneeId,
+        newAssigneeId: workstreamInput.assigneeId,
+        actorUserId: user.id,
+        organizationId: user.organizationId,
+        entityType: AssignmentEntityType.Workstream,
+        entityTitle: workstream.title,
+        entityUrl: `/workstreams/${workstream.id}`,
+        subjectId: workstream.id,
+      });
 
       if (customFields) {
         await applyCustomFieldsFromBody(

@@ -1,5 +1,7 @@
 import { CustomFieldEntityType } from "@repo/api/src/types/custom-field";
 import type { FeatureWithWorkstream } from "@repo/api/src/types/feature";
+import { AssignmentEntityType } from "@repo/collaboration/inbox-notifications";
+import { dispatchAssignmentNotification } from "@/lib/assignment-notifications";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { resolveFeatureId, resolveProjectId } from "@/lib/identifier-utils";
 
@@ -78,11 +80,30 @@ export const PUT = withAnyAuth<FeatureWithWorkstream, "/features/[id]">(
         featureInput.projectId = pId;
       }
 
+      const existing = await featuresService.findById(
+        resolvedId,
+        user.organizationId
+      );
+      if (!existing) {
+        return notFoundResponse("Feature");
+      }
+
       const feature = await featuresService.update(
         resolvedId,
         user.organizationId,
         featureInput
       );
+
+      dispatchAssignmentNotification({
+        previousAssigneeId: existing.assigneeId,
+        newAssigneeId: featureInput.assigneeId,
+        actorUserId: user.id,
+        organizationId: user.organizationId,
+        entityType: AssignmentEntityType.Feature,
+        entityTitle: feature.title,
+        entityUrl: `/features/${feature.slug}`,
+        subjectId: feature.id,
+      });
 
       if (customFields) {
         await applyCustomFieldsFromBody(

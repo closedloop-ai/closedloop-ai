@@ -1,5 +1,7 @@
 import { CustomFieldEntityType } from "@repo/api/src/types/custom-field";
 import type { ProjectWithDetails } from "@repo/api/src/types/project";
+import { AssignmentEntityType } from "@repo/collaboration/inbox-notifications";
+import { dispatchAssignmentNotification } from "@/lib/assignment-notifications";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { resolveProjectId } from "@/lib/identifier-utils";
 
@@ -73,6 +75,14 @@ export const PUT = withAnyAuth<ProjectWithDetails, "/projects/[id]">(
 
       const { customFields, ...projectInput } = body;
 
+      const existing = await projectsService.findById(
+        resolvedId,
+        user.organizationId
+      );
+      if (!existing) {
+        return notFoundResponse("Project");
+      }
+
       const updated = await projectsService.update(
         resolvedId,
         user.organizationId,
@@ -103,6 +113,20 @@ export const PUT = withAnyAuth<ProjectWithDetails, "/projects/[id]">(
           "Project updated but could not be retrieved",
           new Error("Project not found")
         );
+      }
+
+      const teamId = projectWithDetails.teams[0]?.id;
+      if (teamId) {
+        dispatchAssignmentNotification({
+          previousAssigneeId: existing.assigneeId,
+          newAssigneeId: projectInput.assigneeId,
+          actorUserId: user.id,
+          organizationId: user.organizationId,
+          entityType: AssignmentEntityType.Project,
+          entityTitle: projectWithDetails.name,
+          entityUrl: `/teams/${teamId}/projects/${projectWithDetails.id}`,
+          subjectId: projectWithDetails.id,
+        });
       }
 
       return successResponse(projectWithDetails);
