@@ -223,18 +223,21 @@ export function useRunLoop() {
       prompt,
       computeTargetId,
       backendOverride,
+      repo,
     }: {
       artifactId: string;
       command: RunLoopCommand;
       prompt?: string;
       computeTargetId?: string | null;
       backendOverride?: boolean;
+      repo?: CreateLoopRequest["repo"];
     }) =>
       apiClient.post<CreateLoopResponse>(`/artifacts/${artifactId}/run-loop`, {
         command,
         prompt,
         ...(computeTargetId ? { computeTargetId } : {}),
         ...(backendOverride ? { backendOverride } : {}),
+        ...(repo ? { repo } : {}),
       }),
     onSuccess: (_, { artifactId }) => {
       queryClient.invalidateQueries({ queryKey: loopKeys.lists() });

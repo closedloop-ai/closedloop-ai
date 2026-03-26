@@ -1,5 +1,7 @@
 import { LoopCommand } from "@repo/api/src/types/loop";
 import { decomposeHandler } from "./decompose-handler";
+import { evaluateCodeHandler } from "./evaluate-code-handler";
+import { evaluatePlanHandler } from "./evaluate-plan-handler";
 import { evaluatePrdHandler } from "./evaluate-prd-handler";
 import { executeHandler } from "./execute-handler";
 import { generatePrdHandler } from "./generate-prd-handler";
@@ -23,4 +25,6 @@ const COMMAND_HANDLERS: Record<LoopCommand, LoopCommandHandler | undefined> = {
   [LoopCommand.Decompose]: decomposeHandler,
   [LoopCommand.EvaluatePrd]: evaluatePrdHandler,
   [LoopCommand.GeneratePrd]: generatePrdHandler,
+  [LoopCommand.EvaluatePlan]: evaluatePlanHandler,
+  [LoopCommand.EvaluateCode]: evaluateCodeHandler,
 };

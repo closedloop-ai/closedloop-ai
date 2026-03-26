@@ -4,10 +4,13 @@ import type {
   BackendMismatchBody,
   ComputeTargetConflictBody,
 } from "@repo/api/src/types/compute-target";
+import type { CreateLoopRequest } from "@repo/api/src/types/loop";
 import { RunLoopCommand } from "@repo/api/src/types/loop";
 import { toast } from "@repo/design-system/components/ui/sonner";
+import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useRef, useState } from "react";
 import { useUpdateArtifact } from "@/hooks/queries/use-artifacts";
+import { judgesKeys } from "@/hooks/queries/use-judges";
 import { useRunLoop } from "@/hooks/queries/use-loops";
 import { handleRunLoopResponse } from "@/lib/run-loop-response";
 
@@ -20,6 +23,7 @@ type RunLoopParams = {
   prompt?: string;
   computeTargetId?: string;
   backendOverride?: boolean;
+  repo?: CreateLoopRequest["repo"];
 };
 
 /**
@@ -32,6 +36,7 @@ type RunLoopParams = {
  * - Regenerate operation (triggers plan regeneration via Loops)
  * - Request changes operation (submits feedback and triggers regeneration with changes)
  * - Execute operation (triggers implementation execution, creates PR)
+ * - Evaluate PR operation (code judges on the open PR branch; requires PR in UI)
  * - Loading states for each operation
  * - Multi-target state and selectTarget for compute target conflict resolution
  *
@@ -53,11 +58,17 @@ type RunLoopParams = {
 export function usePlanActions(config: UsePlanActionsConfig) {
   const { artifactId } = config;
 
+  // TanStack Query client for cache invalidation
+  const queryClient = useQueryClient();
+
   // TanStack Query mutation for artifact approval
   const updateArtifact = useUpdateArtifact();
 
   // TanStack Query mutation — all plan operations route through run-loop
   const runLoop = useRunLoop();
+
+  // Tracks which evaluate command is currently active (null when idle)
+  const activeCommandRef = useRef<RunLoopCommand | null>(null);
 
   // Multi-target conflict state
   const [multiTargetState, setMultiTargetState] = useState<{
@@ -76,6 +87,12 @@ export function usePlanActions(config: UsePlanActionsConfig) {
   const isRegenerating = runLoop.isPending;
   const isRequestingChanges = runLoop.isPending;
   const isExecuting = runLoop.isPending;
+  const isEvaluatingPlan =
+    activeCommandRef.current === RunLoopCommand.EvaluatePlan &&
+    runLoop.isPending;
+  const isEvaluatingCode =
+    activeCommandRef.current === RunLoopCommand.EvaluateCode &&
+    runLoop.isPending;
 
   /**
    * Set up pending-action refs so that selectTarget / confirmOriginalBackend /
@@ -204,6 +221,71 @@ export function usePlanActions(config: UsePlanActionsConfig) {
     }
   }, [artifactId, runLoop, prepareConflictRefs, routeConflictError]);
 
+  /**
+   * Evaluate the implementation plan via Loops.
+   * Creates a Loop with command="evaluate_plan". Invalidates plan judge cache on success.
+   */
+  const handleEvaluatePlan = useCallback(() => {
+    activeCommandRef.current = RunLoopCommand.EvaluatePlan;
+    prepareConflictRefs({ command: RunLoopCommand.EvaluatePlan });
+    runLoop.mutate(
+      { artifactId, command: RunLoopCommand.EvaluatePlan },
+      {
+        onSuccess: () => {
+          queryClient.invalidateQueries({
+            queryKey: judgesKeys.detail(artifactId),
+          });
+          toast.success("Plan evaluation started via Loop");
+        },
+        onError: routeConflictError,
+        onSettled: () => {
+          activeCommandRef.current = null;
+        },
+      }
+    );
+  }, [
+    artifactId,
+    queryClient,
+    runLoop,
+    prepareConflictRefs,
+    routeConflictError,
+  ]);
+
+  /**
+   * Evaluate the implementation code on the open PR branch via Loops.
+   * Creates a Loop with command="evaluate_code". Invalidates code judge cache on success.
+   */
+  const handleEvaluateCode = useCallback(
+    (prHeadBranch: string, repoFullName: string | null) => {
+      activeCommandRef.current = RunLoopCommand.EvaluateCode;
+      const repo =
+        repoFullName && repoFullName.length > 0
+          ? { fullName: repoFullName, branch: prHeadBranch }
+          : undefined;
+      prepareConflictRefs({ command: RunLoopCommand.EvaluateCode, repo });
+      runLoop.mutate(
+        {
+          artifactId,
+          command: RunLoopCommand.EvaluateCode,
+          ...(repo ? { repo } : {}),
+        },
+        {
+          onSuccess: () => {
+            queryClient.invalidateQueries({
+              queryKey: judgesKeys.codeDetail(artifactId),
+            });
+            toast.success("PR evaluation started via Loop");
+          },
+          onError: routeConflictError,
+          onSettled: () => {
+            activeCommandRef.current = null;
+          },
+        }
+      );
+    },
+    [artifactId, queryClient, runLoop, prepareConflictRefs, routeConflictError]
+  );
+
   const selectTarget = useCallback((targetId: string) => {
     setMultiTargetState(null);
     pendingActionRef.current?.(targetId);
@@ -237,6 +319,8 @@ export function usePlanActions(config: UsePlanActionsConfig) {
     handleRegenerate,
     handleRequestChanges,
     handleExecute,
+    handleEvaluatePlan,
+    handleEvaluateCode,
     selectTarget,
     confirmOriginalBackend,
     confirmPreferredBackend,
@@ -247,6 +331,8 @@ export function usePlanActions(config: UsePlanActionsConfig) {
     isRegenerating,
     isRequestingChanges,
     isExecuting,
+    isEvaluatingPlan,
+    isEvaluatingCode,
 
     // Multi-target conflict state
     multiTargetState,

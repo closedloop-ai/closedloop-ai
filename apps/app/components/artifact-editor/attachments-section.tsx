@@ -4,6 +4,7 @@ import { ALLOWED_EXTENSIONS } from "@repo/api/src/types/attachment";
 import { Button } from "@repo/design-system/components/ui/button";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { DownloadIcon, Loader2Icon, Trash2Icon } from "lucide-react";
+import Image from "next/image";
 import { useRef, useState } from "react";
 import {
   useAttachments,
@@ -76,10 +77,13 @@ export function AttachmentsSection({ artifactId }: { artifactId: string }) {
               key={attachment.id}
             >
               {attachment.previewUrl ? (
-                <img
+                <Image
                   alt={attachment.filename}
                   className="max-h-48 w-full rounded object-contain"
+                  height={192}
                   src={attachment.previewUrl}
+                  unoptimized
+                  width={400}
                 />
               ) : null}
               <div className="flex items-center justify-between">

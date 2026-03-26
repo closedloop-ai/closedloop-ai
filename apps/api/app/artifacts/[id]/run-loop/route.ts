@@ -30,6 +30,7 @@ import {
   COMMAND_MAP,
   checkBackendMismatch,
   resolveComputeTargetForRoute,
+  resolveEvaluateCodeBranchForRunLoop,
   resolveLoopContext,
 } from "./run-loop-helpers";
 import { runLoopSchema } from "./validators";
@@ -85,7 +86,7 @@ export const POST = withAuth<RunLoopResponse, "/artifacts/[id]/run-loop">(
       const {
         workstream,
         targetRepo,
-        targetBranch,
+        targetBranch: resolvedTargetBranch,
         contextRefs,
         parentLoopId,
         parentLoopComputeTargetId,
@@ -99,11 +100,24 @@ export const POST = withAuth<RunLoopResponse, "/artifacts/[id]/run-loop">(
         artifactId
       );
 
+      let targetBranch = resolvedTargetBranch;
+
       if (handler?.requiresRepo && !targetRepo) {
         return badRequestResponse(
           "No repository configured. Link a repository to the project or set a target repo on the artifact."
         );
       }
+
+      const evaluateBranchResult = await resolveEvaluateCodeBranchForRunLoop(
+        body.command,
+        artifactId,
+        user.organizationId,
+        targetBranch
+      );
+      if (!evaluateBranchResult.ok) {
+        return evaluateBranchResult.response;
+      }
+      targetBranch = evaluateBranchResult.branch;
 
       const ctRouteResult = await resolveComputeTargetForRoute(
         user.organizationId,

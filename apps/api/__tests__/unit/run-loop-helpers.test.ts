@@ -8,7 +8,12 @@
  * parentLoopId lookup gating on handler.requiresParent.
  */
 
-import { ArtifactType } from "@repo/api/src/types/artifact";
+import {
+  ArtifactType,
+  type PullRequestInfo,
+  PullRequestState,
+} from "@repo/api/src/types/artifact";
+import { RunLoopCommand } from "@repo/api/src/types/loop";
 import { vi } from "vitest";
 
 // --- Mocks (must come before imports) ---
@@ -20,6 +25,7 @@ vi.mock("@repo/observability/log", () => ({
 vi.mock("@/app/artifacts/service", () => ({
   artifactsService: {
     findOrCreateWorkstream: vi.fn(),
+    getArtifactPullRequest: vi.fn(),
   },
 }));
 
@@ -32,7 +38,12 @@ vi.mock("@/app/loops/service", () => ({
 // --- Imports (after mocks) ---
 
 import { beforeEach, describe, expect, it } from "vitest";
-import { resolveLoopContext } from "@/app/artifacts/[id]/run-loop/run-loop-helpers";
+import {
+  COMMAND_MAP,
+  resolveEvaluateCodeBranchForRunLoop,
+  resolveEvaluateCodeTargetBranch,
+  resolveLoopContext,
+} from "@/app/artifacts/[id]/run-loop/run-loop-helpers";
 import { artifactsService } from "@/app/artifacts/service";
 import { loopsService } from "@/app/loops/service";
 
@@ -40,6 +51,7 @@ type MockFn = ReturnType<typeof vi.fn>;
 
 const mockArtifactsService = artifactsService as unknown as {
   findOrCreateWorkstream: MockFn;
+  getArtifactPullRequest: MockFn;
 };
 const mockLoopsService = loopsService as unknown as {
   findLatestCompletedForArtifact: MockFn;
@@ -512,5 +524,126 @@ describe("resolveLoopContext — workstream", () => {
     );
 
     expect(result.workstream).toBe(artifactWorkstream);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// COMMAND_MAP — EVALUATE_PLAN and EVALUATE_CODE
+// ---------------------------------------------------------------------------
+
+describe("COMMAND_MAP", () => {
+  it("accepts EVALUATE_PLAN command and maps it to 'EVALUATE_PLAN'", () => {
+    expect(COMMAND_MAP[RunLoopCommand.EvaluatePlan]).toBe("EVALUATE_PLAN");
+  });
+
+  it("accepts EVALUATE_CODE command and maps it to 'EVALUATE_CODE'", () => {
+    expect(COMMAND_MAP[RunLoopCommand.EvaluateCode]).toBe("EVALUATE_CODE");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveEvaluateCodeTargetBranch — PR-gated EVALUATE_CODE
+// ---------------------------------------------------------------------------
+
+function buildPullRequestInfo(
+  overrides: Partial<PullRequestInfo> = {}
+): PullRequestInfo {
+  return {
+    id: "pr-1",
+    number: 42,
+    title: "Test PR",
+    htmlUrl: "https://github.com/o/r/pull/42",
+    state: PullRequestState.Open,
+    headBranch: "feature/eval",
+    baseBranch: "main",
+    createdAt: new Date(),
+    checksStatus: null,
+    reviewDecision: null,
+    ...overrides,
+  };
+}
+
+describe("resolveEvaluateCodeTargetBranch", () => {
+  it("returns error when PR is null", () => {
+    const result = resolveEvaluateCodeTargetBranch(null);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.message).toContain("No open pull request");
+    }
+  });
+
+  it("returns error when PR is merged", () => {
+    const result = resolveEvaluateCodeTargetBranch(
+      buildPullRequestInfo({ state: PullRequestState.Merged })
+    );
+    expect(result.ok).toBe(false);
+  });
+
+  it("returns error when PR is closed", () => {
+    const result = resolveEvaluateCodeTargetBranch(
+      buildPullRequestInfo({ state: PullRequestState.Closed })
+    );
+    expect(result.ok).toBe(false);
+  });
+
+  it("returns head branch when PR is open", () => {
+    const result = resolveEvaluateCodeTargetBranch(
+      buildPullRequestInfo({ headBranch: "symphony/my-branch" })
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.branch).toBe("symphony/my-branch");
+    }
+  });
+});
+
+describe("resolveEvaluateCodeBranchForRunLoop", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns fallback branch for non-evaluate_code without calling getArtifactPullRequest", async () => {
+    const result = await resolveEvaluateCodeBranchForRunLoop(
+      RunLoopCommand.Plan,
+      "artifact-1",
+      "org-1",
+      "main"
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.branch).toBe("main");
+    }
+    expect(mockArtifactsService.getArtifactPullRequest).not.toHaveBeenCalled();
+  });
+
+  it("loads open PR and returns head branch for evaluate_code", async () => {
+    mockArtifactsService.getArtifactPullRequest.mockResolvedValue(
+      buildPullRequestInfo({ headBranch: "feature/pr-eval" })
+    );
+    const result = await resolveEvaluateCodeBranchForRunLoop(
+      RunLoopCommand.EvaluateCode,
+      "artifact-1",
+      "org-1",
+      "main"
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.branch).toBe("feature/pr-eval");
+    }
+    expect(mockArtifactsService.getArtifactPullRequest).toHaveBeenCalledWith(
+      "artifact-1",
+      "org-1"
+    );
+  });
+
+  it("returns bad request when evaluate_code has no open PR", async () => {
+    mockArtifactsService.getArtifactPullRequest.mockResolvedValue(null);
+    const result = await resolveEvaluateCodeBranchForRunLoop(
+      RunLoopCommand.EvaluateCode,
+      "artifact-1",
+      "org-1",
+      "main"
+    );
+    expect(result.ok).toBe(false);
   });
 });
