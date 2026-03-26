@@ -42,6 +42,9 @@ vi.mock("@repo/database", () => ({
           updateMany: vi.fn().mockResolvedValue({ count: 1 }),
         },
         loopEvent: { create: vi.fn() },
+        organization: {
+          findUnique: vi.fn().mockResolvedValue({ settings: null }),
+        },
       })
     ),
     { tx: vi.fn() }

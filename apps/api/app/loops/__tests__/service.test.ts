@@ -47,6 +47,9 @@ const NEW_LOOP_FIXTURE = {
   status: LoopStatus.Pending,
 };
 
+/** Mock org lookup — returns null settings so fetchOrgLoopLimit uses defaults. */
+const mockOrgFindUnique = vi.fn().mockResolvedValue({ settings: null });
+
 describe("loopsService.resume", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -68,6 +71,7 @@ describe("loopsService.resume", () => {
           count: mockCount,
           create: mockCreate,
         },
+        organization: { findUnique: mockOrgFindUnique },
       };
       return callback(mockDb);
     });
@@ -99,6 +103,7 @@ describe("loopsService.resume", () => {
           count: mockCount,
           create: mockCreate,
         },
+        organization: { findUnique: mockOrgFindUnique },
       };
       return callback(mockDb);
     });
@@ -131,6 +136,7 @@ describe("loopsService.resume", () => {
           count: mockCount,
           create: mockCreate,
         },
+        organization: { findUnique: mockOrgFindUnique },
       };
       return callback(mockDb);
     });
@@ -161,6 +167,7 @@ describe("loopsService.resume", () => {
           count: mockCount,
           create: mockCreate,
         },
+        organization: { findUnique: mockOrgFindUnique },
       };
       return callback(mockDb);
     });
