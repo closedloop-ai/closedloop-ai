@@ -1,7 +1,11 @@
 {
   "version": 1,
   "defaults": {
-    "baseCritics": ["typescript-expert", "dry-kiss-reviewer"],
+    "baseCritics": [
+      "typescript-expert",
+      "dry-kiss-reviewer",
+      "feature-flag-reviewer"
+    ],
     "reviewBudget": 5
   },
   "moduleCritics": [

@@ -1,24 +1,11 @@
-## Description
+## Feature Flags
 
-Please provide a brief description of the changes introduced in this pull request.
+Does this PR introduce new functionality? It must be gated behind a PostHog feature flag.
 
-## Related Issues
+- [ ] New functionality is gated behind a feature flag (`useFeatureFlag()`, `<FeatureFlagged>`, or server-side PostHog check)
+- [ ] Feature flag key: `_______________`
+- [ ] No new functionality introduced (bug fix, refactor, docs, tests only)
 
-Closes #<issue_number>
-
-## Checklist
-
-- [ ] My code follows the code style of this project.
-- [ ] I have performed a self-review of my code.
-- [ ] I have commented my code, particularly in hard-to-understand areas.
-- [ ] I have updated the documentation, if necessary.
-- [ ] I have added tests that prove my fix is effective or my feature works.
-- [ ] New and existing tests pass locally with my changes.
-
-## Screenshots (if applicable)
-
-<!-- Add screenshots to help explain your changes, especially if this is a UI-related PR. -->
-
-## Additional Notes
-
-<!-- Add any additional information or context about the pull request here. -->
+<!-- To opt out: replace this section with [flag:N/A] and a justification, e.g.:
+[flag:N/A] This change modifies internal tooling configuration with no user-facing impact.
+-->
