@@ -26,10 +26,6 @@ import {
 } from "@/lib/engineer/codex-models";
 import { getCodexChatStatePath } from "@/lib/engineer/codex-state";
 import {
-  checkLegacyProcessAndMigrate,
-  resolveReviewReadPaths,
-} from "@/lib/engineer/process-utils";
-import {
   expandHome,
   getWorktreeParentDir,
   isRepoAllowed,
@@ -694,20 +690,8 @@ export async function POST(
     return worktreeError;
   }
 
-  const preflightResult = checkLegacyProcessAndMigrate(worktreeDir);
-  if (preflightResult === "live-process-blocking") {
-    return Response.json(
-      {
-        error:
-          "A job started before the .closedloop-ai migration is still running. Stop it first, then retry.",
-      },
-      { status: 409 }
-    );
-  }
-
-  // Check if a review is already running for this provider in EITHER work dir
-  const { pidPath } = getReviewPaths(worktreeDir, provider);
-  const { statePath: readStatePath } = resolveReviewReadPaths(
+  // Check if a review is already running for this provider
+  const { pidPath, statePath: readStatePath } = getReviewPaths(
     worktreeDir,
     provider
   );

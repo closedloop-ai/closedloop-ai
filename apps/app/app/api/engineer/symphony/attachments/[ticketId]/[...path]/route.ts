@@ -1,7 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { basename, extname, join, sep } from "node:path";
 import { type NextRequest, NextResponse } from "next/server";
-import { findFirstExistingPath } from "@/lib/engineer/process-utils";
 import { expandHome, getWorktreeParentDir } from "@/lib/engineer/repos";
 
 /**
@@ -9,7 +8,7 @@ import { expandHome, getWorktreeParentDir } from "@/lib/engineer/repos";
  *
  * GET /api/symphony/attachments/[ticketId]/[...path]?repo=~/Source/repo-name
  *
- * Serves images from the .claude/work/attachments directory
+ * Serves images from the .closedloop-ai/work/attachments directory
  */
 export async function GET(
   request: NextRequest,
@@ -35,28 +34,18 @@ export async function GET(
   const worktreeParentDir = getWorktreeParentDir();
   const worktreeDir = join(worktreeParentDir, `${repoName}-${sanitizedTicket}`);
 
-  // Build the file path from segments — resolve per-file across both dirs
+  // Build the file path from segments
   const filename = pathSegments.join("/");
-  const newAttachmentsDir = join(
+  const attachmentsDir = join(
     worktreeDir,
     ".closedloop-ai",
     "work",
     "attachments"
   );
-  const oldAttachmentsDir = join(worktreeDir, ".claude", "work", "attachments");
-  const filePath =
-    findFirstExistingPath(
-      join(newAttachmentsDir, filename),
-      join(oldAttachmentsDir, filename)
-    ) ?? join(newAttachmentsDir, filename);
+  const filePath = join(attachmentsDir, filename);
 
-  // Security check: ensure the path stays within one of the allowed attachments directories.
-  const attachmentsDir = filePath.startsWith(newAttachmentsDir + sep)
-    ? newAttachmentsDir
-    : filePath.startsWith(oldAttachmentsDir + sep)
-      ? oldAttachmentsDir
-      : null;
-  if (!attachmentsDir) {
+  // Security check: ensure the path stays within the attachments directory.
+  if (!filePath.startsWith(attachmentsDir + sep)) {
     return NextResponse.json({ error: "Invalid path" }, { status: 403 });
   }
 

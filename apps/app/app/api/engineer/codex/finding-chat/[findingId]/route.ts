@@ -1,12 +1,5 @@
 import { spawn } from "node:child_process";
-import {
-  copyFileSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  unlinkSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { NextRequest } from "next/server";
 import { ENGINEER_CHAT_TOOLS } from "@/lib/engineer/allowed-tools";
@@ -15,10 +8,6 @@ import {
   getOrgPatternsContext,
   triggerAsyncLearningExtraction,
 } from "@/lib/engineer/learnings";
-import {
-  checkLegacyProcessAndMigrate,
-  findFirstExistingPath,
-} from "@/lib/engineer/process-utils";
 import { expandHome, getWorktreeParentDir } from "@/lib/engineer/repos";
 import { getShellPath } from "@/lib/engineer/shell-path";
 import {
@@ -74,39 +63,16 @@ function getWorkPaths(ticketId: string, repoPath: string, findingId: string) {
   const worktreeDir = join(worktreeParentDir, `${repoName}-${sanitizedTicket}`);
   const claudeWorkDir = join(worktreeDir, ".closedloop-ai", "work");
   const findingChatsDir = join(claudeWorkDir, "finding-chats");
-  const legacyFindingChatsDir = join(
-    worktreeDir,
-    ".claude",
-    "work",
-    "finding-chats"
-  );
 
   const historyFilename = `${sanitizedFindingId}.json`;
-  const newHistoryPath = join(findingChatsDir, historyFilename);
-  const legacyHistoryPath = join(legacyFindingChatsDir, historyFilename);
-
-  // Resolve plan/prd per-file across both dirs
-  const planPath =
-    findFirstExistingPath(
-      join(claudeWorkDir, "plan.json"),
-      join(worktreeDir, ".claude", "work", "plan.json")
-    ) ?? join(claudeWorkDir, "plan.json");
-  const prdPath =
-    findFirstExistingPath(
-      join(claudeWorkDir, "prd.md"),
-      join(worktreeDir, ".claude", "work", "prd.md")
-    ) ?? join(claudeWorkDir, "prd.md");
 
   return {
     worktreeDir,
     claudeWorkDir,
     findingChatsDir,
-    historyPath:
-      findFirstExistingPath(newHistoryPath, legacyHistoryPath) ??
-      newHistoryPath,
-    legacyHistoryPath,
-    planPath,
-    prdPath,
+    historyPath: join(findingChatsDir, historyFilename),
+    planPath: join(claudeWorkDir, "plan.json"),
+    prdPath: join(claudeWorkDir, "prd.md"),
   };
 }
 
@@ -331,29 +297,7 @@ export async function POST(
     });
   }
 
-  const preflightResult = checkLegacyProcessAndMigrate(paths.worktreeDir);
-  if (preflightResult === "live-process-blocking") {
-    return new Response(
-      JSON.stringify({
-        error:
-          "A job started before the .closedloop-ai migration is still running. Stop it first, then retry.",
-      }),
-      { status: 409, headers: { "Content-Type": "application/json" } }
-    );
-  }
-
-  // Migrate legacy finding chat history AFTER preflight
-  if (!existsSync(paths.historyPath) && existsSync(paths.legacyHistoryPath)) {
-    mkdirSync(paths.findingChatsDir, { recursive: true });
-    copyFileSync(paths.legacyHistoryPath, paths.historyPath);
-    try {
-      unlinkSync(paths.legacyHistoryPath);
-    } catch {
-      /* best effort */
-    }
-  }
-
-  // Load chat history (don't save user message yet — defer until after Claude responds
+  // Load chat history (don't save user message yet -- defer until after Claude responds
   // to avoid race with the GET query on the client)
   const history = loadFindingChatHistory(
     paths.historyPath,

@@ -195,7 +195,7 @@ export function PlanViewer({
 
 /**
  * Transform local file paths to API URLs for attachments
- * Input: /Users/.../repoName-ticketId/.claude/work/attachments/image-1.png
+ * Input: /Users/.../repoName-ticketId/.closedloop-ai/work/attachments/image-1.png
  * Output: /api/engineer/symphony/attachments/ticketId/image-1.png?repo=~/Source/repoName
  */
 function transformImageSrc(
@@ -203,9 +203,9 @@ function transformImageSrc(
   ticketId: string,
   repoPath: string
 ): string {
-  // Match full path (.claude/work/attachments/..., .closedloop-ai/work/attachments/...) or relative path (attachments/...)
+  // Match full path (.closedloop-ai/work/attachments/...) or relative path (attachments/...)
   const attachmentsMatch =
-    /(?:\.claude\/work\/|\.closedloop-ai\/work\/)?attachments\/(.+)$/.exec(src);
+    /(?:\.closedloop-ai\/work\/)?attachments\/(.+)$/.exec(src);
   if (attachmentsMatch) {
     const filename = attachmentsMatch[1];
     return `/api/engineer/symphony/attachments/${encodeURIComponent(ticketId)}/${encodeURIComponent(filename)}?repo=${encodeURIComponent(repoPath)}`;

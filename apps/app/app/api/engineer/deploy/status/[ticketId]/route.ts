@@ -1,7 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { type NextRequest, NextResponse } from "next/server";
-import { findFirstExistingPath } from "@/lib/engineer/process-utils";
 import { expandHome, getWorktreeParentDir } from "@/lib/engineer/repos";
 
 function readJsonFile<T>(path: string): T | null {
@@ -98,21 +97,10 @@ export async function GET(
       getWorktreeParentDir(),
       `${repoName}-${sanitizedTicket}`
     );
-    const deployLogPath =
-      findFirstExistingPath(
-        join(worktreeDir, ".closedloop-ai", "work", "deploy.log"),
-        join(worktreeDir, ".claude", "work", "deploy.log")
-      ) ?? join(worktreeDir, ".closedloop-ai", "work", "deploy.log");
-    const deployExitPath =
-      findFirstExistingPath(
-        join(worktreeDir, ".closedloop-ai", "work", "deploy-exit.json"),
-        join(worktreeDir, ".claude", "work", "deploy-exit.json")
-      ) ?? join(worktreeDir, ".closedloop-ai", "work", "deploy-exit.json");
-    const deployResultPath =
-      findFirstExistingPath(
-        join(worktreeDir, ".closedloop-ai", "work", "deploy-result.json"),
-        join(worktreeDir, ".claude", "work", "deploy-result.json")
-      ) ?? join(worktreeDir, ".closedloop-ai", "work", "deploy-result.json");
+    const workDir = join(worktreeDir, ".closedloop-ai", "work");
+    const deployLogPath = join(workDir, "deploy.log");
+    const deployExitPath = join(workDir, "deploy-exit.json");
+    const deployResultPath = join(workDir, "deploy-result.json");
 
     const logs = readTextFile(deployLogPath);
     const processAlive = isProcessAlive(pidStr);

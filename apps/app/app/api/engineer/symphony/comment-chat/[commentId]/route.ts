@@ -1,6 +1,5 @@
 import { spawn } from "node:child_process";
 import {
-  copyFileSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -17,10 +16,6 @@ import {
   getOrgPatternsContext,
   triggerAsyncLearningExtraction,
 } from "@/lib/engineer/learnings";
-import {
-  checkLegacyProcessAndMigrate,
-  findFirstExistingPath,
-} from "@/lib/engineer/process-utils";
 import { expandHome, getWorktreeParentDir } from "@/lib/engineer/repos";
 import { getShellPath } from "@/lib/engineer/shell-path";
 import {
@@ -104,39 +99,16 @@ function getWorkPaths(
 
   const claudeWorkDir = join(effectiveDir, ".closedloop-ai", "work");
   const commentChatsDir = join(claudeWorkDir, "comment-chats");
-  const legacyCommentChatsDir = join(
-    effectiveDir,
-    ".claude",
-    "work",
-    "comment-chats"
-  );
 
   const historyFilename = `${sanitizedCommentId}.json`;
-  const newHistoryPath = join(commentChatsDir, historyFilename);
-  const legacyHistoryPath = join(legacyCommentChatsDir, historyFilename);
-
-  // Resolve plan/prd per-file across both dirs
-  const planPath =
-    findFirstExistingPath(
-      join(claudeWorkDir, "plan.json"),
-      join(effectiveDir, ".claude", "work", "plan.json")
-    ) ?? join(claudeWorkDir, "plan.json");
-  const prdPath =
-    findFirstExistingPath(
-      join(claudeWorkDir, "prd.md"),
-      join(effectiveDir, ".claude", "work", "prd.md")
-    ) ?? join(claudeWorkDir, "prd.md");
 
   return {
     effectiveDir,
     claudeWorkDir,
     commentChatsDir,
-    historyPath:
-      findFirstExistingPath(newHistoryPath, legacyHistoryPath) ??
-      newHistoryPath,
-    legacyHistoryPath,
-    planPath,
-    prdPath,
+    historyPath: join(commentChatsDir, historyFilename),
+    planPath: join(claudeWorkDir, "plan.json"),
+    prdPath: join(claudeWorkDir, "prd.md"),
   };
 }
 
@@ -530,28 +502,6 @@ export async function POST(
       status: 404,
       headers: { "Content-Type": "application/json" },
     });
-  }
-
-  const preflightResult = checkLegacyProcessAndMigrate(paths.effectiveDir);
-  if (preflightResult === "live-process-blocking") {
-    return new Response(
-      JSON.stringify({
-        error:
-          "A job started before the .closedloop-ai migration is still running. Stop it first, then retry.",
-      }),
-      { status: 409, headers: { "Content-Type": "application/json" } }
-    );
-  }
-
-  // Migrate legacy comment chat history AFTER preflight
-  if (!existsSync(paths.historyPath) && existsSync(paths.legacyHistoryPath)) {
-    mkdirSync(paths.commentChatsDir, { recursive: true });
-    copyFileSync(paths.legacyHistoryPath, paths.historyPath);
-    try {
-      unlinkSync(paths.legacyHistoryPath);
-    } catch {
-      /* best effort */
-    }
   }
 
   // Load and update chat history with user message

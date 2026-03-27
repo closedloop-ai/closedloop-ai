@@ -7,10 +7,6 @@ import {
   DEFAULT_CODEX_MODEL,
   MODEL_ERROR_REGEX,
 } from "@/lib/engineer/codex-models";
-import {
-  checkLegacyProcessAndMigrate,
-  findFirstExistingPath,
-} from "@/lib/engineer/process-utils";
 import { expandHome, getWorktreeParentDir } from "@/lib/engineer/repos";
 
 export const dynamic = "force-dynamic";
@@ -41,20 +37,13 @@ function getWorktreeDir(repoPath: string, ticketId: string): string {
   return join(worktreeParentDir, `${repoName}-${sanitizedTicket}`);
 }
 
-function getDebateStateReadPath(worktreeDir: string): string | null {
-  return findFirstExistingPath(
-    join(worktreeDir, ".closedloop-ai", "work", "codex-debate.json"),
-    join(worktreeDir, ".claude", "work", "codex-debate.json")
-  );
-}
-
-function getDebateStateWritePath(worktreeDir: string): string {
+function getDebateStatePath(worktreeDir: string): string {
   return join(worktreeDir, ".closedloop-ai", "work", "codex-debate.json");
 }
 
 function loadDebateState(worktreeDir: string): DebateState {
-  const statePath = getDebateStateReadPath(worktreeDir);
-  if (!(statePath && existsSync(statePath))) {
+  const statePath = getDebateStatePath(worktreeDir);
+  if (!existsSync(statePath)) {
     return { rounds: 0 };
   }
   try {
@@ -65,7 +54,7 @@ function loadDebateState(worktreeDir: string): DebateState {
 }
 
 function saveDebateState(worktreeDir: string, state: DebateState): void {
-  const statePath = getDebateStateWritePath(worktreeDir);
+  const statePath = getDebateStatePath(worktreeDir);
   const dir = join(statePath, "..");
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true });
@@ -173,17 +162,6 @@ export async function POST(
     return Response.json(
       { error: "Work directory not found" },
       { status: 404 }
-    );
-  }
-
-  const preflightResult = checkLegacyProcessAndMigrate(worktreeDir);
-  if (preflightResult === "live-process-blocking") {
-    return Response.json(
-      {
-        error:
-          "A job started before the .closedloop-ai migration is still running. Stop it first, then retry.",
-      },
-      { status: 409 }
     );
   }
 
