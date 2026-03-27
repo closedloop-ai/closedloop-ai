@@ -407,7 +407,7 @@ describe("handleWorkflowRun", () => {
       expect(mockHandleWorkflowStatusUpdate).toHaveBeenCalledWith(
         "stage-correlation-123",
         "requested",
-        987_654_321,
+        "987654321",
         "https://github.com/owner/repo/actions/runs/987654321"
       );
     });
@@ -462,7 +462,7 @@ describe("handleWorkflowRun", () => {
       expect(mockHandleWorkflowStatusUpdate).toHaveBeenCalledWith(
         "stage-correlation-789",
         "in_progress",
-        987_654_321,
+        "987654321",
         "https://github.com/owner/repo/actions/runs/987654321"
       );
     });
@@ -481,7 +481,7 @@ describe("handleWorkflowRun", () => {
       expect(mockHandleWorkflowStatusUpdate).toHaveBeenCalledWith(
         "stage-correlation-123",
         "requested",
-        987_654_321,
+        "987654321",
         "https://github.com/owner/repo/actions/runs/987654321"
       );
       expect(mockProcessWorkflowCompletion).not.toHaveBeenCalled();
@@ -499,7 +499,7 @@ describe("handleWorkflowRun", () => {
       expect(mockHandleWorkflowStatusUpdate).toHaveBeenCalledWith(
         "stage-correlation-456",
         "in_progress",
-        987_654_321,
+        "987654321",
         "https://github.com/owner/repo/actions/runs/987654321"
       );
       expect(mockProcessWorkflowCompletion).not.toHaveBeenCalled();
@@ -561,7 +561,7 @@ describe("handleWorkflowRun", () => {
       expect(mockHandleWorkflowStatusUpdate).toHaveBeenCalledWith(
         correlationId,
         "requested",
-        987_654_321,
+        "987654321",
         expect.any(String)
       );
 
@@ -577,7 +577,7 @@ describe("handleWorkflowRun", () => {
       expect(mockHandleWorkflowStatusUpdate).toHaveBeenCalledWith(
         correlationId,
         "in_progress",
-        987_654_321,
+        "987654321",
         expect.any(String)
       );
 

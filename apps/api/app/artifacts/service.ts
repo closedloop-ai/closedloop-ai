@@ -1527,9 +1527,7 @@ Please try again or contact support if the issue persists.`
         return createEmptyExecutionTrace();
       }
 
-      const artifacts = await downloadWorkflowArtifacts(
-        Number(actionRun.runId)
-      );
+      const artifacts = await downloadWorkflowArtifacts(actionRun.runId);
 
       // Find the symphony run artifact (contains .claude/runs/ with conversation logs)
       const symphonyArtifact = artifacts.find((a) =>

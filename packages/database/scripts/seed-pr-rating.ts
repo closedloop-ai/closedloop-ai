@@ -167,12 +167,12 @@ async function main() {
       update: {},
       create: {
         organizationId,
-        installationId: 999_999,
-        accountId: 999_999,
+        installationId: "999999",
+        accountId: "999999",
         accountLogin: PR_RATING_QA.repoOwner,
         accountType: "Organization",
         senderLogin: "qa-seed",
-        senderId: 1,
+        senderId: "1",
         status: "ACTIVE",
       },
     });

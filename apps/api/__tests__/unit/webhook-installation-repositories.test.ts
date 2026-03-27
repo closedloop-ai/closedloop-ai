@@ -242,7 +242,7 @@ describe("handleInstallationRepositoriesAdded", () => {
 
     await handleInstallationRepositoriesAdded(event);
 
-    expect(mockFindInstallationByInstallationId).toHaveBeenCalledWith(123_456);
+    expect(mockFindInstallationByInstallationId).toHaveBeenCalledWith("123456");
     expect(log.warn).toHaveBeenCalledWith(
       "[handleInstallationRepositoriesAdded] Installation not found",
       {
@@ -272,7 +272,7 @@ describe("handleInstallationRepositoriesAdded", () => {
 
     await handleInstallationRepositoriesAdded(event);
 
-    expect(mockFindInstallationByInstallationId).toHaveBeenCalledWith(123_456);
+    expect(mockFindInstallationByInstallationId).toHaveBeenCalledWith("123456");
     expect(mockAddRepositories).toHaveBeenCalledWith("inst-uuid-123", [
       {
         githubRepoId: "101",
@@ -462,7 +462,7 @@ describe("handleInstallationRepositoriesRemoved", () => {
 
     await handleInstallationRepositoriesRemoved(event);
 
-    expect(mockFindInstallationByInstallationId).toHaveBeenCalledWith(123_456);
+    expect(mockFindInstallationByInstallationId).toHaveBeenCalledWith("123456");
     expect(log.warn).toHaveBeenCalledWith(
       "[handleInstallationRepositoriesRemoved] Installation not found",
       {
@@ -492,7 +492,7 @@ describe("handleInstallationRepositoriesRemoved", () => {
 
     await handleInstallationRepositoriesRemoved(event);
 
-    expect(mockFindInstallationByInstallationId).toHaveBeenCalledWith(123_456);
+    expect(mockFindInstallationByInstallationId).toHaveBeenCalledWith("123456");
     expect(mockRemoveRepositories).toHaveBeenCalledWith("inst-uuid-123", [
       "101",
       "102",

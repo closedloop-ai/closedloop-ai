@@ -14,7 +14,7 @@ export type ConnectGitHubResponse = {
 
 export type GitHubInstallationInfo = {
   id: string;
-  installationId: number;
+  installationId: string;
   accountLogin: string;
   accountType: string;
   status: string;

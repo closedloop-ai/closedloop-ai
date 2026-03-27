@@ -816,11 +816,11 @@ describe("handlePullRequestReview", () => {
             pullRequestId: "pr-uuid-upsert",
             authorLogin: "specific-reviewer",
             state: "APPROVED",
-            githubReviewId: BigInt(23),
+            githubReviewId: "23",
           }),
           update: expect.objectContaining({
             state: "APPROVED",
-            githubReviewId: BigInt(23),
+            githubReviewId: "23",
           }),
         })
       );

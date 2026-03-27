@@ -290,7 +290,7 @@ describe("handleCheckRun", () => {
       const response = await handleCheckRun(event);
 
       expect(mockQueryStatusCheckRollup).toHaveBeenCalledWith(
-        installationId,
+        String(installationId),
         "org",
         "repo",
         headSha
@@ -345,7 +345,7 @@ describe("handleCheckRun", () => {
 
       // Verify GraphQL call
       expect(mockQueryStatusCheckRollup).toHaveBeenCalledWith(
-        installationId,
+        String(installationId),
         "org",
         "repo",
         headSha

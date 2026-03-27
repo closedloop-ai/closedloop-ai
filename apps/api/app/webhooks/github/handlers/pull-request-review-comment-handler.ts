@@ -113,12 +113,12 @@ export async function handlePullRequestReviewComment(
       case "created": {
         // Upsert GitHubPRReviewComment record (idempotent for webhook retries)
         await tx.gitHubPRReviewComment.upsert({
-          where: { githubCommentId: BigInt(comment.id) },
+          where: { githubCommentId: String(comment.id) },
           create: {
             pullRequestId: existingPr.id,
-            githubCommentId: BigInt(comment.id),
+            githubCommentId: String(comment.id),
             reviewId: comment.pull_request_review_id
-              ? BigInt(comment.pull_request_review_id)
+              ? String(comment.pull_request_review_id)
               : null,
             body: comment.body,
             path: comment.path,
@@ -133,7 +133,7 @@ export async function handlePullRequestReviewComment(
             path: comment.path,
             line: comment.line,
             reviewId: comment.pull_request_review_id
-              ? BigInt(comment.pull_request_review_id)
+              ? String(comment.pull_request_review_id)
               : null,
           },
         });
@@ -173,7 +173,7 @@ export async function handlePullRequestReviewComment(
         // Update body field on existing GitHubPRReviewComment
         const updatedComment = await tx.gitHubPRReviewComment.updateMany({
           where: {
-            githubCommentId: BigInt(comment.id),
+            githubCommentId: String(comment.id),
           },
           data: {
             body: comment.body,
@@ -202,7 +202,7 @@ export async function handlePullRequestReviewComment(
         // Delete GitHubPRReviewComment by githubCommentId
         const deletedComment = await tx.gitHubPRReviewComment.deleteMany({
           where: {
-            githubCommentId: BigInt(comment.id),
+            githubCommentId: String(comment.id),
           },
         });
 

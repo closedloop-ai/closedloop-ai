@@ -115,7 +115,7 @@ describe("handleWorkflowSuccess", () => {
     const correlationId = "test-correlation-123";
     const artifactId = "artifact-123";
     const workstreamId = "ws-123";
-    const runId = 1_234_567_890;
+    const runId = "1234567890";
 
     const ctx: WorkflowContext = {
       correlationId,
@@ -205,7 +205,7 @@ describe("handleWorkflowSuccess", () => {
     const correlationId = "test-correlation-456";
     const artifactId = "artifact-456";
     const workstreamId = "ws-456";
-    const runId = 9_876_543_210;
+    const runId = "9876543210";
 
     const ctx: WorkflowContext = {
       correlationId,
@@ -281,7 +281,7 @@ describe("handleWorkflowSuccess", () => {
     const correlationId = "test-correlation-789";
     const artifactId = "artifact-789";
     const workstreamId = "ws-789";
-    const runId = 1_111_111_111;
+    const runId = "1111111111";
     const actionRunId = "action-run-789";
 
     const ctx: WorkflowContext = {
@@ -399,7 +399,7 @@ describe("handleWorkflowSuccess", () => {
     const correlationId = "test-correlation-no-workstream";
     const artifactId = "artifact-no-workstream";
     const workstreamId = "ws-no-workstream";
-    const runId = 8_888_888_888;
+    const runId = "8888888888";
 
     const ctx: WorkflowContext = {
       correlationId,
@@ -442,7 +442,7 @@ describe("handleWorkflowSuccess", () => {
     const correlationId = "test-correlation-nonexistent";
     const artifactId = "artifact-nonexistent";
     const workstreamId = "ws-nonexistent";
-    const runId = 9_999_999_999;
+    const runId = "9999999999";
 
     const ctx: WorkflowContext = {
       correlationId,
@@ -491,7 +491,7 @@ describe("handleWorkflowSuccess", () => {
     const correlationId = "test-correlation-perf";
     const artifactId = "artifact-perf";
     const workstreamId = "ws-perf";
-    const runId = 5_555_555_000;
+    const runId = "5555555000";
     const actionRunId = "action-run-perf";
 
     const ctx: WorkflowContext = {
@@ -581,7 +581,7 @@ describe("handleWorkflowSuccess", () => {
     const correlationId = "test-correlation-no-perf";
     const artifactId = "artifact-no-perf";
     const workstreamId = "ws-no-perf";
-    const runId = 5_555_555_001;
+    const runId = "5555555001";
 
     const ctx: WorkflowContext = {
       correlationId,
@@ -640,7 +640,7 @@ describe("handleWorkflowSuccess", () => {
   it("logs error when artifactId is missing in context", async () => {
     const correlationId = "test-correlation-no-artifact";
     const workstreamId = "ws-no-artifact";
-    const runId = 8_888_888_888;
+    const runId = "8888888888";
 
     const ctx: WorkflowContext = {
       correlationId,
@@ -684,7 +684,7 @@ describe("handleWorkflowSuccess", () => {
     const correlationId = "test-correlation-prompts";
     const artifactId = "artifact-prompts";
     const workstreamId = "ws-prompts";
-    const runId = 1_234_000_001;
+    const runId = "1234000001";
 
     const ctx: WorkflowContext = {
       correlationId,
@@ -764,7 +764,7 @@ Plan the work carefully.
     const correlationId = "test-correlation-no-prompts";
     const artifactId = "artifact-no-prompts";
     const workstreamId = "ws-no-prompts";
-    const runId = 1_234_000_002;
+    const runId = "1234000002";
 
     const ctx: WorkflowContext = {
       correlationId,
@@ -830,7 +830,7 @@ describe("handleExecutionSuccess", () => {
     const artifactId = "plan-artifact-123";
     const workstreamId = "ws-123";
     const repositoryId = "repo-123";
-    const runId = 5_555_555_555;
+    const runId = "5555555555";
 
     const ctx: WorkflowContext = {
       correlationId,
@@ -943,7 +943,7 @@ describe("handleExecutionSuccess", () => {
       artifactId: "plan-artifact-456",
       workstreamId: "ws-456",
       repositoryId: "repo-456",
-      runId: 6_666_666_666,
+      runId: "6666666666",
     };
 
     const executionResult = {
@@ -1001,7 +1001,7 @@ describe("handleExecutionSuccess", () => {
       artifactId: "plan-artifact-789",
       workstreamId: "ws-789",
       repositoryId: "repo-789",
-      runId: 7_777_777_777,
+      runId: "7777777777",
     };
 
     const executionResult = {
@@ -1056,7 +1056,7 @@ describe("handleExecutionSuccess", () => {
       correlationId: "exec-correlation-no-changes",
       artifactId: "plan-artifact-no-changes",
       workstreamId: "ws-no-changes",
-      runId: 4_444_444_444,
+      runId: "4444444444",
     };
 
     const executionResult = {
@@ -1098,7 +1098,7 @@ describe("handleExecutionSuccess", () => {
       correlationId: "exec-correlation-no-repo",
       artifactId: "plan-artifact-no-repo",
       workstreamId: "ws-no-repo",
-      runId: 3_333_333_333,
+      runId: "3333333333",
     };
 
     const executionResult = {
@@ -1120,7 +1120,7 @@ describe("handleExecutionSuccess", () => {
       artifactId: "nonexistent-artifact",
       workstreamId: "ws-bad-artifact",
       repositoryId: "repo-bad-artifact",
-      runId: 2_222_222_222,
+      runId: "2222222222",
     };
 
     const executionResult = {
@@ -1157,7 +1157,7 @@ describe("handleExecutionSuccess", () => {
       artifactId: "plan-artifact-prompts",
       workstreamId: "ws-prompts-exec",
       repositoryId: "repo-prompts",
-      runId: 5_555_001_001,
+      runId: "5555001001",
       command: "execute",
     };
 
@@ -1231,7 +1231,7 @@ describe("handleExecutionSuccess", () => {
       artifactId: "plan-artifact-null-prompts",
       workstreamId: "ws-null-prompts-exec",
       repositoryId: "repo-null-prompts",
-      runId: 5_555_001_002,
+      runId: "5555001002",
       command: "execute",
     };
 
@@ -1295,7 +1295,7 @@ describe("handleWorkflowFailure", () => {
     const correlationId = "fail-correlation-123";
     const artifactId = "artifact-fail-123";
     const workstreamId = "ws-fail-123";
-    const runId = 1_010_101_010;
+    const runId = "1010101010";
     const htmlUrl = "https://github.com/owner/repo/actions/runs/1010101010";
 
     const ctx: WorkflowContext = {
@@ -1338,7 +1338,7 @@ describe("handleWorkflowFailure", () => {
     const correlationId = "fail-correlation-456";
     const artifactId = "artifact-fail-456";
     const workstreamId = "ws-fail-456";
-    const runId = 2_020_202_020;
+    const runId = "2020202020";
     const htmlUrl = "https://github.com/owner/repo/actions/runs/2020202020";
 
     const ctx: WorkflowContext = {
@@ -1383,7 +1383,7 @@ describe("handleWorkflowSuccess fan-out", () => {
     const correlationId = "fanout-correlation-plan";
     const artifactId = "fanout-artifact-plan";
     const workstreamId = "fanout-ws-plan";
-    const runId = 1_234_000_001;
+    const runId = "1234000001";
     const actionRunId = "fanout-action-run-plan";
 
     const ctx: WorkflowContext = {
@@ -1479,7 +1479,7 @@ describe("handleWorkflowSuccess fan-out", () => {
     const correlationId = "fanout-correlation-plan-2";
     const artifactId = "fanout-artifact-plan-2";
     const workstreamId = "fanout-ws-plan-2";
-    const runId = 1_234_000_002;
+    const runId = "1234000002";
     const actionRunId = "fanout-action-run-plan-2";
 
     const ctx: WorkflowContext = {
@@ -1590,7 +1590,7 @@ describe("handleExecutionSuccess fan-out", () => {
     const artifactId = "fanout-artifact-code";
     const workstreamId = "fanout-ws-code";
     const repositoryId = "fanout-repo-code";
-    const runId = 2_234_000_001;
+    const runId = "2234000001";
     const actionRunId = "fanout-action-run-code";
 
     const ctx: WorkflowContext = {
@@ -1693,7 +1693,7 @@ describe("handleExecutionSuccess fan-out", () => {
       artifactId: "fanout-artifact-no-code",
       workstreamId: "fanout-ws-no-code",
       repositoryId: "fanout-repo-no-code",
-      runId: 2_234_000_002,
+      runId: "2234000002",
       actionRunId: "fanout-action-run-no-code",
     };
 
@@ -1758,7 +1758,7 @@ describe("handleExecutionSuccess fan-out", () => {
       artifactId,
       workstreamId,
       repositoryId,
-      runId: 8_200_001_001,
+      runId: "8200001001",
       actionRunId,
       command: "execute",
     };
@@ -1842,7 +1842,7 @@ describe("handleExecutionSuccess fan-out", () => {
       artifactId,
       workstreamId,
       repositoryId,
-      runId: 8_200_001_002,
+      runId: "8200001002",
       actionRunId,
       command: "execute",
     };
@@ -1930,7 +1930,7 @@ describe("handleExecutionSuccess fan-out", () => {
       artifactId,
       workstreamId,
       repositoryId,
-      runId: 8_200_001_003,
+      runId: "8200001003",
       actionRunId,
       command: "execute",
     };
@@ -2012,7 +2012,7 @@ describe("handleWorkflowSuccess — PLAN upsert (SS8.3)", () => {
     const artifactId = "ss83-artifact-plan";
     const workstreamId = "ss83-ws-plan";
     const actionRunId = "ss83-action-run-plan";
-    const runId = 8_300_001_001;
+    const runId = "8300001001";
 
     const ctx: WorkflowContext = {
       correlationId: "ss83-correlation-1",
@@ -2099,7 +2099,7 @@ describe("handleWorkflowSuccess — PLAN upsert (SS8.3)", () => {
     const artifactId = "ss83-artifact-plan-2";
     const workstreamId = "ss83-ws-plan-2";
     const actionRunId = "ss83-action-run-plan-2";
-    const runId = 8_300_001_002;
+    const runId = "8300001002";
 
     const ctx: WorkflowContext = {
       correlationId: "ss83-correlation-2",
@@ -2277,11 +2277,11 @@ describe("processWorkflowCompletion", () => {
       correlationId,
       false
     );
-    expect(mockDownloadWorkflowArtifacts).toHaveBeenCalledWith(runId);
+    expect(mockDownloadWorkflowArtifacts).toHaveBeenCalledWith(String(runId));
     expect(mockDb.gitHubActionRun.update).toHaveBeenCalledWith({
       where: { id: mockActionRun.id },
       data: {
-        runId: BigInt(runId),
+        runId: String(runId),
         status: "SUCCESS",
         conclusion: "success",
         htmlUrl: event.workflow_run.html_url,
@@ -2364,7 +2364,7 @@ describe("processWorkflowCompletion", () => {
         data: {
           correlationId,
           artifactId,
-          runId,
+          runId: String(runId),
           command: "plan",
           conclusion: "failure",
           htmlUrl: event.workflow_run.html_url,
@@ -2374,7 +2374,7 @@ describe("processWorkflowCompletion", () => {
     expect(mockDb.gitHubActionRun.update).toHaveBeenCalledWith({
       where: { id: mockActionRun.id },
       data: {
-        runId: BigInt(runId),
+        runId: String(runId),
         status: "FAILURE",
         conclusion: "failure",
         htmlUrl: event.workflow_run.html_url,

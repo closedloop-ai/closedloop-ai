@@ -30,12 +30,10 @@ export async function handlePush(event: PushEvent): Promise<Response> {
   // Update lastPushedAt in a single query — no separate lookup needed.
   // updateMany returns { count } so we know if a matching repo existed.
   // Security: Scope to installationId if available to prevent cross-tenant updates.
-  // The installationId from the event is GitHub's installation ID (number),
-  // which we filter via the nested relation to GitHubInstallation.
   const whereClause = installationId
     ? {
         githubRepoId: String(repository.id),
-        installation: { installationId },
+        installation: { installationId: String(installationId) },
       }
     : {
         githubRepoId: String(repository.id),

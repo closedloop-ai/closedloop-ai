@@ -108,7 +108,7 @@ export function processArtifactZip(
  * 3. Merge results across multiple artifacts
  */
 export async function processArtifactDownloads(
-  runId: number
+  runId: string
 ): Promise<ProcessArtifactResult> {
   log.info(`[processArtifactDownloads] Downloading artifacts for run ${runId}`);
 

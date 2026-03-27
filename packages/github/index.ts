@@ -65,7 +65,7 @@ async function getAuthenticatedOctokit(): Promise<Octokit> {
  * Create an authenticated Octokit instance for a specific installation.
  */
 async function getInstallationOctokit(
-  installationId: number
+  installationId: string
 ): Promise<Octokit> {
   const config = getConfig();
   const auth = createAppAuth({
@@ -75,7 +75,7 @@ async function getInstallationOctokit(
 
   const installationAuth = await auth({
     type: "installation",
-    installationId,
+    installationId: Number.parseInt(installationId, 10),
   });
 
   return new Octokit({
@@ -201,7 +201,7 @@ export function verifyWebhookSignature(
  * Get workflow run details including inputs (for workflow_dispatch events).
  */
 export async function getWorkflowRunInputs(
-  runId: number
+  runId: string
 ): Promise<Record<string, string> | null> {
   const [dispatchOwner, dispatchRepo] = getDispatchRepo();
   const octokit = await getAuthenticatedOctokit();
@@ -209,7 +209,7 @@ export async function getWorkflowRunInputs(
   const { data: run } = await octokit.actions.getWorkflowRun({
     owner: dispatchOwner,
     repo: dispatchRepo,
-    run_id: runId,
+    run_id: Number.parseInt(runId, 10),
   });
 
   // For workflow_dispatch events, inputs are available in the response
@@ -229,7 +229,7 @@ export async function getWorkflowRunInputs(
  * Download artifacts from a workflow run.
  */
 export async function downloadWorkflowArtifacts(
-  runId: number,
+  runId: string,
   artifactName?: string
 ): Promise<{ name: string; data: Buffer }[]> {
   const [dispatchOwner, dispatchRepo] = getDispatchRepo();
@@ -240,7 +240,7 @@ export async function downloadWorkflowArtifacts(
     await octokit.actions.listWorkflowRunArtifacts({
       owner: dispatchOwner,
       repo: dispatchRepo,
-      run_id: runId,
+      run_id: Number.parseInt(runId, 10),
     });
 
   const artifacts: { name: string; data: Buffer }[] = [];
@@ -273,7 +273,7 @@ export async function downloadWorkflowArtifacts(
  * Returns the repo data needed to create a Repository record.
  */
 export async function getRepositoryInfo(fullName: string): Promise<{
-  githubId: number;
+  githubId: string;
   owner: string;
   name: string;
   fullName: string;
@@ -289,7 +289,7 @@ export async function getRepositoryInfo(fullName: string): Promise<{
     const { data: repo } = await octokit.repos.get({ owner, repo: name });
 
     return {
-      githubId: repo.id,
+      githubId: String(repo.id),
       owner: repo.owner.login,
       name: repo.name,
       fullName: repo.full_name,
@@ -339,7 +339,7 @@ export function isCurrentEnvironment(correlationId: string): boolean {
  * @see https://docs.github.com/en/rest/apps/apps#delete-an-installation-for-the-authenticated-app
  */
 export async function deleteInstallation(
-  installationId: number
+  installationId: string
 ): Promise<{ success: boolean; error?: string }> {
   const config = getConfig();
 
@@ -354,7 +354,7 @@ export async function deleteInstallation(
     });
 
     await appOctokit.apps.deleteInstallation({
-      installation_id: installationId,
+      installation_id: Number.parseInt(installationId, 10),
     });
 
     log.info("[github/app] Deleted installation", { installationId });
@@ -378,7 +378,7 @@ export async function getLatestDeploymentStatusForRef(
   repoFullName: string,
   ref: string,
   options?: {
-    installationId?: number;
+    installationId?: string;
     environment?: string | null;
   }
 ): Promise<{
@@ -455,13 +455,13 @@ export async function getLatestDeploymentStatusForRef(
  * Fetches up to 100 branches, sorted by committedDate descending.
  * Returns the top `limit` branches with the default branch pinned at position 0.
  *
- * @param installationId - GitHub installation ID (numeric)
+ * @param installationId - GitHub installation ID (string)
  * @param owner - Repository owner (org or user)
  * @param name - Repository name
  * @param limit - Maximum number of branches to return (default: 20)
  */
 export async function getRepositoryBranches(
-  installationId: number,
+  installationId: string,
   owner: string,
   name: string,
   limit = 20
@@ -477,7 +477,7 @@ export async function getRepositoryBranches(
 
     const installationAuth = await auth({
       type: "installation",
-      installationId,
+      installationId: Number.parseInt(installationId, 10),
     });
 
     const octokit = new Octokit({
@@ -569,7 +569,7 @@ export async function getRepositoryBranches(
  * Returns PRs sorted by most recently updated.
  */
 export async function getRepositoryPullRequests(
-  installationId: number,
+  installationId: string,
   owner: string,
   name: string,
   options?: { state?: "open" | "closed" | "all"; limit?: number }
@@ -598,7 +598,7 @@ export async function getRepositoryPullRequests(
 
     const installationAuth = await auth({
       type: "installation",
-      installationId,
+      installationId: Number.parseInt(installationId, 10),
     });
 
     const octokit = new Octokit({
@@ -667,7 +667,7 @@ type StatusCheckRollupResponse = {
  * Returns the aggregate CI status or null if unavailable.
  */
 export async function queryStatusCheckRollup(
-  installationId: number,
+  installationId: string,
   owner: string,
   repo: string,
   commitSha: string
@@ -748,7 +748,7 @@ export async function queryStatusCheckRollup(
  * Used by the loop orchestrator to pass a short-lived token to containers.
  */
 export async function getInstallationAccessToken(
-  installationId: number
+  installationId: string
 ): Promise<string> {
   const config = getConfig();
   const auth = createAppAuth({
@@ -758,7 +758,7 @@ export async function getInstallationAccessToken(
 
   const installationAuth = await auth({
     type: "installation",
-    installationId,
+    installationId: Number.parseInt(installationId, 10),
   });
 
   return installationAuth.token;
