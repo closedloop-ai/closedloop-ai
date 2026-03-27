@@ -11,6 +11,7 @@ vi.mock("@repo/observability/log", () => ({
 
 vi.mock("@/app/artifacts/artifact-version-service", () => ({
   artifactVersionService: {
+    getByVersion: vi.fn().mockResolvedValue(null),
     getLatest: vi.fn().mockResolvedValue(null),
   },
 }));
@@ -60,6 +61,7 @@ const mockArtifactsService = artifactsService as unknown as {
   findByIdSimple: ReturnType<typeof vi.fn>;
 };
 const mockArtifactVersionService = artifactVersionService as unknown as {
+  getByVersion: ReturnType<typeof vi.fn>;
   getLatest: ReturnType<typeof vi.fn>;
 };
 const mockUploadContextPack = uploadContextPack as unknown as ReturnType<
