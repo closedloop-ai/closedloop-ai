@@ -271,9 +271,11 @@ async function fetchUserContext(
     return undefined;
   }
 
-  // Version 1 is intentionally hardcoded here: it captures the user's original
-  // context as entered at plan creation time. This differs from loop.artifactVersion
-  // used elsewhere (which tracks the artifact's current revision for TOCTOU safety).
+  // Version 1 contains the user's original context when entered at plan creation
+  // time (e.g., via the "Generate PRD" flow). In the start-from-local path
+  // (`/plans/start-loop-from-local`), version 1 is created with empty content
+  // because that flow does not yet collect additional instructions — in that case
+  // this returns undefined and userContext is omitted from the context pack.
   const version = await artifactVersionService.getByVersion(loop.artifactId, 1);
   const content = version?.content;
 

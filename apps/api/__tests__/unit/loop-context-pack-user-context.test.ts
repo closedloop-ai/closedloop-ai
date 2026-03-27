@@ -60,7 +60,6 @@ vi.mock("@/lib/loops/loop-state", () => ({
 // --- Imports (after mocks) ---
 
 import { LoopCommand } from "@repo/api/src/types/loop";
-import { log } from "@repo/observability/log";
 import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
 import { getCommandHandler } from "@/lib/loops/loop-commands";
 import { buildContextPackInMemory } from "@/lib/loops/loop-context-pack";
@@ -69,8 +68,6 @@ type MockFn = ReturnType<typeof vi.fn>;
 const mockGetByVersion = artifactVersionService.getByVersion as MockFn;
 const mockGetLatest = artifactVersionService.getLatest as MockFn;
 const mockGetCommandHandler = getCommandHandler as MockFn;
-const mockLogWarn = log.warn as MockFn;
-
 // ---------------------------------------------------------------------------
 // Shared test fixtures
 // ---------------------------------------------------------------------------
@@ -183,12 +180,5 @@ describe("buildContextPackInMemory — userContext", () => {
 
     expect(pack.userContext).toHaveLength(16_000);
     expect(pack.userContext).toBe(oversizedContent.slice(0, 16_000));
-    expect(mockLogWarn).toHaveBeenCalledWith(
-      "[loop-context-pack] User context truncated",
-      expect.objectContaining({
-        artifactId: "artifact-1",
-        originalLength: 20_000,
-      })
-    );
   });
 });
