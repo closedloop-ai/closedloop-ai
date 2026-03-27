@@ -270,41 +270,4 @@ describe("readLiveActivity", () => {
     const result = await readLiveActivity(TMP_DIR);
     expect(result).toBeUndefined();
   });
-
-  describe("legacy-aware path fallback", () => {
-    it("JSONL at old .claude/work path only -> returns activity label", async () => {
-      // Clean up the standard new-path work dir created in beforeEach
-      await rm(WORK_DIR, { recursive: true, force: true });
-
-      const oldWorkDir = join(TMP_DIR, ".claude", "work");
-      await mkdir(oldWorkDir, { recursive: true });
-      await writeFile(
-        join(oldWorkDir, "claude-output.jsonl"),
-        jsonlLines({
-          type: "assistant",
-          message: {
-            content: [{ type: "tool_use", name: "Read", id: "t1", input: {} }],
-          },
-        })
-      );
-
-      const result = await readLiveActivity(TMP_DIR);
-      expect(result).toBe("Reading files...");
-    });
-
-    it("JSONL at new .closedloop-ai/work path only -> returns activity label", async () => {
-      await writeFile(
-        JSONL_PATH,
-        jsonlLines({
-          type: "assistant",
-          message: {
-            content: [{ type: "tool_use", name: "Grep", id: "t1", input: {} }],
-          },
-        })
-      );
-
-      const result = await readLiveActivity(TMP_DIR);
-      expect(result).toBe("Searching codebase...");
-    });
-  });
 });

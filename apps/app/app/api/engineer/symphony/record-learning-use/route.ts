@@ -3,7 +3,6 @@ import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { NextRequest } from "next/server";
 import type { LearningUsed } from "@/lib/engineer/chat-utils";
-import { checkLegacyProcessAndMigrate } from "@/lib/engineer/process-utils";
 import {
   expandHome,
   getSymphonyScriptPath,
@@ -57,17 +56,6 @@ export async function POST(request: NextRequest) {
       status: 404,
       headers: { "Content-Type": "application/json" },
     });
-  }
-
-  const preflightResult = checkLegacyProcessAndMigrate(worktreeDir);
-  if (preflightResult === "live-process-blocking") {
-    return new Response(
-      JSON.stringify({
-        error:
-          "A job started before the .closedloop-ai migration is still running. Stop it first, then retry.",
-      }),
-      { status: 409, headers: { "Content-Type": "application/json" } }
-    );
   }
 
   const claudeWorkDir = join(worktreeDir, ".closedloop-ai", "work");

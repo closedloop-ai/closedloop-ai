@@ -2,7 +2,6 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { type NextRequest, NextResponse } from "next/server";
-import { resolveReviewReadPaths } from "@/lib/engineer/process-utils";
 import {
   expandHome,
   getWorktreeParentDir,
@@ -80,30 +79,14 @@ export async function POST(
     );
   }
 
-  const { worktreeDir } = getReviewPaths(ticketId, repoPath, provider);
-  // Note: do NOT call checkLegacyProcessAndMigrate here. The stop route
-  // needs to read state from wherever it exists (legacy or new) to find and
-  // kill the review process. Migration would rename the dir while a codex
-  // review (whose PID is in codex-review-*.pid, not process.pid) is running.
+  const { statePath } = getReviewPaths(ticketId, repoPath, provider);
 
-  // Read paths resolve per-file across both dirs
-  const { statePath: readStatePath } = resolveReviewReadPaths(
-    worktreeDir,
-    provider
-  );
-  // Write path always targets .closedloop-ai/work
-  const { statePath: writeStatePath } = getReviewPaths(
-    ticketId,
-    repoPath,
-    provider
-  );
-
-  if (!existsSync(readStatePath)) {
+  if (!existsSync(statePath)) {
     return NextResponse.json({ error: "No review found" }, { status: 404 });
   }
 
   try {
-    const stateContent = await readFile(readStatePath, "utf-8");
+    const stateContent = await readFile(statePath, "utf-8");
     const state: ReviewState = JSON.parse(stateContent);
 
     if (state.status !== "running") {
@@ -135,8 +118,8 @@ export async function POST(
       status: "stopped",
       completedAt: new Date().toISOString(),
     };
-    await mkdir(join(writeStatePath, ".."), { recursive: true });
-    await writeFile(writeStatePath, JSON.stringify(updatedState, null, 2));
+    await mkdir(join(statePath, ".."), { recursive: true });
+    await writeFile(statePath, JSON.stringify(updatedState, null, 2));
 
     return NextResponse.json({ stopped: true, pid: state.pid });
   } catch (err) {
@@ -192,14 +175,18 @@ async function deleteReviewFiles(
   p: string,
   deleted: string[]
 ): Promise<void> {
-  const { worktreeDir } = getReviewPaths(ticketId, repoPath, p);
-  // Resolve each file independently for reads
-  const { statePath } = resolveReviewReadPaths(worktreeDir, p);
+  const { worktreeDir, statePath: delStatePath } = getReviewPaths(
+    ticketId,
+    repoPath,
+    p
+  );
 
   // Kill running process if any
-  if (existsSync(statePath)) {
+  if (existsSync(delStatePath)) {
     try {
-      const state: ReviewState = JSON.parse(await readFile(statePath, "utf-8"));
+      const state: ReviewState = JSON.parse(
+        await readFile(delStatePath, "utf-8")
+      );
       if (state.status === "running" && state.pid) {
         try {
           process.kill(state.pid, "SIGTERM");
@@ -212,19 +199,14 @@ async function deleteReviewFiles(
     }
   }
 
-  // Delete from both roots explicitly to catch all copies
-  const newWorkDir = join(worktreeDir, ".closedloop-ai", "work");
-  const oldWorkDir = join(worktreeDir, ".claude", "work");
+  const delWorkDir = join(worktreeDir, ".closedloop-ai", "work");
   const fileNames = [
     `codex-review-${p}.json`,
     `codex-review-${p}.log`,
     `codex-review-${p}.pid`,
     `review-findings-${p}.json`,
   ];
-  const allPaths = new Set(
-    fileNames.flatMap((f) => [join(newWorkDir, f), join(oldWorkDir, f)])
-  );
-  for (const filePath of allPaths) {
+  for (const filePath of fileNames.map((f) => join(delWorkDir, f))) {
     if (existsSync(filePath)) {
       await unlink(filePath).catch(() => {});
       deleted.push(basename(filePath));

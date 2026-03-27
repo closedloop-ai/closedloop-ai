@@ -3,10 +3,6 @@ import { basename, join } from "node:path";
 import type { NextRequest } from "next/server";
 import { triggerAsyncLearningExtraction } from "@/lib/engineer/learnings";
 import {
-  checkLegacyProcessAndMigrate,
-  findFirstExistingPath,
-} from "@/lib/engineer/process-utils";
-import {
   expandHome,
   getWorktreeParentDir,
   isRepoAllowed,
@@ -24,7 +20,7 @@ export async function POST(request: NextRequest) {
     ticketId: string;
     repoPath: string;
     activeTab?: string;
-    /** Relative path within .claude/work/ to the chat file to analyze.
+    /** Relative path within .closedloop-ai/work/ to the chat file to analyze.
      *  e.g. "chat-history.json" or "comment-chats/{commentId}.json".
      *  Defaults to "chat-history.json" if not provided. */
     chatFile?: string;
@@ -52,9 +48,6 @@ export async function POST(request: NextRequest) {
   const repoName = basename(expandedRepoPath);
   const worktreeParentDir = getWorktreeParentDir();
   const worktreeDir = join(worktreeParentDir, `${repoName}-${sanitizedTicket}`);
-  const newWorkDir = join(worktreeDir, ".closedloop-ai", "work");
-  const oldWorkDir = join(worktreeDir, ".claude", "work");
-
   if (!existsSync(worktreeDir)) {
     return new Response(JSON.stringify({ error: "Work directory not found" }), {
       status: 404,
@@ -62,26 +55,9 @@ export async function POST(request: NextRequest) {
     });
   }
 
-  const preflightResult = checkLegacyProcessAndMigrate(worktreeDir);
-  if (preflightResult === "live-process-blocking") {
-    return new Response(
-      JSON.stringify({
-        error:
-          "A job started before the .closedloop-ai migration is still running. Stop it first, then retry.",
-      }),
-      { status: 409, headers: { "Content-Type": "application/json" } }
-    );
-  }
-
-  const claudeWorkDir = newWorkDir;
+  const claudeWorkDir = join(worktreeDir, ".closedloop-ai", "work");
   const chatFilename = chatFile || "chat-history.json";
-
-  // Resolve the chat file independently: check new path first, fall back to legacy
-  const chatHistoryPath =
-    findFirstExistingPath(
-      join(claudeWorkDir, chatFilename),
-      join(oldWorkDir, chatFilename)
-    ) ?? join(claudeWorkDir, chatFilename);
+  const chatHistoryPath = join(claudeWorkDir, chatFilename);
 
   if (!existsSync(chatHistoryPath)) {
     return new Response(

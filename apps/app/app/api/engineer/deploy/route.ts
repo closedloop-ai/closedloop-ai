@@ -3,7 +3,6 @@ import { existsSync, mkdirSync, openSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { type NextRequest, NextResponse } from "next/server";
 import { detectDeployment } from "@/lib/engineer/deploy-detect";
-import { checkLegacyProcessAndMigrate } from "@/lib/engineer/process-utils";
 import {
   expandHome,
   isRepoAllowed,
@@ -60,18 +59,6 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         { error: "No deployment configuration detected for this repository" },
         { status: 400 }
-      );
-    }
-
-    // Migrate .claude/work → .closedloop-ai/work if needed
-    const preflightResult = checkLegacyProcessAndMigrate(expandedWorktreePath);
-    if (preflightResult === "live-process-blocking") {
-      return NextResponse.json(
-        {
-          error:
-            "A job started before the .closedloop-ai migration is still running. Stop it first, then retry.",
-        },
-        { status: 409 }
       );
     }
 

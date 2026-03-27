@@ -3,10 +3,6 @@ import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { type NextRequest, NextResponse } from "next/server";
 import {
-  checkLegacyProcessAndMigrate,
-  findFirstExistingPath,
-} from "@/lib/engineer/process-utils";
-import {
   expandHome,
   getWorktreeParentDir,
   isRepoAllowed,
@@ -44,16 +40,13 @@ function getFindingsReadPath(
   ticketId: string,
   repoPath: string,
   provider: string
-): string | null {
+): string {
   const worktreeDir = getWorktreeDir(ticketId, repoPath);
-  return findFirstExistingPath(
-    join(
-      worktreeDir,
-      ".closedloop-ai",
-      "work",
-      `review-findings-${provider}.json`
-    ),
-    join(worktreeDir, ".claude", "work", `review-findings-${provider}.json`)
+  return join(
+    worktreeDir,
+    ".closedloop-ai",
+    "work",
+    `review-findings-${provider}.json`
   );
 }
 
@@ -140,18 +133,6 @@ export async function POST(
     return NextResponse.json(
       { error: `Repository not allowed: ${repoPath}` },
       { status: 403 }
-    );
-  }
-
-  const worktreeDir = getWorktreeDir(ticketId, repoPath);
-  const preflightResult = checkLegacyProcessAndMigrate(worktreeDir);
-  if (preflightResult === "live-process-blocking") {
-    return NextResponse.json(
-      {
-        error:
-          "A job started before the .closedloop-ai migration is still running. Stop it first, then retry.",
-      },
-      { status: 409 }
     );
   }
 

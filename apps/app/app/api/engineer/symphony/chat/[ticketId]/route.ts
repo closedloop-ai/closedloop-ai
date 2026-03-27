@@ -1,12 +1,5 @@
 import { spawn } from "node:child_process";
-import {
-  copyFileSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  unlinkSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { NextRequest } from "next/server";
 import simpleGit from "simple-git";
@@ -18,10 +11,6 @@ import {
   getOrgPatternsContext,
   triggerAsyncLearningExtraction,
 } from "@/lib/engineer/learnings";
-import {
-  checkLegacyProcessAndMigrate,
-  findFirstExistingPath,
-} from "@/lib/engineer/process-utils";
 import { expandHome, getWorktreeParentDir } from "@/lib/engineer/repos";
 import { getShellPath } from "@/lib/engineer/shell-path";
 import {
@@ -84,35 +73,12 @@ function getWorkPaths(ticketId: string, repoPath: string, provider?: string) {
       ? `chat-history-${provider}.json`
       : "chat-history.json";
 
-  const newHistoryPath = join(claudeWorkDir, historyFilename);
-  const legacyHistoryPath = join(
-    worktreeDir,
-    ".claude",
-    "work",
-    historyFilename
-  );
-
-  // Resolve plan/prd per-file across both dirs
-  const planPath =
-    findFirstExistingPath(
-      join(claudeWorkDir, "plan.json"),
-      join(worktreeDir, ".claude", "work", "plan.json")
-    ) ?? join(claudeWorkDir, "plan.json");
-  const prdPath =
-    findFirstExistingPath(
-      join(claudeWorkDir, "prd.md"),
-      join(worktreeDir, ".claude", "work", "prd.md")
-    ) ?? join(claudeWorkDir, "prd.md");
-
   return {
     worktreeDir,
     claudeWorkDir,
-    historyPath:
-      findFirstExistingPath(newHistoryPath, legacyHistoryPath) ??
-      newHistoryPath,
-    legacyHistoryPath,
-    planPath,
-    prdPath,
+    historyPath: join(claudeWorkDir, historyFilename),
+    planPath: join(claudeWorkDir, "plan.json"),
+    prdPath: join(claudeWorkDir, "prd.md"),
   };
 }
 
@@ -500,29 +466,6 @@ export async function POST(
       status: 404,
       headers: { "Content-Type": "application/json" },
     });
-  }
-
-  const preflightResult = checkLegacyProcessAndMigrate(paths.worktreeDir);
-  if (preflightResult === "live-process-blocking") {
-    return new Response(
-      JSON.stringify({
-        error:
-          "A job started before the .closedloop-ai migration is still running. Stop it first, then retry.",
-      }),
-      { status: 409, headers: { "Content-Type": "application/json" } }
-    );
-  }
-
-  // Migrate legacy chat history AFTER preflight so the new dir creation
-  // doesn't bypass the live-legacy-process guard above
-  if (!existsSync(paths.historyPath) && existsSync(paths.legacyHistoryPath)) {
-    mkdirSync(paths.claudeWorkDir, { recursive: true });
-    copyFileSync(paths.legacyHistoryPath, paths.historyPath);
-    try {
-      unlinkSync(paths.legacyHistoryPath);
-    } catch {
-      /* best effort */
-    }
   }
 
   // Load chat history and determine session state

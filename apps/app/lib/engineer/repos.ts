@@ -8,7 +8,6 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { findFirstExistingPath } from "@/lib/engineer/process-utils";
 import type { ConfiguredRepo, RepoSettings, ReposConfig } from "@/types/repos";
 
 /**
@@ -624,12 +623,15 @@ export function getWorktreesWithPendingLearnings(): WorktreeWithPendingLearnings
     }
 
     const worktreeDir = entryPath;
-    const pendingDir = findFirstExistingPath(
-      join(worktreeDir, ".closedloop-ai", "work", ".learnings", "pending"),
-      join(worktreeDir, ".claude", "work", ".learnings", "pending")
+    const pendingDir = join(
+      worktreeDir,
+      ".closedloop-ai",
+      "work",
+      ".learnings",
+      "pending"
     );
 
-    if (!pendingDir) {
+    if (!existsSync(pendingDir)) {
       continue;
     }
 

@@ -14,7 +14,6 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { resolveReviewReadPaths } from "@/lib/engineer/process-utils";
 
 /**
  * Tests for saveWorktreeState / restoreWorktreeState logic.
@@ -316,41 +315,5 @@ describe("worktree state save/restore", () => {
     // savedClaudeDir still exists -- data not lost
     expect(existsSync(savedClaudeDir)).toBe(true);
     expect(existsSync(join(savedClaudeDir, "bad-file.json"))).toBe(true);
-  });
-});
-
-describe("checkLegacyProcessAndMigrate", () => {
-  let testDir: string;
-
-  beforeEach(() => {
-    testDir = mkdtempSync(join(tmpdir(), "worktree-preflight-"));
-  });
-
-  afterEach(() => {
-    rmSync(testDir, { recursive: true, force: true });
-  });
-
-  it("does not migrate when called from codex stop (no process.pid but codex review running)", () => {
-    // Simulates the scenario: codex review is running (has codex-review-codex.pid)
-    // but no process.pid exists. checkLegacyProcessAndMigrate would migrate,
-    // which is wrong for codex stop. This test verifies the codex stop route
-    // should NOT call checkLegacyProcessAndMigrate.
-    const oldWork = join(testDir, ".claude", "work");
-    mkdirSync(oldWork, { recursive: true });
-    // No process.pid, but codex review PID exists
-    writeFileSync(join(oldWork, "codex-review-codex.pid"), String(process.pid));
-    writeFileSync(
-      join(oldWork, "codex-review-codex.json"),
-      JSON.stringify({ status: "running", pid: process.pid })
-    );
-
-    // resolveReviewReadPaths should find the state at the legacy path
-    // without needing migration
-    const { statePath } = resolveReviewReadPaths(testDir, "codex");
-    expect(statePath).toContain(".claude");
-    expect(existsSync(statePath)).toBe(true);
-
-    // The old work dir should NOT have been renamed
-    expect(existsSync(oldWork)).toBe(true);
   });
 });

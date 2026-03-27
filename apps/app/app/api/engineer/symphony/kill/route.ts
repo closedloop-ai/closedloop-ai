@@ -9,10 +9,6 @@ import {
 import { basename, join } from "node:path";
 import { type NextRequest, NextResponse } from "next/server";
 import {
-  findFirstExistingPath,
-  isProcessRunning,
-} from "@/lib/engineer/process-utils";
-import {
   expandHome,
   getWorktreeParentDir,
   isRepoAllowed,
@@ -53,39 +49,18 @@ function resolvePid(body: {
       worktreeParentDir,
       `${repoName}-${sanitizedTicket}`
     );
-    // Check both roots for PID files; prefer the one with a live process
-    const pidCandidates = [
-      join(worktreeDir, ".closedloop-ai", "work", "process.pid"),
-      join(worktreeDir, ".claude", "work", "process.pid"),
-    ];
+    const pidFile = join(worktreeDir, ".closedloop-ai", "work", "process.pid");
 
-    let fallbackPidFile: string | null = null;
-    let fallbackPid: number | null = null;
-
-    for (const candidate of pidCandidates) {
-      if (!existsSync(candidate)) {
-        continue;
-      }
+    if (existsSync(pidFile)) {
       try {
-        const content = readFileSync(candidate, "utf-8");
-        const candidatePid = Number.parseInt(content.trim(), 10);
-        if (Number.isNaN(candidatePid)) {
-          continue;
-        }
-        if (isProcessRunning(candidatePid)) {
-          return { pid: candidatePid, pidFilePath: candidate, worktreeDir };
-        }
-        if (fallbackPid === null) {
-          fallbackPidFile = candidate;
-          fallbackPid = candidatePid;
+        const content = readFileSync(pidFile, "utf-8");
+        const resolvedPid = Number.parseInt(content.trim(), 10);
+        if (!Number.isNaN(resolvedPid)) {
+          return { pid: resolvedPid, pidFilePath: pidFile, worktreeDir };
         }
       } catch {
-        // Can't read — skip
+        // Can't read -- fall through
       }
-    }
-
-    if (fallbackPid !== null && fallbackPidFile !== null) {
-      return { pid: fallbackPid, pidFilePath: fallbackPidFile, worktreeDir };
     }
 
     // No PID file - return worktreeDir so we can still update state.json
@@ -129,14 +104,12 @@ function deletePidFile(pidFilePath: string | null): void {
  * between iterations, and update_iteration() will fail under set -e when it's gone.
  */
 function cancelLoop(worktreeDir: string): boolean {
-  const newStateFile = join(
+  const stateFile = join(
     worktreeDir,
     ".closedloop-ai",
     "closedloop-loop.local.md"
   );
-  const oldStateFile = join(worktreeDir, ".claude", "closedloop-loop.local.md");
-  const stateFile = findFirstExistingPath(newStateFile, oldStateFile);
-  if (!stateFile) {
+  if (!existsSync(stateFile)) {
     return false;
   }
   try {
@@ -151,20 +124,20 @@ function cancelLoop(worktreeDir: string): boolean {
  * Clear .agent-types/ so the UI doesn't show stale subagent indicators on resume.
  */
 function clearAgentTypes(worktreeDir: string): void {
-  const dirsToCheck = [
-    join(worktreeDir, ".closedloop-ai", "work", ".agent-types"),
-    join(worktreeDir, ".claude", "work", ".agent-types"),
-  ];
-  for (const agentTypesDir of dirsToCheck) {
-    try {
-      if (existsSync(agentTypesDir)) {
-        for (const file of readdirSync(agentTypesDir)) {
-          unlinkSync(join(agentTypesDir, file));
-        }
+  const agentTypesDir = join(
+    worktreeDir,
+    ".closedloop-ai",
+    "work",
+    ".agent-types"
+  );
+  try {
+    if (existsSync(agentTypesDir)) {
+      for (const file of readdirSync(agentTypesDir)) {
+        unlinkSync(join(agentTypesDir, file));
       }
-    } catch {
-      // Best effort
     }
+  } catch {
+    // Best effort
   }
 }
 
@@ -172,24 +145,18 @@ function clearAgentTypes(worktreeDir: string): void {
  * Update state.json to mark status as STOPPED.
  */
 function markStateAsStopped(worktreeDir: string): void {
-  // Always write STOPPED -- the kill route is explicitly stopping a job.
-  // Don't use checkLegacyProcessAndMigrate since that could skip the write
-  // when a codex review PID is alive (but we still want state marked STOPPED).
-  const newWorkDir = join(worktreeDir, ".closedloop-ai", "work");
-  const oldWorkDir = join(worktreeDir, ".claude", "work");
-  const statePath = join(newWorkDir, "state.json");
-  const legacyStatePath = join(oldWorkDir, "state.json");
+  const workDir = join(worktreeDir, ".closedloop-ai", "work");
+  const statePath = join(workDir, "state.json");
   try {
     let state: Record<string, unknown> = {};
-    const readPath = findFirstExistingPath(statePath, legacyStatePath);
-    if (readPath) {
-      const content = readFileSync(readPath, "utf-8");
+    if (existsSync(statePath)) {
+      const content = readFileSync(statePath, "utf-8");
       state = JSON.parse(content);
     }
     state.status = "STOPPED";
     state.phase = "Process stopped by user";
     state.timestamp = new Date().toISOString();
-    mkdirSync(newWorkDir, { recursive: true });
+    mkdirSync(workDir, { recursive: true });
     writeFileSync(statePath, JSON.stringify(state, null, 2));
   } catch {
     // Ignore errors - best effort

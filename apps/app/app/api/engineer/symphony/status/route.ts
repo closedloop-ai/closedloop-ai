@@ -1,7 +1,6 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { type NextRequest, NextResponse } from "next/server";
-import { findFirstExistingPath } from "@/lib/engineer/process-utils";
 
 /**
  * API route to check Symphony run status
@@ -24,13 +23,10 @@ export function GET(request: NextRequest) {
 
   try {
     // Orchestrator writes state.json to $CLOSEDLOOP_WORKDIR
-    const stateFile = findFirstExistingPath(
-      join(workDir, ".closedloop-ai", "work", "state.json"),
-      join(workDir, ".claude", "work", "state.json")
-    );
+    const stateFile = join(workDir, ".closedloop-ai", "work", "state.json");
 
     // Check if state file exists
-    if (!stateFile) {
+    if (!existsSync(stateFile)) {
       return NextResponse.json({
         isRunning: false,
         reason: "state.json not found",

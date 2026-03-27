@@ -3,7 +3,6 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { NextResponse } from "next/server";
 import { migrateLegacySessions } from "@/lib/engineer/migrate-sessions";
-import { findFirstExistingPath } from "@/lib/engineer/process-utils";
 
 type ActiveSession = {
   ticketId: string;
@@ -48,11 +47,13 @@ export function GET() {
       continue;
     }
 
-    const chatPath = findFirstExistingPath(
-      join(worktreePath, ".closedloop-ai", "work", "chat-history.json"),
-      join(worktreePath, ".claude", "work", "chat-history.json")
+    const chatPath = join(
+      worktreePath,
+      ".closedloop-ai",
+      "work",
+      "chat-history.json"
     );
-    if (!chatPath) {
+    if (!existsSync(chatPath)) {
       continue;
     }
 

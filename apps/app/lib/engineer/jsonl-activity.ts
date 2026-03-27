@@ -1,6 +1,5 @@
 import { open, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { findFirstExistingPath } from "@/lib/engineer/process-utils";
 import {
   type ContentBlock,
   isToolResultEntry,
@@ -86,20 +85,12 @@ function labelFromEntry(entry: ParsedLogEntry): string {
 export async function readLiveActivity(
   worktreeDir: string
 ): Promise<string | undefined> {
-  const newJsonlPath = join(
+  const jsonlPath = join(
     worktreeDir,
     ".closedloop-ai",
     "work",
     "claude-output.jsonl"
   );
-  const oldJsonlPath = join(
-    worktreeDir,
-    ".claude",
-    "work",
-    "claude-output.jsonl"
-  );
-  const jsonlPath =
-    findFirstExistingPath(newJsonlPath, oldJsonlPath) ?? newJsonlPath;
 
   let fileSize: number;
   try {
