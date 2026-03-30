@@ -278,6 +278,13 @@ export type LoopUsageSummary = {
   byUser: LoopUsageByUser[];
 };
 
+// Structured error codes emitted by the electron/runner harness.
+export const LoopErrorCode = {
+  NoWorkProduced: "NO_WORK_PRODUCED",
+  ContextLimitExceeded: "CONTEXT_LIMIT_EXCEEDED",
+} as const;
+export type LoopErrorCode = (typeof LoopErrorCode)[keyof typeof LoopErrorCode];
+
 // Feature decomposition types (output of DECOMPOSE command)
 export type DecomposeUserStory = {
   id: string;

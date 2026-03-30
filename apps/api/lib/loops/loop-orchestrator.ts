@@ -5,6 +5,7 @@ import type {
 } from "@repo/api/src/types/loop";
 import {
   LoopCommand,
+  LoopErrorCode,
   LoopStatus,
   MODEL_PRICING,
 } from "@repo/api/src/types/loop";
@@ -895,10 +896,12 @@ async function handleLoopCompleted(
   // Calculate cost per model if we have breakdown, otherwise fall back to Opus pricing
   const estimatedCost = calculateCost(tokensInput, tokensOutput, tokensByModel);
 
-  // Guard: EXECUTE loops that completed with 0/0 tokens did no work.
-  // Convert to a NO_WORK_PRODUCED error instead of accepting as success.
+  // Guard: EXECUTE loops that explicitly reported 0/0 tokens did no work.
+  // Only fires when the event carried a valid token pair (hasEventTokens),
+  // not when token data is simply absent (which falls back to metadata).
   if (
     loop?.command === LoopCommand.Execute &&
+    hasEventTokens &&
     tokensInput === 0 &&
     tokensOutput === 0
   ) {
@@ -1128,12 +1131,12 @@ async function handleLoopError(
 
   // Structured error codes from electron/runner with specific log levels.
   // Both map to LoopStatus.Failed -- no new status enum needed.
-  if (event.code === "CONTEXT_LIMIT_EXCEEDED") {
+  if (event.code === LoopErrorCode.ContextLimitExceeded) {
     log.warn("[loop-orchestrator] Loop hit context limit", {
       loopId,
       message: event.message,
     });
-  } else if (event.code === "NO_WORK_PRODUCED") {
+  } else if (event.code === LoopErrorCode.NoWorkProduced) {
     log.error("[loop-orchestrator] Loop produced no work", {
       loopId,
       message: event.message,
@@ -1166,8 +1169,8 @@ async function handleLoopError(
 
   // Skip generic log for codes that already logged above
   if (
-    event.code !== "CONTEXT_LIMIT_EXCEEDED" &&
-    event.code !== "NO_WORK_PRODUCED"
+    event.code !== LoopErrorCode.ContextLimitExceeded &&
+    event.code !== LoopErrorCode.NoWorkProduced
   ) {
     log.error("[loop-orchestrator] Loop failed", {
       loopId,
@@ -1209,7 +1212,7 @@ async function handleZeroTokenExecute(
 ): Promise<LoopEvent[]> {
   const errorEvent: LoopEvent = {
     type: "error",
-    code: "NO_WORK_PRODUCED",
+    code: LoopErrorCode.NoWorkProduced,
     message: "EXECUTE loop completed with 0 tokens -- no work was done",
     timestamp: event.timestamp,
   };
@@ -1234,7 +1237,10 @@ async function handleZeroTokenExecute(
   try {
     await loopsService.updateStatus(loopId, organizationId, LoopStatus.Failed, {
       completedAt: new Date(),
-      error: { code: "NO_WORK_PRODUCED", message: errorEvent.message },
+      error: {
+        code: LoopErrorCode.NoWorkProduced,
+        message: errorEvent.message,
+      },
     });
   } catch (err) {
     if (isInvalidStatusTransitionError(err)) {
@@ -1260,7 +1266,7 @@ async function handleZeroTokenExecute(
     {
       type: "error",
       data: {
-        code: "NO_WORK_PRODUCED",
+        code: LoopErrorCode.NoWorkProduced,
         message: errorEvent.message,
         timestamp: event.timestamp,
       },

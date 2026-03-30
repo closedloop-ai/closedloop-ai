@@ -432,8 +432,7 @@ describe("handleLoopCompleted EXECUTE 0-token guard", () => {
     });
 
     expect(result).toHaveLength(0);
-    // updateStatus should only be called for the first findById call,
-    // not for a status transition
+    // Loop is already terminal (TIMED_OUT) -- no status transition should be attempted
     expect(mockLoopsService.updateStatus).not.toHaveBeenCalled();
   });
 
