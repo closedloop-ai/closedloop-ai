@@ -1,34 +1,9 @@
 /**
  * Unit tests for ProjectsTable component.
- * Focuses on the HexagonProgress tooltip: correct text and element presence.
+ * Focuses on the StatusPercentageIcon tooltip: correct text and element presence.
  */
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-
-// Mock @dnd-kit/sortable — used by SortableContext and SortableProjectRow
-vi.mock("@dnd-kit/sortable", () => ({
-  SortableContext: ({ children }: { children: React.ReactNode }) => (
-    <>{children}</>
-  ),
-  verticalListSortingStrategy: {},
-  useSortable: vi.fn(() => ({
-    attributes: {},
-    listeners: {},
-    setNodeRef: vi.fn(),
-    transform: null,
-    transition: undefined,
-    isDragging: false,
-  })),
-}));
-
-// Mock @dnd-kit/utilities — used by SortableProjectRow
-vi.mock("@dnd-kit/utilities", () => ({
-  CSS: {
-    Transform: {
-      toString: vi.fn(() => ""),
-    },
-  },
-}));
 
 // Mock next/navigation — useSortParams calls useRouter, usePathname, useSearchParams
 vi.mock("next/navigation", () => ({
@@ -97,12 +72,12 @@ const makeProject = (
 });
 
 describe("ProjectsTable — status tooltip", () => {
-  it("renders the HexagonProgress element for each project row", () => {
+  it("renders the StatusPercentageIcon element for each project row", () => {
     render(<ProjectsTable projects={[makeProject()]} teamId="team-1" />);
 
-    // HexagonProgress renders a data-slot attribute
-    const hexagon = document.querySelector("[data-slot='hexagon-progress']");
-    expect(hexagon).toBeInTheDocument();
+    // StatusPercentageIcon renders a data-slot attribute
+    const icon = document.querySelector("[data-slot='status-percentage-icon']");
+    expect(icon).toBeInTheDocument();
   });
 
   it("renders tooltip content with the correct explanatory text", () => {
@@ -110,7 +85,7 @@ describe("ProjectsTable — status tooltip", () => {
 
     const tooltips = screen.getAllByTestId("tooltip-content");
     const statusTooltip = tooltips.find((el) =>
-      el.textContent?.includes('% of artifacts in "Complete" status')
+      el.textContent?.includes("% of artifacts complete")
     );
     expect(statusTooltip).toBeInTheDocument();
   });
@@ -125,7 +100,7 @@ describe("ProjectsTable — status tooltip", () => {
 
     const tooltips = screen.getAllByTestId("tooltip-content");
     const statusTooltips = tooltips.filter((el) =>
-      el.textContent?.includes('% of artifacts in "Complete" status')
+      el.textContent?.includes("% of artifacts complete")
     );
     expect(statusTooltips).toHaveLength(2);
   });

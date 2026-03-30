@@ -297,8 +297,8 @@ function MyTasksRow({
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
             <DropdownMenuItem
-              className="text-destructive focus:text-destructive"
               onClick={() => onRequestDelete(feature)}
+              variant="destructive"
             >
               <TrashIcon className="h-4 w-4" />
               Delete

@@ -54,6 +54,8 @@ type TeamModalProps = {
   trigger?: ReactNode;
   team?: TeamWithCounts;
   onSuccess?: () => void;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 };
 
 function getSubmitButtonText(
@@ -106,11 +108,22 @@ function UserSelectContent({
   );
 }
 
-export function TeamModal({ trigger, team, onSuccess }: TeamModalProps) {
+export function TeamModal({
+  trigger,
+  team,
+  onSuccess,
+  open: controlledOpen,
+  onOpenChange: controlledOnOpenChange,
+}: TeamModalProps) {
   const router = useRouter();
   const isEditMode = !!team;
 
-  const [open, setOpen] = useState(false);
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
+  const open = controlledOpen ?? uncontrolledOpen;
+  const setOpen = (value: boolean) => {
+    setUncontrolledOpen(value);
+    controlledOnOpenChange?.(value);
+  };
   const [name, setName] = useState(team?.name || "");
   const [error, setError] = useState<string | null>(null);
 
@@ -303,16 +316,20 @@ export function TeamModal({ trigger, team, onSuccess }: TeamModalProps) {
     }
   };
 
+  const isControlled = controlledOpen !== undefined;
+
   return (
     <Dialog onOpenChange={handleOpenChange} open={open}>
-      <DialogTrigger asChild>
-        {trigger || (
-          <Button>
-            <PlusIcon className="h-4 w-4" />
-            Create Team
-          </Button>
-        )}
-      </DialogTrigger>
+      {!isControlled && (
+        <DialogTrigger asChild>
+          {trigger || (
+            <Button>
+              <PlusIcon className="h-4 w-4" />
+              Create Team
+            </Button>
+          )}
+        </DialogTrigger>
+      )}
       <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-[500px]">
         <form onSubmit={handleSubmit}>
           <DialogHeader>

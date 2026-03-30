@@ -113,10 +113,7 @@ export function PRDEditorHeader({
           </DropdownMenuItem>
         ) : null}
         <DropdownMenuSeparator />
-        <DropdownMenuItem
-          className="text-destructive focus:text-destructive"
-          onClick={onDelete}
-        >
+        <DropdownMenuItem onClick={onDelete} variant="destructive">
           <TrashIcon className="h-4 w-4" />
           Delete
         </DropdownMenuItem>

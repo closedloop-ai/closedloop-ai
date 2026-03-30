@@ -22,23 +22,32 @@ type AssigneeAvatarProps = {
   className?: string;
   /** When true, the avatar does NOT link to the user profile. Use when already wrapped in an interactive element (e.g. UserSelectPopover). */
   disableLink?: boolean;
+  /** When true, suppresses the name tooltip. Use when the name is already visible nearby. */
+  disableTooltip?: boolean;
 };
 
 export function AssigneeAvatar({
   assignee,
   className,
   disableLink,
+  disableTooltip,
 }: Readonly<AssigneeAvatarProps>) {
   if (!assignee) {
+    const avatar = (
+      <Avatar className={cn("size-6", className)} key="unassigned">
+        <AvatarFallback className="text-[10px]">
+          <User2Icon className="h-5 w-5 text-muted-foreground" />
+        </AvatarFallback>
+      </Avatar>
+    );
+
+    if (disableTooltip) {
+      return avatar;
+    }
+
     return (
       <Tooltip>
-        <TooltipTrigger asChild>
-          <Avatar className={cn("size-6", className)} key="unassigned">
-            <AvatarFallback className="text-[10px]">
-              <User2Icon className="h-5 w-5 text-muted-foreground" />
-            </AvatarFallback>
-          </Avatar>
-        </TooltipTrigger>
+        <TooltipTrigger asChild>{avatar}</TooltipTrigger>
         <TooltipContent>Unassigned</TooltipContent>
       </Tooltip>
     );
@@ -56,7 +65,14 @@ export function AssigneeAvatar({
     </Avatar>
   );
 
+  if (disableTooltip && disableLink) {
+    return avatar;
+  }
+
   if (disableLink) {
+    if (disableTooltip) {
+      return avatar;
+    }
     return (
       <Tooltip>
         <TooltipTrigger asChild>{avatar}</TooltipTrigger>
@@ -65,18 +81,24 @@ export function AssigneeAvatar({
     );
   }
 
+  const linked = (
+    <Link
+      href={`/users/${assignee.id}`}
+      onClick={(e: MouseEvent) => {
+        e.stopPropagation();
+      }}
+    >
+      {avatar}
+    </Link>
+  );
+
+  if (disableTooltip) {
+    return linked;
+  }
+
   return (
     <Tooltip>
-      <TooltipTrigger asChild>
-        <Link
-          href={`/users/${assignee.id}`}
-          onClick={(e: MouseEvent) => {
-            e.stopPropagation();
-          }}
-        >
-          {avatar}
-        </Link>
-      </TooltipTrigger>
+      <TooltipTrigger asChild>{linked}</TooltipTrigger>
       <TooltipContent>{displayName}</TooltipContent>
     </Tooltip>
   );
