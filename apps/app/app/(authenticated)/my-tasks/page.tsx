@@ -58,6 +58,7 @@ import {
 } from "./utils";
 
 const VIEW_KEY = "my-tasks-view";
+const COLUMN_VISIBILITY_KEY = "table:columns:my-tasks";
 
 function toggleArrayValue<T>(arr: T[], value: T): T[] {
   return arr.includes(value) ? arr.filter((v) => v !== value) : [...arr, value];
@@ -108,7 +109,9 @@ export default function MyTasksPage() {
 
   // ---- Column visibility ----
 
-  const { visibility, userVisibility, toggleColumn } = useColumnVisibility();
+  const { visibility, userVisibility, toggleColumn } = useColumnVisibility({
+    storageKey: COLUMN_VISIBILITY_KEY,
+  });
   const visibleColumns = useMemo(
     () => MY_TASKS_DEFAULT_COLUMNS.filter((c) => userVisibility[c] !== false),
     [userVisibility]

@@ -101,6 +101,7 @@ const ACTIVE_WORKSTREAM_STATES: Set<WorkstreamState> = new Set([
   "VISUAL_QA_RUNNING",
   "MERGING",
 ]);
+const COLUMN_VISIBILITY_KEY = "table:columns:project-artifacts";
 
 export default function ProjectDetailPage() {
   const params = useParams();
@@ -132,8 +133,10 @@ export default function ProjectDetailPage() {
         return {};
     }
   }, [filterCategory]);
-  const { userVisibility, visibleColumns, toggleColumn } =
-    useColumnVisibility(columnOverrides);
+  const { userVisibility, visibleColumns, toggleColumn } = useColumnVisibility({
+    overrides: columnOverrides,
+    storageKey: COLUMN_VISIBILITY_KEY,
+  });
   const isFavorite = useIsFavorite(projectId);
   const toggleFavorite = useToggleFavorite();
   const deleteProjectMutation = useDeleteProject();

@@ -23,13 +23,17 @@ import {
 import { CreateProjectModal } from "./components/create-project-modal";
 import { ProjectsTable } from "./components/projects-table";
 
+const COLUMN_VISIBILITY_KEY = "table:columns:team-projects";
+
 export default function TeamProjectsPage() {
   const params = useParams();
   const router = useRouter();
   const teamId = params.teamId as string;
   const [createProjectOpen, setCreateProjectOpen] = useState(false);
 
-  const { visibility, userVisibility, toggleColumn } = useColumnVisibility();
+  const { visibility, userVisibility, toggleColumn } = useColumnVisibility({
+    storageKey: COLUMN_VISIBILITY_KEY,
+  });
   const visibleColumns = useMemo(
     () => PROJECT_DEFAULT_COLUMNS.filter((c) => userVisibility[c] !== false),
     [userVisibility]

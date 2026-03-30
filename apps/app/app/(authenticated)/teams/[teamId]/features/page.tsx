@@ -25,11 +25,15 @@ import {
 } from "@/hooks/use-column-visibility";
 import { useOrgUsersAsPopoverUsers } from "@/hooks/use-org-users-as-popover-users";
 
+const COLUMN_VISIBILITY_KEY = "table:columns:team-features";
+
 export default function TeamFeaturesPage() {
   const params = useParams();
   const teamId = params.teamId as string;
 
-  const { visibility, userVisibility, toggleColumn } = useColumnVisibility();
+  const { visibility, userVisibility, toggleColumn } = useColumnVisibility({
+    storageKey: COLUMN_VISIBILITY_KEY,
+  });
   const visibleColumns = useMemo(
     () => FEATURE_DEFAULT_COLUMNS.filter((c) => userVisibility[c] !== false),
     [userVisibility]

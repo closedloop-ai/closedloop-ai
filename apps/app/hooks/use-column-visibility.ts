@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useLocalStorageState } from "@/hooks/use-local-storage-state";
 
 /**
  * Standard column identifiers for artifact tables.
@@ -109,12 +109,17 @@ const DEFAULT_VISIBILITY: ColumnVisibility = {
 /**
  * Hook managing which columns are visible in the artifact table.
  *
- * @param overrides - Per-column forced visibility (e.g., hide Type when filtering to a single type).
+ * @param options.storageKey - Local storage key used to persist user visibility preferences.
+ * @param options.overrides - Per-column forced visibility (e.g., hide Type when filtering to a single type).
  *   These override user toggles and are not saved.
  */
-export function useColumnVisibility(overrides?: Partial<ColumnVisibility>) {
+export function useColumnVisibility(options: {
+  storageKey: string;
+  overrides?: Partial<ColumnVisibility>;
+}) {
+  const { storageKey, overrides } = options;
   const [userVisibility, setUserVisibility] =
-    useState<ColumnVisibility>(DEFAULT_VISIBILITY);
+    useLocalStorageState<ColumnVisibility>(storageKey, DEFAULT_VISIBILITY);
 
   const toggleColumn = (column: ArtifactColumn) => {
     setUserVisibility((prev) => ({ ...prev, [column]: !prev[column] }));
