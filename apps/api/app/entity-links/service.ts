@@ -1,3 +1,4 @@
+import type { JsonObject } from "@repo/api/src/types/common";
 import {
   type CreateEntityLinkInput,
   type EntityLink,
@@ -7,12 +8,19 @@ import {
   type LinkType,
   type ResolvedEntity,
 } from "@repo/api/src/types/entity-link";
-import type { ExternalLink } from "@repo/api/src/types/external-link";
 import { Prisma, withDb } from "@repo/database";
 import { basicUserSelect } from "@/lib/db-utils";
 import { assertEntityInOrganization } from "@/lib/entity-validation";
+import { externalLinksService } from "../external-links/service";
 
 export const entityLinksService = {
+  toEntityLink(link: Prisma.EntityLinkModel): EntityLink {
+    return {
+      ...link,
+      metadata: link.metadata as JsonObject | null,
+    };
+  },
+
   async createLink(
     organizationId: string,
     input: CreateEntityLinkInput
@@ -38,7 +46,7 @@ export const entityLinksService = {
           metadata: input.metadata ?? Prisma.DbNull,
         },
       })
-    ) as Promise<EntityLink>;
+    ).then(this.toEntityLink);
   },
 
   findLinks(
@@ -66,7 +74,7 @@ export const entityLinksService = {
         },
         orderBy: { createdAt: "desc" },
       })
-    ) as Promise<EntityLink[]>;
+    ).then((links) => links.map(this.toEntityLink));
   },
 
   /**
@@ -89,7 +97,7 @@ export const entityLinksService = {
         },
         orderBy: { createdAt: "desc" },
       })
-    ) as Promise<EntityLink[]>;
+    ).then((links) => links.map(this.toEntityLink));
   },
 
   /**
@@ -112,7 +120,7 @@ export const entityLinksService = {
         },
         orderBy: { createdAt: "desc" },
       })
-    ) as Promise<EntityLink[]>;
+    ).then((links) => links.map(this.toEntityLink));
   },
 
   /**
@@ -163,7 +171,7 @@ export const entityLinksService = {
         }
         return {
           type: EntityType.ExternalLink,
-          entity: link as ExternalLink,
+          entity: externalLinksService.toExternalLink(link),
         };
       }
       default:

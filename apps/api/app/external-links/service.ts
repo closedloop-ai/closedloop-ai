@@ -1,3 +1,4 @@
+import type { JsonObject } from "@repo/api/src/types/common";
 import type {
   CreateExternalLinkInput,
   ExternalLink,
@@ -7,6 +8,13 @@ import type {
 import { Prisma, withDb } from "@repo/database";
 
 export const externalLinksService = {
+  toExternalLink(link: Prisma.ExternalLinkModel): ExternalLink {
+    return {
+      ...link,
+      metadata: link.metadata as JsonObject | null,
+    };
+  },
+
   findAll(
     options: FindExternalLinksOptions & { organizationId: string }
   ): Promise<ExternalLink[]> {
@@ -22,7 +30,7 @@ export const externalLinksService = {
         },
         orderBy: { createdAt: "desc" },
       })
-    ) as Promise<ExternalLink[]>;
+    ).then((links) => links.map(this.toExternalLink));
   },
 
   findById(id: string, organizationId: string): Promise<ExternalLink | null> {
@@ -30,7 +38,7 @@ export const externalLinksService = {
       db.externalLink.findFirst({
         where: { id, organizationId },
       })
-    ) as Promise<ExternalLink | null>;
+    ).then((link) => (link ? this.toExternalLink(link) : null));
   },
 
   findByWorkstream(
@@ -45,7 +53,7 @@ export const externalLinksService = {
         },
         orderBy: { createdAt: "desc" },
       })
-    ) as Promise<ExternalLink[]>;
+    ).then((links) => links.map(this.toExternalLink));
   },
 
   create(
@@ -60,7 +68,7 @@ export const externalLinksService = {
           metadata: input.metadata ?? Prisma.DbNull,
         },
       })
-    ) as Promise<ExternalLink>;
+    ).then((link) => this.toExternalLink(link));
   },
 
   update(
@@ -80,7 +88,7 @@ export const externalLinksService = {
           metadata,
         },
       })
-    ) as Promise<ExternalLink>;
+    ).then((link) => this.toExternalLink(link));
   },
 
   async delete(organizationId: string, id: string): Promise<void> {

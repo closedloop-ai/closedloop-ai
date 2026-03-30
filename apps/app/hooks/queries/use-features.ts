@@ -17,6 +17,7 @@ import {
 import { useApiClient } from "@/hooks/use-api-client";
 import { dashboardKeys } from "./use-dashboard-stats";
 import { invalidateEntityLinkQueries } from "./use-entity-links";
+import { projectTreeKeys } from "./use-project-tree";
 import { projectKeys, useProjectsByTeam } from "./use-projects";
 
 // Query keys
@@ -126,9 +127,12 @@ export function useCreateFeature() {
   return useMutation({
     mutationFn: (input: CreateFeatureInput) =>
       apiClient.post<FeatureWithWorkstream>("/features", input),
-    onSuccess: () => {
+    onSuccess: (_, input) => {
       queryClient.invalidateQueries({ queryKey: featureKeys.lists() });
       queryClient.invalidateQueries({ queryKey: dashboardKeys.all });
+      queryClient.invalidateQueries({
+        queryKey: projectTreeKeys.detail(input.projectId),
+      });
     },
   });
 }

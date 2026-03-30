@@ -22,6 +22,7 @@ import { useMemo } from "react";
 import { useApiClient } from "@/hooks/use-api-client";
 import { dashboardKeys } from "./use-dashboard-stats";
 import { invalidateEntityLinkQueries } from "./use-entity-links";
+import { projectTreeKeys } from "./use-project-tree";
 
 // Query keys
 export const externalLinkKeys = {
@@ -128,9 +129,12 @@ export function useCreateExternalLink() {
   return useMutation({
     mutationFn: (input: CreateExternalLinkInput) =>
       apiClient.post<ExternalLink>("/external-links", input),
-    onSuccess: () => {
+    onSuccess: (_, input) => {
       queryClient.invalidateQueries({ queryKey: externalLinkKeys.lists() });
       queryClient.invalidateQueries({ queryKey: dashboardKeys.all });
+      queryClient.invalidateQueries({
+        queryKey: projectTreeKeys.detail(input.projectId),
+      });
     },
   });
 }

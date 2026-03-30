@@ -7,20 +7,16 @@ import {
   ArtifactType,
   type ArtifactWithWorkstream,
   BATCH_META_MAX_SLUGS,
-  type ChecksStatus,
   type CreateArtifactInput,
   type FindArtifactsOptions,
   type GenerationStatus,
   type PullRequestInfo,
-  PullRequestState,
-  ReviewDecision,
   type UpdateArtifactInput,
 } from "@repo/api/src/types/artifact";
 import { EntityType, LinkType } from "@repo/api/src/types/entity-link";
 import {
   type ArtifactJudgeScores,
   type BatchJudgeScoresResponse,
-  type EvalStatus,
   EvaluationReportType,
   type JudgesFeedbackResponse,
 } from "@repo/api/src/types/evaluation";
@@ -328,17 +324,13 @@ export const artifactsService = {
     // Find the most recent PR for this workstream, selecting only the fields we need
     const pr = await withDb((db) =>
       db.gitHubPullRequest.findFirst({
-        where: { workstreamId: artifact.workstreamId as string },
+        where: { workstreamId: artifact.workstreamId! },
         orderBy: { createdAt: "desc" },
         select: pullRequestSelect,
       })
     );
 
-    if (!pr) {
-      return null;
-    }
-
-    return toPullRequestInfo(pr);
+    return pr;
   },
 
   /**
@@ -588,7 +580,7 @@ export const artifactsService = {
       const newWorkstream = await tx.workstream.create({
         data: {
           organizationId,
-          projectId: artifact.projectId as string,
+          projectId: artifact.projectId!,
           title: foundSource.title,
           description: `Auto-created for: ${foundSource.title}`,
           type: "FEATURE_DELIVERY",
@@ -1585,7 +1577,7 @@ Please try again or contact support if the issue persists.`
         score: js.score,
         threshold: js.threshold,
         justification: js.justification,
-        finalStatus: js.finalStatus as EvalStatus,
+        finalStatus: js.finalStatus,
         promptName: js.prompt?.name ?? null,
       }));
       return { status: "success", data };
@@ -1660,7 +1652,7 @@ Please try again or contact support if the issue persists.`
         score: js.score,
         threshold: js.threshold,
         justification: js.justification,
-        finalStatus: js.finalStatus as EvalStatus,
+        finalStatus: js.finalStatus,
         promptName: js.prompt?.name ?? null,
       }));
     }
@@ -3041,52 +3033,6 @@ Configure the following environment variables to enable plan generation:
 }
 
 const DEFAULT_BRANCH = "main";
-const VALID_PR_STATES = new Set<string>(Object.values(PullRequestState));
-const VALID_REVIEW_DECISIONS = new Set<string>(Object.values(ReviewDecision));
-
-/**
- * Convert a Prisma gitHubPullRequest record to the API PullRequestInfo type.
- * Returns null if the record contains invalid enum values (e.g. a new GitHub
- * state we don't yet map) so a single bad record doesn't break batch listings.
- */
-function toPullRequestInfo(pr: {
-  id: string;
-  number: number;
-  title: string;
-  htmlUrl: string;
-  state: string;
-  headBranch: string;
-  baseBranch: string;
-  createdAt: Date;
-  checksStatus: string;
-  reviewDecision: string | null;
-}): PullRequestInfo | null {
-  if (!VALID_PR_STATES.has(pr.state)) {
-    log.warn(`Skipping PR #${pr.number}: invalid state "${pr.state}"`);
-    return null;
-  }
-  if (
-    pr.reviewDecision !== null &&
-    !VALID_REVIEW_DECISIONS.has(pr.reviewDecision)
-  ) {
-    log.warn(
-      `Skipping PR #${pr.number}: invalid review decision "${pr.reviewDecision}"`
-    );
-    return null;
-  }
-  return {
-    id: pr.id,
-    number: pr.number,
-    title: pr.title,
-    htmlUrl: pr.htmlUrl,
-    state: pr.state as PullRequestState,
-    headBranch: pr.headBranch,
-    baseBranch: pr.baseBranch,
-    createdAt: pr.createdAt,
-    checksStatus: pr.checksStatus as ChecksStatus,
-    reviewDecision: pr.reviewDecision as ReviewDecision | null,
-  };
-}
 
 /**
  * System prompt for the LLM merge operation.
@@ -3143,17 +3089,14 @@ Please merge the primary and secondary artifacts into a single unified document.
 
 /** Build Map keyed by workstreamId (one PR per workstream — most recent wins). */
 function buildPullRequestMap(
-  records: (Parameters<typeof toPullRequestInfo>[0] & {
+  records: (PullRequestInfo & {
     workstreamId: string | null;
   })[]
 ): Map<string, PullRequestInfo> {
   const map = new Map<string, PullRequestInfo>();
   for (const pr of records) {
     if (pr.workstreamId && !map.has(pr.workstreamId)) {
-      const mapped = toPullRequestInfo(pr);
-      if (mapped) {
-        map.set(pr.workstreamId, mapped);
-      }
+      map.set(pr.workstreamId, pr);
     }
   }
   return map;

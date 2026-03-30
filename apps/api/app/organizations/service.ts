@@ -1,9 +1,10 @@
+import type { JsonObject } from "@repo/api/src/types/common";
 import type {
   CreateOrganizationInput,
   Organization,
   UpdateOrganizationInput,
 } from "@repo/api/src/types/organization";
-import { withDb } from "@repo/database";
+import { type Prisma, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { clerkService } from "@/lib/auth/clerk-service";
 
@@ -11,6 +12,16 @@ import { clerkService } from "@/lib/auth/clerk-service";
  * Organizations service - handles database operations for organization management
  */
 export const organizationsService = {
+  toOrganization(
+    organization: Prisma.OrganizationModel | null
+  ): Organization | null {
+    return organization
+      ? {
+          ...organization,
+          settings: organization.settings as JsonObject,
+        }
+      : null;
+  },
   /**
    * Find an organization by ID
    */
@@ -19,7 +30,7 @@ export const organizationsService = {
       db.organization.findUnique({
         where: { id },
       })
-    ) as Promise<Organization | null>;
+    ).then(this.toOrganization);
   },
 
   /**
@@ -30,7 +41,7 @@ export const organizationsService = {
       db.organization.findUnique({
         where: { clerkId },
       })
-    ) as Promise<Organization | null>;
+    ).then(this.toOrganization);
   },
 
   /**
@@ -45,7 +56,7 @@ export const organizationsService = {
           slug: input.slug,
         },
       })
-    ) as Promise<Organization>;
+    ).then((organization) => this.toOrganization(organization)!);
   },
 
   /**
@@ -54,13 +65,13 @@ export const organizationsService = {
   update(
     id: string,
     input: Omit<UpdateOrganizationInput, "id">
-  ): Promise<Organization> {
+  ): Promise<Organization | null> {
     return withDb((db) =>
       db.organization.update({
         where: { id },
         data: input,
       })
-    ) as Promise<Organization>;
+    ).then(this.toOrganization);
   },
 
   /**
@@ -69,37 +80,37 @@ export const organizationsService = {
   updateByClerkId(
     clerkId: string,
     input: Omit<UpdateOrganizationInput, "id">
-  ): Promise<Organization> {
+  ): Promise<Organization | null> {
     return withDb((db) =>
       db.organization.update({
         where: { clerkId },
         data: input,
       })
-    ) as Promise<Organization>;
+    ).then(this.toOrganization);
   },
 
   /**
    * Deactivate an organization (soft delete)
    */
-  deactivate(id: string): Promise<Organization> {
+  deactivate(id: string): Promise<Organization | null> {
     return withDb((db) =>
       db.organization.update({
         where: { id },
         data: { active: false },
       })
-    ) as Promise<Organization>;
+    ).then(this.toOrganization);
   },
 
   /**
    * Deactivate an organization by Clerk ID (soft delete)
    */
-  deactivateByClerkId(clerkId: string): Promise<Organization> {
+  deactivateByClerkId(clerkId: string): Promise<Organization | null> {
     return withDb((db) =>
       db.organization.update({
         where: { clerkId },
         data: { active: false },
       })
-    ) as Promise<Organization>;
+    ).then(this.toOrganization);
   },
 
   /**

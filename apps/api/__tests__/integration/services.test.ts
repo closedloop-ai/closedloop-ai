@@ -158,8 +158,9 @@ describe.skipIf(!hasDatabase)("Organizations Service Integration", () => {
         name: "New Name",
       });
 
-      expect(updated.name).toBe("New Name");
-      expect(updated.slug).toBe("old-slug"); // unchanged
+      expect(updated).toBeTruthy();
+      expect(updated!.name).toBe("New Name");
+      expect(updated!.slug).toBe("old-slug"); // unchanged
     });
   });
 });
