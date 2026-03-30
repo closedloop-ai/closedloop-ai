@@ -948,7 +948,10 @@ export function PRBrowserDialog({
 
   const handleStructuredFindings = useCallback(
     (provider: string, findings: ReviewFinding[]) => {
-      patchReview(provider, { structuredFindings: findings });
+      patchReview(provider, {
+        structuredFindings: findings,
+        findingCount: findings.length,
+      });
 
       // Re-run both dedup checks with structured findings (better file paths)
       if (findings.length > 0) {

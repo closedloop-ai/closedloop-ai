@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { User } from "@repo/api/src/types/user";
 import { withDb } from "@repo/database";
 import type { TransactionClient } from "@repo/database/generated/internal/prismaNamespace";
@@ -44,12 +45,13 @@ export async function autoRollbackTransaction<T>(
 export async function createTestOrganization(
   overrides?: Partial<OrganizationCreateInput>
 ): Promise<string> {
+  const suffix = randomUUID().replaceAll("-", "").slice(0, 12);
   const org = await withDb((db) =>
     db.organization.create({
       data: {
-        clerkId: "org_test",
-        name: "Test Organization",
-        slug: "test-org",
+        clerkId: `org_test_${suffix}`,
+        name: `Test Organization ${suffix}`,
+        slug: `test-org-${suffix}`,
         ...overrides,
       },
     })
@@ -65,12 +67,13 @@ export async function createTestUser(
   organizationId: string,
   overrides?: Partial<UserUncheckedCreateInput>
 ): Promise<User> {
+  const suffix = randomUUID().replaceAll("-", "").slice(0, 12);
   const user = await withDb((db) =>
     db.user.create({
       data: {
         organizationId,
-        clerkId: "clerk_test_user",
-        email: "test@example.com",
+        clerkId: `clerk_test_user_${suffix}`,
+        email: `test+${suffix}@example.com`,
         firstName: "Test",
         lastName: "User",
         role: "ENGINEER",

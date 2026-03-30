@@ -32,6 +32,7 @@ import {
 
 const TERMINAL_STATUSES = new Set(["completed", "failed", "stopped"]);
 const MAX_RECONNECT_ATTEMPTS = 10;
+const MAX_TRANSIENT_RETRY_ATTEMPTS = 2;
 
 type UseReviewExecutionParams = {
   ticketId: string;
@@ -81,6 +82,22 @@ type UseReviewExecutionReturn = {
   setFindingsRevealed: (v: boolean) => void;
 };
 
+function isTransientCodexUpstreamError(text: string | undefined): boolean {
+  if (!text) {
+    return false;
+  }
+  const lower = text.toLowerCase();
+  return (
+    lower.includes("http error: 503") ||
+    lower.includes("service unavailable") ||
+    lower.includes("unexpected status 503") ||
+    lower.includes("upstream connect error") ||
+    lower.includes("remote connection failure") ||
+    lower.includes("wss://chatgpt.com/backend-api/codex/responses") ||
+    lower.includes("https://chatgpt.com/backend-api/codex/responses")
+  );
+}
+
 export function useReviewExecution(
   params: UseReviewExecutionParams
 ): UseReviewExecutionReturn {
@@ -121,6 +138,11 @@ export function useReviewExecution(
   const [reviewContextPercent, setReviewContextPercent] = useState<
     number | null
   >(null);
+  const [structuredFindings, setStructuredFindings] = useState<
+    ReviewFinding[] | null
+  >(null);
+  const completedExtractionKeysRef = useRef(new Set<string>());
+  const inFlightExtractionKeyRef = useRef<string | null>(null);
 
   // Refs for parent callbacks — avoids depending on callback identity in effects
   const onReviewCompleteRef = useRef(onReviewComplete);
@@ -177,7 +199,8 @@ export function useReviewExecution(
       return null;
     }
     const split = splitReviewOutput(reviewOutput, config.provider);
-    const annotated = split.findings.map((f, i) => ({
+    const sourceFindings = structuredFindings ?? split.findings;
+    const annotated = sourceFindings.map((f, i) => ({
       ...f,
       originalIndex: i,
     }));
@@ -197,7 +220,7 @@ export function useReviewExecution(
       findings: filtered,
       verdict: split.verdict,
     };
-  }, [reviewDone, reviewOutput, config.provider, prFiles]);
+  }, [reviewDone, reviewOutput, config.provider, prFiles, structuredFindings]);
 
   // Notify parent when all findings have been individually commented (fire once)
   const allCommentedFiredRef = useRef(false);
@@ -262,7 +285,7 @@ export function useReviewExecution(
     return split;
   }
 
-  /** Post-stream Claude-specific work: seed session ID, trigger extraction & verdict. */
+  /** Post-stream provider-specific follow-ups: seed session ID, extraction, verdict. */
   function handlePostStreamActions(
     split: ReturnType<typeof splitReviewOutput>
   ) {
@@ -279,7 +302,9 @@ export function useReviewExecution(
       );
     }
 
-    if (
+    if (config.provider === "codex" && sessionIdRef.current) {
+      triggerExtraction(sessionIdRef.current);
+    } else if (
       config.provider === "claude" &&
       split.findings.length > 0 &&
       sessionIdRef.current
@@ -308,32 +333,50 @@ export function useReviewExecution(
 
   // eslint-disable-next-line @typescript-eslint/no-shadow -- startReview is hoisted and used in the mount effect
   async function startReview(signal: AbortSignal) {
+    await runReviewAttempt(signal, 0);
+  }
+
+  async function runReviewAttempt(
+    signal: AbortSignal,
+    transientRetryAttempt: number
+  ) {
     reviewStartedAtRef.current = new Date().toISOString();
     setIsReviewing(true);
     setReviewDone(false);
+    if (transientRetryAttempt === 0) {
+      setStructuredFindings(null);
+      completedExtractionKeysRef.current.clear();
+      inFlightExtractionKeyRef.current = null;
+    }
     let accumulatedOutput = "";
 
     try {
-      const existing = await checkExistingReview(
-        ticketId,
-        repoPath,
-        config.provider,
-        signal
-      );
+      if (transientRetryAttempt === 0) {
+        const existing = await checkExistingReview(
+          ticketId,
+          repoPath,
+          config.provider,
+          signal
+        );
 
-      if (existing.kind === "completed" || existing.kind === "terminal") {
-        if (existing.sessionId) {
-          sessionIdRef.current = existing.sessionId;
+        if (existing.kind === "completed" || existing.kind === "terminal") {
+          if (existing.sessionId) {
+            sessionIdRef.current = existing.sessionId;
+          }
+          const split = finalizeReviewOutput(existing.log);
+          if (existing.kind === "completed") {
+            handlePostStreamActions(split);
+          } else if (!split.verdict && sessionIdRef.current) {
+            triggerVerdictExtraction(sessionIdRef.current);
+          }
+          return;
         }
-        const split = finalizeReviewOutput(existing.log);
-        handlePostStreamActions(split);
-        return;
-      }
 
-      if (existing.kind === "running") {
-        setReviewOutput(existing.log);
-        await pollRunningReview(signal);
-        return;
+        if (existing.kind === "running") {
+          setReviewOutput(existing.log);
+          await pollRunningReview(signal);
+          return;
+        }
       }
 
       setReviewOutput("");
@@ -409,6 +452,34 @@ export function useReviewExecution(
       }
 
       if (result.terminalState === "terminal_error") {
+        const combinedErrorText = `${result.terminalError ?? ""}\n${result.text}`;
+        const shouldRetryTransientCodexError =
+          config.provider === "codex" &&
+          transientRetryAttempt < MAX_TRANSIENT_RETRY_ATTEMPTS &&
+          isTransientCodexUpstreamError(combinedErrorText);
+        if (shouldRetryTransientCodexError) {
+          const nextAttempt = transientRetryAttempt + 1;
+          const backoffMs = Math.min(5000 * 2 ** transientRetryAttempt, 30_000);
+          toast.info(
+            `Codex service is temporarily unavailable. Retrying (${nextAttempt}/${MAX_TRANSIENT_RETRY_ATTEMPTS})...`
+          );
+          await new Promise<void>((resolve) => {
+            const timer = setTimeout(resolve, backoffMs);
+            signal.addEventListener(
+              "abort",
+              () => {
+                clearTimeout(timer);
+                resolve();
+              },
+              { once: true }
+            );
+          });
+          if (signal.aborted) {
+            return;
+          }
+          await runReviewAttempt(signal, nextAttempt);
+          return;
+        }
         toast.error("Review failed", {
           description:
             result.terminalError ??
@@ -550,8 +621,10 @@ export function useReviewExecution(
       setReviewDone(true);
       onReviewCompleteRef.current?.(accumulatedOutput, 0);
     } finally {
-      setIsReviewing(false);
-      abortRef.current = null;
+      if (transientRetryAttempt === 0) {
+        setIsReviewing(false);
+        abortRef.current = null;
+      }
     }
   }
 
@@ -563,8 +636,9 @@ export function useReviewExecution(
     const split = finalizeReviewOutput(finalOutput);
     if (data.status === "completed") {
       toast.success("Code review completed");
+      handlePostStreamActions(split);
     }
-    if (!split.verdict && sessionIdRef.current) {
+    if (data.status !== "completed" && !split.verdict && sessionIdRef.current) {
       triggerVerdictExtraction(sessionIdRef.current);
     }
   };
@@ -713,19 +787,34 @@ export function useReviewExecution(
 
   const triggerExtraction = useCallback(
     async (sid: string) => {
+      const key = `${config.provider}:${sid}`;
+      if (
+        completedExtractionKeysRef.current.has(key) ||
+        inFlightExtractionKeyRef.current === key
+      ) {
+        return;
+      }
+      inFlightExtractionKeyRef.current = key;
       try {
         console.log(
-          `[review-extract] Triggering extraction with session ${sid}`
+          `[review-extract] Triggering extraction for ${config.provider} with session ${sid}`
         );
         const res = await fetch(
           `/api/engineer/codex/review-extract/${encodeURIComponent(ticketId)}`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ repoPath, sessionId: sid }),
+            body: JSON.stringify({
+              repoPath,
+              sessionId: sid,
+              provider: config.provider,
+            }),
           }
         );
         const data = await res.json();
+        if (Array.isArray(data.findings)) {
+          setStructuredFindings(data.findings);
+        }
         if (data.findings && data.findings.length > 0) {
           console.log(
             `[review-extract] Got ${data.findings.length} structured findings`
@@ -744,8 +833,13 @@ export function useReviewExecution(
             data.error ?? ""
           );
         }
+        completedExtractionKeysRef.current.add(key);
       } catch (err) {
         console.warn("[review-extract] Extraction failed silently:", err);
+      } finally {
+        if (inFlightExtractionKeyRef.current === key) {
+          inFlightExtractionKeyRef.current = null;
+        }
       }
     },
     [ticketId, repoPath, config.provider, config.model]
