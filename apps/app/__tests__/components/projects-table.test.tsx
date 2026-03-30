@@ -15,6 +15,7 @@ vi.mock("next/navigation", () => ({
         typeof import("next/navigation").useSearchParams
       >
   ),
+  useParams: vi.fn(() => ({ teamId: "team-1" })),
 }));
 
 // Mock useOrganizationUsers — avoids needing a QueryClient provider
