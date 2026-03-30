@@ -43,6 +43,18 @@ describe("dispatchReviewEvent", () => {
     expect(state.terminalState).toBe("done");
   });
 
+  it("sets terminalState to 'terminal_error' on done event with non-zero exitCode", () => {
+    const state = makeState();
+    dispatchReviewEvent(
+      { type: "done", exitCode: 1 },
+      state,
+      vi.fn(),
+      makeHandlers()
+    );
+    expect(state.terminalState).toBe("terminal_error");
+    expect(state.terminalError).toContain("exited with code 1");
+  });
+
   it("sets terminalState to 'terminal_error' on terminal error event", () => {
     const state = makeState();
     dispatchReviewEvent(
@@ -168,6 +180,13 @@ describe("streamReviewOutput", () => {
     const result = await streamReviewOutput(reader, vi.fn());
     expect(result.terminalState).toBe("done");
     expect(result.text).toBe("Review complete.");
+  });
+
+  it("returns terminalState 'terminal_error' when done event has non-zero exitCode", async () => {
+    const reader = createReader(['{"type":"done","exitCode":2}\n']);
+    const result = await streamReviewOutput(reader, vi.fn());
+    expect(result.terminalState).toBe("terminal_error");
+    expect(result.terminalError).toContain("exited with code 2");
   });
 
   it("returns terminalState 'terminal_error' with error message", async () => {

@@ -7,7 +7,8 @@ import {
 
 export type AnnotatedFinding = ReviewFinding & { originalIndex: number };
 
-const FINDINGS_HEADER = /^(?:Full )?[Rr]eview comments?:\s*$/m;
+const FINDINGS_HEADER = /(?:Full\s+)?[Rr]eview comments?:\s*/;
+const PRIORITY_CHUNK_START_RE = /(^|\n)\s*(?:[-*]\s*)?\[[Pp]\d\]\s+/g;
 
 export function splitReviewOutput(
   output: string,
@@ -39,9 +40,9 @@ export function splitReviewOutput(
  * Each finding is separated by a blank line.
  */
 function parseFullReviewComments(text: string): ReviewFinding[] {
-  // Split on blank lines then filter out empty chunks
-  const chunks = text.split(/\n{2,}/).filter((c) => c.trim());
+  const chunks = splitPriorityChunks(text);
   const findings: ReviewFinding[] = [];
+  const dedupe = new Set<string>();
 
   for (const chunk of chunks) {
     const headerMatch =
@@ -62,17 +63,55 @@ function parseFullReviewComments(text: string): ReviewFinding[] {
 
     const severity = priorityToSeverity(priority ?? "P3");
     const fileMatch = fileRef ? /^(.+?):(\d+)/.exec(fileRef) : null;
+    const message = description ? `${title}\n${description}` : title;
+    const dedupeKey = [
+      priority,
+      fileMatch?.[1] ?? fileRef ?? "",
+      fileMatch?.[2] ?? "",
+      message,
+    ].join("|");
+    if (dedupe.has(dedupeKey)) {
+      continue;
+    }
+    dedupe.add(dedupeKey);
 
     findings.push({
       severity,
       priority,
       file: fileMatch?.[1] ?? fileRef,
       line: fileMatch?.[2] ? Number.parseInt(fileMatch[2], 10) : undefined,
-      message: description ? `${title}\n${description}` : title,
+      message,
     });
   }
 
   return findings;
+}
+
+function splitPriorityChunks(text: string): string[] {
+  const starts: number[] = [];
+  PRIORITY_CHUNK_START_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  for (;;) {
+    match = PRIORITY_CHUNK_START_RE.exec(text);
+    if (!match) {
+      break;
+    }
+    // Skip the leading delimiter captured by group 1 (start/newline).
+    starts.push(match.index + match[1].length);
+  }
+  if (starts.length === 0) {
+    return text.split(/\n{2,}/).filter((c) => c.trim());
+  }
+  const chunks: string[] = [];
+  for (let i = 0; i < starts.length; i++) {
+    const start = starts[i];
+    const end = starts[i + 1] ?? text.length;
+    const chunk = text.slice(start, end).trim();
+    if (chunk) {
+      chunks.push(chunk);
+    }
+  }
+  return chunks;
 }
 
 function priorityToSeverity(priority: string): ReviewFinding["severity"] {

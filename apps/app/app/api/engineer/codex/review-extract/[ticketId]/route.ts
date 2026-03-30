@@ -20,6 +20,7 @@ const JSON_ARRAY_REGEX = /\[[\s\S]*\]/;
 type ExtractRequest = {
   repoPath: string;
   sessionId: string;
+  provider?: "codex" | "claude";
 };
 
 type StructuredFinding = {
@@ -90,10 +91,17 @@ export async function POST(
   }
 
   const { repoPath, sessionId } = body;
+  const provider = body.provider ?? "claude";
 
   if (!(repoPath && sessionId)) {
     return Response.json(
       { error: "repoPath and sessionId are required" },
+      { status: 400 }
+    );
+  }
+  if (provider !== "codex" && provider !== "claude") {
+    return Response.json(
+      { error: "provider must be 'codex' or 'claude'" },
       { status: 400 }
     );
   }
@@ -108,11 +116,14 @@ export async function POST(
   const worktreeDir = getWorktreeDir(repoPath, ticketId);
 
   console.log(
-    `[review-extract] Starting extraction for ${ticketId}, session ${sessionId}`
+    `[review-extract] Starting extraction for ${ticketId}, provider=${provider}, session ${sessionId}`
   );
 
   try {
-    const collected = await runClaudeExtraction(worktreeDir, sessionId);
+    const collected =
+      provider === "codex"
+        ? await runCodexExtraction(worktreeDir, sessionId)
+        : await runClaudeExtraction(worktreeDir, sessionId);
     console.log(`[review-extract] Collected ${collected.length} chars of text`);
 
     const findings = parseStructuredFindings(collected);
@@ -124,6 +135,88 @@ export async function POST(
     console.error("[review-extract] Extraction failed:", msg);
     return Response.json({ findings: [], error: msg });
   }
+}
+
+function runCodexExtraction(
+  worktreeDir: string,
+  sessionId: string
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      "codex",
+      ["exec", "resume", sessionId, EXTRACTION_PROMPT, "--full-auto", "--json"],
+      {
+        cwd: worktreeDir,
+        stdio: ["ignore", "pipe", "pipe"],
+        env: { ...process.env, FORCE_COLOR: "0" },
+      }
+    );
+
+    let buffer = "";
+    let collected = "";
+
+    child.stdout?.on("data", (data: Buffer) => {
+      buffer += data.toString();
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) {
+          continue;
+        }
+        try {
+          const event = JSON.parse(trimmed) as Record<string, unknown>;
+          const item = event.item as
+            | { type?: string; text?: string }
+            | undefined;
+          if (
+            event.type === "item.completed" &&
+            item?.type === "agent_message" &&
+            item.text
+          ) {
+            collected += item.text;
+          }
+        } catch {
+          collected += trimmed;
+        }
+      }
+    });
+
+    child.stderr?.on("data", (data: Buffer) => {
+      console.log(
+        `[review-extract] codex stderr: ${data.toString().trim().slice(0, 300)}`
+      );
+    });
+
+    child.on("close", (code) => {
+      if (buffer.trim()) {
+        try {
+          const event = JSON.parse(buffer.trim()) as Record<string, unknown>;
+          const item = event.item as
+            | { type?: string; text?: string }
+            | undefined;
+          if (
+            event.type === "item.completed" &&
+            item?.type === "agent_message" &&
+            item.text
+          ) {
+            collected += item.text;
+          }
+        } catch {
+          collected += buffer.trim();
+        }
+      }
+      console.log(`[review-extract] Codex exited with code ${code}`);
+      if (code === 0) {
+        resolve(collected);
+      } else {
+        reject(new Error(`Codex process exited with code ${code}`));
+      }
+    });
+
+    child.on("error", reject);
+  });
 }
 
 async function runClaudeExtraction(
