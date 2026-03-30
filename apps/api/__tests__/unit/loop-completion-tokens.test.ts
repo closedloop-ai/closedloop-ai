@@ -439,8 +439,9 @@ describe("handleLoopCompleted EXECUTE 0-token guard", () => {
 
   it("EXECUTE 0/0 race to terminal returns []", async () => {
     setupLoop({ command: "EXECUTE" as "PLAN" });
-    const transitionError = new Error(
-      "Invalid status transition: COMPLETED -> FAILED"
+    const transitionError = Object.assign(
+      new Error("Invalid status transition: COMPLETED -> FAILED"),
+      { from: "COMPLETED", to: "FAILED" }
     );
     mockLoopsService.updateStatus.mockRejectedValueOnce(transitionError);
     mockIsInvalidStatusTransitionError.mockReturnValueOnce(true);
@@ -455,6 +456,25 @@ describe("handleLoopCompleted EXECUTE 0-token guard", () => {
     expect(result).toHaveLength(0);
     // Error event should NOT be persisted on race
     expect(mockLoopsService.addEvent).not.toHaveBeenCalled();
+  });
+
+  it("EXECUTE 0/0 re-throws InvalidStatusTransitionError from non-terminal source", async () => {
+    setupLoop({ command: "EXECUTE" as "PLAN" });
+    const transitionError = Object.assign(
+      new Error("Invalid status transition: PENDING -> FAILED"),
+      { from: "PENDING", to: "FAILED" }
+    );
+    mockLoopsService.updateStatus.mockRejectedValueOnce(transitionError);
+    mockIsInvalidStatusTransitionError.mockReturnValueOnce(true);
+
+    await expect(
+      handleLoopEvent("loop-1", "org-1", {
+        type: "completed",
+        result: {},
+        tokensUsed: { input: 0, output: 0 },
+        timestamp: "2026-01-01T00:00:00.000Z",
+      })
+    ).rejects.toThrow("PENDING -> FAILED");
   });
 
   it("PLAN with 0/0 tokens still passes through as completed", async () => {

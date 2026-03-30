@@ -1238,11 +1238,17 @@ async function handleZeroTokenExecute(
     });
   } catch (err) {
     if (isInvalidStatusTransitionError(err)) {
-      log.info(
-        "[loop-orchestrator] NO_WORK_PRODUCED race -- loop already transitioned",
-        { loopId }
-      );
-      return [];
+      // Only swallow when the source status is terminal (another event raced
+      // to completion). Re-throw for non-terminal source statuses (e.g.,
+      // PENDING -> FAILED is invalid) so the runner can retry.
+      if (terminalStatuses.has(err.from as LoopStatus)) {
+        log.info(
+          "[loop-orchestrator] NO_WORK_PRODUCED race -- loop already terminal",
+          { loopId, from: err.from }
+        );
+        return [];
+      }
+      throw err;
     }
     throw err;
   }
