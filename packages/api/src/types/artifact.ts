@@ -2,6 +2,7 @@
 // These are explicitly defined to keep packages/api independent of database
 
 import type { ArtifactVersion } from "./artifact-version";
+import type { Priority } from "./common";
 import type { CustomFieldValueDetail } from "./custom-field";
 import type { EntityType } from "./entity-link";
 import type { BasicUser } from "./user";
@@ -74,6 +75,7 @@ export type Artifact = {
   slug: string;
   fileName: string | null;
   status: ArtifactStatus;
+  priority: Priority;
   latestVersion: number;
   createdById: string;
   assigneeId: string | null;
@@ -138,6 +140,7 @@ export type CreateArtifactInput = {
   fileName?: string;
   approverId?: string | null;
   status?: ArtifactStatus;
+  priority?: Priority;
   content: string;
   targetRepo?: string;
   targetBranch?: string;
@@ -152,6 +155,7 @@ export type UpdateArtifactInput = {
   projectId?: string;
   approverId?: string | null;
   status?: ArtifactStatus;
+  priority?: Priority;
   targetRepo?: string | null;
   targetBranch?: string | null;
   assigneeId?: string | null;

@@ -2,8 +2,16 @@
  * Unit tests for SortableArtifactRow component.
  * Tests drag handle rendering and @dnd-kit integration.
  */
+
+import { useSortable } from "@dnd-kit/sortable";
+import {
+  ArtifactStatus,
+  type ArtifactWithWorkstream,
+} from "@repo/api/src/types/artifact";
+import { Priority } from "@repo/api/src/types/common";
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import { SortableArtifactRow } from "@/app/(authenticated)/teams/[teamId]/projects/[projectId]/components/sortable-artifact-row";
 
 // Mock @dnd-kit/sortable
 vi.mock("@dnd-kit/sortable", () => ({
@@ -30,11 +38,6 @@ vi.mock("lucide-react", () => ({
   GripVertical: () => <div data-testid="grip-icon" />,
 }));
 
-// Import after mocks
-import { useSortable } from "@dnd-kit/sortable";
-import type { ArtifactWithWorkstream } from "@repo/api/src/types/artifact";
-import { SortableArtifactRow } from "@/app/(authenticated)/teams/[teamId]/projects/[projectId]/components/sortable-artifact-row";
-
 describe("SortableArtifactRow", () => {
   const mockArtifact: ArtifactWithWorkstream = {
     id: "01TEST000000000000000000",
@@ -47,7 +50,8 @@ describe("SortableArtifactRow", () => {
     fileName: null,
     assignee: null,
     approver: null,
-    status: "DRAFT",
+    status: ArtifactStatus.Draft,
+    priority: Priority.Medium,
     latestVersion: 1,
     createdById: "user-1",
     assigneeId: null,
