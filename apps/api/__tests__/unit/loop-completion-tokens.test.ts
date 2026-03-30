@@ -39,6 +39,10 @@ vi.mock("@/app/integrations/github/service", () => ({
   githubService: { findInstallationForRepoFullName: vi.fn() },
 }));
 
+const { mockIsInvalidStatusTransitionError } = vi.hoisted(() => ({
+  mockIsInvalidStatusTransitionError: vi.fn().mockReturnValue(false),
+}));
+
 vi.mock("@/app/loops/service", () => ({
   loopsService: {
     findById: vi.fn().mockResolvedValue(null),
@@ -46,7 +50,7 @@ vi.mock("@/app/loops/service", () => ({
     addEvent: vi.fn().mockResolvedValue(undefined),
     persistLaunchInfo: vi.fn(),
   },
-  isInvalidStatusTransitionError: vi.fn(),
+  isInvalidStatusTransitionError: mockIsInvalidStatusTransitionError,
 }));
 
 vi.mock("@/app/settings/api-key-service", () => ({
@@ -169,7 +173,9 @@ describe("handleLoopCompleted token persistence", () => {
     );
   });
 
-  it("falls back to S3 metadata tokens when event has zero values", async () => {
+  it("uses event tokensUsed { 0, 0 } over S3 metadata (atomic pair precedence)", async () => {
+    // When event.tokensUsed = { input: 0, output: 0 } and metadata has values,
+    // the event pair wins because both fields are numeric (atomic pair precedence).
     setupLoop({ s3StateKey: "org/loops/loop-1/run-1" });
     mockDownloadMetadata.mockResolvedValue({
       loopId: "loop-1",
@@ -191,6 +197,78 @@ describe("handleLoopCompleted token persistence", () => {
       timestamp: new Date().toISOString(),
     });
 
+    expect(mockLoopsService.updateStatus).toHaveBeenCalledWith(
+      "loop-1",
+      "org-1",
+      "COMPLETED",
+      expect.objectContaining({
+        tokensInput: 0,
+        tokensOutput: 0,
+      })
+    );
+  });
+
+  it("falls back to S3 metadata tokens when event.tokensUsed is absent", async () => {
+    setupLoop({ s3StateKey: "org/loops/loop-1/run-1" });
+    mockDownloadMetadata.mockResolvedValue({
+      loopId: "loop-1",
+      command: "CHAT",
+      status: "completed",
+      startedAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+      tokensInput: 60_000,
+      tokensOutput: 40_000,
+      filesRead: [],
+      filesWritten: [],
+      toolCalls: 5,
+    });
+
+    await handleLoopEvent("loop-1", "org-1", {
+      type: "completed",
+      result: {},
+      tokensUsed: undefined as unknown as { input: number; output: number },
+      timestamp: new Date().toISOString(),
+    });
+
+    expect(mockLoopsService.updateStatus).toHaveBeenCalledWith(
+      "loop-1",
+      "org-1",
+      "COMPLETED",
+      expect.objectContaining({
+        tokensInput: 60_000,
+        tokensOutput: 40_000,
+      })
+    );
+  });
+
+  it("falls back to S3 metadata when event.tokensUsed has only one numeric field (partial pair)", async () => {
+    // When only input is present but output is missing, the pair is invalid --
+    // fall back to metadata for both fields (never mix sources).
+    setupLoop({ s3StateKey: "org/loops/loop-1/run-1" });
+    mockDownloadMetadata.mockResolvedValue({
+      loopId: "loop-1",
+      command: "CHAT",
+      status: "completed",
+      startedAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+      tokensInput: 60_000,
+      tokensOutput: 40_000,
+      filesRead: [],
+      filesWritten: [],
+      toolCalls: 5,
+    });
+
+    await handleLoopEvent("loop-1", "org-1", {
+      type: "completed",
+      result: {},
+      tokensUsed: { input: 100, output: undefined } as unknown as {
+        input: number;
+        output: number;
+      },
+      timestamp: new Date().toISOString(),
+    });
+
+    // Partial pair is invalid -- both fields come from metadata, not mixed
     expect(mockLoopsService.updateStatus).toHaveBeenCalledWith(
       "loop-1",
       "org-1",
@@ -290,5 +368,117 @@ describe("handleLoopCompleted token persistence", () => {
     const updateCall = mockLoopsService.updateStatus.mock.calls[0];
     const data = updateCall[3];
     expect(data.completedAt).toBeInstanceOf(Date);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// handleLoopCompleted — EXECUTE 0-token guard (NO_WORK_PRODUCED)
+// ---------------------------------------------------------------------------
+
+describe("handleLoopCompleted EXECUTE 0-token guard", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockDownloadMetadata.mockResolvedValue(null);
+  });
+
+  function setupLoop(overrides: Partial<Parameters<typeof buildLoop>[0]> = {}) {
+    const loop = buildLoop({
+      status: "RUNNING",
+      s3StateKey: null,
+      artifactId: null,
+      ...overrides,
+    });
+    mockLoopsService.findById.mockResolvedValue(loop);
+    mockLoopsService.updateStatus.mockResolvedValue(undefined);
+    mockLoopsService.addEvent.mockResolvedValue(undefined);
+  }
+
+  it("EXECUTE with 0/0 tokens returns error event with NO_WORK_PRODUCED", async () => {
+    setupLoop({ command: "EXECUTE" as "PLAN" });
+
+    const result = await handleLoopEvent("loop-1", "org-1", {
+      type: "completed",
+      result: {},
+      tokensUsed: { input: 0, output: 0 },
+      timestamp: "2026-01-01T00:00:00.000Z",
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      type: "error",
+      code: "NO_WORK_PRODUCED",
+      timestamp: "2026-01-01T00:00:00.000Z",
+    });
+
+    // Should transition to FAILED, not COMPLETED
+    expect(mockLoopsService.updateStatus).toHaveBeenCalledWith(
+      "loop-1",
+      "org-1",
+      "FAILED",
+      expect.objectContaining({
+        error: expect.objectContaining({ code: "NO_WORK_PRODUCED" }),
+      })
+    );
+  });
+
+  it("EXECUTE 0/0 with already-terminal loop returns []", async () => {
+    setupLoop({ command: "EXECUTE" as "PLAN", status: "TIMED_OUT" });
+
+    const result = await handleLoopEvent("loop-1", "org-1", {
+      type: "completed",
+      result: {},
+      tokensUsed: { input: 0, output: 0 },
+      timestamp: "2026-01-01T00:00:00.000Z",
+    });
+
+    expect(result).toHaveLength(0);
+    // updateStatus should only be called for the first findById call,
+    // not for a status transition
+    expect(mockLoopsService.updateStatus).not.toHaveBeenCalled();
+  });
+
+  it("EXECUTE 0/0 race to terminal returns []", async () => {
+    setupLoop({ command: "EXECUTE" as "PLAN" });
+    const transitionError = new Error(
+      "Invalid status transition: COMPLETED -> FAILED"
+    );
+    mockLoopsService.updateStatus.mockRejectedValueOnce(transitionError);
+    mockIsInvalidStatusTransitionError.mockReturnValueOnce(true);
+
+    const result = await handleLoopEvent("loop-1", "org-1", {
+      type: "completed",
+      result: {},
+      tokensUsed: { input: 0, output: 0 },
+      timestamp: "2026-01-01T00:00:00.000Z",
+    });
+
+    expect(result).toHaveLength(0);
+    // Error event should NOT be persisted on race
+    expect(mockLoopsService.addEvent).not.toHaveBeenCalled();
+  });
+
+  it("PLAN with 0/0 tokens still passes through as completed", async () => {
+    setupLoop({ command: "PLAN" });
+
+    const result = await handleLoopEvent("loop-1", "org-1", {
+      type: "completed",
+      result: {},
+      tokensUsed: { input: 0, output: 0 },
+      timestamp: "2026-01-01T00:00:00.000Z",
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ type: "completed" });
+
+    // Should transition to COMPLETED, not FAILED
+    expect(mockLoopsService.updateStatus).toHaveBeenCalledWith(
+      "loop-1",
+      "org-1",
+      "COMPLETED",
+      expect.objectContaining({
+        tokensInput: 0,
+        tokensOutput: 0,
+      })
+    );
   });
 });

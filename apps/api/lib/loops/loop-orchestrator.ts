@@ -3,7 +3,11 @@ import type {
   LoopEventCompleted,
   TokensByModel,
 } from "@repo/api/src/types/loop";
-import { LoopStatus, MODEL_PRICING } from "@repo/api/src/types/loop";
+import {
+  LoopCommand,
+  LoopStatus,
+  MODEL_PRICING,
+} from "@repo/api/src/types/loop";
 import { withDb } from "@repo/database";
 import { getInstallationAccessToken } from "@repo/github";
 import { log } from "@repo/observability/log";
@@ -778,8 +782,7 @@ export async function handleLoopEvent(
     }
 
     case "completed": {
-      await handleLoopCompleted(loopId, organizationId, event, replayContext);
-      return [event];
+      return handleLoopCompleted(loopId, organizationId, event, replayContext);
     }
 
     case "error": {
@@ -860,28 +863,53 @@ async function ingestLoopArtifacts(
 
 /**
  * Handle loop completion: download metadata from S3, update token counts.
+ * Returns the canonical event(s) to publish via SSE.
  */
 async function handleLoopCompleted(
   loopId: string,
   organizationId: string,
   event: LoopEventCompleted,
   replayContext?: RunnerReplayContext
-): Promise<void> {
+): Promise<LoopEvent[]> {
   // Try to download metadata from S3 for detailed token counts
   const loop = await loopsService.findById(loopId, organizationId);
   const metadata = loop?.s3StateKey
     ? await downloadMetadata(loop.s3StateKey)
     : null;
 
-  // Prefer the event's token data (validated at ingestion) over S3 metadata.
-  // S3 metadata may have stale zeros if uploaded before final counts.
-  const tokensInput = event.tokensUsed?.input || metadata?.tokensInput || 0;
-  const tokensOutput = event.tokensUsed?.output || metadata?.tokensOutput || 0;
+  // Use the event's token pair as an atomic unit when both fields are numeric
+  // (including zeros). Only fall back to the metadata pair if the event pair is
+  // absent/invalid. Never mix input from one source and output from another.
+  const hasEventTokens =
+    typeof event.tokensUsed?.input === "number" &&
+    typeof event.tokensUsed?.output === "number";
+  const tokensInput = hasEventTokens
+    ? event.tokensUsed!.input
+    : (metadata?.tokensInput ?? 0);
+  const tokensOutput = hasEventTokens
+    ? event.tokensUsed!.output
+    : (metadata?.tokensOutput ?? 0);
   const tokensByModel: TokensByModel | null =
     event.tokensByModel ?? metadata?.tokensByModel ?? null;
 
   // Calculate cost per model if we have breakdown, otherwise fall back to Opus pricing
   const estimatedCost = calculateCost(tokensInput, tokensOutput, tokensByModel);
+
+  // Guard: EXECUTE loops that completed with 0/0 tokens did no work.
+  // Convert to a NO_WORK_PRODUCED error instead of accepting as success.
+  if (
+    loop?.command === LoopCommand.Execute &&
+    tokensInput === 0 &&
+    tokensOutput === 0
+  ) {
+    return handleZeroTokenExecute(
+      loopId,
+      organizationId,
+      loop,
+      event,
+      replayContext
+    );
+  }
 
   // Extract PR info + session ID from event.result
   const prSession = extractPrSessionInfo(
@@ -967,6 +995,7 @@ async function handleLoopCompleted(
     estimatedCost,
     ...prSession,
   });
+  return [event];
 }
 
 /**
@@ -1097,6 +1126,20 @@ async function handleLoopError(
     return [event as unknown as LoopEvent];
   }
 
+  // Structured error codes from electron/runner with specific log levels.
+  // Both map to LoopStatus.Failed -- no new status enum needed.
+  if (event.code === "CONTEXT_LIMIT_EXCEEDED") {
+    log.warn("[loop-orchestrator] Loop hit context limit", {
+      loopId,
+      message: event.message,
+    });
+  } else if (event.code === "NO_WORK_PRODUCED") {
+    log.error("[loop-orchestrator] Loop produced no work", {
+      loopId,
+      message: event.message,
+    });
+  }
+
   // Extract PR/session info from error event (harness includes these even on failure)
   const prSession = extractPrSessionInfo(event as Record<string, unknown>);
 
@@ -1121,11 +1164,17 @@ async function handleLoopError(
     replayContext
   );
 
-  log.error("[loop-orchestrator] Loop failed", {
-    loopId,
-    errorCode: event.code,
-    errorMessage: event.message,
-  });
+  // Skip generic log for codes that already logged above
+  if (
+    event.code !== "CONTEXT_LIMIT_EXCEEDED" &&
+    event.code !== "NO_WORK_PRODUCED"
+  ) {
+    log.error("[loop-orchestrator] Loop failed", {
+      loopId,
+      errorCode: event.code,
+      errorMessage: event.message,
+    });
+  }
 
   return [event as unknown as LoopEvent];
 }
@@ -1139,4 +1188,83 @@ function describeErrorType(error: unknown): string {
     return error.constructor.name;
   }
   return typeof error;
+}
+
+/**
+ * Handle an EXECUTE loop that completed with 0/0 tokens (ghost loop).
+ * Converts the completion into a NO_WORK_PRODUCED error event.
+ *
+ * Only persists the error event when updateStatus(FAILED) succeeds.
+ * Returns [] for terminal or race cases to avoid confusing the frontend.
+ */
+async function handleZeroTokenExecute(
+  loopId: string,
+  organizationId: string,
+  loop:
+    | NonNullable<Awaited<ReturnType<typeof loopsService.findById>>>
+    | null
+    | undefined,
+  event: LoopEventCompleted,
+  replayContext?: RunnerReplayContext
+): Promise<LoopEvent[]> {
+  const errorEvent: LoopEvent = {
+    type: "error",
+    code: "NO_WORK_PRODUCED",
+    message: "EXECUTE loop completed with 0 tokens -- no work was done",
+    timestamp: event.timestamp,
+  };
+
+  // Pre-read loop status to avoid appending error events to already-terminal loops
+  const terminalStatuses = new Set<string>([
+    LoopStatus.Completed,
+    LoopStatus.Failed,
+    LoopStatus.Cancelled,
+    LoopStatus.TimedOut,
+  ]);
+
+  if (!loop || terminalStatuses.has(loop.status)) {
+    log.info(
+      "[loop-orchestrator] Skipping NO_WORK_PRODUCED -- loop already terminal",
+      { loopId, status: loop?.status }
+    );
+    return [];
+  }
+
+  // Attempt transition to FAILED. If another event raced to terminal, catch and return [].
+  try {
+    await loopsService.updateStatus(loopId, organizationId, LoopStatus.Failed, {
+      completedAt: new Date(),
+      error: { code: "NO_WORK_PRODUCED", message: errorEvent.message },
+    });
+  } catch (err) {
+    if (isInvalidStatusTransitionError(err)) {
+      log.info(
+        "[loop-orchestrator] NO_WORK_PRODUCED race -- loop already transitioned",
+        { loopId }
+      );
+      return [];
+    }
+    throw err;
+  }
+
+  // Persist error event only after successful status transition
+  await loopsService.addEvent(
+    loopId,
+    organizationId,
+    {
+      type: "error",
+      data: {
+        code: "NO_WORK_PRODUCED",
+        message: errorEvent.message,
+        timestamp: event.timestamp,
+      },
+    },
+    replayContext
+  );
+
+  log.error("[loop-orchestrator] EXECUTE loop completed with 0 tokens", {
+    loopId,
+  });
+
+  return [errorEvent];
 }
