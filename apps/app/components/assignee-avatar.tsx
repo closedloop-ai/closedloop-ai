@@ -70,9 +70,6 @@ export function AssigneeAvatar({
   }
 
   if (disableLink) {
-    if (disableTooltip) {
-      return avatar;
-    }
     return (
       <Tooltip>
         <TooltipTrigger asChild>{avatar}</TooltipTrigger>

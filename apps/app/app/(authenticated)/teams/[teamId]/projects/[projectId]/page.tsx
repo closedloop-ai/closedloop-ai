@@ -35,7 +35,10 @@ import {
 import { useParams, useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import { Header } from "@/app/(authenticated)/components/header";
-import type { RowEditHandlers } from "@/components/artifact-table/artifact-row";
+import type {
+  ArtifactRowItem,
+  RowEditHandlers,
+} from "@/components/artifact-table/artifact-row";
 import { ColumnVisibilityPanel } from "@/components/artifact-table/column-visibility-panel";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { EditableProjectDescription } from "@/components/editable-project-description";
@@ -251,7 +254,7 @@ export default function ProjectDetailPage() {
   };
 
   const handleDeleteArtifact = async (
-    item: import("@/components/artifact-table/artifact-row").ArtifactRowItem
+    item: ArtifactRowItem
   ): Promise<boolean> => {
     if (item.kind === "feature") {
       const result = await deleteFeatureMutation.mutateAsync(item.data.id);

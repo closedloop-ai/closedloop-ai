@@ -13,7 +13,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@repo/design-system/components/ui/dropdown-menu";
-import type { User as PopoverUser } from "@repo/design-system/components/ui/user-select-popover";
 import {
   BoxIcon,
   LayoutGridIcon,
@@ -28,6 +27,7 @@ import type {
   RowEditHandlers,
 } from "@/components/artifact-table/artifact-row";
 import { ColumnVisibilityPanel } from "@/components/artifact-table/column-visibility-panel";
+import { DeleteRowActions } from "@/components/artifact-table/delete-row-actions";
 import { FlatArtifactTable } from "@/components/artifact-table/flat-artifact-table";
 import {
   featurePriorityLabels,
@@ -39,18 +39,14 @@ import {
   useUpdateFeature,
 } from "@/hooks/queries/use-features";
 import { useProjects } from "@/hooks/queries/use-projects";
-import {
-  useCurrentUser,
-  useOrganizationUsers,
-} from "@/hooks/queries/use-users";
+import { useCurrentUser } from "@/hooks/queries/use-users";
 import {
   MY_TASKS_DEFAULT_COLUMNS,
   useColumnVisibility,
 } from "@/hooks/use-column-visibility";
 import { useLocalStorageState } from "@/hooks/use-local-storage-state";
-import { getUserDisplayName, getUserInitials } from "@/lib/user-utils";
+import { useOrgUsersAsPopoverUsers } from "@/hooks/use-org-users-as-popover-users";
 import { OnboardingChecklist } from "../components/onboarding-checklist";
-import { FeatureRowActions } from "../teams/[teamId]/features/components/feature-row-actions";
 import { MyTasksEmptyState } from "./components/my-tasks-empty-state";
 import { MyTasksKanban } from "./components/my-tasks-kanban";
 import type { MyTasksFeatureFilters } from "./types";
@@ -79,8 +75,6 @@ export default function MyTasksPage() {
   );
   const [filters, setFilters] = useState<MyTasksFeatureFilters>(EMPTY_FILTERS);
   const { data: projects = [] } = useProjects();
-  const { data: usersResult } = useOrganizationUsers();
-
   const assigneeId = currentUser?.id ?? null;
   const listParams = useMemo(
     () => buildFeatureListParams(assigneeId),
@@ -125,18 +119,7 @@ export default function MyTasksPage() {
   const updateFeatureMutation = useUpdateFeature();
   const deleteFeatureMutation = useDeleteFeature();
 
-  const orgUsers: PopoverUser[] = useMemo(() => {
-    if (!usersResult) {
-      return [];
-    }
-    return usersResult.map((user) => ({
-      id: user.id,
-      name: getUserDisplayName(user),
-      email: user.email,
-      avatarUrl: user.avatarUrl ?? undefined,
-      initials: getUserInitials(user.firstName, user.lastName),
-    }));
-  }, [usersResult]);
+  const orgUsers = useOrgUsersAsPopoverUsers();
 
   const editHandlers: RowEditHandlers = useMemo(
     () => ({
@@ -148,7 +131,7 @@ export default function MyTasksPage() {
       onUpdateStatus: (id, status) =>
         updateFeatureMutation.mutate({ id, status: status as FeatureStatus }),
     }),
-    [orgUsers, updateFeatureMutation]
+    [orgUsers, updateFeatureMutation.mutate]
   );
 
   const handleDelete = async (item: ArtifactRowItem): Promise<boolean> => {
@@ -333,7 +316,7 @@ export default function MyTasksPage() {
                 emptyTitle="No matching tasks"
                 items={items}
                 moreMenuContent={(_item, onRequestDelete) => (
-                  <FeatureRowActions onDelete={onRequestDelete} />
+                  <DeleteRowActions onDelete={onRequestDelete} />
                 )}
                 onDelete={handleDelete}
                 visibleColumns={visibleColumns}

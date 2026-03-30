@@ -2,7 +2,6 @@
 
 import type { Priority } from "@repo/api/src/types/common";
 import type { FeatureStatus } from "@repo/api/src/types/feature";
-import type { User as PopoverUser } from "@repo/design-system/components/ui/user-select-popover";
 import { BoxIcon, Loader2Icon } from "lucide-react";
 import { useParams } from "next/navigation";
 import { useMemo } from "react";
@@ -12,6 +11,7 @@ import type {
   RowEditHandlers,
 } from "@/components/artifact-table/artifact-row";
 import { ColumnVisibilityPanel } from "@/components/artifact-table/column-visibility-panel";
+import { DeleteRowActions } from "@/components/artifact-table/delete-row-actions";
 import { FlatArtifactTable } from "@/components/artifact-table/flat-artifact-table";
 import {
   useDeleteFeature,
@@ -19,13 +19,11 @@ import {
   useUpdateFeature,
 } from "@/hooks/queries/use-features";
 import { useTeam } from "@/hooks/queries/use-teams";
-import { useOrganizationUsers } from "@/hooks/queries/use-users";
 import {
   FEATURE_DEFAULT_COLUMNS,
   useColumnVisibility,
 } from "@/hooks/use-column-visibility";
-import { getUserDisplayName, getUserInitials } from "@/lib/user-utils";
-import { FeatureRowActions } from "./components/feature-row-actions";
+import { useOrgUsersAsPopoverUsers } from "@/hooks/use-org-users-as-popover-users";
 
 export default function TeamFeaturesPage() {
   const params = useParams();
@@ -40,7 +38,7 @@ export default function TeamFeaturesPage() {
   const { data: team, isLoading: loadingTeam } = useTeam(teamId);
   const { data: features = [], isLoading: loadingFeatures } =
     useFeaturesByTeam(teamId);
-  const { data: usersResult } = useOrganizationUsers();
+  const orgUsers = useOrgUsersAsPopoverUsers();
 
   const deleteFeatureMutation = useDeleteFeature();
   const updateFeatureMutation = useUpdateFeature();
@@ -49,19 +47,6 @@ export default function TeamFeaturesPage() {
     () => features.map((f) => ({ kind: "feature" as const, data: f })),
     [features]
   );
-
-  const orgUsers: PopoverUser[] = useMemo(() => {
-    if (!usersResult) {
-      return [];
-    }
-    return usersResult.map((user) => ({
-      id: user.id,
-      name: getUserDisplayName(user),
-      email: user.email,
-      avatarUrl: user.avatarUrl ?? undefined,
-      initials: getUserInitials(user.firstName, user.lastName),
-    }));
-  }, [usersResult]);
 
   const editHandlers: RowEditHandlers = useMemo(
     () => ({
@@ -73,7 +58,7 @@ export default function TeamFeaturesPage() {
       onUpdateStatus: (id, status) =>
         updateFeatureMutation.mutate({ id, status: status as FeatureStatus }),
     }),
-    [orgUsers, updateFeatureMutation]
+    [orgUsers, updateFeatureMutation.mutate]
   );
 
   const handleDelete = async (item: ArtifactRowItem): Promise<boolean> => {
@@ -125,7 +110,7 @@ export default function TeamFeaturesPage() {
             emptyTitle="No features yet"
             items={items}
             moreMenuContent={(_item, onRequestDelete) => (
-              <FeatureRowActions onDelete={onRequestDelete} />
+              <DeleteRowActions onDelete={onRequestDelete} />
             )}
             onDelete={handleDelete}
             visibleColumns={visibleColumns}

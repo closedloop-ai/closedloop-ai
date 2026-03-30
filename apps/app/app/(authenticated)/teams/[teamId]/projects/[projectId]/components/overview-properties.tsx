@@ -32,7 +32,7 @@ import { useGitHubIntegrationStatus } from "@/hooks/queries/use-github-integrati
 import { useTeamMembers } from "@/hooks/use-team-members";
 import { ensureDate } from "@/lib/date-utils";
 import { PRIORITY_LABELS } from "@/lib/project-constants";
-import { getUserDisplayName } from "@/lib/user-utils";
+import { getUserDisplayName, getUserInitials } from "@/lib/user-utils";
 import { DefaultRepositoryPicker } from "./default-repository-picker";
 
 /** Matches SelectTrigger size="sm" styling so all property cells look uniform. */
@@ -45,16 +45,6 @@ type OverviewPropertiesProps = {
   onUpdateAssignee: (assigneeId: string | null) => void;
   onUpdateTargetDate: (date: Date | null) => void;
 };
-
-function getInitials(name: string): string {
-  return name
-    .split(" ")
-    .filter((part) => part.length > 0)
-    .map((part) => part[0])
-    .join("")
-    .toUpperCase()
-    .slice(0, 2);
-}
 
 export function OverviewProperties({
   project,
@@ -84,7 +74,10 @@ export function OverviewProperties({
               />
             ) : null}
             <AvatarFallback className="text-[10px]">
-              {getInitials(getUserDisplayName(project.assignee))}
+              {getUserInitials(
+                project.assignee.firstName,
+                project.assignee.lastName
+              )}
             </AvatarFallback>
           </Avatar>
           <span className="truncate">

@@ -9,11 +9,11 @@ import {
 } from "@repo/design-system/components/ui/dropdown-menu";
 import { MoreHorizontalIcon, TrashIcon } from "lucide-react";
 
-type PlanRowActionsProps = {
+type DeleteRowActionsProps = {
   onDelete: () => void;
 };
 
-export function PlanRowActions({ onDelete }: PlanRowActionsProps) {
+export function DeleteRowActions({ onDelete }: DeleteRowActionsProps) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>

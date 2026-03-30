@@ -309,6 +309,7 @@ export function ArtifactsView({
   const [deleteTarget, setDeleteTarget] = useState<ArtifactRowItem | null>(
     null
   );
+  const [pendingBulkIds, setPendingBulkIds] = useState<Set<string>>(new Set());
   const [moveArtifact, setMoveArtifact] =
     useState<ArtifactWithWorkstream | null>(null);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
@@ -448,12 +449,43 @@ export function ArtifactsView({
     setMenuState(null);
   }
 
+  async function executeBulkDelete(
+    performDelete: (item: ArtifactRowItem) => Promise<boolean>
+  ): Promise<boolean> {
+    const itemsToDelete: ArtifactRowItem[] = [];
+    for (const id of pendingBulkIds) {
+      const artifact = artifacts.find((a) => a.id === id);
+      if (artifact) {
+        itemsToDelete.push({ kind: "artifact", data: artifact });
+      } else {
+        const feature = features.find((f) => f.id === id);
+        if (feature) {
+          itemsToDelete.push({ kind: "feature", data: feature });
+        }
+      }
+    }
+    const results = await Promise.all(itemsToDelete.map(performDelete));
+    const allDeleted = results.every(Boolean);
+    if (allDeleted) {
+      setDeleteDialogOpen(false);
+      setPendingBulkIds(new Set());
+      setSelectedIds(new Set());
+    }
+    return allDeleted;
+  }
+
   async function handleConfirmDelete(): Promise<boolean> {
-    if (!(deleteTarget && onDelete)) {
+    if (!onDelete) {
       return false;
     }
     setDeletePending(true);
     try {
+      if (pendingBulkIds.size > 0) {
+        return await executeBulkDelete(onDelete);
+      }
+      if (!deleteTarget) {
+        return false;
+      }
       const result = await onDelete(deleteTarget);
       if (result) {
         setDeleteDialogOpen(false);
@@ -589,12 +621,8 @@ export function ArtifactsView({
                 <Button
                   className="h-8 text-xs"
                   onClick={() => {
-                    for (const id of selectedIds) {
-                      handleRequestDelete({
-                        kind: "artifact",
-                        data: artifacts.find((a) => a.id === id),
-                      } as ArtifactRowItem);
-                    }
+                    setPendingBulkIds(new Set(selectedIds));
+                    setDeleteDialogOpen(true);
                   }}
                   size="sm"
                   variant="outline"

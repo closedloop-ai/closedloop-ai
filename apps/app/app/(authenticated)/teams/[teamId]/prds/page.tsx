@@ -4,7 +4,6 @@ import {
   type ArtifactStatus,
   ArtifactType,
 } from "@repo/api/src/types/artifact";
-import type { User as PopoverUser } from "@repo/design-system/components/ui/user-select-popover";
 import { FileIcon, Loader2Icon } from "lucide-react";
 import { useParams } from "next/navigation";
 import { useMemo } from "react";
@@ -14,6 +13,7 @@ import type {
   RowEditHandlers,
 } from "@/components/artifact-table/artifact-row";
 import { ColumnVisibilityPanel } from "@/components/artifact-table/column-visibility-panel";
+import { DeleteRowActions } from "@/components/artifact-table/delete-row-actions";
 import { FlatArtifactTable } from "@/components/artifact-table/flat-artifact-table";
 import {
   useArtifactsByTeam,
@@ -21,13 +21,11 @@ import {
   useUpdateArtifact,
 } from "@/hooks/queries/use-artifacts";
 import { useTeam } from "@/hooks/queries/use-teams";
-import { useOrganizationUsers } from "@/hooks/queries/use-users";
 import {
   PRD_DEFAULT_COLUMNS,
   useColumnVisibility,
 } from "@/hooks/use-column-visibility";
-import { getUserDisplayName, getUserInitials } from "@/lib/user-utils";
-import { PrdRowActions } from "./components/prd-row-actions";
+import { useOrgUsersAsPopoverUsers } from "@/hooks/use-org-users-as-popover-users";
 
 export default function TeamPrdsPage() {
   const params = useParams();
@@ -42,7 +40,7 @@ export default function TeamPrdsPage() {
   const { data: team, isLoading: loadingTeam } = useTeam(teamId);
   const { data: artifacts = [], isLoading: loadingArtifacts } =
     useArtifactsByTeam(teamId, ArtifactType.Prd);
-  const { data: usersResult } = useOrganizationUsers();
+  const orgUsers = useOrgUsersAsPopoverUsers();
 
   const deleteArtifactMutation = useDeleteArtifact();
   const updateArtifactMutation = useUpdateArtifact();
@@ -51,19 +49,6 @@ export default function TeamPrdsPage() {
     () => artifacts.map((a) => ({ kind: "artifact" as const, data: a })),
     [artifacts]
   );
-
-  const orgUsers: PopoverUser[] = useMemo(() => {
-    if (!usersResult) {
-      return [];
-    }
-    return usersResult.map((user) => ({
-      id: user.id,
-      name: getUserDisplayName(user),
-      email: user.email,
-      avatarUrl: user.avatarUrl ?? undefined,
-      initials: getUserInitials(user.firstName, user.lastName),
-    }));
-  }, [usersResult]);
 
   const editHandlers: RowEditHandlers = useMemo(
     () => ({
@@ -125,7 +110,7 @@ export default function TeamPrdsPage() {
             emptyTitle="No PRDs yet"
             items={items}
             moreMenuContent={(_item, onRequestDelete) => (
-              <PrdRowActions onDelete={onRequestDelete} />
+              <DeleteRowActions onDelete={onRequestDelete} />
             )}
             onDelete={handleDelete}
             visibleColumns={visibleColumns}
