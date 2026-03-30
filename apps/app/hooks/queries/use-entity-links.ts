@@ -16,6 +16,7 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { useApiClient } from "@/hooks/use-api-client";
+import { projectTreeKeys } from "./use-project-tree";
 
 // Query keys
 export const entityLinkKeys = {
@@ -250,6 +251,7 @@ export function useCreateEntityLink() {
       apiClient.post<EntityLink>("/entity-links", input),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: entityLinkKeys.lists() });
+      queryClient.invalidateQueries({ queryKey: projectTreeKeys.all });
     },
   });
 }
@@ -263,6 +265,7 @@ export function useDeleteEntityLink() {
       apiClient.delete<{ deleted: true }>(`/entity-links/${id}`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: entityLinkKeys.all });
+      queryClient.invalidateQueries({ queryKey: projectTreeKeys.all });
     },
   });
 }
@@ -304,4 +307,7 @@ export function invalidateEntityLinkQueries(
       );
     },
   });
+
+  // Entity link changes affect the project tree hierarchy
+  queryClient.invalidateQueries({ queryKey: projectTreeKeys.all });
 }

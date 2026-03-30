@@ -30,6 +30,7 @@ import { dashboardKeys } from "./use-dashboard-stats";
 import { invalidateEntityLinkQueries } from "./use-entity-links";
 import { executionLogKeys } from "./use-execution-log";
 import { judgesKeys } from "./use-judges";
+import { projectTreeKeys } from "./use-project-tree";
 import { projectKeys } from "./use-projects";
 
 /** Summary fields returned by the versions list endpoint (no content). */
@@ -217,9 +218,12 @@ export function useCreateArtifact() {
   return useMutation({
     mutationFn: (input: CreateArtifactInput) =>
       apiClient.post<Artifact>("/artifacts", input),
-    onSuccess: () => {
+    onSuccess: (_, input) => {
       queryClient.invalidateQueries({ queryKey: artifactKeys.lists() });
       queryClient.invalidateQueries({ queryKey: dashboardKeys.all });
+      queryClient.invalidateQueries({
+        queryKey: projectTreeKeys.detail(input.projectId),
+      });
     },
   });
 }
@@ -407,6 +411,11 @@ export function useCreateAndGenerateArtifact() {
       queryClient.invalidateQueries({
         queryKey: artifactKeys.generationStatus(data.id),
       });
+      if (data.projectId) {
+        queryClient.invalidateQueries({
+          queryKey: projectTreeKeys.detail(data.projectId),
+        });
+      }
     },
   });
 

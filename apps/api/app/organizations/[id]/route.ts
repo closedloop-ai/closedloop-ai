@@ -53,6 +53,10 @@ export const PUT = withAuth<Organization, "/organizations/[id]">(
 
       const organization = await organizationsService.update(id, body);
 
+      if (!organization) {
+        return notFoundResponse("Organization");
+      }
+
       return successResponse(organization);
     } catch (error) {
       return errorResponse("Failed to update organization", error);
