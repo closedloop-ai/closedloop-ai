@@ -77,7 +77,7 @@ type ReviewChatPaneProps = {
     findingCount: number,
     findings?: ReviewFinding[]
   ) => void;
-  /** Called when structured findings are extracted via session resumption (Claude only) */
+  /** Called when structured findings are extracted via session resumption */
   onStructuredFindings?: (findings: ReviewFinding[]) => void;
   /** Indices of findings flagged as duplicates of the other provider's review */
   duplicateIndices?: Set<number>;

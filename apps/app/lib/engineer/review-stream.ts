@@ -69,7 +69,15 @@ export function dispatchReviewEvent(
     handlers.onContextPercent?.(event.contextPercent);
   } else if (event.type === "done") {
     console.log(`[stream-reader] Done event, exitCode=${event.exitCode}`);
-    state.terminalState = "done";
+    if (typeof event.exitCode === "number" && event.exitCode !== 0) {
+      state.terminalState = "terminal_error";
+      state.terminalError =
+        event.error ??
+        event.content ??
+        `Review process exited with code ${event.exitCode}`;
+    } else {
+      state.terminalState = "done";
+    }
   } else if (event.type === "error") {
     handleErrorEvent(event, state);
   }
