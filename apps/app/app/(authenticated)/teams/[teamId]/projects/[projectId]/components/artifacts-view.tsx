@@ -5,7 +5,9 @@ import {
   ArtifactType,
   type ArtifactWithWorkstream,
 } from "@repo/api/src/types/artifact";
+import { EntityType } from "@repo/api/src/types/entity-link";
 import type { FeatureWithWorkstream } from "@repo/api/src/types/feature";
+import type { TreeEntity, TreeNode } from "@repo/api/src/types/project-tree";
 import type { WorkstreamState } from "@repo/api/src/types/workstream";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
@@ -26,6 +28,7 @@ import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialo
 import { EmptyState } from "@/components/empty-state";
 import { MoveArtifactDialog } from "@/components/move-artifact-dialog";
 import { useMergeArtifacts } from "@/hooks/queries/use-artifacts";
+import { useProjectTree } from "@/hooks/queries/use-project-tree";
 import type { ArtifactColumn } from "@/hooks/use-column-visibility";
 import { useSortParams } from "@/hooks/use-sort-params";
 import { matchesFilter } from "@/lib/artifact-filter";
@@ -163,6 +166,94 @@ function groupByWorkstream(
     }
     return a.title.localeCompare(b.title);
   });
+}
+
+// ---- Tree-based grouping ----
+
+/** Unified group shape used by both workstream and tree grouping paths. */
+type DisplayGroup = {
+  groupKey: string;
+  root: ArtifactRowItem;
+  children: ArtifactRowItem[];
+};
+
+/** Convert workstream groups (fallback path) to the unified DisplayGroup shape. */
+function toDisplayGroups(wsGroups: WorkstreamGroup[]): DisplayGroup[] {
+  const result: DisplayGroup[] = [];
+  for (const g of wsGroups) {
+    const [root, ...children] = g.items;
+    if (root) {
+      result.push({ groupKey: g.groupKey, root, children });
+    }
+  }
+  return result;
+}
+
+function treeEntityToRowItem(
+  entity: TreeEntity,
+  artifactMap: Map<string, ArtifactWithWorkstream>,
+  featureMap: Map<string, FeatureWithWorkstream>
+): ArtifactRowItem | null {
+  if (entity.entityType === EntityType.Artifact) {
+    const data = artifactMap.get(entity.id);
+    return data ? { kind: "artifact", data } : null;
+  }
+  if (entity.entityType === EntityType.Feature) {
+    const data = featureMap.get(entity.id);
+    return data ? { kind: "feature", data } : null;
+  }
+  return null; // ExternalLink — no row type yet
+}
+
+function groupByProjectTree(
+  nodes: TreeNode[],
+  artifacts: ArtifactWithWorkstream[],
+  features: FeatureWithWorkstream[]
+): DisplayGroup[] {
+  const artifactMap = new Map(artifacts.map((a) => [a.id, a]));
+  const featureMap = new Map(features.map((f) => [f.id, f]));
+  const seenIds = new Set<string>();
+  const groups: DisplayGroup[] = [];
+
+  for (const node of nodes) {
+    const root = treeEntityToRowItem(node.root, artifactMap, featureMap);
+    if (!root) {
+      continue;
+    }
+    seenIds.add(node.root.id);
+
+    const children: ArtifactRowItem[] = [];
+    for (const child of node.children) {
+      seenIds.add(child.id);
+      const childItem = treeEntityToRowItem(child, artifactMap, featureMap);
+      if (childItem) {
+        children.push(childItem);
+      }
+    }
+    groups.push({ groupKey: node.root.id, root, children });
+  }
+
+  // Orphans — items in filtered data but not in any tree node
+  for (const artifact of artifacts) {
+    if (!seenIds.has(artifact.id)) {
+      groups.push({
+        groupKey: artifact.id,
+        root: { kind: "artifact", data: artifact },
+        children: [],
+      });
+    }
+  }
+  for (const feature of features) {
+    if (!seenIds.has(feature.id)) {
+      groups.push({
+        groupKey: feature.id,
+        root: { kind: "feature", data: feature },
+        children: [],
+      });
+    }
+  }
+
+  return groups;
 }
 
 // ---- Filter items by category ----
@@ -347,30 +438,30 @@ export function ArtifactsView({
     return null;
   }, [selectedIds, artifacts]);
 
-  // Build groups for "All" view, sorted by parent item when a sort is active
-  const groups = useMemo(() => {
-    const unsorted = groupByWorkstream(filteredArtifacts, filteredFeatures);
+  const { data: treeData } = useProjectTree(projectId, {
+    enabled: filterCategory === "all",
+  });
+
+  // Build groups for "All" view, sorted by root item when a sort is active.
+  // Uses project tree structure when available; falls back to workstream grouping while loading.
+  const groups: DisplayGroup[] = useMemo(() => {
+    const ungrouped: DisplayGroup[] = treeData
+      ? groupByProjectTree(treeData.nodes, filteredArtifacts, filteredFeatures)
+      : toDisplayGroups(groupByWorkstream(filteredArtifacts, filteredFeatures));
+
     if (!sortBy) {
-      return unsorted;
+      return ungrouped;
     }
     const config = ITEM_SORT_CONFIGS[sortBy];
-    if (!config) {
-      return unsorted;
+    if (!config?.comparator) {
+      return ungrouped;
     }
-    const comparator = config.comparator;
-    if (!comparator) {
-      return unsorted;
-    }
+    const { comparator } = config;
     const dirMultiplier = sortDir === "asc" ? 1 : -1;
-    return [...unsorted].sort((a, b) => {
-      const parentA = a.items[0];
-      const parentB = b.items[0];
-      if (!(parentA && parentB)) {
-        return 0;
-      }
-      return comparator(parentA, parentB) * dirMultiplier;
-    });
-  }, [filteredArtifacts, filteredFeatures, sortBy, sortDir]);
+    return [...ungrouped].sort(
+      (a, b) => comparator(a.root, b.root) * dirMultiplier
+    );
+  }, [filteredArtifacts, filteredFeatures, sortBy, sortDir, treeData]);
 
   // Initialize all groups as open on first render
   if (!openGroupsInitialized && groups.length > 0) {
@@ -534,10 +625,7 @@ export function ArtifactsView({
         />
         {isGroupedView
           ? groups.map((group) => {
-              const [parent, ...children] = group.items;
-              if (!parent) {
-                return null;
-              }
+              const { root, children } = group;
               const isOpen = openGroups.has(group.groupKey);
               const hasChildren = children.length > 0;
               return (
@@ -545,8 +633,8 @@ export function ArtifactsView({
                   <ArtifactRow
                     editHandlers={editHandlers}
                     isExpanded={hasChildren ? isOpen : false}
-                    isSelected={selectedIds.has(parent.data.id)}
-                    item={parent}
+                    isSelected={selectedIds.has(root.data.id)}
+                    item={root}
                     onMoreMenu={handleMoreMenu}
                     onSelectionChange={handleSelectionChange}
                     onToggleExpand={
