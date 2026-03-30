@@ -387,7 +387,6 @@ export function ArtifactsView({
   editHandlers,
 }: ArtifactsViewProps) {
   const [openGroups, setOpenGroups] = useState<Set<string>>(new Set());
-  const [openGroupsInitialized, setOpenGroupsInitialized] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   // Clear selection when filter category changes
@@ -463,12 +462,21 @@ export function ArtifactsView({
     );
   }, [filteredArtifacts, filteredFeatures, sortBy, sortDir, treeData]);
 
-  // Initialize all groups as open on first render
-  if (!openGroupsInitialized && groups.length > 0) {
-    const allKeys = new Set(groups.map((g) => g.groupKey));
-    setOpenGroups(allKeys);
-    setOpenGroupsInitialized(true);
-  }
+  // Auto-open any groups that haven't been seen before (handles initial load and
+  // async tree data arriving after the workstream fallback was already shown).
+  useEffect(() => {
+    setOpenGroups((prev) => {
+      const next = new Set(prev);
+      let changed = false;
+      for (const g of groups) {
+        if (!prev.has(g.groupKey)) {
+          next.add(g.groupKey);
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [groups]);
 
   // Build flat items for filtered views
   const flatItems: ArtifactRowItem[] = useMemo(() => {
