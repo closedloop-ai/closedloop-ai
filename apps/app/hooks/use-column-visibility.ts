@@ -46,7 +46,6 @@ export const ALL_ARTIFACT_COLUMNS: ArtifactColumn[] = [
   ArtifactColumn.Assignee,
   ArtifactColumn.Loop,
   ArtifactColumn.Workflow,
-  ArtifactColumn.DueDate,
   ArtifactColumn.Priority,
   ArtifactColumn.Score,
 ];
@@ -64,7 +63,6 @@ export const PRD_DEFAULT_COLUMNS: ArtifactColumn[] = [
   ArtifactColumn.Project,
   ArtifactColumn.Assignee,
   ArtifactColumn.Workflow,
-  ArtifactColumn.DueDate,
   ArtifactColumn.Priority,
   ArtifactColumn.Score,
 ];
@@ -74,7 +72,6 @@ export const MY_TASKS_DEFAULT_COLUMNS: ArtifactColumn[] = [
   ArtifactColumn.Project,
   ArtifactColumn.Assignee,
   ArtifactColumn.Workflow,
-  ArtifactColumn.DueDate,
   ArtifactColumn.Priority,
 ];
 
@@ -83,7 +80,6 @@ export const FEATURE_DEFAULT_COLUMNS: ArtifactColumn[] = [
   ArtifactColumn.Project,
   ArtifactColumn.Assignee,
   ArtifactColumn.Workflow,
-  ArtifactColumn.DueDate,
   ArtifactColumn.Priority,
 ];
 
@@ -92,7 +88,6 @@ export const PLAN_DEFAULT_COLUMNS: ArtifactColumn[] = [
   ArtifactColumn.Project,
   ArtifactColumn.Assignee,
   ArtifactColumn.Workflow,
-  ArtifactColumn.DueDate,
   ArtifactColumn.Priority,
   ArtifactColumn.Score,
 ];
