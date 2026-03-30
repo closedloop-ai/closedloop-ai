@@ -51,4 +51,22 @@ describe("splitReviewOutput", () => {
       "apps/desktop/src/main/app.ts",
     ]);
   });
+
+  it("does not split findings on inline [P#] mentions in descriptions", () => {
+    const output = [
+      "some process log",
+      "Full review comments:",
+      "- [P2] First issue — apps/api/src/a.ts:10",
+      "This description mentions [P3] inline and should stay in one finding.",
+      "- [P1] Second issue — apps/api/src/b.ts:20",
+      "Second description line.",
+    ].join("\n");
+
+    const result = splitReviewOutput(output, "codex");
+
+    expect(result.findings).toHaveLength(2);
+    expect(result.findings[0]?.message).toContain("mentions [P3] inline");
+    expect(result.findings[0]?.priority).toBe("P2");
+    expect(result.findings[1]?.priority).toBe("P1");
+  });
 });

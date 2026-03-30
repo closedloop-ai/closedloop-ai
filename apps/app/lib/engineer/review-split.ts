@@ -8,7 +8,7 @@ import {
 export type AnnotatedFinding = ReviewFinding & { originalIndex: number };
 
 const FINDINGS_HEADER = /(?:Full\s+)?[Rr]eview comments?:\s*/;
-const PRIORITY_CHUNK_START_RE = /(^|\n|\s)(?:[-*]\s*)?\[[Pp]\d\]\s+/g;
+const PRIORITY_CHUNK_START_RE = /(^|\n)\s*(?:[-*]\s*)?\[[Pp]\d\]\s+/g;
 
 export function splitReviewOutput(
   output: string,
@@ -96,7 +96,7 @@ function splitPriorityChunks(text: string): string[] {
     if (!match) {
       break;
     }
-    // Skip the leading delimiter captured by group 1 (start/newline/space).
+    // Skip the leading delimiter captured by group 1 (start/newline).
     starts.push(match.index + match[1].length);
   }
   if (starts.length === 0) {

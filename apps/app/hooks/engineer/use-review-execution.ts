@@ -452,7 +452,7 @@ export function useReviewExecution(
       }
 
       if (result.terminalState === "terminal_error") {
-        const combinedErrorText = `${result.terminalError ?? ""}\n${result.text}`;
+        const combinedErrorText = result.terminalError ?? "";
         const shouldRetryTransientCodexError =
           config.provider === "codex" &&
           transientRetryAttempt < MAX_TRANSIENT_RETRY_ATTEMPTS &&
@@ -475,6 +475,7 @@ export function useReviewExecution(
             );
           });
           if (signal.aborted) {
+            setReviewDone(true);
             return;
           }
           await runReviewAttempt(signal, nextAttempt);
@@ -812,10 +813,8 @@ export function useReviewExecution(
           }
         );
         const data = await res.json();
-        if (Array.isArray(data.findings)) {
+        if (Array.isArray(data.findings) && data.findings.length > 0) {
           setStructuredFindings(data.findings);
-        }
-        if (data.findings && data.findings.length > 0) {
           console.log(
             `[review-extract] Got ${data.findings.length} structured findings`
           );
