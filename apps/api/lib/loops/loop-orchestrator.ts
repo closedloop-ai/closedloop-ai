@@ -1233,6 +1233,12 @@ async function handleZeroTokenExecute(
     return [];
   }
 
+  // Preserve PR/session metadata from the completed event so the loop record
+  // retains linkage/debug context even on NO_WORK_PRODUCED failures.
+  const prSession = extractPrSessionInfo(
+    event as unknown as Record<string, unknown>
+  );
+
   // Attempt transition to FAILED. If another event raced to terminal, catch and return [].
   try {
     await loopsService.updateStatus(loopId, organizationId, LoopStatus.Failed, {
@@ -1241,6 +1247,7 @@ async function handleZeroTokenExecute(
         code: LoopErrorCode.NoWorkProduced,
         message: errorEvent.message,
       },
+      ...prSession,
     });
   } catch (err) {
     if (isInvalidStatusTransitionError(err)) {
