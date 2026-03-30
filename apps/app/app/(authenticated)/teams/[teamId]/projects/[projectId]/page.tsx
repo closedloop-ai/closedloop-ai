@@ -124,7 +124,10 @@ export default function ProjectDetailPage() {
   // Column visibility — override based on active filter category
   const columnOverrides = useMemo((): Partial<ColumnVisibility> => {
     switch (filterCategory) {
+      case "all":
+        return { [ArtifactColumn.Parent]: false };
       case "documents":
+        return { [ArtifactColumn.Type]: false, [ArtifactColumn.Parent]: false };
       case "features":
       case "plans":
       case "branches":
@@ -282,7 +285,12 @@ export default function ProjectDetailPage() {
         }
       },
       onUpdatePriority: (itemId, priority) => {
-        updateFeatureMutation.mutate({ id: itemId, priority });
+        const isArtifact = artifacts.some((a) => a.id === itemId);
+        if (isArtifact) {
+          updateArtifactMutation.mutate({ id: itemId, priority });
+        } else {
+          updateFeatureMutation.mutate({ id: itemId, priority });
+        }
       },
       onUpdateDueDate: (_itemId, _date) => {
         // Due date update not yet supported on artifacts/issues — placeholder

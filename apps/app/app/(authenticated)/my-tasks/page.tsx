@@ -44,6 +44,7 @@ import {
   MY_TASKS_DEFAULT_COLUMNS,
   useColumnVisibility,
 } from "@/hooks/use-column-visibility";
+import { useItemsParentTitles } from "@/hooks/use-items-parent-titles";
 import { useLocalStorageState } from "@/hooks/use-local-storage-state";
 import { useOrgUsersAsPopoverUsers } from "@/hooks/use-org-users-as-popover-users";
 import { OnboardingChecklist } from "../components/onboarding-checklist";
@@ -148,6 +149,8 @@ export default function MyTasksPage() {
     () => features.map((f) => ({ kind: "feature" as const, data: f })),
     [features]
   );
+
+  const parentTitleMap = useItemsParentTitles(items);
 
   // ---- Filter toggles ----
 
@@ -322,6 +325,7 @@ export default function MyTasksPage() {
                   <DeleteRowActions onDelete={onRequestDelete} />
                 )}
                 onDelete={handleDelete}
+                parentTitleMap={parentTitleMap}
                 visibleColumns={visibleColumns}
               />
             </div>

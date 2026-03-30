@@ -23,6 +23,7 @@ import {
   FEATURE_DEFAULT_COLUMNS,
   useColumnVisibility,
 } from "@/hooks/use-column-visibility";
+import { useItemsParentTitles } from "@/hooks/use-items-parent-titles";
 import { useOrgUsersAsPopoverUsers } from "@/hooks/use-org-users-as-popover-users";
 
 const COLUMN_VISIBILITY_KEY = "table:columns:team-features";
@@ -51,6 +52,8 @@ export default function TeamFeaturesPage() {
     () => features.map((f) => ({ kind: "feature" as const, data: f })),
     [features]
   );
+
+  const parentTitleMap = useItemsParentTitles(items);
 
   const editHandlers: RowEditHandlers = useMemo(
     () => ({
@@ -117,6 +120,7 @@ export default function TeamFeaturesPage() {
               <DeleteRowActions onDelete={onRequestDelete} />
             )}
             onDelete={handleDelete}
+            parentTitleMap={parentTitleMap}
             visibleColumns={visibleColumns}
           />
         </div>

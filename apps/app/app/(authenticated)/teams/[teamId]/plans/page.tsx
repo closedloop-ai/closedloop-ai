@@ -25,6 +25,7 @@ import {
   PLAN_DEFAULT_COLUMNS,
   useColumnVisibility,
 } from "@/hooks/use-column-visibility";
+import { useItemsParentTitles } from "@/hooks/use-items-parent-titles";
 import { useOrgUsersAsPopoverUsers } from "@/hooks/use-org-users-as-popover-users";
 
 const COLUMN_VISIBILITY_KEY = "table:columns:team-plans";
@@ -54,11 +55,15 @@ export default function TeamPlansPage() {
     [artifacts]
   );
 
+  const parentTitleMap = useItemsParentTitles(items);
+
   const editHandlers: RowEditHandlers = useMemo(
     () => ({
       teamMembers: orgUsers,
       onUpdateAssignee: (id, assigneeId) =>
         updateArtifactMutation.mutate({ id, assigneeId }),
+      onUpdatePriority: (id, priority) =>
+        updateArtifactMutation.mutate({ id, priority }),
       onUpdateStatus: (id, status) =>
         updateArtifactMutation.mutate({ id, status: status as ArtifactStatus }),
     }),
@@ -117,6 +122,7 @@ export default function TeamPlansPage() {
               <DeleteRowActions onDelete={onRequestDelete} />
             )}
             onDelete={handleDelete}
+            parentTitleMap={parentTitleMap}
             visibleColumns={visibleColumns}
           />
         </div>

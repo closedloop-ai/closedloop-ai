@@ -8,7 +8,7 @@ import { useLocalStorageState } from "@/hooks/use-local-storage-state";
  */
 export const ArtifactColumn = {
   Type: "type",
-  Workflow: "workflow",
+  Parent: "parent",
   DueDate: "dueDate",
   Assignee: "assignee",
   Priority: "priority",
@@ -24,7 +24,7 @@ export type ArtifactColumn =
 
 export const ARTIFACT_COLUMN_LABELS: Record<ArtifactColumn, string> = {
   [ArtifactColumn.Type]: "Type",
-  [ArtifactColumn.Workflow]: "Workflow",
+  [ArtifactColumn.Parent]: "Parent",
   [ArtifactColumn.DueDate]: "Due Date",
   [ArtifactColumn.Assignee]: "Assignee",
   [ArtifactColumn.Priority]: "Priority",
@@ -45,7 +45,7 @@ export const ALL_ARTIFACT_COLUMNS: ArtifactColumn[] = [
   ArtifactColumn.Type,
   ArtifactColumn.Assignee,
   ArtifactColumn.Loop,
-  ArtifactColumn.Workflow,
+  ArtifactColumn.Parent,
   ArtifactColumn.Priority,
   ArtifactColumn.Score,
 ];
@@ -62,7 +62,6 @@ export const PROJECT_DEFAULT_COLUMNS: ArtifactColumn[] = [
 export const PRD_DEFAULT_COLUMNS: ArtifactColumn[] = [
   ArtifactColumn.Project,
   ArtifactColumn.Assignee,
-  ArtifactColumn.Workflow,
   ArtifactColumn.Priority,
   ArtifactColumn.Score,
 ];
@@ -71,7 +70,7 @@ export const PRD_DEFAULT_COLUMNS: ArtifactColumn[] = [
 export const MY_TASKS_DEFAULT_COLUMNS: ArtifactColumn[] = [
   ArtifactColumn.Project,
   ArtifactColumn.Assignee,
-  ArtifactColumn.Workflow,
+  ArtifactColumn.Parent,
   ArtifactColumn.Priority,
 ];
 
@@ -79,7 +78,7 @@ export const MY_TASKS_DEFAULT_COLUMNS: ArtifactColumn[] = [
 export const FEATURE_DEFAULT_COLUMNS: ArtifactColumn[] = [
   ArtifactColumn.Project,
   ArtifactColumn.Assignee,
-  ArtifactColumn.Workflow,
+  ArtifactColumn.Parent,
   ArtifactColumn.Priority,
 ];
 
@@ -87,7 +86,7 @@ export const FEATURE_DEFAULT_COLUMNS: ArtifactColumn[] = [
 export const PLAN_DEFAULT_COLUMNS: ArtifactColumn[] = [
   ArtifactColumn.Project,
   ArtifactColumn.Assignee,
-  ArtifactColumn.Workflow,
+  ArtifactColumn.Parent,
   ArtifactColumn.Priority,
   ArtifactColumn.Score,
 ];
@@ -96,7 +95,7 @@ export type ColumnVisibility = Record<ArtifactColumn, boolean>;
 
 const DEFAULT_VISIBILITY: ColumnVisibility = {
   [ArtifactColumn.Type]: false,
-  [ArtifactColumn.Workflow]: false,
+  [ArtifactColumn.Parent]: true,
   [ArtifactColumn.DueDate]: true,
   [ArtifactColumn.Assignee]: true,
   [ArtifactColumn.Priority]: true,

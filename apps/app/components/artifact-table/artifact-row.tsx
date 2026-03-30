@@ -35,7 +35,6 @@ import {
   EllipsisIcon,
   Loader2Icon,
   MonitorIcon,
-  NetworkIcon,
   XCircleIcon,
 } from "lucide-react";
 import Link from "next/link";
@@ -84,6 +83,10 @@ export type RowEditHandlers = {
   teamMembers?: User[];
   /** Active loops for displaying per-artifact loop status. */
   activeLoops?: LoopWithUser[];
+  /** Parent entity title, injected per-row for the Parent column cell. */
+  parentTitle?: string;
+  /** Parent entity route, injected per-row for the Parent column cell. */
+  parentHref?: string | null;
 };
 
 const RowEditContext = createContext<RowEditHandlers>({});
@@ -133,7 +136,7 @@ function NameCell({
             />
           </div>
         )}
-        <span className="ml-1 inline-block min-w-[7ch] shrink-0 font-mono text-muted-foreground text-xs">
+        <span className="mr-1.5 ml-1 inline-block min-w-[7ch] shrink-0 font-mono text-muted-foreground text-xs">
           {isDisplayableSlug(item.data.slug) ? item.data.slug : null}
         </span>
         <Tooltip>
@@ -227,7 +230,7 @@ function NameCell({
           />
         </button>
       )}
-      <span className="ml-1 inline-block min-w-[7ch] shrink-0 font-mono text-muted-foreground text-xs">
+      <span className="mr-1.5 ml-1 inline-block min-w-[7ch] shrink-0 font-mono text-muted-foreground text-xs">
         {isDisplayableSlug(item.data.slug) ? item.data.slug : null}
       </span>
       {onUpdateStatus ? (
@@ -297,14 +300,29 @@ function TypeCell({ item }: { item: ArtifactRowItem }) {
   );
 }
 
-function WorkflowCell({ item }: { item: ArtifactRowItem }) {
-  const workstream =
-    item.kind === "artifact" ? item.data.workstream : undefined;
+function ParentCell({ item: _item }: { item: ArtifactRowItem }) {
+  const { parentTitle, parentHref } = useContext(RowEditContext);
+
+  if (parentTitle && parentHref) {
+    return (
+      <div className="h-11 w-[124px] shrink-0 border-l">
+        <Link
+          className="flex h-full w-full items-center px-3 py-2 hover:bg-muted/50"
+          href={parentHref}
+          onClick={(e: MouseEvent<HTMLAnchorElement>) => e.stopPropagation()}
+        >
+          <span className="truncate font-medium text-muted-foreground text-xs">
+            {parentTitle}
+          </span>
+        </Link>
+      </div>
+    );
+  }
+
   return (
-    <div className="flex h-11 w-[124px] shrink-0 items-center gap-0 border-l px-3 py-2">
-      <NetworkIcon className="mr-1 h-4 w-4 shrink-0 text-muted-foreground" />
+    <div className="flex h-11 w-[124px] shrink-0 items-center border-l px-3 py-2">
       <span className="truncate font-medium text-muted-foreground text-xs">
-        {workstream?.title ?? "\u2014"}
+        {parentTitle ?? "\u2014"}
       </span>
     </div>
   );
@@ -421,13 +439,9 @@ function AssigneeCell({ item }: { item: ArtifactRowItem }) {
 
 function PriorityCell({ item }: { item: ArtifactRowItem }) {
   const { onUpdatePriority } = useContext(RowEditContext);
-  // Features and projects have priority; artifacts show a static dash
-  const priority =
-    item.kind === "feature" || item.kind === "project"
-      ? item.data.priority
-      : null;
+  const priority = item.data.priority ?? null;
 
-  if (!onUpdatePriority || item.kind === "artifact") {
+  if (!onUpdatePriority) {
     if (!priority) {
       return (
         <div className="flex h-11 w-[124px] shrink-0 items-center border-l px-3 py-2">
@@ -580,8 +594,43 @@ function LoopCell({ item }: { item: ArtifactRowItem }) {
 }
 
 function ProjectCell({ item }: { item: ArtifactRowItem }) {
-  const projectName =
-    item.kind === "project" ? item.data.name : item.data.project?.name;
+  let project: {
+    id: string;
+    name: string;
+    teams?: { id: string; name: string }[];
+  } | null = null;
+
+  if (item.kind === "project") {
+    project = item.data;
+  } else if (item.data.project) {
+    project = {
+      id: item.data.project.id,
+      name: item.data.project.name,
+      teams: item.data.project.teams,
+    };
+  }
+
+  const projectName = project?.name ?? null;
+  const teamId = project?.teams?.[0]?.id;
+  const projectHref =
+    teamId && project?.id ? `/teams/${teamId}/projects/${project.id}` : null;
+
+  if (projectName && projectHref) {
+    return (
+      <div className="h-11 w-[124px] shrink-0 border-l">
+        <Link
+          className="flex h-full w-full items-center px-3 py-2 hover:bg-muted/50"
+          href={projectHref}
+          onClick={(e: MouseEvent<HTMLAnchorElement>) => e.stopPropagation()}
+        >
+          <span className="truncate font-medium text-muted-foreground text-xs">
+            {projectName}
+          </span>
+        </Link>
+      </div>
+    );
+  }
+
   return (
     <div className="flex h-11 w-[124px] shrink-0 items-center border-l px-3 py-2">
       <span className="truncate font-medium text-muted-foreground text-xs">
@@ -608,7 +657,7 @@ const CELL_RENDERERS: Record<
   React.ComponentType<{ item: ArtifactRowItem }>
 > = {
   [Col.Type]: TypeCell,
-  [Col.Workflow]: WorkflowCell,
+  [Col.Parent]: ParentCell,
   [Col.DueDate]: DueDateCell,
   [Col.Assignee]: AssigneeCell,
   [Col.Priority]: PriorityCell,
@@ -636,6 +685,10 @@ type ArtifactRowProps = {
   indented?: boolean;
   /** Edit handlers for inline cell editing. */
   editHandlers?: RowEditHandlers;
+  /** Parent entity title for this row, used by the Parent column cell. */
+  parentTitle?: string;
+  /** Parent entity route for this row, used by the Parent column cell. */
+  parentHref?: string | null;
 };
 
 export function ArtifactRow({
@@ -650,6 +703,8 @@ export function ArtifactRow({
   onToggleExpand,
   indented = false,
   editHandlers,
+  parentTitle,
+  parentHref,
 }: ArtifactRowProps) {
   const router = useRouter();
 
@@ -677,7 +732,9 @@ export function ArtifactRow({
   }
 
   return (
-    <RowEditContext.Provider value={editHandlers ?? {}}>
+    <RowEditContext.Provider
+      value={{ ...(editHandlers ?? {}), parentHref, parentTitle }}
+    >
       <div className="group/row flex h-11 min-w-fit items-center border-b bg-background hover:bg-muted/50">
         <NameCell
           indented={indented}

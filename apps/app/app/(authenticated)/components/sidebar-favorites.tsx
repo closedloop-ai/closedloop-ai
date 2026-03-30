@@ -12,7 +12,7 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@repo/design-system/components/ui/sidebar";
-import { ChevronRightIcon, FolderIcon } from "lucide-react";
+import { ChevronRightIcon, Layers2Icon } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
@@ -52,7 +52,7 @@ export function SidebarFavorites() {
                 <SidebarMenuItem key={project.id}>
                   <SidebarMenuButton asChild isActive={isActive}>
                     <Link href={href}>
-                      <FolderIcon />
+                      <Layers2Icon />
                       <span>{project.name}</span>
                     </Link>
                   </SidebarMenuButton>

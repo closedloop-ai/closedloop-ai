@@ -4,8 +4,8 @@ import {
   type ArtifactStatus,
   ArtifactType,
   type ArtifactWithWorkstream,
+  getRoutePrefixForType,
 } from "@repo/api/src/types/artifact";
-import { EntityType } from "@repo/api/src/types/entity-link";
 import type { FeatureWithWorkstream } from "@repo/api/src/types/feature";
 import type { TreeEntity, TreeNode } from "@repo/api/src/types/project-tree";
 import type { WorkstreamState } from "@repo/api/src/types/workstream";
@@ -194,11 +194,11 @@ function treeEntityToRowItem(
   artifactMap: Map<string, ArtifactWithWorkstream>,
   featureMap: Map<string, FeatureWithWorkstream>
 ): ArtifactRowItem | null {
-  if (entity.entityType === EntityType.Artifact) {
+  if (isArtifactTreeEntity(entity)) {
     const data = artifactMap.get(entity.id);
     return data ? { kind: "artifact", data } : null;
   }
-  if (entity.entityType === EntityType.Feature) {
+  if (isFeatureTreeEntity(entity)) {
     const data = featureMap.get(entity.id);
     return data ? { kind: "feature", data } : null;
   }
@@ -314,7 +314,6 @@ function filterByCategory(
 const SORT_COLUMNS = [
   "title",
   "type",
-  "workflow",
   "dueDate",
   "assignee",
   "priority",
@@ -437,9 +436,31 @@ export function ArtifactsView({
     return null;
   }, [selectedIds, artifacts]);
 
-  const { data: treeData } = useProjectTree(projectId, {
-    enabled: filterCategory === "all",
-  });
+  const { data: treeData } = useProjectTree(projectId);
+
+  // Build parent map: child entity id → parent title + optional parent artifact route.
+  const parentMap = useMemo((): Map<
+    string,
+    { title: string; href: string | null }
+  > => {
+    if (!treeData) {
+      return new Map();
+    }
+    const map = new Map<string, { title: string; href: string | null }>();
+    for (const node of treeData.nodes) {
+      let parentHref: string | null = null;
+      if (isArtifactTreeEntity(node.root)) {
+        const routePrefix = getRoutePrefixForType(node.root.type);
+        if (routePrefix) {
+          parentHref = `/${routePrefix}/${node.root.slug}`;
+        }
+      }
+      for (const child of node.children) {
+        map.set(child.id, { title: node.root.title, href: parentHref });
+      }
+    }
+    return map;
+  }, [treeData]);
 
   // Build groups for "All" view, sorted by root item when a sort is active.
   // Uses project tree structure when available; falls back to workstream grouping while loading.
@@ -650,6 +671,8 @@ export function ArtifactsView({
                         ? () => toggleGroup(group.groupKey)
                         : undefined
                     }
+                    parentHref={parentMap.get(root.data.id)?.href}
+                    parentTitle={parentMap.get(root.data.id)?.title}
                     showCheckbox={false}
                     visibleColumns={visibleColumns}
                   />
@@ -663,6 +686,8 @@ export function ArtifactsView({
                         key={child.data.id}
                         onMoreMenu={handleMoreMenu}
                         onSelectionChange={handleSelectionChange}
+                        parentHref={parentMap.get(child.data.id)?.href}
+                        parentTitle={parentMap.get(child.data.id)?.title}
                         showCheckbox={false}
                         visibleColumns={visibleColumns}
                       />
@@ -678,6 +703,8 @@ export function ArtifactsView({
                 key={item.data.id}
                 onMoreMenu={handleMoreMenu}
                 onSelectionChange={handleSelectionChange}
+                parentHref={parentMap.get(item.data.id)?.href}
+                parentTitle={parentMap.get(item.data.id)?.title}
                 showCheckbox={showCheckbox}
                 visibleColumns={visibleColumns}
               />
@@ -830,4 +857,16 @@ export function ArtifactsView({
       )}
     </>
   );
+}
+
+function isArtifactTreeEntity(
+  entity: TreeEntity
+): entity is Extract<TreeEntity, { slug: string; type: ArtifactType }> {
+  return "slug" in entity && "type" in entity;
+}
+
+function isFeatureTreeEntity(
+  entity: TreeEntity
+): entity is Extract<TreeEntity, { slug: string; priority: string }> {
+  return "slug" in entity && "priority" in entity;
 }

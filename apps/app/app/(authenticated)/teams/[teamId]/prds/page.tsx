@@ -59,6 +59,8 @@ export default function TeamPrdsPage() {
       teamMembers: orgUsers,
       onUpdateAssignee: (id, assigneeId) =>
         updateArtifactMutation.mutate({ id, assigneeId }),
+      onUpdatePriority: (id, priority) =>
+        updateArtifactMutation.mutate({ id, priority }),
       onUpdateStatus: (id, status) =>
         updateArtifactMutation.mutate({ id, status: status as ArtifactStatus }),
     }),

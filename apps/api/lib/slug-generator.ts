@@ -3,11 +3,12 @@ import { withDb } from "@repo/database";
 import { nanoid } from "nanoid";
 
 export const SlugPrefix = {
-  Project: "PROJ",
-  Workstream: "WORK",
+  Project: "PRO",
+  Workstream: "WRK",
   Prd: "PRD",
-  Plan: "PLAN",
-  Feature: "FEAT",
+  Plan: "PLN",
+  Feature: "FEA",
+  Branch: "BRN",
 } as const;
 export type SlugPrefix = (typeof SlugPrefix)[keyof typeof SlugPrefix];
 
@@ -52,4 +53,5 @@ export async function generateArtifactSlug(
 const ARTIFACT_SLUG_PREFIXES: Partial<Record<ArtifactType, SlugPrefix>> = {
   [ArtifactType.Prd]: SlugPrefix.Prd,
   [ArtifactType.ImplementationPlan]: SlugPrefix.Plan,
+  [ArtifactType.Template]: SlugPrefix.Branch,
 };

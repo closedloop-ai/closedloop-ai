@@ -23,7 +23,6 @@ const FLAT_SORT_COLUMNS = [
   "assignee",
   "dueDate",
   "priority",
-  "workflow",
   "project",
   "type",
   "score",
@@ -86,14 +85,6 @@ function compareByPriority(a: ArtifactRowItem, b: ArtifactRowItem): number {
   return aPriority - bPriority;
 }
 
-function compareByWorkflow(a: ArtifactRowItem, b: ArtifactRowItem): number {
-  const aWorkflow =
-    a.kind === "artifact" ? (a.data.workstream?.title ?? "") : "";
-  const bWorkflow =
-    b.kind === "artifact" ? (b.data.workstream?.title ?? "") : "";
-  return aWorkflow.localeCompare(bWorkflow);
-}
-
 function compareByProject(a: ArtifactRowItem, b: ArtifactRowItem): number {
   const aProject =
     a.kind === "project" ? a.data.name : (a.data.project?.name ?? "");
@@ -109,7 +100,6 @@ const SORT_COMPARATORS: Partial<
   assignee: compareByAssignee,
   dueDate: compareByDueDate,
   priority: compareByPriority,
-  workflow: compareByWorkflow,
   project: compareByProject,
 };
 
@@ -142,6 +132,8 @@ type FlatArtifactTableProps = {
     onRequestDelete: () => void
   ) => React.ReactNode;
   editHandlers?: RowEditHandlers;
+  /** Maps child entity ID to parent entity title for the Parent column. */
+  parentTitleMap?: Map<string, { title: string; href: string | null }>;
   emptyIcon?: LucideIcon;
   emptyTitle?: string;
   emptyDescription?: string;
@@ -155,6 +147,7 @@ export function FlatArtifactTable({
   onDelete,
   moreMenuContent,
   editHandlers,
+  parentTitleMap,
   emptyIcon,
   emptyTitle = "No items",
   emptyDescription = "Nothing to show here yet.",
@@ -288,6 +281,8 @@ export function FlatArtifactTable({
               handleRequestDelete(item)
             )}
             onSelectionChange={handleSelectionChange}
+            parentHref={parentTitleMap?.get(item.data.id)?.href}
+            parentTitle={parentTitleMap?.get(item.data.id)?.title}
             showCheckbox
             visibleColumns={visibleColumns}
           />

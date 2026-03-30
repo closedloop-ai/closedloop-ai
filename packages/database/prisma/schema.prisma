@@ -622,6 +622,7 @@ model Artifact {
   assigneeId      String?        @map("assignee_id") @db.Uuid
   approverId      String?        @map("approver_id") @db.Uuid
   status          ArtifactStatus @default(DRAFT)
+  priority        Priority       @default(MEDIUM)
   latestVersion   Int            @default(1) @map("latest_version")
   createdById     String         @map("created_by_id") @db.Uuid
   tokenUsage      Json?          @map("token_usage")
