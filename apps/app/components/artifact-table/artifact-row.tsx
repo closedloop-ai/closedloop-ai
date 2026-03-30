@@ -40,6 +40,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import type { MouseEvent } from "react";
 import { createContext, useContext } from "react";
 import { AssigneeAvatar } from "@/components/assignee-avatar";
 import type { ArtifactColumn } from "@/hooks/use-column-visibility";
@@ -535,7 +536,7 @@ function LoopCell({ item }: { item: ArtifactRowItem }) {
         <Link
           className="flex h-11 w-[124px] shrink-0 items-center gap-1.5 border-l px-3 py-2 hover:bg-muted/50"
           href={`/loops/${failedLoopId}`}
-          onClick={(e) => e.stopPropagation()}
+          onClick={(e: MouseEvent<HTMLAnchorElement>) => e.stopPropagation()}
         >
           {cellContent}
         </Link>
@@ -563,7 +564,7 @@ function LoopCell({ item }: { item: ArtifactRowItem }) {
     <Link
       className="flex h-11 w-[124px] shrink-0 items-center gap-1.5 border-l px-3 py-2 hover:bg-muted/50"
       href={`/loops/${loop.id}`}
-      onClick={(e) => e.stopPropagation()}
+      onClick={(e: MouseEvent<HTMLAnchorElement>) => e.stopPropagation()}
     >
       <Loader2Icon className="h-3.5 w-3.5 shrink-0 animate-spin text-blue-500" />
       {isLocal ? (
