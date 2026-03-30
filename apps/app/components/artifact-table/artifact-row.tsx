@@ -38,7 +38,7 @@ import {
   XCircleIcon,
 } from "lucide-react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import type { MouseEvent } from "react";
 import { createContext, useContext } from "react";
 import { AssigneeAvatar } from "@/components/assignee-avatar";
@@ -707,6 +707,8 @@ export function ArtifactRow({
   parentHref,
 }: ArtifactRowProps) {
   const router = useRouter();
+  const params = useParams();
+  const activeTeamId = params?.teamId as string | undefined;
 
   const isClickable =
     item.kind === "project" ||
@@ -715,7 +717,7 @@ export function ArtifactRow({
 
   function handleClick() {
     if (item.kind === "project") {
-      const teamId = item.data.teams[0]?.id;
+      const teamId = activeTeamId ?? item.data.teams[0]?.id;
       if (teamId) {
         router.push(`/teams/${teamId}/projects/${item.data.id}`);
       }

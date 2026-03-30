@@ -25,7 +25,7 @@ describe("generateSlug", () => {
 
     const result = await generateSlug(ORG_ID, SlugPrefix.Project);
 
-    expect(result).toBe("PROJ-1");
+    expect(result).toBe("PRO-1");
   });
 
   it("returns incremented value on sequential calls", async () => {
@@ -42,8 +42,8 @@ describe("generateSlug", () => {
     const first = await generateSlug(ORG_ID, SlugPrefix.Project);
     const second = await generateSlug(ORG_ID, SlugPrefix.Project);
 
-    expect(first).toBe("PROJ-1");
-    expect(second).toBe("PROJ-2");
+    expect(first).toBe("PRO-1");
+    expect(second).toBe("PRO-2");
   });
 
   it("uses separate counters per type prefix", async () => {

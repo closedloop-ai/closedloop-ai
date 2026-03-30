@@ -573,19 +573,22 @@ export function ArtifactsView({
     performDelete: (item: ArtifactRowItem) => Promise<boolean>
   ): Promise<boolean> {
     const itemsToDelete: ArtifactRowItem[] = [];
+    let hasMissing = false;
     for (const id of pendingBulkIds) {
       const artifact = artifacts.find((a) => a.id === id);
       if (artifact) {
         itemsToDelete.push({ kind: "artifact", data: artifact });
+        continue;
+      }
+      const feature = features.find((f) => f.id === id);
+      if (feature) {
+        itemsToDelete.push({ kind: "feature", data: feature });
       } else {
-        const feature = features.find((f) => f.id === id);
-        if (feature) {
-          itemsToDelete.push({ kind: "feature", data: feature });
-        }
+        hasMissing = true;
       }
     }
     const results = await Promise.all(itemsToDelete.map(performDelete));
-    const allDeleted = results.every(Boolean);
+    const allDeleted = !hasMissing && results.every(Boolean);
     if (allDeleted) {
       setDeleteDialogOpen(false);
       setPendingBulkIds(new Set());

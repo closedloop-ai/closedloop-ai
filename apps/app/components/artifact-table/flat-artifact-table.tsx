@@ -202,17 +202,19 @@ export function FlatArtifactTable({
         let allSuccess = true;
         for (const id of pendingBulkIds) {
           const item = items.find((i) => i.data.id === id);
-          if (item) {
-            const success = await onDelete(item);
-            if (success) {
-              setSelectedIds((prev) => {
-                const next = new Set(prev);
-                next.delete(id);
-                return next;
-              });
-            } else {
-              allSuccess = false;
-            }
+          if (!item) {
+            allSuccess = false;
+            continue;
+          }
+          const success = await onDelete(item);
+          if (success) {
+            setSelectedIds((prev) => {
+              const next = new Set(prev);
+              next.delete(id);
+              return next;
+            });
+          } else {
+            allSuccess = false;
           }
         }
         return allSuccess;

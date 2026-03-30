@@ -71,7 +71,14 @@ describe("uuidOrSlug", () => {
   });
 
   it("accepts all typed slug prefixes", () => {
-    for (const slug of ["PROJ-1", "WORK-99", "PRD-42", "PLAN-7", "FEAT-123"]) {
+    for (const slug of [
+      "PRO-1",
+      "WRK-99",
+      "PRD-42",
+      "PLN-7",
+      "FEA-123",
+      "BRN-1",
+    ]) {
       expect(schema.safeParse(slug).success).toBe(true);
     }
   });
