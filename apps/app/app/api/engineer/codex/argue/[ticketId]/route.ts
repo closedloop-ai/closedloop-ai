@@ -38,7 +38,7 @@ function getWorktreeDir(repoPath: string, ticketId: string): string {
 }
 
 function getDebateStatePath(worktreeDir: string): string {
-  return join(worktreeDir, ".claude", "work", "codex-debate.json");
+  return join(worktreeDir, ".closedloop-ai", "work", "codex-debate.json");
 }
 
 function loadDebateState(worktreeDir: string): DebateState {

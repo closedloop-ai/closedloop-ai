@@ -47,7 +47,11 @@ type FindingChatHistory = {
 const ALLOWED_TOOLS = ENGINEER_CHAT_TOOLS;
 
 /**
- * Get work directory paths for a finding chat
+ * Get work directory paths for a finding chat.
+ *
+ * claudeWorkDir always points to .closedloop-ai/work (canonical write target).
+ * historyPath resolves per-file: if the legacy path exists but the new path
+ * does not, the file is migrated so writes append to the existing transcript.
  */
 function getWorkPaths(ticketId: string, repoPath: string, findingId: string) {
   const expandedRepoPath = expandHome(repoPath);
@@ -57,14 +61,16 @@ function getWorkPaths(ticketId: string, repoPath: string, findingId: string) {
   const repoName = basename(expandedRepoPath);
   const worktreeParentDir = getWorktreeParentDir();
   const worktreeDir = join(worktreeParentDir, `${repoName}-${sanitizedTicket}`);
-  const claudeWorkDir = join(worktreeDir, ".claude", "work");
+  const claudeWorkDir = join(worktreeDir, ".closedloop-ai", "work");
   const findingChatsDir = join(claudeWorkDir, "finding-chats");
+
+  const historyFilename = `${sanitizedFindingId}.json`;
 
   return {
     worktreeDir,
     claudeWorkDir,
     findingChatsDir,
-    historyPath: join(findingChatsDir, `${sanitizedFindingId}.json`),
+    historyPath: join(findingChatsDir, historyFilename),
     planPath: join(claudeWorkDir, "plan.json"),
     prdPath: join(claudeWorkDir, "prd.md"),
   };
@@ -291,7 +297,7 @@ export async function POST(
     });
   }
 
-  // Load chat history (don't save user message yet — defer until after Claude responds
+  // Load chat history (don't save user message yet -- defer until after Claude responds
   // to avoid race with the GET query on the client)
   const history = loadFindingChatHistory(
     paths.historyPath,

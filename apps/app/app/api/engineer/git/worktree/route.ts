@@ -205,12 +205,12 @@ function isRemoteBranchGone(mainRepoPath: string, branchRef: string): boolean {
  * deletion should remove them.
  */
 function hasReviewState(worktreeDir: string): boolean {
-  const workDir = join(worktreeDir, ".claude", "work");
-  if (!existsSync(workDir)) {
-    return false;
-  }
+  const workDir = join(worktreeDir, ".closedloop-ai", "work");
   try {
-    return readdirSync(workDir).some((f) => f.startsWith("codex-review-"));
+    return (
+      existsSync(workDir) &&
+      readdirSync(workDir).some((f) => f.startsWith("codex-review-"))
+    );
   } catch {
     return false;
   }

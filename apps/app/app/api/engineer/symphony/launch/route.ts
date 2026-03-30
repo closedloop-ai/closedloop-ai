@@ -106,7 +106,7 @@ async function createPrdFile(
   ticket: TicketDetails,
   primaryRepoPath: string
 ): Promise<void> {
-  const claudeWorkDir = join(workDir, ".claude", "work");
+  const claudeWorkDir = join(workDir, ".closedloop-ai", "work");
   const attachmentsDir = join(claudeWorkDir, "attachments");
 
   // Ensure directories exist
@@ -242,8 +242,8 @@ function getErrorMessage(err: unknown): string {
 }
 
 function getPrdFileIfExists(worktreeDir: string): string | undefined {
-  const prdFile = join(worktreeDir, ".claude", "work", "prd.md");
-  return existsSync(prdFile) ? prdFile : undefined;
+  const prdPath = join(worktreeDir, ".closedloop-ai", "work", "prd.md");
+  return existsSync(prdPath) ? prdPath : undefined;
 }
 
 function validateLaunchBody(
@@ -419,7 +419,7 @@ export async function POST(request: NextRequest) {
         const meta = readLaunchMetadata(worktreeDir);
         const logFile = join(
           worktreeDir,
-          ".claude",
+          ".closedloop-ai",
           "work",
           "closedloop-launch.log"
         );
@@ -483,7 +483,7 @@ export async function POST(request: NextRequest) {
         // Write PID after metadata
         if (result.pid) {
           writeFileSync(
-            join(worktreeDir, ".claude", "work", "process.pid"),
+            join(worktreeDir, ".closedloop-ai", "work", "process.pid"),
             String(result.pid)
           );
         }
@@ -561,7 +561,7 @@ export async function POST(request: NextRequest) {
       // Write PID after metadata
       if (result.pid) {
         writeFileSync(
-          join(worktreeDir, ".claude", "work", "process.pid"),
+          join(worktreeDir, ".closedloop-ai", "work", "process.pid"),
           String(result.pid)
         );
       }
@@ -643,11 +643,11 @@ function spawnSymphony(
     );
   }
 
-  // Symphony workdir is .claude/work within the worktree
-  const claudeWorkDir = join(workDir, ".claude", "work");
+  // Symphony workdir is .closedloop-ai/work within the worktree
+  const claudeWorkDir = join(workDir, ".closedloop-ai", "work");
   mkdirSync(claudeWorkDir, { recursive: true });
 
-  // Build arguments - pass .claude/work as the workdir to run-loop.sh
+  // Build arguments - pass .closedloop-ai/work as the workdir to run-loop.sh
   const args = [claudeWorkDir];
   if (prdFile) {
     args.push("--prd", prdFile);

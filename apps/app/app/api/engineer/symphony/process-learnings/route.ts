@@ -43,7 +43,7 @@ export function GET(request: NextRequest) {
   const worktreeDir = join(worktreeParentDir, `${repoName}-${sanitizedTicket}`);
   const statusPath = join(
     worktreeDir,
-    ".claude",
+    ".closedloop-ai",
     "work",
     ".learnings",
     "processing-status.json"
@@ -92,15 +92,15 @@ export async function POST(request: NextRequest) {
   const repoName = basename(expandedRepoPath);
   const worktreeParentDir = getWorktreeParentDir();
   const worktreeDir = join(worktreeParentDir, `${repoName}-${sanitizedTicket}`);
-  const claudeWorkDir = join(worktreeDir, ".claude", "work");
-  const pendingDir = join(claudeWorkDir, ".learnings", "pending");
-
   if (!existsSync(worktreeDir)) {
     return new Response(JSON.stringify({ error: "Work directory not found" }), {
       status: 404,
       headers: { "Content-Type": "application/json" },
     });
   }
+
+  const claudeWorkDir = join(worktreeDir, ".closedloop-ai", "work");
+  const pendingDir = join(claudeWorkDir, ".learnings", "pending");
 
   // When extraction is still in flight, spawn a wrapper that polls until it completes
   if (waitForExtraction) {

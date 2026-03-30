@@ -2,7 +2,8 @@
 name: dry-kiss-reviewer
 description: Reviews code for DRY (Don't Repeat Yourself) and KISS (Keep It Simple, Stupid) principle violations. Use when performing code reviews or quality checks.
 model: sonnet
-tools: Read, Grep, Glob
+color: cyan
+tools: ["Read", "Grep", "Glob"]
 ---
 
 # DRY/KISS Code Reviewer

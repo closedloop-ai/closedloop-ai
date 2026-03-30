@@ -322,7 +322,7 @@ export const githubService = {
       // Find the installation record, or create it if the webhook hasn't arrived yet
       // This handles the race condition where OAuth callback arrives before webhook
       let installation = await this.findInstallationByInstallationId(
-        resolvedInstallationId
+        String(resolvedInstallationId)
       );
 
       if (!installation) {
@@ -332,17 +332,20 @@ export const githubService = {
         );
 
         // Create the installation record (webhook will upsert if it arrives later)
-        installation = await this.upsertInstallation(resolvedInstallationId, {
-          accountId: resolved.info.account.id,
-          accountLogin: resolved.info.account.login,
-          accountType: resolved.info.account.type,
-          senderLogin: githubUser?.login ?? "oauth",
-          senderId: githubUser?.id ?? 0,
-          status: "PENDING_CLAIM", // Will be set to ACTIVE below
-          permissions: resolved.info.permissions,
-          events: resolved.info.events,
-          repositorySelection: resolved.info.repository_selection,
-        });
+        installation = await this.upsertInstallation(
+          String(resolvedInstallationId),
+          {
+            accountId: String(resolved.info.account.id),
+            accountLogin: resolved.info.account.login,
+            accountType: resolved.info.account.type,
+            senderLogin: githubUser?.login ?? "oauth",
+            senderId: String(githubUser?.id ?? 0),
+            status: "PENDING_CLAIM", // Will be set to ACTIVE below
+            permissions: resolved.info.permissions,
+            events: resolved.info.events,
+            repositorySelection: resolved.info.repository_selection,
+          }
+        );
 
         log.info("[github/oauth] Created installation record from OAuth flow", {
           installationId: installation.id,
@@ -448,13 +451,13 @@ export const githubService = {
    * Uses upsert by installationId.
    */
   upsertInstallation(
-    installationId: number,
+    installationId: string,
     data: {
-      accountId: number;
+      accountId: string;
       accountLogin: string;
       accountType: string;
       senderLogin: string;
-      senderId: number;
+      senderId: string;
       status?: GitHubInstallationStatus;
       permissions?: unknown;
       events?: unknown;
@@ -668,10 +671,10 @@ export const githubService = {
   },
 
   /**
-   * Find a GitHubInstallation by GitHub's installationId (Int).
+   * Find a GitHubInstallation by GitHub's installationId.
    */
   findInstallationByInstallationId(
-    installationId: number
+    installationId: string
   ): Promise<GitHubInstallation | null> {
     return withDb((db) =>
       db.gitHubInstallation.findUnique({
@@ -689,7 +692,7 @@ export const githubService = {
   async findInstallationForRepoFullName(
     organizationId: string,
     fullName: string
-  ): Promise<number | null> {
+  ): Promise<string | null> {
     const repository = await withDb((db) =>
       db.gitHubInstallationRepository.findFirst({
         where: {

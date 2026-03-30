@@ -11,7 +11,7 @@ import {
 import { log } from "@repo/observability/log";
 import { waitUntil } from "@vercel/functions";
 import { NextResponse } from "next/server";
-import { loopsService } from "@/app/loops/service";
+import { isConcurrentLoopLimitError, loopsService } from "@/app/loops/service";
 import { withAuth } from "@/lib/auth/with-auth";
 import { resolveArtifactId } from "@/lib/identifier-utils";
 import { scheduleAutoEvaluatePrd } from "@/lib/loops/auto-evaluate-prd";
@@ -29,10 +29,18 @@ import { artifactsService } from "../../service";
 import {
   COMMAND_MAP,
   checkBackendMismatch,
+  resolveEvaluateCodeBranchForRunLoop,
   resolveLoopContext,
   resolveRunLoopComputeTarget,
 } from "./run-loop-helpers";
 import { runLoopSchema } from "./validators";
+
+function handleRunLoopError(error: unknown) {
+  if (isConcurrentLoopLimitError(error)) {
+    return errorResponse(error.message, error, 429);
+  }
+  return errorResponse("Failed to run loop", error);
+}
 
 type RunLoopResponse =
   | CreateLoopResponse
@@ -85,7 +93,7 @@ export const POST = withAuth<RunLoopResponse, "/artifacts/[id]/run-loop">(
       const {
         workstream,
         targetRepo,
-        targetBranch,
+        targetBranch: resolvedTargetBranch,
         contextRefs,
         parentLoopId,
         parentLoopComputeTargetId,
@@ -99,11 +107,24 @@ export const POST = withAuth<RunLoopResponse, "/artifacts/[id]/run-loop">(
         artifactId
       );
 
+      let targetBranch = resolvedTargetBranch;
+
       if (handler?.requiresRepo && !targetRepo) {
         return badRequestResponse(
           "No repository configured. Link a repository to the project or set a target repo on the artifact."
         );
       }
+
+      const evaluateBranchResult = await resolveEvaluateCodeBranchForRunLoop(
+        body.command,
+        artifactId,
+        user.organizationId,
+        targetBranch
+      );
+      if (!evaluateBranchResult.ok) {
+        return evaluateBranchResult.response;
+      }
+      targetBranch = evaluateBranchResult.branch;
 
       const ctRouteResult = await resolveRunLoopComputeTarget(
         user.organizationId,
@@ -175,7 +196,7 @@ export const POST = withAuth<RunLoopResponse, "/artifacts/[id]/run-loop">(
 
       return NextResponse.json(success(loopResponse));
     } catch (error) {
-      return errorResponse("Failed to run loop", error);
+      return handleRunLoopError(error);
     }
   }
 );

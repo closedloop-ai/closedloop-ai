@@ -13,6 +13,7 @@ export const uploadArtifactsSchema = z.object({
     features: z.record(z.string(), z.unknown()).optional(),
     judges: z.record(z.string(), z.unknown()).optional(),
     codeJudges: z.record(z.string(), z.unknown()).optional(),
+    planJudges: z.record(z.string(), z.unknown()).optional(),
     prdJudges: z.record(z.string(), z.unknown()).optional(),
     openQuestions: z.string().optional(),
   }),

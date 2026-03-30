@@ -63,7 +63,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Create log directory and file
-    const claudeWorkDir = join(expandedWorktreePath, ".claude", "work");
+    const claudeWorkDir = join(expandedWorktreePath, ".closedloop-ai", "work");
     mkdirSync(claudeWorkDir, { recursive: true });
 
     const logFile = join(claudeWorkDir, "deploy.log");

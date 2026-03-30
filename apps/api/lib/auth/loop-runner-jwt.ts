@@ -38,7 +38,7 @@ export type LoopRunnerClaims = {
 
 export function issueLoopRunnerToken(
   claims: LoopRunnerTokenIssueClaims,
-  ttlSeconds = 2 * 60 * 60
+  ttlSeconds = 8 * 60 * 60
 ): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
   return new SignJWT({ orgId: claims.organizationId })

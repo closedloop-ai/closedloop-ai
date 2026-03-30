@@ -47,7 +47,12 @@ export function GET() {
       continue;
     }
 
-    const chatPath = join(worktreePath, ".claude", "work", "chat-history.json");
+    const chatPath = join(
+      worktreePath,
+      ".closedloop-ai",
+      "work",
+      "chat-history.json"
+    );
     if (!existsSync(chatPath)) {
       continue;
     }

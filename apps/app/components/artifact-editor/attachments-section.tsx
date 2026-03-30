@@ -77,7 +77,6 @@ export function AttachmentsSection({ artifactId }: { artifactId: string }) {
             >
               {attachment.previewUrl ? (
                 /* biome-ignore lint/performance/noImgElement: S3 presigned URLs are external/dynamic */
-                /* biome-ignore lint/correctness/useImageSize: dimensions set via CSS */
                 <img
                   alt={attachment.filename}
                   className="max-h-48 w-full rounded object-contain"

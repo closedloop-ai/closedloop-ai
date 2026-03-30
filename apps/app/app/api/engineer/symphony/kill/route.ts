@@ -1,5 +1,6 @@
 import {
   existsSync,
+  mkdirSync,
   readdirSync,
   readFileSync,
   unlinkSync,
@@ -48,23 +49,22 @@ function resolvePid(body: {
       worktreeParentDir,
       `${repoName}-${sanitizedTicket}`
     );
-    const pidFilePath = join(worktreeDir, ".claude", "work", "process.pid");
+    const pidFile = join(worktreeDir, ".closedloop-ai", "work", "process.pid");
 
-    if (!existsSync(pidFilePath)) {
-      // No PID file - return worktreeDir so we can still update state.json
-      return { noPidFile: true, worktreeDir };
-    }
-
-    try {
-      const pidContent = readFileSync(pidFilePath, "utf-8");
-      const resolvedPid = Number.parseInt(pidContent.trim(), 10);
-      if (Number.isNaN(resolvedPid)) {
-        return { error: "Invalid PID in process.pid file", status: 500 };
+    if (existsSync(pidFile)) {
+      try {
+        const content = readFileSync(pidFile, "utf-8");
+        const resolvedPid = Number.parseInt(content.trim(), 10);
+        if (!Number.isNaN(resolvedPid)) {
+          return { pid: resolvedPid, pidFilePath: pidFile, worktreeDir };
+        }
+      } catch {
+        // Can't read -- fall through
       }
-      return { pid: resolvedPid, pidFilePath, worktreeDir };
-    } catch {
-      return { error: "Failed to read process.pid file", status: 500 };
     }
+
+    // No PID file - return worktreeDir so we can still update state.json
+    return { noPidFile: true, worktreeDir };
   }
 
   return {
@@ -104,23 +104,32 @@ function deletePidFile(pidFilePath: string | null): void {
  * between iterations, and update_iteration() will fail under set -e when it's gone.
  */
 function cancelLoop(worktreeDir: string): boolean {
-  const stateFile = join(worktreeDir, ".claude", "closedloop-loop.local.md");
-  try {
-    if (existsSync(stateFile)) {
-      unlinkSync(stateFile);
-      return true;
-    }
-  } catch {
-    // Best effort
+  const stateFile = join(
+    worktreeDir,
+    ".closedloop-ai",
+    "closedloop-loop.local.md"
+  );
+  if (!existsSync(stateFile)) {
+    return false;
   }
-  return false;
+  try {
+    unlinkSync(stateFile);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
  * Clear .agent-types/ so the UI doesn't show stale subagent indicators on resume.
  */
 function clearAgentTypes(worktreeDir: string): void {
-  const agentTypesDir = join(worktreeDir, ".claude", "work", ".agent-types");
+  const agentTypesDir = join(
+    worktreeDir,
+    ".closedloop-ai",
+    "work",
+    ".agent-types"
+  );
   try {
     if (existsSync(agentTypesDir)) {
       for (const file of readdirSync(agentTypesDir)) {
@@ -136,7 +145,8 @@ function clearAgentTypes(worktreeDir: string): void {
  * Update state.json to mark status as STOPPED.
  */
 function markStateAsStopped(worktreeDir: string): void {
-  const statePath = join(worktreeDir, ".claude", "work", "state.json");
+  const workDir = join(worktreeDir, ".closedloop-ai", "work");
+  const statePath = join(workDir, "state.json");
   try {
     let state: Record<string, unknown> = {};
     if (existsSync(statePath)) {
@@ -146,6 +156,7 @@ function markStateAsStopped(worktreeDir: string): void {
     state.status = "STOPPED";
     state.phase = "Process stopped by user";
     state.timestamp = new Date().toISOString();
+    mkdirSync(workDir, { recursive: true });
     writeFileSync(statePath, JSON.stringify(state, null, 2));
   } catch {
     // Ignore errors - best effort

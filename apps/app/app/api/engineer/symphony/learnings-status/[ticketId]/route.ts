@@ -33,7 +33,7 @@ export async function GET(
   const worktreeDir = join(worktreeParentDir, `${repoName}-${sanitizedTicket}`);
   const statusPath = join(
     worktreeDir,
-    ".claude",
+    ".closedloop-ai",
     "work",
     ".learnings",
     "chat-extraction-status.json"

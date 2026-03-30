@@ -8,7 +8,7 @@ import { expandHome, getWorktreeParentDir } from "@/lib/engineer/repos";
  *
  * GET /api/symphony/attachments/[ticketId]/[...path]?repo=~/Source/repo-name
  *
- * Serves images from the .claude/work/attachments directory
+ * Serves images from the .closedloop-ai/work/attachments directory
  */
 export async function GET(
   request: NextRequest,
@@ -36,18 +36,15 @@ export async function GET(
 
   // Build the file path from segments
   const filename = pathSegments.join("/");
-  const filePath = join(
+  const attachmentsDir = join(
     worktreeDir,
-    ".claude",
+    ".closedloop-ai",
     "work",
-    "attachments",
-    filename
+    "attachments"
   );
+  const filePath = join(attachmentsDir, filename);
 
-  // Security check: ensure the path stays within attachments directory.
-  // Use attachmentsDir + sep to prevent prefix-collision bypass where a path
-  // like /path/to/attachments-private/file satisfies startsWith("/path/to/attachments").
-  const attachmentsDir = join(worktreeDir, ".claude", "work", "attachments");
+  // Security check: ensure the path stays within the attachments directory.
   if (!filePath.startsWith(attachmentsDir + sep)) {
     return NextResponse.json({ error: "Invalid path" }, { status: 403 });
   }

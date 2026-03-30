@@ -58,7 +58,7 @@ export async function POST(request: NextRequest) {
     });
   }
 
-  const claudeWorkDir = join(worktreeDir, ".claude", "work");
+  const claudeWorkDir = join(worktreeDir, ".closedloop-ai", "work");
   const learningsDir = join(claudeWorkDir, ".learnings");
   mkdirSync(learningsDir, { recursive: true });
 

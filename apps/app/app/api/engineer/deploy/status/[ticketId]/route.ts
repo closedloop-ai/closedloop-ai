@@ -97,15 +97,18 @@ export async function GET(
       getWorktreeParentDir(),
       `${repoName}-${sanitizedTicket}`
     );
-    const claudeWorkDir = join(worktreeDir, ".claude", "work");
+    const workDir = join(worktreeDir, ".closedloop-ai", "work");
+    const deployLogPath = join(workDir, "deploy.log");
+    const deployExitPath = join(workDir, "deploy-exit.json");
+    const deployResultPath = join(workDir, "deploy-result.json");
 
-    const logs = readTextFile(join(claudeWorkDir, "deploy.log"));
+    const logs = readTextFile(deployLogPath);
     const processAlive = isProcessAlive(pidStr);
     const exitInfo = readJsonFile<{ exitCode: number; failedCommand: string }>(
-      join(claudeWorkDir, "deploy-exit.json")
+      deployExitPath
     );
     const deployResult = readJsonFile<{ url?: string; serviceId?: string }>(
-      join(claudeWorkDir, "deploy-result.json")
+      deployResultPath
     );
 
     const status = determineStatus(

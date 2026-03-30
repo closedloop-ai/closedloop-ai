@@ -2,7 +2,11 @@ import { existsSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { NextRequest } from "next/server";
 import { triggerAsyncLearningExtraction } from "@/lib/engineer/learnings";
-import { expandHome, getWorktreeParentDir } from "@/lib/engineer/repos";
+import {
+  expandHome,
+  getWorktreeParentDir,
+  isRepoAllowed,
+} from "@/lib/engineer/repos";
 
 /**
  * POST /api/engineer/symphony/extract-learnings
@@ -16,7 +20,7 @@ export async function POST(request: NextRequest) {
     ticketId: string;
     repoPath: string;
     activeTab?: string;
-    /** Relative path within .claude/work/ to the chat file to analyze.
+    /** Relative path within .closedloop-ai/work/ to the chat file to analyze.
      *  e.g. "chat-history.json" or "comment-chats/{commentId}.json".
      *  Defaults to "chat-history.json" if not provided. */
     chatFile?: string;
@@ -32,14 +36,18 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  if (!isRepoAllowed(repoPath)) {
+    return new Response(
+      JSON.stringify({ error: `Repository not allowed: ${repoPath}` }),
+      { status: 403, headers: { "Content-Type": "application/json" } }
+    );
+  }
+
   const expandedRepoPath = expandHome(repoPath);
   const sanitizedTicket = ticketId.replaceAll(/[^a-zA-Z0-9-_]/g, "_");
   const repoName = basename(expandedRepoPath);
   const worktreeParentDir = getWorktreeParentDir();
   const worktreeDir = join(worktreeParentDir, `${repoName}-${sanitizedTicket}`);
-  const claudeWorkDir = join(worktreeDir, ".claude", "work");
-  const chatHistoryPath = join(claudeWorkDir, chatFile || "chat-history.json");
-
   if (!existsSync(worktreeDir)) {
     return new Response(JSON.stringify({ error: "Work directory not found" }), {
       status: 404,
@@ -47,11 +55,15 @@ export async function POST(request: NextRequest) {
     });
   }
 
+  const claudeWorkDir = join(worktreeDir, ".closedloop-ai", "work");
+  const chatFilename = chatFile || "chat-history.json";
+  const chatHistoryPath = join(claudeWorkDir, chatFilename);
+
   if (!existsSync(chatHistoryPath)) {
     return new Response(
       JSON.stringify({
         error: "No chat history found",
-        path: chatFile || "chat-history.json",
+        path: chatFilename,
       }),
       { status: 404, headers: { "Content-Type": "application/json" } }
     );

@@ -23,7 +23,7 @@ const EXT_MAP: Record<string, string> = {
  * POST /api/engineer/symphony/upload/[ticketId]?repo=<repoPath>
  *
  * Accepts multipart/form-data with image files.
- * Saves to .claude/work/attachments/ and returns metadata.
+ * Saves to .closedloop-ai/work/attachments/ and returns metadata.
  */
 export async function POST(
   request: NextRequest,
@@ -53,7 +53,8 @@ export async function POST(
     );
   }
 
-  const attachmentsDir = join(worktreeDir, ".claude", "work", "attachments");
+  const newWorkDir = join(worktreeDir, ".closedloop-ai", "work");
+  const attachmentsDir = join(newWorkDir, "attachments");
   if (!existsSync(attachmentsDir)) {
     mkdirSync(attachmentsDir, { recursive: true });
   }

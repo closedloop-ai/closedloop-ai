@@ -25,6 +25,7 @@ export type SocketConnectionContext = {
   organizationId: string;
   userId: string;
   sessionId: string;
+  pluginVersion?: string;
   unsubscribeOperations: () => void;
   unsubscribeConnectionClose: () => void;
   heartbeatTimer: ReturnType<typeof setInterval>;
@@ -74,4 +75,21 @@ export type GatewaySocketData = {
   authContext?: DesktopAuthContext;
   authDurationMs?: number;
   connectStartedAt?: number;
+};
+
+/**
+ * Adds optional correlation fields to any payload type for command dispatch tracking.
+ *
+ * - `requestId`: Unique identifier for the originating HTTP request, useful for
+ *   end-to-end tracing across the relay pipeline.
+ * - `gatewaySessionId`: Session correlation identifier for the desktop gateway
+ *   WebSocket session. Treat with session-token sensitivity — do not log or
+ *   expose in client-facing responses.
+ * - `computeTargetId`: The target compute node this command is routed to,
+ *   enabling fan-out disambiguation when multiple targets are connected.
+ */
+export type WithCorrelation<T> = T & {
+  requestId?: string;
+  gatewaySessionId?: string;
+  computeTargetId?: string;
 };

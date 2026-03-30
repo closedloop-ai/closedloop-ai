@@ -1,0 +1,55 @@
+name: Feature Flag Attestation
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+    branches: [main]
+
+jobs:
+  check-attestation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      pull-requests: read
+
+    steps:
+      - name: Check feature flag attestation
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        shell: bash
+        run: |
+          if [ -z "$PR_BODY" ]; then
+            echo "::error::PR description is empty. Please fill out the feature flag attestation section from the PR template."
+            exit 1
+          fi
+
+          # Check for opt-out keyword with justification
+          if echo "$PR_BODY" | grep -q '\[flag:N/A\]'; then
+            # Extract everything after [flag:N/A] on the same line
+            SAME_LINE=$(echo "$PR_BODY" | grep '\[flag:N/A\]' | sed 's/.*\[flag:N\/A\]//' | tr -d '[:space:]')
+            # Also check the next non-empty line after the marker
+            NEXT_LINE=$(echo "$PR_BODY" | sed -n '/\[flag:N\/A\]/{n;p;}' | tr -d '[:space:]')
+
+            if [ -n "$SAME_LINE" ] || [ -n "$NEXT_LINE" ]; then
+              echo "Feature flag opt-out accepted with justification."
+              exit 0
+            else
+              echo "::error::[flag:N/A] found but no justification provided. Add a reason after the marker explaining why no feature flag is needed."
+              exit 1
+            fi
+          fi
+
+          # Check for the attestation section with at least one checked box
+          if echo "$PR_BODY" | grep -q '## Feature Flags'; then
+            CHECKED=$(echo "$PR_BODY" | sed -n '/## Feature Flags/,/^## /p' | grep -ci '\[x\]' || true)
+            if [ "$CHECKED" -gt 0 ]; then
+              echo "Feature flag attestation verified ($CHECKED item(s) checked)."
+              exit 0
+            else
+              echo "::error::Feature flag attestation section exists but no items are checked. Check the applicable boxes or use [flag:N/A] with a justification."
+              exit 1
+            fi
+          fi
+
+          echo "::error::Missing '## Feature Flags' attestation section in PR description. Please use the PR template or add [flag:N/A] with a justification."
+          exit 1

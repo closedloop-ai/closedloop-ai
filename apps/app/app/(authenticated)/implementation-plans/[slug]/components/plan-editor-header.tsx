@@ -1,6 +1,9 @@
 "use client";
 
-import type { ArtifactWithWorkstream } from "@repo/api/src/types/artifact";
+import type {
+  ArtifactWithWorkstream,
+  PullRequestState,
+} from "@repo/api/src/types/artifact";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   DropdownMenu,
@@ -16,6 +19,7 @@ import {
   DownloadIcon,
   ExternalLinkIcon,
   FolderIcon,
+  GaugeIcon,
   GitPullRequestIcon,
   MessageSquareIcon,
   MoreHorizontalIcon,
@@ -36,7 +40,11 @@ type PlanEditorHeaderProps = {
   canShowPanel?: boolean;
   isDraft: boolean;
   isApproved: boolean;
-  pullRequest?: { htmlUrl: string; number: number } | null;
+  pullRequest?: {
+    htmlUrl: string;
+    number: number;
+    state: PullRequestState;
+  } | null;
   isExecuting: boolean;
   onToggleMetadataPanel: () => void;
   onApprove: () => void;
@@ -48,6 +56,9 @@ type PlanEditorHeaderProps = {
   onExportToLinear: () => void;
   onRegenerate: () => void;
   onDelete: () => void;
+  onEvaluatePlan: () => void;
+  /** Present only when an open PR with a head branch is available; menu item is omitted when undefined. */
+  onEvaluateCode?: () => void;
   showRestore?: boolean;
   onRestoreVersion?: () => void;
   isPending?: boolean;
@@ -71,6 +82,8 @@ export function PlanEditorHeader({
   onMove,
   onRegenerate,
   onDelete,
+  onEvaluatePlan,
+  onEvaluateCode,
   showRestore = false,
   onRestoreVersion,
   isPending = false,
@@ -178,6 +191,16 @@ export function PlanEditorHeader({
             <RefreshCwIcon className="h-4 w-4" />
             Regenerate Plan
           </DropdownMenuItem>
+          <DropdownMenuItem disabled={isPending} onClick={onEvaluatePlan}>
+            <GaugeIcon className="h-4 w-4" />
+            Evaluate Plan
+          </DropdownMenuItem>
+          {onEvaluateCode ? (
+            <DropdownMenuItem disabled={isPending} onClick={onEvaluateCode}>
+              <GaugeIcon className="h-4 w-4" />
+              Evaluate PR
+            </DropdownMenuItem>
+          ) : null}
         </DropdownMenuContent>
       </DropdownMenu>
 

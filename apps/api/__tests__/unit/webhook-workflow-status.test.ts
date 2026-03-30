@@ -47,7 +47,7 @@ describe("handleWorkflowStatusUpdate", () => {
       const response = await handleWorkflowStatusUpdate(
         invalidCorrelationId,
         "requested",
-        123_456,
+        "123456",
         "https://github.com/owner/repo/actions/runs/123456"
       );
 
@@ -76,7 +76,7 @@ describe("handleWorkflowStatusUpdate", () => {
       const response = await handleWorkflowStatusUpdate(
         correlationId,
         "in_progress",
-        789_012,
+        "789012",
         "https://github.com/owner/repo/actions/runs/789012"
       );
 
@@ -99,7 +99,7 @@ describe("handleWorkflowStatusUpdate", () => {
 
     it("returns success when no matching action run is found", async () => {
       const correlationId = "local-test-id-123";
-      const runId = 123_456;
+      const runId = "123456";
 
       // Mock findActionRunByCorrelationId returning undefined
       mockWithDb.mockImplementation((callback: any) => {
@@ -136,14 +136,14 @@ describe("handleWorkflowStatusUpdate", () => {
 
     it("finds action run when correlation ID matches in triggerData", async () => {
       const correlationId = "stage-workflow-abc";
-      const runId = 789_012;
+      const runId = "789012";
       const htmlUrl = "https://github.com/owner/repo/actions/runs/789012";
 
       const mockActionRun = {
         id: "run-123",
         workstreamId: "ws-123",
         repositoryId: "repo-123",
-        runId: BigInt(0),
+        runId: "0",
         workflowName: "symphony-dispatch",
         status: "PENDING",
         htmlUrl: null,
@@ -204,7 +204,7 @@ describe("handleWorkflowStatusUpdate", () => {
 
   describe("status update for 'requested' action", () => {
     const correlationId = "prod-artifact-xyz";
-    const runId = 555_555;
+    const runId = "555555";
     const htmlUrl = "https://github.com/owner/repo/actions/runs/555555";
 
     beforeEach(() => {
@@ -219,7 +219,7 @@ describe("handleWorkflowStatusUpdate", () => {
         id: "run-abc",
         workstreamId: "ws-abc",
         repositoryId: "repo-abc",
-        runId: BigInt(0),
+        runId: "0",
         workflowName: "symphony-dispatch",
         status: "PENDING",
         htmlUrl: null,
@@ -254,7 +254,7 @@ describe("handleWorkflowStatusUpdate", () => {
       );
 
       expect(capturedUpdateData).toEqual({
-        runId: BigInt(runId),
+        runId,
         status: "QUEUED",
         htmlUrl,
       });
@@ -269,7 +269,7 @@ describe("handleWorkflowStatusUpdate", () => {
         id: "run-def",
         workstreamId: "ws-def",
         repositoryId: "repo-def",
-        runId: BigInt(0),
+        runId: "0",
         workflowName: "symphony-dispatch",
         status: "PENDING",
         htmlUrl: null,
@@ -310,7 +310,7 @@ describe("handleWorkflowStatusUpdate", () => {
 
   describe("status update for 'in_progress' action", () => {
     const correlationId = "local-feature-123";
-    const runId = 999_999;
+    const runId = "999999";
     const htmlUrl = "https://github.com/owner/repo/actions/runs/999999";
 
     beforeEach(() => {
@@ -325,7 +325,7 @@ describe("handleWorkflowStatusUpdate", () => {
         id: "run-xyz",
         workstreamId: "ws-xyz",
         repositoryId: "repo-xyz",
-        runId: BigInt(0),
+        runId: "0",
         workflowName: "symphony-dispatch",
         status: "QUEUED",
         htmlUrl: null,
@@ -363,7 +363,7 @@ describe("handleWorkflowStatusUpdate", () => {
       expect(capturedUpdateData).toHaveProperty("startedAt");
       expect(capturedUpdateData.startedAt).toBeInstanceOf(Date);
       expect(capturedUpdateData.status).toBe("RUNNING");
-      expect(capturedUpdateData.runId).toEqual(BigInt(runId));
+      expect(capturedUpdateData.runId).toEqual(runId);
       expect(capturedUpdateData.htmlUrl).toBe(htmlUrl);
 
       const json = await response.json();
@@ -378,7 +378,7 @@ describe("handleWorkflowStatusUpdate", () => {
         id: "run-timestamp",
         workstreamId: "ws-timestamp",
         repositoryId: "repo-timestamp",
-        runId: BigInt(0),
+        runId: "0",
         workflowName: "symphony-dispatch",
         status: "QUEUED",
         htmlUrl: null,
@@ -439,7 +439,7 @@ describe("handleWorkflowStatusUpdate", () => {
         id: "run-null",
         workstreamId: "ws-null",
         repositoryId: "repo-null",
-        runId: BigInt(123),
+        runId: "123",
         workflowName: "symphony-dispatch",
         status: "PENDING",
         htmlUrl: null,
@@ -461,7 +461,7 @@ describe("handleWorkflowStatusUpdate", () => {
       const response = await handleWorkflowStatusUpdate(
         correlationId,
         "requested",
-        123_456,
+        "123456",
         "https://github.com/owner/repo/actions/runs/123456"
       );
 
@@ -476,7 +476,7 @@ describe("handleWorkflowStatusUpdate", () => {
         id: "run-no-correlation",
         workstreamId: "ws-no-correlation",
         repositoryId: "repo-no-correlation",
-        runId: BigInt(123),
+        runId: "123",
         workflowName: "symphony-dispatch",
         status: "PENDING",
         htmlUrl: null,
@@ -498,7 +498,7 @@ describe("handleWorkflowStatusUpdate", () => {
       const response = await handleWorkflowStatusUpdate(
         correlationId,
         "requested",
-        123_456,
+        "123456",
         "https://github.com/owner/repo/actions/runs/123456"
       );
 
@@ -509,7 +509,7 @@ describe("handleWorkflowStatusUpdate", () => {
 
     it("finds correct action run among multiple candidates", async () => {
       const correlationId = "stage-target-run";
-      const runId = 888_888;
+      const runId = "888888";
       const htmlUrl = "https://github.com/owner/repo/actions/runs/888888";
 
       const mockActionRuns = [
@@ -517,7 +517,7 @@ describe("handleWorkflowStatusUpdate", () => {
           id: "run-1",
           workstreamId: "ws-1",
           repositoryId: "repo-1",
-          runId: BigInt(1),
+          runId: "1",
           workflowName: "symphony-dispatch",
           status: "RUNNING",
           htmlUrl: "https://github.com/owner/repo/actions/runs/1",
@@ -530,7 +530,7 @@ describe("handleWorkflowStatusUpdate", () => {
           id: "run-2",
           workstreamId: "ws-2",
           repositoryId: "repo-2",
-          runId: BigInt(2),
+          runId: "2",
           workflowName: "symphony-dispatch",
           status: "QUEUED",
           htmlUrl: "https://github.com/owner/repo/actions/runs/2",
@@ -543,7 +543,7 @@ describe("handleWorkflowStatusUpdate", () => {
           id: "run-3",
           workstreamId: "ws-3",
           repositoryId: "repo-3",
-          runId: BigInt(3),
+          runId: "3",
           workflowName: "symphony-dispatch",
           status: "RUNNING",
           htmlUrl: "https://github.com/owner/repo/actions/runs/3",
@@ -593,7 +593,7 @@ describe("handleWorkflowStatusUpdate", () => {
 
     it("handles very large runId values", async () => {
       const correlationId = "local-big-run";
-      const runId = Number.MAX_SAFE_INTEGER;
+      const runId = String(Number.MAX_SAFE_INTEGER);
       const htmlUrl =
         "https://github.com/owner/repo/actions/runs/9007199254740991";
 
@@ -601,7 +601,7 @@ describe("handleWorkflowStatusUpdate", () => {
         id: "run-big",
         workstreamId: "ws-big",
         repositoryId: "repo-big",
-        runId: BigInt(0),
+        runId: "0",
         workflowName: "symphony-dispatch",
         status: "PENDING",
         htmlUrl: null,
@@ -640,7 +640,7 @@ describe("handleWorkflowStatusUpdate", () => {
         htmlUrl
       );
 
-      expect(capturedUpdateData.runId).toEqual(BigInt(runId));
+      expect(capturedUpdateData.runId).toEqual(runId);
     });
   });
 
@@ -654,14 +654,14 @@ describe("handleWorkflowStatusUpdate", () => {
 
     it("logs info message on successful update", async () => {
       const correlationId = "prod-logging-test";
-      const runId = 111_111;
+      const runId = "111111";
       const htmlUrl = "https://github.com/owner/repo/actions/runs/111111";
 
       const mockActionRun = {
         id: "run-log",
         workstreamId: "ws-log",
         repositoryId: "repo-log",
-        runId: BigInt(0),
+        runId: "0",
         workflowName: "symphony-dispatch",
         status: "PENDING",
         htmlUrl: null,
@@ -678,7 +678,7 @@ describe("handleWorkflowStatusUpdate", () => {
             update: vi.fn().mockResolvedValue({
               ...mockActionRun,
               status: "QUEUED",
-              runId: BigInt(runId),
+              runId,
               htmlUrl,
             }),
           },
@@ -706,14 +706,14 @@ describe("handleWorkflowStatusUpdate", () => {
 
     it("includes correct newStatus in logs for in_progress action", async () => {
       const correlationId = "prod-logging-test";
-      const runId = 222_222;
+      const runId = "222222";
       const htmlUrl = "https://github.com/owner/repo/actions/runs/222222";
 
       const mockActionRun = {
         id: "run-log-2",
         workstreamId: "ws-log-2",
         repositoryId: "repo-log-2",
-        runId: BigInt(0),
+        runId: "0",
         workflowName: "symphony-dispatch",
         status: "QUEUED",
         htmlUrl: null,
@@ -730,7 +730,7 @@ describe("handleWorkflowStatusUpdate", () => {
             update: vi.fn().mockResolvedValue({
               ...mockActionRun,
               status: "RUNNING",
-              runId: BigInt(runId),
+              runId,
               htmlUrl,
               startedAt: new Date(),
             }),

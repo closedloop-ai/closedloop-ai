@@ -11,14 +11,16 @@ import type {
   LoopUsageSummary,
   LoopWithUser,
   ResumeLoopRequest,
-  RunLoopCommand,
+  RunLoopCommand as RunLoopCommandType,
 } from "@repo/api/src/types/loop";
+import { RunLoopCommand } from "@repo/api/src/types/loop";
 import {
   type UseQueryOptions,
   useMutation,
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
+import { judgesKeys } from "@/hooks/queries/use-judges";
 import { useApiClient } from "@/hooks/use-api-client";
 import { buildSearchParams } from "@/lib/format-utils";
 
@@ -223,20 +225,23 @@ export function useRunLoop() {
       prompt,
       computeTargetId,
       backendOverride,
+      repo,
     }: {
       artifactId: string;
-      command: RunLoopCommand;
+      command: RunLoopCommandType;
       prompt?: string;
       computeTargetId?: string | null;
       backendOverride?: boolean;
+      repo?: CreateLoopRequest["repo"];
     }) =>
       apiClient.post<CreateLoopResponse>(`/artifacts/${artifactId}/run-loop`, {
         command,
         prompt,
         ...(computeTargetId !== undefined ? { computeTargetId } : {}),
         ...(backendOverride ? { backendOverride } : {}),
+        ...(repo ? { repo } : {}),
       }),
-    onSuccess: (_, { artifactId }) => {
+    onSuccess: (_, { artifactId, command }) => {
       queryClient.invalidateQueries({ queryKey: loopKeys.lists() });
       queryClient.invalidateQueries({
         queryKey: loopKeys.list({ artifactId }),
@@ -245,6 +250,16 @@ export function useRunLoop() {
       queryClient.invalidateQueries({
         queryKey: ["artifacts", "detail", artifactId, "generation-status"],
       });
+      if (command === RunLoopCommand.EvaluatePlan) {
+        queryClient.invalidateQueries({
+          queryKey: judgesKeys.detail(artifactId),
+        });
+      }
+      if (command === RunLoopCommand.EvaluateCode) {
+        queryClient.invalidateQueries({
+          queryKey: judgesKeys.codeDetail(artifactId),
+        });
+      }
     },
   });
 }

@@ -9,12 +9,9 @@ vi.mock("@repo/observability/log", () => ({
   },
 }));
 
-vi.mock("@repo/database", () => ({
-  withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
-}));
-
 vi.mock("@/app/artifacts/artifact-version-service", () => ({
   artifactVersionService: {
+    getByVersion: vi.fn().mockResolvedValue(null),
     getLatest: vi.fn().mockResolvedValue(null),
   },
 }));
@@ -64,6 +61,7 @@ const mockArtifactsService = artifactsService as unknown as {
   findByIdSimple: ReturnType<typeof vi.fn>;
 };
 const mockArtifactVersionService = artifactVersionService as unknown as {
+  getByVersion: ReturnType<typeof vi.fn>;
   getLatest: ReturnType<typeof vi.fn>;
 };
 const mockUploadContextPack = uploadContextPack as unknown as ReturnType<
@@ -121,30 +119,6 @@ describe("buildContextPack", () => {
       title: "User login flow",
       content: "Implement the user login flow with OAuth",
     });
-  });
-
-  it("does not include issue artifact when contextRefs is empty", async () => {
-    await buildContextPack(
-      {
-        id: "loop-1",
-        userId: "user-1",
-        command: "PLAN",
-        prompt: null,
-        artifactId: null,
-        artifactVersion: null,
-        parentLoopId: null,
-        repo: { fullName: "org/repo", branch: "main" },
-        contextRefs: [],
-      },
-      "org-1",
-      "state-prefix"
-    );
-
-    expect(mockFeaturesService.findById).not.toHaveBeenCalled();
-
-    const uploadCall = mockUploadContextPack.mock.calls[0];
-    const contextPack = uploadCall[1];
-    expect(contextPack.artifacts).toEqual([]);
   });
 
   it("does not include issue artifact when contextRefs is null", async () => {

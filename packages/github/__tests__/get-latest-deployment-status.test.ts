@@ -61,7 +61,7 @@ describe("getLatestDeploymentStatusForRef", () => {
     });
 
     const result = await getLatestDeploymentStatusForRef("acme/repo", "ref", {
-      installationId: 42,
+      installationId: "42",
       environment: "preview",
     });
 
@@ -94,7 +94,7 @@ describe("getLatestDeploymentStatusForRef", () => {
     listDeploymentStatuses.mockResolvedValue({ data: [] });
 
     const result = await getLatestDeploymentStatusForRef("acme/repo", "ref", {
-      installationId: 42,
+      installationId: "42",
       environment: "preview",
     });
 

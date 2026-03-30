@@ -14,13 +14,13 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 /**
- * Read the PID from process.pid file if it exists.
+ * Read the PID from .closedloop-ai/work/process.pid if it exists.
  * Returns null if file doesn't exist or is invalid.
  */
 export async function readProcessPid(
   worktreeDir: string
 ): Promise<number | null> {
-  const pidPath = join(worktreeDir, ".claude", "work", "process.pid");
+  const pidPath = join(worktreeDir, ".closedloop-ai", "work", "process.pid");
 
   if (!existsSync(pidPath)) {
     return null;
@@ -29,7 +29,10 @@ export async function readProcessPid(
   try {
     const pidContent = await readFile(pidPath, "utf-8");
     const pid = Number.parseInt(pidContent.trim(), 10);
-    return Number.isNaN(pid) ? null : pid;
+    if (Number.isNaN(pid)) {
+      return null;
+    }
+    return pid;
   } catch {
     return null;
   }
@@ -54,11 +57,16 @@ type LaunchMetadata = {
 };
 
 /**
- * Read launch metadata from {worktreeDir}/.claude/work/launch-metadata.json.
+ * Read launch metadata from {worktreeDir}/.closedloop-ai/work/launch-metadata.json.
  * Returns null if file missing or malformed.
  */
 export function readLaunchMetadata(worktreeDir: string): LaunchMetadata | null {
-  const metaPath = join(worktreeDir, ".claude", "work", "launch-metadata.json");
+  const metaPath = join(
+    worktreeDir,
+    ".closedloop-ai",
+    "work",
+    "launch-metadata.json"
+  );
 
   if (!existsSync(metaPath)) {
     return null;
@@ -81,7 +89,7 @@ export function readLaunchMetadata(worktreeDir: string): LaunchMetadata | null {
 }
 
 /**
- * Write launch metadata to {worktreeDir}/.claude/work/launch-metadata.json.
+ * Write launch metadata to {worktreeDir}/.closedloop-ai/work/launch-metadata.json.
  * Merges with existing metadata: new defined values override, undefined values
  * fall back to existing.
  * Called BEFORE process.pid is written (ordering guarantee).
@@ -90,7 +98,7 @@ export function writeLaunchMetadata(
   worktreeDir: string,
   meta: LaunchMetadata
 ): void {
-  const claudeWorkDir = join(worktreeDir, ".claude", "work");
+  const claudeWorkDir = join(worktreeDir, ".closedloop-ai", "work");
   mkdirSync(claudeWorkDir, { recursive: true });
 
   const metaPath = join(claudeWorkDir, "launch-metadata.json");
@@ -221,4 +229,29 @@ function isLockFileOld(lockPath: string): boolean {
   } catch {
     return false;
   }
+}
+
+type ReviewReadPaths = {
+  workDir: string;
+  statePath: string;
+  logPath: string;
+  pidPath: string;
+  findingsPath: string;
+};
+
+/**
+ * Build canonical review file paths under .closedloop-ai/work.
+ */
+export function getReviewPaths(
+  worktreeDir: string,
+  provider: string
+): ReviewReadPaths {
+  const workDir = join(worktreeDir, ".closedloop-ai", "work");
+  return {
+    workDir,
+    statePath: join(workDir, `codex-review-${provider}.json`),
+    logPath: join(workDir, `codex-review-${provider}.log`),
+    pidPath: join(workDir, `codex-review-${provider}.pid`),
+    findingsPath: join(workDir, `review-findings-${provider}.json`),
+  };
 }

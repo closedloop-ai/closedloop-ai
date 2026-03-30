@@ -151,7 +151,9 @@ type ExtractionOptions = {
  * Fire-and-forget async learning extraction from a chat session.
  * Spawns a detached Claude process to analyze the chat history and extract learnings.
  */
-export async function triggerAsyncLearningExtraction(opts: ExtractionOptions): Promise<void> {
+export async function triggerAsyncLearningExtraction(
+  opts: ExtractionOptions
+): Promise<void> {
   try {
     return await triggerAsyncLearningExtractionInner(opts);
   } catch (err) {
@@ -159,7 +161,9 @@ export async function triggerAsyncLearningExtraction(opts: ExtractionOptions): P
   }
 }
 
-async function triggerAsyncLearningExtractionInner(opts: ExtractionOptions): Promise<void> {
+async function triggerAsyncLearningExtractionInner(
+  opts: ExtractionOptions
+): Promise<void> {
   const { symphonyWorkDir, worktreeDir, chatHistoryPath, activeTab, ticketId } =
     opts;
 

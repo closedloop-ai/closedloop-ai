@@ -10,7 +10,7 @@ import { findActionRunByCorrelationId } from "../webhook-service";
 export async function handleWorkflowStatusUpdate(
   correlationId: string,
   action: "requested" | "in_progress",
-  runId: number,
+  runId: string,
   htmlUrl: string
 ): Promise<Response> {
   const parsed = parseCorrelationId(correlationId);
@@ -44,7 +44,7 @@ export async function handleWorkflowStatusUpdate(
     db.gitHubActionRun.update({
       where: { id: actionRun.id },
       data: {
-        runId: BigInt(runId),
+        runId,
         status: newStatus,
         htmlUrl,
         ...(action === "in_progress" ? { startedAt: new Date() } : {}),

@@ -18,7 +18,12 @@ import {
 async function detectCompletionFromLogs(
   worktreeDir: string
 ): Promise<{ completed: boolean; awaitingUser: boolean; timestamp?: string }> {
-  const logPath = join(worktreeDir, ".claude", "work", "closedloop-launch.log");
+  const logPath = join(
+    worktreeDir,
+    ".closedloop-ai",
+    "work",
+    "closedloop-launch.log"
+  );
 
   if (!existsSync(logPath)) {
     return { completed: false, awaitingUser: false };
@@ -88,15 +93,26 @@ async function resolveEffectiveState(
   }
 
   // If the loop lock file exists, the loop is actively running — trust state.json
-  const lockPath = join(worktreeDir, ".claude", "work", ".learnings", ".lock");
+  const lockPath = join(
+    worktreeDir,
+    ".closedloop-ai",
+    "work",
+    ".learnings",
+    ".lock"
+  );
   if (existsSync(lockPath)) {
     return { status, phase, fallbackDetected: false, ...base };
   }
 
   // Check if state.json was updated recently (within last 2 minutes)
-  const statePath = join(worktreeDir, ".claude", "work", "state.json");
-  const stateStats = await stat(statePath);
-  const stateAge = Date.now() - stateStats.mtime.getTime();
+  const statePath = join(worktreeDir, ".closedloop-ai", "work", "state.json");
+  let stateAge = Number.POSITIVE_INFINITY;
+  try {
+    const stateStats = await stat(statePath);
+    stateAge = Date.now() - stateStats.mtime.getTime();
+  } catch {
+    // state.json removed by concurrent kill -- treat as stale
+  }
   if (stateAge <= 2 * 60 * 1000) {
     return { status, phase, fallbackDetected: false, ...base };
   }
@@ -174,17 +190,24 @@ type ActiveAgent = {
  * Read active agents from the .agent-types directory.
  * Each file (named by UUID) contains: agent_type|agent_short_name|started_at
  * Skip retry-tracking files (filenames containing "-").
+ *
  */
 async function readActiveAgents(worktreeDir: string): Promise<ActiveAgent[]> {
-  const agentTypesDir = join(worktreeDir, ".claude", "work", ".agent-types");
+  const agentTypesDir = join(
+    worktreeDir,
+    ".closedloop-ai",
+    "work",
+    ".agent-types"
+  );
 
   if (!existsSync(agentTypesDir)) {
     return [];
   }
 
+  const agents: ActiveAgent[] = [];
+
   try {
     const files = await readdir(agentTypesDir);
-    const agents: ActiveAgent[] = [];
 
     for (const file of files) {
       // Skip retry-tracking files (contain "-" which UUIDs don't have in the filename)
@@ -207,11 +230,11 @@ async function readActiveAgents(worktreeDir: string): Promise<ActiveAgent[]> {
         // Skip unreadable files
       }
     }
-
-    return agents;
   } catch {
-    return [];
+    // Skip unreadable dir
   }
+
+  return agents;
 }
 
 /**
@@ -264,7 +287,8 @@ export async function GET(
       worktreeParentDir,
       `${repoName}-${sanitizedTicket}`
     );
-    const statePath = join(worktreeDir, ".claude", "work", "state.json");
+    const workDir = join(worktreeDir, ".closedloop-ai", "work");
+    const statePath = join(workDir, "state.json");
 
     // Check if worktree exists
     if (!existsSync(worktreeDir)) {
@@ -317,7 +341,7 @@ export async function GET(
     const effective = await resolveEffectiveState(worktreeDir, state);
 
     // Read task progress from plan.json
-    const planPath = join(worktreeDir, ".claude", "work", "plan.json");
+    const planPath = join(workDir, "plan.json");
     const planExists = existsSync(planPath);
     const { taskProgress, currentTaskId } = await readPlanProgress(planPath);
 

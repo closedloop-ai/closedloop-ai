@@ -29,7 +29,9 @@ export async function handleInstallationRepositoriesAdded(
   }
 
   const existingInstallation =
-    await githubService.findInstallationByInstallationId(installation.id);
+    await githubService.findInstallationByInstallationId(
+      String(installation.id)
+    );
 
   if (!existingInstallation) {
     log.warn("[handleInstallationRepositoriesAdded] Installation not found", {
@@ -70,7 +72,9 @@ export async function handleInstallationRepositoriesRemoved(
   }
 
   const existingInstallation =
-    await githubService.findInstallationByInstallationId(installation.id);
+    await githubService.findInstallationByInstallationId(
+      String(installation.id)
+    );
 
   if (!existingInstallation) {
     log.warn("[handleInstallationRepositoriesRemoved] Installation not found", {

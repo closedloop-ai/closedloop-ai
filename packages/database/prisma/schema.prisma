@@ -226,6 +226,8 @@ enum LoopCommand {
   DECOMPOSE
   EVALUATE_PRD
   GENERATE_PRD
+  EVALUATE_PLAN
+  EVALUATE_CODE
 }
 
 enum CustomFieldType {
@@ -338,12 +340,14 @@ model User {
   claudeApiKeyEncrypted String?   @map("claude_api_key_encrypted")
   claudeApiKeyLastFour  String?   @map("claude_api_key_last_four")
   claudeApiKeySetAt     DateTime? @map("claude_api_key_set_at")
-  preferredComputeMode  PreferredComputeMode? @map("preferred_compute_mode")
+  preferredComputeMode     PreferredComputeMode? @map("preferred_compute_mode")
+  preferredComputeTargetId String?               @map("preferred_compute_target_id") @db.Uuid
   createdAt       DateTime     @default(now()) @map("created_at")
   updatedAt       DateTime     @updatedAt @map("updated_at")
 
   // Relations
-  organization       Organization     @relation(fields: [organizationId], references: [id])
+  organization              Organization   @relation(fields: [organizationId], references: [id])
+  preferredComputeTarget    ComputeTarget? @relation("UserPreferredComputeTarget", fields: [preferredComputeTargetId], references: [id])
   teamMemberships    TeamMember[]
   pullRequestRatings PullRequestRating[]
   favoriteProjects   FavoriteProject[]
@@ -387,6 +391,7 @@ model ComputeTarget {
 
   organization    Organization     @relation(fields: [organizationId], references: [id])
   user            User             @relation(fields: [userId], references: [id])
+  preferringUsers User[]           @relation("UserPreferredComputeTarget")
   desktopCommands DesktopCommand[]
   loops           Loop[]
 
@@ -1212,12 +1217,12 @@ model LinearSubtask {
 model GitHubInstallation {
   id                  String                   @id @default(uuid(7)) @db.Uuid
   organizationId      String?                  @unique @map("organization_id") @db.Uuid
-  installationId      Int                      @unique @map("installation_id")
-  accountId           Int                      @map("account_id")
+  installationId      String                   @unique @map("installation_id")
+  accountId           String                   @map("account_id")
   accountLogin        String                   @map("account_login")
   accountType         String                   @map("account_type")
   senderLogin         String                   @map("sender_login")
-  senderId            Int                      @map("sender_id")
+  senderId            String                   @map("sender_id")
   status              GitHubInstallationStatus @default(PENDING_CLAIM)
   permissions         Json?
   events              Json?
@@ -1300,8 +1305,8 @@ model GitHubPullRequest {
 model GitHubPRReviewComment {
   id              String               @id @default(uuid(7)) @db.Uuid
   pullRequestId   String               @map("pull_request_id") @db.Uuid
-  githubCommentId BigInt               @unique @map("github_comment_id")
-  reviewId        BigInt?              @map("review_id")
+  githubCommentId String               @unique @map("github_comment_id")
+  reviewId        String?              @map("review_id")
   body            String               @db.Text
   path            String?
   line            Int?
@@ -1322,7 +1327,7 @@ model GitHubPRReviewComment {
 model GitHubPRReview {
   id              String         @id @default(uuid(7)) @db.Uuid
   pullRequestId   String         @map("pull_request_id") @db.Uuid
-  githubReviewId  BigInt         @unique @map("github_review_id")
+  githubReviewId  String         @unique @map("github_review_id")
   authorLogin     String         @map("author_login")
   authorAvatarUrl String?        @map("author_avatar_url")
   state           ReviewDecision
@@ -1343,7 +1348,7 @@ model GitHubActionRun {
   id           String             @id @default(uuid(7)) @db.Uuid
   workstreamId String             @map("workstream_id") @db.Uuid
   repositoryId String             @map("repository_id") @db.Uuid
-  runId        BigInt?            @map("run_id")
+  runId        String?            @map("run_id")
   workflowName String             @map("workflow_name")
   status       GitHubActionStatus @default(PENDING)
   conclusion   String?

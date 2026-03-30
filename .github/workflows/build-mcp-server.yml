@@ -26,8 +26,9 @@ jobs:
     name: Build and Push (${{ matrix.environment }})
     runs-on: ubuntu-latest
     permissions:
-      id-token: write # For OIDC
+      id-token: write # For OIDC and provenance attestation
       contents: read
+      attestations: write
 
     strategy:
       fail-fast: false
@@ -60,17 +61,29 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Build and push
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
           file: apps/mcp/Dockerfile
           push: true
+          provenance: true
+          sbom: true
           tags: |
             ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
             ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
           platforms: linux/amd64
+
+      - name: Write image digest
+        run: echo "${{ steps.build.outputs.digest }}" > digest.txt
+
+      - name: Upload image digest
+        uses: actions/upload-artifact@v7
+        with:
+          name: image-digest-${{ matrix.environment }}
+          path: digest.txt
 
       - name: Force new ECS deployment
         run: |

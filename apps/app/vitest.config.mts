@@ -1,12 +1,36 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
+import type { Plugin } from "vite";
 import { defineConfig } from "vitest/config";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
+const appRoot = path.resolve(__dirname, "./");
+
+/**
+ * Vite plugin: resolve `@/` bare specifiers inside Next.js dynamic-segment
+ * route files (paths containing `[`). These files are resolved via absolute
+ * path, so Vite's normal alias substitution would not fire for their imports.
+ * We intercept them here and rewrite `@/foo` → `<appRoot>/foo`.
+ */
+function bracketRouteAliasPlugin(): Plugin {
+  return {
+    name: "bracket-route-alias",
+    resolveId(source, importer) {
+      if (!importer?.includes("[")) {
+        return null;
+      }
+      if (!source.startsWith("@/")) {
+        return null;
+      }
+      const resolved = path.resolve(appRoot, source.slice(2));
+      return resolved;
+    },
+  };
+}
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), bracketRouteAliasPlugin()],
   test: {
     environment: "jsdom",
     setupFiles: ["./vitest.setup.ts"],

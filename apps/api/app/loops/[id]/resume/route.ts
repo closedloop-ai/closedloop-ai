@@ -5,7 +5,7 @@ import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { resolveComputeTargetForRoute } from "@/lib/loops/compute-target-route-helpers";
 import { launchLoop } from "@/lib/loops/loop-orchestrator";
 import { errorResponse, parseBody, successResponse } from "@/lib/route-utils";
-import { loopsService } from "../../service";
+import { isConcurrentLoopLimitError, loopsService } from "../../service";
 import { resumeLoopValidator } from "../../validators";
 
 export const POST = withAnyAuth<CreateLoopResponse, "/loops/[id]/resume">(
@@ -21,15 +21,41 @@ export const POST = withAnyAuth<CreateLoopResponse, "/loops/[id]/resume">(
         return parseError;
       }
 
-      // resolveComputeTargetForRoute already validates ownership via
-      // findOwnedById when a hint is provided — no separate check needed.
-      const ctResult = await resolveComputeTargetForRoute(
-        user.organizationId,
-        user.id,
-        body.computeTargetId
-      );
-      if ("errorResponse" in ctResult) {
-        return ctResult.errorResponse;
+      // Always validate the compute target — whether explicitly provided or
+      // inherited from the parent. An inherited target may have been unshared
+      // or gone offline since the parent ran; soft-fail to cloud in that case.
+      let resolvedComputeTargetId: string | undefined;
+      if (body.computeTargetId) {
+        const ctResult = await resolveComputeTargetForRoute(
+          user.organizationId,
+          user.id,
+          body.computeTargetId
+        );
+        if ("errorResponse" in ctResult) {
+          return ctResult.errorResponse;
+        }
+        resolvedComputeTargetId = ctResult.computeTargetId;
+      } else {
+        // No explicit target — validate the parent's target if it had one.
+        const parentLoop = await loopsService.findById(id, user.organizationId);
+        if (parentLoop?.computeTargetId) {
+          const ctResult = await resolveComputeTargetForRoute(
+            user.organizationId,
+            user.id,
+            parentLoop.computeTargetId
+          );
+          if ("errorResponse" in ctResult) {
+            log.warn(
+              "[resume] Parent compute target no longer accessible, falling back to cloud",
+              {
+                parentLoopId: id,
+                parentComputeTargetId: parentLoop.computeTargetId,
+              }
+            );
+          } else {
+            resolvedComputeTargetId = ctResult.computeTargetId;
+          }
+        }
       }
 
       const result = await loopsService.resume(
@@ -37,7 +63,7 @@ export const POST = withAnyAuth<CreateLoopResponse, "/loops/[id]/resume">(
         user.organizationId,
         user.id,
         body,
-        ctResult.computeTargetId
+        resolvedComputeTargetId
       );
 
       // Launch the resumed loop asynchronously. waitUntil() keeps the
@@ -56,6 +82,9 @@ export const POST = withAnyAuth<CreateLoopResponse, "/loops/[id]/resume">(
 
       return successResponse(result);
     } catch (error) {
+      if (isConcurrentLoopLimitError(error)) {
+        return errorResponse(error.message, error, 429);
+      }
       return errorResponse("Failed to resume loop", error);
     }
   },

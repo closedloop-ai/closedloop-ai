@@ -1,10 +1,12 @@
 import type { WorkflowRunCompletedEvent } from "@octokit/webhooks-types";
-import type { JudgesReport } from "@repo/api/src/types/evaluation";
+import {
+  EvaluationReportType,
+  type JudgesReport,
+} from "@repo/api/src/types/evaluation";
 import type { PromptsSnapshot } from "@repo/api/src/types/prompt";
 import {
   EntityType,
   type Prisma,
-  EvaluationReportType as PrismaEvaluationReportType,
   type TransactionClient,
   withDb,
 } from "@repo/database";
@@ -30,7 +32,7 @@ type PrEventMetadata = {
   branch: string;
   prNumber: number;
   correlationId: string;
-  runId: number;
+  runId: string;
 };
 
 /**
@@ -243,12 +245,12 @@ export async function handleExecutionSuccess(
           entityType: EntityType.ARTIFACT,
           artifactId: ctx.artifactId,
           actionRunId: ctx.actionRunId,
-          reportType: PrismaEvaluationReportType.CODE,
+          reportType: EvaluationReportType.Code,
           reportId: codeJudgesReport.report_id,
           reportData: codeJudgesReport,
         },
         update: {
-          reportType: PrismaEvaluationReportType.CODE,
+          reportType: EvaluationReportType.Code,
           reportData: codeJudgesReport,
         },
       });
@@ -409,12 +411,12 @@ export async function handleWorkflowSuccess(
         entityType: EntityType.ARTIFACT,
         artifactId,
         actionRunId: ctx.actionRunId,
-        reportType: PrismaEvaluationReportType.PLAN,
+        reportType: EvaluationReportType.Plan,
         reportId: judgesReport.report_id,
         reportData: judgesReport,
       },
       update: {
-        reportType: PrismaEvaluationReportType.PLAN,
+        reportType: EvaluationReportType.Plan,
         reportData: judgesReport,
       },
     });
@@ -506,7 +508,7 @@ export async function processWorkflowCompletion(
   event: WorkflowRunCompletedEvent,
   correlationId: string
 ): Promise<Response> {
-  const runId = event.workflow_run.id;
+  const runId = String(event.workflow_run.id);
 
   // Find GitHubActionRun by correlation ID in triggerData
   // Use activeOnly=false to support replay of completed events (idempotent processing)
@@ -563,7 +565,7 @@ export async function processWorkflowCompletion(
     await tx.gitHubActionRun.update({
       where: { id: actionRun.id },
       data: {
-        runId: BigInt(runId),
+        runId: String(runId),
         status: conclusion === "success" ? "SUCCESS" : "FAILURE",
         conclusion,
         htmlUrl: event.workflow_run.html_url,

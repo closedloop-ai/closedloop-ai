@@ -85,7 +85,12 @@ function labelFromEntry(entry: ParsedLogEntry): string {
 export async function readLiveActivity(
   worktreeDir: string
 ): Promise<string | undefined> {
-  const jsonlPath = join(worktreeDir, ".claude", "work", "claude-output.jsonl");
+  const jsonlPath = join(
+    worktreeDir,
+    ".closedloop-ai",
+    "work",
+    "claude-output.jsonl"
+  );
 
   let fileSize: number;
   try {

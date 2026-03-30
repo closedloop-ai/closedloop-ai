@@ -1,7 +1,8 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { readFile, stat, unlink } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { type NextRequest, NextResponse } from "next/server";
+import { getReviewPaths, isProcessRunning } from "@/lib/engineer/process-utils";
 import {
   expandHome,
   getWorktreeParentDir,
@@ -26,15 +27,6 @@ type ReviewState = {
     instructions?: string;
   };
 };
-
-function isProcessRunning(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 /** If state says "running" but the process is dead, mark it "stopped". */
 function reconcileProcessStatus(state: ReviewState): boolean {
@@ -113,7 +105,6 @@ export async function GET(
   const repoName = basename(expandedRepoPath);
   const worktreeParentDir = getWorktreeParentDir();
   const worktreeDir = join(worktreeParentDir, `${repoName}-${sanitizedTicket}`);
-  const workDir = join(worktreeDir, ".claude", "work");
 
   // Check if worktree exists
   if (!existsSync(worktreeDir)) {
@@ -125,7 +116,7 @@ export async function GET(
   }
 
   // Determine which provider's files to read
-  const targetProvider = provider ?? resolveProvider(workDir);
+  const targetProvider = provider ?? resolveProvider(worktreeDir);
   if (!targetProvider) {
     return NextResponse.json({
       hasReview: false,
@@ -134,8 +125,7 @@ export async function GET(
     });
   }
 
-  const statePath = join(workDir, `codex-review-${targetProvider}.json`);
-  const logPath = join(workDir, `codex-review-${targetProvider}.log`);
+  const { statePath, logPath } = getReviewPaths(worktreeDir, targetProvider);
 
   if (!existsSync(statePath)) {
     return NextResponse.json({
@@ -209,9 +199,9 @@ export async function DELETE(
   const repoName = basename(expandedRepoPath);
   const worktreeParentDir = getWorktreeParentDir();
   const worktreeDir = join(worktreeParentDir, `${repoName}-${sanitizedTicket}`);
-  const workDir = join(worktreeDir, ".claude", "work");
 
   const providers = provider ? [provider] : ["claude", "codex"];
+  const workDir = join(worktreeDir, ".closedloop-ai", "work");
   const filesToDelete = providers.flatMap((p) => [
     join(workDir, `codex-review-${p}.json`),
     join(workDir, `codex-review-${p}.log`),
@@ -225,9 +215,30 @@ export async function DELETE(
 }
 
 /** Scan for any existing provider state file (backwards compat when no provider param given) */
-function resolveProvider(workDir: string): string | null {
+function resolveProvider(worktreeDir: string): string | null {
+  const rpWorkDir = join(worktreeDir, ".closedloop-ai", "work");
+  // First pass: prefer the provider with a live running review
   for (const p of ["claude", "codex"]) {
-    if (existsSync(join(workDir, `codex-review-${p}.json`))) {
+    const statePath = join(rpWorkDir, `codex-review-${p}.json`);
+    if (!existsSync(statePath)) {
+      continue;
+    }
+    try {
+      const state = JSON.parse(readFileSync(statePath, "utf-8"));
+      if (
+        state.status === "running" &&
+        typeof state.pid === "number" &&
+        isProcessRunning(state.pid)
+      ) {
+        return p;
+      }
+    } catch {
+      // Parse error -- skip
+    }
+  }
+  // Fallback: return the first existing provider regardless of liveness
+  for (const p of ["claude", "codex"]) {
+    if (existsSync(join(rpWorkDir, `codex-review-${p}.json`))) {
       return p;
     }
   }

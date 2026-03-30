@@ -37,7 +37,7 @@ describe("launch-idempotency", () => {
 
   it("live PID returns alreadyRunning with metadata, does NOT re-spawn", async () => {
     // Simulate existing worktree with live process
-    const claudeWorkDir = join(worktreeDir, ".claude", "work");
+    const claudeWorkDir = join(worktreeDir, ".closedloop-ai", "work");
     mkdirSync(claudeWorkDir, { recursive: true });
     writeFileSync(join(claudeWorkDir, "process.pid"), String(process.pid));
     writeLaunchMetadata(worktreeDir, {
@@ -57,7 +57,7 @@ describe("launch-idempotency", () => {
 
   it("live PID + missing launch-metadata.json (legacy) returns undefined metadata", async () => {
     // Simulate legacy worktree (no launch-metadata.json)
-    const claudeWorkDir = join(worktreeDir, ".claude", "work");
+    const claudeWorkDir = join(worktreeDir, ".closedloop-ai", "work");
     mkdirSync(claudeWorkDir, { recursive: true });
     writeFileSync(join(claudeWorkDir, "process.pid"), String(process.pid));
 
@@ -70,7 +70,7 @@ describe("launch-idempotency", () => {
   });
 
   it("dead PID allows re-spawn, writes metadata then PID (ordering)", async () => {
-    const claudeWorkDir = join(worktreeDir, ".claude", "work");
+    const claudeWorkDir = join(worktreeDir, ".closedloop-ai", "work");
     mkdirSync(claudeWorkDir, { recursive: true });
     writeFileSync(join(claudeWorkDir, "process.pid"), "999999999");
 
@@ -103,7 +103,7 @@ describe("launch-idempotency", () => {
   });
 
   it("no PID file allows spawn, writes metadata then PID", async () => {
-    const claudeWorkDir = join(worktreeDir, ".claude", "work");
+    const claudeWorkDir = join(worktreeDir, ".closedloop-ai", "work");
     mkdirSync(claudeWorkDir, { recursive: true });
     // No process.pid file
 

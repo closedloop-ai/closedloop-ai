@@ -100,7 +100,10 @@ function killByPorts(primaryPort: number, additionalPorts?: number[]): boolean {
 /**
  * Strategy 3: Run a configured teardown command in the worktree.
  */
-async function runTeardownCommand(command: string, worktreePath: string): Promise<boolean> {
+async function runTeardownCommand(
+  command: string,
+  worktreePath: string
+): Promise<boolean> {
   const shellPath = await getShellPath();
   try {
     execSync(command, {

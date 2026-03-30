@@ -3,6 +3,9 @@ import type {
   CreateDesktopCommandResponse,
 } from "@repo/api/src/types/compute-target";
 import { log } from "@repo/observability/log";
+import { buildTelemetryTraceContext } from "@repo/observability/telemetry/context";
+import { emitCommandLifecycleEvent } from "@repo/observability/telemetry/emitter";
+import { TelemetryCategory } from "@repo/observability/telemetry/schema";
 import { NextResponse } from "next/server";
 import { env } from "@/env";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
@@ -18,7 +21,10 @@ import {
   parseBody,
   successResponse,
 } from "@/lib/route-utils";
-import { toRelayOperation } from "../../relay-command-helpers";
+import {
+  toRelayOperation,
+  withCorrelationContext,
+} from "../../relay-command-helpers";
 import { computeTargetsService } from "../../service";
 import { createDesktopCommandValidator } from "../../validators";
 
@@ -27,18 +33,23 @@ async function dispatchToRelay(
   internalSecret: string,
   targetId: string,
   commandId: string,
-  relayOperation: ReturnType<typeof toRelayOperation>
-): Promise<void> {
+  relayOperation: ReturnType<typeof toRelayOperation>,
+  requestId?: string
+): Promise<boolean> {
   const wireCommand = toWireCommandFromRelayOperation(relayOperation);
   if (!wireCommand) {
     log.error("Failed to convert relay operation to wire command", {
       targetId,
       commandId,
     });
-    return;
+    return false;
   }
 
-  const envelopedCommand = toEnvelope(wireCommand);
+  const correlatedCommand = withCorrelationContext(wireCommand, {
+    requestId,
+    computeTargetId: targetId,
+  });
+  const envelopedCommand = toEnvelope(correlatedCommand);
   try {
     const response = await fetch(`${relayApiUrl}/dispatch`, {
       method: "POST",
@@ -60,21 +71,23 @@ async function dispatchToRelay(
         delivered: result.delivered,
         reason: result.reason,
       });
-    } else {
-      const body = await response.text().catch(() => "");
-      log.error("Relay dispatch failed", {
-        targetId,
-        commandId,
-        status: response.status,
-        body,
-      });
+      return true;
     }
+    const body = await response.text().catch(() => "");
+    log.error("Relay dispatch failed", {
+      targetId,
+      commandId,
+      status: response.status,
+      body,
+    });
+    return false;
   } catch (dispatchError) {
     log.error("Failed to dispatch command to relay", {
       targetId,
       commandId,
       error: dispatchError,
     });
+    return false;
   }
 }
 
@@ -106,15 +119,27 @@ export const POST = withAnyAuth<
     }
 
     const input = body as CreateDesktopCommandInput;
+    const requestId = crypto.randomUUID();
+
     const createResult = await desktopCommandStore.createCommand(
       target.id,
-      input
+      input,
+      buildTelemetryTraceContext({
+        computeTargetId: target.id,
+        operationId: input.operationId,
+        requestId,
+      })
     );
 
-    const relayOperation = toRelayOperation(
-      createResult.command.commandId,
-      input
-    );
+    const { commandId } = createResult.command;
+    const traceContext = buildTelemetryTraceContext({
+      commandId,
+      operationId: input.operationId,
+      computeTargetId: target.id,
+      requestId,
+    });
+
+    const relayOperation = toRelayOperation(commandId, input);
 
     // Dispatch via ECS relay when configured, otherwise use in-process relay bus
     const relayApiUrl = env.RELAY_API_URL;
@@ -123,26 +148,37 @@ export const POST = withAnyAuth<
       log.info("Dispatching command to relay", {
         relayApiUrl,
         targetId: target.id,
-        commandId: createResult.command.commandId,
+        commandId,
         deduped: createResult.deduped,
       });
-      await dispatchToRelay(
+      const dispatched = await dispatchToRelay(
         relayApiUrl,
         internalSecret,
         target.id,
-        createResult.command.commandId,
-        relayOperation
+        commandId,
+        relayOperation,
+        requestId
       );
+      if (dispatched) {
+        emitCommandLifecycleEvent(
+          TelemetryCategory.CommandDispatched,
+          traceContext
+        );
+      }
     } else {
       log.info("Using in-process relay bus (no RELAY_API_URL)", {
         targetId: target.id,
-        commandId: createResult.command.commandId,
+        commandId,
       });
       relayEventBus.publishOperation(target.id, relayOperation);
+      emitCommandLifecycleEvent(
+        TelemetryCategory.CommandDispatched,
+        traceContext
+      );
     }
 
     return successResponse({
-      commandId: createResult.command.commandId,
+      commandId,
       status: createResult.command.status,
       deduped: createResult.deduped ? true : undefined,
     });

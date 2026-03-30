@@ -68,7 +68,7 @@ export async function handleWorkflowRun(
       return await handleWorkflowStatusUpdate(
         correlationId,
         event.action,
-        event.workflow_run.id,
+        String(event.workflow_run.id),
         event.workflow_run.html_url
       );
     }

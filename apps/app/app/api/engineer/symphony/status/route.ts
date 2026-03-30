@@ -22,8 +22,8 @@ export function GET(request: NextRequest) {
   }
 
   try {
-    // Orchestrator writes state.json to $CLOSEDLOOP_WORKDIR (.claude/work)
-    const stateFile = join(workDir, ".claude", "work", "state.json");
+    // Orchestrator writes state.json to $CLOSEDLOOP_WORKDIR
+    const stateFile = join(workDir, ".closedloop-ai", "work", "state.json");
 
     // Check if state file exists
     if (!existsSync(stateFile)) {

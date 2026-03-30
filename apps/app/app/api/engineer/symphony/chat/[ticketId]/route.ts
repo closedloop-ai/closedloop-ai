@@ -53,6 +53,11 @@ const ALLOWED_TOOLS = ENGINEER_CHAT_TOOLS;
  * Get work directory paths for a ticket.
  * When `provider` is specified (and valid), the history path uses a
  * provider-scoped file so each ReviewChatPane gets its own transcript.
+ *
+ * claudeWorkDir always points to .closedloop-ai/work (canonical write target).
+ * historyPath resolves per-file: checks new path first, falls back to legacy.
+ * If the legacy path exists but the new path does not, the file is migrated
+ * to the new path so subsequent writes append to the existing transcript.
  */
 function getWorkPaths(ticketId: string, repoPath: string, provider?: string) {
   const expandedRepoPath = expandHome(repoPath);
@@ -61,7 +66,7 @@ function getWorkPaths(ticketId: string, repoPath: string, provider?: string) {
   const repoName = basename(expandedRepoPath);
   const worktreeParentDir = getWorktreeParentDir();
   const worktreeDir = join(worktreeParentDir, `${repoName}-${sanitizedTicket}`);
-  const claudeWorkDir = join(worktreeDir, ".claude", "work");
+  const claudeWorkDir = join(worktreeDir, ".closedloop-ai", "work");
 
   const historyFilename =
     provider && VALID_PROVIDERS.has(provider)

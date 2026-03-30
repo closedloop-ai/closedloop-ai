@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   acquireLaunchLock,
   cleanStaleLock,
+  getReviewPaths,
   isProcessRunning,
   readLaunchMetadata,
   readProcessPid,
@@ -40,21 +41,39 @@ describe("process-utils", () => {
     });
 
     it("returns parsed PID from valid file", async () => {
-      const claudeWorkDir = join(testDir, ".claude", "work");
-      mkdirSync(claudeWorkDir, { recursive: true });
-      writeFileSync(join(claudeWorkDir, "process.pid"), "12345");
+      const workDir = join(testDir, ".closedloop-ai", "work");
+      mkdirSync(workDir, { recursive: true });
+      writeFileSync(join(workDir, "process.pid"), "12345");
 
       const pid = await readProcessPid(testDir);
       expect(pid).toBe(12_345);
     });
 
     it("returns null for non-numeric content", async () => {
-      const claudeWorkDir = join(testDir, ".claude", "work");
-      mkdirSync(claudeWorkDir, { recursive: true });
-      writeFileSync(join(claudeWorkDir, "process.pid"), "not-a-pid");
+      const workDir = join(testDir, ".closedloop-ai", "work");
+      mkdirSync(workDir, { recursive: true });
+      writeFileSync(join(workDir, "process.pid"), "not-a-pid");
 
       const pid = await readProcessPid(testDir);
       expect(pid).toBeNull();
+    });
+
+    it("returns null for empty file", async () => {
+      const workDir = join(testDir, ".closedloop-ai", "work");
+      mkdirSync(workDir, { recursive: true });
+      writeFileSync(join(workDir, "process.pid"), "");
+
+      const pid = await readProcessPid(testDir);
+      expect(pid).toBeNull();
+    });
+
+    it("trims whitespace from PID file", async () => {
+      const workDir = join(testDir, ".closedloop-ai", "work");
+      mkdirSync(workDir, { recursive: true });
+      writeFileSync(join(workDir, "process.pid"), "  54321\n");
+
+      const pid = await readProcessPid(testDir);
+      expect(pid).toBe(54_321);
     });
   });
 
@@ -75,10 +94,10 @@ describe("process-utils", () => {
     });
 
     it("returns baseBranch and parentTicketId from valid file", () => {
-      const claudeWorkDir = join(testDir, ".claude", "work");
-      mkdirSync(claudeWorkDir, { recursive: true });
+      const workDir = join(testDir, ".closedloop-ai", "work");
+      mkdirSync(workDir, { recursive: true });
       writeFileSync(
-        join(claudeWorkDir, "launch-metadata.json"),
+        join(workDir, "launch-metadata.json"),
         JSON.stringify({ baseBranch: "main", parentTicketId: "AI-100" })
       );
 
@@ -87,9 +106,9 @@ describe("process-utils", () => {
     });
 
     it("returns null for malformed JSON", () => {
-      const claudeWorkDir = join(testDir, ".claude", "work");
-      mkdirSync(claudeWorkDir, { recursive: true });
-      writeFileSync(join(claudeWorkDir, "launch-metadata.json"), "not json");
+      const workDir = join(testDir, ".closedloop-ai", "work");
+      mkdirSync(workDir, { recursive: true });
+      writeFileSync(join(workDir, "launch-metadata.json"), "not json");
 
       const meta = readLaunchMetadata(testDir);
       expect(meta).toBeNull();
@@ -97,10 +116,15 @@ describe("process-utils", () => {
   });
 
   describe("writeLaunchMetadata", () => {
-    it("writes launch-metadata.json and creates .claude/work dir if needed", () => {
+    it("writes launch-metadata.json and creates .closedloop-ai/work dir if needed", () => {
       writeLaunchMetadata(testDir, { baseBranch: "develop" });
 
-      const metaPath = join(testDir, ".claude", "work", "launch-metadata.json");
+      const metaPath = join(
+        testDir,
+        ".closedloop-ai",
+        "work",
+        "launch-metadata.json"
+      );
       expect(existsSync(metaPath)).toBe(true);
       const content = JSON.parse(readFileSync(metaPath, "utf-8"));
       expect(content.baseBranch).toBe("develop");
@@ -287,6 +311,33 @@ describe("process-utils", () => {
       cleanStaleLock(lockDir);
       // Lock should still be present because the PID is alive
       expect(existsSync(join(lockDir, "launch.lock"))).toBe(true);
+    });
+  });
+
+  describe("getReviewPaths", () => {
+    it("returns all expected paths under .closedloop-ai/work", () => {
+      const paths = getReviewPaths(testDir, "codex");
+      expect(paths.workDir).toBe(join(testDir, ".closedloop-ai", "work"));
+      expect(paths.statePath).toBe(
+        join(testDir, ".closedloop-ai", "work", "codex-review-codex.json")
+      );
+      expect(paths.logPath).toBe(
+        join(testDir, ".closedloop-ai", "work", "codex-review-codex.log")
+      );
+      expect(paths.pidPath).toBe(
+        join(testDir, ".closedloop-ai", "work", "codex-review-codex.pid")
+      );
+      expect(paths.findingsPath).toBe(
+        join(testDir, ".closedloop-ai", "work", "review-findings-codex.json")
+      );
+    });
+
+    it("uses provider name in file paths", () => {
+      const paths = getReviewPaths(testDir, "claude");
+      expect(paths.statePath).toContain("codex-review-claude.json");
+      expect(paths.logPath).toContain("codex-review-claude.log");
+      expect(paths.pidPath).toContain("codex-review-claude.pid");
+      expect(paths.findingsPath).toContain("review-findings-claude.json");
     });
   });
 });

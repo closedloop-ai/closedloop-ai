@@ -5,9 +5,39 @@ on:
     types: [opened, synchronize, reopened]
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+        env:
+          # prisma generate (runs via postinstall) only needs the URL format, not a live DB
+          DATABASE_URL: postgresql://localhost:5432/placeholder
+
+      - name: Lint
+        run: pnpm lint
+
   typecheck:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout repository
@@ -39,6 +69,8 @@ jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
 
     services:
       postgres:
@@ -90,3 +122,19 @@ jobs:
           # Explicitly disable any AWS-specific auth
           AWS_REGION: ""
           AWS_EXECUTION_ENV: ""
+
+  security-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Dependency Review
+        uses: actions/dependency-review-action@v4
+        continue-on-error: true
+        with:
+          config-file: ".github/vulnerability-exemptions.yml"

@@ -59,7 +59,12 @@ export async function GET(
       worktreeParentDir,
       `${repoName}-${sanitizedTicket}`
     );
-    const judgesPath = join(worktreeDir, ".claude", "work", "judges.json");
+    const judgesPath = join(
+      worktreeDir,
+      ".closedloop-ai",
+      "work",
+      "judges.json"
+    );
 
     // Check if worktree exists
     if (!existsSync(worktreeDir)) {

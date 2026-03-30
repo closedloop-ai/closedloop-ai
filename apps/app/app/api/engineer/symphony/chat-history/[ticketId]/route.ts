@@ -33,8 +33,22 @@ type ChatHistory = {
   contextPercent?: number | null;
 };
 
+function resolveWorktreeDir(ticketId: string, repoPath: string): string {
+  const expandedRepoPath = expandHome(repoPath);
+  const sanitizedTicket = ticketId.replaceAll(/[^a-zA-Z0-9-_]/g, "_");
+  const repoName = basename(expandedRepoPath);
+  const worktreeParentDir = getWorktreeParentDir();
+  return join(worktreeParentDir, `${repoName}-${sanitizedTicket}`);
+}
+
+function chatHistoryFilename(provider?: string | null): string {
+  return provider && VALID_PROVIDERS.has(provider)
+    ? `chat-history-${provider}.json`
+    : "chat-history.json";
+}
+
 /**
- * Get the chat history file path for a ticket.
+ * Get the canonical (new) chat history file path for a ticket.
  * When `provider` is specified (and valid), returns a provider-scoped file
  * (`chat-history-claude.json` / `chat-history-codex.json`) so that each
  * ReviewChatPane gets its own transcript.
@@ -44,19 +58,13 @@ function getChatHistoryPath(
   repoPath: string,
   provider?: string | null
 ): string {
-  const expandedRepoPath = expandHome(repoPath);
-
-  const sanitizedTicket = ticketId.replaceAll(/[^a-zA-Z0-9-_]/g, "_");
-  const repoName = basename(expandedRepoPath);
-  const worktreeParentDir = getWorktreeParentDir();
-  const worktreeDir = join(worktreeParentDir, `${repoName}-${sanitizedTicket}`);
-
-  const filename =
-    provider && VALID_PROVIDERS.has(provider)
-      ? `chat-history-${provider}.json`
-      : "chat-history.json";
-
-  return join(worktreeDir, ".claude", "work", filename);
+  const worktreeDir = resolveWorktreeDir(ticketId, repoPath);
+  return join(
+    worktreeDir,
+    ".closedloop-ai",
+    "work",
+    chatHistoryFilename(provider)
+  );
 }
 
 /**
@@ -156,7 +164,6 @@ export async function POST(
 
   const historyPath = getChatHistoryPath(ticketId, repoPath, provider);
 
-  // Ensure directory exists
   const historyDir = join(historyPath, "..");
   if (!existsSync(historyDir)) {
     mkdirSync(historyDir, { recursive: true });
@@ -244,23 +251,18 @@ export async function DELETE(
   }
 
   const historyPath = getChatHistoryPath(ticketId, repoPath, provider);
-  const workDir = join(historyPath, "..");
+  const worktreeDir = resolveWorktreeDir(ticketId, repoPath);
+  const workDir = join(worktreeDir, ".closedloop-ai", "work");
 
   if (!existsSync(historyPath)) {
     if (indexParam === null && !provider) {
-      // Even if no transcript exists yet, a review may have already seeded
-      // shared-surface Codex session files. Clear them on full reset.
       deleteSharedCodexChatState(workDir);
     }
     if (indexParam === null && provider === "codex") {
-      // Also clean up the review-scoped Codex session file
-      const codexReviewPath = getCodexChatStatePath(workDir, "review");
-      if (existsSync(codexReviewPath)) {
-        try {
-          unlinkSync(codexReviewPath);
-        } catch {
-          /* best-effort */
-        }
+      try {
+        unlinkSync(getCodexChatStatePath(workDir, "review"));
+      } catch {
+        /* best-effort */
       }
     }
     return NextResponse.json({
@@ -271,21 +273,20 @@ export async function DELETE(
 
   try {
     if (indexParam === null) {
-      // Clear entire chat - delete the file
-      unlinkSync(historyPath);
+      // Clear entire chat
+      try {
+        unlinkSync(historyPath);
+      } catch {
+        /* best effort */
+      }
 
       if (provider === "codex") {
-        // Only clean up the review-scoped Codex session file
-        const codexReviewPath = getCodexChatStatePath(workDir, "review");
-        if (existsSync(codexReviewPath)) {
-          try {
-            unlinkSync(codexReviewPath);
-          } catch {
-            /* best-effort */
-          }
+        try {
+          unlinkSync(getCodexChatStatePath(workDir, "review"));
+        } catch {
+          /* best-effort */
         }
       } else if (!provider) {
-        // No provider specified (SymphonyChat full clear) — blanket cleanup
         deleteSharedCodexChatState(workDir);
       }
       // provider=claude: do NOT touch any codex state files

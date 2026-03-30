@@ -1,7 +1,6 @@
 "use client";
 
 import type {
-  ComputePreference,
   ComputePreferenceResponse,
   SetComputePreferenceRequest,
 } from "@repo/api/src/types/compute-target";
@@ -50,21 +49,23 @@ export function useSetComputePreference(userId: string) {
   const apiClient = useApiClient();
 
   return useMutation({
-    mutationFn: (mode: ComputePreference) =>
-      apiClient.put<ComputePreferenceResponse>("/settings/compute-preference", {
-        mode,
-      } satisfies SetComputePreferenceRequest),
-    onMutate: async (mode: ComputePreference) => {
+    mutationFn: (request: SetComputePreferenceRequest) =>
+      apiClient.put<ComputePreferenceResponse>(
+        "/settings/compute-preference",
+        request
+      ),
+    onMutate: async (request: SetComputePreferenceRequest) => {
       const queryKey = computePreferenceKeys.detail(userId);
       await queryClient.cancelQueries({ queryKey });
       const previous =
         queryClient.getQueryData<ComputePreferenceResponse>(queryKey);
       queryClient.setQueryData<ComputePreferenceResponse>(queryKey, {
-        preferredComputeMode: mode,
+        preferredComputeMode: request.mode,
+        computeTargetId: request.computeTargetId,
       });
       return { previous };
     },
-    onError: (_err, _mode, context) => {
+    onError: (_err, _request, context) => {
       if (context?.previous !== undefined) {
         queryClient.setQueryData(
           computePreferenceKeys.detail(userId),

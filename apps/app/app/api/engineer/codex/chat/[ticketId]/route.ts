@@ -80,7 +80,8 @@ function getWorktreeDir(
 }
 
 function getWorkPaths(worktreeDir: string, chatContextId?: string) {
-  const claudeWorkDir = join(worktreeDir, ".claude", "work");
+  const claudeWorkDir = join(worktreeDir, ".closedloop-ai", "work");
+
   return {
     worktreeDir,
     claudeWorkDir,
@@ -635,6 +636,11 @@ export async function POST(
         console.log(
           `[codex-chat] Resume failed (exit ${result.exitCode}), deleting stale session and retrying as new`
         );
+        try {
+          unlinkSync(paths.chatStatePath);
+        } catch {
+          /* already gone */
+        }
         try {
           unlinkSync(paths.chatStatePath);
         } catch {

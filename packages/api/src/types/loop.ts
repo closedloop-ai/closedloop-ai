@@ -26,6 +26,8 @@ export const LoopCommand = {
   Decompose: "DECOMPOSE",
   EvaluatePrd: "EVALUATE_PRD",
   GeneratePrd: "GENERATE_PRD",
+  EvaluatePlan: "EVALUATE_PLAN",
+  EvaluateCode: "EVALUATE_CODE",
 } as const;
 export type LoopCommand = (typeof LoopCommand)[keyof typeof LoopCommand];
 
@@ -37,6 +39,8 @@ export const RunLoopCommand = {
   Decompose: "decompose",
   EvaluatePrd: "evaluate_prd",
   GeneratePrd: "generate_prd",
+  EvaluatePlan: "evaluate_plan",
+  EvaluateCode: "evaluate_code",
 } as const;
 export type RunLoopCommand =
   (typeof RunLoopCommand)[keyof typeof RunLoopCommand];

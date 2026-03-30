@@ -625,7 +625,7 @@ export function getWorktreesWithPendingLearnings(): WorktreeWithPendingLearnings
     const worktreeDir = entryPath;
     const pendingDir = join(
       worktreeDir,
-      ".claude",
+      ".closedloop-ai",
       "work",
       ".learnings",
       "pending"
@@ -638,9 +638,11 @@ export function getWorktreesWithPendingLearnings(): WorktreeWithPendingLearnings
     try {
       const files = readdirSync(pendingDir).filter((f) => f.endsWith(".json"));
       if (files.length > 0) {
+        // Derive claudeWorkDir by going up 2 levels from pendingDir (.learnings/pending)
+        const claudeWorkDir = join(pendingDir, "..", "..");
         results.push({
           worktreeDir,
-          claudeWorkDir: join(worktreeDir, ".claude", "work"),
+          claudeWorkDir,
           pendingCount: files.length,
         });
       }

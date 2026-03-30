@@ -135,7 +135,8 @@ export async function GET(
       worktreeParentDir,
       `${repoName}-${sanitizedTicket}`
     );
-    const planPath = join(worktreeDir, ".claude", "work", "plan.json");
+    const workDir = join(worktreeDir, ".closedloop-ai", "work");
+    const planPath = join(workDir, "plan.json");
 
     // Check if worktree exists
     if (!existsSync(worktreeDir)) {
@@ -176,7 +177,7 @@ export async function GET(
 
     // Fallback: try plan.md if content field is empty
     if (!markdownContent) {
-      const planMdPath = join(worktreeDir, ".claude", "work", "plan.md");
+      const planMdPath = join(workDir, "plan.md");
       if (existsSync(planMdPath)) {
         const planMd = await readFile(planMdPath, "utf-8");
         // Only use plan.md if it looks related to the same plan (title appears in first few lines)

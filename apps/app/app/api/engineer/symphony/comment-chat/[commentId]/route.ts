@@ -97,14 +97,16 @@ function getWorkPaths(
     effectiveDir = existsSync(worktreeDir) ? worktreeDir : expandedRepoPath;
   }
 
-  const claudeWorkDir = join(effectiveDir, ".claude", "work");
+  const claudeWorkDir = join(effectiveDir, ".closedloop-ai", "work");
   const commentChatsDir = join(claudeWorkDir, "comment-chats");
+
+  const historyFilename = `${sanitizedCommentId}.json`;
 
   return {
     effectiveDir,
     claudeWorkDir,
     commentChatsDir,
-    historyPath: join(commentChatsDir, `${sanitizedCommentId}.json`),
+    historyPath: join(commentChatsDir, historyFilename),
     planPath: join(claudeWorkDir, "plan.json"),
     prdPath: join(claudeWorkDir, "prd.md"),
   };

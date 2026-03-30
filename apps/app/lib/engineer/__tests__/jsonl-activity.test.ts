@@ -1,24 +1,23 @@
-import { rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { readLiveActivity } from "../jsonl-activity";
-
-const TMP_DIR = join(__dirname, ".tmp-jsonl-activity-test");
-const WORK_DIR = join(TMP_DIR, ".claude", "work");
-const JSONL_PATH = join(WORK_DIR, "claude-output.jsonl");
-
-async function mkdirp(dir: string) {
-  const { mkdir } = await import("node:fs/promises");
-  await mkdir(dir, { recursive: true });
-}
 
 function jsonlLines(...entries: object[]): string {
   return `${entries.map((e) => JSON.stringify(e)).join("\n")}\n`;
 }
 
 describe("readLiveActivity", () => {
+  let TMP_DIR: string;
+  let WORK_DIR: string;
+  let JSONL_PATH: string;
+
   beforeEach(async () => {
-    await mkdirp(WORK_DIR);
+    TMP_DIR = await mkdtemp(join(tmpdir(), "jsonl-activity-test-"));
+    WORK_DIR = join(TMP_DIR, ".closedloop-ai", "work");
+    JSONL_PATH = join(WORK_DIR, "claude-output.jsonl");
+    await mkdir(WORK_DIR, { recursive: true });
   });
 
   afterEach(async () => {

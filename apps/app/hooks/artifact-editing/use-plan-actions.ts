@@ -4,6 +4,7 @@ import type {
   BackendMismatchBody,
   ComputeTargetConflictBody,
 } from "@repo/api/src/types/compute-target";
+import type { CreateLoopRequest } from "@repo/api/src/types/loop";
 import { RunLoopCommand } from "@repo/api/src/types/loop";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { useCallback, useRef, useState } from "react";
@@ -20,6 +21,7 @@ type RunLoopParams = {
   prompt?: string;
   computeTargetId?: string;
   backendOverride?: boolean;
+  repo?: CreateLoopRequest["repo"];
 };
 
 /**
@@ -32,6 +34,7 @@ type RunLoopParams = {
  * - Regenerate operation (triggers plan regeneration via Loops)
  * - Request changes operation (submits feedback and triggers regeneration with changes)
  * - Execute operation (triggers implementation execution, creates PR)
+ * - Evaluate PR operation (code judges on the open PR branch; requires PR in UI)
  * - Loading states for each operation
  * - Multi-target state and selectTarget for compute target conflict resolution
  *
@@ -59,6 +62,9 @@ export function usePlanActions(config: UsePlanActionsConfig) {
   // TanStack Query mutation — all plan operations route through run-loop
   const runLoop = useRunLoop();
 
+  // Tracks which evaluate command is currently active (null when idle)
+  const activeCommandRef = useRef<RunLoopCommand | null>(null);
+
   // Multi-target conflict state
   const [multiTargetState, setMultiTargetState] = useState<{
     availableTargets: ComputeTargetConflictBody["availableTargets"];
@@ -66,9 +72,14 @@ export function usePlanActions(config: UsePlanActionsConfig) {
   // Backend mismatch state
   const [backendMismatchState, setBackendMismatchState] =
     useState<BackendMismatchBody | null>(null);
-  const pendingActionRef = useRef<((targetId: string) => void) | null>(null);
+  /** Command last passed to `prepareConflictRefs` — used to restore evaluate loading state on conflict replay. */
+  const pendingConflictCommandRef = useRef<RunLoopCommand | null>(null);
+  const pendingActionRef = useRef<((targetId: string) => Promise<void>) | null>(
+    null
+  );
   const pendingMismatchActionRef = useRef<
-    ((targetId: string | null, backendOverride: boolean) => void) | null
+    | ((targetId: string | null, backendOverride: boolean) => Promise<void>)
+    | null
   >(null);
 
   // Derived state
@@ -76,6 +87,22 @@ export function usePlanActions(config: UsePlanActionsConfig) {
   const isRegenerating = runLoop.isPending;
   const isRequestingChanges = runLoop.isPending;
   const isExecuting = runLoop.isPending;
+  const isEvaluatingPlan =
+    activeCommandRef.current === RunLoopCommand.EvaluatePlan &&
+    runLoop.isPending;
+  const isEvaluatingCode =
+    activeCommandRef.current === RunLoopCommand.EvaluateCode &&
+    runLoop.isPending;
+
+  const restoreEvaluateActiveCommandBeforeReplay = useCallback((): void => {
+    const pendingCommand = pendingConflictCommandRef.current;
+    if (
+      pendingCommand === RunLoopCommand.EvaluatePlan ||
+      pendingCommand === RunLoopCommand.EvaluateCode
+    ) {
+      activeCommandRef.current = pendingCommand;
+    }
+  }, []);
 
   /**
    * Set up pending-action refs so that selectTarget / confirmOriginalBackend /
@@ -83,22 +110,42 @@ export function usePlanActions(config: UsePlanActionsConfig) {
    */
   const prepareConflictRefs = useCallback(
     (baseParams: RunLoopParams): void => {
-      pendingActionRef.current = (targetId: string) =>
-        runLoop.mutateAsync({
-          ...baseParams,
-          artifactId,
-          computeTargetId: targetId,
-        });
-      pendingMismatchActionRef.current = (
+      pendingConflictCommandRef.current = baseParams.command;
+      const { command } = baseParams;
+      const clearEvaluateActiveCommandAfterReplay = (): void => {
+        if (
+          command === RunLoopCommand.EvaluatePlan ||
+          command === RunLoopCommand.EvaluateCode
+        ) {
+          activeCommandRef.current = null;
+        }
+      };
+      pendingActionRef.current = async (targetId: string) => {
+        try {
+          await runLoop.mutateAsync({
+            ...baseParams,
+            artifactId,
+            computeTargetId: targetId,
+          });
+        } finally {
+          clearEvaluateActiveCommandAfterReplay();
+        }
+      };
+      pendingMismatchActionRef.current = async (
         targetId: string | null,
         backendOverride: boolean
-      ) =>
-        runLoop.mutateAsync({
-          ...baseParams,
-          artifactId,
-          computeTargetId: targetId ?? undefined,
-          backendOverride,
-        });
+      ) => {
+        try {
+          await runLoop.mutateAsync({
+            ...baseParams,
+            artifactId,
+            computeTargetId: targetId ?? undefined,
+            backendOverride,
+          });
+        } finally {
+          clearEvaluateActiveCommandAfterReplay();
+        }
+      };
     },
     [artifactId, runLoop]
   );
@@ -112,6 +159,7 @@ export function usePlanActions(config: UsePlanActionsConfig) {
       onSuccess: () => {
         // unreachable: error handlers only receive thrown errors
       },
+      onRateLimited: (message) => toast.error(message),
     });
   }, []);
 
@@ -204,10 +252,67 @@ export function usePlanActions(config: UsePlanActionsConfig) {
     }
   }, [artifactId, runLoop, prepareConflictRefs, routeConflictError]);
 
-  const selectTarget = useCallback((targetId: string) => {
-    setMultiTargetState(null);
-    pendingActionRef.current?.(targetId);
-  }, []);
+  /**
+   * Evaluate the implementation plan via Loops.
+   * Creates a Loop with command="evaluate_plan". Invalidates plan judge cache on success.
+   */
+  const handleEvaluatePlan = useCallback(() => {
+    activeCommandRef.current = RunLoopCommand.EvaluatePlan;
+    prepareConflictRefs({ command: RunLoopCommand.EvaluatePlan });
+    runLoop.mutate(
+      { artifactId, command: RunLoopCommand.EvaluatePlan },
+      {
+        onSuccess: () => {
+          toast.success("Plan evaluation started via Loop");
+        },
+        onError: routeConflictError,
+        onSettled: () => {
+          activeCommandRef.current = null;
+        },
+      }
+    );
+  }, [artifactId, runLoop, prepareConflictRefs, routeConflictError]);
+
+  /**
+   * Evaluate the implementation code on the open PR branch via Loops.
+   * Creates a Loop with command="evaluate_code". Invalidates code judge cache on success.
+   */
+  const handleEvaluateCode = useCallback(
+    (prHeadBranch: string, repoFullName: string | null) => {
+      activeCommandRef.current = RunLoopCommand.EvaluateCode;
+      const repo =
+        repoFullName && repoFullName.length > 0
+          ? { fullName: repoFullName, branch: prHeadBranch }
+          : undefined;
+      prepareConflictRefs({ command: RunLoopCommand.EvaluateCode, repo });
+      runLoop.mutate(
+        {
+          artifactId,
+          command: RunLoopCommand.EvaluateCode,
+          ...(repo ? { repo } : {}),
+        },
+        {
+          onSuccess: () => {
+            toast.success("PR evaluation started via Loop");
+          },
+          onError: routeConflictError,
+          onSettled: () => {
+            activeCommandRef.current = null;
+          },
+        }
+      );
+    },
+    [artifactId, runLoop, prepareConflictRefs, routeConflictError]
+  );
+
+  const selectTarget = useCallback(
+    (targetId: string) => {
+      setMultiTargetState(null);
+      restoreEvaluateActiveCommandBeforeReplay();
+      pendingActionRef.current?.(targetId);
+    },
+    [restoreEvaluateActiveCommandBeforeReplay]
+  );
 
   const confirmOriginalBackend = useCallback(() => {
     if (!backendMismatchState) {
@@ -215,8 +320,9 @@ export function usePlanActions(config: UsePlanActionsConfig) {
     }
     const targetId = backendMismatchState.originalComputeTargetId;
     setBackendMismatchState(null);
+    restoreEvaluateActiveCommandBeforeReplay();
     pendingMismatchActionRef.current?.(targetId, true);
-  }, [backendMismatchState]);
+  }, [backendMismatchState, restoreEvaluateActiveCommandBeforeReplay]);
 
   const confirmPreferredBackend = useCallback(() => {
     if (!backendMismatchState) {
@@ -224,8 +330,9 @@ export function usePlanActions(config: UsePlanActionsConfig) {
     }
     const targetId = backendMismatchState.preferredComputeTargetId;
     setBackendMismatchState(null);
+    restoreEvaluateActiveCommandBeforeReplay();
     pendingMismatchActionRef.current?.(targetId, true);
-  }, [backendMismatchState]);
+  }, [backendMismatchState, restoreEvaluateActiveCommandBeforeReplay]);
 
   const dismissBackendMismatch = useCallback(() => {
     setBackendMismatchState(null);
@@ -237,6 +344,8 @@ export function usePlanActions(config: UsePlanActionsConfig) {
     handleRegenerate,
     handleRequestChanges,
     handleExecute,
+    handleEvaluatePlan,
+    handleEvaluateCode,
     selectTarget,
     confirmOriginalBackend,
     confirmPreferredBackend,
@@ -247,6 +356,8 @@ export function usePlanActions(config: UsePlanActionsConfig) {
     isRegenerating,
     isRequestingChanges,
     isExecuting,
+    isEvaluatingPlan,
+    isEvaluatingCode,
 
     // Multi-target conflict state
     multiTargetState,
