@@ -5,17 +5,13 @@ import { loopsService } from "@/app/loops/service";
 import { stopLoopTask } from "@/lib/loops/loop-ecs";
 import { scrubContextPackSecrets } from "@/lib/loops/loop-state";
 
-// NOTE: computeTargetId is used in the WHERE clause only (to restrict to
-// cloud/ECS loops — null means no local ComputeTarget, i.e. dispatched to ECS)
-// and is intentionally absent from the select below. If observability of
-// skipped loops is ever needed, add computeTargetId to both the select and
-// this type simultaneously.
 type StuckLoop = {
   id: string;
   organizationId: string;
   status: string;
   containerId: string | null;
   s3StateKey: string | null;
+  computeTargetId: string | null;
 };
 
 /**
@@ -32,7 +28,10 @@ type StuckLoop = {
  * ECS task-level stopTimeout configuration.
  */
 async function timeoutLoop(loop: StuckLoop, now: Date): Promise<boolean> {
-  if (loop.containerId) {
+  // Only stop ECS tasks. Desktop loops store a command ID in containerId
+  // which must NOT be passed to the ECS stop API. Desktop loops are only
+  // marked TIMED_OUT; the desktop client handles its own process cleanup.
+  if (loop.containerId && loop.computeTargetId === null) {
     try {
       await stopLoopTask(loop.containerId, "Cron timeout safety net");
     } catch (err) {
@@ -145,31 +144,34 @@ export const GET = async (request: Request): Promise<Response> => {
 
   const now = new Date();
 
-  // RUNNING loops: activity-based detection.
+  // RUNNING ECS loops: activity-based detection.
   // The harness reports output events every ~5s. If a RUNNING loop has had
   // zero events in the last 75 minutes, the container is dead. One single
-  // recent event = alive, don't touch it. No age cutoff needed — a loop
+  // recent event = alive, don't touch it. No age cutoff needed -- a loop
   // running for 6+ hours with active events is healthy and should never
   // be reaped.
   const activityCutoff = new Date(now.getTime() - 75 * 60 * 1000);
+
+  // RUNNING desktop loops: use createdAt-based detection (24h).
+  // Desktop loops don't write to the LoopEvent table -- their progress
+  // events flow through the desktop command channel -- so the activity-based
+  // "events.none" check would always match. Use a generous 24h age cutoff.
+  const desktopRunningCutoff = new Date(now.getTime() - 24 * 60 * 60 * 1000);
 
   // 90 minutes for CLAIMED loops (container may have never reported started)
   const claimedCutoff = new Date(now.getTime() - 90 * 60 * 1000);
   // 30 minutes for PENDING loops (should have been claimed quickly)
   const pendingCutoff = new Date(now.getTime() - 30 * 60 * 1000);
 
-  // Find stuck loops across all three categories.
-  // For RUNNING: purely activity-based — no events in 75 min = dead container.
-  //
-  // Desktop loops (computeTargetId IS NOT NULL) are excluded from the
-  // RUNNING inactivity check only. Their progress events flow through the
-  // desktop command channel rather than the LoopEvent table, causing
-  // false-positive reaping. PENDING/CLAIMED desktop loops can still get
-  // stranded (e.g., dispatch fails) and should be reaped normally.
+  // Find stuck loops across all categories.
+  // ECS RUNNING: activity-based (no events in 75 min = dead container).
+  // Desktop RUNNING: age-based (created > 24h ago).
+  // CLAIMED/PENDING: both ECS and desktop are reaped at standard thresholds.
   const stuckLoops = await withDb((db) =>
     db.loop.findMany({
       where: {
         OR: [
+          // ECS RUNNING: no events in 75 min
           {
             status: LoopStatus.RUNNING,
             computeTargetId: null,
@@ -179,14 +181,20 @@ export const GET = async (request: Request): Promise<Response> => {
               },
             },
           },
+          // Desktop RUNNING: created > 24h ago
+          {
+            status: LoopStatus.RUNNING,
+            computeTargetId: { not: null },
+            createdAt: { lt: desktopRunningCutoff },
+          },
+          // CLAIMED: both ECS and desktop
           {
             status: LoopStatus.CLAIMED,
-            computeTargetId: null,
             createdAt: { lt: claimedCutoff },
           },
+          // PENDING: both ECS and desktop
           {
             status: LoopStatus.PENDING,
-            computeTargetId: null,
             createdAt: { lt: pendingCutoff },
           },
         ],
@@ -197,6 +205,7 @@ export const GET = async (request: Request): Promise<Response> => {
         status: true,
         containerId: true,
         s3StateKey: true,
+        computeTargetId: true,
       },
     })
   );

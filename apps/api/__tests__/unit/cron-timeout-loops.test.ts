@@ -72,7 +72,10 @@ import { GET } from "@/app/cron/timeout-loops/route";
 // Helpers
 // ---------------------------------------------------------------------------
 
-type FindManyArgs = { where: { OR: Record<string, unknown>[] } };
+type FindManyArgs = {
+  where: { OR: Record<string, unknown>[] };
+  select: Record<string, boolean>;
+};
 
 function makeRequest(token = "test-secret"): Request {
   return new Request("http://localhost/api/cron/timeout-loops", {
@@ -114,6 +117,7 @@ type StuckLoopFixture = {
   status: string;
   containerId: string | null;
   s3StateKey: string | null;
+  computeTargetId: string | null;
 };
 
 /**
@@ -215,7 +219,7 @@ describe("GET /api/cron/timeout-loops — WHERE clause structure", () => {
     expect(mockUpdateMany).not.toHaveBeenCalled();
   });
 
-  it("RUNNING clause uses activity-based detection with computeTargetId: null", async () => {
+  it("ECS RUNNING clause uses activity-based detection with computeTargetId: null", async () => {
     const now = new Date("2026-01-01T12:00:00.000Z");
     const activityCutoff = new Date(now.getTime() - 75 * 60 * 1000);
     const args = await captureWhereClause(now);
@@ -227,37 +231,45 @@ describe("GET /api/cron/timeout-loops — WHERE clause structure", () => {
     });
   });
 
-  it("CLAIMED clause uses createdAt cutoff and computeTargetId: null", async () => {
+  it("desktop RUNNING clause uses 24h createdAt cutoff with computeTargetId not null", async () => {
+    const now = new Date("2026-01-01T12:00:00.000Z");
+    const desktopRunningCutoff = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    const args = await captureWhereClause(now);
+
+    expect(args.where.OR[1]).toEqual({
+      status: LoopStatus.RUNNING,
+      computeTargetId: { not: null },
+      createdAt: { lt: desktopRunningCutoff },
+    });
+  });
+
+  it("CLAIMED clause reaps both ECS and desktop (no computeTargetId filter)", async () => {
     const now = new Date("2026-01-01T12:00:00.000Z");
     const claimedCutoff = new Date(now.getTime() - 90 * 60 * 1000);
     const args = await captureWhereClause(now);
 
-    expect(args.where.OR[1]).toEqual({
+    expect(args.where.OR[2]).toEqual({
       status: LoopStatus.CLAIMED,
-      computeTargetId: null,
       createdAt: { lt: claimedCutoff },
     });
   });
 
-  it("PENDING clause uses createdAt cutoff and computeTargetId: null", async () => {
+  it("PENDING clause reaps both ECS and desktop (no computeTargetId filter)", async () => {
     const now = new Date("2026-01-01T12:00:00.000Z");
     const pendingCutoff = new Date(now.getTime() - 30 * 60 * 1000);
     const args = await captureWhereClause(now);
 
-    expect(args.where.OR[2]).toEqual({
+    expect(args.where.OR[3]).toEqual({
       status: LoopStatus.PENDING,
-      computeTargetId: null,
       createdAt: { lt: pendingCutoff },
     });
   });
 
-  it("all OR clauses include computeTargetId: null", async () => {
+  it("select clause includes computeTargetId", async () => {
     const now = new Date("2026-01-01T12:00:00.000Z");
     const args = await captureWhereClause(now);
 
-    for (const clause of args.where.OR) {
-      expect(clause).toHaveProperty("computeTargetId", null);
-    }
+    expect(args.select).toHaveProperty("computeTargetId", true);
   });
 });
 
@@ -283,6 +295,7 @@ describe("GET /api/cron/timeout-loops — timeoutLoop processing", () => {
       status: LoopStatus.RUNNING,
       containerId: null,
       s3StateKey: null,
+      computeTargetId: null,
     };
 
     const mockUpdateMany = mockFindAndUpdate([stuckLoop]);
@@ -332,6 +345,7 @@ describe("GET /api/cron/timeout-loops — timeoutLoop processing", () => {
       status: LoopStatus.RUNNING,
       containerId: "arn:aws:ecs:us-east-1:123456789:task/cluster/abc123",
       s3StateKey: null,
+      computeTargetId: null,
     };
 
     mockFindAndUpdate([stuckLoop]);
@@ -354,6 +368,7 @@ describe("GET /api/cron/timeout-loops — timeoutLoop processing", () => {
       status: LoopStatus.CLAIMED,
       containerId: null,
       s3StateKey: "orgs/org-1/loops/loop-stuck-3/context-pack.json",
+      computeTargetId: null,
     };
 
     mockFindAndUpdate([stuckLoop]);
@@ -375,6 +390,7 @@ describe("GET /api/cron/timeout-loops — timeoutLoop processing", () => {
       status: LoopStatus.RUNNING,
       containerId: null,
       s3StateKey: null,
+      computeTargetId: null,
     };
 
     mockFindAndUpdate([stuckLoop], 0);
@@ -386,5 +402,50 @@ describe("GET /api/cron/timeout-loops — timeoutLoop processing", () => {
 
     // addEvent should NOT be called when the loop was not actually timed out
     expect(mockAddEvent).not.toHaveBeenCalled();
+  });
+
+  it("does NOT call stopLoopTask for desktop loops (command ID in containerId)", async () => {
+    const now = new Date("2026-01-01T12:00:00.000Z");
+    vi.setSystemTime(now);
+
+    const desktopLoop: StuckLoopFixture = {
+      id: "loop-desktop-1",
+      organizationId: "org-1",
+      status: LoopStatus.RUNNING,
+      containerId: "cmd-123",
+      s3StateKey: null,
+      computeTargetId: "ct-abc",
+    };
+
+    mockFindAndUpdate([desktopLoop]);
+    await GET(makeRequest());
+
+    // Desktop loops must NOT have their command ID passed to ECS stop
+    expect(mockStopLoopTask).not.toHaveBeenCalled();
+    // But they should still be marked TIMED_OUT
+    expect(mockAddEvent).toHaveBeenCalledOnce();
+  });
+
+  it("calls stopLoopTask for ECS loops (computeTargetId is null)", async () => {
+    const now = new Date("2026-01-01T12:00:00.000Z");
+    vi.setSystemTime(now);
+
+    const ecsLoop: StuckLoopFixture = {
+      id: "loop-ecs-1",
+      organizationId: "org-1",
+      status: LoopStatus.RUNNING,
+      containerId: "arn:aws:ecs:us-east-1:123456789:task/cluster/xyz",
+      s3StateKey: null,
+      computeTargetId: null,
+    };
+
+    mockFindAndUpdate([ecsLoop]);
+    await GET(makeRequest());
+
+    expect(mockStopLoopTask).toHaveBeenCalledOnce();
+    expect(mockStopLoopTask).toHaveBeenCalledWith(
+      ecsLoop.containerId,
+      "Cron timeout safety net"
+    );
   });
 });
