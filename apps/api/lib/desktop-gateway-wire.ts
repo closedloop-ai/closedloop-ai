@@ -276,7 +276,7 @@ export function emitCommand(
  * Must stay in sync with Electron's `resolveOperationId()` in
  * `apps/desktop/src/main/app.ts`.
  */
-const EXACT_OPERATION_IDS: Record<string, string> = {
+export const EXACT_OPERATION_IDS: Record<string, string> = {
   "/api/engineer/symphony/launch": "symphony_launch",
   "/api/engineer/symphony/kill": "symphony_kill",
   "/api/engineer/symphony/loop": "symphony_loop",
@@ -297,7 +297,7 @@ const EXACT_OPERATION_IDS: Record<string, string> = {
  * Prefix-match path → operationId (checked in order, first match wins).
  * Order matters: more-specific prefixes must come before less-specific ones.
  */
-const PREFIX_OPERATION_IDS: [string, string][] = [
+export const PREFIX_OPERATION_IDS: [string, string][] = [
   ["/api/engineer/symphony/status/", "symphony_status"],
   ["/api/engineer/symphony/chat-history/", "symphony_chat_history"],
   ["/api/engineer/symphony/chat/", "symphony_chat"],

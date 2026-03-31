@@ -11,6 +11,7 @@ export default defineConfig({
     environment: "node",
     globals: true, // Makes describe, it, expect available globally
     setupFiles: ["./__tests__/setup.ts"],
+    exclude: ["**/node_modules/**", "**/dist/**", "__tests__/compatibility/**"],
     // Cache configuration for faster re-runs
     cache: {
       dir: "../../node_modules/.vitest", // Share cache at monorepo root

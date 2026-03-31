@@ -5,6 +5,12 @@ import { vi } from "vitest";
 // If .env.local doesn't exist (e.g., in CI), this will silently fail
 config({ path: ".env.local" });
 
+// Set fallback env vars for packages that validate at import time.
+// These are only used when .env.local is absent (e.g., CI).
+process.env.STRIPE_SECRET_KEY ??= "sk_test_placeholder";
+process.env.STRIPE_WEBHOOK_SECRET ??= "whsec_test_placeholder";
+process.env.INTERNAL_API_SECRET ??= "test-internal-secret";
+
 // Mock server-only to prevent "Client Component" errors in tests
 vi.mock("server-only", () => ({}));
 

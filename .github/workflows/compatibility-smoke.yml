@@ -1,0 +1,282 @@
+name: Compatibility Smoke
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: compat-smoke-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  detect-changes:
+    name: Detect Electron-boundary changes
+    runs-on: ubuntu-latest
+    outputs:
+      boundary: ${{ steps.filter.outputs.boundary }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Filter paths
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            boundary:
+              - 'apps/api/lib/desktop-gateway-types.ts'
+              - 'apps/api/lib/desktop-gateway-wire.ts'
+              - 'apps/api/lib/desktop-gateway-socket-server.ts'
+              - 'apps/api/lib/relay-event-bus.ts'
+              - 'apps/api/lib/sse-stream.ts'
+              - 'apps/api/lib/auth/local-gateway-jwt.ts'
+              - 'apps/api/lib/auth/local-gateway-jwt-config.ts'
+              - 'apps/api/lib/auth/local-gateway-origins.ts'
+              - 'apps/api/lib/auth/local-gateway-jti-registry.ts'
+              - 'apps/api/app/compute-targets/**'
+              - 'apps/api/app/internal/relay/**'
+              - 'apps/api/__tests__/compatibility/**'
+
+  smoke-tests:
+    name: Run compatibility smoke tests
+    needs: detect-changes
+    if: needs.detect-changes.outputs.boundary == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      electron_candidate_sha: ${{ steps.candidate.outputs.electron_candidate_sha }}
+      electron_candidate_pr: ${{ steps.candidate.outputs.electron_candidate_pr }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+        env:
+          DATABASE_URL: postgresql://localhost:5432/placeholder
+
+      - name: Read last-known-good electron SHA
+        id: lkg
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const lkg = JSON.parse(fs.readFileSync('.github/compatibility/last-known-good.json', 'utf8'));
+            const sha = lkg.closedloopElectron.sha;
+            const isPlaceholder = sha === '<placeholder-sha>';
+            core.setOutput('sha', sha);
+            core.setOutput('repo', lkg.closedloopElectron.repo);
+            core.setOutput('electron_sha', sha);
+            core.setOutput('is_placeholder', isPlaceholder ? 'true' : 'false');
+            if (isPlaceholder) {
+              core.warning('Electron SHA is a placeholder — skipping electron checkout.');
+            }
+
+      - name: Check ELECTRON_REPO_TOKEN availability
+        id: token_check
+        run: |
+          if [ -n "$ELECTRON_REPO_TOKEN" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::ELECTRON_REPO_TOKEN not set — skipping electron checkout."
+          fi
+        env:
+          ELECTRON_REPO_TOKEN: ${{ secrets.ELECTRON_REPO_TOKEN }}
+
+      # SECURITY: electron-checkout is read as reference data only. No code from this directory is executed. Tests compare type constants and operation ID maps extracted as plain text.
+      - name: Checkout closedloop-electron at last-known-good SHA
+        if: steps.lkg.outputs.is_placeholder != 'true' && steps.token_check.outputs.available == 'true'
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ steps.lkg.outputs.repo }}
+          ref: ${{ steps.lkg.outputs.sha }}
+          token: ${{ secrets.ELECTRON_REPO_TOKEN }}
+          path: electron-checkout
+
+      # Coordinated change detection: if a closedloop-electron PR carries the
+      # `compatibility-pair` label, switch the electron-checkout working tree to
+      # that PR's head SHA so both sides of the boundary change are tested together.
+      #
+      # RACE CONDITION: both PRs (this symphony-alpha PR and the paired electron PR)
+      # must have the `compatibility-pair` label applied BEFORE either CI run starts.
+      # If labels are applied sequentially, one run may miss the paired PR and test
+      # against last-known-good instead. Coordinate label application before pushing
+      # either branch or triggering re-runs.
+      #
+      # REVIEWER VERIFICATION: the PR comment posted by T-6.2 includes both SHAs
+      # (symphony-alpha head SHA and electron_candidate_sha) so reviewers can confirm
+      # the correct pair of commits was tested together.
+      - name: Detect coordinated electron candidate PR
+        id: candidate
+        continue-on-error: true
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.ELECTRON_REPO_TOKEN || github.token }}
+          script: |
+            // Search for open PRs in closedloop-electron that carry the compatibility-pair label.
+            // The label signals that this electron PR is intentionally paired with the current
+            // symphony-alpha PR for a coordinated boundary change.
+            const searchResult = await github.rest.search.issuesAndPullRequests({
+              q: "repo:closedloop-ai/closedloop-electron is:pr is:open label:compatibility-pair",
+              sort: "updated",
+              order: "desc",
+            });
+
+            if (searchResult.data.total_count === 0) {
+              core.info("No compatibility-pair electron PR found — using last-known-good SHA.");
+              core.setOutput("electron_candidate_sha", "");
+              core.setOutput("electron_candidate_pr", "");
+              return;
+            }
+
+            // Use the most recently updated paired PR if multiple exist.
+            const candidatePr = searchResult.data.items[0];
+            const prNumber = candidatePr.number;
+            const prUrl = candidatePr.html_url;
+
+            // Fetch the PR head SHA via the pulls API (search results do not include head SHA).
+            const prDetails = await github.rest.pulls.get({
+              owner: "closedloop-ai",
+              repo: "closedloop-electron",
+              pull_number: prNumber,
+            });
+            const candidateSha = prDetails.data.head.sha;
+
+            core.info(`Found compatibility-pair PR #${prNumber}: ${prUrl}`);
+            core.info(`Switching electron-checkout from last-known-good to candidate SHA ${candidateSha}`);
+
+            // Override the electron-checkout working tree to the candidate SHA.
+            const { execSync } = require("child_process");
+            execSync(`git -C electron-checkout fetch origin ${candidateSha}`, { stdio: "inherit" });
+            execSync(`git -C electron-checkout checkout ${candidateSha}`, { stdio: "inherit" });
+
+            core.setOutput("electron_candidate_sha", candidateSha);
+            core.setOutput("electron_candidate_pr", prUrl);
+
+      - name: Run API compatibility smoke tests
+        run: pnpm --filter=api test:compatibility
+        env:
+          NODE_ENV: test
+          INTERNAL_API_SECRET: test-internal-secret
+
+      - name: Run app compatibility smoke tests
+        run: pnpm --filter=app test:compatibility
+        env:
+          NODE_ENV: test
+
+      - name: Enrich compatibility results with metadata
+        shell: bash
+        run: |
+          node -e "
+            const fs = require('fs');
+            const results = JSON.parse(fs.readFileSync('apps/api/compatibility-results.json', 'utf8'));
+            results.symphonyAlphaSha = '${{ github.event.pull_request.head.sha }}';
+            results.closedloopElectronVersion = '${{ steps.candidate.outputs.electron_candidate_sha }}' || '${{ steps.lkg.outputs.electron_sha }}';
+            fs.writeFileSync('compatibility-results.json', JSON.stringify(results, null, 2));
+          "
+
+      - name: Upload compatibility results
+        uses: actions/upload-artifact@v4
+        with:
+          name: compatibility-results-${{ github.event.pull_request.number }}
+          path: compatibility-results.json
+          retention-days: 30
+
+      - name: Post PR comment with smoke test results
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const runStatus = '${{ job.status }}';
+            const symphonyAlphaSha = '${{ github.event.pull_request.head.sha }}';
+            const lkgSha = '${{ steps.lkg.outputs.electron_sha }}';
+            const candidateSha = '${{ steps.candidate.outputs.electron_candidate_sha }}';
+            const candidatePr = '${{ steps.candidate.outputs.electron_candidate_pr }}';
+            const electronSha = candidateSha || lkgSha;
+            const electronLabel = candidateSha ? 'candidate' : 'last-known-good';
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const marker = '<!-- compatibility-smoke-results -->';
+
+            const statusEmoji = runStatus === 'success' ? ':white_check_mark:' : ':x:';
+            const lines = [
+              marker,
+              `## Compatibility Smoke Test Results ${statusEmoji}`,
+              '',
+              `**Status:** ${runStatus}`,
+              `**Symphony Alpha SHA:** \`${symphonyAlphaSha}\``,
+              `**Electron SHA (${electronLabel}):** \`${electronSha}\``,
+            ];
+            if (candidatePr) {
+              lines.push(`**Paired Electron PR:** ${candidatePr}`);
+            }
+            lines.push('', `[View Actions run](${runUrl})`);
+            const body = lines.join('\n');
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const existing = comments.find((c) => c.body && c.body.includes(marker));
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+
+  # REQUIRED STATUS CHECK: this job name must be added to branch protection rules.
+  # Use the full name 'Compatibility Smoke / status-report' when configuring the required check.
+  # Do NOT use the 'smoke-tests' job — it is skipped on non-boundary PRs which would leave the check pending.
+  # The 'if: always()' ensures it always runs regardless of whether smoke-tests was skipped or failed.
+  status-report:
+    name: Compatibility smoke status
+    needs: [detect-changes, smoke-tests]
+    if: always()
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Report status
+        run: |
+          SMOKE_RESULT="${{ needs.smoke-tests.result }}"
+          BOUNDARY_CHANGED="${{ needs.detect-changes.outputs.boundary }}"
+
+          if [ "$SMOKE_RESULT" = "failure" ] || [ "$SMOKE_RESULT" = "cancelled" ]; then
+            echo "Compatibility smoke tests failed or were cancelled."
+            exit 1
+          fi
+
+          if [ "$BOUNDARY_CHANGED" = "true" ] && [ "$SMOKE_RESULT" = "success" ]; then
+            echo "Compatibility smoke tests passed."
+            exit 0
+          fi
+
+          echo "No Electron-boundary changes detected — smoke tests skipped."
+          exit 0

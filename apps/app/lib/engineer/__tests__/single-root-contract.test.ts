@@ -162,7 +162,6 @@ function makeRequest(urlPath: string, method = "GET", body?: unknown) {
   // Attach nextUrl so routes using request.nextUrl.searchParams work
   Object.defineProperty(req, "nextUrl", { get: () => url, enumerable: true });
   // Cast to any -- test requests don't need full NextRequest fidelity
-  // biome-ignore lint/suspicious/noExplicitAny: test helper
   return req as any;
 }
 

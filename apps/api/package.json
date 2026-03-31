@@ -10,6 +10,7 @@
     "start": "npm run server:start",
     "analyze": "ANALYZE=true npm run build",
     "test": "NODE_ENV=test vitest run",
+    "test:compatibility": "NODE_ENV=test vitest run --config vitest.config.compatibility.mts",
     "stripe": "stripe listen --forward-to localhost:3002/webhooks/payments",
     "clean": "git clean -xdf .cache .turbo dist node_modules",
     "typecheck": "tsc --noEmit --emitDeclarationOnly false"
