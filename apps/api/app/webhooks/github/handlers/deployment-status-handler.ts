@@ -82,9 +82,12 @@ export async function handleDeploymentStatus(
   });
 
   if (!repo) {
-    log.info("[handleDeploymentStatus] Repository not registered in ClosedLoop", {
-      githubRepoId: event.repository.id,
-    });
+    log.info(
+      "[handleDeploymentStatus] Repository not registered in ClosedLoop",
+      {
+        githubRepoId: event.repository.id,
+      }
+    );
     return NextResponse.json({
       message: "Repository not tracked",
       ok: true,

@@ -87,26 +87,14 @@ jobs:
               core.warning('Electron SHA is a placeholder — skipping electron checkout.');
             }
 
-      - name: Check ELECTRON_REPO_TOKEN availability
-        id: token_check
-        run: |
-          if [ -n "$ELECTRON_REPO_TOKEN" ]; then
-            echo "available=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "available=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::ELECTRON_REPO_TOKEN not set — skipping electron checkout."
-          fi
-        env:
-          ELECTRON_REPO_TOKEN: ${{ secrets.ELECTRON_REPO_TOKEN }}
-
       # SECURITY: electron-checkout is read as reference data only. No code from this directory is executed. Tests compare type constants and operation ID maps extracted as plain text.
       - name: Checkout closedloop-electron at last-known-good SHA
-        if: steps.lkg.outputs.is_placeholder != 'true' && steps.token_check.outputs.available == 'true'
+        if: steps.lkg.outputs.is_placeholder != 'true'
         uses: actions/checkout@v6
         with:
           repository: ${{ steps.lkg.outputs.repo }}
           ref: ${{ steps.lkg.outputs.sha }}
-          token: ${{ secrets.ELECTRON_REPO_TOKEN }}
+          token: ${{ secrets.GH_PAT }}
           path: electron-checkout
 
       # Coordinated change detection: if a closedloop-electron PR carries the
@@ -127,7 +115,7 @@ jobs:
         continue-on-error: true
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.ELECTRON_REPO_TOKEN || github.token }}
+          github-token: ${{ secrets.GH_PAT }}
           script: |
             // Search for open PRs in closedloop-electron that carry the compatibility-pair label.
             // The label signals that this electron PR is intentionally paired with the current
