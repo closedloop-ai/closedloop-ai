@@ -507,7 +507,7 @@ export default function ProjectDetailPage() {
               Workflows coming soon
             </div>
           </TabsContent>
-          <TabsContent className="mt-0 min-w-fit" value="artifacts">
+          <TabsContent className="mt-0 min-w-0" value="artifacts">
             <ArtifactsView
               artifacts={artifacts}
               editHandlers={artifactEditHandlers}

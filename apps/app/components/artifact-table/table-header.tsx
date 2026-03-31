@@ -48,9 +48,9 @@ export function ArtifactTableHeader({
   }
 
   return (
-    <div className="sticky top-0 z-10 flex h-10 min-w-fit items-center border-b bg-background">
+    <div className="sticky top-0 z-10 flex h-10 w-full min-w-0 items-center border-b bg-background">
       {/* Name column — flexible width */}
-      <div className="flex min-w-[250px] flex-1 items-center py-2 pr-3 pl-4">
+      <div className="flex min-w-[350px] flex-1 items-center py-2 pr-3 pl-4">
         <button
           className="flex items-center gap-1 hover:text-foreground"
           onClick={() => handleSort("title")}
