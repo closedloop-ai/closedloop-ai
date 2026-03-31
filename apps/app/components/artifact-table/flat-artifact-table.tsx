@@ -10,6 +10,7 @@ import { EmptyState } from "@/components/empty-state";
 import type { ArtifactColumn } from "@/hooks/use-column-visibility";
 import { useSortParams } from "@/hooks/use-sort-params";
 import { ensureDate } from "@/lib/date-utils";
+import { comparePriorityValues } from "@/lib/priority-sort";
 import type { SortDirection } from "@/lib/table-utils";
 import { getUserDisplayName } from "@/lib/user-utils";
 import type { ArtifactRowItem, RowEditHandlers } from "./artifact-row";
@@ -28,13 +29,6 @@ const FLAT_SORT_COLUMNS = [
   "score",
 ] as const;
 type FlatSortColumn = (typeof FLAT_SORT_COLUMNS)[number];
-
-const PRIORITY_ORDER: Record<string, number> = {
-  URGENT: 0,
-  HIGH: 1,
-  MEDIUM: 2,
-  LOW: 3,
-};
 
 function getItemDisplayName(item: ArtifactRowItem): string {
   if (item.kind === "project") {
@@ -74,9 +68,7 @@ function compareByDueDate(a: ArtifactRowItem, b: ArtifactRowItem): number {
 }
 
 function compareByPriority(a: ArtifactRowItem, b: ArtifactRowItem): number {
-  const aPriority = PRIORITY_ORDER[a.data.priority] ?? 99;
-  const bPriority = PRIORITY_ORDER[b.data.priority] ?? 99;
-  return aPriority - bPriority;
+  return comparePriorityValues(a.data.priority, b.data.priority);
 }
 
 function compareByProject(a: ArtifactRowItem, b: ArtifactRowItem): number {

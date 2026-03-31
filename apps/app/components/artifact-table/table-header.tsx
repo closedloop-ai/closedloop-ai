@@ -7,6 +7,7 @@ import {
   NON_SORTABLE_COLUMNS,
 } from "@/hooks/use-column-visibility";
 import type { SortDirection } from "@/lib/table-utils";
+import { getArtifactRowGridTemplateColumns } from "./artifact-row";
 
 type ArtifactTableHeaderProps = {
   visibleColumns: ArtifactColumn[];
@@ -39,11 +40,9 @@ export function ArtifactTableHeader({
   sortDir,
   onSort,
 }: ArtifactTableHeaderProps) {
-  const gridTemplateColumns = [
-    "minmax(350px, 1fr)",
-    ...visibleColumns.map(() => "124px"),
-    "56px",
-  ].join(" ");
+  const gridTemplateColumns = getArtifactRowGridTemplateColumns(
+    visibleColumns.length
+  );
 
   function handleSort(column: string) {
     if (sortBy !== column) {

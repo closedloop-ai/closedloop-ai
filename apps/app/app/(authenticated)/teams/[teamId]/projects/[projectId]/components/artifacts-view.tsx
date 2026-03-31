@@ -6,7 +6,6 @@ import {
   type ArtifactWithWorkstream,
   getRoutePrefixForType,
 } from "@repo/api/src/types/artifact";
-import type { Priority } from "@repo/api/src/types/common";
 import type { FeatureWithWorkstream } from "@repo/api/src/types/feature";
 import type { TreeEntity, TreeNode } from "@repo/api/src/types/project-tree";
 import type { WorkstreamState } from "@repo/api/src/types/workstream";
@@ -33,6 +32,7 @@ import { useProjectTree } from "@/hooks/queries/use-project-tree";
 import type { ArtifactColumn } from "@/hooks/use-column-visibility";
 import { useSortParams } from "@/hooks/use-sort-params";
 import { matchesFilter } from "@/lib/artifact-filter";
+import { comparePriorityValues } from "@/lib/priority-sort";
 import type { SortConfig } from "@/lib/table-utils";
 import { sortTableData } from "@/lib/table-utils";
 import type { FilterCategory } from "../page";
@@ -323,13 +323,6 @@ const SORT_COLUMNS = [
 
 type SortColumn = (typeof SORT_COLUMNS)[number];
 
-const PRIORITY_SORT_ORDER: Record<Priority, number> = {
-  URGENT: 0,
-  HIGH: 1,
-  MEDIUM: 2,
-  LOW: 3,
-};
-
 const ITEM_SORT_CONFIGS: Record<string, SortConfig<ArtifactRowItem>> = {
   title: {
     key: "title",
@@ -379,18 +372,7 @@ const ITEM_SORT_CONFIGS: Record<string, SortConfig<ArtifactRowItem>> = {
 };
 
 function compareByPriority(a: ArtifactRowItem, b: ArtifactRowItem): number {
-  const aPriority = a.data.priority;
-  const bPriority = b.data.priority;
-  if (!(aPriority || bPriority)) {
-    return 0;
-  }
-  if (!aPriority) {
-    return 1;
-  }
-  if (!bPriority) {
-    return -1;
-  }
-  return PRIORITY_SORT_ORDER[aPriority] - PRIORITY_SORT_ORDER[bPriority];
+  return comparePriorityValues(a.data.priority, b.data.priority);
 }
 
 // ---- Context menu state ----

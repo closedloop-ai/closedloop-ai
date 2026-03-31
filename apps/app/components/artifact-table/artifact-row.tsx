@@ -792,7 +792,9 @@ export function ArtifactRow({
   );
 }
 
-function getArtifactRowGridTemplateColumns(visibleColumnCount: number): string {
+export function getArtifactRowGridTemplateColumns(
+  visibleColumnCount: number
+): string {
   return [
     "minmax(350px, 1fr)",
     ...Array.from({ length: visibleColumnCount }, () => "124px"),
