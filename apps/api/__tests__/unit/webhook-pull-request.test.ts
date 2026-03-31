@@ -239,7 +239,11 @@ describe("handlePullRequest", () => {
       },
       entityLink: {
         findFirst: vi.fn(),
+        findMany: vi.fn().mockResolvedValue([]),
         create: vi.fn(),
+      },
+      feature: {
+        updateMany: vi.fn().mockResolvedValue({ count: 0 }),
       },
     };
 

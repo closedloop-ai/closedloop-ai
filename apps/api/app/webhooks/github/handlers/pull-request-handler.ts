@@ -14,6 +14,7 @@ import {
 } from "@repo/api/src/types/artifact";
 import { EntityType, LinkType } from "@repo/api/src/types/entity-link";
 import { ExternalLinkType } from "@repo/api/src/types/external-link";
+import { FeatureStatus } from "@repo/api/src/types/feature";
 import type { TransactionClient } from "@repo/database";
 import {
   ChecksStatus,
@@ -595,6 +596,14 @@ async function applyPrAction(
         log.info("[handlePullRequest] Marked artifact as EXECUTED", {
           artifactId: existingPr.artifactId,
         });
+
+        // Cascade: mark linked Features as COMPLETED when their plan ships,
+        // and ensure the PR is linked to those Features via EntityLink.
+        await markLinkedFeaturesCompleted(
+          tx,
+          existingPr.artifactId,
+          existingPr.id
+        );
       }
 
       log.info("[handlePullRequest] PR closed", {
@@ -683,4 +692,125 @@ async function applyPrAction(
     default:
       break;
   }
+}
+
+/**
+ * When an Implementation Plan is marked EXECUTED (PR merged), find any Features
+ * linked to it, mark them as COMPLETED, and ensure the PR ExternalLink is linked
+ * to those Features. Checks both directions of EntityLink since the plan can be
+ * either source or target.
+ */
+async function markLinkedFeaturesCompleted(
+  tx: TransactionClient,
+  artifactId: string,
+  _gitHubPullRequestId: string
+): Promise<void> {
+  const links = await tx.entityLink.findMany({
+    where: {
+      linkType: { in: [LinkType.Produces, LinkType.RelatesTo] },
+      OR: [
+        {
+          sourceId: artifactId,
+          sourceType: EntityType.Artifact,
+          targetType: EntityType.Feature,
+        },
+        {
+          targetId: artifactId,
+          targetType: EntityType.Artifact,
+          sourceType: EntityType.Feature,
+        },
+      ],
+    },
+    select: {
+      sourceId: true,
+      sourceType: true,
+      targetId: true,
+      targetType: true,
+      organizationId: true,
+    },
+  });
+
+  const featureIds = links.map((link) =>
+    link.sourceType === EntityType.Feature ? link.sourceId : link.targetId
+  );
+
+  if (featureIds.length === 0) {
+    return;
+  }
+
+  const organizationId = links[0].organizationId;
+
+  // Mark features as COMPLETED
+  const { count } = await tx.feature.updateMany({
+    where: {
+      id: { in: featureIds },
+      status: { not: FeatureStatus.Completed },
+    },
+    data: { status: FeatureStatus.Completed },
+  });
+
+  if (count > 0) {
+    log.info("[handlePullRequest] Marked linked features as COMPLETED", {
+      artifactId,
+      featureIds,
+      updatedCount: count,
+    });
+  }
+
+  // Find the PR's ExternalLink to link it to the features
+  const prExternalLink = await tx.entityLink.findFirst({
+    where: {
+      sourceId: artifactId,
+      sourceType: EntityType.Artifact,
+      targetType: EntityType.ExternalLink,
+      linkType: LinkType.Produces,
+    },
+    select: { targetId: true },
+  });
+
+  if (!prExternalLink) {
+    return;
+  }
+
+  // Collect target IDs for bulk link creation (PR + optional preview)
+  const targetExternalLinkIds = [prExternalLink.targetId];
+
+  const previewLink = await tx.entityLink.findFirst({
+    where: {
+      sourceId: prExternalLink.targetId,
+      sourceType: EntityType.ExternalLink,
+      targetType: EntityType.ExternalLink,
+      linkType: LinkType.Produces,
+    },
+    select: { targetId: true },
+  });
+
+  if (previewLink) {
+    targetExternalLinkIds.push(previewLink.targetId);
+  }
+
+  // Bulk-create Feature → ExternalLink entity links, skipping duplicates
+  const candidateLinks = featureIds.flatMap((featureId) =>
+    targetExternalLinkIds.map((targetId) => ({
+      organizationId,
+      sourceId: featureId,
+      sourceType: EntityType.Feature,
+      targetId,
+      targetType: EntityType.ExternalLink,
+      linkType: LinkType.Produces,
+    }))
+  );
+
+  await tx.entityLink.createMany({
+    data: candidateLinks,
+    skipDuplicates: true,
+  });
+
+  log.info("[handlePullRequest] Ensured features linked to PR and preview", {
+    artifactId,
+    featureIds,
+    prExternalLinkId: prExternalLink.targetId,
+    previewExternalLinkId: previewLink?.targetId ?? null,
+    candidateLinkCount: candidateLinks.length,
+  });
 }

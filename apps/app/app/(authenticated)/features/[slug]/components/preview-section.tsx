@@ -37,6 +37,20 @@ export function PreviewSection({ featureId }: Readonly<PreviewSectionProps>) {
               return null;
             }
             const externalLink = linked.resolvedEntity.entity;
+            if (!externalLink.externalUrl) {
+              return (
+                <div
+                  className="flex items-center gap-2 rounded-md px-2 py-2 text-muted-foreground"
+                  key={linked.id}
+                >
+                  <ExternalLinkIcon className="h-4 w-4 shrink-0" />
+                  <span className="truncate font-medium text-sm">
+                    {externalLink.title}
+                  </span>
+                  <span className="text-xs">Deploying...</span>
+                </div>
+              );
+            }
             return (
               <a
                 className="flex items-center gap-2 rounded-md px-2 py-2 hover:bg-accent"
