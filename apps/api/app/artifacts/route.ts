@@ -2,7 +2,6 @@ import type {
   Artifact,
   ArtifactWithWorkstream,
 } from "@repo/api/src/types/artifact";
-import { ArtifactType } from "@repo/api/src/types/artifact";
 import { CustomFieldEntityType } from "@repo/api/src/types/custom-field";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import {
@@ -10,7 +9,6 @@ import {
   resolveProjectId,
   resolveWorkstreamId,
 } from "@/lib/identifier-utils";
-import { scheduleAutoEvaluatePrd } from "@/lib/loops/auto-evaluate-prd";
 import {
   badRequestResponse,
   errorResponse,
@@ -161,10 +159,6 @@ export const POST = withAnyAuth<Artifact, "/artifacts">(
       );
       if (!artifact) {
         return badRequestResponse("Failed to create artifact");
-      }
-
-      if (artifact.type === ArtifactType.Prd) {
-        scheduleAutoEvaluatePrd(artifact.id, user.organizationId, user.id);
       }
 
       return successResponse(artifact);

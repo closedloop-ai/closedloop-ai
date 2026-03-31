@@ -30,7 +30,6 @@ vi.mock("@/app/custom-fields/values-service", () => ({
     getValuesForEntity: vi.fn().mockResolvedValue([]),
   },
 }));
-
 describe("GET /api/artifacts", () => {
   beforeEach(() => {
     vi.clearAllMocks();
