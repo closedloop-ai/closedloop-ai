@@ -17,7 +17,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@repo/design-system/components/ui/dropdown-menu";
-import { FileTextIcon, FolderIcon, MergeIcon, TrashIcon } from "lucide-react";
+import { FileTextIcon, Layers2Icon, MergeIcon, TrashIcon } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
   ArtifactRow,
@@ -411,6 +411,9 @@ export function ArtifactsView({
     null
   );
   const [pendingBulkIds, setPendingBulkIds] = useState<Set<string>>(new Set());
+  const [moveEntities, setMoveEntities] = useState<
+    { id: string; entityType: EntityType; projectId?: string | null }[]
+  >([]);
   const [moveEntity, setMoveEntity] = useState<{
     id: string;
     entityType: EntityType;
@@ -434,6 +437,10 @@ export function ArtifactsView({
 
   const isGroupedView = filterCategory === "all";
   const showCheckbox = !isGroupedView;
+  const canBulkMove =
+    filterCategory === "documents" ||
+    filterCategory === "features" ||
+    filterCategory === "plans";
 
   // Check if exactly 2 artifacts (not features) are selected for merge
   const selectedArtifactsForMerge = useMemo(():
@@ -650,6 +657,39 @@ export function ArtifactsView({
     }
   }
 
+  function handleRequestBulkMove() {
+    const entitiesToMove: {
+      id: string;
+      entityType: EntityType;
+      projectId?: string | null;
+    }[] = [];
+
+    for (const id of selectedIds) {
+      const artifact = artifacts.find((a) => a.id === id);
+      if (artifact) {
+        entitiesToMove.push({
+          id: artifact.id,
+          entityType: EntityType.Artifact,
+          projectId: artifact.projectId,
+        });
+        continue;
+      }
+
+      const feature = features.find((f) => f.id === id);
+      if (feature) {
+        entitiesToMove.push({
+          id: feature.id,
+          entityType: EntityType.Feature,
+          projectId: feature.projectId,
+        });
+      }
+    }
+
+    if (entitiesToMove.length > 0) {
+      setMoveEntities(entitiesToMove);
+    }
+  }
+
   // ---- Empty state ----
 
   if (isEmpty) {
@@ -769,6 +809,17 @@ export function ArtifactsView({
                     Merge
                   </Button>
                 )}
+                {canBulkMove && (
+                  <Button
+                    className="h-8 text-xs"
+                    onClick={handleRequestBulkMove}
+                    size="sm"
+                    variant="outline"
+                  >
+                    <Layers2Icon className="h-4 w-4" />
+                    Move to Project
+                  </Button>
+                )}
                 <Button
                   className="h-8 text-xs"
                   onClick={() => {
@@ -817,7 +868,7 @@ export function ArtifactsView({
           {(menuState?.item.kind === "artifact" ||
             menuState?.item.kind === "feature") && (
             <DropdownMenuItem onClick={() => handleRequestMove(menuState.item)}>
-              <FolderIcon className="h-4 w-4" />
+              <Layers2Icon className="h-4 w-4" />
               Move to Project
             </DropdownMenuItem>
           )}
@@ -856,6 +907,23 @@ export function ArtifactsView({
             }
           }}
           open={moveEntity !== null}
+          teamId={teamId}
+        />
+      )}
+      {moveEntities.length > 0 && (
+        <MoveEntityDialog
+          currentProjectId={projectId}
+          entities={moveEntities}
+          onOpenChange={(open) => {
+            if (!open) {
+              setMoveEntities([]);
+            }
+          }}
+          onSuccess={() => {
+            setSelectedIds(new Set());
+            setMoveEntities([]);
+          }}
+          open={moveEntities.length > 0}
           teamId={teamId}
         />
       )}
