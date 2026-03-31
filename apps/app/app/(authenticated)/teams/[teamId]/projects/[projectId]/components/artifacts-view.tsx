@@ -6,6 +6,7 @@ import {
   type ArtifactWithWorkstream,
   getRoutePrefixForType,
 } from "@repo/api/src/types/artifact";
+import type { Priority } from "@repo/api/src/types/common";
 import type { FeatureWithWorkstream } from "@repo/api/src/types/feature";
 import type { TreeEntity, TreeNode } from "@repo/api/src/types/project-tree";
 import type { WorkstreamState } from "@repo/api/src/types/workstream";
@@ -322,7 +323,7 @@ const SORT_COLUMNS = [
 
 type SortColumn = (typeof SORT_COLUMNS)[number];
 
-const PRIORITY_SORT_ORDER: Record<string, number> = {
+const PRIORITY_SORT_ORDER: Record<Priority, number> = {
   URGENT: 0,
   HIGH: 1,
   MEDIUM: 2,
@@ -373,22 +374,24 @@ const ITEM_SORT_CONFIGS: Record<string, SortConfig<ArtifactRowItem>> = {
   },
   priority: {
     key: "priority",
-    comparator: (a, b) => {
-      const aPriority = a.data.priority;
-      const bPriority = b.data.priority;
-      if (!(aPriority || bPriority)) {
-        return 0;
-      }
-      if (!aPriority) {
-        return 1;
-      }
-      if (!bPriority) {
-        return -1;
-      }
-      return PRIORITY_SORT_ORDER[aPriority] - PRIORITY_SORT_ORDER[bPriority];
-    },
+    comparator: compareByPriority,
   },
 };
+
+function compareByPriority(a: ArtifactRowItem, b: ArtifactRowItem): number {
+  const aPriority = a.data.priority;
+  const bPriority = b.data.priority;
+  if (!(aPriority || bPriority)) {
+    return 0;
+  }
+  if (!aPriority) {
+    return 1;
+  }
+  if (!bPriority) {
+    return -1;
+  }
+  return PRIORITY_SORT_ORDER[aPriority] - PRIORITY_SORT_ORDER[bPriority];
+}
 
 // ---- Context menu state ----
 
