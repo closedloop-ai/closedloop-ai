@@ -25,7 +25,6 @@
     "@repo/google": "workspace:*",
     "@repo/linear": "workspace:*",
     "@repo/next-config": "workspace:*",
-    "@repo/notifications": "workspace:*",
     "@repo/observability": "workspace:*",
     "@repo/rich-text": "workspace:*",
     "@repo/security": "workspace:*",

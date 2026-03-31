@@ -84,12 +84,6 @@ vi.mock("@repo/design-system/components/ui/mode-toggle", () => ({
   ModeToggle: () => <div data-testid="mode-toggle">Mode Toggle</div>,
 }));
 
-vi.mock("@repo/notifications/components/trigger", () => ({
-  NotificationsTrigger: () => (
-    <div data-testid="notifications-trigger">Notifications</div>
-  ),
-}));
-
 vi.mock("../inbox-badge", () => ({
   InboxBadge: () => null,
 }));
