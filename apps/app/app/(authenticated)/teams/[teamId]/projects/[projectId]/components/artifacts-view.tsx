@@ -33,6 +33,7 @@ import { useProjectTree } from "@/hooks/queries/use-project-tree";
 import type { ArtifactColumn } from "@/hooks/use-column-visibility";
 import { useSortParams } from "@/hooks/use-sort-params";
 import { matchesFilter } from "@/lib/artifact-filter";
+import { comparePriorityValues } from "@/lib/priority-sort";
 import type { SortConfig } from "@/lib/table-utils";
 import { sortTableData } from "@/lib/table-utils";
 import type { FilterCategory } from "../page";
@@ -366,7 +367,15 @@ const ITEM_SORT_CONFIGS: Record<string, SortConfig<ArtifactRowItem>> = {
       return aName.localeCompare(bName);
     },
   },
+  priority: {
+    key: "priority",
+    comparator: compareByPriority,
+  },
 };
+
+function compareByPriority(a: ArtifactRowItem, b: ArtifactRowItem): number {
+  return comparePriorityValues(a.data.priority, b.data.priority);
+}
 
 // ---- Context menu state ----
 
