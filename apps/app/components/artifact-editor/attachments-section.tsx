@@ -76,14 +76,21 @@ export function AttachmentsSection({ artifactId }: { artifactId: string }) {
               key={attachment.id}
             >
               {attachment.previewUrl ? (
-                /* biome-ignore lint/performance/noImgElement: S3 presigned URLs are external/dynamic */
-                <img
-                  alt={attachment.filename}
-                  className="max-h-48 w-full rounded object-contain"
-                  height={192}
-                  src={attachment.previewUrl}
-                  width={384}
-                />
+                <a
+                  className="hover:opacity-90"
+                  href={attachment.previewUrl}
+                  rel="noopener noreferrer"
+                  target="_blank"
+                >
+                  {/* biome-ignore lint/performance/noImgElement: S3 presigned URLs are external/dynamic */}
+                  <img
+                    alt={attachment.filename}
+                    className="max-h-48 w-full rounded object-contain"
+                    height={192}
+                    src={attachment.previewUrl}
+                    width={384}
+                  />
+                </a>
               ) : null}
               <div className="flex items-center justify-between">
                 <div className="min-w-0 flex-1">

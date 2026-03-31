@@ -268,14 +268,21 @@ function AttachmentRow({
     <div className="group flex items-center px-2 py-1">
       <div className="flex min-w-0 flex-1 items-center gap-2 rounded-md">
         {attachment.previewUrl ? (
-          /* biome-ignore lint/performance/noImgElement: S3 presigned URLs are external/dynamic */
-          <img
-            alt={attachment.filename}
-            className="h-8 w-8 shrink-0 rounded object-cover"
-            height={8}
-            src={attachment.previewUrl}
-            width={8}
-          />
+          <a
+            className="hover:opacity-90"
+            href={attachment.previewUrl}
+            rel="noopener noreferrer"
+            target="_blank"
+          >
+            {/* biome-ignore lint/performance/noImgElement: S3 presigned URLs are external/dynamic */}
+            <img
+              alt={attachment.filename}
+              className="h-8 w-8 shrink-0 rounded object-cover"
+              height={8}
+              src={attachment.previewUrl}
+              width={8}
+            />
+          </a>
         ) : (
           <div className="flex shrink-0 items-center p-1">
             <FileIcon className="h-4 w-4 text-muted-foreground" />
