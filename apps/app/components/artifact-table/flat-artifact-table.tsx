@@ -74,14 +74,8 @@ function compareByDueDate(a: ArtifactRowItem, b: ArtifactRowItem): number {
 }
 
 function compareByPriority(a: ArtifactRowItem, b: ArtifactRowItem): number {
-  const aPriority =
-    a.kind === "feature" || a.kind === "project"
-      ? (PRIORITY_ORDER[a.data.priority] ?? 99)
-      : 99;
-  const bPriority =
-    b.kind === "feature" || b.kind === "project"
-      ? (PRIORITY_ORDER[b.data.priority] ?? 99)
-      : 99;
+  const aPriority = PRIORITY_ORDER[a.data.priority] ?? 99;
+  const bPriority = PRIORITY_ORDER[b.data.priority] ?? 99;
   return aPriority - bPriority;
 }
 
