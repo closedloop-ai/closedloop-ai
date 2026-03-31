@@ -13,7 +13,7 @@ import { useRunLoop } from "@/hooks/queries/use-loops";
 import { handleRunLoopResponse } from "@/lib/run-loop-response";
 
 type UsePlanActionsConfig = {
-  artifactId: string;
+  artifactId: string | null;
 };
 
 type RunLoopParams = {
@@ -121,6 +121,9 @@ export function usePlanActions(config: UsePlanActionsConfig) {
         }
       };
       pendingActionRef.current = async (targetId: string) => {
+        if (!artifactId) {
+          return;
+        }
         try {
           await runLoop.mutateAsync({
             ...baseParams,
@@ -135,6 +138,9 @@ export function usePlanActions(config: UsePlanActionsConfig) {
         targetId: string | null,
         backendOverride: boolean
       ) => {
+        if (!artifactId) {
+          return;
+        }
         try {
           await runLoop.mutateAsync({
             ...baseParams,
@@ -169,6 +175,9 @@ export function usePlanActions(config: UsePlanActionsConfig) {
    * (Approval is always a direct update, not a loop.)
    */
   const handleApprove = useCallback(() => {
+    if (!artifactId) {
+      return;
+    }
     updateArtifact.mutate(
       { id: artifactId, status: "APPROVED" },
       {
@@ -182,6 +191,9 @@ export function usePlanActions(config: UsePlanActionsConfig) {
    * Creates a Loop with command="plan". Compute target is resolved server-side.
    */
   const handleRegenerate = useCallback(() => {
+    if (!artifactId) {
+      return;
+    }
     prepareConflictRefs({ command: RunLoopCommand.Plan });
     runLoop.mutate(
       { artifactId, command: RunLoopCommand.Plan },
@@ -199,6 +211,9 @@ export function usePlanActions(config: UsePlanActionsConfig) {
    */
   const handleRequestChanges = useCallback(
     async (changes: string): Promise<boolean> => {
+      if (!artifactId) {
+        return false;
+      }
       prepareConflictRefs({
         command: RunLoopCommand.RequestChanges,
         prompt: changes,
@@ -232,6 +247,9 @@ export function usePlanActions(config: UsePlanActionsConfig) {
    * Creates a Loop with command="execute". Compute target is resolved server-side.
    */
   const handleExecute = useCallback(async (): Promise<boolean> => {
+    if (!artifactId) {
+      return false;
+    }
     prepareConflictRefs({ command: RunLoopCommand.Execute });
     try {
       await runLoop.mutateAsync(
@@ -257,6 +275,9 @@ export function usePlanActions(config: UsePlanActionsConfig) {
    * Creates a Loop with command="evaluate_plan". Invalidates plan judge cache on success.
    */
   const handleEvaluatePlan = useCallback(() => {
+    if (!artifactId) {
+      return;
+    }
     activeCommandRef.current = RunLoopCommand.EvaluatePlan;
     prepareConflictRefs({ command: RunLoopCommand.EvaluatePlan });
     runLoop.mutate(
@@ -279,6 +300,9 @@ export function usePlanActions(config: UsePlanActionsConfig) {
    */
   const handleEvaluateCode = useCallback(
     (prHeadBranch: string, repoFullName: string | null) => {
+      if (!artifactId) {
+        return;
+      }
       activeCommandRef.current = RunLoopCommand.EvaluateCode;
       const repo =
         repoFullName && repoFullName.length > 0

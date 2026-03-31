@@ -1,6 +1,8 @@
 "use client";
 
 import {
+  type BatchMoveEntitiesInput,
+  type BatchMoveEntitiesResult,
   type CreateEntityLinkInput,
   type EntityLink,
   EntityType,
@@ -16,7 +18,11 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { useApiClient } from "@/hooks/use-api-client";
+import { artifactKeys } from "./use-artifacts";
+import { dashboardKeys } from "./use-dashboard-stats";
+import { featureKeys } from "./use-features";
 import { projectTreeKeys } from "./use-project-tree";
+import { projectKeys } from "./use-projects";
 
 // Query keys
 export const entityLinkKeys = {
@@ -230,14 +236,13 @@ export function useLinkedPlanId(
     options
   );
 
-  const linkedPlanLink = targetLinks.find(
-    (link) => link.targetType === EntityType.Artifact
-  );
+  const linkedPlanLink =
+    targetLinks.find((link) => link.targetType === EntityType.Artifact) ?? null;
 
   return {
     targetLinks,
     linkedPlanLink,
-    linkedPlanId: linkedPlanLink?.targetId ?? "",
+    linkedPlanId: linkedPlanLink?.targetId ?? null,
   };
 }
 
@@ -265,6 +270,27 @@ export function useDeleteEntityLink() {
       apiClient.delete<{ deleted: true }>(`/entity-links/${id}`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: entityLinkKeys.all });
+      queryClient.invalidateQueries({ queryKey: projectTreeKeys.all });
+    },
+  });
+}
+
+export function useBatchMoveEntities() {
+  const queryClient = useQueryClient();
+  const apiClient = useApiClient();
+
+  return useMutation({
+    mutationFn: (input: BatchMoveEntitiesInput) =>
+      apiClient.post<BatchMoveEntitiesResult>(
+        "/entity-links/batch-move",
+        input
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: featureKeys.all });
+      queryClient.invalidateQueries({ queryKey: artifactKeys.all });
+      queryClient.invalidateQueries({ queryKey: entityLinkKeys.all });
+      queryClient.invalidateQueries({ queryKey: projectKeys.all });
+      queryClient.invalidateQueries({ queryKey: dashboardKeys.all });
       queryClient.invalidateQueries({ queryKey: projectTreeKeys.all });
     },
   });

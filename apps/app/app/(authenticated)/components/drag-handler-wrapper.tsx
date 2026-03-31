@@ -2,18 +2,23 @@
 
 import type { DragEndEvent } from "@dnd-kit/core";
 import { arrayMove } from "@dnd-kit/sortable";
-import type { Artifact } from "@repo/api/src/types/artifact";
+import type { LinkedEntity } from "@repo/api/src/types/entity-link";
+import {
+  EntityType,
+  LinkDirection,
+  LinkQueryMode,
+  LinkType,
+} from "@repo/api/src/types/entity-link";
 import { useQueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { useState } from "react";
 import { DndProvider } from "@/components/dnd/dnd-provider";
-import { MoveRelatedConfirmationDialog } from "@/components/move-related-confirmation-dialog";
+import { MoveDownstreamConfirmationDialog } from "@/components/move-downstream-confirmation-dialog";
+import { useReorderArtifacts } from "@/hooks/queries/use-artifacts";
 import {
-  artifactKeys,
-  useArtifact,
-  useBatchMoveArtifacts,
-  useReorderArtifacts,
-} from "@/hooks/queries/use-artifacts";
+  entityLinkKeys,
+  useBatchMoveEntities,
+} from "@/hooks/queries/use-entity-links";
 import { useReorderProjects } from "@/hooks/queries/use-projects";
 import { useApiClient } from "@/hooks/use-api-client";
 
@@ -21,34 +26,52 @@ type DragHandlerWrapperProps = {
   children: ReactNode;
 };
 
-export function DragHandlerWrapper({ children }: DragHandlerWrapperProps) {
+export function DragHandlerWrapper({
+  children,
+}: Readonly<DragHandlerWrapperProps>) {
   const [dialogState, setDialogState] = useState<{
     open: boolean;
     artifactId: string | null;
     targetProjectId: string | null;
+    downstreamEntities: LinkedEntity[];
   }>({
     open: false,
     artifactId: null,
     targetProjectId: null,
+    downstreamEntities: [],
   });
 
   const queryClient = useQueryClient();
   const apiClient = useApiClient();
-  const batchMoveMutation = useBatchMoveArtifacts();
+  const batchMoveMutation = useBatchMoveEntities();
   const reorderArtifacts = useReorderArtifacts();
   const reorderProjects = useReorderProjects();
 
-  // Fetch the dragged artifact data for dialog display
-  const { data: draggedArtifact } = useArtifact(
-    dialogState.artifactId ?? "",
-    undefined,
-    {
-      enabled: !!dialogState.artifactId,
-    }
-  );
-
-  // Fetch related artifact details for display
-  const relatedArtifacts: Artifact[] = [];
+  const fetchDownstream = (artifactId: string): Promise<LinkedEntity[]> => {
+    const params = new URLSearchParams({
+      entityId: artifactId,
+      entityType: EntityType.Artifact,
+      direction: LinkDirection.Target,
+      linkType: LinkType.Produces,
+      mode: LinkQueryMode.Tree,
+    });
+    return queryClient
+      .fetchQuery({
+        queryKey: entityLinkKeys.list({
+          entityId: artifactId,
+          entityType: EntityType.Artifact,
+          direction: LinkDirection.Target,
+          linkType: LinkType.Produces,
+          mode: LinkQueryMode.Tree,
+          resolved: true,
+        }),
+        queryFn: () =>
+          apiClient.get<LinkedEntity[]>(
+            `/entity-links/resolved?${params.toString()}`
+          ),
+      })
+      .catch(() => [] as LinkedEntity[]);
+  };
 
   const handleDragEnd = async (event: DragEndEvent) => {
     const { active, over } = event;
@@ -62,29 +85,21 @@ export function DragHandlerWrapper({ children }: DragHandlerWrapperProps) {
       const targetProjectId = over.data.current.projectId as string;
       const draggedArtifactId = active.id as string;
 
-      try {
-        const relatedIds = await queryClient.fetchQuery({
-          queryKey: artifactKeys.related(draggedArtifactId),
-          queryFn: () =>
-            apiClient.get<string[]>(`/artifacts/${draggedArtifactId}/related`),
-        });
+      const downstream = await fetchDownstream(draggedArtifactId);
 
-        if (relatedIds && relatedIds.length > 0) {
-          setDialogState({
-            open: true,
-            artifactId: draggedArtifactId,
-            targetProjectId,
-          });
-        } else {
-          await batchMoveMutation.mutateAsync({
-            artifactIds: [draggedArtifactId],
-            targetProjectId,
-          });
-        }
-      } catch {
-        await batchMoveMutation.mutateAsync({
-          artifactIds: [draggedArtifactId],
+      if (downstream.length > 0) {
+        setDialogState({
+          open: true,
+          artifactId: draggedArtifactId,
           targetProjectId,
+          downstreamEntities: downstream,
+        });
+      } else {
+        batchMoveMutation.mutate({
+          entityId: draggedArtifactId,
+          entityType: EntityType.Artifact,
+          targetProjectId,
+          includeDownstream: false,
         });
       }
       return;
@@ -112,48 +127,49 @@ export function DragHandlerWrapper({ children }: DragHandlerWrapperProps) {
     }
   };
 
-  const handleConfirmMove = async (moveAll: boolean) => {
+  const handleConfirmMove = (moveAll: boolean) => {
     if (!(dialogState.artifactId && dialogState.targetProjectId)) {
       return;
     }
 
-    const cachedRelatedIds =
-      queryClient.getQueryData<string[]>(
-        artifactKeys.related(dialogState.artifactId)
-      ) ?? [];
-
-    const artifactIds = moveAll
-      ? [dialogState.artifactId, ...cachedRelatedIds]
-      : [dialogState.artifactId];
-
-    await batchMoveMutation.mutateAsync({
-      artifactIds,
-      targetProjectId: dialogState.targetProjectId,
-    });
-
-    setDialogState({ open: false, artifactId: null, targetProjectId: null });
+    batchMoveMutation.mutate(
+      {
+        entityId: dialogState.artifactId,
+        entityType: EntityType.Artifact,
+        targetProjectId: dialogState.targetProjectId,
+        includeDownstream: moveAll,
+      },
+      {
+        onSuccess: () => {
+          setDialogState({
+            open: false,
+            artifactId: null,
+            targetProjectId: null,
+            downstreamEntities: [],
+          });
+        },
+      }
+    );
   };
 
   return (
     <>
       <DndProvider onDragEnd={handleDragEnd}>{children}</DndProvider>
-      {draggedArtifact && (
-        <MoveRelatedConfirmationDialog
-          artifact={draggedArtifact}
-          onConfirm={handleConfirmMove}
-          onOpenChange={(open) => {
-            if (!open) {
-              setDialogState({
-                open: false,
-                artifactId: null,
-                targetProjectId: null,
-              });
-            }
-          }}
-          open={dialogState.open}
-          relatedArtifacts={relatedArtifacts}
-        />
-      )}
+      <MoveDownstreamConfirmationDialog
+        downstreamEntities={dialogState.downstreamEntities}
+        onConfirm={handleConfirmMove}
+        onOpenChange={(open) => {
+          if (!open) {
+            setDialogState({
+              open: false,
+              artifactId: null,
+              targetProjectId: null,
+              downstreamEntities: [],
+            });
+          }
+        }}
+        open={dialogState.open}
+      />
     </>
   );
 }

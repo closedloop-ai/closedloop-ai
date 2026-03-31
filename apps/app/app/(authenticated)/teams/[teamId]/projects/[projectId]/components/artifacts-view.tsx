@@ -6,6 +6,7 @@ import {
   type ArtifactWithWorkstream,
   getRoutePrefixForType,
 } from "@repo/api/src/types/artifact";
+import { EntityType } from "@repo/api/src/types/entity-link";
 import type { FeatureWithWorkstream } from "@repo/api/src/types/feature";
 import type { TreeEntity, TreeNode } from "@repo/api/src/types/project-tree";
 import type { WorkstreamState } from "@repo/api/src/types/workstream";
@@ -26,7 +27,7 @@ import {
 import { ArtifactTableHeader } from "@/components/artifact-table/table-header";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { EmptyState } from "@/components/empty-state";
-import { MoveArtifactDialog } from "@/components/move-artifact-dialog";
+import { MoveEntityDialog } from "@/components/move-entity-dialog";
 import { useMergeArtifacts } from "@/hooks/queries/use-artifacts";
 import { useProjectTree } from "@/hooks/queries/use-project-tree";
 import type { ArtifactColumn } from "@/hooks/use-column-visibility";
@@ -43,6 +44,7 @@ type ArtifactsViewProps = {
   artifacts: ArtifactWithWorkstream[];
   features: FeatureWithWorkstream[];
   projectId: string;
+  teamId: string;
   filterText: string;
   filterCategory: FilterCategory;
   visibleColumns: ArtifactColumn[];
@@ -379,6 +381,7 @@ export function ArtifactsView({
   artifacts,
   features,
   projectId,
+  teamId,
   filterText,
   filterCategory,
   visibleColumns,
@@ -399,8 +402,11 @@ export function ArtifactsView({
     null
   );
   const [pendingBulkIds, setPendingBulkIds] = useState<Set<string>>(new Set());
-  const [moveArtifact, setMoveArtifact] =
-    useState<ArtifactWithWorkstream | null>(null);
+  const [moveEntity, setMoveEntity] = useState<{
+    id: string;
+    entityType: EntityType;
+    projectId?: string | null;
+  } | null>(null);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [deletePending, setDeletePending] = useState(false);
   const [mergeDialogOpen, setMergeDialogOpen] = useState(false);
@@ -564,7 +570,17 @@ export function ArtifactsView({
 
   function handleRequestMove(item: ArtifactRowItem) {
     if (item.kind === "artifact") {
-      setMoveArtifact(item.data);
+      setMoveEntity({
+        id: item.data.id,
+        entityType: EntityType.Artifact,
+        projectId: item.data.projectId,
+      });
+    } else if (item.kind === "feature") {
+      setMoveEntity({
+        id: item.data.id,
+        entityType: EntityType.Feature,
+        projectId: item.data.projectId,
+      });
     }
     setMenuState(null);
   }
@@ -789,7 +805,8 @@ export function ArtifactsView({
           align="end"
           onCloseAutoFocus={(e) => e.preventDefault()}
         >
-          {menuState?.item.kind === "artifact" && (
+          {(menuState?.item.kind === "artifact" ||
+            menuState?.item.kind === "feature") && (
             <DropdownMenuItem onClick={() => handleRequestMove(menuState.item)}>
               <FolderIcon className="h-4 w-4" />
               Move to Project
@@ -819,17 +836,18 @@ export function ArtifactsView({
         title={deleteTarget?.kind === "artifact" ? "Artifact" : "Feature"}
       />
 
-      {/* Move artifact dialog */}
-      {moveArtifact && (
-        <MoveArtifactDialog
-          artifact={moveArtifact}
+      {/* Move entity dialog */}
+      {moveEntity && (
+        <MoveEntityDialog
           currentProjectId={projectId}
+          entity={moveEntity}
           onOpenChange={(open) => {
             if (!open) {
-              setMoveArtifact(null);
+              setMoveEntity(null);
             }
           }}
-          open={moveArtifact !== null}
+          open={moveEntity !== null}
+          teamId={teamId}
         />
       )}
 

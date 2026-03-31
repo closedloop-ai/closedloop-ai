@@ -1,16 +1,22 @@
 import type { JsonObject } from "@repo/api/src/types/common";
+import type {
+  BatchMoveEntitiesInput,
+  BatchMoveEntitiesResult,
+  CreateEntityLinkInput,
+  EntityLink,
+  LinkedEntity,
+  ResolvedEntity,
+} from "@repo/api/src/types/entity-link";
 import {
-  type CreateEntityLinkInput,
-  type EntityLink,
   EntityType,
   LinkDirection,
-  type LinkedEntity,
-  type LinkType,
-  type ResolvedEntity,
+  LinkType,
 } from "@repo/api/src/types/entity-link";
 import { Prisma, withDb } from "@repo/database";
+import { log } from "@repo/observability/log";
 import { basicUserSelect } from "@/lib/db-utils";
 import { assertEntityInOrganization } from "@/lib/entity-validation";
+import { Result, Status } from "@/lib/result";
 import { externalLinksService } from "../external-links/service";
 
 export const entityLinksService = {
@@ -289,6 +295,140 @@ export const entityLinksService = {
       const key = `${other.id}:${other.type}`;
       return { ...link, resolvedEntity: resolved.get(key) ?? null };
     });
+  },
+
+  /**
+   * Find all downstream entities reachable from the given entity via PRODUCES links.
+   * Returns deduplicated array of { id, type } pairs (excludes the starting entity).
+   */
+  async findDownstreamEntityIds(
+    organizationId: string,
+    entityId: string,
+    entityType: EntityType
+  ): Promise<{ id: string; type: EntityType }[]> {
+    const annotatedLinks = await this.findLinkTree(
+      organizationId,
+      entityId,
+      entityType,
+      LinkDirection.Target,
+      50,
+      LinkType.Produces
+    );
+
+    const seen = new Set<string>();
+    const result: { id: string; type: EntityType }[] = [];
+
+    for (const { link, fromEntityId } of annotatedLinks) {
+      const other = getOtherSide(link, fromEntityId);
+      const key = `${other.id}:${other.type}`;
+      if (!seen.has(key) && other.id !== entityId) {
+        seen.add(key);
+        result.push(other);
+      }
+    }
+
+    return result;
+  },
+
+  /**
+   * Move an entity (and optionally all its downstream entities) to a target project.
+   * All updates happen in a single transaction.
+   */
+  async batchMoveEntities(
+    organizationId: string,
+    input: BatchMoveEntitiesInput
+  ): Promise<Result<BatchMoveEntitiesResult>> {
+    // Validate both root entity and target project exist in the org
+    const [entityExists, targetProject] = await Promise.all([
+      assertEntityInOrganization(
+        organizationId,
+        input.entityId,
+        input.entityType
+      )
+        .then(() => true)
+        .catch(() => false),
+      withDb((db) =>
+        db.project.findUnique({
+          where: { id: input.targetProjectId, organizationId },
+          select: { id: true },
+        })
+      ),
+    ]);
+
+    if (!entityExists) {
+      return Result.err(Status.NotFound);
+    }
+    if (!targetProject) {
+      return Result.err(Status.BadRequest);
+    }
+
+    const entitiesToMove: { id: string; type: EntityType }[] = [
+      { id: input.entityId, type: input.entityType },
+    ];
+
+    if (input.includeDownstream) {
+      const downstream = await this.findDownstreamEntityIds(
+        organizationId,
+        input.entityId,
+        input.entityType
+      );
+      entitiesToMove.push(...downstream);
+    }
+
+    const artifactIds: string[] = [];
+    const featureIds: string[] = [];
+    const externalLinkIds: string[] = [];
+
+    for (const entity of entitiesToMove) {
+      if (entity.type === EntityType.Artifact) {
+        artifactIds.push(entity.id);
+      } else if (entity.type === EntityType.Feature) {
+        featureIds.push(entity.id);
+      } else if (entity.type === EntityType.ExternalLink) {
+        externalLinkIds.push(entity.id);
+      }
+    }
+
+    const counts = await withDb.tx(async (tx) => {
+      let totalUpdated = 0;
+
+      if (artifactIds.length > 0) {
+        const { count } = await tx.artifact.updateMany({
+          where: { id: { in: artifactIds }, organizationId },
+          data: { projectId: input.targetProjectId },
+        });
+        totalUpdated += count;
+      }
+      if (featureIds.length > 0) {
+        const { count } = await tx.feature.updateMany({
+          where: { id: { in: featureIds }, organizationId },
+          data: { projectId: input.targetProjectId },
+        });
+        totalUpdated += count;
+      }
+      if (externalLinkIds.length > 0) {
+        const { count } = await tx.externalLink.updateMany({
+          where: { id: { in: externalLinkIds }, organizationId },
+          data: { projectId: input.targetProjectId },
+        });
+        totalUpdated += count;
+      }
+
+      return totalUpdated;
+    });
+
+    if (counts === 0) {
+      return Result.err(Status.NotFound);
+    }
+
+    log.info("[entity-links-service] Batch moved entities", {
+      organizationId,
+      targetProjectId: input.targetProjectId,
+      requestedCount: entitiesToMove.length,
+      actualCount: counts,
+    });
+
+    return Result.ok({ movedEntities: entitiesToMove });
   },
 
   async deleteLink(id: string, organizationId: string): Promise<void> {

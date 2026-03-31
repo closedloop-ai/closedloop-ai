@@ -53,13 +53,7 @@ export function PlanSection({
     newPlanSource,
   } = useFeatureState(feature);
 
-  const { data: plan, isLoading: isLoadingPlan } = useArtifact(
-    linkedPlanId,
-    undefined,
-    {
-      enabled: !!linkedPlanId,
-    }
-  );
+  const { data: plan, isLoading: isLoadingPlan } = useArtifact(linkedPlanId);
 
   const deleteLink = useDeleteEntityLink();
 

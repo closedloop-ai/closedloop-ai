@@ -30,3 +30,10 @@ export const findEntityLinksQueryValidator = z.object({
   mode: z.enum(LinkQueryMode).optional().default(LinkQueryMode.Direct),
   maxDepth: z.coerce.number().int().min(1).max(50).optional().default(10),
 });
+
+export const batchMoveEntitiesValidator = z.object({
+  entityId: z.uuid(),
+  entityType: entityTypeEnum,
+  targetProjectId: z.uuid(),
+  includeDownstream: z.boolean(),
+});

@@ -10,6 +10,7 @@ import {
 } from "@repo/design-system/components/ui/dropdown-menu";
 import {
   ChevronDownIcon,
+  FolderInputIcon,
   MoreHorizontalIcon,
   PanelRightIcon,
   PlayIcon,
@@ -30,6 +31,7 @@ type FeatureEditorHeaderProps = {
   onToggleMetadataPanel: () => void;
   onGeneratePlan: () => void;
   onStartBuild: () => void;
+  onMoveToProject: () => void;
   onDelete: () => void;
 };
 
@@ -42,6 +44,7 @@ export function FeatureEditorHeader({
   onToggleMetadataPanel,
   onGeneratePlan,
   onStartBuild,
+  onMoveToProject,
   onDelete,
 }: Readonly<FeatureEditorHeaderProps>) {
   const teamId = feature.project?.teams?.[0]?.id;
@@ -94,6 +97,10 @@ export function FeatureEditorHeader({
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-[160px]">
+          <DropdownMenuItem onClick={onMoveToProject}>
+            <FolderInputIcon className="h-4 w-4" />
+            Move to Project
+          </DropdownMenuItem>
           <DropdownMenuItem onClick={onDelete} variant="destructive">
             <TrashIcon className="h-4 w-4" />
             Delete

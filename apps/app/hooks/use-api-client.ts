@@ -6,6 +6,7 @@ import { useMemo } from "react";
 import { useWaitForAuthLoaded } from "@/hooks/use-wait-for-auth-loaded";
 import { ApiError } from "@/lib/api-error";
 import { resolveApiOrigin } from "@/lib/api-origin";
+import { reviveWithDates } from "@/lib/revive-with-dates";
 
 /**
  * This hook provides an HTTP client for interacting with the REST API.
@@ -84,7 +85,10 @@ async function apiFetch<T>(
       },
     });
 
-    const result: ApiResult<T> = await response.json();
+    const result: ApiResult<T> = JSON.parse(
+      await response.text(),
+      reviveWithDates
+    );
 
     if (!result.success) {
       throw new ApiError(result.error, response.status, undefined, result);

@@ -174,7 +174,7 @@ function LinkExistingTab({
               sourceType: EntityType.Artifact,
               targetId: featureId,
               targetType: EntityType.Feature,
-              linkType: LinkType.RelatesTo,
+              linkType: LinkType.Produces,
             },
             {
               onSuccess: () => {

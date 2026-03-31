@@ -41,14 +41,14 @@ type SelectPullRequestDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   projectId: string;
-  featureId: string;
+  planId: string | null;
 };
 
 export function SelectPullRequestDialog({
   open,
   onOpenChange,
   projectId,
-  featureId,
+  planId,
 }: Readonly<SelectPullRequestDialogProps>) {
   const [isLinking, setIsLinking] = useState(false);
   const { data: project } = useProject(projectId, { enabled: !!projectId });
@@ -74,7 +74,7 @@ export function SelectPullRequestDialog({
   );
 
   async function handleSelect(pr: GitHubPullRequestSummary) {
-    if (trackedUrls.has(pr.htmlUrl) || isLinking) {
+    if (trackedUrls.has(pr.htmlUrl) || isLinking || !planId) {
       return;
     }
 
@@ -95,11 +95,11 @@ export function SelectPullRequestDialog({
       });
 
       await createEntityLink.mutateAsync({
-        sourceId: featureId,
-        sourceType: EntityType.Feature,
+        sourceId: planId,
+        sourceType: EntityType.Artifact,
         targetId: externalLink.id,
         targetType: EntityType.ExternalLink,
-        linkType: LinkType.RelatesTo,
+        linkType: LinkType.Produces,
       });
 
       toast.success(`Linked PR #${pr.number}`);

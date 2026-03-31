@@ -1,6 +1,7 @@
 "use client";
 
 import type { CustomFieldValueDetail } from "@repo/api/src/types/custom-field";
+import { EntityType } from "@repo/api/src/types/entity-link";
 import type { FeatureWithWorkstream } from "@repo/api/src/types/feature";
 import { FeatureStatus } from "@repo/api/src/types/feature";
 import { isDisplayableSlug } from "@repo/api/src/types/slug";
@@ -21,6 +22,7 @@ import {
   BoxIcon,
   ChevronDown,
   EllipsisIcon,
+  FolderInputIcon,
   InboxIcon,
   TrashIcon,
 } from "lucide-react";
@@ -31,6 +33,7 @@ import { AssigneeAvatar } from "@/components/assignee-avatar";
 import { CustomFieldCell } from "@/components/custom-fields/custom-field-cell";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { EmptyState } from "@/components/empty-state";
+import { MoveEntityDialog } from "@/components/move-entity-dialog";
 import {
   FeatureStatusBadge,
   featureStatusLabels,
@@ -41,11 +44,13 @@ import { deriveCustomFieldColumns } from "@/lib/custom-field-utils";
 
 type FeaturesListProps = {
   projectId: string;
+  teamId: string;
   onCreateFeature?: () => void;
 };
 
 export function FeaturesList({
   projectId,
+  teamId,
   onCreateFeature,
 }: Readonly<FeaturesListProps>) {
   const { data: features = [], isLoading } = useFeatures({ projectId });
@@ -61,6 +66,15 @@ export function FeaturesList({
       toast.success("Feature deleted");
       return result.deleted;
     });
+  };
+
+  const [moveDialogOpen, setMoveDialogOpen] = useState(false);
+  const [featureToMove, setFeatureToMove] =
+    useState<FeatureWithWorkstream | null>(null);
+
+  const requestMove = (feature: FeatureWithWorkstream) => {
+    setFeatureToMove(feature);
+    setMoveDialogOpen(true);
   };
 
   const {
@@ -122,6 +136,7 @@ export function FeaturesList({
             items={items}
             key={status}
             onRequestDelete={requestDelete}
+            onRequestMove={requestMove}
             status={status}
           />
         );
@@ -135,6 +150,20 @@ export function FeaturesList({
         open={isDeleteOpen}
         title="Feature"
       />
+
+      {featureToMove && (
+        <MoveEntityDialog
+          currentProjectId={projectId}
+          entity={{
+            id: featureToMove.id,
+            entityType: EntityType.Feature,
+            projectId: featureToMove.projectId,
+          }}
+          onOpenChange={setMoveDialogOpen}
+          open={moveDialogOpen}
+          teamId={teamId}
+        />
+      )}
     </div>
   );
 }
@@ -143,6 +172,7 @@ type FeatureStatusSectionProps = {
   status: FeatureStatus;
   items: FeatureWithWorkstream[];
   onRequestDelete: (feature: FeatureWithWorkstream) => void;
+  onRequestMove: (feature: FeatureWithWorkstream) => void;
   customFieldColumns: CustomFieldValueDetail[];
 };
 
@@ -150,6 +180,7 @@ function FeatureStatusSection({
   status,
   items,
   onRequestDelete,
+  onRequestMove,
   customFieldColumns,
 }: Readonly<FeatureStatusSectionProps>) {
   const [isOpen, setIsOpen] = useState(true);
@@ -181,6 +212,7 @@ function FeatureStatusSection({
               feature={feature}
               key={feature.id}
               onRequestDelete={onRequestDelete}
+              onRequestMove={onRequestMove}
             />
           ))}
         </div>
@@ -200,12 +232,14 @@ const STATUS_ORDER: FeatureStatus[] = [
 type FeatureRowProps = {
   feature: FeatureWithWorkstream;
   onRequestDelete: (feature: FeatureWithWorkstream) => void;
+  onRequestMove: (feature: FeatureWithWorkstream) => void;
   customFieldColumns: CustomFieldValueDetail[];
 };
 
 function FeatureRow({
   feature,
   onRequestDelete,
+  onRequestMove,
   customFieldColumns,
 }: Readonly<FeatureRowProps>) {
   return (
@@ -250,6 +284,10 @@ function FeatureRow({
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
+            <DropdownMenuItem onClick={() => onRequestMove(feature)}>
+              <FolderInputIcon className="h-4 w-4" />
+              Move to Project
+            </DropdownMenuItem>
             <DropdownMenuItem
               onClick={() => onRequestDelete(feature)}
               variant="destructive"

@@ -24,7 +24,7 @@ import { StatusMetadataSection } from "@/components/artifact-editor/status-metad
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { LoopDispatchTargetSelector } from "@/components/engineer/LoopDispatchTargetSelector";
 import { GenerationStatusBanner } from "@/components/generation-status-banner";
-import { MoveArtifactDialog } from "@/components/move-artifact-dialog";
+import { MoveEntityDialog } from "@/components/move-entity-dialog";
 import { RenameDialog } from "@/components/rename-dialog";
 import { useArtifactActions } from "@/hooks/artifact-editing/use-artifact-actions";
 import { useArtifactContent } from "@/hooks/artifact-editing/use-artifact-content";
@@ -393,8 +393,12 @@ export function PRDEditor({
       />
 
       {/* Move Dialog */}
-      <MoveArtifactDialog
-        artifact={prd}
+      <MoveEntityDialog
+        entity={{
+          id: prd.id,
+          entityType: EntityType.Artifact,
+          projectId: prd.projectId,
+        }}
         onOpenChange={setShowMoveDialog}
         open={showMoveDialog}
       />

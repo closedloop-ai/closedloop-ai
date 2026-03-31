@@ -68,3 +68,14 @@ export type ResolvedEntity =
 export type LinkedEntity = EntityLink & {
   resolvedEntity: ResolvedEntity | null;
 };
+
+export type BatchMoveEntitiesInput = {
+  entityId: string;
+  entityType: EntityType;
+  targetProjectId: string;
+  includeDownstream: boolean;
+};
+
+export type BatchMoveEntitiesResult = {
+  movedEntities: { id: string; type: EntityType }[];
+};

@@ -160,7 +160,7 @@ export function CreateFeatureModal({
                     sourceType: EntityType.Artifact,
                     targetId: feature.id,
                     targetType: EntityType.Feature,
-                    linkType: LinkType.RelatesTo,
+                    linkType: LinkType.Produces,
                   })
                 )
               );

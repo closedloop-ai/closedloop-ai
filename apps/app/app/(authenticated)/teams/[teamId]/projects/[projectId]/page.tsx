@@ -517,6 +517,7 @@ export default function ProjectDetailPage() {
               onDelete={handleDeleteArtifact}
               onStatusChange={handleArtifactStatusChange}
               projectId={projectId}
+              teamId={teamId}
               visibleColumns={visibleColumns}
             />
           </TabsContent>

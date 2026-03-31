@@ -1,6 +1,7 @@
 "use client";
 
 import { isActiveGenerationStatus } from "@repo/api/src/types/artifact";
+import { EntityType } from "@repo/api/src/types/entity-link";
 import type { FeatureWithWorkstream } from "@repo/api/src/types/feature";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { useRouter } from "next/navigation";
@@ -9,6 +10,7 @@ import { ExecutePlanModal } from "@/app/(authenticated)/implementation-plans/com
 import { BackendMismatchModal } from "@/components/backend-mismatch-modal";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { LoopDispatchTargetSelector } from "@/components/engineer/LoopDispatchTargetSelector";
+import { MoveEntityDialog } from "@/components/move-entity-dialog";
 import { usePlanActions } from "@/hooks/artifact-editing/use-plan-actions";
 import { useArtifactGenerationStatus } from "@/hooks/queries/use-artifacts";
 import { useDeleteFeature } from "@/hooks/queries/use-features";
@@ -32,6 +34,7 @@ export function FeaturePage({ feature }: Readonly<FeaturePageProps>) {
   const deleteFeature = useDeleteFeature();
 
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const [showMoveDialog, setShowMoveDialog] = useState(false);
   const [showGenerateModal, setShowGenerateModal] = useState(false);
   const [showExecuteModal, setShowExecuteModal] = useState(false);
   const [showMetadataPanel, setShowMetadataPanel] = useLocalStorageState(
@@ -95,6 +98,7 @@ export function FeaturePage({ feature }: Readonly<FeaturePageProps>) {
         isReady={isReady}
         onDelete={() => setShowDeleteDialog(true)}
         onGeneratePlan={() => setShowGenerateModal(true)}
+        onMoveToProject={() => setShowMoveDialog(true)}
         onStartBuild={() => setShowExecuteModal(true)}
         onToggleMetadataPanel={() => setShowMetadataPanel((prev) => !prev)}
         showMetadataPanel={showMetadataPanel}
@@ -131,8 +135,8 @@ export function FeaturePage({ feature }: Readonly<FeaturePageProps>) {
                 <BranchesSection
                   featureId={feature.id}
                   generationStatus={generationStatus}
-                  hasPlan={hasPlan}
                   onStartBuild={() => setShowExecuteModal(true)}
+                  planId={linkedPlanId}
                   projectId={feature.projectId ?? ""}
                 />
                 <PreviewSection featureId={feature.id} />
@@ -157,6 +161,17 @@ export function FeaturePage({ feature }: Readonly<FeaturePageProps>) {
         onOpenChange={setShowDeleteDialog}
         open={showDeleteDialog}
         title="Feature"
+      />
+
+      <MoveEntityDialog
+        entity={{
+          id: feature.id,
+          entityType: EntityType.Feature,
+          projectId: feature.projectId,
+        }}
+        onOpenChange={setShowMoveDialog}
+        open={showMoveDialog}
+        teamId={teamId}
       />
 
       <ExecutePlanModal

@@ -6,6 +6,7 @@ import {
   ArtifactType,
   PullRequestState,
 } from "@repo/api/src/types/artifact";
+import { EntityType } from "@repo/api/src/types/entity-link";
 import { InlinePresence, OptionalArtifactRoom } from "@repo/collaboration";
 import { Loader2Icon } from "lucide-react";
 import {
@@ -27,7 +28,7 @@ import { BackendMismatchModal } from "@/components/backend-mismatch-modal";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { LoopDispatchTargetSelector } from "@/components/engineer/LoopDispatchTargetSelector";
 import { GenerationStatusBanner } from "@/components/generation-status-banner";
-import { MoveArtifactDialog } from "@/components/move-artifact-dialog";
+import { MoveEntityDialog } from "@/components/move-entity-dialog";
 import { useArtifactActions } from "@/hooks/artifact-editing/use-artifact-actions";
 import { useArtifactContent } from "@/hooks/artifact-editing/use-artifact-content";
 import { useArtifactMetadata } from "@/hooks/artifact-editing/use-artifact-metadata";
@@ -404,8 +405,12 @@ export function PlanEditor({
       />
 
       {/* Move Dialog */}
-      <MoveArtifactDialog
-        artifact={plan}
+      <MoveEntityDialog
+        entity={{
+          id: plan.id,
+          entityType: EntityType.Artifact,
+          projectId: plan.projectId,
+        }}
         onOpenChange={setShowMoveDialog}
         open={showMoveDialog}
       />

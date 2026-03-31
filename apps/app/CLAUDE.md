@@ -12,6 +12,7 @@ All data fetching in `hooks/queries/use-*.ts`:
 - Export `<entity>Keys` factory (e.g., `artifactKeys`, `projectKeys`): `.all`, `.lists()`, `.list(filters)`, `.detail(id)`
 - Query hooks: `queryKey` + `queryFn` + `enabled` + `...options` spread
 - Mutations: invalidate relevant caches in `onSuccess`
+- Prefer `mutate` over `mutateAsync`. `mutateAsync` can throw and thus requires try/catch, which is overly verbose.
 - `useApiClient()` provides the HTTP client (throws `ApiError`)
 - Only `staleTime` acceptable as default; omit gcTime, refetchOnMount, refetchOnWindowFocus
 - Use `refetchInterval` for polling (e.g., generation status)

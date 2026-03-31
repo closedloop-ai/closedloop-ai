@@ -153,7 +153,7 @@ export function useArtifactsByTeam(
  * omit to get the latest version.
  */
 export function useArtifact(
-  id: string,
+  id: string | null,
   version?: number,
   options?: Omit<UseQueryOptions<ArtifactDetail>, "queryKey" | "queryFn">
 ) {
@@ -161,8 +161,8 @@ export function useArtifact(
 
   return useQuery({
     queryKey: version
-      ? artifactKeys.version(id, version)
-      : artifactKeys.detail(id),
+      ? artifactKeys.version(id!, version)
+      : artifactKeys.detail(id!),
     queryFn: () => {
       const versionParam = version ? `?version=${version}` : "";
       return apiClient.get<ArtifactDetail>(`/artifacts/${id}${versionParam}`);

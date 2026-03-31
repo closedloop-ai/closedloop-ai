@@ -33,7 +33,7 @@ import { SelectPullRequestDialog } from "./select-pr-dialog";
 type BranchesSectionProps = {
   featureId: string;
   projectId: string;
-  hasPlan: boolean;
+  planId: string | null;
   onStartBuild?: () => void;
   generationStatus?: GenerationStatus;
 };
@@ -41,7 +41,7 @@ type BranchesSectionProps = {
 export function BranchesSection({
   featureId,
   projectId,
-  hasPlan,
+  planId,
   onStartBuild,
   generationStatus,
 }: Readonly<BranchesSectionProps>) {
@@ -101,28 +101,30 @@ export function BranchesSection({
               No PR exists for this feature
             </p>
             <div className="flex gap-4">
-              {hasPlan ? (
-                <Button
-                  disabled={isExecutingPlan}
-                  onClick={onStartBuild}
-                  size="sm"
-                  variant="default"
-                >
-                  Start Building
-                  <PlayIcon className="h-4 w-4" />
-                </Button>
+              {planId ? (
+                <>
+                  <Button
+                    disabled={isExecutingPlan}
+                    onClick={onStartBuild}
+                    size="sm"
+                    variant="default"
+                  >
+                    Start Building
+                    <PlayIcon className="h-4 w-4" />
+                  </Button>
+                  <Button
+                    onClick={() => setShowSelectPr(true)}
+                    size="sm"
+                    variant="outline"
+                  >
+                    Select Existing PR
+                  </Button>
+                </>
               ) : (
                 <Button disabled size="sm" variant="secondary">
                   Need approved plan to build
                 </Button>
               )}
-              <Button
-                onClick={() => setShowSelectPr(true)}
-                size="sm"
-                variant="outline"
-              >
-                Select Existing PR
-              </Button>
             </div>
           </div>
         </div>
@@ -133,9 +135,9 @@ export function BranchesSection({
         </div>
       )}
       <SelectPullRequestDialog
-        featureId={featureId}
         onOpenChange={setShowSelectPr}
         open={showSelectPr}
+        planId={planId}
         projectId={projectId}
       />
     </div>
