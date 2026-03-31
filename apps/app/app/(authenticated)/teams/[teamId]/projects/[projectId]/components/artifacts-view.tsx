@@ -881,9 +881,12 @@ export function ArtifactsView({
                     visibleColumns={visibleColumns}
                   />
                   {isOpen &&
-                    children.map((child) => (
+                    children.map((child, childIndex) => (
                       <ArtifactRow
                         editHandlers={editHandlers}
+                        extendIndentedBottomBorderLeft={
+                          childIndex === children.length - 1
+                        }
                         indented
                         isSelected={selectedIds.has(child.data.id)}
                         item={child}
