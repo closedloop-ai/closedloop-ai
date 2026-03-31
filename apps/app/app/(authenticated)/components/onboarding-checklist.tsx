@@ -42,7 +42,7 @@ export function OnboardingChecklist() {
   };
 
   return (
-    <Card className="shadow-none">
+    <Card className="mx-4 mt-4 shadow-none">
       <CardHeader>
         <CardTitle>Complete Your Setup</CardTitle>
         <CardDescription>

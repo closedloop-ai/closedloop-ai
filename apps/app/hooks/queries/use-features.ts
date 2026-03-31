@@ -10,6 +10,7 @@ import type {
 import {
   type UseQueryOptions,
   useMutation,
+  useQueries,
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
@@ -17,7 +18,7 @@ import { useApiClient } from "@/hooks/use-api-client";
 import { dashboardKeys } from "./use-dashboard-stats";
 import { invalidateEntityLinkQueries } from "./use-entity-links";
 import { projectTreeKeys } from "./use-project-tree";
-import { projectKeys } from "./use-projects";
+import { projectKeys, useProjectsByTeam } from "./use-projects";
 
 // Query keys
 export const featureKeys = {
@@ -84,6 +85,38 @@ export function useFeatureBySlug(
     enabled: !!slug,
     ...options,
   });
+}
+
+/**
+ * Fetch all features across every project in a team.
+ * Fans out one query per project using useQueries and flattens the results.
+ */
+export function useFeaturesByTeam(
+  teamId: string,
+  options?: { enabled?: boolean }
+) {
+  const apiClient = useApiClient();
+  const enabled = (options?.enabled ?? true) && !!teamId;
+  const { data: projects = [], isLoading: loadingProjects } = useProjectsByTeam(
+    teamId,
+    { enabled }
+  );
+
+  const featureQueries = useQueries({
+    queries: projects.map((project) => ({
+      queryKey: featureKeys.list({ projectId: project.id }),
+      queryFn: () =>
+        apiClient.get<FeatureWithWorkstream[]>(
+          `/features?projectId=${project.id}`
+        ),
+      enabled,
+    })),
+  });
+
+  return {
+    data: featureQueries.flatMap((q) => q.data ?? []),
+    isLoading: loadingProjects || featureQueries.some((q) => q.isLoading),
+  };
 }
 
 // Mutations

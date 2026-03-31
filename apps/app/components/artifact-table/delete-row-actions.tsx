@@ -7,21 +7,13 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@repo/design-system/components/ui/dropdown-menu";
-import { MoreHorizontalIcon, StarIcon, TrashIcon } from "lucide-react";
-import { useIsFavorite, useToggleFavorite } from "@/hooks/queries/use-projects";
+import { MoreHorizontalIcon, TrashIcon } from "lucide-react";
 
-type ProjectRowActionsProps = {
-  projectId: string;
+type DeleteRowActionsProps = {
   onDelete: () => void;
 };
 
-export function ProjectRowActions({
-  projectId,
-  onDelete,
-}: ProjectRowActionsProps) {
-  const isFavorite = useIsFavorite(projectId);
-  const toggleFavorite = useToggleFavorite();
-
+export function DeleteRowActions({ onDelete }: DeleteRowActionsProps) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -31,18 +23,9 @@ export function ProjectRowActions({
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
-        <DropdownMenuItem
-          disabled={toggleFavorite.isPending}
-          onClick={() => toggleFavorite.mutate({ projectId, isFavorite })}
-        >
-          <StarIcon
-            className={`h-4 w-4 ${isFavorite ? "fill-yellow-400 text-yellow-400" : ""}`}
-          />
-          {isFavorite ? "Remove from Favorites" : "Add to Favorites"}
-        </DropdownMenuItem>
         <DropdownMenuItem onClick={onDelete} variant="destructive">
           <TrashIcon className="h-4 w-4 text-destructive" />
-          Delete project
+          Delete
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>

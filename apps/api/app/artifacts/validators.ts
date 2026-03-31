@@ -1,4 +1,5 @@
 import { ArtifactStatus, ArtifactType } from "@repo/api/src/types/artifact";
+import { Priority } from "@repo/api/src/types/common";
 import { EntityType } from "@repo/api/src/types/entity-link";
 import { z } from "zod";
 import { uuidOrSlug } from "@/lib/identifier-utils";
@@ -6,6 +7,7 @@ import { uuidOrSlug } from "@/lib/identifier-utils";
 const artifactStatusEnum = z.enum(ArtifactStatus);
 const artifactTypeEnum = z.enum(ArtifactType);
 const entityTypeEnum = z.enum(EntityType);
+const priorityEnum = z.enum(Priority);
 
 // Validate owner/repo format (e.g., "closedloop/astoria-service")
 const OWNER_REPO_REGEX = /^[^/]+\/[^/]+$/;
@@ -21,6 +23,7 @@ export const createArtifactValidator = z.object({
   fileName: z.string().optional(),
   approverId: z.uuid().nullable().optional(),
   status: artifactStatusEnum.optional(),
+  priority: priorityEnum.optional(),
   content: z.string(),
   targetRepo: z
     .string()
@@ -35,6 +38,7 @@ export const updateArtifactValidator = z.object({
   fileName: z.string().optional(),
   approverId: z.uuid().nullable().optional(),
   status: artifactStatusEnum.optional(),
+  priority: priorityEnum.optional(),
   targetRepo: z
     .string()
     .regex(OWNER_REPO_REGEX, "Must be owner/repo format")

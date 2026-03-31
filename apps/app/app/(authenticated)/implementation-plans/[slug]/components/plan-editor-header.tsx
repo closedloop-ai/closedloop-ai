@@ -152,10 +152,7 @@ export function PlanEditorHeader({
           </DropdownMenuItem>
         ) : null}
         <DropdownMenuSeparator />
-        <DropdownMenuItem
-          className="text-destructive focus:text-destructive"
-          onClick={onDelete}
-        >
+        <DropdownMenuItem onClick={onDelete} variant="destructive">
           <TrashIcon className="h-4 w-4" />
           Delete Plan
         </DropdownMenuItem>

@@ -20,6 +20,7 @@ import { toast } from "@repo/design-system/components/ui/sonner";
 import {
   type UseQueryOptions,
   useMutation,
+  useQueries,
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
@@ -31,7 +32,7 @@ import { invalidateEntityLinkQueries } from "./use-entity-links";
 import { executionLogKeys } from "./use-execution-log";
 import { judgesKeys } from "./use-judges";
 import { projectTreeKeys } from "./use-project-tree";
-import { projectKeys } from "./use-projects";
+import { projectKeys, useProjectsByTeam } from "./use-projects";
 
 /** Summary fields returned by the versions list endpoint (no content). */
 type ArtifactVersionSummary = Omit<ArtifactVersion, "content">;
@@ -103,6 +104,47 @@ export function useArtifactsByProject(
     },
     ...options,
   });
+}
+
+/**
+ * Fetch all artifacts of a given type across every project in a team.
+ * Fans out one query per project using useQueries and flattens the results.
+ */
+export function useArtifactsByTeam(
+  teamId: string,
+  type?: string,
+  options?: { enabled?: boolean }
+) {
+  const apiClient = useApiClient();
+  const enabled = (options?.enabled ?? true) && !!teamId;
+  const { data: projects = [], isLoading: loadingProjects } = useProjectsByTeam(
+    teamId,
+    { enabled }
+  );
+
+  const artifactQueries = useQueries({
+    queries: projects.map((project) => ({
+      queryKey: artifactKeys.list({
+        projectId: project.id,
+        ...(type ? { type } : {}),
+      }),
+      queryFn: () => {
+        const params = new URLSearchParams({ projectId: project.id });
+        if (type) {
+          params.set("type", type);
+        }
+        return apiClient.get<ArtifactWithWorkstream[]>(
+          `/artifacts?${params.toString()}`
+        );
+      },
+      enabled,
+    })),
+  });
+
+  return {
+    data: artifactQueries.flatMap((q) => q.data ?? []),
+    isLoading: loadingProjects || artifactQueries.some((q) => q.isLoading),
+  };
 }
 
 /**

@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { UserPlusIcon, CheckIcon } from "lucide-react";
+import { UserPlusIcon } from "lucide-react";
 import { cn } from "@repo/design-system/lib/utils";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
@@ -137,7 +137,6 @@ function UserSelectPopover({
                   onSelect={handleClear}
                   className="cursor-pointer text-muted-foreground hover:bg-accent hover:text-foreground"
                 >
-                  <span className="mr-2 h-4 w-4" />
                   Clear selection
                 </CommandItem>
               )}
@@ -148,12 +147,6 @@ function UserSelectPopover({
                   onSelect={() => handleSelect(user)}
                   className="cursor-pointer hover:bg-accent"
                 >
-                  <CheckIcon
-                    className={cn(
-                      "mr-2 h-4 w-4",
-                      value?.id === user.id ? "opacity-100" : "opacity-0"
-                    )}
-                  />
                   <Avatar className="mr-2 h-6 w-6">
                     {user.avatarUrl && (
                       <AvatarImage src={user.avatarUrl} alt={user.name} />

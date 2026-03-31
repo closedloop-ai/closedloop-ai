@@ -3,11 +3,12 @@
  * Must stay in sync with SlugPrefix in apps/api/lib/slug-generator.ts.
  */
 export const TYPED_SLUG_PREFIXES = [
-  "PROJ",
-  "WORK",
+  "PRO",
+  "WRK",
   "PRD",
-  "PLAN",
-  "FEAT",
+  "PLN",
+  "FEA",
+  "BRN",
 ] as const;
 
 export const TYPED_SLUG_PATTERN = new RegExp(

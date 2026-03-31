@@ -7,6 +7,12 @@ import {
   CollapsibleTrigger,
 } from "@repo/design-system/components/ui/collapsible";
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@repo/design-system/components/ui/dropdown-menu";
+import {
   SidebarGroup,
   SidebarGroupLabel,
   SidebarMenu,
@@ -18,22 +24,42 @@ import {
   SidebarMenuSubItem,
 } from "@repo/design-system/components/ui/sidebar";
 import {
-  ChevronRightIcon,
-  FolderIcon,
+  BoxIcon,
+  EllipsisIcon,
+  FileCodeIcon,
+  FileIcon,
+  Layers2Icon,
   PlusIcon,
   SettingsIcon,
+  Trash2Icon,
   UsersIcon,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
-import { useRecentProjectsByTeam } from "@/hooks/queries/use-projects";
-import { useTeams } from "@/hooks/queries/use-teams";
+import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
+import { useDeleteTeam, useTeams } from "@/hooks/queries/use-teams";
 import { useIsMounted } from "@/hooks/use-is-mounted";
-import { DroppableProjectItem } from "./droppable-project-item";
 import { TeamModal } from "./team-modal";
 
-const PROJECT_DETAIL_PATTERN = /^\/teams\/([^/]+)\/projects\/[^/]+/;
+const TEAM_PATTERN = /^\/teams\/([^/]+)/;
+
+type NavItem = {
+  label: string;
+  href: (teamId: string) => string;
+  icon: React.ComponentType<{ className?: string }>;
+};
+
+const TEAM_NAV_ITEMS: NavItem[] = [
+  {
+    label: "Projects",
+    href: (id) => `/teams/${id}/projects`,
+    icon: Layers2Icon,
+  },
+  { label: "PRDs", href: (id) => `/teams/${id}/prds`, icon: FileIcon },
+  { label: "Features", href: (id) => `/teams/${id}/features`, icon: BoxIcon },
+  { label: "Plans", href: (id) => `/teams/${id}/plans`, icon: FileCodeIcon },
+];
 
 type TeamCollapsibleProps = {
   team: TeamWithCounts;
@@ -49,86 +75,99 @@ function TeamCollapsible({
   setOpenTeamIds,
 }: TeamCollapsibleProps) {
   const mounted = useIsMounted();
-  const { data: recentProjects, isLoading: isLoadingRecent } =
-    useRecentProjectsByTeam(team.id, {
-      enabled: openTeamIds.has(team.id),
-    });
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const deleteTeam = useDeleteTeam();
+
+  async function handleConfirmDelete(): Promise<boolean> {
+    const result = await deleteTeam.mutateAsync(team.id);
+    return result.deleted ?? false;
+  }
 
   return (
-    <Collapsible
-      asChild
-      onOpenChange={(isOpen) => {
-        setOpenTeamIds((prev) => {
-          const next = new Set(prev);
-          if (isOpen) {
-            next.add(team.id);
-          } else {
-            next.delete(team.id);
-          }
-          return next;
-        });
-      }}
-      open={openTeamIds.has(team.id)}
-    >
-      <SidebarMenuItem>
-        <SidebarMenuButton asChild tooltip={team.name}>
-          <Link href={`/teams/${team.id}/projects`}>
-            <UsersIcon />
-            <span>{team.name}</span>
-          </Link>
-        </SidebarMenuButton>
-        <CollapsibleTrigger asChild>
-          <SidebarMenuAction className="data-[state=open]:rotate-90">
-            <ChevronRightIcon />
-            <span className="sr-only">Toggle</span>
-          </SidebarMenuAction>
-        </CollapsibleTrigger>
-        <CollapsibleContent>
-          <SidebarMenuSub>
-            {isLoadingRecent &&
-              openTeamIds.has(team.id) &&
-              [1, 2, 3].map((i) => (
-                <SidebarMenuSubItem key={`skeleton-${i}`}>
-                  <SidebarMenuSubButton>
-                    <div className="h-4 w-4 animate-pulse rounded bg-muted" />
-                    <div className="h-4 flex-1 animate-pulse rounded bg-muted" />
+    <>
+      <Collapsible
+        asChild
+        onOpenChange={(isOpen) => {
+          setOpenTeamIds((prev) => {
+            const next = new Set(prev);
+            if (isOpen) {
+              next.add(team.id);
+            } else {
+              next.delete(team.id);
+            }
+            return next;
+          });
+        }}
+        open={openTeamIds.has(team.id)}
+      >
+        <SidebarMenuItem>
+          <CollapsibleTrigger asChild>
+            <SidebarMenuButton tooltip={team.name}>
+              <UsersIcon />
+              <span>{team.name}</span>
+            </SidebarMenuButton>
+          </CollapsibleTrigger>
+          {mounted ? (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <SidebarMenuAction showOnHover>
+                  <EllipsisIcon />
+                  <span className="sr-only">Team options</span>
+                </SidebarMenuAction>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" side="right">
+                <DropdownMenuItem onClick={() => setSettingsOpen(true)}>
+                  <SettingsIcon className="h-4 w-4" />
+                  Settings
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() => setDeleteOpen(true)}
+                  variant="destructive"
+                >
+                  <Trash2Icon className="h-4 w-4 text-destructive" />
+                  Delete
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          ) : null}
+          <CollapsibleContent>
+            <SidebarMenuSub>
+              {TEAM_NAV_ITEMS.map(({ label, href, icon: Icon }) => (
+                <SidebarMenuSubItem key={label}>
+                  <SidebarMenuSubButton
+                    asChild
+                    isActive={pathname.startsWith(href(team.id))}
+                  >
+                    <Link href={href(team.id)}>
+                      <Icon className="h-4 w-4" />
+                      <span>{label}</span>
+                    </Link>
                   </SidebarMenuSubButton>
                 </SidebarMenuSubItem>
               ))}
-            {recentProjects?.map((project) => (
-              <SidebarMenuSubItem key={project.id}>
-                <DroppableProjectItem projectId={project.id}>
-                  <SidebarMenuSubButton
-                    asChild
-                    isActive={
-                      pathname === `/teams/${team.id}/projects/${project.id}`
-                    }
-                  >
-                    <Link href={`/teams/${team.id}/projects/${project.id}`}>
-                      <FolderIcon className="h-4 w-4" />
-                      <span>{project.name}</span>
-                    </Link>
-                  </SidebarMenuSubButton>
-                </DroppableProjectItem>
-              </SidebarMenuSubItem>
-            ))}
-            {mounted ? (
-              <SidebarMenuSubItem>
-                <TeamModal
-                  team={team}
-                  trigger={
-                    <SidebarMenuSubButton>
-                      <SettingsIcon className="h-4 w-4" />
-                      <span>Settings</span>
-                    </SidebarMenuSubButton>
-                  }
-                />
-              </SidebarMenuSubItem>
-            ) : null}
-          </SidebarMenuSub>
-        </CollapsibleContent>
-      </SidebarMenuItem>
-    </Collapsible>
+            </SidebarMenuSub>
+          </CollapsibleContent>
+        </SidebarMenuItem>
+      </Collapsible>
+
+      {mounted ? (
+        <TeamModal
+          onOpenChange={setSettingsOpen}
+          open={settingsOpen}
+          team={team}
+        />
+      ) : null}
+
+      <DeleteConfirmationDialog
+        isPending={deleteTeam.isPending}
+        itemName={team.name}
+        onConfirm={handleConfirmDelete}
+        onOpenChange={setDeleteOpen}
+        open={deleteOpen}
+        title="Team"
+      />
+    </>
   );
 }
 
@@ -138,9 +177,9 @@ export function SidebarTeams() {
   const pathname = usePathname();
   const [openTeamIds, setOpenTeamIds] = useState<Set<string>>(new Set());
 
-  // Auto-expand the team whose project is currently being viewed
+  // Auto-expand the team matching the current route
   const activeTeamId = useMemo(() => {
-    const match = pathname.match(PROJECT_DETAIL_PATTERN);
+    const match = TEAM_PATTERN.exec(pathname);
     return match?.[1];
   }, [pathname]);
 
@@ -185,18 +224,6 @@ export function SidebarTeams() {
             team={team}
           />
         ))}
-        {teams.length === 0 && mounted && (
-          <SidebarMenuItem>
-            <TeamModal
-              trigger={
-                <SidebarMenuButton className="text-muted-foreground text-sm">
-                  <PlusIcon className="h-4 w-4" />
-                  <span>Create a team</span>
-                </SidebarMenuButton>
-              }
-            />
-          </SidebarMenuItem>
-        )}
       </SidebarMenu>
     </SidebarGroup>
   );
