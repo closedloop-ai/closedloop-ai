@@ -6,7 +6,12 @@ import {
   type ArtifactWithWorkstream,
   getRoutePrefixForType,
 } from "@repo/api/src/types/artifact";
-import { EntityType } from "@repo/api/src/types/entity-link";
+import type { LinkedEntity } from "@repo/api/src/types/entity-link";
+import {
+  EntityType,
+  LinkDirection,
+  LinkQueryMode,
+} from "@repo/api/src/types/entity-link";
 import type { FeatureWithWorkstream } from "@repo/api/src/types/feature";
 import type { TreeEntity, TreeNode } from "@repo/api/src/types/project-tree";
 import type { WorkstreamState } from "@repo/api/src/types/workstream";
@@ -17,6 +22,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@repo/design-system/components/ui/dropdown-menu";
+import { useQueries } from "@tanstack/react-query";
 import { FileTextIcon, Layers2Icon, MergeIcon, TrashIcon } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
@@ -29,7 +35,9 @@ import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialo
 import { EmptyState } from "@/components/empty-state";
 import { MoveEntityDialog } from "@/components/move-entity-dialog";
 import { useMergeArtifacts } from "@/hooks/queries/use-artifacts";
+import { entityLinkKeys } from "@/hooks/queries/use-entity-links";
 import { useProjectTree } from "@/hooks/queries/use-project-tree";
+import { useApiClient } from "@/hooks/use-api-client";
 import type { ArtifactColumn } from "@/hooks/use-column-visibility";
 import { useSortParams } from "@/hooks/use-sort-params";
 import { matchesFilter } from "@/lib/artifact-filter";
@@ -397,6 +405,7 @@ export function ArtifactsView({
   onDelete,
   editHandlers,
 }: ArtifactsViewProps) {
+  const apiClient = useApiClient();
   const [openGroups, setOpenGroups] = useState<Set<string>>(new Set());
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
@@ -505,6 +514,14 @@ export function ArtifactsView({
     );
   }, [filteredArtifacts, filteredFeatures, sortBy, sortDir, treeData]);
 
+  const groupedChildrenByRootId = useMemo(() => {
+    const map = new Map<string, ArtifactRowItem[]>();
+    for (const group of groups) {
+      map.set(group.root.data.id, group.children);
+    }
+    return map;
+  }, [groups]);
+
   // Auto-open any groups that haven't been seen before (handles initial load and
   // async tree data arriving after the workstream fallback was already shown).
   useEffect(() => {
@@ -539,6 +556,107 @@ export function ArtifactsView({
     }
     return items;
   }, [filteredArtifacts, filteredFeatures, sortBy, sortDir]);
+
+  const renderedItems = useMemo((): ArtifactRowItem[] => {
+    if (!isGroupedView) {
+      return flatItems;
+    }
+
+    const items: ArtifactRowItem[] = [];
+    for (const group of groups) {
+      items.push(group.root);
+      if (openGroups.has(group.groupKey)) {
+        items.push(...group.children);
+      }
+    }
+    return items;
+  }, [isGroupedView, flatItems, groups, openGroups]);
+
+  const renderedItemById = useMemo(() => {
+    const map = new Map<string, ArtifactRowItem>();
+    for (const item of renderedItems) {
+      map.set(item.data.id, item);
+    }
+    return map;
+  }, [renderedItems]);
+
+  const parentFallbackIds = useMemo(
+    () =>
+      renderedItems
+        .map((item) => item.data.id)
+        .filter((id) => !parentMap.has(id)),
+    [renderedItems, parentMap]
+  );
+
+  const parentFallbackQueries = useQueries({
+    queries: parentFallbackIds.map((entityId) => {
+      const item = renderedItemById.get(entityId);
+      const entityType =
+        item?.kind === "feature" ? EntityType.Feature : EntityType.Artifact;
+
+      return {
+        queryKey: entityLinkKeys.list({
+          entityId,
+          entityType,
+          direction: LinkDirection.Source,
+          mode: LinkQueryMode.Direct,
+          resolved: true,
+          parentFallback: true,
+        }),
+        queryFn: () => {
+          const params = new URLSearchParams();
+          params.set("entityId", entityId);
+          params.set("entityType", entityType);
+          params.set("direction", LinkDirection.Source);
+          params.set("mode", LinkQueryMode.Direct);
+          return apiClient.get<LinkedEntity[]>(
+            `/entity-links/resolved?${params.toString()}`
+          );
+        },
+        enabled: !!item,
+      };
+    }),
+  });
+
+  const fallbackParentMap = useMemo(() => {
+    const map = new Map<string, { title: string; href: string | null }>();
+    for (const [index, query] of parentFallbackQueries.entries()) {
+      const childId = parentFallbackIds[index];
+      if (!(childId && query.data?.length)) {
+        continue;
+      }
+
+      const linkedParent = query.data.find((linked) => {
+        if (!linked.resolvedEntity) {
+          return false;
+        }
+        return (
+          linked.resolvedEntity.type === EntityType.Artifact ||
+          linked.resolvedEntity.type === EntityType.Feature
+        );
+      });
+
+      if (!linkedParent?.resolvedEntity) {
+        continue;
+      }
+
+      map.set(childId, {
+        title: linkedParent.resolvedEntity.entity.title,
+        href: getResolvedEntityHref(linkedParent),
+      });
+    }
+    return map;
+  }, [parentFallbackIds, parentFallbackQueries]);
+
+  const combinedParentMap = useMemo(() => {
+    const map = new Map(parentMap);
+    for (const [childId, parentInfo] of fallbackParentMap) {
+      if (!map.has(childId)) {
+        map.set(childId, parentInfo);
+      }
+    }
+    return map;
+  }, [parentMap, fallbackParentMap]);
 
   const isEmpty =
     filteredArtifacts.length === 0 && filteredFeatures.length === 0;
@@ -585,6 +703,24 @@ export function ArtifactsView({
   }
 
   function handleRequestMove(item: ArtifactRowItem) {
+    const groupedChildren = groupedChildrenByRootId.get(item.data.id) ?? [];
+    if (groupedChildren.length > 0) {
+      const entitiesToMove = [item, ...groupedChildren]
+        .filter((row) => row.kind === "artifact" || row.kind === "feature")
+        .map((row) => ({
+          id: row.data.id,
+          entityType:
+            row.kind === "artifact" ? EntityType.Artifact : EntityType.Feature,
+          projectId: row.data.projectId,
+        }));
+
+      if (entitiesToMove.length > 0) {
+        setMoveEntities(entitiesToMove);
+        setMenuState(null);
+        return;
+      }
+    }
+
     if (item.kind === "artifact") {
       setMoveEntity({
         id: item.data.id,
@@ -739,8 +875,8 @@ export function ArtifactsView({
                         ? () => toggleGroup(group.groupKey)
                         : undefined
                     }
-                    parentHref={parentMap.get(root.data.id)?.href}
-                    parentTitle={parentMap.get(root.data.id)?.title}
+                    parentHref={combinedParentMap.get(root.data.id)?.href}
+                    parentTitle={combinedParentMap.get(root.data.id)?.title}
                     showCheckbox={false}
                     visibleColumns={visibleColumns}
                   />
@@ -754,8 +890,10 @@ export function ArtifactsView({
                         key={child.data.id}
                         onMoreMenu={handleMoreMenu}
                         onSelectionChange={handleSelectionChange}
-                        parentHref={parentMap.get(child.data.id)?.href}
-                        parentTitle={parentMap.get(child.data.id)?.title}
+                        parentHref={combinedParentMap.get(child.data.id)?.href}
+                        parentTitle={
+                          combinedParentMap.get(child.data.id)?.title
+                        }
                         showCheckbox={false}
                         visibleColumns={visibleColumns}
                       />
@@ -771,8 +909,8 @@ export function ArtifactsView({
                 key={item.data.id}
                 onMoreMenu={handleMoreMenu}
                 onSelectionChange={handleSelectionChange}
-                parentHref={parentMap.get(item.data.id)?.href}
-                parentTitle={parentMap.get(item.data.id)?.title}
+                parentHref={combinedParentMap.get(item.data.id)?.href}
+                parentTitle={combinedParentMap.get(item.data.id)?.title}
                 showCheckbox={showCheckbox}
                 visibleColumns={visibleColumns}
               />
@@ -967,4 +1105,26 @@ function isFeatureTreeEntity(
   entity: TreeEntity
 ): entity is Extract<TreeEntity, { slug: string; priority: string }> {
   return "slug" in entity && "priority" in entity;
+}
+
+function getResolvedEntityHref(linked: LinkedEntity): string | null {
+  if (!linked.resolvedEntity) {
+    return null;
+  }
+
+  if (linked.resolvedEntity.type === EntityType.Artifact) {
+    const routePrefix = getRoutePrefixForType(
+      linked.resolvedEntity.entity.type
+    );
+    if (!routePrefix) {
+      return null;
+    }
+    return `/${routePrefix}/${linked.resolvedEntity.entity.slug}`;
+  }
+
+  if (linked.resolvedEntity.type === EntityType.Feature) {
+    return `/features/${linked.resolvedEntity.entity.slug}`;
+  }
+
+  return null;
 }

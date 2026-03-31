@@ -1,6 +1,5 @@
 "use client";
 
-import type { LinkedEntity } from "@repo/api/src/types/entity-link";
 import {
   EntityType,
   LinkDirection,
@@ -32,7 +31,6 @@ import {
   useLinkedEntities,
 } from "@/hooks/queries/use-entity-links";
 import { useProjects } from "@/hooks/queries/use-projects";
-import { useApiClient } from "@/hooks/use-api-client";
 import { MoveDownstreamConfirmationDialog } from "./move-downstream-confirmation-dialog";
 
 type MovableEntity = {
@@ -63,10 +61,6 @@ export function MoveEntityDialog({
   const [selectedProjectId, setSelectedProjectId] = useState<string>("");
   const [showConfirmation, setShowConfirmation] = useState(false);
   const [isBulkMoving, setIsBulkMoving] = useState(false);
-  const [isCheckingDownstream, setIsCheckingDownstream] = useState(false);
-  const [bulkDownstreamEntities, setBulkDownstreamEntities] = useState<
-    LinkedEntity[]
-  >([]);
 
   let entitiesToMove: MovableEntity[] = [];
   if (entities?.length) {
@@ -76,10 +70,10 @@ export function MoveEntityDialog({
   }
   const isBulkMove = entitiesToMove.length > 1;
   const primaryEntity = entitiesToMove[0];
+  const isArtifactRoot = primaryEntity?.entityType === EntityType.Artifact;
 
   const { data: projects = [] } = useProjects(teamId ?? undefined);
   const batchMove = useBatchMoveEntities();
-  const apiClient = useApiClient();
 
   const { data: downstreamEntities = [], isLoading: isLoadingDownstream } =
     useLinkedEntities(
@@ -89,71 +83,30 @@ export function MoveEntityDialog({
         direction: LinkDirection.Target,
         linkType: LinkType.Produces,
         mode: LinkQueryMode.Tree,
-        enabled: open && !isBulkMove && !!primaryEntity,
+        enabled: open && !isBulkMove && !!primaryEntity && !isArtifactRoot,
       }
     );
 
   const entityProjectId = primaryEntity?.projectId ?? currentProjectId;
   const availableProjects = projects.filter((p) => p.id !== entityProjectId);
-  const isMovePending =
-    batchMove.isPending || isBulkMoving || isCheckingDownstream;
+  const isMovePending = batchMove.isPending || isBulkMoving;
 
   const handleMoveClick = async () => {
     if (!primaryEntity) {
       return;
     }
     if (isBulkMove) {
-      setIsCheckingDownstream(true);
-      try {
-        const downstreamById = new Map<string, LinkedEntity>();
-        const requests = entitiesToMove.map(async (item) => {
-          const params = new URLSearchParams();
-          params.set("entityId", item.id);
-          params.set("entityType", item.entityType);
-          params.set("direction", LinkDirection.Target);
-          params.set("linkType", LinkType.Produces);
-          params.set("mode", LinkQueryMode.Tree);
-          const response = await apiClient.get<LinkedEntity[]>(
-            `/entity-links/resolved?${params.toString()}`
-          );
-          for (const linked of response) {
-            downstreamById.set(linked.id, linked);
-          }
-        });
-        await Promise.all(requests);
-        const allDownstream = Array.from(downstreamById.values());
-        if (allDownstream.length > 0) {
-          setBulkDownstreamEntities(allDownstream);
-          setShowConfirmation(true);
-          return;
-        }
-      } finally {
-        setIsCheckingDownstream(false);
-      }
-      await executeBulkMove(false);
+      await executeBulkMove(isArtifactRoot);
+      return;
+    }
+    if (isArtifactRoot) {
+      executeSingleMove(true);
       return;
     }
     if (downstreamEntities.length > 0) {
       setShowConfirmation(true);
     } else {
-      batchMove.mutate(
-        {
-          entityId: primaryEntity.id,
-          entityType: primaryEntity.entityType,
-          targetProjectId: selectedProjectId,
-          includeDownstream: false,
-        },
-        {
-          onSuccess: () => {
-            toast.success("Moved successfully");
-            setShowConfirmation(false);
-            setBulkDownstreamEntities([]);
-            setSelectedProjectId("");
-            onOpenChange(false);
-            onSuccess?.();
-          },
-        }
-      );
+      executeSingleMove(false);
     }
   };
 
@@ -196,13 +149,15 @@ export function MoveEntityDialog({
             entityId: item.id,
             entityType: item.entityType,
             targetProjectId: selectedProjectId,
-            includeDownstream,
+            includeDownstream:
+              item.entityType === EntityType.Artifact
+                ? true
+                : includeDownstream,
           })
         )
       );
       toast.success(`Moved ${entitiesToMove.length} items successfully`);
       setShowConfirmation(false);
-      setBulkDownstreamEntities([]);
       setSelectedProjectId("");
       onOpenChange(false);
       onSuccess?.();
@@ -226,7 +181,6 @@ export function MoveEntityDialog({
           if (!nextOpen) {
             setSelectedProjectId("");
             setShowConfirmation(false);
-            setBulkDownstreamEntities([]);
           }
           onOpenChange(nextOpen);
         }}
@@ -282,7 +236,7 @@ export function MoveEntityDialog({
                 !selectedProjectId ||
                 availableProjects.length === 0 ||
                 isMovePending ||
-                (!isBulkMove && isLoadingDownstream)
+                (!(isBulkMove || isArtifactRoot) && isLoadingDownstream)
               }
               onClick={handleMoveClick}
             >
@@ -298,14 +252,14 @@ export function MoveEntityDialog({
           </DialogFooter>
         </DialogContent>
       </Dialog>
-      <MoveDownstreamConfirmationDialog
-        downstreamEntities={
-          isBulkMove ? bulkDownstreamEntities : downstreamEntities
-        }
-        onConfirm={handleConfirm}
-        onOpenChange={setShowConfirmation}
-        open={showConfirmation}
-      />
+      {!(isBulkMove || isArtifactRoot) && (
+        <MoveDownstreamConfirmationDialog
+          downstreamEntities={downstreamEntities}
+          onConfirm={handleConfirm}
+          onOpenChange={setShowConfirmation}
+          open={showConfirmation}
+        />
+      )}
     </>
   );
 }

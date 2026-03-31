@@ -214,7 +214,7 @@ function NameCell({
           />
         </div>
       )}
-      {indented && <div className="w-10 shrink-0" />}
+      {indented && <div className="w-14 shrink-0" />}
       {hasChevron && (
         <button
           className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md ${onToggleExpand ? "hover:bg-accent" : "cursor-default opacity-30"}`}
