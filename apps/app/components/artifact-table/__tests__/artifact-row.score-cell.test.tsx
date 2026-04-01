@@ -18,11 +18,12 @@ vi.mock("next/navigation", () => ({
   useParams: vi.fn(() => ({})),
 }));
 
-const mockUseJudgesFeedback = vi.fn();
+const mockUsePlanJudgesFeedback = vi.fn();
 const mockUsePrdJudgesFeedback = vi.fn();
 
 vi.mock("@/hooks/queries/use-judges", () => ({
-  useJudgesFeedback: (...args: unknown[]) => mockUseJudgesFeedback(...args),
+  usePlanJudgesFeedback: (...args: unknown[]) =>
+    mockUsePlanJudgesFeedback(...args),
   usePrdJudgesFeedback: (...args: unknown[]) =>
     mockUsePrdJudgesFeedback(...args),
   useCodeJudgesFeedback: vi.fn(),
@@ -134,7 +135,7 @@ function renderScoreColumn(item: ArtifactRowItem) {
 describe("ScoreCell — per-artifact judge hooks", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockUseJudgesFeedback.mockReturnValue({
+    mockUsePlanJudgesFeedback.mockReturnValue({
       data: null,
       isLoading: false,
     });
@@ -149,7 +150,7 @@ describe("ScoreCell — per-artifact judge hooks", () => {
       data: [prdFeedbackItem],
       isLoading: false,
     });
-    mockUseJudgesFeedback.mockReturnValue({
+    mockUsePlanJudgesFeedback.mockReturnValue({
       data: null,
       isLoading: false,
     });
@@ -158,12 +159,12 @@ describe("ScoreCell — per-artifact judge hooks", () => {
     renderScoreColumn(item);
 
     expect(mockUsePrdJudgesFeedback).toHaveBeenCalledWith("artifact-prd-1");
-    expect(mockUseJudgesFeedback).not.toHaveBeenCalled();
+    expect(mockUsePlanJudgesFeedback).not.toHaveBeenCalled();
     expect(screen.getByText("85%")).toBeInTheDocument();
   });
 
-  it("renders '72%' for a Plan artifact from useJudgesFeedback data", () => {
-    mockUseJudgesFeedback.mockReturnValue({
+  it("renders '72%' for a Plan artifact from usePlanJudgesFeedback data", () => {
+    mockUsePlanJudgesFeedback.mockReturnValue({
       data: [planFeedbackItem],
       isLoading: false,
     });
@@ -178,13 +179,13 @@ describe("ScoreCell — per-artifact judge hooks", () => {
     };
     renderScoreColumn(item);
 
-    expect(mockUseJudgesFeedback).toHaveBeenCalledWith("artifact-plan-1");
+    expect(mockUsePlanJudgesFeedback).toHaveBeenCalledWith("artifact-plan-1");
     expect(mockUsePrdJudgesFeedback).not.toHaveBeenCalled();
     expect(screen.getByText("72%")).toBeInTheDocument();
   });
 
   it("renders a dash for a feature item and does not call judge feedback hooks", () => {
-    mockUseJudgesFeedback.mockReturnValue({
+    mockUsePlanJudgesFeedback.mockReturnValue({
       data: null,
       isLoading: false,
     });
@@ -196,7 +197,7 @@ describe("ScoreCell — per-artifact judge hooks", () => {
     const item: ArtifactRowItem = { kind: "feature", data: makeFeature() };
     renderScoreColumn(item);
 
-    expect(mockUseJudgesFeedback).not.toHaveBeenCalled();
+    expect(mockUsePlanJudgesFeedback).not.toHaveBeenCalled();
     expect(mockUsePrdJudgesFeedback).not.toHaveBeenCalled();
     expect(screen.getByText("\u2014")).toBeInTheDocument();
   });
@@ -206,7 +207,7 @@ describe("ScoreCell — per-artifact judge hooks", () => {
       data: null,
       isLoading: false,
     });
-    mockUseJudgesFeedback.mockReturnValue({
+    mockUsePlanJudgesFeedback.mockReturnValue({
       data: null,
       isLoading: false,
     });
@@ -223,7 +224,7 @@ describe("ScoreCell — per-artifact judge hooks", () => {
       data: undefined,
       isLoading: true,
     });
-    mockUseJudgesFeedback.mockReturnValue({
+    mockUsePlanJudgesFeedback.mockReturnValue({
       data: null,
       isLoading: false,
     });

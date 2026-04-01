@@ -35,7 +35,7 @@ function makeJudgesFeedbackHook(
   };
 }
 
-export const useJudgesFeedback = makeJudgesFeedbackHook(
+export const usePlanJudgesFeedback = makeJudgesFeedbackHook(
   (id) => `/artifacts/${id}/plan-judges`,
   judgesKeys.detail
 );

@@ -5,7 +5,7 @@ import { createMockJudgeFeedbackItem } from "@/__tests__/fixtures/evaluation";
 import {
   judgesKeys,
   useCodeJudgesFeedback,
-  useJudgesFeedback,
+  usePlanJudgesFeedback,
   usePrdJudgesFeedback,
 } from "../use-judges";
 import { createWrapper } from "./test-utils";
@@ -44,14 +44,14 @@ function buildSuccessResponse(
 }
 
 // ---------------------------------------------------------------------------
-// Tests — useJudgesFeedback
+// Tests — usePlanJudgesFeedback
 // ---------------------------------------------------------------------------
 
 beforeEach(() => {
   vi.clearAllMocks();
 });
 
-describe("useJudgesFeedback", () => {
+describe("usePlanJudgesFeedback", () => {
   test("fetches judge feedback for artifact and returns data on success", async () => {
     const response = buildSuccessResponse({
       caseId: "clarity-judge",
@@ -59,7 +59,7 @@ describe("useJudgesFeedback", () => {
     });
     mockApiClient.get.mockResolvedValueOnce(response);
 
-    const { result } = renderHook(() => useJudgesFeedback("artifact-abc"), {
+    const { result } = renderHook(() => usePlanJudgesFeedback("artifact-abc"), {
       wrapper: createWrapper(),
     });
 
@@ -80,9 +80,12 @@ describe("useJudgesFeedback", () => {
     };
     mockApiClient.get.mockResolvedValueOnce(notFoundResponse);
 
-    const { result } = renderHook(() => useJudgesFeedback("artifact-missing"), {
-      wrapper: createWrapper(),
-    });
+    const { result } = renderHook(
+      () => usePlanJudgesFeedback("artifact-missing"),
+      {
+        wrapper: createWrapper(),
+      }
+    );
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
@@ -96,9 +99,12 @@ describe("useJudgesFeedback", () => {
     };
     mockApiClient.get.mockResolvedValueOnce(errorResponse);
 
-    const { result } = renderHook(() => useJudgesFeedback("artifact-error"), {
-      wrapper: createWrapper(),
-    });
+    const { result } = renderHook(
+      () => usePlanJudgesFeedback("artifact-error"),
+      {
+        wrapper: createWrapper(),
+      }
+    );
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
@@ -106,7 +112,7 @@ describe("useJudgesFeedback", () => {
   });
 
   test("does not fetch when artifactId is empty string", () => {
-    renderHook(() => useJudgesFeedback(""), {
+    renderHook(() => usePlanJudgesFeedback(""), {
       wrapper: createWrapper(),
     });
 
@@ -116,7 +122,7 @@ describe("useJudgesFeedback", () => {
   test("handles API transport error", async () => {
     mockApiClient.get.mockRejectedValueOnce(new Error("Network timeout"));
 
-    const { result } = renderHook(() => useJudgesFeedback("artifact-abc"), {
+    const { result } = renderHook(() => usePlanJudgesFeedback("artifact-abc"), {
       wrapper: createWrapper(),
     });
 
@@ -141,7 +147,7 @@ describe("useJudgesFeedback", () => {
     };
     mockApiClient.get.mockResolvedValueOnce(emptyResponse);
 
-    const { result } = renderHook(() => useJudgesFeedback("artifact-abc"), {
+    const { result } = renderHook(() => usePlanJudgesFeedback("artifact-abc"), {
       wrapper: createWrapper(),
     });
 
@@ -183,7 +189,7 @@ describe("usePrdJudgesFeedback", () => {
     expect(mockApiClient.get).not.toHaveBeenCalled();
   });
 
-  test("uses a distinct query key from useJudgesFeedback and useCodeJudgesFeedback", () => {
+  test("uses a distinct query key from usePlanJudgesFeedback and useCodeJudgesFeedback", () => {
     const prdKey = judgesKeys.prdDetail("artifact-xyz");
     const planKey = judgesKeys.detail("artifact-xyz");
     const codeKey = judgesKeys.codeDetail("artifact-xyz");
@@ -226,7 +232,7 @@ describe("useCodeJudgesFeedback", () => {
     expect(mockApiClient.get).not.toHaveBeenCalled();
   });
 
-  test("uses a distinct query key from useJudgesFeedback", () => {
+  test("uses a distinct query key from usePlanJudgesFeedback", () => {
     const codeKey = judgesKeys.codeDetail("artifact-xyz");
     const planKey = judgesKeys.detail("artifact-xyz");
 

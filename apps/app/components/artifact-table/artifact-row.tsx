@@ -45,7 +45,7 @@ import type { MouseEvent } from "react";
 import { createContext, useContext } from "react";
 import { AssigneeAvatar } from "@/components/assignee-avatar";
 import {
-  useJudgesFeedback,
+  usePlanJudgesFeedback,
   usePrdJudgesFeedback,
 } from "@/hooks/queries/use-judges";
 import type { ArtifactColumn } from "@/hooks/use-column-visibility";
@@ -557,7 +557,7 @@ function ScoreCellPrdArtifact({ artifactId }: { artifactId: string }) {
 }
 
 function ScoreCellPlanArtifact({ artifactId }: { artifactId: string }) {
-  const { data, isLoading } = useJudgesFeedback(artifactId);
+  const { data, isLoading } = usePlanJudgesFeedback(artifactId);
   if (isLoading) {
     return (
       <div className="flex h-11 w-[124px] shrink-0 items-center border-l px-3 py-2">
