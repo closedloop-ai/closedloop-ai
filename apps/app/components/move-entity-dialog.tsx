@@ -70,7 +70,9 @@ export function MoveEntityDialog({
   }
   const isBulkMove = entitiesToMove.length > 1;
   const primaryEntity = entitiesToMove[0];
-  const isArtifactRoot = primaryEntity?.entityType === EntityType.Artifact;
+  // Any entity that can have downstream children (Artifact, Feature, Plan, etc.) is a parent.
+  // ExternalLink is a leaf — it cannot produce downstream entities.
+  const isParentEntity = primaryEntity?.entityType !== EntityType.ExternalLink;
 
   const { data: projects = [] } = useProjects(teamId ?? undefined);
   const batchMove = useBatchMoveEntities();
@@ -83,7 +85,7 @@ export function MoveEntityDialog({
         direction: LinkDirection.Target,
         linkType: LinkType.Produces,
         mode: LinkQueryMode.Tree,
-        enabled: open && !isBulkMove && !!primaryEntity && !isArtifactRoot,
+        enabled: open && !isBulkMove && !!primaryEntity && !isParentEntity,
       }
     );
 
@@ -96,10 +98,10 @@ export function MoveEntityDialog({
       return;
     }
     if (isBulkMove) {
-      executeBulkMove(isArtifactRoot).catch(() => undefined);
+      executeBulkMove(isParentEntity).catch(() => undefined);
       return;
     }
-    if (isArtifactRoot) {
+    if (isParentEntity) {
       executeSingleMove(true);
       return;
     }
@@ -245,7 +247,7 @@ export function MoveEntityDialog({
                 !selectedProjectId ||
                 availableProjects.length === 0 ||
                 isMovePending ||
-                (!(isBulkMove || isArtifactRoot) && isLoadingDownstream)
+                (!(isBulkMove || isParentEntity) && isLoadingDownstream)
               }
               onClick={handleMoveClick}
             >
@@ -261,7 +263,7 @@ export function MoveEntityDialog({
           </DialogFooter>
         </DialogContent>
       </Dialog>
-      {!(isBulkMove || isArtifactRoot) && (
+      {!(isBulkMove || isParentEntity) && (
         <MoveDownstreamConfirmationDialog
           downstreamEntities={downstreamEntities}
           onConfirm={handleConfirm}
