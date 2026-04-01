@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock all external dependencies before imports
 vi.mock("@repo/observability/log", () => ({
@@ -301,11 +301,6 @@ describe("fetchAttachmentsForContextPack", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    process.env.ENABLE_ATTACHMENT_CONTEXT_PACK = "true";
-  });
-
-  afterEach(() => {
-    process.env.ENABLE_ATTACHMENT_CONTEXT_PACK = undefined;
   });
 
   it("calls listWithSignedUrlsByFeature for Feature contextRef with attachments", async () => {
@@ -618,28 +613,6 @@ describe("fetchAttachmentsForContextPack", () => {
       "org-1"
     );
 
-    expect(result).toHaveLength(0);
-  });
-
-  it("returns empty array when ENABLE_ATTACHMENT_CONTEXT_PACK is not set", async () => {
-    process.env.ENABLE_ATTACHMENT_CONTEXT_PACK = undefined;
-
-    mockAttachmentsService.listWithSignedUrlsByArtifact.mockResolvedValue([
-      mockAttachment,
-    ]);
-
-    const result = await fetchAttachmentsForContextPack(
-      {
-        ...baseLoop,
-        command: LoopCommand.Execute,
-        contextRefs: null,
-      },
-      "org-1"
-    );
-
-    expect(
-      mockAttachmentsService.listWithSignedUrlsByArtifact
-    ).not.toHaveBeenCalled();
     expect(result).toHaveLength(0);
   });
 });

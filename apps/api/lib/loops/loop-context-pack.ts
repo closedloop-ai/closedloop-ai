@@ -314,16 +314,11 @@ const ATTACHMENT_MAX_FILES = ATTACHMENT_SIGNED_URL_MAX_FILES;
  * Enforces per-file (25 MB), total (50 MB), and count (20 files) limits.
  * Deduplicates by attachment ID — primary artifact entries take precedence.
  *
- * Gated by ENABLE_ATTACHMENT_CONTEXT_PACK=true env var.
  */
 export async function fetchAttachmentsForContextPack(
   loop: LoopForContextPack,
   organizationId: string
 ): Promise<ContextPackAttachment[]> {
-  if (process.env.ENABLE_ATTACHMENT_CONTEXT_PACK !== "true") {
-    return [];
-  }
-
   // Path 1: primary artifact attachments
   let primaryAttachments: ContextPackAttachment[] = [];
   if (
