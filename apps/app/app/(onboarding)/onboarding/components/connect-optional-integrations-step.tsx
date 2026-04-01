@@ -1,5 +1,7 @@
 "use client";
 
+import { useFeatureFlag } from "@repo/analytics/client";
+import { FeatureFlagged } from "@repo/analytics/components/feature-flagged";
 import { Button } from "@repo/design-system/components/ui/button";
 import { Check, ExternalLink, Loader2 } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -28,8 +30,10 @@ export function ConnectOptionalIntegrationsStep({
 
   const { data: linearStatus, isLoading: linearLoading } =
     useLinearIntegrationStatus();
+  const gdriveFlag = useFeatureFlag("google-drive");
+  const gdriveEnabled = Boolean((gdriveFlag as { enabled?: boolean })?.enabled);
   const { data: googleStatus, isLoading: googleLoading } =
-    useGoogleIntegrationStatus();
+    useGoogleIntegrationStatus({ enabled: gdriveEnabled });
 
   // Handle OAuth callback results via URL params (fire once, then strip params)
   useEffect(() => {
@@ -69,7 +73,7 @@ export function ConnectOptionalIntegrationsStep({
 
   const connectedCount = [
     linearStatus?.connected,
-    googleStatus?.connected,
+    gdriveEnabled && googleStatus?.connected,
   ].filter(Boolean).length;
 
   return (
@@ -77,8 +81,9 @@ export function ConnectOptionalIntegrationsStep({
       <div>
         <h2 className="font-semibold text-lg">Connect additional tools</h2>
         <p className="text-muted-foreground text-sm">
-          Optionally link Linear or Google Drive. You can always do this later
-          from settings.
+          {gdriveEnabled
+            ? "Optionally link Linear or Google Drive. You can always do this later from settings."
+            : "Optionally link Linear. You can always do this later from settings."}
         </p>
       </div>
 
@@ -92,14 +97,16 @@ export function ConnectOptionalIntegrationsStep({
           onConnect={() => handleConnect(getLinearOAuthUrl())}
         />
 
-        <IntegrationRow
-          connected={googleStatus?.connected ?? false}
-          description="Import and collaborate on documents"
-          icon={<GoogleDriveIcon />}
-          loading={googleLoading}
-          name="Google Drive"
-          onConnect={() => handleConnect(getGoogleOAuthUrl())}
-        />
+        <FeatureFlagged flag="google-drive">
+          <IntegrationRow
+            connected={googleStatus?.connected ?? false}
+            description="Import and collaborate on documents"
+            icon={<GoogleDriveIcon />}
+            loading={googleLoading}
+            name="Google Drive"
+            onConnect={() => handleConnect(getGoogleOAuthUrl())}
+          />
+        </FeatureFlagged>
       </div>
 
       <div className="flex items-center justify-between">
