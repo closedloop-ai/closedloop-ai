@@ -61,7 +61,7 @@ import {
   formatDateCompact,
   formatRelativeTime,
 } from "@/lib/date-utils";
-import { deriveScoreDisplay } from "@/lib/judge-score-utils";
+import { deriveScoreDisplay } from "@/lib/evaluation-utils";
 import {
   ARTIFACT_STATUS_LABELS,
   ARTIFACT_STATUS_TO_ICON,
