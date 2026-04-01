@@ -159,7 +159,7 @@ describe("ScoreCell — per-artifact judge hooks", () => {
     renderScoreColumn(item);
 
     expect(mockUsePrdJudgesFeedback).toHaveBeenCalledWith("artifact-prd-1");
-    expect(mockUsePlanJudgesFeedback).not.toHaveBeenCalled();
+    expect(mockUsePlanJudgesFeedback).toHaveBeenCalledWith("");
     expect(screen.getByText("85%")).toBeInTheDocument();
   });
 
@@ -180,11 +180,11 @@ describe("ScoreCell — per-artifact judge hooks", () => {
     renderScoreColumn(item);
 
     expect(mockUsePlanJudgesFeedback).toHaveBeenCalledWith("artifact-plan-1");
-    expect(mockUsePrdJudgesFeedback).not.toHaveBeenCalled();
+    expect(mockUsePrdJudgesFeedback).toHaveBeenCalledWith("");
     expect(screen.getByText("72%")).toBeInTheDocument();
   });
 
-  it("renders a dash for a feature item and does not call judge feedback hooks", () => {
+  it("renders a dash for a feature item; judge hooks run with empty id (disabled)", () => {
     mockUsePlanJudgesFeedback.mockReturnValue({
       data: null,
       isLoading: false,
@@ -197,8 +197,8 @@ describe("ScoreCell — per-artifact judge hooks", () => {
     const item: ArtifactRowItem = { kind: "feature", data: makeFeature() };
     renderScoreColumn(item);
 
-    expect(mockUsePlanJudgesFeedback).not.toHaveBeenCalled();
-    expect(mockUsePrdJudgesFeedback).not.toHaveBeenCalled();
+    expect(mockUsePlanJudgesFeedback).toHaveBeenCalledWith("");
+    expect(mockUsePrdJudgesFeedback).toHaveBeenCalledWith("");
     expect(screen.getByText("\u2014")).toBeInTheDocument();
   });
 

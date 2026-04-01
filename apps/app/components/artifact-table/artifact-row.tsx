@@ -30,6 +30,7 @@ import {
 } from "@repo/design-system/components/ui/tooltip";
 import type { User } from "@repo/design-system/components/ui/user-select-popover";
 import { UserSelectPopover } from "@repo/design-system/components/ui/user-select-popover";
+import type { UseQueryResult } from "@tanstack/react-query";
 import {
   CalendarIcon,
   ChevronRightIcon,
@@ -544,20 +545,12 @@ function ScoreCellFromFeedback({
   );
 }
 
-function ScoreCellPrdArtifact({ artifactId }: { artifactId: string }) {
-  const { data, isLoading } = usePrdJudgesFeedback(artifactId);
-  if (isLoading) {
-    return (
-      <div className="flex h-11 w-[124px] shrink-0 items-center border-l px-3 py-2">
-        <Loader2Icon className="h-4 w-4 animate-spin text-muted-foreground" />
-      </div>
-    );
-  }
-  return <ScoreCellFromFeedback items={data ?? undefined} />;
-}
-
-function ScoreCellPlanArtifact({ artifactId }: { artifactId: string }) {
-  const { data, isLoading } = usePlanJudgesFeedback(artifactId);
+function ScoreCellWithQuery({
+  queryResult,
+}: {
+  queryResult: UseQueryResult<JudgeFeedbackItem[] | null>;
+}) {
+  const { data, isLoading } = queryResult;
   if (isLoading) {
     return (
       <div className="flex h-11 w-[124px] shrink-0 items-center border-l px-3 py-2">
@@ -569,14 +562,23 @@ function ScoreCellPlanArtifact({ artifactId }: { artifactId: string }) {
 }
 
 function ScoreCell({ item }: { item: ArtifactRowItem }) {
+  const isPrd = item.kind === "artifact" && item.data.type === ArtifactType.Prd;
+  const isPlan =
+    item.kind === "artifact" &&
+    item.data.type === ArtifactType.ImplementationPlan;
+  const artifactId = item.kind === "artifact" ? item.data.id : "";
+
+  const prdJudgesQuery = usePrdJudgesFeedback(isPrd ? artifactId : "");
+  const planJudgesQuery = usePlanJudgesFeedback(isPlan ? artifactId : "");
+
   if (item.kind !== "artifact") {
     return <ScoreCellDash />;
   }
-  if (item.data.type === ArtifactType.Prd) {
-    return <ScoreCellPrdArtifact artifactId={item.data.id} />;
+  if (isPrd) {
+    return <ScoreCellWithQuery queryResult={prdJudgesQuery} />;
   }
-  if (item.data.type === ArtifactType.ImplementationPlan) {
-    return <ScoreCellPlanArtifact artifactId={item.data.id} />;
+  if (isPlan) {
+    return <ScoreCellWithQuery queryResult={planJudgesQuery} />;
   }
   return <ScoreCellDash />;
 }
