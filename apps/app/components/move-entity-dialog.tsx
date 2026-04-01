@@ -164,6 +164,7 @@ export function MoveEntityDialog({
           `Moved ${succeeded} of ${results.length} items. ${failed} failed.`
         );
       } else {
+        toast.error("Failed to move items. Please try again.");
         return;
       }
       setShowConfirmation(false);
