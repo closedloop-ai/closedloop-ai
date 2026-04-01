@@ -105,7 +105,7 @@ export function BranchPropertiesBar({
       {data.featureSlug && data.featureTitle ? (
         <Link
           className="inline-flex h-8 max-w-[240px] items-center gap-2 truncate rounded-md border border-border bg-background px-2 py-1.5 font-medium text-foreground text-xs transition-colors hover:bg-accent"
-          href={`/issues/${data.featureSlug}`}
+          href={`/features/${data.featureSlug}`}
           title={data.featureTitle}
         >
           <BoxIcon className="h-4 w-4 shrink-0 text-foreground" />

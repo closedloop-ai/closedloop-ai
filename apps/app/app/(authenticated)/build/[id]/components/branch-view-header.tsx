@@ -46,7 +46,7 @@ export function BranchViewHeader({
       ? [
           {
             label: data.featureTitle,
-            href: `/issues/${data.featureSlug}`,
+            href: `/features/${data.featureSlug}`,
           },
         ]
       : []),
