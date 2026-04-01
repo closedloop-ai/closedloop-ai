@@ -1,5 +1,6 @@
 import type { AttachmentDownloadResponse } from "@repo/api/src/types/attachment";
 import { attachmentsService } from "@/app/artifacts/attachments-service";
+import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { withAuth } from "@/lib/auth/with-auth";
 import { resolveArtifactId } from "@/lib/identifier-utils";
 import {
@@ -9,7 +10,7 @@ import {
   successResponse,
 } from "@/lib/route-utils";
 
-export const GET = withAuth<
+export const GET = withAnyAuth<
   AttachmentDownloadResponse,
   "/artifacts/[id]/attachments/[attachmentId]"
 >(async ({ user }, _request, params) => {

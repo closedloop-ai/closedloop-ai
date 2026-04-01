@@ -18,7 +18,11 @@ export const DELETE = withAnyAuth<
       return notFoundResponse("Feature");
     }
 
-    await attachmentsService.deleteFeatureAttachment(resolvedId, attachmentId);
+    await attachmentsService.deleteFeatureAttachment(
+      resolvedId,
+      user.organizationId,
+      attachmentId
+    );
 
     return deleteResponse();
   } catch (error) {

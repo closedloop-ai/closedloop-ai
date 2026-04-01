@@ -11,12 +11,17 @@ import { EntityType } from "@repo/api/src/types/entity-link";
 import { LoopCommand } from "@repo/api/src/types/loop";
 import { log } from "@repo/observability/log";
 import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
+import {
+  ATTACHMENT_SIGNED_URL_MAX_FILES,
+  attachmentsService,
+} from "@/app/artifacts/attachments-service";
 import { artifactsService } from "@/app/artifacts/service";
 import { featuresService } from "@/app/features/service";
 import { loopsService } from "@/app/loops/service";
 import { getCommandHandler } from "./loop-commands";
 import {
   type ContextPack,
+  type ContextPackAttachment,
   downloadMetadata,
   uploadContextPack,
 } from "./loop-state";
@@ -295,6 +300,164 @@ async function fetchUserContext(
   return content;
 }
 
+const ATTACHMENT_MAX_FILE_BYTES = 25 * 1024 * 1024; // 25 MB per-file limit
+const ATTACHMENT_MAX_TOTAL_BYTES = 50 * 1024 * 1024; // 50 MB total cap
+const ATTACHMENT_MAX_FILES = ATTACHMENT_SIGNED_URL_MAX_FILES;
+
+/**
+ * Fetch file attachments to include in the context pack.
+ *
+ * Collects from two sources:
+ * 1. Primary artifact attachments (when command declares includePrimaryArtifact)
+ * 2. ContextRef attachments (features and artifacts referenced by the loop)
+ *
+ * Enforces per-file (25 MB), total (50 MB), and count (20 files) limits.
+ * Deduplicates by attachment ID — primary artifact entries take precedence.
+ *
+ * Gated by ENABLE_ATTACHMENT_CONTEXT_PACK=true env var.
+ */
+export async function fetchAttachmentsForContextPack(
+  loop: LoopForContextPack,
+  organizationId: string
+): Promise<ContextPackAttachment[]> {
+  if (process.env.ENABLE_ATTACHMENT_CONTEXT_PACK !== "true") {
+    return [];
+  }
+
+  // Path 1: primary artifact attachments
+  let primaryAttachments: ContextPackAttachment[] = [];
+  if (
+    loop.artifactId &&
+    getCommandHandler(loop.command)?.includePrimaryArtifact
+  ) {
+    try {
+      primaryAttachments =
+        await attachmentsService.listWithSignedUrlsByArtifact(
+          loop.artifactId,
+          organizationId
+        );
+    } catch (error) {
+      log.warn(
+        "[loop-context-pack] Failed to fetch primary artifact attachments",
+        {
+          loopId: loop.id,
+          error,
+        }
+      );
+      primaryAttachments = [];
+    }
+  }
+
+  // Path 2: contextRef attachments
+  const contextRefAttachments = await collectContextRefAttachments(
+    loop.contextRefs ?? [],
+    organizationId,
+    loop.id
+  );
+
+  // Deduplicate — primary artifact entries written first (take precedence)
+  const deduped = new Map<string, ContextPackAttachment>();
+  for (const attachment of primaryAttachments) {
+    deduped.set(attachment.id, attachment);
+  }
+  for (const attachment of contextRefAttachments) {
+    if (!deduped.has(attachment.id)) {
+      deduped.set(attachment.id, attachment);
+    }
+  }
+
+  return applyAttachmentLimits(deduped.values(), loop.id);
+}
+
+async function collectContextRefAttachments(
+  contextRefs: NonNullable<LoopForContextPack["contextRefs"]>,
+  organizationId: string,
+  loopId: string
+): Promise<ContextPackAttachment[]> {
+  const result: ContextPackAttachment[] = [];
+  for (const ref of contextRefs) {
+    try {
+      let refAttachments: ContextPackAttachment[];
+      if (ref.sourceType === EntityType.Feature) {
+        refAttachments = await attachmentsService.listWithSignedUrlsByFeature(
+          ref.sourceId,
+          organizationId
+        );
+      } else {
+        refAttachments = await attachmentsService.listWithSignedUrlsByArtifact(
+          ref.sourceId,
+          organizationId
+        );
+      }
+      result.push(...refAttachments);
+    } catch (error) {
+      log.warn("[loop-context-pack] Failed to fetch context ref attachments", {
+        loopId,
+        sourceId: ref.sourceId,
+        sourceType: ref.sourceType,
+        error,
+      });
+    }
+  }
+  return result;
+}
+
+function applyAttachmentLimits(
+  attachments: IterableIterator<ContextPackAttachment>,
+  loopId: string
+): ContextPackAttachment[] {
+  const result: ContextPackAttachment[] = [];
+  let totalBytes = 0;
+
+  for (const attachment of attachments) {
+    if (attachment.sizeBytes > ATTACHMENT_MAX_FILE_BYTES) {
+      log.warn(
+        "[loop-context-pack] Attachment exceeds per-file size limit, skipping",
+        {
+          loopId,
+          attachmentId: attachment.id,
+          filename: attachment.filename,
+          sizeBytes: attachment.sizeBytes,
+          limitBytes: ATTACHMENT_MAX_FILE_BYTES,
+        }
+      );
+      continue;
+    }
+
+    if (result.length >= ATTACHMENT_MAX_FILES) {
+      log.warn(
+        "[loop-context-pack] Attachment count cap reached, skipping remaining",
+        {
+          loopId,
+          attachmentId: attachment.id,
+          filename: attachment.filename,
+          cap: ATTACHMENT_MAX_FILES,
+        }
+      );
+      continue;
+    }
+
+    if (totalBytes + attachment.sizeBytes > ATTACHMENT_MAX_TOTAL_BYTES) {
+      log.warn(
+        "[loop-context-pack] Attachment total size cap reached, skipping",
+        {
+          loopId,
+          attachmentId: attachment.id,
+          filename: attachment.filename,
+          totalBytes,
+          limitBytes: ATTACHMENT_MAX_TOTAL_BYTES,
+        }
+      );
+      continue;
+    }
+
+    result.push(attachment);
+    totalBytes += attachment.sizeBytes;
+  }
+
+  return result;
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -315,12 +478,20 @@ export async function buildContextPackInMemory(
     templateArtifacts,
     priorLoopSummaries,
     userContext,
+    attachments,
   ] = await Promise.all([
     fetchPrimaryArtifact(loop, organizationId),
     fetchContextRefArtifacts(loop, organizationId),
     fetchTemplateForCommand(loop, organizationId),
     fetchParentLoopSummary(loop, organizationId),
     fetchUserContext(loop),
+    fetchAttachmentsForContextPack(loop, organizationId).catch((error) => {
+      log.warn("[loop-context-pack] Failed to fetch attachments", {
+        loopId: loop.id,
+        error,
+      });
+      return [];
+    }),
   ]);
 
   // Template first (structural blueprint), then context refs (Feature/PRD), then primary artifact
@@ -340,6 +511,7 @@ export async function buildContextPackInMemory(
     committer,
     secrets,
     userContext,
+    attachments: attachments.length > 0 ? attachments : undefined,
   };
 }
 

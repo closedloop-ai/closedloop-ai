@@ -3,6 +3,7 @@ import type {
   FileAttachment,
 } from "@repo/api/src/types/attachment";
 import { attachmentsService } from "@/app/artifacts/attachments-service";
+import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { withAuth } from "@/lib/auth/with-auth";
 import { resolveArtifactId } from "@/lib/identifier-utils";
 import {
@@ -52,7 +53,7 @@ export const POST = withAuth<
   }
 });
 
-export const GET = withAuth<FileAttachment[], "/artifacts/[id]/attachments">(
+export const GET = withAnyAuth<FileAttachment[], "/artifacts/[id]/attachments">(
   async ({ user }, _request, params) => {
     try {
       const { id } = await params;
