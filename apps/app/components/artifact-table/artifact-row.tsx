@@ -6,8 +6,7 @@ import type {
 } from "@repo/api/src/types/artifact";
 import { ArtifactType } from "@repo/api/src/types/artifact";
 import type { Priority } from "@repo/api/src/types/common";
-import type { BatchJudgeScoresResponse } from "@repo/api/src/types/evaluation";
-import { EvaluationReportType } from "@repo/api/src/types/evaluation";
+import type { JudgeFeedbackItem } from "@repo/api/src/types/evaluation";
 import type { FeatureWithWorkstream } from "@repo/api/src/types/feature";
 import type { LoopWithUser } from "@repo/api/src/types/loop";
 import type { ProjectWithDetails } from "@repo/api/src/types/project";
@@ -45,6 +44,10 @@ import { useParams, useRouter } from "next/navigation";
 import type { MouseEvent } from "react";
 import { createContext, useContext } from "react";
 import { AssigneeAvatar } from "@/components/assignee-avatar";
+import {
+  useJudgesFeedback,
+  usePrdJudgesFeedback,
+} from "@/hooks/queries/use-judges";
 import type { ArtifactColumn } from "@/hooks/use-column-visibility";
 import { ArtifactColumn as Col } from "@/hooks/use-column-visibility";
 import {
@@ -87,8 +90,6 @@ export type RowEditHandlers = {
   teamMembers?: User[];
   /** Active loops for displaying per-artifact loop status. */
   activeLoops?: LoopWithUser[];
-  /** Judge scores keyed by artifact ID, for displaying evaluation results. */
-  judgeScores?: BatchJudgeScoresResponse;
   /** Parent entity title, injected per-row for the Parent column cell. */
   parentTitle?: string;
   /** Parent entity route, injected per-row for the Parent column cell. */
@@ -512,19 +513,22 @@ function PriorityCell({ item }: { item: ArtifactRowItem }) {
   );
 }
 
-function ScoreCell({ item }: { item: ArtifactRowItem }) {
-  const { judgeScores } = useContext(RowEditContext);
-  const artifactId = item.kind === "artifact" ? item.data.id : undefined;
-  const reportType =
-    item.kind === "artifact"
-      ? ARTIFACT_TYPE_TO_REPORT_TYPE[item.data.type]
-      : undefined;
-  const items =
-    artifactId !== undefined && reportType !== undefined
-      ? judgeScores?.[artifactId]?.[reportType]
-      : undefined;
-  const score = deriveScoreDisplay(items);
+function ScoreCellDash() {
+  return (
+    <div className="flex h-11 w-[124px] shrink-0 items-center border-l px-3 py-2">
+      <span className="font-medium text-muted-foreground text-xs">
+        {"\u2014"}
+      </span>
+    </div>
+  );
+}
 
+function ScoreCellFromFeedback({
+  items,
+}: {
+  items: JudgeFeedbackItem[] | null | undefined;
+}) {
+  const score = deriveScoreDisplay(items);
   return (
     <div className="flex h-11 w-[124px] shrink-0 items-center border-l px-3 py-2">
       {score !== null ? (
@@ -538,6 +542,43 @@ function ScoreCell({ item }: { item: ArtifactRowItem }) {
       )}
     </div>
   );
+}
+
+function ScoreCellPrdArtifact({ artifactId }: { artifactId: string }) {
+  const { data, isLoading } = usePrdJudgesFeedback(artifactId);
+  if (isLoading) {
+    return (
+      <div className="flex h-11 w-[124px] shrink-0 items-center border-l px-3 py-2">
+        <Loader2Icon className="h-4 w-4 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+  return <ScoreCellFromFeedback items={data ?? undefined} />;
+}
+
+function ScoreCellPlanArtifact({ artifactId }: { artifactId: string }) {
+  const { data, isLoading } = useJudgesFeedback(artifactId);
+  if (isLoading) {
+    return (
+      <div className="flex h-11 w-[124px] shrink-0 items-center border-l px-3 py-2">
+        <Loader2Icon className="h-4 w-4 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+  return <ScoreCellFromFeedback items={data ?? undefined} />;
+}
+
+function ScoreCell({ item }: { item: ArtifactRowItem }) {
+  if (item.kind !== "artifact") {
+    return <ScoreCellDash />;
+  }
+  if (item.data.type === ArtifactType.Prd) {
+    return <ScoreCellPrdArtifact artifactId={item.data.id} />;
+  }
+  if (item.data.type === ArtifactType.ImplementationPlan) {
+    return <ScoreCellPlanArtifact artifactId={item.data.id} />;
+  }
+  return <ScoreCellDash />;
 }
 
 function LoopCell({ item }: { item: ArtifactRowItem }) {
@@ -664,15 +705,6 @@ function UpdatedCell({ item }: { item: ArtifactRowItem }) {
     </div>
   );
 }
-
-// ---- Artifact type → evaluation report type mapping ----
-
-const ARTIFACT_TYPE_TO_REPORT_TYPE: Partial<
-  Record<ArtifactType, EvaluationReportType>
-> = {
-  [ArtifactType.Prd]: EvaluationReportType.Prd,
-  [ArtifactType.ImplementationPlan]: EvaluationReportType.Plan,
-};
 
 // ---- Column to cell mapping ----
 

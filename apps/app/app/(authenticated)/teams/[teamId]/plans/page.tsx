@@ -20,7 +20,6 @@ import {
   useDeleteArtifact,
   useUpdateArtifact,
 } from "@/hooks/queries/use-artifacts";
-import { useTeamArtifactJudgeScores } from "@/hooks/queries/use-judges";
 import { useTeam } from "@/hooks/queries/use-teams";
 import {
   PLAN_DEFAULT_COLUMNS,
@@ -48,7 +47,6 @@ export default function TeamPlansPage() {
     teamId,
     ArtifactType.ImplementationPlan
   );
-  const judgeScores = useTeamArtifactJudgeScores(artifacts ?? []);
   const orgUsers = useOrgUsersAsPopoverUsers();
 
   const deleteArtifactMutation = useDeleteArtifact();
@@ -64,7 +62,6 @@ export default function TeamPlansPage() {
 
   const editHandlers: RowEditHandlers = useMemo(
     () => ({
-      judgeScores,
       teamMembers: orgUsers,
       onUpdateAssignee: (id, assigneeId) =>
         updateArtifactMutation.mutate({ id, assigneeId }),
@@ -73,7 +70,7 @@ export default function TeamPlansPage() {
       onUpdateStatus: (id, status) =>
         updateArtifactMutation.mutate({ id, status: status as ArtifactStatus }),
     }),
-    [judgeScores, orgUsers, updateArtifactMutation]
+    [orgUsers, updateArtifactMutation]
   );
 
   const handleDelete = async (item: ArtifactRowItem): Promise<boolean> => {

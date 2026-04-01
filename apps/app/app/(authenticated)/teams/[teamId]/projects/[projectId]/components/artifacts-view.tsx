@@ -29,7 +29,6 @@ import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialo
 import { EmptyState } from "@/components/empty-state";
 import { MoveEntityDialog } from "@/components/move-entity-dialog";
 import { useMergeArtifacts } from "@/hooks/queries/use-artifacts";
-import { useProjectJudgeScores } from "@/hooks/queries/use-judges";
 import { useProjectTree } from "@/hooks/queries/use-project-tree";
 import type { ArtifactColumn } from "@/hooks/use-column-visibility";
 import { useSortParams } from "@/hooks/use-sort-params";
@@ -422,12 +421,6 @@ export function ArtifactsView({
   const [mergeDialogOpen, setMergeDialogOpen] = useState(false);
   const [mergeError, setMergeError] = useState<string | null>(null);
   const mergeMutation = useMergeArtifacts();
-  const { data: judgeScores } = useProjectJudgeScores(projectId);
-
-  const mergedEditHandlers = useMemo(
-    () => ({ ...editHandlers, judgeScores }),
-    [editHandlers, judgeScores]
-  );
 
   const { sortBy, sortDir, setSort } = useSortParams<SortColumn>({
     validColumns: SORT_COLUMNS,
@@ -695,7 +688,7 @@ export function ArtifactsView({
               return (
                 <div key={group.groupKey}>
                   <ArtifactRow
-                    editHandlers={mergedEditHandlers}
+                    editHandlers={editHandlers}
                     isExpanded={hasChildren ? isOpen : false}
                     isSelected={selectedIds.has(root.data.id)}
                     item={root}
@@ -714,7 +707,7 @@ export function ArtifactsView({
                   {isOpen &&
                     children.map((child) => (
                       <ArtifactRow
-                        editHandlers={mergedEditHandlers}
+                        editHandlers={editHandlers}
                         indented
                         isSelected={selectedIds.has(child.data.id)}
                         item={child}
@@ -732,7 +725,7 @@ export function ArtifactsView({
             })
           : flatItems.map((item) => (
               <ArtifactRow
-                editHandlers={mergedEditHandlers}
+                editHandlers={editHandlers}
                 isSelected={selectedIds.has(item.data.id)}
                 item={item}
                 key={item.data.id}

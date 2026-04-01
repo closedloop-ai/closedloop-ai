@@ -1,13 +1,9 @@
 import { ArtifactStatus, ArtifactType } from "@repo/api/src/types/artifact";
 import { Priority } from "@repo/api/src/types/common";
-import {
-  type BatchJudgeScoresResponse,
-  EvalStatus,
-  EvaluationReportType,
-} from "@repo/api/src/types/evaluation";
+import { EvalStatus } from "@repo/api/src/types/evaluation";
 import { FeatureStatus } from "@repo/api/src/types/feature";
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock next/navigation — ArtifactRow uses useRouter and useParams
 vi.mock("next/navigation", () => ({
@@ -22,14 +18,21 @@ vi.mock("next/navigation", () => ({
   useParams: vi.fn(() => ({})),
 }));
 
+const mockUseJudgesFeedback = vi.fn();
+const mockUsePrdJudgesFeedback = vi.fn();
+
+vi.mock("@/hooks/queries/use-judges", () => ({
+  useJudgesFeedback: (...args: unknown[]) => mockUseJudgesFeedback(...args),
+  usePrdJudgesFeedback: (...args: unknown[]) =>
+    mockUsePrdJudgesFeedback(...args),
+  useCodeJudgesFeedback: vi.fn(),
+}));
+
 // Import after mocks
 import type { ArtifactWithWorkstream } from "@repo/api/src/types/artifact";
 import type { FeatureWithWorkstream } from "@repo/api/src/types/feature";
 import type { ArtifactRowItem } from "@/components/artifact-table/artifact-row";
-import {
-  ArtifactRow,
-  RowEditContext,
-} from "@/components/artifact-table/artifact-row";
+import { ArtifactRow } from "@/components/artifact-table/artifact-row";
 import { ArtifactColumn as Col } from "@/hooks/use-column-visibility";
 
 // ---------------------------------------------------------------------------
@@ -98,113 +101,136 @@ const makeFeature = (
   ...overrides,
 });
 
-// BatchJudgeScoresResponse with PRD score=0.85 and Plan score=0.72
-const makeJudgeScores = (): BatchJudgeScoresResponse => ({
-  "artifact-prd-1": {
-    [EvaluationReportType.Prd]: [
-      {
-        judgeScoreId: "score-1",
-        caseId: "case-1",
-        score: 0.85,
-        threshold: 0.7,
-        justification: "Good PRD",
-        finalStatus: EvalStatus.Passed,
-        promptName: null,
-        metricName: "completeness",
-      },
-    ],
-    [EvaluationReportType.Plan]: null,
-    [EvaluationReportType.Code]: null,
-  },
-  "artifact-plan-1": {
-    [EvaluationReportType.Plan]: [
-      {
-        judgeScoreId: "score-2",
-        caseId: "case-2",
-        score: 0.72,
-        threshold: 0.7,
-        justification: "Adequate plan",
-        finalStatus: EvalStatus.Passed,
-        promptName: null,
-        metricName: "clarity",
-      },
-    ],
-    [EvaluationReportType.Prd]: null,
-    [EvaluationReportType.Code]: null,
-  },
-});
+const prdFeedbackItem = {
+  judgeScoreId: "score-1",
+  caseId: "case-1",
+  score: 0.85,
+  threshold: 0.7,
+  justification: "Good PRD",
+  finalStatus: EvalStatus.Passed,
+  promptName: null,
+  metricName: "completeness",
+};
 
-function renderWithContext(
-  item: ArtifactRowItem,
-  judgeScores?: BatchJudgeScoresResponse
-) {
-  return render(
-    <ArtifactRow
-      editHandlers={{ judgeScores }}
-      item={item}
-      visibleColumns={[Col.Score]}
-    />
-  );
+const planFeedbackItem = {
+  judgeScoreId: "score-2",
+  caseId: "case-2",
+  score: 0.72,
+  threshold: 0.7,
+  justification: "Adequate plan",
+  finalStatus: EvalStatus.Passed,
+  promptName: null,
+  metricName: "clarity",
+};
+
+function renderScoreColumn(item: ArtifactRowItem) {
+  return render(<ArtifactRow item={item} visibleColumns={[Col.Score]} />);
 }
 
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
-describe("ScoreCell — renders score from judgeScores context", () => {
-  it("renders '85%' for a PRD artifact with a 0.85 score in judgeScores", () => {
+describe("ScoreCell — per-artifact judge hooks", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockUseJudgesFeedback.mockReturnValue({
+      data: null,
+      isLoading: false,
+    });
+    mockUsePrdJudgesFeedback.mockReturnValue({
+      data: null,
+      isLoading: false,
+    });
+  });
+
+  it("renders '85%' for a PRD artifact from usePrdJudgesFeedback data", () => {
+    mockUsePrdJudgesFeedback.mockReturnValue({
+      data: [prdFeedbackItem],
+      isLoading: false,
+    });
+    mockUseJudgesFeedback.mockReturnValue({
+      data: null,
+      isLoading: false,
+    });
+
     const item: ArtifactRowItem = { kind: "artifact", data: makePrdArtifact() };
+    renderScoreColumn(item);
 
-    renderWithContext(item, makeJudgeScores());
-
+    expect(mockUsePrdJudgesFeedback).toHaveBeenCalledWith("artifact-prd-1");
+    expect(mockUseJudgesFeedback).not.toHaveBeenCalled();
     expect(screen.getByText("85%")).toBeInTheDocument();
   });
 
-  it("renders '72%' for a Plan artifact with a 0.72 score in judgeScores", () => {
+  it("renders '72%' for a Plan artifact from useJudgesFeedback data", () => {
+    mockUseJudgesFeedback.mockReturnValue({
+      data: [planFeedbackItem],
+      isLoading: false,
+    });
+    mockUsePrdJudgesFeedback.mockReturnValue({
+      data: null,
+      isLoading: false,
+    });
+
     const item: ArtifactRowItem = {
       kind: "artifact",
       data: makePlanArtifact(),
     };
+    renderScoreColumn(item);
 
-    renderWithContext(item, makeJudgeScores());
-
+    expect(mockUseJudgesFeedback).toHaveBeenCalledWith("artifact-plan-1");
+    expect(mockUsePrdJudgesFeedback).not.toHaveBeenCalled();
     expect(screen.getByText("72%")).toBeInTheDocument();
   });
 
-  it("renders a dash for a feature item regardless of judgeScores", () => {
+  it("renders a dash for a feature item and does not call judge feedback hooks", () => {
+    mockUseJudgesFeedback.mockReturnValue({
+      data: null,
+      isLoading: false,
+    });
+    mockUsePrdJudgesFeedback.mockReturnValue({
+      data: null,
+      isLoading: false,
+    });
+
     const item: ArtifactRowItem = { kind: "feature", data: makeFeature() };
+    renderScoreColumn(item);
 
-    renderWithContext(item, makeJudgeScores());
-
-    // The em dash is the Unicode character U+2014
+    expect(mockUseJudgesFeedback).not.toHaveBeenCalled();
+    expect(mockUsePrdJudgesFeedback).not.toHaveBeenCalled();
     expect(screen.getByText("\u2014")).toBeInTheDocument();
   });
 
-  it("renders a dash for all artifact types when judgeScores is absent from context", () => {
-    const prdItem: ArtifactRowItem = {
-      kind: "artifact",
-      data: makePrdArtifact(),
-    };
+  it("renders a dash when PRD feedback is absent", () => {
+    mockUsePrdJudgesFeedback.mockReturnValue({
+      data: null,
+      isLoading: false,
+    });
+    mockUseJudgesFeedback.mockReturnValue({
+      data: null,
+      isLoading: false,
+    });
 
-    renderWithContext(prdItem, undefined);
+    const item: ArtifactRowItem = { kind: "artifact", data: makePrdArtifact() };
+    renderScoreColumn(item);
 
     expect(screen.getByText("\u2014")).toBeInTheDocument();
     expect(screen.queryByText("85%")).not.toBeInTheDocument();
   });
 
-  it("renders a dash when judgeScores is set on an outer RowEditContext.Provider but not passed via editHandlers", () => {
-    // ArtifactRow always wraps children with its own RowEditContext.Provider using
-    // editHandlers. An outer provider is overridden, so judgeScores never reaches
-    // ScoreCell unless passed through editHandlers.
+  it("shows a loading spinner while PRD feedback is loading", () => {
+    mockUsePrdJudgesFeedback.mockReturnValue({
+      data: undefined,
+      isLoading: true,
+    });
+    mockUseJudgesFeedback.mockReturnValue({
+      data: null,
+      isLoading: false,
+    });
+
     const item: ArtifactRowItem = { kind: "artifact", data: makePrdArtifact() };
-    const judgeScores = makeJudgeScores();
+    const { container } = renderScoreColumn(item);
 
-    render(
-      <RowEditContext.Provider value={{ judgeScores }}>
-        <ArtifactRow item={item} visibleColumns={[Col.Score]} />
-      </RowEditContext.Provider>
-    );
-
-    expect(screen.getByText("\u2014")).toBeInTheDocument();
+    expect(container.querySelector(".animate-spin")).toBeInTheDocument();
   });
 });
