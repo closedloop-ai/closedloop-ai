@@ -314,7 +314,14 @@ export function PRBrowserDialog({
     enabled: open && !!selectedRepo,
   });
 
-  const repos = useMemo(() => reposData?.repos || [], [reposData]);
+  const repos = useMemo(
+    () =>
+      (reposData?.repos || []).map((r) => ({
+        ...r,
+        name: r.name || r.path.split("/").pop() || r.path,
+      })),
+    [reposData]
+  );
   const prs = useMemo(() => prData?.prs || [], [prData]);
   const defaultRepoPath = reposData?.settings?.worktreeParentDir ?? "~/";
   const openAddRepoDialog = useCallback(() => {
