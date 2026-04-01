@@ -91,12 +91,12 @@ export function MoveEntityDialog({
   const availableProjects = projects.filter((p) => p.id !== entityProjectId);
   const isMovePending = batchMove.isPending || isBulkMoving;
 
-  const handleMoveClick = async () => {
+  const handleMoveClick = () => {
     if (!primaryEntity) {
       return;
     }
     if (isBulkMove) {
-      await executeBulkMove(isArtifactRoot);
+      executeBulkMove(isArtifactRoot).catch(() => undefined);
       return;
     }
     if (isArtifactRoot) {
@@ -143,7 +143,7 @@ export function MoveEntityDialog({
     }
     setIsBulkMoving(true);
     try {
-      await Promise.all(
+      const results = await Promise.allSettled(
         entitiesToMove.map((item) =>
           batchMove.mutateAsync({
             entityId: item.id,
@@ -156,11 +156,21 @@ export function MoveEntityDialog({
           })
         )
       );
-      toast.success(`Moved ${entitiesToMove.length} items successfully`);
+      const succeeded = results.filter((r) => r.status === "fulfilled").length;
+      const failed = results.length - succeeded;
+      if (failed === 0) {
+        toast.success(`Moved ${succeeded} items successfully`);
+      } else if (succeeded > 0) {
+        toast.warning(
+          `Moved ${succeeded} of ${results.length} items. ${failed} failed.`
+        );
+      }
       setShowConfirmation(false);
       setSelectedProjectId("");
       onOpenChange(false);
       onSuccess?.();
+    } catch {
+      /* global onError handles toast */
     } finally {
       setIsBulkMoving(false);
     }
