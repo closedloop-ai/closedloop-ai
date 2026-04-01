@@ -564,6 +564,11 @@ export function ArtifactsView({
     return items;
   }, [isGroupedView, flatItems, groups, openGroups]);
 
+  // When a child entity is moved to a different project, it leaves its parent's
+  // project tree (parentMap is built from the current project's tree). To keep
+  // the "Parent" column populated after a cross-project move, we query
+  // entity-links for any item not already in parentMap and build a fallback
+  // that surfaces the parent's title and href in the new project's table.
   const parentFallbackItems = useMemo(
     () =>
       renderedItems
