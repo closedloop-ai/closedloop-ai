@@ -96,9 +96,10 @@ export function useTeamArtifactJudgeScores(
   }, [artifacts]);
 
   const results = useQueries({
-    queries: projectIds.map((id) =>
-      makeProjectJudgeScoresQueryOptions(apiClient, id)
-    ),
+    queries: projectIds.map((id) => ({
+      ...makeProjectJudgeScoresQueryOptions(apiClient, id),
+      enabled: !!id,
+    })),
   });
 
   const judgeScoresMergeKey = results.map((r) => r.dataUpdatedAt).join(",");
