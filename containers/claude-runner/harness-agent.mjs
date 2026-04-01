@@ -853,7 +853,9 @@ async function writeContextPackFiles(workDir, pack) {
 
           // (3) Compute disk path and assert no path traversal
           const diskPath = path.join(attachmentsDir, diskName);
-          if (!path.resolve(diskPath).startsWith(path.resolve(attachmentsDir))) {
+          if (
+            !path.resolve(diskPath).startsWith(path.resolve(attachmentsDir))
+          ) {
             log(
               "warn",
               `Attachment ${attachment.id} resolved path escapes attachments dir, skipping`
