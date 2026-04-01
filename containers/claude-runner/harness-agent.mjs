@@ -3,7 +3,7 @@
 /**
  * Harness Agent for the Claude Code Runner container.
  *
- * Orchestrates a Symphony loop execution inside the container:
+ * Orchestrates a ClosedLoop.AI loop execution inside the container:
  * 1. Reads configuration from environment variables
  * 2. Downloads context pack from S3 (PRD, plan, prompt files)
  * 3. Reports "started" event to the backend
@@ -1078,7 +1078,7 @@ function cloneRepo(workDir) {
   // Use committer info from the context pack (triggering user) when available,
   // falling back to generic identity. This ensures Vercel matches the commit
   // author to a team member for preview deploy permissions.
-  const gitName = config.committerName || "Symphony Agent";
+  const gitName = config.committerName || "ClosedLoop.AI Agent";
   const gitEmail = config.committerEmail || "agent@closedloop.ai";
   execFileSync("git", ["config", "user.name", gitName], {
     cwd: workDir,
@@ -1103,8 +1103,8 @@ function attemptSafetyCommit(
     return;
   }
   try {
-    // Stage everything except .claude directory (matches dispatch pattern)
-    execFileSync("git", ["add", "-A", "--", ":!.claude"], {
+    // Stage everything except .claude and .closedloop-ai directories
+    execFileSync("git", ["add", "--", ".", ":!.claude", ":!.closedloop-ai"], {
       cwd: workDir,
       stdio: "pipe",
     });
@@ -1208,28 +1208,36 @@ function attemptLlmCommit(workDir, resultFilePath) {
   }
 
   const prompt = [
-    `You are a commit assistant finalizing work from a Symphony ${config.command} loop.`,
+    `You are a commit assistant finalizing work from a ClosedLoop.AI ${config.command} loop.`,
     "",
     "Review all uncommitted changes in this repository and create a proper commit, push it, and create a pull request.",
     "",
     "STEPS:",
     "1. Run `git status` and `git diff --stat` to understand what changed",
-    "2. Stage all changed/new files EXCEPT the .claude/ directory:",
-    "   git add -A -- ':!.claude'",
+    "2. Stage all changed/new files EXCEPT the .claude/ and .closedloop-ai/ directories:",
+    "   git add -- . ':!.claude' ':!.closedloop-ai'",
     "3. Write a clear, descriptive commit message based on the actual code changes",
-    "   - Summarize WHAT changed and WHY (not just 'Symphony loop output')",
+    "   - Summarize WHAT changed and WHY (not just 'ClosedLoop.AI loop output')",
     "   - Use conventional commit style if the changes have a clear category",
-    "4. Try `git commit` first. If pre-commit hooks fail:",
-    "   - Attempt to fix the issue (e.g., run the linter/formatter if the error message tells you how)",
-    "   - If you can't quickly fix it, use `git commit --no-verify`",
-    "5. Push to origin. If pre-push hooks fail, use `git push --no-verify origin HEAD`",
+    "4. Run `git commit` (do NOT use --no-verify). If pre-commit hooks fail, attempt to fix",
+    "   the issue (e.g., run the linter/formatter if the error message tells you how).",
+    "   If you cannot quickly fix it, the commit fails — do not bypass hooks.",
+    "5. Push to origin with: git push -u origin HEAD",
     `6. Check if a PR already exists for this branch: gh pr list --head ${branchName}`,
-    "   - If NO PR exists, create one with `gh pr create`:",
-    `     - Base branch: ${config.targetBranch}`,
-    "     - Write a descriptive title based on the actual changes",
-    "     - Include a summary of what was changed in the body",
-    "     - Add label: symphony",
-    "   - If a PR already exists, get its URL with: gh pr view --json url -q .url",
+    "   - If NO PR exists:",
+    "     a. Check if the repo has a PR template at .github/pull_request_template.md",
+    "        If a template exists, use it as the base for the PR body — fill in every section appropriately.",
+    "        If no template exists, write a summary of what changed and why.",
+    "     b. Append the following metadata footer on its own lines at the end:",
+    "        ---",
+    `        Loop ID: ${config.loopId}`,
+    `        Command: ${config.command}`,
+    "     c. Write the complete PR body to pr-body.md",
+    `     d. Create the PR: gh pr create --label symphony --base ${config.targetBranch} --title '<descriptive title>' --body-file pr-body.md`,
+    "   - If a PR already exists, get its URL with: gh pr view --json url,number",
+    "     Fetch the current body: gh pr view <number> --json body --jq .body",
+    "     If any required template sections are missing, append them.",
+    "     Write the full updated body to pr-body.md and run: gh pr edit <number> --body-file pr-body.md",
     "7. ONLY after a successful commit AND push, write this EXACT JSON file:",
     `   File path: ${resultFilePath}`,
     "   ```json",
@@ -1245,7 +1253,8 @@ function attemptLlmCommit(workDir, resultFilePath) {
     "   Run `git rev-parse HEAD` to get the commit SHA.",
     "",
     "RULES:",
-    "- NEVER stage or commit the .claude/ directory",
+    "- NEVER stage or commit the .claude/ or .closedloop-ai/ directories",
+    "- Do NOT use --no-verify on git commit",
     "- Do NOT modify any source code except to fix pre-commit hook failures (formatting, lint)",
     "- Do NOT write execution-result.json unless you successfully committed AND pushed",
     "- Keep it quick — commit, push, PR, write result file, done",
@@ -1475,13 +1484,35 @@ function createPullRequest(workDir, existingPrInfo) {
   }
 
   try {
-    const title = `Symphony: ${config.command} — loop ${config.loopId}`;
-    const body = [
-      "Automated PR created by Symphony loop runner.",
-      "",
-      `**Loop:** \`${config.loopId}\``,
-      `**Command:** \`${config.command}\``,
-    ].join("\n");
+    const title = `ClosedLoop.AI: ${config.command} — loop ${config.loopId}`;
+
+    // Use the repo's PR template if one exists, otherwise fall back to a
+    // simple metadata body. This ensures automated PRs satisfy any CI checks
+    // that validate template sections (e.g., Feature Flags attestation).
+    let body;
+    const templatePath = path.join(
+      workDir,
+      ".github",
+      "pull_request_template.md"
+    );
+    if (fs.existsSync(templatePath)) {
+      const template = fs.readFileSync(templatePath, "utf-8");
+      body = [
+        "Automated PR created by ClosedLoop.AI loop runner.",
+        "",
+        `**Loop:** \`${config.loopId}\``,
+        `**Command:** \`${config.command}\``,
+        "",
+        template,
+      ].join("\n");
+    } else {
+      body = [
+        "Automated PR created by ClosedLoop.AI loop runner.",
+        "",
+        `**Loop:** \`${config.loopId}\``,
+        `**Command:** \`${config.command}\``,
+      ].join("\n");
+    }
 
     const result = execFileSync(
       "gh",
@@ -2154,7 +2185,7 @@ let currentChild = null;
 let shuttingDown = false;
 // Module-level output buffer so timeout/shutdown paths can access accumulated output
 let liveOutputChunks = [];
-// Symphony workdir inside the repo (e.g., .claude/runs/YYYYMMDD-HHMMSS-loop-xxx/)
+// ClosedLoop.AI workdir inside the repo (e.g., .claude/runs/YYYYMMDD-HHMMSS-loop-xxx/)
 let symphonyWorkDir = null;
 
 function setupShutdownHandlers(workDir) {
@@ -2737,7 +2768,7 @@ async function main() {
   const workDir = "/workspace/repo";
 
   log("info", "========================================");
-  log("info", "Symphony Claude Runner - Harness Agent");
+  log("info", "ClosedLoop.AI Claude Runner - Harness Agent");
   log("info", "========================================");
   log("info", `Loop ID:        ${config.loopId}`);
   log("info", `Command:        ${config.command}`);

@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import type { ContentBlock } from "@/components/engineer/chat";
 import type { PRComment } from "@/components/engineer/PRCommentCard";
 import { useChatStream } from "@/hooks/engineer/use-chat-stream";
+import { useSelfLearningEnabled } from "@/hooks/engineer/use-self-learning-enabled";
 import { getWorktreePath, SENTINEL_VALUES } from "@/lib/engineer/chat-utils";
 import {
   markCommentAddressed,
@@ -115,6 +116,7 @@ export function useCommentChat({
   onChatCleared,
   onStreamComplete,
 }: UseCommentChatOptions): UseCommentChatReturn {
+  const selfLearningEnabled = useSelfLearningEnabled();
   const [input, setInput] = useState("");
   const [hasAcceptedChanges, setHasAcceptedChanges] = useState(false);
   const [isCommitting, setIsCommitting] = useState(false);
@@ -493,6 +495,10 @@ export function useCommentChat({
 
   // Fire-and-forget learnings extraction from comment chat history
   const triggerLearningsExtraction = useCallback(() => {
+    if (!selfLearningEnabled) {
+      return;
+    }
+
     const chatFile = `comment-chats/${comment.id.replaceAll(/[^a-zA-Z0-9-_]/g, "_")}.json`;
 
     // Step 1: Trigger extraction from comment chat history
@@ -519,7 +525,7 @@ export function useCommentChat({
         detail: { ticketId, repoPath },
       })
     );
-  }, [comment.id, ticketId, repoPath]);
+  }, [selfLearningEnabled, comment.id, ticketId, repoPath]);
 
   // Handle "Commit & Mark Resolved"
   const handleCommitAndResolve = async () => {

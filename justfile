@@ -45,9 +45,11 @@ lint-fix:
 test:
     pnpm test
 
-# Docker postgres
+# Docker postgres -- explicit POSTGRES_USER avoids auth failures on fresh containers,
+# and the symphony DB must exist before Prisma migrations can run.
 db-start:
-    docker start postgres16 || docker run -d --name postgres16 -e POSTGRES_PASSWORD=postgres -p 5432:5432 postgres:16
+    docker start postgres16 || docker run -d --name postgres16 -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=symphony -p 5432:5432 postgres:16
+    docker exec postgres16 psql -U postgres -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='symphony'" | grep -q 1 || docker exec postgres16 createdb -U postgres symphony
 
 db-stop:
     docker stop postgres16

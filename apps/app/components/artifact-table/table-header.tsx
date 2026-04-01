@@ -7,6 +7,7 @@ import {
   NON_SORTABLE_COLUMNS,
 } from "@/hooks/use-column-visibility";
 import type { SortDirection } from "@/lib/table-utils";
+import { getArtifactRowGridTemplateColumns } from "./artifact-row";
 
 type ArtifactTableHeaderProps = {
   visibleColumns: ArtifactColumn[];
@@ -39,6 +40,10 @@ export function ArtifactTableHeader({
   sortDir,
   onSort,
 }: ArtifactTableHeaderProps) {
+  const gridTemplateColumns = getArtifactRowGridTemplateColumns(
+    visibleColumns.length
+  );
+
   function handleSort(column: string) {
     if (sortBy !== column) {
       onSort(column, "desc");
@@ -48,9 +53,12 @@ export function ArtifactTableHeader({
   }
 
   return (
-    <div className="sticky top-0 z-10 flex h-10 min-w-fit items-center border-b bg-background">
+    <div
+      className="sticky top-0 z-10 grid h-10 min-w-fit border-b bg-background"
+      style={{ gridTemplateColumns }}
+    >
       {/* Name column — flexible width */}
-      <div className="flex min-w-[250px] flex-1 items-center py-2 pr-3 pl-4">
+      <div className="flex min-w-0 items-center py-2 pr-3 pl-4">
         <button
           className="flex items-center gap-1 hover:text-foreground"
           onClick={() => handleSort("title")}
@@ -68,7 +76,7 @@ export function ArtifactTableHeader({
         const isSortable = !NON_SORTABLE_COLUMNS.has(column);
         return (
           <div
-            className="flex h-10 w-[124px] shrink-0 items-center border-l px-3 py-2"
+            className="flex h-10 min-w-0 items-center border-l px-3 py-2"
             key={column}
           >
             {isSortable ? (
@@ -92,7 +100,7 @@ export function ArtifactTableHeader({
       })}
 
       {/* More menu spacer */}
-      <div className="h-10 w-14 shrink-0 border-l" />
+      <div className="h-10 border-l" />
     </div>
   );
 }

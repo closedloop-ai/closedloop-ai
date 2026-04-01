@@ -10,7 +10,6 @@ import { EngineerTransportBootstrap } from "@/components/engineer/engineer-trans
 import { env } from "@/env";
 import { CollaborationProviderWrapper } from "./components/collaboration-provider-wrapper";
 import { DragHandlerWrapper } from "./components/drag-handler-wrapper";
-import { NotificationsProvider } from "./components/notifications-provider";
 import { OnboardingGuard } from "./components/onboarding-guard";
 import { GlobalSidebar } from "./components/sidebar";
 import { SystemCheckBootstrap } from "./components/system-check-bootstrap";
@@ -42,20 +41,18 @@ const AppLayout = async ({ children }: AppLayoutProperties) => {
   return (
     <CollaborationProviderWrapper>
       <DragHandlerWrapper>
-        <NotificationsProvider userId={user.id}>
-          <SidebarProvider defaultOpen={sidebarDefaultOpen}>
-            <GlobalSidebar envBadge={sidebarEnvBadge}>
-              <OnboardingGuard>
-                <UserIdentifier />
-                <EngineerTransportBootstrap />
-                <SystemCheckBootstrap />
-                <div className="flex h-full max-h-full flex-col overflow-hidden">
-                  {children}
-                </div>
-              </OnboardingGuard>
-            </GlobalSidebar>
-          </SidebarProvider>
-        </NotificationsProvider>
+        <SidebarProvider defaultOpen={sidebarDefaultOpen}>
+          <GlobalSidebar envBadge={sidebarEnvBadge}>
+            <OnboardingGuard>
+              <UserIdentifier />
+              <EngineerTransportBootstrap />
+              <SystemCheckBootstrap />
+              <div className="flex h-full max-h-full flex-col overflow-hidden">
+                {children}
+              </div>
+            </OnboardingGuard>
+          </GlobalSidebar>
+        </SidebarProvider>
       </DragHandlerWrapper>
     </CollaborationProviderWrapper>
   );

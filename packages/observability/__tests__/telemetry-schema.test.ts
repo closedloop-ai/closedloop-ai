@@ -130,6 +130,46 @@ describe("desktopTelemetryEventSchema", () => {
       expect("sessionId" in result.data.trace).toBe(false);
     }
   });
+
+  it("rejects payload with numeric schemaVersion (must be string)", () => {
+    const result = desktopTelemetryEventSchema.safeParse({
+      ...validDesktopWirePayload,
+      schemaVersion: 1,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts payload without gatewaySessionId (desktop before hello-ack)", () => {
+    const result = desktopTelemetryEventSchema.safeParse({
+      schemaVersion: "1",
+      category: TelemetryCategory.JobStarted,
+      severity: TelemetrySeverity.Info,
+      timestamp: "2024-01-01T00:00:00.000Z",
+      trace: {
+        commandId: "",
+        operationId: "",
+        computeTargetId: "",
+      },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts payload without optional trace fields (loopId, jobId, sessionId)", () => {
+    const result = desktopTelemetryEventSchema.safeParse({
+      schemaVersion: "1",
+      category: TelemetryCategory.PreflightBinaryNotFound,
+      severity: TelemetrySeverity.Error,
+      timestamp: "2024-01-01T00:00:00.000Z",
+      trace: {
+        commandId: "cmd-1",
+        operationId: "op-1",
+        computeTargetId: "target-1",
+        gatewaySessionId: VALID_UUID_A,
+      },
+      message: "claude not found in PATH",
+    });
+    expect(result.success).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -148,7 +188,6 @@ describe("buildDesktopTelemetryPayload", () => {
 
   it("validation_failed issues only contain path, code, and optionally expected — no received or message", () => {
     const payloadWithSecret = {
-      schemaVersion: "1",
       category: "job.started",
       severity: "info",
       timestamp: "2024-01-01T00:00:00.000Z",

@@ -122,7 +122,7 @@ function NameCell({
       // biome-ignore lint/a11y/noNoninteractiveElementInteractions: clickable name cell for navigation
       // biome-ignore lint/a11y/noStaticElementInteractions: clickable name cell
       <div
-        className={`flex min-w-[250px] flex-1 items-center pr-3 pl-3 ${onNavigate ? "cursor-pointer" : ""}`}
+        className={`flex h-full w-full min-w-0 items-center overflow-hidden pr-3 pl-3 ${onNavigate ? "cursor-pointer" : ""}`}
         onClick={onNavigate}
       >
         {showCheckbox && (
@@ -158,9 +158,11 @@ function NameCell({
             {Math.round(item.data.completionPercentage)}% of artifacts complete
           </TooltipContent>
         </Tooltip>
-        <span className="ml-1.5 truncate font-medium text-base text-foreground">
-          {item.data.name}
-        </span>
+        <div className="ml-1.5 min-w-0 flex-1">
+          <span className="block truncate font-medium text-base text-foreground">
+            {item.data.name}
+          </span>
+        </div>
       </div>
     );
   }
@@ -198,7 +200,7 @@ function NameCell({
     // biome-ignore lint/a11y/noNoninteractiveElementInteractions: clickable name cell for navigation
     // biome-ignore lint/a11y/noStaticElementInteractions: clickable name cell
     <div
-      className={`flex min-w-[250px] flex-1 items-center pr-3 pl-3 ${onNavigate ? "cursor-pointer" : ""}`}
+      className={`flex h-full w-full min-w-0 items-center overflow-hidden pr-3 pl-3 ${onNavigate ? "cursor-pointer" : ""}`}
       onClick={onNavigate}
     >
       {showCheckbox && (
@@ -212,7 +214,7 @@ function NameCell({
           />
         </div>
       )}
-      {indented && <div className="w-7 shrink-0" />}
+      {indented && <div className="w-10 shrink-0" />}
       {hasChevron && (
         <button
           className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md ${onToggleExpand ? "hover:bg-accent" : "cursor-default opacity-30"}`}
@@ -264,9 +266,11 @@ function NameCell({
           <StatusIcon size={16} status={statusIcon} thinking={thinking} />
         </div>
       )}
-      <span className="ml-1.5 truncate font-medium text-base text-foreground">
-        {item.data.title}
-      </span>
+      <div className="ml-1.5 min-w-0 flex-1">
+        <span className="block truncate font-medium text-base text-foreground">
+          {item.data.title}
+        </span>
+      </div>
     </div>
   );
 }
@@ -714,6 +718,9 @@ export function ArtifactRow({
     item.kind === "project" ||
     item.kind === "feature" ||
     (item.kind === "artifact" && isNavigableArtifact(item.data));
+  const gridTemplateColumns = getArtifactRowGridTemplateColumns(
+    visibleColumns.length
+  );
 
   function handleClick() {
     if (item.kind === "project") {
@@ -737,39 +744,60 @@ export function ArtifactRow({
     <RowEditContext.Provider
       value={{ ...(editHandlers ?? {}), parentHref, parentTitle }}
     >
-      <div className="group/row flex h-11 min-w-fit items-center border-b bg-background hover:bg-muted/50">
-        <NameCell
-          indented={indented}
-          isExpanded={isExpanded}
-          isSelected={isSelected}
-          item={item}
-          onNavigate={isClickable ? handleClick : undefined}
-          onSelectionChange={onSelectionChange}
-          onToggleExpand={onToggleExpand}
-          showCheckbox={showCheckbox}
-        />
+      <div
+        className="group/row grid h-11 min-w-fit bg-background hover:bg-muted/50"
+        style={{ gridTemplateColumns }}
+      >
+        <div className="border-b">
+          <NameCell
+            indented={indented}
+            isExpanded={isExpanded}
+            isSelected={isSelected}
+            item={item}
+            onNavigate={isClickable ? handleClick : undefined}
+            onSelectionChange={onSelectionChange}
+            onToggleExpand={onToggleExpand}
+            showCheckbox={showCheckbox}
+          />
+        </div>
 
         {visibleColumns.map((column) => {
           const CellRenderer = CELL_RENDERERS[column];
-          return <CellRenderer item={item} key={column} />;
+          return (
+            <div className="border-b" key={column}>
+              <CellRenderer item={item} />
+            </div>
+          );
         })}
 
         {/* More menu */}
-        <div className="flex h-11 w-14 shrink-0 items-center border-l px-3 py-2">
-          {moreMenuContent ?? (
-            <button
-              className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-accent"
-              onClick={(e) => {
-                e.stopPropagation();
-                onMoreMenu?.(item, e.currentTarget);
-              }}
-              type="button"
-            >
-              <EllipsisIcon className="h-4 w-4" />
-            </button>
-          )}
+        <div className="border-b">
+          <div className="flex h-11 items-center border-l px-3 py-2">
+            {moreMenuContent ?? (
+              <button
+                className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-accent"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onMoreMenu?.(item, e.currentTarget);
+                }}
+                type="button"
+              >
+                <EllipsisIcon className="h-4 w-4" />
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </RowEditContext.Provider>
   );
+}
+
+export function getArtifactRowGridTemplateColumns(
+  visibleColumnCount: number
+): string {
+  return [
+    "minmax(350px, 1fr)",
+    ...Array.from({ length: visibleColumnCount }, () => "124px"),
+    "56px",
+  ].join(" ");
 }

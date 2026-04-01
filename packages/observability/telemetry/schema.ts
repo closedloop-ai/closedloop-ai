@@ -117,7 +117,7 @@ const desktopTelemetryEventInputSchema = z.object({
     commandId: z.string(),
     operationId: z.string(),
     computeTargetId: z.string(),
-    gatewaySessionId: z.uuid(),
+    gatewaySessionId: z.uuid().optional(),
     sessionId: z.uuid().optional(),
     loopId: z.string().optional(),
     jobId: z.string().optional(),
