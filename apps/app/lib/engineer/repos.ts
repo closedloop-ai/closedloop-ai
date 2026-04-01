@@ -216,6 +216,14 @@ export function loadReposConfig(): ReposConfig {
   config = migrateLegacyConfig(config);
   needsSave = needsSave || hadLegacyConfig;
 
+  // Backfill missing name from path basename (older configs may omit it)
+  for (const repo of config.repos) {
+    if (!repo.name) {
+      repo.name = basename(expandHome(repo.path));
+      needsSave = true;
+    }
+  }
+
   // Only write when something actually changed
   if (needsSave) {
     saveReposConfig(config);

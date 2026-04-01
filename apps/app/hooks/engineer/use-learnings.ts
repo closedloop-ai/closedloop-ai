@@ -1,5 +1,6 @@
 "use client";
 
+import { useFeatureFlag } from "@repo/analytics/client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
@@ -23,6 +24,8 @@ export function useLearnings({
   repoPath,
   activeTab,
 }: Readonly<UseLearningsOptions>): UseLearningsReturn {
+  const selfLearningEnabled =
+    useFeatureFlag("self-learning")?.enabled !== false;
   const [count, setCount] = useState(0);
   const [status, setStatus] = useState<"none" | "processing" | "completed">(
     "none"
@@ -68,6 +71,9 @@ export function useLearnings({
 
   const triggerExtract = useCallback(
     (chatFile?: string) => {
+      if (!selfLearningEnabled) {
+        return;
+      }
       setStatus("processing");
       toast("Collecting learnings for this ticket...", {
         description: ticketId,
@@ -86,11 +92,17 @@ export function useLearnings({
           toast.error("Failed to extract learnings");
         });
     },
-    [ticketId, repoPath, activeTab, poll]
+    [selfLearningEnabled, ticketId, repoPath, activeTab, poll]
   );
 
   const handleClose = useCallback(() => {
     stopPolling();
+
+    if (!selfLearningEnabled) {
+      setCount(0);
+      setStatus("none");
+      return;
+    }
 
     if (count > 0) {
       toast(
@@ -134,7 +146,7 @@ export function useLearnings({
     // Reset learnings state so stale counts don't show on next open
     setCount(0);
     setStatus("none");
-  }, [ticketId, repoPath, count, status, stopPolling]);
+  }, [selfLearningEnabled, ticketId, repoPath, count, status, stopPolling]);
 
   // Cleanup polling on unmount
   useEffect(() => stopPolling, [stopPolling]);

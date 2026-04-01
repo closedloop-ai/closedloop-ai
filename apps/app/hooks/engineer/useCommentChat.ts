@@ -1,5 +1,6 @@
 "use client";
 
+import { useFeatureFlag } from "@repo/analytics/client";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -115,6 +116,8 @@ export function useCommentChat({
   onChatCleared,
   onStreamComplete,
 }: UseCommentChatOptions): UseCommentChatReturn {
+  const selfLearningEnabled =
+    useFeatureFlag("self-learning")?.enabled !== false;
   const [input, setInput] = useState("");
   const [hasAcceptedChanges, setHasAcceptedChanges] = useState(false);
   const [isCommitting, setIsCommitting] = useState(false);
@@ -493,6 +496,10 @@ export function useCommentChat({
 
   // Fire-and-forget learnings extraction from comment chat history
   const triggerLearningsExtraction = useCallback(() => {
+    if (!selfLearningEnabled) {
+      return;
+    }
+
     const chatFile = `comment-chats/${comment.id.replaceAll(/[^a-zA-Z0-9-_]/g, "_")}.json`;
 
     // Step 1: Trigger extraction from comment chat history
@@ -519,7 +526,7 @@ export function useCommentChat({
         detail: { ticketId, repoPath },
       })
     );
-  }, [comment.id, ticketId, repoPath]);
+  }, [selfLearningEnabled, comment.id, ticketId, repoPath]);
 
   // Handle "Commit & Mark Resolved"
   const handleCommitAndResolve = async () => {
