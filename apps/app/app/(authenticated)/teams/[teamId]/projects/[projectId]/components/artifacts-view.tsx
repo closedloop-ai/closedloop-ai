@@ -633,7 +633,9 @@ export function ArtifactsView({
   }
 
   function handleRequestMove(item: ArtifactRowItem) {
-    const groupedChildren = groupedChildrenByRootId.get(item.data.id) ?? [];
+    const groupedChildren = treeData
+      ? (groupedChildrenByRootId.get(item.data.id) ?? [])
+      : [];
     if (groupedChildren.length > 0) {
       const entitiesToMove = [item, ...groupedChildren]
         .filter((row) => row.kind === "artifact" || row.kind === "feature")

@@ -161,6 +161,8 @@ export function MoveEntityDialog({
         toast.warning(
           `Moved ${succeeded} of ${results.length} items. ${failed} failed.`
         );
+      } else {
+        return;
       }
       setShowConfirmation(false);
       setSelectedProjectId("");
