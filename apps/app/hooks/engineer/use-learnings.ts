@@ -1,8 +1,8 @@
 "use client";
 
-import { useFeatureFlag } from "@repo/analytics/client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
+import { useSelfLearningEnabled } from "@/hooks/engineer/use-self-learning-enabled";
 
 type UseLearningsOptions = {
   ticketId: string;
@@ -24,8 +24,7 @@ export function useLearnings({
   repoPath,
   activeTab,
 }: Readonly<UseLearningsOptions>): UseLearningsReturn {
-  const selfLearningEnabled =
-    useFeatureFlag("self-learning")?.enabled !== false;
+  const selfLearningEnabled = useSelfLearningEnabled();
   const [count, setCount] = useState(0);
   const [status, setStatus] = useState<"none" | "processing" | "completed">(
     "none"
