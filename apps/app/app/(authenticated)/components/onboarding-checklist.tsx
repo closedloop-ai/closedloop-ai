@@ -1,5 +1,7 @@
 "use client";
 
+import { useFeatureFlag } from "@repo/analytics/client";
+import { ChecklistItemId } from "@repo/api/src/types/onboarding";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   Card,
@@ -20,16 +22,23 @@ import {
 export function OnboardingChecklist() {
   const { data: status } = useOnboardingStatus();
   const dismissChecklist = useDismissChecklist();
+  const gdriveFlag = useFeatureFlag("google-drive");
+  const gdriveEnabled = Boolean((gdriveFlag as { enabled?: boolean })?.enabled);
 
   // Don't render if wizard not completed, checklist dismissed, or still loading
   if (!status?.wizardCompleted || status.checklistDismissed) {
     return null;
   }
 
-  const completedCount = status.checklist.filter(
+  const visibleChecklist = gdriveEnabled
+    ? status.checklist
+    : status.checklist.filter(
+        (item) => item.id !== ChecklistItemId.ConnectGoogle
+      );
+  const completedCount = visibleChecklist.filter(
     (item) => item.completed
   ).length;
-  const totalCount = status.checklist.length;
+  const totalCount = visibleChecklist.length;
   const progressPercent = Math.round((completedCount / totalCount) * 100);
 
   // Don't render if all items are completed
@@ -64,7 +73,7 @@ export function OnboardingChecklist() {
         <Progress value={progressPercent} />
 
         <div className="space-y-1">
-          {status.checklist.map((item) => (
+          {visibleChecklist.map((item) => (
             <ChecklistItem
               completed={item.completed}
               description={item.description}
