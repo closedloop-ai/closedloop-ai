@@ -173,7 +173,7 @@ describe("entityLinksService.batchMoveEntities", () => {
     expect(findDownstreamSpy).not.toHaveBeenCalled();
   });
 
-  it("always moves downstream when root entity is an artifact", async () => {
+  it("moves downstream when root entity is an artifact and includeDownstream is true", async () => {
     setupProjectLookup(true);
     findDownstreamSpy.mockResolvedValueOnce([
       { id: "art-child-1", type: EntityType.Artifact },
@@ -185,7 +185,7 @@ describe("entityLinksService.batchMoveEntities", () => {
       entityId: "art-root-1",
       entityType: EntityType.Artifact,
       targetProjectId: TARGET_PROJECT_ID,
-      includeDownstream: false,
+      includeDownstream: true,
     });
 
     expect(findDownstreamSpy).toHaveBeenCalledWith(
@@ -260,7 +260,7 @@ describe("entityLinksService.batchMoveEntities", () => {
       entityId: "art-child-1",
       entityType: EntityType.Artifact,
       targetProjectId: TARGET_PROJECT_ID,
-      includeDownstream: false,
+      includeDownstream: true,
     });
 
     expect(result).toEqual({
