@@ -70,13 +70,8 @@ export function useProjectJudgeScores(
   const apiClient = useApiClient();
 
   return useQuery({
-    queryKey: judgesKeys.byProject(projectId),
-    queryFn: () =>
-      apiClient.get<BatchJudgeScoresResponse>(
-        `/artifacts/judge-scores?projectId=${encodeURIComponent(projectId)}`
-      ),
+    ...makeProjectJudgeScoresQueryOptions(apiClient, projectId),
     enabled: !!projectId,
-    staleTime: 60_000,
     ...options,
   });
 }
@@ -101,19 +96,31 @@ export function useTeamArtifactJudgeScores(
   }, [artifacts]);
 
   const results = useQueries({
-    queries: projectIds.map((id) => ({
-      queryKey: judgesKeys.byProject(id),
-      queryFn: () =>
-        apiClient.get<BatchJudgeScoresResponse>(
-          `/artifacts/judge-scores?projectId=${encodeURIComponent(id)}`
-        ),
-      staleTime: 60_000,
-    })),
+    queries: projectIds.map((id) =>
+      makeProjectJudgeScoresQueryOptions(apiClient, id)
+    ),
   });
 
+  const judgeScoresMergeKey = results.map((r) => r.dataUpdatedAt).join(",");
+
   // Safe merge relies on artifactIds being globally unique UUIDs
+  // biome-ignore lint/correctness/useExhaustiveDependencies: judgeScoresMergeKey tracks all query dataUpdatedAt values; useQueries result array identity is not stable enough to list alone
   return useMemo(
     () => Object.assign({}, ...results.map((r) => r.data ?? {})),
-    [results]
+    [judgeScoresMergeKey]
   );
+}
+
+function makeProjectJudgeScoresQueryOptions(
+  apiClient: ReturnType<typeof useApiClient>,
+  projectId: string
+) {
+  return {
+    queryKey: judgesKeys.byProject(projectId),
+    queryFn: () =>
+      apiClient.get<BatchJudgeScoresResponse>(
+        `/artifacts/judge-scores?projectId=${encodeURIComponent(projectId)}`
+      ),
+    staleTime: 60_000,
+  };
 }

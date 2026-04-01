@@ -1,8 +1,11 @@
-import { ArtifactType } from "@repo/api/src/types/artifact";
+import { ArtifactStatus, ArtifactType } from "@repo/api/src/types/artifact";
+import { Priority } from "@repo/api/src/types/common";
 import {
   type BatchJudgeScoresResponse,
+  EvalStatus,
   EvaluationReportType,
 } from "@repo/api/src/types/evaluation";
+import { FeatureStatus } from "@repo/api/src/types/feature";
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
@@ -44,8 +47,8 @@ const makePrdArtifact = (
   title: "Test PRD",
   slug: "prd-1",
   fileName: null,
-  status: "DRAFT",
-  priority: "MEDIUM",
+  status: ArtifactStatus.Draft,
+  priority: Priority.Medium,
   latestVersion: 1,
   createdById: "user-1",
   assigneeId: null,
@@ -83,8 +86,8 @@ const makeFeature = (
   title: "Test Feature",
   slug: "feature-1",
   description: null,
-  status: "NOT_STARTED",
-  priority: "MEDIUM",
+  status: FeatureStatus.NotStarted,
+  priority: Priority.Medium,
   assigneeId: null,
   assignee: null,
   createdById: "user-1",
@@ -105,7 +108,7 @@ const makeJudgeScores = (): BatchJudgeScoresResponse => ({
         score: 0.85,
         threshold: 0.7,
         justification: "Good PRD",
-        finalStatus: "PASSED",
+        finalStatus: EvalStatus.Passed,
         promptName: null,
         metricName: "completeness",
       },
@@ -121,7 +124,7 @@ const makeJudgeScores = (): BatchJudgeScoresResponse => ({
         score: 0.72,
         threshold: 0.7,
         justification: "Adequate plan",
-        finalStatus: "PASSED",
+        finalStatus: EvalStatus.Passed,
         promptName: null,
         metricName: "clarity",
       },
