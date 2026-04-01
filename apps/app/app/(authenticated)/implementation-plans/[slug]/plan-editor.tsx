@@ -42,7 +42,7 @@ import {
 import { useWorkstreamPreviewDeployment } from "@/hooks/queries/use-external-links";
 import {
   useCodeJudgesFeedback,
-  useJudgesFeedback,
+  usePlanJudgesFeedback,
 } from "@/hooks/queries/use-judges";
 import { useOrganizationUsers } from "@/hooks/queries/use-users";
 import { usePreviewDeploymentPolling } from "@/hooks/use-preview-deployment-polling";
@@ -141,7 +141,7 @@ export function PlanEditor({
   // Fetch generation status and pull request data
   const { data: generationStatus } = useArtifactGenerationStatus(plan.id);
   const { data: pullRequest } = useArtifactPullRequest(plan.id);
-  const { data: judgesReport } = useJudgesFeedback(plan.id);
+  const { data: judgesReport } = usePlanJudgesFeedback(plan.id);
   const { data: codeJudgesReport } = useCodeJudgesFeedback(plan.id);
 
   // Preview deployment via ExternalLink
