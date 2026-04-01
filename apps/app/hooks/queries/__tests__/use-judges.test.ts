@@ -1,3 +1,4 @@
+import type { ArtifactWithWorkstream } from "@repo/api/src/types/artifact";
 import type {
   BatchJudgeScoresResponse,
   JudgesFeedbackResponse,
@@ -15,6 +16,7 @@ import {
   useJudgesFeedback,
   usePrdJudgesFeedback,
   useProjectJudgeScores,
+  useTeamArtifactJudgeScores,
 } from "../use-judges";
 import { createWrapper } from "./test-utils";
 
@@ -358,5 +360,93 @@ describe("useProjectJudgeScores", () => {
       "by-project",
       "project-xyz",
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests — useTeamArtifactJudgeScores
+// ---------------------------------------------------------------------------
+
+describe("useTeamArtifactJudgeScores", () => {
+  test("merges judge scores across multiple projects into a single map", async () => {
+    const responseProjectA: BatchJudgeScoresResponse = {
+      "artifact-plan-a": {
+        [EvaluationReportType.Plan]: [
+          createMockJudgeFeedbackItem({
+            caseId: "plan-quality-judge",
+            score: 0.9,
+            finalStatus: EvalStatus.Passed,
+          }),
+        ],
+        [EvaluationReportType.Prd]: null,
+        [EvaluationReportType.Code]: null,
+      },
+    };
+
+    const responseProjectB: BatchJudgeScoresResponse = {
+      "artifact-prd-b": {
+        [EvaluationReportType.Plan]: null,
+        [EvaluationReportType.Prd]: [
+          createMockJudgeFeedbackItem({
+            caseId: "prd-clarity-judge",
+            score: 0.85,
+            finalStatus: EvalStatus.Passed,
+          }),
+        ],
+        [EvaluationReportType.Code]: null,
+      },
+    };
+
+    mockApiClient.get
+      .mockResolvedValueOnce(responseProjectA)
+      .mockResolvedValueOnce(responseProjectB);
+
+    const artifacts = [
+      {
+        project: { id: "project-a", name: "Project A" },
+      } as ArtifactWithWorkstream,
+      {
+        project: { id: "project-b", name: "Project B" },
+      } as ArtifactWithWorkstream,
+    ];
+
+    const { result } = renderHook(() => useTeamArtifactJudgeScores(artifacts), {
+      wrapper: createWrapper(),
+    });
+
+    await waitFor(() => expect(Object.keys(result.current)).toHaveLength(2));
+
+    expect(Object.keys(result.current)).toContain("artifact-plan-a");
+    expect(Object.keys(result.current)).toContain("artifact-prd-b");
+    expect(
+      result.current["artifact-plan-a"][EvaluationReportType.Plan]?.[0].caseId
+    ).toBe("plan-quality-judge");
+    expect(
+      result.current["artifact-prd-b"][EvaluationReportType.Prd]?.[0].caseId
+    ).toBe("prd-clarity-judge");
+  });
+
+  test("returns empty map and never calls apiClient.get when artifacts array is empty", () => {
+    const { result } = renderHook(() => useTeamArtifactJudgeScores([]), {
+      wrapper: createWrapper(),
+    });
+
+    expect(mockApiClient.get).not.toHaveBeenCalled();
+    expect(result.current).toEqual({});
+  });
+
+  test("skips artifacts without project?.id and returns empty map", () => {
+    const artifacts = [
+      { project: undefined } as ArtifactWithWorkstream,
+      { project: null } as unknown as ArtifactWithWorkstream,
+      {} as ArtifactWithWorkstream,
+    ];
+
+    const { result } = renderHook(() => useTeamArtifactJudgeScores(artifacts), {
+      wrapper: createWrapper(),
+    });
+
+    expect(mockApiClient.get).not.toHaveBeenCalled();
+    expect(result.current).toEqual({});
   });
 });

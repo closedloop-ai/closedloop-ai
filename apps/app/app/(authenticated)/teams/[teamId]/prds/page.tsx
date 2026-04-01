@@ -20,6 +20,7 @@ import {
   useDeleteArtifact,
   useUpdateArtifact,
 } from "@/hooks/queries/use-artifacts";
+import { useTeamArtifactJudgeScores } from "@/hooks/queries/use-judges";
 import { useTeam } from "@/hooks/queries/use-teams";
 import {
   PRD_DEFAULT_COLUMNS,
@@ -42,20 +43,25 @@ export default function TeamPrdsPage() {
   );
 
   const { data: team, isLoading: loadingTeam } = useTeam(teamId);
-  const { data: artifacts = [], isLoading: loadingArtifacts } =
-    useArtifactsByTeam(teamId, ArtifactType.Prd);
+  const { data: artifacts, isLoading: loadingArtifacts } = useArtifactsByTeam(
+    teamId,
+    ArtifactType.Prd
+  );
+  const judgeScores = useTeamArtifactJudgeScores(artifacts ?? []);
   const orgUsers = useOrgUsersAsPopoverUsers();
 
   const deleteArtifactMutation = useDeleteArtifact();
   const updateArtifactMutation = useUpdateArtifact();
 
   const items: ArtifactRowItem[] = useMemo(
-    () => artifacts.map((a) => ({ kind: "artifact" as const, data: a })),
+    () =>
+      (artifacts ?? []).map((a) => ({ kind: "artifact" as const, data: a })),
     [artifacts]
   );
 
   const editHandlers: RowEditHandlers = useMemo(
     () => ({
+      judgeScores,
       teamMembers: orgUsers,
       onUpdateAssignee: (id, assigneeId) =>
         updateArtifactMutation.mutate({ id, assigneeId }),
@@ -64,7 +70,7 @@ export default function TeamPrdsPage() {
       onUpdateStatus: (id, status) =>
         updateArtifactMutation.mutate({ id, status: status as ArtifactStatus }),
     }),
-    [orgUsers, updateArtifactMutation]
+    [judgeScores, orgUsers, updateArtifactMutation]
   );
 
   const handleDelete = async (item: ArtifactRowItem): Promise<boolean> => {

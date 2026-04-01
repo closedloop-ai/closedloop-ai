@@ -4,7 +4,10 @@ import type {
   ArtifactStatus,
   ArtifactWithWorkstream,
 } from "@repo/api/src/types/artifact";
+import { ArtifactType } from "@repo/api/src/types/artifact";
 import type { Priority } from "@repo/api/src/types/common";
+import type { BatchJudgeScoresResponse } from "@repo/api/src/types/evaluation";
+import { EvaluationReportType } from "@repo/api/src/types/evaluation";
 import type { FeatureWithWorkstream } from "@repo/api/src/types/feature";
 import type { LoopWithUser } from "@repo/api/src/types/loop";
 import type { ProjectWithDetails } from "@repo/api/src/types/project";
@@ -54,6 +57,7 @@ import {
   formatDateCompact,
   formatRelativeTime,
 } from "@/lib/date-utils";
+import { deriveScoreDisplay } from "@/lib/judge-score-utils";
 import {
   ARTIFACT_STATUS_LABELS,
   ARTIFACT_STATUS_TO_ICON,
@@ -83,13 +87,15 @@ export type RowEditHandlers = {
   teamMembers?: User[];
   /** Active loops for displaying per-artifact loop status. */
   activeLoops?: LoopWithUser[];
+  /** Judge scores keyed by artifact ID, for displaying evaluation results. */
+  judgeScores?: BatchJudgeScoresResponse;
   /** Parent entity title, injected per-row for the Parent column cell. */
   parentTitle?: string;
   /** Parent entity route, injected per-row for the Parent column cell. */
   parentHref?: string | null;
 };
 
-const RowEditContext = createContext<RowEditHandlers>({});
+export const RowEditContext = createContext<RowEditHandlers>({});
 
 // ---- Cell renderers ----
 
@@ -507,16 +513,21 @@ function PriorityCell({ item }: { item: ArtifactRowItem }) {
 }
 
 function ScoreCell({ item }: { item: ArtifactRowItem }) {
-  const score =
+  const { judgeScores } = useContext(RowEditContext);
+  const artifactId = item.kind === "artifact" ? item.data.id : undefined;
+  const reportType =
     item.kind === "artifact"
-      ? item.data.customFields?.find(
-          (f) => f.name.toLowerCase() === "quality score"
-        )?.displayValue
+      ? ARTIFACT_TYPE_TO_REPORT_TYPE[item.data.type]
       : undefined;
+  const items =
+    artifactId !== undefined && reportType !== undefined
+      ? judgeScores?.[artifactId]?.[reportType]
+      : undefined;
+  const score = deriveScoreDisplay(items);
 
   return (
     <div className="flex h-11 w-[124px] shrink-0 items-center border-l px-3 py-2">
-      {score ? (
+      {score !== null ? (
         <span className="truncate font-medium text-green-600 text-xs dark:text-green-400">
           {score}
         </span>
@@ -653,6 +664,15 @@ function UpdatedCell({ item }: { item: ArtifactRowItem }) {
     </div>
   );
 }
+
+// ---- Artifact type → evaluation report type mapping ----
+
+const ARTIFACT_TYPE_TO_REPORT_TYPE: Partial<
+  Record<ArtifactType, EvaluationReportType>
+> = {
+  [ArtifactType.Prd]: EvaluationReportType.Prd,
+  [ArtifactType.ImplementationPlan]: EvaluationReportType.Plan,
+};
 
 // ---- Column to cell mapping ----
 
