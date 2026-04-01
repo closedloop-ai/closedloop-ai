@@ -201,7 +201,9 @@ export function SettingsPage({
           <LocalComputeTargetsCard />
           <AnthropicApiKeyCard isAdmin={isAdmin} />
           <GitHubIntegrationCard />
-          <GoogleIntegrationCard />
+          <FeatureFlagged flag="google-drive">
+            <GoogleIntegrationCard />
+          </FeatureFlagged>
           <LinearIntegrationCard />
 
           <Card>

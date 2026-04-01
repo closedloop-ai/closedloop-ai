@@ -1,5 +1,6 @@
 "use client";
 
+import { useFeatureFlag } from "@repo/analytics/client";
 import { ArtifactType } from "@repo/api/src/types/artifact";
 import { EntityType, LinkType } from "@repo/api/src/types/entity-link";
 import { Button } from "@repo/design-system/components/ui/button";
@@ -61,6 +62,8 @@ export function AddContextDialog({
   onOpenChange,
 }: Readonly<AddContextDialogProps>) {
   const [activeTab, setActiveTab] = useState("link");
+  const gdriveFlag = useFeatureFlag("google-drive");
+  const gdriveEnabled = Boolean((gdriveFlag as { enabled?: boolean })?.enabled);
 
   // Reset tab on close
   useEffect(() => {
@@ -76,10 +79,14 @@ export function AddContextDialog({
           <DialogTitle>Add Context</DialogTitle>
         </DialogHeader>
         <Tabs onValueChange={setActiveTab} value={activeTab}>
-          <TabsList className="grid w-full grid-cols-3">
+          <TabsList
+            className={`grid w-full ${gdriveEnabled ? "grid-cols-3" : "grid-cols-2"}`}
+          >
             <TabsTrigger value="link">Link Existing</TabsTrigger>
             <TabsTrigger value="upload">Upload File</TabsTrigger>
-            <TabsTrigger value="gdrive">Import Google Docs</TabsTrigger>
+            {gdriveEnabled && (
+              <TabsTrigger value="gdrive">Import Google Docs</TabsTrigger>
+            )}
           </TabsList>
           <TabsContent value="link">
             <LinkExistingTab
@@ -97,13 +104,15 @@ export function AddContextDialog({
               projectId={projectId}
             />
           </TabsContent>
-          <TabsContent value="gdrive">
-            <ImportGoogleDocsTab
-              featureId={featureId}
-              onOpenChange={onOpenChange}
-              projectId={projectId}
-            />
-          </TabsContent>
+          {gdriveEnabled && (
+            <TabsContent value="gdrive">
+              <ImportGoogleDocsTab
+                featureId={featureId}
+                onOpenChange={onOpenChange}
+                projectId={projectId}
+              />
+            </TabsContent>
+          )}
         </Tabs>
       </DialogContent>
     </Dialog>
