@@ -1,3 +1,7 @@
+## Summary
+
+<!-- 1-3 bullet points describing what changed and why -->
+
 ## Feature Flags
 
 Does this PR introduce new functionality? It must be gated behind a PostHog feature flag.
@@ -10,3 +14,7 @@ Does this PR introduce new functionality? It must be gated behind a PostHog feat
 <!-- To opt out: replace this section with [flag:N/A] and a justification, e.g.:
 [flag:N/A] This change modifies internal tooling configuration with no user-facing impact.
 -->
+
+## Test plan
+
+<!-- How was this tested? Checklist of manual/automated verification steps -->
