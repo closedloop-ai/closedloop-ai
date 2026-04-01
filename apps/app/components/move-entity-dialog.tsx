@@ -149,10 +149,7 @@ export function MoveEntityDialog({
             entityId: item.id,
             entityType: item.entityType,
             targetProjectId: selectedProjectId,
-            includeDownstream:
-              item.entityType === EntityType.Artifact
-                ? true
-                : includeDownstream,
+            includeDownstream,
           })
         )
       );
@@ -200,8 +197,8 @@ export function MoveEntityDialog({
           <DialogHeader>
             <DialogTitle>Move to Project</DialogTitle>
             <DialogDescription>
-              Select the project where you want to move{" "}
-              {isBulkMove ? "these items" : "this item"}.
+              Select the project you want to move{" "}
+              {isBulkMove ? "these items" : "this item"} to.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">

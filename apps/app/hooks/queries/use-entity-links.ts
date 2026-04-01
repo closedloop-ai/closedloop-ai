@@ -1,5 +1,6 @@
 "use client";
 
+import { getRoutePrefixForType } from "@repo/api/src/types/artifact";
 import {
   type BatchMoveEntitiesInput,
   type BatchMoveEntitiesResult,
@@ -14,9 +15,11 @@ import {
 import {
   type UseQueryOptions,
   useMutation,
+  useQueries,
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
+import { useMemo } from "react";
 import { useApiClient } from "@/hooks/use-api-client";
 import { artifactKeys } from "./use-artifacts";
 import { dashboardKeys } from "./use-dashboard-stats";
@@ -336,4 +339,82 @@ export function invalidateEntityLinkQueries(
 
   // Entity link changes affect the project tree hierarchy
   queryClient.invalidateQueries({ queryKey: projectTreeKeys.all });
+}
+
+type ParentFallbackItem = {
+  id: string;
+  entityType: EntityType;
+};
+
+/**
+ * For items missing a parent in the tree, queries entity-links to find the
+ * nearest parent (artifact or feature) and returns a map of child ID → parent info.
+ */
+export function useParentFallbackMap(items: ParentFallbackItem[]) {
+  const apiClient = useApiClient();
+
+  const queries = useQueries({
+    queries: items.map((item) => ({
+      queryKey: entityLinkKeys.list({
+        entityId: item.id,
+        entityType: item.entityType,
+        direction: LinkDirection.Source,
+        mode: LinkQueryMode.Direct,
+        resolved: true,
+        parentFallback: true,
+      }),
+      queryFn: () => {
+        const params = new URLSearchParams();
+        params.set("entityId", item.id);
+        params.set("entityType", item.entityType);
+        params.set("direction", LinkDirection.Source);
+        params.set("mode", LinkQueryMode.Direct);
+        return apiClient.get<LinkedEntity[]>(
+          `/entity-links/resolved?${params.toString()}`
+        );
+      },
+    })),
+  });
+
+  return useMemo(() => {
+    const map = new Map<string, { title: string; href: string | null }>();
+    for (const [index, query] of queries.entries()) {
+      const item = items[index];
+      if (!(item && query.data?.length)) {
+        continue;
+      }
+      const linkedParent = query.data.find(
+        (linked) =>
+          linked.resolvedEntity?.type === EntityType.Artifact ||
+          linked.resolvedEntity?.type === EntityType.Feature
+      );
+      if (!linkedParent?.resolvedEntity) {
+        continue;
+      }
+      map.set(item.id, {
+        title: linkedParent.resolvedEntity.entity.title,
+        href: resolveEntityHref(linkedParent),
+      });
+    }
+    return map;
+  }, [items, queries]);
+}
+
+function resolveEntityHref(linked: LinkedEntity): string | null {
+  if (!linked.resolvedEntity) {
+    return null;
+  }
+  if (linked.resolvedEntity.type === EntityType.Artifact) {
+    const routePrefix = getRoutePrefixForType(
+      linked.resolvedEntity.entity.type
+    );
+    if (!routePrefix) {
+      return null;
+    }
+    return `/${routePrefix}/${linked.resolvedEntity.entity.slug}`;
+  }
+  if (linked.resolvedEntity.type === EntityType.Feature) {
+    return `/features/${linked.resolvedEntity.entity.slug}`;
+  }
+  return null;
 }

@@ -6,12 +6,7 @@ import {
   type ArtifactWithWorkstream,
   getRoutePrefixForType,
 } from "@repo/api/src/types/artifact";
-import type { LinkedEntity } from "@repo/api/src/types/entity-link";
-import {
-  EntityType,
-  LinkDirection,
-  LinkQueryMode,
-} from "@repo/api/src/types/entity-link";
+import { EntityType } from "@repo/api/src/types/entity-link";
 import type { FeatureWithWorkstream } from "@repo/api/src/types/feature";
 import type { TreeEntity, TreeNode } from "@repo/api/src/types/project-tree";
 import type { WorkstreamState } from "@repo/api/src/types/workstream";
@@ -22,7 +17,6 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@repo/design-system/components/ui/dropdown-menu";
-import { useQueries } from "@tanstack/react-query";
 import { FileTextIcon, Layers2Icon, MergeIcon, TrashIcon } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
@@ -35,9 +29,8 @@ import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialo
 import { EmptyState } from "@/components/empty-state";
 import { MoveEntityDialog } from "@/components/move-entity-dialog";
 import { useMergeArtifacts } from "@/hooks/queries/use-artifacts";
-import { entityLinkKeys } from "@/hooks/queries/use-entity-links";
+import { useParentFallbackMap } from "@/hooks/queries/use-entity-links";
 import { useProjectTree } from "@/hooks/queries/use-project-tree";
-import { useApiClient } from "@/hooks/use-api-client";
 import type { ArtifactColumn } from "@/hooks/use-column-visibility";
 import { useSortParams } from "@/hooks/use-sort-params";
 import { matchesFilter } from "@/lib/artifact-filter";
@@ -405,7 +398,6 @@ export function ArtifactsView({
   onDelete,
   editHandlers,
 }: ArtifactsViewProps) {
-  const apiClient = useApiClient();
   const [openGroups, setOpenGroups] = useState<Set<string>>(new Set());
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
@@ -572,81 +564,19 @@ export function ArtifactsView({
     return items;
   }, [isGroupedView, flatItems, groups, openGroups]);
 
-  const renderedItemById = useMemo(() => {
-    const map = new Map<string, ArtifactRowItem>();
-    for (const item of renderedItems) {
-      map.set(item.data.id, item);
-    }
-    return map;
-  }, [renderedItems]);
-
-  const parentFallbackIds = useMemo(
+  const parentFallbackItems = useMemo(
     () =>
       renderedItems
-        .map((item) => item.data.id)
-        .filter((id) => !parentMap.has(id)),
+        .filter((item) => !parentMap.has(item.data.id))
+        .map((item) => ({
+          id: item.data.id,
+          entityType:
+            item.kind === "feature" ? EntityType.Feature : EntityType.Artifact,
+        })),
     [renderedItems, parentMap]
   );
 
-  const parentFallbackQueries = useQueries({
-    queries: parentFallbackIds.map((entityId) => {
-      const item = renderedItemById.get(entityId);
-      const entityType =
-        item?.kind === "feature" ? EntityType.Feature : EntityType.Artifact;
-
-      return {
-        queryKey: entityLinkKeys.list({
-          entityId,
-          entityType,
-          direction: LinkDirection.Source,
-          mode: LinkQueryMode.Direct,
-          resolved: true,
-          parentFallback: true,
-        }),
-        queryFn: () => {
-          const params = new URLSearchParams();
-          params.set("entityId", entityId);
-          params.set("entityType", entityType);
-          params.set("direction", LinkDirection.Source);
-          params.set("mode", LinkQueryMode.Direct);
-          return apiClient.get<LinkedEntity[]>(
-            `/entity-links/resolved?${params.toString()}`
-          );
-        },
-        enabled: !!item,
-      };
-    }),
-  });
-
-  const fallbackParentMap = useMemo(() => {
-    const map = new Map<string, { title: string; href: string | null }>();
-    for (const [index, query] of parentFallbackQueries.entries()) {
-      const childId = parentFallbackIds[index];
-      if (!(childId && query.data?.length)) {
-        continue;
-      }
-
-      const linkedParent = query.data.find((linked) => {
-        if (!linked.resolvedEntity) {
-          return false;
-        }
-        return (
-          linked.resolvedEntity.type === EntityType.Artifact ||
-          linked.resolvedEntity.type === EntityType.Feature
-        );
-      });
-
-      if (!linkedParent?.resolvedEntity) {
-        continue;
-      }
-
-      map.set(childId, {
-        title: linkedParent.resolvedEntity.entity.title,
-        href: getResolvedEntityHref(linkedParent),
-      });
-    }
-    return map;
-  }, [parentFallbackIds, parentFallbackQueries]);
+  const fallbackParentMap = useParentFallbackMap(parentFallbackItems);
 
   const combinedParentMap = useMemo(() => {
     const map = new Map(parentMap);
@@ -1108,26 +1038,4 @@ function isFeatureTreeEntity(
   entity: TreeEntity
 ): entity is Extract<TreeEntity, { slug: string; priority: string }> {
   return "slug" in entity && "priority" in entity;
-}
-
-function getResolvedEntityHref(linked: LinkedEntity): string | null {
-  if (!linked.resolvedEntity) {
-    return null;
-  }
-
-  if (linked.resolvedEntity.type === EntityType.Artifact) {
-    const routePrefix = getRoutePrefixForType(
-      linked.resolvedEntity.entity.type
-    );
-    if (!routePrefix) {
-      return null;
-    }
-    return `/${routePrefix}/${linked.resolvedEntity.entity.slug}`;
-  }
-
-  if (linked.resolvedEntity.type === EntityType.Feature) {
-    return `/features/${linked.resolvedEntity.entity.slug}`;
-  }
-
-  return null;
 }
