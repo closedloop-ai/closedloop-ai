@@ -256,10 +256,11 @@ describe("writeContextPackFiles attachments", () => {
     const restore = mockFetch(async (_url) => ({
       ok: true,
       status: 200,
-      arrayBuffer: async () => fileContent.buffer.slice(
-        fileContent.byteOffset,
-        fileContent.byteOffset + fileContent.byteLength
-      ),
+      arrayBuffer: async () =>
+        fileContent.buffer.slice(
+          fileContent.byteOffset,
+          fileContent.byteOffset + fileContent.byteLength
+        ),
     }));
 
     try {
@@ -270,7 +271,12 @@ describe("writeContextPackFiles attachments", () => {
       });
       await writeContextPackFiles(workDir, { attachments: [attachment] });
 
-      const attachmentsDir = path.join(workDir, ".closedloop-ai", "work", "attachments");
+      const attachmentsDir = path.join(
+        workDir,
+        ".closedloop-ai",
+        "work",
+        "attachments"
+      );
       const expectedFile = path.join(attachmentsDir, "att-001-report.pdf");
       assert.ok(
         fs.existsSync(expectedFile),
@@ -292,7 +298,12 @@ describe("writeContextPackFiles attachments", () => {
 
     try {
       await writeContextPackFiles(workDir, { prompt: "hello" });
-      const attachmentsDir = path.join(workDir, ".closedloop-ai", "work", "attachments");
+      const attachmentsDir = path.join(
+        workDir,
+        ".closedloop-ai",
+        "work",
+        "attachments"
+      );
       assert.ok(
         !fs.existsSync(attachmentsDir),
         "attachments directory should not be created when no attachments in pack"
@@ -325,8 +336,16 @@ describe("writeContextPackFiles attachments", () => {
       });
       await writeContextPackFiles(workDir, { attachments: [attachment] });
 
-      assert.ok(!fetchCalled, "fetch should not be called for expired attachment");
-      const attachmentsDir = path.join(workDir, ".closedloop-ai", "work", "attachments");
+      assert.ok(
+        !fetchCalled,
+        "fetch should not be called for expired attachment"
+      );
+      const attachmentsDir = path.join(
+        workDir,
+        ".closedloop-ai",
+        "work",
+        "attachments"
+      );
       const expectedFile = path.join(attachmentsDir, "att-expired-secret.txt");
       assert.ok(
         !fs.existsSync(expectedFile),
@@ -348,10 +367,19 @@ describe("writeContextPackFiles attachments", () => {
     }));
 
     try {
-      const attachment = makeAttachment({ id: "att-403", filename: "doc.txt", sizeBytes: 100 });
+      const attachment = makeAttachment({
+        id: "att-403",
+        filename: "doc.txt",
+        sizeBytes: 100,
+      });
       await writeContextPackFiles(workDir, { attachments: [attachment] });
 
-      const attachmentsDir = path.join(workDir, ".closedloop-ai", "work", "attachments");
+      const attachmentsDir = path.join(
+        workDir,
+        ".closedloop-ai",
+        "work",
+        "attachments"
+      );
       const expectedFile = path.join(attachmentsDir, "att-403-doc.txt");
       assert.ok(
         !fs.existsSync(expectedFile),
@@ -370,10 +398,11 @@ describe("writeContextPackFiles attachments", () => {
     const restore = mockFetch(async (_url) => ({
       ok: true,
       status: 200,
-      arrayBuffer: async () => fileContent.buffer.slice(
-        fileContent.byteOffset,
-        fileContent.byteOffset + fileContent.byteLength
-      ),
+      arrayBuffer: async () =>
+        fileContent.buffer.slice(
+          fileContent.byteOffset,
+          fileContent.byteOffset + fileContent.byteLength
+        ),
     }));
 
     try {
@@ -384,7 +413,12 @@ describe("writeContextPackFiles attachments", () => {
       });
       await writeContextPackFiles(workDir, { attachments: [attachment] });
 
-      const attachmentsDir = path.join(workDir, ".closedloop-ai", "work", "attachments");
+      const attachmentsDir = path.join(
+        workDir,
+        ".closedloop-ai",
+        "work",
+        "attachments"
+      );
 
       // path.basename("../../etc/passwd") → "passwd", sanitized → "passwd"
       // The resulting disk path stays inside attachmentsDir, so the file IS written
@@ -415,14 +449,17 @@ describe("writeContextPackFiles attachments", () => {
   // (6) Byte count of downloaded buffer exceeds `attachment.sizeBytes` skips file
   test("buffer size exceeding sizeBytes skips file and does not write", async () => {
     const workDir = makeTempDir();
-    const oversizedContent = Buffer.from("this is way too large for declared size");
+    const oversizedContent = Buffer.from(
+      "this is way too large for declared size"
+    );
     const restore = mockFetch(async (_url) => ({
       ok: true,
       status: 200,
-      arrayBuffer: async () => oversizedContent.buffer.slice(
-        oversizedContent.byteOffset,
-        oversizedContent.byteOffset + oversizedContent.byteLength
-      ),
+      arrayBuffer: async () =>
+        oversizedContent.buffer.slice(
+          oversizedContent.byteOffset,
+          oversizedContent.byteOffset + oversizedContent.byteLength
+        ),
     }));
 
     try {
@@ -433,7 +470,12 @@ describe("writeContextPackFiles attachments", () => {
       });
       await writeContextPackFiles(workDir, { attachments: [attachment] });
 
-      const attachmentsDir = path.join(workDir, ".closedloop-ai", "work", "attachments");
+      const attachmentsDir = path.join(
+        workDir,
+        ".closedloop-ai",
+        "work",
+        "attachments"
+      );
       const expectedFile = path.join(attachmentsDir, "att-oversized-small.txt");
       assert.ok(
         !fs.existsSync(expectedFile),
@@ -456,7 +498,8 @@ describe("writeContextPackFiles attachments", () => {
       return {
         ok: true,
         status: 200,
-        arrayBuffer: async () => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
+        arrayBuffer: async () =>
+          buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
       };
     });
 
@@ -480,14 +523,27 @@ describe("writeContextPackFiles attachments", () => {
       ];
       await writeContextPackFiles(workDir, { attachments });
 
-      const attachmentsDir = path.join(workDir, ".closedloop-ai", "work", "attachments");
+      const attachmentsDir = path.join(
+        workDir,
+        ".closedloop-ai",
+        "work",
+        "attachments"
+      );
       const file1 = path.join(attachmentsDir, "id-aaa-notes.txt");
       const file2 = path.join(attachmentsDir, "id-bbb-notes.txt");
 
       assert.ok(fs.existsSync(file1), "first attachment file should exist");
       assert.ok(fs.existsSync(file2), "second attachment file should exist");
-      assert.deepEqual(fs.readFileSync(file1), content1, "first file content must match");
-      assert.deepEqual(fs.readFileSync(file2), content2, "second file content must match");
+      assert.deepEqual(
+        fs.readFileSync(file1),
+        content1,
+        "first file content must match"
+      );
+      assert.deepEqual(
+        fs.readFileSync(file2),
+        content2,
+        "second file content must match"
+      );
     } finally {
       restore();
     }
