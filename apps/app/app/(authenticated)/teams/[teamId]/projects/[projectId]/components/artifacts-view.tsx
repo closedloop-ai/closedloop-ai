@@ -506,14 +506,6 @@ export function ArtifactsView({
     );
   }, [filteredArtifacts, filteredFeatures, sortBy, sortDir, treeData]);
 
-  const groupedChildrenByRootId = useMemo(() => {
-    const map = new Map<string, ArtifactRowItem[]>();
-    for (const group of groups) {
-      map.set(group.root.data.id, group.children);
-    }
-    return map;
-  }, [groups]);
-
   // Auto-open any groups that haven't been seen before (handles initial load and
   // async tree data arriving after the workstream fallback was already shown).
   useEffect(() => {
@@ -638,21 +630,29 @@ export function ArtifactsView({
   }
 
   function handleRequestMove(item: ArtifactRowItem) {
-    const groupedChildren = treeData
-      ? (groupedChildrenByRootId.get(item.data.id) ?? [])
-      : [];
-    if (groupedChildren.length > 0) {
-      const entitiesToMove = [item, ...groupedChildren]
-        .filter((row) => row.kind === "artifact" || row.kind === "feature")
-        .map((row) => ({
-          id: row.data.id,
-          entityType:
-            row.kind === "artifact" ? EntityType.Artifact : EntityType.Feature,
-          projectId: row.data.projectId,
-        }));
-
-      if (entitiesToMove.length > 0) {
-        setMoveEntities(entitiesToMove);
+    // Use the full, unfiltered tree data to find children so that active
+    // view filters (e.g. "Documents only") do not hide children of a
+    // different type and cause them to be left behind during a move.
+    if (treeData) {
+      const treeNode = treeData.nodes.find((n) => n.root.id === item.data.id);
+      if (treeNode && treeNode.children.length > 0) {
+        const rootEntityType =
+          item.kind === "artifact" ? EntityType.Artifact : EntityType.Feature;
+        const rootProjectId =
+          item.kind === "artifact" || item.kind === "feature"
+            ? item.data.projectId
+            : undefined;
+        setMoveEntities([
+          {
+            id: item.data.id,
+            entityType: rootEntityType,
+            projectId: rootProjectId,
+          },
+          ...treeNode.children.map((child) => ({
+            id: child.id,
+            entityType: child.entityType,
+          })),
+        ]);
         setMenuState(null);
         return;
       }
