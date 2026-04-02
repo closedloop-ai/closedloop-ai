@@ -19,7 +19,6 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { useMemo } from "react";
 import { useApiClient } from "@/hooks/use-api-client";
 import { artifactKeys } from "./use-artifacts";
 import { dashboardKeys } from "./use-dashboard-stats";
@@ -353,7 +352,7 @@ type ParentFallbackItem = {
 export function useParentFallbackMap(items: ParentFallbackItem[]) {
   const apiClient = useApiClient();
 
-  const queries = useQueries({
+  return useQueries({
     queries: items.map((item) => ({
       queryKey: entityLinkKeys.list({
         entityId: item.id,
@@ -374,30 +373,29 @@ export function useParentFallbackMap(items: ParentFallbackItem[]) {
         );
       },
     })),
+    combine: (results) => {
+      const map = new Map<string, { title: string; href: string | null }>();
+      for (const [index, query] of results.entries()) {
+        const item = items[index];
+        if (!(item && query.data?.length)) {
+          continue;
+        }
+        const linkedParent = query.data.find(
+          (linked) =>
+            linked.resolvedEntity?.type === EntityType.Artifact ||
+            linked.resolvedEntity?.type === EntityType.Feature
+        );
+        if (!linkedParent?.resolvedEntity) {
+          continue;
+        }
+        map.set(item.id, {
+          title: linkedParent.resolvedEntity.entity.title,
+          href: resolveEntityHref(linkedParent),
+        });
+      }
+      return map;
+    },
   });
-
-  return useMemo(() => {
-    const map = new Map<string, { title: string; href: string | null }>();
-    for (const [index, query] of queries.entries()) {
-      const item = items[index];
-      if (!(item && query.data?.length)) {
-        continue;
-      }
-      const linkedParent = query.data.find(
-        (linked) =>
-          linked.resolvedEntity?.type === EntityType.Artifact ||
-          linked.resolvedEntity?.type === EntityType.Feature
-      );
-      if (!linkedParent?.resolvedEntity) {
-        continue;
-      }
-      map.set(item.id, {
-        title: linkedParent.resolvedEntity.entity.title,
-        href: resolveEntityHref(linkedParent),
-      });
-    }
-    return map;
-  }, [items, queries]);
 }
 
 function resolveEntityHref(linked: LinkedEntity): string | null {

@@ -1,11 +1,6 @@
 "use client";
 
-import {
-  EntityType,
-  LinkDirection,
-  LinkQueryMode,
-  LinkType,
-} from "@repo/api/src/types/entity-link";
+import type { EntityType } from "@repo/api/src/types/entity-link";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   Dialog,
@@ -26,12 +21,8 @@ import {
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { Loader2Icon } from "lucide-react";
 import { useState } from "react";
-import {
-  useBatchMoveEntities,
-  useLinkedEntities,
-} from "@/hooks/queries/use-entity-links";
+import { useBatchMoveEntities } from "@/hooks/queries/use-entity-links";
 import { useProjects } from "@/hooks/queries/use-projects";
-import { MoveDownstreamConfirmationDialog } from "./move-downstream-confirmation-dialog";
 
 type MovableEntity = {
   id: string;
@@ -59,7 +50,6 @@ export function MoveEntityDialog({
   onSuccess,
 }: Readonly<MoveEntityDialogProps>) {
   const [selectedProjectId, setSelectedProjectId] = useState<string>("");
-  const [showConfirmation, setShowConfirmation] = useState(false);
   const [isBulkMoving, setIsBulkMoving] = useState(false);
 
   let entitiesToMove: MovableEntity[] = [];
@@ -70,24 +60,9 @@ export function MoveEntityDialog({
   }
   const isBulkMove = entitiesToMove.length > 1;
   const primaryEntity = entitiesToMove[0];
-  // Any entity that can have downstream children (Artifact, Feature, Plan, etc.) is a parent.
-  // ExternalLink is a leaf — it cannot produce downstream entities.
-  const isParentEntity = primaryEntity?.entityType !== EntityType.ExternalLink;
 
   const { data: projects = [] } = useProjects(teamId ?? undefined);
   const batchMove = useBatchMoveEntities();
-
-  const { data: downstreamEntities = [], isLoading: isLoadingDownstream } =
-    useLinkedEntities(
-      primaryEntity?.id ?? "",
-      primaryEntity?.entityType ?? EntityType.Artifact,
-      {
-        direction: LinkDirection.Target,
-        linkType: LinkType.Produces,
-        mode: LinkQueryMode.Tree,
-        enabled: open && !isBulkMove && !!primaryEntity && !isParentEntity,
-      }
-    );
 
   const entityProjectId = primaryEntity?.projectId ?? currentProjectId;
   const availableProjects = projects.filter((p) => p.id !== entityProjectId);
@@ -98,21 +73,13 @@ export function MoveEntityDialog({
       return;
     }
     if (isBulkMove) {
-      executeBulkMove(isParentEntity).catch(() => undefined);
+      executeBulkMove().catch(() => undefined);
       return;
     }
-    if (isParentEntity) {
-      executeSingleMove(true);
-      return;
-    }
-    if (downstreamEntities.length > 0) {
-      setShowConfirmation(true);
-    } else {
-      executeSingleMove(false);
-    }
+    executeSingleMove();
   };
 
-  const executeSingleMove = (includeDownstream: boolean) => {
+  const executeSingleMove = () => {
     if (!primaryEntity) {
       return;
     }
@@ -121,16 +88,11 @@ export function MoveEntityDialog({
         entityId: primaryEntity.id,
         entityType: primaryEntity.entityType,
         targetProjectId: selectedProjectId,
-        includeDownstream,
+        includeDownstream: true,
       },
       {
         onSuccess: () => {
-          toast.success(
-            includeDownstream
-              ? "Moved with all downstream items"
-              : "Moved successfully"
-          );
-          setShowConfirmation(false);
+          toast.success("Moved with all downstream items");
           setSelectedProjectId("");
           onOpenChange(false);
           onSuccess?.();
@@ -139,7 +101,7 @@ export function MoveEntityDialog({
     );
   };
 
-  const executeBulkMove = async (includeDownstream: boolean) => {
+  const executeBulkMove = async () => {
     if (!(selectedProjectId && entitiesToMove.length > 0)) {
       return;
     }
@@ -151,7 +113,7 @@ export function MoveEntityDialog({
             entityId: item.id,
             entityType: item.entityType,
             targetProjectId: selectedProjectId,
-            includeDownstream,
+            includeDownstream: true,
           })
         )
       );
@@ -167,7 +129,6 @@ export function MoveEntityDialog({
         toast.error("Failed to move items. Please try again.");
         return;
       }
-      setShowConfirmation(false);
       setSelectedProjectId("");
       onOpenChange(false);
       onSuccess?.();
@@ -178,100 +139,80 @@ export function MoveEntityDialog({
     }
   };
 
-  const handleConfirm = (moveAll: boolean) => {
-    if (isBulkMove) {
-      executeBulkMove(moveAll).catch(() => undefined);
-      return;
-    }
-    executeSingleMove(moveAll);
-  };
-
   return (
-    <>
-      <Dialog
-        onOpenChange={(nextOpen) => {
-          if (!nextOpen) {
-            setSelectedProjectId("");
-            setShowConfirmation(false);
-          }
-          onOpenChange(nextOpen);
-        }}
-        open={open}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Move to Project</DialogTitle>
-            <DialogDescription>
-              Select the project you want to move{" "}
-              {isBulkMove ? "these items" : "this item"} to.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="project-select">Select project</Label>
-              <Select
-                onValueChange={setSelectedProjectId}
-                value={selectedProjectId}
+    <Dialog
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen) {
+          setSelectedProjectId("");
+        }
+        onOpenChange(nextOpen);
+      }}
+      open={open}
+    >
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Move to Project</DialogTitle>
+          <DialogDescription>
+            Select the project you want to move{" "}
+            {isBulkMove ? "these items" : "this item"} to.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="project-select">Select project</Label>
+            <Select
+              onValueChange={setSelectedProjectId}
+              value={selectedProjectId}
+            >
+              <SelectTrigger
+                aria-label="Select destination project"
+                id="project-select"
               >
-                <SelectTrigger
-                  aria-label="Select destination project"
-                  id="project-select"
-                >
-                  <SelectValue placeholder="Choose a project" />
-                </SelectTrigger>
-                <SelectContent>
-                  {availableProjects.length === 0 ? (
-                    <SelectItem disabled value="no-projects">
-                      No available projects
+                <SelectValue placeholder="Choose a project" />
+              </SelectTrigger>
+              <SelectContent>
+                {availableProjects.length === 0 ? (
+                  <SelectItem disabled value="no-projects">
+                    No available projects
+                  </SelectItem>
+                ) : (
+                  availableProjects.map((project) => (
+                    <SelectItem key={project.id} value={project.id}>
+                      {project.name}
                     </SelectItem>
-                  ) : (
-                    availableProjects.map((project) => (
-                      <SelectItem key={project.id} value={project.id}>
-                        {project.name}
-                      </SelectItem>
-                    ))
-                  )}
-                </SelectContent>
-              </Select>
-            </div>
+                  ))
+                )}
+              </SelectContent>
+            </Select>
           </div>
-          <DialogFooter>
-            <Button
-              disabled={isMovePending}
-              onClick={() => onOpenChange(false)}
-              variant="outline"
-            >
-              Cancel
-            </Button>
-            <Button
-              disabled={
-                !selectedProjectId ||
-                availableProjects.length === 0 ||
-                isMovePending ||
-                (!(isBulkMove || isParentEntity) && isLoadingDownstream)
-              }
-              onClick={handleMoveClick}
-            >
-              {isMovePending ? (
-                <>
-                  <Loader2Icon className="mr-2 size-4 animate-spin" />
-                  Moving...
-                </>
-              ) : (
-                "Move"
-              )}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-      {!(isBulkMove || isParentEntity) && (
-        <MoveDownstreamConfirmationDialog
-          downstreamEntities={downstreamEntities}
-          onConfirm={handleConfirm}
-          onOpenChange={setShowConfirmation}
-          open={showConfirmation}
-        />
-      )}
-    </>
+        </div>
+        <DialogFooter>
+          <Button
+            disabled={isMovePending}
+            onClick={() => onOpenChange(false)}
+            variant="outline"
+          >
+            Cancel
+          </Button>
+          <Button
+            disabled={
+              !selectedProjectId ||
+              availableProjects.length === 0 ||
+              isMovePending
+            }
+            onClick={handleMoveClick}
+          >
+            {isMovePending ? (
+              <>
+                <Loader2Icon className="mr-2 size-4 animate-spin" />
+                Moving...
+              </>
+            ) : (
+              "Move"
+            )}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
