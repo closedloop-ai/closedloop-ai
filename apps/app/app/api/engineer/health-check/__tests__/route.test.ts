@@ -43,6 +43,7 @@ let fakeBinDir = "";
 
 vi.mock("@/lib/engineer/shell-path", () => ({
   getShellPath: vi.fn(() => Promise.resolve(fakeBinDir)),
+  clearShellPathCache: vi.fn(),
 }));
 
 // Import route AFTER mocks are registered

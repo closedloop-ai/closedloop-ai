@@ -36,16 +36,16 @@ vi.mock("@repo/database", () => {
   const mockWithDb: any = vi.fn();
   mockWithDb.tx = vi.fn();
   return {
-    GitHubPRState: {
-      OPEN: "OPEN",
-      MERGED: "MERGED",
-      CLOSED: "CLOSED",
-    },
     ChecksStatus: {
       UNKNOWN: "UNKNOWN",
       PENDING: "PENDING",
       PASSING: "PASSING",
       FAILING: "FAILING",
+    },
+    WorkstreamType: {
+      FEATURE: "FEATURE",
+      BUG: "BUG",
+      TASK: "TASK",
     },
     withDb: mockWithDb,
   };
@@ -64,7 +64,8 @@ vi.mock("@/lib/slug-generator", () => ({
 import { ArtifactStatus, ArtifactType } from "@repo/api/src/types/artifact";
 import { EntityType, LinkType } from "@repo/api/src/types/entity-link";
 import { ExternalLinkType } from "@repo/api/src/types/external-link";
-import { GitHubPRState, withDb } from "@repo/database";
+import { GitHubPRState } from "@repo/api/src/types/github";
+import { withDb } from "@repo/database";
 import { parsePlanReferences } from "@repo/github/plan-reference-parser";
 import { handlePullRequest } from "@/app/webhooks/github/handlers/pull-request-handler";
 
@@ -236,6 +237,8 @@ describe("handlePullRequest", () => {
       externalLink: {
         findFirst: vi.fn(),
         create: vi.fn(),
+        update: vi.fn(),
+        updateMany: vi.fn(),
       },
       entityLink: {
         findFirst: vi.fn(),
@@ -335,7 +338,7 @@ describe("handlePullRequest", () => {
       expect(mockTx.gitHubPullRequest.update).toHaveBeenCalledWith({
         where: { id: "pr-uuid-456" },
         data: {
-          state: "MERGED",
+          state: GitHubPRState.Merged,
           closedAt: new Date("2026-02-10T12:00:00Z"),
           mergedAt: new Date("2026-02-10T12:00:00Z"),
           mergeCommitSha: "def456",
@@ -409,7 +412,7 @@ describe("handlePullRequest", () => {
       expect(mockTx.gitHubPullRequest.update).toHaveBeenCalledWith({
         where: { id: "pr-uuid-789" },
         data: {
-          state: "CLOSED",
+          state: GitHubPRState.Closed,
           closedAt: new Date("2026-02-10T13:00:00Z"),
           mergedAt: null,
           mergeCommitSha: null,
@@ -470,7 +473,7 @@ describe("handlePullRequest", () => {
       expect(mockTx.gitHubPullRequest.update).toHaveBeenCalledWith({
         where: { id: "pr-uuid-reopen" },
         data: {
-          state: "OPEN",
+          state: GitHubPRState.Open,
           closedAt: null,
         },
       });
@@ -891,7 +894,7 @@ describe("handlePullRequest", () => {
           organizationId: ORG_ID,
           repositoryId: REPO_ID,
           number: 100,
-          state: GitHubPRState.OPEN,
+          state: GitHubPRState.Open,
         }),
       });
 

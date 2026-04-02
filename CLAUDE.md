@@ -57,6 +57,9 @@ Schema: `packages/database/prisma/schema.prisma`. Client: `packages/database/gen
 ### Engineer Feature (SECURITY CRITICAL)
 Located in `apps/app/app/api/engineer/` — spawns local CLI processes (Claude, git, codex). **Localhost-only**: proxy guard (`apps/app/proxy.ts`) rejects non-localhost with 403. `EngineerGuard` is UX-only. **Do NOT remove the proxy guard** (arbitrary command execution). **Do NOT move to `apps/api`** — requires local filesystem access.
 
+### System Health Check
+Runs on app launch via `SystemCheckBootstrap` in the authenticated layout (`apps/app/app/(authenticated)/layout.tsx`), not just on the engineer page. Eligibility gated by `useSystemCheckEligibility` — only fires when a compute target is active (cloud relay online or local Electron detected). In cloud relay mode, the fetch interceptor rewrites `/api/engineer/health-check` to `/api/engineer-relay/health-check` and routes to the remote compute target. The health check route resolves the user's login-shell PATH via `getShellPath()` to find tools like `python3`, `git`, `claude`, `gh`.
+
 ## Self-Improving CLAUDE.md
 Discover undocumented patterns during PRs → add to relevant CLAUDE.md in same PR.
 

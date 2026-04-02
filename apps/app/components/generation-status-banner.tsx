@@ -25,6 +25,7 @@ export function GenerationStatusBanner({
   const [isPolling, setIsPolling] = useState(true);
   const pollIntervalRef = useRef(MIN_POLL_INTERVAL);
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const toastShownRef = useRef(false);
 
   const {
     data: generationStatus,
@@ -43,7 +44,10 @@ export function GenerationStatusBanner({
     if (generationStatus?.status === "SUCCESS") {
       setIsPolling(false);
       handleGenerationSuccess();
-      toast.success("Generation completed successfully");
+      if (!toastShownRef.current) {
+        toastShownRef.current = true;
+        toast.success("Generation completed successfully");
+      }
       return;
     }
 
@@ -59,7 +63,9 @@ export function GenerationStatusBanner({
       return;
     }
 
-    // Continue polling with backoff for active statuses
+    // Continue polling with backoff for active statuses.
+    // Reset toast guard so a new generation cycle can show a fresh toast.
+    toastShownRef.current = false;
     pollIntervalRef.current = Math.min(
       pollIntervalRef.current * BACKOFF_MULTIPLIER,
       MAX_POLL_INTERVAL
