@@ -5,6 +5,7 @@ import {
   afterAll,
   afterEach,
   beforeAll,
+  beforeEach,
   describe,
   expect,
   test,
@@ -14,6 +15,14 @@ import {
 // --- Mock module boundaries BEFORE importing route module ---
 
 vi.mock("@/lib/engineer/repos", () => ({
+  REQUIRED_SYMPHONY_PLUGINS: [
+    "code@closedloop-ai",
+    "self-learning@closedloop-ai",
+    "judges@closedloop-ai",
+    "code-review@closedloop-ai",
+    "platform@closedloop-ai",
+    "code-simplifier@claude-plugins-official",
+  ],
   checkRequiredPlugins: vi.fn(() => ({
     allInstalled: true,
     missing: [],
@@ -46,8 +55,9 @@ vi.mock("@/lib/engineer/shell-path", () => ({
   clearShellPathCache: vi.fn(),
 }));
 
-// Import route AFTER mocks are registered
+// Import route and mocked repos AFTER mocks are registered
 const { GET } = await import("../route");
+const { checkRequiredPlugins } = await import("@/lib/engineer/repos");
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -199,5 +209,206 @@ describe("GET /api/engineer/health-check — python3 checks", () => {
     expect(py.required).toBe(true);
     expect(py.error).toContain("Unable to determine Python version");
     expect(body.allRequiredPassed).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Plugin version checks
+// ---------------------------------------------------------------------------
+
+const ALL_UP_TO_DATE_INSTALLED: Record<string, string> = {
+  "code@closedloop-ai": "99.0.0",
+  "self-learning@closedloop-ai": "99.0.0",
+  "judges@closedloop-ai": "99.0.0",
+  "code-review@closedloop-ai": "99.0.0",
+  "platform@closedloop-ai": "99.0.0",
+  "code-simplifier@claude-plugins-official": "99.0.0",
+};
+
+function makeJsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+describe("GET /api/engineer/health-check -- plugin version checks", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn());
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  test("all 5 up-to-date: plugin-versions row present with passed: true, required: false", async () => {
+    vi.mocked(checkRequiredPlugins).mockReturnValueOnce({
+      allInstalled: true,
+      missing: [],
+      installed: ALL_UP_TO_DATE_INSTALLED,
+      reason: "ok",
+    });
+
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation(() =>
+      Promise.resolve(makeJsonResponse({ version: "99.0.0" }))
+    );
+
+    const binDir = createBaseBinDir(tmpRoot);
+    fakeBinDir = binDir;
+
+    const response = await GET();
+    const body = await response.json();
+
+    const row = body.checks.find(
+      (c: { id: string }) => c.id === "plugin-versions"
+    );
+    expect(row).toBeDefined();
+    expect(row.passed).toBe(true);
+    expect(row.required).toBe(false);
+  });
+
+  test("one outdated: passed: false, error contains plugin key, remediation contains install command", async () => {
+    vi.mocked(checkRequiredPlugins).mockReturnValueOnce({
+      allInstalled: true,
+      missing: [],
+      installed: {
+        ...ALL_UP_TO_DATE_INSTALLED,
+        "code@closedloop-ai": "1.0.0",
+      },
+      reason: "ok",
+    });
+
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation(() =>
+      Promise.resolve(makeJsonResponse({ version: "99.0.0" }))
+    );
+
+    const binDir = createBaseBinDir(tmpRoot);
+    fakeBinDir = binDir;
+
+    const response = await GET();
+    const body = await response.json();
+
+    const row = body.checks.find(
+      (c: { id: string }) => c.id === "plugin-versions"
+    );
+    expect(row).toBeDefined();
+    expect(row.passed).toBe(false);
+    expect(row.error).toContain("code@closedloop-ai");
+    expect(row.remediation).toContain(
+      "claude plugin install code@closedloop-ai"
+    );
+  });
+
+  test("all fetches fail: no plugin-versions row", async () => {
+    vi.mocked(checkRequiredPlugins).mockReturnValueOnce({
+      allInstalled: true,
+      missing: [],
+      installed: ALL_UP_TO_DATE_INSTALLED,
+      reason: "ok",
+    });
+
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockRejectedValue(new Error("timeout"));
+
+    const binDir = createBaseBinDir(tmpRoot);
+    fakeBinDir = binDir;
+
+    const response = await GET();
+    const body = await response.json();
+
+    const row = body.checks.find(
+      (c: { id: string }) => c.id === "plugin-versions"
+    );
+    expect(row).toBeUndefined();
+  });
+
+  test("partial success: 3 of 5 return 404, 2 return valid JSON matching installed; passed: false, error contains unverified fraction", async () => {
+    vi.mocked(checkRequiredPlugins).mockReturnValueOnce({
+      allInstalled: true,
+      missing: [],
+      installed: {
+        "code@closedloop-ai": "1.5.8",
+        "self-learning@closedloop-ai": "1.0.0",
+        "judges@closedloop-ai": "1.0.0",
+        "code-review@closedloop-ai": "1.0.0",
+        "platform@closedloop-ai": "1.0.0",
+        "code-simplifier@claude-plugins-official": "1.0.0",
+      },
+      reason: "ok",
+    });
+
+    const fetchMock = vi.mocked(fetch);
+    // First 2 fetches (code, self-learning) return versions matching installed
+    fetchMock.mockResolvedValueOnce(makeJsonResponse({ version: "1.5.8" }));
+    fetchMock.mockResolvedValueOnce(makeJsonResponse({ version: "1.0.0" }));
+    // Next 3 fetches (judges, code-review, platform) return 404
+    fetchMock.mockResolvedValueOnce(makeJsonResponse({}, 404));
+    fetchMock.mockResolvedValueOnce(makeJsonResponse({}, 404));
+    fetchMock.mockResolvedValueOnce(makeJsonResponse({}, 404));
+
+    const binDir = createBaseBinDir(tmpRoot);
+    fakeBinDir = binDir;
+
+    const response = await GET();
+    const body = await response.json();
+
+    const row = body.checks.find(
+      (c: { id: string }) => c.id === "plugin-versions"
+    );
+    expect(row).toBeDefined();
+    expect(row.passed).toBe(false);
+    expect(row.error).toContain("3/5");
+  });
+
+  test("non-semver installed version: passed: false (unverified partial), no crash", async () => {
+    vi.mocked(checkRequiredPlugins).mockReturnValueOnce({
+      allInstalled: true,
+      missing: [],
+      installed: {
+        ...ALL_UP_TO_DATE_INSTALLED,
+        "code@closedloop-ai": "installed",
+      },
+      reason: "ok",
+    });
+
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation(() =>
+      Promise.resolve(makeJsonResponse({ version: "99.0.0" }))
+    );
+
+    const binDir = createBaseBinDir(tmpRoot);
+    fakeBinDir = binDir;
+
+    const response = await GET();
+    const body = await response.json();
+
+    const row = body.checks.find(
+      (c: { id: string }) => c.id === "plugin-versions"
+    );
+    expect(row).toBeDefined();
+    expect(row.passed).toBe(false);
+  });
+
+  test("gating - allInstalled false: no plugin-versions row", async () => {
+    vi.mocked(checkRequiredPlugins).mockReturnValueOnce({
+      allInstalled: false,
+      missing: ["code@closedloop-ai"],
+      installed: {},
+      reason: "plugins_missing",
+    });
+
+    // fetch is stubbed in beforeEach but should not be called when allInstalled is false
+    const binDir = createBaseBinDir(tmpRoot);
+    fakeBinDir = binDir;
+
+    const response = await GET();
+    const body = await response.json();
+
+    const row = body.checks.find(
+      (c: { id: string }) => c.id === "plugin-versions"
+    );
+    expect(row).toBeUndefined();
   });
 });

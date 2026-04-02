@@ -1,10 +1,12 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { NextResponse } from "next/server";
+import type { PluginCheckResult } from "@/lib/engineer/repos";
 import {
   checkRequiredPlugins,
   getSymphonyScriptPath,
   loadReposConfig,
+  type REQUIRED_SYMPHONY_PLUGINS,
 } from "@/lib/engineer/repos";
 import { clearShellPathCache, getShellPath } from "@/lib/engineer/shell-path";
 
@@ -43,70 +45,68 @@ function parseVersion(output: string): string | undefined {
   return match?.[1];
 }
 
-async function checkGit(): Promise<CheckResult> {
+type CliCheckConfig = {
+  id: string;
+  label: string;
+  required: boolean;
+  cmd: string;
+  args: string[];
+  remediation: string;
+};
+
+async function checkCli(config: CliCheckConfig): Promise<CheckResult> {
   try {
-    const output = await runCommand("git", ["--version"]);
+    const output = await runCommand(config.cmd, config.args);
     return {
-      id: "git",
-      label: "Git",
-      required: true,
+      id: config.id,
+      label: config.label,
+      required: config.required,
       passed: true,
       version: parseVersion(output),
     };
   } catch {
     return {
-      id: "git",
-      label: "Git",
-      required: true,
+      id: config.id,
+      label: config.label,
+      required: config.required,
       passed: false,
       error: "Not found",
-      remediation: "Install via Xcode CLT: xcode-select --install",
+      remediation: config.remediation,
     };
   }
 }
 
-async function checkClaudeCli(): Promise<CheckResult> {
-  try {
-    const output = await runCommand("claude", ["--version"]);
-    return {
-      id: "claude-cli",
-      label: "Claude CLI",
-      required: true,
-      passed: true,
-      version: parseVersion(output),
-    };
-  } catch {
-    return {
-      id: "claude-cli",
-      label: "Claude CLI",
-      required: true,
-      passed: false,
-      error: "Not found",
-      remediation: "Install: npm install -g @anthropic-ai/claude-code",
-    };
-  }
+function checkGit(): Promise<CheckResult> {
+  return checkCli({
+    id: "git",
+    label: "Git",
+    required: true,
+    cmd: "git",
+    args: ["--version"],
+    remediation: "Install via Xcode CLT: xcode-select --install",
+  });
 }
 
-async function checkGhCli(): Promise<CheckResult> {
-  try {
-    const output = await runCommand("gh", ["--version"]);
-    return {
-      id: "gh-cli",
-      label: "GitHub CLI",
-      required: true,
-      passed: true,
-      version: parseVersion(output),
-    };
-  } catch {
-    return {
-      id: "gh-cli",
-      label: "GitHub CLI",
-      required: true,
-      passed: false,
-      error: "Not found",
-      remediation: "Install: brew install gh",
-    };
-  }
+function checkClaudeCli(): Promise<CheckResult> {
+  return checkCli({
+    id: "claude-cli",
+    label: "Claude CLI",
+    required: true,
+    cmd: "claude",
+    args: ["--version"],
+    remediation: "Install: npm install -g @anthropic-ai/claude-code",
+  });
+}
+
+function checkGhCli(): Promise<CheckResult> {
+  return checkCli({
+    id: "gh-cli",
+    label: "GitHub CLI",
+    required: true,
+    cmd: "gh",
+    args: ["--version"],
+    remediation: "Install: brew install gh",
+  });
 }
 
 async function checkGhAuth(): Promise<CheckResult> {
@@ -130,25 +130,25 @@ async function checkGhAuth(): Promise<CheckResult> {
   }
 }
 
-function checkSymphonyPlugins(): CheckResult {
-  const result = checkRequiredPlugins();
-
-  if (!result.allInstalled) {
+function checkSymphonyPlugins(
+  pluginCheckResult: PluginCheckResult
+): CheckResult {
+  if (!pluginCheckResult.allInstalled) {
     let remediation: string;
 
-    if (result.reason === "manifest_missing") {
+    if (pluginCheckResult.reason === "manifest_missing") {
       remediation =
         "Run: claude plugin marketplace add closedloop-ai/claude-plugins && claude plugin install " +
-        result.missing.join(" ");
-    } else if (result.reason === "manifest_malformed") {
+        pluginCheckResult.missing.join(" ");
+    } else if (pluginCheckResult.reason === "manifest_malformed") {
       remediation =
         "~/.claude/plugins/installed_plugins.json is corrupted. Try reinstalling plugins.";
     } else {
       // plugins_missing — split by publisher for remediation
-      const closedloopMissing = result.missing.filter((p) =>
+      const closedloopMissing = pluginCheckResult.missing.filter((p) =>
         p.endsWith("@closedloop-ai")
       );
-      const officialMissing = result.missing.filter((p) =>
+      const officialMissing = pluginCheckResult.missing.filter((p) =>
         p.endsWith("@claude-plugins-official")
       );
       const parts: string[] = [];
@@ -166,7 +166,7 @@ function checkSymphonyPlugins(): CheckResult {
       label: "Symphony Plugins",
       required: true,
       passed: false,
-      error: `Missing: ${result.missing.join(", ")}`,
+      error: `Missing: ${pluginCheckResult.missing.join(", ")}`,
       remediation,
     };
   }
@@ -185,7 +185,7 @@ function checkSymphonyPlugins(): CheckResult {
     };
   }
 
-  const codeVersion = result.installed["code@closedloop-ai"];
+  const codeVersion = pluginCheckResult.installed["code@closedloop-ai"];
   return {
     id: "symphony-plugin",
     label: "Symphony Plugins",
@@ -218,26 +218,15 @@ function checkWorktreeDir(): CheckResult {
   };
 }
 
-async function checkCodex(): Promise<CheckResult> {
-  try {
-    const output = await runCommand("codex", ["--version"]);
-    return {
-      id: "codex",
-      label: "Codex CLI",
-      required: false,
-      passed: true,
-      version: parseVersion(output),
-    };
-  } catch {
-    return {
-      id: "codex",
-      label: "Codex CLI",
-      required: false,
-      passed: false,
-      error: "Not found",
-      remediation: "Optional — enables debate/review features",
-    };
-  }
+function checkCodex(): Promise<CheckResult> {
+  return checkCli({
+    id: "codex",
+    label: "Codex CLI",
+    required: false,
+    cmd: "codex",
+    args: ["--version"],
+    remediation: "Optional — enables debate/review features",
+  });
 }
 
 async function checkPython3(): Promise<CheckResult> {
@@ -289,24 +278,206 @@ async function checkPython3(): Promise<CheckResult> {
   }
 }
 
+/**
+ * Parses a strict semver string (no prerelease or build metadata allowed).
+ * Returns a [major, minor, patch] tuple if the version is a valid strict semver,
+ * undefined otherwise (e.g. "1.0.0-rc1", "1.0", "installed" all return undefined).
+ */
+function parseStrictSemver(
+  version: string
+): [number, number, number] | undefined {
+  const parts = version.split(".");
+  if (parts.length !== 3) {
+    return undefined;
+  }
+  const numericOnly = /^\d+$/;
+  const [majorStr, minorStr, patchStr] = parts;
+  if (
+    !(
+      numericOnly.test(majorStr) &&
+      numericOnly.test(minorStr) &&
+      numericOnly.test(patchStr)
+    )
+  ) {
+    return undefined;
+  }
+  return [Number(majorStr), Number(minorStr), Number(patchStr)];
+}
+
+/**
+ * Compares two strict semver strings lexicographically (major, minor, patch).
+ * Returns true if installed >= latest, false if installed is behind.
+ * Returns undefined if either version cannot be parsed as strict semver
+ * (caller must not treat undefined as up-to-date).
+ */
+function compareStrictSemver(
+  installed: string,
+  latest: string
+): boolean | undefined {
+  const installedTuple = parseStrictSemver(installed);
+  const latestTuple = parseStrictSemver(latest);
+  if (installedTuple === undefined || latestTuple === undefined) {
+    return undefined;
+  }
+  for (let i = 0; i < 3; i++) {
+    if (installedTuple[i] > latestTuple[i]) {
+      return true;
+    }
+    if (installedTuple[i] < latestTuple[i]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+type ClosedLoopPlugin = Extract<
+  (typeof REQUIRED_SYMPHONY_PLUGINS)[number],
+  `${string}@closedloop-ai`
+>;
+
+/**
+ * Maps each @closedloop-ai plugin key to its folder name under the
+ * plugins/ directory in the closedloop-ai/claude-plugins GitHub repo.
+ * code-simplifier@claude-plugins-official is intentionally absent — different publisher.
+ */
+const PLUGIN_VERSION_MAP: Record<ClosedLoopPlugin, string> = {
+  "code@closedloop-ai": "code",
+  "self-learning@closedloop-ai": "self-learning",
+  "judges@closedloop-ai": "judges",
+  "code-review@closedloop-ai": "code-review",
+  "platform@closedloop-ai": "platform",
+};
+
+async function checkPluginVersions(
+  installed: Record<string, string>
+): Promise<CheckResult | undefined> {
+  const entries = Object.entries(PLUGIN_VERSION_MAP) as [
+    ClosedLoopPlugin,
+    string,
+  ][];
+
+  const results = await Promise.allSettled(
+    entries.map(([, folder]) =>
+      fetch(
+        `https://raw.githubusercontent.com/closedloop-ai/claude-plugins/main/plugins/${folder}/.claude-plugin/plugin.json`,
+        { signal: AbortSignal.timeout(800) }
+      )
+    )
+  );
+
+  const outdated: { key: string; installed: string; latest: string }[] = [];
+  const upToDate: string[] = [];
+  let unverified = 0;
+
+  for (let i = 0; i < entries.length; i++) {
+    const [pluginKey] = entries[i];
+    const result = results[i];
+
+    if (result.status === "rejected") {
+      unverified++;
+      continue;
+    }
+
+    const response = result.value;
+    if (!response.ok) {
+      unverified++;
+      continue;
+    }
+
+    let latestVer: string;
+    try {
+      const body = (await response.json()) as { version?: unknown };
+      if (typeof body.version !== "string") {
+        unverified++;
+        continue;
+      }
+      latestVer = body.version;
+    } catch {
+      unverified++;
+      continue;
+    }
+
+    const installedVer = installed[pluginKey] ?? "";
+    const cmp = compareStrictSemver(installedVer, latestVer);
+
+    if (cmp === undefined) {
+      unverified++;
+    } else if (cmp === false) {
+      outdated.push({
+        key: pluginKey,
+        installed: installedVer,
+        latest: latestVer,
+      });
+    } else {
+      upToDate.push(pluginKey);
+    }
+  }
+
+  if (upToDate.length === 0 && outdated.length === 0) {
+    return undefined;
+  }
+
+  if (outdated.length > 0) {
+    return {
+      id: "plugin-versions",
+      label: "Plugin Versions (@closedloop-ai)",
+      required: false,
+      passed: false,
+      error:
+        "Outdated: " +
+        outdated
+          .map((p) => `${p.key} (${p.installed} -> ${p.latest})`)
+          .join(", "),
+      remediation: outdated
+        .map((p) => `claude plugin install ${p.key}`)
+        .join(" && "),
+    };
+  }
+
+  if (unverified > 0) {
+    return {
+      id: "plugin-versions",
+      label: "Plugin Versions (@closedloop-ai)",
+      required: false,
+      passed: false,
+      error: `${unverified}/${entries.length} plugin manifest(s) could not be verified`,
+    };
+  }
+
+  return {
+    id: "plugin-versions",
+    label: "Plugin Versions (@closedloop-ai)",
+    required: false,
+    passed: true,
+  };
+}
+
 export async function GET(): Promise<NextResponse<HealthCheckResponse>> {
   // Clear cached PATH so we pick up any changes to the user's shell config
   clearShellPathCache();
 
   // Run Claude CLI check first — plugin check depends on CLI being available
   const claudeResult = await checkClaudeCli();
+  const pluginCheckResult = checkRequiredPlugins();
 
   // Run remaining parallel checks (excluding plugin which depends on Claude CLI)
   const parallelResults = await Promise.allSettled([
     checkGit(),
     checkGhCli(),
     checkGhAuth(),
-    Promise.resolve(checkWorktreeDir()),
+    checkWorktreeDir(),
     checkCodex(),
     checkPython3(),
   ]);
 
-  const parallelChecks = parallelResults.map((r) => {
+  const [
+    gitResult,
+    ghCliResult,
+    ghAuthResult,
+    worktreeResult,
+    codexResult,
+    python3Result,
+  ] = parallelResults.map((r): CheckResult => {
     if (r.status === "fulfilled") {
       return r.value;
     }
@@ -318,14 +489,6 @@ export async function GET(): Promise<NextResponse<HealthCheckResponse>> {
       error: "Check failed unexpectedly",
     };
   });
-  const [
-    gitResult,
-    ghCliResult,
-    ghAuthResult,
-    worktreeResult,
-    codexResult,
-    python3Result,
-  ] = parallelChecks;
 
   // Only run plugin check if Claude CLI is installed
   const checks: CheckResult[] = [
@@ -336,7 +499,7 @@ export async function GET(): Promise<NextResponse<HealthCheckResponse>> {
   ];
 
   if (claudeResult.passed) {
-    checks.push(checkSymphonyPlugins());
+    checks.push(checkSymphonyPlugins(pluginCheckResult));
   } else {
     checks.push({
       id: "symphony-plugin",
@@ -349,6 +512,15 @@ export async function GET(): Promise<NextResponse<HealthCheckResponse>> {
   }
 
   checks.push(worktreeResult, codexResult, python3Result);
+
+  if (claudeResult.passed && pluginCheckResult.allInstalled) {
+    const versionResult = await checkPluginVersions(
+      pluginCheckResult.installed
+    );
+    if (versionResult !== undefined) {
+      checks.push(versionResult);
+    }
+  }
 
   const allRequiredPassed = checks
     .filter((c) => c.required)
