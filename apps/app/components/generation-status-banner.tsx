@@ -19,13 +19,17 @@ const MIN_POLL_INTERVAL = 2000; // 2 seconds
 const MAX_POLL_INTERVAL = 30_000; // 30 seconds
 const BACKOFF_MULTIPLIER = 1.5;
 
+// Module-level set to track which correlationIds have already shown a success
+// toast. Survives component unmount/remount cycles caused by cache invalidation
+// triggering parent re-renders.
+export const toastedCorrelationIds = new Set<string>();
+
 export function GenerationStatusBanner({
   artifactId,
 }: Readonly<GenerationStatusBannerProps>) {
   const [isPolling, setIsPolling] = useState(true);
   const pollIntervalRef = useRef(MIN_POLL_INTERVAL);
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const toastShownRef = useRef(false);
 
   const {
     data: generationStatus,
@@ -44,8 +48,9 @@ export function GenerationStatusBanner({
     if (generationStatus?.status === "SUCCESS") {
       setIsPolling(false);
       handleGenerationSuccess();
-      if (!toastShownRef.current) {
-        toastShownRef.current = true;
+      const corrId = generationStatus.correlationId ?? artifactId;
+      if (!toastedCorrelationIds.has(corrId)) {
+        toastedCorrelationIds.add(corrId);
         toast.success("Generation completed successfully");
       }
       return;
@@ -63,9 +68,9 @@ export function GenerationStatusBanner({
       return;
     }
 
-    // Continue polling with backoff for active statuses.
-    // Reset toast guard so a new generation cycle can show a fresh toast.
-    toastShownRef.current = false;
+    // Active status (PENDING/QUEUED/RUNNING) — clear previous toast key so a
+    // new generation cycle for the same artifact can show a fresh toast.
+    toastedCorrelationIds.delete(generationStatus?.correlationId ?? artifactId);
     pollIntervalRef.current = Math.min(
       pollIntervalRef.current * BACKOFF_MULTIPLIER,
       MAX_POLL_INTERVAL

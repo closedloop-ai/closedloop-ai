@@ -24,7 +24,10 @@ vi.mock("next/link", () => ({
 
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { useArtifactGenerationStatus } from "@/hooks/queries/use-artifacts";
-import { GenerationStatusBanner } from "../generation-status-banner";
+import {
+  GenerationStatusBanner,
+  toastedCorrelationIds,
+} from "../generation-status-banner";
 
 const RE_BG_DESTRUCTIVE = /bg-destructive/;
 
@@ -57,6 +60,7 @@ function mockHook(data: GenerationStatus | undefined, isLoading = false): void {
 describe("GenerationStatusBanner", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    toastedCorrelationIds.clear();
   });
 
   // ---------------------------------------------------------------------------
@@ -100,6 +104,47 @@ describe("GenerationStatusBanner", () => {
 
     // Still only called once
     expect(toast.success).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not fire toast again after unmount and remount (same correlationId)", () => {
+    mockHook(makeStatus({ status: "RUNNING", command: "plan" }));
+    const { rerender, unmount } = render(
+      <GenerationStatusBanner artifactId="artifact-1" />
+    );
+
+    mockHook(makeStatus({ status: "SUCCESS", command: "plan" }));
+    rerender(<GenerationStatusBanner artifactId="artifact-1" />);
+    expect(toast.success).toHaveBeenCalledTimes(1);
+
+    // Unmount and remount — simulates parent re-render from cache invalidation
+    unmount();
+    mockHook(makeStatus({ status: "SUCCESS", command: "plan" }));
+    render(<GenerationStatusBanner artifactId="artifact-1" />);
+
+    // Still only called once — module-level Set prevents duplicate
+    expect(toast.success).toHaveBeenCalledTimes(1);
+  });
+
+  it("fires toast again for a new generation cycle on the same artifact (null correlationId)", () => {
+    // First cycle: RUNNING → SUCCESS
+    mockHook(makeStatus({ status: "RUNNING", command: "plan", correlationId: null as unknown as string }));
+    const { rerender } = render(
+      <GenerationStatusBanner artifactId="artifact-1" />
+    );
+
+    mockHook(makeStatus({ status: "SUCCESS", command: "plan", correlationId: null as unknown as string }));
+    rerender(<GenerationStatusBanner artifactId="artifact-1" />);
+    expect(toast.success).toHaveBeenCalledTimes(1);
+
+    // Second cycle: back to RUNNING (clears the toast key) → SUCCESS again
+    mockHook(makeStatus({ status: "RUNNING", command: "plan", correlationId: null as unknown as string }));
+    rerender(<GenerationStatusBanner artifactId="artifact-1" />);
+
+    mockHook(makeStatus({ status: "SUCCESS", command: "plan", correlationId: null as unknown as string }));
+    rerender(<GenerationStatusBanner artifactId="artifact-1" />);
+
+    // Should fire a second time for the new cycle
+    expect(toast.success).toHaveBeenCalledTimes(2);
   });
 
   // ---------------------------------------------------------------------------
