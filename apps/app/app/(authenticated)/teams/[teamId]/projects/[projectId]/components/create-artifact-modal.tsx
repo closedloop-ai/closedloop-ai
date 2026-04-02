@@ -49,7 +49,6 @@ import {
 import { useRunLoop } from "@/hooks/queries/use-loops";
 import { useProject } from "@/hooks/queries/use-projects";
 import { useTeamMembers } from "@/hooks/queries/use-teams";
-import { useEngineerRoutingSelection } from "@/lib/engineer/routing-store";
 import { ARTIFACT_TYPE_LABELS } from "@/lib/project-constants";
 import { transformApiUserToSelectUser } from "@/lib/user-utils";
 
@@ -153,7 +152,6 @@ export function CreateArtifactModal({
   // Create artifact mutations
   const createArtifact = useCreateArtifact();
   const runLoop = useRunLoop();
-  const routing = useEngineerRoutingSelection();
 
   // Auto-select default branch only when no branch is selected yet
   useEffect(() => {
@@ -317,7 +315,6 @@ export function CreateArtifactModal({
           runLoop.mutate({
             artifactId: artifact.id,
             command: RunLoopCommand.GeneratePrd,
-            computeTargetId: routing.computeTargetId,
           });
           handleClose();
           onSuccess?.(artifact);
