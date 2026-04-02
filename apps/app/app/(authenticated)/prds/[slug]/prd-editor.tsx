@@ -167,8 +167,13 @@ export function PRDEditor({
 
   const handleEvaluatePrd = () => {
     setPendingCommand("evaluate_prd");
+    // Omit computeTargetId so the API resolves the target from the user's saved
+    // compute preference (same as explicit plan evaluation). Passing
+    // routing.computeTargetId here could be null on hosted production when
+    // Electron is not detected, which the API treated as an explicit cloud
+    // override and skipped local preference resolution.
     runLoop.mutate(
-      { artifactId: prd.id, command: "evaluate_prd", computeTargetId },
+      { artifactId: prd.id, command: RunLoopCommand.EvaluatePrd },
       {
         onSuccess: () => {
           toast.success("PRD evaluation started");
