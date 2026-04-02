@@ -1,6 +1,5 @@
 "use client";
 
-import { isActiveGenerationStatus } from "@repo/api/src/types/artifact";
 import { EntityType } from "@repo/api/src/types/entity-link";
 import type { FeatureWithWorkstream } from "@repo/api/src/types/feature";
 import { toast } from "@repo/design-system/components/ui/sonner";
@@ -61,13 +60,7 @@ export function FeaturePage({ feature }: Readonly<FeaturePageProps>) {
     linkedPlanId ?? "",
     {
       enabled: !!linkedPlanId,
-      refetchInterval: (query) => {
-        const status = query.state.data?.status;
-        if (status && isActiveGenerationStatus(status)) {
-          return 5000;
-        }
-        return false;
-      },
+      polling: true,
     }
   );
 

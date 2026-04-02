@@ -140,8 +140,9 @@ export function PlanEditor({
     prevThreadCount.current = session.openThreadCount;
   }, [session.openThreadCount]);
 
-  // Fetch generation status and pull request data
-  const { data: generationStatus } = useArtifactGenerationStatus(plan.id);
+  // Fetch generation status with adaptive polling (stops when terminal)
+  const { data: generationStatus, invalidateCache: invalidateArtifactCache } =
+    useArtifactGenerationStatus(plan.id, { polling: true });
   const { data: pullRequest } = useArtifactPullRequest(plan.id);
   const { data: judgesReport } = usePlanJudgesFeedback(plan.id);
   const { data: codeJudgesReport } = useCodeJudgesFeedback(plan.id);
@@ -320,7 +321,10 @@ export function PlanEditor({
               />
 
               {/* Generation Status Banner */}
-              <GenerationStatusBanner artifactId={plan.id} />
+              <GenerationStatusBanner
+                generationStatus={generationStatus}
+                onGenerationComplete={invalidateArtifactCache}
+              />
 
               {/* biome-ignore lint/a11y/noNoninteractiveElementInteractions: wraps TipTap rich text editor */}
               {/* biome-ignore lint/a11y/noStaticElementInteractions: wraps TipTap rich text editor */}

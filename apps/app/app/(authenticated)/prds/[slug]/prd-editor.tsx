@@ -31,6 +31,7 @@ import { useArtifactContent } from "@/hooks/artifact-editing/use-artifact-conten
 import { useArtifactMetadata } from "@/hooks/artifact-editing/use-artifact-metadata";
 import { useArtifactUIState } from "@/hooks/artifact-editing/use-artifact-ui-state";
 import { useEditorSession } from "@/hooks/artifact-editing/use-editor-session";
+import { useArtifactGenerationStatus } from "@/hooks/queries/use-artifacts";
 import { usePrdJudgesFeedback } from "@/hooks/queries/use-judges";
 import { useRunLoop } from "@/hooks/queries/use-loops";
 import { useOrganizationUsers } from "@/hooks/queries/use-users";
@@ -115,6 +116,10 @@ export function PRDEditor({
   const [decomposeTargetState, setDecomposeTargetState] = useState<{
     availableTargets: ComputeTargetConflictBody["availableTargets"];
   } | null>(null);
+
+  // Fetch generation status with adaptive polling (stops when terminal)
+  const { data: generationStatus, invalidateCache: invalidateArtifactCache } =
+    useArtifactGenerationStatus(prd.id, { polling: true });
 
   // Loop-based actions (PRD generation, decompose)
   const runLoop = useRunLoop();
@@ -300,7 +305,10 @@ export function PRDEditor({
               />
 
               {/* Generation Status Banner */}
-              <GenerationStatusBanner artifactId={prd.id} />
+              <GenerationStatusBanner
+                generationStatus={generationStatus}
+                onGenerationComplete={invalidateArtifactCache}
+              />
 
               {/* biome-ignore lint/a11y/noNoninteractiveElementInteractions: wraps TipTap rich text editor */}
               {/* biome-ignore lint/a11y/noStaticElementInteractions: wraps TipTap rich text editor */}
