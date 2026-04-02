@@ -16,7 +16,7 @@
  *   CLOSEDLOOP_ORG_ID            - Organization ID (defaults to local dev org)
  */
 
-import crypto from "crypto";
+import crypto from "node:crypto";
 
 // --- Config ---
 
@@ -96,7 +96,7 @@ const payload = {
       "  at Agent.step (agent.ts:89)",
       "  at Loop.run (loop.ts:34)",
     ].join("\n"),
-    tokenUsage: { inputTokens: 189432, outputTokens: 12847 },
+    tokenUsage: { inputTokens: 189_432, outputTokens: 12_847 },
     diagnosticsVersion: "1.0.0",
   },
 };
