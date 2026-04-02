@@ -510,12 +510,21 @@ export function LoopProgressPanel({
   );
   const active = isActiveDisplayStatus(displayStatus);
 
-  // Derive token totals from completed event (if present)
+  // Derive token totals from completed event, or fall back to error event diagnostics
   const completedEvent = events.find(
     (e): e is LoopEventCompleted => e.type === "completed"
   );
-  const tokensInput = completedEvent?.tokensUsed?.input ?? 0;
-  const tokensOutput = completedEvent?.tokensUsed?.output ?? 0;
+  const errorEvent = events.find(
+    (e): e is LoopEventError => e.type === "error"
+  );
+  const tokensInput =
+    completedEvent?.tokensUsed?.input ??
+    errorEvent?.tokenUsage?.inputTokens ??
+    0;
+  const tokensOutput =
+    completedEvent?.tokensUsed?.output ??
+    errorEvent?.tokenUsage?.outputTokens ??
+    0;
 
   // Derive start timestamp from first event
   const startTimestamp = events.length > 0 ? events[0].timestamp : null;

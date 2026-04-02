@@ -1107,6 +1107,10 @@ async function handleLoopError(
       {
         completedAt: new Date(),
         error: { code: event.code, message: event.message },
+        ...(event.tokenUsage !== undefined && {
+          tokensInput: event.tokenUsage.inputTokens,
+          tokensOutput: event.tokenUsage.outputTokens,
+        }),
         ...prSession,
       }
     );
@@ -1149,6 +1153,10 @@ async function handleLoopError(
   await loopsService.updateStatus(loopId, organizationId, LoopStatus.Failed, {
     completedAt: new Date(),
     error: { code: event.code, message: event.message },
+    ...(event.tokenUsage !== undefined && {
+      tokensInput: event.tokenUsage.inputTokens,
+      tokensOutput: event.tokenUsage.outputTokens,
+    }),
     ...prSession,
   });
 
