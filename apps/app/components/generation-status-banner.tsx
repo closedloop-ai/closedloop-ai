@@ -75,7 +75,7 @@ export function GenerationStatusBanner({
       pollIntervalRef.current * BACKOFF_MULTIPLIER,
       MAX_POLL_INTERVAL
     );
-  }, [isLoading, generationStatus]);
+  }, [isLoading, generationStatus, artifactId]);
 
   useEffect(() => {
     if (!isPolling) {
