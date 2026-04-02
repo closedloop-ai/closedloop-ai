@@ -3,6 +3,7 @@
 import { useFeatureFlag } from "@repo/analytics/client";
 import {
   type ArtifactDetail,
+  ArtifactStatus,
   ArtifactType,
   PullRequestState,
 } from "@repo/api/src/types/artifact";
@@ -104,6 +105,7 @@ export function PlanEditor({
 
   const planActions = usePlanActions({
     artifactId: plan.id,
+    slug: plan.slug,
   });
 
   const uiState = useArtifactUIState({
@@ -168,8 +170,8 @@ export function PlanEditor({
   });
 
   // Derived state
-  const isDraft = metadata.status === "DRAFT";
-  const isApproved = metadata.status === "APPROVED";
+  const isDraft = metadata.status === ArtifactStatus.Draft;
+  const isApproved = metadata.status === ArtifactStatus.Approved;
   const isReadOnly = session.isEditing || session.isViewingHistorical;
   const isPending =
     contentController.isSaving ||
