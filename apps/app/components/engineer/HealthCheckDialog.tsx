@@ -197,7 +197,8 @@ export function HealthCheckDialog({
       await queryClient.invalidateQueries({
         queryKey: queryKeys.healthCheck(),
       });
-      refetch();
+      await refetch();
+      setRecheckKey((k) => k + 1);
     } catch (err) {
       toast.error("Failed to save", {
         description: err instanceof Error ? err.message : "Unknown error",

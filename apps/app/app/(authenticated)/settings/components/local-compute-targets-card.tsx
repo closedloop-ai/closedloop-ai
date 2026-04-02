@@ -1,6 +1,5 @@
 "use client";
 
-import { EngineerRoutingMode } from "@repo/api/src/types/relay";
 import { useUser } from "@repo/auth/client";
 import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
@@ -44,6 +43,7 @@ import {
 import type { CheckResult } from "@/lib/engineer/queries/health-check";
 import { healthCheckOptions } from "@/lib/engineer/queries/health-check";
 import { queryKeys } from "@/lib/engineer/queries/keys";
+import { resolveTargetLabel } from "@/lib/engineer/routing-label";
 import { useEngineerRoutingSelection } from "@/lib/engineer/routing-store";
 import { useSystemCheckEligibility } from "@/lib/system-check/use-system-check-eligibility";
 
@@ -173,16 +173,7 @@ export function LocalComputeTargetsCard() {
     await refetchHealthCheck();
   };
 
-  let activeTargetLabel: string | undefined;
-  if (
-    routing.mode === EngineerRoutingMode.CloudRelay &&
-    routing.computeTargetId
-  ) {
-    const target = targets.find((t) => t.id === routing.computeTargetId);
-    activeTargetLabel = target?.machineName;
-  } else if (routing.mode === EngineerRoutingMode.LocalElectron) {
-    activeTargetLabel = "localhost";
-  }
+  const activeTargetLabel = resolveTargetLabel(routing, targets);
 
   const failureCount = getFailureCount(healthCheckData?.checks);
   const summary = getSystemCheckSummary(
