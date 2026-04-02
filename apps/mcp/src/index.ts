@@ -32,6 +32,7 @@ import { registerCreateExternalLink } from "./tools/create-external-link.js";
 import { registerCreateFeature } from "./tools/create-feature.js";
 import { registerCreateProject } from "./tools/create-project.js";
 import { registerCreateWorkstream } from "./tools/create-workstream.js";
+import { registerDownloadAttachment } from "./tools/download-attachment.js";
 import { registerGetArtifact } from "./tools/get-artifact.js";
 import { registerGetDashboardStats } from "./tools/get-dashboard-stats.js";
 import { registerGetFeature } from "./tools/get-feature.js";
@@ -45,6 +46,7 @@ import { registerGetRelatedArtifacts } from "./tools/get-related-artifacts.js";
 import { registerGetWorkstream } from "./tools/get-workstream.js";
 import { registerListArtifactVersions } from "./tools/list-artifact-versions.js";
 import { registerListArtifacts } from "./tools/list-artifacts.js";
+import { registerListAttachments } from "./tools/list-attachments.js";
 import { registerListEntityLinks } from "./tools/list-entity-links.js";
 import { registerListExternalLinks } from "./tools/list-external-links.js";
 import { registerListFeatures } from "./tools/list-features.js";
@@ -334,6 +336,8 @@ const TOOL_REGISTRATIONS: ToolRegistration[] = [
     requiresWrite: true,
   },
   { name: "list-artifact-versions", register: registerListArtifactVersions },
+  { name: "list-attachments", register: registerListAttachments },
+  { name: "download-attachment", register: registerDownloadAttachment },
   { name: "get-related-artifacts", register: registerGetRelatedArtifacts },
   { name: "list-features", register: registerListFeatures },
   { name: "get-feature", register: registerGetFeature },

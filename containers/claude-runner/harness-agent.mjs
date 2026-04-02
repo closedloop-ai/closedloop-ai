@@ -759,7 +759,7 @@ async function downloadContextPack() {
   return pack;
 }
 
-function writeContextPackFiles(workDir, pack) {
+async function writeContextPackFiles(workDir, pack) {
   if (!pack) {
     return;
   }
@@ -822,6 +822,83 @@ function writeContextPackFiles(workDir, pack) {
         lines.join("\n\n---\n\n")
       );
       filesWritten++;
+    }
+
+    // Download attachments into .closedloop-ai/work/attachments/
+    if (Array.isArray(pack.attachments) && pack.attachments.length > 0) {
+      const attachmentsDir = path.join(
+        workDir,
+        ".closedloop-ai",
+        "work",
+        "attachments"
+      );
+      fs.mkdirSync(attachmentsDir, { recursive: true });
+
+      for (const attachment of pack.attachments) {
+        try {
+          // (1) Check expiry
+          const expiresAt = new Date(attachment.signedUrlExpiresAt);
+          if (expiresAt <= new Date()) {
+            log(
+              "warn",
+              `Attachment ${attachment.id} signed URL expired at ${attachment.signedUrlExpiresAt}, skipping`
+            );
+            continue;
+          }
+
+          // (2) Sanitize filename
+          const basename = path.basename(attachment.filename);
+          const safeName = basename.replace(/[^a-zA-Z0-9._-]/g, "_");
+          const diskName = `${attachment.id}-${safeName}`;
+
+          // (3) Compute disk path and assert no path traversal
+          const diskPath = path.join(attachmentsDir, diskName);
+          if (
+            !path.resolve(diskPath).startsWith(path.resolve(attachmentsDir))
+          ) {
+            log(
+              "warn",
+              `Attachment ${attachment.id} resolved path escapes attachments dir, skipping`
+            );
+            continue;
+          }
+
+          // (4) Download
+          const response = await fetch(attachment.signedUrl);
+          if (!response.ok) {
+            log(
+              "warn",
+              `Attachment ${attachment.id} download failed: HTTP ${response.status}, skipping`
+            );
+            continue;
+          }
+          const buffer = Buffer.from(await response.arrayBuffer());
+
+          // (5) Validate size
+          if (buffer.length > attachment.sizeBytes) {
+            log(
+              "warn",
+              `Attachment ${attachment.id} buffer size ${buffer.length} exceeds declared sizeBytes ${attachment.sizeBytes}, skipping`
+            );
+            continue;
+          }
+          if (buffer.length < attachment.sizeBytes) {
+            log(
+              "warn",
+              `Attachment ${attachment.id} downloaded ${buffer.length} bytes but expected ${attachment.sizeBytes}, may be truncated — writing anyway`
+            );
+          }
+
+          // (6) Write to disk
+          fs.writeFileSync(diskPath, buffer);
+          filesWritten++;
+        } catch (attachErr) {
+          log(
+            "warn",
+            `Failed to download attachment ${attachment.id}: ${attachErr.message}`
+          );
+        }
+      }
     }
 
     log("info", `Wrote ${filesWritten} context pack files`);
@@ -2746,7 +2823,7 @@ async function main() {
     // Step 3b: Write context files into the prepared workspace.
     // This must happen after clone AND after downloadState — clone fails on
     // non-empty dir, and we want fresh context to overwrite .claude/context/.
-    writeContextPackFiles(workDir, contextPack);
+    await writeContextPackFiles(workDir, contextPack);
 
     // Step 3b2: Resolve the symphony run directory.
     // There is ONE run directory per chain (PLAN → RC → RC → EXECUTE).
@@ -2977,6 +3054,7 @@ export {
   validateConfig,
   validatePreRunInputs,
   validateSecrets,
+  writeContextPackFiles,
 };
 
 // Guard main() so the script does not execute when imported by tests.

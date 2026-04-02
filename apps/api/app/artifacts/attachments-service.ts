@@ -16,6 +16,7 @@ import {
 import { keys as awsKeys } from "@repo/aws/keys";
 import { withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
+import type { ContextPackAttachment } from "@/lib/loops/loop-state";
 
 /**
  * Convert a Prisma FileAttachment record to the API FileAttachment type.
@@ -113,6 +114,68 @@ async function populatePreviewUrls(
       attachment.previewUrl = url;
     }
   }
+}
+
+const SIGNED_URL_EXPIRY_SECONDS = 3600;
+
+/** Maximum number of attachments returned by the signed-URL listing methods. */
+export const ATTACHMENT_SIGNED_URL_MAX_FILES = 20;
+
+const signedUrlSelect = {
+  id: true,
+  filename: true,
+  mimeType: true,
+  sizeBytes: true,
+  key: true,
+  bucket: true,
+} as const;
+
+type SignedUrlRecord = {
+  id: string;
+  filename: string;
+  mimeType: string;
+  sizeBytes: number;
+  key: string;
+  bucket: string;
+};
+
+/**
+ * Convert attachment records to ContextPackAttachment entries with presigned download URLs.
+ */
+async function toContextPackAttachments(
+  records: SignedUrlRecord[]
+): Promise<ContextPackAttachment[]> {
+  const results = await Promise.allSettled(
+    records.map(async (record) => ({
+      id: record.id,
+      filename: record.filename,
+      mimeType: record.mimeType,
+      sizeBytes: record.sizeBytes,
+      signedUrl: await getSignedDownloadUrl(
+        record.key,
+        SIGNED_URL_EXPIRY_SECONDS,
+        record.bucket
+      ),
+      signedUrlExpiresAt: new Date(
+        Date.now() + SIGNED_URL_EXPIRY_SECONDS * 1000
+      ).toISOString(),
+    }))
+  );
+
+  const attachments: ContextPackAttachment[] = [];
+  for (const result of results) {
+    if (result.status === "fulfilled") {
+      attachments.push(result.value);
+    } else {
+      log.warn(
+        "[attachments-service] Failed to sign attachment URL, skipping",
+        {
+          error: result.reason,
+        }
+      );
+    }
+  }
+  return attachments;
 }
 
 export const attachmentsService = {
@@ -240,7 +303,7 @@ export const attachmentsService = {
 
     const records = await withDb((db) =>
       db.fileAttachment.findMany({
-        where: { artifactId },
+        where: { artifactId, artifact: { organizationId } },
         orderBy: { createdAt: "desc" },
       })
     );
@@ -264,6 +327,33 @@ export const attachmentsService = {
     const attachment = await withDb((db) =>
       db.fileAttachment.findUnique({
         where: { id: attachmentId, artifactId },
+      })
+    );
+
+    if (!attachment) {
+      throw new Error("Attachment not found");
+    }
+
+    const downloadUrl = await getSignedDownloadUrlWithDisposition(
+      attachment.key,
+      attachment.filename,
+      3600,
+      attachment.bucket
+    );
+
+    return { downloadUrl };
+  },
+
+  async getFeatureDownloadUrl(
+    featureId: string,
+    organizationId: string,
+    attachmentId: string
+  ): Promise<AttachmentDownloadResponse> {
+    await requireFeature(featureId, organizationId);
+
+    const attachment = await withDb((db) =>
+      db.fileAttachment.findUnique({
+        where: { id: attachmentId, featureId },
       })
     );
 
@@ -318,12 +408,52 @@ export const attachmentsService = {
   },
 
   /**
+   * List all attachments for an artifact with presigned download URLs (for context pack use).
+   */
+  async listWithSignedUrlsByArtifact(
+    artifactId: string,
+    organizationId: string
+  ): Promise<ContextPackAttachment[]> {
+    const records = await withDb((db) =>
+      db.fileAttachment.findMany({
+        where: { artifactId, artifact: { organizationId } },
+        select: signedUrlSelect,
+        orderBy: { createdAt: "desc" },
+        take: ATTACHMENT_SIGNED_URL_MAX_FILES,
+      })
+    );
+
+    return toContextPackAttachments(records);
+  },
+
+  /**
+   * List all attachments for a feature with presigned download URLs (for context pack use).
+   */
+  async listWithSignedUrlsByFeature(
+    featureId: string,
+    organizationId: string
+  ): Promise<ContextPackAttachment[]> {
+    const records = await withDb((db) =>
+      db.fileAttachment.findMany({
+        where: { featureId, feature: { organizationId } },
+        select: signedUrlSelect,
+        orderBy: { createdAt: "desc" },
+        take: ATTACHMENT_SIGNED_URL_MAX_FILES,
+      })
+    );
+
+    return toContextPackAttachments(records);
+  },
+
+  /**
    * Delete a feature attachment from the database and S3.
    */
   async deleteFeatureAttachment(
     featureId: string,
+    organizationId: string,
     attachmentId: string
   ): Promise<void> {
+    await requireFeature(featureId, organizationId);
     const attachment = await withDb.tx(async (tx) => {
       const record = await tx.fileAttachment.findUnique({
         where: { id: attachmentId, featureId },

@@ -38,6 +38,14 @@ vi.mock("@/app/artifacts/service", () => ({
   getCommitterInfo: vi.fn(),
 }));
 
+vi.mock("@/app/artifacts/attachments-service", () => ({
+  attachmentsService: {
+    listWithSignedUrlsByArtifact: vi.fn().mockResolvedValue([]),
+    listWithSignedUrlsByFeature: vi.fn().mockResolvedValue([]),
+  },
+  ATTACHMENT_SIGNED_URL_MAX_FILES: 20,
+}));
+
 vi.mock("@/app/integrations/github/service", () => ({
   githubService: { findInstallationForRepoFullName: vi.fn() },
 }));

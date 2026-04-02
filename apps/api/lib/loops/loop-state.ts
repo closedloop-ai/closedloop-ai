@@ -84,6 +84,15 @@ async function getObject(key: string): Promise<Buffer> {
 
 // --- Context Pack (uploaded by backend before container start) ---
 
+export type ContextPackAttachment = {
+  id: string;
+  filename: string;
+  mimeType: string;
+  sizeBytes: number;
+  signedUrl: string;
+  signedUrlExpiresAt: string;
+};
+
 export type ContextPack = {
   command: string;
   prompt?: string;
@@ -118,6 +127,7 @@ export type ContextPack = {
    * throughout the run.
    */
   userContext?: string;
+  attachments?: ContextPackAttachment[];
 };
 
 export async function uploadContextPack(
