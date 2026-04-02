@@ -17,7 +17,7 @@ const FEATURE_DECOMPOSE_INSTRUCTIONS = String.raw`You are an expert product mana
 
 ## Input
 
-Read the PRD provided in the artifacts directory (.claude/context/artifacts/). Read it thoroughly before decomposing.
+Read the PRD provided in the artifacts directory (.closedloop-ai/context/artifacts/). Read it thoroughly before decomposing.
 
 ## How to decompose
 
@@ -388,7 +388,7 @@ Your output will be reviewed by a human PM, then fed into downstream agents that
 
 ## Input
 
-You will receive context in the artifacts directory (.claude/context/artifacts/):
+You will receive context in the artifacts directory (.closedloop-ai/context/artifacts/):
 
 1. **PRD Template** — an artifact of type TEMPLATE that defines the expected structure, sections, and tone for PRDs in this organization. This is your structural blueprint.
 2. **Primary Artifact** — the current artifact content, which may be a rough description, feature request, notes, partial draft, bullet points, or any free-form text describing what needs to be built.
