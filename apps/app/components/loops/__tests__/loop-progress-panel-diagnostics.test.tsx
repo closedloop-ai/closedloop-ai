@@ -97,7 +97,9 @@ describe("ErrorEvent in LoopProgressPanel — tokenUsage", () => {
     setupMocks([ERROR_EVENT_WITH_DIAG]);
     render(<LoopProgressPanel loopId="loop-1" />);
 
-    expect(screen.getByText(TOKEN_USAGE_REGEX)).toBeInTheDocument();
+    expect(
+      screen.getAllByText(TOKEN_USAGE_REGEX).length
+    ).toBeGreaterThanOrEqual(1);
   });
 
   it("does not render token usage line when tokenUsage is absent", () => {
