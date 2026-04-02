@@ -1,4 +1,5 @@
 import { ArtifactType } from "@repo/api/src/types/artifact";
+import { RunLoopCommand } from "@repo/api/src/types/loop";
 import {
   cleanup,
   fireEvent,
@@ -13,7 +14,6 @@ import { CreateArtifactModal } from "../create-artifact-modal";
 // Mock the hooks
 const mockUseCreateArtifact = vi.fn();
 const mockUseRunLoop = vi.fn();
-const mockUseEngineerRoutingSelection = vi.fn();
 const mockUseArtifact = vi.fn();
 const mockUseArtifactsByProject = vi.fn();
 const mockUseTeamMembers = vi.fn();
@@ -48,10 +48,6 @@ vi.mock("@/hooks/queries/use-artifacts", async () => {
 
 vi.mock("@/hooks/queries/use-loops", () => ({
   useRunLoop: () => mockUseRunLoop(),
-}));
-
-vi.mock("@/lib/engineer/routing-store", () => ({
-  useEngineerRoutingSelection: () => mockUseEngineerRoutingSelection(),
 }));
 
 vi.mock("@/hooks/queries/use-teams", () => ({
@@ -92,6 +88,7 @@ const NO_PRDS_REGEX = /no prds in this project/i;
 
 describe("CreateArtifactModal", () => {
   const mockMutate = vi.fn();
+  const mockRunLoopMutate = vi.fn();
   const mockOnOpenChange = vi.fn();
   const mockOnSuccess = vi.fn();
 
@@ -105,12 +102,8 @@ describe("CreateArtifactModal", () => {
     });
 
     mockUseRunLoop.mockReturnValue({
-      mutate: vi.fn(),
+      mutate: mockRunLoopMutate,
       isPending: false,
-    });
-
-    mockUseEngineerRoutingSelection.mockReturnValue({
-      computeTargetId: null,
     });
 
     mockUseArtifact.mockReturnValue({
@@ -451,6 +444,58 @@ describe("CreateArtifactModal", () => {
         name: GENERATE_PRD_REGEX,
       });
       expect(generateButton).toBeInTheDocument();
+    });
+
+    it("should start PRD generation without a compute target override", async () => {
+      mockUseGitHubIntegrationStatus.mockReturnValue({
+        data: { connected: true },
+        isLoading: false,
+      });
+
+      mockUseGitHubRepositories.mockReturnValue({
+        data: [{ id: "repo-1", name: "repo", fullName: "org/repo" }],
+        isLoading: false,
+      });
+
+      mockMutate.mockImplementation((_input, options) => {
+        options?.onSuccess?.({
+          id: "new-prd-123",
+          title: "Generated PRD",
+          slug: "generated-prd",
+        });
+      });
+
+      render(
+        <CreateArtifactModal
+          artifactType={ArtifactType.Prd}
+          onOpenChange={mockOnOpenChange}
+          open={true}
+          projectId="project-1"
+          teamId="team-1"
+        />
+      );
+
+      fireEvent.change(screen.getByLabelText(TITLE_REGEX), {
+        target: { value: "Generated PRD" },
+      });
+
+      const repoSelector = screen.getByRole("combobox", {
+        name: TARGET_REPOSITORY_REGEX,
+      });
+      repoSelector.click();
+
+      await waitFor(() => {
+        screen.getByText("org/repo").click();
+      });
+
+      screen.getByRole("button", { name: GENERATE_PRD_REGEX }).click();
+
+      await waitFor(() => {
+        expect(mockRunLoopMutate).toHaveBeenCalledWith({
+          artifactId: "new-prd-123",
+          command: RunLoopCommand.GeneratePrd,
+        });
+      });
     });
   });
 
