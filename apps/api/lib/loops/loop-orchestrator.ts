@@ -1,6 +1,7 @@
 import type {
   LoopEvent,
   LoopEventCompleted,
+  LoopEventError,
   TokensByModel,
 } from "@repo/api/src/types/loop";
 import {
@@ -12,6 +13,7 @@ import {
 import { withDb } from "@repo/database";
 import { getInstallationAccessToken } from "@repo/github";
 import { log } from "@repo/observability/log";
+import { truncateUtf8 } from "@repo/observability/truncate-utf8";
 import { getCommitterInfo } from "@/app/artifacts/service";
 import { githubService } from "@/app/integrations/github/service";
 import {
@@ -1052,7 +1054,7 @@ function extractPrSessionInfo(event: Record<string, unknown>): {
 async function handleLoopError(
   loopId: string,
   organizationId: string,
-  event: { type: "error"; code: string; message: string; timestamp: string },
+  event: LoopEventError,
   replayContext?: RunnerReplayContext
 ): Promise<LoopEvent[]> {
   if (event.code === "CANCELLED") {
@@ -1096,6 +1098,7 @@ async function handleLoopError(
 
   if (event.code === "TIMED_OUT") {
     const prSession = extractPrSessionInfo(event as Record<string, unknown>);
+    const canonical = buildCanonicalErrorData(event);
 
     await loopsService.updateStatus(
       loopId,
@@ -1104,6 +1107,10 @@ async function handleLoopError(
       {
         completedAt: new Date(),
         error: { code: event.code, message: event.message },
+        ...(event.tokenUsage !== undefined && {
+          tokensInput: event.tokenUsage.inputTokens,
+          tokensOutput: event.tokenUsage.outputTokens,
+        }),
         ...prSession,
       }
     );
@@ -1113,11 +1120,7 @@ async function handleLoopError(
       organizationId,
       {
         type: event.type,
-        data: {
-          code: event.code,
-          message: event.message,
-          timestamp: event.timestamp,
-        },
+        data: canonical,
       },
       replayContext
     );
@@ -1126,7 +1129,7 @@ async function handleLoopError(
       loopId,
       message: event.message,
     });
-    return [event as unknown as LoopEvent];
+    return [canonical];
   }
 
   // Structured error codes from electron/runner with specific log levels.
@@ -1145,10 +1148,15 @@ async function handleLoopError(
 
   // Extract PR/session info from error event (harness includes these even on failure)
   const prSession = extractPrSessionInfo(event as Record<string, unknown>);
+  const canonical = buildCanonicalErrorData(event);
 
   await loopsService.updateStatus(loopId, organizationId, LoopStatus.Failed, {
     completedAt: new Date(),
     error: { code: event.code, message: event.message },
+    ...(event.tokenUsage !== undefined && {
+      tokensInput: event.tokenUsage.inputTokens,
+      tokensOutput: event.tokenUsage.outputTokens,
+    }),
     ...prSession,
   });
 
@@ -1158,11 +1166,7 @@ async function handleLoopError(
     organizationId,
     {
       type: event.type,
-      data: {
-        code: event.code,
-        message: event.message,
-        timestamp: event.timestamp,
-      },
+      data: canonical,
     },
     replayContext
   );
@@ -1179,7 +1183,31 @@ async function handleLoopError(
     });
   }
 
-  return [event as unknown as LoopEvent];
+  return [canonical];
+}
+
+export const LOG_TAIL_MAX_BYTES_ERROR_EVENT = 8192;
+
+/**
+ * Build a canonical LoopEventError with truncated logTail.
+ * Used for both addEvent persistence and SSE return so both paths see identical data.
+ */
+function buildCanonicalErrorData(event: LoopEventError): LoopEventError {
+  return {
+    type: "error",
+    code: event.code,
+    message: event.message,
+    timestamp: event.timestamp,
+    ...(event.logTail !== undefined && {
+      logTail: truncateUtf8(event.logTail, LOG_TAIL_MAX_BYTES_ERROR_EVENT),
+    }),
+    ...(event.tokenUsage !== undefined && {
+      tokenUsage: event.tokenUsage,
+    }),
+    ...(event.diagnosticsVersion !== undefined && {
+      diagnosticsVersion: event.diagnosticsVersion,
+    }),
+  };
 }
 
 /**

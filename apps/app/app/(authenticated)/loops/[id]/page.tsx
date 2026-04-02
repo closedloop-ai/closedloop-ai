@@ -22,7 +22,7 @@ export default async function LoopDetailPage({ params }: LoopDetailPageProps) {
           { label: "Loop Detail" },
         ]}
       />
-      <main className="flex flex-1 flex-col p-6">
+      <main className="flex min-h-0 flex-1 flex-col overflow-auto p-6">
         <LoopDetailContainer id={id} />
       </main>
     </>

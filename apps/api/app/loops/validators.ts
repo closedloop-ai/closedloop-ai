@@ -93,6 +93,32 @@ export const loopEventPayloadValidator = z.union([
  * Applied post-normalization so both envelope and flattened paths are covered.
  * Returns an error string if validation fails, or null if valid.
  */
+const errorEventSchema = z.object({
+  code: z.string(),
+  message: z.string(),
+  timestamp: z.string(),
+  logTail: z.string().optional(),
+  tokenUsage: z
+    .object({
+      inputTokens: z.number(),
+      outputTokens: z.number(),
+    })
+    .optional(),
+  diagnosticsVersion: z.string().optional(),
+});
+
+function validateErrorEvent(event: Record<string, unknown>): string | null {
+  const result = errorEventSchema.safeParse(event);
+  if (!result.success) {
+    const issue = result.error.issues[0];
+    const path = issue?.path.join(".");
+    return path
+      ? `${path}: ${issue.message}`
+      : (issue?.message ?? "invalid error event");
+  }
+  return null;
+}
+
 export function validateNormalizedEvent(
   event: Record<string, unknown>
 ): string | null {
@@ -110,11 +136,8 @@ export function validateNormalizedEvent(
       return "completed event requires a timestamp string";
     }
   }
-  if (
-    event.type === "error" &&
-    (typeof event.code !== "string" || typeof event.message !== "string")
-  ) {
-    return "error event requires code and message strings";
+  if (event.type === "error") {
+    return validateErrorEvent(event);
   }
   if (event.type === "cancelled" && typeof event.timestamp !== "string") {
     return "cancelled event requires a timestamp string";

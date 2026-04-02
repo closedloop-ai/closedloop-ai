@@ -198,6 +198,9 @@ export type LoopEventError = {
   code: string;
   message: string;
   timestamp: string;
+  logTail?: string;
+  tokenUsage?: { inputTokens: number; outputTokens: number };
+  diagnosticsVersion?: string;
 };
 
 export type LoopEventCancelled = {
