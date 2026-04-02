@@ -1,5 +1,6 @@
 "use client";
 
+import { EngineerRoutingMode } from "@repo/api/src/types/relay";
 import { useUser } from "@repo/auth/client";
 import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
@@ -43,6 +44,7 @@ import {
 import type { CheckResult } from "@/lib/engineer/queries/health-check";
 import { healthCheckOptions } from "@/lib/engineer/queries/health-check";
 import { queryKeys } from "@/lib/engineer/queries/keys";
+import { useEngineerRoutingSelection } from "@/lib/engineer/routing-store";
 import { useSystemCheckEligibility } from "@/lib/system-check/use-system-check-eligibility";
 
 function formatLastSeen(value: Date): string {
@@ -143,6 +145,7 @@ export function LocalComputeTargetsCard() {
   const toggleSharing = useToggleComputeTargetSharing();
   const { isLoading: systemCheckLoading, shouldRunSystemCheck } =
     useSystemCheckEligibility();
+  const routing = useEngineerRoutingSelection();
   const {
     data: healthCheckData,
     dataUpdatedAt,
@@ -169,6 +172,17 @@ export function LocalComputeTargetsCard() {
 
     await refetchHealthCheck();
   };
+
+  let activeTargetLabel: string | undefined;
+  if (
+    routing.mode === EngineerRoutingMode.CloudRelay &&
+    routing.computeTargetId
+  ) {
+    const target = targets.find((t) => t.id === routing.computeTargetId);
+    activeTargetLabel = target?.machineName;
+  } else if (routing.mode === EngineerRoutingMode.LocalElectron) {
+    activeTargetLabel = "localhost";
+  }
 
   const failureCount = getFailureCount(healthCheckData?.checks);
   const summary = getSystemCheckSummary(
@@ -317,6 +331,9 @@ export function LocalComputeTargetsCard() {
                     <p className="text-sm">{summary}</p>
                     <p className="text-muted-foreground text-xs">
                       {statusDescription}
+                      {activeTargetLabel && (
+                        <> &middot; Target: {activeTargetLabel}</>
+                      )}
                     </p>
                   </div>
                 </CollapsibleTrigger>

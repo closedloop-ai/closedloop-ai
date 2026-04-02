@@ -36,7 +36,8 @@ export function resetHealthCheckDialogVisibilityForTests(): void {
 
 export function HealthCheckDialog({
   targetKey = "default",
-}: Readonly<{ targetKey?: string }>) {
+  targetLabel,
+}: Readonly<{ targetKey?: string; targetLabel?: string }>) {
   const [mounted, setMounted] = useState(false);
   const [failureDetected, setFailureDetected] = useState(false);
   const [closing, setClosing] = useState(false);
@@ -44,6 +45,7 @@ export function HealthCheckDialog({
   const [worktreePath, setWorktreePath] = useState("~/Source");
   const [savingWorktree, setSavingWorktree] = useState(false);
   const [revealedCount, setRevealedCount] = useState(0);
+  const [recheckKey, setRecheckKey] = useState(0);
   const [showSuccess, setShowSuccess] = useState(false);
   const revealTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
   const canOpenThisMount = useRef(!shownTargetKeys.has(targetKey));
@@ -105,7 +107,10 @@ export function HealthCheckDialog({
     return () => clearTimeout(timer);
   }, [hasRequiredFailure]);
 
-  // Staggered reveal: only run when dialog is showing (failure detected)
+  // Staggered reveal: only run when dialog is showing (failure detected).
+  // recheckKey ensures the stagger re-triggers even when the response is
+  // structurally identical (TanStack Query structural sharing preserves the
+  // same data reference in that case).
   useEffect(() => {
     if (!(failureDetected && data?.checks)) {
       return;
@@ -131,7 +136,7 @@ export function HealthCheckDialog({
       revealTimers.current.forEach(clearTimeout);
       revealTimers.current = [];
     };
-  }, [failureDetected, data]);
+  }, [failureDetected, data, recheckKey]);
 
   // Phase 1: after all revealed + all pass → show success screen
   useEffect(() => {
@@ -163,7 +168,9 @@ export function HealthCheckDialog({
     setRevealedCount(0);
     setShowSuccess(false);
     await queryClient.invalidateQueries({ queryKey: queryKeys.healthCheck() });
-    refetch();
+    await refetch();
+    // Bump recheckKey to re-trigger stagger even if data is structurally identical
+    setRecheckKey((k) => k + 1);
   }, [queryClient, refetch]);
 
   const handleContinue = useCallback(() => {
@@ -229,6 +236,14 @@ export function HealthCheckDialog({
           </div>
           <DialogDescription>
             Verifying that all required tools and configuration are in place.
+            {targetLabel && (
+              <>
+                {" "}
+                <span className="font-medium text-foreground">
+                  Target: {targetLabel}
+                </span>
+              </>
+            )}
           </DialogDescription>
         </DialogHeader>
 
