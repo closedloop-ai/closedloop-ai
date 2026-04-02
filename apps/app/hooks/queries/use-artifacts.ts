@@ -542,79 +542,7 @@ export function useArtifactPullRequest(
 }
 
 /**
- * Reorder artifacts by setting sortOrder values.
- * Accepts an array of artifact IDs in the desired order.
- */
-export function useReorderArtifacts() {
-  const queryClient = useQueryClient();
-  const apiClient = useApiClient();
-
-  return useMutation({
-    mutationFn: (artifactIds: string[]) =>
-      apiClient.post<string[]>("/artifacts/reorder", { artifactIds }),
-    onMutate: async (artifactIds) => {
-      // Cancel outgoing refetches to avoid overwriting optimistic update
-      await queryClient.cancelQueries({ queryKey: artifactKeys.lists() });
-
-      // Snapshot previous values for rollback
-      const previousLists = queryClient.getQueriesData({
-        queryKey: artifactKeys.lists(),
-      });
-
-      // Optimistically update all artifact list queries
-      queryClient.setQueriesData(
-        { queryKey: artifactKeys.lists() },
-        (old: ArtifactWithWorkstream[] | undefined) => {
-          if (!old) {
-            return old;
-          }
-
-          // Create a map of new positions
-          const positionMap = new Map(
-            artifactIds.map((id, index) => [id, index])
-          );
-
-          // Sort artifacts by new order
-          return [...old].sort((a, b) => {
-            const posA = positionMap.get(a.id);
-            const posB = positionMap.get(b.id);
-
-            // Keep artifacts not in reorder list at the end
-            if (posA === undefined && posB === undefined) {
-              return 0;
-            }
-            if (posA === undefined) {
-              return 1;
-            }
-            if (posB === undefined) {
-              return -1;
-            }
-
-            return posA - posB;
-          });
-        }
-      );
-
-      return { previousLists };
-    },
-    onError: (_err, _variables, context) => {
-      // Rollback on error
-      if (context?.previousLists) {
-        for (const [queryKey, data] of context.previousLists) {
-          queryClient.setQueryData(queryKey, data);
-        }
-      }
-    },
-    onSuccess: () => {
-      // Invalidate to fetch fresh data from server
-      queryClient.invalidateQueries({ queryKey: artifactKeys.lists() });
-    },
-  });
-}
-
-/**
  * Move multiple artifacts to a different project.
- * Used for drag-and-drop cross-project move.
  */
 export function useBatchMoveArtifacts() {
   const queryClient = useQueryClient();

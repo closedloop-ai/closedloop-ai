@@ -222,7 +222,7 @@ function NameCell({
           />
         </div>
       )}
-      {indented && <div className="w-10 shrink-0" />}
+      {indented && <div className="w-7 shrink-0" />}
       {hasChevron && (
         <button
           className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md ${onToggleExpand ? "hover:bg-accent" : "cursor-default opacity-30"}`}
@@ -747,6 +747,8 @@ type ArtifactRowProps = {
   parentTitle?: string;
   /** Parent entity route for this row, used by the Parent column cell. */
   parentHref?: string | null;
+  /** Extend an indented bottom border to the left edge. */
+  extendIndentedBottomBorderLeft?: boolean;
 };
 
 export function ArtifactRow({
@@ -763,6 +765,7 @@ export function ArtifactRow({
   editHandlers,
   parentTitle,
   parentHref,
+  extendIndentedBottomBorderLeft = false,
 }: ArtifactRowProps) {
   const router = useRouter();
   const params = useParams();
@@ -775,6 +778,7 @@ export function ArtifactRow({
   const gridTemplateColumns = getArtifactRowGridTemplateColumns(
     visibleColumns.length
   );
+  const useIndentedBottomBorder = indented || isExpanded === true;
 
   function handleClick() {
     if (item.kind === "project") {
@@ -799,10 +803,20 @@ export function ArtifactRow({
       value={{ ...(editHandlers ?? {}), parentHref, parentTitle }}
     >
       <div
-        className="group/row grid h-11 min-w-fit bg-background hover:bg-muted/50"
+        className="group/row relative grid h-11 min-w-fit bg-background hover:bg-muted/50"
         style={{ gridTemplateColumns }}
       >
-        <div className="border-b">
+        {useIndentedBottomBorder ? (
+          <>
+            <div className="pointer-events-none absolute right-0 bottom-0 left-10 border-b" />
+            {extendIndentedBottomBorderLeft && (
+              <div className="pointer-events-none absolute bottom-0 left-0 h-px w-10 bg-border" />
+            )}
+          </>
+        ) : (
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 border-b" />
+        )}
+        <div>
           <NameCell
             indented={indented}
             isExpanded={isExpanded}
@@ -818,14 +832,14 @@ export function ArtifactRow({
         {visibleColumns.map((column) => {
           const CellRenderer = CELL_RENDERERS[column];
           return (
-            <div className="border-b" key={column}>
+            <div key={column}>
               <CellRenderer item={item} />
             </div>
           );
         })}
 
         {/* More menu */}
-        <div className="border-b">
+        <div>
           <div className="flex h-11 items-center border-l px-3 py-2">
             {moreMenuContent ?? (
               <button

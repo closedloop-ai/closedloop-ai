@@ -76,7 +76,7 @@ vi.mock("@/hooks/queries/use-users", () => ({
 
 // Mock entity links hooks to avoid Clerk auth dependencies
 vi.mock("@/hooks/queries/use-entity-links", () => ({
-  useSourceLinks: () => ({
+  useLinkedEntities: () => ({
     data: [],
     isLoading: false,
     error: null,

@@ -366,7 +366,9 @@ export const entityLinksService = {
       { id: input.entityId, type: input.entityType },
     ];
 
-    if (input.includeDownstream) {
+    const shouldIncludeDownstream = input.includeDownstream;
+
+    if (shouldIncludeDownstream) {
       const downstream = await this.findDownstreamEntityIds(
         organizationId,
         input.entityId,
