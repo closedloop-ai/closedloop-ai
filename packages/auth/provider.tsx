@@ -49,7 +49,9 @@ export const AuthProvider = ({
     cardBox: "shadow-none border-0",
     profileSectionPrimaryButton:
       "bg-primary text-primary-foreground hover:bg-primary/90",
-    formButtonPrimary: "bg-primary text-primary-foreground hover:bg-primary/90",
+    formButtonPrimary:
+      "bg-primary text-primary-foreground hover:bg-primary/90 h-11",
+    formButtonPrimary__icon: "hidden",
     badge: "bg-muted text-muted-foreground",
   };
 
@@ -67,12 +69,12 @@ export const AuthProvider = ({
       localization={{
         signIn: {
           start: {
-            title: "Sign in",
+            title: "Welcome to ClosedLoop",
           },
         },
         signUp: {
           start: {
-            title: "Sign up",
+            title: "Create your account",
           },
         },
         userButton: {

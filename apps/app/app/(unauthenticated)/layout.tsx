@@ -1,4 +1,3 @@
-import { ModeToggle } from "@repo/design-system/components/ui/mode-toggle";
 import Image from "next/image";
 import type { ReactNode } from "react";
 
@@ -8,10 +7,10 @@ type AuthLayoutProps = {
 
 function AuthLayout({ children }: AuthLayoutProps) {
   return (
-    <div className="container relative grid h-dvh flex-col items-center justify-center lg:max-w-none lg:grid-cols-2 lg:px-0">
-      <div className="relative hidden h-full flex-col bg-muted p-10 text-white lg:flex dark:border-r">
-        <div className="absolute inset-0 bg-muted" />
-        <div className="relative z-20">
+    <div className="relative grid h-dvh lg:grid-cols-2">
+      {/* Left — auth form */}
+      <div className="flex h-full flex-col px-6 py-10 lg:px-10">
+        <div>
           <Image
             alt="ClosedLoop logo"
             className="dark:hidden"
@@ -27,13 +26,28 @@ function AuthLayout({ children }: AuthLayoutProps) {
             width={200}
           />
         </div>
-        <div className="absolute top-4 right-4">
-          <ModeToggle />
+        <div className="flex flex-1 items-center justify-center">
+          <div className="w-full max-w-[400px]">{children}</div>
         </div>
       </div>
-      <div className="lg:p-8">
-        <div className="mx-auto flex w-full max-w-[400px] flex-col justify-center space-y-6">
-          {children}
+
+      {/* Right — product showcase (hidden on mobile) */}
+      <div className="hidden h-full items-center justify-center p-8 lg:flex">
+        <div
+          className="flex h-[90%] w-[90%] items-center justify-end overflow-hidden rounded-3xl pl-12"
+          style={{
+            background:
+              "linear-gradient(to bottom, #fff9eb, #ffe4ab 31%, #d9a2d2 68%, #4685ff)",
+          }}
+        >
+          <Image
+            alt="ClosedLoop product screenshot"
+            className="max-h-full w-auto object-contain"
+            height={1191}
+            priority
+            src="/CL-SS3.png"
+            width={1060}
+          />
         </div>
       </div>
     </div>
