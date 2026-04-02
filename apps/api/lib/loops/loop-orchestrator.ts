@@ -13,6 +13,7 @@ import {
 import { withDb } from "@repo/database";
 import { getInstallationAccessToken } from "@repo/github";
 import { log } from "@repo/observability/log";
+import { truncateUtf8 } from "@repo/observability/truncate-utf8";
 import { getCommitterInfo } from "@/app/artifacts/service";
 import { githubService } from "@/app/integrations/github/service";
 import {
@@ -1097,21 +1098,7 @@ async function handleLoopError(
 
   if (event.code === "TIMED_OUT") {
     const prSession = extractPrSessionInfo(event as Record<string, unknown>);
-
-    const canonicalErrorData: Record<string, unknown> = {
-      code: event.code,
-      message: event.message,
-      timestamp: event.timestamp,
-      ...(event.logTail !== undefined
-        ? { logTail: truncateLogTail(event.logTail) }
-        : {}),
-      ...(event.tokenUsage !== undefined
-        ? { tokenUsage: event.tokenUsage }
-        : {}),
-      ...(event.diagnosticsVersion !== undefined
-        ? { diagnosticsVersion: event.diagnosticsVersion }
-        : {}),
-    };
+    const canonical = buildCanonicalErrorData(event);
 
     await loopsService.updateStatus(
       loopId,
@@ -1129,7 +1116,7 @@ async function handleLoopError(
       organizationId,
       {
         type: event.type,
-        data: canonicalErrorData,
+        data: canonical,
       },
       replayContext
     );
@@ -1138,7 +1125,7 @@ async function handleLoopError(
       loopId,
       message: event.message,
     });
-    return [{ type: "error", ...canonicalErrorData } as unknown as LoopEvent];
+    return [canonical];
   }
 
   // Structured error codes from electron/runner with specific log levels.
@@ -1157,19 +1144,7 @@ async function handleLoopError(
 
   // Extract PR/session info from error event (harness includes these even on failure)
   const prSession = extractPrSessionInfo(event as Record<string, unknown>);
-
-  const canonicalErrorData: Record<string, unknown> = {
-    code: event.code,
-    message: event.message,
-    timestamp: event.timestamp,
-    ...(event.logTail !== undefined
-      ? { logTail: truncateLogTail(event.logTail) }
-      : {}),
-    ...(event.tokenUsage !== undefined ? { tokenUsage: event.tokenUsage } : {}),
-    ...(event.diagnosticsVersion !== undefined
-      ? { diagnosticsVersion: event.diagnosticsVersion }
-      : {}),
-  };
+  const canonical = buildCanonicalErrorData(event);
 
   await loopsService.updateStatus(loopId, organizationId, LoopStatus.Failed, {
     completedAt: new Date(),
@@ -1183,7 +1158,7 @@ async function handleLoopError(
     organizationId,
     {
       type: event.type,
-      data: canonicalErrorData,
+      data: canonical,
     },
     replayContext
   );
@@ -1200,27 +1175,31 @@ async function handleLoopError(
     });
   }
 
-  return [{ type: "error", ...canonicalErrorData } as unknown as LoopEvent];
+  return [canonical];
 }
 
 export const LOG_TAIL_MAX_BYTES_ERROR_EVENT = 8192;
 
 /**
- * Truncate a logTail string to LOG_TAIL_MAX_BYTES_ERROR_EVENT bytes, UTF-8 safe.
- * Walks backward past UTF-8 continuation bytes (0x80..0xBF) to avoid splitting
- * a multi-byte character at the truncation boundary.
+ * Build a canonical LoopEventError with truncated logTail.
+ * Used for both addEvent persistence and SSE return so both paths see identical data.
  */
-export function truncateLogTail(logTail: string): string {
-  const encoded = new TextEncoder().encode(logTail);
-  if (encoded.length <= LOG_TAIL_MAX_BYTES_ERROR_EVENT) {
-    return logTail;
-  }
-  let cutoff = LOG_TAIL_MAX_BYTES_ERROR_EVENT;
-  // biome-ignore lint/suspicious/noBitwiseOperators: UTF-8 continuation byte check requires bitwise AND
-  while (cutoff > 0 && (encoded[cutoff]! & 0xc0) === 0x80) {
-    cutoff--;
-  }
-  return new TextDecoder().decode(encoded.subarray(0, cutoff));
+function buildCanonicalErrorData(event: LoopEventError): LoopEventError {
+  return {
+    type: "error",
+    code: event.code,
+    message: event.message,
+    timestamp: event.timestamp,
+    ...(event.logTail !== undefined && {
+      logTail: truncateUtf8(event.logTail, LOG_TAIL_MAX_BYTES_ERROR_EVENT),
+    }),
+    ...(event.tokenUsage !== undefined && {
+      tokenUsage: event.tokenUsage,
+    }),
+    ...(event.diagnosticsVersion !== undefined && {
+      diagnosticsVersion: event.diagnosticsVersion,
+    }),
+  };
 }
 
 /**

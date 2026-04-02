@@ -1,4 +1,5 @@
 import { log } from "../log";
+import { truncateUtf8 } from "../truncate-utf8";
 import type {
   DesktopTelemetryEvent,
   TelemetryDiagnostics,
@@ -50,20 +51,7 @@ export function sanitizeDesktopTelemetryDiagnostics(
     });
     const joined = filtered.join("\n");
 
-    const encoded = new TextEncoder().encode(joined);
-    if (encoded.byteLength > LOG_TAIL_MAX_BYTES) {
-      let end = LOG_TAIL_MAX_BYTES;
-      // Walk backward to find the start of the last complete UTF-8 character.
-      // UTF-8 continuation bytes have the form 10xxxxxx (0x80..0xBF).
-      // biome-ignore lint/suspicious/noBitwiseOperators: bitwise mask for UTF-8 continuation byte detection
-      while (end > 0 && (encoded[end] & 0xc0) === 0x80) {
-        end--;
-      }
-      const truncated = encoded.slice(0, end);
-      sanitized.logTail = new TextDecoder().decode(truncated);
-    } else {
-      sanitized.logTail = joined;
-    }
+    sanitized.logTail = truncateUtf8(joined, LOG_TAIL_MAX_BYTES);
   }
 
   return sanitized;

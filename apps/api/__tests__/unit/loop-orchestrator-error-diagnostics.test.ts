@@ -87,12 +87,12 @@ vi.mock("@/lib/loops/loop-commands", () => ({
 
 // --- Imports (after mocks) ---
 
+import { truncateUtf8 } from "@repo/observability/truncate-utf8";
 import { beforeEach, describe, expect, it } from "vitest";
 import { loopsService } from "@/app/loops/service";
 import {
   handleLoopEvent,
   LOG_TAIL_MAX_BYTES_ERROR_EVENT,
-  truncateLogTail,
 } from "@/lib/loops/loop-orchestrator";
 import { buildLoop } from "../fixtures/loop";
 
@@ -108,15 +108,15 @@ const mockLoopsService = loopsService as unknown as {
 // truncateLogTail unit tests
 // ---------------------------------------------------------------------------
 
-describe("truncateLogTail", () => {
+describe("truncateUtf8 (with LOG_TAIL_MAX_BYTES_ERROR_EVENT)", () => {
   it("returns the original string when within 8KB", () => {
     const short = "a".repeat(100);
-    expect(truncateLogTail(short)).toBe(short);
+    expect(truncateUtf8(short, LOG_TAIL_MAX_BYTES_ERROR_EVENT)).toBe(short);
   });
 
   it("truncates to exactly 8KB for ASCII input", () => {
     const long = "x".repeat(LOG_TAIL_MAX_BYTES_ERROR_EVENT + 100);
-    const result = truncateLogTail(long);
+    const result = truncateUtf8(long, LOG_TAIL_MAX_BYTES_ERROR_EVENT);
     expect(new TextEncoder().encode(result).length).toBeLessThanOrEqual(
       LOG_TAIL_MAX_BYTES_ERROR_EVENT
     );
@@ -126,12 +126,12 @@ describe("truncateLogTail", () => {
   it("does not split a multi-byte UTF-8 character", () => {
     // Build a string just over 8KB ending with a 3-byte UTF-8 character (U+4E2D "中")
     const base = "a".repeat(LOG_TAIL_MAX_BYTES_ERROR_EVENT - 2);
-    const twoByteChar = "\u00e9"; // é — 2 bytes in UTF-8
-    const threeByteChar = "\u4e2d"; // 中 — 3 bytes in UTF-8
+    const twoByteChar = "\u00e9"; // é -- 2 bytes in UTF-8
+    const threeByteChar = "\u4e2d"; // 中 -- 3 bytes in UTF-8
     // position the 3-byte char so it straddles the cutoff
     const input = base + twoByteChar + threeByteChar;
-    const result = truncateLogTail(input);
-    // Result must be valid UTF-8 (no partial sequences) — TextDecoder would throw on invalid
+    const result = truncateUtf8(input, LOG_TAIL_MAX_BYTES_ERROR_EVENT);
+    // Result must be valid UTF-8 (no partial sequences)
     expect(() =>
       new TextDecoder("utf-8", { fatal: true }).decode(
         new TextEncoder().encode(result)
@@ -156,7 +156,7 @@ describe("handleLoopEvent error diagnostics", () => {
   function setupLoop(overrides: Partial<Parameters<typeof buildLoop>[0]> = {}) {
     const loop = buildLoop({
       status: "RUNNING",
-      command: "EXECUTE" as "PLAN",
+      command: "EXECUTE",
       s3StateKey: null,
       artifactId: null,
       ...overrides,
