@@ -142,10 +142,10 @@ type SignedUrlRecord = {
 /**
  * Convert attachment records to ContextPackAttachment entries with presigned download URLs.
  */
-function toContextPackAttachments(
+async function toContextPackAttachments(
   records: SignedUrlRecord[]
 ): Promise<ContextPackAttachment[]> {
-  return Promise.all(
+  const results = await Promise.allSettled(
     records.map(async (record) => ({
       id: record.id,
       filename: record.filename,
@@ -161,6 +161,21 @@ function toContextPackAttachments(
       ).toISOString(),
     }))
   );
+
+  const attachments: ContextPackAttachment[] = [];
+  for (const result of results) {
+    if (result.status === "fulfilled") {
+      attachments.push(result.value);
+    } else {
+      log.warn(
+        "[attachments-service] Failed to sign attachment URL, skipping",
+        {
+          error: result.reason,
+        }
+      );
+    }
+  }
+  return attachments;
 }
 
 export const attachmentsService = {
