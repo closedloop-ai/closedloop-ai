@@ -83,7 +83,10 @@ function checkGit(): Promise<CheckResult> {
     required: true,
     cmd: "git",
     args: ["--version"],
-    remediation: "Install via Xcode CLT: xcode-select --install",
+    remediation:
+      process.platform === "darwin"
+        ? "Install via Xcode CLT: xcode-select --install"
+        : "Install: sudo apt-get install git (or your distro's package manager)",
   });
 }
 
@@ -105,7 +108,10 @@ function checkGhCli(): Promise<CheckResult> {
     required: true,
     cmd: "gh",
     args: ["--version"],
-    remediation: "Install: brew install gh",
+    remediation:
+      process.platform === "darwin"
+        ? "Install: brew install gh"
+        : "Install: see https://github.com/cli/cli/blob/trunk/docs/install_linux.md",
   });
 }
 
@@ -230,7 +236,10 @@ function checkCodex(): Promise<CheckResult> {
 }
 
 async function checkPython3(): Promise<CheckResult> {
-  const REMEDIATION = "Install Python 3.10 or later: brew install python@3.13";
+  const REMEDIATION =
+    process.platform === "darwin"
+      ? "Install Python 3.10 or later: brew install python@3.13"
+      : "Install Python 3.10 or later: sudo apt-get install python3 (or your distro's package manager)";
   try {
     const output = await runCommand("python3", ["--version"]);
     const version = parseVersion(output);

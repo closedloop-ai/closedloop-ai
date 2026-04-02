@@ -102,8 +102,18 @@ afterAll(() => {
   rmSync(tmpRoot, { recursive: true, force: true });
 });
 
+beforeEach(() => {
+  // Stub fetch globally so tests that trigger checkPluginVersions()
+  // (whenever allInstalled is true) never make real network requests.
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(() => Promise.reject(new Error("unstubbed fetch")))
+  );
+});
+
 afterEach(() => {
   vi.clearAllMocks();
+  vi.unstubAllGlobals();
 });
 
 // ---------------------------------------------------------------------------
@@ -234,11 +244,8 @@ function makeJsonResponse(body: unknown, status = 200): Response {
 
 describe("GET /api/engineer/health-check -- plugin version checks", () => {
   beforeEach(() => {
+    // Override the file-level fetch rejection with a controllable mock
     vi.stubGlobal("fetch", vi.fn());
-  });
-
-  afterEach(() => {
-    vi.unstubAllGlobals();
   });
 
   test("all 5 up-to-date: plugin-versions row present with passed: true, required: false", async () => {
