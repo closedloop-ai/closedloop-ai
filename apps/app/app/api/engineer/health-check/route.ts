@@ -422,10 +422,6 @@ async function checkPluginVersions(
     }
   }
 
-  if (upToDate.length === 0 && outdated.length === 0) {
-    return undefined;
-  }
-
   if (outdated.length > 0) {
     return {
       id: "plugin-versions",
