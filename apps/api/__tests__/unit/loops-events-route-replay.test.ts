@@ -36,6 +36,38 @@ import { loopsService, ReplayDetectedError } from "@/app/loops/service";
 import { authenticateLoopRunner } from "@/lib/auth/loop-runner-jwt";
 import { handleLoopEvent } from "@/lib/loops/loop-orchestrator";
 
+function makeAuthOk(loopId = "loop-123") {
+  vi.mocked(authenticateLoopRunner).mockResolvedValue({
+    ok: true,
+    claims: {
+      loopId,
+      organizationId: "org-123",
+      tokenId: "token-123",
+    },
+  });
+  vi.mocked(loopsService.findById).mockResolvedValue({
+    id: loopId,
+    organizationId: "org-123",
+    status: "RUNNING",
+  } as any);
+  vi.mocked(handleLoopEvent).mockResolvedValue([]);
+}
+
+function makeErrorRequest(
+  body: Record<string, unknown>,
+  loopId = "loop-123"
+): Request {
+  return new Request(`http://localhost/api/loops/${loopId}/events`, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer runner-token",
+      "x-loop-event-nonce": "11111111-1111-4111-8111-111111111111",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+}
+
 describe("POST /api/loops/[id]/events replay handling", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -80,5 +112,113 @@ describe("POST /api/loops/[id]/events replay handling", () => {
     const json = await response.json();
     expect(json.success).toBe(false);
     expect(json.error).toBe("Replay detected");
+  });
+});
+
+describe("POST /api/loops/[id]/events — diagnostic fields", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("accepts envelope format error event with valid diagnostics: returns 200", async () => {
+    makeAuthOk();
+
+    const request = makeErrorRequest({
+      type: "error",
+      data: {
+        code: "SOME_ERROR",
+        message: "Something went wrong",
+        timestamp: "2026-01-01T00:00:00.000Z",
+        logTail: "last log lines",
+        tokenUsage: { inputTokens: 100, outputTokens: 50 },
+        diagnosticsVersion: "1.0.0",
+      },
+    });
+
+    const response = await POST(request, {
+      params: Promise.resolve({ id: "loop-123" }),
+    });
+
+    expect(response.status).toBe(200);
+    const json = await response.json();
+    expect(json.success).toBe(true);
+  });
+
+  it("accepts flattened format error event with valid diagnostics: returns 200", async () => {
+    makeAuthOk();
+
+    const request = makeErrorRequest({
+      type: "error",
+      code: "SOME_ERROR",
+      message: "Something went wrong",
+      timestamp: "2026-01-01T00:00:00.000Z",
+      logTail: "last log lines",
+      tokenUsage: { inputTokens: 100, outputTokens: 50 },
+      diagnosticsVersion: "1.0.0",
+    });
+
+    const response = await POST(request, {
+      params: Promise.resolve({ id: "loop-123" }),
+    });
+
+    expect(response.status).toBe(200);
+    const json = await response.json();
+    expect(json.success).toBe(true);
+  });
+
+  it("rejects error event missing timestamp: returns 400", async () => {
+    makeAuthOk();
+
+    const request = makeErrorRequest({
+      type: "error",
+      code: "SOME_ERROR",
+      message: "Something went wrong",
+      // no timestamp
+    });
+
+    const response = await POST(request, {
+      params: Promise.resolve({ id: "loop-123" }),
+    });
+
+    expect(response.status).toBe(400);
+    const json = await response.json();
+    expect(json.success).toBe(false);
+  });
+
+  it("rejects error event with malformed tokenUsage: returns 400", async () => {
+    makeAuthOk();
+
+    const request = makeErrorRequest({
+      type: "error",
+      code: "SOME_ERROR",
+      message: "Something went wrong",
+      timestamp: "2026-01-01T00:00:00.000Z",
+      tokenUsage: { inputTokens: "not-a-number", outputTokens: 5 },
+    });
+
+    const response = await POST(request, {
+      params: Promise.resolve({ id: "loop-123" }),
+    });
+
+    expect(response.status).toBe(400);
+    const json = await response.json();
+    expect(json.success).toBe(false);
+  });
+
+  it("accepts error event without any diagnostic fields: returns 200", async () => {
+    makeAuthOk();
+
+    const request = makeErrorRequest({
+      type: "error",
+      code: "SOME_ERROR",
+      message: "Something went wrong",
+      timestamp: "2026-01-01T00:00:00.000Z",
+    });
+
+    const response = await POST(request, {
+      params: Promise.resolve({ id: "loop-123" }),
+    });
+
+    expect(response.status).toBe(200);
   });
 });

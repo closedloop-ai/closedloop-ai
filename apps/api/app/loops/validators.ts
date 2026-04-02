@@ -93,6 +93,34 @@ export const loopEventPayloadValidator = z.union([
  * Applied post-normalization so both envelope and flattened paths are covered.
  * Returns an error string if validation fails, or null if valid.
  */
+function validateErrorEvent(event: Record<string, unknown>): string | null {
+  if (typeof event.code !== "string" || typeof event.message !== "string") {
+    return "error event requires code and message strings";
+  }
+  if (typeof event.timestamp !== "string") {
+    return "error event requires a timestamp string";
+  }
+  if (event.logTail !== undefined && typeof event.logTail !== "string") {
+    return "error event logTail must be a string if present";
+  }
+  if (event.tokenUsage !== undefined) {
+    const tu = event.tokenUsage as Record<string, unknown>;
+    if (
+      typeof tu.inputTokens !== "number" ||
+      typeof tu.outputTokens !== "number"
+    ) {
+      return "error event tokenUsage must have numeric inputTokens and outputTokens";
+    }
+  }
+  if (
+    event.diagnosticsVersion !== undefined &&
+    typeof event.diagnosticsVersion !== "string"
+  ) {
+    return "error event diagnosticsVersion must be a string if present";
+  }
+  return null;
+}
+
 export function validateNormalizedEvent(
   event: Record<string, unknown>
 ): string | null {
@@ -110,11 +138,8 @@ export function validateNormalizedEvent(
       return "completed event requires a timestamp string";
     }
   }
-  if (
-    event.type === "error" &&
-    (typeof event.code !== "string" || typeof event.message !== "string")
-  ) {
-    return "error event requires code and message strings";
+  if (event.type === "error") {
+    return validateErrorEvent(event);
   }
   if (event.type === "cancelled" && typeof event.timestamp !== "string") {
     return "cancelled event requires a timestamp string";

@@ -1,6 +1,10 @@
 "use client";
 
-import type { LoopEvent, LoopEventType } from "@repo/api/src/types/loop";
+import type {
+  LoopEvent,
+  LoopEventError,
+  LoopEventType,
+} from "@repo/api/src/types/loop";
 import { Badge } from "@repo/design-system/components/ui/badge";
 import {
   Collapsible,
@@ -110,6 +114,14 @@ function isExpandableEvent(event: LoopEvent): boolean {
   if (event.type === "cancelled" && event.reason) {
     return true;
   }
+  if (event.type === "error") {
+    const e = event as LoopEventError;
+    return (
+      (typeof e.logTail === "string" && e.logTail.length > 0) ||
+      e.tokenUsage !== undefined ||
+      e.diagnosticsVersion !== undefined
+    );
+  }
   return false;
 }
 
@@ -131,6 +143,22 @@ function getExpandedContent(event: LoopEvent): string | null {
       return JSON.stringify(event.result, null, 2);
     case "cancelled":
       return event.reason ?? null;
+    case "error": {
+      const e = event as LoopEventError;
+      const parts: string[] = [];
+      if (e.tokenUsage) {
+        parts.push(
+          `Tokens: ${e.tokenUsage.inputTokens} in / ${e.tokenUsage.outputTokens} out`
+        );
+      }
+      if (e.diagnosticsVersion) {
+        parts.push(`Diagnostics version: ${e.diagnosticsVersion}`);
+      }
+      if (e.logTail) {
+        parts.push(`Log tail:\n${e.logTail}`);
+      }
+      return parts.length > 0 ? parts.join("\n\n") : null;
+    }
     default:
       return null;
   }

@@ -1,6 +1,7 @@
 import type {
   LoopEvent,
   LoopEventCompleted,
+  LoopEventError,
   TokensByModel,
 } from "@repo/api/src/types/loop";
 import {
@@ -1052,7 +1053,7 @@ function extractPrSessionInfo(event: Record<string, unknown>): {
 async function handleLoopError(
   loopId: string,
   organizationId: string,
-  event: { type: "error"; code: string; message: string; timestamp: string },
+  event: LoopEventError,
   replayContext?: RunnerReplayContext
 ): Promise<LoopEvent[]> {
   if (event.code === "CANCELLED") {
@@ -1097,6 +1098,21 @@ async function handleLoopError(
   if (event.code === "TIMED_OUT") {
     const prSession = extractPrSessionInfo(event as Record<string, unknown>);
 
+    const canonicalErrorData: Record<string, unknown> = {
+      code: event.code,
+      message: event.message,
+      timestamp: event.timestamp,
+      ...(event.logTail !== undefined
+        ? { logTail: truncateLogTail(event.logTail) }
+        : {}),
+      ...(event.tokenUsage !== undefined
+        ? { tokenUsage: event.tokenUsage }
+        : {}),
+      ...(event.diagnosticsVersion !== undefined
+        ? { diagnosticsVersion: event.diagnosticsVersion }
+        : {}),
+    };
+
     await loopsService.updateStatus(
       loopId,
       organizationId,
@@ -1113,11 +1129,7 @@ async function handleLoopError(
       organizationId,
       {
         type: event.type,
-        data: {
-          code: event.code,
-          message: event.message,
-          timestamp: event.timestamp,
-        },
+        data: canonicalErrorData,
       },
       replayContext
     );
@@ -1126,7 +1138,7 @@ async function handleLoopError(
       loopId,
       message: event.message,
     });
-    return [event as unknown as LoopEvent];
+    return [{ type: "error", ...canonicalErrorData } as unknown as LoopEvent];
   }
 
   // Structured error codes from electron/runner with specific log levels.
@@ -1146,6 +1158,19 @@ async function handleLoopError(
   // Extract PR/session info from error event (harness includes these even on failure)
   const prSession = extractPrSessionInfo(event as Record<string, unknown>);
 
+  const canonicalErrorData: Record<string, unknown> = {
+    code: event.code,
+    message: event.message,
+    timestamp: event.timestamp,
+    ...(event.logTail !== undefined
+      ? { logTail: truncateLogTail(event.logTail) }
+      : {}),
+    ...(event.tokenUsage !== undefined ? { tokenUsage: event.tokenUsage } : {}),
+    ...(event.diagnosticsVersion !== undefined
+      ? { diagnosticsVersion: event.diagnosticsVersion }
+      : {}),
+  };
+
   await loopsService.updateStatus(loopId, organizationId, LoopStatus.Failed, {
     completedAt: new Date(),
     error: { code: event.code, message: event.message },
@@ -1158,11 +1183,7 @@ async function handleLoopError(
     organizationId,
     {
       type: event.type,
-      data: {
-        code: event.code,
-        message: event.message,
-        timestamp: event.timestamp,
-      },
+      data: canonicalErrorData,
     },
     replayContext
   );
@@ -1179,7 +1200,27 @@ async function handleLoopError(
     });
   }
 
-  return [event as unknown as LoopEvent];
+  return [{ type: "error", ...canonicalErrorData } as unknown as LoopEvent];
+}
+
+export const LOG_TAIL_MAX_BYTES_ERROR_EVENT = 8192;
+
+/**
+ * Truncate a logTail string to LOG_TAIL_MAX_BYTES_ERROR_EVENT bytes, UTF-8 safe.
+ * Walks backward past UTF-8 continuation bytes (0x80..0xBF) to avoid splitting
+ * a multi-byte character at the truncation boundary.
+ */
+export function truncateLogTail(logTail: string): string {
+  const encoded = new TextEncoder().encode(logTail);
+  if (encoded.length <= LOG_TAIL_MAX_BYTES_ERROR_EVENT) {
+    return logTail;
+  }
+  let cutoff = LOG_TAIL_MAX_BYTES_ERROR_EVENT;
+  // biome-ignore lint/suspicious/noBitwiseOperators: UTF-8 continuation byte check requires bitwise AND
+  while (cutoff > 0 && (encoded[cutoff]! & 0xc0) === 0x80) {
+    cutoff--;
+  }
+  return new TextDecoder().decode(encoded.subarray(0, cutoff));
 }
 
 /**
