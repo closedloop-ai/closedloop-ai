@@ -19,6 +19,12 @@ const execFileAsync = promisify(execFile);
 let cachedPath: string | null = null;
 let resolvePromise: Promise<string> | null = null;
 
+/** Clear the cached PATH so the next `getShellPath()` re-resolves from the login shell. */
+export function clearShellPathCache(): void {
+  cachedPath = null;
+  resolvePromise = null;
+}
+
 /**
  * Get the user's full login-shell PATH (async, cached).
  *

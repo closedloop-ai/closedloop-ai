@@ -6,7 +6,7 @@ import {
   getSymphonyScriptPath,
   loadReposConfig,
 } from "@/lib/engineer/repos";
-import { getShellPath } from "@/lib/engineer/shell-path";
+import { clearShellPathCache, getShellPath } from "@/lib/engineer/shell-path";
 
 const execFileAsync = promisify(execFile);
 
@@ -290,6 +290,9 @@ async function checkPython3(): Promise<CheckResult> {
 }
 
 export async function GET(): Promise<NextResponse<HealthCheckResponse>> {
+  // Clear cached PATH so we pick up any changes to the user's shell config
+  clearShellPathCache();
+
   // Run Claude CLI check first — plugin check depends on CLI being available
   const claudeResult = await checkClaudeCli();
 

@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockUseSystemCheckEligibility = vi.fn();
 const mockUseEngineerRoutingSelection = vi.fn();
+const mockUseComputeTargets = vi.fn();
 
 vi.mock("@/components/engineer/HealthCheckDialog", () => ({
   HealthCheckDialog: () => (
@@ -19,6 +20,10 @@ vi.mock("@/lib/system-check/use-system-check-eligibility", () => ({
   useSystemCheckEligibility: () => mockUseSystemCheckEligibility(),
 }));
 
+vi.mock("@/hooks/queries/use-compute-targets", () => ({
+  useComputeTargets: () => mockUseComputeTargets(),
+}));
+
 import { SystemCheckBootstrap } from "../system-check-bootstrap";
 
 describe("SystemCheckBootstrap", () => {
@@ -30,6 +35,7 @@ describe("SystemCheckBootstrap", () => {
       source: "auto",
       updatedAt: Date.now(),
     });
+    mockUseComputeTargets.mockReturnValue({ data: [] });
   });
 
   it("does not render the dialog while eligibility is loading", () => {
