@@ -4,7 +4,9 @@ import type {
   ArtifactStatus,
   ArtifactWithWorkstream,
 } from "@repo/api/src/types/artifact";
+import { ArtifactType } from "@repo/api/src/types/artifact";
 import type { Priority } from "@repo/api/src/types/common";
+import type { JudgeFeedbackItem } from "@repo/api/src/types/evaluation";
 import type { FeatureWithWorkstream } from "@repo/api/src/types/feature";
 import type { LoopWithUser } from "@repo/api/src/types/loop";
 import type { ProjectWithDetails } from "@repo/api/src/types/project";
@@ -28,6 +30,7 @@ import {
 } from "@repo/design-system/components/ui/tooltip";
 import type { User } from "@repo/design-system/components/ui/user-select-popover";
 import { UserSelectPopover } from "@repo/design-system/components/ui/user-select-popover";
+import type { UseQueryResult } from "@tanstack/react-query";
 import {
   CalendarIcon,
   ChevronRightIcon,
@@ -42,6 +45,10 @@ import { useParams, useRouter } from "next/navigation";
 import type { MouseEvent } from "react";
 import { createContext, useContext } from "react";
 import { AssigneeAvatar } from "@/components/assignee-avatar";
+import {
+  usePlanJudgesFeedback,
+  usePrdJudgesFeedback,
+} from "@/hooks/queries/use-judges";
 import type { ArtifactColumn } from "@/hooks/use-column-visibility";
 import { ArtifactColumn as Col } from "@/hooks/use-column-visibility";
 import {
@@ -54,6 +61,7 @@ import {
   formatDateCompact,
   formatRelativeTime,
 } from "@/lib/date-utils";
+import { deriveScoreDisplay } from "@/lib/evaluation-utils";
 import {
   ARTIFACT_STATUS_LABELS,
   ARTIFACT_STATUS_TO_ICON,
@@ -89,7 +97,7 @@ export type RowEditHandlers = {
   parentHref?: string | null;
 };
 
-const RowEditContext = createContext<RowEditHandlers>({});
+export const RowEditContext = createContext<RowEditHandlers>({});
 
 // ---- Cell renderers ----
 
@@ -214,7 +222,7 @@ function NameCell({
           />
         </div>
       )}
-      {indented && <div className="w-10 shrink-0" />}
+      {indented && <div className="w-7 shrink-0" />}
       {hasChevron && (
         <button
           className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md ${onToggleExpand ? "hover:bg-accent" : "cursor-default opacity-30"}`}
@@ -506,17 +514,25 @@ function PriorityCell({ item }: { item: ArtifactRowItem }) {
   );
 }
 
-function ScoreCell({ item }: { item: ArtifactRowItem }) {
-  const score =
-    item.kind === "artifact"
-      ? item.data.customFields?.find(
-          (f) => f.name.toLowerCase() === "quality score"
-        )?.displayValue
-      : undefined;
-
+function ScoreCellDash() {
   return (
     <div className="flex h-11 w-[124px] shrink-0 items-center border-l px-3 py-2">
-      {score ? (
+      <span className="font-medium text-muted-foreground text-xs">
+        {"\u2014"}
+      </span>
+    </div>
+  );
+}
+
+function ScoreCellFromFeedback({
+  items,
+}: {
+  items: JudgeFeedbackItem[] | null | undefined;
+}) {
+  const score = deriveScoreDisplay(items);
+  return (
+    <div className="flex h-11 w-[124px] shrink-0 items-center border-l px-3 py-2">
+      {score !== null ? (
         <span className="truncate font-medium text-green-600 text-xs dark:text-green-400">
           {score}
         </span>
@@ -527,6 +543,44 @@ function ScoreCell({ item }: { item: ArtifactRowItem }) {
       )}
     </div>
   );
+}
+
+function ScoreCellWithQuery({
+  queryResult,
+}: {
+  queryResult: UseQueryResult<JudgeFeedbackItem[] | null>;
+}) {
+  const { data, isLoading } = queryResult;
+  if (isLoading) {
+    return (
+      <div className="flex h-11 w-[124px] shrink-0 items-center border-l px-3 py-2">
+        <Loader2Icon className="h-4 w-4 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+  return <ScoreCellFromFeedback items={data ?? undefined} />;
+}
+
+function ScoreCell({ item }: { item: ArtifactRowItem }) {
+  const isPrd = item.kind === "artifact" && item.data.type === ArtifactType.Prd;
+  const isPlan =
+    item.kind === "artifact" &&
+    item.data.type === ArtifactType.ImplementationPlan;
+  const artifactId = item.kind === "artifact" ? item.data.id : "";
+
+  const prdJudgesQuery = usePrdJudgesFeedback(isPrd ? artifactId : "");
+  const planJudgesQuery = usePlanJudgesFeedback(isPlan ? artifactId : "");
+
+  if (item.kind !== "artifact") {
+    return <ScoreCellDash />;
+  }
+  if (isPrd) {
+    return <ScoreCellWithQuery queryResult={prdJudgesQuery} />;
+  }
+  if (isPlan) {
+    return <ScoreCellWithQuery queryResult={planJudgesQuery} />;
+  }
+  return <ScoreCellDash />;
 }
 
 function LoopCell({ item }: { item: ArtifactRowItem }) {
@@ -693,6 +747,8 @@ type ArtifactRowProps = {
   parentTitle?: string;
   /** Parent entity route for this row, used by the Parent column cell. */
   parentHref?: string | null;
+  /** Extend an indented bottom border to the left edge. */
+  extendIndentedBottomBorderLeft?: boolean;
 };
 
 export function ArtifactRow({
@@ -709,6 +765,7 @@ export function ArtifactRow({
   editHandlers,
   parentTitle,
   parentHref,
+  extendIndentedBottomBorderLeft = false,
 }: ArtifactRowProps) {
   const router = useRouter();
   const params = useParams();
@@ -721,6 +778,7 @@ export function ArtifactRow({
   const gridTemplateColumns = getArtifactRowGridTemplateColumns(
     visibleColumns.length
   );
+  const useIndentedBottomBorder = indented || isExpanded === true;
 
   function handleClick() {
     if (item.kind === "project") {
@@ -745,10 +803,20 @@ export function ArtifactRow({
       value={{ ...(editHandlers ?? {}), parentHref, parentTitle }}
     >
       <div
-        className="group/row grid h-11 min-w-fit bg-background hover:bg-muted/50"
+        className="group/row relative grid h-11 min-w-fit bg-background hover:bg-muted/50"
         style={{ gridTemplateColumns }}
       >
-        <div className="border-b">
+        {useIndentedBottomBorder ? (
+          <>
+            <div className="pointer-events-none absolute right-0 bottom-0 left-10 border-b" />
+            {extendIndentedBottomBorderLeft && (
+              <div className="pointer-events-none absolute bottom-0 left-0 h-px w-10 bg-border" />
+            )}
+          </>
+        ) : (
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 border-b" />
+        )}
+        <div>
           <NameCell
             indented={indented}
             isExpanded={isExpanded}
@@ -764,14 +832,14 @@ export function ArtifactRow({
         {visibleColumns.map((column) => {
           const CellRenderer = CELL_RENDERERS[column];
           return (
-            <div className="border-b" key={column}>
+            <div key={column}>
               <CellRenderer item={item} />
             </div>
           );
         })}
 
         {/* More menu */}
-        <div className="border-b">
+        <div>
           <div className="flex h-11 items-center border-l px-3 py-2">
             {moreMenuContent ?? (
               <button

@@ -1,5 +1,6 @@
 "use client";
 
+import { ArtifactStatus } from "@repo/api/src/types/artifact";
 import type {
   BackendMismatchBody,
   ComputeTargetConflictBody,
@@ -14,6 +15,7 @@ import { handleRunLoopResponse } from "@/lib/run-loop-response";
 
 type UsePlanActionsConfig = {
   artifactId: string | null;
+  slug?: string;
 };
 
 type RunLoopParams = {
@@ -172,17 +174,15 @@ export function usePlanActions(config: UsePlanActionsConfig) {
   /**
    * Approve the implementation plan.
    * Updates the artifact status to APPROVED.
-   * (Approval is always a direct update, not a loop.)
+   * Cache invalidation is handled by useUpdateArtifact's onSuccess.
    */
-  const handleApprove = useCallback(() => {
+  const handleApprove = useCallback((): void => {
     if (!artifactId) {
       return;
     }
     updateArtifact.mutate(
-      { id: artifactId, status: "APPROVED" },
-      {
-        onSuccess: () => toast.success("Plan approved"),
-      }
+      { id: artifactId, status: ArtifactStatus.Approved },
+      { onSuccess: () => toast.success("Plan approved") }
     );
   }, [artifactId, updateArtifact]);
 

@@ -10,7 +10,7 @@ import {
 } from "@repo/api/src/types/external-link";
 import {
   type PreviewDeploymentInfo,
-  parsePreviewDeploymentMetadata,
+  parseDeploymentMetadata,
 } from "@repo/api/src/types/external-link-utils";
 import {
   type UseQueryOptions,
@@ -108,12 +108,16 @@ export function useWorkstreamPreviewDeployment(
     if (!link) {
       return null;
     }
-    const meta = parsePreviewDeploymentMetadata(link.metadata);
+    const meta = parseDeploymentMetadata(link.metadata);
     return {
-      state: meta?.state ?? null,
-      environment: meta?.environment ?? null,
-      ref: meta?.ref ?? null,
-      sha: meta?.sha ?? null,
+      statusUrl: meta?.statusUrl,
+      deploymentUrl: meta?.deploymentUrl,
+      state: meta?.state,
+      environment: meta?.environment,
+      ref: meta?.ref,
+      sha: meta?.sha,
+      transient: meta?.transient,
+      production: meta?.production,
       url: link.externalUrl || null,
     };
   }, [previewLinks]);

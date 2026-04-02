@@ -173,6 +173,38 @@ describe("entityLinksService.batchMoveEntities", () => {
     expect(findDownstreamSpy).not.toHaveBeenCalled();
   });
 
+  it("moves downstream when root entity is an artifact and includeDownstream is true", async () => {
+    setupProjectLookup(true);
+    findDownstreamSpy.mockResolvedValueOnce([
+      { id: "art-child-1", type: EntityType.Artifact },
+      { id: "feat-child-1", type: EntityType.Feature },
+    ]);
+    setupTransaction({ artifact: 2, feature: 1 });
+
+    const result = await entityLinksService.batchMoveEntities(ORG_ID, {
+      entityId: "art-root-1",
+      entityType: EntityType.Artifact,
+      targetProjectId: TARGET_PROJECT_ID,
+      includeDownstream: true,
+    });
+
+    expect(findDownstreamSpy).toHaveBeenCalledWith(
+      ORG_ID,
+      "art-root-1",
+      EntityType.Artifact
+    );
+    expect(result).toEqual({
+      ok: true,
+      value: {
+        movedEntities: [
+          { id: "art-root-1", type: EntityType.Artifact },
+          { id: "art-child-1", type: EntityType.Artifact },
+          { id: "feat-child-1", type: EntityType.Feature },
+        ],
+      },
+    });
+  });
+
   it("moves feature with downstream artifacts and external links", async () => {
     setupProjectLookup(true);
 
@@ -217,6 +249,31 @@ describe("entityLinksService.batchMoveEntities", () => {
     expect(result).toEqual({ ok: false, status: 404 });
   });
 
+  it("does not move upstream parent when moving a child artifact", async () => {
+    setupProjectLookup(true);
+    findDownstreamSpy.mockResolvedValueOnce([
+      { id: "art-grandchild-1", type: EntityType.Artifact },
+    ]);
+    setupTransaction({ artifact: 2 });
+
+    const result = await entityLinksService.batchMoveEntities(ORG_ID, {
+      entityId: "art-child-1",
+      entityType: EntityType.Artifact,
+      targetProjectId: TARGET_PROJECT_ID,
+      includeDownstream: true,
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      value: {
+        movedEntities: [
+          { id: "art-child-1", type: EntityType.Artifact },
+          { id: "art-grandchild-1", type: EntityType.Artifact },
+        ],
+      },
+    });
+  });
+
   it("returns BadRequest when target project does not exist", async () => {
     setupProjectLookup(false);
 
@@ -232,6 +289,7 @@ describe("entityLinksService.batchMoveEntities", () => {
 
   it("returns NotFound when zero rows are actually updated", async () => {
     setupProjectLookup(true);
+    findDownstreamSpy.mockResolvedValueOnce([]);
     setupTransaction({ artifact: 0 });
 
     const result = await entityLinksService.batchMoveEntities(ORG_ID, {

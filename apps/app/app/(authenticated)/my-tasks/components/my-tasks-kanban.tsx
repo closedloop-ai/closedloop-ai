@@ -15,7 +15,6 @@ import { CSS } from "@dnd-kit/utilities";
 import type { FeatureWithWorkstream } from "@repo/api/src/types/feature";
 import { FeatureStatus } from "@repo/api/src/types/feature";
 import { isDisplayableSlug } from "@repo/api/src/types/slug";
-import { Badge } from "@repo/design-system/components/ui/badge";
 import { Card } from "@repo/design-system/components/ui/card";
 import { PriorityIcon } from "@repo/design-system/components/ui/priority-icon";
 import { StatusIcon } from "@repo/design-system/components/ui/status-icon";
@@ -262,9 +261,6 @@ function KanbanCardContent({
   disableAvatarLink?: boolean;
   feature: FeatureWithWorkstream;
 }>) {
-  const workstreamOrProject =
-    feature.workstream?.title ?? feature.project?.name ?? null;
-
   return (
     <div className="px-3 py-1">
       <div className="flex min-w-0 items-start gap-2">
@@ -282,17 +278,7 @@ function KanbanCardContent({
           </div>
         </div>
       </div>
-      <div className="mt-1.5 flex items-center justify-between gap-2">
-        <div className="min-w-0 shrink-0">
-          {workstreamOrProject ? (
-            <Badge
-              className="rounded-md border-border px-2 py-1 font-normal text-muted-foreground"
-              variant="outline"
-            >
-              {workstreamOrProject}
-            </Badge>
-          ) : null}
-        </div>
+      <div className="mt-1.5 flex items-center justify-end gap-2">
         <div className="flex shrink-0 items-center gap-1">
           <div className="flex size-6 shrink-0 items-center justify-center">
             <PriorityIcon priority={feature.priority} size={14} />

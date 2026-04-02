@@ -254,65 +254,6 @@ export function useUpdateProjectStatus() {
   });
 }
 
-export function useReorderProjects() {
-  const queryClient = useQueryClient();
-  const apiClient = useApiClient();
-
-  return useMutation({
-    mutationFn: (projectIds: string[]) =>
-      apiClient.post<string[]>("/projects/reorder", { projectIds }),
-    onMutate: async (projectIds) => {
-      await queryClient.cancelQueries({ queryKey: projectKeys.lists() });
-
-      const previousLists = queryClient.getQueriesData({
-        queryKey: projectKeys.lists(),
-      });
-
-      queryClient.setQueriesData(
-        { queryKey: projectKeys.lists() },
-        (old: ProjectWithDetails[] | undefined) => {
-          if (!old) {
-            return old;
-          }
-
-          const positionMap = new Map(
-            projectIds.map((id, index) => [id, index])
-          );
-
-          return [...old].sort((a, b) => {
-            const posA = positionMap.get(a.id);
-            const posB = positionMap.get(b.id);
-
-            if (posA === undefined && posB === undefined) {
-              return 0;
-            }
-            if (posA === undefined) {
-              return 1;
-            }
-            if (posB === undefined) {
-              return -1;
-            }
-
-            return posA - posB;
-          });
-        }
-      );
-
-      return { previousLists };
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: projectKeys.lists() });
-    },
-    onError: (_err, _variables, context) => {
-      if (context?.previousLists) {
-        for (const [queryKey, data] of context.previousLists) {
-          queryClient.setQueryData(queryKey, data);
-        }
-      }
-    },
-  });
-}
-
 export function useUploadCodebaseSummary() {
   const queryClient = useQueryClient();
   const updateProject = useUpdateProject();

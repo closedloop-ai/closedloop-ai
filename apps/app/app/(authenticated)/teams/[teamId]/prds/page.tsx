@@ -42,15 +42,18 @@ export default function TeamPrdsPage() {
   );
 
   const { data: team, isLoading: loadingTeam } = useTeam(teamId);
-  const { data: artifacts = [], isLoading: loadingArtifacts } =
-    useArtifactsByTeam(teamId, ArtifactType.Prd);
+  const { data: artifacts, isLoading: loadingArtifacts } = useArtifactsByTeam(
+    teamId,
+    ArtifactType.Prd
+  );
   const orgUsers = useOrgUsersAsPopoverUsers();
 
   const deleteArtifactMutation = useDeleteArtifact();
   const updateArtifactMutation = useUpdateArtifact();
 
   const items: ArtifactRowItem[] = useMemo(
-    () => artifacts.map((a) => ({ kind: "artifact" as const, data: a })),
+    () =>
+      (artifacts ?? []).map((a) => ({ kind: "artifact" as const, data: a })),
     [artifacts]
   );
 

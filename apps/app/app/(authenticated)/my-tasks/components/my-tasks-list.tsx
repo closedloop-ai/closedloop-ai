@@ -3,7 +3,6 @@
 import type { CustomFieldValueDetail } from "@repo/api/src/types/custom-field";
 import type { FeatureWithWorkstream } from "@repo/api/src/types/feature";
 import { isDisplayableSlug } from "@repo/api/src/types/slug";
-import { Badge } from "@repo/design-system/components/ui/badge";
 import {
   Collapsible,
   CollapsibleContent,
@@ -226,9 +225,6 @@ function MyTasksRow({
   customFieldColumns,
   onRequestDelete,
 }: Readonly<MyTasksRowProps>) {
-  const workstreamOrProject =
-    feature.workstream?.title ?? feature.project?.name ?? null;
-
   return (
     <div className="flex items-center gap-4 border-b bg-background p-1.5">
       <Link
@@ -245,14 +241,6 @@ function MyTasksRow({
       </Link>
       <div className="flex shrink-0 items-center gap-4">
         <div className="flex items-center gap-2.5">
-          {workstreamOrProject ? (
-            <Badge
-              className="rounded-md border-border px-2 py-1 font-normal text-muted-foreground"
-              variant="outline"
-            >
-              {workstreamOrProject}
-            </Badge>
-          ) : null}
           {customFieldColumns.map((colDef) => {
             const fieldValue = feature.customFields?.find(
               (f: CustomFieldValueDetail) =>
