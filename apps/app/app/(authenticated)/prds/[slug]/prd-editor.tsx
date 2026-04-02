@@ -35,7 +35,6 @@ import { usePrdJudgesFeedback } from "@/hooks/queries/use-judges";
 import { useRunLoop } from "@/hooks/queries/use-loops";
 import { useOrganizationUsers } from "@/hooks/queries/use-users";
 import { parseComputeTargetConflict } from "@/lib/compute-target-conflict";
-import { useEngineerRoutingSelection } from "@/lib/engineer/routing-store";
 import { transformApiUserToSelectUser } from "@/lib/user-utils";
 import type { PlanSource } from "../../implementation-plans/components/plan-source";
 import { PRDEditorHeader } from "./components/prd-editor-header";
@@ -120,18 +119,12 @@ export function PRDEditor({
   // Loop-based actions (PRD generation, decompose)
   const runLoop = useRunLoop();
   const { data: judgesReport } = usePrdJudgesFeedback(prd.id);
-  const routing = useEngineerRoutingSelection();
-  // Pass computeTargetId for both CloudRelay and LocalElectron modes.
-  // Loop dispatch always goes through the API → desktop gateway, which needs
-  // the compute target ID regardless of how the engineer dashboard proxies.
-  const computeTargetId = routing.computeTargetId;
 
   const handleGeneratePrd = () => {
     runLoop.mutate(
       {
         artifactId: prd.id,
         command: RunLoopCommand.GeneratePrd,
-        computeTargetId,
       },
       {
         onSuccess: () => {
@@ -146,7 +139,7 @@ export function PRDEditor({
   const handleDecomposeFeatures = () => {
     setPendingCommand("decompose");
     runLoop.mutate(
-      { artifactId: prd.id, command: "decompose", computeTargetId },
+      { artifactId: prd.id, command: "decompose" },
       {
         onSuccess: () => {
           toast.success("Feature decomposition started");
