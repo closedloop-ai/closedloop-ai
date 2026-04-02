@@ -429,12 +429,12 @@ function applyAttachmentLimits(
           cap: ATTACHMENT_MAX_FILES,
         }
       );
-      continue;
+      break;
     }
 
     if (totalBytes + attachment.sizeBytes > ATTACHMENT_MAX_TOTAL_BYTES) {
       log.warn(
-        "[loop-context-pack] Attachment total size cap reached, skipping",
+        "[loop-context-pack] Attachment total size cap reached, skipping remaining",
         {
           loopId,
           attachmentId: attachment.id,
@@ -443,7 +443,7 @@ function applyAttachmentLimits(
           limitBytes: ATTACHMENT_MAX_TOTAL_BYTES,
         }
       );
-      continue;
+      break;
     }
 
     result.push(attachment);

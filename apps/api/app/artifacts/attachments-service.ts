@@ -329,6 +329,33 @@ export const attachmentsService = {
     return { downloadUrl };
   },
 
+  async getFeatureDownloadUrl(
+    featureId: string,
+    organizationId: string,
+    attachmentId: string
+  ): Promise<AttachmentDownloadResponse> {
+    await requireFeature(featureId, organizationId);
+
+    const attachment = await withDb((db) =>
+      db.fileAttachment.findUnique({
+        where: { id: attachmentId, featureId },
+      })
+    );
+
+    if (!attachment) {
+      throw new Error("Attachment not found");
+    }
+
+    const downloadUrl = await getSignedDownloadUrlWithDisposition(
+      attachment.key,
+      attachment.filename,
+      3600,
+      attachment.bucket
+    );
+
+    return { downloadUrl };
+  },
+
   /**
    * Delete an attachment from the database and S3.
    * DB record is deleted first; S3 deletion failure is logged but not re-thrown.
