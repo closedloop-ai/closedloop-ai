@@ -11,21 +11,18 @@ import {
   LinkQueryMode,
 } from "@repo/api/src/types/entity-link";
 import { ExternalLinkType } from "@repo/api/src/types/external-link";
+import { parsePullRequestMetadata } from "@repo/api/src/types/external-link-utils";
+import { GitHubPRState } from "@repo/api/src/types/github";
 import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
 import { toast } from "@repo/design-system/components/ui/sonner";
-import { cn } from "@repo/design-system/lib/utils";
-import { GitBranchIcon, PlayIcon, PlusIcon } from "lucide-react";
+import { GitBranchIcon, GitMergeIcon, PlayIcon, PlusIcon } from "lucide-react";
 import { useState } from "react";
 import { GenerationStatusIndicator } from "@/components/generation-status-indicator";
 import {
   useDeleteEntityLink,
   useLinkedEntities,
 } from "@/hooks/queries/use-entity-links";
-import {
-  EXTERNAL_LINK_TYPE_BADGE_LABELS,
-  EXTERNAL_LINK_TYPE_COLORS,
-} from "@/lib/project-constants";
 import { OverflowMenu } from "./overflow-menu";
 import { SectionHeader } from "./section-header";
 import { SelectPullRequestDialog } from "./select-pr-dialog";
@@ -156,8 +153,7 @@ function BranchRow({ linked, onUnlink }: Readonly<BranchRowProps>) {
   }
 
   const externalLink = resolved.entity;
-  const badgeLabel = EXTERNAL_LINK_TYPE_BADGE_LABELS[externalLink.type];
-  const badgeColors = EXTERNAL_LINK_TYPE_COLORS[externalLink.type];
+  const prMeta = parsePullRequestMetadata(externalLink.metadata);
 
   return (
     <div className="flex items-center gap-4 px-2 py-1">
@@ -168,30 +164,54 @@ function BranchRow({ linked, onUnlink }: Readonly<BranchRowProps>) {
         target="_blank"
       >
         <div className="flex shrink-0 items-center p-1">
-          <GitBranchIcon className="h-4 w-4 text-muted-foreground" />
+          <PrStateIcon state={prMeta?.state ?? null} />
         </div>
-        <span className="min-w-[60px] shrink-0 truncate font-medium text-muted-foreground text-xs">
-          {badgeLabel}
-        </span>
         <span className="truncate px-1 font-medium text-sm">
           {externalLink.title}
         </span>
       </a>
       <div className="flex h-9 shrink-0 items-center gap-2">
-        {badgeLabel ? (
-          <Badge
-            className={cn(
-              "border text-muted-foreground text-xs",
-              badgeColors?.bg,
-              badgeColors?.text
-            )}
-            variant="outline"
-          >
-            {badgeLabel}
-          </Badge>
-        ) : null}
+        <PrStateBadge state={prMeta?.state ?? null} />
         <OverflowMenu linkId={linked.id} onUnlink={onUnlink} />
       </div>
     </div>
+  );
+}
+
+function PrStateIcon({ state }: Readonly<{ state: GitHubPRState | null }>) {
+  if (state === GitHubPRState.Merged) {
+    return <GitMergeIcon className="h-4 w-4 shrink-0 text-muted-foreground" />;
+  }
+  return <GitBranchIcon className="h-4 w-4 shrink-0 text-muted-foreground" />;
+}
+
+function PrStateBadge({ state }: Readonly<{ state: GitHubPRState | null }>) {
+  if (state === GitHubPRState.Merged) {
+    return (
+      <Badge
+        className="border-purple-200 bg-purple-50 text-purple-700 dark:border-purple-800 dark:bg-purple-950/30 dark:text-purple-300"
+        variant="outline"
+      >
+        Merged
+      </Badge>
+    );
+  }
+  if (state === GitHubPRState.Closed) {
+    return (
+      <Badge
+        className="border-red-200 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-950/30 dark:text-red-300"
+        variant="outline"
+      >
+        Closed
+      </Badge>
+    );
+  }
+  return (
+    <Badge
+      className="border-green-200 bg-green-50 text-green-700 dark:border-green-800 dark:bg-green-950/30 dark:text-green-300"
+      variant="outline"
+    >
+      Open
+    </Badge>
   );
 }

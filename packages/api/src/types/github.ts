@@ -59,13 +59,21 @@ export type GetBranchesResponse = {
   branches: GitHubBranch[];
 };
 
+export const GitHubPRState = {
+  Open: "OPEN",
+  Merged: "MERGED",
+  Closed: "CLOSED",
+} as const;
+export type GitHubPRState = (typeof GitHubPRState)[keyof typeof GitHubPRState];
+
 export type GitHubPullRequestSummary = {
+  githubId: string;
   number: number;
   title: string;
   htmlUrl: string;
   headBranch: string;
   baseBranch: string;
-  state: "OPEN" | "MERGED" | "CLOSED";
+  state: GitHubPRState;
   isDraft: boolean;
   updatedAt: string;
   author: string;

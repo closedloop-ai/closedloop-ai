@@ -1,8 +1,5 @@
 import { EntityType, LinkType } from "@repo/api/src/types/entity-link";
-import {
-  ExternalLinkType,
-  type PreviewDeploymentMetadata,
-} from "@repo/api/src/types/external-link";
+import { ExternalLinkType } from "@repo/api/src/types/external-link";
 import { GitHubPRState, type TransactionClient } from "@repo/database";
 import { log } from "@repo/observability/log";
 
@@ -99,75 +96,10 @@ export async function ensurePrLinkageRecords(
     });
   }
 
-  // TODO: These preview deployment bits were pre-existing, but they need to be revisited.
-  // PRs can have multiple preview links (ours have 3). Also the title matching is a bit odd.
-  // We should only create the preview links when the deployment is created in GitHub.
-  // Dedup preview deployment ExternalLink by branch ref
-  const previewTitle = `Preview: ${input.headBranch}`;
-  const existingPreviewLink = await tx.externalLink.findFirst({
-    where: {
-      organizationId: input.organizationId,
-      type: ExternalLinkType.PreviewDeployment,
-      workstreamId: input.workstreamId,
-      title: previewTitle,
-    },
-    select: { id: true },
-  });
-
-  let previewLinkId: string;
-
-  if (existingPreviewLink) {
-    previewLinkId = existingPreviewLink.id;
-  } else {
-    const metadata: PreviewDeploymentMetadata = {
-      ref: input.headBranch,
-      sha: input.commitSha,
-      environment: "preview",
-      state: null,
-    };
-
-    const previewLink = await tx.externalLink.create({
-      data: {
-        organizationId: input.organizationId,
-        workstreamId: input.workstreamId,
-        projectId: input.projectId,
-        type: ExternalLinkType.PreviewDeployment,
-        title: previewTitle,
-        externalUrl: "",
-        metadata,
-      },
-    });
-    previewLinkId = previewLink.id;
-  }
-
-  // Dedup EntityLink: PR → PRODUCES → preview deployment
-  const existingPreviewEntityLink = await tx.entityLink.findFirst({
-    where: {
-      sourceId: externalLinkId,
-      targetId: previewLinkId,
-      linkType: LinkType.Produces,
-    },
-    select: { id: true },
-  });
-
-  if (!existingPreviewEntityLink) {
-    await tx.entityLink.create({
-      data: {
-        organizationId: input.organizationId,
-        sourceId: externalLinkId,
-        sourceType: EntityType.ExternalLink,
-        targetId: previewLinkId,
-        targetType: EntityType.ExternalLink,
-        linkType: LinkType.Produces,
-      },
-    });
-  }
-
   log.info("[pr-linkage] Ensured PR linkage records", {
     artifactId: input.artifactId,
     prUrl: input.prUrl,
     prNumber: input.prNumber,
     externalLinkId,
-    previewLinkId,
   });
 }

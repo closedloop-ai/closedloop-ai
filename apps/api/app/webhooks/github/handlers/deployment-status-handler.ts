@@ -1,11 +1,14 @@
 import type { DeploymentStatusEvent } from "@octokit/webhooks-types";
+import { EntityType, LinkType } from "@repo/api/src/types/entity-link";
 import {
+  type DeploymentMetadata,
   ExternalLinkType,
-  type PreviewDeploymentMetadata,
 } from "@repo/api/src/types/external-link";
-import { GitHubPRState, withDb } from "@repo/database";
+import { withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
+import { entityLinksService } from "@/app/entity-links/service";
+import { externalLinksService } from "@/app/external-links/service";
 
 /**
  * Handle GitHub deployment_status webhook events.
@@ -19,13 +22,13 @@ import { NextResponse } from "next/server";
  * 1. Filter to "success" deployments with a non-empty environment_url
  * 2. Look up the GitHub repository
  * 3. Find the open PR matching the deployment's ref (branch)
- * 4. Find or update the PREVIEW_DEPLOYMENT ExternalLink for that workstream+branch
+ * 4. Create the deployment record
  */
 export async function handleDeploymentStatus(
   event: DeploymentStatusEvent
 ): Promise<Response> {
   const { deployment, deployment_status: status } = event;
-  const environmentUrl = status.environment_url || status.target_url || "";
+  const environmentUrl = status.environment_url;
   const ref = deployment.ref;
   const sha = deployment.sha;
   const state = status.state;
@@ -52,33 +55,48 @@ export async function handleDeploymentStatus(
   }
 
   // Look up repository and matching open PR
-  const { pr, repo } = await withDb(async (db) => {
+  const { pr, repo, prExternalLink } = await withDb(async (db) => {
     const foundRepo = await db.gitHubInstallationRepository.findFirst({
       where: { githubRepoId: String(event.repository.id) },
       select: { id: true },
     });
 
     if (!foundRepo) {
-      return { repo: null, pr: null };
+      return { repo: null, pr: null, prExternalLink: null };
     }
 
     // Match PR by headSha or headBranch
     const foundPr = await db.gitHubPullRequest.findFirst({
       where: {
-        state: GitHubPRState.OPEN,
         repositoryId: foundRepo.id,
         OR: [{ headSha: sha }, { headBranch: ref }],
       },
+      orderBy: { createdAt: "desc" },
       select: {
         id: true,
         workstreamId: true,
         headBranch: true,
         organizationId: true,
         workstream: { select: { projectId: true } },
+        htmlUrl: true,
       },
     });
 
-    return { repo: foundRepo, pr: foundPr };
+    if (!foundPr) {
+      return { repo: foundRepo, pr: null, prExternalLink: null };
+    }
+
+    const prExternalLink = await db.externalLink.findFirst({
+      where: {
+        organizationId: foundPr.organizationId,
+        workstreamId: foundPr.workstreamId,
+        type: ExternalLinkType.PullRequest,
+        externalUrl: foundPr.htmlUrl,
+      },
+      select: { id: true },
+    });
+
+    return { repo: foundRepo, pr: foundPr, prExternalLink };
   });
 
   if (!repo) {
@@ -95,70 +113,53 @@ export async function handleDeploymentStatus(
   }
 
   if (!pr?.workstreamId) {
-    log.info("[handleDeploymentStatus] No open PR found for deployment ref", {
+    log.info("[handleDeploymentStatus] No PR found for deployment ref", {
       ref,
       sha,
     });
     return NextResponse.json({
-      message: "No matching open PR for this deployment",
+      message: "No matching PR for this deployment",
       ok: true,
     });
   }
 
-  // Find and update the PREVIEW_DEPLOYMENT ExternalLink
   const branchRef = pr.headBranch ?? ref;
-  const previewTitle = `Preview: ${branchRef}`;
+  const title = `${branchRef} deployed to ${deployment.environment}`;
+  const metadata: DeploymentMetadata = {
+    statusUrl: status.url,
+    deploymentUrl: status.deployment_url,
+    state,
+    environment: deployment.environment,
+    ref: branchRef,
+    sha,
+    transient: deployment.transient_environment,
+    production: deployment.production_environment,
+  };
 
-  await withDb(async (db) => {
-    const existingLink = await db.externalLink.findFirst({
-      where: {
-        workstreamId: pr.workstreamId,
-        type: ExternalLinkType.PreviewDeployment,
-        title: previewTitle,
-      },
-      select: { id: true },
+  const created = await externalLinksService.create(pr.organizationId, {
+    workstreamId: pr.workstreamId,
+    projectId: pr.workstream.projectId,
+    type: ExternalLinkType.PreviewDeployment,
+    title,
+    externalUrl: environmentUrl,
+    metadata,
+  });
+
+  // Link the deployment to the PR external link record.
+  if (prExternalLink) {
+    await entityLinksService.createLink(pr.organizationId, {
+      sourceId: prExternalLink.id,
+      sourceType: EntityType.ExternalLink,
+      targetId: created.id,
+      targetType: EntityType.ExternalLink,
+      linkType: LinkType.Produces,
     });
+  }
 
-    const metadata: PreviewDeploymentMetadata = {
-      ref: branchRef,
-      sha,
-      environment: deployment.environment,
-      state,
-    };
-
-    if (existingLink) {
-      await db.externalLink.update({
-        where: { id: existingLink.id },
-        data: {
-          externalUrl: environmentUrl,
-          metadata,
-        },
-      });
-
-      log.info("[handleDeploymentStatus] Updated preview deployment URL", {
-        externalLinkId: existingLink.id,
-        environmentUrl,
-        previewTitle,
-      });
-    } else {
-      const created = await db.externalLink.create({
-        data: {
-          organizationId: pr.organizationId,
-          workstreamId: pr.workstreamId,
-          projectId: pr.workstream.projectId,
-          type: ExternalLinkType.PreviewDeployment,
-          title: previewTitle,
-          externalUrl: environmentUrl,
-          metadata,
-        },
-      });
-
-      log.info("[handleDeploymentStatus] Created preview deployment record", {
-        externalLinkId: created.id,
-        environmentUrl,
-        previewTitle,
-      });
-    }
+  log.info("[handleDeploymentStatus] Created preview deployment record", {
+    externalLinkId: created.id,
+    environmentUrl,
+    title,
   });
 
   return NextResponse.json({

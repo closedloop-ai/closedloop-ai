@@ -1,8 +1,8 @@
 /**
- * Parser for extracting plan references (e.g., PLAN-42) from PR title and body.
+ * Parser for extracting plan references (e.g., PLN-42) from PR title and body.
  * Supports two formats:
- * 1. Slug pattern: `PLAN-{n}` (case-insensitive, word-boundary)
- * 2. URL pattern: `{NEXT_PUBLIC_APP_URL}/implementation-plans/PLAN-{n}`
+ * 1. Slug pattern: `PLN-{n}` (case-insensitive, word-boundary)
+ * 2. URL pattern: `{NEXT_PUBLIC_APP_URL}/implementation-plans/PLN-{n}`
  *
  * Title matches take precedence over body matches.
  * Within a source, first occurrence wins.
@@ -26,19 +26,24 @@ export type PlanReference = {
   source: MatchSource;
 };
 
-// Word-boundary slug pattern: PLAN-{n} case-insensitive
-const SLUG_PATTERN = /\bPLAN-(\d+)\b/gi;
+// TODO: Use slug prefix constant instead of hardcoding PLN.
+// The constants need to be moved out of /apps first.
+// Word-boundary slug pattern: PLN-{n} case-insensitive
+const SLUG_PATTERN = /\bPLN-(\d+)\b/gi;
 
 // Strip trailing slashes from URLs
 const TRAILING_SLASH_PATTERN = /\/+$/;
 
 /**
  * Build a URL pattern regex from the app base URL.
- * Matches: {baseUrl}/implementation-plans/PLAN-{n}
+ * Matches: {baseUrl}/implementation-plans/PLN-{n}
  */
 function buildUrlPattern(baseUrl: string): RegExp {
-  const escaped = baseUrl.replaceAll(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`${escaped}/implementation-plans/PLAN-(\\d+)\\b`, "gi");
+  const escaped = baseUrl.replaceAll(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`);
+  return new RegExp(
+    String.raw`${escaped}/implementation-plans/PLN-(\d+)\b`,
+    "gi"
+  );
 }
 
 /**
@@ -58,7 +63,7 @@ function extractFromText(
   if (appBaseUrl) {
     const urlPattern = buildUrlPattern(appBaseUrl);
     for (const match of text.matchAll(urlPattern)) {
-      const slug = `PLAN-${match[1]}`;
+      const slug = `PLN-${match[1]}`;
       const normalizedSlug = slug.toUpperCase();
       if (!seen.has(normalizedSlug)) {
         seen.add(normalizedSlug);
@@ -69,7 +74,7 @@ function extractFromText(
 
   // Then check slug pattern
   for (const match of text.matchAll(SLUG_PATTERN)) {
-    const slug = `PLAN-${match[1]}`;
+    const slug = `PLN-${match[1]}`;
     const normalizedSlug = slug.toUpperCase();
     if (!seen.has(normalizedSlug)) {
       seen.add(normalizedSlug);

@@ -575,6 +575,7 @@ export async function getRepositoryPullRequests(
   options?: { state?: "open" | "closed" | "all"; limit?: number }
 ): Promise<
   Array<{
+    githubId: string;
     number: number;
     title: string;
     htmlUrl: string;
@@ -623,6 +624,7 @@ export async function getRepositoryPullRequests(
       }
 
       return {
+        githubId: String(pr.id),
         number: pr.number,
         title: pr.title,
         htmlUrl: pr.html_url,
