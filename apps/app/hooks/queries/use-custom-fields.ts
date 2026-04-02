@@ -311,3 +311,26 @@ export function useUpdateEnumOption(fieldId: string) {
     },
   });
 }
+
+export function useReorderEnumOptions(fieldId: string) {
+  const queryClient = useQueryClient();
+  const apiClient = useApiClient();
+
+  return useMutation({
+    mutationFn: (optionIds: string[]) =>
+      apiClient.post(`/custom-fields/${fieldId}/enum-options/reorder`, {
+        optionIds,
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: customFieldKeys.detail(fieldId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: customFieldKeys.enumOptions(fieldId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: customFieldKeys.lists(),
+      });
+    },
+  });
+}

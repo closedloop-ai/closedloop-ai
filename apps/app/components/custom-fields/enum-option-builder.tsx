@@ -1,5 +1,13 @@
 "use client";
 
+import type { DragEndEvent } from "@dnd-kit/core";
+import {
+  arrayMove,
+  SortableContext,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import type {
   CreateEnumOptionInput,
   CustomFieldEnumOption,
@@ -13,11 +21,13 @@ import {
   DropdownMenuTrigger,
 } from "@repo/design-system/components/ui/dropdown-menu";
 import { Input } from "@repo/design-system/components/ui/input";
-import { MoreHorizontal, Plus } from "lucide-react";
+import { GripVertical, MoreHorizontal, Plus } from "lucide-react";
 import { useId, useMemo, useRef, useState } from "react";
+import { DndProvider } from "@/components/dnd/dnd-provider";
 import {
   useCreateEnumOption,
   useCustomFieldEnumOptions,
+  useReorderEnumOptions,
   useUpdateEnumOption,
 } from "@/hooks/queries/use-custom-fields";
 import type { ColorName } from "./color-picker";
@@ -28,7 +38,7 @@ import { ColorPicker } from "./color-picker";
 // ---------------------------------------------------------------------------
 
 type LocalEnumOption = {
-  /** Stable key for React. */
+  /** Stable key for React and DnD. */
   id: string;
   name: string;
   color: ColorName | null;
@@ -64,6 +74,21 @@ function EnumOptionRow({
   const [draftName, setDraftName] = useState(name);
   const isCommitting = useRef(false);
 
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id });
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : undefined,
+  };
+
   const handleRenameCommit = () => {
     if (isCommitting.current) {
       return;
@@ -91,7 +116,22 @@ function EnumOptionRow({
   };
 
   return (
-    <div className="flex items-center gap-2 rounded-md py-1" id={id}>
+    <div
+      className="flex items-center gap-2 rounded-md py-1"
+      ref={setNodeRef}
+      style={style}
+    >
+      {/* Drag handle */}
+      <button
+        className="cursor-grab text-muted-foreground hover:text-foreground active:cursor-grabbing"
+        type="button"
+        {...attributes}
+        {...listeners}
+      >
+        <GripVertical className="h-4 w-4" />
+        <span className="sr-only">Drag to reorder</span>
+      </button>
+
       {/* Color picker dot */}
       <ColorPicker onChange={onColorChange} value={color} />
 
@@ -167,6 +207,7 @@ type CreateModeProps = {
 };
 
 function CreateModeBuilder({ value, onChange }: Readonly<CreateModeProps>) {
+  // Assign stable local IDs so DnD keys remain stable
   const [localOptions, setLocalOptions] = useState<LocalEnumOption[]>(() =>
     value.map((opt, i) => ({
       id: `local-${i}-${Date.now()}`,
@@ -215,21 +256,48 @@ function CreateModeBuilder({ value, onChange }: Readonly<CreateModeProps>) {
     syncToParent(updated);
   };
 
+  const handleDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id) {
+      return;
+    }
+    const oldIndex = localOptions.findIndex((o) => o.id === active.id);
+    const newIndex = localOptions.findIndex((o) => o.id === over.id);
+    if (oldIndex === -1 || newIndex === -1) {
+      return;
+    }
+    const reordered = arrayMove(localOptions, oldIndex, newIndex);
+    setLocalOptions(reordered);
+    syncToParent(reordered);
+  };
+
+  const optionIds = useMemo(
+    () => localOptions.map((o) => o.id),
+    [localOptions]
+  );
+
   return (
     <div className="space-y-1">
-      {localOptions.map((opt) => (
-        <EnumOptionRow
-          color={opt.color}
-          enabled={opt.enabled}
-          id={opt.id}
-          key={opt.id}
-          name={opt.name}
-          onColorChange={(color) => updateOption(opt.id, { color })}
-          onDelete={() => deleteOption(opt.id)}
-          onDisable={() => updateOption(opt.id, { enabled: !opt.enabled })}
-          onRename={(name) => updateOption(opt.id, { name })}
-        />
-      ))}
+      <DndProvider onDragEnd={handleDragEnd}>
+        <SortableContext
+          items={optionIds}
+          strategy={verticalListSortingStrategy}
+        >
+          {localOptions.map((opt) => (
+            <EnumOptionRow
+              color={opt.color}
+              enabled={opt.enabled}
+              id={opt.id}
+              key={opt.id}
+              name={opt.name}
+              onColorChange={(color) => updateOption(opt.id, { color })}
+              onDelete={() => deleteOption(opt.id)}
+              onDisable={() => updateOption(opt.id, { enabled: !opt.enabled })}
+              onRename={(name) => updateOption(opt.id, { name })}
+            />
+          ))}
+        </SortableContext>
+      </DndProvider>
 
       <Button
         className="mt-2 w-full"
@@ -257,11 +325,41 @@ function EditModeBuilder({ fieldId }: Readonly<EditModeProps>) {
   const { data: options = [] } = useCustomFieldEnumOptions(fieldId);
   const updateOption = useUpdateEnumOption(fieldId);
   const createOption = useCreateEnumOption(fieldId);
+  const reorderOptions = useReorderEnumOptions(fieldId);
 
-  const displayOptions = useMemo(
-    () => [...options].sort((a, b) => a.sortOrder - b.sortOrder),
-    [options]
+  // Local reorder state: if null, use server order
+  const [orderedIds, setOrderedIds] = useState<string[] | null>(null);
+
+  const displayOptions = useMemo(() => {
+    if (orderedIds === null) {
+      return [...options].sort((a, b) => a.sortOrder - b.sortOrder);
+    }
+    const map = new Map(options.map((o) => [o.id, o]));
+    return orderedIds
+      .map((id) => map.get(id))
+      .filter((o): o is CustomFieldEnumOption => Boolean(o));
+  }, [options, orderedIds]);
+
+  const sortedIds = useMemo(
+    () => displayOptions.map((o) => o.id),
+    [displayOptions]
   );
+
+  const handleDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id) {
+      return;
+    }
+    const oldIndex = displayOptions.findIndex((o) => o.id === active.id);
+    const newIndex = displayOptions.findIndex((o) => o.id === over.id);
+    if (oldIndex === -1 || newIndex === -1) {
+      return;
+    }
+    const reordered = arrayMove(displayOptions, oldIndex, newIndex);
+    const newIds = reordered.map((o) => o.id);
+    setOrderedIds(newIds);
+    reorderOptions.mutate(newIds);
+  };
 
   const handleAddOption = () => {
     createOption.mutate({
@@ -273,28 +371,37 @@ function EditModeBuilder({ fieldId }: Readonly<EditModeProps>) {
 
   return (
     <div className="space-y-1">
-      {displayOptions.map((opt: CustomFieldEnumOption) => (
-        <EnumOptionRow
-          color={(opt.color as ColorName | null) ?? null}
-          enabled={opt.enabled}
-          id={opt.id}
-          key={opt.id}
-          name={opt.name}
-          onColorChange={(color) =>
-            updateOption.mutate({
-              optionId: opt.id,
-              color: color ?? undefined,
-            })
-          }
-          onDelete={() =>
-            updateOption.mutate({ optionId: opt.id, enabled: false })
-          }
-          onDisable={() =>
-            updateOption.mutate({ optionId: opt.id, enabled: !opt.enabled })
-          }
-          onRename={(name) => updateOption.mutate({ optionId: opt.id, name })}
-        />
-      ))}
+      <DndProvider onDragEnd={handleDragEnd}>
+        <SortableContext
+          items={sortedIds}
+          strategy={verticalListSortingStrategy}
+        >
+          {displayOptions.map((opt) => (
+            <EnumOptionRow
+              color={(opt.color as ColorName | null) ?? null}
+              enabled={opt.enabled}
+              id={opt.id}
+              key={opt.id}
+              name={opt.name}
+              onColorChange={(color) =>
+                updateOption.mutate({
+                  optionId: opt.id,
+                  color: color ?? undefined,
+                })
+              }
+              onDelete={() =>
+                updateOption.mutate({ optionId: opt.id, enabled: false })
+              }
+              onDisable={() =>
+                updateOption.mutate({ optionId: opt.id, enabled: !opt.enabled })
+              }
+              onRename={(name) =>
+                updateOption.mutate({ optionId: opt.id, name })
+              }
+            />
+          ))}
+        </SortableContext>
+      </DndProvider>
 
       <Button
         className="mt-2 w-full"
