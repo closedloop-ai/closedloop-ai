@@ -188,7 +188,14 @@ export type LoopEventArtifactCreated = {
 export type LoopEventCompleted = {
   type: "completed";
   result: JsonObject;
-  tokensUsed: { input: number; output: number };
+  tokensUsed: {
+    input: number;
+    output: number;
+    cacheCreationInputTokens?: number;
+    cacheReadInputTokens?: number;
+    turns?: number;
+    models?: string[];
+  };
   tokensByModel?: TokensByModel;
   timestamp: string;
 };
@@ -199,7 +206,12 @@ export type LoopEventError = {
   message: string;
   timestamp: string;
   logTail?: string;
-  tokenUsage?: { inputTokens: number; outputTokens: number };
+  tokenUsage?: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheCreationInputTokens?: number;
+    cacheReadInputTokens?: number;
+  };
   diagnosticsVersion?: string;
 };
 
@@ -277,6 +289,8 @@ export type LoopUsageSummary = {
   totalTokensInput: number;
   totalTokensOutput: number;
   totalEstimatedCost: number;
+  totalCacheCreationTokens: number;
+  totalCacheReadTokens: number;
   byCommand: LoopUsageByCommand[];
   byUser: LoopUsageByUser[];
 };

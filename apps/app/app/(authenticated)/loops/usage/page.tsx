@@ -263,9 +263,10 @@ export default function LoopUsagePage() {
       <Separator />
 
       {/* Summary cards */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
         {isLoading ? (
           <>
+            <SummaryCardSkeleton />
             <SummaryCardSkeleton />
             <SummaryCardSkeleton />
             <SummaryCardSkeleton />
@@ -286,6 +287,14 @@ export default function LoopUsagePage() {
               description={`${(usage?.totalTokensOutput ?? 0).toLocaleString()} tokens`}
               title="Output Tokens"
               value={formatTokenCount(usage?.totalTokensOutput ?? 0)}
+            />
+            <SummaryCard
+              description={`${(usage?.totalCacheCreationTokens ?? 0).toLocaleString()} write / ${(usage?.totalCacheReadTokens ?? 0).toLocaleString()} read`}
+              title="Cache Tokens"
+              value={formatTokenCount(
+                (usage?.totalCacheCreationTokens ?? 0) +
+                  (usage?.totalCacheReadTokens ?? 0)
+              )}
             />
             <SummaryCard
               title="Estimated Cost"

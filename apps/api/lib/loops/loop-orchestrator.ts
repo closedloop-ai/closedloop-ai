@@ -135,17 +135,22 @@ async function resolveParentLoopInfo(
 /**
  * Calculate estimated cost from per-model token breakdown.
  * Falls back to default (Opus) pricing if no model breakdown is available.
+ * Optional cacheCreation/cacheRead apply only in the fallback (no-tokensByModel) path.
  */
 function calculateCost(
   tokensInput: number,
   tokensOutput: number,
-  tokensByModel: TokensByModel | null
+  tokensByModel: TokensByModel | null,
+  cacheCreation = 0,
+  cacheRead = 0
 ): number {
   if (!tokensByModel || Object.keys(tokensByModel).length === 0) {
     const fallback = MODEL_PRICING.default;
     return (
       (tokensInput / 1_000_000) * fallback.input +
-      (tokensOutput / 1_000_000) * fallback.output
+      (tokensOutput / 1_000_000) * fallback.output +
+      (cacheCreation / 1_000_000) * fallback.input +
+      (cacheRead / 1_000_000) * fallback.input * 0.1
     );
   }
 
@@ -865,6 +870,86 @@ async function ingestLoopArtifacts(
 }
 
 /**
+ * Synthesize a "default" TokensByModel entry from aggregate token counts when
+ * no per-model breakdown is available. Returns null when there is no activity.
+ */
+function buildFallbackTokensByModel(
+  input: number,
+  output: number,
+  cacheCreation: number,
+  cacheRead: number
+): TokensByModel | null {
+  const hasActivity =
+    input > 0 || output > 0 || cacheCreation > 0 || cacheRead > 0;
+  if (!hasActivity || (cacheCreation === 0 && cacheRead === 0)) {
+    return null;
+  }
+  return { default: { input, output, cacheCreation, cacheRead } };
+}
+
+/**
+ * Resolve the effective TokensByModel for a completed event: use the per-model
+ * breakdown from the event/metadata if present, otherwise synthesize a fallback
+ * "default" entry so cache pricing can be applied.
+ */
+function resolveEffectiveTokensByModel(
+  rawTokensByModel: TokensByModel | null,
+  tokensInput: number,
+  tokensOutput: number,
+  cacheCreation: number,
+  cacheRead: number
+): TokensByModel | null {
+  if (rawTokensByModel && Object.keys(rawTokensByModel).length > 0) {
+    return rawTokensByModel;
+  }
+  return (
+    buildFallbackTokensByModel(
+      tokensInput,
+      tokensOutput,
+      cacheCreation,
+      cacheRead
+    ) ?? rawTokensByModel
+  );
+}
+
+/**
+ * Build a "default" TokensByModel entry from an error event's tokenUsage field.
+ * Returns undefined when tokenUsage is absent or all-zero.
+ */
+function buildErrorTokensByModel(
+  tokenUsage:
+    | {
+        inputTokens: number;
+        outputTokens: number;
+        cacheCreationInputTokens?: number;
+        cacheReadInputTokens?: number;
+      }
+    | undefined
+): TokensByModel | undefined {
+  if (tokenUsage === undefined) {
+    return undefined;
+  }
+  const cacheCreation = tokenUsage.cacheCreationInputTokens ?? 0;
+  const cacheRead = tokenUsage.cacheReadInputTokens ?? 0;
+  const hasActivity =
+    tokenUsage.inputTokens > 0 ||
+    tokenUsage.outputTokens > 0 ||
+    cacheCreation > 0 ||
+    cacheRead > 0;
+  if (!hasActivity) {
+    return undefined;
+  }
+  return {
+    default: {
+      input: tokenUsage.inputTokens,
+      output: tokenUsage.outputTokens,
+      cacheCreation,
+      cacheRead,
+    },
+  };
+}
+
+/**
  * Handle loop completion: download metadata from S3, update token counts.
  * Returns the canonical event(s) to publish via SSE.
  */
@@ -880,6 +965,11 @@ async function handleLoopCompleted(
     ? await downloadMetadata(loop.s3StateKey)
     : null;
 
+  // Extract cache token counts from the completed event (if present).
+  // These are extracted before the zero-token guard so the guard can check all four counters.
+  const cacheCreation = event.tokensUsed?.cacheCreationInputTokens ?? 0;
+  const cacheRead = event.tokensUsed?.cacheReadInputTokens ?? 0;
+
   // Use the event's token pair as an atomic unit when both fields are numeric
   // (including zeros). Only fall back to the metadata pair if the event pair is
   // absent/invalid. Never mix input from one source and output from another.
@@ -892,11 +982,28 @@ async function handleLoopCompleted(
   const tokensOutput = hasEventTokens
     ? event.tokensUsed!.output
     : (metadata?.tokensOutput ?? 0);
-  const tokensByModel: TokensByModel | null =
+  const rawTokensByModel: TokensByModel | null =
     event.tokensByModel ?? metadata?.tokensByModel ?? null;
 
+  // Synthesize a fallback "default" entry when the runner reported aggregate
+  // cache tokens but did not send a per-model breakdown. This lets the cost
+  // calculator apply cache pricing even when tokensByModel is absent.
+  const effectiveTokensByModel = resolveEffectiveTokensByModel(
+    rawTokensByModel,
+    tokensInput,
+    tokensOutput,
+    cacheCreation,
+    cacheRead
+  );
+
   // Calculate cost per model if we have breakdown, otherwise fall back to Opus pricing
-  const estimatedCost = calculateCost(tokensInput, tokensOutput, tokensByModel);
+  const estimatedCost = calculateCost(
+    tokensInput,
+    tokensOutput,
+    effectiveTokensByModel,
+    cacheCreation,
+    cacheRead
+  );
 
   // Guard: EXECUTE loops that explicitly reported 0/0 tokens did no work.
   // Only fires when the event carried a valid token pair (hasEventTokens),
@@ -905,7 +1012,9 @@ async function handleLoopCompleted(
     loop?.command === LoopCommand.Execute &&
     hasEventTokens &&
     tokensInput === 0 &&
-    tokensOutput === 0
+    tokensOutput === 0 &&
+    cacheCreation === 0 &&
+    cacheRead === 0
   ) {
     return handleZeroTokenExecute(
       loopId,
@@ -970,7 +1079,7 @@ async function handleLoopCompleted(
       completedAt: new Date(),
       tokensInput,
       tokensOutput,
-      tokensByModel: tokensByModel ?? undefined,
+      tokensByModel: effectiveTokensByModel ?? undefined,
       estimatedCost,
       ...(isOverridingFailure ? { error: null } : {}),
       ...prSession,
@@ -996,7 +1105,9 @@ async function handleLoopCompleted(
     loopId,
     tokensInput,
     tokensOutput,
-    tokensByModel,
+    cacheCreation,
+    cacheRead,
+    tokensByModel: effectiveTokensByModel,
     estimatedCost,
     ...prSession,
   });
@@ -1099,6 +1210,7 @@ async function handleLoopError(
   if (event.code === "TIMED_OUT") {
     const prSession = extractPrSessionInfo(event as Record<string, unknown>);
     const canonical = buildCanonicalErrorData(event);
+    const errorTokensByModel = buildErrorTokensByModel(event.tokenUsage);
 
     await loopsService.updateStatus(
       loopId,
@@ -1110,6 +1222,9 @@ async function handleLoopError(
         ...(event.tokenUsage !== undefined && {
           tokensInput: event.tokenUsage.inputTokens,
           tokensOutput: event.tokenUsage.outputTokens,
+        }),
+        ...(errorTokensByModel !== undefined && {
+          tokensByModel: errorTokensByModel,
         }),
         ...prSession,
       }
@@ -1149,6 +1264,7 @@ async function handleLoopError(
   // Extract PR/session info from error event (harness includes these even on failure)
   const prSession = extractPrSessionInfo(event as Record<string, unknown>);
   const canonical = buildCanonicalErrorData(event);
+  const failedTokensByModel = buildErrorTokensByModel(event.tokenUsage);
 
   await loopsService.updateStatus(loopId, organizationId, LoopStatus.Failed, {
     completedAt: new Date(),
@@ -1156,6 +1272,9 @@ async function handleLoopError(
     ...(event.tokenUsage !== undefined && {
       tokensInput: event.tokenUsage.inputTokens,
       tokensOutput: event.tokenUsage.outputTokens,
+    }),
+    ...(failedTokensByModel !== undefined && {
+      tokensByModel: failedTokensByModel,
     }),
     ...prSession,
   });

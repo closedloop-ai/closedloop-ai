@@ -146,6 +146,69 @@ describe("validateNormalizedEvent — error event validation", () => {
     expect(result).toContain("diagnosticsVersion");
   });
 
+  it("accepts error with numeric cacheCreationInputTokens and cacheReadInputTokens", () => {
+    const result = validateNormalizedEvent({
+      type: "error",
+      code: "SOME_ERROR",
+      message: "Something failed",
+      timestamp: "2026-01-01T00:00:00.000Z",
+      tokenUsage: {
+        inputTokens: 100,
+        outputTokens: 50,
+        cacheCreationInputTokens: 2000,
+        cacheReadInputTokens: 1500,
+      },
+    });
+    expect(result).toBeNull();
+  });
+
+  it("accepts error with only cacheCreationInputTokens (cacheRead absent)", () => {
+    const result = validateNormalizedEvent({
+      type: "error",
+      code: "SOME_ERROR",
+      message: "Something failed",
+      timestamp: "2026-01-01T00:00:00.000Z",
+      tokenUsage: {
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheCreationInputTokens: 500,
+      },
+    });
+    expect(result).toBeNull();
+  });
+
+  it("rejects error where cacheCreationInputTokens is non-numeric", () => {
+    const result = validateNormalizedEvent({
+      type: "error",
+      code: "SOME_ERROR",
+      message: "Something failed",
+      timestamp: "2026-01-01T00:00:00.000Z",
+      tokenUsage: {
+        inputTokens: 100,
+        outputTokens: 50,
+        cacheCreationInputTokens: "lots",
+      },
+    });
+    expect(result).not.toBeNull();
+    expect(result).toContain("tokenUsage");
+  });
+
+  it("rejects error where cacheReadInputTokens is non-numeric", () => {
+    const result = validateNormalizedEvent({
+      type: "error",
+      code: "SOME_ERROR",
+      message: "Something failed",
+      timestamp: "2026-01-01T00:00:00.000Z",
+      tokenUsage: {
+        inputTokens: 100,
+        outputTokens: 50,
+        cacheReadInputTokens: true,
+      },
+    });
+    expect(result).not.toBeNull();
+    expect(result).toContain("tokenUsage");
+  });
+
   it("rejects error missing code", () => {
     const result = validateNormalizedEvent({
       type: "error",

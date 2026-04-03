@@ -102,6 +102,8 @@ const errorEventSchema = z.object({
     .object({
       inputTokens: z.number(),
       outputTokens: z.number(),
+      cacheCreationInputTokens: z.number().optional(),
+      cacheReadInputTokens: z.number().optional(),
     })
     .optional(),
   diagnosticsVersion: z.string().optional(),

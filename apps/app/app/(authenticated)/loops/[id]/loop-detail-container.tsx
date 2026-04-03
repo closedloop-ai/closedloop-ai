@@ -68,10 +68,16 @@ function ModelTokenBreakdown({
 }: {
   tokensByModel: TokensByModel;
 }) {
-  const models = Object.entries(tokensByModel);
+  const models = Object.entries(tokensByModel).filter(
+    ([key]) => key !== "default"
+  );
   if (models.length === 0) {
     return null;
   }
+
+  const hasCacheColumns = models.some(
+    ([, usage]) => (usage.cacheCreation ?? 0) > 0 || (usage.cacheRead ?? 0) > 0
+  );
 
   return (
     <div className="mt-2 space-y-1 border-muted border-t pt-2">
@@ -80,9 +86,18 @@ function ModelTokenBreakdown({
           <span className="text-muted-foreground">
             {formatModelName(model)}
           </span>
-          <span className="tabular-nums">
-            {formatTokenCount(usage.input)} / {formatTokenCount(usage.output)}
-          </span>
+          {hasCacheColumns ? (
+            <span className="tabular-nums">
+              {formatTokenCount(usage.input)} in /{" "}
+              {formatTokenCount(usage.output)} out /{" "}
+              {formatTokenCount(usage.cacheCreation ?? 0)} cc /{" "}
+              {formatTokenCount(usage.cacheRead ?? 0)} cr
+            </span>
+          ) : (
+            <span className="tabular-nums">
+              {formatTokenCount(usage.input)} / {formatTokenCount(usage.output)}
+            </span>
+          )}
         </div>
       ))}
     </div>
@@ -154,9 +169,27 @@ function MetadataCards({ loop, totalTokens }: MetadataCardsProps) {
               ~${loop.estimatedCost.toFixed(4)}
             </p>
           )}
-          {loop.tokensByModel && (
-            <ModelTokenBreakdown tokensByModel={loop.tokensByModel} />
-          )}
+          {loop.tokensByModel &&
+            (() => {
+              const totalCacheCreation = Object.values(
+                loop.tokensByModel
+              ).reduce((sum, u) => sum + (u.cacheCreation ?? 0), 0);
+              const totalCacheRead = Object.values(loop.tokensByModel).reduce(
+                (sum, u) => sum + (u.cacheRead ?? 0),
+                0
+              );
+              return (
+                <>
+                  {(totalCacheCreation > 0 || totalCacheRead > 0) && (
+                    <p className="text-muted-foreground text-xs">
+                      {formatTokenCount(totalCacheCreation)} cache write /{" "}
+                      {formatTokenCount(totalCacheRead)} cache read
+                    </p>
+                  )}
+                  <ModelTokenBreakdown tokensByModel={loop.tokensByModel} />
+                </>
+              );
+            })()}
         </CardContent>
       </Card>
 
