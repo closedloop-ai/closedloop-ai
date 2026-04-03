@@ -38,6 +38,7 @@ import {
   useFeatures,
   useUpdateFeature,
 } from "@/hooks/queries/use-features";
+import { useLoops } from "@/hooks/queries/use-loops";
 import { useProjects } from "@/hooks/queries/use-projects";
 import { useCurrentUser } from "@/hooks/queries/use-users";
 import {
@@ -47,6 +48,7 @@ import {
 import { useItemsParentTitles } from "@/hooks/use-items-parent-titles";
 import { useLocalStorageState } from "@/hooks/use-local-storage-state";
 import { useOrgUsersAsPopoverUsers } from "@/hooks/use-org-users-as-popover-users";
+import { ACTIVE_LOOP_STATUSES } from "@/lib/loop-constants";
 import { OnboardingChecklist } from "../components/onboarding-checklist";
 import { MyTasksEmptyState } from "./components/my-tasks-empty-state";
 import { MyTasksKanban } from "./components/my-tasks-kanban";
@@ -92,6 +94,16 @@ export default function MyTasksPage() {
     [rawFeatures, filters]
   );
 
+  // Fetch loops and filter to active ones for the Loop column
+  const { data: loops = [] } = useLoops(
+    { limit: 200 },
+    { refetchInterval: 10_000 }
+  );
+  const activeLoops = useMemo(
+    () => loops.filter((l) => ACTIVE_LOOP_STATUSES.has(l.status)),
+    [loops]
+  );
+
   // Derive unique projects from the user's assigned features (not the full org list).
   const filterProjects = useMemo(() => {
     const seen = new Set<string>();
@@ -128,6 +140,7 @@ export default function MyTasksPage() {
   const editHandlers: RowEditHandlers = useMemo(
     () => ({
       teamMembers: orgUsers,
+      activeLoops,
       onUpdateAssignee: (id, assigneeId) =>
         updateFeatureMutation.mutate({ id, assigneeId }),
       onUpdatePriority: (id, priority: Priority) =>
@@ -135,7 +148,7 @@ export default function MyTasksPage() {
       onUpdateStatus: (id, status) =>
         updateFeatureMutation.mutate({ id, status: status as FeatureStatus }),
     }),
-    [orgUsers, updateFeatureMutation.mutate]
+    [orgUsers, activeLoops, updateFeatureMutation.mutate]
   );
 
   const handleDelete = async (item: ArtifactRowItem): Promise<boolean> => {
