@@ -100,12 +100,23 @@ const tokenUsageSchema = z.object({
   cacheReadInputTokens: z.number().optional(),
 });
 
+const tokensByModelSchema = z.record(
+  z.string(),
+  z.object({
+    input: z.number(),
+    output: z.number(),
+    cacheCreation: z.number().optional(),
+    cacheRead: z.number().optional(),
+  })
+);
+
 const errorEventSchema = z.object({
   code: z.string(),
   message: z.string(),
   timestamp: z.string(),
   logTail: z.string().optional(),
   tokenUsage: tokenUsageSchema.optional(),
+  tokensByModel: tokensByModelSchema.optional(),
   diagnosticsVersion: z.string().optional(),
 });
 

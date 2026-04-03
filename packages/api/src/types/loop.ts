@@ -219,6 +219,7 @@ export type LoopEventError = {
     cacheCreationInputTokens?: number;
     cacheReadInputTokens?: number;
   };
+  tokensByModel?: TokensByModel;
   diagnosticsVersion?: string;
   apiKeySource?: string;
 };

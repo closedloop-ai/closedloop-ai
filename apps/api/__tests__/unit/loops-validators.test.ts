@@ -228,4 +228,61 @@ describe("validateNormalizedEvent — error event validation", () => {
     expect(result).not.toBeNull();
     expect(result).toContain("message");
   });
+
+  it("accepts valid tokensByModel map", () => {
+    const result = validateNormalizedEvent({
+      type: "error",
+      code: "SOME_ERROR",
+      message: "Something failed",
+      timestamp: "2026-01-01T00:00:00.000Z",
+      tokensByModel: {
+        "claude-sonnet-4-5": { input: 1500, output: 800 },
+        "claude-opus-4": {
+          input: 500,
+          output: 200,
+          cacheCreation: 100,
+          cacheRead: 50,
+        },
+      },
+    });
+    expect(result).toBeNull();
+  });
+
+  it("rejects tokensByModel with non-numeric input value", () => {
+    const result = validateNormalizedEvent({
+      type: "error",
+      code: "SOME_ERROR",
+      message: "Something failed",
+      timestamp: "2026-01-01T00:00:00.000Z",
+      tokensByModel: {
+        "claude-sonnet-4-5": { input: "many", output: 800 },
+      },
+    });
+    expect(result).not.toBeNull();
+    expect(result).toContain("tokensByModel");
+  });
+
+  it("rejects tokensByModel with non-numeric output value", () => {
+    const result = validateNormalizedEvent({
+      type: "error",
+      code: "SOME_ERROR",
+      message: "Something failed",
+      timestamp: "2026-01-01T00:00:00.000Z",
+      tokensByModel: {
+        "claude-sonnet-4-5": { input: 1500, output: false },
+      },
+    });
+    expect(result).not.toBeNull();
+    expect(result).toContain("tokensByModel");
+  });
+
+  it("accepts error with omitted tokensByModel", () => {
+    const result = validateNormalizedEvent({
+      type: "error",
+      code: "SOME_ERROR",
+      message: "Something failed",
+      timestamp: "2026-01-01T00:00:00.000Z",
+    });
+    expect(result).toBeNull();
+  });
 });

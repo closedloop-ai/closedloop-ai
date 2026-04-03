@@ -321,6 +321,188 @@ describe("handleLoopEvent error diagnostics", () => {
     expect(persistedLogTail.length).toBeLessThan(oversized.length);
   });
 
+  it("FAILED error with tokenUsage: updateStatus receives estimatedCost > 0", async () => {
+    setupLoop();
+    const tokenUsage = { inputTokens: 1500, outputTokens: 800 };
+
+    await handleLoopEvent("loop-1", "org-1", {
+      type: "error",
+      code: "SOME_ERROR",
+      message: "Something went wrong",
+      timestamp: "2026-01-01T00:00:00.000Z",
+      tokenUsage,
+    });
+
+    const updateCall = mockLoopsService.updateStatus.mock.calls[0];
+    const updateData = updateCall[3] as Record<string, unknown>;
+    expect(updateData.estimatedCost).toBeGreaterThan(0);
+    expect(updateData.tokensInput).toBe(1500);
+    expect(updateData.tokensOutput).toBe(800);
+  });
+
+  it("TIMED_OUT error with tokenUsage: updateStatus receives estimatedCost > 0", async () => {
+    setupLoop();
+    const tokenUsage = { inputTokens: 2000, outputTokens: 1000 };
+
+    await handleLoopEvent("loop-1", "org-1", {
+      type: "error",
+      code: "TIMED_OUT",
+      message: "Loop timed out",
+      timestamp: "2026-01-01T00:00:00.000Z",
+      tokenUsage,
+    });
+
+    const updateCall = mockLoopsService.updateStatus.mock.calls[0];
+    const updateData = updateCall[3] as Record<string, unknown>;
+    expect(updateData.estimatedCost).toBeGreaterThan(0);
+    expect(updateData.tokensInput).toBe(2000);
+    expect(updateData.tokensOutput).toBe(1000);
+  });
+
+  it("FAILED error with both tokenUsage and tokensByModel: updateStatus uses tokensByModel", async () => {
+    setupLoop();
+    const tokenUsage = { inputTokens: 1500, outputTokens: 800 };
+    const tokensByModel = {
+      "claude-sonnet-4-5": { input: 1500, output: 800 },
+    };
+
+    await handleLoopEvent("loop-1", "org-1", {
+      type: "error",
+      code: "SOME_ERROR",
+      message: "Something went wrong",
+      timestamp: "2026-01-01T00:00:00.000Z",
+      tokenUsage,
+      tokensByModel,
+    });
+
+    const updateCall = mockLoopsService.updateStatus.mock.calls[0];
+    const updateData = updateCall[3] as Record<string, unknown>;
+    expect(updateData.tokensByModel).toEqual(tokensByModel);
+    expect(updateData.estimatedCost).toBeGreaterThan(0);
+  });
+
+  it("TIMED_OUT error with both tokenUsage and tokensByModel: updateStatus uses tokensByModel", async () => {
+    setupLoop();
+    const tokenUsage = { inputTokens: 2000, outputTokens: 1000 };
+    const tokensByModel = {
+      "claude-sonnet-4-5": { input: 2000, output: 1000 },
+    };
+
+    await handleLoopEvent("loop-1", "org-1", {
+      type: "error",
+      code: "TIMED_OUT",
+      message: "Loop timed out",
+      timestamp: "2026-01-01T00:00:00.000Z",
+      tokenUsage,
+      tokensByModel,
+    });
+
+    const updateCall = mockLoopsService.updateStatus.mock.calls[0];
+    const updateData = updateCall[3] as Record<string, unknown>;
+    expect(updateData.tokensByModel).toEqual(tokensByModel);
+    expect(updateData.estimatedCost).toBeGreaterThan(0);
+  });
+
+  it("FAILED error without tokenUsage: estimatedCost is omitted", async () => {
+    setupLoop();
+
+    await handleLoopEvent("loop-1", "org-1", {
+      type: "error",
+      code: "SOME_ERROR",
+      message: "Something went wrong",
+      timestamp: "2026-01-01T00:00:00.000Z",
+    });
+
+    const updateCall = mockLoopsService.updateStatus.mock.calls[0];
+    const updateData = updateCall[3] as Record<string, unknown>;
+    expect(updateData).not.toHaveProperty("estimatedCost");
+  });
+
+  it("FAILED error with tokensByModel but no tokenUsage: updateStatus receives tokensByModel and estimatedCost", async () => {
+    setupLoop();
+    const tokensByModel = {
+      "claude-sonnet-4-5": { input: 3000, output: 1500 },
+    };
+
+    await handleLoopEvent("loop-1", "org-1", {
+      type: "error",
+      code: "SOME_ERROR",
+      message: "Something went wrong",
+      timestamp: "2026-01-01T00:00:00.000Z",
+      tokensByModel,
+    });
+
+    const updateCall = mockLoopsService.updateStatus.mock.calls[0];
+    const updateData = updateCall[3] as Record<string, unknown>;
+    expect(updateData.tokensByModel).toEqual(tokensByModel);
+    expect(updateData.tokensInput).toBe(3000);
+    expect(updateData.tokensOutput).toBe(1500);
+    expect(updateData.estimatedCost).toBeGreaterThan(0);
+  });
+
+  it("TIMED_OUT error with tokensByModel but no tokenUsage: updateStatus receives tokensByModel and estimatedCost", async () => {
+    setupLoop();
+    const tokensByModel = {
+      "claude-sonnet-4-5": { input: 3000, output: 1500 },
+    };
+
+    await handleLoopEvent("loop-1", "org-1", {
+      type: "error",
+      code: "TIMED_OUT",
+      message: "Loop timed out",
+      timestamp: "2026-01-01T00:00:00.000Z",
+      tokensByModel,
+    });
+
+    const updateCall = mockLoopsService.updateStatus.mock.calls[0];
+    const updateData = updateCall[3] as Record<string, unknown>;
+    expect(updateData.tokensByModel).toEqual(tokensByModel);
+    expect(updateData.tokensInput).toBe(3000);
+    expect(updateData.tokensOutput).toBe(1500);
+    expect(updateData.estimatedCost).toBeGreaterThan(0);
+  });
+
+  it("CANCELLED error with tokenUsage: updateStatus receives tokensInput, tokensOutput, and estimatedCost", async () => {
+    setupLoop();
+    const tokenUsage = { inputTokens: 1000, outputTokens: 500 };
+
+    await handleLoopEvent("loop-1", "org-1", {
+      type: "error",
+      code: "CANCELLED",
+      message: "User cancelled",
+      timestamp: "2026-01-01T00:00:00.000Z",
+      tokenUsage,
+    });
+
+    const updateCall = mockLoopsService.updateStatus.mock.calls[0];
+    const updateData = updateCall[3] as Record<string, unknown>;
+    expect(updateData.tokensInput).toBe(1000);
+    expect(updateData.tokensOutput).toBe(500);
+    expect(updateData.estimatedCost).toBeGreaterThan(0);
+  });
+
+  it("CANCELLED error with tokensByModel but no tokenUsage: updateStatus receives tokensByModel and estimatedCost", async () => {
+    setupLoop();
+    const tokensByModel = {
+      "claude-sonnet-4-5": { input: 2000, output: 800 },
+    };
+
+    await handleLoopEvent("loop-1", "org-1", {
+      type: "error",
+      code: "CANCELLED",
+      message: "User cancelled",
+      timestamp: "2026-01-01T00:00:00.000Z",
+      tokensByModel,
+    });
+
+    const updateCall = mockLoopsService.updateStatus.mock.calls[0];
+    const updateData = updateCall[3] as Record<string, unknown>;
+    expect(updateData.tokensByModel).toEqual(tokensByModel);
+    expect(updateData.tokensInput).toBe(2000);
+    expect(updateData.tokensOutput).toBe(800);
+    expect(updateData.estimatedCost).toBeGreaterThan(0);
+  });
+
   it("TIMED_OUT error without diagnostics: data has only core fields", async () => {
     setupLoop();
 
