@@ -520,11 +520,11 @@ export function LoopProgressPanel({
   const tokensInput =
     completedEvent?.tokensUsed?.input ??
     errorEvent?.tokenUsage?.inputTokens ??
-    0;
+    polling.loopTokensInput;
   const tokensOutput =
     completedEvent?.tokensUsed?.output ??
     errorEvent?.tokenUsage?.outputTokens ??
-    0;
+    polling.loopTokensOutput;
 
   // Derive start timestamp from first event
   const startTimestamp = events.length > 0 ? events[0].timestamp : null;
