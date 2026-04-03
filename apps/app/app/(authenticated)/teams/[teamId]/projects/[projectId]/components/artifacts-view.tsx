@@ -400,7 +400,7 @@ export function ArtifactsView({
   editHandlers,
 }: ArtifactsViewProps) {
   const { isExpanded: isGroupExpanded, toggleGroup } = useGroupExpansion(
-    "table:expand:project-artifacts"
+    `table:expand:project-artifacts:${projectId}`
   );
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
