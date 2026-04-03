@@ -64,7 +64,10 @@ vi.mock("@repo/database", () => ({
 
 // --- Imports (after mocks) ---
 
+import { LoopCommand } from "@repo/api/src/types/loop";
 import { LoopStatus } from "@repo/database";
+import { log } from "@repo/observability/log";
+import type { Mock } from "vitest";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { GET } from "@/app/cron/timeout-loops/route";
 
@@ -447,5 +450,251 @@ describe("GET /api/cron/timeout-loops — timeoutLoop processing", () => {
       ecsLoop.containerId,
       "Cron timeout safety net"
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Anomaly detection helpers
+// ---------------------------------------------------------------------------
+
+type AnomalyCandidateFixture = {
+  id: string;
+  organizationId: string;
+  computeTargetId: string | null;
+  artifactId: string | null;
+  command: string;
+  tokensInput: number;
+  tokensOutput: number;
+  startedAt: Date | null;
+};
+
+/**
+ * Mocks both withDb calls needed for anomaly detection tests:
+ * 1. First call: stuckLoops findMany (returns empty array — not what we're testing)
+ * 2. Second call: anomalyCandidates findMany (returns the given candidates)
+ */
+function mockEmptyStuckLoopsThenAnomalyCandidates(
+  candidates: AnomalyCandidateFixture[]
+): void {
+  // First withDb call: stuckLoops findMany — return empty so route doesn't process timeouts
+  mockWithDb.mockImplementationOnce((fn: (db: unknown) => unknown) =>
+    fn({
+      loop: {
+        findMany: vi.fn().mockResolvedValue([]),
+      },
+    })
+  );
+
+  // Second withDb call: anomalyCandidates findMany
+  mockWithDb.mockImplementationOnce((fn: (db: unknown) => unknown) =>
+    fn({
+      loop: {
+        findMany: vi.fn().mockResolvedValue(candidates),
+      },
+    })
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+describe("GET /api/cron/timeout-loops -- anomaly detection", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+    process.env.CRON_SECRET = "test-secret";
+    process.env.ENABLE_GHOST_LOOP_ANOMALY_WARNING = "true";
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    process.env.CRON_SECRET = undefined;
+    process.env.ENABLE_GHOST_LOOP_ANOMALY_WARNING = undefined;
+  });
+
+  it("logs warn for EXECUTE loop startedAt exactly 5 min ago with zero tokens", async () => {
+    const now = new Date("2026-01-01T12:00:00.000Z");
+    vi.setSystemTime(now);
+
+    // startedAt must be strictly before the anomalyCutoff (now - 5*60*1000).
+    // Use 5 min + 1ms to cross the strict "<" threshold while keeping duration
+    // clearly in the "exactly 5 min" range the task describes.
+    const durationMs = 5 * 60 * 1000 + 1; // 300001 ms — just past the 5 min threshold
+    const startedAt = new Date(now.getTime() - durationMs);
+    const loopId = "loop-ghost-1";
+    const computeTargetId = "ct-ghost-1";
+    const artifactId = "artifact-ghost-1";
+
+    const candidate: AnomalyCandidateFixture = {
+      id: loopId,
+      organizationId: "org-1",
+      computeTargetId,
+      artifactId,
+      command: LoopCommand.Execute,
+      tokensInput: 0,
+      tokensOutput: 0,
+      startedAt,
+    };
+
+    mockEmptyStuckLoopsThenAnomalyCandidates([candidate]);
+    await GET(makeRequest());
+
+    const warnCalls = (log.warn as Mock).mock.calls;
+    const ghostWarnCall = warnCalls.find(
+      (call) =>
+        typeof call[0] === "string" && call[0].includes("Ghost loop anomaly")
+    );
+    expect(ghostWarnCall).toBeDefined();
+    expect(ghostWarnCall?.[1]).toEqual({
+      loopId,
+      computeTargetId,
+      durationMs,
+      artifactId,
+    });
+  });
+
+  it("does NOT log warn when startedAt is 4m59s ago (below 5 min threshold)", async () => {
+    const now = new Date("2026-01-01T12:00:00.000Z");
+    vi.setSystemTime(now);
+
+    // 4 min 59 sec ago — just inside the cutoff, should not trigger
+    const startedAt = new Date(now.getTime() - (5 * 60 * 1000 - 1));
+
+    const candidate: AnomalyCandidateFixture = {
+      id: "loop-ghost-2",
+      organizationId: "org-1",
+      computeTargetId: "ct-1",
+      artifactId: "artifact-1",
+      command: LoopCommand.Execute,
+      tokensInput: 0,
+      tokensOutput: 0,
+      startedAt,
+    };
+
+    mockEmptyStuckLoopsThenAnomalyCandidates([candidate]);
+    await GET(makeRequest());
+
+    const warnCalls = (log.warn as Mock).mock.calls;
+    const ghostWarnCall = warnCalls.find(
+      (call) =>
+        typeof call[0] === "string" && call[0].includes("Ghost loop anomaly")
+    );
+    expect(ghostWarnCall).toBeUndefined();
+  });
+
+  it("logs warn for EXECUTE loop startedAt 10 min ago with zero tokens", async () => {
+    const now = new Date("2026-01-01T12:00:00.000Z");
+    vi.setSystemTime(now);
+
+    const startedAt = new Date(now.getTime() - 10 * 60 * 1000); // 10 min ago
+    const loopId = "loop-ghost-3";
+    const computeTargetId = "ct-ghost-3";
+    const artifactId = "artifact-ghost-3";
+
+    const candidate: AnomalyCandidateFixture = {
+      id: loopId,
+      organizationId: "org-1",
+      computeTargetId,
+      artifactId,
+      command: LoopCommand.Execute,
+      tokensInput: 0,
+      tokensOutput: 0,
+      startedAt,
+    };
+
+    mockEmptyStuckLoopsThenAnomalyCandidates([candidate]);
+    await GET(makeRequest());
+
+    const warnCalls = (log.warn as Mock).mock.calls;
+    const ghostWarnCall = warnCalls.find(
+      (call) =>
+        typeof call[0] === "string" && call[0].includes("Ghost loop anomaly")
+    );
+    expect(ghostWarnCall).toBeDefined();
+    expect(ghostWarnCall?.[1]).toEqual({
+      loopId,
+      computeTargetId,
+      durationMs: 600_000,
+      artifactId,
+    });
+  });
+
+  it("does NOT log warn when tokensInput is non-zero", async () => {
+    const now = new Date("2026-01-01T12:00:00.000Z");
+    vi.setSystemTime(now);
+
+    const startedAt = new Date(now.getTime() - 10 * 60 * 1000); // 10 min ago
+
+    const candidate: AnomalyCandidateFixture = {
+      id: "loop-ghost-4",
+      organizationId: "org-1",
+      computeTargetId: "ct-1",
+      artifactId: "artifact-1",
+      command: LoopCommand.Execute,
+      tokensInput: 100, // non-zero — has consumed tokens, not a ghost
+      tokensOutput: 0,
+      startedAt,
+    };
+
+    mockEmptyStuckLoopsThenAnomalyCandidates([candidate]);
+    await GET(makeRequest());
+
+    const warnCalls = (log.warn as Mock).mock.calls;
+    const ghostWarnCall = warnCalls.find(
+      (call) =>
+        typeof call[0] === "string" && call[0].includes("Ghost loop anomaly")
+    );
+    expect(ghostWarnCall).toBeUndefined();
+  });
+
+  it("does NOT log warn for PLAN loop with zero tokens and startedAt >5 min ago", async () => {
+    const now = new Date("2026-01-01T12:00:00.000Z");
+    vi.setSystemTime(now);
+
+    const startedAt = new Date(now.getTime() - 10 * 60 * 1000); // 10 min ago
+
+    const candidate: AnomalyCandidateFixture = {
+      id: "loop-ghost-5",
+      organizationId: "org-1",
+      computeTargetId: "ct-1",
+      artifactId: "artifact-1",
+      command: LoopCommand.Plan, // PLAN, not EXECUTE — should not trigger
+      tokensInput: 0,
+      tokensOutput: 0,
+      startedAt,
+    };
+
+    mockEmptyStuckLoopsThenAnomalyCandidates([candidate]);
+    await GET(makeRequest());
+
+    const warnCalls = (log.warn as Mock).mock.calls;
+    const ghostWarnCall = warnCalls.find(
+      (call) =>
+        typeof call[0] === "string" && call[0].includes("Ghost loop anomaly")
+    );
+    expect(ghostWarnCall).toBeUndefined();
+  });
+
+  it("calls mockWithDb only once when ENABLE_GHOST_LOOP_ANOMALY_WARNING is not set", async () => {
+    process.env.ENABLE_GHOST_LOOP_ANOMALY_WARNING = undefined;
+
+    const now = new Date("2026-01-01T12:00:00.000Z");
+    vi.setSystemTime(now);
+
+    // Only mock the stuckLoops findMany call — if anomaly detection runs,
+    // it would call withDb a second time which would throw (no mock provided).
+    mockWithDb.mockImplementationOnce((fn: (db: unknown) => unknown) =>
+      fn({
+        loop: {
+          findMany: vi.fn().mockResolvedValue([]),
+        },
+      })
+    );
+
+    await GET(makeRequest());
+
+    // Exactly one withDb call: the stuckLoops findMany
+    expect(mockWithDb).toHaveBeenCalledTimes(1);
   });
 });

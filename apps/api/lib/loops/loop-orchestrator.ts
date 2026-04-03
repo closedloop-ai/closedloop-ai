@@ -101,29 +101,35 @@ export async function resolveGitHubToken(
  * the parent left off.
  */
 async function resolveParentLoopInfo(
-  parentLoopId: string,
+  parentLoopId: string | null,
   organizationId: string
 ): Promise<
+  | { kind: "no-parent" }
+  | { kind: "state-unavailable" }
   | {
+      kind: "state-available";
       s3StateKey: string | null;
       sessionId: string | null;
       branchName: string | null;
     }
-  | undefined
 > {
+  if (parentLoopId === null) {
+    return { kind: "no-parent" };
+  }
   const parent = await loopsService.findById(parentLoopId, organizationId);
   if (!parent) {
     log.warn("[loop-orchestrator] Parent loop not found", { parentLoopId });
-    return undefined;
+    return { kind: "state-unavailable" };
   }
   if (!(parent.s3StateKey || parent.computeTargetId)) {
     log.warn(
       "[loop-orchestrator] Parent loop has no s3StateKey or computeTargetId",
       { parentLoopId }
     );
-    return undefined;
+    return { kind: "state-unavailable" };
   }
   return {
+    kind: "state-available",
     s3StateKey: parent.s3StateKey ?? null,
     sessionId: parent.sessionId ?? null,
     branchName: parent.branchName ?? null,
@@ -349,6 +355,63 @@ async function cancelLoopAfterLaunchFailure(
   }
 }
 
+/**
+ * Transition a loop to FAILED status and append an error event.
+ * Silently swallows InvalidStatusTransition errors only when the loop is
+ * already in a terminal status (COMPLETED, FAILED, CANCELLED, TIMED_OUT) --
+ * indicating a benign race condition where another handler finished first.
+ * If the source status is NOT terminal (e.g. PENDING), the transition failure
+ * is a real validation issue and is re-thrown so it surfaces to the caller.
+ * The event is only persisted after the status transition succeeds.
+ */
+async function failLoopWithError(
+  loopId: string,
+  organizationId: string,
+  code: string,
+  message: string,
+  timestamp: string
+): Promise<void> {
+  const terminalStatuses = new Set<string>([
+    LoopStatus.Completed,
+    LoopStatus.Failed,
+    LoopStatus.Cancelled,
+    LoopStatus.TimedOut,
+  ]);
+
+  try {
+    await loopsService.updateStatus(loopId, organizationId, LoopStatus.Failed, {
+      error: { code, message },
+      completedAt: new Date(),
+    });
+  } catch (err) {
+    if (isInvalidStatusTransitionError(err)) {
+      if (terminalStatuses.has(err.from)) {
+        // Race: another handler already drove the loop to a terminal state.
+        // This is a benign race condition -- swallow silently.
+        log.info(
+          "[loop-orchestrator] failLoopWithError: loop already terminal, skipping transition",
+          { loopId, from: err.from }
+        );
+        return;
+      }
+      // Non-terminal source status (e.g. PENDING): this indicates a real
+      // transition validation issue, not a race. Re-throw so the caller
+      // sees the failure.
+      log.error(
+        "[loop-orchestrator] failLoopWithError: unexpected invalid transition from non-terminal status",
+        { loopId, from: err.from, to: LoopStatus.Failed }
+      );
+      throw err;
+    }
+    throw err;
+  }
+
+  await loopsService.addEvent(loopId, organizationId, {
+    type: "error",
+    data: { code, message, timestamp },
+  });
+}
+
 async function recordScrubFailureWarning(
   loopId: string,
   organizationId: string
@@ -381,10 +444,13 @@ async function recordScrubFailureWarning(
 
 /**
  * Resolve shared launch context needed by both ECS and desktop paths.
+ * Accepts a pre-resolved parentInfo to avoid a redundant DB lookup when
+ * launchLoop already fetched it for the pre-dispatch guard.
  */
 async function resolveLoopLaunchContext(
   loop: NonNullable<Awaited<ReturnType<typeof loopsService.findById>>>,
   organizationId: string,
+  parentInfo: Awaited<ReturnType<typeof resolveParentLoopInfo>>,
   options?: { skipSecrets?: boolean }
 ) {
   // Desktop loops don't need server-side secrets — the electron has its own
@@ -411,10 +477,6 @@ async function resolveLoopLaunchContext(
     organizationId,
   });
 
-  const parentInfo = loop.parentLoopId
-    ? await resolveParentLoopInfo(loop.parentLoopId, organizationId)
-    : undefined;
-
   return {
     anthropicApiKey,
     githubToken,
@@ -436,6 +498,35 @@ export async function launchLoop(
 ): Promise<string> {
   const loop = await getPendingLoopOrThrow(loopId, organizationId);
 
+  // Pre-dispatch guard: if the command requires a parent loop's state and the
+  // parent state is unavailable, fail the loop immediately rather than letting
+  // the runner start and immediately abort.
+  // Desktop EXECUTE loops with a non-null computeTargetId on the parent resolve
+  // as state-available because resolveParentLoopInfo returns state-available
+  // when parent.computeTargetId is set.
+  const parentInfo = await resolveParentLoopInfo(
+    loop.parentLoopId,
+    organizationId
+  );
+  if (
+    getCommandHandler(loop.command)?.requiresParent === true &&
+    parentInfo.kind === "state-unavailable"
+  ) {
+    const timestamp = new Date().toISOString();
+    log.error(
+      "[loop-orchestrator] Pre-dispatch guard: parent state unavailable, failing loop",
+      { loopId, command: loop.command, parentLoopId: loop.parentLoopId }
+    );
+    await failLoopWithError(
+      loopId,
+      organizationId,
+      LoopErrorCode.PlanStateUnavailable,
+      "Parent loop state is unavailable, cannot resume execution",
+      timestamp
+    );
+    return loopId;
+  }
+
   log.info("[loop-orchestrator] Launching loop", {
     loopId,
     command: loop.command,
@@ -447,11 +538,11 @@ export async function launchLoop(
 
   // Desktop path: dispatch to electron via desktop gateway
   if (loop.computeTargetId) {
-    return launchLoopDesktop(loopId, organizationId, loop);
+    return launchLoopDesktop(loopId, organizationId, loop, parentInfo);
   }
 
   // ECS path: launch as container task
-  return launchLoopEcs(loopId, organizationId, loop);
+  return launchLoopEcs(loopId, organizationId, loop, parentInfo);
 }
 
 /**
@@ -461,13 +552,19 @@ export async function launchLoop(
 async function launchLoopDesktop(
   loopId: string,
   organizationId: string,
-  loop: NonNullable<Awaited<ReturnType<typeof loopsService.findById>>>
+  loop: NonNullable<Awaited<ReturnType<typeof loopsService.findById>>>,
+  parentInfo: Awaited<ReturnType<typeof resolveParentLoopInfo>>
 ): Promise<string> {
   let commandId: string | undefined;
   try {
-    const ctx = await resolveLoopLaunchContext(loop, organizationId, {
-      skipSecrets: true,
-    });
+    const ctx = await resolveLoopLaunchContext(
+      loop,
+      organizationId,
+      parentInfo,
+      {
+        skipSecrets: true,
+      }
+    );
 
     // Build context pack in memory (no S3 upload)
     const contextPack = await buildContextPackInMemory(
@@ -515,8 +612,14 @@ async function launchLoopDesktop(
       contextPack,
       artifactSlug,
       parentLoopId: loop.parentLoopId ?? undefined,
-      parentBranchName: ctx.parentInfo?.branchName ?? undefined,
-      parentSessionId: ctx.parentInfo?.sessionId ?? undefined,
+      parentBranchName:
+        ctx.parentInfo.kind === "state-available"
+          ? (ctx.parentInfo.branchName ?? undefined)
+          : undefined,
+      parentSessionId:
+        ctx.parentInfo.kind === "state-available"
+          ? (ctx.parentInfo.sessionId ?? undefined)
+          : undefined,
       localRepoPath,
     });
 
@@ -565,13 +668,18 @@ async function launchLoopDesktop(
 async function launchLoopEcs(
   loopId: string,
   organizationId: string,
-  loop: NonNullable<Awaited<ReturnType<typeof loopsService.findById>>>
+  loop: NonNullable<Awaited<ReturnType<typeof loopsService.findById>>>,
+  parentInfo: Awaited<ReturnType<typeof resolveParentLoopInfo>>
 ): Promise<string> {
   let taskArn: string | undefined;
   let s3StateKey: string | undefined;
 
   try {
-    const ctx = await resolveLoopLaunchContext(loop, organizationId);
+    const ctx = await resolveLoopLaunchContext(
+      loop,
+      organizationId,
+      parentInfo
+    );
 
     // Build context pack and upload to S3
     s3StateKey = getStateKeyPrefix(organizationId, loopId);
@@ -601,9 +709,18 @@ async function launchLoopEcs(
       repo: loop.repo ?? undefined,
       closedLoopAuthToken: ctx.closedLoopAuthToken,
       artifactId: loop.artifactId ?? undefined,
-      parentS3StateKey: ctx.parentInfo?.s3StateKey ?? undefined,
-      parentSessionId: ctx.parentInfo?.sessionId ?? undefined,
-      parentBranchName: ctx.parentInfo?.branchName ?? undefined,
+      parentS3StateKey:
+        ctx.parentInfo.kind === "state-available"
+          ? (ctx.parentInfo.s3StateKey ?? undefined)
+          : undefined,
+      parentSessionId:
+        ctx.parentInfo.kind === "state-available"
+          ? (ctx.parentInfo.sessionId ?? undefined)
+          : undefined,
+      parentBranchName:
+        ctx.parentInfo.kind === "state-available"
+          ? (ctx.parentInfo.branchName ?? undefined)
+          : undefined,
     });
 
     // Update loop status to CLAIMED
@@ -1306,6 +1423,11 @@ async function handleLoopError(
       loopId,
       message: event.message,
     });
+  } else if (event.code === LoopErrorCode.PlanStateUnavailable) {
+    log.error("[loop-orchestrator] Loop failed: plan state unavailable", {
+      loopId,
+      message: event.message,
+    });
   }
 
   // Extract PR/session info from error event (harness includes these even on failure)
@@ -1403,12 +1525,14 @@ async function handleZeroTokenExecute(
     | null
     | undefined,
   event: LoopEventCompleted,
-  replayContext?: RunnerReplayContext
+  _replayContext?: RunnerReplayContext
 ): Promise<LoopEvent[]> {
+  const noWorkMessage =
+    "EXECUTE loop completed with 0 tokens -- no work was done";
   const errorEvent: LoopEvent = {
     type: "error",
     code: LoopErrorCode.NoWorkProduced,
-    message: "EXECUTE loop completed with 0 tokens -- no work was done",
+    message: noWorkMessage,
     timestamp: event.timestamp,
   };
 
@@ -1428,53 +1552,43 @@ async function handleZeroTokenExecute(
     return [];
   }
 
-  // Preserve PR/session metadata from the completed event so the loop record
-  // retains linkage/debug context even on NO_WORK_PRODUCED failures.
+  // Extract PR/session info from the completed event (harness includes these even on zero-token runs)
   const prSession = extractPrSessionInfo(
     event as unknown as Record<string, unknown>
   );
 
-  // Attempt transition to FAILED. If another event raced to terminal, catch and return [].
+  // Attempt to transition to FAILED. Handle races against other terminal transitions.
   try {
     await loopsService.updateStatus(loopId, organizationId, LoopStatus.Failed, {
+      error: { code: LoopErrorCode.NoWorkProduced, message: noWorkMessage },
       completedAt: new Date(),
-      error: {
-        code: LoopErrorCode.NoWorkProduced,
-        message: errorEvent.message,
-      },
       ...prSession,
     });
   } catch (err) {
     if (isInvalidStatusTransitionError(err)) {
-      // Only swallow when the source status is terminal (another event raced
-      // to completion). Re-throw for non-terminal source statuses (e.g.,
-      // PENDING -> FAILED is invalid) so the runner can retry.
-      if (terminalStatuses.has(err.from as LoopStatus)) {
+      if (terminalStatuses.has(err.from)) {
+        // Race: another handler already drove the loop to a terminal state before
+        // we could mark it FAILED. Treat as a no-op rather than surfacing an error.
         log.info(
-          "[loop-orchestrator] NO_WORK_PRODUCED race -- loop already terminal",
+          "[loop-orchestrator] NO_WORK_PRODUCED race to terminal -- skipping error event",
           { loopId, from: err.from }
         );
         return [];
       }
+      // Non-terminal source: unexpected invalid transition, propagate to caller.
       throw err;
     }
     throw err;
   }
 
-  // Persist error event only after successful status transition
-  await loopsService.addEvent(
-    loopId,
-    organizationId,
-    {
-      type: "error",
-      data: {
-        code: LoopErrorCode.NoWorkProduced,
-        message: errorEvent.message,
-        timestamp: event.timestamp,
-      },
+  await loopsService.addEvent(loopId, organizationId, {
+    type: "error",
+    data: {
+      code: LoopErrorCode.NoWorkProduced,
+      message: noWorkMessage,
+      timestamp: event.timestamp,
     },
-    replayContext
-  );
+  });
 
   log.error("[loop-orchestrator] EXECUTE loop completed with 0 tokens", {
     loopId,

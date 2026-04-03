@@ -307,6 +307,7 @@ export type LoopUsageSummary = {
 export const LoopErrorCode = {
   NoWorkProduced: "NO_WORK_PRODUCED",
   ContextLimitExceeded: "CONTEXT_LIMIT_EXCEEDED",
+  PlanStateUnavailable: "PLAN_STATE_UNAVAILABLE",
 } as const;
 export type LoopErrorCode = (typeof LoopErrorCode)[keyof typeof LoopErrorCode];
 
