@@ -1,6 +1,12 @@
 "use client";
 
-import type { TokensByModel } from "@repo/api/src/types/loop";
+import { useFeatureFlag } from "@repo/analytics/client";
+import type {
+  LoopErrorCode,
+  LoopEventError,
+  TokensByModel,
+} from "@repo/api/src/types/loop";
+import { LoopStatus } from "@repo/api/src/types/loop";
 import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
@@ -38,12 +44,17 @@ import { useState } from "react";
 import { ConfirmStopLoopDialog } from "@/components/loops/confirm-stop-loop-dialog";
 import { LoopAuditLog } from "@/components/loops/loop-audit-log";
 import { LoopProgressPanel } from "@/components/loops/loop-progress-panel";
-import { LoopCommandBadge, LoopStatusBadge } from "@/components/status-badge";
+import {
+  LoopCommandBadge,
+  LoopStatusBadge,
+  loopErrorCodeLabels,
+} from "@/components/status-badge";
 import { UserLink } from "@/components/user-link";
 import { useArtifact } from "@/hooks/queries/use-artifacts";
 import {
   useCancelLoop,
   useLoop,
+  useLoopEventsPaginated,
   useResumeLoop,
 } from "@/hooks/queries/use-loops";
 import { getArtifactRoute } from "@/lib/artifact-navigation";
@@ -285,6 +296,13 @@ export function LoopDetailContainer({ id }: LoopDetailContainerProps) {
   const cancelLoop = useCancelLoop();
   const router = useRouter();
   const [showCancelConfirm, setShowCancelConfirm] = useState(false);
+  const ghostLoopFlag = useFeatureFlag("ghost-loop-ux");
+  const ghostLoopUx = ghostLoopFlag?.enabled;
+  const { data: errorEvents } = useLoopEventsPaginated(
+    id,
+    { type: "error", limit: 1, sort: "desc" },
+    { enabled: loop?.status === LoopStatus.Failed && !!ghostLoopUx }
+  );
 
   if (isLoading) {
     return (
@@ -313,6 +331,9 @@ export function LoopDetailContainer({ id }: LoopDetailContainerProps) {
 
   const isActive = CANCELLABLE_LOOP_STATUSES.has(loop.status);
   const defaultTab = isActive ? "live" : "audit-log";
+  const diagnosticsLogTail = ghostLoopUx
+    ? (errorEvents?.data?.[0] as LoopEventError | undefined)?.logTail
+    : undefined;
 
   const handleRestart = async () => {
     try {
@@ -424,12 +445,26 @@ export function LoopDetailContainer({ id }: LoopDetailContainerProps) {
       {loop.error && (
         <div className="rounded-md border border-destructive/20 bg-destructive/10 p-4">
           <p className="font-medium text-destructive text-sm">
-            Error: {loop.error.code}
+            Error:{" "}
+            {ghostLoopUx
+              ? (loopErrorCodeLabels[loop.error.code as LoopErrorCode] ??
+                loop.error.code)
+              : loop.error.code}
           </p>
           <p className="mt-1 text-destructive/80 text-sm">
             {loop.error.message}
           </p>
         </div>
+      )}
+
+      {/* Diagnostics */}
+      {diagnosticsLogTail && (
+        <details>
+          <summary>Diagnostics</summary>
+          <pre className="max-h-64 overflow-auto rounded bg-muted p-2 text-xs">
+            {diagnosticsLogTail}
+          </pre>
+        </details>
       )}
 
       {/* Tabs: Live / Audit Log */}

@@ -1,4 +1,5 @@
 import { timingSafeEqual } from "node:crypto";
+import { LoopCommand } from "@repo/api/src/types/loop";
 import { LoopStatus, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { loopsService } from "@/app/loops/service";
@@ -109,6 +110,64 @@ async function timeoutLoop(loop: StuckLoop, now: Date): Promise<boolean> {
 }
 
 /**
+ * Detects and warns about EXECUTE loops that have been running for more than
+ * 5 minutes with zero token consumption — a sign that the AI provider
+ * accepted the connection but never streamed a response (ghost loop).
+ *
+ * Applies defense-in-depth guards matching the DB WHERE clause so that test
+ * mocks returning out-of-filter records don't produce spurious warnings.
+ */
+async function warnGhostLoopAnomalies(now: Date): Promise<void> {
+  const anomalyCutoff = new Date(now.getTime() - 5 * 60 * 1000);
+
+  const ghostLoops = await withDb((db) =>
+    db.loop.findMany({
+      where: {
+        status: LoopStatus.RUNNING,
+        command: LoopCommand.Execute,
+        tokensInput: 0,
+        tokensOutput: 0,
+        startedAt: {
+          not: null,
+          lt: anomalyCutoff,
+        },
+      },
+      select: {
+        id: true,
+        organizationId: true,
+        computeTargetId: true,
+        artifactId: true,
+        startedAt: true,
+        command: true,
+        tokensInput: true,
+        tokensOutput: true,
+      },
+    })
+  );
+
+  for (const loop of ghostLoops) {
+    if (!loop.startedAt || loop.startedAt >= anomalyCutoff) {
+      continue;
+    }
+    if (loop.command !== LoopCommand.Execute) {
+      continue;
+    }
+    if (loop.tokensInput !== 0 || loop.tokensOutput !== 0) {
+      continue;
+    }
+    log.warn(
+      "[timeout-loops] Ghost loop anomaly: EXECUTE loop running >5 min with zero tokens",
+      {
+        loopId: loop.id,
+        computeTargetId: loop.computeTargetId,
+        durationMs: now.getTime() - loop.startedAt.getTime(),
+        artifactId: loop.artifactId,
+      }
+    );
+  }
+}
+
+/**
  * Cron safety net for stuck loops.
  *
  * Runs every 5 minutes. Finds loops in non-terminal status that appear stuck
@@ -209,6 +268,16 @@ export const GET = async (request: Request): Promise<Response> => {
       },
     })
   );
+
+  if (process.env.ENABLE_GHOST_LOOP_ANOMALY_WARNING === "true") {
+    try {
+      await warnGhostLoopAnomalies(now);
+    } catch (e) {
+      log.error("[timeout-loops] Ghost loop anomaly check failed", {
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
 
   if (stuckLoops.length === 0) {
     return new Response("OK: no stuck loops", { status: 200 });
