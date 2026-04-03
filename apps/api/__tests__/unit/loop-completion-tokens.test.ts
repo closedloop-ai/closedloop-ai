@@ -805,4 +805,75 @@ describe("handleLoopCompleted EXECUTE 0-token guard", () => {
       expect.objectContaining({ tokensInput: 0, tokensOutput: 0 })
     );
   });
+
+  it("persists apiKeySource in metadata when present on completed event", async () => {
+    setupLoop({ metadata: { branchName: "feature/test" } });
+
+    await handleLoopEvent("loop-1", "org-1", {
+      type: "completed",
+      result: {},
+      tokensUsed: { input: 100, output: 50 },
+      apiKeySource: "none",
+      timestamp: new Date().toISOString(),
+    });
+
+    expect(mockLoopsService.updateStatus).toHaveBeenCalledWith(
+      "loop-1",
+      "org-1",
+      "COMPLETED",
+      expect.objectContaining({
+        metadata: { branchName: "feature/test", apiKeySource: "none" },
+      })
+    );
+  });
+
+  it("sets estimatedCost to 0 when apiKeySource is none (subscription)", async () => {
+    setupLoop();
+
+    await handleLoopEvent("loop-1", "org-1", {
+      type: "completed",
+      result: {},
+      tokensUsed: { input: 50_000, output: 30_000 },
+      apiKeySource: "none",
+      timestamp: new Date().toISOString(),
+    });
+
+    expect(mockLoopsService.updateStatus).toHaveBeenCalledWith(
+      "loop-1",
+      "org-1",
+      "COMPLETED",
+      expect.objectContaining({ estimatedCost: 0 })
+    );
+  });
+
+  it("calculates non-zero estimatedCost when apiKeySource is not none", async () => {
+    setupLoop();
+
+    await handleLoopEvent("loop-1", "org-1", {
+      type: "completed",
+      result: {},
+      tokensUsed: { input: 50_000, output: 30_000 },
+      apiKeySource: "env_variable",
+      timestamp: new Date().toISOString(),
+    });
+
+    const call = mockLoopsService.updateStatus.mock.calls[0];
+    const data = call[3] as { estimatedCost: number };
+    expect(data.estimatedCost).toBeGreaterThan(0);
+  });
+
+  it("does not include metadata when apiKeySource is absent from event", async () => {
+    setupLoop();
+
+    await handleLoopEvent("loop-1", "org-1", {
+      type: "completed",
+      result: {},
+      tokensUsed: { input: 100, output: 50 },
+      timestamp: new Date().toISOString(),
+    });
+
+    const call = mockLoopsService.updateStatus.mock.calls[0];
+    const data = call[3] as Record<string, unknown>;
+    expect(data.metadata).toBeUndefined();
+  });
 });
