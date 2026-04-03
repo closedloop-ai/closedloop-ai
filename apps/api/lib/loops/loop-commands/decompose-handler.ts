@@ -1,3 +1,4 @@
+import type { JsonObject } from "@repo/api/src/types/common";
 import { Priority } from "@repo/api/src/types/common";
 import { EntityType, LinkType } from "@repo/api/src/types/entity-link";
 import { FeatureStatus } from "@repo/api/src/types/feature";
@@ -9,6 +10,7 @@ import type {
 } from "@repo/api/src/types/loop";
 import { withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
+import { z } from "zod";
 import { artifactsService } from "@/app/artifacts/service";
 import { entityLinksService } from "@/app/entity-links/service";
 import { featuresService } from "@/app/features/service";
@@ -64,6 +66,34 @@ function buildFullDescription(feature: DecomposeFeature): string {
 }
 
 // ---------------------------------------------------------------------------
+// Shared schema
+// ---------------------------------------------------------------------------
+
+const decomposeResultSchema = z.object({
+  features: z.array(
+    z.object({
+      title: z.string(),
+      description: z.string(),
+      priority: z.enum(["HIGH", "MEDIUM", "LOW"]).optional(),
+      userStories: z
+        .array(
+          z.object({
+            id: z.string(),
+            story: z.string(),
+            acceptanceCriteria: z.array(
+              z.object({
+                id: z.string(),
+                criterion: z.string(),
+              })
+            ),
+          })
+        )
+        .optional(),
+    })
+  ),
+});
+
+// ---------------------------------------------------------------------------
 // Download
 // ---------------------------------------------------------------------------
 
@@ -75,7 +105,17 @@ async function downloadDecomposeArtifacts(
   const result = parseJsonArtifact<DecomposeResult>(
     buf,
     "features.json",
-    (r) => r
+    (r) => {
+      const parsed = decomposeResultSchema.safeParse(r);
+      if (!parsed.success) {
+        log.warn(
+          "[loop-artifact-ingestion] features.json failed schema validation",
+          { error: parsed.error.message }
+        );
+        return null;
+      }
+      return parsed.data;
+    }
   ) as DecomposeResult | null;
 
   return { result };
@@ -91,6 +131,7 @@ async function ingestDecomposeArtifacts(
   artifacts: DecomposeArtifacts
 ): Promise<void> {
   const { result } = artifacts;
+
   if (!(result?.features?.length && loop.artifactId)) {
     log.info("[loop-artifact-ingestion] No features to ingest", {
       artifactId: loop.artifactId,
@@ -104,6 +145,7 @@ async function ingestDecomposeArtifacts(
     loop.artifactId,
     organizationId
   );
+
   if (!prd?.projectId) {
     log.warn(
       "[loop-artifact-ingestion] PRD has no projectId, skipping ingestion",
@@ -150,6 +192,29 @@ async function ingestDecomposeArtifacts(
 }
 
 // ---------------------------------------------------------------------------
+// Upload-based loading (desktop path)
+// ---------------------------------------------------------------------------
+
+const decomposeUploadSchema = z.object({
+  features: decomposeResultSchema.optional(),
+});
+
+function decomposeArtifactsFromUpload(
+  uploaded: JsonObject
+): DecomposeArtifacts {
+  const parsed = decomposeUploadSchema.safeParse(uploaded);
+  if (!parsed.success) {
+    log.warn(
+      "[loop-artifact-ingestion] Decompose upload failed schema validation",
+      { error: parsed.error.message }
+    );
+    return { result: null };
+  }
+  const result = parsed.data?.features ?? null;
+  return { result };
+}
+
+// ---------------------------------------------------------------------------
 // Handler
 // ---------------------------------------------------------------------------
 
@@ -157,16 +222,7 @@ export const decomposeHandler = defineHandler<DecomposeArtifacts>({
   requiresRepo: false,
   requiresParent: false,
   includePrimaryArtifact: true,
-
-  downloadArtifacts(stateKeyPrefix: string) {
-    return downloadDecomposeArtifacts(stateKeyPrefix);
-  },
-
-  async ingest(
-    loop: Loop,
-    organizationId: string,
-    artifacts: DecomposeArtifacts
-  ) {
-    await ingestDecomposeArtifacts(loop, organizationId, artifacts);
-  },
+  downloadArtifacts: downloadDecomposeArtifacts,
+  downloadFromUpload: decomposeArtifactsFromUpload,
+  ingest: ingestDecomposeArtifacts,
 });

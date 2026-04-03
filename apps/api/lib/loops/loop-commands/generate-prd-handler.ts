@@ -117,8 +117,15 @@ const generatePrdUploadSchema = z.object({
 function generatePrdArtifactsFromUpload(
   uploaded: JsonObject
 ): GeneratePrdArtifacts {
-  const parsed = generatePrdUploadSchema.parse(uploaded);
-  const prdContent = parsed.prd?.content ?? null;
+  const parsed = generatePrdUploadSchema.safeParse(uploaded);
+  if (!parsed.success) {
+    log.warn(
+      "[loop-artifact-ingestion] Generate PRD upload failed schema validation",
+      { error: parsed.error.message }
+    );
+    return { prdContent: null };
+  }
+  const prdContent = parsed.data.prd?.content ?? null;
   return { prdContent };
 }
 

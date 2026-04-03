@@ -221,3 +221,64 @@ describe("decomposeHandler ingestion", () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// Upload-based ingestion (desktop path)
+// ---------------------------------------------------------------------------
+
+describe("decomposeHandler uploadAndIngest", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("ingests from uploaded artifacts (desktop path)", async () => {
+    const loop = buildDecomposeLoop();
+    const uploaded = {
+      features: {
+        features: [
+          { title: "Feature A", description: "desc A", priority: "HIGH" },
+        ],
+      },
+    };
+    mockArtifactsService.findByIdSimple.mockResolvedValue({
+      id: "prd-artifact-1",
+      projectId: "project-1",
+    });
+    mockFeaturesService.create.mockResolvedValue({ id: "feature-1" });
+    mockEntityLinksService.createLink.mockResolvedValue({ id: "link-1" });
+
+    await decomposeHandler.uploadAndIngest(uploaded, loop, "org-1");
+
+    expect(mockFeaturesService.create).toHaveBeenCalledWith("org-1", "user-1", {
+      projectId: "project-1",
+      title: "Feature A",
+      description: "desc A",
+      priority: Priority.High,
+      status: FeatureStatus.NotStarted,
+    });
+    expect(mockEntityLinksService.createLink).toHaveBeenCalledWith("org-1", {
+      sourceId: "prd-artifact-1",
+      sourceType: EntityType.Artifact,
+      targetId: "feature-1",
+      targetType: EntityType.Feature,
+      linkType: LinkType.Produces,
+    });
+  });
+
+  it("handles upload with missing features field gracefully", async () => {
+    const loop = buildDecomposeLoop();
+
+    await decomposeHandler.uploadAndIngest({}, loop, "org-1");
+
+    expect(mockFeaturesService.create).not.toHaveBeenCalled();
+  });
+
+  it("handles upload with invalid schema gracefully", async () => {
+    const loop = buildDecomposeLoop();
+    const uploaded = { features: { features: "not-an-array" } };
+
+    await decomposeHandler.uploadAndIngest(uploaded, loop, "org-1");
+
+    expect(mockFeaturesService.create).not.toHaveBeenCalled();
+  });
+});
