@@ -178,7 +178,9 @@ describe("handleLoopEvent output — token tracking", () => {
       "loop-1",
       "org-1",
       1000,
-      500
+      500,
+      0,
+      0
     );
   });
 
@@ -229,6 +231,8 @@ describe("handleLoopEvent output — token tracking", () => {
       "loop-1",
       "org-1",
       500,
+      0,
+      0,
       0
     );
   });

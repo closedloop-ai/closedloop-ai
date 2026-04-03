@@ -882,18 +882,16 @@ async function ingestLoopArtifacts(
 }
 
 /**
- * Synthesize a "default" TokensByModel entry from aggregate token counts when
- * no per-model breakdown is available. Returns null when there is no activity.
+ * Build a synthetic "default" TokensByModel entry from aggregate token counts.
+ * Returns null when all counters are zero.
  */
-function buildFallbackTokensByModel(
+function buildDefaultTokensByModel(
   input: number,
   output: number,
   cacheCreation: number,
   cacheRead: number
 ): TokensByModel | null {
-  const hasActivity =
-    input > 0 || output > 0 || cacheCreation > 0 || cacheRead > 0;
-  if (!hasActivity || (cacheCreation === 0 && cacheRead === 0)) {
+  if (input === 0 && output === 0 && cacheCreation === 0 && cacheRead === 0) {
     return null;
   }
   return { default: { input, output, cacheCreation, cacheRead } };
@@ -915,7 +913,7 @@ function resolveEffectiveTokensByModel(
     return rawTokensByModel;
   }
   return (
-    buildFallbackTokensByModel(
+    buildDefaultTokensByModel(
       tokensInput,
       tokensOutput,
       cacheCreation,
@@ -955,24 +953,14 @@ function buildErrorTokensByModel(
   if (tokenUsage === undefined) {
     return undefined;
   }
-  const cacheCreation = tokenUsage.cacheCreationInputTokens ?? 0;
-  const cacheRead = tokenUsage.cacheReadInputTokens ?? 0;
-  const hasActivity =
-    tokenUsage.inputTokens > 0 ||
-    tokenUsage.outputTokens > 0 ||
-    cacheCreation > 0 ||
-    cacheRead > 0;
-  if (!hasActivity) {
-    return undefined;
-  }
-  return {
-    default: {
-      input: tokenUsage.inputTokens,
-      output: tokenUsage.outputTokens,
-      cacheCreation,
-      cacheRead,
-    },
-  };
+  return (
+    buildDefaultTokensByModel(
+      tokenUsage.inputTokens,
+      tokenUsage.outputTokens,
+      tokenUsage.cacheCreationInputTokens ?? 0,
+      tokenUsage.cacheReadInputTokens ?? 0
+    ) ?? undefined
+  );
 }
 
 /**

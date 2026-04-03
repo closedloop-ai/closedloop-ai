@@ -925,7 +925,9 @@ export const loopsService = {
       rawPredicates.push(Prisma.sql`user_id = ${userId}::uuid`);
     }
     if (validatedCommand) {
-      rawPredicates.push(Prisma.sql`command = ${validatedCommand}`);
+      rawPredicates.push(
+        Prisma.sql`command = ${validatedCommand}::"LoopCommand"`
+      );
     }
     if (startDate) {
       rawPredicates.push(Prisma.sql`created_at >= ${startDate}`);
