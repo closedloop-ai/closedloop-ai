@@ -240,4 +240,4 @@ function createDeployGroup(link: LinkedEntity, index: number): DeployGroup {
   };
 }
 
-const DEPLOY_GROUP_WINDOW_MS = 60 * 1000;
+const DEPLOY_GROUP_WINDOW_MS = 10 * 60 * 1000;
