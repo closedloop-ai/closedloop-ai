@@ -3,12 +3,7 @@
  * Verifies ClosedLoop branding, logo rendering, and child rendering.
  */
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
-
-vi.mock("@repo/design-system/components/ui/mode-toggle", () => ({
-  ModeToggle: () => <button type="button">Toggle mode</button>,
-}));
-
+import { describe, expect, it } from "vitest";
 import AuthLayout from "@/app/(unauthenticated)/layout";
 
 describe("AuthLayout — ClosedLoop branding", () => {
@@ -23,7 +18,7 @@ describe("AuthLayout — ClosedLoop branding", () => {
     expect(logos.length).toBe(2);
   });
 
-  it("renders the mode toggle", () => {
+  it("renders the product screenshot", () => {
     render(
       <AuthLayout>
         <div>child</div>
@@ -31,7 +26,7 @@ describe("AuthLayout — ClosedLoop branding", () => {
     );
 
     expect(
-      screen.getByRole("button", { name: "Toggle mode" })
+      screen.getByRole("img", { name: "ClosedLoop product screenshot" })
     ).toBeInTheDocument();
   });
 
