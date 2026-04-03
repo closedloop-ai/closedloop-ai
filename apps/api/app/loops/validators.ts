@@ -93,18 +93,26 @@ export const loopEventPayloadValidator = z.union([
  * Applied post-normalization so both envelope and flattened paths are covered.
  * Returns an error string if validation fails, or null if valid.
  */
+const tokenUsageSchema = z.object({
+  inputTokens: z.number(),
+  outputTokens: z.number(),
+  cacheCreationInputTokens: z.number().optional(),
+  cacheReadInputTokens: z.number().optional(),
+});
+
 const errorEventSchema = z.object({
   code: z.string(),
   message: z.string(),
   timestamp: z.string(),
   logTail: z.string().optional(),
-  tokenUsage: z
-    .object({
-      inputTokens: z.number(),
-      outputTokens: z.number(),
-    })
-    .optional(),
+  tokenUsage: tokenUsageSchema.optional(),
   diagnosticsVersion: z.string().optional(),
+});
+
+const outputEventSchema = z.object({
+  chunk: z.string(),
+  timestamp: z.string().optional(),
+  tokenUsage: tokenUsageSchema.optional(),
 });
 
 function validateErrorEvent(event: Record<string, unknown>): string | null {
@@ -119,9 +127,24 @@ function validateErrorEvent(event: Record<string, unknown>): string | null {
   return null;
 }
 
+function validateOutputEvent(event: Record<string, unknown>): string | null {
+  const result = outputEventSchema.safeParse(event);
+  if (!result.success) {
+    const issue = result.error.issues[0];
+    const path = issue?.path.join(".");
+    return path
+      ? `${path}: ${issue.message}`
+      : (issue?.message ?? "invalid output event");
+  }
+  return null;
+}
+
 export function validateNormalizedEvent(
   event: Record<string, unknown>
 ): string | null {
+  if (event.type === "output") {
+    return validateOutputEvent(event);
+  }
   if (event.type === "completed") {
     const tu = event.tokensUsed;
     if (

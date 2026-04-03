@@ -19,6 +19,8 @@ const MIKES_MACBOOK = /Mikes-MacBook/;
 const ONLINE = /online/;
 const TARGET_CLOUD = /Target: Cloud/;
 const TARGET_LABEL = /Target:/;
+const CACHE_WRITE = /cache write/i;
+const CACHE_READ = /cache read/i;
 
 vi.mock("next/navigation", () => ({
   useRouter: vi.fn(() => ({ push: mockPush, replace: vi.fn() })),
@@ -434,5 +436,187 @@ describe("LoopDetailContainer — cancel button interaction", () => {
     });
 
     expect(mockPush).not.toHaveBeenCalled();
+  });
+});
+
+describe("LoopDetailContainer — cache token display", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(useResumeLoop).mockReturnValue({
+      mutateAsync: mockMutateAsync,
+      isPending: false,
+    } as unknown as ReturnType<typeof useResumeLoop>);
+    vi.mocked(useCancelLoop).mockReturnValue({
+      mutateAsync: mockCancelMutateAsync,
+      isPending: false,
+    } as unknown as ReturnType<typeof useCancelLoop>);
+  });
+
+  it("shows cache write/read summary when tokensByModel has cacheCreation and cacheRead data", () => {
+    vi.mocked(useLoop).mockReturnValue({
+      data: createMockLoopWithUser({
+        status: LoopStatus.Completed,
+        tokensInput: 50_000,
+        tokensOutput: 30_000,
+        tokensByModel: {
+          "claude-sonnet-4-5": {
+            input: 50_000,
+            output: 30_000,
+            cacheCreation: 5000,
+            cacheRead: 2000,
+          },
+        },
+      }),
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoop>);
+
+    render(<LoopDetailContainer id="loop-001" />);
+
+    expect(screen.getByText(CACHE_WRITE)).toBeInTheDocument();
+    expect(screen.getByText(CACHE_READ)).toBeInTheDocument();
+  });
+
+  it("does not show cache summary when cacheCreation and cacheRead are zero", () => {
+    vi.mocked(useLoop).mockReturnValue({
+      data: createMockLoopWithUser({
+        status: LoopStatus.Completed,
+        tokensInput: 50_000,
+        tokensOutput: 30_000,
+        tokensByModel: {
+          "claude-sonnet-4-5": {
+            input: 50_000,
+            output: 30_000,
+            cacheCreation: 0,
+            cacheRead: 0,
+          },
+        },
+      }),
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoop>);
+
+    render(<LoopDetailContainer id="loop-001" />);
+
+    expect(screen.queryByText(CACHE_WRITE)).not.toBeInTheDocument();
+  });
+
+  it("does not show cache summary when tokensByModel is null", () => {
+    vi.mocked(useLoop).mockReturnValue({
+      data: createMockLoopWithUser({
+        status: LoopStatus.Completed,
+        tokensInput: 10_000,
+        tokensOutput: 5000,
+        tokensByModel: null,
+      }),
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoop>);
+
+    render(<LoopDetailContainer id="loop-001" />);
+
+    expect(screen.queryByText(CACHE_WRITE)).not.toBeInTheDocument();
+  });
+
+  it("headline shows in/out when cache data is present", () => {
+    vi.mocked(useLoop).mockReturnValue({
+      data: createMockLoopWithUser({
+        status: LoopStatus.Completed,
+        tokensInput: 10_000,
+        tokensOutput: 5000,
+        tokensByModel: {
+          "claude-sonnet-4-5": {
+            input: 10_000,
+            output: 5000,
+            cacheCreation: 8000,
+            cacheRead: 3000,
+          },
+        },
+      }),
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoop>);
+
+    render(<LoopDetailContainer id="loop-001" />);
+
+    // Stacked layout: Input and Output shown as separate labeled values
+    expect(screen.getByText("10.0k")).toBeInTheDocument();
+    expect(screen.getByText("5.0k")).toBeInTheDocument();
+    // "effective" label and effective total should be absent
+    expect(screen.queryByText("effective")).not.toBeInTheDocument();
+    expect(screen.queryByText("~23.3k")).not.toBeInTheDocument();
+  });
+
+  it("cache-only case: input=0, output=0, cacheRead>0 still renders cache summary", () => {
+    vi.mocked(useLoop).mockReturnValue({
+      data: createMockLoopWithUser({
+        status: LoopStatus.Completed,
+        tokensInput: 0,
+        tokensOutput: 0,
+        tokensByModel: {
+          default: {
+            input: 0,
+            output: 0,
+            cacheCreation: 0,
+            cacheRead: 4000,
+          },
+        },
+      }),
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoop>);
+
+    render(<LoopDetailContainer id="loop-001" />);
+
+    // Should show "-" when input and output are both 0
+    expect(screen.getByText("-")).toBeInTheDocument();
+    // Cache summary should still render
+    expect(screen.getByText(CACHE_READ)).toBeInTheDocument();
+  });
+
+  it("headline abbreviates large numbers (formatTokenCount)", () => {
+    vi.mocked(useLoop).mockReturnValue({
+      data: createMockLoopWithUser({
+        status: LoopStatus.Completed,
+        tokensInput: 15_000_000,
+        tokensOutput: 2800,
+      }),
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoop>);
+
+    render(<LoopDetailContainer id="loop-001" />);
+
+    // Stacked layout: large numbers abbreviated
+    expect(screen.getByText("15.0M")).toBeInTheDocument();
+    expect(screen.getByText("2.8k")).toBeInTheDocument();
+  });
+
+  it("default key is filtered from ModelTokenBreakdown (no model row rendered for it)", () => {
+    vi.mocked(useLoop).mockReturnValue({
+      data: createMockLoopWithUser({
+        status: LoopStatus.Completed,
+        tokensInput: 10_000,
+        tokensOutput: 5000,
+        tokensByModel: {
+          default: {
+            input: 10_000,
+            output: 5000,
+            cacheCreation: 2000,
+            cacheRead: 500,
+          },
+        },
+      }),
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoop>);
+
+    render(<LoopDetailContainer id="loop-001" />);
+
+    // The "Default" model row must not be rendered in the per-model breakdown
+    // (the "default" key is a synthetic fallback, not a real model name)
+    expect(screen.queryByText("Default")).not.toBeInTheDocument();
+    // But the cache summary in MetadataCards still shows (from all tokensByModel values)
+    expect(screen.getByText(CACHE_WRITE)).toBeInTheDocument();
   });
 });

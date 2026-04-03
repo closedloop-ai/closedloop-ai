@@ -160,6 +160,12 @@ export type LoopEventOutput = {
   type: "output";
   chunk: string;
   timestamp: string;
+  tokenUsage?: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheCreationInputTokens?: number;
+    cacheReadInputTokens?: number;
+  };
 };
 
 export type LoopEventProgress = {
@@ -188,8 +194,16 @@ export type LoopEventArtifactCreated = {
 export type LoopEventCompleted = {
   type: "completed";
   result: JsonObject;
-  tokensUsed: { input: number; output: number };
+  tokensUsed: {
+    input: number;
+    output: number;
+    cacheCreationInputTokens?: number;
+    cacheReadInputTokens?: number;
+    turns?: number;
+    models?: string[];
+  };
   tokensByModel?: TokensByModel;
+  apiKeySource?: string;
   timestamp: string;
 };
 
@@ -199,8 +213,14 @@ export type LoopEventError = {
   message: string;
   timestamp: string;
   logTail?: string;
-  tokenUsage?: { inputTokens: number; outputTokens: number };
+  tokenUsage?: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheCreationInputTokens?: number;
+    cacheReadInputTokens?: number;
+  };
   diagnosticsVersion?: string;
+  apiKeySource?: string;
 };
 
 export type LoopEventCancelled = {
@@ -277,6 +297,8 @@ export type LoopUsageSummary = {
   totalTokensInput: number;
   totalTokensOutput: number;
   totalEstimatedCost: number;
+  totalCacheCreationTokens: number;
+  totalCacheReadTokens: number;
   byCommand: LoopUsageByCommand[];
   byUser: LoopUsageByUser[];
 };

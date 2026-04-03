@@ -68,10 +68,16 @@ function ModelTokenBreakdown({
 }: {
   tokensByModel: TokensByModel;
 }) {
-  const models = Object.entries(tokensByModel);
+  const models = Object.entries(tokensByModel).filter(
+    ([key]) => key !== "default"
+  );
   if (models.length === 0) {
     return null;
   }
+
+  const hasCacheColumns = models.some(
+    ([, usage]) => (usage.cacheCreation ?? 0) > 0 || (usage.cacheRead ?? 0) > 0
+  );
 
   return (
     <div className="mt-2 space-y-1 border-muted border-t pt-2">
@@ -80,9 +86,18 @@ function ModelTokenBreakdown({
           <span className="text-muted-foreground">
             {formatModelName(model)}
           </span>
-          <span className="tabular-nums">
-            {formatTokenCount(usage.input)} / {formatTokenCount(usage.output)}
-          </span>
+          {hasCacheColumns ? (
+            <span className="tabular-nums">
+              {formatTokenCount(usage.input)} in /{" "}
+              {formatTokenCount(usage.output)} out /{" "}
+              {formatTokenCount(usage.cacheCreation ?? 0)} cc /{" "}
+              {formatTokenCount(usage.cacheRead ?? 0)} cr
+            </span>
+          ) : (
+            <span className="tabular-nums">
+              {formatTokenCount(usage.input)} / {formatTokenCount(usage.output)}
+            </span>
+          )}
         </div>
       ))}
     </div>
@@ -91,10 +106,9 @@ function ModelTokenBreakdown({
 
 type MetadataCardsProps = {
   loop: Awaited<ReturnType<typeof useLoop>["data"]>;
-  totalTokens: number;
 };
 
-function MetadataCards({ loop, totalTokens }: MetadataCardsProps) {
+function MetadataCards({ loop }: MetadataCardsProps) {
   if (!loop) {
     return null;
   }
@@ -140,20 +154,86 @@ function MetadataCards({ loop, totalTokens }: MetadataCardsProps) {
           <CoinsIcon className="h-4 w-4 text-muted-foreground" />
         </CardHeader>
         <CardContent>
-          <div className="font-bold text-2xl">
-            {totalTokens > 0 ? formatTokenCount(totalTokens) : "-"}
-          </div>
-          {totalTokens > 0 && (
-            <p className="text-muted-foreground text-xs">
-              {formatTokenCount(loop.tokensInput)} in /{" "}
-              {formatTokenCount(loop.tokensOutput)} out
-            </p>
-          )}
-          {loop.estimatedCost != null && loop.estimatedCost > 0 && (
-            <p className="mt-1 text-muted-foreground text-xs">
-              ~${loop.estimatedCost.toFixed(4)}
-            </p>
-          )}
+          {(() => {
+            const input = loop.tokensInput;
+            const output = loop.tokensOutput;
+            const cacheWrite = loop.tokensByModel
+              ? Object.values(loop.tokensByModel).reduce(
+                  (sum, u) => sum + (u.cacheCreation ?? 0),
+                  0
+                )
+              : 0;
+            const cacheRead = loop.tokensByModel
+              ? Object.values(loop.tokensByModel).reduce(
+                  (sum, u) => sum + (u.cacheRead ?? 0),
+                  0
+                )
+              : 0;
+            const cost = loop.estimatedCost ?? 0;
+            const isSubscription =
+              (loop.metadata as Record<string, unknown>)?.apiKeySource ===
+              "none";
+            const hasTokens = input > 0 || output > 0;
+            const hasCache = cacheWrite > 0 || cacheRead > 0;
+
+            if (!(hasTokens || hasCache)) {
+              return <div className="font-bold text-2xl">-</div>;
+            }
+
+            return (
+              <div className="space-y-2">
+                <div className="grid grid-cols-2 gap-x-4">
+                  <div>
+                    <p className="text-[10px] text-muted-foreground uppercase tracking-wider">
+                      Input
+                    </p>
+                    <p className="font-semibold text-lg tabular-nums">
+                      {formatTokenCount(input)}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-[10px] text-muted-foreground uppercase tracking-wider">
+                      Output
+                    </p>
+                    <p className="font-semibold text-lg tabular-nums">
+                      {formatTokenCount(output)}
+                    </p>
+                  </div>
+                </div>
+                {hasCache && (
+                  <div className="grid grid-cols-2 gap-x-4">
+                    <div>
+                      <p className="text-[10px] text-muted-foreground uppercase tracking-wider">
+                        Cache Write
+                      </p>
+                      <p className="text-muted-foreground text-sm tabular-nums">
+                        {formatTokenCount(cacheWrite)}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] text-muted-foreground uppercase tracking-wider">
+                        Cache Read
+                      </p>
+                      <p className="text-muted-foreground text-sm tabular-nums">
+                        {formatTokenCount(cacheRead)}
+                      </p>
+                    </div>
+                  </div>
+                )}
+                {isSubscription ? (
+                  <p className="text-muted-foreground text-xs">
+                    $0.00 (subscription)
+                  </p>
+                ) : (
+                  cost > 0 && (
+                    <p className="text-muted-foreground text-xs">
+                      ~${cost.toFixed(2)}
+                    </p>
+                  )
+                )}
+              </div>
+            );
+          })()}
           {loop.tokensByModel && (
             <ModelTokenBreakdown tokensByModel={loop.tokensByModel} />
           )}
@@ -232,7 +312,6 @@ export function LoopDetailContainer({ id }: LoopDetailContainerProps) {
   }
 
   const isActive = CANCELLABLE_LOOP_STATUSES.has(loop.status);
-  const totalTokens = loop.tokensInput + loop.tokensOutput;
   const defaultTab = isActive ? "live" : "audit-log";
 
   const handleRestart = async () => {
@@ -298,7 +377,7 @@ export function LoopDetailContainer({ id }: LoopDetailContainerProps) {
         )}
       </div>
 
-      <MetadataCards loop={loop} totalTokens={totalTokens} />
+      <MetadataCards loop={loop} />
 
       {/* Detail row */}
       <div className="flex flex-wrap items-center gap-4 text-muted-foreground text-sm">

@@ -1,7 +1,9 @@
+import type { JsonObject } from "@repo/api/src/types/common";
 import type {
   LoopEvent,
   LoopEventCompleted,
   LoopEventError,
+  LoopEventOutput,
   TokensByModel,
 } from "@repo/api/src/types/loop";
 import {
@@ -135,17 +137,22 @@ async function resolveParentLoopInfo(
 /**
  * Calculate estimated cost from per-model token breakdown.
  * Falls back to default (Opus) pricing if no model breakdown is available.
+ * Optional cacheCreation/cacheRead apply only in the fallback (no-tokensByModel) path.
  */
 function calculateCost(
   tokensInput: number,
   tokensOutput: number,
-  tokensByModel: TokensByModel | null
+  tokensByModel: TokensByModel | null,
+  cacheCreation = 0,
+  cacheRead = 0
 ): number {
   if (!tokensByModel || Object.keys(tokensByModel).length === 0) {
     const fallback = MODEL_PRICING.default;
     return (
       (tokensInput / 1_000_000) * fallback.input +
-      (tokensOutput / 1_000_000) * fallback.output
+      (tokensOutput / 1_000_000) * fallback.output +
+      (cacheCreation / 1_000_000) * fallback.input +
+      (cacheRead / 1_000_000) * fallback.input * 0.1
     );
   }
 
@@ -719,7 +726,7 @@ export async function handleLoopEvent(
     }
 
     case "output": {
-      await loopsService.addEvent(
+      const persisted = await loopsService.addEvent(
         loopId,
         organizationId,
         {
@@ -728,6 +735,17 @@ export async function handleLoopEvent(
         },
         replayContext
       );
+      if (persisted && hasNonZeroTokenUsage(event.tokenUsage)) {
+        const tu = event.tokenUsage!;
+        await loopsService.updateTokens(
+          loopId,
+          organizationId,
+          tu.inputTokens,
+          tu.outputTokens,
+          tu.cacheCreationInputTokens ?? 0,
+          tu.cacheReadInputTokens ?? 0
+        );
+      }
       return [event];
     }
 
@@ -865,6 +883,118 @@ async function ingestLoopArtifacts(
 }
 
 /**
+ * Build a synthetic "default" TokensByModel entry from aggregate token counts.
+ * Returns null when all counters are zero.
+ */
+function buildDefaultTokensByModel(
+  input: number,
+  output: number,
+  cacheCreation: number,
+  cacheRead: number
+): TokensByModel | null {
+  if (input === 0 && output === 0 && cacheCreation === 0 && cacheRead === 0) {
+    return null;
+  }
+  return { default: { input, output, cacheCreation, cacheRead } };
+}
+
+/**
+ * Resolve the effective TokensByModel for a completed event: use the per-model
+ * breakdown from the event/metadata if present, otherwise synthesize a fallback
+ * "default" entry so cache pricing can be applied.
+ */
+function resolveEffectiveTokensByModel(
+  rawTokensByModel: TokensByModel | null,
+  tokensInput: number,
+  tokensOutput: number,
+  cacheCreation: number,
+  cacheRead: number
+): TokensByModel | null {
+  if (rawTokensByModel && Object.keys(rawTokensByModel).length > 0) {
+    return rawTokensByModel;
+  }
+  return (
+    buildDefaultTokensByModel(
+      tokensInput,
+      tokensOutput,
+      cacheCreation,
+      cacheRead
+    ) ?? rawTokensByModel
+  );
+}
+
+function hasNonZeroTokenUsage(
+  tokenUsage: LoopEventOutput["tokenUsage"]
+): boolean {
+  if (!tokenUsage) {
+    return false;
+  }
+  return (
+    tokenUsage.inputTokens > 0 ||
+    tokenUsage.outputTokens > 0 ||
+    (tokenUsage.cacheCreationInputTokens ?? 0) > 0 ||
+    (tokenUsage.cacheReadInputTokens ?? 0) > 0
+  );
+}
+
+function calculateLoopCost(
+  apiKeySource: string | undefined,
+  tokensInput: number,
+  tokensOutput: number,
+  tokensByModel: TokensByModel | null,
+  cacheCreation: number,
+  cacheRead: number
+): number {
+  if (apiKeySource === "none") {
+    return 0;
+  }
+  return calculateCost(
+    tokensInput,
+    tokensOutput,
+    tokensByModel,
+    cacheCreation,
+    cacheRead
+  );
+}
+
+function buildApiKeySourceMetadata(
+  apiKeySource: string | undefined,
+  existingMetadata?: JsonObject | null
+): JsonObject | undefined {
+  if (!apiKeySource) {
+    return undefined;
+  }
+  return { ...(existingMetadata ?? {}), apiKeySource };
+}
+
+/**
+ * Build a "default" TokensByModel entry from an error event's tokenUsage field.
+ * Returns undefined when tokenUsage is absent or all-zero.
+ */
+function buildErrorTokensByModel(
+  tokenUsage:
+    | {
+        inputTokens: number;
+        outputTokens: number;
+        cacheCreationInputTokens?: number;
+        cacheReadInputTokens?: number;
+      }
+    | undefined
+): TokensByModel | undefined {
+  if (tokenUsage === undefined) {
+    return undefined;
+  }
+  return (
+    buildDefaultTokensByModel(
+      tokenUsage.inputTokens,
+      tokenUsage.outputTokens,
+      tokenUsage.cacheCreationInputTokens ?? 0,
+      tokenUsage.cacheReadInputTokens ?? 0
+    ) ?? undefined
+  );
+}
+
+/**
  * Handle loop completion: download metadata from S3, update token counts.
  * Returns the canonical event(s) to publish via SSE.
  */
@@ -880,6 +1010,11 @@ async function handleLoopCompleted(
     ? await downloadMetadata(loop.s3StateKey)
     : null;
 
+  // Extract cache token counts from the completed event (if present).
+  // These are extracted before the zero-token guard so the guard can check all four counters.
+  const cacheCreation = event.tokensUsed?.cacheCreationInputTokens ?? 0;
+  const cacheRead = event.tokensUsed?.cacheReadInputTokens ?? 0;
+
   // Use the event's token pair as an atomic unit when both fields are numeric
   // (including zeros). Only fall back to the metadata pair if the event pair is
   // absent/invalid. Never mix input from one source and output from another.
@@ -892,11 +1027,28 @@ async function handleLoopCompleted(
   const tokensOutput = hasEventTokens
     ? event.tokensUsed!.output
     : (metadata?.tokensOutput ?? 0);
-  const tokensByModel: TokensByModel | null =
+  const rawTokensByModel: TokensByModel | null =
     event.tokensByModel ?? metadata?.tokensByModel ?? null;
 
-  // Calculate cost per model if we have breakdown, otherwise fall back to Opus pricing
-  const estimatedCost = calculateCost(tokensInput, tokensOutput, tokensByModel);
+  // Synthesize a fallback "default" entry when the runner reported aggregate
+  // cache tokens but did not send a per-model breakdown. This lets the cost
+  // calculator apply cache pricing even when tokensByModel is absent.
+  const effectiveTokensByModel = resolveEffectiveTokensByModel(
+    rawTokensByModel,
+    tokensInput,
+    tokensOutput,
+    cacheCreation,
+    cacheRead
+  );
+
+  const estimatedCost = calculateLoopCost(
+    event.apiKeySource,
+    tokensInput,
+    tokensOutput,
+    effectiveTokensByModel,
+    cacheCreation,
+    cacheRead
+  );
 
   // Guard: EXECUTE loops that explicitly reported 0/0 tokens did no work.
   // Only fires when the event carried a valid token pair (hasEventTokens),
@@ -905,7 +1057,9 @@ async function handleLoopCompleted(
     loop?.command === LoopCommand.Execute &&
     hasEventTokens &&
     tokensInput === 0 &&
-    tokensOutput === 0
+    tokensOutput === 0 &&
+    cacheCreation === 0 &&
+    cacheRead === 0
   ) {
     return handleZeroTokenExecute(
       loopId,
@@ -970,10 +1124,11 @@ async function handleLoopCompleted(
       completedAt: new Date(),
       tokensInput,
       tokensOutput,
-      tokensByModel: tokensByModel ?? undefined,
+      tokensByModel: effectiveTokensByModel ?? undefined,
       estimatedCost,
       ...(isOverridingFailure ? { error: null } : {}),
       ...prSession,
+      metadata: buildApiKeySourceMetadata(event.apiKeySource, loop?.metadata),
     }
   );
 
@@ -996,7 +1151,9 @@ async function handleLoopCompleted(
     loopId,
     tokensInput,
     tokensOutput,
-    tokensByModel,
+    cacheCreation,
+    cacheRead,
+    tokensByModel: effectiveTokensByModel,
     estimatedCost,
     ...prSession,
   });
@@ -1099,6 +1256,7 @@ async function handleLoopError(
   if (event.code === "TIMED_OUT") {
     const prSession = extractPrSessionInfo(event as Record<string, unknown>);
     const canonical = buildCanonicalErrorData(event);
+    const errorTokensByModel = buildErrorTokensByModel(event.tokenUsage);
 
     await loopsService.updateStatus(
       loopId,
@@ -1111,7 +1269,11 @@ async function handleLoopError(
           tokensInput: event.tokenUsage.inputTokens,
           tokensOutput: event.tokenUsage.outputTokens,
         }),
+        ...(errorTokensByModel !== undefined && {
+          tokensByModel: errorTokensByModel,
+        }),
         ...prSession,
+        metadata: buildApiKeySourceMetadata(event.apiKeySource),
       }
     );
 
@@ -1149,6 +1311,7 @@ async function handleLoopError(
   // Extract PR/session info from error event (harness includes these even on failure)
   const prSession = extractPrSessionInfo(event as Record<string, unknown>);
   const canonical = buildCanonicalErrorData(event);
+  const failedTokensByModel = buildErrorTokensByModel(event.tokenUsage);
 
   await loopsService.updateStatus(loopId, organizationId, LoopStatus.Failed, {
     completedAt: new Date(),
@@ -1157,7 +1320,11 @@ async function handleLoopError(
       tokensInput: event.tokenUsage.inputTokens,
       tokensOutput: event.tokenUsage.outputTokens,
     }),
+    ...(failedTokensByModel !== undefined && {
+      tokensByModel: failedTokensByModel,
+    }),
     ...prSession,
+    metadata: buildApiKeySourceMetadata(event.apiKeySource),
   });
 
   // Persist the error event only after transition succeeds

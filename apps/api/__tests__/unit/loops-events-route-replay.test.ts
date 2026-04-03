@@ -221,4 +221,29 @@ describe("POST /api/loops/[id]/events — diagnostic fields", () => {
 
     expect(response.status).toBe(200);
   });
+
+  it("accepts error event with tokenUsage including cache fields: returns 200", async () => {
+    makeAuthOk();
+
+    const request = makeErrorRequest({
+      type: "error",
+      code: "TIMED_OUT",
+      message: "Loop exceeded time limit",
+      timestamp: "2026-01-01T00:00:00.000Z",
+      tokenUsage: {
+        inputTokens: 1000,
+        outputTokens: 500,
+        cacheCreationInputTokens: 2000,
+        cacheReadInputTokens: 800,
+      },
+    });
+
+    const response = await POST(request, {
+      params: Promise.resolve({ id: "loop-123" }),
+    });
+
+    expect(response.status).toBe(200);
+    const json = await response.json();
+    expect(json.success).toBe(true);
+  });
 });
