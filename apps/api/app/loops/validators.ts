@@ -111,7 +111,7 @@ const errorEventSchema = z.object({
 
 const outputEventSchema = z.object({
   chunk: z.string(),
-  timestamp: z.string(),
+  timestamp: z.string().optional(),
   tokenUsage: tokenUsageSchema.optional(),
 });
 
