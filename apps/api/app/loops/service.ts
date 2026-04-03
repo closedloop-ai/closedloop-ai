@@ -455,6 +455,7 @@ export const loopsService = {
         "prNumber",
         "branchName",
         "sessionId",
+        "metadata",
       ] as const;
       for (const field of optionalFields) {
         if (data[field] !== undefined) {
