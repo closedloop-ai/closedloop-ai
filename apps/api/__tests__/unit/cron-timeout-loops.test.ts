@@ -676,6 +676,65 @@ describe("GET /api/cron/timeout-loops -- anomaly detection", () => {
     expect(ghostWarnCall).toBeUndefined();
   });
 
+  it("continues stuck-loop processing when warnGhostLoopAnomalies throws", async () => {
+    const now = new Date("2026-01-01T12:00:00.000Z");
+    vi.setSystemTime(now);
+
+    const stuckLoop: StuckLoopFixture = {
+      id: "loop-stuck-after-anomaly-error",
+      organizationId: "org-1",
+      status: LoopStatus.RUNNING,
+      containerId: null,
+      s3StateKey: null,
+      computeTargetId: null,
+    };
+
+    // First withDb call: stuckLoops findMany — returns a stuck loop
+    mockWithDb.mockImplementationOnce((fn: (db: unknown) => unknown) =>
+      fn({
+        loop: {
+          findMany: vi.fn().mockResolvedValue([stuckLoop]),
+        },
+      })
+    );
+
+    // Second withDb call: anomaly detection — throws a DB error
+    mockWithDb.mockImplementationOnce(() => {
+      throw new Error("DB connection lost");
+    });
+
+    // Third withDb call: updateMany inside timeoutLoop — should still execute
+    const mockUpdateMany = vi.fn().mockResolvedValue({ count: 1 });
+    mockWithDb.mockImplementationOnce((fn: (db: unknown) => unknown) =>
+      fn({
+        loop: {
+          updateMany: mockUpdateMany,
+        },
+      })
+    );
+
+    const response = await GET(makeRequest());
+    expect(response.status).toBe(200);
+    const text = await response.text();
+    expect(text).toBe("OK: timed out 1 loops");
+
+    // Verify the stuck loop was still processed despite anomaly detection failure
+    expect(mockUpdateMany).toHaveBeenCalledOnce();
+    expect(mockAddEvent).toHaveBeenCalledOnce();
+
+    // Verify the error was logged
+    const errorCalls = (log.error as Mock).mock.calls;
+    const anomalyErrorCall = errorCalls.find(
+      (call) =>
+        typeof call[0] === "string" &&
+        call[0].includes("Ghost loop anomaly check failed")
+    );
+    expect(anomalyErrorCall).toBeDefined();
+    expect(anomalyErrorCall?.[1]).toEqual({
+      error: "DB connection lost",
+    });
+  });
+
   it("calls mockWithDb only once when ENABLE_GHOST_LOOP_ANOMALY_WARNING is not set", async () => {
     process.env.ENABLE_GHOST_LOOP_ANOMALY_WARNING = undefined;
 

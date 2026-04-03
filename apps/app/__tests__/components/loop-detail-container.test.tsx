@@ -3,7 +3,7 @@
  * Focuses on the restart button: visibility based on loop status and navigation on success.
  */
 
-import { LoopStatus } from "@repo/api/src/types/loop";
+import { LoopErrorCode, LoopStatus } from "@repo/api/src/types/loop";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -653,7 +653,7 @@ describe("LoopDetailContainer -- NO_WORK_PRODUCED label rendering", () => {
       data: createMockLoopWithUser({
         status: LoopStatus.Failed,
         error: {
-          code: "NO_WORK_PRODUCED",
+          code: LoopErrorCode.NoWorkProduced,
           message: "The loop produced no output.",
         },
       }),
@@ -677,7 +677,7 @@ describe("LoopDetailContainer -- NO_WORK_PRODUCED label rendering", () => {
       data: createMockLoopWithUser({
         status: LoopStatus.Failed,
         error: {
-          code: "CONTEXT_LIMIT_EXCEEDED",
+          code: LoopErrorCode.ContextLimitExceeded,
           message: "Context window exceeded.",
         },
       }),
@@ -723,7 +723,7 @@ describe("LoopDetailContainer -- NO_WORK_PRODUCED label rendering", () => {
       data: createMockLoopWithUser({
         status: LoopStatus.Failed,
         error: {
-          code: "NO_WORK_PRODUCED",
+          code: LoopErrorCode.NoWorkProduced,
           message: "The loop produced no output.",
         },
       }),
@@ -761,7 +761,7 @@ describe("LoopDetailContainer -- diagnostics UI", () => {
     vi.mocked(useLoop).mockReturnValue({
       data: createMockLoopWithUser({
         status: LoopStatus.Failed,
-        error: { code: "NO_WORK_PRODUCED", message: "No output." },
+        error: { code: LoopErrorCode.NoWorkProduced, message: "No output." },
       }),
       isLoading: false,
       error: null,
@@ -771,7 +771,7 @@ describe("LoopDetailContainer -- diagnostics UI", () => {
         data: [
           {
             type: "error",
-            code: "NO_WORK_PRODUCED",
+            code: LoopErrorCode.NoWorkProduced,
             message: "No output.",
             timestamp: "2024-01-01T00:00:00Z",
             logTail: "stderr output here",

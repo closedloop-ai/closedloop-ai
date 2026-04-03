@@ -270,7 +270,13 @@ export const GET = async (request: Request): Promise<Response> => {
   );
 
   if (process.env.ENABLE_GHOST_LOOP_ANOMALY_WARNING === "true") {
-    await warnGhostLoopAnomalies(now);
+    try {
+      await warnGhostLoopAnomalies(now);
+    } catch (e) {
+      log.error("[timeout-loops] Ghost loop anomaly check failed", {
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
   }
 
   if (stuckLoops.length === 0) {

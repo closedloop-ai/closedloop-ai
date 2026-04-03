@@ -300,7 +300,7 @@ export function LoopDetailContainer({ id }: LoopDetailContainerProps) {
   const ghostLoopUx = ghostLoopFlag?.enabled;
   const { data: errorEvents } = useLoopEventsPaginated(
     id,
-    { type: "error", limit: 1 },
+    { type: "error", limit: 1, sort: "desc" },
     { enabled: loop?.status === LoopStatus.Failed && !!ghostLoopUx }
   );
 

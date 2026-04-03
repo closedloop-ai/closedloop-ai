@@ -837,7 +837,7 @@ export const loopsService = {
     organizationId: string,
     filters: LoopEventsFilters
   ): Promise<LoopEventsPaginatedResponse> {
-    const { type, limit = 100, offset = 0 } = filters;
+    const { type, limit = 100, offset = 0, sort = "asc" } = filters;
 
     // Verify loop belongs to org
     const loop = await withDb((db) =>
@@ -860,7 +860,7 @@ export const loopsService = {
       withDb((db) =>
         db.loopEvent.findMany({
           where,
-          orderBy: { createdAt: "asc" },
+          orderBy: { createdAt: sort },
           take: limit,
           skip: offset,
         })

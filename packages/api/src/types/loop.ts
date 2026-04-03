@@ -245,6 +245,7 @@ export type LoopEventsFilters = {
   type?: LoopEventType;
   limit?: number;
   offset?: number;
+  sort?: "asc" | "desc";
 };
 
 export type LoopEventsPaginatedResponse = {
