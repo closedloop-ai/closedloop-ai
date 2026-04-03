@@ -539,9 +539,9 @@ describe("LoopDetailContainer — cache token display", () => {
 
     render(<LoopDetailContainer id="loop-001" />);
 
-    // Headline should show in/out, not a single total or effective number
-    const headline = document.querySelector(".font-bold.text-2xl");
-    expect(headline?.textContent).toBe("10.0k in / 5.0k out");
+    // Stacked layout: Input and Output shown as separate labeled values
+    expect(screen.getByText("10.0k")).toBeInTheDocument();
+    expect(screen.getByText("5.0k")).toBeInTheDocument();
     // "effective" label and effective total should be absent
     expect(screen.queryByText("effective")).not.toBeInTheDocument();
     expect(screen.queryByText("~23.3k")).not.toBeInTheDocument();
@@ -568,9 +568,8 @@ describe("LoopDetailContainer — cache token display", () => {
 
     render(<LoopDetailContainer id="loop-001" />);
 
-    // Headline should show "-" when input and output are both 0
-    const headline = document.querySelector(".font-bold.text-2xl");
-    expect(headline?.textContent).toBe("-");
+    // Should show "-" when input and output are both 0
+    expect(screen.getByText("-")).toBeInTheDocument();
     // Cache summary should still render
     expect(screen.getByText(CACHE_READ)).toBeInTheDocument();
   });
@@ -588,8 +587,9 @@ describe("LoopDetailContainer — cache token display", () => {
 
     render(<LoopDetailContainer id="loop-001" />);
 
-    const headline = document.querySelector(".font-bold.text-2xl");
-    expect(headline?.textContent).toBe("15.0M in / 2.8k out");
+    // Stacked layout: large numbers abbreviated
+    expect(screen.getByText("15.0M")).toBeInTheDocument();
+    expect(screen.getByText("2.8k")).toBeInTheDocument();
   });
 
   it("default key is filtered from ModelTokenBreakdown (no model row rendered for it)", () => {

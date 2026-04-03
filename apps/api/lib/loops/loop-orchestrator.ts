@@ -1,3 +1,4 @@
+import type { JsonObject } from "@repo/api/src/types/common";
 import type {
   LoopEvent,
   LoopEventCompleted,
@@ -936,6 +937,36 @@ function hasNonZeroTokenUsage(
   );
 }
 
+function calculateLoopCost(
+  apiKeySource: string | undefined,
+  tokensInput: number,
+  tokensOutput: number,
+  tokensByModel: TokensByModel | null,
+  cacheCreation: number,
+  cacheRead: number
+): number {
+  if (apiKeySource === "none") {
+    return 0;
+  }
+  return calculateCost(
+    tokensInput,
+    tokensOutput,
+    tokensByModel,
+    cacheCreation,
+    cacheRead
+  );
+}
+
+function buildApiKeySourceMetadata(
+  apiKeySource: string | undefined,
+  existingMetadata?: JsonObject | null
+): JsonObject | undefined {
+  if (!apiKeySource) {
+    return undefined;
+  }
+  return { ...(existingMetadata ?? {}), apiKeySource };
+}
+
 /**
  * Build a "default" TokensByModel entry from an error event's tokenUsage field.
  * Returns undefined when tokenUsage is absent or all-zero.
@@ -1010,8 +1041,8 @@ async function handleLoopCompleted(
     cacheRead
   );
 
-  // Calculate cost per model if we have breakdown, otherwise fall back to Opus pricing
-  const estimatedCost = calculateCost(
+  const estimatedCost = calculateLoopCost(
+    event.apiKeySource,
     tokensInput,
     tokensOutput,
     effectiveTokensByModel,
@@ -1097,6 +1128,7 @@ async function handleLoopCompleted(
       estimatedCost,
       ...(isOverridingFailure ? { error: null } : {}),
       ...prSession,
+      metadata: buildApiKeySourceMetadata(event.apiKeySource, loop?.metadata),
     }
   );
 
@@ -1241,6 +1273,7 @@ async function handleLoopError(
           tokensByModel: errorTokensByModel,
         }),
         ...prSession,
+        metadata: buildApiKeySourceMetadata(event.apiKeySource),
       }
     );
 
@@ -1291,6 +1324,7 @@ async function handleLoopError(
       tokensByModel: failedTokensByModel,
     }),
     ...prSession,
+    metadata: buildApiKeySourceMetadata(event.apiKeySource),
   });
 
   // Persist the error event only after transition succeeds

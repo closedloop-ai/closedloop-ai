@@ -170,6 +170,9 @@ function MetadataCards({ loop }: MetadataCardsProps) {
                 )
               : 0;
             const cost = loop.estimatedCost ?? 0;
+            const isSubscription =
+              (loop.metadata as Record<string, unknown>)?.apiKeySource ===
+              "none";
             const hasTokens = input > 0 || output > 0;
             const hasCache = cacheWrite > 0 || cacheRead > 0;
 
@@ -217,10 +220,16 @@ function MetadataCards({ loop }: MetadataCardsProps) {
                     </div>
                   </div>
                 )}
-                {cost > 0 && (
+                {isSubscription ? (
                   <p className="text-muted-foreground text-xs">
-                    ~${cost.toFixed(2)}
+                    $0.00 (subscription)
                   </p>
+                ) : (
+                  cost > 0 && (
+                    <p className="text-muted-foreground text-xs">
+                      ~${cost.toFixed(2)}
+                    </p>
+                  )
                 )}
               </div>
             );

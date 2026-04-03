@@ -203,6 +203,7 @@ export type LoopEventCompleted = {
     models?: string[];
   };
   tokensByModel?: TokensByModel;
+  apiKeySource?: string;
   timestamp: string;
 };
 
@@ -219,6 +220,7 @@ export type LoopEventError = {
     cacheReadInputTokens?: number;
   };
   diagnosticsVersion?: string;
+  apiKeySource?: string;
 };
 
 export type LoopEventCancelled = {

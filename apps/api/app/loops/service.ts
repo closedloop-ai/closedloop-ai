@@ -423,6 +423,7 @@ export const loopsService = {
       prNumber: number;
       branchName: string;
       sessionId: string;
+      metadata: JsonObject;
     }>
   ): Promise<Loop> {
     // Compute the set of valid source statuses for this target status
