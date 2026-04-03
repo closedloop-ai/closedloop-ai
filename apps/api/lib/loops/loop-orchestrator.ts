@@ -995,6 +995,55 @@ function buildErrorTokensByModel(
 }
 
 /**
+ * Resolve effective tokensByModel and estimatedCost for an error event.
+ * Prefers event.tokensByModel when present, falls back to the "default" entry
+ * derived from tokenUsage. Returns spread-ready fields for updateStatus.
+ */
+function buildErrorCostFields(event: LoopEventError): Record<string, unknown> {
+  const rawTokensByModel = buildErrorTokensByModel(event.tokenUsage);
+  const effectiveTokensByModel =
+    event.tokensByModel && Object.keys(event.tokensByModel).length > 0
+      ? event.tokensByModel
+      : rawTokensByModel;
+
+  const tokensInput = event.tokenUsage?.inputTokens ?? 0;
+  const tokensOutput = event.tokenUsage?.outputTokens ?? 0;
+  const estimatedCost = calculateLoopCost(
+    event.apiKeySource,
+    tokensInput,
+    tokensOutput,
+    effectiveTokensByModel ?? null,
+    0,
+    0
+  );
+
+  // Derive aggregate tokens: prefer event.tokenUsage, fall back to summing tokensByModel.
+  let aggregateInput = event.tokenUsage?.inputTokens;
+  let aggregateOutput = event.tokenUsage?.outputTokens;
+  if (aggregateInput === undefined && effectiveTokensByModel !== undefined) {
+    aggregateInput = Object.values(effectiveTokensByModel).reduce(
+      (sum, m) => sum + m.input,
+      0
+    );
+    aggregateOutput = Object.values(effectiveTokensByModel).reduce(
+      (sum, m) => sum + m.output,
+      0
+    );
+  }
+
+  return {
+    ...(aggregateInput !== undefined && {
+      tokensInput: aggregateInput,
+      tokensOutput: aggregateOutput ?? 0,
+    }),
+    ...(effectiveTokensByModel !== undefined && {
+      tokensByModel: effectiveTokensByModel,
+    }),
+    ...(effectiveTokensByModel !== undefined && { estimatedCost }),
+  };
+}
+
+/**
  * Handle loop completion: download metadata from S3, update token counts.
  * Returns the canonical event(s) to publish via SSE.
  */
@@ -1242,6 +1291,11 @@ async function handleLoopError(
         LoopStatus.Cancelled,
         {
           completedAt: new Date(),
+          ...buildErrorCostFields(event),
+          metadata: buildApiKeySourceMetadata(
+            event.apiKeySource,
+            loop?.metadata
+          ),
         }
       );
     }
@@ -1256,7 +1310,6 @@ async function handleLoopError(
   if (event.code === "TIMED_OUT") {
     const prSession = extractPrSessionInfo(event as Record<string, unknown>);
     const canonical = buildCanonicalErrorData(event);
-    const errorTokensByModel = buildErrorTokensByModel(event.tokenUsage);
 
     await loopsService.updateStatus(
       loopId,
@@ -1265,13 +1318,7 @@ async function handleLoopError(
       {
         completedAt: new Date(),
         error: { code: event.code, message: event.message },
-        ...(event.tokenUsage !== undefined && {
-          tokensInput: event.tokenUsage.inputTokens,
-          tokensOutput: event.tokenUsage.outputTokens,
-        }),
-        ...(errorTokensByModel !== undefined && {
-          tokensByModel: errorTokensByModel,
-        }),
+        ...buildErrorCostFields(event),
         ...prSession,
         metadata: buildApiKeySourceMetadata(event.apiKeySource),
       }
@@ -1311,18 +1358,11 @@ async function handleLoopError(
   // Extract PR/session info from error event (harness includes these even on failure)
   const prSession = extractPrSessionInfo(event as Record<string, unknown>);
   const canonical = buildCanonicalErrorData(event);
-  const failedTokensByModel = buildErrorTokensByModel(event.tokenUsage);
 
   await loopsService.updateStatus(loopId, organizationId, LoopStatus.Failed, {
     completedAt: new Date(),
     error: { code: event.code, message: event.message },
-    ...(event.tokenUsage !== undefined && {
-      tokensInput: event.tokenUsage.inputTokens,
-      tokensOutput: event.tokenUsage.outputTokens,
-    }),
-    ...(failedTokensByModel !== undefined && {
-      tokensByModel: failedTokensByModel,
-    }),
+    ...buildErrorCostFields(event),
     ...prSession,
     metadata: buildApiKeySourceMetadata(event.apiKeySource),
   });
@@ -1373,6 +1413,9 @@ function buildCanonicalErrorData(event: LoopEventError): LoopEventError {
     }),
     ...(event.diagnosticsVersion !== undefined && {
       diagnosticsVersion: event.diagnosticsVersion,
+    }),
+    ...(event.tokensByModel !== undefined && {
+      tokensByModel: event.tokensByModel,
     }),
   };
 }
