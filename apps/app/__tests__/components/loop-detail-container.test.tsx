@@ -518,7 +518,7 @@ describe("LoopDetailContainer — cache token display", () => {
     expect(screen.queryByText(CACHE_WRITE)).not.toBeInTheDocument();
   });
 
-  it("headline total (tokensInput + tokensOutput) is unchanged when cache data is present", () => {
+  it("headline shows effective tokens when cache data is present", () => {
     vi.mocked(useLoop).mockReturnValue({
       data: createMockLoopWithUser({
         status: LoopStatus.Completed,
@@ -539,10 +539,14 @@ describe("LoopDetailContainer — cache token display", () => {
 
     render(<LoopDetailContainer id="loop-001" />);
 
-    // 10k + 5k = 15k total (formatTokenCount renders "15.0k") — cache tokens NOT added
-    expect(screen.getByText("15.0k")).toBeInTheDocument();
-    // Cache-inflated total of 26k must not be present
-    expect(screen.queryByText("26.0k")).not.toBeInTheDocument();
+    // effective = 10k + 5k + 8k + round(3k * 0.1) = 23300 -> "~23.3k"
+    expect(screen.getByText("~23.3k")).toBeInTheDocument();
+    // "effective" label should be present
+    expect(screen.getByText("effective")).toBeInTheDocument();
+    // Raw in/out breakdown still shown somewhere on page
+    expect(
+      screen.getAllByText("10.0k in /", { exact: false }).length
+    ).toBeGreaterThan(0);
   });
 
   it("cache-only case: input=0, output=0, cacheRead>0 still renders cache summary", () => {

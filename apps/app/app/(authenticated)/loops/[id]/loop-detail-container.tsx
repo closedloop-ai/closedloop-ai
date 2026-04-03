@@ -104,6 +104,33 @@ function ModelTokenBreakdown({
   );
 }
 
+function computeEffectiveTokens(loop: {
+  tokensInput: number;
+  tokensOutput: number;
+  tokensByModel?: TokensByModel | null;
+}): { effective: number; hasCache: boolean } {
+  if (!loop.tokensByModel) {
+    return { effective: loop.tokensInput + loop.tokensOutput, hasCache: false };
+  }
+  const totalCacheCreation = Object.values(loop.tokensByModel).reduce(
+    (sum, u) => sum + (u.cacheCreation ?? 0),
+    0
+  );
+  const totalCacheRead = Object.values(loop.tokensByModel).reduce(
+    (sum, u) => sum + (u.cacheRead ?? 0),
+    0
+  );
+  if (totalCacheCreation === 0 && totalCacheRead === 0) {
+    return { effective: loop.tokensInput + loop.tokensOutput, hasCache: false };
+  }
+  const effective =
+    loop.tokensInput +
+    loop.tokensOutput +
+    totalCacheCreation +
+    Math.round(totalCacheRead * 0.1);
+  return { effective, hasCache: true };
+}
+
 type MetadataCardsProps = {
   loop: Awaited<ReturnType<typeof useLoop>["data"]>;
   totalTokens: number;
@@ -155,9 +182,23 @@ function MetadataCards({ loop, totalTokens }: MetadataCardsProps) {
           <CoinsIcon className="h-4 w-4 text-muted-foreground" />
         </CardHeader>
         <CardContent>
-          <div className="font-bold text-2xl">
-            {totalTokens > 0 ? formatTokenCount(totalTokens) : "-"}
-          </div>
+          {(() => {
+            const { effective, hasCache } = computeEffectiveTokens(loop);
+            let headline = "-";
+            if (effective > 0) {
+              headline = `~${formatTokenCount(effective)}`;
+            } else if (totalTokens > 0) {
+              headline = formatTokenCount(totalTokens);
+            }
+            return (
+              <>
+                <div className="font-bold text-2xl">{headline}</div>
+                {hasCache && effective > 0 && (
+                  <p className="text-muted-foreground text-xs">effective</p>
+                )}
+              </>
+            );
+          })()}
           {totalTokens > 0 && (
             <p className="text-muted-foreground text-xs">
               {formatTokenCount(loop.tokensInput)} in /{" "}

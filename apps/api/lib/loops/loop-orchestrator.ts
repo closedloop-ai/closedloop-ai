@@ -724,7 +724,7 @@ export async function handleLoopEvent(
     }
 
     case "output": {
-      await loopsService.addEvent(
+      const persisted = await loopsService.addEvent(
         loopId,
         organizationId,
         {
@@ -733,6 +733,18 @@ export async function handleLoopEvent(
         },
         replayContext
       );
+      if (
+        persisted &&
+        event.tokenUsage &&
+        (event.tokenUsage.inputTokens > 0 || event.tokenUsage.outputTokens > 0)
+      ) {
+        await loopsService.updateTokens(
+          loopId,
+          organizationId,
+          event.tokenUsage.inputTokens,
+          event.tokenUsage.outputTokens
+        );
+      }
       return [event];
     }
 

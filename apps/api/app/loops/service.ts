@@ -1225,6 +1225,32 @@ export const loopsService = {
   },
 
   /**
+   * Monotonically update token counts on a loop row while it is still active.
+   * Uses GREATEST so stale or out-of-order output events cannot overwrite a
+   * higher value already written by a later event.
+   * Restricted to PENDING/CLAIMED/RUNNING to prevent late-arriving output
+   * events from mutating terminal rows after the final completed event.
+   */
+  async updateTokens(
+    id: string,
+    organizationId: string,
+    tokensInput: number,
+    tokensOutput: number
+  ): Promise<void> {
+    await withDb((db) =>
+      db.$executeRaw(Prisma.sql`
+        UPDATE loops
+        SET tokens_input = GREATEST(tokens_input, ${tokensInput}),
+            tokens_output = GREATEST(tokens_output, ${tokensOutput})
+        WHERE id = ${id}::uuid
+          AND organization_id = ${organizationId}::uuid
+          AND status IN ('PENDING', 'CLAIMED', 'RUNNING')
+          AND (tokens_input < ${tokensInput} OR tokens_output < ${tokensOutput})
+      `)
+    );
+  },
+
+  /**
    * Replace loop metadata. Caller is responsible for merging with existing values.
    * Returns the number of rows updated (0 if loop is already terminal).
    */

@@ -160,6 +160,12 @@ export type LoopEventOutput = {
   type: "output";
   chunk: string;
   timestamp: string;
+  tokenUsage?: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheCreationInputTokens?: number;
+    cacheReadInputTokens?: number;
+  };
 };
 
 export type LoopEventProgress = {
