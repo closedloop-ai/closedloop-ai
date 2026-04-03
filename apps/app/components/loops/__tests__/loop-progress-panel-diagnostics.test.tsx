@@ -41,6 +41,8 @@ type MockPolling = {
   events: LoopEvent[];
   isComplete: boolean;
   loopStatus: null;
+  loopTokensInput: number;
+  loopTokensOutput: number;
 };
 
 type MockStream = {
@@ -57,6 +59,8 @@ function setupMocks(events: LoopEvent[]) {
         e.type === "error" || e.type === "completed" || e.type === "cancelled"
     ),
     loopStatus: null,
+    loopTokensInput: 0,
+    loopTokensOutput: 0,
   };
   const stream: MockStream = {
     events: [],

@@ -518,7 +518,7 @@ describe("LoopDetailContainer — cache token display", () => {
     expect(screen.queryByText(CACHE_WRITE)).not.toBeInTheDocument();
   });
 
-  it("headline shows effective tokens when cache data is present", () => {
+  it("headline shows in/out when cache data is present", () => {
     vi.mocked(useLoop).mockReturnValue({
       data: createMockLoopWithUser({
         status: LoopStatus.Completed,
@@ -539,14 +539,12 @@ describe("LoopDetailContainer — cache token display", () => {
 
     render(<LoopDetailContainer id="loop-001" />);
 
-    // effective = 10k + 5k + 8k + round(3k * 0.1) = 23300 -> "~23.3k"
-    expect(screen.getByText("~23.3k")).toBeInTheDocument();
-    // "effective" label should be present
-    expect(screen.getByText("effective")).toBeInTheDocument();
-    // Raw in/out breakdown still shown somewhere on page
-    expect(
-      screen.getAllByText("10.0k in /", { exact: false }).length
-    ).toBeGreaterThan(0);
+    // Headline should show in/out, not a single total or effective number
+    const headline = document.querySelector(".font-bold.text-2xl");
+    expect(headline?.textContent).toBe("10.0k in / 5.0k out");
+    // "effective" label and effective total should be absent
+    expect(screen.queryByText("effective")).not.toBeInTheDocument();
+    expect(screen.queryByText("~23.3k")).not.toBeInTheDocument();
   });
 
   it("cache-only case: input=0, output=0, cacheRead>0 still renders cache summary", () => {
@@ -570,7 +568,28 @@ describe("LoopDetailContainer — cache token display", () => {
 
     render(<LoopDetailContainer id="loop-001" />);
 
+    // Headline should show "-" when input and output are both 0
+    const headline = document.querySelector(".font-bold.text-2xl");
+    expect(headline?.textContent).toBe("-");
+    // Cache summary should still render
     expect(screen.getByText(CACHE_READ)).toBeInTheDocument();
+  });
+
+  it("headline abbreviates large numbers (formatTokenCount)", () => {
+    vi.mocked(useLoop).mockReturnValue({
+      data: createMockLoopWithUser({
+        status: LoopStatus.Completed,
+        tokensInput: 15_000_000,
+        tokensOutput: 2800,
+      }),
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoop>);
+
+    render(<LoopDetailContainer id="loop-001" />);
+
+    const headline = document.querySelector(".font-bold.text-2xl");
+    expect(headline?.textContent).toBe("15.0M in / 2.8k out");
   });
 
   it("default key is filtered from ModelTokenBreakdown (no model row rendered for it)", () => {

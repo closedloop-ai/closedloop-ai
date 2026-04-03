@@ -104,39 +104,11 @@ function ModelTokenBreakdown({
   );
 }
 
-function computeEffectiveTokens(loop: {
-  tokensInput: number;
-  tokensOutput: number;
-  tokensByModel?: TokensByModel | null;
-}): { effective: number; hasCache: boolean } {
-  if (!loop.tokensByModel) {
-    return { effective: loop.tokensInput + loop.tokensOutput, hasCache: false };
-  }
-  const totalCacheCreation = Object.values(loop.tokensByModel).reduce(
-    (sum, u) => sum + (u.cacheCreation ?? 0),
-    0
-  );
-  const totalCacheRead = Object.values(loop.tokensByModel).reduce(
-    (sum, u) => sum + (u.cacheRead ?? 0),
-    0
-  );
-  if (totalCacheCreation === 0 && totalCacheRead === 0) {
-    return { effective: loop.tokensInput + loop.tokensOutput, hasCache: false };
-  }
-  const effective =
-    loop.tokensInput +
-    loop.tokensOutput +
-    totalCacheCreation +
-    Math.round(totalCacheRead * 0.1);
-  return { effective, hasCache: true };
-}
-
 type MetadataCardsProps = {
   loop: Awaited<ReturnType<typeof useLoop>["data"]>;
-  totalTokens: number;
 };
 
-function MetadataCards({ loop, totalTokens }: MetadataCardsProps) {
+function MetadataCards({ loop }: MetadataCardsProps) {
   if (!loop) {
     return null;
   }
@@ -183,54 +155,79 @@ function MetadataCards({ loop, totalTokens }: MetadataCardsProps) {
         </CardHeader>
         <CardContent>
           {(() => {
-            const { effective, hasCache } = computeEffectiveTokens(loop);
-            let headline = "-";
-            if (effective > 0) {
-              headline = `~${formatTokenCount(effective)}`;
-            } else if (totalTokens > 0) {
-              headline = formatTokenCount(totalTokens);
+            const input = loop.tokensInput;
+            const output = loop.tokensOutput;
+            const cacheWrite = loop.tokensByModel
+              ? Object.values(loop.tokensByModel).reduce(
+                  (sum, u) => sum + (u.cacheCreation ?? 0),
+                  0
+                )
+              : 0;
+            const cacheRead = loop.tokensByModel
+              ? Object.values(loop.tokensByModel).reduce(
+                  (sum, u) => sum + (u.cacheRead ?? 0),
+                  0
+                )
+              : 0;
+            const cost = loop.estimatedCost ?? 0;
+            const hasTokens = input > 0 || output > 0;
+            const hasCache = cacheWrite > 0 || cacheRead > 0;
+
+            if (!(hasTokens || hasCache)) {
+              return <div className="font-bold text-2xl">-</div>;
             }
+
             return (
-              <>
-                <div className="font-bold text-2xl">{headline}</div>
-                {hasCache && effective > 0 && (
-                  <p className="text-muted-foreground text-xs">effective</p>
+              <div className="space-y-2">
+                <div className="grid grid-cols-2 gap-x-4">
+                  <div>
+                    <p className="text-[10px] text-muted-foreground uppercase tracking-wider">
+                      Input
+                    </p>
+                    <p className="font-semibold text-lg tabular-nums">
+                      {formatTokenCount(input)}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-[10px] text-muted-foreground uppercase tracking-wider">
+                      Output
+                    </p>
+                    <p className="font-semibold text-lg tabular-nums">
+                      {formatTokenCount(output)}
+                    </p>
+                  </div>
+                </div>
+                {hasCache && (
+                  <div className="grid grid-cols-2 gap-x-4">
+                    <div>
+                      <p className="text-[10px] text-muted-foreground uppercase tracking-wider">
+                        Cache Write
+                      </p>
+                      <p className="text-muted-foreground text-sm tabular-nums">
+                        {formatTokenCount(cacheWrite)}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] text-muted-foreground uppercase tracking-wider">
+                        Cache Read
+                      </p>
+                      <p className="text-muted-foreground text-sm tabular-nums">
+                        {formatTokenCount(cacheRead)}
+                      </p>
+                    </div>
+                  </div>
                 )}
-              </>
+                {cost > 0 && (
+                  <p className="text-muted-foreground text-xs">
+                    ~${cost.toFixed(2)}
+                  </p>
+                )}
+              </div>
             );
           })()}
-          {totalTokens > 0 && (
-            <p className="text-muted-foreground text-xs">
-              {formatTokenCount(loop.tokensInput)} in /{" "}
-              {formatTokenCount(loop.tokensOutput)} out
-            </p>
+          {loop.tokensByModel && (
+            <ModelTokenBreakdown tokensByModel={loop.tokensByModel} />
           )}
-          {loop.estimatedCost != null && loop.estimatedCost > 0 && (
-            <p className="mt-1 text-muted-foreground text-xs">
-              ~${loop.estimatedCost.toFixed(4)}
-            </p>
-          )}
-          {loop.tokensByModel &&
-            (() => {
-              const totalCacheCreation = Object.values(
-                loop.tokensByModel
-              ).reduce((sum, u) => sum + (u.cacheCreation ?? 0), 0);
-              const totalCacheRead = Object.values(loop.tokensByModel).reduce(
-                (sum, u) => sum + (u.cacheRead ?? 0),
-                0
-              );
-              return (
-                <>
-                  {(totalCacheCreation > 0 || totalCacheRead > 0) && (
-                    <p className="text-muted-foreground text-xs">
-                      {formatTokenCount(totalCacheCreation)} cache write /{" "}
-                      {formatTokenCount(totalCacheRead)} cache read
-                    </p>
-                  )}
-                  <ModelTokenBreakdown tokensByModel={loop.tokensByModel} />
-                </>
-              );
-            })()}
         </CardContent>
       </Card>
 
@@ -306,7 +303,6 @@ export function LoopDetailContainer({ id }: LoopDetailContainerProps) {
   }
 
   const isActive = CANCELLABLE_LOOP_STATUSES.has(loop.status);
-  const totalTokens = loop.tokensInput + loop.tokensOutput;
   const defaultTab = isActive ? "live" : "audit-log";
 
   const handleRestart = async () => {
@@ -372,7 +368,7 @@ export function LoopDetailContainer({ id }: LoopDetailContainerProps) {
         )}
       </div>
 
-      <MetadataCards loop={loop} totalTokens={totalTokens} />
+      <MetadataCards loop={loop} />
 
       {/* Detail row */}
       <div className="flex flex-wrap items-center gap-4 text-muted-foreground text-sm">

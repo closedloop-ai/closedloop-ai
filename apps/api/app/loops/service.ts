@@ -1235,13 +1235,24 @@ export const loopsService = {
     id: string,
     organizationId: string,
     tokensInput: number,
-    tokensOutput: number
+    tokensOutput: number,
+    cacheCreation = 0,
+    cacheRead = 0
   ): Promise<void> {
+    const tokensByModel = JSON.stringify({
+      default: {
+        input: tokensInput,
+        output: tokensOutput,
+        cacheCreation,
+        cacheRead,
+      },
+    });
     await withDb((db) =>
       db.$executeRaw(Prisma.sql`
         UPDATE loops
         SET tokens_input = GREATEST(tokens_input, ${tokensInput}),
-            tokens_output = GREATEST(tokens_output, ${tokensOutput})
+            tokens_output = GREATEST(tokens_output, ${tokensOutput}),
+            tokens_by_model = ${tokensByModel}::jsonb
         WHERE id = ${id}::uuid
           AND organization_id = ${organizationId}::uuid
           AND status IN ('PENDING', 'CLAIMED', 'RUNNING')

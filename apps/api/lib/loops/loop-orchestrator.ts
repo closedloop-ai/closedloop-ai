@@ -2,6 +2,7 @@ import type {
   LoopEvent,
   LoopEventCompleted,
   LoopEventError,
+  LoopEventOutput,
   TokensByModel,
 } from "@repo/api/src/types/loop";
 import {
@@ -733,16 +734,15 @@ export async function handleLoopEvent(
         },
         replayContext
       );
-      if (
-        persisted &&
-        event.tokenUsage &&
-        (event.tokenUsage.inputTokens > 0 || event.tokenUsage.outputTokens > 0)
-      ) {
+      if (persisted && hasNonZeroTokenUsage(event.tokenUsage)) {
+        const tu = event.tokenUsage!;
         await loopsService.updateTokens(
           loopId,
           organizationId,
-          event.tokenUsage.inputTokens,
-          event.tokenUsage.outputTokens
+          tu.inputTokens,
+          tu.outputTokens,
+          tu.cacheCreationInputTokens ?? 0,
+          tu.cacheReadInputTokens ?? 0
         );
       }
       return [event];
@@ -921,6 +921,20 @@ function resolveEffectiveTokensByModel(
       cacheCreation,
       cacheRead
     ) ?? rawTokensByModel
+  );
+}
+
+function hasNonZeroTokenUsage(
+  tokenUsage: LoopEventOutput["tokenUsage"]
+): boolean {
+  if (!tokenUsage) {
+    return false;
+  }
+  return (
+    tokenUsage.inputTokens > 0 ||
+    tokenUsage.outputTokens > 0 ||
+    (tokenUsage.cacheCreationInputTokens ?? 0) > 0 ||
+    (tokenUsage.cacheReadInputTokens ?? 0) > 0
   );
 }
 

@@ -263,10 +263,12 @@ export default function LoopUsagePage() {
       <Separator />
 
       {/* Summary cards */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-6">
+      <div
+        className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5"
+        data-testid="usage-summary-grid"
+      >
         {isLoading ? (
           <>
-            <SummaryCardSkeleton />
             <SummaryCardSkeleton />
             <SummaryCardSkeleton />
             <SummaryCardSkeleton />
@@ -289,21 +291,6 @@ export default function LoopUsagePage() {
               title="Output Tokens"
               value={formatTokenCount(usage?.totalTokensOutput ?? 0)}
             />
-            {(() => {
-              const cacheWrite = usage?.totalCacheCreationTokens ?? 0;
-              const cacheRead = usage?.totalCacheReadTokens ?? 0;
-              const input = usage?.totalTokensInput ?? 0;
-              const output = usage?.totalTokensOutput ?? 0;
-              const effective =
-                input + output + cacheWrite + Math.round(cacheRead * 0.1);
-              return (
-                <SummaryCard
-                  description={`${input.toLocaleString()} in + ${output.toLocaleString()} out + ${cacheWrite.toLocaleString()} cw + ${cacheRead.toLocaleString()} cr`}
-                  title="Effective Tokens"
-                  value={`~${formatTokenCount(effective)}`}
-                />
-              );
-            })()}
             <SummaryCard
               description={`${(usage?.totalCacheCreationTokens ?? 0).toLocaleString()} write / ${(usage?.totalCacheReadTokens ?? 0).toLocaleString()} read`}
               title="Cache Tokens"
