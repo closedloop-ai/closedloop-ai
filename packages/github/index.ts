@@ -2,6 +2,7 @@ import "server-only";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { createAppAuth } from "@octokit/auth-app";
 import { Octokit } from "@octokit/rest";
+import { GitHubPRState } from "@repo/api/src/types/github";
 import { log } from "@repo/observability/log";
 import { keys } from "./keys";
 
@@ -761,7 +762,7 @@ export async function getSinglePullRequest(
   htmlUrl: string;
   headBranch: string;
   baseBranch: string;
-  state: "OPEN" | "MERGED" | "CLOSED";
+  state: GitHubPRState;
   mergedAt: string | null;
   closedAt: string | null;
 } | null> {
@@ -773,11 +774,11 @@ export async function getSinglePullRequest(
       pull_number: pullNumber,
     });
 
-    let state: "OPEN" | "MERGED" | "CLOSED" = "OPEN";
+    let state: GitHubPRState = GitHubPRState.Open;
     if (pr.merged_at) {
-      state = "MERGED";
+      state = GitHubPRState.Merged;
     } else if (pr.state === "closed") {
-      state = "CLOSED";
+      state = GitHubPRState.Closed;
     }
 
     return {

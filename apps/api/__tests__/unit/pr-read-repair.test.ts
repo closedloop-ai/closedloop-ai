@@ -30,6 +30,11 @@ vi.mock("@vercel/functions", () => ({
 }));
 
 vi.mock("@repo/database", () => ({
+  GitHubInstallationStatus: {
+    PENDING_CLAIM: "PENDING_CLAIM",
+    ACTIVE: "ACTIVE",
+    SUSPENDED: "SUSPENDED",
+  },
   withDb: vi.fn(),
 }));
 
@@ -445,9 +450,13 @@ describe("runPrReadRepair — repair logic", () => {
     // Second externalLink.update should include fresh state/title/timestamps
     expect(mockExternalLinkUpdate).toHaveBeenCalledTimes(2);
     const secondUpdateCall = mockExternalLinkUpdate.mock.calls[1][0];
+    expect(secondUpdateCall.data.title).toBe("Fresh title");
     expect(secondUpdateCall.data.metadata).toMatchObject({
+      githubId: "gh-pr-999",
+      number: 42,
+      headBranch: "feature-x",
+      baseBranch: "main",
       state: GitHubPRState.Merged,
-      title: "Fresh title",
       lastVerifiedAt: expect.any(String),
       lastRefreshAttemptAt: expect.any(String),
     });

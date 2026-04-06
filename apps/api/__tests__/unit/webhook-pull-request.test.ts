@@ -61,7 +61,11 @@ vi.mock("@/lib/slug-generator", () => ({
 }));
 
 // Import after mocking
-import { ArtifactStatus, ArtifactType } from "@repo/api/src/types/artifact";
+import {
+  ArtifactStatus,
+  ArtifactType,
+  ChecksStatus,
+} from "@repo/api/src/types/artifact";
 import { EntityType, LinkType } from "@repo/api/src/types/entity-link";
 import { ExternalLinkType } from "@repo/api/src/types/external-link";
 import { GitHubPRState } from "@repo/api/src/types/github";
@@ -293,7 +297,7 @@ describe("handlePullRequest", () => {
         workstreamId: "ws-uuid-789",
         organizationId: "org-uuid-123",
         artifactId: "artifact-uuid-123",
-        checksStatus: "UNKNOWN",
+        checksStatus: ChecksStatus.Unknown,
         artifact: { slug: "plan-feature-x" },
       });
 
@@ -405,7 +409,7 @@ describe("handlePullRequest", () => {
         workstreamId: "ws-uuid-abc",
         organizationId: "org-uuid-456",
         artifactId: null,
-        checksStatus: "UNKNOWN",
+        checksStatus: ChecksStatus.Unknown,
         artifact: null,
       });
 
@@ -471,7 +475,7 @@ describe("handlePullRequest", () => {
         workstreamId: "ws-uuid-def",
         organizationId: "org-uuid-456",
         artifactId: null,
-        checksStatus: "UNKNOWN",
+        checksStatus: ChecksStatus.Unknown,
         artifact: null,
       });
 

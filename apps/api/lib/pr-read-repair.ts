@@ -3,7 +3,7 @@ import type { ExternalLink } from "@repo/api/src/types/external-link";
 import { ExternalLinkType } from "@repo/api/src/types/external-link";
 import { parsePullRequestMetadata } from "@repo/api/src/types/external-link-utils";
 import { GitHubPRState } from "@repo/api/src/types/github";
-import { withDb } from "@repo/database";
+import { GitHubInstallationStatus, withDb } from "@repo/database";
 import { getSinglePullRequest } from "@repo/github";
 import { log } from "@repo/observability/log";
 import { waitUntil } from "@vercel/functions";
@@ -62,7 +62,13 @@ export function schedulePrReadRepair(
     return;
   }
 
-  waitUntil(runPrReadRepair(eligible, organizationId).catch(log.warn));
+  waitUntil(
+    runPrReadRepair(eligible, organizationId).catch((error) => {
+      log.warn("[pr-read-repair] Background repair failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    })
+  );
 }
 
 const PR_URL_REGEX = /github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/;
@@ -104,7 +110,7 @@ async function resolveInstallationId(
   // Fallback: org's single active installation
   const installations = await withDb((db) =>
     db.gitHubInstallation.findMany({
-      where: { organizationId, status: "ACTIVE" },
+      where: { organizationId, status: GitHubInstallationStatus.ACTIVE },
       select: { installationId: true },
     })
   );
@@ -189,6 +195,10 @@ async function repairSinglePrLink(
         title: freshPr.title,
         metadata: {
           ...currentMetadata,
+          githubId: freshPr.githubId,
+          number: freshPr.number,
+          headBranch: freshPr.headBranch,
+          baseBranch: freshPr.baseBranch,
           state: freshPr.state,
           lastVerifiedAt: now,
           lastRefreshAttemptAt: now,
@@ -227,6 +237,13 @@ async function runPrReadRepair(
   organizationId: string
 ): Promise<void> {
   for (const link of eligibleLinks) {
-    await repairSinglePrLink(link, organizationId);
+    try {
+      await repairSinglePrLink(link, organizationId);
+    } catch (err) {
+      log.warn("[pr-read-repair] Failed to repair link, continuing", {
+        externalLinkId: link.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 }
