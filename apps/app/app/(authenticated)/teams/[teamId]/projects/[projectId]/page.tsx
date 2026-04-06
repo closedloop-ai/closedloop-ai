@@ -7,6 +7,7 @@ import {
 } from "@repo/api/src/types/artifact";
 import type { Priority } from "@repo/api/src/types/common";
 import type { FeatureStatus } from "@repo/api/src/types/feature";
+import { ProjectStatus } from "@repo/api/src/types/project";
 import type { WorkstreamState } from "@repo/api/src/types/workstream";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
@@ -34,6 +35,7 @@ import {
 } from "lucide-react";
 import { useParams, useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
+import { toast } from "sonner";
 import { Header } from "@/app/(authenticated)/components/header";
 import type {
   ArtifactRowItem,
@@ -66,6 +68,7 @@ import {
   useToggleFavorite,
   useUpdateProjectAssignee,
   useUpdateProjectPriority,
+  useUpdateProjectStatus,
   useUpdateProjectTargetDate,
 } from "@/hooks/queries/use-projects";
 import { useTeam } from "@/hooks/queries/use-teams";
@@ -215,6 +218,7 @@ export default function ProjectDetailPage() {
   const updatePriorityMutation = useUpdateProjectPriority();
   const updateAssigneeMutation = useUpdateProjectAssignee();
   const updateTargetDateMutation = useUpdateProjectTargetDate();
+  const updateStatusMutation = useUpdateProjectStatus();
   const updateArtifactMutation = useUpdateArtifact();
   const updateFeatureMutation = useUpdateFeature();
   const deleteArtifactMutation = useDeleteArtifact();
@@ -257,6 +261,38 @@ export default function ProjectDetailPage() {
   const handleCreateArtifact = (type: ArtifactType) => {
     setSelectedArtifactType(type);
     setCreateArtifactOpen(true);
+  };
+
+  const handleUpdateProjectStatus = (status: ProjectStatus) => {
+    if (!project) {
+      return;
+    }
+
+    const previousStatus = project.status;
+    updateStatusMutation.mutate(
+      { projectId: project.id, status },
+      {
+        onSuccess: () => {
+          if (status === ProjectStatus.Archived) {
+            toast.success("Project archived", {
+              action: {
+                label: "Undo",
+                onClick: () => {
+                  updateStatusMutation.mutate({
+                    projectId: project.id,
+                    status: previousStatus,
+                  });
+                },
+              },
+            });
+            router.push(`/teams/${teamId}/projects`);
+            return;
+          }
+
+          toast.success("Project unarchived");
+        },
+      }
+    );
   };
 
   const handleDeleteArtifact = async (
@@ -335,13 +371,21 @@ export default function ProjectDetailPage() {
     );
   }
 
+  const favoritesDisabled =
+    toggleFavorite.isPending || project.status === ProjectStatus.Archived;
+  const favoriteButtonLabel = getFavoriteButtonLabel(
+    project.status,
+    isFavorite
+  );
+  const favoriteMenuLabel = getFavoriteMenuLabel(project.status, isFavorite);
+
   return (
     <>
       <Header
         afterBreadcrumbs={
           <Button
             className="ml-1 h-6 w-6"
-            disabled={toggleFavorite.isPending}
+            disabled={favoritesDisabled}
             onClick={(e) => {
               e.preventDefault();
               e.stopPropagation();
@@ -356,9 +400,7 @@ export default function ProjectDetailPage() {
             <StarIcon
               className={`h-4 w-4 ${isFavorite ? "fill-yellow-400 text-yellow-400" : "text-muted-foreground"}`}
             />
-            <span className="sr-only">
-              {isFavorite ? "Remove from favorites" : "Add to favorites"}
-            </span>
+            <span className="sr-only">{favoriteButtonLabel}</span>
           </Button>
         }
         breadcrumbs={[
@@ -403,7 +445,7 @@ export default function ProjectDetailPage() {
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
             <DropdownMenuItem
-              disabled={toggleFavorite.isPending}
+              disabled={favoritesDisabled}
               onClick={() =>
                 toggleFavorite.mutate({
                   projectId: project.id,
@@ -414,7 +456,23 @@ export default function ProjectDetailPage() {
               <StarIcon
                 className={`h-4 w-4 ${isFavorite ? "fill-yellow-400 text-yellow-400" : ""}`}
               />
-              {isFavorite ? "Remove from Favorites" : "Add to Favorites"}
+              {favoriteMenuLabel}
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              disabled={updateStatusMutation.isPending}
+              onClick={() =>
+                handleUpdateProjectStatus(
+                  project.status === ProjectStatus.Archived
+                    ? ProjectStatus.NotStarted
+                    : ProjectStatus.Archived
+                )
+              }
+            >
+              <span>
+                {project.status === ProjectStatus.Archived
+                  ? "Unarchive"
+                  : "Archive"}
+              </span>
             </DropdownMenuItem>
             <DropdownMenuItem
               onClick={() => setDeleteDialogOpen(true)}
@@ -554,4 +612,24 @@ export default function ProjectDetailPage() {
       />
     </>
   );
+}
+
+function getFavoriteButtonLabel(status: ProjectStatus, isFavorite: boolean) {
+  if (status === ProjectStatus.Archived) {
+    return "Archived projects cannot be favorited";
+  }
+  if (isFavorite) {
+    return "Remove from favorites";
+  }
+  return "Add to favorites";
+}
+
+function getFavoriteMenuLabel(status: ProjectStatus, isFavorite: boolean) {
+  if (status === ProjectStatus.Archived) {
+    return "Favorites unavailable while archived";
+  }
+  if (isFavorite) {
+    return "Remove from Favorites";
+  }
+  return "Add to Favorites";
 }

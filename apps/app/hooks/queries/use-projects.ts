@@ -32,17 +32,24 @@ export const projectKeys = {
   bySlug: (slug: string) => [...projectKeys.all, "by-slug", slug] as const,
 };
 
+export type ProjectListFilters = {
+  status?: ProjectStatus[];
+  excludeStatus?: ProjectStatus[];
+};
+
 // Queries
 export function useProjects(
   teamId?: string,
-  options?: Omit<UseQueryOptions<ProjectWithDetails[]>, "queryKey" | "queryFn">
+  options?: Omit<UseQueryOptions<ProjectWithDetails[]>, "queryKey" | "queryFn">,
+  filters?: ProjectListFilters
 ) {
   const apiClient = useApiClient();
+  const normalizedFilters = normalizeProjectListFilters(filters);
 
   return useQuery({
-    queryKey: projectKeys.list({ teamId }),
+    queryKey: projectKeys.list({ teamId, ...normalizedFilters }),
     queryFn: () => {
-      const query = teamId ? `?teamId=${teamId}` : "";
+      const query = buildProjectListQuery(teamId, normalizedFilters);
       return apiClient.get<ProjectWithDetails[]>(`/projects${query}`);
     },
     ...options,
@@ -51,14 +58,18 @@ export function useProjects(
 
 export function useProjectsByTeam(
   teamId: string,
-  options?: Omit<UseQueryOptions<ProjectWithDetails[]>, "queryKey" | "queryFn">
+  options?: Omit<UseQueryOptions<ProjectWithDetails[]>, "queryKey" | "queryFn">,
+  filters?: ProjectListFilters
 ) {
   const apiClient = useApiClient();
+  const normalizedFilters = normalizeProjectListFilters(filters);
 
   return useQuery({
-    queryKey: projectKeys.list({ teamId }),
-    queryFn: () =>
-      apiClient.get<ProjectWithDetails[]>(`/projects?teamId=${teamId}`),
+    queryKey: projectKeys.list({ teamId, ...normalizedFilters }),
+    queryFn: () => {
+      const query = buildProjectListQuery(teamId, normalizedFilters);
+      return apiClient.get<ProjectWithDetails[]>(`/projects${query}`);
+    },
     enabled: !!teamId,
     ...options,
   });
@@ -241,6 +252,7 @@ export function useUpdateProjectPriority() {
 }
 
 export function useUpdateProjectStatus() {
+  const queryClient = useQueryClient();
   const updateProject = useUpdateProject();
 
   return useMutation({
@@ -251,6 +263,9 @@ export function useUpdateProjectStatus() {
       projectId: string;
       status: ProjectStatus;
     }) => updateProject.mutateAsync({ id: projectId, status }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: projectKeys.favorites() });
+    },
   });
 }
 
@@ -347,4 +362,37 @@ export function useToggleFavorite() {
       return favorite.mutateAsync(projectId);
     },
   });
+}
+
+function normalizeProjectListFilters(
+  filters?: ProjectListFilters
+): ProjectListFilters {
+  return {
+    ...(filters?.status
+      ? { status: normalizeProjectStatuses(filters.status) }
+      : {}),
+    ...(filters?.excludeStatus
+      ? { excludeStatus: normalizeProjectStatuses(filters.excludeStatus) }
+      : {}),
+  };
+}
+
+function normalizeProjectStatuses(statuses: ProjectStatus[]): ProjectStatus[] {
+  return [...new Set(statuses)].sort();
+}
+
+function buildProjectListQuery(teamId?: string, filters?: ProjectListFilters) {
+  const searchParams = new URLSearchParams();
+  if (teamId) {
+    searchParams.set("teamId", teamId);
+  }
+  if (filters?.status?.length) {
+    searchParams.set("status", filters.status.join(","));
+  }
+  if (filters?.excludeStatus?.length) {
+    searchParams.set("excludeStatus", filters.excludeStatus.join(","));
+  }
+
+  const query = searchParams.toString();
+  return query ? `?${query}` : "";
 }
