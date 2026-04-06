@@ -101,10 +101,14 @@ export function isConcurrentLoopLimitError(
 const VALID_TRANSITIONS: Record<LoopStatus, Set<LoopStatus>> = {
   // PENDING → RUNNING covers the race where the container sends "started"
   // before the backend has finished transitioning to CLAIMED.
+  // PENDING → FAILED covers the pre-dispatch guard path in launchLoop: when
+  // a required parent state is unavailable, failLoopWithError is called before
+  // any task is dispatched, while the loop is still PENDING.
   PENDING: new Set<LoopStatus>([
     LoopStatus.Claimed,
     LoopStatus.Running,
     LoopStatus.Cancelled,
+    LoopStatus.Failed,
   ]),
   // CLAIMED → terminal states covers the case where the "started" event was
   // dropped (network issue, transient failure). Without this, a lost "started"
@@ -833,7 +837,7 @@ export const loopsService = {
     organizationId: string,
     filters: LoopEventsFilters
   ): Promise<LoopEventsPaginatedResponse> {
-    const { type, limit = 100, offset = 0 } = filters;
+    const { type, limit = 100, offset = 0, sort = "asc" } = filters;
 
     // Verify loop belongs to org
     const loop = await withDb((db) =>
@@ -856,7 +860,7 @@ export const loopsService = {
       withDb((db) =>
         db.loopEvent.findMany({
           where,
-          orderBy: { createdAt: "asc" },
+          orderBy: { createdAt: sort },
           take: limit,
           skip: offset,
         })

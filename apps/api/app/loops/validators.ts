@@ -100,12 +100,23 @@ const tokenUsageSchema = z.object({
   cacheReadInputTokens: z.number().optional(),
 });
 
+const tokensByModelSchema = z.record(
+  z.string(),
+  z.object({
+    input: z.number(),
+    output: z.number(),
+    cacheCreation: z.number().optional(),
+    cacheRead: z.number().optional(),
+  })
+);
+
 const errorEventSchema = z.object({
   code: z.string(),
   message: z.string(),
   timestamp: z.string(),
   logTail: z.string().optional(),
   tokenUsage: tokenUsageSchema.optional(),
+  tokensByModel: tokensByModelSchema.optional(),
   diagnosticsVersion: z.string().optional(),
 });
 
@@ -183,6 +194,7 @@ export const listLoopEventsQueryValidator = z.object({
     .optional(),
   limit: z.coerce.number().min(1).max(500).default(100).optional(),
   offset: z.coerce.number().min(0).default(0).optional(),
+  sort: z.enum(["asc", "desc"]).default("asc").optional(),
 });
 
 export const listLoopsQueryValidator = z.object({
