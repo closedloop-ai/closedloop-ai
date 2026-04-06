@@ -22,6 +22,10 @@
       "dependsOn": ["^build"],
       "outputs": ["dist/**"]
     },
+    "@closedloop/loops-api#build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**"]
+    },
     "typecheck": {
       "dependsOn": ["^typecheck"]
     },

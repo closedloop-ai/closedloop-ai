@@ -190,10 +190,12 @@ function EventRow({ event }: { event: LoopEvent }) {
             <Tooltip>
               <TooltipTrigger asChild>
                 <span className="text-muted-foreground text-sm">
-                  {formatRelativeTime(event.timestamp)}
+                  {event.timestamp ? formatRelativeTime(event.timestamp) : "—"}
                 </span>
               </TooltipTrigger>
-              <TooltipContent>{formatDateTime(event.timestamp)}</TooltipContent>
+              <TooltipContent>
+                {event.timestamp ? formatDateTime(event.timestamp) : "—"}
+              </TooltipContent>
             </Tooltip>
           </TooltipProvider>
         </TableCell>

@@ -84,6 +84,7 @@ No sycophantic language. Brief, factual — state what changed.
 - Positive condition first in if/else (S7735)
 - Double quotes, semicolons, trailing commas (ES5), 100 char width
 - New functions/types/constants at bottom of file
+- Never use inline imports. Imports belong first in the file.
 
 ### Biome
 - Run `pnpm lint:fix` after modifying React components (auto-fixes import/CSS/JSX ordering)

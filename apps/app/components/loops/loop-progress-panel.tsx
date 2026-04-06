@@ -249,9 +249,11 @@ function OutputEvent({ event }: { event: LoopEventOutput }) {
             </pre>
           </CollapsibleContent>
         </Collapsible>
-        <div className="mt-1 text-muted-foreground text-xs">
-          {formatTimestamp(event.timestamp)}
-        </div>
+        {event.timestamp ? (
+          <div className="mt-1 text-muted-foreground text-xs">
+            {formatTimestamp(event.timestamp)}
+          </div>
+        ) : null}
       </div>
     </div>
   );
@@ -493,7 +495,9 @@ export function LoopProgressPanel({
     }
 
     const lastPolledTs = polled.at(-1)?.timestamp ?? "";
-    const newFromStream = streamed.filter((e) => e.timestamp > lastPolledTs);
+    const newFromStream = streamed.filter(
+      (e) => (e.timestamp ?? "") > lastPolledTs
+    );
 
     return newFromStream.length > 0 ? [...polled, ...newFromStream] : polled;
   }, [polling.events, stream.events]);
@@ -527,7 +531,8 @@ export function LoopProgressPanel({
     polling.loopTokensOutput;
 
   // Derive start timestamp from first event
-  const startTimestamp = events.length > 0 ? events[0].timestamp : null;
+  const startTimestamp =
+    events.length > 0 ? (events[0].timestamp ?? null) : null;
   const elapsed = useElapsedTime(startTimestamp, active);
 
   // Auto-scroll to bottom as events arrive.

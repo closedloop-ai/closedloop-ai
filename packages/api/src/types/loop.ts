@@ -1,49 +1,55 @@
 // Loop types for API contract
-// These are explicitly defined to keep packages/api independent of database
+// Shared contract types are re-exported from @closedloop/loops-api.
+// API-specific types (Loop entity, request/response, usage) are defined here.
 
+/** biome-ignore-all lint/style/useImportType: imported type re-exported as values. */
+/** biome-ignore-all lint/style/noExportedImports: re-exoorting shared loop types for backwards compatibility. */
+
+import { LoopCommand, LoopStatus } from "@closedloop/loops-api/commands";
+import { TokensByModel } from "@closedloop/loops-api/tokens";
 import type { JsonObject } from "./common";
 import type { EntityType } from "./entity-link";
 
-// Loop Status
-export const LoopStatus = {
-  Pending: "PENDING",
-  Claimed: "CLAIMED",
-  Running: "RUNNING",
-  Completed: "COMPLETED",
-  Failed: "FAILED",
-  Cancelled: "CANCELLED",
-  TimedOut: "TIMED_OUT",
-} as const;
-export type LoopStatus = (typeof LoopStatus)[keyof typeof LoopStatus];
+// --- Re-exports from @closedloop/loops-api ---
 
-// Loop Command
-export const LoopCommand = {
-  Plan: "PLAN",
-  Execute: "EXECUTE",
-  Chat: "CHAT",
-  Explore: "EXPLORE",
-  RequestChanges: "REQUEST_CHANGES",
-  Decompose: "DECOMPOSE",
-  EvaluatePrd: "EVALUATE_PRD",
-  GeneratePrd: "GENERATE_PRD",
-  EvaluatePlan: "EVALUATE_PLAN",
-  EvaluateCode: "EVALUATE_CODE",
-} as const;
-export type LoopCommand = (typeof LoopCommand)[keyof typeof LoopCommand];
+// biome-ignore lint/performance/noBarrelFile: Shared contract types are re-exported from @closedloop/loops-api.
+export {
+  LoopCommandSchema,
+  LoopStatusSchema,
+  RunLoopCommand,
+  RunLoopCommandSchema,
+} from "@closedloop/loops-api/commands";
+export {
+  LoopErrorCode,
+  LoopErrorCodeSchema,
+} from "@closedloop/loops-api/error-codes";
+export type {
+  LoopEvent,
+  LoopEventArtifactCreated,
+  LoopEventCancelled,
+  LoopEventCompleted,
+  LoopEventError,
+  LoopEventOutput,
+  LoopEventProgress,
+  LoopEventStarted,
+  LoopEventsFilters,
+  LoopEventsPaginatedResponse,
+  LoopEventToolCall,
+  LoopEventType,
+} from "@closedloop/loops-api/events";
+export type {
+  ModelTokenUsage,
+  TokenUsage,
+} from "@closedloop/loops-api/tokens";
+export {
+  MODEL_PRICING,
+  ModelTokenUsageSchema,
+  TokensByModelSchema,
+  TokenUsageSchema,
+} from "@closedloop/loops-api/tokens";
+export { LoopCommand, LoopStatus, type TokensByModel };
 
-// Lowercase command keys accepted by the /artifacts/:id/run-loop endpoint.
-export const RunLoopCommand = {
-  Plan: "plan",
-  Execute: "execute",
-  RequestChanges: "request_changes",
-  Decompose: "decompose",
-  EvaluatePrd: "evaluate_prd",
-  GeneratePrd: "generate_prd",
-  EvaluatePlan: "evaluate_plan",
-  EvaluateCode: "evaluate_code",
-} as const;
-export type RunLoopCommand =
-  (typeof RunLoopCommand)[keyof typeof RunLoopCommand];
+// --- API-specific types (not in shared contract) ---
 
 export type SourceContextType = (typeof EntityType)[keyof Pick<
   typeof EntityType,
@@ -149,131 +155,6 @@ export type LoopListFilters = {
   offset?: number;
 };
 
-// Event types (streamed from container -> backend -> frontend)
-export type LoopEventStarted = {
-  type: "started";
-  loopId: string;
-  timestamp: string;
-};
-
-export type LoopEventOutput = {
-  type: "output";
-  chunk: string;
-  timestamp: string;
-  tokenUsage?: {
-    inputTokens: number;
-    outputTokens: number;
-    cacheCreationInputTokens?: number;
-    cacheReadInputTokens?: number;
-  };
-};
-
-export type LoopEventProgress = {
-  type: "progress";
-  percent: number;
-  stage: string;
-  timestamp: string;
-};
-
-export type LoopEventToolCall = {
-  type: "tool_call";
-  tool: string;
-  status: "start" | "end";
-  input?: unknown;
-  output?: unknown;
-  timestamp: string;
-};
-
-export type LoopEventArtifactCreated = {
-  type: "artifact_created";
-  artifactId: string;
-  artifactType: string;
-  timestamp: string;
-};
-
-export type LoopEventCompleted = {
-  type: "completed";
-  result: JsonObject;
-  tokensUsed: {
-    input: number;
-    output: number;
-    cacheCreationInputTokens?: number;
-    cacheReadInputTokens?: number;
-    turns?: number;
-    models?: string[];
-  };
-  tokensByModel?: TokensByModel;
-  apiKeySource?: string;
-  timestamp: string;
-};
-
-export type LoopEventError = {
-  type: "error";
-  code: string;
-  message: string;
-  timestamp: string;
-  logTail?: string;
-  tokenUsage?: {
-    inputTokens: number;
-    outputTokens: number;
-    cacheCreationInputTokens?: number;
-    cacheReadInputTokens?: number;
-  };
-  tokensByModel?: TokensByModel;
-  diagnosticsVersion?: string;
-  apiKeySource?: string;
-};
-
-export type LoopEventCancelled = {
-  type: "cancelled";
-  reason?: string;
-  timestamp: string;
-};
-
-export type LoopEvent =
-  | LoopEventStarted
-  | LoopEventOutput
-  | LoopEventProgress
-  | LoopEventToolCall
-  | LoopEventArtifactCreated
-  | LoopEventCompleted
-  | LoopEventError
-  | LoopEventCancelled;
-
-export type LoopEventType = LoopEvent["type"];
-
-export type LoopEventsFilters = {
-  type?: LoopEventType;
-  limit?: number;
-  offset?: number;
-  sort?: "asc" | "desc";
-};
-
-export type LoopEventsPaginatedResponse = {
-  data: LoopEvent[];
-  total: number;
-};
-
-// Per-model token tracking
-export type ModelTokenUsage = {
-  input: number;
-  output: number;
-  cacheCreation?: number;
-  cacheRead?: number;
-};
-
-export type TokensByModel = Record<string, ModelTokenUsage>;
-
-// Model pricing (USD per million tokens)
-export const MODEL_PRICING: Record<string, { input: number; output: number }> =
-  {
-    "claude-opus-4": { input: 15, output: 75 },
-    "claude-sonnet-4-5": { input: 3, output: 15 },
-    "claude-haiku-4-5": { input: 0.8, output: 4 },
-    // Fallback for unknown models
-    default: { input: 15, output: 75 },
-  };
-
 // Usage/cost summary types
 export type LoopUsageByCommand = {
   command: LoopCommand;
@@ -304,14 +185,6 @@ export type LoopUsageSummary = {
   byCommand: LoopUsageByCommand[];
   byUser: LoopUsageByUser[];
 };
-
-// Structured error codes emitted by the electron/runner harness.
-export const LoopErrorCode = {
-  NoWorkProduced: "NO_WORK_PRODUCED",
-  ContextLimitExceeded: "CONTEXT_LIMIT_EXCEEDED",
-  PlanStateUnavailable: "PLAN_STATE_UNAVAILABLE",
-} as const;
-export type LoopErrorCode = (typeof LoopErrorCode)[keyof typeof LoopErrorCode];
 
 // Feature decomposition types (output of DECOMPOSE command)
 export type DecomposeUserStory = {

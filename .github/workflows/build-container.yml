@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - "containers/claude-runner/**"
+      - "packages/loops-api/**"
   workflow_dispatch: {}
 
 concurrency:
@@ -37,6 +38,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Build loops-api package
+        run: pnpm install --frozen-lockfile && pnpm turbo build --filter=@closedloop/loops-api
+
       - name: Generate plugin repo token
         id: plugin-token
         uses: actions/create-github-app-token@v3
@@ -63,7 +76,8 @@ jobs:
         id: build
         uses: docker/build-push-action@v7
         with:
-          context: containers/claude-runner
+          context: .
+          file: containers/claude-runner/Dockerfile
           push: true
           provenance: true
           sbom: true

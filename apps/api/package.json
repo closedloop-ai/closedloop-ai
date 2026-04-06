@@ -16,6 +16,7 @@
     "typecheck": "tsc --noEmit --emitDeclarationOnly false"
   },
   "dependencies": {
+    "@closedloop/loops-api": "workspace:*",
     "@aws-sdk/client-ecs": "^3.985.0",
     "@aws-sdk/client-kms": "^3.985.0",
     "@aws-sdk/client-s3": "^3.985.0",

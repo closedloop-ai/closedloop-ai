@@ -7,6 +7,7 @@
     "typecheck": "tsc --noEmit --emitDeclarationOnly false"
   },
   "dependencies": {
+    "@closedloop/loops-api": "workspace:*",
     "zod": "^4.3.6"
   },
   "devDependencies": {
