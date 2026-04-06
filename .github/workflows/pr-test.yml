@@ -114,7 +114,7 @@ jobs:
           DATABASE_URL: postgresql://testuser:testpass@localhost:5432/testdb
 
       - name: Run tests
-        run: pnpm test --filter=api
+        run: pnpm test --filter=app --filter=api
         env:
           # Standard PostgreSQL connection (not AWS RDS IAM auth)
           DATABASE_URL: postgresql://testuser:testpass@localhost:5432/testdb
