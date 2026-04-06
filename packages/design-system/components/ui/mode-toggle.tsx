@@ -1,6 +1,7 @@
 "use client";
 
 import { MoonIcon, SunIcon } from "@radix-ui/react-icons";
+import { cn } from "@repo/design-system/lib/utils";
 import { useTheme } from "next-themes";
 import { useEffect, useState } from "react";
 import { Button } from "./button";
@@ -13,11 +14,16 @@ import {
 
 const themes = [
   { label: "Light", value: "light" },
+  { label: "Hybrid", value: "hybrid" },
   { label: "Dark", value: "dark" },
   { label: "System", value: "system" },
 ];
 
-export function ModeToggle() {
+type ModeToggleProps = {
+  className?: string;
+};
+
+export function ModeToggle({ className }: ModeToggleProps) {
   const { setTheme } = useTheme();
   const [mounted, setMounted] = useState(false);
 
@@ -28,7 +34,7 @@ export function ModeToggle() {
   if (!mounted) {
     return (
       <Button
-        className="shrink-0 text-foreground"
+        className={cn("shrink-0 text-foreground", className)}
         size="icon"
         type="button"
         variant="ghost"
@@ -44,8 +50,9 @@ export function ModeToggle() {
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <Button
-          className="shrink-0 text-foreground"
+          className={cn("shrink-0 text-foreground", className)}
           size="icon"
+          type="button"
           variant="ghost"
         >
           <SunIcon className="h-[1.2rem] w-[1.2rem] rotate-0 scale-100 transition-all dark:-rotate-90 dark:scale-0" />
@@ -62,4 +69,4 @@ export function ModeToggle() {
       </DropdownMenuContent>
     </DropdownMenu>
   );
-};
+}
