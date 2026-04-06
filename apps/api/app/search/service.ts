@@ -1,3 +1,4 @@
+import { ProjectStatus } from "@repo/api/src/types/project";
 import type {
   ArtifactSearchResult,
   FeatureSearchResult,
@@ -154,6 +155,7 @@ async function searchProjects(
     db.project.findMany({
       where: {
         organizationId,
+        status: { not: ProjectStatus.Archived },
         OR: [{ name: ilike(query) }, { description: ilike(query) }],
       },
       select: {

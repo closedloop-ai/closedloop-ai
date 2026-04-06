@@ -1,9 +1,11 @@
 import { ArtifactStatus } from "@repo/api/src/types/artifact";
 import type { JsonObject } from "@repo/api/src/types/common";
-import type {
-  CreateProjectInput,
-  ProjectWithDetails,
-  UpdateProjectInput,
+import {
+  type ProjectStatus as ApiProjectStatus,
+  type CreateProjectInput,
+  ProjectStatus,
+  type ProjectWithDetails,
+  type UpdateProjectInput,
 } from "@repo/api/src/types/project";
 import type { Prisma } from "@repo/database";
 import { withDb } from "@repo/database";
@@ -18,11 +20,16 @@ export const projectsService = {
    * Find all projects for an organization
    */
   async findByOrganization(
-    organizationId: string
+    organizationId: string,
+    options?: ProjectListOptions
   ): Promise<ProjectWithDetails[]> {
+    const statusFilter = buildProjectStatusFilter(options);
     const projects = await withDb((db) =>
       db.project.findMany({
-        where: { organizationId },
+        where: {
+          organizationId,
+          ...(statusFilter ? { status: statusFilter } : {}),
+        },
         include: PROJECT_DETAIL_INCLUDE,
         orderBy: [{ sortOrder: "asc" }, { createdAt: "desc" }],
       })
@@ -36,8 +43,9 @@ export const projectsService = {
   async findByTeam(
     teamId: string,
     organizationId: string,
-    options?: { limit?: number }
+    options?: ProjectListOptions
   ): Promise<ProjectWithDetails[]> {
+    const statusFilter = buildProjectStatusFilter(options);
     const projects = await withDb((db) =>
       db.project.findMany({
         where: {
@@ -45,6 +53,7 @@ export const projectsService = {
             some: { teamId },
           },
           organizationId,
+          ...(statusFilter ? { status: statusFilter } : {}),
         },
         include: PROJECT_DETAIL_INCLUDE,
         orderBy: [{ sortOrder: "asc" }, { updatedAt: "desc" }],
@@ -259,7 +268,10 @@ export const projectsService = {
       db.favoriteProject.findMany({
         where: {
           userId,
-          project: { organizationId },
+          project: {
+            organizationId,
+            status: { not: ProjectStatus.Archived },
+          },
         },
         orderBy: { createdAt: "desc" },
         include: {
@@ -288,6 +300,12 @@ export const projectsService = {
 
     return Math.round((completedCount / artifacts.length) * 100);
   },
+};
+
+type ProjectListOptions = {
+  limit?: number;
+  status?: ApiProjectStatus[];
+  excludeStatus?: ApiProjectStatus[];
 };
 
 /**
@@ -333,5 +351,28 @@ function toProjectWithDetails(project: ProjectFromDb): ProjectWithDetails {
       id: pt.team.id,
       name: pt.team.name,
     })),
+  };
+}
+
+function buildProjectStatusFilter(
+  options?: ProjectListOptions
+): Prisma.EnumProjectStatusFilter | undefined {
+  const hasStatus = (options?.status?.length ?? 0) > 0;
+  const hasExcludeStatus = (options?.excludeStatus?.length ?? 0) > 0;
+  if (!(hasStatus || hasExcludeStatus)) {
+    return undefined;
+  }
+
+  return {
+    ...(hasStatus
+      ? {
+          in: options?.status,
+        }
+      : {}),
+    ...(hasExcludeStatus
+      ? {
+          notIn: options?.excludeStatus,
+        }
+      : {}),
   };
 }

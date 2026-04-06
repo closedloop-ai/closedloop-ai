@@ -4,6 +4,7 @@
  * Tests the limit parameter functionality and multi-tenant security checks.
  */
 import { ArtifactStatus } from "@repo/api/src/types/artifact";
+import { ProjectStatus } from "@repo/api/src/types/project";
 import { type Mock, vi } from "vitest";
 
 // Mock modules before importing the service
@@ -141,6 +142,56 @@ describe("projectsService.findByTeam", () => {
         where: expect.objectContaining({
           organizationId: TEST_ORG_ID,
           teams: { some: { teamId: TEST_TEAM_ID } },
+        }),
+      })
+    );
+  });
+
+  it("applies status inclusion filters when provided", async () => {
+    const mockFindMany = vi.fn().mockResolvedValue([MOCK_PROJECT]);
+
+    mockWithDb.mockImplementation((callback: any) => {
+      const mockDb = {
+        project: {
+          findMany: mockFindMany,
+        },
+      };
+      return callback(mockDb);
+    });
+
+    await projectsService.findByTeam(TEST_TEAM_ID, TEST_ORG_ID, {
+      status: [ProjectStatus.Archived],
+    });
+
+    expect(mockFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          status: { in: [ProjectStatus.Archived] },
+        }),
+      })
+    );
+  });
+
+  it("applies status exclusion filters when provided", async () => {
+    const mockFindMany = vi.fn().mockResolvedValue([MOCK_PROJECT]);
+
+    mockWithDb.mockImplementation((callback: any) => {
+      const mockDb = {
+        project: {
+          findMany: mockFindMany,
+        },
+      };
+      return callback(mockDb);
+    });
+
+    await projectsService.findByTeam(TEST_TEAM_ID, TEST_ORG_ID, {
+      excludeStatus: [ProjectStatus.Archived],
+    });
+
+    expect(mockFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          status: { notIn: [ProjectStatus.Archived] },
         }),
       })
     );

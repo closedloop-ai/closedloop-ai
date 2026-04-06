@@ -1,5 +1,9 @@
 import { CustomFieldEntityType } from "@repo/api/src/types/custom-field";
-import type { ProjectWithDetails } from "@repo/api/src/types/project";
+import {
+  type ProjectStatus,
+  ProjectStatus as ProjectStatusValues,
+  type ProjectWithDetails,
+} from "@repo/api/src/types/project";
 import { z } from "zod";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import {
@@ -18,6 +22,8 @@ import { createProjectValidator } from "./validators";
  * Query params:
  *   - teamId: Filter by team
  *   - limit: Maximum number of projects to return (1-100, only applies when teamId is provided)
+ *   - status: Optional project status filter (comma-delimited)
+ *   - excludeStatus: Optional excluded project status filter (comma-delimited)
  */
 export const GET = withAnyAuth<ProjectWithDetails[], "/projects">(
   async ({ user }, request) => {
@@ -28,27 +34,53 @@ export const GET = withAnyAuth<ProjectWithDetails[], "/projects">(
       const querySchema = z.object({
         teamId: z.string().optional(),
         limit: z.coerce.number().int().positive().max(100).optional(),
+        status: z.string().optional(),
+        excludeStatus: z.string().optional(),
       });
 
       const queryResult = querySchema.safeParse({
         teamId: url.searchParams.get("teamId") ?? undefined,
         limit: url.searchParams.get("limit") ?? undefined,
+        status: url.searchParams.get("status") ?? undefined,
+        excludeStatus: url.searchParams.get("excludeStatus") ?? undefined,
       });
 
       if (!queryResult.success) {
         return badRequestResponse("Invalid query parameters");
       }
 
-      const { teamId, limit } = queryResult.data;
+      const { teamId, limit, status, excludeStatus } = queryResult.data;
+      const statusFilter = parseProjectStatuses(status);
+      const excludeStatusFilter = parseProjectStatuses(excludeStatus);
+      if (statusFilter === null || excludeStatusFilter === null) {
+        return badRequestResponse("Invalid project status filter");
+      }
+
+      const hasExplicitStatusFilter =
+        statusFilter !== undefined || excludeStatusFilter !== undefined;
+      const defaultExcludeStatus = hasExplicitStatusFilter
+        ? undefined
+        : [ProjectStatusValues.Archived];
+      const listOptions = {
+        ...(limit ? { limit } : {}),
+        ...(statusFilter ? { status: statusFilter } : {}),
+        ...(excludeStatusFilter ? { excludeStatus: excludeStatusFilter } : {}),
+        ...(defaultExcludeStatus
+          ? { excludeStatus: defaultExcludeStatus }
+          : {}),
+      };
 
       // Determine which service method to call based on parameters
       const projects = teamId
         ? await projectsService.findByTeam(
             teamId,
             user.organizationId,
-            limit ? { limit } : undefined
+            listOptions
           )
-        : await projectsService.findByOrganization(user.organizationId);
+        : await projectsService.findByOrganization(
+            user.organizationId,
+            listOptions
+          );
 
       // Batch-load custom field values for all projects in a single query
       const projectIds = projects.map((p) => p.id);
@@ -123,3 +155,29 @@ export const POST = withAnyAuth<ProjectWithDetails, "/projects">(
   },
   { requiredScopes: ["write"] }
 );
+
+function parseProjectStatuses(
+  value?: string
+): ProjectStatus[] | null | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const values = value
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean) as ProjectStatus[];
+  if (values.length === 0) {
+    return null;
+  }
+
+  const allowedValues = new Set(
+    Object.values(ProjectStatusValues) as ProjectStatus[]
+  );
+  const hasInvalidStatus = values.some((status) => !allowedValues.has(status));
+  if (hasInvalidStatus) {
+    return null;
+  }
+
+  return [...new Set(values)];
+}
