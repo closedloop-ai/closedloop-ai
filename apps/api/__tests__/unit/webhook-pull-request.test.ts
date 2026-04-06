@@ -291,7 +291,9 @@ describe("handlePullRequest", () => {
       mockTx.gitHubPullRequest.findUnique.mockResolvedValue({
         id: "pr-uuid-456",
         workstreamId: "ws-uuid-789",
+        organizationId: "org-uuid-123",
         artifactId: "artifact-uuid-123",
+        checksStatus: "UNKNOWN",
         artifact: { slug: "plan-feature-x" },
       });
 
@@ -328,6 +330,7 @@ describe("handlePullRequest", () => {
         select: {
           id: true,
           workstreamId: true,
+          organizationId: true,
           artifactId: true,
           checksStatus: true,
           artifact: { select: { slug: true } },
@@ -400,7 +403,9 @@ describe("handlePullRequest", () => {
       mockTx.gitHubPullRequest.findUnique.mockResolvedValue({
         id: "pr-uuid-789",
         workstreamId: "ws-uuid-abc",
+        organizationId: "org-uuid-456",
         artifactId: null,
+        checksStatus: "UNKNOWN",
         artifact: null,
       });
 
@@ -464,6 +469,10 @@ describe("handlePullRequest", () => {
       mockTx.gitHubPullRequest.findUnique.mockResolvedValue({
         id: "pr-uuid-reopen",
         workstreamId: "ws-uuid-def",
+        organizationId: "org-uuid-456",
+        artifactId: null,
+        checksStatus: "UNKNOWN",
+        artifact: null,
       });
 
       mockTx.gitHubPullRequest.update.mockResolvedValue({});

@@ -746,6 +746,64 @@ export async function queryStatusCheckRollup(
 }
 
 /**
+ * Fetch a single pull request by number.
+ * Returns null on any error (not found, permission denied, etc.).
+ */
+export async function getSinglePullRequest(
+  installationId: string,
+  owner: string,
+  repo: string,
+  pullNumber: number
+): Promise<{
+  githubId: string;
+  number: number;
+  title: string;
+  htmlUrl: string;
+  headBranch: string;
+  baseBranch: string;
+  state: "OPEN" | "MERGED" | "CLOSED";
+  mergedAt: string | null;
+  closedAt: string | null;
+} | null> {
+  try {
+    const octokit = await getInstallationOctokit(installationId);
+    const { data: pr } = await octokit.rest.pulls.get({
+      owner,
+      repo,
+      pull_number: pullNumber,
+    });
+
+    let state: "OPEN" | "MERGED" | "CLOSED" = "OPEN";
+    if (pr.merged_at) {
+      state = "MERGED";
+    } else if (pr.state === "closed") {
+      state = "CLOSED";
+    }
+
+    return {
+      githubId: String(pr.id),
+      number: pr.number,
+      title: pr.title,
+      htmlUrl: pr.html_url,
+      headBranch: pr.head.ref,
+      baseBranch: pr.base.ref,
+      state,
+      mergedAt: pr.merged_at ?? null,
+      closedAt: pr.closed_at ?? null,
+    };
+  } catch (error) {
+    log.warn("[github/pull-request] Failed to fetch single pull request", {
+      installationId,
+      owner,
+      repo,
+      pullNumber,
+      error: error instanceof Error ? error.message : "Unknown error",
+    });
+    return null;
+  }
+}
+
+/**
  * Generate an installation access token for a given GitHub App installation.
  * Used by the loop orchestrator to pass a short-lived token to containers.
  */

@@ -1,8 +1,14 @@
 import {
+  EntityType,
   type LinkedEntity,
   LinkQueryMode,
 } from "@repo/api/src/types/entity-link";
+import {
+  type ExternalLink,
+  ExternalLinkType,
+} from "@repo/api/src/types/external-link";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
+import { schedulePrReadRepair } from "@/lib/pr-read-repair";
 import {
   errorResponse,
   parseQueryParams,
@@ -55,6 +61,14 @@ export const GET = withAnyAuth<LinkedEntity[], "/entity-links/resolved">(
         user.organizationId,
         annotatedLinks
       );
+
+      const prLinks = resolved.flatMap((le) =>
+        le.resolvedEntity?.type === EntityType.ExternalLink &&
+        le.resolvedEntity.entity.type === ExternalLinkType.PullRequest
+          ? [le.resolvedEntity.entity as ExternalLink]
+          : []
+      );
+      schedulePrReadRepair(prLinks, user.organizationId);
 
       return successResponse(resolved);
     } catch (error) {

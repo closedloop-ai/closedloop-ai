@@ -144,6 +144,7 @@ export async function handlePullRequest(
       select: {
         id: true,
         workstreamId: true,
+        organizationId: true,
         artifactId: true,
         checksStatus: true,
         artifact: { select: { slug: true } },
@@ -190,6 +191,7 @@ type RepoWithInstallation = {
 type ExistingPr = {
   id: string;
   workstreamId: string;
+  organizationId: string;
   artifactId: string | null;
   checksStatus: string;
   artifact: { slug: string } | null;
@@ -576,7 +578,7 @@ async function applyPrAction(
 
       await tx.externalLink.updateMany({
         where: {
-          workstreamId: existingPr.workstreamId,
+          organizationId: existingPr.organizationId,
           type: ExternalLinkType.PullRequest,
           metadata: { path: ["githubId"], equals: String(pullRequest.id) },
         },
@@ -638,7 +640,7 @@ async function applyPrAction(
 
       await tx.externalLink.updateMany({
         where: {
-          workstreamId: existingPr.workstreamId,
+          organizationId: existingPr.organizationId,
           type: ExternalLinkType.PullRequest,
           metadata: { path: ["githubId"], equals: String(pullRequest.id) },
         },
