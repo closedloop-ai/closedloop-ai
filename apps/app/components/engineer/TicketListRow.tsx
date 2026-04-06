@@ -186,7 +186,7 @@ export function TicketListRow({
         {/* Status badge */}
         <span
           className={cn(
-            "shrink-0 rounded-full px-2 py-0.5 font-medium text-xs",
+            "max-w-[8rem] shrink-0 truncate rounded-full px-2 py-0.5 font-medium text-xs",
             getStatusStyles(ticket.status.type)
           )}
         >
@@ -215,12 +215,12 @@ export function TicketListRow({
         {/* Stacked On badge */}
         {parentTicketId && (
           <button
-            className="inline-flex shrink-0 cursor-pointer items-center gap-1 rounded-full border border-border/50 bg-muted/50 px-1.5 py-0.5 text-[10px] text-muted-foreground transition-colors hover:border-primary/30 hover:text-primary"
+            className="inline-flex max-w-[6rem] shrink-0 cursor-pointer items-center gap-1 rounded-full border border-border/50 bg-muted/50 px-1.5 py-0.5 text-[10px] text-muted-foreground transition-colors hover:border-primary/30 hover:text-primary"
             onClick={() => onParentClick?.(parentTicketId)}
             type="button"
           >
-            <GitMerge className="size-2.5" />
-            {parentTicketId}
+            <GitMerge className="size-2.5 shrink-0" />
+            <span className="truncate">{parentTicketId}</span>
           </button>
         )}
 
@@ -242,7 +242,7 @@ export function TicketListRow({
               }
             }}
           >
-            <BookMarked className="size-2.5" />
+            <BookMarked className="size-2.5 shrink-0" />
             Learnings
           </button>
         )}
