@@ -57,7 +57,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v5
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -180,7 +180,7 @@ jobs:
           "
 
       - name: Upload compatibility results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: compatibility-results-${{ github.event.pull_request.number }}
           path: compatibility-results.json

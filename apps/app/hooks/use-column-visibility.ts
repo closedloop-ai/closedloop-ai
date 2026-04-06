@@ -70,6 +70,7 @@ export const PRD_DEFAULT_COLUMNS: ArtifactColumn[] = [
 export const MY_TASKS_DEFAULT_COLUMNS: ArtifactColumn[] = [
   ArtifactColumn.Project,
   ArtifactColumn.Assignee,
+  ArtifactColumn.Loop,
   ArtifactColumn.Parent,
   ArtifactColumn.Priority,
 ];
