@@ -6,6 +6,7 @@ import {
   S3Client,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import type { ContextPackAttachment } from "@repo/api/src/types/context-attachment";
 import { getAwsCredentials } from "@repo/aws/credentials";
 import { log } from "@repo/observability/log";
 
@@ -83,15 +84,6 @@ async function getObject(key: string): Promise<Buffer> {
 }
 
 // --- Context Pack (uploaded by backend before container start) ---
-
-export type ContextPackAttachment = {
-  id: string;
-  filename: string;
-  mimeType: string;
-  sizeBytes: number;
-  signedUrl: string;
-  signedUrlExpiresAt: string;
-};
 
 export type ContextPack = {
   command: string;

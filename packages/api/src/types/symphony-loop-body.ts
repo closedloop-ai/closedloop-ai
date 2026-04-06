@@ -1,3 +1,5 @@
+import type { ContextPackAttachment } from "./context-attachment";
+
 /**
  * Typed body for the symphony_loop relay operation dispatched to the
  * electron harness via the desktop gateway.
@@ -31,4 +33,5 @@ export type SymphonyLoopBody = {
   parentSessionId: string | null;
   localRepoPath: string | null;
   userContext?: string;
+  attachments?: ContextPackAttachment[];
 };

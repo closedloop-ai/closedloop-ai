@@ -7,6 +7,7 @@ import type {
   FileAttachment,
 } from "@repo/api/src/types/attachment";
 import { isImageMimeType } from "@repo/api/src/types/attachment";
+import type { ContextPackAttachment } from "@repo/api/src/types/context-attachment";
 import {
   deleteArtifact,
   getSignedDownloadUrl,
@@ -16,7 +17,6 @@ import {
 import { keys as awsKeys } from "@repo/aws/keys";
 import { withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
-import type { ContextPackAttachment } from "@/lib/loops/loop-state";
 
 /**
  * Convert a Prisma FileAttachment record to the API FileAttachment type.
