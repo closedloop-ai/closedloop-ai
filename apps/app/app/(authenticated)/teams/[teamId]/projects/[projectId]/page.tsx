@@ -36,7 +36,6 @@ import {
 } from "lucide-react";
 import { useParams, useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
-import { toast } from "sonner";
 import { Header } from "@/app/(authenticated)/components/header";
 import type {
   ArtifactRowItem,
@@ -66,10 +65,10 @@ import {
   useIsFavorite,
   useProject,
   useProjectActivity,
+  useProjectStatusHandler,
   useToggleFavorite,
   useUpdateProjectAssignee,
   useUpdateProjectPriority,
-  useUpdateProjectStatus,
   useUpdateProjectTargetDate,
 } from "@/hooks/queries/use-projects";
 import { useTeam } from "@/hooks/queries/use-teams";
@@ -219,7 +218,12 @@ export default function ProjectDetailPage() {
   const updatePriorityMutation = useUpdateProjectPriority();
   const updateAssigneeMutation = useUpdateProjectAssignee();
   const updateTargetDateMutation = useUpdateProjectTargetDate();
-  const updateStatusMutation = useUpdateProjectStatus();
+  const {
+    handleUpdateStatus: handleProjectStatusUpdate,
+    isPending: statusPending,
+  } = useProjectStatusHandler({
+    onArchived: () => router.push(`/teams/${teamId}/projects`),
+  });
   const updateArtifactMutation = useUpdateArtifact();
   const updateFeatureMutation = useUpdateFeature();
   const deleteArtifactMutation = useDeleteArtifact();
@@ -268,32 +272,7 @@ export default function ProjectDetailPage() {
     if (!project) {
       return;
     }
-
-    const previousStatus = project.status;
-    updateStatusMutation.mutate(
-      { projectId: project.id, status },
-      {
-        onSuccess: () => {
-          if (status === ProjectStatus.Archived) {
-            toast.success("Project archived", {
-              action: {
-                label: "Undo",
-                onClick: () => {
-                  updateStatusMutation.mutate({
-                    projectId: project.id,
-                    status: previousStatus,
-                  });
-                },
-              },
-            });
-            router.push(`/teams/${teamId}/projects`);
-            return;
-          }
-
-          toast.success("Project unarchived");
-        },
-      }
-    );
+    handleProjectStatusUpdate(project.id, status, project.status);
   };
 
   const handleDeleteArtifact = async (
@@ -460,7 +439,7 @@ export default function ProjectDetailPage() {
               {favoriteMenuLabel}
             </DropdownMenuItem>
             <DropdownMenuItem
-              disabled={updateStatusMutation.isPending}
+              disabled={statusPending}
               onClick={() =>
                 handleUpdateProjectStatus(
                   project.status === ProjectStatus.Archived

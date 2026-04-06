@@ -5,15 +5,14 @@ import { ProjectStatus } from "@repo/api/src/types/project";
 import { Loader2Icon } from "lucide-react";
 import { useParams } from "next/navigation";
 import { useMemo } from "react";
-import { toast } from "sonner";
 import { Header } from "@/app/(authenticated)/components/header";
 import { ColumnVisibilityPanel } from "@/components/artifact-table/column-visibility-panel";
 import {
   useDeleteProject,
+  useProjectStatusHandler,
   useProjectsByTeam,
   useUpdateProjectAssignee,
   useUpdateProjectPriority,
-  useUpdateProjectStatus,
   useUpdateProjectTargetDate,
 } from "@/hooks/queries/use-projects";
 import { useTeam } from "@/hooks/queries/use-teams";
@@ -56,7 +55,9 @@ export default function TeamArchivedProjectsPage() {
   const updateAssigneeMutation = useUpdateProjectAssignee();
   const updateTargetDateMutation = useUpdateProjectTargetDate();
   const updatePriorityMutation = useUpdateProjectPriority();
-  const updateStatusMutation = useUpdateProjectStatus();
+  const { handleUpdateStatus } = useProjectStatusHandler({
+    showUndoOnUnarchive: true,
+  });
   const deleteProjectMutation = useDeleteProject();
 
   const handleUpdateAssignee = (
@@ -77,46 +78,6 @@ export default function TeamArchivedProjectsPage() {
   const handleDeleteProject = async (projectId: string) => {
     const result = await deleteProjectMutation.mutateAsync(projectId);
     return result.deleted ?? false;
-  };
-
-  const handleUpdateStatus = (
-    projectId: string,
-    status: ProjectStatus,
-    previousStatus: ProjectStatus
-  ) => {
-    updateStatusMutation.mutate(
-      { projectId, status },
-      {
-        onSuccess: () => {
-          if (status === ProjectStatus.Archived) {
-            toast.success("Project archived", {
-              action: {
-                label: "Undo",
-                onClick: () => {
-                  updateStatusMutation.mutate({
-                    projectId,
-                    status: previousStatus,
-                  });
-                },
-              },
-            });
-            return;
-          }
-
-          toast.success("Project unarchived", {
-            action: {
-              label: "Undo",
-              onClick: () => {
-                updateStatusMutation.mutate({
-                  projectId,
-                  status: ProjectStatus.Archived,
-                });
-              },
-            },
-          });
-        },
-      }
-    );
   };
 
   if (loading) {

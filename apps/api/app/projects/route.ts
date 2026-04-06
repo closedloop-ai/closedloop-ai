@@ -1,6 +1,5 @@
 import { CustomFieldEntityType } from "@repo/api/src/types/custom-field";
 import {
-  type ProjectStatus,
   ProjectStatus as ProjectStatusValues,
   type ProjectWithDetails,
 } from "@repo/api/src/types/project";
@@ -13,6 +12,7 @@ import {
   successResponse,
 } from "@/lib/route-utils";
 import { customFieldValuesService } from "../custom-fields/values-service";
+import { parseProjectStatuses } from "./project-route-helpers";
 import { projectsService } from "./service";
 import { createProjectValidator } from "./validators";
 
@@ -155,29 +155,3 @@ export const POST = withAnyAuth<ProjectWithDetails, "/projects">(
   },
   { requiredScopes: ["write"] }
 );
-
-function parseProjectStatuses(
-  value?: string
-): ProjectStatus[] | null | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-
-  const values = value
-    .split(",")
-    .map((part) => part.trim())
-    .filter(Boolean) as ProjectStatus[];
-  if (values.length === 0) {
-    return null;
-  }
-
-  const allowedValues = new Set(
-    Object.values(ProjectStatusValues) as ProjectStatus[]
-  );
-  const hasInvalidStatus = values.some((status) => !allowedValues.has(status));
-  if (hasInvalidStatus) {
-    return null;
-  }
-
-  return [...new Set(values)];
-}
