@@ -52,6 +52,36 @@ describe("splitReviewOutput", () => {
     ]);
   });
 
+  it("deduplicates findings when codex repeats the Review comment block", () => {
+    const output = [
+      "codex",
+      "The patch introduces loop polling on a feature-only page where matching cannot succeed.",
+      "",
+      "Review comment:",
+      "",
+      "- [P2] Remove artifact loop polling from feature-only My Tasks page — apps/app/app/(authenticated)/my-tasks/page.tsx:98-103",
+      "  This page only renders feature rows, but loop display logic matches by loop.artifactId.",
+      "The patch introduces loop polling on a feature-only page where matching cannot succeed.",
+      "",
+      "Review comment:",
+      "",
+      "- [P2] Remove artifact loop polling from feature-only My Tasks page — apps/app/app/(authenticated)/my-tasks/page.tsx:98-103",
+      "  This page only renders feature rows, but loop display logic matches by loop.artifactId.",
+    ].join("\n");
+
+    const result = splitReviewOutput(output, "codex");
+
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0]).toMatchObject({
+      priority: "P2",
+      severity: "warning",
+      file: "apps/app/app/(authenticated)/my-tasks/page.tsx",
+      line: 98,
+    });
+    // The description should NOT include trailing junk like "Review comment:"
+    expect(result.findings[0].message).not.toContain("Review comment");
+  });
+
   it("does not split findings on inline [P#] mentions in descriptions", () => {
     const output = [
       "some process log",

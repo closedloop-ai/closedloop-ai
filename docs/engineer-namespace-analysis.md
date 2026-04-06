@@ -102,7 +102,7 @@ Client-side check: appEnvironment derived from NEXT_PUBLIC_APP_URL
 ### Path Validation
 
 - `isRepoAllowed(path)` in `lib/engineer/repos.ts` prevents path traversal
-- Validates paths against `~/.claude/closedloop/repos.json` config
+- Validates paths against `~/.closedloop-ai/repos.json` config
 - Worktree validation checks actual `.git` pointer linkage, not just naming
 
 ---
@@ -454,13 +454,13 @@ Data Flow:
 
 **Shell commands spawned**: `claude -p --model sonnet --allowedTools=Read,Write,Glob,mcp__closedloop__* --max-turns 20`
 
-**Local dependencies**: Spawns `claude` CLI, reads/writes learnings files at `~/.claude/.learnings/`.
+**Local dependencies**: Spawns `claude` CLI, reads/writes learnings files at `~/.closedloop-ai/learnings/`.
 
 ---
 
 ### 15. Repo Management
 
-**What it does**: CRUD for `~/.claude/closedloop/repos.json`.
+**What it does**: CRUD for `~/.closedloop-ai/repos.json`.
 
 **API Routes**:
 | Route | Method | Purpose |
@@ -721,7 +721,7 @@ All routes are `exec` (gh CLI commands). No streaming, no file I/O.
 #### 13. Learnings Pipeline
 **Via relay?** YES
 
-- `spawn_detached` (claude CLI for extraction), `read_file`/`write_file` (learnings files at `~/.claude/.learnings/`)
+- `spawn_detached` (claude CLI for extraction), `read_file`/`write_file` (learnings files at `~/.closedloop-ai/learnings/`)
 
 **Complexity**: Low. Fire-and-forget CLI spawn + file I/O.
 
@@ -859,7 +859,7 @@ The only feature with a meaningful caveat is **Deploy** (#12) — the dev server
 │  │   [Approve] [Deny] [Always Allow]"    │              │
 │  └───────────────────────────────────────┘              │
 │                                                         │
-│  Local resources: git repos, ~/.claude/,                │
+│  Local resources: git repos, ~/.closedloop-ai/,         │
 │  claude CLI, codex CLI, gh CLI, git                     │
 │                                                         │
 └─────────────────────────────────────────────────────────┘
@@ -957,7 +957,7 @@ This means the entire orchestration logic currently in `apps/app/app/api/enginee
 │  │                                                              │
 │  └─> Plugin Handler Router                                      │
 │       │                                                         │
-│       ├─ ~/.claude/plugins/cache/closedloop/                    │
+│       ├─ ~/.claude/plugins/cache/closedloop-ai/                 │
 │       │   └── operations/                                       │
 │       │       ├── symphony_launch.ts                            │
 │       │       ├── symphony_chat.ts                              │
@@ -975,9 +975,9 @@ This means the entire orchestration logic currently in `apps/app/app/api/enginee
 │       │                                                         │
 │       └─ Local resources:                                       │
 │           ├── claude, codex, git, gh CLIs                       │
-│           ├── ~/.claude/closedloop/repos.json                   │
+│           ├── ~/.closedloop-ai/repos.json                       │
 │           ├── ~/Source/* (git repos + worktrees)                │
-│           └── ~/.claude/.learnings/                             │
+│           └── ~/.closedloop-ai/learnings/                       │
 │                                                                 │
 │  ┌─ Approval UI ──────────────────────────────────────┐        │
 │  │  "ClosedLoop Chat for AI-350"         [Allow] [Deny] │        │
@@ -1147,7 +1147,7 @@ With high-level operations, the approval UI becomes natural and user-friendly:
 ### Remaining Challenges
 
 #### 1. Plugin Update Distribution
-Operation handlers live in the plugin (`~/.claude/plugins/cache/closedloop/`). When you update handler logic, users get it on next plugin sync — no server redeploy needed. But you need a versioning/compatibility protocol: the server must know which operation versions the Electron app supports.
+Operation handlers live in the plugin (`~/.claude/plugins/cache/closedloop-ai/`). When you update handler logic, users get it on next plugin sync -- no server redeploy needed. But you need a versioning/compatibility protocol: the server must know which operation versions the Electron app supports.
 
 **Mitigation**: Handshake on WebSocket connect — Electron reports `{ pluginVersion: "0.4.2", operations: ["symphony_chat@v2", "codex_review@v3", ...] }`.
 
@@ -1295,7 +1295,7 @@ This changes the product from a "CLI relay" to a **remote compute platform with 
 │  ┌─────────────────────────────────────────────────────────────┐    │
 │  │  PluginOperationRouter                                       │    │
 │  │  • Routes high-level ops to plugin handlers                  │    │
-│  │  • Handlers in ~/.claude/plugins/cache/closedloop/operations │    │
+│  │  • Handlers in ~/.claude/plugins/cache/closedloop-ai/ops     │    │
 │  │  • Version handshake with server on connect                  │    │
 │  └─────────────────────────────────────────────────────────────┘    │
 │                                                                      │
