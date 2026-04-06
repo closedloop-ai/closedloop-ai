@@ -22,7 +22,7 @@
       "dependsOn": ["^build"],
       "outputs": ["dist/**"]
     },
-    "@closedloop/loops-api#build": {
+    "@closedloop-ai/loops-api#build": {
       "dependsOn": ["^build"],
       "outputs": ["dist/**"]
     },

@@ -1,28 +1,28 @@
 // Loop types for API contract
-// Shared contract types are re-exported from @closedloop/loops-api.
+// Shared contract types are re-exported from @closedloop-ai/loops-api.
 // API-specific types (Loop entity, request/response, usage) are defined here.
 
 /** biome-ignore-all lint/style/useImportType: imported type re-exported as values. */
 /** biome-ignore-all lint/style/noExportedImports: re-exoorting shared loop types for backwards compatibility. */
 
-import { LoopCommand, LoopStatus } from "@closedloop/loops-api/commands";
-import { TokensByModel } from "@closedloop/loops-api/tokens";
+import { LoopCommand, LoopStatus } from "@closedloop-ai/loops-api/commands";
+import { TokensByModel } from "@closedloop-ai/loops-api/tokens";
 import type { JsonObject } from "./common";
 import type { EntityType } from "./entity-link";
 
-// --- Re-exports from @closedloop/loops-api ---
+// --- Re-exports from @closedloop-ai/loops-api ---
 
-// biome-ignore lint/performance/noBarrelFile: Shared contract types are re-exported from @closedloop/loops-api.
+// biome-ignore lint/performance/noBarrelFile: Shared contract types are re-exported from @closedloop-ai/loops-api.
 export {
   LoopCommandSchema,
   LoopStatusSchema,
   RunLoopCommand,
   RunLoopCommandSchema,
-} from "@closedloop/loops-api/commands";
+} from "@closedloop-ai/loops-api/commands";
 export {
   LoopErrorCode,
   LoopErrorCodeSchema,
-} from "@closedloop/loops-api/error-codes";
+} from "@closedloop-ai/loops-api/error-codes";
 export type {
   LoopEvent,
   LoopEventArtifactCreated,
@@ -36,17 +36,17 @@ export type {
   LoopEventsPaginatedResponse,
   LoopEventToolCall,
   LoopEventType,
-} from "@closedloop/loops-api/events";
+} from "@closedloop-ai/loops-api/events";
 export type {
   ModelTokenUsage,
   TokenUsage,
-} from "@closedloop/loops-api/tokens";
+} from "@closedloop-ai/loops-api/tokens";
 export {
   MODEL_PRICING,
   ModelTokenUsageSchema,
   TokensByModelSchema,
   TokenUsageSchema,
-} from "@closedloop/loops-api/tokens";
+} from "@closedloop-ai/loops-api/tokens";
 export { LoopCommand, LoopStatus, type TokensByModel };
 
 // --- API-specific types (not in shared contract) ---

@@ -84,7 +84,7 @@ importers:
       '@aws-sdk/s3-request-presigner':
         specifier: ^3.987.0
         version: 3.987.0
-      '@closedloop/loops-api':
+      '@closedloop-ai/loops-api':
         specifier: workspace:*
         version: link:../../packages/loops-api
       '@liveblocks/node':
@@ -780,7 +780,7 @@ importers:
 
   packages/api:
     dependencies:
-      '@closedloop/loops-api':
+      '@closedloop-ai/loops-api':
         specifier: workspace:*
         version: link:../loops-api
       zod:

@@ -48,7 +48,7 @@ jobs:
           cache: pnpm
 
       - name: Build loops-api package
-        run: pnpm install --frozen-lockfile && pnpm turbo build --filter=@closedloop/loops-api
+        run: pnpm install --frozen-lockfile && pnpm turbo build --filter=@closedloop-ai/loops-api
 
       - name: Generate plugin repo token
         id: plugin-token

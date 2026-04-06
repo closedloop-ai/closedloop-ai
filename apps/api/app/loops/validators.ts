@@ -1,13 +1,13 @@
 import {
   LoopCommandSchema,
   LoopStatusSchema,
-} from "@closedloop/loops-api/commands";
+} from "@closedloop-ai/loops-api/commands";
 import {
   LoopEventCompletedSchema,
   LoopEventErrorSchema,
   LoopEventOutputSchema,
   LoopEventTypeSchema,
-} from "@closedloop/loops-api/events";
+} from "@closedloop-ai/loops-api/events";
 import { EntityType } from "@repo/api/src/types/entity-link";
 import { z } from "zod";
 import { uuidOrSlug } from "@/lib/identifier-utils";

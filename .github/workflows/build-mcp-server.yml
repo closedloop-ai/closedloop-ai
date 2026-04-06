@@ -10,6 +10,7 @@ on:
     paths:
       - "apps/mcp/**"
       - "packages/api/**"
+      - "packages/loops-api/**"
       - "packages/database/**"
   workflow_dispatch: {}
 

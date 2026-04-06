@@ -6,7 +6,7 @@ import {
   S3Client,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-import type { ContextPack } from "@closedloop/loops-api/context-pack";
+import type { ContextPack } from "@closedloop-ai/loops-api/context-pack";
 import { getAwsCredentials } from "@repo/aws/credentials";
 import { log } from "@repo/observability/log";
 
@@ -84,12 +84,12 @@ async function getObject(key: string): Promise<Buffer> {
 }
 
 // --- Context Pack (uploaded by backend before container start) ---
-// Types re-exported from @closedloop/loops-api/context-pack (shared contract)
+// Types re-exported from @closedloop-ai/loops-api/context-pack (shared contract)
 
 export type {
   ContextPack,
   ContextPackAttachment,
-} from "@closedloop/loops-api/context-pack";
+} from "@closedloop-ai/loops-api/context-pack";
 
 export async function uploadContextPack(
   stateKeyPrefix: string,
