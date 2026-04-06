@@ -23,6 +23,7 @@ import {
   ToggleGroupItem,
 } from "@repo/design-system/components/ui/toggle-group";
 import {
+  ArchiveIcon,
   BoxIcon,
   ChevronDownIcon,
   FileCode2Icon,
@@ -468,11 +469,10 @@ export default function ProjectDetailPage() {
                 )
               }
             >
-              <span>
-                {project.status === ProjectStatus.Archived
-                  ? "Unarchive"
-                  : "Archive"}
-              </span>
+              <ArchiveIcon className="h-4 w-4" />
+              {project.status === ProjectStatus.Archived
+                ? "Unarchive Project"
+                : "Archive Project"}
             </DropdownMenuItem>
             <DropdownMenuItem
               onClick={() => setDeleteDialogOpen(true)}
