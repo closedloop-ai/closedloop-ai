@@ -667,7 +667,10 @@ async function downloadState(workDir) {
   const workspaceStatePrefixes = getWorkspaceStateRestorePrefixes(parentPrefix);
   for (const statePrefix of workspaceStatePrefixes) {
     try {
-      const count = await downloadDirectoryFromS3(statePrefix, workspaceStateDir);
+      const count = await downloadDirectoryFromS3(
+        statePrefix,
+        workspaceStateDir
+      );
       if (count > 0) {
         workspaceStateRestored = true;
         log("info", `Restored ${count} files to ${workspaceStateDir}`);

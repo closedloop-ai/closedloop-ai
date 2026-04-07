@@ -270,7 +270,10 @@ describe("writeContextPackFiles context directory", () => {
     const repoInfoPath = path.join(closedloopContextDir, "repo-info.json");
     const priorLoopsPath = path.join(closedloopContextDir, "prior-loops.md");
 
-    assert.ok(fs.existsSync(promptPath), "prompt.md should exist under closedloop context");
+    assert.ok(
+      fs.existsSync(promptPath),
+      "prompt.md should exist under closedloop context"
+    );
     assert.equal(
       fs.readFileSync(promptPath, "utf-8"),
       "Use this context prompt",
@@ -317,7 +320,10 @@ describe("buildClaudeDirectArgs context path", () => {
       path.join(closedloopContextDir, "prompt.md"),
       "prompt-from-closedloop"
     );
-    fs.writeFileSync(path.join(claudeContextDir, "prompt.md"), "prompt-from-claude");
+    fs.writeFileSync(
+      path.join(claudeContextDir, "prompt.md"),
+      "prompt-from-claude"
+    );
 
     resetConfig({ command: "DECOMPOSE" });
     const { args } = buildClaudeDirectArgs(workDir, null);
