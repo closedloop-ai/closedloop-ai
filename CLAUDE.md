@@ -131,5 +131,5 @@ ClosedLoop: human-governed, AI-centric software delivery platform. AI produces a
 ### ClosedLoop CI/CD
 - **[pattern]**: run-loop.sh state: `.closedloop-loop.local.md` with YAML frontmatter (active, iteration, max_iterations, etc.) — not state.json.
 - **[insight]**: run-loop.sh deletes state file on success. Check output artifacts (plan.json, plan.md) for success, not file existence.
-- **[convention]**: State file at `.claude/closedloop-loop.local.md` (repo root), NOT inside `.claude/runs/`. Not part of artifact bundle.
+- **[convention]**: State file at `.closedloop-ai/closedloop-loop.local.md` (repo root), NOT inside `.closedloop-ai/runs/`. Not part of artifact bundle.
 - **[convention]**: closedloop-ai plugins installed from `https://github.com/closedloop-ai/claude-plugins.git`.

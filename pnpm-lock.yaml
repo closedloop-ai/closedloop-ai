@@ -24,6 +24,9 @@ importers:
       '@auto-it/first-time-contributor':
         specifier: ^11.3.6
         version: 11.3.6(@types/node@25.3.5)(typescript@5.9.3)
+      '@aws-sdk/client-s3':
+        specifier: ^3.987.0
+        version: 3.987.0
       '@biomejs/biome':
         specifier: 2.3.13
         version: 2.3.13

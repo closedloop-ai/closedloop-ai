@@ -73,16 +73,16 @@ runs:
           exit 1
         fi
 
-        mkdir -p .claude
-        unzip -o symphony-run.zip -d .claude/
+        mkdir -p .closedloop-ai
+        unzip -o symphony-run.zip -d .closedloop-ai/
 
-        if [ ! -d ".claude/runs" ]; then
+        if [ ! -d ".closedloop-ai/runs" ]; then
           echo "::error::No runs directory found after unzip"
           exit 1
         fi
 
         # Capture the run directory path
-        RUN_DIR=$(ls -d .claude/runs/*/ | head -1)
+        RUN_DIR=$(ls -d .closedloop-ai/runs/*/ | head -1)
         RUN_DIR="${RUN_DIR%/}"
         echo "run_dir=$RUN_DIR" >> "$GITHUB_OUTPUT"
         echo "Run directory: $RUN_DIR"
@@ -95,8 +95,8 @@ runs:
       if: inputs.mode == 'upload'
       shell: bash
       run: |
-        if [ -d ".claude/runs" ]; then
-          cd .claude && zip -r ../symphony-run.zip runs/
+        if [ -d ".closedloop-ai/runs" ]; then
+          cd .closedloop-ai && zip -r ../symphony-run.zip runs/
         else
           echo "No runs directory found, skipping zip"
         fi
