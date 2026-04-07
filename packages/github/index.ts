@@ -2,6 +2,7 @@ import "server-only";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { createAppAuth } from "@octokit/auth-app";
 import { Octokit } from "@octokit/rest";
+import { GitHubPRState } from "@repo/api/src/types/github";
 import { log } from "@repo/observability/log";
 import { keys } from "./keys";
 
@@ -740,6 +741,64 @@ export async function queryStatusCheckRollup(
       repo,
       commitSha,
       error: message,
+    });
+    return null;
+  }
+}
+
+/**
+ * Fetch a single pull request by number.
+ * Returns null on any error (not found, permission denied, etc.).
+ */
+export async function getSinglePullRequest(
+  installationId: string,
+  owner: string,
+  repo: string,
+  pullNumber: number
+): Promise<{
+  githubId: string;
+  number: number;
+  title: string;
+  htmlUrl: string;
+  headBranch: string;
+  baseBranch: string;
+  state: GitHubPRState;
+  mergedAt: string | null;
+  closedAt: string | null;
+} | null> {
+  try {
+    const octokit = await getInstallationOctokit(installationId);
+    const { data: pr } = await octokit.rest.pulls.get({
+      owner,
+      repo,
+      pull_number: pullNumber,
+    });
+
+    let state: GitHubPRState = GitHubPRState.Open;
+    if (pr.merged_at) {
+      state = GitHubPRState.Merged;
+    } else if (pr.state === "closed") {
+      state = GitHubPRState.Closed;
+    }
+
+    return {
+      githubId: String(pr.id),
+      number: pr.number,
+      title: pr.title,
+      htmlUrl: pr.html_url,
+      headBranch: pr.head.ref,
+      baseBranch: pr.base.ref,
+      state,
+      mergedAt: pr.merged_at ?? null,
+      closedAt: pr.closed_at ?? null,
+    };
+  } catch (error) {
+    log.warn("[github/pull-request] Failed to fetch single pull request", {
+      installationId,
+      owner,
+      repo,
+      pullNumber,
+      error: error instanceof Error ? error.message : "Unknown error",
     });
     return null;
   }
