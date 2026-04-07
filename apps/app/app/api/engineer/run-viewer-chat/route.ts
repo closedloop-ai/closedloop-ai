@@ -62,9 +62,9 @@ function saveChatHistory(history: ChatHistory): void {
   writeFileSync(HISTORY_PATH, JSON.stringify(history, null, 2));
 }
 
-const RUN_ARTIFACT_GUIDE = `## Symphony Run Artifact Guide
+const RUN_ARTIFACT_GUIDE = `## ClosedLoop Run Artifact Guide
 
-Symphony runs execute in numbered phases. Key artifacts:
+ClosedLoop runs execute in numbered phases. Key artifacts:
 
 PLANNING:
 - prd.md — Original product requirements document
