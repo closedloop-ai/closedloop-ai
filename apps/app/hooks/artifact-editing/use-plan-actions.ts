@@ -1,29 +1,15 @@
 "use client";
 
 import { ArtifactStatus } from "@repo/api/src/types/artifact";
-import type {
-  BackendMismatchBody,
-  ComputeTargetConflictBody,
-} from "@repo/api/src/types/compute-target";
-import type { CreateLoopRequest } from "@repo/api/src/types/loop";
 import { RunLoopCommand } from "@repo/api/src/types/loop";
 import { toast } from "@repo/design-system/components/ui/sonner";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useMemo, useRef } from "react";
+import { useArtifactRunLoop } from "@/hooks/artifact-editing/use-artifact-run-loop";
 import { useUpdateArtifact } from "@/hooks/queries/use-artifacts";
-import { useRunLoop } from "@/hooks/queries/use-loops";
-import { handleRunLoopResponse } from "@/lib/run-loop-response";
 
 type UsePlanActionsConfig = {
   artifactId: string | null;
   slug?: string;
-};
-
-type RunLoopParams = {
-  command: RunLoopCommand;
-  prompt?: string;
-  computeTargetId?: string;
-  backendOverride?: boolean;
-  repo?: CreateLoopRequest["repo"];
 };
 
 /**
@@ -61,28 +47,22 @@ export function usePlanActions(config: UsePlanActionsConfig) {
   // TanStack Query mutation for artifact approval
   const updateArtifact = useUpdateArtifact();
 
-  // TanStack Query mutation — all plan operations route through run-loop
-  const runLoop = useRunLoop();
+  // Generic conflict-resolution machinery
+  const {
+    runLoop,
+    prepareConflictRefs,
+    routeConflictError,
+    makeRequestChangesHandler,
+    selectTarget: selectTargetRaw,
+    confirmOriginalBackend: confirmOriginalBackendRaw,
+    confirmPreferredBackend: confirmPreferredBackendRaw,
+    dismissBackendMismatch,
+    multiTargetState,
+    backendMismatchState,
+  } = useArtifactRunLoop({ artifactId });
 
   // Tracks which evaluate command is currently active (null when idle)
   const activeCommandRef = useRef<RunLoopCommand | null>(null);
-
-  // Multi-target conflict state
-  const [multiTargetState, setMultiTargetState] = useState<{
-    availableTargets: ComputeTargetConflictBody["availableTargets"];
-  } | null>(null);
-  // Backend mismatch state
-  const [backendMismatchState, setBackendMismatchState] =
-    useState<BackendMismatchBody | null>(null);
-  /** Command last passed to `prepareConflictRefs` — used to restore evaluate loading state on conflict replay. */
-  const pendingConflictCommandRef = useRef<RunLoopCommand | null>(null);
-  const pendingActionRef = useRef<((targetId: string) => Promise<void>) | null>(
-    null
-  );
-  const pendingMismatchActionRef = useRef<
-    | ((targetId: string | null, backendOverride: boolean) => Promise<void>)
-    | null
-  >(null);
 
   // Derived state
   const isApproving = updateArtifact.isPending;
@@ -95,81 +75,6 @@ export function usePlanActions(config: UsePlanActionsConfig) {
   const isEvaluatingCode =
     activeCommandRef.current === RunLoopCommand.EvaluateCode &&
     runLoop.isPending;
-
-  const restoreEvaluateActiveCommandBeforeReplay = useCallback((): void => {
-    const pendingCommand = pendingConflictCommandRef.current;
-    if (
-      pendingCommand === RunLoopCommand.EvaluatePlan ||
-      pendingCommand === RunLoopCommand.EvaluateCode
-    ) {
-      activeCommandRef.current = pendingCommand;
-    }
-  }, []);
-
-  /**
-   * Set up pending-action refs so that selectTarget / confirmOriginalBackend /
-   * confirmPreferredBackend can replay the same command with the resolved target.
-   */
-  const prepareConflictRefs = useCallback(
-    (baseParams: RunLoopParams): void => {
-      pendingConflictCommandRef.current = baseParams.command;
-      const { command } = baseParams;
-      const clearEvaluateActiveCommandAfterReplay = (): void => {
-        if (
-          command === RunLoopCommand.EvaluatePlan ||
-          command === RunLoopCommand.EvaluateCode
-        ) {
-          activeCommandRef.current = null;
-        }
-      };
-      pendingActionRef.current = async (targetId: string) => {
-        if (!artifactId) {
-          return;
-        }
-        try {
-          await runLoop.mutateAsync({
-            ...baseParams,
-            artifactId,
-            computeTargetId: targetId,
-          });
-        } finally {
-          clearEvaluateActiveCommandAfterReplay();
-        }
-      };
-      pendingMismatchActionRef.current = async (
-        targetId: string | null,
-        backendOverride: boolean
-      ) => {
-        if (!artifactId) {
-          return;
-        }
-        try {
-          await runLoop.mutateAsync({
-            ...baseParams,
-            artifactId,
-            computeTargetId: targetId ?? undefined,
-            backendOverride,
-          });
-        } finally {
-          clearEvaluateActiveCommandAfterReplay();
-        }
-      };
-    },
-    [artifactId, runLoop]
-  );
-
-  /** Route conflict errors (409) from a run-loop call to the appropriate state setter. */
-  const routeConflictError = useCallback((error: unknown): void => {
-    handleRunLoopResponse(error, {
-      onMultipleTargets: (conflict) =>
-        setMultiTargetState({ availableTargets: conflict.availableTargets }),
-      onBackendMismatch: (body) => setBackendMismatchState(body),
-      onSuccess: () => {
-        // unreachable: error handlers only receive thrown errors
-      },
-      onRateLimited: (message) => toast.error(message),
-    });
-  }, []);
 
   /**
    * Approve the implementation plan.
@@ -209,37 +114,13 @@ export function usePlanActions(config: UsePlanActionsConfig) {
    * Creates a Loop with command="request_changes". Compute target is resolved server-side.
    * Returns a promise that resolves to true on success, false on error.
    */
-  const handleRequestChanges = useCallback(
-    async (changes: string): Promise<boolean> => {
-      if (!artifactId) {
-        return false;
-      }
-      prepareConflictRefs({
-        command: RunLoopCommand.RequestChanges,
-        prompt: changes,
-      });
-      try {
-        await runLoop.mutateAsync(
-          {
-            artifactId,
-            command: RunLoopCommand.RequestChanges,
-            prompt: changes,
-          },
-          {
-            onSuccess: () => {
-              toast.success(
-                "Change request submitted via Loop - generating updated plan..."
-              );
-            },
-          }
-        );
-        return true;
-      } catch (error) {
-        routeConflictError(error);
-        return false;
-      }
-    },
-    [artifactId, runLoop, prepareConflictRefs, routeConflictError]
+  const handleRequestChanges = useMemo(
+    () =>
+      makeRequestChangesHandler(
+        RunLoopCommand.RequestChanges,
+        "Change request submitted via Loop - generating updated plan..."
+      ),
+    [makeRequestChangesHandler]
   );
 
   /**
@@ -279,7 +160,10 @@ export function usePlanActions(config: UsePlanActionsConfig) {
       return;
     }
     activeCommandRef.current = RunLoopCommand.EvaluatePlan;
-    prepareConflictRefs({ command: RunLoopCommand.EvaluatePlan });
+    prepareConflictRefs(
+      { command: RunLoopCommand.EvaluatePlan },
+      activeCommandRef
+    );
     runLoop.mutate(
       { artifactId, command: RunLoopCommand.EvaluatePlan },
       {
@@ -308,7 +192,10 @@ export function usePlanActions(config: UsePlanActionsConfig) {
         repoFullName && repoFullName.length > 0
           ? { fullName: repoFullName, branch: prHeadBranch }
           : undefined;
-      prepareConflictRefs({ command: RunLoopCommand.EvaluateCode, repo });
+      prepareConflictRefs(
+        { command: RunLoopCommand.EvaluateCode, repo },
+        activeCommandRef
+      );
       runLoop.mutate(
         {
           artifactId,
@@ -329,38 +216,21 @@ export function usePlanActions(config: UsePlanActionsConfig) {
     [artifactId, runLoop, prepareConflictRefs, routeConflictError]
   );
 
+  // Wrap raw conflict functions to close over the local activeCommandRef
   const selectTarget = useCallback(
     (targetId: string) => {
-      setMultiTargetState(null);
-      restoreEvaluateActiveCommandBeforeReplay();
-      pendingActionRef.current?.(targetId);
+      selectTargetRaw(targetId, activeCommandRef);
     },
-    [restoreEvaluateActiveCommandBeforeReplay]
+    [selectTargetRaw]
   );
 
   const confirmOriginalBackend = useCallback(() => {
-    if (!backendMismatchState) {
-      return;
-    }
-    const targetId = backendMismatchState.originalComputeTargetId;
-    setBackendMismatchState(null);
-    restoreEvaluateActiveCommandBeforeReplay();
-    pendingMismatchActionRef.current?.(targetId, true);
-  }, [backendMismatchState, restoreEvaluateActiveCommandBeforeReplay]);
+    confirmOriginalBackendRaw(activeCommandRef);
+  }, [confirmOriginalBackendRaw]);
 
   const confirmPreferredBackend = useCallback(() => {
-    if (!backendMismatchState) {
-      return;
-    }
-    const targetId = backendMismatchState.preferredComputeTargetId;
-    setBackendMismatchState(null);
-    restoreEvaluateActiveCommandBeforeReplay();
-    pendingMismatchActionRef.current?.(targetId, true);
-  }, [backendMismatchState, restoreEvaluateActiveCommandBeforeReplay]);
-
-  const dismissBackendMismatch = useCallback(() => {
-    setBackendMismatchState(null);
-  }, []);
+    confirmPreferredBackendRaw(activeCommandRef);
+  }, [confirmPreferredBackendRaw]);
 
   return {
     // Action handlers

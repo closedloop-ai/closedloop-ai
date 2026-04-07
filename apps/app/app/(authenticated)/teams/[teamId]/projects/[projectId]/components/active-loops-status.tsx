@@ -18,6 +18,7 @@ const COMMAND_VERBS: Record<LoopCommand, string> = {
   [LoopCommand.GeneratePrd]: "generating PRD",
   [LoopCommand.EvaluatePlan]: "evaluating plan",
   [LoopCommand.EvaluateCode]: "evaluating PR",
+  [LoopCommand.RequestPrdChanges]: "requesting PRD changes",
 };
 
 function formatLoopStatus(loop: LoopWithUser): string {

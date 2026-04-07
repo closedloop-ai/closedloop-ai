@@ -42,6 +42,8 @@ function getQueuedMessage(command: GenerationStatus["command"]): string {
       return "Queued for execution...";
     case "request_changes":
       return "Queued for change request...";
+    case "request_prd_changes":
+      return "Queued for PRD change request...";
     case "explore":
       return "Queued for exploration...";
     default:
@@ -68,6 +70,8 @@ function getRunningVerb(command: GenerationStatus["command"]): string {
       return "Executing plan and creating PR...";
     case "request_changes":
       return "Applying requested changes...";
+    case "request_prd_changes":
+      return "Applying requested PRD changes...";
     case "explore":
       return "Exploring codebase...";
     case "chat":
@@ -84,6 +88,8 @@ function getFailureMessage(command: GenerationStatus["command"]): string {
       return "Plan execution failed";
     case "request_changes":
       return "Change request failed";
+    case "request_prd_changes":
+      return "PRD change request failed";
     case "explore":
       return "Codebase exploration failed";
     case "chat":

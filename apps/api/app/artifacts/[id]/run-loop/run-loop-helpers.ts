@@ -6,6 +6,7 @@ import type { JsonObject } from "@repo/api/src/types/common";
 import type { BackendMismatchBody } from "@repo/api/src/types/compute-target";
 import {
   type CreateLoopRequest,
+  LoopCommand,
   RunLoopCommand,
 } from "@repo/api/src/types/loop";
 import { getProjectSettings } from "@repo/api/src/types/project";
@@ -24,14 +25,15 @@ import { artifactsService } from "../../service";
  * Map route body commands (lowercase) to LoopCommand enum values (uppercase).
  */
 export const COMMAND_MAP = {
-  [RunLoopCommand.Plan]: "PLAN",
-  [RunLoopCommand.Execute]: "EXECUTE",
-  [RunLoopCommand.RequestChanges]: "REQUEST_CHANGES",
-  [RunLoopCommand.Decompose]: "DECOMPOSE",
-  [RunLoopCommand.EvaluatePrd]: "EVALUATE_PRD",
-  [RunLoopCommand.GeneratePrd]: "GENERATE_PRD",
-  [RunLoopCommand.EvaluatePlan]: "EVALUATE_PLAN",
-  [RunLoopCommand.EvaluateCode]: "EVALUATE_CODE",
+  [RunLoopCommand.Plan]: LoopCommand.Plan,
+  [RunLoopCommand.Execute]: LoopCommand.Execute,
+  [RunLoopCommand.RequestChanges]: LoopCommand.RequestChanges,
+  [RunLoopCommand.RequestPrdChanges]: LoopCommand.RequestPrdChanges,
+  [RunLoopCommand.Decompose]: LoopCommand.Decompose,
+  [RunLoopCommand.EvaluatePrd]: LoopCommand.EvaluatePrd,
+  [RunLoopCommand.GeneratePrd]: LoopCommand.GeneratePrd,
+  [RunLoopCommand.EvaluatePlan]: LoopCommand.EvaluatePlan,
+  [RunLoopCommand.EvaluateCode]: LoopCommand.EvaluateCode,
 } as const;
 
 /**
