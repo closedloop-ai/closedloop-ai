@@ -47,7 +47,7 @@ import {
   useGitHubRepositories,
 } from "@/hooks/queries/use-github-integration";
 import { useRunLoop } from "@/hooks/queries/use-loops";
-import { useProject } from "@/hooks/queries/use-projects";
+import { useProject, useProjectsByTeam } from "@/hooks/queries/use-projects";
 import { useTeamMembers } from "@/hooks/queries/use-teams";
 import { ARTIFACT_TYPE_LABELS } from "@/lib/project-constants";
 import { transformApiUserToSelectUser } from "@/lib/user-utils";
@@ -56,7 +56,7 @@ export type CreateArtifactModalProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   artifactType: ArtifactType;
-  projectId: string;
+  projectId?: string;
   teamId: string;
   onSuccess?: (artifact: Artifact) => void;
 };
@@ -71,6 +71,13 @@ export function CreateArtifactModal({
 }: Readonly<CreateArtifactModalProps>) {
   const fileInputRef = useRef<HiddenFileInputHandle>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // Project selection (when projectId prop is not provided)
+  const showProjectSelector = !projectId;
+  const [selectedProjectId, setSelectedProjectId] = useState("");
+  const resolvedProjectId = projectId ?? selectedProjectId;
+  const { data: teamProjects = [], isLoading: isLoadingProjects } =
+    useProjectsByTeam(teamId, { enabled: open && showProjectSelector });
 
   const [title, setTitle] = useState("");
   const [fileName, setFileName] = useState("");
@@ -88,8 +95,8 @@ export function CreateArtifactModal({
   const [selectedPrdId, setSelectedPrdId] = useState<string>("");
 
   // Seed the default GH repository from the project settings
-  const { data: project } = useProject(projectId, {
-    enabled: open,
+  const { data: project } = useProject(resolvedProjectId, {
+    enabled: open && !!resolvedProjectId,
   });
   const hasSeededRepoRef = useRef(false);
   if (project && !hasSeededRepoRef.current) {
@@ -129,8 +136,8 @@ export function CreateArtifactModal({
 
   // Fetch PRDs when modal opens for implementation plan
   const { data: artifacts = [], isLoading: loadingPrds } =
-    useArtifactsByProject(projectId, {
-      enabled: open && isImplementationPlan,
+    useArtifactsByProject(resolvedProjectId, {
+      enabled: open && isImplementationPlan && !!resolvedProjectId,
     });
 
   // Filter to get only PRDs
@@ -229,6 +236,9 @@ export function CreateArtifactModal({
     setReverseSynthesisLink("");
     setError(null);
     fileInputRef.current?.reset();
+    if (showProjectSelector) {
+      setSelectedProjectId("");
+    }
   };
 
   const handleClose = () => {
@@ -246,6 +256,10 @@ export function CreateArtifactModal({
 
   const handleSubmit = () => {
     setError(null);
+    if (!resolvedProjectId) {
+      setError("Please select a project");
+      return;
+    }
     if (!title.trim()) {
       setError("Please enter a title");
       return;
@@ -253,7 +267,7 @@ export function CreateArtifactModal({
 
     createArtifact.mutate(
       {
-        projectId,
+        projectId: resolvedProjectId,
         type: artifactType,
         title: title.trim(),
         fileName: fileName.trim() || undefined,
@@ -281,6 +295,10 @@ export function CreateArtifactModal({
 
   const handleGenerate = () => {
     setError(null);
+    if (!resolvedProjectId) {
+      setError("Please select a project");
+      return;
+    }
     if (!title.trim()) {
       setError("Please enter a title");
       return;
@@ -300,7 +318,7 @@ export function CreateArtifactModal({
 
     createArtifact.mutate(
       {
-        projectId,
+        projectId: resolvedProjectId,
         type: artifactType,
         title: title.trim(),
         fileName: fileName.trim() || undefined,
@@ -348,6 +366,39 @@ export function CreateArtifactModal({
           {error ? (
             <div className="rounded-md border border-destructive/20 bg-destructive/10 p-3 text-destructive text-sm">
               {error}
+            </div>
+          ) : null}
+
+          {showProjectSelector ? (
+            <div className="space-y-2">
+              <Label
+                className="font-normal text-muted-foreground text-xs"
+                htmlFor="artifact-project"
+              >
+                Project<span className="text-destructive">*</span>
+              </Label>
+              <Select
+                disabled={isLoadingProjects}
+                onValueChange={setSelectedProjectId}
+                value={selectedProjectId}
+              >
+                <SelectTrigger id="artifact-project">
+                  <SelectValue
+                    placeholder={
+                      isLoadingProjects
+                        ? "Loading projects..."
+                        : "Select a project..."
+                    }
+                  />
+                </SelectTrigger>
+                <SelectContent>
+                  {teamProjects.map((p) => (
+                    <SelectItem key={p.id} value={p.id}>
+                      {p.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
           ) : null}
 
@@ -469,8 +520,8 @@ export function CreateArtifactModal({
         </div>
 
         <CreateArtifactFooter
-          canGenerate={!!title.trim()}
-          canSubmit={!!title.trim()}
+          canGenerate={!!title.trim() && !!resolvedProjectId}
+          canSubmit={!!title.trim() && !!resolvedProjectId}
           isGenerating={false}
           isPrd={isPrd}
           isSaving={createArtifact.isPending}
