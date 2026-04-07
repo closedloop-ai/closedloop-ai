@@ -215,12 +215,12 @@ export function TicketListRow({
         {/* Stacked On badge */}
         {parentTicketId && (
           <button
-            className="inline-flex max-w-[6rem] shrink-0 cursor-pointer items-center gap-1 rounded-full border border-border/50 bg-muted/50 px-1.5 py-0.5 text-[10px] text-muted-foreground transition-colors hover:border-primary/30 hover:text-primary"
+            className="inline-flex shrink-0 cursor-pointer items-center gap-1 rounded-full border border-border/50 bg-muted/50 px-1.5 py-0.5 text-[10px] text-muted-foreground transition-colors hover:border-primary/30 hover:text-primary"
             onClick={() => onParentClick?.(parentTicketId)}
             type="button"
           >
             <GitMerge className="size-2.5 shrink-0" />
-            <span className="truncate">{parentTicketId}</span>
+            <span className="max-w-[6rem] truncate">{parentTicketId}</span>
           </button>
         )}
 
