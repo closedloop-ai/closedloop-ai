@@ -8,7 +8,7 @@ FROM node:20-slim
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Install system dependencies
-# gawk: required by code plugin hooks (FPAT support — mawk doesn't have it)
+# gawk: install an awk implementation explicitly so hook parsing is always available
 # python3 + pip: required by code plugin post-iteration scripts
 # xxd: required by run-loop.sh for run ID generation
 RUN apt-get update && apt-get install -y --no-install-recommends \

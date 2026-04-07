@@ -70,6 +70,38 @@ const ListObjectsV2Command = new Proxy(() => {}, {
   },
 });
 
+const WORKSPACE_STATE_DIR = ".closedloop-ai";
+const WORKSPACE_RUNS_SUBDIR = "runs";
+const WORKSPACE_STATE_PREFIX = "closedloop-state";
+const LEGACY_WORKSPACE_STATE_PREFIX = "claude-state";
+const HOME_STATE_PREFIX = "home-claude-state";
+
+function getWorkspaceStateDir(workDir) {
+  return path.join(workDir, WORKSPACE_STATE_DIR);
+}
+
+function getWorkspaceRunsDir(workDir) {
+  return path.join(workDir, WORKSPACE_STATE_DIR, WORKSPACE_RUNS_SUBDIR);
+}
+
+function getWorkspaceStateRestorePrefixes(parentPrefix) {
+  return [
+    `${parentPrefix}/${WORKSPACE_STATE_PREFIX}`,
+    `${parentPrefix}/${LEGACY_WORKSPACE_STATE_PREFIX}`,
+  ];
+}
+
+function getWorkspaceStateUploadPrefixes(statePrefix) {
+  return [
+    `${statePrefix}/${WORKSPACE_STATE_PREFIX}`,
+    `${statePrefix}/${LEGACY_WORKSPACE_STATE_PREFIX}`,
+  ];
+}
+
+function getHomeStateTransferPrefix(prefix) {
+  return `${prefix}/${HOME_STATE_PREFIX}`;
+}
+
 // ---------------------------------------------------------------------------
 // Logging helper
 // ---------------------------------------------------------------------------
@@ -109,7 +141,7 @@ const config = {
   s3Region: process.env.S3_REGION || "us-east-1",
   correlationId: process.env.CORRELATION_ID,
   maxIterations: Number.parseInt(process.env.MAX_ITERATIONS || "50", 10),
-  // Parent state for resume: used to download prior run's .claude directory
+  // Parent state for resume: used to download prior run workspace/session state
   s3ParentStateKey: process.env.S3_PARENT_STATE_KEY || null,
   parentSessionId: process.env.PARENT_SESSION_ID || null,
   parentBranchName: process.env.PARENT_BRANCH_NAME || null,
@@ -612,7 +644,8 @@ async function downloadDirectoryFromS3(s3Prefix, localDir) {
 /**
  * Download and restore prior run state from the parent loop.
  * Restores:
- *   - {parentPrefix}/claude-state/      → {workDir}/.claude/  (run state, conversation history)
+ *   - {parentPrefix}/closedloop-state/  → {workDir}/.closedloop-ai/ (run state, conversations, workspace)
+ *     (fallback for older runs: {parentPrefix}/claude-state/)
  *   - {parentPrefix}/home-claude-state/  → ~/.claude/          (session state for --resume)
  *   - {parentPrefix}/artifacts/          → {workDir}/          (plan.json, plan.md, etc.)
  *
@@ -627,22 +660,39 @@ async function downloadState(workDir) {
   log("info", "Downloading prior run state from parent loop...");
   const parentPrefix = config.s3ParentStateKey;
 
-  // 1. Restore workDir/.claude from parent's claude-state
-  try {
-    const claudeStatePrefix = `${parentPrefix}/claude-state`;
-    const claudeDir = path.join(workDir, ".claude");
-    const count = await downloadDirectoryFromS3(claudeStatePrefix, claudeDir);
-    log("info", `Restored ${count} files to ${claudeDir}`);
-  } catch (err) {
+  // 1. Restore workDir/.closedloop-ai from parent state (new prefix first,
+  // then legacy fallback for old runs that only uploaded claude-state).
+  const workspaceStateDir = getWorkspaceStateDir(workDir);
+  let workspaceStateRestored = false;
+  const workspaceStatePrefixes = getWorkspaceStateRestorePrefixes(parentPrefix);
+  for (const statePrefix of workspaceStatePrefixes) {
+    try {
+      const count = await downloadDirectoryFromS3(
+        statePrefix,
+        workspaceStateDir
+      );
+      if (count > 0) {
+        workspaceStateRestored = true;
+        log("info", `Restored ${count} files to ${workspaceStateDir}`);
+        break;
+      }
+    } catch (err) {
+      log(
+        "error",
+        `Failed to download ${statePrefix} (best-effort): ${err.message}`
+      );
+    }
+  }
+  if (!workspaceStateRestored) {
     log(
-      "error",
-      `Failed to download claude-state (best-effort): ${err.message}`
+      "info",
+      `No workspace state found at ${workspaceStatePrefixes.join(" or ")}`
     );
   }
 
   // 2. Restore ~/.claude/{projects,sessions} from parent's home-claude-state
   try {
-    const homeClaudePrefix = `${parentPrefix}/home-claude-state`;
+    const homeClaudePrefix = getHomeStateTransferPrefix(parentPrefix);
     const homeClaudeDir = path.join(os.homedir(), ".claude");
     const count = await downloadDirectoryFromS3(
       homeClaudePrefix,
@@ -657,8 +707,8 @@ async function downloadState(workDir) {
   }
 
   // Note: artifacts/ is NOT restored here. The run directory (which contains
-  // plan.json, plan.md, etc.) is already restored as part of claude-state/
-  // above (at .claude/runs/TIMESTAMP/). findExistingRunDir() locates it,
+  // plan.json, plan.md, etc.) is already restored as part of workspace state
+  // above (at .closedloop-ai/runs/TIMESTAMP/). findExistingRunDir() locates it,
   // and syncPlanFromContextPack() updates it with the latest user edits.
   // Restoring artifacts/ to repo root would create confusing duplicates.
 }
@@ -811,7 +861,7 @@ async function writeContextPackFiles(workDir, pack) {
     return;
   }
   try {
-    const contextDir = path.join(workDir, ".claude", "context");
+    const contextDir = path.join(workDir, ".closedloop-ai", "context");
     fs.mkdirSync(contextDir, { recursive: true });
 
     // Write structured context pack fields as specific files that the CLI expects.
@@ -964,15 +1014,15 @@ async function writeContextPackFiles(workDir, pack) {
 
 /**
  * Find an existing run directory restored from parent state.
- * downloadState() restores .claude/ from the parent, which includes
- * .claude/runs/TIMESTAMP/. We find that directory so child loops
+ * downloadState() restores .closedloop-ai/ from the parent, which includes
+ * .closedloop-ai/runs/TIMESTAMP/. We find that directory so child loops
  * (REQUEST_CHANGES, EXECUTE) operate on the same workspace as the parent.
  *
  * Returns the path to the most recent run directory, or null if none exists
  * (indicating this is a fresh PLAN with no parent).
  */
 function findExistingRunDir(workDir) {
-  const runsDir = path.join(workDir, ".claude", "runs");
+  const runsDir = getWorkspaceRunsDir(workDir);
   if (!fs.existsSync(runsDir)) {
     return null;
   }
@@ -1920,16 +1970,18 @@ async function uploadState(workDir, output, runDir) {
     log("error", `Failed to upload output log: ${err.message}`);
   }
 
-  // 2. Upload .claude directory (conversation history, run state).
-  // This is the single source of truth — mirrors what symphony-artifact does
-  // in GitHub Actions (zip .claude/runs/ and upload). The run directory
-  // (symphonyWorkDir) lives INSIDE .claude/runs/, so this captures everything.
-  const claudeDir = path.join(workDir, ".claude");
-  if (fs.existsSync(claudeDir)) {
+  // 2. Upload workspace state directory (conversation history + run state).
+  // The run directory (symphonyWorkDir) lives inside .closedloop-ai/runs/.
+  const workspaceStateDir = getWorkspaceStateDir(workDir);
+  if (fs.existsSync(workspaceStateDir)) {
     try {
-      await uploadDirectory(claudeDir, `${statePrefix}/claude-state`);
+      for (const workspaceStatePrefix of getWorkspaceStateUploadPrefixes(
+        statePrefix
+      )) {
+        await uploadDirectory(workspaceStateDir, workspaceStatePrefix);
+      }
     } catch (err) {
-      log("error", `Failed to upload .claude state: ${err.message}`);
+      log("error", `Failed to upload workspace state: ${err.message}`);
     }
   }
 
@@ -1945,7 +1997,7 @@ async function uploadState(workDir, output, runDir) {
     try {
       await uploadDirectory(
         absDir,
-        `${statePrefix}/home-claude-state/${relDir}`
+        `${getHomeStateTransferPrefix(statePrefix)}/${relDir}`
       );
     } catch (err) {
       log("error", `Failed to upload ~/.claude/${relDir}: ${err.message}`);
@@ -1953,11 +2005,11 @@ async function uploadState(workDir, output, runDir) {
   }
 
   // 3. Upload key artifact files from the run directory.
-  // The run directory (.claude/runs/TIMESTAMP/) is the single source of truth —
+  // The run directory (.closedloop-ai/runs/TIMESTAMP/) is the single source of truth —
   // run-loop.sh, amend-plan, and syncPlanFromContextPack all write there.
   // We upload specific files to artifacts/ at flat paths so the backend
   // ingestion pipeline can read them by name (e.g., artifacts/plan.json).
-  // The full run directory is already captured in claude-state/ (step 2).
+  // The full run directory is already captured in workspace state (step 2).
   const pluginArtifactDir = runDir ?? workDir;
   const CLAUDE_PLUGIN_ARTIFACT_FILE_NAMES = [
     LoopArtifactFile.Plan,
@@ -2142,7 +2194,7 @@ function buildClaudeDirectArgs(workDir, symphonyWD) {
       // interprets them as its own flags and errors with "unknown option".
       // The dispatch workflow sends the equivalent as one prompt field:
       //   /code:amend-plan --workdir $RUN_DIR --message "$MESSAGE"
-      const contextDir = path.join(workDir, ".claude", "context");
+      const contextDir = path.join(workDir, ".closedloop-ai", "context");
       const promptFile = path.join(contextDir, "prompt.md");
       let prompt = "Please amend the plan based on the requested changes.";
       if (fs.existsSync(promptFile)) {
@@ -2163,7 +2215,7 @@ function buildClaudeDirectArgs(workDir, symphonyWD) {
     case LoopCommand.Explore:
     case LoopCommand.Decompose:
     case LoopCommand.GeneratePrd: {
-      const contextDir = path.join(workDir, ".claude", "context");
+      const contextDir = path.join(workDir, ".closedloop-ai", "context");
       const promptFile = path.join(contextDir, "prompt.md");
       let prompt = "";
       if (fs.existsSync(promptFile)) {
@@ -2240,7 +2292,7 @@ let currentChild = null;
 let shuttingDown = false;
 // Module-level output buffer so timeout/shutdown paths can access accumulated output
 let liveOutputChunks = [];
-// ClosedLoop.AI workdir inside the repo (e.g., .claude/runs/YYYYMMDD-HHMMSS-loop-xxx/)
+// ClosedLoop.AI workdir inside the repo (e.g., .closedloop-ai/runs/YYYYMMDD-HHMMSS-loop-xxx/)
 let symphonyWorkDir = null;
 
 function setupShutdownHandlers(workDir) {
@@ -2851,13 +2903,13 @@ async function main() {
     runRepoSetup(workDir);
 
     // Step 3a: Restore prior run state from parent loop (if resuming).
-    // This restores .claude/ and ~/.claude/ so run-loop can continue
+    // This restores .closedloop-ai/ and ~/.claude/ so run-loop can continue
     // where the parent left off.
     await downloadState(workDir);
 
     // Step 3b: Write context files into the prepared workspace.
     // This must happen after clone AND after downloadState — clone fails on
-    // non-empty dir, and we want fresh context to overwrite .claude/context/.
+    // non-empty dir, and we want fresh context to overwrite .closedloop-ai/context/.
     await writeContextPackFiles(workDir, contextPack);
 
     // Step 3b2: Resolve the symphony run directory.
@@ -2865,7 +2917,7 @@ async function main() {
     // - PLAN (fresh): creates a new run dir
     // - Child loops (RC, EXECUTE): reuse the parent's run dir restored by downloadState
     // This mirrors the GitHub Actions flow where symphony-artifact downloads/uploads
-    // the same .claude/runs/TIMESTAMP/ directory across all steps.
+    // the same .closedloop-ai/runs/TIMESTAMP/ directory across all steps.
     symphonyWorkDir = findExistingRunDir(workDir);
     if (symphonyWorkDir) {
       log("info", `Reusing parent run directory: ${symphonyWorkDir}`);
@@ -2881,8 +2933,8 @@ async function main() {
         .slice(0, 50);
       symphonyWorkDir = path.join(
         workDir,
-        ".claude",
-        "runs",
+        WORKSPACE_STATE_DIR,
+        WORKSPACE_RUNS_SUBDIR,
         `${runTs}-loop-${loopSuffix}`
       );
       fs.mkdirSync(symphonyWorkDir, { recursive: true });
@@ -3085,6 +3137,10 @@ export {
   buildCommand,
   config,
   ERROR_CODES,
+  findExistingRunDir,
+  getHomeStateTransferPrefix,
+  getWorkspaceStateRestorePrefixes,
+  getWorkspaceStateUploadPrefixes,
   HarnessError,
   parseTokenUsage,
   parsePrInfo,

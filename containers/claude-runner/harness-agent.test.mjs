@@ -11,6 +11,10 @@ import {
   buildCommand,
   config,
   ERROR_CODES,
+  findExistingRunDir,
+  getHomeStateTransferPrefix,
+  getWorkspaceStateRestorePrefixes,
+  getWorkspaceStateUploadPrefixes,
   HarnessError,
   parsePrInfo,
   parseTokenUsage,
@@ -52,7 +56,7 @@ function makeTempDir() {
  * Write prompt.md into the expected context directory under workDir.
  */
 function writePromptFile(workDir, content = "Evaluate this PRD.") {
-  const contextDir = path.join(workDir, ".claude", "context");
+  const contextDir = path.join(workDir, ".closedloop-ai", "context");
   fs.mkdirSync(contextDir, { recursive: true });
   fs.writeFileSync(path.join(contextDir, "prompt.md"), content);
 }
@@ -224,6 +228,157 @@ test("validatePreRunInputs does not throw for EVALUATE_PRD with non-empty artifa
   };
 
   assert.doesNotThrow(() => validatePreRunInputs("EVALUATE_PRD", contextPack));
+});
+
+describe("writeContextPackFiles context directory", () => {
+  test("writes prompt/artifacts under .closedloop-ai/context (not .claude/context)", async () => {
+    const workDir = makeTempDir();
+    const pack = {
+      prompt: "Use this context prompt",
+      artifacts: [
+        {
+          id: "artifact-123",
+          type: "PRD",
+          title: "Source PRD",
+          content: "PRD body content",
+        },
+      ],
+      repoInfo: { fullName: "owner/repo", branch: "main" },
+      priorLoopSummaries: [
+        {
+          loopId: "loop-1",
+          command: "PLAN",
+          summary: "Completed prior run",
+        },
+      ],
+    };
+
+    await writeContextPackFiles(workDir, pack);
+
+    const closedloopContextDir = path.join(
+      workDir,
+      ".closedloop-ai",
+      "context"
+    );
+    const claudeContextDir = path.join(workDir, ".claude", "context");
+    const promptPath = path.join(closedloopContextDir, "prompt.md");
+    const artifactPath = path.join(
+      closedloopContextDir,
+      "artifacts",
+      "prd-artifact-123.md"
+    );
+    const repoInfoPath = path.join(closedloopContextDir, "repo-info.json");
+    const priorLoopsPath = path.join(closedloopContextDir, "prior-loops.md");
+
+    assert.ok(
+      fs.existsSync(promptPath),
+      "prompt.md should exist under closedloop context"
+    );
+    assert.equal(
+      fs.readFileSync(promptPath, "utf-8"),
+      "Use this context prompt",
+      "prompt.md content should match pack prompt"
+    );
+
+    assert.ok(
+      fs.existsSync(artifactPath),
+      "artifact markdown should exist under .closedloop-ai/context/artifacts"
+    );
+    const artifactContent = fs.readFileSync(artifactPath, "utf-8");
+    assert.ok(
+      artifactContent.includes("# Source PRD"),
+      "artifact markdown should include title header"
+    );
+    assert.ok(
+      artifactContent.includes("PRD body content"),
+      "artifact markdown should include artifact content"
+    );
+
+    assert.ok(fs.existsSync(repoInfoPath), "repo-info.json should exist");
+    assert.ok(fs.existsSync(priorLoopsPath), "prior-loops.md should exist");
+
+    assert.ok(
+      !fs.existsSync(claudeContextDir),
+      ".claude/context should not be created by writeContextPackFiles"
+    );
+  });
+});
+
+describe("buildClaudeDirectArgs context path", () => {
+  test("DECOMPOSE reads prompt from .closedloop-ai/context/prompt.md", () => {
+    const workDir = makeTempDir();
+    const closedloopContextDir = path.join(
+      workDir,
+      ".closedloop-ai",
+      "context"
+    );
+    const claudeContextDir = path.join(workDir, ".claude", "context");
+    fs.mkdirSync(closedloopContextDir, { recursive: true });
+    fs.mkdirSync(claudeContextDir, { recursive: true });
+
+    fs.writeFileSync(
+      path.join(closedloopContextDir, "prompt.md"),
+      "prompt-from-closedloop"
+    );
+    fs.writeFileSync(
+      path.join(claudeContextDir, "prompt.md"),
+      "prompt-from-claude"
+    );
+
+    resetConfig({ command: "DECOMPOSE" });
+    const { args } = buildClaudeDirectArgs(workDir, null);
+
+    assert.ok(
+      args.includes("prompt-from-closedloop"),
+      "DECOMPOSE should load prompt from .closedloop-ai/context"
+    );
+    assert.ok(
+      !args.includes("prompt-from-claude"),
+      "DECOMPOSE should not load prompt from .claude/context"
+    );
+  });
+});
+
+describe("findExistingRunDir workspace path", () => {
+  test("uses .closedloop-ai/runs and ignores .claude/runs", () => {
+    const workDir = makeTempDir();
+    const closedloopRuns = path.join(workDir, ".closedloop-ai", "runs");
+    const legacyRuns = path.join(workDir, ".claude", "runs");
+
+    fs.mkdirSync(path.join(closedloopRuns, "20260407-120000-loop-new"), {
+      recursive: true,
+    });
+    fs.mkdirSync(path.join(legacyRuns, "20260407-120001-loop-legacy"), {
+      recursive: true,
+    });
+
+    const resolved = findExistingRunDir(workDir);
+    assert.equal(
+      resolved,
+      path.join(closedloopRuns, "20260407-120000-loop-new"),
+      "findExistingRunDir should resolve from .closedloop-ai/runs"
+    );
+  });
+});
+
+describe("state transfer prefixes", () => {
+  test("builds restore prefixes with legacy fallback", () => {
+    assert.deepEqual(getWorkspaceStateRestorePrefixes("loops/parent-123"), [
+      "loops/parent-123/closedloop-state",
+      "loops/parent-123/claude-state",
+    ]);
+  });
+
+  test("builds upload prefixes for workspace and home state", () => {
+    assert.deepEqual(getWorkspaceStateUploadPrefixes("loops/current-456"), [
+      "loops/current-456/closedloop-state",
+      "loops/current-456/claude-state",
+    ]);
+    assert.equal(
+      getHomeStateTransferPrefix("loops/current-456"),
+      "loops/current-456/home-claude-state"
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
