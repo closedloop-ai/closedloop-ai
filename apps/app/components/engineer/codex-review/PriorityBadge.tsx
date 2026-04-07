@@ -11,7 +11,7 @@ export function PriorityBadge({ priority }: Readonly<{ priority: string }>) {
   return (
     <span
       className={cn(
-        "rounded border px-1.5 py-0.5 font-mono font-semibold text-[10px]",
+        "shrink-0 rounded border px-1.5 py-0.5 font-mono font-semibold text-[10px]",
         PRIORITY_COLORS[priority] || "bg-muted text-muted-foreground"
       )}
     >
