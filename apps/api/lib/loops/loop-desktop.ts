@@ -188,6 +188,7 @@ export async function launchLoopOnDesktop(
       parentSessionId: parentSessionId ?? null,
       localRepoPath: localRepoPath ?? null,
       userContext: contextPack.userContext,
+      attachments: contextPack.attachments,
     } satisfies SymphonyLoopBody as JsonValue,
   };
 

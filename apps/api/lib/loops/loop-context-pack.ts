@@ -6,6 +6,7 @@
  * artifacts to include.
  */
 
+import type { ContextPackAttachment } from "@closedloop-ai/loops-api/context-pack";
 import { ArtifactType } from "@repo/api/src/types/artifact";
 import { EntityType } from "@repo/api/src/types/entity-link";
 import { LoopCommand } from "@repo/api/src/types/loop";
@@ -21,7 +22,6 @@ import { loopsService } from "@/app/loops/service";
 import { getCommandHandler } from "./loop-commands";
 import {
   type ContextPack,
-  type ContextPackAttachment,
   downloadMetadata,
   uploadContextPack,
 } from "./loop-state";
