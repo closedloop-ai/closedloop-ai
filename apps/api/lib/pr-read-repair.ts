@@ -1,8 +1,10 @@
 import type { JsonObject } from "@repo/api/src/types/common";
+import { EntityType } from "@repo/api/src/types/entity-link";
 import type { ExternalLink } from "@repo/api/src/types/external-link";
 import { ExternalLinkType } from "@repo/api/src/types/external-link";
 import { parsePullRequestMetadata } from "@repo/api/src/types/external-link-utils";
 import { GitHubPRState } from "@repo/api/src/types/github";
+import type { TransactionClient } from "@repo/database";
 import { GitHubInstallationStatus, withDb } from "@repo/database";
 import { getSinglePullRequest } from "@repo/github";
 import { log } from "@repo/observability/log";
@@ -126,9 +128,164 @@ async function resolveInstallationId(
   return installations[0].installationId;
 }
 
+type RepoResolution = { repositoryId: string; installationId: string };
+
+/**
+ * Resolve both repositoryId and installationId for a given owner/repo pair
+ * by querying `github_installation_repositories` in a single DB lookup.
+ *
+ * Results are memoized in the provided Map (keyed on `owner/repo`) so that
+ * multiple PR links for the same repository share one DB round-trip per
+ * repair run.
+ */
+async function resolveRepositoryId(
+  owner: string,
+  repo: string,
+  cache: Map<string, RepoResolution | null>
+): Promise<RepoResolution | null> {
+  const cacheKey = `${owner}/${repo}`;
+
+  if (cache.has(cacheKey)) {
+    return cache.get(cacheKey) ?? null;
+  }
+
+  const row = await withDb((db) =>
+    db.gitHubInstallationRepository.findFirst({
+      where: { fullName: cacheKey },
+      select: {
+        id: true,
+        installation: { select: { installationId: true } },
+      },
+    })
+  );
+
+  const result = row?.installation?.installationId
+    ? { repositoryId: row.id, installationId: row.installation.installationId }
+    : null;
+
+  cache.set(cacheKey, result);
+  return result;
+}
+
+type FreshPr = NonNullable<Awaited<ReturnType<typeof getSinglePullRequest>>>;
+
+async function applyExternalLinkUpdate(
+  tx: TransactionClient,
+  link: ExternalLink,
+  freshPr: FreshPr,
+  currentMetadata: JsonObject,
+  workstreamId: string | null,
+  now: string
+): Promise<void> {
+  const updatedMetadata = {
+    ...currentMetadata,
+    githubId: freshPr.githubId,
+    number: freshPr.number,
+    headBranch: freshPr.headBranch,
+    baseBranch: freshPr.baseBranch,
+    state: freshPr.state,
+    lastVerifiedAt: now,
+    lastRefreshAttemptAt: now,
+  } as JsonObject;
+
+  await tx.externalLink.updateMany({
+    where: { id: link.id },
+    data: {
+      title: freshPr.title,
+      metadata: updatedMetadata,
+      ...(workstreamId !== null && link.workstreamId === null
+        ? { workstreamId }
+        : {}),
+    },
+  });
+}
+
+type PullRequestUpsertOptions = {
+  tx: TransactionClient;
+  freshPr: FreshPr;
+  organizationId: string;
+  repositoryId: string | null;
+  workstreamId: string | null;
+  pullNumber: number;
+  externalLinkId: string;
+};
+
+async function applyPullRequestUpsert({
+  tx,
+  freshPr,
+  organizationId,
+  repositoryId,
+  workstreamId,
+  pullNumber,
+  externalLinkId,
+}: PullRequestUpsertOptions): Promise<void> {
+  const existingPr = await tx.gitHubPullRequest.findFirst({
+    where: {
+      organizationId,
+      number: pullNumber,
+      ...(repositoryId !== null ? { repositoryId } : {}),
+    },
+    select: { id: true },
+  });
+
+  if (existingPr) {
+    await tx.gitHubPullRequest.updateMany({
+      where: { githubId: freshPr.githubId, organizationId },
+      data: {
+        state: freshPr.state,
+        title: freshPr.title,
+        mergedAt: freshPr.mergedAt ? new Date(freshPr.mergedAt) : null,
+        closedAt: freshPr.closedAt ? new Date(freshPr.closedAt) : null,
+      },
+    });
+    return;
+  }
+
+  if (repositoryId === null || workstreamId === null) {
+    log.warn(
+      "[pr-read-repair] GitHubPullRequest row not found and cannot backfill",
+      {
+        githubId: freshPr.githubId,
+        organizationId,
+        repositoryId,
+        workstreamId,
+        externalLinkId,
+      }
+    );
+    return;
+  }
+
+  // Backfill: create the row if it doesn't exist yet
+  try {
+    await tx.gitHubPullRequest.create({
+      data: {
+        workstreamId,
+        organizationId,
+        repositoryId,
+        githubId: freshPr.githubId,
+        number: freshPr.number,
+        title: freshPr.title,
+        htmlUrl: freshPr.htmlUrl,
+        headBranch: freshPr.headBranch,
+        baseBranch: freshPr.baseBranch,
+        state: freshPr.state,
+        mergedAt: freshPr.mergedAt ? new Date(freshPr.mergedAt) : null,
+        closedAt: freshPr.closedAt ? new Date(freshPr.closedAt) : null,
+      },
+    });
+  } catch (createError) {
+    if ((createError as { code?: string }).code === "P2002") {
+      // Concurrent insert — no-op dedup
+      return;
+    }
+    throw createError;
+  }
+}
+
 async function repairSinglePrLink(
   link: ExternalLink,
-  organizationId: string
+  organizationId: string,
+  repoCache: Map<string, RepoResolution | null>
 ): Promise<void> {
   const match = PR_URL_REGEX.exec(link.externalUrl);
   if (!match) {
@@ -143,7 +300,7 @@ async function repairSinglePrLink(
   const pullNumber = Number(pullNumberStr);
   const now = new Date().toISOString();
 
-  // Stamp lastRefreshAttemptAt before making the GitHub API call
+  // Stamp lastRefreshAttemptAt before making the GitHub API call (debounce write-ahead)
   const updated = await withDb((db) =>
     db.externalLink.update({
       where: { id: link.id },
@@ -159,14 +316,16 @@ async function repairSinglePrLink(
 
   const currentMetadata = (updated.metadata ?? {}) as JsonObject;
 
-  const parsed = parsePullRequestMetadata(link.metadata);
+  const parsed = parsePullRequestMetadata(currentMetadata);
   const githubId = parsed?.githubId;
 
-  const installationId = await resolveInstallationId(
-    githubId,
-    organizationId,
-    link.id
-  );
+  // Try the fast path: resolve both repositoryId and installationId in one lookup
+  const repoResolution = await resolveRepositoryId(owner, repo, repoCache);
+
+  const installationId =
+    repoResolution?.installationId ??
+    (await resolveInstallationId(githubId, organizationId, link.id));
+
   if (!installationId) {
     return;
   }
@@ -188,57 +347,40 @@ async function repairSinglePrLink(
     return;
   }
 
-  await withDb((db) =>
-    db.externalLink.update({
-      where: { id: link.id },
-      data: {
-        title: freshPr.title,
-        metadata: {
-          ...currentMetadata,
-          githubId: freshPr.githubId,
-          number: freshPr.number,
-          headBranch: freshPr.headBranch,
-          baseBranch: freshPr.baseBranch,
-          state: freshPr.state,
-          lastVerifiedAt: now,
-          lastRefreshAttemptAt: now,
-        } as JsonObject,
-      },
-    })
-  );
+  const workstreamId =
+    link.workstreamId ?? (await resolveWorkstreamId(link.id, organizationId));
+  const repositoryId = repoResolution?.repositoryId ?? null;
 
-  if (!githubId) {
-    return;
-  }
-
-  const updateResult = await withDb((db) =>
-    db.gitHubPullRequest.updateMany({
-      where: { githubId, organizationId },
-      data: {
-        state: freshPr.state,
-        title: freshPr.title,
-        mergedAt: freshPr.mergedAt ? new Date(freshPr.mergedAt) : null,
-        closedAt: freshPr.closedAt ? new Date(freshPr.closedAt) : null,
-      },
-    })
-  );
-
-  if (updateResult.count === 0) {
-    log.warn("[pr-read-repair] GitHubPullRequest updateMany matched 0 rows", {
-      githubId,
+  await withDb.tx(async (tx) => {
+    await applyExternalLinkUpdate(
+      tx,
+      link,
+      freshPr,
+      currentMetadata,
+      workstreamId,
+      now
+    );
+    await applyPullRequestUpsert({
+      tx,
+      freshPr,
       organizationId,
+      repositoryId,
+      workstreamId,
+      pullNumber,
       externalLinkId: link.id,
     });
-  }
+  });
 }
 
 async function runPrReadRepair(
   eligibleLinks: ExternalLink[],
   organizationId: string
 ): Promise<void> {
+  const repoCache = new Map<string, RepoResolution | null>();
+
   for (const link of eligibleLinks) {
     try {
-      await repairSinglePrLink(link, organizationId);
+      await repairSinglePrLink(link, organizationId, repoCache);
     } catch (err) {
       log.warn("[pr-read-repair] Failed to repair link, continuing", {
         externalLinkId: link.id,
@@ -246,4 +388,74 @@ async function runPrReadRepair(
       });
     }
   }
+}
+
+/**
+ * Walk the entity link tree to resolve a workstream ID for an external link.
+ *
+ * Resolution order:
+ * 1. Find the parent artifact via entity_links (targetId = externalLinkId, targetType = EXTERNAL_LINK).
+ * 2. Return artifact's workstream_id if present.
+ * 3. Walk one more level: find parent feature via entity_links (targetId = artifactId, targetType = ARTIFACT).
+ * 4. Return feature's workstream_id, or null if unresolvable.
+ */
+async function resolveWorkstreamId(
+  externalLinkId: string,
+  organizationId: string
+): Promise<string | null> {
+  // Level 1: find the artifact that targets this external link
+  const artifactLink = await withDb((db) =>
+    db.entityLink.findFirst({
+      where: {
+        targetId: externalLinkId,
+        targetType: EntityType.ExternalLink,
+        organizationId,
+      },
+      select: { sourceId: true, sourceType: true },
+    })
+  );
+
+  if (!artifactLink || artifactLink.sourceType !== EntityType.Artifact) {
+    return null;
+  }
+
+  const artifact = await withDb((db) =>
+    db.artifact.findFirst({
+      where: { id: artifactLink.sourceId, organizationId },
+      select: { workstreamId: true },
+    })
+  );
+
+  if (!artifact) {
+    return null;
+  }
+
+  if (artifact.workstreamId !== null) {
+    return artifact.workstreamId;
+  }
+
+  // Level 2: find the feature that targets this artifact
+  const featureLink = await withDb((db) =>
+    db.entityLink.findFirst({
+      where: {
+        targetId: artifactLink.sourceId,
+        targetType: EntityType.Artifact,
+        organizationId,
+      },
+      select: { sourceId: true, sourceType: true },
+    })
+  );
+
+  if (!featureLink || featureLink.sourceType !== EntityType.Feature) {
+    return null;
+  }
+
+  const feature = await withDb((db) =>
+    db.feature.findFirst({
+      where: { id: featureLink.sourceId, organizationId },
+      select: { workstreamId: true },
+    })
+  );
+
+  return feature?.workstreamId ?? null;
 }

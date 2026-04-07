@@ -5,7 +5,10 @@ import {
   ExternalLinkType,
   type PullRequestMetadata,
 } from "@repo/api/src/types/external-link";
-import type { GitHubPullRequestSummary } from "@repo/api/src/types/github";
+import {
+  GitHubPRState,
+  type GitHubPullRequestSummary,
+} from "@repo/api/src/types/github";
 import { getProjectSettings } from "@repo/api/src/types/project";
 import { Badge } from "@repo/design-system/components/ui/badge";
 import {
@@ -85,6 +88,7 @@ export function SelectPullRequestDialog({
     try {
       const externalLink = await createExternalLink.mutateAsync({
         projectId,
+        artifactId: planId,
         type: ExternalLinkType.PullRequest,
         title: `PR #${pr.number}: ${pr.title}`,
         externalUrl: pr.htmlUrl,
@@ -110,6 +114,23 @@ export function SelectPullRequestDialog({
     } finally {
       setIsLinking(false);
     }
+  }
+
+  // No plan linked
+  if (open && !planId) {
+    return (
+      <Dialog onOpenChange={onOpenChange} open={open}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Select Existing PR</DialogTitle>
+          </DialogHeader>
+          <div className="flex flex-col items-center justify-center gap-2 py-8 text-center text-muted-foreground text-sm">
+            <AlertCircleIcon className="h-5 w-5" />
+            <p>Link a plan to this feature before selecting a PR.</p>
+          </div>
+        </DialogContent>
+      </Dialog>
+    );
   }
 
   // No repo configured
@@ -200,10 +221,10 @@ export function SelectPullRequestDialog({
 }
 
 function PrStateIcon({ pr }: Readonly<{ pr: GitHubPullRequestSummary }>) {
-  if (pr.state === "MERGED") {
+  if (pr.state === GitHubPRState.Merged) {
     return <GitMergeIcon className="h-4 w-4 shrink-0 text-purple-500" />;
   }
-  if (pr.state === "CLOSED") {
+  if (pr.state === GitHubPRState.Closed) {
     return <XCircleIcon className="h-4 w-4 shrink-0 text-red-500" />;
   }
   return (
@@ -217,7 +238,7 @@ function PrStateIcon({ pr }: Readonly<{ pr: GitHubPullRequestSummary }>) {
 }
 
 function PrStateBadge({ pr }: Readonly<{ pr: GitHubPullRequestSummary }>) {
-  if (pr.state === "MERGED") {
+  if (pr.state === GitHubPRState.Merged) {
     return (
       <Badge
         className="border-purple-200 bg-purple-50 text-purple-700 dark:border-purple-800 dark:bg-purple-950/30 dark:text-purple-300"
@@ -227,7 +248,7 @@ function PrStateBadge({ pr }: Readonly<{ pr: GitHubPullRequestSummary }>) {
       </Badge>
     );
   }
-  if (pr.state === "CLOSED") {
+  if (pr.state === GitHubPRState.Closed) {
     return (
       <Badge
         className="border-red-200 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-950/30 dark:text-red-300"

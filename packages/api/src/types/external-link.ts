@@ -33,6 +33,7 @@ export type FindExternalLinksOptions = {
 
 export type CreateExternalLinkInput = {
   workstreamId?: string;
+  artifactId?: string;
   projectId: string;
   type: ExternalLinkType;
   title: string;
@@ -50,12 +51,12 @@ export type UpdateExternalLinkInput = {
 /** Type-safe metadata for PULL_REQUEST external links */
 export type PullRequestMetadata = {
   number: number;
-  githubId: string;
+  githubId?: string;
   headBranch: string;
   baseBranch: string;
   state: GitHubPRState;
-  lastVerifiedAt?: string | null;
-  lastRefreshAttemptAt?: string | null;
+  lastVerifiedAt?: string | Date | null;
+  lastRefreshAttemptAt?: string | Date | null;
 };
 
 /** Type-safe metadata for PREVIEW_DEPLOYMENT external links */
