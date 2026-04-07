@@ -1,6 +1,6 @@
 {
   "name": "@closedloop-ai/loops-api",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "repository": {
     "type": "git",
@@ -8,16 +8,72 @@
     "directory": "packages/loops-api"
   },
   "exports": {
-    "./artifacts": "./src/artifacts.ts",
-    "./commands": "./src/commands.ts",
-    "./common": "./src/common.ts",
-    "./context-pack": "./src/context-pack.ts",
-    "./desktop-request": "./src/desktop-request.ts",
-    "./env-vars": "./src/env-vars.ts",
-    "./error-codes": "./src/error-codes.ts",
-    "./events": "./src/events.ts",
-    "./execution-result": "./src/execution-result.ts",
-    "./tokens": "./src/tokens.ts"
+    "./artifacts": {
+      "types": "./src/artifacts.ts",
+      "import": "./dist/artifacts.js",
+      "require": "./dist/artifacts.cjs",
+      "default": "./src/artifacts.ts"
+    },
+    "./bundles": {
+      "types": "./src/bundles.ts",
+      "import": "./dist/bundles.js",
+      "require": "./dist/bundles.cjs",
+      "default": "./src/bundles.ts"
+    },
+    "./commands": {
+      "types": "./src/commands.ts",
+      "import": "./dist/commands.js",
+      "require": "./dist/commands.cjs",
+      "default": "./src/commands.ts"
+    },
+    "./common": {
+      "types": "./src/common.ts",
+      "import": "./dist/common.js",
+      "require": "./dist/common.cjs",
+      "default": "./src/common.ts"
+    },
+    "./context-pack": {
+      "types": "./src/context-pack.ts",
+      "import": "./dist/context-pack.js",
+      "require": "./dist/context-pack.cjs",
+      "default": "./src/context-pack.ts"
+    },
+    "./desktop-request": {
+      "types": "./src/desktop-request.ts",
+      "import": "./dist/desktop-request.js",
+      "require": "./dist/desktop-request.cjs",
+      "default": "./src/desktop-request.ts"
+    },
+    "./env-vars": {
+      "types": "./src/env-vars.ts",
+      "import": "./dist/env-vars.js",
+      "require": "./dist/env-vars.cjs",
+      "default": "./src/env-vars.ts"
+    },
+    "./error-codes": {
+      "types": "./src/error-codes.ts",
+      "import": "./dist/error-codes.js",
+      "require": "./dist/error-codes.cjs",
+      "default": "./src/error-codes.ts"
+    },
+    "./events": {
+      "types": "./src/events.ts",
+      "import": "./dist/events.js",
+      "require": "./dist/events.cjs",
+      "default": "./src/events.ts"
+    },
+    "./execution-result": {
+      "types": "./src/execution-result.ts",
+      "import": "./dist/execution-result.js",
+      "require": "./dist/execution-result.cjs",
+      "default": "./src/execution-result.ts"
+    },
+    "./tokens": {
+      "types": "./src/tokens.ts",
+      "import": "./dist/tokens.js",
+      "require": "./dist/tokens.cjs",
+      "default": "./src/tokens.ts"
+    }
   },
   "files": [
     "dist"
@@ -29,6 +85,11 @@
         "types": "./dist/artifacts.d.ts",
         "import": "./dist/artifacts.js",
         "require": "./dist/artifacts.cjs"
+      },
+      "./bundles": {
+        "types": "./dist/bundles.d.ts",
+        "import": "./dist/bundles.js",
+        "require": "./dist/bundles.cjs"
       },
       "./commands": {
         "types": "./dist/commands.d.ts",
@@ -80,7 +141,8 @@
   "scripts": {
     "build": "tsup",
     "clean": "git clean -xdf .cache .turbo dist node_modules",
-    "typecheck": "tsc --noEmit --emitDeclarationOnly false"
+    "typecheck": "tsc --noEmit --emitDeclarationOnly false",
+    "test": "vitest run"
   },
   "peerDependencies": {
     "zod": "^4.0.0"
@@ -90,6 +152,7 @@
     "@types/node": "^25.3.5",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
+    "vitest": "^4.0.18",
     "zod": "^4.3.6"
   }
 }

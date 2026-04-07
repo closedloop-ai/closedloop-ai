@@ -4,16 +4,23 @@ import os from "node:os";
 import path from "node:path";
 import { after, describe, test } from "node:test";
 
+import { LoopArtifactType } from "@closedloop-ai/loops-api/artifacts";
+
 import {
   buildClaudeDirectArgs,
   buildCommand,
   config,
   ERROR_CODES,
   HarnessError,
+  parsePrInfo,
+  parseTokenUsage,
+  syncPlanFromContextPack,
   validateConfig,
   validatePreRunInputs,
   validateSecrets,
   writeContextPackFiles,
+  writeExecutionResult,
+  writePrdFile,
 } from "./harness-agent.mjs";
 
 // ---------------------------------------------------------------------------
@@ -210,7 +217,9 @@ test("validatePreRunInputs throws preRunValidation for EVALUATE_PRD with no arti
 
 test("validatePreRunInputs does not throw for EVALUATE_PRD with non-empty artifacts and no prompt", () => {
   const contextPack = {
-    artifacts: [{ id: "1", type: "PRD", content: "some prd content" }],
+    artifacts: [
+      { id: "1", type: LoopArtifactType.Prd, content: "some prd content" },
+    ],
     // prompt intentionally absent
   };
 
@@ -547,5 +556,409 @@ describe("writeContextPackFiles attachments", () => {
     } finally {
       restore();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseTokenUsage
+// ---------------------------------------------------------------------------
+
+describe("parseTokenUsage", () => {
+  test("parses single model usage line", () => {
+    const result = parseTokenUsage([
+      { line: "Model: claude-opus-4-6  Input: 12,345  Output: 6,789" },
+    ]);
+    assert.deepEqual(result.tokensByModel, {
+      "claude-opus-4": { input: 12_345, output: 6789 },
+    });
+    assert.equal(result.totalInput, 12_345);
+    assert.equal(result.totalOutput, 6789);
+  });
+
+  test("parses cache creation and read tokens", () => {
+    const result = parseTokenUsage([
+      {
+        line: "Model: claude-sonnet-4-5  Input: 1,000  Output: 500  Cache creation: 200  Cache read: 300",
+      },
+    ]);
+    const model = result.tokensByModel["claude-sonnet-4-5"];
+    assert.equal(model.input, 1000);
+    assert.equal(model.output, 500);
+    assert.equal(model.cacheCreation, 200);
+    assert.equal(model.cacheRead, 300);
+  });
+
+  test("accumulates multiple lines for the same model", () => {
+    const result = parseTokenUsage([
+      { line: "Model: claude-opus-4  Input: 100  Output: 50" },
+      { line: "Model: claude-opus-4  Input: 200  Output: 75" },
+    ]);
+    assert.deepEqual(result.tokensByModel["claude-opus-4"], {
+      input: 300,
+      output: 125,
+    });
+  });
+
+  test("parses multiple models", () => {
+    const result = parseTokenUsage([
+      { line: "Model: claude-opus-4  Input: 100  Output: 50" },
+      { line: "Model: claude-haiku-4-5  Input: 500  Output: 200" },
+    ]);
+    assert.equal(Object.keys(result.tokensByModel).length, 2);
+    assert.equal(result.totalInput, 600);
+    assert.equal(result.totalOutput, 250);
+  });
+
+  test("returns null tokensByModel when no model lines found", () => {
+    const result = parseTokenUsage([
+      { line: "Total input tokens: 5,000" },
+      { line: "Total output tokens: 2,000" },
+    ]);
+    assert.equal(result.tokensByModel, null);
+    assert.equal(result.totalInput, 5000);
+    assert.equal(result.totalOutput, 2000);
+  });
+
+  test("returns zeros for empty output", () => {
+    const result = parseTokenUsage([]);
+    assert.equal(result.tokensByModel, null);
+    assert.equal(result.totalInput, 0);
+    assert.equal(result.totalOutput, 0);
+  });
+
+  test("prefers model sum over total lines when both present", () => {
+    const result = parseTokenUsage([
+      { line: "Model: claude-opus-4  Input: 100  Output: 50" },
+      { line: "Total input tokens: 999" },
+      { line: "Total output tokens: 888" },
+    ]);
+    // Model sum (100, 50) takes precedence over total lines (999, 888)
+    assert.equal(result.totalInput, 100);
+    assert.equal(result.totalOutput, 50);
+  });
+
+  test("handles lines without .line property", () => {
+    const result = parseTokenUsage([{}, { line: "" }, { other: "field" }]);
+    assert.equal(result.tokensByModel, null);
+    assert.equal(result.totalInput, 0);
+  });
+
+  test("normalizes model names with date suffixes", () => {
+    const result = parseTokenUsage([
+      { line: "Model: claude-sonnet-4-5-20250929  Input: 100  Output: 50" },
+    ]);
+    assert.ok(result.tokensByModel["claude-sonnet-4-5"]);
+    assert.equal(result.tokensByModel["claude-sonnet-4-5"].input, 100);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parsePrInfo — output scanning logic (git-dependent branch detection is
+// tested indirectly; we focus on the PR URL extraction from output lines)
+// ---------------------------------------------------------------------------
+
+describe("parsePrInfo", () => {
+  // parsePrInfo calls detectBranchName(workDir) which requires a git repo.
+  // For unit tests we pass a non-repo dir so branch is null, isolating
+  // the output-scanning logic.
+
+  test("extracts PR URL from output lines (scans backward)", () => {
+    const workDir = makeTempDir();
+    const lines = [
+      { line: "Compiling..." },
+      { line: "https://github.com/org/repo/pull/42" },
+      { line: "Done." },
+    ];
+    const result = parsePrInfo(workDir, lines);
+    assert.equal(result.prUrl, "https://github.com/org/repo/pull/42");
+    assert.equal(result.prNumber, 42);
+  });
+
+  test("returns last PR URL when multiple are present", () => {
+    const workDir = makeTempDir();
+    const lines = [
+      { line: "https://github.com/org/repo/pull/1" },
+      { line: "some output" },
+      { line: "https://github.com/org/repo/pull/99" },
+    ];
+    // Scans backward — finds 99 first
+    const result = parsePrInfo(workDir, lines);
+    assert.equal(result.prNumber, 99);
+  });
+
+  test("returns null when no PR URL and no branch", () => {
+    const workDir = makeTempDir();
+    const result = parsePrInfo(workDir, [{ line: "no pr here" }, { line: "" }]);
+    assert.equal(result, null);
+  });
+
+  test("handles empty output lines", () => {
+    const workDir = makeTempDir();
+    const result = parsePrInfo(workDir, []);
+    assert.equal(result, null);
+  });
+
+  test("extracts PR number from embedded URL", () => {
+    const workDir = makeTempDir();
+    const lines = [
+      {
+        line: "Created PR: https://github.com/closedloop-ai/symphony/pull/123 for review",
+      },
+    ];
+    const result = parsePrInfo(workDir, lines);
+    assert.equal(
+      result.prUrl,
+      "https://github.com/closedloop-ai/symphony/pull/123"
+    );
+    assert.equal(result.prNumber, 123);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// writePrdFile — content priority logic
+// ---------------------------------------------------------------------------
+
+describe("writePrdFile", () => {
+  test("uses prompt when present", () => {
+    const dir = makeTempDir();
+    const result = writePrdFile(dir, { prompt: "My PRD content" });
+    assert.ok(result);
+    assert.equal(fs.readFileSync(result, "utf-8"), "My PRD content");
+  });
+
+  test("falls back to PRD artifact when no prompt", () => {
+    const dir = makeTempDir();
+    const result = writePrdFile(dir, {
+      artifacts: [
+        { id: "1", type: LoopArtifactType.Prd, content: "PRD from artifact" },
+      ],
+    });
+    assert.ok(result);
+    assert.equal(fs.readFileSync(result, "utf-8"), "PRD from artifact");
+  });
+
+  test("falls back to FEATURE artifact when no prompt or PRD", () => {
+    const dir = makeTempDir();
+    const result = writePrdFile(dir, {
+      artifacts: [
+        {
+          id: "1",
+          type: LoopArtifactType.Feature,
+          content: "Feature description",
+        },
+      ],
+    });
+    assert.ok(result);
+    assert.equal(fs.readFileSync(result, "utf-8"), "Feature description");
+  });
+
+  test("prefers PRD over FEATURE artifact", () => {
+    const dir = makeTempDir();
+    const result = writePrdFile(dir, {
+      artifacts: [
+        { id: "1", type: LoopArtifactType.Feature, content: "Feature text" },
+        { id: "2", type: LoopArtifactType.Prd, content: "PRD text" },
+      ],
+    });
+    assert.ok(result);
+    assert.equal(fs.readFileSync(result, "utf-8"), "PRD text");
+  });
+
+  test("prompt takes priority over PRD artifact", () => {
+    const dir = makeTempDir();
+    const result = writePrdFile(dir, {
+      prompt: "Prompt wins",
+      artifacts: [
+        { id: "1", type: LoopArtifactType.Prd, content: "PRD loses" },
+      ],
+    });
+    assert.equal(fs.readFileSync(result, "utf-8"), "Prompt wins");
+  });
+
+  test("returns null when no content available", () => {
+    const dir = makeTempDir();
+    assert.equal(writePrdFile(dir, {}), null);
+    assert.equal(writePrdFile(dir, { artifacts: [] }), null);
+    assert.equal(writePrdFile(dir, null), null);
+  });
+
+  test("writes to prd.md filename", () => {
+    const dir = makeTempDir();
+    const result = writePrdFile(dir, { prompt: "content" });
+    assert.equal(path.basename(result), "prd.md");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// syncPlanFromContextPack — plan.json content merge
+// ---------------------------------------------------------------------------
+
+describe("syncPlanFromContextPack", () => {
+  test("updates content field in existing plan.json", () => {
+    const dir = makeTempDir();
+    const planPath = path.join(dir, "plan.json");
+    fs.writeFileSync(
+      planPath,
+      JSON.stringify({
+        content: "old content",
+        pendingTasks: ["task1"],
+        openQuestions: [],
+      })
+    );
+
+    syncPlanFromContextPack(dir, {
+      artifacts: [
+        {
+          id: "1",
+          type: LoopArtifactType.ImplementationPlan,
+          content: "new content",
+        },
+      ],
+    });
+
+    const updated = JSON.parse(fs.readFileSync(planPath, "utf-8"));
+    assert.equal(updated.content, "new content");
+    assert.deepEqual(updated.pendingTasks, ["task1"]);
+    assert.deepEqual(updated.openQuestions, []);
+  });
+
+  test("finds IMPLEMENTATION_PLAN artifact even when not first", () => {
+    const dir = makeTempDir();
+    const planPath = path.join(dir, "plan.json");
+    fs.writeFileSync(planPath, JSON.stringify({ content: "old" }));
+
+    syncPlanFromContextPack(dir, {
+      artifacts: [
+        { id: "1", type: LoopArtifactType.Prd, content: "prd text" },
+        { id: "2", type: LoopArtifactType.Feature, content: "feature text" },
+        {
+          id: "3",
+          type: LoopArtifactType.ImplementationPlan,
+          content: "plan text",
+        },
+      ],
+    });
+
+    const updated = JSON.parse(fs.readFileSync(planPath, "utf-8"));
+    assert.equal(updated.content, "plan text");
+  });
+
+  test("skips when plan.json does not exist", () => {
+    const dir = makeTempDir();
+    // No plan.json — should not throw
+    syncPlanFromContextPack(dir, {
+      artifacts: [
+        {
+          id: "1",
+          type: LoopArtifactType.ImplementationPlan,
+          content: "new content",
+        },
+      ],
+    });
+    assert.ok(!fs.existsSync(path.join(dir, "plan.json")));
+  });
+
+  test("skips when no artifacts", () => {
+    const dir = makeTempDir();
+    const planPath = path.join(dir, "plan.json");
+    fs.writeFileSync(planPath, JSON.stringify({ content: "unchanged" }));
+
+    syncPlanFromContextPack(dir, { artifacts: [] });
+    syncPlanFromContextPack(dir, {});
+    syncPlanFromContextPack(dir, null);
+
+    const result = JSON.parse(fs.readFileSync(planPath, "utf-8"));
+    assert.equal(result.content, "unchanged");
+  });
+
+  test("skips PRD and FEATURE artifacts as primary", () => {
+    const dir = makeTempDir();
+    const planPath = path.join(dir, "plan.json");
+    fs.writeFileSync(planPath, JSON.stringify({ content: "original" }));
+
+    syncPlanFromContextPack(dir, {
+      artifacts: [
+        { id: "1", type: LoopArtifactType.Prd, content: "should not replace" },
+        {
+          id: "2",
+          type: LoopArtifactType.Feature,
+          content: "should not replace either",
+        },
+      ],
+    });
+
+    const result = JSON.parse(fs.readFileSync(planPath, "utf-8"));
+    assert.equal(result.content, "original");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// writeExecutionResult — sentinel value construction
+// ---------------------------------------------------------------------------
+
+describe("writeExecutionResult", () => {
+  test("writes execution-result.json with PR info", () => {
+    const dir = makeTempDir();
+    resetConfig({ targetBranch: "main" });
+
+    writeExecutionResult(dir, {
+      prUrl: "https://github.com/org/repo/pull/42",
+      prNumber: 42,
+      branchName: "symphony/abc",
+    });
+
+    const filePath = path.join(dir, "execution-result.json");
+    assert.ok(fs.existsSync(filePath));
+    const result = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+    assert.equal(result.has_changes, true);
+    assert.equal(result.pr_url, "https://github.com/org/repo/pull/42");
+    assert.equal(result.pr_number, 42);
+    assert.equal(result.branch_name, "symphony/abc");
+    assert.equal(result.base_ref, "main");
+  });
+
+  test("writes empty sentinels when no PR info", () => {
+    const dir = makeTempDir();
+    resetConfig({ targetBranch: "develop" });
+
+    writeExecutionResult(dir, null);
+
+    const result = JSON.parse(
+      fs.readFileSync(path.join(dir, "execution-result.json"), "utf-8")
+    );
+    assert.equal(result.has_changes, false);
+    assert.equal(result.pr_url, "");
+    assert.equal(result.pr_number, 0);
+    assert.equal(result.branch_name, "");
+    assert.equal(result.base_ref, "develop");
+  });
+
+  test("does not overwrite existing execution-result.json", () => {
+    const dir = makeTempDir();
+    resetConfig();
+    const filePath = path.join(dir, "execution-result.json");
+    fs.writeFileSync(filePath, '{"llm_wrote_this": true}');
+
+    writeExecutionResult(dir, {
+      prUrl: "https://github.com/org/repo/pull/1",
+      prNumber: 1,
+      branchName: "branch",
+    });
+
+    const result = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+    assert.equal(result.llm_wrote_this, true);
+    assert.equal(result.pr_url, undefined);
+  });
+
+  test("uses config.targetBranch for base_ref", () => {
+    const dir = makeTempDir();
+    resetConfig({ targetBranch: "staging" });
+
+    writeExecutionResult(dir, null);
+
+    const result = JSON.parse(
+      fs.readFileSync(path.join(dir, "execution-result.json"), "utf-8")
+    );
+    assert.equal(result.base_ref, "staging");
   });
 });

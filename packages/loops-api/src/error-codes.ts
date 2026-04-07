@@ -23,6 +23,18 @@ export const LoopErrorCode = {
   ArtifactWriteFailed: "ARTIFACT_WRITE_FAILED",
   ProcessFailed: "PROCESS_FAILED",
   ProcessStopped: "PROCESS_STOPPED",
+  AuthChallenge: "AUTH_CHALLENGE",
+  BinaryNotFound: "BINARY_NOT_FOUND",
+  ScriptNotFound: "SCRIPT_NOT_FOUND",
+  SpawnFailed: "SPAWN_FAILED",
+
+  // Lifecycle codes (set by harness/gateway at run completion)
+  TimedOut: "TIMED_OUT",
+  Cancelled: "CANCELLED",
+
+  // Desktop-specific codes
+  RepoNotAllowed: "REPO_NOT_ALLOWED",
+  RepoNotFound: "REPO_NOT_FOUND",
 
   // Backend semantic errors
   NoWorkProduced: "NO_WORK_PRODUCED",

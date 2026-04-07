@@ -22,17 +22,53 @@ import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  LoopArtifactFile,
+  LoopArtifactType,
+} from "@closedloop-ai/loops-api/artifacts";
+import { validateResultBundle } from "@closedloop-ai/loops-api/bundles";
+import {
+  LoopCommand,
+  validateCommandInputs,
+} from "@closedloop-ai/loops-api/commands";
+import { ContextPackSchema } from "@closedloop-ai/loops-api/context-pack";
+import { LoopErrorCode } from "@closedloop-ai/loops-api/error-codes";
+import { normalizeModelName } from "@closedloop-ai/loops-api/tokens";
 
 // ---------------------------------------------------------------------------
-// AWS SDK v3 — loaded from the global install
+// AWS SDK v3 — lazy-loaded on first use (not needed for unit tests)
 // ---------------------------------------------------------------------------
 const require = createRequire(import.meta.url);
-const {
-  S3Client,
-  GetObjectCommand,
-  PutObjectCommand,
-  ListObjectsV2Command,
-} = require("@aws-sdk/client-s3");
+let _awsSdk = null;
+
+function getAwsSdk() {
+  if (!_awsSdk) {
+    _awsSdk = require("@aws-sdk/client-s3");
+  }
+  return _awsSdk;
+}
+
+// Proxy classes that lazy-load the SDK on first construction
+const S3Client = new Proxy(() => {}, {
+  construct(_, args) {
+    return new (getAwsSdk().S3Client)(...args);
+  },
+});
+const GetObjectCommand = new Proxy(() => {}, {
+  construct(_, args) {
+    return new (getAwsSdk().GetObjectCommand)(...args);
+  },
+});
+const PutObjectCommand = new Proxy(() => {}, {
+  construct(_, args) {
+    return new (getAwsSdk().PutObjectCommand)(...args);
+  },
+});
+const ListObjectsV2Command = new Proxy(() => {}, {
+  construct(_, args) {
+    return new (getAwsSdk().ListObjectsV2Command)(...args);
+  },
+});
 
 // ---------------------------------------------------------------------------
 // Logging helper
@@ -55,7 +91,7 @@ function log(level, ...args) {
 // ---------------------------------------------------------------------------
 const config = {
   loopId: process.env.LOOP_ID,
-  command: process.env.COMMAND?.toUpperCase(), // "PLAN" | "EXECUTE" | "CHAT" | "EXPLORE" | "REQUEST_CHANGES" | "GENERATE_PRD"
+  command: process.env.COMMAND?.toUpperCase(), // LoopCommand values from @closedloop-ai/loops-api
   anthropicApiKey: null, // Injected from S3 context pack (not env vars)
   githubToken: null, // Injected from S3 context pack (not env vars)
   committerName: null, // Injected from S3 context pack (triggering user's name)
@@ -79,17 +115,18 @@ const config = {
   parentBranchName: process.env.PARENT_BRANCH_NAME || null,
 };
 
+// Local aliases for shared error codes (preserves existing property names)
 const ERROR_CODES = {
-  runner: "RUNNER_ERROR",
-  config: "CONFIG_VALIDATION_FAILED",
-  secrets: "SECRETS_VALIDATION_FAILED",
-  contextPackDownload: "CONTEXT_PACK_DOWNLOAD_FAILED",
-  contextPackInvalid: "CONTEXT_PACK_INVALID",
-  contextPackWrite: "CONTEXT_PACK_WRITE_FAILED",
-  gitClone: "GIT_CLONE_FAILED",
-  branchCreate: "BRANCH_CREATE_FAILED",
-  preRunValidation: "PRE_RUN_VALIDATION_FAILED",
-  runLoopNotFound: "RUN_LOOP_NOT_FOUND",
+  runner: LoopErrorCode.RunnerError,
+  config: LoopErrorCode.ConfigValidationFailed,
+  secrets: LoopErrorCode.SecretsValidationFailed,
+  contextPackDownload: LoopErrorCode.ContextPackDownloadFailed,
+  contextPackInvalid: LoopErrorCode.ContextPackInvalid,
+  contextPackWrite: LoopErrorCode.ContextPackWriteFailed,
+  gitClone: LoopErrorCode.GitCloneFailed,
+  branchCreate: LoopErrorCode.BranchCreateFailed,
+  preRunValidation: LoopErrorCode.PreRunValidationFailed,
+  runLoopNotFound: LoopErrorCode.RunLoopNotFound,
 };
 
 class HarnessError extends Error {
@@ -159,12 +196,12 @@ function validateConfig() {
   // targetRepo is only required for commands that operate on a repository.
   // chat/explore can run prompt-only without a repo.
   const repoCommands = new Set([
-    "PLAN",
-    "EXECUTE",
-    "REQUEST_CHANGES",
-    "GENERATE_PRD",
-    "EVALUATE_PLAN",
-    "EVALUATE_CODE",
+    LoopCommand.Plan,
+    LoopCommand.Execute,
+    LoopCommand.RequestChanges,
+    LoopCommand.GeneratePrd,
+    LoopCommand.EvaluatePlan,
+    LoopCommand.EvaluateCode,
   ]);
   if (repoCommands.has(config.command)) {
     requiredEnv.push("targetRepo");
@@ -216,16 +253,16 @@ function validateSecrets() {
   // EVALUATE_PRD with a targetRepo also needs a GitHub token to fetch repo context.
   // EVALUATE_PLAN and EVALUATE_CODE always need a GitHub token (unconditional).
   const repoCommands = new Set([
-    "PLAN",
-    "EXECUTE",
-    "REQUEST_CHANGES",
-    "GENERATE_PRD",
-    "EVALUATE_PLAN",
-    "EVALUATE_CODE",
+    LoopCommand.Plan,
+    LoopCommand.Execute,
+    LoopCommand.RequestChanges,
+    LoopCommand.GeneratePrd,
+    LoopCommand.EvaluatePlan,
+    LoopCommand.EvaluateCode,
   ]);
   if (
     repoCommands.has(config.command) ||
-    (config.command === "EVALUATE_PRD" && config.targetRepo)
+    (config.command === LoopCommand.EvaluatePrd && config.targetRepo)
   ) {
     requiredSecrets.push("githubToken");
   }
@@ -734,6 +771,16 @@ async function downloadContextPack() {
     );
   }
 
+  // Validate context pack against shared schema
+  const validation = ContextPackSchema.safeParse(pack);
+  if (!validation.success) {
+    log(
+      "warn",
+      "Context pack schema validation failed:",
+      validation.error.issues
+    );
+  }
+
   // Extract secrets from context pack before writing anything to disk.
   // Secrets must never be persisted to the filesystem.
   if (pack.secrets) {
@@ -960,10 +1007,12 @@ function writePrdFile(targetDir, contextPack) {
 
   // Fall back to the first PRD-type artifact, then FEATURE-type
   if (!prdContent && Array.isArray(contextPack?.artifacts)) {
-    const prdArtifact = contextPack.artifacts.find((a) => a.type === "PRD");
+    const prdArtifact = contextPack.artifacts.find(
+      (a) => a.type === LoopArtifactType.Prd
+    );
     const featureArtifact = prdArtifact
       ? null
-      : contextPack.artifacts.find((a) => a.type === "FEATURE");
+      : contextPack.artifacts.find((a) => a.type === LoopArtifactType.Feature);
     const source = prdArtifact || featureArtifact;
 
     if (source?.content) {
@@ -978,7 +1027,7 @@ function writePrdFile(targetDir, contextPack) {
   if (!prdContent) {
     return null;
   }
-  const prdPath = path.join(targetDir, "prd.md");
+  const prdPath = path.join(targetDir, LoopArtifactFile.Prd);
   fs.writeFileSync(prdPath, prdContent);
   log("info", `Wrote prd.md to ${prdPath}`);
   return prdPath;
@@ -1001,13 +1050,17 @@ function syncPlanFromContextPack(runDir, contextPack) {
   // Find the plan artifact by type — ref artifacts (PRD/Issue) may precede
   // the primary artifact in the array, so index 0 is not reliable.
   const primaryArtifact =
-    contextPack.artifacts.find((a) => a.type === "IMPLEMENTATION_PLAN") ??
-    contextPack.artifacts.find((a) => !["PRD", "FEATURE"].includes(a.type));
+    contextPack.artifacts.find(
+      (a) => a.type === LoopArtifactType.ImplementationPlan
+    ) ??
+    contextPack.artifacts.find(
+      (a) => ![LoopArtifactType.Prd, LoopArtifactType.Feature].includes(a.type)
+    );
   if (!primaryArtifact?.content) {
     return;
   }
 
-  const planJsonPath = path.join(runDir, "plan.json");
+  const planJsonPath = path.join(runDir, LoopArtifactFile.Plan);
 
   // If plan.json exists, update its .content field preserving other fields
   // (pendingTasks, openQuestions, etc.). If it doesn't exist, the parent
@@ -1775,8 +1828,6 @@ const RE_CACHE_CREATION = /Cache creation:\s*([\d,]+)/i;
 const RE_CACHE_READ = /Cache read:\s*([\d,]+)/i;
 const RE_TOTAL_INPUT = /Total input tokens:\s*([\d,]+)/i;
 const RE_TOTAL_OUTPUT = /Total output tokens:\s*([\d,]+)/i;
-const RE_DATE_SUFFIX = /-\d{8}$/;
-
 /**
  * Parse a single model-usage line and accumulate into tokensByModel map.
  */
@@ -1846,24 +1897,7 @@ function parseTokenUsage(outputLines) {
   };
 }
 
-/**
- * Normalize model names to canonical short forms for consistent pricing lookup.
- * e.g., "claude-opus-4-6" -> "claude-opus-4"
- *        "claude-sonnet-4-5-20250929" -> "claude-sonnet-4-5"
- *        "claude-haiku-4-5-20251001" -> "claude-haiku-4-5"
- */
-function normalizeModelName(rawName) {
-  // Strip date suffixes like -20250929
-  const stripped = rawName.replace(RE_DATE_SUFFIX, "");
-  // Map known variants to canonical names
-  const canonicalMap = {
-    "claude-opus-4-6": "claude-opus-4",
-    "claude-opus-4": "claude-opus-4",
-    "claude-sonnet-4-5": "claude-sonnet-4-5",
-    "claude-haiku-4-5": "claude-haiku-4-5",
-  };
-  return canonicalMap[stripped] || stripped;
-}
+// normalizeModelName imported from shared package (see imports at top)
 
 // ---------------------------------------------------------------------------
 // State upload
@@ -1926,18 +1960,22 @@ async function uploadState(workDir, output, runDir) {
   // The full run directory is already captured in claude-state/ (step 2).
   const pluginArtifactDir = runDir ?? workDir;
   const CLAUDE_PLUGIN_ARTIFACT_FILE_NAMES = [
-    "plan.json",
-    "plan.md",
-    "implementation-plan.md",
-    "open-questions.md",
-    "execution-result.json",
-    "judges.json",
-    "prd-judges.json",
-    "code-judges.json",
-    "perf.jsonl",
-    "state.json",
+    LoopArtifactFile.Plan,
+    LoopArtifactFile.PlanMarkdown,
+    LoopArtifactFile.ImplementationPlanMarkdown,
+    LoopArtifactFile.OpenQuestions,
+    LoopArtifactFile.ExecutionResult,
+    LoopArtifactFile.Judges,
+    LoopArtifactFile.PrdJudges,
+    LoopArtifactFile.PlanJudges,
+    LoopArtifactFile.CodeJudges,
+    LoopArtifactFile.Perf,
+    LoopArtifactFile.State,
   ];
-  const NON_PLUGIN_ARTIFACT_FILE_NAMES = ["features.json", "prd.md"];
+  const NON_PLUGIN_ARTIFACT_FILE_NAMES = [
+    LoopArtifactFile.Features,
+    LoopArtifactFile.Prd,
+  ];
   const artifactFiles = CLAUDE_PLUGIN_ARTIFACT_FILE_NAMES.map((fileName) => ({
     name: fileName,
     path: path.join(pluginArtifactDir, fileName),
@@ -1964,6 +2002,21 @@ async function uploadState(workDir, output, runDir) {
     } else {
       log("info", `Artifact ${file.name} not found at ${file.path}`);
     }
+  }
+
+  // Validate result bundle — warn if required artifacts are missing for this command
+  const uploadedFileNames = artifactFiles
+    .filter((f) => fs.existsSync(f.path))
+    .map((f) => f.name);
+  const missingRequired = validateResultBundle(
+    config.command,
+    uploadedFileNames
+  );
+  if (missingRequired.length > 0) {
+    log(
+      "warn",
+      `Missing required artifacts for ${config.command}: ${missingRequired.join(", ")}`
+    );
   }
 
   // 4. Upload agent/judge prompt snapshots as markdown files.
@@ -2046,10 +2099,10 @@ function buildRunLoopArgs(runLoopPath, workDir, prdPath) {
   args.push(workDir);
 
   switch (config.command) {
-    case "PLAN":
+    case LoopCommand.Plan:
       args.push("--max-iterations", String(config.maxIterations || 50));
       break;
-    case "EXECUTE":
+    case LoopCommand.Execute:
       args.push("--max-iterations", String(config.maxIterations || 150));
       break;
     default:
@@ -2082,7 +2135,7 @@ function buildClaudeDirectArgs(workDir, symphonyWD) {
   }
 
   switch (config.command) {
-    case "REQUEST_CHANGES": {
+    case LoopCommand.RequestChanges: {
       // Build the full skill invocation as a SINGLE prompt string.
       // The claude CLI treats each argv entry after flags as the prompt —
       // if we pass --workdir / --message as separate argv entries, the CLI
@@ -2106,10 +2159,10 @@ function buildClaudeDirectArgs(workDir, symphonyWD) {
       );
       break;
     }
-    case "CHAT":
-    case "EXPLORE":
-    case "DECOMPOSE":
-    case "GENERATE_PRD": {
+    case LoopCommand.Chat:
+    case LoopCommand.Explore:
+    case LoopCommand.Decompose:
+    case LoopCommand.GeneratePrd: {
       const contextDir = path.join(workDir, ".claude", "context");
       const promptFile = path.join(contextDir, "prompt.md");
       let prompt = "";
@@ -2122,7 +2175,7 @@ function buildClaudeDirectArgs(workDir, symphonyWD) {
       args.push(prompt);
       break;
     }
-    case "EVALUATE_PRD": {
+    case LoopCommand.EvaluatePrd: {
       // prd.md is written to symphonyWD (the run directory) by writePrdFile(),
       // and uploadState() collects prd-judges.json from that same directory.
       // Use symphonyWD so the skill reads prd.md and writes prd-judges.json
@@ -2141,7 +2194,7 @@ function buildClaudeDirectArgs(workDir, symphonyWD) {
       args.push(skillCall);
       break;
     }
-    case "EVALUATE_PLAN": {
+    case LoopCommand.EvaluatePlan: {
       // plan.json is written to symphonyWD (the run directory).
       // Use symphonyWD so the skill reads plan artifacts and writes plan-judges.json
       // to the correct location.
@@ -2156,7 +2209,7 @@ function buildClaudeDirectArgs(workDir, symphonyWD) {
       args.push(skillCall);
       break;
     }
-    case "EVALUATE_CODE": {
+    case LoopCommand.EvaluateCode: {
       // Code artifacts are written to symphonyWD (the run directory).
       // Use symphonyWD so the skill reads code artifacts and writes code-judges.json
       // to the correct location.
@@ -2230,7 +2283,7 @@ function setupShutdownHandlers(workDir) {
     await refreshGitHubToken();
 
     // Attempt safety commit before uploading state (only for code-producing commands)
-    const shouldCommitAndPush = config.command === "EXECUTE";
+    const shouldCommitAndPush = config.command === LoopCommand.Execute;
     if (shouldCommitAndPush) {
       attemptSafetyCommit(
         workDir,
@@ -2254,7 +2307,7 @@ function setupShutdownHandlers(workDir) {
     try {
       await reportEvent({
         type: "error",
-        code: "CANCELLED",
+        code: LoopErrorCode.Cancelled,
         message: `Loop cancelled (${signal})`,
         correlationId: config.correlationId,
       });
@@ -2353,7 +2406,7 @@ function runRepoSetup(workDir) {
 }
 
 function shouldCreateWorkingBranch() {
-  return config.command === "EXECUTE";
+  return config.command === LoopCommand.Execute;
 }
 
 function createWorkingBranch(workDir) {
@@ -2446,40 +2499,19 @@ function validatePreRunInputs(command, contextPack) {
   const hasArtifacts =
     Array.isArray(contextPack?.artifacts) && contextPack.artifacts.length > 0;
 
-  if (command === "EXECUTE" && !(hasArtifacts || hasPrompt)) {
+  const error = validateCommandInputs(command, hasPrompt, hasArtifacts);
+  if (error) {
     throw new HarnessError(
       ERROR_CODES.preRunValidation,
-      "Pre-run validation failed: EXECUTE requires prompt or artifacts in context pack"
-    );
-  }
-  if (command === "REQUEST_CHANGES" && !hasPrompt) {
-    throw new HarnessError(
-      ERROR_CODES.preRunValidation,
-      "Pre-run validation failed: REQUEST_CHANGES requires a non-empty prompt"
-    );
-  }
-  if (command === "EVALUATE_PRD" && !hasArtifacts) {
-    throw new HarnessError(
-      ERROR_CODES.preRunValidation,
-      "Pre-run validation failed: EVALUATE_PRD requires artifacts in context pack (PRD content)"
-    );
-  }
-  if (command === "EVALUATE_PLAN" && !hasArtifacts) {
-    throw new HarnessError(
-      ERROR_CODES.preRunValidation,
-      "Pre-run validation failed: EVALUATE_PLAN requires artifacts in context pack (plan content)"
-    );
-  }
-  if (command === "EVALUATE_CODE" && !hasArtifacts) {
-    throw new HarnessError(
-      ERROR_CODES.preRunValidation,
-      "Pre-run validation failed: EVALUATE_CODE requires artifacts in context pack (implementation artifacts)"
+      `Pre-run validation failed: ${error}`
     );
   }
 }
 
 function buildCommand(workDir, symphonyWD, prdPath) {
-  const usesRunLoop = config.command === "PLAN" || config.command === "EXECUTE";
+  const usesRunLoop =
+    config.command === LoopCommand.Plan ||
+    config.command === LoopCommand.Execute;
 
   if (usesRunLoop) {
     let runLoopPath;
@@ -2595,7 +2627,7 @@ function getHeadCommitSha(workDir) {
  */
 function writeExecutionResult(workDir, prInfo) {
   try {
-    const filePath = path.join(workDir, "execution-result.json");
+    const filePath = path.join(workDir, LoopArtifactFile.ExecutionResult);
 
     // Don't overwrite if the LLM commit step already wrote it —
     // the LLM's version has first-hand PR/commit info from its own operations.
@@ -2646,7 +2678,7 @@ async function reportFinalStatus(
   // during the run)
   await refreshGitHubToken();
 
-  const shouldCommitAndPush = config.command === "EXECUTE";
+  const shouldCommitAndPush = config.command === LoopCommand.Execute;
 
   const isIncomplete = timedOut || exitCode !== 0;
   const safetyCommitMsg = isIncomplete
@@ -2656,7 +2688,10 @@ async function reportFinalStatus(
   let prInfo = null;
 
   if (shouldCommitAndPush) {
-    const resultFilePath = path.join(swDir || workDir, "execution-result.json");
+    const resultFilePath = path.join(
+      swDir || workDir,
+      LoopArtifactFile.ExecutionResult
+    );
 
     // Step 1: LLM-assisted commit — standalone Claude call that reviews
     // changes, writes a good commit message, pushes, creates a PR, and
@@ -2713,7 +2748,7 @@ async function reportFinalStatus(
   if (timedOut) {
     await reportEvent({
       type: "error",
-      code: "TIMED_OUT",
+      code: LoopErrorCode.TimedOut,
       message: `Loop exceeded maximum runtime of ${MAX_RUNTIME_MS / 1000}s`,
       result: {
         ...(prInfo || {}),
@@ -2749,7 +2784,7 @@ async function reportFinalStatus(
   } else {
     await reportEvent({
       type: "error",
-      code: "PROCESS_FAILED",
+      code: LoopErrorCode.ProcessFailed,
       message: `Process exited with code ${exitCode}`,
       result: {
         ...(prInfo || {}),
@@ -2942,7 +2977,7 @@ async function main() {
     // Best-effort: refresh token, LLM commit, safety commit, push, create PR
     // Mirrors dispatch workflow's `if: always()` pattern — preserve work
     // even on fatal errors.
-    const shouldCommitAndPush = config.command === "EXECUTE";
+    const shouldCommitAndPush = config.command === LoopCommand.Execute;
 
     try {
       await refreshGitHubToken();
@@ -2954,7 +2989,7 @@ async function main() {
     if (shouldCommitAndPush) {
       const errorResultPath = path.join(
         symphonyWorkDir || workDir,
-        "execution-result.json"
+        LoopArtifactFile.ExecutionResult
       );
 
       // Try LLM commit first (writes execution-result.json on success)
@@ -3051,10 +3086,15 @@ export {
   config,
   ERROR_CODES,
   HarnessError,
+  parseTokenUsage,
+  parsePrInfo,
+  syncPlanFromContextPack,
   validateConfig,
   validatePreRunInputs,
   validateSecrets,
   writeContextPackFiles,
+  writeExecutionResult,
+  writePrdFile,
 };
 
 // Guard main() so the script does not execute when imported by tests.

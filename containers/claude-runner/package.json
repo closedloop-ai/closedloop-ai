@@ -1,0 +1,13 @@
+{
+  "name": "@closedloop-ai/claude-runner",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test harness-agent.test.mjs"
+  },
+  "dependencies": {
+    "@closedloop-ai/loops-api": "workspace:*",
+    "zod": "^4.3.6"
+  }
+}

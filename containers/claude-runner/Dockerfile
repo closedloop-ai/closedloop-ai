@@ -45,11 +45,18 @@ RUN corepack enable && corepack prepare pnpm@latest --activate
 # Install Claude Code CLI
 RUN npm install -g @anthropic-ai/claude-code
 
-# Copy the harness agent and install its dependencies locally
+# Copy the harness agent and shared loop contract package
 COPY containers/claude-runner/harness-agent.mjs /opt/harness/harness-agent.mjs
-# Copy shared loop contract package (types + Zod schemas) for harness imports
-COPY packages/loops-api/dist/ /opt/harness/loops-api/
-RUN cd /opt/harness && npm init -y && npm install @aws-sdk/client-s3 zod
+COPY containers/claude-runner/package.json /opt/harness/package.json
+# Copy pre-built loops-api package so npm can install it from local path
+COPY packages/loops-api/dist/ /opt/harness/loops-api-pkg/dist/
+COPY packages/loops-api/package.json /opt/harness/loops-api-pkg/package.json
+# Strip devDependencies — they contain workspace:* refs that npm can't resolve.
+RUN cd /opt/harness && \
+    jq 'del(.devDependencies)' loops-api-pkg/package.json > tmp.json && \
+    mv tmp.json loops-api-pkg/package.json && \
+    npm pkg set "dependencies.@closedloop-ai/loops-api=file:./loops-api-pkg" && \
+    npm install --omit=dev @aws-sdk/client-s3 zod
 
 # Create non-root user for runtime.
 # The harness, git clone, and Claude Code all run as this user.

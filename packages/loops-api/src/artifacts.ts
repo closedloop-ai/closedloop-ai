@@ -21,20 +21,11 @@ export const LoopArtifactFile = {
   PrdJudges: "prd-judges.json",
   PlanJudges: "plan-judges.json",
   CodeJudges: "code-judges.json",
+  Features: "features.json",
+  ImplementationPlanMarkdown: "implementation-plan.md",
+  OpenQuestions: "open-questions.md",
+  Perf: "perf.jsonl",
+  State: "state.json",
 } as const;
 export type LoopArtifactFile =
   (typeof LoopArtifactFile)[keyof typeof LoopArtifactFile];
-
-/**
- * Normalize lowercase artifact type variants (Electron legacy) to canonical uppercase.
- * Returns the input unchanged if already uppercase or unrecognized.
- */
-const LOWERCASE_ARTIFACT_TYPE_MAP: Record<string, LoopArtifactType> = {
-  prd: LoopArtifactType.Prd,
-  plan: LoopArtifactType.ImplementationPlan,
-  artifact: LoopArtifactType.Feature,
-};
-
-export function normalizeArtifactType(type: string): string {
-  return LOWERCASE_ARTIFACT_TYPE_MAP[type] ?? type;
-}

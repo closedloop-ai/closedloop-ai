@@ -35,6 +35,9 @@
     "test": {
       "dependsOn": ["^test"]
     },
+    "api#test": {
+      "dependsOn": ["^test", "@closedloop-ai/loops-api#build"]
+    },
     "analyze": {
       "dependsOn": ["^analyze"]
     },
