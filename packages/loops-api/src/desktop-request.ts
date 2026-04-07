@@ -1,7 +1,7 @@
 import { z } from "zod";
+import { LoopArtifactType } from "./artifacts";
 import type { LoopCommand } from "./commands";
 import { LoopCommandSchema } from "./commands";
-
 import type { ContextPackAttachment } from "./context-pack";
 import { ContextPackAttachmentSchema } from "./context-pack";
 
@@ -19,7 +19,7 @@ export type LoopRequestBody = {
   apiBaseUrl?: string;
   artifacts: Array<{
     id: string;
-    type: string;
+    type: LoopArtifactType;
     title: string;
     content: string;
   }>;
@@ -43,7 +43,7 @@ export const LoopRequestBodySchema = z.object({
   artifacts: z.array(
     z.object({
       id: z.string(),
-      type: z.string(),
+      type: z.enum(LoopArtifactType),
       title: z.string(),
       content: z.string(),
     })
