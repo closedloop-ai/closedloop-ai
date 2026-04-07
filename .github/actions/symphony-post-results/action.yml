@@ -89,7 +89,7 @@ runs:
         }
 
         # Find the latest run directory
-        LATEST_RUN=$(ls -td .claude/runs/*/ 2>/dev/null | head -1)
+        LATEST_RUN=$(ls -td .closedloop-ai/runs/*/ 2>/dev/null | head -1)
         if [ -z "$LATEST_RUN" ]; then
           echo "::error::No runs directory found"
           exit 1

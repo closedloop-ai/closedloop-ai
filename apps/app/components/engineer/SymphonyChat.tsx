@@ -1796,7 +1796,7 @@ export function SymphonyChat({
         onToggleExpand={() => setIsExpanded((v) => !v)}
       >
         <DialogTitle className="sr-only">
-          Symphony Chat for {ticketId}
+          ClosedLoop Chat for {ticketId}
         </DialogTitle>
         {ticketTitle && (
           <div className="flex min-h-0 shrink-0 items-center gap-2 border-border border-b bg-muted/30 px-5 py-4 pr-24">
@@ -2645,7 +2645,7 @@ export function SymphonyChatButton({
         "shadow-sm"
       )}
       onClick={onClick}
-      title="Chat with Symphony"
+      title="Chat with ClosedLoop"
     >
       <MessageSquare className="size-4" />
       {hasMessages && (
@@ -2663,9 +2663,9 @@ function transformImageSrc(
   ticketId: string,
   repoPath: string
 ): string {
-  // Match full path (.closedloop-ai/work/attachments/... or legacy .claude/work/attachments/...) or relative path (attachments/...)
+  // Match full path (.closedloop-ai/work/attachments/...) or relative path (attachments/...)
   const attachmentsMatch =
-    /(?:\.(?:closedloop-ai|claude)\/work\/)?attachments\/(.+)$/.exec(src);
+    /(?:\.closedloop-ai\/work\/)?attachments\/(.+)$/.exec(src);
   if (attachmentsMatch) {
     const filename = attachmentsMatch[1];
     return `/api/engineer/symphony/attachments/${encodeURIComponent(ticketId)}/${encodeURIComponent(filename)}?repo=${encodeURIComponent(repoPath)}`;

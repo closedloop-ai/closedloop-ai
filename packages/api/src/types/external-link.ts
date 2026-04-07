@@ -54,6 +54,8 @@ export type PullRequestMetadata = {
   headBranch: string;
   baseBranch: string;
   state: GitHubPRState;
+  lastVerifiedAt?: string | null;
+  lastRefreshAttemptAt?: string | null;
 };
 
 /** Type-safe metadata for PREVIEW_DEPLOYMENT external links */

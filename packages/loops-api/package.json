@@ -1,6 +1,6 @@
 {
   "name": "@closedloop-ai/loops-api",
-  "version": "0.1.0",
+  "version": "0.2.1",
   "type": "module",
   "repository": {
     "type": "git",
@@ -9,6 +9,7 @@
   },
   "exports": {
     "./artifacts": "./src/artifacts.ts",
+    "./bundles": "./src/bundles.ts",
     "./commands": "./src/commands.ts",
     "./common": "./src/common.ts",
     "./context-pack": "./src/context-pack.ts",
@@ -29,6 +30,11 @@
         "types": "./dist/artifacts.d.ts",
         "import": "./dist/artifacts.js",
         "require": "./dist/artifacts.cjs"
+      },
+      "./bundles": {
+        "types": "./dist/bundles.d.ts",
+        "import": "./dist/bundles.js",
+        "require": "./dist/bundles.cjs"
       },
       "./commands": {
         "types": "./dist/commands.d.ts",
@@ -80,7 +86,8 @@
   "scripts": {
     "build": "tsup",
     "clean": "git clean -xdf .cache .turbo dist node_modules",
-    "typecheck": "tsc --noEmit --emitDeclarationOnly false"
+    "typecheck": "tsc --noEmit --emitDeclarationOnly false",
+    "test": "vitest run"
   },
   "peerDependencies": {
     "zod": "^4.0.0"
@@ -90,6 +97,7 @@
     "@types/node": "^25.3.5",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
+    "vitest": "^4.0.18",
     "zod": "^4.3.6"
   }
 }

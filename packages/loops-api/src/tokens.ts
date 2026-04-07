@@ -43,3 +43,23 @@ export const MODEL_PRICING: Record<string, { input: number; output: number }> =
     // Fallback for unknown models
     default: { input: 15, output: 75 },
   };
+
+const RE_DATE_SUFFIX = /-\d{8}$/;
+
+const CANONICAL_MODEL_NAMES: Record<string, string> = {
+  "claude-opus-4-6": "claude-opus-4",
+  "claude-opus-4": "claude-opus-4",
+  "claude-sonnet-4-5": "claude-sonnet-4-5",
+  "claude-haiku-4-5": "claude-haiku-4-5",
+};
+
+/**
+ * Normalize model names to canonical short forms for consistent pricing lookup.
+ *
+ * Strips date suffixes (e.g., `-20250929`) and maps known variants to
+ * canonical names (e.g., `claude-opus-4-6` → `claude-opus-4`).
+ */
+export function normalizeModelName(rawName: string): string {
+  const stripped = rawName.replace(RE_DATE_SUFFIX, "");
+  return CANONICAL_MODEL_NAMES[stripped] ?? stripped;
+}

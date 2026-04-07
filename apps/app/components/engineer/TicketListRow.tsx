@@ -186,7 +186,7 @@ export function TicketListRow({
         {/* Status badge */}
         <span
           className={cn(
-            "shrink-0 rounded-full px-2 py-0.5 font-medium text-xs",
+            "max-w-[8rem] shrink-0 truncate rounded-full px-2 py-0.5 font-medium text-xs",
             getStatusStyles(ticket.status.type)
           )}
         >
@@ -219,8 +219,8 @@ export function TicketListRow({
             onClick={() => onParentClick?.(parentTicketId)}
             type="button"
           >
-            <GitMerge className="size-2.5" />
-            {parentTicketId}
+            <GitMerge className="size-2.5 shrink-0" />
+            <span className="max-w-[6rem] truncate">{parentTicketId}</span>
           </button>
         )}
 
@@ -242,7 +242,7 @@ export function TicketListRow({
               }
             }}
           >
-            <BookMarked className="size-2.5" />
+            <BookMarked className="size-2.5 shrink-0" />
             Learnings
           </button>
         )}

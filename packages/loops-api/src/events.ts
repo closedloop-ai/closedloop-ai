@@ -20,18 +20,51 @@ export type LoopEventType = (typeof LoopEventType)[keyof typeof LoopEventType];
 
 export const LoopEventTypeSchema = z.enum(LoopEventType);
 
+// --- Completed event result shape ---
+
+/**
+ * Typed shape for the completed event `result` field.
+ *
+ * Both ECS harness and Electron gateway send these fields. The backend reads
+ * specific fields via `extractPrSessionInfo()`. Extra fields are preserved
+ * via `.passthrough()` on the schema.
+ */
+export type LoopCompletedResult = {
+  exitCode?: number;
+  signal?: string | null;
+  durationSeconds?: number;
+  prUrl?: string | null;
+  prNumber?: number | null;
+  branchName?: string | null;
+  commitSha?: string | null;
+  sessionId?: string;
+};
+
+export const LoopCompletedResultSchema = z.looseObject({
+  exitCode: z.number().optional(),
+  signal: z.string().nullable().optional(),
+  durationSeconds: z.number().optional(),
+  prUrl: z.string().nullable().optional(),
+  prNumber: z.number().nullable().optional(),
+  branchName: z.string().nullable().optional(),
+  commitSha: z.string().nullable().optional(),
+  sessionId: z.string().optional(),
+});
+
 // --- Individual event types + schemas ---
 
 export type LoopEventStarted = {
   type: "started";
   loopId: string;
   timestamp: string;
+  correlationId?: string;
 };
 
 export const LoopEventStartedSchema = z.object({
   type: z.literal("started"),
   loopId: z.string(),
   timestamp: z.string(),
+  correlationId: z.string().optional(),
 });
 
 export type LoopEventOutput = {
@@ -39,6 +72,8 @@ export type LoopEventOutput = {
   chunk: string;
   timestamp?: string;
   tokenUsage?: TokenUsage;
+  correlationId?: string;
+  loopId?: string;
 };
 
 export const LoopEventOutputSchema = z.object({
@@ -46,6 +81,8 @@ export const LoopEventOutputSchema = z.object({
   chunk: z.string(),
   timestamp: z.string().optional(),
   tokenUsage: TokenUsageSchema.optional(),
+  correlationId: z.string().optional(),
+  loopId: z.string().optional(),
 });
 
 export type LoopEventProgress = {
@@ -53,6 +90,8 @@ export type LoopEventProgress = {
   percent: number;
   stage: string;
   timestamp: string;
+  correlationId?: string;
+  loopId?: string;
 };
 
 export const LoopEventProgressSchema = z.object({
@@ -60,6 +99,8 @@ export const LoopEventProgressSchema = z.object({
   percent: z.number(),
   stage: z.string(),
   timestamp: z.string(),
+  correlationId: z.string().optional(),
+  loopId: z.string().optional(),
 });
 
 export type LoopEventToolCall = {
@@ -69,6 +110,8 @@ export type LoopEventToolCall = {
   input?: unknown;
   output?: unknown;
   timestamp: string;
+  correlationId?: string;
+  loopId?: string;
 };
 
 export const LoopEventToolCallSchema = z.object({
@@ -78,6 +121,8 @@ export const LoopEventToolCallSchema = z.object({
   input: z.unknown().optional(),
   output: z.unknown().optional(),
   timestamp: z.string(),
+  correlationId: z.string().optional(),
+  loopId: z.string().optional(),
 });
 
 export type LoopEventArtifactCreated = {
@@ -85,6 +130,8 @@ export type LoopEventArtifactCreated = {
   artifactId: string;
   artifactType: string;
   timestamp: string;
+  correlationId?: string;
+  loopId?: string;
 };
 
 export const LoopEventArtifactCreatedSchema = z.object({
@@ -92,11 +139,13 @@ export const LoopEventArtifactCreatedSchema = z.object({
   artifactId: z.string(),
   artifactType: z.string(),
   timestamp: z.string(),
+  correlationId: z.string().optional(),
+  loopId: z.string().optional(),
 });
 
 export type LoopEventCompleted = {
   type: "completed";
-  result: JsonObject;
+  result: LoopCompletedResult;
   tokensUsed: {
     input: number;
     output: number;
@@ -108,11 +157,14 @@ export type LoopEventCompleted = {
   tokensByModel?: TokensByModel;
   apiKeySource?: string;
   timestamp: string;
+  correlationId?: string;
+  loopId?: string;
+  warnings?: string[];
 };
 
 export const LoopEventCompletedSchema = z.object({
   type: z.literal("completed"),
-  result: z.record(z.string(), z.unknown()),
+  result: LoopCompletedResultSchema,
   tokensUsed: z.object({
     input: z.number(),
     output: z.number(),
@@ -124,6 +176,9 @@ export const LoopEventCompletedSchema = z.object({
   tokensByModel: TokensByModelSchema.optional(),
   apiKeySource: z.string().optional(),
   timestamp: z.string(),
+  correlationId: z.string().optional(),
+  loopId: z.string().optional(),
+  warnings: z.array(z.string()).optional(),
 });
 
 export type LoopEventError = {
@@ -136,6 +191,10 @@ export type LoopEventError = {
   tokensByModel?: TokensByModel;
   diagnosticsVersion?: string;
   apiKeySource?: string;
+  result?: JsonObject;
+  correlationId?: string;
+  loopId?: string;
+  warnings?: string[];
 };
 
 export const LoopEventErrorSchema = z.object({
@@ -148,18 +207,26 @@ export const LoopEventErrorSchema = z.object({
   tokensByModel: TokensByModelSchema.optional(),
   diagnosticsVersion: z.string().optional(),
   apiKeySource: z.string().optional(),
+  result: z.record(z.string(), z.unknown()).optional(),
+  correlationId: z.string().optional(),
+  loopId: z.string().optional(),
+  warnings: z.array(z.string()).optional(),
 });
 
 export type LoopEventCancelled = {
   type: "cancelled";
   reason?: string;
   timestamp: string;
+  correlationId?: string;
+  loopId?: string;
 };
 
 export const LoopEventCancelledSchema = z.object({
   type: z.literal("cancelled"),
   reason: z.string().optional(),
   timestamp: z.string(),
+  correlationId: z.string().optional(),
+  loopId: z.string().optional(),
 });
 
 // --- Discriminated union ---

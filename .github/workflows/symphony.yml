@@ -155,7 +155,7 @@ jobs:
       - name: Setup Workdir
         id: setup_workdir
         run: |
-          WORKDIR=".claude/runs/$(date -u +%Y%m%d-%H%M%S)-issue-${{ github.event.issue.number }}"
+          WORKDIR=".closedloop-ai/runs/$(date -u +%Y%m%d-%H%M%S)-issue-${{ github.event.issue.number }}"
           mkdir -p "$WORKDIR"
           echo "workdir=$WORKDIR" >> "$GITHUB_OUTPUT"
           echo "Created workdir: $WORKDIR"
@@ -183,9 +183,9 @@ jobs:
           RUN_LOOP="${{ steps.cli_setup.outputs.run_loop_path }}"
 
           # Copy attachments if they exist
-          if [ -d ".claude/attachments" ] && [ "$(ls -A .claude/attachments 2>/dev/null)" ]; then
+          if [ -d ".closedloop-ai/attachments" ] && [ "$(ls -A .closedloop-ai/attachments 2>/dev/null)" ]; then
             mkdir -p "$WORKDIR/attachments"
-            cp -r .claude/attachments/* "$WORKDIR/attachments/"
+            cp -r .closedloop-ai/attachments/* "$WORKDIR/attachments/"
             echo "Copied attachments to $WORKDIR/attachments/"
           fi
 
@@ -252,7 +252,7 @@ jobs:
           ls -la "$WORKDIR"
 
           # Check for minimum viable output
-          # The code run-loop deletes its state file (.claude/closedloop-loop.local.md) on
+          # The code run-loop deletes its state file (.closedloop-ai/closedloop-loop.local.md) on
           # successful completion, so we verify success by checking for expected output artifacts
           if [ ! -f "$WORKDIR/plan.json" ]; then
             echo "::error::plan.json not found in $WORKDIR"
@@ -661,7 +661,7 @@ jobs:
       - name: Verify Implementation Plan
         id: verify_plan
         run: |
-          LATEST_RUN=$(ls -td .claude/runs/*/ 2>/dev/null | head -1)
+          LATEST_RUN=$(ls -td .closedloop-ai/runs/*/ 2>/dev/null | head -1)
           LATEST_RUN="${LATEST_RUN%/}"
 
           if [ -z "$LATEST_RUN" ]; then
@@ -1118,6 +1118,10 @@ jobs:
           github_token: ${{ steps.token.outputs.token }}
           action_name: process amendment
 
+      - name: Ensure ClosedLoop Workspace
+        if: steps.context.outputs.has_plan != 'true'
+        run: mkdir -p .closedloop-ai
+
       - name: Run ClosedLoop Chat
         id: symphony
         if: steps.context.outputs.has_plan != 'true'
@@ -1146,7 +1150,7 @@ jobs:
             Instructions:
             1. If previous context exists, read plan.json to understand the current state (tasks, open questions, acceptance criteria)
             2. Respond helpfully to the user's message/question
-            3. Write your response to a file at .claude/chat-response.md
+            3. Write your response to a file at .closedloop-ai/chat-response.md
             4. Keep your response focused and actionable
 
             Available commands the user can use:
@@ -1163,7 +1167,7 @@ jobs:
         id: post_response
         if: steps.context.outputs.has_plan != 'true'
         run: |
-          RESPONSE_FILE=".claude/chat-response.md"
+          RESPONSE_FILE=".closedloop-ai/chat-response.md"
 
           if [ -f "$RESPONSE_FILE" ]; then
             BODY=$(cat "$RESPONSE_FILE")

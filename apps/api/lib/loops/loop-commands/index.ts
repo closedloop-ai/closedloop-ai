@@ -4,7 +4,10 @@ import { evaluateCodeHandler } from "./evaluate-code-handler";
 import { evaluatePlanHandler } from "./evaluate-plan-handler";
 import { evaluatePrdHandler } from "./evaluate-prd-handler";
 import { executeHandler } from "./execute-handler";
-import { generatePrdHandler } from "./generate-prd-handler";
+import {
+  generatePrdHandler,
+  requestPrdChangesHandler,
+} from "./generate-prd-handler";
 import type { LoopCommandHandler } from "./loop-command-handler";
 import { planHandler, requestChangesHandler } from "./plan-handler";
 
@@ -27,4 +30,5 @@ const COMMAND_HANDLERS: Record<LoopCommand, LoopCommandHandler | undefined> = {
   [LoopCommand.GeneratePrd]: generatePrdHandler,
   [LoopCommand.EvaluatePlan]: evaluatePlanHandler,
   [LoopCommand.EvaluateCode]: evaluateCodeHandler,
+  [LoopCommand.RequestPrdChanges]: requestPrdChangesHandler,
 };

@@ -13,7 +13,6 @@ import {
   READONLY_CODEBASE_TOOLS,
   WEB_ONLY_TOOLS,
 } from "@/lib/engineer/allowed-tools";
-import { migrateLegacyChatHistory } from "@/lib/engineer/migrate-chat-history";
 import { getShellPath } from "@/lib/engineer/shell-path";
 import {
   type ContentBlock,
@@ -43,32 +42,7 @@ const HISTORY_PATH = join(
   "chat-history.json"
 );
 
-const CLOSEDLOOP_HISTORY_PATH = join(
-  homedir(),
-  ".claude",
-  ".closedloop",
-  "chats",
-  "_run-viewer",
-  "chat-history.json"
-);
-
-const LEGACY_HISTORY_PATH = join(
-  homedir(),
-  ".claude",
-  ".symphony",
-  "chats",
-  "_run-viewer",
-  "chat-history.json"
-);
-
 function loadChatHistory(): ChatHistory {
-  if (existsSync(HISTORY_PATH)) {
-    // already at new location
-  } else if (existsSync(CLOSEDLOOP_HISTORY_PATH)) {
-    migrateLegacyChatHistory(CLOSEDLOOP_HISTORY_PATH, HISTORY_PATH);
-  } else if (existsSync(LEGACY_HISTORY_PATH)) {
-    migrateLegacyChatHistory(LEGACY_HISTORY_PATH, HISTORY_PATH);
-  }
   if (!existsSync(HISTORY_PATH)) {
     return { messages: [] };
   }
@@ -88,9 +62,9 @@ function saveChatHistory(history: ChatHistory): void {
   writeFileSync(HISTORY_PATH, JSON.stringify(history, null, 2));
 }
 
-const RUN_ARTIFACT_GUIDE = `## Symphony Run Artifact Guide
+const RUN_ARTIFACT_GUIDE = `## ClosedLoop Run Artifact Guide
 
-Symphony runs execute in numbered phases. Key artifacts:
+ClosedLoop runs execute in numbered phases. Key artifacts:
 
 PLANNING:
 - prd.md — Original product requirements document

@@ -1521,7 +1521,7 @@ Please try again or contact support if the issue persists.`
 
       const artifacts = await downloadWorkflowArtifacts(actionRun.runId);
 
-      // Find the symphony run artifact (contains .claude/runs/ with conversation logs)
+      // Find the symphony run artifact (contains .closedloop-ai/runs/ with conversation logs)
       const symphonyArtifact = artifacts.find((a) =>
         SYMPHONY_RUN_ARTIFACT_PREFIXES.some((prefix) =>
           a.name.startsWith(prefix)

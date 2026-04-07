@@ -61,6 +61,7 @@ vi.mock("@/lib/desktop-gateway-wire", () => ({
 // --- Imports (after mocks) ---
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { toRelayOperation } from "@/app/compute-targets/relay-command-helpers";
 import {
   DispatchError,
   isDispatchError,
@@ -84,6 +85,16 @@ const VALID_LAUNCH_OPTS = {
     prompt: undefined,
     repoInfo: undefined,
     committer: undefined,
+    attachments: [
+      {
+        id: "att-1",
+        filename: "spec.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 1024,
+        signedUrl: "https://storage.example.com/spec.pdf?sig=abc",
+        signedUrlExpiresAt: "2026-12-31T00:00:00.000Z",
+      },
+    ],
   },
 };
 
@@ -171,6 +182,61 @@ describe("dispatchRelayOperation (via launchLoopOnDesktop)", () => {
     await expect(launchLoopOnDesktop(VALID_LAUNCH_OPTS)).rejects.toThrow(
       RE_503
     );
+  });
+
+  it("includes contextPack.attachments in the relay payload body", async () => {
+    vi.spyOn(globalThis, "fetch").mockReturnValue(
+      mockResponse(200, { delivered: true })
+    );
+
+    await launchLoopOnDesktop(VALID_LAUNCH_OPTS);
+
+    const toRelayOperationMock = vi.mocked(toRelayOperation);
+    expect(toRelayOperationMock).toHaveBeenCalledOnce();
+    const [, dispatchedInput] = toRelayOperationMock.mock.calls[0];
+    expect(
+      (dispatchedInput as { body: Record<string, unknown> }).body.attachments
+    ).toEqual(VALID_LAUNCH_OPTS.contextPack.attachments);
+  });
+
+  it("passes undefined to relay payload body when contextPack.attachments is absent", async () => {
+    vi.spyOn(globalThis, "fetch").mockReturnValue(
+      mockResponse(200, { delivered: true })
+    );
+
+    const opts = {
+      ...VALID_LAUNCH_OPTS,
+      contextPack: { ...VALID_LAUNCH_OPTS.contextPack, attachments: undefined },
+    };
+
+    await launchLoopOnDesktop(opts);
+
+    const toRelayOperationMock = vi.mocked(toRelayOperation);
+    expect(toRelayOperationMock).toHaveBeenCalledOnce();
+    const [, dispatchedInput] = toRelayOperationMock.mock.calls[0];
+    expect(
+      (dispatchedInput as { body: Record<string, unknown> }).body.attachments
+    ).toBeUndefined();
+  });
+
+  it("passes empty array to relay payload body when contextPack.attachments is []", async () => {
+    vi.spyOn(globalThis, "fetch").mockReturnValue(
+      mockResponse(200, { delivered: true })
+    );
+
+    const opts = {
+      ...VALID_LAUNCH_OPTS,
+      contextPack: { ...VALID_LAUNCH_OPTS.contextPack, attachments: [] },
+    };
+
+    await launchLoopOnDesktop(opts);
+
+    const toRelayOperationMock = vi.mocked(toRelayOperation);
+    expect(toRelayOperationMock).toHaveBeenCalledOnce();
+    const [, dispatchedInput] = toRelayOperationMock.mock.calls[0];
+    expect(
+      (dispatchedInput as { body: Record<string, unknown> }).body.attachments
+    ).toEqual([]);
   });
 
   it("does NOT throw when relay returns { delivered: false } on the kill (fire-and-forget) path", async () => {

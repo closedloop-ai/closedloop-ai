@@ -143,7 +143,7 @@ function FindingCardButton({
         ))}
       <SeverityIcon severity={finding.severity} />
       <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-1.5">
+        <div className="flex min-w-0 items-center gap-1.5">
           <PriorityBadge priority={displayPriority} />
           <p className="truncate font-medium text-sm">{title}</p>
         </div>
