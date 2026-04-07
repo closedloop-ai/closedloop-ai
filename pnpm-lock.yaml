@@ -84,6 +84,9 @@ importers:
       '@aws-sdk/s3-request-presigner':
         specifier: ^3.987.0
         version: 3.987.0
+      '@closedloop-ai/loops-api':
+        specifier: workspace:*
+        version: link:../../packages/loops-api
       '@liveblocks/node':
         specifier: ^3.14.0
         version: 3.14.0(@types/json-schema@7.0.15)
@@ -777,6 +780,9 @@ importers:
 
   packages/api:
     dependencies:
+      '@closedloop-ai/loops-api':
+        specifier: workspace:*
+        version: link:../loops-api
       zod:
         specifier: ^4.3.6
         version: 4.3.6
@@ -1268,6 +1274,24 @@ importers:
       vitest:
         specifier: ^4.0.18
         version: 4.0.18(@opentelemetry/api@1.9.0)(@types/node@25.3.5)(jiti@2.6.1)(jsdom@27.4.0(@noble/hashes@1.8.0)(bufferutil@4.1.0))(lightningcss@1.30.2)(terser@5.46.0)(tsx@4.21.0)(yaml@2.8.2)
+
+  packages/loops-api:
+    devDependencies:
+      '@repo/typescript-config':
+        specifier: workspace:*
+        version: link:../typescript-config
+      '@types/node':
+        specifier: ^25.3.5
+        version: 25.3.5
+      tsup:
+        specifier: ^8.5.1
+        version: 8.5.1(jiti@2.6.1)(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.3)(yaml@2.8.2)
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      zod:
+        specifier: ^4.3.6
+        version: 4.3.6
 
   packages/next-config:
     dependencies:

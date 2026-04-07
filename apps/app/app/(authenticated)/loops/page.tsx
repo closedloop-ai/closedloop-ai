@@ -10,7 +10,7 @@ export const metadata: Metadata = {
 
 export default function LoopsPage() {
   return (
-    <>
+    <div className="flex min-h-0 flex-1 flex-col">
       <Header breadcrumbs={[{ label: "Loops" }]} />
       <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-auto p-6">
         <div className="flex items-start justify-between">
@@ -29,6 +29,6 @@ export default function LoopsPage() {
         </div>
         <LoopsTable />
       </div>
-    </>
+    </div>
   );
 }

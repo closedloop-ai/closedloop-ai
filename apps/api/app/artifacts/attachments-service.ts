@@ -1,5 +1,6 @@
 import "server-only";
 
+import type { ContextPackAttachment } from "@closedloop-ai/loops-api/context-pack";
 import { createId } from "@paralleldrive/cuid2";
 import type {
   AttachmentDownloadResponse,
@@ -7,7 +8,6 @@ import type {
   FileAttachment,
 } from "@repo/api/src/types/attachment";
 import { isImageMimeType } from "@repo/api/src/types/attachment";
-import type { ContextPackAttachment } from "@repo/api/src/types/context-attachment";
 import {
   deleteArtifact,
   getSignedDownloadUrl,

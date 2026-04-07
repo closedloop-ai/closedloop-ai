@@ -1,9 +1,14 @@
 "use client";
 
+import { useFeatureFlag } from "@repo/analytics/client";
 import { ArtifactStatus } from "@repo/api/src/types/artifact";
 import { Priority } from "@repo/api/src/types/common";
 import { FeatureStatus } from "@repo/api/src/types/feature";
-import { LoopCommand, LoopStatus } from "@repo/api/src/types/loop";
+import {
+  LoopCommand,
+  LoopErrorCode,
+  LoopStatus,
+} from "@repo/api/src/types/loop";
 import type {
   WorkstreamState,
   WorkstreamType,
@@ -340,16 +345,42 @@ const loopStatusLabels: Record<LoopStatus, string> = {
   [LoopStatus.TimedOut]: "Timed Out",
 };
 
-export function LoopStatusBadge({ status }: Readonly<{ status: LoopStatus }>) {
-  const displayStatus = loopStatusLabels[status] ?? status;
+export const loopErrorCodeLabels: Partial<Record<LoopErrorCode, string>> = {
+  [LoopErrorCode.NoWorkProduced]: "No output produced",
+  [LoopErrorCode.ContextLimitExceeded]: "Context limit exceeded",
+  [LoopErrorCode.PlanStateUnavailable]: "Plan state unavailable",
+};
+
+export const loopErrorCodeColors: Partial<Record<LoopErrorCode, string>> = {
+  [LoopErrorCode.NoWorkProduced]:
+    "bg-amber-100 text-amber-800 border-amber-200 dark:bg-amber-900/30 dark:text-amber-400 dark:border-amber-800",
+  [LoopErrorCode.ContextLimitExceeded]: COLOR_FAILURE,
+  [LoopErrorCode.PlanStateUnavailable]: COLOR_FAILURE,
+};
+
+export function LoopStatusBadge({
+  status,
+  errorCode,
+}: Readonly<{ status: LoopStatus; errorCode?: LoopErrorCode }>) {
+  const ghostLoopFlag = useFeatureFlag("ghost-loop-ux");
+  const ghostLoopUx = ghostLoopFlag?.enabled;
+
+  const showErrorCode =
+    ghostLoopUx &&
+    status === LoopStatus.Failed &&
+    errorCode !== undefined &&
+    loopErrorCodeLabels[errorCode] !== undefined;
+
+  const displayStatus = showErrorCode
+    ? loopErrorCodeLabels[errorCode!]
+    : (loopStatusLabels[status] ?? status);
+
+  const colorClass = showErrorCode
+    ? loopErrorCodeColors[errorCode!]
+    : (loopStatusColors[status] ?? loopStatusColors[LoopStatus.Pending]);
+
   return (
-    <Badge
-      className={cn(
-        "font-medium",
-        loopStatusColors[status] ?? loopStatusColors.PENDING
-      )}
-      variant="outline"
-    >
+    <Badge className={cn("font-medium", colorClass)} variant="outline">
       {displayStatus}
     </Badge>
   );

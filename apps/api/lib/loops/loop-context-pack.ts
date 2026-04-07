@@ -6,8 +6,8 @@
  * artifacts to include.
  */
 
+import type { ContextPackAttachment } from "@closedloop-ai/loops-api/context-pack";
 import { ArtifactType } from "@repo/api/src/types/artifact";
-import type { ContextPackAttachment } from "@repo/api/src/types/context-attachment";
 import { EntityType } from "@repo/api/src/types/entity-link";
 import { LoopCommand } from "@repo/api/src/types/loop";
 import { log } from "@repo/observability/log";
