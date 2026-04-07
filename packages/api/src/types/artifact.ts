@@ -208,6 +208,7 @@ export type GenerationStatus = {
     | "execute"
     | "chat"
     | "request_changes"
+    | "request_prd_changes"
     | "explore"
     | "decompose"
     | "evaluate_prd"

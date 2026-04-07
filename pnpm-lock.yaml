@@ -84,6 +84,9 @@ importers:
       '@aws-sdk/s3-request-presigner':
         specifier: ^3.987.0
         version: 3.987.0
+      '@closedloop-ai/loops-api':
+        specifier: workspace:*
+        version: link:../../packages/loops-api
       '@liveblocks/node':
         specifier: ^3.14.0
         version: 3.14.0(@types/json-schema@7.0.15)
@@ -777,6 +780,9 @@ importers:
 
   packages/api:
     dependencies:
+      '@closedloop-ai/loops-api':
+        specifier: workspace:*
+        version: link:../loops-api
       zod:
         specifier: ^4.3.6
         version: 4.3.6
@@ -1207,8 +1213,8 @@ importers:
   packages/internationalization:
     dependencies:
       '@formatjs/intl-localematcher':
-        specifier: ^0.6.2
-        version: 0.6.2
+        specifier: ^0.8.2
+        version: 0.8.2
       negotiator:
         specifier: ^1.0.0
         version: 1.0.0
@@ -1268,6 +1274,24 @@ importers:
       vitest:
         specifier: ^4.0.18
         version: 4.0.18(@opentelemetry/api@1.9.0)(@types/node@25.3.5)(jiti@2.6.1)(jsdom@27.4.0(@noble/hashes@1.8.0)(bufferutil@4.1.0))(lightningcss@1.30.2)(terser@5.46.0)(tsx@4.21.0)(yaml@2.8.2)
+
+  packages/loops-api:
+    devDependencies:
+      '@repo/typescript-config':
+        specifier: workspace:*
+        version: link:../typescript-config
+      '@types/node':
+        specifier: ^25.3.5
+        version: 25.3.5
+      tsup:
+        specifier: ^8.5.1
+        version: 8.5.1(jiti@2.6.1)(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.3)(yaml@2.8.2)
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      zod:
+        specifier: ^4.3.6
+        version: 4.3.6
 
   packages/next-config:
     dependencies:
@@ -1420,8 +1444,8 @@ importers:
   packages/security:
     dependencies:
       '@nosecone/next':
-        specifier: 1.3.0
-        version: 1.3.0(next@16.1.7(@opentelemetry/api@1.9.0)(@playwright/test@1.58.2)(babel-plugin-react-compiler@1.0.0)(react-dom@19.2.1(react@19.2.1))(react@19.2.1))
+        specifier: 1.3.1
+        version: 1.3.1(next@16.1.7(@opentelemetry/api@1.9.0)(@playwright/test@1.58.2)(babel-plugin-react-compiler@1.0.0)(react-dom@19.2.1(react@19.2.1))(react@19.2.1))
     devDependencies:
       '@repo/typescript-config':
         specifier: workspace:*
@@ -3374,11 +3398,14 @@ packages:
   '@formatjs/fast-memoize@3.1.0':
     resolution: {integrity: sha512-b5mvSWCI+XVKiz5WhnBCY3RJ4ZwfjAidU0yVlKa3d3MSgKmH1hC3tBGEAtYyN5mqL7N0G5x0BOUYyO8CEupWgg==}
 
-  '@formatjs/intl-localematcher@0.6.2':
-    resolution: {integrity: sha512-XOMO2Hupl0wdd172Y06h6kLpBz6Dv+J4okPLl4LPtzbr8f66WbIoy4ev98EBuZ6ZK4h5ydTN6XneT4QVpD7cdA==}
+  '@formatjs/fast-memoize@3.1.1':
+    resolution: {integrity: sha512-CbNbf+tlJn1baRnPkNePnBqTLxGliG6DDgNa/UtV66abwIjwsliPMOt0172tzxABYzSuxZBZfcp//qI8AvBWPg==}
 
   '@formatjs/intl-localematcher@0.8.1':
     resolution: {integrity: sha512-xwEuwQFdtSq1UKtQnyTZWC+eHdv7Uygoa+H2k/9uzBVQjDyp9r20LNDNKedWXll7FssT3GRHvqsdJGYSUWqYFA==}
+
+  '@formatjs/intl-localematcher@0.8.2':
+    resolution: {integrity: sha512-q05KMYGJLyqFNFtIb8NhWLF5X3aK/k0wYt7dnRFuy6aLQL+vUwQ1cg5cO4qawEiINybeCPXAWlprY2mSBjSXAQ==}
 
   '@graphql-typed-document-node/core@3.2.0':
     resolution: {integrity: sha512-mB9oAsNCm9aM3/SOv4YtBMqZbYj10R7dkq8byBqxGY/ncFwhf2oQzMV+LCRlWoDSEBJ3COiR1yeDvMtsoOsuFQ==}
@@ -3905,8 +3932,8 @@ packages:
     resolution: {integrity: sha512-oGB+UxlgWcgQkgwo8GcEGwemoTFt3FIO9ababBmaGwXIoBKZ+GTy0pP185beGg7Llih/NSHSV2XAs1lnznocSg==}
     engines: {node: '>= 8'}
 
-  '@nosecone/next@1.3.0':
-    resolution: {integrity: sha512-/vk7V4c9CRNdFyrG2Lr4VsImUYSIUzSFOZwXsUIOIIE+Hr8iMaysjZ+/8Yodhk/tbM89bwxNj5uwWN4Y4jOW3w==}
+  '@nosecone/next@1.3.1':
+    resolution: {integrity: sha512-k4BOWLsHra04XtZFzeAtMFh9IbE8ZdvgkKgJoBLOTYHTV6svZnwMver4wizNrZudCXcA7cokLb0lMOICw4n3pQ==}
     engines: {node: '>=20'}
     peerDependencies:
       next: 16.1.7
@@ -10237,8 +10264,8 @@ packages:
     resolution: {integrity: sha512-6eZs5Ls3WtCisHWp9S2GUy8dqkpGi4BVSz3GaqiE6ezub0512ESztXUwUB6C6IKbQkY2Pnb/mD4WYojCRwcwLA==}
     engines: {node: '>=0.10.0'}
 
-  nosecone@1.3.0:
-    resolution: {integrity: sha512-AYEacOpXmpbBX+GheA3Lbp8CxxsWtNanMjINFi9mt0pvPUaDCJc3VSffU21O0QDRtBM8hrBWhRVyvTqShaIHdw==}
+  nosecone@1.3.1:
+    resolution: {integrity: sha512-7Oufja1/Ud9MInuMviqyWuUPlUco0mdF99AJLm2d5hYAGtbmAMCxXJZyAwBy/ruaK+8pEp2mQ9L3LM4qbqL7dg==}
     engines: {node: '>=20'}
 
   npm-run-path@4.0.1:
@@ -15858,14 +15885,16 @@ snapshots:
     dependencies:
       tslib: 2.8.1
 
-  '@formatjs/intl-localematcher@0.6.2':
-    dependencies:
-      tslib: 2.8.1
+  '@formatjs/fast-memoize@3.1.1': {}
 
   '@formatjs/intl-localematcher@0.8.1':
     dependencies:
       '@formatjs/fast-memoize': 3.1.0
       tslib: 2.8.1
+
+  '@formatjs/intl-localematcher@0.8.2':
+    dependencies:
+      '@formatjs/fast-memoize': 3.1.1
 
   '@graphql-typed-document-node/core@3.2.0(graphql@15.10.1)':
     dependencies:
@@ -16437,10 +16466,10 @@ snapshots:
       '@nodelib/fs.scandir': 2.1.5
       fastq: 1.20.1
 
-  '@nosecone/next@1.3.0(next@16.1.7(@opentelemetry/api@1.9.0)(@playwright/test@1.58.2)(babel-plugin-react-compiler@1.0.0)(react-dom@19.2.1(react@19.2.1))(react@19.2.1))':
+  '@nosecone/next@1.3.1(next@16.1.7(@opentelemetry/api@1.9.0)(@playwright/test@1.58.2)(babel-plugin-react-compiler@1.0.0)(react-dom@19.2.1(react@19.2.1))(react@19.2.1))':
     dependencies:
       next: 16.1.7(@babel/core@7.29.0)(@opentelemetry/api@1.9.0)(@playwright/test@1.58.2)(babel-plugin-react-compiler@1.0.0)(react-dom@19.2.1(react@19.2.1))(react@19.2.1)
-      nosecone: 1.3.0
+      nosecone: 1.3.1
 
   '@octokit/auth-app@7.2.2':
     dependencies:
@@ -23929,7 +23958,7 @@ snapshots:
 
   normalize-path@3.0.0: {}
 
-  nosecone@1.3.0: {}
+  nosecone@1.3.1: {}
 
   npm-run-path@4.0.1:
     dependencies:

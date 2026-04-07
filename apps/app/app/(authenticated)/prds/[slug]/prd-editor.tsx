@@ -13,6 +13,7 @@ import { toast } from "@repo/design-system/components/ui/sonner";
 import { Loader2Icon } from "lucide-react";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { NewPlanModal } from "@/app/(authenticated)/implementation-plans/components/new-plan-modal";
+import { RequestChangesModal } from "@/app/(authenticated)/implementation-plans/components/request-changes-modal";
 import { VersionSelector } from "@/app/(authenticated)/implementation-plans/components/version-selector";
 import { ArtifactChatPanel } from "@/components/artifact-editor/artifact-chat-panel";
 import { CollaborativeEditor } from "@/components/artifact-editor/collaborative-editor";
@@ -21,6 +22,7 @@ import { EditorToolbarRow } from "@/components/artifact-editor/editor-toolbar-ro
 import { MetadataPanel } from "@/components/artifact-editor/metadata-panel";
 import { SaveIndicator } from "@/components/artifact-editor/save-indicator";
 import { StatusMetadataSection } from "@/components/artifact-editor/status-metadata-section";
+import { BackendMismatchModal } from "@/components/backend-mismatch-modal";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { LoopDispatchTargetSelector } from "@/components/engineer/LoopDispatchTargetSelector";
 import { GenerationStatusBanner } from "@/components/generation-status-banner";
@@ -31,9 +33,9 @@ import { useArtifactContent } from "@/hooks/artifact-editing/use-artifact-conten
 import { useArtifactMetadata } from "@/hooks/artifact-editing/use-artifact-metadata";
 import { useArtifactUIState } from "@/hooks/artifact-editing/use-artifact-ui-state";
 import { useEditorSession } from "@/hooks/artifact-editing/use-editor-session";
+import { usePrdActions } from "@/hooks/artifact-editing/use-prd-actions";
 import { useArtifactGenerationStatus } from "@/hooks/queries/use-artifacts";
 import { usePrdJudgesFeedback } from "@/hooks/queries/use-judges";
-import { useRunLoop } from "@/hooks/queries/use-loops";
 import { useOrganizationUsers } from "@/hooks/queries/use-users";
 import { parseComputeTargetConflict } from "@/lib/compute-target-conflict";
 import { transformApiUserToSelectUser } from "@/lib/user-utils";
@@ -111,7 +113,12 @@ export function PRDEditor({
     showGeneratePlanModal,
     setShowGeneratePlanModal,
     openGeneratePlanModal,
+    showRequestChangesModal,
+    openRequestChangesModal,
+    closeRequestChangesModal,
   } = uiState;
+
+  const prdActions = usePrdActions({ artifactId: prd.id });
 
   const [decomposeTargetState, setDecomposeTargetState] = useState<{
     availableTargets: ComputeTargetConflictBody["availableTargets"];
@@ -121,8 +128,8 @@ export function PRDEditor({
   const { data: generationStatus, invalidateCache: invalidateArtifactCache } =
     useArtifactGenerationStatus(prd.id, { polling: true });
 
-  // Loop-based actions (PRD generation, decompose)
-  const runLoop = useRunLoop();
+  // Share runLoop instance from prdActions to avoid divergent isPending states
+  const { runLoop } = prdActions;
   const { data: judgesReport } = usePrdJudgesFeedback(prd.id);
 
   const handleGeneratePrd = () => {
@@ -219,6 +226,7 @@ export function PRDEditor({
         isEvaluating={pendingCommand === "evaluate_prd"}
         isGenerating={runLoop.isPending}
         isPending={isPending}
+        isRequestingChanges={prdActions.isRequestingChanges}
         onDecomposeFeatures={handleDecomposeFeatures}
         onDelete={uiState.openDeleteDialog}
         onEvaluatePrd={handleEvaluatePrd}
@@ -227,6 +235,7 @@ export function PRDEditor({
         onGeneratePrd={handleGeneratePrd}
         onMove={() => setShowMoveDialog(true)}
         onRename={openRenameDialog}
+        onRequestChanges={openRequestChangesModal}
         onRestoreVersion={session.handleRestoreVersion}
         onToggleMetadataPanel={uiState.toggleMetadataPanel}
         prd={prd}
@@ -385,6 +394,37 @@ export function PRDEditor({
           }}
         />
       )}
+
+      {/* Compute target selector for PRD actions (request changes) */}
+      {prdActions.multiTargetState && (
+        <LoopDispatchTargetSelector
+          availableTargets={prdActions.multiTargetState.availableTargets}
+          onSelect={prdActions.selectTarget}
+        />
+      )}
+
+      {/* Backend mismatch modal for PRD actions */}
+      <BackendMismatchModal
+        mismatchData={prdActions.backendMismatchState}
+        onConfirmOriginal={prdActions.confirmOriginalBackend}
+        onConfirmPreferred={prdActions.confirmPreferredBackend}
+        onOpenChange={(open) => {
+          if (!open) {
+            prdActions.dismissBackendMismatch();
+          }
+        }}
+        open={!!prdActions.backendMismatchState}
+      />
+
+      {/* Request Changes Modal */}
+      <RequestChangesModal
+        description="Describe the changes you want to make to this PRD. The PRD will be regenerated with your modifications."
+        isSubmitting={prdActions.isRequestingChanges}
+        onOpenChange={closeRequestChangesModal}
+        onSubmit={prdActions.handleRequestChanges}
+        open={showRequestChangesModal}
+        placeholder="Describe the changes you want to make to this PRD..."
+      />
 
       {/* Rename Dialog */}
       <RenameDialog

@@ -4,7 +4,7 @@ import type { LoopWithUser } from "@repo/api/src/types/loop";
 import { LoopCommand } from "@repo/api/src/types/loop";
 import { CloudIcon, Loader2Icon, MonitorIcon } from "lucide-react";
 import { useLoopsByProject } from "@/hooks/queries/use-loops";
-import { ACTIVE_LOOP_STATUSES } from "@/lib/loop-constants";
+import { useActiveLoops } from "@/hooks/use-active-loops";
 import { getUserDisplayName } from "@/lib/user-utils";
 
 const COMMAND_VERBS: Record<LoopCommand, string> = {
@@ -18,6 +18,7 @@ const COMMAND_VERBS: Record<LoopCommand, string> = {
   [LoopCommand.GeneratePrd]: "generating PRD",
   [LoopCommand.EvaluatePlan]: "evaluating plan",
   [LoopCommand.EvaluateCode]: "evaluating PR",
+  [LoopCommand.RequestPrdChanges]: "requesting PRD changes",
 };
 
 function formatLoopStatus(loop: LoopWithUser): string {
@@ -36,7 +37,7 @@ export function ActiveLoopsStatus({ projectId }: ActiveLoopsStatusProps) {
     refetchInterval: 10_000,
   });
 
-  const activeLoops = loops.filter((l) => ACTIVE_LOOP_STATUSES.has(l.status));
+  const activeLoops = useActiveLoops(loops);
 
   if (isLoading || activeLoops.length === 0) {
     return null;

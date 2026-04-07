@@ -32,6 +32,7 @@ import { useMergeArtifacts } from "@/hooks/queries/use-artifacts";
 import { useParentFallbackMap } from "@/hooks/queries/use-entity-links";
 import { useProjectTree } from "@/hooks/queries/use-project-tree";
 import type { ArtifactColumn } from "@/hooks/use-column-visibility";
+import { useGroupExpansion } from "@/hooks/use-group-expansion";
 import { useSortParams } from "@/hooks/use-sort-params";
 import { matchesFilter } from "@/lib/artifact-filter";
 import { comparePriorityValues } from "@/lib/priority-sort";
@@ -398,7 +399,9 @@ export function ArtifactsView({
   onDelete,
   editHandlers,
 }: ArtifactsViewProps) {
-  const [openGroups, setOpenGroups] = useState<Set<string>>(new Set());
+  const { isExpanded: isGroupExpanded, toggleGroup } = useGroupExpansion(
+    `table:expand:project-artifacts:${projectId}`
+  );
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   // Clear selection when filter category changes
@@ -506,22 +509,6 @@ export function ArtifactsView({
     );
   }, [filteredArtifacts, filteredFeatures, sortBy, sortDir, treeData]);
 
-  // Auto-open any groups that haven't been seen before (handles initial load and
-  // async tree data arriving after the workstream fallback was already shown).
-  useEffect(() => {
-    setOpenGroups((prev) => {
-      const next = new Set(prev);
-      let changed = false;
-      for (const g of groups) {
-        if (!prev.has(g.groupKey)) {
-          next.add(g.groupKey);
-          changed = true;
-        }
-      }
-      return changed ? next : prev;
-    });
-  }, [groups]);
-
   // Build flat items for filtered views
   const flatItems: ArtifactRowItem[] = useMemo(() => {
     const items: ArtifactRowItem[] = [
@@ -549,12 +536,12 @@ export function ArtifactsView({
     const items: ArtifactRowItem[] = [];
     for (const group of groups) {
       items.push(group.root);
-      if (openGroups.has(group.groupKey)) {
+      if (isGroupExpanded(group.groupKey)) {
         items.push(...group.children);
       }
     }
     return items;
-  }, [isGroupedView, flatItems, groups, openGroups]);
+  }, [isGroupedView, flatItems, groups, isGroupExpanded]);
 
   // When a child entity is moved to a different project, it leaves its parent's
   // project tree (parentMap is built from the current project's tree). To keep
@@ -598,20 +585,6 @@ export function ArtifactsView({
         next.add(id);
       } else {
         next.delete(id);
-      }
-      return next;
-    });
-  }
-
-  // ---- Group toggle ----
-
-  function toggleGroup(groupKey: string) {
-    setOpenGroups((prev) => {
-      const next = new Set(prev);
-      if (next.has(groupKey)) {
-        next.delete(groupKey);
-      } else {
-        next.add(groupKey);
       }
       return next;
     });
@@ -796,7 +769,7 @@ export function ArtifactsView({
         {isGroupedView
           ? groups.map((group) => {
               const { root, children } = group;
-              const isOpen = openGroups.has(group.groupKey);
+              const isOpen = isGroupExpanded(group.groupKey);
               const hasChildren = children.length > 0;
               return (
                 <div key={group.groupKey}>

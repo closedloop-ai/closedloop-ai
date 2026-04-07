@@ -69,6 +69,7 @@ import {
   useUpdateProjectTargetDate,
 } from "@/hooks/queries/use-projects";
 import { useTeam } from "@/hooks/queries/use-teams";
+import { useActiveLoops } from "@/hooks/use-active-loops";
 import {
   ArtifactColumn,
   type ColumnVisibility,
@@ -76,7 +77,6 @@ import {
 } from "@/hooks/use-column-visibility";
 import { useTabParam } from "@/hooks/use-tab-param";
 import { useTeamMembers } from "@/hooks/use-team-members";
-import { ACTIVE_LOOP_STATUSES } from "@/lib/loop-constants";
 import { ActiveLoopsStatus } from "./components/active-loops-status";
 import { ArtifactsView } from "./components/artifacts-view";
 import { CreateArtifactModal } from "./components/create-artifact-modal";
@@ -188,10 +188,7 @@ export default function ProjectDetailPage() {
   const { data: loops = [] } = useLoopsByProject(projectId, {
     refetchInterval: 10_000,
   });
-  const activeLoops = useMemo(
-    () => loops.filter((l) => ACTIVE_LOOP_STATUSES.has(l.status)),
-    [loops]
-  );
+  const activeLoops = useActiveLoops(loops);
 
   const team = teamData ? { id: teamData.id, name: teamData.name } : null;
   const activities = activityData?.activities ?? [];
