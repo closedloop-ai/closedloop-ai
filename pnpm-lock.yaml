@@ -1213,8 +1213,8 @@ importers:
   packages/internationalization:
     dependencies:
       '@formatjs/intl-localematcher':
-        specifier: ^0.6.2
-        version: 0.6.2
+        specifier: ^0.8.2
+        version: 0.8.2
       negotiator:
         specifier: ^1.0.0
         version: 1.0.0
@@ -3398,11 +3398,14 @@ packages:
   '@formatjs/fast-memoize@3.1.0':
     resolution: {integrity: sha512-b5mvSWCI+XVKiz5WhnBCY3RJ4ZwfjAidU0yVlKa3d3MSgKmH1hC3tBGEAtYyN5mqL7N0G5x0BOUYyO8CEupWgg==}
 
-  '@formatjs/intl-localematcher@0.6.2':
-    resolution: {integrity: sha512-XOMO2Hupl0wdd172Y06h6kLpBz6Dv+J4okPLl4LPtzbr8f66WbIoy4ev98EBuZ6ZK4h5ydTN6XneT4QVpD7cdA==}
+  '@formatjs/fast-memoize@3.1.1':
+    resolution: {integrity: sha512-CbNbf+tlJn1baRnPkNePnBqTLxGliG6DDgNa/UtV66abwIjwsliPMOt0172tzxABYzSuxZBZfcp//qI8AvBWPg==}
 
   '@formatjs/intl-localematcher@0.8.1':
     resolution: {integrity: sha512-xwEuwQFdtSq1UKtQnyTZWC+eHdv7Uygoa+H2k/9uzBVQjDyp9r20LNDNKedWXll7FssT3GRHvqsdJGYSUWqYFA==}
+
+  '@formatjs/intl-localematcher@0.8.2':
+    resolution: {integrity: sha512-q05KMYGJLyqFNFtIb8NhWLF5X3aK/k0wYt7dnRFuy6aLQL+vUwQ1cg5cO4qawEiINybeCPXAWlprY2mSBjSXAQ==}
 
   '@graphql-typed-document-node/core@3.2.0':
     resolution: {integrity: sha512-mB9oAsNCm9aM3/SOv4YtBMqZbYj10R7dkq8byBqxGY/ncFwhf2oQzMV+LCRlWoDSEBJ3COiR1yeDvMtsoOsuFQ==}
@@ -15882,14 +15885,16 @@ snapshots:
     dependencies:
       tslib: 2.8.1
 
-  '@formatjs/intl-localematcher@0.6.2':
-    dependencies:
-      tslib: 2.8.1
+  '@formatjs/fast-memoize@3.1.1': {}
 
   '@formatjs/intl-localematcher@0.8.1':
     dependencies:
       '@formatjs/fast-memoize': 3.1.0
       tslib: 2.8.1
+
+  '@formatjs/intl-localematcher@0.8.2':
+    dependencies:
+      '@formatjs/fast-memoize': 3.1.1
 
   '@graphql-typed-document-node/core@3.2.0(graphql@15.10.1)':
     dependencies:
