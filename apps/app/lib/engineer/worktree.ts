@@ -3,6 +3,7 @@ import {
   copyFileSync,
   cpSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readdirSync,
   renameSync,
@@ -81,6 +82,24 @@ type SavedWorktreeState = {
   closedloopAiDir: string | null;
 };
 
+function mergeTreeWithoutOverwrite(sourceDir: string, destDir: string): void {
+  mkdirSync(destDir, { recursive: true });
+
+  for (const child of readdirSync(sourceDir, { withFileTypes: true })) {
+    const sourceChild = join(sourceDir, child.name);
+    const destChild = join(destDir, child.name);
+
+    if (!existsSync(destChild)) {
+      cpSync(sourceChild, destChild, { recursive: true, force: false });
+      continue;
+    }
+
+    if (child.isDirectory() && lstatSync(destChild).isDirectory()) {
+      mergeTreeWithoutOverwrite(sourceChild, destChild);
+    }
+  }
+}
+
 /**
  * Save accepted non-git worktree state from the worktree root to temp locations.
  *
@@ -154,7 +173,9 @@ function restoreWorktreeState(
   if (savedClosedloopAiDir) {
     const destClosedloopAi = join(worktreeDir, ".closedloop-ai");
     try {
-      cpSync(savedClosedloopAiDir, destClosedloopAi, { recursive: true });
+      // Destination wins on conflicts so tracked files checked out by git
+      // are not clobbered by stale saved state from a prior non-git directory.
+      mergeTreeWithoutOverwrite(savedClosedloopAiDir, destClosedloopAi);
       rmSync(savedClosedloopAiDir, { recursive: true, force: true });
     } catch {
       // Best effort -- backup preserved at savedClosedloopAiDir if cpSync failed

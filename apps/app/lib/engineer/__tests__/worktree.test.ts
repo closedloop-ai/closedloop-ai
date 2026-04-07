@@ -1,6 +1,8 @@
+import { execSync } from "node:child_process";
 import {
   cpSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -12,6 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { addWorktree } from "../worktree";
 
 /**
  * Tests for saveWorktreeState / restoreWorktreeState logic.
@@ -90,10 +93,28 @@ function restoreState(saved: SavedWorktreeState, worktreeDir: string): void {
   if (savedClosedloopAiDir) {
     const destClosedloopAi = join(worktreeDir, ".closedloop-ai");
     try {
-      cpSync(savedClosedloopAiDir, destClosedloopAi, { recursive: true });
+      mergeTreeWithoutOverwrite(savedClosedloopAiDir, destClosedloopAi);
       rmSync(savedClosedloopAiDir, { recursive: true, force: true });
     } catch {
-      // Best effort -- backup preserved if cpSync failed
+      // Best effort -- backup preserved if restore failed
+    }
+  }
+}
+
+function mergeTreeWithoutOverwrite(sourceDir: string, destDir: string): void {
+  mkdirSync(destDir, { recursive: true });
+
+  for (const child of readdirSync(sourceDir, { withFileTypes: true })) {
+    const sourceChild = join(sourceDir, child.name);
+    const destChild = join(destDir, child.name);
+
+    if (!existsSync(destChild)) {
+      cpSync(sourceChild, destChild, { recursive: true, force: false });
+      continue;
+    }
+
+    if (child.isDirectory() && lstatSync(destChild).isDirectory()) {
+      mergeTreeWithoutOverwrite(sourceChild, destChild);
     }
   }
 }
@@ -237,6 +258,29 @@ describe("worktree state save/restore", () => {
     expect(readFileSync(preservedState, "utf-8")).toBe('{"status":"RUNNING"}');
   });
 
+  it("preserves checked-out .closedloop-ai/settings/critic-gates.json on restore", () => {
+    const settingsDir = join(testDir, ".closedloop-ai", "settings");
+    mkdirSync(settingsDir, { recursive: true });
+    writeFileSync(
+      join(settingsDir, "critic-gates.json"),
+      '{"defaults":{"baseCritics":["stale"]}}'
+    );
+
+    const saved = saveState(testDir, testDir);
+
+    mkdirSync(settingsDir, { recursive: true });
+    writeFileSync(
+      join(settingsDir, "critic-gates.json"),
+      '{"defaults":{"baseCritics":["current"]}}'
+    );
+
+    restoreState(saved, testDir);
+
+    expect(readFileSync(join(settingsDir, "critic-gates.json"), "utf-8")).toBe(
+      '{"defaults":{"baseCritics":["current"]}}'
+    );
+  });
+
   it("preserves .closedloop-ai backup when restore fails", () => {
     const scratchDir = join(testDir, "scratch");
     const savedClosedloopAiDir = join(scratchDir, "saved-closedloop");
@@ -264,5 +308,90 @@ describe("worktree state save/restore", () => {
     const saved = saveState(testDir, testDir);
     expect(saved.claudeAgentsDir).toBeNull();
     expect(saved.closedloopAiDir).toBeNull();
+  });
+});
+
+describe("addWorktree", () => {
+  let testDir: string;
+
+  beforeEach(() => {
+    testDir = mkdtempSync(join(tmpdir(), "worktree-add-test-"));
+  });
+
+  afterEach(() => {
+    rmSync(testDir, { recursive: true, force: true });
+  });
+
+  it("restores saved .closedloop-ai state without overwriting tracked files", () => {
+    const repoPath = join(testDir, "repo");
+    const worktreeDir = join(testDir, "repo-loop");
+    mkdirSync(join(repoPath, ".closedloop-ai", "settings"), {
+      recursive: true,
+    });
+    writeFileSync(
+      join(repoPath, ".closedloop-ai", "settings", "critic-gates.json"),
+      '{"defaults":{"baseCritics":["current"]}}'
+    );
+    writeFileSync(join(repoPath, "README.md"), "# repo\n");
+
+    execSync("git init", { cwd: repoPath, stdio: "pipe" });
+    execSync('git config user.email "test@example.com"', {
+      cwd: repoPath,
+      stdio: "pipe",
+    });
+    execSync('git config user.name "Test User"', {
+      cwd: repoPath,
+      stdio: "pipe",
+    });
+    execSync("git add .", { cwd: repoPath, stdio: "pipe" });
+    execSync('git commit -m "init"', { cwd: repoPath, stdio: "pipe" });
+
+    mkdirSync(join(worktreeDir, ".closedloop-ai", "settings"), {
+      recursive: true,
+    });
+    writeFileSync(
+      join(worktreeDir, ".closedloop-ai", "settings", "critic-gates.json"),
+      '{"defaults":{"baseCritics":["stale"]}}'
+    );
+    mkdirSync(join(worktreeDir, ".closedloop-ai", "work", "comment-chats"), {
+      recursive: true,
+    });
+    writeFileSync(
+      join(
+        worktreeDir,
+        ".closedloop-ai",
+        "work",
+        "comment-chats",
+        "IC_1234.json"
+      ),
+      '{"messages":[]}'
+    );
+
+    const ref = execSync("git rev-parse HEAD", {
+      cwd: repoPath,
+      encoding: "utf-8",
+      stdio: "pipe",
+    }).trim();
+
+    addWorktree(repoPath, worktreeDir, ref);
+
+    expect(
+      readFileSync(
+        join(worktreeDir, ".closedloop-ai", "settings", "critic-gates.json"),
+        "utf-8"
+      )
+    ).toBe('{"defaults":{"baseCritics":["current"]}}');
+    expect(
+      readFileSync(
+        join(
+          worktreeDir,
+          ".closedloop-ai",
+          "work",
+          "comment-chats",
+          "IC_1234.json"
+        ),
+        "utf-8"
+      )
+    ).toBe('{"messages":[]}');
   });
 });
