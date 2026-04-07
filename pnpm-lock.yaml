@@ -1444,8 +1444,8 @@ importers:
   packages/security:
     dependencies:
       '@nosecone/next':
-        specifier: 1.3.0
-        version: 1.3.0(next@16.1.7(@opentelemetry/api@1.9.0)(@playwright/test@1.58.2)(babel-plugin-react-compiler@1.0.0)(react-dom@19.2.1(react@19.2.1))(react@19.2.1))
+        specifier: 1.3.1
+        version: 1.3.1(next@16.1.7(@opentelemetry/api@1.9.0)(@playwright/test@1.58.2)(babel-plugin-react-compiler@1.0.0)(react-dom@19.2.1(react@19.2.1))(react@19.2.1))
     devDependencies:
       '@repo/typescript-config':
         specifier: workspace:*
@@ -3932,8 +3932,8 @@ packages:
     resolution: {integrity: sha512-oGB+UxlgWcgQkgwo8GcEGwemoTFt3FIO9ababBmaGwXIoBKZ+GTy0pP185beGg7Llih/NSHSV2XAs1lnznocSg==}
     engines: {node: '>= 8'}
 
-  '@nosecone/next@1.3.0':
-    resolution: {integrity: sha512-/vk7V4c9CRNdFyrG2Lr4VsImUYSIUzSFOZwXsUIOIIE+Hr8iMaysjZ+/8Yodhk/tbM89bwxNj5uwWN4Y4jOW3w==}
+  '@nosecone/next@1.3.1':
+    resolution: {integrity: sha512-k4BOWLsHra04XtZFzeAtMFh9IbE8ZdvgkKgJoBLOTYHTV6svZnwMver4wizNrZudCXcA7cokLb0lMOICw4n3pQ==}
     engines: {node: '>=20'}
     peerDependencies:
       next: 16.1.7
@@ -10264,8 +10264,8 @@ packages:
     resolution: {integrity: sha512-6eZs5Ls3WtCisHWp9S2GUy8dqkpGi4BVSz3GaqiE6ezub0512ESztXUwUB6C6IKbQkY2Pnb/mD4WYojCRwcwLA==}
     engines: {node: '>=0.10.0'}
 
-  nosecone@1.3.0:
-    resolution: {integrity: sha512-AYEacOpXmpbBX+GheA3Lbp8CxxsWtNanMjINFi9mt0pvPUaDCJc3VSffU21O0QDRtBM8hrBWhRVyvTqShaIHdw==}
+  nosecone@1.3.1:
+    resolution: {integrity: sha512-7Oufja1/Ud9MInuMviqyWuUPlUco0mdF99AJLm2d5hYAGtbmAMCxXJZyAwBy/ruaK+8pEp2mQ9L3LM4qbqL7dg==}
     engines: {node: '>=20'}
 
   npm-run-path@4.0.1:
@@ -16466,10 +16466,10 @@ snapshots:
       '@nodelib/fs.scandir': 2.1.5
       fastq: 1.20.1
 
-  '@nosecone/next@1.3.0(next@16.1.7(@opentelemetry/api@1.9.0)(@playwright/test@1.58.2)(babel-plugin-react-compiler@1.0.0)(react-dom@19.2.1(react@19.2.1))(react@19.2.1))':
+  '@nosecone/next@1.3.1(next@16.1.7(@opentelemetry/api@1.9.0)(@playwright/test@1.58.2)(babel-plugin-react-compiler@1.0.0)(react-dom@19.2.1(react@19.2.1))(react@19.2.1))':
     dependencies:
       next: 16.1.7(@babel/core@7.29.0)(@opentelemetry/api@1.9.0)(@playwright/test@1.58.2)(babel-plugin-react-compiler@1.0.0)(react-dom@19.2.1(react@19.2.1))(react@19.2.1)
-      nosecone: 1.3.0
+      nosecone: 1.3.1
 
   '@octokit/auth-app@7.2.2':
     dependencies:
@@ -23958,7 +23958,7 @@ snapshots:
 
   normalize-path@3.0.0: {}
 
-  nosecone@1.3.0: {}
+  nosecone@1.3.1: {}
 
   npm-run-path@4.0.1:
     dependencies:
