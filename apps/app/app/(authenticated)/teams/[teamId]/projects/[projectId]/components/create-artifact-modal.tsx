@@ -216,6 +216,16 @@ export function CreateArtifactModal({
     }
   };
 
+  const handleProjectChange = (newProjectId: string) => {
+    setSelectedProjectId(newProjectId);
+    // Clear project-scoped state so stale selections don't carry over
+    setSelectedPrdId("");
+    setTargetRepo("");
+    setTargetBranch("main");
+    setSelectedRepoId("");
+    hasSeededRepoRef.current = false;
+  };
+
   const handleRepositoryChange = (repoId: string) => {
     const selectedRepo = repositories?.find((r) => r.id === repoId);
     if (selectedRepo) {
@@ -379,7 +389,7 @@ export function CreateArtifactModal({
               </Label>
               <Select
                 disabled={isLoadingProjects}
-                onValueChange={setSelectedProjectId}
+                onValueChange={handleProjectChange}
                 value={selectedProjectId}
               >
                 <SelectTrigger id="artifact-project">

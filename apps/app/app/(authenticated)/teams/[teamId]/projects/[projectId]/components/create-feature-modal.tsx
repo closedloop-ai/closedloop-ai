@@ -127,6 +127,12 @@ export function CreateFeatureModal({
     setSelectedArtifacts((prev) => prev.filter((a) => a.id !== artifactId));
   };
 
+  const handleProjectChange = (newProjectId: string) => {
+    setSelectedProjectId(newProjectId);
+    // Clear project-scoped state so stale selections don't carry over
+    setSelectedArtifacts([]);
+  };
+
   const resetForm = () => {
     setTitle("");
     setSelectedArtifacts([]);
@@ -231,7 +237,7 @@ export function CreateFeatureModal({
               </Label>
               <Select
                 disabled={isLoadingProjects}
-                onValueChange={setSelectedProjectId}
+                onValueChange={handleProjectChange}
                 value={selectedProjectId}
               >
                 <SelectTrigger id="feature-project">
