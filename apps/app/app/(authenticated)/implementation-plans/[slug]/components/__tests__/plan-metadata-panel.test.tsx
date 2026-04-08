@@ -1,6 +1,7 @@
 import type { ArtifactDetail } from "@repo/api/src/types/artifact";
 import type { JudgeFeedbackItem } from "@repo/api/src/types/evaluation";
 import { cleanup, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   createMockArtifact,
@@ -310,8 +311,11 @@ describe("PlanMetadataPanel", () => {
       expect(screen.getByText(ACTIVITY_PATTERN)).toBeDefined();
     });
 
-    test("displays created and updated dates", () => {
+    test("displays created and updated dates", async () => {
+      const user = userEvent.setup();
       render(<PlanMetadataPanel {...defaultProps} />);
+      // Activity section is collapsed by default; expand it first
+      await user.click(screen.getByText(ACTIVITY_PATTERN));
       expect(screen.getByText(CREATED_PATTERN)).toBeDefined();
       expect(screen.getByText(UPDATED_PATTERN)).toBeDefined();
     });
