@@ -2831,7 +2831,9 @@ async function reportFinalStatus(
         input: tokenUsage.totalInput,
         output: tokenUsage.totalOutput,
       },
-      ...(tokenUsage.tokensByModel ? { tokensByModel: tokenUsage.tokensByModel } : {}),
+      ...(tokenUsage.tokensByModel
+        ? { tokensByModel: tokenUsage.tokensByModel }
+        : {}),
       correlationId: config.correlationId,
       loopId: config.loopId,
     });
