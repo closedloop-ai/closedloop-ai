@@ -26,7 +26,7 @@ type PRDMetadataPanelProps = {
 
 /**
  * Metadata panel for PRD editor.
- * Displays execution log, evaluation, comments, attachments, and version info.
+ * Displays evaluation, comments, attachments, and version info.
  */
 export function PRDMetadataPanel({
   prd,
