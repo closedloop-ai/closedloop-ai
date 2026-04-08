@@ -154,7 +154,7 @@ export type LoopEventCompleted = {
     turns?: number;
     models?: string[];
   };
-  tokensByModel?: TokensByModel;
+  tokensByModel?: TokensByModel | null;
   apiKeySource?: string;
   timestamp: string;
   correlationId?: string;
@@ -173,7 +173,7 @@ export const LoopEventCompletedSchema = z.object({
     turns: z.number().optional(),
     models: z.array(z.string()).optional(),
   }),
-  tokensByModel: TokensByModelSchema.optional(),
+  tokensByModel: TokensByModelSchema.nullable().optional(),
   apiKeySource: z.string().optional(),
   timestamp: z.string(),
   correlationId: z.string().optional(),
@@ -188,7 +188,7 @@ export type LoopEventError = {
   timestamp: string;
   logTail?: string;
   tokenUsage?: TokenUsage;
-  tokensByModel?: TokensByModel;
+  tokensByModel?: TokensByModel | null;
   diagnosticsVersion?: string;
   apiKeySource?: string;
   result?: JsonObject;
@@ -204,7 +204,7 @@ export const LoopEventErrorSchema = z.object({
   timestamp: z.string(),
   logTail: z.string().optional(),
   tokenUsage: TokenUsageSchema.optional(),
-  tokensByModel: TokensByModelSchema.optional(),
+  tokensByModel: TokensByModelSchema.nullable().optional(),
   diagnosticsVersion: z.string().optional(),
   apiKeySource: z.string().optional(),
   result: z.record(z.string(), z.unknown()).optional(),
