@@ -37,7 +37,7 @@ export type LoopCompletedResult = {
   prNumber?: number | null;
   branchName?: string | null;
   commitSha?: string | null;
-  sessionId?: string;
+  sessionId?: string | null;
 };
 
 export const LoopCompletedResultSchema = z.looseObject({
@@ -48,7 +48,7 @@ export const LoopCompletedResultSchema = z.looseObject({
   prNumber: z.number().nullable().optional(),
   branchName: z.string().nullable().optional(),
   commitSha: z.string().nullable().optional(),
-  sessionId: z.string().optional(),
+  sessionId: z.string().nullable().optional(),
 });
 
 // --- Individual event types + schemas ---

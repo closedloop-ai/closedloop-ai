@@ -1883,8 +1883,8 @@ const RE_TOTAL_OUTPUT = /Total output tokens:\s*([\d,]+)/i;
  */
 function accumulateModelUsage(tokensByModel, line, modelMatch) {
   const modelName = normalizeModelName(modelMatch[1]);
-  const input = Number.parseInt(modelMatch[2].replace(/,/g, ""), 10);
-  const output = Number.parseInt(modelMatch[3].replace(/,/g, ""), 10);
+  const input = Number.parseInt(modelMatch[2].replaceAll(",", ""), 10);
+  const output = Number.parseInt(modelMatch[3].replaceAll(",", ""), 10);
 
   if (!tokensByModel[modelName]) {
     tokensByModel[modelName] = { input: 0, output: 0 };
@@ -1896,13 +1896,13 @@ function accumulateModelUsage(tokensByModel, line, modelMatch) {
   if (cacheCreateMatch) {
     tokensByModel[modelName].cacheCreation =
       (tokensByModel[modelName].cacheCreation || 0) +
-      Number.parseInt(cacheCreateMatch[1].replace(/,/g, ""), 10);
+      Number.parseInt(cacheCreateMatch[1].replaceAll(",", ""), 10);
   }
   const cacheReadMatch = line.match(RE_CACHE_READ);
   if (cacheReadMatch) {
     tokensByModel[modelName].cacheRead =
       (tokensByModel[modelName].cacheRead || 0) +
-      Number.parseInt(cacheReadMatch[1].replace(/,/g, ""), 10);
+      Number.parseInt(cacheReadMatch[1].replaceAll(",", ""), 10);
   }
 }
 
@@ -1921,11 +1921,14 @@ function parseTokenUsage(outputLines) {
 
     const totalInputMatch = line.match(RE_TOTAL_INPUT);
     if (totalInputMatch) {
-      totalInput = Number.parseInt(totalInputMatch[1].replace(/,/g, ""), 10);
+      totalInput = Number.parseInt(totalInputMatch[1].replaceAll(",", ""), 10);
     }
     const totalOutputMatch = line.match(RE_TOTAL_OUTPUT);
     if (totalOutputMatch) {
-      totalOutput = Number.parseInt(totalOutputMatch[1].replace(/,/g, ""), 10);
+      totalOutput = Number.parseInt(
+        totalOutputMatch[1].replaceAll(",", ""),
+        10
+      );
     }
   }
 
@@ -2803,8 +2806,8 @@ async function reportFinalStatus(
       code: LoopErrorCode.TimedOut,
       message: `Loop exceeded maximum runtime of ${MAX_RUNTIME_MS / 1000}s`,
       result: {
-        ...(prInfo || {}),
-        sessionId: capturedSessionId,
+        ...prInfo,
+        ...(capturedSessionId ? { sessionId: capturedSessionId } : {}),
         durationSeconds: Number.parseFloat(duration),
       },
       correlationId: config.correlationId,
@@ -2821,8 +2824,8 @@ async function reportFinalStatus(
         exitCode,
         signal,
         durationSeconds: Number.parseFloat(duration),
-        ...(prInfo || {}),
-        sessionId: capturedSessionId,
+        ...prInfo,
+        ...(capturedSessionId ? { sessionId: capturedSessionId } : {}),
       },
       tokensUsed: {
         input: tokenUsage.totalInput,
@@ -2839,8 +2842,8 @@ async function reportFinalStatus(
       code: LoopErrorCode.ProcessFailed,
       message: `Process exited with code ${exitCode}`,
       result: {
-        ...(prInfo || {}),
-        sessionId: capturedSessionId,
+        ...prInfo,
+        ...(capturedSessionId ? { sessionId: capturedSessionId } : {}),
       },
       correlationId: config.correlationId,
       loopId: config.loopId,
@@ -3048,7 +3051,7 @@ async function main() {
       let llmPrInfo = null;
       try {
         llmPrInfo = attemptLlmCommit(workDir, errorResultPath);
-      } catch (_) {
+      } catch {
         // ignore
       }
 
@@ -3063,7 +3066,7 @@ async function main() {
             "[INCOMPLETE] WIP: Safety commit — harness error"
           );
           ensureBranchPushed(workDir);
-        } catch (_) {
+        } catch {
           // ignore
         }
 
@@ -3073,14 +3076,14 @@ async function main() {
             prInfo = { ...(prInfo || {}), ...llmPrInfo };
           }
           prInfo = createPullRequest(workDir, prInfo);
-        } catch (_) {
+        } catch {
           // ignore
         }
 
         // Write execution-result.json ourselves since LLM didn't
         try {
           writeExecutionResult(symphonyWorkDir || workDir, prInfo);
-        } catch (_) {
+        } catch {
           // ignore
         }
       }
@@ -3089,7 +3092,7 @@ async function main() {
       if (prInfo?.prNumber) {
         try {
           labelPrIncomplete(workDir, prInfo.prNumber);
-        } catch (_) {
+        } catch {
           // ignore
         }
       }
@@ -3112,8 +3115,8 @@ async function main() {
         code: harnessError.code,
         message: redactSensitive(errorMessage),
         result: {
-          ...(prInfo || {}),
-          sessionId: capturedSessionId,
+          ...prInfo,
+          ...(capturedSessionId ? { sessionId: capturedSessionId } : {}),
         },
         correlationId: config.correlationId,
         loopId: config.loopId,
