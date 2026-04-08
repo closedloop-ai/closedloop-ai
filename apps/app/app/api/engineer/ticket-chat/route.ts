@@ -7,7 +7,6 @@ import {
   READONLY_CODEBASE_TOOLS,
   WEB_ONLY_TOOLS,
 } from "@/lib/engineer/allowed-tools";
-import { migrateLegacyChatHistory } from "@/lib/engineer/migrate-chat-history";
 import { getShellPath } from "@/lib/engineer/shell-path";
 import {
   type ContentBlock,
@@ -68,33 +67,6 @@ function loadChatHistory(
   historyPath: string,
   ticketId: string
 ): TicketChatHistory {
-  const sanitizedTicket = ticketId.replaceAll(/[^a-zA-Z0-9-_]/g, "_");
-  const closedloopPath = join(
-    homedir(),
-    ".claude",
-    ".closedloop",
-    "chats",
-    sanitizedTicket,
-    "chat-history.json"
-  );
-  const legacyPath = join(
-    homedir(),
-    ".claude",
-    ".symphony",
-    "chats",
-    sanitizedTicket,
-    "chat-history.json"
-  );
-
-  // Precedence: new path wins; if absent check .closedloop; if absent check .symphony
-  if (existsSync(historyPath)) {
-    // already at new location
-  } else if (existsSync(closedloopPath)) {
-    migrateLegacyChatHistory(closedloopPath, historyPath);
-  } else if (existsSync(legacyPath)) {
-    migrateLegacyChatHistory(legacyPath, historyPath);
-  }
-
   if (!existsSync(historyPath)) {
     return { messages: [], ticketId };
   }

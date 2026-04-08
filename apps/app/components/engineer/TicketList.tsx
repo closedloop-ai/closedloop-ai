@@ -1452,7 +1452,7 @@ export function TicketList({
           } else {
             // Clean cancel: process confirmed gone. Clear session entirely.
             await clearSession(ticketId);
-            toast.success("Symphony process stopped");
+            toast.success("ClosedLoop process stopped");
           }
           queryClient.invalidateQueries({
             queryKey: queryKeys.symphonyStatus(ticketId, repoPath),
@@ -1475,7 +1475,7 @@ export function TicketList({
       const data = await response.json();
 
       if (data.success) {
-        toast.success("Symphony process stopped");
+        toast.success("ClosedLoop process stopped");
         // Invalidate status query to update UI
         queryClient.invalidateQueries({
           queryKey: queryKeys.symphonyStatus(ticketId, repoPath),

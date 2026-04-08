@@ -228,6 +228,7 @@ enum LoopCommand {
   GENERATE_PRD
   EVALUATE_PLAN
   EVALUATE_CODE
+  REQUEST_PRD_CHANGES
 }
 
 enum CustomFieldType {

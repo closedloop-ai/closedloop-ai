@@ -345,13 +345,13 @@ const loopStatusLabels: Record<LoopStatus, string> = {
   [LoopStatus.TimedOut]: "Timed Out",
 };
 
-export const loopErrorCodeLabels: Record<LoopErrorCode, string> = {
+export const loopErrorCodeLabels: Partial<Record<LoopErrorCode, string>> = {
   [LoopErrorCode.NoWorkProduced]: "No output produced",
   [LoopErrorCode.ContextLimitExceeded]: "Context limit exceeded",
   [LoopErrorCode.PlanStateUnavailable]: "Plan state unavailable",
 };
 
-export const loopErrorCodeColors: Record<LoopErrorCode, string> = {
+export const loopErrorCodeColors: Partial<Record<LoopErrorCode, string>> = {
   [LoopErrorCode.NoWorkProduced]:
     "bg-amber-100 text-amber-800 border-amber-200 dark:bg-amber-900/30 dark:text-amber-400 dark:border-amber-800",
   [LoopErrorCode.ContextLimitExceeded]: COLOR_FAILURE,
@@ -399,6 +399,7 @@ export const loopCommandColors: Record<LoopCommand, string> = {
   [LoopCommand.GeneratePrd]: COLOR_PURPLE,
   [LoopCommand.EvaluatePlan]: COLOR_PURPLE,
   [LoopCommand.EvaluateCode]: COLOR_PURPLE,
+  [LoopCommand.RequestPrdChanges]: COLOR_PENDING,
 };
 
 const loopCommandLabels: Record<LoopCommand, string> = {
@@ -412,6 +413,7 @@ const loopCommandLabels: Record<LoopCommand, string> = {
   [LoopCommand.GeneratePrd]: "Generate PRD",
   [LoopCommand.EvaluatePlan]: "Evaluate Plan",
   [LoopCommand.EvaluateCode]: "Evaluate PR",
+  [LoopCommand.RequestPrdChanges]: "Request PRD Changes",
 };
 
 export function LoopCommandBadge({

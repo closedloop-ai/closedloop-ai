@@ -33,6 +33,10 @@ type PrdState = CommonState & {
   setShowGeneratePlanModal: React.Dispatch<React.SetStateAction<boolean>>;
   openGeneratePlanModal: () => void;
   closeGeneratePlanModal: () => void;
+  showRequestChangesModal: boolean;
+  setShowRequestChangesModal: React.Dispatch<React.SetStateAction<boolean>>;
+  openRequestChangesModal: () => void;
+  closeRequestChangesModal: () => void;
 };
 
 type PlanState = CommonState & {
@@ -127,6 +131,10 @@ export function useArtifactUIState(config: UseArtifactUIStateConfig) {
       setShowGeneratePlanModal,
       openGeneratePlanModal: () => setShowGeneratePlanModal(true),
       closeGeneratePlanModal: () => setShowGeneratePlanModal(false),
+      showRequestChangesModal,
+      setShowRequestChangesModal,
+      openRequestChangesModal: () => setShowRequestChangesModal(true),
+      closeRequestChangesModal: () => setShowRequestChangesModal(false),
     };
   }
 

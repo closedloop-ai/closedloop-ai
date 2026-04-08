@@ -18,6 +18,8 @@ type RequestChangesModalProps = {
   onOpenChange: (open: boolean) => void;
   onSubmit: (changes: string) => Promise<boolean>;
   isSubmitting: boolean;
+  description?: string;
+  placeholder?: string;
 };
 
 export function RequestChangesModal({
@@ -25,6 +27,8 @@ export function RequestChangesModal({
   onOpenChange,
   onSubmit,
   isSubmitting,
+  description,
+  placeholder,
 }: RequestChangesModalProps) {
   const [changes, setChanges] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -62,8 +66,8 @@ export function RequestChangesModal({
             </div>
           </DialogTitle>
           <DialogDescription>
-            Describe the changes you want to make to this implementation plan.
-            The plan will be regenerated with your modifications.
+            {description ??
+              "Describe the changes you want to make to this implementation plan. The plan will be regenerated with your modifications."}
           </DialogDescription>
         </DialogHeader>
 
@@ -81,7 +85,10 @@ export function RequestChangesModal({
             className="min-h-[150px]"
             disabled={isSubmitting}
             onChange={(e) => setChanges(e.target.value)}
-            placeholder="Describe the changes you want to make to this plan..."
+            placeholder={
+              placeholder ??
+              "Describe the changes you want to make to this plan..."
+            }
             value={changes}
           />
         </div>
