@@ -76,8 +76,7 @@ export function CreateFeatureModal({
 
   // Project selection (when projectId prop is not provided)
   const showProjectSelector = !projectId;
-  const [selectedProjectId, setSelectedProjectId] = useState("");
-  const resolvedProjectId = projectId ?? selectedProjectId;
+  const [selectedProjectId, setSelectedProjectId] = useState(projectId ?? "");
   const { data: teamProjects = [], isLoading: isLoadingProjects } =
     useProjectsByTeam(teamId, { enabled: open && showProjectSelector });
 
@@ -102,8 +101,8 @@ export function CreateFeatureModal({
     [teamMembers]
   );
 
-  const { data: artifacts = [] } = useArtifactsByProject(resolvedProjectId, {
-    enabled: open && !!resolvedProjectId,
+  const { data: artifacts = [] } = useArtifactsByProject(selectedProjectId, {
+    enabled: open && !!selectedProjectId,
   });
   // Filter out already-selected artifacts
   const availableArtifacts = useMemo(() => {
@@ -153,7 +152,7 @@ export function CreateFeatureModal({
 
   const handleSubmit = () => {
     setError(null);
-    if (!resolvedProjectId) {
+    if (!selectedProjectId) {
       setError("Please select a project");
       return;
     }
@@ -164,7 +163,7 @@ export function CreateFeatureModal({
 
     createFeatureMutation.mutate(
       {
-        projectId: resolvedProjectId,
+        projectId: selectedProjectId,
         title: title.trim(),
         status,
         priority,
@@ -405,7 +404,7 @@ export function CreateFeatureModal({
             Cancel
           </Button>
           <Button
-            disabled={!(title.trim() && resolvedProjectId) || isSubmitting}
+            disabled={!(title.trim() && selectedProjectId) || isSubmitting}
             onClick={handleSubmit}
           >
             {isSubmitting ? (

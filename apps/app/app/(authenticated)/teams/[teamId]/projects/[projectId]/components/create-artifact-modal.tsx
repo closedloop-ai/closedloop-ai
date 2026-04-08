@@ -74,8 +74,7 @@ export function CreateArtifactModal({
 
   // Project selection (when projectId prop is not provided)
   const showProjectSelector = !projectId;
-  const [selectedProjectId, setSelectedProjectId] = useState("");
-  const resolvedProjectId = projectId ?? selectedProjectId;
+  const [selectedProjectId, setSelectedProjectId] = useState(projectId ?? "");
   const { data: teamProjects = [], isLoading: isLoadingProjects } =
     useProjectsByTeam(teamId, { enabled: open && showProjectSelector });
 
@@ -95,8 +94,8 @@ export function CreateArtifactModal({
   const [selectedPrdId, setSelectedPrdId] = useState<string>("");
 
   // Seed the default GH repository from the project settings
-  const { data: project } = useProject(resolvedProjectId, {
-    enabled: open && !!resolvedProjectId,
+  const { data: project } = useProject(selectedProjectId, {
+    enabled: open && !!selectedProjectId,
   });
   const hasSeededRepoRef = useRef(false);
   if (project && !hasSeededRepoRef.current) {
@@ -136,8 +135,8 @@ export function CreateArtifactModal({
 
   // Fetch PRDs when modal opens for implementation plan
   const { data: artifacts = [], isLoading: loadingPrds } =
-    useArtifactsByProject(resolvedProjectId, {
-      enabled: open && isImplementationPlan && !!resolvedProjectId,
+    useArtifactsByProject(selectedProjectId, {
+      enabled: open && isImplementationPlan && !!selectedProjectId,
     });
 
   // Filter to get only PRDs
@@ -220,9 +219,6 @@ export function CreateArtifactModal({
     setSelectedProjectId(newProjectId);
     // Clear project-scoped state so stale selections don't carry over
     setSelectedPrdId("");
-    setTargetRepo("");
-    setTargetBranch("main");
-    setSelectedRepoId("");
     hasSeededRepoRef.current = false;
   };
 
@@ -266,7 +262,7 @@ export function CreateArtifactModal({
 
   const handleSubmit = () => {
     setError(null);
-    if (!resolvedProjectId) {
+    if (!selectedProjectId) {
       setError("Please select a project");
       return;
     }
@@ -277,7 +273,7 @@ export function CreateArtifactModal({
 
     createArtifact.mutate(
       {
-        projectId: resolvedProjectId,
+        projectId: selectedProjectId,
         type: artifactType,
         title: title.trim(),
         fileName: fileName.trim() || undefined,
@@ -305,7 +301,7 @@ export function CreateArtifactModal({
 
   const handleGenerate = () => {
     setError(null);
-    if (!resolvedProjectId) {
+    if (!selectedProjectId) {
       setError("Please select a project");
       return;
     }
@@ -328,7 +324,7 @@ export function CreateArtifactModal({
 
     createArtifact.mutate(
       {
-        projectId: resolvedProjectId,
+        projectId: selectedProjectId,
         type: artifactType,
         title: title.trim(),
         fileName: fileName.trim() || undefined,
@@ -530,8 +526,8 @@ export function CreateArtifactModal({
         </div>
 
         <CreateArtifactFooter
-          canGenerate={!!title.trim() && !!resolvedProjectId}
-          canSubmit={!!title.trim() && !!resolvedProjectId}
+          canGenerate={!!title.trim() && !!selectedProjectId}
+          canSubmit={!!title.trim() && !!selectedProjectId}
           isGenerating={false}
           isPrd={isPrd}
           isSaving={createArtifact.isPending}
