@@ -11,6 +11,7 @@ import {
   buildCommand,
   config,
   ERROR_CODES,
+  extractSessionId,
   findExistingRunDir,
   getHomeStateTransferPrefix,
   getWorkspaceStateRestorePrefixes,
@@ -18,6 +19,9 @@ import {
   HarnessError,
   parsePrInfo,
   parseTokenUsage,
+  parseTokenUsageFromJsonl,
+  parseTokenUsageFromJsonlFile,
+  parseTokenUsageFromRegex,
   syncPlanFromContextPack,
   validateConfig,
   validatePreRunInputs,
@@ -1115,5 +1119,520 @@ describe("writeExecutionResult", () => {
       fs.readFileSync(path.join(dir, "execution-result.json"), "utf-8")
     );
     assert.equal(result.base_ref, "staging");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseTokenUsageFromJsonl — structured JSONL parsing
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a JSONL assistant record matching Claude CLI --output-format stream-json.
+ */
+function makeAssistantJsonl(model, usage) {
+  return {
+    line: JSON.stringify({
+      type: "assistant",
+      message: { model, usage },
+    }),
+  };
+}
+
+describe("parseTokenUsageFromJsonl", () => {
+  test("parses single assistant record with input/output tokens", () => {
+    const lines = [
+      makeAssistantJsonl("claude-opus-4-6-20260407", {
+        input_tokens: 1000,
+        output_tokens: 500,
+      }),
+    ];
+    const result = parseTokenUsageFromJsonl(lines);
+    assert.ok(result);
+    assert.equal(result.totalInput, 1000);
+    assert.equal(result.totalOutput, 500);
+    assert.ok(result.tokensByModel["claude-opus-4"]);
+    assert.equal(result.tokensByModel["claude-opus-4"].input, 1000);
+    assert.equal(result.tokensByModel["claude-opus-4"].output, 500);
+  });
+
+  test("parses cache creation and read tokens", () => {
+    const lines = [
+      makeAssistantJsonl("claude-sonnet-4-5-20250929", {
+        input_tokens: 2000,
+        output_tokens: 800,
+        cache_creation_input_tokens: 300,
+        cache_read_input_tokens: 150,
+      }),
+    ];
+    const result = parseTokenUsageFromJsonl(lines);
+    assert.ok(result);
+    const model = result.tokensByModel["claude-sonnet-4-5"];
+    assert.equal(model.input, 2000);
+    assert.equal(model.output, 800);
+    assert.equal(model.cacheCreation, 300);
+    assert.equal(model.cacheRead, 150);
+  });
+
+  test("accumulates across multiple assistant records for same model", () => {
+    const lines = [
+      makeAssistantJsonl("claude-opus-4-6", {
+        input_tokens: 100,
+        output_tokens: 50,
+      }),
+      makeAssistantJsonl("claude-opus-4-6", {
+        input_tokens: 200,
+        output_tokens: 75,
+      }),
+    ];
+    const result = parseTokenUsageFromJsonl(lines);
+    assert.ok(result);
+    assert.equal(result.tokensByModel["claude-opus-4"].input, 300);
+    assert.equal(result.tokensByModel["claude-opus-4"].output, 125);
+    assert.equal(result.totalInput, 300);
+    assert.equal(result.totalOutput, 125);
+  });
+
+  test("tracks multiple models separately", () => {
+    const lines = [
+      makeAssistantJsonl("claude-opus-4-6", {
+        input_tokens: 100,
+        output_tokens: 50,
+      }),
+      makeAssistantJsonl("claude-haiku-4-5-20251001", {
+        input_tokens: 500,
+        output_tokens: 200,
+      }),
+    ];
+    const result = parseTokenUsageFromJsonl(lines);
+    assert.ok(result);
+    assert.equal(Object.keys(result.tokensByModel).length, 2);
+    assert.equal(result.tokensByModel["claude-opus-4"].input, 100);
+    assert.equal(result.tokensByModel["claude-haiku-4-5"].input, 500);
+    assert.equal(result.totalInput, 600);
+    assert.equal(result.totalOutput, 250);
+  });
+
+  test("skips non-assistant JSONL records", () => {
+    const lines = [
+      {
+        line: JSON.stringify({
+          type: "system",
+          subtype: "init",
+          session_id: "abc",
+        }),
+      },
+      { line: JSON.stringify({ type: "tool_use", tool: "Bash" }) },
+      makeAssistantJsonl("claude-opus-4", {
+        input_tokens: 100,
+        output_tokens: 50,
+      }),
+      { line: JSON.stringify({ type: "result", is_error: false }) },
+    ];
+    const result = parseTokenUsageFromJsonl(lines);
+    assert.ok(result);
+    assert.equal(result.totalInput, 100);
+    assert.equal(result.totalOutput, 50);
+    assert.equal(Object.keys(result.tokensByModel).length, 1);
+  });
+
+  test("skips non-JSON lines", () => {
+    const lines = [
+      { line: "Some human-readable output" },
+      { line: "[child] Starting..." },
+      makeAssistantJsonl("claude-opus-4", {
+        input_tokens: 100,
+        output_tokens: 50,
+      }),
+    ];
+    const result = parseTokenUsageFromJsonl(lines);
+    assert.ok(result);
+    assert.equal(result.totalInput, 100);
+  });
+
+  test("skips malformed JSON lines", () => {
+    const lines = [
+      { line: "{not valid json" },
+      { line: '{"type":"assistant","message":' }, // truncated
+      makeAssistantJsonl("claude-opus-4", {
+        input_tokens: 100,
+        output_tokens: 50,
+      }),
+    ];
+    const result = parseTokenUsageFromJsonl(lines);
+    assert.ok(result);
+    assert.equal(result.totalInput, 100);
+  });
+
+  test("returns null when no assistant records found", () => {
+    const lines = [
+      { line: JSON.stringify({ type: "system", subtype: "init" }) },
+      { line: JSON.stringify({ type: "result", is_error: false }) },
+    ];
+    assert.equal(parseTokenUsageFromJsonl(lines), null);
+  });
+
+  test("returns null for empty output", () => {
+    assert.equal(parseTokenUsageFromJsonl([]), null);
+  });
+
+  test("handles assistant record with missing usage", () => {
+    const lines = [
+      {
+        line: JSON.stringify({
+          type: "assistant",
+          message: { model: "claude-opus-4" },
+        }),
+      },
+    ];
+    assert.equal(parseTokenUsageFromJsonl(lines), null);
+  });
+
+  test("preserves totals when assistant record has usage but no model", () => {
+    const lines = [
+      {
+        line: JSON.stringify({
+          type: "assistant",
+          message: { usage: { input_tokens: 100, output_tokens: 50 } },
+        }),
+      },
+    ];
+    const result = parseTokenUsageFromJsonl(lines);
+    assert.ok(result);
+    assert.equal(result.totalInput, 100);
+    assert.equal(result.totalOutput, 50);
+    assert.equal(result.tokensByModel, null);
+  });
+
+  test("does not set cacheCreation/cacheRead when zero", () => {
+    const lines = [
+      makeAssistantJsonl("claude-opus-4", {
+        input_tokens: 100,
+        output_tokens: 50,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+      }),
+    ];
+    const result = parseTokenUsageFromJsonl(lines);
+    assert.ok(result);
+    assert.equal(
+      result.tokensByModel["claude-opus-4"].cacheCreation,
+      undefined
+    );
+    assert.equal(result.tokensByModel["claude-opus-4"].cacheRead, undefined);
+  });
+
+  test("handles lines without .line property", () => {
+    const lines = [{}, { line: "" }, { other: "field" }];
+    assert.equal(parseTokenUsageFromJsonl(lines), null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseTokenUsageFromJsonlFile — JSONL file on disk (run-loop.sh path)
+// ---------------------------------------------------------------------------
+
+describe("parseTokenUsageFromJsonlFile", () => {
+  test("parses token usage from a JSONL file on disk", () => {
+    const dir = makeTempDir();
+    const jsonlPath = path.join(dir, "claude-output.jsonl");
+    const lines = [
+      JSON.stringify({
+        type: "system",
+        subtype: "init",
+        session_id: "abc-123",
+      }),
+      JSON.stringify({
+        type: "assistant",
+        message: {
+          model: "claude-opus-4-6",
+          usage: { input_tokens: 5000, output_tokens: 2000 },
+        },
+      }),
+      JSON.stringify({
+        type: "assistant",
+        message: {
+          model: "claude-sonnet-4-5-20250929",
+          usage: {
+            input_tokens: 3000,
+            output_tokens: 1000,
+            cache_creation_input_tokens: 400,
+            cache_read_input_tokens: 100,
+          },
+        },
+      }),
+      JSON.stringify({ type: "result", is_error: false }),
+    ];
+    fs.writeFileSync(jsonlPath, lines.join("\n"));
+
+    const result = parseTokenUsageFromJsonlFile(jsonlPath);
+    assert.ok(result);
+    assert.equal(result.totalInput, 8000);
+    assert.equal(result.totalOutput, 3000);
+    assert.equal(Object.keys(result.tokensByModel).length, 2);
+    assert.equal(result.tokensByModel["claude-opus-4"].input, 5000);
+    assert.equal(result.tokensByModel["claude-sonnet-4-5"].cacheCreation, 400);
+    assert.equal(result.tokensByModel["claude-sonnet-4-5"].cacheRead, 100);
+  });
+
+  test("returns null when file does not exist", () => {
+    const result = parseTokenUsageFromJsonlFile(
+      "/nonexistent/path/claude-output.jsonl"
+    );
+    assert.equal(result, null);
+  });
+
+  test("returns null when file has no assistant records", () => {
+    const dir = makeTempDir();
+    const jsonlPath = path.join(dir, "claude-output.jsonl");
+    fs.writeFileSync(
+      jsonlPath,
+      JSON.stringify({ type: "system", subtype: "init" })
+    );
+    assert.equal(parseTokenUsageFromJsonlFile(jsonlPath), null);
+  });
+
+  test("returns null for empty file", () => {
+    const dir = makeTempDir();
+    const jsonlPath = path.join(dir, "claude-output.jsonl");
+    fs.writeFileSync(jsonlPath, "");
+    assert.equal(parseTokenUsageFromJsonlFile(jsonlPath), null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseTokenUsageFromRegex — human-readable output parsing
+// ---------------------------------------------------------------------------
+
+describe("parseTokenUsageFromRegex", () => {
+  test("parses single model usage line", () => {
+    const result = parseTokenUsageFromRegex([
+      { line: "Model: claude-opus-4-6  Input: 12,345  Output: 6,789" },
+    ]);
+    assert.deepEqual(result.tokensByModel, {
+      "claude-opus-4": { input: 12_345, output: 6789 },
+    });
+    assert.equal(result.totalInput, 12_345);
+    assert.equal(result.totalOutput, 6789);
+  });
+
+  test("parses cache tokens from regex line", () => {
+    const result = parseTokenUsageFromRegex([
+      {
+        line: "Model: claude-sonnet-4-5  Input: 1,000  Output: 500  Cache creation: 200  Cache read: 300",
+      },
+    ]);
+    const model = result.tokensByModel["claude-sonnet-4-5"];
+    assert.equal(model.cacheCreation, 200);
+    assert.equal(model.cacheRead, 300);
+  });
+
+  test("returns null tokensByModel when no model lines found", () => {
+    const result = parseTokenUsageFromRegex([
+      { line: "Total input tokens: 5,000" },
+      { line: "Total output tokens: 2,000" },
+    ]);
+    assert.equal(result.tokensByModel, null);
+    assert.equal(result.totalInput, 5000);
+    assert.equal(result.totalOutput, 2000);
+  });
+
+  test("returns zeros for empty output", () => {
+    const result = parseTokenUsageFromRegex([]);
+    assert.equal(result.tokensByModel, null);
+    assert.equal(result.totalInput, 0);
+    assert.equal(result.totalOutput, 0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseTokenUsage — JSONL-first with regex fallback
+// ---------------------------------------------------------------------------
+
+describe("parseTokenUsage (unified)", () => {
+  test("prefers JSONL over regex when both are present", () => {
+    const lines = [
+      // JSONL assistant record
+      makeAssistantJsonl("claude-opus-4-6", {
+        input_tokens: 1000,
+        output_tokens: 500,
+      }),
+      // Regex summary line (should be ignored when JSONL succeeds)
+      { line: "Model: claude-opus-4  Input: 999  Output: 888" },
+    ];
+    const result = parseTokenUsage(lines);
+    // JSONL values win
+    assert.equal(result.totalInput, 1000);
+    assert.equal(result.totalOutput, 500);
+  });
+
+  test("falls back to regex when no JSONL assistant records", () => {
+    const lines = [
+      { line: "Model: claude-opus-4  Input: 12,345  Output: 6,789" },
+      { line: "Total input tokens: 12,345" },
+    ];
+    const result = parseTokenUsage(lines);
+    assert.ok(result.tokensByModel);
+    assert.equal(result.tokensByModel["claude-opus-4"].input, 12_345);
+  });
+
+  test("falls back to regex totals when no model data anywhere", () => {
+    const lines = [
+      { line: "Total input tokens: 5,000" },
+      { line: "Total output tokens: 2,000" },
+    ];
+    const result = parseTokenUsage(lines);
+    assert.equal(result.tokensByModel, null);
+    assert.equal(result.totalInput, 5000);
+    assert.equal(result.totalOutput, 2000);
+  });
+
+  test("returns zeros for completely empty output", () => {
+    const result = parseTokenUsage([]);
+    assert.equal(result.tokensByModel, null);
+    assert.equal(result.totalInput, 0);
+    assert.equal(result.totalOutput, 0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// extractSessionId — JSONL init record and regex fallback
+// ---------------------------------------------------------------------------
+
+describe("extractSessionId", () => {
+  test("extracts session ID from JSONL init record", () => {
+    const line = JSON.stringify({
+      type: "system",
+      subtype: "init",
+      session_id: "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    });
+    assert.equal(
+      extractSessionId(line),
+      "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+    );
+  });
+
+  test("extracts session ID from human-readable Session: line", () => {
+    const line = "Session: a1b2c3d4-e5f6-7890-abcd-ef1234567890";
+    assert.equal(
+      extractSessionId(line),
+      "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+    );
+  });
+
+  test("falls through to regex for non-init JSONL records with session_id", () => {
+    // Non-init records skip the JSONL path but the regex fallback still
+    // matches "session_id": "<uuid>" in the serialized JSON string.
+    const line = JSON.stringify({
+      type: "system",
+      subtype: "config",
+      session_id: "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    });
+    assert.equal(
+      extractSessionId(line),
+      "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+    );
+  });
+
+  test("returns null for assistant JSONL records", () => {
+    const line = JSON.stringify({
+      type: "assistant",
+      message: { model: "claude-opus-4" },
+    });
+    assert.equal(extractSessionId(line), null);
+  });
+
+  test("returns null for non-JSON, non-session lines", () => {
+    assert.equal(extractSessionId("Compiling..."), null);
+    assert.equal(extractSessionId(""), null);
+    assert.equal(extractSessionId("[child] Starting up"), null);
+  });
+
+  test("returns null for malformed JSON starting with {", () => {
+    assert.equal(extractSessionId("{not valid json"), null);
+  });
+
+  test("prefers JSONL init over regex when line is valid JSONL init", () => {
+    // A JSONL init record that also happens to contain a Session: pattern
+    // should use the structured session_id field
+    const line = JSON.stringify({
+      type: "system",
+      subtype: "init",
+      session_id: "11111111-2222-3333-4444-555555555555",
+    });
+    assert.equal(
+      extractSessionId(line),
+      "11111111-2222-3333-4444-555555555555"
+    );
+  });
+
+  test("handles JSONL init record with missing session_id", () => {
+    const line = JSON.stringify({
+      type: "system",
+      subtype: "init",
+      apiKeySource: "environment",
+    });
+    assert.equal(extractSessionId(line), null);
+  });
+
+  test("extracts session ID embedded with quotes in JSON-like output", () => {
+    const line = '"session_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"';
+    assert.equal(
+      extractSessionId(line),
+      "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildClaudeDirectArgs — --output-format stream-json flag
+// ---------------------------------------------------------------------------
+
+describe("buildClaudeDirectArgs output format", () => {
+  test("includes -p and --output-format stream-json for DECOMPOSE", () => {
+    const workDir = makeTempDir();
+    writePromptFile(workDir, "Decompose this feature");
+    resetConfig({ command: "DECOMPOSE" });
+
+    const { args } = buildClaudeDirectArgs(workDir, null);
+    assert.ok(args.includes("-p"), "args must contain -p (print mode)");
+    const fmtIdx = args.indexOf("--output-format");
+    assert.ok(fmtIdx !== -1, "args must contain --output-format");
+    assert.equal(args[fmtIdx + 1], "stream-json");
+    assert.ok(args.indexOf("-p") < fmtIdx, "-p must precede --output-format");
+  });
+
+  test("includes -p and --output-format stream-json for CHAT", () => {
+    const workDir = makeTempDir();
+    writePromptFile(workDir, "Hello");
+    resetConfig({ command: "CHAT" });
+
+    const { args } = buildClaudeDirectArgs(workDir, null);
+    assert.ok(args.includes("-p"), "args must contain -p (print mode)");
+    const fmtIdx = args.indexOf("--output-format");
+    assert.ok(fmtIdx !== -1, "args must contain --output-format");
+    assert.equal(args[fmtIdx + 1], "stream-json");
+  });
+
+  test("includes -p and --output-format stream-json for EVALUATE_PRD", () => {
+    const workDir = makeTempDir();
+    resetConfig({ command: "EVALUATE_PRD" });
+
+    const { args } = buildClaudeDirectArgs(workDir, null);
+    assert.ok(args.includes("-p"), "args must contain -p (print mode)");
+    const fmtIdx = args.indexOf("--output-format");
+    assert.ok(fmtIdx !== -1, "args must contain --output-format");
+    assert.equal(args[fmtIdx + 1], "stream-json");
+  });
+
+  test("includes -p and --output-format stream-json for REQUEST_CHANGES", () => {
+    const workDir = makeTempDir();
+    writePromptFile(workDir, "Fix the bug");
+    resetConfig({ command: "REQUEST_CHANGES" });
+
+    const { args } = buildClaudeDirectArgs(workDir, workDir);
+    assert.ok(args.includes("-p"), "args must contain -p (print mode)");
+    const fmtIdx = args.indexOf("--output-format");
+    assert.ok(fmtIdx !== -1, "args must contain --output-format");
+    assert.equal(args[fmtIdx + 1], "stream-json");
   });
 });
