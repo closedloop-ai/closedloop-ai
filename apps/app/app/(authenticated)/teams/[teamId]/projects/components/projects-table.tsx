@@ -1,7 +1,10 @@
 "use client";
 
 import { Priority } from "@repo/api/src/types/common";
-import type { ProjectWithDetails } from "@repo/api/src/types/project";
+import type {
+  ProjectStatus,
+  ProjectWithDetails,
+} from "@repo/api/src/types/project";
 import { Button } from "@repo/design-system/components/ui/button";
 import type { User as PopoverUser } from "@repo/design-system/components/ui/user-select-popover";
 import { FolderIcon } from "lucide-react";
@@ -31,8 +34,15 @@ type ProjectsTableProps = {
   onUpdateAssignee?: (projectId: string, assigneeId: string | null) => void;
   onUpdateTargetDate?: (projectId: string, date: Date | null) => void;
   onUpdatePriority?: (projectId: string, priority: Priority) => void;
+  onUpdateStatus?: (
+    projectId: string,
+    status: ProjectStatus,
+    previousStatus: ProjectStatus
+  ) => void;
   onDelete?: (projectId: string) => Promise<boolean>;
   onCreateProject?: () => void;
+  emptyStateTitle?: string;
+  emptyStateDescription?: string;
 };
 
 const PROJECT_SORT_COLUMNS = [
@@ -79,8 +89,11 @@ export function ProjectsTable({
   onUpdateAssignee,
   onUpdateTargetDate,
   onUpdatePriority,
+  onUpdateStatus,
   onDelete,
   onCreateProject,
+  emptyStateTitle = "No projects yet",
+  emptyStateDescription = "Create your first project to get started.",
 }: ProjectsTableProps) {
   const { data: usersResult } = useOrganizationUsers();
   const { sortBy, sortDir, setSort } = useSortParams<ProjectSortColumn>({
@@ -136,9 +149,9 @@ export function ProjectsTable({
             <Button onClick={onCreateProject}>Create Project</Button>
           ) : undefined
         }
-        description="Create your first project to get started."
+        description={emptyStateDescription}
         icon={FolderIcon}
-        title="No projects yet"
+        title={emptyStateTitle}
       />
     );
   }
@@ -164,7 +177,11 @@ export function ProjectsTable({
               moreMenuContent={
                 <ProjectRowActions
                   onDelete={() => deleteConfirmation.requestDelete(project)}
+                  onUpdateStatus={(nextStatus, previousStatus) =>
+                    onUpdateStatus?.(project.id, nextStatus, previousStatus)
+                  }
                   projectId={project.id}
+                  status={project.status}
                 />
               }
               visibleColumns={visibleColumns}
