@@ -87,12 +87,9 @@ export function PRDEditorHeader({
           label: prd.project.name,
           href: `/teams/${prd.project.teams[0].id}/projects/${prd.project.id}`,
         },
-        { label: prd.fileName ?? prd.title },
+        { label: prd.title },
       ]
-    : [
-        { label: "Library", href: "/prds" },
-        { label: prd.fileName ?? prd.title },
-      ];
+    : [{ label: "Library", href: "/prds" }, { label: prd.title }];
 
   const overflowMenu = (
     <DropdownMenu>

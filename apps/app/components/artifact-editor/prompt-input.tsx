@@ -52,7 +52,7 @@ export function PromptInput({
 
   return (
     <div className={cn("rounded-md border bg-background px-3 py-2", className)}>
-      <div className="relative flex items-end">
+      <div className="relative flex items-center">
         <textarea
           className={cn(
             "min-h-[40px] w-full resize-none bg-transparent py-2 pr-10 text-sm leading-relaxed placeholder:text-muted-foreground focus:outline-none focus:ring-0",
@@ -71,7 +71,7 @@ export function PromptInput({
           value={value}
         />
         <Button
-          className="absolute right-0 bottom-2 shrink-0 rounded-md"
+          className="absolute right-0 shrink-0 rounded-md"
           disabled={!canSubmit}
           onClick={onSubmit}
           size="icon-sm"

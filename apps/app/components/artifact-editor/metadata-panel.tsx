@@ -52,7 +52,7 @@ export function MetadataPanel({
     return (
       <div
         className={cn(
-          "flex flex-wrap items-center gap-2 border-b bg-background py-2",
+          "flex flex-wrap items-center gap-2 bg-background py-2",
           className
         )}
       >

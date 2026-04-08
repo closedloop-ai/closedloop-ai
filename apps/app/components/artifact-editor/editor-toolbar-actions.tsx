@@ -5,29 +5,25 @@ import { Toggle } from "@repo/design-system/components/ui/toggle";
 import { MessageSquareDotIcon } from "lucide-react";
 
 type EditorToolbarActionsProps = {
-  isEditing: boolean;
   isPending: boolean;
   isSaving: boolean;
-  isViewingHistorical: boolean;
-  onDiscard: () => void;
-  onEdit: () => void;
-  onPublish: () => void;
+  onRestoreVersion: () => void;
+  onSaveVersion: () => void;
   onToggleComments: (pressed: boolean) => void;
   openThreadCount: number;
   showComments: boolean;
+  showRestoreVersion?: boolean;
 };
 
 export function EditorToolbarActions({
-  isEditing,
   isPending,
   isSaving,
-  isViewingHistorical,
-  onDiscard,
-  onEdit,
-  onPublish,
+  onRestoreVersion,
+  onSaveVersion,
   onToggleComments,
   openThreadCount,
   showComments,
+  showRestoreVersion = true,
 }: Readonly<EditorToolbarActionsProps>) {
   return (
     <>
@@ -43,30 +39,24 @@ export function EditorToolbarActions({
           {openThreadCount}
         </Toggle>
       )}
-      {isEditing ? (
-        <>
-          <Button
-            disabled={isPending}
-            onClick={onDiscard}
-            size="sm"
-            variant="outline"
-          >
-            Discard
-          </Button>
-          <Button disabled={isPending} onClick={onPublish} size="sm">
-            {isSaving ? "Publishing..." : "Publish"}
-          </Button>
-        </>
-      ) : (
+      {showRestoreVersion && (
         <Button
-          disabled={isViewingHistorical}
-          onClick={onEdit}
+          disabled={isPending}
+          onClick={onRestoreVersion}
           size="sm"
-          variant="secondary"
+          variant="outline"
         >
-          Edit
+          Restore Version
         </Button>
       )}
+      <Button
+        disabled={isPending}
+        onClick={onSaveVersion}
+        size="sm"
+        variant="outline"
+      >
+        {isSaving ? "Saving..." : "Save New Version"}
+      </Button>
     </>
   );
 }
