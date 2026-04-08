@@ -5,31 +5,25 @@ import {
 
 /**
  * Parse a comma-delimited string of project statuses into a validated array.
- * Returns undefined if value is undefined (no filter), null if invalid, or
- * a deduplicated array of valid ProjectStatus values.
+ * Returns undefined when no valid statuses are present (missing param, empty
+ * string, or all-invalid values) so callers can fall through to the default
+ * exclude-archived behaviour. This keeps the endpoint lenient — important for
+ * MCP and other programmatic clients that may omit or send empty params.
  */
 export function parseProjectStatuses(
   value?: string
-): ProjectStatus[] | null | undefined {
+): ProjectStatus[] | undefined {
   if (value === undefined) {
     return undefined;
-  }
-
-  const values = value
-    .split(",")
-    .map((part) => part.trim())
-    .filter(Boolean) as ProjectStatus[];
-  if (values.length === 0) {
-    return null;
   }
 
   const allowedValues = new Set(
     Object.values(ProjectStatusValues) as ProjectStatus[]
   );
-  const hasInvalidStatus = values.some((status) => !allowedValues.has(status));
-  if (hasInvalidStatus) {
-    return null;
-  }
+  const values = value
+    .split(",")
+    .map((part) => part.trim())
+    .filter((v): v is ProjectStatus => allowedValues.has(v as ProjectStatus));
 
-  return [...new Set(values)];
+  return values.length > 0 ? [...new Set(values)] : undefined;
 }

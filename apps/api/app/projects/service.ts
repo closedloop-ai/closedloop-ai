@@ -1,7 +1,6 @@
 import { ArtifactStatus } from "@repo/api/src/types/artifact";
 import type { JsonObject } from "@repo/api/src/types/common";
 import {
-  type ProjectStatus as ApiProjectStatus,
   type CreateProjectInput,
   ProjectStatus,
   type ProjectWithDetails,
@@ -304,8 +303,8 @@ export const projectsService = {
 
 type ProjectListOptions = {
   limit?: number;
-  status?: ApiProjectStatus[];
-  excludeStatus?: ApiProjectStatus[];
+  status?: ProjectStatus[];
+  excludeStatus?: ProjectStatus[];
 };
 
 /**

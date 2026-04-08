@@ -52,9 +52,6 @@ export const GET = withAnyAuth<ProjectWithDetails[], "/projects">(
       const { teamId, limit, status, excludeStatus } = queryResult.data;
       const statusFilter = parseProjectStatuses(status);
       const excludeStatusFilter = parseProjectStatuses(excludeStatus);
-      if (statusFilter === null || excludeStatusFilter === null) {
-        return badRequestResponse("Invalid project status filter");
-      }
 
       const hasExplicitStatusFilter =
         statusFilter !== undefined || excludeStatusFilter !== undefined;
