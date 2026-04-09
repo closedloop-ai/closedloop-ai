@@ -263,7 +263,10 @@ export function PRDEditor({
       <ResizablePanelGroup autoSaveId="prd-editor" direction="horizontal">
         <ResizablePanel defaultSize={75} minSize={50}>
           <div className="h-full overflow-y-auto overflow-x-hidden bg-background">
-            <OptionalArtifactRoom roomId={session.liveblocksRoomId}>
+            <OptionalArtifactRoom
+              key={session.roomResetKey}
+              roomId={session.liveblocksRoomId}
+            >
               {/* Loading spinner — visible until editor content is fully loaded */}
               <div
                 className={

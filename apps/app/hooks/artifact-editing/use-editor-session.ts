@@ -59,6 +59,14 @@ export function useEditorSession(config: UseEditorSessionConfig) {
   const editorSnapshotRef = useRef<JSONContent | null>(null);
   const [isContentReady, setIsContentReady] = useState(false);
 
+  // Counter that bumps when the Liveblocks room is reset server-side (e.g. after
+  // an AI agent creates a new version via API key). The server deletes and
+  // recreates the room, which leaves any connected RoomProvider with a stale
+  // WebSocket. Bumping this key forces the RoomProvider to remount, establishing
+  // a fresh connection so all Liveblocks features (Y.Doc sync, threads, presence,
+  // undo/redo) work correctly against the new room.
+  const [roomResetKey, setRoomResetKey] = useState(0);
+
   const isViewingHistorical = currentVersion !== artifact.latestVersion;
 
   // Always connect Liveblocks for the latest version so the editor is pre-loaded
@@ -128,6 +136,9 @@ export function useEditorSession(config: UseEditorSessionConfig) {
       if (wasViewingLatest) {
         onVersionChange(artifact.latestVersion);
         handleGenerationComplete(artifact.version.content ?? "");
+        // Bump roomResetKey so the RoomProvider remounts with a fresh connection
+        // to the server-recreated Liveblocks room.
+        setRoomResetKey((k) => k + 1);
       }
     }
   }, [
@@ -167,6 +178,10 @@ export function useEditorSession(config: UseEditorSessionConfig) {
     isViewingHistorical,
     liveblocksRoomId,
     openThreadCount,
+
+    // Bumped when the Liveblocks room is reset server-side (generation complete).
+    // Use as part of the OptionalArtifactRoom key to force RoomProvider remount.
+    roomResetKey,
 
     // Content reset (for CollaborativeEditor)
     contentResetKey,
