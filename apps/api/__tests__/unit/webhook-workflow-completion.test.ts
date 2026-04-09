@@ -1046,7 +1046,7 @@ describe("handleExecutionSuccess", () => {
     expect(mockEnsurePrLinkageRecords).toHaveBeenCalledWith(
       mockTx,
       expect.objectContaining({
-        prTitle: "Symphony: symphony/no-title-feature",
+        prTitle: "ClosedLoop: symphony/no-title-feature",
       })
     );
   });

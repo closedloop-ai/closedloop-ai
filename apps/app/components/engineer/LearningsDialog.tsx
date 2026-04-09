@@ -917,7 +917,7 @@ export function LearningsDialog({
                 <div className="py-12 text-center text-muted-foreground text-sm">
                   <p className="mb-1">No learnings found</p>
                   <p className="text-muted-foreground/60 text-xs">
-                    Patterns will appear here after Symphony runs capture them
+                    Patterns will appear here after ClosedLoop runs capture them
                   </p>
                 </div>
               )}

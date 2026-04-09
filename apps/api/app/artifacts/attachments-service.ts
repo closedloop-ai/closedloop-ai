@@ -1,5 +1,6 @@
 import "server-only";
 
+import type { ContextPackAttachment } from "@closedloop-ai/loops-api/context-pack";
 import { createId } from "@paralleldrive/cuid2";
 import type {
   AttachmentDownloadResponse,
@@ -16,7 +17,6 @@ import {
 import { keys as awsKeys } from "@repo/aws/keys";
 import { withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
-import type { ContextPackAttachment } from "@/lib/loops/loop-state";
 
 /**
  * Convert a Prisma FileAttachment record to the API FileAttachment type.

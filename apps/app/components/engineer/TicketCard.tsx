@@ -951,9 +951,12 @@ export function TicketCard({
       {/* Content section */}
       <div className="flex flex-1 flex-col p-5 pt-4 sm:p-6">
         {/* Status Badge & Progress */}
-        <div className="mb-auto flex flex-wrap items-center gap-2">
+        <div className="mb-auto flex min-w-0 flex-wrap items-center gap-2">
           <span
-            className={cn("badge-status", getStatusStyles(ticket.status.type))}
+            className={cn(
+              "badge-status max-w-[12rem] truncate",
+              getStatusStyles(ticket.status.type)
+            )}
           >
             {ticket.status.name}
           </span>
@@ -971,8 +974,10 @@ export function TicketCard({
               title={`This worktree was created from ${parentTicketId}'s branch. ${parentTicketId} should be merged first.`}
               type="button"
             >
-              <GitMerge className="size-3" />
-              <span>Based on {parentTicketId}</span>
+              <GitMerge className="size-3 shrink-0" />
+              <span className="max-w-[10rem] truncate">
+                Based on {parentTicketId}
+              </span>
             </button>
           )}
 
@@ -985,8 +990,10 @@ export function TicketCard({
               )}
               title={`${childTicketIds.length} ticket(s) depend on this branch: ${childTicketIds.join(", ")}`}
             >
-              <GitMerge className="size-3" />
-              <span>{childTicketIds.length} dependent</span>
+              <GitMerge className="size-3 shrink-0" />
+              <span className="max-w-[10rem] truncate">
+                {childTicketIds.length} dependent
+              </span>
             </span>
           )}
 

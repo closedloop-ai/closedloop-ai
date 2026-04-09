@@ -1,58 +1,49 @@
+import { execSync } from "node:child_process";
 import {
-  copyFileSync,
   cpSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
   renameSync,
   rmSync,
-  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { addWorktree } from "../worktree";
 
 /**
  * Tests for saveWorktreeState / restoreWorktreeState logic.
  *
  * These functions are private to worktree.ts but their behavior is observable
  * through addWorktree. Since addWorktree requires a real git repo to function,
- * we test the state-save/restore logic by duplicating its core mechanics
- * inline using the same Node.js primitives (renameSync, cpSync, copyFileSync,
- * readdirSync, statSync).
- *
- * Each test sets up a simulated "pre-existing non-git worktree" and a
- * "freshly-checked-out worktree" (with git-tracked files restored by git),
- * then runs the same save+restore logic and asserts the expected outcome.
+ * we test the state-save/restore mechanics inline using the same primitives.
  */
 
 type SavedWorktreeState = {
-  claudeDir: string | null;
+  claudeAgentsDir: string | null;
   closedloopAiDir: string | null;
 };
 
 /**
  * Inline re-implementation of saveWorktreeState from worktree.ts.
- * Saves into sub-paths of a caller-supplied scratch directory so the
- * test's afterEach cleanup can reliably remove every temp dir it creates.
  */
 function saveState(
   worktreeDir: string,
   scratchDir: string
 ): SavedWorktreeState {
-  const claudeDir = join(worktreeDir, ".claude");
-  let savedClaudeDir: string | null = null;
-  if (existsSync(claudeDir)) {
-    // Use a unique sub-path inside scratchDir — no need to pre-create it,
-    // renameSync will atomically move the source dir to this destination.
-    savedClaudeDir = join(
+  const claudeAgentsDir = join(worktreeDir, ".claude", "agents");
+  let savedClaudeAgentsDir: string | null = null;
+  if (existsSync(claudeAgentsDir)) {
+    savedClaudeAgentsDir = join(
       scratchDir,
-      `saved-claude-${Date.now()}-${Math.random().toString(36).slice(2)}`
+      `saved-claude-agents-${Date.now()}-${Math.random().toString(36).slice(2)}`
     );
-    renameSync(claudeDir, savedClaudeDir);
+    renameSync(claudeAgentsDir, savedClaudeAgentsDir);
   }
 
   const closedloopAiDir = join(worktreeDir, ".closedloop-ai");
@@ -65,50 +56,65 @@ function saveState(
     renameSync(closedloopAiDir, savedClosedloopAiDir);
   }
 
-  return { claudeDir: savedClaudeDir, closedloopAiDir: savedClosedloopAiDir };
+  return {
+    claudeAgentsDir: savedClaudeAgentsDir,
+    closedloopAiDir: savedClosedloopAiDir,
+  };
 }
 
+/**
+ * Inline re-implementation of restoreWorktreeState from worktree.ts.
+ */
 function restoreState(saved: SavedWorktreeState, worktreeDir: string): void {
-  const { claudeDir: savedClaudeDir, closedloopAiDir: savedClosedloopAiDir } =
-    saved;
+  const {
+    claudeAgentsDir: savedClaudeAgentsDir,
+    closedloopAiDir: savedClosedloopAiDir,
+  } = saved;
 
-  if (savedClaudeDir) {
-    const destClaude = join(worktreeDir, ".claude");
-    if (existsSync(destClaude)) {
-      for (const child of readdirSync(savedClaudeDir)) {
-        const srcChild = join(savedClaudeDir, child);
-        const destChild = join(destClaude, child);
+  if (savedClaudeAgentsDir) {
+    const destClaudeAgents = join(worktreeDir, ".claude", "agents");
+    try {
+      mkdirSync(destClaudeAgents, { recursive: true });
+      for (const child of readdirSync(savedClaudeAgentsDir)) {
+        const destChild = join(destClaudeAgents, child);
         if (!existsSync(destChild)) {
-          try {
-            let isDir = false;
-            try {
-              isDir = statSync(srcChild).isDirectory();
-            } catch {
-              // treat as file
-            }
-            if (isDir) {
-              cpSync(srcChild, destChild, { recursive: true });
-            } else {
-              copyFileSync(srcChild, destChild);
-            }
-          } catch {
-            // best effort
-          }
+          cpSync(join(savedClaudeAgentsDir, child), destChild, {
+            recursive: true,
+            force: false,
+          });
         }
       }
-      rmSync(savedClaudeDir, { recursive: true, force: true });
-    } else {
-      renameSync(savedClaudeDir, destClaude);
+      rmSync(savedClaudeAgentsDir, { recursive: true, force: true });
+    } catch {
+      // Best effort -- backup preserved if restore failed
     }
   }
 
   if (savedClosedloopAiDir) {
     const destClosedloopAi = join(worktreeDir, ".closedloop-ai");
     try {
-      cpSync(savedClosedloopAiDir, destClosedloopAi, { recursive: true });
+      mergeTreeWithoutOverwrite(savedClosedloopAiDir, destClosedloopAi);
       rmSync(savedClosedloopAiDir, { recursive: true, force: true });
     } catch {
-      // best effort -- backup preserved if cpSync failed
+      // Best effort -- backup preserved if restore failed
+    }
+  }
+}
+
+function mergeTreeWithoutOverwrite(sourceDir: string, destDir: string): void {
+  mkdirSync(destDir, { recursive: true });
+
+  for (const child of readdirSync(sourceDir, { withFileTypes: true })) {
+    const sourceChild = join(sourceDir, child.name);
+    const destChild = join(destDir, child.name);
+
+    if (!existsSync(destChild)) {
+      cpSync(sourceChild, destChild, { recursive: true, force: false });
+      continue;
+    }
+
+    if (child.isDirectory() && lstatSync(destChild).isDirectory()) {
+      mergeTreeWithoutOverwrite(sourceChild, destChild);
     }
   }
 }
@@ -122,68 +128,6 @@ describe("worktree state save/restore", () => {
 
   afterEach(() => {
     rmSync(testDir, { recursive: true, force: true });
-  });
-
-  it("saves .claude/work/attachments/image.png and restores when .claude/ already exists (cpSync recursion)", () => {
-    // Simulate pre-existing non-git worktree with attachment
-    const attachmentsDir = join(testDir, ".claude", "work", "attachments");
-    mkdirSync(attachmentsDir, { recursive: true });
-    writeFileSync(join(attachmentsDir, "image.png"), "binary-data");
-
-    // Save state (renames .claude/ away to tmp)
-    const saved = saveState(testDir, testDir);
-    expect(saved.claudeDir).not.toBeNull();
-    expect(existsSync(join(testDir, ".claude"))).toBe(false);
-
-    // Simulate git worktree add recreating .claude/ with a tracked file
-    const claudeRestoredDir = join(testDir, ".claude");
-    mkdirSync(claudeRestoredDir, { recursive: true });
-    writeFileSync(join(claudeRestoredDir, "settings.json"), '{"version":1}');
-
-    // Restore state — merges, does NOT overwrite settings.json
-    restoreState(saved, testDir);
-
-    // work/attachments/image.png must be present
-    const restoredImg = join(
-      testDir,
-      ".claude",
-      "work",
-      "attachments",
-      "image.png"
-    );
-    expect(existsSync(restoredImg)).toBe(true);
-    expect(readFileSync(restoredImg, "utf-8")).toBe("binary-data");
-
-    // git-tracked settings.json must survive untouched
-    expect(
-      readFileSync(join(testDir, ".claude", "settings.json"), "utf-8")
-    ).toBe('{"version":1}');
-  });
-
-  it("saves .claude/settings.local.json and does NOT overwrite git-tracked settings.json", () => {
-    // Pre-existing state has both settings.local.json and settings.json
-    const claudeDir = join(testDir, ".claude");
-    mkdirSync(claudeDir, { recursive: true });
-    writeFileSync(join(claudeDir, "settings.local.json"), '{"local":true}');
-    writeFileSync(join(claudeDir, "settings.json"), '{"old":true}');
-
-    const saved = saveState(testDir, testDir);
-
-    // Git recreates .claude/ with new settings.json
-    mkdirSync(join(testDir, ".claude"), { recursive: true });
-    writeFileSync(join(testDir, ".claude", "settings.json"), '{"new":true}');
-
-    restoreState(saved, testDir);
-
-    // settings.local.json restored (was absent in fresh .claude/)
-    expect(
-      readFileSync(join(testDir, ".claude", "settings.local.json"), "utf-8")
-    ).toBe('{"local":true}');
-
-    // settings.json kept at new (git-restored) value — destination-precedence
-    expect(
-      readFileSync(join(testDir, ".claude", "settings.json"), "utf-8")
-    ).toBe('{"new":true}');
   });
 
   it("saves .closedloop-ai/work/comment-chats/IC_1234.json and survives worktree recreation", () => {
@@ -211,109 +155,243 @@ describe("worktree state save/restore", () => {
     });
   });
 
-  it("renames .claude/ straight in when new worktree has no .claude/", () => {
-    const claudeDir = join(testDir, ".claude");
-    mkdirSync(claudeDir, { recursive: true });
-    writeFileSync(join(claudeDir, "CLAUDE.md"), "# instructions");
+  it("ignores legacy .claude/work state", () => {
+    const attachmentsDir = join(testDir, ".claude", "work", "attachments");
+    mkdirSync(attachmentsDir, { recursive: true });
+    writeFileSync(join(attachmentsDir, "image.png"), "binary-data");
 
     const saved = saveState(testDir, testDir);
-    // Fresh worktree — no .claude/ present after git checkout
     restoreState(saved, testDir);
 
-    // All contents available
-    expect(readFileSync(join(testDir, ".claude", "CLAUDE.md"), "utf-8")).toBe(
-      "# instructions"
+    const ignored = join(
+      testDir,
+      ".closedloop-ai",
+      "work",
+      "attachments",
+      "image.png"
     );
+    expect(existsSync(ignored)).toBe(false);
   });
 
-  it("a tracked settings.json already restored by git is NOT overwritten", () => {
-    // Saved state contains settings.json with old value
-    const claudeDir = join(testDir, ".claude");
-    mkdirSync(claudeDir, { recursive: true });
-    writeFileSync(join(claudeDir, "settings.json"), '{"saved":"old"}');
+  it("ignores legacy .claude/settings/critic-gates.json", () => {
+    const settingsDir = join(testDir, ".claude", "settings");
+    mkdirSync(settingsDir, { recursive: true });
+    writeFileSync(
+      join(settingsDir, "critic-gates.json"),
+      '{"defaults":{"baseCritics":["security-privacy"]}}'
+    );
+
+    const saved = saveState(testDir, testDir);
+    restoreState(saved, testDir);
+
+    const ignored = join(
+      testDir,
+      ".closedloop-ai",
+      "settings",
+      "critic-gates.json"
+    );
+    expect(existsSync(ignored)).toBe(false);
+  });
+
+  it("preserves .claude/agents without restoring unrelated .claude state", () => {
+    const agentsDir = join(testDir, ".claude", "agents");
+    mkdirSync(agentsDir, { recursive: true });
+    writeFileSync(join(agentsDir, "custom-agent.md"), "# custom agent");
+    writeFileSync(join(testDir, ".claude", "settings.json"), '{"legacy":true}');
 
     const saved = saveState(testDir, testDir);
 
-    // Git checkout recreates settings.json with new value
     mkdirSync(join(testDir, ".claude"), { recursive: true });
     writeFileSync(
       join(testDir, ".claude", "settings.json"),
-      '{"tracked":"new"}'
+      '{"tracked":true}'
     );
 
     restoreState(saved, testDir);
 
-    // Destination-precedence: git-restored file wins
+    expect(
+      readFileSync(
+        join(testDir, ".claude", "agents", "custom-agent.md"),
+        "utf-8"
+      )
+    ).toBe("# custom agent");
     expect(
       readFileSync(join(testDir, ".claude", "settings.json"), "utf-8")
-    ).toBe('{"tracked":"new"}');
+    ).toBe('{"tracked":true}');
   });
 
-  it("preserves .claude/ backup when a child copy fails (partial failure)", () => {
-    // Simulate: save .claude/ with a child, then restore into a dir
-    // where the destination child path is a non-writable directory (forces copy failure)
+  it("merges saved .closedloop-ai/ into an existing destination directory", () => {
+    const attachmentsDir = join(
+      testDir,
+      ".closedloop-ai",
+      "work",
+      "attachments"
+    );
+    mkdirSync(attachmentsDir, { recursive: true });
+    writeFileSync(join(attachmentsDir, "image.png"), "binary-data");
+
+    const saved = saveState(testDir, testDir);
+
+    // Simulate destination being recreated with different files before restore
+    const destDir = join(testDir, ".closedloop-ai", "work");
+    mkdirSync(destDir, { recursive: true });
+    writeFileSync(join(destDir, "state.json"), '{"status":"RUNNING"}');
+
+    restoreState(saved, testDir);
+
+    const restoredImage = join(
+      testDir,
+      ".closedloop-ai",
+      "work",
+      "attachments",
+      "image.png"
+    );
+    const preservedState = join(
+      testDir,
+      ".closedloop-ai",
+      "work",
+      "state.json"
+    );
+
+    expect(existsSync(restoredImage)).toBe(true);
+    expect(readFileSync(restoredImage, "utf-8")).toBe("binary-data");
+    expect(readFileSync(preservedState, "utf-8")).toBe('{"status":"RUNNING"}');
+  });
+
+  it("preserves checked-out .closedloop-ai/settings/critic-gates.json on restore", () => {
+    const settingsDir = join(testDir, ".closedloop-ai", "settings");
+    mkdirSync(settingsDir, { recursive: true });
+    writeFileSync(
+      join(settingsDir, "critic-gates.json"),
+      '{"defaults":{"baseCritics":["stale"]}}'
+    );
+
+    const saved = saveState(testDir, testDir);
+
+    mkdirSync(settingsDir, { recursive: true });
+    writeFileSync(
+      join(settingsDir, "critic-gates.json"),
+      '{"defaults":{"baseCritics":["current"]}}'
+    );
+
+    restoreState(saved, testDir);
+
+    expect(readFileSync(join(settingsDir, "critic-gates.json"), "utf-8")).toBe(
+      '{"defaults":{"baseCritics":["current"]}}'
+    );
+  });
+
+  it("preserves .closedloop-ai backup when restore fails", () => {
     const scratchDir = join(testDir, "scratch");
-    mkdirSync(scratchDir, { recursive: true });
+    const savedClosedloopAiDir = join(scratchDir, "saved-closedloop");
+    mkdirSync(join(savedClosedloopAiDir, "work"), { recursive: true });
+    writeFileSync(
+      join(savedClosedloopAiDir, "work", "state.json"),
+      '{"ok":true}'
+    );
 
-    // Create a saved .claude/ dir with two children
-    const savedClaudeDir = join(scratchDir, "saved-claude");
-    mkdirSync(savedClaudeDir, { recursive: true });
-    writeFileSync(join(savedClaudeDir, "good-file.json"), '{"ok":true}');
-    writeFileSync(join(savedClaudeDir, "bad-file.json"), '{"will":"fail"}');
+    // Force cpSync failure: destination exists as a file instead of a directory.
+    writeFileSync(join(testDir, ".closedloop-ai"), "not-a-dir");
 
-    // Create destination .claude/ with a directory named "bad-file.json"
-    // (making copyFileSync fail since you can't overwrite a dir with a file)
-    const destClaude = join(testDir, ".claude");
-    mkdirSync(destClaude, { recursive: true });
-    mkdirSync(join(destClaude, "bad-file.json"), { recursive: true });
+    restoreState(
+      { claudeAgentsDir: null, closedloopAiDir: savedClosedloopAiDir },
+      testDir
+    );
 
-    // Run the merge logic (mirrors production restoreWorktreeState)
-    let allCopied = true;
-    for (const child of readdirSync(savedClaudeDir)) {
-      const srcChild = join(savedClaudeDir, child);
-      const destChild = join(destClaude, child);
-      if (!existsSync(destChild)) {
-        try {
-          copyFileSync(srcChild, destChild);
-        } catch {
-          allCopied = false;
-        }
-      }
-    }
+    expect(existsSync(savedClosedloopAiDir)).toBe(true);
+    expect(
+      readFileSync(join(savedClosedloopAiDir, "work", "state.json"), "utf-8")
+    ).toBe('{"ok":true}');
+  });
 
-    // good-file.json was absent in dest, so it was copied
-    expect(existsSync(join(destClaude, "good-file.json"))).toBe(true);
-    // bad-file.json already existed (as dir), copy was skipped by existsSync check
-    // allCopied should still be true since the child existed
-    // But let's test the failure case: remove good-file to force a real failure path
-    rmSync(join(destClaude, "good-file.json"));
-    rmSync(join(destClaude, "bad-file.json"), { recursive: true });
+  it("returns null state when .closedloop-ai does not exist", () => {
+    const saved = saveState(testDir, testDir);
+    expect(saved.claudeAgentsDir).toBeNull();
+    expect(saved.closedloopAiDir).toBeNull();
+  });
+});
 
-    // Now simulate a copy failure scenario
-    allCopied = true;
-    for (const child of readdirSync(savedClaudeDir)) {
-      const srcChild = join(savedClaudeDir, child);
-      const destChild = join(destClaude, child);
-      if (!existsSync(destChild)) {
-        try {
-          // Force a failure on one file by making dest a read-only dir
-          if (child === "bad-file.json") {
-            throw new Error("simulated ENOSPC");
-          }
-          copyFileSync(srcChild, destChild);
-        } catch {
-          allCopied = false;
-        }
-      }
-    }
+describe("addWorktree", () => {
+  let testDir: string;
 
-    // Backup should be preserved since not all copies succeeded
-    expect(allCopied).toBe(false);
-    if (allCopied) {
-      rmSync(savedClaudeDir, { recursive: true, force: true });
-    }
-    // savedClaudeDir still exists -- data not lost
-    expect(existsSync(savedClaudeDir)).toBe(true);
-    expect(existsSync(join(savedClaudeDir, "bad-file.json"))).toBe(true);
+  beforeEach(() => {
+    testDir = mkdtempSync(join(tmpdir(), "worktree-add-test-"));
+  });
+
+  afterEach(() => {
+    rmSync(testDir, { recursive: true, force: true });
+  });
+
+  it("restores saved .closedloop-ai state without overwriting tracked files", () => {
+    const repoPath = join(testDir, "repo");
+    const worktreeDir = join(testDir, "repo-loop");
+    mkdirSync(join(repoPath, ".closedloop-ai", "settings"), {
+      recursive: true,
+    });
+    writeFileSync(
+      join(repoPath, ".closedloop-ai", "settings", "critic-gates.json"),
+      '{"defaults":{"baseCritics":["current"]}}'
+    );
+    writeFileSync(join(repoPath, "README.md"), "# repo\n");
+
+    execSync("git init", { cwd: repoPath, stdio: "pipe" });
+    execSync('git config user.email "test@example.com"', {
+      cwd: repoPath,
+      stdio: "pipe",
+    });
+    execSync('git config user.name "Test User"', {
+      cwd: repoPath,
+      stdio: "pipe",
+    });
+    execSync("git add .", { cwd: repoPath, stdio: "pipe" });
+    execSync('git commit -m "init"', { cwd: repoPath, stdio: "pipe" });
+
+    mkdirSync(join(worktreeDir, ".closedloop-ai", "settings"), {
+      recursive: true,
+    });
+    writeFileSync(
+      join(worktreeDir, ".closedloop-ai", "settings", "critic-gates.json"),
+      '{"defaults":{"baseCritics":["stale"]}}'
+    );
+    mkdirSync(join(worktreeDir, ".closedloop-ai", "work", "comment-chats"), {
+      recursive: true,
+    });
+    writeFileSync(
+      join(
+        worktreeDir,
+        ".closedloop-ai",
+        "work",
+        "comment-chats",
+        "IC_1234.json"
+      ),
+      '{"messages":[]}'
+    );
+
+    const ref = execSync("git rev-parse HEAD", {
+      cwd: repoPath,
+      encoding: "utf-8",
+      stdio: "pipe",
+    }).trim();
+
+    addWorktree(repoPath, worktreeDir, ref);
+
+    expect(
+      readFileSync(
+        join(worktreeDir, ".closedloop-ai", "settings", "critic-gates.json"),
+        "utf-8"
+      )
+    ).toBe('{"defaults":{"baseCritics":["current"]}}');
+    expect(
+      readFileSync(
+        join(
+          worktreeDir,
+          ".closedloop-ai",
+          "work",
+          "comment-chats",
+          "IC_1234.json"
+        ),
+        "utf-8"
+      )
+    ).toBe('{"messages":[]}');
   });
 });

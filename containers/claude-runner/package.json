@@ -1,0 +1,16 @@
+{
+  "name": "@closedloop-ai/claude-runner",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "tsx --test harness-agent.test.mjs"
+  },
+  "dependencies": {
+    "@closedloop-ai/loops-api": "workspace:*",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "tsx": "^4.21.0"
+  }
+}

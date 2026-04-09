@@ -61,4 +61,6 @@ const pullRequestMetadataSchema = z.object({
   headBranch: z.string(),
   baseBranch: z.string(),
   state: z.enum(GitHubPRState),
+  lastVerifiedAt: z.string().optional().nullable(),
+  lastRefreshAttemptAt: z.string().optional().nullable(),
 });

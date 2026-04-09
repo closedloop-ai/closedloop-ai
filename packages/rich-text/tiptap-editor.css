@@ -1,6 +1,35 @@
 @import "@repo/design-system/styles/globals.css";
 @source "./**/*.{ts,tsx}";
 
+/* Spacing and heading overrides */
+.ProseMirror {
+  line-height: 1.5;
+}
+
+/* Reduce spacing between paragraphs, list items, and block elements */
+.ProseMirror p,
+.ProseMirror ul,
+.ProseMirror ol,
+.ProseMirror blockquote {
+  margin-top: 0.5em;
+  margin-bottom: 0.5em;
+}
+
+.ProseMirror.prose h1 {
+  font-size: 1.6rem;
+  font-weight: 600;
+}
+
+.ProseMirror.prose h2 {
+  font-size: 1.3rem;
+  font-weight: 600;
+}
+
+.ProseMirror.prose h3 {
+  font-size: 1.2rem;
+  font-weight: 600;
+}
+
 /* Table styles for Tiptap editor */
 .ProseMirror table {
   border-collapse: collapse;
@@ -86,7 +115,8 @@
 .tiptap p.is-editor-empty:first-child::before {
   --tw-content: attr(data-placeholder);
   content: var(--tw-content);
-  color: var(--muted-foreground);
+  color: var(--foreground);
+  opacity: 0.5;
   float: left;
   height: 0;
   pointer-events: none;

@@ -1,0 +1,11 @@
+.git
+node_modules
+**/node_modules
+.next
+**/dist
+!packages/loops-api/dist
+*.log
+.turbo
+**/.turbo
+.env*
+!.env.example

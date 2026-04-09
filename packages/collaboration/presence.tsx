@@ -81,7 +81,7 @@ function UserAvatar({
           className={cn(
             "size-8 border-2",
             isCurrentUser
-              ? "ring-2 ring-primary ring-offset-2 ring-offset-background"
+              ? ""
               : "transition-transform hover:z-10 hover:scale-110"
           )}
           style={{

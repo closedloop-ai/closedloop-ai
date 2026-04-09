@@ -2,6 +2,7 @@
  * Unit tests for projectsService favorite methods:
  * addFavorite, removeFavorite, findFavoritesByUser
  */
+import { ProjectStatus } from "@repo/api/src/types/project";
 import { type Mock, vi } from "vitest";
 
 // Mock modules before importing the service
@@ -145,7 +146,10 @@ describe("projectsService.findFavoritesByUser", () => {
     expect(mockFindMany).toHaveBeenCalledWith({
       where: {
         userId: TEST_USER_ID,
-        project: { organizationId: TEST_ORG_ID },
+        project: {
+          organizationId: TEST_ORG_ID,
+          status: { not: ProjectStatus.Archived },
+        },
       },
       orderBy: { createdAt: "desc" },
       include: {

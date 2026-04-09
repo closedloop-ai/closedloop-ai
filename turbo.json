@@ -22,6 +22,10 @@
       "dependsOn": ["^build"],
       "outputs": ["dist/**"]
     },
+    "@closedloop-ai/loops-api#build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**"]
+    },
     "typecheck": {
       "dependsOn": ["^typecheck"]
     },
@@ -30,6 +34,12 @@
     },
     "test": {
       "dependsOn": ["^test"]
+    },
+    "api#test": {
+      "dependsOn": ["^test", "@closedloop-ai/loops-api#build"]
+    },
+    "app#test": {
+      "dependsOn": ["^test", "@closedloop-ai/loops-api#build"]
     },
     "analyze": {
       "dependsOn": ["^analyze"]

@@ -65,7 +65,7 @@ export function useArtifactContent(config: UseArtifactContentConfig) {
 
     createVersion.mutate(content, {
       onSuccess: () => {
-        toast.success("New version created");
+        toast.success("Version saved");
         onVersionCreated?.();
       },
     });
@@ -76,7 +76,7 @@ export function useArtifactContent(config: UseArtifactContentConfig) {
    */
   const discardChanges = useCallback(() => {
     setContent(artifact.version.content ?? "");
-    toast.info("Changes discarded");
+    toast.info("Version restored");
   }, [artifact.version.content]);
 
   return {
