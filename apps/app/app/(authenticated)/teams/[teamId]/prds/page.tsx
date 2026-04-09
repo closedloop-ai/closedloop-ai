@@ -1,13 +1,16 @@
 "use client";
 
 import {
+  type Artifact,
   type ArtifactStatus,
   ArtifactType,
 } from "@repo/api/src/types/artifact";
-import { FileIcon, Loader2Icon } from "lucide-react";
-import { useParams } from "next/navigation";
-import { useMemo } from "react";
+import { Button } from "@repo/design-system/components/ui/button";
+import { FileIcon, Loader2Icon, PlusIcon } from "lucide-react";
+import { useParams, useRouter } from "next/navigation";
+import { useMemo, useState } from "react";
 import { Header } from "@/app/(authenticated)/components/header";
+import { CreateArtifactModal } from "@/app/(authenticated)/teams/[teamId]/projects/[projectId]/components/create-artifact-modal";
 import type {
   ArtifactRowItem,
   RowEditHandlers,
@@ -31,7 +34,9 @@ const COLUMN_VISIBILITY_KEY = "table:columns:team-prds";
 
 export default function TeamPrdsPage() {
   const params = useParams();
+  const router = useRouter();
   const teamId = params.teamId as string;
+  const [createPrdOpen, setCreatePrdOpen] = useState(false);
 
   const { visibility, userVisibility, toggleColumn } = useColumnVisibility({
     storageKey: COLUMN_VISIBILITY_KEY,
@@ -101,6 +106,20 @@ export default function TeamPrdsPage() {
           { label: team.name, href: `/teams/${teamId}/projects` },
           { label: "PRDs" },
         ]}
+      >
+        <Button onClick={() => setCreatePrdOpen(true)}>
+          <PlusIcon className="h-4 w-4" />
+          Create PRD
+        </Button>
+      </Header>
+      <CreateArtifactModal
+        artifactType={ArtifactType.Prd}
+        onOpenChange={setCreatePrdOpen}
+        onSuccess={(artifact: Artifact) =>
+          router.push(`/prds/${artifact.slug}`)
+        }
+        open={createPrdOpen}
+        teamId={teamId}
       />
       <main className="flex flex-1 flex-col overflow-hidden">
         <div className="flex min-w-fit items-center justify-between border-b px-4 pt-4 pb-2">
