@@ -2371,6 +2371,7 @@ function buildClaudeDirectArgs(workDir, symphonyWD) {
   // Matches the dispatch workflow's claude_args (symphony-dispatch.yml:962-964).
   args.push(
     "-p",
+    "--verbose",
     "--output-format",
     "stream-json",
     "--allowedTools",
