@@ -26,8 +26,8 @@ describe("PullRequestStatusBadge", () => {
     );
     const badge = screen.getByText("OPEN");
     expect(badge).toBeDefined();
-    // Check for blue color class - StatusBadge uses bg-blue-100 for OPEN state
-    expect(badge.className).toContain("bg-blue-100");
+    // Check for info token class - StatusBadge uses bg-info/10 for OPEN state
+    expect(badge.className).toContain("bg-info/10");
   });
 
   it("renders green badge for MERGED state", () => {
@@ -49,8 +49,8 @@ describe("PullRequestStatusBadge", () => {
     );
     const badge = screen.getByText("MERGED");
     expect(badge).toBeDefined();
-    // Check for green color class - StatusBadge uses bg-green-100 for MERGED state
-    expect(badge.className).toContain("bg-green-100");
+    // Check for success token class - StatusBadge uses bg-success/10 for MERGED state
+    expect(badge.className).toContain("bg-success/10");
   });
 
   it("renders red badge for CLOSED state", () => {
@@ -72,8 +72,8 @@ describe("PullRequestStatusBadge", () => {
     );
     const badge = screen.getByText("CLOSED");
     expect(badge).toBeDefined();
-    // Check for red color class - StatusBadge uses bg-red-100 for CLOSED state
-    expect(badge.className).toContain("bg-red-100");
+    // Check for destructive token class - StatusBadge uses bg-destructive/10 for CLOSED state
+    expect(badge.className).toContain("bg-destructive/10");
   });
 
   it("renders null when pullRequest is not provided", () => {

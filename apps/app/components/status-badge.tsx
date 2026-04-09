@@ -167,9 +167,9 @@ export function FeatureStatusBadge({
 
 // Feature priority colors
 export const featurePriorityColors: Record<Priority, string> = {
-  [Priority.Low]: COLOR_INACTIVE,
-  [Priority.Medium]: COLOR_PROGRESS,
-  [Priority.High]: COLOR_PENDING,
+  [Priority.Low]: COLOR_PROGRESS,
+  [Priority.Medium]: COLOR_PENDING,
+  [Priority.High]: COLOR_FAILURE,
   [Priority.Urgent]: COLOR_FAILURE,
 };
 
