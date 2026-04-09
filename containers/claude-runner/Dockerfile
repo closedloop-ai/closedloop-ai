@@ -51,7 +51,8 @@ COPY containers/claude-runner/package.json /opt/harness/package.json
 # Copy pre-built loops-api package so npm can install it from local path
 COPY packages/loops-api/dist/ /opt/harness/loops-api-pkg/dist/
 COPY packages/loops-api/package.json /opt/harness/loops-api-pkg/package.json
-# Strip devDependencies — they contain workspace:* refs that npm can't resolve.
+# Prepare loops-api for container install by removing devDependencies
+# (workspace:* refs that npm can't resolve in a standalone npm install).
 RUN cd /opt/harness && \
     jq 'del(.devDependencies)' loops-api-pkg/package.json > tmp.json && \
     mv tmp.json loops-api-pkg/package.json && \

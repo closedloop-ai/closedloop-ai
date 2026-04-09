@@ -42,7 +42,6 @@ jobs:
 
       - name: Publish to GitHub Packages
         working-directory: packages/loops-api
-        # pnpm publish applies publishConfig.exports to swap source → dist paths.
         # --no-git-checks: CI runs on a detached HEAD.
         run: pnpm publish --no-git-checks
         env:

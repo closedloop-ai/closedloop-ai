@@ -1696,6 +1696,33 @@ let capturedSessionId = null;
 const RE_SESSION_ID =
   /(?:Session:\s*|"session_id"\s*:\s*")([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
 
+/**
+ * Extract session ID from a single output line.
+ * Handles both JSONL stream-json format (init record with session_id field)
+ * and human-readable format ("Session: <uuid>").
+ * Returns the session ID string or null.
+ */
+function extractSessionId(line) {
+  // Try JSONL init record first (from --output-format stream-json)
+  if (line.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(line);
+      if (
+        parsed.type === "system" &&
+        parsed.subtype === "init" &&
+        typeof parsed.session_id === "string"
+      ) {
+        return parsed.session_id;
+      }
+    } catch {
+      // Not valid JSON, fall through to regex
+    }
+  }
+  // Fallback: regex match for human-readable output
+  const match = RE_SESSION_ID.exec(line);
+  return match ? match[1] : null;
+}
+
 // ---------------------------------------------------------------------------
 // Run-loop discovery
 // ---------------------------------------------------------------------------
@@ -1787,11 +1814,12 @@ function spawnProcess(cmd, args, cwd, env) {
       const safeLine = redactSensitive(line);
       outputChunks.push({ stream, line: safeLine, ts: Date.now() });
 
-      // Capture session ID from output (first match wins)
+      // Capture session ID from output (first match wins).
+      // With --output-format stream-json, the init record contains session_id.
+      // With human-readable output, the "Session: <uuid>" line is matched by regex.
       if (!capturedSessionId) {
-        const sessionMatch = line.match(RE_SESSION_ID);
-        if (sessionMatch) {
-          capturedSessionId = sessionMatch[1];
+        capturedSessionId = extractSessionId(line);
+        if (capturedSessionId) {
           log("info", `Captured session ID: ${capturedSessionId}`);
         }
       }
@@ -1860,53 +1888,143 @@ function spawnProcess(cmd, args, cwd, env) {
 // ---------------------------------------------------------------------------
 
 /**
- * Parse Claude Code CLI output for per-model token usage.
- * Claude Code prints a summary like:
- *   Model: claude-opus-4-6  Input: 12345  Output: 6789  Cache creation: 100  Cache read: 200
- *   Model: claude-sonnet-4-5-20250929  Input: 5000  Output: 2000
- *
- * It may also print total lines like:
- *   Total input tokens: 17345
- *   Total output tokens: 8789
- *   Total cost: $1.23
+ * Ensure a model entry exists in tokensByModel and return it.
  */
+function getOrCreateModelEntry(tokensByModel, model) {
+  if (!tokensByModel[model]) {
+    tokensByModel[model] = { input: 0, output: 0 };
+  }
+  return tokensByModel[model];
+}
 
-// Regex patterns for parsing token usage (top-level for performance)
+/**
+ * Accumulate token counts into a model entry, including cache tokens.
+ */
+function accumulateModelTokens(
+  tokensByModel,
+  model,
+  inputTk,
+  outputTk,
+  cacheCreationTk,
+  cacheReadTk
+) {
+  const entry = getOrCreateModelEntry(tokensByModel, model);
+  entry.input += inputTk;
+  entry.output += outputTk;
+  if (cacheCreationTk > 0) {
+    entry.cacheCreation = (entry.cacheCreation || 0) + cacheCreationTk;
+  }
+  if (cacheReadTk > 0) {
+    entry.cacheRead = (entry.cacheRead || 0) + cacheReadTk;
+  }
+}
+
+/**
+ * Try to parse a single JSONL line as an assistant message with usage data.
+ * Returns { model, inputTk, outputTk, cacheCreationTk, cacheReadTk } or null.
+ */
+function parseJsonlAssistantUsage(line) {
+  if (!line.startsWith("{")) {
+    return null;
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  if (parsed.type !== "assistant") {
+    return null;
+  }
+  const message = parsed.message;
+  if (!message || typeof message !== "object") {
+    return null;
+  }
+  const usage = message.usage;
+  if (!usage || typeof usage !== "object") {
+    return null;
+  }
+  const model =
+    typeof message.model === "string" && message.model.length > 0
+      ? normalizeModelName(message.model)
+      : null;
+  return {
+    model,
+    inputTk: typeof usage.input_tokens === "number" ? usage.input_tokens : 0,
+    outputTk: typeof usage.output_tokens === "number" ? usage.output_tokens : 0,
+    cacheCreationTk:
+      typeof usage.cache_creation_input_tokens === "number"
+        ? usage.cache_creation_input_tokens
+        : 0,
+    cacheReadTk:
+      typeof usage.cache_read_input_tokens === "number"
+        ? usage.cache_read_input_tokens
+        : 0,
+  };
+}
+
+/**
+ * Parse token usage from Claude CLI JSONL stream output.
+ *
+ * When Claude is invoked with `--output-format stream-json`, each stdout line
+ * is a JSON record. Records with `type === "assistant"` contain a `message`
+ * field with `model` and `usage` (input_tokens, output_tokens,
+ * cache_creation_input_tokens, cache_read_input_tokens).
+ *
+ * This mirrors the desktop harness (closedloop-electron/src/main/token-usage.ts).
+ */
+function parseTokenUsageFromJsonl(outputLines) {
+  const tokensByModel = {};
+  let totalInput = 0;
+  let totalOutput = 0;
+
+  for (const entry of outputLines) {
+    const usage = parseJsonlAssistantUsage(entry.line || "");
+    if (!usage) {
+      continue;
+    }
+    totalInput += usage.inputTk;
+    totalOutput += usage.outputTk;
+    if (usage.model) {
+      accumulateModelTokens(
+        tokensByModel,
+        usage.model,
+        usage.inputTk,
+        usage.outputTk,
+        usage.cacheCreationTk,
+        usage.cacheReadTk
+      );
+    }
+  }
+
+  if (totalInput === 0 && totalOutput === 0) {
+    return null;
+  }
+  const hasModelData = Object.keys(tokensByModel).length > 0;
+  return {
+    tokensByModel: hasModelData ? tokensByModel : null,
+    totalInput,
+    totalOutput,
+  };
+}
+
+/**
+ * Parse token usage from Claude CLI human-readable output (regex fallback).
+ *
+ * Used for commands routed through run-loop.sh (PLAN, EXECUTE) where the
+ * harness does not control Claude's output format. Claude prints summary
+ * lines like:
+ *   Model: claude-opus-4-6  Input: 12345  Output: 6789  Cache creation: 100
+ *   Total input tokens: 17345
+ */
 const RE_MODEL_USAGE =
   /Model:\s*([\w.-]+)\s+Input:\s*([\d,]+)\s+Output:\s*([\d,]+)/i;
 const RE_CACHE_CREATION = /Cache creation:\s*([\d,]+)/i;
 const RE_CACHE_READ = /Cache read:\s*([\d,]+)/i;
 const RE_TOTAL_INPUT = /Total input tokens:\s*([\d,]+)/i;
 const RE_TOTAL_OUTPUT = /Total output tokens:\s*([\d,]+)/i;
-/**
- * Parse a single model-usage line and accumulate into tokensByModel map.
- */
-function accumulateModelUsage(tokensByModel, line, modelMatch) {
-  const modelName = normalizeModelName(modelMatch[1]);
-  const input = Number.parseInt(modelMatch[2].replace(/,/g, ""), 10);
-  const output = Number.parseInt(modelMatch[3].replace(/,/g, ""), 10);
 
-  if (!tokensByModel[modelName]) {
-    tokensByModel[modelName] = { input: 0, output: 0 };
-  }
-  tokensByModel[modelName].input += input;
-  tokensByModel[modelName].output += output;
-
-  const cacheCreateMatch = line.match(RE_CACHE_CREATION);
-  if (cacheCreateMatch) {
-    tokensByModel[modelName].cacheCreation =
-      (tokensByModel[modelName].cacheCreation || 0) +
-      Number.parseInt(cacheCreateMatch[1].replace(/,/g, ""), 10);
-  }
-  const cacheReadMatch = line.match(RE_CACHE_READ);
-  if (cacheReadMatch) {
-    tokensByModel[modelName].cacheRead =
-      (tokensByModel[modelName].cacheRead || 0) +
-      Number.parseInt(cacheReadMatch[1].replace(/,/g, ""), 10);
-  }
-}
-
-function parseTokenUsage(outputLines) {
+function parseTokenUsageFromRegex(outputLines) {
   const tokensByModel = {};
   let totalInput = 0;
   let totalOutput = 0;
@@ -1914,18 +2032,37 @@ function parseTokenUsage(outputLines) {
   for (const entry of outputLines) {
     const line = entry.line || "";
 
-    const modelMatch = line.match(RE_MODEL_USAGE);
+    const modelMatch = RE_MODEL_USAGE.exec(line);
     if (modelMatch) {
-      accumulateModelUsage(tokensByModel, line, modelMatch);
+      const modelName = normalizeModelName(modelMatch[1]);
+      const input = Number.parseInt(modelMatch[2].replaceAll(",", ""), 10);
+      const output = Number.parseInt(modelMatch[3].replaceAll(",", ""), 10);
+      const cacheCreateMatch = RE_CACHE_CREATION.exec(line);
+      const cacheReadMatch = RE_CACHE_READ.exec(line);
+      accumulateModelTokens(
+        tokensByModel,
+        modelName,
+        input,
+        output,
+        cacheCreateMatch
+          ? Number.parseInt(cacheCreateMatch[1].replaceAll(",", ""), 10)
+          : 0,
+        cacheReadMatch
+          ? Number.parseInt(cacheReadMatch[1].replaceAll(",", ""), 10)
+          : 0
+      );
     }
 
-    const totalInputMatch = line.match(RE_TOTAL_INPUT);
+    const totalInputMatch = RE_TOTAL_INPUT.exec(line);
     if (totalInputMatch) {
-      totalInput = Number.parseInt(totalInputMatch[1].replace(/,/g, ""), 10);
+      totalInput = Number.parseInt(totalInputMatch[1].replaceAll(",", ""), 10);
     }
-    const totalOutputMatch = line.match(RE_TOTAL_OUTPUT);
+    const totalOutputMatch = RE_TOTAL_OUTPUT.exec(line);
     if (totalOutputMatch) {
-      totalOutput = Number.parseInt(totalOutputMatch[1].replace(/,/g, ""), 10);
+      totalOutput = Number.parseInt(
+        totalOutputMatch[1].replaceAll(",", ""),
+        10
+      );
     }
   }
 
@@ -1945,6 +2082,61 @@ function parseTokenUsage(outputLines) {
     totalInput: sumInput || totalInput,
     totalOutput: sumOutput || totalOutput,
   };
+}
+
+/**
+ * Parse token usage from a claude-output.jsonl file on disk.
+ *
+ * run-loop.sh pipes Claude's stream-json output through a formatter, so the
+ * harness's captured stdout contains formatted text, not raw JSONL. But
+ * run-loop.sh also tees the JSONL to ${CLOSEDLOOP_WORKDIR}/claude-output.jsonl.
+ * This function reads that file and delegates to parseTokenUsageFromJsonl.
+ *
+ * Returns null if the file doesn't exist or contains no assistant records.
+ */
+function parseTokenUsageFromJsonlFile(jsonlPath) {
+  if (!fs.existsSync(jsonlPath)) {
+    return null;
+  }
+  try {
+    const content = fs.readFileSync(jsonlPath, "utf-8");
+    const lines = content
+      .split("\n")
+      .filter((l) => l.trim().length > 0)
+      .map((line) => ({ line }));
+    return parseTokenUsageFromJsonl(lines);
+  } catch (err) {
+    log("error", `Failed to parse JSONL file ${jsonlPath}: ${err.message}`);
+    return null;
+  }
+}
+
+/**
+ * Parse token usage from captured output lines.
+ *
+ * Strategy order:
+ * 1. JSONL from stdout (commands using --output-format stream-json directly)
+ * 2. JSONL from disk (run-loop.sh tees to claude-output.jsonl)
+ * 3. Regex from stdout (legacy fallback for human-readable summary lines)
+ */
+function parseTokenUsage(outputLines) {
+  // 1. Try JSONL from captured stdout
+  const jsonlResult = parseTokenUsageFromJsonl(outputLines);
+  if (jsonlResult) {
+    return jsonlResult;
+  }
+
+  // 2. Try JSONL file written by run-loop.sh
+  if (symphonyWorkDir) {
+    const jsonlPath = path.join(symphonyWorkDir, "claude-output.jsonl");
+    const fileResult = parseTokenUsageFromJsonlFile(jsonlPath);
+    if (fileResult) {
+      return fileResult;
+    }
+  }
+
+  // 3. Fall back to regex parsing of human-readable output
+  return parseTokenUsageFromRegex(outputLines);
 }
 
 // normalizeModelName imported from shared package (see imports at top)
@@ -2172,9 +2364,16 @@ function buildRunLoopArgs(runLoopPath, workDir, prdPath) {
 function buildClaudeDirectArgs(workDir, symphonyWD) {
   const args = [];
 
+  // -p: print mode (non-interactive, required for --output-format stream-json).
+  // --output-format stream-json: emit structured JSONL so we can parse token
+  // usage from message.usage fields (same approach as the desktop harness).
   // Grant tool permissions so claude doesn't prompt for approval in headless mode.
   // Matches the dispatch workflow's claude_args (symphony-dispatch.yml:962-964).
   args.push(
+    "-p",
+    "--verbose",
+    "--output-format",
+    "stream-json",
     "--allowedTools",
     "Bash,Glob,Grep,Read,Write,Edit,Task,Skill,SlashCommand,TodoWrite",
     "--max-turns",
@@ -2803,8 +3002,8 @@ async function reportFinalStatus(
       code: LoopErrorCode.TimedOut,
       message: `Loop exceeded maximum runtime of ${MAX_RUNTIME_MS / 1000}s`,
       result: {
-        ...(prInfo || {}),
-        sessionId: capturedSessionId,
+        ...prInfo,
+        ...(capturedSessionId ? { sessionId: capturedSessionId } : {}),
         durationSeconds: Number.parseFloat(duration),
       },
       correlationId: config.correlationId,
@@ -2821,14 +3020,16 @@ async function reportFinalStatus(
         exitCode,
         signal,
         durationSeconds: Number.parseFloat(duration),
-        ...(prInfo || {}),
-        sessionId: capturedSessionId,
+        ...prInfo,
+        ...(capturedSessionId ? { sessionId: capturedSessionId } : {}),
       },
       tokensUsed: {
         input: tokenUsage.totalInput,
         output: tokenUsage.totalOutput,
       },
-      tokensByModel: tokenUsage.tokensByModel,
+      ...(tokenUsage.tokensByModel
+        ? { tokensByModel: tokenUsage.tokensByModel }
+        : {}),
       correlationId: config.correlationId,
       loopId: config.loopId,
     });
@@ -2839,8 +3040,8 @@ async function reportFinalStatus(
       code: LoopErrorCode.ProcessFailed,
       message: `Process exited with code ${exitCode}`,
       result: {
-        ...(prInfo || {}),
-        sessionId: capturedSessionId,
+        ...prInfo,
+        ...(capturedSessionId ? { sessionId: capturedSessionId } : {}),
       },
       correlationId: config.correlationId,
       loopId: config.loopId,
@@ -3048,7 +3249,7 @@ async function main() {
       let llmPrInfo = null;
       try {
         llmPrInfo = attemptLlmCommit(workDir, errorResultPath);
-      } catch (_) {
+      } catch {
         // ignore
       }
 
@@ -3063,7 +3264,7 @@ async function main() {
             "[INCOMPLETE] WIP: Safety commit — harness error"
           );
           ensureBranchPushed(workDir);
-        } catch (_) {
+        } catch {
           // ignore
         }
 
@@ -3073,14 +3274,14 @@ async function main() {
             prInfo = { ...(prInfo || {}), ...llmPrInfo };
           }
           prInfo = createPullRequest(workDir, prInfo);
-        } catch (_) {
+        } catch {
           // ignore
         }
 
         // Write execution-result.json ourselves since LLM didn't
         try {
           writeExecutionResult(symphonyWorkDir || workDir, prInfo);
-        } catch (_) {
+        } catch {
           // ignore
         }
       }
@@ -3089,7 +3290,7 @@ async function main() {
       if (prInfo?.prNumber) {
         try {
           labelPrIncomplete(workDir, prInfo.prNumber);
-        } catch (_) {
+        } catch {
           // ignore
         }
       }
@@ -3112,8 +3313,8 @@ async function main() {
         code: harnessError.code,
         message: redactSensitive(errorMessage),
         result: {
-          ...(prInfo || {}),
-          sessionId: capturedSessionId,
+          ...prInfo,
+          ...(capturedSessionId ? { sessionId: capturedSessionId } : {}),
         },
         correlationId: config.correlationId,
         loopId: config.loopId,
@@ -3142,7 +3343,11 @@ export {
   getWorkspaceStateRestorePrefixes,
   getWorkspaceStateUploadPrefixes,
   HarnessError,
+  extractSessionId,
   parseTokenUsage,
+  parseTokenUsageFromJsonl,
+  parseTokenUsageFromJsonlFile,
+  parseTokenUsageFromRegex,
   parsePrInfo,
   syncPlanFromContextPack,
   validateConfig,
