@@ -98,11 +98,9 @@ export const previewDeploymentStateColors: Record<string, string> = {
 export const artifactStatusColors: Record<ArtifactStatus, string> = {
   [ArtifactStatus.Draft]: "bg-muted text-muted-foreground border-muted",
   [ArtifactStatus.ReadyForReview]: COLOR_PENDING,
-  [ArtifactStatus.InReview]:
-    "bg-yellow-100 text-yellow-800 border-yellow-200 dark:bg-yellow-900/30 dark:text-yellow-400 dark:border-yellow-800",
-  [ArtifactStatus.Approved]:
-    "bg-green-100 text-green-800 border-green-200 dark:bg-green-900/30 dark:text-green-400 dark:border-green-800",
-  [ArtifactStatus.Executed]: COLOR_SUCCESS,
+  [ArtifactStatus.InReview]: COLOR_PROGRESS,
+  [ArtifactStatus.Approved]: COLOR_PROGRESS,
+  [ArtifactStatus.Executed]: COLOR_PROGRESS,
   [ArtifactStatus.Obsolete]:
     "bg-gray-100 text-gray-600 border-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-700",
 };
@@ -144,8 +142,7 @@ export const featureStatusColors: Record<FeatureStatus, string> = {
   [FeatureStatus.NotStarted]: "bg-muted text-muted-foreground border-muted",
   [FeatureStatus.InProgress]:
     "bg-blue-100 text-blue-800 border-blue-200 dark:bg-blue-900/30 dark:text-blue-400 dark:border-blue-800",
-  [FeatureStatus.InReview]:
-    "bg-yellow-100 text-yellow-800 border-yellow-200 dark:bg-yellow-900/30 dark:text-yellow-400 dark:border-yellow-800",
+  [FeatureStatus.InReview]: COLOR_PROGRESS,
   [FeatureStatus.Completed]:
     "bg-green-100 text-green-800 border-green-200 dark:bg-green-900/30 dark:text-green-400 dark:border-green-800",
   [FeatureStatus.Obsolete]:
