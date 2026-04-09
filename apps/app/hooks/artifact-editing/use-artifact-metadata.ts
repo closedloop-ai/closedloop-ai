@@ -4,6 +4,7 @@ import type {
   ArtifactStatus,
   ArtifactWithWorkstream,
 } from "@repo/api/src/types/artifact";
+import type { Priority } from "@repo/api/src/types/common";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import type { User } from "@repo/design-system/components/ui/user-select-popover";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -71,6 +72,7 @@ export function useArtifactMetadata(config: UseArtifactMetadataConfig) {
 
   // Metadata state - tracks local edits
   const [status, setStatus] = useState(artifact.status);
+  const [priority, setPriority] = useState<Priority>(artifact.priority);
   const [targetRepo, setTargetRepo] = useState(artifact.targetRepo ?? "");
   const [targetBranch, setTargetBranch] = useState(
     artifact.targetBranch ?? "main"
@@ -98,11 +100,13 @@ export function useArtifactMetadata(config: UseArtifactMetadataConfig) {
   // Sync state when artifact prop changes (e.g., after update, navigation)
   useEffect(() => {
     setStatus(artifact.status);
+    setPriority(artifact.priority);
     setTargetRepo(artifact.targetRepo ?? "");
     setTargetBranch(artifact.targetBranch ?? "main");
     setAssignee(assigneeToUser(artifact.assignee));
   }, [
     artifact.status,
+    artifact.priority,
     artifact.targetRepo,
     artifact.targetBranch,
     artifact.assignee,
@@ -116,6 +120,7 @@ export function useArtifactMetadata(config: UseArtifactMetadataConfig) {
     (
       updates: Partial<{
         status: ArtifactStatus;
+        priority: Priority;
         parentId: string | null;
         approverId: string | null;
         targetRepo: string | null;
@@ -143,6 +148,18 @@ export function useArtifactMetadata(config: UseArtifactMetadataConfig) {
     (newStatus: ArtifactStatus) => {
       setStatus(newStatus);
       handleMetadataUpdate({ status: newStatus });
+    },
+    [handleMetadataUpdate]
+  );
+
+  /**
+   * Handle priority change.
+   * Updates local state and immediately saves to server.
+   */
+  const handlePriorityChange = useCallback(
+    (newPriority: Priority) => {
+      setPriority(newPriority);
+      handleMetadataUpdate({ priority: newPriority });
     },
     [handleMetadataUpdate]
   );
@@ -220,6 +237,7 @@ export function useArtifactMetadata(config: UseArtifactMetadataConfig) {
   return {
     // Metadata state
     status,
+    priority,
     approver,
     targetRepo,
     targetBranch,
@@ -228,6 +246,9 @@ export function useArtifactMetadata(config: UseArtifactMetadataConfig) {
 
     // Status handlers
     handleStatusChange,
+
+    // Priority handlers
+    handlePriorityChange,
 
     // Approver handlers
     handleApproverSelect,

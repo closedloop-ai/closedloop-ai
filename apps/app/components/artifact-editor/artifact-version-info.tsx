@@ -1,6 +1,7 @@
 "use client";
 
-import { MetadataSection } from "./metadata-panel";
+import { useState } from "react";
+import { CollapsibleSection } from "./collapsible-section";
 
 /**
  * Date formatter for consistent date display across artifact metadata.
@@ -10,10 +11,6 @@ const dateFormatter = new Intl.DateTimeFormat("en-US", {
 });
 
 type ArtifactVersionInfoProps = {
-  /**
-   * Artifact version number
-   */
-  version: number;
   /**
    * Artifact creation date (ISO string or Date)
    */
@@ -25,21 +22,20 @@ type ArtifactVersionInfoProps = {
 };
 
 /**
- * Displays artifact version and timestamp metadata.
- * Provides consistent formatting for version, created, and updated dates.
+ * Displays artifact activity metadata with created and updated dates.
  */
 export function ArtifactVersionInfo({
-  version,
   createdAt,
   updatedAt,
 }: Readonly<ArtifactVersionInfoProps>) {
+  const [isOpen, setIsOpen] = useState(false);
+
   return (
-    <MetadataSection separator>
+    <CollapsibleSection onOpenChange={setIsOpen} open={isOpen} title="Activity">
       <div className="space-y-1 text-muted-foreground text-sm">
-        <p>Version: v{version}</p>
         <p>Created: {dateFormatter.format(new Date(createdAt))}</p>
         <p>Updated: {dateFormatter.format(new Date(updatedAt))}</p>
       </div>
-    </MetadataSection>
+    </CollapsibleSection>
   );
 }

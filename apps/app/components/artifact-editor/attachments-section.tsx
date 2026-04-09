@@ -134,7 +134,6 @@ export function AttachmentsSection({ artifactId }: { artifactId: string }) {
         )}
       </div>
       <Button
-        className="w-full"
         disabled={isUploading}
         onClick={() => fileInputRef.current?.click()}
         size="sm"

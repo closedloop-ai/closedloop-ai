@@ -109,7 +109,7 @@ export function SourceArtifactSection({
   };
 
   return (
-    <MetadataSection separator>
+    <MetadataSection>
       <Label className="text-muted-foreground text-xs">Source Artifact</Label>
       {sourceArtifact ? (
         <div className="flex items-center justify-between gap-2">
@@ -140,7 +140,7 @@ export function SourceArtifactSection({
         <Popover onOpenChange={setIsOpen} open={isOpen}>
           <PopoverTrigger asChild>
             <Button
-              className="w-full justify-start gap-2 text-muted-foreground"
+              className="justify-start gap-2 text-muted-foreground"
               size="sm"
               variant="outline"
             >

@@ -1,5 +1,6 @@
 "use client";
 
+import { Button } from "@repo/design-system/components/ui/button";
 import { Label } from "@repo/design-system/components/ui/label";
 import {
   Select,
@@ -9,6 +10,8 @@ import {
   SelectValue,
 } from "@repo/design-system/components/ui/select";
 import { formatDistanceToNow } from "date-fns";
+import { ArrowRight } from "lucide-react";
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import {
   useGitHubBranches,
@@ -54,6 +57,10 @@ type TargetRepositoryFieldsProps = {
    * Accepts optional override value to avoid stale closure issues.
    */
   onTargetBranchBlur: (overrideValue?: string) => void;
+  /**
+   * Layout: "vertical" = stacked with labels (default), "horizontal" = compact inline for metadata bar
+   */
+  layout?: "horizontal" | "vertical";
 };
 
 /**
@@ -69,6 +76,7 @@ export function TargetRepositoryFields({
   onTargetRepoBlur,
   onTargetBranchChange,
   onTargetBranchBlur,
+  layout = "vertical",
 }: Readonly<TargetRepositoryFieldsProps>) {
   // GitHub integration queries
   const { data: githubStatus, isLoading: isLoadingGitHubStatus } =
@@ -143,6 +151,69 @@ export function TargetRepositoryFields({
     onTargetBranchChange(branch);
     onTargetBranchBlur(branch);
   };
+
+  const compactTriggerClassName =
+    "min-w-0 w-auto justify-start gap-1 bg-transparent dark:bg-transparent [&>:last-child]:hidden";
+
+  if (layout === "horizontal") {
+    if (githubStatus?.connected === false) {
+      return <GitHubDisconnectedInline targetRepo={targetRepo} />;
+    }
+
+    return (
+      <>
+        <Select
+          disabled={isLoadingGitHubStatus || isLoadingRepos}
+          onValueChange={handleRepositoryChange}
+          value={selectedRepoId}
+        >
+          <SelectTrigger className={compactTriggerClassName} size="sm">
+            <SelectValue
+              placeholder={
+                isLoadingGitHubStatus || isLoadingRepos
+                  ? "Loading..."
+                  : "Repository"
+              }
+            />
+          </SelectTrigger>
+          <SelectContent>
+            {sortedRepositories.map((repo) => (
+              <SelectItem key={repo.id} value={repo.id}>
+                <div className="flex flex-col">
+                  <span>{repo.fullName}</span>
+                  {repo.lastPushedAt && (
+                    <span className="text-muted-foreground text-xs">
+                      Last active{" "}
+                      {formatDistanceToNow(new Date(repo.lastPushedAt), {
+                        addSuffix: true,
+                      })}
+                    </span>
+                  )}
+                </div>
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select
+          disabled={!selectedRepoId || isLoadingBranches}
+          onValueChange={handleBranchChange}
+          value={targetBranch}
+        >
+          <SelectTrigger className={compactTriggerClassName} size="sm">
+            <SelectValue placeholder={getBranchPlaceholder()} />
+          </SelectTrigger>
+          <SelectContent>
+            {branchesData?.branches.map((branch) => (
+              <SelectItem key={branch.name} value={branch.name}>
+                {branch.name}
+                {branch.isDefault ? " (default)" : ""}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </>
+    );
+  }
 
   return (
     <MetadataSection separator={separator}>
@@ -223,5 +294,19 @@ export function TargetRepositoryFields({
         )}
       </div>
     </MetadataSection>
+  );
+}
+
+function GitHubDisconnectedInline({ targetRepo }: { targetRepo: string }) {
+  if (targetRepo) {
+    return <span className="text-muted-foreground text-sm">{targetRepo}</span>;
+  }
+  return (
+    <Button asChild className="h-8 px-3" size="sm" variant="outline">
+      <Link href="/settings?tab=integrations">
+        Connect GitHub
+        <ArrowRight className="ml-1 h-3.5 w-3.5" />
+      </Link>
+    </Button>
   );
 }
