@@ -1,5 +1,6 @@
 "use client";
 
+import { useSearchParams } from "next/navigation";
 import { HealthCheckDialog } from "@/components/engineer/HealthCheckDialog";
 import { useComputeTargets } from "@/hooks/queries/use-compute-targets";
 import {
@@ -17,8 +18,13 @@ export function SystemCheckBootstrap() {
     ...COMPUTE_TARGETS_QUERY_OPTIONS,
     enabled: CLOUD_RELAY_ENABLED,
   });
+  const searchParams = useSearchParams();
+  const fromOnboarding = searchParams.get("from") === "onboarding";
 
-  if (isLoading || !shouldRunSystemCheck) {
+  // When the user arrives directly from onboarding, trigger the health check
+  // immediately even if the normal eligibility gate has not yet passed —
+  // so that ClaudeCode plugin installation guidance surfaces without delay.
+  if (isLoading || !(shouldRunSystemCheck || fromOnboarding)) {
     return null;
   }
 
