@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { mkdir, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import type { NextRequest } from "next/server";
 import { withMcpTools } from "@/lib/engineer/allowed-tools";
@@ -30,6 +31,7 @@ type StructuredFinding = {
   title: string;
   description: string;
   suggestion: string | null;
+  humanizedBody: string;
 };
 
 function getWorktreeDir(repoPath: string, ticketId: string): string {
@@ -65,14 +67,18 @@ function mapPriority(severity: string): ReviewFinding["priority"] {
   return "P3";
 }
 
-const EXTRACTION_PROMPT = `Now please provide your review findings as structured JSON. For each finding, look up the actual file to determine the correct full path and starting line number. Return ONLY a JSON array inside a \`\`\`json code block. Each element must have:
+const EXTRACTION_PROMPT = `Now please provide your review findings as structured JSON. For each finding, look up the actual file to determine the correct full path and starting line number. Return ONLY a JSON array inside a \`\`\`json code block.
+
+Every element MUST have ALL of these fields. None may be omitted. None except "line" and "suggestion" may be null.
 - "severity": "critical" | "high" | "medium" | "low"
 - "file": full repository-relative path (e.g., "src/components/Button.tsx") — use Glob to find the exact path if needed
 - "line": starting line number of the relevant code — use Read/Grep to find it, or null if not applicable
-- "title": one-line summary
-- "description": detailed explanation
-- "suggestion": suggested fix or null
-Use the FULL repository-relative file paths, not abbreviated names. If a finding spans multiple files, create separate entries for each file.`;
+- "title": one-line summary of the issue (REQUIRED, always a string)
+- "description": detailed explanation of the issue — this is the analytical body the reviewer would put in a formal report (REQUIRED, always a non-empty string, even when humanizedBody is also provided)
+- "suggestion": suggested fix, or null if none applies
+- "humanizedBody": a SEPARATE natural-voice rewording of the same finding for a PR comment. 2-4 sentences in the voice of a senior engineer leaving a note for a colleague. Casual and collegial, with mild hedging where appropriate ("I think", "might want to", "not sure if this is intentional but", "feels like"). No headings, no severity tags like [P2], no bold, no lists, no title prefix. Do not include the file path or line number (GitHub shows those in the diff gutter). Fold the suggestion in naturally as a follow-up sentence. Do not invent facts beyond this finding. This is IN ADDITION to "description" — it does not replace it. REQUIRED, always a non-empty string.
+
+Use the FULL repository-relative file paths, not abbreviated names. If a finding spans multiple files, create separate entries for each file. Include every finding from the review — do not drop any.`;
 
 export async function POST(
   request: NextRequest,
@@ -116,8 +122,28 @@ export async function POST(
   const worktreeDir = getWorktreeDir(repoPath, ticketId);
 
   console.log(
-    `[review-extract] Starting extraction for ${ticketId}, provider=${provider}, session ${sessionId}`
+    `[review-extract] >>> NEW CODE PATH <<< Starting extraction for ${ticketId}, provider=${provider}, session ${sessionId}`
   );
+
+  // Canary: write the prompt to disk IMMEDIATELY so we can verify the new
+  // code path is running. If this file doesn't appear after a review, the
+  // dev server is serving stale code.
+  const workDir = join(worktreeDir, ".closedloop-ai", "work");
+  try {
+    await mkdir(workDir, { recursive: true });
+    await writeFile(
+      join(workDir, `review-extract-prompt-${provider}.txt`),
+      EXTRACTION_PROMPT
+    );
+    console.log(
+      `[review-extract] Wrote prompt canary to ${join(workDir, `review-extract-prompt-${provider}.txt`)}`
+    );
+  } catch (err) {
+    console.error(
+      "[review-extract] Failed to write prompt canary:",
+      err instanceof Error ? err.message : String(err)
+    );
+  }
 
   try {
     const collected =
@@ -126,8 +152,28 @@ export async function POST(
         : await runClaudeExtraction(worktreeDir, sessionId);
     console.log(`[review-extract] Collected ${collected.length} chars of text`);
 
+    // Persist the raw model response so we can diagnose model incompleteness
+    // (missing fields, dropped findings, etc.) without re-running the review.
+    try {
+      await writeFile(
+        join(workDir, `review-extract-raw-${provider}.txt`),
+        collected
+      );
+      console.log(
+        `[review-extract] Wrote raw response to review-extract-raw-${provider}.txt (${collected.length} chars)`
+      );
+    } catch (err) {
+      console.warn(
+        "[review-extract] Failed to persist raw response:",
+        err instanceof Error ? err.message : String(err)
+      );
+    }
+
     const findings = parseStructuredFindings(collected);
-    console.log(`[review-extract] Parsed ${findings.length} findings`);
+    const humanizedCount = findings.filter((f) => f.humanizedBody).length;
+    console.log(
+      `[review-extract] Parsed ${findings.length} findings (with humanizedBody: ${humanizedCount})`
+    );
 
     return Response.json({ findings });
   } catch (err) {
@@ -345,5 +391,9 @@ function parseStructuredFindings(text: string): ReviewFinding[] {
       ? `${item.title}\n${item.description}`
       : (item.title ?? ""),
     suggestion: item.suggestion ?? undefined,
+    humanizedBody:
+      typeof item.humanizedBody === "string" && item.humanizedBody.trim()
+        ? item.humanizedBody.trim()
+        : undefined,
   }));
 }

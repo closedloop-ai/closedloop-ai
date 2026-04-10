@@ -23,6 +23,10 @@ export type ReviewFinding = {
   line?: number;
   message: string;
   suggestion?: string;
+  // Natural-voice PR comment body generated during extraction.
+  // Used only by buildCommentBody when "Leave as Comment" is pressed.
+  // Never rendered in the review chat UI.
+  humanizedBody?: string;
 };
 
 export type ReviewFindings = {

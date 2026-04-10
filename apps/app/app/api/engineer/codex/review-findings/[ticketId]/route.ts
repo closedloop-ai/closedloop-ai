@@ -17,6 +17,7 @@ type PersistedFinding = {
   line?: number;
   message: string;
   suggestion?: string;
+  humanizedBody?: string;
   commented: boolean;
 };
 
@@ -271,6 +272,7 @@ async function saveFindings(
           line: f.line as number | undefined,
           message: (f.message as string) || "",
           suggestion: f.suggestion as string | undefined,
+          humanizedBody: f.humanizedBody as string | undefined,
           commented: f.commented as boolean,
         })
       ),

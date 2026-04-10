@@ -8,7 +8,9 @@ import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import {
   appendFile,
   mkdir,
+  readdir,
   readFile,
+  stat,
   unlink,
   writeFile,
 } from "node:fs/promises";
@@ -206,10 +208,34 @@ function setupProcessLifecycle(
   initialState: ReviewState,
   pidPath: string,
   sessionIdHolder: { value: string | null },
-  onModelError?: () => void
+  onModelError?: () => void,
+  onProcessClose?: (exitCode: number, errorMessage?: string) => void
 ) {
   const provider = initialState.provider;
   let stderrText = "";
+
+  // Codex prints its session ID banner to stdout in older versions but to
+  // stderr in newer versions (>= 0.118). Scan both channels with one shared
+  // 2KB buffer until found. Set BEFORE any await so createCodexStream sees
+  // the value in the same event-loop tick.
+  let codexStartupBuffer = "";
+  let codexSessionIdCaptured = false;
+  const tryCaptureCodexSessionId = (text: string): void => {
+    if (codexSessionIdCaptured) {
+      return;
+    }
+    codexStartupBuffer += text;
+    const match = CODEX_SESSION_ID_REGEX.exec(codexStartupBuffer);
+    if (match) {
+      sessionIdHolder.value = match[1];
+      codexSessionIdCaptured = true;
+      codexStartupBuffer = "";
+      console.log(`[codex-review] Codex session ID captured: ${match[1]}`);
+    } else if (codexStartupBuffer.length > 2048) {
+      codexSessionIdCaptured = true;
+      codexStartupBuffer = "";
+    }
+  };
 
   if (provider === "claude") {
     // For Claude, extract text from stream-json events before writing to log.
@@ -233,38 +259,18 @@ function setupProcessLifecycle(
       }
     });
   } else {
-    // Buffer the first ~2KB of Codex stdout to capture the session ID from its startup banner.
-    // Once found (or buffer limit hit), stop scanning but keep appending to the review log.
-    let startupBuffer = "";
-    let sessionIdCaptured = false;
-
     childProcess.stdout?.on("data", async (data: Buffer) => {
       const text = data.toString();
-
-      // Parse session ID synchronously BEFORE any await so that
-      // createCodexStream's listener (which reads sessionIdHolder.value
-      // in the same event-loop tick) sees the captured value.
-      if (!sessionIdCaptured) {
-        startupBuffer += text;
-        const match = CODEX_SESSION_ID_REGEX.exec(startupBuffer);
-        if (match) {
-          sessionIdHolder.value = match[1];
-          sessionIdCaptured = true;
-          startupBuffer = "";
-          console.log(`[codex-review] Codex session ID captured: ${match[1]}`);
-        } else if (startupBuffer.length > 2048) {
-          // Stop scanning after 2KB — session ID should appear in the first few lines
-          sessionIdCaptured = true;
-          startupBuffer = "";
-        }
-      }
-
+      tryCaptureCodexSessionId(text);
       await appendReviewLog(worktreeDir, provider, text);
     });
   }
 
   childProcess.stderr?.on("data", async (data: Buffer) => {
     const text = data.toString();
+    if (provider === "codex") {
+      tryCaptureCodexSessionId(text);
+    }
     stderrText += text;
     await appendReviewLog(worktreeDir, provider, text);
   });
@@ -295,6 +301,13 @@ function setupProcessLifecycle(
       await unlink(pidPath).catch(() => {});
     }
 
+    // Bridge code-review skill findings to review-findings-claude.json
+    if (provider === "claude" && code === 0) {
+      bridgeSkillFindings(worktreeDir, initialState.config.model).catch((err) =>
+        console.warn("[codex-review] bridgeSkillFindings failed:", err)
+      );
+    }
+
     // Persist Codex session ID to codex-chat-review.json so the chat route can resume it
     if (provider === "codex" && sessionIdHolder.value) {
       const workDir = join(worktreeDir, ".closedloop-ai", "work");
@@ -312,6 +325,9 @@ function setupProcessLifecycle(
         `[codex-review] Wrote ${chatStatePath} with session ${sessionIdHolder.value}`
       );
     }
+
+    // Notify stream after state file is written (Claude path only)
+    onProcessClose?.(code ?? 1);
   });
 
   childProcess.on("error", async (err) => {
@@ -323,6 +339,11 @@ function setupProcessLifecycle(
       exitCode: 1,
     };
     await writeReviewState(worktreeDir, provider, errorState);
+    if (existsSync(pidPath)) {
+      await unlink(pidPath).catch(() => {});
+    }
+    // Notify stream after state file is written (Claude path only)
+    onProcessClose?.(1, err.message);
   });
 
   childProcess.unref();
@@ -370,18 +391,25 @@ function createCodexStream(
         }
       };
 
-      childProcess.stdout?.on("data", (data: Buffer) => {
-        console.log(`[codex-stream] stdout data: ${data.length} bytes`);
-        // Emit sessionId event once when setupProcessLifecycle has captured it
+      // Emit sessionId event once when setupProcessLifecycle has captured it.
+      // The banner can arrive on stdout (older codex) or stderr (>= 0.118),
+      // so check from both listeners.
+      const maybeEmitSessionId = (): void => {
         if (!sessionIdEmitted && sessionIdHolder.value) {
           sessionIdEmitted = true;
           sendEvent({ type: "sessionId", sessionId: sessionIdHolder.value });
         }
+      };
+
+      childProcess.stdout?.on("data", (data: Buffer) => {
+        console.log(`[codex-stream] stdout data: ${data.length} bytes`);
+        maybeEmitSessionId();
         sendEvent({ type: "output", content: data.toString() });
       });
 
       childProcess.stderr?.on("data", (data: Buffer) => {
         console.log(`[codex-stream] stderr data: ${data.length} bytes`);
+        maybeEmitSessionId();
         sendEvent({ type: "output", content: data.toString() });
       });
 
@@ -407,13 +435,46 @@ function createCodexStream(
   });
 }
 
+type ClaudeStreamControls = {
+  sendDone: (exitCode: number) => void;
+  sendError: (exitCode: number, errorMessage: string) => void;
+};
+
 function createClaudeStream(
   childProcess: ChildProcess,
   sessionIdHolder?: { value: string | null },
   reviewCommand?: string
-): ReadableStream {
+): { stream: ReadableStream; controls: ClaudeStreamControls } {
   const encoder = new TextEncoder();
-  return new ReadableStream({
+  let sendDoneRef: ((exitCode: number) => void) | null = null;
+  let sendErrorRef: ((exitCode: number, msg: string) => void) | null = null;
+  let pendingDone: { exitCode: number; errorMessage?: string } | null = null;
+  let terminalSent = false;
+
+  const controls: ClaudeStreamControls = {
+    sendDone: (code: number) => {
+      if (terminalSent) {
+        return;
+      }
+      if (sendDoneRef) {
+        sendDoneRef(code);
+      } else {
+        pendingDone = { exitCode: code };
+      }
+    },
+    sendError: (code: number, errorMessage: string) => {
+      if (terminalSent) {
+        return;
+      }
+      if (sendErrorRef) {
+        sendErrorRef(code, errorMessage);
+      } else {
+        pendingDone = { exitCode: code, errorMessage };
+      }
+    },
+  };
+
+  const stream = new ReadableStream({
     start(controller) {
       let buffer = "";
       let controllerClosed = false;
@@ -433,6 +494,8 @@ function createClaudeStream(
         sessionId?: string;
         reviewCommand?: string;
         contextPercent?: number;
+        terminal?: boolean;
+        error?: string;
       }) => {
         if (controllerClosed) {
           return;
@@ -494,11 +557,8 @@ function createClaudeStream(
         );
       });
 
-      childProcess.on("close", (code) => {
-        console.log(
-          `[codex-review] Claude process closed with code ${code}, buffer remaining: ${buffer.length} chars`
-        );
-        // Flush remaining buffer
+      // Flush remaining stdout buffer and emit a terminal frame
+      const flushBufferAndSendTerminal = (exitCode: number) => {
         if (buffer.trim()) {
           try {
             const event = JSON.parse(buffer.trim());
@@ -516,15 +576,45 @@ function createClaudeStream(
           } catch {
             sendEvent({ type: "output", content: `${buffer.trim()}\n` });
           }
+          buffer = "";
         }
-        sendEvent({ type: "done", exitCode: code ?? 1 });
+        sendEvent({ type: "done", exitCode });
         closeController();
-      });
+      };
 
-      childProcess.on("error", (err) => {
-        sendEvent({ type: "error", content: err.message });
+      // Wire up the refs for lifecycle-driven terminal events
+      sendDoneRef = (exitCode: number) => {
+        if (terminalSent) {
+          return;
+        }
+        terminalSent = true;
+        flushBufferAndSendTerminal(exitCode);
+      };
+
+      sendErrorRef = (exitCode: number, errorMessage: string) => {
+        if (terminalSent) {
+          return;
+        }
+        terminalSent = true;
+        sendEvent({
+          type: "error",
+          terminal: true,
+          error: errorMessage,
+        });
         closeController();
-      });
+      };
+
+      // Flush any buffered terminal signal from lifecycle firing before start()
+      if (pendingDone !== null) {
+        if (pendingDone.errorMessage) {
+          sendErrorRef(pendingDone.exitCode, pendingDone.errorMessage);
+        } else {
+          sendDoneRef(pendingDone.exitCode);
+        }
+      }
+
+      // No close/error listeners here -- terminal events are driven by
+      // setupProcessLifecycle via onProcessClose after state file is written.
     },
     cancel() {
       console.log(
@@ -532,6 +622,8 @@ function createClaudeStream(
       );
     },
   });
+
+  return { stream, controls };
 }
 
 /**
@@ -548,12 +640,17 @@ async function resolveClaudeReviewProcess(
   model: string,
   prNum: string,
   stateDir: string,
-  provider: string
+  provider: string,
+  rawBaseBranch: string
 ): Promise<{ process: ChildProcess; command: string }> {
   const first = await spawnClaudeReview(cwd, model);
-  first.stdin?.write("/code-review:start");
+  // The skill's resolve-scope prepends origin/ to --base internally,
+  // so pass the raw branch name (not the remote ref).
+  first.stdin?.write(`/code-review:start --base ${rawBaseBranch}`);
   first.stdin?.end();
-  console.log(`[codex-review] Trying /code-review:start (pid: ${first.pid})`);
+  console.log(
+    `[codex-review] Trying /code-review:start --base ${rawBaseBranch} (pid: ${first.pid})`
+  );
 
   type ProbeResult = { type: "working" } | { type: "exited"; code: number };
 
@@ -717,16 +814,27 @@ export async function POST(
     provider
   );
 
+  // Use the remote tracking ref so the diff matches what GitHub sees, even if
+  // the local base branch is stale. ensureWorktree already calls fetchOrigin.
+  const remoteBaseBranch = baseBranch.startsWith("origin/")
+    ? baseBranch
+    : `origin/${baseBranch}`;
+
   console.log(`[codex-review] Starting ${provider} review for ${ticketId}`, {
     model,
     reviewMode: effectiveReviewMode,
     worktreeDir,
     reviewCwd,
     useBaseRepo,
+    baseBranch: remoteBaseBranch,
   });
 
-  // Clear previous log
+  // Clear previous log and stale findings
   await clearReviewLog(worktreeDir, provider);
+  const { workDir: clearWorkDir } = getReviewPaths(worktreeDir, provider);
+  await unlink(join(clearWorkDir, `review-findings-${provider}.json`)).catch(
+    () => {}
+  );
 
   // Spawn the appropriate process
   let childProcess: ChildProcess;
@@ -739,7 +847,8 @@ export async function POST(
       model,
       prNum,
       worktreeDir,
-      provider
+      provider,
+      baseBranch
     );
     childProcess = resolved.process;
     reviewCommand = resolved.command;
@@ -749,7 +858,7 @@ export async function POST(
       model,
       reasoningEffort,
       effectiveReviewMode,
-      baseBranch,
+      remoteBaseBranch,
       instructions
     );
   }
@@ -845,6 +954,33 @@ export async function POST(
         }
       : undefined;
 
+  // Create the Claude stream + controls before lifecycle setup so onProcessClose
+  // can route terminal events through the stream after the state file is written.
+  let claudeStream: ReadableStream | undefined;
+  let claudeControls: ClaudeStreamControls | undefined;
+  if (provider === "claude") {
+    const result = createClaudeStream(
+      childProcess,
+      sessionIdHolder,
+      reviewCommand
+    );
+    claudeStream = result.stream;
+    claudeControls = result.controls;
+  }
+
+  // Build the onProcessClose callback for Claude -- captures controls ref
+  const onProcessClose:
+    | ((exitCode: number, errorMessage?: string) => void)
+    | undefined = claudeControls
+    ? (exitCode, errorMessage) => {
+        if (errorMessage) {
+          claudeControls!.sendError(exitCode, errorMessage);
+        } else {
+          claudeControls!.sendDone(exitCode);
+        }
+      }
+    : undefined;
+
   // Set up lifecycle handlers (log capture, state updates on close/error)
   setupProcessLifecycle(
     childProcess,
@@ -852,14 +988,13 @@ export async function POST(
     initialState,
     pidPath,
     sessionIdHolder,
-    modelFallbackHandler
+    modelFallbackHandler,
+    onProcessClose
   );
 
   // Create the appropriate streaming response
   const stream =
-    provider === "claude"
-      ? createClaudeStream(childProcess, sessionIdHolder, reviewCommand)
-      : createCodexStream(childProcess, sessionIdHolder);
+    claudeStream ?? createCodexStream(childProcess, sessionIdHolder);
 
   console.log(
     `[codex-review] Returning streaming response for ${provider}, pid ${pid}`
@@ -1128,4 +1263,138 @@ function processClaudeStreamLine(
     sendEvent({ type: "output", content: `${trimmed}\n` });
   }
   return false;
+}
+
+type SkillFinding = {
+  file?: string;
+  line?: number;
+  severity?: string;
+  issue?: string;
+  explanation?: string;
+  recommendation?: string;
+  priority?: number;
+};
+
+function skillSeverityToLevel(
+  severity: string
+): "critical" | "warning" | "info" {
+  const upper = severity.toUpperCase();
+  if (upper === "CRITICAL" || upper === "HIGH") {
+    return "critical";
+  }
+  if (upper === "MEDIUM") {
+    return "warning";
+  }
+  return "info";
+}
+
+function skillPriorityToLabel(priority: number): string {
+  return `P${priority}`;
+}
+
+/**
+ * Bridge code-review skill findings to review-findings-claude.json so the
+ * UI can display them. The skill writes validated findings to
+ * .closedloop-ai/code-review/cr-{id}/validate_output.json but the UI reads
+ * from .closedloop-ai/work/review-findings-claude.json.
+ */
+async function bridgeSkillFindings(
+  worktreeDir: string,
+  model: string
+): Promise<void> {
+  const codeReviewDir = join(worktreeDir, ".closedloop-ai", "code-review");
+  if (!existsSync(codeReviewDir)) {
+    return;
+  }
+
+  // Find the most recent cr-* directory with a validate_output.json
+  let entries: string[];
+  try {
+    entries = await readdir(codeReviewDir);
+  } catch {
+    return;
+  }
+
+  const crDirs = entries.filter((e) => e.startsWith("cr-"));
+  if (crDirs.length === 0) {
+    return;
+  }
+
+  // Pick the most recently modified cr-* directory
+  let bestDir: string | null = null;
+  let bestMtime = 0;
+  for (const dir of crDirs) {
+    const validatePath = join(codeReviewDir, dir, "validate_output.json");
+    if (!existsSync(validatePath)) {
+      continue;
+    }
+    try {
+      const stats = await stat(validatePath);
+      if (stats.mtimeMs > bestMtime) {
+        bestMtime = stats.mtimeMs;
+        bestDir = dir;
+      }
+    } catch {
+      // skip inaccessible entries
+    }
+  }
+
+  if (!bestDir) {
+    return;
+  }
+
+  const validatePath = join(codeReviewDir, bestDir, "validate_output.json");
+  try {
+    const raw = await readFile(validatePath, "utf-8");
+    const data = JSON.parse(raw) as { validated?: SkillFinding[] };
+    const validated = data.validated;
+    if (!Array.isArray(validated) || validated.length === 0) {
+      // Write empty findings to overwrite any stale file from a prior review
+      const emptyWorkDir = join(worktreeDir, ".closedloop-ai", "work");
+      await mkdir(emptyWorkDir, { recursive: true });
+      const emptyOutPath = join(emptyWorkDir, "review-findings-claude.json");
+      await writeFile(
+        emptyOutPath,
+        JSON.stringify({ provider: "claude", model, findings: [] }, null, 2)
+      );
+      return;
+    }
+
+    const findings = validated.map((f) => {
+      const severity = skillSeverityToLevel(f.severity ?? "LOW");
+      const priority = f.priority
+        ? skillPriorityToLabel(f.priority)
+        : undefined;
+      // Strip leading [P*] tag from issue title if present
+      const issueClean = (f.issue ?? "").replace(/^\[P\d\]\s*/, "");
+      const message = f.explanation
+        ? `${issueClean}\n${f.explanation}`
+        : issueClean;
+      return {
+        severity,
+        priority,
+        file: f.file,
+        line: f.line,
+        message,
+        suggestion: f.recommendation,
+        commented: false,
+      };
+    });
+
+    const findingsFile = {
+      provider: "claude",
+      model,
+      findings,
+    };
+
+    const workDir = join(worktreeDir, ".closedloop-ai", "work");
+    await mkdir(workDir, { recursive: true });
+    const outPath = join(workDir, "review-findings-claude.json");
+    await writeFile(outPath, JSON.stringify(findingsFile, null, 2));
+    console.log(
+      `[codex-review] Bridged ${findings.length} skill findings from ${bestDir} to review-findings-claude.json`
+    );
+  } catch (err) {
+    console.warn("[codex-review] Failed to bridge skill findings:", err);
+  }
 }
