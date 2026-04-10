@@ -303,8 +303,12 @@ function setupProcessLifecycle(
 
     // Bridge code-review skill findings to review-findings-claude.json
     if (provider === "claude" && code === 0) {
-      await bridgeSkillFindings(worktreeDir, initialState.config.model).catch(
-        (err) => console.warn("[codex-review] bridgeSkillFindings failed:", err)
+      await bridgeSkillFindings(
+        worktreeDir,
+        initialState.config.model,
+        initialState.startedAt
+      ).catch((err) =>
+        console.warn("[codex-review] bridgeSkillFindings failed:", err)
       );
     }
 
@@ -1300,8 +1304,10 @@ function skillPriorityToLabel(priority: number): string {
  */
 async function bridgeSkillFindings(
   worktreeDir: string,
-  model: string
+  model: string,
+  startedAt: string
 ): Promise<void> {
+  const runStartMs = new Date(startedAt).getTime();
   const codeReviewDir = join(worktreeDir, ".closedloop-ai", "code-review");
   if (!existsSync(codeReviewDir)) {
     return;
@@ -1320,7 +1326,9 @@ async function bridgeSkillFindings(
     return;
   }
 
-  // Pick the most recently modified cr-* directory
+  // Pick the most recently modified cr-* directory whose validate_output.json
+  // was written during or after the current review run. This prevents importing
+  // stale findings from a previous run.
   let bestDir: string | null = null;
   let bestMtime = 0;
   for (const dir of crDirs) {
@@ -1330,6 +1338,9 @@ async function bridgeSkillFindings(
     }
     try {
       const stats = await stat(validatePath);
+      if (stats.mtimeMs < runStartMs) {
+        continue;
+      }
       if (stats.mtimeMs > bestMtime) {
         bestMtime = stats.mtimeMs;
         bestDir = dir;
