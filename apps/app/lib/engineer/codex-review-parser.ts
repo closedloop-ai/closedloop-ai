@@ -24,8 +24,8 @@ export type ReviewFinding = {
   message: string;
   suggestion?: string;
   // Natural-voice PR comment body generated during extraction.
-  // Used only by buildCommentBody when "Leave as Comment" is pressed.
-  // Never rendered in the review chat UI.
+  // Rendered in the chat UI in place of the structured description/suggestion.
+  // Also used by buildCommentBody when posting as a PR comment.
   humanizedBody?: string;
 };
 

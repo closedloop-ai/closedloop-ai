@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdir, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import type { NextRequest } from "next/server";
 import { withMcpTools } from "@/lib/engineer/allowed-tools";
@@ -122,28 +122,10 @@ export async function POST(
   const worktreeDir = getWorktreeDir(repoPath, ticketId);
 
   console.log(
-    `[review-extract] >>> NEW CODE PATH <<< Starting extraction for ${ticketId}, provider=${provider}, session ${sessionId}`
+    `[review-extract] Starting extraction for ${ticketId}, provider=${provider}, session ${sessionId}`
   );
 
-  // Canary: write the prompt to disk IMMEDIATELY so we can verify the new
-  // code path is running. If this file doesn't appear after a review, the
-  // dev server is serving stale code.
   const workDir = join(worktreeDir, ".closedloop-ai", "work");
-  try {
-    await mkdir(workDir, { recursive: true });
-    await writeFile(
-      join(workDir, `review-extract-prompt-${provider}.txt`),
-      EXTRACTION_PROMPT
-    );
-    console.log(
-      `[review-extract] Wrote prompt canary to ${join(workDir, `review-extract-prompt-${provider}.txt`)}`
-    );
-  } catch (err) {
-    console.error(
-      "[review-extract] Failed to write prompt canary:",
-      err instanceof Error ? err.message : String(err)
-    );
-  }
 
   try {
     const collected =

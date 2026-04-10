@@ -27,6 +27,7 @@ import {
   MODEL_ERROR_REGEX,
 } from "@/lib/engineer/codex-models";
 import { getCodexChatStatePath } from "@/lib/engineer/codex-state";
+import { CODEX_SESSION_ID_REGEX } from "@/lib/engineer/process-utils";
 import {
   expandHome,
   getWorktreeParentDir,
@@ -40,7 +41,6 @@ export const maxDuration = 300; // 5 minutes max for long reviews
 
 const PR_PREFIX_REGEX = /^pr-/;
 const SAFE_REF_REGEX = /^[a-zA-Z0-9/_.-]+$/;
-const CODEX_SESSION_ID_REGEX = /session id:\s*([0-9a-f-]{36})/i;
 
 type ReviewRequest = {
   instructions?: string;
@@ -303,8 +303,8 @@ function setupProcessLifecycle(
 
     // Bridge code-review skill findings to review-findings-claude.json
     if (provider === "claude" && code === 0) {
-      bridgeSkillFindings(worktreeDir, initialState.config.model).catch((err) =>
-        console.warn("[codex-review] bridgeSkillFindings failed:", err)
+      await bridgeSkillFindings(worktreeDir, initialState.config.model).catch(
+        (err) => console.warn("[codex-review] bridgeSkillFindings failed:", err)
       );
     }
 
@@ -927,7 +927,7 @@ export async function POST(
             DEFAULT_CODEX_MODEL,
             reasoningEffort,
             effectiveReviewMode,
-            baseBranch,
+            remoteBaseBranch,
             instructions
           );
           const fallbackState: ReviewState = {

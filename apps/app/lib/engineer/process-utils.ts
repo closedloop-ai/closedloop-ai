@@ -255,3 +255,5 @@ export function getReviewPaths(
     findingsPath: join(workDir, `review-findings-${provider}.json`),
   };
 }
+
+export const CODEX_SESSION_ID_REGEX = /session id:\s*([0-9a-f-]{36})/i;

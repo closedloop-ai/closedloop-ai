@@ -1,8 +1,12 @@
 import { existsSync, readFileSync } from "node:fs";
-import { readFile, stat, unlink, writeFile } from "node:fs/promises";
+import { open, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { type NextRequest, NextResponse } from "next/server";
-import { getReviewPaths, isProcessRunning } from "@/lib/engineer/process-utils";
+import {
+  CODEX_SESSION_ID_REGEX,
+  getReviewPaths,
+  isProcessRunning,
+} from "@/lib/engineer/process-utils";
 import {
   expandHome,
   getWorktreeParentDir,
@@ -94,7 +98,6 @@ async function reconcileProcessStatus(
 
 const MAX_LOG_BYTES = 100 * 1024;
 const LOG_HEAD_BYTES = 4 * 1024;
-const CODEX_SESSION_ID_REGEX = /session id:\s*([0-9a-f-]{36})/i;
 
 /**
  * Read the log file, tailing to the last 100 KB for large files. Also reads
@@ -116,8 +119,7 @@ async function readLogTail(
     const match = CODEX_SESSION_ID_REGEX.exec(log.slice(0, LOG_HEAD_BYTES));
     return { log, logSize, headSessionId: match?.[1] };
   }
-  const fs = await import("node:fs/promises");
-  const fd = await fs.open(logPath, "r");
+  const fd = await open(logPath, "r");
   try {
     const tailBuffer = Buffer.alloc(MAX_LOG_BYTES);
     await fd.read(
