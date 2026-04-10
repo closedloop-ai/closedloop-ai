@@ -1,4 +1,5 @@
 import type {
+  PullRequest,
   PullRequestClosedEvent,
   PullRequestConvertedToDraftEvent,
   PullRequestEditedEvent,
@@ -13,15 +14,14 @@ import {
   ArtifactType,
 } from "@repo/api/src/types/artifact";
 import { EntityType, LinkType } from "@repo/api/src/types/entity-link";
-import { ExternalLinkType } from "@repo/api/src/types/external-link";
-import { FeatureStatus } from "@repo/api/src/types/feature";
-import type { TransactionClient } from "@repo/database";
 import {
-  ChecksStatus,
-  GitHubPRState,
-  WorkstreamType,
-  withDb,
-} from "@repo/database";
+  ExternalLinkType,
+  type PullRequestMetadata,
+} from "@repo/api/src/types/external-link";
+import { FeatureStatus } from "@repo/api/src/types/feature";
+import { GitHubPRState } from "@repo/api/src/types/github";
+import type { TransactionClient } from "@repo/database";
+import { ChecksStatus, WorkstreamType, withDb } from "@repo/database";
 import { parsePlanReferences } from "@repo/github/plan-reference-parser";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
@@ -144,6 +144,7 @@ export async function handlePullRequest(
       select: {
         id: true,
         workstreamId: true,
+        organizationId: true,
         artifactId: true,
         checksStatus: true,
         artifact: { select: { slug: true } },
@@ -190,6 +191,7 @@ type RepoWithInstallation = {
 type ExistingPr = {
   id: string;
   workstreamId: string;
+  organizationId: string;
   artifactId: string | null;
   checksStatus: string;
   artifact: { slug: string } | null;
@@ -426,30 +428,35 @@ async function createAndLinkPr(
   artifact: Pick<Artifact, "id" | "organizationId" | "projectId" | "slug">,
   organizationId: string,
   workstreamId: string,
-  pull_request: HandledPullRequestEvent["pull_request"]
+  pullRequest: HandledPullRequestEvent["pull_request"]
 ): Promise<void> {
+  let state: GitHubPRState = GitHubPRState.Open;
+  if (pullRequest.state === "closed") {
+    state = pullRequest.merged ? GitHubPRState.Merged : GitHubPRState.Closed;
+  }
+
   await tx.gitHubPullRequest.create({
     data: {
       workstreamId,
       organizationId,
       repositoryId: repo.id,
       artifactId: artifact.id,
-      githubId: String(pull_request.id),
-      number: pull_request.number,
-      title: pull_request.title,
-      htmlUrl: pull_request.html_url,
-      headBranch: pull_request.head.ref,
-      baseBranch: pull_request.base.ref,
-      headSha: pull_request.head.sha,
-      state: GitHubPRState.OPEN,
-      isDraft: pull_request.draft ?? false,
+      githubId: String(pullRequest.id),
+      number: pullRequest.number,
+      title: pullRequest.title,
+      htmlUrl: pullRequest.html_url,
+      headBranch: pullRequest.head.ref,
+      baseBranch: pullRequest.base.ref,
+      headSha: pullRequest.head.sha,
+      state,
+      isDraft: pullRequest.draft ?? false,
     },
   });
 
-  await createLinkageRecords(tx, artifact, workstreamId, pull_request);
+  await createLinkageRecords(tx, artifact, workstreamId, pullRequest);
 
   log.info("[handlePullRequest] Created and linked new PR to artifact", {
-    prNumber: pull_request.number,
+    prNumber: pullRequest.number,
     artifactId: artifact.id,
     slug: artifact.slug,
   });
@@ -462,14 +469,14 @@ async function createLinkageRecords(
   tx: TransactionClient,
   artifact: Pick<Artifact, "id" | "organizationId" | "projectId" | "slug">,
   workstreamId: string,
-  pull_request: HandledPullRequestEvent["pull_request"]
+  pullRequest: HandledPullRequestEvent["pull_request"]
 ): Promise<void> {
   // AC-008: Check for existing ExternalLink to prevent duplicates
   const existingExternalLink = await tx.externalLink.findFirst({
     where: {
       organizationId: artifact.organizationId,
       type: ExternalLinkType.PullRequest,
-      externalUrl: pull_request.html_url,
+      externalUrl: pullRequest.html_url,
     },
     select: { id: true },
   });
@@ -478,6 +485,14 @@ async function createLinkageRecords(
 
   if (existingExternalLink) {
     externalLinkId = existingExternalLink.id;
+
+    await tx.externalLink.update({
+      where: { id: externalLinkId },
+      data: {
+        title: pullRequest.title,
+        metadata: pullRequestToMetadata(pullRequest),
+      },
+    });
   } else {
     const prLink = await tx.externalLink.create({
       data: {
@@ -485,15 +500,9 @@ async function createLinkageRecords(
         workstreamId,
         projectId: artifact.projectId!,
         type: ExternalLinkType.PullRequest,
-        title: pull_request.title,
-        externalUrl: pull_request.html_url,
-        metadata: {
-          number: pull_request.number,
-          githubId: String(pull_request.id),
-          headBranch: pull_request.head.ref,
-          baseBranch: pull_request.base.ref,
-          state: GitHubPRState.OPEN,
-        },
+        title: pullRequest.title,
+        externalUrl: pullRequest.html_url,
+        metadata: pullRequestToMetadata(pullRequest),
       },
     });
     externalLinkId = prLink.id;
@@ -532,10 +541,10 @@ async function createLinkageRecords(
       type: eventType,
       actorType: "system",
       data: {
-        prNumber: pull_request.number,
-        prUrl: pull_request.html_url,
-        prTitle: pull_request.title,
-        branch: pull_request.head.ref,
+        prNumber: pullRequest.number,
+        prUrl: pullRequest.html_url,
+        prTitle: pullRequest.title,
+        branch: pullRequest.head.ref,
         artifactId: artifact.id,
         slug: artifact.slug,
       },
@@ -548,22 +557,33 @@ async function applyPrAction(
   action: string,
   event: HandledPullRequestEvent,
   existingPr: ExistingPr,
-  pull_request: HandledPullRequestEvent["pull_request"]
+  pullRequest: HandledPullRequestEvent["pull_request"]
 ): Promise<void> {
   switch (action) {
     case "closed": {
       const isMerged = (event as PullRequestClosedEvent).pull_request.merged;
-      const newState = isMerged ? GitHubPRState.MERGED : GitHubPRState.CLOSED;
+      const newState = isMerged ? GitHubPRState.Merged : GitHubPRState.Closed;
 
       await tx.gitHubPullRequest.update({
         where: { id: existingPr.id },
         data: {
           state: newState,
-          closedAt: parseDateOrNow(pull_request.closed_at),
-          mergedAt: pull_request.merged_at
-            ? new Date(pull_request.merged_at)
+          closedAt: parseDateOrNow(pullRequest.closed_at),
+          mergedAt: pullRequest.merged_at
+            ? new Date(pullRequest.merged_at)
             : null,
-          mergeCommitSha: pull_request.merge_commit_sha,
+          mergeCommitSha: pullRequest.merge_commit_sha,
+        },
+      });
+
+      await tx.externalLink.updateMany({
+        where: {
+          organizationId: existingPr.organizationId,
+          type: ExternalLinkType.PullRequest,
+          metadata: { path: ["githubId"], equals: String(pullRequest.id) },
+        },
+        data: {
+          metadata: pullRequestToMetadata(pullRequest),
         },
       });
 
@@ -573,15 +593,15 @@ async function applyPrAction(
           type: isMerged ? "GITHUB_PR_MERGED" : "GITHUB_PR_CLOSED",
           actorType: "system",
           data: {
-            prNumber: pull_request.number,
-            prTitle: pull_request.title,
-            prUrl: pull_request.html_url,
+            prNumber: pullRequest.number,
+            prTitle: pullRequest.title,
+            prUrl: pullRequest.html_url,
             artifactId: existingPr.artifactId,
             slug: existingPr.artifact?.slug,
             ...(isMerged
               ? {
-                  mergedAt: pull_request.merged_at,
-                  mergeCommitSha: pull_request.merge_commit_sha,
+                  mergedAt: pullRequest.merged_at,
+                  mergeCommitSha: pullRequest.merge_commit_sha,
                 }
               : {}),
           },
@@ -597,17 +617,12 @@ async function applyPrAction(
           artifactId: existingPr.artifactId,
         });
 
-        // Cascade: mark linked Features as COMPLETED when their plan ships,
-        // and ensure the PR is linked to those Features via EntityLink.
-        await markLinkedFeaturesCompleted(
-          tx,
-          existingPr.artifactId,
-          existingPr.id
-        );
+        // Cascade: mark linked Features as COMPLETED when their plan ships.
+        await markLinkedFeaturesCompleted(tx, existingPr.artifactId);
       }
 
       log.info("[handlePullRequest] PR closed", {
-        prNumber: pull_request.number,
+        prNumber: pullRequest.number,
         newState,
         isMerged,
       });
@@ -618,13 +633,24 @@ async function applyPrAction(
       await tx.gitHubPullRequest.update({
         where: { id: existingPr.id },
         data: {
-          state: GitHubPRState.OPEN,
+          state: GitHubPRState.Open,
           closedAt: null,
         },
       });
 
+      await tx.externalLink.updateMany({
+        where: {
+          organizationId: existingPr.organizationId,
+          type: ExternalLinkType.PullRequest,
+          metadata: { path: ["githubId"], equals: String(pullRequest.id) },
+        },
+        data: {
+          metadata: pullRequestToMetadata(pullRequest),
+        },
+      });
+
       log.info("[handlePullRequest] PR reopened", {
-        prNumber: pull_request.number,
+        prNumber: pullRequest.number,
       });
       break;
     }
@@ -633,7 +659,7 @@ async function applyPrAction(
       await tx.gitHubPullRequest.update({
         where: { id: existingPr.id },
         data: {
-          headSha: pull_request.head.sha,
+          headSha: pullRequest.head.sha,
           checksStatus: ChecksStatus.PENDING,
         },
       });
@@ -644,23 +670,23 @@ async function applyPrAction(
           type: "GITHUB_CI_STATUS_CHANGED",
           actorType: "system",
           data: {
-            prNumber: pull_request.number,
-            prTitle: pull_request.title,
-            prUrl: pull_request.html_url,
+            prNumber: pullRequest.number,
+            prTitle: pullRequest.title,
+            prUrl: pullRequest.html_url,
             artifactId: existingPr.artifactId,
             slug: existingPr.artifact?.slug,
             checksStatus: ChecksStatus.PENDING,
             previousChecksStatus: existingPr.checksStatus,
-            headSha: pull_request.head.sha,
+            headSha: pullRequest.head.sha,
           },
         },
       });
 
       log.info("[handlePullRequest] PR synchronized", {
-        prNumber: pull_request.number,
+        prNumber: pullRequest.number,
         before: (event as PullRequestSynchronizeEvent).before,
         after: (event as PullRequestSynchronizeEvent).after,
-        newHeadSha: pull_request.head.sha,
+        newHeadSha: pullRequest.head.sha,
       });
       break;
     }
@@ -672,7 +698,7 @@ async function applyPrAction(
       });
 
       log.info("[handlePullRequest] PR converted to draft", {
-        prNumber: pull_request.number,
+        prNumber: pullRequest.number,
       });
       break;
     }
@@ -684,7 +710,7 @@ async function applyPrAction(
       });
 
       log.info("[handlePullRequest] PR ready for review", {
-        prNumber: pull_request.number,
+        prNumber: pullRequest.number,
       });
       break;
     }
@@ -696,49 +722,29 @@ async function applyPrAction(
 
 /**
  * When an Implementation Plan is marked EXECUTED (PR merged), find any Features
- * linked to it, mark them as COMPLETED, and ensure the PR ExternalLink is linked
- * to those Features. Checks both directions of EntityLink since the plan can be
- * either source or target.
+ * linked to it, mark them as COMPLETED.
  */
 async function markLinkedFeaturesCompleted(
   tx: TransactionClient,
-  artifactId: string,
-  _gitHubPullRequestId: string
+  artifactId: string
 ): Promise<void> {
   const links = await tx.entityLink.findMany({
     where: {
-      linkType: { in: [LinkType.Produces, LinkType.RelatesTo] },
-      OR: [
-        {
-          sourceId: artifactId,
-          sourceType: EntityType.Artifact,
-          targetType: EntityType.Feature,
-        },
-        {
-          targetId: artifactId,
-          targetType: EntityType.Artifact,
-          sourceType: EntityType.Feature,
-        },
-      ],
+      sourceType: EntityType.Feature,
+      targetId: artifactId,
+      targetType: EntityType.Artifact,
+      linkType: LinkType.Produces,
     },
     select: {
       sourceId: true,
-      sourceType: true,
-      targetId: true,
-      targetType: true,
-      organizationId: true,
     },
   });
 
-  const featureIds = links.map((link) =>
-    link.sourceType === EntityType.Feature ? link.sourceId : link.targetId
-  );
+  const featureIds = links.map((link) => link.sourceId);
 
   if (featureIds.length === 0) {
     return;
   }
-
-  const organizationId = links[0].organizationId;
 
   // Mark features as COMPLETED
   const { count } = await tx.feature.updateMany({
@@ -756,61 +762,20 @@ async function markLinkedFeaturesCompleted(
       updatedCount: count,
     });
   }
+}
 
-  // Find the PR's ExternalLink to link it to the features
-  const prExternalLink = await tx.entityLink.findFirst({
-    where: {
-      sourceId: artifactId,
-      sourceType: EntityType.Artifact,
-      targetType: EntityType.ExternalLink,
-      linkType: LinkType.Produces,
-    },
-    select: { targetId: true },
-  });
+function pullRequestToMetadata(pullRequest: PullRequest): PullRequestMetadata {
+  let state: GitHubPRState = GitHubPRState.Open;
 
-  if (!prExternalLink) {
-    return;
+  if (pullRequest.state === "closed") {
+    state = pullRequest.merged ? GitHubPRState.Merged : GitHubPRState.Closed;
   }
 
-  // Collect target IDs for bulk link creation (PR + optional preview)
-  const targetExternalLinkIds = [prExternalLink.targetId];
-
-  const previewLink = await tx.entityLink.findFirst({
-    where: {
-      sourceId: prExternalLink.targetId,
-      sourceType: EntityType.ExternalLink,
-      targetType: EntityType.ExternalLink,
-      linkType: LinkType.Produces,
-    },
-    select: { targetId: true },
-  });
-
-  if (previewLink) {
-    targetExternalLinkIds.push(previewLink.targetId);
-  }
-
-  // Bulk-create Feature → ExternalLink entity links, skipping duplicates
-  const candidateLinks = featureIds.flatMap((featureId) =>
-    targetExternalLinkIds.map((targetId) => ({
-      organizationId,
-      sourceId: featureId,
-      sourceType: EntityType.Feature,
-      targetId,
-      targetType: EntityType.ExternalLink,
-      linkType: LinkType.Produces,
-    }))
-  );
-
-  await tx.entityLink.createMany({
-    data: candidateLinks,
-    skipDuplicates: true,
-  });
-
-  log.info("[handlePullRequest] Ensured features linked to PR and preview", {
-    artifactId,
-    featureIds,
-    prExternalLinkId: prExternalLink.targetId,
-    previewExternalLinkId: previewLink?.targetId ?? null,
-    candidateLinkCount: candidateLinks.length,
-  });
+  return {
+    number: pullRequest.number,
+    githubId: String(pullRequest.id),
+    headBranch: pullRequest.head.ref,
+    baseBranch: pullRequest.base.ref,
+    state,
+  };
 }

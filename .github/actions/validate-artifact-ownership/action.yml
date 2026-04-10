@@ -17,7 +17,7 @@ runs:
         RUN_DIR="${{ inputs.run_dir }}"
         EXPECTED_ISSUE="${{ inputs.issue_number }}"
 
-        # Extract issue number from RUN_DIR path (format: .claude/runs/YYYYMMDD-HHMMSS-issue-NNN)
+        # Extract issue number from RUN_DIR path (format: .closedloop-ai/runs/YYYYMMDD-HHMMSS-issue-NNN)
         if [[ "$RUN_DIR" =~ issue-([0-9]+) ]]; then
           ARTIFACT_ISSUE="${BASH_REMATCH[1]}"
 

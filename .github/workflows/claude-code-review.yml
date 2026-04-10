@@ -31,7 +31,7 @@ jobs:
     steps:
       - name: Generate GitHub App Token
         id: generate_token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.CLOSEDLOOP_APP_ID_STAGE }}
           private-key: ${{ secrets.CLOSEDLOOP_APP_SECRET_STAGE }}
@@ -103,6 +103,10 @@ jobs:
           fi
           claude --version
 
+      - name: Ensure ClosedLoop Workspace
+        shell: bash
+        run: mkdir -p .closedloop-ai
+
       - name: Run Claude Code Review
         id: claude-review
         continue-on-error: true
@@ -136,7 +140,7 @@ jobs:
           GH_TOKEN: ${{ steps.generate_token.outputs.token }}
         shell: bash
         run: |
-          THREADS_FILE=".claude/code-review-threads.json"
+          THREADS_FILE=".closedloop-ai/code-review-threads.json"
           if [ ! -f "$THREADS_FILE" ]; then
             echo "No threads file — skipping."
             exit 0
@@ -155,7 +159,7 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
         shell: bash
         run: |
-          FINDINGS_FILE=".claude/code-review-findings.json"
+          FINDINGS_FILE=".closedloop-ai/code-review-findings.json"
           if [ ! -f "$FINDINGS_FILE" ]; then
             echo "No findings file — skipping."
             exit 0
@@ -166,6 +170,29 @@ jobs:
             exit 0
           fi
           python3 "$HELPERS" post-comments --findings "$FINDINGS_FILE"
+
+      - name: Validate migrated review artifacts
+        id: validate-review-artifacts
+        if: always() && steps.claude-review.outcome == 'success'
+        shell: bash
+        run: |
+          ARTIFACT_COUNT=0
+          for FILE in \
+            ".closedloop-ai/code-review-findings.json" \
+            ".closedloop-ai/code-review-threads.json" \
+            ".closedloop-ai/code-review-summary.md"; do
+            if [ -f "$FILE" ]; then
+              ARTIFACT_COUNT=$((ARTIFACT_COUNT + 1))
+            fi
+          done
+
+          if [ "$ARTIFACT_COUNT" -eq 0 ]; then
+            echo "::warning::Claude review completed successfully but produced no .closedloop-ai/code-review-* artifacts."
+            echo "::warning::This usually means the runtime/plugin path contract is out of sync."
+            echo "missing=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "missing=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Post code review summary
         id: post-summary
@@ -183,7 +210,7 @@ jobs:
             exit 0
           fi
 
-          SUMMARY_FILE=".claude/code-review-summary.md"
+          SUMMARY_FILE=".closedloop-ai/code-review-summary.md"
 
           if [ -f "$SUMMARY_FILE" ]; then
             SUMMARY=$(cat "$SUMMARY_FILE")

@@ -57,9 +57,14 @@ function parseFullReviewComments(text: string): ReviewFinding[] {
     const title = headerMatch[2].trim();
     const fileRef = headerMatch[3]?.trim();
 
-    // Everything after the first line is the description
+    // Everything after the first line is the description.
+    // Truncate at any trailing "Review comment(s):" header that leaked from
+    // the next repeated block (codex sometimes duplicates the findings block).
     const descLines = chunk.split("\n").slice(1);
-    const description = descLines.join("\n").trim();
+    const truncIdx = descLines.findIndex((l) => FINDINGS_HEADER.test(l));
+    const effectiveDescLines =
+      truncIdx >= 0 ? descLines.slice(0, truncIdx) : descLines;
+    const description = effectiveDescLines.join("\n").trim();
 
     const severity = priorityToSeverity(priority ?? "P3");
     const fileMatch = fileRef ? /^(.+?):(\d+)/.exec(fileRef) : null;
@@ -68,7 +73,7 @@ function parseFullReviewComments(text: string): ReviewFinding[] {
       priority,
       fileMatch?.[1] ?? fileRef ?? "",
       fileMatch?.[2] ?? "",
-      message,
+      title,
     ].join("|");
     if (dedupe.has(dedupeKey)) {
       continue;

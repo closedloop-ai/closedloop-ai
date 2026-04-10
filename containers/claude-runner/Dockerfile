@@ -8,7 +8,7 @@ FROM node:20-slim
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Install system dependencies
-# gawk: required by code plugin hooks (FPAT support — mawk doesn't have it)
+# gawk: install an awk implementation explicitly so hook parsing is always available
 # python3 + pip: required by code plugin post-iteration scripts
 # xxd: required by run-loop.sh for run ID generation
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -45,9 +45,19 @@ RUN corepack enable && corepack prepare pnpm@latest --activate
 # Install Claude Code CLI
 RUN npm install -g @anthropic-ai/claude-code
 
-# Copy the harness agent and install its dependencies locally
-COPY harness-agent.mjs /opt/harness/harness-agent.mjs
-RUN cd /opt/harness && npm init -y && npm install @aws-sdk/client-s3
+# Copy the harness agent and shared loop contract package
+COPY containers/claude-runner/harness-agent.mjs /opt/harness/harness-agent.mjs
+COPY containers/claude-runner/package.json /opt/harness/package.json
+# Copy pre-built loops-api package so npm can install it from local path
+COPY packages/loops-api/dist/ /opt/harness/loops-api-pkg/dist/
+COPY packages/loops-api/package.json /opt/harness/loops-api-pkg/package.json
+# Prepare loops-api for container install by removing devDependencies
+# (workspace:* refs that npm can't resolve in a standalone npm install).
+RUN cd /opt/harness && \
+    jq 'del(.devDependencies)' loops-api-pkg/package.json > tmp.json && \
+    mv tmp.json loops-api-pkg/package.json && \
+    npm pkg set "dependencies.@closedloop-ai/loops-api=file:./loops-api-pkg" && \
+    npm install --omit=dev @aws-sdk/client-s3 zod
 
 # Create non-root user for runtime.
 # The harness, git clone, and Claude Code all run as this user.

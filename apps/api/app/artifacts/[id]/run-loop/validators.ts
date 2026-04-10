@@ -6,7 +6,7 @@ const loopCommands = Object.keys(COMMAND_MAP) as (keyof typeof COMMAND_MAP)[];
 
 export const runLoopSchema = z.object({
   command: z.enum(loopCommands),
-  prompt: z.string().optional(),
+  prompt: z.string().max(100_000).optional(),
   repo: repoSchema.optional(),
   computeTargetId: z.uuid().nullable().optional(),
   backendOverride: z.boolean().optional(),

@@ -1,13 +1,16 @@
 "use client";
 
 import {
+  type Artifact,
   type ArtifactStatus,
   ArtifactType,
 } from "@repo/api/src/types/artifact";
-import { FileCodeIcon, Loader2Icon } from "lucide-react";
-import { useParams } from "next/navigation";
-import { useMemo } from "react";
+import { Button } from "@repo/design-system/components/ui/button";
+import { FileCodeIcon, Loader2Icon, PlusIcon } from "lucide-react";
+import { useParams, useRouter } from "next/navigation";
+import { useMemo, useState } from "react";
 import { Header } from "@/app/(authenticated)/components/header";
+import { CreateArtifactModal } from "@/app/(authenticated)/teams/[teamId]/projects/[projectId]/components/create-artifact-modal";
 import type {
   ArtifactRowItem,
   RowEditHandlers,
@@ -32,7 +35,9 @@ const COLUMN_VISIBILITY_KEY = "table:columns:team-plans";
 
 export default function TeamPlansPage() {
   const params = useParams();
+  const router = useRouter();
   const teamId = params.teamId as string;
+  const [createPlanOpen, setCreatePlanOpen] = useState(false);
 
   const { visibility, userVisibility, toggleColumn } = useColumnVisibility({
     storageKey: COLUMN_VISIBILITY_KEY,
@@ -43,15 +48,18 @@ export default function TeamPlansPage() {
   );
 
   const { data: team, isLoading: loadingTeam } = useTeam(teamId);
-  const { data: artifacts = [], isLoading: loadingArtifacts } =
-    useArtifactsByTeam(teamId, ArtifactType.ImplementationPlan);
+  const { data: artifacts, isLoading: loadingArtifacts } = useArtifactsByTeam(
+    teamId,
+    ArtifactType.ImplementationPlan
+  );
   const orgUsers = useOrgUsersAsPopoverUsers();
 
   const deleteArtifactMutation = useDeleteArtifact();
   const updateArtifactMutation = useUpdateArtifact();
 
   const items: ArtifactRowItem[] = useMemo(
-    () => artifacts.map((a) => ({ kind: "artifact" as const, data: a })),
+    () =>
+      (artifacts ?? []).map((a) => ({ kind: "artifact" as const, data: a })),
     [artifacts]
   );
 
@@ -101,6 +109,20 @@ export default function TeamPlansPage() {
           { label: team.name, href: `/teams/${teamId}/projects` },
           { label: "Plans" },
         ]}
+      >
+        <Button onClick={() => setCreatePlanOpen(true)}>
+          <PlusIcon className="h-4 w-4" />
+          Create Plan
+        </Button>
+      </Header>
+      <CreateArtifactModal
+        artifactType={ArtifactType.ImplementationPlan}
+        onOpenChange={setCreatePlanOpen}
+        onSuccess={(artifact: Artifact) =>
+          router.push(`/implementation-plans/${artifact.slug}`)
+        }
+        open={createPlanOpen}
+        teamId={teamId}
       />
       <main className="flex flex-1 flex-col overflow-hidden">
         <div className="flex min-w-fit items-center justify-between border-b px-4 pt-4 pb-2">

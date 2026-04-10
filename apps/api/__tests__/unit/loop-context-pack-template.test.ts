@@ -34,6 +34,14 @@ vi.mock("@/app/artifacts/service", () => ({
   },
 }));
 
+vi.mock("@/app/artifacts/attachments-service", () => ({
+  attachmentsService: {
+    listWithSignedUrlsByArtifact: vi.fn().mockResolvedValue([]),
+    listWithSignedUrlsByFeature: vi.fn().mockResolvedValue([]),
+  },
+  ATTACHMENT_SIGNED_URL_MAX_FILES: 20,
+}));
+
 vi.mock("@/app/features/service", () => ({
   featuresService: {
     findById: vi.fn(),

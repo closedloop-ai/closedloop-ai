@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+
 import { getShellPath } from "@/lib/engineer/shell-path";
 import { withMcpTools } from "./allowed-tools";
 import { parseToon } from "./toon-parser";
@@ -12,19 +13,12 @@ import { parseToon } from "./toon-parser";
  */
 export function getOrgPatternsContext(): string {
   try {
-    const newPath = join(
+    const filePath = join(
       homedir(),
       ".closedloop-ai",
       "learnings",
       "org-patterns.toon"
     );
-    const legacyPath = join(
-      homedir(),
-      ".claude",
-      ".learnings",
-      "org-patterns.toon"
-    );
-    const filePath = existsSync(newPath) ? newPath : legacyPath;
     if (!existsSync(filePath)) {
       return "";
     }

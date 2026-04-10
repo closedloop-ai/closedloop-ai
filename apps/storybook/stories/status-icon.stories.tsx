@@ -21,6 +21,7 @@ const meta = {
         "todo",
         "in-progress",
         "in-review",
+        "executed",
         "complete",
         "wont-do",
       ],
@@ -54,6 +55,10 @@ export const InReview: Story = {
   args: { status: "in-review" },
 };
 
+export const Executed: Story = {
+  args: { status: "executed" },
+};
+
 export const Complete: Story = {
   args: { status: "complete" },
 };
@@ -67,6 +72,7 @@ const ALL_STATUSES: StatusIconStatus[] = [
   "todo",
   "in-progress",
   "in-review",
+  "executed",
   "complete",
   "wont-do",
 ];
@@ -122,7 +128,9 @@ export const Thinking: Story = {
   args: { status: "in-progress", thinking: true },
   render: () => (
     <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-      {(["backlog", "todo", "in-progress", "in-review"] as const).map((s) => (
+      {(
+        ["backlog", "todo", "in-progress", "in-review", "executed"] as const
+      ).map((s) => (
         <div
           key={s}
           style={{
@@ -145,7 +153,7 @@ export const NormalVsThinking: Story = {
   args: { status: "in-progress" },
   render: () => (
     <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
-      {(["in-progress", "in-review"] as const).map((s) => (
+      {(["in-progress", "in-review", "executed"] as const).map((s) => (
         <div key={s} style={{ display: "flex", alignItems: "center", gap: 24 }}>
           <div
             style={{

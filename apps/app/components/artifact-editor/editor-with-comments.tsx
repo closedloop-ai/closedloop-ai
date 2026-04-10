@@ -15,6 +15,16 @@ export type EditorWithCommentsProps = {
   onChange: (value: string) => void;
   contentResetKey?: number;
   contentResetValue?: string;
+  /**
+   * When true, the formatting toolbar is not rendered inside this component.
+   * The parent is responsible for rendering TiptapToolbar externally.
+   */
+  externalToolbar?: boolean;
+  /**
+   * Content rendered above the editor inside the same flex column that
+   * shares width with the comments panel, so it stays aligned with the editor.
+   */
+  headerContent?: React.ReactNode;
   liveblocksRoomId?: string | null;
   onEditorInstance?: (editor: Editor | null) => void;
   onContentReady?: () => void;
@@ -29,6 +39,8 @@ export function EditorWithComments({
   onChange,
   contentResetKey,
   contentResetValue,
+  externalToolbar = false,
+  headerContent,
   liveblocksRoomId,
   onEditorInstance,
   onContentReady,
@@ -56,7 +68,7 @@ export function EditorWithComments({
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
       {/* Formatting toolbar — spans full width above the editor+comments split */}
-      {!readOnly && (
+      {!(readOnly || externalToolbar) && (
         <TiptapToolbar
           editor={editor}
           hasLiveblocksExtension={liveblocksEnabled}
@@ -76,7 +88,8 @@ export function EditorWithComments({
       {/* Scrollable area: editor + anchored comments side by side */}
       <div className="relative min-h-0 flex-1 overflow-y-auto">
         <div className="relative flex min-h-full min-w-0 items-stretch">
-          <div className="relative flex min-w-0 flex-1 flex-col">
+          <div className="relative mx-auto flex min-w-0 max-w-[900px] flex-1 flex-col">
+            {headerContent}
             <EditorContent
               contentResetKey={contentResetKey}
               contentResetValue={contentResetValue}

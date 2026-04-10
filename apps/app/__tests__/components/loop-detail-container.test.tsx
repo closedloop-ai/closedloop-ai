@@ -3,7 +3,7 @@
  * Focuses on the restart button: visibility based on loop status and navigation on success.
  */
 
-import { LoopStatus } from "@repo/api/src/types/loop";
+import { LoopErrorCode, LoopStatus } from "@repo/api/src/types/loop";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -19,6 +19,11 @@ const MIKES_MACBOOK = /Mikes-MacBook/;
 const ONLINE = /online/;
 const TARGET_CLOUD = /Target: Cloud/;
 const TARGET_LABEL = /Target:/;
+const CACHE_WRITE = /cache write/i;
+const CACHE_READ = /cache read/i;
+const NO_OUTPUT_PRODUCED = /No output produced/;
+const NO_WORK_PRODUCED_RAW = /NO_WORK_PRODUCED/;
+const ERROR_LABEL = /^Error:/;
 
 vi.mock("next/navigation", () => ({
   useRouter: vi.fn(() => ({ push: mockPush, replace: vi.fn() })),
@@ -41,11 +46,14 @@ vi.mock("@/hooks/queries/use-loops", () => ({
     mutateAsync: mockCancelMutateAsync,
     isPending: false,
   })),
+  useLoopEventsPaginated: vi.fn(() => ({ data: null })),
 }));
 
 vi.mock("@repo/design-system/components/ui/sonner", () => ({
   toast: { success: vi.fn(), error: vi.fn() },
 }));
+
+vi.mock("@repo/analytics/client", () => ({ useFeatureFlag: vi.fn() }));
 
 vi.mock("@/hooks/queries/use-artifacts", () => ({
   useArtifact: vi.fn(() => ({ data: null })),
@@ -60,11 +68,13 @@ vi.mock("@/components/loops/loop-audit-log", () => ({
   LoopAuditLog: () => <div data-testid="loop-audit-log" />,
 }));
 
+import { useFeatureFlag } from "@repo/analytics/client";
 import { LoopDetailContainer } from "@/app/(authenticated)/loops/[id]/loop-detail-container";
 // Import after mocks
 import {
   useCancelLoop,
   useLoop,
+  useLoopEventsPaginated,
   useResumeLoop,
 } from "@/hooks/queries/use-loops";
 import { createMockLoopWithUser } from "../fixtures/loops";
@@ -434,5 +444,345 @@ describe("LoopDetailContainer — cancel button interaction", () => {
     });
 
     expect(mockPush).not.toHaveBeenCalled();
+  });
+});
+
+describe("LoopDetailContainer — cache token display", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(useResumeLoop).mockReturnValue({
+      mutateAsync: mockMutateAsync,
+      isPending: false,
+    } as unknown as ReturnType<typeof useResumeLoop>);
+    vi.mocked(useCancelLoop).mockReturnValue({
+      mutateAsync: mockCancelMutateAsync,
+      isPending: false,
+    } as unknown as ReturnType<typeof useCancelLoop>);
+  });
+
+  it("shows cache write/read summary when tokensByModel has cacheCreation and cacheRead data", () => {
+    vi.mocked(useLoop).mockReturnValue({
+      data: createMockLoopWithUser({
+        status: LoopStatus.Completed,
+        tokensInput: 50_000,
+        tokensOutput: 30_000,
+        tokensByModel: {
+          "claude-sonnet-4-5": {
+            input: 50_000,
+            output: 30_000,
+            cacheCreation: 5000,
+            cacheRead: 2000,
+          },
+        },
+      }),
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoop>);
+
+    render(<LoopDetailContainer id="loop-001" />);
+
+    expect(screen.getByText(CACHE_WRITE)).toBeInTheDocument();
+    expect(screen.getByText(CACHE_READ)).toBeInTheDocument();
+  });
+
+  it("does not show cache summary when cacheCreation and cacheRead are zero", () => {
+    vi.mocked(useLoop).mockReturnValue({
+      data: createMockLoopWithUser({
+        status: LoopStatus.Completed,
+        tokensInput: 50_000,
+        tokensOutput: 30_000,
+        tokensByModel: {
+          "claude-sonnet-4-5": {
+            input: 50_000,
+            output: 30_000,
+            cacheCreation: 0,
+            cacheRead: 0,
+          },
+        },
+      }),
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoop>);
+
+    render(<LoopDetailContainer id="loop-001" />);
+
+    expect(screen.queryByText(CACHE_WRITE)).not.toBeInTheDocument();
+  });
+
+  it("does not show cache summary when tokensByModel is null", () => {
+    vi.mocked(useLoop).mockReturnValue({
+      data: createMockLoopWithUser({
+        status: LoopStatus.Completed,
+        tokensInput: 10_000,
+        tokensOutput: 5000,
+        tokensByModel: null,
+      }),
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoop>);
+
+    render(<LoopDetailContainer id="loop-001" />);
+
+    expect(screen.queryByText(CACHE_WRITE)).not.toBeInTheDocument();
+  });
+
+  it("headline shows in/out when cache data is present", () => {
+    vi.mocked(useLoop).mockReturnValue({
+      data: createMockLoopWithUser({
+        status: LoopStatus.Completed,
+        tokensInput: 10_000,
+        tokensOutput: 5000,
+        tokensByModel: {
+          "claude-sonnet-4-5": {
+            input: 10_000,
+            output: 5000,
+            cacheCreation: 8000,
+            cacheRead: 3000,
+          },
+        },
+      }),
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoop>);
+
+    render(<LoopDetailContainer id="loop-001" />);
+
+    // Stacked layout: Input and Output shown as separate labeled values
+    expect(screen.getByText("10.0k")).toBeInTheDocument();
+    expect(screen.getByText("5.0k")).toBeInTheDocument();
+    // "effective" label and effective total should be absent
+    expect(screen.queryByText("effective")).not.toBeInTheDocument();
+    expect(screen.queryByText("~23.3k")).not.toBeInTheDocument();
+  });
+
+  it("cache-only case: input=0, output=0, cacheRead>0 still renders cache summary", () => {
+    vi.mocked(useLoop).mockReturnValue({
+      data: createMockLoopWithUser({
+        status: LoopStatus.Completed,
+        tokensInput: 0,
+        tokensOutput: 0,
+        tokensByModel: {
+          default: {
+            input: 0,
+            output: 0,
+            cacheCreation: 0,
+            cacheRead: 4000,
+          },
+        },
+      }),
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoop>);
+
+    render(<LoopDetailContainer id="loop-001" />);
+
+    // Should show "-" when input and output are both 0
+    expect(screen.getByText("-")).toBeInTheDocument();
+    // Cache summary should still render
+    expect(screen.getByText(CACHE_READ)).toBeInTheDocument();
+  });
+
+  it("headline abbreviates large numbers (formatTokenCount)", () => {
+    vi.mocked(useLoop).mockReturnValue({
+      data: createMockLoopWithUser({
+        status: LoopStatus.Completed,
+        tokensInput: 15_000_000,
+        tokensOutput: 2800,
+      }),
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoop>);
+
+    render(<LoopDetailContainer id="loop-001" />);
+
+    // Stacked layout: large numbers abbreviated
+    expect(screen.getByText("15.0M")).toBeInTheDocument();
+    expect(screen.getByText("2.8k")).toBeInTheDocument();
+  });
+
+  it("default key is filtered from ModelTokenBreakdown (no model row rendered for it)", () => {
+    vi.mocked(useLoop).mockReturnValue({
+      data: createMockLoopWithUser({
+        status: LoopStatus.Completed,
+        tokensInput: 10_000,
+        tokensOutput: 5000,
+        tokensByModel: {
+          default: {
+            input: 10_000,
+            output: 5000,
+            cacheCreation: 2000,
+            cacheRead: 500,
+          },
+        },
+      }),
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoop>);
+
+    render(<LoopDetailContainer id="loop-001" />);
+
+    // The "Default" model row must not be rendered in the per-model breakdown
+    // (the "default" key is a synthetic fallback, not a real model name)
+    expect(screen.queryByText("Default")).not.toBeInTheDocument();
+    // But the cache summary in MetadataCards still shows (from all tokensByModel values)
+    expect(screen.getByText(CACHE_WRITE)).toBeInTheDocument();
+  });
+});
+
+describe("LoopDetailContainer -- NO_WORK_PRODUCED label rendering", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(useResumeLoop).mockReturnValue({
+      mutateAsync: mockMutateAsync,
+      isPending: false,
+    } as unknown as ReturnType<typeof useResumeLoop>);
+    vi.mocked(useCancelLoop).mockReturnValue({
+      mutateAsync: mockCancelMutateAsync,
+      isPending: false,
+    } as unknown as ReturnType<typeof useCancelLoop>);
+  });
+
+  it("renders 'No output produced' for FAILED loop with NO_WORK_PRODUCED error when flag is enabled", () => {
+    vi.mocked(useFeatureFlag).mockReturnValue({
+      key: "ghost-loop-ux",
+      enabled: true,
+      variant: undefined,
+      payload: undefined,
+    });
+    vi.mocked(useLoop).mockReturnValue({
+      data: createMockLoopWithUser({
+        status: LoopStatus.Failed,
+        error: {
+          code: LoopErrorCode.NoWorkProduced,
+          message: "The loop produced no output.",
+        },
+      }),
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoop>);
+
+    render(<LoopDetailContainer id="loop-001" />);
+
+    expect(screen.getByText(NO_OUTPUT_PRODUCED)).toBeInTheDocument();
+  });
+
+  it("does not render 'No output produced' for FAILED loop with CONTEXT_LIMIT_EXCEEDED error when flag is enabled", () => {
+    vi.mocked(useFeatureFlag).mockReturnValue({
+      key: "ghost-loop-ux",
+      enabled: true,
+      variant: undefined,
+      payload: undefined,
+    });
+    vi.mocked(useLoop).mockReturnValue({
+      data: createMockLoopWithUser({
+        status: LoopStatus.Failed,
+        error: {
+          code: LoopErrorCode.ContextLimitExceeded,
+          message: "Context window exceeded.",
+        },
+      }),
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoop>);
+
+    render(<LoopDetailContainer id="loop-002" />);
+
+    expect(screen.queryByText(NO_OUTPUT_PRODUCED)).not.toBeInTheDocument();
+  });
+
+  it("renders no error label block when FAILED loop has no error", () => {
+    vi.mocked(useFeatureFlag).mockReturnValue({
+      key: "ghost-loop-ux",
+      enabled: true,
+      variant: undefined,
+      payload: undefined,
+    });
+    vi.mocked(useLoop).mockReturnValue({
+      data: createMockLoopWithUser({
+        status: LoopStatus.Failed,
+        error: null,
+      }),
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoop>);
+
+    render(<LoopDetailContainer id="loop-003" />);
+
+    expect(screen.queryByText(NO_OUTPUT_PRODUCED)).not.toBeInTheDocument();
+    expect(screen.queryByText(ERROR_LABEL)).not.toBeInTheDocument();
+  });
+
+  it("renders raw 'NO_WORK_PRODUCED' string (not 'No output produced') when flag is disabled", () => {
+    vi.mocked(useFeatureFlag).mockReturnValue({
+      key: "ghost-loop-ux",
+      enabled: false,
+      variant: undefined,
+      payload: undefined,
+    });
+    vi.mocked(useLoop).mockReturnValue({
+      data: createMockLoopWithUser({
+        status: LoopStatus.Failed,
+        error: {
+          code: LoopErrorCode.NoWorkProduced,
+          message: "The loop produced no output.",
+        },
+      }),
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoop>);
+
+    render(<LoopDetailContainer id="loop-004" />);
+
+    expect(screen.queryByText(NO_OUTPUT_PRODUCED)).not.toBeInTheDocument();
+    expect(screen.getByText(NO_WORK_PRODUCED_RAW)).toBeInTheDocument();
+  });
+});
+
+describe("LoopDetailContainer -- diagnostics UI", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(useResumeLoop).mockReturnValue({
+      mutateAsync: mockMutateAsync,
+      isPending: false,
+    } as unknown as ReturnType<typeof useResumeLoop>);
+    vi.mocked(useCancelLoop).mockReturnValue({
+      mutateAsync: mockCancelMutateAsync,
+      isPending: false,
+    } as unknown as ReturnType<typeof useCancelLoop>);
+  });
+
+  it("renders logTail content in diagnostics block when ghostLoopUx is enabled and loop is failed", () => {
+    vi.mocked(useFeatureFlag).mockReturnValue({
+      key: "ghost-loop-ux",
+      enabled: true,
+      variant: undefined,
+      payload: undefined,
+    });
+    vi.mocked(useLoop).mockReturnValue({
+      data: createMockLoopWithUser({
+        status: LoopStatus.Failed,
+        error: { code: LoopErrorCode.NoWorkProduced, message: "No output." },
+      }),
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoop>);
+    vi.mocked(useLoopEventsPaginated).mockReturnValue({
+      data: {
+        data: [
+          {
+            type: "error",
+            code: LoopErrorCode.NoWorkProduced,
+            message: "No output.",
+            timestamp: "2024-01-01T00:00:00Z",
+            logTail: "stderr output here",
+          },
+        ],
+        total: 1,
+      },
+    } as unknown as ReturnType<typeof useLoopEventsPaginated>);
+
+    render(<LoopDetailContainer id="loop-001" />);
+
+    expect(screen.getByText("stderr output here")).toBeInTheDocument();
   });
 });

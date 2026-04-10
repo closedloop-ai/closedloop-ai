@@ -28,10 +28,6 @@ export type StatusMetadataSectionProps = {
    */
   status: ArtifactStatus;
   /**
-   * Current approver (User or null if not selected)
-   */
-  approver: User | null;
-  /**
    * Current assignee (User or null if not selected)
    */
   assignee: User | null;
@@ -40,17 +36,9 @@ export type StatusMetadataSectionProps = {
    */
   teamMembers: User[];
   /**
-   * List of organization users to choose from for approver selection
-   */
-  orgUsers: User[];
-  /**
    * Handler called when status is changed
    */
   onStatusChange: (status: ArtifactStatus) => void;
-  /**
-   * Handler called when approver is selected (saves immediately)
-   */
-  onApproverSelect: (user: User | null) => void;
   /**
    * Handler called when assignee is changed
    */
@@ -67,32 +55,24 @@ export type StatusMetadataSectionProps = {
 
 /**
  * Shared metadata section for PRD and Plan editors.
- * Provides status select, owner selection, and approver selection fields with consistent styling.
- *
- * The approver field saves immediately on selection (no blur handler needed).
+ * Provides status select and assignee selection fields with consistent styling.
  *
  * Usage:
  * ```tsx
  * <StatusMetadataSection
  *   status={status}
- *   approver={approver}
  *   assignee={assignee}
  *   teamMembers={teamMembers}
- *   orgUsers={orgUsers}
  *   onStatusChange={handleStatusChange}
- *   onApproverSelect={handleApproverSelect}
  *   onAssigneeChange={handleAssigneeChange}
  * />
  * ```
  */
 export function StatusMetadataSection({
   status,
-  approver,
   assignee,
   teamMembers,
-  orgUsers,
   onStatusChange,
-  onApproverSelect,
   onAssigneeChange,
   className,
   layout = "vertical",
@@ -116,7 +96,7 @@ export function StatusMetadataSection({
           value={status}
         >
           <SelectTrigger
-            className="min-w-0 justify-start gap-1 bg-transparent hover:bg-transparent dark:bg-transparent dark:hover:bg-transparent [&>:last-child]:hidden"
+            className="min-w-0 justify-start gap-1 bg-transparent dark:bg-transparent [&>:last-child]:hidden"
             size="sm"
           >
             <SelectValue />
@@ -124,20 +104,12 @@ export function StatusMetadataSection({
           <SelectContent>{statusOptions}</SelectContent>
         </Select>
         <UserSelectPopover
-          className="w-auto min-w-[7rem] bg-transparent hover:bg-transparent dark:bg-transparent dark:hover:bg-transparent"
+          className="h-8 w-auto min-w-[7rem] bg-transparent px-3 dark:bg-transparent"
           disabled={teamMembers.length === 0}
           onSelect={onAssigneeChange}
           placeholder="Select assignee..."
           users={teamMembers}
           value={assignee}
-        />
-        <UserSelectPopover
-          className="w-auto min-w-[7rem] bg-transparent hover:bg-transparent dark:bg-transparent dark:hover:bg-transparent"
-          disabled={orgUsers.length === 0}
-          onSelect={onApproverSelect}
-          placeholder="Select approver..."
-          users={orgUsers}
-          value={approver}
         />
       </>
     ) : (
@@ -166,17 +138,6 @@ export function StatusMetadataSection({
             placeholder="Select assignee..."
             users={teamMembers}
             value={assignee}
-          />
-        </div>
-        <div className="space-y-2">
-          <Label>Approver</Label>
-          <UserSelectPopover
-            className="w-full bg-transparent hover:bg-transparent dark:bg-transparent dark:hover:bg-transparent"
-            disabled={orgUsers.length === 0}
-            onSelect={onApproverSelect}
-            placeholder="Select approver..."
-            users={orgUsers}
-            value={approver}
           />
         </div>
       </>

@@ -1,15 +1,16 @@
 "use client";
 
-import type {
-  Artifact,
-  ArtifactDetail,
-  ArtifactWithWorkstream,
-  CreateArtifactInput,
-  FindArtifactsOptions,
-  GenerationStatus,
-  MergeArtifactsInput,
-  PullRequestInfo,
-  UpdateArtifactInput,
+import {
+  type Artifact,
+  type ArtifactDetail,
+  type ArtifactWithWorkstream,
+  type CreateArtifactInput,
+  type FindArtifactsOptions,
+  type GenerationStatus,
+  isActiveGenerationStatus,
+  type MergeArtifactsInput,
+  type PullRequestInfo,
+  type UpdateArtifactInput,
 } from "@repo/api/src/types/artifact";
 import type { ArtifactVersion } from "@repo/api/src/types/artifact-version";
 import type { ComputeTargetConflictBody } from "@repo/api/src/types/compute-target";
@@ -199,22 +200,36 @@ export function useArtifactBySlug(
   });
 }
 
+const GENERATION_POLL_INTERVAL = 5000;
+
 export function useArtifactGenerationStatus(
   artifactId: string,
-  options?: Omit<UseQueryOptions<GenerationStatus>, "queryKey" | "queryFn">
+  options?: Omit<UseQueryOptions<GenerationStatus>, "queryKey" | "queryFn"> & {
+    polling?: boolean;
+  }
 ) {
+  const { polling, ...queryOptions } = options ?? {};
   const apiClient = useApiClient();
   const queryClient = useQueryClient();
 
   return {
-    ...useQuery({
+    ...useQuery<GenerationStatus>({
       queryKey: artifactKeys.generationStatus(artifactId),
       queryFn: () =>
         apiClient.get<GenerationStatus>(
           `/artifacts/${artifactId}/generation-status`
         ),
       enabled: !!artifactId,
-      ...options,
+      refetchInterval: polling
+        ? (query) => {
+            const status = query.state.data?.status;
+            if (status && isActiveGenerationStatus(status)) {
+              return GENERATION_POLL_INTERVAL;
+            }
+            return false;
+          }
+        : undefined,
+      ...queryOptions,
     }),
     invalidateCache: () => {
       queryClient.invalidateQueries({
@@ -353,6 +368,7 @@ export function useRegenerateArtifact() {
     }) => apiClient.post<Artifact>(`/artifacts/${id}/regenerate`, body ?? {}),
     onSuccess: (_, { id }) => {
       queryClient.invalidateQueries({ queryKey: artifactKeys.detail(id) });
+      queryClient.invalidateQueries({ queryKey: artifactKeys.bySlugs() });
       queryClient.invalidateQueries({
         queryKey: artifactKeys.generationStatus(id),
       });
@@ -387,6 +403,7 @@ export function useRequestPlanChanges() {
       queryClient.invalidateQueries({
         queryKey: artifactKeys.detail(variables.artifactId),
       });
+      queryClient.invalidateQueries({ queryKey: artifactKeys.bySlugs() });
       queryClient.invalidateQueries({
         queryKey: artifactKeys.generationStatus(variables.artifactId),
       });
@@ -450,6 +467,7 @@ export function useCreateAndGenerateArtifact() {
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: artifactKeys.lists() });
+      queryClient.invalidateQueries({ queryKey: artifactKeys.bySlugs() });
       queryClient.invalidateQueries({
         queryKey: artifactKeys.generationStatus(data.id),
       });
@@ -510,6 +528,7 @@ export function useExecuteImplementationPlan() {
       queryClient.invalidateQueries({
         queryKey: artifactKeys.detail(artifactId),
       });
+      queryClient.invalidateQueries({ queryKey: artifactKeys.bySlugs() });
       queryClient.invalidateQueries({
         queryKey: artifactKeys.generationStatus(artifactId),
       });
@@ -542,79 +561,7 @@ export function useArtifactPullRequest(
 }
 
 /**
- * Reorder artifacts by setting sortOrder values.
- * Accepts an array of artifact IDs in the desired order.
- */
-export function useReorderArtifacts() {
-  const queryClient = useQueryClient();
-  const apiClient = useApiClient();
-
-  return useMutation({
-    mutationFn: (artifactIds: string[]) =>
-      apiClient.post<string[]>("/artifacts/reorder", { artifactIds }),
-    onMutate: async (artifactIds) => {
-      // Cancel outgoing refetches to avoid overwriting optimistic update
-      await queryClient.cancelQueries({ queryKey: artifactKeys.lists() });
-
-      // Snapshot previous values for rollback
-      const previousLists = queryClient.getQueriesData({
-        queryKey: artifactKeys.lists(),
-      });
-
-      // Optimistically update all artifact list queries
-      queryClient.setQueriesData(
-        { queryKey: artifactKeys.lists() },
-        (old: ArtifactWithWorkstream[] | undefined) => {
-          if (!old) {
-            return old;
-          }
-
-          // Create a map of new positions
-          const positionMap = new Map(
-            artifactIds.map((id, index) => [id, index])
-          );
-
-          // Sort artifacts by new order
-          return [...old].sort((a, b) => {
-            const posA = positionMap.get(a.id);
-            const posB = positionMap.get(b.id);
-
-            // Keep artifacts not in reorder list at the end
-            if (posA === undefined && posB === undefined) {
-              return 0;
-            }
-            if (posA === undefined) {
-              return 1;
-            }
-            if (posB === undefined) {
-              return -1;
-            }
-
-            return posA - posB;
-          });
-        }
-      );
-
-      return { previousLists };
-    },
-    onError: (_err, _variables, context) => {
-      // Rollback on error
-      if (context?.previousLists) {
-        for (const [queryKey, data] of context.previousLists) {
-          queryClient.setQueryData(queryKey, data);
-        }
-      }
-    },
-    onSuccess: () => {
-      // Invalidate to fetch fresh data from server
-      queryClient.invalidateQueries({ queryKey: artifactKeys.lists() });
-    },
-  });
-}
-
-/**
  * Move multiple artifacts to a different project.
- * Used for drag-and-drop cross-project move.
  */
 export function useBatchMoveArtifacts() {
   const queryClient = useQueryClient();
@@ -635,6 +582,7 @@ export function useBatchMoveArtifacts() {
     onSuccess: (_, { targetProjectId }) => {
       // Invalidate all artifact lists to refresh source and target project views
       queryClient.invalidateQueries({ queryKey: artifactKeys.lists() });
+      queryClient.invalidateQueries({ queryKey: artifactKeys.bySlugs() });
       // Invalidate project lists to update artifact counts
       queryClient.invalidateQueries({ queryKey: projectKeys.lists() });
       // Invalidate target project detail to reflect new artifacts

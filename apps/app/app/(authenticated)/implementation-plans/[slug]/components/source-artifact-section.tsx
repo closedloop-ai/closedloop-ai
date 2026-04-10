@@ -1,7 +1,14 @@
 "use client";
 
-import { ArtifactType } from "@repo/api/src/types/artifact";
-import { EntityType, LinkType } from "@repo/api/src/types/entity-link";
+import {
+  ArtifactType,
+  getRoutePrefixForType,
+} from "@repo/api/src/types/artifact";
+import {
+  EntityType,
+  LinkDirection,
+  LinkType,
+} from "@repo/api/src/types/entity-link";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   Command,
@@ -25,7 +32,7 @@ import { useArtifactsByProject } from "@/hooks/queries/use-artifacts";
 import {
   useCreateEntityLink,
   useDeleteEntityLink,
-  useSourceLinks,
+  useLinkedEntities,
 } from "@/hooks/queries/use-entity-links";
 import {
   ARTIFACT_TYPE_ICONS,
@@ -43,10 +50,13 @@ export function SourceArtifactSection({
 }: SourceArtifactSectionProps) {
   const [isOpen, setIsOpen] = useState(false);
 
-  const { data: sourceLinks = [] } = useSourceLinks(
+  const { data: sourceLinkedEntities = [] } = useLinkedEntities(
     artifactId,
     EntityType.Artifact,
-    LinkType.Produces
+    {
+      direction: LinkDirection.Source,
+      linkType: LinkType.Produces,
+    }
   );
   const createEntityLink = useCreateEntityLink();
   const deleteEntityLink = useDeleteEntityLink();
@@ -56,16 +66,22 @@ export function SourceArtifactSection({
     { enabled: !!projectId }
   );
 
-  const sourceLink = sourceLinks.find(
-    (link) => link.sourceType === EntityType.Artifact
+  const sourceLinkedEntity = sourceLinkedEntities.find(
+    (linked) => linked.resolvedEntity?.type === EntityType.Artifact
   );
 
-  const sourceArtifact = useMemo(() => {
-    if (!sourceLink) {
+  const sourceArtifact =
+    sourceLinkedEntity?.resolvedEntity?.type === EntityType.Artifact
+      ? sourceLinkedEntity.resolvedEntity.entity
+      : null;
+
+  const sourceArtifactRoute = useMemo(() => {
+    if (!sourceArtifact) {
       return null;
     }
-    return projectArtifacts.find((a) => a.id === sourceLink.sourceId) ?? null;
-  }, [sourceLink, projectArtifacts]);
+    const routePrefix = getRoutePrefixForType(sourceArtifact.type);
+    return routePrefix ? `/${routePrefix}/${sourceArtifact.slug}` : null;
+  }, [sourceArtifact]);
 
   const parentCandidates = useMemo(
     () =>
@@ -87,19 +103,19 @@ export function SourceArtifactSection({
   };
 
   const handleUnlinkSource = () => {
-    if (sourceLink) {
-      deleteEntityLink.mutate(sourceLink.id);
+    if (sourceLinkedEntity) {
+      deleteEntityLink.mutate(sourceLinkedEntity.id);
     }
   };
 
   return (
-    <MetadataSection separator>
+    <MetadataSection>
       <Label className="text-muted-foreground text-xs">Source Artifact</Label>
       {sourceArtifact ? (
         <div className="flex items-center justify-between gap-2">
           <Link
             className="flex min-w-0 items-center gap-1.5 text-primary text-sm hover:underline"
-            href={`/prds/${sourceArtifact.slug}`}
+            href={sourceArtifactRoute ?? "#"}
           >
             {(() => {
               const Icon =
@@ -124,7 +140,7 @@ export function SourceArtifactSection({
         <Popover onOpenChange={setIsOpen} open={isOpen}>
           <PopoverTrigger asChild>
             <Button
-              className="w-full justify-start gap-2 text-muted-foreground"
+              className="justify-start gap-2 text-muted-foreground"
               size="sm"
               variant="outline"
             >

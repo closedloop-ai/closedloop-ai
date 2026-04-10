@@ -125,7 +125,7 @@ export function ArtifactChatPanel({
     const assistantMsg: ConversationMessageItem = {
       id: `assistant-${Date.now()}`,
       role: "assistant",
-      content: "Chat isn’t connected yet. This is a mock.",
+      content: "Chat isn't connected yet. This is a mock.",
     };
     setMessages((prev) => [...prev, userMsg, assistantMsg]);
     setInputValue("");

@@ -16,8 +16,9 @@ import {
   type LoopUsageSummary,
   type LoopWithUser,
   type ResumeLoopRequest,
+  type TokensByModel,
 } from "@repo/api/src/types/loop";
-import { type Loop as PrismaLoop, withDb } from "@repo/database";
+import { Prisma, type Loop as PrismaLoop, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { basicUserSelect } from "@/lib/db-utils";
 
@@ -100,10 +101,14 @@ export function isConcurrentLoopLimitError(
 const VALID_TRANSITIONS: Record<LoopStatus, Set<LoopStatus>> = {
   // PENDING → RUNNING covers the race where the container sends "started"
   // before the backend has finished transitioning to CLAIMED.
+  // PENDING → FAILED covers the pre-dispatch guard path in launchLoop: when
+  // a required parent state is unavailable, failLoopWithError is called before
+  // any task is dispatched, while the loop is still PENDING.
   PENDING: new Set<LoopStatus>([
     LoopStatus.Claimed,
     LoopStatus.Running,
     LoopStatus.Cancelled,
+    LoopStatus.Failed,
   ]),
   // CLAIMED → terminal states covers the case where the "started" event was
   // dropped (network issue, transient failure). Without this, a lost "started"
@@ -414,7 +419,7 @@ export const loopsService = {
       completedAt: Date;
       tokensInput: number;
       tokensOutput: number;
-      tokensByModel: Record<string, { input: number; output: number }>;
+      tokensByModel: TokensByModel;
       estimatedCost: number;
       error: { code: string; message: string } | null;
       s3StateKey: string;
@@ -422,6 +427,7 @@ export const loopsService = {
       prNumber: number;
       branchName: string;
       sessionId: string;
+      metadata: JsonObject;
     }>
   ): Promise<Loop> {
     // Compute the set of valid source statuses for this target status
@@ -453,6 +459,7 @@ export const loopsService = {
         "prNumber",
         "branchName",
         "sessionId",
+        "metadata",
       ] as const;
       for (const field of optionalFields) {
         if (data[field] !== undefined) {
@@ -830,7 +837,7 @@ export const loopsService = {
     organizationId: string,
     filters: LoopEventsFilters
   ): Promise<LoopEventsPaginatedResponse> {
-    const { type, limit = 100, offset = 0 } = filters;
+    const { type, limit = 100, offset = 0, sort = "asc" } = filters;
 
     // Verify loop belongs to org
     const loop = await withDb((db) =>
@@ -853,7 +860,7 @@ export const loopsService = {
       withDb((db) =>
         db.loopEvent.findMany({
           where,
-          orderBy: { createdAt: "asc" },
+          orderBy: { createdAt: sort },
           take: limit,
           skip: offset,
         })
@@ -915,43 +922,109 @@ export const loopsService = {
         : {}),
     };
 
-    const [aggregate, groupByCommand, groupByUser] = await Promise.all([
-      withDb((db) =>
-        db.loop.aggregate({
-          where,
-          _count: true,
-          _sum: {
-            tokensInput: true,
-            tokensOutput: true,
-            estimatedCost: true,
-          },
-        })
-      ),
-      withDb((db) =>
-        db.loop.groupBy({
-          by: ["command"],
-          where,
-          _count: true,
-          _sum: {
-            tokensInput: true,
-            tokensOutput: true,
-            estimatedCost: true,
-          },
-        })
-      ),
-      withDb((db) =>
-        db.loop.groupBy({
-          by: ["userId"],
-          where,
-          _count: true,
-          _sum: {
-            tokensInput: true,
-            tokensOutput: true,
-            estimatedCost: true,
-          },
-        })
-      ),
-    ]);
+    // Build parameterized WHERE predicates for the raw cache aggregation query.
+    // Must match the same filter conditions as the Prisma `where` object above.
+    const rawPredicates: Prisma.Sql[] = [
+      Prisma.sql`organization_id = ${organizationId}::uuid`,
+    ];
+    if (userId) {
+      rawPredicates.push(Prisma.sql`user_id = ${userId}::uuid`);
+    }
+    if (validatedCommand) {
+      rawPredicates.push(
+        Prisma.sql`command = ${validatedCommand}::"LoopCommand"`
+      );
+    }
+    if (startDate) {
+      rawPredicates.push(Prisma.sql`created_at >= ${startDate}`);
+    }
+    if (endDate) {
+      rawPredicates.push(Prisma.sql`created_at <= ${endDate}`);
+    }
+    const whereClause = Prisma.join(rawPredicates, " AND ");
+
+    type CacheAggRow = {
+      total_cache_creation: bigint;
+      total_cache_read: bigint;
+    };
+
+    const [aggregate, groupByCommand, groupByUser, cacheAgg] =
+      await Promise.all([
+        withDb((db) =>
+          db.loop.aggregate({
+            where,
+            _count: true,
+            _sum: {
+              tokensInput: true,
+              tokensOutput: true,
+              estimatedCost: true,
+            },
+          })
+        ),
+        withDb((db) =>
+          db.loop.groupBy({
+            by: ["command"],
+            where,
+            _count: true,
+            _sum: {
+              tokensInput: true,
+              tokensOutput: true,
+              estimatedCost: true,
+            },
+          })
+        ),
+        withDb((db) =>
+          db.loop.groupBy({
+            by: ["userId"],
+            where,
+            _count: true,
+            _sum: {
+              tokensInput: true,
+              tokensOutput: true,
+              estimatedCost: true,
+            },
+          })
+        ),
+        withDb((db) =>
+          db.$queryRaw<CacheAggRow[]>(Prisma.sql`
+          SELECT
+            COALESCE(SUM(
+              CASE
+                WHEN jsonb_typeof(tokens_by_model) = 'object' THEN (
+                  SELECT COALESCE(SUM(
+                    CASE
+                      WHEN jsonb_typeof(entry.value -> 'cacheCreation') = 'number'
+                        AND (entry.value ->> 'cacheCreation') ~ '^[0-9]+$'
+                      THEN (entry.value ->> 'cacheCreation')::bigint
+                      ELSE 0
+                    END
+                  ), 0)
+                  FROM jsonb_each(tokens_by_model) AS entry(key, value)
+                )
+                ELSE 0
+              END
+            ), 0) AS total_cache_creation,
+            COALESCE(SUM(
+              CASE
+                WHEN jsonb_typeof(tokens_by_model) = 'object' THEN (
+                  SELECT COALESCE(SUM(
+                    CASE
+                      WHEN jsonb_typeof(entry.value -> 'cacheRead') = 'number'
+                        AND (entry.value ->> 'cacheRead') ~ '^[0-9]+$'
+                      THEN (entry.value ->> 'cacheRead')::bigint
+                      ELSE 0
+                    END
+                  ), 0)
+                  FROM jsonb_each(tokens_by_model) AS entry(key, value)
+                )
+                ELSE 0
+              END
+            ), 0) AS total_cache_read
+          FROM loops
+          WHERE ${whereClause}
+        `)
+        ),
+      ]);
 
     const byCommand: LoopUsageByCommand[] = groupByCommand.map((g) => ({
       command: g.command as LoopCommand,
@@ -995,6 +1068,8 @@ export const loopsService = {
       totalTokensInput: aggregate._sum.tokensInput ?? 0,
       totalTokensOutput: aggregate._sum.tokensOutput ?? 0,
       totalEstimatedCost: Number(aggregate._sum.estimatedCost ?? 0),
+      totalCacheCreationTokens: Number(cacheAgg[0]?.total_cache_creation ?? 0),
+      totalCacheReadTokens: Number(cacheAgg[0]?.total_cache_read ?? 0),
       byCommand,
       byUser,
     };
@@ -1155,6 +1230,43 @@ export const loopsService = {
       loopId: loop.id,
       status: loop.status as LoopStatus,
     };
+  },
+
+  /**
+   * Monotonically update token counts on a loop row while it is still active.
+   * Uses GREATEST so stale or out-of-order output events cannot overwrite a
+   * higher value already written by a later event.
+   * Restricted to PENDING/CLAIMED/RUNNING to prevent late-arriving output
+   * events from mutating terminal rows after the final completed event.
+   */
+  async updateTokens(
+    id: string,
+    organizationId: string,
+    tokensInput: number,
+    tokensOutput: number,
+    cacheCreation = 0,
+    cacheRead = 0
+  ): Promise<void> {
+    const tokensByModel = JSON.stringify({
+      default: {
+        input: tokensInput,
+        output: tokensOutput,
+        cacheCreation,
+        cacheRead,
+      },
+    });
+    await withDb((db) =>
+      db.$executeRaw(Prisma.sql`
+        UPDATE loops
+        SET tokens_input = GREATEST(tokens_input, ${tokensInput}),
+            tokens_output = GREATEST(tokens_output, ${tokensOutput}),
+            tokens_by_model = ${tokensByModel}::jsonb
+        WHERE id = ${id}::uuid
+          AND organization_id = ${organizationId}::uuid
+          AND status IN ('PENDING', 'CLAIMED', 'RUNNING')
+          AND (tokens_input < ${tokensInput} OR tokens_output < ${tokensOutput})
+      `)
+    );
   },
 
   /**

@@ -249,9 +249,11 @@ function OutputEvent({ event }: { event: LoopEventOutput }) {
             </pre>
           </CollapsibleContent>
         </Collapsible>
-        <div className="mt-1 text-muted-foreground text-xs">
-          {formatTimestamp(event.timestamp)}
-        </div>
+        {event.timestamp ? (
+          <div className="mt-1 text-muted-foreground text-xs">
+            {formatTimestamp(event.timestamp)}
+          </div>
+        ) : null}
       </div>
     </div>
   );
@@ -364,6 +366,8 @@ function CompletedEvent({ event }: { event: LoopEventCompleted }) {
 }
 
 function ErrorEvent({ event }: { event: LoopEventError }) {
+  const [logOpen, setLogOpen] = useState(false);
+
   return (
     <div className="flex items-start gap-3">
       <div className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full bg-red-100 dark:bg-red-900/30">
@@ -376,6 +380,44 @@ function ErrorEvent({ event }: { event: LoopEventError }) {
         <div className="mt-1 text-red-600 text-xs dark:text-red-300">
           {event.message}
         </div>
+        {event.tokenUsage && (
+          <div className="mt-1 text-muted-foreground text-xs">
+            Tokens: {formatTokenCount(event.tokenUsage.inputTokens)} in /{" "}
+            {formatTokenCount(event.tokenUsage.outputTokens)} out
+          </div>
+        )}
+        {event.diagnosticsVersion && (
+          <div className="mt-1 text-muted-foreground text-xs">
+            Diagnostics version: {event.diagnosticsVersion}
+          </div>
+        )}
+        {event.logTail && (
+          <Collapsible
+            className="mt-1"
+            onOpenChange={setLogOpen}
+            open={logOpen}
+          >
+            <CollapsibleTrigger asChild>
+              <button
+                className="flex items-center gap-1 text-muted-foreground text-xs transition-colors hover:text-foreground"
+                type="button"
+              >
+                Log tail
+                <ChevronDownIcon
+                  className={cn(
+                    "size-3 transition-transform",
+                    logOpen && "rotate-180"
+                  )}
+                />
+              </button>
+            </CollapsibleTrigger>
+            <CollapsibleContent className="mt-1">
+              <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-md bg-muted/50 p-2 text-xs">
+                {event.logTail}
+              </pre>
+            </CollapsibleContent>
+          </Collapsible>
+        )}
         <div className="mt-1 text-muted-foreground text-xs">
           {formatTimestamp(event.timestamp)}
         </div>
@@ -453,7 +495,9 @@ export function LoopProgressPanel({
     }
 
     const lastPolledTs = polled.at(-1)?.timestamp ?? "";
-    const newFromStream = streamed.filter((e) => e.timestamp > lastPolledTs);
+    const newFromStream = streamed.filter(
+      (e) => (e.timestamp ?? "") > lastPolledTs
+    );
 
     return newFromStream.length > 0 ? [...polled, ...newFromStream] : polled;
   }, [polling.events, stream.events]);
@@ -470,15 +514,25 @@ export function LoopProgressPanel({
   );
   const active = isActiveDisplayStatus(displayStatus);
 
-  // Derive token totals from completed event (if present)
+  // Derive token totals from completed event, or fall back to error event diagnostics
   const completedEvent = events.find(
     (e): e is LoopEventCompleted => e.type === "completed"
   );
-  const tokensInput = completedEvent?.tokensUsed?.input ?? 0;
-  const tokensOutput = completedEvent?.tokensUsed?.output ?? 0;
+  const errorEvent = events.find(
+    (e): e is LoopEventError => e.type === "error"
+  );
+  const tokensInput =
+    completedEvent?.tokensUsed?.input ??
+    errorEvent?.tokenUsage?.inputTokens ??
+    polling.loopTokensInput;
+  const tokensOutput =
+    completedEvent?.tokensUsed?.output ??
+    errorEvent?.tokenUsage?.outputTokens ??
+    polling.loopTokensOutput;
 
   // Derive start timestamp from first event
-  const startTimestamp = events.length > 0 ? events[0].timestamp : null;
+  const startTimestamp =
+    events.length > 0 ? (events[0].timestamp ?? null) : null;
   const elapsed = useElapsedTime(startTimestamp, active);
 
   // Auto-scroll to bottom as events arrive.

@@ -1,10 +1,9 @@
 /**
  * Single-root contract tests: verify that route handlers read exclusively
- * from .closedloop-ai/work and ignore legacy .claude/work.
+ * from .closedloop-ai/work.
  *
- * Each test sets up a temp directory with both .claude/work/<file> and
- * .closedloop-ai/work/<file> containing DIFFERENT content, calls the relevant
- * route handler, and asserts the result reflects .closedloop-ai/work only.
+ * Each test sets up a temp directory with .closedloop-ai/work/<file>,
+ * calls the relevant route handler, and asserts the result reflects that data.
  */
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -137,16 +136,6 @@ function writeToCanonical(
   writeFileSync(fullPath, content, "utf-8");
 }
 
-function writeToLegacy(
-  worktreeDir: string,
-  relPath: string,
-  content: string
-): void {
-  const fullPath = join(worktreeDir, ".claude", "work", relPath);
-  mkdirSync(join(fullPath, ".."), { recursive: true });
-  writeFileSync(fullPath, content, "utf-8");
-}
-
 /**
  * Create a minimal request compatible with both the standard `Request` API
  * and the Next.js `NextRequest` shape (adds `nextUrl` for routes that use it).
@@ -170,7 +159,7 @@ function makeRequest(urlPath: string, method = "GET", body?: unknown) {
 // ---------------------------------------------------------------------------
 
 describe("single-root: symphony/status/[ticketId]", () => {
-  it("returns state from .closedloop-ai/work/state.json, ignores .claude/work/state.json", async () => {
+  it("returns state from .closedloop-ai/work/state.json", async () => {
     const repoName = "myrepo";
     const repoPath = join(testDir, repoName);
     mkdirSync(repoPath, { recursive: true });
@@ -183,15 +172,6 @@ describe("single-root: symphony/status/[ticketId]", () => {
       JSON.stringify({
         status: "COMPLETED",
         phase: "Done",
-        timestamp: new Date().toISOString(),
-      })
-    );
-    writeToLegacy(
-      worktreeDir,
-      "state.json",
-      JSON.stringify({
-        status: "IN_PROGRESS",
-        phase: "Legacy should be ignored",
         timestamp: new Date().toISOString(),
       })
     );
@@ -213,70 +193,14 @@ describe("single-root: symphony/status/[ticketId]", () => {
     expect(body.status).toBe("COMPLETED");
     expect(body.phase).toBe("Done");
   });
-
-  it("returns STARTING (not the legacy status) when only .claude/work/state.json exists", async () => {
-    const repoName = "myrepo";
-    const repoPath = join(testDir, repoName);
-    mkdirSync(repoPath, { recursive: true });
-
-    const worktreeDir = makeWorktreeDir(repoName, "SR-2");
-
-    // Only write to legacy — canonical path is absent
-    writeToLegacy(
-      worktreeDir,
-      "state.json",
-      JSON.stringify({
-        status: "IN_PROGRESS",
-        phase: "Legacy",
-        timestamp: new Date().toISOString(),
-      })
-    );
-
-    const request = makeRequest(
-      `/api/engineer/symphony/status/SR-2?repo=${encodeURIComponent(repoPath)}`
-    );
-    const response = await symphonyStatusGET(request, {
-      params: Promise.resolve({ ticketId: "SR-2" }),
-    });
-
-    expect(response.status).toBe(200);
-    const body = (await response.json()) as {
-      status: string;
-      stateExists: boolean;
-    };
-    // Route must NOT fall back to .claude/work
-    expect(body.stateExists).toBe(false);
-    expect(body.status).toBe("STARTING");
-  });
 });
 
 // ---------------------------------------------------------------------------
-// 2. symphony/kill — POST resolves PID from .closedloop-ai/work/process.pid only
+// 2. symphony/kill — POST writes STOPPED state to .closedloop-ai/work
 // ---------------------------------------------------------------------------
 
 describe("single-root: symphony/kill", () => {
-  it("returns 'No process to kill' when PID only exists in .claude/work", async () => {
-    const repoName = "myrepo";
-    const repoPath = join(testDir, repoName);
-    mkdirSync(repoPath, { recursive: true });
-
-    const worktreeDir = makeWorktreeDir(repoName, "SR-3");
-
-    // Write PID to legacy path only — route must NOT read it
-    writeToLegacy(worktreeDir, "process.pid", "99999");
-
-    const request = makeRequest("/api/engineer/symphony/kill", "POST", {
-      ticketId: "SR-3",
-      repoPath,
-    });
-    const response = await killPOST(request);
-
-    expect(response.status).toBe(200);
-    const body = (await response.json()) as { message: string };
-    expect(body.message).toContain("No process to kill");
-  });
-
-  it("marks state as STOPPED in .closedloop-ai/work, not .claude/work", async () => {
+  it("marks state as STOPPED in .closedloop-ai/work", async () => {
     const repoName = "myrepo";
     const repoPath = join(testDir, repoName);
     mkdirSync(repoPath, { recursive: true });
@@ -297,11 +221,9 @@ describe("single-root: symphony/kill", () => {
       "work",
       "state.json"
     );
-    const legacyStatePath = join(worktreeDir, ".claude", "work", "state.json");
 
     const { existsSync, readFileSync } = await import("node:fs");
     expect(existsSync(canonicalStatePath)).toBe(true);
-    expect(existsSync(legacyStatePath)).toBe(false);
 
     const state = JSON.parse(readFileSync(canonicalStatePath, "utf-8")) as {
       status: string;
@@ -315,38 +237,7 @@ describe("single-root: symphony/kill", () => {
 // ---------------------------------------------------------------------------
 
 describe("single-root: codex/status/[ticketId]", () => {
-  it("returns hasReview=false when review file only in .claude/work", async () => {
-    const repoName = "myrepo";
-    const repoPath = join(testDir, repoName);
-    mkdirSync(repoPath, { recursive: true });
-
-    const worktreeDir = makeWorktreeDir(repoName, "SR-5");
-
-    // Write review state to legacy only
-    writeToLegacy(
-      worktreeDir,
-      "codex-review-codex.json",
-      JSON.stringify({
-        status: "completed",
-        provider: "codex",
-        startedAt: new Date().toISOString(),
-        config: {},
-      })
-    );
-
-    const request = makeRequest(
-      `/api/engineer/codex/status/SR-5?repo=${encodeURIComponent(repoPath)}&provider=codex`
-    );
-    const response = await codexStatusGET(request, {
-      params: Promise.resolve({ ticketId: "SR-5" }),
-    });
-
-    expect(response.status).toBe(200);
-    const body = (await response.json()) as { hasReview: boolean };
-    expect(body.hasReview).toBe(false);
-  });
-
-  it("reads review state from .closedloop-ai/work and not from .claude/work", async () => {
+  it("reads review state from .closedloop-ai/work", async () => {
     const repoName = "myrepo";
     const repoPath = join(testDir, repoName);
     mkdirSync(repoPath, { recursive: true });
@@ -358,21 +249,6 @@ describe("single-root: codex/status/[ticketId]", () => {
       "codex-review-codex.json",
       JSON.stringify({
         status: "completed",
-        provider: "codex",
-        startedAt: new Date().toISOString(),
-        config: {
-          model: "o3",
-          reasoningEffort: "medium",
-          reviewMode: "uncommitted",
-          baseBranch: "main",
-        },
-      })
-    );
-    writeToLegacy(
-      worktreeDir,
-      "codex-review-codex.json",
-      JSON.stringify({
-        status: "running",
         provider: "codex",
         startedAt: new Date().toISOString(),
         config: {
@@ -397,17 +273,16 @@ describe("single-root: codex/status/[ticketId]", () => {
       status: string;
     };
     expect(body.hasReview).toBe(true);
-    // Must reflect canonical value, not legacy "running"
     expect(body.status).toBe("completed");
   });
 });
 
 // ---------------------------------------------------------------------------
-// 4. codex/stop/[ticketId] — DELETE only deletes from .closedloop-ai/work
+// 4. codex/stop/[ticketId] — DELETE deletes from .closedloop-ai/work
 // ---------------------------------------------------------------------------
 
 describe("single-root: codex/stop/[ticketId] DELETE (deleteReviewFiles)", () => {
-  it("only deletes files from .closedloop-ai/work, leaves .claude/work untouched", async () => {
+  it("deletes files from .closedloop-ai/work", async () => {
     const repoName = "myrepo";
     const repoPath = join(testDir, repoName);
     mkdirSync(repoPath, { recursive: true });
@@ -415,25 +290,10 @@ describe("single-root: codex/stop/[ticketId] DELETE (deleteReviewFiles)", () => 
     const worktreeDir = makeWorktreeDir(repoName, "SR-7");
 
     const canonicalFile = "codex-review-claude.json";
-    const legacyFile = "codex-review-claude.json";
 
     writeToCanonical(
       worktreeDir,
       canonicalFile,
-      JSON.stringify({
-        status: "completed",
-        startedAt: new Date().toISOString(),
-        config: {
-          model: "claude",
-          reasoningEffort: "medium",
-          reviewMode: "uncommitted",
-          baseBranch: "main",
-        },
-      })
-    );
-    writeToLegacy(
-      worktreeDir,
-      legacyFile,
       JSON.stringify({
         status: "completed",
         startedAt: new Date().toISOString(),
@@ -464,10 +324,6 @@ describe("single-root: codex/stop/[ticketId] DELETE (deleteReviewFiles)", () => 
       canonicalFile
     );
     expect(existsSync(canonicalPath)).toBe(false);
-
-    // Legacy file must NOT be deleted by the single-root handler
-    const legacyPath = join(worktreeDir, ".claude", "work", legacyFile);
-    expect(existsSync(legacyPath)).toBe(true);
   });
 });
 
@@ -476,7 +332,7 @@ describe("single-root: codex/stop/[ticketId] DELETE (deleteReviewFiles)", () => 
 // ---------------------------------------------------------------------------
 
 describe("single-root: deploy/status/[ticketId]", () => {
-  it("reads deploy.log from .closedloop-ai/work, ignores .claude/work/deploy.log", async () => {
+  it("reads deploy.log from .closedloop-ai/work", async () => {
     const repoName = "myrepo";
     const repoPath = join(testDir, repoName);
     mkdirSync(repoPath, { recursive: true });
@@ -488,14 +344,7 @@ describe("single-root: deploy/status/[ticketId]", () => {
       "deploy.log",
       "canonical deploy log line 1\n"
     );
-    writeToLegacy(
-      worktreeDir,
-      "deploy.log",
-      "legacy deploy log should be ignored\n"
-    );
 
-    // Provide a pid that doesn't exist so processAlive=false; the route should
-    // still find the log and the pid in the query string (legacy path: has logs + pid)
     const request = makeRequest(
       `/api/engineer/deploy/status/SR-8?repo=${encodeURIComponent(repoPath)}`
     );
@@ -507,36 +356,9 @@ describe("single-root: deploy/status/[ticketId]", () => {
     const body = (await response.json()) as { logs: string; status: string };
 
     expect(body.logs).toContain("canonical deploy log");
-    expect(body.logs).not.toContain("legacy deploy log");
   });
 
-  it("returns empty logs when deploy.log only exists in .claude/work", async () => {
-    const repoName = "myrepo";
-    const repoPath = join(testDir, repoName);
-    mkdirSync(repoPath, { recursive: true });
-
-    makeWorktreeDir(repoName, "SR-9");
-
-    // Only write to legacy
-    const worktreeDir = join(worktreeParentDir, `${repoName}-SR-9`);
-    writeToLegacy(worktreeDir, "deploy.log", "legacy only deploy log\n");
-
-    const request = makeRequest(
-      `/api/engineer/deploy/status/SR-9?repo=${encodeURIComponent(repoPath)}`
-    );
-    const response = await deployStatusGET(request, {
-      params: Promise.resolve({ ticketId: "SR-9" }),
-    });
-
-    expect(response.status).toBe(200);
-    const body = (await response.json()) as { logs: string; status: string };
-
-    // Route must NOT fall back to .claude/work
-    expect(body.logs).toBe("");
-    expect(body.status).toBe("not-started");
-  });
-
-  it("reads deploy-result.json from .closedloop-ai/work only", async () => {
+  it("reads deploy-result.json from .closedloop-ai/work", async () => {
     const repoName = "myrepo";
     const repoPath = join(testDir, repoName);
     mkdirSync(repoPath, { recursive: true });
@@ -549,14 +371,6 @@ describe("single-root: deploy/status/[ticketId]", () => {
       JSON.stringify({
         url: "https://canonical.example.com",
         serviceId: "svc-canonical",
-      })
-    );
-    writeToLegacy(
-      worktreeDir,
-      "deploy-result.json",
-      JSON.stringify({
-        url: "https://legacy.example.com",
-        serviceId: "svc-legacy",
       })
     );
 

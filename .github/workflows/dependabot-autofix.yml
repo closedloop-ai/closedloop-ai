@@ -192,7 +192,7 @@ jobs:
     steps:
       - name: Generate GitHub App Token
         id: generate_token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.CLOSEDLOOP_APP_ID_STAGE }}
           private-key: ${{ secrets.CLOSEDLOOP_APP_SECRET_STAGE }}
@@ -224,7 +224,7 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v5
         with:
           version: 10
 

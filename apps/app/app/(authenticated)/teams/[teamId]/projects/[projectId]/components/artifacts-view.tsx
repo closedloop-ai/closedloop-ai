@@ -17,7 +17,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@repo/design-system/components/ui/dropdown-menu";
-import { FileTextIcon, FolderIcon, MergeIcon, TrashIcon } from "lucide-react";
+import { FileTextIcon, Layers2Icon, MergeIcon, TrashIcon } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
   ArtifactRow,
@@ -29,8 +29,10 @@ import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialo
 import { EmptyState } from "@/components/empty-state";
 import { MoveEntityDialog } from "@/components/move-entity-dialog";
 import { useMergeArtifacts } from "@/hooks/queries/use-artifacts";
+import { useParentFallbackMap } from "@/hooks/queries/use-entity-links";
 import { useProjectTree } from "@/hooks/queries/use-project-tree";
 import type { ArtifactColumn } from "@/hooks/use-column-visibility";
+import { useGroupExpansion } from "@/hooks/use-group-expansion";
 import { useSortParams } from "@/hooks/use-sort-params";
 import { matchesFilter } from "@/lib/artifact-filter";
 import { comparePriorityValues } from "@/lib/priority-sort";
@@ -397,7 +399,9 @@ export function ArtifactsView({
   onDelete,
   editHandlers,
 }: ArtifactsViewProps) {
-  const [openGroups, setOpenGroups] = useState<Set<string>>(new Set());
+  const { isExpanded: isGroupExpanded, toggleGroup } = useGroupExpansion(
+    `table:expand:project-artifacts:${projectId}`
+  );
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   // Clear selection when filter category changes
@@ -411,6 +415,9 @@ export function ArtifactsView({
     null
   );
   const [pendingBulkIds, setPendingBulkIds] = useState<Set<string>>(new Set());
+  const [moveEntities, setMoveEntities] = useState<
+    { id: string; entityType: EntityType; projectId?: string | null }[]
+  >([]);
   const [moveEntity, setMoveEntity] = useState<{
     id: string;
     entityType: EntityType;
@@ -434,6 +441,10 @@ export function ArtifactsView({
 
   const isGroupedView = filterCategory === "all";
   const showCheckbox = !isGroupedView;
+  const canBulkMove =
+    filterCategory === "documents" ||
+    filterCategory === "features" ||
+    filterCategory === "plans";
 
   // Check if exactly 2 artifacts (not features) are selected for merge
   const selectedArtifactsForMerge = useMemo(():
@@ -498,22 +509,6 @@ export function ArtifactsView({
     );
   }, [filteredArtifacts, filteredFeatures, sortBy, sortDir, treeData]);
 
-  // Auto-open any groups that haven't been seen before (handles initial load and
-  // async tree data arriving after the workstream fallback was already shown).
-  useEffect(() => {
-    setOpenGroups((prev) => {
-      const next = new Set(prev);
-      let changed = false;
-      for (const g of groups) {
-        if (!prev.has(g.groupKey)) {
-          next.add(g.groupKey);
-          changed = true;
-        }
-      }
-      return changed ? next : prev;
-    });
-  }, [groups]);
-
   // Build flat items for filtered views
   const flatItems: ArtifactRowItem[] = useMemo(() => {
     const items: ArtifactRowItem[] = [
@@ -533,6 +528,50 @@ export function ArtifactsView({
     return items;
   }, [filteredArtifacts, filteredFeatures, sortBy, sortDir]);
 
+  const renderedItems = useMemo((): ArtifactRowItem[] => {
+    if (!isGroupedView) {
+      return flatItems;
+    }
+
+    const items: ArtifactRowItem[] = [];
+    for (const group of groups) {
+      items.push(group.root);
+      if (isGroupExpanded(group.groupKey)) {
+        items.push(...group.children);
+      }
+    }
+    return items;
+  }, [isGroupedView, flatItems, groups, isGroupExpanded]);
+
+  // When a child entity is moved to a different project, it leaves its parent's
+  // project tree (parentMap is built from the current project's tree). To keep
+  // the "Parent" column populated after a cross-project move, we query
+  // entity-links for any item not already in parentMap and build a fallback
+  // that surfaces the parent's title and href in the new project's table.
+  const parentFallbackItems = useMemo(
+    () =>
+      renderedItems
+        .filter((item) => !parentMap.has(item.data.id))
+        .map((item) => ({
+          id: item.data.id,
+          entityType:
+            item.kind === "feature" ? EntityType.Feature : EntityType.Artifact,
+        })),
+    [renderedItems, parentMap]
+  );
+
+  const fallbackParentMap = useParentFallbackMap(parentFallbackItems);
+
+  const combinedParentMap = useMemo(() => {
+    const map = new Map(parentMap);
+    for (const [childId, parentInfo] of fallbackParentMap) {
+      if (!map.has(childId)) {
+        map.set(childId, parentInfo);
+      }
+    }
+    return map;
+  }, [parentMap, fallbackParentMap]);
+
   const isEmpty =
     filteredArtifacts.length === 0 && filteredFeatures.length === 0;
   const hasAnyItems = artifacts.length > 0 || features.length > 0;
@@ -551,20 +590,6 @@ export function ArtifactsView({
     });
   }
 
-  // ---- Group toggle ----
-
-  function toggleGroup(groupKey: string) {
-    setOpenGroups((prev) => {
-      const next = new Set(prev);
-      if (next.has(groupKey)) {
-        next.delete(groupKey);
-      } else {
-        next.add(groupKey);
-      }
-      return next;
-    });
-  }
-
   // ---- Context menu handlers ----
 
   function handleMoreMenu(item: ArtifactRowItem, anchor: HTMLElement) {
@@ -578,6 +603,34 @@ export function ArtifactsView({
   }
 
   function handleRequestMove(item: ArtifactRowItem) {
+    // Use the full, unfiltered tree data to find children so that active
+    // view filters (e.g. "Documents only") do not hide children of a
+    // different type and cause them to be left behind during a move.
+    if (treeData) {
+      const treeNode = treeData.nodes.find((n) => n.root.id === item.data.id);
+      if (treeNode && treeNode.children.length > 0) {
+        const rootEntityType =
+          item.kind === "artifact" ? EntityType.Artifact : EntityType.Feature;
+        const rootProjectId =
+          item.kind === "artifact" || item.kind === "feature"
+            ? item.data.projectId
+            : undefined;
+        setMoveEntities([
+          {
+            id: item.data.id,
+            entityType: rootEntityType,
+            projectId: rootProjectId,
+          },
+          ...treeNode.children.map((child) => ({
+            id: child.id,
+            entityType: child.entityType,
+          })),
+        ]);
+        setMenuState(null);
+        return;
+      }
+    }
+
     if (item.kind === "artifact") {
       setMoveEntity({
         id: item.data.id,
@@ -650,6 +703,39 @@ export function ArtifactsView({
     }
   }
 
+  function handleRequestBulkMove() {
+    const entitiesToMove: {
+      id: string;
+      entityType: EntityType;
+      projectId?: string | null;
+    }[] = [];
+
+    for (const id of selectedIds) {
+      const artifact = artifacts.find((a) => a.id === id);
+      if (artifact) {
+        entitiesToMove.push({
+          id: artifact.id,
+          entityType: EntityType.Artifact,
+          projectId: artifact.projectId,
+        });
+        continue;
+      }
+
+      const feature = features.find((f) => f.id === id);
+      if (feature) {
+        entitiesToMove.push({
+          id: feature.id,
+          entityType: EntityType.Feature,
+          projectId: feature.projectId,
+        });
+      }
+    }
+
+    if (entitiesToMove.length > 0) {
+      setMoveEntities(entitiesToMove);
+    }
+  }
+
   // ---- Empty state ----
 
   if (isEmpty) {
@@ -683,7 +769,7 @@ export function ArtifactsView({
         {isGroupedView
           ? groups.map((group) => {
               const { root, children } = group;
-              const isOpen = openGroups.has(group.groupKey);
+              const isOpen = isGroupExpanded(group.groupKey);
               const hasChildren = children.length > 0;
               return (
                 <div key={group.groupKey}>
@@ -699,23 +785,28 @@ export function ArtifactsView({
                         ? () => toggleGroup(group.groupKey)
                         : undefined
                     }
-                    parentHref={parentMap.get(root.data.id)?.href}
-                    parentTitle={parentMap.get(root.data.id)?.title}
+                    parentHref={combinedParentMap.get(root.data.id)?.href}
+                    parentTitle={combinedParentMap.get(root.data.id)?.title}
                     showCheckbox={false}
                     visibleColumns={visibleColumns}
                   />
                   {isOpen &&
-                    children.map((child) => (
+                    children.map((child, childIndex) => (
                       <ArtifactRow
                         editHandlers={editHandlers}
+                        extendIndentedBottomBorderLeft={
+                          childIndex === children.length - 1
+                        }
                         indented
                         isSelected={selectedIds.has(child.data.id)}
                         item={child}
                         key={child.data.id}
                         onMoreMenu={handleMoreMenu}
                         onSelectionChange={handleSelectionChange}
-                        parentHref={parentMap.get(child.data.id)?.href}
-                        parentTitle={parentMap.get(child.data.id)?.title}
+                        parentHref={combinedParentMap.get(child.data.id)?.href}
+                        parentTitle={
+                          combinedParentMap.get(child.data.id)?.title
+                        }
                         showCheckbox={false}
                         visibleColumns={visibleColumns}
                       />
@@ -731,8 +822,8 @@ export function ArtifactsView({
                 key={item.data.id}
                 onMoreMenu={handleMoreMenu}
                 onSelectionChange={handleSelectionChange}
-                parentHref={parentMap.get(item.data.id)?.href}
-                parentTitle={parentMap.get(item.data.id)?.title}
+                parentHref={combinedParentMap.get(item.data.id)?.href}
+                parentTitle={combinedParentMap.get(item.data.id)?.title}
                 showCheckbox={showCheckbox}
                 visibleColumns={visibleColumns}
               />
@@ -767,6 +858,17 @@ export function ArtifactsView({
                   >
                     <MergeIcon className="h-4 w-4" />
                     Merge
+                  </Button>
+                )}
+                {canBulkMove && (
+                  <Button
+                    className="h-8 text-xs"
+                    onClick={handleRequestBulkMove}
+                    size="sm"
+                    variant="outline"
+                  >
+                    <Layers2Icon className="h-4 w-4" />
+                    Move to Project
                   </Button>
                 )}
                 <Button
@@ -817,7 +919,7 @@ export function ArtifactsView({
           {(menuState?.item.kind === "artifact" ||
             menuState?.item.kind === "feature") && (
             <DropdownMenuItem onClick={() => handleRequestMove(menuState.item)}>
-              <FolderIcon className="h-4 w-4" />
+              <Layers2Icon className="h-4 w-4" />
               Move to Project
             </DropdownMenuItem>
           )}
@@ -856,6 +958,23 @@ export function ArtifactsView({
             }
           }}
           open={moveEntity !== null}
+          teamId={teamId}
+        />
+      )}
+      {moveEntities.length > 0 && (
+        <MoveEntityDialog
+          currentProjectId={projectId}
+          entities={moveEntities}
+          onOpenChange={(open) => {
+            if (!open) {
+              setMoveEntities([]);
+            }
+          }}
+          onSuccess={() => {
+            setSelectedIds(new Set());
+            setMoveEntities([]);
+          }}
+          open={moveEntities.length > 0}
           teamId={teamId}
         />
       )}

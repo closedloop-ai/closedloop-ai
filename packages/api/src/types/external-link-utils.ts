@@ -1,7 +1,9 @@
-import type { PreviewDeploymentMetadata } from "./external-link";
+import { z } from "zod/v4";
+import type { DeploymentMetadata, PullRequestMetadata } from "./external-link";
+import { GitHubPRState } from "./github";
 
 /** Parsed preview deployment with its URL. */
-export type PreviewDeploymentInfo = PreviewDeploymentMetadata & {
+export type PreviewDeploymentInfo = Partial<DeploymentMetadata> & {
   url: string | null;
 };
 
@@ -9,19 +11,56 @@ export type PreviewDeploymentInfo = PreviewDeploymentMetadata & {
  * Type-safe parser for PREVIEW_DEPLOYMENT metadata JSON.
  * Returns null if metadata is missing or not a valid object.
  */
-export function parsePreviewDeploymentMetadata(
+export function parseDeploymentMetadata(
   metadata: unknown
-): PreviewDeploymentMetadata | null {
-  if (typeof metadata !== "object" || metadata === null) {
+): DeploymentMetadata | null {
+  const result = deploymentMetadataSchema.safeParse(metadata);
+  if (!result.success) {
     return null;
   }
-
-  const data = metadata as Record<string, unknown>;
-
   return {
-    state: typeof data.state === "string" ? data.state : null,
-    environment: typeof data.environment === "string" ? data.environment : null,
-    ref: typeof data.ref === "string" ? data.ref : null,
-    sha: typeof data.sha === "string" ? data.sha : null,
+    statusUrl: result.data.statusUrl,
+    deploymentUrl: result.data.deploymentUrl,
+    state: result.data.state,
+    environment: result.data.environment,
+    ref: result.data.ref,
+    sha: result.data.sha,
+    transient: result.data.transient,
+    production: result.data.production,
   };
 }
+
+/**
+ * Type-safe parser for PULL_REQUEST metadata JSON.
+ * Returns null if metadata is missing or not valid.
+ */
+export function parsePullRequestMetadata(
+  metadata: unknown
+): PullRequestMetadata | null {
+  const result = pullRequestMetadataSchema.safeParse(metadata);
+  if (!result.success) {
+    return null;
+  }
+  return result.data;
+}
+
+const deploymentMetadataSchema = z.object({
+  statusUrl: z.string().optional(),
+  deploymentUrl: z.string().optional(),
+  state: z.string().optional(),
+  environment: z.string().optional(),
+  ref: z.string().optional(),
+  sha: z.string().optional(),
+  transient: z.boolean().optional(),
+  production: z.boolean().optional(),
+});
+
+const pullRequestMetadataSchema = z.object({
+  number: z.number(),
+  githubId: z.string(),
+  headBranch: z.string(),
+  baseBranch: z.string(),
+  state: z.enum(GitHubPRState),
+  lastVerifiedAt: z.string().optional().nullable(),
+  lastRefreshAttemptAt: z.string().optional().nullable(),
+});

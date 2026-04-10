@@ -54,6 +54,7 @@ import {
 import { useArtifactsByProject } from "@/hooks/queries/use-artifacts";
 import { useCreateEntityLink } from "@/hooks/queries/use-entity-links";
 import { useCreateFeature } from "@/hooks/queries/use-features";
+import { useProjectsByTeam } from "@/hooks/queries/use-projects";
 import { useTeamMembers } from "@/hooks/queries/use-teams";
 import { ARTIFACT_TYPE_LABELS } from "@/lib/project-constants";
 import { transformApiUserToSelectUser } from "@/lib/user-utils";
@@ -61,7 +62,7 @@ import { transformApiUserToSelectUser } from "@/lib/user-utils";
 type CreateFeatureModalProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  projectId: string;
+  projectId?: string;
   teamId: string;
 };
 
@@ -72,6 +73,12 @@ export function CreateFeatureModal({
   teamId,
 }: CreateFeatureModalProps) {
   const router = useRouter();
+
+  // Project selection (when projectId prop is not provided)
+  const showProjectSelector = !projectId;
+  const [selectedProjectId, setSelectedProjectId] = useState(projectId ?? "");
+  const { data: teamProjects = [], isLoading: isLoadingProjects } =
+    useProjectsByTeam(teamId, { enabled: open && showProjectSelector });
 
   // Form state
   const [title, setTitle] = useState("");
@@ -94,8 +101,8 @@ export function CreateFeatureModal({
     [teamMembers]
   );
 
-  const { data: artifacts = [] } = useArtifactsByProject(projectId, {
-    enabled: open,
+  const { data: artifacts = [] } = useArtifactsByProject(selectedProjectId, {
+    enabled: open && !!selectedProjectId,
   });
   // Filter out already-selected artifacts
   const availableArtifacts = useMemo(() => {
@@ -119,6 +126,12 @@ export function CreateFeatureModal({
     setSelectedArtifacts((prev) => prev.filter((a) => a.id !== artifactId));
   };
 
+  const handleProjectChange = (newProjectId: string) => {
+    setSelectedProjectId(newProjectId);
+    // Clear project-scoped state so stale selections don't carry over
+    setSelectedArtifacts([]);
+  };
+
   const resetForm = () => {
     setTitle("");
     setSelectedArtifacts([]);
@@ -127,6 +140,9 @@ export function CreateFeatureModal({
     setStatus(FeatureStatus.NotStarted);
     setError(null);
     setRelationshipsOpen(false);
+    if (showProjectSelector) {
+      setSelectedProjectId("");
+    }
   };
 
   const handleClose = () => {
@@ -136,6 +152,10 @@ export function CreateFeatureModal({
 
   const handleSubmit = () => {
     setError(null);
+    if (!selectedProjectId) {
+      setError("Please select a project");
+      return;
+    }
     if (!title.trim()) {
       setError("Please enter a title");
       return;
@@ -143,7 +163,7 @@ export function CreateFeatureModal({
 
     createFeatureMutation.mutate(
       {
-        projectId,
+        projectId: selectedProjectId,
         title: title.trim(),
         status,
         priority,
@@ -203,6 +223,39 @@ export function CreateFeatureModal({
           {error ? (
             <div className="rounded-md border border-destructive/20 bg-destructive/10 p-3 text-destructive text-sm">
               {error}
+            </div>
+          ) : null}
+
+          {showProjectSelector ? (
+            <div className="space-y-2">
+              <Label
+                className="font-normal text-muted-foreground text-xs"
+                htmlFor="feature-project"
+              >
+                Project<span className="text-destructive">*</span>
+              </Label>
+              <Select
+                disabled={isLoadingProjects}
+                onValueChange={handleProjectChange}
+                value={selectedProjectId}
+              >
+                <SelectTrigger id="feature-project">
+                  <SelectValue
+                    placeholder={
+                      isLoadingProjects
+                        ? "Loading projects..."
+                        : "Select a project..."
+                    }
+                  />
+                </SelectTrigger>
+                <SelectContent>
+                  {teamProjects.map((p) => (
+                    <SelectItem key={p.id} value={p.id}>
+                      {p.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
           ) : null}
 
@@ -351,7 +404,7 @@ export function CreateFeatureModal({
             Cancel
           </Button>
           <Button
-            disabled={!title.trim() || isSubmitting}
+            disabled={!(title.trim() && selectedProjectId) || isSubmitting}
             onClick={handleSubmit}
           >
             {isSubmitting ? (

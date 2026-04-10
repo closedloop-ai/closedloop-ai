@@ -6,6 +6,7 @@ import {
   S3Client,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import type { ContextPack } from "@closedloop-ai/loops-api/context-pack";
 import { getAwsCredentials } from "@repo/aws/credentials";
 import { log } from "@repo/observability/log";
 
@@ -83,42 +84,12 @@ async function getObject(key: string): Promise<Buffer> {
 }
 
 // --- Context Pack (uploaded by backend before container start) ---
+// Types re-exported from @closedloop-ai/loops-api/context-pack (shared contract)
 
-export type ContextPack = {
-  command: string;
-  prompt?: string;
-  artifacts: Array<{
-    id: string;
-    type: string;
-    title: string;
-    content: string;
-  }>;
-  repoInfo?: {
-    fullName: string;
-    branch: string;
-  };
-  priorLoopSummaries?: Array<{
-    loopId: string;
-    command: string;
-    summary: string;
-  }>;
-  committer?: {
-    name: string;
-    email: string;
-  };
-  secrets?: {
-    anthropicApiKey?: string;
-    githubToken?: string;
-  };
-  /**
-   * User-supplied Additional Context from ArtifactVersion v1.
-   * Carries free-form text the user entered alongside the artifact when
-   * dispatching the loop. scrubContextPackSecrets preserves this field
-   * intentionally — it contains no secrets and is needed by the container
-   * throughout the run.
-   */
-  userContext?: string;
-};
+export type {
+  ContextPack,
+  ContextPackAttachment,
+} from "@closedloop-ai/loops-api/context-pack";
 
 export async function uploadContextPack(
   stateKeyPrefix: string,

@@ -23,17 +23,6 @@ const REPOS_CONFIG_PATH = join(CONFIG_DIR, "repos.json");
  */
 const LEGACY_CONFIG_PATH = join(process.cwd(), ".cache", "repos.json");
 
-/**
- * Previous global config location: ~/.claude/closedloop/repos.json
- * Migrated to ~/.closedloop-ai/repos.json on first load.
- */
-const LEGACY_CLAUDE_CONFIG_PATH = join(
-  homedir(),
-  ".claude",
-  "closedloop",
-  "repos.json"
-);
-
 const DEFAULT_REPOS: ConfiguredRepo[] = [];
 const DEFAULT_SETTINGS: RepoSettings = {};
 
@@ -136,44 +125,6 @@ function removeLegacyConfig(): void {
 }
 
 /**
- * Migrate repos.json from the previous global location (~/.claude/closedloop/)
- * into the new global config dir (~/.closedloop-ai/).
- * Only runs when the new config doesn't exist yet and the old one does.
- * Copies the file and cleans up the old directory if empty.
- */
-function migrateLegacyClaudeConfig(global: ReposConfig): ReposConfig {
-  if (existsSync(REPOS_CONFIG_PATH) || !existsSync(LEGACY_CLAUDE_CONFIG_PATH)) {
-    return global;
-  }
-
-  try {
-    const content = readFileSync(LEGACY_CLAUDE_CONFIG_PATH, "utf-8");
-    const legacy = JSON.parse(content) as ReposConfig;
-
-    ensureConfigDir();
-    writeFileSync(REPOS_CONFIG_PATH, content);
-
-    // Clean up legacy file and directory
-    rmSync(LEGACY_CLAUDE_CONFIG_PATH, { force: true });
-    const legacyDir = dirname(LEGACY_CLAUDE_CONFIG_PATH);
-    if (existsSync(legacyDir) && readdirSync(legacyDir).length === 0) {
-      rmSync(legacyDir, { recursive: true, force: true });
-    }
-
-    console.log(
-      "[repos] Migrated config from ~/.claude/closedloop/ to ~/.closedloop-ai/"
-    );
-
-    return {
-      repos: [...(legacy.repos ?? DEFAULT_REPOS)],
-      settings: { ...(legacy.settings ?? DEFAULT_SETTINGS) },
-    };
-  } catch {
-    return global;
-  }
-}
-
-/**
  * Load repos configuration from ~/.closedloop-ai/repos.json.
  * On every load, checks for a legacy .cache/repos.json in the cwd and
  * migrates any repos from it before deleting the old file.
@@ -208,13 +159,18 @@ export function loadReposConfig(): ReposConfig {
     needsSave = true; // Create file on first load
   }
 
-  // Migrate from ~/.claude/closedloop/repos.json (previous global location)
-  config = migrateLegacyClaudeConfig(config);
-
   // Check for legacy file before migration (migration deletes it)
   const hadLegacyConfig = existsSync(LEGACY_CONFIG_PATH);
   config = migrateLegacyConfig(config);
   needsSave = needsSave || hadLegacyConfig;
+
+  // Backfill missing name from path basename (older configs may omit it)
+  for (const repo of config.repos) {
+    if (!repo.name) {
+      repo.name = basename(expandHome(repo.path));
+      needsSave = true;
+    }
+  }
 
   // Only write when something actually changed
   if (needsSave) {
@@ -225,7 +181,7 @@ export function loadReposConfig(): ReposConfig {
 }
 
 /**
- * Save repos configuration to ~/.claude/closedloop/repos.json
+ * Save repos configuration to ~/.closedloop-ai/repos.json
  */
 export function saveReposConfig(config: ReposConfig): void {
   ensureConfigDir();

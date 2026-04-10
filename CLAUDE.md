@@ -57,6 +57,9 @@ Schema: `packages/database/prisma/schema.prisma`. Client: `packages/database/gen
 ### Engineer Feature (SECURITY CRITICAL)
 Located in `apps/app/app/api/engineer/` — spawns local CLI processes (Claude, git, codex). **Localhost-only**: proxy guard (`apps/app/proxy.ts`) rejects non-localhost with 403. `EngineerGuard` is UX-only. **Do NOT remove the proxy guard** (arbitrary command execution). **Do NOT move to `apps/api`** — requires local filesystem access.
 
+### System Health Check
+Runs on app launch via `SystemCheckBootstrap` in the authenticated layout (`apps/app/app/(authenticated)/layout.tsx`), not just on the engineer page. Eligibility gated by `useSystemCheckEligibility` — only fires when a compute target is active (cloud relay online or local Electron detected). In cloud relay mode, the fetch interceptor rewrites `/api/engineer/health-check` to `/api/engineer-relay/health-check` and routes to the remote compute target. The health check route resolves the user's login-shell PATH via `getShellPath()` to find tools like `python3`, `git`, `claude`, `gh`.
+
 ## Self-Improving CLAUDE.md
 Discover undocumented patterns during PRs → add to relevant CLAUDE.md in same PR.
 
@@ -81,6 +84,7 @@ No sycophantic language. Brief, factual — state what changed.
 - Positive condition first in if/else (S7735)
 - Double quotes, semicolons, trailing commas (ES5), 100 char width
 - New functions/types/constants at bottom of file
+- Never use inline imports. Imports belong first in the file.
 
 ### Biome
 - Run `pnpm lint:fix` after modifying React components (auto-fixes import/CSS/JSX ordering)
@@ -127,5 +131,5 @@ ClosedLoop: human-governed, AI-centric software delivery platform. AI produces a
 ### ClosedLoop CI/CD
 - **[pattern]**: run-loop.sh state: `.closedloop-loop.local.md` with YAML frontmatter (active, iteration, max_iterations, etc.) — not state.json.
 - **[insight]**: run-loop.sh deletes state file on success. Check output artifacts (plan.json, plan.md) for success, not file existence.
-- **[convention]**: State file at `.claude/closedloop-loop.local.md` (repo root), NOT inside `.claude/runs/`. Not part of artifact bundle.
+- **[convention]**: State file at `.closedloop-ai/closedloop-loop.local.md` (repo root), NOT inside `.closedloop-ai/runs/`. Not part of artifact bundle.
 - **[convention]**: closedloop-ai plugins installed from `https://github.com/closedloop-ai/claude-plugins.git`.

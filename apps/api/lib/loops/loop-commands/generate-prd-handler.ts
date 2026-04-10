@@ -1,4 +1,4 @@
-import { ArtifactStatus } from "@repo/api/src/types/artifact";
+import { ArtifactStatus, ArtifactType } from "@repo/api/src/types/artifact";
 import type { JsonObject } from "@repo/api/src/types/common";
 import type { Loop } from "@repo/api/src/types/loop";
 import { withDb } from "@repo/database";
@@ -117,8 +117,15 @@ const generatePrdUploadSchema = z.object({
 function generatePrdArtifactsFromUpload(
   uploaded: JsonObject
 ): GeneratePrdArtifacts {
-  const parsed = generatePrdUploadSchema.parse(uploaded);
-  const prdContent = parsed.prd?.content ?? null;
+  const parsed = generatePrdUploadSchema.safeParse(uploaded);
+  if (!parsed.success) {
+    log.warn(
+      "[loop-artifact-ingestion] Generate PRD upload failed schema validation",
+      { error: parsed.error.message }
+    );
+    return { prdContent: null };
+  }
+  const prdContent = parsed.data.prd?.content ?? null;
   return { prdContent };
 }
 
@@ -133,4 +140,43 @@ export const generatePrdHandler = defineHandler<GeneratePrdArtifacts>({
   downloadArtifacts: downloadGeneratePrdArtifacts,
   downloadFromUpload: generatePrdArtifactsFromUpload,
   ingest: ingestGeneratePrdArtifacts,
+});
+
+// `assertLoopBackendAllowed` correctly blocks PRDs pre-dating loop-based
+// generation because requiresParent: true causes the orchestrator to call it
+// before dispatching this handler. PRDs that were generated via GH Actions
+// will be rejected there, so we never reach this ingest function for them.
+export const requestPrdChangesHandler = defineHandler<GeneratePrdArtifacts>({
+  requiresRepo: true,
+  requiresParent: true,
+  includePrimaryArtifact: true,
+  downloadArtifacts: downloadGeneratePrdArtifacts,
+  downloadFromUpload: generatePrdArtifactsFromUpload,
+  async ingest(
+    loop: Loop,
+    organizationId: string,
+    artifacts: GeneratePrdArtifacts
+  ) {
+    // Defense-in-depth: re-fetch the artifact type from the DB rather than
+    // trusting the dispatch-time type. The Loop type does not carry
+    // artifactType, and the defineHandler pattern has no allowedArtifactTypes
+    // field, so this DB lookup is the only way to guard against a misrouted
+    // loop reaching this handler with a non-PRD artifact.
+    const artifact = loop.artifactId
+      ? await withDb((db) =>
+          db.artifact.findUnique({
+            where: { id: loop.artifactId!, organizationId },
+            select: { type: true },
+          })
+        )
+      : null;
+
+    if (artifact?.type !== ArtifactType.Prd) {
+      throw new Error(
+        `[request-prd-changes] Expected artifact type ${ArtifactType.Prd}, got ${artifact?.type ?? "none"} — marking loop failed`
+      );
+    }
+
+    await ingestGeneratePrdArtifacts(loop, organizationId, artifacts);
+  },
 });

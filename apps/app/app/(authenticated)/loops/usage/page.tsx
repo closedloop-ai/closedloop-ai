@@ -233,7 +233,7 @@ export default function LoopUsagePage() {
   const { data: usage, isLoading } = useLoopUsage(filters);
 
   return (
-    <div className="flex flex-1 flex-col gap-6 p-6">
+    <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-auto p-6">
       <div className="flex items-start justify-between">
         <div>
           <h1 className="font-semibold text-2xl tracking-tight">
@@ -263,9 +263,13 @@ export default function LoopUsagePage() {
       <Separator />
 
       {/* Summary cards */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div
+        className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5"
+        data-testid="usage-summary-grid"
+      >
         {isLoading ? (
           <>
+            <SummaryCardSkeleton />
             <SummaryCardSkeleton />
             <SummaryCardSkeleton />
             <SummaryCardSkeleton />
@@ -286,6 +290,14 @@ export default function LoopUsagePage() {
               description={`${(usage?.totalTokensOutput ?? 0).toLocaleString()} tokens`}
               title="Output Tokens"
               value={formatTokenCount(usage?.totalTokensOutput ?? 0)}
+            />
+            <SummaryCard
+              description={`${(usage?.totalCacheCreationTokens ?? 0).toLocaleString()} write / ${(usage?.totalCacheReadTokens ?? 0).toLocaleString()} read`}
+              title="Cache Tokens"
+              value={formatTokenCount(
+                (usage?.totalCacheCreationTokens ?? 0) +
+                  (usage?.totalCacheReadTokens ?? 0)
+              )}
             />
             <SummaryCard
               title="Estimated Cost"

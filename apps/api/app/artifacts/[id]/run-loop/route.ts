@@ -12,7 +12,7 @@ import { log } from "@repo/observability/log";
 import { waitUntil } from "@vercel/functions";
 import { NextResponse } from "next/server";
 import { isConcurrentLoopLimitError, loopsService } from "@/app/loops/service";
-import { withAuth } from "@/lib/auth/with-auth";
+import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { resolveArtifactId } from "@/lib/identifier-utils";
 import { scheduleAutoEvaluatePrd } from "@/lib/loops/auto-evaluate-prd";
 import { getCommandHandler } from "@/lib/loops/loop-commands";
@@ -47,7 +47,7 @@ type RunLoopResponse =
   | ComputeTargetConflictBody
   | BackendMismatchBody;
 
-export const POST = withAuth<RunLoopResponse, "/artifacts/[id]/run-loop">(
+export const POST = withAnyAuth<RunLoopResponse, "/artifacts/[id]/run-loop">(
   async ({ user }, request, params) => {
     try {
       const { id } = await params;

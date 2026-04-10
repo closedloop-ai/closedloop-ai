@@ -43,7 +43,7 @@ export function useEditorSession(config: UseEditorSessionConfig) {
   const { artifact, currentVersion, contentCallbacks, onVersionChange } =
     config;
 
-  const [isEditing, setIsEditing] = useState(false);
+  const [isEditing, setIsEditing] = useState(true);
   const [openThreadCount, setOpenThreadCount] = useState(0);
   const handleThreadCountChange = useCallback((count: number) => {
     setOpenThreadCount(count);
@@ -58,6 +58,14 @@ export function useEditorSession(config: UseEditorSessionConfig) {
   const editorRef = useRef<Editor | null>(null);
   const editorSnapshotRef = useRef<JSONContent | null>(null);
   const [isContentReady, setIsContentReady] = useState(false);
+
+  // Counter that bumps when the Liveblocks room is reset server-side (e.g. after
+  // an AI agent creates a new version via API key). The server deletes and
+  // recreates the room, which leaves any connected RoomProvider with a stale
+  // WebSocket. Bumping this key forces the RoomProvider to remount, establishing
+  // a fresh connection so all Liveblocks features (Y.Doc sync, threads, presence,
+  // undo/redo) work correctly against the new room.
+  const [roomResetKey, setRoomResetKey] = useState(0);
 
   const isViewingHistorical = currentVersion !== artifact.latestVersion;
 
@@ -128,6 +136,9 @@ export function useEditorSession(config: UseEditorSessionConfig) {
       if (wasViewingLatest) {
         onVersionChange(artifact.latestVersion);
         handleGenerationComplete(artifact.version.content ?? "");
+        // Bump roomResetKey so the RoomProvider remounts with a fresh connection
+        // to the server-recreated Liveblocks room.
+        setRoomResetKey((k) => k + 1);
       }
     }
   }, [
@@ -140,8 +151,7 @@ export function useEditorSession(config: UseEditorSessionConfig) {
 
   const handlePublish = useCallback(() => {
     contentCallbacks.saveContent();
-    exitEditMode();
-  }, [contentCallbacks, exitEditMode]);
+  }, [contentCallbacks]);
 
   const handleDiscard = useCallback(() => {
     const snapshot = editorSnapshotRef.current;
@@ -151,18 +161,7 @@ export function useEditorSession(config: UseEditorSessionConfig) {
       const editor = editorRef.current;
       const currentJson = editor.getJSON();
       const merged = mergeCommentMarks(snapshot, currentJson);
-      // Must temporarily make editor editable since setIsEditing(false)
-      // will set readOnly before the microtask runs.
-      queueMicrotask(() => {
-        const wasEditable = editor.isEditable;
-        if (!wasEditable) {
-          editor.setEditable(true);
-        }
-        editor.commands.setContent(merged);
-        if (!wasEditable) {
-          editor.setEditable(false);
-        }
-      });
+      editor.commands.setContent(merged);
     } else {
       // Fallback: reset via markdown (strips thread marks)
       setContentResetValue(artifact.version.content ?? "");
@@ -170,7 +169,6 @@ export function useEditorSession(config: UseEditorSessionConfig) {
     }
     contentCallbacks.discardChanges();
     editorSnapshotRef.current = null;
-    setIsEditing(false);
   }, [artifact.version.content, contentCallbacks]);
 
   return {
@@ -181,11 +179,16 @@ export function useEditorSession(config: UseEditorSessionConfig) {
     liveblocksRoomId,
     openThreadCount,
 
+    // Bumped when the Liveblocks room is reset server-side (generation complete).
+    // Use as part of the OptionalArtifactRoom key to force RoomProvider remount.
+    roomResetKey,
+
     // Content reset (for CollaborativeEditor)
     contentResetKey,
     contentResetValue,
 
-    // Editor instance management
+    // Editor instance
+    editor: editorRef.current,
     handleEditorInstance,
     handleContentReady,
 

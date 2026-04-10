@@ -98,6 +98,8 @@ export function useLoopPolling(
     lastEvent,
     isComplete: isTerminal,
     loopStatus: loopQuery.data?.status ?? null,
+    loopTokensInput: loopQuery.data?.tokensInput ?? 0,
+    loopTokensOutput: loopQuery.data?.tokensOutput ?? 0,
     isLoading: eventsQuery.isLoading,
     error: eventsQuery.error,
   };

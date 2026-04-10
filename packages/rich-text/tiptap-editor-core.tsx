@@ -83,7 +83,7 @@ export function TiptapEditorCore({
     editorProps: {
       attributes: {
         class: cn(
-          "prose prose-sm sm:prose-base dark:prose-invert min-h-[200px] max-w-none px-5 pt-10 pb-8 focus:outline-none",
+          "prose prose-sm sm:prose-base dark:prose-invert min-h-[200px] max-w-none px-5 pt-8 pb-8 focus:outline-none",
           className
         ),
       },
@@ -194,10 +194,7 @@ export function TiptapEditorCore({
         <div
           className={cn("min-h-0", !isOuterScroll && "flex-1 overflow-y-auto")}
         >
-          <EditorContent
-            className={cn("min-h-[200px]", readOnly && "p-4")}
-            editor={editor}
-          />
+          <EditorContent className="min-h-[200px]" editor={editor} />
         </div>
       </div>
 

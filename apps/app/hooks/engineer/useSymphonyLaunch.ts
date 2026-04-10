@@ -181,7 +181,7 @@ export function useSymphonyLaunch(): UseSymphonyLaunchResult {
         console.log("[useSymphonyLaunch] Response:", { ok: response.ok, data });
 
         if (!response.ok) {
-          throw new Error(data.error || "Failed to launch Symphony");
+          throw new Error(data.error || "Failed to launch ClosedLoop");
         }
 
         // Save session to ~/.symphony/sessions.json via API

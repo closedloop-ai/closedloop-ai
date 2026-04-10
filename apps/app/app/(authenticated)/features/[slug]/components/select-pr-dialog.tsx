@@ -1,7 +1,10 @@
 "use client";
 
 import { EntityType, LinkType } from "@repo/api/src/types/entity-link";
-import { ExternalLinkType } from "@repo/api/src/types/external-link";
+import {
+  ExternalLinkType,
+  type PullRequestMetadata,
+} from "@repo/api/src/types/external-link";
 import type { GitHubPullRequestSummary } from "@repo/api/src/types/github";
 import { getProjectSettings } from "@repo/api/src/types/project";
 import { Badge } from "@repo/design-system/components/ui/badge";
@@ -87,11 +90,11 @@ export function SelectPullRequestDialog({
         externalUrl: pr.htmlUrl,
         metadata: {
           number: pr.number,
+          githubId: pr.githubId,
           headBranch: pr.headBranch,
           baseBranch: pr.baseBranch,
           state: pr.state,
-          isDraft: pr.isDraft,
-        },
+        } satisfies PullRequestMetadata,
       });
 
       await createEntityLink.mutateAsync({

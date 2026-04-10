@@ -1,6 +1,7 @@
 // ExternalLink types for API contract
 
 import type { JsonObject } from "./common";
+import type { GitHubPRState } from "./github";
 
 export const ExternalLinkType = {
   PullRequest: "PULL_REQUEST",
@@ -46,10 +47,25 @@ export type UpdateExternalLinkInput = {
   metadata?: JsonObject | null;
 };
 
+/** Type-safe metadata for PULL_REQUEST external links */
+export type PullRequestMetadata = {
+  number: number;
+  githubId: string;
+  headBranch: string;
+  baseBranch: string;
+  state: GitHubPRState;
+  lastVerifiedAt?: string | null;
+  lastRefreshAttemptAt?: string | null;
+};
+
 /** Type-safe metadata for PREVIEW_DEPLOYMENT external links */
-export type PreviewDeploymentMetadata = {
-  state: string | null;
-  environment: string | null;
-  ref: string | null;
-  sha: string | null;
+export type DeploymentMetadata = {
+  statusUrl?: string;
+  deploymentUrl?: string;
+  state?: string;
+  environment?: string;
+  ref?: string;
+  sha?: string;
+  transient?: boolean;
+  production?: boolean;
 };

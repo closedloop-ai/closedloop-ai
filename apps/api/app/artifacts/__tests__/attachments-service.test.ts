@@ -20,6 +20,7 @@ vi.mock("@repo/database", () => {
 
 vi.mock("@repo/aws", () => ({
   deleteArtifact: vi.fn(),
+  getSignedDownloadUrl: vi.fn(),
   getSignedDownloadUrlWithDisposition: vi.fn(),
   getSignedUploadUrl: vi.fn(),
 }));
@@ -37,6 +38,7 @@ vi.mock("@paralleldrive/cuid2", () => ({
 import { createId } from "@paralleldrive/cuid2";
 import {
   deleteArtifact,
+  getSignedDownloadUrl,
   getSignedDownloadUrlWithDisposition,
   getSignedUploadUrl,
 } from "@repo/aws";
@@ -46,6 +48,7 @@ import { attachmentsService } from "../attachments-service";
 const mockWithDb = withDb as unknown as Mock & { tx: Mock };
 const mockWithDbTx = mockWithDb.tx;
 const mockGetSignedUploadUrl = getSignedUploadUrl as unknown as Mock;
+const mockGetSignedDownloadUrl = getSignedDownloadUrl as unknown as Mock;
 const mockGetSignedDownloadUrlWithDisposition =
   getSignedDownloadUrlWithDisposition as unknown as Mock;
 const mockDeleteArtifact = deleteArtifact as unknown as Mock;
@@ -64,7 +67,8 @@ const MOCK_CUID = "cuid2mockval01";
 function makeAttachmentRecord(
   overrides: Partial<{
     id: string;
-    artifactId: string;
+    artifactId: string | undefined;
+    featureId: string | undefined;
     filename: string;
     mimeType: string;
     sizeBytes: number;
@@ -286,7 +290,7 @@ describe("attachmentsService.listByArtifact", () => {
     expect(results[0].createdAt).toBe(date.toISOString());
   });
 
-  it("queries fileAttachment.findMany scoped to the given artifactId ordered newest first", async () => {
+  it("queries fileAttachment.findMany scoped to the given artifactId and org, ordered newest first", async () => {
     let capturedArgs: Record<string, unknown> | undefined;
 
     mockWithDb
@@ -311,7 +315,7 @@ describe("attachmentsService.listByArtifact", () => {
     await attachmentsService.listByArtifact(ARTIFACT_ID, ORG_ID);
 
     expect(capturedArgs).toEqual({
-      where: { artifactId: ARTIFACT_ID },
+      where: { artifactId: ARTIFACT_ID, artifact: { organizationId: ORG_ID } },
       orderBy: { createdAt: "desc" },
     });
   });
@@ -602,5 +606,395 @@ describe("attachmentsService.getDownloadUrl", () => {
         "nonexistent-attach"
       )
     ).rejects.toThrow("Attachment not found");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// listWithSignedUrlsByArtifact
+// ---------------------------------------------------------------------------
+
+describe("attachmentsService.listWithSignedUrlsByArtifact", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("queries with org-scoped where clause and returns ContextPackAttachment shape", async () => {
+    const record = makeAttachmentRecord();
+    mockWithDb.mockImplementationOnce((callback: (db: unknown) => unknown) =>
+      callback({
+        fileAttachment: {
+          findMany: vi.fn().mockResolvedValue([record]),
+        },
+      })
+    );
+    mockGetSignedDownloadUrl.mockResolvedValue("https://s3.example.com/signed");
+
+    const result = await attachmentsService.listWithSignedUrlsByArtifact(
+      ARTIFACT_ID,
+      ORG_ID
+    );
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      id: ATTACHMENT_ID,
+      filename: "report.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: 4096,
+      signedUrl: "https://s3.example.com/signed",
+    });
+    expect(result[0].signedUrlExpiresAt).toBeDefined();
+  });
+
+  it("passes org-scoped where clause to fileAttachment.findMany", async () => {
+    let capturedArgs: Record<string, unknown> | undefined;
+    mockWithDb.mockImplementationOnce((callback: (db: unknown) => unknown) =>
+      callback({
+        fileAttachment: {
+          findMany: vi.fn((args: Record<string, unknown>) => {
+            capturedArgs = args;
+            return Promise.resolve([]);
+          }),
+        },
+      })
+    );
+
+    await attachmentsService.listWithSignedUrlsByArtifact(ARTIFACT_ID, ORG_ID);
+
+    expect(capturedArgs).toMatchObject({
+      where: { artifactId: ARTIFACT_ID, artifact: { organizationId: ORG_ID } },
+      orderBy: { createdAt: "desc" },
+    });
+  });
+
+  it("calls getSignedDownloadUrl with the record's key and bucket", async () => {
+    const record = makeAttachmentRecord({
+      key: "attachments/org-abc/artifact-123/specific-key",
+      bucket: "my-bucket",
+    });
+    mockWithDb.mockImplementationOnce((callback: (db: unknown) => unknown) =>
+      callback({
+        fileAttachment: {
+          findMany: vi.fn().mockResolvedValue([record]),
+        },
+      })
+    );
+    mockGetSignedDownloadUrl.mockResolvedValue("https://s3.example.com/url");
+
+    await attachmentsService.listWithSignedUrlsByArtifact(ARTIFACT_ID, ORG_ID);
+
+    expect(mockGetSignedDownloadUrl).toHaveBeenCalledWith(
+      record.key,
+      3600,
+      "my-bucket"
+    );
+  });
+
+  it("returns empty array and does not call getSignedDownloadUrl when no records exist", async () => {
+    mockWithDb.mockImplementationOnce((callback: (db: unknown) => unknown) =>
+      callback({
+        fileAttachment: {
+          findMany: vi.fn().mockResolvedValue([]),
+        },
+      })
+    );
+
+    const result = await attachmentsService.listWithSignedUrlsByArtifact(
+      ARTIFACT_ID,
+      ORG_ID
+    );
+
+    expect(result).toHaveLength(0);
+    expect(mockGetSignedDownloadUrl).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// listWithSignedUrlsByFeature
+// ---------------------------------------------------------------------------
+
+const FEATURE_ID = "feature-789";
+
+describe("attachmentsService.listWithSignedUrlsByFeature", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("queries with feature org-scoped where clause and returns ContextPackAttachment shape", async () => {
+    const record = makeAttachmentRecord({
+      artifactId: undefined,
+      featureId: FEATURE_ID,
+    });
+    mockWithDb.mockImplementationOnce((callback: (db: unknown) => unknown) =>
+      callback({
+        fileAttachment: {
+          findMany: vi.fn().mockResolvedValue([record]),
+        },
+      })
+    );
+    mockGetSignedDownloadUrl.mockResolvedValue(
+      "https://s3.example.com/feature-signed"
+    );
+
+    const result = await attachmentsService.listWithSignedUrlsByFeature(
+      FEATURE_ID,
+      ORG_ID
+    );
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      id: ATTACHMENT_ID,
+      filename: "report.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: 4096,
+      signedUrl: "https://s3.example.com/feature-signed",
+    });
+    expect(result[0].signedUrlExpiresAt).toBeDefined();
+  });
+
+  it("passes feature org-scoped where clause to fileAttachment.findMany", async () => {
+    let capturedArgs: Record<string, unknown> | undefined;
+    mockWithDb.mockImplementationOnce((callback: (db: unknown) => unknown) =>
+      callback({
+        fileAttachment: {
+          findMany: vi.fn((args: Record<string, unknown>) => {
+            capturedArgs = args;
+            return Promise.resolve([]);
+          }),
+        },
+      })
+    );
+
+    await attachmentsService.listWithSignedUrlsByFeature(FEATURE_ID, ORG_ID);
+
+    expect(capturedArgs).toMatchObject({
+      where: { featureId: FEATURE_ID, feature: { organizationId: ORG_ID } },
+      orderBy: { createdAt: "desc" },
+    });
+  });
+
+  it("returns empty array when feature has no attachments", async () => {
+    mockWithDb.mockImplementationOnce((callback: (db: unknown) => unknown) =>
+      callback({
+        fileAttachment: {
+          findMany: vi.fn().mockResolvedValue([]),
+        },
+      })
+    );
+
+    const result = await attachmentsService.listWithSignedUrlsByFeature(
+      FEATURE_ID,
+      ORG_ID
+    );
+
+    expect(result).toHaveLength(0);
+    expect(mockGetSignedDownloadUrl).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// deleteFeatureAttachment
+// ---------------------------------------------------------------------------
+
+describe("attachmentsService.deleteFeatureAttachment", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockDeleteArtifact.mockResolvedValue(undefined);
+  });
+
+  it("verifies feature org membership before deleting the attachment", async () => {
+    const record = makeAttachmentRecord({
+      artifactId: undefined,
+      featureId: FEATURE_ID,
+    });
+
+    mockWithDb.mockImplementationOnce((callback: (db: unknown) => unknown) =>
+      callback({
+        feature: {
+          findUnique: vi.fn().mockResolvedValue({ id: FEATURE_ID }),
+        },
+      })
+    );
+
+    mockWithDbTx.mockImplementationOnce(
+      async (callback: (tx: unknown) => unknown) =>
+        callback({
+          fileAttachment: {
+            findUnique: vi.fn().mockResolvedValue(record),
+            delete: vi.fn().mockResolvedValue(undefined),
+          },
+        })
+    );
+
+    await attachmentsService.deleteFeatureAttachment(
+      FEATURE_ID,
+      ORG_ID,
+      ATTACHMENT_ID
+    );
+
+    expect(mockDeleteArtifact).toHaveBeenCalledWith(record.key, record.bucket);
+  });
+
+  it("passes org-scoped where clause to requireFeature lookup", async () => {
+    let capturedWhere: Record<string, unknown> | undefined;
+    const record = makeAttachmentRecord({
+      artifactId: undefined,
+      featureId: FEATURE_ID,
+    });
+
+    mockWithDb.mockImplementationOnce((callback: (db: unknown) => unknown) =>
+      callback({
+        feature: {
+          findUnique: vi.fn((args: { where: Record<string, unknown> }) => {
+            capturedWhere = args.where;
+            return Promise.resolve({ id: FEATURE_ID });
+          }),
+        },
+      })
+    );
+
+    mockWithDbTx.mockImplementationOnce(
+      async (callback: (tx: unknown) => unknown) =>
+        callback({
+          fileAttachment: {
+            findUnique: vi.fn().mockResolvedValue(record),
+            delete: vi.fn().mockResolvedValue(undefined),
+          },
+        })
+    );
+
+    await attachmentsService.deleteFeatureAttachment(
+      FEATURE_ID,
+      ORG_ID,
+      ATTACHMENT_ID
+    );
+
+    expect(capturedWhere).toEqual({ id: FEATURE_ID, organizationId: ORG_ID });
+  });
+
+  it("throws 'Feature not found' and skips delete when feature belongs to a different org", async () => {
+    mockWithDb.mockImplementationOnce((callback: (db: unknown) => unknown) =>
+      callback({
+        feature: {
+          findUnique: vi.fn().mockResolvedValue(null),
+        },
+      })
+    );
+
+    await expect(
+      attachmentsService.deleteFeatureAttachment(
+        FEATURE_ID,
+        "other-org",
+        ATTACHMENT_ID
+      )
+    ).rejects.toThrow("Feature not found");
+
+    expect(mockWithDbTx).not.toHaveBeenCalled();
+    expect(mockDeleteArtifact).not.toHaveBeenCalled();
+  });
+
+  it("throws 'Attachment not found' when attachment does not belong to the feature", async () => {
+    mockWithDb.mockImplementationOnce((callback: (db: unknown) => unknown) =>
+      callback({
+        feature: {
+          findUnique: vi.fn().mockResolvedValue({ id: FEATURE_ID }),
+        },
+      })
+    );
+
+    mockWithDbTx.mockImplementationOnce(
+      async (callback: (tx: unknown) => unknown) =>
+        callback({
+          fileAttachment: {
+            findUnique: vi.fn().mockResolvedValue(null),
+            delete: vi.fn(),
+          },
+        })
+    );
+
+    await expect(
+      attachmentsService.deleteFeatureAttachment(
+        FEATURE_ID,
+        ORG_ID,
+        "nonexistent-attach"
+      )
+    ).rejects.toThrow("Attachment not found");
+
+    expect(mockDeleteArtifact).not.toHaveBeenCalled();
+  });
+
+  it("does not re-throw when S3 deleteArtifact fails after DB delete", async () => {
+    const record = makeAttachmentRecord({
+      artifactId: undefined,
+      featureId: FEATURE_ID,
+    });
+    mockDeleteArtifact.mockRejectedValue(new Error("S3 unavailable"));
+
+    mockWithDb.mockImplementationOnce((callback: (db: unknown) => unknown) =>
+      callback({
+        feature: {
+          findUnique: vi.fn().mockResolvedValue({ id: FEATURE_ID }),
+        },
+      })
+    );
+
+    mockWithDbTx.mockImplementationOnce(
+      async (callback: (tx: unknown) => unknown) =>
+        callback({
+          fileAttachment: {
+            findUnique: vi.fn().mockResolvedValue(record),
+            delete: vi.fn().mockResolvedValue(undefined),
+          },
+        })
+    );
+
+    await expect(
+      attachmentsService.deleteFeatureAttachment(
+        FEATURE_ID,
+        ORG_ID,
+        ATTACHMENT_ID
+      )
+    ).resolves.toBeUndefined();
+  });
+
+  it("deletes DB record before calling S3 deleteArtifact", async () => {
+    const callOrder: string[] = [];
+    const record = makeAttachmentRecord({
+      artifactId: undefined,
+      featureId: FEATURE_ID,
+    });
+
+    mockDeleteArtifact.mockImplementation(() => {
+      callOrder.push("s3.delete");
+      return Promise.resolve();
+    });
+
+    mockWithDb.mockImplementationOnce((callback: (db: unknown) => unknown) =>
+      callback({
+        feature: {
+          findUnique: vi.fn().mockResolvedValue({ id: FEATURE_ID }),
+        },
+      })
+    );
+
+    mockWithDbTx.mockImplementationOnce(
+      async (callback: (tx: unknown) => unknown) =>
+        callback({
+          fileAttachment: {
+            findUnique: vi.fn().mockResolvedValue(record),
+            delete: vi.fn(() => {
+              callOrder.push("db.delete");
+              return Promise.resolve(undefined);
+            }),
+          },
+        })
+    );
+
+    await attachmentsService.deleteFeatureAttachment(
+      FEATURE_ID,
+      ORG_ID,
+      ATTACHMENT_ID
+    );
+
+    expect(callOrder).toEqual(["db.delete", "s3.delete"]);
   });
 });

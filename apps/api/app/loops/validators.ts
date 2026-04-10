@@ -1,5 +1,14 @@
+import {
+  LoopCommandSchema,
+  LoopStatusSchema,
+} from "@closedloop-ai/loops-api/commands";
+import {
+  LoopEventCompletedSchema,
+  LoopEventErrorSchema,
+  LoopEventOutputSchema,
+  LoopEventTypeSchema,
+} from "@closedloop-ai/loops-api/events";
 import { EntityType } from "@repo/api/src/types/entity-link";
-import { LoopCommand } from "@repo/api/src/types/loop";
 import { z } from "zod";
 import { uuidOrSlug } from "@/lib/identifier-utils";
 
@@ -25,7 +34,7 @@ export const repoSchema = z.object({
 });
 
 export const createLoopValidator = z.object({
-  command: z.enum(["PLAN", "EXECUTE", "CHAT", "EXPLORE", "REQUEST_CHANGES"]),
+  command: LoopCommandSchema,
   artifactId: z.uuidv7().optional(),
   workstreamId: z.uuidv7().optional(),
   prompt: z.string().max(100_000).optional(),
@@ -52,16 +61,7 @@ export const resumeLoopValidator = z.object({
  * Known event types from the container harness.
  * Restricts what the runner can send to prevent arbitrary data injection.
  */
-const loopEventType = z.enum([
-  "started",
-  "output",
-  "progress",
-  "tool_call",
-  "artifact_created",
-  "completed",
-  "error",
-  "cancelled",
-]);
+const loopEventType = LoopEventTypeSchema;
 
 export const loopEventValidator = z
   .object({
@@ -89,32 +89,48 @@ export const loopEventPayloadValidator = z.union([
 ]);
 
 /**
- * Validate required fields on a normalized (flat) loop event.
- * Applied post-normalization so both envelope and flattened paths are covered.
+ * Format the first Zod issue into a human-readable error string.
+ */
+function firstZodIssue(
+  issues: Array<{ path: PropertyKey[]; message: string }>,
+  fallback: string
+): string {
+  const issue = issues[0];
+  const path = issue?.path.join(".");
+  return path ? `${path}: ${issue.message}` : (issue?.message ?? fallback);
+}
+
+/**
+ * Validate a normalized (flat) loop event against the shared schema.
  * Returns an error string if validation fails, or null if valid.
  */
+const eventSchemaByType: Record<
+  string,
+  { schema: z.ZodType; fallback: string }
+> = {
+  output: {
+    schema: LoopEventOutputSchema.omit({ type: true }),
+    fallback: "invalid output event",
+  },
+  completed: {
+    schema: LoopEventCompletedSchema.omit({ type: true }),
+    fallback: "invalid completed event",
+  },
+  error: {
+    schema: LoopEventErrorSchema.omit({ type: true }),
+    fallback: "invalid error event",
+  },
+};
+
 export function validateNormalizedEvent(
   event: Record<string, unknown>
 ): string | null {
-  if (event.type === "completed") {
-    const tu = event.tokensUsed;
-    if (
-      !tu ||
-      typeof tu !== "object" ||
-      typeof (tu as Record<string, unknown>).input !== "number" ||
-      typeof (tu as Record<string, unknown>).output !== "number"
-    ) {
-      return "completed event requires tokensUsed with numeric input and output";
+  const entry = eventSchemaByType[event.type as string];
+  if (entry) {
+    const result = entry.schema.safeParse(event);
+    if (!result.success) {
+      return firstZodIssue(result.error.issues, entry.fallback);
     }
-    if (typeof event.timestamp !== "string") {
-      return "completed event requires a timestamp string";
-    }
-  }
-  if (
-    event.type === "error" &&
-    (typeof event.code !== "string" || typeof event.message !== "string")
-  ) {
-    return "error event requires code and message strings";
   }
   if (event.type === "cancelled" && typeof event.timestamp !== "string") {
     return "cancelled event requires a timestamp string";
@@ -123,39 +139,15 @@ export function validateNormalizedEvent(
 }
 
 export const listLoopEventsQueryValidator = z.object({
-  type: z
-    .enum([
-      "started",
-      "output",
-      "progress",
-      "tool_call",
-      "artifact_created",
-      "completed",
-      "error",
-      "cancelled",
-    ])
-    .optional(),
+  type: LoopEventTypeSchema.optional(),
   limit: z.coerce.number().min(1).max(500).default(100).optional(),
   offset: z.coerce.number().min(0).default(0).optional(),
+  sort: z.enum(["asc", "desc"]).default("asc").optional(),
 });
 
 export const listLoopsQueryValidator = z.object({
-  status: z
-    .enum([
-      "PENDING",
-      "CLAIMED",
-      "RUNNING",
-      "COMPLETED",
-      "FAILED",
-      "CANCELLED",
-      "TIMED_OUT",
-    ])
-    .optional(),
-  command: z
-    .enum(
-      Object.values(LoopCommand) as unknown as [LoopCommand, ...LoopCommand[]]
-    )
-    .optional(),
+  status: LoopStatusSchema.optional(),
+  command: LoopCommandSchema.optional(),
   artifactId: uuidOrSlug().optional(),
   workstreamId: z.uuid().optional(),
   projectId: z.uuid().optional(),

@@ -158,16 +158,22 @@ vi.mock("@/lib/loops/loop-desktop", async (importActual) => {
 
 // --- Imports (after mocks) ---
 
-import type { LoopWithUser } from "@repo/api/src/types/loop";
+import {
+  LoopErrorCode,
+  LoopStatus,
+  type LoopWithUser,
+} from "@repo/api/src/types/loop";
 import { withDb } from "@repo/database";
 import { afterEach, beforeEach, describe, expect, it, type Mock } from "vitest";
 import { loopsService } from "@/app/loops/service";
+import { apiKeyService } from "@/app/settings/api-key-service";
 import { desktopCommandStore } from "@/lib/desktop-command-store";
 import {
   DispatchError,
   launchLoopOnDesktop,
   stopDesktopLoop,
 } from "@/lib/loops/loop-desktop";
+import { runEcsTask } from "@/lib/loops/loop-ecs";
 import { handleLoopEvent, launchLoop } from "@/lib/loops/loop-orchestrator";
 import { buildLoop } from "../fixtures/loop";
 
@@ -335,6 +341,186 @@ describe("launchLoop orphaned command cleanup on relay failure", () => {
     );
 
     expect(mockLoopsService.cancel).toHaveBeenCalledWith("loop-1", "org-1");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PLAN_STATE_UNAVAILABLE pre-dispatch guard
+// ---------------------------------------------------------------------------
+
+describe("PLAN_STATE_UNAVAILABLE pre-dispatch guard", () => {
+  const originalEnv = { ...process.env };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.API_BASE_URL = "https://api.test";
+  });
+
+  afterEach(() => {
+    process.env.API_BASE_URL = originalEnv.API_BASE_URL;
+  });
+
+  const mockRunEcsTask = runEcsTask as unknown as MockFn;
+  const mockResolveApiKey = (
+    apiKeyService as unknown as { resolveApiKey: MockFn }
+  ).resolveApiKey;
+
+  it("ECS EXECUTE loop with parent s3StateKey: null and computeTargetId: null — fails with PlanStateUnavailable, runEcsTask not called", async () => {
+    const childLoop = buildLoop({
+      status: "PENDING",
+      command: "EXECUTE",
+      parentLoopId: "parent-1",
+      computeTargetId: null,
+    });
+    const parentLoop = buildLoop({
+      id: "parent-1",
+      s3StateKey: null,
+      computeTargetId: null,
+    });
+
+    // First findById call: getPendingLoopOrThrow (child loop)
+    // Second findById call: resolveParentLoopInfo (parent loop)
+    mockLoopsService.findById
+      .mockResolvedValueOnce(childLoop)
+      .mockResolvedValueOnce(parentLoop);
+
+    await launchLoop("loop-1", "org-1");
+
+    expect(mockLoopsService.updateStatus).toHaveBeenCalledWith(
+      "loop-1",
+      "org-1",
+      LoopStatus.Failed,
+      expect.objectContaining({
+        error: expect.objectContaining({
+          code: LoopErrorCode.PlanStateUnavailable,
+        }),
+      })
+    );
+    expect(mockRunEcsTask).not.toHaveBeenCalled();
+  });
+
+  it("Desktop EXECUTE loop with parent s3StateKey: null and computeTargetId: 'ct-parent' — launchLoopOnDesktop IS called", async () => {
+    const childLoop = buildLoop({
+      status: "PENDING",
+      command: "EXECUTE",
+      parentLoopId: "parent-1",
+      computeTargetId: "ct-child",
+    });
+    const parentLoop = buildLoop({
+      id: "parent-1",
+      s3StateKey: null,
+      computeTargetId: "ct-parent",
+    });
+
+    mockLoopsService.findById
+      .mockResolvedValueOnce(childLoop)
+      .mockResolvedValueOnce(parentLoop);
+
+    mockLaunchLoopOnDesktop.mockResolvedValue("cmd-desktop-1");
+    mockLoopsService.updateStatus.mockResolvedValue(undefined);
+
+    await launchLoop("loop-1", "org-1");
+
+    expect(mockLaunchLoopOnDesktop).toHaveBeenCalledTimes(1);
+    expect(mockLoopsService.updateStatus).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      LoopStatus.Failed,
+      expect.anything()
+    );
+  });
+
+  it("EXECUTE loop with no parentLoopId — launches normally (ECS path, guard does not fire)", async () => {
+    const childLoop = buildLoop({
+      status: "PENDING",
+      command: "EXECUTE",
+      parentLoopId: null,
+      computeTargetId: null,
+    });
+
+    mockLoopsService.findById.mockResolvedValue(childLoop);
+    mockRunEcsTask.mockResolvedValue("ecs-task-arn");
+    mockLoopsService.updateStatus.mockResolvedValue(undefined);
+
+    // The ECS launch may fail downstream (API key not configured) but the
+    // pre-dispatch guard must NOT have fired with PlanStateUnavailable.
+    await launchLoop("loop-1", "org-1").catch(() => undefined);
+
+    expect(mockLoopsService.updateStatus).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      LoopStatus.Failed,
+      expect.objectContaining({
+        error: expect.objectContaining({
+          code: LoopErrorCode.PlanStateUnavailable,
+        }),
+      })
+    );
+  });
+
+  it("PLAN loop with parentLoopId and parent s3StateKey: null — launches normally (requiresParent: false, guard does not fire)", async () => {
+    const childLoop = buildLoop({
+      status: "PENDING",
+      command: "PLAN",
+      parentLoopId: "parent-1",
+      computeTargetId: null,
+    });
+    const parentLoop = buildLoop({
+      id: "parent-1",
+      s3StateKey: null,
+      computeTargetId: null,
+    });
+
+    mockLoopsService.findById
+      .mockResolvedValueOnce(childLoop)
+      .mockResolvedValueOnce(parentLoop);
+    mockRunEcsTask.mockResolvedValue("ecs-task-arn");
+    mockLoopsService.updateStatus.mockResolvedValue(undefined);
+
+    // The ECS launch may fail downstream (API key not configured) but the
+    // pre-dispatch guard must NOT have fired with PlanStateUnavailable.
+    await launchLoop("loop-1", "org-1").catch(() => undefined);
+
+    expect(mockLoopsService.updateStatus).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      LoopStatus.Failed,
+      expect.objectContaining({
+        error: expect.objectContaining({
+          code: LoopErrorCode.PlanStateUnavailable,
+        }),
+      })
+    );
+  });
+
+  it("parent findById returns null — PLAN_STATE_UNAVAILABLE triggered, no call to apiKeyService.resolveApiKey", async () => {
+    const childLoop = buildLoop({
+      status: "PENDING",
+      command: "EXECUTE",
+      parentLoopId: "parent-1",
+      computeTargetId: null,
+    });
+
+    // First call: getPendingLoopOrThrow returns the child loop
+    // Second call: resolveParentLoopInfo — parent not found
+    mockLoopsService.findById
+      .mockResolvedValueOnce(childLoop)
+      .mockResolvedValueOnce(null);
+
+    await launchLoop("loop-1", "org-1");
+
+    expect(mockLoopsService.updateStatus).toHaveBeenCalledWith(
+      "loop-1",
+      "org-1",
+      LoopStatus.Failed,
+      expect.objectContaining({
+        error: expect.objectContaining({
+          code: LoopErrorCode.PlanStateUnavailable,
+        }),
+      })
+    );
+    expect(mockResolveApiKey).not.toHaveBeenCalled();
+    expect(mockRunEcsTask).not.toHaveBeenCalled();
   });
 });
 

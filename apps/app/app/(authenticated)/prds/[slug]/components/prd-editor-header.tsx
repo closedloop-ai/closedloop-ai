@@ -1,5 +1,6 @@
 "use client";
 
+import { useFeatureFlag } from "@repo/analytics/client";
 import {
   ArtifactType,
   type ArtifactWithWorkstream,
@@ -18,6 +19,7 @@ import {
   DownloadIcon,
   FolderIcon,
   GaugeIcon,
+  MessageSquareIcon,
   MoreHorizontalIcon,
   PanelRightIcon,
   PencilIcon,
@@ -39,8 +41,10 @@ type PRDEditorHeaderProps = {
   onEvaluatePrd: () => void;
   onGeneratePlan: () => void;
   onGeneratePrd: () => void;
+  onRequestChanges: () => void;
   isGenerating?: boolean;
   isEvaluating?: boolean;
+  isRequestingChanges?: boolean;
   onRename: () => void;
   onExport: () => void;
   onMove: () => void;
@@ -59,8 +63,10 @@ export function PRDEditorHeader({
   onEvaluatePrd,
   onGeneratePlan,
   onGeneratePrd,
+  onRequestChanges,
   isGenerating = false,
   isEvaluating = false,
+  isRequestingChanges = false,
   onRename,
   onExport,
   onMove,
@@ -69,6 +75,8 @@ export function PRDEditorHeader({
   onDelete,
   isPending = false,
 }: Readonly<PRDEditorHeaderProps>) {
+  const requestChangesFlag = useFeatureFlag("prd-request-changes");
+
   const breadcrumbs: BreadcrumbEntry[] = prd.project?.teams?.[0]?.id
     ? [
         {
@@ -79,12 +87,9 @@ export function PRDEditorHeader({
           label: prd.project.name,
           href: `/teams/${prd.project.teams[0].id}/projects/${prd.project.id}`,
         },
-        { label: prd.fileName ?? prd.title },
+        { label: prd.title },
       ]
-    : [
-        { label: "Library", href: "/prds" },
-        { label: prd.fileName ?? prd.title },
-      ];
+    : [{ label: "Library", href: "/prds" }, { label: prd.title }];
 
   const overflowMenu = (
     <DropdownMenu>
@@ -150,6 +155,15 @@ export function PRDEditorHeader({
             <PlanIcon className="h-4 w-4" />
             Generate Implementation Plan
           </DropdownMenuItem>
+          {requestChangesFlag?.enabled && (
+            <DropdownMenuItem
+              disabled={isGenerating || isRequestingChanges}
+              onClick={onRequestChanges}
+            >
+              <MessageSquareIcon className="h-4 w-4" />
+              {isRequestingChanges ? "Amending PRD..." : "Amend PRD"}
+            </DropdownMenuItem>
+          )}
         </DropdownMenuContent>
       </DropdownMenu>
 

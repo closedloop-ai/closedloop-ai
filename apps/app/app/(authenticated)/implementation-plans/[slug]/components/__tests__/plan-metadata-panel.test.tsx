@@ -1,9 +1,7 @@
-import type {
-  ArtifactDetail,
-  ArtifactStatus,
-} from "@repo/api/src/types/artifact";
+import type { ArtifactDetail } from "@repo/api/src/types/artifact";
 import type { JudgeFeedbackItem } from "@repo/api/src/types/evaluation";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   createMockArtifact,
@@ -17,13 +15,6 @@ import {
 } from "@/lib/evaluation-utils";
 import { PlanMetadataPanel } from "../plan-metadata-panel";
 
-// Mock the ExecutionLogSummary component to avoid query client dependencies
-vi.mock("@/components/execution-log/execution-log-summary", () => ({
-  ExecutionLogSummary: () => (
-    <div data-testid="execution-log-summary">Execution Log Content</div>
-  ),
-}));
-
 // Mock usePerformanceData to avoid query client dependencies
 vi.mock("@/hooks/queries/use-performance", () => ({
   usePerformanceData: () => ({
@@ -31,13 +22,6 @@ vi.mock("@/hooks/queries/use-performance", () => ({
     isLoading: false,
     error: null,
   }),
-}));
-
-// Mock the StatusMetadataSection to simplify testing
-vi.mock("@/components/artifact-editor/status-metadata-section", () => ({
-  StatusMetadataSection: () => (
-    <div data-testid="status-metadata-section">Status Section Mock</div>
-  ),
 }));
 
 // Mock JudgeResultCard to simplify testing
@@ -65,18 +49,9 @@ vi.mock("@/hooks/queries/use-artifacts", () => ({
   }),
 }));
 
-// Mock useOrganizationUsers to avoid Clerk authentication context
-vi.mock("@/hooks/queries/use-users", () => ({
-  useOrganizationUsers: () => ({
-    data: [],
-    isLoading: false,
-    error: null,
-  }),
-}));
-
 // Mock entity links hooks to avoid Clerk auth dependencies
 vi.mock("@/hooks/queries/use-entity-links", () => ({
-  useSourceLinks: () => ({
+  useLinkedEntities: () => ({
     data: [],
     isLoading: false,
     error: null,
@@ -91,44 +66,11 @@ vi.mock("@/hooks/queries/use-entity-links", () => ({
   }),
 }));
 
-// Mock GitHub integration hooks to avoid Clerk auth dependencies
-vi.mock("@/hooks/queries/use-github-integration", () => ({
-  useGitHubIntegrationStatus: () => ({
-    data: { connected: false },
-    isLoading: false,
-    error: null,
-  }),
-  useGitHubRepositories: () => ({
-    data: [],
-    isLoading: false,
-    error: null,
-  }),
-  useGitHubBranches: () => ({
-    data: null,
-    isLoading: false,
-    error: null,
-  }),
-}));
-
 // Mock AttachmentsSection to avoid QueryClient dependencies
 vi.mock("@/components/artifact-editor/attachments-section", () => ({
   AttachmentsSection: () => (
     <div data-testid="attachments-section">Attachments Mock</div>
   ),
-}));
-
-// Mock custom fields hooks to avoid Clerk auth dependencies
-vi.mock("@/hooks/queries/use-custom-fields", () => ({
-  useCustomFieldSettings: () => ({
-    data: [],
-    isLoading: false,
-    error: null,
-  }),
-  useCustomFieldsForEntityType: () => ({
-    data: [],
-    isLoading: false,
-    error: null,
-  }),
 }));
 
 // Mock pull request rating hooks to avoid Clerk auth dependencies
@@ -145,7 +87,7 @@ vi.mock("@/hooks/queries/use-pull-request-rating", () => ({
 }));
 
 // Regex patterns for testing (hoisted to module level per Biome lint rules)
-const VERSION_PATTERN = /version: v1/i;
+const ACTIVITY_PATTERN = /activity/i;
 const CREATED_PATTERN = /created:/i;
 const UPDATED_PATTERN = /updated:/i;
 const PR_NUMBER_PATTERN = /#42:/i;
@@ -167,10 +109,6 @@ const createMockPlan = (overrides?: Partial<ArtifactDetail>): ArtifactDetail =>
 
 const defaultProps = {
   plan: createMockPlan(),
-  status: "DRAFT" as ArtifactStatus,
-  approver: null,
-  assignee: null,
-  teamMembers: [],
   generationStatus: null,
   pullRequest: null,
   previewDeployment: null,
@@ -178,15 +116,6 @@ const defaultProps = {
   isPreviewRefreshing: false,
   judgeItems: null,
   codeJudgeItems: null,
-  onStatusChange: vi.fn(),
-  onApproverSelect: vi.fn(),
-  onAssigneeChange: vi.fn(),
-  targetRepo: "",
-  targetBranch: "",
-  onTargetRepoChange: vi.fn(),
-  onTargetRepoBlur: vi.fn(),
-  onTargetBranchChange: vi.fn(),
-  onTargetBranchBlur: vi.fn(),
 };
 
 describe("sortJudgeFeedbackItemsByScore", () => {
@@ -366,46 +295,27 @@ describe("PlanMetadataPanel", () => {
   });
 
   describe("Section structure", () => {
-    test("renders all collapsible sections: Properties, Execution Log, Plan Evaluation, Code Evaluation, Performance, and Comments", () => {
+    test("renders key sections: Agent Evaluation, Code Evaluation, Performance, and Comments", () => {
       render(<PlanMetadataPanel {...defaultProps} />);
 
-      // Check for collapsible section headings
-      expect(screen.getByText("Properties")).toBeDefined();
-      expect(screen.getByText("Execution Log")).toBeDefined();
-      expect(screen.getByText("Plan Evaluation")).toBeDefined();
+      expect(screen.getByText("Agent Evaluation")).toBeDefined();
       expect(screen.getByText("Code Evaluation")).toBeDefined();
       expect(screen.getByText("Performance")).toBeDefined();
       expect(screen.getByText("Comments")).toBeDefined();
     });
-
-    test("Properties section is collapsed by default", () => {
-      render(<PlanMetadataPanel {...defaultProps} />);
-
-      // Properties section content should NOT be visible when collapsed
-      expect(screen.queryByTestId("status-metadata-section")).toBeNull();
-    });
   });
 
-  describe("Details tab content", () => {
-    function expandProperties() {
-      fireEvent.click(screen.getByText("Properties"));
-    }
-
-    test("renders StatusMetadataSection when Properties is expanded", () => {
+  describe("Details content", () => {
+    test("displays activity section", () => {
       render(<PlanMetadataPanel {...defaultProps} />);
-      expandProperties();
-      expect(screen.getByTestId("status-metadata-section")).toBeDefined();
+      expect(screen.getByText(ACTIVITY_PATTERN)).toBeDefined();
     });
 
-    test("displays version information", () => {
+    test("displays created and updated dates", async () => {
+      const user = userEvent.setup();
       render(<PlanMetadataPanel {...defaultProps} />);
-      expandProperties();
-      expect(screen.getByText(VERSION_PATTERN)).toBeDefined();
-    });
-
-    test("displays created and updated dates", () => {
-      render(<PlanMetadataPanel {...defaultProps} />);
-      expandProperties();
+      // Activity section is collapsed by default; expand it first
+      await user.click(screen.getByText(ACTIVITY_PATTERN));
       expect(screen.getByText(CREATED_PATTERN)).toBeDefined();
       expect(screen.getByText(UPDATED_PATTERN)).toBeDefined();
     });
@@ -420,7 +330,6 @@ describe("PlanMetadataPanel", () => {
           })}
         />
       );
-      expandProperties();
       expect(screen.getByText("View loop details")).toBeDefined();
     });
 
@@ -431,7 +340,6 @@ describe("PlanMetadataPanel", () => {
           pullRequest={createMockPullRequest()}
         />
       );
-      expandProperties();
       expect(screen.getByText(PR_NUMBER_PATTERN)).toBeDefined();
       expect(screen.getByText(PR_TITLE_PATTERN)).toBeDefined();
     });

@@ -12,10 +12,15 @@ import {
   LinkDirection,
   LinkType,
 } from "@repo/api/src/types/entity-link";
+import {
+  type ExternalLink,
+  ExternalLinkType,
+} from "@repo/api/src/types/external-link";
 import { Prisma, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { basicUserSelect } from "@/lib/db-utils";
 import { assertEntityInOrganization } from "@/lib/entity-validation";
+import { schedulePrReadRepair } from "@/lib/pr-read-repair";
 import { Result, Status } from "@/lib/result";
 import { externalLinksService } from "../external-links/service";
 
@@ -290,11 +295,21 @@ export const entityLinksService = {
       })
     );
 
-    return annotatedLinks.map(({ link, fromEntityId }) => {
+    const result = annotatedLinks.map(({ link, fromEntityId }) => {
       const other = getOtherSide(link, fromEntityId);
       const key = `${other.id}:${other.type}`;
       return { ...link, resolvedEntity: resolved.get(key) ?? null };
     });
+
+    const prLinks = result.flatMap((le) =>
+      le.resolvedEntity?.type === EntityType.ExternalLink &&
+      le.resolvedEntity.entity.type === ExternalLinkType.PullRequest
+        ? [le.resolvedEntity.entity as ExternalLink]
+        : []
+    );
+    schedulePrReadRepair(prLinks, organizationId);
+
+    return result;
   },
 
   /**
@@ -366,7 +381,9 @@ export const entityLinksService = {
       { id: input.entityId, type: input.entityType },
     ];
 
-    if (input.includeDownstream) {
+    const shouldIncludeDownstream = input.includeDownstream;
+
+    if (shouldIncludeDownstream) {
       const downstream = await this.findDownstreamEntityIds(
         organizationId,
         input.entityId,

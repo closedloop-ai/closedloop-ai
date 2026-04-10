@@ -7,88 +7,48 @@ import {
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { ExternalLinkIcon, LoaderIcon, XCircleIcon } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useEffectEvent, useRef, useState } from "react";
-import { useArtifactGenerationStatus } from "@/hooks/queries/use-artifacts";
+import { useEffect, useEffectEvent, useRef } from "react";
 import { getStatusMessage } from "@/lib/generation-status-utils";
 
 type GenerationStatusBannerProps = {
-  artifactId: string;
+  generationStatus: GenerationStatus | undefined;
+  onGenerationComplete?: () => void;
 };
 
-const MIN_POLL_INTERVAL = 2000; // 2 seconds
-const MAX_POLL_INTERVAL = 30_000; // 30 seconds
-const BACKOFF_MULTIPLIER = 1.5;
-
 export function GenerationStatusBanner({
-  artifactId,
+  generationStatus,
+  onGenerationComplete,
 }: Readonly<GenerationStatusBannerProps>) {
-  const [isPolling, setIsPolling] = useState(true);
-  const pollIntervalRef = useRef(MIN_POLL_INTERVAL);
-  const timeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const toastShownRef = useRef(false);
+  const prevStatusRef = useRef<GenerationStatus["status"] | undefined>(
+    undefined
+  );
 
-  const {
-    data: generationStatus,
-    isLoading,
-    refetch,
-    invalidateCache,
-  } = useArtifactGenerationStatus(artifactId);
-  const handleGenerationSuccess = useEffectEvent(invalidateCache);
+  const handleGenerationComplete = useEffectEvent(() => {
+    onGenerationComplete?.();
+  });
 
   useEffect(() => {
-    if (isLoading) {
-      return;
-    }
+    const prevStatus = prevStatusRef.current;
+    const currentStatus = generationStatus?.status;
+    prevStatusRef.current = currentStatus;
 
-    // Handle completion
-    if (generationStatus?.status === "SUCCESS") {
-      setIsPolling(false);
-      handleGenerationSuccess();
+    if (
+      currentStatus === "SUCCESS" &&
+      prevStatus &&
+      prevStatus !== "SUCCESS" &&
+      !toastShownRef.current
+    ) {
+      toastShownRef.current = true;
       toast.success("Generation completed successfully");
-      return;
+      handleGenerationComplete();
     }
 
-    // Handle failure - stop polling but keep showing banner
-    if (generationStatus?.status === "FAILURE") {
-      setIsPolling(false);
-      return;
+    // Reset toast guard when generation becomes active again
+    if (currentStatus && isActiveGenerationStatus(currentStatus)) {
+      toastShownRef.current = false;
     }
-
-    // Handle no status - stop polling and hide
-    if (generationStatus?.status === "NONE") {
-      setIsPolling(false);
-      return;
-    }
-
-    // Continue polling with backoff for active statuses
-    pollIntervalRef.current = Math.min(
-      pollIntervalRef.current * BACKOFF_MULTIPLIER,
-      MAX_POLL_INTERVAL
-    );
-  }, [isLoading, generationStatus]);
-
-  useEffect(() => {
-    if (!isPolling) {
-      return;
-    }
-
-    const poll = () => {
-      timeoutRef.current = setTimeout(async () => {
-        await refetch();
-
-        if (isPolling) {
-          poll();
-        }
-      }, pollIntervalRef.current);
-    };
-
-    poll();
-
-    return () => {
-      if (timeoutRef.current) {
-        clearTimeout(timeoutRef.current);
-      }
-    };
-  }, [isPolling, refetch]);
+  }, [generationStatus]);
 
   // Don't render if no status or status is NONE/SUCCESS
   if (

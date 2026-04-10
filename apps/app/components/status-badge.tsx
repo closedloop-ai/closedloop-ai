@@ -1,9 +1,14 @@
 "use client";
 
+import { useFeatureFlag } from "@repo/analytics/client";
 import { ArtifactStatus } from "@repo/api/src/types/artifact";
 import { Priority } from "@repo/api/src/types/common";
 import { FeatureStatus } from "@repo/api/src/types/feature";
-import { LoopCommand, LoopStatus } from "@repo/api/src/types/loop";
+import {
+  LoopCommand,
+  LoopErrorCode,
+  LoopStatus,
+} from "@repo/api/src/types/loop";
 import type {
   WorkstreamState,
   WorkstreamType,
@@ -93,11 +98,9 @@ export const previewDeploymentStateColors: Record<string, string> = {
 export const artifactStatusColors: Record<ArtifactStatus, string> = {
   [ArtifactStatus.Draft]: "bg-muted text-muted-foreground border-muted",
   [ArtifactStatus.ReadyForReview]: COLOR_PENDING,
-  [ArtifactStatus.InReview]:
-    "bg-yellow-100 text-yellow-800 border-yellow-200 dark:bg-yellow-900/30 dark:text-yellow-400 dark:border-yellow-800",
-  [ArtifactStatus.Approved]:
-    "bg-green-100 text-green-800 border-green-200 dark:bg-green-900/30 dark:text-green-400 dark:border-green-800",
-  [ArtifactStatus.Executed]: COLOR_SUCCESS,
+  [ArtifactStatus.InReview]: COLOR_PROGRESS,
+  [ArtifactStatus.Approved]: COLOR_PROGRESS,
+  [ArtifactStatus.Executed]: COLOR_PROGRESS,
   [ArtifactStatus.Obsolete]:
     "bg-gray-100 text-gray-600 border-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-700",
 };
@@ -139,8 +142,7 @@ export const featureStatusColors: Record<FeatureStatus, string> = {
   [FeatureStatus.NotStarted]: "bg-muted text-muted-foreground border-muted",
   [FeatureStatus.InProgress]:
     "bg-blue-100 text-blue-800 border-blue-200 dark:bg-blue-900/30 dark:text-blue-400 dark:border-blue-800",
-  [FeatureStatus.InReview]:
-    "bg-yellow-100 text-yellow-800 border-yellow-200 dark:bg-yellow-900/30 dark:text-yellow-400 dark:border-yellow-800",
+  [FeatureStatus.InReview]: COLOR_PROGRESS,
   [FeatureStatus.Completed]:
     "bg-green-100 text-green-800 border-green-200 dark:bg-green-900/30 dark:text-green-400 dark:border-green-800",
   [FeatureStatus.Obsolete]:
@@ -340,16 +342,42 @@ const loopStatusLabels: Record<LoopStatus, string> = {
   [LoopStatus.TimedOut]: "Timed Out",
 };
 
-export function LoopStatusBadge({ status }: Readonly<{ status: LoopStatus }>) {
-  const displayStatus = loopStatusLabels[status] ?? status;
+export const loopErrorCodeLabels: Partial<Record<LoopErrorCode, string>> = {
+  [LoopErrorCode.NoWorkProduced]: "No output produced",
+  [LoopErrorCode.ContextLimitExceeded]: "Context limit exceeded",
+  [LoopErrorCode.PlanStateUnavailable]: "Plan state unavailable",
+};
+
+export const loopErrorCodeColors: Partial<Record<LoopErrorCode, string>> = {
+  [LoopErrorCode.NoWorkProduced]:
+    "bg-amber-100 text-amber-800 border-amber-200 dark:bg-amber-900/30 dark:text-amber-400 dark:border-amber-800",
+  [LoopErrorCode.ContextLimitExceeded]: COLOR_FAILURE,
+  [LoopErrorCode.PlanStateUnavailable]: COLOR_FAILURE,
+};
+
+export function LoopStatusBadge({
+  status,
+  errorCode,
+}: Readonly<{ status: LoopStatus; errorCode?: LoopErrorCode }>) {
+  const ghostLoopFlag = useFeatureFlag("ghost-loop-ux");
+  const ghostLoopUx = ghostLoopFlag?.enabled;
+
+  const showErrorCode =
+    ghostLoopUx &&
+    status === LoopStatus.Failed &&
+    errorCode !== undefined &&
+    loopErrorCodeLabels[errorCode] !== undefined;
+
+  const displayStatus = showErrorCode
+    ? loopErrorCodeLabels[errorCode!]
+    : (loopStatusLabels[status] ?? status);
+
+  const colorClass = showErrorCode
+    ? loopErrorCodeColors[errorCode!]
+    : (loopStatusColors[status] ?? loopStatusColors[LoopStatus.Pending]);
+
   return (
-    <Badge
-      className={cn(
-        "font-medium",
-        loopStatusColors[status] ?? loopStatusColors.PENDING
-      )}
-      variant="outline"
-    >
+    <Badge className={cn("font-medium", colorClass)} variant="outline">
       {displayStatus}
     </Badge>
   );
@@ -368,6 +396,7 @@ export const loopCommandColors: Record<LoopCommand, string> = {
   [LoopCommand.GeneratePrd]: COLOR_PURPLE,
   [LoopCommand.EvaluatePlan]: COLOR_PURPLE,
   [LoopCommand.EvaluateCode]: COLOR_PURPLE,
+  [LoopCommand.RequestPrdChanges]: COLOR_PENDING,
 };
 
 const loopCommandLabels: Record<LoopCommand, string> = {
@@ -381,6 +410,7 @@ const loopCommandLabels: Record<LoopCommand, string> = {
   [LoopCommand.GeneratePrd]: "Generate PRD",
   [LoopCommand.EvaluatePlan]: "Evaluate Plan",
   [LoopCommand.EvaluateCode]: "Evaluate PR",
+  [LoopCommand.RequestPrdChanges]: "Request PRD Changes",
 };
 
 export function LoopCommandBadge({

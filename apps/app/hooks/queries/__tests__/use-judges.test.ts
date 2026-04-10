@@ -1,20 +1,12 @@
-import type {
-  BatchJudgeScoresResponse,
-  JudgesFeedbackResponse,
-} from "@repo/api/src/types/evaluation";
-import {
-  EvalStatus,
-  EvaluationReportType,
-} from "@repo/api/src/types/evaluation";
+import type { JudgesFeedbackResponse } from "@repo/api/src/types/evaluation";
 import { renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { createMockJudgeFeedbackItem } from "@/__tests__/fixtures/evaluation";
 import {
   judgesKeys,
   useCodeJudgesFeedback,
-  useJudgesFeedback,
+  usePlanJudgesFeedback,
   usePrdJudgesFeedback,
-  useProjectJudgeScores,
 } from "../use-judges";
 import { createWrapper } from "./test-utils";
 
@@ -52,14 +44,14 @@ function buildSuccessResponse(
 }
 
 // ---------------------------------------------------------------------------
-// Tests — useJudgesFeedback
+// Tests — usePlanJudgesFeedback
 // ---------------------------------------------------------------------------
 
 beforeEach(() => {
   vi.clearAllMocks();
 });
 
-describe("useJudgesFeedback", () => {
+describe("usePlanJudgesFeedback", () => {
   test("fetches judge feedback for artifact and returns data on success", async () => {
     const response = buildSuccessResponse({
       caseId: "clarity-judge",
@@ -67,7 +59,7 @@ describe("useJudgesFeedback", () => {
     });
     mockApiClient.get.mockResolvedValueOnce(response);
 
-    const { result } = renderHook(() => useJudgesFeedback("artifact-abc"), {
+    const { result } = renderHook(() => usePlanJudgesFeedback("artifact-abc"), {
       wrapper: createWrapper(),
     });
 
@@ -88,9 +80,12 @@ describe("useJudgesFeedback", () => {
     };
     mockApiClient.get.mockResolvedValueOnce(notFoundResponse);
 
-    const { result } = renderHook(() => useJudgesFeedback("artifact-missing"), {
-      wrapper: createWrapper(),
-    });
+    const { result } = renderHook(
+      () => usePlanJudgesFeedback("artifact-missing"),
+      {
+        wrapper: createWrapper(),
+      }
+    );
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
@@ -104,9 +99,12 @@ describe("useJudgesFeedback", () => {
     };
     mockApiClient.get.mockResolvedValueOnce(errorResponse);
 
-    const { result } = renderHook(() => useJudgesFeedback("artifact-error"), {
-      wrapper: createWrapper(),
-    });
+    const { result } = renderHook(
+      () => usePlanJudgesFeedback("artifact-error"),
+      {
+        wrapper: createWrapper(),
+      }
+    );
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
@@ -114,7 +112,7 @@ describe("useJudgesFeedback", () => {
   });
 
   test("does not fetch when artifactId is empty string", () => {
-    renderHook(() => useJudgesFeedback(""), {
+    renderHook(() => usePlanJudgesFeedback(""), {
       wrapper: createWrapper(),
     });
 
@@ -124,7 +122,7 @@ describe("useJudgesFeedback", () => {
   test("handles API transport error", async () => {
     mockApiClient.get.mockRejectedValueOnce(new Error("Network timeout"));
 
-    const { result } = renderHook(() => useJudgesFeedback("artifact-abc"), {
+    const { result } = renderHook(() => usePlanJudgesFeedback("artifact-abc"), {
       wrapper: createWrapper(),
     });
 
@@ -149,7 +147,7 @@ describe("useJudgesFeedback", () => {
     };
     mockApiClient.get.mockResolvedValueOnce(emptyResponse);
 
-    const { result } = renderHook(() => useJudgesFeedback("artifact-abc"), {
+    const { result } = renderHook(() => usePlanJudgesFeedback("artifact-abc"), {
       wrapper: createWrapper(),
     });
 
@@ -191,7 +189,7 @@ describe("usePrdJudgesFeedback", () => {
     expect(mockApiClient.get).not.toHaveBeenCalled();
   });
 
-  test("uses a distinct query key from useJudgesFeedback and useCodeJudgesFeedback", () => {
+  test("uses a distinct query key from usePlanJudgesFeedback and useCodeJudgesFeedback", () => {
     const prdKey = judgesKeys.prdDetail("artifact-xyz");
     const planKey = judgesKeys.detail("artifact-xyz");
     const codeKey = judgesKeys.codeDetail("artifact-xyz");
@@ -234,129 +232,11 @@ describe("useCodeJudgesFeedback", () => {
     expect(mockApiClient.get).not.toHaveBeenCalled();
   });
 
-  test("uses a distinct query key from useJudgesFeedback", () => {
+  test("uses a distinct query key from usePlanJudgesFeedback", () => {
     const codeKey = judgesKeys.codeDetail("artifact-xyz");
     const planKey = judgesKeys.detail("artifact-xyz");
 
     expect(codeKey).toEqual(["judges", "code-detail", "artifact-xyz"]);
     expect(codeKey).not.toEqual(planKey);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Tests — useProjectJudgeScores
-// ---------------------------------------------------------------------------
-
-describe("useProjectJudgeScores", () => {
-  test("fetches batch judge scores for project and returns map with plan/prd shape", async () => {
-    const mockResponse: BatchJudgeScoresResponse = {
-      "artifact-plan-1": {
-        [EvaluationReportType.Plan]: [
-          createMockJudgeFeedbackItem({
-            caseId: "plan-quality-judge",
-            score: 0.9,
-            finalStatus: EvalStatus.Passed,
-          }),
-        ],
-        [EvaluationReportType.Prd]: null,
-        [EvaluationReportType.Code]: null,
-      },
-      "artifact-prd-1": {
-        [EvaluationReportType.Plan]: null,
-        [EvaluationReportType.Prd]: [
-          createMockJudgeFeedbackItem({
-            caseId: "prd-clarity-judge",
-            score: 0.85,
-            finalStatus: EvalStatus.Passed,
-          }),
-        ],
-        [EvaluationReportType.Code]: null,
-      },
-    };
-
-    mockApiClient.get.mockResolvedValueOnce(mockResponse);
-
-    const { result } = renderHook(() => useProjectJudgeScores("project-abc"), {
-      wrapper: createWrapper(),
-    });
-
-    await waitFor(() => expect(result.current.isSuccess).toBe(true));
-
-    expect(mockApiClient.get).toHaveBeenCalledWith(
-      "/artifacts/judge-scores?projectId=project-abc"
-    );
-    expect(result.current.data).toEqual(mockResponse);
-    expect(Object.keys(result.current.data ?? {})).toContain("artifact-plan-1");
-    expect(
-      result.current.data?.["artifact-plan-1"][EvaluationReportType.Plan]?.[0]
-        .caseId
-    ).toBe("plan-quality-judge");
-    expect(
-      result.current.data?.["artifact-plan-1"][EvaluationReportType.Prd]
-    ).toBeNull();
-    expect(Object.keys(result.current.data ?? {})).toContain("artifact-prd-1");
-    expect(
-      result.current.data?.["artifact-prd-1"][EvaluationReportType.Prd]?.[0]
-        .caseId
-    ).toBe("prd-clarity-judge");
-    expect(
-      result.current.data?.["artifact-prd-1"][EvaluationReportType.Plan]
-    ).toBeNull();
-  });
-
-  test("URL-encodes projectId in query parameter", async () => {
-    mockApiClient.get.mockResolvedValueOnce({});
-
-    const { result } = renderHook(
-      () => useProjectJudgeScores("project with spaces"),
-      { wrapper: createWrapper() }
-    );
-
-    await waitFor(() => expect(result.current.isSuccess).toBe(true));
-
-    expect(mockApiClient.get).toHaveBeenCalledWith(
-      "/artifacts/judge-scores?projectId=project%20with%20spaces"
-    );
-  });
-
-  test("returns empty map when no evaluations exist for project", async () => {
-    mockApiClient.get.mockResolvedValueOnce({});
-
-    const { result } = renderHook(
-      () => useProjectJudgeScores("project-empty"),
-      { wrapper: createWrapper() }
-    );
-
-    await waitFor(() => expect(result.current.isSuccess).toBe(true));
-
-    expect(result.current.data).toEqual({});
-  });
-
-  test("does not fetch when projectId is empty string", () => {
-    renderHook(() => useProjectJudgeScores(""), {
-      wrapper: createWrapper(),
-    });
-
-    expect(mockApiClient.get).not.toHaveBeenCalled();
-  });
-
-  test("handles API transport error", async () => {
-    mockApiClient.get.mockRejectedValueOnce(new Error("Server error"));
-
-    const { result } = renderHook(() => useProjectJudgeScores("project-abc"), {
-      wrapper: createWrapper(),
-    });
-
-    await waitFor(() => expect(result.current.isError).toBe(true));
-
-    expect(result.current.error).toBeInstanceOf(Error);
-  });
-
-  test("uses correct query key scoped to project", () => {
-    expect(judgesKeys.byProject("project-xyz")).toEqual([
-      "judges",
-      "by-project",
-      "project-xyz",
-    ]);
   });
 });
