@@ -93,9 +93,9 @@ export const previewDeploymentStateColors: Record<string, string> = {
 export const artifactStatusColors: Record<ArtifactStatus, string> = {
   [ArtifactStatus.Draft]: "bg-muted text-muted-foreground border-muted",
   [ArtifactStatus.ReadyForReview]: COLOR_PENDING,
-  [ArtifactStatus.InReview]: COLOR_PENDING,
-  [ArtifactStatus.Approved]: COLOR_SUCCESS,
-  [ArtifactStatus.Executed]: COLOR_SUCCESS,
+  [ArtifactStatus.InReview]: COLOR_PROGRESS,
+  [ArtifactStatus.Approved]: COLOR_PROGRESS,
+  [ArtifactStatus.Executed]: COLOR_PROGRESS,
   [ArtifactStatus.Obsolete]: COLOR_INACTIVE,
 };
 
@@ -135,7 +135,7 @@ export const ImplementationPlanStatusBadge = ArtifactStatusBadge;
 export const featureStatusColors: Record<FeatureStatus, string> = {
   [FeatureStatus.NotStarted]: "bg-muted text-muted-foreground border-muted",
   [FeatureStatus.InProgress]: COLOR_PROGRESS,
-  [FeatureStatus.InReview]: COLOR_PENDING,
+  [FeatureStatus.InReview]: COLOR_PROGRESS,
   [FeatureStatus.Completed]: COLOR_SUCCESS,
   [FeatureStatus.Obsolete]: COLOR_INACTIVE,
 };

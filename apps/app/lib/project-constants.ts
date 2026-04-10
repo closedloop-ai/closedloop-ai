@@ -42,9 +42,9 @@ export const ARTIFACT_STATUS_LABELS: Record<ArtifactStatus, string> = {
 export const ARTIFACT_STATUS_COLORS: Record<ArtifactStatus, string> = {
   [ArtifactStatus.Draft]: "text-muted-foreground",
   [ArtifactStatus.ReadyForReview]: "text-yellow-600 dark:text-yellow-400",
-  [ArtifactStatus.InReview]: "text-yellow-600 dark:text-yellow-400",
-  [ArtifactStatus.Approved]: "text-green-600 dark:text-green-400",
-  [ArtifactStatus.Executed]: "text-green-600 dark:text-green-400",
+  [ArtifactStatus.InReview]: "text-blue-600 dark:text-blue-400",
+  [ArtifactStatus.Approved]: "text-blue-600 dark:text-blue-400",
+  [ArtifactStatus.Executed]: "text-blue-600 dark:text-blue-400",
   [ArtifactStatus.Obsolete]: "text-muted-foreground",
 };
 
@@ -52,9 +52,9 @@ export const ARTIFACT_STATUS_TO_ICON: Record<ArtifactStatus, StatusIconStatus> =
   {
     [ArtifactStatus.Draft]: "todo",
     [ArtifactStatus.ReadyForReview]: "in-progress",
-    [ArtifactStatus.InReview]: "in-review",
-    [ArtifactStatus.Approved]: "complete",
-    [ArtifactStatus.Executed]: "complete",
+    [ArtifactStatus.InReview]: "in-progress",
+    [ArtifactStatus.Approved]: "in-review",
+    [ArtifactStatus.Executed]: "executed",
     [ArtifactStatus.Obsolete]: "wont-do",
   };
 
@@ -110,7 +110,7 @@ export const FEATURE_STATUS_LABELS: Record<FeatureStatus, string> = {
 export const FEATURE_STATUS_COLORS: Record<FeatureStatus, string> = {
   [FeatureStatus.NotStarted]: "text-muted-foreground",
   [FeatureStatus.InProgress]: "text-blue-600 dark:text-blue-400",
-  [FeatureStatus.InReview]: "text-yellow-600 dark:text-yellow-400",
+  [FeatureStatus.InReview]: "text-blue-600 dark:text-blue-400",
   [FeatureStatus.Completed]: "text-green-600 dark:text-green-400",
   [FeatureStatus.Obsolete]: "text-muted-foreground",
 };
@@ -118,7 +118,7 @@ export const FEATURE_STATUS_COLORS: Record<FeatureStatus, string> = {
 export const FEATURE_STATUS_TO_ICON: Record<FeatureStatus, StatusIconStatus> = {
   [FeatureStatus.NotStarted]: "todo",
   [FeatureStatus.InProgress]: "in-progress",
-  [FeatureStatus.InReview]: "in-review",
+  [FeatureStatus.InReview]: "in-progress",
   [FeatureStatus.Completed]: "complete",
   [FeatureStatus.Obsolete]: "wont-do",
 };

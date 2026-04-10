@@ -19,6 +19,7 @@ type StatusIconStatus =
   | "todo"
   | "in-progress"
   | "in-review"
+  | "executed"
   | "complete"
   | "wont-do";
 
@@ -37,6 +38,7 @@ const STATUS_LABELS: Record<StatusIconStatus, string> = {
   todo: "To do",
   "in-progress": "In progress",
   "in-review": "In review",
+  executed: "Executed",
   complete: "Complete",
   "wont-do": "Won't do",
 };
@@ -61,7 +63,10 @@ function getStatusConfig(status: StatusIconStatus): StatusConfig {
       return { percentage: 48.5, color: "var(--progress-foreground)", dashed: false, filled: false, icon: null };
     }
     case "in-review": {
-      return { percentage: 73.5, color: "var(--warning)", dashed: false, filled: false, icon: null };
+      return { percentage: 73.5, color: "var(--progress-foreground)", dashed: false, filled: false, icon: null };
+    }
+    case "executed": {
+      return { percentage: 100, color: "var(--progress-foreground)", dashed: false, filled: false, icon: null };
     }
     case "complete": {
       return { percentage: 100, color: "var(--success)", dashed: false, filled: true, icon: "check" };

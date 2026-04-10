@@ -1,4 +1,6 @@
+import type { CommentThreadWithComments } from "@repo/api/src/types/comment";
 import { ThreadSource, ThreadStatus } from "@repo/api/src/types/comment";
+import type { JsonObject } from "@repo/api/src/types/common";
 import { EntityType } from "@repo/api/src/types/entity-link";
 import { createArtifactThread as createLiveblocksThread } from "@repo/collaboration/room-management";
 import {
@@ -236,6 +238,35 @@ export const commentsService = {
     );
   },
 
+  /**
+   * Find all threads for a given artifact entity, optionally filtered by status.
+   */
+  findThreadsByArtifact(
+    organizationId: string,
+    entityId: string,
+    options?: { status?: ThreadStatus }
+  ): Promise<CommentThreadWithComments[]> {
+    return withDb(async (db) => {
+      const rows = await db.commentThread.findMany({
+        where: {
+          organizationId,
+          entityId,
+          entityType: EntityType.Artifact,
+          status: options?.status,
+        },
+        include: {
+          comments: {
+            where: { deletedAt: null },
+            include: { reactions: true, attachments: true },
+            orderBy: { createdAt: "asc" },
+          },
+        },
+        orderBy: { createdAt: "desc" },
+      });
+      return rows.map(toCommentThreadWithComments);
+    });
+  },
+
   createArtifactThread,
 };
 
@@ -283,6 +314,30 @@ async function createArtifactThread(
   }
 
   return { threadId: threadData.id, commentId: firstComment.id };
+}
+
+/**
+ * Map a Prisma CommentThread row (with comments included) to the API type.
+ * `resolvedBy` and `createdBy` are not fetched — set to null.
+ * Prisma's `Json` fields are cast to our stricter `JsonObject` type.
+ */
+function toCommentThreadWithComments(
+  row: Prisma.CommentThreadGetPayload<{
+    include: {
+      comments: { include: { reactions: true; attachments: true } };
+    };
+  }>
+): CommentThreadWithComments {
+  return {
+    ...row,
+    metadata: row.metadata as JsonObject | null,
+    resolvedBy: null,
+    createdBy: null,
+    comments: row.comments.map((c) => ({
+      ...c,
+      body: c.body as JsonObject,
+    })),
+  };
 }
 
 /**

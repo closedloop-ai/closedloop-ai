@@ -62,8 +62,8 @@ describe("artifactStatusColors", () => {
     );
   });
 
-  it("assigns success token classes to Executed", () => {
-    expect(artifactStatusColors[ArtifactStatus.Executed]).toContain("success");
+  it("assigns info token classes to Executed", () => {
+    expect(artifactStatusColors[ArtifactStatus.Executed]).toContain("info");
   });
 });
 
@@ -102,8 +102,8 @@ describe("ARTIFACT_STATUS_COLORS", () => {
     );
   });
 
-  it("assigns green color class to Executed", () => {
-    expect(ARTIFACT_STATUS_COLORS[ArtifactStatus.Executed]).toContain("green");
+  it("assigns blue color class to Executed", () => {
+    expect(ARTIFACT_STATUS_COLORS[ArtifactStatus.Executed]).toContain("blue");
   });
 });
 
