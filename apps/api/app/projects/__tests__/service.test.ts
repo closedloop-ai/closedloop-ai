@@ -208,16 +208,16 @@ describe("projectsService.calculateStatus", () => {
       { status: ArtifactStatus.Draft },
       { status: ArtifactStatus.InReview },
       { status: ArtifactStatus.Approved },
-      { status: ArtifactStatus.ReadyForReview },
+      { status: ArtifactStatus.Executed },
     ];
     expect(projectsService.calculateStatus(artifacts)).toBe(0);
   });
 
-  it("returns 100 when all artifacts are Executed", () => {
+  it("returns 100 when all artifacts are Done", () => {
     const artifacts = [
-      { status: ArtifactStatus.Executed },
-      { status: ArtifactStatus.Executed },
-      { status: ArtifactStatus.Executed },
+      { status: ArtifactStatus.Done },
+      { status: ArtifactStatus.Done },
+      { status: ArtifactStatus.Done },
     ];
     expect(projectsService.calculateStatus(artifacts)).toBe(100);
   });
@@ -231,9 +231,9 @@ describe("projectsService.calculateStatus", () => {
     expect(projectsService.calculateStatus(artifacts)).toBe(100);
   });
 
-  it("returns 50 for mixed Executed+Obsolete+Draft with 2-of-4 completed", () => {
+  it("returns 50 for mixed Done+Obsolete+Draft with 2-of-4 completed", () => {
     const artifacts = [
-      { status: ArtifactStatus.Executed },
+      { status: ArtifactStatus.Done },
       { status: ArtifactStatus.Obsolete },
       { status: ArtifactStatus.Draft },
       { status: ArtifactStatus.Draft },
@@ -241,9 +241,9 @@ describe("projectsService.calculateStatus", () => {
     expect(projectsService.calculateStatus(artifacts)).toBe(50);
   });
 
-  it("returns 25 for 1-of-4 Executed artifacts", () => {
+  it("returns 25 for 1-of-4 Done artifacts", () => {
     const artifacts = [
-      { status: ArtifactStatus.Executed },
+      { status: ArtifactStatus.Done },
       { status: ArtifactStatus.Draft },
       { status: ArtifactStatus.InReview },
       { status: ArtifactStatus.Approved },
@@ -251,20 +251,20 @@ describe("projectsService.calculateStatus", () => {
     expect(projectsService.calculateStatus(artifacts)).toBe(25);
   });
 
-  it("regression: 1-Approved-of-4 returns 0 while 1-Executed-of-4 returns 25, confirming Approved is not terminal", () => {
-    const approvedArtifacts = [
-      { status: ArtifactStatus.Approved },
-      { status: ArtifactStatus.Draft },
-      { status: ArtifactStatus.Draft },
-      { status: ArtifactStatus.Draft },
-    ];
+  it("regression: 1-Executed-of-4 returns 0 while 1-Done-of-4 returns 25, confirming Executed is not terminal", () => {
     const executedArtifacts = [
       { status: ArtifactStatus.Executed },
       { status: ArtifactStatus.Draft },
       { status: ArtifactStatus.Draft },
       { status: ArtifactStatus.Draft },
     ];
-    expect(projectsService.calculateStatus(approvedArtifacts)).toBe(0);
-    expect(projectsService.calculateStatus(executedArtifacts)).toBe(25);
+    const doneArtifacts = [
+      { status: ArtifactStatus.Done },
+      { status: ArtifactStatus.Draft },
+      { status: ArtifactStatus.Draft },
+      { status: ArtifactStatus.Draft },
+    ];
+    expect(projectsService.calculateStatus(executedArtifacts)).toBe(0);
+    expect(projectsService.calculateStatus(doneArtifacts)).toBe(25);
   });
 });

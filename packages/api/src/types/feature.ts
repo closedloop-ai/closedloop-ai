@@ -2,15 +2,27 @@ import type { Priority } from "./common";
 import type { CustomFieldValueDetail } from "./custom-field";
 import type { BasicUser } from "./user";
 
-export const FeatureStatus = {
-  NotStarted: "NOT_STARTED",
+// Feature Status — unified set used by UI dropdowns and display mappings
+const FeatureStatusActive = {
+  Draft: "DRAFT",
   InProgress: "IN_PROGRESS",
   InReview: "IN_REVIEW",
-  Completed: "COMPLETED",
+  Approved: "APPROVED",
+  Executed: "EXECUTED",
+  Done: "DONE",
   Obsolete: "OBSOLETE",
 } as const;
+// Deprecated values kept for Prisma type compatibility (data migrated away)
+export const FeatureStatus = {
+  ...FeatureStatusActive,
+  /** @deprecated Migrated to DRAFT */
+  NotStarted: "NOT_STARTED",
+  /** @deprecated Migrated to DONE */
+  Completed: "COMPLETED",
+} as const;
 export type FeatureStatus = (typeof FeatureStatus)[keyof typeof FeatureStatus];
-export const FEATURE_STATUS_OPTIONS = Object.values(FeatureStatus);
+/** Only active statuses — drives UI dropdowns */
+export const FEATURE_STATUS_OPTIONS = Object.values(FeatureStatusActive);
 
 export type Feature = {
   id: string;

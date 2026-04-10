@@ -87,7 +87,7 @@ export function CreateFeatureModal({
   >([]);
   const [selectedAssignee, setSelectedAssignee] = useState<User | null>(null);
   const [priority, setPriority] = useState<Priority>(Priority.Medium);
-  const [status, setStatus] = useState<FeatureStatus>(FeatureStatus.NotStarted);
+  const [status, setStatus] = useState<FeatureStatus>(FeatureStatus.Draft);
   const [error, setError] = useState<string | null>(null);
   const [relationshipsOpen, setRelationshipsOpen] = useState(false);
 
@@ -137,7 +137,7 @@ export function CreateFeatureModal({
     setSelectedArtifacts([]);
     setSelectedAssignee(null);
     setPriority(Priority.Medium);
-    setStatus(FeatureStatus.NotStarted);
+    setStatus(FeatureStatus.Draft);
     setError(null);
     setRelationshipsOpen(false);
     if (showProjectSelector) {

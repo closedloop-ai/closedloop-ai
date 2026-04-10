@@ -286,15 +286,14 @@ export const projectsService = {
   /**
    * Calculate project status based on artifact completion
    */
-  calculateStatus(artifacts: Array<{ status: ArtifactStatus }>): number {
+  calculateStatus(artifacts: Array<{ status: string }>): number {
     if (artifacts.length === 0) {
       return 0;
     }
 
     const completedCount = artifacts.filter(
       (a) =>
-        a.status === ArtifactStatus.Executed ||
-        a.status === ArtifactStatus.Obsolete
+        a.status === ArtifactStatus.Done || a.status === ArtifactStatus.Obsolete
     ).length;
 
     return Math.round((completedCount / artifacts.length) * 100);

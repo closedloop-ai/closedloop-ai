@@ -17,6 +17,7 @@ import {
 type StatusIconStatus =
   | "backlog"
   | "todo"
+  | "started"
   | "in-progress"
   | "in-review"
   | "executed"
@@ -36,6 +37,7 @@ interface StatusIconProps
 const STATUS_LABELS: Record<StatusIconStatus, string> = {
   backlog: "Backlog",
   todo: "To do",
+  started: "In Progress",
   "in-progress": "In progress",
   "in-review": "In review",
   executed: "Executed",
@@ -58,6 +60,9 @@ function getStatusConfig(status: StatusIconStatus): StatusConfig {
     }
     case "todo": {
       return { percentage: 0, color: "var(--progress)", dashed: false, filled: false, icon: null };
+    }
+    case "started": {
+      return { percentage: 25, color: "var(--progress-foreground)", dashed: false, filled: false, icon: null };
     }
     case "in-progress": {
       return { percentage: 48.5, color: "var(--progress-foreground)", dashed: false, filled: false, icon: null };

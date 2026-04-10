@@ -750,13 +750,13 @@ async function markLinkedFeaturesCompleted(
   const { count } = await tx.feature.updateMany({
     where: {
       id: { in: featureIds },
-      status: { not: FeatureStatus.Completed },
+      status: { not: FeatureStatus.Done },
     },
-    data: { status: FeatureStatus.Completed },
+    data: { status: FeatureStatus.Done },
   });
 
   if (count > 0) {
-    log.info("[handlePullRequest] Marked linked features as COMPLETED", {
+    log.info("[handlePullRequest] Marked linked features as DONE", {
       artifactId,
       featureIds,
       updatedCount: count,

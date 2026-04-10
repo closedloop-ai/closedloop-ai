@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  ARTIFACT_STATUS_OPTIONS,
   type Artifact,
   ArtifactStatus,
   ArtifactType,
@@ -502,7 +503,7 @@ export function CreateArtifactModal({
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {Object.values(ArtifactStatus).map((statusOption) => (
+                {ARTIFACT_STATUS_OPTIONS.map((statusOption) => (
                   <SelectItem key={statusOption} value={statusOption}>
                     {statusOption.charAt(0) +
                       statusOption.slice(1).toLowerCase()}

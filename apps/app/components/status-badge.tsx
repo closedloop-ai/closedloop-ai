@@ -97,21 +97,27 @@ export const previewDeploymentStateColors: Record<string, string> = {
 // Pre-configured color maps for common use cases
 export const artifactStatusColors: Record<ArtifactStatus, string> = {
   [ArtifactStatus.Draft]: "bg-muted text-muted-foreground border-muted",
-  [ArtifactStatus.ReadyForReview]: COLOR_PENDING,
+  [ArtifactStatus.InProgress]: COLOR_PROGRESS,
   [ArtifactStatus.InReview]: COLOR_PROGRESS,
   [ArtifactStatus.Approved]: COLOR_PROGRESS,
   [ArtifactStatus.Executed]: COLOR_PROGRESS,
+  [ArtifactStatus.Done]: COLOR_SUCCESS,
   [ArtifactStatus.Obsolete]:
     "bg-gray-100 text-gray-600 border-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-700",
+  /** @deprecated Migrated to IN_REVIEW */
+  [ArtifactStatus.ReadyForReview]: COLOR_PROGRESS,
 };
 
 export const artifactStatusLabels: Record<ArtifactStatus, string> = {
   [ArtifactStatus.Draft]: "Draft",
-  [ArtifactStatus.ReadyForReview]: "Ready for Review",
+  [ArtifactStatus.InProgress]: "In Progress",
   [ArtifactStatus.InReview]: "In Review",
   [ArtifactStatus.Approved]: "Approved",
   [ArtifactStatus.Executed]: "Executed",
+  [ArtifactStatus.Done]: "Done",
   [ArtifactStatus.Obsolete]: "Obsolete",
+  /** @deprecated Migrated to IN_REVIEW */
+  [ArtifactStatus.ReadyForReview]: "In Review",
 };
 
 export function ArtifactStatusBadge({
@@ -139,22 +145,32 @@ export const ImplementationPlanStatusBadge = ArtifactStatusBadge;
 
 // Feature status colors
 export const featureStatusColors: Record<FeatureStatus, string> = {
-  [FeatureStatus.NotStarted]: "bg-muted text-muted-foreground border-muted",
-  [FeatureStatus.InProgress]:
-    "bg-blue-100 text-blue-800 border-blue-200 dark:bg-blue-900/30 dark:text-blue-400 dark:border-blue-800",
+  [FeatureStatus.Draft]: "bg-muted text-muted-foreground border-muted",
+  [FeatureStatus.InProgress]: COLOR_PROGRESS,
   [FeatureStatus.InReview]: COLOR_PROGRESS,
-  [FeatureStatus.Completed]:
-    "bg-green-100 text-green-800 border-green-200 dark:bg-green-900/30 dark:text-green-400 dark:border-green-800",
+  [FeatureStatus.Approved]: COLOR_PROGRESS,
+  [FeatureStatus.Executed]: COLOR_PROGRESS,
+  [FeatureStatus.Done]: COLOR_SUCCESS,
   [FeatureStatus.Obsolete]:
     "bg-gray-100 text-gray-600 border-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-700",
+  /** @deprecated Migrated to DRAFT */
+  [FeatureStatus.NotStarted]: "bg-muted text-muted-foreground border-muted",
+  /** @deprecated Migrated to DONE */
+  [FeatureStatus.Completed]: COLOR_SUCCESS,
 };
 
 export const featureStatusLabels: Record<FeatureStatus, string> = {
-  [FeatureStatus.NotStarted]: "Not Started",
+  [FeatureStatus.Draft]: "Draft",
   [FeatureStatus.InProgress]: "In Progress",
   [FeatureStatus.InReview]: "In Review",
-  [FeatureStatus.Completed]: "Completed",
+  [FeatureStatus.Approved]: "Approved",
+  [FeatureStatus.Executed]: "Executed",
+  [FeatureStatus.Done]: "Done",
   [FeatureStatus.Obsolete]: "Obsolete",
+  /** @deprecated Migrated to DRAFT */
+  [FeatureStatus.NotStarted]: "Draft",
+  /** @deprecated Migrated to DONE */
+  [FeatureStatus.Completed]: "Done",
 };
 
 export function FeatureStatusBadge({

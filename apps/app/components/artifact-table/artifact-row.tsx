@@ -4,10 +4,14 @@ import type {
   ArtifactStatus,
   ArtifactWithWorkstream,
 } from "@repo/api/src/types/artifact";
-import { ArtifactType } from "@repo/api/src/types/artifact";
+import {
+  ARTIFACT_STATUS_OPTIONS,
+  ArtifactType,
+} from "@repo/api/src/types/artifact";
 import type { Priority } from "@repo/api/src/types/common";
 import type { JudgeFeedbackItem } from "@repo/api/src/types/evaluation";
 import type { FeatureWithWorkstream } from "@repo/api/src/types/feature";
+import { FEATURE_STATUS_OPTIONS } from "@repo/api/src/types/feature";
 import type { LoopWithUser } from "@repo/api/src/types/loop";
 import type { ProjectWithDetails } from "@repo/api/src/types/project";
 import { isDisplayableSlug } from "@repo/api/src/types/slug";
@@ -190,8 +194,16 @@ function NameCell({
 
   const statusOptions =
     item.kind === "artifact"
-      ? { labels: ARTIFACT_STATUS_LABELS, icons: ARTIFACT_STATUS_TO_ICON }
-      : { labels: FEATURE_STATUS_LABELS, icons: FEATURE_STATUS_TO_ICON };
+      ? {
+          labels: ARTIFACT_STATUS_LABELS,
+          icons: ARTIFACT_STATUS_TO_ICON,
+          options: ARTIFACT_STATUS_OPTIONS,
+        }
+      : {
+          labels: FEATURE_STATUS_LABELS,
+          icons: FEATURE_STATUS_TO_ICON,
+          options: FEATURE_STATUS_OPTIONS,
+        };
 
   const statusButton = (
     <button
@@ -247,7 +259,7 @@ function NameCell({
         <DropdownMenu>
           <DropdownMenuTrigger asChild>{statusButton}</DropdownMenuTrigger>
           <DropdownMenuContent align="start">
-            {Object.entries(statusOptions.labels).map(([value, label]) => (
+            {statusOptions.options.map((value) => (
               <DropdownMenuItem
                 className="hover:!bg-accent focus:!bg-accent data-[highlighted]:!bg-accent"
                 key={value}
@@ -264,7 +276,11 @@ function NameCell({
                     ]
                   }
                 />
-                {label}
+                {
+                  statusOptions.labels[
+                    value as keyof typeof statusOptions.labels
+                  ]
+                }
               </DropdownMenuItem>
             ))}
           </DropdownMenuContent>
