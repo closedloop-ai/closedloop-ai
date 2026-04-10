@@ -286,7 +286,7 @@ export const projectsService = {
   /**
    * Calculate project status based on artifact completion
    */
-  calculateStatus(artifacts: Array<{ status: string }>): number {
+  calculateStatus(artifacts: Array<{ status: ArtifactStatus }>): number {
     if (artifacts.length === 0) {
       return 0;
     }

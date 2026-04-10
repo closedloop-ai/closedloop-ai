@@ -50,7 +50,10 @@ import {
 import { useRunLoop } from "@/hooks/queries/use-loops";
 import { useProject, useProjectsByTeam } from "@/hooks/queries/use-projects";
 import { useTeamMembers } from "@/hooks/queries/use-teams";
-import { ARTIFACT_TYPE_LABELS } from "@/lib/project-constants";
+import {
+  ARTIFACT_STATUS_LABELS,
+  ARTIFACT_TYPE_LABELS,
+} from "@/lib/project-constants";
 import { transformApiUserToSelectUser } from "@/lib/user-utils";
 
 export type CreateArtifactModalProps = {
@@ -505,8 +508,7 @@ export function CreateArtifactModal({
               <SelectContent>
                 {ARTIFACT_STATUS_OPTIONS.map((statusOption) => (
                   <SelectItem key={statusOption} value={statusOption}>
-                    {statusOption.charAt(0) +
-                      statusOption.slice(1).toLowerCase()}
+                    {ARTIFACT_STATUS_LABELS[statusOption]}
                   </SelectItem>
                 ))}
               </SelectContent>
