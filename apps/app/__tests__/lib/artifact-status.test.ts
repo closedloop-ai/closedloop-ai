@@ -56,14 +56,14 @@ describe("artifactStatusColors", () => {
     expect(artifactStatusColors[ArtifactStatus.Executed]).toBeTruthy();
   });
 
-  it("assigns yellow color classes to ReadyForReview", () => {
+  it("assigns warning token classes to ReadyForReview", () => {
     expect(artifactStatusColors[ArtifactStatus.ReadyForReview]).toContain(
-      "yellow"
+      "warning"
     );
   });
 
-  it("assigns green color classes to Executed", () => {
-    expect(artifactStatusColors[ArtifactStatus.Executed]).toContain("green");
+  it("assigns success token classes to Executed", () => {
+    expect(artifactStatusColors[ArtifactStatus.Executed]).toContain("success");
   });
 });
 
