@@ -106,10 +106,13 @@ export function GenerationStatusBanner({
 
   const isActive = isActiveGenerationStatus(generationStatus.status);
   const isFailed = generationStatus.status === "FAILURE";
-  const failureRunKey = runKey ?? UNKNOWN_FAILURE_RUN_KEY;
-
-  if (isFailed && dismissedFailureRunKey === failureRunKey) {
-    return null;
+  if (isFailed && dismissedFailureRunKey) {
+    if (runKey && dismissedFailureRunKey === runKey) {
+      return null;
+    }
+    if (!runKey && dismissedFailureRunKey === UNKNOWN_FAILURE_RUN_KEY) {
+      return null;
+    }
   }
 
   return (
@@ -140,8 +143,10 @@ export function GenerationStatusBanner({
         {isFailed && (
           <button
             aria-label="Dismiss"
-            className="rounded-sm p-0.5 opacity-70 hover:opacity-100"
-            onClick={() => setDismissedFailureRunKey(failureRunKey)}
+            className="rounded-sm p-0.5 opacity-70 hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            onClick={() =>
+              setDismissedFailureRunKey(runKey ?? UNKNOWN_FAILURE_RUN_KEY)
+            }
             type="button"
           >
             <XIcon className="h-4 w-4" />
