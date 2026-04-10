@@ -153,7 +153,7 @@ export function TargetRepositoryFields({
   };
 
   const compactTriggerClassName =
-    "min-w-0 w-auto justify-start gap-1 bg-transparent dark:bg-transparent [&>:last-child]:hidden";
+    "min-w-0 w-auto justify-start gap-1 bg-transparent dark:bg-transparent [&>:last-child]:hidden [&_.text-muted-foreground]:hidden";
 
   if (layout === "horizontal") {
     if (githubStatus?.connected === false) {
@@ -239,7 +239,7 @@ export function TargetRepositoryFields({
             onValueChange={handleRepositoryChange}
             value={selectedRepoId}
           >
-            <SelectTrigger className="bg-transparent hover:bg-transparent dark:bg-transparent dark:hover:bg-transparent">
+            <SelectTrigger className="bg-transparent hover:bg-transparent dark:bg-transparent dark:hover:bg-transparent [&_.text-muted-foreground]:hidden">
               <SelectValue
                 placeholder={
                   isLoadingGitHubStatus || isLoadingRepos

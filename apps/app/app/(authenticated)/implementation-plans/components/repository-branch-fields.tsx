@@ -88,7 +88,10 @@ export function RepositoryBranchFields({
             onValueChange={handleRepoSelect}
             value={selectedRepoId}
           >
-            <SelectTrigger id="target-repo">
+            <SelectTrigger
+              className="[&_.text-muted-foreground]:hidden"
+              id="target-repo"
+            >
               <SelectValue
                 placeholder={
                   isLoadingGitHubStatus || isLoadingRepos

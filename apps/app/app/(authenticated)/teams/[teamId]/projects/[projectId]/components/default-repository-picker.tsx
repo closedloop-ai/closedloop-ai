@@ -144,7 +144,7 @@ export function DefaultRepositoryPicker({
           onValueChange={handleRepoSelect}
           value={selectedRepoId}
         >
-          <SelectTrigger className="h-8 text-xs">
+          <SelectTrigger className="h-8 text-xs [&_.text-muted-foreground]:hidden">
             <SelectValue
               placeholder={
                 isLoadingGitHubStatus || isLoadingRepos
