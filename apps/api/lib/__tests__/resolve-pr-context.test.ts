@@ -123,7 +123,7 @@ describe("resolvePrContext", () => {
     });
     mockInstallationRepositoryFindUnique.mockResolvedValue({
       fullName: "acme/other-repo",
-      installation: { installationId: "999" },
+      installation: { installationId: "999", status: "ACTIVE" },
     });
     mockInstallationRepositoryFindFirst.mockResolvedValue({
       id: "repo-correct",
