@@ -897,11 +897,25 @@ export async function getFileContentAtRef(
     const { data } = await octokit.repos.getContent({ owner, repo, path, ref });
 
     // Directories return arrays; symlinks/submodules have no content field
-    if (Array.isArray(data) || data.type !== "file" || !("content" in data)) {
+    if (Array.isArray(data) || data.type !== "file") {
       return null;
     }
 
-    return Buffer.from(data.content, "base64").toString("utf-8");
+    if (data.encoding === "none") {
+      const { data: blob } = await octokit.git.getBlob({
+        owner,
+        repo,
+        file_sha: data.sha,
+      });
+
+      return decodeGitHubTextContent(blob.content, blob.encoding);
+    }
+
+    if (!("content" in data) || typeof data.content !== "string") {
+      return null;
+    }
+
+    return decodeGitHubTextContent(data.content, data.encoding);
   } catch (error) {
     const status = (error as { status?: number }).status;
     if (status === 404) {
@@ -917,6 +931,24 @@ export async function getFileContentAtRef(
     });
     throw error;
   }
+}
+
+function decodeGitHubTextContent(
+  content: string,
+  encoding: string | undefined
+): string | null {
+  if (encoding === "base64") {
+    return Buffer.from(content, "base64").toString("utf-8");
+  }
+
+  if (encoding === "utf-8" || encoding === "utf8") {
+    return content;
+  }
+
+  log.warn("[github/content] Unsupported file encoding", {
+    encoding: encoding ?? null,
+  });
+  return null;
 }
 
 /**

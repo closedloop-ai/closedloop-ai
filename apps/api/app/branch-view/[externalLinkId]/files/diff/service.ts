@@ -1,7 +1,11 @@
 import "server-only";
 
 import type { BranchViewFileDiff } from "@repo/api/src/types/branch-view";
-import { getFileContentAtRef, getSinglePullRequest } from "@repo/github";
+import {
+  getFileContentAtRef,
+  getSinglePullRequest,
+  listPullRequestFiles,
+} from "@repo/github";
 import type { PrContext } from "@/lib/resolve-pr-context";
 
 // Common binary extensions
@@ -38,6 +42,21 @@ export type GetFileDiffResult =
   | { data: BranchViewFileDiff; error: null }
   | { data: null; error: string };
 
+export function isRequestedDiffInPullRequest(
+  files: Array<{
+    filename: string;
+    previous_filename?: string;
+  }>,
+  path: string,
+  previousPath: string | null
+): boolean {
+  return files.some(
+    (file) =>
+      file.filename === path &&
+      (file.previous_filename ?? null) === previousPath
+  );
+}
+
 /**
  * Fetch old (base) and new (head) content for a single file diff.
  * Uses immutable SHAs from the live GitHub PR (not mutable branch names).
@@ -50,15 +69,21 @@ export async function getFileDiff(
   const { installationId, owner, repo, pullNumber } = ctx;
 
   // Resolve immutable SHAs from GitHub
-  const livePr = await getSinglePullRequest(
-    installationId,
-    owner,
-    repo,
-    pullNumber
-  );
+  const [livePr, fileList] = await Promise.all([
+    getSinglePullRequest(installationId, owner, repo, pullNumber),
+    listPullRequestFiles(installationId, owner, repo, pullNumber),
+  ]);
 
   if (!livePr) {
     return { data: null, error: "Pull request not found on GitHub" };
+  }
+
+  if (!fileList) {
+    return { data: null, error: "Failed to load pull request files" };
+  }
+
+  if (!isRequestedDiffInPullRequest(fileList, path, previousPath)) {
+    return { data: null, error: "File is not part of this pull request" };
   }
 
   const baseSha = livePr.baseSha;

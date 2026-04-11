@@ -764,6 +764,27 @@ export type SyncResult =
   | { synced: true; error: null }
   | { synced: false; error: string };
 
+export function buildStaleCommentDeleteWhere(
+  pullRequestId: string,
+  liveCommentIds: Set<string>
+):
+  | {
+      pullRequestId: string;
+    }
+  | {
+      pullRequestId: string;
+      githubCommentId: { notIn: string[] };
+    } {
+  if (liveCommentIds.size === 0) {
+    return { pullRequestId };
+  }
+
+  return {
+    pullRequestId,
+    githubCommentId: { notIn: [...liveCommentIds] },
+  };
+}
+
 /**
  * User-initiated sync: fetch comments/reviews from GitHub API and upsert
  * into the existing GitHubPullRequest row. Callable from the sync endpoint.
@@ -803,15 +824,11 @@ export async function syncCommentsAndReviews(
     await upsertBackfillReviews(tx, gitHubPullRequest.id, apiRevs);
     await recomputeBackfillReviewDecision(tx, gitHubPullRequest.id);
 
-    // Delete stale comments no longer present on GitHub
-    if (liveCommentIds.size > 0) {
-      await tx.gitHubPRReviewComment.deleteMany({
-        where: {
-          pullRequestId: gitHubPullRequest.id,
-          githubCommentId: { notIn: [...liveCommentIds] },
-        },
-      });
-    }
+    // Delete stale comments no longer present on GitHub, including the
+    // "GitHub returned zero comments" case.
+    await tx.gitHubPRReviewComment.deleteMany({
+      where: buildStaleCommentDeleteWhere(gitHubPullRequest.id, liveCommentIds),
+    });
   });
 
   log.info("[branch-view/sync] Completed", {
