@@ -1,11 +1,15 @@
 "use client";
 
 import {
+  CommentKind,
+  PRReviewCommentState,
+  PrCommentAuthorKind,
+} from "@repo/api/src/types/branch-view";
+import {
   Avatar,
   AvatarFallback,
   AvatarImage,
 } from "@repo/design-system/components/ui/avatar";
-import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   Collapsible,
@@ -25,6 +29,11 @@ import {
   TabsTrigger,
 } from "@repo/design-system/components/ui/tabs";
 import { Textarea } from "@repo/design-system/components/ui/textarea";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@repo/design-system/components/ui/tooltip";
 import { cn } from "@repo/design-system/lib/utils";
 import {
   Bot,
@@ -33,14 +42,76 @@ import {
   ChevronRight,
   Ellipsis,
   FileCode,
+  Loader2,
   MessageSquare,
+  RefreshCw,
 } from "lucide-react";
 import { useMemo, useState } from "react";
+import {
+  useReplyToComment,
+  useSyncBranchView,
+} from "@/hooks/queries/use-branch-view";
 import { formatRelativeTime } from "@/lib/date-utils";
-import type { StubPrComment, StubPrCommentAuthorKind } from "../types";
+import { CommentMarkdown } from "@/lib/markdown";
+import type { BranchViewComment } from "../types";
+
+type CommentThread = {
+  root: BranchViewComment;
+  replies: BranchViewComment[];
+};
+
+/**
+ * Group flat comments into threads. Comments with inReplyToId are attached
+ * to their parent (matched by githubCommentId). Orphans become standalone roots.
+ */
+function buildThreads(comments: BranchViewComment[]): CommentThread[] {
+  const byGithubId = new Map<string, BranchViewComment>();
+  for (const c of comments) {
+    byGithubId.set(c.githubCommentId, c);
+  }
+
+  const threads = new Map<string, CommentThread>();
+
+  // First pass: roots (no inReplyToId)
+  for (const c of comments) {
+    if (!c.inReplyToId) {
+      threads.set(c.githubCommentId, { root: c, replies: [] });
+    }
+  }
+
+  // Second pass: attach replies to parent thread
+  for (const c of comments) {
+    if (!c.inReplyToId) {
+      continue;
+    }
+    const parent = byGithubId.get(c.inReplyToId);
+    if (parent && threads.has(parent.githubCommentId)) {
+      threads.get(parent.githubCommentId)!.replies.push(c);
+    } else {
+      // Orphan reply -- promote to standalone root
+      threads.set(c.githubCommentId, { root: c, replies: [] });
+    }
+  }
+
+  // Sort replies oldest-first within each thread
+  for (const thread of threads.values()) {
+    thread.replies.sort(
+      (a, b) =>
+        new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+    );
+  }
+
+  // Preserve original comment order (oldest-first by root)
+  return Array.from(threads.values()).sort(
+    (a, b) =>
+      new Date(a.root.createdAt).getTime() -
+      new Date(b.root.createdAt).getTime()
+  );
+}
 
 type BranchPrCommentsSectionProps = {
-  comments: StubPrComment[];
+  comments: BranchViewComment[];
+  externalLinkId: string;
   selectedCommentId: string | null;
   onSelectComment: (id: string | null) => void;
 };
@@ -65,15 +136,15 @@ function CommentAvatar({
   size = "md",
 }: {
   author: string;
-  authorAvatar?: string;
-  authorKind?: StubPrCommentAuthorKind;
+  authorAvatar?: string | null;
+  authorKind?: PrCommentAuthorKind;
   size?: AvatarSize;
 }) {
   const isMd = size === "md";
   const box = isMd ? "h-8 w-8" : "h-7 w-7";
   const iconClass = isMd ? "h-4 w-4" : "h-3.5 w-3.5";
 
-  if (authorKind === "bot") {
+  if (authorKind === PrCommentAuthorKind.Bot) {
     return (
       <span
         className={cn(
@@ -106,35 +177,45 @@ function CommentAvatar({
   );
 }
 
-function StatusBadge({ isResolved }: { isResolved: boolean }) {
+function isCommentResolved(state: BranchViewComment["state"]): boolean {
   return (
-    <Badge className="shrink-0 text-[11px]" variant="secondary">
-      {isResolved ? "Resolved" : "Pending"}
-    </Badge>
+    state === PRReviewCommentState.Addressed ||
+    state === PRReviewCommentState.Dismissed
   );
 }
 
 function CommentRowActions({
   isReplying,
   onReplyToggle,
+  showReply,
 }: Readonly<{
   isReplying: boolean;
   onReplyToggle: () => void;
+  showReply: boolean;
 }>) {
   return (
     <div className="flex shrink-0 items-center gap-1">
-      <Button
-        aria-label="Reply"
-        className={cn(
-          "h-7 w-7 shrink-0 p-0",
-          isReplying && "bg-accent text-accent-foreground"
-        )}
-        onClick={onReplyToggle}
-        size="icon"
-        variant="ghost"
-      >
-        <MessageSquare className="h-4 w-4" />
-      </Button>
+      {showReply ? (
+        <Tooltip delayDuration={0}>
+          <TooltipTrigger asChild>
+            <Button
+              aria-label="Reply"
+              className={cn(
+                "h-7 w-7 shrink-0 p-0",
+                isReplying && "bg-accent text-accent-foreground"
+              )}
+              onClick={onReplyToggle}
+              size="icon"
+              variant="ghost"
+            >
+              <MessageSquare className="h-4 w-4" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>
+            <p>Reply</p>
+          </TooltipContent>
+        </Tooltip>
+      ) : null}
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <Button
@@ -155,64 +236,10 @@ function CommentRowActions({
   );
 }
 
-/** Threaded reply row: same interactions as top-level (select, reply, overflow). */
-function ReplyRow({
-  reply,
-  isSelected,
-  isReplying,
-  onReplyToggle,
-  onSelect,
-}: {
-  reply: StubPrComment;
-  isSelected: boolean;
-  isReplying: boolean;
-  onReplyToggle: () => void;
-  onSelect: () => void;
-}) {
-  return (
-    <div
-      className={cn(
-        "flex w-full items-start gap-3 border-border border-b pt-3 pr-4 pb-4 pl-11 transition-colors",
-        isSelected ? "bg-accent" : "hover:bg-accent/50"
-      )}
-    >
-      <button
-        className="flex min-w-0 flex-1 gap-3 text-left outline-none"
-        onClick={onSelect}
-        type="button"
-      >
-        <CommentAvatar
-          author={reply.author}
-          authorAvatar={reply.authorAvatar}
-          authorKind={reply.authorKind}
-          size="sm"
-        />
-        <div className="flex min-w-0 flex-1 flex-col gap-2">
-          <div className="flex items-center gap-2">
-            <span className="font-semibold text-[13px] text-foreground">
-              {reply.author}
-            </span>
-            <span className="text-muted-foreground text-xs">
-              {formatRelativeTime(reply.createdAt)}
-            </span>
-            <StatusBadge isResolved={reply.isResolved} />
-          </div>
-          <p className="text-[13px] text-muted-foreground leading-[1.5]">
-            {reply.body}
-          </p>
-        </div>
-      </button>
-      <CommentRowActions
-        isReplying={isReplying}
-        onReplyToggle={onReplyToggle}
-      />
-    </div>
-  );
-}
-
 function InlineReplyComposer({
   draft,
   indent,
+  isPending,
   onCancel,
   onChangeDraft,
   onSubmit,
@@ -220,6 +247,7 @@ function InlineReplyComposer({
   draft: string;
   /** Match threaded reply horizontal inset (pl-11). */
   indent?: boolean;
+  isPending?: boolean;
   onCancel: () => void;
   onChangeDraft: (v: string) => void;
   onSubmit: () => void;
@@ -233,16 +261,23 @@ function InlineReplyComposer({
     >
       <Textarea
         className="min-h-[88px] resize-y text-sm"
+        disabled={isPending}
         onChange={(e) => onChangeDraft(e.target.value)}
         placeholder="Write a reply…"
         value={draft}
       />
       <div className="mt-2 flex justify-end gap-2">
-        <Button onClick={onCancel} size="sm" type="button" variant="outline">
+        <Button
+          disabled={isPending}
+          onClick={onCancel}
+          size="sm"
+          type="button"
+          variant="outline"
+        >
           Cancel
         </Button>
         <Button
-          disabled={draft.trim().length === 0}
+          disabled={draft.trim().length === 0 || isPending}
           onClick={onSubmit}
           size="sm"
           type="button"
@@ -256,12 +291,14 @@ function InlineReplyComposer({
 
 function CommentRow({
   comment,
+  replies,
   isSelected,
   isReplying,
   onReplyToggle,
   onSelect,
 }: {
-  comment: StubPrComment;
+  comment: BranchViewComment;
+  replies: BranchViewComment[];
   isSelected: boolean;
   isReplying: boolean;
   onReplyToggle: () => void;
@@ -270,76 +307,134 @@ function CommentRow({
   return (
     <div
       className={cn(
-        "flex w-full items-start gap-3 border-border border-b px-4 py-4 transition-colors",
+        "min-w-0 overflow-hidden rounded-lg border border-border transition-colors",
         isSelected ? "bg-accent" : "hover:bg-accent/50"
       )}
     >
-      <button
-        className="flex min-w-0 flex-1 gap-3 text-left outline-none"
-        onClick={onSelect}
-        type="button"
-      >
-        <CommentAvatar
-          author={comment.author}
-          authorAvatar={comment.authorAvatar}
-          authorKind={comment.authorKind}
-        />
-        <div className="flex min-w-0 flex-1 flex-col gap-2">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="flex items-center gap-2">
-              <span className="font-semibold text-[13px] text-foreground">
-                {comment.author}
-              </span>
-              <span className="text-muted-foreground text-xs">
-                {formatRelativeTime(comment.createdAt)}
-              </span>
-              <StatusBadge isResolved={comment.isResolved} />
+      <div className="flex w-full min-w-0 items-start gap-2 px-3 py-3 sm:gap-3 sm:px-4 sm:py-4">
+        <button
+          className="flex min-w-0 flex-1 gap-3 overflow-hidden text-left outline-none"
+          onClick={onSelect}
+          type="button"
+        >
+          <CommentAvatar
+            author={comment.author}
+            authorAvatar={comment.authorAvatar}
+            authorKind={comment.authorKind}
+          />
+          <div className="flex w-0 flex-1 flex-col gap-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <span className="font-semibold text-[13px] text-foreground">
+                  {comment.author}
+                </span>
+                <span className="text-muted-foreground text-xs">
+                  {formatRelativeTime(comment.createdAt)}
+                </span>
+              </div>
             </div>
+            {comment.path ? (
+              <div className="flex items-center gap-1">
+                <FileCode className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                <span className="truncate font-mono text-muted-foreground text-xs">
+                  {comment.path}
+                  {comment.line != null ? `:${comment.line}` : ""}
+                </span>
+              </div>
+            ) : null}
+            <CommentMarkdown className="text-muted-foreground">
+              {comment.body}
+            </CommentMarkdown>
           </div>
-          {comment.path ? (
-            <div className="flex items-center gap-1">
-              <FileCode className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-              <span className="truncate font-mono text-muted-foreground text-xs">
-                {comment.path}
-                {comment.line != null ? `:${comment.line}` : ""}
-              </span>
-            </div>
-          ) : null}
-          <p className="text-[13px] text-muted-foreground leading-[1.5]">
-            {comment.body}
-          </p>
-        </div>
-      </button>
-      <CommentRowActions
-        isReplying={isReplying}
-        onReplyToggle={onReplyToggle}
-      />
+        </button>
+        <CommentRowActions
+          isReplying={isReplying}
+          onReplyToggle={onReplyToggle}
+          showReply={comment.kind !== CommentKind.IssueComment}
+        />
+      </div>
+      {replies.length > 0 ? (
+        <>
+          <div className="mx-4 flex items-center gap-3">
+            <div className="h-px flex-1 bg-border" />
+            <span className="font-medium text-muted-foreground text-xs">
+              {replies.length} {replies.length === 1 ? "reply" : "replies"}
+            </span>
+            <div className="h-px flex-1 bg-border" />
+          </div>
+          <div className="space-y-3 border-muted border-l-2 bg-muted/20 px-3 py-3 pb-4 pl-8 sm:px-4 sm:pl-12">
+            {replies.map((reply) => (
+              <div className="flex items-start gap-2.5" key={reply.id}>
+                <CommentAvatar
+                  author={reply.author}
+                  authorAvatar={reply.authorAvatar}
+                  authorKind={reply.authorKind}
+                  size="sm"
+                />
+                <div className="flex min-w-0 flex-1 flex-col gap-1">
+                  <div className="flex items-center gap-2">
+                    <span className="font-semibold text-foreground text-xs">
+                      {reply.author}
+                    </span>
+                    <span className="text-[11px] text-muted-foreground">
+                      {formatRelativeTime(reply.createdAt)}
+                    </span>
+                  </div>
+                  <CommentMarkdown className="text-muted-foreground text-xs">
+                    {reply.body}
+                  </CommentMarkdown>
+                </div>
+              </div>
+            ))}
+            {comment.kind !== CommentKind.IssueComment ? (
+              <Button
+                className="h-7 text-muted-foreground text-xs"
+                onClick={onReplyToggle}
+                size="sm"
+                variant="ghost"
+              >
+                <MessageSquare className="mr-1.5 h-3.5 w-3.5" />
+                Reply
+              </Button>
+            ) : null}
+          </div>
+        </>
+      ) : null}
     </div>
   );
 }
 
 export function BranchPrCommentsSection({
   comments,
+  externalLinkId,
   selectedCommentId,
   onSelectComment,
 }: Readonly<BranchPrCommentsSectionProps>) {
+  const syncMutation = useSyncBranchView(externalLinkId);
+  const replyMutation = useReplyToComment(externalLinkId);
   const [expanded, setExpanded] = useState(true);
   const [filter, setFilter] = useState<CommentFilter>("all");
   const [replyingToCommentId, setReplyingToCommentId] = useState<string | null>(
     null
   );
   const [replyDraft, setReplyDraft] = useState("");
-  const resolvedCount = comments.filter((c) => c.isResolved).length;
+  const resolvedCount = comments.filter((c) =>
+    isCommentResolved(c.state)
+  ).length;
   const pendingCount = comments.length - resolvedCount;
-  const filteredComments = useMemo((): StubPrComment[] => {
+  const filteredComments = useMemo((): BranchViewComment[] => {
     if (filter === "all") {
       return comments;
     }
     if (filter === "resolved") {
-      return comments.filter((c) => c.isResolved);
+      return comments.filter((c) => isCommentResolved(c.state));
     }
-    return comments.filter((c) => !c.isResolved);
+    return comments.filter((c) => !isCommentResolved(c.state));
   }, [comments, filter]);
+  const threads = useMemo(
+    () => buildThreads(filteredComments),
+    [filteredComments]
+  );
 
   function emptyCommentMessage(): string {
     if (comments.length === 0) {
@@ -365,17 +460,30 @@ export function BranchPrCommentsSection({
     setReplyDraft("");
   }
 
-  function submitStubReply(): void {
-    closeReplyComposer();
+  function submitReply(): void {
+    if (!replyingToCommentId || replyDraft.trim().length === 0) {
+      return;
+    }
+    const comment = comments.find((c) => c.id === replyingToCommentId);
+    if (!comment) {
+      return;
+    }
+    replyMutation.mutate(
+      {
+        commentGithubId: Number(comment.githubCommentId),
+        body: replyDraft.trim(),
+      },
+      { onSuccess: closeReplyComposer }
+    );
   }
 
   return (
     <Collapsible onOpenChange={setExpanded} open={expanded}>
-      <section className="flex flex-col">
-        <div className="flex items-center justify-between gap-3 border-border border-b px-4 py-3">
+      <section className="flex min-w-0 flex-col">
+        <div className="flex flex-col gap-2 border-border border-b px-1 py-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3 sm:py-0">
           <CollapsibleTrigger asChild>
             <button
-              className="flex min-w-0 flex-1 cursor-pointer items-center gap-1 rounded-md text-left outline-none hover:bg-accent/30 [&[data-state=open]]:bg-transparent"
+              className="flex h-10 min-w-0 shrink-0 cursor-pointer items-center gap-1 text-left outline-none hover:bg-accent/30 sm:h-12 [&[data-state=open]]:bg-transparent"
               type="button"
             >
               <span className="font-semibold text-base text-foreground">
@@ -388,28 +496,61 @@ export function BranchPrCommentsSection({
               )}
             </button>
           </CollapsibleTrigger>
-          <div className="flex shrink-0 items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2 sm:gap-3">
             <Tabs
               className="w-auto"
               onValueChange={(v) => setFilter(v as CommentFilter)}
               value={filter}
             >
               <TabsList>
-                <TabsTrigger className="px-3" value="all">
+                <TabsTrigger
+                  className="px-2 text-xs sm:px-3 sm:text-sm"
+                  value="all"
+                >
                   All ({comments.length})
                 </TabsTrigger>
-                <TabsTrigger className="px-3" value="pending">
+                <TabsTrigger
+                  className="px-2 text-xs sm:px-3 sm:text-sm"
+                  value="pending"
+                >
                   Pending ({pendingCount})
                 </TabsTrigger>
-                <TabsTrigger className="px-3" value="resolved">
+                <TabsTrigger
+                  className="px-2 text-xs sm:px-3 sm:text-sm"
+                  value="resolved"
+                >
                   Resolved ({resolvedCount})
                 </TabsTrigger>
               </TabsList>
             </Tabs>
+            <Tooltip delayDuration={0}>
+              <TooltipTrigger asChild>
+                <Button
+                  aria-label="Sync comments from GitHub"
+                  className="h-8 w-8 shrink-0"
+                  disabled={syncMutation.isPending}
+                  onClick={() => syncMutation.mutate()}
+                  size="icon"
+                  type="button"
+                  variant="ghost"
+                >
+                  {syncMutation.isPending ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <RefreshCw className="h-4 w-4" />
+                  )}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>
+                <p>Sync comments from GitHub</p>
+              </TooltipContent>
+            </Tooltip>
             <Button
-              className="shrink-0"
+              className="h-8 shrink-0 px-3"
               disabled={pendingCount === 0}
+              size="sm"
               type="button"
+              variant="secondary"
             >
               <CheckCheck className="mr-1.5 h-4 w-4" />
               Resolve All
@@ -418,58 +559,40 @@ export function BranchPrCommentsSection({
         </div>
         <CollapsibleContent>
           <div className="border-border border-t">
-            {filteredComments.length === 0 ? (
+            {threads.length === 0 ? (
               <p className="py-8 text-center text-muted-foreground text-sm">
                 {emptyCommentMessage()}
               </p>
             ) : (
-              <ScrollArea className="max-h-[360px]">
-                <div className="flex flex-col">
-                  {filteredComments.map((comment) => (
-                    <div key={comment.id}>
+              <ScrollArea className="max-h-[420px]">
+                <div className="space-y-3 p-3 sm:p-4">
+                  {threads.map((thread) => (
+                    <div className="min-w-0" key={thread.root.id}>
                       <CommentRow
-                        comment={comment}
-                        isReplying={replyingToCommentId === comment.id}
-                        isSelected={selectedCommentId === comment.id}
-                        onReplyToggle={() => toggleReplyComposer(comment.id)}
+                        comment={thread.root}
+                        isReplying={replyingToCommentId === thread.root.id}
+                        isSelected={selectedCommentId === thread.root.id}
+                        onReplyToggle={() =>
+                          toggleReplyComposer(thread.root.id)
+                        }
                         onSelect={() =>
                           onSelectComment(
-                            selectedCommentId === comment.id ? null : comment.id
+                            selectedCommentId === thread.root.id
+                              ? null
+                              : thread.root.id
                           )
                         }
+                        replies={thread.replies}
                       />
-                      {replyingToCommentId === comment.id ? (
+                      {replyingToCommentId === thread.root.id ? (
                         <InlineReplyComposer
                           draft={replyDraft}
+                          isPending={replyMutation.isPending}
                           onCancel={closeReplyComposer}
                           onChangeDraft={setReplyDraft}
-                          onSubmit={submitStubReply}
+                          onSubmit={submitReply}
                         />
                       ) : null}
-                      {comment.replies.map((reply) => (
-                        <div key={reply.id}>
-                          <ReplyRow
-                            isReplying={replyingToCommentId === reply.id}
-                            isSelected={selectedCommentId === reply.id}
-                            onReplyToggle={() => toggleReplyComposer(reply.id)}
-                            onSelect={() =>
-                              onSelectComment(
-                                selectedCommentId === reply.id ? null : reply.id
-                              )
-                            }
-                            reply={reply}
-                          />
-                          {replyingToCommentId === reply.id ? (
-                            <InlineReplyComposer
-                              draft={replyDraft}
-                              indent
-                              onCancel={closeReplyComposer}
-                              onChangeDraft={setReplyDraft}
-                              onSubmit={submitStubReply}
-                            />
-                          ) : null}
-                        </div>
-                      ))}
                     </div>
                   ))}
                 </div>

@@ -1,48 +1,42 @@
 /**
- * Stub types for Branch view UI. Replace with API types when wiring real data.
+ * Branch view UI types.
+ * API types imported from @repo/api/src/types/branch-view.
+ * This file contains UI-only constructs (file selection, section tagging).
  */
 
-export type StubChangedFile = {
-  path: string;
-  status: "added" | "modified" | "removed";
-  additions?: number;
-  deletions?: number;
+export type {
+  BranchViewComment,
+  BranchViewData,
+  BranchViewFile,
+  BranchViewFileDiff,
+  BranchViewReview,
+  ChecksStatus,
+  CommentKind,
+  FileChangeStatus,
+  PRReviewCommentState,
+  PrCommentAuthorKind,
+  ReviewDecision,
+} from "@repo/api/src/types/branch-view";
+
+export const FileSection = {
+  Local: "local",
+  Committed: "committed",
+} as const;
+export type FileSection = (typeof FileSection)[keyof typeof FileSection];
+
+/** A changed file annotated with a unique identity for selection. */
+export type ChangedFileEntry = {
+  fileId: string;
+  section: FileSection;
+  file: {
+    path: string;
+    previousPath?: string | null;
+    status: string;
+    additions?: number;
+    deletions?: number;
+  };
 };
 
-export type StubPrCommentAuthorKind = "user" | "bot";
-
-export type StubPrComment = {
-  id: string;
-  author: string;
-  /** Photo URL for user avatars (stub). */
-  authorAvatar?: string;
-  /** Bot comments use icon tile like the design mock. */
-  authorKind?: StubPrCommentAuthorKind;
-  body: string;
-  createdAt: string;
-  path?: string;
-  line?: number;
-  isResolved: boolean;
-  replies: StubPrComment[];
-};
-
-export type StubBranchViewData = {
-  externalLinkId: string;
-  prTitle: string;
-  externalUrl: string;
-  featureSlug: string;
-  featureTitle: string;
-  teamId: string | null;
-  teamName: string | null;
-  projectId: string | null;
-  projectName: string | null;
-  isAuthor: boolean;
-  producedByPlanSlug: string | null;
-  producedByPlanTitle: string | null;
-  committedFiles: StubChangedFile[];
-  localFiles: StubChangedFile[];
-  comments: StubPrComment[];
-  prState: "OPEN" | "MERGED" | "CLOSED";
-  reviewDecision: "APPROVED" | "CHANGES_REQUESTED" | "REVIEW_REQUIRED" | null;
-  checksStatus: "PASSING" | "FAILING" | "PENDING" | null;
-};
+export function buildFileId(section: FileSection, path: string): string {
+  return `${section}:${path}`;
+}

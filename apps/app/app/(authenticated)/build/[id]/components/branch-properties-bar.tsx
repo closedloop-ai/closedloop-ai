@@ -1,6 +1,7 @@
 "use client";
 
 import { ArtifactType } from "@repo/api/src/types/artifact";
+import { ChecksStatus, ReviewDecision } from "@repo/api/src/types/branch-view";
 import {
   Avatar,
   AvatarFallback,
@@ -11,7 +12,7 @@ import Link from "next/link";
 import { useCurrentUser } from "@/hooks/queries/use-users";
 import { ARTIFACT_TYPE_ICONS } from "@/lib/project-constants";
 import { getUserInitials } from "@/lib/user-utils";
-import type { StubBranchViewData } from "../types";
+import type { BranchViewData } from "../types";
 
 const PlanIcon = ARTIFACT_TYPE_ICONS[ArtifactType.ImplementationPlan];
 
@@ -31,30 +32,34 @@ type PrStatus =
   | "checks_failing"
   | "checks_pending"
   | "changes_requested"
+  | "commented"
   | "review_required"
   | "approved"
   | "checks_passing";
 
 function getPrStatus(
-  reviewDecision: StubBranchViewData["reviewDecision"],
-  checksStatus: StubBranchViewData["checksStatus"]
+  reviewDecision: BranchViewData["reviewDecision"],
+  checksStatus: BranchViewData["checksStatus"]
 ): PrStatus | null {
-  if (checksStatus === "FAILING") {
+  if (checksStatus === ChecksStatus.Failing) {
     return "checks_failing";
   }
-  if (checksStatus === "PENDING") {
+  if (checksStatus === ChecksStatus.Pending) {
     return "checks_pending";
   }
-  if (reviewDecision === "CHANGES_REQUESTED") {
+  if (reviewDecision === ReviewDecision.ChangesRequested) {
     return "changes_requested";
   }
-  if (reviewDecision === "REVIEW_REQUIRED") {
+  if (reviewDecision === null) {
     return "review_required";
   }
-  if (reviewDecision === "APPROVED") {
+  if (reviewDecision === ReviewDecision.Approved) {
     return "approved";
   }
-  if (checksStatus === "PASSING") {
+  if (reviewDecision === ReviewDecision.Commented) {
+    return "commented";
+  }
+  if (checksStatus === ChecksStatus.Passing) {
     return "checks_passing";
   }
   return null;
@@ -64,17 +69,18 @@ const PR_STATUS_LABELS: Record<PrStatus, string> = {
   checks_failing: "Checks failing",
   checks_pending: "Checks pending",
   changes_requested: "Changes requested",
+  commented: "Commented",
   review_required: "Review required",
   approved: "Approved",
   checks_passing: "Checks passing",
 };
 
 type BranchPropertiesBarProps = {
-  data: StubBranchViewData;
+  data: BranchViewData;
 };
 
 /**
- * Metadata bar under the title. Design: Properties Inline — only bottom border,
+ * Metadata bar under the title. Design: Properties Inline -- only bottom border,
  * no outer box. Chips in order: plan (if linked), feature (link to issue), You (if author), one PR status (if PR). Same chip style: rounded 6px, bg, 1px border, py-1.5 px-2, gap-2, text 12px font-medium.
  */
 export function BranchPropertiesBar({

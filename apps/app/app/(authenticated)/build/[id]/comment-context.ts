@@ -1,32 +1,23 @@
 import type { ArtifactChatPrCommentContext } from "@/components/artifact-editor/artifact-chat-panel";
-import type { StubPrComment } from "./types";
+import type { BranchViewComment } from "./types";
 
 export function findCommentById(
-  comments: StubPrComment[],
+  comments: BranchViewComment[],
   id: string | null
-): StubPrComment | null {
+): BranchViewComment | null {
   if (!id) {
     return null;
   }
-  for (const c of comments) {
-    if (c.id === id) {
-      return c;
-    }
-    const inReplies = findCommentById(c.replies, id);
-    if (inReplies) {
-      return inReplies;
-    }
-  }
-  return null;
+  return comments.find((c) => c.id === id) ?? null;
 }
 
 export function buildPrCommentChatContext(
-  comment: StubPrComment
+  comment: BranchViewComment
 ): ArtifactChatPrCommentContext {
   return {
     id: comment.id,
-    filePath: comment.path,
-    line: comment.line,
+    filePath: comment.path ?? undefined,
+    line: comment.line ?? undefined,
     body: comment.body,
   };
 }

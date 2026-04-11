@@ -46,7 +46,6 @@ export function ModeToggle() {
       <DropdownMenuTrigger asChild id={triggerId}>
         <Button
           className="shrink-0 text-foreground"
-          id={triggerId}
           size="icon"
           variant="ghost"
         >

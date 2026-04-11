@@ -17,10 +17,10 @@ import {
   type BreadcrumbEntry,
   Header,
 } from "@/app/(authenticated)/components/header";
-import type { StubBranchViewData } from "../types";
+import type { BranchViewData } from "../types";
 
 type BranchViewHeaderProps = {
-  data: StubBranchViewData;
+  data: BranchViewData;
   showChatPanel: boolean;
   onToggleChatPanel: () => void;
 };
