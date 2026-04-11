@@ -39,7 +39,7 @@ export function LocalChangesSection({
   return (
     <ChangesSection
       actionButton={
-        <Button className="h-8 px-3" size="sm">
+        <Button className="h-8 px-3" size="sm" type="button">
           <GitCommitHorizontal className="mr-1.5 h-4 w-4" />
           Commit & push
         </Button>

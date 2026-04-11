@@ -7,7 +7,6 @@ import type {
   BranchViewFile,
   BranchViewReview,
   FileChangeStatus,
-  PrCommentAuthorKind,
 } from "@repo/api/src/types/branch-view";
 import {
   ChecksStatus,
@@ -26,6 +25,9 @@ import {
 } from "@repo/github";
 import { log } from "@repo/observability/log";
 import type { PrContext } from "@/lib/resolve-pr-context";
+import { recomputeAndUpdateAggregate } from "@/lib/review-decision-utils";
+
+import { detectAuthorKind } from "./comment-utils";
 
 /**
  * Map GitHub file status string to our FileChangeStatus.
@@ -43,13 +45,6 @@ function mapFileStatus(status: string): FileChangeStatus {
     default:
       return "modified";
   }
-}
-
-/**
- * Detect bot authors by GitHub's [bot] suffix convention.
- */
-function detectAuthorKind(login: string): PrCommentAuthorKind {
-  return login.endsWith("[bot]") ? "bot" : "user";
 }
 
 /**
@@ -103,15 +98,6 @@ const VALID_REVIEW_STATES = new Set([
   "COMMENTED",
   "DISMISSED",
 ]);
-
-/**
- * Priority order for review decisions, matching pull-request-review-handler.ts.
- */
-const REVIEW_DECISION_PRIORITY: Record<string, number> = {
-  CHANGES_REQUESTED: 3,
-  APPROVED: 2,
-  COMMENTED: 1,
-};
 
 export type GetBranchViewResult =
   | { data: BranchViewData; error: null; backfillPromise?: Promise<void> }
@@ -539,7 +525,7 @@ async function backfillPullRequestData(
     await upsertBackfillReviews(tx, effectivePr.id, apiReviews);
 
     // 5. Recompute aggregate reviewDecision
-    await recomputeBackfillReviewDecision(tx, effectivePr.id);
+    await recomputeAndUpdateAggregate(tx, effectivePr.id);
   });
 
   log.info("[branch-view/backfill] Completed", {
@@ -563,48 +549,52 @@ async function upsertBackfillComments(
   apiInlineComments: ApiInlineComment[],
   apiGeneralComments: ApiGeneralComment[]
 ): Promise<void> {
-  for (const c of apiInlineComments) {
-    await tx.gitHubPRReviewComment.upsert({
-      where: { githubCommentId: String(c.id) },
-      create: {
-        pullRequestId,
-        githubCommentId: String(c.id),
-        inReplyToId: c.in_reply_to_id ? String(c.in_reply_to_id) : null,
-        reviewId: c.pull_request_review_id
-          ? String(c.pull_request_review_id)
-          : null,
-        body: c.body,
-        path: c.path,
-        line: c.line,
-        authorLogin: c.user?.login ?? "unknown",
-        authorAvatarUrl: c.user?.avatar_url ?? null,
-        state: "PENDING",
-        htmlUrl: c.html_url,
-        createdAt: new Date(c.created_at),
-      },
-      update: {},
-    });
-  }
+  await Promise.all(
+    apiInlineComments.map((c) =>
+      tx.gitHubPRReviewComment.upsert({
+        where: { githubCommentId: String(c.id) },
+        create: {
+          pullRequestId,
+          githubCommentId: String(c.id),
+          inReplyToId: c.in_reply_to_id ? String(c.in_reply_to_id) : null,
+          reviewId: c.pull_request_review_id
+            ? String(c.pull_request_review_id)
+            : null,
+          body: c.body,
+          path: c.path,
+          line: c.line,
+          authorLogin: c.user?.login ?? "unknown",
+          authorAvatarUrl: c.user?.avatar_url ?? null,
+          state: "PENDING",
+          htmlUrl: c.html_url,
+          createdAt: new Date(c.created_at),
+        },
+        update: {},
+      })
+    )
+  );
 
-  for (const c of apiGeneralComments) {
-    await tx.gitHubPRReviewComment.upsert({
-      where: { githubCommentId: String(c.id) },
-      create: {
-        pullRequestId,
-        githubCommentId: String(c.id),
-        reviewId: null,
-        body: c.body,
-        path: null,
-        line: null,
-        authorLogin: c.user?.login ?? "unknown",
-        authorAvatarUrl: c.user?.avatar_url ?? null,
-        state: "PENDING",
-        htmlUrl: c.html_url,
-        createdAt: new Date(c.created_at),
-      },
-      update: {},
-    });
-  }
+  await Promise.all(
+    apiGeneralComments.map((c) =>
+      tx.gitHubPRReviewComment.upsert({
+        where: { githubCommentId: String(c.id) },
+        create: {
+          pullRequestId,
+          githubCommentId: String(c.id),
+          reviewId: null,
+          body: c.body,
+          path: null,
+          line: null,
+          authorLogin: c.user?.login ?? "unknown",
+          authorAvatarUrl: c.user?.avatar_url ?? null,
+          state: "PENDING",
+          htmlUrl: c.html_url,
+          createdAt: new Date(c.created_at),
+        },
+        update: {},
+      })
+    )
+  );
 }
 
 async function upsertBackfillReviews(
@@ -621,68 +611,35 @@ async function upsertBackfillReviews(
 
   const latestByAuthor = keepLatestReviewPerAuthor(validReviews);
 
-  for (const r of latestByAuthor.values()) {
-    await tx.gitHubPRReview.upsert({
-      where: {
-        pullRequestId_authorLogin: {
-          pullRequestId,
-          authorLogin: r.user!.login,
+  await Promise.all(
+    Array.from(latestByAuthor.values()).map((r) =>
+      tx.gitHubPRReview.upsert({
+        where: {
+          pullRequestId_authorLogin: {
+            pullRequestId,
+            authorLogin: r.user!.login,
+          },
         },
-      },
-      create: {
-        pullRequestId,
-        githubReviewId: String(r.id),
-        authorLogin: r.user!.login,
-        authorAvatarUrl: r.user!.avatar_url ?? null,
-        state: r.state as PrismaReviewDecision,
-        body: r.body,
-        htmlUrl: r.html_url,
-        submittedAt: new Date(r.submitted_at!),
-      },
-      update: {
-        githubReviewId: String(r.id),
-        state: r.state as PrismaReviewDecision,
-        body: r.body,
-        htmlUrl: r.html_url,
-        submittedAt: new Date(r.submitted_at!),
-      },
-    });
-  }
-}
-
-async function recomputeBackfillReviewDecision(
-  tx: TransactionClient,
-  pullRequestId: string
-): Promise<void> {
-  const allReviews = await tx.gitHubPRReview.findMany({
-    where: { pullRequestId },
-    select: { state: true },
-  });
-
-  const activeStates = allReviews
-    .map((r) => r.state)
-    .filter((s) => s !== "DISMISSED");
-
-  let aggregateDecision: string | null = null;
-  if (activeStates.length > 0) {
-    let highest = activeStates[0];
-    for (const state of activeStates) {
-      if (
-        (REVIEW_DECISION_PRIORITY[state] ?? 0) >
-        (REVIEW_DECISION_PRIORITY[highest] ?? 0)
-      ) {
-        highest = state;
-      }
-    }
-    aggregateDecision = highest;
-  }
-
-  await tx.gitHubPullRequest.update({
-    where: { id: pullRequestId },
-    data: {
-      reviewDecision: aggregateDecision as PrismaReviewDecision | null,
-    },
-  });
+        create: {
+          pullRequestId,
+          githubReviewId: String(r.id),
+          authorLogin: r.user!.login,
+          authorAvatarUrl: r.user!.avatar_url ?? null,
+          state: r.state as PrismaReviewDecision,
+          body: r.body,
+          htmlUrl: r.html_url,
+          submittedAt: new Date(r.submitted_at!),
+        },
+        update: {
+          githubReviewId: String(r.id),
+          state: r.state as PrismaReviewDecision,
+          body: r.body,
+          htmlUrl: r.html_url,
+          submittedAt: new Date(r.submitted_at!),
+        },
+      })
+    )
+  );
 }
 
 /**
@@ -822,7 +779,7 @@ export async function syncCommentsAndReviews(
       apiGeneral
     );
     await upsertBackfillReviews(tx, gitHubPullRequest.id, apiRevs);
-    await recomputeBackfillReviewDecision(tx, gitHubPullRequest.id);
+    await recomputeAndUpdateAggregate(tx, gitHubPullRequest.id);
 
     // Delete stale comments no longer present on GitHub, including the
     // "GitHub returned zero comments" case.

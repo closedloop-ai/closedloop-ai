@@ -263,7 +263,9 @@ async function resolvePrByRepositoryAndNumber(
   const repoRow = await withDb((db) =>
     db.gitHubInstallationRepository.findFirst({
       where: {
-        fullName: toRepositoryFullName(parsedIdentity),
+        fullName: normalizeRepositoryFullName(
+          toRepositoryFullName(parsedIdentity)
+        ),
         installation: {
           organizationId,
           status: GitHubInstallationStatus.ACTIVE,
@@ -333,7 +335,9 @@ async function resolveInstallationFallback(params: {
   const repoRow = await withDb((db) =>
     db.gitHubInstallationRepository.findFirst({
       where: {
-        fullName: toRepositoryFullName(params.parsedIdentity),
+        fullName: normalizeRepositoryFullName(
+          toRepositoryFullName(params.parsedIdentity)
+        ),
         installation: { installationId },
       },
       select: { id: true },

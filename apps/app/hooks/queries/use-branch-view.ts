@@ -14,8 +14,8 @@ export const branchViewKeys = {
   details: () => [...branchViewKeys.all, "detail"] as const,
   detail: (id: string) => [...branchViewKeys.details(), id] as const,
   fileDiffs: () => [...branchViewKeys.all, "file-diff"] as const,
-  fileDiff: (id: string, path: string) =>
-    [...branchViewKeys.fileDiffs(), id, path] as const,
+  fileDiff: (id: string, path: string, previousPath?: string) =>
+    [...branchViewKeys.fileDiffs(), id, path, previousPath ?? ""] as const,
 };
 
 export function useBranchView(externalLinkId: string) {
@@ -37,7 +37,7 @@ export function useBranchViewFileDiff(
   const apiClient = useApiClient();
 
   return useQuery({
-    queryKey: branchViewKeys.fileDiff(externalLinkId, path ?? ""),
+    queryKey: branchViewKeys.fileDiff(externalLinkId, path ?? "", previousPath),
     queryFn: () => {
       const params = new URLSearchParams({ path: path! });
       if (previousPath) {

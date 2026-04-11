@@ -1,17 +1,11 @@
 import "server-only";
 
-import type {
-  BranchViewComment,
-  PrCommentAuthorKind,
-} from "@repo/api/src/types/branch-view";
+import type { BranchViewComment } from "@repo/api/src/types/branch-view";
 import { CommentKind } from "@repo/api/src/types/branch-view";
 import { withDb } from "@repo/database";
 import { replyToPullRequestReviewComment } from "@repo/github";
+import { detectAuthorKind } from "@/app/branch-view/[externalLinkId]/comment-utils";
 import type { PrContext } from "@/lib/resolve-pr-context";
-
-function detectAuthorKind(login: string): PrCommentAuthorKind {
-  return login.endsWith("[bot]") ? "bot" : "user";
-}
 
 export type ReplyToCommentResult =
   | { data: BranchViewComment; error: null }

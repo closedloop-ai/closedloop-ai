@@ -228,8 +228,8 @@ function CommentRowActions({
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
-          <DropdownMenuItem>Resolve thread</DropdownMenuItem>
-          <DropdownMenuItem>Copy link</DropdownMenuItem>
+          <DropdownMenuItem disabled>Resolve thread</DropdownMenuItem>
+          <DropdownMenuItem disabled>Copy link</DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
     </div>

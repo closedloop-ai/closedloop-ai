@@ -1116,27 +1116,39 @@ export async function replyToPullRequestReviewComment(
   pull_request_review_id: number | null;
   in_reply_to_id: number | null;
 }> {
-  const octokit = await getInstallationOctokit(installationId);
-  const { data } = await octokit.pulls.createReplyForReviewComment({
-    owner,
-    repo,
-    pull_number: pullNumber,
-    comment_id: commentId,
-    body,
-  });
+  try {
+    const octokit = await getInstallationOctokit(installationId);
+    const { data } = await octokit.pulls.createReplyForReviewComment({
+      owner,
+      repo,
+      pull_number: pullNumber,
+      comment_id: commentId,
+      body,
+    });
 
-  return {
-    id: data.id,
-    body: data.body,
-    user: data.user
-      ? { login: data.user.login, avatar_url: data.user.avatar_url }
-      : null,
-    created_at: data.created_at,
-    html_url: data.html_url,
-    path: data.path ?? null,
-    line: data.line ?? data.original_line ?? null,
-    pull_request_review_id: data.pull_request_review_id ?? null,
-    in_reply_to_id:
-      (data as { in_reply_to_id?: number }).in_reply_to_id ?? null,
-  };
+    return {
+      id: data.id,
+      body: data.body,
+      user: data.user
+        ? { login: data.user.login, avatar_url: data.user.avatar_url }
+        : null,
+      created_at: data.created_at,
+      html_url: data.html_url,
+      path: data.path ?? null,
+      line: data.line ?? data.original_line ?? null,
+      pull_request_review_id: data.pull_request_review_id ?? null,
+      in_reply_to_id:
+        (data as { in_reply_to_id?: number }).in_reply_to_id ?? null,
+    };
+  } catch (error) {
+    log.error("[github] Failed to reply to PR review comment", {
+      installationId,
+      owner,
+      repo,
+      pullNumber,
+      commentId,
+      error,
+    });
+    throw error;
+  }
 }
