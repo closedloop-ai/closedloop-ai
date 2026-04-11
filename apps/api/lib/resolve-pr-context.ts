@@ -224,10 +224,19 @@ async function resolvePrFromMetadata(params: {
       where: { id: prRow.repositoryId },
       select: {
         fullName: true,
-        installation: { select: { installationId: true } },
+        installation: { select: { installationId: true, status: true } },
       },
     })
   );
+
+  // Skip if the installation is no longer active (uninstalled/suspended)
+  if (repoRow?.installation.status !== GitHubInstallationStatus.ACTIVE) {
+    return {
+      gitHubPullRequest: toPrContextPullRequest(prRow),
+      repositoryId: prRow.repositoryId,
+      installationId: null,
+    };
+  }
 
   if (
     !matchesParsedPullRequestIdentity(params.parsedIdentity, {

@@ -22,7 +22,11 @@ export const GET = withAnyAuth<BranchViewData, "/branch-view/[externalLinkId]">(
 
       const result = await getBranchViewData(ctx, user);
       if (result.error || !result.data) {
-        return notFoundResponse(result.error ?? "Branch view data unavailable");
+        return errorResponse(
+          result.error ?? "Branch view data unavailable",
+          result.error,
+          404
+        );
       }
 
       if (result.backfillPromise) {
