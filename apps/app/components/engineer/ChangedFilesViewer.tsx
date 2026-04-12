@@ -20,6 +20,7 @@ import ReactDiffViewerBase, {
 } from "react-diff-viewer-continued";
 import { CommitDialog } from "@/components/engineer/CommitDialog";
 import { useThemeContext } from "@/components/engineer/ThemeProvider";
+import { diffViewerStyles } from "@/lib/diff-viewer-theme";
 import { getWorktreePath } from "@/lib/engineer/chat-utils";
 import {
   type FileDiff,
@@ -42,68 +43,6 @@ type ChangedFilesViewerProps = {
   repoPath: string;
   hideCommitButton?: boolean;
   onSelectedFileChange?: (file: string | null) => void;
-};
-
-/**
- * Custom styles for the diff viewer to match our dark theme
- */
-const diffViewerStyles = {
-  variables: {
-    light: {
-      diffViewerBackground: "hsl(var(--background))",
-      diffViewerColor: "hsl(var(--foreground))",
-      addedBackground: "rgba(46, 160, 67, 0.12)",
-      addedColor: "hsl(var(--foreground))",
-      removedBackground: "rgba(248, 81, 73, 0.12)",
-      removedColor: "hsl(var(--foreground))",
-      wordAddedBackground: "rgba(46, 160, 67, 0.30)",
-      wordRemovedBackground: "rgba(248, 81, 73, 0.30)",
-      addedGutterBackground: "rgba(46, 160, 67, 0.25)",
-      removedGutterBackground: "rgba(248, 81, 73, 0.25)",
-      gutterBackground: "hsl(var(--muted))",
-      gutterBackgroundDark: "hsl(var(--muted))",
-      highlightBackground: "rgba(0, 0, 0, 0.05)",
-      highlightGutterBackground: "rgba(0, 0, 0, 0.05)",
-      codeFoldGutterBackground: "hsl(var(--muted))",
-      codeFoldBackground: "hsl(var(--muted))",
-      emptyLineBackground: "hsl(var(--muted))",
-      codeFoldContentColor: "hsl(var(--muted-foreground))",
-    },
-    dark: {
-      diffViewerBackground: "hsl(var(--background))",
-      diffViewerColor: "hsl(var(--foreground))",
-      addedBackground: "rgba(46, 160, 67, 0.15)",
-      addedColor: "hsl(var(--foreground))",
-      removedBackground: "rgba(248, 81, 73, 0.15)",
-      removedColor: "hsl(var(--foreground))",
-      wordAddedBackground: "rgba(46, 160, 67, 0.4)",
-      wordRemovedBackground: "rgba(248, 81, 73, 0.4)",
-      addedGutterBackground: "rgba(46, 160, 67, 0.2)",
-      removedGutterBackground: "rgba(248, 81, 73, 0.2)",
-      gutterBackground: "hsl(var(--muted))",
-      gutterBackgroundDark: "hsl(var(--muted))",
-      highlightBackground: "rgba(255, 255, 255, 0.1)",
-      highlightGutterBackground: "rgba(255, 255, 255, 0.1)",
-      codeFoldGutterBackground: "hsl(var(--muted))",
-      codeFoldBackground: "hsl(var(--muted))",
-      emptyLineBackground: "hsl(var(--muted))",
-      codeFoldContentColor: "hsl(var(--muted-foreground))",
-    },
-  },
-  line: {
-    padding: "4px 8px",
-    fontSize: "12px",
-    fontFamily: "var(--font-mono), monospace",
-  },
-  gutter: {
-    padding: "4px 8px",
-    fontSize: "11px",
-    minWidth: "40px",
-  },
-  contentText: {
-    fontSize: "12px",
-    fontFamily: "var(--font-mono), monospace",
-  },
 };
 
 export function ChangedFilesViewer({

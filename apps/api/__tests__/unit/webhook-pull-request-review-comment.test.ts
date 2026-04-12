@@ -300,6 +300,7 @@ describe("handlePullRequestReviewComment", () => {
         create: {
           pullRequestId: "pr-uuid-456",
           githubCommentId: String(123_456_789),
+          inReplyToId: null,
           reviewId: "555",
           body: "This looks good!",
           path: "src/feature.ts",
