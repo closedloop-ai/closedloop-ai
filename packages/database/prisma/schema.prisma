@@ -42,10 +42,12 @@ enum WorkstreamState {
 }
 
 enum FeatureStatus {
-  NOT_STARTED
+  DRAFT
   IN_PROGRESS
   IN_REVIEW
-  COMPLETED
+  APPROVED
+  EXECUTED
+  DONE
   OBSOLETE
 
   @@map("IssueStatus")
@@ -73,11 +75,12 @@ enum LinkType {
 
 enum ArtifactStatus {
   DRAFT
+  IN_PROGRESS
   IN_REVIEW
   APPROVED
-  OBSOLETE
-  READY_FOR_REVIEW
   EXECUTED
+  DONE
+  OBSOLETE
 }
 
 enum ArtifactType {
@@ -856,7 +859,7 @@ model Feature {
   title          String
   slug           String
   description    String?       @db.Text
-  status         FeatureStatus @default(NOT_STARTED)
+  status         FeatureStatus @default(DRAFT)
   priority       Priority      @default(MEDIUM)
   assigneeId     String?       @map("assignee_id") @db.Uuid
   createdById    String        @map("created_by_id") @db.Uuid

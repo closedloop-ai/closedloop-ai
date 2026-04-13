@@ -169,7 +169,7 @@ async function ingestDecomposeArtifacts(
           description: buildFullDescription(feature),
           priority:
             PRIORITY_MAP[feature.priority ?? "MEDIUM"] ?? Priority.Medium,
-          status: FeatureStatus.NotStarted,
+          status: FeatureStatus.Draft,
         }
       );
 

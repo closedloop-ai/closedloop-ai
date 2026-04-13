@@ -52,7 +52,7 @@ export type EngineerFeaturesResultWithUser = EngineerTicketsResult & {
 function mapToSymphonyStatus(status: string): FeatureStatus {
   const lower = status.toLowerCase();
   if (lower === "done" || lower === "completed") {
-    return "COMPLETED";
+    return "DONE";
   }
   if (lower === "in progress" || lower === "started") {
     return "IN_PROGRESS";
@@ -61,9 +61,9 @@ function mapToSymphonyStatus(status: string): FeatureStatus {
     return "IN_REVIEW";
   }
   if (lower === "todo" || lower === "to do" || lower === "unstarted") {
-    return "NOT_STARTED";
+    return "DRAFT";
   }
-  return "NOT_STARTED";
+  return "DRAFT";
 }
 
 function toDisplayName(
