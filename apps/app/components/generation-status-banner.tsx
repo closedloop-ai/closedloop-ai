@@ -2,6 +2,7 @@
 
 import {
   type GenerationStatus,
+  getGenerationStatusRunKey,
   isActiveGenerationStatus,
 } from "@repo/api/src/types/artifact";
 import { toast } from "@repo/design-system/components/ui/sonner";
@@ -18,40 +19,15 @@ import { getStatusMessage } from "@/lib/generation-status-utils";
 type GenerationStatusBannerProps = {
   generationStatus: GenerationStatus | undefined;
   onGenerationComplete?: () => void;
+  onDismissFailure?: (runKey: string | null) => Promise<void> | void;
+  isDismissFailurePending?: boolean;
 };
-
-const UNKNOWN_FAILURE_RUN_KEY = "__unknown_failure_run__";
-
-function stringifyDate(date: Date | null): string | null {
-  if (!date) {
-    return null;
-  }
-  return date instanceof Date ? date.toISOString() : String(date);
-}
-
-function getGenerationRunKey(
-  generationStatus: GenerationStatus | undefined
-): string | null {
-  if (!generationStatus) {
-    return null;
-  }
-  if (generationStatus.correlationId) {
-    return `corr:${generationStatus.correlationId}`;
-  }
-  const startedAt = stringifyDate(generationStatus.startedAt);
-  if (startedAt) {
-    return `started:${startedAt}`;
-  }
-  const completedAt = stringifyDate(generationStatus.completedAt);
-  if (completedAt) {
-    return `completed:${completedAt}`;
-  }
-  return null;
-}
 
 export function GenerationStatusBanner({
   generationStatus,
   onGenerationComplete,
+  onDismissFailure,
+  isDismissFailurePending = false,
 }: Readonly<GenerationStatusBannerProps>) {
   const toastShownRef = useRef(false);
   const prevStatusRef = useRef<GenerationStatus["status"] | undefined>(
@@ -60,7 +36,9 @@ export function GenerationStatusBanner({
   const [dismissedFailureRunKey, setDismissedFailureRunKey] = useState<
     string | null
   >(null);
-  const runKey = getGenerationRunKey(generationStatus);
+  const runKey = generationStatus
+    ? (generationStatus.runKey ?? getGenerationStatusRunKey(generationStatus))
+    : null;
 
   const handleGenerationComplete = useEffectEvent(() => {
     onGenerationComplete?.();
@@ -106,13 +84,8 @@ export function GenerationStatusBanner({
 
   const isActive = isActiveGenerationStatus(generationStatus.status);
   const isFailed = generationStatus.status === "FAILURE";
-  if (isFailed && dismissedFailureRunKey) {
-    if (runKey && dismissedFailureRunKey === runKey) {
-      return null;
-    }
-    if (!runKey && dismissedFailureRunKey === UNKNOWN_FAILURE_RUN_KEY) {
-      return null;
-    }
+  if (isFailed && dismissedFailureRunKey && runKey === dismissedFailureRunKey) {
+    return null;
   }
 
   return (
@@ -144,9 +117,13 @@ export function GenerationStatusBanner({
           <button
             aria-label="Dismiss"
             className="rounded-sm p-0.5 opacity-70 hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            onClick={() =>
-              setDismissedFailureRunKey(runKey ?? UNKNOWN_FAILURE_RUN_KEY)
-            }
+            disabled={isDismissFailurePending}
+            onClick={() => {
+              if (runKey) {
+                setDismissedFailureRunKey(runKey);
+              }
+              onDismissFailure?.(runKey);
+            }}
             type="button"
           >
             <XIcon className="h-4 w-4" />
