@@ -198,6 +198,7 @@ export type PullRequestInfo = {
   createdAt: Date;
   checksStatus: ChecksStatus | null;
   reviewDecision: ReviewDecision | null;
+  externalLinkId: string | null;
 };
 
 // Generation status for artifacts being processed by GitHub Actions or Loops

@@ -765,6 +765,10 @@ export async function getSinglePullRequest(
   state: GitHubPRState;
   mergedAt: string | null;
   closedAt: string | null;
+  authorLogin: string | null;
+  isDraft: boolean;
+  headSha: string;
+  baseSha: string;
 } | null> {
   try {
     const octokit = await getInstallationOctokit(installationId);
@@ -791,6 +795,10 @@ export async function getSinglePullRequest(
       state,
       mergedAt: pr.merged_at ?? null,
       closedAt: pr.closed_at ?? null,
+      authorLogin: pr.user?.login ?? null,
+      isDraft: pr.draft ?? false,
+      headSha: pr.head.sha,
+      baseSha: pr.base.sha,
     };
   } catch (error) {
     log.warn("[github/pull-request] Failed to fetch single pull request", {
@@ -823,4 +831,324 @@ export async function getInstallationAccessToken(
   });
 
   return installationAuth.token;
+}
+
+/**
+ * List all files changed in a pull request.
+ * Uses pagination to retrieve up to all changed files.
+ * Returns null on error.
+ */
+export async function listPullRequestFiles(
+  installationId: string,
+  owner: string,
+  repo: string,
+  pullNumber: number
+): Promise<Array<{
+  filename: string;
+  previous_filename?: string;
+  status: string;
+  additions: number;
+  deletions: number;
+  patch?: string;
+}> | null> {
+  try {
+    const octokit = await getInstallationOctokit(installationId);
+    const files = await octokit.paginate(octokit.pulls.listFiles, {
+      owner,
+      repo,
+      pull_number: pullNumber,
+      per_page: 100,
+    });
+
+    return files.map((file) => ({
+      filename: file.filename,
+      previous_filename: file.previous_filename,
+      status: file.status,
+      additions: file.additions,
+      deletions: file.deletions,
+      patch: file.patch,
+    }));
+  } catch (error) {
+    log.warn("[github/pull-request] Failed to list pull request files", {
+      installationId,
+      owner,
+      repo,
+      pullNumber,
+      error: error instanceof Error ? error.message : "Unknown error",
+    });
+    return null;
+  }
+}
+
+/**
+ * Fetch file content at a specific git ref (branch, tag, or commit SHA).
+ * Returns the decoded UTF-8 string content, or null if the file does not exist
+ * or the path refers to a non-file (directory, symlink, submodule).
+ */
+export async function getFileContentAtRef(
+  installationId: string,
+  owner: string,
+  repo: string,
+  path: string,
+  ref: string
+): Promise<string | null> {
+  try {
+    const octokit = await getInstallationOctokit(installationId);
+    const { data } = await octokit.repos.getContent({ owner, repo, path, ref });
+
+    // Directories return arrays; symlinks/submodules have no content field
+    if (Array.isArray(data) || data.type !== "file") {
+      return null;
+    }
+
+    if (data.encoding === "none") {
+      const { data: blob } = await octokit.git.getBlob({
+        owner,
+        repo,
+        file_sha: data.sha,
+      });
+
+      return decodeGitHubTextContent(blob.content, blob.encoding);
+    }
+
+    if (!("content" in data) || typeof data.content !== "string") {
+      return null;
+    }
+
+    return decodeGitHubTextContent(data.content, data.encoding);
+  } catch (error) {
+    const status = (error as { status?: number }).status;
+    if (status === 404) {
+      return null;
+    }
+    log.warn("[github/content] Failed to fetch file content at ref", {
+      installationId,
+      owner,
+      repo,
+      path,
+      ref,
+      error: error instanceof Error ? error.message : "Unknown error",
+    });
+    throw error;
+  }
+}
+
+function decodeGitHubTextContent(
+  content: string,
+  encoding: string | undefined
+): string | null {
+  if (encoding === "base64") {
+    return Buffer.from(content, "base64").toString("utf-8");
+  }
+
+  if (encoding === "utf-8" || encoding === "utf8") {
+    return content;
+  }
+
+  log.warn("[github/content] Unsupported file encoding", {
+    encoding: encoding ?? null,
+  });
+  return null;
+}
+
+/**
+ * Reply to an existing pull request review comment.
+ * Returns the created reply comment's key fields.
+ */
+/**
+ * Fetch all review comments (inline code comments) for a pull request.
+ * Returns null on error.
+ */
+export async function listPullRequestReviewComments(
+  installationId: string,
+  owner: string,
+  repo: string,
+  pullNumber: number
+): Promise<Array<{
+  id: number;
+  path: string;
+  line: number | null;
+  body: string;
+  user: { login: string; avatar_url: string } | null;
+  created_at: string;
+  html_url: string;
+  pull_request_review_id: number | null;
+  in_reply_to_id: number | null;
+}> | null> {
+  try {
+    const octokit = await getInstallationOctokit(installationId);
+    const comments = await octokit.paginate(octokit.pulls.listReviewComments, {
+      owner,
+      repo,
+      pull_number: pullNumber,
+      per_page: 100,
+    });
+    return comments.map((c) => ({
+      id: c.id,
+      path: c.path,
+      line: c.line ?? c.original_line ?? null,
+      body: c.body,
+      user: c.user
+        ? { login: c.user.login, avatar_url: c.user.avatar_url }
+        : null,
+      created_at: c.created_at,
+      html_url: c.html_url,
+      pull_request_review_id: c.pull_request_review_id ?? null,
+      in_reply_to_id: (c as { in_reply_to_id?: number }).in_reply_to_id ?? null,
+    }));
+  } catch (error) {
+    log.error("[github] Failed to list PR review comments", {
+      owner,
+      repo,
+      pullNumber,
+      error,
+    });
+    return null;
+  }
+}
+
+/**
+ * Fetch all reviews for a pull request.
+ * Returns null on error.
+ */
+export async function listPullRequestReviews(
+  installationId: string,
+  owner: string,
+  repo: string,
+  pullNumber: number
+): Promise<Array<{
+  id: number;
+  user: { login: string; avatar_url: string } | null;
+  state: string;
+  body: string | null;
+  submitted_at: string | null;
+  html_url: string;
+}> | null> {
+  try {
+    const octokit = await getInstallationOctokit(installationId);
+    const reviews = await octokit.paginate(octokit.pulls.listReviews, {
+      owner,
+      repo,
+      pull_number: pullNumber,
+      per_page: 100,
+    });
+    return reviews.map((r) => ({
+      id: r.id,
+      user: r.user
+        ? { login: r.user.login, avatar_url: r.user.avatar_url }
+        : null,
+      state: r.state,
+      body: r.body ?? null,
+      submitted_at: r.submitted_at ?? null,
+      html_url: r.html_url,
+    }));
+  } catch (error) {
+    log.error("[github] Failed to list PR reviews", {
+      owner,
+      repo,
+      pullNumber,
+      error,
+    });
+    return null;
+  }
+}
+
+/**
+ * Fetch all general PR conversation comments (issue comments on a PR).
+ * These are non-inline comments posted in the PR conversation tab.
+ * Returns null on error.
+ */
+export async function listPullRequestIssueComments(
+  installationId: string,
+  owner: string,
+  repo: string,
+  pullNumber: number
+): Promise<Array<{
+  id: number;
+  user: { login: string; avatar_url: string } | null;
+  body: string;
+  created_at: string;
+  html_url: string;
+}> | null> {
+  try {
+    const octokit = await getInstallationOctokit(installationId);
+    const comments = await octokit.paginate(octokit.issues.listComments, {
+      owner,
+      repo,
+      issue_number: pullNumber,
+      per_page: 100,
+    });
+    return comments.map((c) => ({
+      id: c.id,
+      user: c.user
+        ? { login: c.user.login, avatar_url: c.user.avatar_url }
+        : null,
+      body: c.body ?? "",
+      created_at: c.created_at,
+      html_url: c.html_url,
+    }));
+  } catch (error) {
+    log.error("[github] Failed to list PR issue comments", {
+      owner,
+      repo,
+      pullNumber,
+      error,
+    });
+    return null;
+  }
+}
+
+export async function replyToPullRequestReviewComment(
+  installationId: string,
+  owner: string,
+  repo: string,
+  pullNumber: number,
+  commentId: number,
+  body: string
+): Promise<{
+  id: number;
+  body: string;
+  user: { login: string; avatar_url: string } | null;
+  created_at: string;
+  html_url: string;
+  path: string | null;
+  line: number | null;
+  pull_request_review_id: number | null;
+  in_reply_to_id: number | null;
+}> {
+  try {
+    const octokit = await getInstallationOctokit(installationId);
+    const { data } = await octokit.pulls.createReplyForReviewComment({
+      owner,
+      repo,
+      pull_number: pullNumber,
+      comment_id: commentId,
+      body,
+    });
+
+    return {
+      id: data.id,
+      body: data.body,
+      user: data.user
+        ? { login: data.user.login, avatar_url: data.user.avatar_url }
+        : null,
+      created_at: data.created_at,
+      html_url: data.html_url,
+      path: data.path ?? null,
+      line: data.line ?? data.original_line ?? null,
+      pull_request_review_id: data.pull_request_review_id ?? null,
+      in_reply_to_id:
+        (data as { in_reply_to_id?: number }).in_reply_to_id ?? null,
+    };
+  } catch (error) {
+    log.error("[github] Failed to reply to PR review comment", {
+      installationId,
+      owner,
+      repo,
+      pullNumber,
+      commentId,
+      error,
+    });
+    throw error;
+  }
 }

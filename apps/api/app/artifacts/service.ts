@@ -180,7 +180,9 @@ export const artifactsService = {
           )
         : [];
 
-    const pullRequestMap = buildPullRequestMap(pullRequestRecords);
+    const pullRequestMap = buildPullRequestMap(
+      pullRequestRecords.map((pr) => ({ ...pr, externalLinkId: null }))
+    );
 
     return artifacts.map((a) =>
       toArtifactWithWorkstream(a, { generationStatusMap, pullRequestMap })
@@ -340,7 +342,24 @@ export const artifactsService = {
       })
     );
 
-    return pr;
+    if (!pr) {
+      return null;
+    }
+
+    // Resolve ExternalLink ID via entity links (Artifact -> PRODUCES -> ExternalLink)
+    const entityLink = await withDb((db) =>
+      db.entityLink.findFirst({
+        where: {
+          sourceId: artifactId,
+          sourceType: "ARTIFACT",
+          targetType: "EXTERNAL_LINK",
+          linkType: "PRODUCES",
+        },
+        select: { targetId: true },
+      })
+    );
+
+    return { ...pr, externalLinkId: entityLink?.targetId ?? null };
   },
 
   /**

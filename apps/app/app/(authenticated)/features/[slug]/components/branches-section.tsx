@@ -17,6 +17,7 @@ import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { GitBranchIcon, GitMergeIcon, PlayIcon, PlusIcon } from "lucide-react";
+import Link from "next/link";
 import { useState } from "react";
 import { GenerationStatusIndicator } from "@/components/generation-status-indicator";
 import {
@@ -157,11 +158,9 @@ function BranchRow({ linked, onUnlink }: Readonly<BranchRowProps>) {
 
   return (
     <div className="flex items-center gap-4 px-2 py-1">
-      <a
+      <Link
         className="flex min-w-0 flex-1 items-center gap-1 rounded-md hover:bg-accent"
-        href={externalLink.externalUrl}
-        rel="noopener noreferrer"
-        target="_blank"
+        href={`/build/${externalLink.id}`}
       >
         <div className="flex shrink-0 items-center p-1">
           <PrStateIcon state={prMeta?.state ?? null} />
@@ -169,7 +168,7 @@ function BranchRow({ linked, onUnlink }: Readonly<BranchRowProps>) {
         <span className="truncate px-1 font-medium text-sm">
           {externalLink.title}
         </span>
-      </a>
+      </Link>
       <div className="flex h-9 shrink-0 items-center gap-2">
         <PrStateBadge state={prMeta?.state ?? null} />
         <OverflowMenu linkId={linked.id} onUnlink={onUnlink} />

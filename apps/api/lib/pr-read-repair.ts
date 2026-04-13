@@ -159,7 +159,7 @@ async function repairSinglePrLink(
 
   const currentMetadata = (updated.metadata ?? {}) as JsonObject;
 
-  const parsed = parsePullRequestMetadata(link.metadata);
+  const parsed = parsePullRequestMetadata(currentMetadata);
   const githubId = parsed?.githubId;
 
   const installationId = await resolveInstallationId(

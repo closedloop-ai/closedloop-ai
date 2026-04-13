@@ -24,12 +24,8 @@ import {
   X,
 } from "lucide-react";
 import { useState } from "react";
-import ReactMarkdown from "react-markdown";
-import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
-import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
-import remarkGfm from "remark-gfm";
 import type { CommentDisplayStatus } from "@/lib/engineer/pr-comment-tracker";
-import { getTextContent } from "@/lib/engineer/utils";
+import { CommentMarkdown } from "@/lib/markdown";
 
 /**
  * Format a date as relative time (e.g., "2 hours ago", "3 days ago")
@@ -133,58 +129,6 @@ function getStatusBadge(status: CommentDisplayStatus, commitSha?: string) {
 }
 
 /**
- * Shared markdown component overrides for comment rendering
- */
-const markdownComponents = {
-  code({
-    className,
-    children,
-    ...props
-  }: React.ComponentPropsWithoutRef<"code"> & { className?: string }) {
-    const match = /language-(\w+)/.exec(className || "");
-    const codeString = getTextContent(children).replace(/\n$/, "");
-
-    if (match) {
-      return (
-        <SyntaxHighlighter
-          className="!my-2 !rounded-lg !text-xs"
-          language={match[1]}
-          PreTag="div"
-          style={oneDark}
-        >
-          {codeString}
-        </SyntaxHighlighter>
-      );
-    }
-
-    if (codeString.includes("\n")) {
-      return (
-        <SyntaxHighlighter
-          className="!my-2 !rounded-lg !text-xs"
-          language="text"
-          PreTag="div"
-          style={oneDark}
-        >
-          {codeString}
-        </SyntaxHighlighter>
-      );
-    }
-
-    return (
-      <code
-        className="rounded bg-muted-foreground/20 px-1.5 py-0.5 font-mono text-[12px]"
-        {...props}
-      >
-        {children}
-      </code>
-    );
-  },
-  pre({ children }: { children?: React.ReactNode }) {
-    return <>{children}</>;
-  },
-};
-
-/**
  * PRCommentCard displays a single PR comment with its status and actions
  */
 const TRUNCATE_LENGTH = 200;
@@ -264,19 +208,13 @@ export function PRCommentCard({
 
       {/* Comment body */}
       <div className="mb-3">
-        <div
+        <CommentMarkdown
           className={cn(
-            "prose prose-sm dark:prose-invert prose-headings:my-1.5 prose-p:my-1 max-w-none prose-headings:text-sm text-[13px]",
             isLongComment && !isExpanded && "max-h-[6em] overflow-hidden"
           )}
         >
-          <ReactMarkdown
-            components={markdownComponents}
-            remarkPlugins={[remarkGfm]}
-          >
-            {comment.body}
-          </ReactMarkdown>
-        </div>
+          {comment.body}
+        </CommentMarkdown>
         {isLongComment && (
           <button
             className="mt-1.5 inline-flex cursor-pointer items-center gap-1 text-muted-foreground text-xs transition-colors hover:text-foreground"
@@ -324,14 +262,9 @@ export function PRCommentCard({
                     {formatRelativeTime(new Date(reply.createdAt))}
                   </span>
                 </div>
-                <div className="prose prose-sm dark:prose-invert prose-headings:my-1.5 prose-p:my-1 max-w-none prose-headings:text-sm text-[13px] text-foreground/75">
-                  <ReactMarkdown
-                    components={markdownComponents}
-                    remarkPlugins={[remarkGfm]}
-                  >
-                    {reply.body}
-                  </ReactMarkdown>
-                </div>
+                <CommentMarkdown className="text-foreground/75">
+                  {reply.body}
+                </CommentMarkdown>
               </div>
             ))}
           </div>
