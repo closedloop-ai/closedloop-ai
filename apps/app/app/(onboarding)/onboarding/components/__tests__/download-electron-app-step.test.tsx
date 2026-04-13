@@ -36,6 +36,26 @@ const DEFAULT_ELECTRON_STATE = {
   checkedAt: null,
 };
 
+const MOCK_API_KEY_RESPONSE = {
+  id: "key-1",
+  organizationId: "org-1",
+  userId: "user-1",
+  name: "ClosedLoop Desktop",
+  keyPrefix: "cl_",
+  expiresAt: null,
+  scopes: ["read", "write"],
+  lastUsedAt: null,
+  createdAt: new Date(),
+  revokedAt: null,
+  plaintext: "cl_test_secret_key_12345",
+};
+
+function makeMockKeyMutate() {
+  return vi.fn().mockImplementation((_input, options) => {
+    options?.onSuccess?.(MOCK_API_KEY_RESPONSE);
+  });
+}
+
 describe("DownloadElectronAppStep", () => {
   const mockOnNext = vi.fn();
   const mockMutate = vi.fn();
@@ -113,13 +133,11 @@ describe("DownloadElectronAppStep", () => {
 
       render(<DownloadElectronAppStep onNext={mockOnNext} />);
 
-      // The download link is rendered but disabled, and shows the spinner
       const downloadLink = screen.getByRole("link", {
         name: DOWNLOAD_FOR_MACOS,
       });
-      expect(
-        downloadLink.closest("button") ?? downloadLink
-      ).toBeInTheDocument();
+      expect(downloadLink).toHaveAttribute("aria-disabled", "true");
+      expect(downloadLink.querySelector(".animate-spin")).not.toBeNull();
     });
   });
 
@@ -237,21 +255,7 @@ describe("DownloadElectronAppStep", () => {
 
     it("displays the generated API key after successful mutation", async () => {
       mockUseCreatePlatformApiKey.mockReturnValue({
-        mutate: vi.fn().mockImplementation((_input, options) => {
-          options?.onSuccess?.({
-            id: "key-1",
-            organizationId: "org-1",
-            userId: "user-1",
-            name: "ClosedLoop Desktop",
-            keyPrefix: "cl_",
-            expiresAt: null,
-            scopes: ["read", "write"],
-            lastUsedAt: null,
-            createdAt: new Date(),
-            revokedAt: null,
-            plaintext: "cl_test_secret_key_12345",
-          });
-        }),
+        mutate: makeMockKeyMutate(),
         isPending: false,
       });
 
@@ -273,21 +277,7 @@ describe("DownloadElectronAppStep", () => {
 
     it("hides the Generate API Key button after a key is generated", async () => {
       mockUseCreatePlatformApiKey.mockReturnValue({
-        mutate: vi.fn().mockImplementation((_input, options) => {
-          options?.onSuccess?.({
-            id: "key-1",
-            organizationId: "org-1",
-            userId: "user-1",
-            name: "ClosedLoop Desktop",
-            keyPrefix: "cl_",
-            expiresAt: null,
-            scopes: ["read", "write"],
-            lastUsedAt: null,
-            createdAt: new Date(),
-            revokedAt: null,
-            plaintext: "cl_test_secret_key_12345",
-          });
-        }),
+        mutate: makeMockKeyMutate(),
         isPending: false,
       });
 
@@ -323,21 +313,7 @@ describe("DownloadElectronAppStep", () => {
       });
 
       mockUseCreatePlatformApiKey.mockReturnValue({
-        mutate: vi.fn().mockImplementation((_input, options) => {
-          options?.onSuccess?.({
-            id: "key-1",
-            organizationId: "org-1",
-            userId: "user-1",
-            name: "ClosedLoop Desktop",
-            keyPrefix: "cl_",
-            expiresAt: null,
-            scopes: ["read", "write"],
-            lastUsedAt: null,
-            createdAt: new Date(),
-            revokedAt: null,
-            plaintext: "cl_test_secret_key_12345",
-          });
-        }),
+        mutate: makeMockKeyMutate(),
         isPending: false,
       });
 
@@ -383,21 +359,7 @@ describe("DownloadElectronAppStep", () => {
       });
 
       mockUseCreatePlatformApiKey.mockReturnValue({
-        mutate: vi.fn().mockImplementation((_input, options) => {
-          options?.onSuccess?.({
-            id: "key-1",
-            organizationId: "org-1",
-            userId: "user-1",
-            name: "ClosedLoop Desktop",
-            keyPrefix: "cl_",
-            expiresAt: null,
-            scopes: ["read", "write"],
-            lastUsedAt: null,
-            createdAt: new Date(),
-            revokedAt: null,
-            plaintext: "cl_test_secret_key_12345",
-          });
-        }),
+        mutate: makeMockKeyMutate(),
         isPending: false,
       });
 

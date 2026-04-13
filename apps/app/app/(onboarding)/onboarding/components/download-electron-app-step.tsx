@@ -3,6 +3,7 @@
 import { Button } from "@repo/design-system/components/ui/button";
 import { Input } from "@repo/design-system/components/ui/input";
 import { Label } from "@repo/design-system/components/ui/label";
+import { cn } from "@repo/design-system/lib/utils";
 import {
   CheckCircleIcon,
   CheckIcon,
@@ -30,14 +31,12 @@ export function DownloadElectronAppStep({
   const createApiKey = useCreatePlatformApiKey();
 
   const [generatedKey, setGeneratedKey] = useState<string | null>(null);
-  const [skippedKey, setSkippedKey] = useState(false);
   const [copied, setCopied] = useState(false);
 
   const downloadUrl = release?.downloadUrl ?? null;
   const version = release?.version ?? null;
 
-  const canContinue =
-    electron.detected && (generatedKey !== null || skippedKey);
+  const canContinue = electron.detected && generatedKey !== null;
 
   const handleGenerateKey = () => {
     createApiKey.mutate(
@@ -158,10 +157,7 @@ export function DownloadElectronAppStep({
       <div className="flex items-center justify-between">
         <Button
           className="text-muted-foreground"
-          onClick={() => {
-            setSkippedKey(true);
-            onNext();
-          }}
+          onClick={onNext}
           size="sm"
           variant="ghost"
         >
@@ -206,14 +202,20 @@ function DownloadAction({
 
   return (
     <div className="space-y-3">
-      <Button
-        asChild
-        className="w-full"
-        disabled={isReleaseLoading || !downloadUrl}
-      >
+      <Button asChild className="w-full">
         <a
+          aria-disabled={isReleaseLoading || !downloadUrl}
+          className={cn(
+            (isReleaseLoading || !downloadUrl) &&
+              "pointer-events-none opacity-50"
+          )}
           download
           href={downloadUrl ?? "#"}
+          onClick={
+            isReleaseLoading || !downloadUrl
+              ? (e) => e.preventDefault()
+              : undefined
+          }
           rel="noopener noreferrer"
           target="_blank"
         >

@@ -47,6 +47,6 @@ export async function getLatestElectronRelease(): Promise<ElectronReleaseInfo | 
         error: error instanceof Error ? error.message : "Unknown error",
       }
     );
-    return null;
+    throw error;
   }
 }
