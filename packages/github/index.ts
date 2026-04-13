@@ -2,7 +2,6 @@ import "server-only";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { createAppAuth } from "@octokit/auth-app";
 import { Octokit } from "@octokit/rest";
-import type { ElectronReleaseInfo } from "@repo/api/src/types/electron";
 import { GitHubPRState } from "@repo/api/src/types/github";
 import { log } from "@repo/observability/log";
 import { keys } from "./keys";
@@ -29,7 +28,7 @@ function getDispatchRepo() {
  * Create an authenticated Octokit instance using the GitHub App installation token.
  * This generates a fresh token for the symphony-cli repo where workflows run.
  */
-async function getAuthenticatedOctokit(): Promise<Octokit> {
+export async function getAuthenticatedOctokit(): Promise<Octokit> {
   const config = getConfig();
   const [dispatchOwner, dispatchRepo] = getDispatchRepo();
 
@@ -824,52 +823,4 @@ export async function getInstallationAccessToken(
   });
 
   return installationAuth.token;
-}
-
-export type { ElectronReleaseInfo } from "@repo/api/src/types/electron";
-
-/**
- * Fetch the latest release info for the closedloop-electron app.
- * Returns the .dmg asset's browser_download_url, version tag, and release notes.
- */
-export async function getLatestElectronRelease(): Promise<ElectronReleaseInfo | null> {
-  const owner = "closedloop-ai";
-  const repo = "closedloop-electron";
-
-  try {
-    const octokit = await getAuthenticatedOctokit();
-    const { data: release } = await octokit.repos.getLatestRelease({
-      owner,
-      repo,
-    });
-
-    const dmgAsset = release.assets.find((asset) =>
-      asset.name.endsWith(".dmg")
-    );
-
-    if (!dmgAsset) {
-      log.warn(
-        "[github/electron-release] No .dmg asset found in latest release",
-        {
-          tag: release.tag_name,
-          assets: release.assets.map((a) => a.name),
-        }
-      );
-      return null;
-    }
-
-    return {
-      downloadUrl: dmgAsset.browser_download_url,
-      version: release.tag_name,
-      releaseNotes: release.body ?? "",
-    };
-  } catch (error) {
-    log.error(
-      "[github/electron-release] Failed to fetch latest electron release",
-      {
-        error: error instanceof Error ? error.message : "Unknown error",
-      }
-    );
-    return null;
-  }
 }

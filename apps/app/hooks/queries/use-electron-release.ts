@@ -16,7 +16,7 @@ export function useLatestElectronRelease(
 
   return useQuery({
     queryKey: electronReleaseKeys.latest(),
-    queryFn: () => apiClient.get<ElectronReleaseInfo>("/electron-releases"),
+    queryFn: () => apiClient.get<ElectronReleaseInfo>("/electron-release"),
     staleTime: 5 * 60 * 1000,
     ...options,
   });

@@ -270,7 +270,7 @@ export function HealthCheckDialog({
           <>
             <div className="space-y-4 py-2">
               <SystemCheckResults
-                afterRequired={renderAfterRequired({
+                afterRequired={AfterRequiredContent({
                   showWorktreeSetup,
                   worktreePath,
                   savingWorktree,
@@ -313,7 +313,7 @@ function PluginInstallGuidance() {
     <div className="space-y-2 rounded-lg border border-border bg-muted/30 p-3">
       <div className="flex items-center gap-2">
         <Package className="size-3.5 shrink-0 text-primary" />
-        <p className="font-medium text-sm">Install ClaudeCode plugins</p>
+        <p className="font-medium text-sm">Install Claude Code plugins</p>
       </div>
       <p className="text-muted-foreground text-xs">
         Required ClosedLoop plugins are not yet installed. Run the following
@@ -366,7 +366,7 @@ function WorktreeInlineSetup({
   );
 }
 
-function renderAfterRequired({
+function AfterRequiredContent({
   showWorktreeSetup,
   worktreePath,
   savingWorktree,
