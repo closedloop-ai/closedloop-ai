@@ -1,5 +1,6 @@
 import type { GenerationStatus } from "@repo/api/src/types/artifact";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@repo/design-system/components/ui/sonner", () => ({
@@ -317,5 +318,123 @@ describe("GenerationStatusBanner", () => {
     );
 
     expect(container.querySelector("a")).not.toBeInTheDocument();
+  });
+
+  // ---------------------------------------------------------------------------
+  // Dismiss behavior
+  // ---------------------------------------------------------------------------
+
+  it("renders a dismiss button for FAILURE state", () => {
+    render(
+      <GenerationStatusBanner
+        generationStatus={makeStatus({ status: "FAILURE", command: "plan" })}
+      />
+    );
+
+    expect(screen.getByRole("button", { name: "Dismiss" })).toBeInTheDocument();
+  });
+
+  it("does not render a dismiss button for active states", () => {
+    render(
+      <GenerationStatusBanner
+        generationStatus={makeStatus({ status: "RUNNING", command: "plan" })}
+      />
+    );
+
+    expect(
+      screen.queryByRole("button", { name: "Dismiss" })
+    ).not.toBeInTheDocument();
+  });
+
+  it("hides the banner when dismiss is clicked", async () => {
+    const user = userEvent.setup();
+    const { container } = render(
+      <GenerationStatusBanner
+        generationStatus={makeStatus({ status: "FAILURE", command: "plan" })}
+      />
+    );
+
+    expect(screen.getByText("Generation failed")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Dismiss" }));
+
+    expect(container.firstChild).toBeNull();
+  });
+
+  it("resets dismissed state when generation becomes active again", async () => {
+    const user = userEvent.setup();
+    const { rerender } = render(
+      <GenerationStatusBanner
+        generationStatus={makeStatus({ status: "FAILURE", command: "plan" })}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(screen.queryByText("Generation failed")).not.toBeInTheDocument();
+
+    // New generation starts — banner should reappear
+    rerender(
+      <GenerationStatusBanner
+        generationStatus={makeStatus({ status: "RUNNING", command: "plan" })}
+      />
+    );
+
+    expect(screen.getByText("Generating...")).toBeInTheDocument();
+  });
+
+  it("keeps failure dismissed for repeated updates from the same run", async () => {
+    const user = userEvent.setup();
+    const { rerender } = render(
+      <GenerationStatusBanner
+        generationStatus={makeStatus({
+          status: "FAILURE",
+          command: "plan",
+          correlationId: "same-run",
+        })}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(screen.queryByText("Generation failed")).not.toBeInTheDocument();
+
+    rerender(
+      <GenerationStatusBanner
+        generationStatus={makeStatus({
+          status: "FAILURE",
+          command: "plan",
+          correlationId: "same-run",
+        })}
+      />
+    );
+
+    expect(screen.queryByText("Generation failed")).not.toBeInTheDocument();
+  });
+
+  it("shows a new failure when the run identity changes without an active transition", async () => {
+    const user = userEvent.setup();
+    const { rerender } = render(
+      <GenerationStatusBanner
+        generationStatus={makeStatus({
+          status: "FAILURE",
+          command: "plan",
+          correlationId: "run-1",
+        })}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(screen.queryByText("Generation failed")).not.toBeInTheDocument();
+
+    rerender(
+      <GenerationStatusBanner
+        generationStatus={makeStatus({
+          status: "FAILURE",
+          command: "plan",
+          correlationId: "run-2",
+        })}
+      />
+    );
+
+    expect(screen.getByText("Generation failed")).toBeInTheDocument();
   });
 });
