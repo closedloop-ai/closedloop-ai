@@ -2,7 +2,10 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { NextRequest } from "next/server";
-import { ENGINEER_CHAT_TOOLS } from "@/lib/engineer/allowed-tools";
+import {
+  ENGINEER_CHAT_TOOLS,
+  withMcpTools,
+} from "@/lib/engineer/allowed-tools";
 import {
   getLearningCaptureInstruction,
   getOrgPatternsContext,
@@ -338,7 +341,7 @@ export async function POST(
 
   const shellPath = await getShellPath();
   const stream = new ReadableStream({
-    start(controller) {
+    async start(controller) {
       const streamState = createStreamState(
         (sessionId) => {
           // Eagerly persist session ID so we can resume if Claude gets killed
@@ -369,6 +372,8 @@ export async function POST(
           )
         );
 
+        const allowedTools = await withMcpTools(ALLOWED_TOOLS);
+
         const claudeArgs = [
           "-p",
           "--model",
@@ -376,7 +381,7 @@ export async function POST(
           "--verbose",
           "--output-format",
           "stream-json",
-          `--allowedTools=${ALLOWED_TOOLS}`,
+          `--allowedTools=${allowedTools}`,
         ];
 
         if (isResuming && history.sessionId) {

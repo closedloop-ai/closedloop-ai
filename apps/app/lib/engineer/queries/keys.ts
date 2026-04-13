@@ -68,5 +68,19 @@ export const queryKeys = {
     ["deploy-existing", repoPath, worktreePath] as const,
 
   // Health check domain
-  healthCheck: () => ["health-check"] as const,
+  healthCheck: (targetKey: string, expectedMcpUrl: string | null) =>
+    ["health-check", targetKey, expectedMcpUrl] as const,
+
+  // Generic chat domain
+  genericChatHistory: (chatKey: string) =>
+    ["generic-chat-history", chatKey] as const,
+  chatRunnerToken: (chatKey: string) => ["chat-runner-token", chatKey] as const,
+  branchWorktree: (
+    repoFullName: string,
+    headBranch: string,
+    prNumber: number
+  ) => ["branch-worktree", repoFullName, headBranch, prNumber] as const,
+
+  // Work directory domain
+  workDirectory: (ticketId: string) => ["work-directory", ticketId] as const,
 };

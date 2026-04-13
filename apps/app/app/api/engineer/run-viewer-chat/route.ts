@@ -12,6 +12,7 @@ import type { NextRequest } from "next/server";
 import {
   READONLY_CODEBASE_TOOLS,
   WEB_ONLY_TOOLS,
+  withMcpTools,
 } from "@/lib/engineer/allowed-tools";
 import { getShellPath } from "@/lib/engineer/shell-path";
 import {
@@ -252,7 +253,7 @@ async function spawnClaude(
 
   const shellPath = await getShellPath();
   return new ReadableStream({
-    start(controller) {
+    async start(controller) {
       const streamState = createStreamState(
         (sessionId) => {
           if (!history.claudeSessionId) {
@@ -275,8 +276,8 @@ async function spawnClaude(
         );
 
         const allowedTools = hasRunDir
-          ? READONLY_CODEBASE_TOOLS
-          : WEB_ONLY_TOOLS;
+          ? await withMcpTools(READONLY_CODEBASE_TOOLS)
+          : await withMcpTools(WEB_ONLY_TOOLS);
 
         const claudeArgs = [
           "-p",

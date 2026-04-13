@@ -174,6 +174,7 @@ async function spawnClaudeReview(
   model: string
 ): Promise<ChildProcess> {
   const shellPath = await getShellPath();
+  const allowedTools = await withMcpTools("Bash,Read,Glob,Grep,Task,TodoWrite");
   return spawn(
     "claude",
     [
@@ -184,7 +185,7 @@ async function spawnClaudeReview(
       "--model",
       model,
       "--allowedTools",
-      withMcpTools("Bash,Read,Glob,Grep,Task,TodoWrite"),
+      allowedTools,
       "--append-system-prompt",
       REVIEW_SYSTEM_PROMPT,
     ],

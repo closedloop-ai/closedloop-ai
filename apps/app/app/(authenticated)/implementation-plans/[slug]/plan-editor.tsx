@@ -32,7 +32,6 @@ import {
 import { TiptapToolbar } from "@repo/rich-text";
 import { Loader2Icon } from "lucide-react";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
-import { ArtifactChatPanel } from "@/components/artifact-editor/artifact-chat-panel";
 import { CollaborativeEditor } from "@/components/artifact-editor/collaborative-editor";
 import { EditableArtifactTitle } from "@/components/artifact-editor/editable-artifact-title";
 import { EditorToolbarActions } from "@/components/artifact-editor/editor-toolbar-actions";
@@ -41,6 +40,7 @@ import { MetadataPanel } from "@/components/artifact-editor/metadata-panel";
 import { StatusMetadataSection } from "@/components/artifact-editor/status-metadata-section";
 import { TargetRepositoryFields } from "@/components/artifact-editor/target-repository-fields";
 import { BackendMismatchModal } from "@/components/backend-mismatch-modal";
+import { ArtifactChatDrawer } from "@/components/chat/ArtifactChatDrawer";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { LoopDispatchTargetSelector } from "@/components/engineer/LoopDispatchTargetSelector";
 import { ExecutionLogDialog } from "@/components/execution-log/execution-log-dialog";
@@ -85,7 +85,7 @@ export function PlanEditor({
   onVersionChange,
   showHeader = true,
 }: Readonly<PlanEditorProps>) {
-  const chatFlag = useFeatureFlag("the-one-flag");
+  const chatFlag = useFeatureFlag("interactive-chat");
   const executionLogDialog = useExecutionLogDialog();
 
   const contentController = useArtifactContent({
@@ -252,7 +252,7 @@ export function PlanEditor({
 
   const header = showHeader ? (
     <PlanEditorHeader
-      canShowPanel={chatFlag?.enabled}
+      canShowPanel={chatFlag?.enabled === true}
       isApproved={isApproved}
       isDraft={isDraft}
       isExecuting={planActions.isExecuting}
@@ -421,7 +421,7 @@ export function PlanEditor({
         </ResizablePanel>
 
         {/* Right panel: Chat + Execution Log tabs */}
-        {chatFlag?.enabled !== false && uiState.showMetadataPanel && (
+        {chatFlag?.enabled === true && uiState.showMetadataPanel && (
           <>
             <ResizableHandle className="after:!w-[3px] z-20 hover:after:bg-primary" />
             <ResizablePanel defaultSize={25} maxSize={40} minSize={15}>
@@ -434,7 +434,12 @@ export function PlanEditor({
                   className="min-h-0 flex-1 overflow-hidden"
                   value="chat"
                 >
-                  <ArtifactChatPanel artifactId={plan.id} artifactType="plan" />
+                  <ArtifactChatDrawer
+                    artifactId={plan.id}
+                    artifactSlug={plan.slug}
+                    artifactTitle={plan.title}
+                    artifactType="plan"
+                  />
                 </TabsContent>
                 <TabsContent
                   className="min-h-0 flex-1 overflow-y-auto p-4"

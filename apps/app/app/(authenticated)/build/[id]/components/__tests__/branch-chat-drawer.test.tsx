@@ -1,0 +1,223 @@
+import { GitHubPRState } from "@repo/api/src/types/github";
+import { render } from "@testing-library/react";
+import { beforeEach, describe, expect, test, vi } from "vitest";
+import type { BranchViewData } from "../../types";
+
+const mockUseQuery = vi.fn();
+vi.mock("@tanstack/react-query", async () => {
+  const actual = await vi.importActual<typeof import("@tanstack/react-query")>(
+    "@tanstack/react-query"
+  );
+  return {
+    ...actual,
+    useQuery: (...args: unknown[]) => mockUseQuery(...args),
+  };
+});
+
+const capturedUseGenericChatOptions: {
+  value:
+    | {
+        chatKey: string;
+        provider: string;
+        context: string;
+        cwd?: string;
+      }
+    | undefined;
+} = { value: undefined };
+
+vi.mock("@/hooks/chat/use-generic-chat", () => ({
+  useGenericChat: (opts: {
+    chatKey: string;
+    provider: string;
+    context: string;
+    cwd?: string;
+  }) => {
+    capturedUseGenericChatOptions.value = opts;
+    return {
+      messages: [],
+      isLoading: false,
+      isStreaming: false,
+      streamingContent: "",
+      streamingBlocks: [],
+      streamStartedAt: "",
+      contextPercent: null,
+      error: null,
+      inputValue: "",
+      setInputValue: vi.fn(),
+      sendMessage: vi.fn(),
+      stopStreaming: vi.fn(),
+      clearHistory: vi.fn(),
+      currentProvider: null,
+      currentModel: null,
+    };
+  },
+}));
+
+const capturedChatPanelProps: {
+  value: {
+    notice?: string | null;
+    contextSlot?: React.ReactNode;
+  } | null;
+} = { value: null };
+
+vi.mock("@/components/chat/ChatPanel", () => ({
+  ChatPanel: (props: {
+    notice?: string | null;
+    contextSlot?: React.ReactNode;
+  }) => {
+    capturedChatPanelProps.value = props;
+    return null;
+  },
+}));
+
+vi.mock("@/lib/engineer/queries/health-check", () => ({
+  getHealthCheckTargetKey: (routing: {
+    mode: string;
+    computeTargetId: string | null;
+  }) => `${routing.mode}:${routing.computeTargetId ?? "none"}`,
+  healthCheckOptions: () => ({ queryKey: ["health"], queryFn: vi.fn() }),
+}));
+
+import { BranchChatDrawer } from "../branch-chat-drawer";
+
+const BASE_BRANCH_DATA: BranchViewData = {
+  externalLinkId: "ext-1",
+  prTitle: "Add feature X",
+  externalUrl: "https://github.com/acme/repo/pull/42",
+  prNumber: 42,
+  prHtmlUrl: "https://github.com/acme/repo/pull/42",
+  featureSlug: null,
+  featureTitle: null,
+  teamId: null,
+  teamName: null,
+  projectId: null,
+  projectName: null,
+  headBranch: "feat/x",
+  baseBranch: "main",
+  headSha: null,
+  prState: GitHubPRState.Open,
+  reviewDecision: null,
+  checksStatus: null,
+  isDraft: false,
+  authorLogin: null,
+  isAuthor: false,
+  repoFullName: "acme/repo",
+  committedFiles: [],
+  reviews: [],
+  comments: [],
+  producedByPlanSlug: null,
+  producedByPlanTitle: null,
+};
+
+beforeEach(() => {
+  capturedUseGenericChatOptions.value = undefined;
+  capturedChatPanelProps.value = null;
+  vi.clearAllMocks();
+  mockUseQuery.mockReturnValue({ data: undefined });
+});
+
+describe("BranchChatDrawer", () => {
+  test("passes chatKey derived from externalLinkId to useGenericChat", () => {
+    render(
+      <BranchChatDrawer
+        contextSelection={null}
+        data={BASE_BRANCH_DATA}
+        showFilesystemNotice={false}
+        worktreePath={null}
+      />
+    );
+    expect(capturedUseGenericChatOptions.value?.chatKey).toBe("branch:ext-1");
+  });
+
+  test("passes cwd matching worktreePath when provided", () => {
+    render(
+      <BranchChatDrawer
+        contextSelection={null}
+        data={BASE_BRANCH_DATA}
+        showFilesystemNotice={false}
+        worktreePath="/Users/dev/wt-1"
+      />
+    );
+    expect(capturedUseGenericChatOptions.value?.cwd).toBe("/Users/dev/wt-1");
+  });
+
+  test("passes cwd undefined when worktreePath is null", () => {
+    render(
+      <BranchChatDrawer
+        contextSelection={null}
+        data={BASE_BRANCH_DATA}
+        showFilesystemNotice={false}
+        worktreePath={null}
+      />
+    );
+    expect(capturedUseGenericChatOptions.value?.cwd).toBeUndefined();
+  });
+
+  test("renders notice when filesystem access is unavailable", () => {
+    render(
+      <BranchChatDrawer
+        contextSelection={null}
+        data={BASE_BRANCH_DATA}
+        showFilesystemNotice={true}
+        worktreePath={null}
+      />
+    );
+    expect(capturedChatPanelProps.value?.notice).toContain(
+      "No local checkout was found for this PR branch"
+    );
+  });
+
+  test("does not render notice when filesystem access is available", () => {
+    render(
+      <BranchChatDrawer
+        contextSelection={null}
+        data={BASE_BRANCH_DATA}
+        showFilesystemNotice={false}
+        worktreePath={null}
+      />
+    );
+    expect(capturedChatPanelProps.value?.notice).toBeNull();
+  });
+
+  test("does not render notice when worktreePath is present", () => {
+    render(
+      <BranchChatDrawer
+        contextSelection={null}
+        data={BASE_BRANCH_DATA}
+        showFilesystemNotice={false}
+        worktreePath="/Users/dev/wt-1"
+      />
+    );
+    expect(capturedChatPanelProps.value?.notice).toBeNull();
+  });
+
+  test("renders contextSlot when contextSelection is non-null", () => {
+    render(
+      <BranchChatDrawer
+        contextSelection={{
+          id: "comment-1",
+          filePath: "src/foo.ts",
+          line: 10,
+          body: "Looks suspicious",
+        }}
+        data={BASE_BRANCH_DATA}
+        showFilesystemNotice={false}
+        worktreePath={null}
+      />
+    );
+    expect(capturedChatPanelProps.value?.contextSlot).not.toBeNull();
+    expect(capturedChatPanelProps.value?.contextSlot).toBeDefined();
+  });
+
+  test("does not render contextSlot when contextSelection is null", () => {
+    render(
+      <BranchChatDrawer
+        contextSelection={null}
+        data={BASE_BRANCH_DATA}
+        showFilesystemNotice={false}
+        worktreePath={null}
+      />
+    );
+    expect(capturedChatPanelProps.value?.contextSlot).toBeNull();
+  });
+});

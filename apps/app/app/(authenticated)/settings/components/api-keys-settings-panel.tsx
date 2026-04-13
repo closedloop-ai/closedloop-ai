@@ -40,6 +40,7 @@ import {
 import { Loader2Icon, PlusIcon } from "lucide-react";
 import { type FormEvent, useState } from "react";
 import { ConfirmationDialog } from "@/components/confirmation-dialog";
+import { env } from "@/env";
 import {
   useCreatePlatformApiKey,
   usePlatformApiKeys,
@@ -341,6 +342,8 @@ const MCP_TOOL_GROUPS = [
 ] as const;
 
 function QuickStartGuide() {
+  const mcpServerUrl = env.NEXT_PUBLIC_MCP_SERVER_URL ?? "MCP server URL";
+
   return (
     <Card>
       <CardHeader>
@@ -354,13 +357,12 @@ function QuickStartGuide() {
         <div className="space-y-2">
           <p className="font-medium text-sm">Claude Code (CLI)</p>
           <pre className="overflow-x-auto rounded-md bg-muted p-3 font-mono text-xs">
-            {
-              "claude mcp add --transport http closedloop https://mcp.closedloop.ai/mcp"
-            }
+            {`claude mcp add --transport http your-mcp-name ${mcpServerUrl}`}
           </pre>
           <p className="text-muted-foreground text-xs">
-            You&apos;ll be prompted to authenticate via OAuth when the server is
-            first used.
+            Install it at the user/global scope so it is available across
+            projects. You&apos;ll be prompted to authenticate via OAuth when the
+            server is first used.
           </p>
         </div>
         <div className="space-y-2">
@@ -370,11 +372,11 @@ function QuickStartGuide() {
             <strong>
               Settings &rarr; Connectors &rarr; Add Custom Connector
             </strong>
-            . Set the name to <code className="text-xs">ClosedLoop</code> and
-            the Remote MCP server URL to:
+            . Use any connector name you want, add it at the user/global scope,
+            and set the Remote MCP server URL to:
           </p>
           <pre className="overflow-x-auto rounded-md bg-muted p-3 font-mono text-xs">
-            {"https://mcp.closedloop.ai/mcp"}
+            {mcpServerUrl}
           </pre>
         </div>
         <div className="space-y-2">

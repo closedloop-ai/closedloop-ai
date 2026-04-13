@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import type { ReviewConfig } from "@/components/engineer/CodexReviewSettingsDialog";
+import { env } from "@/env";
 import type {
   ReviewFinding,
   ReviewVerdict,
@@ -809,6 +810,7 @@ export function useReviewExecution(
               repoPath,
               sessionId: sid,
               provider: config.provider,
+              expectedMcpUrl: env.NEXT_PUBLIC_MCP_SERVER_URL,
             }),
           }
         );
@@ -859,6 +861,7 @@ export function useReviewExecution(
               repoPath,
               sessionId: sid,
               provider: config.provider,
+              expectedMcpUrl: env.NEXT_PUBLIC_MCP_SERVER_URL,
             }),
           }
         );

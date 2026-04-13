@@ -35,7 +35,6 @@ import { Loader2Icon } from "lucide-react";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { NewPlanModal } from "@/app/(authenticated)/implementation-plans/components/new-plan-modal";
 import { VersionSelector } from "@/app/(authenticated)/implementation-plans/components/version-selector";
-import { ArtifactChatPanel } from "@/components/artifact-editor/artifact-chat-panel";
 import { CollaborativeEditor } from "@/components/artifact-editor/collaborative-editor";
 import { EditableArtifactTitle } from "@/components/artifact-editor/editable-artifact-title";
 import { EditorToolbarActions } from "@/components/artifact-editor/editor-toolbar-actions";
@@ -43,6 +42,7 @@ import { EditorToolbarRow } from "@/components/artifact-editor/editor-toolbar-ro
 import { MetadataPanel } from "@/components/artifact-editor/metadata-panel";
 import { StatusMetadataSection } from "@/components/artifact-editor/status-metadata-section";
 import { TargetRepositoryFields } from "@/components/artifact-editor/target-repository-fields";
+import { ArtifactChatDrawer } from "@/components/chat/ArtifactChatDrawer";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { LoopDispatchTargetSelector } from "@/components/engineer/LoopDispatchTargetSelector";
 import { ExecutionLogDialog } from "@/components/execution-log/execution-log-dialog";
@@ -78,7 +78,7 @@ export function PRDEditor({
   currentVersion,
   onVersionChange,
 }: Readonly<PRDEditorProps>) {
-  const chatFlag = useFeatureFlag("the-one-flag");
+  const chatFlag = useFeatureFlag("interactive-chat");
   const executionLogDialog = useExecutionLogDialog();
 
   // Move dialog state
@@ -238,7 +238,7 @@ export function PRDEditor({
     <>
       {/* Header */}
       <PRDEditorHeader
-        canShowPanel={chatFlag?.enabled}
+        canShowPanel={chatFlag?.enabled === true}
         isEvaluating={pendingCommand === "evaluate_prd"}
         isGenerating={runLoop.isPending}
         isPending={isPending}
@@ -418,7 +418,7 @@ export function PRDEditor({
         </ResizablePanel>
 
         {/* Right panel: Chat + Execution Log tabs */}
-        {chatFlag?.enabled !== false && uiState.showMetadataPanel && (
+        {chatFlag?.enabled === true && uiState.showMetadataPanel && (
           <>
             <ResizableHandle className="after:!w-[3px] z-20 hover:after:bg-primary" />
             <ResizablePanel defaultSize={25} maxSize={40} minSize={15}>
@@ -431,7 +431,12 @@ export function PRDEditor({
                   className="min-h-0 flex-1 overflow-hidden"
                   value="chat"
                 >
-                  <ArtifactChatPanel artifactId={prd.id} artifactType="prd" />
+                  <ArtifactChatDrawer
+                    artifactId={prd.id}
+                    artifactSlug={prd.slug}
+                    artifactTitle={prd.title}
+                    artifactType="prd"
+                  />
                 </TabsContent>
                 <TabsContent
                   className="min-h-0 flex-1 overflow-y-auto p-4"

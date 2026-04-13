@@ -27,8 +27,11 @@ export const env = createEnv({
   server: {
     INTERNAL_API_SECRET: z.string().min(1).optional(),
   },
-  client: {},
+  client: {
+    NEXT_PUBLIC_MCP_SERVER_URL: z.string().url().optional(),
+  },
   runtimeEnv: {
     INTERNAL_API_SECRET: process.env.INTERNAL_API_SECRET,
+    NEXT_PUBLIC_MCP_SERVER_URL: process.env.NEXT_PUBLIC_MCP_SERVER_URL,
   },
 });
