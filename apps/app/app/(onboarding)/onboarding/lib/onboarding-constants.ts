@@ -2,6 +2,7 @@ import { OnboardingStep } from "@repo/api/src/types/onboarding";
 
 export const ONBOARDING_STEPS = [
   OnboardingStep.Welcome,
+  OnboardingStep.DownloadElectronApp,
   OnboardingStep.CreateTeam,
   OnboardingStep.CreateProject,
   OnboardingStep.ConnectGitHub,
