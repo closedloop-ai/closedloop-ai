@@ -9,10 +9,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@repo/design-system/components/ui/select";
-import { formatDistanceToNow } from "date-fns";
 import { ArrowRight } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
+import { GitHubRepositoryOptionLabel } from "@/components/github-repository-option-label";
 import {
   useGitHubBranches,
   useGitHubIntegrationStatus,
@@ -93,6 +93,9 @@ export function TargetRepositoryFields({
 
   // Derive selectedRepoId from targetRepo value (match fullName to find repo ID)
   const [selectedRepoId, setSelectedRepoId] = useState<string>("");
+  const selectedRepository = repositories?.find(
+    (repo) => repo.id === selectedRepoId
+  );
 
   // Sync selectedRepoId with targetRepo value (match fullName to find repo ID)
   useEffect(() => {
@@ -152,8 +155,25 @@ export function TargetRepositoryFields({
     onTargetBranchBlur(branch);
   };
 
+  const renderRepositoryTriggerValue = () => {
+    if (selectedRepository) {
+      return (
+        <GitHubRepositoryOptionLabel
+          repository={selectedRepository}
+          showLastActive={false}
+        />
+      );
+    }
+
+    if (targetRepo) {
+      return <span>{targetRepo}</span>;
+    }
+
+    return null;
+  };
+
   const compactTriggerClassName =
-    "min-w-0 w-auto justify-start gap-1 bg-transparent dark:bg-transparent [&>:last-child]:hidden [&_.text-muted-foreground]:hidden";
+    "min-w-0 w-auto justify-start gap-1 bg-transparent dark:bg-transparent [&>:last-child]:hidden";
 
   if (layout === "horizontal") {
     if (githubStatus?.connected === false) {
@@ -174,22 +194,14 @@ export function TargetRepositoryFields({
                   ? "Loading..."
                   : "Repository"
               }
-            />
+            >
+              {renderRepositoryTriggerValue()}
+            </SelectValue>
           </SelectTrigger>
           <SelectContent>
             {sortedRepositories.map((repo) => (
               <SelectItem key={repo.id} value={repo.id}>
-                <div className="flex flex-col">
-                  <span>{repo.fullName}</span>
-                  {repo.lastPushedAt && (
-                    <span className="text-muted-foreground text-xs">
-                      Last active{" "}
-                      {formatDistanceToNow(new Date(repo.lastPushedAt), {
-                        addSuffix: true,
-                      })}
-                    </span>
-                  )}
-                </div>
+                <GitHubRepositoryOptionLabel repository={repo} />
               </SelectItem>
             ))}
           </SelectContent>
@@ -239,29 +251,21 @@ export function TargetRepositoryFields({
             onValueChange={handleRepositoryChange}
             value={selectedRepoId}
           >
-            <SelectTrigger className="bg-transparent hover:bg-transparent dark:bg-transparent dark:hover:bg-transparent [&_.text-muted-foreground]:hidden">
+            <SelectTrigger className="bg-transparent hover:bg-transparent dark:bg-transparent dark:hover:bg-transparent">
               <SelectValue
                 placeholder={
                   isLoadingGitHubStatus || isLoadingRepos
                     ? "Loading repositories..."
                     : "Select a repository"
                 }
-              />
+              >
+                {renderRepositoryTriggerValue()}
+              </SelectValue>
             </SelectTrigger>
             <SelectContent>
               {sortedRepositories.map((repo) => (
                 <SelectItem key={repo.id} value={repo.id}>
-                  <div className="flex flex-col">
-                    <span>{repo.fullName}</span>
-                    {repo.lastPushedAt && (
-                      <span className="text-muted-foreground text-xs">
-                        Last active{" "}
-                        {formatDistanceToNow(new Date(repo.lastPushedAt), {
-                          addSuffix: true,
-                        })}
-                      </span>
-                    )}
-                  </div>
+                  <GitHubRepositoryOptionLabel repository={repo} />
                 </SelectItem>
               ))}
             </SelectContent>

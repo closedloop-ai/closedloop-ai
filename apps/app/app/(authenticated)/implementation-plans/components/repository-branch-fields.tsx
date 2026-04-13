@@ -6,8 +6,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@repo/design-system/components/ui/select";
-import { formatDistanceToNow } from "date-fns";
 import { useEffect, useMemo } from "react";
+import { GitHubRepositoryOptionLabel } from "@/components/github-repository-option-label";
 import {
   useGitHubBranches,
   useGitHubIntegrationStatus,
@@ -16,6 +16,7 @@ import {
 import { sortRepositoriesByActivity } from "@/lib/sort-utils";
 
 type RepositoryBranchFieldsProps = {
+  targetRepo: string;
   targetBranch: string;
   selectedRepoId: string;
   onRepositoryChange: (repoId: string, fullName: string) => void;
@@ -23,6 +24,7 @@ type RepositoryBranchFieldsProps = {
 };
 
 export function RepositoryBranchFields({
+  targetRepo,
   targetBranch,
   selectedRepoId,
   onRepositoryChange,
@@ -42,6 +44,9 @@ export function RepositoryBranchFields({
   const sortedRepositories = useMemo(
     () => (repositories ? sortRepositoriesByActivity(repositories) : []),
     [repositories]
+  );
+  const selectedRepository = repositories?.find(
+    (repo) => repo.id === selectedRepoId
   );
 
   // Auto-select default branch when branches load and no branch selected
@@ -71,6 +76,23 @@ export function RepositoryBranchFields({
     return "Select a branch";
   };
 
+  const renderRepositoryTriggerValue = () => {
+    if (selectedRepository) {
+      return (
+        <GitHubRepositoryOptionLabel
+          repository={selectedRepository}
+          showLastActive={false}
+        />
+      );
+    }
+
+    if (targetRepo) {
+      return <span>{targetRepo}</span>;
+    }
+
+    return null;
+  };
+
   return (
     <>
       <div className="space-y-2">
@@ -88,32 +110,21 @@ export function RepositoryBranchFields({
             onValueChange={handleRepoSelect}
             value={selectedRepoId}
           >
-            <SelectTrigger
-              className="[&_.text-muted-foreground]:hidden"
-              id="target-repo"
-            >
+            <SelectTrigger id="target-repo">
               <SelectValue
                 placeholder={
                   isLoadingGitHubStatus || isLoadingRepos
                     ? "Loading repositories..."
                     : "Select a repository"
                 }
-              />
+              >
+                {renderRepositoryTriggerValue()}
+              </SelectValue>
             </SelectTrigger>
             <SelectContent>
               {sortedRepositories.map((repo) => (
                 <SelectItem key={repo.id} value={repo.id}>
-                  <div className="flex flex-col">
-                    <span>{repo.fullName}</span>
-                    {repo.lastPushedAt ? (
-                      <span className="text-muted-foreground text-xs">
-                        Last active{" "}
-                        {formatDistanceToNow(new Date(repo.lastPushedAt), {
-                          addSuffix: true,
-                        })}
-                      </span>
-                    ) : null}
-                  </div>
+                  <GitHubRepositoryOptionLabel repository={repo} />
                 </SelectItem>
               ))}
             </SelectContent>

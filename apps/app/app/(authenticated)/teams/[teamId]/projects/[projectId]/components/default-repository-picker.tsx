@@ -9,8 +9,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@repo/design-system/components/ui/select";
-import { formatDistanceToNow } from "date-fns";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { GitHubRepositoryOptionLabel } from "@/components/github-repository-option-label";
 import {
   useGitHubBranches,
   useGitHubIntegrationStatus,
@@ -54,6 +54,31 @@ export function DefaultRepositoryPicker({
     () => (repositories ? sortRepositoriesByActivity(repositories) : []),
     [repositories]
   );
+  const selectedRepository = repositories?.find(
+    (repo) => repo.id === selectedRepoId
+  );
+  const selectedRepositoryLabel =
+    selectedRepository?.fullName ||
+    (selectedRepoId === defaultRepository?.repoId
+      ? defaultRepository?.repoFullName
+      : undefined);
+
+  const renderRepositoryTriggerValue = () => {
+    if (selectedRepository) {
+      return (
+        <GitHubRepositoryOptionLabel
+          repository={selectedRepository}
+          showLastActive={false}
+        />
+      );
+    }
+
+    if (selectedRepositoryLabel) {
+      return <span>{selectedRepositoryLabel}</span>;
+    }
+
+    return null;
+  };
 
   // Sync local state when prop changes (e.g., after save or external update)
   useEffect(() => {
@@ -128,29 +153,21 @@ export function DefaultRepositoryPicker({
         onValueChange={handleRepoSelect}
         value={selectedRepoId}
       >
-        <SelectTrigger className="h-8 text-xs [&_.text-muted-foreground]:hidden">
+        <SelectTrigger className="h-8 text-xs">
           <SelectValue
             placeholder={
               isLoadingGitHubStatus || isLoadingRepos
                 ? "Loading..."
                 : "Select repository"
             }
-          />
+          >
+            {renderRepositoryTriggerValue()}
+          </SelectValue>
         </SelectTrigger>
         <SelectContent>
           {sortedRepositories.map((repo) => (
             <SelectItem key={repo.id} value={repo.id}>
-              <div className="flex flex-col">
-                <span>{repo.fullName}</span>
-                {repo.lastPushedAt ? (
-                  <span className="text-muted-foreground text-xs">
-                    Last active{" "}
-                    {formatDistanceToNow(new Date(repo.lastPushedAt), {
-                      addSuffix: true,
-                    })}
-                  </span>
-                ) : null}
-              </div>
+              <GitHubRepositoryOptionLabel repository={repo} />
             </SelectItem>
           ))}
         </SelectContent>
