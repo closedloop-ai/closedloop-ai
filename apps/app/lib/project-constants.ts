@@ -38,8 +38,6 @@ export const ARTIFACT_STATUS_LABELS: Record<ArtifactStatus, string> = {
   [ArtifactStatus.Executed]: "Executed",
   [ArtifactStatus.Done]: "Done",
   [ArtifactStatus.Obsolete]: "Obsolete",
-  /** @deprecated Migrated to IN_REVIEW */
-  [ArtifactStatus.ReadyForReview]: "In Review",
 };
 
 export const ARTIFACT_STATUS_COLORS: Record<ArtifactStatus, string> = {
@@ -50,8 +48,6 @@ export const ARTIFACT_STATUS_COLORS: Record<ArtifactStatus, string> = {
   [ArtifactStatus.Executed]: "text-blue-600 dark:text-blue-400",
   [ArtifactStatus.Done]: "text-green-600 dark:text-green-400",
   [ArtifactStatus.Obsolete]: "text-muted-foreground",
-  /** @deprecated Migrated to IN_REVIEW */
-  [ArtifactStatus.ReadyForReview]: "text-blue-600 dark:text-blue-400",
 };
 
 export const ARTIFACT_STATUS_TO_ICON: Record<ArtifactStatus, StatusIconStatus> =
@@ -63,8 +59,6 @@ export const ARTIFACT_STATUS_TO_ICON: Record<ArtifactStatus, StatusIconStatus> =
     [ArtifactStatus.Executed]: "executed",
     [ArtifactStatus.Done]: "complete",
     [ArtifactStatus.Obsolete]: "wont-do",
-    /** @deprecated Migrated to IN_REVIEW */
-    [ArtifactStatus.ReadyForReview]: "in-progress",
   };
 
 // Artifact type icons
@@ -116,10 +110,6 @@ export const FEATURE_STATUS_LABELS: Record<FeatureStatus, string> = {
   [FeatureStatus.Executed]: "Executed",
   [FeatureStatus.Done]: "Done",
   [FeatureStatus.Obsolete]: "Obsolete",
-  /** @deprecated Migrated to DRAFT */
-  [FeatureStatus.NotStarted]: "Draft",
-  /** @deprecated Migrated to DONE */
-  [FeatureStatus.Completed]: "Done",
 };
 
 export const FEATURE_STATUS_COLORS: Record<FeatureStatus, string> = {
@@ -130,10 +120,6 @@ export const FEATURE_STATUS_COLORS: Record<FeatureStatus, string> = {
   [FeatureStatus.Executed]: "text-blue-600 dark:text-blue-400",
   [FeatureStatus.Done]: "text-green-600 dark:text-green-400",
   [FeatureStatus.Obsolete]: "text-muted-foreground",
-  /** @deprecated Migrated to DRAFT */
-  [FeatureStatus.NotStarted]: "text-muted-foreground",
-  /** @deprecated Migrated to DONE */
-  [FeatureStatus.Completed]: "text-green-600 dark:text-green-400",
 };
 
 export const FEATURE_STATUS_TO_ICON: Record<FeatureStatus, StatusIconStatus> = {
@@ -144,10 +130,6 @@ export const FEATURE_STATUS_TO_ICON: Record<FeatureStatus, StatusIconStatus> = {
   [FeatureStatus.Executed]: "executed",
   [FeatureStatus.Done]: "complete",
   [FeatureStatus.Obsolete]: "wont-do",
-  /** @deprecated Migrated to DRAFT */
-  [FeatureStatus.NotStarted]: "todo",
-  /** @deprecated Migrated to DONE */
-  [FeatureStatus.Completed]: "complete",
 };
 
 // External link type icons

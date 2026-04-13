@@ -104,8 +104,6 @@ export const artifactStatusColors: Record<ArtifactStatus, string> = {
   [ArtifactStatus.Done]: COLOR_SUCCESS,
   [ArtifactStatus.Obsolete]:
     "bg-gray-100 text-gray-600 border-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-700",
-  /** @deprecated Migrated to IN_REVIEW */
-  [ArtifactStatus.ReadyForReview]: COLOR_PROGRESS,
 };
 
 export const artifactStatusLabels: Record<ArtifactStatus, string> = {
@@ -116,8 +114,6 @@ export const artifactStatusLabels: Record<ArtifactStatus, string> = {
   [ArtifactStatus.Executed]: "Executed",
   [ArtifactStatus.Done]: "Done",
   [ArtifactStatus.Obsolete]: "Obsolete",
-  /** @deprecated Migrated to IN_REVIEW */
-  [ArtifactStatus.ReadyForReview]: "In Review",
 };
 
 export function ArtifactStatusBadge({
@@ -153,10 +149,6 @@ export const featureStatusColors: Record<FeatureStatus, string> = {
   [FeatureStatus.Done]: COLOR_SUCCESS,
   [FeatureStatus.Obsolete]:
     "bg-gray-100 text-gray-600 border-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-700",
-  /** @deprecated Migrated to DRAFT */
-  [FeatureStatus.NotStarted]: "bg-muted text-muted-foreground border-muted",
-  /** @deprecated Migrated to DONE */
-  [FeatureStatus.Completed]: COLOR_SUCCESS,
 };
 
 export const featureStatusLabels: Record<FeatureStatus, string> = {
@@ -167,10 +159,6 @@ export const featureStatusLabels: Record<FeatureStatus, string> = {
   [FeatureStatus.Executed]: "Executed",
   [FeatureStatus.Done]: "Done",
   [FeatureStatus.Obsolete]: "Obsolete",
-  /** @deprecated Migrated to DRAFT */
-  [FeatureStatus.NotStarted]: "Draft",
-  /** @deprecated Migrated to DONE */
-  [FeatureStatus.Completed]: "Done",
 };
 
 export function FeatureStatusBadge({
@@ -181,7 +169,7 @@ export function FeatureStatusBadge({
     <Badge
       className={cn(
         "font-medium",
-        featureStatusColors[status] ?? featureStatusColors.NOT_STARTED
+        featureStatusColors[status] ?? featureStatusColors.DRAFT
       )}
       variant="outline"
     >

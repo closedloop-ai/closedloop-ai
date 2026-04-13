@@ -354,10 +354,12 @@ async function main() {
       projectId: string;
       workstreamId?: string;
       status:
-        | "NOT_STARTED"
+        | "DRAFT"
         | "IN_PROGRESS"
         | "IN_REVIEW"
-        | "COMPLETED"
+        | "APPROVED"
+        | "EXECUTED"
+        | "DONE"
         | "OBSOLETE";
       priority: "LOW" | "MEDIUM" | "HIGH" | "URGENT";
     }) {
@@ -406,7 +408,7 @@ async function main() {
         "Create responsive HTML email templates for welcome, password reset, and payment confirmation emails using MJML.",
       projectId: project2.id,
       workstreamId: ws2.id,
-      status: "NOT_STARTED",
+      status: "DRAFT",
       priority: "MEDIUM",
     });
 

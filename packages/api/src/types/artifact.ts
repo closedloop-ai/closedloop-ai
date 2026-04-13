@@ -44,8 +44,8 @@ export function getRoutePrefixForType(type: string): string | null {
   return null;
 }
 
-// Artifact Status — unified set used by UI dropdowns and display mappings
-const ArtifactStatusActive = {
+// Artifact Status
+export const ArtifactStatus = {
   Draft: "DRAFT",
   InProgress: "IN_PROGRESS",
   InReview: "IN_REVIEW",
@@ -54,16 +54,9 @@ const ArtifactStatusActive = {
   Done: "DONE",
   Obsolete: "OBSOLETE",
 } as const;
-// Deprecated values kept for Prisma type compatibility (data migrated away)
-export const ArtifactStatus = {
-  ...ArtifactStatusActive,
-  /** @deprecated Migrated to IN_REVIEW */
-  ReadyForReview: "READY_FOR_REVIEW",
-} as const;
 export type ArtifactStatus =
   (typeof ArtifactStatus)[keyof typeof ArtifactStatus];
-/** Only active statuses — drives UI dropdowns */
-export const ARTIFACT_STATUS_OPTIONS = Object.values(ArtifactStatusActive);
+export const ARTIFACT_STATUS_OPTIONS = Object.values(ArtifactStatus);
 
 export const ChecksStatus = {
   Unknown: "UNKNOWN",

@@ -43,13 +43,11 @@ enum WorkstreamState {
 
 enum FeatureStatus {
   DRAFT
-  NOT_STARTED // @deprecated — migrated to DRAFT
   IN_PROGRESS
   IN_REVIEW
   APPROVED
   EXECUTED
   DONE
-  COMPLETED // @deprecated — migrated to DONE
   OBSOLETE
 
   @@map("IssueStatus")
@@ -80,10 +78,9 @@ enum ArtifactStatus {
   IN_PROGRESS
   IN_REVIEW
   APPROVED
-  OBSOLETE
-  READY_FOR_REVIEW // @deprecated — migrated to IN_REVIEW
   EXECUTED
   DONE
+  OBSOLETE
 }
 
 enum ArtifactType {

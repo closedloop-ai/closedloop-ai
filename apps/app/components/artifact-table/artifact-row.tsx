@@ -192,18 +192,16 @@ function NameCell({
       item.data.generationStatus.status
     );
 
-  const statusOptions =
-    item.kind === "artifact"
-      ? {
-          labels: ARTIFACT_STATUS_LABELS,
-          icons: ARTIFACT_STATUS_TO_ICON,
-          options: ARTIFACT_STATUS_OPTIONS,
-        }
-      : {
-          labels: FEATURE_STATUS_LABELS,
-          icons: FEATURE_STATUS_TO_ICON,
-          options: FEATURE_STATUS_OPTIONS,
-        };
+  const isArtifact = item.kind === "artifact";
+  const statusLabels = isArtifact
+    ? ARTIFACT_STATUS_LABELS
+    : FEATURE_STATUS_LABELS;
+  const statusIcons = isArtifact
+    ? ARTIFACT_STATUS_TO_ICON
+    : FEATURE_STATUS_TO_ICON;
+  const statusOptions = isArtifact
+    ? ARTIFACT_STATUS_OPTIONS
+    : FEATURE_STATUS_OPTIONS;
 
   const statusButton = (
     <button
@@ -259,7 +257,7 @@ function NameCell({
         <DropdownMenu>
           <DropdownMenuTrigger asChild>{statusButton}</DropdownMenuTrigger>
           <DropdownMenuContent align="start">
-            {statusOptions.options.map((value) => (
+            {statusOptions.map((value) => (
               <DropdownMenuItem
                 className="hover:!bg-accent focus:!bg-accent data-[highlighted]:!bg-accent"
                 key={value}
@@ -270,17 +268,9 @@ function NameCell({
               >
                 <StatusIcon
                   size={16}
-                  status={
-                    statusOptions.icons[
-                      value as keyof typeof statusOptions.icons
-                    ]
-                  }
+                  status={statusIcons[value as keyof typeof statusIcons]}
                 />
-                {
-                  statusOptions.labels[
-                    value as keyof typeof statusOptions.labels
-                  ]
-                }
+                {statusLabels[value as keyof typeof statusLabels]}
               </DropdownMenuItem>
             ))}
           </DropdownMenuContent>
