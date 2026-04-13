@@ -81,8 +81,8 @@ export const LoopRequestBodySchema = z.object({
     .array(
       z
         .object({
-          localRepoPath: z.string().optional(),
-          fullName: z.string().optional(),
+          localRepoPath: z.string().min(1).optional(),
+          fullName: z.string().min(1).optional(),
           branch: z.string(),
         })
         .refine(
