@@ -12,6 +12,10 @@ import { handleDeploymentStatus } from "./handlers/deployment-status-handler";
 import { handleInstallation } from "./handlers/installation-handler";
 import { handleInstallationRepositories } from "./handlers/installation-repositories-handler";
 import {
+  type HandledIssueCommentEvent,
+  handleIssueComment,
+} from "./handlers/issue-comment-handler";
+import {
   type HandledPullRequestEvent,
   handlePullRequest,
 } from "./handlers/pull-request-handler";
@@ -92,6 +96,9 @@ export async function POST(request: Request): Promise<Response> {
         return await handlePullRequestReviewComment(
           parsedBody as HandledPullRequestReviewCommentEvent
         );
+
+      case "issue_comment":
+        return await handleIssueComment(parsedBody as HandledIssueCommentEvent);
 
       case "push":
         return await handlePush(parsedBody as PushEvent);

@@ -60,6 +60,7 @@ export const createMockPullRequest = (
     createdAt: new Date("2024-01-15T10:00:00Z"),
     checksStatus: null,
     reviewDecision: null,
+    externalLinkId: null,
     ...overrides,
   };
 };

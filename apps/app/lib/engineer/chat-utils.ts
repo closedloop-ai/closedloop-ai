@@ -4,6 +4,8 @@
 
 import { readNdjsonLines } from "./stream-utils";
 
+export { getWorktreePath } from "@/lib/git/worktree";
+
 /**
  * Check if text looks like terminal/CLI output.
  * Detects box-drawing characters, ANSI codes, and common CLI patterns.
@@ -252,29 +254,6 @@ export async function readChatStream(
     terminalError,
     lastRelayError,
   };
-}
-
-/**
- * Construct worktree path from base repo path and ticket ID.
- *
- * @param worktreeParentDir - The configured worktree parent directory (e.g. "~/Source").
- *   When provided, the worktree is resolved as `{worktreeParentDir}/{repoName}-{ticketId}`.
- *   When omitted, falls back to assuming the worktree is a sibling of the repo (legacy behavior).
- */
-export function getWorktreePath(
-  baseRepoPath: string,
-  ticketId: string,
-  worktreeParentDir?: string
-): string {
-  const repoName = baseRepoPath.split("/").pop() || "";
-  if (worktreeParentDir) {
-    const dir = worktreeParentDir.endsWith("/")
-      ? worktreeParentDir.slice(0, -1)
-      : worktreeParentDir;
-    return `${dir}/${repoName}-${ticketId}`;
-  }
-  const sourceDir = baseRepoPath.replace(/\/[^/]+$/, "");
-  return `${sourceDir}/${repoName}-${ticketId}`;
 }
 
 /**

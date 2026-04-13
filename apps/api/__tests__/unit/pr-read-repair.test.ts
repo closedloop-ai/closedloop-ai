@@ -404,7 +404,9 @@ describe("runPrReadRepair — repair logic", () => {
       }),
     });
 
-    const mockExternalLinkUpdate = vi.fn().mockResolvedValue({ metadata: {} });
+    const mockExternalLinkUpdate = vi
+      .fn()
+      .mockResolvedValue({ metadata: link.metadata });
     const mockPrFindFirst = vi.fn().mockResolvedValue(null);
     const mockInstallationFindMany = vi
       .fn()
@@ -443,6 +445,10 @@ describe("runPrReadRepair — repair logic", () => {
       state: GitHubPRState.Merged,
       mergedAt: "2026-04-01T10:00:00Z",
       closedAt: "2026-04-01T10:00:00Z",
+      authorLogin: null,
+      isDraft: false,
+      headSha: "abc123",
+      baseSha: "def456",
     });
 
     await runRepair([link]);
@@ -470,7 +476,9 @@ describe("runPrReadRepair — repair logic", () => {
       }),
     });
 
-    const mockExternalLinkUpdate = vi.fn().mockResolvedValue({ metadata: {} });
+    const mockExternalLinkUpdate = vi
+      .fn()
+      .mockResolvedValue({ metadata: link.metadata });
     const mockPrFindFirst = vi.fn().mockResolvedValue(null);
     const mockInstallationFindMany = vi
       .fn()
@@ -504,6 +512,10 @@ describe("runPrReadRepair — repair logic", () => {
       state: GitHubPRState.Merged,
       mergedAt: "2026-04-02T10:00:00Z",
       closedAt: "2026-04-02T10:00:00Z",
+      authorLogin: null,
+      isDraft: false,
+      headSha: "abc123",
+      baseSha: "def456",
     });
 
     await runRepair([link]);
@@ -558,6 +570,10 @@ describe("runPrReadRepair — repair logic", () => {
       state: GitHubPRState.Merged,
       mergedAt: "2026-04-03T00:00:00Z",
       closedAt: "2026-04-03T00:00:00Z",
+      authorLogin: null,
+      isDraft: false,
+      headSha: "abc123",
+      baseSha: "def456",
     });
 
     await runRepair([link]);

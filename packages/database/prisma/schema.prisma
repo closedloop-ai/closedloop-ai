@@ -1308,6 +1308,7 @@ model GitHubPRReviewComment {
   id              String               @id @default(uuid(7)) @db.Uuid
   pullRequestId   String               @map("pull_request_id") @db.Uuid
   githubCommentId String               @unique @map("github_comment_id")
+  inReplyToId     String?              @map("in_reply_to_id")
   reviewId        String?              @map("review_id")
   body            String               @db.Text
   path            String?
