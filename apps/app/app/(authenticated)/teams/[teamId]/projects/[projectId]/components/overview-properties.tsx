@@ -172,7 +172,7 @@ export function OverviewProperties({
           />
         </div>
 
-        <div className="flex w-[175px] min-w-[120px] flex-col gap-1.5">
+        <div className="flex min-w-[120px] flex-col gap-1.5">
           <span className="text-muted-foreground text-xs">Repo</span>
           {isGitHubConnected ? (
             <DefaultRepositoryPicker

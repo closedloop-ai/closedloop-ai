@@ -333,6 +333,7 @@ export function NewPlanModal({
             }}
             selectedRepoId={selectedRepoId}
             targetBranch={targetBranch}
+            targetRepo={targetRepo}
           />
 
           {selectedSource ? (
