@@ -1,8 +1,9 @@
 "use client";
 
+import { useFeatureFlag } from "@repo/analytics/client";
 import { cn } from "@repo/design-system/lib/utils";
 import { Loader2 } from "lucide-react";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { ArtifactChatPanel } from "@/components/artifact-editor/artifact-chat-panel";
 import { useBranchView } from "@/hooks/queries/use-branch-view";
 import { useLocalStorageState } from "@/hooks/use-local-storage-state";
@@ -42,6 +43,21 @@ export function BranchViewContainer({
   externalLinkId,
 }: Readonly<BranchViewContainerProps>) {
   const { data, isLoading, error } = useBranchView(externalLinkId);
+  const branchPrFlag = useFeatureFlag("branch-pr");
+  // Wait for the flag to resolve so we don't redirect during initial page load
+  // before PostHog reports the actual value.
+  const branchPrLoading = branchPrFlag === undefined;
+  const branchPrEnabled = branchPrFlag?.enabled === true;
+
+  useEffect(() => {
+    if (branchPrLoading || branchPrEnabled) {
+      return;
+    }
+    if (!data?.prHtmlUrl) {
+      return;
+    }
+    globalThis.location.replace(data.prHtmlUrl);
+  }, [branchPrLoading, branchPrEnabled, data?.prHtmlUrl]);
   const [showChatPanel, setShowChatPanel] = useLocalStorageState(
     "panel:metadata:branch",
     true
@@ -95,6 +111,25 @@ export function BranchViewContainer({
       <div className="flex min-h-full items-center justify-center bg-background">
         <p className="text-muted-foreground text-sm">
           {error?.message ?? "Branch view not found"}
+        </p>
+      </div>
+    );
+  }
+
+  if (branchPrLoading) {
+    return (
+      <div className="flex min-h-full items-center justify-center bg-background">
+        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  if (!branchPrEnabled) {
+    return (
+      <div className="flex min-h-full items-center justify-center gap-3 bg-background">
+        <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+        <p className="text-muted-foreground text-sm">
+          Redirecting to GitHub...
         </p>
       </div>
     );
