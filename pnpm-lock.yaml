@@ -763,8 +763,8 @@ importers:
         specifier: ^1.6.1
         version: 1.6.1(next@16.1.7(@opentelemetry/api@1.9.0)(@playwright/test@1.58.2)(babel-plugin-react-compiler@1.0.0)(react-dom@19.2.4(react@19.2.4))(react@19.2.4))(react@19.2.4)
       posthog-js:
-        specifier: ^1.343.2
-        version: 1.345.5
+        specifier: ^1.359.1
+        version: 1.359.1
       posthog-node:
         specifier: ^5.24.13
         version: 5.24.15
@@ -4239,9 +4239,6 @@ packages:
     peerDependenciesMeta:
       '@vercel/functions':
         optional: true
-
-  '@posthog/types@1.345.5':
-    resolution: {integrity: sha512-nPQQ5QfVMmsKquXQkXfA8g1/2IrHO7npw8ezcC0v3xJaTpAKoqBqknqugP+RwTlIfkhCbHSGd6x00yRSwTGaBQ==}
 
   '@posthog/types@1.359.1':
     resolution: {integrity: sha512-oQihoHWLnOkSkzOToCWKNigbJ7UZcIkl+rSJuq2PLwL7EB0Q/r1UGSbVCkrPH8xtPbYpi7w4TVpMrg41TMT+LQ==}
@@ -10857,9 +10854,6 @@ packages:
     resolution: {integrity: sha512-Jtc2612XINuBjIl/QTWsV5UvE8UHuNblcO3vVADSrKsrc6RqGX6lOW1cEo3CM2v0XG4Nat8nI+YM7/f26VxXLw==}
     engines: {node: '>=12'}
 
-  posthog-js@1.345.5:
-    resolution: {integrity: sha512-Hplt/aRD3DQLTQl3NxmS7V0jZPF18nnKJ4rST0qinz/6tXNCMemYqOVb4C/HYAXXWrtVVzGSJeNCNKvECFHHoQ==}
-
   posthog-js@1.359.1:
     resolution: {integrity: sha512-Gy/eX02im6ON0zMxfTR61GNk1sjgLT9rVGfBQ5C757/WS4mN3vTUJveQYoX9jr3y0pqPZ57DqCcf6zcw++bpzQ==}
 
@@ -16855,8 +16849,6 @@ snapshots:
       '@vercel/functions': 3.4.3(@aws-sdk/credential-provider-web-identity@3.972.17)
     transitivePeerDependencies:
       - rxjs
-
-  '@posthog/types@1.345.5': {}
 
   '@posthog/types@1.359.1': {}
 
@@ -24556,22 +24548,6 @@ snapshots:
   postgres-range@1.1.4: {}
 
   postgres@3.4.7: {}
-
-  posthog-js@1.345.5:
-    dependencies:
-      '@opentelemetry/api': 1.9.0
-      '@opentelemetry/api-logs': 0.208.0
-      '@opentelemetry/exporter-logs-otlp-http': 0.208.0(@opentelemetry/api@1.9.0)
-      '@opentelemetry/resources': 2.5.0(@opentelemetry/api@1.9.0)
-      '@opentelemetry/sdk-logs': 0.208.0(@opentelemetry/api@1.9.0)
-      '@posthog/core': 1.22.0
-      '@posthog/types': 1.345.5
-      core-js: 3.48.0
-      dompurify: 3.3.1
-      fflate: 0.4.8
-      preact: 10.28.3
-      query-selector-shadow-dom: 1.0.1
-      web-vitals: 5.1.0
 
   posthog-js@1.359.1:
     dependencies:

@@ -34,6 +34,7 @@ import {
 const TERMINAL_STATUSES = new Set(["completed", "failed", "stopped"]);
 const MAX_RECONNECT_ATTEMPTS = 10;
 const MAX_TRANSIENT_RETRY_ATTEMPTS = 2;
+const CODEX_SESSION_ID_REGEX = /session id:\s*([0-9a-f-]{36})/i;
 
 type UseReviewExecutionParams = {
   ticketId: string;
@@ -157,10 +158,11 @@ export function useReviewExecution(
     initialOutput ? new Date().toISOString() : ""
   );
 
-  // Fetch persisted findings to restore commented status
+  // Fetch persisted findings to restore commented status and hydrate
+  // humanized bodies (written to disk by triggerExtraction in a prior mount).
   const findingsUrl = `/api/engineer/codex/review-findings/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${encodeURIComponent(config.provider)}`;
   const { data: savedFindings } = useQuery<{
-    findings: Array<{ commented: boolean }>;
+    findings: Array<ReviewFinding & { commented: boolean }>;
     declined?: boolean;
     declineReason?: string;
   }>({
@@ -169,7 +171,12 @@ export function useReviewExecution(
     enabled: reviewDone,
   });
 
-  // Sync submitted findings and declined status from persisted data
+  // Sync submitted findings and declined status from persisted data.
+  // Also hydrate structuredFindings when disk has humanized bodies — this
+  // recovers humanized comments after the component remounts (the parent
+  // flips initialOutput on completion, which changes the React key and
+  // destroys the in-memory structuredFindings state populated by
+  // triggerExtraction in the previous mount).
   useEffect(() => {
     if (!savedFindings?.findings) {
       return;
@@ -192,7 +199,27 @@ export function useReviewExecution(
     if (savedFindings.declined) {
       setDeclined(true);
     }
-  }, [savedFindings]);
+    const hasHumanized = savedFindings.findings.some(
+      (f) => typeof f.humanizedBody === "string" && f.humanizedBody.trim()
+    );
+    // Hydrate structuredFindings from disk when:
+    // 1. Disk has humanized bodies (from extraction), OR
+    // 2. Stream parser found nothing but disk has findings (code-review skill bridge)
+    const streamParsedEmpty =
+      reviewOutput &&
+      splitReviewOutput(reviewOutput, config.provider).findings.length === 0;
+    if (
+      hasHumanized ||
+      (streamParsedEmpty && savedFindings.findings.length > 0)
+    ) {
+      setStructuredFindings((prev) => {
+        if (prev && prev.length > 0) {
+          return prev;
+        }
+        return savedFindings.findings.map(({ commented: _c, ...rest }) => rest);
+      });
+    }
+  }, [savedFindings, reviewOutput, config.provider]);
 
   // Split completed review output into thinking (process log) + findings
   const reviewSplit = useMemo(() => {
@@ -240,7 +267,11 @@ export function useReviewExecution(
     }
   }, [submittedFindings.size, reviewSplit, onAllCommented]);
 
-  // Notify parent when restoring a previous review + persist findings if missing
+  // Notify parent when restoring a previous review. Do NOT re-save findings
+  // here: on remount (e.g. after review completes and the React key flips from
+  // "live" to "restored"), the disk may already contain humanized findings
+  // written by the extract route. Re-saving the basic log-parser findings
+  // would clobber humanizedBody and other fields.
   useEffect(() => {
     if (!initialOutput) {
       return;
@@ -251,22 +282,25 @@ export function useReviewExecution(
       split.findings.length,
       split.findings
     );
-    if (split.findings.length > 0 && !findingsSavedRef.current) {
-      findingsSavedRef.current = true;
-      saveReviewFindings(
-        ticketId,
-        repoPath,
-        config.provider,
-        config.model,
-        split.findings
-      );
-    }
-  }, [config.model, config.provider, initialOutput, repoPath, ticketId]);
+  }, [config.provider, initialOutput]);
 
   /** Split output, notify callback, persist findings. Returns the split result. */
   function finalizeReviewOutput(output: string) {
     setReviewOutput(output);
     setReviewDone(true);
+    // Fallback: if the stream's sessionId event was missed, parse the codex
+    // banner out of the accumulated output. createCodexStream always forwards
+    // stdout (banner included) as "output" events, so the session id appears
+    // in the raw text even if the dedicated event was lost.
+    if (config.provider === "codex" && !sessionIdRef.current) {
+      const match = CODEX_SESSION_ID_REGEX.exec(output);
+      if (match) {
+        sessionIdRef.current = match[1];
+        console.log(
+          `[review-extract] Recovered codex session ID from output: ${match[1]}`
+        );
+      }
+    }
     const split = splitReviewOutput(output, config.provider);
     onReviewCompleteRef.current?.(
       output,
@@ -290,6 +324,10 @@ export function useReviewExecution(
   function handlePostStreamActions(
     split: ReturnType<typeof splitReviewOutput>
   ) {
+    console.log(
+      `[review-extract-gate] provider=${config.provider}, sessionId=${sessionIdRef.current ?? "NULL"}, findingsCount=${split.findings.length}`
+    );
+
     if (config.provider === "claude" && sessionIdRef.current) {
       fetch(
         `/api/engineer/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=claude`,
@@ -304,13 +342,19 @@ export function useReviewExecution(
     }
 
     if (config.provider === "codex" && sessionIdRef.current) {
+      console.log("[review-extract-gate] Firing codex triggerExtraction");
       triggerExtraction(sessionIdRef.current);
     } else if (
       config.provider === "claude" &&
       split.findings.length > 0 &&
       sessionIdRef.current
     ) {
+      console.log("[review-extract-gate] Firing claude triggerExtraction");
       triggerExtraction(sessionIdRef.current);
+    } else {
+      console.warn(
+        `[review-extract-gate] Skipped triggerExtraction — provider=${config.provider}, sessionId=${sessionIdRef.current ?? "NULL"}, findingsCount=${split.findings.length}`
+      );
     }
 
     if (!split.verdict && sessionIdRef.current) {
