@@ -222,10 +222,12 @@ function FeatureStatusSection({
 }
 
 const STATUS_ORDER: FeatureStatus[] = [
-  FeatureStatus.NotStarted,
+  FeatureStatus.Draft,
   FeatureStatus.InProgress,
   FeatureStatus.InReview,
-  FeatureStatus.Completed,
+  FeatureStatus.Approved,
+  FeatureStatus.Executed,
+  FeatureStatus.Done,
   FeatureStatus.Obsolete,
 ];
 

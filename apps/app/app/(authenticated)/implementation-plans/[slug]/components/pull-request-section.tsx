@@ -1,8 +1,10 @@
 "use client";
 
+import { useFeatureFlag } from "@repo/analytics/client";
 import type { PullRequestInfo } from "@repo/api/src/types/artifact";
 import { Label } from "@repo/design-system/components/ui/label";
-import { ExternalLinkIcon, GitPullRequestIcon } from "lucide-react";
+import { GitPullRequestIcon } from "lucide-react";
+import Link from "next/link";
 import { MetadataSection } from "@/components/artifact-editor/metadata-panel";
 import {
   prReviewDecisionColors,
@@ -15,19 +17,36 @@ type PullRequestSectionProps = {
 };
 
 export function PullRequestSection({ pullRequest }: PullRequestSectionProps) {
+  const branchPrFlag = useFeatureFlag("branch-pr");
+  const branchPrEnabled = branchPrFlag?.enabled === true;
+  const useBranchView = Boolean(pullRequest.externalLinkId && branchPrEnabled);
+  const href = useBranchView
+    ? `/build/${pullRequest.externalLinkId}`
+    : pullRequest.htmlUrl;
+  const isExternal = !useBranchView;
+
   return (
     <MetadataSection separator>
       <Label className="text-muted-foreground text-xs">Pull Request</Label>
-      <a
-        className="flex items-center gap-1 text-primary text-sm hover:underline"
-        href={pullRequest.htmlUrl}
-        rel="noopener noreferrer"
-        target="_blank"
-      >
-        <GitPullRequestIcon className="h-3 w-3" />#{pullRequest.number}:{" "}
-        {pullRequest.title}
-        <ExternalLinkIcon className="h-3 w-3" />
-      </a>
+      {isExternal ? (
+        <a
+          className="flex items-center gap-1 text-primary text-sm hover:underline"
+          href={href}
+          rel="noopener noreferrer"
+          target="_blank"
+        >
+          <GitPullRequestIcon className="h-3 w-3" />#{pullRequest.number}:{" "}
+          {pullRequest.title}
+        </a>
+      ) : (
+        <Link
+          className="flex items-center gap-1 text-primary text-sm hover:underline"
+          href={href}
+        >
+          <GitPullRequestIcon className="h-3 w-3" />#{pullRequest.number}:{" "}
+          {pullRequest.title}
+        </Link>
+      )}
       <div className="flex items-center gap-2 text-muted-foreground text-xs">
         <StatusBadge
           className="px-2 py-0.5 text-xs uppercase"

@@ -56,7 +56,10 @@ import { useArtifactMetadata } from "@/hooks/artifact-editing/use-artifact-metad
 import { useArtifactUIState } from "@/hooks/artifact-editing/use-artifact-ui-state";
 import { useEditorSession } from "@/hooks/artifact-editing/use-editor-session";
 import { usePrdActions } from "@/hooks/artifact-editing/use-prd-actions";
-import { useArtifactGenerationStatus } from "@/hooks/queries/use-artifacts";
+import {
+  useArtifactGenerationStatus,
+  useDismissArtifactGenerationStatus,
+} from "@/hooks/queries/use-artifacts";
 import { usePrdJudgesFeedback } from "@/hooks/queries/use-judges";
 import { useRunLoop } from "@/hooks/queries/use-loops";
 import { useExecutionLogDialog } from "@/hooks/use-execution-log-dialog";
@@ -146,6 +149,7 @@ export function PRDEditor({
   // Fetch generation status with adaptive polling (stops when terminal)
   const { data: generationStatus, invalidateCache: invalidateArtifactCache } =
     useArtifactGenerationStatus(prd.id, { polling: true });
+  const dismissGenerationStatus = useDismissArtifactGenerationStatus();
 
   // Loop-based actions (PRD generation, decompose)
   const runLoop = useRunLoop();
@@ -263,7 +267,10 @@ export function PRDEditor({
       <ResizablePanelGroup autoSaveId="prd-editor" direction="horizontal">
         <ResizablePanel defaultSize={75} minSize={50}>
           <div className="h-full overflow-y-auto overflow-x-hidden bg-background">
-            <OptionalArtifactRoom roomId={session.liveblocksRoomId}>
+            <OptionalArtifactRoom
+              key={session.roomResetKey}
+              roomId={session.liveblocksRoomId}
+            >
               {/* Loading spinner — visible until editor content is fully loaded */}
               <div
                 className={
@@ -317,6 +324,13 @@ export function PRDEditor({
                 {/* Generation Status Banner */}
                 <GenerationStatusBanner
                   generationStatus={generationStatus}
+                  isDismissFailurePending={dismissGenerationStatus.isPending}
+                  onDismissFailure={async (runKey) => {
+                    await dismissGenerationStatus.mutateAsync({
+                      artifactId: prd.id,
+                      runKey,
+                    });
+                  }}
                   onGenerationComplete={invalidateArtifactCache}
                 />
 

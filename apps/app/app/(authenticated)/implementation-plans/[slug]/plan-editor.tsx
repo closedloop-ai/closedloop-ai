@@ -56,6 +56,7 @@ import { usePlanActions } from "@/hooks/artifact-editing/use-plan-actions";
 import {
   useArtifactGenerationStatus,
   useArtifactPullRequest,
+  useDismissArtifactGenerationStatus,
 } from "@/hooks/queries/use-artifacts";
 import { useWorkstreamPreviewDeployment } from "@/hooks/queries/use-external-links";
 import {
@@ -155,6 +156,7 @@ export function PlanEditor({
   // Fetch generation status with adaptive polling (stops when terminal)
   const { data: generationStatus, invalidateCache: invalidateArtifactCache } =
     useArtifactGenerationStatus(plan.id, { polling: true });
+  const dismissGenerationStatus = useDismissArtifactGenerationStatus();
   const { data: pullRequest } = useArtifactPullRequest(plan.id);
   const { data: judgesReport } = usePlanJudgesFeedback(plan.id);
   const { data: codeJudgesReport } = useCodeJudgesFeedback(plan.id);
@@ -285,7 +287,10 @@ export function PlanEditor({
       <ResizablePanelGroup autoSaveId="plan-editor" direction="horizontal">
         <ResizablePanel defaultSize={75} minSize={50}>
           <div className="h-full overflow-y-auto overflow-x-hidden bg-background">
-            <OptionalArtifactRoom roomId={session.liveblocksRoomId}>
+            <OptionalArtifactRoom
+              key={session.roomResetKey}
+              roomId={session.liveblocksRoomId}
+            >
               {/* Loading spinner — visible until editor content is fully loaded */}
               <div
                 className={
@@ -314,6 +319,13 @@ export function PlanEditor({
                 {/* Generation Status Banner */}
                 <GenerationStatusBanner
                   generationStatus={generationStatus}
+                  isDismissFailurePending={dismissGenerationStatus.isPending}
+                  onDismissFailure={async (runKey) => {
+                    await dismissGenerationStatus.mutateAsync({
+                      artifactId: plan.id,
+                      runKey,
+                    });
+                  }}
                   onGenerationComplete={invalidateArtifactCache}
                 />
 

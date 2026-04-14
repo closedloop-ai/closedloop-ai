@@ -64,13 +64,17 @@ export function mapFeatureStatusToType(
   status: FeatureStatus
 ): TicketStatusType {
   switch (status) {
-    case FeatureStatus.NotStarted:
+    case FeatureStatus.Draft:
       return "unstarted";
     case FeatureStatus.InProgress:
       return "started";
     case FeatureStatus.InReview:
       return "started";
-    case FeatureStatus.Completed:
+    case FeatureStatus.Approved:
+      return "started";
+    case FeatureStatus.Executed:
+      return "started";
+    case FeatureStatus.Done:
       return "completed";
     case FeatureStatus.Obsolete:
       return "canceled";
@@ -82,13 +86,17 @@ export function mapFeatureStatusToType(
 /** Map Symphony FeatureStatus to display name */
 export function statusDisplayName(status: FeatureStatus): string {
   switch (status) {
-    case FeatureStatus.NotStarted:
-      return "Not Started";
+    case FeatureStatus.Draft:
+      return "Draft";
     case FeatureStatus.InProgress:
       return "In Progress";
     case FeatureStatus.InReview:
       return "In Review";
-    case FeatureStatus.Completed:
+    case FeatureStatus.Approved:
+      return "Approved";
+    case FeatureStatus.Executed:
+      return "Executed";
+    case FeatureStatus.Done:
       return "Done";
     case FeatureStatus.Obsolete:
       return "Obsolete";
@@ -136,16 +144,18 @@ export function mapArtifactStatusToType(
   switch (status) {
     case ArtifactStatus.Draft:
       return "started";
+    case ArtifactStatus.InProgress:
+      return "started";
     case ArtifactStatus.InReview:
       return "started";
     case ArtifactStatus.Approved:
       return "started";
+    case ArtifactStatus.Executed:
+      return "started";
+    case ArtifactStatus.Done:
+      return "completed";
     case ArtifactStatus.Obsolete:
       return "canceled";
-    case ArtifactStatus.ReadyForReview:
-      return "started";
-    case ArtifactStatus.Executed:
-      return "completed";
     default:
       return "unstarted";
   }
@@ -156,16 +166,18 @@ export function artifactStatusDisplayName(status: ArtifactStatus): string {
   switch (status) {
     case ArtifactStatus.Draft:
       return "Draft";
+    case ArtifactStatus.InProgress:
+      return "In Progress";
     case ArtifactStatus.InReview:
       return "In Review";
     case ArtifactStatus.Approved:
       return "Approved";
-    case ArtifactStatus.Obsolete:
-      return "Obsolete";
-    case ArtifactStatus.ReadyForReview:
-      return "Ready for Review";
     case ArtifactStatus.Executed:
       return "Executed";
+    case ArtifactStatus.Done:
+      return "Done";
+    case ArtifactStatus.Obsolete:
+      return "Obsolete";
     default:
       return status;
   }

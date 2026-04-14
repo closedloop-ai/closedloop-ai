@@ -1,12 +1,19 @@
 import type {
+  DailyTokenUsage,
   DailyTrend,
   DashboardStats,
+  ModelUsage,
+  ProjectUsage,
   PublicDashboardResponse,
+  PublicUsageDashboardResponse,
+  RecentSession,
+  UsageDashboardStats,
 } from "@repo/api/src/types/dashboard";
 import {
   ArtifactType,
   GitHubActionStatus,
   GitHubPRState,
+  Prisma,
   withDb,
 } from "@repo/database";
 import { log } from "@repo/observability/log";
@@ -197,6 +204,293 @@ export const dashboardService = {
 
     const stats = await dashboardService.getDashboardStats(org.id);
     return { organizationName: org.name, stats };
+  },
+
+  /**
+   * Get Claude Code usage dashboard data for public display.
+   * Aggregates Loop data: sessions, tokens, costs, daily breakdown, model/project breakdowns.
+   */
+  async getPublicUsageDashboard(
+    token: string,
+    filters: { rangeDays?: number; models?: string[] }
+  ): Promise<PublicUsageDashboardResponse | null> {
+    const org = await withDb((db) =>
+      db.organization.findUnique({
+        where: { publicDashboardToken: token },
+        select: { id: true, name: true, active: true },
+      })
+    );
+
+    if (!org?.active) {
+      return null;
+    }
+
+    const { rangeDays, models } = filters;
+    const startDate =
+      rangeDays !== undefined && rangeDays > 0
+        ? new Date(Date.now() - rangeDays * 86_400_000)
+        : undefined;
+
+    // Build raw SQL predicates for cache/model/project aggregation
+    const basePreds: Prisma.Sql[] = [
+      Prisma.sql`organization_id = ${org.id}::uuid`,
+    ];
+    if (startDate) {
+      basePreds.push(Prisma.sql`created_at >= ${startDate}`);
+    }
+    // baseWhereClause: org + date only (used for allModels enumeration)
+    const baseWhereClause = Prisma.join([...basePreds], " AND ");
+    // Model filter: restrict to loops whose tokens_by_model JSON contains at least one matching key
+    const rawPreds = [...basePreds];
+    if (models && models.length > 0) {
+      const modelPreds = models.map((m) => Prisma.sql`tokens_by_model ? ${m}`);
+      rawPreds.push(Prisma.sql`(${Prisma.join(modelPreds, " OR ")})`);
+    }
+    const whereClause = Prisma.join(rawPreds, " AND ");
+
+    type AggRow = {
+      distinct_sessions: bigint;
+      total_loops: bigint;
+      total_input: bigint;
+      total_output: bigint;
+      total_cost: string | null;
+      total_cache_creation: bigint;
+      total_cache_read: bigint;
+    };
+
+    type DailyRow = {
+      day: string;
+      input: bigint;
+      output: bigint;
+      cache_read: bigint;
+      cache_creation: bigint;
+    };
+
+    type ModelRow = {
+      model: string;
+      total_tokens: bigint;
+    };
+
+    type ProjectRow = {
+      project: string;
+      input_tokens: bigint;
+      output_tokens: bigint;
+    };
+
+    type SessionRow = {
+      session_id: string;
+      project: string;
+      last_active: Date;
+      started_at: Date | null;
+      primary_model: string;
+      turns: bigint;
+      input_tokens: bigint;
+      output_tokens: bigint;
+      total_cost: string | null;
+    };
+
+    const [
+      aggResult,
+      dailyResult,
+      modelResult,
+      projectResult,
+      sessionResult,
+      allModels,
+    ] = await Promise.all([
+      // Aggregate stats
+      withDb((db) =>
+        db.$queryRaw<AggRow[]>(Prisma.sql`
+            SELECT
+              COUNT(DISTINCT session_id) AS distinct_sessions,
+              COUNT(*) AS total_loops,
+              COALESCE(SUM(tokens_input), 0) AS total_input,
+              COALESCE(SUM(tokens_output), 0) AS total_output,
+              SUM(estimated_cost) AS total_cost,
+              COALESCE(SUM(
+                CASE WHEN jsonb_typeof(tokens_by_model) = 'object' THEN (
+                  SELECT COALESCE(SUM(CASE
+                    WHEN jsonb_typeof(e.value -> 'cacheCreation') = 'number' THEN (e.value ->> 'cacheCreation')::numeric::bigint
+                    ELSE 0 END), 0)
+                  FROM jsonb_each(tokens_by_model) AS e(key, value)
+                ) ELSE 0 END
+              ), 0) AS total_cache_creation,
+              COALESCE(SUM(
+                CASE WHEN jsonb_typeof(tokens_by_model) = 'object' THEN (
+                  SELECT COALESCE(SUM(CASE
+                    WHEN jsonb_typeof(e.value -> 'cacheRead') = 'number' THEN (e.value ->> 'cacheRead')::numeric::bigint
+                    ELSE 0 END), 0)
+                  FROM jsonb_each(tokens_by_model) AS e(key, value)
+                ) ELSE 0 END
+              ), 0) AS total_cache_read
+            FROM loops
+            WHERE ${whereClause}
+          `)
+      ),
+
+      // Daily token breakdown
+      withDb((db) =>
+        db.$queryRaw<DailyRow[]>(Prisma.sql`
+            SELECT
+              TO_CHAR(created_at, 'YYYY-MM-DD') AS day,
+              COALESCE(SUM(tokens_input), 0) AS input,
+              COALESCE(SUM(tokens_output), 0) AS output,
+              COALESCE(SUM(
+                CASE WHEN jsonb_typeof(tokens_by_model) = 'object' THEN (
+                  SELECT COALESCE(SUM(CASE
+                    WHEN jsonb_typeof(e.value -> 'cacheRead') = 'number' THEN (e.value ->> 'cacheRead')::numeric::bigint
+                    ELSE 0 END), 0)
+                  FROM jsonb_each(tokens_by_model) AS e(key, value)
+                ) ELSE 0 END
+              ), 0) AS cache_read,
+              COALESCE(SUM(
+                CASE WHEN jsonb_typeof(tokens_by_model) = 'object' THEN (
+                  SELECT COALESCE(SUM(CASE
+                    WHEN jsonb_typeof(e.value -> 'cacheCreation') = 'number' THEN (e.value ->> 'cacheCreation')::numeric::bigint
+                    ELSE 0 END), 0)
+                  FROM jsonb_each(tokens_by_model) AS e(key, value)
+                ) ELSE 0 END
+              ), 0) AS cache_creation
+            FROM loops
+            WHERE ${whereClause}
+            GROUP BY day
+            ORDER BY day
+          `)
+      ),
+
+      // Token usage by model
+      withDb((db) =>
+        db.$queryRaw<ModelRow[]>(Prisma.sql`
+            SELECT
+              e.key AS model,
+              SUM(
+                COALESCE(CASE WHEN jsonb_typeof(e.value -> 'input') = 'number' THEN (e.value ->> 'input')::numeric::bigint ELSE 0 END, 0) +
+                COALESCE(CASE WHEN jsonb_typeof(e.value -> 'output') = 'number' THEN (e.value ->> 'output')::numeric::bigint ELSE 0 END, 0) +
+                COALESCE(CASE WHEN jsonb_typeof(e.value -> 'cacheCreation') = 'number' THEN (e.value ->> 'cacheCreation')::numeric::bigint ELSE 0 END, 0) +
+                COALESCE(CASE WHEN jsonb_typeof(e.value -> 'cacheRead') = 'number' THEN (e.value ->> 'cacheRead')::numeric::bigint ELSE 0 END, 0)
+              ) AS total_tokens
+            FROM loops,
+            LATERAL jsonb_each(tokens_by_model) AS e(key, value)
+            WHERE ${whereClause}
+              AND jsonb_typeof(tokens_by_model) = 'object'
+            GROUP BY e.key
+            ORDER BY total_tokens DESC
+          `)
+      ),
+
+      // Top projects by tokens (from repo JSON field)
+      withDb((db) =>
+        db.$queryRaw<ProjectRow[]>(Prisma.sql`
+            SELECT
+              COALESCE(repo ->> 'fullName', 'Unknown') AS project,
+              COALESCE(SUM(tokens_input), 0) AS input_tokens,
+              COALESCE(SUM(tokens_output), 0) AS output_tokens
+            FROM loops
+            WHERE ${whereClause}
+              AND repo IS NOT NULL
+            GROUP BY project
+            ORDER BY (COALESCE(SUM(tokens_input), 0) + COALESCE(SUM(tokens_output), 0)) DESC
+            LIMIT 10
+          `)
+      ),
+
+      // Recent sessions
+      withDb((db) =>
+        db.$queryRaw<SessionRow[]>(Prisma.sql`
+            SELECT
+              session_id,
+              COALESCE((SELECT r.repo ->> 'fullName' FROM loops r WHERE r.session_id = l.session_id AND r.repo IS NOT NULL LIMIT 1), 'Unknown') AS project,
+              MAX(COALESCE(completed_at, created_at)) AS last_active,
+              MIN(started_at) AS started_at,
+              COALESCE((
+                SELECT e.key FROM loops sub, LATERAL jsonb_each(sub.tokens_by_model) AS e(key, value)
+                WHERE sub.session_id = l.session_id AND jsonb_typeof(sub.tokens_by_model) = 'object'
+                ORDER BY COALESCE((e.value ->> 'input')::numeric::bigint, 0) + COALESCE((e.value ->> 'output')::numeric::bigint, 0) DESC
+                LIMIT 1
+              ), 'unknown') AS primary_model,
+              COUNT(*) AS turns,
+              COALESCE(SUM(tokens_input), 0) AS input_tokens,
+              COALESCE(SUM(tokens_output), 0) AS output_tokens,
+              SUM(estimated_cost) AS total_cost
+            FROM loops l
+            WHERE ${whereClause}
+              AND session_id IS NOT NULL
+            GROUP BY session_id
+            ORDER BY last_active DESC
+            LIMIT 20
+          `)
+      ),
+
+      // All distinct model names for filter controls (date-scoped, no model filter)
+      withDb((db) =>
+        db.$queryRaw<{ model: string }[]>(Prisma.sql`
+            SELECT DISTINCT e.key AS model
+            FROM loops,
+            LATERAL jsonb_each(tokens_by_model) AS e(key, value)
+            WHERE ${baseWhereClause}
+              AND jsonb_typeof(tokens_by_model) = 'object'
+            ORDER BY e.key
+          `)
+      ),
+    ]);
+
+    const agg = aggResult[0];
+
+    const stats: UsageDashboardStats = {
+      sessions: Number(agg?.distinct_sessions ?? 0),
+      turns: Number(agg?.total_loops ?? 0),
+      inputTokens: Number(agg?.total_input ?? 0),
+      outputTokens: Number(agg?.total_output ?? 0),
+      cacheRead: Number(agg?.total_cache_read ?? 0),
+      cacheCreation: Number(agg?.total_cache_creation ?? 0),
+      estimatedCost: Number(agg?.total_cost ?? 0),
+    };
+
+    const dailyUsage: DailyTokenUsage[] = dailyResult.map((r) => ({
+      date: r.day,
+      input: Number(r.input),
+      output: Number(r.output),
+      cacheRead: Number(r.cache_read),
+      cacheCreation: Number(r.cache_creation),
+    }));
+
+    const byModel: ModelUsage[] = modelResult.map((r) => ({
+      model: r.model,
+      totalTokens: Number(r.total_tokens),
+    }));
+
+    const topProjects: ProjectUsage[] = projectResult.map((r) => ({
+      project: r.project,
+      inputTokens: Number(r.input_tokens),
+      outputTokens: Number(r.output_tokens),
+    }));
+
+    const recentSessions: RecentSession[] = sessionResult.map((r) => {
+      const lastActive = new Date(r.last_active);
+      const startedAt = r.started_at ? new Date(r.started_at) : lastActive;
+      const durationMs = lastActive.getTime() - startedAt.getTime();
+      return {
+        sessionId: r.session_id,
+        project: r.project,
+        lastActive: lastActive.toISOString(),
+        durationMinutes: Math.round((durationMs / 60_000) * 10) / 10,
+        model: r.primary_model,
+        turns: Number(r.turns),
+        inputTokens: Number(r.input_tokens),
+        outputTokens: Number(r.output_tokens),
+        estimatedCost: Number(r.total_cost ?? 0),
+      };
+    });
+
+    return {
+      organizationName: org.name,
+      updatedAt: new Date().toISOString(),
+      models: allModels.map((m) => m.model),
+      stats,
+      dailyUsage,
+      byModel,
+      topProjects,
+      recentSessions,
+    };
   },
 };
 

@@ -161,7 +161,7 @@ describe("decomposeHandler ingestion", () => {
       description:
         "Users can register with email and password.\n\n## User Stories\n\n### US-001: As a user, I want to register with my email so that I can access the platform\n\n- **AC-001.1:** User can register with valid email",
       priority: Priority.High,
-      status: FeatureStatus.NotStarted,
+      status: FeatureStatus.Draft,
     });
 
     // Links each feature to the PRD via PRODUCES
@@ -254,7 +254,7 @@ describe("decomposeHandler uploadAndIngest", () => {
       title: "Feature A",
       description: "desc A",
       priority: Priority.High,
-      status: FeatureStatus.NotStarted,
+      status: FeatureStatus.Draft,
     });
     expect(mockEntityLinksService.createLink).toHaveBeenCalledWith("org-1", {
       sourceId: "prd-artifact-1",

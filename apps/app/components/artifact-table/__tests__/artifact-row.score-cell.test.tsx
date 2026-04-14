@@ -90,7 +90,7 @@ const makeFeature = (
   title: "Test Feature",
   slug: "feature-1",
   description: null,
-  status: FeatureStatus.NotStarted,
+  status: FeatureStatus.Draft,
   priority: Priority.Medium,
   assigneeId: null,
   assignee: null,

@@ -34,6 +34,7 @@ import { registerCreateProject } from "./tools/create-project.js";
 import { registerCreateWorkstream } from "./tools/create-workstream.js";
 import { registerDownloadAttachment } from "./tools/download-attachment.js";
 import { registerGetArtifact } from "./tools/get-artifact.js";
+import { registerGetArtifactComments } from "./tools/get-artifact-comments.js";
 import { registerGetDashboardStats } from "./tools/get-dashboard-stats.js";
 import { registerGetFeature } from "./tools/get-feature.js";
 import { registerGetGithubStatus } from "./tools/get-github-status.js";
@@ -325,6 +326,7 @@ const TOOL_REGISTRATIONS: ToolRegistration[] = [
     register: registerCreateArtifactThread,
     requiresWrite: true,
   },
+  { name: "get-artifact-comments", register: registerGetArtifactComments },
   {
     name: "update-artifact",
     register: registerUpdateArtifact,

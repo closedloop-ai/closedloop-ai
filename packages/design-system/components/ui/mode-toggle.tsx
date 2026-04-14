@@ -3,7 +3,7 @@
 import { MoonIcon, SunIcon } from "@radix-ui/react-icons";
 import { cn } from "@repo/design-system/lib/utils";
 import { useTheme } from "next-themes";
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { Button } from "./button";
 import {
   DropdownMenu,
@@ -26,6 +26,7 @@ type ModeToggleProps = {
 export function ModeToggle({ className }: ModeToggleProps) {
   const { setTheme } = useTheme();
   const [mounted, setMounted] = useState(false);
+  const triggerId = useId();
 
   useEffect(() => {
     setMounted(true);
@@ -48,7 +49,7 @@ export function ModeToggle({ className }: ModeToggleProps) {
 
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger asChild>
+      <DropdownMenuTrigger asChild id={triggerId}>
         <Button
           className={cn("shrink-0 text-foreground", className)}
           size="icon"

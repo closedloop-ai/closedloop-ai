@@ -47,10 +47,11 @@ export function getRoutePrefixForType(type: string): string | null {
 // Artifact Status
 export const ArtifactStatus = {
   Draft: "DRAFT",
-  ReadyForReview: "READY_FOR_REVIEW",
+  InProgress: "IN_PROGRESS",
   InReview: "IN_REVIEW",
   Approved: "APPROVED",
   Executed: "EXECUTED",
+  Done: "DONE",
   Obsolete: "OBSOLETE",
 } as const;
 export type ArtifactStatus =
@@ -198,6 +199,7 @@ export type PullRequestInfo = {
   createdAt: Date;
   checksStatus: ChecksStatus | null;
   reviewDecision: ReviewDecision | null;
+  externalLinkId: string | null;
 };
 
 // Generation status for artifacts being processed by GitHub Actions or Loops
@@ -226,6 +228,11 @@ export type GenerationStatus = {
     firstName: string | null;
     lastName: string | null;
   } | null;
+  /**
+   * Server-computed stable identifier for a specific generation run.
+   * Used for status dismissal and cross-client synchronization.
+   */
+  runKey?: string | null;
 };
 
 const ACTIVE_GENERATION_STATUSES = ["PENDING", "QUEUED", "RUNNING"] as const;
@@ -236,6 +243,31 @@ export function isActiveGenerationStatus(
   return ACTIVE_GENERATION_STATUSES.includes(
     status as (typeof ACTIVE_GENERATION_STATUSES)[number]
   );
+}
+
+/**
+ * Build a stable run key for generation status identity.
+ * Preference order: loopId, correlationId, startedAt, completedAt.
+ */
+export function getGenerationStatusRunKey(
+  generationStatus: Pick<
+    GenerationStatus,
+    "loopId" | "correlationId" | "startedAt" | "completedAt"
+  >
+): string | null {
+  if (generationStatus.loopId) {
+    return `loop:${generationStatus.loopId}`;
+  }
+  if (generationStatus.correlationId) {
+    return `corr:${generationStatus.correlationId}`;
+  }
+  if (generationStatus.startedAt) {
+    return `started:${generationStatus.startedAt.toISOString()}`;
+  }
+  if (generationStatus.completedAt) {
+    return `completed:${generationStatus.completedAt.toISOString()}`;
+  }
+  return null;
 }
 
 // Plan JSON types for code plugin artifacts
