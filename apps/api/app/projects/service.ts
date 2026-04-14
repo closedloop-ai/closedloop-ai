@@ -293,8 +293,7 @@ export const projectsService = {
 
     const completedCount = artifacts.filter(
       (a) =>
-        a.status === ArtifactStatus.Executed ||
-        a.status === ArtifactStatus.Obsolete
+        a.status === ArtifactStatus.Done || a.status === ArtifactStatus.Obsolete
     ).length;
 
     return Math.round((completedCount / artifacts.length) * 100);

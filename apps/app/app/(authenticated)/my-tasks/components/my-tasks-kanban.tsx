@@ -39,10 +39,12 @@ import {
 
 /** Map column (droppable) id to the status to set when a feature is dropped there */
 const COLUMN_TO_STATUS: Record<string, FeatureStatus> = {
-  not_started: FeatureStatus.NotStarted,
+  draft: FeatureStatus.Draft,
   in_progress: FeatureStatus.InProgress,
   in_review: FeatureStatus.InReview,
-  completed: FeatureStatus.Completed,
+  approved: FeatureStatus.Approved,
+  executed: FeatureStatus.Executed,
+  done: FeatureStatus.Done,
   obsolete: FeatureStatus.Obsolete,
 };
 

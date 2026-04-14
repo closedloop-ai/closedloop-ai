@@ -2,7 +2,6 @@
 
 import type { JsonObject } from "@repo/api/src/types/common";
 import type { DefaultRepository } from "@repo/api/src/types/project";
-import { Button } from "@repo/design-system/components/ui/button";
 import {
   Select,
   SelectContent,
@@ -10,9 +9,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@repo/design-system/components/ui/select";
-import { formatDistanceToNow } from "date-fns";
-import { XIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { GitHubRepositoryOptionLabel } from "@/components/github-repository-option-label";
 import {
   useGitHubBranches,
   useGitHubIntegrationStatus,
@@ -56,6 +54,31 @@ export function DefaultRepositoryPicker({
     () => (repositories ? sortRepositoriesByActivity(repositories) : []),
     [repositories]
   );
+  const selectedRepository = repositories?.find(
+    (repo) => repo.id === selectedRepoId
+  );
+  const selectedRepositoryLabel =
+    selectedRepository?.fullName ||
+    (selectedRepoId === defaultRepository?.repoId
+      ? defaultRepository?.repoFullName
+      : undefined);
+
+  const renderRepositoryTriggerValue = () => {
+    if (selectedRepository) {
+      return (
+        <GitHubRepositoryOptionLabel
+          repository={selectedRepository}
+          showLastActive={false}
+        />
+      );
+    }
+
+    if (selectedRepositoryLabel) {
+      return <span>{selectedRepositoryLabel}</span>;
+    }
+
+    return null;
+  };
 
   // Sync local state when prop changes (e.g., after save or external update)
   useEffect(() => {
@@ -115,19 +138,6 @@ export function DefaultRepositoryPicker({
     }
   };
 
-  const handleClear = () => {
-    setSelectedRepoId("");
-    setSelectedBranch("");
-    const { defaultRepository: _, ...rest } = currentSettings as Record<
-      string,
-      unknown
-    >;
-    updateProject.mutate({
-      id: projectId,
-      settings: rest as JsonObject,
-    });
-  };
-
   if (githubStatus?.connected === false) {
     return (
       <div className="rounded-md border border-muted bg-muted/20 p-2 text-muted-foreground text-xs">
@@ -137,51 +147,31 @@ export function DefaultRepositoryPicker({
   }
 
   return (
-    <div className="space-y-2">
-      <div className="flex items-center gap-1">
-        <Select
-          disabled={isLoadingGitHubStatus || isLoadingRepos}
-          onValueChange={handleRepoSelect}
-          value={selectedRepoId}
-        >
-          <SelectTrigger className="h-8 text-xs">
-            <SelectValue
-              placeholder={
-                isLoadingGitHubStatus || isLoadingRepos
-                  ? "Loading..."
-                  : "Select repository"
-              }
-            />
-          </SelectTrigger>
-          <SelectContent>
-            {sortedRepositories.map((repo) => (
-              <SelectItem key={repo.id} value={repo.id}>
-                <div className="flex flex-col">
-                  <span>{repo.fullName}</span>
-                  {repo.lastPushedAt ? (
-                    <span className="text-muted-foreground text-xs">
-                      Last active{" "}
-                      {formatDistanceToNow(new Date(repo.lastPushedAt), {
-                        addSuffix: true,
-                      })}
-                    </span>
-                  ) : null}
-                </div>
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        {selectedRepoId ? (
-          <Button
-            className="h-8 w-8 shrink-0"
-            onClick={handleClear}
-            size="icon"
-            variant="ghost"
+    <div className="flex items-center gap-2">
+      <Select
+        disabled={isLoadingGitHubStatus || isLoadingRepos}
+        onValueChange={handleRepoSelect}
+        value={selectedRepoId}
+      >
+        <SelectTrigger className="h-8 text-xs">
+          <SelectValue
+            placeholder={
+              isLoadingGitHubStatus || isLoadingRepos
+                ? "Loading..."
+                : "Select repository"
+            }
           >
-            <XIcon className="h-3 w-3" />
-          </Button>
-        ) : null}
-      </div>
+            {renderRepositoryTriggerValue()}
+          </SelectValue>
+        </SelectTrigger>
+        <SelectContent>
+          {sortedRepositories.map((repo) => (
+            <SelectItem key={repo.id} value={repo.id}>
+              <GitHubRepositoryOptionLabel repository={repo} />
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
       {selectedRepoId ? (
         <Select
           disabled={!selectedRepoId || isLoadingBranches}

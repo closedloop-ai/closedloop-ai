@@ -32,29 +32,32 @@ export const PRIORITY_COLORS: Record<Priority, string> = {
 // Artifact status configuration (uses API status directly — no display mapping)
 export const ARTIFACT_STATUS_LABELS: Record<ArtifactStatus, string> = {
   [ArtifactStatus.Draft]: "Draft",
-  [ArtifactStatus.ReadyForReview]: "Ready for Review",
+  [ArtifactStatus.InProgress]: "In Progress",
   [ArtifactStatus.InReview]: "In Review",
   [ArtifactStatus.Approved]: "Approved",
   [ArtifactStatus.Executed]: "Executed",
+  [ArtifactStatus.Done]: "Done",
   [ArtifactStatus.Obsolete]: "Obsolete",
 };
 
 export const ARTIFACT_STATUS_COLORS: Record<ArtifactStatus, string> = {
   [ArtifactStatus.Draft]: "text-muted-foreground",
-  [ArtifactStatus.ReadyForReview]: "text-yellow-600 dark:text-yellow-400",
+  [ArtifactStatus.InProgress]: "text-blue-600 dark:text-blue-400",
   [ArtifactStatus.InReview]: "text-blue-600 dark:text-blue-400",
   [ArtifactStatus.Approved]: "text-blue-600 dark:text-blue-400",
   [ArtifactStatus.Executed]: "text-blue-600 dark:text-blue-400",
+  [ArtifactStatus.Done]: "text-green-600 dark:text-green-400",
   [ArtifactStatus.Obsolete]: "text-muted-foreground",
 };
 
 export const ARTIFACT_STATUS_TO_ICON: Record<ArtifactStatus, StatusIconStatus> =
   {
     [ArtifactStatus.Draft]: "todo",
-    [ArtifactStatus.ReadyForReview]: "in-progress",
+    [ArtifactStatus.InProgress]: "started",
     [ArtifactStatus.InReview]: "in-progress",
     [ArtifactStatus.Approved]: "in-review",
     [ArtifactStatus.Executed]: "executed",
+    [ArtifactStatus.Done]: "complete",
     [ArtifactStatus.Obsolete]: "wont-do",
   };
 
@@ -100,26 +103,32 @@ export const ARTIFACT_TYPE_BADGE_LABELS: Record<ArtifactType, string> = {
 
 // Feature status labels and colors
 export const FEATURE_STATUS_LABELS: Record<FeatureStatus, string> = {
-  [FeatureStatus.NotStarted]: "Not Started",
+  [FeatureStatus.Draft]: "Draft",
   [FeatureStatus.InProgress]: "In Progress",
   [FeatureStatus.InReview]: "In Review",
-  [FeatureStatus.Completed]: "Completed",
+  [FeatureStatus.Approved]: "Approved",
+  [FeatureStatus.Executed]: "Executed",
+  [FeatureStatus.Done]: "Done",
   [FeatureStatus.Obsolete]: "Obsolete",
 };
 
 export const FEATURE_STATUS_COLORS: Record<FeatureStatus, string> = {
-  [FeatureStatus.NotStarted]: "text-muted-foreground",
+  [FeatureStatus.Draft]: "text-muted-foreground",
   [FeatureStatus.InProgress]: "text-blue-600 dark:text-blue-400",
   [FeatureStatus.InReview]: "text-blue-600 dark:text-blue-400",
-  [FeatureStatus.Completed]: "text-green-600 dark:text-green-400",
+  [FeatureStatus.Approved]: "text-blue-600 dark:text-blue-400",
+  [FeatureStatus.Executed]: "text-blue-600 dark:text-blue-400",
+  [FeatureStatus.Done]: "text-green-600 dark:text-green-400",
   [FeatureStatus.Obsolete]: "text-muted-foreground",
 };
 
 export const FEATURE_STATUS_TO_ICON: Record<FeatureStatus, StatusIconStatus> = {
-  [FeatureStatus.NotStarted]: "todo",
-  [FeatureStatus.InProgress]: "in-progress",
+  [FeatureStatus.Draft]: "todo",
+  [FeatureStatus.InProgress]: "started",
   [FeatureStatus.InReview]: "in-progress",
-  [FeatureStatus.Completed]: "complete",
+  [FeatureStatus.Approved]: "in-review",
+  [FeatureStatus.Executed]: "executed",
+  [FeatureStatus.Done]: "complete",
   [FeatureStatus.Obsolete]: "wont-do",
 };
 
