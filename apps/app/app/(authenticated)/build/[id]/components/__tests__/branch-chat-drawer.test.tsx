@@ -14,7 +14,7 @@ vi.mock("@tanstack/react-query", async () => {
   };
 });
 
-const capturedUseGenericChatOptions: {
+const capturedUseChatSessionOptions: {
   value:
     | {
         chatKey: string;
@@ -25,14 +25,14 @@ const capturedUseGenericChatOptions: {
     | undefined;
 } = { value: undefined };
 
-vi.mock("@/hooks/chat/use-generic-chat", () => ({
-  useGenericChat: (opts: {
+vi.mock("@/hooks/chat/use-chat-session", () => ({
+  useChatSession: (opts: {
     chatKey: string;
     provider: string;
     context: string;
     cwd?: string;
   }) => {
-    capturedUseGenericChatOptions.value = opts;
+    capturedUseChatSessionOptions.value = opts;
     return {
       messages: [],
       isLoading: false,
@@ -110,14 +110,14 @@ const BASE_BRANCH_DATA: BranchViewData = {
 };
 
 beforeEach(() => {
-  capturedUseGenericChatOptions.value = undefined;
+  capturedUseChatSessionOptions.value = undefined;
   capturedChatPanelProps.value = null;
   vi.clearAllMocks();
   mockUseQuery.mockReturnValue({ data: undefined });
 });
 
 describe("BranchChatDrawer", () => {
-  test("passes chatKey derived from externalLinkId to useGenericChat", () => {
+  test("passes chatKey derived from externalLinkId to useChatSession", () => {
     render(
       <BranchChatDrawer
         contextSelection={null}
@@ -126,7 +126,7 @@ describe("BranchChatDrawer", () => {
         worktreePath={null}
       />
     );
-    expect(capturedUseGenericChatOptions.value?.chatKey).toBe("branch:ext-1");
+    expect(capturedUseChatSessionOptions.value?.chatKey).toBe("branch:ext-1");
   });
 
   test("passes cwd matching worktreePath when provided", () => {
@@ -138,7 +138,7 @@ describe("BranchChatDrawer", () => {
         worktreePath="/Users/dev/wt-1"
       />
     );
-    expect(capturedUseGenericChatOptions.value?.cwd).toBe("/Users/dev/wt-1");
+    expect(capturedUseChatSessionOptions.value?.cwd).toBe("/Users/dev/wt-1");
   });
 
   test("passes cwd undefined when worktreePath is null", () => {
@@ -150,7 +150,7 @@ describe("BranchChatDrawer", () => {
         worktreePath={null}
       />
     );
-    expect(capturedUseGenericChatOptions.value?.cwd).toBeUndefined();
+    expect(capturedUseChatSessionOptions.value?.cwd).toBeUndefined();
   });
 
   test("renders notice when filesystem access is unavailable", () => {

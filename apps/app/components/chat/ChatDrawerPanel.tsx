@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { ChatPanel } from "@/components/chat/ChatPanel";
-import { useGenericChat } from "@/hooks/chat/use-generic-chat";
+import { useChatSession } from "@/hooks/chat/use-chat-session";
 
 const STORAGE_KEY = "artifact-chat-panel-width";
 const MIN_WIDTH = 280;
@@ -128,7 +128,7 @@ export function ChatDrawerPanel({
     );
   }, []);
 
-  const chat = useGenericChat({
+  const chat = useChatSession({
     chatKey,
     context,
     provider,

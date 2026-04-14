@@ -71,9 +71,9 @@ export const queryKeys = {
   healthCheck: (targetKey: string, expectedMcpUrl: string | null) =>
     ["health-check", targetKey, expectedMcpUrl] as const,
 
-  // Generic chat domain
-  genericChatHistory: (chatKey: string) =>
-    ["generic-chat-history", chatKey] as const,
+  // Chat session domain
+  chatSessionHistory: (chatKey: string) =>
+    ["chat-session-history", chatKey] as const,
   chatRunnerToken: (chatKey: string) => ["chat-runner-token", chatKey] as const,
   branchWorktree: (
     repoFullName: string,

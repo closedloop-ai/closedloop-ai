@@ -69,7 +69,7 @@ vi.mock("@/lib/engineer/routing-store", () => ({
 // --- Imports (after mocks) ---
 
 import type { StreamErrorEvent } from "@/lib/chat/chat-utils";
-import { useGenericChat } from "../use-generic-chat";
+import { useChatSession } from "../use-chat-session";
 
 const CHAT_KEY = "artifact:plan-1";
 const PROVIDER = "claude" as const;
@@ -111,11 +111,11 @@ beforeEach(() => {
   mockApiClient.delete.mockResolvedValue({ deleted: true });
 });
 
-describe("useGenericChat — initial state and history", () => {
+describe("useChatSession — initial state and history", () => {
   test("does not fetch history when chatKey is empty", () => {
     const { result } = renderHook(
       () =>
-        useGenericChat({
+        useChatSession({
           chatKey: "",
           context: "ctx",
           provider: PROVIDER,
@@ -127,12 +127,12 @@ describe("useGenericChat — initial state and history", () => {
     expect(result.current.isLoading).toBe(false);
   });
 
-  test("loads existing messages via GET /generic-chats on mount", async () => {
+  test("loads existing messages via GET /chat-sessions on mount", async () => {
     mockApiClient.get.mockResolvedValue({ chat: SAMPLE_CHAT });
 
     const { result } = renderHook(
       () =>
-        useGenericChat({
+        useChatSession({
           chatKey: CHAT_KEY,
           context: "ctx",
           provider: PROVIDER,
@@ -145,16 +145,16 @@ describe("useGenericChat — initial state and history", () => {
     expect(result.current.currentProvider).toBe("claude");
     expect(result.current.currentModel).toBe("claude-sonnet-4-5");
     expect(mockApiClient.get).toHaveBeenCalledWith(
-      `/generic-chats?chatKey=${encodeURIComponent(CHAT_KEY)}`
+      `/chat-sessions?chatKey=${encodeURIComponent(CHAT_KEY)}`
     );
   });
 });
 
-describe("useGenericChat — sendMessage guards", () => {
+describe("useChatSession — sendMessage guards", () => {
   test("does nothing when input is empty/whitespace", async () => {
     const { result } = renderHook(
       () =>
-        useGenericChat({
+        useChatSession({
           chatKey: CHAT_KEY,
           context: "ctx",
           provider: PROVIDER,
@@ -178,7 +178,7 @@ describe("useGenericChat — sendMessage guards", () => {
 
     const { result } = renderHook(
       () =>
-        useGenericChat({
+        useChatSession({
           chatKey: CHAT_KEY,
           context: "ctx",
           provider: PROVIDER,
@@ -204,7 +204,7 @@ describe("useGenericChat — sendMessage guards", () => {
 
     const { result } = renderHook(
       () =>
-        useGenericChat({
+        useChatSession({
           chatKey: CHAT_KEY,
           context: "ctx",
           provider: PROVIDER,
@@ -229,7 +229,7 @@ describe("useGenericChat — sendMessage guards", () => {
 
     const { result } = renderHook(
       () =>
-        useGenericChat({
+        useChatSession({
           chatKey: CHAT_KEY,
           context: "ctx",
           provider: PROVIDER,
@@ -249,11 +249,11 @@ describe("useGenericChat — sendMessage guards", () => {
   });
 });
 
-describe("useGenericChat — sendMessage single flow", () => {
+describe("useChatSession — sendMessage single flow", () => {
   test("POSTs to /api/engineer/chat exactly once with the minimal body shape", async () => {
     const { result } = renderHook(
       () =>
-        useGenericChat({
+        useChatSession({
           chatKey: CHAT_KEY,
           context: "doc-ctx",
           provider: PROVIDER,
@@ -291,7 +291,7 @@ describe("useGenericChat — sendMessage single flow", () => {
   test("resolves model from DEFAULT_CHAT_MODELS when not provided", async () => {
     const { result } = renderHook(
       () =>
-        useGenericChat({
+        useChatSession({
           chatKey: CHAT_KEY,
           context: "ctx",
           provider: PROVIDER,
@@ -313,7 +313,7 @@ describe("useGenericChat — sendMessage single flow", () => {
   test("clears composer immediately after send resolves without errors", async () => {
     const { result } = renderHook(
       () =>
-        useGenericChat({
+        useChatSession({
           chatKey: CHAT_KEY,
           context: "ctx",
           provider: PROVIDER,
@@ -332,7 +332,7 @@ describe("useGenericChat — sendMessage single flow", () => {
   });
 });
 
-describe("useGenericChat — onError handling", () => {
+describe("useChatSession — onError handling", () => {
   async function runErrorCase(
     err: StreamErrorEvent,
     opts: { draft?: string; onProviderMismatch?: (p: string) => void } = {}
@@ -351,7 +351,7 @@ describe("useGenericChat — onError handling", () => {
 
     const { result } = renderHook(
       () =>
-        useGenericChat({
+        useChatSession({
           chatKey: CHAT_KEY,
           context: "ctx",
           provider: PROVIDER,
@@ -431,7 +431,7 @@ describe("useGenericChat — onError handling", () => {
   });
 });
 
-describe("useGenericChat — optimistic pending user message", () => {
+describe("useChatSession — optimistic pending user message", () => {
   test("appends the user message to the transcript while the stream is in flight", async () => {
     // Hold the stream promise open so we can observe the intermediate state.
     let resolveSend: (() => void) | undefined;
@@ -444,7 +444,7 @@ describe("useGenericChat — optimistic pending user message", () => {
 
     const { result } = renderHook(
       () =>
-        useGenericChat({
+        useChatSession({
           chatKey: CHAT_KEY,
           context: "ctx",
           provider: PROVIDER,
@@ -516,7 +516,7 @@ describe("useGenericChat — optimistic pending user message", () => {
 
     const { result } = renderHook(
       () =>
-        useGenericChat({
+        useChatSession({
           chatKey: CHAT_KEY,
           context: "ctx",
           provider: PROVIDER,
@@ -556,7 +556,7 @@ describe("useGenericChat — optimistic pending user message", () => {
 
     const { result } = renderHook(
       () =>
-        useGenericChat({
+        useChatSession({
           chatKey: CHAT_KEY,
           context: "ctx",
           provider: PROVIDER,
@@ -604,7 +604,7 @@ describe("useGenericChat — optimistic pending user message", () => {
 
     const { result } = renderHook(
       () =>
-        useGenericChat({
+        useChatSession({
           chatKey: CHAT_KEY,
           context: "ctx",
           provider: PROVIDER,
@@ -637,11 +637,11 @@ describe("useGenericChat — optimistic pending user message", () => {
   });
 });
 
-describe("useGenericChat — clearHistory", () => {
+describe("useChatSession — clearHistory", () => {
   test("calls apiClient.delete with the exact URL string", async () => {
     const { result } = renderHook(
       () =>
-        useGenericChat({
+        useChatSession({
           chatKey: CHAT_KEY,
           context: "ctx",
           provider: PROVIDER,
@@ -655,14 +655,14 @@ describe("useGenericChat — clearHistory", () => {
 
     expect(mockApiClient.delete).toHaveBeenCalledTimes(1);
     expect(mockApiClient.delete).toHaveBeenCalledWith(
-      `/generic-chats?chatKey=${encodeURIComponent(CHAT_KEY)}`
+      `/chat-sessions?chatKey=${encodeURIComponent(CHAT_KEY)}`
     );
   });
 
   test("does nothing when chatKey is empty", async () => {
     const { result } = renderHook(
       () =>
-        useGenericChat({
+        useChatSession({
           chatKey: "",
           context: "ctx",
           provider: PROVIDER,

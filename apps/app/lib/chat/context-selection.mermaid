@@ -57,13 +57,13 @@ flowchart TD
   end
 
   %% ----- Shared drawer -----
-  ArtifactKey --> Drawer["ChatDrawerPanel<br/>(components/chat/ChatDrawerPanel.tsx)<br/>owns useResizableWidth + useGenericChat"]
+  ArtifactKey --> Drawer["ChatDrawerPanel<br/>(components/chat/ChatDrawerPanel.tsx)<br/>owns useResizableWidth + useChatSession"]
   BranchKey --> Drawer
   BranchNoticeYes --> Drawer
   BranchNoticeNo --> Drawer
   BranchSlotYes --> Drawer
   BranchSlotNo --> Drawer
-  Drawer --> Chat["useGenericChat POSTs<br/>{ chatKey, userMessage, context, provider, cwd?, apiBaseUrl, apiAuthToken }<br/>to /api/engineer/chat"]
+  Drawer --> Chat["useChatSession POSTs<br/>{ chatKey, userMessage, context, provider, cwd?, apiBaseUrl, apiAuthToken }<br/>to /api/engineer/chat"]
 
   classDef decision fill:#fef3c7,stroke:#b45309,color:#1f2937
   classDef artifactbox fill:#fce7f3,stroke:#be185c,color:#1f2937

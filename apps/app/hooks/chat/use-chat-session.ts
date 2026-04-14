@@ -14,7 +14,7 @@ import { useElectronDetection } from "@/lib/engineer/electron-detection";
 import { queryKeys } from "@/lib/engineer/queries/keys";
 import { useEngineerRoutingSelection } from "@/lib/engineer/routing-store";
 
-type GenericChatRow = {
+type ChatSessionRow = {
   id: string;
   chatKey: string;
   userId: string;
@@ -28,9 +28,9 @@ type GenericChatRow = {
   updatedAt: string;
 };
 
-type ChatEnvelope = { chat: GenericChatRow | null };
+type ChatEnvelope = { chat: ChatSessionRow | null };
 
-export type UseGenericChatOptions = {
+export type UseChatSessionOptions = {
   chatKey: string;
   context: string;
   provider: "claude" | "codex";
@@ -39,7 +39,7 @@ export type UseGenericChatOptions = {
   onProviderMismatch?: (boundProvider: string) => void;
 };
 
-export type UseGenericChatReturn = {
+export type UseChatSessionReturn = {
   messages: ChatMessage[];
   isLoading: boolean;
   isStreaming: boolean;
@@ -57,9 +57,9 @@ export type UseGenericChatReturn = {
   currentModel: string | null;
 };
 
-export function useGenericChat(
-  options: UseGenericChatOptions
-): UseGenericChatReturn {
+export function useChatSession(
+  options: UseChatSessionOptions
+): UseChatSessionReturn {
   const { chatKey, context, provider, model, cwd, onProviderMismatch } =
     options;
   const apiClient = useApiClient();
@@ -78,10 +78,10 @@ export function useGenericChat(
 
   const chatKeyEnabled = chatKey.length > 0;
 
-  const historyQuery = useQuery<GenericChatRow | null>({
-    queryKey: queryKeys.genericChatHistory(chatKey),
+  const historyQuery = useQuery<ChatSessionRow | null>({
+    queryKey: queryKeys.chatSessionHistory(chatKey),
     queryFn: async () => {
-      const path = `/generic-chats?chatKey=${encodeURIComponent(chatKey)}`;
+      const path = `/chat-sessions?chatKey=${encodeURIComponent(chatKey)}`;
       const result = await apiClient.get<ChatEnvelope>(path);
       return result.chat;
     },
@@ -120,7 +120,7 @@ export function useGenericChat(
 
   const invalidateHistory = useCallback(() => {
     queryClient.invalidateQueries({
-      queryKey: queryKeys.genericChatHistory(chatKey),
+      queryKey: queryKeys.chatSessionHistory(chatKey),
     });
   }, [queryClient, chatKey]);
 
@@ -212,7 +212,7 @@ export function useGenericChat(
     }
     try {
       await apiClient.delete(
-        `/generic-chats?chatKey=${encodeURIComponent(chatKey)}`
+        `/chat-sessions?chatKey=${encodeURIComponent(chatKey)}`
       );
     } catch (err) {
       setLocalError(

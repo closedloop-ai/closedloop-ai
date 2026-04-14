@@ -12,7 +12,7 @@ vi.mock("@tanstack/react-query", async () => {
   };
 });
 
-const capturedUseGenericChatOptions: {
+const capturedUseChatSessionOptions: {
   value:
     | {
         chatKey: string;
@@ -23,14 +23,14 @@ const capturedUseGenericChatOptions: {
     | undefined;
 } = { value: undefined };
 
-vi.mock("@/hooks/chat/use-generic-chat", () => ({
-  useGenericChat: (opts: {
+vi.mock("@/hooks/chat/use-chat-session", () => ({
+  useChatSession: (opts: {
     chatKey: string;
     provider: string;
     context: string;
     cwd?: string;
   }) => {
-    capturedUseGenericChatOptions.value = opts;
+    capturedUseChatSessionOptions.value = opts;
     return {
       messages: [],
       isLoading: false,
@@ -80,30 +80,30 @@ const ARTIFACT_PROPS = {
 };
 
 beforeEach(() => {
-  capturedUseGenericChatOptions.value = undefined;
+  capturedUseChatSessionOptions.value = undefined;
   capturedChatPanelProps.value = null;
   vi.clearAllMocks();
 });
 
 describe("ArtifactChatDrawer", () => {
-  test("passes chatKey derived from artifactId to useGenericChat", () => {
+  test("passes chatKey derived from artifactId to useChatSession", () => {
     mockUseQuery.mockReturnValue({ data: undefined });
     render(<ArtifactChatDrawer {...ARTIFACT_PROPS} />);
-    expect(capturedUseGenericChatOptions.value?.chatKey).toBe("artifact:art-1");
+    expect(capturedUseChatSessionOptions.value?.chatKey).toBe("artifact:art-1");
   });
 
-  test("passes provider 'claude' and non-empty context to useGenericChat", () => {
+  test("passes provider 'claude' and non-empty context to useChatSession", () => {
     mockUseQuery.mockReturnValue({ data: undefined });
     render(<ArtifactChatDrawer {...ARTIFACT_PROPS} />);
-    expect(capturedUseGenericChatOptions.value?.provider).toBe("claude");
-    expect(capturedUseGenericChatOptions.value?.context).toBeDefined();
-    expect(capturedUseGenericChatOptions.value?.context.length).toBeGreaterThan(
+    expect(capturedUseChatSessionOptions.value?.provider).toBe("claude");
+    expect(capturedUseChatSessionOptions.value?.context).toBeDefined();
+    expect(capturedUseChatSessionOptions.value?.context.length).toBeGreaterThan(
       0
     );
-    expect(capturedUseGenericChatOptions.value?.context).toContain(
+    expect(capturedUseChatSessionOptions.value?.context).toContain(
       "Artifact type: plan"
     );
-    expect(capturedUseGenericChatOptions.value?.context).toContain(
+    expect(capturedUseChatSessionOptions.value?.context).toContain(
       "Slug: PLN-123"
     );
   });
@@ -111,7 +111,7 @@ describe("ArtifactChatDrawer", () => {
   test("does not pass a cwd (artifact mode never sets one)", () => {
     mockUseQuery.mockReturnValue({ data: undefined });
     render(<ArtifactChatDrawer {...ARTIFACT_PROPS} />);
-    expect(capturedUseGenericChatOptions.value?.cwd).toBeUndefined();
+    expect(capturedUseChatSessionOptions.value?.cwd).toBeUndefined();
   });
 
   test("renders ChatPanel with welcomeMessage matching the artifact type label", () => {
