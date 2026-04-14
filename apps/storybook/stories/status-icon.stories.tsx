@@ -19,6 +19,7 @@ const meta = {
       options: [
         "backlog",
         "todo",
+        "started",
         "in-progress",
         "in-review",
         "executed",
@@ -47,6 +48,10 @@ export const Todo: Story = {
   args: { status: "todo" },
 };
 
+export const Started: Story = {
+  args: { status: "started" },
+};
+
 export const InProgress: Story = {
   args: { status: "in-progress" },
 };
@@ -70,6 +75,7 @@ export const WontDo: Story = {
 const ALL_STATUSES: StatusIconStatus[] = [
   "backlog",
   "todo",
+  "started",
   "in-progress",
   "in-review",
   "executed",
@@ -129,7 +135,14 @@ export const Thinking: Story = {
   render: () => (
     <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
       {(
-        ["backlog", "todo", "in-progress", "in-review", "executed"] as const
+        [
+          "backlog",
+          "todo",
+          "started",
+          "in-progress",
+          "in-review",
+          "executed",
+        ] as const
       ).map((s) => (
         <div
           key={s}
@@ -153,32 +166,37 @@ export const NormalVsThinking: Story = {
   args: { status: "in-progress" },
   render: () => (
     <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
-      {(["in-progress", "in-review", "executed"] as const).map((s) => (
-        <div key={s} style={{ display: "flex", alignItems: "center", gap: 24 }}>
+      {(["started", "in-progress", "in-review", "executed"] as const).map(
+        (s) => (
           <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              gap: 4,
-            }}
+            key={s}
+            style={{ display: "flex", alignItems: "center", gap: 24 }}
           >
-            <StatusIcon size={20} status={s} />
-            <span style={{ fontSize: 11 }}>{s}</span>
+            <div
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                gap: 4,
+              }}
+            >
+              <StatusIcon size={20} status={s} />
+              <span style={{ fontSize: 11 }}>{s}</span>
+            </div>
+            <div
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                gap: 4,
+              }}
+            >
+              <StatusIcon size={20} status={s} thinking />
+              <span style={{ fontSize: 11 }}>{s} thinking</span>
+            </div>
           </div>
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              gap: 4,
-            }}
-          >
-            <StatusIcon size={20} status={s} thinking />
-            <span style={{ fontSize: 11 }}>{s} thinking</span>
-          </div>
-        </div>
-      ))}
+        )
+      )}
     </div>
   ),
 };

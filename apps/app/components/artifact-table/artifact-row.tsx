@@ -4,10 +4,14 @@ import type {
   ArtifactStatus,
   ArtifactWithWorkstream,
 } from "@repo/api/src/types/artifact";
-import { ArtifactType } from "@repo/api/src/types/artifact";
+import {
+  ARTIFACT_STATUS_OPTIONS,
+  ArtifactType,
+} from "@repo/api/src/types/artifact";
 import type { Priority } from "@repo/api/src/types/common";
 import type { JudgeFeedbackItem } from "@repo/api/src/types/evaluation";
 import type { FeatureWithWorkstream } from "@repo/api/src/types/feature";
+import { FEATURE_STATUS_OPTIONS } from "@repo/api/src/types/feature";
 import type { LoopWithUser } from "@repo/api/src/types/loop";
 import type { ProjectWithDetails } from "@repo/api/src/types/project";
 import { isDisplayableSlug } from "@repo/api/src/types/slug";
@@ -188,10 +192,16 @@ function NameCell({
       item.data.generationStatus.status
     );
 
-  const statusOptions =
-    item.kind === "artifact"
-      ? { labels: ARTIFACT_STATUS_LABELS, icons: ARTIFACT_STATUS_TO_ICON }
-      : { labels: FEATURE_STATUS_LABELS, icons: FEATURE_STATUS_TO_ICON };
+  const isArtifact = item.kind === "artifact";
+  const statusLabels = isArtifact
+    ? ARTIFACT_STATUS_LABELS
+    : FEATURE_STATUS_LABELS;
+  const statusIcons = isArtifact
+    ? ARTIFACT_STATUS_TO_ICON
+    : FEATURE_STATUS_TO_ICON;
+  const statusOptions = isArtifact
+    ? ARTIFACT_STATUS_OPTIONS
+    : FEATURE_STATUS_OPTIONS;
 
   const statusButton = (
     <button
@@ -247,7 +257,7 @@ function NameCell({
         <DropdownMenu>
           <DropdownMenuTrigger asChild>{statusButton}</DropdownMenuTrigger>
           <DropdownMenuContent align="start">
-            {Object.entries(statusOptions.labels).map(([value, label]) => (
+            {statusOptions.map((value) => (
               <DropdownMenuItem
                 className="hover:!bg-accent focus:!bg-accent data-[highlighted]:!bg-accent"
                 key={value}
@@ -258,13 +268,9 @@ function NameCell({
               >
                 <StatusIcon
                   size={16}
-                  status={
-                    statusOptions.icons[
-                      value as keyof typeof statusOptions.icons
-                    ]
-                  }
+                  status={statusIcons[value as keyof typeof statusIcons]}
                 />
-                {label}
+                {statusLabels[value as keyof typeof statusLabels]}
               </DropdownMenuItem>
             ))}
           </DropdownMenuContent>

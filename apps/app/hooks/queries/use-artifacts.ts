@@ -223,7 +223,10 @@ export function useArtifactGenerationStatus(
       refetchInterval: polling
         ? (query) => {
             const status = query.state.data?.status;
-            if (status && isActiveGenerationStatus(status)) {
+            if (
+              status &&
+              (isActiveGenerationStatus(status) || status === "FAILURE")
+            ) {
               return GENERATION_POLL_INTERVAL;
             }
             return false;
@@ -533,6 +536,42 @@ export function useExecuteImplementationPlan() {
         queryKey: artifactKeys.generationStatus(artifactId),
       });
       queryClient.invalidateQueries({ queryKey: artifactKeys.lists() });
+    },
+  });
+}
+
+/**
+ * Dismiss the currently displayed generation status (shared across users).
+ */
+export function useDismissArtifactGenerationStatus() {
+  const queryClient = useQueryClient();
+  const apiClient = useApiClient();
+
+  return useMutation({
+    mutationFn: ({
+      artifactId,
+      runKey,
+    }: {
+      artifactId: string;
+      runKey: string | null;
+    }) =>
+      apiClient.put<GenerationStatus>(
+        `/artifacts/${artifactId}/generation-status/dismiss`,
+        { runKey }
+      ),
+    onSuccess: (status, { artifactId }) => {
+      queryClient.setQueryData(
+        artifactKeys.generationStatus(artifactId),
+        status
+      );
+      queryClient.invalidateQueries({
+        queryKey: artifactKeys.detail(artifactId),
+      });
+      queryClient.invalidateQueries({ queryKey: artifactKeys.bySlugs() });
+      queryClient.invalidateQueries({ queryKey: artifactKeys.lists() });
+    },
+    onError: () => {
+      toast.error("Failed to dismiss generation status");
     },
   });
 }

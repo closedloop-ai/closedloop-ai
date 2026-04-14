@@ -6,6 +6,7 @@ import {
 } from "@repo/design-system/components/ui/sidebar";
 import { cookies, headers } from "next/headers";
 import type { ReactNode } from "react";
+import { Suspense } from "react";
 import { EngineerTransportBootstrap } from "@/components/engineer/engineer-transport-bootstrap";
 import { env } from "@/env";
 import { CollaborationProviderWrapper } from "./components/collaboration-provider-wrapper";
@@ -44,7 +45,9 @@ const AppLayout = async ({ children }: AppLayoutProperties) => {
           <OnboardingGuard>
             <UserIdentifier />
             <EngineerTransportBootstrap />
-            <SystemCheckBootstrap />
+            <Suspense>
+              <SystemCheckBootstrap />
+            </Suspense>
             <div className="flex h-full max-h-full flex-col overflow-hidden">
               {children}
             </div>

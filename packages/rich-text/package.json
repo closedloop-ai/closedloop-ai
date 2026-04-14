@@ -22,7 +22,7 @@
     "@tiptap/starter-kit": "~3.19.0",
     "lucide-react": "^0.556.0",
     "mermaid": "^11.12.2",
-    "react": "19.2.1"
+    "react": "19.2.4"
   },
   "devDependencies": {
     "@repo/typescript-config": "workspace:*",

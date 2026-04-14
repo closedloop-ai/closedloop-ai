@@ -2,11 +2,14 @@ import type { Priority } from "./common";
 import type { CustomFieldValueDetail } from "./custom-field";
 import type { BasicUser } from "./user";
 
+// Feature Status
 export const FeatureStatus = {
-  NotStarted: "NOT_STARTED",
+  Draft: "DRAFT",
   InProgress: "IN_PROGRESS",
   InReview: "IN_REVIEW",
-  Completed: "COMPLETED",
+  Approved: "APPROVED",
+  Executed: "EXECUTED",
+  Done: "DONE",
   Obsolete: "OBSOLETE",
 } as const;
 export type FeatureStatus = (typeof FeatureStatus)[keyof typeof FeatureStatus];

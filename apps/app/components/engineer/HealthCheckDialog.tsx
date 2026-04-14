@@ -10,8 +10,14 @@ import {
   DialogTitle,
 } from "@repo/design-system/components/ui/dialog";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { CheckCircle2, RefreshCw, Save, Settings } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { CheckCircle2, Package, RefreshCw, Save, Settings } from "lucide-react";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { toast } from "sonner";
 import { PathAutocomplete } from "@/components/engineer/PathAutocomplete";
 import { SystemCheckResults } from "@/components/system-check/system-check-results";
@@ -220,6 +226,11 @@ export function HealthCheckDialog({
   const showWorktreeSetup =
     worktreeCheck && !worktreeCheck.passed && revealedCount >= requiredCount;
 
+  // claude-plugins check failed — show inline install guidance (only after it's revealed)
+  const pluginCheck = data?.checks?.find((c) => c.id === "claude-plugins");
+  const showPluginGuidance =
+    pluginCheck && !pluginCheck.passed && revealedCount >= requiredCount;
+
   return (
     <Dialog open={dialogOpen}>
       <DialogContent
@@ -259,18 +270,14 @@ export function HealthCheckDialog({
           <>
             <div className="space-y-4 py-2">
               <SystemCheckResults
-                afterRequired={
-                  showWorktreeSetup ? (
-                    <div className="fade-in slide-in-from-bottom-2 animate-in duration-300">
-                      <WorktreeInlineSetup
-                        onChange={setWorktreePath}
-                        onSave={handleSaveWorktree}
-                        saving={savingWorktree}
-                        value={worktreePath}
-                      />
-                    </div>
-                  ) : undefined
-                }
+                afterRequired={AfterRequiredContent({
+                  showWorktreeSetup,
+                  worktreePath,
+                  savingWorktree,
+                  onChangeWorktree: setWorktreePath,
+                  onSaveWorktree: handleSaveWorktree,
+                  showPluginGuidance,
+                })}
                 checks={data?.checks}
                 isLoading={isLoading}
                 revealedCount={revealedCount}
@@ -298,6 +305,25 @@ export function HealthCheckDialog({
         )}
       </DialogContent>
     </Dialog>
+  );
+}
+
+function PluginInstallGuidance() {
+  return (
+    <div className="space-y-2 rounded-lg border border-border bg-muted/30 p-3">
+      <div className="flex items-center gap-2">
+        <Package className="size-3.5 shrink-0 text-primary" />
+        <p className="font-medium text-sm">Install Claude Code plugins</p>
+      </div>
+      <p className="text-muted-foreground text-xs">
+        Required ClosedLoop plugins are not yet installed. Run the following
+        command in your terminal to install them:
+      </p>
+      <p className="select-all rounded bg-muted px-2 py-1 font-mono text-[11px]">
+        claude plugin install code@closedloop-ai self-learning@closedloop-ai
+        judges@closedloop-ai code-review@closedloop-ai platform@closedloop-ai
+      </p>
+    </div>
   );
 }
 
@@ -338,4 +364,43 @@ function WorktreeInlineSetup({
       </div>
     </div>
   );
+}
+
+function AfterRequiredContent({
+  showWorktreeSetup,
+  worktreePath,
+  savingWorktree,
+  onChangeWorktree,
+  onSaveWorktree,
+  showPluginGuidance,
+}: {
+  showWorktreeSetup: boolean | undefined;
+  worktreePath: string;
+  savingWorktree: boolean;
+  onChangeWorktree: (v: string) => void;
+  onSaveWorktree: () => void;
+  showPluginGuidance: boolean | undefined;
+}): ReactNode {
+  if (showWorktreeSetup) {
+    return (
+      <div className="fade-in slide-in-from-bottom-2 animate-in duration-300">
+        <WorktreeInlineSetup
+          onChange={onChangeWorktree}
+          onSave={onSaveWorktree}
+          saving={savingWorktree}
+          value={worktreePath}
+        />
+      </div>
+    );
+  }
+
+  if (showPluginGuidance) {
+    return (
+      <div className="fade-in slide-in-from-bottom-2 animate-in duration-300">
+        <PluginInstallGuidance />
+      </div>
+    );
+  }
+
+  return undefined;
 }
