@@ -316,7 +316,7 @@ model Organization {
   loops              Loop[]
   prompts            Prompt[]
   computeTargets     ComputeTarget[]
-  genericChats       GenericChat[]
+  chatSessions       ChatSession[]
   judgeHumanScores   JudgeHumanScore[]
   customFields       CustomField[]
   commentThreads     CommentThread[]
@@ -364,7 +364,7 @@ model User {
   assignedWorkstreams      Workstream[]        @relation("WorkstreamAssignee")
   loops                    Loop[]
   computeTargets           ComputeTarget[]
-  genericChats             GenericChat[]
+  chatSessions             ChatSession[]
   judgeHumanScores         JudgeHumanScore[]
   createdCustomFields      CustomField[]
   updatedCustomFieldValues CustomFieldValue[]
@@ -945,7 +945,7 @@ model Message {
   @@map("messages")
 }
 
-model GenericChat {
+model ChatSession {
   id              String   @id @default(uuid(7)) @db.Uuid
   chatKey         String   @map("chat_key")
   userId          String   @map("user_id") @db.Uuid
@@ -965,7 +965,7 @@ model GenericChat {
   @@unique([userId, chatKey])
   @@index([userId])
   @@index([organizationId, userId])
-  @@map("generic_chats")
+  @@map("chat_sessions")
 }
 
 // =============================================================================
