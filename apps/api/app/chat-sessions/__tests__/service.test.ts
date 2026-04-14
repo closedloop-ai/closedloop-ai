@@ -1,5 +1,5 @@
 /**
- * Unit tests for genericChatsService.
+ * Unit tests for chatSessionsService.
  *
  * Covers access-control (userId scoping), id-based message reconciliation
  * (create + appendMessages), provider lock enforcement, idempotent delete,
@@ -12,7 +12,7 @@ vi.mock("@repo/database", () => ({
 }));
 
 import { withDb } from "@repo/database";
-import { type ChatMessage, genericChatsService } from "../service";
+import { type ChatMessage, chatSessionsService } from "../service";
 
 type Row = {
   id: string;
@@ -135,7 +135,7 @@ function buildMockDb() {
   );
 
   return {
-    genericChat: {
+    chatSession: {
       findUnique: mockFindUnique,
       create: mockCreate,
       update: mockUpdate,
@@ -165,9 +165,9 @@ afterEach(() => {
 // findByKey
 // ---------------------------------------------------------------------------
 
-describe("genericChatsService.findByKey", () => {
+describe("chatSessionsService.findByKey", () => {
   it("returns each user's own row when two users share a chatKey", async () => {
-    await genericChatsService.create({
+    await chatSessionsService.create({
       userId: USER_A,
       organizationId: ORG_A,
       chatKey: "artifact:pln-1",
@@ -177,7 +177,7 @@ describe("genericChatsService.findByKey", () => {
         { id: "m-a", role: "user", content: "hi from A", timestamp: "t1" },
       ],
     });
-    await genericChatsService.create({
+    await chatSessionsService.create({
       userId: USER_B,
       organizationId: ORG_B,
       chatKey: "artifact:pln-1",
@@ -188,8 +188,8 @@ describe("genericChatsService.findByKey", () => {
       ],
     });
 
-    const rowA = await genericChatsService.findByKey(USER_A, "artifact:pln-1");
-    const rowB = await genericChatsService.findByKey(USER_B, "artifact:pln-1");
+    const rowA = await chatSessionsService.findByKey(USER_A, "artifact:pln-1");
+    const rowB = await chatSessionsService.findByKey(USER_B, "artifact:pln-1");
 
     expect(rowA?.userId).toBe(USER_A);
     expect(rowA?.provider).toBe("claude");
@@ -198,7 +198,7 @@ describe("genericChatsService.findByKey", () => {
   });
 
   it("returns null for a chatKey that does not exist", async () => {
-    const row = await genericChatsService.findByKey(USER_A, "missing");
+    const row = await chatSessionsService.findByKey(USER_A, "missing");
     expect(row).toBeNull();
   });
 });
@@ -207,11 +207,11 @@ describe("genericChatsService.findByKey", () => {
 // create
 // ---------------------------------------------------------------------------
 
-describe("genericChatsService.create", () => {
+describe("chatSessionsService.create", () => {
   const CHAT_KEY = "artifact:pln-1";
 
   it("stores the initial user message on first create", async () => {
-    const row = await genericChatsService.create({
+    const row = await chatSessionsService.create({
       userId: USER_A,
       organizationId: ORG_A,
       chatKey: CHAT_KEY,
@@ -227,7 +227,7 @@ describe("genericChatsService.create", () => {
   });
 
   it("returns the existing row unchanged when called twice with identical messages", async () => {
-    const first = await genericChatsService.create({
+    const first = await chatSessionsService.create({
       userId: USER_A,
       organizationId: ORG_A,
       chatKey: CHAT_KEY,
@@ -236,7 +236,7 @@ describe("genericChatsService.create", () => {
       messages: [{ id: "u1", role: "user", content: "hello", timestamp: "t1" }],
     });
 
-    const second = await genericChatsService.create({
+    const second = await chatSessionsService.create({
       userId: USER_A,
       organizationId: ORG_A,
       chatKey: CHAT_KEY,
@@ -252,7 +252,7 @@ describe("genericChatsService.create", () => {
   });
 
   it("reconciles by id when called again with a stale-read message list", async () => {
-    await genericChatsService.create({
+    await chatSessionsService.create({
       userId: USER_A,
       organizationId: ORG_A,
       chatKey: CHAT_KEY,
@@ -261,7 +261,7 @@ describe("genericChatsService.create", () => {
       messages: [{ id: "u1", role: "user", content: "msg A", timestamp: "t1" }],
     });
 
-    const second = await genericChatsService.create({
+    const second = await chatSessionsService.create({
       userId: USER_A,
       organizationId: ORG_A,
       chatKey: CHAT_KEY,
@@ -278,7 +278,7 @@ describe("genericChatsService.create", () => {
   });
 
   it("appends only the new message ids when the existing row has a subset", async () => {
-    await genericChatsService.create({
+    await chatSessionsService.create({
       userId: USER_A,
       organizationId: ORG_A,
       chatKey: CHAT_KEY,
@@ -287,7 +287,7 @@ describe("genericChatsService.create", () => {
       messages: [{ id: "u1", role: "user", content: "first", timestamp: "t1" }],
     });
 
-    const second = await genericChatsService.create({
+    const second = await chatSessionsService.create({
       userId: USER_A,
       organizationId: ORG_A,
       chatKey: CHAT_KEY,
@@ -303,7 +303,7 @@ describe("genericChatsService.create", () => {
   });
 
   it("returns the existing row unchanged when caller supplies only already-present ids", async () => {
-    const first = await genericChatsService.create({
+    const first = await chatSessionsService.create({
       userId: USER_A,
       organizationId: ORG_A,
       chatKey: CHAT_KEY,
@@ -317,7 +317,7 @@ describe("genericChatsService.create", () => {
 
     mockUpdate.mockClear();
 
-    const second = await genericChatsService.create({
+    const second = await chatSessionsService.create({
       userId: USER_A,
       organizationId: ORG_A,
       chatKey: CHAT_KEY,
@@ -336,11 +336,11 @@ describe("genericChatsService.create", () => {
 // appendMessages
 // ---------------------------------------------------------------------------
 
-describe("genericChatsService.appendMessages", () => {
+describe("chatSessionsService.appendMessages", () => {
   const CHAT_KEY = "artifact:pln-1";
 
   async function seedClaudeChat(): Promise<void> {
-    await genericChatsService.create({
+    await chatSessionsService.create({
       userId: USER_A,
       organizationId: ORG_A,
       chatKey: CHAT_KEY,
@@ -351,7 +351,7 @@ describe("genericChatsService.appendMessages", () => {
   }
 
   it("returns { notFound: true } for an unknown chatKey", async () => {
-    const result = await genericChatsService.appendMessages(
+    const result = await chatSessionsService.appendMessages(
       USER_A,
       "missing",
       "claude",
@@ -363,7 +363,7 @@ describe("genericChatsService.appendMessages", () => {
   it("returns a provider conflict with boundProvider when request provider differs", async () => {
     await seedClaudeChat();
 
-    const result = await genericChatsService.appendMessages(
+    const result = await chatSessionsService.appendMessages(
       USER_A,
       CHAT_KEY,
       "codex",
@@ -377,7 +377,7 @@ describe("genericChatsService.appendMessages", () => {
   it("appends a brand-new message and persists it exactly once", async () => {
     await seedClaudeChat();
 
-    const result = await genericChatsService.appendMessages(
+    const result = await chatSessionsService.appendMessages(
       USER_A,
       CHAT_KEY,
       "claude",
@@ -389,16 +389,16 @@ describe("genericChatsService.appendMessages", () => {
     }
     expect(msgs(result.chat).map((m) => m.id)).toEqual(["u1", "a1"]);
 
-    const reread = await genericChatsService.findByKey(USER_A, CHAT_KEY);
+    const reread = await chatSessionsService.findByKey(USER_A, CHAT_KEY);
     expect(reread ? msgs(reread).map((m) => m.id) : []).toEqual(["u1", "a1"]);
   });
 
   it("is a no-op (no updatedAt bump) when the appended id already exists", async () => {
     await seedClaudeChat();
-    const before = await genericChatsService.findByKey(USER_A, CHAT_KEY);
+    const before = await chatSessionsService.findByKey(USER_A, CHAT_KEY);
     mockUpdate.mockClear();
 
-    const result = await genericChatsService.appendMessages(
+    const result = await chatSessionsService.appendMessages(
       USER_A,
       CHAT_KEY,
       "claude",
@@ -417,7 +417,7 @@ describe("genericChatsService.appendMessages", () => {
   it("only appends new ids from a partially overlapping batch", async () => {
     await seedClaudeChat();
 
-    const result = await genericChatsService.appendMessages(
+    const result = await chatSessionsService.appendMessages(
       USER_A,
       CHAT_KEY,
       "claude",
@@ -438,16 +438,16 @@ describe("genericChatsService.appendMessages", () => {
     await seedClaudeChat();
 
     const [first, second] = await Promise.all([
-      genericChatsService.appendMessages(USER_A, CHAT_KEY, "claude", [
+      chatSessionsService.appendMessages(USER_A, CHAT_KEY, "claude", [
         { id: "a1", role: "assistant", content: "answer", timestamp: "t2" },
       ]),
-      genericChatsService.appendMessages(USER_A, CHAT_KEY, "claude", [
+      chatSessionsService.appendMessages(USER_A, CHAT_KEY, "claude", [
         { id: "a1", role: "assistant", content: "answer", timestamp: "t2" },
       ]),
     ]);
 
     expect("chat" in first && "chat" in second).toBe(true);
-    const final = await genericChatsService.findByKey(USER_A, CHAT_KEY);
+    const final = await chatSessionsService.findByKey(USER_A, CHAT_KEY);
     const ids = final ? msgs(final).map((m) => m.id) : [];
     expect(ids).toEqual(["u1", "a1"]);
     expect(ids.filter((id: string) => id === "a1")).toHaveLength(1);
@@ -456,7 +456,7 @@ describe("genericChatsService.appendMessages", () => {
   it("updates sessionId when provided and different from stored value", async () => {
     await seedClaudeChat();
 
-    const result = await genericChatsService.appendMessages(
+    const result = await chatSessionsService.appendMessages(
       USER_A,
       CHAT_KEY,
       "claude",
@@ -475,11 +475,11 @@ describe("genericChatsService.appendMessages", () => {
 // deleteChat
 // ---------------------------------------------------------------------------
 
-describe("genericChatsService.deleteChat", () => {
+describe("chatSessionsService.deleteChat", () => {
   const CHAT_KEY = "artifact:pln-1";
 
   it("returns true when a row is deleted", async () => {
-    await genericChatsService.create({
+    await chatSessionsService.create({
       userId: USER_A,
       organizationId: ORG_A,
       chatKey: CHAT_KEY,
@@ -487,15 +487,15 @@ describe("genericChatsService.deleteChat", () => {
       model: "claude-sonnet-4-5",
     });
 
-    const deleted = await genericChatsService.deleteChat(USER_A, CHAT_KEY);
+    const deleted = await chatSessionsService.deleteChat(USER_A, CHAT_KEY);
     expect(deleted).toBe(true);
 
-    const reread = await genericChatsService.findByKey(USER_A, CHAT_KEY);
+    const reread = await chatSessionsService.findByKey(USER_A, CHAT_KEY);
     expect(reread).toBeNull();
   });
 
   it("returns false (idempotent) when no row exists", async () => {
-    const deleted = await genericChatsService.deleteChat(USER_A, "nonexistent");
+    const deleted = await chatSessionsService.deleteChat(USER_A, "nonexistent");
     expect(deleted).toBe(false);
   });
 });
@@ -504,7 +504,7 @@ describe("genericChatsService.deleteChat", () => {
 // upsertTurn
 // ---------------------------------------------------------------------------
 
-describe("genericChatsService.upsertTurn", () => {
+describe("chatSessionsService.upsertTurn", () => {
   const CHAT_KEY = "artifact:pln-1";
   const GATEWAY_A = "gateway-a";
   const GATEWAY_B = "gateway-b";
@@ -537,7 +537,7 @@ describe("genericChatsService.upsertTurn", () => {
   }
 
   it("creates a new row when (userId, chatKey) is absent", async () => {
-    const result = await genericChatsService.upsertTurn(USER_A, ORG_A, {
+    const result = await chatSessionsService.upsertTurn(USER_A, ORG_A, {
       chatKey: CHAT_KEY,
       userMessage: u1,
       provider: "claude",
@@ -565,7 +565,7 @@ describe("genericChatsService.upsertTurn", () => {
       content: "second",
       timestamp: "t2",
     };
-    const result = await genericChatsService.upsertTurn(USER_A, ORG_A, {
+    const result = await chatSessionsService.upsertTurn(USER_A, ORG_A, {
       chatKey: CHAT_KEY,
       userMessage: u2,
       provider: "claude",
@@ -584,7 +584,7 @@ describe("genericChatsService.upsertTurn", () => {
     await seedClaudeChat();
     mockUpdate.mockClear();
 
-    const result = await genericChatsService.upsertTurn(USER_A, ORG_A, {
+    const result = await chatSessionsService.upsertTurn(USER_A, ORG_A, {
       chatKey: CHAT_KEY,
       userMessage: u1,
       provider: "codex",
@@ -598,10 +598,10 @@ describe("genericChatsService.upsertTurn", () => {
 
   it("is a no-op when the userMessage id already exists", async () => {
     await seedClaudeChat();
-    const before = await genericChatsService.findByKey(USER_A, CHAT_KEY);
+    const before = await chatSessionsService.findByKey(USER_A, CHAT_KEY);
     mockUpdate.mockClear();
 
-    const result = await genericChatsService.upsertTurn(USER_A, ORG_A, {
+    const result = await chatSessionsService.upsertTurn(USER_A, ORG_A, {
       chatKey: CHAT_KEY,
       userMessage: u1,
       provider: "claude",
@@ -623,7 +623,7 @@ describe("genericChatsService.upsertTurn", () => {
       sessionSourceId: GATEWAY_A,
     });
 
-    const result = await genericChatsService.upsertTurn(USER_A, ORG_A, {
+    const result = await chatSessionsService.upsertTurn(USER_A, ORG_A, {
       chatKey: CHAT_KEY,
       userMessage: u1,
       provider: "claude",
@@ -644,7 +644,7 @@ describe("genericChatsService.upsertTurn", () => {
       sessionSourceId: GATEWAY_A,
     });
 
-    const result = await genericChatsService.upsertTurn(USER_A, ORG_A, {
+    const result = await chatSessionsService.upsertTurn(USER_A, ORG_A, {
       chatKey: CHAT_KEY,
       userMessage: u1,
       provider: "claude",
@@ -665,7 +665,7 @@ describe("genericChatsService.upsertTurn", () => {
       sessionSourceId: GATEWAY_B,
     });
 
-    const result = await genericChatsService.upsertTurn(USER_A, ORG_A, {
+    const result = await chatSessionsService.upsertTurn(USER_A, ORG_A, {
       chatKey: CHAT_KEY,
       userMessage: u1,
       provider: "claude",
@@ -686,7 +686,7 @@ describe("genericChatsService.upsertTurn", () => {
       sessionSourceId: GATEWAY_B,
     });
 
-    const result = await genericChatsService.upsertTurn(USER_A, ORG_A, {
+    const result = await chatSessionsService.upsertTurn(USER_A, ORG_A, {
       chatKey: CHAT_KEY,
       userMessage: u1,
       provider: "claude",
@@ -714,7 +714,7 @@ describe("genericChatsService.upsertTurn", () => {
       content: "second",
       timestamp: "t2",
     };
-    await genericChatsService.upsertTurn(USER_A, ORG_A, {
+    await chatSessionsService.upsertTurn(USER_A, ORG_A, {
       chatKey: CHAT_KEY,
       userMessage: u2,
       provider: "claude",
@@ -729,7 +729,7 @@ describe("genericChatsService.upsertTurn", () => {
     expect(updateCall.data.sessionId).toBeUndefined();
     expect(updateCall.data.sessionSourceId).toBeUndefined();
 
-    const reread = await genericChatsService.findByKey(USER_A, CHAT_KEY);
+    const reread = await chatSessionsService.findByKey(USER_A, CHAT_KEY);
     expect(reread?.sessionId).toBe("sess-old");
     expect(reread?.sessionSourceId).toBe(GATEWAY_B);
   });
@@ -739,7 +739,7 @@ describe("genericChatsService.upsertTurn", () => {
 // appendAssistantTurn
 // ---------------------------------------------------------------------------
 
-describe("genericChatsService.appendAssistantTurn", () => {
+describe("chatSessionsService.appendAssistantTurn", () => {
   const CHAT_KEY = "artifact:pln-1";
   const GATEWAY_A = "gateway-a";
 
@@ -777,7 +777,7 @@ describe("genericChatsService.appendAssistantTurn", () => {
   it("appends the assistant message and writes both session fields atomically", async () => {
     await seedClaudeChat();
 
-    const result = await genericChatsService.appendAssistantTurn(USER_A, {
+    const result = await chatSessionsService.appendAssistantTurn(USER_A, {
       chatKey: CHAT_KEY,
       provider: "claude",
       messages: [a1],
@@ -796,7 +796,7 @@ describe("genericChatsService.appendAssistantTurn", () => {
   });
 
   it("returns { notFound: true } when the row does not exist", async () => {
-    const result = await genericChatsService.appendAssistantTurn(USER_A, {
+    const result = await chatSessionsService.appendAssistantTurn(USER_A, {
       chatKey: "missing",
       provider: "claude",
       messages: [a1],
@@ -810,7 +810,7 @@ describe("genericChatsService.appendAssistantTurn", () => {
     await seedClaudeChat();
     mockUpdate.mockClear();
 
-    const result = await genericChatsService.appendAssistantTurn(USER_A, {
+    const result = await chatSessionsService.appendAssistantTurn(USER_A, {
       chatKey: CHAT_KEY,
       provider: "codex",
       messages: [a1],
@@ -825,14 +825,14 @@ describe("genericChatsService.appendAssistantTurn", () => {
   it("is id-idempotent on duplicate assistant message ids", async () => {
     await seedClaudeChat();
 
-    const first = await genericChatsService.appendAssistantTurn(USER_A, {
+    const first = await chatSessionsService.appendAssistantTurn(USER_A, {
       chatKey: CHAT_KEY,
       provider: "claude",
       messages: [a1],
       sessionId: "sess-xyz",
       sessionSourceId: GATEWAY_A,
     });
-    const second = await genericChatsService.appendAssistantTurn(USER_A, {
+    const second = await chatSessionsService.appendAssistantTurn(USER_A, {
       chatKey: CHAT_KEY,
       provider: "claude",
       messages: [a1],
@@ -841,7 +841,7 @@ describe("genericChatsService.appendAssistantTurn", () => {
     });
 
     expect("chat" in first && "chat" in second).toBe(true);
-    const reread = await genericChatsService.findByKey(USER_A, CHAT_KEY);
+    const reread = await chatSessionsService.findByKey(USER_A, CHAT_KEY);
     const ids = reread ? msgs(reread).map((m) => m.id) : [];
     expect(ids).toEqual(["u1", "a1"]);
     expect(ids.filter((id: string) => id === "a1")).toHaveLength(1);

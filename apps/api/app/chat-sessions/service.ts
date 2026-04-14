@@ -1,8 +1,8 @@
-import { type GenericChat, withDb } from "@repo/database";
+import { type ChatSession, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 
 /**
- * Shape of a single chat message stored in GenericChat.messages.
+ * Shape of a single chat message stored in ChatSession.messages.
  * Backend-only — the same shape is used by the frontend but the
  * canonical definition for the DB contract lives here.
  */
@@ -14,7 +14,7 @@ export type ChatMessage = {
   blocks?: unknown[];
 };
 
-export type CreateGenericChatInput = {
+export type CreateChatSessionInput = {
   userId: string;
   organizationId: string;
   chatKey: string;
@@ -25,7 +25,7 @@ export type CreateGenericChatInput = {
 };
 
 export type AppendMessagesResult =
-  | { chat: GenericChat }
+  | { chat: ChatSession }
   | { notFound: true }
   | { conflict: true; boundProvider: string };
 
@@ -42,7 +42,7 @@ export type UpsertTurnResult =
   | { conflict: true; boundProvider: string }
   | {
       conflict: false;
-      chat: GenericChat;
+      chat: ChatSession;
       resumeSessionId: string | null;
     };
 
@@ -57,10 +57,10 @@ export type CompleteTurnInput = {
 export type AppendAssistantTurnResult =
   | { notFound: true }
   | { conflict: true; boundProvider: string }
-  | { notFound: false; conflict: false; chat: GenericChat };
+  | { notFound: false; conflict: false; chat: ChatSession };
 
 /**
- * Service for `generic_chats` DB operations. All read/update operations are
+ * Service for `chat_sessions` DB operations. All read/update operations are
  * scoped by (userId, chatKey) so cross-user access is impossible at the
  * query level. `organizationId` is accepted only by methods that create new
  * rows (`create`, `upsertTurn`) because those are the only operations that
@@ -68,15 +68,15 @@ export type AppendAssistantTurnResult =
  * purely from `userId`. `create` and `appendMessages` run inside `withDb.tx`
  * so the read-then-write merge is atomic against concurrent writers.
  */
-export const genericChatsService = {
+export const chatSessionsService = {
   /**
    * Find a chat by (userId, chatKey). Returns null when the row does not
    * exist or belongs to a different user. Plain `withDb` is sufficient —
    * no read-after-write coordination is required.
    */
-  findByKey(userId: string, chatKey: string): Promise<GenericChat | null> {
+  findByKey(userId: string, chatKey: string): Promise<ChatSession | null> {
     return withDb((db) =>
-      db.genericChat.findUnique({
+      db.chatSession.findUnique({
         where: { userId_chatKey: { userId, chatKey } },
       })
     );
@@ -90,7 +90,7 @@ export const genericChatsService = {
    * reconciled) row. Runs inside a transaction so concurrent creates
    * cannot produce duplicate message ids.
    */
-  create(data: CreateGenericChatInput): Promise<GenericChat> {
+  create(data: CreateChatSessionInput): Promise<ChatSession> {
     const {
       userId,
       organizationId,
@@ -103,12 +103,12 @@ export const genericChatsService = {
     const incoming = messages ?? [];
 
     return withDb.tx(async (tx) => {
-      const existing = await tx.genericChat.findUnique({
+      const existing = await tx.chatSession.findUnique({
         where: { userId_chatKey: { userId, chatKey } },
       });
 
       if (!existing) {
-        const created = await tx.genericChat.create({
+        const created = await tx.chatSession.create({
           data: {
             userId,
             organizationId,
@@ -119,7 +119,7 @@ export const genericChatsService = {
             messages: incoming as unknown as ChatMessage[] as never,
           },
         });
-        log.info("Generic chat created", {
+        log.info("Chat session created", {
           chatId: created.id,
           userId,
           chatKey,
@@ -142,7 +142,7 @@ export const genericChatsService = {
         ...toAppend,
       ];
 
-      const updated = await tx.genericChat.update({
+      const updated = await tx.chatSession.update({
         where: { userId_chatKey: { userId, chatKey } },
         data: {
           messages: mergedMessages as unknown as ChatMessage[] as never,
@@ -169,7 +169,7 @@ export const genericChatsService = {
     sessionId?: string
   ): Promise<AppendMessagesResult> {
     return withDb.tx(async (tx) => {
-      const existing = await tx.genericChat.findUnique({
+      const existing = await tx.chatSession.findUnique({
         where: { userId_chatKey: { userId, chatKey } },
       });
 
@@ -195,7 +195,7 @@ export const genericChatsService = {
 
       const mergedMessages = [...existingMessages, ...toAppend];
 
-      const updated = await tx.genericChat.update({
+      const updated = await tx.chatSession.update({
         where: { userId_chatKey: { userId, chatKey } },
         data: {
           messages: mergedMessages as unknown as ChatMessage[] as never,
@@ -213,7 +213,7 @@ export const genericChatsService = {
    */
   async deleteChat(userId: string, chatKey: string): Promise<boolean> {
     const result = await withDb((db) =>
-      db.genericChat.deleteMany({
+      db.chatSession.deleteMany({
         where: { userId, chatKey },
       })
     );
@@ -233,11 +233,11 @@ export const genericChatsService = {
     input: TurnInput
   ): Promise<UpsertTurnResult> {
     return withDb.tx(async (tx) => {
-      const existing = await tx.genericChat.findUnique({
+      const existing = await tx.chatSession.findUnique({
         where: { userId_chatKey: { userId, chatKey: input.chatKey } },
       });
 
-      let row: GenericChat;
+      let row: ChatSession;
 
       if (existing) {
         if (existing.provider !== input.provider) {
@@ -256,7 +256,7 @@ export const genericChatsService = {
           row = existing;
         } else {
           const mergedMessages = [...existingMessages, input.userMessage];
-          row = await tx.genericChat.update({
+          row = await tx.chatSession.update({
             where: { userId_chatKey: { userId, chatKey: input.chatKey } },
             data: {
               messages: mergedMessages as unknown as ChatMessage[] as never,
@@ -264,7 +264,7 @@ export const genericChatsService = {
           });
         }
       } else {
-        row = await tx.genericChat.create({
+        row = await tx.chatSession.create({
           data: {
             userId,
             organizationId,
@@ -277,7 +277,7 @@ export const genericChatsService = {
             sessionSourceId: null,
           },
         });
-        log.info("Generic chat created via upsertTurn", {
+        log.info("Chat session created via upsertTurn", {
           chatId: row.id,
           userId,
           chatKey: input.chatKey,
@@ -305,7 +305,7 @@ export const genericChatsService = {
     input: CompleteTurnInput
   ): Promise<AppendAssistantTurnResult> {
     return withDb.tx(async (tx) => {
-      const existing = await tx.genericChat.findUnique({
+      const existing = await tx.chatSession.findUnique({
         where: { userId_chatKey: { userId, chatKey: input.chatKey } },
       });
 
@@ -335,7 +335,7 @@ export const genericChatsService = {
 
       const mergedMessages = [...existingMessages, ...toAppend];
 
-      const updated = await tx.genericChat.update({
+      const updated = await tx.chatSession.update({
         where: { userId_chatKey: { userId, chatKey: input.chatKey } },
         data: {
           messages: mergedMessages as unknown as ChatMessage[] as never,

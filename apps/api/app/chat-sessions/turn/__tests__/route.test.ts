@@ -1,10 +1,9 @@
 /**
- * Route tests for POST /generic-chats/turn/complete.
+ * Route tests for POST /chat-sessions/turn.
  *
- * Covers chat-runner token authentication, body validation (including the
- * both-or-neither sessionId + sessionSourceId refinement), the chatKey
+ * Covers chat-runner token authentication, body validation, the chatKey
  * binding check, and the service-result → HTTP status mapping for
- * notFound, conflict and successful completions.
+ * conflicts and successful upserts.
  */
 import { vi } from "vitest";
 
@@ -18,14 +17,12 @@ vi.mock("@repo/auth/chat-runner-jwt", () => ({
   authenticateChatRunner: mockAuthenticateChatRunner,
 }));
 
-vi.mock("../../../service", async () => {
+vi.mock("../../service", async () => {
   const actual =
-    await vi.importActual<typeof import("../../../service")>(
-      "../../../service"
-    );
+    await vi.importActual<typeof import("../../service")>("../../service");
   return {
     ...actual,
-    genericChatsService: {
+    chatSessionsService: {
       findByKey: vi.fn(),
       create: vi.fn(),
       appendMessages: vi.fn(),
@@ -43,13 +40,14 @@ vi.mock("@repo/observability/log", () => ({
 // --- Imports (after mocks) ---
 
 import { beforeEach, describe, expect, it } from "vitest";
-import { createMockRequest } from "../../../../../__tests__/utils/auth-helpers";
-import { genericChatsService } from "../../../service";
+import { createMockRequest } from "../../../../__tests__/utils/auth-helpers";
+import { chatSessionsService } from "../../service";
 import { POST } from "../route";
 
 const ORG_ID = "test-org-id";
 const USER_ID = "test-user-id";
 const CHAT_KEY = "artifact:plan-123";
+const GATEWAY_ID = "gateway-abc";
 
 const VALID_CLAIMS = {
   userId: USER_ID,
@@ -62,20 +60,20 @@ const VALID_CLAIMS = {
   expiresAt: 0,
 };
 
-const ASSISTANT_MESSAGE = {
-  id: "asst-1",
-  role: "assistant" as const,
-  content: "hi back",
-  timestamp: "2026-04-12T00:00:01.000Z",
+const USER_MESSAGE = {
+  id: "user-1",
+  role: "user" as const,
+  content: "hello",
+  timestamp: "2026-04-12T00:00:00.000Z",
 };
 
 function validBody(overrides: Record<string, unknown> = {}) {
   return {
     chatKey: CHAT_KEY,
+    userMessage: USER_MESSAGE,
     provider: "claude",
-    messages: [ASSISTANT_MESSAGE],
-    sessionId: null,
-    sessionSourceId: null,
+    model: "claude-sonnet-4-5",
+    sourceGatewayId: GATEWAY_ID,
     ...overrides,
   };
 }
@@ -88,7 +86,7 @@ function buildChatRow(overrides: Record<string, unknown> = {}) {
     organizationId: ORG_ID,
     provider: "claude",
     model: "claude-sonnet-4-5",
-    messages: [ASSISTANT_MESSAGE],
+    messages: [USER_MESSAGE],
     sessionId: null,
     sessionSourceId: null,
     context: null,
@@ -107,25 +105,19 @@ beforeEach(() => {
   mockAuthenticateChatRunner.mockResolvedValue(VALID_CLAIMS);
 });
 
-describe("POST /generic-chats/turn/complete", () => {
-  it("returns 200 and the updated chat on the happy path", async () => {
-    vi.mocked(genericChatsService.appendAssistantTurn).mockResolvedValue({
-      notFound: false,
+describe("POST /chat-sessions/turn", () => {
+  it("returns 200 and the chat row on the happy path", async () => {
+    vi.mocked(chatSessionsService.upsertTurn).mockResolvedValue({
       conflict: false,
-      chat: buildChatRow({
-        sessionId: "sess-xyz",
-        sessionSourceId: "gateway-abc",
-      }) as never,
+      chat: buildChatRow() as never,
+      resumeSessionId: null,
     });
 
     const response = await POST(
       createMockRequest({
-        url: "http://localhost:3002/generic-chats/turn/complete",
+        url: "http://localhost:3002/chat-sessions/turn",
         method: "POST",
-        body: validBody({
-          sessionId: "sess-xyz",
-          sessionSourceId: "gateway-abc",
-        }),
+        body: validBody(),
         headers: bearerHeaders(),
       })
     );
@@ -133,14 +125,36 @@ describe("POST /generic-chats/turn/complete", () => {
     expect(response.status).toBe(200);
     const json = await response.json();
     expect(json.data.chat?.id).toBe("chat-uuid");
-    expect(json.data.chat?.sessionId).toBe("sess-xyz");
-    expect(genericChatsService.appendAssistantTurn).toHaveBeenCalledWith(
+    expect(json.data.resumeSessionId).toBeNull();
+    expect(chatSessionsService.upsertTurn).toHaveBeenCalledWith(
       USER_ID,
-      validBody({
+      ORG_ID,
+      validBody()
+    );
+  });
+
+  it("propagates resumeSessionId from the service", async () => {
+    vi.mocked(chatSessionsService.upsertTurn).mockResolvedValue({
+      conflict: false,
+      chat: buildChatRow({
         sessionId: "sess-xyz",
-        sessionSourceId: "gateway-abc",
+        sessionSourceId: GATEWAY_ID,
+      }) as never,
+      resumeSessionId: "sess-xyz",
+    });
+
+    const response = await POST(
+      createMockRequest({
+        url: "http://localhost:3002/chat-sessions/turn",
+        method: "POST",
+        body: validBody(),
+        headers: bearerHeaders(),
       })
     );
+
+    expect(response.status).toBe(200);
+    const json = await response.json();
+    expect(json.data.resumeSessionId).toBe("sess-xyz");
   });
 
   it("returns 401 when Authorization header is missing", async () => {
@@ -148,22 +162,22 @@ describe("POST /generic-chats/turn/complete", () => {
 
     const response = await POST(
       createMockRequest({
-        url: "http://localhost:3002/generic-chats/turn/complete",
+        url: "http://localhost:3002/chat-sessions/turn",
         method: "POST",
         body: validBody(),
       })
     );
 
     expect(response.status).toBe(401);
-    expect(genericChatsService.appendAssistantTurn).not.toHaveBeenCalled();
+    expect(chatSessionsService.upsertTurn).not.toHaveBeenCalled();
   });
 
-  it("returns 401 when token verification throws", async () => {
-    mockAuthenticateChatRunner.mockRejectedValue(new Error("bad token"));
+  it("returns 401 when the token fails verification", async () => {
+    mockAuthenticateChatRunner.mockRejectedValue(new Error("bad signature"));
 
     const response = await POST(
       createMockRequest({
-        url: "http://localhost:3002/generic-chats/turn/complete",
+        url: "http://localhost:3002/chat-sessions/turn",
         method: "POST",
         body: validBody(),
         headers: bearerHeaders(),
@@ -171,6 +185,9 @@ describe("POST /generic-chats/turn/complete", () => {
     );
 
     expect(response.status).toBe(401);
+    const json = await response.json();
+    expect(json.error).toContain("Invalid");
+    expect(chatSessionsService.upsertTurn).not.toHaveBeenCalled();
   });
 
   it("returns 403 when claims.chatKey does not match body.chatKey", async () => {
@@ -181,7 +198,7 @@ describe("POST /generic-chats/turn/complete", () => {
 
     const response = await POST(
       createMockRequest({
-        url: "http://localhost:3002/generic-chats/turn/complete",
+        url: "http://localhost:3002/chat-sessions/turn",
         method: "POST",
         body: validBody(),
         headers: bearerHeaders(),
@@ -189,83 +206,48 @@ describe("POST /generic-chats/turn/complete", () => {
     );
 
     expect(response.status).toBe(403);
-    expect(genericChatsService.appendAssistantTurn).not.toHaveBeenCalled();
+    expect(chatSessionsService.upsertTurn).not.toHaveBeenCalled();
   });
 
-  it("returns 400 when body fails validation", async () => {
+  it("returns 400 when body is missing required fields", async () => {
     const response = await POST(
       createMockRequest({
-        url: "http://localhost:3002/generic-chats/turn/complete",
+        url: "http://localhost:3002/chat-sessions/turn",
         method: "POST",
-        body: { chatKey: CHAT_KEY, provider: "claude" },
+        body: { chatKey: CHAT_KEY },
         headers: bearerHeaders(),
       })
     );
 
     expect(response.status).toBe(400);
-    expect(genericChatsService.appendAssistantTurn).not.toHaveBeenCalled();
+    expect(chatSessionsService.upsertTurn).not.toHaveBeenCalled();
   });
 
-  it("returns 400 when sessionId is set but sessionSourceId is null", async () => {
+  it("returns 400 when userMessage.role is not 'user'", async () => {
     const response = await POST(
       createMockRequest({
-        url: "http://localhost:3002/generic-chats/turn/complete",
+        url: "http://localhost:3002/chat-sessions/turn",
         method: "POST",
         body: validBody({
-          sessionId: "sess-xyz",
-          sessionSourceId: null,
+          userMessage: { ...USER_MESSAGE, role: "assistant" },
         }),
         headers: bearerHeaders(),
       })
     );
 
     expect(response.status).toBe(400);
-    expect(genericChatsService.appendAssistantTurn).not.toHaveBeenCalled();
-  });
-
-  it("returns 400 when sessionSourceId is set but sessionId is null", async () => {
-    const response = await POST(
-      createMockRequest({
-        url: "http://localhost:3002/generic-chats/turn/complete",
-        method: "POST",
-        body: validBody({
-          sessionId: null,
-          sessionSourceId: "gateway-abc",
-        }),
-        headers: bearerHeaders(),
-      })
-    );
-
-    expect(response.status).toBe(400);
-    expect(genericChatsService.appendAssistantTurn).not.toHaveBeenCalled();
-  });
-
-  it("returns 404 when service reports notFound", async () => {
-    vi.mocked(genericChatsService.appendAssistantTurn).mockResolvedValue({
-      notFound: true,
-    });
-
-    const response = await POST(
-      createMockRequest({
-        url: "http://localhost:3002/generic-chats/turn/complete",
-        method: "POST",
-        body: validBody(),
-        headers: bearerHeaders(),
-      })
-    );
-
-    expect(response.status).toBe(404);
+    expect(chatSessionsService.upsertTurn).not.toHaveBeenCalled();
   });
 
   it("returns 409 with boundProvider when service reports a provider conflict", async () => {
-    vi.mocked(genericChatsService.appendAssistantTurn).mockResolvedValue({
+    vi.mocked(chatSessionsService.upsertTurn).mockResolvedValue({
       conflict: true,
       boundProvider: "codex",
     });
 
     const response = await POST(
       createMockRequest({
-        url: "http://localhost:3002/generic-chats/turn/complete",
+        url: "http://localhost:3002/chat-sessions/turn",
         method: "POST",
         body: validBody(),
         headers: bearerHeaders(),

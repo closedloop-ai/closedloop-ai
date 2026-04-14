@@ -13,7 +13,7 @@ vi.mock("./service", async () => {
   const actual = await vi.importActual<typeof import("./service")>("./service");
   return {
     ...actual,
-    genericChatsService: {
+    chatSessionsService: {
       findByKey: vi.fn(),
       create: vi.fn(),
       appendMessages: vi.fn(),
@@ -34,7 +34,7 @@ import {
   createTestAuthContext,
 } from "../../__tests__/utils/auth-helpers";
 import { DELETE, GET, PATCH, POST } from "./route";
-import { genericChatsService } from "./service";
+import { chatSessionsService } from "./service";
 
 const ORG_ID = "test-org-id";
 const USER_ID = "test-user-id";
@@ -82,24 +82,24 @@ beforeEach(() => {
   });
 });
 
-describe("GET /generic-chats", () => {
+describe("GET /chat-sessions", () => {
   it("returns 400 when chatKey is missing", async () => {
     const response = await GET(
       createMockRequest({
-        url: "http://localhost:3002/generic-chats",
+        url: "http://localhost:3002/chat-sessions",
       }),
       {} as any
     );
     expect(response.status).toBe(400);
-    expect(genericChatsService.findByKey).not.toHaveBeenCalled();
+    expect(chatSessionsService.findByKey).not.toHaveBeenCalled();
   });
 
   it("returns chat: null when no row exists for the user", async () => {
-    vi.mocked(genericChatsService.findByKey).mockResolvedValue(null);
+    vi.mocked(chatSessionsService.findByKey).mockResolvedValue(null);
 
     const response = await GET(
       createMockRequest({
-        url: `http://localhost:3002/generic-chats?chatKey=${encodeURIComponent(CHAT_KEY)}`,
+        url: `http://localhost:3002/chat-sessions?chatKey=${encodeURIComponent(CHAT_KEY)}`,
       }),
       {} as any
     );
@@ -107,20 +107,20 @@ describe("GET /generic-chats", () => {
     expect(response.status).toBe(200);
     const json = await response.json();
     expect(json.data.chat).toBeNull();
-    expect(genericChatsService.findByKey).toHaveBeenCalledWith(
+    expect(chatSessionsService.findByKey).toHaveBeenCalledWith(
       USER_ID,
       CHAT_KEY
     );
   });
 
   it("returns chat: null when the row belongs to a different user", async () => {
-    vi.mocked(genericChatsService.findByKey).mockResolvedValue(
+    vi.mocked(chatSessionsService.findByKey).mockResolvedValue(
       buildChatRow({ userId: OTHER_USER_ID }) as any
     );
 
     const response = await GET(
       createMockRequest({
-        url: `http://localhost:3002/generic-chats?chatKey=${encodeURIComponent(CHAT_KEY)}`,
+        url: `http://localhost:3002/chat-sessions?chatKey=${encodeURIComponent(CHAT_KEY)}`,
       }),
       {} as any
     );
@@ -131,13 +131,13 @@ describe("GET /generic-chats", () => {
   });
 
   it("returns the chat when the row belongs to the caller", async () => {
-    vi.mocked(genericChatsService.findByKey).mockResolvedValue(
+    vi.mocked(chatSessionsService.findByKey).mockResolvedValue(
       buildChatRow() as any
     );
 
     const response = await GET(
       createMockRequest({
-        url: `http://localhost:3002/generic-chats?chatKey=${encodeURIComponent(CHAT_KEY)}`,
+        url: `http://localhost:3002/chat-sessions?chatKey=${encodeURIComponent(CHAT_KEY)}`,
       }),
       {} as any
     );
@@ -149,18 +149,18 @@ describe("GET /generic-chats", () => {
   });
 });
 
-describe("POST /generic-chats — reconciliation", () => {
+describe("POST /chat-sessions — reconciliation", () => {
   it("POST existing chat returns reconciled row", async () => {
     const reconciledRow = buildChatRow({
       messages: [SAMPLE_USER_MESSAGE, SAMPLE_ASSISTANT_MESSAGE],
     });
-    vi.mocked(genericChatsService.create).mockResolvedValue(
+    vi.mocked(chatSessionsService.create).mockResolvedValue(
       reconciledRow as any
     );
 
     const response = await POST(
       createMockRequest({
-        url: "http://localhost:3002/generic-chats",
+        url: "http://localhost:3002/chat-sessions",
         method: "POST",
         body: {
           chatKey: CHAT_KEY,
@@ -178,8 +178,8 @@ describe("POST /generic-chats — reconciliation", () => {
     expect(json.data.chat?.messages).toHaveLength(2);
     expect(json.data.chat?.messages[0].id).toBe(SAMPLE_USER_MESSAGE.id);
     expect(json.data.chat?.messages[1].id).toBe(SAMPLE_ASSISTANT_MESSAGE.id);
-    expect(genericChatsService.create).toHaveBeenCalledTimes(1);
-    expect(genericChatsService.create).toHaveBeenCalledWith({
+    expect(chatSessionsService.create).toHaveBeenCalledTimes(1);
+    expect(chatSessionsService.create).toHaveBeenCalledWith({
       userId: USER_ID,
       organizationId: ORG_ID,
       chatKey: CHAT_KEY,
@@ -191,24 +191,24 @@ describe("POST /generic-chats — reconciliation", () => {
   });
 });
 
-describe("POST /generic-chats", () => {
+describe("POST /chat-sessions", () => {
   it("returns 400 when body fails validation", async () => {
     const response = await POST(
       createMockRequest({
-        url: "http://localhost:3002/generic-chats",
+        url: "http://localhost:3002/chat-sessions",
         method: "POST",
         body: { provider: "claude" },
       }),
       {} as any
     );
     expect(response.status).toBe(400);
-    expect(genericChatsService.create).not.toHaveBeenCalled();
+    expect(chatSessionsService.create).not.toHaveBeenCalled();
   });
 
   it("returns 400 when provider is not claude or codex", async () => {
     const response = await POST(
       createMockRequest({
-        url: "http://localhost:3002/generic-chats",
+        url: "http://localhost:3002/chat-sessions",
         method: "POST",
         body: {
           chatKey: CHAT_KEY,
@@ -219,17 +219,17 @@ describe("POST /generic-chats", () => {
       {} as any
     );
     expect(response.status).toBe(400);
-    expect(genericChatsService.create).not.toHaveBeenCalled();
+    expect(chatSessionsService.create).not.toHaveBeenCalled();
   });
 
   it("creates a chat and returns the row", async () => {
-    vi.mocked(genericChatsService.create).mockResolvedValue(
+    vi.mocked(chatSessionsService.create).mockResolvedValue(
       buildChatRow() as any
     );
 
     const response = await POST(
       createMockRequest({
-        url: "http://localhost:3002/generic-chats",
+        url: "http://localhost:3002/chat-sessions",
         method: "POST",
         body: {
           chatKey: CHAT_KEY,
@@ -245,7 +245,7 @@ describe("POST /generic-chats", () => {
     expect(response.status).toBe(200);
     const json = await response.json();
     expect(json.data.chat?.id).toBe("chat-uuid");
-    expect(genericChatsService.create).toHaveBeenCalledWith({
+    expect(chatSessionsService.create).toHaveBeenCalledWith({
       userId: USER_ID,
       organizationId: ORG_ID,
       chatKey: CHAT_KEY,
@@ -257,11 +257,11 @@ describe("POST /generic-chats", () => {
   });
 });
 
-describe("PATCH /generic-chats", () => {
+describe("PATCH /chat-sessions", () => {
   it("returns 400 when messages array is empty", async () => {
     const response = await PATCH(
       createMockRequest({
-        url: "http://localhost:3002/generic-chats",
+        url: "http://localhost:3002/chat-sessions",
         method: "PATCH",
         body: {
           chatKey: CHAT_KEY,
@@ -272,17 +272,17 @@ describe("PATCH /generic-chats", () => {
       {} as any
     );
     expect(response.status).toBe(400);
-    expect(genericChatsService.appendMessages).not.toHaveBeenCalled();
+    expect(chatSessionsService.appendMessages).not.toHaveBeenCalled();
   });
 
   it("returns 404 when service reports notFound", async () => {
-    vi.mocked(genericChatsService.appendMessages).mockResolvedValue({
+    vi.mocked(chatSessionsService.appendMessages).mockResolvedValue({
       notFound: true,
     } as any);
 
     const response = await PATCH(
       createMockRequest({
-        url: "http://localhost:3002/generic-chats",
+        url: "http://localhost:3002/chat-sessions",
         method: "PATCH",
         body: {
           chatKey: CHAT_KEY,
@@ -296,14 +296,14 @@ describe("PATCH /generic-chats", () => {
   });
 
   it("returns 409 when service reports a provider conflict", async () => {
-    vi.mocked(genericChatsService.appendMessages).mockResolvedValue({
+    vi.mocked(chatSessionsService.appendMessages).mockResolvedValue({
       conflict: true,
       boundProvider: "codex",
     } as any);
 
     const response = await PATCH(
       createMockRequest({
-        url: "http://localhost:3002/generic-chats",
+        url: "http://localhost:3002/chat-sessions",
         method: "PATCH",
         body: {
           chatKey: CHAT_KEY,
@@ -323,13 +323,13 @@ describe("PATCH /generic-chats", () => {
       messages: [SAMPLE_USER_MESSAGE, SAMPLE_ASSISTANT_MESSAGE],
       sessionId: "sess-1",
     });
-    vi.mocked(genericChatsService.appendMessages).mockResolvedValue({
+    vi.mocked(chatSessionsService.appendMessages).mockResolvedValue({
       chat: updated,
     } as any);
 
     const response = await PATCH(
       createMockRequest({
-        url: "http://localhost:3002/generic-chats",
+        url: "http://localhost:3002/chat-sessions",
         method: "PATCH",
         body: {
           chatKey: CHAT_KEY,
@@ -345,7 +345,7 @@ describe("PATCH /generic-chats", () => {
     const json = await response.json();
     expect(json.data.chat?.sessionId).toBe("sess-1");
     expect(json.data.chat?.messages).toHaveLength(2);
-    expect(genericChatsService.appendMessages).toHaveBeenCalledWith(
+    expect(chatSessionsService.appendMessages).toHaveBeenCalledWith(
       USER_ID,
       CHAT_KEY,
       "claude",
@@ -360,7 +360,7 @@ describe("PATCH /generic-chats", () => {
     });
 
     // First PATCH: service appends the new assistant message
-    vi.mocked(genericChatsService.appendMessages).mockResolvedValueOnce({
+    vi.mocked(chatSessionsService.appendMessages).mockResolvedValueOnce({
       chat: existingRow,
     } as any);
 
@@ -372,7 +372,7 @@ describe("PATCH /generic-chats", () => {
 
     const firstResponse = await PATCH(
       createMockRequest({
-        url: "http://localhost:3002/generic-chats",
+        url: "http://localhost:3002/chat-sessions",
         method: "PATCH",
         body: patchBody,
       }),
@@ -388,13 +388,13 @@ describe("PATCH /generic-chats", () => {
     expect(firstIds).toContain(SAMPLE_ASSISTANT_MESSAGE.id);
 
     // Second PATCH with identical body: service dedupes and returns unchanged row
-    vi.mocked(genericChatsService.appendMessages).mockResolvedValueOnce({
+    vi.mocked(chatSessionsService.appendMessages).mockResolvedValueOnce({
       chat: existingRow,
     } as any);
 
     const secondResponse = await PATCH(
       createMockRequest({
-        url: "http://localhost:3002/generic-chats",
+        url: "http://localhost:3002/chat-sessions",
         method: "PATCH",
         body: patchBody,
       }),
@@ -413,29 +413,29 @@ describe("PATCH /generic-chats", () => {
     expect(matchingIds).toHaveLength(1);
 
     // Service called twice total (once per PATCH)
-    expect(genericChatsService.appendMessages).toHaveBeenCalledTimes(2);
+    expect(chatSessionsService.appendMessages).toHaveBeenCalledTimes(2);
   });
 });
 
-describe("DELETE /generic-chats", () => {
+describe("DELETE /chat-sessions", () => {
   it("returns 400 when chatKey is missing", async () => {
     const response = await DELETE(
       createMockRequest({
-        url: "http://localhost:3002/generic-chats",
+        url: "http://localhost:3002/chat-sessions",
         method: "DELETE",
       }),
       {} as any
     );
     expect(response.status).toBe(400);
-    expect(genericChatsService.deleteChat).not.toHaveBeenCalled();
+    expect(chatSessionsService.deleteChat).not.toHaveBeenCalled();
   });
 
   it("returns deleted: true when service deletes a row", async () => {
-    vi.mocked(genericChatsService.deleteChat).mockResolvedValue(true);
+    vi.mocked(chatSessionsService.deleteChat).mockResolvedValue(true);
 
     const response = await DELETE(
       createMockRequest({
-        url: `http://localhost:3002/generic-chats?chatKey=${encodeURIComponent(CHAT_KEY)}`,
+        url: `http://localhost:3002/chat-sessions?chatKey=${encodeURIComponent(CHAT_KEY)}`,
         method: "DELETE",
       }),
       {} as any
@@ -444,18 +444,18 @@ describe("DELETE /generic-chats", () => {
     expect(response.status).toBe(200);
     const json = await response.json();
     expect(json.data.deleted).toBe(true);
-    expect(genericChatsService.deleteChat).toHaveBeenCalledWith(
+    expect(chatSessionsService.deleteChat).toHaveBeenCalledWith(
       USER_ID,
       CHAT_KEY
     );
   });
 
   it("returns deleted: false when no matching row exists", async () => {
-    vi.mocked(genericChatsService.deleteChat).mockResolvedValue(false);
+    vi.mocked(chatSessionsService.deleteChat).mockResolvedValue(false);
 
     const response = await DELETE(
       createMockRequest({
-        url: `http://localhost:3002/generic-chats?chatKey=${encodeURIComponent(CHAT_KEY)}`,
+        url: `http://localhost:3002/chat-sessions?chatKey=${encodeURIComponent(CHAT_KEY)}`,
         method: "DELETE",
       }),
       {} as any

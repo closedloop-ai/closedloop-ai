@@ -2,7 +2,7 @@ import { failure } from "@repo/api/src/types/common";
 import { type NextRequest, NextResponse } from "next/server";
 import { errorResponse, parseBody, successResponse } from "@/lib/route-utils";
 import { authenticateChatRunnerRequest } from "../chat-runner-auth";
-import { genericChatsService } from "../service";
+import { chatSessionsService } from "../service";
 import { turnValidator } from "../validators";
 
 export async function POST(request: NextRequest): Promise<Response> {
@@ -27,7 +27,7 @@ export async function POST(request: NextRequest): Promise<Response> {
       });
     }
 
-    const result = await genericChatsService.upsertTurn(
+    const result = await chatSessionsService.upsertTurn(
       claims.userId,
       claims.organizationId,
       body

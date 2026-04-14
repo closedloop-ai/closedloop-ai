@@ -7,7 +7,7 @@ import {
   successResponse,
 } from "@/lib/route-utils";
 import { authenticateChatRunnerRequest } from "../../chat-runner-auth";
-import { genericChatsService } from "../../service";
+import { chatSessionsService } from "../../service";
 import { completeTurnValidator } from "../../validators";
 
 export async function POST(request: NextRequest): Promise<Response> {
@@ -32,7 +32,7 @@ export async function POST(request: NextRequest): Promise<Response> {
       });
     }
 
-    const result = await genericChatsService.appendAssistantTurn(
+    const result = await chatSessionsService.appendAssistantTurn(
       claims.userId,
       body
     );

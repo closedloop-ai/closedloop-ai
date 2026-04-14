@@ -8,7 +8,7 @@ const chatMessageSchema = z.object({
   blocks: z.array(z.unknown()).optional(),
 });
 
-export const createGenericChatValidator = z.object({
+export const createChatSessionValidator = z.object({
   chatKey: z.string().min(1).max(500),
   provider: z.enum(["claude", "codex"]),
   model: z.string().min(1).max(200),

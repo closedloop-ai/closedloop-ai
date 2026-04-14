@@ -1,4 +1,4 @@
-import type { GenericChat } from "@repo/database";
+import type { ChatSession } from "@repo/database";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import {
   badRequestResponse,
@@ -8,16 +8,16 @@ import {
   parseBody,
   successResponse,
 } from "@/lib/route-utils";
-import { genericChatsService } from "./service";
+import { chatSessionsService } from "./service";
 import {
   appendMessagesValidator,
-  createGenericChatValidator,
+  createChatSessionValidator,
 } from "./validators";
 
-type ChatResponse = { chat: GenericChat | null };
+type ChatResponse = { chat: ChatSession | null };
 type DeleteResponse = { deleted: boolean };
 
-export const GET = withAnyAuth<ChatResponse, "/generic-chats">(
+export const GET = withAnyAuth<ChatResponse, "/chat-sessions">(
   async ({ user }, request) => {
     try {
       const chatKey = request.nextUrl.searchParams.get("chatKey");
@@ -25,7 +25,7 @@ export const GET = withAnyAuth<ChatResponse, "/generic-chats">(
         return badRequestResponse("chatKey query parameter is required");
       }
 
-      const chat = await genericChatsService.findByKey(user.id, chatKey);
+      const chat = await chatSessionsService.findByKey(user.id, chatKey);
 
       if (!chat || chat.userId !== user.id) {
         return successResponse<ChatResponse>({ chat: null });
@@ -33,23 +33,23 @@ export const GET = withAnyAuth<ChatResponse, "/generic-chats">(
 
       return successResponse<ChatResponse>({ chat });
     } catch (error) {
-      return errorResponse("Failed to fetch generic chat", error);
+      return errorResponse("Failed to fetch chat session", error);
     }
   }
 );
 
-export const POST = withAnyAuth<ChatResponse, "/generic-chats">(
+export const POST = withAnyAuth<ChatResponse, "/chat-sessions">(
   async ({ user }, request) => {
     try {
       const { body, errorResponse: parseError } = await parseBody(
         request,
-        createGenericChatValidator
+        createChatSessionValidator
       );
       if (parseError) {
         return parseError;
       }
 
-      const chat = await genericChatsService.create({
+      const chat = await chatSessionsService.create({
         userId: user.id,
         organizationId: user.organizationId,
         chatKey: body.chatKey,
@@ -61,13 +61,13 @@ export const POST = withAnyAuth<ChatResponse, "/generic-chats">(
 
       return successResponse<ChatResponse>({ chat });
     } catch (error) {
-      return errorResponse("Failed to create generic chat", error);
+      return errorResponse("Failed to create chat session", error);
     }
   },
   { requiredScopes: ["write"] }
 );
 
-export const PATCH = withAnyAuth<ChatResponse, "/generic-chats">(
+export const PATCH = withAnyAuth<ChatResponse, "/chat-sessions">(
   async ({ user }, request) => {
     try {
       const { body, errorResponse: parseError } = await parseBody(
@@ -78,7 +78,7 @@ export const PATCH = withAnyAuth<ChatResponse, "/generic-chats">(
         return parseError;
       }
 
-      const result = await genericChatsService.appendMessages(
+      const result = await chatSessionsService.appendMessages(
         user.id,
         body.chatKey,
         body.provider,
@@ -97,13 +97,13 @@ export const PATCH = withAnyAuth<ChatResponse, "/generic-chats">(
 
       return successResponse<ChatResponse>({ chat: result.chat });
     } catch (error) {
-      return errorResponse("Failed to append messages to generic chat", error);
+      return errorResponse("Failed to append messages to chat session", error);
     }
   },
   { requiredScopes: ["write"] }
 );
 
-export const DELETE = withAnyAuth<DeleteResponse, "/generic-chats">(
+export const DELETE = withAnyAuth<DeleteResponse, "/chat-sessions">(
   async ({ user }, request) => {
     try {
       const chatKey = request.nextUrl.searchParams.get("chatKey");
@@ -111,11 +111,11 @@ export const DELETE = withAnyAuth<DeleteResponse, "/generic-chats">(
         return badRequestResponse("chatKey query parameter is required");
       }
 
-      const deleted = await genericChatsService.deleteChat(user.id, chatKey);
+      const deleted = await chatSessionsService.deleteChat(user.id, chatKey);
 
       return successResponse<DeleteResponse>({ deleted });
     } catch (error) {
-      return errorResponse("Failed to delete generic chat", error);
+      return errorResponse("Failed to delete chat session", error);
     }
   },
   { requiredScopes: ["delete"] }
