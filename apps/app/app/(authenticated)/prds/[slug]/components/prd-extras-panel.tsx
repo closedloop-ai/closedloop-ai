@@ -9,7 +9,7 @@ import { CommentsSection } from "@/components/artifact-editor/comments-section";
 import { EvaluationSection } from "@/components/artifact-editor/evaluation-section";
 import { MetadataPanel } from "@/components/artifact-editor/metadata-panel";
 
-type PRDMetadataPanelProps = {
+type PRDExtrasPanelProps = {
   /**
    * PRD artifact with workstream data
    */
@@ -28,11 +28,11 @@ type PRDMetadataPanelProps = {
  * Metadata panel for PRD editor.
  * Displays evaluation, comments, attachments, and version info.
  */
-export function PRDMetadataPanel({
+export function PRDExtrasPanel({
   prd,
   judgeItems,
   variant = "sidebar",
-}: PRDMetadataPanelProps) {
+}: Readonly<PRDExtrasPanelProps>) {
   const detailsContent = (
     <div className="space-y-6">
       <AttachmentsSection artifactId={prd.id} />

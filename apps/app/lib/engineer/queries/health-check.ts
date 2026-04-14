@@ -159,7 +159,7 @@ export function getRenderableHealthChecks(
     return undefined;
   }
 
-  const checks = [...response.checks];
+  const checks = response?.checks ? [...response.checks] : [];
   const claudeMcp = getMcpCheckResult(
     "claude",
     response.mcpServers?.claude,

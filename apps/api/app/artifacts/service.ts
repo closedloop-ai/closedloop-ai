@@ -2,6 +2,7 @@ import { createId } from "@paralleldrive/cuid2";
 import { generateText, models } from "@repo/ai/server";
 import {
   type Artifact,
+  type ArtifactDetail,
   ArtifactStatus,
   type ArtifactTitleMap,
   ArtifactType,
@@ -307,6 +308,7 @@ export const artifactsService = {
     if (!existingVersion) {
       await artifactVersionService.createVersion(
         template.id,
+        organizationId,
         null,
         PRD_TEMPLATE
       );
@@ -920,7 +922,12 @@ Analyze the content at this link and identify capabilities or features that coul
     userId: string | null,
     content: string
   ): Promise<Artifact> {
-    await artifactVersionService.createVersion(id, userId, content);
+    await artifactVersionService.createVersion(
+      id,
+      organizationId,
+      userId,
+      content
+    );
 
     // Update status to DRAFT
     return withDb((db) =>
@@ -941,19 +948,13 @@ Analyze the content at this link and identify capabilities or features that coul
     organizationId: string,
     userId: string | null,
     content: string
-  ): Promise<Artifact> {
-    const artifact = await withDb((db) =>
-      db.artifact.findUnique({
-        where: { id, organizationId },
-        include: artifactIncludeWithUser,
-      })
+  ): Promise<ArtifactDetail | null> {
+    const newVersion = await artifactVersionService.createVersion(
+      id,
+      organizationId,
+      userId,
+      content
     );
-
-    if (!artifact) {
-      throw new ArtifactNotFoundError();
-    }
-
-    await artifactVersionService.createVersion(id, userId, content);
 
     // Re-fetch the artifact to get the updated latestVersion
     const updated = await withDb((db) =>
@@ -963,7 +964,7 @@ Analyze the content at this link and identify capabilities or features that coul
       })
     );
 
-    return updated!;
+    return updated && newVersion ? { ...updated, version: newVersion } : null;
   },
 
   /**
@@ -1379,6 +1380,7 @@ Analyze the content at this link and identify capabilities or features that coul
     // IMPORTANT: Create GitHubActionRun and new artifact version BEFORE triggering workflow
     // This prevents race condition where webhook fires before records exist
     await this.createChatWorkflowTriggerRecords({
+      organizationId,
       workstreamId: workstream.id,
       repositoryId,
       artifactId,
@@ -1413,6 +1415,7 @@ ${changes}`;
       // Workflow trigger failed - update the version with error content
       await artifactVersionService.createVersion(
         artifactId,
+        organizationId,
         userId,
         `# Change Request Failed
 
@@ -1440,6 +1443,7 @@ Please try again or contact support if the issue persists.`
    * Creates a NEW artifact version to preserve the original content.
    */
   async createChatWorkflowTriggerRecords(params: {
+    organizationId: string;
     workstreamId: string;
     repositoryId: string;
     artifactId: string;
@@ -1451,6 +1455,7 @@ Please try again or contact support if the issue persists.`
     targetBranch: string;
   }): Promise<void> {
     const {
+      organizationId,
       workstreamId,
       repositoryId,
       artifactId,
@@ -1465,6 +1470,7 @@ Please try again or contact support if the issue persists.`
     // Create a new version with placeholder content (preserves original in previous version)
     await artifactVersionService.createVersion(
       artifactId,
+      organizationId,
       userId,
       "# Generating...\n\nYour change request is being processed."
     );

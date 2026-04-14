@@ -79,12 +79,13 @@ export const artifactVersionService = {
    */
   createVersion(
     artifactId: string,
+    organizationId: string,
     userId: string | null,
     content: string | null
   ): Promise<ArtifactVersion> {
     return withDb.tx(async (tx) => {
       const artifact = await tx.artifact.findUnique({
-        where: { id: artifactId },
+        where: { id: artifactId, organizationId },
         select: { latestVersion: true },
       });
 

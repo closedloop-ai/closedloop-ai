@@ -301,7 +301,6 @@ export function useUpdateArtifact() {
       queryClient.invalidateQueries({
         queryKey: artifactKeys.detail(input.id),
       });
-      // Also invalidate the slug-based lookup so detail pages loaded by slug pick up the change
       queryClient.invalidateQueries({
         queryKey: artifactKeys.bySlug(data.slug),
       });
@@ -336,23 +335,35 @@ export function useCreateArtifactVersion(artifactId: string) {
   const apiClient = useApiClient();
 
   return useMutation({
-    mutationFn: (content: string) =>
-      apiClient.post<Artifact>(`/artifacts/${artifactId}/versions`, {
-        content,
-      }),
-    onSuccess: () => {
+    mutationFn: ({
+      content,
+      resetRoom,
+    }: {
+      content: string;
+      resetRoom?: boolean;
+    }) => {
+      const params = new URLSearchParams();
+      if (resetRoom !== undefined) {
+        params.set("reset-room", resetRoom.toString());
+      }
+      return apiClient.post<ArtifactDetail>(
+        `/artifacts/${artifactId}/versions?${params.toString()}`,
+        {
+          content,
+        }
+      );
+    },
+    onSuccess: (result) => {
       queryClient.invalidateQueries({
         queryKey: artifactKeys.detail(artifactId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: artifactKeys.bySlug(result.slug),
       });
       queryClient.invalidateQueries({
         queryKey: artifactKeys.versions(artifactId),
       });
       queryClient.invalidateQueries({ queryKey: artifactKeys.lists() });
-      // Invalidate slug-based lookups so useArtifactBySlug picks up the new version
-      queryClient.invalidateQueries({
-        predicate: (query) =>
-          query.queryKey[0] === "artifacts" && query.queryKey[1] === "by-slug",
-      });
     },
   });
 }

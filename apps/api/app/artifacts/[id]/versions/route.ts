@@ -1,4 +1,4 @@
-import type { Artifact } from "@repo/api/src/types/artifact";
+import type { ArtifactDetail } from "@repo/api/src/types/artifact";
 import type { ArtifactVersion } from "@repo/api/src/types/artifact-version";
 import { log } from "@repo/observability/log";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
@@ -45,8 +45,8 @@ export const GET = withAnyAuth<
   }
 });
 
-export const POST = withAnyAuth<Artifact, "/artifacts/[id]/versions">(
-  async ({ user, authMethod }, request, params) => {
+export const POST = withAnyAuth<ArtifactDetail, "/artifacts/[id]/versions">(
+  async ({ user }, request, params) => {
     try {
       const { id } = await params;
       const resolvedId = await resolveArtifactId(id, user.organizationId);
@@ -62,29 +62,32 @@ export const POST = withAnyAuth<Artifact, "/artifacts/[id]/versions">(
         return parseError;
       }
 
-      // This delegates to artifactVersionService which atomically increments latestVersion
       const updatedArtifact = await artifactsService.createNewVersion(
         resolvedId,
         user.organizationId,
         user.id,
         body.content
       );
+      if (!updatedArtifact) {
+        return notFoundResponse("Artifact");
+      }
 
-      // Reset the Liveblocks room when the version was created out-of-band
-      // (MCP/API key) so the collaborative editor picks up the new content
-      // instead of serving the stale Y.Doc. Skip for browser sessions — the
-      // editor already has the Y.Doc in sync, and resetting would tear down
-      // the active collaboration session and drop comment/thread state.
-      if (authMethod === "api_key") {
+      // Reset the Liveblocks room when a new version is created.
+      // This allows the room to be reset with the new content the next time a user opens the
+      // artifact editor.
+      const resetRoom =
+        request.nextUrl.searchParams.get("reset-room") !== "false";
+      if (resetRoom) {
+        log.info("[liveblocks] Resetting room after version create", {
+          artifactId: resolvedId,
+          version: updatedArtifact.latestVersion,
+        });
         await resetArtifactRoom(updatedArtifact).catch((error) => {
-          log.error(
-            "[versions] Failed to reset Liveblocks room after version create",
-            {
-              artifactId: resolvedId,
-              version: updatedArtifact.latestVersion,
-              error: error instanceof Error ? error.message : String(error),
-            }
-          );
+          log.error("[liveblocks] Failed to reset room after version create", {
+            artifactId: resolvedId,
+            version: updatedArtifact.latestVersion,
+            error: error instanceof Error ? error.message : String(error),
+          });
         });
       }
 
