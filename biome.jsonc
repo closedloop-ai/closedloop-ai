@@ -24,9 +24,12 @@
     {
       "includes": [
         "apps/app/components/engineer/**",
+        "apps/app/components/chat/**",
         "apps/app/app/api/engineer/**",
         "apps/app/hooks/engineer/**",
+        "apps/app/hooks/chat/**",
         "apps/app/lib/engineer/**",
+        "apps/app/lib/chat/**",
         "apps/app/types/engineer.ts",
         "apps/app/types/repos.ts",
         "apps/app/types/run-viewer.ts",

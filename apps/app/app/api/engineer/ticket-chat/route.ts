@@ -6,6 +6,7 @@ import type { NextRequest } from "next/server";
 import {
   READONLY_CODEBASE_TOOLS,
   WEB_ONLY_TOOLS,
+  withMcpTools,
 } from "@/lib/engineer/allowed-tools";
 import { getShellPath } from "@/lib/engineer/shell-path";
 import {
@@ -222,7 +223,7 @@ export async function POST(request: NextRequest) {
 
   const shellPath = await getShellPath();
   const stream = new ReadableStream({
-    start(controller) {
+    async start(controller) {
       const streamState = createStreamState(
         (sessionId) => {
           // Eagerly persist session ID for resume capability
@@ -258,8 +259,8 @@ export async function POST(request: NextRequest) {
         );
 
         const allowedTools = expandedRepoPath
-          ? READONLY_CODEBASE_TOOLS
-          : WEB_ONLY_TOOLS;
+          ? await withMcpTools(READONLY_CODEBASE_TOOLS)
+          : await withMcpTools(WEB_ONLY_TOOLS);
 
         const claudeArgs = [
           "-p",

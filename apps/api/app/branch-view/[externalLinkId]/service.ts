@@ -232,7 +232,6 @@ export async function getBranchViewData(
         user.githubUsername.toLowerCase() === livePr.authorLogin.toLowerCase()
     ),
     repoFullName: `${owner}/${repo}`,
-    worktreeTicketId: featureContext?.slug ?? null,
     committedFiles,
     reviews,
     comments,
@@ -394,7 +393,6 @@ function buildResult(
     authorLogin,
     isAuthor,
     repoFullName: `${owner}/${repo}`,
-    worktreeTicketId: featureContext?.slug ?? null,
     committedFiles,
     reviews,
     comments,

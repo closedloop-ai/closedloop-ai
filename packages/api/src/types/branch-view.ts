@@ -115,7 +115,6 @@ export type BranchViewData = {
   authorLogin: string | null;
   isAuthor: boolean;
   repoFullName: string;
-  worktreeTicketId: string | null;
   committedFiles: BranchViewFile[];
   reviews: BranchViewReview[];
   comments: BranchViewComment[];

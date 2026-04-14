@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { basename, join } from "node:path";
 import type { NextRequest } from "next/server";
+import { withMcpTools } from "@/lib/engineer/allowed-tools";
 import { extractClaudeText } from "@/lib/engineer/claude-stream-utils";
 import { extractVerdictTag } from "@/lib/engineer/codex-review-parser";
 import {
@@ -200,6 +201,7 @@ async function runClaudeVerdict(
   sessionId: string
 ): Promise<string> {
   const shellPath = await getShellPath();
+  const allowedTools = await withMcpTools("Read,Glob,Grep");
   return new Promise((resolve, reject) => {
     const child = spawn(
       "claude",
@@ -212,7 +214,7 @@ async function runClaudeVerdict(
         "--model",
         "sonnet",
         "--allowedTools",
-        "Read,Glob,Grep",
+        allowedTools,
       ],
       {
         cwd: worktreeDir,

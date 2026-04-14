@@ -7,16 +7,27 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const EXIT_ANIMATION_MS = 250;
 
 const mockQueryFn = vi.fn();
+const mockSystemCheckResults = vi.fn();
 
-vi.mock("@/lib/engineer/queries/health-check", () => ({
-  healthCheckOptions: () => ({
-    queryKey: ["health-check"],
-    queryFn: mockQueryFn,
-  }),
-}));
+vi.mock("@/lib/engineer/queries/health-check", async (importOriginal) => {
+  const actual =
+    await importOriginal<
+      typeof import("@/lib/engineer/queries/health-check")
+    >();
+  return {
+    ...actual,
+    healthCheckOptions: () => ({
+      queryKey: ["health-check"],
+      queryFn: mockQueryFn,
+    }),
+  };
+});
 
 vi.mock("@/components/system-check/system-check-results", () => ({
-  SystemCheckResults: () => <div data-testid="system-check-results" />,
+  SystemCheckResults: (props: Record<string, unknown>) => {
+    mockSystemCheckResults(props);
+    return <div data-testid="system-check-results" />;
+  },
 }));
 
 vi.mock("@/components/engineer/PathAutocomplete", () => ({
@@ -185,6 +196,74 @@ describe("Dismissal behavior", () => {
     });
 
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+});
+
+describe("MCP rendering", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.clearAllMocks();
+    resetHealthCheckDialogVisibilityForTests();
+    mockQueryFn.mockResolvedValue({
+      checks: [{ id: "cli", label: "CLI", required: true, passed: false }],
+      allRequiredPassed: false,
+      mcpServers: {
+        claude: {
+          available: true,
+          serverName: "my-claude-mcp",
+          matchedUrl: "https://example.com/mcp",
+          checkedAt: "2026-04-13T18:41:00.000Z",
+        },
+        codex: {
+          available: false,
+          serverName: "my-codex-mcp",
+          matchedUrl: "https://example.com/mcp",
+          checkedAt: "2026-04-13T18:41:00.000Z",
+        },
+      },
+    });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("passes Claude and Codex MCP rows into the rendered checks", async () => {
+    const Wrapper = createWrapper();
+    render(
+      <Wrapper>
+        <HealthCheckDialog />
+      </Wrapper>
+    );
+
+    await act(async () => {});
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+
+    const latestProps = mockSystemCheckResults.mock.calls.at(-1)?.[0] as
+      | {
+          checks?: Array<{ label: string; version?: string; error?: string }>;
+        }
+      | undefined;
+
+    expect(latestProps?.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          label: "Claude MCP",
+          passed: true,
+          version: "my-claude-mcp",
+        }),
+        expect.objectContaining({
+          label: "Codex MCP",
+          passed: false,
+          error: "Disconnected",
+        }),
+      ])
+    );
   });
 });
 

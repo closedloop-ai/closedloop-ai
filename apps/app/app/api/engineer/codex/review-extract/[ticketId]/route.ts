@@ -224,6 +224,7 @@ async function runClaudeExtraction(
   sessionId: string
 ): Promise<string> {
   const shellPath = await getShellPath();
+  const allowedTools = await withMcpTools("Read,Glob,Grep");
   return new Promise((resolve, reject) => {
     const child = spawn(
       "claude",
@@ -236,7 +237,7 @@ async function runClaudeExtraction(
         "--model",
         "sonnet",
         "--allowedTools",
-        withMcpTools("Read,Glob,Grep"),
+        allowedTools,
       ],
       {
         cwd: worktreeDir,

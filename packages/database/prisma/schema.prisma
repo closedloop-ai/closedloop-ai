@@ -62,7 +62,7 @@ enum ExternalLinkType {
 // Entity types for polymorphic EntityLink
 enum EntityType {
   ARTIFACT
-  FEATURE @map("ISSUE")
+  FEATURE       @map("ISSUE")
   EXTERNAL_LINK
 }
 
@@ -246,7 +246,7 @@ enum CustomFieldType {
 enum CustomFieldEntityType {
   PROJECT
   WORKSTREAM
-  FEATURE @map("ISSUE")
+  FEATURE    @map("ISSUE")
   ARTIFACT
 }
 
@@ -291,19 +291,19 @@ model PreviewSchema {
 }
 
 model Organization {
-  id              String   @id @default(uuid(7)) @db.Uuid
-  clerkId         String   @unique @map("clerk_id")
-  active          Boolean  @default(true) @map("active")
-  name            String
-  slug            String   @unique
-  anthropicApiKey String?  @map("anthropic_api_key") // @deprecated - auto-migrated to claudeApiKeyEncrypted on read (see apiKeyService.resolveApiKey)
+  id                    String    @id @default(uuid(7)) @db.Uuid
+  clerkId               String    @unique @map("clerk_id")
+  active                Boolean   @default(true) @map("active")
+  name                  String
+  slug                  String    @unique
+  anthropicApiKey       String?   @map("anthropic_api_key") // @deprecated - auto-migrated to claudeApiKeyEncrypted on read (see apiKeyService.resolveApiKey)
   claudeApiKeyEncrypted String?   @map("claude_api_key_encrypted")
   claudeApiKeyLastFour  String?   @map("claude_api_key_last_four")
   claudeApiKeySetAt     DateTime? @map("claude_api_key_set_at")
-  settings              Json     @default("{}") // settings.computeMode deprecated -- use User.preferredComputeMode instead
-  publicDashboardToken  String?  @unique @map("public_dashboard_token")
-  createdAt             DateTime @default(now()) @map("created_at")
-  updatedAt       DateTime @updatedAt @map("updated_at")
+  settings              Json      @default("{}") // settings.computeMode deprecated -- use User.preferredComputeMode instead
+  publicDashboardToken  String?   @unique @map("public_dashboard_token")
+  createdAt             DateTime  @default(now()) @map("created_at")
+  updatedAt             DateTime  @updatedAt @map("updated_at")
 
   // Relations
   users              User[]
@@ -319,6 +319,7 @@ model Organization {
   loops              Loop[]
   prompts            Prompt[]
   computeTargets     ComputeTarget[]
+  chatSessions       ChatSession[]
   judgeHumanScores   JudgeHumanScore[]
   customFields       CustomField[]
   commentThreads     CommentThread[]
@@ -327,47 +328,48 @@ model Organization {
 }
 
 model User {
-  id              String       @id @default(uuid(7)) @db.Uuid
-  clerkId         String       @map("clerk_id")
-  organizationId  String       @map("organization_id") @db.Uuid
-  active          Boolean      @default(true) @map("active")
-  email           String
-  firstName       String?      @map("first_name")
-  lastName        String?      @map("last_name")
-  avatarUrl       String?      @map("avatar_url")
-  phoneNumber     String?      @map("phone_number")
-  role            ApproverRole @default(ENGINEER)
-  linearId        String?      @map("linear_id")
-  slackId         String?      @map("slack_id")
-  githubUsername  String?      @map("github_username")
-  anthropicApiKey String?      @map("anthropic_api_key") // @deprecated - auto-migrated to claudeApiKeyEncrypted on read (see apiKeyService.resolveApiKey)
-  claudeApiKeyEncrypted String?   @map("claude_api_key_encrypted")
-  claudeApiKeyLastFour  String?   @map("claude_api_key_last_four")
-  claudeApiKeySetAt     DateTime? @map("claude_api_key_set_at")
+  id                       String                @id @default(uuid(7)) @db.Uuid
+  clerkId                  String                @map("clerk_id")
+  organizationId           String                @map("organization_id") @db.Uuid
+  active                   Boolean               @default(true) @map("active")
+  email                    String
+  firstName                String?               @map("first_name")
+  lastName                 String?               @map("last_name")
+  avatarUrl                String?               @map("avatar_url")
+  phoneNumber              String?               @map("phone_number")
+  role                     ApproverRole          @default(ENGINEER)
+  linearId                 String?               @map("linear_id")
+  slackId                  String?               @map("slack_id")
+  githubUsername           String?               @map("github_username")
+  anthropicApiKey          String?               @map("anthropic_api_key") // @deprecated - auto-migrated to claudeApiKeyEncrypted on read (see apiKeyService.resolveApiKey)
+  claudeApiKeyEncrypted    String?               @map("claude_api_key_encrypted")
+  claudeApiKeyLastFour     String?               @map("claude_api_key_last_four")
+  claudeApiKeySetAt        DateTime?             @map("claude_api_key_set_at")
   preferredComputeMode     PreferredComputeMode? @map("preferred_compute_mode")
   preferredComputeTargetId String?               @map("preferred_compute_target_id") @db.Uuid
-  createdAt       DateTime     @default(now()) @map("created_at")
-  updatedAt       DateTime     @updatedAt @map("updated_at")
+  createdAt                DateTime              @default(now()) @map("created_at")
+  updatedAt                DateTime              @updatedAt @map("updated_at")
 
   // Relations
-  organization              Organization   @relation(fields: [organizationId], references: [id])
-  preferredComputeTarget    ComputeTarget? @relation("UserPreferredComputeTarget", fields: [preferredComputeTargetId], references: [id])
-  teamMemberships    TeamMember[]
-  pullRequestRatings PullRequestRating[]
-  favoriteProjects   FavoriteProject[]
-  assignedProjects   Project[]    @relation("ProjectAssignee")
-  createdProjects    Project[]    @relation("ProjectCreatedBy")
-  assignedArtifacts  Artifact[]   @relation("ArtifactAssignee")
-  createdArtifacts   Artifact[]   @relation("ArtifactCreatedBy")
-  approvedArtifacts  Artifact[]   @relation("ArtifactApprover")
-  assignedFeatures   Feature[]    @relation("FeatureAssignee")
-  createdFeatures    Feature[]    @relation("FeatureCreator")
-  createdWorkstreams  Workstream[] @relation("WorkstreamCreatedBy")
-  assignedWorkstreams Workstream[] @relation("WorkstreamAssignee")
-  loops               Loop[]
-  computeTargets      ComputeTarget[]
-  judgeHumanScores    JudgeHumanScore[]
-  createdCustomFields CustomField[]
+  organization             Organization        @relation(fields: [organizationId], references: [id])
+  preferredComputeTarget   ComputeTarget?      @relation("UserPreferredComputeTarget", fields: [preferredComputeTargetId], references: [id])
+  teamMemberships          TeamMember[]
+  pullRequestRatings       PullRequestRating[]
+  favoriteProjects         FavoriteProject[]
+  assignedProjects         Project[]           @relation("ProjectAssignee")
+  createdProjects          Project[]           @relation("ProjectCreatedBy")
+  assignedArtifacts        Artifact[]          @relation("ArtifactAssignee")
+  createdArtifacts         Artifact[]          @relation("ArtifactCreatedBy")
+  approvedArtifacts        Artifact[]          @relation("ArtifactApprover")
+  assignedFeatures         Feature[]           @relation("FeatureAssignee")
+  createdFeatures          Feature[]           @relation("FeatureCreator")
+  createdWorkstreams       Workstream[]        @relation("WorkstreamCreatedBy")
+  assignedWorkstreams      Workstream[]        @relation("WorkstreamAssignee")
+  loops                    Loop[]
+  computeTargets           ComputeTarget[]
+  chatSessions             ChatSession[]
+  judgeHumanScores         JudgeHumanScore[]
+  createdCustomFields      CustomField[]
   updatedCustomFieldValues CustomFieldValue[]
   dismissedGenerationStatuses ArtifactGenerationStatusDismissal[]
 
@@ -408,23 +410,23 @@ model ComputeTarget {
 }
 
 model DesktopCommand {
-  id               String   @id @default(uuid(7)) @db.Uuid
-  computeTargetId  String   @map("compute_target_id") @db.Uuid
-  idempotencyKey   String?  @map("idempotency_key")
-  requestFingerprint String @map("request_fingerprint")
-  operationId      String   @map("operation_id")
-  requestPayload   Json     @map("request_payload")
-  status           String
-  error            String?
-  lastSequenceAcked Int     @default(0) @map("last_sequence_acked")
-  queuedTimeoutMs  Int?     @map("queued_timeout_ms")
-  runningTimeoutMs Int?     @map("running_timeout_ms")
-  createdAt        DateTime @default(now()) @map("created_at")
-  startedAt        DateTime? @map("started_at")
-  finishedAt       DateTime? @map("finished_at")
+  id                 String    @id @default(uuid(7)) @db.Uuid
+  computeTargetId    String    @map("compute_target_id") @db.Uuid
+  idempotencyKey     String?   @map("idempotency_key")
+  requestFingerprint String    @map("request_fingerprint")
+  operationId        String    @map("operation_id")
+  requestPayload     Json      @map("request_payload")
+  status             String
+  error              String?
+  lastSequenceAcked  Int       @default(0) @map("last_sequence_acked")
+  queuedTimeoutMs    Int?      @map("queued_timeout_ms")
+  runningTimeoutMs   Int?      @map("running_timeout_ms")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  startedAt          DateTime? @map("started_at")
+  finishedAt         DateTime? @map("finished_at")
 
-  computeTarget ComputeTarget @relation(fields: [computeTargetId], references: [id], onDelete: Cascade)
-  events       DesktopCommandEvent[]
+  computeTarget ComputeTarget         @relation(fields: [computeTargetId], references: [id], onDelete: Cascade)
+  events        DesktopCommandEvent[]
 
   // NOTE: A partial unique index on (compute_target_id, idempotency_key) WHERE
   // idempotency_key IS NOT NULL is maintained via raw migrations. Prisma cannot
@@ -437,11 +439,11 @@ model DesktopCommand {
 }
 
 model DesktopCommandEvent {
-  commandId   String   @map("command_id") @db.Uuid
-  sequence    Int
-  eventType   String   @map("event_type")
-  eventPayload Json    @map("event_payload")
-  createdAt   DateTime @default(now()) @map("created_at")
+  commandId    String   @map("command_id") @db.Uuid
+  sequence     Int
+  eventType    String   @map("event_type")
+  eventPayload Json     @map("event_payload")
+  createdAt    DateTime @default(now()) @map("created_at")
 
   command DesktopCommand @relation(fields: [commandId], references: [id], onDelete: Cascade)
 
@@ -468,9 +470,9 @@ model Project {
   updatedAt       DateTime      @updatedAt @map("updated_at")
 
   // Relations
-  organization  Organization   @relation(fields: [organizationId], references: [id])
-  assignee      User?          @relation("ProjectAssignee", fields: [assigneeId], references: [id])
-  createdBy     User           @relation("ProjectCreatedBy", fields: [createdById], references: [id])
+  organization  Organization      @relation(fields: [organizationId], references: [id])
+  assignee      User?             @relation("ProjectAssignee", fields: [assigneeId], references: [id])
+  createdBy     User              @relation("ProjectCreatedBy", fields: [createdById], references: [id])
   workstreams   Workstream[]
   artifacts     Artifact[]
   features      Feature[]
@@ -578,10 +580,10 @@ model Workstream {
   updatedAt      DateTime        @updatedAt @map("updated_at")
 
   // Relations
-  organization  Organization   @relation(fields: [organizationId], references: [id])
-  project       Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  createdBy     User           @relation("WorkstreamCreatedBy", fields: [createdById], references: [id])
-  assignee      User?          @relation("WorkstreamAssignee", fields: [assigneeId], references: [id])
+  organization  Organization        @relation(fields: [organizationId], references: [id])
+  project       Project             @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  createdBy     User                @relation("WorkstreamCreatedBy", fields: [createdById], references: [id])
+  assignee      User?               @relation("WorkstreamAssignee", fields: [assigneeId], references: [id])
   artifacts     Artifact[]
   features      Feature[]
   externalLinks ExternalLink[]
@@ -639,19 +641,19 @@ model Artifact {
   updatedAt       DateTime       @updatedAt @map("updated_at")
 
   // Relations
-  organization Organization         @relation(fields: [organizationId], references: [id])
-  workstream   Workstream?          @relation(fields: [workstreamId], references: [id], onDelete: Cascade)
-  project      Project?             @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  assignee     User?                @relation("ArtifactAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
-  createdBy    User                 @relation("ArtifactCreatedBy", fields: [createdById], references: [id])
-  approver     User?                @relation("ArtifactApprover", fields: [approverId], references: [id], onDelete: SetNull)
-  versions         ArtifactVersion[]
-  ratings          ArtifactRating[]
-  evaluations      ArtifactEvaluation[]
-  performances     GitHubActionRunPerformance[]
-  pullRequests     GitHubPullRequest[]
-  loops            Loop[]
-  fileAttachments  FileAttachment[]
+  organization              Organization                       @relation(fields: [organizationId], references: [id])
+  workstream                Workstream?                        @relation(fields: [workstreamId], references: [id], onDelete: Cascade)
+  project                   Project?                           @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  assignee                  User?                              @relation("ArtifactAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  createdBy                 User                               @relation("ArtifactCreatedBy", fields: [createdById], references: [id])
+  approver                  User?                              @relation("ArtifactApprover", fields: [approverId], references: [id], onDelete: SetNull)
+  versions                  ArtifactVersion[]
+  ratings                   ArtifactRating[]
+  evaluations               ArtifactEvaluation[]
+  performances              GitHubActionRunPerformance[]
+  pullRequests              GitHubPullRequest[]
+  loops                     Loop[]
+  fileAttachments           FileAttachment[]
   generationStatusDismissal ArtifactGenerationStatusDismissal?
 
   @@unique([organizationId, slug])
@@ -867,11 +869,11 @@ model Feature {
   updatedAt      DateTime      @updatedAt @map("updated_at")
 
   // Relations
-  organization Organization @relation(fields: [organizationId], references: [id])
-  workstream   Workstream?  @relation(fields: [workstreamId], references: [id], onDelete: Cascade)
-  project      Project?     @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  assignee     User?        @relation("FeatureAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
-  createdBy    User         @relation("FeatureCreator", fields: [createdById], references: [id])
+  organization Organization     @relation(fields: [organizationId], references: [id])
+  workstream   Workstream?      @relation(fields: [workstreamId], references: [id], onDelete: Cascade)
+  project      Project?         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  assignee     User?            @relation("FeatureAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  createdBy    User             @relation("FeatureCreator", fields: [createdById], references: [id])
   attachments  FileAttachment[]
 
   @@unique([organizationId, slug])
@@ -920,17 +922,17 @@ model ExternalLink {
 }
 
 model EntityLink {
-  id            String     @id @default(uuid(7)) @db.Uuid
-  organizationId String    @map("organization_id") @db.Uuid
-  sourceId      String     @map("source_id") @db.Uuid
-  sourceType    EntityType @map("source_type")
-  sourceVersion Int?       @map("source_version")
-  targetId      String     @map("target_id") @db.Uuid
-  targetType    EntityType @map("target_type")
-  targetVersion Int?       @map("target_version")
-  linkType      LinkType   @map("link_type")
-  metadata      Json?
-  createdAt     DateTime   @default(now()) @map("created_at")
+  id             String     @id @default(uuid(7)) @db.Uuid
+  organizationId String     @map("organization_id") @db.Uuid
+  sourceId       String     @map("source_id") @db.Uuid
+  sourceType     EntityType @map("source_type")
+  sourceVersion  Int?       @map("source_version")
+  targetId       String     @map("target_id") @db.Uuid
+  targetType     EntityType @map("target_type")
+  targetVersion  Int?       @map("target_version")
+  linkType       LinkType   @map("link_type")
+  metadata       Json?
+  createdAt      DateTime   @default(now()) @map("created_at")
 
   @@index([organizationId, sourceId, sourceType, linkType])
   @@index([organizationId, targetId, targetType, linkType])
@@ -962,6 +964,29 @@ model Message {
 
   @@index([conversationId, createdAt])
   @@map("messages")
+}
+
+model ChatSession {
+  id              String   @id @default(uuid(7)) @db.Uuid
+  chatKey         String   @map("chat_key")
+  userId          String   @map("user_id") @db.Uuid
+  organizationId  String   @map("organization_id") @db.Uuid
+  provider        String
+  model           String
+  messages        Json     @default("[]")
+  sessionId       String?  @map("session_id")
+  sessionSourceId String?  @map("session_source_id")
+  context         String?  @db.Text
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, chatKey])
+  @@index([userId])
+  @@index([organizationId, userId])
+  @@map("chat_sessions")
 }
 
 // =============================================================================
@@ -1082,10 +1107,10 @@ model Loop {
   sessionId  String? @map("session_id")
 
   // Cost tracking
-  tokensInput    Int      @default(0) @map("tokens_input")
-  tokensOutput   Int      @default(0) @map("tokens_output")
-  tokensByModel  Json?    @map("tokens_by_model") // { "claude-opus-4": { input, output }, ... }
-  estimatedCost  Decimal? @map("estimated_cost") @db.Decimal(10, 6)
+  tokensInput   Int      @default(0) @map("tokens_input")
+  tokensOutput  Int      @default(0) @map("tokens_output")
+  tokensByModel Json?    @map("tokens_by_model") // { "claude-opus-4": { input, output }, ... }
+  estimatedCost Decimal? @map("estimated_cost") @db.Decimal(10, 6)
 
   // Timing
   startedAt   DateTime? @map("started_at")
@@ -1099,20 +1124,20 @@ model Loop {
   artifactVersion Int? @map("artifact_version")
 
   // Extensible metadata
-  metadata           Json  @default("{}") @map("metadata")
-  uploadedArtifacts  Json? @map("uploaded_artifacts")
+  metadata          Json  @default("{}") @map("metadata")
+  uploadedArtifacts Json? @map("uploaded_artifacts")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
   // Relations
-  organization Organization @relation(fields: [organizationId], references: [id])
-  user         User         @relation(fields: [userId], references: [id])
-  artifact     Artifact?    @relation(fields: [artifactId], references: [id], onDelete: SetNull)
-  workstream   Workstream?  @relation(fields: [workstreamId], references: [id], onDelete: Cascade)
-  computeTarget ComputeTarget? @relation(fields: [computeTargetId], references: [id])
-  parentLoop    Loop?          @relation("LoopParent", fields: [parentLoopId], references: [id], onDelete: Restrict, onUpdate: Restrict)
-  childLoops    Loop[]         @relation("LoopParent")
+  organization  Organization         @relation(fields: [organizationId], references: [id])
+  user          User                 @relation(fields: [userId], references: [id])
+  artifact      Artifact?            @relation(fields: [artifactId], references: [id], onDelete: SetNull)
+  workstream    Workstream?          @relation(fields: [workstreamId], references: [id], onDelete: Cascade)
+  computeTarget ComputeTarget?       @relation(fields: [computeTargetId], references: [id])
+  parentLoop    Loop?                @relation("LoopParent", fields: [parentLoopId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  childLoops    Loop[]               @relation("LoopParent")
   evaluations   ArtifactEvaluation[]
   events        LoopEvent[]
 
@@ -1146,9 +1171,9 @@ model LoopEvent {
 
   loop Loop @relation(fields: [loopId], references: [id], onDelete: Cascade)
 
+  @@unique([loopId, eventSource, eventId])
   @@index([loopId, createdAt])
   @@index([loopId, type])
-  @@unique([loopId, eventSource, eventId])
   @@map("loop_events")
 }
 
@@ -1157,20 +1182,20 @@ model LoopEvent {
 // =============================================================================
 
 model Prompt {
-  id             String      @id @default(uuid(7)) @db.Uuid
-  organizationId String      @map("organization_id") @db.Uuid
-  promptType     PromptType  @map("prompt_type")
+  id             String     @id @default(uuid(7)) @db.Uuid
+  organizationId String     @map("organization_id") @db.Uuid
+  promptType     PromptType @map("prompt_type")
   name           String
-  description    String      @db.Text
+  description    String     @db.Text
   model          String
   tools          String[]
-  filePath       String      @map("file_path")
-  content        String      @db.Text
+  filePath       String     @map("file_path")
+  content        String     @db.Text
   version        Int
-  createdAt      DateTime    @default(now()) @map("created_at")
+  createdAt      DateTime   @default(now()) @map("created_at")
 
-  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  judgeScores    JudgeScore[]
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  judgeScores  JudgeScore[]
 
   @@unique([organizationId, name, version])
   @@index([organizationId, name])
@@ -1286,12 +1311,12 @@ model GitHubInstallationRepository {
 }
 
 model GitHubPullRequest {
-  id             String        @id @default(uuid(7)) @db.Uuid
-  workstreamId   String        @map("workstream_id") @db.Uuid
-  organizationId String        @map("organization_id") @db.Uuid // Denormalized from workstream for defense-in-depth (org-scoped queries)
-  repositoryId   String        @map("repository_id") @db.Uuid
-  artifactId     String?       @map("artifact_id") @db.Uuid
-  githubId       String        @map("github_id")
+  id             String          @id @default(uuid(7)) @db.Uuid
+  workstreamId   String          @map("workstream_id") @db.Uuid
+  organizationId String          @map("organization_id") @db.Uuid // Denormalized from workstream for defense-in-depth (org-scoped queries)
+  repositoryId   String          @map("repository_id") @db.Uuid
+  artifactId     String?         @map("artifact_id") @db.Uuid
+  githubId       String          @map("github_id")
   number         Int
   title          String
   body           String?         @db.Text
@@ -1457,20 +1482,20 @@ model OAuthRateLimit {
 }
 
 model OAuthAuthorizationCode {
-  id               String    @id @default(uuid(7)) @db.Uuid
-  code             String    @unique
-  encryptedApiKey  String    @map("encrypted_api_key")
-  keyId            String    @map("key_id")
-  userId           String    @map("user_id") @db.Uuid
-  organizationId   String    @map("organization_id") @db.Uuid
-  clientId         String    @map("client_id")
-  redirectUri      String    @map("redirect_uri")
-  scopes           String[]
-  codeChallenge    String    @map("code_challenge")
-  codeChallengeMethod String @map("code_challenge_method")
-  expiresAt        DateTime  @map("expires_at")
-  consumedAt       DateTime? @map("consumed_at")
-  createdAt        DateTime  @default(now()) @map("created_at")
+  id                  String    @id @default(uuid(7)) @db.Uuid
+  code                String    @unique
+  encryptedApiKey     String    @map("encrypted_api_key")
+  keyId               String    @map("key_id")
+  userId              String    @map("user_id") @db.Uuid
+  organizationId      String    @map("organization_id") @db.Uuid
+  clientId            String    @map("client_id")
+  redirectUri         String    @map("redirect_uri")
+  scopes              String[]
+  codeChallenge       String    @map("code_challenge")
+  codeChallengeMethod String    @map("code_challenge_method")
+  expiresAt           DateTime  @map("expires_at")
+  consumedAt          DateTime? @map("consumed_at")
+  createdAt           DateTime  @default(now()) @map("created_at")
 
   @@index([expiresAt])
   @@index([consumedAt])
@@ -1478,20 +1503,20 @@ model OAuthAuthorizationCode {
 }
 
 model OAuthRefreshToken {
-  id               String    @id @default(uuid(7)) @db.Uuid
-  tokenFingerprint String    @unique @map("token_fingerprint")
-  encryptedApiKey  String    @map("encrypted_api_key")
-  keyId            String    @map("key_id")
-  userId           String    @map("user_id") @db.Uuid
-  organizationId   String    @map("organization_id") @db.Uuid
-  clientId         String    @map("client_id")
-  scopes           String[]
-  familyId         String    @map("family_id") @db.Uuid
-  expiresAt        DateTime  @map("expires_at")
-  lastUsedAt       DateTime? @map("last_used_at")
-  revokedAt        DateTime? @map("revoked_at")
-  replacedByTokenId String?  @map("replaced_by_token_id") @db.Uuid
-  createdAt        DateTime  @default(now()) @map("created_at")
+  id                String    @id @default(uuid(7)) @db.Uuid
+  tokenFingerprint  String    @unique @map("token_fingerprint")
+  encryptedApiKey   String    @map("encrypted_api_key")
+  keyId             String    @map("key_id")
+  userId            String    @map("user_id") @db.Uuid
+  organizationId    String    @map("organization_id") @db.Uuid
+  clientId          String    @map("client_id")
+  scopes            String[]
+  familyId          String    @map("family_id") @db.Uuid
+  expiresAt         DateTime  @map("expires_at")
+  lastUsedAt        DateTime? @map("last_used_at")
+  revokedAt         DateTime? @map("revoked_at")
+  replacedByTokenId String?   @map("replaced_by_token_id") @db.Uuid
+  createdAt         DateTime  @default(now()) @map("created_at")
 
   @@index([expiresAt])
   @@index([familyId, revokedAt])
@@ -1512,22 +1537,22 @@ model LocalGatewayChallengeJti {
 // =============================================================================
 
 model CustomField {
-  id                  String          @id @default(uuid(7)) @db.Uuid
-  organizationId      String          @map("organization_id") @db.Uuid
-  name                String
-  description         String?
-  fieldType           CustomFieldType @map("field_type")
-  createdById         String?         @map("created_by_id") @db.Uuid
+  id             String          @id @default(uuid(7)) @db.Uuid
+  organizationId String          @map("organization_id") @db.Uuid
+  name           String
+  description    String?
+  fieldType      CustomFieldType @map("field_type")
+  createdById    String?         @map("created_by_id") @db.Uuid
 
   // Number-specific configuration
   precision           Int?
-  numberFormat        NumberFormat?   @map("number_format")
-  currencyCode        String?         @map("currency_code")
-  customLabel         String?         @map("custom_label")
-  customLabelPosition LabelPosition?  @map("custom_label_position")
+  numberFormat        NumberFormat?  @map("number_format")
+  currencyCode        String?        @map("currency_code")
+  customLabel         String?        @map("custom_label")
+  customLabelPosition LabelPosition? @map("custom_label_position")
 
   // Behavior
-  isGlobalToOrg Boolean  @default(true) @map("is_global_to_org")
+  isGlobalToOrg Boolean @default(true) @map("is_global_to_org")
 
   // Entity type applicability — which entity types this field applies to
   entityTypes CustomFieldEntityType[] @default([]) @map("entity_types")
@@ -1569,14 +1594,14 @@ model CustomFieldEnumOption {
 }
 
 model CustomFieldSetting {
-  id             String               @id @default(uuid(7)) @db.Uuid
-  customFieldId  String               @map("custom_field_id") @db.Uuid
-  organizationId String               @map("organization_id") @db.Uuid
+  id             String                @id @default(uuid(7)) @db.Uuid
+  customFieldId  String                @map("custom_field_id") @db.Uuid
+  organizationId String                @map("organization_id") @db.Uuid
   entityType     CustomFieldEntityType @map("entity_type")
-  entityId       String               @map("entity_id") @db.Uuid
-  isImportant    Boolean              @default(false) @map("is_important")
-  isRequired     Boolean              @default(false) @map("is_required")
-  sortOrder      Int                  @default(0) @map("sort_order")
+  entityId       String                @map("entity_id") @db.Uuid
+  isImportant    Boolean               @default(false) @map("is_important")
+  isRequired     Boolean               @default(false) @map("is_required")
+  sortOrder      Int                   @default(0) @map("sort_order")
 
   createdAt DateTime @default(now()) @map("created_at")
 
@@ -1589,19 +1614,19 @@ model CustomFieldSetting {
 }
 
 model CustomFieldValue {
-  id             String               @id @default(uuid(7)) @db.Uuid
-  customFieldId  String               @map("custom_field_id") @db.Uuid
-  organizationId String               @map("organization_id") @db.Uuid
+  id             String                @id @default(uuid(7)) @db.Uuid
+  customFieldId  String                @map("custom_field_id") @db.Uuid
+  organizationId String                @map("organization_id") @db.Uuid
   entityType     CustomFieldEntityType @map("entity_type")
-  entityId       String               @map("entity_id") @db.Uuid
+  entityId       String                @map("entity_id") @db.Uuid
 
   // Type-specific value columns (only one populated per row)
-  textValue         String?    @map("text_value")
-  numberValue       Float?     @map("number_value")
-  dateValue         DateTime?  @map("date_value")
-  enumValueId       String?    @map("enum_value_id") @db.Uuid
-  multiEnumValueIds String[]   @map("multi_enum_value_ids")
-  peopleValueIds    String[]   @map("people_value_ids")
+  textValue         String?   @map("text_value")
+  numberValue       Float?    @map("number_value")
+  dateValue         DateTime? @map("date_value")
+  enumValueId       String?   @map("enum_value_id") @db.Uuid
+  multiEnumValueIds String[]  @map("multi_enum_value_ids")
+  peopleValueIds    String[]  @map("people_value_ids")
 
   // Cached display string (updated on write)
   displayValue String? @map("display_value")
