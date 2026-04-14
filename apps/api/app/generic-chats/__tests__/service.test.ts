@@ -188,16 +188,8 @@ describe("genericChatsService.findByKey", () => {
       ],
     });
 
-    const rowA = await genericChatsService.findByKey(
-      USER_A,
-      ORG_A,
-      "artifact:pln-1"
-    );
-    const rowB = await genericChatsService.findByKey(
-      USER_B,
-      ORG_B,
-      "artifact:pln-1"
-    );
+    const rowA = await genericChatsService.findByKey(USER_A, "artifact:pln-1");
+    const rowB = await genericChatsService.findByKey(USER_B, "artifact:pln-1");
 
     expect(rowA?.userId).toBe(USER_A);
     expect(rowA?.provider).toBe("claude");
@@ -206,7 +198,7 @@ describe("genericChatsService.findByKey", () => {
   });
 
   it("returns null for a chatKey that does not exist", async () => {
-    const row = await genericChatsService.findByKey(USER_A, ORG_A, "missing");
+    const row = await genericChatsService.findByKey(USER_A, "missing");
     expect(row).toBeNull();
   });
 });
@@ -361,7 +353,6 @@ describe("genericChatsService.appendMessages", () => {
   it("returns { notFound: true } for an unknown chatKey", async () => {
     const result = await genericChatsService.appendMessages(
       USER_A,
-      ORG_A,
       "missing",
       "claude",
       [{ id: "u1", role: "user", content: "x", timestamp: "t1" }]
@@ -374,7 +365,6 @@ describe("genericChatsService.appendMessages", () => {
 
     const result = await genericChatsService.appendMessages(
       USER_A,
-      ORG_A,
       CHAT_KEY,
       "codex",
       [{ id: "u2", role: "user", content: "x", timestamp: "t2" }]
@@ -389,7 +379,6 @@ describe("genericChatsService.appendMessages", () => {
 
     const result = await genericChatsService.appendMessages(
       USER_A,
-      ORG_A,
       CHAT_KEY,
       "claude",
       [{ id: "a1", role: "assistant", content: "hi back", timestamp: "t2" }]
@@ -400,18 +389,17 @@ describe("genericChatsService.appendMessages", () => {
     }
     expect(msgs(result.chat).map((m) => m.id)).toEqual(["u1", "a1"]);
 
-    const reread = await genericChatsService.findByKey(USER_A, ORG_A, CHAT_KEY);
+    const reread = await genericChatsService.findByKey(USER_A, CHAT_KEY);
     expect(reread ? msgs(reread).map((m) => m.id) : []).toEqual(["u1", "a1"]);
   });
 
   it("is a no-op (no updatedAt bump) when the appended id already exists", async () => {
     await seedClaudeChat();
-    const before = await genericChatsService.findByKey(USER_A, ORG_A, CHAT_KEY);
+    const before = await genericChatsService.findByKey(USER_A, CHAT_KEY);
     mockUpdate.mockClear();
 
     const result = await genericChatsService.appendMessages(
       USER_A,
-      ORG_A,
       CHAT_KEY,
       "claude",
       [{ id: "u1", role: "user", content: "hello", timestamp: "t1" }]
@@ -431,7 +419,6 @@ describe("genericChatsService.appendMessages", () => {
 
     const result = await genericChatsService.appendMessages(
       USER_A,
-      ORG_A,
       CHAT_KEY,
       "claude",
       [
@@ -451,16 +438,16 @@ describe("genericChatsService.appendMessages", () => {
     await seedClaudeChat();
 
     const [first, second] = await Promise.all([
-      genericChatsService.appendMessages(USER_A, ORG_A, CHAT_KEY, "claude", [
+      genericChatsService.appendMessages(USER_A, CHAT_KEY, "claude", [
         { id: "a1", role: "assistant", content: "answer", timestamp: "t2" },
       ]),
-      genericChatsService.appendMessages(USER_A, ORG_A, CHAT_KEY, "claude", [
+      genericChatsService.appendMessages(USER_A, CHAT_KEY, "claude", [
         { id: "a1", role: "assistant", content: "answer", timestamp: "t2" },
       ]),
     ]);
 
     expect("chat" in first && "chat" in second).toBe(true);
-    const final = await genericChatsService.findByKey(USER_A, ORG_A, CHAT_KEY);
+    const final = await genericChatsService.findByKey(USER_A, CHAT_KEY);
     const ids = final ? msgs(final).map((m) => m.id) : [];
     expect(ids).toEqual(["u1", "a1"]);
     expect(ids.filter((id: string) => id === "a1")).toHaveLength(1);
@@ -471,7 +458,6 @@ describe("genericChatsService.appendMessages", () => {
 
     const result = await genericChatsService.appendMessages(
       USER_A,
-      ORG_A,
       CHAT_KEY,
       "claude",
       [{ id: "a1", role: "assistant", content: "answer", timestamp: "t2" }],
@@ -501,23 +487,15 @@ describe("genericChatsService.deleteChat", () => {
       model: "claude-sonnet-4-5",
     });
 
-    const deleted = await genericChatsService.deleteChat(
-      USER_A,
-      ORG_A,
-      CHAT_KEY
-    );
+    const deleted = await genericChatsService.deleteChat(USER_A, CHAT_KEY);
     expect(deleted).toBe(true);
 
-    const reread = await genericChatsService.findByKey(USER_A, ORG_A, CHAT_KEY);
+    const reread = await genericChatsService.findByKey(USER_A, CHAT_KEY);
     expect(reread).toBeNull();
   });
 
   it("returns false (idempotent) when no row exists", async () => {
-    const deleted = await genericChatsService.deleteChat(
-      USER_A,
-      ORG_A,
-      "nonexistent"
-    );
+    const deleted = await genericChatsService.deleteChat(USER_A, "nonexistent");
     expect(deleted).toBe(false);
   });
 });
@@ -620,7 +598,7 @@ describe("genericChatsService.upsertTurn", () => {
 
   it("is a no-op when the userMessage id already exists", async () => {
     await seedClaudeChat();
-    const before = await genericChatsService.findByKey(USER_A, ORG_A, CHAT_KEY);
+    const before = await genericChatsService.findByKey(USER_A, CHAT_KEY);
     mockUpdate.mockClear();
 
     const result = await genericChatsService.upsertTurn(USER_A, ORG_A, {
@@ -751,7 +729,7 @@ describe("genericChatsService.upsertTurn", () => {
     expect(updateCall.data.sessionId).toBeUndefined();
     expect(updateCall.data.sessionSourceId).toBeUndefined();
 
-    const reread = await genericChatsService.findByKey(USER_A, ORG_A, CHAT_KEY);
+    const reread = await genericChatsService.findByKey(USER_A, CHAT_KEY);
     expect(reread?.sessionId).toBe("sess-old");
     expect(reread?.sessionSourceId).toBe(GATEWAY_B);
   });
@@ -799,17 +777,13 @@ describe("genericChatsService.appendAssistantTurn", () => {
   it("appends the assistant message and writes both session fields atomically", async () => {
     await seedClaudeChat();
 
-    const result = await genericChatsService.appendAssistantTurn(
-      USER_A,
-      ORG_A,
-      {
-        chatKey: CHAT_KEY,
-        provider: "claude",
-        messages: [a1],
-        sessionId: "sess-xyz",
-        sessionSourceId: GATEWAY_A,
-      }
-    );
+    const result = await genericChatsService.appendAssistantTurn(USER_A, {
+      chatKey: CHAT_KEY,
+      provider: "claude",
+      messages: [a1],
+      sessionId: "sess-xyz",
+      sessionSourceId: GATEWAY_A,
+    });
 
     expect("notFound" in result && result.notFound === true).toBe(false);
     if ("chat" in result) {
@@ -822,17 +796,13 @@ describe("genericChatsService.appendAssistantTurn", () => {
   });
 
   it("returns { notFound: true } when the row does not exist", async () => {
-    const result = await genericChatsService.appendAssistantTurn(
-      USER_A,
-      ORG_A,
-      {
-        chatKey: "missing",
-        provider: "claude",
-        messages: [a1],
-        sessionId: null,
-        sessionSourceId: null,
-      }
-    );
+    const result = await genericChatsService.appendAssistantTurn(USER_A, {
+      chatKey: "missing",
+      provider: "claude",
+      messages: [a1],
+      sessionId: null,
+      sessionSourceId: null,
+    });
     expect(result).toEqual({ notFound: true });
   });
 
@@ -840,17 +810,13 @@ describe("genericChatsService.appendAssistantTurn", () => {
     await seedClaudeChat();
     mockUpdate.mockClear();
 
-    const result = await genericChatsService.appendAssistantTurn(
-      USER_A,
-      ORG_A,
-      {
-        chatKey: CHAT_KEY,
-        provider: "codex",
-        messages: [a1],
-        sessionId: null,
-        sessionSourceId: null,
-      }
-    );
+    const result = await genericChatsService.appendAssistantTurn(USER_A, {
+      chatKey: CHAT_KEY,
+      provider: "codex",
+      messages: [a1],
+      sessionId: null,
+      sessionSourceId: null,
+    });
 
     expect(result).toEqual({ conflict: true, boundProvider: "claude" });
     expect(mockUpdate).not.toHaveBeenCalled();
@@ -859,27 +825,23 @@ describe("genericChatsService.appendAssistantTurn", () => {
   it("is id-idempotent on duplicate assistant message ids", async () => {
     await seedClaudeChat();
 
-    const first = await genericChatsService.appendAssistantTurn(USER_A, ORG_A, {
+    const first = await genericChatsService.appendAssistantTurn(USER_A, {
       chatKey: CHAT_KEY,
       provider: "claude",
       messages: [a1],
       sessionId: "sess-xyz",
       sessionSourceId: GATEWAY_A,
     });
-    const second = await genericChatsService.appendAssistantTurn(
-      USER_A,
-      ORG_A,
-      {
-        chatKey: CHAT_KEY,
-        provider: "claude",
-        messages: [a1],
-        sessionId: "sess-xyz",
-        sessionSourceId: GATEWAY_A,
-      }
-    );
+    const second = await genericChatsService.appendAssistantTurn(USER_A, {
+      chatKey: CHAT_KEY,
+      provider: "claude",
+      messages: [a1],
+      sessionId: "sess-xyz",
+      sessionSourceId: GATEWAY_A,
+    });
 
     expect("chat" in first && "chat" in second).toBe(true);
-    const reread = await genericChatsService.findByKey(USER_A, ORG_A, CHAT_KEY);
+    const reread = await genericChatsService.findByKey(USER_A, CHAT_KEY);
     const ids = reread ? msgs(reread).map((m) => m.id) : [];
     expect(ids).toEqual(["u1", "a1"]);
     expect(ids.filter((id: string) => id === "a1")).toHaveLength(1);

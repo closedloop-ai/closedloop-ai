@@ -60,10 +60,13 @@ export type AppendAssistantTurnResult =
   | { notFound: false; conflict: false; chat: GenericChat };
 
 /**
- * Service for `generic_chats` DB operations. All operations are scoped by
- * (userId, organizationId) — cross-user access is impossible at the query
- * level. `create` and `appendMessages` run inside `withDb.tx` so the
- * read-then-write merge is atomic against concurrent writers.
+ * Service for `generic_chats` DB operations. All read/update operations are
+ * scoped by (userId, chatKey) so cross-user access is impossible at the
+ * query level. `organizationId` is accepted only by methods that create new
+ * rows (`create`, `upsertTurn`) because those are the only operations that
+ * need to stamp it on new records; read/append/delete paths derive isolation
+ * purely from `userId`. `create` and `appendMessages` run inside `withDb.tx`
+ * so the read-then-write merge is atomic against concurrent writers.
  */
 export const genericChatsService = {
   /**
@@ -71,11 +74,7 @@ export const genericChatsService = {
    * exist or belongs to a different user. Plain `withDb` is sufficient —
    * no read-after-write coordination is required.
    */
-  findByKey(
-    userId: string,
-    _organizationId: string,
-    chatKey: string
-  ): Promise<GenericChat | null> {
+  findByKey(userId: string, chatKey: string): Promise<GenericChat | null> {
     return withDb((db) =>
       db.genericChat.findUnique({
         where: { userId_chatKey: { userId, chatKey } },
@@ -164,7 +163,6 @@ export const genericChatsService = {
    */
   appendMessages(
     userId: string,
-    _organizationId: string,
     chatKey: string,
     provider: string,
     messagesToAppend: ChatMessage[],
@@ -213,11 +211,7 @@ export const genericChatsService = {
    * deleted, `false` when no row existed. `deleteMany` scoped to
    * (userId, chatKey) guarantees cross-user rows cannot be deleted.
    */
-  async deleteChat(
-    userId: string,
-    _organizationId: string,
-    chatKey: string
-  ): Promise<boolean> {
+  async deleteChat(userId: string, chatKey: string): Promise<boolean> {
     const result = await withDb((db) =>
       db.genericChat.deleteMany({
         where: { userId, chatKey },
@@ -308,7 +302,6 @@ export const genericChatsService = {
    */
   appendAssistantTurn(
     userId: string,
-    _organizationId: string,
     input: CompleteTurnInput
   ): Promise<AppendAssistantTurnResult> {
     return withDb.tx(async (tx) => {
@@ -329,6 +322,17 @@ export const genericChatsService = {
 
       const existingMessages = existing.messages as unknown as ChatMessage[];
       const toAppend = filterNewMessages(input.messages, existingMessages);
+      // Fully idempotent: if the gateway retries a completion write with
+      // the same messages and the same session pair, short-circuit before
+      // touching the DB. Mirrors the guard in `appendMessages`.
+      const sessionUnchanged =
+        input.sessionId === existing.sessionId &&
+        input.sessionSourceId === existing.sessionSourceId;
+
+      if (toAppend.length === 0 && sessionUnchanged) {
+        return { notFound: false, conflict: false, chat: existing } as const;
+      }
+
       const mergedMessages = [...existingMessages, ...toAppend];
 
       const updated = await tx.genericChat.update({

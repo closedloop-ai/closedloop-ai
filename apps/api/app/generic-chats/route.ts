@@ -25,11 +25,7 @@ export const GET = withAnyAuth<ChatResponse, "/generic-chats">(
         return badRequestResponse("chatKey query parameter is required");
       }
 
-      const chat = await genericChatsService.findByKey(
-        user.id,
-        user.organizationId,
-        chatKey
-      );
+      const chat = await genericChatsService.findByKey(user.id, chatKey);
 
       if (!chat || chat.userId !== user.id) {
         return successResponse<ChatResponse>({ chat: null });
@@ -84,7 +80,6 @@ export const PATCH = withAnyAuth<ChatResponse, "/generic-chats">(
 
       const result = await genericChatsService.appendMessages(
         user.id,
-        user.organizationId,
         body.chatKey,
         body.provider,
         body.messages,
@@ -116,11 +111,7 @@ export const DELETE = withAnyAuth<DeleteResponse, "/generic-chats">(
         return badRequestResponse("chatKey query parameter is required");
       }
 
-      const deleted = await genericChatsService.deleteChat(
-        user.id,
-        user.organizationId,
-        chatKey
-      );
+      const deleted = await genericChatsService.deleteChat(user.id, chatKey);
 
       return successResponse<DeleteResponse>({ deleted });
     } catch (error) {

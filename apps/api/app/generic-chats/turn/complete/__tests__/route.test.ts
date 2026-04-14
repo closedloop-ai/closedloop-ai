@@ -136,7 +136,6 @@ describe("POST /generic-chats/turn/complete", () => {
     expect(json.data.chat?.sessionId).toBe("sess-xyz");
     expect(genericChatsService.appendAssistantTurn).toHaveBeenCalledWith(
       USER_ID,
-      ORG_ID,
       validBody({
         sessionId: "sess-xyz",
         sessionSourceId: "gateway-abc",

@@ -34,7 +34,6 @@ export async function POST(request: NextRequest): Promise<Response> {
 
     const result = await genericChatsService.appendAssistantTurn(
       claims.userId,
-      claims.organizationId,
       body
     );
 

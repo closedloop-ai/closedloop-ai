@@ -95,20 +95,27 @@ export function BranchViewContainer({
   const chatFlag = useFeatureFlag("interactive-chat");
   const chatFlagEnabled = chatFlag?.enabled === true;
   const branchPrFlag = useFeatureFlag("branch-pr");
+  // Distinguish "flag is still loading" (undefined) from "flag resolved to
+  // disabled" (?.enabled !== true). Treating the loading state as disabled
+  // fires the redirect useEffect below and ships users to GitHub on every
+  // fresh page load, which is wrong. Only redirect once PostHog has actually
+  // reported the flag value.
+  const branchPrLoading = branchPrFlag === undefined;
   const branchPrEnabled = branchPrFlag?.enabled === true;
 
   // When the branch-pr flag is off, redirect to the PR's GitHub URL as soon
   // as we know it. Keeps any existing /build/[id] links (shared links,
-  // bookmarks, older plan-page renders) pointing at the right place.
+  // bookmarks, older plan-page renders) pointing at the right place. Skip
+  // the redirect while the flag is still loading.
   useEffect(() => {
-    if (branchPrEnabled) {
+    if (branchPrLoading || branchPrEnabled) {
       return;
     }
     if (!data?.prHtmlUrl) {
       return;
     }
     globalThis.location.replace(data.prHtmlUrl);
-  }, [branchPrEnabled, data?.prHtmlUrl]);
+  }, [branchPrLoading, branchPrEnabled, data?.prHtmlUrl]);
   const [showChatPanel, setShowChatPanel] = useLocalStorageState(
     "panel:chat:branch",
     true
@@ -163,6 +170,14 @@ export function BranchViewContainer({
         <p className="text-muted-foreground text-sm">
           {error?.message ?? "Branch view not found"}
         </p>
+      </div>
+    );
+  }
+
+  if (branchPrLoading) {
+    return (
+      <div className="flex min-h-full items-center justify-center bg-background">
+        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
       </div>
     );
   }

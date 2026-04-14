@@ -6,7 +6,7 @@ export const ISSUER = "closedloop-api";
 export const SECRET_ENV = "CLOSEDLOOP_RUNNER_JWT_SECRET";
 export const MIN_SECRET_LENGTH = 32;
 const MIN_UNIQUE_SECRET_CHARS = 8;
-const DEFAULT_TTL_SECONDS = 4 * 60 * 60;
+export const DEFAULT_TTL_SECONDS = 4 * 60 * 60;
 
 function getSecret(): Uint8Array {
   const secret = process.env[SECRET_ENV];

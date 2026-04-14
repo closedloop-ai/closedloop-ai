@@ -42,9 +42,20 @@ function useResizableWidth(): {
 } {
   const [width, setWidth] = useState(DEFAULT_WIDTH);
   const dragRef = useRef<{ startX: number; startWidth: number } | null>(null);
+  // Holds the active drag's teardown function so the component can clean up
+  // document listeners and body styles if it unmounts mid-drag. Without this,
+  // an in-progress drag would leak `mousemove`/`mouseup` handlers and leave
+  // `document.body.style.cursor = "col-resize"` stuck until the next drag.
+  const cleanupRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     setWidth(getStoredWidth());
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      cleanupRef.current?.();
+    };
   }, []);
 
   const handleResizeStart = useCallback(
@@ -65,18 +76,24 @@ function useResizableWidth(): {
         setStoredWidth(newWidth);
       };
 
-      const onMouseUp = () => {
+      const teardown = () => {
         dragRef.current = null;
         document.removeEventListener("mousemove", onMouseMove);
         document.removeEventListener("mouseup", onMouseUp);
         document.body.style.cursor = "";
         document.body.style.userSelect = "";
+        cleanupRef.current = null;
+      };
+
+      const onMouseUp = () => {
+        teardown();
       };
 
       document.addEventListener("mousemove", onMouseMove);
       document.addEventListener("mouseup", onMouseUp);
       document.body.style.cursor = "col-resize";
       document.body.style.userSelect = "none";
+      cleanupRef.current = teardown;
     },
     [width]
   );

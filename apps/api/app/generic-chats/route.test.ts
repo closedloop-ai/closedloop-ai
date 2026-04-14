@@ -109,7 +109,6 @@ describe("GET /generic-chats", () => {
     expect(json.data.chat).toBeNull();
     expect(genericChatsService.findByKey).toHaveBeenCalledWith(
       USER_ID,
-      ORG_ID,
       CHAT_KEY
     );
   });
@@ -348,7 +347,6 @@ describe("PATCH /generic-chats", () => {
     expect(json.data.chat?.messages).toHaveLength(2);
     expect(genericChatsService.appendMessages).toHaveBeenCalledWith(
       USER_ID,
-      ORG_ID,
       CHAT_KEY,
       "claude",
       [SAMPLE_ASSISTANT_MESSAGE],
@@ -448,7 +446,6 @@ describe("DELETE /generic-chats", () => {
     expect(json.data.deleted).toBe(true);
     expect(genericChatsService.deleteChat).toHaveBeenCalledWith(
       USER_ID,
-      ORG_ID,
       CHAT_KEY
     );
   });

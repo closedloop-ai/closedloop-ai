@@ -1,14 +1,15 @@
 import type { ApiResult } from "@repo/api/src/types/common";
 import type { User } from "@repo/api/src/types/user";
-import { issueChatRunnerToken } from "@repo/auth/chat-runner-jwt";
+import {
+  DEFAULT_TTL_SECONDS,
+  issueChatRunnerToken,
+} from "@repo/auth/chat-runner-jwt";
 import { auth } from "@repo/auth/server";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
 import { type NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { resolveApiOrigin } from "@/lib/api-origin";
-
-const TOKEN_TTL_SECONDS = 4 * 60 * 60;
 
 const bodyValidator = z.object({
   chatKey: z.string().min(1, "chatKey is required"),
@@ -85,7 +86,7 @@ export async function POST(request: NextRequest): Promise<Response> {
   }
 
   const expiresAt = new Date(
-    Date.now() + TOKEN_TTL_SECONDS * 1000
+    Date.now() + DEFAULT_TTL_SECONDS * 1000
   ).toISOString();
 
   const payload: MintResponse = { token, apiBaseUrl, expiresAt };
