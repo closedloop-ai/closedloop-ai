@@ -12,9 +12,9 @@ import type {
   ArtifactRowItem,
   RowEditHandlers,
 } from "@/components/artifact-table/artifact-row";
-import { ColumnVisibilityPanel } from "@/components/artifact-table/column-visibility-panel";
 import { DeleteRowActions } from "@/components/artifact-table/delete-row-actions";
 import { FlatArtifactTable } from "@/components/artifact-table/flat-artifact-table";
+import { TableViewMenu } from "@/components/artifact-table/table-view-menu";
 import {
   useDeleteFeature,
   useFeaturesByTeam,
@@ -116,7 +116,7 @@ export default function TeamFeaturesPage() {
       <main className="flex flex-1 flex-col overflow-hidden">
         <div className="flex min-w-fit items-center justify-between border-b px-4 pt-4 pb-2">
           <h1 className="font-semibold text-xl">Features</h1>
-          <ColumnVisibilityPanel
+          <TableViewMenu
             columns={FEATURE_DEFAULT_COLUMNS}
             onToggle={toggleColumn}
             visibility={visibility}

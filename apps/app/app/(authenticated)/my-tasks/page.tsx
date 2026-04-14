@@ -29,9 +29,9 @@ import type {
   ArtifactRowItem,
   RowEditHandlers,
 } from "@/components/artifact-table/artifact-row";
-import { ColumnVisibilityPanel } from "@/components/artifact-table/column-visibility-panel";
 import { DeleteRowActions } from "@/components/artifact-table/delete-row-actions";
 import { FlatArtifactTable } from "@/components/artifact-table/flat-artifact-table";
+import { TableViewMenu } from "@/components/artifact-table/table-view-menu";
 import {
   featurePriorityLabels,
   featureStatusLabels,
@@ -190,7 +190,7 @@ export default function MyTasksPage() {
           <h1 className="font-semibold text-xl">My Tasks</h1>
           <div className="flex items-center gap-2">
             {isListView && (
-              <ColumnVisibilityPanel
+              <TableViewMenu
                 columns={MY_TASKS_DEFAULT_COLUMNS}
                 onToggle={toggleColumn}
                 visibility={visibility}
