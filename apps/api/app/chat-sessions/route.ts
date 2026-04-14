@@ -49,7 +49,7 @@ export const POST = withAnyAuth<ChatResponse, "/chat-sessions">(
         return parseError;
       }
 
-      const chat = await chatSessionsService.create({
+      const result = await chatSessionsService.create({
         userId: user.id,
         organizationId: user.organizationId,
         chatKey: body.chatKey,
@@ -59,7 +59,13 @@ export const POST = withAnyAuth<ChatResponse, "/chat-sessions">(
         messages: body.messages,
       });
 
-      return successResponse<ChatResponse>({ chat });
+      if ("conflict" in result) {
+        return conflictResponse(
+          `Chat is bound to provider ${result.boundProvider}; start a new chat to change providers`
+        );
+      }
+
+      return successResponse<ChatResponse>({ chat: result.chat });
     } catch (error) {
       return errorResponse("Failed to create chat session", error);
     }

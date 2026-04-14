@@ -264,6 +264,7 @@ function RoleBarActions({
           className="cursor-pointer rounded p-0.5 text-muted-foreground/50 opacity-0 transition-all hover:text-destructive group-hover:opacity-100"
           onClick={onDelete}
           title="Delete message"
+          type="button"
         >
           <Trash2 className="size-3" />
         </button>
@@ -273,6 +274,7 @@ function RoleBarActions({
           className="cursor-pointer rounded p-0.5 text-muted-foreground/50 opacity-0 transition-all hover:scale-125 hover:text-foreground active:scale-95 group-hover:opacity-100"
           onClick={onCopy}
           title="Copy message"
+          type="button"
         >
           <Copy className="size-3 transition-transform hover:-rotate-6" />
         </button>
@@ -282,6 +284,7 @@ function RoleBarActions({
           className="cursor-pointer rounded p-0.5 text-muted-foreground/50 opacity-0 transition-all hover:scale-125 hover:text-primary active:scale-95 group-hover:opacity-100"
           onClick={onForward}
           title={forwardLabel ?? "Forward message"}
+          type="button"
         >
           <Forward
             className={cn(

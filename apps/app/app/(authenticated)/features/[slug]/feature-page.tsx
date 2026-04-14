@@ -1,6 +1,6 @@
 "use client";
 
-import { useFeatureFlag } from "@repo/analytics/client";
+import { FeatureFlagged } from "@repo/analytics/components/feature-flagged";
 import { EntityType } from "@repo/api/src/types/entity-link";
 import type { FeatureWithWorkstream } from "@repo/api/src/types/feature";
 import { toast } from "@repo/design-system/components/ui/sonner";
@@ -42,8 +42,6 @@ export function FeaturePage({ feature }: Readonly<FeaturePageProps>) {
     "panel:chat:FEATURE",
     true
   );
-  const chatFlag = useFeatureFlag("interactive-chat");
-  const chatFlagEnabled = chatFlag?.enabled === true;
   const [displayTitle, setDisplayTitle] = useState(feature.title);
 
   const { hasPlan, isReady, linkedPlanId } = useFeatureState(feature);
@@ -149,7 +147,7 @@ export function FeaturePage({ feature }: Readonly<FeaturePageProps>) {
             />
           )}
           {/* Right Sidebar: interactive chat */}
-          {chatFlagEnabled && (
+          <FeatureFlagged flag="interactive-chat">
             <div className="flex w-[360px] flex-none flex-col border-l">
               <ArtifactChatDrawer
                 artifactId={feature.id}
@@ -158,7 +156,7 @@ export function FeaturePage({ feature }: Readonly<FeaturePageProps>) {
                 artifactType="feature"
               />
             </div>
-          )}
+          </FeatureFlagged>
         </div>
       </main>
 

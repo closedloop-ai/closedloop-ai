@@ -152,7 +152,7 @@ export function useChatSession(
     }
 
     const userMessage: ChatMessage = {
-      id: `user-${Date.now()}`,
+      id: `user-${crypto.randomUUID()}`,
       role: "user",
       content: draft,
       timestamp: new Date().toISOString(),

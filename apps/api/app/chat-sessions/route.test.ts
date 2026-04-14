@@ -154,9 +154,9 @@ describe("POST /chat-sessions — reconciliation", () => {
     const reconciledRow = buildChatRow({
       messages: [SAMPLE_USER_MESSAGE, SAMPLE_ASSISTANT_MESSAGE],
     });
-    vi.mocked(chatSessionsService.create).mockResolvedValue(
-      reconciledRow as any
-    );
+    vi.mocked(chatSessionsService.create).mockResolvedValue({
+      chat: reconciledRow,
+    } as any);
 
     const response = await POST(
       createMockRequest({
@@ -223,9 +223,9 @@ describe("POST /chat-sessions", () => {
   });
 
   it("creates a chat and returns the row", async () => {
-    vi.mocked(chatSessionsService.create).mockResolvedValue(
-      buildChatRow() as any
-    );
+    vi.mocked(chatSessionsService.create).mockResolvedValue({
+      chat: buildChatRow(),
+    } as any);
 
     const response = await POST(
       createMockRequest({
@@ -254,6 +254,31 @@ describe("POST /chat-sessions", () => {
       context: "doc-context",
       messages: [SAMPLE_USER_MESSAGE],
     });
+  });
+
+  it("returns 409 when service reports a provider conflict", async () => {
+    vi.mocked(chatSessionsService.create).mockResolvedValue({
+      conflict: true,
+      boundProvider: "codex",
+    } as any);
+
+    const response = await POST(
+      createMockRequest({
+        url: "http://localhost:3002/chat-sessions",
+        method: "POST",
+        body: {
+          chatKey: CHAT_KEY,
+          provider: "claude",
+          model: "claude-sonnet-4-5",
+          messages: [SAMPLE_USER_MESSAGE],
+        },
+      }),
+      {} as any
+    );
+
+    expect(response.status).toBe(409);
+    const json = await response.json();
+    expect(JSON.stringify(json)).toContain("codex");
   });
 });
 

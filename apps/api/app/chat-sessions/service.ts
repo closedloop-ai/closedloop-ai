@@ -24,6 +24,10 @@ export type CreateChatSessionInput = {
   messages?: ChatMessage[];
 };
 
+export type CreateChatSessionResult =
+  | { chat: ChatSession }
+  | { conflict: true; boundProvider: string };
+
 export type AppendMessagesResult =
   | { chat: ChatSession }
   | { notFound: true }
@@ -86,11 +90,13 @@ export const chatSessionsService = {
    * Create a new chat, or reconcile messages into an existing row when
    * (userId, chatKey) already exists. Reconciliation is id-based: only
    * messages whose id is not already stored are appended; existing order
-   * is preserved and new ids go at the end. Returns the (possibly
-   * reconciled) row. Runs inside a transaction so concurrent creates
-   * cannot produce duplicate message ids.
+   * is preserved and new ids go at the end. Returns `{ chat }` on success
+   * or `{ conflict, boundProvider }` when the existing row was created
+   * with a different provider (provider is immutable per chat). Runs
+   * inside a transaction so concurrent creates cannot produce duplicate
+   * message ids.
    */
-  create(data: CreateChatSessionInput): Promise<ChatSession> {
+  create(data: CreateChatSessionInput): Promise<CreateChatSessionResult> {
     const {
       userId,
       organizationId,
@@ -125,7 +131,14 @@ export const chatSessionsService = {
           chatKey,
           provider,
         });
-        return created;
+        return { chat: created } as const;
+      }
+
+      if (existing.provider !== provider) {
+        return {
+          conflict: true,
+          boundProvider: existing.provider,
+        } as const;
       }
 
       const toAppend = filterNewMessages(
@@ -134,7 +147,7 @@ export const chatSessionsService = {
       );
 
       if (toAppend.length === 0) {
-        return existing;
+        return { chat: existing } as const;
       }
 
       const mergedMessages = [
@@ -148,7 +161,7 @@ export const chatSessionsService = {
           messages: mergedMessages as unknown as ChatMessage[] as never,
         },
       });
-      return updated;
+      return { chat: updated } as const;
     });
   },
 

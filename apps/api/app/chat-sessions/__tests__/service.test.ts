@@ -11,8 +11,30 @@ vi.mock("@repo/database", () => ({
   withDb: vi.fn(),
 }));
 
+import type { ChatSession } from "@repo/database";
 import { withDb } from "@repo/database";
-import { type ChatMessage, chatSessionsService } from "../service";
+import {
+  type ChatMessage,
+  type CreateChatSessionInput,
+  chatSessionsService,
+} from "../service";
+
+/**
+ * Unwraps `chatSessionsService.create()` for tests that assume the happy
+ * path. Throws if the service reports a provider conflict, letting tests
+ * keep their existing assertions on `.id`, `.updatedAt`, etc. Tests that
+ * intentionally exercise the conflict branch call `chatSessionsService.create`
+ * directly.
+ */
+async function createChat(input: CreateChatSessionInput): Promise<ChatSession> {
+  const result = await chatSessionsService.create(input);
+  if ("conflict" in result) {
+    throw new Error(
+      `unexpected conflict in createChat helper: boundProvider=${result.boundProvider}`
+    );
+  }
+  return result.chat;
+}
 
 type Row = {
   id: string;
@@ -167,7 +189,7 @@ afterEach(() => {
 
 describe("chatSessionsService.findByKey", () => {
   it("returns each user's own row when two users share a chatKey", async () => {
-    await chatSessionsService.create({
+    await createChat({
       userId: USER_A,
       organizationId: ORG_A,
       chatKey: "artifact:pln-1",
@@ -177,7 +199,7 @@ describe("chatSessionsService.findByKey", () => {
         { id: "m-a", role: "user", content: "hi from A", timestamp: "t1" },
       ],
     });
-    await chatSessionsService.create({
+    await createChat({
       userId: USER_B,
       organizationId: ORG_B,
       chatKey: "artifact:pln-1",
@@ -211,7 +233,7 @@ describe("chatSessionsService.create", () => {
   const CHAT_KEY = "artifact:pln-1";
 
   it("stores the initial user message on first create", async () => {
-    const row = await chatSessionsService.create({
+    const row = await createChat({
       userId: USER_A,
       organizationId: ORG_A,
       chatKey: CHAT_KEY,
@@ -227,7 +249,7 @@ describe("chatSessionsService.create", () => {
   });
 
   it("returns the existing row unchanged when called twice with identical messages", async () => {
-    const first = await chatSessionsService.create({
+    const first = await createChat({
       userId: USER_A,
       organizationId: ORG_A,
       chatKey: CHAT_KEY,
@@ -236,7 +258,7 @@ describe("chatSessionsService.create", () => {
       messages: [{ id: "u1", role: "user", content: "hello", timestamp: "t1" }],
     });
 
-    const second = await chatSessionsService.create({
+    const second = await createChat({
       userId: USER_A,
       organizationId: ORG_A,
       chatKey: CHAT_KEY,
@@ -252,7 +274,7 @@ describe("chatSessionsService.create", () => {
   });
 
   it("reconciles by id when called again with a stale-read message list", async () => {
-    await chatSessionsService.create({
+    await createChat({
       userId: USER_A,
       organizationId: ORG_A,
       chatKey: CHAT_KEY,
@@ -261,7 +283,7 @@ describe("chatSessionsService.create", () => {
       messages: [{ id: "u1", role: "user", content: "msg A", timestamp: "t1" }],
     });
 
-    const second = await chatSessionsService.create({
+    const second = await createChat({
       userId: USER_A,
       organizationId: ORG_A,
       chatKey: CHAT_KEY,
@@ -278,7 +300,7 @@ describe("chatSessionsService.create", () => {
   });
 
   it("appends only the new message ids when the existing row has a subset", async () => {
-    await chatSessionsService.create({
+    await createChat({
       userId: USER_A,
       organizationId: ORG_A,
       chatKey: CHAT_KEY,
@@ -287,7 +309,7 @@ describe("chatSessionsService.create", () => {
       messages: [{ id: "u1", role: "user", content: "first", timestamp: "t1" }],
     });
 
-    const second = await chatSessionsService.create({
+    const second = await createChat({
       userId: USER_A,
       organizationId: ORG_A,
       chatKey: CHAT_KEY,
@@ -303,7 +325,7 @@ describe("chatSessionsService.create", () => {
   });
 
   it("returns the existing row unchanged when caller supplies only already-present ids", async () => {
-    const first = await chatSessionsService.create({
+    const first = await createChat({
       userId: USER_A,
       organizationId: ORG_A,
       chatKey: CHAT_KEY,
@@ -317,7 +339,7 @@ describe("chatSessionsService.create", () => {
 
     mockUpdate.mockClear();
 
-    const second = await chatSessionsService.create({
+    const second = await createChat({
       userId: USER_A,
       organizationId: ORG_A,
       chatKey: CHAT_KEY,
@@ -330,6 +352,38 @@ describe("chatSessionsService.create", () => {
     expect(second.updatedAt).toEqual(first.updatedAt);
     expect(mockUpdate).not.toHaveBeenCalled();
   });
+
+  it("returns { conflict, boundProvider } when an existing chat was bound to a different provider", async () => {
+    await createChat({
+      userId: USER_A,
+      organizationId: ORG_A,
+      chatKey: CHAT_KEY,
+      provider: "claude",
+      model: "claude-sonnet-4-5",
+      messages: [{ id: "u1", role: "user", content: "hi", timestamp: "t1" }],
+    });
+
+    mockUpdate.mockClear();
+
+    const result = await chatSessionsService.create({
+      userId: USER_A,
+      organizationId: ORG_A,
+      chatKey: CHAT_KEY,
+      provider: "codex",
+      model: "gpt-5.3-codex",
+      messages: [
+        { id: "u2", role: "user", content: "new provider", timestamp: "t2" },
+      ],
+    });
+
+    expect(result).toEqual({ conflict: true, boundProvider: "claude" });
+    expect(mockUpdate).not.toHaveBeenCalled();
+    const unchanged = await chatSessionsService.findByKey(USER_A, CHAT_KEY);
+    expect(unchanged?.provider).toBe("claude");
+    expect(msgs(unchanged as { messages: unknown }).map((m) => m.id)).toEqual([
+      "u1",
+    ]);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -340,7 +394,7 @@ describe("chatSessionsService.appendMessages", () => {
   const CHAT_KEY = "artifact:pln-1";
 
   async function seedClaudeChat(): Promise<void> {
-    await chatSessionsService.create({
+    await createChat({
       userId: USER_A,
       organizationId: ORG_A,
       chatKey: CHAT_KEY,
@@ -479,7 +533,7 @@ describe("chatSessionsService.deleteChat", () => {
   const CHAT_KEY = "artifact:pln-1";
 
   it("returns true when a row is deleted", async () => {
-    await chatSessionsService.create({
+    await createChat({
       userId: USER_A,
       organizationId: ORG_A,
       chatKey: CHAT_KEY,

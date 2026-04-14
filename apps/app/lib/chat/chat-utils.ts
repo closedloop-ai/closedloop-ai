@@ -236,7 +236,7 @@ function dispatchStreamEvent(
     handlers.onUsage
   ) {
     handlers.onUsage(event.contextPercent);
-  } else if (event.type === "error" && (event.error || event.message)) {
+  } else if (event.type === "error") {
     handlers.onError(toStreamErrorEvent(event));
   } else if (event.type === "result" || event.type === "done") {
     handlers.onComplete();

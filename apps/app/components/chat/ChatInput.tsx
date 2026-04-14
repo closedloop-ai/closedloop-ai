@@ -48,7 +48,7 @@ export function ChatInput({
       el.style.height = "40px";
       el.style.height = `${el.scrollHeight}px`;
     }
-  }, []);
+  }, [value]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // Let parent handle keyboard events first
