@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
+import { log } from "@repo/observability/log";
 import type { NextRequest } from "next/server";
 import { withMcpTools } from "@/lib/engineer/allowed-tools";
 import { extractClaudeText } from "@/lib/engineer/claude-stream-utils";
@@ -121,7 +122,7 @@ export async function POST(
 
   const worktreeDir = getWorktreeDir(repoPath, ticketId);
 
-  console.log(
+  log.info(
     `[review-extract] Starting extraction for ${ticketId}, provider=${provider}, session ${sessionId}`
   );
 
@@ -132,7 +133,7 @@ export async function POST(
       provider === "codex"
         ? await runCodexExtraction(worktreeDir, sessionId)
         : await runClaudeExtraction(worktreeDir, sessionId);
-    console.log(`[review-extract] Collected ${collected.length} chars of text`);
+    log.info(`[review-extract] Collected ${collected.length} chars of text`);
 
     // Persist the raw model response so we can diagnose model incompleteness
     // (missing fields, dropped findings, etc.) without re-running the review.
@@ -141,11 +142,11 @@ export async function POST(
         join(workDir, `review-extract-raw-${provider}.txt`),
         collected
       );
-      console.log(
+      log.info(
         `[review-extract] Wrote raw response to review-extract-raw-${provider}.txt (${collected.length} chars)`
       );
     } catch (err) {
-      console.warn(
+      log.warn(
         "[review-extract] Failed to persist raw response:",
         err instanceof Error ? err.message : String(err)
       );
@@ -153,14 +154,14 @@ export async function POST(
 
     const findings = parseStructuredFindings(collected);
     const humanizedCount = findings.filter((f) => f.humanizedBody).length;
-    console.log(
+    log.info(
       `[review-extract] Parsed ${findings.length} findings (with humanizedBody: ${humanizedCount})`
     );
 
     return Response.json({ findings });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.error("[review-extract] Extraction failed:", msg);
+    log.error("[review-extract] Extraction failed:", msg);
     return Response.json({ findings: [], error: msg });
   }
 }
@@ -212,7 +213,7 @@ function runCodexExtraction(
     });
 
     child.stderr?.on("data", (data: Buffer) => {
-      console.log(
+      log.info(
         `[review-extract] codex stderr: ${data.toString().trim().slice(0, 300)}`
       );
     });
@@ -235,7 +236,7 @@ function runCodexExtraction(
           collected += buffer.trim();
         }
       }
-      console.log(`[review-extract] Codex exited with code ${code}`);
+      log.info(`[review-extract] Codex exited with code ${code}`);
       if (code === 0) {
         resolve(collected);
       } else {
@@ -305,7 +306,7 @@ async function runClaudeExtraction(
     });
 
     child.stderr?.on("data", (data: Buffer) => {
-      console.log(
+      log.info(
         `[review-extract] stderr: ${data.toString().trim().slice(0, 300)}`
       );
     });
@@ -323,7 +324,7 @@ async function runClaudeExtraction(
           // ignore
         }
       }
-      console.log(`[review-extract] Claude exited with code ${code}`);
+      log.info(`[review-extract] Claude exited with code ${code}`);
       if (code === 0) {
         resolve(collected);
       } else {
@@ -349,13 +350,13 @@ function parseStructuredFindings(text: string): ReviewFinding[] {
     // Try to find any JSON array in the text
     const arrayMatch = JSON_ARRAY_REGEX.exec(text);
     if (!arrayMatch) {
-      console.warn("[review-extract] No JSON array found in response");
+      log.warn("[review-extract] No JSON array found in response");
       return [];
     }
     try {
       parsed = JSON.parse(arrayMatch[0]);
     } catch {
-      console.warn("[review-extract] Failed to parse JSON array from response");
+      log.warn("[review-extract] Failed to parse JSON array from response");
       return [];
     }
   }
