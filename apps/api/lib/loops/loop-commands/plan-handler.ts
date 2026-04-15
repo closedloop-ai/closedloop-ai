@@ -9,6 +9,7 @@ import type { PromptsSnapshot } from "@repo/api/src/types/prompt";
 import { EntityType, withDb } from "@repo/database";
 import { parsePromptsSnapshotFromMarkdownEntries } from "@repo/github/prompt-snapshot-parser";
 import { log } from "@repo/observability/log";
+import { waitUntil } from "@vercel/functions";
 import { z } from "zod";
 import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
 import { resetArtifactRoom } from "@/app/artifacts/room-utils";
@@ -110,7 +111,12 @@ export async function ingestPlanArtifacts(
     return;
   }
 
-  await artifactVersionService.createVersion(artifactId, null, finalContent);
+  await artifactVersionService.createVersion(
+    artifactId,
+    organizationId,
+    null,
+    finalContent
+  );
 
   const updatedArtifact = await withDb((db) =>
     db.artifact.update({
@@ -128,7 +134,7 @@ export async function ingestPlanArtifacts(
 
   // Reset the Liveblocks room so any stale Y.Doc content is cleared.
   if (updatedArtifact.slug) {
-    await resetArtifactRoom(updatedArtifact);
+    waitUntil(resetArtifactRoom(updatedArtifact));
   }
 
   // Persist prompt registry entries from snapshot (idempotent upsert)

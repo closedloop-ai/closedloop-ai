@@ -30,7 +30,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
-type TiptapToolbarProps = {
+export type TiptapToolbarProps = {
   editor: Editor | null;
   readOnly?: boolean;
   hasLiveblocksExtension?: boolean;

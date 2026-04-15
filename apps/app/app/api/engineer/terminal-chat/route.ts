@@ -238,7 +238,7 @@ async function handleClaude(
 
   const shellPath = await getShellPath();
   return new ReadableStream({
-    start(controller) {
+    async start(controller) {
       const streamState = createStreamState(
         (sessionId) => {
           if (!history.claudeSessionId) {
@@ -261,12 +261,14 @@ async function handleClaude(
           )
         );
 
+        const allowedTools = await withMcpTools("WebSearch,WebFetch,Bash");
+
         const claudeArgs = [
           "-p",
           "--verbose",
           "--output-format",
           "stream-json",
-          `--allowedTools=${withMcpTools("WebSearch,WebFetch,Bash")}`,
+          `--allowedTools=${allowedTools}`,
           "--append-system-prompt",
           buildClaudeSystemPrompt(),
         ];

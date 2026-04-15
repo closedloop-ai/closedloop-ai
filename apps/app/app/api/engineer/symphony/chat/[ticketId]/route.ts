@@ -3,7 +3,10 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { NextRequest } from "next/server";
 import simpleGit from "simple-git";
-import { ENGINEER_CHAT_TOOLS } from "@/lib/engineer/allowed-tools";
+import {
+  ENGINEER_CHAT_TOOLS,
+  withMcpTools,
+} from "@/lib/engineer/allowed-tools";
 import { VALID_PROVIDERS } from "@/lib/engineer/constants";
 import {
   getLearningAttributionInstruction,
@@ -516,7 +519,7 @@ export async function POST(
 
   const shellPath = await getShellPath();
   const stream = new ReadableStream({
-    start(controller) {
+    async start(controller) {
       const streamState = createStreamState(
         (sessionId) => {
           if (!history.sessionId) {
@@ -549,6 +552,8 @@ export async function POST(
         );
 
         // Build Claude arguments
+        const allowedTools = await withMcpTools(ALLOWED_TOOLS);
+
         const claudeArgs = [
           "-p",
           "--model",
@@ -556,7 +561,7 @@ export async function POST(
           "--verbose",
           "--output-format",
           "stream-json",
-          `--allowedTools=${ALLOWED_TOOLS}`,
+          `--allowedTools=${allowedTools}`,
         ];
 
         // Add --resume flag if we have an existing session

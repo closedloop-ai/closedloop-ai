@@ -1,8 +1,8 @@
 "use client";
 
 import { ClerkProvider } from "@clerk/nextjs";
-import { dark } from "@clerk/themes";
-import type { Theme } from "@clerk/types";
+import type { Appearance } from "@clerk/ui";
+import { dark } from "@clerk/ui/themes";
 import { useTheme } from "next-themes";
 import type { ComponentProps } from "react";
 import { keys } from "./keys";
@@ -23,9 +23,9 @@ export const AuthProvider = ({
 }: AuthProviderProperties) => {
   const { resolvedTheme } = useTheme();
   const isDark = resolvedTheme === "dark";
-  const baseTheme = isDark ? dark : undefined;
+  const theme = isDark ? dark : undefined;
 
-  const variables: Theme["variables"] = {
+  const variables: Appearance["variables"] = {
     fontFamily: "var(--font-sans)",
     fontFamilyButtons: "var(--font-sans)",
     fontWeight: {
@@ -35,7 +35,7 @@ export const AuthProvider = ({
     },
   };
 
-  const elements: Theme["elements"] = {
+  const elements: Appearance["elements"] = {
     dividerLine: "bg-border",
     socialButtonsIconButton: "bg-card",
     navbarButton: "text-foreground",
@@ -55,7 +55,7 @@ export const AuthProvider = ({
     badge: "bg-muted text-muted-foreground",
   };
 
-  const layout: Theme["layout"] = {
+  const options: Appearance["options"] = {
     logoImageUrl: logoUrl ?? keys().NEXT_PUBLIC_LOGO_URL,
     privacyPageUrl: privacyUrl,
     termsPageUrl: termsUrl,
@@ -65,7 +65,7 @@ export const AuthProvider = ({
   return (
     <ClerkProvider
       {...properties}
-      appearance={{ layout, baseTheme, elements, variables }}
+      appearance={{ options, theme, elements, variables }}
       localization={{
         signIn: {
           start: {

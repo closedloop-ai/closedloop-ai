@@ -499,6 +499,7 @@ For each file:
 Do NOT run git rebase --continue. Just resolve the files and stage them.`;
 
   const shellPath = await getShellPath();
+  const allowedTools = await withMcpTools("Read,Edit,Write,Bash");
   return new Promise((resolve) => {
     const claude = spawn(
       "claude",
@@ -506,7 +507,7 @@ Do NOT run git rebase --continue. Just resolve the files and stage them.`;
         "--model",
         "sonnet",
         "--allowedTools",
-        withMcpTools("Read,Edit,Write,Bash"),
+        allowedTools,
         "--max-turns",
         "15",
         "-p",

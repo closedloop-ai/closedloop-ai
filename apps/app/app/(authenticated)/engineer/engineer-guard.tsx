@@ -1,5 +1,6 @@
 "use client";
 
+import { FeatureFlagged } from "@repo/analytics/components/feature-flagged";
 import { AlertCircle, Loader2 } from "lucide-react";
 import Link from "next/link";
 import { ComputeTargetSelector } from "@/components/engineer/compute-target-selector";
@@ -15,6 +16,14 @@ import { useSystemCheckEligibility } from "@/lib/system-check/use-system-check-e
  * Hosted users must select an available execution target.
  */
 export function EngineerGuard() {
+  return (
+    <FeatureFlagged flag="engineer-view">
+      <EngineerGuardContent />
+    </FeatureFlagged>
+  );
+}
+
+function EngineerGuardContent() {
   // Engineer access intentionally reuses the same execution-readiness rules as
   // the global system-check bootstrap.
   const { isLoading, shouldRunSystemCheck: canAccess } =

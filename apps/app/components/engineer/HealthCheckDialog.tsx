@@ -21,7 +21,11 @@ import {
 import { toast } from "sonner";
 import { PathAutocomplete } from "@/components/engineer/PathAutocomplete";
 import { SystemCheckResults } from "@/components/system-check/system-check-results";
-import { healthCheckOptions } from "@/lib/engineer/queries/health-check";
+import { env } from "@/env";
+import {
+  getRenderableHealthChecks,
+  healthCheckOptions,
+} from "@/lib/engineer/queries/health-check";
 import { queryKeys } from "@/lib/engineer/queries/keys";
 import { updateRepoSettings } from "@/lib/engineer/queries/repos";
 
@@ -56,6 +60,7 @@ export function HealthCheckDialog({
   const revealTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
   const canOpenThisMount = useRef(!shownTargetKeys.has(targetKey));
   const queryClient = useQueryClient();
+  const expectedMcpUrl = env.NEXT_PUBLIC_MCP_SERVER_URL ?? null;
 
   // Client-only mount flag — avoids SSR/hydration mismatch
   useEffect(() => {
@@ -79,17 +84,19 @@ export function HealthCheckDialog({
   const dialogOpen = alive && !closing && failureDetected;
 
   const { data, isLoading, refetch, isFetching } = useQuery({
-    ...healthCheckOptions(),
+    ...healthCheckOptions(targetKey, expectedMcpUrl),
     enabled: mounted && canOpenThisMount.current,
     refetchOnMount: "always" as const,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
   });
+  const renderableChecks = getRenderableHealthChecks(data, expectedMcpUrl);
 
   // Auto-dismiss after all checks are revealed and all required pass
-  const allRevealed = data?.checks && revealedCount >= data.checks.length;
+  const allRevealed =
+    renderableChecks && revealedCount >= renderableChecks.length;
   const hasRequiredFailure =
-    data?.checks?.some((c) => c.required && !c.passed) ?? false;
+    renderableChecks?.some((c) => c.required && !c.passed) ?? false;
   const allRequiredPassed = allRevealed && !hasRequiredFailure;
 
   // Latch failureDetected — once a required failure is seen, open the dialog.
@@ -118,7 +125,7 @@ export function HealthCheckDialog({
   // structurally identical (TanStack Query structural sharing preserves the
   // same data reference in that case).
   useEffect(() => {
-    if (!(failureDetected && data?.checks)) {
+    if (!(failureDetected && renderableChecks)) {
       return;
     }
 
@@ -127,7 +134,7 @@ export function HealthCheckDialog({
     revealTimers.current.forEach(clearTimeout);
     revealTimers.current = [];
 
-    const total = data.checks.length;
+    const total = renderableChecks.length;
     for (let i = 0; i < total; i++) {
       const timer = setTimeout(
         () => {
@@ -142,7 +149,7 @@ export function HealthCheckDialog({
       revealTimers.current.forEach(clearTimeout);
       revealTimers.current = [];
     };
-  }, [failureDetected, data, recheckKey]);
+  }, [failureDetected, recheckKey, renderableChecks]);
 
   // Phase 1: after all revealed + all pass → show success screen
   useEffect(() => {
@@ -173,11 +180,13 @@ export function HealthCheckDialog({
   const handleRecheck = useCallback(async () => {
     setRevealedCount(0);
     setShowSuccess(false);
-    await queryClient.invalidateQueries({ queryKey: queryKeys.healthCheck() });
+    await queryClient.invalidateQueries({
+      queryKey: queryKeys.healthCheck(targetKey, expectedMcpUrl),
+    });
     await refetch();
     // Bump recheckKey to re-trigger stagger even if data is structurally identical
     setRecheckKey((k) => k + 1);
-  }, [queryClient, refetch]);
+  }, [expectedMcpUrl, queryClient, refetch, targetKey]);
 
   const handleContinue = useCallback(() => {
     setClosing(true);
@@ -201,7 +210,7 @@ export function HealthCheckDialog({
       // Re-run health checks to pick up the change
       setRevealedCount(0);
       await queryClient.invalidateQueries({
-        queryKey: queryKeys.healthCheck(),
+        queryKey: queryKeys.healthCheck(targetKey, expectedMcpUrl),
       });
       await refetch();
       setRecheckKey((k) => k + 1);
@@ -212,17 +221,17 @@ export function HealthCheckDialog({
     } finally {
       setSavingWorktree(false);
     }
-  }, [worktreePath, queryClient, refetch]);
+  }, [expectedMcpUrl, queryClient, refetch, targetKey, worktreePath]);
 
   if (!(alive && (canOpenThisMount.current || failureDetected))) {
     return null;
   }
 
   const requiredCount =
-    data?.checks?.filter((check) => check.required).length ?? 0;
+    renderableChecks?.filter((check) => check.required).length ?? 0;
 
   // worktree-dir check failed — show inline setup (only after it's revealed)
-  const worktreeCheck = data?.checks?.find((c) => c.id === "worktree-dir");
+  const worktreeCheck = renderableChecks?.find((c) => c.id === "worktree-dir");
   const showWorktreeSetup =
     worktreeCheck && !worktreeCheck.passed && revealedCount >= requiredCount;
 
@@ -278,7 +287,7 @@ export function HealthCheckDialog({
                   onSaveWorktree: handleSaveWorktree,
                   showPluginGuidance,
                 })}
-                checks={data?.checks}
+                checks={renderableChecks}
                 isLoading={isLoading}
                 revealedCount={revealedCount}
               />

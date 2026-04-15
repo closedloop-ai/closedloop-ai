@@ -38,8 +38,11 @@ afterEach(() => {
   localStorageStore.clear();
 });
 
-// Mock scrollIntoView which is not implemented in jsdom
-Element.prototype.scrollIntoView = () => {};
+// Mock scrollIntoView which is not implemented in jsdom.
+// Guarded for `@vitest-environment node` test files where Element is undefined.
+if (typeof Element !== "undefined") {
+  Element.prototype.scrollIntoView = () => {};
+}
 
 function createStableLocalStorage(
   store: Map<string, string>

@@ -24,9 +24,12 @@
     {
       "includes": [
         "apps/app/components/engineer/**",
+        "apps/app/components/chat/**",
         "apps/app/app/api/engineer/**",
         "apps/app/hooks/engineer/**",
+        "apps/app/hooks/chat/**",
         "apps/app/lib/engineer/**",
+        "apps/app/lib/chat/**",
         "apps/app/types/engineer.ts",
         "apps/app/types/repos.ts",
         "apps/app/types/run-viewer.ts",
@@ -98,6 +101,8 @@
   "files": {
     "includes": [
       "**/*",
+      // shadcn/ui upstream conventions: these directories use interface declarations,
+      // barrel exports, and patterns that conflict with project Biome rules
       "!packages/design-system/components/ui",
       "!packages/design-system/lib",
       "!packages/design-system/hooks",

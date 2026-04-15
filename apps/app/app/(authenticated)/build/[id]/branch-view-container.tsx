@@ -1,12 +1,15 @@
 "use client";
 
+import { useFeatureFlag } from "@repo/analytics/client";
 import { cn } from "@repo/design-system/lib/utils";
+import { useQuery } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
-import { useCallback, useMemo, useState } from "react";
-import { ArtifactChatPanel } from "@/components/artifact-editor/artifact-chat-panel";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useBranchView } from "@/hooks/queries/use-branch-view";
 import { useLocalStorageState } from "@/hooks/use-local-storage-state";
+import { queryKeys } from "@/lib/engineer/queries/keys";
 import { buildPrCommentChatContext, findCommentById } from "./comment-context";
+import { BranchChatDrawer } from "./components/branch-chat-drawer";
 import { BranchDiffView } from "./components/branch-diff-view";
 import { BranchViewContent } from "./components/branch-view-content";
 import { BranchViewHeader } from "./components/branch-view-header";
@@ -20,6 +23,34 @@ import {
 type BranchViewContainerProps = {
   externalLinkId: string;
 };
+
+type BranchWorktreeResponse = {
+  path: string | null;
+  repoPath: string | null;
+};
+
+async function fetchBranchWorktree(params: {
+  repoFullName: string;
+  headBranch: string;
+  prNumber: number;
+}): Promise<BranchWorktreeResponse> {
+  const searchParams = new URLSearchParams({
+    repoFullName: params.repoFullName,
+    headBranch: params.headBranch,
+    prNumber: String(params.prNumber),
+  });
+  const response = await fetch(
+    `/api/chat/branch-worktree?${searchParams.toString()}`
+  );
+  if (!response.ok) {
+    throw new Error("Failed to resolve branch worktree");
+  }
+  const raw = (await response.json()) as Partial<BranchWorktreeResponse>;
+  return {
+    path: typeof raw.path === "string" ? raw.path : null,
+    repoPath: typeof raw.repoPath === "string" ? raw.repoPath : null,
+  };
+}
 
 function buildAllFileEntries(
   data: BranchViewData,
@@ -42,8 +73,51 @@ export function BranchViewContainer({
   externalLinkId,
 }: Readonly<BranchViewContainerProps>) {
   const { data, isLoading, error } = useBranchView(externalLinkId);
+  const repoFullName = data?.repoFullName ?? "";
+  const headBranch = data?.headBranch ?? "";
+  const prNumber = data?.prNumber ?? 0;
+  const branchWorktreeQuery = useQuery({
+    queryKey: queryKeys.branchWorktree(repoFullName, headBranch, prNumber),
+    queryFn: () =>
+      fetchBranchWorktree({
+        repoFullName,
+        headBranch,
+        prNumber,
+      }),
+    enabled:
+      repoFullName.length > 0 &&
+      headBranch.length > 0 &&
+      Number.isInteger(prNumber),
+  });
+  const worktreePath = branchWorktreeQuery.data?.path ?? null;
+  const showFilesystemNotice =
+    branchWorktreeQuery.isSuccess && worktreePath === null;
+  const chatFlag = useFeatureFlag("interactive-chat");
+  const chatFlagEnabled = chatFlag?.enabled === true;
+  const branchPrFlag = useFeatureFlag("branch-pr");
+  // Distinguish "flag is still loading" (undefined) from "flag resolved to
+  // disabled" (?.enabled !== true). Treating the loading state as disabled
+  // fires the redirect useEffect below and ships users to GitHub on every
+  // fresh page load, which is wrong. Only redirect once PostHog has actually
+  // reported the flag value.
+  const branchPrLoading = branchPrFlag === undefined;
+  const branchPrEnabled = branchPrFlag?.enabled === true;
+
+  // When the branch-pr flag is off, redirect to the PR's GitHub URL as soon
+  // as we know it. Keeps any existing /build/[id] links (shared links,
+  // bookmarks, older plan-page renders) pointing at the right place. Skip
+  // the redirect while the flag is still loading.
+  useEffect(() => {
+    if (branchPrLoading || branchPrEnabled) {
+      return;
+    }
+    if (!data?.prHtmlUrl) {
+      return;
+    }
+    globalThis.location.replace(data.prHtmlUrl);
+  }, [branchPrLoading, branchPrEnabled, data?.prHtmlUrl]);
   const [showChatPanel, setShowChatPanel] = useLocalStorageState(
-    "panel:metadata:branch",
+    "panel:chat:branch",
     true
   );
   const [selectedFileId, setSelectedFileId] = useState<string | null>(null);
@@ -100,6 +174,25 @@ export function BranchViewContainer({
     );
   }
 
+  if (branchPrLoading) {
+    return (
+      <div className="flex min-h-full items-center justify-center bg-background">
+        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  if (!branchPrEnabled) {
+    return (
+      <div className="flex min-h-full items-center justify-center gap-3 bg-background">
+        <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+        <p className="text-muted-foreground text-sm">
+          Redirecting to GitHub...
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div className="flex min-h-full flex-col bg-background">
       <BranchViewHeader
@@ -135,11 +228,12 @@ export function BranchViewContainer({
             />
           )}
         </div>
-        {showChatPanel ? (
-          <ArtifactChatPanel
-            artifactId={data.externalLinkId}
-            artifactType="branch"
+        {chatFlagEnabled && showChatPanel ? (
+          <BranchChatDrawer
             contextSelection={chatCommentContext}
+            data={data}
+            showFilesystemNotice={showFilesystemNotice}
+            worktreePath={worktreePath}
           />
         ) : null}
       </main>

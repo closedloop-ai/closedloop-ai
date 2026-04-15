@@ -255,13 +255,14 @@ Write: { "timestamp": "<current ISO timestamp>", "count": <number of learnings>,
 Be selective — only capture things that would help agents do better in the future.`;
 
   try {
+    const allowedTools = await withMcpTools("Read,Write,Glob");
     const child = spawn(
       "claude",
       [
         "-p",
         "--model",
         "sonnet",
-        `--allowedTools=${withMcpTools("Read,Write,Glob")}`,
+        `--allowedTools=${allowedTools}`,
         "--max-turns",
         "20",
       ],

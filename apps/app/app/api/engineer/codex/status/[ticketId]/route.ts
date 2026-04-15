@@ -1,8 +1,12 @@
 import { existsSync, readFileSync } from "node:fs";
-import { readFile, stat, unlink } from "node:fs/promises";
+import { open, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { type NextRequest, NextResponse } from "next/server";
-import { getReviewPaths, isProcessRunning } from "@/lib/engineer/process-utils";
+import {
+  CODEX_SESSION_ID_REGEX,
+  getReviewPaths,
+  isProcessRunning,
+} from "@/lib/engineer/process-utils";
 import {
   expandHome,
   getWorktreeParentDir,
@@ -28,39 +32,114 @@ type ReviewState = {
   };
 };
 
-/** If state says "running" but the process is dead, mark it "stopped". */
-function reconcileProcessStatus(state: ReviewState): boolean {
+/**
+ * If state says "running" but the process is dead, mark it "stopped" and
+ * persist the corrected state to disk (best-effort CAS).
+ *
+ * The CAS re-reads the file before writing and only writes if the file
+ * still has status "running" with the same dead PID and no completedAt.
+ * This avoids clobbering a concurrent write from setupProcessLifecycle
+ * that already set a more accurate terminal state (completed/failed).
+ */
+async function reconcileProcessStatus(
+  state: ReviewState,
+  statePath: string,
+  pidPath: string
+): Promise<boolean> {
   if (state.status !== "running" || !state.pid) {
     return false;
   }
   const alive = isProcessRunning(state.pid);
   if (!alive) {
+    const deadPid = state.pid;
     state.status = "stopped";
+    if (!state.completedAt) {
+      state.completedAt = new Date().toISOString();
+    }
+
+    // Best-effort CAS: re-read file, only write if still stale
+    try {
+      const current: ReviewState = JSON.parse(
+        await readFile(statePath, "utf-8")
+      );
+      if (
+        current.status === "running" &&
+        current.pid === deadPid &&
+        !current.completedAt
+      ) {
+        const reconciled: ReviewState = {
+          ...current,
+          status: "stopped",
+          completedAt: state.completedAt,
+        };
+        await writeFile(statePath, JSON.stringify(reconciled, null, 2));
+        console.log(
+          `[codex-status] Reconciled stale running state to stopped (pid ${deadPid})`
+        );
+      }
+    } catch {
+      // File disappeared or was replaced -- skip write
+    }
+
+    // Delete the .pid file if it still references the dead PID
+    try {
+      if (existsSync(pidPath)) {
+        const pidContent = await readFile(pidPath, "utf-8");
+        if (Number.parseInt(pidContent.trim(), 10) === deadPid) {
+          await unlink(pidPath).catch(() => {});
+        }
+      }
+    } catch {
+      // .pid file already gone -- fine
+    }
   }
   return alive;
 }
 
 const MAX_LOG_BYTES = 100 * 1024;
+const LOG_HEAD_BYTES = 4 * 1024;
 
-/** Read the log file, tailing to the last 100 KB for large files. */
+/**
+ * Read the log file, tailing to the last 100 KB for large files. Also reads
+ * the first 4 KB and parses the codex session ID out of it — the client
+ * needs this to fire post-stream extraction, and the server-side stdout
+ * parser in setupProcessLifecycle can miss it if the codex CLI writes the
+ * banner to a channel we don't scan (e.g. stderr in newer codex versions).
+ */
 async function readLogTail(
   logPath: string
-): Promise<{ log: string; logSize: number }> {
+): Promise<{ log: string; logSize: number; headSessionId?: string }> {
   if (!existsSync(logPath)) {
     return { log: "", logSize: 0 };
   }
   const logStats = await stat(logPath);
   const logSize = logStats.size;
   if (logSize <= MAX_LOG_BYTES) {
-    return { log: await readFile(logPath, "utf-8"), logSize };
+    const log = await readFile(logPath, "utf-8");
+    const match = CODEX_SESSION_ID_REGEX.exec(log.slice(0, LOG_HEAD_BYTES));
+    return { log, logSize, headSessionId: match?.[1] };
   }
-  const buffer = Buffer.alloc(MAX_LOG_BYTES);
-  const fd = await import("node:fs/promises").then((fs) =>
-    fs.open(logPath, "r")
-  );
-  await fd.read(buffer, 0, buffer.length, logSize - buffer.length);
-  await fd.close();
-  return { log: buffer.toString("utf-8"), logSize };
+  const fd = await open(logPath, "r");
+  try {
+    const tailBuffer = Buffer.alloc(MAX_LOG_BYTES);
+    await fd.read(
+      tailBuffer,
+      0,
+      tailBuffer.length,
+      logSize - tailBuffer.length
+    );
+    const headBuffer = Buffer.alloc(LOG_HEAD_BYTES);
+    await fd.read(headBuffer, 0, headBuffer.length, 0);
+    const headText = headBuffer.toString("utf-8");
+    const match = CODEX_SESSION_ID_REGEX.exec(headText);
+    return {
+      log: tailBuffer.toString("utf-8"),
+      logSize,
+      headSessionId: match?.[1],
+    };
+  } finally {
+    await fd.close();
+  }
 }
 
 /**
@@ -125,7 +204,10 @@ export async function GET(
     });
   }
 
-  const { statePath, logPath } = getReviewPaths(worktreeDir, targetProvider);
+  const { statePath, logPath, pidPath } = getReviewPaths(
+    worktreeDir,
+    targetProvider
+  );
 
   if (!existsSync(statePath)) {
     return NextResponse.json({
@@ -138,8 +220,12 @@ export async function GET(
   try {
     const stateContent = await readFile(statePath, "utf-8");
     const state: ReviewState = JSON.parse(stateContent);
-    const processRunning = reconcileProcessStatus(state);
-    const { log, logSize } = await readLogTail(logPath);
+    const processRunning = await reconcileProcessStatus(
+      state,
+      statePath,
+      pidPath
+    );
+    const { log, logSize, headSessionId } = await readLogTail(logPath);
 
     return NextResponse.json({
       hasReview: true,
@@ -148,7 +234,7 @@ export async function GET(
       processRunning,
       pid: state.pid,
       provider: state.provider,
-      sessionId: state.sessionId,
+      sessionId: state.sessionId ?? headSessionId,
       startedAt: state.startedAt,
       completedAt: state.completedAt,
       exitCode: state.exitCode,

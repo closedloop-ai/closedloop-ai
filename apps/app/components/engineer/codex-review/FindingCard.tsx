@@ -41,7 +41,9 @@ export function FindingCard({
   onSelectFinding,
 }: Readonly<FindingCardProps>) {
   const { title, description } = parseFindingTitle(finding.message);
-  const hasDetails = !isDismissed && (!!description || !!finding.suggestion);
+  const humanized = finding.humanizedBody?.trim() || undefined;
+  const hasDetails =
+    !isDismissed && (!!humanized || !!description || !!finding.suggestion);
   const displayPriority =
     finding.priority || severityToPriority(finding.severity);
 
@@ -68,7 +70,12 @@ export function FindingCard({
         onToggleExpand={onToggleExpand}
         title={title}
       />
-      {isFindingExpanded && (
+      {isFindingExpanded && humanized && (
+        <div className="mr-3 mb-3 ml-12 text-muted-foreground text-xs leading-relaxed">
+          <MessageContent content={humanized} />
+        </div>
+      )}
+      {isFindingExpanded && !humanized && (
         <div className="mr-3 mb-3 ml-12 space-y-2">
           <p className="font-semibold text-sm">{title}</p>
           {description && (
@@ -78,7 +85,7 @@ export function FindingCard({
           )}
         </div>
       )}
-      {isFindingExpanded && finding.suggestion && (
+      {isFindingExpanded && !humanized && finding.suggestion && (
         <div className="ml-12 border-muted border-l-2 px-3 pb-3 pl-3 text-muted-foreground text-xs italic">
           {finding.suggestion}
         </div>

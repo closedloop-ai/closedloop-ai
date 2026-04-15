@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { env } from "@/env";
 
 /**
  * Ticket details to pass to Symphony
@@ -159,6 +160,7 @@ export function useSymphonyLaunch(): UseSymphonyLaunchResult {
             repoPath,
             ticket,
             baseBranch,
+            expectedMcpUrl: env.NEXT_PUBLIC_MCP_SERVER_URL,
           }),
         };
 

@@ -1,5 +1,6 @@
 "use client";
 
+import { useFeatureFlag } from "@repo/analytics/client";
 import type { PullRequestInfo } from "@repo/api/src/types/artifact";
 import { Label } from "@repo/design-system/components/ui/label";
 import { GitPullRequestIcon } from "lucide-react";
@@ -16,10 +17,13 @@ type PullRequestSectionProps = {
 };
 
 export function PullRequestSection({ pullRequest }: PullRequestSectionProps) {
-  const href = pullRequest.externalLinkId
+  const branchPrFlag = useFeatureFlag("branch-pr");
+  const branchPrEnabled = branchPrFlag?.enabled === true;
+  const useBranchView = Boolean(pullRequest.externalLinkId && branchPrEnabled);
+  const href = useBranchView
     ? `/build/${pullRequest.externalLinkId}`
     : pullRequest.htmlUrl;
-  const isExternal = !pullRequest.externalLinkId;
+  const isExternal = !useBranchView;
 
   return (
     <MetadataSection separator>
