@@ -138,6 +138,15 @@ export default function TeamPlansPage() {
   };
 
   const loading = loadingTeam || loadingArtifacts;
+  const hasAnyPlans = (artifacts ?? []).length > 0;
+  const hasActiveRefinements =
+    filterText.trim().length > 0 || filtersReturn.isAnyFilterActive;
+  const emptyTitle =
+    hasAnyPlans && hasActiveRefinements ? "No matching plans" : "No plans yet";
+  const emptyDescription =
+    hasAnyPlans && hasActiveRefinements
+      ? "Try adjusting your search or filters."
+      : "Plans will appear here once they are created in a project.";
 
   if (loading) {
     return (
@@ -224,9 +233,9 @@ export default function TeamPlansPage() {
         <div className="flex-1 overflow-auto">
           <FlatArtifactTable
             editHandlers={editHandlers}
-            emptyDescription="Plans will appear here once they are created in a project."
+            emptyDescription={emptyDescription}
             emptyIcon={FileCodeIcon}
-            emptyTitle="No plans yet"
+            emptyTitle={emptyTitle}
             groupByStatus={groupByStatus}
             items={displayItems}
             moreMenuContent={(_item, onRequestDelete) => (

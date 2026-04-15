@@ -135,6 +135,15 @@ export default function TeamPrdsPage() {
   };
 
   const loading = loadingTeam || loadingArtifacts;
+  const hasAnyPrds = (artifacts ?? []).length > 0;
+  const hasActiveRefinements =
+    filterText.trim().length > 0 || filtersReturn.isAnyFilterActive;
+  const emptyTitle =
+    hasAnyPrds && hasActiveRefinements ? "No matching PRDs" : "No PRDs yet";
+  const emptyDescription =
+    hasAnyPrds && hasActiveRefinements
+      ? "Try adjusting your search or filters."
+      : "PRDs will appear here once they are created in a project.";
 
   if (loading) {
     return (
@@ -221,9 +230,9 @@ export default function TeamPrdsPage() {
         <div className="flex-1 overflow-auto">
           <FlatArtifactTable
             editHandlers={editHandlers}
-            emptyDescription="PRDs will appear here once they are created in a project."
+            emptyDescription={emptyDescription}
             emptyIcon={FileIcon}
-            emptyTitle="No PRDs yet"
+            emptyTitle={emptyTitle}
             groupByStatus={groupByStatus}
             items={displayItems}
             moreMenuContent={(_item, onRequestDelete) => (

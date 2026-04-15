@@ -1,7 +1,10 @@
 "use client";
 
 import type { Priority } from "@repo/api/src/types/common";
-import type { FeatureStatus } from "@repo/api/src/types/feature";
+import type {
+  FeatureStatus,
+  FeatureWithWorkstream,
+} from "@repo/api/src/types/feature";
 import { Button } from "@repo/design-system/components/ui/button";
 import { Input } from "@repo/design-system/components/ui/input";
 import { BoxIcon, LayoutGridIcon, ListIcon, SearchIcon } from "lucide-react";
@@ -35,7 +38,6 @@ import { useTableFilters } from "@/hooks/use-table-filters";
 import { OnboardingChecklist } from "../components/onboarding-checklist";
 import { MyTasksEmptyState } from "./components/my-tasks-empty-state";
 import { MyTasksKanban } from "./components/my-tasks-kanban";
-import type { MyTasksFeatureFilters } from "./types";
 import { buildFeatureListParams } from "./utils";
 
 const VIEW_KEY = "my-tasks-view";
@@ -133,14 +135,12 @@ export default function MyTasksPage() {
 
   const parentTitleMap = useItemsParentTitles(allItems);
 
-  // Derive MyTasksFeatureFilters for the kanban view (backward compat).
-  const kanbanFilters: MyTasksFeatureFilters = useMemo(
-    () => ({
-      priorities: filtersReturn.filters.priorities,
-      projectIds: [],
-      statuses: filtersReturn.filters.statuses as FeatureStatus[],
-    }),
-    [filtersReturn.filters.priorities, filtersReturn.filters.statuses]
+  const kanbanFeatures = useMemo(
+    () =>
+      displayItems
+        .filter((item) => item.kind === "feature")
+        .map((item) => item.data as FeatureWithWorkstream),
+    [displayItems]
   );
 
   return (
@@ -221,7 +221,8 @@ export default function MyTasksPage() {
           <div className="flex-1 overflow-auto p-4">
             <MyTasksKanban
               assigneeId={assigneeId}
-              featureFilters={kanbanFilters}
+              features={kanbanFeatures}
+              isLoading={isFeaturesLoading}
               isUserLoading={isUserLoading}
             />
           </div>

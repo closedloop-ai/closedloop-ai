@@ -135,6 +135,17 @@ export default function TeamFeaturesPage() {
   };
 
   const loading = loadingTeam || loadingFeatures;
+  const hasAnyFeatures = features.length > 0;
+  const hasActiveRefinements =
+    filterText.trim().length > 0 || filtersReturn.isAnyFilterActive;
+  const emptyTitle =
+    hasAnyFeatures && hasActiveRefinements
+      ? "No matching features"
+      : "No features yet";
+  const emptyDescription =
+    hasAnyFeatures && hasActiveRefinements
+      ? "Try adjusting your search or filters."
+      : "Features will appear here once they are created in a project.";
 
   if (loading) {
     return (
@@ -217,9 +228,9 @@ export default function TeamFeaturesPage() {
         <div className="flex-1 overflow-auto">
           <FlatArtifactTable
             editHandlers={editHandlers}
-            emptyDescription="Features will appear here once they are created in a project."
+            emptyDescription={emptyDescription}
             emptyIcon={BoxIcon}
-            emptyTitle="No features yet"
+            emptyTitle={emptyTitle}
             groupByStatus={groupByStatus}
             items={displayItems}
             moreMenuContent={(_item, onRequestDelete) => (
