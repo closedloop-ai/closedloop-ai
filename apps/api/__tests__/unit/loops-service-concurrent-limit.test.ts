@@ -9,7 +9,7 @@
  *   when at the concurrent limit
  * - isConcurrentLoopLimitError correctly identifies ConcurrentLoopLimitError instances
  * - loopsService.create / createIfNotExists persist additionalRepos as a
- *   first-class loop column and strip metadata.additionalRepos
+ *   first-class loop column
  *
  * // TOCTOU: count check and insert are not atomic. Two concurrent requests at
  * // count=N-1 can both proceed. Accepted tradeoff — limit is a soft cap, not a
@@ -228,22 +228,6 @@ describe("loopsService.create / createIfNotExists additionalRepos column persist
       expectedMetadata: undefined,
     },
     {
-      id: "create: strips metadata.additionalRepos and preserves other metadata keys",
-      method: "create",
-      input: {
-        ...baseInput,
-        additionalRepos: [{ fullName: "org/top-level", branch: "main" }],
-        metadata: {
-          launchSource: "test",
-          additionalRepos: [{ fullName: "org/stale", branch: "dev" }],
-        },
-      },
-      expectedAdditionalRepos: [{ fullName: "org/top-level", branch: "main" }],
-      expectedMetadata: {
-        launchSource: "test",
-      },
-    },
-    {
       id: "createIfNotExists: persists additionalRepos in a first-class column",
       method: "createIfNotExists",
       input: {
@@ -251,21 +235,6 @@ describe("loopsService.create / createIfNotExists additionalRepos column persist
         additionalRepos: [{ fullName: "org/repo-b", branch: "main" }],
       },
       expectedAdditionalRepos: [{ fullName: "org/repo-b", branch: "main" }],
-      expectedMetadata: undefined,
-    },
-    {
-      id: "createIfNotExists: strips metadata.additionalRepos and keeps canonical column value",
-      method: "createIfNotExists",
-      input: {
-        ...baseInput,
-        additionalRepos: [{ fullName: "org/repo-canonical", branch: "main" }],
-        metadata: {
-          additionalRepos: [{ fullName: "org/repo-stale", branch: "dev" }],
-        },
-      },
-      expectedAdditionalRepos: [
-        { fullName: "org/repo-canonical", branch: "main" },
-      ],
       expectedMetadata: undefined,
     },
   ];

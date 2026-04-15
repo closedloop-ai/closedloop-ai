@@ -339,7 +339,7 @@ export const loopsService = {
           additionalRepos: additionalRepos ?? undefined,
           contextRefs: input.contextRefs ?? undefined,
           artifactVersion: input.artifactVersion ?? null,
-          metadata: sanitizeCreateLoopMetadata(input.metadata),
+          metadata: input.metadata ?? undefined,
           status: LoopStatus.Pending,
         },
       })
@@ -1253,7 +1253,7 @@ export const loopsService = {
             additionalRepos: additionalRepos ?? undefined,
             contextRefs: input.contextRefs ?? undefined,
             artifactVersion: input.artifactVersion,
-            metadata: sanitizeCreateLoopMetadata(input.metadata),
+            metadata: input.metadata ?? undefined,
             status: LoopStatus.Pending,
           },
         ],
@@ -1340,24 +1340,6 @@ export const loopsService = {
     return result.count;
   },
 };
-
-function sanitizeCreateLoopMetadata(
-  metadata: CreateLoopRequest["metadata"]
-): JsonObject | undefined {
-  if (!metadata) {
-    return undefined;
-  }
-
-  const { additionalRepos: _ignored, ...rest } = metadata as Record<
-    string,
-    unknown
-  >;
-  if (Object.keys(rest).length === 0) {
-    return undefined;
-  }
-
-  return rest as JsonObject;
-}
 
 /**
  * Apply PostHog feature flag and PLAN-only gates to requested additionalRepos.
