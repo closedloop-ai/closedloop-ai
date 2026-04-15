@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { after, beforeEach, afterEach, describe, test } from "node:test";
+import { after, afterEach, beforeEach, describe, test } from "node:test";
 
 import { LoopArtifactType } from "@closedloop-ai/loops-api/artifacts";
 
@@ -1809,7 +1809,10 @@ describe("refreshGitHubToken", () => {
     };
 
     globalThis.fetch = async (url, options) => {
-      assert.equal(url, "https://api.example.com/loops/test-loop-id/github-token");
+      assert.equal(
+        url,
+        "https://api.example.com/loops/test-loop-id/github-token"
+      );
       assert.equal(options.headers.Authorization, "Bearer test-auth-token");
       return {
         ok: true,
