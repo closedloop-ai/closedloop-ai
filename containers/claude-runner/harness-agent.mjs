@@ -761,7 +761,7 @@ async function reportEvent(event) {
 // ---------------------------------------------------------------------------
 // GitHub token refresh (best-effort, never throws)
 // ---------------------------------------------------------------------------
-async function refreshGitHubToken() {
+async function refreshGitHubToken(contextPack) {
   if (!(config.authToken && config.apiBaseUrl && config.loopId)) {
     return;
   }
@@ -785,6 +785,26 @@ async function refreshGitHubToken() {
       config.githubToken = body.data.token;
       registerSecret(config.githubToken);
       log("info", "Refreshed GitHub token from API");
+    }
+
+    // Patch peer-repo tokens in the contextPack
+    if (
+      Array.isArray(body.data?.additionalRepoTokens) &&
+      contextPack?.additionalRepos
+    ) {
+      for (const refreshed of body.data.additionalRepoTokens) {
+        const entry = contextPack.additionalRepos.find(
+          (r) => r.fullName === refreshed.fullName
+        );
+        if (entry) {
+          entry.githubToken = refreshed.token;
+          registerSecret(refreshed.token);
+        }
+      }
+      log(
+        "info",
+        `Refreshed ${body.data.additionalRepoTokens.length} peer-repo token(s)`
+      );
     }
   } catch (err) {
     log("warn", `GitHub token refresh error: ${redactSensitive(err.message)}`);
@@ -3219,7 +3239,7 @@ async function main() {
 
     // Step 2a: Refresh GitHub token (installation tokens expire after 1h;
     // ECS placement + S3 downloads may have consumed most of that window)
-    await refreshGitHubToken();
+    await refreshGitHubToken(contextPack);
 
     // Step 3: Clone the target repository or prepare an empty workspace
     prepareWorkspace(workDir);
@@ -3491,6 +3511,7 @@ export {
   parseTokenUsageFromRegex,
   parsePrInfo,
   redactSensitive,
+  refreshGitHubToken,
   registerSecret,
   syncPlanFromContextPack,
   validateConfig,

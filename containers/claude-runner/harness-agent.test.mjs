@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { after, describe, test } from "node:test";
+import { after, beforeEach, afterEach, describe, test } from "node:test";
 
 import { LoopArtifactType } from "@closedloop-ai/loops-api/artifacts";
 
@@ -25,6 +25,7 @@ import {
   parseTokenUsageFromJsonlFile,
   parseTokenUsageFromRegex,
   redactSensitive,
+  refreshGitHubToken,
   registerSecret,
   syncPlanFromContextPack,
   validateConfig,
@@ -1774,5 +1775,89 @@ describe("buildClaudeDirectArgs output format", () => {
     const fmtIdx = args.indexOf("--output-format");
     assert.ok(fmtIdx !== -1, "args must contain --output-format");
     assert.equal(args[fmtIdx + 1], "stream-json");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// refreshGitHubToken
+// ---------------------------------------------------------------------------
+
+describe("refreshGitHubToken", () => {
+  let originalFetch;
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  test("patches contextPack.additionalRepos with fresh tokens", async () => {
+    resetConfig({
+      authToken: "test-auth-token",
+      apiBaseUrl: "https://api.example.com",
+      loopId: "test-loop-id",
+      githubToken: "old-primary-token",
+    });
+
+    const contextPack = {
+      additionalRepos: [
+        { fullName: "owner/peer1", branch: "main", githubToken: "old-peer1" },
+        { fullName: "owner/peer2", branch: "main", githubToken: "old-peer2" },
+      ],
+    };
+
+    globalThis.fetch = async (url, options) => {
+      assert.equal(url, "https://api.example.com/loops/test-loop-id/github-token");
+      assert.equal(options.headers.Authorization, "Bearer test-auth-token");
+      return {
+        ok: true,
+        json: async () => ({
+          data: {
+            token: "new-primary-token",
+            additionalRepoTokens: [
+              { fullName: "owner/peer1", token: "new-peer1" },
+              { fullName: "owner/peer2", token: "new-peer2" },
+            ],
+          },
+        }),
+      };
+    };
+
+    await refreshGitHubToken(contextPack);
+
+    assert.equal(config.githubToken, "new-primary-token");
+    assert.equal(contextPack.additionalRepos[0].githubToken, "new-peer1");
+    assert.equal(contextPack.additionalRepos[1].githubToken, "new-peer2");
+  });
+
+  test("does not crash if additionalRepoTokens is missing", async () => {
+    resetConfig({
+      authToken: "test-auth-token",
+      apiBaseUrl: "https://api.example.com",
+      loopId: "test-loop-id",
+      githubToken: "old-primary-token",
+    });
+
+    const contextPack = {
+      additionalRepos: [
+        { fullName: "owner/peer1", branch: "main", githubToken: "old-peer1" },
+      ],
+    };
+
+    globalThis.fetch = async () => ({
+      ok: true,
+      json: async () => ({
+        data: {
+          token: "new-primary-token",
+        },
+      }),
+    });
+
+    await refreshGitHubToken(contextPack);
+
+    assert.equal(config.githubToken, "new-primary-token");
+    assert.equal(contextPack.additionalRepos[0].githubToken, "old-peer1");
   });
 });
