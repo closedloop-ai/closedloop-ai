@@ -28,7 +28,6 @@ import {
   CalendarIcon,
   CheckIcon,
   ListFilterIcon,
-  SearchIcon,
   UserIcon,
   UsersIcon,
 } from "lucide-react";
@@ -211,11 +210,7 @@ export function AssigneeFilterContent({
 
   return (
     <>
-      <SubMenuSearch
-        onChange={setSearch}
-        placeholder="Search assignees..."
-        value={search}
-      />
+      <SubMenuSearch onChange={setSearch} value={search} />
       {teamMembersLoading && (
         <div className="p-4 text-center text-muted-foreground text-sm">
           Loading...
@@ -298,11 +293,7 @@ export function StatusFilterContent({
 
   return (
     <>
-      <SubMenuSearch
-        onChange={setSearch}
-        placeholder="Search statuses..."
-        value={search}
-      />
+      <SubMenuSearch onChange={setSearch} value={search} />
       {filtered.map((status) => {
         const checked = filters.statuses.includes(status);
         return (
@@ -341,11 +332,7 @@ export function PriorityFilterContent({
 
   return (
     <>
-      <SubMenuSearch
-        onChange={setSearch}
-        placeholder="Search priorities..."
-        value={search}
-      />
+      <SubMenuSearch onChange={setSearch} value={search} />
       {filtered.map((priority) => {
         const checked = filters.priorities.includes(priority);
         return (
@@ -612,24 +599,24 @@ function DateFieldSubmenu({
 function SubMenuSearch({
   value,
   onChange,
-  placeholder,
 }: {
   value: string;
   onChange: (value: string) => void;
-  placeholder: string;
 }) {
   return (
-    <div className="flex items-center gap-2 border-b px-2 py-1.5">
-      <SearchIcon className="size-4 shrink-0 text-muted-foreground" />
-      <input
-        className="flex h-6 w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
-        onChange={(e) => onChange(e.target.value)}
-        onKeyDown={(e) => e.stopPropagation()}
-        placeholder={placeholder}
-        type="text"
-        value={value}
-      />
-    </div>
+    <>
+      <div className="px-2 py-1.5">
+        <input
+          className="h-6 w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+          onChange={(e) => onChange(e.target.value)}
+          onKeyDown={(e) => e.stopPropagation()}
+          placeholder="Filter..."
+          type="text"
+          value={value}
+        />
+      </div>
+      <div className="border-b" />
+    </>
   );
 }
 
