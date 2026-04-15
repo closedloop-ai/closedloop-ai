@@ -1,0 +1,119 @@
+name: E2E Tests
+
+on:
+  deployment_status: {}
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch name or SHA to test"
+        required: false
+        type: string
+
+concurrency:
+  group: "${{ github.workflow }}-${{ github.event.deployment.ref || github.ref }}"
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      deployments: read
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (
+        github.event.deployment_status.state == 'success' &&
+        github.event.deployment.environment != 'Production' &&
+        contains(github.event.deployment_status.environment_url, '-app-') &&
+        github.event.deployment_status.creator.type == 'Bot' &&
+        github.event.deployment_status.creator.login == 'vercel[bot]'
+      )
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          ref: "${{ github.event_name == 'deployment_status' && github.event.deployment.sha || github.event.inputs.ref || github.ref }}"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+        env:
+          # prisma generate (runs via postinstall) only needs the URL format, not a live DB
+          DATABASE_URL: postgresql://localhost:5432/placeholder
+
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/ms-playwright
+          key: "${{ runner.os }}-playwright-${{ hashFiles('pnpm-lock.yaml') }}"
+
+      - name: Install Playwright browsers and system dependencies
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Install Playwright chromium
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+        run: pnpm exec playwright install chromium
+
+      - name: Get checkout SHA
+        id: get-sha
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve preview URL
+        run: |
+          if [ "$TRIGGER" = "deployment_status" ]; then
+            PREVIEW_URL="$DEPLOYMENT_URL"
+          else
+            # workflow_dispatch: poll Vercel API for the preview deployment URL
+            # VERCEL_TOKEN: use a read-only Vercel API token scoped to deployment reads, not a full team token.
+            node scripts/deploy/check-vercel.mjs
+            PREVIEW_URL=$(jq -r '.deployments[0].url' vercel-status.json)
+          fi
+          if [ -z "$PREVIEW_URL" ] || [ "$PREVIEW_URL" = "null" ]; then
+            echo "::error::No preview URL resolved (check Vercel deployment status or check-vercel.mjs output)"
+            exit 1
+          fi
+          if ! echo "$PREVIEW_URL" | grep -qE '^https://[a-z0-9-]+-closedloop\.vercel\.app(/.*)?$'; then
+            echo "::error::Unexpected preview URL pattern: $PREVIEW_URL"
+            exit 1
+          fi
+          echo "BASE_URL=$PREVIEW_URL" >> "$GITHUB_ENV"
+        env:
+          TRIGGER: ${{ github.event_name }}
+          DEPLOYMENT_URL: ${{ github.event.deployment_status.environment_url }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_IDS: ${{ secrets.VERCEL_APP_PROJECT_ID }}
+          VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
+          DEPLOY_SHA: ${{ steps.get-sha.outputs.sha }}
+          VERCEL_TARGET: preview
+          VERCEL_TIMEOUT_SECONDS: "300"
+          VERCEL_STATUS_PATH: vercel-status.json
+
+      - name: Run E2E tests
+        run: pnpm exec playwright test
+        env:
+          CI: "true"
+          BASE_URL: ${{ env.BASE_URL }}
+          CLERK_TESTING_TOKEN: ${{ secrets.CLERK_TESTING_TOKEN }}
+          DEVOPS_CLOSEDLOOP_APP_PWD: ${{ secrets.DEVOPS_CLOSEDLOOP_APP_PWD }}
+
+      - name: Upload test failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: "e2e-failure-${{ github.run_id }}"
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 7

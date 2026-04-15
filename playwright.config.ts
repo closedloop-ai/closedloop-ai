@@ -13,9 +13,15 @@ export default defineConfig({
   timeout: 60_000,
   outputDir: "test-results",
   globalSetup: "./e2e/global.setup.ts",
+  // Top-level retries apply to projects that don't set their own.
+  // Auth-related projects override to 0 to prevent Clerk account lockout.
+  retries: process.env.CI ? 2 : 0,
+  workers: process.env.CI ? 1 : undefined,
   reporter: [["list"], ["html", { outputFolder: "playwright-report" }]],
   use: {
-    baseURL: "http://localhost:3000",
+    baseURL: process.env.BASE_URL ?? "http://localhost:3000",
+    trace: process.env.CI ? "on-first-retry" : "off",
+    screenshot: process.env.CI ? "only-on-failure" : "off",
   },
   projects: [
     {
