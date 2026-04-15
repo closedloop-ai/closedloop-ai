@@ -2,6 +2,19 @@ import { type Mock, vi } from "vitest";
 
 vi.mock("@repo/database", () => ({
   withDb: vi.fn(),
+  LoopCommand: {
+    PLAN: "PLAN",
+    EXECUTE: "EXECUTE",
+    CHAT: "CHAT",
+    EXPLORE: "EXPLORE",
+    REQUEST_CHANGES: "REQUEST_CHANGES",
+    DECOMPOSE: "DECOMPOSE",
+    EVALUATE_PRD: "EVALUATE_PRD",
+    GENERATE_PRD: "GENERATE_PRD",
+    EVALUATE_PLAN: "EVALUATE_PLAN",
+    EVALUATE_CODE: "EVALUATE_CODE",
+    REQUEST_PRD_CHANGES: "REQUEST_PRD_CHANGES",
+  },
 }));
 
 // Transitive dependencies required by loopsService (service.ts imports modules that pull in these)

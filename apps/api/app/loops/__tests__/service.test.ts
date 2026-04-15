@@ -4,8 +4,16 @@
  * Tests computeTargetId propagation, s3StateKey exclusion from resumed loops,
  * and resumable-status validation.
  */
-import { LoopStatus } from "@repo/api/src/types/loop";
-import { type Mock, vi } from "vitest";
+import { LoopCommand, LoopStatus } from "@repo/api/src/types/loop";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  type Mock,
+  vi,
+} from "vitest";
 
 // Mock modules before importing the service
 vi.mock("@repo/database", () => ({
@@ -177,5 +185,76 @@ describe("loopsService.resume", () => {
     ).resolves.not.toThrow();
 
     expect(mockCreate).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("loopsService.create — additionalRepos gate", () => {
+  const originalFlag = process.env.MULTI_REPO_PLAN_ENABLED;
+
+  const setupMocks = () => {
+    const mockCount = vi.fn().mockResolvedValue(0);
+    const mockCreate = vi
+      .fn()
+      .mockResolvedValue({ id: "new-loop", status: LoopStatus.Pending });
+    mockWithDb.mockImplementation((callback: (db: unknown) => unknown) => {
+      const mockDb = {
+        loop: { count: mockCount, create: mockCreate },
+        organization: { findUnique: mockOrgFindUnique },
+      };
+      return callback(mockDb);
+    });
+    return { mockCreate };
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    process.env.MULTI_REPO_PLAN_ENABLED = originalFlag;
+    vi.restoreAllMocks();
+  });
+
+  it("drops additionalRepos when MULTI_REPO_PLAN_ENABLED is not 'true'", async () => {
+    process.env.MULTI_REPO_PLAN_ENABLED = "false";
+    const { mockCreate } = setupMocks();
+
+    await loopsService.create(TEST_ORG_ID, TEST_USER_ID, {
+      command: LoopCommand.Plan,
+      additionalRepos: [{ fullName: "org/repo-a", branch: "main" }],
+    });
+
+    expect(mockCreate.mock.calls[0][0].data.metadata).toBeUndefined();
+  });
+
+  it("drops additionalRepos for non-PLAN commands even when the flag is enabled", async () => {
+    process.env.MULTI_REPO_PLAN_ENABLED = "true";
+    const { mockCreate } = setupMocks();
+
+    await loopsService.create(TEST_ORG_ID, TEST_USER_ID, {
+      command: LoopCommand.Execute,
+      additionalRepos: [{ fullName: "org/repo-a", branch: "main" }],
+    });
+
+    expect(mockCreate.mock.calls[0][0].data.metadata).toBeUndefined();
+  });
+
+  it("persists additionalRepos for PLAN commands when the flag is enabled", async () => {
+    process.env.MULTI_REPO_PLAN_ENABLED = "true";
+    const { mockCreate } = setupMocks();
+
+    const additionalRepos = [
+      { fullName: "org/peer-a", branch: "main" },
+      { fullName: "org/peer-b", branch: "dev" },
+    ];
+
+    await loopsService.create(TEST_ORG_ID, TEST_USER_ID, {
+      command: LoopCommand.Plan,
+      additionalRepos,
+    });
+
+    expect(mockCreate.mock.calls[0][0].data.metadata).toEqual({
+      additionalRepos,
+    });
   });
 });

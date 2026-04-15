@@ -1304,14 +1304,49 @@ export const loopsService = {
 };
 
 function mergeCreateLoopMetadata(
-  input: Pick<CreateLoopRequest, "additionalRepos" | "metadata">
+  input: Pick<CreateLoopRequest, "additionalRepos" | "metadata" | "command">
 ): JsonObject | undefined {
-  if (!input.additionalRepos) {
+  const additionalRepos = resolveAdditionalReposForCreate(
+    input.additionalRepos,
+    input.command
+  );
+
+  if (!additionalRepos) {
     return input.metadata ?? undefined;
   }
 
   return {
     ...(input.metadata ?? {}),
-    additionalRepos: input.additionalRepos,
+    additionalRepos,
   } satisfies JsonObject;
+}
+
+/**
+ * Apply the MULTI_REPO_PLAN_ENABLED feature flag and PLAN-only gate to the
+ * requested additionalRepos. Returns undefined when the feature is disabled
+ * or the command is not PLAN. Enforced at the service layer so every caller
+ * (POST /loops, /artifacts/[id]/run-loop, internal callers) is gated.
+ */
+function resolveAdditionalReposForCreate(
+  additionalRepos: CreateLoopRequest["additionalRepos"],
+  command: LoopCommand
+): CreateLoopRequest["additionalRepos"] {
+  if (!additionalRepos) {
+    return undefined;
+  }
+  if (process.env.MULTI_REPO_PLAN_ENABLED !== "true") {
+    log.warn(
+      "[loops.service] MULTI_REPO_PLAN_ENABLED is not enabled — dropping additionalRepos",
+      { command }
+    );
+    return undefined;
+  }
+  if (command !== LoopCommand.Plan) {
+    log.warn(
+      "[loops.service] additionalRepos is only supported for PLAN loops — dropping",
+      { command }
+    );
+    return undefined;
+  }
+  return additionalRepos;
 }

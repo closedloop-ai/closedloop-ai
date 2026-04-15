@@ -27,7 +27,6 @@ import {
 } from "@/lib/route-utils";
 import { artifactsService } from "../../service";
 import {
-  buildAdditionalReposInput,
   COMMAND_MAP,
   checkBackendMismatch,
   resolveEvaluateCodeBranchForRunLoop,
@@ -157,13 +156,6 @@ export const POST = withAnyAuth<RunLoopResponse, "/artifacts/[id]/run-loop">(
       const command = COMMAND_MAP[body.command];
       const prompt = body.prompt || getDefaultPrompt(command);
 
-      // Resolve additional repos: apply feature flag and PLAN-only gate.
-      const additionalRepos = buildAdditionalReposInput(
-        body.additionalRepos,
-        body.command,
-        artifactId
-      );
-
       const loopResponse = await loopsService.create(
         user.organizationId,
         user.id,
@@ -177,7 +169,7 @@ export const POST = withAnyAuth<RunLoopResponse, "/artifacts/[id]/run-loop">(
           repo: targetRepo
             ? { fullName: targetRepo, branch: targetBranch }
             : undefined,
-          additionalRepos,
+          additionalRepos: body.additionalRepos,
           contextRefs: contextRefs.length > 0 ? contextRefs : undefined,
         }
       );

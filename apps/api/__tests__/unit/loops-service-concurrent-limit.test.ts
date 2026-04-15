@@ -87,7 +87,7 @@ vi.mock("@/lib/db-utils", () => ({
 
 // --- Imports (after mocks) ---
 
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   type ConcurrentLoopLimitError,
   isConcurrentLoopLimitError,
@@ -195,9 +195,16 @@ describe("loopsService.createIfNotExists — concurrent loop limit enforcement",
 });
 
 describe("loopsService.create metadata merge for additionalRepos", () => {
+  const originalFlag = process.env.MULTI_REPO_PLAN_ENABLED;
+
   beforeEach(() => {
     vi.clearAllMocks();
     mockCount.mockResolvedValue(0);
+    process.env.MULTI_REPO_PLAN_ENABLED = "true";
+  });
+
+  afterEach(() => {
+    process.env.MULTI_REPO_PLAN_ENABLED = originalFlag;
   });
 
   it("persists additionalRepos into metadata.additionalRepos", async () => {
@@ -233,9 +240,16 @@ describe("loopsService.create metadata merge for additionalRepos", () => {
 });
 
 describe("loopsService.createIfNotExists metadata merge for additionalRepos", () => {
+  const originalFlag = process.env.MULTI_REPO_PLAN_ENABLED;
+
   beforeEach(() => {
     vi.clearAllMocks();
     mockCount.mockResolvedValue(0);
+    process.env.MULTI_REPO_PLAN_ENABLED = "true";
+  });
+
+  afterEach(() => {
+    process.env.MULTI_REPO_PLAN_ENABLED = originalFlag;
   });
 
   it("persists additionalRepos under metadata for createManyAndReturn", async () => {
