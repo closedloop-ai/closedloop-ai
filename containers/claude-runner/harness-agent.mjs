@@ -1220,7 +1220,7 @@ function cloneRepo(workDir) {
 // ---------------------------------------------------------------------------
 // Additional peer repository cloning
 // ---------------------------------------------------------------------------
-function cloneAdditionalRepos(entries) {
+function cloneAdditionalRepos(entries, peersDir = "/workspace/peers") {
   if (!Array.isArray(entries) || entries.length === 0) {
     return [];
   }
@@ -1246,7 +1246,6 @@ function cloneAdditionalRepos(entries) {
     }
   }
 
-  const peersDir = "/workspace/peers";
   fs.mkdirSync(peersDir, { recursive: true });
 
   const clonedDirs = [];
