@@ -16,7 +16,7 @@ export function reposOptions() {
   return queryOptions<ReposResponse>({
     queryKey: queryKeys.repos(),
     queryFn: async () => {
-      const response = await fetch("/api/engineer/repos");
+      const response = await fetch("/api/gateway/repos");
       if (!response.ok) {
         const data = await response.json().catch(() => null);
         throw new Error(

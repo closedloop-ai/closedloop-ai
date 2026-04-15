@@ -6,6 +6,7 @@
  * itself has zero `if (loop.computeTargetId)` branching.
  */
 
+import type { DesktopApiNamespace } from "@repo/api/src/desktop-api-namespace";
 import type { Loop, LoopCommand } from "@repo/api/src/types/loop";
 import type { LoopCommandHandler } from "./loop-commands/loop-command-handler";
 import type { ContextPack } from "./loop-state";
@@ -34,6 +35,7 @@ export type LaunchContext = {
   parentSessionId: string | null;
   localRepoPath: string | undefined;
   computeTargetId: string | null;
+  desktopApiNamespace: DesktopApiNamespace | undefined;
 };
 
 // ---------------------------------------------------------------------------

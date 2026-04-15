@@ -43,7 +43,7 @@ export function RunViewerDialog({
       // Upload zip server-side for Claude file tools
       const formData = new FormData();
       formData.append("file", file);
-      const res = await fetch("/api/engineer/run-viewer-extract", {
+      const res = await fetch("/api/gateway/run-viewer-extract", {
         method: "POST",
         body: formData,
       });
@@ -63,7 +63,7 @@ export function RunViewerDialog({
       if (!isOpen) {
         // Clean up server-side extracted files
         if (runDir) {
-          fetch("/api/engineer/run-viewer-extract", {
+          fetch("/api/gateway/run-viewer-extract", {
             method: "DELETE",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ runDir }),
@@ -77,7 +77,7 @@ export function RunViewerDialog({
         setSessionName("");
         setChatOpen(false);
         // Clear chat history when dialog closes
-        fetch("/api/engineer/run-viewer-chat", { method: "DELETE" }).catch(
+        fetch("/api/gateway/run-viewer-chat", { method: "DELETE" }).catch(
           () => {}
         );
       }

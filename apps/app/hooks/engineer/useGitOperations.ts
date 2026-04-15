@@ -81,7 +81,7 @@ export function useGitOperations(): UseGitOperationsResult {
       setError(null);
 
       try {
-        const response = await fetch("/api/engineer/git", {
+        const response = await fetch("/api/gateway/git", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body),

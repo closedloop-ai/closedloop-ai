@@ -110,7 +110,7 @@ export function EngineerDashboard() {
     const poll = async () => {
       try {
         const res = await fetch(
-          `/api/engineer/symphony/process-learnings?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`
+          `/api/gateway/symphony/process-learnings?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`
         );
         const data = await res.json();
         if (data.status === "completed") {
@@ -150,7 +150,7 @@ export function EngineerDashboard() {
 
   const handleProcessPending = useCallback(async () => {
     try {
-      const res = await fetch("/api/engineer/symphony/process-all-learnings", {
+      const res = await fetch("/api/gateway/symphony/process-all-learnings", {
         method: "POST",
       });
       if (!res.ok) {

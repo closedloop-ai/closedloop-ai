@@ -1,5 +1,6 @@
 "use client";
 
+import { CURRENT_DESKTOP_API_NAMESPACE } from "@repo/api/src/desktop-api-namespace";
 import {
   type Artifact,
   type ArtifactDetail,
@@ -27,6 +28,7 @@ import {
 } from "@tanstack/react-query";
 import { useCallback, useState } from "react";
 import { useApiClient } from "@/hooks/use-api-client";
+import { resolveDesktopApiNamespaceHint } from "@/lib/engineer/local-gateway-api-namespace";
 import { handleRunLoopResponse } from "@/lib/run-loop-response";
 import { dashboardKeys } from "./use-dashboard-stats";
 import { invalidateEntityLinkQueries } from "./use-entity-links";
@@ -454,8 +456,13 @@ export function useCreateAndGenerateArtifact() {
 
       // Trigger generation via Loops — compute target resolved server-side
       try {
+        const desktopApiNamespace = await resolveDesktopApiNamespaceHint();
         await apiClient.post(`/artifacts/${artifact.id}/run-loop`, {
           command: RunLoopCommand.Plan,
+          ...(desktopApiNamespace &&
+          desktopApiNamespace !== CURRENT_DESKTOP_API_NAMESPACE
+            ? { desktopApiNamespace }
+            : {}),
         });
         return artifact;
       } catch (error) {
@@ -501,9 +508,14 @@ export function useCreateAndGenerateArtifact() {
       const { pendingArtifactId } = multiTargetState;
       setMultiTargetState(null);
       try {
+        const desktopApiNamespace = await resolveDesktopApiNamespaceHint();
         await apiClient.post(`/artifacts/${pendingArtifactId}/run-loop`, {
           command: "plan",
           computeTargetId: targetId,
+          ...(desktopApiNamespace &&
+          desktopApiNamespace !== CURRENT_DESKTOP_API_NAMESPACE
+            ? { desktopApiNamespace }
+            : {}),
         });
         queryClient.invalidateQueries({
           queryKey: artifactKeys.generationStatus(pendingArtifactId),

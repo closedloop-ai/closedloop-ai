@@ -1,4 +1,8 @@
 import { randomUUID } from "node:crypto";
+import {
+  isDesktopApiPath,
+  normalizeDesktopApiPath,
+} from "@repo/api/src/desktop-api-namespace";
 import type { JsonValue } from "@repo/api/src/types/common";
 import type { DesktopCommandEventType } from "@repo/api/src/types/compute-target";
 import type { Socket } from "socket.io";
@@ -232,7 +236,7 @@ export function toWireCommandFromRelayOperation(operation: {
   }
 
   const { path, query } = splitPathAndQuery(rawPath);
-  if (!path.startsWith("/api/engineer/")) {
+  if (!isDesktopApiPath(path)) {
     return null;
   }
 
@@ -277,20 +281,24 @@ export function emitCommand(
  * `apps/desktop/src/main/app.ts`.
  */
 export const EXACT_OPERATION_IDS: Record<string, string> = {
-  "/api/engineer/symphony/launch": "symphony_launch",
-  "/api/engineer/symphony/kill": "symphony_kill",
-  "/api/engineer/symphony/loop": "symphony_loop",
-  "/api/engineer/symphony/loop/kill": "symphony_loop_kill",
-  "/api/engineer/symphony/sessions": "symphony_sessions",
-  "/api/engineer/terminal-chat": "terminal_chat",
-  "/api/engineer/ticket-chat": "ticket_chat",
-  "/api/engineer/run-viewer-chat": "run_viewer_chat",
-  "/api/engineer/health-check": "health_check",
-  "/api/engineer/repos": "repos_config",
-  "/api/engineer/learnings": "learnings",
-  "/api/engineer/directories": "filesystem",
-  "/api/engineer/files/search": "filesystem",
-  "/api/engineer/git/user": "git_pr",
+  "/api/gateway/symphony/launch": "symphony_launch",
+  "/api/gateway/symphony/kill": "symphony_kill",
+  "/api/gateway/symphony/loop": "symphony_loop",
+  "/api/gateway/symphony/loop/kill": "symphony_loop_kill",
+  "/api/gateway/symphony/status": "symphony_status",
+  "/api/gateway/symphony/sessions": "symphony_sessions",
+  "/api/gateway/symphony/record-learning-use": "learnings",
+  "/api/gateway/terminal-chat": "terminal_chat",
+  "/api/gateway/ticket-chat": "ticket_chat",
+  "/api/gateway/run-viewer-chat": "run_viewer_chat",
+  "/api/gateway/health-check": "health_check",
+  "/api/gateway/version": "health_check",
+  "/api/gateway/repos": "repos_config",
+  "/api/gateway/learnings": "learnings",
+  "/api/gateway/directories": "filesystem",
+  "/api/gateway/files/search": "filesystem",
+  "/api/gateway/git/user": "git_pr",
+  "/api/gateway/git/branch-worktree": "git_branch_worktree",
 };
 
 /**
@@ -298,42 +306,50 @@ export const EXACT_OPERATION_IDS: Record<string, string> = {
  * Order matters: more-specific prefixes must come before less-specific ones.
  */
 export const PREFIX_OPERATION_IDS: [string, string][] = [
-  ["/api/engineer/symphony/status/", "symphony_status"],
-  ["/api/engineer/symphony/chat-history/", "symphony_chat_history"],
-  ["/api/engineer/symphony/chat/", "symphony_chat"],
-  ["/api/engineer/symphony/comment-chat/", "symphony_comment_chat"],
-  ["/api/engineer/symphony/commit-message/", "symphony_commit_message"],
-  ["/api/engineer/symphony/plan/", "symphony_plan"],
-  ["/api/engineer/symphony/judges/", "symphony_judges"],
-  ["/api/engineer/symphony/logs/", "symphony_logs"],
-  ["/api/engineer/symphony/pending-learnings", "learnings"],
-  ["/api/engineer/symphony/process-all-learnings", "learnings"],
-  ["/api/engineer/symphony/process-learnings", "learnings"],
-  ["/api/engineer/codex/argue/", "codex_argue"],
-  ["/api/engineer/codex/", "codex_review"],
-  ["/api/engineer/git/pr", "git_pr"],
-  ["/api/engineer/git", "git_action"],
-  ["/api/engineer/deploy", "deploy"],
-  ["/api/engineer/run-viewer-extract", "filesystem"],
+  ["/api/gateway/symphony/status/", "symphony_status"],
+  ["/api/gateway/symphony/plan-loop/", "symphony_plan_loop"],
+  ["/api/gateway/symphony/chat-history/", "symphony_chat_history"],
+  ["/api/gateway/symphony/chat/", "symphony_chat"],
+  ["/api/gateway/symphony/comment-chat/", "symphony_comment_chat"],
+  ["/api/gateway/symphony/commit-message/", "symphony_commit_message"],
+  ["/api/gateway/symphony/plan/", "symphony_plan"],
+  ["/api/gateway/symphony/judges/", "symphony_judges"],
+  ["/api/gateway/symphony/logs/", "symphony_logs"],
+  ["/api/gateway/symphony/sessions/", "symphony_sessions"],
+  ["/api/gateway/symphony/attachments/", "filesystem"],
+  ["/api/gateway/symphony/upload/", "filesystem"],
+  ["/api/gateway/symphony/pending-learnings", "learnings"],
+  ["/api/gateway/symphony/process-all-learnings", "learnings"],
+  ["/api/gateway/symphony/process-learnings", "learnings"],
+  ["/api/gateway/symphony/extract-learnings", "learnings"],
+  ["/api/gateway/symphony/learnings-status/", "learnings"],
+  ["/api/gateway/codex/argue/", "codex_argue"],
+  ["/api/gateway/codex/", "codex_review"],
+  ["/api/gateway/work-directory/", "filesystem"],
+  ["/api/gateway/git/pr", "git_pr"],
+  ["/api/gateway/git", "git_action"],
+  ["/api/gateway/deploy", "deploy"],
+  ["/api/gateway/run-viewer-extract", "filesystem"],
 ];
 
 /**
  * Resolve the semantic operationId that Electron expects for a given
- * `/api/engineer/*` path.  This must stay in sync with the Electron
+ * desktop API path. This must stay in sync with the Electron
  * desktop app's `resolveOperationId()` in `apps/desktop/src/main/app.ts`.
  */
 export function resolveOperationId(pathname: string): string | null {
-  if (!pathname.startsWith("/api/engineer/")) {
+  const normalizedPath = normalizeDesktopApiPath(pathname);
+  if (!normalizedPath) {
     return null;
   }
 
-  const exact = EXACT_OPERATION_IDS[pathname];
+  const exact = EXACT_OPERATION_IDS[normalizedPath];
   if (exact) {
     return exact;
   }
 
   for (const [prefix, operationId] of PREFIX_OPERATION_IDS) {
-    if (pathname.startsWith(prefix)) {
+    if (normalizedPath.startsWith(prefix)) {
       return operationId;
     }
   }

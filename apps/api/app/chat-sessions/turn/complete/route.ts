@@ -14,9 +14,9 @@ export async function POST(request: NextRequest): Promise<Response> {
   try {
     const auth = await authenticateChatRunnerRequest(request);
     if (!auth.ok) {
-      return auth.response;
+      return auth.error;
     }
-    const { claims } = auth;
+    const claims = auth.value;
 
     const { body, errorResponse: parseError } = await parseBody(
       request,
@@ -37,17 +37,17 @@ export async function POST(request: NextRequest): Promise<Response> {
       body
     );
 
-    if ("chat" in result) {
-      return successResponse({ chat: result.chat });
+    if (result.ok) {
+      return successResponse({ chat: result.value.chat });
     }
-    if ("notFound" in result) {
+    if (result.error.kind === "notFound") {
       return notFoundResponse("Chat");
     }
     return NextResponse.json(
       {
         success: false,
-        error: `Chat is bound to provider ${result.boundProvider}`,
-        boundProvider: result.boundProvider,
+        error: `Chat is bound to provider ${result.error.boundProvider}`,
+        boundProvider: result.error.boundProvider,
       },
       { status: 409 }
     );

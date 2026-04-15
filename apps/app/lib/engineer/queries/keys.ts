@@ -78,8 +78,16 @@ export const queryKeys = {
   branchWorktree: (
     repoFullName: string,
     headBranch: string,
-    prNumber: number
-  ) => ["branch-worktree", repoFullName, headBranch, prNumber] as const,
+    prNumber: number,
+    routingKey: string
+  ) =>
+    [
+      "branch-worktree",
+      repoFullName,
+      headBranch,
+      prNumber,
+      routingKey,
+    ] as const,
 
   // Work directory domain
   workDirectory: (ticketId: string) => ["work-directory", ticketId] as const,
