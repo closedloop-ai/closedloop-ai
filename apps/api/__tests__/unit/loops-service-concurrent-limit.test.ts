@@ -232,16 +232,19 @@ describe("loopsService.create / createIfNotExists additionalRepos column persist
 
     if (method === "create") {
       await loopsService.create("org-1", "user-1", input);
-      expect(mockCreate).toHaveBeenCalledTimes(1);
-      const createArgs = mockCreate.mock.calls[0][0];
-      expect(createArgs.data.additionalRepos).toEqual(additionalRepos);
-      expect(createArgs.data.metadata).toBeUndefined();
     } else {
       await loopsService.createIfNotExists("org-1", "user-1", input);
-      expect(mockCreateManyAndReturn).toHaveBeenCalledTimes(1);
-      const createManyArgs = mockCreateManyAndReturn.mock.calls[0][0];
-      expect(createManyArgs.data[0].additionalRepos).toEqual(additionalRepos);
-      expect(createManyArgs.data[0].metadata).toBeUndefined();
     }
+
+    const data =
+      method === "create"
+        ? mockCreate.mock.calls[0][0].data
+        : mockCreateManyAndReturn.mock.calls[0][0].data[0];
+
+    expect(
+      method === "create" ? mockCreate : mockCreateManyAndReturn
+    ).toHaveBeenCalledTimes(1);
+    expect(data.additionalRepos).toEqual(additionalRepos);
+    expect(data.metadata).toBeUndefined();
   });
 });
