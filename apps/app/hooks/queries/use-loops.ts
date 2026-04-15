@@ -11,7 +11,6 @@ import type {
   LoopUsageSummary,
   LoopWithUser,
   ResumeLoopRequest,
-  RunLoopCommand as RunLoopCommandType,
 } from "@repo/api/src/types/loop";
 import { RunLoopCommand } from "@repo/api/src/types/loop";
 import {
@@ -228,7 +227,7 @@ export function useRunLoop() {
       repo,
     }: {
       artifactId: string;
-      command: RunLoopCommandType;
+      command: RunLoopCommand;
       prompt?: string;
       computeTargetId?: string | null;
       backendOverride?: boolean;

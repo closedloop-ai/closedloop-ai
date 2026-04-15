@@ -31,6 +31,16 @@ export type LoopRequestBody = {
   parentSessionId?: string;
   prompt?: string;
   localRepoPath?: string;
+  /**
+   * Additional repositories to check out alongside the primary repo.
+   * Accepted and validated by this schema but not yet forwarded to compute
+   * targets; propagation is tracked in a follow-on PR.
+   * An empty array is valid (no additional repos).
+   */
+  additionalRepos?: Array<
+    | { localRepoPath: string; fullName?: string; branch: string }
+    | { localRepoPath?: string; fullName: string; branch: string }
+  >;
   userContext?: string;
   attachments?: ContextPackAttachment[];
 };
@@ -67,5 +77,24 @@ export const LoopRequestBodySchema = z.object({
   prompt: z.string().optional(),
   localRepoPath: z.string().optional(),
   userContext: z.string().optional(),
+  additionalRepos: z
+    .array(
+      z
+        .object({
+          localRepoPath: z.string().min(1).optional(),
+          fullName: z.string().min(1).optional(),
+          branch: z.string(),
+        })
+        .refine(
+          (obj) =>
+            obj.localRepoPath !== undefined || obj.fullName !== undefined,
+          {
+            message:
+              "At least one of localRepoPath or fullName must be provided",
+            path: ["localRepoPath"],
+          }
+        )
+    )
+    .optional(),
   attachments: z.array(ContextPackAttachmentSchema).optional(),
 });

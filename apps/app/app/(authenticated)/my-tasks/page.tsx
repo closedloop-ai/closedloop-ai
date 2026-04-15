@@ -1,7 +1,10 @@
 "use client";
 
 import type { Priority } from "@repo/api/src/types/common";
-import type { FeatureStatus } from "@repo/api/src/types/feature";
+import {
+  FEATURE_STATUS_OPTIONS,
+  type FeatureStatus,
+} from "@repo/api/src/types/feature";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   DropdownMenu,
@@ -241,18 +244,14 @@ export default function MyTasksPage() {
                 <DropdownMenuSeparator />
                 <DropdownMenuGroup>
                   <DropdownMenuLabel>Status</DropdownMenuLabel>
-                  {Object.entries(featureStatusLabels).map(([value, label]) => (
+                  {FEATURE_STATUS_OPTIONS.map((value) => (
                     <DropdownMenuCheckboxItem
-                      checked={filters.statuses.includes(
-                        value as FeatureStatus
-                      )}
+                      checked={filters.statuses.includes(value)}
                       key={value}
-                      onCheckedChange={() =>
-                        toggleStatus(value as FeatureStatus)
-                      }
+                      onCheckedChange={() => toggleStatus(value)}
                       onSelect={preventClose}
                     >
-                      {label}
+                      {featureStatusLabels[value]}
                     </DropdownMenuCheckboxItem>
                   ))}
                 </DropdownMenuGroup>

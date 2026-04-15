@@ -223,7 +223,10 @@ export function useArtifactGenerationStatus(
       refetchInterval: polling
         ? (query) => {
             const status = query.state.data?.status;
-            if (status && isActiveGenerationStatus(status)) {
+            if (
+              status &&
+              (isActiveGenerationStatus(status) || status === "FAILURE")
+            ) {
               return GENERATION_POLL_INTERVAL;
             }
             return false;
@@ -298,7 +301,6 @@ export function useUpdateArtifact() {
       queryClient.invalidateQueries({
         queryKey: artifactKeys.detail(input.id),
       });
-      // Also invalidate the slug-based lookup so detail pages loaded by slug pick up the change
       queryClient.invalidateQueries({
         queryKey: artifactKeys.bySlug(data.slug),
       });
@@ -333,23 +335,35 @@ export function useCreateArtifactVersion(artifactId: string) {
   const apiClient = useApiClient();
 
   return useMutation({
-    mutationFn: (content: string) =>
-      apiClient.post<Artifact>(`/artifacts/${artifactId}/versions`, {
-        content,
-      }),
-    onSuccess: () => {
+    mutationFn: ({
+      content,
+      resetRoom,
+    }: {
+      content: string;
+      resetRoom?: boolean;
+    }) => {
+      const params = new URLSearchParams();
+      if (resetRoom !== undefined) {
+        params.set("reset-room", resetRoom.toString());
+      }
+      return apiClient.post<ArtifactDetail>(
+        `/artifacts/${artifactId}/versions?${params.toString()}`,
+        {
+          content,
+        }
+      );
+    },
+    onSuccess: (result) => {
       queryClient.invalidateQueries({
         queryKey: artifactKeys.detail(artifactId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: artifactKeys.bySlug(result.slug),
       });
       queryClient.invalidateQueries({
         queryKey: artifactKeys.versions(artifactId),
       });
       queryClient.invalidateQueries({ queryKey: artifactKeys.lists() });
-      // Invalidate slug-based lookups so useArtifactBySlug picks up the new version
-      queryClient.invalidateQueries({
-        predicate: (query) =>
-          query.queryKey[0] === "artifacts" && query.queryKey[1] === "by-slug",
-      });
     },
   });
 }
@@ -533,6 +547,42 @@ export function useExecuteImplementationPlan() {
         queryKey: artifactKeys.generationStatus(artifactId),
       });
       queryClient.invalidateQueries({ queryKey: artifactKeys.lists() });
+    },
+  });
+}
+
+/**
+ * Dismiss the currently displayed generation status (shared across users).
+ */
+export function useDismissArtifactGenerationStatus() {
+  const queryClient = useQueryClient();
+  const apiClient = useApiClient();
+
+  return useMutation({
+    mutationFn: ({
+      artifactId,
+      runKey,
+    }: {
+      artifactId: string;
+      runKey: string | null;
+    }) =>
+      apiClient.put<GenerationStatus>(
+        `/artifacts/${artifactId}/generation-status/dismiss`,
+        { runKey }
+      ),
+    onSuccess: (status, { artifactId }) => {
+      queryClient.setQueryData(
+        artifactKeys.generationStatus(artifactId),
+        status
+      );
+      queryClient.invalidateQueries({
+        queryKey: artifactKeys.detail(artifactId),
+      });
+      queryClient.invalidateQueries({ queryKey: artifactKeys.bySlugs() });
+      queryClient.invalidateQueries({ queryKey: artifactKeys.lists() });
+    },
+    onError: () => {
+      toast.error("Failed to dismiss generation status");
     },
   });
 }

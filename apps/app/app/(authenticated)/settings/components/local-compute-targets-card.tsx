@@ -31,6 +31,7 @@ import {
 import Link from "next/link";
 import { type MouseEvent, useState } from "react";
 import { SystemCheckResults } from "@/components/system-check/system-check-results";
+import { env } from "@/env";
 import {
   useComputeTargets,
   useDeleteComputeTarget,
@@ -41,7 +42,11 @@ import {
   DESKTOP_SETUP_URL,
 } from "@/lib/engineer/constants";
 import type { CheckResult } from "@/lib/engineer/queries/health-check";
-import { healthCheckOptions } from "@/lib/engineer/queries/health-check";
+import {
+  getHealthCheckTargetKey,
+  getRenderableHealthChecks,
+  healthCheckOptions,
+} from "@/lib/engineer/queries/health-check";
 import { queryKeys } from "@/lib/engineer/queries/keys";
 import { resolveTargetLabel } from "@/lib/engineer/routing-label";
 import { useEngineerRoutingSelection } from "@/lib/engineer/routing-store";
@@ -146,16 +151,25 @@ export function LocalComputeTargetsCard() {
   const { isLoading: systemCheckLoading, shouldRunSystemCheck } =
     useSystemCheckEligibility();
   const routing = useEngineerRoutingSelection();
+  const expectedMcpUrl = env.NEXT_PUBLIC_MCP_SERVER_URL ?? null;
+  const healthCheckTargetKey = getHealthCheckTargetKey(routing);
+  const healthCheckQueryKey = queryKeys.healthCheck(
+    healthCheckTargetKey,
+    expectedMcpUrl
+  );
   const {
     data: healthCheckData,
     dataUpdatedAt,
     refetch: refetchHealthCheck,
   } = useQuery({
-    ...healthCheckOptions(),
-    enabled: false,
+    ...healthCheckOptions(healthCheckTargetKey, expectedMcpUrl),
+    enabled: shouldRunSystemCheck && !systemCheckLoading,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
   });
   const isHealthCheckFetching =
-    useIsFetching({ queryKey: queryKeys.healthCheck() }) > 0;
+    useIsFetching({ queryKey: healthCheckQueryKey }) > 0;
 
   const handleDelete = (id: string, machineName: string) => {
     deleteTarget.mutate(id, {
@@ -174,10 +188,13 @@ export function LocalComputeTargetsCard() {
   };
 
   const activeTargetLabel = resolveTargetLabel(routing, targets);
-
-  const failureCount = getFailureCount(healthCheckData?.checks);
+  const renderableChecks = getRenderableHealthChecks(
+    healthCheckData,
+    expectedMcpUrl
+  );
+  const failureCount = getFailureCount(renderableChecks);
   const summary = getSystemCheckSummary(
-    healthCheckData?.checks,
+    renderableChecks,
     isHealthCheckFetching,
     shouldRunSystemCheck
   );
@@ -350,7 +367,7 @@ export function LocalComputeTargetsCard() {
               <CollapsibleContent className="border-border/70 border-t px-4 pb-4">
                 <div className="pt-4">
                   {healthCheckData ? (
-                    <SystemCheckResults checks={healthCheckData.checks} />
+                    <SystemCheckResults checks={renderableChecks} />
                   ) : (
                     <p className="text-muted-foreground text-sm">
                       {shouldRunSystemCheck

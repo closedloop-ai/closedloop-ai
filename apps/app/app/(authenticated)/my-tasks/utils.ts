@@ -17,9 +17,9 @@ export const DISPLAY_GROUPS: {
   statuses: FeatureStatus[];
 }[] = [
   {
-    key: "not_started",
-    label: "Not started",
-    statuses: [FeatureStatus.NotStarted],
+    key: "draft",
+    label: "Draft",
+    statuses: [FeatureStatus.Draft],
   },
   {
     key: "in_progress",
@@ -27,7 +27,9 @@ export const DISPLAY_GROUPS: {
     statuses: [FeatureStatus.InProgress],
   },
   { key: "in_review", label: "In review", statuses: [FeatureStatus.InReview] },
-  { key: "completed", label: "Completed", statuses: [FeatureStatus.Completed] },
+  { key: "approved", label: "Approved", statuses: [FeatureStatus.Approved] },
+  { key: "executed", label: "Executed", statuses: [FeatureStatus.Executed] },
+  { key: "done", label: "Done", statuses: [FeatureStatus.Done] },
   { key: "obsolete", label: "Obsolete", statuses: [FeatureStatus.Obsolete] },
 ];
 

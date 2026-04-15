@@ -18,8 +18,8 @@ import {
 // ---------------------------------------------------------------------------
 
 describe("ArtifactStatus", () => {
-  it("contains ReadyForReview with value READY_FOR_REVIEW", () => {
-    expect(ArtifactStatus.ReadyForReview).toBe("READY_FOR_REVIEW");
+  it("contains Done with value DONE", () => {
+    expect(ArtifactStatus.Done).toBe("DONE");
   });
 
   it("contains Executed with value EXECUTED", () => {
@@ -32,10 +32,8 @@ describe("ArtifactStatus", () => {
 // ---------------------------------------------------------------------------
 
 describe("artifactStatusLabels", () => {
-  it("maps ReadyForReview to 'Ready for Review'", () => {
-    expect(artifactStatusLabels[ArtifactStatus.ReadyForReview]).toBe(
-      "Ready for Review"
-    );
+  it("maps Done to 'Done'", () => {
+    expect(artifactStatusLabels[ArtifactStatus.Done]).toBe("Done");
   });
 
   it("maps Executed to 'Executed'", () => {
@@ -48,18 +46,16 @@ describe("artifactStatusLabels", () => {
 // ---------------------------------------------------------------------------
 
 describe("artifactStatusColors", () => {
-  it("has a non-empty color entry for ReadyForReview", () => {
-    expect(artifactStatusColors[ArtifactStatus.ReadyForReview]).toBeTruthy();
+  it("has a non-empty color entry for Done", () => {
+    expect(artifactStatusColors[ArtifactStatus.Done]).toBeTruthy();
   });
 
   it("has a non-empty color entry for Executed", () => {
     expect(artifactStatusColors[ArtifactStatus.Executed]).toBeTruthy();
   });
 
-  it("assigns warning token classes to ReadyForReview", () => {
-    expect(artifactStatusColors[ArtifactStatus.ReadyForReview]).toContain(
-      "warning"
-    );
+  it("assigns success token classes to Done", () => {
+    expect(artifactStatusColors[ArtifactStatus.Done]).toContain("success");
   });
 
   it("assigns info token classes to Executed", () => {
@@ -72,10 +68,8 @@ describe("artifactStatusColors", () => {
 // ---------------------------------------------------------------------------
 
 describe("ARTIFACT_STATUS_LABELS", () => {
-  it("maps ReadyForReview to 'Ready for Review'", () => {
-    expect(ARTIFACT_STATUS_LABELS[ArtifactStatus.ReadyForReview]).toBe(
-      "Ready for Review"
-    );
+  it("maps Done to 'Done'", () => {
+    expect(ARTIFACT_STATUS_LABELS[ArtifactStatus.Done]).toBe("Done");
   });
 
   it("maps Executed to 'Executed'", () => {
@@ -88,18 +82,16 @@ describe("ARTIFACT_STATUS_LABELS", () => {
 // ---------------------------------------------------------------------------
 
 describe("ARTIFACT_STATUS_COLORS", () => {
-  it("has a non-empty color entry for ReadyForReview", () => {
-    expect(ARTIFACT_STATUS_COLORS[ArtifactStatus.ReadyForReview]).toBeTruthy();
+  it("has a non-empty color entry for Done", () => {
+    expect(ARTIFACT_STATUS_COLORS[ArtifactStatus.Done]).toBeTruthy();
   });
 
   it("has a non-empty color entry for Executed", () => {
     expect(ARTIFACT_STATUS_COLORS[ArtifactStatus.Executed]).toBeTruthy();
   });
 
-  it("assigns yellow color class to ReadyForReview", () => {
-    expect(ARTIFACT_STATUS_COLORS[ArtifactStatus.ReadyForReview]).toContain(
-      "yellow"
-    );
+  it("assigns green color class to Done", () => {
+    expect(ARTIFACT_STATUS_COLORS[ArtifactStatus.Done]).toContain("green");
   });
 
   it("assigns blue color class to Executed", () => {
@@ -112,14 +104,12 @@ describe("ARTIFACT_STATUS_COLORS", () => {
 // ---------------------------------------------------------------------------
 
 describe("mapArtifactStatusToType", () => {
-  it("returns 'started' for ReadyForReview", () => {
-    expect(mapArtifactStatusToType(ArtifactStatus.ReadyForReview)).toBe(
-      "started"
-    );
+  it("returns 'started' for InReview", () => {
+    expect(mapArtifactStatusToType(ArtifactStatus.InReview)).toBe("started");
   });
 
-  it("returns 'completed' for Executed", () => {
-    expect(mapArtifactStatusToType(ArtifactStatus.Executed)).toBe("completed");
+  it("returns 'completed' for Done", () => {
+    expect(mapArtifactStatusToType(ArtifactStatus.Done)).toBe("completed");
   });
 });
 
@@ -128,9 +118,9 @@ describe("mapArtifactStatusToType", () => {
 // ---------------------------------------------------------------------------
 
 describe("artifactStatusDisplayName", () => {
-  it("returns 'Ready for Review' for ReadyForReview", () => {
-    expect(artifactStatusDisplayName(ArtifactStatus.ReadyForReview)).toBe(
-      "Ready for Review"
+  it("returns 'In Review' for InReview", () => {
+    expect(artifactStatusDisplayName(ArtifactStatus.InReview)).toBe(
+      "In Review"
     );
   });
 

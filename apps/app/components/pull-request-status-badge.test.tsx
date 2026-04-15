@@ -21,6 +21,7 @@ describe("PullRequestStatusBadge", () => {
           createdAt: new Date("2024-01-01T00:00:00Z"),
           checksStatus: null,
           reviewDecision: null,
+          externalLinkId: null,
         }}
       />
     );
@@ -44,6 +45,7 @@ describe("PullRequestStatusBadge", () => {
           createdAt: new Date("2024-01-02T00:00:00Z"),
           checksStatus: null,
           reviewDecision: null,
+          externalLinkId: null,
         }}
       />
     );
@@ -67,6 +69,7 @@ describe("PullRequestStatusBadge", () => {
           createdAt: new Date("2024-01-03T00:00:00Z"),
           checksStatus: null,
           reviewDecision: null,
+          externalLinkId: null,
         }}
       />
     );
@@ -100,6 +103,7 @@ describe("CI status indicator", () => {
     baseBranch: "main",
     createdAt: new Date("2024-01-01T00:00:00Z"),
     reviewDecision: null,
+    externalLinkId: null,
   };
 
   it("renders green checkmark for checksStatus PASSING", () => {

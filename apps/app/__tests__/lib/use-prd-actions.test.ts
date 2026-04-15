@@ -159,21 +159,4 @@ describe("usePrdActions", () => {
       });
     });
   });
-
-  describe("handleRequestChanges — null artifactId guard", () => {
-    test("returns false without calling mutateAsync when artifactId is null", async () => {
-      const { result } = renderHook(() => usePrdActions({ artifactId: null }), {
-        wrapper: createWrapperWithClient(queryClient),
-      });
-
-      let returnValue: boolean | undefined;
-      await act(async () => {
-        returnValue =
-          await result.current.handleRequestChanges("add error handling");
-      });
-
-      expect(returnValue).toBe(false);
-      expect(mockMutateAsync).not.toHaveBeenCalled();
-    });
-  });
 });

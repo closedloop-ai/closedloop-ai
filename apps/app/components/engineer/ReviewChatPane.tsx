@@ -818,6 +818,10 @@ function FindingCard({
   const { title: findingTitle, description: findingBody } = parseFindingTitle(
     finding.message
   );
+  const humanized = finding.humanizedBody?.trim() || undefined;
+  // Prefer humanized body for display. This is also what gets posted as a PR
+  // comment (see buildCommentBody), so the UI matches the outcome exactly.
+  const displayBody = humanized ?? findingBody;
   const title = findingTitle.slice(0, 100);
 
   if (collapsed) {
@@ -920,13 +924,13 @@ function FindingCard({
         <p className="font-semibold text-[13px] text-foreground leading-snug">
           {findingTitle}
         </p>
-        {findingBody && (
+        {displayBody && (
           <div className="text-[12px] text-foreground/70 leading-relaxed">
             <ReactMarkdown
               components={chatMarkdownComponents}
               remarkPlugins={[remarkGfm]}
             >
-              {findingBody}
+              {displayBody}
             </ReactMarkdown>
           </div>
         )}

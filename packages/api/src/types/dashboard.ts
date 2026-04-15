@@ -54,3 +54,60 @@ export type PublicDashboardTokenResponse = {
   token: string | null;
   url: string | null;
 };
+
+// ── Public Usage Dashboard Types ────────────────────────────────────────────
+
+/**
+ * Response for the public usage dashboard (Claude Code usage stats).
+ */
+export type PublicUsageDashboardResponse = {
+  organizationName: string;
+  updatedAt: string;
+  models: string[];
+  stats: UsageDashboardStats;
+  dailyUsage: DailyTokenUsage[];
+  byModel: ModelUsage[];
+  topProjects: ProjectUsage[];
+  recentSessions: RecentSession[];
+};
+
+export type UsageDashboardStats = {
+  sessions: number;
+  turns: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheRead: number;
+  cacheCreation: number;
+  estimatedCost: number;
+};
+
+export type DailyTokenUsage = {
+  date: string;
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheCreation: number;
+};
+
+export type ModelUsage = {
+  model: string;
+  totalTokens: number;
+};
+
+export type ProjectUsage = {
+  project: string;
+  inputTokens: number;
+  outputTokens: number;
+};
+
+export type RecentSession = {
+  sessionId: string;
+  project: string;
+  lastActive: string;
+  durationMinutes: number;
+  model: string;
+  turns: number;
+  inputTokens: number;
+  outputTokens: number;
+  estimatedCost: number;
+};

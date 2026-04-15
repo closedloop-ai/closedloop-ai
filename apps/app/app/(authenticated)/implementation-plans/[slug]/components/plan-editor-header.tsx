@@ -1,5 +1,6 @@
 "use client";
 
+import { useFeatureFlag } from "@repo/analytics/client";
 import type {
   ArtifactWithWorkstream,
   PullRequestState,
@@ -29,6 +30,7 @@ import {
   RotateCcwIcon,
   TrashIcon,
 } from "lucide-react";
+import Link from "next/link";
 import {
   type BreadcrumbEntry,
   Header,
@@ -44,6 +46,7 @@ type PlanEditorHeaderProps = {
     htmlUrl: string;
     number: number;
     state: PullRequestState;
+    externalLinkId?: string | null;
   } | null;
   isExecuting: boolean;
   onToggleMetadataPanel: () => void;
@@ -88,6 +91,12 @@ export function PlanEditorHeader({
   onRestoreVersion,
   isPending = false,
 }: PlanEditorHeaderProps) {
+  const branchPrFlag = useFeatureFlag("branch-pr");
+  const branchPrEnabled = branchPrFlag?.enabled === true;
+  const prUsesBranchView = Boolean(
+    pullRequest?.externalLinkId && branchPrEnabled
+  );
+
   const breadcrumbs: BreadcrumbEntry[] = plan.project?.teams?.[0]?.id
     ? [
         {
@@ -116,15 +125,22 @@ export function PlanEditorHeader({
         {pullRequest ? (
           <>
             <DropdownMenuItem asChild>
-              <a
-                href={pullRequest.htmlUrl}
-                rel="noopener noreferrer"
-                target="_blank"
-              >
-                <GitPullRequestIcon className="h-4 w-4" />
-                PR #{pullRequest.number}
-                <ExternalLinkIcon className="ml-auto h-3 w-3" />
-              </a>
+              {prUsesBranchView && pullRequest.externalLinkId ? (
+                <Link href={`/build/${pullRequest.externalLinkId}`}>
+                  <GitPullRequestIcon className="h-4 w-4" />
+                  PR #{pullRequest.number}
+                </Link>
+              ) : (
+                <a
+                  href={pullRequest.htmlUrl}
+                  rel="noopener noreferrer"
+                  target="_blank"
+                >
+                  <GitPullRequestIcon className="h-4 w-4" />
+                  PR #{pullRequest.number}
+                  <ExternalLinkIcon className="ml-auto h-3 w-3" />
+                </a>
+              )}
             </DropdownMenuItem>
             <DropdownMenuSeparator />
           </>

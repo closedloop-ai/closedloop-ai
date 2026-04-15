@@ -1,5 +1,6 @@
 "use client";
 
+import { FeatureFlagged } from "@repo/analytics/components/feature-flagged";
 import { EntityType } from "@repo/api/src/types/entity-link";
 import type { FeatureWithWorkstream } from "@repo/api/src/types/feature";
 import { toast } from "@repo/design-system/components/ui/sonner";
@@ -7,6 +8,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useState } from "react";
 import { ExecutePlanModal } from "@/app/(authenticated)/implementation-plans/components/execute-plan-modal";
 import { BackendMismatchModal } from "@/components/backend-mismatch-modal";
+import { ArtifactChatDrawer } from "@/components/chat/ArtifactChatDrawer";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { LoopDispatchTargetSelector } from "@/components/engineer/LoopDispatchTargetSelector";
 import { MoveEntityDialog } from "@/components/move-entity-dialog";
@@ -37,7 +39,7 @@ export function FeaturePage({ feature }: Readonly<FeaturePageProps>) {
   const [showGenerateModal, setShowGenerateModal] = useState(false);
   const [showExecuteModal, setShowExecuteModal] = useState(false);
   const [showMetadataPanel, setShowMetadataPanel] = useLocalStorageState(
-    "panel:metadata:FEATURE",
+    "panel:chat:FEATURE",
     true
   );
   const [displayTitle, setDisplayTitle] = useState(feature.title);
@@ -137,13 +139,24 @@ export function FeaturePage({ feature }: Readonly<FeaturePageProps>) {
             </div>
           </div>
 
-          {/* Right Sidebar */}
+          {/* Right Sidebar: metadata */}
           {showMetadataPanel && (
             <FeatureMetadataPanel
               feature={feature}
               teamIds={feature.project?.teams.map((team) => team.id) ?? []}
             />
           )}
+          {/* Right Sidebar: interactive chat */}
+          <FeatureFlagged flag="interactive-chat">
+            <div className="flex w-[360px] flex-none flex-col border-l">
+              <ArtifactChatDrawer
+                artifactId={feature.id}
+                artifactSlug={feature.slug}
+                artifactTitle={feature.title}
+                artifactType="feature"
+              />
+            </div>
+          </FeatureFlagged>
         </div>
       </main>
 

@@ -3,6 +3,7 @@ import type { JsonObject } from "@repo/api/src/types/common";
 import type { Loop } from "@repo/api/src/types/loop";
 import { withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
+import { waitUntil } from "@vercel/functions";
 import { z } from "zod";
 import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
 import { resetArtifactRoom } from "@/app/artifacts/room-utils";
@@ -51,7 +52,12 @@ export async function ingestGeneratePrdArtifacts(
     return;
   }
 
-  await artifactVersionService.createVersion(artifactId, null, prdContent);
+  await artifactVersionService.createVersion(
+    artifactId,
+    organizationId,
+    null,
+    prdContent
+  );
 
   const updatedArtifact = await withDb((db) =>
     db.artifact.update({
@@ -69,7 +75,7 @@ export async function ingestGeneratePrdArtifacts(
 
   // Reset the Liveblocks room so any stale Y.Doc content is cleared.
   if (updatedArtifact.slug) {
-    await resetArtifactRoom(updatedArtifact);
+    waitUntil(resetArtifactRoom(updatedArtifact));
   }
 
   // Create workstream completion event (idempotent — skip if already exists)

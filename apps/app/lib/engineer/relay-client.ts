@@ -364,6 +364,7 @@ export function isStreamingEngineerRequest(
     /^\/api\/engineer\/ticket-chat$/,
     /^\/api\/engineer\/terminal-chat$/,
     /^\/api\/engineer\/run-viewer-chat$/,
+    /^\/api\/engineer\/chat$/,
   ].some((pattern) => pattern.test(pathname));
 }
 

@@ -363,7 +363,12 @@ export async function handleWorkflowSuccess(
 
   // Store content via ArtifactVersion instead of directly on Artifact
   if (finalContent) {
-    await artifactVersionService.createVersion(artifactId, null, finalContent);
+    await artifactVersionService.createVersion(
+      artifactId,
+      existingArtifact.organizationId,
+      null,
+      finalContent
+    );
   }
 
   await tx.artifact.update({

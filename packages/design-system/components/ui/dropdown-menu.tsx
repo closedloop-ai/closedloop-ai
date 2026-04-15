@@ -21,12 +21,16 @@ function DropdownMenuPortal({
 }
 
 function DropdownMenuTrigger({
+  id: idProp,
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.Trigger>) {
+  const stableId = React.useId()
+  const id = idProp ?? stableId
   return (
     <DropdownMenuPrimitive.Trigger
       data-slot="dropdown-menu-trigger"
       {...props}
+      id={id}
     />
   )
 }

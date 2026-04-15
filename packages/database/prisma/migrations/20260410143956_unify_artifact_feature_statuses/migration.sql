@@ -1,0 +1,8 @@
+-- AlterEnum
+ALTER TYPE "ArtifactStatus" ADD VALUE 'DONE';
+
+-- AlterEnum
+ALTER TYPE "IssueStatus" ADD VALUE 'DRAFT';
+ALTER TYPE "IssueStatus" ADD VALUE 'APPROVED';
+ALTER TYPE "IssueStatus" ADD VALUE 'EXECUTED';
+ALTER TYPE "IssueStatus" ADD VALUE 'DONE';
