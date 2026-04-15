@@ -205,39 +205,18 @@ describe("loopsService.createIfNotExists — concurrent loop limit enforcement",
 });
 
 describe("loopsService.create / createIfNotExists additionalRepos column persistence", () => {
-  const additionalReposPersistenceScenarios: {
-    id: string;
-    method: "create" | "createIfNotExists";
-    input: AdditionalReposPersistenceScenarioInput;
-    expectedAdditionalRepos:
-      | {
-          fullName: string;
-          branch: string;
-        }[]
-      | undefined;
-    expectedMetadata: Record<string, unknown> | undefined;
-  }[] = [
+  const additionalRepos = [{ fullName: "org/repo-a", branch: "main" }];
+
+  const additionalReposPersistenceScenarios = [
     {
       id: "create: persists additionalRepos in a first-class column",
       method: "create",
-      input: {
-        ...baseInput,
-        additionalRepos: [{ fullName: "org/repo-a", branch: "main" }],
-      },
-      expectedAdditionalRepos: [{ fullName: "org/repo-a", branch: "main" }],
-      expectedMetadata: undefined,
     },
     {
       id: "createIfNotExists: persists additionalRepos in a first-class column",
       method: "createIfNotExists",
-      input: {
-        ...baseInput,
-        additionalRepos: [{ fullName: "org/repo-b", branch: "main" }],
-      },
-      expectedAdditionalRepos: [{ fullName: "org/repo-b", branch: "main" }],
-      expectedMetadata: undefined,
     },
-  ];
+  ] as const;
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -245,34 +224,24 @@ describe("loopsService.create / createIfNotExists additionalRepos column persist
     mockIsFeatureEnabled.mockResolvedValue(true);
   });
 
-  it.each(additionalReposPersistenceScenarios)("$id", async ({
-    method,
-    input,
-    expectedAdditionalRepos,
-    expectedMetadata,
-  }) => {
+  it.each(additionalReposPersistenceScenarios)("$id", async ({ method }) => {
+    const input = {
+      ...baseInput,
+      additionalRepos,
+    };
+
     if (method === "create") {
       await loopsService.create("org-1", "user-1", input);
       expect(mockCreate).toHaveBeenCalledTimes(1);
       const createArgs = mockCreate.mock.calls[0][0];
-      expect(createArgs.data.additionalRepos).toEqual(expectedAdditionalRepos);
-      expect(createArgs.data.metadata).toEqual(expectedMetadata);
+      expect(createArgs.data.additionalRepos).toEqual(additionalRepos);
+      expect(createArgs.data.metadata).toBeUndefined();
     } else {
       await loopsService.createIfNotExists("org-1", "user-1", input);
       expect(mockCreateManyAndReturn).toHaveBeenCalledTimes(1);
       const createManyArgs = mockCreateManyAndReturn.mock.calls[0][0];
-      expect(createManyArgs.data[0].additionalRepos).toEqual(
-        expectedAdditionalRepos
-      );
-      expect(createManyArgs.data[0].metadata).toEqual(expectedMetadata);
+      expect(createManyArgs.data[0].additionalRepos).toEqual(additionalRepos);
+      expect(createManyArgs.data[0].metadata).toBeUndefined();
     }
   });
 });
-
-type AdditionalReposPersistenceScenarioInput = typeof baseInput & {
-  additionalRepos?: { fullName: string; branch: string }[];
-  metadata?: {
-    launchSource?: string;
-    additionalRepos?: { fullName: string; branch: string }[];
-  };
-};
