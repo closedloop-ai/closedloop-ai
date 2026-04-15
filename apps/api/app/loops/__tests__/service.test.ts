@@ -234,9 +234,9 @@ describe("loopsService.create — additionalRepos gate", () => {
       additionalRepos,
     });
 
-    expect(mockCreate.mock.calls[0][0].data.metadata).toEqual({
-      additionalRepos,
-    });
+    expect(mockCreate.mock.calls[0][0].data.additionalRepos).toEqual(
+      additionalRepos
+    );
   });
 
   it("drops additionalRepos when PostHog flag is disabled", async () => {
@@ -248,7 +248,7 @@ describe("loopsService.create — additionalRepos gate", () => {
       additionalRepos: [{ fullName: "org/peer-a", branch: "main" }],
     });
 
-    expect(mockCreate.mock.calls[0][0].data.metadata).toBeUndefined();
+    expect(mockCreate.mock.calls[0][0].data.additionalRepos).toBeUndefined();
   });
 
   it("drops additionalRepos for non-PLAN commands even when PostHog flag is enabled", async () => {
@@ -260,7 +260,7 @@ describe("loopsService.create — additionalRepos gate", () => {
       additionalRepos: [{ fullName: "org/peer-a", branch: "main" }],
     });
 
-    expect(mockCreate.mock.calls[0][0].data.metadata).toBeUndefined();
+    expect(mockCreate.mock.calls[0][0].data.additionalRepos).toBeUndefined();
     expect(mockIsFeatureEnabled).not.toHaveBeenCalled();
   });
 });

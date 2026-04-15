@@ -14,6 +14,7 @@ export function buildLoop(overrides: Partial<Loop> = {}): Loop {
     computeTargetId: null,
     prompt: null,
     repo: { fullName: "org/repo", branch: "main" },
+    additionalRepos: null,
     contextRefs: null,
     containerId: null,
     s3StateKey: null,

@@ -8,8 +8,8 @@
  * - loopsService.createIfNotExists throws ConcurrentLoopLimitError (not returns null)
  *   when at the concurrent limit
  * - isConcurrentLoopLimitError correctly identifies ConcurrentLoopLimitError instances
- * - loopsService.create / createIfNotExists merge additionalRepos into loop metadata
- *   when the PostHog multi-repo-plan flag is enabled
+ * - loopsService.create / createIfNotExists persist additionalRepos as a
+ *   first-class loop column and strip metadata.additionalRepos
  *
  * // TOCTOU: count check and insert are not atomic. Two concurrent requests at
  * // count=N-1 can both proceed. Accepted tradeoff — limit is a soft cap, not a
@@ -204,26 +204,31 @@ describe("loopsService.createIfNotExists — concurrent loop limit enforcement",
   });
 });
 
-describe("loopsService.create / createIfNotExists metadata merge for additionalRepos", () => {
-  const additionalReposMetadataMergeScenarios: {
+describe("loopsService.create / createIfNotExists additionalRepos column persistence", () => {
+  const additionalReposPersistenceScenarios: {
     id: string;
     method: "create" | "createIfNotExists";
-    input: AdditionalReposMetadataMergeScenarioInput;
-    expectedMetadata: Record<string, unknown>;
+    input: AdditionalReposPersistenceScenarioInput;
+    expectedAdditionalRepos:
+      | {
+          fullName: string;
+          branch: string;
+        }[]
+      | undefined;
+    expectedMetadata: Record<string, unknown> | undefined;
   }[] = [
     {
-      id: "create: persists additionalRepos into metadata.additionalRepos",
+      id: "create: persists additionalRepos in a first-class column",
       method: "create",
       input: {
         ...baseInput,
         additionalRepos: [{ fullName: "org/repo-a", branch: "main" }],
       },
-      expectedMetadata: {
-        additionalRepos: [{ fullName: "org/repo-a", branch: "main" }],
-      },
+      expectedAdditionalRepos: [{ fullName: "org/repo-a", branch: "main" }],
+      expectedMetadata: undefined,
     },
     {
-      id: "create: uses top-level additionalRepos when metadata already has additionalRepos",
+      id: "create: strips metadata.additionalRepos and preserves other metadata keys",
       method: "create",
       input: {
         ...baseInput,
@@ -233,24 +238,23 @@ describe("loopsService.create / createIfNotExists metadata merge for additionalR
           additionalRepos: [{ fullName: "org/stale", branch: "dev" }],
         },
       },
+      expectedAdditionalRepos: [{ fullName: "org/top-level", branch: "main" }],
       expectedMetadata: {
         launchSource: "test",
-        additionalRepos: [{ fullName: "org/top-level", branch: "main" }],
       },
     },
     {
-      id: "createIfNotExists: persists additionalRepos under metadata for createManyAndReturn",
+      id: "createIfNotExists: persists additionalRepos in a first-class column",
       method: "createIfNotExists",
       input: {
         ...baseInput,
         additionalRepos: [{ fullName: "org/repo-b", branch: "main" }],
       },
-      expectedMetadata: {
-        additionalRepos: [{ fullName: "org/repo-b", branch: "main" }],
-      },
+      expectedAdditionalRepos: [{ fullName: "org/repo-b", branch: "main" }],
+      expectedMetadata: undefined,
     },
     {
-      id: "createIfNotExists: overrides metadata.additionalRepos with top-level additionalRepos",
+      id: "createIfNotExists: strips metadata.additionalRepos and keeps canonical column value",
       method: "createIfNotExists",
       input: {
         ...baseInput,
@@ -259,9 +263,10 @@ describe("loopsService.create / createIfNotExists metadata merge for additionalR
           additionalRepos: [{ fullName: "org/repo-stale", branch: "dev" }],
         },
       },
-      expectedMetadata: {
-        additionalRepos: [{ fullName: "org/repo-canonical", branch: "main" }],
-      },
+      expectedAdditionalRepos: [
+        { fullName: "org/repo-canonical", branch: "main" },
+      ],
+      expectedMetadata: undefined,
     },
   ];
 
@@ -271,26 +276,31 @@ describe("loopsService.create / createIfNotExists metadata merge for additionalR
     mockIsFeatureEnabled.mockResolvedValue(true);
   });
 
-  it.each(additionalReposMetadataMergeScenarios)("$id", async ({
+  it.each(additionalReposPersistenceScenarios)("$id", async ({
     method,
     input,
+    expectedAdditionalRepos,
     expectedMetadata,
   }) => {
     if (method === "create") {
       await loopsService.create("org-1", "user-1", input);
       expect(mockCreate).toHaveBeenCalledTimes(1);
       const createArgs = mockCreate.mock.calls[0][0];
+      expect(createArgs.data.additionalRepos).toEqual(expectedAdditionalRepos);
       expect(createArgs.data.metadata).toEqual(expectedMetadata);
     } else {
       await loopsService.createIfNotExists("org-1", "user-1", input);
       expect(mockCreateManyAndReturn).toHaveBeenCalledTimes(1);
       const createManyArgs = mockCreateManyAndReturn.mock.calls[0][0];
+      expect(createManyArgs.data[0].additionalRepos).toEqual(
+        expectedAdditionalRepos
+      );
       expect(createManyArgs.data[0].metadata).toEqual(expectedMetadata);
     }
   });
 });
 
-type AdditionalReposMetadataMergeScenarioInput = typeof baseInput & {
+type AdditionalReposPersistenceScenarioInput = typeof baseInput & {
   additionalRepos?: { fullName: string; branch: string }[];
   metadata?: {
     launchSource?: string;

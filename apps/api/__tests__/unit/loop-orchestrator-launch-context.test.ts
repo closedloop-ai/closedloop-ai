@@ -110,7 +110,6 @@ vi.mock("@/lib/loops/loop-ecs", () => ({
   stopLoopTask: vi.fn().mockResolvedValue(undefined),
 }));
 
-import type { JsonObject } from "@repo/api/src/types/common";
 import { LoopStatus } from "@repo/api/src/types/loop";
 import { withDb } from "@repo/database";
 import { getInstallationAccessToken } from "@repo/github";
@@ -218,7 +217,7 @@ describe("resolveLoopLaunchContext — token resolution failure cancels the loop
   });
 });
 
-describe("resolveLoopLaunchContext — Zod metadata parsing", () => {
+describe("resolveLoopLaunchContext — additionalRepos handling", () => {
   const originalEnv = { ...process.env };
 
   beforeEach(() => {
@@ -241,13 +240,13 @@ describe("resolveLoopLaunchContext — Zod metadata parsing", () => {
 
   it.each<{
     scenario: string;
-    additionalRepos: unknown;
+    additionalRepos: { fullName: string; branch: string }[] | null;
     expectedCalls: number;
     expectExtraRepoLookup?: string;
   }>([
     {
-      scenario: "invalid additionalRepos is treated as no extra repos",
-      additionalRepos: "not-an-array",
+      scenario: "missing additionalRepos is treated as no extra repos",
+      additionalRepos: null,
       expectedCalls: 1,
     },
     {
@@ -265,7 +264,7 @@ describe("resolveLoopLaunchContext — Zod metadata parsing", () => {
       status: LoopStatus.Pending,
       computeTargetId: null,
       repo: { fullName: "org/repo", branch: "main" },
-      metadata: { additionalRepos } as JsonObject,
+      additionalRepos,
     });
     mockLoopsService.findById.mockResolvedValue(loop);
 

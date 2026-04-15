@@ -1,5 +1,6 @@
 import type { JsonObject } from "@repo/api/src/types/common";
 import type {
+  AdditionalRepoRef,
   AdditionalRepoRefWithToken,
   LoopEvent,
   LoopEventCompleted,
@@ -18,7 +19,6 @@ import { withDb } from "@repo/database";
 import { getInstallationAccessToken } from "@repo/github";
 import { log } from "@repo/observability/log";
 import { truncateUtf8 } from "@repo/observability/truncate-utf8";
-import { z } from "zod";
 import { getCommitterInfo } from "@/app/artifacts/service";
 import { githubService } from "@/app/integrations/github/service";
 import {
@@ -425,7 +425,7 @@ async function resolveLoopLaunchContext(
   }
 
   const resolvedAdditionalRepos = await resolveAdditionalRepos(
-    loop.metadata,
+    loop.additionalRepos,
     organizationId,
     isDesktop
   );
@@ -1427,21 +1427,9 @@ async function handleZeroTokenExecute(
 // below the cognitive-complexity limit)
 // ---------------------------------------------------------------------------
 
-const AdditionalRepoRefSchema = z.object({
-  fullName: z.string(),
-  branch: z.string(),
-});
-
-const AdditionalReposMetadataSchema = z.object({
-  additionalRepos: z.array(AdditionalRepoRefSchema).optional(),
-});
-
 /**
- * Parse, cap, and resolve GitHub tokens for additional repos declared in loop
- * metadata.
+ * Cap and resolve GitHub tokens for additional repos declared on the loop.
  *
- * - Parses loop.metadata.additionalRepos with Zod (unknown metadata is ignored
- *   on parse failure).
  * - Enforces MAX_ADDITIONAL_REPOS defensively via slice.
  * - Cloud/ECS: resolves a GitHub App installation token per repo (fail-fast).
  * - Desktop: includes repo entries without tokens — the electron has its own
@@ -1450,18 +1438,13 @@ const AdditionalReposMetadataSchema = z.object({
  *   are resolved here.
  */
 async function resolveAdditionalRepos(
-  metadata: JsonObject,
+  additionalRepos: AdditionalRepoRef[] | null,
   organizationId: string,
   isDesktop: boolean
 ): Promise<AdditionalRepoRefWithToken[] | undefined> {
-  const metadataParseResult = AdditionalReposMetadataSchema.safeParse(metadata);
-  const rawAdditionalRepos = metadataParseResult.success
-    ? (metadataParseResult.data.additionalRepos ?? [])
-    : [];
-
   // Defensive: enforce MAX_ADDITIONAL_REPOS cap regardless of how the list
   // entered the system.
-  const cappedAdditionalRepos = rawAdditionalRepos.slice(
+  const cappedAdditionalRepos = (additionalRepos ?? []).slice(
     0,
     MAX_ADDITIONAL_REPOS
   );

@@ -80,6 +80,7 @@ export type Loop = {
   computeTargetId: string | null;
   prompt: string | null;
   repo: { fullName: string; branch: string } | null;
+  additionalRepos: AdditionalRepoRef[] | null;
   contextRefs: Array<{
     sourceId: string;
     sourceType?: SourceContextType;
