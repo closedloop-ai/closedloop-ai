@@ -23,10 +23,10 @@ export const DISPLAY_GROUPS: {
   },
   {
     key: "in_progress",
-    label: "In progress",
+    label: "In Progress",
     statuses: [FeatureStatus.InProgress],
   },
-  { key: "in_review", label: "In review", statuses: [FeatureStatus.InReview] },
+  { key: "in_review", label: "In Review", statuses: [FeatureStatus.InReview] },
   { key: "approved", label: "Approved", statuses: [FeatureStatus.Approved] },
   { key: "executed", label: "Executed", statuses: [FeatureStatus.Executed] },
   { key: "done", label: "Done", statuses: [FeatureStatus.Done] },

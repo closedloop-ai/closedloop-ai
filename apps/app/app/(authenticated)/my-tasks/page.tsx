@@ -151,7 +151,7 @@ export default function MyTasksPage() {
         <OnboardingChecklist />
 
         {/* Title bar */}
-        <div className="border-b">
+        <div className={isListView ? "border-b" : ""}>
           <div className="flex min-w-fit shrink-0 items-center justify-between gap-3 px-4 py-3">
             <h1 className="font-semibold text-xl">My Tasks</h1>
             <div className="flex items-center gap-2">
@@ -219,7 +219,7 @@ export default function MyTasksPage() {
 
         {/* Content — card view */}
         {!isListView && (
-          <div className="flex-1 overflow-auto p-4">
+          <div className="min-h-0 flex-1 overflow-hidden">
             <MyTasksKanban
               assigneeId={assigneeId}
               features={kanbanFeatures}
