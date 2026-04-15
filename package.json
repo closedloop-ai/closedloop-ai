@@ -39,7 +39,7 @@
     "check-dependency-version-consistency": "^6.0.0",
     "husky": "^9.1.7",
     "lint-staged": "^16.3.2",
-    "next": "16.1.7",
+    "next": "16.2.3",
     "playwright": "^1.58.2",
     "tsup": "^8.5.1",
     "turbo": "^2.9.6",
@@ -56,12 +56,6 @@
     "commander": "^14.0.3"
   },
   "pnpm": {
-    "overrides": {
-      "@types/react": "19.2.13",
-      "@types/react-dom": "19.2.3",
-      "next": "$next",
-      "parse5": "^7.2.1"
-    },
     "onlyBuiltDependencies": [
       "@clerk/shared",
       "@prisma/engines",
@@ -72,8 +66,12 @@
       "esbuild",
       "prisma",
       "protobufjs",
-      "sharp"
-    ]
+      "sharp",
+      "utf-8-validate"
+    ],
+    "overrides": {
+      "next": "$next"
+    }
   },
   "type": "module"
 }
