@@ -15,7 +15,17 @@ export default async function globalSetup() {
     );
   }
 
-  // clerkSetup() fetches a testing token from Clerk using the publishable key.
-  // The token is then injected per-page by setupClerkTestingToken() to bypass 2FA and bot detection.
-  await clerkSetup();
+  // clerkSetup() fetches a testing token from Clerk's Backend API using the secret key,
+  // then sets CLERK_FAPI and CLERK_TESTING_TOKEN in process.env. These propagate to
+  // worker processes where setupClerkTestingToken() intercepts Clerk API requests to
+  // bypass 2FA and bot detection.
+  await clerkSetup({ debug: true });
+
+  // Verify the token was actually fetched — fail fast instead of hanging on factor-two.
+  if (!process.env.CLERK_TESTING_TOKEN) {
+    throw new Error(
+      "clerkSetup() did not produce a CLERK_TESTING_TOKEN. " +
+        "Verify CLERK_SECRET_KEY and NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY are set correctly."
+    );
+  }
 }
