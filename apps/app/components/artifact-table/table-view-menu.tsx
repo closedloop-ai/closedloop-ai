@@ -63,8 +63,8 @@ export function TableViewMenu({
   return (
     <Popover>
       <PopoverTrigger asChild>
-        <Button className="h-9 shadow-none" size="sm" variant="outline">
-          <Settings2Icon className="h-4 w-4" />
+        <Button className="h-8 shadow-none" size="sm" variant="outline">
+          <Settings2Icon />
           View
         </Button>
       </PopoverTrigger>

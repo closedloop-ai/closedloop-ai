@@ -161,7 +161,7 @@ export default function MyTasksPage() {
                 </div>
                 <Input
                   aria-label="Filter items"
-                  className="pl-9 shadow-none"
+                  className="h-8 pl-9 shadow-none"
                   onChange={(e) => setFilterText(e.target.value)}
                   placeholder="Filter items..."
                   value={filterText}
@@ -187,18 +187,19 @@ export default function MyTasksPage() {
                 aria-label={
                   isListView ? "Switch to card view" : "Switch to list view"
                 }
-                className="border border-input-border bg-transparent"
+                className="h-8 border border-input-border bg-transparent shadow-none"
                 onClick={() => setView(isListView ? "card" : "list")}
+                size="sm"
                 variant="ghost"
               >
                 {isListView ? (
                   <>
-                    <LayoutGridIcon className="size-4" />
+                    <LayoutGridIcon />
                     <span className="hidden sm:inline">Card</span>
                   </>
                 ) : (
                   <>
-                    <ListIcon className="size-4" />
+                    <ListIcon />
                     <span className="hidden sm:inline">List</span>
                   </>
                 )}
