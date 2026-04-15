@@ -1,0 +1,140 @@
+name: Staging Integration Tests
+
+on:
+  repository_dispatch:
+    types: [vercel.deployment.ready, vercel.deployment.success]
+  workflow_dispatch:
+    inputs:
+      deployment_url:
+        description: 'Deployment URL to test against (leave empty to use STAGING_APP_URL)'
+        required: false
+        default: ''
+        type: string
+
+concurrency:
+  group: staging-integration-tests
+  cancel-in-progress: false
+
+jobs:
+  integration-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+
+    steps:
+      - name: Validate deployment payload
+        id: validate
+        shell: bash
+        env:
+          PAYLOAD_URL: ${{ github.event.client_payload.url }}
+          PAYLOAD_REF: ${{ github.event.client_payload.git.ref }}
+          PAYLOAD_ENV: ${{ github.event.client_payload.environment }}
+          INPUT_DEPLOY_URL: ${{ inputs.deployment_url }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            CANDIDATE_URL="$INPUT_DEPLOY_URL"
+            if [[ -z "$CANDIDATE_URL" ]]; then
+              echo "BASE_URL=${{ vars.STAGING_APP_URL }}" >> $GITHUB_ENV
+              exit 0
+            fi
+          else
+            if [[ "$PAYLOAD_ENV" != "staging" ]]; then
+              echo "::notice::Skipping non-staging deployment (environment: $PAYLOAD_ENV)"
+              echo "SKIP_TESTS=true" >> $GITHUB_ENV
+              exit 0
+            fi
+            REF="$PAYLOAD_REF"
+            if [ "$REF" != "main" ]; then
+              echo "::error::Not a main branch deployment"
+              exit 1
+            fi
+            CANDIDATE_URL="$PAYLOAD_URL"
+          fi
+
+          ALLOWLIST_REGEX='^https://(app\.closedloop-stage\.ai|app-stage-[a-z0-9-]+\.preview\.closedloop-stage\.ai)(/|$)'
+          if [[ "$CANDIDATE_URL" =~ $ALLOWLIST_REGEX ]]; then
+            echo "BASE_URL=$CANDIDATE_URL" >> $GITHUB_ENV
+          else
+            if [ "$EVENT_NAME" = "repository_dispatch" ]; then
+              echo "::error::Deployment URL failed allowlist validation: $CANDIDATE_URL"
+              exit 1
+            else
+              echo "BASE_URL=${{ vars.STAGING_APP_URL }}" >> $GITHUB_ENV
+            fi
+          fi
+
+      - name: Pre-flight check
+        if: env.SKIP_TESTS != 'true'
+        run: |
+          if [[ -z "$BASE_URL" || "$BASE_URL" != https://* ]]; then
+            echo "::error::BASE_URL is empty or invalid — check STAGING_APP_URL repository variable"
+            exit 1
+          fi
+
+      - name: Checkout repository
+        if: env.SKIP_TESTS != 'true'
+        uses: actions/checkout@v6
+
+      - name: Setup pnpm
+        if: env.SKIP_TESTS != 'true'
+        uses: pnpm/action-setup@v5
+
+      - name: Setup Node.js
+        if: env.SKIP_TESTS != 'true'
+        uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        if: env.SKIP_TESTS != 'true'
+        run: pnpm install --frozen-lockfile
+        env:
+          # prisma generate (runs via postinstall) only needs the URL format, not a live DB
+          DATABASE_URL: postgresql://localhost:5432/placeholder
+
+      - name: Cache Playwright browsers
+        if: env.SKIP_TESTS != 'true'
+        id: playwright-cache
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/ms-playwright
+          key: "${{ runner.os }}-playwright-${{ hashFiles('pnpm-lock.yaml') }}"
+
+      - name: Install Playwright browsers and system dependencies
+        if: env.SKIP_TESTS != 'true' && steps.playwright-cache.outputs.cache-hit != 'true'
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Install Playwright chromium
+        if: env.SKIP_TESTS != 'true' && steps.playwright-cache.outputs.cache-hit == 'true'
+        run: pnpm exec playwright install chromium
+
+      - name: Run Playwright tests
+        if: env.SKIP_TESTS != 'true'
+        run: pnpm exec playwright test
+        env:
+          CI: "true"
+          BASE_URL: ${{ env.BASE_URL }}
+          DEVOPS_CLOSEDLOOP_APP_PWD: ${{ secrets.DEVOPS_CLOSEDLOOP_APP_PWD }}
+
+      - name: Upload Playwright report
+        if: failure() && env.SKIP_TESTS != 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 7
+
+      - name: Notify Slack
+        if: failure() && env.SKIP_TESTS != 'true'
+        continue-on-error: true
+        uses: ./.github/actions/symphony-slack-notify
+        with:
+          webhook_url: ${{ secrets.SLACK_SYMPHONY_WEBHOOK_URL }}
+          message: |
+            Staging Integration Tests failed
+            Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

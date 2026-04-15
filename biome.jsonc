@@ -81,6 +81,20 @@
       }
     },
     {
+      "includes": ["e2e/**", "playwright.config.ts"],
+      "linter": {
+        "rules": {
+          "performance": {
+            "noBarrelFile": "off"
+          },
+          "a11y": {
+            "useButtonType": "off",
+            "useSemanticElements": "off"
+          }
+        }
+      }
+    },
+    {
       "includes": ["containers/**", "scripts/deploy/**"],
       "linter": {
         "rules": {
