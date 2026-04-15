@@ -3,6 +3,7 @@ import { POST as commandsPOST } from "@/app/compute-targets/[id]/commands/route"
 import { POST as dispatchPOST } from "@/app/compute-targets/[id]/operations/route";
 import { POST as resultsPOST } from "@/app/compute-targets/[id]/results/route";
 import { computeTargetsService } from "@/app/compute-targets/service";
+import { env } from "@/env";
 import type { AuthContext } from "@/lib/auth/with-auth";
 import { desktopCommandStore } from "@/lib/desktop-command-store";
 import { relayEventBus } from "@/lib/relay-event-bus";
@@ -76,6 +77,7 @@ const mockTarget = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.unstubAllGlobals();
   vi.mocked(desktopCommandStore.createFromRelayOperation).mockResolvedValue({
     command: {
       commandId: "cmd-1",
@@ -180,9 +182,20 @@ describe("POST /compute-targets/:id/commands", () => {
       ...mockTarget,
       capabilities: { desktopApiNamespace: "engineer" },
     } as any);
-    vi.mocked(relayEventBus.publishOperation).mockReturnValue({
-      deliveredToSubscriber: true,
-    });
+    let relayFetch: ReturnType<typeof vi.fn> | null = null;
+    if (env.RELAY_API_URL) {
+      relayFetch = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ delivered: true }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        })
+      );
+      vi.stubGlobal("fetch", relayFetch);
+    } else {
+      vi.mocked(relayEventBus.publishOperation).mockReturnValue({
+        deliveredToSubscriber: true,
+      });
+    }
 
     const response = await commandsPOST(
       createMockRequest({
@@ -205,6 +218,32 @@ describe("POST /compute-targets/:id/commands", () => {
       }),
       expect.anything()
     );
+
+    if (relayFetch && env.RELAY_API_URL) {
+      expect(relayFetch).toHaveBeenCalledWith(
+        `${env.RELAY_API_URL}/dispatch`,
+        expect.objectContaining({
+          method: "POST",
+          headers: expect.objectContaining({
+            "Content-Type": "application/json",
+            "x-internal-secret": env.INTERNAL_API_SECRET,
+          }),
+        })
+      );
+
+      const [, init] = relayFetch.mock.calls[0] as [string, RequestInit];
+      const body = JSON.parse(String(init.body));
+      expect(body).toEqual(
+        expect.objectContaining({
+          targetId: "target-1",
+          operation: expect.objectContaining({
+            path: "/api/engineer/symphony/chat/run-1",
+          }),
+        })
+      );
+      return;
+    }
+
     expect(relayEventBus.publishOperation).toHaveBeenCalledWith(
       "target-1",
       expect.objectContaining({
