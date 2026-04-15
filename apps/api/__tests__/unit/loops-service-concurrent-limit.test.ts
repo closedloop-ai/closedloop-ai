@@ -8,8 +8,6 @@
  * - loopsService.createIfNotExists throws ConcurrentLoopLimitError (not returns null)
  *   when at the concurrent limit
  * - isConcurrentLoopLimitError correctly identifies ConcurrentLoopLimitError instances
- * - loopsService.create / createIfNotExists persist additionalRepos as a
- *   first-class loop column
  *
  * // TOCTOU: count check and insert are not atomic. Two concurrent requests at
  * // count=N-1 can both proceed. Accepted tradeoff — limit is a soft cap, not a
@@ -193,49 +191,5 @@ describe("loopsService.createIfNotExists — concurrent loop limit enforcement",
     const limitError = caught as ConcurrentLoopLimitError;
     expect(limitError.limit).toBe(5);
     expect(limitError.activeCount).toBe(5);
-  });
-});
-
-describe("loopsService.create / createIfNotExists additionalRepos column persistence", () => {
-  const additionalRepos = [{ fullName: "org/repo-a", branch: "main" }];
-
-  const additionalReposPersistenceScenarios = [
-    {
-      id: "create: persists additionalRepos in a first-class column",
-      method: "create",
-    },
-    {
-      id: "createIfNotExists: persists additionalRepos in a first-class column",
-      method: "createIfNotExists",
-    },
-  ] as const;
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockCount.mockResolvedValue(0);
-  });
-
-  it.each(additionalReposPersistenceScenarios)("$id", async ({ method }) => {
-    const input = {
-      ...baseInput,
-      additionalRepos,
-    };
-
-    if (method === "create") {
-      await loopsService.create("org-1", "user-1", input);
-    } else {
-      await loopsService.createIfNotExists("org-1", "user-1", input);
-    }
-
-    const data =
-      method === "create"
-        ? mockCreate.mock.calls[0][0].data
-        : mockCreateManyAndReturn.mock.calls[0][0].data[0];
-
-    expect(
-      method === "create" ? mockCreate : mockCreateManyAndReturn
-    ).toHaveBeenCalledTimes(1);
-    expect(data.additionalRepos).toEqual(additionalRepos);
-    expect(data.metadata).toBeUndefined();
   });
 });

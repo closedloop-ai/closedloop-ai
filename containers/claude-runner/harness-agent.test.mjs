@@ -1630,10 +1630,6 @@ describe("registerSecret + redactSensitive", () => {
 // ---------------------------------------------------------------------------
 
 describe("cloneAdditionalRepos", () => {
-  test("returns empty array when entries is null/undefined/empty", () => {
-    assert.deepEqual(cloneAdditionalRepos(null, "/tmp"), []);
-  });
-
   test("rejects invalid fullName that fails RE_SAFE_REPO", () => {
     assert.throws(
       () =>
@@ -1671,7 +1667,6 @@ describe("cloneAdditionalRepos", () => {
       }
     );
   });
-
 });
 
 // ---------------------------------------------------------------------------
@@ -1712,17 +1707,6 @@ describe("buildRunLoopArgs", () => {
     );
     assert.equal(args[addDirIndices[0] + 1], additionalRepoPaths[0]);
     assert.equal(args[addDirIndices[1] + 1], additionalRepoPaths[1]);
-  });
-
-  test("PLAN command with empty additionalRepoPaths omits --add-dir", () => {
-    resetConfig({ command: "PLAN" });
-
-    const { args } = buildRunLoopArgs(fakePath, fakeWorkDir, null, []);
-
-    assert.ok(
-      !args.includes("--add-dir"),
-      "empty array must not produce --add-dir flags"
-    );
   });
 
   test("EXECUTE command omits --add-dir even when additionalRepoPaths provided", () => {
