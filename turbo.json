@@ -41,6 +41,9 @@
     "app#test": {
       "dependsOn": ["^test", "@closedloop-ai/loops-api#build"]
     },
+    "@closedloop-ai/claude-runner#test": {
+      "dependsOn": ["^test", "@closedloop-ai/loops-api#build"]
+    },
     "analyze": {
       "dependsOn": ["^analyze"]
     },

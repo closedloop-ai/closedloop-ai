@@ -1,6 +1,5 @@
 import type { Loop } from "@repo/api/src/types/loop";
-import { LoopStatus } from "@repo/api/src/types/loop";
-import { LoopCommand } from "@repo/database";
+import { LoopCommand, LoopStatus } from "@repo/api/src/types/loop";
 
 export function buildLoop(overrides: Partial<Loop> = {}): Loop {
   return {
@@ -8,7 +7,7 @@ export function buildLoop(overrides: Partial<Loop> = {}): Loop {
     organizationId: "org-1",
     userId: "user-1",
     status: LoopStatus.Completed,
-    command: LoopCommand.PLAN,
+    command: LoopCommand.Plan,
     artifactId: "artifact-1",
     workstreamId: "ws-1",
     parentLoopId: null,
