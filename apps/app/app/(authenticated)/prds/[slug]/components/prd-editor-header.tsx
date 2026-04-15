@@ -99,26 +99,26 @@ export function PRDEditorHeader({
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-[160px]">
-        <DropdownMenuItem onClick={onRename}>
+        <DropdownMenuItem onClick={() => onRename()}>
           <PencilIcon className="h-4 w-4" />
           Rename
         </DropdownMenuItem>
-        <DropdownMenuItem onClick={onExport}>
+        <DropdownMenuItem onClick={() => onExport()}>
           <DownloadIcon className="h-4 w-4" />
           Export .md
         </DropdownMenuItem>
-        <DropdownMenuItem onClick={onMove}>
+        <DropdownMenuItem onClick={() => onMove()}>
           <FolderIcon className="h-4 w-4" />
           Move...
         </DropdownMenuItem>
         {showRestore ? (
-          <DropdownMenuItem onClick={onRestoreVersion}>
+          <DropdownMenuItem onClick={() => onRestoreVersion?.()}>
             <RotateCcwIcon className="h-4 w-4" />
             Restore Version
           </DropdownMenuItem>
         ) : null}
         <DropdownMenuSeparator />
-        <DropdownMenuItem onClick={onDelete} variant="destructive">
+        <DropdownMenuItem onClick={() => onDelete()} variant="destructive">
           <TrashIcon className="h-4 w-4" />
           Delete
         </DropdownMenuItem>
@@ -139,26 +139,32 @@ export function PRDEditorHeader({
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
-          <DropdownMenuItem disabled={isGenerating} onClick={onGeneratePrd}>
+          <DropdownMenuItem
+            disabled={isGenerating}
+            onClick={() => onGeneratePrd()}
+          >
             <PrdIcon className="h-4 w-4" />
             {isGenerating ? "Generating PRD..." : "Generate PRD"}
           </DropdownMenuItem>
-          <DropdownMenuItem onClick={onDecomposeFeatures}>
+          <DropdownMenuItem onClick={() => onDecomposeFeatures()}>
             <BoxIcon className="h-4 w-4" />
             Decompose into Features
           </DropdownMenuItem>
-          <DropdownMenuItem disabled={isEvaluating} onClick={onEvaluatePrd}>
+          <DropdownMenuItem
+            disabled={isEvaluating}
+            onClick={() => onEvaluatePrd()}
+          >
             <GaugeIcon className="mr-2 h-4 w-4" />
             {isEvaluating ? "Evaluating PRD..." : "Evaluate PRD"}
           </DropdownMenuItem>
-          <DropdownMenuItem onClick={onGeneratePlan}>
+          <DropdownMenuItem onClick={() => onGeneratePlan()}>
             <PlanIcon className="h-4 w-4" />
             Generate Implementation Plan
           </DropdownMenuItem>
           {requestChangesFlag?.enabled && (
             <DropdownMenuItem
               disabled={isGenerating || isRequestingChanges}
-              onClick={onRequestChanges}
+              onClick={() => onRequestChanges()}
             >
               <MessageSquareIcon className="h-4 w-4" />
               {isRequestingChanges ? "Amending PRD..." : "Amend PRD"}
@@ -172,7 +178,7 @@ export function PRDEditorHeader({
       {canShowPanel && (
         <Button
           aria-label="Toggle chat panel"
-          onClick={onToggleMetadataPanel}
+          onClick={() => onToggleMetadataPanel()}
           size="icon"
           title="Toggle chat panel"
           variant={showMetadataPanel ? "secondary" : "ghost"}
