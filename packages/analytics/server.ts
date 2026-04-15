@@ -1,5 +1,4 @@
 import "server-only";
-import { log } from "@repo/observability/log";
 import { PostHog } from "posthog-node";
 import { keys } from "./keys";
 
@@ -11,7 +10,6 @@ const createAnalytics = () => {
     return {
       capture: () => {},
       identify: () => {},
-      isFeatureEnabled: async () => true,
       shutdown: () => Promise.resolve(),
     } as unknown as PostHog;
   }
@@ -24,24 +22,3 @@ const createAnalytics = () => {
 };
 
 export const analytics = createAnalytics();
-
-export async function isFeatureEnabled(
-  key: string,
-  distinctId: string
-): Promise<boolean> {
-  if (!NEXT_PUBLIC_POSTHOG_KEY) {
-    return true;
-  }
-
-  try {
-    const enabled = await analytics.isFeatureEnabled(key, distinctId);
-    return enabled !== false;
-  } catch (error) {
-    log.warn("Failed to evaluate PostHog feature flag; defaulting to enabled", {
-      key,
-      distinctId,
-      error,
-    });
-    return true;
-  }
-}

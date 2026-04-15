@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import { AdditionalRepoRefSchema } from "@closedloop-ai/loops-api/context-pack";
-import { isFeatureEnabled } from "@repo/analytics/server";
 import type { JsonObject } from "@repo/api/src/types/common";
 import {
   type ComputeTargetSummary,
@@ -318,10 +317,9 @@ export const loopsService = {
       throw new ConcurrentLoopLimitError(activeCount, maxConcurrentLoops);
     }
 
-    const additionalRepos = await resolveAdditionalReposForCreate(
+    const additionalRepos = resolveAdditionalReposForCreate(
       input.additionalRepos,
-      input.command,
-      userId
+      input.command
     );
 
     const loop = await withDb((db) =>
@@ -1231,10 +1229,9 @@ export const loopsService = {
       throw new ConcurrentLoopLimitError(activeCount, maxConcurrentLoops);
     }
 
-    const additionalRepos = await resolveAdditionalReposForCreate(
+    const additionalRepos = resolveAdditionalReposForCreate(
       input.additionalRepos,
-      input.command,
-      userId
+      input.command
     );
 
     const [loop] = await withDb((db) =>
@@ -1347,11 +1344,10 @@ export const loopsService = {
  * Enforced at the service layer so every caller
  * (POST /loops, /artifacts/[id]/run-loop, internal callers) is gated.
  */
-async function resolveAdditionalReposForCreate(
+function resolveAdditionalReposForCreate(
   additionalRepos: CreateLoopRequest["additionalRepos"],
-  command: LoopCommand,
-  userId: string
-): Promise<CreateLoopRequest["additionalRepos"]> {
+  command: LoopCommand
+): CreateLoopRequest["additionalRepos"] {
   if (!additionalRepos) {
     return undefined;
   }
@@ -1360,15 +1356,6 @@ async function resolveAdditionalReposForCreate(
     log.warn(
       "[loops.service] additionalRepos is only supported for PLAN loops — dropping",
       { command }
-    );
-    return undefined;
-  }
-
-  const enabled = await isFeatureEnabled("multi-repo-plan", userId);
-  if (!enabled) {
-    log.warn(
-      "[loops.service] PostHog flag multi-repo-plan disabled — dropping additionalRepos",
-      { command, userId }
     );
     return undefined;
   }

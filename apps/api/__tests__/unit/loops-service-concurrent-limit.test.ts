@@ -34,14 +34,6 @@ vi.mock("@repo/observability/log", () => ({
   log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
-const { mockIsFeatureEnabled } = vi.hoisted(() => ({
-  mockIsFeatureEnabled: vi.fn().mockResolvedValue(true),
-}));
-
-vi.mock("@repo/analytics/server", () => ({
-  isFeatureEnabled: mockIsFeatureEnabled,
-}));
-
 const mockCount = vi.fn().mockResolvedValue(0);
 const mockCreate = vi.fn().mockResolvedValue({
   id: "loop-new",
@@ -221,7 +213,6 @@ describe("loopsService.create / createIfNotExists additionalRepos column persist
   beforeEach(() => {
     vi.clearAllMocks();
     mockCount.mockResolvedValue(0);
-    mockIsFeatureEnabled.mockResolvedValue(true);
   });
 
   it.each(additionalReposPersistenceScenarios)("$id", async ({ method }) => {

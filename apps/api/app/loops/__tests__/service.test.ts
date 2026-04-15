@@ -4,7 +4,7 @@
  * Tests computeTargetId propagation, s3StateKey exclusion from resumed loops,
  * and resumable-status validation.
  */
-import { LoopCommand, LoopStatus } from "@repo/api/src/types/loop";
+import { LoopStatus } from "@repo/api/src/types/loop";
 import {
   afterEach,
   beforeEach,
@@ -18,14 +18,6 @@ import {
 // Mock modules before importing the service
 vi.mock("@repo/database", () => ({
   withDb: vi.fn(),
-}));
-
-const { mockIsFeatureEnabled } = vi.hoisted(() => ({
-  mockIsFeatureEnabled: vi.fn().mockResolvedValue(true),
-}));
-
-vi.mock("@repo/analytics/server", () => ({
-  isFeatureEnabled: mockIsFeatureEnabled,
 }));
 
 // Import after mocking
@@ -193,56 +185,5 @@ describe("loopsService.resume", () => {
     ).resolves.not.toThrow();
 
     expect(mockCreate).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe("loopsService.create — additionalRepos gate", () => {
-  const setupMocks = () => {
-    const mockCount = vi.fn().mockResolvedValue(0);
-    const mockCreate = vi
-      .fn()
-      .mockResolvedValue({ id: "new-loop", status: LoopStatus.Pending });
-    mockWithDb.mockImplementation((callback: (db: unknown) => unknown) => {
-      const mockDb = {
-        loop: { count: mockCount, create: mockCreate },
-        organization: { findUnique: mockOrgFindUnique },
-      };
-      return callback(mockDb);
-    });
-    return { mockCreate };
-  };
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockIsFeatureEnabled.mockResolvedValue(true);
-  });
-
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
-  it("drops additionalRepos when PostHog flag is disabled", async () => {
-    mockIsFeatureEnabled.mockResolvedValue(false);
-    const { mockCreate } = setupMocks();
-
-    await loopsService.create(TEST_ORG_ID, TEST_USER_ID, {
-      command: LoopCommand.Plan,
-      additionalRepos: [{ fullName: "org/peer-a", branch: "main" }],
-    });
-
-    expect(mockCreate.mock.calls[0][0].data.additionalRepos).toBeUndefined();
-  });
-
-  it("drops additionalRepos for non-PLAN commands even when PostHog flag is enabled", async () => {
-    mockIsFeatureEnabled.mockResolvedValue(true);
-    const { mockCreate } = setupMocks();
-
-    await loopsService.create(TEST_ORG_ID, TEST_USER_ID, {
-      command: LoopCommand.Chat,
-      additionalRepos: [{ fullName: "org/peer-a", branch: "main" }],
-    });
-
-    expect(mockCreate.mock.calls[0][0].data.additionalRepos).toBeUndefined();
-    expect(mockIsFeatureEnabled).not.toHaveBeenCalled();
   });
 });
