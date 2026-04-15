@@ -111,6 +111,7 @@ vi.mock("@/lib/loops/loop-ecs", () => ({
 }));
 
 import type { JsonObject } from "@repo/api/src/types/common";
+import { LoopStatus } from "@repo/api/src/types/loop";
 import { withDb } from "@repo/database";
 import { getInstallationAccessToken } from "@repo/github";
 import { afterEach, beforeEach, describe, expect, it, type Mock } from "vitest";
@@ -255,7 +256,7 @@ describe("resolveLoopLaunchContext — Zod metadata parsing", () => {
 
   it("resolves additional repo tokens for valid metadata", async () => {
     const loop = buildLoop({
-      status: "PENDING",
+      status: LoopStatus.Pending,
       computeTargetId: null,
       repo: { fullName: "org/repo", branch: "main" },
       metadata: {

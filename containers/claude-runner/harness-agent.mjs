@@ -783,6 +783,7 @@ async function refreshGitHubToken() {
     const body = await resp.json();
     if (body.data?.token) {
       config.githubToken = body.data.token;
+      registerSecret(config.githubToken);
       log("info", "Refreshed GitHub token from API");
     }
   } catch (err) {
