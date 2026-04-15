@@ -9,7 +9,7 @@
  *   when at the concurrent limit
  * - isConcurrentLoopLimitError correctly identifies ConcurrentLoopLimitError instances
  * - loopsService.create / createIfNotExists merge additionalRepos into loop metadata
- *   when MULTI_REPO_PLAN_ENABLED is set
+ *   when the PostHog multi-repo-plan flag is enabled
  *
  * // TOCTOU: count check and insert are not atomic. Two concurrent requests at
  * // count=N-1 can both proceed. Accepted tradeoff — limit is a soft cap, not a
@@ -32,6 +32,14 @@ vi.mock("@repo/github", () => ({
 
 vi.mock("@repo/observability/log", () => ({
   log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+}));
+
+const { mockIsFeatureEnabled } = vi.hoisted(() => ({
+  mockIsFeatureEnabled: vi.fn().mockResolvedValue(true),
+}));
+
+vi.mock("@repo/analytics/server", () => ({
+  isFeatureEnabled: mockIsFeatureEnabled,
 }));
 
 const mockCount = vi.fn().mockResolvedValue(0);
@@ -89,7 +97,7 @@ vi.mock("@/lib/db-utils", () => ({
 
 // --- Imports (after mocks) ---
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import {
   type ConcurrentLoopLimitError,
   isConcurrentLoopLimitError,
@@ -197,8 +205,6 @@ describe("loopsService.createIfNotExists — concurrent loop limit enforcement",
 });
 
 describe("loopsService.create / createIfNotExists metadata merge for additionalRepos", () => {
-  const originalFlag = process.env.MULTI_REPO_PLAN_ENABLED;
-
   const additionalReposMetadataMergeScenarios: {
     id: string;
     method: "create" | "createIfNotExists";
@@ -262,11 +268,7 @@ describe("loopsService.create / createIfNotExists metadata merge for additionalR
   beforeEach(() => {
     vi.clearAllMocks();
     mockCount.mockResolvedValue(0);
-    process.env.MULTI_REPO_PLAN_ENABLED = "true";
-  });
-
-  afterEach(() => {
-    process.env.MULTI_REPO_PLAN_ENABLED = originalFlag;
+    mockIsFeatureEnabled.mockResolvedValue(true);
   });
 
   it.each(additionalReposMetadataMergeScenarios)("$id", async ({

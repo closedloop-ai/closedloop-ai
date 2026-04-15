@@ -20,6 +20,14 @@ vi.mock("@repo/database", () => ({
   withDb: vi.fn(),
 }));
 
+const { mockIsFeatureEnabled } = vi.hoisted(() => ({
+  mockIsFeatureEnabled: vi.fn().mockResolvedValue(true),
+}));
+
+vi.mock("@repo/analytics/server", () => ({
+  isFeatureEnabled: mockIsFeatureEnabled,
+}));
+
 // Import after mocking
 import { withDb } from "@repo/database";
 import { loopsService } from "../service";
@@ -189,8 +197,6 @@ describe("loopsService.resume", () => {
 });
 
 describe("loopsService.create — additionalRepos gate", () => {
-  const originalFlag = process.env.MULTI_REPO_PLAN_ENABLED;
-
   const setupMocks = () => {
     const mockCount = vi.fn().mockResolvedValue(0);
     const mockCreate = vi
@@ -208,15 +214,14 @@ describe("loopsService.create — additionalRepos gate", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockIsFeatureEnabled.mockResolvedValue(true);
   });
 
   afterEach(() => {
-    process.env.MULTI_REPO_PLAN_ENABLED = originalFlag;
     vi.restoreAllMocks();
   });
 
-  it("persists additionalRepos for PLAN commands when the flag is enabled", async () => {
-    process.env.MULTI_REPO_PLAN_ENABLED = "true";
+  it("persists additionalRepos for PLAN commands when PostHog flag is enabled", async () => {
     const { mockCreate } = setupMocks();
 
     const additionalRepos = [
@@ -232,5 +237,30 @@ describe("loopsService.create — additionalRepos gate", () => {
     expect(mockCreate.mock.calls[0][0].data.metadata).toEqual({
       additionalRepos,
     });
+  });
+
+  it("drops additionalRepos when PostHog flag is disabled", async () => {
+    mockIsFeatureEnabled.mockResolvedValue(false);
+    const { mockCreate } = setupMocks();
+
+    await loopsService.create(TEST_ORG_ID, TEST_USER_ID, {
+      command: LoopCommand.Plan,
+      additionalRepos: [{ fullName: "org/peer-a", branch: "main" }],
+    });
+
+    expect(mockCreate.mock.calls[0][0].data.metadata).toBeUndefined();
+  });
+
+  it("drops additionalRepos for non-PLAN commands even when PostHog flag is enabled", async () => {
+    mockIsFeatureEnabled.mockResolvedValue(true);
+    const { mockCreate } = setupMocks();
+
+    await loopsService.create(TEST_ORG_ID, TEST_USER_ID, {
+      command: LoopCommand.Chat,
+      additionalRepos: [{ fullName: "org/peer-a", branch: "main" }],
+    });
+
+    expect(mockCreate.mock.calls[0][0].data.metadata).toBeUndefined();
+    expect(mockIsFeatureEnabled).not.toHaveBeenCalled();
   });
 });

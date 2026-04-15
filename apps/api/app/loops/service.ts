@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isFeatureEnabled } from "@repo/analytics/server";
 import type { JsonObject } from "@repo/api/src/types/common";
 import {
   type ComputeTargetSummary,
@@ -294,6 +295,8 @@ export const loopsService = {
       throw new ConcurrentLoopLimitError(activeCount, maxConcurrentLoops);
     }
 
+    const metadata = await mergeCreateLoopMetadata(input, userId);
+
     const loop = await withDb((db) =>
       db.loop.create({
         data: {
@@ -308,8 +311,8 @@ export const loopsService = {
           repo: input.repo ?? undefined,
           contextRefs: input.contextRefs ?? undefined,
           artifactVersion: input.artifactVersion ?? null,
-          metadata: mergeCreateLoopMetadata(input),
-          status: "PENDING",
+          metadata,
+          status: LoopStatus.Pending,
         },
       })
     );
@@ -1200,6 +1203,8 @@ export const loopsService = {
       throw new ConcurrentLoopLimitError(activeCount, maxConcurrentLoops);
     }
 
+    const metadata = await mergeCreateLoopMetadata(input, userId);
+
     const [loop] = await withDb((db) =>
       db.loop.createManyAndReturn({
         data: [
@@ -1215,7 +1220,7 @@ export const loopsService = {
             repo: input.repo ?? undefined,
             contextRefs: input.contextRefs ?? undefined,
             artifactVersion: input.artifactVersion,
-            metadata: mergeCreateLoopMetadata(input),
+            metadata,
             status: LoopStatus.Pending,
           },
         ],
@@ -1303,12 +1308,14 @@ export const loopsService = {
   },
 };
 
-function mergeCreateLoopMetadata(
-  input: Pick<CreateLoopRequest, "additionalRepos" | "metadata" | "command">
-): JsonObject | undefined {
-  const additionalRepos = resolveAdditionalReposForCreate(
+async function mergeCreateLoopMetadata(
+  input: Pick<CreateLoopRequest, "additionalRepos" | "metadata" | "command">,
+  userId: string
+): Promise<JsonObject | undefined> {
+  const additionalRepos = await resolveAdditionalReposForCreate(
     input.additionalRepos,
-    input.command
+    input.command,
+    userId
   );
 
   if (!additionalRepos) {
@@ -1322,25 +1329,20 @@ function mergeCreateLoopMetadata(
 }
 
 /**
- * Apply the MULTI_REPO_PLAN_ENABLED feature flag and PLAN-only gate to the
- * requested additionalRepos. Returns undefined when the feature is disabled
- * or the command is not PLAN. Enforced at the service layer so every caller
+ * Apply PostHog feature flag and PLAN-only gates to requested additionalRepos.
+ * Returns undefined when the feature is disabled or the command is not PLAN.
+ * Enforced at the service layer so every caller
  * (POST /loops, /artifacts/[id]/run-loop, internal callers) is gated.
  */
-function resolveAdditionalReposForCreate(
+async function resolveAdditionalReposForCreate(
   additionalRepos: CreateLoopRequest["additionalRepos"],
-  command: LoopCommand
-): CreateLoopRequest["additionalRepos"] {
+  command: LoopCommand,
+  userId: string
+): Promise<CreateLoopRequest["additionalRepos"]> {
   if (!additionalRepos) {
     return undefined;
   }
-  if (process.env.MULTI_REPO_PLAN_ENABLED !== "true") {
-    log.warn(
-      "[loops.service] MULTI_REPO_PLAN_ENABLED is not enabled — dropping additionalRepos",
-      { command }
-    );
-    return undefined;
-  }
+
   if (command !== LoopCommand.Plan) {
     log.warn(
       "[loops.service] additionalRepos is only supported for PLAN loops — dropping",
@@ -1348,5 +1350,15 @@ function resolveAdditionalReposForCreate(
     );
     return undefined;
   }
+
+  const enabled = await isFeatureEnabled("multi-repo-plan", userId);
+  if (!enabled) {
+    log.warn(
+      "[loops.service] PostHog flag multi-repo-plan disabled — dropping additionalRepos",
+      { command, userId }
+    );
+    return undefined;
+  }
+
   return additionalRepos;
 }
