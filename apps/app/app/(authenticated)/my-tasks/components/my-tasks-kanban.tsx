@@ -24,18 +24,9 @@ import Link from "next/link";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { AssigneeAvatar } from "@/components/assignee-avatar";
 import { EmptyState } from "@/components/empty-state";
-import {
-  featureKeys,
-  useFeatures,
-  useUpdateFeature,
-} from "@/hooks/queries/use-features";
+import { featureKeys, useUpdateFeature } from "@/hooks/queries/use-features";
 import { FEATURE_STATUS_TO_ICON } from "@/lib/project-constants";
-import type { MyTasksFeatureFilters } from "../types";
-import {
-  applyClientFilters,
-  buildFeatureListParams,
-  DISPLAY_GROUPS,
-} from "../utils";
+import { buildFeatureListParams, DISPLAY_GROUPS } from "../utils";
 
 /** Map column (droppable) id to the status to set when a feature is dropped there */
 const COLUMN_TO_STATUS: Record<string, FeatureStatus> = {
@@ -50,29 +41,21 @@ const COLUMN_TO_STATUS: Record<string, FeatureStatus> = {
 
 type MyTasksKanbanProps = {
   assigneeId: string | null;
+  features: FeatureWithWorkstream[];
+  isLoading: boolean;
   isUserLoading: boolean;
-  featureFilters?: MyTasksFeatureFilters;
 };
 
 export function MyTasksKanban({
   assigneeId,
+  features,
+  isLoading,
   isUserLoading,
-  featureFilters,
 }: Readonly<MyTasksKanbanProps>) {
   const queryClient = useQueryClient();
   const listFilters = useMemo(
     () => buildFeatureListParams(assigneeId),
     [assigneeId]
-  );
-  const { data: rawFeatures = [], isLoading } = useFeatures(listFilters, {
-    enabled: !!assigneeId && !isUserLoading,
-  });
-  const features = useMemo(
-    () =>
-      featureFilters
-        ? applyClientFilters(rawFeatures, featureFilters)
-        : rawFeatures,
-    [rawFeatures, featureFilters]
   );
   const updateFeatureMutation = useUpdateFeature();
   const lastDraggedFeatureIdRef = useRef<string | null>(null);
