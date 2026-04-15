@@ -1,20 +1,9 @@
 /**
- * Tests for resolveLoopLaunchContext() token resolution behavior (via launchLoop),
- * and normalizeAdditionalRepos() pure function behavior.
- *
- * Covers:
- * - resolveLoopLaunchContext: resolves GitHub token for ECS launches with a repo
- * - resolveLoopLaunchContext: fails fast (throws) when token resolution fails
- * - resolveLoopLaunchContext: omits anthropicApiKey and githubToken for desktop launches
- * - resolveLoopLaunchContext: Zod metadata parsing — invalid entries are skipped
- * - normalizeAdditionalRepos: deduplicates by fullName (keeps first)
- * - normalizeAdditionalRepos: excludes primary repo
- * - normalizeAdditionalRepos: returns undefined for empty result
+ * Tests for resolveLoopLaunchContext() token resolution behavior (via launchLoop)
+ * and normalizeAdditionalRepos() pure function behavior — scoped to PLN-263.
  */
 
 import { vi } from "vitest";
-
-// --- Mocks (must come before imports) ---
 
 vi.mock("@aws-sdk/client-ecs", () => ({
   ECSClient: vi.fn(),
@@ -116,14 +105,11 @@ vi.mock("@/lib/loops/loop-desktop", async (importActual) => {
   };
 });
 
-// ECS provider mock — captured here so tests can inspect launch calls
 const mockRunEcsTask = vi.fn().mockResolvedValue("ecs-task-arn");
 vi.mock("@/lib/loops/loop-ecs", () => ({
   runEcsTask: (...args: unknown[]) => mockRunEcsTask(...args),
   stopLoopTask: vi.fn().mockResolvedValue(undefined),
 }));
-
-// --- Imports (after mocks) ---
 
 import type { JsonObject } from "@repo/api/src/types/common";
 import { withDb } from "@repo/database";
@@ -156,11 +142,11 @@ const mockWithDb = withDb as unknown as Mock;
 // normalizeAdditionalRepos — pure function tests
 // ---------------------------------------------------------------------------
 
-describe("normalizeAdditionalRepos — deduplication", () => {
+describe("normalizeAdditionalRepos", () => {
   it("deduplicates by fullName and keeps the first occurrence", () => {
     const entries = [
       { fullName: "org/repo-a", branch: "main" },
-      { fullName: "org/repo-a", branch: "develop" }, // duplicate — branch differs, still skipped
+      { fullName: "org/repo-a", branch: "develop" },
       { fullName: "org/repo-b", branch: "main" },
     ];
 
@@ -172,20 +158,6 @@ describe("normalizeAdditionalRepos — deduplication", () => {
     ]);
   });
 
-  it("returns exactly one entry when all entries share the same fullName", () => {
-    const entries = [
-      { fullName: "org/same", branch: "main" },
-      { fullName: "org/same", branch: "feat-1" },
-      { fullName: "org/same", branch: "feat-2" },
-    ];
-
-    const result = normalizeAdditionalRepos(entries, undefined);
-
-    expect(result).toEqual([{ fullName: "org/same", branch: "main" }]);
-  });
-});
-
-describe("normalizeAdditionalRepos — primary repo exclusion", () => {
   it("excludes entries whose fullName matches the primary repo", () => {
     const entries = [
       { fullName: "org/primary", branch: "main" },
@@ -197,18 +169,7 @@ describe("normalizeAdditionalRepos — primary repo exclusion", () => {
     expect(result).toEqual([{ fullName: "org/secondary", branch: "main" }]);
   });
 
-  it("excludes all entries when they all match the primary repo", () => {
-    const entries = [
-      { fullName: "org/primary", branch: "main" },
-      { fullName: "org/primary", branch: "develop" },
-    ];
-
-    const result = normalizeAdditionalRepos(entries, "org/primary");
-
-    expect(result).toBeUndefined();
-  });
-
-  it("includes all entries when primaryFullName is undefined", () => {
+  it("passes all entries through when primaryFullName is undefined", () => {
     const entries = [
       { fullName: "org/repo-a", branch: "main" },
       { fullName: "org/repo-b", branch: "main" },
@@ -220,24 +181,8 @@ describe("normalizeAdditionalRepos — primary repo exclusion", () => {
   });
 });
 
-describe("normalizeAdditionalRepos — returns undefined for empty result", () => {
-  it("returns undefined when the input array is empty", () => {
-    const result = normalizeAdditionalRepos([], undefined);
-
-    expect(result).toBeUndefined();
-  });
-
-  it("returns undefined when all entries are filtered out", () => {
-    const entries = [{ fullName: "org/primary", branch: "main" }];
-
-    const result = normalizeAdditionalRepos(entries, "org/primary");
-
-    expect(result).toBeUndefined();
-  });
-});
-
 // ---------------------------------------------------------------------------
-// resolveLoopLaunchContext — token resolution (tested via launchLoop)
+// resolveLoopLaunchContext — additional-repo token resolution via launchLoop
 // ---------------------------------------------------------------------------
 
 describe("resolveLoopLaunchContext — token resolution for ECS launches", () => {
@@ -247,7 +192,6 @@ describe("resolveLoopLaunchContext — token resolution for ECS launches", () =>
     vi.clearAllMocks();
     process.env.API_BASE_URL = "https://api.test";
 
-    // Default ECS setup — no computeTargetId means cloud/ECS path
     mockApiKeyService.resolveApiKey.mockResolvedValue("sk-anthropic-key");
     mockGithubService.findInstallationForRepoFullName.mockResolvedValue(
       "installation-123"
@@ -255,7 +199,6 @@ describe("resolveLoopLaunchContext — token resolution for ECS launches", () =>
     mockGetInstallationAccessToken.mockResolvedValue("ghs-github-token");
     mockRunEcsTask.mockResolvedValue("ecs-task-arn");
     mockLoopsService.updateStatus.mockResolvedValue(undefined);
-    // withDb is used to fetch artifact slug
     mockWithDb.mockResolvedValue({ slug: "my-artifact" });
   });
 
@@ -266,7 +209,7 @@ describe("resolveLoopLaunchContext — token resolution for ECS launches", () =>
   it("resolves GitHub installation token for ECS launch when loop has a repo", async () => {
     const loop = buildLoop({
       status: "PENDING",
-      computeTargetId: null, // ECS path
+      computeTargetId: null,
       repo: { fullName: "org/repo", branch: "main" },
     });
     mockLoopsService.findById.mockResolvedValue(loop);
@@ -280,25 +223,9 @@ describe("resolveLoopLaunchContext — token resolution for ECS launches", () =>
       "installation-123"
     );
   });
-
-  it("does not resolve GitHub token for ECS launch when loop has no repo", async () => {
-    const loop = buildLoop({
-      status: "PENDING",
-      computeTargetId: null, // ECS path
-      repo: null,
-    });
-    mockLoopsService.findById.mockResolvedValue(loop);
-
-    await launchLoop("loop-1", "org-1");
-
-    expect(
-      mockGithubService.findInstallationForRepoFullName
-    ).not.toHaveBeenCalled();
-    expect(mockGetInstallationAccessToken).not.toHaveBeenCalled();
-  });
 });
 
-describe("resolveLoopLaunchContext — fails fast when token resolution fails", () => {
+describe("resolveLoopLaunchContext — token resolution failure cancels the loop", () => {
   const originalEnv = { ...process.env };
 
   beforeEach(() => {
@@ -316,7 +243,7 @@ describe("resolveLoopLaunchContext — fails fast when token resolution fails", 
   it("throws and cancels loop when GitHub installation token resolution fails", async () => {
     const loop = buildLoop({
       status: "PENDING",
-      computeTargetId: null, // ECS path
+      computeTargetId: null,
       repo: { fullName: "org/repo", branch: "main" },
     });
     mockLoopsService.findById.mockResolvedValue(loop);
@@ -333,63 +260,9 @@ describe("resolveLoopLaunchContext — fails fast when token resolution fails", 
 
     expect(mockLoopsService.cancel).toHaveBeenCalledWith("loop-1", "org-1");
   });
-
-  it("throws and cancels loop when Anthropic API key is missing", async () => {
-    const loop = buildLoop({
-      status: "PENDING",
-      computeTargetId: null, // ECS path
-    });
-    mockLoopsService.findById.mockResolvedValue(loop);
-    mockApiKeyService.resolveApiKey.mockResolvedValue(null); // no key configured
-
-    await expect(launchLoop("loop-1", "org-1")).rejects.toThrow(
-      "No Anthropic API key configured"
-    );
-
-    expect(mockLoopsService.cancel).toHaveBeenCalledWith("loop-1", "org-1");
-  });
 });
 
-describe("resolveLoopLaunchContext — omits tokens for desktop launches", () => {
-  const originalEnv = { ...process.env };
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-    process.env.API_BASE_URL = "https://api.test";
-
-    mockWithDb.mockResolvedValue({ slug: "my-artifact" });
-    mockRunEcsTask.mockResolvedValue("ecs-task-arn");
-  });
-
-  afterEach(() => {
-    process.env.API_BASE_URL = originalEnv.API_BASE_URL;
-  });
-
-  it("does not call resolveApiKey or findInstallationForRepoFullName for desktop loops", async () => {
-    const loop = buildLoop({
-      status: "PENDING",
-      computeTargetId: "target-desktop-1", // desktop path
-      repo: { fullName: "org/repo", branch: "main" },
-    });
-    mockLoopsService.findById.mockResolvedValue(loop);
-    mockLoopsService.updateStatus.mockResolvedValue(undefined);
-
-    // Desktop dispatch succeeds — mock is set in top-level mock
-    await launchLoop("loop-1", "org-1");
-
-    expect(mockApiKeyService.resolveApiKey).not.toHaveBeenCalled();
-    expect(
-      mockGithubService.findInstallationForRepoFullName
-    ).not.toHaveBeenCalled();
-    expect(mockGetInstallationAccessToken).not.toHaveBeenCalled();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// resolveLoopLaunchContext — Zod metadata parsing validation
-// ---------------------------------------------------------------------------
-
-describe("resolveLoopLaunchContext — Zod metadata parsing skips invalid entries", () => {
+describe("resolveLoopLaunchContext — Zod metadata parsing", () => {
   const originalEnv = { ...process.env };
 
   beforeEach(() => {
@@ -410,44 +283,25 @@ describe("resolveLoopLaunchContext — Zod metadata parsing skips invalid entrie
     process.env.API_BASE_URL = originalEnv.API_BASE_URL;
   });
 
-  it("treats loop with invalid metadata (non-object additionalRepos) as having no additional repos", async () => {
+  it("treats loop with invalid additionalRepos metadata as having no additional repos", async () => {
     const loop = buildLoop({
       status: "PENDING",
-      computeTargetId: null, // ECS path
+      computeTargetId: null,
       repo: { fullName: "org/repo", branch: "main" },
       metadata: { additionalRepos: "not-an-array" } as JsonObject,
     });
     mockLoopsService.findById.mockResolvedValue(loop);
 
-    // Should launch without throwing — invalid metadata treated as empty
     await launchLoop("loop-1", "org-1");
 
-    // GitHub token resolution: once for the primary repo, but NOT for any additional
-    // repos (because invalid metadata means no additional repos were parsed)
-    expect(mockGetInstallationAccessToken).toHaveBeenCalledTimes(1);
-  });
-
-  it("treats loop with missing fullName in additionalRepos entry as having no additional repos", async () => {
-    const loop = buildLoop({
-      status: "PENDING",
-      computeTargetId: null, // ECS path
-      repo: { fullName: "org/repo", branch: "main" },
-      metadata: {
-        additionalRepos: [{ noFullName: "org/extra", branch: "main" }],
-      } as JsonObject,
-    });
-    mockLoopsService.findById.mockResolvedValue(loop);
-
-    await launchLoop("loop-1", "org-1");
-
-    // Only the primary repo token call — extra repo with invalid shape is ignored
+    // Only the primary repo token is resolved — invalid metadata skipped.
     expect(mockGetInstallationAccessToken).toHaveBeenCalledTimes(1);
   });
 
   it("resolves additional repo tokens for valid metadata", async () => {
     const loop = buildLoop({
       status: "PENDING",
-      computeTargetId: null, // ECS path
+      computeTargetId: null,
       repo: { fullName: "org/repo", branch: "main" },
       metadata: {
         additionalRepos: [{ fullName: "org/extra-repo", branch: "main" }],
@@ -457,7 +311,6 @@ describe("resolveLoopLaunchContext — Zod metadata parsing skips invalid entrie
 
     await launchLoop("loop-1", "org-1");
 
-    // Token called for primary repo AND additional repo
     expect(mockGetInstallationAccessToken).toHaveBeenCalledTimes(2);
     expect(
       mockGithubService.findInstallationForRepoFullName

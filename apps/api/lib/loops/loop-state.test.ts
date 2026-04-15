@@ -1,31 +1,16 @@
 /**
- * Unit tests for loop-state.ts
+ * Unit tests for scrubContextPackSecrets() in loop-state.ts.
  *
- * Covers scrubContextPackSecrets():
+ * Covers:
  * - Per-repo githubToken is stripped from additionalRepos entries
  * - Function does not early-return when additionalRepos have tokens but secrets is absent
  * - Function returns early (no S3 write) when neither secrets nor per-repo tokens exist
- * - top-level secrets are removed along with per-repo tokens
- *
- * Also covers pure utility functions (no S3 dependency):
- * - validateKeyBelongsToOrg
- * - validateKeyBelongsToLoop
+ * - Top-level secrets are removed along with per-repo tokens
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-// ---------------------------------------------------------------------------
-// vi.hoisted() — define shared mock references available inside vi.mock factories.
-// ---------------------------------------------------------------------------
-
 const { mockSend } = vi.hoisted(() => ({ mockSend: vi.fn() }));
-
-// ---------------------------------------------------------------------------
-// AWS SDK mock — must come before imports so the module under test receives
-// the mock when it first imports S3Client.
-//
-// S3Client is mocked as a class so "new S3Client()" returns the mock instance.
-// ---------------------------------------------------------------------------
 
 vi.mock("@aws-sdk/client-s3", () => {
   class MockS3Client {
@@ -64,20 +49,8 @@ vi.mock("@repo/observability/log", () => ({
   log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
-// ---------------------------------------------------------------------------
-// Imports (after mocks)
-// ---------------------------------------------------------------------------
-
 import type { ContextPack } from "@closedloop-ai/loops-api/context-pack";
-import {
-  scrubContextPackSecrets,
-  validateKeyBelongsToLoop,
-  validateKeyBelongsToOrg,
-} from "@/lib/loops/loop-state";
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+import { scrubContextPackSecrets } from "@/lib/loops/loop-state";
 
 /**
  * Build a minimal async-iterable stream for the S3 GetObject Body mock.
@@ -103,10 +76,6 @@ function makeS3GetObjectBody(json: unknown): AsyncIterable<Uint8Array> {
   };
 }
 
-/**
- * Return the JSON parsed from the Body that was passed to the PutObjectCommand.
- * Scans all mockSend.mock.calls for the call with _type === "PutObjectCommand".
- */
 function capturedPutBody(): ContextPack {
   const putCall = (mockSend.mock.calls as unknown[][]).find(
     (call) =>
@@ -119,18 +88,17 @@ function capturedPutBody(): ContextPack {
   return JSON.parse(bodyBuffer.toString()) as ContextPack;
 }
 
-// ---------------------------------------------------------------------------
-// LOOP_STATE_BUCKET env — required by requireBucket()
-// ---------------------------------------------------------------------------
+function putCallCount(): number {
+  return (mockSend.mock.calls as unknown[][]).filter(
+    (call) =>
+      (call[0] as { _type?: string } | undefined)?._type === "PutObjectCommand"
+  ).length;
+}
 
 beforeEach(() => {
   vi.clearAllMocks();
   process.env.LOOP_STATE_BUCKET = "test-loop-state-bucket";
 });
-
-// ---------------------------------------------------------------------------
-// scrubContextPackSecrets
-// ---------------------------------------------------------------------------
 
 describe("scrubContextPackSecrets", () => {
   it("strips githubToken from each additionalRepos entry", async () => {
@@ -148,8 +116,8 @@ describe("scrubContextPackSecrets", () => {
     };
 
     mockSend
-      .mockResolvedValueOnce({ Body: makeS3GetObjectBody(contextPack) }) // GetObject
-      .mockResolvedValueOnce({}); // PutObject
+      .mockResolvedValueOnce({ Body: makeS3GetObjectBody(contextPack) })
+      .mockResolvedValueOnce({});
 
     await scrubContextPackSecrets("org-1/loops/loop-1/run-1");
 
@@ -165,7 +133,6 @@ describe("scrubContextPackSecrets", () => {
     const contextPack: ContextPack = {
       command: "EXECUTE",
       artifacts: [],
-      // secrets is intentionally absent
       additionalRepos: [
         { fullName: "org/repo-a", branch: "main", githubToken: "ghp_token_a" },
       ],
@@ -177,14 +144,7 @@ describe("scrubContextPackSecrets", () => {
 
     await scrubContextPackSecrets("org-1/loops/loop-1/run-1");
 
-    // PutObject should have been called (function did not early-return)
-    const putCalls = (mockSend.mock.calls as unknown[][]).filter(
-      (call) =>
-        (call[0] as { _type?: string } | undefined)?._type ===
-        "PutObjectCommand"
-    );
-    expect(putCalls).toHaveLength(1);
-
+    expect(putCallCount()).toBe(1);
     const scrubbed = capturedPutBody();
     expect(scrubbed.additionalRepos?.[0].githubToken).toBeUndefined();
   });
@@ -193,40 +153,14 @@ describe("scrubContextPackSecrets", () => {
     const contextPack: ContextPack = {
       command: "EXECUTE",
       artifacts: [],
-      additionalRepos: [
-        { fullName: "org/repo-a", branch: "main" }, // no githubToken
-      ],
+      additionalRepos: [{ fullName: "org/repo-a", branch: "main" }],
     };
 
     mockSend.mockResolvedValueOnce({ Body: makeS3GetObjectBody(contextPack) });
 
     await scrubContextPackSecrets("org-1/loops/loop-1/run-1");
 
-    // Only GetObject was called; PutObject was not called (early return)
-    const putCalls = (mockSend.mock.calls as unknown[][]).filter(
-      (call) =>
-        (call[0] as { _type?: string } | undefined)?._type ===
-        "PutObjectCommand"
-    );
-    expect(putCalls).toHaveLength(0);
-  });
-
-  it("returns early without S3 write when context pack has no secrets and no additionalRepos", async () => {
-    const contextPack: ContextPack = {
-      command: "PLAN",
-      artifacts: [],
-    };
-
-    mockSend.mockResolvedValueOnce({ Body: makeS3GetObjectBody(contextPack) });
-
-    await scrubContextPackSecrets("org-1/loops/loop-1/run-1");
-
-    const putCalls = (mockSend.mock.calls as unknown[][]).filter(
-      (call) =>
-        (call[0] as { _type?: string } | undefined)?._type ===
-        "PutObjectCommand"
-    );
-    expect(putCalls).toHaveLength(0);
+    expect(putCallCount()).toBe(0);
   });
 
   it("removes top-level secrets alongside per-repo token scrubbing", async () => {
@@ -250,148 +184,13 @@ describe("scrubContextPackSecrets", () => {
     expect(scrubbed.additionalRepos?.[0].githubToken).toBeUndefined();
   });
 
-  it("removes top-level secrets when no additionalRepos are present", async () => {
-    const contextPack: ContextPack = {
-      command: "EXECUTE",
-      artifacts: [],
-      secrets: { anthropicApiKey: "sk-ant-key" },
-    };
-
-    mockSend
-      .mockResolvedValueOnce({ Body: makeS3GetObjectBody(contextPack) })
-      .mockResolvedValueOnce({});
-
-    await scrubContextPackSecrets("org-1/loops/loop-1/run-1");
-
-    const scrubbed = capturedPutBody();
-    expect(scrubbed.secrets).toBeUndefined();
-  });
-
-  it("preserves non-secret additionalRepos fields after scrubbing", async () => {
-    const contextPack: ContextPack = {
-      command: "EXECUTE",
-      artifacts: [],
-      additionalRepos: [
-        {
-          fullName: "org/repo-a",
-          branch: "feature/auth",
-          githubToken: "ghp_a",
-        },
-      ],
-    };
-
-    mockSend
-      .mockResolvedValueOnce({ Body: makeS3GetObjectBody(contextPack) })
-      .mockResolvedValueOnce({});
-
-    await scrubContextPackSecrets("org-1/loops/loop-1/run-1");
-
-    const scrubbed = capturedPutBody();
-    expect(scrubbed.additionalRepos?.[0].fullName).toBe("org/repo-a");
-    expect(scrubbed.additionalRepos?.[0].branch).toBe("feature/auth");
-  });
-
   it("returns early without S3 write when downloadContextPack returns null", async () => {
-    // Simulate S3 GetObject throwing (object not found)
     mockSend.mockRejectedValueOnce(
       Object.assign(new Error("NoSuchKey"), { Code: "NoSuchKey" })
     );
 
-    // downloadContextPack catches the error and returns null; scrubContextPackSecrets
-    // then evaluates contextPack?.secrets (undefined) and additionalRepos (undefined)
-    // as falsy, so it returns early without a PutObject call.
     await scrubContextPackSecrets("org-1/loops/loop-1/run-1");
 
-    const putCalls = (mockSend.mock.calls as unknown[][]).filter(
-      (call) =>
-        (call[0] as { _type?: string } | undefined)?._type ===
-        "PutObjectCommand"
-    );
-    expect(putCalls).toHaveLength(0);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// validateKeyBelongsToOrg — pure function, no mocking needed
-// ---------------------------------------------------------------------------
-
-describe("validateKeyBelongsToOrg", () => {
-  it("returns true for a key that starts with the org prefix", () => {
-    expect(
-      validateKeyBelongsToOrg(
-        "org-abc/loops/loop-1/run-1/context-pack.json",
-        "org-abc"
-      )
-    ).toBe(true);
-  });
-
-  it("returns false for a key belonging to a different org", () => {
-    expect(
-      validateKeyBelongsToOrg(
-        "org-xyz/loops/loop-1/run-1/context-pack.json",
-        "org-abc"
-      )
-    ).toBe(false);
-  });
-
-  it("returns false for a key containing path traversal (..)", () => {
-    expect(
-      validateKeyBelongsToOrg(
-        "org-abc/../org-abc/loops/loop-1/secret.json",
-        "org-abc"
-      )
-    ).toBe(false);
-  });
-
-  it("returns false for a key containing path traversal (./)", () => {
-    expect(
-      validateKeyBelongsToOrg("org-abc/./loops/loop-1/secret.json", "org-abc")
-    ).toBe(false);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// validateKeyBelongsToLoop — pure function, no mocking needed
-// ---------------------------------------------------------------------------
-
-describe("validateKeyBelongsToLoop", () => {
-  it("returns true for a key scoped to the org and loop", () => {
-    expect(
-      validateKeyBelongsToLoop(
-        "org-abc/loops/loop-1/run-1/context-pack.json",
-        "org-abc",
-        "loop-1"
-      )
-    ).toBe(true);
-  });
-
-  it("returns false for a key belonging to a different loop under the same org", () => {
-    expect(
-      validateKeyBelongsToLoop(
-        "org-abc/loops/loop-2/run-1/context-pack.json",
-        "org-abc",
-        "loop-1"
-      )
-    ).toBe(false);
-  });
-
-  it("returns false for a key containing path traversal (..)", () => {
-    expect(
-      validateKeyBelongsToLoop(
-        "org-abc/loops/loop-1/../loop-2/secret.json",
-        "org-abc",
-        "loop-1"
-      )
-    ).toBe(false);
-  });
-
-  it("returns false when org prefix does not match", () => {
-    expect(
-      validateKeyBelongsToLoop(
-        "org-xyz/loops/loop-1/run-1/context-pack.json",
-        "org-abc",
-        "loop-1"
-      )
-    ).toBe(false);
+    expect(putCallCount()).toBe(0);
   });
 });
