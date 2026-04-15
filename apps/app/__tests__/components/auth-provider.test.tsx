@@ -1,13 +1,13 @@
 /**
  * Unit tests for AuthProvider.
- * Verifies that logoImageUrl in Clerk appearance.layout is populated from
+ * Verifies that logoImageUrl in Clerk appearance.options is populated from
  * the explicit logoUrl prop and falls back to the NEXT_PUBLIC_LOGO_URL env var.
  */
 import { render } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 type ReceivedClerkProps = {
-  appearance?: { layout?: { logoImageUrl?: string } };
+  appearance?: { options?: { logoImageUrl?: string } };
   children?: React.ReactNode;
 };
 
@@ -19,7 +19,7 @@ vi.mock("@clerk/nextjs", () => ({
   ClerkProvider: mockClerkProvider,
 }));
 
-vi.mock("@clerk/themes", () => ({
+vi.mock("@clerk/ui/themes", () => ({
   dark: undefined,
 }));
 
@@ -46,7 +46,7 @@ describe("AuthProvider — logoImageUrl in Clerk appearance", () => {
     );
   });
 
-  it("passes logoUrl prop as logoImageUrl in Clerk appearance layout", () => {
+  it("passes logoUrl prop as logoImageUrl in Clerk appearance options", () => {
     const logoUrl = "https://example.com/logo.png";
 
     render(
@@ -57,7 +57,7 @@ describe("AuthProvider — logoImageUrl in Clerk appearance", () => {
 
     const receivedProps = mockClerkProvider.mock
       .calls[0]?.[0] as ReceivedClerkProps;
-    expect(receivedProps?.appearance?.layout?.logoImageUrl).toBe(logoUrl);
+    expect(receivedProps?.appearance?.options?.logoImageUrl).toBe(logoUrl);
   });
 
   it("falls back to NEXT_PUBLIC_LOGO_URL env var when no logoUrl prop is given", () => {
@@ -72,7 +72,7 @@ describe("AuthProvider — logoImageUrl in Clerk appearance", () => {
 
     const receivedProps = mockClerkProvider.mock
       .calls[0]?.[0] as ReceivedClerkProps;
-    expect(receivedProps?.appearance?.layout?.logoImageUrl).toBe(envLogoUrl);
+    expect(receivedProps?.appearance?.options?.logoImageUrl).toBe(envLogoUrl);
   });
 
   it("sets logoImageUrl to undefined when neither logoUrl prop nor env var is provided", () => {
@@ -86,7 +86,7 @@ describe("AuthProvider — logoImageUrl in Clerk appearance", () => {
 
     const receivedProps = mockClerkProvider.mock
       .calls[0]?.[0] as ReceivedClerkProps;
-    expect(receivedProps?.appearance?.layout?.logoImageUrl).toBeUndefined();
+    expect(receivedProps?.appearance?.options?.logoImageUrl).toBeUndefined();
   });
 
   it("prefers the explicit logoUrl prop over the env var", () => {
@@ -102,6 +102,6 @@ describe("AuthProvider — logoImageUrl in Clerk appearance", () => {
 
     const receivedProps = mockClerkProvider.mock
       .calls[0]?.[0] as ReceivedClerkProps;
-    expect(receivedProps?.appearance?.layout?.logoImageUrl).toBe(propLogoUrl);
+    expect(receivedProps?.appearance?.options?.logoImageUrl).toBe(propLogoUrl);
   });
 });
