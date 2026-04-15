@@ -35,6 +35,17 @@ export const ContextPackArtifactSchema = z.object({
 });
 
 /**
+ * Additional repository reference with optional GitHub token.
+ * Defined locally to avoid dependency on @repo/api.
+ * Mirrors AdditionalRepoRefWithToken from @repo/api/src/types/loop.
+ */
+export type AdditionalRepoRefWithToken = {
+  fullName: string;
+  branch: string;
+  githubToken?: string;
+};
+
+/**
  * Context pack — the input payload assembled by the backend and consumed
  * by the ECS runner harness (via S3) or desktop gateway (via relay).
  *
@@ -54,6 +65,7 @@ export type ContextPack = {
   secrets?: { anthropicApiKey?: string; githubToken?: string };
   userContext?: string;
   attachments?: ContextPackAttachment[];
+  additionalRepos?: AdditionalRepoRefWithToken[];
 };
 
 export const ContextPackSchema = z.object({
@@ -89,4 +101,17 @@ export const ContextPackSchema = z.object({
     .optional(),
   userContext: z.string().optional(),
   attachments: z.array(ContextPackAttachmentSchema).optional(),
+  additionalRepos: z
+    .array(
+      z.object({
+        fullName: z.string(),
+        branch: z.string(),
+        githubToken: z.string().optional(),
+      })
+    )
+    .optional(),
 });
+
+// Compile-time assertion: ContextPackSchema must be assignable to ContextPack
+type _ContextPackSchemaCheck =
+  z.infer<typeof ContextPackSchema> extends ContextPack ? true : never;

@@ -1,5 +1,6 @@
 import type { JsonObject } from "@repo/api/src/types/common";
 import type {
+  AdditionalRepoRefWithToken,
   LoopEvent,
   LoopEventCompleted,
   LoopEventError,
@@ -10,12 +11,14 @@ import {
   LoopCommand,
   LoopErrorCode,
   LoopStatus,
+  MAX_ADDITIONAL_REPOS,
   MODEL_PRICING,
 } from "@repo/api/src/types/loop";
 import { withDb } from "@repo/database";
 import { getInstallationAccessToken } from "@repo/github";
 import { log } from "@repo/observability/log";
 import { truncateUtf8 } from "@repo/observability/truncate-utf8";
+import { z } from "zod";
 import { getCommitterInfo } from "@/app/artifacts/service";
 import { githubService } from "@/app/integrations/github/service";
 import {
@@ -421,13 +424,20 @@ async function resolveLoopLaunchContext(
     );
   }
 
+  const resolvedAdditionalRepos = await resolveAdditionalRepos(
+    loop.metadata,
+    organizationId,
+    isDesktop
+  );
+
   // Build context pack in memory (shared by both paths).
   // ECS provider uploads to S3; desktop provider sends inline.
   const contextPack = await buildContextPackInMemory(
     loop,
     organizationId,
     { anthropicApiKey, githubToken },
-    committer
+    committer,
+    resolvedAdditionalRepos
   );
 
   // Resolve artifact slug for worktree/branch naming on desktop.
@@ -475,6 +485,7 @@ async function resolveLoopLaunchContext(
         : null,
     localRepoPath,
     computeTargetId: loop.computeTargetId,
+    additionalRepos: resolvedAdditionalRepos,
   };
 }
 
@@ -1409,4 +1420,75 @@ async function handleZeroTokenExecute(
   });
 
   return [errorEvent];
+}
+
+// ---------------------------------------------------------------------------
+// Additional repos resolution (extracted to keep resolveLoopLaunchContext
+// below the cognitive-complexity limit)
+// ---------------------------------------------------------------------------
+
+const AdditionalRepoRefSchema = z.object({
+  fullName: z.string(),
+  branch: z.string(),
+});
+
+const AdditionalReposMetadataSchema = z.object({
+  additionalRepos: z.array(AdditionalRepoRefSchema).optional(),
+});
+
+/**
+ * Parse, cap, and resolve GitHub tokens for additional repos declared in loop
+ * metadata.
+ *
+ * - Parses loop.metadata.additionalRepos with Zod (unknown metadata is ignored
+ *   on parse failure).
+ * - Enforces MAX_ADDITIONAL_REPOS defensively via slice.
+ * - Cloud/ECS: resolves a GitHub App installation token per repo (fail-fast).
+ * - Desktop: includes repo entries without tokens — the electron has its own
+ *   GitHub auth (gh CLI) locally.
+ * - User-level auth is deferred to the runner; only installation-level tokens
+ *   are resolved here.
+ */
+async function resolveAdditionalRepos(
+  metadata: JsonObject,
+  organizationId: string,
+  isDesktop: boolean
+): Promise<AdditionalRepoRefWithToken[] | undefined> {
+  const metadataParseResult = AdditionalReposMetadataSchema.safeParse(metadata);
+  const rawAdditionalRepos = metadataParseResult.success
+    ? (metadataParseResult.data.additionalRepos ?? [])
+    : [];
+
+  // Defensive: enforce MAX_ADDITIONAL_REPOS cap regardless of how the list
+  // entered the system.
+  const cappedAdditionalRepos = rawAdditionalRepos.slice(
+    0,
+    MAX_ADDITIONAL_REPOS
+  );
+
+  if (cappedAdditionalRepos.length === 0) {
+    return undefined;
+  }
+
+  if (isDesktop) {
+    return cappedAdditionalRepos.map((r) => ({
+      fullName: r.fullName,
+      branch: r.branch,
+    }));
+  }
+
+  // Cloud/ECS: resolve a GitHub installation token per repo.
+  // Fail-fast: if any token cannot be resolved, throw immediately so the loop
+  // fails before ECS dispatch rather than failing inside the container with a
+  // cryptic auth error.
+  const resolved: AdditionalRepoRefWithToken[] = [];
+  for (const repoRef of cappedAdditionalRepos) {
+    const token = await resolveGitHubToken(organizationId, repoRef.fullName);
+    resolved.push({
+      fullName: repoRef.fullName,
+      branch: repoRef.branch,
+      githubToken: token,
+    });
+  }
+  return resolved;
 }

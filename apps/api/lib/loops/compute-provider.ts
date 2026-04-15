@@ -6,7 +6,11 @@
  * itself has zero `if (loop.computeTargetId)` branching.
  */
 
-import type { Loop, LoopCommand } from "@repo/api/src/types/loop";
+import type {
+  AdditionalRepoRefWithToken,
+  Loop,
+  LoopCommand,
+} from "@repo/api/src/types/loop";
 import type { LoopCommandHandler } from "./loop-commands/loop-command-handler";
 import type { ContextPack } from "./loop-state";
 
@@ -34,6 +38,7 @@ export type LaunchContext = {
   parentSessionId: string | null;
   localRepoPath: string | undefined;
   computeTargetId: string | null;
+  additionalRepos?: AdditionalRepoRefWithToken[];
 };
 
 // ---------------------------------------------------------------------------

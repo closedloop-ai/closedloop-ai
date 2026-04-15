@@ -1,4 +1,5 @@
 import type { ContextPackAttachment } from "./context-attachment";
+import type { AdditionalRepoRef } from "./loop";
 
 /**
  * Typed body for the symphony_loop relay operation dispatched to the
@@ -34,4 +35,5 @@ export type SymphonyLoopBody = {
   localRepoPath: string | null;
   userContext?: string;
   attachments?: ContextPackAttachment[];
+  additionalRepos?: AdditionalRepoRef[];
 };

@@ -1,6 +1,7 @@
 "use client";
 
 import type {
+  AdditionalRepoRef,
   CreateLoopRequest,
   CreateLoopResponse,
   Loop,
@@ -226,6 +227,7 @@ export function useRunLoop() {
       computeTargetId,
       backendOverride,
       repo,
+      additionalRepos,
     }: {
       artifactId: string;
       command: RunLoopCommandType;
@@ -233,6 +235,7 @@ export function useRunLoop() {
       computeTargetId?: string | null;
       backendOverride?: boolean;
       repo?: CreateLoopRequest["repo"];
+      additionalRepos?: AdditionalRepoRef[];
     }) =>
       apiClient.post<CreateLoopResponse>(`/artifacts/${artifactId}/run-loop`, {
         command,
@@ -240,6 +243,7 @@ export function useRunLoop() {
         ...(computeTargetId !== undefined ? { computeTargetId } : {}),
         ...(backendOverride ? { backendOverride } : {}),
         ...(repo ? { repo } : {}),
+        ...(additionalRepos ? { additionalRepos } : {}),
       }),
     onSuccess: (_, { artifactId, command }) => {
       queryClient.invalidateQueries({ queryKey: loopKeys.lists() });

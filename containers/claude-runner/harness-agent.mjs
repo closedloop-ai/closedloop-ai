@@ -172,19 +172,28 @@ class HarnessError extends Error {
   }
 }
 
+// Module-level set of secrets to redact from all log output.
+// Populated by registerSecret() as secrets become available.
+const _redactSet = new Set();
+
+/**
+ * Register a secret value to be redacted from all future log output.
+ * Must be called whenever a new secret is obtained (e.g., from context pack).
+ * No-op for empty / non-string values.
+ */
+function registerSecret(secret) {
+  if (typeof secret === "string" && secret.length > 0) {
+    _redactSet.add(secret);
+  }
+}
+
 function redactSensitive(value) {
   if (typeof value !== "string" || value.length === 0) {
     return value;
   }
 
-  const secrets = [
-    config.anthropicApiKey,
-    config.githubToken,
-    config.authToken,
-  ].filter((secret) => typeof secret === "string" && secret.length > 0);
-
   let redacted = value;
-  for (const secret of secrets) {
+  for (const secret of _redactSet) {
     redacted = redacted.split(secret).join("[REDACTED]");
   }
   return redacted.replace(
@@ -220,6 +229,9 @@ const RE_UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function validateConfig() {
+  // Register the auth token early so it is redacted from all subsequent log output.
+  registerSecret(config.authToken);
+
   // Validate required environment variables (available before context pack download).
   // Secrets (anthropicApiKey, githubToken) are delivered via S3 context pack,
   // so they are validated separately after download.
@@ -836,9 +848,11 @@ async function downloadContextPack() {
   if (pack.secrets) {
     if (pack.secrets.anthropicApiKey) {
       config.anthropicApiKey = pack.secrets.anthropicApiKey;
+      registerSecret(config.anthropicApiKey);
     }
     if (pack.secrets.githubToken) {
       config.githubToken = pack.secrets.githubToken;
+      registerSecret(config.githubToken);
     }
     log("info", "Extracted secrets from context pack");
   }
@@ -1139,9 +1153,14 @@ function syncPlanFromContextPack(runDir, contextPack) {
 // ---------------------------------------------------------------------------
 // Git auth helper (shared between clone and safety commit)
 // ---------------------------------------------------------------------------
-function buildGitAuthEnv() {
+function buildGitAuthEnv(token) {
+  const resolvedToken = token ?? config.githubToken;
+  // Fail-closed: if no token is available, return empty env (no auth)
+  if (!resolvedToken) {
+    return {};
+  }
   const authHeader = Buffer.from(
-    `x-access-token:${config.githubToken}`,
+    `x-access-token:${resolvedToken}`,
     "utf-8"
   ).toString("base64");
   return {
@@ -1195,6 +1214,84 @@ function cloneRepo(workDir) {
   });
 
   log("info", "Repository cloned successfully");
+}
+
+// ---------------------------------------------------------------------------
+// Additional peer repository cloning
+// ---------------------------------------------------------------------------
+function cloneAdditionalRepos(entries) {
+  if (!Array.isArray(entries) || entries.length === 0) {
+    return [];
+  }
+
+  // Validate all entries before performing any filesystem or network operations
+  // so callers get a clear config error without side effects on invalid input.
+  for (const entry of entries) {
+    if (!RE_SAFE_REPO.test(entry.fullName)) {
+      throw new HarnessError(
+        ERROR_CODES.config,
+        redactSensitive(
+          `Invalid peer repo fullName: "${entry.fullName}" — must be "owner/repo" (alphanumeric, dots, hyphens, underscores)`
+        )
+      );
+    }
+    if (!RE_SAFE_BRANCH.test(entry.branch)) {
+      throw new HarnessError(
+        ERROR_CODES.config,
+        redactSensitive(
+          `Invalid peer repo branch: "${entry.branch}" for repo "${entry.fullName}" — must be alphanumeric with /, _, ., - (max 200 chars)`
+        )
+      );
+    }
+  }
+
+  const peersDir = "/workspace/peers";
+  fs.mkdirSync(peersDir, { recursive: true });
+
+  const clonedDirs = [];
+
+  for (const entry of entries) {
+    const cloneDirName = entry.fullName.replaceAll("/", "--");
+    const cloneTarget = path.join(peersDir, cloneDirName);
+    const cloneUrl = `https://github.com/${entry.fullName}.git`;
+
+    log(
+      "info",
+      `Cloning peer repo ${entry.fullName} (branch: ${entry.branch}) into ${cloneTarget}`
+    );
+
+    try {
+      execFileSync(
+        "git",
+        [
+          "clone",
+          "--depth",
+          "1",
+          "--branch",
+          entry.branch,
+          cloneUrl,
+          cloneTarget,
+        ],
+        {
+          stdio: "pipe",
+          env: buildGitAuthEnv(entry.githubToken),
+        }
+      );
+    } catch (err) {
+      throw new HarnessError(
+        ERROR_CODES.gitClone,
+        redactSensitive(
+          `Failed to clone peer repository ${entry.fullName}@${entry.branch}: ${err.message}`
+        ),
+        err
+      );
+    }
+
+    log("info", `Peer repo ${entry.fullName} cloned successfully`);
+    clonedDirs.push(cloneTarget);
+  }
+
+  return clonedDirs;
 }
 
 // ---------------------------------------------------------------------------
@@ -2336,7 +2433,13 @@ async function uploadMetadata(_workDir, output, tokenUsage, startTime) {
 // ---------------------------------------------------------------------------
 // Command builders
 // ---------------------------------------------------------------------------
-function buildRunLoopArgs(runLoopPath, workDir, prdPath) {
+/**
+ * @param {string} runLoopPath
+ * @param {string} workDir
+ * @param {string|null|undefined} prdPath
+ * @param {string[]} [additionalRepoPaths]
+ */
+function buildRunLoopArgs(runLoopPath, workDir, prdPath, additionalRepoPaths) {
   const args = [runLoopPath];
 
   // Pass workdir as positional argument so run-loop.sh knows where to operate
@@ -2345,6 +2448,12 @@ function buildRunLoopArgs(runLoopPath, workDir, prdPath) {
   switch (config.command) {
     case LoopCommand.Plan:
       args.push("--max-iterations", String(config.maxIterations || 50));
+      // Append --add-dir for each additional repo path (PLAN only)
+      if (Array.isArray(additionalRepoPaths)) {
+        for (const repoPath of additionalRepoPaths) {
+          args.push("--add-dir", repoPath);
+        }
+      }
       break;
     case LoopCommand.Execute:
       args.push("--max-iterations", String(config.maxIterations || 150));
@@ -2759,7 +2868,13 @@ function validatePreRunInputs(command, contextPack) {
   }
 }
 
-function buildCommand(workDir, symphonyWD, prdPath) {
+/**
+ * @param {string} workDir
+ * @param {string|null|undefined} symphonyWD
+ * @param {string|null|undefined} prdPath
+ * @param {string[]} [additionalRepoPaths]
+ */
+function buildCommand(workDir, symphonyWD, prdPath, additionalRepoPaths) {
   const usesRunLoop =
     config.command === LoopCommand.Plan ||
     config.command === LoopCommand.Execute;
@@ -2775,7 +2890,12 @@ function buildCommand(workDir, symphonyWD, prdPath) {
         err
       );
     }
-    return buildRunLoopArgs(runLoopPath, symphonyWD || workDir, prdPath);
+    return buildRunLoopArgs(
+      runLoopPath,
+      symphonyWD || workDir,
+      prdPath,
+      additionalRepoPaths
+    );
   }
   return buildClaudeDirectArgs(workDir, symphonyWD);
 }
@@ -3081,6 +3201,14 @@ async function main() {
     const contextPack = await downloadContextPack();
     validateSecrets();
 
+    // Register per-repo tokens so they are redacted from all subsequent log output
+    // before the first log call that might include a repo URL with embedded credentials.
+    if (Array.isArray(contextPack?.additionalRepos)) {
+      for (const repo of contextPack.additionalRepos) {
+        registerSecret(repo.githubToken);
+      }
+    }
+
     // Step 2: Report started event (triggers backend secret scrubbing)
     await reportEvent({
       type: "started",
@@ -3095,6 +3223,12 @@ async function main() {
 
     // Step 3: Clone the target repository or prepare an empty workspace
     prepareWorkspace(workDir);
+
+    // Step 3-peer: Clone additional peer repositories specified in the context pack.
+    // Returns an array of local directory paths (e.g., ["/workspace/peers/org--repo"]).
+    const additionalRepoPaths = cloneAdditionalRepos(
+      contextPack?.additionalRepos
+    );
 
     // Step 3-bootstrap: Run repo-level setup script if present.
     // This installs dependencies (pnpm install), generates env stubs, sets
@@ -3160,7 +3294,12 @@ async function main() {
     }
 
     // Step 4: Determine execution mode and build command
-    const { cmd, args } = buildCommand(workDir, symphonyWorkDir, prdPath);
+    const { cmd, args } = buildCommand(
+      workDir,
+      symphonyWorkDir,
+      prdPath,
+      additionalRepoPaths
+    );
 
     // Step 5: Build environment for the child process
     const childEnv = {
@@ -3336,6 +3475,8 @@ async function main() {
 export {
   buildClaudeDirectArgs,
   buildCommand,
+  buildRunLoopArgs,
+  cloneAdditionalRepos,
   config,
   ERROR_CODES,
   findExistingRunDir,
@@ -3349,6 +3490,8 @@ export {
   parseTokenUsageFromJsonlFile,
   parseTokenUsageFromRegex,
   parsePrInfo,
+  redactSensitive,
+  registerSecret,
   syncPlanFromContextPack,
   validateConfig,
   validatePreRunInputs,
