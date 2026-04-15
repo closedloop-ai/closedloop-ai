@@ -8,6 +8,8 @@
  * - loopsService.createIfNotExists throws ConcurrentLoopLimitError (not returns null)
  *   when at the concurrent limit
  * - isConcurrentLoopLimitError correctly identifies ConcurrentLoopLimitError instances
+ * - loopsService.create / createIfNotExists merge additionalRepos into loop metadata
+ *   when MULTI_REPO_PLAN_ENABLED is set
  *
  * // TOCTOU: count check and insert are not atomic. Two concurrent requests at
  * // count=N-1 can both proceed. Accepted tradeoff — limit is a soft cap, not a
@@ -194,22 +196,18 @@ describe("loopsService.createIfNotExists — concurrent loop limit enforcement",
   });
 });
 
-describe("loopsService.create metadata merge for additionalRepos", () => {
+describe("loopsService.create / createIfNotExists metadata merge for additionalRepos", () => {
   const originalFlag = process.env.MULTI_REPO_PLAN_ENABLED;
 
-  const additionalReposCreateMetadataScenarios: {
+  const additionalReposMetadataMergeScenarios: {
     id: string;
-    input: typeof baseInput & {
-      additionalRepos?: { fullName: string; branch: string }[];
-      metadata?: {
-        launchSource?: string;
-        additionalRepos?: { fullName: string; branch: string }[];
-      };
-    };
+    method: "create" | "createIfNotExists";
+    input: AdditionalReposMetadataMergeScenarioInput;
     expectedMetadata: Record<string, unknown>;
   }[] = [
     {
-      id: "persists additionalRepos into metadata.additionalRepos",
+      id: "create: persists additionalRepos into metadata.additionalRepos",
+      method: "create",
       input: {
         ...baseInput,
         additionalRepos: [{ fullName: "org/repo-a", branch: "main" }],
@@ -219,7 +217,8 @@ describe("loopsService.create metadata merge for additionalRepos", () => {
       },
     },
     {
-      id: "uses top-level additionalRepos when metadata already has additionalRepos",
+      id: "create: uses top-level additionalRepos when metadata already has additionalRepos",
+      method: "create",
       input: {
         ...baseInput,
         additionalRepos: [{ fullName: "org/top-level", branch: "main" }],
@@ -231,6 +230,31 @@ describe("loopsService.create metadata merge for additionalRepos", () => {
       expectedMetadata: {
         launchSource: "test",
         additionalRepos: [{ fullName: "org/top-level", branch: "main" }],
+      },
+    },
+    {
+      id: "createIfNotExists: persists additionalRepos under metadata for createManyAndReturn",
+      method: "createIfNotExists",
+      input: {
+        ...baseInput,
+        additionalRepos: [{ fullName: "org/repo-b", branch: "main" }],
+      },
+      expectedMetadata: {
+        additionalRepos: [{ fullName: "org/repo-b", branch: "main" }],
+      },
+    },
+    {
+      id: "createIfNotExists: overrides metadata.additionalRepos with top-level additionalRepos",
+      method: "createIfNotExists",
+      input: {
+        ...baseInput,
+        additionalRepos: [{ fullName: "org/repo-canonical", branch: "main" }],
+        metadata: {
+          additionalRepos: [{ fullName: "org/repo-stale", branch: "dev" }],
+        },
+      },
+      expectedMetadata: {
+        additionalRepos: [{ fullName: "org/repo-canonical", branch: "main" }],
       },
     },
   ];
@@ -245,61 +269,29 @@ describe("loopsService.create metadata merge for additionalRepos", () => {
     process.env.MULTI_REPO_PLAN_ENABLED = originalFlag;
   });
 
-  it.each(additionalReposCreateMetadataScenarios)("$id", async ({
+  it.each(additionalReposMetadataMergeScenarios)("$id", async ({
+    method,
     input,
     expectedMetadata,
   }) => {
-    await loopsService.create("org-1", "user-1", input);
-
-    expect(mockCreate).toHaveBeenCalledTimes(1);
-    const createArgs = mockCreate.mock.calls[0][0];
-    expect(createArgs.data.metadata).toEqual(expectedMetadata);
+    if (method === "create") {
+      await loopsService.create("org-1", "user-1", input);
+      expect(mockCreate).toHaveBeenCalledTimes(1);
+      const createArgs = mockCreate.mock.calls[0][0];
+      expect(createArgs.data.metadata).toEqual(expectedMetadata);
+    } else {
+      await loopsService.createIfNotExists("org-1", "user-1", input);
+      expect(mockCreateManyAndReturn).toHaveBeenCalledTimes(1);
+      const createManyArgs = mockCreateManyAndReturn.mock.calls[0][0];
+      expect(createManyArgs.data[0].metadata).toEqual(expectedMetadata);
+    }
   });
 });
 
-describe("loopsService.createIfNotExists metadata merge for additionalRepos", () => {
-  const originalFlag = process.env.MULTI_REPO_PLAN_ENABLED;
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockCount.mockResolvedValue(0);
-    process.env.MULTI_REPO_PLAN_ENABLED = "true";
-  });
-
-  afterEach(() => {
-    process.env.MULTI_REPO_PLAN_ENABLED = originalFlag;
-  });
-
-  it("persists additionalRepos under metadata for createManyAndReturn", async () => {
-    await loopsService.createIfNotExists("org-1", "user-1", {
-      ...baseInput,
-      additionalRepos: [{ fullName: "org/repo-b", branch: "main" }],
-    });
-
-    expect(mockCreateManyAndReturn).toHaveBeenCalledTimes(1);
-    const createManyArgs = mockCreateManyAndReturn.mock.calls[0][0];
-    expect(createManyArgs.data[0]).toMatchObject({
-      metadata: {
-        additionalRepos: [{ fullName: "org/repo-b", branch: "main" }],
-      },
-    });
-  });
-
-  it("overrides metadata.additionalRepos with top-level additionalRepos", async () => {
-    await loopsService.createIfNotExists("org-1", "user-1", {
-      ...baseInput,
-      additionalRepos: [{ fullName: "org/repo-canonical", branch: "main" }],
-      metadata: {
-        additionalRepos: [{ fullName: "org/repo-stale", branch: "dev" }],
-      },
-    });
-
-    expect(mockCreateManyAndReturn).toHaveBeenCalledTimes(1);
-    const createManyArgs = mockCreateManyAndReturn.mock.calls[0][0];
-    expect(createManyArgs.data[0]).toMatchObject({
-      metadata: {
-        additionalRepos: [{ fullName: "org/repo-canonical", branch: "main" }],
-      },
-    });
-  });
-});
+type AdditionalReposMetadataMergeScenarioInput = typeof baseInput & {
+  additionalRepos?: { fullName: string; branch: string }[];
+  metadata?: {
+    launchSource?: string;
+    additionalRepos?: { fullName: string; branch: string }[];
+  };
+};
