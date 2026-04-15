@@ -6,6 +6,7 @@
  * itself has zero `if (loop.computeTargetId)` branching.
  */
 
+import type { DesktopApiNamespace } from "@repo/api/src/desktop-api-namespace";
 import type {
   AdditionalRepoRefWithToken,
   Loop,
@@ -39,6 +40,7 @@ export type LaunchContext = {
   localRepoPath: string | undefined;
   computeTargetId: string | null;
   additionalRepos?: AdditionalRepoRefWithToken[];
+  desktopApiNamespace: DesktopApiNamespace | undefined;
 };
 
 // ---------------------------------------------------------------------------

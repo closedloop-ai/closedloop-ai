@@ -16,6 +16,7 @@ import { PrCommentContextCard } from "./pr-comment-context-card";
 export type BranchChatDrawerProps = {
   data: BranchViewData;
   contextSelection: PrCommentContext | null;
+  onClearComment?: () => void;
   showFilesystemNotice: boolean;
   worktreePath: string | null;
 };
@@ -27,6 +28,7 @@ function getBranchWelcomeMessage(prTitle: string): string {
 export function BranchChatDrawer({
   data,
   contextSelection,
+  onClearComment,
   showFilesystemNotice,
   worktreePath,
 }: Readonly<BranchChatDrawerProps>) {
@@ -69,9 +71,11 @@ export function BranchChatDrawer({
     <ChatDrawerPanel
       chatKey={chatKey}
       context={context}
+      contextSelection={contextSelection}
       contextSlot={contextSlot}
       cwd={worktreePath ?? undefined}
       notice={notice}
+      onContextConsumed={() => onClearComment?.()}
       welcomeMessage={welcomeMessage}
     />
   );

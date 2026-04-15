@@ -54,12 +54,12 @@ describe("artifactStatusColors", () => {
     expect(artifactStatusColors[ArtifactStatus.Executed]).toBeTruthy();
   });
 
-  it("assigns green color classes to Done", () => {
-    expect(artifactStatusColors[ArtifactStatus.Done]).toContain("green");
+  it("assigns success token classes to Done", () => {
+    expect(artifactStatusColors[ArtifactStatus.Done]).toContain("success");
   });
 
-  it("assigns blue color classes to Executed", () => {
-    expect(artifactStatusColors[ArtifactStatus.Executed]).toContain("blue");
+  it("assigns info token classes to Executed", () => {
+    expect(artifactStatusColors[ArtifactStatus.Executed]).toContain("info");
   });
 });
 

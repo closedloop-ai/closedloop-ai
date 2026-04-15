@@ -177,6 +177,7 @@ describe("handleWorkflowSuccess", () => {
     expect(mockDownloadWorkflowArtifacts).toHaveBeenCalledWith(runId);
     expect(mockCreateVersion).toHaveBeenCalledWith(
       artifactId,
+      "test-org-id",
       null,
       planContent
     );
@@ -266,6 +267,7 @@ describe("handleWorkflowSuccess", () => {
     expect(mockDownloadWorkflowArtifacts).toHaveBeenCalledWith(runId);
     expect(mockCreateVersion).toHaveBeenCalledWith(
       artifactId,
+      "test-org-id",
       null,
       planContent
     );

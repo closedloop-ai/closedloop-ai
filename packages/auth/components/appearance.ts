@@ -1,11 +1,11 @@
-import type { Appearance } from "@clerk/types";
+import type { Appearance } from "@clerk/ui";
 
 /**
  * Shared Clerk appearance overrides for sign-in and sign-up pages.
  * Component-level styles that take precedence over the provider-level config.
  */
 export const authPageAppearance: Appearance = {
-  layout: {
+  options: {
     logoPlacement: "none",
   },
   elements: {

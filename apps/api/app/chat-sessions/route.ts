@@ -59,13 +59,13 @@ export const POST = withAnyAuth<ChatResponse, "/chat-sessions">(
         messages: body.messages,
       });
 
-      if ("conflict" in result) {
+      if (!result.ok) {
         return conflictResponse(
-          `Chat is bound to provider ${result.boundProvider}; start a new chat to change providers`
+          `Chat is bound to provider ${result.error.boundProvider}; start a new chat to change providers`
         );
       }
 
-      return successResponse<ChatResponse>({ chat: result.chat });
+      return successResponse<ChatResponse>({ chat: result.value.chat });
     } catch (error) {
       return errorResponse("Failed to create chat session", error);
     }
@@ -92,16 +92,16 @@ export const PATCH = withAnyAuth<ChatResponse, "/chat-sessions">(
         body.sessionId
       );
 
-      if ("notFound" in result) {
-        return notFoundResponse("Chat");
-      }
-      if ("conflict" in result) {
+      if (!result.ok) {
+        if (result.error.kind === "notFound") {
+          return notFoundResponse("Chat");
+        }
         return conflictResponse(
-          `Chat is bound to provider ${result.boundProvider}; start a new chat to change providers`
+          `Chat is bound to provider ${result.error.boundProvider}; start a new chat to change providers`
         );
       }
 
-      return successResponse<ChatResponse>({ chat: result.chat });
+      return successResponse<ChatResponse>({ chat: result.value.chat });
     } catch (error) {
       return errorResponse("Failed to append messages to chat session", error);
     }

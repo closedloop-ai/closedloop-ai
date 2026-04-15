@@ -47,10 +47,7 @@ export function PlanEditorContainer({
   const currentVersion = plan.version.version;
 
   const handleVersionChange = (version: number) => {
-    // If selecting the latest version, clear the selection to use default (latest)
-    if (version === plan.latestVersion) {
-      setSelectedVersion(undefined);
-    } else {
+    if (version !== currentVersion) {
       setSelectedVersion(version);
     }
   };

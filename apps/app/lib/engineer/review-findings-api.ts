@@ -9,7 +9,7 @@ export function saveReviewFindings(
   model: string,
   findings: ReviewFinding[]
 ): void {
-  const url = `/api/engineer/codex/review-findings/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${encodeURIComponent(provider)}`;
+  const url = `/api/gateway/codex/review-findings/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${encodeURIComponent(provider)}`;
   fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -23,7 +23,7 @@ export function markFindingCommented(
   provider: string,
   index: number
 ): void {
-  const url = `/api/engineer/codex/review-findings/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${encodeURIComponent(provider)}`;
+  const url = `/api/gateway/codex/review-findings/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${encodeURIComponent(provider)}`;
   fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -39,7 +39,7 @@ export async function postDeclineComment(
   reason: string
 ): Promise<void> {
   const body = `\u26D4 **Review Recommendation: Decline**\n\n${reason}`;
-  const res = await fetch("/api/engineer/git/pr/reply", {
+  const res = await fetch("/api/gateway/git/pr/reply", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ repoPath, prNumber, body, requestChanges: true }),
@@ -55,7 +55,7 @@ export async function markReviewDeclined(
   provider: string,
   reason: string
 ): Promise<void> {
-  const url = `/api/engineer/codex/review-findings/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${encodeURIComponent(provider)}`;
+  const url = `/api/gateway/codex/review-findings/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${encodeURIComponent(provider)}`;
   const response = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -81,7 +81,7 @@ export async function checkExistingReview(
   signal: AbortSignal
 ): Promise<ExistingReviewState> {
   try {
-    const url = `/api/engineer/codex/status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${encodeURIComponent(provider)}`;
+    const url = `/api/gateway/codex/status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${encodeURIComponent(provider)}`;
     const res = await fetch(url, { signal });
     const data = await res.json();
 
@@ -122,7 +122,7 @@ export async function fetchCommentedIndices(
   provider: string
 ): Promise<Set<number>> {
   const res = await fetch(
-    `/api/engineer/codex/review-findings/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${encodeURIComponent(provider)}`
+    `/api/gateway/codex/review-findings/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${encodeURIComponent(provider)}`
   );
   if (!res.ok) {
     throw new Error(`Failed to fetch commented indices (${res.status})`);
@@ -151,7 +151,7 @@ export async function fetchProviderFindings(
 ): Promise<ReviewFinding[]> {
   try {
     const res = await fetch(
-      `/api/engineer/codex/review-findings/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${encodeURIComponent(provider)}`
+      `/api/gateway/codex/review-findings/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${encodeURIComponent(provider)}`
     );
     const data = await res.json();
     return data.findings ?? [];

@@ -21,7 +21,7 @@ export function VersionSelector({
   latestVersion,
   onVersionChange,
   compact = false,
-}: VersionSelectorProps) {
+}: Readonly<VersionSelectorProps>) {
   // Only one version exists — show disabled indicator
   if (latestVersion <= 1) {
     return (
@@ -60,7 +60,6 @@ export function VersionSelector({
         {versions.map((dbVersion) => (
           <DropdownMenuItem
             className="font-mono"
-            disabled={dbVersion === currentVersion}
             key={dbVersion}
             onClick={() => onVersionChange(dbVersion)}
           >

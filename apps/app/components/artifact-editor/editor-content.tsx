@@ -3,8 +3,8 @@
 import { useRoom } from "@liveblocks/react";
 import { useIsEditorReady, useLiveblocksExtension } from "@repo/collaboration";
 import { cn } from "@repo/design-system/lib/utils";
+import type { TiptapEditor } from "@repo/rich-text";
 import { RichTextEditor } from "@repo/rich-text";
-import type { Editor } from "@tiptap/react";
 import { useEffect, useRef } from "react";
 
 type EditorContentProps = {
@@ -24,7 +24,7 @@ type EditorContentProps = {
    * Callback to get the editor instance (for comments/collaboration features).
    * The callback is only called when liveblocks is enabled (liveblocksRoomId is not null).
    */
-  onEditorReady?: (editor: Editor | null) => void;
+  onEditorReady?: (editor: TiptapEditor | null) => void;
   /**
    * Fired when the editor content is fully loaded and ready to display.
    * For Liveblocks: fires after Y.Doc sync completes.
@@ -43,14 +43,6 @@ type EditorContentProps = {
    * Optional className for custom styling
    */
   className?: string;
-  /**
-   * Forces a content reset when Liveblocks is active
-   */
-  contentResetKey?: number;
-  /**
-   * Content to apply when a reset is triggered
-   */
-  contentResetValue?: string;
   /**
    * Where scrolling is handled for the editor content.
    * "inner" keeps scroll inside the editor; "outer" lets a parent container scroll.
@@ -71,8 +63,6 @@ export function EditorContent({
   placeholder,
   readOnly,
   className,
-  contentResetKey,
-  contentResetValue,
   scrollMode = "inner",
   externalToolbar,
 }: Readonly<EditorContentProps>) {
@@ -89,8 +79,6 @@ export function EditorContent({
         )}
       >
         <RichTextEditor
-          contentResetKey={contentResetKey}
-          contentResetValue={contentResetValue}
           externalToolbar={externalToolbar}
           onChange={onChange}
           onEditorReady={onEditorReady}
@@ -107,8 +95,6 @@ export function EditorContent({
   return (
     <EditorContentWithLiveblocks
       className={className}
-      contentResetKey={contentResetKey}
-      contentResetValue={contentResetValue}
       externalToolbar={externalToolbar}
       onChange={onChange}
       onContentReady={onContentReady}
@@ -138,8 +124,6 @@ function EditorContentWithLiveblocks({
   placeholder,
   readOnly,
   className,
-  contentResetKey,
-  contentResetValue,
   scrollMode = "inner",
   externalToolbar,
 }: Readonly<EditorContentWithLiveblocksProps>) {
@@ -178,8 +162,6 @@ function EditorContentWithLiveblocks({
       )}
     >
       <RichTextEditor
-        contentResetKey={contentResetKey}
-        contentResetValue={contentResetValue}
         externalToolbar={externalToolbar}
         key={editorKeyRef.current}
         liveblocksExtension={liveblocksExtension}

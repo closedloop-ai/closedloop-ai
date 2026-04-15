@@ -50,6 +50,19 @@ export function useChatRunnerToken(chatKey: string) {
     staleTime: STALE_TIME_MS,
   });
 
+  /**
+   * Returns a guaranteed-fresh token for use in the streaming POST.
+   *
+   * React Query's staleTime triggers a background refetch that eventually
+   * replaces the cached token, but the background refetch does not block the
+   * calling code path that needs a fresh token right now. ensureFresh
+   * synchronously checks expiry and re-fetches inline if the cached token is
+   * within the expiry window, giving the streaming caller a token it can
+   * immediately trust.
+   *
+   * The two mechanisms solve different problems: staleTime = proactive
+   * background refresh; ensureFresh = synchronous guarantee at call time.
+   */
   const ensureFresh =
     useCallback(async (): Promise<ChatRunnerCredentials | null> => {
       if (!chatKey) {

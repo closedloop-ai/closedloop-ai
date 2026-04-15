@@ -1,3 +1,7 @@
+import {
+  DESKTOP_API_NAMESPACE_CAPABILITY_KEY,
+  isDesktopApiNamespace,
+} from "@repo/api/src/desktop-api-namespace";
 import type { JsonObject } from "@repo/api/src/types/common";
 import type {
   AdditionalRepoRef,
@@ -15,6 +19,7 @@ import {
   MAX_ADDITIONAL_REPOS,
   MODEL_PRICING,
 } from "@repo/api/src/types/loop";
+import { issueLoopRunnerToken } from "@repo/auth/loop-runner-jwt";
 import { withDb } from "@repo/database";
 import { getInstallationAccessToken } from "@repo/github";
 import { log } from "@repo/observability/log";
@@ -26,7 +31,6 @@ import {
   loopsService,
 } from "@/app/loops/service";
 import { apiKeyService } from "@/app/settings/api-key-service";
-import { issueLoopRunnerToken } from "@/lib/auth/loop-runner-jwt";
 import type {
   LaunchContext,
   LaunchResult,
@@ -456,6 +460,11 @@ async function resolveLoopLaunchContext(
     typeof loop.metadata?.localRepoPath === "string"
       ? loop.metadata.localRepoPath
       : undefined;
+  const desktopApiNamespace = isDesktopApiNamespace(
+    loop.metadata?.[DESKTOP_API_NAMESPACE_CAPABILITY_KEY]
+  )
+    ? loop.metadata[DESKTOP_API_NAMESPACE_CAPABILITY_KEY]
+    : undefined;
 
   return {
     loopId: loop.id,
@@ -486,6 +495,7 @@ async function resolveLoopLaunchContext(
     localRepoPath,
     computeTargetId: loop.computeTargetId,
     additionalRepos: resolvedAdditionalRepos,
+    desktopApiNamespace,
   };
 }
 

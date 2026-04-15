@@ -3,11 +3,18 @@
  * to the electron harness via the desktop gateway.
  */
 
+import {
+  CURRENT_DESKTOP_API_NAMESPACE,
+  type DesktopApiNamespace,
+  getDesktopApiNamespaceFromCapabilities,
+  rewriteDesktopApiPath,
+} from "@repo/api/src/desktop-api-namespace";
 import type { JsonValue } from "@repo/api/src/types/common";
 import type { AdditionalRepoRef, LoopCommand } from "@repo/api/src/types/loop";
 import type { SymphonyLoopBody } from "@repo/api/src/types/symphony-loop-body";
 import { log } from "@repo/observability/log";
 import { toRelayOperation } from "@/app/compute-targets/relay-command-helpers";
+import { computeTargetsService } from "@/app/compute-targets/service";
 import { desktopCommandStore } from "@/lib/desktop-command-store";
 import {
   toEnvelope,
@@ -135,6 +142,7 @@ type LaunchDesktopOpts = {
   organizationId: string;
   command: LoopCommand;
   computeTargetId: string;
+  desktopApiNamespace?: DesktopApiNamespace;
   closedLoopAuthToken: string;
   apiBaseUrl: string;
   contextPack: ContextPack;
@@ -145,6 +153,22 @@ type LaunchDesktopOpts = {
   localRepoPath?: string;
   additionalRepos?: AdditionalRepoRef[];
 };
+
+async function resolveDesktopApiNamespace(
+  computeTargetId: string,
+  namespaceHint?: DesktopApiNamespace
+): Promise<DesktopApiNamespace> {
+  if (namespaceHint) {
+    return namespaceHint;
+  }
+
+  const target = await computeTargetsService.findById(computeTargetId);
+  return (
+    getDesktopApiNamespaceFromCapabilities(
+      target?.capabilities as Record<string, unknown> | null
+    ) ?? CURRENT_DESKTOP_API_NAMESPACE
+  );
+}
 
 /**
  * Launch a loop on a desktop compute target.
@@ -160,6 +184,7 @@ export async function launchLoopOnDesktop(
     loopId,
     command,
     computeTargetId,
+    desktopApiNamespace,
     closedLoopAuthToken,
     apiBaseUrl,
     contextPack,
@@ -170,11 +195,15 @@ export async function launchLoopOnDesktop(
     localRepoPath,
     additionalRepos,
   } = opts;
+  const namespace = await resolveDesktopApiNamespace(
+    computeTargetId,
+    desktopApiNamespace
+  );
 
   const input = {
     operationId: "symphony_loop",
     method: "POST" as const,
-    path: "/api/engineer/symphony/loop",
+    path: rewriteDesktopApiPath("/api/gateway/symphony/loop", namespace),
     body: {
       loopId,
       command,
@@ -237,10 +266,11 @@ export async function stopDesktopLoop(
   loopId: string,
   computeTargetId: string
 ): Promise<void> {
+  const namespace = await resolveDesktopApiNamespace(computeTargetId);
   const killInput = {
     operationId: "symphony_loop_kill",
     method: "POST" as const,
-    path: "/api/engineer/symphony/loop/kill",
+    path: rewriteDesktopApiPath("/api/gateway/symphony/loop/kill", namespace),
     body: { loopId },
   };
   const createResult = await desktopCommandStore.createCommand(

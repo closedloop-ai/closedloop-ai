@@ -1,11 +1,14 @@
 "use client";
 
+import type { ComputeTargetConflictBody } from "@repo/api/src/types/compute-target";
 import { RunLoopCommand } from "@repo/api/src/types/loop";
-import { useMemo } from "react";
+import { toast } from "@repo/design-system/components/ui/sonner";
+import { useMemo, useState } from "react";
 import { useArtifactRunLoop } from "@/hooks/artifact-editing/use-artifact-run-loop";
+import { parseComputeTargetConflict } from "@/lib/compute-target-conflict";
 
 type UsePrdActionsConfig = {
-  artifactId: string | null;
+  artifactId: string;
 };
 
 /**
@@ -32,42 +35,103 @@ type UsePrdActionsConfig = {
  * **Important:** Request changes returns a Promise<boolean> for modal handling.
  */
 export function usePrdActions({ artifactId }: UsePrdActionsConfig) {
-  const {
-    runLoop,
-    makeRequestChangesHandler,
-    selectTarget,
-    confirmOriginalBackend,
-    confirmPreferredBackend,
-    dismissBackendMismatch,
-    multiTargetState,
-    backendMismatchState,
-  } = useArtifactRunLoop({ artifactId });
+  const { runLoop, makeRequestChangesHandler, multiTargetState, selectTarget } =
+    useArtifactRunLoop({
+      artifactId,
+    });
 
-  const isRequestingChanges = runLoop.isPending;
+  const [pendingCommand, setPendingCommand] = useState<RunLoopCommand | null>(
+    null
+  );
+
+  const [decomposeTargetState, setDecomposeTargetState] = useState<{
+    availableTargets: ComputeTargetConflictBody["availableTargets"];
+  } | null>(null);
 
   /**
    * Request changes to the PRD via Loops.
    * Creates a Loop with command="request_prd_changes". Compute target is resolved server-side.
    * Returns a promise that resolves to true on success, false on error.
    */
-  const handleRequestChanges = useMemo(
-    () =>
-      makeRequestChangesHandler(
-        RunLoopCommand.RequestPrdChanges,
-        "Change request submitted via Loop - generating updated PRD..."
-      ),
-    [makeRequestChangesHandler]
-  );
+  const handleRequestChanges = useMemo(() => {
+    const handler = makeRequestChangesHandler(
+      RunLoopCommand.RequestPrdChanges,
+      "Change request submitted via Loop - generating updated PRD..."
+    );
+    return (changes: string) => {
+      setPendingCommand(RunLoopCommand.RequestPrdChanges);
+      return handler(changes).finally(() => {
+        setPendingCommand(null);
+      });
+    };
+  }, [makeRequestChangesHandler]);
+
+  const handleGeneratePrd = () => {
+    setPendingCommand(RunLoopCommand.GeneratePrd);
+    runLoop.mutate(
+      { artifactId, command: RunLoopCommand.GeneratePrd },
+      {
+        onSuccess: () => {
+          toast.success("PRD generation started");
+          setPendingCommand(null);
+        },
+        onError: () => {
+          setPendingCommand(null);
+        },
+      }
+    );
+  };
+
+  const handleDecomposeFeatures = (computeTargetId?: string) => {
+    setPendingCommand(RunLoopCommand.Decompose);
+    runLoop.mutate(
+      { artifactId, command: RunLoopCommand.Decompose, computeTargetId },
+      {
+        onSuccess: () => {
+          toast.success("Feature decomposition started");
+          setPendingCommand(null);
+        },
+        onError: (error) => {
+          setPendingCommand(null);
+          const conflict = parseComputeTargetConflict(error);
+          if (conflict) {
+            setDecomposeTargetState({
+              availableTargets: conflict.availableTargets,
+            });
+          }
+        },
+      }
+    );
+  };
+
+  const handleEvaluatePrd = () => {
+    setPendingCommand(RunLoopCommand.EvaluatePrd);
+    runLoop.mutate(
+      { artifactId, command: RunLoopCommand.EvaluatePrd },
+      {
+        onSuccess: () => {
+          toast.success("PRD evaluation started");
+          setPendingCommand(null);
+        },
+        onError: () => {
+          setPendingCommand(null);
+        },
+      }
+    );
+  };
 
   return {
-    runLoop,
     handleRequestChanges,
-    isRequestingChanges,
+    isRequestingChanges: pendingCommand === RunLoopCommand.RequestPrdChanges,
+    handleGeneratePrd,
+    isGenerating: pendingCommand === RunLoopCommand.GeneratePrd,
+    handleDecomposeFeatures,
+    isDecomposing: pendingCommand === RunLoopCommand.Decompose,
+    handleEvaluatePrd,
+    isEvaluating: pendingCommand === RunLoopCommand.EvaluatePrd,
+    decomposeTargetState,
+    clearDecomposeTargetState: () => setDecomposeTargetState(null),
     multiTargetState,
-    backendMismatchState,
     selectTarget,
-    confirmOriginalBackend,
-    confirmPreferredBackend,
-    dismissBackendMismatch,
   };
 }

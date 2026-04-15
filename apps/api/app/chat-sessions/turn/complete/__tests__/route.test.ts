@@ -110,12 +110,13 @@ beforeEach(() => {
 describe("POST /chat-sessions/turn/complete", () => {
   it("returns 200 and the updated chat on the happy path", async () => {
     vi.mocked(chatSessionsService.appendAssistantTurn).mockResolvedValue({
-      notFound: false,
-      conflict: false,
-      chat: buildChatRow({
-        sessionId: "sess-xyz",
-        sessionSourceId: "gateway-abc",
-      }) as never,
+      ok: true,
+      value: {
+        chat: buildChatRow({
+          sessionId: "sess-xyz",
+          sessionSourceId: "gateway-abc",
+        }) as never,
+      },
     });
 
     const response = await POST(
@@ -242,7 +243,8 @@ describe("POST /chat-sessions/turn/complete", () => {
 
   it("returns 404 when service reports notFound", async () => {
     vi.mocked(chatSessionsService.appendAssistantTurn).mockResolvedValue({
-      notFound: true,
+      ok: false,
+      error: { kind: "notFound" },
     });
 
     const response = await POST(
@@ -259,8 +261,8 @@ describe("POST /chat-sessions/turn/complete", () => {
 
   it("returns 409 with boundProvider when service reports a provider conflict", async () => {
     vi.mocked(chatSessionsService.appendAssistantTurn).mockResolvedValue({
-      conflict: true,
-      boundProvider: "codex",
+      ok: false,
+      error: { kind: "providerConflict", boundProvider: "codex" },
     });
 
     const response = await POST(

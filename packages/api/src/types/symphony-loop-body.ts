@@ -6,7 +6,7 @@ import type { AdditionalRepoRef } from "./loop";
  * electron harness via the desktop gateway.
  *
  * Used by loop-desktop.ts when building the POST body for the
- * /api/engineer/symphony/loop endpoint on the desktop target.
+ * /api/gateway/symphony/loop endpoint on the desktop target.
  */
 export type SymphonyLoopBody = {
   loopId: string;

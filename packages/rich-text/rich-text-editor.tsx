@@ -28,8 +28,6 @@ export function RichTextEditor({
   liveblocksExtension,
   liveblocksIsReady,
   onEditorReady,
-  contentResetKey,
-  contentResetValue,
   scrollMode = "inner",
   externalToolbar,
   toolbarMode = "always",
@@ -38,8 +36,6 @@ export function RichTextEditor({
     <div className="flex min-h-0 flex-1 flex-col">
       <TiptapEditorCore
         className={className}
-        contentResetKey={contentResetKey}
-        contentResetValue={contentResetValue}
         externalToolbar={externalToolbar}
         liveblocksExtension={liveblocksExtension}
         liveblocksIsReady={liveblocksIsReady}

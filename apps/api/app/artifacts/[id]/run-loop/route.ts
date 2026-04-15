@@ -1,3 +1,8 @@
+import {
+  DESKTOP_API_NAMESPACE_CAPABILITY_KEY,
+  type DesktopApiNamespace,
+  LEGACY_DESKTOP_API_NAMESPACE,
+} from "@repo/api/src/desktop-api-namespace";
 import { success } from "@repo/api/src/types/common";
 import type {
   BackendMismatchBody,
@@ -40,6 +45,18 @@ function handleRunLoopError(error: unknown) {
     return errorResponse(error.message, error, 429);
   }
   return errorResponse("Failed to run loop", error);
+}
+
+function getLoopMetadata(
+  desktopApiNamespace: DesktopApiNamespace | undefined
+): Record<string, DesktopApiNamespace> | undefined {
+  if (desktopApiNamespace !== LEGACY_DESKTOP_API_NAMESPACE) {
+    return undefined;
+  }
+
+  return {
+    [DESKTOP_API_NAMESPACE_CAPABILITY_KEY]: desktopApiNamespace,
+  };
 }
 
 type RunLoopResponse =
@@ -171,6 +188,7 @@ export const POST = withAnyAuth<RunLoopResponse, "/artifacts/[id]/run-loop">(
             : undefined,
           additionalRepos: body.additionalRepos,
           contextRefs: contextRefs.length > 0 ? contextRefs : undefined,
+          metadata: getLoopMetadata(body.desktopApiNamespace),
         }
       );
 

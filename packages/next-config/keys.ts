@@ -1,6 +1,11 @@
 import { createEnv } from "@t3-oss/env-nextjs";
 import { z } from "zod";
 
+// Keep in sync with MIN_SECRET_LENGTH in @repo/auth/runner-jwt-base. Not
+// imported to avoid pulling @repo/auth into every app that extends these
+// keys; the runtime check in getRunnerSecret is the source of truth.
+const RUNNER_JWT_MIN_SECRET_LENGTH = 32;
+
 type AppType = "app" | "web" | "api";
 
 // Supported environment suffixes for Vercel project names
@@ -148,6 +153,15 @@ export const keys = () =>
     server: {
       ANALYZE: z.string().optional(),
 
+      // Shared runner JWT secret used by the chat runner and loop runner
+      // token helpers. Centralized here so every Next.js app that extends
+      // these keys validates it consistently. Optional because not every
+      // environment (tests, standalone preview) exercises runner flows.
+      CLOSEDLOOP_RUNNER_JWT_SECRET: z
+        .string()
+        .min(RUNNER_JWT_MIN_SECRET_LENGTH)
+        .optional(),
+
       // Added by Vercel
       NEXT_RUNTIME: z.enum(["nodejs", "edge"]).optional(),
 
@@ -167,6 +181,7 @@ export const keys = () =>
     },
     runtimeEnv: {
       ANALYZE: process.env.ANALYZE,
+      CLOSEDLOOP_RUNNER_JWT_SECRET: process.env.CLOSEDLOOP_RUNNER_JWT_SECRET,
       NEXT_RUNTIME: process.env.NEXT_RUNTIME,
       VERCEL: process.env.VERCEL,
       VERCEL_ENV: process.env.VERCEL_ENV,

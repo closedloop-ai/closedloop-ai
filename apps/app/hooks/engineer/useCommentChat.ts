@@ -307,7 +307,7 @@ export function useCommentChat({
     learningsPollingRef.current = setInterval(async () => {
       try {
         const res = await fetch(
-          `/api/engineer/symphony/learnings-status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`
+          `/api/gateway/symphony/learnings-status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`
         );
         const data = await res.json();
         if (data.status === "completed") {
@@ -374,7 +374,7 @@ export function useCommentChat({
       };
       setPendingUserMessage(userMessage);
 
-      const url = `/api/engineer/symphony/comment-chat/${encodeURIComponent(comment.id)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}${branchParams}`;
+      const url = `/api/gateway/symphony/comment-chat/${encodeURIComponent(comment.id)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}${branchParams}`;
 
       await streamSendMessage(
         url,
@@ -406,7 +406,7 @@ export function useCommentChat({
           },
           onLearnings: () => pollLearningsStatus(),
           onLearningsUsed: (learnings) => {
-            fetch("/api/engineer/symphony/record-learning-use", {
+            fetch("/api/gateway/symphony/record-learning-use", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ ticketId, repoPath, learnings }),
@@ -502,7 +502,7 @@ export function useCommentChat({
     const chatFile = `comment-chats/${comment.id.replaceAll(/[^a-zA-Z0-9-_]/g, "_")}.json`;
 
     // Step 1: Trigger extraction from comment chat history
-    fetch("/api/engineer/symphony/extract-learnings", {
+    fetch("/api/gateway/symphony/extract-learnings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ticketId, repoPath, chatFile }),
@@ -511,7 +511,7 @@ export function useCommentChat({
     });
 
     // Step 2: Queue processing (waitForExtraction so server waits for step 1)
-    fetch("/api/engineer/symphony/process-learnings", {
+    fetch("/api/gateway/symphony/process-learnings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ticketId, repoPath, waitForExtraction: true }),
@@ -532,7 +532,7 @@ export function useCommentChat({
     setIsCommitting(true);
     try {
       // 1. Commit changes (must succeed before we can resolve)
-      const commitResponse = await fetch("/api/engineer/git", {
+      const commitResponse = await fetch("/api/gateway/git", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -599,7 +599,7 @@ export function useCommentChat({
           : `@${comment.author} ${responseText}`;
 
       // Use base repoPath (not worktreePath) since we only need the git remote
-      const response = await fetch("/api/engineer/git/pr/reply", {
+      const response = await fetch("/api/gateway/git/pr/reply", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -619,7 +619,7 @@ export function useCommentChat({
       setHasResponded(true);
 
       // Persist responded flag on the message so it survives navigation
-      const patchUrl = `/api/engineer/symphony/comment-chat/${encodeURIComponent(comment.id)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}${branchParams}`;
+      const patchUrl = `/api/gateway/symphony/comment-chat/${encodeURIComponent(comment.id)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}${branchParams}`;
       fetch(patchUrl, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -700,7 +700,7 @@ export function useCommentChat({
     async (index: number) => {
       try {
         const response = await fetch(
-          `/api/engineer/symphony/comment-chat/${encodeURIComponent(comment.id)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}${branchParams}&index=${index}`,
+          `/api/gateway/symphony/comment-chat/${encodeURIComponent(comment.id)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}${branchParams}&index=${index}`,
           { method: "DELETE" }
         );
         if (response.ok) {
@@ -726,7 +726,7 @@ export function useCommentChat({
     }
     try {
       const response = await fetch(
-        `/api/engineer/symphony/comment-chat/${encodeURIComponent(comment.id)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}${branchParams}`,
+        `/api/gateway/symphony/comment-chat/${encodeURIComponent(comment.id)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}${branchParams}`,
         { method: "DELETE" }
       );
       if (response.ok) {
@@ -844,7 +844,7 @@ async function pushAndReply(
   commitSha: string
 ): Promise<void> {
   try {
-    const pushResponse = await fetch("/api/engineer/git", {
+    const pushResponse = await fetch("/api/gateway/git", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "push", repoPath: worktreePath }),
@@ -871,7 +871,7 @@ async function pushAndReply(
     const replyBody = isBot
       ? `Issue addressed in ${commitSha}`
       : `@${comment.author} Issue addressed in ${commitSha}`;
-    fetch("/api/engineer/git/pr/reply", {
+    fetch("/api/gateway/git/pr/reply", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({

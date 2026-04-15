@@ -56,7 +56,7 @@ export function RunViewerChatPanel({
   // Fetch chat history from server
   const reloadHistory = useCallback(async () => {
     try {
-      const res = await fetch("/api/engineer/run-viewer-chat");
+      const res = await fetch("/api/gateway/run-viewer-chat");
       if (res.ok) {
         const data = await res.json();
         if (data.messages) {
@@ -127,7 +127,7 @@ export function RunViewerChatPanel({
           : undefined;
 
       try {
-        const response = await fetch("/api/engineer/run-viewer-chat", {
+        const response = await fetch("/api/gateway/run-viewer-chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ message: trimmed, fileContext, runDir }),
@@ -220,7 +220,7 @@ export function RunViewerChatPanel({
 
   const handleClearChat = useCallback(async () => {
     try {
-      await fetch("/api/engineer/run-viewer-chat", { method: "DELETE" });
+      await fetch("/api/gateway/run-viewer-chat", { method: "DELETE" });
       setEntries([]);
     } catch {
       // Best effort

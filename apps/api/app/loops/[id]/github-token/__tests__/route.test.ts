@@ -1,9 +1,7 @@
+import { verifyLoopRunnerToken } from "@repo/auth/loop-runner-jwt";
 import { NextRequest } from "next/server";
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import {
-  extractBearerToken,
-  verifyLoopRunnerToken,
-} from "@/lib/auth/loop-runner-jwt";
+import { extractBearerToken } from "@/lib/auth/loop-runner-jwt";
 import { resolveGitHubToken } from "@/lib/loops/loop-orchestrator";
 import { loopsService } from "../../../service";
 import { POST } from "../route";
@@ -17,6 +15,9 @@ vi.mock("../../../service", () => ({
 
 vi.mock("@/lib/auth/loop-runner-jwt", () => ({
   extractBearerToken: vi.fn(),
+}));
+
+vi.mock("@repo/auth/loop-runner-jwt", () => ({
   verifyLoopRunnerToken: vi.fn(),
 }));
 

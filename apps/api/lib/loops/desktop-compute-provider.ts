@@ -43,6 +43,7 @@ export class DesktopComputeProvider implements ComputeProvider {
       organizationId: ctx.organizationId,
       command: ctx.command,
       computeTargetId: ctx.computeTargetId!,
+      desktopApiNamespace: ctx.desktopApiNamespace,
       closedLoopAuthToken: ctx.closedLoopAuthToken,
       apiBaseUrl: ctx.apiBaseUrl,
       contextPack: ctx.contextPack,

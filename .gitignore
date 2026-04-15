@@ -311,3 +311,8 @@ packages/database/generated
 # Review artifacts
 reviews/
 .dev-environment.json
+
+# Playwright
+.auth/
+test-results/
+playwright-report/

@@ -1,18 +1,27 @@
-import { type ChatSession, withDb } from "@repo/database";
+import type { ChatMessage } from "@repo/api/src/types/chat-session";
+import { Result } from "@repo/api/src/types/result";
+import { type ChatSession, type Prisma, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 
 /**
- * Shape of a single chat message stored in ChatSession.messages.
- * Backend-only — the same shape is used by the frontend but the
- * canonical definition for the DB contract lives here.
+ * Narrowing helpers for the `messages` JSON column. The Prisma client
+ * types the column as `Prisma.JsonValue` on read and requires
+ * `Prisma.InputJsonValue` on write, so every read/write historically
+ * needed a `as unknown as ChatMessage[] as never` chain. Centralize
+ * that coercion here so the service bodies stay clean.
  */
-export type ChatMessage = {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  timestamp: string;
-  blocks?: unknown[];
-};
+function toPrismaJsonMessages(messages: ChatMessage[]): Prisma.InputJsonValue {
+  return messages as unknown as Prisma.InputJsonValue;
+}
+
+function parseStoredMessages(
+  raw: Prisma.JsonValue | null | undefined
+): ChatMessage[] {
+  if (raw === null || raw === undefined) {
+    return [];
+  }
+  return raw as unknown as ChatMessage[];
+}
 
 export type CreateChatSessionInput = {
   userId: string;
@@ -24,14 +33,24 @@ export type CreateChatSessionInput = {
   messages?: ChatMessage[];
 };
 
-export type CreateChatSessionResult =
-  | { chat: ChatSession }
-  | { conflict: true; boundProvider: string };
+export type CreateChatSessionError = {
+  kind: "providerConflict";
+  boundProvider: string;
+};
+export type CreateChatSessionValue = { chat: ChatSession };
+export type CreateChatSessionResult = Result<
+  CreateChatSessionValue,
+  CreateChatSessionError
+>;
 
-export type AppendMessagesResult =
-  | { chat: ChatSession }
-  | { notFound: true }
-  | { conflict: true; boundProvider: string };
+export type AppendMessagesError =
+  | { kind: "notFound" }
+  | { kind: "providerConflict"; boundProvider: string };
+export type AppendMessagesValue = { chat: ChatSession };
+export type AppendMessagesResult = Result<
+  AppendMessagesValue,
+  AppendMessagesError
+>;
 
 export type TurnInput = {
   chatKey: string;
@@ -42,13 +61,15 @@ export type TurnInput = {
   sourceGatewayId: string;
 };
 
-export type UpsertTurnResult =
-  | { conflict: true; boundProvider: string }
-  | {
-      conflict: false;
-      chat: ChatSession;
-      resumeSessionId: string | null;
-    };
+export type UpsertTurnError = {
+  kind: "providerConflict";
+  boundProvider: string;
+};
+export type UpsertTurnValue = {
+  chat: ChatSession;
+  resumeSessionId: string | null;
+};
+export type UpsertTurnResult = Result<UpsertTurnValue, UpsertTurnError>;
 
 export type CompleteTurnInput = {
   chatKey: string;
@@ -58,10 +79,14 @@ export type CompleteTurnInput = {
   sessionSourceId: string | null;
 };
 
-export type AppendAssistantTurnResult =
-  | { notFound: true }
-  | { conflict: true; boundProvider: string }
-  | { notFound: false; conflict: false; chat: ChatSession };
+export type AppendAssistantTurnError =
+  | { kind: "notFound" }
+  | { kind: "providerConflict"; boundProvider: string };
+export type AppendAssistantTurnValue = { chat: ChatSession };
+export type AppendAssistantTurnResult = Result<
+  AppendAssistantTurnValue,
+  AppendAssistantTurnError
+>;
 
 /**
  * Service for `chat_sessions` DB operations. All read/update operations are
@@ -122,7 +147,7 @@ export const chatSessionsService = {
             provider,
             model,
             context: context ?? null,
-            messages: incoming as unknown as ChatMessage[] as never,
+            messages: toPrismaJsonMessages(incoming),
           },
         });
         log.info("Chat session created", {
@@ -131,37 +156,43 @@ export const chatSessionsService = {
           chatKey,
           provider,
         });
-        return { chat: created } as const;
+        return Result.ok<CreateChatSessionValue, CreateChatSessionError>({
+          chat: created,
+        });
       }
 
       if (existing.provider !== provider) {
-        return {
-          conflict: true,
+        return Result.err<CreateChatSessionValue, CreateChatSessionError>({
+          kind: "providerConflict",
           boundProvider: existing.provider,
-        } as const;
+        });
       }
 
       const toAppend = filterNewMessages(
         incoming,
-        existing.messages as unknown as ChatMessage[]
+        parseStoredMessages(existing.messages)
       );
 
       if (toAppend.length === 0) {
-        return { chat: existing } as const;
+        return Result.ok<CreateChatSessionValue, CreateChatSessionError>({
+          chat: existing,
+        });
       }
 
       const mergedMessages = [
-        ...(existing.messages as unknown as ChatMessage[]),
+        ...parseStoredMessages(existing.messages),
         ...toAppend,
       ];
 
       const updated = await tx.chatSession.update({
         where: { userId_chatKey: { userId, chatKey } },
         data: {
-          messages: mergedMessages as unknown as ChatMessage[] as never,
+          messages: toPrismaJsonMessages(mergedMessages),
         },
       });
-      return { chat: updated } as const;
+      return Result.ok<CreateChatSessionValue, CreateChatSessionError>({
+        chat: updated,
+      });
     });
   },
 
@@ -187,23 +218,27 @@ export const chatSessionsService = {
       });
 
       if (!existing) {
-        return { notFound: true } as const;
+        return Result.err<AppendMessagesValue, AppendMessagesError>({
+          kind: "notFound",
+        });
       }
 
       if (existing.provider !== provider) {
-        return {
-          conflict: true,
+        return Result.err<AppendMessagesValue, AppendMessagesError>({
+          kind: "providerConflict",
           boundProvider: existing.provider,
-        } as const;
+        });
       }
 
-      const existingMessages = existing.messages as unknown as ChatMessage[];
+      const existingMessages = parseStoredMessages(existing.messages);
       const toAppend = filterNewMessages(messagesToAppend, existingMessages);
       const sessionIdChanged =
         sessionId !== undefined && sessionId !== existing.sessionId;
 
       if (toAppend.length === 0 && !sessionIdChanged) {
-        return { chat: existing };
+        return Result.ok<AppendMessagesValue, AppendMessagesError>({
+          chat: existing,
+        });
       }
 
       const mergedMessages = [...existingMessages, ...toAppend];
@@ -211,11 +246,13 @@ export const chatSessionsService = {
       const updated = await tx.chatSession.update({
         where: { userId_chatKey: { userId, chatKey } },
         data: {
-          messages: mergedMessages as unknown as ChatMessage[] as never,
+          messages: toPrismaJsonMessages(mergedMessages),
           ...(sessionIdChanged ? { sessionId } : {}),
         },
       });
-      return { chat: updated };
+      return Result.ok<AppendMessagesValue, AppendMessagesError>({
+        chat: updated,
+      });
     });
   },
 
@@ -254,13 +291,13 @@ export const chatSessionsService = {
 
       if (existing) {
         if (existing.provider !== input.provider) {
-          return {
-            conflict: true,
+          return Result.err<UpsertTurnValue, UpsertTurnError>({
+            kind: "providerConflict",
             boundProvider: existing.provider,
-          } as const;
+          });
         }
 
-        const existingMessages = existing.messages as unknown as ChatMessage[];
+        const existingMessages = parseStoredMessages(existing.messages);
         const alreadyStored = existingMessages.some(
           (m) => m.id === input.userMessage.id
         );
@@ -272,7 +309,7 @@ export const chatSessionsService = {
           row = await tx.chatSession.update({
             where: { userId_chatKey: { userId, chatKey: input.chatKey } },
             data: {
-              messages: mergedMessages as unknown as ChatMessage[] as never,
+              messages: toPrismaJsonMessages(mergedMessages),
             },
           });
         }
@@ -285,7 +322,7 @@ export const chatSessionsService = {
             provider: input.provider,
             model: input.model,
             context: input.context ?? null,
-            messages: [input.userMessage] as unknown as ChatMessage[] as never,
+            messages: toPrismaJsonMessages([input.userMessage]),
             sessionId: null,
             sessionSourceId: null,
           },
@@ -303,7 +340,10 @@ export const chatSessionsService = {
           ? row.sessionId
           : null;
 
-      return { conflict: false, chat: row, resumeSessionId } as const;
+      return Result.ok<UpsertTurnValue, UpsertTurnError>({
+        chat: row,
+        resumeSessionId,
+      });
     });
   },
 
@@ -323,17 +363,19 @@ export const chatSessionsService = {
       });
 
       if (!existing) {
-        return { notFound: true } as const;
+        return Result.err<AppendAssistantTurnValue, AppendAssistantTurnError>({
+          kind: "notFound",
+        });
       }
 
       if (existing.provider !== input.provider) {
-        return {
-          conflict: true,
+        return Result.err<AppendAssistantTurnValue, AppendAssistantTurnError>({
+          kind: "providerConflict",
           boundProvider: existing.provider,
-        } as const;
+        });
       }
 
-      const existingMessages = existing.messages as unknown as ChatMessage[];
+      const existingMessages = parseStoredMessages(existing.messages);
       const toAppend = filterNewMessages(input.messages, existingMessages);
       // Fully idempotent: if the gateway retries a completion write with
       // the same messages and the same session pair, short-circuit before
@@ -343,7 +385,9 @@ export const chatSessionsService = {
         input.sessionSourceId === existing.sessionSourceId;
 
       if (toAppend.length === 0 && sessionUnchanged) {
-        return { notFound: false, conflict: false, chat: existing } as const;
+        return Result.ok<AppendAssistantTurnValue, AppendAssistantTurnError>({
+          chat: existing,
+        });
       }
 
       const mergedMessages = [...existingMessages, ...toAppend];
@@ -351,13 +395,15 @@ export const chatSessionsService = {
       const updated = await tx.chatSession.update({
         where: { userId_chatKey: { userId, chatKey: input.chatKey } },
         data: {
-          messages: mergedMessages as unknown as ChatMessage[] as never,
+          messages: toPrismaJsonMessages(mergedMessages),
           sessionId: input.sessionId,
           sessionSourceId: input.sessionSourceId,
         },
       });
 
-      return { notFound: false, conflict: false, chat: updated } as const;
+      return Result.ok<AppendAssistantTurnValue, AppendAssistantTurnError>({
+        chat: updated,
+      });
     });
   },
 };

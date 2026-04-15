@@ -1,5 +1,6 @@
 "use client";
 
+import { CURRENT_DESKTOP_API_NAMESPACE } from "@repo/api/src/desktop-api-namespace";
 import {
   type Artifact,
   type ArtifactDetail,
@@ -27,6 +28,7 @@ import {
 } from "@tanstack/react-query";
 import { useCallback, useState } from "react";
 import { useApiClient } from "@/hooks/use-api-client";
+import { resolveDesktopApiNamespaceHint } from "@/lib/engineer/local-gateway-api-namespace";
 import { handleRunLoopResponse } from "@/lib/run-loop-response";
 import { dashboardKeys } from "./use-dashboard-stats";
 import { invalidateEntityLinkQueries } from "./use-entity-links";
@@ -301,7 +303,6 @@ export function useUpdateArtifact() {
       queryClient.invalidateQueries({
         queryKey: artifactKeys.detail(input.id),
       });
-      // Also invalidate the slug-based lookup so detail pages loaded by slug pick up the change
       queryClient.invalidateQueries({
         queryKey: artifactKeys.bySlug(data.slug),
       });
@@ -336,23 +337,35 @@ export function useCreateArtifactVersion(artifactId: string) {
   const apiClient = useApiClient();
 
   return useMutation({
-    mutationFn: (content: string) =>
-      apiClient.post<Artifact>(`/artifacts/${artifactId}/versions`, {
-        content,
-      }),
-    onSuccess: () => {
+    mutationFn: ({
+      content,
+      resetRoom,
+    }: {
+      content: string;
+      resetRoom?: boolean;
+    }) => {
+      const params = new URLSearchParams();
+      if (resetRoom !== undefined) {
+        params.set("reset-room", resetRoom.toString());
+      }
+      return apiClient.post<ArtifactDetail>(
+        `/artifacts/${artifactId}/versions?${params.toString()}`,
+        {
+          content,
+        }
+      );
+    },
+    onSuccess: (result) => {
       queryClient.invalidateQueries({
         queryKey: artifactKeys.detail(artifactId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: artifactKeys.bySlug(result.slug),
       });
       queryClient.invalidateQueries({
         queryKey: artifactKeys.versions(artifactId),
       });
       queryClient.invalidateQueries({ queryKey: artifactKeys.lists() });
-      // Invalidate slug-based lookups so useArtifactBySlug picks up the new version
-      queryClient.invalidateQueries({
-        predicate: (query) =>
-          query.queryKey[0] === "artifacts" && query.queryKey[1] === "by-slug",
-      });
     },
   });
 }
@@ -443,8 +456,13 @@ export function useCreateAndGenerateArtifact() {
 
       // Trigger generation via Loops — compute target resolved server-side
       try {
+        const desktopApiNamespace = await resolveDesktopApiNamespaceHint();
         await apiClient.post(`/artifacts/${artifact.id}/run-loop`, {
           command: RunLoopCommand.Plan,
+          ...(desktopApiNamespace &&
+          desktopApiNamespace !== CURRENT_DESKTOP_API_NAMESPACE
+            ? { desktopApiNamespace }
+            : {}),
         });
         return artifact;
       } catch (error) {
@@ -490,9 +508,14 @@ export function useCreateAndGenerateArtifact() {
       const { pendingArtifactId } = multiTargetState;
       setMultiTargetState(null);
       try {
+        const desktopApiNamespace = await resolveDesktopApiNamespaceHint();
         await apiClient.post(`/artifacts/${pendingArtifactId}/run-loop`, {
           command: "plan",
           computeTargetId: targetId,
+          ...(desktopApiNamespace &&
+          desktopApiNamespace !== CURRENT_DESKTOP_API_NAMESPACE
+            ? { desktopApiNamespace }
+            : {}),
         });
         queryClient.invalidateQueries({
           queryKey: artifactKeys.generationStatus(pendingArtifactId),

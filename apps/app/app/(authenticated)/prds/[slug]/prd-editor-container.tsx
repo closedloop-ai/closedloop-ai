@@ -47,10 +47,7 @@ export function PRDEditorContainer({
   const currentVersion = prd.version.version;
 
   const handleVersionChange = (version: number) => {
-    // If selecting the latest version, clear the selection to use default (latest)
-    if (version === prd.latestVersion) {
-      setSelectedVersion(undefined);
-    } else {
+    if (version !== currentVersion) {
       setSelectedVersion(version);
     }
   };
