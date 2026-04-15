@@ -5,7 +5,6 @@ import type {
 } from "@repo/api/src/types/compute-target";
 import { EntityType } from "@repo/api/src/types/entity-link";
 import {
-  type AdditionalRepoRef,
   type CreateLoopResponse,
   RunLoopCommand,
 } from "@repo/api/src/types/loop";
@@ -28,6 +27,7 @@ import {
 } from "@/lib/route-utils";
 import { artifactsService } from "../../service";
 import {
+  buildAdditionalReposInput,
   COMMAND_MAP,
   checkBackendMismatch,
   resolveEvaluateCodeBranchForRunLoop,
@@ -41,36 +41,6 @@ function handleRunLoopError(error: unknown) {
     return errorResponse(error.message, error, 429);
   }
   return errorResponse("Failed to run loop", error);
-}
-
-/**
- * Apply the MULTI_REPO_PLAN_ENABLED feature flag and PLAN-only gate to the
- * requested additionalRepos. Returns undefined when the feature is disabled
- * or the command is not Plan.
- */
-export function buildAdditionalReposInput(
-  additionalRepos: AdditionalRepoRef[] | undefined,
-  command: string,
-  artifactId: string
-): AdditionalRepoRef[] | undefined {
-  if (!additionalRepos) {
-    return undefined;
-  }
-  if (process.env.MULTI_REPO_PLAN_ENABLED !== "true") {
-    log.warn(
-      "[run-loop] MULTI_REPO_PLAN_ENABLED is not enabled — dropping additionalRepos",
-      { artifactId, command }
-    );
-    return undefined;
-  }
-  if (command !== RunLoopCommand.Plan) {
-    log.warn(
-      "[run-loop] additionalRepos is only supported for plan commands — dropping",
-      { artifactId, command }
-    );
-    return undefined;
-  }
-  return additionalRepos;
 }
 
 type RunLoopResponse =

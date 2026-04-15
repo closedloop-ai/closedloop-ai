@@ -5,11 +5,13 @@ import {
 import type { JsonObject } from "@repo/api/src/types/common";
 import type { BackendMismatchBody } from "@repo/api/src/types/compute-target";
 import {
+  type AdditionalRepoRef,
   type CreateLoopRequest,
   LoopCommand,
   RunLoopCommand,
 } from "@repo/api/src/types/loop";
 import { getProjectSettings } from "@repo/api/src/types/project";
+import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
 import { computeTargetsService } from "@/app/compute-targets/service";
 import { loopsService } from "@/app/loops/service";
@@ -249,4 +251,34 @@ export function resolveRunLoopComputeTarget(
     userId,
     computeTargetIdHint
   );
+}
+
+/**
+ * Apply the MULTI_REPO_PLAN_ENABLED feature flag and PLAN-only gate to the
+ * requested additionalRepos. Returns undefined when the feature is disabled
+ * or the command is not Plan.
+ */
+export function buildAdditionalReposInput(
+  additionalRepos: AdditionalRepoRef[] | undefined,
+  command: string,
+  artifactId: string
+): AdditionalRepoRef[] | undefined {
+  if (!additionalRepos) {
+    return undefined;
+  }
+  if (process.env.MULTI_REPO_PLAN_ENABLED !== "true") {
+    log.warn(
+      "[run-loop] MULTI_REPO_PLAN_ENABLED is not enabled — dropping additionalRepos",
+      { artifactId, command }
+    );
+    return undefined;
+  }
+  if (command !== RunLoopCommand.Plan) {
+    log.warn(
+      "[run-loop] additionalRepos is only supported for plan commands — dropping",
+      { artifactId, command }
+    );
+    return undefined;
+  }
+  return additionalRepos;
 }

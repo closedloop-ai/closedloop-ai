@@ -1,6 +1,6 @@
 import { RunLoopCommand } from "@repo/api/src/types/loop";
 import { afterEach, describe, expect, it } from "vitest";
-import { buildAdditionalReposInput } from "./route";
+import { buildAdditionalReposInput } from "./run-loop-helpers";
 
 describe("buildAdditionalReposInput", () => {
   const originalFlag = process.env.MULTI_REPO_PLAN_ENABLED;
