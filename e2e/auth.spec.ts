@@ -11,12 +11,8 @@ test("login flow authenticates and redirects to my-tasks", async ({ page }) => {
   await page.context().clearCookies();
   await page.evaluate(() => localStorage.clear());
 
-  // In CI against remote environments, sign in with real credentials directly.
-  // Locally, inject the Clerk testing token to bypass bot detection.
-  if (!process.env.CI) {
-    requireEnvVar("CLERK_TESTING_TOKEN");
-    await setupClerkTestingToken({ page });
-  }
+  // Injects the testing token (fetched by clerkSetup in global.setup.ts) to bypass 2FA and bot detection.
+  await setupClerkTestingToken({ page });
 
   await performSignIn(page, TEST_EMAIL, password);
 
