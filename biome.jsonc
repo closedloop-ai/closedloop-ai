@@ -110,7 +110,8 @@
       "!docs/lib",
       "!docs/hooks",
       "!apps/docs/**/*.json",
-      "!apps/email/.react-email"
+      "!apps/email/.react-email",
+      "!playwright-report"
     ]
   }
 }
