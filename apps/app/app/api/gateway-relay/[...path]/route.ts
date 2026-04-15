@@ -1,4 +1,9 @@
 import { Buffer } from "node:buffer";
+import {
+  CURRENT_DESKTOP_API_NAMESPACE,
+  getDesktopApiNamespaceFromCapabilities,
+  rewriteDesktopApiPath,
+} from "@repo/api/src/desktop-api-namespace";
 import type { ApiResult } from "@repo/api/src/types/common";
 import { auth } from "@repo/auth/server";
 import { log } from "@repo/observability/log";
@@ -138,13 +143,14 @@ function toRelayHttpResponse(value: unknown): Response {
 type TargetOwnershipCheck = {
   id: string;
   isOnline: boolean;
+  capabilities: Record<string, unknown>;
 };
 
 async function ensureTargetOwnedAndOnline(
   apiOrigin: string,
   authToken: string,
   targetId: string
-): Promise<void> {
+): Promise<TargetOwnershipCheck> {
   const response = await fetch(`${apiOrigin}/compute-targets`, {
     method: "GET",
     headers: {
@@ -178,6 +184,7 @@ async function ensureTargetOwnedAndOnline(
   if (!target.isOnline) {
     throw new RelayRequestError("Compute target offline", 503);
   }
+  return target;
 }
 
 async function handleRelayRequest(request: NextRequest): Promise<Response> {
@@ -200,9 +207,13 @@ async function handleRelayRequest(request: NextRequest): Promise<Response> {
   }
 
   const apiOrigin = resolveApiOrigin(request);
-  await ensureTargetOwnedAndOnline(apiOrigin, token, targetId);
+  const target = await ensureTargetOwnedAndOnline(apiOrigin, token, targetId);
 
-  const path = toGatewayPath(request);
+  const path = rewriteDesktopApiPath(
+    toGatewayPath(request),
+    getDesktopApiNamespaceFromCapabilities(target.capabilities) ??
+      CURRENT_DESKTOP_API_NAMESPACE
+  );
   const relayRequest: RelayHttpRequestPayload = {
     method: request.method,
     path,

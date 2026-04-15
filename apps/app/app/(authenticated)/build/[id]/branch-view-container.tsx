@@ -46,6 +46,9 @@ async function fetchBranchWorktree(params: {
     `/api/gateway/git/branch-worktree?${searchParams.toString()}`
   );
   if (!response.ok) {
+    if (response.status === 404) {
+      return { path: null, repoPath: null };
+    }
     throw new Error("Failed to resolve branch worktree");
   }
   const raw = (await response.json()) as Partial<BranchWorktreeResponse>;

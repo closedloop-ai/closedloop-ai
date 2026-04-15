@@ -7,6 +7,7 @@ const mockGetElectronDetectionSnapshot = vi.fn();
 const mockGetEngineerRoutingSelection = vi.fn();
 const mockEnsureLocalGatewaySession = vi.fn();
 const mockGetLastExchangeError = vi.fn();
+const mockEnsureLocalGatewayApiNamespace = vi.fn();
 
 vi.mock("@/lib/engineer/electron-detection", () => ({
   ensureElectronDetection: (...args: unknown[]) =>
@@ -22,6 +23,12 @@ vi.mock("@/lib/engineer/local-gateway-session", () => ({
   invalidateLocalGatewaySession: vi.fn(),
   getLastExchangeError: (...args: unknown[]) =>
     mockGetLastExchangeError(...args),
+}));
+
+vi.mock("@/lib/engineer/local-gateway-api-namespace", () => ({
+  ensureLocalGatewayApiNamespace: (...args: unknown[]) =>
+    mockEnsureLocalGatewayApiNamespace(...args),
+  invalidateLocalGatewayApiNamespace: vi.fn(),
 }));
 
 vi.mock("@/lib/engineer/routing-store", () => ({
@@ -50,9 +57,11 @@ describe("engineer-fetch-interceptor", () => {
     mockGetEngineerRoutingSelection.mockReset();
     mockEnsureLocalGatewaySession.mockReset();
     mockGetLastExchangeError.mockReset();
+    mockEnsureLocalGatewayApiNamespace.mockReset();
     // Default: session available, no exchange errors
     mockEnsureLocalGatewaySession.mockResolvedValue("test-session-token");
     mockGetLastExchangeError.mockReturnValue(null);
+    mockEnsureLocalGatewayApiNamespace.mockResolvedValue("gateway");
   });
 
   afterEach(() => {
@@ -100,6 +109,47 @@ describe("engineer-fetch-interceptor", () => {
     );
     expect(outboundRequest.headers.get("authorization")).toBeNull();
     expect(outboundRequest.headers.get("cookie")).toBeNull();
+
+    uninstall();
+  });
+
+  it("rewrites gateway routes to the legacy engineer namespace when required", async () => {
+    const originalFetch = vi.fn().mockResolvedValue(new Response("ok"));
+    Object.defineProperty(globalThis, "fetch", {
+      configurable: true,
+      writable: true,
+      value: originalFetch,
+    });
+    mockGetEngineerRoutingSelection.mockReturnValue({
+      mode: EngineerRoutingMode.LocalElectron,
+      computeTargetId: null,
+      source: "auto",
+      updatedAt: Date.now(),
+    });
+
+    mockGetElectronDetectionSnapshot.mockReturnValue({
+      detected: true,
+      loading: false,
+      port: 19_432,
+      version: "1.0.0",
+      machineName: "machine-1",
+      capabilities: {},
+      checkedAt: Date.now(),
+    });
+    mockEnsureLocalGatewayApiNamespace.mockResolvedValue("engineer");
+
+    const uninstall = installEngineerFetchInterceptor();
+
+    await fetch("/api/gateway/terminal-chat", {
+      method: "POST",
+      body: JSON.stringify({ message: "hello" }),
+    });
+
+    expect(originalFetch).toHaveBeenCalledTimes(1);
+    const outboundRequest = originalFetch.mock.calls[0][0] as Request;
+    expect(outboundRequest.url).toBe(
+      "http://localhost:19432/api/engineer/terminal-chat"
+    );
 
     uninstall();
   });

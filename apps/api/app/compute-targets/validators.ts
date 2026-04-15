@@ -1,3 +1,4 @@
+import { isDesktopApiPath } from "@repo/api/src/desktop-api-namespace";
 import { z } from "zod";
 import { jsonObjectValidator } from "@/lib/validators/json";
 
@@ -50,7 +51,13 @@ export const setSharingValidator = z.object({
 export const createDesktopCommandValidator = z.object({
   operationId: z.string().trim().min(1),
   method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]),
-  path: z.string().trim().min(1).startsWith("/api/gateway/"),
+  path: z
+    .string()
+    .trim()
+    .min(1)
+    .refine((value) => isDesktopApiPath(value), {
+      message: "Path must target /api/gateway/* or /api/engineer/*",
+    }),
   headers: z.record(z.string(), z.string()).optional(),
   query: z
     .record(z.string(), z.union([z.string(), z.array(z.string())]))

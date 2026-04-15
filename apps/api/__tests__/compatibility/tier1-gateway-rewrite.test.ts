@@ -121,6 +121,12 @@ describe("resolveOperationId", () => {
     );
   });
 
+  it("resolves exact match: /api/engineer/health-check → health_check", () => {
+    expect(resolveOperationId("/api/engineer/health-check")).toBe(
+      "health_check"
+    );
+  });
+
   it("resolves exact match: /api/gateway/symphony/launch → symphony_launch", () => {
     expect(resolveOperationId("/api/gateway/symphony/launch")).toBe(
       "symphony_launch"
@@ -139,6 +145,12 @@ describe("resolveOperationId", () => {
 
   it("resolves prefix match: /api/gateway/symphony/chat/<id> → symphony_chat", () => {
     expect(resolveOperationId("/api/gateway/symphony/chat/run-abc-123")).toBe(
+      "symphony_chat"
+    );
+  });
+
+  it("resolves prefix match: /api/engineer/symphony/chat/<id> → symphony_chat", () => {
+    expect(resolveOperationId("/api/engineer/symphony/chat/run-abc-123")).toBe(
       "symphony_chat"
     );
   });

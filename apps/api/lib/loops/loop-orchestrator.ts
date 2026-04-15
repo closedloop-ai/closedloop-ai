@@ -1,3 +1,7 @@
+import {
+  DESKTOP_API_NAMESPACE_CAPABILITY_KEY,
+  isDesktopApiNamespace,
+} from "@repo/api/src/desktop-api-namespace";
 import type { JsonObject } from "@repo/api/src/types/common";
 import type {
   LoopEvent,
@@ -446,6 +450,11 @@ async function resolveLoopLaunchContext(
     typeof loop.metadata?.localRepoPath === "string"
       ? loop.metadata.localRepoPath
       : undefined;
+  const desktopApiNamespace = isDesktopApiNamespace(
+    loop.metadata?.[DESKTOP_API_NAMESPACE_CAPABILITY_KEY]
+  )
+    ? loop.metadata[DESKTOP_API_NAMESPACE_CAPABILITY_KEY]
+    : undefined;
 
   return {
     loopId: loop.id,
@@ -475,6 +484,7 @@ async function resolveLoopLaunchContext(
         : null,
     localRepoPath,
     computeTargetId: loop.computeTargetId,
+    desktopApiNamespace,
   };
 }
 

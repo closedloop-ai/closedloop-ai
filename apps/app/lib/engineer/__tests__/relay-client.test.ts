@@ -81,6 +81,12 @@ describe("isStreamingGatewayRequest", () => {
     );
   });
 
+  it("classifies legacy engineer streaming endpoints after normalization", () => {
+    expect(
+      isStreamingGatewayRequest("POST", "/api/engineer/terminal-chat", null)
+    ).toBe(true);
+  });
+
   it("honors explicit event-stream accept header", () => {
     expect(
       isStreamingGatewayRequest(
@@ -146,6 +152,48 @@ describe("RelayClient.executeOperation preserves body fields", () => {
       message: "hello",
       provider: "claude",
     });
+  });
+
+  it("accepts legacy engineer paths when creating relay commands", async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        success: true,
+        data: { commandId: "cmd-legacy", status: "queued" },
+      })
+    );
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        `data: ${JSON.stringify({
+          commandId: "cmd-legacy",
+          sequence: 1,
+          eventType: "result",
+          data: { statusCode: 200, body: { ok: true } },
+          createdAt: "2026-03-11T00:00:00.000Z",
+        })}\n\n`,
+        {
+          status: 200,
+          headers: { "Content-Type": "text/event-stream" },
+        }
+      )
+    );
+
+    const client = new RelayClient("http://api.test", "token-123");
+    await client.executeOperation("target-1", {
+      method: "POST",
+      path: "/api/engineer/symphony/chat/pr-42?repo=%2Ftmp%2Frepo",
+      headers: { "content-type": "application/json" },
+      body: {
+        kind: "json",
+        value: { message: "hello" },
+      },
+    });
+
+    const createCall = fetchMock.mock.calls[0];
+    const createBody = JSON.parse(createCall[1]?.body as string) as {
+      path: string;
+    };
+    expect(createBody.path).toBe("/api/engineer/symphony/chat/pr-42");
   });
 });
 

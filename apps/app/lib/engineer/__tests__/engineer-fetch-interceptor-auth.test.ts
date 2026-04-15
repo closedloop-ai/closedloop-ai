@@ -9,6 +9,8 @@ const mockInvalidateElectronDetectionCache = vi.fn();
 const mockEnsureLocalGatewaySession = vi.fn();
 const mockInvalidateLocalGatewaySession = vi.fn();
 const mockGetLastExchangeError = vi.fn();
+const mockEnsureLocalGatewayApiNamespace = vi.fn();
+const mockInvalidateLocalGatewayApiNamespace = vi.fn();
 const mockGetEngineerRoutingSelection = vi.fn();
 
 vi.mock("../electron-detection", () => ({
@@ -27,6 +29,13 @@ vi.mock("../local-gateway-session", () => ({
     mockInvalidateLocalGatewaySession(...args),
   getLastExchangeError: (...args: unknown[]) =>
     mockGetLastExchangeError(...args),
+}));
+
+vi.mock("../local-gateway-api-namespace", () => ({
+  ensureLocalGatewayApiNamespace: (...args: unknown[]) =>
+    mockEnsureLocalGatewayApiNamespace(...args),
+  invalidateLocalGatewayApiNamespace: (...args: unknown[]) =>
+    mockInvalidateLocalGatewayApiNamespace(...args),
 }));
 
 vi.mock("../routing-store", () => ({
@@ -102,7 +111,10 @@ describe("engineer-fetch-interceptor – auth integration", () => {
     mockEnsureLocalGatewaySession.mockReset();
     mockInvalidateLocalGatewaySession.mockReset();
     mockGetLastExchangeError.mockReset();
+    mockEnsureLocalGatewayApiNamespace.mockReset();
+    mockInvalidateLocalGatewayApiNamespace.mockReset();
     mockGetLastExchangeError.mockReturnValue(null);
+    mockEnsureLocalGatewayApiNamespace.mockResolvedValue("gateway");
 
     // Defaults used by most tests
     mockGetEngineerRoutingSelection.mockReturnValue(

@@ -1,4 +1,5 @@
 import { vi } from "vitest";
+import { POST as commandsPOST } from "@/app/compute-targets/[id]/commands/route";
 import { POST as dispatchPOST } from "@/app/compute-targets/[id]/operations/route";
 import { POST as resultsPOST } from "@/app/compute-targets/[id]/results/route";
 import { computeTargetsService } from "@/app/compute-targets/service";
@@ -51,6 +52,7 @@ vi.mock("@/lib/desktop-command-store", async (importOriginal) => {
     ...original,
     desktopCommandStore: {
       ...original.desktopCommandStore,
+      createCommand: vi.fn(),
       createFromRelayOperation: vi.fn(),
       findCommandIdByOperationId: vi.fn(),
       ingestCommandEvent: vi.fn(),
@@ -77,6 +79,13 @@ beforeEach(() => {
   vi.mocked(desktopCommandStore.createFromRelayOperation).mockResolvedValue({
     command: {
       commandId: "cmd-1",
+    },
+    deduped: false,
+  } as any);
+  vi.mocked(desktopCommandStore.createCommand).mockResolvedValue({
+    command: {
+      commandId: "cmd-1",
+      status: "queued",
     },
     deduped: false,
   } as any);
@@ -160,6 +169,50 @@ describe("POST /compute-targets/:id/operations", () => {
       "target-1",
       expect.objectContaining({
         operationId: "op-1",
+      })
+    );
+  });
+});
+
+describe("POST /compute-targets/:id/commands", () => {
+  it("rewrites gateway paths to the stored legacy namespace before dispatch", async () => {
+    vi.mocked(computeTargetsService.findOwnedById).mockResolvedValue({
+      ...mockTarget,
+      capabilities: { desktopApiNamespace: "engineer" },
+    } as any);
+    vi.mocked(relayEventBus.publishOperation).mockReturnValue({
+      deliveredToSubscriber: true,
+    });
+
+    const response = await commandsPOST(
+      createMockRequest({
+        method: "POST",
+        body: {
+          operationId: "symphony_chat",
+          method: "POST",
+          path: "/api/gateway/symphony/chat/run-1",
+          streaming: true,
+        },
+      }),
+      createMockRouteContext({ id: "target-1" })
+    );
+
+    expect(response.status).toBe(200);
+    expect(desktopCommandStore.createCommand).toHaveBeenCalledWith(
+      "target-1",
+      expect.objectContaining({
+        path: "/api/engineer/symphony/chat/run-1",
+      }),
+      expect.anything()
+    );
+    expect(relayEventBus.publishOperation).toHaveBeenCalledWith(
+      "target-1",
+      expect.objectContaining({
+        params: expect.objectContaining({
+          request: expect.objectContaining({
+            path: "/api/engineer/symphony/chat/run-1",
+          }),
+        }),
       })
     );
   });

@@ -1,5 +1,6 @@
 "use client";
 
+import { rewriteDesktopApiPath } from "@repo/api/src/desktop-api-namespace";
 import { EngineerRoutingMode } from "@repo/api/src/types/relay";
 import { log } from "@repo/observability/log";
 import { CLOUD_RELAY_ENABLED } from "./constants";
@@ -8,6 +9,10 @@ import {
   getElectronDetectionSnapshot,
   invalidateElectronDetectionCache,
 } from "./electron-detection";
+import {
+  ensureLocalGatewayApiNamespace,
+  invalidateLocalGatewayApiNamespace,
+} from "./local-gateway-api-namespace";
 import {
   ensureLocalGatewaySession,
   getLastExchangeError,
@@ -185,11 +190,6 @@ function createFetchInterceptor(
     }
 
     const port = detection.port;
-    const localhostUrl = new URL(
-      `${requestUrl.pathname}${requestUrl.search}`,
-      `http://localhost:${port}`
-    );
-
     const sessionToken = await ensureLocalGatewaySession(port);
 
     // Short-circuit: if the session exchange failed with an actionable error
@@ -201,6 +201,17 @@ function createFetchInterceptor(
         return buildExchangeErrorResponse(exchangeError);
       }
     }
+
+    const namespace = await ensureLocalGatewayApiNamespace(port, sessionToken);
+    const localhostUrl = new URL(
+      namespace
+        ? rewriteDesktopApiPath(
+            `${requestUrl.pathname}${requestUrl.search}`,
+            namespace
+          )
+        : `${requestUrl.pathname}${requestUrl.search}`,
+      `http://localhost:${port}`
+    );
 
     // Materialize body once so retries can reuse the same buffer.
     const bodyBuffer = methodAllowsBody(request.method)
@@ -219,10 +230,20 @@ function createFetchInterceptor(
       // On 401, invalidate session, re-acquire, and retry once
       if (response.status === 401 && sessionToken) {
         invalidateLocalGatewaySession();
+        invalidateLocalGatewayApiNamespace(port);
         const freshToken = await ensureLocalGatewaySession(port);
         if (freshToken) {
+          const freshNamespace = await ensureLocalGatewayApiNamespace(
+            port,
+            freshToken
+          );
           const retryUrl = new URL(
-            `${requestUrl.pathname}${requestUrl.search}`,
+            freshNamespace
+              ? rewriteDesktopApiPath(
+                  `${requestUrl.pathname}${requestUrl.search}`,
+                  freshNamespace
+                )
+              : `${requestUrl.pathname}${requestUrl.search}`,
             `http://localhost:${port}`
           );
           const retryRequest = buildLocalhostRequest(
@@ -245,6 +266,7 @@ function createFetchInterceptor(
       if (error instanceof TypeError) {
         invalidateElectronDetectionCache();
         invalidateLocalGatewaySession();
+        invalidateLocalGatewayApiNamespace(port);
       }
       throw error;
     }
@@ -293,6 +315,7 @@ export function resetEngineerFetchInterceptorForTests(): void {
   if (globalThis.window === undefined) {
     return;
   }
+  invalidateLocalGatewayApiNamespace();
   const interceptorWindow = globalThis.window as InterceptorWindow;
   if (interceptorWindow.__engineerOriginalFetch) {
     globalThis.fetch = interceptorWindow.__engineerOriginalFetch;

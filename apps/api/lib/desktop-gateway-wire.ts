@@ -1,4 +1,8 @@
 import { randomUUID } from "node:crypto";
+import {
+  isDesktopApiPath,
+  normalizeDesktopApiPath,
+} from "@repo/api/src/desktop-api-namespace";
 import type { JsonValue } from "@repo/api/src/types/common";
 import type { DesktopCommandEventType } from "@repo/api/src/types/compute-target";
 import type { Socket } from "socket.io";
@@ -232,7 +236,7 @@ export function toWireCommandFromRelayOperation(operation: {
   }
 
   const { path, query } = splitPathAndQuery(rawPath);
-  if (!path.startsWith("/api/gateway/")) {
+  if (!isDesktopApiPath(path)) {
     return null;
   }
 
@@ -330,21 +334,22 @@ export const PREFIX_OPERATION_IDS: [string, string][] = [
 
 /**
  * Resolve the semantic operationId that Electron expects for a given
- * `/api/gateway/*` path.  This must stay in sync with the Electron
+ * desktop API path. This must stay in sync with the Electron
  * desktop app's `resolveOperationId()` in `apps/desktop/src/main/app.ts`.
  */
 export function resolveOperationId(pathname: string): string | null {
-  if (!pathname.startsWith("/api/gateway/")) {
+  const normalizedPath = normalizeDesktopApiPath(pathname);
+  if (!normalizedPath) {
     return null;
   }
 
-  const exact = EXACT_OPERATION_IDS[pathname];
+  const exact = EXACT_OPERATION_IDS[normalizedPath];
   if (exact) {
     return exact;
   }
 
   for (const [prefix, operationId] of PREFIX_OPERATION_IDS) {
-    if (pathname.startsWith(prefix)) {
+    if (normalizedPath.startsWith(prefix)) {
       return operationId;
     }
   }

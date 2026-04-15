@@ -1,3 +1,7 @@
+import {
+  isDesktopApiPath,
+  normalizeDesktopApiPath,
+} from "@repo/api/src/desktop-api-namespace";
 import type { ApiResult, JsonValue } from "@repo/api/src/types/common";
 import type {
   CreateDesktopCommandInput,
@@ -309,8 +313,10 @@ function toDesktopCommandInput(
   streaming: boolean
 ): CreateDesktopCommandInput {
   const { path, query } = splitPathAndQuery(request.path);
-  if (!path.startsWith("/api/gateway/")) {
-    throw new Error(`Relay path must target /api/gateway/*, got: ${path}`);
+  if (!isDesktopApiPath(path)) {
+    throw new Error(
+      `Relay path must target /api/gateway/* or /api/engineer/*, got: ${path}`
+    );
   }
 
   return {
@@ -353,7 +359,11 @@ export function isStreamingGatewayRequest(
     return false;
   }
 
-  const pathname = path.split("?")[0];
+  const rawPathname = path.split("?")[0];
+  const pathname = normalizeDesktopApiPath(rawPathname);
+  if (!pathname) {
+    return false;
+  }
   return [
     /^\/api\/gateway\/symphony\/chat\/[^/]+$/,
     /^\/api\/gateway\/symphony\/comment-chat\/[^/]+$/,
