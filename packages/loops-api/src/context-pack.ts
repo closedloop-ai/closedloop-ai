@@ -34,16 +34,25 @@ export const ContextPackArtifactSchema = z.object({
   content: z.string(),
 });
 
-/**
- * Additional repository reference with optional GitHub token.
- * Defined locally to avoid dependency on @repo/api.
- * Mirrors AdditionalRepoRefWithToken from @repo/api/src/types/loop.
- */
-export type AdditionalRepoRefWithToken = {
+// Additional repository reference for multi-repo loop execution
+export type AdditionalRepoRef = {
   fullName: string;
   branch: string;
+};
+
+export const AdditionalRepoRefSchema = z.object({
+  fullName: z.string(),
+  branch: z.string(),
+});
+
+// Additional repository reference with optional GitHub token
+export type AdditionalRepoRefWithToken = AdditionalRepoRef & {
   githubToken?: string;
 };
+
+export const AdditionalRepoRefWithTokenSchema = AdditionalRepoRefSchema.extend({
+  githubToken: z.string().optional(),
+});
 
 /**
  * Context pack — the input payload assembled by the backend and consumed
@@ -101,15 +110,7 @@ export const ContextPackSchema = z.object({
     .optional(),
   userContext: z.string().optional(),
   attachments: z.array(ContextPackAttachmentSchema).optional(),
-  additionalRepos: z
-    .array(
-      z.object({
-        fullName: z.string(),
-        branch: z.string(),
-        githubToken: z.string().optional(),
-      })
-    )
-    .optional(),
+  additionalRepos: z.array(AdditionalRepoRefWithTokenSchema).optional(),
 });
 
 // Compile-time assertion: ContextPackSchema must be assignable to ContextPack

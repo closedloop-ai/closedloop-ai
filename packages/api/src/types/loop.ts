@@ -6,6 +6,10 @@
 /** biome-ignore-all lint/style/noExportedImports: re-exporting shared loop types for backwards compatibility. */
 
 import { LoopCommand, LoopStatus } from "@closedloop-ai/loops-api/commands";
+import type {
+  AdditionalRepoRef,
+  AdditionalRepoRefWithToken,
+} from "@closedloop-ai/loops-api/context-pack";
 import { TokensByModel } from "@closedloop-ai/loops-api/tokens";
 import type { JsonObject } from "./common";
 import type { EntityType } from "./entity-link";
@@ -114,14 +118,8 @@ export type LoopWithUser = Loop & {
 };
 
 // Additional repository references for multi-repo loop execution
-export type AdditionalRepoRef = {
-  fullName: string;
-  branch: string;
-};
-
-export type AdditionalRepoRefWithToken = AdditionalRepoRef & {
-  githubToken?: string;
-};
+// Canonical source: @closedloop-ai/loops-api/context-pack
+export type { AdditionalRepoRef, AdditionalRepoRefWithToken };
 
 export const MAX_ADDITIONAL_REPOS = 5;
 
