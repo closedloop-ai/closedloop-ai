@@ -137,7 +137,7 @@ const mockGetInstallationAccessToken = getInstallationAccessToken as MockFn;
 const mockWithDb = withDb as unknown as Mock;
 
 // ---------------------------------------------------------------------------
-// resolveLoopLaunchContext — additional-repo token resolution via launchLoop
+// resolveLoopLaunchContext — token resolution via launchLoop
 // ---------------------------------------------------------------------------
 
 describe("resolveLoopLaunchContext — token resolution for ECS launches", () => {
@@ -161,120 +161,75 @@ describe("resolveLoopLaunchContext — token resolution for ECS launches", () =>
     process.env.API_BASE_URL = originalEnv.API_BASE_URL;
   });
 
-  it("resolves GitHub installation token for ECS launch when loop has a repo", async () => {
-    const loop = buildLoop({
-      status: LoopStatus.Pending,
-      computeTargetId: null,
-      repo: { fullName: "org/repo", branch: "main" },
-    });
-    mockLoopsService.findById.mockResolvedValue(loop);
-
-    await launchLoop("loop-1", "org-1");
-
-    expect(
-      mockGithubService.findInstallationForRepoFullName
-    ).toHaveBeenCalledWith("org-1", "org/repo");
-    expect(mockGetInstallationAccessToken).toHaveBeenCalledWith(
-      "installation-123"
-    );
-  });
-});
-
-describe("resolveLoopLaunchContext — token resolution failure cancels the loop", () => {
-  const originalEnv = { ...process.env };
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-    process.env.API_BASE_URL = "https://api.test";
-
-    mockApiKeyService.resolveApiKey.mockResolvedValue("sk-anthropic-key");
-    mockLoopsService.cancel.mockResolvedValue(undefined);
-  });
-
-  afterEach(() => {
-    process.env.API_BASE_URL = originalEnv.API_BASE_URL;
-  });
-
-  it("throws and cancels loop when GitHub installation token resolution fails", async () => {
-    const loop = buildLoop({
-      status: LoopStatus.Pending,
-      computeTargetId: null,
-      repo: { fullName: "org/repo", branch: "main" },
-    });
-    mockLoopsService.findById.mockResolvedValue(loop);
-    mockGithubService.findInstallationForRepoFullName.mockResolvedValue(
-      "installation-123"
-    );
-    mockGetInstallationAccessToken.mockRejectedValue(
-      new Error("GitHub App auth failed")
-    );
-
-    await expect(launchLoop("loop-1", "org-1")).rejects.toThrow(
-      "GitHub App auth failed"
-    );
-
-    expect(mockLoopsService.cancel).toHaveBeenCalledWith("loop-1", "org-1");
-  });
-});
-
-describe("resolveLoopLaunchContext — additionalRepos handling", () => {
-  const originalEnv = { ...process.env };
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-    process.env.API_BASE_URL = "https://api.test";
-
-    mockApiKeyService.resolveApiKey.mockResolvedValue("sk-anthropic-key");
-    mockGithubService.findInstallationForRepoFullName.mockResolvedValue(
-      "installation-123"
-    );
-    mockGetInstallationAccessToken.mockResolvedValue("ghs-token");
-    mockRunEcsTask.mockResolvedValue("ecs-task-arn");
-    mockLoopsService.updateStatus.mockResolvedValue(undefined);
-    mockWithDb.mockResolvedValue({ slug: "my-artifact" });
-  });
-
-  afterEach(() => {
-    process.env.API_BASE_URL = originalEnv.API_BASE_URL;
-  });
-
   it.each<{
     scenario: string;
-    additionalRepos: { fullName: string; branch: string }[] | null;
-    expectedCalls: number;
-    expectExtraRepoLookup?: string;
+    additionalRepos?: { fullName: string; branch: string }[] | null;
+    tokenOverride?: () => void;
+    expectedError?: string;
+    assert: (ctx: typeof expect) => void;
   }>([
+    {
+      scenario: "resolves GitHub installation token when loop has a repo",
+      assert: (expect) => {
+        expect(
+          mockGithubService.findInstallationForRepoFullName
+        ).toHaveBeenCalledWith("org-1", "org/repo");
+        expect(mockGetInstallationAccessToken).toHaveBeenCalledWith(
+          "installation-123"
+        );
+      },
+    },
+    {
+      scenario: "token resolution failure cancels the loop",
+      tokenOverride: () =>
+        mockGetInstallationAccessToken.mockRejectedValue(
+          new Error("GitHub App auth failed")
+        ),
+      expectedError: "GitHub App auth failed",
+      assert: (expect) => {
+        expect(mockLoopsService.cancel).toHaveBeenCalledWith("loop-1", "org-1");
+      },
+    },
     {
       scenario: "missing additionalRepos is treated as no extra repos",
       additionalRepos: null,
-      expectedCalls: 1,
+      assert: (expect) => {
+        expect(mockGetInstallationAccessToken).toHaveBeenCalledTimes(1);
+      },
     },
     {
       scenario: "valid additionalRepos resolves extra installation tokens",
       additionalRepos: [{ fullName: "org/extra-repo", branch: "main" }],
-      expectedCalls: 2,
-      expectExtraRepoLookup: "org/extra-repo",
+      assert: (expect) => {
+        expect(mockGetInstallationAccessToken).toHaveBeenCalledTimes(2);
+        expect(
+          mockGithubService.findInstallationForRepoFullName
+        ).toHaveBeenCalledWith("org-1", "org/extra-repo");
+      },
     },
   ])("$scenario", async ({
     additionalRepos,
-    expectedCalls,
-    expectExtraRepoLookup,
+    tokenOverride,
+    expectedError,
+    assert,
   }) => {
+    tokenOverride?.();
     const loop = buildLoop({
       status: LoopStatus.Pending,
       computeTargetId: null,
       repo: { fullName: "org/repo", branch: "main" },
-      additionalRepos,
+      additionalRepos: additionalRepos ?? null,
     });
     mockLoopsService.findById.mockResolvedValue(loop);
 
-    await launchLoop("loop-1", "org-1");
-
-    expect(mockGetInstallationAccessToken).toHaveBeenCalledTimes(expectedCalls);
-    if (expectExtraRepoLookup !== undefined) {
-      expect(
-        mockGithubService.findInstallationForRepoFullName
-      ).toHaveBeenCalledWith("org-1", expectExtraRepoLookup);
+    if (expectedError) {
+      await expect(launchLoop("loop-1", "org-1")).rejects.toThrow(
+        expectedError
+      );
+    } else {
+      await launchLoop("loop-1", "org-1");
     }
+
+    assert(expect);
   });
 });
