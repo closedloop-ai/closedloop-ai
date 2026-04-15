@@ -34,27 +34,29 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import {
+  DATE_PRESET_LABELS,
+  DateFilterField,
+  DatePreset,
+  getStatusesForCategory,
+  type TableFiltersReturn,
+} from "@/hooks/use-table-filters";
+import {
   ARTIFACT_STATUS_LABELS,
   ARTIFACT_STATUS_TO_ICON,
   PRIORITY_LABELS,
 } from "@/lib/project-constants";
 import { getInitials } from "@/lib/user-utils";
-import {
-  DATE_PRESET_LABELS,
-  DateFilterField,
-  DatePreset,
-  getStatusesForCategory,
-  type ProjectFiltersReturn,
-} from "../use-project-filters";
 
 // ---- Props ----
 
 type FilterPopoverProps = {
-  filtersReturn: ProjectFiltersReturn;
+  filtersReturn: TableFiltersReturn;
   currentUser?: { id: string; name: string; avatarUrl?: string } | null;
   teamMembers: User[];
   teamMembersLoading: boolean;
   teamMembersError: string | null;
+  /** Hide the "Assigned to me" quick action and Assignee submenu. */
+  hideAssignee?: boolean;
 };
 
 const DATE_PRESETS_ORDER: DatePreset[] = [
@@ -72,6 +74,7 @@ export function FilterPopover({
   teamMembers,
   teamMembersLoading,
   teamMembersError,
+  hideAssignee,
 }: FilterPopoverProps) {
   const [open, setOpen] = useState(false);
 
@@ -91,6 +94,7 @@ export function FilterPopover({
       <FilterMenuContent
         currentUser={currentUser}
         filtersReturn={filtersReturn}
+        hideAssignee={hideAssignee}
         teamMembers={teamMembers}
         teamMembersError={teamMembersError}
         teamMembersLoading={teamMembersLoading}
@@ -107,6 +111,7 @@ export function FilterMenuContent({
   teamMembers,
   teamMembersLoading,
   teamMembersError,
+  hideAssignee,
 }: FilterPopoverProps) {
   const {
     filters,
@@ -126,7 +131,7 @@ export function FilterMenuContent({
 
   return (
     <DropdownMenuContent align="start" className="w-52">
-      {currentUser && (
+      {!hideAssignee && currentUser && (
         <>
           <DropdownMenuGroup>
             <DropdownMenuItem
@@ -153,15 +158,17 @@ export function FilterMenuContent({
         </>
       )}
       <DropdownMenuGroup>
-        <AssigneeSubmenu
-          assigneeCounts={assigneeCounts}
-          assigneeTotal={assigneeTotal}
-          filters={filters}
-          teamMembers={teamMembers}
-          teamMembersError={teamMembersError}
-          teamMembersLoading={teamMembersLoading}
-          toggleAssignee={toggleAssignee}
-        />
+        {!hideAssignee && (
+          <AssigneeSubmenu
+            assigneeCounts={assigneeCounts}
+            assigneeTotal={assigneeTotal}
+            filters={filters}
+            teamMembers={teamMembers}
+            teamMembersError={teamMembersError}
+            teamMembersLoading={teamMembersLoading}
+            toggleAssignee={toggleAssignee}
+          />
+        )}
         <StatusSubmenu
           filters={filters}
           statusCounts={statusCounts}
@@ -190,7 +197,7 @@ export function AssigneeFilterContent({
   teamMembersError,
   assigneeCounts,
 }: {
-  filters: ProjectFiltersReturn["filters"];
+  filters: TableFiltersReturn["filters"];
   toggleAssignee: (id: string) => void;
   teamMembers: User[];
   teamMembersLoading: boolean;
@@ -279,7 +286,7 @@ export function StatusFilterContent({
   toggleStatus,
   statusCounts,
 }: {
-  filters: ProjectFiltersReturn["filters"];
+  filters: TableFiltersReturn["filters"];
   toggleStatus: (status: string) => void;
   statusCounts: Map<string, number>;
 }) {
@@ -323,7 +330,7 @@ export function PriorityFilterContent({
   togglePriority,
   priorityCounts,
 }: {
-  filters: ProjectFiltersReturn["filters"];
+  filters: TableFiltersReturn["filters"];
   togglePriority: (p: Priority) => void;
   priorityCounts: Map<Priority, number>;
 }) {
@@ -365,8 +372,8 @@ export function DateFilterContent({
   filters,
   setDateFilter,
 }: {
-  filters: ProjectFiltersReturn["filters"];
-  setDateFilter: (d: ProjectFiltersReturn["filters"]["date"]) => void;
+  filters: TableFiltersReturn["filters"];
+  setDateFilter: (d: TableFiltersReturn["filters"]["date"]) => void;
 }) {
   const field = filters.date?.field ?? DateFilterField.CreatedAt;
   const currentPreset = filters.date?.preset ?? null;
@@ -408,7 +415,7 @@ function AssigneeSubmenu({
   assigneeCounts,
   assigneeTotal,
 }: {
-  filters: ProjectFiltersReturn["filters"];
+  filters: TableFiltersReturn["filters"];
   toggleAssignee: (id: string) => void;
   teamMembers: User[];
   teamMembersLoading: boolean;
@@ -447,7 +454,7 @@ function StatusSubmenu({
   statusCounts,
   statusTotal,
 }: {
-  filters: ProjectFiltersReturn["filters"];
+  filters: TableFiltersReturn["filters"];
   toggleStatus: (status: string) => void;
   statusCounts: Map<string, number>;
   statusTotal: number;
@@ -487,7 +494,7 @@ function PrioritySubmenu({
   priorityCounts,
   priorityTotal,
 }: {
-  filters: ProjectFiltersReturn["filters"];
+  filters: TableFiltersReturn["filters"];
   togglePriority: (p: Priority) => void;
   priorityCounts: Map<Priority, number>;
   priorityTotal: number;
@@ -518,8 +525,8 @@ function DatesSubmenu({
   filters,
   setDateFilter,
 }: {
-  filters: ProjectFiltersReturn["filters"];
-  setDateFilter: (d: ProjectFiltersReturn["filters"]["date"]) => void;
+  filters: TableFiltersReturn["filters"];
+  setDateFilter: (d: TableFiltersReturn["filters"]["date"]) => void;
 }) {
   const hasDateFilter = filters.date !== null;
 
@@ -560,8 +567,8 @@ function DateFieldSubmenu({
 }: {
   label: string;
   field: DateFilterField;
-  filters: ProjectFiltersReturn["filters"];
-  setDateFilter: (d: ProjectFiltersReturn["filters"]["date"]) => void;
+  filters: TableFiltersReturn["filters"];
+  setDateFilter: (d: TableFiltersReturn["filters"]["date"]) => void;
 }) {
   const isActive = filters.date?.field === field;
   const currentPreset = isActive ? filters.date?.preset : null;
@@ -627,8 +634,6 @@ function SubMenuSearch({
 }
 
 // ---- Shared: Filter row with checkbox + label ----
-// Click checkbox area → toggle filter, menu stays open
-// Click label area → toggle filter, menu closes
 
 function FilterRow({
   checked,

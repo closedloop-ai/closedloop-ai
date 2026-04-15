@@ -17,10 +17,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@repo/design-system/components/ui/dropdown-menu";
-import { StatusIcon } from "@repo/design-system/components/ui/status-icon";
 import {
-  ChevronDownIcon,
-  ChevronRightIcon,
   ExternalLinkIcon,
   FileTextIcon,
   FilterXIcon,
@@ -37,6 +34,7 @@ import {
   type ArtifactRowItem,
   type RowEditHandlers,
 } from "@/components/artifact-table/artifact-row";
+import { StatusSectionHeader } from "@/components/artifact-table/status-section-header";
 import { ArtifactTableHeader } from "@/components/artifact-table/table-header";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { EmptyState } from "@/components/empty-state";
@@ -50,10 +48,7 @@ import { useGroupExpansion } from "@/hooks/use-group-expansion";
 import { useSortParams } from "@/hooks/use-sort-params";
 import { matchesFilter } from "@/lib/artifact-filter";
 import { comparePriorityValues } from "@/lib/priority-sort";
-import {
-  ARTIFACT_STATUS_LABELS,
-  ARTIFACT_STATUS_TO_ICON,
-} from "@/lib/project-constants";
+import { ARTIFACT_STATUS_LABELS } from "@/lib/project-constants";
 import type { SortConfig } from "@/lib/table-utils";
 import { sortTableData } from "@/lib/table-utils";
 import type { FilterCategory } from "../page";
@@ -1228,40 +1223,6 @@ function isFeatureTreeEntity(
   entity: TreeEntity
 ): entity is Extract<TreeEntity, { slug: string; priority: string }> {
   return "slug" in entity && "priority" in entity;
-}
-
-// ---- Status section header ----
-
-function StatusSectionHeader({
-  status,
-  label,
-  count,
-  isOpen,
-  onToggle,
-}: {
-  status: ArtifactStatus;
-  label: string;
-  count: number;
-  isOpen: boolean;
-  onToggle: () => void;
-}) {
-  const iconStatus = ARTIFACT_STATUS_TO_ICON[status];
-  return (
-    <button
-      className="flex w-full items-center gap-2.5 border-b bg-muted/50 py-2.5 pr-4 pl-[18px] font-medium text-sm hover:bg-accent/50"
-      onClick={onToggle}
-      type="button"
-    >
-      {isOpen ? (
-        <ChevronDownIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
-      ) : (
-        <ChevronRightIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
-      )}
-      <StatusIcon size={16} status={iconStatus} />
-      <span>{label}</span>
-      <span className="text-muted-foreground text-xs">{count}</span>
-    </button>
-  );
 }
 
 // ---- Tree group rows (shared between grouped and status-grouped views) ----
