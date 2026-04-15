@@ -92,7 +92,7 @@ jobs:
             echo "::error::No preview URL resolved. Either pass deployment_url input or configure VERCEL_APP_PROJECT_ID secret."
             exit 1
           fi
-          ALLOWLIST='^https://(app\.closedloop-stage\.ai|app-stage-git-[a-z0-9-]+\.preview\.closedloop-stage\.ai)(/.*)?$'
+          ALLOWLIST='^https://(app\.closedloop-stage\.ai|app-stage-[a-z0-9-]+\.preview\.closedloop-stage\.ai)(/.*)?$'
           if ! echo "$PREVIEW_URL" | grep -qE "$ALLOWLIST"; then
             echo "::error::Unexpected preview URL pattern: $PREVIEW_URL"
             exit 1

@@ -53,7 +53,7 @@ jobs:
             CANDIDATE_URL="$PAYLOAD_URL"
           fi
 
-          ALLOWLIST_REGEX='^https://(app\.closedloop-stage\.ai|app-stage-git-[a-z0-9-]+\.preview\.closedloop-stage\.ai)(/|$)'
+          ALLOWLIST_REGEX='^https://(app\.closedloop-stage\.ai|app-stage-[a-z0-9-]+\.preview\.closedloop-stage\.ai)(/|$)'
           if [[ "$CANDIDATE_URL" =~ $ALLOWLIST_REGEX ]]; then
             echo "BASE_URL=$CANDIDATE_URL" >> $GITHUB_ENV
           else
