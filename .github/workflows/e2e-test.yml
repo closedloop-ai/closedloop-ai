@@ -14,7 +14,9 @@ on:
         type: string
 
 concurrency:
-  group: "${{ github.workflow }}-${{ github.event.deployment.ref || github.ref }}"
+  # Include environment to prevent api-stage/web-stage deployment_status events
+  # from cancelling the app-stage run (all three fire near-simultaneously).
+  group: "${{ github.workflow }}-${{ github.event.deployment.environment || github.ref }}"
   cancel-in-progress: true
 
 jobs:
