@@ -1,7 +1,7 @@
 "use client";
 
 import {
-  type ArtifactStatus,
+  ArtifactStatus,
   ArtifactType,
   type ArtifactWithWorkstream,
   getRoutePrefixForType,
@@ -347,13 +347,13 @@ function filterByCategory(
 
 /** Fixed display order matching the ArtifactStatus enum. */
 const STATUS_DISPLAY_ORDER: ArtifactStatus[] = [
-  "DRAFT",
-  "IN_PROGRESS",
-  "IN_REVIEW",
-  "APPROVED",
-  "EXECUTED",
-  "DONE",
-  "OBSOLETE",
+  ArtifactStatus.Draft,
+  ArtifactStatus.InProgress,
+  ArtifactStatus.InReview,
+  ArtifactStatus.Approved,
+  ArtifactStatus.Executed,
+  ArtifactStatus.Done,
+  ArtifactStatus.Obsolete,
 ];
 
 type StatusSection = {
@@ -758,8 +758,11 @@ export function ArtifactsView({
     return map;
   }, [parentMap, fallbackParentMap]);
 
-  const isEmpty =
+  const isSourceEmpty =
     filteredArtifacts.length === 0 && filteredFeatures.length === 0;
+  const isPostFilterEmpty = renderedItems.length === 0;
+  const shouldShowEmptyState =
+    isSourceEmpty || (isFilterActive === true && isPostFilterEmpty);
   const hasAnyItems = artifacts.length > 0 || features.length > 0;
 
   // ---- Selection handlers ----
@@ -930,7 +933,7 @@ export function ArtifactsView({
 
   // ---- Empty state ----
 
-  if (isEmpty) {
+  if (shouldShowEmptyState) {
     return (
       <ArtifactsEmptyState
         hasAnyItems={hasAnyItems}
