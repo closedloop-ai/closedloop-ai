@@ -1,5 +1,6 @@
 "use client";
 
+import { Priority } from "@repo/api/src/types/common";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   Popover,
@@ -34,7 +35,7 @@ const COLUMN_ICONS: Partial<Record<ArtifactColumn, ReactNode>> = {
   [Col.Assignee]: <UserIcon className="h-4 w-4 text-muted-foreground" />,
   [Col.Loop]: <RefreshCwIcon className="h-4 w-4 text-muted-foreground" />,
   [Col.Parent]: <ListTreeIcon className="h-4 w-4 text-muted-foreground" />,
-  [Col.Priority]: <PriorityIcon priority="MEDIUM" size={16} />,
+  [Col.Priority]: <PriorityIcon priority={Priority.Medium} size={16} />,
   [Col.Score]: <BadgeCheckIcon className="h-4 w-4 text-muted-foreground" />,
   [Col.DueDate]: <CalendarIcon className="h-4 w-4 text-muted-foreground" />,
   [Col.Updated]: <ClockIcon className="h-4 w-4 text-muted-foreground" />,

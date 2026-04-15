@@ -38,7 +38,9 @@ import {
   ARTIFACT_STATUS_TO_ICON,
   PRIORITY_LABELS,
 } from "@/lib/project-constants";
+import { getInitials } from "@/lib/user-utils";
 import {
+  DATE_PRESET_LABELS,
   DateFilterField,
   DatePreset,
   getStatusesForCategory,
@@ -53,16 +55,6 @@ type FilterPopoverProps = {
   teamMembers: User[];
   teamMembersLoading: boolean;
   teamMembersError: string | null;
-};
-
-// ---- Date preset labels ----
-
-const DATE_PRESET_LABELS: Record<DatePreset, string> = {
-  [DatePreset.Last24h]: "Last 24 hours",
-  [DatePreset.Last7d]: "Last 7 days",
-  [DatePreset.Last30d]: "Last 30 days",
-  [DatePreset.Last3m]: "Last 3 months",
-  [DatePreset.Custom]: "Custom date range",
 };
 
 const DATE_PRESETS_ORDER: DatePreset[] = [
@@ -503,7 +495,7 @@ function PrioritySubmenu({
   return (
     <DropdownMenuSub>
       <DropdownMenuSubTrigger>
-        <PriorityIcon priority="HIGH" size={16} />
+        <PriorityIcon priority={Priority.High} size={16} />
         <span className="flex-1">Priority</span>
         {priorityTotal > 0 && (
           <span className="text-muted-foreground text-xs">{priorityTotal}</span>
@@ -669,16 +661,4 @@ function FilterRow({
       {children}
     </DropdownMenuItem>
   );
-}
-
-// ---- Utility ----
-
-function getInitials(name: string): string {
-  return name
-    .split(" ")
-    .map((w) => w[0])
-    .filter(Boolean)
-    .slice(0, 2)
-    .join("")
-    .toUpperCase();
 }

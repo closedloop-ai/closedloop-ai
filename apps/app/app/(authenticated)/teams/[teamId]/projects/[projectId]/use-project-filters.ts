@@ -2,6 +2,7 @@
 
 import {
   ArtifactStatus,
+  ArtifactType,
   type ArtifactWithWorkstream,
 } from "@repo/api/src/types/artifact";
 import type { Priority } from "@repo/api/src/types/common";
@@ -20,6 +21,14 @@ export const DatePreset = {
   Custom: "CUSTOM",
 } as const;
 export type DatePreset = (typeof DatePreset)[keyof typeof DatePreset];
+
+export const DATE_PRESET_LABELS: Record<DatePreset, string> = {
+  [DatePreset.Last24h]: "Last 24 hours",
+  [DatePreset.Last7d]: "Last 7 days",
+  [DatePreset.Last30d]: "Last 30 days",
+  [DatePreset.Last3m]: "Last 3 months",
+  [DatePreset.Custom]: "Custom range",
+};
 
 export const DateFilterField = {
   CreatedAt: "CREATED_AT",
@@ -133,10 +142,10 @@ function isArtifactVisibleInCategory(
     return false;
   }
   if (category === "documents") {
-    return type === "PRD";
+    return type === ArtifactType.Prd;
   }
   if (category === "plans") {
-    return type === "IMPLEMENTATION_PLAN";
+    return type === ArtifactType.ImplementationPlan;
   }
   return true;
 }
@@ -186,29 +195,40 @@ export function useProjectFilters({
 
   // ---- Mutators ----
 
-  const setAssignees = useCallback((ids: string[]) => {
-    setFilters((prev) => ({
-      ...prev,
-      assigneeIds: ids,
-      // If current user was removed from selection, turn off assignToMe
-      assignToMe:
-        prev.assignToMe &&
-        ids.includes(
-          prev.assigneeIds.find((id) => id === prev.assigneeIds[0]) ?? ""
-        )
-          ? prev.assignToMe
-          : false,
-    }));
-  }, []);
+  const setAssignees = useCallback(
+    (ids: string[]) => {
+      setFilters((prev) => ({
+        ...prev,
+        assigneeIds: ids,
+        // Keep assign-to-me enabled only while current user remains selected.
+        assignToMe:
+          prev.assignToMe &&
+          currentUserId != null &&
+          ids.includes(currentUserId),
+      }));
+    },
+    [currentUserId]
+  );
 
-  const toggleAssignee = useCallback((id: string) => {
-    setFilters((prev) => {
-      const next = prev.assigneeIds.includes(id)
-        ? prev.assigneeIds.filter((a) => a !== id)
-        : [...prev.assigneeIds, id];
-      return { ...prev, assigneeIds: next };
-    });
-  }, []);
+  const toggleAssignee = useCallback(
+    (id: string) => {
+      setFilters((prev) => {
+        const isRemoving = prev.assigneeIds.includes(id);
+        const next = isRemoving
+          ? prev.assigneeIds.filter((a) => a !== id)
+          : [...prev.assigneeIds, id];
+        return {
+          ...prev,
+          assigneeIds: next,
+          assignToMe:
+            prev.assignToMe &&
+            currentUserId != null &&
+            next.includes(currentUserId),
+        };
+      });
+    },
+    [currentUserId]
+  );
 
   const toggleAssignToMe = useCallback(() => {
     if (!currentUserId) {
@@ -420,20 +440,13 @@ export function useProjectFilters({
       });
     }
     if (filters.date) {
-      const presetLabels: Record<DatePreset, string> = {
-        [DatePreset.Last24h]: "Last 24 hours",
-        [DatePreset.Last7d]: "Last 7 days",
-        [DatePreset.Last30d]: "Last 30 days",
-        [DatePreset.Last3m]: "Last 3 months",
-        [DatePreset.Custom]: "Custom range",
-      };
       const fieldLabel =
         filters.date.field === DateFilterField.CreatedAt
           ? "Created"
           : "Updated";
       chips.push({
         category: "date",
-        label: `${fieldLabel}: ${presetLabels[filters.date.preset]}`,
+        label: `${fieldLabel}: ${DATE_PRESET_LABELS[filters.date.preset]}`,
       });
     }
     return chips;
