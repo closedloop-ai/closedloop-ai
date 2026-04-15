@@ -164,7 +164,7 @@ describe("resolveLoopLaunchContext — token resolution for ECS launches", () =>
 
   it("resolves GitHub installation token for ECS launch when loop has a repo", async () => {
     const loop = buildLoop({
-      status: "PENDING",
+      status: LoopStatus.Pending,
       computeTargetId: null,
       repo: { fullName: "org/repo", branch: "main" },
     });
@@ -198,7 +198,7 @@ describe("resolveLoopLaunchContext — token resolution failure cancels the loop
 
   it("throws and cancels loop when GitHub installation token resolution fails", async () => {
     const loop = buildLoop({
-      status: "PENDING",
+      status: LoopStatus.Pending,
       computeTargetId: null,
       repo: { fullName: "org/repo", branch: "main" },
     });
@@ -239,37 +239,43 @@ describe("resolveLoopLaunchContext — Zod metadata parsing", () => {
     process.env.API_BASE_URL = originalEnv.API_BASE_URL;
   });
 
-  it("treats loop with invalid additionalRepos metadata as having no additional repos", async () => {
-    const loop = buildLoop({
-      status: "PENDING",
-      computeTargetId: null,
-      repo: { fullName: "org/repo", branch: "main" },
-      metadata: { additionalRepos: "not-an-array" } as JsonObject,
-    });
-    mockLoopsService.findById.mockResolvedValue(loop);
-
-    await launchLoop("loop-1", "org-1");
-
-    // Only the primary repo token is resolved — invalid metadata skipped.
-    expect(mockGetInstallationAccessToken).toHaveBeenCalledTimes(1);
-  });
-
-  it("resolves additional repo tokens for valid metadata", async () => {
+  it.each<{
+    scenario: string;
+    additionalRepos: unknown;
+    expectedCalls: number;
+    expectExtraRepoLookup?: string;
+  }>([
+    {
+      scenario: "invalid additionalRepos is treated as no extra repos",
+      additionalRepos: "not-an-array",
+      expectedCalls: 1,
+    },
+    {
+      scenario: "valid additionalRepos resolves extra installation tokens",
+      additionalRepos: [{ fullName: "org/extra-repo", branch: "main" }],
+      expectedCalls: 2,
+      expectExtraRepoLookup: "org/extra-repo",
+    },
+  ])("$scenario", async ({
+    additionalRepos,
+    expectedCalls,
+    expectExtraRepoLookup,
+  }) => {
     const loop = buildLoop({
       status: LoopStatus.Pending,
       computeTargetId: null,
       repo: { fullName: "org/repo", branch: "main" },
-      metadata: {
-        additionalRepos: [{ fullName: "org/extra-repo", branch: "main" }],
-      },
+      metadata: { additionalRepos } as JsonObject,
     });
     mockLoopsService.findById.mockResolvedValue(loop);
 
     await launchLoop("loop-1", "org-1");
 
-    expect(mockGetInstallationAccessToken).toHaveBeenCalledTimes(2);
-    expect(
-      mockGithubService.findInstallationForRepoFullName
-    ).toHaveBeenCalledWith("org-1", "org/extra-repo");
+    expect(mockGetInstallationAccessToken).toHaveBeenCalledTimes(expectedCalls);
+    if (expectExtraRepoLookup !== undefined) {
+      expect(
+        mockGithubService.findInstallationForRepoFullName
+      ).toHaveBeenCalledWith("org-1", expectExtraRepoLookup);
+    }
   });
 });
