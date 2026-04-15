@@ -15,10 +15,7 @@ export default async function globalSetup() {
     );
   }
 
-  // clerkSetup() configures the Clerk testing SDK for local dev (requires
-  // CLERK_PUBLISHABLE_KEY from .env.local). In CI against remote environments,
-  // the app already has Clerk configured — skip the SDK and sign in with real credentials.
-  if (!process.env.CI) {
-    await clerkSetup();
-  }
+  // clerkSetup() fetches a testing token from Clerk using the publishable key.
+  // The token is then injected per-page by setupClerkTestingToken() to bypass 2FA and bot detection.
+  await clerkSetup();
 }

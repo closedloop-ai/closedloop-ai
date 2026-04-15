@@ -115,6 +115,8 @@ jobs:
         env:
           CI: "true"
           BASE_URL: ${{ env.BASE_URL }}
+          NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${{ secrets.STAGING_NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
+          CLERK_SECRET_KEY: ${{ secrets.STAGING_CLERK_SECRET_KEY }}
           DEVOPS_CLOSEDLOOP_APP_PWD: ${{ secrets.DEVOPS_CLOSEDLOOP_APP_PWD }}
 
       - name: Upload test failure artifacts
