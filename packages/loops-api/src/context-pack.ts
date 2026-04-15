@@ -112,7 +112,3 @@ export const ContextPackSchema = z.object({
   attachments: z.array(ContextPackAttachmentSchema).optional(),
   additionalRepos: z.array(AdditionalRepoRefWithTokenSchema).optional(),
 });
-
-// Compile-time assertion: ContextPackSchema must be assignable to ContextPack
-type _ContextPackSchemaCheck =
-  z.infer<typeof ContextPackSchema> extends ContextPack ? true : never;
