@@ -82,11 +82,11 @@ export function FilterPopover({
       <DropdownMenuTrigger asChild>
         <Button
           aria-label="Filter artifacts"
-          className="h-9 shadow-none"
+          className="h-8 shadow-none"
           size="sm"
           variant="outline"
         >
-          <ListFilterIcon className="size-4" />
+          <ListFilterIcon />
           Filter
         </Button>
       </DropdownMenuTrigger>
@@ -258,7 +258,7 @@ export function AssigneeFilterContent({
                 </Avatar>
                 <span
                   className={cn(
-                    "max-w-[140px] flex-1 truncate",
+                    "min-w-0 flex-1 truncate",
                     checked && "font-medium"
                   )}
                 >
@@ -605,7 +605,7 @@ function SubMenuSearch({
 }) {
   return (
     <>
-      <div className="px-2 py-1.5">
+      <div className="px-2 pt-0.5 pb-1.5">
         <input
           className="h-6 w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
           onChange={(e) => onChange(e.target.value)}
@@ -615,7 +615,7 @@ function SubMenuSearch({
           value={value}
         />
       </div>
-      <div className="border-b" />
+      <DropdownMenuSeparator className="mt-0 mb-1" />
     </>
   );
 }

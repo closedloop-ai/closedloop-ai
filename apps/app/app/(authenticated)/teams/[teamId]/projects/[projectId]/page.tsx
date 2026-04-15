@@ -522,6 +522,7 @@ export default function ProjectDetailPage() {
                       setFilterCategory(value as FilterCategory);
                     }
                   }}
+                  size="sm"
                   type="single"
                   value={filterCategory}
                   variant="outline"
@@ -540,7 +541,7 @@ export default function ProjectDetailPage() {
                   </div>
                   <Input
                     aria-label="Filter items"
-                    className="pl-9 shadow-none"
+                    className="h-8 pl-9 shadow-none"
                     onChange={(e) => setFilterText(e.target.value)}
                     placeholder="Filter items..."
                     value={filterText}
