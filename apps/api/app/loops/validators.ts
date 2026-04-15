@@ -9,6 +9,7 @@ import {
   LoopEventTypeSchema,
 } from "@closedloop-ai/loops-api/events";
 import { EntityType } from "@repo/api/src/types/entity-link";
+import { MAX_ADDITIONAL_REPOS } from "@repo/api/src/types/loop";
 import { z } from "zod";
 import { uuidOrSlug } from "@/lib/identifier-utils";
 
@@ -39,6 +40,11 @@ export const createLoopValidator = z.object({
   workstreamId: z.uuidv7().optional(),
   prompt: z.string().max(100_000).optional(),
   repo: repoSchema.optional(),
+  additionalRepos: z
+    .array(repoSchema)
+    .max(MAX_ADDITIONAL_REPOS)
+    .optional()
+    .transform((value) => (value?.length ? value : undefined)),
   contextRefs: z
     .array(
       z.object({

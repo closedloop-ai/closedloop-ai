@@ -308,7 +308,7 @@ export const loopsService = {
           repo: input.repo ?? undefined,
           contextRefs: input.contextRefs ?? undefined,
           artifactVersion: input.artifactVersion ?? null,
-          metadata: input.metadata ?? undefined,
+          metadata: mergeCreateLoopMetadata(input),
           status: "PENDING",
         },
       })
@@ -1206,7 +1206,16 @@ export const loopsService = {
           {
             organizationId,
             userId,
-            ...input,
+            command: input.command,
+            artifactId: input.artifactId,
+            workstreamId: input.workstreamId ?? null,
+            parentLoopId: input.parentLoopId ?? null,
+            computeTargetId: input.computeTargetId ?? null,
+            prompt: input.prompt ?? null,
+            repo: input.repo ?? undefined,
+            contextRefs: input.contextRefs ?? undefined,
+            artifactVersion: input.artifactVersion,
+            metadata: mergeCreateLoopMetadata(input),
             status: LoopStatus.Pending,
           },
         ],
@@ -1293,3 +1302,16 @@ export const loopsService = {
     return result.count;
   },
 };
+
+function mergeCreateLoopMetadata(
+  input: Pick<CreateLoopRequest, "additionalRepos" | "metadata">
+): JsonObject | undefined {
+  if (!input.additionalRepos) {
+    return input.metadata ?? undefined;
+  }
+
+  return {
+    ...(input.metadata ?? {}),
+    additionalRepos: input.additionalRepos,
+  } satisfies JsonObject;
+}

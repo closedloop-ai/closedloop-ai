@@ -193,3 +193,81 @@ describe("loopsService.createIfNotExists — concurrent loop limit enforcement",
     expect(limitError.activeCount).toBe(5);
   });
 });
+
+describe("loopsService.create metadata merge for additionalRepos", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockCount.mockResolvedValue(0);
+  });
+
+  it("persists additionalRepos into metadata.additionalRepos", async () => {
+    await loopsService.create("org-1", "user-1", {
+      ...baseInput,
+      additionalRepos: [{ fullName: "org/repo-a", branch: "main" }],
+    });
+
+    expect(mockCreate).toHaveBeenCalledTimes(1);
+    const createArgs = mockCreate.mock.calls[0][0];
+    expect(createArgs.data.metadata).toEqual({
+      additionalRepos: [{ fullName: "org/repo-a", branch: "main" }],
+    });
+  });
+
+  it("uses top-level additionalRepos when metadata already has additionalRepos", async () => {
+    await loopsService.create("org-1", "user-1", {
+      ...baseInput,
+      additionalRepos: [{ fullName: "org/top-level", branch: "main" }],
+      metadata: {
+        launchSource: "test",
+        additionalRepos: [{ fullName: "org/stale", branch: "dev" }],
+      },
+    });
+
+    expect(mockCreate).toHaveBeenCalledTimes(1);
+    const createArgs = mockCreate.mock.calls[0][0];
+    expect(createArgs.data.metadata).toEqual({
+      launchSource: "test",
+      additionalRepos: [{ fullName: "org/top-level", branch: "main" }],
+    });
+  });
+});
+
+describe("loopsService.createIfNotExists metadata merge for additionalRepos", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockCount.mockResolvedValue(0);
+  });
+
+  it("persists additionalRepos under metadata for createManyAndReturn", async () => {
+    await loopsService.createIfNotExists("org-1", "user-1", {
+      ...baseInput,
+      additionalRepos: [{ fullName: "org/repo-b", branch: "main" }],
+    });
+
+    expect(mockCreateManyAndReturn).toHaveBeenCalledTimes(1);
+    const createManyArgs = mockCreateManyAndReturn.mock.calls[0][0];
+    expect(createManyArgs.data[0]).toMatchObject({
+      metadata: {
+        additionalRepos: [{ fullName: "org/repo-b", branch: "main" }],
+      },
+    });
+  });
+
+  it("overrides metadata.additionalRepos with top-level additionalRepos", async () => {
+    await loopsService.createIfNotExists("org-1", "user-1", {
+      ...baseInput,
+      additionalRepos: [{ fullName: "org/repo-canonical", branch: "main" }],
+      metadata: {
+        additionalRepos: [{ fullName: "org/repo-stale", branch: "dev" }],
+      },
+    });
+
+    expect(mockCreateManyAndReturn).toHaveBeenCalledTimes(1);
+    const createManyArgs = mockCreateManyAndReturn.mock.calls[0][0];
+    expect(createManyArgs.data[0]).toMatchObject({
+      metadata: {
+        additionalRepos: [{ fullName: "org/repo-canonical", branch: "main" }],
+      },
+    });
+  });
+});

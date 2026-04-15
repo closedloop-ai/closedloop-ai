@@ -50,12 +50,12 @@ function handleRunLoopError(error: unknown) {
  * list, or undefined when the feature is disabled, the command is not Plan,
  * or the list is empty after deduplication.
  */
-function buildAdditionalReposMetadata(
+export function buildAdditionalReposInput(
   additionalRepos: AdditionalRepoRef[] | undefined,
   command: string,
   primaryFullName: string | undefined,
   artifactId: string
-): { additionalRepos: AdditionalRepoRef[] } | undefined {
+): AdditionalRepoRef[] | undefined {
   if (!additionalRepos) {
     return undefined;
   }
@@ -73,8 +73,7 @@ function buildAdditionalReposMetadata(
     );
     return undefined;
   }
-  const normalized = normalizeAdditionalRepos(additionalRepos, primaryFullName);
-  return normalized ? { additionalRepos: normalized } : undefined;
+  return normalizeAdditionalRepos(additionalRepos, primaryFullName);
 }
 
 type RunLoopResponse =
@@ -192,7 +191,7 @@ export const POST = withAnyAuth<RunLoopResponse, "/artifacts/[id]/run-loop">(
       const prompt = body.prompt || getDefaultPrompt(command);
 
       // Resolve additional repos: apply feature flag and PLAN-only gate.
-      const loopMetadata = buildAdditionalReposMetadata(
+      const additionalRepos = buildAdditionalReposInput(
         body.additionalRepos,
         body.command,
         targetRepo,
@@ -212,8 +211,8 @@ export const POST = withAnyAuth<RunLoopResponse, "/artifacts/[id]/run-loop">(
           repo: targetRepo
             ? { fullName: targetRepo, branch: targetBranch }
             : undefined,
+          additionalRepos,
           contextRefs: contextRefs.length > 0 ? contextRefs : undefined,
-          metadata: loopMetadata,
         }
       );
 
