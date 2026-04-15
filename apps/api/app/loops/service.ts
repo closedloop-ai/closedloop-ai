@@ -1339,8 +1339,8 @@ export const loopsService = {
 };
 
 /**
- * Apply PostHog feature flag and PLAN-only gates to requested additionalRepos.
- * Returns undefined when the feature is disabled or the command is not PLAN.
+ * Apply PLAN-only gate to requested additionalRepos.
+ * Returns undefined when the command is not PLAN.
  * Enforced at the service layer so every caller
  * (POST /loops, /artifacts/[id]/run-loop, internal callers) is gated.
  */

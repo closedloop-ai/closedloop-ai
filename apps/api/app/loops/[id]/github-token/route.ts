@@ -51,18 +51,16 @@ export async function POST(
     );
 
     const additionalRepoTokens: Array<{ fullName: string; token: string }> = [];
-    if (Array.isArray(loop.additionalRepos)) {
-      for (const ref of loop.additionalRepos as Array<{ fullName: string }>) {
-        if (ref?.fullName) {
-          const peerToken = await resolveGitHubToken(
-            claims.organizationId,
-            ref.fullName
-          );
-          additionalRepoTokens.push({
-            fullName: ref.fullName,
-            token: peerToken,
-          });
-        }
+    if (loop.additionalRepos) {
+      for (const ref of loop.additionalRepos) {
+        const peerToken = await resolveGitHubToken(
+          claims.organizationId,
+          ref.fullName
+        );
+        additionalRepoTokens.push({
+          fullName: ref.fullName,
+          token: peerToken,
+        });
       }
     }
 
