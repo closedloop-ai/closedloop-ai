@@ -113,7 +113,6 @@ jobs:
         env:
           CI: "true"
           BASE_URL: ${{ env.BASE_URL }}
-          CLERK_TESTING_TOKEN: ${{ secrets.CLERK_TESTING_TOKEN }}
           DEVOPS_CLOSEDLOOP_APP_PWD: ${{ secrets.DEVOPS_CLOSEDLOOP_APP_PWD }}
 
       - name: Upload test failure artifacts
