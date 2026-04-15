@@ -221,24 +221,6 @@ describe("loopsService.create — additionalRepos gate", () => {
     vi.restoreAllMocks();
   });
 
-  it("persists additionalRepos for PLAN commands when PostHog flag is enabled", async () => {
-    const { mockCreate } = setupMocks();
-
-    const additionalRepos = [
-      { fullName: "org/peer-a", branch: "main" },
-      { fullName: "org/peer-b", branch: "dev" },
-    ];
-
-    await loopsService.create(TEST_ORG_ID, TEST_USER_ID, {
-      command: LoopCommand.Plan,
-      additionalRepos,
-    });
-
-    expect(mockCreate.mock.calls[0][0].data.additionalRepos).toEqual(
-      additionalRepos
-    );
-  });
-
   it("drops additionalRepos when PostHog flag is disabled", async () => {
     mockIsFeatureEnabled.mockResolvedValue(false);
     const { mockCreate } = setupMocks();

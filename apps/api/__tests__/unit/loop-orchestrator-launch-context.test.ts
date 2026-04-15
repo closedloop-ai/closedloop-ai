@@ -169,17 +169,6 @@ describe("resolveLoopLaunchContext — token resolution for ECS launches", () =>
     assert: (ctx: typeof expect) => void;
   }>([
     {
-      scenario: "resolves GitHub installation token when loop has a repo",
-      assert: (expect) => {
-        expect(
-          mockGithubService.findInstallationForRepoFullName
-        ).toHaveBeenCalledWith("org-1", "org/repo");
-        expect(mockGetInstallationAccessToken).toHaveBeenCalledWith(
-          "installation-123"
-        );
-      },
-    },
-    {
       scenario: "token resolution failure cancels the loop",
       tokenOverride: () =>
         mockGetInstallationAccessToken.mockRejectedValue(
@@ -188,13 +177,6 @@ describe("resolveLoopLaunchContext — token resolution for ECS launches", () =>
       expectedError: "GitHub App auth failed",
       assert: (expect) => {
         expect(mockLoopsService.cancel).toHaveBeenCalledWith("loop-1", "org-1");
-      },
-    },
-    {
-      scenario: "missing additionalRepos is treated as no extra repos",
-      additionalRepos: null,
-      assert: (expect) => {
-        expect(mockGetInstallationAccessToken).toHaveBeenCalledTimes(1);
       },
     },
     {

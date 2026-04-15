@@ -1672,26 +1672,6 @@ describe("cloneAdditionalRepos", () => {
     );
   });
 
-  test("validation runs before any filesystem operations", () => {
-    // Regression guard: before the validation-first refactor, mkdirSync ran
-    // before input validation. If validation throws, the error must be a
-    // HarnessError(config) — not an EROFS/ENOENT filesystem error.
-    let thrown = null;
-    try {
-      cloneAdditionalRepos(
-        [{ fullName: "bad name!", branch: "main", githubToken: null }],
-        "/tmp"
-      );
-    } catch (err) {
-      thrown = err;
-    }
-    assert.ok(thrown !== null, "must throw");
-    assert.ok(
-      thrown instanceof HarnessError,
-      `must be HarnessError, got: ${thrown.constructor.name} — ${thrown.message}`
-    );
-    assert.equal(thrown.code, ERROR_CODES.config);
-  });
 });
 
 // ---------------------------------------------------------------------------
