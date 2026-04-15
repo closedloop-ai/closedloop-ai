@@ -15,7 +15,6 @@ describe("buildAdditionalReposInput", () => {
     const result = buildAdditionalReposInput(
       [{ fullName: "org/repo-a", branch: "main" }],
       RunLoopCommand.Plan,
-      "org/primary",
       "artifact-1"
     );
 
@@ -28,31 +27,27 @@ describe("buildAdditionalReposInput", () => {
     const result = buildAdditionalReposInput(
       [{ fullName: "org/repo-a", branch: "main" }],
       RunLoopCommand.Execute,
-      "org/primary",
       "artifact-1"
     );
 
     expect(result).toBeUndefined();
   });
 
-  it("deduplicates entries and removes primary repo", () => {
+  it("passes additional repos through unchanged for plan commands", () => {
     process.env.MULTI_REPO_PLAN_ENABLED = "true";
 
+    const additionalRepos = [
+      { fullName: "org/peer-a", branch: "main" },
+      { fullName: "org/primary", branch: "main" },
+      { fullName: "org/peer-a", branch: "release" },
+      { fullName: "org/peer-b", branch: "dev" },
+    ];
     const result = buildAdditionalReposInput(
-      [
-        { fullName: "org/peer-a", branch: "main" },
-        { fullName: "org/primary", branch: "main" },
-        { fullName: "org/peer-a", branch: "release" },
-        { fullName: "org/peer-b", branch: "dev" },
-      ],
+      additionalRepos,
       RunLoopCommand.Plan,
-      "org/primary",
       "artifact-1"
     );
 
-    expect(result).toEqual([
-      { fullName: "org/peer-a", branch: "main" },
-      { fullName: "org/peer-b", branch: "dev" },
-    ]);
+    expect(result).toEqual(additionalRepos);
   });
 });

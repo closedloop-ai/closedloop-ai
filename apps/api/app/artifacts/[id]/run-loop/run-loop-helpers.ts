@@ -5,7 +5,6 @@ import {
 import type { JsonObject } from "@repo/api/src/types/common";
 import type { BackendMismatchBody } from "@repo/api/src/types/compute-target";
 import {
-  type AdditionalRepoRef,
   type CreateLoopRequest,
   LoopCommand,
   RunLoopCommand,
@@ -250,27 +249,4 @@ export function resolveRunLoopComputeTarget(
     userId,
     computeTargetIdHint
   );
-}
-
-/**
- * Deduplicate additional repo refs by fullName, exclude the primary repo,
- * and return undefined when the result is empty.
- */
-export function normalizeAdditionalRepos(
-  entries: AdditionalRepoRef[],
-  primaryFullName: string | undefined
-): AdditionalRepoRef[] | undefined {
-  const seen = new Set<string>();
-  const result: AdditionalRepoRef[] = [];
-  for (const entry of entries) {
-    if (entry.fullName === primaryFullName) {
-      continue;
-    }
-    if (seen.has(entry.fullName)) {
-      continue;
-    }
-    seen.add(entry.fullName);
-    result.push({ fullName: entry.fullName, branch: entry.branch });
-  }
-  return result.length > 0 ? result : undefined;
 }

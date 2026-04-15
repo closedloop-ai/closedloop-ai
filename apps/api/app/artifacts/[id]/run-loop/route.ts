@@ -30,7 +30,6 @@ import { artifactsService } from "../../service";
 import {
   COMMAND_MAP,
   checkBackendMismatch,
-  normalizeAdditionalRepos,
   resolveEvaluateCodeBranchForRunLoop,
   resolveLoopContext,
   resolveRunLoopComputeTarget,
@@ -46,14 +45,12 @@ function handleRunLoopError(error: unknown) {
 
 /**
  * Apply the MULTI_REPO_PLAN_ENABLED feature flag and PLAN-only gate to the
- * requested additionalRepos. Returns loop metadata containing the normalized
- * list, or undefined when the feature is disabled, the command is not Plan,
- * or the list is empty after deduplication.
+ * requested additionalRepos. Returns undefined when the feature is disabled
+ * or the command is not Plan.
  */
 export function buildAdditionalReposInput(
   additionalRepos: AdditionalRepoRef[] | undefined,
   command: string,
-  primaryFullName: string | undefined,
   artifactId: string
 ): AdditionalRepoRef[] | undefined {
   if (!additionalRepos) {
@@ -73,7 +70,7 @@ export function buildAdditionalReposInput(
     );
     return undefined;
   }
-  return normalizeAdditionalRepos(additionalRepos, primaryFullName);
+  return additionalRepos;
 }
 
 type RunLoopResponse =
@@ -194,7 +191,6 @@ export const POST = withAnyAuth<RunLoopResponse, "/artifacts/[id]/run-loop">(
       const additionalRepos = buildAdditionalReposInput(
         body.additionalRepos,
         body.command,
-        targetRepo,
         artifactId
       );
 

@@ -1,6 +1,5 @@
 /**
- * Tests for resolveLoopLaunchContext() token resolution behavior (via launchLoop)
- * and normalizeAdditionalRepos() pure function behavior — scoped to PLN-263.
+ * Tests for resolveLoopLaunchContext() token resolution behavior (via launchLoop).
  */
 
 import { vi } from "vitest";
@@ -115,7 +114,6 @@ import type { JsonObject } from "@repo/api/src/types/common";
 import { withDb } from "@repo/database";
 import { getInstallationAccessToken } from "@repo/github";
 import { afterEach, beforeEach, describe, expect, it, type Mock } from "vitest";
-import { normalizeAdditionalRepos } from "@/app/artifacts/[id]/run-loop/run-loop-helpers";
 import { githubService } from "@/app/integrations/github/service";
 import { loopsService } from "@/app/loops/service";
 import { apiKeyService } from "@/app/settings/api-key-service";
@@ -137,49 +135,6 @@ const mockGithubService = githubService as unknown as {
 };
 const mockGetInstallationAccessToken = getInstallationAccessToken as MockFn;
 const mockWithDb = withDb as unknown as Mock;
-
-// ---------------------------------------------------------------------------
-// normalizeAdditionalRepos — pure function tests
-// ---------------------------------------------------------------------------
-
-describe("normalizeAdditionalRepos", () => {
-  it("deduplicates by fullName and keeps the first occurrence", () => {
-    const entries = [
-      { fullName: "org/repo-a", branch: "main" },
-      { fullName: "org/repo-a", branch: "develop" },
-      { fullName: "org/repo-b", branch: "main" },
-    ];
-
-    const result = normalizeAdditionalRepos(entries, undefined);
-
-    expect(result).toEqual([
-      { fullName: "org/repo-a", branch: "main" },
-      { fullName: "org/repo-b", branch: "main" },
-    ]);
-  });
-
-  it("excludes entries whose fullName matches the primary repo", () => {
-    const entries = [
-      { fullName: "org/primary", branch: "main" },
-      { fullName: "org/secondary", branch: "main" },
-    ];
-
-    const result = normalizeAdditionalRepos(entries, "org/primary");
-
-    expect(result).toEqual([{ fullName: "org/secondary", branch: "main" }]);
-  });
-
-  it("passes all entries through when primaryFullName is undefined", () => {
-    const entries = [
-      { fullName: "org/repo-a", branch: "main" },
-      { fullName: "org/repo-b", branch: "main" },
-    ];
-
-    const result = normalizeAdditionalRepos(entries, undefined);
-
-    expect(result).toEqual(entries);
-  });
-});
 
 // ---------------------------------------------------------------------------
 // resolveLoopLaunchContext — additional-repo token resolution via launchLoop
