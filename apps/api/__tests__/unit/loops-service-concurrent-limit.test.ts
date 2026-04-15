@@ -197,6 +197,44 @@ describe("loopsService.createIfNotExists — concurrent loop limit enforcement",
 describe("loopsService.create metadata merge for additionalRepos", () => {
   const originalFlag = process.env.MULTI_REPO_PLAN_ENABLED;
 
+  const additionalReposCreateMetadataScenarios: {
+    id: string;
+    input: typeof baseInput & {
+      additionalRepos?: { fullName: string; branch: string }[];
+      metadata?: {
+        launchSource?: string;
+        additionalRepos?: { fullName: string; branch: string }[];
+      };
+    };
+    expectedMetadata: Record<string, unknown>;
+  }[] = [
+    {
+      id: "persists additionalRepos into metadata.additionalRepos",
+      input: {
+        ...baseInput,
+        additionalRepos: [{ fullName: "org/repo-a", branch: "main" }],
+      },
+      expectedMetadata: {
+        additionalRepos: [{ fullName: "org/repo-a", branch: "main" }],
+      },
+    },
+    {
+      id: "uses top-level additionalRepos when metadata already has additionalRepos",
+      input: {
+        ...baseInput,
+        additionalRepos: [{ fullName: "org/top-level", branch: "main" }],
+        metadata: {
+          launchSource: "test",
+          additionalRepos: [{ fullName: "org/stale", branch: "dev" }],
+        },
+      },
+      expectedMetadata: {
+        launchSource: "test",
+        additionalRepos: [{ fullName: "org/top-level", branch: "main" }],
+      },
+    },
+  ];
+
   beforeEach(() => {
     vi.clearAllMocks();
     mockCount.mockResolvedValue(0);
@@ -207,35 +245,15 @@ describe("loopsService.create metadata merge for additionalRepos", () => {
     process.env.MULTI_REPO_PLAN_ENABLED = originalFlag;
   });
 
-  it("persists additionalRepos into metadata.additionalRepos", async () => {
-    await loopsService.create("org-1", "user-1", {
-      ...baseInput,
-      additionalRepos: [{ fullName: "org/repo-a", branch: "main" }],
-    });
+  it.each(additionalReposCreateMetadataScenarios)("$id", async ({
+    input,
+    expectedMetadata,
+  }) => {
+    await loopsService.create("org-1", "user-1", input);
 
     expect(mockCreate).toHaveBeenCalledTimes(1);
     const createArgs = mockCreate.mock.calls[0][0];
-    expect(createArgs.data.metadata).toEqual({
-      additionalRepos: [{ fullName: "org/repo-a", branch: "main" }],
-    });
-  });
-
-  it("uses top-level additionalRepos when metadata already has additionalRepos", async () => {
-    await loopsService.create("org-1", "user-1", {
-      ...baseInput,
-      additionalRepos: [{ fullName: "org/top-level", branch: "main" }],
-      metadata: {
-        launchSource: "test",
-        additionalRepos: [{ fullName: "org/stale", branch: "dev" }],
-      },
-    });
-
-    expect(mockCreate).toHaveBeenCalledTimes(1);
-    const createArgs = mockCreate.mock.calls[0][0];
-    expect(createArgs.data.metadata).toEqual({
-      launchSource: "test",
-      additionalRepos: [{ fullName: "org/top-level", branch: "main" }],
-    });
+    expect(createArgs.data.metadata).toEqual(expectedMetadata);
   });
 });
 
