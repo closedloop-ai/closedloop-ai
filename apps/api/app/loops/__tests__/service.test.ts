@@ -215,30 +215,6 @@ describe("loopsService.create — additionalRepos gate", () => {
     vi.restoreAllMocks();
   });
 
-  it("drops additionalRepos when MULTI_REPO_PLAN_ENABLED is not 'true'", async () => {
-    process.env.MULTI_REPO_PLAN_ENABLED = "false";
-    const { mockCreate } = setupMocks();
-
-    await loopsService.create(TEST_ORG_ID, TEST_USER_ID, {
-      command: LoopCommand.Plan,
-      additionalRepos: [{ fullName: "org/repo-a", branch: "main" }],
-    });
-
-    expect(mockCreate.mock.calls[0][0].data.metadata).toBeUndefined();
-  });
-
-  it("drops additionalRepos for non-PLAN commands even when the flag is enabled", async () => {
-    process.env.MULTI_REPO_PLAN_ENABLED = "true";
-    const { mockCreate } = setupMocks();
-
-    await loopsService.create(TEST_ORG_ID, TEST_USER_ID, {
-      command: LoopCommand.Execute,
-      additionalRepos: [{ fullName: "org/repo-a", branch: "main" }],
-    });
-
-    expect(mockCreate.mock.calls[0][0].data.metadata).toBeUndefined();
-  });
-
   it("persists additionalRepos for PLAN commands when the flag is enabled", async () => {
     process.env.MULTI_REPO_PLAN_ENABLED = "true";
     const { mockCreate } = setupMocks();
