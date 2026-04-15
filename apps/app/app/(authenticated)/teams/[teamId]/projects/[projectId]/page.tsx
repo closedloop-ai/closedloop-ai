@@ -22,7 +22,6 @@ import {
   ToggleGroup,
   ToggleGroupItem,
 } from "@repo/design-system/components/ui/toggle-group";
-import type { User } from "@repo/design-system/components/ui/user-select-popover";
 import {
   ArchiveIcon,
   BoxIcon,
@@ -31,7 +30,6 @@ import {
   FileIcon,
   Loader2Icon,
   MoreHorizontalIcon,
-  PlusIcon,
   SearchIcon,
   StarIcon,
   TrashIcon,
@@ -39,15 +37,16 @@ import {
 import { useParams, useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import { Header } from "@/app/(authenticated)/components/header";
+import { ActiveFiltersBar } from "@/components/artifact-table/active-filters-bar";
 import type {
   ArtifactRowItem,
   RowEditHandlers,
 } from "@/components/artifact-table/artifact-row";
+import { FilterPopover } from "@/components/artifact-table/filter-popover";
 import { TableViewMenu } from "@/components/artifact-table/table-view-menu";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { EditableProjectDescription } from "@/components/editable-project-description";
 import { EditableProjectTitle } from "@/components/editable-project-title";
-import { FilterChip } from "@/components/filter-chip";
 import {
   UnderlineTabsList,
   UnderlineTabsTrigger,
@@ -89,21 +88,10 @@ import { ActiveLoopsStatus } from "./components/active-loops-status";
 import { ArtifactsView } from "./components/artifacts-view";
 import { CreateArtifactModal } from "./components/create-artifact-modal";
 import { CreateFeatureModal } from "./components/create-feature-modal";
-import {
-  AssigneeFilterContent,
-  DateFilterContent,
-  FilterMenuContent,
-  FilterPopover,
-  PriorityFilterContent,
-  StatusFilterContent,
-} from "./components/filter-popover";
 import { OverviewActivity } from "./components/overview-activity";
 import { OverviewProperties } from "./components/overview-properties";
 import { useMergeNotification } from "./hooks/use-merge-notification";
-import {
-  type ProjectFiltersReturn,
-  useProjectFilters,
-} from "./use-project-filters";
+import { useProjectFilters } from "./use-project-filters";
 
 export type FilterCategory =
   | "all"
@@ -690,119 +678,4 @@ function getFavoriteMenuLabel(status: ProjectStatus, isFavorite: boolean) {
     return "Remove from Favorites";
   }
   return "Add to Favorites";
-}
-
-function ActiveFiltersBar({
-  currentUser,
-  filtersReturn,
-  teamMembers,
-  teamMembersLoading,
-  teamMembersError,
-}: {
-  currentUser?: { id: string; name: string; avatarUrl?: string } | null;
-  filtersReturn: ProjectFiltersReturn;
-  teamMembers: User[];
-  teamMembersLoading: boolean;
-  teamMembersError: string | null;
-}) {
-  const { activeChips, clearCategoryFilter, clearAllFilters } = filtersReturn;
-
-  return (
-    <div className="flex flex-wrap items-center gap-1 px-4 pb-2">
-      {activeChips.map((chip) => (
-        <FilterChip
-          dropdownClassName={chip.category === "assignee" ? "w-64" : undefined}
-          key={chip.category}
-          label={chip.label}
-          onRemove={() => clearCategoryFilter(chip.category)}
-        >
-          <ChipDropdownContent
-            category={chip.category}
-            filtersReturn={filtersReturn}
-            teamMembers={teamMembers}
-            teamMembersError={teamMembersError}
-            teamMembersLoading={teamMembersLoading}
-          />
-        </FilterChip>
-      ))}
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <button
-            aria-label="Add filter"
-            className="inline-flex items-center self-stretch rounded-md border px-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
-            type="button"
-          >
-            <PlusIcon className="size-3.5" />
-          </button>
-        </DropdownMenuTrigger>
-        <FilterMenuContent
-          currentUser={currentUser}
-          filtersReturn={filtersReturn}
-          teamMembers={teamMembers}
-          teamMembersError={teamMembersError}
-          teamMembersLoading={teamMembersLoading}
-        />
-      </DropdownMenu>
-      <Button
-        className="h-auto px-2 py-1 text-xs"
-        onClick={clearAllFilters}
-        variant="ghost"
-      >
-        Clear all
-      </Button>
-    </div>
-  );
-}
-
-function ChipDropdownContent({
-  category,
-  filtersReturn,
-  teamMembers,
-  teamMembersLoading,
-  teamMembersError,
-}: {
-  category: "assignee" | "status" | "priority" | "date";
-  filtersReturn: ProjectFiltersReturn;
-  teamMembers: User[];
-  teamMembersLoading: boolean;
-  teamMembersError: string | null;
-}) {
-  switch (category) {
-    case "assignee":
-      return (
-        <AssigneeFilterContent
-          assigneeCounts={filtersReturn.assigneeCounts}
-          filters={filtersReturn.filters}
-          teamMembers={teamMembers}
-          teamMembersError={teamMembersError}
-          teamMembersLoading={teamMembersLoading}
-          toggleAssignee={filtersReturn.toggleAssignee}
-        />
-      );
-    case "status":
-      return (
-        <StatusFilterContent
-          filters={filtersReturn.filters}
-          statusCounts={filtersReturn.statusCounts}
-          toggleStatus={filtersReturn.toggleStatus}
-        />
-      );
-    case "priority":
-      return (
-        <PriorityFilterContent
-          filters={filtersReturn.filters}
-          priorityCounts={filtersReturn.priorityCounts}
-          togglePriority={filtersReturn.togglePriority}
-        />
-      );
-    case "date":
-      return (
-        <DateFilterContent
-          filters={filtersReturn.filters}
-          setDateFilter={filtersReturn.setDateFilter}
-        />
-      );
-    default:
-      return null;
-  }
 }
