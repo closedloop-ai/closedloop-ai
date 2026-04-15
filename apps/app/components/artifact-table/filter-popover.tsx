@@ -632,7 +632,13 @@ function FilterRow({
   children: React.ReactNode;
 }) {
   return (
-    <DropdownMenuItem className="gap-2" onSelect={() => onToggle()}>
+    <DropdownMenuItem
+      className="gap-2"
+      onSelect={(e) => {
+        e.preventDefault();
+        onToggle();
+      }}
+    >
       <button
         className="flex items-center"
         onClick={(e) => {

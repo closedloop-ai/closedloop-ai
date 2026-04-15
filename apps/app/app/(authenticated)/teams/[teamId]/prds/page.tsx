@@ -87,6 +87,8 @@ export default function TeamPrdsPage() {
     currentUserId: currentUser?.id,
   });
 
+  const { isAnyFilterActive, applyFilters } = filtersReturn;
+
   const displayItems = useMemo(() => {
     const textFiltered = (artifacts ?? []).filter((a) =>
       matchesFilter(a, filterText)
@@ -95,11 +97,11 @@ export default function TeamPrdsPage() {
       kind: "artifact" as const,
       data: a,
     }));
-    if (filtersReturn.isAnyFilterActive) {
-      items = filtersReturn.applyFilters(items);
+    if (isAnyFilterActive) {
+      items = applyFilters(items);
     }
     return items;
-  }, [artifacts, filterText, filtersReturn]);
+  }, [artifacts, filterText, isAnyFilterActive, applyFilters]);
 
   const filterCurrentUser = useMemo(
     () =>

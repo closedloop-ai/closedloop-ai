@@ -1,7 +1,7 @@
 "use client";
 
 import {
-  ArtifactStatus,
+  type ArtifactStatus,
   ArtifactType,
   type ArtifactWithWorkstream,
   getRoutePrefixForType,
@@ -49,6 +49,7 @@ import { useSortParams } from "@/hooks/use-sort-params";
 import { matchesFilter } from "@/lib/artifact-filter";
 import { comparePriorityValues } from "@/lib/priority-sort";
 import { ARTIFACT_STATUS_LABELS } from "@/lib/project-constants";
+import { STATUS_DISPLAY_ORDER } from "@/lib/status-grouping";
 import type { SortConfig } from "@/lib/table-utils";
 import { sortTableData } from "@/lib/table-utils";
 import type { FilterCategory } from "../page";
@@ -339,17 +340,6 @@ function filterByCategory(
 }
 
 // ---- Status grouping ----
-
-/** Fixed display order matching the ArtifactStatus enum. */
-const STATUS_DISPLAY_ORDER: ArtifactStatus[] = [
-  ArtifactStatus.Draft,
-  ArtifactStatus.InProgress,
-  ArtifactStatus.InReview,
-  ArtifactStatus.Approved,
-  ArtifactStatus.Executed,
-  ArtifactStatus.Done,
-  ArtifactStatus.Obsolete,
-];
 
 type StatusSection = {
   status: ArtifactStatus;

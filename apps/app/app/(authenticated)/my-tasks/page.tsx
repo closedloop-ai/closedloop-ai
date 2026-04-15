@@ -114,6 +114,8 @@ export default function MyTasksPage() {
     currentUserId: currentUser?.id,
   });
 
+  const { isAnyFilterActive, applyFilters } = filtersReturn;
+
   const displayItems = useMemo(() => {
     let filtered = rawFeatures;
     if (filterText.trim()) {
@@ -127,11 +129,11 @@ export default function MyTasksPage() {
       kind: "feature" as const,
       data: f,
     }));
-    if (filtersReturn.isAnyFilterActive) {
-      items = filtersReturn.applyFilters(items);
+    if (isAnyFilterActive) {
+      items = applyFilters(items);
     }
     return items;
-  }, [rawFeatures, filterText, filtersReturn]);
+  }, [rawFeatures, filterText, isAnyFilterActive, applyFilters]);
 
   const parentTitleMap = useItemsParentTitles(allItems);
 

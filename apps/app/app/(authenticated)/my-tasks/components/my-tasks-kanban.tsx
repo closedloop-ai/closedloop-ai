@@ -149,18 +149,26 @@ export function MyTasksKanban({
     }
     const top = el.getBoundingClientRect().top;
     // Keep a small bottom gap so the horizontal scrollbar remains visible.
-    const next = Math.max(240, Math.floor(window.innerHeight - top - 12));
+    const next = Math.max(240, Math.floor(globalThis.innerHeight - top - 12));
     setViewportHeight((prev) => (prev === next ? prev : next));
   }, []);
 
-  useEffect(() => {
-    updateViewportHeight();
+  const containerCallbackRef = useCallback(
+    (node: HTMLDivElement | null) => {
+      containerRef.current = node;
+      if (node) {
+        updateViewportHeight();
+      }
+    },
+    [updateViewportHeight]
+  );
 
+  useEffect(() => {
     const onResize = () => {
       updateViewportHeight();
     };
 
-    window.addEventListener("resize", onResize);
+    globalThis.addEventListener("resize", onResize);
 
     const observer =
       typeof ResizeObserver !== "undefined"
@@ -172,7 +180,7 @@ export function MyTasksKanban({
     }
 
     return () => {
-      window.removeEventListener("resize", onResize);
+      globalThis.removeEventListener("resize", onResize);
       observer?.disconnect();
     };
   }, [updateViewportHeight]);
@@ -210,7 +218,7 @@ export function MyTasksKanban({
     : null;
 
   return (
-    <div className="flex h-full min-h-0 flex-col" ref={containerRef}>
+    <div className="flex h-full min-h-0 flex-col" ref={containerCallbackRef}>
       <DndContext
         onDragEnd={handleDragEnd}
         onDragStart={handleDragStart}
