@@ -141,7 +141,7 @@ export function useReviewChat(
           prompt = `${formatReviewContextForCodex(findings, reviewOutput, config.model)}\n\n${message}`;
         }
         return {
-          url: `/api/engineer/codex/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
+          url: `/api/gateway/codex/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
           body: {
             prompt,
             chatHistory: recentHistory,
@@ -152,7 +152,7 @@ export function useReviewChat(
         };
       }
       return {
-        url: `/api/engineer/symphony/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
+        url: `/api/gateway/symphony/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
         body: {
           message,
           activeTab: "plan",
@@ -184,7 +184,7 @@ export function useReviewChat(
       sender?: string;
     }) =>
       fetch(
-        `/api/engineer/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${encodeURIComponent(config.provider)}`,
+        `/api/gateway/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${encodeURIComponent(config.provider)}`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },

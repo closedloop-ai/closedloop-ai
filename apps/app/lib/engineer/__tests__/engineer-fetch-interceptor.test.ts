@@ -60,7 +60,7 @@ describe("engineer-fetch-interceptor", () => {
     vi.restoreAllMocks();
   });
 
-  it("rewrites engineer routes to localhost when electron is detected", async () => {
+  it("rewrites gateway routes to localhost when electron is detected", async () => {
     const originalFetch = vi.fn().mockResolvedValue(new Response("ok"));
     Object.defineProperty(globalThis, "fetch", {
       configurable: true,
@@ -86,7 +86,7 @@ describe("engineer-fetch-interceptor", () => {
 
     const uninstall = installEngineerFetchInterceptor();
 
-    await fetch("/api/engineer/health-check", {
+    await fetch("/api/gateway/health-check", {
       headers: {
         Authorization: "Bearer sk_live_123",
         Cookie: "session=abc",
@@ -96,7 +96,7 @@ describe("engineer-fetch-interceptor", () => {
     expect(originalFetch).toHaveBeenCalledTimes(1);
     const outboundRequest = originalFetch.mock.calls[0][0] as Request;
     expect(outboundRequest.url).toBe(
-      "http://localhost:19432/api/engineer/health-check"
+      "http://localhost:19432/api/gateway/health-check"
     );
     expect(outboundRequest.headers.get("authorization")).toBeNull();
     expect(outboundRequest.headers.get("cookie")).toBeNull();
@@ -120,19 +120,19 @@ describe("engineer-fetch-interceptor", () => {
 
     const uninstall = installEngineerFetchInterceptor();
 
-    await fetch("/api/engineer/git", { method: "POST" });
+    await fetch("/api/gateway/git", { method: "POST" });
 
     const outboundRequest = originalFetch.mock.calls[0][0] as Request;
     const outboundUrl = new URL(outboundRequest.url);
     // With CLOUD_RELAY_ENABLED=false, the relay rewrite branch is skipped.
     // The catch-all sends the request as-is via originalFetch.
-    expect(outboundUrl.pathname.startsWith("/api/engineer-relay/")).toBe(false);
+    expect(outboundUrl.pathname.startsWith("/api/gateway-relay/")).toBe(false);
     expect(outboundRequest.headers.get("x-compute-target")).toBeNull();
 
     uninstall();
   });
 
-  it("leaves non-engineer routes untouched", async () => {
+  it("leaves non-gateway routes untouched", async () => {
     const originalFetch = vi.fn().mockResolvedValue(new Response("ok"));
     Object.defineProperty(globalThis, "fetch", {
       configurable: true,
@@ -201,7 +201,7 @@ describe("engineer-fetch-interceptor", () => {
     });
 
     const uninstall = installEngineerFetchInterceptor();
-    await fetch("/api/engineer/git");
+    await fetch("/api/gateway/git");
 
     expect(mockEnsureElectronDetection).toHaveBeenCalledTimes(1);
     expect(originalFetch).toHaveBeenCalledTimes(1);
@@ -234,13 +234,13 @@ describe("engineer-fetch-interceptor", () => {
 
     const uninstall = installEngineerFetchInterceptor();
     await fetch(
-      "/api/engineer/symphony/chat-history/pr-42?repo=%2Ftmp%2Frepo&provider=claude"
+      "/api/gateway/symphony/chat-history/pr-42?repo=%2Ftmp%2Frepo&provider=claude"
     );
 
     const outboundRequest = originalFetch.mock.calls[0][0] as Request;
     const outboundUrl = new URL(outboundRequest.url);
     expect(outboundUrl.pathname).toBe(
-      "/api/engineer/symphony/chat-history/pr-42"
+      "/api/gateway/symphony/chat-history/pr-42"
     );
     expect(outboundUrl.searchParams.get("provider")).toBe("claude");
     expect(outboundUrl.searchParams.get("repo")).toBe("/tmp/repo");
@@ -264,7 +264,7 @@ describe("engineer-fetch-interceptor", () => {
 
     const uninstall = installEngineerFetchInterceptor();
     await fetch(
-      "/api/engineer/symphony/chat-history/pr-42?repo=%2Ftmp%2Frepo&provider=codex",
+      "/api/gateway/symphony/chat-history/pr-42?repo=%2Ftmp%2Frepo&provider=codex",
       { method: "DELETE" }
     );
 
@@ -272,9 +272,9 @@ describe("engineer-fetch-interceptor", () => {
     const outboundUrl = new URL(outboundRequest.url);
     // With CLOUD_RELAY_ENABLED=false, no relay rewrite occurs — the catch-all
     // sends the request as-is via originalFetch.
-    expect(outboundUrl.pathname.startsWith("/api/engineer-relay/")).toBe(false);
+    expect(outboundUrl.pathname.startsWith("/api/gateway-relay/")).toBe(false);
     expect(outboundUrl.pathname).toBe(
-      "/api/engineer/symphony/chat-history/pr-42"
+      "/api/gateway/symphony/chat-history/pr-42"
     );
     expect(outboundUrl.searchParams.get("provider")).toBe("codex");
     expect(outboundUrl.searchParams.get("repo")).toBe("/tmp/repo");
@@ -307,7 +307,7 @@ describe("engineer-fetch-interceptor", () => {
     });
 
     const uninstall = installEngineerFetchInterceptor();
-    await fetch("/api/engineer/terminal-chat", {
+    await fetch("/api/gateway/terminal-chat", {
       method: "POST",
       body: JSON.stringify({ message: "hello" }),
       headers: {
@@ -318,7 +318,7 @@ describe("engineer-fetch-interceptor", () => {
 
     const outboundRequest = originalFetch.mock.calls[0][0] as Request;
     expect(outboundRequest.url).toBe(
-      "http://localhost:19432/api/engineer/terminal-chat"
+      "http://localhost:19432/api/gateway/terminal-chat"
     );
     expect(outboundRequest.method).toBe("POST");
     await expect(outboundRequest.text()).resolves.toBe(
@@ -398,11 +398,11 @@ describe("engineer-fetch-interceptor (CLOUD_RELAY_ENABLED=true)", () => {
 
     const uninstall = installInterceptor();
 
-    await fetch("/api/engineer/git", { method: "POST" });
+    await fetch("/api/gateway/git", { method: "POST" });
 
     const outboundRequest = originalFetch.mock.calls[0][0] as Request;
     const outboundUrl = new URL(outboundRequest.url);
-    expect(outboundUrl.pathname).toBe("/api/engineer-relay/git");
+    expect(outboundUrl.pathname).toBe("/api/gateway-relay/git");
     expect(outboundRequest.headers.get("x-compute-target")).toBe("target-1");
 
     uninstall();
@@ -425,14 +425,14 @@ describe("engineer-fetch-interceptor (CLOUD_RELAY_ENABLED=true)", () => {
     const uninstall = installInterceptor();
 
     await fetch(
-      "/api/engineer/symphony/chat-history/pr-10?repo=%2Ftmp%2Frepo&provider=codex",
+      "/api/gateway/symphony/chat-history/pr-10?repo=%2Ftmp%2Frepo&provider=codex",
       { method: "DELETE" }
     );
 
     const outboundRequest = originalFetch.mock.calls[0][0] as Request;
     const outboundUrl = new URL(outboundRequest.url);
     expect(outboundUrl.pathname).toBe(
-      "/api/engineer-relay/symphony/chat-history/pr-10"
+      "/api/gateway-relay/symphony/chat-history/pr-10"
     );
     expect(outboundUrl.searchParams.get("provider")).toBe("codex");
     expect(outboundUrl.searchParams.get("repo")).toBe("/tmp/repo");

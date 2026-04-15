@@ -309,8 +309,8 @@ function toDesktopCommandInput(
   streaming: boolean
 ): CreateDesktopCommandInput {
   const { path, query } = splitPathAndQuery(request.path);
-  if (!path.startsWith("/api/engineer/")) {
-    throw new Error(`Relay path must target /api/engineer/*, got: ${path}`);
+  if (!path.startsWith("/api/gateway/")) {
+    throw new Error(`Relay path must target /api/gateway/*, got: ${path}`);
   }
 
   return {
@@ -341,7 +341,7 @@ function mapCommandEventToNdjsonLine(
   return line;
 }
 
-export function isStreamingEngineerRequest(
+export function isStreamingGatewayRequest(
   method: string,
   path: string,
   acceptHeader: string | null
@@ -355,16 +355,16 @@ export function isStreamingEngineerRequest(
 
   const pathname = path.split("?")[0];
   return [
-    /^\/api\/engineer\/symphony\/chat\/[^/]+$/,
-    /^\/api\/engineer\/symphony\/comment-chat\/[^/]+$/,
-    /^\/api\/engineer\/codex\/chat\/[^/]+$/,
-    /^\/api\/engineer\/codex\/argue\/[^/]+$/,
-    /^\/api\/engineer\/codex\/review\/[^/]+$/,
-    /^\/api\/engineer\/codex\/finding-chat\/[^/]+$/,
-    /^\/api\/engineer\/ticket-chat$/,
-    /^\/api\/engineer\/terminal-chat$/,
-    /^\/api\/engineer\/run-viewer-chat$/,
-    /^\/api\/engineer\/chat$/,
+    /^\/api\/gateway\/symphony\/chat\/[^/]+$/,
+    /^\/api\/gateway\/symphony\/comment-chat\/[^/]+$/,
+    /^\/api\/gateway\/codex\/chat\/[^/]+$/,
+    /^\/api\/gateway\/codex\/argue\/[^/]+$/,
+    /^\/api\/gateway\/codex\/review\/[^/]+$/,
+    /^\/api\/gateway\/codex\/finding-chat\/[^/]+$/,
+    /^\/api\/gateway\/ticket-chat$/,
+    /^\/api\/gateway\/terminal-chat$/,
+    /^\/api\/gateway\/run-viewer-chat$/,
+    /^\/api\/gateway\/chat$/,
   ].some((pattern) => pattern.test(pathname));
 }
 

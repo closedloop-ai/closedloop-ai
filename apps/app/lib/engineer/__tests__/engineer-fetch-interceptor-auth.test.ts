@@ -134,7 +134,7 @@ describe("engineer-fetch-interceptor – auth integration", () => {
     });
 
     const uninstall = installEngineerFetchInterceptor();
-    await fetch("/api/engineer/health-check");
+    await fetch("/api/gateway/health-check");
 
     expect(originalFetch).toHaveBeenCalledTimes(1);
     const outgoing = originalFetch.mock.calls[0][0] as Request;
@@ -156,7 +156,7 @@ describe("engineer-fetch-interceptor – auth integration", () => {
     });
 
     const uninstall = installEngineerFetchInterceptor();
-    await fetch("/api/engineer/health-check");
+    await fetch("/api/gateway/health-check");
 
     const outgoing = originalFetch.mock.calls[0][0] as Request;
     expect(outgoing.headers.get("x-desktop-session-token")).toBeNull();
@@ -181,7 +181,7 @@ describe("engineer-fetch-interceptor – auth integration", () => {
     });
 
     const uninstall = installEngineerFetchInterceptor();
-    const response = await fetch("/api/engineer/git");
+    const response = await fetch("/api/gateway/git");
 
     // Two outbound requests: original + retry
     expect(originalFetch).toHaveBeenCalledTimes(2);
@@ -220,7 +220,7 @@ describe("engineer-fetch-interceptor – auth integration", () => {
     });
 
     const uninstall = installEngineerFetchInterceptor();
-    const response = await fetch("/api/engineer/git");
+    const response = await fetch("/api/gateway/git");
 
     expect(originalFetch).toHaveBeenCalledTimes(1);
     expect(mockInvalidateLocalGatewaySession).toHaveBeenCalledTimes(1);
@@ -252,7 +252,7 @@ describe("engineer-fetch-interceptor – auth integration", () => {
     const uninstall = installEngineerFetchInterceptor();
 
     // POST with a body — the body must be reusable across retry
-    const response = await fetch("/api/engineer/terminal-chat", {
+    const response = await fetch("/api/gateway/terminal-chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ prompt: "hello" }),
@@ -291,7 +291,7 @@ describe("engineer-fetch-interceptor – auth integration", () => {
     });
 
     const uninstall = installEngineerFetchInterceptor();
-    const response = await fetch("/api/engineer/git");
+    const response = await fetch("/api/gateway/git");
 
     expect(response.status).toBe(401);
     // No retry — fetch called only once
@@ -315,7 +315,7 @@ describe("engineer-fetch-interceptor – auth integration", () => {
     });
 
     const uninstall = installEngineerFetchInterceptor();
-    await expect(fetch("/api/engineer/git")).rejects.toThrow(TypeError);
+    await expect(fetch("/api/gateway/git")).rejects.toThrow(TypeError);
 
     expect(mockInvalidateElectronDetectionCache).toHaveBeenCalledTimes(1);
     expect(mockInvalidateLocalGatewaySession).toHaveBeenCalledTimes(1);
@@ -337,9 +337,7 @@ describe("engineer-fetch-interceptor – auth integration", () => {
     });
 
     const uninstall = installEngineerFetchInterceptor();
-    await expect(fetch("/api/engineer/git")).rejects.toThrow(
-      "unexpected error"
-    );
+    await expect(fetch("/api/gateway/git")).rejects.toThrow("unexpected error");
 
     // Non-TypeError: session cache should NOT be invalidated
     expect(mockInvalidateLocalGatewaySession).not.toHaveBeenCalled();
@@ -361,13 +359,13 @@ describe("engineer-fetch-interceptor – auth integration", () => {
     });
 
     const uninstall = installEngineerFetchInterceptor();
-    await fetch("/api/engineer/health-check");
+    await fetch("/api/gateway/health-check");
 
     // Simulate port change
     mockGetElectronDetectionSnapshot.mockReturnValue(
       makeDetectedSnapshot(19_433)
     );
-    await fetch("/api/engineer/health-check");
+    await fetch("/api/gateway/health-check");
 
     // Both requests should have been sent
     expect(originalFetch).toHaveBeenCalledTimes(2);
@@ -395,7 +393,7 @@ describe("engineer-fetch-interceptor – auth integration", () => {
     });
 
     const uninstall = installEngineerFetchInterceptor();
-    const response = await fetch("/api/engineer/health-check");
+    const response = await fetch("/api/gateway/health-check");
 
     // Should NOT call the original fetch — short-circuited
     expect(originalFetch).not.toHaveBeenCalled();
@@ -423,7 +421,7 @@ describe("engineer-fetch-interceptor – auth integration", () => {
     });
 
     const uninstall = installEngineerFetchInterceptor();
-    const response = await fetch("/api/engineer/health-check");
+    const response = await fetch("/api/gateway/health-check");
 
     expect(originalFetch).not.toHaveBeenCalled();
     expect(response.status).toBe(401);
@@ -448,7 +446,7 @@ describe("engineer-fetch-interceptor – auth integration", () => {
     });
 
     const uninstall = installEngineerFetchInterceptor();
-    const response = await fetch("/api/engineer/health-check");
+    const response = await fetch("/api/gateway/health-check");
 
     // Original fetch IS called (no short-circuit)
     expect(originalFetch).toHaveBeenCalledTimes(1);

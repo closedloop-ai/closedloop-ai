@@ -50,7 +50,7 @@ export const setSharingValidator = z.object({
 export const createDesktopCommandValidator = z.object({
   operationId: z.string().trim().min(1),
   method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]),
-  path: z.string().trim().min(1).startsWith("/api/engineer/"),
+  path: z.string().trim().min(1).startsWith("/api/gateway/"),
   headers: z.record(z.string(), z.string()).optional(),
   query: z
     .record(z.string(), z.union([z.string(), z.array(z.string())]))

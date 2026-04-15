@@ -7,8 +7,17 @@ const execFileAsync = promisify(execFile);
 
 type McpProvider = "claude" | "codex";
 
-type CachedMcpServer = {
-  serverName: string | null;
+/**
+ * Cached MCP server lookup result. Using a discriminated union lets us
+ * distinguish "cache miss" (return `null` from the lookup helper) from
+ * "cached confirmed-no-server" (`{ found: false }`). The previous shape
+ * (`serverName: string | null`) conflated the two and re-ran the expensive
+ * CLI probe on every call when no server was configured.
+ */
+type CachedMcpLookup = { found: true; serverName: string } | { found: false };
+
+type CachedMcpEntry = {
+  lookup: CachedMcpLookup;
   expiresAt: number;
 };
 
@@ -47,8 +56,8 @@ const WHITESPACE_REGEX = /\s+/;
 const CODEX_ENABLED_REGEX = /\benabled\b/i;
 const TIMEOUT_REGEX = /timed out|ETIMEDOUT/i;
 
-const cache = new Map<string, CachedMcpServer>();
-const resolvedNameCache = new Map<string, CachedMcpServer>();
+const cache = new Map<string, CachedMcpEntry>();
+const resolvedNameCache = new Map<string, CachedMcpEntry>();
 
 export const ENGINEER_CHAT_TOOLS = ENGINEER_CHAT_BASE_TOOLS.join(",");
 export const READONLY_CODEBASE_TOOLS = READONLY_CODEBASE_BASE_TOOLS.join(",");
@@ -193,11 +202,17 @@ function cacheKey(provider: McpProvider, expectedMcpUrl: string): string {
   return `${provider}::${expectedMcpUrl}`;
 }
 
+/**
+ * Look up a cached entry. Returns `null` when nothing fresh is cached
+ * (cold miss or expired), or the cached `CachedMcpLookup` discriminant
+ * when a value is still valid. Callers can then distinguish a
+ * confirmed-no-server cache hit from a true cache miss.
+ */
 function getFreshCachedValue(
-  targetCache: Map<string, CachedMcpServer>,
+  targetCache: Map<string, CachedMcpEntry>,
   provider: McpProvider,
   expectedMcpUrl: string
-): string | null {
+): CachedMcpLookup | null {
   const cached = targetCache.get(cacheKey(provider, expectedMcpUrl));
   if (!cached) {
     return null;
@@ -206,24 +221,24 @@ function getFreshCachedValue(
     targetCache.delete(cacheKey(provider, expectedMcpUrl));
     return null;
   }
-  return cached.serverName;
+  return cached.lookup;
 }
 
 function setCachedValue(
-  targetCache: Map<string, CachedMcpServer>,
+  targetCache: Map<string, CachedMcpEntry>,
   provider: McpProvider,
   expectedMcpUrl: string,
-  serverName: string | null,
+  lookup: CachedMcpLookup,
   ttlMs: number
 ): void {
   targetCache.set(cacheKey(provider, expectedMcpUrl), {
-    serverName,
+    lookup,
     expiresAt: Date.now() + ttlMs,
   });
 }
 
 function clearCachedValue(
-  targetCache: Map<string, CachedMcpServer>,
+  targetCache: Map<string, CachedMcpEntry>,
   provider: McpProvider,
   expectedMcpUrl: string
 ): void {
@@ -258,6 +273,10 @@ function getCommandOutput(error: unknown): string {
   return `${stdout}\n${stderr}`.trim();
 }
 
+function toLookup(serverName: string | null): CachedMcpLookup {
+  return serverName === null ? { found: false } : { found: true, serverName };
+}
+
 async function resolveMcpServerName(
   provider: McpProvider = "claude"
 ): Promise<string | null> {
@@ -268,20 +287,20 @@ async function resolveMcpServerName(
     return null;
   }
 
-  const cachedServerName = getFreshCachedValue(cache, provider, expectedMcpUrl);
-  if (cachedServerName !== null) {
-    return cachedServerName;
+  const cachedLookup = getFreshCachedValue(cache, provider, expectedMcpUrl);
+  if (cachedLookup !== null) {
+    return cachedLookup.found ? cachedLookup.serverName : null;
   }
 
   if (provider === "claude") {
-    const resolvedName = getFreshCachedValue(
+    const resolvedLookup = getFreshCachedValue(
       resolvedNameCache,
       provider,
       expectedMcpUrl
     );
-    if (resolvedName) {
+    if (resolvedLookup?.found) {
       const byName = await resolveClaudeServerNameByGet(
-        resolvedName,
+        resolvedLookup.serverName,
         expectedMcpUrl
       );
       if (byName !== undefined) {
@@ -289,7 +308,7 @@ async function resolveMcpServerName(
           cache,
           provider,
           expectedMcpUrl,
-          byName,
+          toLookup(byName),
           STATUS_CACHE_TTL_MS
         );
         return byName;
@@ -305,7 +324,7 @@ async function resolveMcpServerName(
     cache,
     provider,
     expectedMcpUrl,
-    discoveredServerName,
+    toLookup(discoveredServerName),
     STATUS_CACHE_TTL_MS
   );
   if (discoveredServerName) {
@@ -313,7 +332,7 @@ async function resolveMcpServerName(
       resolvedNameCache,
       provider,
       expectedMcpUrl,
-      discoveredServerName,
+      { found: true, serverName: discoveredServerName },
       RESOLVED_NAME_TTL_MS
     );
   }

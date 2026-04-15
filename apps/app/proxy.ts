@@ -10,7 +10,7 @@ import { resolveApiOrigin } from "./lib/api-origin";
 export default authMiddleware(async (auth, request) => {
   const securityHeadersResponse = await securityHeaders();
 
-  const guardResponse = await engineerGuard(auth, request);
+  const guardResponse = await gatewayGuard(auth, request);
   if (guardResponse) {
     applySecurityHeaders(guardResponse, securityHeadersResponse);
     return guardResponse;
@@ -34,22 +34,22 @@ export const config = {
 };
 
 /**
- * Guards engineer API routes to localhost or authenticated users with
+ * Guards gateway API routes to localhost or authenticated users with
  * registered compute targets (cached for 30s).
  *
- * Engineer API routes spawn local CLI processes (Claude, git, codex) and
+ * Gateway API routes spawn local CLI processes (Claude, git, codex) and
  * read/write the local filesystem. They must never be accessible in deployed
- * environments — EngineerGuard only blocks the UI, not the HTTP layer.
+ * environments — gatewayGuard only blocks the UI, not the HTTP layer.
  *
  * See CLAUDE.md "Engineer Feature — Architectural Exception" for full context.
  */
-async function engineerGuard(
+async function gatewayGuard(
   auth: ClerkMiddlewareAuth,
   request: NextRequest
 ): Promise<NextResponse | null> {
   const pathname = request.nextUrl.pathname;
-  const isLocal = isEngineerLocalPath(pathname);
-  const isRelay = isEngineerRelayPath(pathname);
+  const isLocal = isGatewayLocalPath(pathname);
+  const isRelay = isGatewayRelayPath(pathname);
 
   if (!(isLocal || isRelay)) {
     return null;
@@ -60,15 +60,15 @@ async function engineerGuard(
     return null;
   }
 
-  // /api/engineer/* routes spawn local CLI processes — always localhost-only.
+  // /api/gateway/* routes spawn local CLI processes — always localhost-only.
   if (isLocal) {
     return NextResponse.json(
-      { error: "Engineer API is only available on localhost" },
+      { error: "Gateway API is only available on localhost" },
       { status: 403 }
     );
   }
 
-  // /api/engineer-relay/* routes are cloud-safe but require a compute target.
+  // /api/gateway-relay/* routes are cloud-safe but require a compute target.
   const authState = await auth();
   if (!authState.userId) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -85,19 +85,19 @@ async function engineerGuard(
   }
 
   return NextResponse.json(
-    { error: "Engineer API requires a registered compute target" },
+    { error: "Gateway API requires a registered compute target" },
     { status: 403 }
   );
 }
 
 const LOCALHOST_HOSTNAMES = new Set(["localhost", "127.0.0.1"]);
 
-function isEngineerLocalPath(pathname: string): boolean {
-  return pathname.startsWith("/api/engineer/");
+function isGatewayLocalPath(pathname: string): boolean {
+  return pathname.startsWith("/api/gateway/");
 }
 
-function isEngineerRelayPath(pathname: string): boolean {
-  return pathname.startsWith("/api/engineer-relay/");
+function isGatewayRelayPath(pathname: string): boolean {
+  return pathname.startsWith("/api/gateway-relay/");
 }
 
 async function fetchHasComputeTarget(

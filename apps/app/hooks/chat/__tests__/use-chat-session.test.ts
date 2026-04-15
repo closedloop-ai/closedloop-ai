@@ -70,6 +70,7 @@ vi.mock("@/lib/engineer/routing-store", () => ({
 
 import type { StreamErrorEvent } from "@/lib/chat/chat-utils";
 import { useChatSession } from "../use-chat-session";
+import type { SendMessageResult } from "../use-chat-stream";
 
 const CHAT_KEY = "artifact:plan-1";
 const PROVIDER = "claude" as const;
@@ -105,7 +106,7 @@ beforeEach(() => {
   mockElectronDetection.detected = false;
   mockRoutingSelection.mode = EngineerRoutingMode.CloudRelay;
   mockRoutingSelection.computeTargetId = "ct-1";
-  mockChatStreamSend.mockResolvedValue(undefined);
+  mockChatStreamSend.mockResolvedValue({ ok: true });
   mockEnsureFresh.mockResolvedValue(DEFAULT_CREDENTIALS);
   mockApiClient.get.mockResolvedValue({ chat: null });
   mockApiClient.delete.mockResolvedValue({ deleted: true });
@@ -250,7 +251,7 @@ describe("useChatSession — sendMessage guards", () => {
 });
 
 describe("useChatSession — sendMessage single flow", () => {
-  test("POSTs to /api/engineer/chat exactly once with the minimal body shape", async () => {
+  test("POSTs to /api/gateway/chat exactly once with the minimal body shape", async () => {
     const { result } = renderHook(
       () =>
         useChatSession({
@@ -272,7 +273,7 @@ describe("useChatSession — sendMessage single flow", () => {
 
     expect(mockChatStreamSend).toHaveBeenCalledTimes(1);
     const [url, body] = mockChatStreamSend.mock.calls[0];
-    expect(url).toBe("/api/engineer/chat");
+    expect(url).toBe("/api/gateway/chat");
     expect(body.chatKey).toBe(CHAT_KEY);
     expect(body.provider).toBe(PROVIDER);
     expect(body.model).toBe("claude-sonnet-4-5");
@@ -345,7 +346,7 @@ describe("useChatSession — onError handling", () => {
         callbacks?: { onError?: (err: StreamErrorEvent) => void }
       ) => {
         capturedOnError = callbacks?.onError;
-        return Promise.resolve();
+        return Promise.resolve<SendMessageResult>({ ok: true });
       }
     );
 
@@ -434,10 +435,10 @@ describe("useChatSession — onError handling", () => {
 describe("useChatSession — optimistic pending user message", () => {
   test("appends the user message to the transcript while the stream is in flight", async () => {
     // Hold the stream promise open so we can observe the intermediate state.
-    let resolveSend: (() => void) | undefined;
+    let resolveSend: ((value: SendMessageResult) => void) | undefined;
     mockChatStreamSend.mockImplementation(
       () =>
-        new Promise<void>((resolve) => {
+        new Promise<SendMessageResult>((resolve) => {
           resolveSend = resolve;
         })
     );
@@ -475,7 +476,7 @@ describe("useChatSession — optimistic pending user message", () => {
 
     // Resolve the held stream so the hook can finish.
     act(() => {
-      resolveSend?.();
+      resolveSend?.({ ok: true });
     });
     await act(async () => {
       await sendPromise;
@@ -490,7 +491,7 @@ describe("useChatSession — optimistic pending user message", () => {
       capturedUserMessage = (
         body as { userMessage: typeof capturedUserMessage }
       ).userMessage;
-      return Promise.resolve();
+      return Promise.resolve<SendMessageResult>({ ok: true });
     });
 
     // First get: empty history. Subsequent gets: include the user message
@@ -550,7 +551,7 @@ describe("useChatSession — optimistic pending user message", () => {
         callbacks?: { onError?: (err: StreamErrorEvent) => void }
       ) => {
         capturedOnError = callbacks?.onError;
-        return Promise.resolve();
+        return Promise.resolve<SendMessageResult>({ ok: true });
       }
     );
 
@@ -598,7 +599,7 @@ describe("useChatSession — optimistic pending user message", () => {
         callbacks?: { onError?: (err: StreamErrorEvent) => void }
       ) => {
         capturedOnError = callbacks?.onError;
-        return Promise.resolve();
+        return Promise.resolve<SendMessageResult>({ ok: true });
       }
     );
 
@@ -675,5 +676,292 @@ describe("useChatSession — clearHistory", () => {
     });
 
     expect(mockApiClient.delete).not.toHaveBeenCalled();
+  });
+
+  test("returned promise stays pending until the DELETE resolves (does not fire-and-forget)", async () => {
+    // Defer the mocked DELETE so clearHistory cannot complete until we
+    // explicitly resolve it. Regression guard for the "mutate() + return
+    // Promise.resolve()" pattern which resolved immediately regardless of
+    // the real request's state.
+    let resolveDelete: (value: unknown) => void = () => {};
+    const pendingDelete = new Promise<unknown>((resolve) => {
+      resolveDelete = resolve;
+    });
+    mockApiClient.delete.mockReturnValueOnce(pendingDelete);
+
+    const { result } = renderHook(
+      () =>
+        useChatSession({
+          chatKey: CHAT_KEY,
+          context: "ctx",
+          provider: PROVIDER,
+        }),
+      { wrapper: createWrapper() }
+    );
+
+    let resolved = false;
+    let clearPromise: Promise<void> = Promise.resolve();
+    await act(async () => {
+      clearPromise = result.current.clearHistory().then(() => {
+        resolved = true;
+      });
+      // Yield microtasks so the mutation actually dispatches before we
+      // inspect `resolved`. Without this, the assertion could race the
+      // synchronous kickoff.
+      await Promise.resolve();
+    });
+
+    // The mutation has been dispatched...
+    expect(mockApiClient.delete).toHaveBeenCalledTimes(1);
+    // ...but the returned promise must not have resolved yet because the
+    // underlying DELETE is still pending.
+    expect(resolved).toBe(false);
+
+    // Resolve the deferred DELETE and let clearHistory settle.
+    resolveDelete({ deleted: true });
+    await act(async () => {
+      await clearPromise;
+    });
+
+    expect(resolved).toBe(true);
+  });
+});
+
+describe("useChatSession — PR I context serialization", () => {
+  const SAMPLE_CONTEXT = {
+    id: "pr-comment-1",
+    filePath: "src/foo.ts",
+    line: 42,
+    body: "This function might leak.",
+  };
+
+  test("prepends [Selected PR comment] header when contextSelection is set", async () => {
+    const onContextConsumed = vi.fn();
+    const { result } = renderHook(
+      () =>
+        useChatSession({
+          chatKey: CHAT_KEY,
+          context: "ctx",
+          provider: PROVIDER,
+          contextSelection: SAMPLE_CONTEXT,
+          onContextConsumed,
+        }),
+      { wrapper: createWrapper() }
+    );
+
+    act(() => {
+      result.current.setInputValue("please review");
+    });
+    await act(async () => {
+      await result.current.sendMessage();
+    });
+
+    expect(mockChatStreamSend).toHaveBeenCalledTimes(1);
+    const [, body] = mockChatStreamSend.mock.calls[0];
+    expect(body.userMessage.content).toBe(
+      "[Selected PR comment on src/foo.ts:42]:\nThis function might leak.\n\n---\nplease review"
+    );
+  });
+
+  test("omits line suffix when context has filePath but no line", async () => {
+    const { result } = renderHook(
+      () =>
+        useChatSession({
+          chatKey: CHAT_KEY,
+          context: "ctx",
+          provider: PROVIDER,
+          contextSelection: {
+            id: "c2",
+            filePath: "README.md",
+            body: "typo",
+          },
+        }),
+      { wrapper: createWrapper() }
+    );
+    act(() => {
+      result.current.setInputValue("ok");
+    });
+    await act(async () => {
+      await result.current.sendMessage();
+    });
+    const [, body] = mockChatStreamSend.mock.calls[0];
+    expect(body.userMessage.content).toBe(
+      "[Selected PR comment on README.md]:\ntypo\n\n---\nok"
+    );
+  });
+
+  test("omits location suffix entirely when context has no filePath", async () => {
+    const { result } = renderHook(
+      () =>
+        useChatSession({
+          chatKey: CHAT_KEY,
+          context: "ctx",
+          provider: PROVIDER,
+          contextSelection: {
+            id: "c3",
+            body: "general note",
+          },
+        }),
+      { wrapper: createWrapper() }
+    );
+    act(() => {
+      result.current.setInputValue("draft");
+    });
+    await act(async () => {
+      await result.current.sendMessage();
+    });
+    const [, body] = mockChatStreamSend.mock.calls[0];
+    expect(body.userMessage.content).toBe(
+      "[Selected PR comment]:\ngeneral note\n\n---\ndraft"
+    );
+  });
+
+  test("leaves draft unchanged when contextSelection is null", async () => {
+    const { result } = renderHook(
+      () =>
+        useChatSession({
+          chatKey: CHAT_KEY,
+          context: "ctx",
+          provider: PROVIDER,
+          contextSelection: null,
+        }),
+      { wrapper: createWrapper() }
+    );
+    act(() => {
+      result.current.setInputValue("plain text");
+    });
+    await act(async () => {
+      await result.current.sendMessage();
+    });
+    const [, body] = mockChatStreamSend.mock.calls[0];
+    expect(body.userMessage.content).toBe("plain text");
+  });
+
+  test("leaves draft unchanged when contextSelection is undefined", async () => {
+    const { result } = renderHook(
+      () =>
+        useChatSession({
+          chatKey: CHAT_KEY,
+          context: "ctx",
+          provider: PROVIDER,
+        }),
+      { wrapper: createWrapper() }
+    );
+    act(() => {
+      result.current.setInputValue("plain text");
+    });
+    await act(async () => {
+      await result.current.sendMessage();
+    });
+    const [, body] = mockChatStreamSend.mock.calls[0];
+    expect(body.userMessage.content).toBe("plain text");
+  });
+
+  test("calls onContextConsumed exactly once when sendMessage result.ok is true", async () => {
+    const onContextConsumed = vi.fn();
+    const { result } = renderHook(
+      () =>
+        useChatSession({
+          chatKey: CHAT_KEY,
+          context: "ctx",
+          provider: PROVIDER,
+          contextSelection: SAMPLE_CONTEXT,
+          onContextConsumed,
+        }),
+      { wrapper: createWrapper() }
+    );
+
+    act(() => {
+      result.current.setInputValue("hi");
+    });
+    await act(async () => {
+      await result.current.sendMessage();
+    });
+
+    expect(onContextConsumed).toHaveBeenCalledTimes(1);
+  });
+
+  test("does NOT call onContextConsumed when CloudRelay has no compute target (preflight guard)", async () => {
+    mockRoutingSelection.computeTargetId = null;
+    const onContextConsumed = vi.fn();
+    const { result } = renderHook(
+      () =>
+        useChatSession({
+          chatKey: CHAT_KEY,
+          context: "ctx",
+          provider: PROVIDER,
+          contextSelection: SAMPLE_CONTEXT,
+          onContextConsumed,
+        }),
+      { wrapper: createWrapper() }
+    );
+
+    act(() => {
+      result.current.setInputValue("hi");
+    });
+    await act(async () => {
+      await result.current.sendMessage();
+    });
+
+    expect(mockChatStreamSend).not.toHaveBeenCalled();
+    expect(onContextConsumed).not.toHaveBeenCalled();
+  });
+
+  test("does NOT call onContextConsumed when ensureFresh returns null (token failure)", async () => {
+    mockEnsureFresh.mockResolvedValue(null);
+    const onContextConsumed = vi.fn();
+    const { result } = renderHook(
+      () =>
+        useChatSession({
+          chatKey: CHAT_KEY,
+          context: "ctx",
+          provider: PROVIDER,
+          contextSelection: SAMPLE_CONTEXT,
+          onContextConsumed,
+        }),
+      { wrapper: createWrapper() }
+    );
+
+    act(() => {
+      result.current.setInputValue("hi");
+    });
+    await act(async () => {
+      await result.current.sendMessage();
+    });
+
+    expect(mockChatStreamSend).not.toHaveBeenCalled();
+    expect(onContextConsumed).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ["upsert" as const],
+    ["transport" as const],
+    ["http" as const],
+    ["stream-read" as const],
+    ["already-streaming" as const],
+  ])("does NOT call onContextConsumed when chatStream returns ok:false reason %s", async (reason) => {
+    mockChatStreamSend.mockResolvedValue({ ok: false, reason });
+    const onContextConsumed = vi.fn();
+    const { result } = renderHook(
+      () =>
+        useChatSession({
+          chatKey: CHAT_KEY,
+          context: "ctx",
+          provider: PROVIDER,
+          contextSelection: SAMPLE_CONTEXT,
+          onContextConsumed,
+        }),
+      { wrapper: createWrapper() }
+    );
+
+    act(() => {
+      result.current.setInputValue("hi");
+    });
+    await act(async () => {
+      await result.current.sendMessage();
+    });
+
+    expect(mockChatStreamSend).toHaveBeenCalledTimes(1);
+    expect(onContextConsumed).not.toHaveBeenCalled();
   });
 });

@@ -106,7 +106,7 @@ export function useStartPlanLoop(
       }
 
       const response = await fetch(
-        `/api/engineer/symphony/plan-loop/${encodeURIComponent(ticketIdentifier)}/prepare`,
+        `/api/gateway/symphony/plan-loop/${encodeURIComponent(ticketIdentifier)}/prepare`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -154,7 +154,7 @@ export function useStartPlanLoop(
 
       try {
         const response = await fetch(
-          `/api/engineer/symphony/plan-loop/${encodeURIComponent(ticketIdentifier)}/confirm`,
+          `/api/gateway/symphony/plan-loop/${encodeURIComponent(ticketIdentifier)}/confirm`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },

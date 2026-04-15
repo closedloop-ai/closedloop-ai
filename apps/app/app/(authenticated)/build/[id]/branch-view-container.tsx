@@ -1,13 +1,16 @@
 "use client";
 
 import { useFeatureFlag } from "@repo/analytics/client";
+import { EngineerRoutingMode } from "@repo/api/src/types/relay";
 import { cn } from "@repo/design-system/lib/utils";
 import { useQuery } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useBranchView } from "@/hooks/queries/use-branch-view";
 import { useLocalStorageState } from "@/hooks/use-local-storage-state";
+import { useElectronDetection } from "@/lib/engineer/electron-detection";
 import { queryKeys } from "@/lib/engineer/queries/keys";
+import { useEngineerRoutingSelection } from "@/lib/engineer/routing-store";
 import { buildPrCommentChatContext, findCommentById } from "./comment-context";
 import { BranchChatDrawer } from "./components/branch-chat-drawer";
 import { BranchDiffView } from "./components/branch-diff-view";
@@ -40,7 +43,7 @@ async function fetchBranchWorktree(params: {
     prNumber: String(params.prNumber),
   });
   const response = await fetch(
-    `/api/chat/branch-worktree?${searchParams.toString()}`
+    `/api/gateway/git/branch-worktree?${searchParams.toString()}`
   );
   if (!response.ok) {
     throw new Error("Failed to resolve branch worktree");
@@ -76,8 +79,23 @@ export function BranchViewContainer({
   const repoFullName = data?.repoFullName ?? "";
   const headBranch = data?.headBranch ?? "";
   const prNumber = data?.prNumber ?? 0;
+  const routing = useEngineerRoutingSelection();
+  const electronDetection = useElectronDetection(
+    routing.mode === EngineerRoutingMode.LocalElectron
+  );
+  const routingKey = `${routing.mode}:${routing.computeTargetId ?? "none"}`;
+  const routeable =
+    (routing.mode === EngineerRoutingMode.LocalElectron &&
+      electronDetection.detected) ||
+    (routing.mode === EngineerRoutingMode.CloudRelay &&
+      routing.computeTargetId !== null);
   const branchWorktreeQuery = useQuery({
-    queryKey: queryKeys.branchWorktree(repoFullName, headBranch, prNumber),
+    queryKey: queryKeys.branchWorktree(
+      repoFullName,
+      headBranch,
+      prNumber,
+      routingKey
+    ),
     queryFn: () =>
       fetchBranchWorktree({
         repoFullName,
@@ -87,7 +105,8 @@ export function BranchViewContainer({
     enabled:
       repoFullName.length > 0 &&
       headBranch.length > 0 &&
-      Number.isInteger(prNumber),
+      Number.isInteger(prNumber) &&
+      routeable,
   });
   const worktreePath = branchWorktreeQuery.data?.path ?? null;
   const showFilesystemNotice =
@@ -232,6 +251,7 @@ export function BranchViewContainer({
           <BranchChatDrawer
             contextSelection={chatCommentContext}
             data={data}
+            onClearComment={() => setSelectedCommentId(null)}
             showFilesystemNotice={showFilesystemNotice}
             worktreePath={worktreePath}
           />

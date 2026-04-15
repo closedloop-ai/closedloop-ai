@@ -20,11 +20,11 @@ type InterceptorWindow = Window & {
   __engineerFetchInterceptorRefs?: number;
 };
 
-const ENGINEER_PREFIX = "/api/engineer/";
-const ENGINEER_RELAY_PREFIX = "/api/engineer-relay/";
+const GATEWAY_PREFIX = "/api/gateway/";
+const GATEWAY_RELAY_PREFIX = "/api/gateway-relay/";
 
-function isEngineerRequest(url: URL): boolean {
-  return url.pathname.startsWith(ENGINEER_PREFIX);
+function isGatewayRequest(url: URL): boolean {
+  return url.pathname.startsWith(GATEWAY_PREFIX);
 }
 
 function stripAuthHeaders(headers: Headers): Headers {
@@ -93,8 +93,8 @@ function withComputeTargetHeader(headers: Headers, targetId: string): Headers {
 }
 
 function toRelayPath(pathname: string): string {
-  return pathname.startsWith(ENGINEER_PREFIX)
-    ? pathname.replace(ENGINEER_PREFIX, ENGINEER_RELAY_PREFIX)
+  return pathname.startsWith(GATEWAY_PREFIX)
+    ? pathname.replace(GATEWAY_PREFIX, GATEWAY_RELAY_PREFIX)
     : pathname;
 }
 
@@ -113,7 +113,7 @@ function createFetchInterceptor(
             );
     const requestUrl = new URL(request.url, globalThis.location.origin);
 
-    if (!isEngineerRequest(requestUrl)) {
+    if (!isGatewayRequest(requestUrl)) {
       return originalFetch(request);
     }
 
@@ -252,7 +252,7 @@ function createFetchInterceptor(
 }
 
 /**
- * Installs a global fetch shim for engineer routes.
+ * Installs a global fetch shim for gateway routes.
  * Reference-counted to tolerate React Strict Mode remounts in development.
  */
 export function installEngineerFetchInterceptor(): () => void {

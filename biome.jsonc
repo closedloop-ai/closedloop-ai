@@ -25,7 +25,6 @@
       "includes": [
         "apps/app/components/engineer/**",
         "apps/app/components/chat/**",
-        "apps/app/app/api/engineer/**",
         "apps/app/hooks/engineer/**",
         "apps/app/hooks/chat/**",
         "apps/app/lib/engineer/**",

@@ -30,7 +30,7 @@ export function fileSearchOptions(
         ticket: ticketId,
         query,
       });
-      const response = await fetch(`/api/engineer/files/search?${params}`);
+      const response = await fetch(`/api/gateway/files/search?${params}`);
       return response.json();
     },
   });
@@ -45,7 +45,7 @@ export function fileSearchBaseOptions(repoPath: string, query: string) {
         query,
         base: "true",
       });
-      const response = await fetch(`/api/engineer/files/search?${params}`);
+      const response = await fetch(`/api/gateway/files/search?${params}`);
       return response.json();
     },
   });
@@ -56,7 +56,7 @@ export function directoriesOptions(path: string) {
     queryKey: queryKeys.directories(path),
     queryFn: async () => {
       const params = new URLSearchParams({ path });
-      const response = await fetch(`/api/engineer/directories?${params}`);
+      const response = await fetch(`/api/gateway/directories?${params}`);
       return response.json();
     },
   });

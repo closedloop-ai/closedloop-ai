@@ -172,7 +172,7 @@ export async function launchLoopOnDesktop(
   const input = {
     operationId: "symphony_loop",
     method: "POST" as const,
-    path: "/api/engineer/symphony/loop",
+    path: "/api/gateway/symphony/loop",
     body: {
       loopId,
       command,
@@ -234,7 +234,7 @@ export async function stopDesktopLoop(
   const killInput = {
     operationId: "symphony_loop_kill",
     method: "POST" as const,
-    path: "/api/engineer/symphony/loop/kill",
+    path: "/api/gateway/symphony/loop/kill",
     body: { loopId },
   };
   const createResult = await desktopCommandStore.createCommand(
