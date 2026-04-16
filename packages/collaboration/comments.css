@@ -1,14 +1,8 @@
 /* Liveblocks comments styling overrides */
 
-/* Floating comments (mobile/tablet and fallback) */
-.lb-collab-floating,
-.lb-tiptap-floating-composer,
-.lb-tiptap-floating-toolbar,
-.lb-tiptap-floating-threads {
-  z-index: 60;
-}
-
 /* Mention suggestion dropdown must appear above floating comments */
+.lb-composer-suggestions,
+.lb-composer-mention-suggestions,
 .lb-tiptap-suggestions,
 .lb-tiptap-mention-suggestions {
   z-index: 70;
