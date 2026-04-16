@@ -79,28 +79,38 @@ export function SelectPullRequestDialog({
     return settings.defaultRepository?.repoId ?? null;
   }, [project?.settings]);
 
-  const { data, isLoading } = useGitHubPullRequests(repoId ?? "", projectId, {
-    enabled: open && !!repoId,
-  });
+  const { data, isLoading: isLoadingPullRequests } = useGitHubPullRequests(
+    repoId ?? "",
+    projectId,
+    {
+      enabled: open && !!repoId,
+    }
+  );
 
-  const { data: projectPullRequestLinks = [] } = useExternalLinks(
+  const {
+    data: projectPullRequestLinks = [],
+    isLoading: isLoadingProjectPullRequestLinks,
+  } = useExternalLinks(
     {
       projectId,
       type: ExternalLinkType.PullRequest,
     },
     { enabled: open && !!projectId }
   );
-  const { data: linkedEntities = [] } = useLinkedEntities(
-    featureId,
-    EntityType.Feature,
-    {
-      direction: LinkDirection.Target,
-      enabled: open && !!featureId,
-      mode: LinkQueryMode.Tree,
-    }
-  );
+  const {
+    data: linkedEntities = [],
+    isLoading: isLoadingFeatureLinkedEntities,
+  } = useLinkedEntities(featureId, EntityType.Feature, {
+    direction: LinkDirection.Target,
+    enabled: open && !!featureId,
+    mode: LinkQueryMode.Tree,
+  });
 
   const pullRequests = data?.pullRequests ?? [];
+  const trackedUrls = useMemo(
+    () => new Set(data?.trackedPrUrls ?? []),
+    [data?.trackedPrUrls]
+  );
   const pullRequestLinksByUrl = useMemo(
     () => getPullRequestLinksByUrl(projectPullRequestLinks),
     [projectPullRequestLinks]
@@ -109,15 +119,31 @@ export function SelectPullRequestDialog({
     () => getFeatureLinkedPullRequestUrls(linkedEntities),
     [linkedEntities]
   );
+  const isCheckingExistingLinks =
+    isLoadingFeatureLinkedEntities ||
+    (isLoadingProjectPullRequestLinks && trackedUrls.size > 0);
 
   async function handleSelect(pr: GitHubPullRequestSummary) {
-    if (featureLinkedUrls.has(pr.htmlUrl) || isLinking) {
+    const isTracked = trackedUrls.has(pr.htmlUrl);
+    const isWaitingOnTrackedLink =
+      isTracked && isLoadingProjectPullRequestLinks;
+
+    if (
+      featureLinkedUrls.has(pr.htmlUrl) ||
+      isLinking ||
+      isLoadingFeatureLinkedEntities ||
+      isWaitingOnTrackedLink
+    ) {
       return;
     }
 
     setIsLinking(true);
     try {
       const existingLink = pullRequestLinksByUrl.get(pr.htmlUrl);
+      if (isTracked && !existingLink) {
+        toast.error("Still loading existing PR links. Try again in a moment.");
+        return;
+      }
       const externalLink =
         existingLink ??
         (await createExternalLink.mutateAsync({
@@ -187,20 +213,54 @@ export function SelectPullRequestDialog({
             <span className="text-muted-foreground text-sm">Linking PR...</span>
           </div>
         )}
+        {isCheckingExistingLinks && !isLinking && (
+          <div className="flex items-center justify-center gap-2 py-2">
+            <Loader2Icon className="h-4 w-4 animate-spin text-muted-foreground" />
+            <span className="text-muted-foreground text-sm">
+              Checking existing PR links...
+            </span>
+          </div>
+        )}
         <Command className="rounded-lg border" shouldFilter>
           <CommandInput placeholder="Search pull requests..." />
           <CommandList className="max-h-[400px]">
             <CommandEmpty>
-              {isLoading
+              {isLoadingPullRequests
                 ? "Loading pull requests..."
                 : "No pull requests found."}
             </CommandEmpty>
             <CommandGroup>
               {pullRequests.map((pr) => {
+                const isTracked = trackedUrls.has(pr.htmlUrl);
                 const isLinked = featureLinkedUrls.has(pr.htmlUrl);
+                const isWaitingOnTrackedLink =
+                  isTracked && isLoadingProjectPullRequestLinks;
+                const isDisabled =
+                  isLinked ||
+                  isLinking ||
+                  isLoadingFeatureLinkedEntities ||
+                  isWaitingOnTrackedLink;
+                let linkStateBadge: React.ReactNode = null;
+
+                if (isLinked) {
+                  linkStateBadge = (
+                    <Badge className="shrink-0" variant="secondary">
+                      <LinkIcon className="mr-1 h-3 w-3" />
+                      Linked
+                    </Badge>
+                  );
+                } else if (isWaitingOnTrackedLink) {
+                  linkStateBadge = (
+                    <Badge className="shrink-0" variant="secondary">
+                      <Loader2Icon className="mr-1 h-3 w-3 animate-spin" />
+                      Checking...
+                    </Badge>
+                  );
+                }
+
                 return (
                   <CommandItem
-                    disabled={isLinked || isLinking}
+                    disabled={isDisabled}
                     key={pr.number}
                     onSelect={() => handleSelect(pr)}
                     value={`#${pr.number} ${pr.title} ${pr.headBranch} ${pr.author}`}
@@ -211,12 +271,7 @@ export function SelectPullRequestDialog({
                         <span className="truncate font-medium text-sm">
                           #{pr.number} {pr.title}
                         </span>
-                        {isLinked && (
-                          <Badge className="shrink-0" variant="secondary">
-                            <LinkIcon className="mr-1 h-3 w-3" />
-                            Linked
-                          </Badge>
-                        )}
+                        {linkStateBadge}
                       </div>
                       <div className="flex items-center gap-2 text-muted-foreground text-xs">
                         <GitBranchIcon className="h-3 w-3" />

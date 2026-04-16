@@ -19,6 +19,7 @@ const mockUseLinkedEntities = vi.fn();
 const mockCreateExternalLink = vi.fn();
 const mockCreateEntityLink = vi.fn();
 const mockToastSuccess = vi.fn();
+const CHECKING_EXISTING_PR_LINKS_REGEX = /checking existing pr links/i;
 const PR_TITLE_REGEX = /fix direct feature pr linking/i;
 
 class MockResizeObserver {
@@ -135,9 +136,11 @@ describe("SelectPullRequestDialog", () => {
     });
     mockUseExternalLinks.mockReturnValue({
       data: [],
+      isLoading: false,
     });
     mockUseLinkedEntities.mockReturnValue({
       data: [],
+      isLoading: false,
     });
     mockCreateExternalLink.mockResolvedValue(makeExternalLink());
     mockCreateEntityLink.mockResolvedValue({ id: "entity-link-1" });
@@ -220,5 +223,40 @@ describe("SelectPullRequestDialog", () => {
     });
 
     expect(mockCreateExternalLink).not.toHaveBeenCalled();
+  });
+
+  it("does not create a duplicate PR link while tracked links are still loading", async () => {
+    const user = userEvent.setup();
+    const pullRequest = makePullRequest();
+
+    mockUseGitHubPullRequests.mockReturnValue({
+      data: {
+        pullRequests: [pullRequest],
+        trackedPrUrls: [pullRequest.htmlUrl],
+      },
+      isLoading: false,
+    });
+    mockUseExternalLinks.mockReturnValue({
+      data: [],
+      isLoading: true,
+    });
+
+    render(
+      <SelectPullRequestDialog
+        featureId="feature-1"
+        onOpenChange={vi.fn()}
+        open={true}
+        projectId="project-1"
+      />
+    );
+
+    expect(
+      screen.getByText(CHECKING_EXISTING_PR_LINKS_REGEX)
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByText(PR_TITLE_REGEX));
+
+    expect(mockCreateExternalLink).not.toHaveBeenCalled();
+    expect(mockCreateEntityLink).not.toHaveBeenCalled();
   });
 });
