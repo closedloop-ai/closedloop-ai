@@ -3,6 +3,7 @@
  */
 
 import { vi } from "vitest";
+import type * as LoopDesktop from "@/lib/loops/loop-desktop";
 
 vi.mock("@aws-sdk/client-ecs", () => ({
   ECSClient: vi.fn(),
@@ -94,8 +95,7 @@ vi.mock("@/lib/desktop-command-store", () => ({
 }));
 
 vi.mock("@/lib/loops/loop-desktop", async (importActual) => {
-  const actual =
-    await importActual<typeof import("@/lib/loops/loop-desktop")>();
+  const actual = await importActual<typeof LoopDesktop>();
   return {
     DispatchError: actual.DispatchError,
     isDispatchError: actual.isDispatchError,

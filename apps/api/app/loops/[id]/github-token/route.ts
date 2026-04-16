@@ -45,24 +45,21 @@ export async function POST(
       );
     }
 
-    const freshToken = await resolveGitHubToken(
-      claims.organizationId,
-      loop.repo.fullName
-    );
-
-    const additionalRepoTokens: Array<{ fullName: string; token: string }> = [];
-    if (loop.additionalRepos) {
-      for (const ref of loop.additionalRepos) {
-        const peerToken = await resolveGitHubToken(
-          claims.organizationId,
-          ref.fullName
-        );
-        additionalRepoTokens.push({
+    // Resolve the primary and additional-repo tokens in parallel. Each
+    // resolveGitHubToken() call is an independent GitHub App installation-token
+    // round-trip, so serializing them would add 100-500ms per additional repo
+    // to a latency-sensitive refresh path (the harness calls this endpoint
+    // when its installation token is near expiry).
+    const additionalRepos = loop.additionalRepos ?? [];
+    const [freshToken, additionalRepoTokens] = await Promise.all([
+      resolveGitHubToken(claims.organizationId, loop.repo.fullName),
+      Promise.all(
+        additionalRepos.map(async (ref) => ({
           fullName: ref.fullName,
-          token: peerToken,
-        });
-      }
-    }
+          token: await resolveGitHubToken(claims.organizationId, ref.fullName),
+        }))
+      ),
+    ]);
 
     return successResponse({ token: freshToken, additionalRepoTokens });
   } catch (error) {

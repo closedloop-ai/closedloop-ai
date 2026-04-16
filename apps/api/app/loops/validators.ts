@@ -34,17 +34,23 @@ export const repoSchema = z.object({
     .regex(/^[a-zA-Z0-9._/-]+$/, "Branch name contains invalid characters"),
 });
 
+/**
+ * Validated additionalRepos schema — coerces empty arrays to undefined so
+ * downstream consumers receive either a non-empty list or nothing at all.
+ */
+export const additionalReposSchema = z
+  .array(repoSchema)
+  .max(MAX_ADDITIONAL_REPOS)
+  .optional()
+  .transform((value) => (value?.length ? value : undefined));
+
 export const createLoopValidator = z.object({
   command: LoopCommandSchema,
   artifactId: z.uuidv7().optional(),
   workstreamId: z.uuidv7().optional(),
   prompt: z.string().max(100_000).optional(),
   repo: repoSchema.optional(),
-  additionalRepos: z
-    .array(repoSchema)
-    .max(MAX_ADDITIONAL_REPOS)
-    .optional()
-    .transform((value) => (value?.length ? value : undefined)),
+  additionalRepos: additionalReposSchema,
   contextRefs: z
     .array(
       z.object({
