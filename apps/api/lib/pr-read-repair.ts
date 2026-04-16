@@ -141,6 +141,7 @@ type RepoResolution = { repositoryId: string; installationId: string };
 async function resolveRepositoryId(
   owner: string,
   repo: string,
+  organizationId: string,
   cache: Map<string, RepoResolution | null>
 ): Promise<RepoResolution | null> {
   const cacheKey = `${owner}/${repo}`;
@@ -151,7 +152,10 @@ async function resolveRepositoryId(
 
   const row = await withDb((db) =>
     db.gitHubInstallationRepository.findFirst({
-      where: { fullName: cacheKey },
+      where: {
+        fullName: cacheKey,
+        installation: { organizationId },
+      },
       select: {
         id: true,
         installation: { select: { installationId: true } },
@@ -320,7 +324,12 @@ async function repairSinglePrLink(
   const githubId = parsed?.githubId;
 
   // Try the fast path: resolve both repositoryId and installationId in one lookup
-  const repoResolution = await resolveRepositoryId(owner, repo, repoCache);
+  const repoResolution = await resolveRepositoryId(
+    owner,
+    repo,
+    organizationId,
+    repoCache
+  );
 
   const installationId =
     repoResolution?.installationId ??
@@ -393,19 +402,19 @@ async function runPrReadRepair(
 /**
  * Walk the entity link tree to resolve a workstream ID for an external link.
  *
- * Resolution order:
- * 1. Find the parent artifact via entity_links (targetId = externalLinkId, targetType = EXTERNAL_LINK).
- * 2. Return artifact's workstream_id if present.
- * 3. Walk one more level: find parent feature via entity_links (targetId = artifactId, targetType = ARTIFACT).
- * 4. Return feature's workstream_id, or null if unresolvable.
+ * Scans all incoming entity links (not just the first) to handle cases where
+ * the external link has multiple parents (e.g., artifact + PRD). Checks:
+ * 1. All parent artifacts — return the first artifact's workstream_id if present.
+ * 2. For each artifact without a workstream, walk one more level to the parent
+ *    feature and return the feature's workstream_id.
  */
 async function resolveWorkstreamId(
   externalLinkId: string,
   organizationId: string
 ): Promise<string | null> {
-  // Level 1: find the artifact that targets this external link
-  const artifactLink = await withDb((db) =>
-    db.entityLink.findFirst({
+  // Level 1: find all entities that target this external link
+  const parentLinks = await withDb((db) =>
+    db.entityLink.findMany({
       where: {
         targetId: externalLinkId,
         targetType: EntityType.ExternalLink,
@@ -415,47 +424,51 @@ async function resolveWorkstreamId(
     })
   );
 
-  if (!artifactLink || artifactLink.sourceType !== EntityType.Artifact) {
-    return null;
+  for (const parentLink of parentLinks) {
+    if (parentLink.sourceType !== EntityType.Artifact) {
+      continue;
+    }
+
+    const artifact = await withDb((db) =>
+      db.artifact.findFirst({
+        where: { id: parentLink.sourceId, organizationId },
+        select: { workstreamId: true },
+      })
+    );
+
+    if (artifact?.workstreamId) {
+      return artifact.workstreamId;
+    }
+
+    // Level 2: find the feature that targets this artifact
+    const featureLinks = await withDb((db) =>
+      db.entityLink.findMany({
+        where: {
+          targetId: parentLink.sourceId,
+          targetType: EntityType.Artifact,
+          organizationId,
+        },
+        select: { sourceId: true, sourceType: true },
+      })
+    );
+
+    for (const featureLink of featureLinks) {
+      if (featureLink.sourceType !== EntityType.Feature) {
+        continue;
+      }
+
+      const feature = await withDb((db) =>
+        db.feature.findFirst({
+          where: { id: featureLink.sourceId, organizationId },
+          select: { workstreamId: true },
+        })
+      );
+
+      if (feature?.workstreamId) {
+        return feature.workstreamId;
+      }
+    }
   }
 
-  const artifact = await withDb((db) =>
-    db.artifact.findFirst({
-      where: { id: artifactLink.sourceId, organizationId },
-      select: { workstreamId: true },
-    })
-  );
-
-  if (!artifact) {
-    return null;
-  }
-
-  if (artifact.workstreamId !== null) {
-    return artifact.workstreamId;
-  }
-
-  // Level 2: find the feature that targets this artifact
-  const featureLink = await withDb((db) =>
-    db.entityLink.findFirst({
-      where: {
-        targetId: artifactLink.sourceId,
-        targetType: EntityType.Artifact,
-        organizationId,
-      },
-      select: { sourceId: true, sourceType: true },
-    })
-  );
-
-  if (!featureLink || featureLink.sourceType !== EntityType.Feature) {
-    return null;
-  }
-
-  const feature = await withDb((db) =>
-    db.feature.findFirst({
-      where: { id: featureLink.sourceId, organizationId },
-      select: { workstreamId: true },
-    })
-  );
-
-  return feature?.workstreamId ?? null;
+  return null;
 }

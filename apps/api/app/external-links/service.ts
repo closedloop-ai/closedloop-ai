@@ -12,6 +12,8 @@ import { log } from "@repo/observability/log";
 
 // URL shape: https://github.com/<owner>/<repo>/pull/<number>
 const PR_FULL_NAME_REGEX = /github\.com\/([^/]+\/[^/]+)\/pull\//;
+// Matches the "PR #N: " display prefix prepended to external link titles
+const PR_TITLE_PREFIX_REGEX = /^PR\s*#\d+:\s*/;
 
 export const externalLinksService = {
   toExternalLink(link: Prisma.ExternalLinkModel): ExternalLink {
@@ -205,6 +207,22 @@ async function bestEffortInsertPullRequest({
         return;
       }
 
+      const existing = await db.gitHubPullRequest.findFirst({
+        where: { githubId, organizationId },
+        select: { id: true },
+      });
+
+      if (existing) {
+        log.info(
+          "[externalLinksService.create] github_pull_requests row already exists — skipping insert",
+          { githubId, externalLinkId: link.id }
+        );
+        return;
+      }
+
+      // Strip the "PR #N: " display prefix to store the raw GitHub title
+      const rawTitle = link.title.replace(PR_TITLE_PREFIX_REGEX, "");
+
       const createdPr = await db.gitHubPullRequest.create({
         data: {
           workstreamId,
@@ -213,7 +231,7 @@ async function bestEffortInsertPullRequest({
           artifactId,
           githubId,
           number: parsed.number,
-          title: link.title,
+          title: rawTitle,
           htmlUrl: link.externalUrl,
           headBranch: parsed.headBranch,
           baseBranch: parsed.baseBranch,
