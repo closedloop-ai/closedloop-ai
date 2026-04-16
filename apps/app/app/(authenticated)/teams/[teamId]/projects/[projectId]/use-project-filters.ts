@@ -13,7 +13,7 @@ import type { FilterCategory } from "./page";
 // ---- Category helpers ----
 
 function isArtifactVisibleInCategory(
-  type: string,
+  type: ArtifactType,
   category: FilterCategory
 ): boolean {
   if (category === "features" || category === "branches") {
