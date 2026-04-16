@@ -1,41 +1,24 @@
 "use client";
 
 import type { Priority } from "@repo/api/src/types/common";
-import {
-  FEATURE_STATUS_OPTIONS,
-  type FeatureStatus,
+import type {
+  FeatureStatus,
+  FeatureWithWorkstream,
 } from "@repo/api/src/types/feature";
 import { Button } from "@repo/design-system/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuCheckboxItem,
-  DropdownMenuContent,
-  DropdownMenuGroup,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@repo/design-system/components/ui/dropdown-menu";
-import {
-  BoxIcon,
-  LayoutGridIcon,
-  ListFilter,
-  ListIcon,
-  XIcon,
-} from "lucide-react";
-import { useCallback, useMemo, useState } from "react";
+import { Input } from "@repo/design-system/components/ui/input";
+import { BoxIcon, LayoutGridIcon, ListIcon, SearchIcon } from "lucide-react";
+import { useMemo, useState } from "react";
 import { Header } from "@/app/(authenticated)/components/header";
+import { ActiveFiltersBar } from "@/components/artifact-table/active-filters-bar";
 import type {
   ArtifactRowItem,
   RowEditHandlers,
 } from "@/components/artifact-table/artifact-row";
-import { ColumnVisibilityPanel } from "@/components/artifact-table/column-visibility-panel";
 import { DeleteRowActions } from "@/components/artifact-table/delete-row-actions";
+import { FilterPopover } from "@/components/artifact-table/filter-popover";
 import { FlatArtifactTable } from "@/components/artifact-table/flat-artifact-table";
-import {
-  featurePriorityLabels,
-  featureStatusLabels,
-} from "@/components/status-badge";
+import { TableViewMenu } from "@/components/artifact-table/table-view-menu";
 import {
   useDeleteFeature,
   useFeatures,
@@ -47,30 +30,18 @@ import {
   MY_TASKS_DEFAULT_COLUMNS,
   useColumnVisibility,
 } from "@/hooks/use-column-visibility";
+import { useGroupByStatus } from "@/hooks/use-group-by-status";
 import { useItemsParentTitles } from "@/hooks/use-items-parent-titles";
 import { useLocalStorageState } from "@/hooks/use-local-storage-state";
 import { useOrgUsersAsPopoverUsers } from "@/hooks/use-org-users-as-popover-users";
+import { useTableFilters } from "@/hooks/use-table-filters";
 import { OnboardingChecklist } from "../components/onboarding-checklist";
 import { MyTasksEmptyState } from "./components/my-tasks-empty-state";
 import { MyTasksKanban } from "./components/my-tasks-kanban";
-import type { MyTasksFeatureFilters } from "./types";
-import {
-  applyClientFilters,
-  buildFeatureListParams,
-  EMPTY_FILTERS,
-  hasActiveFilters,
-} from "./utils";
+import { buildFeatureListParams } from "./utils";
 
 const VIEW_KEY = "my-tasks-view";
 const COLUMN_VISIBILITY_KEY = "table:columns:my-tasks";
-
-function toggleArrayValue<T>(arr: T[], value: T): T[] {
-  return arr.includes(value) ? arr.filter((v) => v !== value) : [...arr, value];
-}
-
-const preventClose = (e: Event) => {
-  e.preventDefault();
-};
 
 export default function MyTasksPage() {
   const { data: currentUser, isLoading: isUserLoading } = useCurrentUser();
@@ -78,7 +49,7 @@ export default function MyTasksPage() {
     VIEW_KEY,
     "list"
   );
-  const [filters, setFilters] = useState<MyTasksFeatureFilters>(EMPTY_FILTERS);
+  const [filterText, setFilterText] = useState("");
   const { data: projects = [] } = useProjects();
   const assigneeId = currentUser?.id ?? null;
   const listParams = useMemo(
@@ -90,26 +61,7 @@ export default function MyTasksPage() {
     { enabled: !!assigneeId && !isUserLoading }
   );
 
-  const features = useMemo(
-    () => applyClientFilters(rawFeatures, filters),
-    [rawFeatures, filters]
-  );
-
-  // Derive unique projects from the user's assigned features (not the full org list).
-  const filterProjects = useMemo(() => {
-    const seen = new Set<string>();
-    const result: { id: string; name: string }[] = [];
-    for (const f of rawFeatures) {
-      if (f.project && !seen.has(f.project.id)) {
-        seen.add(f.project.id);
-        result.push({ id: f.project.id, name: f.project.name });
-      }
-    }
-    return result.sort((a, b) => a.name.localeCompare(b.name));
-  }, [rawFeatures]);
-
   const isListView = view === "list";
-  const filtersActive = hasActiveFilters(filters);
 
   // ---- Column visibility ----
 
@@ -119,6 +71,10 @@ export default function MyTasksPage() {
   const visibleColumns = useMemo(
     () => MY_TASKS_DEFAULT_COLUMNS.filter((c) => userVisibility[c] !== false),
     [userVisibility]
+  );
+
+  const { groupByStatus, toggleGroupByStatus } = useGroupByStatus(
+    "table:groupByStatus:my-tasks"
   );
 
   // ---- Edit handlers ----
@@ -146,37 +102,46 @@ export default function MyTasksPage() {
     return result.deleted ?? false;
   };
 
-  // ---- Items ----
+  // ---- Items & filters ----
 
-  const items: ArtifactRowItem[] = useMemo(
-    () => features.map((f) => ({ kind: "feature" as const, data: f })),
-    [features]
+  const allItems: ArtifactRowItem[] = useMemo(
+    () => rawFeatures.map((f) => ({ kind: "feature" as const, data: f })),
+    [rawFeatures]
   );
 
-  const parentTitleMap = useItemsParentTitles(items);
+  const filtersReturn = useTableFilters({
+    items: allItems,
+    currentUserId: currentUser?.id,
+  });
 
-  // ---- Filter toggles ----
-
-  const toggleProject = useCallback((id: string) => {
-    setFilters((prev) => ({
-      ...prev,
-      projectIds: toggleArrayValue(prev.projectIds, id),
+  const displayItems = useMemo(() => {
+    let filtered = rawFeatures;
+    if (filterText.trim()) {
+      const q = filterText.toLowerCase().trim();
+      filtered = rawFeatures.filter(
+        (f) =>
+          f.title.toLowerCase().includes(q) || f.slug.toLowerCase().includes(q)
+      );
+    }
+    let items: ArtifactRowItem[] = filtered.map((f) => ({
+      kind: "feature" as const,
+      data: f,
     }));
-  }, []);
+    if (filtersReturn.isAnyFilterActive) {
+      items = filtersReturn.applyFilters(items);
+    }
+    return items;
+  }, [rawFeatures, filterText, filtersReturn]);
 
-  const toggleStatus = useCallback((status: FeatureStatus) => {
-    setFilters((prev) => ({
-      ...prev,
-      statuses: toggleArrayValue(prev.statuses, status),
-    }));
-  }, []);
+  const parentTitleMap = useItemsParentTitles(allItems);
 
-  const togglePriority = useCallback((priority: Priority) => {
-    setFilters((prev) => ({
-      ...prev,
-      priorities: toggleArrayValue(prev.priorities, priority),
-    }));
-  }, []);
+  const kanbanFeatures = useMemo(
+    () =>
+      displayItems
+        .filter((item) => item.kind === "feature")
+        .map((item) => item.data as FeatureWithWorkstream),
+    [displayItems]
+  );
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -186,107 +151,70 @@ export default function MyTasksPage() {
         <OnboardingChecklist />
 
         {/* Title bar */}
-        <div className="flex min-w-fit shrink-0 items-center justify-between border-b px-4 pt-4 pb-2">
-          <h1 className="font-semibold text-xl">My Tasks</h1>
-          <div className="flex items-center gap-2">
-            {isListView && (
-              <ColumnVisibilityPanel
-                columns={MY_TASKS_DEFAULT_COLUMNS}
-                onToggle={toggleColumn}
-                visibility={visibility}
+        <div className="border-b">
+          <div className="flex min-w-fit shrink-0 items-center justify-between gap-3 px-4 py-3">
+            <h1 className="font-semibold text-xl">My Tasks</h1>
+            <div className="flex items-center gap-2">
+              <div className="relative min-w-[200px] max-w-[350px]">
+                <div className="pointer-events-none absolute inset-y-0 left-3 flex items-center">
+                  <SearchIcon className="h-4 w-4 text-muted-foreground" />
+                </div>
+                <Input
+                  aria-label="Filter items"
+                  className="h-8 pl-9 shadow-none"
+                  onChange={(e) => setFilterText(e.target.value)}
+                  placeholder="Filter items..."
+                  value={filterText}
+                />
+              </div>
+              <FilterPopover
+                filtersReturn={filtersReturn}
+                hideAssignee
+                teamMembers={[]}
+                teamMembersError={null}
+                teamMembersLoading={false}
               />
-            )}
-            <Button
-              aria-label={
-                isListView ? "Switch to card view" : "Switch to list view"
-              }
-              className="border border-input-border bg-transparent"
-              onClick={() => setView(isListView ? "card" : "list")}
-              variant="ghost"
-            >
-              {isListView ? (
-                <>
-                  <LayoutGridIcon className="size-4" />
-                  <span className="hidden sm:inline">Card</span>
-                </>
-              ) : (
-                <>
-                  <ListIcon className="size-4" />
-                  <span className="hidden sm:inline">List</span>
-                </>
+              {isListView && (
+                <TableViewMenu
+                  columns={MY_TASKS_DEFAULT_COLUMNS}
+                  groupByStatus={groupByStatus}
+                  onToggle={toggleColumn}
+                  onToggleGroupByStatus={toggleGroupByStatus}
+                  visibility={visibility}
+                />
               )}
-            </Button>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  aria-label="Filter tasks"
-                  className={`border border-input-border bg-transparent ${filtersActive ? "border-primary/50" : ""}`}
-                  variant="ghost"
-                >
-                  <ListFilter className="size-4" />
-                  <span className="hidden sm:inline">Filter</span>
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-56">
-                <DropdownMenuGroup>
-                  <DropdownMenuLabel>Project</DropdownMenuLabel>
-                  {filterProjects.map((p) => (
-                    <DropdownMenuCheckboxItem
-                      checked={filters.projectIds.includes(p.id)}
-                      key={p.id}
-                      onCheckedChange={() => toggleProject(p.id)}
-                      onSelect={preventClose}
-                    >
-                      <span className="truncate">{p.name}</span>
-                    </DropdownMenuCheckboxItem>
-                  ))}
-                </DropdownMenuGroup>
-                <DropdownMenuSeparator />
-                <DropdownMenuGroup>
-                  <DropdownMenuLabel>Status</DropdownMenuLabel>
-                  {FEATURE_STATUS_OPTIONS.map((value) => (
-                    <DropdownMenuCheckboxItem
-                      checked={filters.statuses.includes(value)}
-                      key={value}
-                      onCheckedChange={() => toggleStatus(value)}
-                      onSelect={preventClose}
-                    >
-                      {featureStatusLabels[value]}
-                    </DropdownMenuCheckboxItem>
-                  ))}
-                </DropdownMenuGroup>
-                <DropdownMenuSeparator />
-                <DropdownMenuGroup>
-                  <DropdownMenuLabel>Priority</DropdownMenuLabel>
-                  {Object.entries(featurePriorityLabels).map(
-                    ([value, label]) => (
-                      <DropdownMenuCheckboxItem
-                        checked={filters.priorities.includes(value as Priority)}
-                        key={value}
-                        onCheckedChange={() =>
-                          togglePriority(value as Priority)
-                        }
-                        onSelect={preventClose}
-                      >
-                        {label}
-                      </DropdownMenuCheckboxItem>
-                    )
-                  )}
-                </DropdownMenuGroup>
-                {filtersActive && (
+              <Button
+                aria-label={
+                  isListView ? "Switch to card view" : "Switch to list view"
+                }
+                className="h-8 border border-input-border bg-transparent shadow-none"
+                onClick={() => setView(isListView ? "card" : "list")}
+                size="sm"
+                variant="ghost"
+              >
+                {isListView ? (
                   <>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuItem
-                      onSelect={() => setFilters(EMPTY_FILTERS)}
-                    >
-                      <XIcon className="size-4" />
-                      Clear filters
-                    </DropdownMenuItem>
+                    <LayoutGridIcon />
+                    <span className="hidden sm:inline">Card</span>
+                  </>
+                ) : (
+                  <>
+                    <ListIcon />
+                    <span className="hidden sm:inline">List</span>
                   </>
                 )}
-              </DropdownMenuContent>
-            </DropdownMenu>
+              </Button>
+            </div>
           </div>
+          {filtersReturn.isAnyFilterActive && (
+            <ActiveFiltersBar
+              filtersReturn={filtersReturn}
+              hideAssignee
+              teamMembers={[]}
+              teamMembersError={null}
+              teamMembersLoading={false}
+            />
+          )}
         </div>
 
         {/* Content — card view */}
@@ -294,7 +222,8 @@ export default function MyTasksPage() {
           <div className="flex-1 overflow-auto p-4">
             <MyTasksKanban
               assigneeId={assigneeId}
-              featureFilters={filters}
+              features={kanbanFeatures}
+              isLoading={isFeaturesLoading}
               isUserLoading={isUserLoading}
             />
           </div>
@@ -319,12 +248,14 @@ export default function MyTasksPage() {
                 emptyDescription="Try adjusting your filters."
                 emptyIcon={BoxIcon}
                 emptyTitle="No matching tasks"
-                items={items}
+                groupByStatus={groupByStatus}
+                items={displayItems}
                 moreMenuContent={(_item, onRequestDelete) => (
                   <DeleteRowActions onDelete={onRequestDelete} />
                 )}
                 onDelete={handleDelete}
                 parentTitleMap={parentTitleMap}
+                statusExpansionKey="table:expand:my-tasks-status"
                 visibleColumns={visibleColumns}
               />
             </div>

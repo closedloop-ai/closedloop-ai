@@ -18,6 +18,7 @@ export function matchesFilter(
   }
   return [
     artifact.title,
+    artifact.slug,
     artifact.snippet ?? "",
     artifact.workstream?.title ?? "",
   ].some((field) => field.toLowerCase().includes(q));

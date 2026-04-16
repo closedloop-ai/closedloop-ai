@@ -37,11 +37,13 @@ import {
 import { useParams, useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import { Header } from "@/app/(authenticated)/components/header";
+import { ActiveFiltersBar } from "@/components/artifact-table/active-filters-bar";
 import type {
   ArtifactRowItem,
   RowEditHandlers,
 } from "@/components/artifact-table/artifact-row";
-import { ColumnVisibilityPanel } from "@/components/artifact-table/column-visibility-panel";
+import { FilterPopover } from "@/components/artifact-table/filter-popover";
+import { TableViewMenu } from "@/components/artifact-table/table-view-menu";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { EditableProjectDescription } from "@/components/editable-project-description";
 import { EditableProjectTitle } from "@/components/editable-project-title";
@@ -72,12 +74,14 @@ import {
   useUpdateProjectTargetDate,
 } from "@/hooks/queries/use-projects";
 import { useTeam } from "@/hooks/queries/use-teams";
+import { useCurrentUser } from "@/hooks/queries/use-users";
 import { useActiveLoops } from "@/hooks/use-active-loops";
 import {
   ArtifactColumn,
   type ColumnVisibility,
   useColumnVisibility,
 } from "@/hooks/use-column-visibility";
+import { useGroupByStatus } from "@/hooks/use-group-by-status";
 import { useTabParam } from "@/hooks/use-tab-param";
 import { useTeamMembers } from "@/hooks/use-team-members";
 import { ActiveLoopsStatus } from "./components/active-loops-status";
@@ -87,6 +91,7 @@ import { CreateFeatureModal } from "./components/create-feature-modal";
 import { OverviewActivity } from "./components/overview-activity";
 import { OverviewProperties } from "./components/overview-properties";
 import { useMergeNotification } from "./hooks/use-merge-notification";
+import { useProjectFilters } from "./use-project-filters";
 
 export type FilterCategory =
   | "all"
@@ -143,6 +148,9 @@ export default function ProjectDetailPage() {
     overrides: columnOverrides,
     storageKey: COLUMN_VISIBILITY_KEY,
   });
+  const { groupByStatus, toggleGroupByStatus } = useGroupByStatus(
+    "table:groupByStatus:project-artifacts"
+  );
   const isFavorite = useIsFavorite(projectId);
   const toggleFavorite = useToggleFavorite();
   const deleteProjectMutation = useDeleteProject();
@@ -207,9 +215,39 @@ export default function ProjectDetailPage() {
   const error = teamError?.message || projectError?.message || null;
 
   // Team members for inline editing
-  const { members: teamMembers } = useTeamMembers({
+  const {
+    members: teamMembers,
+    isLoading: teamMembersLoading,
+    error: teamMembersError,
+  } = useTeamMembers({
     teamIds: teamData ? [teamData.id] : [],
   });
+
+  // Current user for "Assigned to me" filter
+  const { data: currentUser } = useCurrentUser();
+
+  // Project filters
+  const filtersReturn = useProjectFilters({
+    artifacts,
+    features,
+    filterCategory,
+    currentUserId: currentUser?.id,
+  });
+
+  const filterCurrentUser = useMemo(
+    () =>
+      currentUser
+        ? {
+            id: currentUser.id,
+            name:
+              [currentUser.firstName, currentUser.lastName]
+                .filter(Boolean)
+                .join(" ") || currentUser.email,
+            avatarUrl: currentUser.avatarUrl ?? undefined,
+          }
+        : null,
+    [currentUser]
+  );
 
   // Mutations
   const updatePriorityMutation = useUpdateProjectPriority();
@@ -475,41 +513,66 @@ export default function ProjectDetailPage() {
           </UnderlineTabsTrigger>
         </UnderlineTabsList>
         {activeTab === "artifacts" && hasArtifactItems && (
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3">
-            <ToggleGroup
-              onValueChange={(value) => {
-                if (value) {
-                  setFilterCategory(value as FilterCategory);
-                }
-              }}
-              type="single"
-              value={filterCategory}
-              variant="outline"
-            >
-              <ToggleGroupItem value="all">All</ToggleGroupItem>
-              <ToggleGroupItem value="documents">PRDs</ToggleGroupItem>
-              <ToggleGroupItem value="features">Features</ToggleGroupItem>
-              <ToggleGroupItem value="plans">Plans</ToggleGroupItem>
-              <ToggleGroupItem value="branches">Branches</ToggleGroupItem>
-            </ToggleGroup>
-            <div className="flex items-center gap-2">
-              <div className="relative min-w-[200px] max-w-[350px]">
-                <div className="pointer-events-none absolute inset-y-0 left-3 flex items-center">
-                  <SearchIcon className="h-4 w-4 text-muted-foreground" />
+          <div className="border-b">
+            <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
+              <div className="flex items-center gap-2">
+                <ToggleGroup
+                  onValueChange={(value) => {
+                    if (value) {
+                      setFilterCategory(value as FilterCategory);
+                    }
+                  }}
+                  size="sm"
+                  type="single"
+                  value={filterCategory}
+                  variant="outline"
+                >
+                  <ToggleGroupItem value="all">All</ToggleGroupItem>
+                  <ToggleGroupItem value="documents">PRDs</ToggleGroupItem>
+                  <ToggleGroupItem value="features">Features</ToggleGroupItem>
+                  <ToggleGroupItem value="plans">Plans</ToggleGroupItem>
+                  <ToggleGroupItem value="branches">Branches</ToggleGroupItem>
+                </ToggleGroup>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="relative min-w-[200px] max-w-[350px]">
+                  <div className="pointer-events-none absolute inset-y-0 left-3 flex items-center">
+                    <SearchIcon className="h-4 w-4 text-muted-foreground" />
+                  </div>
+                  <Input
+                    aria-label="Filter items"
+                    className="h-8 pl-9 shadow-none"
+                    onChange={(e) => setFilterText(e.target.value)}
+                    placeholder="Filter items..."
+                    value={filterText}
+                  />
                 </div>
-                <Input
-                  aria-label="Filter items"
-                  className="pl-9 shadow-none"
-                  onChange={(e) => setFilterText(e.target.value)}
-                  placeholder="Filter items..."
-                  value={filterText}
+                {filterCategory !== "branches" && (
+                  <FilterPopover
+                    currentUser={filterCurrentUser}
+                    filtersReturn={filtersReturn}
+                    teamMembers={teamMembers}
+                    teamMembersError={teamMembersError}
+                    teamMembersLoading={teamMembersLoading}
+                  />
+                )}
+                <TableViewMenu
+                  groupByStatus={groupByStatus}
+                  onToggle={toggleColumn}
+                  onToggleGroupByStatus={toggleGroupByStatus}
+                  visibility={userVisibility}
                 />
               </div>
-              <ColumnVisibilityPanel
-                onToggle={toggleColumn}
-                visibility={userVisibility}
-              />
             </div>
+            {filtersReturn.isAnyFilterActive && (
+              <ActiveFiltersBar
+                currentUser={filterCurrentUser}
+                filtersReturn={filtersReturn}
+                teamMembers={teamMembers}
+                teamMembersError={teamMembersError}
+                teamMembersLoading={teamMembersLoading}
+              />
+            )}
           </div>
         )}
         <main className="flex-1 overflow-auto">
@@ -543,11 +606,19 @@ export default function ProjectDetailPage() {
           </TabsContent>
           <TabsContent className="mt-0 min-w-fit" value="artifacts">
             <ArtifactsView
+              applyProjectFilters={
+                filtersReturn.isAnyFilterActive
+                  ? filtersReturn.applyFilters
+                  : undefined
+              }
               artifacts={artifacts}
               editHandlers={artifactEditHandlers}
               features={features}
               filterCategory={filterCategory}
               filterText={filterText}
+              groupByStatus={groupByStatus}
+              isFilterActive={filtersReturn.isAnyFilterActive}
+              onClearFilters={filtersReturn.clearAllFilters}
               onDelete={handleDeleteArtifact}
               onStatusChange={handleArtifactStatusChange}
               projectId={projectId}

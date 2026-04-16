@@ -1,7 +1,7 @@
 "use client";
 
 import {
-  type ArtifactStatus,
+  ArtifactStatus,
   ArtifactType,
   type ArtifactWithWorkstream,
   getRoutePrefixForType,
@@ -20,6 +20,7 @@ import {
 import {
   ExternalLinkIcon,
   FileTextIcon,
+  FilterXIcon,
   GitPullRequestIcon,
   Layers2Icon,
   Loader2,
@@ -33,6 +34,7 @@ import {
   type ArtifactRowItem,
   type RowEditHandlers,
 } from "@/components/artifact-table/artifact-row";
+import { StatusSectionHeader } from "@/components/artifact-table/status-section-header";
 import { ArtifactTableHeader } from "@/components/artifact-table/table-header";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { EmptyState } from "@/components/empty-state";
@@ -46,6 +48,8 @@ import { useGroupExpansion } from "@/hooks/use-group-expansion";
 import { useSortParams } from "@/hooks/use-sort-params";
 import { matchesFilter } from "@/lib/artifact-filter";
 import { comparePriorityValues } from "@/lib/priority-sort";
+import { ARTIFACT_STATUS_LABELS } from "@/lib/project-constants";
+import { groupItemsByStatus } from "@/lib/status-grouping";
 import type { SortConfig } from "@/lib/table-utils";
 import { sortTableData } from "@/lib/table-utils";
 import type { FilterCategory } from "../page";
@@ -65,6 +69,14 @@ type ArtifactsViewProps = {
   onDelete?: (item: ArtifactRowItem) => Promise<boolean>;
   /** Edit handlers for inline cell editing (assignee, priority, due date). */
   editHandlers?: RowEditHandlers;
+  /** Apply project-level filters (assignee, status, priority, date) to root items. */
+  applyProjectFilters?: (items: ArtifactRowItem[]) => ArtifactRowItem[];
+  /** Whether any project filter is currently active. */
+  isFilterActive?: boolean;
+  /** Callback to clear all project filters. */
+  onClearFilters?: () => void;
+  /** Whether to group items by their status. */
+  groupByStatus?: boolean;
 };
 
 // ---- Workstream grouping (reused from threaded view) ----
@@ -287,7 +299,10 @@ function filterByCategory(
     if (!filterText.trim()) {
       return true;
     }
-    return f.title.toLowerCase().includes(filterText.toLowerCase().trim());
+    const q = filterText.toLowerCase().trim();
+    return (
+      f.title.toLowerCase().includes(q) || f.slug.toLowerCase().includes(q)
+    );
   });
 
   switch (category) {
@@ -322,6 +337,98 @@ function filterByCategory(
   }
 
   return { filteredArtifacts, filteredFeatures };
+}
+
+// ---- Status grouping ----
+
+/** Fixed display order matching the ArtifactStatus enum. */
+const STATUS_DISPLAY_ORDER: ArtifactStatus[] = [
+  ArtifactStatus.Draft,
+  ArtifactStatus.InProgress,
+  ArtifactStatus.InReview,
+  ArtifactStatus.Approved,
+  ArtifactStatus.Executed,
+  ArtifactStatus.Done,
+  ArtifactStatus.Obsolete,
+];
+
+type StatusSection = {
+  status: ArtifactStatus;
+  label: string;
+  groups: DisplayGroup[];
+};
+
+function getItemStatus(item: ArtifactRowItem) {
+  return item.data.status as ArtifactStatus;
+}
+
+function groupDisplayGroupsByStatus(groups: DisplayGroup[]): StatusSection[] {
+  const buckets = new Map<ArtifactStatus, DisplayGroup[]>();
+
+  for (const group of groups) {
+    const status = getItemStatus(group.root);
+    if (!buckets.has(status)) {
+      buckets.set(status, []);
+    }
+    buckets.get(status)?.push(group);
+  }
+
+  const sections: StatusSection[] = [];
+  for (const status of STATUS_DISPLAY_ORDER) {
+    const sectionGroups = buckets.get(status);
+    if (sectionGroups && sectionGroups.length > 0) {
+      sections.push({
+        status,
+        label: ARTIFACT_STATUS_LABELS[status],
+        groups: sectionGroups,
+      });
+    }
+  }
+
+  return sections;
+}
+
+function groupFlatItemsByStatus(items: ArtifactRowItem[]): StatusSection[] {
+  return groupItemsByStatus(items).map((section) => ({
+    status: section.status,
+    label: section.label,
+    groups: section.items.map((item) => ({
+      groupKey: item.data.id,
+      root: item,
+      children: [],
+    })),
+  }));
+}
+
+function flattenStatusSections(
+  sections: StatusSection[],
+  isGroupedView: boolean,
+  isGroupExpanded: (key: string) => boolean
+): ArtifactRowItem[] {
+  const items: ArtifactRowItem[] = [];
+  for (const section of sections) {
+    for (const group of section.groups) {
+      items.push(group.root);
+      if (isGroupedView && isGroupExpanded(group.groupKey)) {
+        items.push(...group.children);
+      }
+    }
+  }
+  return items;
+}
+
+function flattenDisplayGroups(
+  groups: DisplayGroup[],
+  isGroupExpanded: (key: string) => boolean
+): ArtifactRowItem[] {
+  const items: ArtifactRowItem[] = [];
+  for (const group of groups) {
+    items.push(group.root);
+    if (isGroupExpanded(group.groupKey)) {
+      items.push(...group.children);
+    }
+  }
+  return items;
 }
 
 // ---- Sort configs ----
@@ -408,10 +515,18 @@ export function ArtifactsView({
   visibleColumns,
   onDelete,
   editHandlers,
+  applyProjectFilters,
+  isFilterActive,
+  onClearFilters,
+  groupByStatus = false,
 }: ArtifactsViewProps) {
   const { isExpanded: isGroupExpanded, toggleGroup } = useGroupExpansion(
     `table:expand:project-artifacts:${projectId}`
   );
+  const { isExpanded: isStatusExpanded, toggleGroup: toggleStatusSection } =
+    useGroupExpansion(`table:expand:project-status-sections:${projectId}`, {
+      defaultExpanded: true,
+    });
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   // Clear selection when filter category changes
@@ -505,23 +620,35 @@ export function ArtifactsView({
       ? groupByProjectTree(treeData.nodes, filteredArtifacts, filteredFeatures)
       : toDisplayGroups(groupByWorkstream(filteredArtifacts, filteredFeatures));
 
+    // Apply project filters to root items — children are preserved regardless
+    const filtered = applyProjectFilters
+      ? ungrouped.filter((g) => applyProjectFilters([g.root]).length > 0)
+      : ungrouped;
+
     if (!sortBy) {
-      return ungrouped;
+      return filtered;
     }
     const config = ITEM_SORT_CONFIGS[sortBy];
     if (!config?.comparator) {
-      return ungrouped;
+      return filtered;
     }
     const { comparator } = config;
     const dirMultiplier = sortDir === "asc" ? 1 : -1;
-    return [...ungrouped].sort(
+    return [...filtered].sort(
       (a, b) => comparator(a.root, b.root) * dirMultiplier
     );
-  }, [filteredArtifacts, filteredFeatures, sortBy, sortDir, treeData]);
+  }, [
+    filteredArtifacts,
+    filteredFeatures,
+    sortBy,
+    sortDir,
+    treeData,
+    applyProjectFilters,
+  ]);
 
   // Build flat items for filtered views
   const flatItems: ArtifactRowItem[] = useMemo(() => {
-    const items: ArtifactRowItem[] = [
+    let items: ArtifactRowItem[] = [
       ...filteredArtifacts.map(
         (a): ArtifactRowItem => ({ kind: "artifact", data: a })
       ),
@@ -529,6 +656,10 @@ export function ArtifactsView({
         (f): ArtifactRowItem => ({ kind: "feature", data: f })
       ),
     ];
+    // Apply project filters (assignee, status, priority, date)
+    if (applyProjectFilters) {
+      items = applyProjectFilters(items);
+    }
     if (sortBy) {
       const config = ITEM_SORT_CONFIGS[sortBy];
       if (config) {
@@ -536,22 +667,45 @@ export function ArtifactsView({
       }
     }
     return items;
-  }, [filteredArtifacts, filteredFeatures, sortBy, sortDir]);
+  }, [
+    filteredArtifacts,
+    filteredFeatures,
+    sortBy,
+    sortDir,
+    applyProjectFilters,
+  ]);
+
+  // Build status sections when groupByStatus is enabled
+  const statusSections: StatusSection[] = useMemo(() => {
+    if (!groupByStatus) {
+      return [];
+    }
+    if (isGroupedView) {
+      return groupDisplayGroupsByStatus(groups);
+    }
+    return groupFlatItemsByStatus(flatItems);
+  }, [groupByStatus, isGroupedView, groups, flatItems]);
 
   const renderedItems = useMemo((): ArtifactRowItem[] => {
+    if (groupByStatus) {
+      return flattenStatusSections(
+        statusSections,
+        isGroupedView,
+        isGroupExpanded
+      );
+    }
     if (!isGroupedView) {
       return flatItems;
     }
-
-    const items: ArtifactRowItem[] = [];
-    for (const group of groups) {
-      items.push(group.root);
-      if (isGroupExpanded(group.groupKey)) {
-        items.push(...group.children);
-      }
-    }
-    return items;
-  }, [isGroupedView, flatItems, groups, isGroupExpanded]);
+    return flattenDisplayGroups(groups, isGroupExpanded);
+  }, [
+    groupByStatus,
+    statusSections,
+    isGroupedView,
+    flatItems,
+    groups,
+    isGroupExpanded,
+  ]);
 
   // When a child entity is moved to a different project, it leaves its parent's
   // project tree (parentMap is built from the current project's tree). To keep
@@ -582,8 +736,11 @@ export function ArtifactsView({
     return map;
   }, [parentMap, fallbackParentMap]);
 
-  const isEmpty =
+  const isSourceEmpty =
     filteredArtifacts.length === 0 && filteredFeatures.length === 0;
+  const isPostFilterEmpty = renderedItems.length === 0;
+  const shouldShowEmptyState =
+    isSourceEmpty || (isFilterActive === true && isPostFilterEmpty);
   const hasAnyItems = artifacts.length > 0 || features.length > 0;
 
   // ---- Selection handlers ----
@@ -754,23 +911,99 @@ export function ArtifactsView({
 
   // ---- Empty state ----
 
-  if (isEmpty) {
-    if (!hasAnyItems) {
-      return (
-        <EmptyState
-          description="Create a PRD, feature, or plan to get started."
-          icon={FileTextIcon}
-          title="No artifacts yet"
-        />
-      );
-    }
+  if (shouldShowEmptyState) {
     return (
-      <EmptyState
-        description="Try adjusting your filter or search term."
-        icon={FileTextIcon}
-        title="No matching artifacts"
+      <ArtifactsEmptyState
+        hasAnyItems={hasAnyItems}
+        isFilterActive={isFilterActive}
+        onClearFilters={onClearFilters}
       />
     );
+  }
+
+  // ---- Table body rendering (extracted to avoid nested ternaries) ----
+
+  function renderTableBody() {
+    if (groupByStatus) {
+      return statusSections.map((section) => {
+        const sectionOpen = isStatusExpanded(section.status);
+        return (
+          <div key={section.status}>
+            <StatusSectionHeader
+              count={section.groups.length}
+              isOpen={sectionOpen}
+              label={section.label}
+              onToggle={() => toggleStatusSection(section.status)}
+              status={section.status}
+            />
+            {sectionOpen &&
+              section.groups.map((group) =>
+                isGroupedView ? (
+                  <TreeGroupRows
+                    combinedParentMap={combinedParentMap}
+                    editHandlers={editHandlers}
+                    group={group}
+                    handleMoreMenu={handleMoreMenu}
+                    handleSelectionChange={handleSelectionChange}
+                    isGroupExpanded={isGroupExpanded}
+                    key={group.groupKey}
+                    selectedIds={selectedIds}
+                    toggleGroup={toggleGroup}
+                    visibleColumns={visibleColumns}
+                  />
+                ) : (
+                  <ArtifactRow
+                    editHandlers={editHandlers}
+                    isSelected={selectedIds.has(group.root.data.id)}
+                    item={group.root}
+                    key={group.root.data.id}
+                    onMoreMenu={handleMoreMenu}
+                    onSelectionChange={handleSelectionChange}
+                    parentHref={combinedParentMap.get(group.root.data.id)?.href}
+                    parentTitle={
+                      combinedParentMap.get(group.root.data.id)?.title
+                    }
+                    showCheckbox={showCheckbox}
+                    visibleColumns={visibleColumns}
+                  />
+                )
+              )}
+          </div>
+        );
+      });
+    }
+
+    if (isGroupedView) {
+      return groups.map((group) => (
+        <TreeGroupRows
+          combinedParentMap={combinedParentMap}
+          editHandlers={editHandlers}
+          group={group}
+          handleMoreMenu={handleMoreMenu}
+          handleSelectionChange={handleSelectionChange}
+          isGroupExpanded={isGroupExpanded}
+          key={group.groupKey}
+          selectedIds={selectedIds}
+          toggleGroup={toggleGroup}
+          visibleColumns={visibleColumns}
+        />
+      ));
+    }
+
+    return flatItems.map((item) => (
+      <ArtifactRow
+        editHandlers={editHandlers}
+        isSelected={selectedIds.has(item.data.id)}
+        item={item}
+        key={item.data.id}
+        onMoreMenu={handleMoreMenu}
+        onSelectionChange={handleSelectionChange}
+        parentHref={combinedParentMap.get(item.data.id)?.href}
+        parentTitle={combinedParentMap.get(item.data.id)?.title}
+        showCheckbox={showCheckbox}
+        visibleColumns={visibleColumns}
+      />
+    ));
   }
 
   return (
@@ -782,68 +1015,7 @@ export function ArtifactsView({
           sortDir={sortDir}
           visibleColumns={visibleColumns}
         />
-        {isGroupedView
-          ? groups.map((group) => {
-              const { root, children } = group;
-              const isOpen = isGroupExpanded(group.groupKey);
-              const hasChildren = children.length > 0;
-              return (
-                <div key={group.groupKey}>
-                  <ArtifactRow
-                    editHandlers={editHandlers}
-                    isExpanded={hasChildren ? isOpen : false}
-                    isSelected={selectedIds.has(root.data.id)}
-                    item={root}
-                    onMoreMenu={handleMoreMenu}
-                    onSelectionChange={handleSelectionChange}
-                    onToggleExpand={
-                      hasChildren
-                        ? () => toggleGroup(group.groupKey)
-                        : undefined
-                    }
-                    parentHref={combinedParentMap.get(root.data.id)?.href}
-                    parentTitle={combinedParentMap.get(root.data.id)?.title}
-                    showCheckbox={false}
-                    visibleColumns={visibleColumns}
-                  />
-                  {isOpen &&
-                    children.map((child, childIndex) => (
-                      <ArtifactRow
-                        editHandlers={editHandlers}
-                        extendIndentedBottomBorderLeft={
-                          childIndex === children.length - 1
-                        }
-                        indented
-                        isSelected={selectedIds.has(child.data.id)}
-                        item={child}
-                        key={child.data.id}
-                        onMoreMenu={handleMoreMenu}
-                        onSelectionChange={handleSelectionChange}
-                        parentHref={combinedParentMap.get(child.data.id)?.href}
-                        parentTitle={
-                          combinedParentMap.get(child.data.id)?.title
-                        }
-                        showCheckbox={false}
-                        visibleColumns={visibleColumns}
-                      />
-                    ))}
-                </div>
-              );
-            })
-          : flatItems.map((item) => (
-              <ArtifactRow
-                editHandlers={editHandlers}
-                isSelected={selectedIds.has(item.data.id)}
-                item={item}
-                key={item.data.id}
-                onMoreMenu={handleMoreMenu}
-                onSelectionChange={handleSelectionChange}
-                parentHref={combinedParentMap.get(item.data.id)?.href}
-                parentTitle={combinedParentMap.get(item.data.id)?.title}
-                showCheckbox={showCheckbox}
-                visibleColumns={visibleColumns}
-              />
-            ))}
+        {renderTableBody()}
 
         {/* Floating selection bar */}
         {selectedIds.size > 0 && (
@@ -1036,6 +1208,70 @@ function isFeatureTreeEntity(
   return "slug" in entity && "priority" in entity;
 }
 
+// ---- Tree group rows (shared between grouped and status-grouped views) ----
+
+function TreeGroupRows({
+  group,
+  editHandlers,
+  isGroupExpanded,
+  toggleGroup,
+  selectedIds,
+  handleSelectionChange,
+  handleMoreMenu,
+  combinedParentMap,
+  visibleColumns,
+}: {
+  group: DisplayGroup;
+  editHandlers?: RowEditHandlers;
+  isGroupExpanded: (key: string) => boolean;
+  toggleGroup: (key: string) => void;
+  selectedIds: Set<string>;
+  handleSelectionChange: (id: string, checked: boolean) => void;
+  handleMoreMenu: (item: ArtifactRowItem, anchor: HTMLElement) => void;
+  combinedParentMap: Map<string, { title: string; href: string | null }>;
+  visibleColumns: ArtifactColumn[];
+}) {
+  const { root, children } = group;
+  const isOpen = isGroupExpanded(group.groupKey);
+  const hasChildren = children.length > 0;
+  return (
+    <div key={group.groupKey}>
+      <ArtifactRow
+        editHandlers={editHandlers}
+        isExpanded={hasChildren ? isOpen : false}
+        isSelected={selectedIds.has(root.data.id)}
+        item={root}
+        onMoreMenu={handleMoreMenu}
+        onSelectionChange={handleSelectionChange}
+        onToggleExpand={
+          hasChildren ? () => toggleGroup(group.groupKey) : undefined
+        }
+        parentHref={combinedParentMap.get(root.data.id)?.href}
+        parentTitle={combinedParentMap.get(root.data.id)?.title}
+        showCheckbox={false}
+        visibleColumns={visibleColumns}
+      />
+      {isOpen &&
+        children.map((child, childIndex) => (
+          <ArtifactRow
+            editHandlers={editHandlers}
+            extendIndentedBottomBorderLeft={childIndex === children.length - 1}
+            indented
+            isSelected={selectedIds.has(child.data.id)}
+            item={child}
+            key={child.data.id}
+            onMoreMenu={handleMoreMenu}
+            onSelectionChange={handleSelectionChange}
+            parentHref={combinedParentMap.get(child.data.id)?.href}
+            parentTitle={combinedParentMap.get(child.data.id)?.title}
+            showCheckbox={false}
+            visibleColumns={visibleColumns}
+          />
+        ))}
+    </div>
+  );
+}
+
 // ---- Branches list (ExternalLinks with type=PULL_REQUEST) ----
 
 function BranchesList({ projectId }: { projectId: string }) {
@@ -1083,5 +1319,48 @@ function BranchesList({ projectId }: { projectId: string }) {
         </Link>
       ))}
     </div>
+  );
+}
+
+function ArtifactsEmptyState({
+  hasAnyItems,
+  isFilterActive,
+  onClearFilters,
+}: {
+  hasAnyItems: boolean;
+  isFilterActive?: boolean;
+  onClearFilters?: () => void;
+}) {
+  if (!hasAnyItems) {
+    return (
+      <EmptyState
+        description="Create a PRD, feature, or plan to get started."
+        icon={FileTextIcon}
+        title="No artifacts yet"
+      />
+    );
+  }
+  if (isFilterActive) {
+    return (
+      <EmptyState
+        action={
+          onClearFilters ? (
+            <Button onClick={onClearFilters} size="sm" variant="outline">
+              Clear filters
+            </Button>
+          ) : undefined
+        }
+        description="Try adjusting your filters or search term."
+        icon={FilterXIcon}
+        title="No items match your filters"
+      />
+    );
+  }
+  return (
+    <EmptyState
+      description="Try adjusting your filter or search term."
+      icon={FileTextIcon}
+      title="No matching artifacts"
+    />
   );
 }

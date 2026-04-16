@@ -8,13 +8,16 @@ import { useMemo, useState } from "react";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { EmptyState } from "@/components/empty-state";
 import type { ArtifactColumn } from "@/hooks/use-column-visibility";
+import { useGroupExpansion } from "@/hooks/use-group-expansion";
 import { useSortParams } from "@/hooks/use-sort-params";
 import { ensureDate } from "@/lib/date-utils";
 import { comparePriorityValues } from "@/lib/priority-sort";
+import { groupItemsByStatus } from "@/lib/status-grouping";
 import type { SortDirection } from "@/lib/table-utils";
 import { getUserDisplayName } from "@/lib/user-utils";
 import type { ArtifactRowItem, RowEditHandlers } from "./artifact-row";
 import { ArtifactRow } from "./artifact-row";
+import { StatusSectionHeader } from "./status-section-header";
 import { ArtifactTableHeader } from "./table-header";
 
 // ---- Sort columns ----
@@ -123,6 +126,10 @@ type FlatArtifactTableProps = {
   emptyIcon?: LucideIcon;
   emptyTitle?: string;
   emptyDescription?: string;
+  /** Whether to group items by their status. */
+  groupByStatus?: boolean;
+  /** localStorage key for status section expansion state. */
+  statusExpansionKey?: string;
 };
 
 // ---- Component ----
@@ -137,6 +144,8 @@ export function FlatArtifactTable({
   emptyIcon,
   emptyTitle = "No items",
   emptyDescription = "Nothing to show here yet.",
+  groupByStatus = false,
+  statusExpansionKey = "table:expand:flat-status-sections",
 }: FlatArtifactTableProps) {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [deleteTarget, setDeleteTarget] = useState<ArtifactRowItem | null>(
@@ -152,10 +161,20 @@ export function FlatArtifactTable({
     validColumns: FLAT_SORT_COLUMNS,
   });
 
+  const { isExpanded: isStatusExpanded, toggleGroup: toggleStatusSection } =
+    useGroupExpansion(statusExpansionKey, { defaultExpanded: true });
+
   const sortedItems = useMemo(
     () => sortFlatItems(items, sortBy, sortDir),
     [items, sortBy, sortDir]
   );
+
+  const statusSections = useMemo(() => {
+    if (!groupByStatus) {
+      return [];
+    }
+    return groupItemsByStatus(sortedItems);
+  }, [groupByStatus, sortedItems]);
 
   function handleSelectionChange(id: string, checked: boolean) {
     setSelectedIds((prev) => {
@@ -229,6 +248,23 @@ export function FlatArtifactTable({
     }
   }
 
+  function renderRow(item: ArtifactRowItem) {
+    return (
+      <ArtifactRow
+        editHandlers={editHandlers}
+        isSelected={selectedIds.has(item.data.id)}
+        item={item}
+        key={item.data.id}
+        moreMenuContent={moreMenuContent(item, () => handleRequestDelete(item))}
+        onSelectionChange={handleSelectionChange}
+        parentHref={parentTitleMap?.get(item.data.id)?.href}
+        parentTitle={parentTitleMap?.get(item.data.id)?.title}
+        showCheckbox
+        visibleColumns={visibleColumns}
+      />
+    );
+  }
+
   if (items.length === 0) {
     return (
       <EmptyState
@@ -250,6 +286,27 @@ export function FlatArtifactTable({
   }
   const deleteTitle = isBulk ? "Items" : "Item";
 
+  function renderTableBody() {
+    if (groupByStatus && statusSections.length > 0) {
+      return statusSections.map((section) => {
+        const sectionOpen = isStatusExpanded(section.status);
+        return (
+          <div key={section.status}>
+            <StatusSectionHeader
+              count={section.items.length}
+              isOpen={sectionOpen}
+              label={section.label}
+              onToggle={() => toggleStatusSection(section.status)}
+              status={section.status}
+            />
+            {sectionOpen && section.items.map(renderRow)}
+          </div>
+        );
+      });
+    }
+    return sortedItems.map(renderRow);
+  }
+
   return (
     <div className="relative">
       <div className="min-w-fit">
@@ -259,22 +316,7 @@ export function FlatArtifactTable({
           sortDir={sortDir}
           visibleColumns={visibleColumns}
         />
-        {sortedItems.map((item) => (
-          <ArtifactRow
-            editHandlers={editHandlers}
-            isSelected={selectedIds.has(item.data.id)}
-            item={item}
-            key={item.data.id}
-            moreMenuContent={moreMenuContent(item, () =>
-              handleRequestDelete(item)
-            )}
-            onSelectionChange={handleSelectionChange}
-            parentHref={parentTitleMap?.get(item.data.id)?.href}
-            parentTitle={parentTitleMap?.get(item.data.id)?.title}
-            showCheckbox
-            visibleColumns={visibleColumns}
-          />
-        ))}
+        {renderTableBody()}
       </div>
 
       {/* Floating selection bar */}
