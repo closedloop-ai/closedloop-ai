@@ -87,7 +87,7 @@ export function prReviewsOptions(
     queryKey: queryKeys.prReviews(owner, repo, prNumber),
     queryFn: async () => {
       const response = await fetch(
-        `/api/engineer/git/pr/reviews?owner=${owner!}&repo=${repo!}&number=${prNumber!}`
+        `/api/gateway/git/pr/reviews?owner=${owner!}&repo=${repo!}&number=${prNumber!}`
       );
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
@@ -107,7 +107,7 @@ export function prCommentsOptions(prNumber: number, repoPath: string) {
     queryKey: queryKeys.prComments(prNumber, repoPath),
     queryFn: async () => {
       const response = await fetch(
-        `/api/engineer/git/pr/comments?repo=${encodeURIComponent(repoPath)}&pr=${prNumber}`
+        `/api/gateway/git/pr/comments?repo=${encodeURIComponent(repoPath)}&pr=${prNumber}`
       );
       if (!response.ok) {
         const errorData = await response.json();
@@ -133,7 +133,7 @@ export function branchesOptions(repoPath: string) {
     queryKey: queryKeys.gitBranches(repoPath),
     queryFn: async () => {
       const response = await fetch(
-        `/api/engineer/git/branches?repo=${encodeURIComponent(repoPath)}`
+        `/api/gateway/git/branches?repo=${encodeURIComponent(repoPath)}`
       );
       if (!response.ok) {
         const errorData = await response.json();
@@ -150,7 +150,7 @@ export function prListOptions(repoPath: string, state: string) {
     queryKey: queryKeys.prList(repoPath, state),
     queryFn: async () => {
       const response = await fetch(
-        `/api/engineer/git/pr/list?repo=${encodeURIComponent(repoPath)}&state=${encodeURIComponent(state)}`
+        `/api/gateway/git/pr/list?repo=${encodeURIComponent(repoPath)}&state=${encodeURIComponent(state)}`
       );
       if (!response.ok) {
         const errorData = await response.json();

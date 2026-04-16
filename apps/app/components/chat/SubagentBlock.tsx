@@ -122,6 +122,7 @@ export const SubagentBlock = memo(function SubagentBlock({
                 const id = `sa-thinking-${idx}`;
                 return (
                   <CollapsibleBlock
+                    contentLength={block.thinking.length}
                     icon={Sparkles}
                     id={id}
                     isExpanded={expandedTools.has(id)}

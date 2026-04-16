@@ -89,7 +89,7 @@ export function CommitDialog({
 
   const fetchGitStatus = useCallback(
     async (signal?: AbortSignal) => {
-      const statusResponse = await fetch("/api/engineer/git", {
+      const statusResponse = await fetch("/api/gateway/git", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "status", repoPath: worktreePath }),
@@ -113,7 +113,7 @@ export function CommitDialog({
   const fetchCommitMessage = useCallback(
     async (signal?: AbortSignal) => {
       const messageResponse = await fetch(
-        `/api/engineer/symphony/commit-message/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
+        `/api/gateway/symphony/commit-message/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
         { signal }
       ).catch(() => null);
 
@@ -220,7 +220,7 @@ export function CommitDialog({
 
     try {
       // Stage all changes and commit (use worktree path)
-      const commitResponse = await fetch("/api/engineer/git", {
+      const commitResponse = await fetch("/api/gateway/git", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -236,7 +236,7 @@ export function CommitDialog({
       }
 
       // Push to remote (use worktree path)
-      const pushResponse = await fetch("/api/engineer/git", {
+      const pushResponse = await fetch("/api/gateway/git", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "push", repoPath: worktreePath }),

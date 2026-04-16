@@ -52,30 +52,35 @@ describe("getRenderableHealthChecks", () => {
   });
 
   it("omits empty MCP placeholders when no expected URL or match metadata exists", () => {
-    const checks = getRenderableHealthChecks({
-      checks: [
-        {
-          id: "git",
-          label: "Git",
-          required: true,
-          passed: true,
-          version: "2.49.0",
-        },
-      ],
-      allRequiredPassed: true,
-      mcpServers: {
-        claude: {
-          available: false,
-          serverName: null,
-          matchedUrl: null,
-          checkedAt: "2026-04-13T18:41:00.000Z",
-        },
-        codex: {
-          closedloopAvailable: false,
-          checkedAt: "2026-04-13T18:41:00.000Z",
+    // Pass null explicitly so the result is deterministic regardless of
+    // NEXT_PUBLIC_MCP_SERVER_URL set in the local environment.
+    const checks = getRenderableHealthChecks(
+      {
+        checks: [
+          {
+            id: "git",
+            label: "Git",
+            required: true,
+            passed: true,
+            version: "2.49.0",
+          },
+        ],
+        allRequiredPassed: true,
+        mcpServers: {
+          claude: {
+            available: false,
+            serverName: null,
+            matchedUrl: null,
+            checkedAt: "2026-04-13T18:41:00.000Z",
+          },
+          codex: {
+            closedloopAvailable: false,
+            checkedAt: "2026-04-13T18:41:00.000Z",
+          },
         },
       },
-    });
+      null
+    );
 
     expect(checks).toEqual([expect.objectContaining({ label: "Git" })]);
   });

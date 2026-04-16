@@ -3,6 +3,16 @@ import { env } from "@/env";
 import type { EngineerRoutingSelection } from "@/lib/engineer/routing-store";
 import { queryKeys } from "./keys";
 
+export type CheckResultDebug = {
+  errorCode?: string;
+  stderr?: string;
+  resolvedPath?: string;
+  shell?: string;
+  platform?: string;
+  foundAt?: string[];
+  overrideUsed?: string;
+};
+
 export type CheckResult = {
   id: string;
   label: string;
@@ -11,6 +21,7 @@ export type CheckResult = {
   version?: string;
   error?: string;
   remediation?: string;
+  debug?: CheckResultDebug;
 };
 
 export type NeutralMcpProviderAvailability = {
@@ -198,8 +209,8 @@ export function healthCheckOptions(
     queryKey: queryKeys.healthCheck(targetKey, expectedMcpUrl),
     queryFn: async () => {
       const url = params.toString()
-        ? `/api/engineer/health-check?${params.toString()}`
-        : "/api/engineer/health-check";
+        ? `/api/gateway/health-check?${params.toString()}`
+        : "/api/gateway/health-check";
       const res = await fetch(url);
       return res.json();
     },

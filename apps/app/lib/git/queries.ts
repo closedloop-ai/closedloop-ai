@@ -37,7 +37,7 @@ export function gitStatusOptions(repoPath: string) {
   return queryOptions<GitFiles>({
     queryKey: queryKeys.gitStatus(repoPath),
     queryFn: async () => {
-      const response = await fetch("/api/engineer/git", {
+      const response = await fetch("/api/gateway/git", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "status", repoPath }),
@@ -57,7 +57,7 @@ export function gitBranchDiffOptions(repoPath: string) {
   return queryOptions<BranchDiffFiles>({
     queryKey: queryKeys.gitBranchDiff(repoPath),
     queryFn: async () => {
-      const response = await fetch("/api/engineer/git", {
+      const response = await fetch("/api/gateway/git", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "branch-diff", repoPath }),
@@ -79,7 +79,7 @@ export function gitDiffOptions(
   return queryOptions<FileDiff>({
     queryKey: queryKeys.gitDiff(repoPath, filePath, diffMode, baseBranch),
     queryFn: async () => {
-      const response = await fetch("/api/engineer/git/diff", {
+      const response = await fetch("/api/gateway/git/diff", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

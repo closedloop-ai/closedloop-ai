@@ -1,6 +1,7 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { env } from "@/env";
 import { createTestQueryClient } from "@/hooks/queries/__tests__/test-utils";
 import { getHealthCheckTargetKey } from "@/lib/engineer/queries/health-check";
 import { queryKeys } from "@/lib/engineer/queries/keys";
@@ -25,6 +26,10 @@ vi.mock("@/hooks/queries/use-compute-targets", () => ({
 vi.mock("@/lib/system-check/use-system-check-eligibility", () => ({
   useSystemCheckEligibility: () => mockUseSystemCheckEligibility(),
 }));
+
+// Resolve the expected MCP URL the same way the component does so that
+// query-cache seeds and URL assertions stay in sync with the env value.
+const expectedMcpUrl = env.NEXT_PUBLIC_MCP_SERVER_URL ?? null;
 
 import { LocalComputeTargetsCard } from "../local-compute-targets-card";
 
@@ -76,8 +81,9 @@ describe("ComputeTargetsCard", () => {
       computeTargetId: null,
     });
     globalThis.fetch = vi.fn(() => new Promise(() => {})) as typeof fetch;
+    // Seed cache using the same key the component will use (includes expectedMcpUrl)
     queryClient.setQueryData(
-      queryKeys.healthCheck(healthCheckTargetKey, null),
+      queryKeys.healthCheck(healthCheckTargetKey, expectedMcpUrl),
       {
         checks: [
           {
@@ -95,7 +101,10 @@ describe("ComputeTargetsCard", () => {
 
     renderWithClient(queryClient);
 
-    expect(globalThis.fetch).toHaveBeenCalledWith("/api/engineer/health-check");
+    // The component appends expectedMcpUrl as a query param when it is set
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      expect.stringContaining("/api/gateway/health-check")
+    );
     expect(screen.getByText("1 failure")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: RE_SYSTEM_CHECK }));
@@ -109,8 +118,9 @@ describe("ComputeTargetsCard", () => {
       mode: "cloud-relay",
       computeTargetId: null,
     });
+    // Seed cache using the same key the component will use (includes expectedMcpUrl)
     queryClient.setQueryData(
-      queryKeys.healthCheck(healthCheckTargetKey, null),
+      queryKeys.healthCheck(healthCheckTargetKey, expectedMcpUrl),
       {
         checks: [
           {
@@ -137,8 +147,9 @@ describe("ComputeTargetsCard", () => {
       computeTargetId: null,
     });
     globalThis.fetch = vi.fn(() => new Promise(() => {})) as typeof fetch;
+    // Seed cache using the same key the component will use (includes expectedMcpUrl)
     queryClient.setQueryData(
-      queryKeys.healthCheck(healthCheckTargetKey, null),
+      queryKeys.healthCheck(healthCheckTargetKey, expectedMcpUrl),
       {
         checks: [
           {
@@ -195,8 +206,9 @@ describe("ComputeTargetsCard", () => {
     renderWithClient();
 
     await waitFor(() => {
+      // The component appends expectedMcpUrl as a query param when it is set
       expect(globalThis.fetch).toHaveBeenCalledWith(
-        "/api/engineer/health-check"
+        expect.stringContaining("/api/gateway/health-check")
       );
     });
 
@@ -239,8 +251,9 @@ describe("ComputeTargetsCard", () => {
     renderWithClient();
 
     await waitFor(() => {
+      // The component appends expectedMcpUrl as a query param when it is set
       expect(globalThis.fetch).toHaveBeenCalledWith(
-        "/api/engineer/health-check"
+        expect.stringContaining("/api/gateway/health-check")
       );
     });
 

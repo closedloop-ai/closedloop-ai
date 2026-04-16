@@ -106,7 +106,7 @@ export function DeployDialog({
       setPhase("extracting");
 
       try {
-        const response = await fetch("/api/engineer/deploy/extract-info", {
+        const response = await fetch("/api/gateway/deploy/extract-info", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ repoPath, logs: data.logs || "" }),
@@ -166,7 +166,7 @@ export function DeployDialog({
     setErrorMessage(null);
 
     try {
-      const response = await fetch("/api/engineer/deploy", {
+      const response = await fetch("/api/gateway/deploy", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ticketId, repoPath, worktreePath }),
@@ -205,7 +205,7 @@ export function DeployDialog({
     }
 
     try {
-      await fetch("/api/engineer/deploy/teardown", {
+      await fetch("/api/gateway/deploy/teardown", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ repoPath, worktreePath }),
@@ -223,7 +223,7 @@ export function DeployDialog({
     }
 
     try {
-      await fetch("/api/engineer/deploy/kill", {
+      await fetch("/api/gateway/deploy/kill", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ pid }),
@@ -239,7 +239,7 @@ export function DeployDialog({
 
   const handleRetry = async () => {
     // Re-detect deployment config in case it changed
-    await fetch("/api/engineer/deploy/redetect", {
+    await fetch("/api/gateway/deploy/redetect", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ repoPath }),

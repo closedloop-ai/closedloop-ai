@@ -1,29 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { jwtVerify, SignJWT } from "jose";
+import { getRunnerSecret } from "./runner-jwt-base";
 
 export const AUDIENCE = "closedloop-chat-runner";
 export const ISSUER = "closedloop-api";
 export const SECRET_ENV = "CLOSEDLOOP_RUNNER_JWT_SECRET";
-export const MIN_SECRET_LENGTH = 32;
-const MIN_UNIQUE_SECRET_CHARS = 8;
 export const DEFAULT_TTL_SECONDS = 4 * 60 * 60;
 
 function getSecret(): Uint8Array {
-  const secret = process.env[SECRET_ENV];
-  if (!secret) {
-    throw new Error(`${SECRET_ENV} is not configured`);
-  }
-  if (secret.length < MIN_SECRET_LENGTH) {
-    throw new Error(
-      `${SECRET_ENV} must be at least ${MIN_SECRET_LENGTH} characters`
-    );
-  }
-  if (new Set(secret).size < MIN_UNIQUE_SECRET_CHARS) {
-    throw new Error(
-      `${SECRET_ENV} is too weak (not enough character diversity)`
-    );
-  }
-  return new TextEncoder().encode(secret);
+  return getRunnerSecret(SECRET_ENV);
 }
 
 export type ChatRunnerTokenIssueClaims = {
