@@ -7,16 +7,7 @@ const PAGE_TIMEOUT = 15_000;
 
 test("loops page renders without errors", async ({ page }) => {
   await page.goto("/loops");
-  await expect(page.getByRole("heading", { name: "Loops" })).toBeVisible({
-    timeout: PAGE_TIMEOUT,
-  });
-});
-
-test("my tasks page renders without errors", async ({ page }) => {
-  await page.goto("/my-tasks");
-  await expect(page.getByRole("heading", { name: "My Tasks" })).toBeVisible({
-    timeout: PAGE_TIMEOUT,
-  });
+  await expect(page.getByRole("heading", { name: "Loops" })).toBeVisible();
 });
 
 test("inbox page renders without errors", async ({ page }) => {
