@@ -249,7 +249,9 @@ export function NewPlanModal({
         {
           input: createConfig.input,
           // additionalRepos is a run-loop concern — not added to FormState or buildCreateInput
-          additionalRepos: normalizeAdditionalRepos(additionalRepos),
+          additionalRepos: showPicker
+            ? normalizeAdditionalRepos(additionalRepos)
+            : undefined,
         },
         { onSuccess }
       );
@@ -376,10 +378,10 @@ export function NewPlanModal({
 
           {showPicker ? (
             <AdditionalReposPicker
+              initialValue={additionalRepos}
               onChange={setAdditionalRepos}
               onValidChange={setAdditionalReposValid}
               targetRepo={targetRepo}
-              value={additionalRepos}
             />
           ) : null}
 

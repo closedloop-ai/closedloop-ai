@@ -34,6 +34,7 @@ type RepoRowFieldsProps = {
   targetRepo: string;
   error?: string;
   onRepoChange: (id: string, repoId: string, fullName: string) => void;
+  onRepoIdResolve: (id: string, repoId: string) => void;
   onBranchChange: (id: string, branch: string) => void;
   onRemove: (id: string) => void;
 };
@@ -45,6 +46,7 @@ function RepoRowFields({
   targetRepo,
   error,
   onRepoChange,
+  onRepoIdResolve,
   onBranchChange,
   onRemove,
 }: RepoRowFieldsProps) {
@@ -57,6 +59,17 @@ function RepoRowFields({
     () => (repositories ? sortRepositoriesByActivity(repositories) : []),
     [repositories]
   );
+
+  // Resolve repoId from fullName once repositories load (for rows seeded from initialValue).
+  // Uses onRepoIdResolve (not onRepoChange) to preserve the seeded branch.
+  useEffect(() => {
+    if (row.fullName && !row.repoId && repositories) {
+      const match = repositories.find((r) => r.fullName === row.fullName);
+      if (match) {
+        onRepoIdResolve(row.id, match.id);
+      }
+    }
+  }, [repositories, row.fullName, row.repoId, row.id, onRepoIdResolve]);
 
   // Auto-select default branch when branches load and none is set
   useEffect(() => {
@@ -101,6 +114,7 @@ function RepoRowFields({
       <div className="flex items-center justify-between">
         <span className="font-medium text-sm">Repository {index + 1}</span>
         <Button
+          aria-label="Remove repository"
           onClick={() => onRemove(row.id)}
           size="sm"
           type="button"
@@ -170,21 +184,23 @@ function RepoRowFields({
 }
 
 type AdditionalReposPickerProps = {
-  value: AdditionalRepoRef[];
+  // Used as seed state on mount only — subsequent changes are not synced.
+  // Parent state is kept in sync via onChange.
+  initialValue: AdditionalRepoRef[];
   onChange: (repos: AdditionalRepoRef[]) => void;
   onValidChange?: (isValid: boolean) => void;
   targetRepo: string;
 };
 
 export function AdditionalReposPicker({
-  value,
+  initialValue,
   onChange,
   onValidChange,
   targetRepo,
 }: AdditionalReposPickerProps) {
   // Internal rows include repoId for Select binding; projected to AdditionalRepoRef[] for parent
   const [rows, setRows] = useState<AdditionalRepoRow[]>(() =>
-    value.map((ref) => ({
+    initialValue.map((ref) => ({
       id: crypto.randomUUID(),
       repoId: "",
       fullName: ref.fullName,
@@ -229,43 +245,41 @@ export function AdditionalReposPicker({
   }, [rows, rowErrors, onValidChange]);
 
   const handleRepoChange = (id: string, repoId: string, fullName: string) => {
-    setRows((prev) => {
-      const next = prev.map((r) =>
-        r.id === id ? { ...r, repoId, fullName, branch: "" } : r
-      );
-      projectToParent(next, onChange);
-      return next;
-    });
+    const next = rows.map((r) =>
+      r.id === id ? { ...r, repoId, fullName, branch: "" } : r
+    );
+    setRows(next);
+    projectToParent(next, onChange);
+  };
+
+  // Resolves repoId without resetting branch — used when reconciling initialValue rows.
+  // Note: only updates internal state (repoId is not part of AdditionalRepoRef); no onChange.
+  const handleRepoIdResolve = (id: string, repoId: string) => {
+    setRows((prev) => prev.map((r) => (r.id === id ? { ...r, repoId } : r)));
   };
 
   const handleBranchChange = (id: string, branch: string) => {
-    setRows((prev) => {
-      const next = prev.map((r) => (r.id === id ? { ...r, branch } : r));
-      projectToParent(next, onChange);
-      return next;
-    });
+    const next = rows.map((r) => (r.id === id ? { ...r, branch } : r));
+    setRows(next);
+    projectToParent(next, onChange);
   };
 
   const handleRemove = (id: string) => {
-    setRows((prev) => {
-      const next = prev.filter((r) => r.id !== id);
-      projectToParent(next, onChange);
-      return next;
-    });
+    const next = rows.filter((r) => r.id !== id);
+    setRows(next);
+    projectToParent(next, onChange);
   };
 
   const handleAdd = () => {
     if (rows.length >= MAX_ADDITIONAL_REPOS) {
       return;
     }
-    setRows((prev) => {
-      const next = [
-        ...prev,
-        { id: crypto.randomUUID(), repoId: "", fullName: "", branch: "" },
-      ];
-      projectToParent(next, onChange);
-      return next;
-    });
+    const next = [
+      ...rows,
+      { id: crypto.randomUUID(), repoId: "", fullName: "", branch: "" },
+    ];
+    setRows(next);
+    projectToParent(next, onChange);
   };
 
   return (
@@ -278,6 +292,7 @@ export function AdditionalReposPicker({
           onBranchChange={handleBranchChange}
           onRemove={handleRemove}
           onRepoChange={handleRepoChange}
+          onRepoIdResolve={handleRepoIdResolve}
           row={row}
           targetRepo={targetRepo}
         />

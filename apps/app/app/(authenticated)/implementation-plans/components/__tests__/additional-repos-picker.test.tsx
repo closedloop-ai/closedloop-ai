@@ -60,6 +60,7 @@ vi.mock("@repo/api/src/types/project", async () => {
 // ---- Regex constants (top-level to satisfy Biome useTopLevelRegex) ----
 
 const ADD_REPO_REGEX = /add repository/i;
+const REMOVE_REPO_REGEX = /remove repository/i;
 const MAX_REACHED_REGEX = /maximum of.*additional repositories reached/i;
 const REPO_1_REGEX = /repository 1/i;
 const PRIMARY_REPO_ERROR_REGEX = /cannot use the primary repository/i;
@@ -74,10 +75,10 @@ function renderPicker(
   const onValidChange = vi.fn();
   render(
     <AdditionalReposPicker
+      initialValue={[]}
       onChange={onChange}
       onValidChange={onValidChange}
       targetRepo="org/primary-repo"
-      value={[]}
       {...overrides}
     />
   );
@@ -127,11 +128,7 @@ describe("AdditionalReposPicker", () => {
         expect(screen.getByText(REPO_1_REGEX)).toBeInTheDocument();
       });
 
-      // The trash icon button is the only button rendered inside the row card
-      const removeButtons = screen.getAllByRole("button", {
-        name: (_, el) => el?.querySelector("svg") !== null,
-      });
-      fireEvent.click(removeButtons[0]);
+      fireEvent.click(screen.getByRole("button", { name: REMOVE_REPO_REGEX }));
 
       await waitFor(() => {
         expect(screen.queryByText(REPO_1_REGEX)).not.toBeInTheDocument();
@@ -146,7 +143,7 @@ describe("AdditionalReposPicker", () => {
         branch: "main",
       }));
 
-      renderPicker({ value: fullRows, targetRepo: "org/primary-repo" });
+      renderPicker({ initialValue: fullRows, targetRepo: "org/primary-repo" });
 
       expect(
         screen.queryByRole("button", { name: ADD_REPO_REGEX })
@@ -158,7 +155,7 @@ describe("AdditionalReposPicker", () => {
   describe("primary-repo conflict validation", () => {
     it("shows an error and marks invalid when a row's fullName matches targetRepo (case-insensitive)", () => {
       const { onValidChange } = renderPicker({
-        value: [{ fullName: "Org/Primary-Repo", branch: "main" }],
+        initialValue: [{ fullName: "Org/Primary-Repo", branch: "main" }],
         targetRepo: "org/primary-repo",
       });
 
@@ -170,7 +167,7 @@ describe("AdditionalReposPicker", () => {
   describe("duplicate detection", () => {
     it("shows a duplicate error and marks invalid when two rows select the same repo (case-insensitive)", () => {
       const { onValidChange } = renderPicker({
-        value: [
+        initialValue: [
           { fullName: "org/shared-repo", branch: "main" },
           { fullName: "Org/Shared-Repo", branch: "develop" },
         ],
@@ -185,7 +182,7 @@ describe("AdditionalReposPicker", () => {
   describe("valid state", () => {
     it("calls onValidChange with true when all rows are complete and have no conflicts", () => {
       const { onValidChange } = renderPicker({
-        value: [
+        initialValue: [
           { fullName: "org/repo-a", branch: "main" },
           { fullName: "org/repo-b", branch: "develop" },
         ],
