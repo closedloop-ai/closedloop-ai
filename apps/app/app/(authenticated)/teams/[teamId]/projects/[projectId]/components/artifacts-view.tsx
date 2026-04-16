@@ -49,6 +49,7 @@ import { useSortParams } from "@/hooks/use-sort-params";
 import { matchesFilter } from "@/lib/artifact-filter";
 import { comparePriorityValues } from "@/lib/priority-sort";
 import { ARTIFACT_STATUS_LABELS } from "@/lib/project-constants";
+import { groupItemsByStatus } from "@/lib/status-grouping";
 import type { SortConfig } from "@/lib/table-utils";
 import { sortTableData } from "@/lib/table-utils";
 import type { FilterCategory } from "../page";
@@ -357,15 +358,15 @@ type StatusSection = {
   groups: DisplayGroup[];
 };
 
-function getItemStatus(item: ArtifactRowItem): string {
-  return item.data.status;
+function getItemStatus(item: ArtifactRowItem) {
+  return item.data.status as ArtifactStatus;
 }
 
 function groupDisplayGroupsByStatus(groups: DisplayGroup[]): StatusSection[] {
   const buckets = new Map<ArtifactStatus, DisplayGroup[]>();
 
   for (const group of groups) {
-    const status = getItemStatus(group.root) as ArtifactStatus;
+    const status = getItemStatus(group.root);
     if (!buckets.has(status)) {
       buckets.set(status, []);
     }
@@ -388,33 +389,15 @@ function groupDisplayGroupsByStatus(groups: DisplayGroup[]): StatusSection[] {
 }
 
 function groupFlatItemsByStatus(items: ArtifactRowItem[]): StatusSection[] {
-  const buckets = new Map<ArtifactStatus, ArtifactRowItem[]>();
-
-  for (const item of items) {
-    const status = getItemStatus(item) as ArtifactStatus;
-    if (!buckets.has(status)) {
-      buckets.set(status, []);
-    }
-    buckets.get(status)?.push(item);
-  }
-
-  const sections: StatusSection[] = [];
-  for (const status of STATUS_DISPLAY_ORDER) {
-    const sectionItems = buckets.get(status);
-    if (sectionItems && sectionItems.length > 0) {
-      sections.push({
-        status,
-        label: ARTIFACT_STATUS_LABELS[status],
-        groups: sectionItems.map((item) => ({
-          groupKey: item.data.id,
-          root: item,
-          children: [],
-        })),
-      });
-    }
-  }
-
-  return sections;
+  return groupItemsByStatus(items).map((section) => ({
+    status: section.status,
+    label: section.label,
+    groups: section.items.map((item) => ({
+      groupKey: item.data.id,
+      root: item,
+      children: [],
+    })),
+  }));
 }
 
 function flattenStatusSections(
