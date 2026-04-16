@@ -53,7 +53,7 @@ export { LoopCommand, LoopStatus, type TokensByModel };
 
 export type SourceContextType = (typeof EntityType)[keyof Pick<
   typeof EntityType,
-  "Artifact" | "Feature"
+  "Document" | "Feature"
 >];
 
 // Compute target summary (for loop list/detail views)
@@ -70,7 +70,7 @@ export type Loop = {
   userId: string;
   status: LoopStatus;
   command: LoopCommand;
-  artifactId: string | null;
+  documentId: string | null;
   workstreamId: string | null;
   parentLoopId: string | null;
   computeTargetId: string | null;
@@ -94,7 +94,7 @@ export type Loop = {
   startedAt: Date | null;
   completedAt: Date | null;
   error: { code: string; message: string } | null;
-  artifactVersion: number | null;
+  documentVersion: number | null;
   metadata: JsonObject;
   uploadedArtifacts: JsonObject | null;
   createdAt: Date;
@@ -116,7 +116,7 @@ export type LoopWithUser = Loop & {
 // Request/Response types
 export type CreateLoopRequest = {
   command: LoopCommand;
-  artifactId?: string;
+  documentId?: string;
   workstreamId?: string;
   parentLoopId?: string;
   computeTargetId?: string;
@@ -130,7 +130,7 @@ export type CreateLoopRequest = {
     sourceType?: SourceContextType;
     include: "full" | "summary";
   }>;
-  artifactVersion?: number;
+  documentVersion?: number;
   metadata?: JsonObject;
 };
 
@@ -147,7 +147,7 @@ export type ResumeLoopRequest = {
 export type LoopListFilters = {
   status?: LoopStatus;
   command?: LoopCommand;
-  artifactId?: string;
+  documentId?: string;
   workstreamId?: string;
   projectId?: string;
   userId?: string;

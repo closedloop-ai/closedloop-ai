@@ -1,11 +1,11 @@
 "use client";
 
 import {
-  type ArtifactDetail,
-  ArtifactType,
-  type ArtifactWithWorkstream,
+  type DocumentDetail,
+  DocumentType,
+  type DocumentWithWorkstream,
   getRoutePrefixForType,
-} from "@repo/api/src/types/artifact";
+} from "@repo/api/src/types/document";
 import type {
   FeatureStatus,
   FeatureWithWorkstream,
@@ -17,8 +17,8 @@ import { ApiError } from "@/lib/api-error";
 import type { EngineerTicket, EngineerTicketsResult } from "@/types/engineer";
 import {
   artifactStatusDisplayName,
-  artifactTypeToSourceType,
-  mapArtifactStatusToType,
+  documentTypeToSourceType,
+  mapDocumentStatusToType,
   mapFeatureStatusToType,
   priorityToLabel,
   priorityToNumber,
@@ -104,7 +104,7 @@ export function useEngineerFeatures(): EngineerFeaturesResultWithUser {
 
   const [apiUser, setApiUser] = useState<User | null>(null);
   const [apiFeatures, setApiFeatures] = useState<FeatureWithWorkstream[]>([]);
-  const [apiArtifacts, setApiArtifacts] = useState<ArtifactWithWorkstream[]>(
+  const [apiArtifacts, setApiArtifacts] = useState<DocumentWithWorkstream[]>(
     []
   );
   const [isLoading, setIsLoading] = useState(true);
@@ -132,8 +132,8 @@ export function useEngineerFeatures(): EngineerFeaturesResultWithUser {
           apiClient.get<FeatureWithWorkstream[]>(
             `/features?${params.toString()}`
           ),
-          apiClient.get<ArtifactWithWorkstream[]>(
-            `/artifacts?${params.toString()}&type=${ArtifactType.ImplementationPlan}`
+          apiClient.get<DocumentWithWorkstream[]>(
+            `/documents?${params.toString()}&type=${DocumentType.ImplementationPlan}`
           ),
         ]);
         if (cancelled) {
@@ -215,8 +215,8 @@ export function useEngineerFeatures(): EngineerFeaturesResultWithUser {
 
       if (ticket && ticket.sourceType !== "Feature") {
         try {
-          const detail = await apiClient.get<ArtifactDetail>(
-            `/artifacts/${ticket.id}`
+          const detail = await apiClient.get<DocumentDetail>(
+            `/documents/${ticket.id}`
           );
           return {
             identifier: ticket.identifier,
@@ -352,7 +352,7 @@ function apiFeatureToEngineerTicket(
 }
 
 function apiArtifactToEngineerTicket(
-  artifact: ArtifactWithWorkstream
+  artifact: DocumentWithWorkstream
 ): EngineerTicket {
   const assignee = artifact.assignee
     ? {
@@ -366,18 +366,18 @@ function apiArtifactToEngineerTicket(
       }
     : undefined;
 
-  const routePrefix = getRoutePrefixForType(artifact.type) ?? "artifacts";
+  const routePrefix = getRoutePrefixForType(artifact.type) ?? "documents";
 
   return {
     id: artifact.id,
     identifier: artifact.slug,
     title: artifact.title,
     description: artifact.snippet ?? undefined,
-    sourceType: artifactTypeToSourceType(artifact.type),
+    sourceType: documentTypeToSourceType(artifact.type),
     status: {
       id: artifact.status,
       name: artifactStatusDisplayName(artifact.status),
-      type: mapArtifactStatusToType(artifact.status),
+      type: mapDocumentStatusToType(artifact.status),
     },
     assignee,
     priority: 3,

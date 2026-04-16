@@ -2,11 +2,11 @@
 
 import { useFeatureFlag } from "@repo/analytics/client";
 import {
-  type ArtifactDetail,
-  ArtifactType,
-} from "@repo/api/src/types/artifact";
+  type DocumentDetail,
+  DocumentType,
+} from "@repo/api/src/types/document";
 import { EntityType } from "@repo/api/src/types/entity-link";
-import { InlinePresence, OptionalArtifactRoom } from "@repo/collaboration";
+import { InlinePresence, OptionalDocumentRoom } from "@repo/collaboration";
 import {
   ResizableHandle,
   ResizablePanel,
@@ -23,28 +23,28 @@ import { Loader2Icon } from "lucide-react";
 import { Suspense, useEffect, useRef, useState } from "react";
 import { NewPlanModal } from "@/app/(authenticated)/implementation-plans/components/new-plan-modal";
 import { VersionSelector } from "@/app/(authenticated)/implementation-plans/components/version-selector";
-import { CollaborativeEditor } from "@/components/artifact-editor/collaborative-editor";
-import { EditableArtifactTitle } from "@/components/artifact-editor/editable-artifact-title";
-import { EditorToolbarActions } from "@/components/artifact-editor/editor-toolbar-actions";
-import { EditorToolbarRow } from "@/components/artifact-editor/editor-toolbar-row";
-import { ArtifactChatDrawer } from "@/components/chat/ArtifactChatDrawer";
+import { DocumentChatDrawer } from "@/components/chat/DocumentChatDrawer";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
+import { CollaborativeEditor } from "@/components/document-editor/collaborative-editor";
+import { EditableDocumentTitle } from "@/components/document-editor/editable-document-title";
+import { EditorToolbarActions } from "@/components/document-editor/editor-toolbar-actions";
+import { EditorToolbarRow } from "@/components/document-editor/editor-toolbar-row";
 import { LoopDispatchTargetSelector } from "@/components/engineer/LoopDispatchTargetSelector";
 import { ExecutionLogDialog } from "@/components/execution-log/execution-log-dialog";
 import { ExecutionLogSummary } from "@/components/execution-log/execution-log-summary";
 import { GenerationStatusBanner } from "@/components/generation-status-banner";
 import { MoveEntityDialog } from "@/components/move-entity-dialog";
 import { RenameDialog } from "@/components/rename-dialog";
-import { useArtifactActions } from "@/hooks/artifact-editing/use-artifact-actions";
-import { useArtifactContent } from "@/hooks/artifact-editing/use-artifact-content";
-import { useArtifactMetadata } from "@/hooks/artifact-editing/use-artifact-metadata";
-import { useArtifactUIState } from "@/hooks/artifact-editing/use-artifact-ui-state";
-import { useEditorSession } from "@/hooks/artifact-editing/use-editor-session";
-import { usePrdActions } from "@/hooks/artifact-editing/use-prd-actions";
+import { useDocumentActions } from "@/hooks/document-editing/use-document-actions";
+import { useDocumentContent } from "@/hooks/document-editing/use-document-content";
+import { useDocumentMetadata } from "@/hooks/document-editing/use-document-metadata";
+import { useDocumentUIState } from "@/hooks/document-editing/use-document-ui-state";
+import { useEditorSession } from "@/hooks/document-editing/use-editor-session";
+import { usePrdActions } from "@/hooks/document-editing/use-prd-actions";
 import {
-  useArtifactGenerationStatus,
-  useDismissArtifactGenerationStatus,
-} from "@/hooks/queries/use-artifacts";
+  useDismissDocumentGenerationStatus,
+  useDocumentGenerationStatus,
+} from "@/hooks/queries/use-documents";
 import { usePrdJudgesFeedback } from "@/hooks/queries/use-judges";
 import { useExecutionLogDialog } from "@/hooks/use-execution-log-dialog";
 import { RequestChangesModal } from "../../implementation-plans/components/request-changes-modal";
@@ -53,7 +53,7 @@ import { PRDExtrasPanel } from "./components/prd-extras-panel";
 import { PRDMetadataBar } from "./components/prd-metadata-bar";
 
 type PRDEditorProps = {
-  prd: ArtifactDetail;
+  prd: DocumentDetail;
   currentVersion: number;
   onVersionChange: (version: number) => void;
 };
@@ -71,8 +71,8 @@ export function PRDEditor({
 
   // Fetch generation status with adaptive polling (stops when terminal)
   const { data: generationStatus, invalidateCache: invalidateArtifactCache } =
-    useArtifactGenerationStatus(prd.id, { polling: true });
-  const dismissGenerationStatus = useDismissArtifactGenerationStatus();
+    useDocumentGenerationStatus(prd.id, { polling: true });
+  const dismissGenerationStatus = useDismissDocumentGenerationStatus();
 
   const { data: judgesReport } = usePrdJudgesFeedback(prd.id);
 
@@ -81,28 +81,28 @@ export function PRDEditor({
     currentVersion,
     onVersionChange,
   });
-  const contentController = useArtifactContent({
+  const contentController = useDocumentContent({
     artifact: prd,
     isLatestVersion: currentVersion === prd.latestVersion,
     setEditorContent: session.setEditorContent,
     onVersionCreated: (updatedArtifact) =>
       onVersionChange(updatedArtifact.version.version),
   });
-  const metadata = useArtifactMetadata({
+  const metadata = useDocumentMetadata({
     artifact: prd,
   });
-  const actions = useArtifactActions({
+  const actions = useDocumentActions({
     artifact: prd,
     redirectPath: prd.project?.teams?.[0]?.id
       ? `/teams/${prd.project.teams[0].id}/projects/${prd.project.id}`
       : "/prds",
   });
-  const uiState = useArtifactUIState({
-    artifactType: ArtifactType.Prd,
+  const uiState = useDocumentUIState({
+    documentType: DocumentType.Prd,
   });
-  const prdActions = usePrdActions({ artifactId: prd.id });
+  const prdActions = usePrdActions({ documentId: prd.id });
 
-  // Type assertion: useArtifactUIState returns a union; narrow to the PRD/Feature branch
+  // Type assertion: useDocumentUIState returns a union; narrow to the PRD/Feature branch
   const {
     showRenameDialog,
     setShowRenameDialog,
@@ -170,7 +170,7 @@ export function PRDEditor({
       <ResizablePanelGroup autoSaveId="prd-editor" direction="horizontal">
         <ResizablePanel defaultSize={75} minSize={50}>
           <div className="h-full overflow-y-auto overflow-x-hidden bg-background">
-            <OptionalArtifactRoom roomId={session.liveblocksRoomId}>
+            <OptionalDocumentRoom roomId={session.liveblocksRoomId}>
               {/* Loading spinner — visible until editor content is fully loaded */}
               <div
                 className={
@@ -229,7 +229,7 @@ export function PRDEditor({
                   isDismissFailurePending={dismissGenerationStatus.isPending}
                   onDismissFailure={async (runKey) => {
                     await dismissGenerationStatus.mutateAsync({
-                      artifactId: prd.id,
+                      documentId: prd.id,
                       runKey,
                     });
                   }}
@@ -241,8 +241,8 @@ export function PRDEditor({
                     externalToolbar
                     headerContent={
                       <div className="space-y-4 px-5 pt-10">
-                        <EditableArtifactTitle
-                          artifactId={prd.id}
+                        <EditableDocumentTitle
+                          documentId={prd.id}
                           initialTitle={prd.title}
                         />
                         <PRDMetadataBar metadata={metadata} />
@@ -270,7 +270,7 @@ export function PRDEditor({
                   />
                 </div>
               </div>
-            </OptionalArtifactRoom>
+            </OptionalDocumentRoom>
           </div>
         </ResizablePanel>
 
@@ -288,11 +288,11 @@ export function PRDEditor({
                   className="min-h-0 flex-1 overflow-hidden"
                   value="chat"
                 >
-                  <ArtifactChatDrawer
-                    artifactId={prd.id}
-                    artifactSlug={prd.slug}
-                    artifactTitle={prd.title}
-                    artifactType="prd"
+                  <DocumentChatDrawer
+                    documentId={prd.id}
+                    documentSlug={prd.slug}
+                    documentTitle={prd.title}
+                    documentType="prd"
                   />
                 </TabsContent>
                 <TabsContent
@@ -300,7 +300,7 @@ export function PRDEditor({
                   value="execution-log"
                 >
                   <ExecutionLogSummary
-                    artifactId={prd.id}
+                    documentId={prd.id}
                     onViewFullTrace={executionLogDialog.handleViewFullTrace}
                   />
                 </TabsContent>
@@ -353,7 +353,7 @@ export function PRDEditor({
       <MoveEntityDialog
         entity={{
           id: prd.id,
-          entityType: EntityType.Artifact,
+          entityType: EntityType.Document,
           projectId: prd.projectId,
         }}
         onOpenChange={setShowMoveDialog}
@@ -376,7 +376,7 @@ export function PRDEditor({
         open={showGeneratePlanModal}
         source={{
           ...prd,
-          sourceType: EntityType.Artifact,
+          sourceType: EntityType.Document,
         }}
       />
     </>

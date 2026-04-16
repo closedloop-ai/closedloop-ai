@@ -250,8 +250,8 @@ describe("handleCheckRun", () => {
           checksStatus: true,
           headSha: true,
           workstreamId: true,
-          artifactId: true,
-          artifact: { select: { slug: true } },
+          documentId: true,
+          document: { select: { slug: true } },
         },
       });
       expect(mockQueryStatusCheckRollup).not.toHaveBeenCalled();
@@ -281,8 +281,8 @@ describe("handleCheckRun", () => {
         checksStatus: "UNKNOWN",
         headSha,
         workstreamId: "ws-uuid-123",
-        artifactId: "artifact-uuid-123",
-        artifact: { slug: "test-slug" },
+        documentId: "artifact-uuid-123",
+        document: { slug: "test-slug" },
       });
 
       mockQueryStatusCheckRollup.mockResolvedValue(null);
@@ -326,8 +326,8 @@ describe("handleCheckRun", () => {
         checksStatus: "UNKNOWN",
         headSha,
         workstreamId: "ws-uuid-123",
-        artifactId: "artifact-uuid-123",
-        artifact: { slug: "test-slug" },
+        documentId: "artifact-uuid-123",
+        document: { slug: "test-slug" },
       });
 
       mockQueryStatusCheckRollup.mockResolvedValue("SUCCESS");
@@ -376,7 +376,7 @@ describe("handleCheckRun", () => {
             prNumber: 42,
             prTitle: "Test PR",
             prUrl: "https://github.com/org/repo/pull/42",
-            artifactId: "artifact-uuid-123",
+            documentId: "artifact-uuid-123",
             slug: "test-slug",
             checksStatus: "PASSING",
             previousChecksStatus: "UNKNOWN",
@@ -408,8 +408,8 @@ describe("handleCheckRun", () => {
         checksStatus: "PASSING",
         headSha,
         workstreamId: "ws-uuid-idempotent",
-        artifactId: null,
-        artifact: null,
+        documentId: null,
+        document: null,
       });
 
       mockQueryStatusCheckRollup.mockResolvedValue("SUCCESS");
@@ -452,8 +452,8 @@ describe("handleCheckRun", () => {
         checksStatus: "UNKNOWN",
         headSha,
         workstreamId: "ws-uuid-toctou",
-        artifactId: null,
-        artifact: null,
+        documentId: null,
+        document: null,
       });
 
       mockQueryStatusCheckRollup.mockResolvedValue("SUCCESS");
@@ -495,8 +495,8 @@ describe("handleCheckRun", () => {
         checksStatus: "UNKNOWN",
         headSha,
         workstreamId: "ws-uuid-merged",
-        artifactId: null,
-        artifact: null,
+        documentId: null,
+        document: null,
       });
 
       mockQueryStatusCheckRollup.mockResolvedValue("SUCCESS");
@@ -538,8 +538,8 @@ describe("handleCheckRun", () => {
         checksStatus: "UNKNOWN",
         headSha,
         workstreamId: "ws-uuid-gone",
-        artifactId: null,
-        artifact: null,
+        documentId: null,
+        document: null,
       });
 
       mockQueryStatusCheckRollup.mockResolvedValue("SUCCESS");
@@ -576,8 +576,8 @@ describe("handleCheckRun", () => {
         checksStatus: "PASSING",
         headSha,
         workstreamId: "ws-uuid-fail",
-        artifactId: "artifact-uuid-fail",
-        artifact: { slug: "fail-slug" },
+        documentId: "artifact-uuid-fail",
+        document: { slug: "fail-slug" },
       });
 
       mockQueryStatusCheckRollup.mockResolvedValue("FAILURE");
@@ -606,7 +606,7 @@ describe("handleCheckRun", () => {
             prNumber: 47,
             prTitle: "Failing PR",
             prUrl: "https://github.com/org/repo/pull/47",
-            artifactId: "artifact-uuid-fail",
+            documentId: "artifact-uuid-fail",
             slug: "fail-slug",
             checksStatus: "FAILING",
             previousChecksStatus: "PASSING",
@@ -638,8 +638,8 @@ describe("handleCheckRun", () => {
         checksStatus: "UNKNOWN",
         headSha,
         workstreamId: "ws-uuid-tx",
-        artifactId: null,
-        artifact: null,
+        documentId: null,
+        document: null,
       });
 
       mockQueryStatusCheckRollup.mockResolvedValue("SUCCESS");

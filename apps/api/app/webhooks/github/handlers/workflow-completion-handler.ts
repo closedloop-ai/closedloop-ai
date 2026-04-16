@@ -12,7 +12,7 @@ import {
 } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
-import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
+import { documentVersionService } from "@/app/documents/document-version-service";
 import { fanOutJudgeScores } from "@/lib/judge-score-fanout";
 import { ensurePrLinkageRecords } from "@/lib/pr-linkage";
 import { upsertFromSnapshot } from "@/lib/prompts-service";
@@ -27,7 +27,7 @@ import { processArtifactDownloads } from "./workflow-artifacts";
 type PrEventMetadata = {
   prTitle: string;
   prUrl: string;
-  artifactId: string;
+  documentId: string;
   slug?: string;
   branch: string;
   prNumber: number;
@@ -115,8 +115,8 @@ export async function handleExecutionSuccess(
     }
 
     // Query plan artifact scoped to organization for defense-in-depth
-    const planArtifact = await tx.artifact.findUnique({
-      where: { id: ctx.artifactId, organizationId: workstream.organizationId },
+    const planArtifact = await tx.document.findUnique({
+      where: { id: ctx.documentId, organizationId: workstream.organizationId },
       select: {
         organizationId: true,
         projectId: true,
@@ -126,7 +126,7 @@ export async function handleExecutionSuccess(
 
     if (!planArtifact) {
       throw new Error(
-        `[handleExecutionSuccess] Implementation plan artifact ${ctx.artifactId} not found in organization for correlation ${correlationId}`
+        `[handleExecutionSuccess] Implementation plan artifact ${ctx.documentId} not found in organization for correlation ${correlationId}`
       );
     }
 
@@ -139,29 +139,29 @@ export async function handleExecutionSuccess(
           number: prNumber,
         },
       },
-      select: { id: true, artifactId: true },
+      select: { id: true, documentId: true },
     });
 
-    // Determine the effective artifactId for linkage. If the PR row already
+    // Determine the effective documentId for linkage. If the PR row already
     // exists with a different artifact, respect the existing link to avoid
     // creating contradictory entity-link edges.
-    let effectiveArtifactId = ctx.artifactId;
+    let effectiveDocumentId = ctx.documentId;
 
     if (existingPr) {
-      if (!existingPr.artifactId) {
+      if (!existingPr.documentId) {
         // PR exists without an artifact link — claim it
         await tx.gitHubPullRequest.update({
           where: { id: existingPr.id },
-          data: { artifactId: ctx.artifactId },
+          data: { documentId: ctx.documentId },
         });
-      } else if (existingPr.artifactId !== ctx.artifactId) {
+      } else if (existingPr.documentId !== ctx.documentId) {
         // PR is already linked to a different artifact — don't overwrite
-        effectiveArtifactId = existingPr.artifactId;
+        effectiveDocumentId = existingPr.documentId;
         log.warn(
           "[handleExecutionSuccess] PR already linked to a different artifact",
           {
-            existingArtifactId: existingPr.artifactId,
-            requestedArtifactId: ctx.artifactId,
+            existingDocumentId: existingPr.documentId,
+            requestedArtifactId: ctx.documentId,
             prNumber,
             correlationId,
           }
@@ -183,7 +183,7 @@ export async function handleExecutionSuccess(
           workstreamId,
           organizationId: workstream.organizationId,
           repositoryId,
-          artifactId: ctx.artifactId,
+          documentId: ctx.documentId,
           githubId: String(executionResult.github_id ?? prNumber),
           number: prNumber,
           title: prTitle,
@@ -200,7 +200,7 @@ export async function handleExecutionSuccess(
       organizationId: workstream.organizationId,
       workstreamId,
       projectId: planArtifact.projectId!,
-      artifactId: effectiveArtifactId,
+      documentId: effectiveDocumentId,
       prUrl: executionResult.pr_url,
       prTitle,
       prNumber,
@@ -223,7 +223,7 @@ export async function handleExecutionSuccess(
           prTitle,
           branch: executionResult.branch_name,
           runId,
-          artifactId: ctx.artifactId,
+          documentId: ctx.documentId,
           slug: planArtifact.slug,
         } as PrEventMetadata,
       },
@@ -232,18 +232,18 @@ export async function handleExecutionSuccess(
     await upsertFromSnapshot(workstream.organizationId, promptsSnapshot);
 
     if (codeJudgesReport && ctx.actionRunId) {
-      const evaluation = await tx.artifactEvaluation.upsert({
+      const evaluation = await tx.documentEvaluation.upsert({
         where: {
           entityId_reportId: {
-            entityId: ctx.artifactId,
+            entityId: ctx.documentId,
             reportId: codeJudgesReport.report_id,
           },
         },
         create: {
           organizationId: workstream.organizationId,
-          entityId: ctx.artifactId,
-          entityType: EntityType.ARTIFACT,
-          artifactId: ctx.artifactId,
+          entityId: ctx.documentId,
+          entityType: EntityType.DOCUMENT,
+          documentId: ctx.documentId,
           actionRunId: ctx.actionRunId,
           reportType: EvaluationReportType.Code,
           reportId: codeJudgesReport.report_id,
@@ -263,7 +263,7 @@ export async function handleExecutionSuccess(
       });
 
       log.info("[handleExecutionSuccess] Persisted code judges report", {
-        artifactId: ctx.artifactId,
+        documentId: ctx.documentId,
         reportId: codeJudgesReport.report_id,
         judgesCount: codeJudgesReport.stats.length,
       });
@@ -283,7 +283,7 @@ export async function handleWorkflowSuccess(
   tx: TransactionClient,
   ctx: WorkflowContext
 ): Promise<void> {
-  const { correlationId, artifactId, workstreamId, runId, command } = ctx;
+  const { correlationId, documentId, workstreamId, runId, command } = ctx;
 
   // Download and extract artifacts from GitHub
   const result = await processArtifactDownloads(runId);
@@ -315,16 +315,16 @@ export async function handleWorkflowSuccess(
   const finalContent = planContent ?? questionsContent;
 
   log.info("[handleWorkflowSuccess] Updating artifact", {
-    artifactId,
+    documentId,
     hasContent: !!finalContent,
     contentLength: finalContent?.length ?? 0,
     hasPerfSummary: !!perfSummary,
     command,
   });
 
-  if (!artifactId) {
+  if (!documentId) {
     log.error(
-      "[handleWorkflowSuccess] No artifactId in context - cannot update artifact",
+      "[handleWorkflowSuccess] No documentId in context - cannot update artifact",
       {
         correlationId,
         workstreamId,
@@ -345,36 +345,36 @@ export async function handleWorkflowSuccess(
     );
   }
 
-  const existingArtifact = await tx.artifact.findUnique({
-    where: { id: artifactId, organizationId: workstream.organizationId },
+  const existingDocument = await tx.document.findUnique({
+    where: { id: documentId, organizationId: workstream.organizationId },
     select: { id: true, organizationId: true, latestVersion: true },
   });
 
-  if (!existingArtifact) {
+  if (!existingDocument) {
     throw new Error(
-      `Artifact ${artifactId} not found in organization - cannot update with workflow results`
+      `Artifact ${documentId} not found in organization - cannot update with workflow results`
     );
   }
 
   log.info("[handleWorkflowSuccess] Found existing artifact", {
-    artifactId,
-    latestVersion: existingArtifact.latestVersion,
+    documentId,
+    latestVersion: existingDocument.latestVersion,
   });
 
   // Store content via ArtifactVersion instead of directly on Artifact
   if (finalContent) {
-    await artifactVersionService.createVersion(
-      artifactId,
-      existingArtifact.organizationId,
+    await documentVersionService.createVersion(
+      documentId,
+      existingDocument.organizationId,
       null,
       finalContent
     );
   }
 
-  await tx.artifact.update({
+  await tx.document.update({
     where: {
-      id: artifactId,
-      organizationId: existingArtifact.organizationId,
+      id: documentId,
+      organizationId: existingDocument.organizationId,
     },
     data: {
       status: "DRAFT",
@@ -382,7 +382,7 @@ export async function handleWorkflowSuccess(
   });
 
   log.info("[handleWorkflowSuccess] Artifact updated successfully", {
-    artifactId,
+    documentId,
     newContentLength: finalContent?.length ?? 0,
   });
 
@@ -393,7 +393,7 @@ export async function handleWorkflowSuccess(
       actorType: "system",
       data: {
         correlationId,
-        artifactId,
+        documentId,
         runId,
         conclusion: "success",
       },
@@ -403,18 +403,18 @@ export async function handleWorkflowSuccess(
   await upsertFromSnapshot(workstream.organizationId, promptsSnapshot);
 
   if (judgesReport && ctx.actionRunId) {
-    const evaluation = await tx.artifactEvaluation.upsert({
+    const evaluation = await tx.documentEvaluation.upsert({
       where: {
         entityId_reportId: {
-          entityId: artifactId,
+          entityId: documentId,
           reportId: judgesReport.report_id,
         },
       },
       create: {
         organizationId: workstream.organizationId,
-        entityId: artifactId,
-        entityType: EntityType.ARTIFACT,
-        artifactId,
+        entityId: documentId,
+        entityType: EntityType.DOCUMENT,
+        documentId,
         actionRunId: ctx.actionRunId,
         reportType: EvaluationReportType.Plan,
         reportId: judgesReport.report_id,
@@ -434,7 +434,7 @@ export async function handleWorkflowSuccess(
     });
 
     log.info("[handleWorkflowSuccess] Persisted judges report", {
-      artifactId,
+      documentId,
       reportId: judgesReport.report_id,
       judgesCount: judgesReport.stats.length,
     });
@@ -444,13 +444,13 @@ export async function handleWorkflowSuccess(
   if (perfSummary !== null && perfSummary !== undefined && ctx.actionRunId) {
     await tx.gitHubActionRunPerformance.upsert({
       where: {
-        artifactId_actionRunId: {
-          artifactId,
+        documentId_actionRunId: {
+          documentId,
           actionRunId: ctx.actionRunId,
         },
       },
       create: {
-        artifactId,
+        documentId,
         actionRunId: ctx.actionRunId,
         summaryData: perfSummary as unknown as Prisma.InputJsonValue,
       },
@@ -460,7 +460,7 @@ export async function handleWorkflowSuccess(
     });
 
     log.info("[handleWorkflowSuccess] Persisted perf summary", {
-      artifactId,
+      documentId,
     });
   }
 
@@ -480,7 +480,7 @@ export async function handleWorkflowFailure(
   ctx: WorkflowContext,
   htmlUrl: string
 ): Promise<void> {
-  const { correlationId, artifactId, workstreamId, runId, command } = ctx;
+  const { correlationId, documentId, workstreamId, runId, command } = ctx;
 
   // Only create the event - NEVER overwrite artifact content with error messages
   await tx.workstreamEvent.create({
@@ -490,7 +490,7 @@ export async function handleWorkflowFailure(
       actorType: "system",
       data: {
         correlationId,
-        artifactId,
+        documentId,
         runId,
         command,
         conclusion: "failure",
@@ -501,7 +501,7 @@ export async function handleWorkflowFailure(
 
   log.error(`Workflow run ${runId} failed for correlation ${correlationId}`, {
     htmlUrl,
-    artifactId,
+    documentId,
     command,
   });
 }
@@ -534,7 +534,7 @@ export async function processWorkflowCompletion(
 
   const triggerData = actionRun.triggerData as {
     correlationId: string;
-    artifactId: string;
+    documentId: string;
     command?: string;
   };
 
@@ -548,7 +548,7 @@ export async function processWorkflowCompletion(
   const conclusion = event.workflow_run.conclusion;
   const ctx: WorkflowContext = {
     correlationId: triggerData.correlationId,
-    artifactId: triggerData.artifactId,
+    documentId: triggerData.documentId,
     workstreamId: actionRun.workstreamId,
     repositoryId: actionRun.repositoryId,
     command: triggerData.command,

@@ -99,7 +99,7 @@ export function SelectPullRequestDialog({
 
       await createEntityLink.mutateAsync({
         sourceId: planId,
-        sourceType: EntityType.Artifact,
+        sourceType: EntityType.Document,
         targetId: externalLink.id,
         targetType: EntityType.ExternalLink,
         linkType: LinkType.Produces,

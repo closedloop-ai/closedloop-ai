@@ -319,7 +319,7 @@ As a security-conscious user, I want to enable MFA so that my account is more se
       title: string;
       content: string;
     }) {
-      const existing = await prisma.artifact.findFirst({
+      const existing = await prisma.document.findFirst({
         where: {
           projectId: data.projectId,
           type: data.type,
@@ -329,9 +329,9 @@ As a security-conscious user, I want to enable MFA so that my account is more se
 
       if (existing) {
         // Update the latest version's content
-        await prisma.artifactVersion.updateMany({
+        await prisma.documentVersion.updateMany({
           where: {
-            artifactId: existing.id,
+            documentId: existing.id,
             version: existing.latestVersion,
           },
           data: { content: data.content },
@@ -339,7 +339,7 @@ As a security-conscious user, I want to enable MFA so that my account is more se
       } else {
         // Create artifact + initial version in a transaction
         await prisma.$transaction(async (tx) => {
-          const artifact = await tx.artifact.create({
+          const doc = await tx.document.create({
             data: {
               organizationId,
               projectId: data.projectId,
@@ -352,9 +352,9 @@ As a security-conscious user, I want to enable MFA so that my account is more se
             },
           });
 
-          await tx.artifactVersion.create({
+          await tx.documentVersion.create({
             data: {
-              artifactId: artifact.id,
+              documentId: doc.id,
               version: 1,
               content: data.content,
             },

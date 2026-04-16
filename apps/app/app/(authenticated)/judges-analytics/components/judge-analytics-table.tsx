@@ -34,7 +34,7 @@ function formatOrDash(value: number | null): string {
 
 const JUDGE_SORT_COLUMNS = [
   "judgeName",
-  "artifactsEvaluated",
+  "documentsEvaluated",
   "min",
   "mean",
   "max",
@@ -48,7 +48,7 @@ const JUDGE_SORT_CONFIGS: Record<
   SortConfig<JudgeAggregateStats>
 > = {
   judgeName: { key: "judgeName", columnType: "string" },
-  artifactsEvaluated: { key: "artifactsEvaluated", columnType: "number" },
+  documentsEvaluated: { key: "documentsEvaluated", columnType: "number" },
   min: { key: "min", columnType: "number" },
   mean: { key: "mean", columnType: "number" },
   max: { key: "max", columnType: "number" },
@@ -124,7 +124,7 @@ export function JudgeAnalyticsTable({
                 );
               })()}
             </TableCell>
-            <TableCell>{judge.artifactsEvaluated}</TableCell>
+            <TableCell>{judge.documentsEvaluated}</TableCell>
             <TableCell>{formatScorePercent(judge.min)}</TableCell>
             <TableCell>{formatScorePercent(judge.max)}</TableCell>
             <TableCell>{formatScorePercent(judge.mean)}</TableCell>

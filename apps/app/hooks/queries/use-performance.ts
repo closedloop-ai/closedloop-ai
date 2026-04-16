@@ -12,16 +12,16 @@ export const performanceKeys = {
 
 // Query hook
 export function usePerformanceData(
-  artifactId: string | undefined,
+  documentId: string | undefined,
   options?: Omit<UseQueryOptions<PerfSummary | null>, "queryKey" | "queryFn">
 ) {
   const apiClient = useApiClient();
 
   return useQuery({
-    queryKey: performanceKeys.detail(artifactId ?? ""),
+    queryKey: performanceKeys.detail(documentId ?? ""),
     queryFn: () =>
-      apiClient.get<PerfSummary | null>(`/artifacts/${artifactId}/perf`),
-    enabled: !!artifactId,
+      apiClient.get<PerfSummary | null>(`/documents/${documentId}/perf`),
+    enabled: !!documentId,
     staleTime: 10 * 60 * 1000, // 10 minutes
     retry: false,
     ...options,

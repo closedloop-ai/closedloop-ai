@@ -145,7 +145,7 @@ export type BackendMismatchBody = {
   originalComputeTargetId: string | null;
   originalComputeTargetName: string | null;
   preferredComputeTargetId: string | null;
-  artifactId: string;
+  documentId: string;
 };
 
 // Compute preference

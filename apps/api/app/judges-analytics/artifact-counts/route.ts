@@ -1,6 +1,6 @@
 import type {
-  ArtifactCountsGroupBy,
-  ArtifactCountsResponse,
+  DocumentCountsGroupBy,
+  DocumentCountsResponse,
 } from "@repo/api/src/types/judges-analytics";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { createJudgesAnalyticsHandler } from "../lib/route-handler";
@@ -8,7 +8,7 @@ import { judgesAnalyticsService } from "../service";
 import { artifactCountsQueryValidator } from "../validators";
 
 export const GET = withAnyAuth<
-  ArtifactCountsResponse,
+  DocumentCountsResponse,
   "/judges-analytics/artifact-counts"
 >(
   createJudgesAnalyticsHandler({
@@ -19,7 +19,7 @@ export const GET = withAnyAuth<
         orgId,
         startDate,
         endDate,
-        (extra?.groupBy ?? "day") as ArtifactCountsGroupBy
+        (extra?.groupBy ?? "day") as DocumentCountsGroupBy
       ),
     errorMessage: "Failed to fetch artifact counts",
   })

@@ -81,7 +81,7 @@ export type RunEcsTaskOptions = {
   s3ContextUrl: string;
   repo?: { fullName: string; branch: string };
   closedLoopAuthToken: string;
-  artifactId?: string;
+  documentId?: string;
   parentS3StateKey?: string;
   parentSessionId?: string;
   parentBranchName?: string;
@@ -112,8 +112,8 @@ export async function runEcsTask(opts: RunEcsTaskOptions): Promise<string> {
     { name: "CORRELATION_ID", value: opts.loopId },
   ];
 
-  if (opts.artifactId) {
-    environment.push({ name: "ARTIFACT_ID", value: opts.artifactId });
+  if (opts.documentId) {
+    environment.push({ name: "ARTIFACT_ID", value: opts.documentId });
   }
 
   if (opts.repo) {

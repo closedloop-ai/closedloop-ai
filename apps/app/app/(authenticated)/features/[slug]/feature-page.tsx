@@ -8,12 +8,12 @@ import { useRouter } from "next/navigation";
 import { useCallback, useState } from "react";
 import { ExecutePlanModal } from "@/app/(authenticated)/implementation-plans/components/execute-plan-modal";
 import { BackendMismatchModal } from "@/components/backend-mismatch-modal";
-import { ArtifactChatDrawer } from "@/components/chat/ArtifactChatDrawer";
+import { DocumentChatDrawer } from "@/components/chat/DocumentChatDrawer";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { LoopDispatchTargetSelector } from "@/components/engineer/LoopDispatchTargetSelector";
 import { MoveEntityDialog } from "@/components/move-entity-dialog";
-import { usePlanActions } from "@/hooks/artifact-editing/use-plan-actions";
-import { useArtifactGenerationStatus } from "@/hooks/queries/use-artifacts";
+import { usePlanActions } from "@/hooks/document-editing/use-plan-actions";
+import { useDocumentGenerationStatus } from "@/hooks/queries/use-documents";
 import { useDeleteFeature } from "@/hooks/queries/use-features";
 import { useLocalStorageState } from "@/hooks/use-local-storage-state";
 import { BranchesSection } from "./components/branches-section";
@@ -55,10 +55,10 @@ export function FeaturePage({ feature }: Readonly<FeaturePageProps>) {
     confirmPreferredBackend,
     dismissBackendMismatch,
   } = usePlanActions({
-    artifactId: linkedPlanId,
+    documentId: linkedPlanId,
   });
 
-  const { data: generationStatus } = useArtifactGenerationStatus(
+  const { data: generationStatus } = useDocumentGenerationStatus(
     linkedPlanId ?? "",
     {
       enabled: !!linkedPlanId,
@@ -149,11 +149,11 @@ export function FeaturePage({ feature }: Readonly<FeaturePageProps>) {
           {/* Right Sidebar: interactive chat */}
           <FeatureFlagged flag="interactive-chat">
             <div className="flex w-[360px] flex-none flex-col border-l">
-              <ArtifactChatDrawer
-                artifactId={feature.id}
-                artifactSlug={feature.slug}
-                artifactTitle={feature.title}
-                artifactType="feature"
+              <DocumentChatDrawer
+                documentId={feature.id}
+                documentSlug={feature.slug}
+                documentTitle={feature.title}
+                documentType="feature"
               />
             </div>
           </FeatureFlagged>

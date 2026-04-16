@@ -1,11 +1,11 @@
 "use client";
 
-import {
-  type ArtifactStatus,
-  ArtifactType,
-  isActiveGenerationStatus,
-} from "@repo/api/src/types/artifact";
 import type { Priority } from "@repo/api/src/types/common";
+import {
+  type DocumentStatus,
+  DocumentType,
+  isActiveGenerationStatus,
+} from "@repo/api/src/types/document";
 import type { FeatureStatus } from "@repo/api/src/types/feature";
 import { ProjectStatus } from "@repo/api/src/types/project";
 import type { WorkstreamState } from "@repo/api/src/types/workstream";
@@ -37,14 +37,14 @@ import {
 import { useParams, useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import { Header } from "@/app/(authenticated)/components/header";
-import { ActiveFiltersBar } from "@/components/artifact-table/active-filters-bar";
-import type {
-  ArtifactRowItem,
-  RowEditHandlers,
-} from "@/components/artifact-table/artifact-row";
-import { FilterPopover } from "@/components/artifact-table/filter-popover";
-import { TableViewMenu } from "@/components/artifact-table/table-view-menu";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
+import { ActiveFiltersBar } from "@/components/document-table/active-filters-bar";
+import type {
+  DocumentRowItem,
+  RowEditHandlers,
+} from "@/components/document-table/document-row";
+import { FilterPopover } from "@/components/document-table/filter-popover";
+import { TableViewMenu } from "@/components/document-table/table-view-menu";
 import { EditableProjectDescription } from "@/components/editable-project-description";
 import { EditableProjectTitle } from "@/components/editable-project-title";
 import {
@@ -52,10 +52,10 @@ import {
   UnderlineTabsTrigger,
 } from "@/components/underline-tabs";
 import {
-  useArtifactsByProject,
-  useDeleteArtifact,
-  useUpdateArtifact,
-} from "@/hooks/queries/use-artifacts";
+  useDeleteDocument,
+  useDocumentsByProject,
+  useUpdateDocument,
+} from "@/hooks/queries/use-documents";
 import {
   useDeleteFeature,
   useFeatures,
@@ -77,17 +77,17 @@ import { useTeam } from "@/hooks/queries/use-teams";
 import { useCurrentUser } from "@/hooks/queries/use-users";
 import { useActiveLoops } from "@/hooks/use-active-loops";
 import {
-  ArtifactColumn,
   type ColumnVisibility,
+  DocumentColumn,
   useColumnVisibility,
 } from "@/hooks/use-column-visibility";
 import { useGroupByStatus } from "@/hooks/use-group-by-status";
 import { useTabParam } from "@/hooks/use-tab-param";
 import { useTeamMembers } from "@/hooks/use-team-members";
 import { ActiveLoopsStatus } from "./components/active-loops-status";
-import { ArtifactsView } from "./components/artifacts-view";
-import { CreateArtifactModal } from "./components/create-artifact-modal";
+import { CreateDocumentModal } from "./components/create-document-modal";
 import { CreateFeatureModal } from "./components/create-feature-modal";
+import { DocumentsView } from "./components/documents-view";
 import { OverviewActivity } from "./components/overview-activity";
 import { OverviewProperties } from "./components/overview-properties";
 import { useMergeNotification } from "./hooks/use-merge-notification";
@@ -123,8 +123,8 @@ export default function ProjectDetailPage() {
   });
   const [createArtifactOpen, setCreateArtifactOpen] = useState(false);
   const [createFeatureOpen, setCreateFeatureOpen] = useState(false);
-  const [selectedArtifactType, setSelectedArtifactType] =
-    useState<ArtifactType>(ArtifactType.Prd);
+  const [selectedDocumentType, setSelectedDocumentType] =
+    useState<DocumentType>(DocumentType.Prd);
   const [filterCategory, setFilterCategory] = useState<FilterCategory>("all");
   const [filterText, setFilterText] = useState("");
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
@@ -133,13 +133,13 @@ export default function ProjectDetailPage() {
   const columnOverrides = useMemo((): Partial<ColumnVisibility> => {
     switch (filterCategory) {
       case "all":
-        return { [ArtifactColumn.Parent]: false };
+        return { [DocumentColumn.Parent]: false };
       case "documents":
-        return { [ArtifactColumn.Type]: false, [ArtifactColumn.Parent]: false };
+        return { [DocumentColumn.Type]: false, [DocumentColumn.Parent]: false };
       case "features":
       case "plans":
       case "branches":
-        return { [ArtifactColumn.Type]: false };
+        return { [DocumentColumn.Type]: false };
       default:
         return {};
     }
@@ -174,7 +174,7 @@ export default function ProjectDetailPage() {
 
   // Poll artifacts when any workstream is actively running (e.g., execution in progress).
   const { data: artifacts = [], isLoading: loadingArtifacts } =
-    useArtifactsByProject(projectId, {
+    useDocumentsByProject(projectId, {
       staleTime: 4000,
       refetchInterval: (query) => {
         const data = query.state.data ?? [];
@@ -259,9 +259,9 @@ export default function ProjectDetailPage() {
   } = useProjectStatusHandler({
     onArchived: () => router.push(`/teams/${teamId}/projects`),
   });
-  const updateArtifactMutation = useUpdateArtifact();
+  const updateArtifactMutation = useUpdateDocument();
   const updateFeatureMutation = useUpdateFeature();
-  const deleteArtifactMutation = useDeleteArtifact();
+  const deleteArtifactMutation = useDeleteDocument();
   const deleteFeatureMutation = useDeleteFeature();
 
   const handleUpdatePriority = (priority: Priority) => {
@@ -291,15 +291,15 @@ export default function ProjectDetailPage() {
     });
   };
 
-  const handleArtifactStatusChange = (
-    artifactId: string,
-    status: ArtifactStatus
+  const handleDocumentStatusChange = (
+    documentId: string,
+    status: DocumentStatus
   ) => {
-    updateArtifactMutation.mutate({ id: artifactId, status });
+    updateArtifactMutation.mutate({ id: documentId, status });
   };
 
-  const handleCreateArtifact = (type: ArtifactType) => {
-    setSelectedArtifactType(type);
+  const handleCreateArtifact = (type: DocumentType) => {
+    setSelectedDocumentType(type);
     setCreateArtifactOpen(true);
   };
 
@@ -311,7 +311,7 @@ export default function ProjectDetailPage() {
   };
 
   const handleDeleteArtifact = async (
-    item: ArtifactRowItem
+    item: DocumentRowItem
   ): Promise<boolean> => {
     if (item.kind === "feature") {
       const result = await deleteFeatureMutation.mutateAsync(item.data.id);
@@ -351,7 +351,7 @@ export default function ProjectDetailPage() {
         if (isArtifact) {
           updateArtifactMutation.mutate({
             id: itemId,
-            status: status as ArtifactStatus,
+            status: status as DocumentStatus,
           });
         } else {
           updateFeatureMutation.mutate({
@@ -432,7 +432,7 @@ export default function ProjectDetailPage() {
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
             <DropdownMenuItem
-              onClick={() => handleCreateArtifact(ArtifactType.Prd)}
+              onClick={() => handleCreateArtifact(DocumentType.Prd)}
             >
               <FileIcon className="h-4 w-4" />
               Create PRD
@@ -443,7 +443,7 @@ export default function ProjectDetailPage() {
             </DropdownMenuItem>
             <DropdownMenuItem
               onClick={() =>
-                handleCreateArtifact(ArtifactType.ImplementationPlan)
+                handleCreateArtifact(DocumentType.ImplementationPlan)
               }
             >
               <FileCode2Icon className="h-4 w-4" />
@@ -605,7 +605,7 @@ export default function ProjectDetailPage() {
             </div>
           </TabsContent>
           <TabsContent className="mt-0 min-w-fit" value="artifacts">
-            <ArtifactsView
+            <DocumentsView
               applyProjectFilters={
                 filtersReturn.isAnyFilterActive
                   ? filtersReturn.applyFilters
@@ -620,7 +620,7 @@ export default function ProjectDetailPage() {
               isFilterActive={filtersReturn.isAnyFilterActive}
               onClearFilters={filtersReturn.clearAllFilters}
               onDelete={handleDeleteArtifact}
-              onStatusChange={handleArtifactStatusChange}
+              onStatusChange={handleDocumentStatusChange}
               projectId={projectId}
               teamId={teamId}
               visibleColumns={visibleColumns}
@@ -628,8 +628,8 @@ export default function ProjectDetailPage() {
           </TabsContent>
         </main>
       </Tabs>
-      <CreateArtifactModal
-        artifactType={selectedArtifactType}
+      <CreateDocumentModal
+        documentType={selectedDocumentType}
         onOpenChange={setCreateArtifactOpen}
         open={createArtifactOpen}
         projectId={projectId}

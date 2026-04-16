@@ -4,17 +4,17 @@
  * Tests GET /judges-analytics/[metricName]/scores and
  * POST /artifacts/[artifactId]/judge-ratings with mocked services.
  */
-import { ArtifactType } from "@repo/api/src/types/artifact";
+import { DocumentType } from "@repo/api/src/types/document";
 import { EvaluationReportType } from "@repo/api/src/types/evaluation";
 import { vi } from "vitest";
 import {
   GET as ratingsGET,
   POST as ratingsPOST,
-} from "@/app/artifacts/[id]/judge-ratings/route";
+} from "@/app/documents/[id]/judge-ratings/route";
 import {
   getUserJudgeRatings,
   submitJudgeRating,
-} from "@/app/artifacts/[id]/judge-ratings/service";
+} from "@/app/documents/[id]/judge-ratings/service";
 import { GET as scoresGET } from "@/app/judges-analytics/[metricName]/scores/route";
 import { judgesAnalyticsService } from "@/app/judges-analytics/service";
 import type { AuthContext } from "@/lib/auth/with-auth";
@@ -36,10 +36,10 @@ vi.mock("@/lib/auth/with-any-auth", () => ({
 }));
 
 vi.mock("@/lib/identifier-utils", () => ({
-  resolveArtifactId: vi.fn(async (id: string) => id),
+  resolveDocumentId: vi.fn(async (id: string) => id),
 }));
 vi.mock("@/app/judges-analytics/service");
-vi.mock("@/app/artifacts/[id]/judge-ratings/service");
+vi.mock("@/app/documents/[id]/judge-ratings/service");
 
 // ---------------------------------------------------------------------------
 // Shared fixtures
@@ -48,10 +48,10 @@ vi.mock("@/app/artifacts/[id]/judge-ratings/service");
 function makeJudgeScoreRow(overrides = {}) {
   return {
     judgeScoreId: "js-artifact-1",
-    artifactId: "artifact-1",
-    artifactType: ArtifactType.ImplementationPlan,
+    documentId: "artifact-1",
+    artifactType: DocumentType.ImplementationPlan,
     artifactTitle: "My Plan",
-    artifactSlug: "my-plan",
+    documentSlug: "my-plan",
     judgeScore: 0.8,
     avgUserRating: 0.8,
     userRatingCount: 0,

@@ -1,19 +1,19 @@
 "use client";
 
 import { FeatureFlagged } from "@repo/analytics/components/feature-flagged";
-import type { ArtifactDetail } from "@repo/api/src/types/artifact";
+import type { DocumentDetail } from "@repo/api/src/types/document";
 import type { JudgeFeedbackItem } from "@repo/api/src/types/evaluation";
-import { ArtifactVersionInfo } from "@/components/artifact-editor/artifact-version-info";
-import { AttachmentsSection } from "@/components/artifact-editor/attachments-section";
-import { CommentsSection } from "@/components/artifact-editor/comments-section";
-import { EvaluationSection } from "@/components/artifact-editor/evaluation-section";
-import { MetadataPanel } from "@/components/artifact-editor/metadata-panel";
+import { AttachmentsSection } from "@/components/document-editor/attachments-section";
+import { CommentsSection } from "@/components/document-editor/comments-section";
+import { DocumentVersionInfo } from "@/components/document-editor/document-version-info";
+import { EvaluationSection } from "@/components/document-editor/evaluation-section";
+import { MetadataPanel } from "@/components/document-editor/metadata-panel";
 
 type PRDExtrasPanelProps = {
   /**
    * PRD artifact with workstream data
    */
-  prd: ArtifactDetail;
+  prd: DocumentDetail;
   /**
    * Judge feedback items for the evaluation section
    */
@@ -35,19 +35,19 @@ export function PRDExtrasPanel({
 }: Readonly<PRDExtrasPanelProps>) {
   const detailsContent = (
     <div className="space-y-6">
-      <AttachmentsSection artifactId={prd.id} />
+      <AttachmentsSection documentId={prd.id} />
 
       <EvaluationSection
-        artifactId={prd.id}
+        documentId={prd.id}
         judgeItems={judgeItems ?? null}
         title="Agent Evaluation"
       />
 
       <FeatureFlagged flag="the-one-flag">
-        <CommentsSection artifactId={prd.id} />
+        <CommentsSection documentId={prd.id} />
       </FeatureFlagged>
 
-      <ArtifactVersionInfo
+      <DocumentVersionInfo
         createdAt={prd.version.createdAt}
         updatedAt={prd.updatedAt}
       />

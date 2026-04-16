@@ -1,6 +1,6 @@
 "use client";
 
-import { getRoutePrefixForType } from "@repo/api/src/types/artifact";
+import { getRoutePrefixForType } from "@repo/api/src/types/document";
 import {
   type BatchMoveEntitiesInput,
   type BatchMoveEntitiesResult,
@@ -20,8 +20,8 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { useApiClient } from "@/hooks/use-api-client";
-import { artifactKeys } from "./use-artifacts";
 import { dashboardKeys } from "./use-dashboard-stats";
+import { documentKeys } from "./use-documents";
 import { featureKeys } from "./use-features";
 import { projectTreeKeys } from "./use-project-tree";
 import { projectKeys } from "./use-projects";
@@ -239,7 +239,7 @@ export function useLinkedPlanId(
   );
 
   const linkedPlanLink =
-    targetLinks.find((link) => link.targetType === EntityType.Artifact) ?? null;
+    targetLinks.find((link) => link.targetType === EntityType.Document) ?? null;
 
   return {
     targetLinks,
@@ -289,7 +289,7 @@ export function useBatchMoveEntities() {
       ),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: featureKeys.all });
-      queryClient.invalidateQueries({ queryKey: artifactKeys.all });
+      queryClient.invalidateQueries({ queryKey: documentKeys.all });
       queryClient.invalidateQueries({ queryKey: entityLinkKeys.all });
       queryClient.invalidateQueries({ queryKey: projectKeys.all });
       queryClient.invalidateQueries({ queryKey: dashboardKeys.all });
@@ -382,7 +382,7 @@ export function useParentFallbackMap(items: ParentFallbackItem[]) {
         }
         const linkedParent = query.data.find(
           (linked) =>
-            linked.resolvedEntity?.type === EntityType.Artifact ||
+            linked.resolvedEntity?.type === EntityType.Document ||
             linked.resolvedEntity?.type === EntityType.Feature
         );
         if (!linkedParent?.resolvedEntity) {
@@ -402,7 +402,7 @@ function resolveEntityHref(linked: LinkedEntity): string | null {
   if (!linked.resolvedEntity) {
     return null;
   }
-  if (linked.resolvedEntity.type === EntityType.Artifact) {
+  if (linked.resolvedEntity.type === EntityType.Document) {
     const routePrefix = getRoutePrefixForType(
       linked.resolvedEntity.entity.type
     );

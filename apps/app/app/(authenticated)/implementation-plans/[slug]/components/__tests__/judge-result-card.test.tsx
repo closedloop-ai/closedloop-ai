@@ -45,7 +45,7 @@ describe("JudgeResultCard", () => {
 
     render(
       <JudgeResultCard
-        artifactId="artifact-1"
+        documentId="artifact-1"
         item={createMockJudgeFeedbackItem({
           judgeScoreId: "js-1",
           score: 0.8,
@@ -57,7 +57,7 @@ describe("JudgeResultCard", () => {
     expect(screen.getByText("Score: 30% (Failing)")).toBeDefined();
   });
 
-  test("renders static score without editable input when artifactId is missing", () => {
+  test("renders static score without editable input when documentId is missing", () => {
     render(
       <JudgeResultCard
         item={createMockJudgeFeedbackItem({
@@ -80,7 +80,7 @@ describe("JudgeResultCard", () => {
 
     render(
       <JudgeResultCard
-        artifactId="artifact-1"
+        documentId="artifact-1"
         item={createMockJudgeFeedbackItem({
           judgeScoreId: "js-1",
           score: 0.9,
@@ -95,7 +95,7 @@ describe("JudgeResultCard", () => {
   test("submits new value on blur when changed", async () => {
     render(
       <JudgeResultCard
-        artifactId="artifact-1"
+        documentId="artifact-1"
         item={createMockJudgeFeedbackItem({
           judgeScoreId: "js-1",
           score: 0.8,
@@ -118,7 +118,7 @@ describe("JudgeResultCard", () => {
   test("does not submit value on blur when unchanged", () => {
     render(
       <JudgeResultCard
-        artifactId="artifact-1"
+        documentId="artifact-1"
         item={createMockJudgeFeedbackItem({
           judgeScoreId: "js-1",
           score: 0.8,
@@ -134,7 +134,7 @@ describe("JudgeResultCard", () => {
   test("shows validation error for out-of-range values", () => {
     render(
       <JudgeResultCard
-        artifactId="artifact-1"
+        documentId="artifact-1"
         item={createMockJudgeFeedbackItem({
           judgeScoreId: "js-1",
           score: 0.8,
@@ -155,7 +155,7 @@ describe("JudgeResultCard", () => {
 
     render(
       <JudgeResultCard
-        artifactId="artifact-1"
+        documentId="artifact-1"
         item={createMockJudgeFeedbackItem({
           judgeScoreId: "js-1",
           score: 0.8,

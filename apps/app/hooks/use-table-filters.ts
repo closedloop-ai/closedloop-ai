@@ -1,9 +1,9 @@
 "use client";
 
-import { ArtifactStatus } from "@repo/api/src/types/artifact";
 import type { Priority } from "@repo/api/src/types/common";
+import { DocumentStatus } from "@repo/api/src/types/document";
 import { useCallback, useMemo, useState } from "react";
-import type { ArtifactRowItem } from "@/components/artifact-table/artifact-row";
+import type { DocumentRowItem } from "@/components/document-table/document-row";
 
 // ---- Const objects & types ----
 
@@ -90,7 +90,7 @@ function getDateRangeForPreset(
 // ---- Filter predicates ----
 
 function matchesAssigneeFilter(
-  item: ArtifactRowItem,
+  item: DocumentRowItem,
   assigneeIds: string[]
 ): boolean {
   if (assigneeIds.length === 0) {
@@ -103,7 +103,7 @@ function matchesAssigneeFilter(
 }
 
 function matchesDateFilter(
-  item: ArtifactRowItem,
+  item: DocumentRowItem,
   dateFilter: DateFilter,
   isCustomRangeValid: boolean
 ): boolean {
@@ -128,8 +128,8 @@ function matchesDateFilter(
 
 // ---- Helper: get visible statuses ----
 
-export function getStatusesForCategory(): ArtifactStatus[] {
-  return Object.values(ArtifactStatus);
+export function getStatusesForCategory(): DocumentStatus[] {
+  return Object.values(DocumentStatus);
 }
 
 // ---- Initial state ----
@@ -145,7 +145,7 @@ const INITIAL_FILTERS: TableFilters = {
 // ---- Hook ----
 
 type UseTableFiltersOptions = {
-  items: ArtifactRowItem[];
+  items: DocumentRowItem[];
   currentUserId?: string;
 };
 
@@ -328,7 +328,7 @@ export function useTableFilters({
   // ---- Apply filters ----
 
   const applyFilters = useCallback(
-    (targetItems: ArtifactRowItem[]): ArtifactRowItem[] => {
+    (targetItems: DocumentRowItem[]): DocumentRowItem[] => {
       if (!isAnyFilterActive) {
         return targetItems;
       }

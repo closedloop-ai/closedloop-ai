@@ -3,7 +3,7 @@
 import {
   ChecksStatus,
   type PullRequestInfo,
-} from "@repo/api/src/types/artifact";
+} from "@repo/api/src/types/document";
 import type { LucideIcon } from "lucide-react";
 import { CheckCircle2Icon, ClockIcon, XCircleIcon } from "lucide-react";
 import {

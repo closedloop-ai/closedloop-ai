@@ -1,6 +1,6 @@
 import { DATE_ONLY_REGEX } from "@repo/api/src/constants";
 import { EVALUATION_REPORT_TYPE_OPTIONS } from "@repo/api/src/types/evaluation";
-import { ARTIFACT_COUNTS_GROUP_BY_OPTIONS } from "@repo/api/src/types/judges-analytics";
+import { DOCUMENT_COUNTS_GROUP_BY_OPTIONS } from "@repo/api/src/types/judges-analytics";
 import { z } from "zod";
 
 const dateRangeQueryValidator = z
@@ -21,7 +21,7 @@ export const judgesAnalyticsQueryValidator = dateRangeQueryValidator.extend({
 });
 
 export const artifactCountsQueryValidator = dateRangeQueryValidator.extend({
-  groupBy: z.enum(ARTIFACT_COUNTS_GROUP_BY_OPTIONS),
+  groupBy: z.enum(DOCUMENT_COUNTS_GROUP_BY_OPTIONS),
 });
 
 export const scoreComparisonQueryValidator = z.object({

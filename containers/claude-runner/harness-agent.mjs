@@ -131,7 +131,7 @@ const config = {
   authToken: process.env.CLOSEDLOOP_AUTH_TOKEN, // JWT for backend API calls
   apiBaseUrl: process.env.API_BASE_URL, // e.g., "https://api.closedloop.ai"
   organizationId: process.env.ORGANIZATION_ID,
-  artifactId: process.env.ARTIFACT_ID,
+  documentId: process.env.DOCUMENT_ID,
   targetRepo: process.env.TARGET_REPO, // "owner/repo"
   targetBranch: process.env.TARGET_BRANCH || "main",
   s3ContextKey: process.env.S3_CONTEXT_KEY, // S3 key for context pack download

@@ -4,8 +4,8 @@ import type { JsonObject } from "@repo/api/src/types/common";
 import { EntityType } from "@repo/api/src/types/entity-link";
 import { createArtifactThread as createLiveblocksThread } from "@repo/collaboration/room-management";
 import {
-  generateArtifactRoomId,
-  parseArtifactRoomId,
+  generateDocumentRoomId,
+  parseDocumentRoomId,
 } from "@repo/collaboration/room-utils";
 import type { CommentData, ThreadData } from "@repo/collaboration/webhook";
 import { Prisma, withDb } from "@repo/database";
@@ -241,7 +241,7 @@ export const commentsService = {
   /**
    * Find all threads for a given artifact entity, optionally filtered by status.
    */
-  findThreadsByArtifact(
+  findThreadsByDocument(
     organizationId: string,
     entityId: string,
     options?: { status?: ThreadStatus }
@@ -251,7 +251,7 @@ export const commentsService = {
         where: {
           organizationId,
           entityId,
-          entityType: EntityType.Artifact,
+          entityType: EntityType.Document,
           status: options?.status,
         },
         include: {
@@ -267,7 +267,7 @@ export const commentsService = {
     });
   },
 
-  createArtifactThread,
+  createDocumentThread,
 };
 
 /**
@@ -275,14 +275,14 @@ export const commentsService = {
  * Encapsulates room ID computation, Liveblocks SDK call, and DB sync.
  * Throws on Liveblocks errors; DB failures are logged but do not throw.
  */
-async function createArtifactThread(
+async function createDocumentThread(
   organizationId: string,
-  artifactSlug: string,
+  documentSlug: string,
   userId: string,
   bodyText: string,
   anchorText: string
 ): Promise<{ threadId: string; commentId: string }> {
-  const roomId = generateArtifactRoomId(organizationId, artifactSlug);
+  const roomId = generateDocumentRoomId(organizationId, documentSlug);
 
   const threadData = await createLiveblocksThread({
     roomId,
@@ -349,10 +349,10 @@ async function findEntityForRoom(
   roomId: string
 ): Promise<{ entityId: string; entityType: EntityType } | null> {
   try {
-    const { slug } = parseArtifactRoomId(roomId);
+    const { slug } = parseDocumentRoomId(roomId);
 
     const artifact = await withDb((db) =>
-      db.artifact.findUnique({
+      db.document.findUnique({
         where: { organizationId_slug: { organizationId, slug } },
         select: { id: true },
       })
@@ -362,7 +362,7 @@ async function findEntityForRoom(
       return null;
     }
 
-    return { entityId: artifact.id, entityType: EntityType.Artifact };
+    return { entityId: artifact.id, entityType: EntityType.Document };
   } catch {
     // Non-artifact room format — expected, not an error
     return null;

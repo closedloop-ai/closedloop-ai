@@ -39,7 +39,7 @@ describe("buildBranchChatContext — no linked artifacts", () => {
 
   test("omits MCP instructions when no feature or plan is linked (MCP available)", () => {
     const ctx = buildBranchChatContext({ ...BRANCH_BASE }, MCP_AVAILABLE);
-    expect(ctx).not.toContain("get-artifact, list-artifact-versions");
+    expect(ctx).not.toContain("get-document, list-document-versions");
     expect(ctx).toContain("READ-ONLY by default");
     expect(ctx).toContain("Policy (non-negotiable)");
     expect(ctx).toContain("You do NOT have filesystem access");
@@ -47,7 +47,7 @@ describe("buildBranchChatContext — no linked artifacts", () => {
 
   test("omits MCP instructions when no feature or plan is linked (MCP unavailable)", () => {
     const ctx = buildBranchChatContext({ ...BRANCH_BASE }, MCP_UNAVAILABLE);
-    expect(ctx).not.toContain("get-artifact, list-artifact-versions");
+    expect(ctx).not.toContain("get-document, list-document-versions");
     expect(ctx).toContain("READ-ONLY by default");
     expect(ctx).toContain("Policy (non-negotiable)");
     expect(ctx).toContain("You do NOT have filesystem access");
@@ -55,7 +55,7 @@ describe("buildBranchChatContext — no linked artifacts", () => {
 
   test("omits MCP instructions when no feature or plan is linked (MCP availability null)", () => {
     const ctx = buildBranchChatContext({ ...BRANCH_BASE }, null);
-    expect(ctx).not.toContain("get-artifact, list-artifact-versions");
+    expect(ctx).not.toContain("get-document, list-document-versions");
     expect(ctx).toContain("READ-ONLY by default");
     expect(ctx).toContain("Policy (non-negotiable)");
     expect(ctx).toContain("You do NOT have filesystem access");
@@ -94,7 +94,7 @@ describe("buildBranchChatContext — linked feature", () => {
       { ...BRANCH_BASE, featureSlug: "FEAT-10" },
       MCP_AVAILABLE
     );
-    expect(ctx).toContain("get-artifact");
+    expect(ctx).toContain("get-document");
     expect(ctx).toContain("READ-ONLY by default");
     expect(ctx).toContain("Policy (non-negotiable)");
   });
@@ -104,7 +104,7 @@ describe("buildBranchChatContext — linked feature", () => {
       { ...BRANCH_BASE, featureSlug: "FEAT-10" },
       null
     );
-    expect(ctx).toContain("get-artifact");
+    expect(ctx).toContain("get-document");
     expect(ctx).toContain("READ-ONLY by default");
     expect(ctx).toContain("Policy (non-negotiable)");
   });
@@ -114,7 +114,7 @@ describe("buildBranchChatContext — linked feature", () => {
       { ...BRANCH_BASE, featureSlug: "FEAT-10" },
       MCP_UNAVAILABLE
     );
-    expect(ctx).not.toContain("get-artifact, list-artifact-versions");
+    expect(ctx).not.toContain("get-document, list-document-versions");
     expect(ctx).toContain("READ-ONLY by default");
     expect(ctx).toContain("Policy (non-negotiable)");
   });
@@ -142,7 +142,7 @@ describe("buildBranchChatContext — implementation plan", () => {
       { ...BRANCH_BASE, producedByPlanSlug: "PLN-42" },
       MCP_AVAILABLE
     );
-    expect(ctx).toContain("get-artifact");
+    expect(ctx).toContain("get-document");
     expect(ctx).toContain("READ-ONLY by default");
     expect(ctx).toContain("Policy (non-negotiable)");
   });
@@ -191,7 +191,7 @@ describe("buildBranchChatContext — working directory", () => {
     expect(ctx).toContain("Filesystem:");
     expect(ctx).toContain("You MAY read files");
     expect(ctx).not.toContain("You do NOT have filesystem access");
-    expect(ctx).toContain("get-artifact");
+    expect(ctx).toContain("get-document");
     expect(ctx).toContain("READ-ONLY by default");
     expect(ctx).toContain("Policy (non-negotiable)");
   });

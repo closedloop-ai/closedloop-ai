@@ -1,8 +1,8 @@
 "use client";
 
 import { useFeatureFlag } from "@repo/analytics/client";
-import { ArtifactStatus } from "@repo/api/src/types/artifact";
 import { Priority } from "@repo/api/src/types/common";
+import { DocumentStatus } from "@repo/api/src/types/document";
 import { FeatureStatus } from "@repo/api/src/types/feature";
 import {
   LoopCommand,
@@ -90,29 +90,29 @@ export const previewDeploymentStateColors: Record<string, string> = {
 };
 
 // Pre-configured color maps for common use cases
-export const artifactStatusColors: Record<ArtifactStatus, string> = {
-  [ArtifactStatus.Draft]: "bg-muted text-muted-foreground border-muted",
-  [ArtifactStatus.InProgress]: COLOR_PROGRESS,
-  [ArtifactStatus.InReview]: COLOR_PROGRESS,
-  [ArtifactStatus.Approved]: COLOR_PROGRESS,
-  [ArtifactStatus.Executed]: COLOR_PROGRESS,
-  [ArtifactStatus.Done]: COLOR_SUCCESS,
-  [ArtifactStatus.Obsolete]: COLOR_INACTIVE,
+export const artifactStatusColors: Record<DocumentStatus, string> = {
+  [DocumentStatus.Draft]: "bg-muted text-muted-foreground border-muted",
+  [DocumentStatus.InProgress]: COLOR_PROGRESS,
+  [DocumentStatus.InReview]: COLOR_PROGRESS,
+  [DocumentStatus.Approved]: COLOR_PROGRESS,
+  [DocumentStatus.Executed]: COLOR_PROGRESS,
+  [DocumentStatus.Done]: COLOR_SUCCESS,
+  [DocumentStatus.Obsolete]: COLOR_INACTIVE,
 };
 
-export const artifactStatusLabels: Record<ArtifactStatus, string> = {
-  [ArtifactStatus.Draft]: "Draft",
-  [ArtifactStatus.InProgress]: "In Progress",
-  [ArtifactStatus.InReview]: "In Review",
-  [ArtifactStatus.Approved]: "Approved",
-  [ArtifactStatus.Executed]: "Executed",
-  [ArtifactStatus.Done]: "Done",
-  [ArtifactStatus.Obsolete]: "Obsolete",
+export const artifactStatusLabels: Record<DocumentStatus, string> = {
+  [DocumentStatus.Draft]: "Draft",
+  [DocumentStatus.InProgress]: "In Progress",
+  [DocumentStatus.InReview]: "In Review",
+  [DocumentStatus.Approved]: "Approved",
+  [DocumentStatus.Executed]: "Executed",
+  [DocumentStatus.Done]: "Done",
+  [DocumentStatus.Obsolete]: "Obsolete",
 };
 
-export function ArtifactStatusBadge({
+export function DocumentStatusBadge({
   status,
-}: Readonly<{ status: ArtifactStatus }>) {
+}: Readonly<{ status: DocumentStatus }>) {
   const displayStatus = artifactStatusLabels[status] ?? status;
   return (
     <Badge
@@ -128,10 +128,10 @@ export function ArtifactStatusBadge({
 }
 
 // Alias for PRDs
-export const PrdStatusBadge = ArtifactStatusBadge;
+export const PrdStatusBadge = DocumentStatusBadge;
 
 // Alias for Implementation Plans
-export const ImplementationPlanStatusBadge = ArtifactStatusBadge;
+export const ImplementationPlanStatusBadge = DocumentStatusBadge;
 
 // Feature status colors
 export const featureStatusColors: Record<FeatureStatus, string> = {

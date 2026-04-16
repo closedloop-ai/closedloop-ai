@@ -12,8 +12,8 @@ import { log } from "@repo/observability/log";
 import {
   COMMAND_MAP,
   resolveLoopContext,
-} from "@/app/artifacts/[id]/run-loop/run-loop-helpers";
-import type { StartPlanLoopFromLocalResult } from "@/app/artifacts/service";
+} from "@/app/documents/[id]/run-loop/run-loop-helpers";
+import type { StartPlanLoopFromLocalResult } from "@/app/documents/service";
 import { loopsService } from "@/app/loops/service";
 import {
   fetchUserComputePreferences,
@@ -37,13 +37,13 @@ export type LaunchPlanLoopResult =
 type ArtifactWithRegenerationContext = Extract<
   StartPlanLoopFromLocalResult,
   { outcome: "ready-to-launch" }
->["artifact"];
+>["document"];
 
 export type LaunchPlanLoopOptions = {
   artifact: ArtifactWithRegenerationContext;
   organizationId: string;
   userId: string;
-  artifactId: string;
+  documentId: string;
   computeTargetId?: string;
   repoOverride?: { fullName: string; branch: string };
   metadata?: JsonObject;
@@ -64,7 +64,7 @@ export async function launchPlanLoop(
     artifact,
     organizationId,
     userId,
-    artifactId,
+    documentId,
     computeTargetId,
     repoOverride,
     metadata,
@@ -115,7 +115,7 @@ export async function launchPlanLoop(
       undefined,
       organizationId,
       userId,
-      artifactId
+      documentId
     );
 
   const command = COMMAND_MAP.plan;
@@ -123,7 +123,7 @@ export async function launchPlanLoop(
 
   const loopResponse = await loopsService.create(organizationId, userId, {
     command,
-    artifactId,
+    documentId,
     workstreamId: workstream?.id,
     computeTargetId: resolvedComputeTargetId,
     prompt,
@@ -143,7 +143,7 @@ export async function launchPlanLoop(
   } catch (error) {
     log.error("[launch-plan-loop] Failed to launch loop", {
       loopId: loopResponse.loopId,
-      artifactId,
+      documentId,
       error: error instanceof Error ? error.message : String(error),
     });
     return { ok: false, error: "launch_failed" as const };

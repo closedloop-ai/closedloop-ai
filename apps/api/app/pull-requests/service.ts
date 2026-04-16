@@ -5,7 +5,7 @@ import { PullRequestNotFoundError } from "./errors";
 
 /**
  * Service for managing pull request ratings.
- * Follows the same pattern as artifactsService rating methods (lines 1439-1554).
+ * Follows the same pattern as documentsService rating methods (lines 1439-1554).
  */
 export const pullRequestRatingsService = {
   /**

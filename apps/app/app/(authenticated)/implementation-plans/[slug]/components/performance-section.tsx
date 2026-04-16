@@ -1,16 +1,16 @@
 "use client";
 
 import { useState } from "react";
-import { CollapsibleSection } from "@/components/artifact-editor/collapsible-section";
+import { CollapsibleSection } from "@/components/document-editor/collapsible-section";
 import { usePerformanceData } from "@/hooks/queries/use-performance";
 
 type PerformanceSectionProps = {
-  artifactId: string;
+  documentId: string;
 };
 
-export function PerformanceSection({ artifactId }: PerformanceSectionProps) {
+export function PerformanceSection({ documentId }: PerformanceSectionProps) {
   const [isOpen, setIsOpen] = useState(false);
-  const { data: perfSummary } = usePerformanceData(artifactId);
+  const { data: perfSummary } = usePerformanceData(documentId);
 
   return (
     <CollapsibleSection

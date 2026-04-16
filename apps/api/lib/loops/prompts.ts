@@ -609,7 +609,7 @@ Based on repository analysis:
 - **System Dependencies:** The existing template system stores templates as artifacts with type=TEMPLATE and templateForType=PRD, scoped per organization. The generation pipeline should fetch the org's template via the existing findOrgTemplate service method.
 - **Team Dependencies:** None — this builds on existing Loops infrastructure.
 - **Constraints:** The Loops infrastructure (ECS container or desktop compute) provides the execution environment. A new GENERATE_PRD loop command should follow the pattern established by the DECOMPOSE command.
-- **Architecture:** The agent runs with repository access, providing codebase context (tech stack, existing entities, architecture patterns) to inform the Technical Considerations section of generated PRDs. Generated content is ingested as a new artifact version via artifactVersionService.createVersion, matching the existing plan-handler ingestion pattern.
+- **Architecture:** The agent runs with repository access, providing codebase context (tech stack, existing entities, architecture patterns) to inform the Technical Considerations section of generated PRDs. Generated content is ingested as a new artifact version via documentVersionService.createVersion, matching the existing plan-handler ingestion pattern.
 - **Migration / Backfill:** N/A — new capability, no existing data to migrate.
 
 ## Alternatives Considered *(optional)*

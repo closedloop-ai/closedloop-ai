@@ -1,11 +1,11 @@
 /**
- * Unit tests for commentsService.findThreadsByArtifact.
+ * Unit tests for commentsService.findThreadsByDocument.
  *
  * All database calls are mocked via vi.mock("@repo/database").
  * Tests verify:
- *   - findThreadsByArtifact returns threads scoped to artifact and organization
- *   - findThreadsByArtifact excludes soft-deleted comments via query argument
- *   - findThreadsByArtifact returns empty array for a different organization
+ *   - findThreadsByDocument returns threads scoped to artifact and organization
+ *   - findThreadsByDocument excludes soft-deleted comments via query argument
+ *   - findThreadsByDocument returns empty array for a different organization
  */
 import { describe, expect, it, type Mock, vi } from "vitest";
 
@@ -42,7 +42,7 @@ function makeCommentThreadFixture(
     externalId: "ext-1",
     roomId: "room-1",
     entityId: "art-1",
-    entityType: EntityType.Artifact,
+    entityType: EntityType.Document,
     status: ThreadStatus.Open,
     metadata: null,
     resolvedAt: null,
@@ -72,15 +72,15 @@ function makeCommentThreadFixture(
 }
 
 // ---------------------------------------------------------------------------
-// findThreadsByArtifact
+// findThreadsByDocument
 // ---------------------------------------------------------------------------
 
-describe("commentsService.findThreadsByArtifact", () => {
+describe("commentsService.findThreadsByDocument", () => {
   it("returns threads scoped to artifact and organization", async () => {
     const thread = makeCommentThreadFixture({
       organizationId: "org-1",
       entityId: "art-1",
-      entityType: EntityType.Artifact,
+      entityType: EntityType.Document,
       status: ThreadStatus.Open,
     });
 
@@ -90,7 +90,7 @@ describe("commentsService.findThreadsByArtifact", () => {
       fn({ commentThread: { findMany: mockFindMany } })
     );
 
-    const result = await commentsService.findThreadsByArtifact(
+    const result = await commentsService.findThreadsByDocument(
       "org-1",
       "art-1"
     );
@@ -104,7 +104,7 @@ describe("commentsService.findThreadsByArtifact", () => {
     expect(callArgs.where).toMatchObject({
       organizationId: "org-1",
       entityId: "art-1",
-      entityType: EntityType.Artifact,
+      entityType: EntityType.Document,
     });
   });
 
@@ -133,7 +133,7 @@ describe("commentsService.findThreadsByArtifact", () => {
       fn({ commentThread: { findMany: mockFindMany } })
     );
 
-    await commentsService.findThreadsByArtifact("org-1", "art-1");
+    await commentsService.findThreadsByDocument("org-1", "art-1");
 
     const callArgs = mockFindMany.mock.calls[0][0] as {
       include: { comments: { where: { deletedAt: unknown } } };
@@ -148,7 +148,7 @@ describe("commentsService.findThreadsByArtifact", () => {
       fn({ commentThread: { findMany: mockFindMany } })
     );
 
-    const result = await commentsService.findThreadsByArtifact(
+    const result = await commentsService.findThreadsByDocument(
       "different-org",
       "art-1"
     );

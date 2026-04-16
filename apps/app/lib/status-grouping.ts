@@ -1,29 +1,29 @@
-import { ArtifactStatus } from "@repo/api/src/types/artifact";
-import type { ArtifactRowItem } from "@/components/artifact-table/artifact-row";
-import { ARTIFACT_STATUS_LABELS } from "@/lib/project-constants";
+import { DocumentStatus } from "@repo/api/src/types/document";
+import type { DocumentRowItem } from "@/components/document-table/document-row";
+import { DOCUMENT_STATUS_LABELS } from "@/lib/project-constants";
 
-/** Fixed display order matching the ArtifactStatus enum. */
-export const STATUS_DISPLAY_ORDER: ArtifactStatus[] = [
-  ArtifactStatus.Draft,
-  ArtifactStatus.InProgress,
-  ArtifactStatus.InReview,
-  ArtifactStatus.Approved,
-  ArtifactStatus.Executed,
-  ArtifactStatus.Done,
-  ArtifactStatus.Obsolete,
+/** Fixed display order matching the DocumentStatus enum. */
+export const STATUS_DISPLAY_ORDER: DocumentStatus[] = [
+  DocumentStatus.Draft,
+  DocumentStatus.InProgress,
+  DocumentStatus.InReview,
+  DocumentStatus.Approved,
+  DocumentStatus.Executed,
+  DocumentStatus.Done,
+  DocumentStatus.Obsolete,
 ];
 
 export type StatusSection = {
-  status: ArtifactStatus;
+  status: DocumentStatus;
   label: string;
-  items: ArtifactRowItem[];
+  items: DocumentRowItem[];
 };
 
-export function groupItemsByStatus(items: ArtifactRowItem[]): StatusSection[] {
-  const buckets = new Map<ArtifactStatus, ArtifactRowItem[]>();
+export function groupItemsByStatus(items: DocumentRowItem[]): StatusSection[] {
+  const buckets = new Map<DocumentStatus, DocumentRowItem[]>();
 
   for (const item of items) {
-    const status = item.data.status as ArtifactStatus;
+    const status = item.data.status as DocumentStatus;
     if (!buckets.has(status)) {
       buckets.set(status, []);
     }
@@ -36,7 +36,7 @@ export function groupItemsByStatus(items: ArtifactRowItem[]): StatusSection[] {
     if (sectionItems && sectionItems.length > 0) {
       sections.push({
         status,
-        label: ARTIFACT_STATUS_LABELS[status],
+        label: DOCUMENT_STATUS_LABELS[status],
         items: sectionItems,
       });
     }

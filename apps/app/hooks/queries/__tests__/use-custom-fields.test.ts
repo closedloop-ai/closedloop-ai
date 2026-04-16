@@ -4,7 +4,6 @@ import {
 } from "@repo/api/src/types/custom-field";
 import { renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import { artifactKeys } from "../use-artifacts";
 import {
   customFieldKeys,
   useCreateCustomField,
@@ -12,6 +11,7 @@ import {
   useUpdateCustomField,
   useUpdateCustomFieldValue,
 } from "../use-custom-fields";
+import { documentKeys } from "../use-documents";
 import { featureKeys } from "../use-features";
 import { projectKeys } from "../use-projects";
 import { workstreamKeys } from "../use-workstreams";
@@ -303,7 +303,7 @@ describe("useUpdateCustomFieldValue", () => {
     );
   });
 
-  test("onSuccess invalidates artifactKeys.detail when entityType is Artifact", async () => {
+  test("onSuccess invalidates documentKeys.detail when entityType is Artifact", async () => {
     mockApiClient.put.mockResolvedValueOnce({});
 
     const queryClient = createTestQueryClient();
@@ -311,7 +311,7 @@ describe("useUpdateCustomFieldValue", () => {
 
     const { result } = renderHook(
       () =>
-        useUpdateCustomFieldValue(CustomFieldEntityType.Artifact, "artifact-1"),
+        useUpdateCustomFieldValue(CustomFieldEntityType.Document, "artifact-1"),
       { wrapper: createWrapperWithClient(queryClient) }
     );
 
@@ -320,7 +320,7 @@ describe("useUpdateCustomFieldValue", () => {
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
     expect(invalidateSpy).toHaveBeenCalledWith(
-      expect.objectContaining({ queryKey: artifactKeys.detail("artifact-1") })
+      expect.objectContaining({ queryKey: documentKeys.detail("artifact-1") })
     );
   });
 

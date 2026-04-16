@@ -3,7 +3,7 @@
 import {
   type GenerationStatus,
   isActiveGenerationStatus,
-} from "@repo/api/src/types/artifact";
+} from "@repo/api/src/types/document";
 import type { LinkedEntity } from "@repo/api/src/types/entity-link";
 import {
   EntityType,

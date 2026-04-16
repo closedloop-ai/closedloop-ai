@@ -13,7 +13,7 @@ import type { ExecutionResult } from "@/app/webhooks/github/types";
 import {
   parseJsonArtifact,
   upsertEvaluationWithJudgeScores,
-} from "@/lib/loops/loop-artifact-ingestion";
+} from "@/lib/loops/loop-document-ingestion";
 import {
   downloadArtifactFile,
   downloadPromptSnapshotMarkdownEntries,
@@ -67,7 +67,7 @@ async function downloadExecutionArtifacts(
   const promptsSnapshot: PromptsSnapshot | null =
     parsePromptsSnapshotFromMarkdownEntries(
       promptMarkdownEntries,
-      "[loop-artifact-ingestion]"
+      "[loop-document-ingestion]"
     );
 
   return { executionResult, codeJudgesReport, promptsSnapshot };
@@ -88,7 +88,7 @@ async function upsertPrRow(
     workstreamId: string;
     organizationId: string;
     repositoryId: string;
-    artifactId: string;
+    documentId: string;
     githubId: string;
     number: number;
     title: string;
@@ -97,7 +97,7 @@ async function upsertPrRow(
     baseBranch: string;
   },
   loopId: string
-): Promise<{ id: string; artifactId: string | null }> {
+): Promise<{ id: string; documentId: string | null }> {
   const row = await tx.gitHubPullRequest.upsert({
     where: {
       repositoryId_number: {
@@ -109,18 +109,18 @@ async function upsertPrRow(
     // Don't overwrite fields that a concurrent handler may have set
     // more accurately (e.g. state from a webhook).
     update: {},
-    select: { id: true, artifactId: true },
+    select: { id: true, documentId: true },
   });
 
-  if (row.artifactId && row.artifactId !== data.artifactId) {
+  if (row.documentId && row.documentId !== data.documentId) {
     log.warn(
-      "[loop-artifact-ingestion] PR row already linked to a different artifact via upsert race",
+      "[loop-document-ingestion] PR row already linked to a different artifact via upsert race",
       {
         loopId,
         repositoryId: data.repositoryId,
         prNumber: data.number,
-        existingArtifactId: row.artifactId,
-        requestedArtifactId: data.artifactId,
+        existingArtifactId: row.documentId,
+        requestedArtifactId: data.documentId,
       }
     );
   }
@@ -144,22 +144,22 @@ export async function ingestExecutionArtifacts(
   const executionResult = artifacts.executionResult;
 
   if (!executionResult) {
-    log.info("[loop-artifact-ingestion] No execution result to ingest", {
+    log.info("[loop-document-ingestion] No execution result to ingest", {
       loopId: loop.id,
     });
     return;
   }
 
   if (!(executionResult.has_changes && executionResult.pr_url)) {
-    log.info("[loop-artifact-ingestion] Execution completed with no changes", {
+    log.info("[loop-document-ingestion] Execution completed with no changes", {
       loopId: loop.id,
     });
     return;
   }
 
-  if (!(loop.workstreamId && loop.artifactId)) {
+  if (!(loop.workstreamId && loop.documentId)) {
     log.warn(
-      "[loop-artifact-ingestion] Loop missing workstreamId or artifactId",
+      "[loop-document-ingestion] Loop missing workstreamId or artifactId",
       {
         loopId: loop.id,
       }
@@ -169,7 +169,7 @@ export async function ingestExecutionArtifacts(
 
   const repoFullName = loop.repo?.fullName;
   if (!repoFullName) {
-    log.warn("[loop-artifact-ingestion] Loop missing repo.fullName", {
+    log.warn("[loop-document-ingestion] Loop missing repo.fullName", {
       loopId: loop.id,
     });
     return;
@@ -188,7 +188,7 @@ export async function ingestExecutionArtifacts(
 
   if (!installationRepo) {
     log.warn(
-      "[loop-artifact-ingestion] GitHubInstallationRepository not found",
+      "[loop-document-ingestion] GitHubInstallationRepository not found",
       {
         loopId: loop.id,
         repoFullName,
@@ -204,7 +204,7 @@ export async function ingestExecutionArtifacts(
 
   if (Number.isNaN(prNumber)) {
     log.warn(
-      "[loop-artifact-ingestion] Invalid pr_number, skipping execution ingestion",
+      "[loop-document-ingestion] Invalid pr_number, skipping execution ingestion",
       { loopId: loop.id, raw: executionResult.pr_number }
     );
     return;
@@ -219,16 +219,16 @@ export async function ingestExecutionArtifacts(
   await upsertFromSnapshot(loop.organizationId, artifacts.promptsSnapshot);
 
   await withDb.tx(async (tx) => {
-    const artifact = await tx.artifact.findUnique({
-      where: { id: loop.artifactId!, organizationId: loop.organizationId },
+    const artifact = await tx.document.findUnique({
+      where: { id: loop.documentId!, organizationId: loop.organizationId },
       select: { organizationId: true, projectId: true, slug: true },
     });
 
     if (!artifact) {
       log.warn(
-        "[loop-artifact-ingestion] Artifact not found for PR record creation",
+        "[loop-document-ingestion] Artifact not found for PR record creation",
         {
-          artifactId: loop.artifactId,
+          documentId: loop.documentId,
           loopId: loop.id,
         }
       );
@@ -237,9 +237,9 @@ export async function ingestExecutionArtifacts(
 
     if (artifacts.codeJudgesReport) {
       await upsertEvaluationWithJudgeScores({
-        entityId: loop.artifactId!,
-        entityType: EntityType.ARTIFACT,
-        artifactId: loop.artifactId!,
+        entityId: loop.documentId!,
+        entityType: EntityType.DOCUMENT,
+        documentId: loop.documentId!,
         loopId: loop.id,
         organizationId: loop.organizationId,
         reportType: EvaluationReportType.Code,
@@ -247,8 +247,8 @@ export async function ingestExecutionArtifacts(
         tx,
       });
 
-      log.info("[loop-artifact-ingestion] Persisted code judges report", {
-        artifactId: loop.artifactId,
+      log.info("[loop-document-ingestion] Persisted code judges report", {
+        documentId: loop.documentId,
         loopId: loop.id,
         reportId: artifacts.codeJudgesReport.report_id,
         judgesCount: artifacts.codeJudgesReport.stats.length,
@@ -264,36 +264,36 @@ export async function ingestExecutionArtifacts(
           number: prNumber,
         },
       },
-      select: { id: true, artifactId: true },
+      select: { id: true, documentId: true },
     });
 
     // Determine the effective artifactId for linkage. If the PR row already
     // exists with a different artifact, respect the existing link to avoid
     // creating contradictory entity-link edges.
-    let effectiveArtifactId = loop.artifactId!;
+    let effectiveArtifactId = loop.documentId!;
 
     if (existingPr) {
-      if (!existingPr.artifactId) {
+      if (!existingPr.documentId) {
         // PR exists without an artifact link — claim it
         await tx.gitHubPullRequest.update({
           where: { id: existingPr.id },
-          data: { artifactId: loop.artifactId! },
+          data: { documentId: loop.documentId! },
         });
-      } else if (existingPr.artifactId !== loop.artifactId) {
+      } else if (existingPr.documentId !== loop.documentId) {
         // PR is already linked to a different artifact — don't overwrite
-        effectiveArtifactId = existingPr.artifactId;
+        effectiveArtifactId = existingPr.documentId;
         log.warn(
-          "[loop-artifact-ingestion] PR already linked to a different artifact",
+          "[loop-document-ingestion] PR already linked to a different artifact",
           {
-            existingArtifactId: existingPr.artifactId,
-            requestedArtifactId: loop.artifactId,
+            existingArtifactId: existingPr.documentId,
+            requestedArtifactId: loop.documentId,
             loopId: loop.id,
             prNumber,
           }
         );
       }
       log.info(
-        "[loop-artifact-ingestion] PR already exists; skipping duplicate PR row create",
+        "[loop-document-ingestion] PR already exists; skipping duplicate PR row create",
         {
           loopId: loop.id,
           repositoryId: installationRepo.id,
@@ -308,7 +308,7 @@ export async function ingestExecutionArtifacts(
           workstreamId: loop.workstreamId!,
           organizationId: loop.organizationId,
           repositoryId: installationRepo.id,
-          artifactId: loop.artifactId!,
+          documentId: loop.documentId!,
           githubId: String(executionResult.github_id ?? prNumber),
           number: prNumber,
           title: prTitle,
@@ -320,8 +320,8 @@ export async function ingestExecutionArtifacts(
       );
       // If the row already existed with a different artifact, use that
       // to avoid contradictory linkage records.
-      if (upsertedPr.artifactId && upsertedPr.artifactId !== loop.artifactId) {
-        effectiveArtifactId = upsertedPr.artifactId;
+      if (upsertedPr.documentId && upsertedPr.documentId !== loop.documentId) {
+        effectiveArtifactId = upsertedPr.documentId;
       }
     }
 
@@ -330,7 +330,7 @@ export async function ingestExecutionArtifacts(
       organizationId: artifact.organizationId,
       workstreamId: loop.workstreamId!,
       projectId: artifact.projectId!,
-      artifactId: effectiveArtifactId,
+      documentId: effectiveArtifactId,
       prUrl: executionResult.pr_url,
       prTitle,
       prNumber,
@@ -352,14 +352,14 @@ export async function ingestExecutionArtifacts(
           prUrl: executionResult.pr_url,
           prTitle,
           branch: executionResult.branch_name,
-          artifactId: loop.artifactId!,
+          documentId: loop.documentId!,
           slug: artifact.slug,
         },
       },
     });
   });
 
-  log.info("[loop-artifact-ingestion] Execution artifacts ingested", {
+  log.info("[loop-document-ingestion] Execution artifacts ingested", {
     loopId: loop.id,
     prUrl: executionResult.pr_url,
     prNumber,
