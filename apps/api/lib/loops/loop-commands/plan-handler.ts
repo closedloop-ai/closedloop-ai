@@ -1,5 +1,5 @@
-import type { PlanJson } from "@repo/api/src/types/artifact";
 import type { JsonObject } from "@repo/api/src/types/common";
+import type { PlanJson } from "@repo/api/src/types/document";
 import {
   EvaluationReportType,
   type JudgesReport,
@@ -11,12 +11,12 @@ import { parsePromptsSnapshotFromMarkdownEntries } from "@repo/github/prompt-sna
 import { log } from "@repo/observability/log";
 import { waitUntil } from "@vercel/functions";
 import { z } from "zod";
-import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
-import { resetArtifactRoom } from "@/app/artifacts/room-utils";
+import { documentVersionService } from "@/app/documents/document-version-service";
+import { resetDocumentRoom } from "@/app/documents/room-utils";
 import {
   parseJsonArtifact,
   upsertEvaluationWithJudgeScores,
-} from "@/lib/loops/loop-artifact-ingestion";
+} from "@/lib/loops/loop-document-ingestion";
 import {
   downloadArtifactFile,
   downloadPromptSnapshotMarkdownEntries,
@@ -73,7 +73,7 @@ export async function downloadPlanArtifacts(
   const promptsSnapshot: PromptsSnapshot | null =
     parsePromptsSnapshotFromMarkdownEntries(
       promptMarkdownEntries,
-      "[loop-artifact-ingestion]"
+      "[loop-document-ingestion]"
     );
 
   return { planContent, questionsContent, judgesReport, promptsSnapshot };
@@ -94,8 +94,8 @@ export async function ingestPlanArtifacts(
   organizationId: string,
   artifacts: PlanArtifacts
 ): Promise<void> {
-  const artifactId = loop.artifactId;
-  if (!artifactId) {
+  const documentId = loop.documentId;
+  if (!documentId) {
     return;
   }
 
@@ -103,24 +103,24 @@ export async function ingestPlanArtifacts(
   const finalContent = artifacts.planContent ?? artifacts.questionsContent;
   if (!finalContent) {
     log.info(
-      "[loop-artifact-ingestion] No plan or questions content to ingest",
+      "[loop-document-ingestion] No plan or questions content to ingest",
       {
-        artifactId,
+        documentId,
       }
     );
     return;
   }
 
-  await artifactVersionService.createVersion(
-    artifactId,
+  await documentVersionService.createVersion(
+    documentId,
     organizationId,
     null,
     finalContent
   );
 
   const updatedArtifact = await withDb((db) =>
-    db.artifact.update({
-      where: { id: artifactId, organizationId },
+    db.document.update({
+      where: { id: documentId, organizationId },
       data: { status: "DRAFT" },
       select: {
         id: true,
@@ -134,7 +134,7 @@ export async function ingestPlanArtifacts(
 
   // Reset the Liveblocks room so any stale Y.Doc content is cleared.
   if (updatedArtifact.slug) {
-    waitUntil(resetArtifactRoom(updatedArtifact));
+    waitUntil(resetDocumentRoom(updatedArtifact));
   }
 
   // Persist prompt registry entries from snapshot (idempotent upsert)
@@ -144,9 +144,9 @@ export async function ingestPlanArtifacts(
   if (artifacts.judgesReport) {
     await withDb.tx(async (tx) => {
       await upsertEvaluationWithJudgeScores({
-        entityId: artifactId,
-        entityType: EntityType.ARTIFACT,
-        artifactId,
+        entityId: documentId,
+        entityType: EntityType.DOCUMENT,
+        documentId,
         loopId: loop.id,
         organizationId,
         reportType: EvaluationReportType.Plan,
@@ -155,8 +155,8 @@ export async function ingestPlanArtifacts(
       });
     });
 
-    log.info("[loop-artifact-ingestion] Persisted judges report", {
-      artifactId,
+    log.info("[loop-document-ingestion] Persisted judges report", {
+      documentId,
       reportId: artifacts.judgesReport.report_id,
     });
   }
@@ -179,7 +179,7 @@ export async function ingestPlanArtifacts(
             actorType: "system",
             data: {
               loopId: loop.id,
-              artifactId,
+              documentId,
               command: loop.command,
               conclusion: "success",
             },
@@ -189,8 +189,8 @@ export async function ingestPlanArtifacts(
     });
   }
 
-  log.info("[loop-artifact-ingestion] Plan content ingested", {
-    artifactId,
+  log.info("[loop-document-ingestion] Plan content ingested", {
+    documentId,
     contentLength: finalContent.length,
   });
 }

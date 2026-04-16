@@ -6,13 +6,13 @@ import { useApiClient } from "@/hooks/use-api-client";
 
 export const myJudgeRatingsKeys = {
   all: ["my-judge-ratings"] as const,
-  detail: (artifactId: string) =>
-    [...myJudgeRatingsKeys.all, artifactId] as const,
+  detail: (documentId: string) =>
+    [...myJudgeRatingsKeys.all, documentId] as const,
 };
 
 // Query hook
 export function useMyJudgeRatings(
-  artifactId: string,
+  documentId: string,
   options?: Omit<
     UseQueryOptions<UserJudgeRatingsResponse>,
     "queryKey" | "queryFn"
@@ -21,12 +21,12 @@ export function useMyJudgeRatings(
   const apiClient = useApiClient();
 
   return useQuery({
-    queryKey: myJudgeRatingsKeys.detail(artifactId),
+    queryKey: myJudgeRatingsKeys.detail(documentId),
     queryFn: () =>
       apiClient.get<UserJudgeRatingsResponse>(
-        `/artifacts/${artifactId}/judge-ratings`
+        `/documents/${documentId}/judge-ratings`
       ),
-    enabled: !!artifactId,
+    enabled: !!documentId,
     staleTime: 5 * 60 * 1000, // 5 minutes
     ...options,
   });

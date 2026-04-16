@@ -19,8 +19,8 @@ export async function assertEntityInOrganization(
 ): Promise<void> {
   const exists = await withDb((db) => {
     switch (entityType) {
-      case EntityType.Artifact:
-        return db.artifact.findFirst({
+      case EntityType.Document:
+        return db.document.findFirst({
           where: { id: entityId, organizationId },
           select: { id: true },
         });

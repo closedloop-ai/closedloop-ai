@@ -1,29 +1,29 @@
 "use client";
 
 import {
-  ArtifactType,
-  type ArtifactWithWorkstream,
-} from "@repo/api/src/types/artifact";
+  DocumentType,
+  type DocumentWithWorkstream,
+} from "@repo/api/src/types/document";
 import type { FeatureWithWorkstream } from "@repo/api/src/types/feature";
 import { useMemo } from "react";
-import type { ArtifactRowItem } from "@/components/artifact-table/artifact-row";
+import type { DocumentRowItem } from "@/components/document-table/document-row";
 import { useTableFilters } from "@/hooks/use-table-filters";
 import type { FilterCategory } from "./page";
 
 // ---- Category helpers ----
 
-function isArtifactVisibleInCategory(
-  type: ArtifactType,
+function isDocumentVisibleInCategory(
+  type: DocumentType,
   category: FilterCategory
 ): boolean {
   if (category === "features" || category === "branches") {
     return false;
   }
   if (category === "documents") {
-    return type === ArtifactType.Prd;
+    return type === DocumentType.Prd;
   }
   if (category === "plans") {
-    return type === ArtifactType.ImplementationPlan;
+    return type === DocumentType.ImplementationPlan;
   }
   return true;
 }
@@ -37,7 +37,7 @@ function includesFeatures(category: FilterCategory): boolean {
 // ---- Hook ----
 
 type UseProjectFiltersOptions = {
-  artifacts: ArtifactWithWorkstream[];
+  artifacts: DocumentWithWorkstream[];
   features: FeatureWithWorkstream[];
   filterCategory: FilterCategory;
   currentUserId?: string;
@@ -49,10 +49,10 @@ export function useProjectFilters({
   filterCategory,
   currentUserId,
 }: UseProjectFiltersOptions) {
-  const rootItems = useMemo((): ArtifactRowItem[] => {
-    const items: ArtifactRowItem[] = artifacts
-      .filter((a) => isArtifactVisibleInCategory(a.type, filterCategory))
-      .map((a): ArtifactRowItem => ({ kind: "artifact", data: a }));
+  const rootItems = useMemo((): DocumentRowItem[] => {
+    const items: DocumentRowItem[] = artifacts
+      .filter((a) => isDocumentVisibleInCategory(a.type, filterCategory))
+      .map((a): DocumentRowItem => ({ kind: "artifact", data: a }));
     if (includesFeatures(filterCategory)) {
       for (const f of features) {
         items.push({ kind: "feature", data: f });

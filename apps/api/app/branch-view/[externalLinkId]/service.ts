@@ -1,6 +1,5 @@
 import "server-only";
 
-import { ArtifactType } from "@repo/api/src/types/artifact";
 import type {
   BranchViewComment,
   BranchViewData,
@@ -13,6 +12,7 @@ import {
   CommentKind,
   ReviewDecision,
 } from "@repo/api/src/types/branch-view";
+import { DocumentType } from "@repo/api/src/types/document";
 import { EntityType, LinkType } from "@repo/api/src/types/entity-link";
 import type { User } from "@repo/api/src/types/user";
 import { type TransactionClient, withDb } from "@repo/database";
@@ -508,7 +508,7 @@ async function backfillPullRequestData(
         headSha: livePr.headSha,
       },
       update: {},
-      select: { id: true, artifactId: true },
+      select: { id: true, documentId: true },
     });
 
     // 2-3. Upsert comments
@@ -659,7 +659,7 @@ async function resolveWorkstreamForBackfill(
         organizationId: ctx.externalLink.organizationId,
         targetId: ctx.externalLink.id,
         targetType: EntityType.ExternalLink,
-        sourceType: EntityType.Artifact,
+        sourceType: EntityType.Document,
         linkType: LinkType.Produces,
       },
       select: { sourceId: true },
@@ -678,7 +678,7 @@ async function resolveWorkstreamForBackfill(
 
   const artifactIds = entityLinks.map((l) => l.sourceId);
   const artifacts = await withDb((db) =>
-    db.artifact.findMany({
+    db.document.findMany({
       where: { id: { in: artifactIds } },
       select: { workstreamId: true },
     })
@@ -811,7 +811,7 @@ async function resolveFeatureContext(
   ctx: PrContext
 ): Promise<FeatureContext | null> {
   // Path 1: Use artifactId shortcut from GitHubPullRequest
-  const artifactId = ctx.gitHubPullRequest?.artifactId;
+  const artifactId = ctx.gitHubPullRequest?.documentId;
 
   // Path 2: Walk entity links from ExternalLink -> Artifact -> Feature
   let resolvedArtifactId = artifactId;
@@ -822,7 +822,7 @@ async function resolveFeatureContext(
           targetId: ctx.externalLink.id,
           targetType: EntityType.ExternalLink,
           linkType: LinkType.Produces,
-          sourceType: EntityType.Artifact,
+          sourceType: EntityType.Document,
         },
         select: { sourceId: true },
       })
@@ -854,7 +854,7 @@ async function resolveFeatureContext(
     db.entityLink.findFirst({
       where: {
         targetId: resolvedArtifactId,
-        targetType: EntityType.Artifact,
+        targetType: EntityType.Document,
         linkType: LinkType.Produces,
         sourceType: EntityType.Feature,
       },
@@ -920,20 +920,20 @@ type PlanContext = {
 };
 
 async function resolvePlanContext(ctx: PrContext): Promise<PlanContext | null> {
-  const artifactId = ctx.gitHubPullRequest?.artifactId;
+  const artifactId = ctx.gitHubPullRequest?.documentId;
   if (!artifactId) {
     return null;
   }
 
   // Check if this artifact IS a plan
   const artifact = await withDb((db) =>
-    db.artifact.findUnique({
+    db.document.findUnique({
       where: { id: artifactId },
       select: { slug: true, title: true, type: true },
     })
   );
 
-  if (artifact?.type === ArtifactType.ImplementationPlan) {
+  if (artifact?.type === DocumentType.ImplementationPlan) {
     return { slug: artifact.slug, title: artifact.title };
   }
 
@@ -942,9 +942,9 @@ async function resolvePlanContext(ctx: PrContext): Promise<PlanContext | null> {
     db.entityLink.findFirst({
       where: {
         targetId: artifactId,
-        targetType: EntityType.Artifact,
+        targetType: EntityType.Document,
         linkType: LinkType.Produces,
-        sourceType: EntityType.Artifact,
+        sourceType: EntityType.Document,
       },
       select: { sourceId: true },
     })
@@ -955,13 +955,13 @@ async function resolvePlanContext(ctx: PrContext): Promise<PlanContext | null> {
   }
 
   const plan = await withDb((db) =>
-    db.artifact.findUnique({
+    db.document.findUnique({
       where: { id: planLink.sourceId },
       select: { slug: true, title: true, type: true },
     })
   );
 
-  if (plan?.type === ArtifactType.ImplementationPlan) {
+  if (plan?.type === DocumentType.ImplementationPlan) {
     return { slug: plan.slug, title: plan.title };
   }
 

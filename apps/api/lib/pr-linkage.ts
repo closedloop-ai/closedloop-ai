@@ -12,7 +12,7 @@ type PrLinkageInput = {
   organizationId: string;
   workstreamId: string;
   projectId: string;
-  artifactId: string;
+  documentId: string;
   prUrl: string;
   prTitle: string;
   prNumber: number;
@@ -76,7 +76,7 @@ export async function ensurePrLinkageRecords(
   const existingEntityLink = await tx.entityLink.findFirst({
     where: {
       organizationId: input.organizationId,
-      sourceId: input.artifactId,
+      sourceId: input.documentId,
       targetId: externalLinkId,
       linkType: LinkType.Produces,
     },
@@ -87,8 +87,8 @@ export async function ensurePrLinkageRecords(
     await tx.entityLink.create({
       data: {
         organizationId: input.organizationId,
-        sourceId: input.artifactId,
-        sourceType: EntityType.Artifact,
+        sourceId: input.documentId,
+        sourceType: EntityType.Document,
         targetId: externalLinkId,
         targetType: EntityType.ExternalLink,
         linkType: LinkType.Produces,
@@ -97,7 +97,7 @@ export async function ensurePrLinkageRecords(
   }
 
   log.info("[pr-linkage] Ensured PR linkage records", {
-    artifactId: input.artifactId,
+    documentId: input.documentId,
     prUrl: input.prUrl,
     prNumber: input.prNumber,
     externalLinkId,

@@ -68,14 +68,14 @@ describe("entityLinksService.findDownstreamEntityIds", () => {
     const linkAB = makeLink(
       "l1",
       "a",
-      EntityType.Artifact,
+      EntityType.Document,
       "b",
-      EntityType.Artifact
+      EntityType.Document
     );
     const linkBC = makeLink(
       "l2",
       "b",
-      EntityType.Artifact,
+      EntityType.Document,
       "c",
       EntityType.Feature
     );
@@ -88,11 +88,11 @@ describe("entityLinksService.findDownstreamEntityIds", () => {
     const result = await entityLinksService.findDownstreamEntityIds(
       ORG_ID,
       "a",
-      EntityType.Artifact
+      EntityType.Document
     );
 
     expect(result).toEqual([
-      { id: "b", type: EntityType.Artifact },
+      { id: "b", type: EntityType.Document },
       { id: "c", type: EntityType.Feature },
     ]);
   });
@@ -103,7 +103,7 @@ describe("entityLinksService.findDownstreamEntityIds", () => {
     const result = await entityLinksService.findDownstreamEntityIds(
       ORG_ID,
       "a",
-      EntityType.Artifact
+      EntityType.Document
     );
 
     expect(result).toEqual([]);
@@ -134,13 +134,13 @@ describe("entityLinksService.batchMoveEntities", () => {
   }
 
   function setupTransaction(counts: {
-    artifact?: number;
+    document?: number;
     feature?: number;
     externalLink?: number;
   }) {
     mockWithDbTx({
-      artifact: {
-        updateMany: vi.fn().mockResolvedValue({ count: counts.artifact ?? 0 }),
+      document: {
+        updateMany: vi.fn().mockResolvedValue({ count: counts.document ?? 0 }),
       },
       feature: {
         updateMany: vi.fn().mockResolvedValue({ count: counts.feature ?? 0 }),
@@ -176,14 +176,14 @@ describe("entityLinksService.batchMoveEntities", () => {
   it("moves downstream when root entity is an artifact and includeDownstream is true", async () => {
     setupProjectLookup(true);
     findDownstreamSpy.mockResolvedValueOnce([
-      { id: "art-child-1", type: EntityType.Artifact },
+      { id: "art-child-1", type: EntityType.Document },
       { id: "feat-child-1", type: EntityType.Feature },
     ]);
-    setupTransaction({ artifact: 2, feature: 1 });
+    setupTransaction({ document: 2, feature: 1 });
 
     const result = await entityLinksService.batchMoveEntities(ORG_ID, {
       entityId: "art-root-1",
-      entityType: EntityType.Artifact,
+      entityType: EntityType.Document,
       targetProjectId: TARGET_PROJECT_ID,
       includeDownstream: true,
     });
@@ -191,14 +191,14 @@ describe("entityLinksService.batchMoveEntities", () => {
     expect(findDownstreamSpy).toHaveBeenCalledWith(
       ORG_ID,
       "art-root-1",
-      EntityType.Artifact
+      EntityType.Document
     );
     expect(result).toEqual({
       ok: true,
       value: {
         movedEntities: [
-          { id: "art-root-1", type: EntityType.Artifact },
-          { id: "art-child-1", type: EntityType.Artifact },
+          { id: "art-root-1", type: EntityType.Document },
+          { id: "art-child-1", type: EntityType.Document },
           { id: "feat-child-1", type: EntityType.Feature },
         ],
       },
@@ -209,10 +209,10 @@ describe("entityLinksService.batchMoveEntities", () => {
     setupProjectLookup(true);
 
     findDownstreamSpy.mockResolvedValueOnce([
-      { id: "art-1", type: EntityType.Artifact },
+      { id: "art-1", type: EntityType.Document },
       { id: "ext-1", type: EntityType.ExternalLink },
     ]);
-    setupTransaction({ feature: 1, artifact: 1, externalLink: 1 });
+    setupTransaction({ feature: 1, document: 1, externalLink: 1 });
 
     const result = await entityLinksService.batchMoveEntities(ORG_ID, {
       entityId: "feat-1",
@@ -226,7 +226,7 @@ describe("entityLinksService.batchMoveEntities", () => {
       value: {
         movedEntities: [
           { id: "feat-1", type: EntityType.Feature },
-          { id: "art-1", type: EntityType.Artifact },
+          { id: "art-1", type: EntityType.Document },
           { id: "ext-1", type: EntityType.ExternalLink },
         ],
       },
@@ -241,7 +241,7 @@ describe("entityLinksService.batchMoveEntities", () => {
 
     const result = await entityLinksService.batchMoveEntities(ORG_ID, {
       entityId: "entity-1",
-      entityType: EntityType.Artifact,
+      entityType: EntityType.Document,
       targetProjectId: TARGET_PROJECT_ID,
       includeDownstream: false,
     });
@@ -252,13 +252,13 @@ describe("entityLinksService.batchMoveEntities", () => {
   it("does not move upstream parent when moving a child artifact", async () => {
     setupProjectLookup(true);
     findDownstreamSpy.mockResolvedValueOnce([
-      { id: "art-grandchild-1", type: EntityType.Artifact },
+      { id: "art-grandchild-1", type: EntityType.Document },
     ]);
-    setupTransaction({ artifact: 2 });
+    setupTransaction({ document: 2 });
 
     const result = await entityLinksService.batchMoveEntities(ORG_ID, {
       entityId: "art-child-1",
-      entityType: EntityType.Artifact,
+      entityType: EntityType.Document,
       targetProjectId: TARGET_PROJECT_ID,
       includeDownstream: true,
     });
@@ -267,8 +267,8 @@ describe("entityLinksService.batchMoveEntities", () => {
       ok: true,
       value: {
         movedEntities: [
-          { id: "art-child-1", type: EntityType.Artifact },
-          { id: "art-grandchild-1", type: EntityType.Artifact },
+          { id: "art-child-1", type: EntityType.Document },
+          { id: "art-grandchild-1", type: EntityType.Document },
         ],
       },
     });
@@ -290,11 +290,11 @@ describe("entityLinksService.batchMoveEntities", () => {
   it("returns NotFound when zero rows are actually updated", async () => {
     setupProjectLookup(true);
     findDownstreamSpy.mockResolvedValueOnce([]);
-    setupTransaction({ artifact: 0 });
+    setupTransaction({ document: 0 });
 
     const result = await entityLinksService.batchMoveEntities(ORG_ID, {
       entityId: "art-1",
-      entityType: EntityType.Artifact,
+      entityType: EntityType.Document,
       targetProjectId: TARGET_PROJECT_ID,
       includeDownstream: false,
     });
@@ -305,13 +305,13 @@ describe("entityLinksService.batchMoveEntities", () => {
   it("groups entities by type for separate updateMany calls", async () => {
     setupProjectLookup(true);
     findDownstreamSpy.mockResolvedValueOnce([
-      { id: "art-1", type: EntityType.Artifact },
-      { id: "art-2", type: EntityType.Artifact },
+      { id: "art-1", type: EntityType.Document },
+      { id: "art-2", type: EntityType.Document },
       { id: "ext-1", type: EntityType.ExternalLink },
     ]);
 
     const mockTx = {
-      artifact: {
+      document: {
         updateMany: vi.fn().mockResolvedValue({ count: 2 }),
       },
       feature: {
@@ -330,7 +330,7 @@ describe("entityLinksService.batchMoveEntities", () => {
       includeDownstream: true,
     });
 
-    expect(mockTx.artifact.updateMany).toHaveBeenCalledWith({
+    expect(mockTx.document.updateMany).toHaveBeenCalledWith({
       where: { id: { in: ["art-1", "art-2"] }, organizationId: ORG_ID },
       data: { projectId: TARGET_PROJECT_ID },
     });

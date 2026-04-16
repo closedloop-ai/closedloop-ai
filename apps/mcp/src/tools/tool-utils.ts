@@ -5,13 +5,13 @@ type ToolResult = {
 
 export const DEFAULT_PAGE_LIMIT = 25;
 export const MAX_PAGE_LIMIT = 100;
-export const ARTIFACT_DOC_HELP =
-  "Artifacts are documents such as PRDs, implementation plans, and templates.";
+export const DOCUMENT_DOC_HELP =
+  "Documents are PRDs, implementation plans, and templates.";
 export const FEATURE_HELP = "Features are issue-like work items.";
 export const WORKSTREAM_HELP =
   "Workstreams are initiatives or tracks of work inside a project.";
 export const ENTITY_LINK_SLUG_HELP =
-  "User-facing slugs are supported for artifacts (PRD-7, PLAN-4) and features (FEAT-42); other entities typically require IDs.";
+  "User-facing slugs are supported for documents (PRD-7, PLAN-4) and features (FEAT-42); other entities typically require IDs.";
 
 export function withErrorHandling(
   fn: () => Promise<ToolResult>

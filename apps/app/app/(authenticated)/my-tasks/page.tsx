@@ -10,15 +10,15 @@ import { Input } from "@repo/design-system/components/ui/input";
 import { BoxIcon, LayoutGridIcon, ListIcon, SearchIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Header } from "@/app/(authenticated)/components/header";
-import { ActiveFiltersBar } from "@/components/artifact-table/active-filters-bar";
+import { ActiveFiltersBar } from "@/components/document-table/active-filters-bar";
+import { DeleteRowActions } from "@/components/document-table/delete-row-actions";
 import type {
-  ArtifactRowItem,
+  DocumentRowItem,
   RowEditHandlers,
-} from "@/components/artifact-table/artifact-row";
-import { DeleteRowActions } from "@/components/artifact-table/delete-row-actions";
-import { FilterPopover } from "@/components/artifact-table/filter-popover";
-import { FlatArtifactTable } from "@/components/artifact-table/flat-artifact-table";
-import { TableViewMenu } from "@/components/artifact-table/table-view-menu";
+} from "@/components/document-table/document-row";
+import { FilterPopover } from "@/components/document-table/filter-popover";
+import { FlatDocumentTable } from "@/components/document-table/flat-document-table";
+import { TableViewMenu } from "@/components/document-table/table-view-menu";
 import {
   useDeleteFeature,
   useFeatures,
@@ -97,14 +97,14 @@ export default function MyTasksPage() {
     [orgUsers, updateFeatureMutation.mutate]
   );
 
-  const handleDelete = async (item: ArtifactRowItem): Promise<boolean> => {
+  const handleDelete = async (item: DocumentRowItem): Promise<boolean> => {
     const result = await deleteFeatureMutation.mutateAsync(item.data.id);
     return result.deleted ?? false;
   };
 
   // ---- Items & filters ----
 
-  const allItems: ArtifactRowItem[] = useMemo(
+  const allItems: DocumentRowItem[] = useMemo(
     () => rawFeatures.map((f) => ({ kind: "feature" as const, data: f })),
     [rawFeatures]
   );
@@ -123,7 +123,7 @@ export default function MyTasksPage() {
           f.title.toLowerCase().includes(q) || f.slug.toLowerCase().includes(q)
       );
     }
-    let items: ArtifactRowItem[] = filtered.map((f) => ({
+    let items: DocumentRowItem[] = filtered.map((f) => ({
       kind: "feature" as const,
       data: f,
     }));
@@ -243,7 +243,7 @@ export default function MyTasksPage() {
         {isListView &&
           (rawFeatures.length > 0 || isFeaturesLoading || isUserLoading) && (
             <div className="flex-1 overflow-auto">
-              <FlatArtifactTable
+              <FlatDocumentTable
                 editHandlers={editHandlers}
                 emptyDescription="Try adjusting your filters."
                 emptyIcon={BoxIcon}

@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { redirect } from "next/navigation";
+import { ClientRedirect } from "@/components/client-redirect";
 import { Header } from "../components/header";
 import { SearchResults } from "./components/search-results";
 
@@ -26,7 +26,7 @@ export default async function SearchPage({
   const { q } = await searchParams;
 
   if (!q) {
-    redirect("/");
+    return <ClientRedirect href="/" />;
   }
 
   return (

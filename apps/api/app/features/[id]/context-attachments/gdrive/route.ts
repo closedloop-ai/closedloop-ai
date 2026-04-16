@@ -1,14 +1,14 @@
-import { ArtifactStatus, ArtifactType } from "@repo/api/src/types/artifact";
 import type {
   GDriveContextImportResult,
   ImportGDriveContextResponse,
 } from "@repo/api/src/types/context-attachment";
+import { DocumentStatus, DocumentType } from "@repo/api/src/types/document";
 import { EntityType, LinkType } from "@repo/api/src/types/entity-link";
 import { exportDocAsMarkdown, getDocName } from "@repo/google";
 import { log } from "@repo/observability/log";
 import pLimit from "p-limit";
 import sanitizeHtml from "sanitize-html";
-import { artifactsService } from "@/app/artifacts/service";
+import { documentsService } from "@/app/documents/service";
 import { entityLinksService } from "@/app/entity-links/service";
 import { featuresService } from "@/app/features/service";
 import {
@@ -142,12 +142,12 @@ export const POST = withAnyAuth<
         }
 
         // Create PRD artifact with actual doc content
-        const artifact = await artifactsService.create(
+        const artifact = await documentsService.create(
           user.organizationId,
           user.id,
           {
-            type: ArtifactType.Prd,
-            status: ArtifactStatus.Draft,
+            type: DocumentType.Prd,
+            status: DocumentStatus.Draft,
             projectId: body.projectId,
             title: docName ?? docId,
             content,
@@ -167,13 +167,13 @@ export const POST = withAnyAuth<
         try {
           await entityLinksService.createLink(user.organizationId, {
             sourceId: artifact.id,
-            sourceType: EntityType.Artifact,
+            sourceType: EntityType.Document,
             targetId: featureId,
             targetType: EntityType.Feature,
             linkType: LinkType.RelatesTo,
           });
         } catch (linkError) {
-          await artifactsService.delete(artifact.id, user.organizationId);
+          await documentsService.delete(artifact.id, user.organizationId);
           throw linkError;
         }
 

@@ -96,7 +96,7 @@ describe("loopsService.findAll — compute target and projectId", () => {
     const call = mockFindMany.mock.calls[0][0];
     expect(call.where).toEqual(
       expect.objectContaining({
-        artifact: { projectId: "proj-1" },
+        document: { projectId: "proj-1" },
       })
     );
   });
@@ -123,7 +123,7 @@ describe("loopsService.findAll — compute target and projectId", () => {
         userId: "user-1",
         status: "RUNNING",
         command: "PLAN",
-        artifactId: null,
+        documentId: null,
         workstreamId: null,
         parentLoopId: null,
         computeTargetId: "ct-1",
@@ -172,7 +172,7 @@ describe("loopsService.findAll — compute target and projectId", () => {
         userId: "user-1",
         status: "RUNNING",
         command: "PLAN",
-        artifactId: null,
+        documentId: null,
         workstreamId: null,
         parentLoopId: null,
         computeTargetId: null,

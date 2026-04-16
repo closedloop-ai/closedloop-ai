@@ -2,9 +2,9 @@
 
 import { useFeatureFlag } from "@repo/analytics/client";
 import {
-  ArtifactType,
-  type ArtifactWithWorkstream,
-} from "@repo/api/src/types/artifact";
+  DocumentType,
+  type DocumentWithWorkstream,
+} from "@repo/api/src/types/document";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   DropdownMenu,
@@ -30,10 +30,10 @@ import {
   type BreadcrumbEntry,
   Header,
 } from "@/app/(authenticated)/components/header";
-import { ARTIFACT_TYPE_ICONS } from "@/lib/project-constants";
+import { DOCUMENT_TYPE_ICONS } from "@/lib/project-constants";
 
 type PRDEditorHeaderProps = {
-  prd: ArtifactWithWorkstream;
+  prd: DocumentWithWorkstream;
   showMetadataPanel: boolean;
   canShowPanel?: boolean;
   onToggleMetadataPanel: () => void;
@@ -126,8 +126,8 @@ export function PRDEditorHeader({
     </DropdownMenu>
   );
 
-  const PrdIcon = ARTIFACT_TYPE_ICONS[ArtifactType.Prd];
-  const PlanIcon = ARTIFACT_TYPE_ICONS[ArtifactType.ImplementationPlan];
+  const PrdIcon = DOCUMENT_TYPE_ICONS[DocumentType.Prd];
+  const PlanIcon = DOCUMENT_TYPE_ICONS[DocumentType.ImplementationPlan];
 
   return (
     <Header breadcrumbs={breadcrumbs}>

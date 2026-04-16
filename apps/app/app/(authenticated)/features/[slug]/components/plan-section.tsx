@@ -1,10 +1,10 @@
 "use client";
 
 import {
-  type Artifact,
+  type Document,
   type GenerationStatus,
   isActiveGenerationStatus,
-} from "@repo/api/src/types/artifact";
+} from "@repo/api/src/types/document";
 import type { FeatureWithWorkstream } from "@repo/api/src/types/feature";
 import { isDisplayableSlug } from "@repo/api/src/types/slug";
 import { Badge } from "@repo/design-system/components/ui/badge";
@@ -17,13 +17,13 @@ import { useState } from "react";
 import { NewPlanModal } from "@/app/(authenticated)/implementation-plans/components/new-plan-modal";
 import { AssigneeAvatar } from "@/components/assignee-avatar";
 import { GenerationStatusIndicator } from "@/components/generation-status-indicator";
-import { useArtifact } from "@/hooks/queries/use-artifacts";
+import { useDocument } from "@/hooks/queries/use-documents";
 import { useDeleteEntityLink } from "@/hooks/queries/use-entity-links";
-import { getArtifactRoute } from "@/lib/artifact-navigation";
+import { getDocumentRoute } from "@/lib/document-navigation";
 import {
-  ARTIFACT_STATUS_TO_ICON,
-  ARTIFACT_TYPE_BADGE_LABELS,
-  ARTIFACT_TYPE_ICONS,
+  DOCUMENT_STATUS_TO_ICON,
+  DOCUMENT_TYPE_BADGE_LABELS,
+  DOCUMENT_TYPE_ICONS,
 } from "@/lib/project-constants";
 import { useFeatureState } from "../use-feature-state";
 import { OverflowMenu } from "./overflow-menu";
@@ -53,7 +53,7 @@ export function PlanSection({
     newPlanSource,
   } = useFeatureState(feature);
 
-  const { data: plan, isLoading: isLoadingPlan } = useArtifact(linkedPlanId);
+  const { data: plan, isLoading: isLoadingPlan } = useDocument(linkedPlanId);
 
   const deleteLink = useDeleteEntityLink();
 
@@ -151,16 +151,16 @@ export function PlanSection({
 }
 
 type PlanRowProps = {
-  plan: Artifact;
+  plan: Document;
   linkId: string;
   onUnlink: (linkId: string) => void;
 };
 
 function PlanRow({ plan, linkId, onUnlink }: Readonly<PlanRowProps>) {
-  const Icon = ARTIFACT_TYPE_ICONS[plan.type];
-  const badgeLabel = ARTIFACT_TYPE_BADGE_LABELS[plan.type];
-  const statusIconStatus = ARTIFACT_STATUS_TO_ICON[plan.status];
-  const route = getArtifactRoute(plan);
+  const Icon = DOCUMENT_TYPE_ICONS[plan.type];
+  const badgeLabel = DOCUMENT_TYPE_BADGE_LABELS[plan.type];
+  const statusIconStatus = DOCUMENT_STATUS_TO_ICON[plan.status];
+  const route = getDocumentRoute(plan);
 
   return (
     <div className="flex items-center px-2 py-1">

@@ -1,5 +1,5 @@
-import { ArtifactStatus, ArtifactType } from "@repo/api/src/types/artifact";
 import { Priority } from "@repo/api/src/types/common";
+import { DocumentStatus, DocumentType } from "@repo/api/src/types/document";
 import { ExternalLinkType } from "@repo/api/src/types/external-link";
 import { FeatureStatus } from "@repo/api/src/types/feature";
 import { ProjectStatus } from "@repo/api/src/types/project";
@@ -30,75 +30,75 @@ export const PRIORITY_COLORS: Record<Priority, string> = {
 };
 
 // Artifact status configuration (uses API status directly — no display mapping)
-export const ARTIFACT_STATUS_LABELS: Record<ArtifactStatus, string> = {
-  [ArtifactStatus.Draft]: "Draft",
-  [ArtifactStatus.InProgress]: "In Progress",
-  [ArtifactStatus.InReview]: "In Review",
-  [ArtifactStatus.Approved]: "Approved",
-  [ArtifactStatus.Executed]: "Executed",
-  [ArtifactStatus.Done]: "Done",
-  [ArtifactStatus.Obsolete]: "Obsolete",
+export const DOCUMENT_STATUS_LABELS: Record<DocumentStatus, string> = {
+  [DocumentStatus.Draft]: "Draft",
+  [DocumentStatus.InProgress]: "In Progress",
+  [DocumentStatus.InReview]: "In Review",
+  [DocumentStatus.Approved]: "Approved",
+  [DocumentStatus.Executed]: "Executed",
+  [DocumentStatus.Done]: "Done",
+  [DocumentStatus.Obsolete]: "Obsolete",
 };
 
-export const ARTIFACT_STATUS_COLORS: Record<ArtifactStatus, string> = {
-  [ArtifactStatus.Draft]: "text-muted-foreground",
-  [ArtifactStatus.InProgress]: "text-blue-600 dark:text-blue-400",
-  [ArtifactStatus.InReview]: "text-blue-600 dark:text-blue-400",
-  [ArtifactStatus.Approved]: "text-blue-600 dark:text-blue-400",
-  [ArtifactStatus.Executed]: "text-blue-600 dark:text-blue-400",
-  [ArtifactStatus.Done]: "text-green-600 dark:text-green-400",
-  [ArtifactStatus.Obsolete]: "text-muted-foreground",
+export const DOCUMENT_STATUS_COLORS: Record<DocumentStatus, string> = {
+  [DocumentStatus.Draft]: "text-muted-foreground",
+  [DocumentStatus.InProgress]: "text-blue-600 dark:text-blue-400",
+  [DocumentStatus.InReview]: "text-blue-600 dark:text-blue-400",
+  [DocumentStatus.Approved]: "text-blue-600 dark:text-blue-400",
+  [DocumentStatus.Executed]: "text-blue-600 dark:text-blue-400",
+  [DocumentStatus.Done]: "text-green-600 dark:text-green-400",
+  [DocumentStatus.Obsolete]: "text-muted-foreground",
 };
 
-export const ARTIFACT_STATUS_TO_ICON: Record<ArtifactStatus, StatusIconStatus> =
+export const DOCUMENT_STATUS_TO_ICON: Record<DocumentStatus, StatusIconStatus> =
   {
-    [ArtifactStatus.Draft]: "todo",
-    [ArtifactStatus.InProgress]: "started",
-    [ArtifactStatus.InReview]: "in-progress",
-    [ArtifactStatus.Approved]: "in-review",
-    [ArtifactStatus.Executed]: "executed",
-    [ArtifactStatus.Done]: "complete",
-    [ArtifactStatus.Obsolete]: "wont-do",
+    [DocumentStatus.Draft]: "todo",
+    [DocumentStatus.InProgress]: "started",
+    [DocumentStatus.InReview]: "in-progress",
+    [DocumentStatus.Approved]: "in-review",
+    [DocumentStatus.Executed]: "executed",
+    [DocumentStatus.Done]: "complete",
+    [DocumentStatus.Obsolete]: "wont-do",
   };
 
 // Artifact type icons
-export const ARTIFACT_TYPE_ICONS: Record<ArtifactType, React.ElementType> = {
-  [ArtifactType.Prd]: FileIcon,
-  [ArtifactType.ImplementationPlan]: FileCode2Icon,
-  [ArtifactType.Template]: FileTextIcon,
+export const DOCUMENT_TYPE_ICONS: Record<DocumentType, React.ElementType> = {
+  [DocumentType.Prd]: FileIcon,
+  [DocumentType.ImplementationPlan]: FileCode2Icon,
+  [DocumentType.Template]: FileTextIcon,
 };
 
 // Artifact type labels for display
-export const ARTIFACT_TYPE_LABELS: Record<ArtifactType, string> = {
-  [ArtifactType.Prd]: "PRD",
-  [ArtifactType.ImplementationPlan]: "Implementation Plan",
-  [ArtifactType.Template]: "Template",
+export const DOCUMENT_TYPE_LABELS: Record<DocumentType, string> = {
+  [DocumentType.Prd]: "PRD",
+  [DocumentType.ImplementationPlan]: "Implementation Plan",
+  [DocumentType.Template]: "Template",
 };
 
 // Artifact type colors for pills (bg + text)
-export const ARTIFACT_TYPE_COLORS: Record<
-  ArtifactType,
+export const DOCUMENT_TYPE_COLORS: Record<
+  DocumentType,
   { bg: string; text: string }
 > = {
-  [ArtifactType.Prd]: {
+  [DocumentType.Prd]: {
     bg: "bg-blue-100 dark:bg-blue-900/50",
     text: "text-blue-700 dark:text-blue-300",
   },
-  [ArtifactType.ImplementationPlan]: {
+  [DocumentType.ImplementationPlan]: {
     bg: "bg-emerald-100 dark:bg-emerald-900/50",
     text: "text-emerald-700 dark:text-emerald-300",
   },
-  [ArtifactType.Template]: {
+  [DocumentType.Template]: {
     bg: "bg-indigo-100 dark:bg-indigo-900/50",
     text: "text-indigo-700 dark:text-indigo-300",
   },
 };
 
 // Artifact type short badge labels (for compact displays like Context table)
-export const ARTIFACT_TYPE_BADGE_LABELS: Record<ArtifactType, string> = {
-  [ArtifactType.Prd]: "PRD",
-  [ArtifactType.ImplementationPlan]: "Plan",
-  [ArtifactType.Template]: "Template",
+export const DOCUMENT_TYPE_BADGE_LABELS: Record<DocumentType, string> = {
+  [DocumentType.Prd]: "PRD",
+  [DocumentType.ImplementationPlan]: "Plan",
+  [DocumentType.Template]: "Template",
 };
 
 // Feature status labels and colors

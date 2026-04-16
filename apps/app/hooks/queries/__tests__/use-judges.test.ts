@@ -66,7 +66,7 @@ describe("usePlanJudgesFeedback", () => {
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
     expect(mockApiClient.get).toHaveBeenCalledWith(
-      "/artifacts/artifact-abc/plan-judges"
+      "/documents/artifact-abc/plan-judges"
     );
     expect(result.current.data).toHaveLength(1);
     expect(result.current.data?.[0].caseId).toBe("clarity-judge");
@@ -111,7 +111,7 @@ describe("usePlanJudgesFeedback", () => {
     expect(result.current.data).toBeNull();
   });
 
-  test("does not fetch when artifactId is empty string", () => {
+  test("does not fetch when documentId is empty string", () => {
     renderHook(() => usePlanJudgesFeedback(""), {
       wrapper: createWrapper(),
     });
@@ -176,12 +176,12 @@ describe("usePrdJudgesFeedback", () => {
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
     expect(mockApiClient.get).toHaveBeenCalledWith(
-      "/artifacts/artifact-abc/prd-judges"
+      "/documents/artifact-abc/prd-judges"
     );
     expect(result.current.data?.[0].caseId).toBe("prd-clarity-judge");
   });
 
-  test("does not fetch when artifactId is empty string", () => {
+  test("does not fetch when documentId is empty string", () => {
     renderHook(() => usePrdJudgesFeedback(""), {
       wrapper: createWrapper(),
     });
@@ -219,12 +219,12 @@ describe("useCodeJudgesFeedback", () => {
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
     expect(mockApiClient.get).toHaveBeenCalledWith(
-      "/artifacts/artifact-abc/code-judges"
+      "/documents/artifact-abc/code-judges"
     );
     expect(result.current.data?.[0].caseId).toBe("dry-principle-judge");
   });
 
-  test("does not fetch when artifactId is empty string", () => {
+  test("does not fetch when documentId is empty string", () => {
     renderHook(() => useCodeJudgesFeedback(""), {
       wrapper: createWrapper(),
     });

@@ -1,11 +1,11 @@
 "use client";
 
 import { useFeatureFlag } from "@repo/analytics/client";
-import type { PullRequestInfo } from "@repo/api/src/types/artifact";
+import type { PullRequestInfo } from "@repo/api/src/types/document";
 import { Label } from "@repo/design-system/components/ui/label";
 import { GitPullRequestIcon } from "lucide-react";
 import Link from "next/link";
-import { MetadataSection } from "@/components/artifact-editor/metadata-panel";
+import { MetadataSection } from "@/components/document-editor/metadata-panel";
 import {
   prReviewDecisionColors,
   prStatusColors,

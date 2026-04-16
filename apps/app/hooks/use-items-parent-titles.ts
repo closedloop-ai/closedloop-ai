@@ -1,15 +1,15 @@
 "use client";
 
-import { getRoutePrefixForType } from "@repo/api/src/types/artifact";
+import { getRoutePrefixForType } from "@repo/api/src/types/document";
 import { EntityType } from "@repo/api/src/types/entity-link";
 import type { ProjectTreeResponse } from "@repo/api/src/types/project-tree";
 import { useQueries } from "@tanstack/react-query";
 import { useMemo } from "react";
-import type { ArtifactRowItem } from "@/components/artifact-table/artifact-row";
+import type { DocumentRowItem } from "@/components/document-table/document-row";
 import { projectTreeKeys } from "@/hooks/queries/use-project-tree";
 import { useApiClient } from "@/hooks/use-api-client";
 
-function getProjectId(item: ArtifactRowItem): string | undefined {
+function getProjectId(item: DocumentRowItem): string | undefined {
   if (item.kind === "project") {
     return item.data.id;
   }
@@ -24,7 +24,7 @@ function getProjectId(item: ArtifactRowItem): string | undefined {
  * Parent column when items span multiple projects.
  */
 export function useItemsParentTitles(
-  items: ArtifactRowItem[]
+  items: DocumentRowItem[]
 ): Map<string, { title: string; href: string | null }> {
   const apiClient = useApiClient();
 
@@ -57,7 +57,7 @@ export function useItemsParentTitles(
     }
     for (const node of query.data.nodes) {
       let parentHref: string | null = null;
-      if (node.root.entityType === EntityType.Artifact) {
+      if (node.root.entityType === EntityType.Document) {
         const routePrefix = getRoutePrefixForType(node.root.type);
         if (routePrefix) {
           parentHref = `/${routePrefix}/${node.root.slug}`;

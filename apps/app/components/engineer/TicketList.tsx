@@ -98,18 +98,18 @@ export function TicketList({
 
   const {
     startPlanLoop,
-    pendingArtifacts,
-    selectArtifact,
-    clearPendingArtifacts,
+    pendingDocuments,
+    selectDocument,
+    clearPendingDocuments,
   } = useStartPlanLoop(
-    async (ticketIdentifier, repoPath, worktreePath, loopId, artifactId) => {
-      // Persist loopId + artifactId in the session immediately so ActiveTicketCard
+    async (ticketIdentifier, repoPath, worktreePath, loopId, documentId) => {
+      // Persist loopId + documentId in the session immediately so ActiveTicketCard
       // can use them before the gateway process starts.
       mergeSessionFields(ticketIdentifier, {
         repoPath,
         worktreePath,
         loopId,
-        artifactId,
+        documentId,
       });
       // Also persist to the sessions file via the API route
       await fetch("/api/gateway/symphony/sessions", {
@@ -120,7 +120,7 @@ export function TicketList({
           repoPath,
           worktreePath,
           loopId,
-          artifactId,
+          documentId,
         }),
       });
     }
@@ -1771,7 +1771,7 @@ export function TicketList({
                       }
                       prInfo={prStatus[ticket.identifier] || null}
                       repoPath={repoPath}
-                      sessionArtifactId={session?.artifactId}
+                      sessionArtifactId={session?.documentId}
                       ticket={ticket}
                     />
                   </div>
@@ -2225,10 +2225,10 @@ export function TicketList({
         onOpenChange={(open) => {
           if (!open) {
             // Dismissing clears picker state; user can retry Start Planning
-            clearPendingArtifacts();
+            clearPendingDocuments();
           }
         }}
-        open={pendingArtifacts !== null && pendingArtifacts.length > 0}
+        open={pendingDocuments !== null && pendingDocuments.length > 0}
       >
         <DialogContent>
           <DialogHeader>
@@ -2239,14 +2239,14 @@ export function TicketList({
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2">
-            {pendingArtifacts?.map((artifact) => (
+            {pendingDocuments?.map((doc) => (
               <Button
                 className="h-auto w-full justify-start whitespace-normal text-left"
-                key={artifact.id}
-                onClick={() => selectArtifact(artifact.id)}
+                key={doc.id}
+                onClick={() => selectDocument(doc.id)}
                 variant="outline"
               >
-                {artifact.title}
+                {doc.title}
               </Button>
             ))}
           </div>

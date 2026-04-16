@@ -1,8 +1,8 @@
 import { LoopStatus } from "@repo/api/src/types/loop";
 import type {
-  ArtifactsByType,
   ContributionDay,
   CreateUserInput,
+  DocumentsByType,
   UpdateUserInput,
   UpdateUserProfileFromClerkInput,
   UserProfileStats,
@@ -223,13 +223,13 @@ export const usersService = {
       ] = await Promise.all([
         // Total artifacts created
         withDb((db) =>
-          db.artifact.count({
+          db.document.count({
             where: { createdById: userId, organizationId },
           })
         ),
         // Artifacts grouped by type
         withDb((db) =>
-          db.artifact.groupBy({
+          db.document.groupBy({
             by: ["type"],
             where: { createdById: userId, organizationId },
             _count: { id: true },
@@ -271,7 +271,7 @@ export const usersService = {
         ),
         // Contribution heatmap: artifact creations over last year
         withDb((db) =>
-          db.artifact.findMany({
+          db.document.findMany({
             where: {
               createdById: userId,
               organizationId,
@@ -304,7 +304,7 @@ export const usersService = {
         ),
       ]);
 
-      const artifactsByType: ArtifactsByType[] = artifactsByTypeRaw.map(
+      const artifactsByType: DocumentsByType[] = artifactsByTypeRaw.map(
         (row) => ({
           type: row.type,
           count: row._count.id,
@@ -315,8 +315,8 @@ export const usersService = {
       const avgConcurrency = computeAvgLoopConcurrency(loopConcurrencyData);
 
       return {
-        totalArtifacts,
-        artifactsByType,
+        totalDocuments: totalArtifacts,
+        documentsByType: artifactsByType,
         totalComments,
         totalPRsLanded,
         totalLoops,

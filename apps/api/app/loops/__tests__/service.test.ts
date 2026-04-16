@@ -40,7 +40,7 @@ const makeParentFixture = (overrides?: Record<string, unknown>) => ({
   userId: TEST_USER_ID,
   command: "PLAN",
   status: LoopStatus.Completed,
-  artifactId: "artifact-111",
+  documentId: "artifact-111",
   workstreamId: null,
   prompt: "Original prompt",
   repo: null,

@@ -1,11 +1,11 @@
 "use client";
 
 import {
-  type ArtifactType,
+  type DocumentType,
   getRoutePrefixForType,
-} from "@repo/api/src/types/artifact";
+} from "@repo/api/src/types/document";
 import type {
-  ArtifactSearchResult,
+  DocumentSearchResult,
   FeatureSearchResult,
   ProjectSearchResult,
   WorkstreamSearchResult,
@@ -22,7 +22,7 @@ import { Loader2Icon } from "lucide-react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import {
-  ArtifactStatusBadge,
+  DocumentStatusBadge,
   FeaturePriorityBadge,
   FeatureStatusBadge,
   WorkstreamStateBadge,
@@ -30,7 +30,7 @@ import {
 import { useGlobalSearch } from "@/hooks/queries/use-search";
 import { formatDate } from "@/lib/date-utils";
 import {
-  ARTIFACT_TYPE_LABELS,
+  DOCUMENT_TYPE_LABELS,
   PROJECT_STATUS_LABELS,
 } from "@/lib/project-constants";
 
@@ -49,7 +49,7 @@ export function SearchResults() {
   }
 
   const totalResults = data
-    ? data.artifacts.length +
+    ? data.documents.length +
       data.features.length +
       data.workstreams.length +
       data.projects.length
@@ -69,8 +69,8 @@ export function SearchResults() {
         </div>
       )}
 
-      {data && data.artifacts.length > 0 && (
-        <ArtifactsSection artifacts={data.artifacts} />
+      {data && data.documents.length > 0 && (
+        <ArtifactsSection artifacts={data.documents} />
       )}
 
       {data && data.features.length > 0 && (
@@ -118,7 +118,7 @@ function TitleCell({
 
 function ArtifactsSection({
   artifacts,
-}: Readonly<{ artifacts: ArtifactSearchResult[] }>) {
+}: Readonly<{ artifacts: DocumentSearchResult[] }>) {
   return (
     <section>
       <SectionHeader count={artifacts.length} title="Artifacts" />
@@ -146,11 +146,11 @@ function ArtifactsSection({
                   <TitleCell href={href}>{artifact.title}</TitleCell>
                 </TableCell>
                 <TableCell className="text-muted-foreground">
-                  {ARTIFACT_TYPE_LABELS[artifact.type as ArtifactType] ??
+                  {DOCUMENT_TYPE_LABELS[artifact.type as DocumentType] ??
                     artifact.type}
                 </TableCell>
                 <TableCell>
-                  <ArtifactStatusBadge status={artifact.status} />
+                  <DocumentStatusBadge status={artifact.status} />
                 </TableCell>
                 <TableCell className="text-muted-foreground">
                   {artifact.projectName ?? "-"}

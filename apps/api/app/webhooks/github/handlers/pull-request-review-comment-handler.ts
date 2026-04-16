@@ -90,8 +90,8 @@ export async function handlePullRequestReviewComment(
       select: {
         id: true,
         workstreamId: true,
-        artifactId: true,
-        artifact: { select: { slug: true } },
+        documentId: true,
+        document: { select: { slug: true } },
       },
     });
 
@@ -152,8 +152,8 @@ export async function handlePullRequestReviewComment(
 type ExistingPr = {
   id: string;
   workstreamId: string;
-  artifactId: string | null;
-  artifact: { slug: string } | null;
+  documentId: string | null;
+  document: { slug: string } | null;
 };
 
 async function handleCreatedComment(
@@ -206,8 +206,8 @@ async function handleCreatedComment(
         prTitle: pull_request.title,
         prUrl: pull_request.html_url,
         commentUrl: comment.html_url,
-        artifactId: existingPr.artifactId,
-        artifactSlug: existingPr.artifact?.slug,
+        documentId: existingPr.documentId,
+        documentSlug: existingPr.document?.slug,
       },
     },
   });

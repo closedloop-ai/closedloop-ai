@@ -236,7 +236,7 @@ function toLoop(record: PrismaLoop): Loop {
     uploadedArtifacts:
       (record.uploadedArtifacts as Loop["uploadedArtifacts"]) ?? null,
     tokensByModel: record.tokensByModel as Loop["tokensByModel"],
-    artifactVersion: record.artifactVersion ?? null,
+    documentVersion: record.documentVersion ?? null,
   };
 }
 
@@ -328,7 +328,7 @@ export const loopsService = {
           organizationId,
           userId,
           command: input.command,
-          artifactId: input.artifactId ?? null,
+          documentId: input.documentId ?? null,
           workstreamId: input.workstreamId ?? null,
           parentLoopId: input.parentLoopId ?? null,
           computeTargetId: input.computeTargetId ?? null,
@@ -336,7 +336,7 @@ export const loopsService = {
           repo: input.repo ?? undefined,
           additionalRepos: additionalRepos ?? undefined,
           contextRefs: input.contextRefs ?? undefined,
-          artifactVersion: input.artifactVersion ?? null,
+          documentVersion: input.documentVersion ?? null,
           metadata: input.metadata ?? undefined,
           status: LoopStatus.Pending,
         },
@@ -397,7 +397,7 @@ export const loopsService = {
     const {
       status,
       command,
-      artifactId,
+      documentId,
       workstreamId,
       projectId,
       userId,
@@ -411,9 +411,9 @@ export const loopsService = {
           organizationId,
           ...(status ? { status } : {}),
           ...(command ? { command } : {}),
-          ...(artifactId ? { artifactId } : {}),
+          ...(documentId ? { documentId } : {}),
           ...(workstreamId ? { workstreamId } : {}),
-          ...(projectId ? { artifact: { projectId } } : {}),
+          ...(projectId ? { document: { projectId } } : {}),
           ...(userId ? { userId } : {}),
         },
         include: {
@@ -715,7 +715,7 @@ export const loopsService = {
           organizationId,
           userId,
           command: parent.command,
-          artifactId: parent.artifactId,
+          documentId: parent.documentId,
           workstreamId: parent.workstreamId,
           parentLoopId: parent.id,
           prompt: input.prompt ?? parent.prompt,
@@ -1114,13 +1114,13 @@ export const loopsService = {
    * to them inherits broken context.
    */
   async findLatestCompletedForArtifact(
-    artifactId: string,
+    documentId: string,
     organizationId: string
   ): Promise<Loop | null> {
     const loop = await withDb((db) =>
       db.loop.findFirst({
         where: {
-          artifactId,
+          documentId,
           organizationId,
           status: "COMPLETED",
         },
@@ -1160,8 +1160,8 @@ export const loopsService = {
    * Find an active (PENDING/CLAIMED/RUNNING) PLAN loop for an artifact.
    * Returns the most recently created one, or null if none exist.
    */
-  async findActivePlanLoopForArtifact(
-    artifactId: string,
+  async findActivePlanLoopForDocument(
+    documentId: string,
     organizationId: string,
     computeTargetId?: string
   ): Promise<Loop | null> {
@@ -1176,7 +1176,7 @@ export const loopsService = {
     const loop = await withDb((db) =>
       db.loop.findFirst({
         where: {
-          artifactId,
+          documentId,
           organizationId,
           command: "PLAN",
           ...(computeTargetId ? { computeTargetId } : {}),
@@ -1202,7 +1202,7 @@ export const loopsService = {
 
   /**
    * Create a loop only if no row already exists for the same
-   * (artifactId, command, artifactVersion) combination.
+   * (documentId, command, documentVersion) combination.
    * Uses createManyAndReturn + skipDuplicates to push dedup atomically to the DB,
    * eliminating the TOCTOU window in a plain findFirst → create sequence.
    * Returns the new loop, or null if a duplicate was detected and skipped.
@@ -1210,7 +1210,7 @@ export const loopsService = {
   async createIfNotExists(
     organizationId: string,
     userId: string,
-    input: CreateLoopRequest & { artifactVersion: number; artifactId: string }
+    input: CreateLoopRequest & { documentVersion: number; documentId: string }
   ): Promise<CreateLoopResponse | null> {
     const maxConcurrentLoops = await fetchOrgLoopLimit(organizationId);
     const activeCount = await withDb((db) =>
@@ -1241,7 +1241,7 @@ export const loopsService = {
             organizationId,
             userId,
             command: input.command,
-            artifactId: input.artifactId,
+            documentId: input.documentId,
             workstreamId: input.workstreamId ?? null,
             parentLoopId: input.parentLoopId ?? null,
             computeTargetId: input.computeTargetId ?? null,
@@ -1249,7 +1249,7 @@ export const loopsService = {
             repo: input.repo ?? undefined,
             additionalRepos: additionalRepos ?? undefined,
             contextRefs: input.contextRefs ?? undefined,
-            artifactVersion: input.artifactVersion,
+            documentVersion: input.documentVersion,
             metadata: input.metadata ?? undefined,
             status: LoopStatus.Pending,
           },

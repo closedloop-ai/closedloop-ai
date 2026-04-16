@@ -1,6 +1,6 @@
 import { ProjectStatus } from "@repo/api/src/types/project";
 import type {
-  ArtifactSearchResult,
+  DocumentSearchResult,
   FeatureSearchResult,
   GlobalSearchResponse,
   ProjectSearchResult,
@@ -31,16 +31,16 @@ export const searchService = {
       searchProjects(organizationId, query),
     ]);
 
-    return { query, artifacts, features, workstreams, projects };
+    return { query, documents: artifacts, features, workstreams, projects };
   },
 };
 
 async function searchArtifacts(
   organizationId: string,
   query: string
-): Promise<ArtifactSearchResult[]> {
+): Promise<DocumentSearchResult[]> {
   const rows = await withDb((db) =>
-    db.artifact.findMany({
+    db.document.findMany({
       where: {
         organizationId,
         OR: [{ title: ilike(query) }, { slug: ilike(query) }],

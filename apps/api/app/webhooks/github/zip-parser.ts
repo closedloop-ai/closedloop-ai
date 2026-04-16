@@ -1,4 +1,4 @@
-import type { PlanJson } from "@repo/api/src/types/artifact";
+import type { PlanJson } from "@repo/api/src/types/document";
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
 import type { PerfSummary } from "@repo/api/src/types/performance";
 import type { PromptsSnapshot } from "@repo/api/src/types/prompt";

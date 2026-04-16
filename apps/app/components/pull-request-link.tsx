@@ -1,4 +1,4 @@
-import type { PullRequestInfo } from "@repo/api/src/types/artifact";
+import type { PullRequestInfo } from "@repo/api/src/types/document";
 import { GitPullRequestIcon } from "lucide-react";
 
 export function PullRequestLink({

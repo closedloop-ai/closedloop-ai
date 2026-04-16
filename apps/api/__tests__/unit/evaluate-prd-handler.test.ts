@@ -10,7 +10,7 @@ import { vi } from "vitest";
 
 vi.mock("@repo/database", () => ({
   EntityType: {
-    ARTIFACT: "ARTIFACT",
+    DOCUMENT: "DOCUMENT",
     FEATURE: "FEATURE",
     EXTERNAL_LINK: "EXTERNAL_LINK",
   },
@@ -21,7 +21,7 @@ vi.mock("@repo/observability/log", () => ({
   log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
-vi.mock("@/lib/loops/loop-artifact-ingestion", () => ({
+vi.mock("@/lib/loops/loop-document-ingestion", () => ({
   parseJsonArtifact: vi.fn(),
   upsertEvaluationWithJudgeScores: vi.fn(),
 }));
@@ -44,7 +44,7 @@ import { registerEvaluationHandlerTests } from "../utils/evaluation-handler-test
 registerEvaluationHandlerTests({
   handler: evaluatePrdHandler,
   reportType: EvaluationReportType.Prd,
-  artifactId: "prd-artifact-1",
+  documentId: "prd-artifact-1",
   fileName: "prd-judges.json",
   reportId: "prd-report-1",
   judgeName: "clarity-judge",

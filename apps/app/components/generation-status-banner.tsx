@@ -4,7 +4,7 @@ import {
   type GenerationStatus,
   getGenerationStatusRunKey,
   isActiveGenerationStatus,
-} from "@repo/api/src/types/artifact";
+} from "@repo/api/src/types/document";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import {
   CircleAlertIcon,

@@ -75,7 +75,7 @@ No sycophantic language. Brief, factual — state what changed.
 `turbo.json` (tasks) · `biome.jsonc` (lint config) · `packages/*/keys.ts` (env validation)
 
 ## Code Style
-- Use enum/const references, not hardcoded strings — `ArtifactType.IMPLEMENTATION_PLAN` not `"IMPLEMENTATION_PLAN"`, `EntityType.Issue` not `"ISSUE"`. This applies everywhere: type annotations, runtime comparisons, test fixtures, and object literals. Import from `packages/api/src/types/` or `@repo/database` for Prisma enums. For type annotations use `import type` with the const object's type alias (e.g., `sourceType?: EntityType`).
+- Use enum/const references, not hardcoded strings — `DocumentType.ImplementationPlan` not `"IMPLEMENTATION_PLAN"`, `EntityType.Document` not `"DOCUMENT"`. This applies everywhere: type annotations, runtime comparisons, test fixtures, and object literals. Import from `packages/api/src/types/` or `@repo/database` for Prisma enums. For type annotations use `import type` with the const object's type alias (e.g., `sourceType?: EntityType`).
 - Define string enums as const objects, never arrays: `export const Foo = { Bar: "bar" } as const; export type Foo = (typeof Foo)[keyof typeof Foo];` — not `const FOOS = ["bar"] as const`.
 - `RegExp.exec(str)` not `str.match(regex)` (S6594)
 - `String#replaceAll()` not `.replace()` with global regex (S7781)
@@ -103,21 +103,21 @@ No sycophantic language. Brief, factual — state what changed.
 Read `.gitmessage` first and follow its format.
 
 ## Background
-ClosedLoop: human-governed, AI-centric software delivery platform. AI produces artifacts; humans review at milestones. Hybrid: source on customer infra, cloud control plane orchestrates. 'Workflow' = user-defined step sequences, NOT generated artifacts.
+ClosedLoop: human-governed, AI-centric software delivery platform. AI produces artifacts (documents, features, etc.); humans review at milestones. Hybrid: source on customer infra, cloud control plane orchestrates. 'Workflow' = user-defined step sequences, NOT generated artifacts. 'Document' = a specific artifact type (PRD, Implementation Plan, Template) stored in the `document` table. 'Artifact' = the broader concept encompassing documents, features, and other primary records.
 
 ## Learned Patterns
 
 ### Planning & Verification
-- **[mistake]**: New artifact types — check existing support in: useArtifactUIState type union, isNavigableArtifact, getArtifactRoute switch, ARTIFACT_SECTIONS. Mark existing as verification, not implementation.
+- **[mistake]**: New document types — check existing support in: useDocumentUIState type union, isNavigableDocument, getDocumentRoute switch, DOCUMENT_SECTIONS. Mark existing as verification, not implementation.
 - **[convention]**: Check `plan.json` architectureDecisions before implementing entity types or schema changes.
 - **[mistake]**: Check investigation-log.md for already-imported components before writing import tasks. Mark as verification when already present.
 
 ### TypeScript & Imports
-- **[mistake]**: Const objects like ArtifactType need `import { ArtifactType }` not `import type` — runtime values can't use type-only imports.
+- **[mistake]**: Const objects like DocumentType need `import { DocumentType }` not `import type` — runtime values can't use type-only imports.
 - **[mistake]**: Adding re-exports to index.ts triggers Biome's `noBarrelFile`. Use direct subpath imports (`@repo/github/execution-log-parser`).
 - **[insight]**: Subpath imports (`@repo/github/execution-log-parser`) resolve without explicit `exports` in package.json — pnpm workspace + TS handles it.
 - **[convention]**: Never use inline `import()` types. Always top-level imports.
-- **[pattern]**: ArtifactStatus has 4 synchronized layers — when adding values, update Prisma schema + TypeScript const (packages/api/src/types/artifact.ts); the Zod validator and status dropdown auto-derive from the const, but exhaustive Record<ArtifactStatus, string> maps in status-badge.tsx and project-constants.ts require manual updates. (context: typescript|enum|ArtifactStatus|record)
+- **[pattern]**: DocumentStatus has 4 synchronized layers — when adding values, update Prisma schema + TypeScript const (packages/api/src/types/document.ts); the Zod validator and status dropdown auto-derive from the const, but exhaustive Record<DocumentStatus, string> maps in status-badge.tsx and project-constants.ts require manual updates. (context: typescript|enum|DocumentStatus|record)
 - **[convention]**: use zod validators to validate object shape. do not "manually" validate unknown objects using `typeof` and other related checks. zod can be used to validate any object, not just in route handlers.
 
 ### React Query & Mutations

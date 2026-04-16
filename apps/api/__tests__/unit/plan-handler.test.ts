@@ -24,22 +24,22 @@ vi.mock("@repo/github/prompt-snapshot-parser", () => ({
   parsePromptsSnapshotFromMarkdownEntries: vi.fn().mockReturnValue(null),
 }));
 
-vi.mock("@/app/artifacts/artifact-version-service", () => ({
-  artifactVersionService: {
+vi.mock("@/app/documents/document-version-service", () => ({
+  documentVersionService: {
     createVersion: vi.fn(),
     getLatest: vi.fn(),
   },
 }));
 
-vi.mock("@/app/artifacts/room-utils", () => ({
-  resetArtifactRoom: vi.fn(),
+vi.mock("@/app/documents/room-utils", () => ({
+  resetDocumentRoom: vi.fn(),
 }));
 
 vi.mock("@/lib/judge-score-fanout", () => ({
   fanOutJudgeScores: vi.fn(),
 }));
 
-vi.mock("@/lib/loops/loop-artifact-ingestion", () => ({
+vi.mock("@/lib/loops/loop-document-ingestion", () => ({
   parseJsonArtifact: vi.fn(),
 }));
 

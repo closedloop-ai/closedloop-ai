@@ -1,11 +1,11 @@
 import { withAuth } from "@/lib/auth/with-auth";
 import { errorResponse, successResponse } from "@/lib/route-utils";
-import { artifactsService } from "../../artifacts/service";
+import { documentsService } from "../../documents/service";
 
 export const POST = withAuth<{ message: string }, "/templates/seed">(
   async ({ user }) => {
     try {
-      await artifactsService.ensureDefaultTemplates(
+      await documentsService.ensureDefaultTemplates(
         user.organizationId,
         user.id
       );

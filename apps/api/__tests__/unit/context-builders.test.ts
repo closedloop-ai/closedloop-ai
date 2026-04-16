@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { artifactsService } from "@/app/artifacts/service";
+import { documentsService } from "@/app/documents/service";
 
 describe("buildContextBase", () => {
   const assumeDefaults = "Assume defaults for any questions.";
 
   it("returns sourceContent + assume defaults when no instructions", () => {
-    const result = artifactsService.buildContextBase(
+    const result = documentsService.buildContextBase(
       "# My PRD",
       null,
       assumeDefaults
@@ -16,7 +16,7 @@ describe("buildContextBase", () => {
   });
 
   it("returns sourceContent + assume defaults when instructions are empty", () => {
-    const result = artifactsService.buildContextBase(
+    const result = documentsService.buildContextBase(
       "# My PRD",
       "  ",
       assumeDefaults
@@ -26,7 +26,7 @@ describe("buildContextBase", () => {
   });
 
   it("appends instructions when provided", () => {
-    const result = artifactsService.buildContextBase(
+    const result = documentsService.buildContextBase(
       "# My PRD",
       "Focus on performance",
       assumeDefaults
@@ -37,7 +37,7 @@ describe("buildContextBase", () => {
   });
 
   it("skips instructions that start with plan generation failure message", () => {
-    const result = artifactsService.buildContextBase(
+    const result = documentsService.buildContextBase(
       "# My PRD",
       "# Plan Generation Failed\nSome error details",
       assumeDefaults
@@ -48,20 +48,20 @@ describe("buildContextBase", () => {
   });
 
   it("handles empty sourceContent", () => {
-    const result = artifactsService.buildContextBase("", null, assumeDefaults);
+    const result = documentsService.buildContextBase("", null, assumeDefaults);
     expect(result).toContain(assumeDefaults);
   });
 });
 
 describe("buildPlanContext", () => {
   it("includes plan-specific assume-defaults message", () => {
-    const result = artifactsService.buildPlanContext("# PRD Content", null);
+    const result = documentsService.buildPlanContext("# PRD Content", null);
     expect(result).toContain("implementation plan");
     expect(result).toContain("assume reasonable defaults");
   });
 
   it("includes initial instructions when provided", () => {
-    const result = artifactsService.buildPlanContext(
+    const result = documentsService.buildPlanContext(
       "# PRD Content",
       "## Existing plan content"
     );
@@ -72,23 +72,23 @@ describe("buildPlanContext", () => {
 
 describe("buildPRDContext", () => {
   it("includes PRD-specific assume-defaults message", () => {
-    const result = artifactsService.buildPRDContext("# Content", null, null);
+    const result = documentsService.buildPRDContext("# Content", null, null);
     expect(result).toContain("PRD");
     expect(result).toContain("assume reasonable defaults");
   });
 
   it("does not include reverse synthesis section when link is null", () => {
-    const result = artifactsService.buildPRDContext("# Content", null, null);
+    const result = documentsService.buildPRDContext("# Content", null, null);
     expect(result).not.toContain("Reverse Synthesis Link");
   });
 
   it("does not include reverse synthesis section when link is empty", () => {
-    const result = artifactsService.buildPRDContext("# Content", null, "  ");
+    const result = documentsService.buildPRDContext("# Content", null, "  ");
     expect(result).not.toContain("Reverse Synthesis Link");
   });
 
   it("includes reverse synthesis section when link is valid", () => {
-    const result = artifactsService.buildPRDContext(
+    const result = documentsService.buildPRDContext(
       "# Content",
       null,
       "https://example.com/repo"

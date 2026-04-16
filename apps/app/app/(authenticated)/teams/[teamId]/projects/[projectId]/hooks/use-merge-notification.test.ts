@@ -18,10 +18,10 @@ vi.mock("@/hooks/use-api-client", () => ({
   })),
 }));
 
-vi.mock("@/hooks/queries/use-artifacts", () => ({
-  artifactKeys: {
+vi.mock("@/hooks/queries/use-documents", () => ({
+  documentKeys: {
     previewDeployment: (id: string) => [
-      "artifacts",
+      "documents",
       "detail",
       id,
       "preview-deployment",
@@ -59,7 +59,7 @@ describe("useMergeNotification", () => {
           timestamp: new Date("2024-01-15T10:00:00Z"),
           metadata: {
             prTitle: "Test PR",
-            artifactId: "abc",
+            documentId: "abc",
             prUrl: "https://github.com/org/repo/pull/1",
           },
           actor: undefined,
@@ -82,7 +82,7 @@ describe("useMergeNotification", () => {
           type: "GITHUB_PR_MERGED",
           description: "Old PR",
           timestamp: new Date("2024-01-15T10:00:00Z"),
-          metadata: { prTitle: "Old PR", artifactId: "abc" },
+          metadata: { prTitle: "Old PR", documentId: "abc" },
           actor: undefined,
         },
       ],
@@ -107,7 +107,7 @@ describe("useMergeNotification", () => {
           timestamp: new Date("2024-01-15T11:00:00Z"),
           metadata: {
             prTitle: "New PR",
-            artifactId: "xyz",
+            documentId: "xyz",
           },
           actor: undefined,
         },
@@ -147,7 +147,7 @@ describe("useMergeNotification", () => {
           type: "GITHUB_PR_MERGED",
           description: "Pull request merged",
           timestamp: new Date("2024-01-15T10:00:00Z"),
-          metadata: { artifactId: "abc" },
+          metadata: { documentId: "abc" },
           actor: undefined,
         },
       ],
@@ -184,7 +184,7 @@ describe("useMergeNotification", () => {
           type: "GITHUB_PR_MERGED",
           description: "Duplicate PR",
           timestamp: new Date("2024-01-15T10:00:00Z"),
-          metadata: { prTitle: "Duplicate PR", artifactId: "abc" },
+          metadata: { prTitle: "Duplicate PR", documentId: "abc" },
           actor: undefined,
         },
       ],
@@ -218,7 +218,7 @@ describe("useMergeNotification", () => {
           type: "GITHUB_PR_CREATED",
           description: "Pull request created",
           timestamp: new Date("2024-01-15T10:00:00Z"),
-          metadata: { prTitle: "New PR", artifactId: "abc" },
+          metadata: { prTitle: "New PR", documentId: "abc" },
           actor: undefined,
         },
         {
@@ -265,7 +265,7 @@ describe("useMergeNotification", () => {
           timestamp: new Date("2024-01-15T10:00:00Z"),
           metadata: {
             prTitle: "Navigation Test",
-            artifactId: "abc",
+            documentId: "abc",
             slug: "abc",
           },
           actor: undefined,
@@ -316,7 +316,7 @@ describe("useMergeNotification", () => {
           timestamp: new Date("2024-01-15T10:00:00Z"),
           metadata: {
             prTitle: "Fallback Test",
-            artifactId: "unknown",
+            documentId: "unknown",
           },
           actor: undefined,
         },
@@ -382,7 +382,7 @@ describe("useMergeNotification", () => {
           timestamp: new Date("2024-01-15T10:00:00Z"),
           metadata: {
             prTitle: "Preview Test",
-            artifactId: "abc",
+            documentId: "abc",
             slug: "abc",
           },
           actor: undefined,
@@ -442,7 +442,7 @@ describe("useMergeNotification", () => {
           timestamp: new Date("2024-01-15T10:00:00Z"),
           metadata: {
             prTitle: "Preview URL Test",
-            artifactId: "abc",
+            documentId: "abc",
             slug: "abc",
           },
           actor: undefined,
@@ -526,7 +526,7 @@ describe("useMergeNotification", () => {
           timestamp: new Date("2024-01-15T10:00:00Z"),
           metadata: {
             prTitle: "First PR",
-            artifactId: "artifact-1",
+            documentId: "artifact-1",
             slug: "artifact-1",
           },
           actor: undefined,
@@ -538,7 +538,7 @@ describe("useMergeNotification", () => {
           timestamp: new Date("2024-01-15T10:05:00Z"),
           metadata: {
             prTitle: "Second PR",
-            artifactId: "artifact-2",
+            documentId: "artifact-2",
             slug: "artifact-2",
           },
           actor: undefined,

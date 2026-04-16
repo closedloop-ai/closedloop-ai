@@ -13,8 +13,8 @@ import { useApiClient } from "@/hooks/use-api-client";
 export const attachmentKeys = {
   all: ["attachments"] as const,
   lists: () => [...attachmentKeys.all, "list"] as const,
-  list: (artifactId: string) =>
-    [...attachmentKeys.lists(), artifactId] as const,
+  list: (documentId: string) =>
+    [...attachmentKeys.lists(), documentId] as const,
   issueList: (issueId: string) =>
     [...attachmentKeys.all, "issue-list", issueId] as const,
   detail: (id: string) => [...attachmentKeys.all, "detail", id] as const,
@@ -23,16 +23,16 @@ export const attachmentKeys = {
 // Queries
 
 export function useAttachments(
-  artifactId: string,
+  documentId: string,
   options?: Omit<UseQueryOptions<FileAttachment[]>, "queryKey" | "queryFn">
 ) {
   const apiClient = useApiClient();
 
   return useQuery({
-    queryKey: attachmentKeys.list(artifactId),
+    queryKey: attachmentKeys.list(documentId),
     queryFn: () =>
-      apiClient.get<FileAttachment[]>(`/artifacts/${artifactId}/attachments`),
-    enabled: !!artifactId,
+      apiClient.get<FileAttachment[]>(`/documents/${documentId}/attachments`),
+    enabled: !!documentId,
     ...options,
   });
 }
@@ -45,40 +45,40 @@ export function useRequestAttachmentUpload() {
 
   return useMutation({
     mutationFn: ({
-      artifactId,
+      documentId,
       filename,
       mimeType,
       sizeBytes,
     }: {
-      artifactId: string;
+      documentId: string;
       filename: string;
       mimeType: string;
       sizeBytes: number;
     }) =>
       apiClient.post<CreateAttachmentResponse>(
-        `/artifacts/${artifactId}/attachments`,
+        `/documents/${documentId}/attachments`,
         { filename, mimeType, sizeBytes }
       ),
-    onSuccess: (_, { artifactId }) => {
+    onSuccess: (_, { documentId }) => {
       queryClient.invalidateQueries({
-        queryKey: attachmentKeys.list(artifactId),
+        queryKey: attachmentKeys.list(documentId),
       });
     },
   });
 }
 
-export function useDeleteAttachment(artifactId: string) {
+export function useDeleteAttachment(documentId: string) {
   const queryClient = useQueryClient();
   const apiClient = useApiClient();
 
   return useMutation({
     mutationFn: (attachmentId: string) =>
       apiClient.delete<{ deleted: true }>(
-        `/artifacts/${artifactId}/attachments/${attachmentId}`
+        `/documents/${documentId}/attachments/${attachmentId}`
       ),
     onSuccess: () => {
       queryClient.invalidateQueries({
-        queryKey: attachmentKeys.list(artifactId),
+        queryKey: attachmentKeys.list(documentId),
       });
     },
   });
@@ -121,14 +121,14 @@ export function useDownloadAttachment() {
 
   return useMutation({
     mutationFn: async ({
-      artifactId,
+      documentId,
       attachmentId,
     }: {
-      artifactId: string;
+      documentId: string;
       attachmentId: string;
     }) => {
       const { downloadUrl } = await apiClient.get<AttachmentDownloadResponse>(
-        `/artifacts/${artifactId}/attachments/${attachmentId}`
+        `/documents/${documentId}/attachments/${attachmentId}`
       );
 
       if (globalThis.window === undefined) {

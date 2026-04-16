@@ -47,7 +47,7 @@ export class DesktopComputeProvider implements ComputeProvider {
       closedLoopAuthToken: ctx.closedLoopAuthToken,
       apiBaseUrl: ctx.apiBaseUrl,
       contextPack: ctx.contextPack,
-      artifactSlug: ctx.artifactSlug,
+      documentSlug: ctx.documentSlug,
       parentLoopId: ctx.parentLoopId ?? undefined,
       parentBranchName: ctx.parentBranchName ?? undefined,
       parentSessionId: ctx.parentSessionId ?? undefined,

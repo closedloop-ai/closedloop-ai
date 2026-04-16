@@ -5,7 +5,7 @@ import { Skeleton } from "@repo/design-system/components/ui/skeleton";
 import { Textarea } from "@repo/design-system/components/ui/textarea";
 import { Loader2Icon } from "lucide-react";
 import { useEffect, useState } from "react";
-import { MetadataSection } from "@/components/artifact-editor/metadata-panel";
+import { MetadataSection } from "@/components/document-editor/metadata-panel";
 import { StarRating } from "@/components/star-rating";
 import {
   usePullRequestRating,

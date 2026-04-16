@@ -80,7 +80,7 @@ function resolveTitle(linked: LinkedEntity): string {
     return `${linked.targetType} (${linked.targetId.slice(0, 8)}...)`;
   }
   const { type, entity } = linked.resolvedEntity;
-  if (type === EntityType.Artifact || type === EntityType.Feature) {
+  if (type === EntityType.Document || type === EntityType.Feature) {
     return (entity as { title: string }).title;
   }
   if (type === EntityType.ExternalLink) {

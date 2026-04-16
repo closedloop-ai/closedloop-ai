@@ -136,7 +136,7 @@ async function warnGhostLoopAnomalies(now: Date): Promise<void> {
         id: true,
         organizationId: true,
         computeTargetId: true,
-        artifactId: true,
+        documentId: true,
         startedAt: true,
         command: true,
         tokensInput: true,
@@ -161,7 +161,7 @@ async function warnGhostLoopAnomalies(now: Date): Promise<void> {
         loopId: loop.id,
         computeTargetId: loop.computeTargetId,
         durationMs: now.getTime() - loop.startedAt.getTime(),
-        artifactId: loop.artifactId,
+        documentId: loop.documentId,
       }
     );
   }

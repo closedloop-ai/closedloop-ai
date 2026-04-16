@@ -2,9 +2,9 @@
 
 import { useFeatureFlag } from "@repo/analytics/client";
 import type {
-  ArtifactWithWorkstream,
+  DocumentWithWorkstream,
   PullRequestState,
-} from "@repo/api/src/types/artifact";
+} from "@repo/api/src/types/document";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   DropdownMenu,
@@ -37,7 +37,7 @@ import {
 } from "@/app/(authenticated)/components/header";
 
 type PlanEditorHeaderProps = {
-  plan: ArtifactWithWorkstream;
+  plan: DocumentWithWorkstream;
   showMetadataPanel: boolean;
   canShowPanel?: boolean;
   isDraft: boolean;
