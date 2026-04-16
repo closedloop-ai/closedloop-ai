@@ -100,29 +100,27 @@ export function BranchesSection({
             </p>
             <div className="flex gap-4">
               {planId ? (
-                <>
-                  <Button
-                    disabled={isExecutingPlan}
-                    onClick={onStartBuild}
-                    size="sm"
-                    variant="default"
-                  >
-                    Start Building
-                    <PlayIcon className="h-4 w-4" />
-                  </Button>
-                  <Button
-                    onClick={() => setShowSelectPr(true)}
-                    size="sm"
-                    variant="outline"
-                  >
-                    Select Existing PR
-                  </Button>
-                </>
+                <Button
+                  disabled={isExecutingPlan}
+                  onClick={onStartBuild}
+                  size="sm"
+                  variant="default"
+                >
+                  Start Building
+                  <PlayIcon className="h-4 w-4" />
+                </Button>
               ) : (
                 <Button disabled size="sm" variant="secondary">
                   Need approved plan to build
                 </Button>
               )}
+              <Button
+                onClick={() => setShowSelectPr(true)}
+                size="sm"
+                variant="outline"
+              >
+                Select Existing PR
+              </Button>
             </div>
           </div>
         </div>
@@ -133,9 +131,9 @@ export function BranchesSection({
         </div>
       )}
       <SelectPullRequestDialog
+        featureId={featureId}
         onOpenChange={setShowSelectPr}
         open={showSelectPr}
-        planId={planId}
         projectId={projectId}
       />
     </div>
