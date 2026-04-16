@@ -40,9 +40,23 @@ export type AdditionalRepoRef = {
   branch: string;
 };
 
+// Format constraints mirror the write-path `repoSchema` in
+// apps/api/app/loops/validators.ts so data round-tripped through the DB is
+// held to the same shape it was validated with on write.
 export const AdditionalRepoRefSchema = z.object({
-  fullName: z.string(),
-  branch: z.string(),
+  fullName: z
+    .string()
+    .min(1)
+    .max(256)
+    .regex(
+      /^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/,
+      "Must be in 'owner/repo' format"
+    ),
+  branch: z
+    .string()
+    .min(1)
+    .max(256)
+    .regex(/^[a-zA-Z0-9._/-]+$/, "Branch name contains invalid characters"),
 });
 
 // Additional repository reference with optional GitHub token
