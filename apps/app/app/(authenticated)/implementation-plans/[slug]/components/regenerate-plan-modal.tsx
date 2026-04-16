@@ -38,12 +38,15 @@ export function RegeneratePlanModal({
     initialAdditionalRepos ?? []
   );
 
-  // initialAdditionalRepos arrives asynchronously from useLoop. The useState
-  // initializer only runs once, so sync when the prop resolves — otherwise
-  // confirming without picker interaction drops previously-saved repos.
+  // Reset to the prop whenever the modal opens so a prior cancel-with-edits
+  // doesn't leak stale selections into the next submission. Also covers the
+  // async initial load from useLoop — the useState initializer only runs once,
+  // so syncing on open ensures the latest saved repos are shown.
   useEffect(() => {
-    setAdditionalRepos(initialAdditionalRepos ?? []);
-  }, [initialAdditionalRepos]);
+    if (open) {
+      setAdditionalRepos(initialAdditionalRepos ?? []);
+    }
+  }, [open, initialAdditionalRepos]);
 
   const handleConfirm = () => {
     onConfirm(normalizeAdditionalRepos(additionalRepos));

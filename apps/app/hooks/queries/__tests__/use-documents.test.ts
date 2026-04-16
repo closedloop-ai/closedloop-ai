@@ -1,3 +1,4 @@
+import { DocumentType } from "@repo/api/src/types/document";
 import { RunLoopCommand } from "@repo/api/src/types/loop";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
@@ -296,7 +297,7 @@ describe("useCreateAndGenerateDocument", () => {
       result.current.mutate({
         input: {
           title: "Test Plan",
-          type: "IMPLEMENTATION_PLAN",
+          type: DocumentType.ImplementationPlan,
           content: "",
           projectId: "project-123",
         },
@@ -350,7 +351,7 @@ describe("useCreateAndGenerateDocument", () => {
       result.current.mutate({
         input: {
           title: "Test Plan",
-          type: "IMPLEMENTATION_PLAN",
+          type: DocumentType.ImplementationPlan,
           content: "",
           projectId: "project-123",
         },
@@ -401,7 +402,7 @@ describe("useCreateAndGenerateDocument", () => {
       result.current.mutate({
         input: {
           title: "Test Plan",
-          type: "IMPLEMENTATION_PLAN",
+          type: DocumentType.ImplementationPlan,
           content: "",
           projectId: "project-123",
         },
