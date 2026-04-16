@@ -11,7 +11,7 @@ import {
   DialogTitle,
 } from "@repo/design-system/components/ui/dialog";
 import { Loader2Icon, RefreshCwIcon } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AdditionalReposPicker } from "../../components/additional-repos-picker";
 import { normalizeAdditionalRepos } from "../../components/plan-form-utils";
 
@@ -34,11 +34,16 @@ export function RegeneratePlanModal({
   initialAdditionalRepos,
   targetRepo,
 }: RegeneratePlanModalProps) {
-  // Dialog unmounts DialogContent when closed, so AdditionalReposPicker
-  // re-seeds from initialValue naturally on next open.
   const [additionalRepos, setAdditionalRepos] = useState<AdditionalRepoRef[]>(
     initialAdditionalRepos ?? []
   );
+
+  // initialAdditionalRepos arrives asynchronously from useLoop. The useState
+  // initializer only runs once, so sync when the prop resolves — otherwise
+  // confirming without picker interaction drops previously-saved repos.
+  useEffect(() => {
+    setAdditionalRepos(initialAdditionalRepos ?? []);
+  }, [initialAdditionalRepos]);
 
   const handleConfirm = () => {
     onConfirm(normalizeAdditionalRepos(additionalRepos));

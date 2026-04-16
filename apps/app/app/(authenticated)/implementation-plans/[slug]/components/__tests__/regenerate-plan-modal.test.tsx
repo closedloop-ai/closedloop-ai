@@ -3,6 +3,8 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RegeneratePlanModal } from "../regenerate-plan-modal";
 
+type ModalProps = Parameters<typeof RegeneratePlanModal>[0];
+
 vi.mock("@/hooks/queries/use-github-integration", () => ({
   useGitHubIntegrationStatus: () => ({
     data: { connected: false },
@@ -84,5 +86,38 @@ describe("RegeneratePlanModal", () => {
 
     expect(onConfirm).not.toHaveBeenCalled();
     expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it("syncs additionalRepos when initialAdditionalRepos resolves after mount", () => {
+    const onConfirm = vi.fn();
+    const onOpenChange = vi.fn();
+    const baseProps: ModalProps = {
+      initialAdditionalRepos: undefined,
+      isLoadingInitialRepos: true,
+      isSubmitting: false,
+      onConfirm,
+      onOpenChange,
+      open: true,
+      targetRepo: "org/primary-repo",
+    };
+    const { rerender } = render(<RegeneratePlanModal {...baseProps} />);
+
+    const resolved: AdditionalRepoRef[] = [
+      { fullName: "org/repo-one", branch: "main" },
+      { fullName: "org/repo-two", branch: "feature" },
+    ];
+    rerender(
+      <RegeneratePlanModal
+        {...baseProps}
+        initialAdditionalRepos={resolved}
+        isLoadingInitialRepos={false}
+      />
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: REGENERATE_BUTTON_REGEX })
+    );
+
+    expect(onConfirm).toHaveBeenCalledWith(resolved);
   });
 });
