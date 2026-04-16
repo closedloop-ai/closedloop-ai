@@ -54,34 +54,46 @@ export function useArtifactActions(config: UseArtifactActionsConfig) {
 
   /**
    * Delete the artifact and redirect to the specified path.
-   * Shows error toast if deletion fails.
+   * Returns a Promise<boolean> for callers that need to await the result
+   * (e.g. DeleteConfirmationDialog).
    */
-  const handleDelete = useCallback(async (): Promise<boolean> => {
-    const result = await deleteArtifact.mutateAsync(artifact.id, {
-      onSuccess: () => {
-        toast.success("Artifact deleted");
-        router.push(redirectPath);
-      },
-    });
-    return !!result;
-  }, [artifact.id, deleteArtifact, redirectPath, router]);
+  const handleDelete = useCallback(
+    (): Promise<boolean> =>
+      new Promise((resolve) => {
+        deleteArtifact.mutate(artifact.id, {
+          onSuccess: () => {
+            toast.success("Artifact deleted");
+            router.push(redirectPath);
+            resolve(true);
+          },
+          onError: () => {
+            resolve(false);
+          },
+        });
+      }),
+    [artifact.id, deleteArtifact, redirectPath, router]
+  );
 
   /**
    * Rename the artifact by updating its title and fileName.
    * Shows success toast on completion, error toast on failure.
    */
   const handleRename = useCallback(
-    async (title: string, fileName: string): Promise<boolean> => {
-      const result = await updateArtifact.mutateAsync(
-        { id: artifact.id, title, fileName },
-        {
-          onSuccess: () => {
-            toast.success("Artifact renamed");
-          },
-        }
-      );
-      return !!result;
-    },
+    (title: string, fileName: string): Promise<boolean> =>
+      new Promise((resolve) => {
+        updateArtifact.mutate(
+          { id: artifact.id, title, fileName },
+          {
+            onSuccess: () => {
+              toast.success("Artifact renamed");
+              resolve(true);
+            },
+            onError: () => {
+              resolve(false);
+            },
+          }
+        );
+      }),
     [artifact.id, updateArtifact]
   );
 

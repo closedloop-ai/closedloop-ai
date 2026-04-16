@@ -426,21 +426,22 @@ Use these findings to write a Technical Considerations section that references r
    - Use clear, specific language. Avoid vague statements like "the system should be fast" — instead write "the API should respond within 200ms at p95 under normal load [TODO: confirm target]."
 
 5. **User stories and acceptance criteria** — if the template includes a user stories section but does not prescribe a specific format, use these defaults:
-   - "As a [persona], I want [capability] so that [value]" format for stories.
-   - Assign IDs: US-001, US-002, etc. for stories; AC-001.1, AC-001.2, etc. for acceptance criteria.
+   - User Story format: "As a [target user], I want to [action], so that [outcome]."
+   - Each story includes its own acceptance criteria directly beneath it, with FR cross-references (e.g., "*(FR1)*").
    - Each acceptance criterion must be specific enough for a QA tester to write a test from it alone.
    - Use Given/When/Then format for acceptance criteria when the behavior involves state transitions.
    - If the template specifies a different format, use the template's format instead.
 
 6. **Requirements** — if the template includes a requirements section but does not prescribe a specific format, use these defaults:
    - Separate functional from non-functional requirements.
-   - For functional requirements, number them (FR-001, FR-002, etc.).
-   - For non-functional requirements, categorize by type (performance, security, accessibility, scalability).
+   - For functional requirements, use \`[FR#] [P#]\` tagging: \`[FR1] [P0]\`, \`[FR2] [P1]\`, etc. P0 = must have for launch, P1 = should have, P2 = nice to have.
+   - For non-functional requirements, categorize by type (performance, security, accessibility, scalability, reliability, observability, privacy/compliance).
    - If the template specifies a different format, use the template's format instead.
 
 7. **Sections that cannot be completed:**
-   - If the user's input provides no information whatsoever for a section and you cannot reasonably infer content, write: "[TODO: This section requires input from [stakeholder/source]. Key questions: [list 2-3 specific questions that would populate this section].]"
-   - Optional/supplementary sections (like Appendix, Instrumentation Notes, or similar) may use brief reasonable defaults or a single [TODO] marker.
+   - If the user's input provides no information whatsoever for a section and you cannot reasonably infer content, write: "[TODO: This section requires input from [stakeholder/source]. Key questions: [list 2-3 specific questions that would populate this section].]" and add the question to **Open Questions**.
+   - For sections that genuinely do not apply to this work, mark them **N/A** and include an explanation for why it does not apply. Do not invent details.
+   - Optional/supplementary sections (marked *(optional)* in the template) may use brief reasonable defaults, a single [TODO] marker, or be omitted if the input provides no basis for them.
 
 8. **Open Questions:**
    - Collect all assumptions you made and all [TODO] items into the Open Questions section.
@@ -484,93 +485,149 @@ User input (primary artifact content): "We need a way for PMs to create lightwei
 Template (abbreviated for example):
 # Product Requirements Document
 ## Overview
+## Problem Statement
 ## Background
+## Target Users / Consumers
 ## Goals & Success Metrics
 ## User Stories
 ## Requirements
 ### Functional Requirements
 ### Non-Functional Requirements
+## User Experience
+### Key Workflows
+### Edge Cases & Error States
 ## Technical Considerations
-## Acceptance Criteria
+## Alternatives Considered *(optional)*
+## Analytics & Instrumentation
+## Assumptions
 ## Open Questions
 ## Out of Scope
+## Rollout Strategy *(optional)*
+## Milestones *(optional)*
+## Risks & Mitigations
 </input>
 <output>
 # Product Requirements Document
+
+> For smaller features or experiments, sections marked *(optional)* can be omitted.
+> If a section is not yet known, add it to **Open Questions**. If a section does not apply, mark it **N/A** and include an explanation for why it does not apply. Do not invent details.
 
 ## Overview
 
 This feature enables Product Managers to generate comprehensive PRDs from lightweight text input using AI. Instead of starting from a blank document and manually filling each section, PMs provide a short description of the feature or product need, and the system produces a complete, template-conformant PRD draft. The generated PRD is editable and serves as a starting point for refinement, not a final artifact.
 
+## Problem Statement
+
+Product Managers currently spend 2-4 hours creating each PRD from scratch, starting from a blank template and manually populating every section. This is particularly burdensome for early-stage ideas where the PM has a clear mental model but hasn't yet formalized it. The manual process discourages PRD creation for smaller features, leading to undocumented requirements and misaligned implementations. Solving this now unblocks the downstream AI decomposition and planning pipeline, which depends on well-structured PRDs as input.
+
 ## Background
 
-Product Managers currently spend significant time creating PRDs from scratch, often working from a blank template and manually populating each section. This is particularly burdensome for early-stage ideas where the PM has a clear mental model but hasn't yet formalized it. The organization already maintains PRD templates that define the expected structure and conventions. By combining these templates with AI generation, we can reduce the time from idea to first-draft PRD from hours to minutes, allowing PMs to focus on refinement and stakeholder alignment rather than document scaffolding.
+The organization already maintains PRD templates that define the expected structure and conventions. The existing Loops infrastructure supports AI-driven artifact generation (e.g., the DECOMPOSE command for feature decomposition). By combining templates with AI generation, we can reduce time-to-first-draft from hours to minutes, allowing PMs to focus on refinement and stakeholder alignment rather than document scaffolding.
+
+## Target Users / Consumers
+
+- **Product Managers:** Primary users who write PRDs. They need to go from a rough idea to a structured first draft quickly.
+- **Engineering Leads:** Downstream consumers who read PRDs to plan implementation. They benefit from consistent structure.
 
 ## Goals & Success Metrics
 
 - **Goal 1:** Reduce time-to-first-draft for PRDs
   - **Metric:** Average time from starting a PRD to having a reviewable first draft
-  - **Target:** [TODO: confirm target — baseline is estimated at 2-4 hours, target could be under 10 minutes]
+  - **Baseline:** Estimated 2-4 hours
+  - **Target:** [TODO: confirm target — suggest under 10 minutes]
 - **Goal 2:** Increase PRD creation adoption across the PM team
   - **Metric:** Number of PRDs created per PM per month
-  - **Target:** [TODO: confirm target and current baseline]
+  - **Baseline:** [TODO: confirm current baseline]
+  - **Target:** [TODO: confirm target]
 - **Goal 3:** Maintain PRD quality despite faster creation
   - **Metric:** Percentage of generated PRDs that pass review without major structural rework
+  - **Baseline:** N/A (new capability)
   - **Target:** [TODO: confirm target — suggest >80%]
 
 ## User Stories
 
-### US-001: Generate PRD from description
-**As a** Product Manager
-**I want to** type a short description of a feature and receive a complete PRD draft
-**So that** I can skip the manual scaffolding work and focus on refining content
+### User Story 1: Generate PRD from description
+
+**As a** Product Manager, **I want to** type a short feature description and generate a complete PRD, **so that** I can go from idea to structured draft in minutes instead of hours.
 
 #### Acceptance Criteria
-- AC-001.1: Given a PM enters a text description (minimum 20 characters) and clicks "Generate PRD", when generation completes, then a PRD is created with all template sections populated
-- AC-001.2: Given the PM's description mentions specific user personas, when the PRD is generated, then those personas appear in the User Stories section
-- AC-001.3: Given the PM's description is vague about success metrics, when the PRD is generated, then the Goals section contains [TODO] placeholders instead of fabricated numbers
 
-### US-002: Edit generated PRD
-**As a** Product Manager
-**I want to** edit the AI-generated PRD after creation
-**So that** I can refine content, fill in TODOs, and add details the AI couldn't infer
+- [ ] PM can generate a PRD from the creation modal with a single "Generate PRD" button *(validates FR1, FR2, FR3)*
+- [ ] Generated PRD follows the organization's template structure exactly *(validates FR2, FR3)*
+- [ ] [TODO] placeholders appear for metrics, dates, and named individuals — none are fabricated *(validates FR3)*
+- [ ] Generated PRD is saved as a DRAFT artifact version *(validates FR4)*
+
+### User Story 2: Regenerate PRD for an existing artifact
+
+**As a** Product Manager, **I want to** regenerate a PRD from the editor using existing content as context, **so that** I can get a fresh, structured draft without starting from scratch.
 
 #### Acceptance Criteria
-- AC-002.1: Given a PRD has been generated, when the PM opens it, then all sections are editable in the existing editor
-- AC-002.2: Given the PM edits and saves, when the PRD is reloaded, then changes are persisted as a new version
+
+- [ ] PM can generate/regenerate a PRD from the editor header actions menu *(validates FR5)*
+- [ ] A new artifact version is created; the previous version is preserved in version history
+- [ ] Generation status is visible via the existing generation status banner
 
 ## Requirements
 
 ### Functional Requirements
 
-1. **FR-001:** The system shall accept free-form text input (description) from the user as the basis for PRD generation.
-2. **FR-002:** The system shall retrieve the organization's PRD template and use it as the structural blueprint for generation.
-3. **FR-003:** The generated PRD shall populate all template sections, using [TODO] placeholders where specific data cannot be inferred.
-4. **FR-004:** The generated PRD shall be saved as a new artifact version in DRAFT status.
-5. **FR-005:** The generation shall be available from both the artifact creation modal and the PRD editor for existing PRDs.
+1. **[FR1] [P0] Accept free-form text input:** The system shall accept free-form text input (description) from the user as the basis for PRD generation.
+2. **[FR2] [P0] Use org template:** The system shall retrieve the organization's PRD template and use it as the structural blueprint for generation.
+3. **[FR3] [P0] Populate all sections:** The generated PRD shall populate all template sections, using [TODO] placeholders where specific data cannot be inferred.
+4. **[FR4] [P0] Save as DRAFT version:** The generated PRD shall be saved as a new artifact version in DRAFT status.
+5. **[FR5] [P1] Multiple entry points:** The generation shall be available from both the artifact creation modal and the PRD editor header actions menu.
+
+> **P0** = Must have for launch. **P1** = Should have, cut only under pressure. **P2** = Nice to have, cut first.
 
 ### Non-Functional Requirements
 
 - **Performance:** Generation should complete within [TODO: confirm target — suggest 60-90 seconds for cloud, 30-60 seconds for desktop compute].
 - **Security:** User input must not be logged in plaintext. The AI model receives only the user's input, the template, and repository context.
 - **Reliability:** If generation fails, the artifact is still created (in DRAFT with empty content) so the user can manually fill it in.
+- **Observability:** Generation duration, success/failure rate, and token usage should be logged for operational monitoring.
+- **Privacy / Compliance:** N/A — no PII beyond what is already in the repository.
+
+## User Experience
+
+### Key Workflows
+
+1. **Create + Generate:** PM opens creation modal → enters description → clicks "Generate PRD" → waits for generation → reviews draft in editor
+2. **Regenerate existing:** PM opens existing PRD → clicks "Generate PRD" in header actions → confirms → waits for generation → reviews new version
+
+### Edge Cases & Error States
+
+- **Empty or minimal input:** PM provides fewer than 20 characters
+  - **Response:** Show a validation message asking for more detail.
+- **Generation failure:** AI generation times out or returns an error
+  - **Response:** Display an error banner with retry option. The artifact is preserved in DRAFT with empty content so the PM can write manually.
+- **Template not found:** The org has no PRD template configured
+  - **Response:** Use a sensible default structure and log a warning.
 
 ## Technical Considerations
 
 Based on repository analysis:
-- The existing template system stores templates as artifacts with type=TEMPLATE and templateForType=PRD, scoped per organization. The generation pipeline should fetch the org's template via the existing findOrgTemplate service method.
-- The Loops infrastructure (ECS container or desktop compute) provides the execution environment. A new GENERATE_PRD loop command should follow the pattern established by the DECOMPOSE command.
-- The agent runs with repository access, which provides codebase context (tech stack, existing entities, architecture patterns) to inform the Technical Considerations section of generated PRDs.
-- Generated content is ingested as a new artifact version via artifactVersionService.createVersion, matching the existing plan-handler ingestion pattern.
+- **System Dependencies:** The existing template system stores templates as artifacts with type=TEMPLATE and templateForType=PRD, scoped per organization. The generation pipeline should fetch the org's template via the existing findOrgTemplate service method.
+- **Team Dependencies:** None — this builds on existing Loops infrastructure.
+- **Constraints:** The Loops infrastructure (ECS container or desktop compute) provides the execution environment. A new GENERATE_PRD loop command should follow the pattern established by the DECOMPOSE command.
+- **Architecture:** The agent runs with repository access, providing codebase context (tech stack, existing entities, architecture patterns) to inform the Technical Considerations section of generated PRDs. Generated content is ingested as a new artifact version via artifactVersionService.createVersion, matching the existing plan-handler ingestion pattern.
+- **Migration / Backfill:** N/A — new capability, no existing data to migrate.
 
-## Acceptance Criteria
+## Alternatives Considered *(optional)*
 
-- [ ] PM can generate a PRD from the creation modal with a single "Generate PRD" button
-- [ ] PM can generate/regenerate a PRD from the editor header actions menu
-- [ ] Generated PRD follows the organization's template structure exactly
-- [ ] [TODO] placeholders appear for metrics, dates, and named individuals — none are fabricated
-- [ ] Generated PRD is saved as a DRAFT artifact version
-- [ ] Generation status is visible via the existing generation status banner
+- **Conversational generation (ask clarifying questions first):** Higher quality output but significantly more complex UX and longer time-to-draft. Deferred to a future iteration.
+- **Template-only scaffolding (no AI):** Lower cost but provides no content generation — PMs still fill every section manually. Does not meet the time-reduction goal.
+
+## Analytics & Instrumentation
+
+- **Events:** prd_generation_started, prd_generation_completed, prd_generation_failed
+- **Dashboards:** [TODO: confirm where generation metrics will be visualized]
+- **Data Sources:** Loops execution logs, artifact version history
+
+## Assumptions
+
+1. The organization has at least one PRD template configured. If not, a default structure will be used.
+2. The existing Loops infrastructure can support the GENERATE_PRD command without capacity changes.
+3. PMs are comfortable editing AI-generated drafts rather than writing from scratch.
 
 ## Open Questions
 
@@ -585,6 +642,30 @@ Based on repository analysis:
 - Multi-PRD generation (batch generation of multiple PRDs at once)
 - PRD generation from non-text sources (images, diagrams, audio)
 - Automatic approval workflow after generation
+
+## Rollout Strategy *(optional)*
+
+- **Rollout approach:** Feature flag — enable for internal team first
+- **Initial audience:** Internal PMs only
+- **GA criteria:** [TODO: confirm — suggest >80% of generated PRDs pass review without major rework]
+- **Rollback plan:** Disable feature flag; PMs revert to manual PRD creation
+
+## Milestones *(optional)*
+
+| Phase | Deliverable | Target |
+|-------|-------------|--------|
+| Build | GENERATE_PRD loop command + ingestion | [TODO: target date] |
+| Build | UI entry points (creation modal + editor action) | [TODO: target date] |
+| Test | Internal PM dogfooding | [TODO: target date] |
+| Launch | GA for all PMs | [TODO: target date] |
+
+## Risks & Mitigations
+
+| Risk | Impact | Likelihood | Mitigation |
+|------|--------|------------|------------|
+| Generated PRDs are too generic or low quality | High | Medium | Include repository context in generation; iterate on prompt based on PM feedback |
+| PMs over-trust generated content and skip review | Medium | Medium | Add visible "AI-generated draft — review before sharing" banner |
+| Generation latency frustrates PMs | Medium | Low | Show progress indicator; optimize prompt length; set clear expectations |
 </output>
 </example>
 

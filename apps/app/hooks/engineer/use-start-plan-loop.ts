@@ -1,5 +1,6 @@
 "use client";
 
+import { CURRENT_DESKTOP_API_NAMESPACE } from "@repo/api/src/desktop-api-namespace";
 import type { StartPlanLoopResponse } from "@repo/api/src/types/plan-loop";
 import { log } from "@repo/observability/log";
 import { useQueryClient } from "@tanstack/react-query";
@@ -9,6 +10,7 @@ import { artifactKeys } from "@/hooks/queries/use-artifacts";
 import { entityLinkKeys } from "@/hooks/queries/use-entity-links";
 import { useApiClient } from "@/hooks/use-api-client";
 import { getRequiredLoopComputeTargetId } from "@/lib/engineer/get-required-loop-compute-target-id";
+import { resolveDesktopApiNamespaceHint } from "@/lib/engineer/local-gateway-api-namespace";
 import type { EngineerTicket } from "@/types/engineer";
 
 export type UseStartPlanLoopResult = {
@@ -106,7 +108,7 @@ export function useStartPlanLoop(
       }
 
       const response = await fetch(
-        `/api/engineer/symphony/plan-loop/${encodeURIComponent(ticketIdentifier)}/prepare`,
+        `/api/gateway/symphony/plan-loop/${encodeURIComponent(ticketIdentifier)}/prepare`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -154,7 +156,7 @@ export function useStartPlanLoop(
 
       try {
         const response = await fetch(
-          `/api/engineer/symphony/plan-loop/${encodeURIComponent(ticketIdentifier)}/confirm`,
+          `/api/gateway/symphony/plan-loop/${encodeURIComponent(ticketIdentifier)}/confirm`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -234,6 +236,7 @@ export function useStartPlanLoop(
           toast.error(computeResult.error);
           return { launched: false, alreadyRunning: false };
         }
+        const desktopApiNamespace = await resolveDesktopApiNamespaceHint();
 
         log.debug("[engineer-debug] startPlanLoop Phase 1: prepare", {
           ticketId: ticket.identifier,
@@ -264,6 +267,12 @@ export function useStartPlanLoop(
         }
         if (prepareResult.repo.fullName || prepareResult.repo.branch) {
           apiBody.repo = prepareResult.repo;
+        }
+        if (
+          desktopApiNamespace &&
+          desktopApiNamespace !== CURRENT_DESKTOP_API_NAMESPACE
+        ) {
+          apiBody.desktopApiNamespace = desktopApiNamespace;
         }
 
         const data = await apiClient.post<StartPlanLoopResponse>(
@@ -349,6 +358,7 @@ export function useStartPlanLoop(
         toast.error(computeResult.error);
         return;
       }
+      const desktopApiNamespace = await resolveDesktopApiNamespaceHint();
 
       // Phase 2: Direct browser-to-API call with selected artifact
       const apiBody: Record<string, unknown> = {
@@ -362,6 +372,12 @@ export function useStartPlanLoop(
       }
       if (prepareResult.repo.fullName || prepareResult.repo.branch) {
         apiBody.repo = prepareResult.repo;
+      }
+      if (
+        desktopApiNamespace &&
+        desktopApiNamespace !== CURRENT_DESKTOP_API_NAMESPACE
+      ) {
+        apiBody.desktopApiNamespace = desktopApiNamespace;
       }
 
       const data = await apiClient.post<StartPlanLoopResponse>(

@@ -7,7 +7,9 @@ import { useCreateArtifactVersion } from "@/hooks/queries/use-artifacts";
 
 type UseArtifactContentConfig = {
   artifact: ArtifactDetail;
-  onVersionCreated?: () => void;
+  isLatestVersion: boolean;
+  setEditorContent: (content: string) => void;
+  onVersionCreated?: (updatedArtifact: ArtifactDetail) => void;
 };
 
 /**
@@ -34,61 +36,77 @@ type UseArtifactContentConfig = {
  * **Important:** Content updates are local until `saveContent()` is called, which creates a new version.
  */
 export function useArtifactContent(config: UseArtifactContentConfig) {
-  const { artifact, onVersionCreated } = config;
+  const { artifact, isLatestVersion, setEditorContent, onVersionCreated } =
+    config;
 
   // TanStack Query mutation for creating new versions
   const createVersion = useCreateArtifactVersion(artifact.id);
 
   // Content state - tracks local edits
   const [content, setContent] = useState(artifact.version.content ?? "");
-  const [lastSaved, setLastSaved] = useState<Date>(artifact.updatedAt);
 
   // Derived state
   const isSaving = createVersion.isPending;
-  const hasUnsavedChanges = content !== (artifact.version.content ?? "");
+  const hasUnsavedChanges = content !== artifact.version.content;
 
   // Sync content state when the version object changes (after version creation, version navigation).
-  useEffect(() => {
-    setContent(artifact.version.content ?? "");
-    setLastSaved(artifact.updatedAt);
-  }, [artifact.version.content, artifact.updatedAt]);
+  useEffect(
+    function trackContentChanges() {
+      setContent(artifact.version.content ?? "");
+    },
+    [artifact.version.content]
+  );
 
   /**
    * Save current content by creating a new version.
    * This preserves version history while updating the artifact.
    */
-  const saveContent = useCallback(() => {
-    if (!hasUnsavedChanges) {
-      toast.info("No changes to save");
-      return;
+  const saveContent = useCallback(
+    (newContent?: string, resetRoom = false) => {
+      if (newContent === undefined && !hasUnsavedChanges) {
+        toast.info("No changes to publish");
+        return;
+      }
+
+      createVersion.mutate(
+        {
+          content: newContent ?? content,
+          resetRoom,
+        },
+        {
+          onSuccess: (updatedArtifact) => {
+            toast.success("New version published");
+            onVersionCreated?.(updatedArtifact);
+          },
+        }
+      );
+    },
+    [content, createVersion, onVersionCreated, hasUnsavedChanges]
+  );
+
+  const restoreVersion = useCallback(() => {
+    setEditorContent(artifact.version.content ?? "");
+
+    // If the user is on the latest version, just overwrite what's in liveblocks.
+    // Otherwise we need to publish a new version with the content from the previous version.
+    if (!isLatestVersion) {
+      saveContent(artifact.version.content ?? "", true);
     }
-
-    createVersion.mutate(content, {
-      onSuccess: () => {
-        toast.success("New version created");
-        onVersionCreated?.();
-      },
-    });
-  }, [content, createVersion, hasUnsavedChanges, onVersionCreated]);
-
-  /**
-   * Discard local changes and revert to the last saved content.
-   */
-  const discardChanges = useCallback(() => {
-    setContent(artifact.version.content ?? "");
-    toast.info("Changes discarded");
-  }, [artifact.version.content]);
+  }, [
+    artifact.version.content,
+    setEditorContent,
+    saveContent,
+    isLatestVersion,
+  ]);
 
   return {
     // Content state
     content,
-    updateContent: setContent, // setContent is stable, no useCallback needed
-    hasUnsavedChanges,
+    updateContent: setContent,
 
     // Save operations
     saveContent,
-    discardChanges,
+    restoreVersion,
     isSaving,
-    lastSaved,
   };
 }

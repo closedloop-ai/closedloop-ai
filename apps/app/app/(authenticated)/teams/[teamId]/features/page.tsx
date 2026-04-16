@@ -2,10 +2,12 @@
 
 import type { Priority } from "@repo/api/src/types/common";
 import type { FeatureStatus } from "@repo/api/src/types/feature";
-import { BoxIcon, Loader2Icon } from "lucide-react";
+import { Button } from "@repo/design-system/components/ui/button";
+import { BoxIcon, Loader2Icon, PlusIcon } from "lucide-react";
 import { useParams } from "next/navigation";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { Header } from "@/app/(authenticated)/components/header";
+import { CreateFeatureModal } from "@/app/(authenticated)/teams/[teamId]/projects/[projectId]/components/create-feature-modal";
 import type {
   ArtifactRowItem,
   RowEditHandlers,
@@ -31,6 +33,7 @@ const COLUMN_VISIBILITY_KEY = "table:columns:team-features";
 export default function TeamFeaturesPage() {
   const params = useParams();
   const teamId = params.teamId as string;
+  const [createFeatureOpen, setCreateFeatureOpen] = useState(false);
 
   const { visibility, userVisibility, toggleColumn } = useColumnVisibility({
     storageKey: COLUMN_VISIBILITY_KEY,
@@ -99,6 +102,16 @@ export default function TeamFeaturesPage() {
           { label: team.name, href: `/teams/${teamId}/projects` },
           { label: "Features" },
         ]}
+      >
+        <Button onClick={() => setCreateFeatureOpen(true)}>
+          <PlusIcon className="h-4 w-4" />
+          Create Feature
+        </Button>
+      </Header>
+      <CreateFeatureModal
+        onOpenChange={setCreateFeatureOpen}
+        open={createFeatureOpen}
+        teamId={teamId}
       />
       <main className="flex flex-1 flex-col overflow-hidden">
         <div className="flex min-w-fit items-center justify-between border-b px-4 pt-4 pb-2">

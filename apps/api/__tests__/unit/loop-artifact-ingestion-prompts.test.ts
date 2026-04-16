@@ -53,6 +53,10 @@ vi.mock("@/app/artifacts/artifact-version-service", () => ({
   },
 }));
 
+vi.mock("@vercel/functions", () => ({
+  waitUntil: vi.fn(),
+}));
+
 vi.mock("@/app/artifacts/room-utils", () => ({
   resetArtifactRoom: vi.fn().mockResolvedValue(undefined),
 }));

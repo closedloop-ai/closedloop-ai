@@ -133,7 +133,7 @@ export function TicketChatDialog({
       });
 
       await stream.sendMessage(
-        "/api/engineer/ticket-chat",
+        "/api/gateway/ticket-chat",
         {
           ticketId: ticket.identifier,
           message: trimmedInput,
@@ -153,7 +153,7 @@ export function TicketChatDialog({
             });
           },
           onLearningsUsed: (used: LearningUsed[]) => {
-            fetch("/api/engineer/symphony/record-learning-use", {
+            fetch("/api/gateway/symphony/record-learning-use", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
@@ -227,7 +227,7 @@ export function TicketChatDialog({
     }
     try {
       const response = await fetch(
-        `/api/engineer/ticket-chat?ticketId=${encodeURIComponent(ticket.identifier)}`,
+        `/api/gateway/ticket-chat?ticketId=${encodeURIComponent(ticket.identifier)}`,
         { method: "DELETE" }
       );
       if (response.ok) {

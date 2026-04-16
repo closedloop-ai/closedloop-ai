@@ -34,6 +34,10 @@ vi.mock("@/app/artifacts/artifact-version-service", () => ({
   },
 }));
 
+vi.mock("@vercel/functions", () => ({
+  waitUntil: vi.fn(),
+}));
+
 vi.mock("@/app/artifacts/room-utils", () => ({
   resetArtifactRoom: vi.fn(),
 }));
@@ -124,6 +128,7 @@ describe("generatePrdHandler ingestion", () => {
 
     expect(mockCreateVersion).toHaveBeenCalledWith(
       "prd-artifact-1",
+      "org-1",
       null,
       prdContent
     );
@@ -226,6 +231,7 @@ describe("generatePrdHandler ingestion", () => {
 
     expect(mockCreateVersion).toHaveBeenCalledWith(
       "prd-artifact-1",
+      "org-1",
       null,
       "# Uploaded PRD"
     );

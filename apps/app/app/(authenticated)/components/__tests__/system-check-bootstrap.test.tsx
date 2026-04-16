@@ -24,6 +24,11 @@ vi.mock("@/hooks/queries/use-compute-targets", () => ({
   useComputeTargets: () => mockUseComputeTargets(),
 }));
 
+vi.mock("next/navigation", () => ({
+  usePathname: () => "/my-tasks",
+  useRouter: vi.fn(() => ({ push: vi.fn(), replace: vi.fn() })),
+}));
+
 import { SystemCheckBootstrap } from "../system-check-bootstrap";
 
 describe("SystemCheckBootstrap", () => {

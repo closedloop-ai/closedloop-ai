@@ -1,6 +1,6 @@
 {
   "name": "@closedloop-ai/loops-api",
-  "version": "0.2.0",
+  "version": "0.2.4",
   "type": "module",
   "repository": {
     "type": "git",
@@ -12,131 +12,74 @@
       "types": "./src/artifacts.ts",
       "import": "./dist/artifacts.js",
       "require": "./dist/artifacts.cjs",
-      "default": "./src/artifacts.ts"
+      "default": "./dist/artifacts.js"
     },
     "./bundles": {
       "types": "./src/bundles.ts",
       "import": "./dist/bundles.js",
       "require": "./dist/bundles.cjs",
-      "default": "./src/bundles.ts"
+      "default": "./dist/bundles.js"
     },
     "./commands": {
       "types": "./src/commands.ts",
       "import": "./dist/commands.js",
       "require": "./dist/commands.cjs",
-      "default": "./src/commands.ts"
+      "default": "./dist/commands.js"
     },
     "./common": {
       "types": "./src/common.ts",
       "import": "./dist/common.js",
       "require": "./dist/common.cjs",
-      "default": "./src/common.ts"
+      "default": "./dist/common.js"
     },
     "./context-pack": {
       "types": "./src/context-pack.ts",
       "import": "./dist/context-pack.js",
       "require": "./dist/context-pack.cjs",
-      "default": "./src/context-pack.ts"
+      "default": "./dist/context-pack.js"
     },
     "./desktop-request": {
       "types": "./src/desktop-request.ts",
       "import": "./dist/desktop-request.js",
       "require": "./dist/desktop-request.cjs",
-      "default": "./src/desktop-request.ts"
+      "default": "./dist/desktop-request.js"
     },
     "./env-vars": {
       "types": "./src/env-vars.ts",
       "import": "./dist/env-vars.js",
       "require": "./dist/env-vars.cjs",
-      "default": "./src/env-vars.ts"
+      "default": "./dist/env-vars.js"
     },
     "./error-codes": {
       "types": "./src/error-codes.ts",
       "import": "./dist/error-codes.js",
       "require": "./dist/error-codes.cjs",
-      "default": "./src/error-codes.ts"
+      "default": "./dist/error-codes.js"
     },
     "./events": {
       "types": "./src/events.ts",
       "import": "./dist/events.js",
       "require": "./dist/events.cjs",
-      "default": "./src/events.ts"
+      "default": "./dist/events.js"
     },
     "./execution-result": {
       "types": "./src/execution-result.ts",
       "import": "./dist/execution-result.js",
       "require": "./dist/execution-result.cjs",
-      "default": "./src/execution-result.ts"
+      "default": "./dist/execution-result.js"
     },
     "./tokens": {
       "types": "./src/tokens.ts",
       "import": "./dist/tokens.js",
       "require": "./dist/tokens.cjs",
-      "default": "./src/tokens.ts"
+      "default": "./dist/tokens.js"
     }
   },
   "files": [
     "dist"
   ],
   "publishConfig": {
-    "registry": "https://npm.pkg.github.com",
-    "exports": {
-      "./artifacts": {
-        "types": "./dist/artifacts.d.ts",
-        "import": "./dist/artifacts.js",
-        "require": "./dist/artifacts.cjs"
-      },
-      "./bundles": {
-        "types": "./dist/bundles.d.ts",
-        "import": "./dist/bundles.js",
-        "require": "./dist/bundles.cjs"
-      },
-      "./commands": {
-        "types": "./dist/commands.d.ts",
-        "import": "./dist/commands.js",
-        "require": "./dist/commands.cjs"
-      },
-      "./common": {
-        "types": "./dist/common.d.ts",
-        "import": "./dist/common.js",
-        "require": "./dist/common.cjs"
-      },
-      "./context-pack": {
-        "types": "./dist/context-pack.d.ts",
-        "import": "./dist/context-pack.js",
-        "require": "./dist/context-pack.cjs"
-      },
-      "./desktop-request": {
-        "types": "./dist/desktop-request.d.ts",
-        "import": "./dist/desktop-request.js",
-        "require": "./dist/desktop-request.cjs"
-      },
-      "./env-vars": {
-        "types": "./dist/env-vars.d.ts",
-        "import": "./dist/env-vars.js",
-        "require": "./dist/env-vars.cjs"
-      },
-      "./error-codes": {
-        "types": "./dist/error-codes.d.ts",
-        "import": "./dist/error-codes.js",
-        "require": "./dist/error-codes.cjs"
-      },
-      "./events": {
-        "types": "./dist/events.d.ts",
-        "import": "./dist/events.js",
-        "require": "./dist/events.cjs"
-      },
-      "./execution-result": {
-        "types": "./dist/execution-result.d.ts",
-        "import": "./dist/execution-result.js",
-        "require": "./dist/execution-result.cjs"
-      },
-      "./tokens": {
-        "types": "./dist/tokens.d.ts",
-        "import": "./dist/tokens.js",
-        "require": "./dist/tokens.cjs"
-      }
-    }
+    "registry": "https://npm.pkg.github.com"
   },
   "scripts": {
     "build": "tsup",

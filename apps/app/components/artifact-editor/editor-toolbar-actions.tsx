@@ -5,26 +5,24 @@ import { Toggle } from "@repo/design-system/components/ui/toggle";
 import { MessageSquareDotIcon } from "lucide-react";
 
 type EditorToolbarActionsProps = {
-  isEditing: boolean;
-  isPending: boolean;
-  isSaving: boolean;
-  isViewingHistorical: boolean;
-  onDiscard: () => void;
-  onEdit: () => void;
-  onPublish: () => void;
+  canRestoreVersion?: boolean;
+  onRestoreVersion: () => void;
+  isRestoring?: boolean;
+  canSaveVersion?: boolean;
+  onSaveVersion: () => void;
+  isSaving?: boolean;
   onToggleComments: (pressed: boolean) => void;
   openThreadCount: number;
   showComments: boolean;
 };
 
 export function EditorToolbarActions({
-  isEditing,
-  isPending,
-  isSaving,
-  isViewingHistorical,
-  onDiscard,
-  onEdit,
-  onPublish,
+  canRestoreVersion = false,
+  onRestoreVersion,
+  isRestoring = false,
+  canSaveVersion = true,
+  onSaveVersion,
+  isSaving = false,
   onToggleComments,
   openThreadCount,
   showComments,
@@ -43,30 +41,23 @@ export function EditorToolbarActions({
           {openThreadCount}
         </Toggle>
       )}
-      {isEditing ? (
-        <>
-          <Button
-            disabled={isPending}
-            onClick={onDiscard}
-            size="sm"
-            variant="outline"
-          >
-            Discard
-          </Button>
-          <Button disabled={isPending} onClick={onPublish} size="sm">
-            {isSaving ? "Publishing..." : "Publish"}
-          </Button>
-        </>
-      ) : (
-        <Button
-          disabled={isViewingHistorical}
-          onClick={onEdit}
-          size="sm"
-          variant="secondary"
-        >
-          Edit
-        </Button>
-      )}
+      <Button
+        disabled={!canRestoreVersion || isRestoring}
+        onClick={onRestoreVersion}
+        size="sm"
+        variant="outline"
+      >
+        Restore Version
+      </Button>
+      <Button
+        disabled={!canSaveVersion || isSaving}
+        // swallow the event
+        onClick={() => onSaveVersion()}
+        size="sm"
+        variant="outline"
+      >
+        {isSaving ? "Saving..." : "Save New Version"}
+      </Button>
     </>
   );
 }

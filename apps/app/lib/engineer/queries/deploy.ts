@@ -36,7 +36,7 @@ export function deployStatusOptions(
         params.set("pid", String(pid));
       }
       const response = await fetch(
-        `/api/engineer/deploy/status/${encodeURIComponent(ticketId)}?${params.toString()}`
+        `/api/gateway/deploy/status/${encodeURIComponent(ticketId)}?${params.toString()}`
       );
       if (!response.ok) {
         throw new Error("Failed to fetch deploy status");
@@ -51,7 +51,7 @@ export function deployHealthOptions(ticketId: string, url: string | undefined) {
   return queryOptions<DeployHealthResponse>({
     queryKey: queryKeys.deployHealth(ticketId),
     queryFn: async () => {
-      const response = await fetch("/api/engineer/deploy/health", {
+      const response = await fetch("/api/gateway/deploy/health", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url }),
@@ -72,7 +72,7 @@ export function deployHealthOptions(ticketId: string, url: string | undefined) {
 export async function triggerDeployDetect(
   repoPath: string
 ): Promise<{ detected: boolean; config?: DeploymentConfig }> {
-  const response = await fetch("/api/engineer/deploy/detect", {
+  const response = await fetch("/api/gateway/deploy/detect", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ repoPath }),

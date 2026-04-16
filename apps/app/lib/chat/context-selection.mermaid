@@ -1,0 +1,78 @@
+%% Chat context selection
+%%
+%% Documents the per-screen chat context flow after the refactor. Each screen
+%% owns a thin wrapper that composes its context via a pure builder function
+%% in lib/chat/contexts/* and renders the shared ChatDrawerPanel. Adding a new
+%% screen is additive: write a new wrapper + a new builder; no shared-file
+%% edits required.
+flowchart TD
+  Start([User opens a chat on some screen]) --> Screen{Which screen?}
+
+  Screen -- "plan-editor<br/>prd-editor" --> ArtifactDrawer["ArtifactChatDrawer<br/>(components/chat/ArtifactChatDrawer.tsx)<br/>props: artifactId / slug / title / type"]
+  Screen -- "branch-view-container" --> BranchDrawer["BranchChatDrawer<br/>(build/[id]/components/branch-chat-drawer.tsx)<br/>props: data / contextSelection / showFilesystemNotice / worktreePath"]
+
+  %% ----- Artifact wrapper -----
+  subgraph ArtifactPath [Artifact path]
+    ArtifactDrawer --> ArtifactHealth["useQuery(healthCheckOptions())<br/>mcpAvailability = claude.closedloopAvailable ?? null"]
+    ArtifactHealth --> ArtifactUrl["resolve url via globalThis.location.href<br/>(SSR-safe: empty string on server)"]
+    ArtifactUrl --> ArtifactBuilder["buildArtifactChatContext(artifact, mcpAvailability)<br/>(lib/chat/contexts/artifact-context.ts)"]
+    ArtifactBuilder --> ArtifactBase["emit metadata: type, title, slug, url"]
+    ArtifactBase --> ArtifactMcp{mcpAvailability}
+    ArtifactMcp -- "null (pending)" --> ArtifactMcpInstr["append MCP_INSTRUCTIONS<br/>(optimistic)"]
+    ArtifactMcp -- "closedloopAvailable = true" --> ArtifactMcpInstr
+    ArtifactMcp -- "closedloopAvailable = false" --> ArtifactInline{inlineContent?}
+    ArtifactInline -- "yes" --> ArtifactInlineBody["append '## Artifact Content' + inlineContent"]
+    ArtifactInline -- "no" --> ArtifactMcpDown["append 'MCP server unavailable' note"]
+    ArtifactMcpInstr --> ArtifactResult[(context string)]
+    ArtifactInlineBody --> ArtifactResult
+    ArtifactMcpDown --> ArtifactResult
+    ArtifactResult --> ArtifactKey["chatKey = 'artifact:' + artifactId<br/>cwd = undefined"]
+  end
+
+  %% ----- Branch wrapper -----
+  subgraph BranchPath [Branch path]
+    BranchDrawer --> BranchHealth["useQuery(healthCheckOptions())<br/>mcpAvailability = claude.closedloopAvailable ?? null"]
+    BranchHealth --> BranchBuilder["buildBranchChatContext(branch, mcpAvailability)<br/>(lib/chat/contexts/branch-context.ts)"]
+    BranchBuilder --> BranchBase["emit PR metadata: prTitle, prHtmlUrl, repoFullName, headBranch, baseBranch"]
+    BranchBase --> FeatureCheck{featureSlug or featureTitle?}
+    FeatureCheck -- "yes" --> FeatureSection["buildSection('Linked Feature', [...])"]
+    FeatureCheck -- "no" --> PlanCheck
+    FeatureSection --> PlanCheck{producedByPlanSlug or producedByPlanTitle?}
+    PlanCheck -- "yes" --> PlanSection["buildSection('Implementation Plan', [...])"]
+    PlanCheck -- "no" --> WorktreeCheck
+    PlanSection --> WorktreeCheck{worktreePath?}
+    WorktreeCheck -- "yes" --> WorktreeSection["buildSection('Working Directory', [...])"]
+    WorktreeCheck -- "no" --> BranchMcpCheck
+    WorktreeSection --> BranchMcpCheck{"featureSlug OR producedByPlanSlug<br/>AND mcpAvailability null or available?"}
+    BranchMcpCheck -- "yes" --> BranchMcpInstr["append MCP_INSTRUCTIONS"]
+    BranchMcpCheck -- "no" --> BranchResult[(context string)]
+    BranchMcpInstr --> BranchResult
+    BranchResult --> BranchKey["chatKey = 'branch:' + data.externalLinkId<br/>cwd = worktreePath ?? undefined"]
+    BranchDrawer -.-> BranchNotice{"showFilesystemNotice?"}
+    BranchNotice -- "yes" --> BranchNoticeYes["notice = 'No local checkout was found<br/>for this PR branch ...'"]
+    BranchNotice -- "no" --> BranchNoticeNo[(notice = null)]
+    BranchDrawer -.-> BranchSlot{contextSelection?}
+    BranchSlot -- "non-null" --> BranchSlotYes["contextSlot = &lt;PrCommentContextCard /&gt;"]
+    BranchSlot -- "null" --> BranchSlotNo[(contextSlot = null)]
+  end
+
+  %% ----- Shared drawer -----
+  ArtifactKey --> Drawer["ChatDrawerPanel<br/>(components/chat/ChatDrawerPanel.tsx)<br/>owns useResizableWidth + useChatSession"]
+  BranchKey --> Drawer
+  BranchNoticeYes --> Drawer
+  BranchNoticeNo --> Drawer
+  BranchSlotYes --> Drawer
+  BranchSlotNo --> Drawer
+  Drawer --> Chat["useChatSession POSTs<br/>{ chatKey, userMessage, context, provider, cwd?, apiBaseUrl, apiAuthToken }<br/>to /api/gateway/chat"]
+
+  classDef decision fill:#fef3c7,stroke:#b45309,color:#1f2937
+  classDef artifactbox fill:#fce7f3,stroke:#be185c,color:#1f2937
+  classDef branchbox fill:#dbeafe,stroke:#1e40af,color:#1f2937
+  classDef shared fill:#e0e7ff,stroke:#4338ca,color:#1f2937
+  classDef terminal fill:#bbf7d0,stroke:#166534,color:#1f2937
+
+  class Screen,ArtifactMcp,ArtifactInline,FeatureCheck,PlanCheck,WorktreeCheck,BranchMcpCheck,BranchNotice,BranchSlot decision
+  class ArtifactDrawer,ArtifactHealth,ArtifactUrl,ArtifactBuilder,ArtifactBase,ArtifactMcpInstr,ArtifactInlineBody,ArtifactMcpDown,ArtifactKey artifactbox
+  class BranchDrawer,BranchHealth,BranchBuilder,BranchBase,FeatureSection,PlanSection,WorktreeSection,BranchMcpInstr,BranchKey,BranchNoticeYes,BranchSlotYes branchbox
+  class Drawer,Chat shared
+  class Start,ArtifactResult,BranchResult,BranchNoticeNo,BranchSlotNo terminal

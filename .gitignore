@@ -61,6 +61,7 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
+.pnpm-store/
 
 # local env files
 .env*.local
@@ -276,6 +277,8 @@ $RECYCLE.BIN/
 .closedloop
 .closedloop-ai/*
 !.closedloop-ai/loops-setup.sh
+!.closedloop-ai/settings/
+!.closedloop-ai/settings/critic-gates.json
 .agent-types
 CLAUDE.md.backup
 
@@ -286,7 +289,6 @@ plan-docs
 **/.claude/*
 !.claude/agents
 !.claude/commands
-!.claude/settings
 !.claude/scripts
 !.claude/skills
 !.claude/settings.json
@@ -312,3 +314,8 @@ packages/database/generated
 # Review artifacts
 reviews/
 .dev-environment.json
+
+# Playwright
+.auth/
+test-results/
+playwright-report/

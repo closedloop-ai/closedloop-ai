@@ -30,12 +30,12 @@ Source docs:
 
 | Tier | Name | Activation | Request Path | Primary Use |
 | --- | --- | --- | --- | --- |
-| 1 | Local Electron | Electron detected on localhost probe | Browser rewrites `/api/engineer/*` -> `http://localhost:{port}/api/engineer/*` | Primary engineer path, lowest latency |
+| 1 | Local Electron | Electron detected on localhost probe | Browser rewrites `/api/gateway/*` -> `http://localhost:{port}/api/gateway/*` | Primary engineer path, lowest latency |
 | 2 | Cloud Relay | Hosted/browser on other device + selected online compute target | Browser -> `apps/app` -> `apps/api` -> desktop gateway socket | Remote operation/monitoring |
 
 ```mermaid
 graph TD
-    REQ["Browser Request to /api/engineer/*"] --> CHK_HOST{Running on localhost?}
+    REQ["Browser Request to /api/gateway/*"] --> CHK_HOST{Running on localhost?}
 
     CHK_HOST -->|No| T2["Tier 2: Cloud Relay"]
     CHK_HOST -->|Yes| CHK_ELEC{Electron detected on<br/>localhost probe?}
@@ -55,7 +55,7 @@ graph TD
 
 Key invariants:
 
-- Tier 1 rewrites all `/api/engineer/*` calls to localhost when Electron is detected.
+- Tier 1 rewrites all `/api/gateway/*` calls to localhost when Electron is detected.
 - Tier 2 supports the full operation surface (not monitoring-only).
 - Browser-facing stream framing remains NDJSON lines.
 
@@ -122,7 +122,7 @@ sequenceDiagram
     participant I as Fetch Interceptor
     participant E as Electron (localhost)
 
-    B->>I: /api/engineer/*
+    B->>I: /api/gateway/*
     I->>E: Probe ports 19432-19435
     E-->>I: Health OK
     I->>E: Rewritten request to localhost:port
@@ -132,7 +132,7 @@ sequenceDiagram
 ```
 
 1. Browser probes localhost ports (`19432-19435`) for Electron health.
-2. If detected, fetch interceptor rewrites `/api/engineer/*` to localhost gateway.
+2. If detected, fetch interceptor rewrites `/api/gateway/*` to localhost gateway.
 3. Desktop executes operations locally and streams NDJSON back directly.
 4. Cloud relay stack is bypassed for those calls.
 
@@ -375,7 +375,7 @@ Terminal rules:
 
 ### 10.1 Engineer routing behavior
 
-- Electron detected => Tier 1 rewrite of all `/api/engineer/*`.
+- Electron detected => Tier 1 rewrite of all `/api/gateway/*`.
 - Hosted + selected online target => Tier 2 relay via command APIs.
 
 ### 10.2 Compute target selector behavior

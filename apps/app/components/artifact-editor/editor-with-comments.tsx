@@ -1,22 +1,26 @@
 "use client";
 
 import { OptionalComments } from "@repo/collaboration";
-import {
-  setEditorMarkdown,
-  TiptapPasteMarkdownDialog,
-  TiptapToolbar,
-} from "@repo/rich-text";
-import type { Editor } from "@tiptap/react";
-import { Suspense, useCallback, useEffect, useState } from "react";
+import type { TiptapEditor } from "@repo/rich-text";
+import { RichTextToolbar } from "@repo/rich-text/rich-text-toolbar";
+import { Suspense, useState } from "react";
 import { EditorContent } from "@/components/artifact-editor/editor-content";
 
 export type EditorWithCommentsProps = {
   value: string;
   onChange: (value: string) => void;
-  contentResetKey?: number;
-  contentResetValue?: string;
+  /**
+   * When true, the formatting toolbar is not rendered inside this component.
+   * The parent is responsible for rendering TiptapToolbar externally.
+   */
+  externalToolbar?: boolean;
+  /**
+   * Content rendered above the editor inside the same flex column that
+   * shares width with the comments panel, so it stays aligned with the editor.
+   */
+  headerContent?: React.ReactNode;
   liveblocksRoomId?: string | null;
-  onEditorInstance?: (editor: Editor | null) => void;
+  onEditorInstance?: (editor: TiptapEditor | null) => void;
   onContentReady?: () => void;
   placeholder?: string;
   readOnly?: boolean;
@@ -27,8 +31,8 @@ export type EditorWithCommentsProps = {
 export function EditorWithComments({
   value,
   onChange,
-  contentResetKey,
-  contentResetValue,
+  externalToolbar = false,
+  headerContent,
   liveblocksRoomId,
   onEditorInstance,
   onContentReady,
@@ -37,56 +41,37 @@ export function EditorWithComments({
   scrollMode = "outer",
   showComments = true,
 }: Readonly<EditorWithCommentsProps>) {
-  const [editor, setEditor] = useState<Editor | null>(null);
-
-  useEffect(() => {
-    onEditorInstance?.(editor);
-  }, [editor, onEditorInstance]);
-
-  const [showPasteDialog, setShowPasteDialog] = useState(false);
+  const [editor, setEditor] = useState<TiptapEditor | null>(null);
   const liveblocksEnabled = !!liveblocksRoomId;
-
-  const handleSetContent = useCallback(
-    (markdown: string) => {
-      setEditorMarkdown(editor, markdown);
-    },
-    [editor]
-  );
 
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
       {/* Formatting toolbar — spans full width above the editor+comments split */}
-      {!readOnly && (
-        <TiptapToolbar
+      {!(readOnly || externalToolbar) && (
+        <RichTextToolbar
           editor={editor}
           hasLiveblocksExtension={liveblocksEnabled}
-          onPasteMarkdown={() => setShowPasteDialog(true)}
+          onPasteMarkdown={(markdown) => editor?.resetContent(markdown)}
           readOnly={readOnly}
-        />
-      )}
-
-      {!readOnly && (
-        <TiptapPasteMarkdownDialog
-          onOpenChange={setShowPasteDialog}
-          onSetContent={handleSetContent}
-          open={showPasteDialog}
         />
       )}
 
       {/* Scrollable area: editor + anchored comments side by side */}
       <div className="relative min-h-0 flex-1 overflow-y-auto">
         <div className="relative flex min-h-full min-w-0 items-stretch">
-          <div className="relative flex min-w-0 flex-1 flex-col">
+          <div className="relative mx-auto flex min-w-0 max-w-[900px] flex-1 flex-col">
+            {headerContent}
             <EditorContent
-              contentResetKey={contentResetKey}
-              contentResetValue={contentResetValue}
               externalToolbar
               liveblocksRoomId={
                 liveblocksEnabled ? liveblocksRoomId : undefined
               }
               onChange={onChange}
               onContentReady={onContentReady}
-              onEditorReady={setEditor}
+              onEditorReady={(editor) => {
+                setEditor(editor);
+                onEditorInstance?.(editor);
+              }}
               placeholder={placeholder}
               readOnly={readOnly}
               scrollMode={scrollMode}

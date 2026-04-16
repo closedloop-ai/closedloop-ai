@@ -10,7 +10,7 @@ export function VersionBadge({ onClick }: Readonly<VersionBadgeProps>) {
   const [version, setVersion] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch("/api/engineer/version")
+    fetch("/api/gateway/version")
       .then((res) => res.json())
       .then((data) => {
         if (data.version) {

@@ -5,6 +5,7 @@ export const OnboardingStep = {
   ConnectGitHub: "CONNECT_GITHUB",
   AddAnthropicKey: "ADD_ANTHROPIC_KEY",
   ConnectOptionalIntegrations: "CONNECT_OPTIONAL_INTEGRATIONS",
+  DownloadElectronApp: "DOWNLOAD_ELECTRON_APP",
   Complete: "COMPLETE",
 } as const;
 export type OnboardingStep =

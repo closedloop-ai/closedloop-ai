@@ -177,6 +177,7 @@ describe("handleWorkflowSuccess", () => {
     expect(mockDownloadWorkflowArtifacts).toHaveBeenCalledWith(runId);
     expect(mockCreateVersion).toHaveBeenCalledWith(
       artifactId,
+      "test-org-id",
       null,
       planContent
     );
@@ -266,6 +267,7 @@ describe("handleWorkflowSuccess", () => {
     expect(mockDownloadWorkflowArtifacts).toHaveBeenCalledWith(runId);
     expect(mockCreateVersion).toHaveBeenCalledWith(
       artifactId,
+      "test-org-id",
       null,
       planContent
     );
@@ -1046,7 +1048,7 @@ describe("handleExecutionSuccess", () => {
     expect(mockEnsurePrLinkageRecords).toHaveBeenCalledWith(
       mockTx,
       expect.objectContaining({
-        prTitle: "Symphony: symphony/no-title-feature",
+        prTitle: "ClosedLoop: symphony/no-title-feature",
       })
     );
   });

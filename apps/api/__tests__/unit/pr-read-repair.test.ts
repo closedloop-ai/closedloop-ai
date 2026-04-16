@@ -473,6 +473,10 @@ describe("runPrReadRepair — repair logic", () => {
       state: GitHubPRState.Merged,
       mergedAt: "2026-04-01T10:00:00Z",
       closedAt: "2026-04-01T10:00:00Z",
+      authorLogin: null,
+      isDraft: false,
+      headSha: "abc123",
+      baseSha: "def456",
     });
 
     await runRepair([link]);
@@ -551,6 +555,10 @@ describe("runPrReadRepair — repair logic", () => {
       state: GitHubPRState.Merged,
       mergedAt: "2026-04-02T10:00:00Z",
       closedAt: "2026-04-02T10:00:00Z",
+      authorLogin: null,
+      isDraft: false,
+      headSha: "abc123",
+      baseSha: "def456",
     });
 
     await runRepair([link]);
@@ -625,6 +633,10 @@ describe("runPrReadRepair — repair logic", () => {
       state: GitHubPRState.Merged,
       mergedAt: "2026-04-03T00:00:00Z",
       closedAt: "2026-04-03T00:00:00Z",
+      authorLogin: null,
+      isDraft: false,
+      headSha: "abc123",
+      baseSha: "def456",
     });
 
     await runRepair([link]);
@@ -697,6 +709,10 @@ describe("repairSinglePrLink — new functionality", () => {
       state: GitHubPRState;
       mergedAt: string | null;
       closedAt: string | null;
+      authorLogin: string | null;
+      isDraft: boolean;
+      headSha: string;
+      baseSha: string;
     }> = {}
   ) {
     return {
@@ -709,6 +725,10 @@ describe("repairSinglePrLink — new functionality", () => {
       state: GitHubPRState.Open,
       mergedAt: null,
       closedAt: null,
+      authorLogin: null,
+      isDraft: false,
+      headSha: "abc123",
+      baseSha: "def456",
       ...overrides,
     };
   }

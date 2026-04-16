@@ -30,11 +30,12 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
-type TiptapToolbarProps = {
+export type TiptapToolbarProps = {
   editor: Editor | null;
   readOnly?: boolean;
   hasLiveblocksExtension?: boolean;
-  onPasteMarkdown: () => void;
+  onPasteMarkdown?: () => void;
+  className?: string;
 };
 
 export function TiptapToolbar({
@@ -42,6 +43,7 @@ export function TiptapToolbar({
   readOnly = false,
   hasLiveblocksExtension = false,
   onPasteMarkdown,
+  className,
 }: Readonly<TiptapToolbarProps>) {
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
@@ -86,7 +88,12 @@ export function TiptapToolbar({
 
   return (
     <TooltipProvider>
-      <div className="flex flex-wrap gap-1 border-b bg-background p-2">
+      <div
+        className={cn(
+          "flex flex-wrap gap-1 border-b bg-background p-2",
+          className
+        )}
+      >
         <ToolbarButton
           disabled={readOnly || !canUndo}
           icon={Undo}
@@ -101,21 +108,18 @@ export function TiptapToolbar({
         />
         <ToolbarDivider />
         <ToolbarButton
-          active={editor?.isActive("heading", { level: 1 })}
           disabled={readOnly}
           icon={Heading1}
           label="Heading 1"
           onClick={() => editor?.commands.toggleHeading({ level: 1 })}
         />
         <ToolbarButton
-          active={editor?.isActive("heading", { level: 2 })}
           disabled={readOnly}
           icon={Heading2}
           label="Heading 2"
           onClick={() => editor?.commands.toggleHeading({ level: 2 })}
         />
         <ToolbarButton
-          active={editor?.isActive("heading", { level: 3 })}
           disabled={readOnly}
           icon={Heading3}
           label="Heading 3"
@@ -123,21 +127,18 @@ export function TiptapToolbar({
         />
         <ToolbarDivider />
         <ToolbarButton
-          active={editor?.isActive("bold")}
           disabled={readOnly}
           icon={Bold}
           label="Bold"
           onClick={() => editor?.commands.toggleBold()}
         />
         <ToolbarButton
-          active={editor?.isActive("italic")}
           disabled={readOnly}
           icon={Italic}
           label="Italic"
           onClick={() => editor?.commands.toggleItalic()}
         />
         <ToolbarButton
-          active={editor?.isActive("code")}
           disabled={readOnly}
           icon={Code}
           label="Inline Code"
@@ -145,14 +146,12 @@ export function TiptapToolbar({
         />
         <ToolbarDivider />
         <ToolbarButton
-          active={editor?.isActive("bulletList")}
           disabled={readOnly}
           icon={List}
           label="Bullet List"
           onClick={() => editor?.commands.toggleBulletList()}
         />
         <ToolbarButton
-          active={editor?.isActive("orderedList")}
           disabled={readOnly}
           icon={ListOrdered}
           label="Numbered List"
@@ -160,14 +159,12 @@ export function TiptapToolbar({
         />
         <ToolbarDivider />
         <ToolbarButton
-          active={editor?.isActive("blockquote")}
           disabled={readOnly}
           icon={Quote}
           label="Blockquote"
           onClick={() => editor?.commands.toggleBlockquote()}
         />
         <ToolbarButton
-          active={editor?.isActive("link")}
           disabled={readOnly}
           icon={LinkIcon}
           label="Link"
@@ -197,13 +194,17 @@ export function TiptapToolbar({
             })
           }
         />
-        <ToolbarDivider />
-        <ToolbarButton
-          disabled={readOnly}
-          icon={FileText}
-          label="Paste Markdown"
-          onClick={onPasteMarkdown}
-        />
+        {onPasteMarkdown && (
+          <>
+            <ToolbarDivider />
+            <ToolbarButton
+              disabled={readOnly}
+              icon={FileText}
+              label="Paste Markdown"
+              onClick={onPasteMarkdown}
+            />
+          </>
+        )}
         {hasLiveblocksExtension && (
           <ToolbarButton
             disabled={readOnly}
@@ -241,7 +242,7 @@ function ToolbarButton({
     <Tooltip>
       <TooltipTrigger asChild>
         <Button
-          className={cn("h-8 w-8 p-0", active && "bg-accent")}
+          className={cn("h-8 w-8 p-0 text-foreground", active && "bg-accent")}
           disabled={disabled}
           onClick={onClick}
           size="sm"

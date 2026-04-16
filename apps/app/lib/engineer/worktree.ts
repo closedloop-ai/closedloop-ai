@@ -3,11 +3,11 @@ import {
   copyFileSync,
   cpSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readdirSync,
   renameSync,
   rmSync,
-  statSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
@@ -78,24 +78,52 @@ export function fetchOrigin(repoPath: string): void {
 }
 
 type SavedWorktreeState = {
-  claudeDir: string | null;
+  claudeAgentsDir: string | null;
   closedloopAiDir: string | null;
 };
 
+function mergeTreeWithoutOverwrite(sourceDir: string, destDir: string): void {
+  mkdirSync(destDir, { recursive: true });
+
+  for (const child of readdirSync(sourceDir, { withFileTypes: true })) {
+    const sourceChild = join(sourceDir, child.name);
+    const destChild = join(destDir, child.name);
+
+    if (!existsSync(destChild)) {
+      cpSync(sourceChild, destChild, { recursive: true, force: false });
+      continue;
+    }
+
+    if (child.isDirectory() && lstatSync(destChild).isDirectory()) {
+      mergeTreeWithoutOverwrite(sourceChild, destChild);
+    }
+  }
+}
+
 /**
- * Save .claude/ and .closedloop-ai/ from a non-git directory to temp locations.
- * Returns saved temp paths (null for each if the directory did not exist).
+ * Save accepted non-git worktree state from the worktree root to temp locations.
+ *
+ * `worktreeDir` here is the git worktree root directory
+ * (for example: `/repo-loop-123`), not the inner `.closedloop-ai/work` path.
+ * Repo-local state therefore lives directly under `worktreeDir/.claude/...`
+ * and `worktreeDir/.closedloop-ai/...`.
+ *
+ * - Preserve .claude/agents/ (project agents still live there)
+ * - Preserve .closedloop-ai/
  */
 function saveWorktreeState(worktreeDir: string): SavedWorktreeState {
   const ts = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
-  const claudeDir = join(worktreeDir, ".claude");
-  let savedClaudeDir: string | null = null;
-  if (existsSync(claudeDir)) {
-    savedClaudeDir = join(tmpdir(), `worktree-claude-${ts}`);
-    renameSync(claudeDir, savedClaudeDir);
+  // worktreeDir is the worktree root, so keep only the allowed repo-local
+  // Claude subtree from `worktreeDir/.claude/agents`.
+  const claudeAgentsDir = join(worktreeDir, ".claude", "agents");
+  let savedClaudeAgentsDir: string | null = null;
+  if (existsSync(claudeAgentsDir)) {
+    savedClaudeAgentsDir = join(tmpdir(), `worktree-claude-agents-${ts}`);
+    renameSync(claudeAgentsDir, savedClaudeAgentsDir);
   }
 
+  // ClosedLoop state also lives at the worktree root.
   const closedloopAiDir = join(worktreeDir, ".closedloop-ai");
   let savedClosedloopAiDir: string | null = null;
   if (existsSync(closedloopAiDir)) {
@@ -103,66 +131,51 @@ function saveWorktreeState(worktreeDir: string): SavedWorktreeState {
     renameSync(closedloopAiDir, savedClosedloopAiDir);
   }
 
-  return { claudeDir: savedClaudeDir, closedloopAiDir: savedClosedloopAiDir };
+  return {
+    claudeAgentsDir: savedClaudeAgentsDir,
+    closedloopAiDir: savedClosedloopAiDir,
+  };
 }
 
 /**
- * Restore previously saved .claude/ and .closedloop-ai/ state into worktreeDir.
- *
- * For .claude/: If absent in new worktree, rename saved dir straight in.
- * If .claude/ already exists (git recreated tracked files), do a
- * destination-precedence merge: for each child of the saved dir, if that
- * child is ABSENT in destination, restore it.
- *
- * For .closedloop-ai/: Always merge using cpSync (destination-precedence is
- * not needed here since git never creates this directory).
+ * Restore previously saved .claude/agents/ and .closedloop-ai/ state into the
+ * worktree root directory. As above, `worktreeDir` is the worktree root, not
+ * `.closedloop-ai/work`.
  */
 function restoreWorktreeState(
   saved: SavedWorktreeState,
   worktreeDir: string
 ): void {
-  const { claudeDir: savedClaudeDir, closedloopAiDir: savedClosedloopAiDir } =
-    saved;
+  const {
+    claudeAgentsDir: savedClaudeAgentsDir,
+    closedloopAiDir: savedClosedloopAiDir,
+  } = saved;
 
-  if (savedClaudeDir) {
-    const destClaude = join(worktreeDir, ".claude");
-    if (existsSync(destClaude)) {
-      // Destination-precedence merge: restore only children absent in dest
-      let allCopied = true;
-      for (const child of readdirSync(savedClaudeDir)) {
-        const srcChild = join(savedClaudeDir, child);
-        const destChild = join(destClaude, child);
+  if (savedClaudeAgentsDir) {
+    const destClaudeAgents = join(worktreeDir, ".claude", "agents");
+    try {
+      mkdirSync(destClaudeAgents, { recursive: true });
+      for (const child of readdirSync(savedClaudeAgentsDir)) {
+        const destChild = join(destClaudeAgents, child);
         if (!existsSync(destChild)) {
-          try {
-            let isDir = false;
-            try {
-              isDir = statSync(srcChild).isDirectory();
-            } catch {
-              // If stat fails, treat as file
-            }
-            if (isDir) {
-              cpSync(srcChild, destChild, { recursive: true });
-            } else {
-              copyFileSync(srcChild, destChild);
-            }
-          } catch {
-            allCopied = false;
-          }
+          cpSync(join(savedClaudeAgentsDir, child), destChild, {
+            recursive: true,
+            force: false,
+          });
         }
       }
-      // Only delete backup if all children were restored; preserve on partial failure
-      if (allCopied) {
-        rmSync(savedClaudeDir, { recursive: true, force: true });
-      }
-    } else {
-      renameSync(savedClaudeDir, destClaude);
+      rmSync(savedClaudeAgentsDir, { recursive: true, force: true });
+    } catch {
+      // Best effort -- backup preserved at savedClaudeAgentsDir if restore failed
     }
   }
 
   if (savedClosedloopAiDir) {
     const destClosedloopAi = join(worktreeDir, ".closedloop-ai");
     try {
-      cpSync(savedClosedloopAiDir, destClosedloopAi, { recursive: true });
+      // Destination wins on conflicts so tracked files checked out by git
+      // are not clobbered by stale saved state from a prior non-git directory.
+      mergeTreeWithoutOverwrite(savedClosedloopAiDir, destClosedloopAi);
       rmSync(savedClosedloopAiDir, { recursive: true, force: true });
     } catch {
       // Best effort -- backup preserved at savedClosedloopAiDir if cpSync failed
@@ -171,7 +184,7 @@ function restoreWorktreeState(
 }
 
 /**
- * Create a new git worktree at worktreeDir checked out to ref,
+ * Create a new git worktree at the worktree root `worktreeDir` checked out to ref,
  * then copy .env/.env.local files from the base repo.
  */
 export function addWorktree(
@@ -181,7 +194,7 @@ export function addWorktree(
 ): void {
   // If the directory exists but isn't a git worktree (e.g. state files were
   // written there by a "use base repo" review), remove it so git worktree add
-  // can create it cleanly. Preserve .claude/ and .closedloop-ai/ (review state files).
+  // can create it cleanly. Preserve .claude/agents/ and .closedloop-ai/.
   let savedState: SavedWorktreeState | null = null;
   if (existsSync(worktreeDir) && !existsSync(join(worktreeDir, ".git"))) {
     savedState = saveWorktreeState(worktreeDir);
@@ -336,6 +349,41 @@ function parseWorktreeListLocal(
 }
 
 /**
+ * Find the checkout currently on branchName, preferring the base repo when its
+ * HEAD already matches and otherwise reusing an existing worktree.
+ */
+export function findExistingWorktreeForBranch(
+  repoPath: string,
+  branchName: string
+): string | null {
+  const headResult = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+    cwd: repoPath,
+    encoding: "utf-8",
+    stdio: ["pipe", "pipe", "pipe"],
+    timeout: LOCAL_GIT_TIMEOUT,
+  });
+  if (headResult.status === 0 && headResult.stdout.trim() === branchName) {
+    return repoPath;
+  }
+
+  const listResult = spawnSync("git", ["worktree", "list", "--porcelain"], {
+    cwd: repoPath,
+    encoding: "utf-8",
+    stdio: ["pipe", "pipe", "pipe"],
+    timeout: LOCAL_GIT_TIMEOUT,
+  });
+  if (listResult.status !== 0) {
+    return null;
+  }
+
+  const entries = parseWorktreeListLocal(listResult.stdout);
+  const match = entries.find((entry) => {
+    return entry.branch === `refs/heads/${branchName}`;
+  });
+  return match?.path ?? null;
+}
+
+/**
  * Resolve the effective working directory for a PR branch.
  *
  * 1. If the base repo HEAD matches branchName, return repoPath (no worktree needed).
@@ -348,30 +396,9 @@ export function resolveWorktreeForPR(
   prNumber: number,
   worktreeParentDir: string
 ): string {
-  // 1. Check if the base repo is already on the PR branch
-  const headResult = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
-    cwd: repoPath,
-    encoding: "utf-8",
-    stdio: ["pipe", "pipe", "pipe"],
-    timeout: LOCAL_GIT_TIMEOUT,
-  });
-  if (headResult.status === 0 && headResult.stdout.trim() === branchName) {
-    return repoPath;
-  }
-
-  // 2. Scan existing worktrees for one checked out on this branch
-  const listResult = spawnSync("git", ["worktree", "list", "--porcelain"], {
-    cwd: repoPath,
-    encoding: "utf-8",
-    stdio: ["pipe", "pipe", "pipe"],
-    timeout: LOCAL_GIT_TIMEOUT,
-  });
-  if (listResult.status === 0) {
-    const entries = parseWorktreeListLocal(listResult.stdout);
-    const match = entries.find((e) => e.branch === `refs/heads/${branchName}`);
-    if (match) {
-      return match.path;
-    }
+  const existingWorktree = findExistingWorktreeForBranch(repoPath, branchName);
+  if (existingWorktree) {
+    return existingWorktree;
   }
 
   // 3. Create a new worktree

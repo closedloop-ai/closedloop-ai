@@ -100,7 +100,7 @@ export function symphonyStatusOptions(
     queryKey: queryKeys.symphonyStatus(ticketId, repoPath),
     queryFn: async () => {
       const response = await fetch(
-        `/api/engineer/symphony/status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath || "")}`
+        `/api/gateway/symphony/status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath || "")}`
       );
       if (!response.ok) {
         throw new Error(`Failed to fetch symphony status: ${response.status}`);
@@ -116,7 +116,7 @@ export function symphonyPlanOptions(ticketId: string, repoPath: string) {
     queryKey: queryKeys.symphonyPlan(ticketId, repoPath),
     queryFn: async () => {
       const response = await fetch(
-        `/api/engineer/symphony/plan/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`
+        `/api/gateway/symphony/plan/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`
       );
       if (!response.ok) {
         throw new Error(`Failed to fetch symphony plan: ${response.status}`);
@@ -134,7 +134,7 @@ export function symphonyChatHistoryOptions(
   return queryOptions<ChatHistory>({
     queryKey: queryKeys.symphonyChatHistory(ticketId, repoPath, provider),
     queryFn: async () => {
-      let url = `/api/engineer/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
+      let url = `/api/gateway/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
       if (provider) {
         url += `&provider=${encodeURIComponent(provider)}`;
       }
@@ -152,7 +152,7 @@ export function symphonyLogsOptions(ticketId: string, repoPath: string) {
     queryKey: queryKeys.symphonyLogs(ticketId, repoPath),
     queryFn: async () => {
       const response = await fetch(
-        `/api/engineer/symphony/logs/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&lines=1000`
+        `/api/gateway/symphony/logs/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&lines=1000`
       );
       if (!response.ok) {
         throw new Error(`Failed to fetch symphony logs: ${response.status}`);
@@ -178,7 +178,7 @@ export function commentChatHistoryOptions(
   return queryOptions<CommentChatHistory>({
     queryKey: queryKeys.commentChatHistory(ticketId, commentId, repoPath),
     queryFn: async () => {
-      let url = `/api/engineer/symphony/comment-chat/${encodeURIComponent(commentId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`;
+      let url = `/api/gateway/symphony/comment-chat/${encodeURIComponent(commentId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`;
       if (branchName && prNumber != null) {
         url += `&branch=${encodeURIComponent(branchName)}&prNumber=${prNumber}`;
       }
@@ -223,7 +223,7 @@ export function findingChatHistoryOptions(
     queryKey: queryKeys.findingChatHistory(ticketId, findingId, repoPath),
     queryFn: async () => {
       const response = await fetch(
-        `/api/engineer/codex/finding-chat/${encodeURIComponent(findingId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`
+        `/api/gateway/codex/finding-chat/${encodeURIComponent(findingId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`
       );
       if (!response.ok) {
         return { messages: [], ticketId, repoPath, findingId };
@@ -238,7 +238,7 @@ export function symphonyJudgesOptions(ticketId: string, repoPath: string) {
     queryKey: queryKeys.symphonyJudges(ticketId, repoPath),
     queryFn: async () => {
       const response = await fetch(
-        `/api/engineer/symphony/judges/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`
+        `/api/gateway/symphony/judges/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`
       );
       if (!response.ok) {
         throw new Error(`Failed to fetch judges: ${response.status}`);

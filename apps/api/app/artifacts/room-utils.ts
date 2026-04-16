@@ -1,6 +1,11 @@
 import type { Artifact } from "@repo/api/src/types/artifact";
 import { generateArtifactRoomId } from "@repo/collaboration/room-utils";
-import { createLiveblocksRoom, deleteLiveblocksRoom } from "@/lib/liveblocks";
+import {
+  createLiveblocksRoom,
+  deleteLiveblocksRoom,
+  resetLiveblocksRoom,
+  updateLiveblocksRoomMetadata,
+} from "@/lib/liveblocks";
 
 export async function createArtifactRoom(
   artifact: Pick<
@@ -21,17 +26,23 @@ export async function createArtifactRoom(
   });
 }
 
-export async function deleteArtifactRoom(organizationId: string, slug: string) {
-  const roomId = generateArtifactRoomId(organizationId, slug);
-  await deleteLiveblocksRoom(roomId);
-}
-
 export async function resetArtifactRoom(
   artifact: Pick<
     Artifact,
     "id" | "organizationId" | "slug" | "type" | "latestVersion"
   >
 ) {
-  await deleteArtifactRoom(artifact.organizationId, artifact.slug);
-  await createArtifactRoom(artifact);
+  const roomId = generateArtifactRoomId(artifact.organizationId, artifact.slug);
+  await resetLiveblocksRoom(roomId);
+  await updateLiveblocksRoomMetadata(roomId, {
+    artifactId: artifact.id,
+    artifactType: artifact.type,
+    slug: artifact.slug,
+    version: String(artifact.latestVersion),
+  });
+}
+
+export async function deleteArtifactRoom(organizationId: string, slug: string) {
+  const roomId = generateArtifactRoomId(organizationId, slug);
+  await deleteLiveblocksRoom(roomId);
 }

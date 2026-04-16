@@ -467,6 +467,7 @@ function buildPullRequestInfo(
     createdAt: new Date(),
     checksStatus: null,
     reviewDecision: null,
+    externalLinkId: null,
     ...overrides,
   };
 }

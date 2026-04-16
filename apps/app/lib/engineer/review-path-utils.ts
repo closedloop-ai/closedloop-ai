@@ -57,6 +57,23 @@ export function buildCommentBody(
   finding: ReviewFinding,
   filePath: string | undefined
 ): string {
+  // Prefer the natural-voice body generated during extraction when available.
+  // The humanized prose already folds in the suggestion, and we drop the
+  // [P*] priority tag on purpose so comments read as a colleague note.
+  const humanized = finding.humanizedBody?.trim();
+  if (humanized) {
+    // Inline comments get file + line from GitHub's diff gutter.
+    // Non-inline comments still need location context in the body.
+    if (!filePath && finding.file) {
+      const displayPath = stripWorktreePath(finding.file);
+      const location = finding.line
+        ? `${displayPath}:${finding.line}`
+        : displayPath;
+      return `**${location}**\n\n${humanized}`;
+    }
+    return humanized;
+  }
+
   const [title, ...descParts] = finding.message.split("\n");
   const description = descParts.join("\n").trim();
   const priorityLabel = finding.priority || "P3";

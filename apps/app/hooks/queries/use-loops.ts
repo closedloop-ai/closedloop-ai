@@ -1,5 +1,6 @@
 "use client";
 
+import { CURRENT_DESKTOP_API_NAMESPACE } from "@repo/api/src/desktop-api-namespace";
 import type {
   CreateLoopRequest,
   CreateLoopResponse,
@@ -11,7 +12,6 @@ import type {
   LoopUsageSummary,
   LoopWithUser,
   ResumeLoopRequest,
-  RunLoopCommand as RunLoopCommandType,
 } from "@repo/api/src/types/loop";
 import { RunLoopCommand } from "@repo/api/src/types/loop";
 import {
@@ -22,6 +22,7 @@ import {
 } from "@tanstack/react-query";
 import { judgesKeys } from "@/hooks/queries/use-judges";
 import { useApiClient } from "@/hooks/use-api-client";
+import { resolveDesktopApiNamespaceHint } from "@/lib/engineer/local-gateway-api-namespace";
 import { buildSearchParams } from "@/lib/format-utils";
 
 // Query keys
@@ -219,7 +220,7 @@ export function useRunLoop() {
   const apiClient = useApiClient();
 
   return useMutation({
-    mutationFn: ({
+    mutationFn: async ({
       artifactId,
       command,
       prompt,
@@ -228,19 +229,29 @@ export function useRunLoop() {
       repo,
     }: {
       artifactId: string;
-      command: RunLoopCommandType;
+      command: RunLoopCommand;
       prompt?: string;
       computeTargetId?: string | null;
       backendOverride?: boolean;
       repo?: CreateLoopRequest["repo"];
-    }) =>
-      apiClient.post<CreateLoopResponse>(`/artifacts/${artifactId}/run-loop`, {
-        command,
-        prompt,
-        ...(computeTargetId !== undefined ? { computeTargetId } : {}),
-        ...(backendOverride ? { backendOverride } : {}),
-        ...(repo ? { repo } : {}),
-      }),
+    }) => {
+      const desktopApiNamespace = await resolveDesktopApiNamespaceHint();
+
+      return apiClient.post<CreateLoopResponse>(
+        `/artifacts/${artifactId}/run-loop`,
+        {
+          command,
+          prompt,
+          ...(computeTargetId !== undefined ? { computeTargetId } : {}),
+          ...(backendOverride ? { backendOverride } : {}),
+          ...(repo ? { repo } : {}),
+          ...(desktopApiNamespace &&
+          desktopApiNamespace !== CURRENT_DESKTOP_API_NAMESPACE
+            ? { desktopApiNamespace }
+            : {}),
+        }
+      );
+    },
     onSuccess: (_, { artifactId, command }) => {
       queryClient.invalidateQueries({ queryKey: loopKeys.lists() });
       queryClient.invalidateQueries({

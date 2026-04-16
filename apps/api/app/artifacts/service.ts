@@ -2,6 +2,7 @@ import { createId } from "@paralleldrive/cuid2";
 import { generateText, models } from "@repo/ai/server";
 import {
   type Artifact,
+  type ArtifactDetail,
   ArtifactStatus,
   type ArtifactTitleMap,
   ArtifactType,
@@ -10,6 +11,7 @@ import {
   type CreateArtifactInput,
   type FindArtifactsOptions,
   type GenerationStatus,
+  getGenerationStatusRunKey,
   type PullRequestInfo,
   type UpdateArtifactInput,
 } from "@repo/api/src/types/artifact";
@@ -43,6 +45,7 @@ import { log } from "@repo/observability/log";
 import {
   mapLoopCommand,
   mapLoopStatus,
+  NONE_STATUS,
   pickBestStatus,
 } from "@/lib/loops/loop-status-utils";
 import { generateArtifactSlug } from "@/lib/slug-generator";
@@ -135,21 +138,29 @@ export const artifactsService = {
 
         // Only set if this artifact doesn't have a status yet (first = most recent)
         if (!generationStatusMap.has(artifactId)) {
-          generationStatusMap.set(artifactId, {
-            status,
-            command: triggerData.command,
-            htmlUrl: run.htmlUrl || null,
-            startedAt: run.startedAt,
-            completedAt: run.completedAt,
-            correlationId: triggerData.correlationId,
-            source: "github_actions",
-          });
+          generationStatusMap.set(
+            artifactId,
+            withRunKey({
+              status,
+              command: triggerData.command,
+              htmlUrl: run.htmlUrl || null,
+              startedAt: run.startedAt,
+              completedAt: run.completedAt,
+              correlationId: triggerData.correlationId,
+              source: "github_actions",
+            })
+          );
         }
       }
     }
 
     // Batch-fetch Loop records and merge into generation status map
     await mergeLoopStatuses(
+      artifacts.map((a) => a.id),
+      generationStatusMap
+    );
+
+    await suppressDismissedFailuresForArtifactMap(
       artifacts.map((a) => a.id),
       generationStatusMap
     );
@@ -170,7 +181,9 @@ export const artifactsService = {
           )
         : [];
 
-    const pullRequestMap = buildPullRequestMap(pullRequestRecords);
+    const pullRequestMap = buildPullRequestMap(
+      pullRequestRecords.map((pr) => ({ ...pr, externalLinkId: null }))
+    );
 
     return artifacts.map((a) =>
       toArtifactWithWorkstream(a, { generationStatusMap, pullRequestMap })
@@ -295,6 +308,7 @@ export const artifactsService = {
     if (!existingVersion) {
       await artifactVersionService.createVersion(
         template.id,
+        organizationId,
         null,
         PRD_TEMPLATE
       );
@@ -330,7 +344,24 @@ export const artifactsService = {
       })
     );
 
-    return pr;
+    if (!pr) {
+      return null;
+    }
+
+    // Resolve ExternalLink ID via entity links (Artifact -> PRODUCES -> ExternalLink)
+    const entityLink = await withDb((db) =>
+      db.entityLink.findFirst({
+        where: {
+          sourceId: artifactId,
+          sourceType: "ARTIFACT",
+          targetType: "EXTERNAL_LINK",
+          linkType: "PRODUCES",
+        },
+        select: { targetId: true },
+      })
+    );
+
+    return { ...pr, externalLinkId: entityLink?.targetId ?? null };
   },
 
   /**
@@ -891,7 +922,12 @@ Analyze the content at this link and identify capabilities or features that coul
     userId: string | null,
     content: string
   ): Promise<Artifact> {
-    await artifactVersionService.createVersion(id, userId, content);
+    await artifactVersionService.createVersion(
+      id,
+      organizationId,
+      userId,
+      content
+    );
 
     // Update status to DRAFT
     return withDb((db) =>
@@ -912,19 +948,13 @@ Analyze the content at this link and identify capabilities or features that coul
     organizationId: string,
     userId: string | null,
     content: string
-  ): Promise<Artifact> {
-    const artifact = await withDb((db) =>
-      db.artifact.findUnique({
-        where: { id, organizationId },
-        include: artifactIncludeWithUser,
-      })
+  ): Promise<ArtifactDetail | null> {
+    const newVersion = await artifactVersionService.createVersion(
+      id,
+      organizationId,
+      userId,
+      content
     );
-
-    if (!artifact) {
-      throw new ArtifactNotFoundError();
-    }
-
-    await artifactVersionService.createVersion(id, userId, content);
 
     // Re-fetch the artifact to get the updated latestVersion
     const updated = await withDb((db) =>
@@ -934,7 +964,7 @@ Analyze the content at this link and identify capabilities or features that coul
       })
     );
 
-    return updated!;
+    return updated && newVersion ? { ...updated, version: newVersion } : null;
   },
 
   /**
@@ -1350,6 +1380,7 @@ Analyze the content at this link and identify capabilities or features that coul
     // IMPORTANT: Create GitHubActionRun and new artifact version BEFORE triggering workflow
     // This prevents race condition where webhook fires before records exist
     await this.createChatWorkflowTriggerRecords({
+      organizationId,
       workstreamId: workstream.id,
       repositoryId,
       artifactId,
@@ -1384,6 +1415,7 @@ ${changes}`;
       // Workflow trigger failed - update the version with error content
       await artifactVersionService.createVersion(
         artifactId,
+        organizationId,
         userId,
         `# Change Request Failed
 
@@ -1411,6 +1443,7 @@ Please try again or contact support if the issue persists.`
    * Creates a NEW artifact version to preserve the original content.
    */
   async createChatWorkflowTriggerRecords(params: {
+    organizationId: string;
     workstreamId: string;
     repositoryId: string;
     artifactId: string;
@@ -1422,6 +1455,7 @@ Please try again or contact support if the issue persists.`
     targetBranch: string;
   }): Promise<void> {
     const {
+      organizationId,
       workstreamId,
       repositoryId,
       artifactId,
@@ -1436,6 +1470,7 @@ Please try again or contact support if the issue persists.`
     // Create a new version with placeholder content (preserves original in previous version)
     await artifactVersionService.createVersion(
       artifactId,
+      organizationId,
       userId,
       "# Generating...\n\nYour change request is being processed."
     );
@@ -1521,7 +1556,7 @@ Please try again or contact support if the issue persists.`
 
       const artifacts = await downloadWorkflowArtifacts(actionRun.runId);
 
-      // Find the symphony run artifact (contains .claude/runs/ with conversation logs)
+      // Find the symphony run artifact (contains .closedloop-ai/runs/ with conversation logs)
       const symphonyArtifact = artifacts.find((a) =>
         SYMPHONY_RUN_ARTIFACT_PREFIXES.some((prefix) =>
           a.name.startsWith(prefix)
@@ -2511,14 +2546,69 @@ Please try again or contact support if the issue persists.`
       return null;
     }
 
-    const [ghStatus, loopStatus] = await Promise.all([
+    const status = await fetchBestGenerationStatusForArtifact(
+      artifact.id,
       artifact.workstreamId
-        ? fetchGitHubActionsStatus(artifact.workstreamId, artifact.id)
-        : Promise.resolve(null),
-      fetchLoopStatus(artifact.id),
-    ]);
+    );
+    const dismissedRunKey = await getDismissedFailureRunKey(artifact.id);
 
-    return pickBestStatus(ghStatus, loopStatus);
+    return suppressDismissedFailure(status, dismissedRunKey);
+  },
+
+  /**
+   * Dismiss the current failure status for an artifact.
+   * Stores dismissal in the database so all users stop seeing the same failed run.
+   */
+  async dismissGenerationStatus(
+    artifactId: string,
+    organizationId: string,
+    userId: string,
+    expectedRunKey: string | null
+  ): Promise<GenerationStatus | null> {
+    const artifact = await withDb((db) =>
+      db.artifact.findUnique({
+        where: { id: artifactId, organizationId },
+        select: { id: true, workstreamId: true },
+      })
+    );
+
+    if (!artifact) {
+      return null;
+    }
+
+    const status = await fetchBestGenerationStatusForArtifact(
+      artifact.id,
+      artifact.workstreamId
+    );
+    const currentRunKey = status.runKey ?? getGenerationStatusRunKey(status);
+
+    const canDismiss =
+      status.status === "FAILURE" &&
+      currentRunKey !== null &&
+      (expectedRunKey === null || expectedRunKey === currentRunKey);
+
+    if (canDismiss) {
+      await withDb((db) =>
+        db.artifactGenerationStatusDismissal.upsert({
+          where: { artifactId: artifact.id },
+          create: {
+            artifactId: artifact.id,
+            dismissedById: userId,
+            runKey: currentRunKey,
+            dismissedAt: new Date(),
+          },
+          update: {
+            dismissedById: userId,
+            runKey: currentRunKey,
+            dismissedAt: new Date(),
+          },
+        })
+      );
+      return NONE_STATUS;
+    }
+
+    const dismissedRunKey = await getDismissedFailureRunKey(artifact.id);
+    return suppressDismissedFailure(status, dismissedRunKey);
   },
 
   /**
@@ -3183,6 +3273,88 @@ function resolveBackend(
   return { backend: "GITHUB_ACTIONS", reason: "github_action_history" };
 }
 
+function withRunKey(status: GenerationStatus): GenerationStatus {
+  return {
+    ...status,
+    runKey: getGenerationStatusRunKey(status),
+  };
+}
+
+async function fetchBestGenerationStatusForArtifact(
+  artifactId: string,
+  workstreamId: string | null
+): Promise<GenerationStatus> {
+  const [ghStatus, loopStatus] = await Promise.all([
+    workstreamId
+      ? fetchGitHubActionsStatus(workstreamId, artifactId)
+      : Promise.resolve(null),
+    fetchLoopStatus(artifactId),
+  ]);
+
+  return withRunKey(pickBestStatus(ghStatus, loopStatus));
+}
+
+async function getDismissedFailureRunKey(
+  artifactId: string
+): Promise<string | null> {
+  const dismissal = await withDb((db) =>
+    db.artifactGenerationStatusDismissal.findUnique({
+      where: { artifactId },
+      select: { runKey: true },
+    })
+  );
+
+  return dismissal?.runKey ?? null;
+}
+
+function suppressDismissedFailure(
+  status: GenerationStatus,
+  dismissedRunKey: string | null
+): GenerationStatus {
+  if (status.status !== "FAILURE" || !dismissedRunKey) {
+    return status;
+  }
+  const runKey = status.runKey ?? getGenerationStatusRunKey(status);
+  if (runKey && runKey === dismissedRunKey) {
+    return NONE_STATUS;
+  }
+  return status;
+}
+
+async function suppressDismissedFailuresForArtifactMap(
+  artifactIds: string[],
+  generationStatusMap: Map<string, GenerationStatus>
+): Promise<void> {
+  if (artifactIds.length === 0 || generationStatusMap.size === 0) {
+    return;
+  }
+
+  const dismissals = await withDb((db) =>
+    db.artifactGenerationStatusDismissal.findMany({
+      where: { artifactId: { in: artifactIds } },
+      select: { artifactId: true, runKey: true },
+    })
+  );
+
+  const dismissedRunKeysByArtifact = new Map<string, string>();
+  for (const dismissal of dismissals) {
+    dismissedRunKeysByArtifact.set(dismissal.artifactId, dismissal.runKey);
+  }
+
+  for (const [artifactId, status] of generationStatusMap) {
+    const dismissedRunKey = dismissedRunKeysByArtifact.get(artifactId);
+    if (!dismissedRunKey) {
+      continue;
+    }
+    const filtered = suppressDismissedFailure(status, dismissedRunKey);
+    if (filtered.status === "NONE") {
+      generationStatusMap.delete(artifactId);
+      continue;
+    }
+    generationStatusMap.set(artifactId, filtered);
+  }
+}
+
 /**
  * Batch-fetch Loop records for the given artifact IDs and merge into the
  * generation status map, preferring active statuses over terminal ones
@@ -3265,7 +3437,7 @@ async function fetchGitHubActionsStatus(
   const status: GenerationStatus["status"] =
     actionRun.status === "CANCELLED" ? "FAILURE" : actionRun.status;
 
-  return {
+  return withRunKey({
     status,
     command: triggerData?.command ?? null,
     htmlUrl: actionRun.htmlUrl || null,
@@ -3273,7 +3445,7 @@ async function fetchGitHubActionsStatus(
     completedAt: actionRun.completedAt,
     correlationId: triggerData?.correlationId ?? null,
     source: "github_actions",
-  };
+  });
 }
 
 /** Fetch the best Loop generation status for an artifact. */
@@ -3320,7 +3492,7 @@ function toLoopGenerationStatus(
   },
   mappedStatus: GenerationStatus["status"]
 ): GenerationStatus {
-  return {
+  return withRunKey({
     status: mappedStatus,
     command: mapLoopCommand(loop.command),
     htmlUrl: null,
@@ -3330,5 +3502,5 @@ function toLoopGenerationStatus(
     source: "loop",
     loopId: loop.id,
     initiatedBy: loop.user,
-  };
+  });
 }

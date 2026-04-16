@@ -33,7 +33,8 @@ RUN pnpm --filter @repo/database exec prisma generate --no-hints --schema=./pris
 # Copy MCP source code
 COPY apps/mcp/src/ apps/mcp/src/
 
-# Build TypeScript → JavaScript
+# Build shared packages required at runtime, then MCP itself.
+RUN pnpm --filter @closedloop-ai/loops-api build
 RUN pnpm --filter mcp build
 
 # ---------------------------------------------------------------------------
@@ -67,7 +68,7 @@ COPY --from=builder /app/apps/mcp/src/ apps/mcp/src/
 
 # Copy shared workspace packages needed at runtime for module resolution
 COPY --from=builder /app/packages/api/src/ packages/api/src/
-COPY --from=builder /app/packages/loops-api/src/ packages/loops-api/src/
+COPY --from=builder /app/packages/loops-api/dist/ packages/loops-api/dist/
 COPY --from=builder /app/packages/database/ packages/database/
 
 ENV NODE_ENV=production

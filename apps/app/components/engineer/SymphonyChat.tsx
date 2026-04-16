@@ -404,7 +404,7 @@ export function SymphonyChat({
       },
       onLearnings: learnings.poll,
       onLearningsUsed: (used: LearningUsed[]) => {
-        fetch("/api/engineer/symphony/record-learning-use", {
+        fetch("/api/gateway/symphony/record-learning-use", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ ticketId, repoPath, learnings: used }),
@@ -449,7 +449,7 @@ export function SymphonyChat({
 
       setExpandedStreamingBlocks(new Set());
       streamingPidRef.current = null;
-      const url = `/api/engineer/symphony/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
+      const url = `/api/gateway/symphony/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
       await stream.sendMessage(
         url,
         {
@@ -493,7 +493,7 @@ export function SymphonyChat({
 
       // Save user message to chat history so it persists after the pending state clears
       await fetch(
-        `/api/engineer/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
+        `/api/gateway/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -503,7 +503,7 @@ export function SymphonyChat({
         /* best-effort */
       });
 
-      const url = `/api/engineer/codex/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
+      const url = `/api/gateway/codex/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
 
       // Build recent chat history for context (last 10 messages, sanitize protocol metadata)
       const recentHistory = sanitizeHistoryForModel(
@@ -558,7 +558,7 @@ export function SymphonyChat({
         setPending: codexChatStream.setPendingUserMessage,
         saveFinalMessage: async (msg) => {
           await fetch(
-            `/api/engineer/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
+            `/api/gateway/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
             {
               method: "POST",
               headers: { "Content-Type": "application/json" },
@@ -656,7 +656,7 @@ export function SymphonyChat({
           content: CHAT_SENTINEL.CODEX_CONFERRED_TO_CLAUDE,
           timestamp: new Date().toISOString(),
         });
-        const url = `/api/engineer/symphony/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
+        const url = `/api/gateway/symphony/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
         await stream.sendMessage(
           url,
           {
@@ -704,7 +704,7 @@ export function SymphonyChat({
       timestamp: new Date().toISOString(),
     };
     await fetch(
-      `/api/engineer/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
+      `/api/gateway/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -732,7 +732,7 @@ export function SymphonyChat({
       timestamp: new Date().toISOString(),
     };
     await fetch(
-      `/api/engineer/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
+      `/api/gateway/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -871,7 +871,7 @@ export function SymphonyChat({
     globalThis.getSelection()?.removeAllRanges();
 
     streamingPidRef.current = null;
-    const url = `/api/engineer/symphony/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
+    const url = `/api/gateway/symphony/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
     await stream.sendMessage(
       url,
       {
@@ -895,7 +895,7 @@ export function SymphonyChat({
       const pid = streamingPidRef.current;
       if (pid) {
         try {
-          await fetch("/api/engineer/symphony/kill", {
+          await fetch("/api/gateway/symphony/kill", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ pid }),
@@ -909,7 +909,7 @@ export function SymphonyChat({
       if (partialContent) {
         try {
           await fetch(
-            `/api/engineer/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
+            `/api/gateway/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
             {
               method: "POST",
               headers: { "Content-Type": "application/json" },
@@ -960,7 +960,7 @@ export function SymphonyChat({
 
       // Save the forwarded indicator to chat history so it persists
       await fetch(
-        `/api/engineer/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
+        `/api/gateway/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -975,7 +975,7 @@ export function SymphonyChat({
 
       setExpandedStreamingBlocks(new Set());
       streamingPidRef.current = null;
-      const url = `/api/engineer/symphony/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
+      const url = `/api/gateway/symphony/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
       await stream.sendMessage(
         url,
         {
@@ -1048,7 +1048,7 @@ export function SymphonyChat({
       setExpandedStreamingBlocks(new Set());
       streamingPidRef.current = null;
 
-      const url = `/api/engineer/symphony/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
+      const url = `/api/gateway/symphony/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
       await stream.sendMessage(
         url,
         {
@@ -1175,7 +1175,7 @@ export function SymphonyChat({
         formData.append("file", file);
 
         const res = await fetch(
-          `/api/engineer/symphony/upload/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
+          `/api/gateway/symphony/upload/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
           { method: "POST", body: formData }
         );
 
@@ -1394,7 +1394,7 @@ export function SymphonyChat({
     }
     try {
       const response = await fetch(
-        `/api/engineer/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
+        `/api/gateway/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
         { method: "DELETE" }
       );
       if (response.ok) {
@@ -1796,7 +1796,7 @@ export function SymphonyChat({
         onToggleExpand={() => setIsExpanded((v) => !v)}
       >
         <DialogTitle className="sr-only">
-          Symphony Chat for {ticketId}
+          ClosedLoop Chat for {ticketId}
         </DialogTitle>
         {ticketTitle && (
           <div className="flex min-h-0 shrink-0 items-center gap-2 border-border border-b bg-muted/30 px-5 py-4 pr-24">
@@ -2137,7 +2137,7 @@ function transformAttachedImages(
       return paths
         .map((filePath) => {
           const filename = filePath.split("/").pop() || "";
-          const apiUrl = `/api/engineer/symphony/attachments/${encodeURIComponent(ticketId)}/${encodeURIComponent(filename)}?repo=${encodeURIComponent(repoPath)}`;
+          const apiUrl = `/api/gateway/symphony/attachments/${encodeURIComponent(ticketId)}/${encodeURIComponent(filename)}?repo=${encodeURIComponent(repoPath)}`;
           return `![${filename}](${apiUrl})`;
         })
         .join("\n");
@@ -2645,7 +2645,7 @@ export function SymphonyChatButton({
         "shadow-sm"
       )}
       onClick={onClick}
-      title="Chat with Symphony"
+      title="Chat with ClosedLoop"
     >
       <MessageSquare className="size-4" />
       {hasMessages && (
@@ -2668,7 +2668,7 @@ function transformImageSrc(
     /(?:\.closedloop-ai\/work\/)?attachments\/(.+)$/.exec(src);
   if (attachmentsMatch) {
     const filename = attachmentsMatch[1];
-    return `/api/engineer/symphony/attachments/${encodeURIComponent(ticketId)}/${encodeURIComponent(filename)}?repo=${encodeURIComponent(repoPath)}`;
+    return `/api/gateway/symphony/attachments/${encodeURIComponent(ticketId)}/${encodeURIComponent(filename)}?repo=${encodeURIComponent(repoPath)}`;
   }
   return src;
 }

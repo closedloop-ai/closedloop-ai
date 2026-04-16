@@ -10,12 +10,22 @@ import {
   DialogTitle,
 } from "@repo/design-system/components/ui/dialog";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { CheckCircle2, RefreshCw, Save, Settings } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { CheckCircle2, Package, RefreshCw, Save, Settings } from "lucide-react";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { toast } from "sonner";
 import { PathAutocomplete } from "@/components/engineer/PathAutocomplete";
 import { SystemCheckResults } from "@/components/system-check/system-check-results";
-import { healthCheckOptions } from "@/lib/engineer/queries/health-check";
+import { env } from "@/env";
+import {
+  getRenderableHealthChecks,
+  healthCheckOptions,
+} from "@/lib/engineer/queries/health-check";
 import { queryKeys } from "@/lib/engineer/queries/keys";
 import { updateRepoSettings } from "@/lib/engineer/queries/repos";
 
@@ -50,6 +60,7 @@ export function HealthCheckDialog({
   const revealTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
   const canOpenThisMount = useRef(!shownTargetKeys.has(targetKey));
   const queryClient = useQueryClient();
+  const expectedMcpUrl = env.NEXT_PUBLIC_MCP_SERVER_URL ?? null;
 
   // Client-only mount flag — avoids SSR/hydration mismatch
   useEffect(() => {
@@ -73,17 +84,19 @@ export function HealthCheckDialog({
   const dialogOpen = alive && !closing && failureDetected;
 
   const { data, isLoading, refetch, isFetching } = useQuery({
-    ...healthCheckOptions(),
+    ...healthCheckOptions(targetKey, expectedMcpUrl),
     enabled: mounted && canOpenThisMount.current,
     refetchOnMount: "always" as const,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
   });
+  const renderableChecks = getRenderableHealthChecks(data, expectedMcpUrl);
 
   // Auto-dismiss after all checks are revealed and all required pass
-  const allRevealed = data?.checks && revealedCount >= data.checks.length;
+  const allRevealed =
+    renderableChecks && revealedCount >= renderableChecks.length;
   const hasRequiredFailure =
-    data?.checks?.some((c) => c.required && !c.passed) ?? false;
+    renderableChecks?.some((c) => c.required && !c.passed) ?? false;
   const allRequiredPassed = allRevealed && !hasRequiredFailure;
 
   // Latch failureDetected — once a required failure is seen, open the dialog.
@@ -112,7 +125,7 @@ export function HealthCheckDialog({
   // structurally identical (TanStack Query structural sharing preserves the
   // same data reference in that case).
   useEffect(() => {
-    if (!(failureDetected && data?.checks)) {
+    if (!(failureDetected && renderableChecks)) {
       return;
     }
 
@@ -121,7 +134,7 @@ export function HealthCheckDialog({
     revealTimers.current.forEach(clearTimeout);
     revealTimers.current = [];
 
-    const total = data.checks.length;
+    const total = renderableChecks.length;
     for (let i = 0; i < total; i++) {
       const timer = setTimeout(
         () => {
@@ -136,7 +149,7 @@ export function HealthCheckDialog({
       revealTimers.current.forEach(clearTimeout);
       revealTimers.current = [];
     };
-  }, [failureDetected, data, recheckKey]);
+  }, [failureDetected, recheckKey, renderableChecks]);
 
   // Phase 1: after all revealed + all pass → show success screen
   useEffect(() => {
@@ -167,11 +180,13 @@ export function HealthCheckDialog({
   const handleRecheck = useCallback(async () => {
     setRevealedCount(0);
     setShowSuccess(false);
-    await queryClient.invalidateQueries({ queryKey: queryKeys.healthCheck() });
+    await queryClient.invalidateQueries({
+      queryKey: queryKeys.healthCheck(targetKey, expectedMcpUrl),
+    });
     await refetch();
     // Bump recheckKey to re-trigger stagger even if data is structurally identical
     setRecheckKey((k) => k + 1);
-  }, [queryClient, refetch]);
+  }, [expectedMcpUrl, queryClient, refetch, targetKey]);
 
   const handleContinue = useCallback(() => {
     setClosing(true);
@@ -195,7 +210,7 @@ export function HealthCheckDialog({
       // Re-run health checks to pick up the change
       setRevealedCount(0);
       await queryClient.invalidateQueries({
-        queryKey: queryKeys.healthCheck(),
+        queryKey: queryKeys.healthCheck(targetKey, expectedMcpUrl),
       });
       await refetch();
       setRecheckKey((k) => k + 1);
@@ -206,19 +221,24 @@ export function HealthCheckDialog({
     } finally {
       setSavingWorktree(false);
     }
-  }, [worktreePath, queryClient, refetch]);
+  }, [expectedMcpUrl, queryClient, refetch, targetKey, worktreePath]);
 
   if (!(alive && (canOpenThisMount.current || failureDetected))) {
     return null;
   }
 
   const requiredCount =
-    data?.checks?.filter((check) => check.required).length ?? 0;
+    renderableChecks?.filter((check) => check.required).length ?? 0;
 
   // worktree-dir check failed — show inline setup (only after it's revealed)
-  const worktreeCheck = data?.checks?.find((c) => c.id === "worktree-dir");
+  const worktreeCheck = renderableChecks?.find((c) => c.id === "worktree-dir");
   const showWorktreeSetup =
     worktreeCheck && !worktreeCheck.passed && revealedCount >= requiredCount;
+
+  // claude-plugins check failed — show inline install guidance (only after it's revealed)
+  const pluginCheck = data?.checks?.find((c) => c.id === "claude-plugins");
+  const showPluginGuidance =
+    pluginCheck && !pluginCheck.passed && revealedCount >= requiredCount;
 
   return (
     <Dialog open={dialogOpen}>
@@ -259,19 +279,15 @@ export function HealthCheckDialog({
           <>
             <div className="space-y-4 py-2">
               <SystemCheckResults
-                afterRequired={
-                  showWorktreeSetup ? (
-                    <div className="fade-in slide-in-from-bottom-2 animate-in duration-300">
-                      <WorktreeInlineSetup
-                        onChange={setWorktreePath}
-                        onSave={handleSaveWorktree}
-                        saving={savingWorktree}
-                        value={worktreePath}
-                      />
-                    </div>
-                  ) : undefined
-                }
-                checks={data?.checks}
+                afterRequired={AfterRequiredContent({
+                  showWorktreeSetup,
+                  worktreePath,
+                  savingWorktree,
+                  onChangeWorktree: setWorktreePath,
+                  onSaveWorktree: handleSaveWorktree,
+                  showPluginGuidance,
+                })}
+                checks={renderableChecks}
                 isLoading={isLoading}
                 revealedCount={revealedCount}
               />
@@ -298,6 +314,25 @@ export function HealthCheckDialog({
         )}
       </DialogContent>
     </Dialog>
+  );
+}
+
+function PluginInstallGuidance() {
+  return (
+    <div className="space-y-2 rounded-lg border border-border bg-muted/30 p-3">
+      <div className="flex items-center gap-2">
+        <Package className="size-3.5 shrink-0 text-primary" />
+        <p className="font-medium text-sm">Install Claude Code plugins</p>
+      </div>
+      <p className="text-muted-foreground text-xs">
+        Required ClosedLoop plugins are not yet installed. Run the following
+        command in your terminal to install them:
+      </p>
+      <p className="select-all rounded bg-muted px-2 py-1 font-mono text-[11px]">
+        claude plugin install code@closedloop-ai self-learning@closedloop-ai
+        judges@closedloop-ai code-review@closedloop-ai platform@closedloop-ai
+      </p>
+    </div>
   );
 }
 
@@ -338,4 +373,43 @@ function WorktreeInlineSetup({
       </div>
     </div>
   );
+}
+
+function AfterRequiredContent({
+  showWorktreeSetup,
+  worktreePath,
+  savingWorktree,
+  onChangeWorktree,
+  onSaveWorktree,
+  showPluginGuidance,
+}: {
+  showWorktreeSetup: boolean | undefined;
+  worktreePath: string;
+  savingWorktree: boolean;
+  onChangeWorktree: (v: string) => void;
+  onSaveWorktree: () => void;
+  showPluginGuidance: boolean | undefined;
+}): ReactNode {
+  if (showWorktreeSetup) {
+    return (
+      <div className="fade-in slide-in-from-bottom-2 animate-in duration-300">
+        <WorktreeInlineSetup
+          onChange={onChangeWorktree}
+          onSave={onSaveWorktree}
+          saving={savingWorktree}
+          value={worktreePath}
+        />
+      </div>
+    );
+  }
+
+  if (showPluginGuidance) {
+    return (
+      <div className="fade-in slide-in-from-bottom-2 animate-in duration-300">
+        <PluginInstallGuidance />
+      </div>
+    );
+  }
+
+  return undefined;
 }

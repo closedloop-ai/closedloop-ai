@@ -31,7 +31,7 @@ vi.mock("@/app/settings/api-key-service", () => ({
   apiKeyService: { resolveApiKey: vi.fn() },
 }));
 
-vi.mock("@/lib/auth/loop-runner-jwt", () => ({
+vi.mock("@repo/auth/loop-runner-jwt", () => ({
   issueLoopRunnerToken: vi.fn(),
 }));
 

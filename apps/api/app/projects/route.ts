@@ -1,5 +1,8 @@
 import { CustomFieldEntityType } from "@repo/api/src/types/custom-field";
-import type { ProjectWithDetails } from "@repo/api/src/types/project";
+import {
+  ProjectStatus as ProjectStatusValues,
+  type ProjectWithDetails,
+} from "@repo/api/src/types/project";
 import { z } from "zod";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import {
@@ -9,6 +12,7 @@ import {
   successResponse,
 } from "@/lib/route-utils";
 import { customFieldValuesService } from "../custom-fields/values-service";
+import { parseProjectStatuses } from "./project-route-helpers";
 import { projectsService } from "./service";
 import { createProjectValidator } from "./validators";
 
@@ -18,6 +22,8 @@ import { createProjectValidator } from "./validators";
  * Query params:
  *   - teamId: Filter by team
  *   - limit: Maximum number of projects to return (1-100, only applies when teamId is provided)
+ *   - status: Optional project status filter (comma-delimited)
+ *   - excludeStatus: Optional excluded project status filter (comma-delimited)
  */
 export const GET = withAnyAuth<ProjectWithDetails[], "/projects">(
   async ({ user }, request) => {
@@ -28,27 +34,50 @@ export const GET = withAnyAuth<ProjectWithDetails[], "/projects">(
       const querySchema = z.object({
         teamId: z.string().optional(),
         limit: z.coerce.number().int().positive().max(100).optional(),
+        status: z.string().optional(),
+        excludeStatus: z.string().optional(),
       });
 
       const queryResult = querySchema.safeParse({
         teamId: url.searchParams.get("teamId") ?? undefined,
         limit: url.searchParams.get("limit") ?? undefined,
+        status: url.searchParams.get("status") ?? undefined,
+        excludeStatus: url.searchParams.get("excludeStatus") ?? undefined,
       });
 
       if (!queryResult.success) {
         return badRequestResponse("Invalid query parameters");
       }
 
-      const { teamId, limit } = queryResult.data;
+      const { teamId, limit, status, excludeStatus } = queryResult.data;
+      const statusFilter = parseProjectStatuses(status);
+      const excludeStatusFilter = parseProjectStatuses(excludeStatus);
+
+      const hasExplicitStatusFilter =
+        statusFilter !== undefined || excludeStatusFilter !== undefined;
+      const defaultExcludeStatus = hasExplicitStatusFilter
+        ? undefined
+        : [ProjectStatusValues.Archived];
+      const listOptions = {
+        ...(limit ? { limit } : {}),
+        ...(statusFilter ? { status: statusFilter } : {}),
+        ...(excludeStatusFilter ? { excludeStatus: excludeStatusFilter } : {}),
+        ...(defaultExcludeStatus
+          ? { excludeStatus: defaultExcludeStatus }
+          : {}),
+      };
 
       // Determine which service method to call based on parameters
       const projects = teamId
         ? await projectsService.findByTeam(
             teamId,
             user.organizationId,
-            limit ? { limit } : undefined
+            listOptions
           )
-        : await projectsService.findByOrganization(user.organizationId);
+        : await projectsService.findByOrganization(
+            user.organizationId,
+            listOptions
+          );
 
       // Batch-load custom field values for all projects in a single query
       const projectIds = projects.map((p) => p.id);

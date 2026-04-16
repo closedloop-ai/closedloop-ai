@@ -5,7 +5,7 @@ import type { ContextPackAttachment } from "./context-attachment";
  * electron harness via the desktop gateway.
  *
  * Used by loop-desktop.ts when building the POST body for the
- * /api/engineer/symphony/loop endpoint on the desktop target.
+ * /api/gateway/symphony/loop endpoint on the desktop target.
  */
 export type SymphonyLoopBody = {
   loopId: string;

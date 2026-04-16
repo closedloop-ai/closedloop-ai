@@ -24,6 +24,7 @@ import {
   SidebarMenuSubItem,
 } from "@repo/design-system/components/ui/sidebar";
 import {
+  ArchiveIcon,
   BoxIcon,
   EllipsisIcon,
   FileCodeIcon,
@@ -117,6 +118,12 @@ function TeamCollapsible({
                 </SidebarMenuAction>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="start" side="right">
+                <DropdownMenuItem asChild>
+                  <Link href={`/teams/${team.id}/projects/archived`}>
+                    <ArchiveIcon className="h-4 w-4" />
+                    Archived Projects
+                  </Link>
+                </DropdownMenuItem>
                 <DropdownMenuItem onClick={() => setSettingsOpen(true)}>
                   <SettingsIcon className="h-4 w-4" />
                   Settings

@@ -12,12 +12,11 @@ import { TableRow } from "@tiptap/extension-table-row";
 import { Markdown } from "@tiptap/markdown";
 import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { MermaidExtension } from "./mermaid-extension";
+import { RichTextToolbar } from "./rich-text-toolbar";
 import { setEditorMarkdown } from "./set-editor-markdown";
-import { TiptapPasteMarkdownDialog } from "./tiptap-paste-markdown-dialog";
-import { TiptapToolbar } from "./tiptap-toolbar";
-import type { RichTextEditorProps } from "./types";
+import type { RichTextEditorProps, TiptapEditor } from "./types";
 
 export function TiptapEditorCore({
   value,
@@ -26,15 +25,12 @@ export function TiptapEditorCore({
   onEditorReady,
   readOnly = false,
   className,
-  contentResetKey,
-  contentResetValue,
   liveblocksExtension,
   liveblocksIsReady,
   scrollMode = "inner",
   externalToolbar = false,
   toolbarMode = "always",
 }: Readonly<RichTextEditorProps>) {
-  const [showPasteMarkdownDialog, setShowPasteMarkdownDialog] = useState(false);
   const hasSeededContent = useRef(false);
   // Capture initial content on first render to avoid it being cleared by onChange
   const initialContentRef = useRef(value);
@@ -83,13 +79,16 @@ export function TiptapEditorCore({
     editorProps: {
       attributes: {
         class: cn(
-          "prose prose-sm sm:prose-base dark:prose-invert min-h-[200px] max-w-none px-5 pt-10 pb-8 focus:outline-none",
+          "prose prose-sm sm:prose-base dark:prose-invert min-h-[200px] max-w-none px-5 pt-8 pb-8 focus:outline-none",
           className
         ),
       },
     },
     onCreate: ({ editor }) => {
-      onEditorReady?.(editor);
+      const editorWithReset = editor as TiptapEditor;
+      editorWithReset.resetContent = (markdown: string) =>
+        setEditorMarkdown(editor, markdown);
+      onEditorReady?.(editorWithReset);
     },
     onUpdate: ({ editor }) => {
       onChange(editor.getMarkdown());
@@ -103,15 +102,27 @@ export function TiptapEditorCore({
     [editor]
   );
 
+  useEffect(
+    function trackReadOnlyChanges() {
+      if (editor) {
+        editor.setEditable(!readOnly);
+      }
+    },
+    [editor, readOnly]
+  );
+
   // Sync content when not using Liveblocks.
-  useEffect(() => {
-    if (!editor || liveblocksExtension) {
-      return;
-    }
-    if (value !== editor.getMarkdown()) {
-      setMarkdownContent(value);
-    }
-  }, [editor, liveblocksExtension, setMarkdownContent, value]);
+  useEffect(
+    function trackValueChanges() {
+      if (!editor || liveblocksExtension) {
+        return;
+      }
+      if (value !== editor.getMarkdown()) {
+        setMarkdownContent(value);
+      }
+    },
+    [editor, liveblocksExtension, setMarkdownContent, value]
+  );
 
   useEffect(
     function maybeSeedLiveblocksRoom() {
@@ -140,74 +151,32 @@ export function TiptapEditorCore({
     [editor, liveblocksExtension, liveblocksIsReady, setMarkdownContent]
   );
 
-  // Explicit content reset (e.g. restore a version).
-  // Temporarily ensures the editor is editable so the command succeeds
-  // even when readOnly flips to true in the same render batch.
-  useEffect(
-    function resetEditorContent() {
-      if (editor && contentResetKey && contentResetValue != null) {
-        const markdown = contentResetValue;
-        queueMicrotask(() => {
-          const wasEditable = editor.isEditable;
-          if (!wasEditable) {
-            editor.setEditable(true);
-          }
-          editor.commands.setContent(markdown, { contentType: "markdown" });
-          if (!wasEditable) {
-            editor.setEditable(false);
-          }
-        });
-      }
-    },
-    [editor, contentResetKey, contentResetValue]
-  );
-
-  // Update editable state when readOnly changes
-  useEffect(() => {
-    if (editor) {
-      editor.setEditable(!readOnly);
-    }
-  }, [editor, readOnly]);
-
   return (
-    <>
-      <div
-        className="group flex min-h-0 flex-1 flex-col"
-        data-liveblocks-editor-boundary
-      >
-        {!(readOnly || externalToolbar) && (
-          <div
-            className={
-              toolbarMode === "focus"
-                ? "hidden group-focus-within:block"
-                : undefined
-            }
-          >
-            <TiptapToolbar
-              editor={editor}
-              hasLiveblocksExtension={!!liveblocksExtension}
-              onPasteMarkdown={() => setShowPasteMarkdownDialog(true)}
-              readOnly={readOnly}
-            />
-          </div>
-        )}
+    <div
+      className="group flex min-h-0 flex-1 flex-col"
+      data-liveblocks-editor-boundary
+    >
+      {!(readOnly || externalToolbar) && (
         <div
-          className={cn("min-h-0", !isOuterScroll && "flex-1 overflow-y-auto")}
+          className={
+            toolbarMode === "focus"
+              ? "hidden group-focus-within:block"
+              : undefined
+          }
         >
-          <EditorContent
-            className={cn("min-h-[200px]", readOnly && "p-4")}
+          <RichTextToolbar
             editor={editor}
+            hasLiveblocksExtension={!!liveblocksExtension}
+            onPasteMarkdown={setMarkdownContent}
+            readOnly={readOnly}
           />
         </div>
-      </div>
-
-      {!(readOnly || externalToolbar) && (
-        <TiptapPasteMarkdownDialog
-          onOpenChange={setShowPasteMarkdownDialog}
-          onSetContent={setMarkdownContent}
-          open={showPasteMarkdownDialog}
-        />
       )}
-    </>
+      <div
+        className={cn("min-h-0", !isOuterScroll && "flex-1 overflow-y-auto")}
+      >
+        <EditorContent className="min-h-[200px]" editor={editor} />
+      </div>
+    </div>
   );
 }

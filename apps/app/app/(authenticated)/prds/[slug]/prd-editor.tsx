@@ -5,26 +5,33 @@ import {
   type ArtifactDetail,
   ArtifactType,
 } from "@repo/api/src/types/artifact";
-import type { ComputeTargetConflictBody } from "@repo/api/src/types/compute-target";
 import { EntityType } from "@repo/api/src/types/entity-link";
-import { RunLoopCommand } from "@repo/api/src/types/loop";
 import { InlinePresence, OptionalArtifactRoom } from "@repo/collaboration";
-import { toast } from "@repo/design-system/components/ui/sonner";
+import {
+  ResizableHandle,
+  ResizablePanel,
+  ResizablePanelGroup,
+} from "@repo/design-system/components/ui/resizable";
+import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from "@repo/design-system/components/ui/tabs";
+import { RichTextToolbar } from "@repo/rich-text/rich-text-toolbar";
 import { Loader2Icon } from "lucide-react";
-import { Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import { NewPlanModal } from "@/app/(authenticated)/implementation-plans/components/new-plan-modal";
-import { RequestChangesModal } from "@/app/(authenticated)/implementation-plans/components/request-changes-modal";
 import { VersionSelector } from "@/app/(authenticated)/implementation-plans/components/version-selector";
-import { ArtifactChatPanel } from "@/components/artifact-editor/artifact-chat-panel";
 import { CollaborativeEditor } from "@/components/artifact-editor/collaborative-editor";
+import { EditableArtifactTitle } from "@/components/artifact-editor/editable-artifact-title";
 import { EditorToolbarActions } from "@/components/artifact-editor/editor-toolbar-actions";
 import { EditorToolbarRow } from "@/components/artifact-editor/editor-toolbar-row";
-import { MetadataPanel } from "@/components/artifact-editor/metadata-panel";
-import { SaveIndicator } from "@/components/artifact-editor/save-indicator";
-import { StatusMetadataSection } from "@/components/artifact-editor/status-metadata-section";
-import { BackendMismatchModal } from "@/components/backend-mismatch-modal";
+import { ArtifactChatDrawer } from "@/components/chat/ArtifactChatDrawer";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { LoopDispatchTargetSelector } from "@/components/engineer/LoopDispatchTargetSelector";
+import { ExecutionLogDialog } from "@/components/execution-log/execution-log-dialog";
+import { ExecutionLogSummary } from "@/components/execution-log/execution-log-summary";
 import { GenerationStatusBanner } from "@/components/generation-status-banner";
 import { MoveEntityDialog } from "@/components/move-entity-dialog";
 import { RenameDialog } from "@/components/rename-dialog";
@@ -34,14 +41,16 @@ import { useArtifactMetadata } from "@/hooks/artifact-editing/use-artifact-metad
 import { useArtifactUIState } from "@/hooks/artifact-editing/use-artifact-ui-state";
 import { useEditorSession } from "@/hooks/artifact-editing/use-editor-session";
 import { usePrdActions } from "@/hooks/artifact-editing/use-prd-actions";
-import { useArtifactGenerationStatus } from "@/hooks/queries/use-artifacts";
+import {
+  useArtifactGenerationStatus,
+  useDismissArtifactGenerationStatus,
+} from "@/hooks/queries/use-artifacts";
 import { usePrdJudgesFeedback } from "@/hooks/queries/use-judges";
-import { useOrganizationUsers } from "@/hooks/queries/use-users";
-import { parseComputeTargetConflict } from "@/lib/compute-target-conflict";
-import { transformApiUserToSelectUser } from "@/lib/user-utils";
-import type { PlanSource } from "../../implementation-plans/components/plan-source";
+import { useExecutionLogDialog } from "@/hooks/use-execution-log-dialog";
+import { RequestChangesModal } from "../../implementation-plans/components/request-changes-modal";
 import { PRDEditorHeader } from "./components/prd-editor-header";
-import { PRDMetadataPanel } from "./components/prd-metadata-panel";
+import { PRDExtrasPanel } from "./components/prd-extras-panel";
+import { PRDMetadataBar } from "./components/prd-metadata-bar";
 
 type PRDEditorProps = {
   prd: ArtifactDetail;
@@ -54,56 +63,44 @@ export function PRDEditor({
   currentVersion,
   onVersionChange,
 }: Readonly<PRDEditorProps>) {
-  const chatFlag = useFeatureFlag("the-one-flag");
+  const chatFlag = useFeatureFlag("interactive-chat");
+  const executionLogDialog = useExecutionLogDialog();
 
-  // Move dialog state
   const [showMoveDialog, setShowMoveDialog] = useState(false);
-  // Comments panel toggle state
   const [showComments, setShowComments] = useState(true);
 
-  const newPlanSource: PlanSource = useMemo(() => {
-    return {
-      ...prd,
-      sourceType: EntityType.Artifact,
-    };
-  }, [prd]);
+  // Fetch generation status with adaptive polling (stops when terminal)
+  const { data: generationStatus, invalidateCache: invalidateArtifactCache } =
+    useArtifactGenerationStatus(prd.id, { polling: true });
+  const dismissGenerationStatus = useDismissArtifactGenerationStatus();
 
-  const contentController = useArtifactContent({
-    artifact: prd,
-    onVersionCreated: () => {
-      if (currentVersion !== prd.latestVersion) {
-        onVersionChange(prd.latestVersion);
-      }
-    },
-  });
+  const { data: judgesReport } = usePrdJudgesFeedback(prd.id);
 
   const session = useEditorSession({
     artifact: prd,
     currentVersion,
-    contentCallbacks: contentController,
     onVersionChange,
   });
-  const prevThreadCount = useRef(session.openThreadCount);
-
+  const contentController = useArtifactContent({
+    artifact: prd,
+    isLatestVersion: currentVersion === prd.latestVersion,
+    setEditorContent: session.setEditorContent,
+    onVersionCreated: (updatedArtifact) =>
+      onVersionChange(updatedArtifact.version.version),
+  });
   const metadata = useArtifactMetadata({
     artifact: prd,
   });
-  const { data: orgUsers = [] } = useOrganizationUsers();
-  const transformedOrgUsers = useMemo(
-    () => orgUsers.map(transformApiUserToSelectUser),
-    [orgUsers]
-  );
-
   const actions = useArtifactActions({
     artifact: prd,
     redirectPath: prd.project?.teams?.[0]?.id
       ? `/teams/${prd.project.teams[0].id}/projects/${prd.project.id}`
       : "/prds",
   });
-
   const uiState = useArtifactUIState({
     artifactType: ArtifactType.Prd,
   });
+  const prdActions = usePrdActions({ artifactId: prd.id });
 
   // Type assertion: useArtifactUIState returns a union; narrow to the PRD/Feature branch
   const {
@@ -114,84 +111,13 @@ export function PRDEditor({
     setShowGeneratePlanModal,
     openGeneratePlanModal,
     showRequestChangesModal,
+    setShowRequestChangesModal,
     openRequestChangesModal,
-    closeRequestChangesModal,
   } = uiState;
 
-  const prdActions = usePrdActions({ artifactId: prd.id });
-
-  const [decomposeTargetState, setDecomposeTargetState] = useState<{
-    availableTargets: ComputeTargetConflictBody["availableTargets"];
-  } | null>(null);
-
-  // Fetch generation status with adaptive polling (stops when terminal)
-  const { data: generationStatus, invalidateCache: invalidateArtifactCache } =
-    useArtifactGenerationStatus(prd.id, { polling: true });
-
-  // Share runLoop instance from prdActions to avoid divergent isPending states
-  const { runLoop } = prdActions;
-  const { data: judgesReport } = usePrdJudgesFeedback(prd.id);
-
-  const handleGeneratePrd = () => {
-    runLoop.mutate(
-      {
-        artifactId: prd.id,
-        command: RunLoopCommand.GeneratePrd,
-      },
-      {
-        onSuccess: () => {
-          toast.success("PRD generation started");
-        },
-      }
-    );
-  };
-
-  const [pendingCommand, setPendingCommand] = useState<string | null>(null);
-
-  const handleDecomposeFeatures = () => {
-    setPendingCommand("decompose");
-    runLoop.mutate(
-      { artifactId: prd.id, command: "decompose" },
-      {
-        onSuccess: () => {
-          toast.success("Feature decomposition started");
-          setPendingCommand(null);
-        },
-        onError: (error) => {
-          setPendingCommand(null);
-          const conflict = parseComputeTargetConflict(error);
-          if (conflict) {
-            setDecomposeTargetState({
-              availableTargets: conflict.availableTargets,
-            });
-          }
-        },
-      }
-    );
-  };
-
-  const handleEvaluatePrd = () => {
-    setPendingCommand("evaluate_prd");
-    // Omit computeTargetId so the API resolves the target from the user's saved
-    // compute preference (same as explicit plan evaluation). Passing
-    // routing.computeTargetId here could be null on hosted production when
-    // Electron is not detected, which the API treated as an explicit cloud
-    // override and skipped local preference resolution.
-    runLoop.mutate(
-      { artifactId: prd.id, command: RunLoopCommand.EvaluatePrd },
-      {
-        onSuccess: () => {
-          toast.success("PRD evaluation started");
-          setPendingCommand(null);
-        },
-        onError: () => {
-          setPendingCommand(null);
-        },
-      }
-    );
-  };
-
-  // Auto-reveal comments when threads reappear after being fully resolved
+  // Auto-reveal comments when threads reappear after being fully resolved.
+  // Edge-triggered only (0 -> >0) so we don't override the user's manual toggle.
+  const prevThreadCount = useRef(session.openThreadCount);
   useEffect(() => {
     if (prevThreadCount.current === 0 && session.openThreadCount > 0) {
       setShowComments(true);
@@ -211,10 +137,7 @@ export function PRDEditor({
     <VersionSelector
       currentVersion={currentVersion}
       latestVersion={prd.latestVersion}
-      onVersionChange={(version) => {
-        session.exitEditMode();
-        onVersionChange(version);
-      }}
+      onVersionChange={onVersionChange}
     />
   );
 
@@ -222,208 +145,196 @@ export function PRDEditor({
     <>
       {/* Header */}
       <PRDEditorHeader
-        canShowPanel={chatFlag?.enabled}
-        isEvaluating={pendingCommand === "evaluate_prd"}
-        isGenerating={runLoop.isPending}
+        canShowPanel={chatFlag?.enabled === true}
+        isEvaluating={prdActions.isEvaluating}
+        isGenerating={prdActions.isGenerating}
         isPending={isPending}
         isRequestingChanges={prdActions.isRequestingChanges}
-        onDecomposeFeatures={handleDecomposeFeatures}
+        onDecomposeFeatures={prdActions.handleDecomposeFeatures}
         onDelete={uiState.openDeleteDialog}
-        onEvaluatePrd={handleEvaluatePrd}
+        onEvaluatePrd={prdActions.handleEvaluatePrd}
         onExport={actions.handleDownload}
         onGeneratePlan={openGeneratePlanModal}
-        onGeneratePrd={handleGeneratePrd}
+        onGeneratePrd={prdActions.handleGeneratePrd}
         onMove={() => setShowMoveDialog(true)}
         onRename={openRenameDialog}
         onRequestChanges={openRequestChangesModal}
-        onRestoreVersion={session.handleRestoreVersion}
+        onRestoreVersion={contentController.restoreVersion}
         onToggleMetadataPanel={uiState.toggleMetadataPanel}
         prd={prd}
         showMetadataPanel={uiState.showMetadataPanel}
         showRestore={session.isViewingHistorical}
       />
 
-      {/* Metadata bar below header */}
-      <MetadataPanel className="pl-4" variant="bar">
-        <StatusMetadataSection
-          approver={metadata.approver}
-          assignee={metadata.assignee}
-          layout="horizontal"
-          onApproverSelect={metadata.handleApproverSelect}
-          onAssigneeChange={metadata.handleAssigneeChange}
-          onStatusChange={metadata.handleStatusChange}
-          orgUsers={transformedOrgUsers}
-          status={metadata.status}
-          teamMembers={metadata.teamMembers}
-        />
-      </MetadataPanel>
-
       {/* Content area: main content + chat panel on right */}
-      <div className="flex min-h-0 flex-1">
-        <div className="min-w-0 flex-1 overflow-y-auto overflow-x-hidden bg-background">
-          <OptionalArtifactRoom roomId={session.liveblocksRoomId}>
-            {/* Loading spinner — visible until editor content is fully loaded */}
-            <div
-              className={
-                session.isContentReady
-                  ? "hidden"
-                  : "flex flex-1 items-center justify-center py-24"
-              }
-            >
-              <Loader2Icon className="h-6 w-6 animate-spin text-muted-foreground" />
-            </div>
-
-            {/* Content wrapper — hidden until Liveblocks Y.Doc sync completes */}
-            <div
-              className={
-                session.isContentReady
-                  ? undefined
-                  : "invisible h-0 overflow-hidden"
-              }
-            >
-              {/* Toolbar Row */}
-              <EditorToolbarRow
-                leftContent={
-                  <>
-                    {session.isEditing && session.liveblocksRoomId && (
-                      <Suspense fallback={null}>
-                        <InlinePresence />
-                      </Suspense>
-                    )}
-                    {versionDisplay}
-                    <SaveIndicator
-                      isSaving={contentController.isSaving}
-                      lastSaved={contentController.lastSaved}
-                    />
-                  </>
-                }
-                rightContent={
-                  <EditorToolbarActions
-                    isEditing={session.isEditing}
-                    isPending={isPending}
-                    isSaving={contentController.isSaving}
-                    isViewingHistorical={session.isViewingHistorical}
-                    onDiscard={session.handleDiscard}
-                    onEdit={session.handleEdit}
-                    onPublish={session.handlePublish}
-                    onToggleComments={setShowComments}
-                    openThreadCount={session.openThreadCount}
-                    showComments={showComments}
-                  />
-                }
-              />
-
-              {/* Generation Status Banner */}
-              <GenerationStatusBanner
-                generationStatus={generationStatus}
-                onGenerationComplete={invalidateArtifactCache}
-              />
-
-              {/* biome-ignore lint/a11y/noNoninteractiveElementInteractions: wraps TipTap rich text editor */}
-              {/* biome-ignore lint/a11y/noStaticElementInteractions: wraps TipTap rich text editor */}
+      <ResizablePanelGroup autoSaveId="prd-editor" direction="horizontal">
+        <ResizablePanel defaultSize={75} minSize={50}>
+          <div className="h-full overflow-y-auto overflow-x-hidden bg-background">
+            <OptionalArtifactRoom roomId={session.liveblocksRoomId}>
+              {/* Loading spinner — visible until editor content is fully loaded */}
               <div
-                className="flex min-h-[200px] flex-col"
-                onClick={
-                  session.isEditing || session.isViewingHistorical
-                    ? undefined
-                    : session.handleEdit
-                }
-                onKeyDown={
-                  session.isEditing || session.isViewingHistorical
-                    ? undefined
-                    : session.handleEdit
+                className={
+                  session.isEditorReady
+                    ? "hidden"
+                    : "flex flex-1 items-center justify-center py-24"
                 }
               >
-                <CollaborativeEditor
-                  contentResetKey={session.contentResetKey}
-                  contentResetValue={session.contentResetValue}
-                  key={currentVersion}
-                  liveblocksRoomId={session.liveblocksRoomId}
-                  onChange={contentController.updateContent}
-                  onContentReady={session.handleContentReady}
-                  onEditorInstance={session.handleEditorInstance}
-                  onOpenThreadCountChange={session.handleThreadCountChange}
-                  readOnly={!session.isEditing}
-                  showComments={showComments}
-                  value={contentController.content}
-                />
+                <Loader2Icon className="h-6 w-6 animate-spin text-muted-foreground" />
               </div>
 
-              {/* Details (target repo, version, execution log, comments, attachments) */}
-              <div className="border-t px-4 py-4">
-                <PRDMetadataPanel
-                  approver={metadata.approver}
-                  assignee={metadata.assignee}
-                  judgeItems={judgesReport ?? null}
-                  onApproverSelect={metadata.handleApproverSelect}
-                  onAssigneeChange={metadata.handleAssigneeChange}
-                  onStatusChange={metadata.handleStatusChange}
-                  onTargetBranchBlur={metadata.handleTargetBranchBlur}
-                  onTargetBranchChange={metadata.handleTargetBranchChange}
-                  onTargetRepoBlur={metadata.handleTargetRepoBlur}
-                  onTargetRepoChange={metadata.handleTargetRepoChange}
-                  prd={prd}
-                  status={metadata.status}
-                  targetBranch={metadata.targetBranch}
-                  targetRepo={metadata.targetRepo}
-                  teamMembers={metadata.teamMembers}
-                  variant="detailsOnly"
+              {/* Content wrapper — hidden until Liveblocks Y.Doc sync completes */}
+              <div
+                className={
+                  session.isEditorReady
+                    ? undefined
+                    : "invisible h-0 overflow-hidden"
+                }
+              >
+                {/* Toolbar Row: formatting + version/save controls */}
+                <EditorToolbarRow
+                  leftContent={
+                    <RichTextToolbar
+                      className="border-0 bg-transparent p-0"
+                      editor={session.editor}
+                      hasLiveblocksExtension={!!session.liveblocksRoomId}
+                      onPasteMarkdown={session.setEditorContent}
+                    />
+                  }
+                  rightContent={
+                    <>
+                      {session.liveblocksRoomId && (
+                        <Suspense fallback={null}>
+                          <InlinePresence />
+                        </Suspense>
+                      )}
+                      {versionDisplay}
+                      <EditorToolbarActions
+                        canRestoreVersion={true}
+                        canSaveVersion={currentVersion === prd.latestVersion}
+                        isRestoring={isPending}
+                        isSaving={contentController.isSaving}
+                        onRestoreVersion={contentController.restoreVersion}
+                        onSaveVersion={contentController.saveContent}
+                        onToggleComments={setShowComments}
+                        openThreadCount={session.openThreadCount}
+                        showComments={showComments}
+                      />
+                    </>
+                  }
                 />
-              </div>
-            </div>
-          </OptionalArtifactRoom>
-        </div>
 
-        {/* Chat panel (replaces metadata sidebar) */}
-        {chatFlag?.enabled !== false && uiState.showMetadataPanel && (
-          <ArtifactChatPanel artifactId={prd.id} artifactType="prd" />
+                {/* Generation Status Banner */}
+                <GenerationStatusBanner
+                  generationStatus={generationStatus}
+                  isDismissFailurePending={dismissGenerationStatus.isPending}
+                  onDismissFailure={async (runKey) => {
+                    await dismissGenerationStatus.mutateAsync({
+                      artifactId: prd.id,
+                      runKey,
+                    });
+                  }}
+                  onGenerationComplete={invalidateArtifactCache}
+                />
+
+                <div className="flex min-h-[200px] flex-col">
+                  <CollaborativeEditor
+                    externalToolbar
+                    headerContent={
+                      <div className="space-y-4 px-5 pt-10">
+                        <EditableArtifactTitle
+                          artifactId={prd.id}
+                          initialTitle={prd.title}
+                        />
+                        <PRDMetadataBar metadata={metadata} />
+                      </div>
+                    }
+                    key={currentVersion}
+                    liveblocksRoomId={session.liveblocksRoomId}
+                    onChange={contentController.updateContent}
+                    onContentReady={session.handleEditorReady}
+                    onEditorInstance={session.handleEditorInstance}
+                    onOpenThreadCountChange={session.handleThreadCountChange}
+                    placeholder="Add description..."
+                    readOnly={session.isViewingHistorical}
+                    showComments={showComments}
+                    value={contentController.content}
+                  />
+                </div>
+
+                {/* Details (execution log, evaluation, comments, attachments) */}
+                <div className="border-t px-4 py-4">
+                  <PRDExtrasPanel
+                    judgeItems={judgesReport ?? null}
+                    prd={prd}
+                    variant="detailsOnly"
+                  />
+                </div>
+              </div>
+            </OptionalArtifactRoom>
+          </div>
+        </ResizablePanel>
+
+        {/* Right panel: Chat + Execution Log tabs */}
+        {chatFlag?.enabled === true && uiState.showMetadataPanel && (
+          <>
+            <ResizableHandle className="z-20 after:w-[3px]! hover:after:bg-primary" />
+            <ResizablePanel defaultSize={25} maxSize={40} minSize={15}>
+              <Tabs className="flex h-full flex-col" defaultValue="chat">
+                <TabsList className="mx-3 mt-3 w-auto">
+                  <TabsTrigger value="chat">Chat</TabsTrigger>
+                  <TabsTrigger value="execution-log">Execution Log</TabsTrigger>
+                </TabsList>
+                <TabsContent
+                  className="min-h-0 flex-1 overflow-hidden"
+                  value="chat"
+                >
+                  <ArtifactChatDrawer
+                    artifactId={prd.id}
+                    artifactSlug={prd.slug}
+                    artifactTitle={prd.title}
+                    artifactType="prd"
+                  />
+                </TabsContent>
+                <TabsContent
+                  className="min-h-0 flex-1 overflow-y-auto p-4"
+                  value="execution-log"
+                >
+                  <ExecutionLogSummary
+                    artifactId={prd.id}
+                    onViewFullTrace={executionLogDialog.handleViewFullTrace}
+                  />
+                </TabsContent>
+              </Tabs>
+            </ResizablePanel>
+          </>
         )}
-      </div>
+      </ResizablePanelGroup>
 
       {/* Compute target selector for decompose command */}
-      {decomposeTargetState && (
+      {prdActions.decomposeTargetState && (
         <LoopDispatchTargetSelector
-          availableTargets={decomposeTargetState.availableTargets}
+          availableTargets={prdActions.decomposeTargetState.availableTargets}
           onSelect={(targetId) => {
-            setDecomposeTargetState(null);
-            runLoop.mutate({
-              artifactId: prd.id,
-              command: "decompose",
-              computeTargetId: targetId,
-            });
+            prdActions.clearDecomposeTargetState();
+            prdActions.handleDecomposeFeatures(targetId);
           }}
         />
       )}
 
-      {/* Compute target selector for PRD actions (request changes) */}
-      {prdActions.multiTargetState && (
-        <LoopDispatchTargetSelector
-          availableTargets={prdActions.multiTargetState.availableTargets}
-          onSelect={prdActions.selectTarget}
-        />
-      )}
-
-      {/* Backend mismatch modal for PRD actions */}
-      <BackendMismatchModal
-        mismatchData={prdActions.backendMismatchState}
-        onConfirmOriginal={prdActions.confirmOriginalBackend}
-        onConfirmPreferred={prdActions.confirmPreferredBackend}
-        onOpenChange={(open) => {
-          if (!open) {
-            prdActions.dismissBackendMismatch();
-          }
-        }}
-        open={!!prdActions.backendMismatchState}
+      {/* Execution Log Dialog */}
+      <ExecutionLogDialog
+        initialSessionId={executionLogDialog.selectedSessionId}
+        onOpenChange={executionLogDialog.setDialogOpen}
+        open={executionLogDialog.dialogOpen}
+        trace={executionLogDialog.dialogTrace}
       />
 
       {/* Request Changes Modal */}
       <RequestChangesModal
-        description="Describe the changes you want to make to this PRD. The PRD will be regenerated with your modifications."
         isSubmitting={prdActions.isRequestingChanges}
-        onOpenChange={closeRequestChangesModal}
+        onOpenChange={setShowRequestChangesModal}
         onSubmit={prdActions.handleRequestChanges}
         open={showRequestChangesModal}
-        placeholder="Describe the changes you want to make to this PRD..."
       />
 
       {/* Rename Dialog */}
@@ -463,7 +374,10 @@ export function PRDEditor({
       <NewPlanModal
         onOpenChange={setShowGeneratePlanModal}
         open={showGeneratePlanModal}
-        source={newPlanSource}
+        source={{
+          ...prd,
+          sourceType: EntityType.Artifact,
+        }}
       />
     </>
   );

@@ -109,10 +109,10 @@ describe.skipIf(!hasDatabase)("Artifacts Service Integration", () => {
         "# Updated Content\n\nUpdated implementation details"
       );
 
-      expect(updated).toBeDefined();
-      expect(updated.title).toBe(original!.title);
-      expect(updated.projectId).toBe(original!.projectId);
-      expect(updated.type).toBe(original!.type);
+      expect(updated).toBeTruthy();
+      expect(updated!.title).toBe(original!.title);
+      expect(updated!.projectId).toBe(original!.projectId);
+      expect(updated!.type).toBe(original!.type);
 
       // Original should still exist
       const originalAfter = await artifactsService.findByIdSimple(

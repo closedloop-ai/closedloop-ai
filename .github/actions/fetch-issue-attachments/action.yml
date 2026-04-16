@@ -13,7 +13,7 @@ inputs:
   output_dir:
     description: 'Directory to save attachments'
     required: false
-    default: '.claude/attachments'
+    default: '.closedloop-ai/attachments'
 outputs:
   attachment_args:
     description: 'CLI arguments for attachments (e.g., --attachment file1.png --attachment file2.pdf)'

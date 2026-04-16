@@ -177,7 +177,7 @@ function toStoredCommand(row: StoredCommandRow): StoredCommand {
     : ({
         operationId: row.operationId,
         method: "POST",
-        path: "/api/engineer",
+        path: "/api/gateway",
       } as CreateDesktopCommandInput);
 
   return {
@@ -250,8 +250,7 @@ function mapRelayPayloadToCommandInput(
       )
     : {};
   const method = typeof request.method === "string" ? request.method : "POST";
-  const path =
-    typeof request.path === "string" ? request.path : "/api/engineer";
+  const path = typeof request.path === "string" ? request.path : "/api/gateway";
   const timeoutMs =
     typeof params.timeoutMs === "number" ? params.timeoutMs : undefined;
   const lockKey =

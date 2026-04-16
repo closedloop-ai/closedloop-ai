@@ -109,7 +109,7 @@ export async function handleCreateIdea(
   if (!context) {
     return {
       response_type: "ephemeral",
-      text: "Your Slack workspace is not connected to Symphony, or your Slack user is not linked to a Symphony account. Please contact your administrator.",
+      text: "Your Slack workspace is not connected to ClosedLoop, or your Slack user is not linked to a ClosedLoop account. Please contact your administrator.",
     };
   }
 
@@ -168,7 +168,7 @@ export async function handleCreateIdea(
     // Step 6: Return success response
     return {
       response_type: "in_channel",
-      text: `Idea created: *${artifact.title}* (ID: \`${artifact.id}\`). Open Symphony to continue refining it.`,
+      text: `Idea created: *${artifact.title}* (ID: \`${artifact.id}\`). Open ClosedLoop to continue refining it.`,
     };
   } catch (error) {
     log.error("[slack/handlers] Failed to create idea", {
@@ -199,7 +199,7 @@ export async function handleGetStatus(
   if (!context) {
     return {
       response_type: "ephemeral",
-      text: "Your Slack workspace is not connected to Symphony, or your Slack user is not linked to a Symphony account. Please contact your administrator.",
+      text: "Your Slack workspace is not connected to ClosedLoop, or your Slack user is not linked to a ClosedLoop account. Please contact your administrator.",
     };
   }
 

@@ -17,7 +17,16 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@repo/design-system/components/ui/dropdown-menu";
-import { FileTextIcon, Layers2Icon, MergeIcon, TrashIcon } from "lucide-react";
+import {
+  ExternalLinkIcon,
+  FileTextIcon,
+  GitPullRequestIcon,
+  Layers2Icon,
+  Loader2,
+  MergeIcon,
+  TrashIcon,
+} from "lucide-react";
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import {
   ArtifactRow,
@@ -30,6 +39,7 @@ import { EmptyState } from "@/components/empty-state";
 import { MoveEntityDialog } from "@/components/move-entity-dialog";
 import { useMergeArtifacts } from "@/hooks/queries/use-artifacts";
 import { useParentFallbackMap } from "@/hooks/queries/use-entity-links";
+import { useExternalLinks } from "@/hooks/queries/use-external-links";
 import { useProjectTree } from "@/hooks/queries/use-project-tree";
 import type { ArtifactColumn } from "@/hooks/use-column-visibility";
 import { useGroupExpansion } from "@/hooks/use-group-expansion";
@@ -736,6 +746,12 @@ export function ArtifactsView({
     }
   }
 
+  // ---- Branches: render ExternalLinks instead of artifacts ----
+
+  if (filterCategory === "branches") {
+    return <BranchesList projectId={projectId} />;
+  }
+
   // ---- Empty state ----
 
   if (isEmpty) {
@@ -1018,4 +1034,54 @@ function isFeatureTreeEntity(
   entity: TreeEntity
 ): entity is Extract<TreeEntity, { slug: string; priority: string }> {
   return "slug" in entity && "priority" in entity;
+}
+
+// ---- Branches list (ExternalLinks with type=PULL_REQUEST) ----
+
+function BranchesList({ projectId }: { projectId: string }) {
+  const { data: links, isLoading } = useExternalLinks({
+    projectId,
+    type: "PULL_REQUEST",
+  });
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  if (!links || links.length === 0) {
+    return (
+      <EmptyState
+        description="No pull requests linked to this project yet."
+        icon={GitPullRequestIcon}
+        title="No branches"
+      />
+    );
+  }
+
+  return (
+    <div className="flex flex-col">
+      {links.map((link) => (
+        <Link
+          className="flex items-center gap-3 border-border border-b px-4 py-3 transition-colors hover:bg-accent/50"
+          href={`/build/${link.id}`}
+          key={link.id}
+        >
+          <GitPullRequestIcon className="h-4 w-4 shrink-0 text-emerald-500" />
+          <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+            <span className="truncate font-medium text-foreground text-sm">
+              {link.title}
+            </span>
+            <span className="truncate text-muted-foreground text-xs">
+              {link.externalUrl}
+            </span>
+          </div>
+          <ExternalLinkIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        </Link>
+      ))}
+    </div>
+  );
 }

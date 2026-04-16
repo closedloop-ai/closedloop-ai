@@ -3,17 +3,14 @@
 import { FeatureFlagged } from "@repo/analytics/components/feature-flagged";
 import type {
   ArtifactDetail,
-  ArtifactStatus,
   GenerationStatus,
   PullRequestInfo,
 } from "@repo/api/src/types/artifact";
-import { CustomFieldEntityType } from "@repo/api/src/types/custom-field";
 import type { JudgeFeedbackItem } from "@repo/api/src/types/evaluation";
 import type { PreviewDeploymentInfo } from "@repo/api/src/types/external-link-utils";
 import { Label } from "@repo/design-system/components/ui/label";
-import type { User } from "@repo/design-system/components/ui/user-select-popover";
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { ArtifactVersionInfo } from "@/components/artifact-editor/artifact-version-info";
 import { AttachmentsSection } from "@/components/artifact-editor/attachments-section";
 import { CollapsibleSection } from "@/components/artifact-editor/collapsible-section";
@@ -24,17 +21,7 @@ import {
   MetadataSection,
 } from "@/components/artifact-editor/metadata-panel";
 import { RatingSection } from "@/components/artifact-editor/rating-section";
-import { StatusMetadataSection } from "@/components/artifact-editor/status-metadata-section";
-import { TargetRepositoryFields } from "@/components/artifact-editor/target-repository-fields";
-import { CustomFieldsSection } from "@/components/custom-fields/custom-fields-section";
-import { ExecutionLogDialog } from "@/components/execution-log/execution-log-dialog";
-import { ExecutionLogSummary } from "@/components/execution-log/execution-log-summary";
-import { useOrganizationUsers } from "@/hooks/queries/use-users";
-import { useExecutionLogDialog } from "@/hooks/use-execution-log-dialog";
-import {
-  getUserDisplayName,
-  transformApiUserToSelectUser,
-} from "@/lib/user-utils";
+import { getUserDisplayName } from "@/lib/user-utils";
 import { PerformanceSection } from "./performance-section";
 import { PreviewDeploymentSection } from "./preview-deployment-section";
 import { PullRequestFeedbackSection } from "./pull-request-feedback-section";
@@ -43,10 +30,6 @@ import { SourceArtifactSection } from "./source-artifact-section";
 
 export type PlanMetadataPanelProps = {
   plan: ArtifactDetail;
-  status: ArtifactStatus;
-  approver: User | null;
-  assignee: User | null;
-  teamMembers: User[];
   generationStatus: GenerationStatus | null;
   pullRequest: PullRequestInfo | null;
   previewDeployment: PreviewDeploymentInfo | null;
@@ -54,27 +37,14 @@ export type PlanMetadataPanelProps = {
   isPreviewRefreshing: boolean;
   judgeItems: JudgeFeedbackItem[] | null;
   codeJudgeItems: JudgeFeedbackItem[] | null;
-  onStatusChange: (status: ArtifactStatus) => void;
-  onApproverSelect: (user: User | null) => void;
-  onAssigneeChange: (user: User | null) => void;
-  targetRepo: string;
-  targetBranch: string;
-  onTargetRepoChange: (targetRepo: string) => void;
-  onTargetRepoBlur: (overrideValue?: string) => void;
-  onTargetBranchChange: (targetBranch: string) => void;
-  onTargetBranchBlur: (overrideValue?: string) => void;
   /**
-   * When "detailsOnly", render content without sidebar wrapper and without StatusMetadataSection.
+   * When "detailsOnly", render content without sidebar wrapper.
    */
   variant?: "detailsOnly" | "sidebar";
 };
 
 export function PlanMetadataPanel({
   plan,
-  status,
-  approver,
-  assignee,
-  teamMembers,
   generationStatus,
   pullRequest,
   previewDeployment,
@@ -82,108 +52,38 @@ export function PlanMetadataPanel({
   isPreviewRefreshing,
   judgeItems,
   codeJudgeItems,
-  onStatusChange,
-  onApproverSelect,
-  onAssigneeChange,
-  targetRepo = "Inherited from project",
-  targetBranch = "main",
-  onTargetRepoChange,
-  onTargetRepoBlur,
-  onTargetBranchChange,
-  onTargetBranchBlur,
   variant = "sidebar",
 }: PlanMetadataPanelProps) {
-  const { data: orgUsers = [] } = useOrganizationUsers();
-  const transformedOrgUsers = useMemo(
-    () => orgUsers.map(transformApiUserToSelectUser),
-    [orgUsers]
-  );
-
-  const {
-    dialogOpen,
-    dialogTrace,
-    selectedSessionId,
-    handleViewFullTrace,
-    setDialogOpen,
-  } = useExecutionLogDialog();
-
-  const [isPropertiesOpen, setIsPropertiesOpen] = useState(false);
-  const [isExecutionLogOpen, setIsExecutionLogOpen] = useState(false);
   const [isRatingOpen, setIsRatingOpen] = useState(false);
 
   const projectId = plan.projectId ?? plan.project?.id;
 
   const detailsContent = (
     <div className="space-y-6">
-      <CollapsibleSection
-        onOpenChange={setIsPropertiesOpen}
-        open={isPropertiesOpen}
-        title="Properties"
-      >
-        {variant === "sidebar" ? (
-          <StatusMetadataSection
-            approver={approver}
-            assignee={assignee}
-            onApproverSelect={onApproverSelect}
-            onAssigneeChange={onAssigneeChange}
-            onStatusChange={onStatusChange}
-            orgUsers={transformedOrgUsers}
-            status={status}
-            teamMembers={teamMembers}
-          />
-        ) : null}
+      <SourceArtifactSection artifactId={plan.id} projectId={projectId} />
 
-        <TargetRepositoryFields
-          onTargetBranchBlur={onTargetBranchBlur}
-          onTargetBranchChange={onTargetBranchChange}
-          onTargetRepoBlur={onTargetRepoBlur}
-          onTargetRepoChange={onTargetRepoChange}
-          separator={variant === "sidebar"}
-          targetBranch={targetBranch}
-          targetRepo={targetRepo}
-          title="Target Repository"
+      <GenerationSection generationStatus={generationStatus} />
+
+      {pullRequest ? <PullRequestSection pullRequest={pullRequest} /> : null}
+
+      {pullRequest ? (
+        <PullRequestFeedbackSection pullRequestId={pullRequest.id} />
+      ) : null}
+
+      {previewDeployment ? (
+        <PreviewDeploymentSection
+          isRefreshing={isPreviewRefreshing}
+          onRefresh={onPreviewRefresh}
+          previewDeployment={previewDeployment}
         />
+      ) : null}
 
-        <SourceArtifactSection artifactId={plan.id} projectId={projectId} />
-
-        <GenerationSection generationStatus={generationStatus} />
-
-        {pullRequest ? <PullRequestSection pullRequest={pullRequest} /> : null}
-
-        {pullRequest ? (
-          <PullRequestFeedbackSection pullRequestId={pullRequest.id} />
-        ) : null}
-
-        {previewDeployment ? (
-          <PreviewDeploymentSection
-            isRefreshing={isPreviewRefreshing}
-            onRefresh={onPreviewRefresh}
-            previewDeployment={previewDeployment}
-          />
-        ) : null}
-
-        <ArtifactVersionInfo
-          createdAt={plan.version.createdAt}
-          updatedAt={plan.updatedAt}
-          version={plan.version.version}
-        />
-      </CollapsibleSection>
-
-      <CollapsibleSection
-        onOpenChange={setIsExecutionLogOpen}
-        open={isExecutionLogOpen}
-        title="Execution Log"
-      >
-        <ExecutionLogSummary
-          artifactId={plan.id}
-          onViewFullTrace={handleViewFullTrace}
-        />
-      </CollapsibleSection>
+      <AttachmentsSection artifactId={plan.id} />
 
       <EvaluationSection
         artifactId={plan.id}
         judgeItems={judgeItems}
-        title="Plan Evaluation"
+        title="Agent Evaluation"
       />
 
       <EvaluationSection
@@ -212,42 +112,21 @@ export function PlanMetadataPanel({
         <CommentsSection artifactId={plan.id} />
       </FeatureFlagged>
 
-      <AttachmentsSection artifactId={plan.id} />
-
-      <CustomFieldsSection
-        entityId={plan.id}
-        entityType={CustomFieldEntityType.Artifact}
-        values={plan.customFields}
+      <ArtifactVersionInfo
+        createdAt={plan.version.createdAt}
+        updatedAt={plan.updatedAt}
       />
     </div>
   );
 
   if (variant === "detailsOnly") {
-    return (
-      <>
-        {detailsContent}
-        <ExecutionLogDialog
-          initialSessionId={selectedSessionId}
-          onOpenChange={setDialogOpen}
-          open={dialogOpen}
-          trace={dialogTrace}
-        />
-      </>
-    );
+    return detailsContent;
   }
 
   return (
-    <>
-      <MetadataPanel title="Implementation Plan Details">
-        {detailsContent}
-      </MetadataPanel>
-      <ExecutionLogDialog
-        initialSessionId={selectedSessionId}
-        onOpenChange={setDialogOpen}
-        open={dialogOpen}
-        trace={dialogTrace}
-      />
-    </>
+    <MetadataPanel title="Implementation Plan Details">
+      {detailsContent}
+    </MetadataPanel>
   );
 }
 

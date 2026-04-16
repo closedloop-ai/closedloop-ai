@@ -21,8 +21,22 @@ export function VersionSelector({
   latestVersion,
   onVersionChange,
   compact = false,
-}: VersionSelectorProps) {
-  // Generate linear version list: [latestVersion, ..., 2, 1] (newest first)
+}: Readonly<VersionSelectorProps>) {
+  // Only one version exists — show disabled indicator
+  if (latestVersion <= 1) {
+    return (
+      <Button
+        aria-label="Version"
+        className={compact ? "h-7 px-2 text-xs" : "h-8 px-3 text-sm"}
+        disabled
+        variant="outline"
+      >
+        <span className="font-mono text-muted-foreground">v1</span>
+      </Button>
+    );
+  }
+
+  // DB versions from latestVersion down to 1
   const versions = Array.from(
     { length: latestVersion },
     (_, i) => latestVersion - i
@@ -34,7 +48,7 @@ export function VersionSelector({
         <Button
           aria-label="Select version"
           className={compact ? "h-7 px-2 text-xs" : "h-8 px-3 text-sm"}
-          variant="ghost"
+          variant="outline"
         >
           <span className="font-mono text-muted-foreground">
             v{currentVersion}
@@ -43,20 +57,19 @@ export function VersionSelector({
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-[160px]">
-        {versions.map((version) => (
+        {versions.map((dbVersion) => (
           <DropdownMenuItem
             className="font-mono"
-            disabled={version === currentVersion}
-            key={version}
-            onClick={() => onVersionChange(version)}
+            key={dbVersion}
+            onClick={() => onVersionChange(dbVersion)}
           >
-            v{version}
-            {version === latestVersion && (
+            v{dbVersion}
+            {dbVersion === latestVersion && (
               <span className="ml-auto text-muted-foreground text-xs">
                 latest
               </span>
             )}
-            {version === currentVersion && version !== latestVersion && (
+            {dbVersion === currentVersion && dbVersion !== latestVersion && (
               <span className="ml-auto text-muted-foreground text-xs">
                 current
               </span>

@@ -8,10 +8,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@repo/design-system/components/ui/popover";
-import {
-  SidebarMenuButton,
-  useSidebar,
-} from "@repo/design-system/components/ui/sidebar";
+import { SidebarMenuButton } from "@repo/design-system/components/ui/sidebar";
 import { cn } from "@repo/design-system/lib/utils";
 import {
   AlertTriangleIcon,
@@ -117,8 +114,6 @@ export function ComputeTargetPopover({
   const [showDownloadPrompt, setShowDownloadPrompt] = useState(false);
   const { user } = useUser();
   const userId = user?.id ?? "";
-  const sidebar = useSidebar();
-
   // Keep SSE stream alive for real-time target status updates
   useComputeTargetStatusStream(true);
 
@@ -228,10 +223,7 @@ export function ComputeTargetPopover({
       open={open}
     >
       <PopoverTrigger asChild>
-        <SidebarMenuButton
-          aria-label={triggerLabel}
-          tooltip={sidebar.open ? undefined : triggerLabel}
-        >
+        <SidebarMenuButton aria-label={triggerLabel} tooltip={triggerLabel}>
           {getTriggerIcon()}
           <span>{triggerLabel}</span>
         </SidebarMenuButton>
