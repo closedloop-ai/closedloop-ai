@@ -1,0 +1,71 @@
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { EditableFeatureTitle } from "../editable-feature-title";
+
+const mockUseUpdateFeature = vi.fn();
+const mockMutateAsync = vi.fn();
+const FEATURE_TITLE_PLACEHOLDER = "Untitled feature";
+
+vi.mock("@/hooks/queries/use-features", async () => {
+  const actual = await vi.importActual("@/hooks/queries/use-features");
+  return {
+    ...actual,
+    useUpdateFeature: () => mockUseUpdateFeature(),
+  };
+});
+
+describe("EditableFeatureTitle", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockUseUpdateFeature.mockReturnValue({
+      mutateAsync: mockMutateAsync,
+    });
+    mockMutateAsync.mockResolvedValue({
+      id: "feature-1",
+      title: "Updated feature title",
+    });
+  });
+
+  afterEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  it("renders the title as a textarea so long titles can wrap", () => {
+    render(
+      <EditableFeatureTitle
+        featureId="feature-1"
+        initialTitle="A very long feature title that should wrap naturally"
+      />
+    );
+
+    const titleField = screen.getByPlaceholderText(FEATURE_TITLE_PLACEHOLDER);
+
+    expect(titleField.tagName).toBe("TEXTAREA");
+    expect(titleField).toHaveValue(
+      "A very long feature title that should wrap naturally"
+    );
+  });
+
+  it("saves the updated title when Enter is pressed", async () => {
+    render(
+      <EditableFeatureTitle
+        featureId="feature-1"
+        initialTitle="Original feature title"
+      />
+    );
+
+    const titleField = screen.getByPlaceholderText(FEATURE_TITLE_PLACEHOLDER);
+
+    fireEvent.change(titleField, {
+      target: { value: "Updated feature title" },
+    });
+    fireEvent.keyDown(titleField, { key: "Enter" });
+
+    await waitFor(() => {
+      expect(mockMutateAsync).toHaveBeenCalledWith({
+        id: "feature-1",
+        title: "Updated feature title",
+      });
+    });
+  });
+});
