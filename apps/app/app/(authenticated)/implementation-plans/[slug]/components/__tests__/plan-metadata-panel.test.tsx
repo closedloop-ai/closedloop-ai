@@ -1,13 +1,13 @@
-import type { ArtifactDetail } from "@repo/api/src/types/artifact";
+import type { DocumentDetail } from "@repo/api/src/types/document";
 import type { JudgeFeedbackItem } from "@repo/api/src/types/evaluation";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
-  createMockArtifact,
+  createMockDocument,
   createMockGenerationStatus,
   createMockPullRequest,
-} from "@/__tests__/fixtures/artifacts";
+} from "@/__tests__/fixtures/documents";
 import { createMockJudgeFeedbackItem } from "@/__tests__/fixtures/evaluation";
 import {
   calculateAcceptanceRate,
@@ -34,15 +34,15 @@ vi.mock("../judge-result-card", () => ({
 }));
 
 // Mock RatingSection to avoid Clerk auth dependencies
-vi.mock("@/components/artifact-editor/rating-section", () => ({
+vi.mock("@/components/document-editor/rating-section", () => ({
   RatingSection: () => (
     <div data-testid="rating-section">Rating Section Mock</div>
   ),
 }));
 
-// Mock useArtifactsByProject to avoid Clerk auth dependencies
-vi.mock("@/hooks/queries/use-artifacts", () => ({
-  useArtifactsByProject: () => ({
+// Mock useDocumentsByProject to avoid Clerk auth dependencies
+vi.mock("@/hooks/queries/use-documents", () => ({
+  useDocumentsByProject: () => ({
     data: [],
     isLoading: false,
     error: null,
@@ -67,7 +67,7 @@ vi.mock("@/hooks/queries/use-entity-links", () => ({
 }));
 
 // Mock AttachmentsSection to avoid QueryClient dependencies
-vi.mock("@/components/artifact-editor/attachments-section", () => ({
+vi.mock("@/components/document-editor/attachments-section", () => ({
   AttachmentsSection: () => (
     <div data-testid="attachments-section">Attachments Mock</div>
   ),
@@ -93,19 +93,19 @@ const UPDATED_PATTERN = /updated:/i;
 const PR_NUMBER_PATTERN = /#42:/i;
 const PR_TITLE_PATTERN = /add new feature/i;
 
-const createMockPlan = (overrides?: Partial<ArtifactDetail>): ArtifactDetail =>
+const createMockPlan = (overrides?: Partial<DocumentDetail>): DocumentDetail =>
   ({
-    ...createMockArtifact({ type: "IMPLEMENTATION_PLAN" }),
+    ...createMockDocument({ type: "IMPLEMENTATION_PLAN" }),
     version: {
       id: "version-1",
-      artifactId: "artifact-123",
+      documentId: "artifact-123",
       version: 1,
       content: "# Plan content",
       createdById: null,
       createdAt: new Date("2024-01-15T10:00:00Z"),
     },
     ...overrides,
-  }) as ArtifactDetail;
+  }) as DocumentDetail;
 
 const defaultProps = {
   plan: createMockPlan(),

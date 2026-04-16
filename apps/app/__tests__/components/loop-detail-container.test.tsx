@@ -59,8 +59,8 @@ vi.mock("@repo/design-system/components/ui/sonner", () => ({
 
 vi.mock("@repo/analytics/client", () => ({ useFeatureFlag: vi.fn() }));
 
-vi.mock("@/hooks/queries/use-artifacts", () => ({
-  useArtifact: vi.fn(() => ({ data: null })),
+vi.mock("@/hooks/queries/use-documents", () => ({
+  useDocument: vi.fn(() => ({ data: null })),
 }));
 
 // Mock heavy sub-components that would require extra providers or network calls

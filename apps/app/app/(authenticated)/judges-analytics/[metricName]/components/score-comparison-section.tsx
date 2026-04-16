@@ -55,7 +55,7 @@ export function ScoreComparisonSection({
     <div className="space-y-4">
       <h2 className="font-semibold text-lg">Score Comparison</h2>
       <p className="text-muted-foreground text-sm">
-        {data.totalArtifacts} artifacts evaluated &mdash; {data.ratedArtifacts}{" "}
+        {data.totalDocuments} artifacts evaluated &mdash; {data.ratedDocuments}{" "}
         rated by at least one org member ({data.coveragePct.toFixed(0)}%
         coverage).
       </p>

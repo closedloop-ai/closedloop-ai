@@ -43,7 +43,7 @@ const makeBackendMismatchBody = () =>
     originalComputeTargetId: "ct-old",
     originalComputeTargetName: "Old Machine",
     preferredComputeTargetId: "ct-new",
-    artifactId: "artifact-abc",
+    documentId: "artifact-abc",
   });
 
 // ---------------------------------------------------------------------------

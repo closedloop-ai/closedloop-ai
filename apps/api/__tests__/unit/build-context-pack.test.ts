@@ -9,15 +9,15 @@ vi.mock("@repo/observability/log", () => ({
   },
 }));
 
-vi.mock("@/app/artifacts/artifact-version-service", () => ({
-  artifactVersionService: {
+vi.mock("@/app/documents/document-version-service", () => ({
+  documentVersionService: {
     getByVersion: vi.fn().mockResolvedValue(null),
     getLatest: vi.fn().mockResolvedValue(null),
   },
 }));
 
-vi.mock("@/app/artifacts/service", () => ({
-  artifactsService: {
+vi.mock("@/app/documents/service", () => ({
+  documentsService: {
     findByIdSimple: vi.fn().mockResolvedValue(null),
   },
   getCommitterInfo: vi.fn(),
@@ -46,21 +46,21 @@ vi.mock("@/lib/loops/loop-event-bus", () => ({
   loopEventBus: { publish: vi.fn() },
 }));
 
-vi.mock("@/app/artifacts/attachments-service", () => ({
+vi.mock("@/app/documents/attachments-service", () => ({
   ATTACHMENT_SIGNED_URL_MAX_FILES: 20,
   attachmentsService: {
     findByIdSimple: vi.fn().mockResolvedValue(null),
-    listWithSignedUrlsByArtifact: vi.fn().mockResolvedValue([]),
+    listWithSignedUrlsByDocument: vi.fn().mockResolvedValue([]),
     listWithSignedUrlsByFeature: vi.fn().mockResolvedValue([]),
   },
 }));
 
-import { ArtifactType } from "@repo/api/src/types/artifact";
+import { DocumentType } from "@repo/api/src/types/document";
 import { EntityType } from "@repo/api/src/types/entity-link";
 import { LoopCommand } from "@repo/api/src/types/loop";
-import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
-import { attachmentsService } from "@/app/artifacts/attachments-service";
-import { artifactsService } from "@/app/artifacts/service";
+import { attachmentsService } from "@/app/documents/attachments-service";
+import { documentVersionService } from "@/app/documents/document-version-service";
+import { documentsService } from "@/app/documents/service";
 import { featuresService } from "@/app/features/service";
 import {
   buildContextPack,
@@ -70,16 +70,16 @@ import { uploadContextPack } from "@/lib/loops/loop-state";
 
 const mockAttachmentsService = attachmentsService as unknown as {
   findByIdSimple: ReturnType<typeof vi.fn>;
-  listWithSignedUrlsByArtifact: ReturnType<typeof vi.fn>;
+  listWithSignedUrlsByDocument: ReturnType<typeof vi.fn>;
   listWithSignedUrlsByFeature: ReturnType<typeof vi.fn>;
 };
 const mockFeaturesService = featuresService as unknown as {
   findById: ReturnType<typeof vi.fn>;
 };
-const mockArtifactsService = artifactsService as unknown as {
+const mockArtifactsService = documentsService as unknown as {
   findByIdSimple: ReturnType<typeof vi.fn>;
 };
-const mockArtifactVersionService = artifactVersionService as unknown as {
+const mockArtifactVersionService = documentVersionService as unknown as {
   getByVersion: ReturnType<typeof vi.fn>;
   getLatest: ReturnType<typeof vi.fn>;
 };
@@ -107,8 +107,8 @@ describe("buildContextPack", () => {
         userId: "user-1",
         command: "PLAN",
         prompt: null,
-        artifactId: "artifact-1",
-        artifactVersion: null,
+        documentId: "artifact-1",
+        documentVersion: null,
         parentLoopId: null,
         repo: { fullName: "org/repo", branch: "main" },
         contextRefs: [
@@ -147,8 +147,8 @@ describe("buildContextPack", () => {
         userId: "user-1",
         command: "PLAN",
         prompt: null,
-        artifactId: null,
-        artifactVersion: null,
+        documentId: null,
+        documentVersion: null,
         parentLoopId: null,
         repo: { fullName: "org/repo", branch: "main" },
         contextRefs: null,
@@ -169,8 +169,8 @@ describe("buildContextPack", () => {
         userId: "user-1",
         command: "PLAN",
         prompt: null,
-        artifactId: null,
-        artifactVersion: null,
+        documentId: null,
+        documentVersion: null,
         parentLoopId: null,
         repo: { fullName: "org/repo", branch: "main" },
         contextRefs: [
@@ -200,7 +200,7 @@ describe("buildContextPack", () => {
 
     mockArtifactsService.findByIdSimple.mockResolvedValue({
       id: "prd-1",
-      type: ArtifactType.Prd,
+      type: DocumentType.Prd,
       title: "Auth PRD",
     });
 
@@ -214,8 +214,8 @@ describe("buildContextPack", () => {
         userId: "user-1",
         command: "PLAN",
         prompt: null,
-        artifactId: "artifact-1",
-        artifactVersion: null,
+        documentId: "artifact-1",
+        documentVersion: null,
         parentLoopId: null,
         repo: { fullName: "org/repo", branch: "main" },
         contextRefs: [
@@ -238,14 +238,14 @@ describe("buildContextPack", () => {
     expect(contextPack.artifacts).toHaveLength(2);
     expect(contextPack.artifacts[0].type).toBe("FEATURE");
     expect(contextPack.artifacts[0].id).toBe("issue-1");
-    expect(contextPack.artifacts[1].type).toBe(ArtifactType.Prd);
+    expect(contextPack.artifacts[1].type).toBe(DocumentType.Prd);
     expect(contextPack.artifacts[1].id).toBe("prd-1");
   });
 
   it("existing PRD-only flow still works without issue refs", async () => {
     mockArtifactsService.findByIdSimple.mockResolvedValue({
       id: "prd-1",
-      type: ArtifactType.Prd,
+      type: DocumentType.Prd,
       title: "My PRD",
     });
 
@@ -259,8 +259,8 @@ describe("buildContextPack", () => {
         userId: "user-1",
         command: "PLAN",
         prompt: null,
-        artifactId: "artifact-1",
-        artifactVersion: null,
+        documentId: "artifact-1",
+        documentVersion: null,
         parentLoopId: null,
         repo: { fullName: "org/repo", branch: "main" },
         contextRefs: [{ sourceId: "prd-1", include: "full" as const }],
@@ -273,7 +273,7 @@ describe("buildContextPack", () => {
     const contextPack = uploadCall[1];
 
     expect(contextPack.artifacts).toHaveLength(1);
-    expect(contextPack.artifacts[0].type).toBe(ArtifactType.Prd);
+    expect(contextPack.artifacts[0].type).toBe(DocumentType.Prd);
     expect(contextPack.artifacts[0].content).toBe("# PRD Content");
   });
 });
@@ -292,8 +292,8 @@ describe("fetchAttachmentsForContextPack", () => {
     id: "loop-1",
     userId: "user-1",
     prompt: null,
-    artifactId: "artifact-1",
-    artifactVersion: null,
+    documentId: "artifact-1",
+    documentVersion: null,
     parentLoopId: null,
     repo: { fullName: "org/repo", branch: "main" },
     contextRefs: null,
@@ -330,8 +330,8 @@ describe("fetchAttachmentsForContextPack", () => {
     expect(result[0].id).toBe("att-1");
   });
 
-  it("calls listWithSignedUrlsByArtifact for artifact contextRef with attachments", async () => {
-    mockAttachmentsService.listWithSignedUrlsByArtifact.mockResolvedValue([
+  it("calls listWithSignedUrlsByDocument for artifact contextRef with attachments", async () => {
+    mockAttachmentsService.listWithSignedUrlsByDocument.mockResolvedValue([
       mockAttachment,
     ]);
 
@@ -339,14 +339,14 @@ describe("fetchAttachmentsForContextPack", () => {
       {
         ...baseLoop,
         command: LoopCommand.Plan,
-        artifactId: null,
+        documentId: null,
         contextRefs: [{ sourceId: "artifact-2", include: "full" as const }],
       },
       "org-1"
     );
 
     expect(
-      mockAttachmentsService.listWithSignedUrlsByArtifact
+      mockAttachmentsService.listWithSignedUrlsByDocument
     ).toHaveBeenCalledWith("artifact-2", "org-1");
     expect(result).toHaveLength(1);
     expect(result[0].id).toBe("att-1");
@@ -357,7 +357,7 @@ describe("fetchAttachmentsForContextPack", () => {
       {
         ...baseLoop,
         command: LoopCommand.Plan,
-        artifactId: null,
+        documentId: null,
         contextRefs: null,
       },
       "org-1"
@@ -367,7 +367,7 @@ describe("fetchAttachmentsForContextPack", () => {
       mockAttachmentsService.listWithSignedUrlsByFeature
     ).not.toHaveBeenCalled();
     expect(
-      mockAttachmentsService.listWithSignedUrlsByArtifact
+      mockAttachmentsService.listWithSignedUrlsByDocument
     ).not.toHaveBeenCalled();
     expect(result).toHaveLength(0);
   });
@@ -379,7 +379,7 @@ describe("fetchAttachmentsForContextPack", () => {
     mockAttachmentsService.listWithSignedUrlsByFeature.mockResolvedValue([
       featureAtt,
     ]);
-    mockAttachmentsService.listWithSignedUrlsByArtifact.mockResolvedValue([
+    mockAttachmentsService.listWithSignedUrlsByDocument.mockResolvedValue([
       artifactAtt,
     ]);
 
@@ -387,7 +387,7 @@ describe("fetchAttachmentsForContextPack", () => {
       {
         ...baseLoop,
         command: LoopCommand.Plan,
-        artifactId: null,
+        documentId: null,
         contextRefs: [
           {
             sourceId: "feature-1",
@@ -407,7 +407,7 @@ describe("fetchAttachmentsForContextPack", () => {
   });
 
   it("includes primary artifact attachments for EXECUTE command", async () => {
-    mockAttachmentsService.listWithSignedUrlsByArtifact.mockResolvedValue([
+    mockAttachmentsService.listWithSignedUrlsByDocument.mockResolvedValue([
       mockAttachment,
     ]);
 
@@ -421,14 +421,14 @@ describe("fetchAttachmentsForContextPack", () => {
     );
 
     expect(
-      mockAttachmentsService.listWithSignedUrlsByArtifact
+      mockAttachmentsService.listWithSignedUrlsByDocument
     ).toHaveBeenCalledWith("artifact-1", "org-1");
     expect(result).toHaveLength(1);
     expect(result[0].id).toBe("att-1");
   });
 
   it("includes primary artifact attachments for REQUEST_CHANGES command", async () => {
-    mockAttachmentsService.listWithSignedUrlsByArtifact.mockResolvedValue([
+    mockAttachmentsService.listWithSignedUrlsByDocument.mockResolvedValue([
       mockAttachment,
     ]);
 
@@ -442,7 +442,7 @@ describe("fetchAttachmentsForContextPack", () => {
     );
 
     expect(
-      mockAttachmentsService.listWithSignedUrlsByArtifact
+      mockAttachmentsService.listWithSignedUrlsByDocument
     ).toHaveBeenCalledWith("artifact-1", "org-1");
     expect(result).toHaveLength(1);
     expect(result[0].id).toBe("att-1");
@@ -458,10 +458,10 @@ describe("fetchAttachmentsForContextPack", () => {
       "org-1"
     );
 
-    // listWithSignedUrlsByArtifact should not be called for primary artifact
+    // listWithSignedUrlsByDocument should not be called for primary artifact
     // (PLAN handler has includePrimaryArtifact: false)
     expect(
-      mockAttachmentsService.listWithSignedUrlsByArtifact
+      mockAttachmentsService.listWithSignedUrlsByDocument
     ).not.toHaveBeenCalled();
     expect(result).toHaveLength(0);
   });
@@ -479,7 +479,7 @@ describe("fetchAttachmentsForContextPack", () => {
     };
 
     // Primary artifact call returns primaryVersion
-    mockAttachmentsService.listWithSignedUrlsByArtifact
+    mockAttachmentsService.listWithSignedUrlsByDocument
       .mockResolvedValueOnce([primaryVersion])
       // contextRef artifact call returns contextRefVersion
       .mockResolvedValueOnce([contextRefVersion]);
@@ -505,7 +505,7 @@ describe("fetchAttachmentsForContextPack", () => {
       id: "att-big",
       sizeBytes: 26 * 1024 * 1024,
     };
-    mockAttachmentsService.listWithSignedUrlsByArtifact.mockResolvedValue([
+    mockAttachmentsService.listWithSignedUrlsByDocument.mockResolvedValue([
       oversizedAttachment,
     ]);
 
@@ -534,7 +534,7 @@ describe("fetchAttachmentsForContextPack", () => {
       ...mockAttachment,
       id: `att-${i}`,
     }));
-    mockAttachmentsService.listWithSignedUrlsByArtifact.mockResolvedValue(
+    mockAttachmentsService.listWithSignedUrlsByDocument.mockResolvedValue(
       attachments
     );
 
@@ -566,7 +566,7 @@ describe("fetchAttachmentsForContextPack", () => {
     const att2 = { ...mockAttachment, id: "att-2", sizeBytes: twentyMb };
     const att3 = { ...mockAttachment, id: "att-3", sizeBytes: twentyMb };
 
-    mockAttachmentsService.listWithSignedUrlsByArtifact.mockResolvedValue([
+    mockAttachmentsService.listWithSignedUrlsByDocument.mockResolvedValue([
       att1,
       att2,
       att3,

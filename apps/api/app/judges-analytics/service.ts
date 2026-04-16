@@ -1,15 +1,15 @@
 import { JUDGE_RADAR_METRICS, JUDGE_THRESHOLDS } from "@repo/api/src/constants";
-import type { ArtifactType } from "@repo/api/src/types/artifact";
+import type { DocumentType } from "@repo/api/src/types/document";
 import {
   type EvaluationReportType,
   EvaluationReportType as EvaluationReportTypeValues,
 } from "@repo/api/src/types/evaluation";
 import type {
-  ArtifactCountBucket,
-  ArtifactCountsGroupBy,
-  ArtifactCountsResponse,
-  ArtifactTypeGroup,
   CharacteristicLabel,
+  DocumentCountBucket,
+  DocumentCountsGroupBy,
+  DocumentCountsResponse,
+  DocumentTypeGroup,
   JudgeAggregateStats,
   JudgeDetailResponse,
   JudgePromptVersion,
@@ -28,15 +28,15 @@ const SUNDAY_INDEX = 0;
 /** Days from Sunday back to the previous Monday. */
 const ISO_WEEK_OFFSET_FROM_SUNDAY = -6;
 type HumanCountsByType = {
-  humanRatingsByType: Map<ArtifactType, number>;
-  humanCommentsByType: Map<ArtifactType, number>;
+  humanRatingsByType: Map<DocumentType, number>;
+  humanCommentsByType: Map<DocumentType, number>;
 };
 
 function formatDateKey(year: number, month: number, day: number): string {
   return `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 }
 
-function bucketKey(d: Date, groupBy: ArtifactCountsGroupBy): string {
+function bucketKey(d: Date, groupBy: DocumentCountsGroupBy): string {
   const date = new Date(d);
   const y = date.getUTCFullYear();
   const m = date.getUTCMonth();
@@ -73,9 +73,9 @@ function getISOWeekStartDate(date: Date): Date {
   );
 }
 
-function initializeHumanCountsByType(types: ArtifactType[]): HumanCountsByType {
-  const humanRatingsByType = new Map<ArtifactType, number>();
-  const humanCommentsByType = new Map<ArtifactType, number>();
+function initializeHumanCountsByType(types: DocumentType[]): HumanCountsByType {
+  const humanRatingsByType = new Map<DocumentType, number>();
+  const humanCommentsByType = new Map<DocumentType, number>();
 
   for (const type of types) {
     humanRatingsByType.set(type, 0);
@@ -87,9 +87,9 @@ function initializeHumanCountsByType(types: ArtifactType[]): HumanCountsByType {
 
 function incrementHumanCountsByType<TRow>(
   rows: TRow[],
-  typeById: Map<string, ArtifactType>,
-  humanRatingsByType: Map<ArtifactType, number>,
-  humanCommentsByType: Map<ArtifactType, number>,
+  typeById: Map<string, DocumentType>,
+  humanRatingsByType: Map<DocumentType, number>,
+  humanCommentsByType: Map<DocumentType, number>,
   getId: (row: TRow) => string,
   getComment: (row: TRow) => string | null | undefined = (row) =>
     (row as { comment?: string | null }).comment
@@ -137,7 +137,7 @@ export async function getHumanCountsByType(
   organizationId: string,
   startDate: Date,
   endDate: Date,
-  types: ArtifactType[]
+  types: DocumentType[]
 ): Promise<HumanCountsByType> {
   const { humanRatingsByType, humanCommentsByType } =
     initializeHumanCountsByType(types);
@@ -147,7 +147,7 @@ export async function getHumanCountsByType(
   }
 
   const artifacts = await withDb((db) =>
-    db.artifact.findMany({
+    db.document.findMany({
       where: {
         organizationId,
         type: { in: types },
@@ -164,13 +164,13 @@ export async function getHumanCountsByType(
   }
 
   const ratings = await withDb((db) =>
-    db.artifactRating.findMany({
+    db.documentRating.findMany({
       where: {
         organizationId,
-        artifactId: { in: orgArtifactIds },
+        documentId: { in: orgArtifactIds },
         createdAt: { gte: startDate, lte: endDate },
       },
-      select: { artifactId: true, comment: true },
+      select: { documentId: true, comment: true },
     })
   );
 
@@ -179,7 +179,7 @@ export async function getHumanCountsByType(
     idToType,
     humanRatingsByType,
     humanCommentsByType,
-    (rating) => rating.artifactId
+    (rating) => rating.documentId
   );
 
   return { humanRatingsByType, humanCommentsByType };
@@ -202,17 +202,17 @@ export async function getHumanRatingsByArtifact(
   }
 
   const ratings = await withDb((db) =>
-    db.artifactRating.findMany({
+    db.documentRating.findMany({
       where: {
         organizationId,
-        artifactId: { in: artifactIds },
+        documentId: { in: artifactIds },
         createdAt: { gte: startDate, lte: endDate },
       },
-      select: { artifactId: true, score: true },
+      select: { documentId: true, score: true },
     })
   );
 
-  return collectNormalizedScores(ratings, (rating) => rating.artifactId);
+  return collectNormalizedScores(ratings, (rating) => rating.documentId);
 }
 
 /**
@@ -225,7 +225,7 @@ export async function getCodeHumanCountsByType(
   organizationId: string,
   startDate: Date,
   endDate: Date,
-  types: ArtifactType[]
+  types: DocumentType[]
 ): Promise<HumanCountsByType> {
   const { humanRatingsByType, humanCommentsByType } =
     initializeHumanCountsByType(types);
@@ -235,7 +235,7 @@ export async function getCodeHumanCountsByType(
   }
 
   const artifacts = await withDb((db) =>
-    db.artifact.findMany({
+    db.document.findMany({
       where: {
         organizationId,
         type: { in: types },
@@ -257,9 +257,9 @@ export async function getCodeHumanCountsByType(
     db.gitHubPullRequest.findMany({
       where: {
         organizationId,
-        artifactId: { in: artifactIds },
+        documentId: { in: artifactIds },
       },
-      select: { id: true, artifactId: true },
+      select: { id: true, documentId: true },
     })
   );
 
@@ -267,12 +267,12 @@ export async function getCodeHumanCountsByType(
     return { humanRatingsByType, humanCommentsByType };
   }
 
-  const prIdToType = new Map<string, ArtifactType>();
+  const prIdToType = new Map<string, DocumentType>();
   for (const pullRequest of pullRequests) {
-    if (pullRequest.artifactId == null) {
+    if (pullRequest.documentId == null) {
       continue;
     }
-    const type = idToType.get(pullRequest.artifactId);
+    const type = idToType.get(pullRequest.documentId);
     if (type !== undefined) {
       prIdToType.set(pullRequest.id, type);
     }
@@ -306,7 +306,7 @@ export async function getCodeHumanCountsByType(
 
 /**
  * Fetches CODE human ratings and returns normalized scores (0-1) per artifact.
- * Uses pull request ratings linked to the artifact via GitHubPullRequest.artifactId.
+ * Uses pull request ratings linked to the artifact via GitHubPullRequest.documentId.
  *
  * @internal Exported for unit testing.
  */
@@ -324,9 +324,9 @@ export async function getCodeHumanRatingsByArtifact(
     db.gitHubPullRequest.findMany({
       where: {
         organizationId,
-        artifactId: { in: artifactIds },
+        documentId: { in: artifactIds },
       },
-      select: { id: true, artifactId: true },
+      select: { id: true, documentId: true },
     })
   );
 
@@ -336,8 +336,8 @@ export async function getCodeHumanRatingsByArtifact(
 
   const prIdToArtifactId = new Map<string, string>();
   for (const pullRequest of pullRequests) {
-    if (pullRequest.artifactId != null) {
-      prIdToArtifactId.set(pullRequest.id, pullRequest.artifactId);
+    if (pullRequest.documentId != null) {
+      prIdToArtifactId.set(pullRequest.id, pullRequest.documentId);
     }
   }
 
@@ -364,43 +364,43 @@ export type JudgeScoreInput = {
   promptId: string | null;
   score: number;
   evaluation: {
-    artifactId: string | null;
+    documentId: string | null;
     entityId: string;
-    artifactType: ArtifactType;
+    documentType: DocumentType;
   };
 };
 
-/** Aggregates judge scores by artifact type and judge name. */
+/** Aggregates judge scores by document type and judge name. */
 type AggregatedJudgeData = {
   scores: number[];
-  artifactIds: Set<string>;
+  documentIds: Set<string>;
   promptName: string;
   metricName: string;
 };
 
 class JudgeScoreAggregator {
   private readonly data = new Map<
-    ArtifactType,
+    DocumentType,
     Map<string, AggregatedJudgeData>
   >();
 
   addScore(
-    artifactType: ArtifactType,
+    documentType: DocumentType,
     aggregationKey: string,
     promptName: string,
     metricName: string,
     score: number,
-    artifactId: string
+    documentId: string
   ): void {
-    if (!this.data.has(artifactType)) {
-      this.data.set(artifactType, new Map());
+    if (!this.data.has(documentType)) {
+      this.data.set(documentType, new Map());
     }
 
-    const judgeMap = this.data.get(artifactType)!;
+    const judgeMap = this.data.get(documentType)!;
     if (!judgeMap.has(aggregationKey)) {
       judgeMap.set(aggregationKey, {
         scores: [],
-        artifactIds: new Set(),
+        documentIds: new Set(),
         promptName,
         metricName,
       });
@@ -408,10 +408,10 @@ class JudgeScoreAggregator {
 
     const judgeData = judgeMap.get(aggregationKey)!;
     judgeData.scores.push(score);
-    judgeData.artifactIds.add(artifactId);
+    judgeData.documentIds.add(documentId);
   }
 
-  getResults(): Map<ArtifactType, Map<string, AggregatedJudgeData>> {
+  getResults(): Map<DocumentType, Map<string, AggregatedJudgeData>> {
     return this.data;
   }
 }
@@ -452,13 +452,13 @@ function resolvePromptRouteName(
  * @param judgeScores - Array of JudgeScore rows with evaluation and artifact relations
  * @param collisionMetrics - Set of metricNames that appear from multiple distinct promptIds
  * @param promptNameById - Map from promptId to normalized prompt name (for collision resolution)
- * @returns Nested map structure: artifactType -> metricName -> { scores, artifactIds }
+ * @returns Nested map structure: documentType -> metricName -> { scores, documentIds }
  */
 export function aggregateJudgeScoreRows(
   judgeScores: JudgeScoreInput[],
   collisionMetrics: Set<string> = new Set(),
   promptNameById: Map<string, string> = new Map()
-): Map<ArtifactType, Map<string, AggregatedJudgeData>> {
+): Map<DocumentType, Map<string, AggregatedJudgeData>> {
   const aggregator = new JudgeScoreAggregator();
 
   for (const row of judgeScores) {
@@ -469,7 +469,7 @@ export function aggregateJudgeScoreRows(
     );
     const promptName = resolvePromptRouteName(row, promptNameById);
     aggregator.addScore(
-      row.evaluation.artifactType,
+      row.evaluation.documentType,
       aggregationKey,
       promptName,
       row.metricName,
@@ -483,12 +483,12 @@ export function aggregateJudgeScoreRows(
 
 /** Collects all unique artifact IDs from the aggregator across all types and judges. */
 function collectAllArtifactIds(
-  aggregator: Map<ArtifactType, Map<string, AggregatedJudgeData>>
+  aggregator: Map<DocumentType, Map<string, AggregatedJudgeData>>
 ): string[] {
   const allIds = new Set<string>();
   for (const judgeMap of aggregator.values()) {
     for (const judgeData of judgeMap.values()) {
-      for (const id of judgeData.artifactIds) {
+      for (const id of judgeData.documentIds) {
         allIds.add(id);
       }
     }
@@ -517,7 +517,7 @@ function computeJudgeStats(
 
   // Pool all human scores across this judge's artifacts
   const judgeHumanScores: number[] = [];
-  for (const artifactId of judgeData.artifactIds) {
+  for (const artifactId of judgeData.documentIds) {
     const artifactScores = humanRatingsByArtifact.get(artifactId);
     if (artifactScores) {
       judgeHumanScores.push(...artifactScores);
@@ -530,7 +530,7 @@ function computeJudgeStats(
     metricName: judgeData.metricName,
     displayMetricName: judgeDisplayName,
     description: judgeDescriptionByMetricName.get(judgeDisplayName) ?? null,
-    artifactsEvaluated: judgeData.artifactIds.size,
+    documentsEvaluated: judgeData.documentIds.size,
     min,
     mean,
     max,
@@ -567,11 +567,11 @@ async function getPlanHumanData(
   organizationId: string,
   startDate: Date,
   endDate: Date,
-  types: ArtifactType[],
+  types: DocumentType[],
   artifactIds: string[]
 ): Promise<{
-  humanRatingsByType: Map<ArtifactType, number>;
-  humanCommentsByType: Map<ArtifactType, number>;
+  humanRatingsByType: Map<DocumentType, number>;
+  humanCommentsByType: Map<DocumentType, number>;
   humanRatingsByArtifact: Map<string, number[]>;
 }> {
   const { humanRatingsByType, humanCommentsByType } =
@@ -589,11 +589,11 @@ async function getCodeHumanData(
   organizationId: string,
   startDate: Date,
   endDate: Date,
-  types: ArtifactType[],
+  types: DocumentType[],
   artifactIds: string[]
 ): Promise<{
-  humanRatingsByType: Map<ArtifactType, number>;
-  humanCommentsByType: Map<ArtifactType, number>;
+  humanRatingsByType: Map<DocumentType, number>;
+  humanCommentsByType: Map<DocumentType, number>;
   humanRatingsByArtifact: Map<string, number[]>;
 }> {
   const { humanRatingsByType, humanCommentsByType } =
@@ -857,7 +857,7 @@ export const judgesAnalyticsService = {
         where: {
           evaluation: {
             reportType,
-            entityType: EntityType.ARTIFACT,
+            entityType: EntityType.DOCUMENT,
             organizationId,
             createdAt: { gte: startDate, lte: endDate },
           },
@@ -869,7 +869,7 @@ export const judgesAnalyticsService = {
           score: true,
           evaluation: {
             select: {
-              artifactId: true,
+              documentId: true,
               entityId: true,
             },
           },
@@ -892,26 +892,26 @@ export const judgesAnalyticsService = {
       ...new Set(rawJudgeScores.map((js) => js.evaluation.entityId)),
     ];
     const evalArtifactRows = await withDb((db) =>
-      db.artifact.findMany({
+      db.document.findMany({
         where: { id: { in: evalEntityIds }, organizationId },
         select: { id: true, type: true },
       })
     );
-    const artifactTypeByEntityId = new Map(
+    const documentTypeByEntityId = new Map(
       evalArtifactRows.map((a) => [a.id, a.type])
     );
     const judgeScores: JudgeScoreInput[] = rawJudgeScores.flatMap((js) => {
-      const artifactType = artifactTypeByEntityId.get(js.evaluation.entityId);
-      if (!artifactType) {
+      const documentType = documentTypeByEntityId.get(js.evaluation.entityId);
+      if (!documentType) {
         return [];
       }
       return [
         {
           ...js,
           evaluation: {
-            artifactId: js.evaluation.artifactId,
+            documentId: js.evaluation.documentId,
             entityId: js.evaluation.entityId,
-            artifactType,
+            documentType,
           },
         },
       ];
@@ -956,10 +956,10 @@ export const judgesAnalyticsService = {
             artifactIds
           );
 
-    // Compute statistics for each judge within each artifact type
-    const groups: ArtifactTypeGroup[] = [];
+    // Compute statistics for each judge within each document type
+    const groups: DocumentTypeGroup[] = [];
 
-    for (const [artifactType, judgeMap] of aggregator) {
+    for (const [docType, judgeMap] of aggregator) {
       const judges: JudgeAggregateStats[] = [];
 
       for (const [judgeName, judgeData] of judgeMap) {
@@ -978,10 +978,10 @@ export const judgesAnalyticsService = {
       judges.sort((a, b) => b.mean - a.mean);
 
       groups.push({
-        artifactType,
+        documentType: docType,
         judges,
-        humanRatingsCount: humanRatingsByType.get(artifactType) ?? 0,
-        humanCommentsCount: humanCommentsByType.get(artifactType) ?? 0,
+        humanRatingsCount: humanRatingsByType.get(docType) ?? 0,
+        humanCommentsCount: humanCommentsByType.get(docType) ?? 0,
       });
     }
 
@@ -1002,10 +1002,10 @@ export const judgesAnalyticsService = {
     organizationId: string,
     startDate: Date,
     endDate: Date,
-    groupBy: ArtifactCountsGroupBy
-  ): Promise<ArtifactCountsResponse> {
+    groupBy: DocumentCountsGroupBy
+  ): Promise<DocumentCountsResponse> {
     const artifacts = await withDb((db) =>
-      db.artifact.findMany({
+      db.document.findMany({
         where: {
           organizationId,
           createdAt: { gte: startDate, lte: endDate },
@@ -1025,7 +1025,7 @@ export const judgesAnalyticsService = {
       typeMap.set(typeStr, (typeMap.get(typeStr) ?? 0) + 1);
     }
 
-    const buckets: ArtifactCountBucket[] = [...bucketTypeCounts.entries()]
+    const buckets: DocumentCountBucket[] = [...bucketTypeCounts.entries()]
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([bucket, typeMap]) => {
         const countsByType: Record<string, number> = {};
@@ -1067,7 +1067,7 @@ export const judgesAnalyticsService = {
           promptId: { in: promptIds },
           evaluation: {
             reportType,
-            entityType: EntityType.ARTIFACT,
+            entityType: EntityType.DOCUMENT,
             organizationId,
           },
         },
@@ -1198,7 +1198,7 @@ export const judgesAnalyticsService = {
           promptId: { in: promptIds },
           evaluation: {
             reportType,
-            entityType: EntityType.ARTIFACT,
+            entityType: EntityType.DOCUMENT,
             organizationId,
           },
         },
@@ -1223,8 +1223,8 @@ export const judgesAnalyticsService = {
     if (judgeScores.length === 0) {
       return {
         rows: [],
-        totalArtifacts: 0,
-        ratedArtifacts: 0,
+        totalDocuments: 0,
+        ratedDocuments: 0,
         coveragePct: 0,
         pagination: { page, pageSize, totalRows: 0, totalPages: 0 },
       };
@@ -1235,7 +1235,7 @@ export const judgesAnalyticsService = {
       ...new Set(judgeScores.map((js) => js.evaluation.entityId)),
     ];
     const artifactRows = await withDb((db) =>
-      db.artifact.findMany({
+      db.document.findMany({
         where: { id: { in: entityIds }, organizationId },
         select: { id: true, type: true, title: true, slug: true },
       })
@@ -1260,10 +1260,10 @@ export const judgesAnalyticsService = {
         {
           judgeScoreId: js.id,
           metricName: js.metricName,
-          artifactId: artifact.id,
-          artifactType: artifact.type,
-          artifactTitle: artifact.title,
-          artifactSlug: artifact.slug,
+          documentId: artifact.id,
+          documentType: artifact.type,
+          documentTitle: artifact.title,
+          documentSlug: artifact.slug,
           judgeScore: js.score,
           avgUserRating,
           userRatingCount,
@@ -1295,8 +1295,8 @@ export const judgesAnalyticsService = {
 
     return {
       rows: paginatedRows,
-      totalArtifacts,
-      ratedArtifacts,
+      totalDocuments: totalArtifacts,
+      ratedDocuments: ratedArtifacts,
       coveragePct,
       pagination: { page, pageSize, totalRows, totalPages },
     };

@@ -5,13 +5,13 @@ import type { ExternalLink } from "@repo/api/src/types/external-link";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { useQueries } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef } from "react";
-import { artifactKeys } from "@/hooks/queries/use-artifacts";
+import { documentKeys } from "@/hooks/queries/use-documents";
 import { useApiClient } from "@/hooks/use-api-client";
 
 type MergeMetadata = {
   prTitle?: string;
   slug?: string;
-  artifactId?: string;
+  documentId?: string;
 };
 
 function showMergeToast(
@@ -23,7 +23,7 @@ function showMergeToast(
   const {
     prTitle,
     slug,
-    artifactId: eventArtifactId,
+    documentId: eventArtifactId,
   } = activity.metadata as MergeMetadata;
 
   const fallbackRoute = `/teams/${teamId}/projects/${projectId}`;
@@ -67,7 +67,7 @@ export function useMergeNotification(
   const initialized = useRef(false);
   const apiClient = useApiClient();
 
-  // Extract artifactIds from ALL unseen GITHUB_PR_MERGED events
+  // Extract documentIds from ALL unseen GITHUB_PR_MERGED events
   const unseenArtifactIds = useMemo(() => {
     if (!activityData?.activities) {
       return [];
@@ -79,9 +79,9 @@ export function useMergeNotification(
         activity.type === "GITHUB_PR_MERGED" &&
         !seenEventIds.current.has(activity.id)
       ) {
-        const artifactId = (activity.metadata as MergeMetadata)?.artifactId;
-        if (artifactId) {
-          ids.push(artifactId);
+        const documentId = (activity.metadata as MergeMetadata)?.documentId;
+        if (documentId) {
+          ids.push(documentId);
         }
       }
     }
@@ -90,26 +90,26 @@ export function useMergeNotification(
 
   // Fetch preview deployments for all unseen merge events
   const previewDeploymentQueries = useQueries({
-    queries: unseenArtifactIds.map((artifactId) => ({
-      queryKey: artifactKeys.previewDeployment(artifactId),
+    queries: unseenArtifactIds.map((documentId) => ({
+      queryKey: documentKeys.previewDeployment(documentId),
       queryFn: () =>
         apiClient.get<ExternalLink | null>(
-          `/artifacts/${artifactId}/preview-deployment`
+          `/documents/${documentId}/preview-deployment`
         ),
-      enabled: !!artifactId,
+      enabled: !!documentId,
       staleTime: 0, // Always fetch fresh
     })),
   });
 
-  // Build artifactId → previewDeployment map
+  // Build documentId → previewDeployment map
   const queryData = previewDeploymentQueries.map((q) => q.data);
   const previewDeploymentMap = useMemo(() => {
     const map = new Map<string, ExternalLink>();
     for (let i = 0; i < unseenArtifactIds.length; i++) {
-      const artifactId = unseenArtifactIds[i];
+      const documentId = unseenArtifactIds[i];
       const data = queryData[i];
       if (data?.externalUrl) {
-        map.set(artifactId, data);
+        map.set(documentId, data);
       }
     }
     return map;

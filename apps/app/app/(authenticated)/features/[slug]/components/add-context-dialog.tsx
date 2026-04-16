@@ -1,7 +1,7 @@
 "use client";
 
 import { useFeatureFlag } from "@repo/analytics/client";
-import { ArtifactType } from "@repo/api/src/types/artifact";
+import { DocumentType } from "@repo/api/src/types/document";
 import { EntityType, LinkType } from "@repo/api/src/types/entity-link";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
@@ -39,7 +39,7 @@ import {
   useGoogleIntegrationStatus,
 } from "@/hooks/queries/use-google-integration";
 import { uploadToS3 } from "@/lib/s3-upload";
-import { SelectArtifactDialog } from "./select-artifact-dialog";
+import { SelectDocumentDialog } from "./select-document-dialog";
 
 const DEBOUNCE_MS = 300;
 
@@ -164,9 +164,9 @@ function LinkExistingTab({
         <FileTextIcon className="h-4 w-4" />
         Browse PRDs
       </Button>
-      <SelectArtifactDialog
-        artifactType={ArtifactType.Prd}
+      <SelectDocumentDialog
         description="Choose a PRD to link as context for this feature."
+        documentType={DocumentType.Prd}
         emptyText="No PRDs found."
         excludeIds={excludeArtifactIds}
         icon={FileTextIcon}
@@ -180,7 +180,7 @@ function LinkExistingTab({
           createEntityLink.mutate(
             {
               sourceId: prd.id,
-              sourceType: EntityType.Artifact,
+              sourceType: EntityType.Document,
               targetId: featureId,
               targetType: EntityType.Feature,
               linkType: LinkType.Produces,

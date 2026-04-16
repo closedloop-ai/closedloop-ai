@@ -16,13 +16,13 @@ import {
 
 vi.mock("@repo/database", () => ({
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
-  EntityType: { ARTIFACT: "ARTIFACT", FEATURE: "FEATURE" },
+  EntityType: { DOCUMENT: "DOCUMENT", FEATURE: "FEATURE" },
 }));
 
 import {
   getUserJudgeRatings,
   submitJudgeRating,
-} from "@/app/artifacts/[id]/judge-ratings/service";
+} from "@/app/documents/[id]/judge-ratings/service";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -130,7 +130,7 @@ describe("getUserJudgeRatings — where clause shape (SS8.8.3)", () => {
           userId: USER_ID,
           evaluation: expect.objectContaining({
             entityId: ARTIFACT_ID,
-            entityType: EntityType.ARTIFACT,
+            entityType: EntityType.DOCUMENT,
           }),
         }),
       })

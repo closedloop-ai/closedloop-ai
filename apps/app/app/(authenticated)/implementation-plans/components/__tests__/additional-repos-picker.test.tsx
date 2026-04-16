@@ -33,13 +33,13 @@ vi.mock("next/navigation", () => ({
   useSearchParams: vi.fn(() => new URLSearchParams()),
 }));
 
-vi.mock("@/hooks/queries/use-artifacts", async () => {
-  const actual = await vi.importActual("@/hooks/queries/use-artifacts");
+vi.mock("@/hooks/queries/use-documents", async () => {
+  const actual = await vi.importActual("@/hooks/queries/use-documents");
   return {
     ...actual,
-    useArtifacts: () => ({ data: [], isLoading: false }),
-    useCreateArtifact: () => ({ mutate: vi.fn(), isPending: false }),
-    useCreateAndGenerateArtifact: () => ({ mutate: vi.fn(), isPending: false }),
+    useDocuments: () => ({ data: [], isLoading: false }),
+    useCreateDocument: () => ({ mutate: vi.fn(), isPending: false }),
+    useCreateAndGenerateDocument: () => ({ mutate: vi.fn(), isPending: false }),
   };
 });
 

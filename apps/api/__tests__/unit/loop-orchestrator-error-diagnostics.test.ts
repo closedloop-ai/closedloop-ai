@@ -34,13 +34,13 @@ vi.mock("@repo/database", () => ({
   EvaluationReportType: { PLAN: "PLAN", CODE: "CODE" },
 }));
 
-vi.mock("@/app/artifacts/service", () => ({
+vi.mock("@/app/documents/service", () => ({
   getCommitterInfo: vi.fn(),
 }));
 
-vi.mock("@/app/artifacts/attachments-service", () => ({
+vi.mock("@/app/documents/attachments-service", () => ({
   attachmentsService: {
-    listWithSignedUrlsByArtifact: vi.fn().mockResolvedValue([]),
+    listWithSignedUrlsByDocument: vi.fn().mockResolvedValue([]),
     listWithSignedUrlsByFeature: vi.fn().mockResolvedValue([]),
   },
   ATTACHMENT_SIGNED_URL_MAX_FILES: 20,
@@ -166,7 +166,7 @@ describe("handleLoopEvent error diagnostics", () => {
       status: "RUNNING",
       command: "EXECUTE",
       s3StateKey: null,
-      artifactId: null,
+      documentId: null,
       ...overrides,
     });
     mockLoopsService.findById.mockResolvedValue(loop);

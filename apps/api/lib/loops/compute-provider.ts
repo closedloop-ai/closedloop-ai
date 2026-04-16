@@ -31,8 +31,8 @@ export type LaunchContext = {
   githubToken: string | undefined;
   committer: { name: string; email: string } | undefined;
   repo: { fullName: string; branch: string } | null;
-  artifactId: string | null;
-  artifactSlug: string | undefined;
+  documentId: string | null;
+  documentSlug: string | undefined;
   parentLoopId: string | null;
   parentS3StateKey: string | null;
   parentBranchName: string | null;

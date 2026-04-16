@@ -4,14 +4,14 @@
  * Covers:
  * - success path: handleRequestChanges returns true and calls mutateAsync correctly
  * - conflict error routing: 409 multiple_targets error sets multiTargetState
- * - null artifactId guard: returns false without calling mutateAsync
+ * - null documentId guard: returns false without calling mutateAsync
  */
 
 import { RunLoopCommand } from "@repo/api/src/types/loop";
 import { QueryClient } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import { usePrdActions } from "@/hooks/artifact-editing/use-prd-actions";
+import { usePrdActions } from "@/hooks/document-editing/use-prd-actions";
 import { createWrapperWithClient } from "@/hooks/queries/__tests__/test-utils";
 import { ApiError } from "@/lib/api-error";
 
@@ -95,7 +95,7 @@ describe("usePrdActions", () => {
       });
 
       const { result } = renderHook(
-        () => usePrdActions({ artifactId: "test-id" }),
+        () => usePrdActions({ documentId: "test-id" }),
         { wrapper: createWrapperWithClient(queryClient) }
       );
 
@@ -109,7 +109,7 @@ describe("usePrdActions", () => {
       expect(mockMutateAsync).toHaveBeenCalledOnce();
       expect(mockMutateAsync).toHaveBeenCalledWith(
         {
-          artifactId: "test-id",
+          documentId: "test-id",
           command: RunLoopCommand.RequestPrdChanges,
           prompt: "add error handling",
         },
@@ -144,7 +144,7 @@ describe("usePrdActions", () => {
       );
 
       const { result } = renderHook(
-        () => usePrdActions({ artifactId: "test-id" }),
+        () => usePrdActions({ documentId: "test-id" }),
         { wrapper: createWrapperWithClient(queryClient) }
       );
 

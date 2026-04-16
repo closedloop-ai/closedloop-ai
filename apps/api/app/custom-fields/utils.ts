@@ -380,7 +380,7 @@ const RESERVED_NAMES_BY_ENTITY_TYPE: Record<
     "workstream",
     "slug",
   ]),
-  [CustomFieldEntityType.Artifact]: new Set([
+  [CustomFieldEntityType.Document]: new Set([
     "title",
     "description",
     "type",
@@ -399,7 +399,7 @@ const ENTITY_TYPE_DISPLAY_NAMES: Record<CustomFieldEntityType, string> = {
   [CustomFieldEntityType.Project]: "Project",
   [CustomFieldEntityType.Workstream]: "Workstream",
   [CustomFieldEntityType.Feature]: "Feature",
-  [CustomFieldEntityType.Artifact]: "Artifact",
+  [CustomFieldEntityType.Document]: "Document",
 };
 
 /**

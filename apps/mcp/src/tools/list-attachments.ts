@@ -5,13 +5,13 @@ import type { ApiClient } from "../api-client.js";
 import { encodePathSegment, withErrorHandling } from "./tool-utils.js";
 
 const ATTACHMENT_ENTITY_TYPE_OPTIONS = [
-  EntityType.Artifact,
+  EntityType.Document,
   EntityType.Feature,
 ] as [string, ...string[]];
 
 /**
  * Register the list-attachments tool on the given MCP server.
- * Calls GET /artifacts/:entityId/attachments or /features/:entityId/attachments
+ * Calls GET /documents/:entityId/attachments or /features/:entityId/attachments
  * based on the entityType parameter.
  */
 export function registerListAttachments(
@@ -22,18 +22,18 @@ export function registerListAttachments(
     "list-attachments",
     {
       description:
-        "List file attachments for an artifact or feature. Returns attachment metadata including id, filename, mimeType, and sizeBytes.",
+        "List file attachments for a document or feature. Returns attachment metadata including id, filename, mimeType, and sizeBytes.",
       inputSchema: {
         entityType: z
           .enum(ATTACHMENT_ENTITY_TYPE_OPTIONS)
-          .describe("Entity type: ARTIFACT or FEATURE"),
-        entityId: z.string().describe("Artifact or feature ID"),
+          .describe("Entity type: DOCUMENT or FEATURE"),
+        entityId: z.string().describe("Document or feature ID"),
       },
     },
     ({ entityType, entityId }) =>
       withErrorHandling(async () => {
         const basePath =
-          entityType === EntityType.Feature ? "features" : "artifacts";
+          entityType === EntityType.Feature ? "features" : "documents";
         const path = `/${basePath}/${encodePathSegment(entityId)}/attachments`;
         const attachments = await apiClient.get<unknown>(path);
         return {

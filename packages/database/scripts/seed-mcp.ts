@@ -243,16 +243,16 @@ async function main() {
       status: "DRAFT" | "IN_REVIEW" | "APPROVED" | "OBSOLETE";
       contents: string[]; // one per version
     }) {
-      let artifact = await prisma.artifact.findFirst({
+      let doc = await prisma.document.findFirst({
         where: { organizationId, slug: data.slug },
       });
 
-      if (artifact) {
-        console.log(`  Artifact exists: ${data.slug} (${artifact.id})`);
-        return artifact;
+      if (doc) {
+        console.log(`  Document exists: ${data.slug} (${doc.id})`);
+        return doc;
       }
 
-      artifact = await prisma.artifact.create({
+      doc = await prisma.document.create({
         data: {
           organizationId,
           projectId: data.projectId,
@@ -268,9 +268,9 @@ async function main() {
       });
 
       for (let i = 0; i < data.contents.length; i++) {
-        await prisma.artifactVersion.create({
+        await prisma.documentVersion.create({
           data: {
-            artifactId: artifact.id,
+            documentId: doc.id,
             version: i + 1,
             content: data.contents[i],
             createdById: userId,
@@ -279,9 +279,9 @@ async function main() {
       }
 
       console.log(
-        `  Artifact: ${data.slug} (${artifact.id}) - ${data.contents.length} version(s)`
+        `  Document: ${data.slug} (${doc.id}) - ${data.contents.length} version(s)`
       );
-      return artifact;
+      return doc;
     }
 
     const prd1 = await upsertArtifactWithVersions({
@@ -427,7 +427,7 @@ async function main() {
     console.log("\n--- Loops ---");
 
     let loop1 = await prisma.loop.findFirst({
-      where: { organizationId, artifactId: plan1.id, command: "PLAN" },
+      where: { organizationId, documentId: plan1.id, command: "PLAN" },
     });
     if (loop1) {
       console.log(`  Loop exists: PLAN for ${plan1.slug} (${loop1.id})`);
@@ -438,7 +438,7 @@ async function main() {
           userId,
           status: "COMPLETED",
           command: "PLAN",
-          artifactId: plan1.id,
+          documentId: plan1.id,
           workstreamId: ws1.id,
           prompt: "Generate an implementation plan for the payment system",
           containerId: "ecs-task-arn-mock-001",
@@ -455,7 +455,7 @@ async function main() {
     }
 
     let loop2 = await prisma.loop.findFirst({
-      where: { organizationId, artifactId: prd2.id, command: "EXPLORE" },
+      where: { organizationId, documentId: prd2.id, command: "EXPLORE" },
     });
     if (loop2) {
       console.log(`  Loop exists: EXPLORE for ${prd2.slug} (${loop2.id})`);
@@ -466,7 +466,7 @@ async function main() {
           userId,
           status: "RUNNING",
           command: "EXPLORE",
-          artifactId: prd2.id,
+          documentId: prd2.id,
           workstreamId: ws2.id,
           prompt: "Explore notification service patterns and best practices",
           containerId: "ecs-task-arn-mock-002",
@@ -486,8 +486,8 @@ async function main() {
     async function upsertEntityLink(data: {
       sourceId: string;
       targetId: string;
-      sourceType: "ARTIFACT" | "FEATURE" | "EXTERNAL_LINK";
-      targetType: "ARTIFACT" | "FEATURE" | "EXTERNAL_LINK";
+      sourceType: "DOCUMENT" | "FEATURE" | "EXTERNAL_LINK";
+      targetType: "DOCUMENT" | "FEATURE" | "EXTERNAL_LINK";
       linkType: "PRODUCES" | "BLOCKS" | "RELATES_TO";
     }) {
       const existing = await prisma.entityLink.findFirst({
@@ -526,8 +526,8 @@ async function main() {
     await upsertEntityLink({
       sourceId: prd1.id,
       targetId: plan1.id,
-      sourceType: "ARTIFACT",
-      targetType: "ARTIFACT",
+      sourceType: "DOCUMENT",
+      targetType: "DOCUMENT",
       linkType: "PRODUCES",
     });
 
@@ -535,8 +535,8 @@ async function main() {
     await upsertEntityLink({
       sourceId: prd2.id,
       targetId: plan2.id,
-      sourceType: "ARTIFACT",
-      targetType: "ARTIFACT",
+      sourceType: "DOCUMENT",
+      targetType: "DOCUMENT",
       linkType: "PRODUCES",
     });
 

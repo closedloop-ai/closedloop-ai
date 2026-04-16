@@ -6,7 +6,7 @@ import { Loader2Icon } from "lucide-react";
 import { useParams } from "next/navigation";
 import { useMemo } from "react";
 import { Header } from "@/app/(authenticated)/components/header";
-import { ColumnVisibilityPanel } from "@/components/artifact-table/column-visibility-panel";
+import { TableViewMenu } from "@/components/document-table/table-view-menu";
 import {
   useDeleteProject,
   useProjectStatusHandler,
@@ -108,7 +108,7 @@ export default function TeamArchivedProjectsPage() {
       <main className="flex flex-1 flex-col overflow-hidden">
         <div className="flex min-w-fit items-center justify-between border-b px-4 pt-4 pb-2">
           <h1 className="font-semibold text-xl">Archived Projects</h1>
-          <ColumnVisibilityPanel
+          <TableViewMenu
             columns={PROJECT_DEFAULT_COLUMNS}
             onToggle={toggleColumn}
             visibility={visibility}

@@ -1,4 +1,4 @@
-import { parseArtifactRoomId } from "@repo/collaboration/room-utils";
+import { parseDocumentRoomId } from "@repo/collaboration/room-utils";
 import type { RoomInfo } from "@repo/collaboration/top-level-collaboration-provider";
 
 /**
@@ -6,7 +6,7 @@ import type { RoomInfo } from "@repo/collaboration/top-level-collaboration-provi
  * Only resolves rooms belonging to the given organization.
  *
  * Calls the server-side /api/collaboration/rooms/resolve endpoint which reads
- * Liveblocks room metadata (artifactType) to build correct type-specific URLs
+ * Liveblocks room metadata (documentType) to build correct type-specific URLs
  * (e.g., /prds/slug, /features/slug). Falls back to slug-based names on error.
  */
 export function createResolveRoomsInfo(organizationId: string) {
@@ -17,7 +17,7 @@ export function createResolveRoomsInfo(organizationId: string) {
   }): Promise<(RoomInfo | undefined)[]> => {
     const orgRoomIds = roomIds.filter((roomId) => {
       try {
-        const { organizationId: roomOrgId } = parseArtifactRoomId(roomId);
+        const { organizationId: roomOrgId } = parseDocumentRoomId(roomId);
         return roomOrgId === organizationId;
       } catch {
         return false;
@@ -53,13 +53,13 @@ export function createResolveRoomsInfo(organizationId: string) {
       }
 
       try {
-        const { organizationId: roomOrgId, slug } = parseArtifactRoomId(roomId);
+        const { organizationId: roomOrgId, slug } = parseDocumentRoomId(roomId);
         if (roomOrgId !== organizationId) {
           return undefined;
         }
         return {
           name: slug,
-          url: `/artifacts/${slug}`,
+          url: `/documents/${slug}`,
         } satisfies RoomInfo;
       } catch {
         return undefined;

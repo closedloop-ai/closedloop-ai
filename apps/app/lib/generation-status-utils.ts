@@ -1,4 +1,4 @@
-import type { GenerationStatus } from "@repo/api/src/types/artifact";
+import type { GenerationStatus } from "@repo/api/src/types/document";
 import { getUserDisplayName } from "@/lib/user-utils";
 
 export function getStatusMessage(

@@ -20,10 +20,10 @@ import { LoaderIcon, PlusIcon, SparklesIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  useArtifacts,
-  useCreateAndGenerateArtifact,
-  useCreateArtifact,
-} from "@/hooks/queries/use-artifacts";
+  useCreateAndGenerateDocument,
+  useCreateDocument,
+  useDocuments,
+} from "@/hooks/queries/use-documents";
 import { useProject, useProjects } from "@/hooks/queries/use-projects";
 import { useMultiRepoPlanEnabled } from "@/hooks/use-multi-repo-plan-enabled";
 import { AdditionalReposPicker } from "./additional-repos-picker";
@@ -70,8 +70,8 @@ export function NewPlanModal({
   onOpenChange: controlledOnOpenChange,
 }: NewPlanModalProps = {}) {
   const router = useRouter();
-  const createPlan = useCreateArtifact();
-  const createAndGeneratePlan = useCreateAndGenerateArtifact();
+  const createPlan = useCreateDocument();
+  const createAndGeneratePlan = useCreateAndGenerateDocument();
   const { open, setOpen, isControlled } = useModalOpenState(
     controlledOpen,
     controlledOnOpenChange
@@ -112,7 +112,7 @@ export function NewPlanModal({
   );
 
   // Fetch PRDs when modal opens (skip if we have a source)
-  const { data: prds = [], isLoading: loadingPrds } = useArtifacts(
+  const { data: prds = [], isLoading: loadingPrds } = useDocuments(
     { type: "PRD", projectId: selectedProjectId },
     {
       enabled: open && !!selectedProjectId && !source,
@@ -133,7 +133,7 @@ export function NewPlanModal({
       (selectedPrd
         ? {
             ...selectedPrd,
-            sourceType: EntityType.Artifact,
+            sourceType: EntityType.Document,
           }
         : undefined)
     );
@@ -221,10 +221,10 @@ export function NewPlanModal({
       selectedSource
     );
 
-    const onSuccess = (artifact: { slug: string }) => {
+    const onSuccess = (document: { slug: string }) => {
       setOpen(false);
       resetForm();
-      router.push(`/implementation-plans/${artifact.slug}`);
+      router.push(`/implementation-plans/${document.slug}`);
     };
 
     if (createConfig.type === "createAndGenerate") {

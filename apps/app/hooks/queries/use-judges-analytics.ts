@@ -2,8 +2,8 @@
 
 import type { EvaluationReportType } from "@repo/api/src/types/evaluation";
 import type {
-  ArtifactCountsGroupBy as ArtifactCountsGroupByType,
-  ArtifactCountsResponse,
+  DocumentCountsGroupBy as DocumentCountsGroupByType,
+  DocumentCountsResponse,
   JudgeDetailResponse,
   JudgeStatsResponse,
 } from "@repo/api/src/types/judges-analytics";
@@ -11,7 +11,7 @@ import { type UseQueryOptions, useQuery } from "@tanstack/react-query";
 import { useApiClient } from "@/hooks/use-api-client";
 import { JUDGES_ANALYTICS_QUERY_STALE_TIME_MS } from "@/lib/config/judges-analytics";
 
-export type { ArtifactCountsGroupBy } from "@repo/api/src/types/judges-analytics";
+export type { DocumentCountsGroupBy } from "@repo/api/src/types/judges-analytics";
 
 // Query keys
 export const judgesAnalyticsKeys = {
@@ -24,7 +24,7 @@ export const judgesAnalyticsKeys = {
   artifactCounts: (
     startDate: string,
     endDate: string,
-    groupBy: ArtifactCountsGroupByType
+    groupBy: DocumentCountsGroupByType
   ) =>
     [
       ...judgesAnalyticsKeys.all,
@@ -63,12 +63,12 @@ export function useJudgesAnalytics(
   });
 }
 
-export function useArtifactCounts(
+export function useDocumentCounts(
   startDate: string,
   endDate: string,
-  groupBy: ArtifactCountsGroupByType,
+  groupBy: DocumentCountsGroupByType,
   options?: Omit<
-    UseQueryOptions<ArtifactCountsResponse>,
+    UseQueryOptions<DocumentCountsResponse>,
     "queryKey" | "queryFn"
   >
 ) {
@@ -81,7 +81,7 @@ export function useArtifactCounts(
       params.set("startDate", startDate);
       params.set("endDate", endDate);
       params.set("groupBy", groupBy);
-      return apiClient.get<ArtifactCountsResponse>(
+      return apiClient.get<DocumentCountsResponse>(
         `/judges-analytics/artifact-counts?${params.toString()}`
       );
     },

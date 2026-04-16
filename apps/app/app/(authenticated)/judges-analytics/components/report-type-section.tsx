@@ -1,10 +1,10 @@
 import { EvaluationReportType } from "@repo/api/src/types/evaluation";
-import type { ArtifactTypeGroup } from "@repo/api/src/types/judges-analytics";
-import { ArtifactTypeSection } from "./artifact-type-section";
+import type { DocumentTypeGroup } from "@repo/api/src/types/judges-analytics";
+import { DocumentTypeSection } from "./document-type-section";
 
 type ReportTypeSectionProps = {
   reportType: EvaluationReportType;
-  groups: ArtifactTypeGroup[];
+  groups: DocumentTypeGroup[];
 };
 
 const REPORT_TYPE_LABEL: Record<EvaluationReportType, string> = {
@@ -46,9 +46,9 @@ export function ReportTypeSection({
       ) : (
         <div className="space-y-8">
           {groups.map((group) => (
-            <ArtifactTypeSection
+            <DocumentTypeSection
               group={group}
-              key={`${reportType}:${group.artifactType}`}
+              key={`${reportType}:${group.documentType}`}
               reportType={reportType}
             />
           ))}

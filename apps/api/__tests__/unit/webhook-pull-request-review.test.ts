@@ -243,9 +243,9 @@ describe("handlePullRequestReview", () => {
       mockTx.gitHubPullRequest.findUnique.mockResolvedValue({
         id: "pr-uuid-456",
         workstreamId: "ws-uuid-789",
-        artifactId: "artifact-uuid-123",
+        documentId: "artifact-uuid-123",
         reviewDecision: null,
-        artifact: { slug: "plan-feature-x" },
+        document: { slug: "plan-feature-x" },
       });
 
       // Mock update
@@ -278,9 +278,9 @@ describe("handlePullRequestReview", () => {
         select: {
           id: true,
           workstreamId: true,
-          artifactId: true,
+          documentId: true,
           reviewDecision: true,
-          artifact: { select: { slug: true } },
+          document: { select: { slug: true } },
         },
       });
 
@@ -327,8 +327,8 @@ describe("handlePullRequestReview", () => {
             prUrl: "https://github.com/owner/test-repo/pull/1",
             reviewUrl:
               "https://github.com/owner/test-repo/pull/1#pullrequestreview-1",
-            artifactId: "artifact-uuid-123",
-            artifactSlug: "plan-feature-x",
+            documentId: "artifact-uuid-123",
+            documentSlug: "plan-feature-x",
           },
         },
       });
@@ -363,9 +363,9 @@ describe("handlePullRequestReview", () => {
       mockTx.gitHubPullRequest.findUnique.mockResolvedValue({
         id: "pr-uuid-789",
         workstreamId: "ws-uuid-abc",
-        artifactId: null,
+        documentId: null,
         reviewDecision: null,
-        artifact: null,
+        document: null,
       });
 
       mockTx.gitHubPullRequest.update.mockResolvedValue({});
@@ -397,8 +397,8 @@ describe("handlePullRequestReview", () => {
             prUrl: "https://github.com/owner/test-repo/pull/1",
             reviewUrl:
               "https://github.com/owner/test-repo/pull/1#pullrequestreview-2",
-            artifactId: null,
-            artifactSlug: undefined,
+            documentId: null,
+            documentSlug: undefined,
           },
         },
       });
@@ -434,9 +434,9 @@ describe("handlePullRequestReview", () => {
       mockTx.gitHubPullRequest.findUnique.mockResolvedValue({
         id: "pr-uuid-dismiss",
         workstreamId: "ws-uuid-dismiss",
-        artifactId: "artifact-uuid-dismiss",
+        documentId: "artifact-uuid-dismiss",
         reviewDecision: "CHANGES_REQUESTED",
-        artifact: { slug: "plan-docs" },
+        document: { slug: "plan-docs" },
       });
 
       mockTx.gitHubPullRequest.update.mockResolvedValue({});
@@ -508,9 +508,9 @@ describe("handlePullRequestReview", () => {
       mockTx.gitHubPullRequest.findUnique.mockResolvedValue({
         id: "pr-uuid-priority",
         workstreamId: "ws-uuid-priority",
-        artifactId: null,
+        documentId: null,
         reviewDecision: "CHANGES_REQUESTED",
-        artifact: null,
+        document: null,
       });
 
       mockTx.gitHubPullRequest.update.mockResolvedValue({});
@@ -563,9 +563,9 @@ describe("handlePullRequestReview", () => {
       mockTx.gitHubPullRequest.findUnique.mockResolvedValue({
         id: "pr-uuid-dismiss-priority",
         workstreamId: "ws-uuid-dismiss-priority",
-        artifactId: null,
+        documentId: null,
         reviewDecision: "CHANGES_REQUESTED",
-        artifact: null,
+        document: null,
       });
 
       mockTx.gitHubPullRequest.update.mockResolvedValue({});
@@ -611,9 +611,9 @@ describe("handlePullRequestReview", () => {
       mockTx.gitHubPullRequest.findUnique.mockResolvedValue({
         id: "pr-uuid-resubmit",
         workstreamId: "ws-uuid-resubmit",
-        artifactId: null,
+        documentId: null,
         reviewDecision: "DISMISSED",
-        artifact: null,
+        document: null,
       });
 
       mockTx.gitHubPullRequest.update.mockResolvedValue({});
@@ -742,9 +742,9 @@ describe("handlePullRequestReview", () => {
       mockTx.gitHubPullRequest.findUnique.mockResolvedValue({
         id: "pr-uuid-multi2",
         workstreamId: "ws-uuid-multi2",
-        artifactId: null,
+        documentId: null,
         reviewDecision: "CHANGES_REQUESTED",
-        artifact: null,
+        document: null,
       });
 
       mockTx.gitHubPullRequest.update.mockResolvedValue({});
@@ -792,9 +792,9 @@ describe("handlePullRequestReview", () => {
       mockTx.gitHubPullRequest.findUnique.mockResolvedValue({
         id: "pr-uuid-upsert",
         workstreamId: "ws-uuid-upsert",
-        artifactId: null,
+        documentId: null,
         reviewDecision: null,
-        artifact: null,
+        document: null,
       });
 
       mockTx.gitHubPullRequest.update.mockResolvedValue({});

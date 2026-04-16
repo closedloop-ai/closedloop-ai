@@ -1,13 +1,13 @@
-import { ArtifactType } from "@repo/api/src/types/artifact";
+import { DocumentType } from "@repo/api/src/types/document";
 import type { FeatureStatus } from "@repo/api/src/types/feature";
 import type { Metadata } from "next";
 import { env } from "@/env";
 import { FEATURE_STATUS_LABELS } from "@/lib/project-constants";
 
-const ARTIFACT_TYPE_DISPLAY: Record<ArtifactType, string> = {
-  [ArtifactType.Prd]: "PRD",
-  [ArtifactType.ImplementationPlan]: "Plan",
-  [ArtifactType.Template]: "Template",
+const DOCUMENT_TYPE_DISPLAY: Record<DocumentType, string> = {
+  [DocumentType.Prd]: "PRD",
+  [DocumentType.ImplementationPlan]: "Plan",
+  [DocumentType.Template]: "Template",
 };
 
 const FALLBACK_METADATA: Metadata = {
@@ -71,15 +71,15 @@ type OgHandler = {
  */
 const handlers: OgHandler[] = [
   {
-    pattern: /^(?:prds|implementation-plans|artifacts)\/([^/]+)$/,
+    pattern: /^(?:prds|implementation-plans|documents)\/([^/]+)$/,
     async resolve(match, apiUrl) {
       const slug = match[1];
-      const data = await fetchJson(`${apiUrl}/artifacts/by-slug/${slug}/meta`);
+      const data = await fetchJson(`${apiUrl}/documents/by-slug/${slug}/meta`);
       if (!data) {
         return FALLBACK_METADATA;
       }
       const description =
-        ARTIFACT_TYPE_DISPLAY[data.type as ArtifactType] ?? data.type;
+        DOCUMENT_TYPE_DISPLAY[data.type as DocumentType] ?? data.type;
       return makeMetadata(data.title, description);
     },
   },

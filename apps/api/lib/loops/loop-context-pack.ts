@@ -7,17 +7,17 @@
  */
 
 import type { ContextPackAttachment } from "@closedloop-ai/loops-api/context-pack";
-import { ArtifactType } from "@repo/api/src/types/artifact";
+import { DocumentType } from "@repo/api/src/types/document";
 import { EntityType } from "@repo/api/src/types/entity-link";
 import type { AdditionalRepoRefWithToken } from "@repo/api/src/types/loop";
 import { LoopCommand } from "@repo/api/src/types/loop";
 import { log } from "@repo/observability/log";
-import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
 import {
   ATTACHMENT_SIGNED_URL_MAX_FILES,
   attachmentsService,
-} from "@/app/artifacts/attachments-service";
-import { artifactsService } from "@/app/artifacts/service";
+} from "@/app/documents/attachments-service";
+import { documentVersionService } from "@/app/documents/document-version-service";
+import { documentsService } from "@/app/documents/service";
 import { featuresService } from "@/app/features/service";
 import { loopsService } from "@/app/loops/service";
 import { getCommandHandler } from "./loop-commands";
@@ -36,8 +36,8 @@ export type LoopForContextPack = {
   userId: string;
   command: LoopCommand;
   prompt: string | null;
-  artifactId: string | null;
-  artifactVersion: number | null;
+  documentId: string | null;
+  documentVersion: number | null;
   parentLoopId: string | null;
   repo: { fullName: string; branch: string } | null;
   contextRefs: Array<{
@@ -55,7 +55,7 @@ async function fetchPrimaryArtifact(
   loop: LoopForContextPack,
   organizationId: string
 ): Promise<ContextPack["artifacts"]> {
-  if (!loop.artifactId) {
+  if (!loop.documentId) {
     return [];
   }
 
@@ -66,14 +66,14 @@ async function fetchPrimaryArtifact(
     return [];
   }
 
-  const artifact = await artifactsService.findByIdSimple(
-    loop.artifactId,
+  const artifact = await documentsService.findByIdSimple(
+    loop.documentId,
     organizationId
   );
   if (!artifact) {
     log.warn("[loop-context-pack] Primary artifact not found", {
       loopId: loop.id,
-      artifactId: loop.artifactId,
+      documentId: loop.documentId,
     });
     return [];
   }
@@ -84,12 +84,12 @@ async function fetchPrimaryArtifact(
   // the version the loop was created for, so the stale-write guard in the
   // ingest handler can accurately compare versions.
   const artifactVersion =
-    loop.artifactVersion != null
-      ? await artifactVersionService.getByVersion(
+    loop.documentVersion != null
+      ? await documentVersionService.getByVersion(
           artifact.id,
-          loop.artifactVersion
+          loop.documentVersion
         )
-      : await artifactVersionService.getLatest(artifact.id);
+      : await documentVersionService.getLatest(artifact.id);
 
   return [
     {
@@ -112,7 +112,7 @@ async function fetchContextRefArtifacts(
   // Exclude the primary artifact from context refs to avoid duplication
   const refs = loop.contextRefs.filter(
     (ref) =>
-      ref.sourceId !== loop.artifactId || ref.sourceType === EntityType.Feature
+      ref.sourceId !== loop.documentId || ref.sourceType === EntityType.Feature
   );
 
   const results = await Promise.all(
@@ -158,19 +158,19 @@ async function fetchArtifactRef(
   organizationId: string,
   loopId: string
 ): Promise<ContextPack["artifacts"][number] | null> {
-  const artifact = await artifactsService.findByIdSimple(
+  const artifact = await documentsService.findByIdSimple(
     ref.sourceId,
     organizationId
   );
   if (!artifact) {
     log.warn("[loop-context-pack] Artifact not found for context ref", {
       loopId,
-      artifactId: ref.sourceId,
+      documentId: ref.sourceId,
     });
     return null;
   }
 
-  const latestVersion = await artifactVersionService.getLatest(artifact.id);
+  const latestVersion = await documentVersionService.getLatest(artifact.id);
   const content = latestVersion?.content ?? "";
 
   return {
@@ -225,15 +225,15 @@ async function fetchTemplateForCommand(
     return [];
   }
 
-  let template = await artifactsService.findOrgTemplate(
+  let template = await documentsService.findOrgTemplate(
     organizationId,
-    ArtifactType.Prd
+    DocumentType.Prd
   );
   if (!template) {
-    await artifactsService.ensureDefaultTemplates(organizationId, loop.userId);
-    template = await artifactsService.findOrgTemplate(
+    await documentsService.ensureDefaultTemplates(organizationId, loop.userId);
+    template = await documentsService.findOrgTemplate(
       organizationId,
-      ArtifactType.Prd
+      DocumentType.Prd
     );
   }
   if (!template) {
@@ -244,11 +244,11 @@ async function fetchTemplateForCommand(
     return [];
   }
 
-  const version = await artifactVersionService.getLatest(template.id);
+  const version = await documentVersionService.getLatest(template.id);
   return [
     {
       id: template.id,
-      type: ArtifactType.Template,
+      type: DocumentType.Template,
       title: template.title,
       content: version?.content ?? "",
     },
@@ -273,7 +273,7 @@ function truncateForSummary(content: string, maxLength = 2000): string {
 async function fetchUserContext(
   loop: LoopForContextPack
 ): Promise<string | undefined> {
-  if (loop.command !== LoopCommand.Plan || !loop.artifactId) {
+  if (loop.command !== LoopCommand.Plan || !loop.documentId) {
     return undefined;
   }
 
@@ -282,7 +282,7 @@ async function fetchUserContext(
   // (`/plans/start-loop-from-local`), version 1 is created with empty content
   // because that flow does not yet collect additional instructions — in that case
   // this returns undefined and userContext is omitted from the context pack.
-  const version = await artifactVersionService.getByVersion(loop.artifactId, 1);
+  const version = await documentVersionService.getByVersion(loop.documentId, 1);
   const content = version?.content;
 
   if (!content?.trim()) {
@@ -292,7 +292,7 @@ async function fetchUserContext(
   const USER_CONTEXT_MAX_LENGTH = 16_000;
   if (content.length > USER_CONTEXT_MAX_LENGTH) {
     log.warn("[loop-context-pack] User context truncated", {
-      artifactId: loop.artifactId,
+      documentId: loop.documentId,
       originalLength: content.length,
     });
     return content.slice(0, USER_CONTEXT_MAX_LENGTH);
@@ -323,13 +323,13 @@ export async function fetchAttachmentsForContextPack(
   // Path 1: primary artifact attachments
   let primaryAttachments: ContextPackAttachment[] = [];
   if (
-    loop.artifactId &&
+    loop.documentId &&
     getCommandHandler(loop.command)?.includePrimaryArtifact
   ) {
     try {
       primaryAttachments =
-        await attachmentsService.listWithSignedUrlsByArtifact(
-          loop.artifactId,
+        await attachmentsService.listWithSignedUrlsByDocument(
+          loop.documentId,
           organizationId
         );
     } catch (error) {
@@ -380,7 +380,7 @@ async function collectContextRefAttachments(
           organizationId
         );
       } else {
-        refAttachments = await attachmentsService.listWithSignedUrlsByArtifact(
+        refAttachments = await attachmentsService.listWithSignedUrlsByDocument(
           ref.sourceId,
           organizationId
         );

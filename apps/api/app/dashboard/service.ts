@@ -10,7 +10,7 @@ import type {
   UsageDashboardStats,
 } from "@repo/api/src/types/dashboard";
 import {
-  ArtifactType,
+  DocumentType,
   GitHubActionStatus,
   GitHubPRState,
   Prisma,
@@ -56,8 +56,8 @@ export const dashboardService = {
       ] = await Promise.all([
         // Aggregate counts
         withDb((db) =>
-          db.artifact.count({
-            where: { organizationId, type: ArtifactType.PRD },
+          db.document.count({
+            where: { organizationId, type: DocumentType.PRD },
           })
         ),
         // Features are a separate entity (Feature table)
@@ -67,10 +67,10 @@ export const dashboardService = {
           })
         ),
         withDb((db) =>
-          db.artifact.count({
+          db.document.count({
             where: {
               organizationId,
-              type: ArtifactType.IMPLEMENTATION_PLAN,
+              type: DocumentType.IMPLEMENTATION_PLAN,
             },
           })
         ),
@@ -96,10 +96,10 @@ export const dashboardService = {
 
         // 14-day trend data
         withDb((db) =>
-          db.artifact.findMany({
+          db.document.findMany({
             where: {
               organizationId,
-              type: ArtifactType.PRD,
+              type: DocumentType.PRD,
               createdAt: { gte: fourteenDaysAgo },
             },
             select: { createdAt: true },
@@ -116,10 +116,10 @@ export const dashboardService = {
           })
         ),
         withDb((db) =>
-          db.artifact.findMany({
+          db.document.findMany({
             where: {
               organizationId,
-              type: ArtifactType.IMPLEMENTATION_PLAN,
+              type: DocumentType.IMPLEMENTATION_PLAN,
               createdAt: { gte: fourteenDaysAgo },
             },
             select: { createdAt: true },

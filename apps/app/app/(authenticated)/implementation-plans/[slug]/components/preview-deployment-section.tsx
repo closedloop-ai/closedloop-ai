@@ -5,7 +5,7 @@ import { Button } from "@repo/design-system/components/ui/button";
 import { Label } from "@repo/design-system/components/ui/label";
 import { cn } from "@repo/design-system/lib/utils";
 import { ExternalLinkIcon, RefreshCwIcon } from "lucide-react";
-import { MetadataSection } from "@/components/artifact-editor/metadata-panel";
+import { MetadataSection } from "@/components/document-editor/metadata-panel";
 import {
   previewDeploymentStateColors,
   StatusBadge,

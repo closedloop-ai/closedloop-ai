@@ -23,7 +23,7 @@ vi.mock("@repo/database", () => ({
     CODE: "CODE",
   },
   EntityType: {
-    ARTIFACT: "ARTIFACT",
+    DOCUMENT: "DOCUMENT",
     FEATURE: "FEATURE",
     EXTERNAL_LINK: "EXTERNAL_LINK",
   },
@@ -47,8 +47,8 @@ vi.mock("@/lib/prompts-service", () => ({
   upsertFromSnapshot: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock("@/app/artifacts/artifact-version-service", () => ({
-  artifactVersionService: {
+vi.mock("@/app/documents/document-version-service", () => ({
+  documentVersionService: {
     createVersion: vi.fn().mockResolvedValue({ id: "version-1", version: 2 }),
   },
 }));
@@ -57,8 +57,8 @@ vi.mock("@vercel/functions", () => ({
   waitUntil: vi.fn(),
 }));
 
-vi.mock("@/app/artifacts/room-utils", () => ({
-  resetArtifactRoom: vi.fn().mockResolvedValue(undefined),
+vi.mock("@/app/documents/room-utils", () => ({
+  resetDocumentRoom: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("@/lib/judge-score-fanout", () => ({
@@ -85,12 +85,12 @@ import { withDb } from "@repo/database";
 import type { Mock } from "vitest";
 import { assertEntityInOrganization } from "@/lib/entity-validation";
 import { fanOutJudgeScores } from "@/lib/judge-score-fanout";
-import { upsertEvaluationWithJudgeScores } from "@/lib/loops/loop-artifact-ingestion";
 import { ingestExecutionArtifacts } from "@/lib/loops/loop-commands/execute-handler";
 import {
   downloadPlanArtifacts,
   ingestPlanArtifacts,
 } from "@/lib/loops/loop-commands/plan-handler";
+import { upsertEvaluationWithJudgeScores } from "@/lib/loops/loop-document-ingestion";
 import {
   downloadArtifactFile,
   downloadPromptSnapshotMarkdownEntries,
@@ -121,7 +121,7 @@ function makeLoop(overrides: Partial<Loop> = {}): Loop {
   return buildLoop({
     id: LOOP_ID,
     organizationId: ORG_ID,
-    artifactId: ARTIFACT_ID,
+    documentId: ARTIFACT_ID,
     workstreamId: WORKSTREAM_ID,
     s3StateKey: STATE_KEY_PREFIX,
     createdAt: new Date("2026-01-01"),
@@ -228,7 +228,7 @@ describe("ingestPlanArtifacts — upsertFromSnapshot ordering", () => {
 
     // withDb.tx is used for judgesReport writes.
     const mockArtifactEvaluationUpsert = vi.fn().mockImplementation(() => {
-      callOrder.push("artifactEvaluation.upsert");
+      callOrder.push("documentEvaluation.upsert");
       return Promise.resolve({ id: "eval-1" });
     });
 
@@ -236,7 +236,7 @@ describe("ingestPlanArtifacts — upsertFromSnapshot ordering", () => {
       .fn()
       .mockImplementation((callback: (tx: unknown) => unknown) => {
         const tx = {
-          artifactEvaluation: {
+          documentEvaluation: {
             upsert: mockArtifactEvaluationUpsert,
           },
         };
@@ -246,7 +246,7 @@ describe("ingestPlanArtifacts — upsertFromSnapshot ordering", () => {
     // withDb is used for artifact.update and workstreamEvent.
     mockWithDb.mockImplementation((callback: (db: unknown) => unknown) => {
       const db = {
-        artifact: {
+        document: {
           update: vi.fn().mockResolvedValue({
             slug: "test-slug",
             latestVersion: 2,
@@ -283,7 +283,7 @@ describe("ingestPlanArtifacts — upsertFromSnapshot ordering", () => {
 
     // upsertFromSnapshot must have been called before judgesReport upsert
     const upsertIdx = callOrder.indexOf("upsertFromSnapshot");
-    const evalIdx = callOrder.indexOf("artifactEvaluation.upsert");
+    const evalIdx = callOrder.indexOf("documentEvaluation.upsert");
     expect(upsertIdx).toBeGreaterThanOrEqual(0);
     expect(evalIdx).toBeGreaterThanOrEqual(0);
     expect(upsertIdx).toBeLessThan(evalIdx);
@@ -294,7 +294,7 @@ describe("ingestPlanArtifacts — upsertFromSnapshot ordering", () => {
 
     mockWithDb.mockImplementation((callback: (db: unknown) => unknown) => {
       const db = {
-        artifact: {
+        document: {
           update: vi.fn().mockResolvedValue({
             slug: null,
             latestVersion: 2,
@@ -348,7 +348,7 @@ describe("ingestExecutionArtifacts — upsertFromSnapshot ordering", () => {
     });
 
     const mockArtifactEvaluationUpsert = vi.fn().mockImplementation(() => {
-      callOrder.push("artifactEvaluation.upsert");
+      callOrder.push("documentEvaluation.upsert");
       return Promise.resolve({ id: "eval-exec-1" });
     });
 
@@ -368,14 +368,14 @@ describe("ingestExecutionArtifacts — upsertFromSnapshot ordering", () => {
       .mockImplementation((callback: (tx: unknown) => unknown) => {
         callOrder.push("withDb.tx.callback");
         const tx = {
-          artifact: {
+          document: {
             findUnique: vi.fn().mockResolvedValue({
               organizationId: ORG_ID,
               projectId: "project-1",
               slug: "test-artifact",
             }),
           },
-          artifactEvaluation: {
+          documentEvaluation: {
             upsert: mockArtifactEvaluationUpsert,
           },
           gitHubPullRequest: {
@@ -383,7 +383,7 @@ describe("ingestExecutionArtifacts — upsertFromSnapshot ordering", () => {
             create: vi.fn().mockResolvedValue({ id: "pr-1" }),
             upsert: vi
               .fn()
-              .mockResolvedValue({ id: "pr-1", artifactId: ARTIFACT_ID }),
+              .mockResolvedValue({ id: "pr-1", documentId: ARTIFACT_ID }),
           },
           externalLink: {
             create: vi.fn().mockResolvedValue({ id: "ext-link-1" }),
@@ -430,7 +430,7 @@ describe("ingestExecutionArtifacts — upsertFromSnapshot ordering", () => {
 
     expect(mockFanOutJudgeScores).toHaveBeenCalledTimes(1);
     const upsertIdx = callOrder.indexOf("upsertFromSnapshot");
-    const evalIdx = callOrder.indexOf("artifactEvaluation.upsert");
+    const evalIdx = callOrder.indexOf("documentEvaluation.upsert");
     expect(upsertIdx).toBeGreaterThanOrEqual(0);
     expect(evalIdx).toBeGreaterThanOrEqual(0);
     expect(upsertIdx).toBeLessThan(evalIdx);
@@ -456,7 +456,7 @@ describe("ingestExecutionArtifacts — upsertFromSnapshot ordering", () => {
       .fn()
       .mockImplementation((callback: (tx: unknown) => unknown) => {
         const tx = {
-          artifact: {
+          document: {
             findUnique: vi.fn().mockResolvedValue({
               organizationId: ORG_ID,
               projectId: "project-1",
@@ -468,7 +468,7 @@ describe("ingestExecutionArtifacts — upsertFromSnapshot ordering", () => {
             create: vi.fn().mockResolvedValue({ id: "pr-1" }),
             upsert: vi
               .fn()
-              .mockResolvedValue({ id: "pr-1", artifactId: ARTIFACT_ID }),
+              .mockResolvedValue({ id: "pr-1", documentId: ARTIFACT_ID }),
           },
           externalLink: {
             create: vi.fn().mockResolvedValue({ id: "ext-link-1" }),
@@ -520,15 +520,15 @@ describe("upsertEvaluationWithJudgeScores", () => {
 
   function makeUpsertParams(overrides: Record<string, unknown> = {}) {
     const mockTx = {
-      artifactEvaluation: {
+      documentEvaluation: {
         upsert: vi.fn().mockResolvedValue({ id: "eval-upsert-1" }),
       },
     };
     return {
       params: {
         entityId: ARTIFACT_ID,
-        entityType: EntityType.Artifact,
-        artifactId: ARTIFACT_ID,
+        entityType: EntityType.Document,
+        documentId: ARTIFACT_ID,
         loopId: LOOP_ID,
         organizationId: ORG_ID,
         reportType: "PLAN",
@@ -547,13 +547,13 @@ describe("upsertEvaluationWithJudgeScores", () => {
       params as unknown as Parameters<typeof upsertEvaluationWithJudgeScores>[0]
     );
 
-    expect(mockTx.artifactEvaluation.upsert).toHaveBeenCalledWith(
+    expect(mockTx.documentEvaluation.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         create: expect.objectContaining({
           entityId: ARTIFACT_ID,
-          entityType: EntityType.Artifact,
+          entityType: EntityType.Document,
           organizationId: ORG_ID,
-          artifactId: ARTIFACT_ID,
+          documentId: ARTIFACT_ID,
         }),
       })
     );
@@ -567,7 +567,7 @@ describe("upsertEvaluationWithJudgeScores", () => {
       params as unknown as Parameters<typeof upsertEvaluationWithJudgeScores>[0]
     );
 
-    expect(mockTx.artifactEvaluation.upsert).toHaveBeenCalledWith(
+    expect(mockTx.documentEvaluation.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         where: {
           entityId_reportId: {
@@ -582,11 +582,11 @@ describe("upsertEvaluationWithJudgeScores", () => {
   it("re-upsert with same entityId and reportId updates without duplicate (idempotent)", async () => {
     const report = makeJudgesReport("report-idempotent");
     const mockUpsert = vi.fn().mockResolvedValue({ id: "eval-idempotent-1" });
-    const mockTx = { artifactEvaluation: { upsert: mockUpsert } };
+    const mockTx = { documentEvaluation: { upsert: mockUpsert } };
     const sharedParams = {
       entityId: ARTIFACT_ID,
-      entityType: EntityType.Artifact,
-      artifactId: ARTIFACT_ID,
+      entityType: EntityType.Document,
+      documentId: ARTIFACT_ID,
       loopId: LOOP_ID,
       organizationId: ORG_ID,
       reportType: "PLAN",
@@ -627,7 +627,7 @@ describe("upsertEvaluationWithJudgeScores", () => {
       params as unknown as Parameters<typeof upsertEvaluationWithJudgeScores>[0]
     );
 
-    expect(mockTx.artifactEvaluation.upsert).toHaveBeenCalledWith(
+    expect(mockTx.documentEvaluation.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         create: expect.objectContaining({
           organizationId: customOrgId,
@@ -639,11 +639,11 @@ describe("upsertEvaluationWithJudgeScores", () => {
   it("calls fanOutJudgeScores with correct evaluationId, organizationId, report, and tx", async () => {
     const report = makeJudgesReport("report-fanout");
     const mockUpsert = vi.fn().mockResolvedValue({ id: "eval-fanout-1" });
-    const mockTx = { artifactEvaluation: { upsert: mockUpsert } };
+    const mockTx = { documentEvaluation: { upsert: mockUpsert } };
     const params = {
       entityId: ARTIFACT_ID,
-      entityType: EntityType.Artifact,
-      artifactId: ARTIFACT_ID,
+      entityType: EntityType.Document,
+      documentId: ARTIFACT_ID,
       loopId: LOOP_ID,
       organizationId: ORG_ID,
       reportType: "PLAN",

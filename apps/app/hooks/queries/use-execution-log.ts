@@ -7,22 +7,22 @@ import { useApiClient } from "@/hooks/use-api-client";
 // Query keys
 export const executionLogKeys = {
   all: ["execution-log"] as const,
-  detail: (artifactId: string) =>
-    [...executionLogKeys.all, artifactId] as const,
+  detail: (documentId: string) =>
+    [...executionLogKeys.all, documentId] as const,
 };
 
 // Query hook
 export function useExecutionLog(
-  artifactId: string,
+  documentId: string,
   options?: Omit<UseQueryOptions<ExecutionTrace>, "queryKey" | "queryFn">
 ) {
   const apiClient = useApiClient();
 
   return useQuery({
-    queryKey: executionLogKeys.detail(artifactId),
+    queryKey: executionLogKeys.detail(documentId),
     queryFn: () =>
-      apiClient.get<ExecutionTrace>(`/artifacts/${artifactId}/execution-log`),
-    enabled: !!artifactId,
+      apiClient.get<ExecutionTrace>(`/documents/${documentId}/execution-log`),
+    enabled: !!documentId,
     staleTime: 10 * 60 * 1000, // 10 minutes
     ...options,
   });

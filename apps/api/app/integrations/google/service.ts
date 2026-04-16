@@ -12,7 +12,7 @@ import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
 import pLimit from "p-limit";
 import sanitizeHtml from "sanitize-html";
-import { artifactsService } from "@/app/artifacts/service";
+import { documentsService } from "@/app/documents/service";
 import { projectsService } from "@/app/projects/service";
 
 /**
@@ -491,7 +491,7 @@ export const googleService = {
           }
 
           // Create artifact
-          const artifact = await artifactsService.create(
+          const artifact = await documentsService.create(
             organizationId,
             userId,
             {
@@ -512,7 +512,7 @@ export const googleService = {
             organizationId,
             docId: doc.id,
             docTitle: doc.name,
-            artifactId: artifact.id,
+            documentId: artifact.id,
           });
 
           artifacts.push({

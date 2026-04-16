@@ -46,7 +46,7 @@ export const additionalReposSchema = z
 
 export const createLoopValidator = z.object({
   command: LoopCommandSchema,
-  artifactId: z.uuidv7().optional(),
+  documentId: z.uuidv7().optional(),
   workstreamId: z.uuidv7().optional(),
   prompt: z.string().max(100_000).optional(),
   repo: repoSchema.optional(),
@@ -56,7 +56,7 @@ export const createLoopValidator = z.object({
       z.object({
         sourceId: z.uuidv7(),
         sourceType: z
-          .enum([EntityType.Artifact, EntityType.Feature])
+          .enum([EntityType.Document, EntityType.Feature])
           .optional(),
         include: z.enum(["full", "summary"]),
       })
@@ -160,7 +160,7 @@ export const listLoopEventsQueryValidator = z.object({
 export const listLoopsQueryValidator = z.object({
   status: LoopStatusSchema.optional(),
   command: LoopCommandSchema.optional(),
-  artifactId: uuidOrSlug().optional(),
+  documentId: uuidOrSlug().optional(),
   workstreamId: z.uuid().optional(),
   projectId: z.uuid().optional(),
   limit: z.coerce.number().min(1).max(200).default(50).optional(),

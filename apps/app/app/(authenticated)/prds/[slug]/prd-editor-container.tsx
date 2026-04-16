@@ -4,7 +4,7 @@ import { keepPreviousData } from "@tanstack/react-query";
 import { Loader2Icon } from "lucide-react";
 import { notFound } from "next/navigation";
 import { useState } from "react";
-import { useArtifactBySlug } from "@/hooks/queries/use-artifacts";
+import { useDocumentBySlug } from "@/hooks/queries/use-documents";
 import { PRDEditor } from "./prd-editor";
 
 type PRDEditorContainerProps = {
@@ -26,7 +26,7 @@ export function PRDEditorContainer({
     data: prd,
     isLoading,
     error,
-  } = useArtifactBySlug(slug, selectedVersion, {
+  } = useDocumentBySlug(slug, selectedVersion, {
     // When the selected version changes, keep displaying the previous version's data
     // until the new version is loaded (instead of a loading state).
     placeholderData: keepPreviousData,

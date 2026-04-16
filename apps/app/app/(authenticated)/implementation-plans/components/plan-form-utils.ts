@@ -1,4 +1,4 @@
-import { ArtifactStatus, ArtifactType } from "@repo/api/src/types/artifact";
+import { DocumentStatus, DocumentType } from "@repo/api/src/types/document";
 import type { AdditionalRepoRef } from "@repo/api/src/types/loop";
 import { useState } from "react";
 import type { PlanSource } from "./plan-source";
@@ -19,11 +19,11 @@ export function buildCreateInput(
   selectedSource: PlanSource | undefined
 ) {
   const baseInput = {
-    type: ArtifactType.ImplementationPlan,
+    type: DocumentType.ImplementationPlan,
     title: formState.title.trim(),
     fileName: finalFileName,
     approverId: selectedSource?.approver?.id,
-    status: ArtifactStatus.Draft,
+    status: DocumentStatus.Draft,
     content: formState.content.trim() || "",
     projectId: selectedSource?.projectId ?? formState.selectedProjectId,
     targetRepo: formState.targetRepo || undefined,

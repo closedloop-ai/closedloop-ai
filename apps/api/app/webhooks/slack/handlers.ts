@@ -1,7 +1,7 @@
-import { ArtifactType } from "@repo/api/src/types/artifact";
+import { DocumentType } from "@repo/api/src/types/document";
 import { withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
-import { artifactsService } from "../../artifacts/service";
+import { documentsService } from "../../documents/service";
 import { WHITESPACE_REGEX } from "./webhook-utils";
 
 export type SlackSlashCommandPayload = {
@@ -151,8 +151,8 @@ export async function handleCreateIdea(
 
   // Step 5: Create the artifact
   try {
-    const artifact = await artifactsService.create(organizationId, userId, {
-      type: ArtifactType.Prd,
+    const artifact = await documentsService.create(organizationId, userId, {
+      type: DocumentType.Prd,
       title,
       content: "",
       projectId,
@@ -215,7 +215,7 @@ export async function handleGetStatus(
   }
 
   // Try to find artifact by ID first
-  const artifact = await artifactsService.findById(identifier, organizationId);
+  const artifact = await documentsService.findById(identifier, organizationId);
 
   if (artifact) {
     const statusText = [
@@ -247,7 +247,7 @@ export async function handleGetStatus(
         _count: {
           select: {
             workstreams: true,
-            artifacts: true,
+            documents: true,
           },
         },
       },
@@ -259,7 +259,7 @@ export async function handleGetStatus(
       `*${project.name}*`,
       `Priority: ${project.priority}`,
       `Workstreams: ${project._count.workstreams}`,
-      `Artifacts: ${project._count.artifacts}`,
+      `Documents: ${project._count.documents}`,
     ].join("\n");
 
     return {

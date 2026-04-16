@@ -3,7 +3,7 @@
  *
  * Tests the limit parameter functionality and multi-tenant security checks.
  */
-import { ArtifactStatus } from "@repo/api/src/types/artifact";
+import { DocumentStatus } from "@repo/api/src/types/document";
 import { ProjectStatus } from "@repo/api/src/types/project";
 import { type Mock, vi } from "vitest";
 
@@ -30,7 +30,7 @@ describe("projectsService.findByTeam", () => {
     organizationId: TEST_ORG_ID,
     createdAt: new Date("2024-01-01"),
     updatedAt: new Date("2024-01-02"),
-    artifacts: [],
+    documents: [],
     teams: [
       {
         team: {
@@ -205,64 +205,64 @@ describe("projectsService.calculateStatus", () => {
 
   it("returns 0 when all artifacts have non-terminal statuses", () => {
     const artifacts = [
-      { status: ArtifactStatus.Draft },
-      { status: ArtifactStatus.InReview },
-      { status: ArtifactStatus.Approved },
-      { status: ArtifactStatus.Executed },
+      { status: DocumentStatus.Draft },
+      { status: DocumentStatus.InReview },
+      { status: DocumentStatus.Approved },
+      { status: DocumentStatus.Executed },
     ];
     expect(projectsService.calculateStatus(artifacts)).toBe(0);
   });
 
   it("returns 100 when all artifacts are Done", () => {
     const artifacts = [
-      { status: ArtifactStatus.Done },
-      { status: ArtifactStatus.Done },
-      { status: ArtifactStatus.Done },
+      { status: DocumentStatus.Done },
+      { status: DocumentStatus.Done },
+      { status: DocumentStatus.Done },
     ];
     expect(projectsService.calculateStatus(artifacts)).toBe(100);
   });
 
   it("returns 100 when all artifacts are Obsolete", () => {
     const artifacts = [
-      { status: ArtifactStatus.Obsolete },
-      { status: ArtifactStatus.Obsolete },
-      { status: ArtifactStatus.Obsolete },
+      { status: DocumentStatus.Obsolete },
+      { status: DocumentStatus.Obsolete },
+      { status: DocumentStatus.Obsolete },
     ];
     expect(projectsService.calculateStatus(artifacts)).toBe(100);
   });
 
   it("returns 50 for mixed Done+Obsolete+Draft with 2-of-4 completed", () => {
     const artifacts = [
-      { status: ArtifactStatus.Done },
-      { status: ArtifactStatus.Obsolete },
-      { status: ArtifactStatus.Draft },
-      { status: ArtifactStatus.Draft },
+      { status: DocumentStatus.Done },
+      { status: DocumentStatus.Obsolete },
+      { status: DocumentStatus.Draft },
+      { status: DocumentStatus.Draft },
     ];
     expect(projectsService.calculateStatus(artifacts)).toBe(50);
   });
 
   it("returns 25 for 1-of-4 Done artifacts", () => {
     const artifacts = [
-      { status: ArtifactStatus.Done },
-      { status: ArtifactStatus.Draft },
-      { status: ArtifactStatus.InReview },
-      { status: ArtifactStatus.Approved },
+      { status: DocumentStatus.Done },
+      { status: DocumentStatus.Draft },
+      { status: DocumentStatus.InReview },
+      { status: DocumentStatus.Approved },
     ];
     expect(projectsService.calculateStatus(artifacts)).toBe(25);
   });
 
   it("regression: 1-Executed-of-4 returns 0 while 1-Done-of-4 returns 25, confirming Executed is not terminal", () => {
     const executedArtifacts = [
-      { status: ArtifactStatus.Executed },
-      { status: ArtifactStatus.Draft },
-      { status: ArtifactStatus.Draft },
-      { status: ArtifactStatus.Draft },
+      { status: DocumentStatus.Executed },
+      { status: DocumentStatus.Draft },
+      { status: DocumentStatus.Draft },
+      { status: DocumentStatus.Draft },
     ];
     const doneArtifacts = [
-      { status: ArtifactStatus.Done },
-      { status: ArtifactStatus.Draft },
-      { status: ArtifactStatus.Draft },
-      { status: ArtifactStatus.Draft },
+      { status: DocumentStatus.Done },
+      { status: DocumentStatus.Draft },
+      { status: DocumentStatus.Draft },
+      { status: DocumentStatus.Draft },
     ];
     expect(projectsService.calculateStatus(executedArtifacts)).toBe(0);
     expect(projectsService.calculateStatus(doneArtifacts)).toBe(25);

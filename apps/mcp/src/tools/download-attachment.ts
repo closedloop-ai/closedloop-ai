@@ -5,13 +5,13 @@ import type { ApiClient } from "../api-client.js";
 import { encodePathSegment, withErrorHandling } from "./tool-utils.js";
 
 const ATTACHMENT_ENTITY_TYPE_OPTIONS = [
-  EntityType.Artifact,
+  EntityType.Document,
   EntityType.Feature,
 ] as [string, ...string[]];
 
 /**
  * Register the download-attachment tool on the given MCP server.
- * Calls GET /artifacts/:entityId/attachments/:attachmentId or
+ * Calls GET /documents/:entityId/attachments/:attachmentId or
  * /features/:entityId/attachments/:attachmentId based on the entityType parameter.
  * Returns a presigned download URL — use it immediately as it expires quickly.
  */
@@ -27,11 +27,11 @@ export function registerDownloadAttachment(
       inputSchema: {
         entityType: z
           .enum(ATTACHMENT_ENTITY_TYPE_OPTIONS)
-          .describe("Entity type: ARTIFACT or FEATURE"),
+          .describe("Entity type: DOCUMENT or FEATURE"),
         entityId: z
           .string()
           .describe(
-            "Artifact or feature ID (required for org-scoped verification — prevents cross-org access)"
+            "Document or feature ID (required for org-scoped verification — prevents cross-org access)"
           ),
         attachmentId: z.string(),
       },
@@ -39,7 +39,7 @@ export function registerDownloadAttachment(
     ({ entityType, entityId, attachmentId }) =>
       withErrorHandling(async () => {
         const basePath =
-          entityType === EntityType.Feature ? "features" : "artifacts";
+          entityType === EntityType.Feature ? "features" : "documents";
         const path = `/${basePath}/${encodePathSegment(entityId)}/attachments/${encodePathSegment(attachmentId)}`;
         const result = await apiClient.get<{ downloadUrl: string }>(path);
         return {
