@@ -68,4 +68,30 @@ describe("EditableFeatureTitle", () => {
       });
     });
   });
+
+  it("collapses pasted line breaks before saving the title", async () => {
+    render(
+      <EditableFeatureTitle
+        featureId="feature-1"
+        initialTitle="Original feature title"
+      />
+    );
+
+    const titleField = screen.getByPlaceholderText(FEATURE_TITLE_PLACEHOLDER);
+
+    fireEvent.change(titleField, {
+      target: { value: "Updated\nfeature\r\ntitle" },
+    });
+
+    expect(titleField).toHaveValue("Updated feature title");
+
+    fireEvent.keyDown(titleField, { key: "Enter" });
+
+    await waitFor(() => {
+      expect(mockMutateAsync).toHaveBeenCalledWith({
+        id: "feature-1",
+        title: "Updated feature title",
+      });
+    });
+  });
 });
