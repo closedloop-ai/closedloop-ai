@@ -17,7 +17,10 @@ import type { ArtifactVersion } from "@repo/api/src/types/artifact-version";
 import type { ComputeTargetConflictBody } from "@repo/api/src/types/compute-target";
 import { EntityType } from "@repo/api/src/types/entity-link";
 import type { ExternalLink } from "@repo/api/src/types/external-link";
-import { RunLoopCommand } from "@repo/api/src/types/loop";
+import {
+  type AdditionalRepoRef,
+  RunLoopCommand,
+} from "@repo/api/src/types/loop";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import {
   type UseQueryOptions,
@@ -448,10 +451,17 @@ export function useCreateAndGenerateArtifact() {
   const [multiTargetState, setMultiTargetState] = useState<{
     availableTargets: ComputeTargetConflictBody["availableTargets"];
     pendingArtifactId: string;
+    additionalRepos?: AdditionalRepoRef[];
   } | null>(null);
 
   const mutation = useMutation({
-    mutationFn: async (input: CreateArtifactInput) => {
+    mutationFn: async ({
+      input,
+      additionalRepos,
+    }: {
+      input: CreateArtifactInput;
+      additionalRepos?: AdditionalRepoRef[];
+    }) => {
       const artifact = await apiClient.post<Artifact>("/artifacts", input);
 
       // Trigger generation via Loops — compute target resolved server-side
@@ -459,6 +469,7 @@ export function useCreateAndGenerateArtifact() {
         const desktopApiNamespace = await resolveDesktopApiNamespaceHint();
         await apiClient.post(`/artifacts/${artifact.id}/run-loop`, {
           command: RunLoopCommand.Plan,
+          ...(additionalRepos?.length ? { additionalRepos } : {}),
           ...(desktopApiNamespace &&
           desktopApiNamespace !== CURRENT_DESKTOP_API_NAMESPACE
             ? { desktopApiNamespace }
@@ -475,6 +486,7 @@ export function useCreateAndGenerateArtifact() {
             setMultiTargetState({
               availableTargets: conflict.availableTargets,
               pendingArtifactId: artifact.id,
+              additionalRepos,
             }),
           onBackendMismatch: () => {
             // Backend mismatch modal handled in T-3.4
@@ -505,13 +517,14 @@ export function useCreateAndGenerateArtifact() {
       if (!multiTargetState) {
         return;
       }
-      const { pendingArtifactId } = multiTargetState;
+      const { pendingArtifactId, additionalRepos } = multiTargetState;
       setMultiTargetState(null);
       try {
         const desktopApiNamespace = await resolveDesktopApiNamespaceHint();
         await apiClient.post(`/artifacts/${pendingArtifactId}/run-loop`, {
-          command: "plan",
+          command: RunLoopCommand.Plan,
           computeTargetId: targetId,
+          ...(additionalRepos?.length ? { additionalRepos } : {}),
           ...(desktopApiNamespace &&
           desktopApiNamespace !== CURRENT_DESKTOP_API_NAMESPACE
             ? { desktopApiNamespace }

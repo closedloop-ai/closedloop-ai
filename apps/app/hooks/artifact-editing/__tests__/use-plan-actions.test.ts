@@ -1,4 +1,6 @@
 import { ArtifactStatus } from "@repo/api/src/types/artifact";
+import type { AdditionalRepoRef } from "@repo/api/src/types/loop";
+import { RunLoopCommand } from "@repo/api/src/types/loop";
 import { QueryClient } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
@@ -24,6 +26,32 @@ vi.mock("@/hooks/queries/use-loops", () => ({
     mutate: vi.fn(),
     mutateAsync: vi.fn(),
     isPending: false,
+  }),
+}));
+
+// Spies captured at module scope so handleRegenerate tests can assert on them
+const mockMutate = vi.fn();
+const mockPrepareConflictRefs = vi.fn();
+
+vi.mock("@/hooks/artifact-editing/use-artifact-run-loop", () => ({
+  useArtifactRunLoop: () => ({
+    runLoop: {
+      mutate: mockMutate,
+      mutateAsync: vi.fn(),
+      isPending: false,
+    },
+    prepareConflictRefs: mockPrepareConflictRefs,
+    routeConflictError: vi.fn(),
+    makeRequestChangesHandler: vi.fn(() => vi.fn()),
+    selectTarget: vi.fn(),
+    confirmOriginalBackend: vi.fn(),
+    confirmPreferredBackend: vi.fn(),
+    dismissBackendMismatch: vi.fn(),
+    multiTargetState: null,
+    backendMismatchState: null,
+    pendingConflictCommandRef: { current: null },
+    pendingActionRef: { current: null },
+    pendingMismatchActionRef: { current: null },
   }),
 }));
 
@@ -78,6 +106,56 @@ describe("usePlanActions", () => {
       });
 
       expect(mockApiClient.put).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("handleRegenerate", () => {
+    test("forwards additionalRepos to prepareConflictRefs and runLoop.mutate", () => {
+      const additionalRepos: AdditionalRepoRef[] = [
+        { fullName: "org/other-repo", branch: "main" },
+      ];
+
+      const { result } = renderHook(
+        () => usePlanActions({ artifactId: "artifact-123" }),
+        { wrapper: createWrapperWithClient(queryClient) }
+      );
+
+      act(() => {
+        result.current.handleRegenerate(additionalRepos);
+      });
+
+      const expectedParams = {
+        command: RunLoopCommand.Plan,
+        additionalRepos,
+      };
+
+      expect(mockPrepareConflictRefs).toHaveBeenCalledWith(expectedParams);
+      expect(mockMutate).toHaveBeenCalledWith(
+        { artifactId: "artifact-123", ...expectedParams },
+        expect.objectContaining({ onSuccess: expect.any(Function) })
+      );
+    });
+
+    test("calls with no additionalRepos when called with undefined", () => {
+      const { result } = renderHook(
+        () => usePlanActions({ artifactId: "artifact-123" }),
+        { wrapper: createWrapperWithClient(queryClient) }
+      );
+
+      act(() => {
+        result.current.handleRegenerate();
+      });
+
+      const expectedParams = { command: RunLoopCommand.Plan };
+
+      expect(mockPrepareConflictRefs).toHaveBeenCalledWith(expectedParams);
+      expect(mockMutate).toHaveBeenCalledWith(
+        { artifactId: "artifact-123", ...expectedParams },
+        expect.objectContaining({ onSuccess: expect.any(Function) })
+      );
+      expect(mockPrepareConflictRefs).not.toHaveBeenCalledWith(
+        expect.objectContaining({ additionalRepos: expect.anything() })
+      );
     });
   });
 });

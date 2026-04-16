@@ -1,11 +1,14 @@
-import { renderHook, waitFor } from "@testing-library/react";
+import { RunLoopCommand } from "@repo/api/src/types/loop";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { createMockArtifact } from "@/__tests__/fixtures/artifacts";
+import { ApiError } from "@/lib/api-error";
 import {
   artifactKeys,
   useArtifact,
   useArtifacts,
   useArtifactsByProject,
+  useCreateAndGenerateArtifact,
   useCreateArtifact,
   useDeleteArtifact,
   useUpdateArtifact,
@@ -22,6 +25,10 @@ const mockApiClient = {
 
 vi.mock("@/hooks/use-api-client", () => ({
   useApiClient: () => mockApiClient,
+}));
+
+vi.mock("@/lib/engineer/local-gateway-api-namespace", () => ({
+  resolveDesktopApiNamespaceHint: vi.fn().mockResolvedValue(undefined),
 }));
 
 describe("Artifact Query Hooks", () => {
@@ -242,6 +249,178 @@ describe("Artifact Mutation Hooks", () => {
         "/artifacts/artifact-123"
       );
       expect(result.current.data).toEqual({ deleted: true });
+    });
+  });
+});
+
+describe("useCreateAndGenerateArtifact", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  test("selectTarget retry includes additionalRepos from the original mutateAsync call", async () => {
+    const mockArtifact = createMockArtifact({
+      id: "artifact-456",
+      projectId: "project-123",
+    });
+
+    const additionalRepos = [
+      { fullName: "org/extra-repo", branch: "main" },
+      { fullName: "org/another-repo", branch: "develop" },
+    ];
+
+    // First call: POST /artifacts → success
+    // Second call: POST /artifacts/artifact-456/run-loop → 409 multiple_targets conflict
+    const conflictError = new ApiError("Multiple targets", 409, undefined, {
+      data: {
+        error: "multiple_targets",
+        message: "Multiple compute targets available",
+        availableTargets: [
+          { id: "target-1", machineName: "machine-1", status: "online" },
+          { id: "target-2", machineName: "machine-2", status: "online" },
+        ],
+      },
+    });
+
+    mockApiClient.post
+      .mockResolvedValueOnce(mockArtifact)
+      .mockRejectedValueOnce(conflictError)
+      .mockResolvedValueOnce({ loopId: "loop-789", status: "PENDING" });
+
+    const { result } = renderHook(() => useCreateAndGenerateArtifact(), {
+      wrapper: createWrapper(),
+    });
+
+    // Trigger the initial mutation with additionalRepos
+    act(() => {
+      result.current.mutate({
+        input: {
+          title: "Test Plan",
+          type: "IMPLEMENTATION_PLAN",
+          content: "",
+          projectId: "project-123",
+        },
+        additionalRepos,
+      });
+    });
+
+    // Wait for multiTargetState to be populated from the 409 conflict
+    await waitFor(() => {
+      expect(result.current.multiTargetState).not.toBeNull();
+    });
+
+    expect(result.current.multiTargetState?.availableTargets).toHaveLength(2);
+
+    // Simulate the user selecting a target — this triggers the retry POST
+    await act(async () => {
+      await result.current.selectTarget("target-1");
+    });
+
+    // The retry call is the third post call (index 2)
+    const retryCallBody = mockApiClient.post.mock.calls[2][1];
+    expect(retryCallBody).toMatchObject({
+      command: RunLoopCommand.Plan,
+      computeTargetId: "target-1",
+      additionalRepos,
+    });
+  });
+
+  test("includes additionalRepos in the initial run-loop POST body when provided", async () => {
+    const mockArtifact = createMockArtifact({
+      id: "artifact-101",
+      projectId: "project-123",
+    });
+
+    const additionalRepos = [
+      { fullName: "org/extra-repo", branch: "main" },
+      { fullName: "org/another-repo", branch: "develop" },
+    ];
+
+    // First call: POST /artifacts → success
+    // Second call: POST /artifacts/artifact-101/run-loop → success (no conflict)
+    mockApiClient.post
+      .mockResolvedValueOnce(mockArtifact)
+      .mockResolvedValueOnce({ loopId: "loop-001", status: "PENDING" });
+
+    const { result } = renderHook(() => useCreateAndGenerateArtifact(), {
+      wrapper: createWrapper(),
+    });
+
+    await act(async () => {
+      await result.current.mutateAsync({
+        input: {
+          title: "Test Plan",
+          type: "IMPLEMENTATION_PLAN",
+          content: "",
+          projectId: "project-123",
+        },
+        additionalRepos,
+      });
+    });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    const runLoopCallBody = mockApiClient.post.mock.calls[1][1];
+    expect(runLoopCallBody).toMatchObject({
+      command: RunLoopCommand.Plan,
+      additionalRepos,
+    });
+    expect(mockApiClient.post).toHaveBeenNthCalledWith(
+      2,
+      `/artifacts/${mockArtifact.id}/run-loop`,
+      expect.objectContaining({ additionalRepos })
+    );
+  });
+
+  test("selectTarget retry omits additionalRepos when none were provided", async () => {
+    const mockArtifact = createMockArtifact({
+      id: "artifact-789",
+      projectId: "project-123",
+    });
+
+    const conflictError = new ApiError("Multiple targets", 409, undefined, {
+      data: {
+        error: "multiple_targets",
+        message: "Multiple compute targets available",
+        availableTargets: [
+          { id: "target-1", machineName: "machine-1", status: "online" },
+        ],
+      },
+    });
+
+    mockApiClient.post
+      .mockResolvedValueOnce(mockArtifact)
+      .mockRejectedValueOnce(conflictError)
+      .mockResolvedValueOnce({ loopId: "loop-999", status: "PENDING" });
+
+    const { result } = renderHook(() => useCreateAndGenerateArtifact(), {
+      wrapper: createWrapper(),
+    });
+
+    act(() => {
+      result.current.mutate({
+        input: {
+          title: "Test Plan",
+          type: "IMPLEMENTATION_PLAN",
+          content: "",
+          projectId: "project-123",
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(result.current.multiTargetState).not.toBeNull();
+    });
+
+    await act(async () => {
+      await result.current.selectTarget("target-1");
+    });
+
+    const retryCallBody = mockApiClient.post.mock.calls[2][1];
+    expect(retryCallBody).not.toHaveProperty("additionalRepos");
+    expect(retryCallBody).toMatchObject({
+      command: RunLoopCommand.Plan,
+      computeTargetId: "target-1",
     });
   });
 });

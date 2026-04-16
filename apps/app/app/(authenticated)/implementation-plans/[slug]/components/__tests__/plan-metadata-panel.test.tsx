@@ -344,4 +344,52 @@ describe("PlanMetadataPanel", () => {
       expect(screen.getByText(PR_TITLE_PATTERN)).toBeDefined();
     });
   });
+
+  describe("Additional repositories", () => {
+    const loopGenerationStatus = createMockGenerationStatus({
+      source: "loop",
+      loopId: "loop-abc",
+    });
+
+    test("renders each repo fullName and branch when additionalRepos is non-empty", () => {
+      render(
+        <PlanMetadataPanel
+          {...defaultProps}
+          additionalRepos={[
+            { fullName: "org/repo-one", branch: "main" },
+            { fullName: "org/repo-two", branch: "feature-branch" },
+          ]}
+          generationStatus={loopGenerationStatus}
+        />
+      );
+
+      expect(screen.getByText("org/repo-one")).toBeDefined();
+      expect(screen.getByText("(main)")).toBeDefined();
+      expect(screen.getByText("org/repo-two")).toBeDefined();
+      expect(screen.getByText("(feature-branch)")).toBeDefined();
+    });
+
+    test("does not render additional repos section when additionalRepos is absent", () => {
+      render(
+        <PlanMetadataPanel
+          {...defaultProps}
+          generationStatus={loopGenerationStatus}
+        />
+      );
+
+      expect(screen.queryByText("Additional Repositories")).toBeNull();
+    });
+
+    test("does not render additional repos section when additionalRepos is empty", () => {
+      render(
+        <PlanMetadataPanel
+          {...defaultProps}
+          additionalRepos={[]}
+          generationStatus={loopGenerationStatus}
+        />
+      );
+
+      expect(screen.queryByText("Additional Repositories")).toBeNull();
+    });
+  });
 });

@@ -1,6 +1,7 @@
 "use client";
 
 import { ArtifactStatus } from "@repo/api/src/types/artifact";
+import type { AdditionalRepoRef } from "@repo/api/src/types/loop";
 import { RunLoopCommand } from "@repo/api/src/types/loop";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { useCallback, useMemo, useRef } from "react";
@@ -95,19 +96,26 @@ export function usePlanActions(config: UsePlanActionsConfig) {
    * Regenerate the implementation plan via Loops.
    * Creates a Loop with command="plan". Compute target is resolved server-side.
    */
-  const handleRegenerate = useCallback(() => {
-    if (!artifactId) {
-      return;
-    }
-    prepareConflictRefs({ command: RunLoopCommand.Plan });
-    runLoop.mutate(
-      { artifactId, command: RunLoopCommand.Plan },
-      {
-        onSuccess: () => toast.success("Plan regeneration started via Loop"),
-        onError: routeConflictError,
+  const handleRegenerate = useCallback(
+    (additionalRepos?: AdditionalRepoRef[]) => {
+      if (!artifactId) {
+        return;
       }
-    );
-  }, [artifactId, runLoop, prepareConflictRefs, routeConflictError]);
+      const params = {
+        command: RunLoopCommand.Plan,
+        ...(additionalRepos?.length ? { additionalRepos } : {}),
+      };
+      prepareConflictRefs(params);
+      runLoop.mutate(
+        { artifactId, ...params },
+        {
+          onSuccess: () => toast.success("Plan regeneration started via Loop"),
+          onError: routeConflictError,
+        }
+      );
+    },
+    [artifactId, runLoop, prepareConflictRefs, routeConflictError]
+  );
 
   /**
    * Request changes to the implementation plan via Loops.
@@ -188,10 +196,9 @@ export function usePlanActions(config: UsePlanActionsConfig) {
         return;
       }
       activeCommandRef.current = RunLoopCommand.EvaluateCode;
-      const repo =
-        repoFullName && repoFullName.length > 0
-          ? { fullName: repoFullName, branch: prHeadBranch }
-          : undefined;
+      const repo = repoFullName
+        ? { fullName: repoFullName, branch: prHeadBranch }
+        : undefined;
       prepareConflictRefs(
         { command: RunLoopCommand.EvaluateCode, repo },
         activeCommandRef

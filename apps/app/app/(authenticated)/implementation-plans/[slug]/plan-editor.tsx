@@ -51,6 +51,7 @@ import {
   useCodeJudgesFeedback,
   usePlanJudgesFeedback,
 } from "@/hooks/queries/use-judges";
+import { useLoop } from "@/hooks/queries/use-loops";
 import { useExecutionLogDialog } from "@/hooks/use-execution-log-dialog";
 import { usePreviewDeploymentPolling } from "@/hooks/use-preview-deployment-polling";
 import { ExecutePlanModal } from "../components/execute-plan-modal";
@@ -136,6 +137,12 @@ export function PlanEditor({
   const { data: generationStatus, invalidateCache: invalidateArtifactCache } =
     useArtifactGenerationStatus(plan.id, { polling: true });
   const dismissGenerationStatus = useDismissArtifactGenerationStatus();
+
+  // Fetch the loop associated with the current generation status to get additionalRepos
+  const { data: loop } = useLoop(generationStatus?.loopId ?? "", {
+    enabled: !!generationStatus?.loopId,
+  });
+
   const { data: pullRequest } = useArtifactPullRequest(plan.id);
   const { data: judgesReport } = usePlanJudgesFeedback(plan.id);
   const { data: codeJudgesReport } = useCodeJudgesFeedback(plan.id);
@@ -180,7 +187,7 @@ export function PlanEditor({
     pullRequest?.state === PullRequestState.Open &&
     pullRequest.headBranch.length > 0;
   const evaluateCodeHandler = useCallback(() => {
-    if (!canEvaluateCode || pullRequest === undefined || pullRequest === null) {
+    if (!(canEvaluateCode && pullRequest)) {
       return;
     }
     planActions.handleEvaluateCode(pullRequest.headBranch, plan.targetRepo);
@@ -190,6 +197,10 @@ export function PlanEditor({
     plan.targetRepo,
     planActions.handleEvaluateCode,
   ]);
+
+  const handleRegenerateWithAdditionalRepos = useCallback(() => {
+    planActions.handleRegenerate(loop?.additionalRepos ?? undefined);
+  }, [planActions.handleRegenerate, loop?.additionalRepos]);
 
   // Create version display component for header
   const versionDisplay = (
@@ -246,7 +257,7 @@ export function PlanEditor({
       onExportMarkdown={actions.handleDownload}
       onExportToLinear={openLinearExportDialog}
       onMove={() => setShowMoveDialog(true)}
-      onRegenerate={planActions.handleRegenerate}
+      onRegenerate={handleRegenerateWithAdditionalRepos}
       onRequestChanges={openRequestChangesModal}
       onRestoreVersion={contentController.restoreVersion}
       onToggleMetadataPanel={uiState.toggleMetadataPanel}
@@ -332,6 +343,7 @@ export function PlanEditor({
                 {/* Details section */}
                 <div className="border-t px-4 py-4">
                   <PlanMetadataPanel
+                    additionalRepos={loop?.additionalRepos}
                     codeJudgeItems={codeJudgesReport ?? null}
                     generationStatus={generationStatus ?? null}
                     isPreviewRefreshing={isRefreshingPreviewDeployment}

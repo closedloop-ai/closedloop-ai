@@ -1,6 +1,8 @@
 "use client";
 
+import { useFeatureFlag } from "@repo/analytics/client";
 import { EntityType } from "@repo/api/src/types/entity-link";
+import type { AdditionalRepoRef } from "@repo/api/src/types/loop";
 import { getProjectSettings } from "@repo/api/src/types/project";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
@@ -24,6 +26,7 @@ import {
   useCreateArtifact,
 } from "@/hooks/queries/use-artifacts";
 import { useProject, useProjects } from "@/hooks/queries/use-projects";
+import { AdditionalReposPicker } from "./additional-repos-picker";
 import { PlanPreview, PrdSelector, ProjectSelector } from "./plan-form-fields";
 import { buildCreateInput, useModalOpenState } from "./plan-form-utils";
 import {
@@ -52,9 +55,27 @@ function isCreateSubmitDisabled(
   isSubmitting: boolean,
   titleTrimmed: boolean,
   selectedSource: PlanSource | undefined,
-  missingRepo: boolean
+  missingRepo: boolean,
+  additionalReposValid: boolean
 ): boolean {
-  return isSubmitting || !titleTrimmed || (!!selectedSource && missingRepo);
+  return (
+    isSubmitting ||
+    !titleTrimmed ||
+    (!!selectedSource && missingRepo) ||
+    !additionalReposValid
+  );
+}
+
+function isMultiRepoPickerVisible(
+  flagValue: ReturnType<typeof useFeatureFlag>
+): boolean {
+  return flagValue?.enabled !== false;
+}
+
+function normalizeAdditionalRepos(
+  repos: AdditionalRepoRef[]
+): AdditionalRepoRef[] | undefined {
+  return repos.length > 0 ? repos : undefined;
 }
 
 export function NewPlanModal({
@@ -70,6 +91,8 @@ export function NewPlanModal({
     controlledOnOpenChange
   );
   const [error, setError] = useState<string | null>(null);
+  const multiRepoFlag = useFeatureFlag("multi-repo-plan");
+  const showPicker = isMultiRepoPickerVisible(multiRepoFlag);
 
   // Form state
   const [selectedSourceId, setSelectedSourceId] = useState(source?.id ?? "");
@@ -86,6 +109,10 @@ export function NewPlanModal({
     () => source?.targetBranch ?? ""
   );
   const [selectedRepoId, setSelectedRepoId] = useState("");
+  const [additionalRepos, setAdditionalRepos] = useState<AdditionalRepoRef[]>(
+    []
+  );
+  const [additionalReposValid, setAdditionalReposValid] = useState(true);
   const hasPrePopulated = useRef(false);
 
   // Fetch project details for default repository
@@ -176,6 +203,8 @@ export function NewPlanModal({
     setTargetRepo(source?.targetRepo ?? "");
     setTargetBranch(source?.targetBranch ?? "");
     setSelectedRepoId("");
+    setAdditionalRepos([]);
+    setAdditionalReposValid(true);
     setError(null);
     hasPrePopulated.current = false;
   };
@@ -216,7 +245,14 @@ export function NewPlanModal({
     };
 
     if (createConfig.type === "createAndGenerate") {
-      createAndGeneratePlan.mutate(createConfig.input, { onSuccess });
+      createAndGeneratePlan.mutate(
+        {
+          input: createConfig.input,
+          // additionalRepos is a run-loop concern — not added to FormState or buildCreateInput
+          additionalRepos: normalizeAdditionalRepos(additionalRepos),
+        },
+        { onSuccess }
+      );
     } else {
       createPlan.mutate(createConfig.input, { onSuccess });
     }
@@ -227,6 +263,12 @@ export function NewPlanModal({
     if (!newOpen) {
       resetForm();
     }
+  };
+
+  const handleRepositoryChange = (repoId: string, fullName: string) => {
+    setSelectedRepoId(repoId);
+    setTargetRepo(fullName);
+    setTargetBranch("");
   };
 
   const showProjectSelector = !selectedSource?.projectId;
@@ -326,15 +368,20 @@ export function NewPlanModal({
 
           <RepositoryBranchFields
             onBranchChange={setTargetBranch}
-            onRepositoryChange={(repoId, fullName) => {
-              setSelectedRepoId(repoId);
-              setTargetRepo(fullName);
-              setTargetBranch("");
-            }}
+            onRepositoryChange={handleRepositoryChange}
             selectedRepoId={selectedRepoId}
             targetBranch={targetBranch}
             targetRepo={targetRepo}
           />
+
+          {showPicker ? (
+            <AdditionalReposPicker
+              onChange={setAdditionalRepos}
+              onValidChange={setAdditionalReposValid}
+              targetRepo={targetRepo}
+              value={additionalRepos}
+            />
+          ) : null}
 
           {selectedSource ? (
             <PlanPreview
@@ -373,7 +420,8 @@ export function NewPlanModal({
               isSubmitting,
               title.trim().length > 0,
               selectedSource,
-              missingRepo
+              missingRepo,
+              additionalReposValid
             )}
             onClick={handleSubmit}
           >
