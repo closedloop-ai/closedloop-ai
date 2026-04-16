@@ -267,13 +267,16 @@ describe("externalLinksService", () => {
 
       const mockRepo = { id: "repo-1" };
       const mockPrCreate = vi.fn().mockResolvedValue({ githubId: "PR_gh_42" });
-      // withDb is called once in the best-effort block for both repo lookup and PR create.
+      // withDb is called once in the best-effort block for repo lookup, existing PR check, and PR create.
       getMockWithDb().mockImplementationOnce((cb: (db: unknown) => unknown) =>
         cb({
           gitHubInstallationRepository: {
             findFirst: vi.fn().mockResolvedValue(mockRepo),
           },
-          gitHubPullRequest: { create: mockPrCreate },
+          gitHubPullRequest: {
+            findFirst: vi.fn().mockResolvedValue(null),
+            create: mockPrCreate,
+          },
         })
       );
 
@@ -341,6 +344,7 @@ describe("externalLinksService", () => {
             findFirst: vi.fn().mockResolvedValue({ id: "repo-1" }),
           },
           gitHubPullRequest: {
+            findFirst: vi.fn().mockResolvedValue(null),
             create: vi.fn().mockRejectedValue(p2002Error),
           },
         })
