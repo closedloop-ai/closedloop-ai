@@ -17,7 +17,7 @@ export function useUnreadSessionCount() {
   const { data: count = 0 } = useQuery({
     queryKey: engineerSessionKeys.unreadCount(),
     queryFn: async () => {
-      const res = await fetch("/api/engineer/symphony/sessions/unread-count");
+      const res = await fetch("/api/gateway/symphony/sessions/unread-count");
       if (!res.ok) {
         return 0;
       }

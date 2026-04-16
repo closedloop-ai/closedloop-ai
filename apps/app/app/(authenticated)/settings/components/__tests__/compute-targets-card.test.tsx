@@ -95,7 +95,7 @@ describe("ComputeTargetsCard", () => {
 
     renderWithClient(queryClient);
 
-    expect(globalThis.fetch).toHaveBeenCalledWith("/api/engineer/health-check");
+    expect(globalThis.fetch).toHaveBeenCalledWith("/api/gateway/health-check");
     expect(screen.getByText("1 failure")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: RE_SYSTEM_CHECK }));
@@ -196,7 +196,7 @@ describe("ComputeTargetsCard", () => {
 
     await waitFor(() => {
       expect(globalThis.fetch).toHaveBeenCalledWith(
-        "/api/engineer/health-check"
+        "/api/gateway/health-check"
       );
     });
 
@@ -240,7 +240,7 @@ describe("ComputeTargetsCard", () => {
 
     await waitFor(() => {
       expect(globalThis.fetch).toHaveBeenCalledWith(
-        "/api/engineer/health-check"
+        "/api/gateway/health-check"
       );
     });
 

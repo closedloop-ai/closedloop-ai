@@ -1,8 +1,8 @@
-import { describe, expect, it } from "vitest";
 import {
   issueLoopRunnerToken,
   verifyLoopRunnerToken,
-} from "@/lib/auth/loop-runner-jwt";
+} from "@repo/auth/loop-runner-jwt";
+import { describe, expect, it } from "vitest";
 
 describe("loop-runner-jwt", () => {
   it("issues and verifies a token with jti", async () => {

@@ -1,20 +1,19 @@
+import type { ChatMessage as BaseChatMessage } from "@repo/api/src/types/chat-session";
+
 /**
  * Shared types for chat components
  */
 
 /**
- * A chat message between user and assistant
+ * A chat message between user and assistant. Extends the API-side
+ * persisted base with optional UI-only fields.
  */
-export type ChatMessage = {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  timestamp: string;
+export interface ChatMessage extends BaseChatMessage {
   mentions?: string[];
   blocks?: ContentBlock[];
   sender?: "claude" | "codex";
   responded?: boolean;
-};
+}
 
 /**
  * Content block from Claude's structured message format.

@@ -4,7 +4,7 @@ export { reposOptions } from "@/lib/git/repos";
 /* ---------- Mutation helpers ---------- */
 
 export async function addRepo(path: string) {
-  const response = await fetch("/api/engineer/repos", {
+  const response = await fetch("/api/gateway/repos", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ path }),
@@ -18,7 +18,7 @@ export async function addRepo(path: string) {
 
 export async function removeRepo(path: string) {
   const response = await fetch(
-    `/api/engineer/repos?path=${encodeURIComponent(path)}`,
+    `/api/gateway/repos?path=${encodeURIComponent(path)}`,
     {
       method: "DELETE",
     }
@@ -34,7 +34,7 @@ export async function updateRepoSettings(settings: {
   worktreeParentDir?: string;
   worktreeParentDirConfirmed?: boolean;
 }) {
-  const response = await fetch("/api/engineer/repos", {
+  const response = await fetch("/api/gateway/repos", {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(settings),

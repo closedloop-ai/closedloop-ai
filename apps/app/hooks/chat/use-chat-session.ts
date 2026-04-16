@@ -1,8 +1,9 @@
 "use client";
 
 import { EngineerRoutingMode } from "@repo/api/src/types/relay";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useCallback, useMemo, useReducer } from "react";
+import type { PrCommentContext } from "@/app/(authenticated)/build/[id]/comment-context";
 import type { ChatMessage, ContentBlock } from "@/components/chat/types";
 import { env } from "@/env";
 import { useChatRunnerToken } from "@/hooks/chat/use-chat-runner-token";
@@ -13,6 +14,24 @@ import { DEFAULT_CHAT_MODELS } from "@/lib/chat/default-models";
 import { useElectronDetection } from "@/lib/engineer/electron-detection";
 import { queryKeys } from "@/lib/engineer/queries/keys";
 import { useEngineerRoutingSelection } from "@/lib/engineer/routing-store";
+import {
+  chatSessionReducer,
+  initialChatSessionState,
+} from "./chat-session-reducer";
+
+function buildUserMessageContent(
+  draft: string,
+  contextSelection: PrCommentContext | null | undefined
+): string {
+  if (!contextSelection) {
+    return draft;
+  }
+  const { filePath, line, body } = contextSelection;
+  const locationSuffix = filePath
+    ? ` on ${filePath}${line ? `:${line}` : ""}`
+    : "";
+  return `[Selected PR comment${locationSuffix}]:\n${body}\n\n---\n${draft}`;
+}
 
 type ChatSessionRow = {
   id: string;
@@ -37,6 +56,8 @@ export type UseChatSessionOptions = {
   model?: string;
   cwd?: string;
   onProviderMismatch?: (boundProvider: string) => void;
+  contextSelection?: PrCommentContext | null;
+  onContextConsumed?: () => void;
 };
 
 export type UseChatSessionReturn = {
@@ -60,8 +81,16 @@ export type UseChatSessionReturn = {
 export function useChatSession(
   options: UseChatSessionOptions
 ): UseChatSessionReturn {
-  const { chatKey, context, provider, model, cwd, onProviderMismatch } =
-    options;
+  const {
+    chatKey,
+    context,
+    provider,
+    model,
+    cwd,
+    onProviderMismatch,
+    contextSelection,
+    onContextConsumed,
+  } = options;
   const apiClient = useApiClient();
   const queryClient = useQueryClient();
   const routing = useEngineerRoutingSelection();
@@ -71,10 +100,11 @@ export function useChatSession(
   const chatStream = useChatStream();
   const runnerToken = useChatRunnerToken(chatKey);
 
-  const [inputValue, setInputValue] = useState("");
-  const [localError, setLocalError] = useState<string | null>(null);
-  const [pendingUserMessage, setPendingUserMessage] =
-    useState<ChatMessage | null>(null);
+  const [state, dispatch] = useReducer(
+    chatSessionReducer,
+    initialChatSessionState
+  );
+  const { inputValue, localError, pendingUserMessage } = state;
 
   const chatKeyEnabled = chatKey.length > 0;
 
@@ -83,26 +113,22 @@ export function useChatSession(
     queryFn: async () => {
       const path = `/chat-sessions?chatKey=${encodeURIComponent(chatKey)}`;
       const result = await apiClient.get<ChatEnvelope>(path);
-      return result.chat;
+      const chat = result.chat;
+      // Clear the optimistic user message once the backend has persisted
+      // it and the history query has caught up. Prevents the "my message
+      // disappears until the stream ends" flicker on the first send.
+      if (
+        pendingUserMessage &&
+        chat?.messages.some((m) => m.id === pendingUserMessage.id)
+      ) {
+        dispatch({ type: "pending/clear" });
+      }
+      return chat;
     },
     enabled: chatKeyEnabled,
   });
 
   const existingChat = historyQuery.data ?? null;
-  // Clear the optimistic user message once the backend has persisted it and
-  // the history query has caught up. Prevents the "my message disappears until
-  // the stream ends" flicker on the first send.
-  useEffect(() => {
-    if (!pendingUserMessage) {
-      return;
-    }
-    const persisted = existingChat?.messages.some(
-      (m) => m.id === pendingUserMessage.id
-    );
-    if (persisted) {
-      setPendingUserMessage(null);
-    }
-  }, [existingChat, pendingUserMessage]);
 
   const messages = useMemo<ChatMessage[]>(() => {
     const base = existingChat?.messages ?? [];
@@ -124,6 +150,10 @@ export function useChatSession(
     });
   }, [queryClient, chatKey]);
 
+  const setInputValue = useCallback((v: string) => {
+    dispatch({ type: "input/set", value: v });
+  }, []);
+
   const sendMessage = useCallback(async (): Promise<void> => {
     if (!chatKeyEnabled) {
       return;
@@ -133,36 +163,44 @@ export function useChatSession(
       return;
     }
 
-    setLocalError(null);
+    dispatch({ type: "error/set", message: null });
 
     if (routing.mode === EngineerRoutingMode.LocalElectron) {
       if (!electronDetection.detected) {
-        setLocalError("Local Electron gateway not detected.");
+        dispatch({
+          type: "error/set",
+          message: "Local Electron gateway not detected.",
+        });
         return;
       }
     } else if (!routing.computeTargetId) {
-      setLocalError("Select an online compute target to use CloudRelay");
+      dispatch({
+        type: "error/set",
+        message: "Select an online compute target to use CloudRelay",
+      });
       return;
     }
 
     const credentials = await runnerToken.ensureFresh();
     if (!credentials) {
-      setLocalError("Failed to authorize chat session");
+      dispatch({
+        type: "error/set",
+        message: "Failed to authorize chat session",
+      });
       return;
     }
 
     const userMessage: ChatMessage = {
       id: `user-${crypto.randomUUID()}`,
       role: "user",
-      content: draft,
+      content: buildUserMessageContent(draft, contextSelection),
       timestamp: new Date().toISOString(),
     };
 
-    setInputValue("");
-    setPendingUserMessage(userMessage);
+    dispatch({ type: "send/start", message: userMessage });
 
-    await chatStream.sendMessage(
-      "/api/engineer/chat",
+    const result = await chatStream.sendMessage(
+      "/api/gateway/chat",
       {
         chatKey,
         userMessage,
@@ -177,16 +215,24 @@ export function useChatSession(
       {
         onError: (err: StreamErrorEvent) => {
           if (err.phase === "upsert") {
-            setInputValue(draft);
-            setPendingUserMessage(null);
+            dispatch({
+              type: "upsertFailure/restoreDraft",
+              draft,
+              message: err.message,
+            });
+          } else {
+            dispatch({ type: "error/set", message: err.message });
           }
           if (err.code === "PROVIDER_MISMATCH" && err.boundProvider) {
             onProviderMismatch?.(err.boundProvider);
           }
-          setLocalError(err.message);
         },
       }
     );
+
+    if (result.ok) {
+      onContextConsumed?.();
+    }
 
     invalidateHistory();
   }, [
@@ -194,11 +240,13 @@ export function useChatSession(
     chatKeyEnabled,
     chatStream,
     context,
+    contextSelection,
     cwd,
     electronDetection.detected,
     inputValue,
     invalidateHistory,
     model,
+    onContextConsumed,
     onProviderMismatch,
     provider,
     routing.computeTargetId,
@@ -206,22 +254,31 @@ export function useChatSession(
     runnerToken,
   ]);
 
+  const clearHistoryMutation = useMutation({
+    mutationFn: () =>
+      apiClient.delete(`/chat-sessions?chatKey=${encodeURIComponent(chatKey)}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.chatSessionHistory(chatKey),
+      });
+    },
+  });
+
   const clearHistory = useCallback(async (): Promise<void> => {
     if (!chatKeyEnabled) {
       return;
     }
+    // Use mutateAsync so callers that `await clearHistory()` actually
+    // wait for the DELETE to complete. The global QueryClient
+    // `mutations.onError` handler in `lib/query-client.tsx` toasts any
+    // failure, so we swallow the rejection here to avoid requiring
+    // every caller to wrap this in try/catch.
     try {
-      await apiClient.delete(
-        `/chat-sessions?chatKey=${encodeURIComponent(chatKey)}`
-      );
-    } catch (err) {
-      setLocalError(
-        err instanceof Error ? err.message : "Failed to clear history"
-      );
-      return;
+      await clearHistoryMutation.mutateAsync();
+    } catch {
+      // Intentional: global onError handler already surfaced the error.
     }
-    invalidateHistory();
-  }, [apiClient, chatKey, chatKeyEnabled, invalidateHistory]);
+  }, [chatKeyEnabled, clearHistoryMutation]);
 
   const mergedError = localError ?? chatStream.error;
 

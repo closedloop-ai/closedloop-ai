@@ -1,4 +1,7 @@
+import { CHAT_PROVIDER_VALUES } from "@repo/api/src/types/chat-session";
 import { z } from "zod";
+
+const chatProviderSchema = z.enum(CHAT_PROVIDER_VALUES);
 
 const chatMessageSchema = z.object({
   id: z.string(),
@@ -10,7 +13,7 @@ const chatMessageSchema = z.object({
 
 export const createChatSessionValidator = z.object({
   chatKey: z.string().min(1).max(500),
-  provider: z.enum(["claude", "codex"]),
+  provider: chatProviderSchema,
   model: z.string().min(1).max(200),
   context: z.string().max(50_000).optional(),
   messages: z.array(chatMessageSchema).default([]),
@@ -18,7 +21,7 @@ export const createChatSessionValidator = z.object({
 
 export const appendMessagesValidator = z.object({
   chatKey: z.string().min(1).max(500),
-  provider: z.enum(["claude", "codex"]),
+  provider: chatProviderSchema,
   messages: z.array(chatMessageSchema).min(1),
   sessionId: z.string().optional(),
 });
@@ -28,7 +31,7 @@ export const turnValidator = z.object({
   userMessage: chatMessageSchema.refine((m) => m.role === "user", {
     message: "userMessage.role must be 'user'",
   }),
-  provider: z.enum(["claude", "codex"]),
+  provider: chatProviderSchema,
   model: z.string().min(1).max(200),
   context: z.string().max(50_000).optional(),
   sourceGatewayId: z.string().min(1),
@@ -37,7 +40,7 @@ export const turnValidator = z.object({
 export const completeTurnValidator = z
   .object({
     chatKey: z.string().min(1).max(500),
-    provider: z.enum(["claude", "codex"]),
+    provider: chatProviderSchema,
     messages: z.array(chatMessageSchema).min(1),
     sessionId: z.string().nullable(),
     sessionSourceId: z.string().nullable(),

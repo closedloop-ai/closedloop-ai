@@ -1,3 +1,7 @@
+import {
+  CURRENT_DESKTOP_API_NAMESPACE,
+  LEGACY_DESKTOP_API_NAMESPACE,
+} from "@repo/api/src/desktop-api-namespace";
 import { z } from "zod";
 import { repoSchema } from "@/app/loops/validators";
 import { COMMAND_MAP } from "./run-loop-helpers";
@@ -9,6 +13,9 @@ export const runLoopSchema = z.object({
   prompt: z.string().max(100_000).optional(),
   repo: repoSchema.optional(),
   computeTargetId: z.uuid().nullable().optional(),
+  desktopApiNamespace: z
+    .enum([CURRENT_DESKTOP_API_NAMESPACE, LEGACY_DESKTOP_API_NAMESPACE])
+    .optional(),
   backendOverride: z.boolean().optional(),
 });
 

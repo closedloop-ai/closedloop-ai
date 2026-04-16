@@ -160,7 +160,7 @@ export function useReviewExecution(
 
   // Fetch persisted findings to restore commented status and hydrate
   // humanized bodies (written to disk by triggerExtraction in a prior mount).
-  const findingsUrl = `/api/engineer/codex/review-findings/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${encodeURIComponent(config.provider)}`;
+  const findingsUrl = `/api/gateway/codex/review-findings/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${encodeURIComponent(config.provider)}`;
   const { data: savedFindings } = useQuery<{
     findings: Array<ReviewFinding & { commented: boolean }>;
     declined?: boolean;
@@ -330,7 +330,7 @@ export function useReviewExecution(
 
     if (config.provider === "claude" && sessionIdRef.current) {
       fetch(
-        `/api/engineer/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=claude`,
+        `/api/gateway/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=claude`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -427,7 +427,7 @@ export function useReviewExecution(
       setReviewOutput("");
 
       const response = await fetch(
-        `/api/engineer/codex/review/${encodeURIComponent(ticketId)}`,
+        `/api/gateway/codex/review/${encodeURIComponent(ticketId)}`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -572,7 +572,7 @@ export function useReviewExecution(
               reconnectHeaders["x-relay-command-id"] = commandId;
             }
             const reconnectResponse = await fetch(
-              `/api/engineer/codex/review/${encodeURIComponent(ticketId)}`,
+              `/api/gateway/codex/review/${encodeURIComponent(ticketId)}`,
               {
                 method: "POST",
                 headers: reconnectHeaders,
@@ -690,7 +690,7 @@ export function useReviewExecution(
   };
 
   const pollRunningReview = async (signal: AbortSignal) => {
-    const statusUrl = `/api/engineer/codex/status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${encodeURIComponent(config.provider)}`;
+    const statusUrl = `/api/gateway/codex/status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${encodeURIComponent(config.provider)}`;
     let pollCount = 0;
     let lastKnownOutput = "";
     console.log("[poll] Starting poll for running review");
@@ -745,7 +745,7 @@ export function useReviewExecution(
     abortRef.current?.abort();
     try {
       const response = await fetch(
-        `/api/engineer/codex/stop/${encodeURIComponent(ticketId)}`,
+        `/api/gateway/codex/stop/${encodeURIComponent(ticketId)}`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -788,7 +788,7 @@ export function useReviewExecution(
       const body = buildCommentBody(finding, filePath);
 
       try {
-        const response = await fetch("/api/engineer/git/pr/inline-comment", {
+        const response = await fetch("/api/gateway/git/pr/inline-comment", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -846,7 +846,7 @@ export function useReviewExecution(
           `[review-extract] Triggering extraction for ${config.provider} with session ${sid}`
         );
         const res = await fetch(
-          `/api/engineer/codex/review-extract/${encodeURIComponent(ticketId)}`,
+          `/api/gateway/codex/review-extract/${encodeURIComponent(ticketId)}`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -897,7 +897,7 @@ export function useReviewExecution(
           `[review-verdict] Triggering verdict extraction with session ${sid}`
         );
         const res = await fetch(
-          `/api/engineer/codex/review-verdict/${encodeURIComponent(ticketId)}`,
+          `/api/gateway/codex/review-verdict/${encodeURIComponent(ticketId)}`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },

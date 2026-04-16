@@ -2,7 +2,7 @@
  * Canonical default models used by the useChatSession hook
  * (apps/app/hooks/chat/use-chat-session.ts). The hook resolves `model`
  * via `body.model ?? DEFAULT_CHAT_MODELS[provider]` before POSTing to
- * /api/engineer/chat, so the gateway always receives an explicit
+ * /api/gateway/chat, so the gateway always receives an explicit
  * non-empty model string.
  */
 export const DEFAULT_CHAT_MODELS = {

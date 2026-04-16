@@ -182,7 +182,7 @@ function saveSessions(config: SessionsConfig): void {
 
 /**
  * Upsert a session in the sessions file under an exclusive file lock.
- * Server-side counterpart of the client-side POST to /api/engineer/symphony/sessions.
+ * Server-side counterpart of the client-side POST to /api/gateway/symphony/sessions.
  * Ensures the session is persisted even if the client dies before its POST completes.
  */
 export function upsertSession(session: {

@@ -155,7 +155,8 @@ describe("POST /chat-sessions — reconciliation", () => {
       messages: [SAMPLE_USER_MESSAGE, SAMPLE_ASSISTANT_MESSAGE],
     });
     vi.mocked(chatSessionsService.create).mockResolvedValue({
-      chat: reconciledRow,
+      ok: true,
+      value: { chat: reconciledRow },
     } as any);
 
     const response = await POST(
@@ -224,7 +225,8 @@ describe("POST /chat-sessions", () => {
 
   it("creates a chat and returns the row", async () => {
     vi.mocked(chatSessionsService.create).mockResolvedValue({
-      chat: buildChatRow(),
+      ok: true,
+      value: { chat: buildChatRow() },
     } as any);
 
     const response = await POST(
@@ -258,8 +260,8 @@ describe("POST /chat-sessions", () => {
 
   it("returns 409 when service reports a provider conflict", async () => {
     vi.mocked(chatSessionsService.create).mockResolvedValue({
-      conflict: true,
-      boundProvider: "codex",
+      ok: false,
+      error: { kind: "providerConflict", boundProvider: "codex" },
     } as any);
 
     const response = await POST(
@@ -302,7 +304,8 @@ describe("PATCH /chat-sessions", () => {
 
   it("returns 404 when service reports notFound", async () => {
     vi.mocked(chatSessionsService.appendMessages).mockResolvedValue({
-      notFound: true,
+      ok: false,
+      error: { kind: "notFound" },
     } as any);
 
     const response = await PATCH(
@@ -322,8 +325,8 @@ describe("PATCH /chat-sessions", () => {
 
   it("returns 409 when service reports a provider conflict", async () => {
     vi.mocked(chatSessionsService.appendMessages).mockResolvedValue({
-      conflict: true,
-      boundProvider: "codex",
+      ok: false,
+      error: { kind: "providerConflict", boundProvider: "codex" },
     } as any);
 
     const response = await PATCH(
@@ -349,7 +352,8 @@ describe("PATCH /chat-sessions", () => {
       sessionId: "sess-1",
     });
     vi.mocked(chatSessionsService.appendMessages).mockResolvedValue({
-      chat: updated,
+      ok: true,
+      value: { chat: updated },
     } as any);
 
     const response = await PATCH(
@@ -386,7 +390,8 @@ describe("PATCH /chat-sessions", () => {
 
     // First PATCH: service appends the new assistant message
     vi.mocked(chatSessionsService.appendMessages).mockResolvedValueOnce({
-      chat: existingRow,
+      ok: true,
+      value: { chat: existingRow },
     } as any);
 
     const patchBody = {
@@ -414,7 +419,8 @@ describe("PATCH /chat-sessions", () => {
 
     // Second PATCH with identical body: service dedupes and returns unchanged row
     vi.mocked(chatSessionsService.appendMessages).mockResolvedValueOnce({
-      chat: existingRow,
+      ok: true,
+      value: { chat: existingRow },
     } as any);
 
     const secondResponse = await PATCH(
