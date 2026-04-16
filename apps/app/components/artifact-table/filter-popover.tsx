@@ -639,23 +639,10 @@ function FilterRow({
         onToggle();
       }}
     >
-      <button
-        className="flex items-center"
-        onClick={(e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          onToggle();
-        }}
-        onPointerDown={(e) => e.stopPropagation()}
-        onPointerUp={(e) => e.stopPropagation()}
-        tabIndex={-1}
-        type="button"
-      >
-        <Checkbox
-          checked={checked}
-          className="[&_svg]:!text-current pointer-events-none"
-        />
-      </button>
+      <Checkbox
+        checked={checked}
+        className="[&_svg]:!text-current pointer-events-none"
+      />
       {children}
     </DropdownMenuItem>
   );
