@@ -28,7 +28,11 @@ import {
 import { useProject, useProjects } from "@/hooks/queries/use-projects";
 import { AdditionalReposPicker } from "./additional-repos-picker";
 import { PlanPreview, PrdSelector, ProjectSelector } from "./plan-form-fields";
-import { buildCreateInput, useModalOpenState } from "./plan-form-utils";
+import {
+  buildCreateInput,
+  normalizeAdditionalRepos,
+  useModalOpenState,
+} from "./plan-form-utils";
 import {
   generateFileNameFromTitle,
   generatePlanFileName,
@@ -70,12 +74,6 @@ function isMultiRepoPickerVisible(
   flagValue: ReturnType<typeof useFeatureFlag>
 ): boolean {
   return flagValue?.enabled !== false;
-}
-
-function normalizeAdditionalRepos(
-  repos: AdditionalRepoRef[]
-): AdditionalRepoRef[] | undefined {
-  return repos.length > 0 ? repos : undefined;
 }
 
 export function NewPlanModal({

@@ -58,7 +58,8 @@ describe("RegeneratePlanModal", () => {
     const confirmButton = confirmButtons.find(
       (btn) => btn.tagName === "BUTTON"
     );
-    expect(confirmButton?.getAttribute("disabled")).not.toBeNull();
+    expect(confirmButton).toBeDefined();
+    expect(confirmButton).toBeDisabled();
   });
 
   it("calls onConfirm with the previously saved repos on confirm", () => {

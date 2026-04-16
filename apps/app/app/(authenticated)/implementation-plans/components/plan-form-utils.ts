@@ -1,4 +1,5 @@
 import { ArtifactStatus, ArtifactType } from "@repo/api/src/types/artifact";
+import type { AdditionalRepoRef } from "@repo/api/src/types/loop";
 import { useState } from "react";
 import type { PlanSource } from "./plan-source";
 
@@ -54,4 +55,10 @@ export function useModalOpenState(
   const open = isControlled ? controlledOpen : internalOpen;
   const setOpen = controlledOnOpenChange ?? setInternalOpen;
   return { open, setOpen, isControlled };
+}
+
+export function normalizeAdditionalRepos(
+  repos: AdditionalRepoRef[]
+): AdditionalRepoRef[] | undefined {
+  return repos.length > 0 ? repos : undefined;
 }

@@ -82,9 +82,16 @@ export function RepoBranchSelector({
 
   // Resolve repoId from a seeded fullName once repositories load. Uses a
   // dedicated callback so the pre-existing branch selection is preserved.
+  // Case-insensitive to match the rest of the picker (availableRepositories
+  // filter, additional-repos-picker duplicate detection) — seedFullName
+  // originates from stored loop data whose casing may drift from GitHub's
+  // current canonical casing.
   useEffect(() => {
     if (seedFullName && !selectedRepoId && repositories && onSeedRepoResolved) {
-      const match = repositories.find((r) => r.fullName === seedFullName);
+      const target = seedFullName.toLowerCase();
+      const match = repositories.find(
+        (r) => r.fullName.toLowerCase() === target
+      );
       if (match) {
         onSeedRepoResolved(match.id);
       }

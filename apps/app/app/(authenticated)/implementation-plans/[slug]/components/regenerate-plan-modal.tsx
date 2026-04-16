@@ -14,6 +14,7 @@ import {
 import { Loader2Icon, RefreshCwIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 import { AdditionalReposPicker } from "../../components/additional-repos-picker";
+import { normalizeAdditionalRepos } from "../../components/plan-form-utils";
 
 type RegeneratePlanModalProps = {
   open: boolean;
@@ -24,12 +25,6 @@ type RegeneratePlanModalProps = {
   initialAdditionalRepos: AdditionalRepoRef[] | undefined;
   targetRepo: string;
 };
-
-function normalizeAdditionalRepos(
-  repos: AdditionalRepoRef[]
-): AdditionalRepoRef[] | undefined {
-  return repos.length > 0 ? repos : undefined;
-}
 
 export function RegeneratePlanModal({
   open,
