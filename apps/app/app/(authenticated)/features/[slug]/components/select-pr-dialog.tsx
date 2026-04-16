@@ -8,7 +8,6 @@ import {
   LinkType,
 } from "@repo/api/src/types/entity-link";
 import {
-  type ExternalLink,
   ExternalLinkType,
   type PullRequestMetadata,
 } from "@repo/api/src/types/external-link";
@@ -46,17 +45,15 @@ import {
   useCreateEntityLink,
   useLinkedEntities,
 } from "@/hooks/queries/use-entity-links";
-import {
-  useCreateExternalLink,
-  useExternalLinks,
-} from "@/hooks/queries/use-external-links";
+import { useCreateExternalLink } from "@/hooks/queries/use-external-links";
 import { useGitHubPullRequests } from "@/hooks/queries/use-github-integration";
 import { useProject } from "@/hooks/queries/use-projects";
 
 type SelectPullRequestDialogProps = {
-  featureId: string;
+  featureId?: string | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  planId?: string | null;
   projectId: string;
 };
 
@@ -64,12 +61,30 @@ export function SelectPullRequestDialog({
   featureId,
   open,
   onOpenChange,
+  planId,
   projectId,
 }: Readonly<SelectPullRequestDialogProps>) {
   const [isLinking, setIsLinking] = useState(false);
   const { data: project } = useProject(projectId, { enabled: !!projectId });
   const createExternalLink = useCreateExternalLink();
   const createEntityLink = useCreateEntityLink();
+  const linkSource = useMemo(() => {
+    if (planId) {
+      return {
+        id: planId,
+        type: EntityType.Document,
+      };
+    }
+
+    if (featureId) {
+      return {
+        id: featureId,
+        type: EntityType.Feature,
+      };
+    }
+
+    return null;
+  }, [featureId, planId]);
 
   const repoId = useMemo(() => {
     if (!project?.settings) {
@@ -88,81 +103,67 @@ export function SelectPullRequestDialog({
   );
 
   const {
-    data: projectPullRequestLinks = [],
-    isLoading: isLoadingProjectPullRequestLinks,
-  } = useExternalLinks(
-    {
-      projectId,
-      type: ExternalLinkType.PullRequest,
-    },
-    { enabled: open && !!projectId }
-  );
-  const {
     data: linkedEntities = [],
-    isLoading: isLoadingFeatureLinkedEntities,
-  } = useLinkedEntities(featureId, EntityType.Feature, {
-    direction: LinkDirection.Target,
-    enabled: open && !!featureId,
-    mode: LinkQueryMode.Tree,
-  });
+    isLoading: isLoadingSourceLinkedEntities,
+  } = useLinkedEntities(
+    linkSource?.id ?? "",
+    linkSource?.type ?? EntityType.Feature,
+    {
+      direction: LinkDirection.Target,
+      enabled: open && !!linkSource,
+      linkType: LinkType.Produces,
+      mode: LinkQueryMode.Direct,
+    }
+  );
 
   const pullRequests = data?.pullRequests ?? [];
   const trackedUrls = useMemo(
     () => new Set(data?.trackedPrUrls ?? []),
     [data?.trackedPrUrls]
   );
-  const pullRequestLinksByUrl = useMemo(
-    () => getPullRequestLinksByUrl(projectPullRequestLinks),
-    [projectPullRequestLinks]
-  );
-  const featureLinkedUrls = useMemo(
-    () => getFeatureLinkedPullRequestUrls(linkedEntities),
+  const linkedUrls = useMemo(
+    () => getLinkedPullRequestUrls(linkedEntities),
     [linkedEntities]
   );
-  const isCheckingExistingLinks =
-    isLoadingFeatureLinkedEntities ||
-    (isLoadingProjectPullRequestLinks && trackedUrls.size > 0);
+  const visiblePullRequests = useMemo(
+    () =>
+      pullRequests.filter((pr) => {
+        const isTracked = trackedUrls.has(pr.htmlUrl);
+        return !isTracked || linkedUrls.has(pr.htmlUrl);
+      }),
+    [linkedUrls, pullRequests, trackedUrls]
+  );
 
   async function handleSelect(pr: GitHubPullRequestSummary) {
-    const isTracked = trackedUrls.has(pr.htmlUrl);
-    const isWaitingOnTrackedLink =
-      isTracked && isLoadingProjectPullRequestLinks;
-
     if (
-      featureLinkedUrls.has(pr.htmlUrl) ||
+      !linkSource ||
+      linkedUrls.has(pr.htmlUrl) ||
+      trackedUrls.has(pr.htmlUrl) ||
       isLinking ||
-      isLoadingFeatureLinkedEntities ||
-      isWaitingOnTrackedLink
+      isLoadingSourceLinkedEntities
     ) {
       return;
     }
 
     setIsLinking(true);
     try {
-      const existingLink = pullRequestLinksByUrl.get(pr.htmlUrl);
-      if (isTracked && !existingLink) {
-        toast.error("Still loading existing PR links. Try again in a moment.");
-        return;
-      }
-      const externalLink =
-        existingLink ??
-        (await createExternalLink.mutateAsync({
-          projectId,
-          type: ExternalLinkType.PullRequest,
-          title: `PR #${pr.number}: ${pr.title}`,
-          externalUrl: pr.htmlUrl,
-          metadata: {
-            number: pr.number,
-            githubId: pr.githubId,
-            headBranch: pr.headBranch,
-            baseBranch: pr.baseBranch,
-            state: pr.state,
-          } satisfies PullRequestMetadata,
-        }));
+      const externalLink = await createExternalLink.mutateAsync({
+        projectId,
+        type: ExternalLinkType.PullRequest,
+        title: `PR #${pr.number}: ${pr.title}`,
+        externalUrl: pr.htmlUrl,
+        metadata: {
+          number: pr.number,
+          githubId: pr.githubId,
+          headBranch: pr.headBranch,
+          baseBranch: pr.baseBranch,
+          state: pr.state,
+        } satisfies PullRequestMetadata,
+      });
 
       await createEntityLink.mutateAsync({
-        sourceId: featureId,
-        sourceType: EntityType.Feature,
+        sourceId: linkSource.id,
+        sourceType: linkSource.type,
         targetId: externalLink.id,
         targetType: EntityType.ExternalLink,
         linkType: LinkType.Produces,
@@ -173,6 +174,27 @@ export function SelectPullRequestDialog({
     } finally {
       setIsLinking(false);
     }
+  }
+
+  if (open && !linkSource) {
+    return (
+      <Dialog onOpenChange={onOpenChange} open={open}>
+        <DialogContent className="sm:max-w-[500px]">
+          <DialogHeader>
+            <DialogTitle>Select Existing PR</DialogTitle>
+            <DialogDescription className="sr-only">
+              Link an existing pull request
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 dark:border-amber-900 dark:bg-amber-950/20">
+            <AlertCircleIcon className="mt-0.5 h-4 w-4 flex-shrink-0 text-amber-600 dark:text-amber-500" />
+            <p className="text-amber-900 text-sm dark:text-amber-200">
+              No feature or plan is available to link this pull request.
+            </p>
+          </div>
+        </DialogContent>
+      </Dialog>
+    );
   }
 
   // No repo configured
@@ -213,14 +235,16 @@ export function SelectPullRequestDialog({
             <span className="text-muted-foreground text-sm">Linking PR...</span>
           </div>
         )}
-        {isCheckingExistingLinks && !isLinking && (
-          <div className="flex items-center justify-center gap-2 py-2">
-            <Loader2Icon className="h-4 w-4 animate-spin text-muted-foreground" />
-            <span className="text-muted-foreground text-sm">
-              Checking existing PR links...
-            </span>
-          </div>
-        )}
+        {isLoadingSourceLinkedEntities &&
+          !isLinking &&
+          trackedUrls.size > 0 && (
+            <div className="flex items-center justify-center gap-2 py-2">
+              <Loader2Icon className="h-4 w-4 animate-spin text-muted-foreground" />
+              <span className="text-muted-foreground text-sm">
+                Checking existing PR links...
+              </span>
+            </div>
+          )}
         <Command className="rounded-lg border" shouldFilter>
           <CommandInput placeholder="Search pull requests..." />
           <CommandList className="max-h-[400px]">
@@ -230,16 +254,10 @@ export function SelectPullRequestDialog({
                 : "No pull requests found."}
             </CommandEmpty>
             <CommandGroup>
-              {pullRequests.map((pr) => {
-                const isTracked = trackedUrls.has(pr.htmlUrl);
-                const isLinked = featureLinkedUrls.has(pr.htmlUrl);
-                const isWaitingOnTrackedLink =
-                  isTracked && isLoadingProjectPullRequestLinks;
+              {visiblePullRequests.map((pr) => {
+                const isLinked = linkedUrls.has(pr.htmlUrl);
                 const isDisabled =
-                  isLinked ||
-                  isLinking ||
-                  isLoadingFeatureLinkedEntities ||
-                  isWaitingOnTrackedLink;
+                  isLinked || isLinking || isLoadingSourceLinkedEntities;
                 let linkStateBadge: React.ReactNode = null;
 
                 if (isLinked) {
@@ -247,13 +265,6 @@ export function SelectPullRequestDialog({
                     <Badge className="shrink-0" variant="secondary">
                       <LinkIcon className="mr-1 h-3 w-3" />
                       Linked
-                    </Badge>
-                  );
-                } else if (isWaitingOnTrackedLink) {
-                  linkStateBadge = (
-                    <Badge className="shrink-0" variant="secondary">
-                      <Loader2Icon className="mr-1 h-3 w-3 animate-spin" />
-                      Checking...
                     </Badge>
                   );
                 }
@@ -291,20 +302,7 @@ export function SelectPullRequestDialog({
   );
 }
 
-function getPullRequestLinksByUrl(links: ExternalLink[]) {
-  const pullRequestLinksByUrl = new Map<string, ExternalLink>();
-
-  for (const link of links) {
-    if (!link.externalUrl || pullRequestLinksByUrl.has(link.externalUrl)) {
-      continue;
-    }
-    pullRequestLinksByUrl.set(link.externalUrl, link);
-  }
-
-  return pullRequestLinksByUrl;
-}
-
-function getFeatureLinkedPullRequestUrls(linkedEntities: LinkedEntity[] = []) {
+function getLinkedPullRequestUrls(linkedEntities: LinkedEntity[] = []) {
   const linkedUrls = new Set<string>();
 
   for (const linked of linkedEntities) {

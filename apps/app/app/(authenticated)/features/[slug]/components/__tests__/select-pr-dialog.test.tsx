@@ -1,8 +1,5 @@
 import { EntityType, LinkType } from "@repo/api/src/types/entity-link";
-import {
-  type ExternalLink,
-  ExternalLinkType,
-} from "@repo/api/src/types/external-link";
+import { ExternalLinkType } from "@repo/api/src/types/external-link";
 import {
   GitHubPRState,
   type GitHubPullRequestSummary,
@@ -14,12 +11,13 @@ import { SelectPullRequestDialog } from "../select-pr-dialog";
 
 const mockUseProject = vi.fn();
 const mockUseGitHubPullRequests = vi.fn();
-const mockUseExternalLinks = vi.fn();
 const mockUseLinkedEntities = vi.fn();
 const mockCreateExternalLink = vi.fn();
 const mockCreateEntityLink = vi.fn();
 const mockToastSuccess = vi.fn();
-const CHECKING_EXISTING_PR_LINKS_REGEX = /checking existing pr links/i;
+const CURRENT_SOURCE_LINKED_PR_REGEX = /already linked on this source/i;
+const DIFFERENT_SOURCE_LINKED_PR_REGEX = /linked somewhere else/i;
+const EXISTING_PR_LINKS_REGEX = /checking existing pr links/i;
 const PR_TITLE_REGEX = /fix direct feature pr linking/i;
 
 class MockResizeObserver {
@@ -70,7 +68,6 @@ vi.mock("@/hooks/queries/use-external-links", async () => {
     useCreateExternalLink: () => ({
       mutateAsync: mockCreateExternalLink,
     }),
-    useExternalLinks: (...args: unknown[]) => mockUseExternalLinks(...args),
   };
 });
 
@@ -103,22 +100,6 @@ function makePullRequest(
   };
 }
 
-function makeExternalLink(overrides: Partial<ExternalLink> = {}): ExternalLink {
-  return {
-    createdAt: new Date("2026-04-16T12:00:00.000Z"),
-    externalUrl: "https://github.com/acme/repo/pull/101",
-    id: "external-link-101",
-    metadata: null,
-    organizationId: "org-1",
-    projectId: "project-1",
-    title: "PR #101: Fix direct feature PR linking",
-    type: ExternalLinkType.PullRequest,
-    updatedAt: new Date("2026-04-16T12:00:00.000Z"),
-    workstreamId: null,
-    ...overrides,
-  };
-}
-
 describe("SelectPullRequestDialog", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -134,15 +115,13 @@ describe("SelectPullRequestDialog", () => {
       },
       isLoading: false,
     });
-    mockUseExternalLinks.mockReturnValue({
-      data: [],
-      isLoading: false,
-    });
     mockUseLinkedEntities.mockReturnValue({
       data: [],
       isLoading: false,
     });
-    mockCreateExternalLink.mockResolvedValue(makeExternalLink());
+    mockCreateExternalLink.mockResolvedValue({
+      id: "external-link-101",
+    });
     mockCreateEntityLink.mockResolvedValue({ id: "entity-link-1" });
   });
 
@@ -190,15 +169,69 @@ describe("SelectPullRequestDialog", () => {
     });
   });
 
-  it("reuses an existing project PR external link before creating the feature link", async () => {
+  it("links a selected PR to the plan when a plan exists", async () => {
     const user = userEvent.setup();
 
-    mockUseExternalLinks.mockReturnValue({
+    render(
+      <SelectPullRequestDialog
+        featureId="feature-1"
+        onOpenChange={vi.fn()}
+        open={true}
+        planId="plan-1"
+        projectId="project-1"
+      />
+    );
+
+    await user.click(screen.getByText(PR_TITLE_REGEX));
+
+    await waitFor(() => {
+      expect(mockCreateEntityLink).toHaveBeenCalledWith({
+        linkType: LinkType.Produces,
+        sourceId: "plan-1",
+        sourceType: EntityType.Document,
+        targetId: "external-link-101",
+        targetType: EntityType.ExternalLink,
+      });
+    });
+  });
+
+  it("hides tracked PRs that are linked elsewhere", () => {
+    const visiblePullRequest = makePullRequest({
+      githubId: "gh-pr-102",
+      headBranch: "feature/current-link",
+      htmlUrl: "https://github.com/acme/repo/pull/102",
+      number: 102,
+      title: "Already linked on this source",
+    });
+    const hiddenPullRequest = makePullRequest({
+      githubId: "gh-pr-103",
+      headBranch: "feature/other-link",
+      htmlUrl: "https://github.com/acme/repo/pull/103",
+      number: 103,
+      title: "Linked somewhere else",
+    });
+
+    mockUseGitHubPullRequests.mockReturnValue({
+      data: {
+        pullRequests: [visiblePullRequest, hiddenPullRequest],
+        trackedPrUrls: [visiblePullRequest.htmlUrl, hiddenPullRequest.htmlUrl],
+      },
+      isLoading: false,
+    });
+    mockUseLinkedEntities.mockReturnValue({
       data: [
-        makeExternalLink({
-          id: "external-link-existing",
-        }),
+        {
+          id: "entity-link-102",
+          resolvedEntity: {
+            type: EntityType.ExternalLink,
+            entity: {
+              externalUrl: visiblePullRequest.htmlUrl,
+              type: ExternalLinkType.PullRequest,
+            },
+          },
+        },
       ],
+      isLoading: false,
     });
 
     render(
@@ -210,23 +243,15 @@ describe("SelectPullRequestDialog", () => {
       />
     );
 
-    await user.click(screen.getByText(PR_TITLE_REGEX));
-
-    await waitFor(() => {
-      expect(mockCreateEntityLink).toHaveBeenCalledWith({
-        linkType: LinkType.Produces,
-        sourceId: "feature-1",
-        sourceType: EntityType.Feature,
-        targetId: "external-link-existing",
-        targetType: EntityType.ExternalLink,
-      });
-    });
-
-    expect(mockCreateExternalLink).not.toHaveBeenCalled();
+    expect(
+      screen.getByText(CURRENT_SOURCE_LINKED_PR_REGEX)
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(DIFFERENT_SOURCE_LINKED_PR_REGEX)
+    ).not.toBeInTheDocument();
   });
 
-  it("does not create a duplicate PR link while tracked links are still loading", async () => {
-    const user = userEvent.setup();
+  it("hides tracked PRs while the source-linked PRs are still loading", () => {
     const pullRequest = makePullRequest();
 
     mockUseGitHubPullRequests.mockReturnValue({
@@ -236,7 +261,7 @@ describe("SelectPullRequestDialog", () => {
       },
       isLoading: false,
     });
-    mockUseExternalLinks.mockReturnValue({
+    mockUseLinkedEntities.mockReturnValue({
       data: [],
       isLoading: true,
     });
@@ -250,12 +275,8 @@ describe("SelectPullRequestDialog", () => {
       />
     );
 
-    expect(
-      screen.getByText(CHECKING_EXISTING_PR_LINKS_REGEX)
-    ).toBeInTheDocument();
-
-    await user.click(screen.getByText(PR_TITLE_REGEX));
-
+    expect(screen.getByText(EXISTING_PR_LINKS_REGEX)).toBeInTheDocument();
+    expect(screen.queryByText(PR_TITLE_REGEX)).not.toBeInTheDocument();
     expect(mockCreateExternalLink).not.toHaveBeenCalled();
     expect(mockCreateEntityLink).not.toHaveBeenCalled();
   });
