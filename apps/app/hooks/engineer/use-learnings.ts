@@ -45,7 +45,7 @@ export function useLearnings({
     pollingRef.current = setInterval(async () => {
       try {
         const res = await fetch(
-          `/api/engineer/symphony/learnings-status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`
+          `/api/gateway/symphony/learnings-status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`
         );
         const data = await res.json();
         if (data.status === "completed") {
@@ -77,7 +77,7 @@ export function useLearnings({
       toast("Collecting learnings for this ticket...", {
         description: ticketId,
       });
-      fetch("/api/engineer/symphony/extract-learnings", {
+      fetch("/api/gateway/symphony/extract-learnings", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ticketId, repoPath, activeTab, chatFile }),
@@ -110,7 +110,7 @@ export function useLearnings({
           icon: "\u{1F9E0}",
         }
       );
-      fetch("/api/engineer/symphony/process-learnings", {
+      fetch("/api/gateway/symphony/process-learnings", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ticketId, repoPath }),
@@ -124,7 +124,7 @@ export function useLearnings({
           icon: "\u{1F9E0}",
         }
       );
-      fetch("/api/engineer/symphony/process-learnings", {
+      fetch("/api/gateway/symphony/process-learnings", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ticketId, repoPath, waitForExtraction: true }),

@@ -10,7 +10,14 @@ import {
   DialogTitle,
 } from "@repo/design-system/components/ui/dialog";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { CheckCircle2, Package, RefreshCw, Save, Settings } from "lucide-react";
+import {
+  CheckCircle2,
+  Package,
+  RefreshCw,
+  Save,
+  Settings,
+  Terminal,
+} from "lucide-react";
 import {
   type ReactNode,
   useCallback,
@@ -22,6 +29,7 @@ import { toast } from "sonner";
 import { PathAutocomplete } from "@/components/engineer/PathAutocomplete";
 import { SystemCheckResults } from "@/components/system-check/system-check-results";
 import { env } from "@/env";
+import type { CheckResult } from "@/lib/engineer/queries/health-check";
 import {
   getRenderableHealthChecks,
   healthCheckOptions,
@@ -240,6 +248,14 @@ export function HealthCheckDialog({
   const showPluginGuidance =
     pluginCheck && !pluginCheck.passed && revealedCount >= requiredCount;
 
+  // claude-cli check failed — show rich debug info (only after it's revealed)
+  const claudeCliCheck = data?.checks?.find((c) => c.id === "claude-cli");
+  const showClaudeCliBlock =
+    claudeCliCheck &&
+    !claudeCliCheck.passed &&
+    claudeCliCheck.debug &&
+    revealedCount >= requiredCount;
+
   return (
     <Dialog open={dialogOpen}>
       <DialogContent
@@ -286,6 +302,9 @@ export function HealthCheckDialog({
                   onChangeWorktree: setWorktreePath,
                   onSaveWorktree: handleSaveWorktree,
                   showPluginGuidance,
+                  claudeCliCheck: showClaudeCliBlock
+                    ? claudeCliCheck
+                    : undefined,
                 })}
                 checks={renderableChecks}
                 isLoading={isLoading}
@@ -375,6 +394,76 @@ function WorktreeInlineSetup({
   );
 }
 
+function ClaudeCliFailureBlock({
+  debug,
+}: Readonly<{
+  debug: NonNullable<CheckResult["debug"]>;
+}>) {
+  return (
+    <div className="space-y-2 rounded-lg border border-border bg-muted/30 p-3">
+      <div className="flex items-center gap-2">
+        <Terminal className="size-3.5 shrink-0 text-primary" />
+        <p className="font-medium text-sm">Claude CLI diagnostics</p>
+      </div>
+
+      {debug.errorCode && (
+        <p className="font-mono text-destructive text-xs">
+          Error: {debug.errorCode}
+        </p>
+      )}
+
+      {debug.resolvedPath && (
+        <div className="flex items-start gap-1.5 text-xs">
+          <span className="shrink-0 text-muted-foreground">Resolved:</span>
+          <span
+            className="truncate font-mono text-foreground"
+            title={debug.resolvedPath}
+          >
+            {debug.resolvedPath.length > 60
+              ? `...${debug.resolvedPath.slice(-57)}`
+              : debug.resolvedPath}
+          </span>
+        </div>
+      )}
+
+      {debug.foundAt && debug.foundAt.length > 0 && (
+        <div className="space-y-1">
+          <p className="text-muted-foreground text-xs">
+            Found at these locations:
+          </p>
+          <ul className="space-y-1">
+            {debug.foundAt.map((p) => (
+              <li className="flex items-center gap-2" key={p}>
+                <span className="flex-1 truncate font-mono text-xs" title={p}>
+                  {p}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-muted-foreground text-xs">
+        {debug.shell && (
+          <span>
+            Shell: <span className="font-mono">{debug.shell}</span>
+          </span>
+        )}
+        {debug.platform && (
+          <span>
+            Platform: <span className="font-mono">{debug.platform}</span>
+          </span>
+        )}
+        {debug.overrideUsed && (
+          <span>
+            Override: <span className="font-mono">{debug.overrideUsed}</span>
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function AfterRequiredContent({
   showWorktreeSetup,
   worktreePath,
@@ -382,6 +471,7 @@ function AfterRequiredContent({
   onChangeWorktree,
   onSaveWorktree,
   showPluginGuidance,
+  claudeCliCheck,
 }: {
   showWorktreeSetup: boolean | undefined;
   worktreePath: string;
@@ -389,6 +479,7 @@ function AfterRequiredContent({
   onChangeWorktree: (v: string) => void;
   onSaveWorktree: () => void;
   showPluginGuidance: boolean | undefined;
+  claudeCliCheck: CheckResult | undefined;
 }): ReactNode {
   if (showWorktreeSetup) {
     return (
@@ -407,6 +498,14 @@ function AfterRequiredContent({
     return (
       <div className="fade-in slide-in-from-bottom-2 animate-in duration-300">
         <PluginInstallGuidance />
+      </div>
+    );
+  }
+
+  if (claudeCliCheck?.debug) {
+    return (
+      <div className="fade-in slide-in-from-bottom-2 animate-in duration-300">
+        <ClaudeCliFailureBlock debug={claudeCliCheck.debug} />
       </div>
     );
   }

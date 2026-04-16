@@ -14,24 +14,21 @@ vi.mock("@tanstack/react-query", async () => {
   };
 });
 
+type CapturedUseChatSessionOptions = {
+  chatKey: string;
+  provider: string;
+  context: string;
+  cwd?: string;
+  onContextConsumed?: () => void;
+  contextSelection?: unknown;
+};
+
 const capturedUseChatSessionOptions: {
-  value:
-    | {
-        chatKey: string;
-        provider: string;
-        context: string;
-        cwd?: string;
-      }
-    | undefined;
+  value: CapturedUseChatSessionOptions | undefined;
 } = { value: undefined };
 
 vi.mock("@/hooks/chat/use-chat-session", () => ({
-  useChatSession: (opts: {
-    chatKey: string;
-    provider: string;
-    context: string;
-    cwd?: string;
-  }) => {
+  useChatSession: (opts: CapturedUseChatSessionOptions) => {
     capturedUseChatSessionOptions.value = opts;
     return {
       messages: [],
@@ -219,5 +216,63 @@ describe("BranchChatDrawer", () => {
       />
     );
     expect(capturedChatPanelProps.value?.contextSlot).toBeNull();
+  });
+
+  test("forwards contextSelection through to useChatSession", () => {
+    const selection = {
+      id: "c1",
+      filePath: "src/foo.ts",
+      line: 7,
+      body: "nit",
+    };
+    render(
+      <BranchChatDrawer
+        contextSelection={selection}
+        data={BASE_BRANCH_DATA}
+        showFilesystemNotice={false}
+        worktreePath={null}
+      />
+    );
+    expect(capturedUseChatSessionOptions.value?.contextSelection).toEqual(
+      selection
+    );
+  });
+
+  test("does NOT call onClearComment on mount (before a successful send)", () => {
+    const onClearComment = vi.fn();
+    render(
+      <BranchChatDrawer
+        contextSelection={{ id: "c1", body: "b" }}
+        data={BASE_BRANCH_DATA}
+        onClearComment={onClearComment}
+        showFilesystemNotice={false}
+        worktreePath={null}
+      />
+    );
+    expect(onClearComment).not.toHaveBeenCalled();
+  });
+
+  test("invokes onClearComment only when onContextConsumed fires from useChatSession", () => {
+    const onClearComment = vi.fn();
+    render(
+      <BranchChatDrawer
+        contextSelection={{ id: "c1", body: "b" }}
+        data={BASE_BRANCH_DATA}
+        onClearComment={onClearComment}
+        showFilesystemNotice={false}
+        worktreePath={null}
+      />
+    );
+
+    // Still not called before onContextConsumed fires.
+    expect(onClearComment).not.toHaveBeenCalled();
+
+    // Simulate useChatSession triggering onContextConsumed (which it only
+    // does after a successful send — see use-chat-session PR I tests).
+    const onContextConsumed =
+      capturedUseChatSessionOptions.value?.onContextConsumed;
+    expect(onContextConsumed).toBeDefined();
+    onContextConsumed?.();
+    expect(onClearComment).toHaveBeenCalledTimes(1);
   });
 });

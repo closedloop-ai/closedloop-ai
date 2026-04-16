@@ -45,6 +45,11 @@ Schema: `packages/database/prisma/schema.prisma`. Client: `packages/database/gen
 ### Background Work in API Routes (CRITICAL)
 **Never fire-and-forget promises in Vercel serverless.** Always wrap background work with `waitUntil()` from `@vercel/functions`. A `.catch()` without `waitUntil()` is a bug.
 
+### Breaking Changes (CRITICAL)
+Any breaking change to an API, contract, or interface (REST routes, request/response shapes, shared types in `packages/api/`, DB schema, public function signatures, etc.) requires BOTH:
+1. **Legacy migration logic** so existing users/clients/data are not broken. Accept the old shape, translate to the new one, and keep the old code path working until the migration is removed.
+2. **A ClosedLoop ticket** created via the ClosedLoop MCP (`mcp__closedloop__create-feature`) to track removal of the legacy migration code at a later date. Reference the ticket ID in a comment next to the legacy code so it can be found when the cleanup ticket is worked.
+
 ### Type Definitions (IMPORTANT)
 **Never duplicate types.** One canonical location, imported everywhere:
 - **Shared API types** (both frontend+backend) → `packages/api/src/types/`
@@ -55,10 +60,10 @@ Schema: `packages/database/prisma/schema.prisma`. Client: `packages/database/gen
 `packages/api/src/types/` only for types used by BOTH apps. Never define same type in multiple files.
 
 ### Engineer Feature (SECURITY CRITICAL)
-Located in `apps/app/app/api/engineer/` — spawns local CLI processes (Claude, git, codex). **Localhost-only**: proxy guard (`apps/app/proxy.ts`) rejects non-localhost with 403. `EngineerGuard` is UX-only. **Do NOT remove the proxy guard** (arbitrary command execution). **Do NOT move to `apps/api`** — requires local filesystem access.
+Spawns local CLI processes (Claude, git, codex) via the `closedloop-electron` gateway binary, NOT in `apps/app` or `apps/api`. The browser fetch interceptor (`apps/app/lib/engineer/engineer-fetch-interceptor.ts`) routes `/api/gateway/*` requests to either localhost (LocalElectron mode) or the `/api/gateway-relay/*` forwarder (CloudRelay mode). **Localhost-only enforcement**: proxy guard (`apps/app/proxy.ts`) rejects non-localhost `/api/gateway/*` requests with 403. The gateway binary enforces its own `isAuthorizedGatewayRequest` auth on top. `EngineerGuard` is UX-only. **Do NOT remove the proxy guard** (arbitrary command execution risk). **Do NOT reimplement gateway operations in `apps/app` or `apps/api`** — they require local filesystem access and live exclusively in the `closedloop-electron` repo under `apps/desktop/src/server/operations/`.
 
 ### System Health Check
-Runs on app launch via `SystemCheckBootstrap` in the authenticated layout (`apps/app/app/(authenticated)/layout.tsx`), not just on the engineer page. Eligibility gated by `useSystemCheckEligibility` — only fires when a compute target is active (cloud relay online or local Electron detected). In cloud relay mode, the fetch interceptor rewrites `/api/engineer/health-check` to `/api/engineer-relay/health-check` and routes to the remote compute target. The health check route resolves the user's login-shell PATH via `getShellPath()` to find tools like `python3`, `git`, `claude`, `gh`.
+Runs on app launch via `SystemCheckBootstrap` in the authenticated layout (`apps/app/app/(authenticated)/layout.tsx`), not just on the engineer page. Eligibility gated by `useSystemCheckEligibility` — only fires when a compute target is active (cloud relay online or local Electron detected). In cloud relay mode, the fetch interceptor rewrites `/api/gateway/health-check` to `/api/gateway-relay/health-check` and routes to the remote compute target. The health check route resolves the user's login-shell PATH via `getShellPath()` to find tools like `python3`, `git`, `claude`, `gh`.
 
 ## Self-Improving CLAUDE.md
 Discover undocumented patterns during PRs → add to relevant CLAUDE.md in same PR.

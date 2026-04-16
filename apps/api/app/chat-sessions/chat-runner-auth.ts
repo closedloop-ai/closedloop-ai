@@ -1,18 +1,17 @@
 import { failure } from "@repo/api/src/types/common";
+import { Result } from "@repo/api/src/types/result";
 import {
   authenticateChatRunner,
   type ChatRunnerClaims,
 } from "@repo/auth/chat-runner-jwt";
 import { NextResponse } from "next/server";
 
-export type ChatRunnerAuthResult =
-  | { ok: true; claims: ChatRunnerClaims }
-  | { ok: false; response: Response };
+export type ChatRunnerAuthResult = Result<ChatRunnerClaims, Response>;
 
 /**
- * Authenticate a chat-runner request at the top of a route handler. Mirrors
- * `authenticateLoopRunner` in `apps/api/lib/auth/loop-runner-jwt.ts`: returns
- * a result object so callers avoid duplicating try/catch + early-return.
+ * Authenticate a chat-runner request at the top of a route handler.
+ * Returns a `Result` so callers avoid duplicating try/catch + early-return.
+ * On failure, the error carries a ready-to-return 401 `Response`.
  */
 export async function authenticateChatRunnerRequest(
   request: Request
@@ -20,20 +19,14 @@ export async function authenticateChatRunnerRequest(
   try {
     const claims = await authenticateChatRunner(request);
     if (claims) {
-      return { ok: true, claims };
+      return Result.ok<ChatRunnerClaims, Response>(claims);
     }
-    return {
-      ok: false,
-      response: NextResponse.json(failure("Missing chat runner token"), {
-        status: 401,
-      }),
-    };
+    return Result.err<ChatRunnerClaims, Response>(
+      NextResponse.json(failure("Missing chat runner token"), { status: 401 })
+    );
   } catch {
-    return {
-      ok: false,
-      response: NextResponse.json(failure("Invalid chat runner token"), {
-        status: 401,
-      }),
-    };
+    return Result.err<ChatRunnerClaims, Response>(
+      NextResponse.json(failure("Invalid chat runner token"), { status: 401 })
+    );
   }
 }

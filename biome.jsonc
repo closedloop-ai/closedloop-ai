@@ -25,7 +25,6 @@
       "includes": [
         "apps/app/components/engineer/**",
         "apps/app/components/chat/**",
-        "apps/app/app/api/engineer/**",
         "apps/app/hooks/engineer/**",
         "apps/app/hooks/chat/**",
         "apps/app/lib/engineer/**",
@@ -82,6 +81,20 @@
       }
     },
     {
+      "includes": ["e2e/**", "playwright.config.ts"],
+      "linter": {
+        "rules": {
+          "performance": {
+            "noBarrelFile": "off"
+          },
+          "a11y": {
+            "useButtonType": "off",
+            "useSemanticElements": "off"
+          }
+        }
+      }
+    },
+    {
       "includes": ["containers/**", "scripts/deploy/**"],
       "linter": {
         "rules": {
@@ -111,7 +124,8 @@
       "!docs/lib",
       "!docs/hooks",
       "!apps/docs/**/*.json",
-      "!apps/email/.react-email"
+      "!apps/email/.react-email",
+      "!playwright-report"
     ]
   }
 }

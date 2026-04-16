@@ -246,7 +246,7 @@ describe("entityLinksService.batchMoveEntities", () => {
       includeDownstream: false,
     });
 
-    expect(result).toEqual({ ok: false, status: 404 });
+    expect(result).toEqual({ ok: false, error: 404 });
   });
 
   it("does not move upstream parent when moving a child artifact", async () => {
@@ -284,7 +284,7 @@ describe("entityLinksService.batchMoveEntities", () => {
       includeDownstream: false,
     });
 
-    expect(result).toEqual({ ok: false, status: 400 });
+    expect(result).toEqual({ ok: false, error: 400 });
   });
 
   it("returns NotFound when zero rows are actually updated", async () => {
@@ -299,7 +299,7 @@ describe("entityLinksService.batchMoveEntities", () => {
       includeDownstream: false,
     });
 
-    expect(result).toEqual({ ok: false, status: 404 });
+    expect(result).toEqual({ ok: false, error: 404 });
   });
 
   it("groups entities by type for separate updateMany calls", async () => {

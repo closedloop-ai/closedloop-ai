@@ -586,7 +586,7 @@ export function TerminalChatDialog({
     setRequestError(null);
     setPendingRemoteResponse(null);
     try {
-      await fetch("/api/engineer/terminal-chat", { method: "DELETE" });
+      await fetch("/api/gateway/terminal-chat", { method: "DELETE" });
       queryClient.invalidateQueries({
         queryKey: queryKeys.terminalChatHistory(),
       });
@@ -1192,7 +1192,7 @@ function createRelayRequestId(): string {
 }
 
 function buildTerminalChatRequestPath(requestId: string): string {
-  return `/api/engineer/terminal-chat?__relayRid=${encodeURIComponent(requestId)}`;
+  return `/api/gateway/terminal-chat?__relayRid=${encodeURIComponent(requestId)}`;
 }
 
 async function resolveTerminalChatRequestUrl(
@@ -1440,9 +1440,7 @@ function buildStreamHandlers(
       setEntries([]);
       setActiveStream(null);
       setIsStreaming(false);
-      fetch("/api/engineer/terminal-chat", { method: "DELETE" }).catch(
-        () => {}
-      );
+      fetch("/api/gateway/terminal-chat", { method: "DELETE" }).catch(() => {});
       queryClient.invalidateQueries({
         queryKey: queryKeys.terminalChatHistory(),
       });

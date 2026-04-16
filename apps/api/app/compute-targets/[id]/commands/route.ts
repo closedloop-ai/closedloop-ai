@@ -1,3 +1,8 @@
+import {
+  CURRENT_DESKTOP_API_NAMESPACE,
+  getDesktopApiNamespaceFromCapabilities,
+  rewriteDesktopApiPath,
+} from "@repo/api/src/desktop-api-namespace";
 import type {
   CreateDesktopCommandInput,
   CreateDesktopCommandResponse,
@@ -119,14 +124,22 @@ export const POST = withAnyAuth<
     }
 
     const input = body as CreateDesktopCommandInput;
+    const rewrittenInput: CreateDesktopCommandInput = {
+      ...input,
+      path: rewriteDesktopApiPath(
+        input.path,
+        getDesktopApiNamespaceFromCapabilities(target.capabilities) ??
+          CURRENT_DESKTOP_API_NAMESPACE
+      ),
+    };
     const requestId = crypto.randomUUID();
 
     const createResult = await desktopCommandStore.createCommand(
       target.id,
-      input,
+      rewrittenInput,
       buildTelemetryTraceContext({
         computeTargetId: target.id,
-        operationId: input.operationId,
+        operationId: rewrittenInput.operationId,
         requestId,
       })
     );
@@ -134,12 +147,12 @@ export const POST = withAnyAuth<
     const { commandId } = createResult.command;
     const traceContext = buildTelemetryTraceContext({
       commandId,
-      operationId: input.operationId,
+      operationId: rewrittenInput.operationId,
       computeTargetId: target.id,
       requestId,
     });
 
-    const relayOperation = toRelayOperation(commandId, input);
+    const relayOperation = toRelayOperation(commandId, rewrittenInput);
 
     // Dispatch via ECS relay when configured, otherwise use in-process relay bus
     const relayApiUrl = env.RELAY_API_URL;

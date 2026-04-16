@@ -101,20 +101,27 @@ export function MessageContent({
       )}
 
       {/* Render all thinking blocks merged into a single collapsible */}
-      {thinkingBlocks.length > 0 && (
-        <div className="not-prose mb-2 space-y-2">
-          <CollapsibleBlock
-            icon={Sparkles}
-            id="thinking-merged"
-            isExpanded={expandedBlocks.has("thinking-merged")}
-            onToggle={toggleBlock}
-            title="Extended thinking..."
-            variant="thinking"
-          >
-            {thinkingBlocks.map((b) => b.thinking || "").join("\n\n")}
-          </CollapsibleBlock>
-        </div>
-      )}
+      {thinkingBlocks.length > 0 &&
+        (() => {
+          const mergedThinking = thinkingBlocks
+            .map((b) => b.thinking || "")
+            .join("\n\n");
+          return (
+            <div className="not-prose mb-2 space-y-2">
+              <CollapsibleBlock
+                contentLength={mergedThinking.length}
+                icon={Sparkles}
+                id="thinking-merged"
+                isExpanded={expandedBlocks.has("thinking-merged")}
+                onToggle={toggleBlock}
+                title="Extended thinking..."
+                variant="thinking"
+              >
+                {mergedThinking}
+              </CollapsibleBlock>
+            </div>
+          );
+        })()}
 
       {/* Render tool blocks grouped with collapsible previous operations */}
       {toolBlocks.length > 0 && (

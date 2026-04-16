@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
+import type { PrCommentContext } from "@/app/(authenticated)/build/[id]/comment-context";
 import { ChatPanel } from "@/components/chat/ChatPanel";
 import { useChatSession } from "@/hooks/chat/use-chat-session";
 
@@ -109,6 +110,8 @@ export type ChatDrawerPanelProps = {
   welcomeMessage: string;
   contextSlot?: React.ReactNode;
   notice?: string | null;
+  contextSelection?: PrCommentContext | null;
+  onContextConsumed?: () => void;
 };
 
 export function ChatDrawerPanel({
@@ -119,6 +122,8 @@ export function ChatDrawerPanel({
   welcomeMessage,
   contextSlot,
   notice,
+  contextSelection,
+  onContextConsumed,
 }: Readonly<ChatDrawerPanelProps>) {
   const { width, handleResizeStart } = useResizableWidth();
 
@@ -134,6 +139,8 @@ export function ChatDrawerPanel({
     provider,
     cwd,
     onProviderMismatch: handleProviderMismatch,
+    contextSelection,
+    onContextConsumed,
   });
 
   return (

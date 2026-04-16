@@ -11,13 +11,22 @@ vi.mock("@repo/database", () => ({
   withDb: vi.fn(),
 }));
 
+import type { ChatMessage } from "@repo/api/src/types/chat-session";
+import type { Result } from "@repo/api/src/types/result";
 import type { ChatSession } from "@repo/database";
 import { withDb } from "@repo/database";
-import {
-  type ChatMessage,
-  type CreateChatSessionInput,
-  chatSessionsService,
-} from "../service";
+import { type CreateChatSessionInput, chatSessionsService } from "../service";
+
+/**
+ * Asserts `result.ok === true` and returns the value. Keeps test
+ * assertions terse without losing type safety.
+ */
+function unwrapOk<T, E>(result: Result<T, E>): T {
+  if (!result.ok) {
+    throw new Error(`Expected ok, got error: ${JSON.stringify(result.error)}`);
+  }
+  return result.value;
+}
 
 /**
  * Unwraps `chatSessionsService.create()` for tests that assume the happy
@@ -28,12 +37,7 @@ import {
  */
 async function createChat(input: CreateChatSessionInput): Promise<ChatSession> {
   const result = await chatSessionsService.create(input);
-  if ("conflict" in result) {
-    throw new Error(
-      `unexpected conflict in createChat helper: boundProvider=${result.boundProvider}`
-    );
-  }
-  return result.chat;
+  return unwrapOk(result).chat;
 }
 
 type Row = {
@@ -376,7 +380,10 @@ describe("chatSessionsService.create", () => {
       ],
     });
 
-    expect(result).toEqual({ conflict: true, boundProvider: "claude" });
+    expect(result).toEqual({
+      ok: false,
+      error: { kind: "providerConflict", boundProvider: "claude" },
+    });
     expect(mockUpdate).not.toHaveBeenCalled();
     const unchanged = await chatSessionsService.findByKey(USER_A, CHAT_KEY);
     expect(unchanged?.provider).toBe("claude");
@@ -404,14 +411,14 @@ describe("chatSessionsService.appendMessages", () => {
     });
   }
 
-  it("returns { notFound: true } for an unknown chatKey", async () => {
+  it("returns { notFound } error for an unknown chatKey", async () => {
     const result = await chatSessionsService.appendMessages(
       USER_A,
       "missing",
       "claude",
       [{ id: "u1", role: "user", content: "x", timestamp: "t1" }]
     );
-    expect(result).toEqual({ notFound: true });
+    expect(result).toEqual({ ok: false, error: { kind: "notFound" } });
   });
 
   it("returns a provider conflict with boundProvider when request provider differs", async () => {
@@ -424,7 +431,10 @@ describe("chatSessionsService.appendMessages", () => {
       [{ id: "u2", role: "user", content: "x", timestamp: "t2" }]
     );
 
-    expect(result).toEqual({ conflict: true, boundProvider: "claude" });
+    expect(result).toEqual({
+      ok: false,
+      error: { kind: "providerConflict", boundProvider: "claude" },
+    });
     expect(mockUpdate).not.toHaveBeenCalled();
   });
 
@@ -437,11 +447,8 @@ describe("chatSessionsService.appendMessages", () => {
       "claude",
       [{ id: "a1", role: "assistant", content: "hi back", timestamp: "t2" }]
     );
-    expect("chat" in result).toBe(true);
-    if (!("chat" in result)) {
-      return;
-    }
-    expect(msgs(result.chat).map((m) => m.id)).toEqual(["u1", "a1"]);
+    const value = unwrapOk(result);
+    expect(msgs(value.chat).map((m) => m.id)).toEqual(["u1", "a1"]);
 
     const reread = await chatSessionsService.findByKey(USER_A, CHAT_KEY);
     expect(reread ? msgs(reread).map((m) => m.id) : []).toEqual(["u1", "a1"]);
@@ -459,12 +466,9 @@ describe("chatSessionsService.appendMessages", () => {
       [{ id: "u1", role: "user", content: "hello", timestamp: "t1" }]
     );
 
-    expect("chat" in result).toBe(true);
-    if (!("chat" in result)) {
-      return;
-    }
-    expect(msgs(result.chat).map((m) => m.id)).toEqual(["u1"]);
-    expect(result.chat.updatedAt).toEqual(before?.updatedAt);
+    const value = unwrapOk(result);
+    expect(msgs(value.chat).map((m) => m.id)).toEqual(["u1"]);
+    expect(value.chat.updatedAt).toEqual(before?.updatedAt);
     expect(mockUpdate).not.toHaveBeenCalled();
   });
 
@@ -480,11 +484,8 @@ describe("chatSessionsService.appendMessages", () => {
         { id: "u2", role: "user", content: "second", timestamp: "t2" },
       ]
     );
-    expect("chat" in result).toBe(true);
-    if (!("chat" in result)) {
-      return;
-    }
-    expect(msgs(result.chat).map((m) => m.id)).toEqual(["u1", "u2"]);
+    const value = unwrapOk(result);
+    expect(msgs(value.chat).map((m) => m.id)).toEqual(["u1", "u2"]);
     expect(mockUpdate).toHaveBeenCalledTimes(1);
   });
 
@@ -500,7 +501,7 @@ describe("chatSessionsService.appendMessages", () => {
       ]),
     ]);
 
-    expect("chat" in first && "chat" in second).toBe(true);
+    expect(first.ok && second.ok).toBe(true);
     const final = await chatSessionsService.findByKey(USER_A, CHAT_KEY);
     const ids = final ? msgs(final).map((m) => m.id) : [];
     expect(ids).toEqual(["u1", "a1"]);
@@ -517,11 +518,8 @@ describe("chatSessionsService.appendMessages", () => {
       [{ id: "a1", role: "assistant", content: "answer", timestamp: "t2" }],
       "sess-xyz"
     );
-    expect("chat" in result).toBe(true);
-    if (!("chat" in result)) {
-      return;
-    }
-    expect(result.chat.sessionId).toBe("sess-xyz");
+    const value = unwrapOk(result);
+    expect(value.chat.sessionId).toBe("sess-xyz");
   });
 });
 
@@ -599,13 +597,11 @@ describe("chatSessionsService.upsertTurn", () => {
       sourceGatewayId: GATEWAY_A,
     });
 
-    expect("conflict" in result && result.conflict).toBe(false);
-    if ("conflict" in result && result.conflict === false) {
-      expect(msgs(result.chat).map((m) => m.id)).toEqual(["u1"]);
-      expect(result.chat.sessionId).toBeNull();
-      expect(result.chat.sessionSourceId).toBeNull();
-      expect(result.resumeSessionId).toBeNull();
-    }
+    const value = unwrapOk(result);
+    expect(msgs(value.chat).map((m) => m.id)).toEqual(["u1"]);
+    expect(value.chat.sessionId).toBeNull();
+    expect(value.chat.sessionSourceId).toBeNull();
+    expect(value.resumeSessionId).toBeNull();
     expect(mockCreate).toHaveBeenCalledTimes(1);
   });
 
@@ -627,14 +623,12 @@ describe("chatSessionsService.upsertTurn", () => {
       sourceGatewayId: GATEWAY_A,
     });
 
-    expect("conflict" in result && result.conflict).toBe(false);
-    if ("conflict" in result && result.conflict === false) {
-      expect(msgs(result.chat).map((m) => m.id)).toEqual(["u1", "u2"]);
-    }
+    const value = unwrapOk(result);
+    expect(msgs(value.chat).map((m) => m.id)).toEqual(["u1", "u2"]);
     expect(mockUpdate).toHaveBeenCalledTimes(1);
   });
 
-  it("returns { conflict: true, boundProvider } on provider mismatch", async () => {
+  it("returns providerConflict error with boundProvider on provider mismatch", async () => {
     await seedClaudeChat();
     mockUpdate.mockClear();
 
@@ -646,7 +640,10 @@ describe("chatSessionsService.upsertTurn", () => {
       sourceGatewayId: GATEWAY_A,
     });
 
-    expect(result).toEqual({ conflict: true, boundProvider: "claude" });
+    expect(result).toEqual({
+      ok: false,
+      error: { kind: "providerConflict", boundProvider: "claude" },
+    });
     expect(mockUpdate).not.toHaveBeenCalled();
   });
 
@@ -663,11 +660,9 @@ describe("chatSessionsService.upsertTurn", () => {
       sourceGatewayId: GATEWAY_A,
     });
 
-    expect("conflict" in result && result.conflict).toBe(false);
-    if ("conflict" in result && result.conflict === false) {
-      expect(msgs(result.chat).map((m) => m.id)).toEqual(["u1"]);
-      expect(result.chat.updatedAt).toEqual(before?.updatedAt);
-    }
+    const value = unwrapOk(result);
+    expect(msgs(value.chat).map((m) => m.id)).toEqual(["u1"]);
+    expect(value.chat.updatedAt).toEqual(before?.updatedAt);
     expect(mockUpdate).not.toHaveBeenCalled();
   });
 
@@ -685,11 +680,7 @@ describe("chatSessionsService.upsertTurn", () => {
       sourceGatewayId: GATEWAY_A,
     });
 
-    if ("conflict" in result && result.conflict === false) {
-      expect(result.resumeSessionId).toBe("sess-xyz");
-    } else {
-      throw new Error("expected non-conflict result");
-    }
+    expect(unwrapOk(result).resumeSessionId).toBe("sess-xyz");
   });
 
   it("returns resumeSessionId: null when gateway matches but session is absent", async () => {
@@ -706,11 +697,7 @@ describe("chatSessionsService.upsertTurn", () => {
       sourceGatewayId: GATEWAY_A,
     });
 
-    if ("conflict" in result && result.conflict === false) {
-      expect(result.resumeSessionId).toBeNull();
-    } else {
-      throw new Error("expected non-conflict result");
-    }
+    expect(unwrapOk(result).resumeSessionId).toBeNull();
   });
 
   it("returns resumeSessionId: null when gateway mismatches but session is present", async () => {
@@ -727,11 +714,7 @@ describe("chatSessionsService.upsertTurn", () => {
       sourceGatewayId: GATEWAY_A,
     });
 
-    if ("conflict" in result && result.conflict === false) {
-      expect(result.resumeSessionId).toBeNull();
-    } else {
-      throw new Error("expected non-conflict result");
-    }
+    expect(unwrapOk(result).resumeSessionId).toBeNull();
   });
 
   it("returns resumeSessionId: null when both gateway mismatches and session is absent", async () => {
@@ -748,11 +731,7 @@ describe("chatSessionsService.upsertTurn", () => {
       sourceGatewayId: GATEWAY_A,
     });
 
-    if ("conflict" in result && result.conflict === false) {
-      expect(result.resumeSessionId).toBeNull();
-    } else {
-      throw new Error("expected non-conflict result");
-    }
+    expect(unwrapOk(result).resumeSessionId).toBeNull();
   });
 
   it("never writes sessionId or sessionSourceId", async () => {
@@ -839,17 +818,13 @@ describe("chatSessionsService.appendAssistantTurn", () => {
       sessionSourceId: GATEWAY_A,
     });
 
-    expect("notFound" in result && result.notFound === true).toBe(false);
-    if ("chat" in result) {
-      expect(msgs(result.chat).map((m) => m.id)).toEqual(["u1", "a1"]);
-      expect(result.chat.sessionId).toBe("sess-xyz");
-      expect(result.chat.sessionSourceId).toBe(GATEWAY_A);
-    } else {
-      throw new Error("expected success result");
-    }
+    const value = unwrapOk(result);
+    expect(msgs(value.chat).map((m) => m.id)).toEqual(["u1", "a1"]);
+    expect(value.chat.sessionId).toBe("sess-xyz");
+    expect(value.chat.sessionSourceId).toBe(GATEWAY_A);
   });
 
-  it("returns { notFound: true } when the row does not exist", async () => {
+  it("returns { notFound } error when the row does not exist", async () => {
     const result = await chatSessionsService.appendAssistantTurn(USER_A, {
       chatKey: "missing",
       provider: "claude",
@@ -857,10 +832,10 @@ describe("chatSessionsService.appendAssistantTurn", () => {
       sessionId: null,
       sessionSourceId: null,
     });
-    expect(result).toEqual({ notFound: true });
+    expect(result).toEqual({ ok: false, error: { kind: "notFound" } });
   });
 
-  it("returns { conflict: true, boundProvider } on provider mismatch", async () => {
+  it("returns providerConflict error with boundProvider on provider mismatch", async () => {
     await seedClaudeChat();
     mockUpdate.mockClear();
 
@@ -872,7 +847,10 @@ describe("chatSessionsService.appendAssistantTurn", () => {
       sessionSourceId: null,
     });
 
-    expect(result).toEqual({ conflict: true, boundProvider: "claude" });
+    expect(result).toEqual({
+      ok: false,
+      error: { kind: "providerConflict", boundProvider: "claude" },
+    });
     expect(mockUpdate).not.toHaveBeenCalled();
   });
 
@@ -894,7 +872,7 @@ describe("chatSessionsService.appendAssistantTurn", () => {
       sessionSourceId: GATEWAY_A,
     });
 
-    expect("chat" in first && "chat" in second).toBe(true);
+    expect(first.ok && second.ok).toBe(true);
     const reread = await chatSessionsService.findByKey(USER_A, CHAT_KEY);
     const ids = reread ? msgs(reread).map((m) => m.id) : [];
     expect(ids).toEqual(["u1", "a1"]);

@@ -97,7 +97,7 @@ export function useSymphonyLaunch(): UseSymphonyLaunchResult {
 
   // Load all sessions from API on mount
   useEffect(() => {
-    fetch("/api/engineer/symphony/sessions")
+    fetch("/api/gateway/symphony/sessions")
       .then((res) => res.json())
       .then((data) => {
         const sessions: ActiveSession[] = data.sessions || [];
@@ -146,10 +146,10 @@ export function useSymphonyLaunch(): UseSymphonyLaunchResult {
 
       try {
         console.log(
-          "[useSymphonyLaunch] Making POST to /api/engineer/symphony/launch"
+          "[useSymphonyLaunch] Making POST to /api/gateway/symphony/launch"
         );
 
-        const url = "/api/engineer/symphony/launch";
+        const url = "/api/gateway/symphony/launch";
         const fetchOptions: RequestInit = {
           method: "POST",
           headers: {
@@ -190,7 +190,7 @@ export function useSymphonyLaunch(): UseSymphonyLaunchResult {
         // Local handler returns `workDir`, Electron relay returns `worktreePath`.
         const resolvedWorktreePath = data.workDir ?? data.worktreePath;
         const contextRepoPaths = ticket?.contextRepoPaths;
-        await fetch("/api/engineer/symphony/sessions", {
+        await fetch("/api/gateway/symphony/sessions", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -254,7 +254,7 @@ export function useSymphonyLaunch(): UseSymphonyLaunchResult {
 
       // Kill the process if we have a PID
       if (session?.pid) {
-        fetch("/api/engineer/symphony/kill", {
+        fetch("/api/gateway/symphony/kill", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ pid: session.pid }),
@@ -265,7 +265,7 @@ export function useSymphonyLaunch(): UseSymphonyLaunchResult {
 
       // Remove from API
       fetch(
-        `/api/engineer/symphony/sessions?ticketId=${encodeURIComponent(ticketId)}`,
+        `/api/gateway/symphony/sessions?ticketId=${encodeURIComponent(ticketId)}`,
         {
           method: "DELETE",
         }
@@ -285,7 +285,7 @@ export function useSymphonyLaunch(): UseSymphonyLaunchResult {
     activeSessions.forEach((session) => {
       // Kill the process if we have a PID
       if (session.pid) {
-        fetch("/api/engineer/symphony/kill", {
+        fetch("/api/gateway/symphony/kill", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ pid: session.pid }),
@@ -295,7 +295,7 @@ export function useSymphonyLaunch(): UseSymphonyLaunchResult {
       }
 
       fetch(
-        `/api/engineer/symphony/sessions?ticketId=${encodeURIComponent(session.ticketId)}`,
+        `/api/gateway/symphony/sessions?ticketId=${encodeURIComponent(session.ticketId)}`,
         {
           method: "DELETE",
         }

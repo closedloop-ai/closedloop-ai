@@ -19,6 +19,12 @@ type CollapsibleBlockProps = {
   isExpanded: boolean;
   onToggle: (id: string) => void;
   children: React.ReactNode;
+  // Stable, monotonically increasing integer derived from the streamed
+  // content so the auto-scroll effect re-runs as new tokens arrive.
+  // Parents pass `content.length` or a similar counter. Undefined means
+  // "no auto-scroll on content growth" -- safe default for non-streaming
+  // call sites.
+  contentLength?: number;
 };
 
 const variantStyles = {
@@ -72,16 +78,20 @@ export const CollapsibleBlock = memo(function CollapsibleBlock({
   isExpanded,
   onToggle,
   children,
+  contentLength,
 }: Readonly<CollapsibleBlockProps>) {
   const styles = variantStyles[variant];
   const contentRef = useRef<HTMLDivElement>(null);
 
-  // Auto-scroll to bottom when content grows while expanded (e.g. streaming thinking)
+  // Auto-scroll to bottom when content grows while expanded (e.g. streaming
+  // thinking). `contentLength` is the dependency that actually changes per
+  // streamed token -- without it, the effect only re-runs on expand/collapse
+  // and streaming updates never scroll.
   useEffect(() => {
     if (isExpanded && contentRef.current) {
       contentRef.current.scrollTop = contentRef.current.scrollHeight;
     }
-  }, [isExpanded]);
+  }, [isExpanded, contentLength]);
 
   return (
     <div

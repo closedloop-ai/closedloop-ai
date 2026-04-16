@@ -16,12 +16,12 @@ import {
   type ExternalLink,
   ExternalLinkType,
 } from "@repo/api/src/types/external-link";
+import { Result, Status } from "@repo/api/src/types/result";
 import { Prisma, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { basicUserSelect } from "@/lib/db-utils";
 import { assertEntityInOrganization } from "@/lib/entity-validation";
 import { schedulePrReadRepair } from "@/lib/pr-read-repair";
-import { Result, Status } from "@/lib/result";
 import { externalLinksService } from "../external-links/service";
 
 export const entityLinksService = {

@@ -138,7 +138,7 @@ export function CommentChat({
   const branchSuffix = branchName
     ? `&branch=${encodeURIComponent(branchName)}&prNumber=${prNumber}`
     : "";
-  const commentApiBase = `/api/engineer/symphony/comment-chat/${encodeURIComponent(commentId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}${branchSuffix}`;
+  const commentApiBase = `/api/gateway/symphony/comment-chat/${encodeURIComponent(commentId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}${branchSuffix}`;
 
   const debate = useCodexDebate({
     ticketId,
@@ -289,7 +289,7 @@ export function CommentChat({
         queryKey: queryKeys.commentChatHistory(ticketId, commentId, repoPath),
       });
 
-      const url = `/api/engineer/codex/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
+      const url = `/api/gateway/codex/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
 
       // Build recent chat history for context (sanitize protocol metadata)
       const recentHistory = sanitizeHistoryForModel(
