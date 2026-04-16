@@ -346,8 +346,8 @@ describe("useCreateAndGenerateArtifact", () => {
       wrapper: createWrapper(),
     });
 
-    await act(async () => {
-      await result.current.mutateAsync({
+    act(() => {
+      result.current.mutate({
         input: {
           title: "Test Plan",
           type: "IMPLEMENTATION_PLAN",

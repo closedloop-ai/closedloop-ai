@@ -1,19 +1,5 @@
-import { Label } from "@repo/design-system/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@repo/design-system/components/ui/select";
-import { useEffect, useMemo } from "react";
-import { GitHubRepositoryOptionLabel } from "@/components/github-repository-option-label";
-import {
-  useGitHubBranches,
-  useGitHubIntegrationStatus,
-  useGitHubRepositories,
-} from "@/hooks/queries/use-github-integration";
-import { sortRepositoriesByActivity } from "@/lib/sort-utils";
+import { useGitHubIntegrationStatus } from "@/hooks/queries/use-github-integration";
+import { RepoBranchSelector } from "./repo-branch-selector";
 
 type RepositoryBranchFieldsProps = {
   targetRepo: string;
@@ -32,126 +18,33 @@ export function RepositoryBranchFields({
 }: RepositoryBranchFieldsProps) {
   const { data: githubStatus, isLoading: isLoadingGitHubStatus } =
     useGitHubIntegrationStatus();
-  const { data: repositories, isLoading: isLoadingRepos } =
-    useGitHubRepositories({
-      enabled: githubStatus?.connected === true,
-    });
-  const { data: branchesData, isLoading: isLoadingBranches } =
-    useGitHubBranches(selectedRepoId, {
-      enabled: !!selectedRepoId,
-    });
 
-  const sortedRepositories = useMemo(
-    () => (repositories ? sortRepositoriesByActivity(repositories) : []),
-    [repositories]
-  );
-  const selectedRepository = repositories?.find(
-    (repo) => repo.id === selectedRepoId
-  );
-
-  // Auto-select default branch when branches load and no branch selected
-  useEffect(() => {
-    if (branchesData?.branches && !targetBranch) {
-      const defaultBranch = branchesData.branches.find((b) => b.isDefault);
-      if (defaultBranch) {
-        onBranchChange(defaultBranch.name);
-      }
-    }
-  }, [branchesData, targetBranch, onBranchChange]);
-
-  const handleRepoSelect = (repoId: string) => {
-    const repo = repositories?.find((r) => r.id === repoId);
-    if (repo) {
-      onRepositoryChange(repoId, repo.fullName);
-    }
-  };
-
-  const getBranchPlaceholder = () => {
-    if (!selectedRepoId) {
-      return "Select a repository first";
-    }
-    if (isLoadingBranches) {
-      return "Loading branches...";
-    }
-    return "Select a branch";
-  };
-
-  const renderRepositoryTriggerValue = () => {
-    if (selectedRepository) {
-      return (
-        <GitHubRepositoryOptionLabel
-          repository={selectedRepository}
-          showLastActive={false}
-        />
-      );
-    }
-
-    if (targetRepo) {
-      return <span>{targetRepo}</span>;
-    }
-
-    return null;
-  };
+  const isDisconnected = githubStatus?.connected === false;
+  const repoFieldReplacement = isDisconnected ? (
+    <div className="rounded-md border border-muted bg-muted/20 p-3 text-muted-foreground text-sm">
+      Connect GitHub to select a repository
+    </div>
+  ) : undefined;
 
   return (
-    <>
-      <div className="space-y-2">
-        <Label htmlFor="target-repo">
+    <RepoBranchSelector
+      branchInputId="target-branch"
+      branchLabel="Target Branch"
+      extraReposLoading={isLoadingGitHubStatus}
+      onBranchChange={onBranchChange}
+      onRepoChange={onRepositoryChange}
+      repoFieldReplacement={repoFieldReplacement}
+      repoInputId="target-repo"
+      repoLabel={
+        <>
           Target Repository{" "}
           <span className="text-muted-foreground text-xs">(owner/repo)</span>
-        </Label>
-        {githubStatus?.connected === false ? (
-          <div className="rounded-md border border-muted bg-muted/20 p-3 text-muted-foreground text-sm">
-            Connect GitHub to select a repository
-          </div>
-        ) : (
-          <Select
-            disabled={isLoadingGitHubStatus || isLoadingRepos}
-            onValueChange={handleRepoSelect}
-            value={selectedRepoId}
-          >
-            <SelectTrigger id="target-repo">
-              <SelectValue
-                placeholder={
-                  isLoadingGitHubStatus || isLoadingRepos
-                    ? "Loading repositories..."
-                    : "Select a repository"
-                }
-              >
-                {renderRepositoryTriggerValue()}
-              </SelectValue>
-            </SelectTrigger>
-            <SelectContent>
-              {sortedRepositories.map((repo) => (
-                <SelectItem key={repo.id} value={repo.id}>
-                  <GitHubRepositoryOptionLabel repository={repo} />
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        )}
-      </div>
-
-      <div className="space-y-2">
-        <Label htmlFor="target-branch">Target Branch</Label>
-        <Select
-          disabled={!selectedRepoId || isLoadingBranches}
-          onValueChange={onBranchChange}
-          value={targetBranch}
-        >
-          <SelectTrigger id="target-branch">
-            <SelectValue placeholder={getBranchPlaceholder()} />
-          </SelectTrigger>
-          <SelectContent>
-            {branchesData?.branches.map((branch) => (
-              <SelectItem key={branch.name} value={branch.name}>
-                {branch.name}
-                {branch.isDefault ? " (default)" : ""}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
-    </>
+        </>
+      }
+      reposEnabled={githubStatus?.connected === true}
+      repoTriggerFallback={targetRepo ? <span>{targetRepo}</span> : null}
+      selectedBranch={targetBranch}
+      selectedRepoId={selectedRepoId}
+    />
   );
 }

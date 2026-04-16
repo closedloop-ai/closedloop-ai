@@ -3,22 +3,9 @@
 import type { AdditionalRepoRef } from "@repo/api/src/types/loop";
 import { MAX_ADDITIONAL_REPOS } from "@repo/api/src/types/loop";
 import { Button } from "@repo/design-system/components/ui/button";
-import { Label } from "@repo/design-system/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@repo/design-system/components/ui/select";
 import { PlusIcon, TrashIcon } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { GitHubRepositoryOptionLabel } from "@/components/github-repository-option-label";
-import {
-  useGitHubBranches,
-  useGitHubRepositories,
-} from "@/hooks/queries/use-github-integration";
-import { sortRepositoriesByActivity } from "@/lib/sort-utils";
+import { RepoBranchSelector } from "./repo-branch-selector";
 
 // Internal type — repoId is needed for Select value binding but is not part of AdditionalRepoRef
 type AdditionalRepoRow = {
@@ -50,65 +37,6 @@ function RepoRowFields({
   onBranchChange,
   onRemove,
 }: RepoRowFieldsProps) {
-  const { data: repositories, isLoading: isLoadingRepos } =
-    useGitHubRepositories();
-  const { data: branchesData, isLoading: isLoadingBranches } =
-    useGitHubBranches(row.repoId, { enabled: !!row.repoId });
-
-  const sortedRepositories = useMemo(
-    () => (repositories ? sortRepositoriesByActivity(repositories) : []),
-    [repositories]
-  );
-
-  // Resolve repoId from fullName once repositories load (for rows seeded from initialValue).
-  // Uses onRepoIdResolve (not onRepoChange) to preserve the seeded branch.
-  useEffect(() => {
-    if (row.fullName && !row.repoId && repositories) {
-      const match = repositories.find((r) => r.fullName === row.fullName);
-      if (match) {
-        onRepoIdResolve(row.id, match.id);
-      }
-    }
-  }, [repositories, row.fullName, row.repoId, row.id, onRepoIdResolve]);
-
-  // Auto-select default branch when branches load and none is set
-  useEffect(() => {
-    if (branchesData?.branches && !row.branch) {
-      const defaultBranch = branchesData.branches.find((b) => b.isDefault);
-      if (defaultBranch) {
-        onBranchChange(row.id, defaultBranch.name);
-      }
-    }
-  }, [branchesData, row.branch, row.id, onBranchChange]);
-
-  const handleRepoSelect = (repoId: string) => {
-    const repo = repositories?.find((r) => r.id === repoId);
-    if (repo) {
-      onRepoChange(row.id, repoId, repo.fullName);
-    }
-  };
-
-  const getBranchPlaceholder = () => {
-    if (!row.repoId) {
-      return "Select a repository first";
-    }
-    if (isLoadingBranches) {
-      return "Loading branches...";
-    }
-    return "Select a branch";
-  };
-
-  // Exclude the primary target repo from options (case-insensitive)
-  const availableRepositories = useMemo(
-    () =>
-      sortedRepositories.filter(
-        (r) => r.fullName.toLowerCase() !== targetRepo?.toLowerCase()
-      ),
-    [sortedRepositories, targetRepo]
-  );
-
-  const selectedRepository = repositories?.find((r) => r.id === row.repoId);
-
   return (
     <div className="space-y-3 rounded-md border border-border p-3">
       <div className="flex items-center justify-between">
@@ -124,59 +52,19 @@ function RepoRowFields({
         </Button>
       </div>
 
-      <div className="space-y-2">
-        <Label>Repository</Label>
-        <Select
-          disabled={isLoadingRepos}
-          onValueChange={handleRepoSelect}
-          value={row.repoId}
-        >
-          <SelectTrigger>
-            <SelectValue
-              placeholder={
-                isLoadingRepos
-                  ? "Loading repositories..."
-                  : "Select a repository"
-              }
-            >
-              {selectedRepository && (
-                <GitHubRepositoryOptionLabel
-                  repository={selectedRepository}
-                  showLastActive={false}
-                />
-              )}
-            </SelectValue>
-          </SelectTrigger>
-          <SelectContent>
-            {availableRepositories.map((repo) => (
-              <SelectItem key={repo.id} value={repo.id}>
-                <GitHubRepositoryOptionLabel repository={repo} />
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
-
-      <div className="space-y-2">
-        <Label>Branch</Label>
-        <Select
-          disabled={!row.repoId || isLoadingBranches}
-          onValueChange={(branch) => onBranchChange(row.id, branch)}
-          value={row.branch}
-        >
-          <SelectTrigger>
-            <SelectValue placeholder={getBranchPlaceholder()} />
-          </SelectTrigger>
-          <SelectContent>
-            {branchesData?.branches.map((branch) => (
-              <SelectItem key={branch.name} value={branch.name}>
-                {branch.name}
-                {branch.isDefault ? " (default)" : ""}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
+      <RepoBranchSelector
+        branchLabel="Branch"
+        excludeRepo={targetRepo}
+        onBranchChange={(branch) => onBranchChange(row.id, branch)}
+        onRepoChange={(repoId, fullName) =>
+          onRepoChange(row.id, repoId, fullName)
+        }
+        onSeedRepoResolved={(repoId) => onRepoIdResolve(row.id, repoId)}
+        repoLabel="Repository"
+        seedFullName={row.fullName}
+        selectedBranch={row.branch}
+        selectedRepoId={row.repoId}
+      />
 
       {error && <p className="text-destructive text-xs">{error}</p>}
     </div>
