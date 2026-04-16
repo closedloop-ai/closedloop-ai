@@ -154,9 +154,7 @@ describe("BranchRow — PrStateIcon states", () => {
 
     expect(screen.getByText("feat: add new feature")).toBeDefined();
     const link = screen.getByRole("link");
-    expect(link.getAttribute("href")).toBe(
-      "https://github.com/org/repo/pull/42"
-    );
+    expect(link.getAttribute("href")).toBe("/build/ext-1");
   });
 
   it("renders null when resolvedEntity is not an ExternalLink type", () => {
