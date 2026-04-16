@@ -268,8 +268,8 @@ describe("NewPlanModal — feature flag behavior for AdditionalReposPicker", () 
 
     render(<NewPlanModal onOpenChange={vi.fn()} open={true} />);
 
-    // useMultiRepoPlanEnabled uses `=== true`, matching branch-pr / chat
-    // convention — unassigned users do not see the picker during rollout.
+    // Picker gate uses `=== true`, matching branch-pr / chat convention —
+    // unassigned users do not see the picker during rollout.
     await waitFor(() => {
       expect(
         screen.queryByRole("button", { name: ADD_REPO_REGEX })

@@ -53,7 +53,6 @@ import {
 } from "@/hooks/queries/use-judges";
 import { useLatestPlanLoopByDocument } from "@/hooks/queries/use-loops";
 import { useExecutionLogDialog } from "@/hooks/use-execution-log-dialog";
-import { useMultiRepoPlanEnabled } from "@/hooks/use-multi-repo-plan-enabled";
 import { usePreviewDeploymentPolling } from "@/hooks/use-preview-deployment-polling";
 import { ExecutePlanModal } from "../components/execute-plan-modal";
 import { RequestChangesModal } from "../components/request-changes-modal";
@@ -78,7 +77,7 @@ export function PlanEditor({
   showHeader = true,
 }: Readonly<PlanEditorProps>) {
   const chatFlag = useFeatureFlag("interactive-chat");
-  const multiRepoEnabled = useMultiRepoPlanEnabled();
+  const multiRepoEnabled = useFeatureFlag("multi-repo-plan")?.enabled === true;
   const executionLogDialog = useExecutionLogDialog();
 
   const [showMoveDialog, setShowMoveDialog] = useState(false);
