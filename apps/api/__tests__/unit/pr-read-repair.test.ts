@@ -168,14 +168,27 @@ describe("schedulePrReadRepair — eligibility filtering", () => {
     expect(mockWaitUntil).not.toHaveBeenCalled();
   });
 
-  it("does not call waitUntil when the PR is already in MERGED state", () => {
+  it("does not call waitUntil when the PR is merged and has been verified", () => {
+    const link = makeExternalLink({
+      metadata: makePrMetadata({
+        state: GitHubPRState.Merged,
+        lastVerifiedAt: msAgo(60 * 60 * 1000),
+      }),
+    });
+
+    schedulePrReadRepair([link], ORG_ID);
+
+    expect(mockWaitUntil).not.toHaveBeenCalled();
+  });
+
+  it("calls waitUntil for a merged PR that was never verified", () => {
     const link = makeExternalLink({
       metadata: makePrMetadata({ state: GitHubPRState.Merged }),
     });
 
     schedulePrReadRepair([link], ORG_ID);
 
-    expect(mockWaitUntil).not.toHaveBeenCalled();
+    expect(mockWaitUntil).toHaveBeenCalledOnce();
   });
 
   it("does not call waitUntil when link was verified within the 24h staleness threshold", () => {

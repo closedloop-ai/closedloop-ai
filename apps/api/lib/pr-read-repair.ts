@@ -34,9 +34,12 @@ export function schedulePrReadRepair(
 
     const parsed = parsePullRequestMetadata(link.metadata);
 
-    // Needs refresh if metadata is missing or PR is not yet merged
+    // Needs refresh if metadata is missing, PR is not yet merged, or
+    // PR is merged but was never verified (e.g., linked via SelectPullRequestDialog
+    // where mergedAt/closedAt are not populated at creation time).
+    const neverVerified = !parsed?.lastVerifiedAt;
     const needsStateCheck =
-      parsed === null || parsed.state !== GitHubPRState.Merged;
+      parsed === null || parsed.state !== GitHubPRState.Merged || neverVerified;
     if (!needsStateCheck) {
       return false;
     }
@@ -210,6 +213,7 @@ type PullRequestUpsertOptions = {
   organizationId: string;
   repositoryId: string | null;
   workstreamId: string | null;
+  artifactId: string | null;
   pullNumber: number;
   externalLinkId: string;
 };
@@ -220,6 +224,7 @@ async function applyPullRequestUpsert({
   organizationId,
   repositoryId,
   workstreamId,
+  artifactId,
   pullNumber,
   externalLinkId,
 }: PullRequestUpsertOptions): Promise<void> {
@@ -266,6 +271,7 @@ async function applyPullRequestUpsert({
         workstreamId,
         organizationId,
         repositoryId,
+        artifactId,
         githubId: freshPr.githubId,
         number: freshPr.number,
         title: freshPr.title,
@@ -356,8 +362,11 @@ async function repairSinglePrLink(
     return;
   }
 
-  const workstreamId =
-    link.workstreamId ?? (await resolveWorkstreamId(link.id, organizationId));
+  const entityContext = link.workstreamId
+    ? { workstreamId: link.workstreamId, artifactId: null as string | null }
+    : await resolveEntityLinkContext(link.id, organizationId);
+  const workstreamId = entityContext.workstreamId;
+  const artifactId = entityContext.artifactId;
   const repositoryId = repoResolution?.repositoryId ?? null;
 
   await withDb.tx(async (tx) => {
@@ -375,6 +384,7 @@ async function repairSinglePrLink(
       organizationId,
       repositoryId,
       workstreamId,
+      artifactId,
       pullNumber,
       externalLinkId: link.id,
     });
@@ -399,19 +409,29 @@ async function runPrReadRepair(
   }
 }
 
+type EntityLinkResolution = {
+  workstreamId: string | null;
+  artifactId: string | null;
+};
+
 /**
- * Walk the entity link tree to resolve a workstream ID for an external link.
+ * Walk the entity link tree to resolve workstreamId and artifactId for an
+ * external link.
  *
  * Scans all incoming entity links (not just the first) to handle cases where
  * the external link has multiple parents (e.g., artifact + PRD). Checks:
  * 1. All parent artifacts — return the first artifact's workstream_id if present.
  * 2. For each artifact without a workstream, walk one more level to the parent
  *    feature and return the feature's workstream_id.
+ *
+ * Always returns the first matched artifactId regardless of workstream resolution.
  */
-async function resolveWorkstreamId(
+async function resolveEntityLinkContext(
   externalLinkId: string,
   organizationId: string
-): Promise<string | null> {
+): Promise<EntityLinkResolution> {
+  let resolvedArtifactId: string | null = null;
+
   // Level 1: find all entities that target this external link
   const parentLinks = await withDb((db) =>
     db.entityLink.findMany({
@@ -429,6 +449,10 @@ async function resolveWorkstreamId(
       continue;
     }
 
+    if (!resolvedArtifactId) {
+      resolvedArtifactId = parentLink.sourceId;
+    }
+
     const artifact = await withDb((db) =>
       db.artifact.findFirst({
         where: { id: parentLink.sourceId, organizationId },
@@ -437,7 +461,10 @@ async function resolveWorkstreamId(
     );
 
     if (artifact?.workstreamId) {
-      return artifact.workstreamId;
+      return {
+        workstreamId: artifact.workstreamId,
+        artifactId: resolvedArtifactId,
+      };
     }
 
     // Level 2: find the feature that targets this artifact
@@ -465,10 +492,13 @@ async function resolveWorkstreamId(
       );
 
       if (feature?.workstreamId) {
-        return feature.workstreamId;
+        return {
+          workstreamId: feature.workstreamId,
+          artifactId: resolvedArtifactId,
+        };
       }
     }
   }
 
-  return null;
+  return { workstreamId: null, artifactId: resolvedArtifactId };
 }

@@ -46,12 +46,17 @@ const deploymentMetadataSchema = z.object({
   production: z.boolean().optional(),
 });
 
+/** Accept string or Date from DB JSON, normalize to ISO string on output. */
+const dateToString = z
+  .union([z.string(), z.date()])
+  .transform((v) => (v instanceof Date ? v.toISOString() : v));
+
 const pullRequestMetadataSchema = z.object({
   number: z.number(),
   githubId: z.string().optional(),
   headBranch: z.string(),
   baseBranch: z.string(),
   state: z.enum(GitHubPRState),
-  lastVerifiedAt: z.union([z.string(), z.date()]).optional().nullable(),
-  lastRefreshAttemptAt: z.union([z.string(), z.date()]).optional().nullable(),
+  lastVerifiedAt: dateToString.optional().nullable(),
+  lastRefreshAttemptAt: dateToString.optional().nullable(),
 });

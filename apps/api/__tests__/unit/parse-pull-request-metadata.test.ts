@@ -62,8 +62,8 @@ describe("parsePullRequestMetadata", () => {
     });
   });
 
-  describe("timestamp fields — Date object path (frontend)", () => {
-    it("accepts Date object for lastVerifiedAt", () => {
+  describe("timestamp fields — Date object path (normalized to string)", () => {
+    it("normalizes Date object for lastVerifiedAt to ISO string", () => {
       const date = new Date("2024-03-10T12:00:00.000Z");
       const result = parsePullRequestMetadata({
         number: 7,
@@ -74,10 +74,10 @@ describe("parsePullRequestMetadata", () => {
       });
 
       expect(result).not.toBeNull();
-      expect(result!.lastVerifiedAt).toEqual(date);
+      expect(result!.lastVerifiedAt).toBe("2024-03-10T12:00:00.000Z");
     });
 
-    it("accepts Date object for lastRefreshAttemptAt", () => {
+    it("normalizes Date object for lastRefreshAttemptAt to ISO string", () => {
       const date = new Date("2024-04-20T08:00:00.000Z");
       const result = parsePullRequestMetadata({
         number: 8,
@@ -88,10 +88,10 @@ describe("parsePullRequestMetadata", () => {
       });
 
       expect(result).not.toBeNull();
-      expect(result!.lastRefreshAttemptAt).toEqual(date);
+      expect(result!.lastRefreshAttemptAt).toBe("2024-04-20T08:00:00.000Z");
     });
 
-    it("accepts Date objects for both timestamp fields", () => {
+    it("normalizes Date objects for both timestamp fields to ISO strings", () => {
       const verified = new Date("2024-05-01T00:00:00.000Z");
       const attempted = new Date("2024-05-02T00:00:00.000Z");
       const result = parsePullRequestMetadata({
@@ -104,8 +104,8 @@ describe("parsePullRequestMetadata", () => {
       });
 
       expect(result).not.toBeNull();
-      expect(result!.lastVerifiedAt).toEqual(verified);
-      expect(result!.lastRefreshAttemptAt).toEqual(attempted);
+      expect(result!.lastVerifiedAt).toBe("2024-05-01T00:00:00.000Z");
+      expect(result!.lastRefreshAttemptAt).toBe("2024-05-02T00:00:00.000Z");
     });
   });
 
