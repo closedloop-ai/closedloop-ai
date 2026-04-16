@@ -1,4 +1,5 @@
 import { useFeatureFlag } from "@repo/analytics/client";
+import { EntityType } from "@repo/api/src/types/entity-link";
 import { MAX_ADDITIONAL_REPOS } from "@repo/api/src/types/loop";
 import {
   cleanup,
@@ -65,6 +66,7 @@ const MAX_REACHED_REGEX = /maximum of.*additional repositories reached/i;
 const REPO_1_REGEX = /repository 1/i;
 const PRIMARY_REPO_ERROR_REGEX = /cannot use the primary repository/i;
 const DUPLICATE_REPO_ERROR_REGEX = /duplicate repository/i;
+const GENERATE_PLAN_REGEX = /generate plan/i;
 
 // ---- Helpers ----
 
@@ -72,15 +74,17 @@ function renderPicker(
   overrides: Partial<Parameters<typeof AdditionalReposPicker>[0]> = {}
 ) {
   const onChange = vi.fn();
+  const onIncompleteChange = vi.fn();
   render(
     <AdditionalReposPicker
       initialValue={[]}
       onChange={onChange}
+      onIncompleteChange={onIncompleteChange}
       targetRepo="org/primary-repo"
       {...overrides}
     />
   );
-  return { onChange };
+  return { onChange, onIncompleteChange };
 }
 
 // ---- Tests ----
@@ -176,13 +180,40 @@ describe("AdditionalReposPicker", () => {
   });
 
   describe("onChange propagation", () => {
-    it("calls onChange with projected row data when a row is added", async () => {
-      const { onChange } = renderPicker();
+    it("does not propagate placeholder rows to the parent when a new row is added", async () => {
+      const { onChange, onIncompleteChange } = renderPicker();
 
       fireEvent.click(screen.getByRole("button", { name: ADD_REPO_REGEX }));
 
       await waitFor(() => {
-        expect(onChange).toHaveBeenCalledWith([{ fullName: "", branch: "" }]);
+        expect(screen.getByText(REPO_1_REGEX)).toBeInTheDocument();
+      });
+
+      // Parent state should never receive an invalid { fullName: "", branch: "" }
+      // — only fully-specified rows leak upstream via onChange.
+      expect(onChange).toHaveBeenCalledWith([]);
+      expect(onChange).not.toHaveBeenCalledWith(
+        expect.arrayContaining([
+          expect.objectContaining({ fullName: "", branch: "" }),
+        ])
+      );
+      // But the parent is told the form has an incomplete row so it can
+      // disable submit until the user finishes filling the row.
+      expect(onIncompleteChange).toHaveBeenCalledWith(true);
+    });
+
+    it("reports incomplete → complete transition when a row is removed", async () => {
+      const { onIncompleteChange } = renderPicker();
+
+      fireEvent.click(screen.getByRole("button", { name: ADD_REPO_REGEX }));
+      await waitFor(() => {
+        expect(screen.getByText(REPO_1_REGEX)).toBeInTheDocument();
+      });
+
+      fireEvent.click(screen.getByRole("button", { name: REMOVE_REPO_REGEX }));
+
+      await waitFor(() => {
+        expect(onIncompleteChange).toHaveBeenLastCalledWith(false);
       });
     });
   });
@@ -243,6 +274,40 @@ describe("NewPlanModal — feature flag behavior for AdditionalReposPicker", () 
       expect(
         screen.queryByRole("button", { name: ADD_REPO_REGEX })
       ).not.toBeInTheDocument();
+    });
+  });
+
+  it("disables Generate Plan when an added repository row is incomplete", async () => {
+    vi.mocked(useFeatureFlag).mockReturnValue({
+      key: "multi-repo-plan",
+      enabled: true,
+      variant: undefined,
+      payload: undefined,
+    });
+
+    render(
+      <NewPlanModal
+        onOpenChange={vi.fn()}
+        open={true}
+        source={{
+          id: "prd-1",
+          sourceType: EntityType.Document,
+          targetBranch: "main",
+          targetRepo: "org/primary-repo",
+          title: "Dashboard PRD",
+        }}
+      />
+    );
+
+    const submitButton = screen.getByRole("button", {
+      name: GENERATE_PLAN_REGEX,
+    });
+    expect(submitButton).not.toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: ADD_REPO_REGEX }));
+
+    await waitFor(() => {
+      expect(submitButton).toBeDisabled();
     });
   });
 });

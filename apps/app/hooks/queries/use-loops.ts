@@ -14,7 +14,7 @@ import type {
   LoopWithUser,
   ResumeLoopRequest,
 } from "@repo/api/src/types/loop";
-import { RunLoopCommand } from "@repo/api/src/types/loop";
+import { LoopCommand, RunLoopCommand } from "@repo/api/src/types/loop";
 import {
   type UseQueryOptions,
   useMutation,
@@ -121,6 +121,37 @@ export function useLoopsByArtifact(
       const params = new URLSearchParams();
       params.set("documentId", documentId);
       return apiClient.get<LoopWithUser[]>(`/loops?${params.toString()}`);
+    },
+    enabled: !!documentId,
+    ...options,
+  });
+}
+
+/**
+ * Fetches the most recent PLAN loop for a document.
+ *
+ * Used to hydrate context (e.g., additionalRepos) from the last plan run,
+ * ignoring intervening non-PLAN loops (EVALUATE_PLAN, EXECUTE, etc.) that
+ * intentionally omit plan-specific state.
+ *
+ * Server-side ordering is `createdAt desc`, so the first element is the
+ * latest PLAN loop.
+ */
+export function useLatestPlanLoopByDocument(
+  documentId: string,
+  options?: Omit<UseQueryOptions<LoopWithUser | null>, "queryKey" | "queryFn">
+) {
+  const apiClient = useApiClient();
+  const filters = { documentId, command: LoopCommand.Plan, limit: 1 };
+
+  return useQuery({
+    queryKey: loopKeys.list(filters),
+    queryFn: async () => {
+      const params = buildSearchParams(filters);
+      const loops = await apiClient.get<LoopWithUser[]>(
+        `/loops?${params.toString()}`
+      );
+      return loops[0] ?? null;
     },
     enabled: !!documentId,
     ...options,

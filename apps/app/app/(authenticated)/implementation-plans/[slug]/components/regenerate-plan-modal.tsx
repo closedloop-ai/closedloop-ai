@@ -37,6 +37,7 @@ export function RegeneratePlanModal({
   const [additionalRepos, setAdditionalRepos] = useState<AdditionalRepoRef[]>(
     initialAdditionalRepos ?? []
   );
+  const [hasIncompleteRepos, setHasIncompleteRepos] = useState(false);
 
   // Reset to the prop whenever the modal opens so a prior cancel-with-edits
   // doesn't leak stale selections into the next submission. Also covers the
@@ -45,6 +46,7 @@ export function RegeneratePlanModal({
   useEffect(() => {
     if (open) {
       setAdditionalRepos(initialAdditionalRepos ?? []);
+      setHasIncompleteRepos(false);
     }
   }, [open, initialAdditionalRepos]);
 
@@ -79,6 +81,7 @@ export function RegeneratePlanModal({
             <AdditionalReposPicker
               initialValue={initialAdditionalRepos ?? []}
               onChange={setAdditionalRepos}
+              onIncompleteChange={setHasIncompleteRepos}
               targetRepo={targetRepo}
             />
           )}
@@ -93,7 +96,9 @@ export function RegeneratePlanModal({
             Cancel
           </Button>
           <Button
-            disabled={isSubmitting || isLoadingInitialRepos}
+            disabled={
+              isSubmitting || isLoadingInitialRepos || hasIncompleteRepos
+            }
             onClick={handleConfirm}
           >
             {isSubmitting ? (

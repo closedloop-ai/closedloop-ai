@@ -30,6 +30,7 @@ import { AdditionalReposPicker } from "./additional-repos-picker";
 import { PlanPreview, PrdSelector, ProjectSelector } from "./plan-form-fields";
 import {
   buildCreateInput,
+  type FormState,
   normalizeAdditionalRepos,
   useModalOpenState,
 } from "./plan-form-utils";
@@ -59,9 +60,57 @@ function isCreateSubmitDisabled(
   isSubmitting: boolean,
   titleTrimmed: boolean,
   selectedSource: PlanSource | undefined,
-  missingRepo: boolean
+  missingRepo: boolean,
+  incompleteAdditionalRepos: boolean
 ): boolean {
-  return isSubmitting || !titleTrimmed || (!!selectedSource && missingRepo);
+  return (
+    isSubmitting ||
+    !titleTrimmed ||
+    (!!selectedSource && (missingRepo || incompleteAdditionalRepos))
+  );
+}
+
+type SubmitCreatePlanArgs = {
+  formState: FormState;
+  selectedSource: PlanSource | undefined;
+  showPicker: boolean;
+  additionalRepos: AdditionalRepoRef[];
+  createPlan: ReturnType<typeof useCreateDocument>;
+  createAndGeneratePlan: ReturnType<typeof useCreateAndGenerateDocument>;
+  onSuccess: (document: { slug: string }) => void;
+};
+
+function submitCreatePlan({
+  formState,
+  selectedSource,
+  showPicker,
+  additionalRepos,
+  createPlan,
+  createAndGeneratePlan,
+  onSuccess,
+}: SubmitCreatePlanArgs): void {
+  const finalFileName = getFinalFileName(
+    formState.fileName,
+    formState.title,
+    selectedSource
+  );
+  const createConfig = buildCreateInput(
+    formState,
+    finalFileName,
+    selectedSource
+  );
+
+  if (createConfig.type === "createAndGenerate") {
+    const submitAdditionalRepos = showPicker
+      ? normalizeAdditionalRepos(additionalRepos)
+      : undefined;
+    createAndGeneratePlan.mutate(
+      { input: createConfig.input, additionalRepos: submitAdditionalRepos },
+      { onSuccess }
+    );
+    return;
+  }
+  createPlan.mutate(createConfig.input, { onSuccess });
 }
 
 export function NewPlanModal({
@@ -97,6 +146,8 @@ export function NewPlanModal({
   const [additionalRepos, setAdditionalRepos] = useState<AdditionalRepoRef[]>(
     []
   );
+  const [incompleteAdditionalRepos, setIncompleteAdditionalRepos] =
+    useState(false);
   const hasPrePopulated = useRef(false);
 
   // Fetch project details for default repository
@@ -188,6 +239,7 @@ export function NewPlanModal({
     setTargetBranch(source?.targetBranch ?? "");
     setSelectedRepoId("");
     setAdditionalRepos([]);
+    setIncompleteAdditionalRepos(false);
     setError(null);
     hasPrePopulated.current = false;
   };
@@ -200,45 +252,27 @@ export function NewPlanModal({
       return;
     }
 
-    const formState = {
-      selectedSourceId,
-      selectedProjectId,
-      title,
-      fileName,
-      content,
-      targetRepo,
-      targetBranch,
-    };
-
-    const finalFileName = getFinalFileName(
-      formState.fileName,
-      formState.title,
-      selectedSource
-    );
-    const createConfig = buildCreateInput(
-      formState,
-      finalFileName,
-      selectedSource
-    );
-
-    const onSuccess = (document: { slug: string }) => {
-      setOpen(false);
-      resetForm();
-      router.push(`/implementation-plans/${document.slug}`);
-    };
-
-    if (createConfig.type === "createAndGenerate") {
-      // additionalRepos is a run-loop concern — not added to FormState or buildCreateInput
-      const submitAdditionalRepos = showPicker
-        ? normalizeAdditionalRepos(additionalRepos)
-        : undefined;
-      createAndGeneratePlan.mutate(
-        { input: createConfig.input, additionalRepos: submitAdditionalRepos },
-        { onSuccess }
-      );
-      return;
-    }
-    createPlan.mutate(createConfig.input, { onSuccess });
+    submitCreatePlan({
+      formState: {
+        selectedSourceId,
+        selectedProjectId,
+        title,
+        fileName,
+        content,
+        targetRepo,
+        targetBranch,
+      },
+      selectedSource,
+      showPicker,
+      additionalRepos,
+      createPlan,
+      createAndGeneratePlan,
+      onSuccess: (document) => {
+        setOpen(false);
+        resetForm();
+        router.push(`/implementation-plans/${document.slug}`);
+      },
+    });
   };
 
   const handleOpenChange = (newOpen: boolean) => {
@@ -361,6 +395,7 @@ export function NewPlanModal({
             <AdditionalReposPicker
               initialValue={additionalRepos}
               onChange={setAdditionalRepos}
+              onIncompleteChange={setIncompleteAdditionalRepos}
               targetRepo={targetRepo}
             />
           ) : null}
@@ -385,12 +420,11 @@ export function NewPlanModal({
             />
           </div>
 
-          {missingRepo && selectedSource ? (
-            <p className="text-destructive text-sm">
-              No repository configured for this project. Select a repository
-              above or add a default repository in project settings.
-            </p>
-          ) : null}
+          <PlanSubmitValidationMessages
+            incompleteAdditionalRepos={incompleteAdditionalRepos}
+            missingRepo={missingRepo}
+            selectedSource={selectedSource}
+          />
         </div>
 
         <DialogFooter>
@@ -402,7 +436,8 @@ export function NewPlanModal({
               isSubmitting,
               title.trim().length > 0,
               selectedSource,
-              missingRepo
+              missingRepo,
+              incompleteAdditionalRepos
             )}
             onClick={handleSubmit}
           >
@@ -454,5 +489,34 @@ function TargetRepoBranchFields({
       selectedBranch={selectedBranch}
       selectedRepoId={selectedRepoId}
     />
+  );
+}
+
+function PlanSubmitValidationMessages({
+  selectedSource,
+  missingRepo,
+  incompleteAdditionalRepos,
+}: {
+  selectedSource: PlanSource | undefined;
+  missingRepo: boolean;
+  incompleteAdditionalRepos: boolean;
+}) {
+  if (!selectedSource) {
+    return null;
+  }
+  return (
+    <>
+      {missingRepo ? (
+        <p className="text-destructive text-sm">
+          No repository configured for this project. Select a repository above
+          or add a default repository in project settings.
+        </p>
+      ) : null}
+      {incompleteAdditionalRepos ? (
+        <p className="text-destructive text-sm">
+          Complete or remove every additional repository row before generating.
+        </p>
+      ) : null}
+    </>
   );
 }

@@ -51,7 +51,7 @@ import {
   useCodeJudgesFeedback,
   usePlanJudgesFeedback,
 } from "@/hooks/queries/use-judges";
-import { useLoop } from "@/hooks/queries/use-loops";
+import { useLatestPlanLoopByDocument } from "@/hooks/queries/use-loops";
 import { useExecutionLogDialog } from "@/hooks/use-execution-log-dialog";
 import { useMultiRepoPlanEnabled } from "@/hooks/use-multi-repo-plan-enabled";
 import { usePreviewDeploymentPolling } from "@/hooks/use-preview-deployment-polling";
@@ -142,11 +142,13 @@ export function PlanEditor({
     useDocumentGenerationStatus(plan.id, { polling: true });
   const dismissGenerationStatus = useDismissDocumentGenerationStatus();
 
-  // Fetch additionalRepos from the loop tied to the current generation status.
-  // Returns loading: true while a known loopId is still in flight so the
-  // regenerate modal can block confirmation rather than default to "no repos".
+  // Fetch additionalRepos from the latest PLAN loop for this document.
+  // generationStatus.loopId can point to newer non-PLAN loops (EVALUATE_PLAN,
+  // EXECUTE, etc.) that intentionally omit plan-specific state like
+  // additionalRepos — using it would cause regenerate to forget the last
+  // plan's multi-repo selection.
   const { initialAdditionalRepos, isLoadingInitialAdditionalRepos } =
-    useInitialAdditionalRepos(generationStatus?.loopId);
+    useInitialAdditionalRepos(plan.id);
 
   const { data: pullRequest } = useDocumentPullRequest(plan.id);
   const { data: judgesReport } = usePlanJudgesFeedback(plan.id);
@@ -517,9 +519,12 @@ function FloatingTargetPicker({
   );
 }
 
-function useInitialAdditionalRepos(loopId: string | null | undefined) {
-  const enabled = Boolean(loopId);
-  const { data: loop, isLoading } = useLoop(loopId ?? "", { enabled });
+function useInitialAdditionalRepos(documentId: string | null | undefined) {
+  const enabled = Boolean(documentId);
+  const { data: loop, isLoading } = useLatestPlanLoopByDocument(
+    documentId ?? "",
+    { enabled }
+  );
   return {
     initialAdditionalRepos: loop?.additionalRepos ?? undefined,
     isLoadingInitialAdditionalRepos: enabled && isLoading,

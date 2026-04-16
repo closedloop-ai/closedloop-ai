@@ -75,13 +75,19 @@ type AdditionalReposPickerProps = {
   // Used as seed state on mount only — subsequent changes are not synced.
   // Parent state is kept in sync via onChange.
   initialValue: AdditionalRepoRef[];
+  // onChange receives only fully-specified rows (fullName AND branch set).
+  // Placeholder/in-progress rows are kept in internal state and never leak upstream.
   onChange: (repos: AdditionalRepoRef[]) => void;
+  // Fires whenever the picker gains or loses an incomplete row, so parents
+  // can disable submit while the user is still filling rows in.
+  onIncompleteChange?: (hasIncomplete: boolean) => void;
   targetRepo: string;
 };
 
 export function AdditionalReposPicker({
   initialValue,
   onChange,
+  onIncompleteChange,
   targetRepo,
 }: AdditionalReposPickerProps) {
   // Internal rows include repoId for Select binding; projected to AdditionalRepoRef[] for parent
@@ -125,7 +131,7 @@ export function AdditionalReposPicker({
       r.id === id ? { ...r, repoId, fullName, branch: "" } : r
     );
     setRows(next);
-    projectToParent(next, onChange);
+    projectToParent(next, onChange, onIncompleteChange);
   };
 
   // Resolves repoId without resetting branch — used when reconciling initialValue rows.
@@ -137,13 +143,13 @@ export function AdditionalReposPicker({
   const handleBranchChange = (id: string, branch: string) => {
     const next = rows.map((r) => (r.id === id ? { ...r, branch } : r));
     setRows(next);
-    projectToParent(next, onChange);
+    projectToParent(next, onChange, onIncompleteChange);
   };
 
   const handleRemove = (id: string) => {
     const next = rows.filter((r) => r.id !== id);
     setRows(next);
-    projectToParent(next, onChange);
+    projectToParent(next, onChange, onIncompleteChange);
   };
 
   const handleAdd = () => {
@@ -155,7 +161,7 @@ export function AdditionalReposPicker({
       { id: crypto.randomUUID(), repoId: "", fullName: "", branch: "" },
     ];
     setRows(next);
-    projectToParent(next, onChange);
+    projectToParent(next, onChange, onIncompleteChange);
   };
 
   return (
@@ -196,10 +202,21 @@ export function AdditionalReposPicker({
   );
 }
 
-// Project AdditionalRepoRow[] → AdditionalRepoRef[] (omit id and repoId)
+function isRowComplete(row: AdditionalRepoRow): boolean {
+  return row.fullName.length > 0 && row.branch.length > 0;
+}
+
+// Project AdditionalRepoRow[] → AdditionalRepoRef[] (omit id and repoId).
+// Placeholder rows (missing fullName or branch) are filtered out so parents
+// never see an invalid { fullName: "", branch: "" } payload in their state.
+// Incompleteness is reported separately via onIncompleteChange so parents
+// can disable submit while the user is still filling rows in.
 function projectToParent(
   rows: AdditionalRepoRow[],
-  onChange: (repos: AdditionalRepoRef[]) => void
+  onChange: (repos: AdditionalRepoRef[]) => void,
+  onIncompleteChange?: (hasIncomplete: boolean) => void
 ) {
-  onChange(rows.map(({ fullName, branch }) => ({ fullName, branch })));
+  const completeRows = rows.filter(isRowComplete);
+  onChange(completeRows.map(({ fullName, branch }) => ({ fullName, branch })));
+  onIncompleteChange?.(completeRows.length !== rows.length);
 }

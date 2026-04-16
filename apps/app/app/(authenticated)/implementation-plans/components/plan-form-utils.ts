@@ -60,5 +60,10 @@ export function useModalOpenState(
 export function normalizeAdditionalRepos(
   repos: AdditionalRepoRef[]
 ): AdditionalRepoRef[] | undefined {
-  return repos.length > 0 ? repos : undefined;
+  // Defensive filter: callers should already drop placeholder rows, but
+  // guard against accidental submission of { fullName: "", branch: "" }.
+  const complete = repos.filter(
+    ({ fullName, branch }) => fullName.length > 0 && branch.length > 0
+  );
+  return complete.length > 0 ? complete : undefined;
 }
