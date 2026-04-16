@@ -134,6 +134,7 @@ export function BranchesSection({
         featureId={featureId}
         onOpenChange={setShowSelectPr}
         open={showSelectPr}
+        planId={planId}
         projectId={projectId}
       />
     </div>
