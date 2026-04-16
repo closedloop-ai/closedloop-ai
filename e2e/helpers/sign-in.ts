@@ -10,7 +10,7 @@ export async function performSignIn(
   await page.goto("/sign-in");
   await page.getByLabel("Email address").fill(email);
   await page.getByRole("button", { name: CONTINUE_BUTTON }).click();
-  await page.getByLabel("Password").fill(password);
+  await page.locator("#password-field").fill(password);
   await page.getByRole("button", { name: CONTINUE_BUTTON }).click();
 }
 

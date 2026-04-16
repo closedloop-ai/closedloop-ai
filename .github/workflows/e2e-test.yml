@@ -4,13 +4,19 @@ on:
   deployment_status: {}
   workflow_dispatch:
     inputs:
+      deployment_url:
+        description: "Preview URL to test against (leave empty to auto-resolve via Vercel API)"
+        required: false
+        type: string
       ref:
         description: "Branch name or SHA to test"
         required: false
         type: string
 
 concurrency:
-  group: "${{ github.workflow }}-${{ github.event.deployment.ref || github.ref }}"
+  # Include environment to prevent api-stage/web-stage deployment_status events
+  # from cancelling the app-stage run (all three fire near-simultaneously).
+  group: "${{ github.workflow }}-${{ github.event.deployment.environment || github.ref }}"
   cancel-in-progress: true
 
 jobs:
@@ -25,7 +31,7 @@ jobs:
       (
         github.event.deployment_status.state == 'success' &&
         github.event.deployment.environment != 'Production' &&
-        contains(github.event.deployment_status.environment_url, '-app-') &&
+        contains(github.event.deployment_status.environment_url, 'app-stage') &&
         github.event.deployment_status.creator.type == 'Bot' &&
         github.event.deployment_status.creator.login == 'vercel[bot]'
       )
@@ -74,17 +80,20 @@ jobs:
         run: |
           if [ "$TRIGGER" = "deployment_status" ]; then
             PREVIEW_URL="$DEPLOYMENT_URL"
+          elif [ -n "$INPUT_DEPLOY_URL" ]; then
+            # workflow_dispatch with explicit URL — skip Vercel API lookup
+            PREVIEW_URL="$INPUT_DEPLOY_URL"
           else
-            # workflow_dispatch: poll Vercel API for the preview deployment URL
-            # VERCEL_TOKEN: use a read-only Vercel API token scoped to deployment reads, not a full team token.
+            # workflow_dispatch without URL — poll Vercel API for the preview deployment
             node scripts/deploy/check-vercel.mjs
             PREVIEW_URL=$(jq -r '.deployments[0].url' vercel-status.json)
           fi
           if [ -z "$PREVIEW_URL" ] || [ "$PREVIEW_URL" = "null" ]; then
-            echo "::error::No preview URL resolved (check Vercel deployment status or check-vercel.mjs output)"
+            echo "::error::No preview URL resolved. Either pass deployment_url input or configure VERCEL_APP_PROJECT_ID secret."
             exit 1
           fi
-          if ! echo "$PREVIEW_URL" | grep -qE '^https://[a-z0-9-]+-closedloop\.vercel\.app(/.*)?$'; then
+          ALLOWLIST='^https://(app\.closedloop-stage\.ai|app-stage-[a-z0-9-]+\.preview\.closedloop-stage\.ai)(/.*)?$'
+          if ! echo "$PREVIEW_URL" | grep -qE "$ALLOWLIST"; then
             echo "::error::Unexpected preview URL pattern: $PREVIEW_URL"
             exit 1
           fi
@@ -92,6 +101,7 @@ jobs:
         env:
           TRIGGER: ${{ github.event_name }}
           DEPLOYMENT_URL: ${{ github.event.deployment_status.environment_url }}
+          INPUT_DEPLOY_URL: ${{ inputs.deployment_url }}
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_PROJECT_IDS: ${{ secrets.VERCEL_APP_PROJECT_ID }}
           VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
@@ -104,8 +114,11 @@ jobs:
         run: pnpm exec playwright test
         env:
           CI: "true"
+          PLAYWRIGHT_FORCE_TTY: "0"
           BASE_URL: ${{ env.BASE_URL }}
-          CLERK_TESTING_TOKEN: ${{ secrets.CLERK_TESTING_TOKEN }}
+          NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${{ secrets.STAGING_NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
+          CLERK_SECRET_KEY: ${{ secrets.STAGING_CLERK_SECRET_KEY }}
+          CLERK_TESTING_DEBUG: "true"
           DEVOPS_CLOSEDLOOP_APP_PWD: ${{ secrets.DEVOPS_CLOSEDLOOP_APP_PWD }}
 
       - name: Upload test failure artifacts
