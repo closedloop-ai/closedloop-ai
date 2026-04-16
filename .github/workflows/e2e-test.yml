@@ -1,11 +1,12 @@
 name: E2E Tests
 
 on:
-  deployment_status: {}
+  pull_request:
+    types: [opened, synchronize, reopened]
   workflow_dispatch:
     inputs:
       deployment_url:
-        description: "Preview URL to test against (leave empty to auto-resolve via Vercel API)"
+        description: "Preview URL to test against (leave empty to auto-resolve for the current branch)"
         required: false
         type: string
       ref:
@@ -14,9 +15,7 @@ on:
         type: string
 
 concurrency:
-  # Include environment to prevent api-stage/web-stage deployment_status events
-  # from cancelling the app-stage run (all three fire near-simultaneously).
-  group: "${{ github.workflow }}-${{ github.event.deployment.environment || github.ref }}"
+  group: "${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}"
   cancel-in-progress: true
 
 jobs:
@@ -26,21 +25,90 @@ jobs:
     permissions:
       contents: read
       deployments: read
-    if: >
-      github.event_name == 'workflow_dispatch' ||
-      (
-        github.event.deployment_status.state == 'success' &&
-        github.event.deployment.environment != 'Production' &&
-        contains(github.event.deployment_status.environment_url, 'app-stage') &&
-        github.event.deployment_status.creator.type == 'Bot' &&
-        github.event.deployment_status.creator.login == 'vercel[bot]'
-      )
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
-          ref: "${{ github.event_name == 'deployment_status' && github.event.deployment.sha || github.event.inputs.ref || github.ref }}"
+          ref: "${{ github.event.pull_request.head.sha || github.event.inputs.ref || github.ref }}"
+
+      - name: Wait for Vercel app-stage preview deployment
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.deployment_url == ''
+        id: wait
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const sha = context.payload.pull_request?.head?.sha
+              || context.payload.workflow_dispatch?.inputs?.ref
+              || context.sha;
+            const MAX_ATTEMPTS = 60;      // 60 * 10s = 10 minutes
+            const DELAY_MS = 10_000;
+            const ALLOWLIST =
+              /^https:\/\/(app\.closedloop-stage\.ai|app-stage-[a-z0-9-]+\.preview\.closedloop-stage\.ai)(\/.*)?$/;
+
+            for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+              const { data: deployments } = await github.rest.repos.listDeployments({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                sha,
+                per_page: 30,
+              });
+
+              const appStage = deployments.find(
+                (d) =>
+                  typeof d.environment === "string" &&
+                  d.environment.toLowerCase().includes("app-stage") &&
+                  d.creator?.login === "vercel[bot]"
+              );
+
+              if (appStage) {
+                const { data: statuses } =
+                  await github.rest.repos.listDeploymentStatuses({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    deployment_id: appStage.id,
+                  });
+                const latest = statuses[0];
+                if (latest?.state === "success" && latest.environment_url) {
+                  if (!ALLOWLIST.test(latest.environment_url)) {
+                    core.setFailed(
+                      `Unexpected preview URL pattern: ${latest.environment_url}`
+                    );
+                    return;
+                  }
+                  core.info(`✓ app-stage preview ready: ${latest.environment_url}`);
+                  core.setOutput("url", latest.environment_url);
+                  return;
+                }
+                if (latest?.state === "failure" || latest?.state === "error") {
+                  core.setFailed(`Preview deployment ${latest.state}`);
+                  return;
+                }
+              }
+
+              core.info(
+                `Waiting for app-stage preview (attempt ${attempt}/${MAX_ATTEMPTS})...`
+              );
+              await new Promise((r) => setTimeout(r, DELAY_MS));
+            }
+
+            core.setFailed("Timed out waiting for app-stage preview deployment");
+
+      - name: Resolve BASE_URL
+        id: base-url
+        run: |
+          if [ -n "$INPUT_DEPLOY_URL" ]; then
+            BASE_URL="$INPUT_DEPLOY_URL"
+          else
+            BASE_URL="$WAIT_URL"
+          fi
+          if [ -z "$BASE_URL" ]; then
+            echo "::error::Failed to resolve a preview URL"
+            exit 1
+          fi
+          echo "url=$BASE_URL" >> "$GITHUB_OUTPUT"
+        env:
+          INPUT_DEPLOY_URL: ${{ inputs.deployment_url }}
+          WAIT_URL: ${{ steps.wait.outputs.url }}
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v5
@@ -72,49 +140,14 @@ jobs:
         if: steps.playwright-cache.outputs.cache-hit == 'true'
         run: pnpm exec playwright install chromium
 
-      - name: Get checkout SHA
-        id: get-sha
-        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-
-      - name: Resolve preview URL
-        run: |
-          if [ "$TRIGGER" = "deployment_status" ]; then
-            PREVIEW_URL="$DEPLOYMENT_URL"
-          elif [ -n "$INPUT_DEPLOY_URL" ]; then
-            # workflow_dispatch with explicit URL — skip Vercel API lookup
-            PREVIEW_URL="$INPUT_DEPLOY_URL"
-          else
-            # workflow_dispatch without URL — poll Vercel API for the preview deployment
-            node scripts/deploy/check-vercel.mjs
-            PREVIEW_URL=$(jq -r '.deployments[0].url' vercel-status.json)
-          fi
-          if [ -z "$PREVIEW_URL" ] || [ "$PREVIEW_URL" = "null" ]; then
-            echo "::error::No preview URL resolved. Either pass deployment_url input or configure VERCEL_APP_PROJECT_ID secret."
-            exit 1
-          fi
-          ALLOWLIST='^https://(app\.closedloop-stage\.ai|app-stage-[a-z0-9-]+\.preview\.closedloop-stage\.ai)(/.*)?$'
-          if ! echo "$PREVIEW_URL" | grep -qE "$ALLOWLIST"; then
-            echo "::error::Unexpected preview URL pattern: $PREVIEW_URL"
-            exit 1
-          fi
-          echo "BASE_URL=$PREVIEW_URL" >> "$GITHUB_ENV"
-        env:
-          TRIGGER: ${{ github.event_name }}
-          DEPLOYMENT_URL: ${{ github.event.deployment_status.environment_url }}
-          INPUT_DEPLOY_URL: ${{ inputs.deployment_url }}
-          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-          VERCEL_PROJECT_IDS: ${{ secrets.VERCEL_APP_PROJECT_ID }}
-          VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
-          DEPLOY_SHA: ${{ steps.get-sha.outputs.sha }}
-          VERCEL_TARGET: preview
-          VERCEL_TIMEOUT_SECONDS: "300"
-          VERCEL_STATUS_PATH: vercel-status.json
-
       - name: Run E2E tests
         run: pnpm exec playwright test
         env:
           CI: "true"
-          BASE_URL: ${{ env.BASE_URL }}
+          PLAYWRIGHT_FORCE_TTY: "0"
+          BASE_URL: ${{ steps.base-url.outputs.url }}
+          NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${{ secrets.STAGING_NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
+          CLERK_SECRET_KEY: ${{ secrets.STAGING_CLERK_SECRET_KEY }}
           DEVOPS_CLOSEDLOOP_APP_PWD: ${{ secrets.DEVOPS_CLOSEDLOOP_APP_PWD }}
 
       - name: Upload test failure artifacts

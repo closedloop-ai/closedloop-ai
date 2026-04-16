@@ -3,23 +3,23 @@ import { expect, test } from "@playwright/test";
 
 import { performSignIn, requireEnvVar, TEST_EMAIL } from "./helpers/sign-in";
 
-const MY_TASKS_URL = /my-tasks/;
+const POST_LOGIN_URL = /\/(my-tasks|onboarding)/;
 
-test("login flow authenticates and redirects to my-tasks", async ({ page }) => {
+test("new user onboarding — login and reach authenticated page", async ({
+  page,
+}) => {
   const password = requireEnvVar("DEVOPS_CLOSEDLOOP_APP_PWD");
 
   await page.context().clearCookies();
+  // Navigate to the app origin before clearing localStorage (not accessible on about:blank)
+  await page.goto("/");
   await page.evaluate(() => localStorage.clear());
 
-  // In CI against remote environments, sign in with real credentials directly.
-  // Locally, inject the Clerk testing token to bypass bot detection.
-  if (!process.env.CI) {
-    requireEnvVar("CLERK_TESTING_TOKEN");
-    await setupClerkTestingToken({ page });
-  }
+  // Injects the testing token (fetched by clerkSetup in global.setup.ts) to bypass 2FA and bot detection.
+  await setupClerkTestingToken({ page });
 
   await performSignIn(page, TEST_EMAIL, password);
 
-  await expect(page).toHaveURL(MY_TASKS_URL);
+  await expect(page).toHaveURL(POST_LOGIN_URL);
   await expect(page.getByLabel("Email address")).not.toBeVisible();
 });

@@ -15,10 +15,17 @@ export default async function globalSetup() {
     );
   }
 
-  // clerkSetup() configures the Clerk testing SDK for local dev (requires
-  // CLERK_PUBLISHABLE_KEY from .env.local). In CI against remote environments,
-  // the app already has Clerk configured — skip the SDK and sign in with real credentials.
-  if (!process.env.CI) {
-    await clerkSetup();
+  // clerkSetup() fetches a testing token from Clerk's Backend API using the secret key,
+  // then sets CLERK_FAPI and CLERK_TESTING_TOKEN in process.env. These propagate to
+  // worker processes where setupClerkTestingToken() intercepts Clerk API requests to
+  // bypass 2FA and bot detection.
+  await clerkSetup({ debug: true });
+
+  // Verify the token was actually fetched — fail fast instead of hanging on factor-two.
+  if (!process.env.CLERK_TESTING_TOKEN) {
+    throw new Error(
+      "clerkSetup() did not produce a CLERK_TESTING_TOKEN. " +
+        "Verify CLERK_SECRET_KEY and NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY are set correctly."
+    );
   }
 }
