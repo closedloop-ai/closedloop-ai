@@ -4,7 +4,9 @@ import type { AdditionalRepoRef } from "@repo/api/src/types/loop";
 import { MAX_ADDITIONAL_REPOS } from "@repo/api/src/types/loop";
 import { Button } from "@repo/design-system/components/ui/button";
 import { PlusIcon, TrashIcon } from "lucide-react";
+import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
+import { useGitHubIntegrationStatus } from "@/hooks/queries/use-github-integration";
 import { RepoBranchSelector } from "./repo-branch-selector";
 
 // Internal type — repoId is needed for Select value binding but is not part of AdditionalRepoRef
@@ -20,6 +22,9 @@ type RepoRowFieldsProps = {
   index: number;
   targetRepo: string;
   error?: string;
+  reposEnabled: boolean;
+  extraReposLoading: boolean;
+  repoFieldReplacement?: ReactNode;
   onRepoChange: (id: string, repoId: string, fullName: string) => void;
   onRepoIdResolve: (id: string, repoId: string) => void;
   onBranchChange: (id: string, branch: string) => void;
@@ -32,6 +37,9 @@ function RepoRowFields({
   index,
   targetRepo,
   error,
+  reposEnabled,
+  extraReposLoading,
+  repoFieldReplacement,
   onRepoChange,
   onRepoIdResolve,
   onBranchChange,
@@ -55,12 +63,15 @@ function RepoRowFields({
       <RepoBranchSelector
         branchLabel="Branch"
         excludeRepo={targetRepo}
+        extraReposLoading={extraReposLoading}
         onBranchChange={(branch) => onBranchChange(row.id, branch)}
         onRepoChange={(repoId, fullName) =>
           onRepoChange(row.id, repoId, fullName)
         }
         onSeedRepoResolved={(repoId) => onRepoIdResolve(row.id, repoId)}
+        repoFieldReplacement={repoFieldReplacement}
         repoLabel="Repository"
+        reposEnabled={reposEnabled}
         seedFullName={row.fullName}
         selectedBranch={row.branch}
         selectedRepoId={row.repoId}
@@ -86,6 +97,16 @@ export function AdditionalReposPicker({
   onValidChange,
   targetRepo,
 }: AdditionalReposPickerProps) {
+  const { data: githubStatus, isLoading: isLoadingGitHubStatus } =
+    useGitHubIntegrationStatus();
+  const reposEnabled = githubStatus?.connected === true;
+  const repoFieldReplacement =
+    githubStatus?.connected === false ? (
+      <div className="rounded-md border border-muted bg-muted/20 p-3 text-muted-foreground text-sm">
+        Connect GitHub to select a repository
+      </div>
+    ) : undefined;
+
   // Internal rows include repoId for Select binding; projected to AdditionalRepoRef[] for parent
   const [rows, setRows] = useState<AdditionalRepoRow[]>(() =>
     initialValue.map((ref) => ({
@@ -175,12 +196,15 @@ export function AdditionalReposPicker({
       {rows.map((row, index) => (
         <RepoRowFields
           error={rowErrors[row.id]}
+          extraReposLoading={isLoadingGitHubStatus}
           index={index}
           key={row.id}
           onBranchChange={handleBranchChange}
           onRemove={handleRemove}
           onRepoChange={handleRepoChange}
           onRepoIdResolve={handleRepoIdResolve}
+          repoFieldReplacement={repoFieldReplacement}
+          reposEnabled={reposEnabled}
           row={row}
           targetRepo={targetRepo}
         />
