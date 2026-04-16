@@ -61,6 +61,7 @@ import { LinearExportDialog } from "./components/linear-export-dialog";
 import { PlanEditorHeader } from "./components/plan-editor-header";
 import { PlanMetadataBar } from "./components/plan-metadata-bar";
 import { PlanMetadataPanel } from "./components/plan-metadata-panel";
+import { RegeneratePlanModal } from "./components/regenerate-plan-modal";
 
 type PlanEditorProps = {
   plan: ArtifactDetail;
@@ -79,6 +80,7 @@ export function PlanEditor({
   const executionLogDialog = useExecutionLogDialog();
 
   const [showMoveDialog, setShowMoveDialog] = useState(false);
+  const [showRegenerateModal, setShowRegenerateModal] = useState(false);
   const [showComments, setShowComments] = useState(true);
 
   const session = useEditorSession({
@@ -138,10 +140,11 @@ export function PlanEditor({
     useArtifactGenerationStatus(plan.id, { polling: true });
   const dismissGenerationStatus = useDismissArtifactGenerationStatus();
 
-  // Fetch the loop associated with the current generation status to get additionalRepos
-  const { data: loop } = useLoop(generationStatus?.loopId ?? "", {
-    enabled: !!generationStatus?.loopId,
-  });
+  // Fetch additionalRepos from the loop tied to the current generation status.
+  // Returns loading: true while a known loopId is still in flight so the
+  // regenerate modal can block confirmation rather than default to "no repos".
+  const { initialAdditionalRepos, isLoadingInitialAdditionalRepos } =
+    useInitialAdditionalRepos(generationStatus?.loopId);
 
   const { data: pullRequest } = useArtifactPullRequest(plan.id);
   const { data: judgesReport } = usePlanJudgesFeedback(plan.id);
@@ -198,10 +201,6 @@ export function PlanEditor({
     planActions.handleEvaluateCode,
   ]);
 
-  const handleRegenerateWithAdditionalRepos = useCallback(() => {
-    planActions.handleRegenerate(loop?.additionalRepos ?? undefined);
-  }, [planActions.handleRegenerate, loop?.additionalRepos]);
-
   // Create version display component for header
   const versionDisplay = (
     <VersionSelector
@@ -257,7 +256,7 @@ export function PlanEditor({
       onExportMarkdown={actions.handleDownload}
       onExportToLinear={openLinearExportDialog}
       onMove={() => setShowMoveDialog(true)}
-      onRegenerate={handleRegenerateWithAdditionalRepos}
+      onRegenerate={() => setShowRegenerateModal(true)}
       onRequestChanges={openRequestChangesModal}
       onRestoreVersion={contentController.restoreVersion}
       onToggleMetadataPanel={uiState.toggleMetadataPanel}
@@ -343,7 +342,7 @@ export function PlanEditor({
                 {/* Details section */}
                 <div className="border-t px-4 py-4">
                   <PlanMetadataPanel
-                    additionalRepos={loop?.additionalRepos}
+                    additionalRepos={initialAdditionalRepos}
                     codeJudgeItems={codeJudgesReport ?? null}
                     generationStatus={generationStatus ?? null}
                     isPreviewRefreshing={isRefreshingPreviewDeployment}
@@ -448,6 +447,19 @@ export function PlanEditor({
         open={showExecuteModal}
       />
 
+      {/* Regenerate Plan Modal — prompts the user to confirm the additional
+          repos selection before regeneration, avoiding the race where a
+          still-loading useLoop silently drops the repos. */}
+      <RegeneratePlanModal
+        initialAdditionalRepos={initialAdditionalRepos}
+        isLoadingInitialRepos={isLoadingInitialAdditionalRepos}
+        isSubmitting={planActions.isRegenerating}
+        onConfirm={planActions.handleRegenerate}
+        onOpenChange={setShowRegenerateModal}
+        open={showRegenerateModal}
+        targetRepo={plan.targetRepo ?? ""}
+      />
+
       <FloatingTargetPicker
         multiTargetState={planActions.multiTargetState}
         onSelect={planActions.selectTarget}
@@ -491,4 +503,13 @@ function FloatingTargetPicker({
       />
     </div>
   );
+}
+
+function useInitialAdditionalRepos(loopId: string | null | undefined) {
+  const enabled = Boolean(loopId);
+  const { data: loop, isLoading } = useLoop(loopId ?? "", { enabled });
+  return {
+    initialAdditionalRepos: loop?.additionalRepos ?? undefined,
+    isLoadingInitialAdditionalRepos: enabled && isLoading,
+  };
 }
