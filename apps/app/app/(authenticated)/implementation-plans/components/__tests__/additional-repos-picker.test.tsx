@@ -232,16 +232,17 @@ describe("NewPlanModal — feature flag behavior for AdditionalReposPicker", () 
     });
   });
 
-  it("renders AdditionalReposPicker when feature flag returns undefined (fail-open)", async () => {
+  it("does not render AdditionalReposPicker when feature flag returns undefined (default-off)", async () => {
     vi.mocked(useFeatureFlag).mockReturnValue(undefined);
 
     render(<NewPlanModal onOpenChange={vi.fn()} open={true} />);
 
-    // `multiRepoFlag?.enabled !== false` treats undefined as enabled — picker must render
+    // useMultiRepoPlanEnabled uses `=== true`, matching branch-pr / chat
+    // convention — unassigned users do not see the picker during rollout.
     await waitFor(() => {
       expect(
-        screen.getByRole("button", { name: ADD_REPO_REGEX })
-      ).toBeInTheDocument();
+        screen.queryByRole("button", { name: ADD_REPO_REGEX })
+      ).not.toBeInTheDocument();
     });
   });
 });

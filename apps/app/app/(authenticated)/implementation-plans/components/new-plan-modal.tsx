@@ -1,6 +1,5 @@
 "use client";
 
-import { useFeatureFlag } from "@repo/analytics/client";
 import { EntityType } from "@repo/api/src/types/entity-link";
 import type { AdditionalRepoRef } from "@repo/api/src/types/loop";
 import { getProjectSettings } from "@repo/api/src/types/project";
@@ -26,6 +25,7 @@ import {
   useCreateArtifact,
 } from "@/hooks/queries/use-artifacts";
 import { useProject, useProjects } from "@/hooks/queries/use-projects";
+import { useMultiRepoPlanEnabled } from "@/hooks/use-multi-repo-plan-enabled";
 import { AdditionalReposPicker } from "./additional-repos-picker";
 import { PlanPreview, PrdSelector, ProjectSelector } from "./plan-form-fields";
 import {
@@ -77,8 +77,7 @@ export function NewPlanModal({
     controlledOnOpenChange
   );
   const [error, setError] = useState<string | null>(null);
-  const multiRepoFlag = useFeatureFlag("multi-repo-plan");
-  const showPicker = multiRepoFlag?.enabled !== false;
+  const showPicker = useMultiRepoPlanEnabled();
 
   // Form state
   const [selectedSourceId, setSelectedSourceId] = useState(source?.id ?? "");
