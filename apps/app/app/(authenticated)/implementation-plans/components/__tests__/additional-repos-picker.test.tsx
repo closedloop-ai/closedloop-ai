@@ -72,17 +72,15 @@ function renderPicker(
   overrides: Partial<Parameters<typeof AdditionalReposPicker>[0]> = {}
 ) {
   const onChange = vi.fn();
-  const onValidChange = vi.fn();
   render(
     <AdditionalReposPicker
       initialValue={[]}
       onChange={onChange}
-      onValidChange={onValidChange}
       targetRepo="org/primary-repo"
       {...overrides}
     />
   );
-  return { onChange, onValidChange };
+  return { onChange };
 }
 
 // ---- Tests ----
@@ -153,20 +151,19 @@ describe("AdditionalReposPicker", () => {
   });
 
   describe("primary-repo conflict validation", () => {
-    it("shows an error and marks invalid when a row's fullName matches targetRepo (case-insensitive)", () => {
-      const { onValidChange } = renderPicker({
+    it("shows an error when a row's fullName matches targetRepo (case-insensitive)", () => {
+      renderPicker({
         initialValue: [{ fullName: "Org/Primary-Repo", branch: "main" }],
         targetRepo: "org/primary-repo",
       });
 
       expect(screen.getByText(PRIMARY_REPO_ERROR_REGEX)).toBeInTheDocument();
-      expect(onValidChange).toHaveBeenCalledWith(false);
     });
   });
 
   describe("duplicate detection", () => {
-    it("shows a duplicate error and marks invalid when two rows select the same repo (case-insensitive)", () => {
-      const { onValidChange } = renderPicker({
+    it("shows a duplicate error when two rows select the same repo (case-insensitive)", () => {
+      renderPicker({
         initialValue: [
           { fullName: "org/shared-repo", branch: "main" },
           { fullName: "Org/Shared-Repo", branch: "develop" },
@@ -175,21 +172,6 @@ describe("AdditionalReposPicker", () => {
       });
 
       expect(screen.getByText(DUPLICATE_REPO_ERROR_REGEX)).toBeInTheDocument();
-      expect(onValidChange).toHaveBeenCalledWith(false);
-    });
-  });
-
-  describe("valid state", () => {
-    it("calls onValidChange with true when all rows are complete and have no conflicts", () => {
-      const { onValidChange } = renderPicker({
-        initialValue: [
-          { fullName: "org/repo-a", branch: "main" },
-          { fullName: "org/repo-b", branch: "develop" },
-        ],
-        targetRepo: "org/primary-repo",
-      });
-
-      expect(onValidChange).toHaveBeenCalledWith(true);
     });
   });
 
@@ -255,7 +237,7 @@ describe("NewPlanModal — feature flag behavior for AdditionalReposPicker", () 
 
     render(<NewPlanModal onOpenChange={vi.fn()} open={true} />);
 
-    // isMultiRepoPickerVisible treats undefined as enabled — picker must render
+    // `multiRepoFlag?.enabled !== false` treats undefined as enabled — picker must render
     await waitFor(() => {
       expect(
         screen.getByRole("button", { name: ADD_REPO_REGEX })

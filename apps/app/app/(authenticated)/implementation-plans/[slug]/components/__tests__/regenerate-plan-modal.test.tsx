@@ -3,10 +3,6 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RegeneratePlanModal } from "../regenerate-plan-modal";
 
-vi.mock("@repo/analytics/client", () => ({
-  useFeatureFlag: vi.fn(() => ({ key: "multi-repo-plan", enabled: true })),
-}));
-
 vi.mock("@/hooks/queries/use-github-integration", () => ({
   useGitHubIntegrationStatus: () => ({
     data: { connected: false },
@@ -19,8 +15,6 @@ vi.mock("@/hooks/queries/use-github-integration", () => ({
 const REGENERATE_BUTTON_REGEX = /regenerate plan/i;
 const CANCEL_BUTTON_REGEX = /cancel/i;
 const LOADING_REGEX = /loading previously selected repositories/i;
-const REPOSITORY_1_REGEX = /repository 1/i;
-const REGENERATE_FROM_SOURCE_REGEX = /regenerate the implementation plan/i;
 
 type RenderOverrides = Partial<Parameters<typeof RegeneratePlanModal>[0]>;
 
@@ -51,15 +45,9 @@ describe("RegeneratePlanModal", () => {
     renderModal({ isLoadingInitialRepos: true });
 
     expect(screen.getByText(LOADING_REGEX)).toBeInTheDocument();
-    const confirmButtons = screen.getAllByRole("button", {
-      name: REGENERATE_BUTTON_REGEX,
-    });
-    // The dialog title also matches; find the actual button
-    const confirmButton = confirmButtons.find(
-      (btn) => btn.tagName === "BUTTON"
-    );
-    expect(confirmButton).toBeDefined();
-    expect(confirmButton).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: REGENERATE_BUTTON_REGEX })
+    ).toBeDisabled();
   });
 
   it("calls onConfirm with the previously saved repos on confirm", () => {
@@ -71,13 +59,9 @@ describe("RegeneratePlanModal", () => {
       initialAdditionalRepos: initial,
     });
 
-    const confirmButtons = screen.getAllByRole("button", {
-      name: REGENERATE_BUTTON_REGEX,
-    });
-    const confirmButton = confirmButtons.find(
-      (btn) => btn.tagName === "BUTTON"
+    fireEvent.click(
+      screen.getByRole("button", { name: REGENERATE_BUTTON_REGEX })
     );
-    fireEvent.click(confirmButton as HTMLButtonElement);
 
     expect(onConfirm).toHaveBeenCalledWith(initial);
     expect(onOpenChange).toHaveBeenCalledWith(false);
@@ -86,13 +70,9 @@ describe("RegeneratePlanModal", () => {
   it("calls onConfirm with undefined when no repos are selected", () => {
     const { onConfirm } = renderModal({ initialAdditionalRepos: [] });
 
-    const confirmButtons = screen.getAllByRole("button", {
-      name: REGENERATE_BUTTON_REGEX,
-    });
-    const confirmButton = confirmButtons.find(
-      (btn) => btn.tagName === "BUTTON"
+    fireEvent.click(
+      screen.getByRole("button", { name: REGENERATE_BUTTON_REGEX })
     );
-    fireEvent.click(confirmButton as HTMLButtonElement);
 
     expect(onConfirm).toHaveBeenCalledWith(undefined);
   });
@@ -104,23 +84,5 @@ describe("RegeneratePlanModal", () => {
 
     expect(onConfirm).not.toHaveBeenCalled();
     expect(onOpenChange).toHaveBeenCalledWith(false);
-  });
-
-  it("omits the picker when the multi-repo-plan feature flag is disabled", async () => {
-    const analytics = await import("@repo/analytics/client");
-    const mocked = vi.mocked(analytics.useFeatureFlag);
-    mocked.mockReturnValueOnce({
-      key: "multi-repo-plan",
-      enabled: false,
-      variant: undefined,
-      payload: undefined,
-    });
-
-    renderModal({
-      initialAdditionalRepos: [{ fullName: "org/repo-one", branch: "main" }],
-    });
-
-    expect(screen.queryByText(REPOSITORY_1_REGEX)).toBeNull();
-    expect(screen.getByText(REGENERATE_FROM_SOURCE_REGEX)).toBeInTheDocument();
   });
 });

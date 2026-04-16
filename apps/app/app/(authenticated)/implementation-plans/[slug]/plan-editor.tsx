@@ -77,6 +77,8 @@ export function PlanEditor({
   showHeader = true,
 }: Readonly<PlanEditorProps>) {
   const chatFlag = useFeatureFlag("interactive-chat");
+  const multiRepoFlag = useFeatureFlag("multi-repo-plan");
+  const multiRepoEnabled = multiRepoFlag?.enabled !== false;
   const executionLogDialog = useExecutionLogDialog();
 
   const [showMoveDialog, setShowMoveDialog] = useState(false);
@@ -256,7 +258,13 @@ export function PlanEditor({
       onExportMarkdown={actions.handleDownload}
       onExportToLinear={openLinearExportDialog}
       onMove={() => setShowMoveDialog(true)}
-      onRegenerate={() => setShowRegenerateModal(true)}
+      onRegenerate={() => {
+        if (multiRepoEnabled) {
+          setShowRegenerateModal(true);
+        } else {
+          planActions.handleRegenerate(undefined);
+        }
+      }}
       onRequestChanges={openRequestChangesModal}
       onRestoreVersion={contentController.restoreVersion}
       onToggleMetadataPanel={uiState.toggleMetadataPanel}
@@ -449,16 +457,20 @@ export function PlanEditor({
 
       {/* Regenerate Plan Modal — prompts the user to confirm the additional
           repos selection before regeneration, avoiding the race where a
-          still-loading useLoop silently drops the repos. */}
-      <RegeneratePlanModal
-        initialAdditionalRepos={initialAdditionalRepos}
-        isLoadingInitialRepos={isLoadingInitialAdditionalRepos}
-        isSubmitting={planActions.isRegenerating}
-        onConfirm={planActions.handleRegenerate}
-        onOpenChange={setShowRegenerateModal}
-        open={showRegenerateModal}
-        targetRepo={plan.targetRepo ?? ""}
-      />
+          still-loading useLoop silently drops the repos. Only mounted when the
+          multi-repo flag is on; otherwise onRegenerate calls handleRegenerate
+          directly. */}
+      {multiRepoEnabled && (
+        <RegeneratePlanModal
+          initialAdditionalRepos={initialAdditionalRepos}
+          isLoadingInitialRepos={isLoadingInitialAdditionalRepos}
+          isSubmitting={planActions.isRegenerating}
+          onConfirm={planActions.handleRegenerate}
+          onOpenChange={setShowRegenerateModal}
+          open={showRegenerateModal}
+          targetRepo={plan.targetRepo ?? ""}
+        />
+      )}
 
       <FloatingTargetPicker
         multiTargetState={planActions.multiTargetState}

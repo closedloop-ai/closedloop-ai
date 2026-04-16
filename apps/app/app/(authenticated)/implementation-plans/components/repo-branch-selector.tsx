@@ -13,6 +13,7 @@ import { useEffect, useMemo } from "react";
 import { GitHubRepositoryOptionLabel } from "@/components/github-repository-option-label";
 import {
   useGitHubBranches,
+  useGitHubIntegrationStatus,
   useGitHubRepositories,
 } from "@/hooks/queries/use-github-integration";
 import { sortRepositoriesByActivity } from "@/lib/sort-utils";
@@ -26,10 +27,6 @@ type RepoBranchSelectorProps = {
   branchLabel: ReactNode;
   repoInputId?: string;
   branchInputId?: string;
-  // Default: true. Set to false to skip fetching repositories (e.g. when GitHub is not connected).
-  reposEnabled?: boolean;
-  // OR'd with the internal repositories-loading state to drive the disabled/placeholder on the repo Select.
-  extraReposLoading?: boolean;
   // When set, filters this repo fullName out of the dropdown options (case-insensitive).
   excludeRepo?: string;
   // Rendered inside the repo Select trigger when no selected repo is resolved yet.
@@ -38,9 +35,6 @@ type RepoBranchSelectorProps = {
   // Does not touch the branch.
   seedFullName?: string;
   onSeedRepoResolved?: (repoId: string) => void;
-  // When provided, replaces the repo Select widget (the Label still renders above).
-  // Used for states like "GitHub not connected" where no dropdown is shown.
-  repoFieldReplacement?: ReactNode;
 };
 
 export function RepoBranchSelector({
@@ -52,16 +46,16 @@ export function RepoBranchSelector({
   branchLabel,
   repoInputId,
   branchInputId,
-  reposEnabled = true,
-  extraReposLoading = false,
   excludeRepo,
   repoTriggerFallback,
   seedFullName,
   onSeedRepoResolved,
-  repoFieldReplacement,
 }: RepoBranchSelectorProps) {
+  const { data: githubStatus, isLoading: isLoadingGitHubStatus } =
+    useGitHubIntegrationStatus();
+  const isConnected = githubStatus?.connected === true;
   const { data: repositories, isLoading: isLoadingRepos } =
-    useGitHubRepositories({ enabled: reposEnabled });
+    useGitHubRepositories({ enabled: isConnected });
   const { data: branchesData, isLoading: isLoadingBranches } =
     useGitHubBranches(selectedRepoId, { enabled: !!selectedRepoId });
 
@@ -80,12 +74,9 @@ export function RepoBranchSelector({
     );
   }, [sortedRepositories, excludeRepo]);
 
-  // Resolve repoId from a seeded fullName once repositories load. Uses a
-  // dedicated callback so the pre-existing branch selection is preserved.
-  // Case-insensitive to match the rest of the picker (availableRepositories
-  // filter, additional-repos-picker duplicate detection) — seedFullName
-  // originates from stored loop data whose casing may drift from GitHub's
-  // current canonical casing.
+  // Resolve repoId from a seeded fullName once repositories load. Case-insensitive
+  // because seedFullName originates from stored loop data whose casing may drift
+  // from GitHub's current canonical casing.
   useEffect(() => {
     if (seedFullName && !selectedRepoId && repositories && onSeedRepoResolved) {
       const target = seedFullName.toLowerCase();
@@ -127,13 +118,18 @@ export function RepoBranchSelector({
 
   const selectedRepository = repositories?.find((r) => r.id === selectedRepoId);
 
-  const isReposBusy = extraReposLoading || isLoadingRepos;
+  const isReposBusy = isLoadingGitHubStatus || isLoadingRepos;
+  const isDisconnected = githubStatus?.connected === false;
 
   return (
     <>
       <div className="space-y-2">
         <Label htmlFor={repoInputId}>{repoLabel}</Label>
-        {repoFieldReplacement ?? (
+        {isDisconnected ? (
+          <div className="rounded-md border border-muted bg-muted/20 p-3 text-muted-foreground text-sm">
+            Connect GitHub to select a repository
+          </div>
+        ) : (
           <Select
             disabled={isReposBusy}
             onValueChange={handleRepoSelect}
