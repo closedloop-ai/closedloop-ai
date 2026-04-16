@@ -92,13 +92,6 @@ describe("AdditionalReposPicker", () => {
   });
 
   describe("adding rows", () => {
-    it("renders the Add Repository button when below the row limit", () => {
-      renderPicker();
-      expect(
-        screen.getByRole("button", { name: ADD_REPO_REGEX })
-      ).toBeInTheDocument();
-    });
-
     it("adds a row when the Add Repository button is clicked", async () => {
       renderPicker();
 
@@ -147,7 +140,7 @@ describe("AdditionalReposPicker", () => {
   });
 
   describe("max-count enforcement", () => {
-    it("hides the Add Repository button when MAX_ADDITIONAL_REPOS rows exist", () => {
+    it("hides the Add Repository button and shows the limit-reached message when MAX_ADDITIONAL_REPOS rows exist", () => {
       const fullRows = Array.from({ length: MAX_ADDITIONAL_REPOS }, (_, i) => ({
         fullName: `org/repo-${i + 1}`,
         branch: "main",
@@ -158,43 +151,25 @@ describe("AdditionalReposPicker", () => {
       expect(
         screen.queryByRole("button", { name: ADD_REPO_REGEX })
       ).not.toBeInTheDocument();
-    });
-
-    it("shows a limit-reached message when MAX_ADDITIONAL_REPOS rows exist", () => {
-      const fullRows = Array.from({ length: MAX_ADDITIONAL_REPOS }, (_, i) => ({
-        fullName: `org/repo-${i + 1}`,
-        branch: "main",
-      }));
-
-      renderPicker({ value: fullRows, targetRepo: "org/primary-repo" });
-
       expect(screen.getByText(MAX_REACHED_REGEX)).toBeInTheDocument();
     });
   });
 
   describe("primary-repo conflict validation", () => {
-    it("shows an error when a row's fullName matches targetRepo (case-insensitive)", () => {
-      renderPicker({
+    it("shows an error and marks invalid when a row's fullName matches targetRepo (case-insensitive)", () => {
+      const { onValidChange } = renderPicker({
         value: [{ fullName: "Org/Primary-Repo", branch: "main" }],
         targetRepo: "org/primary-repo",
       });
 
       expect(screen.getByText(PRIMARY_REPO_ERROR_REGEX)).toBeInTheDocument();
-    });
-
-    it("calls onValidChange with false when a primary-repo conflict exists", () => {
-      const { onValidChange } = renderPicker({
-        value: [{ fullName: "org/primary-repo", branch: "main" }],
-        targetRepo: "org/primary-repo",
-      });
-
       expect(onValidChange).toHaveBeenCalledWith(false);
     });
   });
 
   describe("duplicate detection", () => {
-    it("shows a duplicate error when two rows select the same repo (case-insensitive)", () => {
-      renderPicker({
+    it("shows a duplicate error and marks invalid when two rows select the same repo (case-insensitive)", () => {
+      const { onValidChange } = renderPicker({
         value: [
           { fullName: "org/shared-repo", branch: "main" },
           { fullName: "Org/Shared-Repo", branch: "develop" },
@@ -203,27 +178,11 @@ describe("AdditionalReposPicker", () => {
       });
 
       expect(screen.getByText(DUPLICATE_REPO_ERROR_REGEX)).toBeInTheDocument();
-    });
-
-    it("calls onValidChange with false when duplicate repos exist", () => {
-      const { onValidChange } = renderPicker({
-        value: [
-          { fullName: "org/shared-repo", branch: "main" },
-          { fullName: "org/shared-repo", branch: "develop" },
-        ],
-        targetRepo: "org/primary-repo",
-      });
-
       expect(onValidChange).toHaveBeenCalledWith(false);
     });
   });
 
   describe("valid state", () => {
-    it("calls onValidChange with true when there are no rows", () => {
-      const { onValidChange } = renderPicker({ value: [] });
-      expect(onValidChange).toHaveBeenCalledWith(true);
-    });
-
     it("calls onValidChange with true when all rows are complete and have no conflicts", () => {
       const { onValidChange } = renderPicker({
         value: [

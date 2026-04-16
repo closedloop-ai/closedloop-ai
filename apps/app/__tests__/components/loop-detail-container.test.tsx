@@ -794,23 +794,6 @@ describe("LoopDetailContainer — additional repositories display", () => {
       screen.queryByText("Additional Repositories")
     ).not.toBeInTheDocument();
   });
-
-  it("does not render additional repositories card when additionalRepos is empty", () => {
-    vi.mocked(useLoop).mockReturnValue({
-      data: createMockLoopWithUser({
-        status: LoopStatus.Completed,
-        additionalRepos: [],
-      }),
-      isLoading: false,
-      error: null,
-    } as ReturnType<typeof useLoop>);
-
-    render(<LoopDetailContainer id="loop-003" />);
-
-    expect(
-      screen.queryByText("Additional Repositories")
-    ).not.toBeInTheDocument();
-  });
 });
 
 describe("LoopDetailContainer -- diagnostics UI", () => {

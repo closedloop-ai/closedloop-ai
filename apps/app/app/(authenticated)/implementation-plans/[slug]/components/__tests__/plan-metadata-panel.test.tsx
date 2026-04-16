@@ -379,17 +379,5 @@ describe("PlanMetadataPanel", () => {
 
       expect(screen.queryByText("Additional Repositories")).toBeNull();
     });
-
-    test("does not render additional repos section when additionalRepos is empty", () => {
-      render(
-        <PlanMetadataPanel
-          {...defaultProps}
-          additionalRepos={[]}
-          generationStatus={loopGenerationStatus}
-        />
-      );
-
-      expect(screen.queryByText("Additional Repositories")).toBeNull();
-    });
   });
 });

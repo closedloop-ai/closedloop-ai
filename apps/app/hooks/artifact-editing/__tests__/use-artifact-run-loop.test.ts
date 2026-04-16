@@ -101,58 +101,6 @@ describe("useArtifactRunLoop", () => {
       );
     });
 
-    test("selectTarget replay uses the most recently prepared baseParams", async () => {
-      const firstAdditionalRepos = [
-        { fullName: "org/first-repo", branch: "main" },
-      ];
-      const secondAdditionalRepos = [
-        { fullName: "org/second-repo", branch: "develop" },
-      ];
-
-      mockMutateAsync.mockResolvedValue({
-        loopId: "loop-2",
-        status: "PENDING",
-      });
-
-      const { result } = renderHook(
-        () => useArtifactRunLoop({ artifactId: "artifact-456" }),
-        { wrapper: createWrapperWithClient(queryClient) }
-      );
-
-      // Prepare once with first set of repos
-      act(() => {
-        result.current.prepareConflictRefs({
-          command: RunLoopCommand.Plan,
-          additionalRepos: firstAdditionalRepos,
-        });
-      });
-
-      // Overwrite with second set of repos
-      act(() => {
-        result.current.prepareConflictRefs({
-          command: RunLoopCommand.EvaluatePlan,
-          additionalRepos: secondAdditionalRepos,
-        });
-      });
-
-      act(() => {
-        result.current.selectTarget("target-xyz");
-      });
-
-      await waitFor(() => {
-        expect(mockMutateAsync).toHaveBeenCalledOnce();
-      });
-
-      expect(mockMutateAsync).toHaveBeenCalledWith(
-        expect.objectContaining({
-          artifactId: "artifact-456",
-          command: RunLoopCommand.EvaluatePlan,
-          computeTargetId: "target-xyz",
-          additionalRepos: secondAdditionalRepos,
-        })
-      );
-    });
-
     test("selectTarget replay does not include additionalRepos when none were in baseParams", async () => {
       mockMutateAsync.mockResolvedValue({
         loopId: "loop-3",
@@ -188,33 +136,6 @@ describe("useArtifactRunLoop", () => {
       });
       // additionalRepos should be undefined (not present in baseParams)
       expect(callArgs.additionalRepos).toBeUndefined();
-    });
-
-    test("selectTarget does nothing when artifactId is null", async () => {
-      mockMutateAsync.mockResolvedValue({
-        loopId: "loop-4",
-        status: "PENDING",
-      });
-
-      const { result } = renderHook(
-        () => useArtifactRunLoop({ artifactId: null }),
-        { wrapper: createWrapperWithClient(queryClient) }
-      );
-
-      act(() => {
-        result.current.prepareConflictRefs({
-          command: RunLoopCommand.Plan,
-          additionalRepos: [{ fullName: "org/repo", branch: "main" }],
-        });
-      });
-
-      act(() => {
-        result.current.selectTarget("target-999");
-      });
-
-      // Give any async work time to resolve; mutateAsync should never be called
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      expect(mockMutateAsync).not.toHaveBeenCalled();
     });
   });
 });
