@@ -16,7 +16,13 @@ import { GitHubPRState } from "@repo/api/src/types/github";
 import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
 import { toast } from "@repo/design-system/components/ui/sonner";
-import { GitBranchIcon, GitMergeIcon, PlayIcon, PlusIcon } from "lucide-react";
+import {
+  GitBranchIcon,
+  GitMergeIcon,
+  GitPullRequestIcon,
+  PlayIcon,
+  PlusIcon,
+} from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
 import { GenerationStatusIndicator } from "@/components/generation-status-indicator";
@@ -146,7 +152,7 @@ type BranchRowProps = {
   onUnlink: (linkId: string) => void;
 };
 
-function BranchRow({ linked, onUnlink }: Readonly<BranchRowProps>) {
+export function BranchRow({ linked, onUnlink }: Readonly<BranchRowProps>) {
   const resolved = linked.resolvedEntity;
   if (resolved?.type !== EntityType.ExternalLink) {
     return null;
@@ -177,13 +183,49 @@ function BranchRow({ linked, onUnlink }: Readonly<BranchRowProps>) {
 }
 
 function PrStateIcon({ state }: Readonly<{ state: GitHubPRState | null }>) {
-  if (state === GitHubPRState.Merged) {
-    return <GitMergeIcon className="h-4 w-4 shrink-0 text-muted-foreground" />;
+  if (state === null) {
+    return (
+      <GitPullRequestIcon
+        className="h-4 w-4 shrink-0 text-gray-400 dark:text-gray-600"
+        data-testid="pr-state-icon-unknown"
+      />
+    );
   }
-  return <GitBranchIcon className="h-4 w-4 shrink-0 text-muted-foreground" />;
+  if (state === GitHubPRState.Merged) {
+    return (
+      <GitMergeIcon
+        className="h-4 w-4 shrink-0 text-muted-foreground"
+        data-testid="pr-state-icon-merged"
+      />
+    );
+  }
+  if (state === GitHubPRState.Closed) {
+    return (
+      <GitBranchIcon
+        className="h-4 w-4 shrink-0 text-muted-foreground"
+        data-testid="pr-state-icon-closed"
+      />
+    );
+  }
+  return (
+    <GitBranchIcon
+      className="h-4 w-4 shrink-0 text-muted-foreground"
+      data-testid="pr-state-icon-open"
+    />
+  );
 }
 
 function PrStateBadge({ state }: Readonly<{ state: GitHubPRState | null }>) {
+  if (state === null) {
+    return (
+      <Badge
+        className="border-gray-200 bg-gray-50 text-gray-500 dark:border-gray-700 dark:bg-gray-900/30 dark:text-gray-400"
+        variant="outline"
+      >
+        Unknown
+      </Badge>
+    );
+  }
   if (state === GitHubPRState.Merged) {
     return (
       <Badge
