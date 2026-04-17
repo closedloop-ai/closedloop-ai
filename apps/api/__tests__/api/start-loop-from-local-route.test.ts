@@ -1,0 +1,119 @@
+import { vi } from "vitest";
+
+let mockAuthContext: import("@/lib/auth/with-auth").AuthContext;
+
+vi.mock("@/lib/auth/with-any-auth", () => ({
+  withAnyAuth: (handler: any) => async (request: any, context: any) =>
+    handler(mockAuthContext, request, context?.params),
+}));
+
+vi.mock("@repo/observability/log", () => ({
+  log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+}));
+
+vi.mock("@/app/documents/service", async (importOriginal) => {
+  const original =
+    await importOriginal<typeof import("@/app/documents/service")>();
+  return {
+    ...original,
+    documentsService: {
+      ...original.documentsService,
+      startPlanLoopFromLocal: vi.fn(),
+    },
+  };
+});
+
+vi.mock("@/lib/loops/launch-plan-loop", async (importOriginal) => {
+  const original =
+    await importOriginal<typeof import("@/lib/loops/launch-plan-loop")>();
+  return {
+    ...original,
+    launchPlanLoop: vi.fn(),
+  };
+});
+
+import { beforeEach, describe, expect, it } from "vitest";
+import { documentsService } from "@/app/documents/service";
+import { POST } from "@/app/plans/start-loop-from-local/route";
+import { launchPlanLoop } from "@/lib/loops/launch-plan-loop";
+import {
+  createMockRequest,
+  createMockRouteContext,
+  createTestAuthContext,
+} from "../utils/auth-helpers";
+
+const requestBody = {
+  featureId: "11111111-1111-4111-8111-111111111111",
+  computeTargetId: "22222222-2222-4222-8222-222222222222",
+  localRepoPath: "/tmp/repo",
+};
+
+const readyToLaunchResult = {
+  outcome: "ready-to-launch",
+  documentId: "33333333-3333-4333-8333-333333333333",
+  documentSlug: "impl-plan",
+  document: {
+    id: "33333333-3333-4333-8333-333333333333",
+    slug: "impl-plan",
+    title: "Implementation plan",
+  },
+} as const;
+
+describe("POST /plans/start-loop-from-local", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockAuthContext = createTestAuthContext({
+      user: { id: "user-1", organizationId: "org-1" } as any,
+    });
+
+    vi.mocked(documentsService.startPlanLoopFromLocal).mockResolvedValue(
+      readyToLaunchResult as any
+    );
+  });
+
+  it("returns a callback-specific actionable message for callback_unavailable failures", async () => {
+    vi.mocked(launchPlanLoop).mockResolvedValue({
+      ok: false,
+      error: "callback_unavailable",
+    });
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        url: "http://localhost:3002/plans/start-loop-from-local",
+        body: requestBody,
+      }),
+      createMockRouteContext({})
+    );
+
+    expect(response.status).toBe(500);
+    const json = await response.json();
+    expect(json.success).toBe(false);
+    expect(json.error).toBe(
+      "Loop dispatch failed because the desktop app could not reach the cloud callback endpoint. Check cloud connection in the desktop app and retry."
+    );
+  });
+
+  it("keeps generic launch_failed messaging unchanged", async () => {
+    vi.mocked(launchPlanLoop).mockResolvedValue({
+      ok: false,
+      error: "launch_failed",
+    });
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        url: "http://localhost:3002/plans/start-loop-from-local",
+        body: requestBody,
+      }),
+      createMockRouteContext({})
+    );
+
+    expect(response.status).toBe(500);
+    const json = await response.json();
+    expect(json.success).toBe(false);
+    expect(json.error).toBe(
+      "Loop dispatch failed. The desktop app may be disconnected."
+    );
+  });
+});

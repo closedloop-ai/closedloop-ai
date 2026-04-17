@@ -123,6 +123,12 @@ export const POST = withAnyAuth<StartPlanLoopResponse>(
         if (launchResult.error === "compute_target_not_found") {
           return notFoundResponse("Compute target");
         }
+        if (launchResult.error === "callback_unavailable") {
+          return errorResponse(
+            "Loop dispatch failed because the desktop app could not reach the cloud callback endpoint. Check cloud connection in the desktop app and retry.",
+            null
+          );
+        }
         if (launchResult.error === "launch_failed") {
           return errorResponse(
             "Loop dispatch failed. The desktop app may be disconnected.",
