@@ -345,6 +345,7 @@ function CaseScoreRow({
       <button
         className="flex w-full items-center justify-between rounded-md border p-3 text-left transition-colors hover:bg-muted/50"
         onClick={() => onToggleScore(isExpanded ? null : score.case_id)}
+        type="button"
       >
         <div className="flex items-center gap-3">
           {renderStatusIcon(inferStatusFromScore(score))}

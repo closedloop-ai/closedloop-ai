@@ -570,6 +570,7 @@ export function DeployedInfo({
             onTeardown(ticketId);
           }}
           title="Stop dev server"
+          type="button"
         >
           <Square className="size-3.5 text-muted-foreground transition-colors hover:text-destructive" />
         </button>
@@ -611,6 +612,7 @@ function TicketCardHeaderActions({
             onToggleStar(ticket.identifier);
           }}
           title={isStarred ? "Remove from Next Up" : "Add to Next Up"}
+          type="button"
         >
           <Star className={cn("size-4", isStarred && "fill-current")} />
         </button>
@@ -623,6 +625,7 @@ function TicketCardHeaderActions({
             onAskClaude(ticket);
           }}
           title="Ask Claude about this ticket"
+          type="button"
         >
           <Sparkles className="size-4" />
         </button>
@@ -666,6 +669,7 @@ export function LearningsIndicator({
         }
       }}
       title={pendingClaudeMdPath}
+      type="button"
     >
       <BookMarked className="size-3" />
       <span className="hidden sm:inline">Learnings</span>

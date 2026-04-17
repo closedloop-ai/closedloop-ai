@@ -244,7 +244,7 @@ function collectIndentedBody(allLines: string[], startIndex: number): string {
     if (
       !next.trim() ||
       /^[-*]\s+\[?[Pp]\d/.exec(next.trim()) ||
-      /^[-*]\s+[❌⚠️ℹ️✓✅🔴🟡🟠🔵🟢]/.exec(next.trim())
+      /^[-*]\s+(?:❌|⚠️|ℹ️|✓|✅|🔴|🟡|🟠|🔵|🟢)/.exec(next.trim())
     ) {
       break;
     }

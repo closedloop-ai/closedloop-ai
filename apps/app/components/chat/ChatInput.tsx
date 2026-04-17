@@ -107,6 +107,7 @@ export function ChatInput({
               )}
               onClick={onStop}
               title="Stop response"
+              type="button"
             >
               <Square className="size-2.5 fill-current" />
             </button>
@@ -121,6 +122,7 @@ export function ChatInput({
               )}
               disabled={!canSend}
               onClick={onSend}
+              type="button"
             >
               <Send className="size-3.5" />
             </button>

@@ -257,6 +257,7 @@ export function RunViewerDialog({
                 className="absolute right-5 bottom-5 z-10 flex size-10 cursor-pointer items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg shadow-primary/25 transition-all duration-200 hover:scale-105 hover:shadow-xl"
                 onClick={() => setChatOpen(true)}
                 title="Chat about this run"
+                type="button"
               >
                 <MessageCircle className="size-5" />
               </button>

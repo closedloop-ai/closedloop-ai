@@ -1,5 +1,5 @@
 import { queryOptions } from "@tanstack/react-query";
-import type { ContentBlock } from "@/components/engineer/chat";
+import type { ContentBlock } from "@/components/chat/types";
 import { queryKeys } from "./keys";
 
 /* ---------- Response types ---------- */

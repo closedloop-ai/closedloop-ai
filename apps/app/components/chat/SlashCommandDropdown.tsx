@@ -30,6 +30,7 @@ export function SlashCommandDropdown({
           )}
           key={cmd.command}
           onClick={() => onSelect(cmd.command)}
+          type="button"
         >
           <span className="font-medium font-mono">{cmd.command}</span>
           <span className="text-[11px] text-muted-foreground">

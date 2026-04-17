@@ -1,5 +1,5 @@
 import type { ChildProcess } from "node:child_process";
-import { formatToolResultContent } from "@/lib/engineer/chat-utils";
+import { formatToolResultContent } from "@/lib/chat/chat-utils";
 
 export type ContentBlock = {
   type: "text" | "tool_use" | "tool_result" | "thinking";

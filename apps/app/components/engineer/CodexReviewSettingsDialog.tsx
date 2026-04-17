@@ -125,6 +125,7 @@ export function CodexReviewSettingsDialog({
                     : "text-muted-foreground hover:text-foreground"
                 )}
                 onClick={() => handleProviderChange("claude")}
+                type="button"
               >
                 Claude
               </button>
@@ -136,6 +137,7 @@ export function CodexReviewSettingsDialog({
                     : "text-muted-foreground hover:text-foreground"
                 )}
                 onClick={() => handleProviderChange("codex")}
+                type="button"
               >
                 Codex
               </button>

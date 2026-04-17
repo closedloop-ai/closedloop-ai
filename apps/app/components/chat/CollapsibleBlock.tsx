@@ -106,6 +106,7 @@ export const CollapsibleBlock = memo(function CollapsibleBlock({
           styles.header
         )}
         onClick={() => onToggle(id)}
+        type="button"
       >
         <span
           className="shrink-0 transition-transform duration-200"

@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReviewConfig } from "@/components/engineer/CodexReviewSettingsDialog";
 import type { MentionState } from "@/components/engineer/FileMentionAutocomplete";
 import { dispatchMentionKeyDown } from "@/components/engineer/FileMentionAutocomplete";
-import type { useChatStream } from "@/hooks/engineer/use-chat-stream";
+import type { useChatStream } from "@/hooks/chat/use-chat-stream";
 import {
   type SlashCommand,
   useSlashCommands,
@@ -18,7 +18,7 @@ import {
   type SuggestedAction,
   sanitizeHistoryForModel,
   stripAssistantProtocol,
-} from "@/lib/engineer/chat-utils";
+} from "@/lib/chat/chat-utils";
 import {
   formatFindingContextForChat,
   formatReviewContextForChat,

@@ -140,6 +140,7 @@ function CompactRow({
       <button
         className="group flex w-full cursor-pointer items-center gap-3 px-4 py-2.5 text-left"
         onClick={onToggle}
+        type="button"
       >
         {/* Category dot */}
         <span className={`size-2 shrink-0 rounded-full ${dotColor}`} />
@@ -386,7 +387,7 @@ function LearningsStats({ patterns }: Readonly<{ patterns: Pattern[] }>) {
             Category Distribution
           </div>
           <div className="flex items-center justify-center">
-            <svg className="size-28" viewBox="0 0 100 100">
+            <svg aria-hidden="true" className="size-28" viewBox="0 0 100 100">
               {donutSegments.map((seg) => (
                 <circle
                   className="transition-all duration-300"
@@ -833,6 +834,7 @@ export function LearningsDialog({
                 }`}
                 key={tab}
                 onClick={() => setActiveTab(tab)}
+                type="button"
               >
                 {tab}
               </button>
@@ -882,6 +884,7 @@ export function LearningsDialog({
                           setActiveCategory(isActive ? null : cat);
                           setExpandedId(null);
                         }}
+                        type="button"
                       >
                         {cat}
                         <span className="ml-1.5 opacity-60">{count}</span>
@@ -895,6 +898,7 @@ export function LearningsDialog({
                         setActiveCategory(null);
                         setExpandedId(null);
                       }}
+                      type="button"
                     >
                       Clear
                     </button>

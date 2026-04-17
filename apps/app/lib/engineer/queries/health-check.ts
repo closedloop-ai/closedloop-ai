@@ -112,20 +112,21 @@ function getMcpCheckResult(
 
     if (availability.error) {
       const installRemediation = getMcpInstallRemediation(expectedMcpUrl);
+      let remediation = "Retry check.";
+      if (availability.error === "Project-local config unsupported") {
+        remediation = installRemediation;
+      } else if (availability.serverName) {
+        remediation = `Retry check. ${availability.serverName} is configured for ${availability.matchedUrl ?? expectedMcpUrl ?? "the expected MCP URL"}`;
+      } else if (expectedMcpUrl) {
+        remediation = `Retry check. If this persists, verify a user/global MCP server pointing to ${expectedMcpUrl} is configured.`;
+      }
       return {
         id,
         label,
         required: false,
         passed: false,
         error: availability.error,
-        remediation:
-          availability.error === "Project-local config unsupported"
-            ? installRemediation
-            : availability.serverName
-              ? `Retry check. ${availability.serverName} is configured for ${availability.matchedUrl ?? expectedMcpUrl ?? "the expected MCP URL"}`
-              : expectedMcpUrl
-                ? `Retry check. If this persists, verify a user/global MCP server pointing to ${expectedMcpUrl} is configured.`
-                : "Retry check.",
+        remediation,
       };
     }
 

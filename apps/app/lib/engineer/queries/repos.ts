@@ -1,5 +1,10 @@
-export type { ReposResponse } from "@/lib/git/repos";
-export { reposOptions } from "@/lib/git/repos";
+import {
+  type ReposResponse as ReposResponseBase,
+  reposOptions as reposOptionsBase,
+} from "@/lib/git/repos";
+
+export type ReposResponse = ReposResponseBase;
+export const reposOptions = reposOptionsBase;
 
 /* ---------- Mutation helpers ---------- */
 

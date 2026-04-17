@@ -295,6 +295,7 @@ export function ActiveTicketCard({
             )}
             onClick={() => openChatTab()}
             title="Chat"
+            type="button"
           >
             <MessageSquare className="size-3.5" />
             {hasUnreadMessages && (
@@ -311,6 +312,7 @@ export function ActiveTicketCard({
               )}
               onClick={() => openChatTab("changes")}
               title="Changes"
+              type="button"
             >
               <GitBranch className="size-3.5" />
             </button>
@@ -325,6 +327,7 @@ export function ActiveTicketCard({
               )}
               onClick={() => openChatTab("comments")}
               title="PR Comments"
+              type="button"
             >
               <MessagesSquare className="size-3.5" />
             </button>
@@ -406,6 +409,7 @@ export function ActiveTicketCard({
           )}
           onClick={() => setIsPlanOpen(true)}
           title="View plan"
+          type="button"
         >
           <span
             className="font-medium text-xs uppercase tracking-wider"
@@ -437,6 +441,7 @@ export function ActiveTicketCard({
             )}
             onClick={() => setIsPlanOpen(false)}
             title="Close plan"
+            type="button"
           >
             <span
               className="font-medium text-xs uppercase tracking-wider"
@@ -572,6 +577,7 @@ function OverflowMenu({
             "hover:border-primary/30 hover:text-primary"
           )}
           title="More actions"
+          type="button"
         >
           <MoreHorizontal className="size-3.5" />
         </button>
@@ -673,6 +679,7 @@ function PlanActionButtons({
           disabled={isApproving || !isStatusLoaded}
           onClick={handleApprove}
           title={isStatusLoaded ? "Approve plan" : "Loading plan status..."}
+          type="button"
         >
           {isApproving ? (
             <Loader2 className="size-3.5 animate-spin" />
@@ -693,6 +700,7 @@ function PlanActionButtons({
         disabled={!(isApproved && onLocalExecute)}
         onClick={onLocalExecute}
         title={executeButtonTitle(isExecuted, isApproved, !!onLocalExecute)}
+        type="button"
       >
         <Play className="size-3.5" />
       </button>

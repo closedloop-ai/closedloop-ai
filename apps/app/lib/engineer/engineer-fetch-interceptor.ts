@@ -106,15 +106,17 @@ function createFetchInterceptor(
   originalFetch: typeof globalThis.fetch
 ): typeof globalThis.fetch {
   return async (input: RequestInfo | URL, init?: RequestInit) => {
-    const request =
-      input instanceof Request
-        ? new Request(input, init)
-        : input instanceof URL
-          ? new Request(input.toString(), init)
-          : new Request(
-              new URL(input, globalThis.location.origin).toString(),
-              init
-            );
+    let request: Request;
+    if (input instanceof Request) {
+      request = new Request(input, init);
+    } else if (input instanceof URL) {
+      request = new Request(input.toString(), init);
+    } else {
+      request = new Request(
+        new URL(input, globalThis.location.origin).toString(),
+        init
+      );
+    }
     const requestUrl = new URL(request.url, globalThis.location.origin);
 
     if (!isGatewayRequest(requestUrl)) {

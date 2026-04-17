@@ -27,6 +27,9 @@ Use Node 20+ with `pnpm`.
 ## Coding Style & Naming Conventions
 TypeScript and ESM are standard across the repo. Formatting and linting are enforced by Biome with Ultracite presets; run `pnpm lint:fix` before opening a PR. Follow the existing 2-space indentation, prefer `type` aliases when practical, and keep `@repo/*` imports ahead of local alias imports. File names are typically kebab-case (`pull-request-status-badge.tsx`), while exported React components and types use PascalCase. In `apps/api`, keep route handlers thin and move business logic into nearby `service.ts` modules.
 
+## Compatibility Guardrail
+Compatibility shims and backward-compatibility code paths (for example legacy namespace adapters, re-export shims, or migration fallbacks) must not be removed without explicit human approval in the current task. If there is no explicit approval, preserve the compatibility layer and raise the cleanup as a separate follow-up.
+
 ## Testing Guidelines
 Vitest is the default test runner across `apps/api`, `apps/app`, `apps/mcp`, `apps/relay`, and several packages. Name tests `*.test.ts` or `*.test.tsx`; place them beside the source or under `__tests__/`. No global coverage percentage is enforced, but new services, parsers, and utilities are expected to ship with focused tests. Use `pnpm test` before pushing, or a package-local command such as `pnpm -C apps/api test` while iterating.
 

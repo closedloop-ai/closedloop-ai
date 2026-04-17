@@ -289,6 +289,7 @@ export function PRCommentsViewer({
                 : "text-muted-foreground hover:text-foreground"
             )}
             onClick={() => setFilter("all")}
+            type="button"
           >
             All ({threads.length})
           </button>
@@ -300,6 +301,7 @@ export function PRCommentsViewer({
                 : "text-muted-foreground hover:text-foreground"
             )}
             onClick={() => setFilter("pending")}
+            type="button"
           >
             Pending ({pendingCount})
           </button>
@@ -311,6 +313,7 @@ export function PRCommentsViewer({
                 : "text-muted-foreground hover:text-foreground"
             )}
             onClick={() => setFilter("resolved")}
+            type="button"
           >
             Resolved ({resolvedCount})
           </button>

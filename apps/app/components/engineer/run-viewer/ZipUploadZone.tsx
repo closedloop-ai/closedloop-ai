@@ -64,7 +64,7 @@ export function ZipUploadZone({
 
   return (
     <div className="flex h-full flex-col items-center justify-center gap-6 p-8">
-      <div
+      <button
         className={`flex w-full max-w-md cursor-pointer flex-col items-center justify-center gap-4 rounded-xl border-2 border-dashed p-12 transition-colors ${
           isDragOver
             ? "border-primary bg-primary/5"
@@ -74,14 +74,7 @@ export function ZipUploadZone({
         onDragLeave={handleDragLeave}
         onDragOver={handleDragOver}
         onDrop={handleDrop}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" || e.key === " ") {
-            e.preventDefault();
-            inputRef.current?.click();
-          }
-        }}
-        role="button"
-        tabIndex={0}
+        type="button"
       >
         <Upload
           className={`size-10 ${isDragOver ? "text-primary" : "text-muted-foreground"}`}
@@ -96,7 +89,7 @@ export function ZipUploadZone({
             or click to browse
           </p>
         </div>
-      </div>
+      </button>
 
       <input
         className="hidden"
