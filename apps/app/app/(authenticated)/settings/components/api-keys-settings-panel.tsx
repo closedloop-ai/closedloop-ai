@@ -357,7 +357,7 @@ function QuickStartGuide() {
         <div className="space-y-2">
           <p className="font-medium text-sm">Claude Code (CLI)</p>
           <pre className="overflow-x-auto rounded-md bg-muted p-3 font-mono text-xs">
-            {`claude mcp add --transport http your-mcp-name ${mcpServerUrl}`}
+            {`claude mcp add --transport http closedloop ${mcpServerUrl}`}
           </pre>
           <p className="text-muted-foreground text-xs">
             Install it at the user/global scope so it is available across
