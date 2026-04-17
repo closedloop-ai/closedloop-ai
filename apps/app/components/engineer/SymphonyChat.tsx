@@ -3575,12 +3575,16 @@ function SymphonyChatInputArea({
     /^\/\S*$/i.test(input);
 
   return (
+    // biome-ignore lint/a11y/noNoninteractiveElementInteractions: Fieldset intentionally acts as the chat image drop zone.
     <fieldset
       aria-label="Message input with image drop zone"
       className={cn(
         "shrink-0 border-border border-t bg-muted/30 transition-all duration-200",
         isDragOver && "bg-primary/5 ring-2 ring-primary/50 ring-inset"
       )}
+      onDragLeave={onDragLeave}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
     >
       {/* Selected context display */}
       {selectedContext && (
@@ -3723,9 +3727,6 @@ function SymphonyChatInputArea({
               needsHighlight && "text-transparent caret-foreground"
             )}
             onChange={onInputChange}
-            onDragLeave={onDragLeave}
-            onDragOver={onDragOver}
-            onDrop={onDrop}
             onKeyDown={onKeyDown}
             onPaste={onPaste}
             placeholder={getInputPlaceholder(activeTab)}

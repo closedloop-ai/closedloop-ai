@@ -132,35 +132,37 @@ function FindingCardButton({
   };
 
   return (
-    <button
-      className={cn(
-        "flex w-full items-start gap-2 p-3 text-left",
-        (hasDetails || chatMode) &&
-          "cursor-pointer rounded-lg transition-colors hover:bg-muted/50"
-      )}
-      onClick={handleClick}
-      type="button"
-    >
-      {!chatMode &&
-        hasDetails &&
-        (isFindingExpanded ? (
-          <ChevronDown className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
-        ) : (
-          <ChevronRight className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
-        ))}
-      <SeverityIcon severity={finding.severity} />
-      <div className="min-w-0 flex-1">
-        <div className="flex min-w-0 items-center gap-1.5">
-          <PriorityBadge priority={displayPriority} />
-          <p className="truncate font-medium text-sm">{title}</p>
-        </div>
-        {finding.file && (
-          <code className="font-mono text-muted-foreground text-xs">
-            {finding.file}
-            {finding.line ? `:${finding.line}` : ""}
-          </code>
+    <div className="flex w-full items-start gap-2 p-3">
+      <button
+        className={cn(
+          "flex min-w-0 flex-1 items-start gap-2 text-left",
+          (hasDetails || chatMode) &&
+            "cursor-pointer rounded-lg transition-colors hover:bg-muted/50"
         )}
-      </div>
+        onClick={handleClick}
+        type="button"
+      >
+        {!chatMode &&
+          hasDetails &&
+          (isFindingExpanded ? (
+            <ChevronDown className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+          ) : (
+            <ChevronRight className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+          ))}
+        <SeverityIcon severity={finding.severity} />
+        <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 items-center gap-1.5">
+            <PriorityBadge priority={displayPriority} />
+            <p className="truncate font-medium text-sm">{title}</p>
+          </div>
+          {finding.file && (
+            <code className="font-mono text-muted-foreground text-xs">
+              {finding.file}
+              {finding.line ? `:${finding.line}` : ""}
+            </code>
+          )}
+        </div>
+      </button>
       <FindingCardActions
         chatMode={chatMode}
         idx={idx}
@@ -168,7 +170,7 @@ function FindingCardButton({
         onOpenChat={onOpenChat}
         onToggleDismiss={onToggleDismiss}
       />
-    </button>
+    </div>
   );
 }
 
