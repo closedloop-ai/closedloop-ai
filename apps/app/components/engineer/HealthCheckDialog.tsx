@@ -22,6 +22,7 @@ import {
   type ReactNode,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -98,7 +99,10 @@ export function HealthCheckDialog({
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
   });
-  const renderableChecks = getRenderableHealthChecks(data, expectedMcpUrl);
+  const renderableChecks = useMemo(
+    () => getRenderableHealthChecks(data, expectedMcpUrl),
+    [data, expectedMcpUrl]
+  );
 
   // Auto-dismiss after all checks are revealed and all required pass
   const allRevealed =
