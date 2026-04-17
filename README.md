@@ -126,7 +126,7 @@ Shared packages imported as `@repo/<package-name>`:
 | **collaboration** | Real-time collaboration via Liveblocks + Yjs |
 | **payments** | Stripe subscription management |
 | **analytics** | PostHog + Google Analytics + Vercel Analytics |
-| **observability** | Error tracking and logging (BetterStack) |
+| [**observability**](./packages/observability/README.md) | Structured logging with agentless Datadog export |
 | **security** | Security headers via Nosecone |
 | **notifications** | In-app notifications via Knock |
 | **feature-flags** | Feature flag management (Vercel Flags + PostHog) |

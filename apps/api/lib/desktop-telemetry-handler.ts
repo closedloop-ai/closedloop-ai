@@ -1,6 +1,7 @@
 import { log } from "@repo/observability/log";
 import { buildTelemetryTraceContext } from "@repo/observability/telemetry/context";
 import { sanitizeDesktopTelemetryDiagnostics } from "@repo/observability/telemetry/emitter";
+import { Origin } from "@repo/observability/telemetry/origin";
 import { desktopTelemetryEventSchema } from "@repo/observability/telemetry/schema";
 
 export type TelemetryEmitInstruction = { event: string; payload: unknown };
@@ -103,32 +104,62 @@ export function handleTelemetryEvent(
     };
   }
 
-  // Sanitize diagnostics (truncates logTail, strips credential lines)
-  const sanitizedDiagnostics = sanitizeDesktopTelemetryDiagnostics(
-    event.diagnostics
-  );
+  try {
+    // Sanitize diagnostics (truncates logTail, strips credential lines)
+    const sanitizedDiagnostics = sanitizeDesktopTelemetryDiagnostics(
+      event.diagnostics
+    );
 
-  // Enrich trace with server-side context via buildTelemetryTraceContext.
-  // pluginVersion comes from hello payload (not DB).
-  // serverVersion and environment come from process env (resolved by the builder).
-  const enrichedTrace = buildTelemetryTraceContext({
-    ...event.trace,
-    pluginVersion: context.pluginVersion,
-    gatewaySessionId: context.gatewaySessionId ?? event.trace.gatewaySessionId,
-  });
+    // Enrich trace with server-side context via buildTelemetryTraceContext.
+    // pluginVersion comes from hello payload (not DB).
+    // serverVersion and environment come from process env (resolved by the builder).
+    const enrichedTrace = buildTelemetryTraceContext({
+      ...event.trace,
+      pluginVersion: context.pluginVersion,
+      gatewaySessionId:
+        context.gatewaySessionId ?? event.trace.gatewaySessionId,
+    });
 
-  log.info("Desktop telemetry event received", {
-    schemaVersion: event.schemaVersion,
-    category: event.category,
-    severity: event.severity,
-    timestamp: event.timestamp,
-    trace: enrichedTrace,
-    ...(sanitizedDiagnostics !== undefined && {
-      diagnostics: sanitizedDiagnostics,
-    }),
-    ...(event.message !== undefined && { message: event.message }),
-    ...(event.errorClass !== undefined && { errorClass: event.errorClass }),
-  });
+    log.info("Desktop telemetry event received", {
+      schemaVersion: event.schemaVersion,
+      category: event.category,
+      severity: event.severity,
+      timestamp: event.timestamp,
+      trace: enrichedTrace,
+      ...(sanitizedDiagnostics !== undefined && {
+        diagnostics: sanitizedDiagnostics,
+      }),
+      ...(event.message !== undefined && { message: event.message }),
+      ...(event.errorClass !== undefined && { errorClass: event.errorClass }),
+      origin: Origin.Desktop,
+    });
+  } catch (error) {
+    const errorClass =
+      error instanceof Error ? error.constructor.name : "UnknownError";
+
+    // Fallback: emit the original event data so the event is never dropped.
+    // Origin is structurally known (the event passed desktop-schema validation);
+    // only trace enrichment failed. The accompanying telemetry.enrichment_failed
+    // warning carries the degradation signal.
+    log.info("Desktop telemetry event received", {
+      schemaVersion: event.schemaVersion,
+      category: event.category,
+      severity: event.severity,
+      timestamp: event.timestamp,
+      trace: event.trace,
+      ...(event.message !== undefined && { message: event.message }),
+      ...(event.errorClass !== undefined && { errorClass: event.errorClass }),
+      origin: Origin.Desktop,
+    });
+
+    // Structured warning — only bounded-cardinality fields, no PII.
+    log.warn("telemetry.enrichment_failed", {
+      commandId: event.trace?.commandId,
+      gatewaySessionId: event.trace?.gatewaySessionId,
+      category: event.category,
+      errorClass,
+    });
+  }
 
   return { ok: true };
 }

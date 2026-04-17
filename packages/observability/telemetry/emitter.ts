@@ -302,6 +302,11 @@ export function buildDesktopTelemetryPayload(
   };
 }
 
+/**
+ * Must NOT be called from apps/api or apps/relay for desktop-forwarded events. Desktop events MUST
+ * flow through handleTelemetryEvent() so origin is enriched to Origin.Desktop; this Path B
+ * stringified-message emitter would leave origin at the server's ORIGIN value.
+ */
 export function emitDesktopTelemetryEvent(rawEvent: unknown): void {
   const payload = buildDesktopTelemetryPayload(rawEvent);
   const severity =
