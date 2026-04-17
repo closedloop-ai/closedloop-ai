@@ -1,0 +1,18 @@
+/* Liveblocks theme overrides.
+   Maps --lb-* tokens to the design-system's CSS custom properties so
+   inbox notifications respect light / dark / hybrid theme changes. */
+
+.lb-root {
+  --lb-accent: var(--primary);
+  --lb-accent-foreground: var(--primary-foreground);
+  --lb-destructive: var(--destructive);
+  --lb-destructive-foreground: var(--destructive-foreground);
+  --lb-background: var(--background);
+  --lb-foreground: var(--foreground);
+}
+
+/* Elevated surfaces (popovers, tooltips) use the popover token */
+.lb-root:where(.lb-elevation, .lb-tooltip) {
+  --lb-background: var(--popover);
+  --lb-foreground: var(--popover-foreground);
+}
