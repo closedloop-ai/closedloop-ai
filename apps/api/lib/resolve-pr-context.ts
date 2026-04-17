@@ -47,7 +47,7 @@ export type PrContext = {
   };
   prMetadata: {
     number: number;
-    githubId: string;
+    githubId?: string;
     headBranch: string;
     baseBranch: string;
     state: string;
