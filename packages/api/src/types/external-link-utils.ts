@@ -18,16 +18,7 @@ export function parseDeploymentMetadata(
   if (!result.success) {
     return null;
   }
-  return {
-    statusUrl: result.data.statusUrl,
-    deploymentUrl: result.data.deploymentUrl,
-    state: result.data.state,
-    environment: result.data.environment,
-    ref: result.data.ref,
-    sha: result.data.sha,
-    transient: result.data.transient,
-    production: result.data.production,
-  };
+  return result.data;
 }
 
 /**
@@ -55,12 +46,17 @@ const deploymentMetadataSchema = z.object({
   production: z.boolean().optional(),
 });
 
+/** Accept string or Date from DB JSON, normalize to ISO string on output. */
+const dateToString = z
+  .union([z.string(), z.date()])
+  .transform((v) => (v instanceof Date ? v.toISOString() : v));
+
 const pullRequestMetadataSchema = z.object({
   number: z.number(),
-  githubId: z.string(),
+  githubId: z.string().optional(),
   headBranch: z.string(),
   baseBranch: z.string(),
   state: z.enum(GitHubPRState),
-  lastVerifiedAt: z.string().optional().nullable(),
-  lastRefreshAttemptAt: z.string().optional().nullable(),
+  lastVerifiedAt: dateToString.optional().nullable(),
+  lastRefreshAttemptAt: dateToString.optional().nullable(),
 });

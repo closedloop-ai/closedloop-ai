@@ -7,15 +7,11 @@ import {
   rewriteDesktopApiPath,
 } from "@repo/api/src/desktop-api-namespace";
 import { EngineerRoutingMode } from "@repo/api/src/types/relay";
-import { log } from "@repo/observability/log";
 import {
   ensureElectronDetection,
   getElectronDetectionSnapshot,
 } from "./electron-detection";
-import {
-  ensureLocalGatewaySession,
-  getLastExchangeError,
-} from "./local-gateway-session";
+import { ensureLocalGatewaySession } from "./local-gateway-session";
 import { getEngineerRoutingSelection } from "./routing-store";
 
 type InterceptorWindow = Window & {
@@ -131,11 +127,7 @@ export async function ensureLocalGatewayApiNamespace(
       throw new Error(
         `Legacy namespace probe returned status ${legacyResponse.status}`
       );
-    } catch (error) {
-      log.debug("[engineer-debug] Desktop API namespace probe failed", {
-        port,
-        error: error instanceof Error ? error.message : String(error),
-      });
+    } catch {
       return undefined;
     }
   })().finally(() => {
@@ -176,16 +168,6 @@ export async function resolveDesktopApiNamespaceHint(): Promise<
 
   const sessionToken = await ensureLocalGatewaySession(detection.port);
   if (!sessionToken) {
-    const exchangeError = getLastExchangeError();
-    if (exchangeError) {
-      log.debug(
-        "[engineer-debug] Skipping namespace hint due to gateway auth",
-        {
-          port: detection.port,
-          statusCode: exchangeError.statusCode,
-        }
-      );
-    }
     return undefined;
   }
 

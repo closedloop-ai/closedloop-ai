@@ -33,6 +33,7 @@ export type FindExternalLinksOptions = {
 
 export type CreateExternalLinkInput = {
   workstreamId?: string;
+  documentId?: string;
   projectId: string;
   type: ExternalLinkType;
   title: string;
@@ -50,7 +51,7 @@ export type UpdateExternalLinkInput = {
 /** Type-safe metadata for PULL_REQUEST external links */
 export type PullRequestMetadata = {
   number: number;
-  githubId: string;
+  githubId?: string;
   headBranch: string;
   baseBranch: string;
   state: GitHubPRState;

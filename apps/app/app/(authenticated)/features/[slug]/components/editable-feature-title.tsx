@@ -1,6 +1,6 @@
 "use client";
 
-import { Input } from "@repo/design-system/components/ui/input";
+import { Textarea } from "@repo/design-system/components/ui/textarea";
 import { useUpdateFeature } from "@/hooks/queries/use-features";
 import { useInlineEdit } from "@/hooks/use-inline-edit";
 
@@ -24,14 +24,18 @@ export function EditableFeatureTitle({
     isPending,
     handleSave,
     handleCancel,
-  } = useInlineEdit<HTMLInputElement>({
+  } = useInlineEdit<HTMLTextAreaElement>({
     initialValue: initialTitle,
-    onSave: (title) => updateFeature.mutateAsync({ id: featureId, title }),
+    onSave: (title) =>
+      updateFeature.mutateAsync({
+        id: featureId,
+        title: normalizeFeatureTitle(title),
+      }),
     onChange: onTitleChange,
     emptyErrorMessage: "Feature title cannot be empty",
   });
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter") {
       e.preventDefault();
       handleSave();
@@ -42,15 +46,20 @@ export function EditableFeatureTitle({
   };
 
   return (
-    <Input
-      className="h-auto rounded-none border-none bg-transparent px-0 py-0 font-semibold text-2xl tracking-[-0.6px] shadow-none focus-visible:ring-0 md:text-2xl dark:bg-transparent"
+    <Textarea
+      className="min-h-0 resize-none overflow-hidden rounded-none border-none bg-transparent px-0 py-0 font-semibold text-2xl tracking-[-0.6px] shadow-none focus-visible:ring-0 md:text-2xl dark:bg-transparent"
       disabled={isPending}
       onBlur={handleSave}
-      onChange={(e) => setInputValue(e.target.value)}
+      onChange={(e) => setInputValue(normalizeFeatureTitle(e.target.value))}
       onKeyDown={handleKeyDown}
       placeholder="Untitled feature"
       ref={inputRef}
+      rows={1}
       value={inputValue}
     />
   );
+}
+
+function normalizeFeatureTitle(value: string) {
+  return value.replace(/\s*[\r\n]+\s*/g, " ");
 }
