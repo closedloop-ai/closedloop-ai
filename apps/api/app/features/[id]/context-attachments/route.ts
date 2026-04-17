@@ -1,9 +1,9 @@
-import { ArtifactStatus, ArtifactType } from "@repo/api/src/types/artifact";
 import { isDocumentMimeType } from "@repo/api/src/types/attachment";
 import type { CreateContextAttachmentResponse } from "@repo/api/src/types/context-attachment";
+import { DocumentStatus, DocumentType } from "@repo/api/src/types/document";
 import { EntityType, LinkType } from "@repo/api/src/types/entity-link";
-import { attachmentsService } from "@/app/artifacts/attachments-service";
-import { artifactsService } from "@/app/artifacts/service";
+import { attachmentsService } from "@/app/documents/attachments-service";
+import { documentsService } from "@/app/documents/service";
 import { entityLinksService } from "@/app/entity-links/service";
 import { featuresService } from "@/app/features/service";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
@@ -73,10 +73,10 @@ async function handleDocumentUpload(
     );
   }
 
-  const artifact = await artifactsService.create(user.organizationId, user.id, {
+  const artifact = await documentsService.create(user.organizationId, user.id, {
     title: body.filename,
-    type: ArtifactType.Prd,
-    status: ArtifactStatus.Draft,
+    type: DocumentType.Prd,
+    status: DocumentStatus.Draft,
     projectId,
     content: "",
   });
@@ -101,20 +101,20 @@ async function handleDocumentUpload(
       body.sizeBytes
     );
   } catch (uploadError) {
-    await artifactsService.delete(artifact.id, user.organizationId);
+    await documentsService.delete(artifact.id, user.organizationId);
     return errorResponse("Failed to request upload", uploadError);
   }
 
   try {
     await entityLinksService.createLink(user.organizationId, {
       sourceId: artifact.id,
-      sourceType: EntityType.Artifact,
+      sourceType: EntityType.Document,
       targetId: featureId,
       targetType: EntityType.Feature,
       linkType: LinkType.RelatesTo,
     });
   } catch (linkError) {
-    await artifactsService.delete(artifact.id, user.organizationId);
+    await documentsService.delete(artifact.id, user.organizationId);
     return errorResponse("Failed to link artifact to feature", linkError);
   }
 

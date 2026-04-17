@@ -2,7 +2,7 @@ import { buildSection } from "@/lib/chat/build-section";
 import {
   isMcpAvailable,
   type McpAvailability,
-} from "@/lib/chat/contexts/artifact-context";
+} from "@/lib/chat/contexts/document-context";
 import { MCP_INSTRUCTIONS } from "@/lib/chat/mcp-instructions";
 
 export type BranchChatContextInput = {

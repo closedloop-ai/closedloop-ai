@@ -22,7 +22,8 @@ type StatusIconStatus =
   | "in-review"
   | "executed"
   | "complete"
-  | "wont-do";
+  | "wont-do"
+  | "decorative";
 
 interface StatusIconProps
   extends React.SVGAttributes<SVGSVGElement> {
@@ -43,6 +44,7 @@ const STATUS_LABELS: Record<StatusIconStatus, string> = {
   executed: "Executed",
   complete: "Complete",
   "wont-do": "Won't do",
+  decorative: "Status",
 };
 
 type StatusConfig = {
@@ -51,6 +53,10 @@ type StatusConfig = {
   dashed: boolean;
   filled: boolean;
   icon: "check" | "x" | null;
+  /** Override the track (background circle) color. Defaults to var(--progress). */
+  trackColor?: string;
+  /** Override the stroke width for the track and arc. Defaults to STROKE_WIDTH (2). */
+  strokeWidth?: number;
 };
 
 function getStatusConfig(status: StatusIconStatus): StatusConfig {
@@ -78,6 +84,9 @@ function getStatusConfig(status: StatusIconStatus): StatusConfig {
     }
     case "wont-do": {
       return { percentage: 100, color: "var(--foreground)", dashed: false, filled: true, icon: "x" };
+    }
+    case "decorative": {
+      return { percentage: 48.5, color: "var(--muted-foreground)", dashed: false, filled: false, icon: null, trackColor: "var(--muted-foreground)", strokeWidth: 1.5 };
     }
   }
 }
@@ -112,6 +121,7 @@ function StatusIcon({
     );
   }
 
+  const sw = config.strokeWidth ?? STROKE_WIDTH;
   const outerOffset = CIRCUMFERENCE * (1 - config.percentage / 100);
   const innerOffset = INNER_CIRCUMFERENCE * (1 - config.percentage / 100);
   const spinnerDash = CIRCUMFERENCE * 0.25;
@@ -135,8 +145,8 @@ function StatusIcon({
         cx={CENTER}
         cy={CENTER}
         r={RADIUS}
-        stroke="var(--progress)"
-        strokeWidth={STROKE_WIDTH}
+        stroke={config.trackColor ?? "var(--progress)"}
+        strokeWidth={sw}
         fill="none"
         strokeDasharray={config.dashed ? "3 3" : undefined}
       />
@@ -147,7 +157,7 @@ function StatusIcon({
           cy={CENTER}
           r={RADIUS}
           stroke={config.color}
-          strokeWidth={STROKE_WIDTH}
+          strokeWidth={sw}
           strokeLinecap="round"
           fill="none"
           strokeDasharray={CIRCUMFERENCE}
@@ -163,7 +173,7 @@ function StatusIcon({
           cy={CENTER}
           r={RADIUS}
           stroke="var(--thinking)"
-          strokeWidth={STROKE_WIDTH}
+          strokeWidth={sw}
           strokeLinecap="round"
           fill="none"
           strokeDasharray={`${spinnerDash} ${spinnerGap}`}

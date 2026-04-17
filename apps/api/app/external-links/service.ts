@@ -68,19 +68,19 @@ export const externalLinksService = {
     organizationId: string,
     input: CreateExternalLinkInput
   ): Promise<ExternalLink> {
-    const { artifactId, ...prismaInput } = input;
+    const { documentId, ...prismaInput } = input;
 
     // Wrap the primary insert in a transaction.
     const link = await withDb.tx(async (tx) => {
-      // Resolve workstreamId from the artifact when artifactId is provided but workstreamId is not.
+      // Resolve workstreamId from the document when documentId is provided but workstreamId is not.
       let resolvedWorkstreamId = prismaInput.workstreamId;
 
-      if (artifactId && !resolvedWorkstreamId) {
-        const artifact = await tx.artifact.findFirst({
-          where: { id: artifactId, organizationId },
+      if (documentId && !resolvedWorkstreamId) {
+        const document = await tx.document.findFirst({
+          where: { id: documentId, organizationId },
           select: { workstreamId: true },
         });
-        resolvedWorkstreamId = artifact?.workstreamId ?? undefined;
+        resolvedWorkstreamId = document?.workstreamId ?? undefined;
       }
 
       return tx.externalLink.create({
@@ -100,7 +100,7 @@ export const externalLinksService = {
       await bestEffortInsertPullRequest({
         link,
         organizationId,
-        artifactId: artifactId ?? null,
+        documentId: documentId ?? null,
       });
     }
 
@@ -146,13 +146,13 @@ export const externalLinksService = {
 type BestEffortInsertPROptions = {
   link: Prisma.ExternalLinkModel;
   organizationId: string;
-  artifactId: string | null;
+  documentId: string | null;
 };
 
 async function bestEffortInsertPullRequest({
   link,
   organizationId,
-  artifactId,
+  documentId,
 }: BestEffortInsertPROptions): Promise<void> {
   const { workstreamId } = link;
   if (!workstreamId) {
@@ -228,7 +228,7 @@ async function bestEffortInsertPullRequest({
           workstreamId,
           organizationId,
           repositoryId: repo.id,
-          artifactId,
+          documentId,
           githubId,
           number: parsed.number,
           title: rawTitle,

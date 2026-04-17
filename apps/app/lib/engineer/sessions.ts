@@ -27,7 +27,7 @@ export type PersistedSession = {
   /** Loop ID for real plan loops (only set for issue-sourced tickets using the new plan-loop flow) */
   loopId?: string;
   /** Artifact ID for the linked implementation plan (only set for issue-sourced tickets using the new plan-loop flow) */
-  artifactId?: string;
+  documentId?: string;
 };
 
 type SessionsConfig = {
@@ -194,7 +194,7 @@ export function upsertSession(session: {
   baseBranch?: string;
   parentTicketId?: string;
   loopId?: string;
-  artifactId?: string;
+  documentId?: string;
 }): void {
   withSessionsLock(() => {
     const config = loadSessions();
@@ -220,8 +220,8 @@ export function upsertSession(session: {
           parentTicketId: session.parentTicketId,
         }),
         ...(session.loopId !== undefined && { loopId: session.loopId }),
-        ...(session.artifactId !== undefined && {
-          artifactId: session.artifactId,
+        ...(session.documentId !== undefined && {
+          documentId: session.documentId,
         }),
         lastAccessedAt: now,
       };
@@ -241,8 +241,8 @@ export function upsertSession(session: {
           parentTicketId: session.parentTicketId,
         }),
         ...(session.loopId !== undefined && { loopId: session.loopId }),
-        ...(session.artifactId !== undefined && {
-          artifactId: session.artifactId,
+        ...(session.documentId !== undefined && {
+          documentId: session.documentId,
         }),
         startedAt: now,
         lastAccessedAt: now,

@@ -21,7 +21,7 @@ export const projectTreeService = {
     // Round trip 1: fetch all entities in parallel (3 queries)
     const [artifacts, features, externalLinks] = await Promise.all([
       withDb((db) =>
-        db.artifact.findMany({
+        db.document.findMany({
           where: { projectId, organizationId },
           include: { assignee: basicUserSelect },
         })
@@ -43,8 +43,8 @@ export const projectTreeService = {
     const entityMap = new Map<EntityKey, TreeEntity>();
 
     for (const a of artifacts) {
-      entityMap.set(entityKey(a.id, EntityType.Artifact), {
-        entityType: EntityType.Artifact,
+      entityMap.set(entityKey(a.id, EntityType.Document), {
+        entityType: EntityType.Document,
         id: a.id,
         slug: a.slug,
         title: a.title,
@@ -163,8 +163,8 @@ function fetchEntityLinks(
 
   if (artifactIds.length > 0) {
     orClauses.push(
-      { sourceId: { in: artifactIds }, sourceType: EntityType.Artifact },
-      { targetId: { in: artifactIds }, targetType: EntityType.Artifact }
+      { sourceId: { in: artifactIds }, sourceType: EntityType.Document },
+      { targetId: { in: artifactIds }, targetType: EntityType.Document }
     );
   }
   if (featureIds.length > 0) {

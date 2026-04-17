@@ -258,8 +258,8 @@ describe("handlePullRequestReviewComment", () => {
       mockTx.gitHubPullRequest.findUnique.mockResolvedValue({
         id: "pr-uuid-456",
         workstreamId: "ws-uuid-789",
-        artifactId: "artifact-uuid-123",
-        artifact: { slug: "plan-feature-x" },
+        documentId: "artifact-uuid-123",
+        document: { slug: "plan-feature-x" },
       });
 
       // Mock comment upsert (idempotent for webhook retries)
@@ -289,8 +289,8 @@ describe("handlePullRequestReviewComment", () => {
         select: {
           id: true,
           workstreamId: true,
-          artifactId: true,
-          artifact: { select: { slug: true } },
+          documentId: true,
+          document: { select: { slug: true } },
         },
       });
 
@@ -336,8 +336,8 @@ describe("handlePullRequestReviewComment", () => {
             prUrl: "https://github.com/owner/test-repo/pull/42",
             commentUrl:
               "https://github.com/owner/test-repo/pull/1#discussion_r123456789",
-            artifactId: "artifact-uuid-123",
-            artifactSlug: "plan-feature-x",
+            documentId: "artifact-uuid-123",
+            documentSlug: "plan-feature-x",
           },
         },
       });
@@ -371,8 +371,8 @@ describe("handlePullRequestReviewComment", () => {
       mockTx.gitHubPullRequest.findUnique.mockResolvedValue({
         id: "pr-uuid",
         workstreamId: "ws-uuid",
-        artifactId: null,
-        artifact: null,
+        documentId: null,
+        document: null,
       });
       mockTx.gitHubPRReviewComment.upsert.mockResolvedValue({});
       mockTx.workstreamEvent.create.mockResolvedValue({});

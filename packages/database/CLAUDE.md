@@ -34,7 +34,7 @@ Commands below use `pnpm exec` to pass flags directly to Prisma. From repo root,
 - **[pattern]**: Filter Json fields: `{ path: ['key'], equals: value }` syntax, not dot notation.
 - **[pattern]**: Json field filters: scope through indexed fields first (workstreamId + status) before JSON path. JSON path = sequential scan.
 - **[pattern]**: Adding taxonomy to enum: prefer new category field with default over renaming existing enum.
-- **[convention]**: `Artifact.subtype` is non-nullable in DB and API. All creation paths require subtype.
+- **[convention]**: `Document.type` is non-nullable in DB and API. All creation paths require type.
 - **[pattern]**: Renaming Prisma enums: `@repo/database` re-exports via `export *`. Both `@repo/database` and `@repo/api/src/types/` imports must update in sync.
 - **[resolved]**: `validateOwnerInOrg` uses `withDb` (non-tx) but called from `withDb.tx`. Nested `withDb` now participates in the parent transaction via AsyncLocalStorage propagation — resolved by AsyncLocalStorage implementation.
 - **[pattern]**: Multi-org user profile updates: `updateMany({ where: { clerkId } })` to sync across all organizations.

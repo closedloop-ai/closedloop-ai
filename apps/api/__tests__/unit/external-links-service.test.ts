@@ -176,7 +176,7 @@ describe("externalLinksService", () => {
     it("creates external_links row within transaction", async () => {
       const createdLink = makePrLink({ workstreamId: null, metadata: null });
       const mockTx = {
-        artifact: { findUnique: vi.fn().mockResolvedValue(null) },
+        document: { findUnique: vi.fn().mockResolvedValue(null) },
         externalLink: { create: vi.fn().mockResolvedValue(createdLink) },
       };
       mockWithDbTx(mockTx);
@@ -199,16 +199,16 @@ describe("externalLinksService", () => {
       });
     });
 
-    it("resolves workstreamId from artifact when artifactId provided", async () => {
+    it("resolves workstreamId from document when documentId provided", async () => {
       const createdLink = makePrLink({
-        workstreamId: "ws-from-artifact",
+        workstreamId: "ws-from-document",
         metadata: null,
       });
       const mockTx = {
-        artifact: {
+        document: {
           findFirst: vi
             .fn()
-            .mockResolvedValue({ workstreamId: "ws-from-artifact" }),
+            .mockResolvedValue({ workstreamId: "ws-from-document" }),
         },
         externalLink: { create: vi.fn().mockResolvedValue(createdLink) },
       };
@@ -220,22 +220,22 @@ describe("externalLinksService", () => {
         type: "PULL_REQUEST",
         title: "My PR",
         externalUrl: "https://github.com/acme/repo/pull/42",
-        artifactId: "artifact-1",
+        documentId: "document-1",
       });
 
-      expect(mockTx.artifact.findFirst).toHaveBeenCalledWith({
-        where: { id: "artifact-1", organizationId: ORG_ID },
+      expect(mockTx.document.findFirst).toHaveBeenCalledWith({
+        where: { id: "document-1", organizationId: ORG_ID },
         select: { workstreamId: true },
       });
       expect(mockTx.externalLink.create).toHaveBeenCalledWith({
-        data: expect.objectContaining({ workstreamId: "ws-from-artifact" }),
+        data: expect.objectContaining({ workstreamId: "ws-from-document" }),
       });
     });
 
-    it("handles missing artifact gracefully — external link still created", async () => {
+    it("handles missing document gracefully — external link still created", async () => {
       const createdLink = makePrLink({ workstreamId: null, metadata: null });
       const mockTx = {
-        artifact: { findFirst: vi.fn().mockResolvedValue(null) },
+        document: { findFirst: vi.fn().mockResolvedValue(null) },
         externalLink: { create: vi.fn().mockResolvedValue(createdLink) },
       };
       mockWithDbTx(mockTx);
@@ -246,12 +246,12 @@ describe("externalLinksService", () => {
         type: "PULL_REQUEST",
         title: "My PR",
         externalUrl: "https://github.com/acme/repo/pull/42",
-        artifactId: "artifact-missing",
+        documentId: "document-missing",
       });
 
-      // External link was returned despite missing artifact
+      // External link was returned despite missing document
       expect(result.id).toBe("link-1");
-      // workstreamId falls back to undefined/null (no artifact found)
+      // workstreamId falls back to undefined/null (no document found)
       expect(mockTx.externalLink.create).toHaveBeenCalledWith({
         data: expect.objectContaining({ organizationId: ORG_ID }),
       });
@@ -260,7 +260,7 @@ describe("externalLinksService", () => {
     it("creates github_pull_requests row when workstream is resolvable", async () => {
       const createdLink = makePrLink();
       const mockTx = {
-        artifact: { findUnique: vi.fn() },
+        document: { findUnique: vi.fn() },
         externalLink: { create: vi.fn().mockResolvedValue(createdLink) },
       };
       mockWithDbTx(mockTx);
@@ -304,7 +304,7 @@ describe("externalLinksService", () => {
     it("skips github_pull_requests and logs warning when workstreamId is null", async () => {
       const createdLink = makePrLink({ workstreamId: null });
       const mockTx = {
-        artifact: { findUnique: vi.fn() },
+        document: { findUnique: vi.fn() },
         externalLink: { create: vi.fn().mockResolvedValue(createdLink) },
       };
       mockWithDbTx(mockTx);
@@ -330,7 +330,7 @@ describe("externalLinksService", () => {
     it("handles P2002 dedup when github_pull_requests already exists", async () => {
       const createdLink = makePrLink();
       const mockTx = {
-        artifact: { findUnique: vi.fn() },
+        document: { findUnique: vi.fn() },
         externalLink: { create: vi.fn().mockResolvedValue(createdLink) },
       };
       mockWithDbTx(mockTx);
@@ -365,7 +365,7 @@ describe("externalLinksService", () => {
     it("handles repositoryId lookup failure — external link still created, github_pull_requests skipped", async () => {
       const createdLink = makePrLink();
       const mockTx = {
-        artifact: { findUnique: vi.fn() },
+        document: { findUnique: vi.fn() },
         externalLink: { create: vi.fn().mockResolvedValue(createdLink) },
       };
       mockWithDbTx(mockTx);

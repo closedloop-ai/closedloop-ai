@@ -21,7 +21,7 @@ import { withDb } from "@repo/database";
 import { getInstallationAccessToken } from "@repo/github";
 import { log } from "@repo/observability/log";
 import { truncateUtf8 } from "@repo/observability/truncate-utf8";
-import { getCommitterInfo } from "@/app/artifacts/service";
+import { getCommitterInfo } from "@/app/documents/service";
 import { githubService } from "@/app/integrations/github/service";
 import {
   isInvalidStatusTransitionError,
@@ -435,15 +435,15 @@ async function resolveLoopLaunchContext(
   );
 
   // Resolve artifact slug for worktree/branch naming on desktop.
-  let artifactSlug: string | undefined;
-  if (loop.artifactId) {
+  let documentSlug: string | undefined;
+  if (loop.documentId) {
     const artifact = await withDb((db) =>
-      db.artifact.findUnique({
-        where: { id: loop.artifactId!, organizationId },
+      db.document.findUnique({
+        where: { id: loop.documentId!, organizationId },
         select: { slug: true },
       })
     );
-    artifactSlug = artifact?.slug;
+    documentSlug = artifact?.slug;
   }
 
   const localRepoPath =
@@ -467,8 +467,8 @@ async function resolveLoopLaunchContext(
     githubToken,
     committer,
     repo: loop.repo,
-    artifactId: loop.artifactId,
-    artifactSlug,
+    documentId: loop.documentId,
+    documentSlug,
     parentLoopId: loop.parentLoopId,
     parentS3StateKey:
       parentInfo.kind === "state-available"
@@ -534,7 +534,7 @@ export async function launchLoop(
     loopId,
     command: loop.command,
     repo: loop.repo,
-    hasArtifact: !!loop.artifactId,
+    hasDocument: !!loop.documentId,
     hasParent: !!loop.parentLoopId,
     computeTargetId: loop.computeTargetId,
   });
@@ -767,7 +767,7 @@ async function ingestLoopArtifacts(
   loop: NonNullable<Awaited<ReturnType<typeof loopsService.findById>>>,
   organizationId: string
 ): Promise<void> {
-  if (!loop.artifactId) {
+  if (!loop.documentId) {
     return;
   }
   if (!(loop.s3StateKey || loop.computeTargetId)) {

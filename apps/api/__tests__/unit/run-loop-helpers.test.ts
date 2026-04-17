@@ -9,10 +9,10 @@
  */
 
 import {
-  ArtifactType,
+  DocumentType,
   type PullRequestInfo,
   PullRequestState,
-} from "@repo/api/src/types/artifact";
+} from "@repo/api/src/types/document";
 import { RunLoopCommand } from "@repo/api/src/types/loop";
 import { vi } from "vitest";
 
@@ -22,10 +22,10 @@ vi.mock("@repo/observability/log", () => ({
   log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
-vi.mock("@/app/artifacts/service", () => ({
-  artifactsService: {
+vi.mock("@/app/documents/service", () => ({
+  documentsService: {
     findOrCreateWorkstream: vi.fn(),
-    getArtifactPullRequest: vi.fn(),
+    getDocumentPullRequest: vi.fn(),
   },
 }));
 
@@ -42,15 +42,15 @@ import {
   resolveEvaluateCodeBranchForRunLoop,
   resolveEvaluateCodeTargetBranch,
   resolveLoopContext,
-} from "@/app/artifacts/[id]/run-loop/run-loop-helpers";
-import { artifactsService } from "@/app/artifacts/service";
+} from "@/app/documents/[id]/run-loop/run-loop-helpers";
+import { documentsService } from "@/app/documents/service";
 import { loopsService } from "@/app/loops/service";
 
 type MockFn = ReturnType<typeof vi.fn>;
 
-const mockArtifactsService = artifactsService as unknown as {
+const mockArtifactsService = documentsService as unknown as {
   findOrCreateWorkstream: MockFn;
-  getArtifactPullRequest: MockFn;
+  getDocumentPullRequest: MockFn;
 };
 const mockLoopsService = loopsService as unknown as {
   findLatestCompletedForArtifact: MockFn;
@@ -94,7 +94,7 @@ function buildSource(
 ) {
   return {
     id: "source-1",
-    type: ArtifactType.Prd,
+    type: DocumentType.Prd,
     targetRepo: undefined as string | undefined,
     targetBranch: undefined as string | undefined,
     ...overrides,
@@ -335,7 +335,7 @@ describe("resolveLoopContext — contextRefs", () => {
     expect(result.contextRefs).toEqual([
       {
         sourceId: "source-1",
-        sourceType: ArtifactType.Prd,
+        sourceType: DocumentType.Prd,
         include: "full",
       },
     ]);
@@ -514,7 +514,7 @@ describe("resolveEvaluateCodeBranchForRunLoop", () => {
     vi.clearAllMocks();
   });
 
-  it("returns fallback branch for non-evaluate_code without calling getArtifactPullRequest", async () => {
+  it("returns fallback branch for non-evaluate_code without calling getDocumentPullRequest", async () => {
     const result = await resolveEvaluateCodeBranchForRunLoop(
       RunLoopCommand.Plan,
       "artifact-1",
@@ -525,11 +525,11 @@ describe("resolveEvaluateCodeBranchForRunLoop", () => {
     if (result.ok) {
       expect(result.branch).toBe("main");
     }
-    expect(mockArtifactsService.getArtifactPullRequest).not.toHaveBeenCalled();
+    expect(mockArtifactsService.getDocumentPullRequest).not.toHaveBeenCalled();
   });
 
   it("loads open PR and returns head branch for evaluate_code", async () => {
-    mockArtifactsService.getArtifactPullRequest.mockResolvedValue(
+    mockArtifactsService.getDocumentPullRequest.mockResolvedValue(
       buildPullRequestInfo({ headBranch: "feature/pr-eval" })
     );
     const result = await resolveEvaluateCodeBranchForRunLoop(
@@ -542,14 +542,14 @@ describe("resolveEvaluateCodeBranchForRunLoop", () => {
     if (result.ok) {
       expect(result.branch).toBe("feature/pr-eval");
     }
-    expect(mockArtifactsService.getArtifactPullRequest).toHaveBeenCalledWith(
+    expect(mockArtifactsService.getDocumentPullRequest).toHaveBeenCalledWith(
       "artifact-1",
       "org-1"
     );
   });
 
   it("returns bad request when evaluate_code has no open PR", async () => {
-    mockArtifactsService.getArtifactPullRequest.mockResolvedValue(null);
+    mockArtifactsService.getDocumentPullRequest.mockResolvedValue(null);
     const result = await resolveEvaluateCodeBranchForRunLoop(
       RunLoopCommand.EvaluateCode,
       "artifact-1",

@@ -19,33 +19,33 @@ function makeJudgesFeedbackHook(
   getEndpoint: (id: string) => string,
   keyFn: (id: string) => readonly unknown[]
 ) {
-  return (artifactId: string): UseQueryResult<JudgeFeedbackItem[] | null> => {
+  return (documentId: string): UseQueryResult<JudgeFeedbackItem[] | null> => {
     const apiClient = useApiClient();
     return useQuery({
-      queryKey: keyFn(artifactId),
+      queryKey: keyFn(documentId),
       queryFn: async () => {
         const response = await apiClient.get<JudgesFeedbackResponse>(
-          getEndpoint(artifactId)
+          getEndpoint(documentId)
         );
         return response.status === "success" ? response.data : null;
       },
-      enabled: !!artifactId,
+      enabled: !!documentId,
       staleTime: 10 * 60 * 1000,
     });
   };
 }
 
 export const usePlanJudgesFeedback = makeJudgesFeedbackHook(
-  (id) => `/artifacts/${id}/plan-judges`,
+  (id) => `/documents/${id}/plan-judges`,
   judgesKeys.detail
 );
 
 export const usePrdJudgesFeedback = makeJudgesFeedbackHook(
-  (id) => `/artifacts/${id}/prd-judges`,
+  (id) => `/documents/${id}/prd-judges`,
   judgesKeys.prdDetail
 );
 
 export const useCodeJudgesFeedback = makeJudgesFeedbackHook(
-  (id) => `/artifacts/${id}/code-judges`,
+  (id) => `/documents/${id}/code-judges`,
   judgesKeys.codeDetail
 );

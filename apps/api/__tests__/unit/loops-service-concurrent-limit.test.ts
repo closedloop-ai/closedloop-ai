@@ -101,8 +101,8 @@ import {
 
 const baseInput = {
   command: "PLAN" as const,
-  artifactId: "artifact-1",
-  artifactVersion: 1,
+  documentId: "artifact-1",
+  documentVersion: 1,
 };
 
 // ---------------------------------------------------------------------------

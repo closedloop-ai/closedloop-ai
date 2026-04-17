@@ -1,8 +1,8 @@
 import "server-only";
 import { Liveblocks } from "@liveblocks/node";
-import { getRoutePrefixForType } from "@repo/api/src/types/artifact";
+import { getRoutePrefixForType } from "@repo/api/src/types/document";
 import { keys } from "./keys";
-import { parseArtifactRoomId } from "./room-utils";
+import { parseDocumentRoomId } from "./room-utils";
 
 export type ResolvedRoom = {
   roomId: string;
@@ -12,8 +12,9 @@ export type ResolvedRoom = {
 
 /**
  * Resolves room IDs to display names and navigation URLs by reading
- * Liveblocks room metadata (which stores artifactType at creation time).
- * Falls back to generic /artifacts/:slug URL when metadata is missing.
+ * Liveblocks room metadata (which stores documentType at creation time).
+ * Falls back to reading legacy artifactType/artifactSubtype for old rooms.
+ * Falls back to generic /documents/:slug URL when metadata is missing.
  * Processes rooms in batches to avoid hitting Liveblocks API rate limits
  * when resolving many rooms at once.
  *
@@ -33,17 +34,19 @@ export async function resolveRoomMetadata(
 
   const resolveOne = async (roomId: string): Promise<ResolvedRoom> => {
     try {
-      const { slug } = parseArtifactRoomId(roomId);
+      const { slug } = parseDocumentRoomId(roomId);
       const name = slug;
 
       try {
         const room = await liveblocks.getRoom(roomId);
-        // artifactSubtype was removed, but still exists on old rooms.
-        const artifactType =
-          room.metadata?.artifactType || room.metadata?.artifactSubtype;
+        // Read documentType first, fall back to legacy artifactType/artifactSubtype for old rooms.
+        const documentType =
+          room.metadata?.documentType ||
+          room.metadata?.artifactType ||
+          room.metadata?.artifactSubtype;
 
-        if (typeof artifactType === "string") {
-          const prefix = getRoutePrefixForType(artifactType);
+        if (typeof documentType === "string") {
+          const prefix = getRoutePrefixForType(documentType);
           const url = prefix ? `/${prefix}/${slug}` : null;
           return { roomId, name, url };
         }
@@ -52,7 +55,7 @@ export async function resolveRoomMetadata(
       }
 
       // Fallback: generic redirect route
-      return { roomId, name, url: `/artifacts/${slug}` };
+      return { roomId, name, url: `/documents/${slug}` };
     } catch {
       // Malformed room ID — return entry with no URL
       return { roomId, name: roomId, url: null };
@@ -76,11 +79,11 @@ export async function resolveRoomMetadata(
 function resolveFromSlugsOnly(roomIds: string[]): ResolvedRoom[] {
   return roomIds.map((roomId) => {
     try {
-      const { slug } = parseArtifactRoomId(roomId);
+      const { slug } = parseDocumentRoomId(roomId);
       return {
         roomId,
         name: slug,
-        url: `/artifacts/${slug}`,
+        url: `/documents/${slug}`,
       };
     } catch {
       // Malformed room ID — return entry with no URL

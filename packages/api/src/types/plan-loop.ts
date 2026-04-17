@@ -4,19 +4,19 @@ export type StartPlanLoopResponse =
   | {
       outcome: "launched";
       loopId: string;
-      artifactId: string;
-      artifactSlug: string;
+      documentId: string;
+      documentSlug: string;
     }
   | {
       outcome: "already-running";
       loopId: string;
-      artifactId: string;
+      documentId: string;
       localRepoPath: string;
-      artifactSlug: string;
+      documentSlug: string;
     }
-  | { outcome: "needs-selection"; artifacts: { id: string; title: string }[] }
+  | { outcome: "needs-selection"; documents: { id: string; title: string }[] }
   | {
-      outcome: "invalid-artifact";
-      existingArtifacts: { id: string; title: string }[];
+      outcome: "invalid-document";
+      existingDocuments: { id: string; title: string }[];
     }
   | { outcome: "error"; reason: "missing-local-path" };

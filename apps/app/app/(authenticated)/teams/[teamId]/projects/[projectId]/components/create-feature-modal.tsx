@@ -1,7 +1,7 @@
 "use client";
 
-import type { ArtifactWithWorkstream } from "@repo/api/src/types/artifact";
 import { Priority } from "@repo/api/src/types/common";
+import type { DocumentWithWorkstream } from "@repo/api/src/types/document";
 import { EntityType, LinkType } from "@repo/api/src/types/entity-link";
 import {
   FEATURE_STATUS_OPTIONS,
@@ -51,12 +51,12 @@ import {
   featurePriorityLabels,
   featureStatusLabels,
 } from "@/components/status-badge";
-import { useArtifactsByProject } from "@/hooks/queries/use-artifacts";
+import { useDocumentsByProject } from "@/hooks/queries/use-documents";
 import { useCreateEntityLink } from "@/hooks/queries/use-entity-links";
 import { useCreateFeature } from "@/hooks/queries/use-features";
 import { useProjectsByTeam } from "@/hooks/queries/use-projects";
 import { useTeamMembers } from "@/hooks/queries/use-teams";
-import { ARTIFACT_TYPE_LABELS } from "@/lib/project-constants";
+import { DOCUMENT_TYPE_LABELS } from "@/lib/project-constants";
 import { transformApiUserToSelectUser } from "@/lib/user-utils";
 
 type CreateFeatureModalProps = {
@@ -83,7 +83,7 @@ export function CreateFeatureModal({
   // Form state
   const [title, setTitle] = useState("");
   const [selectedArtifacts, setSelectedArtifacts] = useState<
-    ArtifactWithWorkstream[]
+    DocumentWithWorkstream[]
   >([]);
   const [selectedAssignee, setSelectedAssignee] = useState<User | null>(null);
   const [priority, setPriority] = useState<Priority>(Priority.Medium);
@@ -101,7 +101,7 @@ export function CreateFeatureModal({
     [teamMembers]
   );
 
-  const { data: artifacts = [] } = useArtifactsByProject(selectedProjectId, {
+  const { data: artifacts = [] } = useDocumentsByProject(selectedProjectId, {
     enabled: open && !!selectedProjectId,
   });
   // Filter out already-selected artifacts
@@ -117,13 +117,13 @@ export function CreateFeatureModal({
   const isSubmitting =
     createFeatureMutation.isPending || createEntityLinkMutation.isPending;
 
-  const handleAddArtifact = (artifact: ArtifactWithWorkstream) => {
+  const handleAddArtifact = (artifact: DocumentWithWorkstream) => {
     setSelectedArtifacts((prev) => [...prev, artifact]);
     setRelationshipsOpen(false);
   };
 
-  const handleRemoveArtifact = (artifactId: string) => {
-    setSelectedArtifacts((prev) => prev.filter((a) => a.id !== artifactId));
+  const handleRemoveArtifact = (documentId: string) => {
+    setSelectedArtifacts((prev) => prev.filter((a) => a.id !== documentId));
   };
 
   const handleProjectChange = (newProjectId: string) => {
@@ -177,7 +177,7 @@ export function CreateFeatureModal({
                 selectedArtifacts.map((artifact) =>
                   createEntityLinkMutation.mutateAsync({
                     sourceId: artifact.id,
-                    sourceType: EntityType.Artifact,
+                    sourceType: EntityType.Document,
                     targetId: feature.id,
                     targetType: EntityType.Feature,
                     linkType: LinkType.Produces,
@@ -307,7 +307,7 @@ export function CreateFeatureModal({
                             {artifact.title}
                           </span>
                           <span className="ml-2 text-muted-foreground text-xs">
-                            {ARTIFACT_TYPE_LABELS[artifact.type] ??
+                            {DOCUMENT_TYPE_LABELS[artifact.type] ??
                               artifact.type}
                           </span>
                         </CommandItem>

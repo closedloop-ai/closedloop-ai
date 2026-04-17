@@ -25,12 +25,12 @@ import {
   UserSelectPopover,
 } from "@repo/design-system/components/ui/user-select-popover";
 import { useMemo, useState } from "react";
-import { CollapsibleSection } from "@/components/artifact-editor/collapsible-section";
+import { CustomFieldsSection } from "@/components/custom-fields/custom-fields-section";
+import { CollapsibleSection } from "@/components/document-editor/collapsible-section";
 import {
   MetadataPanel,
   MetadataSection,
-} from "@/components/artifact-editor/metadata-panel";
-import { CustomFieldsSection } from "@/components/custom-fields/custom-fields-section";
+} from "@/components/document-editor/metadata-panel";
 import {
   featurePriorityLabels,
   featureStatusLabels,

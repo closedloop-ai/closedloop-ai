@@ -1,5 +1,5 @@
 /**
- * Tests for loopsService.findActivePlanLoopForArtifact staleness gating.
+ * Tests for loopsService.findActivePlanLoopForDocument staleness gating.
  *
  * The method guards re-launches by returning an active loop when one exists,
  * but must NOT block retries for stale PENDING/CLAIMED loops that never got
@@ -73,7 +73,7 @@ function buildPrismaLoopRow(overrides: {
     userId: "user-1",
     status: overrides.status,
     command: overrides.command ?? "PLAN",
-    artifactId: "artifact-1",
+    documentId: "artifact-1",
     workstreamId: null,
     parentLoopId: null,
     computeTargetId: null,
@@ -115,7 +115,7 @@ function setupFindFirst(
 // Tests
 // ---------------------------------------------------------------------------
 
-describe("loopsService.findActivePlanLoopForArtifact", () => {
+describe("loopsService.findActivePlanLoopForDocument", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -128,7 +128,7 @@ describe("loopsService.findActivePlanLoopForArtifact", () => {
     });
     setupFindFirst(row);
 
-    const result = await loopsService.findActivePlanLoopForArtifact(
+    const result = await loopsService.findActivePlanLoopForDocument(
       "artifact-1",
       "org-1"
     );
@@ -147,7 +147,7 @@ describe("loopsService.findActivePlanLoopForArtifact", () => {
     });
     setupFindFirst(row);
 
-    const result = await loopsService.findActivePlanLoopForArtifact(
+    const result = await loopsService.findActivePlanLoopForDocument(
       "artifact-1",
       "org-1"
     );
@@ -165,7 +165,7 @@ describe("loopsService.findActivePlanLoopForArtifact", () => {
     });
     setupFindFirst(row);
 
-    const result = await loopsService.findActivePlanLoopForArtifact(
+    const result = await loopsService.findActivePlanLoopForDocument(
       "artifact-1",
       "org-1"
     );
@@ -179,7 +179,7 @@ describe("loopsService.findActivePlanLoopForArtifact", () => {
     // findFirst returns null when no matching loops satisfy the OR conditions.
     setupFindFirst(null);
 
-    const result = await loopsService.findActivePlanLoopForArtifact(
+    const result = await loopsService.findActivePlanLoopForDocument(
       "artifact-1",
       "org-1"
     );
@@ -192,7 +192,7 @@ describe("loopsService.findActivePlanLoopForArtifact", () => {
     // OR conditions — findFirst returns null.
     setupFindFirst(null);
 
-    const result = await loopsService.findActivePlanLoopForArtifact(
+    const result = await loopsService.findActivePlanLoopForDocument(
       "artifact-1",
       "org-1"
     );
@@ -203,7 +203,7 @@ describe("loopsService.findActivePlanLoopForArtifact", () => {
   it("returns null when no matching loops exist", async () => {
     setupFindFirst(null);
 
-    const result = await loopsService.findActivePlanLoopForArtifact(
+    const result = await loopsService.findActivePlanLoopForDocument(
       "artifact-1",
       "org-1"
     );
@@ -215,7 +215,7 @@ describe("loopsService.findActivePlanLoopForArtifact", () => {
     const mockFindFirst = setupFindFirst(null);
     const before = Date.now();
 
-    await loopsService.findActivePlanLoopForArtifact("artifact-1", "org-1");
+    await loopsService.findActivePlanLoopForDocument("artifact-1", "org-1");
 
     const after = Date.now();
     const callArgs = mockFindFirst.mock.calls[0][0];
@@ -239,7 +239,7 @@ describe("loopsService.findActivePlanLoopForArtifact", () => {
   it("queries only PLAN command loops", async () => {
     const mockFindFirst = setupFindFirst(null);
 
-    await loopsService.findActivePlanLoopForArtifact("artifact-1", "org-1");
+    await loopsService.findActivePlanLoopForDocument("artifact-1", "org-1");
 
     const callArgs = mockFindFirst.mock.calls[0][0];
     expect(callArgs.where.command).toBe("PLAN");
@@ -248,10 +248,10 @@ describe("loopsService.findActivePlanLoopForArtifact", () => {
   it("queries by the provided artifactId and organizationId", async () => {
     const mockFindFirst = setupFindFirst(null);
 
-    await loopsService.findActivePlanLoopForArtifact("artifact-abc", "org-xyz");
+    await loopsService.findActivePlanLoopForDocument("artifact-abc", "org-xyz");
 
     const callArgs = mockFindFirst.mock.calls[0][0];
-    expect(callArgs.where.artifactId).toBe("artifact-abc");
+    expect(callArgs.where.documentId).toBe("artifact-abc");
     expect(callArgs.where.organizationId).toBe("org-xyz");
   });
 });

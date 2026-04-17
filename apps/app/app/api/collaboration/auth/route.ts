@@ -1,7 +1,7 @@
 import type { User } from "@repo/api/src/types/user";
 import { auth } from "@repo/auth/server";
 import { authenticate } from "@repo/collaboration/auth";
-import { parseArtifactRoomId } from "@repo/collaboration/room-utils";
+import { parseDocumentRoomId } from "@repo/collaboration/room-utils";
 import { getConsistentColor } from "@repo/collaboration/user-colors";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
@@ -32,7 +32,7 @@ export async function POST(request: Request): Promise<Response> {
 
     if (roomId) {
       try {
-        const { organizationId } = parseArtifactRoomId(roomId);
+        const { organizationId } = parseDocumentRoomId(roomId);
         if (organizationId !== user.organizationId) {
           return new Response("Forbidden", { status: 403 });
         }

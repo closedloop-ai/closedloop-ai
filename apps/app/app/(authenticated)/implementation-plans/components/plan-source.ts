@@ -6,7 +6,7 @@ export type PlanSource = {
   sourceType: EntityType;
   projectId?: string | null;
   workstreamId?: string | null;
-  /** Only present for artifact sources */
+  /** Only present for document sources */
   latestVersion?: number;
   targetRepo?: string | null;
   targetBranch?: string | null;

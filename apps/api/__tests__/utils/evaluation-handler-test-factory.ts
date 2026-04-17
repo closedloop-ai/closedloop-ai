@@ -3,7 +3,7 @@
  *
  * All three evaluation handlers (PRD, PLAN, CODE) share identical behavior
  * via createEvaluationHandler. This factory produces the full test suite
- * parameterized by { handler, reportType, artifactId, fileName, reportId, command }.
+ * parameterized by { handler, reportType, documentId, fileName, reportId, command }.
  *
  * Usage (in each test file, after vi.mock() declarations):
  *
@@ -21,7 +21,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   parseJsonArtifact,
   upsertEvaluationWithJudgeScores,
-} from "@/lib/loops/loop-artifact-ingestion";
+} from "@/lib/loops/loop-document-ingestion";
 import { downloadArtifactFile } from "@/lib/loops/loop-state";
 import { buildCaseScore } from "../fixtures/evaluation";
 import { buildLoop } from "../fixtures/loop";
@@ -39,7 +39,7 @@ type EvaluationHandlerTestConfig = {
   };
   /** Persisted discriminator — use e.g. `EvaluationReportType.Prd`. */
   reportType: EvaluationReportTypeValue;
-  artifactId: string;
+  documentId: string;
   fileName: string;
   reportId: string;
   judgeName: string;
@@ -72,7 +72,7 @@ function setupDownload(
 
 function setupMockTx(extra: Record<string, unknown> = {}) {
   const mockTx = {
-    artifactEvaluation: { upsert: vi.fn() },
+    documentEvaluation: { upsert: vi.fn() },
     ...extra,
   };
   mockWithDbTx(mockTx);
@@ -85,7 +85,7 @@ export function registerEvaluationHandlerTests(
   const {
     handler,
     reportType,
-    artifactId,
+    documentId,
     fileName,
     reportId,
     judgeName,
@@ -104,7 +104,7 @@ export function registerEvaluationHandlerTests(
     return buildLoop({
       command,
       s3StateKey,
-      artifactId,
+      documentId,
       ...overrides,
     });
   }
@@ -127,9 +127,9 @@ export function registerEvaluationHandlerTests(
       expect(mocks.mockUpsertEvaluationWithJudgeScores).toHaveBeenCalledOnce();
       expect(mocks.mockUpsertEvaluationWithJudgeScores).toHaveBeenCalledWith(
         expect.objectContaining({
-          entityId: artifactId,
-          entityType: EntityType.ARTIFACT,
-          artifactId,
+          entityId: documentId,
+          entityType: EntityType.DOCUMENT,
+          documentId,
           loopId: loop.id,
           organizationId: "org-1",
           reportType,
@@ -151,8 +151,8 @@ export function registerEvaluationHandlerTests(
       );
     });
 
-    it("does not call upsertEvaluationWithJudgeScores when loop.artifactId is null", async () => {
-      const loop = buildTestLoop({ artifactId: null });
+    it("does not call upsertEvaluationWithJudgeScores when loop.documentId is null", async () => {
+      const loop = buildTestLoop({ documentId: null });
       setupMockTx();
       setupDownload(report, mocks);
 
@@ -185,11 +185,11 @@ export function registerEvaluationHandlerTests(
       expect(mocks.mockUpsertEvaluationWithJudgeScores).not.toHaveBeenCalled();
     });
 
-    it("skips ingestion when artifact.latestVersion is greater than loop.artifactVersion", async () => {
-      const loop = buildTestLoop({ artifactVersion: 1 });
+    it("skips ingestion when artifact.latestVersion is greater than loop.documentVersion", async () => {
+      const loop = buildTestLoop({ documentVersion: 1 });
       setupDownload(report, mocks);
       setupMockTx({
-        artifact: {
+        document: {
           findUnique: vi.fn().mockResolvedValue({ latestVersion: 2 }),
         },
       });
@@ -199,11 +199,11 @@ export function registerEvaluationHandlerTests(
       expect(mocks.mockUpsertEvaluationWithJudgeScores).not.toHaveBeenCalled();
     });
 
-    it("proceeds with ingestion when artifact.latestVersion equals loop.artifactVersion", async () => {
-      const loop = buildTestLoop({ artifactVersion: 2 });
+    it("proceeds with ingestion when artifact.latestVersion equals loop.documentVersion", async () => {
+      const loop = buildTestLoop({ documentVersion: 2 });
       setupDownload(report, mocks);
       setupMockTx({
-        artifact: {
+        document: {
           findUnique: vi.fn().mockResolvedValue({ latestVersion: 2 }),
         },
       });
@@ -213,8 +213,8 @@ export function registerEvaluationHandlerTests(
       expect(mocks.mockUpsertEvaluationWithJudgeScores).toHaveBeenCalledOnce();
     });
 
-    it("proceeds with ingestion when loop.artifactVersion is null (backwards compat — no version check)", async () => {
-      const loop = buildTestLoop({ artifactVersion: null });
+    it("proceeds with ingestion when loop.documentVersion is null (backwards compat — no version check)", async () => {
+      const loop = buildTestLoop({ documentVersion: null });
       setupDownload(report, mocks);
       setupMockTx();
 
@@ -224,10 +224,10 @@ export function registerEvaluationHandlerTests(
     });
 
     it("proceeds with ingestion when artifact is not found during version check (best effort)", async () => {
-      const loop = buildTestLoop({ artifactVersion: 1 });
+      const loop = buildTestLoop({ documentVersion: 1 });
       setupDownload(report, mocks);
       setupMockTx({
-        artifact: { findUnique: vi.fn().mockResolvedValue(null) },
+        document: { findUnique: vi.fn().mockResolvedValue(null) },
       });
 
       await handler.downloadAndIngest(loop.s3StateKey!, loop, "org-1");

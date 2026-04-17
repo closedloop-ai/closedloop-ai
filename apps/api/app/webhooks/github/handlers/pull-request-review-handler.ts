@@ -2,7 +2,7 @@ import type {
   PullRequestReviewDismissedEvent,
   PullRequestReviewSubmittedEvent,
 } from "@octokit/webhooks-types";
-import { ReviewDecision } from "@repo/api/src/types/artifact";
+import { ReviewDecision } from "@repo/api/src/types/document";
 import { type TransactionClient, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
@@ -49,9 +49,9 @@ async function handleSubmittedReview(
   existingPr: {
     id: string;
     workstreamId: string;
-    artifactId: string | null;
+    documentId: string | null;
     reviewDecision: string | null;
-    artifact: { slug: string } | null;
+    document: { slug: string } | null;
   }
 ): Promise<void> {
   const reviewDecision = mapReviewStateToDecision(review.state);
@@ -137,8 +137,8 @@ async function handleSubmittedReview(
         prTitle: pull_request.title,
         prUrl: pull_request.html_url,
         reviewUrl: review.html_url,
-        artifactId: existingPr.artifactId,
-        artifactSlug: existingPr.artifact?.slug,
+        documentId: existingPr.documentId,
+        documentSlug: existingPr.document?.slug,
       },
     },
   });
@@ -155,9 +155,9 @@ async function handleDismissedReview(
   existingPr: {
     id: string;
     workstreamId: string;
-    artifactId: string | null;
+    documentId: string | null;
     reviewDecision: string | null;
-    artifact: { slug: string } | null;
+    document: { slug: string } | null;
   }
 ): Promise<void> {
   const reviewerLogin = review.user?.login;
@@ -214,8 +214,8 @@ async function handleDismissedReview(
         prTitle: pull_request.title,
         prUrl: pull_request.html_url,
         reviewUrl: review.html_url,
-        artifactId: existingPr.artifactId,
-        artifactSlug: existingPr.artifact?.slug,
+        documentId: existingPr.documentId,
+        documentSlug: existingPr.document?.slug,
       },
     },
   });
@@ -290,9 +290,9 @@ export async function handlePullRequestReview(
       select: {
         id: true,
         workstreamId: true,
-        artifactId: true,
+        documentId: true,
         reviewDecision: true,
-        artifact: { select: { slug: true } },
+        document: { select: { slug: true } },
       },
     });
 

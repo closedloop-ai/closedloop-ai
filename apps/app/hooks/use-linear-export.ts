@@ -97,7 +97,7 @@ function reducer(state: State, action: Action): State {
 /**
  * Hook for exporting implementation plans to Linear.
  *
- * @param artifactId - The ID of the implementation plan artifact to export
+ * @param documentId - The ID of the implementation plan artifact to export
  *
  * @example
  * ```tsx
@@ -109,7 +109,7 @@ function reducer(state: State, action: Action): State {
  *   error,
  *   checkConnection,
  *   exportPlan,
- * } = useLinearExport(artifactId);
+ * } = useLinearExport(documentId);
  *
  * useEffect(() => {
  *   checkConnection();
@@ -119,7 +119,7 @@ function reducer(state: State, action: Action): State {
  * // Call exportPlan(teamId) when user clicks export
  * ```
  */
-export function useLinearExport(artifactId: string) {
+export function useLinearExport(documentId: string) {
   const [state, dispatch] = useReducer(reducer, initialState);
   const exportToLinearMutation = useExportToLinear();
 
@@ -175,7 +175,7 @@ export function useLinearExport(artifactId: string) {
 
       try {
         const result = await exportToLinearMutation.mutateAsync({
-          artifactId,
+          documentId,
           teamId,
         });
         dispatch({ type: "EXPORT_SUCCESS", payload: result });
@@ -187,7 +187,7 @@ export function useLinearExport(artifactId: string) {
         });
       }
     },
-    [artifactId, exportToLinearMutation]
+    [documentId, exportToLinearMutation]
   );
 
   /**

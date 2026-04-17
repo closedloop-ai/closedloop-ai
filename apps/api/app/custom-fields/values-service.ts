@@ -369,8 +369,8 @@ async function verifyEntityExists(
         });
         return record !== null;
       }
-      case CustomFieldEntityType.Artifact: {
-        const record = await db.artifact.findFirst({
+      case CustomFieldEntityType.Document: {
+        const record = await db.document.findFirst({
           where: { id: entityId, organizationId },
           select: { id: true },
         });

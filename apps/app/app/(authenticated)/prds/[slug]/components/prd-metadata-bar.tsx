@@ -7,14 +7,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@repo/design-system/components/ui/select";
-import { MetadataPanel } from "@/components/artifact-editor/metadata-panel";
-import { StatusMetadataSection } from "@/components/artifact-editor/status-metadata-section";
-import { TargetRepositoryFields } from "@/components/artifact-editor/target-repository-fields";
-import type { useArtifactMetadata } from "@/hooks/artifact-editing/use-artifact-metadata";
+import { MetadataPanel } from "@/components/document-editor/metadata-panel";
+import { StatusMetadataSection } from "@/components/document-editor/status-metadata-section";
+import { TargetRepositoryFields } from "@/components/document-editor/target-repository-fields";
+import type { useDocumentMetadata } from "@/hooks/document-editing/use-document-metadata";
 import { PRIORITY_LABELS } from "@/lib/project-constants";
 
 export type PRDMetadataBarProps = {
-  metadata: ReturnType<typeof useArtifactMetadata>;
+  metadata: ReturnType<typeof useDocumentMetadata>;
 };
 
 export function PRDMetadataBar({ metadata }: Readonly<PRDMetadataBarProps>) {

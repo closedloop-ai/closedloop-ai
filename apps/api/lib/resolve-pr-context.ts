@@ -55,7 +55,7 @@ export type PrContext = {
   gitHubPullRequest: {
     id: string;
     repositoryId: string;
-    artifactId: string | null;
+    documentId: string | null;
     workstreamId: string;
     headSha: string | null;
   } | null;
@@ -207,7 +207,7 @@ async function resolvePrFromMetadata(params: {
       select: {
         id: true,
         repositoryId: true,
-        artifactId: true,
+        documentId: true,
         workstreamId: true,
         headSha: true,
         number: true,
@@ -302,7 +302,7 @@ async function resolvePrByRepositoryAndNumber(
       select: {
         id: true,
         repositoryId: true,
-        artifactId: true,
+        documentId: true,
         workstreamId: true,
         headSha: true,
       },
@@ -378,7 +378,7 @@ function toPrContextPullRequest(
   return {
     id: prRow.id,
     repositoryId: prRow.repositoryId,
-    artifactId: prRow.artifactId,
+    documentId: prRow.documentId,
     workstreamId: prRow.workstreamId,
     headSha: prRow.headSha,
   };

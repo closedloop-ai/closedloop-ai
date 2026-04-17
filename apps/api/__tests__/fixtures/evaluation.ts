@@ -64,7 +64,7 @@ export function createMockEvaluationRow(overrides?: {
   entityId?: string;
   entityType?: EntityType;
   organizationId?: string;
-  artifactId?: string | null;
+  documentId?: string | null;
   actionRunId?: string;
   reportType?: EvaluationReportType;
   reportId?: string;
@@ -82,9 +82,9 @@ export function createMockEvaluationRow(overrides?: {
   return {
     id: "eval-123",
     entityId,
-    entityType: EntityType.ARTIFACT,
+    entityType: EntityType.DOCUMENT,
     organizationId: "org-123",
-    artifactId: entityId,
+    documentId: entityId,
     actionRunId: "action-run-123",
     reportType: EvaluationReportTypeValue.Plan,
     reportId: "test-report",

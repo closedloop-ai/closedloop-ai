@@ -50,15 +50,15 @@ import {
   loopErrorCodeLabels,
 } from "@/components/status-badge";
 import { UserLink } from "@/components/user-link";
-import { useArtifact } from "@/hooks/queries/use-artifacts";
+import { useDocument } from "@/hooks/queries/use-documents";
 import {
   useCancelLoop,
   useLoop,
   useLoopEventsPaginated,
   useResumeLoop,
 } from "@/hooks/queries/use-loops";
-import { getArtifactRoute } from "@/lib/artifact-navigation";
 import { formatDateTime } from "@/lib/date-utils";
+import { getDocumentRoute } from "@/lib/document-navigation";
 import { formatDuration, formatTokenCount } from "@/lib/format-utils";
 import {
   CANCELLABLE_LOOP_STATUSES,
@@ -439,7 +439,7 @@ export function LoopDetailContainer({ id }: LoopDetailContainerProps) {
       </div>
 
       {/* Artifact link */}
-      {loop.artifactId && <ArtifactLink artifactId={loop.artifactId} />}
+      {loop.documentId && <ArtifactLink documentId={loop.documentId} />}
 
       {/* Error display */}
       {loop.error && (
@@ -534,14 +534,14 @@ function ComputeTargetDetail({
   return null;
 }
 
-function ArtifactLink({ artifactId }: { artifactId: string }) {
-  const { data: artifact } = useArtifact(artifactId);
-  const route = artifact ? getArtifactRoute(artifact) : null;
+function ArtifactLink({ documentId }: { documentId: string }) {
+  const { data: artifact } = useDocument(documentId);
+  const route = artifact ? getDocumentRoute(artifact) : null;
 
   const renderLabel = () => {
     if (!artifact) {
       return (
-        <span className="text-muted-foreground text-sm">{artifactId}</span>
+        <span className="text-muted-foreground text-sm">{documentId}</span>
       );
     }
     if (route) {

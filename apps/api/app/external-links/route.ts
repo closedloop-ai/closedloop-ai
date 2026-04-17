@@ -1,7 +1,7 @@
 import type { ExternalLink } from "@repo/api/src/types/external-link";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import {
-  resolveArtifactId,
+  resolveDocumentId,
   resolveProjectId,
   resolveWorkstreamId,
 } from "@/lib/identifier-utils";
@@ -100,16 +100,16 @@ export const POST = withAnyAuth<ExternalLink, "/external-links">(
         }
         resolvedWorkstreamId = wId;
       }
-      let resolvedArtifactId: string | undefined;
-      if (body.artifactId) {
-        const aId = await resolveArtifactId(
-          body.artifactId,
+      let resolvedDocumentId: string | undefined;
+      if (body.documentId) {
+        const dId = await resolveDocumentId(
+          body.documentId,
           user.organizationId
         );
-        if (!aId) {
-          return notFoundResponse("Artifact");
+        if (!dId) {
+          return notFoundResponse("Document");
         }
-        resolvedArtifactId = aId;
+        resolvedDocumentId = dId;
       }
 
       const externalLink = await externalLinksService.create(
@@ -118,7 +118,7 @@ export const POST = withAnyAuth<ExternalLink, "/external-links">(
           ...body,
           projectId: resolvedProjectId,
           workstreamId: resolvedWorkstreamId,
-          artifactId: resolvedArtifactId,
+          documentId: resolvedDocumentId,
         }
       );
 

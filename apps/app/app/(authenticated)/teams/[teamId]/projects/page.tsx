@@ -8,7 +8,7 @@ import { useParams, useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { Header } from "@/app/(authenticated)/components/header";
-import { ColumnVisibilityPanel } from "@/components/artifact-table/column-visibility-panel";
+import { TableViewMenu } from "@/components/document-table/table-view-menu";
 import {
   useCreateProject,
   useDeleteProject,
@@ -161,7 +161,7 @@ export default function TeamProjectsPage() {
         {/* Title bar */}
         <div className="flex min-w-fit items-center justify-between border-b px-4 pt-4 pb-2">
           <h1 className="font-semibold text-xl">Projects</h1>
-          <ColumnVisibilityPanel
+          <TableViewMenu
             columns={PROJECT_DEFAULT_COLUMNS}
             onToggle={toggleColumn}
             visibility={visibility}

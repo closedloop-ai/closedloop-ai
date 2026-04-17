@@ -1,5 +1,5 @@
 import type { CheckRunEvent } from "@octokit/webhooks-types";
-import { ChecksStatus } from "@repo/api/src/types/artifact";
+import { ChecksStatus } from "@repo/api/src/types/document";
 import { withDb } from "@repo/database";
 import { queryStatusCheckRollup } from "@repo/github";
 import { log } from "@repo/observability/log";
@@ -120,8 +120,8 @@ export async function handleCheckRun(event: CheckRunEvent): Promise<Response> {
         checksStatus: true,
         headSha: true,
         workstreamId: true,
-        artifactId: true,
-        artifact: { select: { slug: true } },
+        documentId: true,
+        document: { select: { slug: true } },
       },
     });
 
@@ -234,8 +234,8 @@ export async function handleCheckRun(event: CheckRunEvent): Promise<Response> {
           prNumber: pr.number,
           prTitle: pr.title,
           prUrl: pr.htmlUrl,
-          artifactId: pr.artifactId,
-          slug: pr.artifact?.slug,
+          documentId: pr.documentId,
+          slug: pr.document?.slug,
           checksStatus: newStatus,
           previousChecksStatus: currentPr.checksStatus,
           headSha,

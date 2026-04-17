@@ -8,7 +8,7 @@ const externalLinkTypeEnum = z.enum(EXTERNAL_LINK_TYPE_OPTIONS);
 export const createExternalLinkValidator = z
   .object({
     workstreamId: uuidOrSlug().optional(),
-    artifactId: uuidOrSlug().optional(),
+    documentId: uuidOrSlug().optional(),
     projectId: uuidOrSlug(),
     type: externalLinkTypeEnum,
     title: z.string().min(1, "Title is required"),
@@ -16,11 +16,11 @@ export const createExternalLinkValidator = z
     metadata: jsonObjectValidator.nullable().optional(),
   })
   .superRefine((data, ctx) => {
-    if (data.workstreamId !== undefined && data.artifactId !== undefined) {
+    if (data.workstreamId !== undefined && data.documentId !== undefined) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "Provide either workstreamId or artifactId, not both",
-        path: ["artifactId"],
+        message: "Provide either workstreamId or documentId, not both",
+        path: ["documentId"],
       });
     }
   });

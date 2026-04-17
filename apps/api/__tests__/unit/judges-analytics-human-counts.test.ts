@@ -3,7 +3,7 @@
  *
  * Uses scenario-registry pattern with describe.each for parametrized execution.
  */
-import { ArtifactType } from "@repo/api/src/types/artifact";
+import { DocumentType } from "@repo/api/src/types/document";
 import { vi } from "vitest";
 
 vi.mock("@repo/database", () => ({
@@ -22,8 +22,8 @@ import {
 // Helper types
 // ---------------------------------------------------------------------------
 
-type ArtifactRow = { id: string; type: ArtifactType };
-type RatingRow = { artifactId: string; comment: string | null };
+type ArtifactRow = { id: string; type: DocumentType };
+type RatingRow = { documentId: string; comment: string | null };
 
 type CountScenarioConfig = {
   name: string;
@@ -31,7 +31,7 @@ type CountScenarioConfig = {
   organizationId: string;
   startDate: Date;
   endDate: Date;
-  types: ArtifactType[];
+  types: DocumentType[];
   artifacts: ArtifactRow[];
   ratings: RatingRow[];
   expectedRatings: Record<string, number>;
@@ -66,11 +66,11 @@ const COUNT_SCENARIOS: CountScenarioConfig[] = [
     organizationId: "org-1",
     startDate: new Date("2026-01-01"),
     endDate: new Date("2026-01-31"),
-    types: [ArtifactType.Prd],
+    types: [DocumentType.Prd],
     artifacts: [],
     ratings: [],
-    expectedRatings: { [ArtifactType.Prd]: 0 },
-    expectedComments: { [ArtifactType.Prd]: 0 },
+    expectedRatings: { [DocumentType.Prd]: 0 },
+    expectedComments: { [DocumentType.Prd]: 0 },
   },
   {
     name: "artifacts_exist_no_ratings_in_range",
@@ -78,11 +78,11 @@ const COUNT_SCENARIOS: CountScenarioConfig[] = [
     organizationId: "org-1",
     startDate: new Date("2026-01-01"),
     endDate: new Date("2026-01-31"),
-    types: [ArtifactType.Prd],
-    artifacts: [{ id: "a1", type: ArtifactType.Prd }],
+    types: [DocumentType.Prd],
+    artifacts: [{ id: "a1", type: DocumentType.Prd }],
     ratings: [],
-    expectedRatings: { [ArtifactType.Prd]: 0 },
-    expectedComments: { [ArtifactType.Prd]: 0 },
+    expectedRatings: { [DocumentType.Prd]: 0 },
+    expectedComments: { [DocumentType.Prd]: 0 },
   },
   {
     name: "single_rating_with_comment",
@@ -90,11 +90,11 @@ const COUNT_SCENARIOS: CountScenarioConfig[] = [
     organizationId: "org-1",
     startDate: new Date("2026-01-01"),
     endDate: new Date("2026-01-31"),
-    types: [ArtifactType.Prd],
-    artifacts: [{ id: "a1", type: ArtifactType.Prd }],
-    ratings: [{ artifactId: "a1", comment: "Looks good" }],
-    expectedRatings: { [ArtifactType.Prd]: 1 },
-    expectedComments: { [ArtifactType.Prd]: 1 },
+    types: [DocumentType.Prd],
+    artifacts: [{ id: "a1", type: DocumentType.Prd }],
+    ratings: [{ documentId: "a1", comment: "Looks good" }],
+    expectedRatings: { [DocumentType.Prd]: 1 },
+    expectedComments: { [DocumentType.Prd]: 1 },
   },
   {
     name: "rating_without_comment",
@@ -102,11 +102,11 @@ const COUNT_SCENARIOS: CountScenarioConfig[] = [
     organizationId: "org-1",
     startDate: new Date("2026-01-01"),
     endDate: new Date("2026-01-31"),
-    types: [ArtifactType.Prd],
-    artifacts: [{ id: "a1", type: ArtifactType.Prd }],
-    ratings: [{ artifactId: "a1", comment: null }],
-    expectedRatings: { [ArtifactType.Prd]: 1 },
-    expectedComments: { [ArtifactType.Prd]: 0 },
+    types: [DocumentType.Prd],
+    artifacts: [{ id: "a1", type: DocumentType.Prd }],
+    ratings: [{ documentId: "a1", comment: null }],
+    expectedRatings: { [DocumentType.Prd]: 1 },
+    expectedComments: { [DocumentType.Prd]: 0 },
   },
   {
     name: "rating_with_empty_comment",
@@ -115,11 +115,11 @@ const COUNT_SCENARIOS: CountScenarioConfig[] = [
     organizationId: "org-1",
     startDate: new Date("2026-01-01"),
     endDate: new Date("2026-01-31"),
-    types: [ArtifactType.Prd],
-    artifacts: [{ id: "a1", type: ArtifactType.Prd }],
-    ratings: [{ artifactId: "a1", comment: "   " }],
-    expectedRatings: { [ArtifactType.Prd]: 1 },
-    expectedComments: { [ArtifactType.Prd]: 0 },
+    types: [DocumentType.Prd],
+    artifacts: [{ id: "a1", type: DocumentType.Prd }],
+    ratings: [{ documentId: "a1", comment: "   " }],
+    expectedRatings: { [DocumentType.Prd]: 1 },
+    expectedComments: { [DocumentType.Prd]: 0 },
   },
   {
     name: "multiple_types_partitioned",
@@ -127,23 +127,23 @@ const COUNT_SCENARIOS: CountScenarioConfig[] = [
     organizationId: "org-1",
     startDate: new Date("2026-01-01"),
     endDate: new Date("2026-01-31"),
-    types: [ArtifactType.Prd, ArtifactType.ImplementationPlan],
+    types: [DocumentType.Prd, DocumentType.ImplementationPlan],
     artifacts: [
-      { id: "a1", type: ArtifactType.Prd },
-      { id: "a2", type: ArtifactType.ImplementationPlan },
+      { id: "a1", type: DocumentType.Prd },
+      { id: "a2", type: DocumentType.ImplementationPlan },
     ],
     ratings: [
-      { artifactId: "a1", comment: "PRD feedback" },
-      { artifactId: "a2", comment: "Plan feedback" },
-      { artifactId: "a1", comment: "Another PRD comment" },
+      { documentId: "a1", comment: "PRD feedback" },
+      { documentId: "a2", comment: "Plan feedback" },
+      { documentId: "a1", comment: "Another PRD comment" },
     ],
     expectedRatings: {
-      [ArtifactType.Prd]: 2,
-      [ArtifactType.ImplementationPlan]: 1,
+      [DocumentType.Prd]: 2,
+      [DocumentType.ImplementationPlan]: 1,
     },
     expectedComments: {
-      [ArtifactType.Prd]: 2,
-      [ArtifactType.ImplementationPlan]: 1,
+      [DocumentType.Prd]: 2,
+      [DocumentType.ImplementationPlan]: 1,
     },
   },
 ];
@@ -156,8 +156,8 @@ describe("getHumanCountsByType", () => {
   describe.each(COUNT_SCENARIOS)("$name", (scenario) => {
     it(scenario.description, async () => {
       const mockDb = {
-        artifact: { findMany: vi.fn().mockResolvedValue(scenario.artifacts) },
-        artifactRating: {
+        document: { findMany: vi.fn().mockResolvedValue(scenario.artifacts) },
+        documentRating: {
           findMany: vi.fn().mockResolvedValue(scenario.ratings),
         },
       };
@@ -191,7 +191,7 @@ describe("getHumanCountsByType", () => {
 // getHumanRatingsByArtifact scenarios
 // ---------------------------------------------------------------------------
 
-type ScoreRatingRow = { artifactId: string; score: number };
+type ScoreRatingRow = { documentId: string; score: number };
 type ScoreScenario = {
   name: string;
   description: string;
@@ -218,21 +218,21 @@ const SCORE_SCENARIOS: ScoreScenario[] = [
   {
     name: "single_rating_score_3",
     description: "Single rating score=3 yields [0.6]",
-    ratings: [{ artifactId: "a1", score: 3 }],
+    ratings: [{ documentId: "a1", score: 3 }],
     artifactIds: ["a1"],
     expected: { a1: [0.6] },
   },
   {
     name: "min_score",
     description: "score=1 yields [0.2]",
-    ratings: [{ artifactId: "a1", score: 1 }],
+    ratings: [{ documentId: "a1", score: 1 }],
     artifactIds: ["a1"],
     expected: { a1: [0.2] },
   },
   {
     name: "max_score",
     description: "score=5 yields [1.0]",
-    ratings: [{ artifactId: "a1", score: 5 }],
+    ratings: [{ documentId: "a1", score: 5 }],
     artifactIds: ["a1"],
     expected: { a1: [1.0] },
   },
@@ -240,8 +240,8 @@ const SCORE_SCENARIOS: ScoreScenario[] = [
     name: "multiple_ratings_same_artifact",
     description: "Two ratings on same artifact: [0.4, 0.8]",
     ratings: [
-      { artifactId: "a1", score: 2 },
-      { artifactId: "a1", score: 4 },
+      { documentId: "a1", score: 2 },
+      { documentId: "a1", score: 4 },
     ],
     artifactIds: ["a1"],
     expected: { a1: [0.4, 0.8] },
@@ -250,8 +250,8 @@ const SCORE_SCENARIOS: ScoreScenario[] = [
     name: "multiple_artifacts",
     description: "Different artifacts get independent score arrays",
     ratings: [
-      { artifactId: "a1", score: 5 },
-      { artifactId: "a2", score: 1 },
+      { documentId: "a1", score: 5 },
+      { documentId: "a2", score: 1 },
     ],
     artifactIds: ["a1", "a2"],
     expected: { a1: [1.0], a2: [0.2] },
@@ -266,7 +266,7 @@ describe("getHumanRatingsByArtifact", () => {
   describe.each(SCORE_SCENARIOS)("$name", (scenario) => {
     it(scenario.description, async () => {
       const mockDb = {
-        artifactRating: {
+        documentRating: {
           findMany: vi.fn().mockResolvedValue(scenario.ratings),
         },
       };
@@ -306,17 +306,17 @@ describe("getCodeHumanCountsByType", () => {
 
   it("counts pull request ratings/comments per artifact type", async () => {
     const mockDb = {
-      artifact: {
+      document: {
         findMany: vi.fn().mockResolvedValue([
-          { id: "a1", type: ArtifactType.ImplementationPlan },
-          { id: "a2", type: ArtifactType.Prd },
+          { id: "a1", type: DocumentType.ImplementationPlan },
+          { id: "a2", type: DocumentType.Prd },
         ]),
       },
       gitHubPullRequest: {
         findMany: vi.fn().mockResolvedValue([
-          { id: "pr-1", artifactId: "a1" },
-          { id: "pr-2", artifactId: "a1" },
-          { id: "pr-3", artifactId: "a2" },
+          { id: "pr-1", documentId: "a1" },
+          { id: "pr-2", documentId: "a1" },
+          { id: "pr-3", documentId: "a2" },
         ]),
       },
       pullRequestRating: {
@@ -340,20 +340,20 @@ describe("getCodeHumanCountsByType", () => {
       "org-1",
       new Date("2026-01-01"),
       new Date("2026-01-31"),
-      [ArtifactType.ImplementationPlan, ArtifactType.Prd]
+      [DocumentType.ImplementationPlan, DocumentType.Prd]
     );
 
     expect(
       mapToObject(result.humanRatingsByType as Map<string, number>)
     ).toEqual({
-      [ArtifactType.ImplementationPlan]: 2,
-      [ArtifactType.Prd]: 1,
+      [DocumentType.ImplementationPlan]: 2,
+      [DocumentType.Prd]: 1,
     });
     expect(
       mapToObject(result.humanCommentsByType as Map<string, number>)
     ).toEqual({
-      [ArtifactType.ImplementationPlan]: 1,
-      [ArtifactType.Prd]: 1,
+      [DocumentType.ImplementationPlan]: 1,
+      [DocumentType.Prd]: 1,
     });
   });
 });
@@ -367,9 +367,9 @@ describe("getCodeHumanRatingsByArtifact", () => {
     const mockDb = {
       gitHubPullRequest: {
         findMany: vi.fn().mockResolvedValue([
-          { id: "pr-1", artifactId: "a1" },
-          { id: "pr-2", artifactId: "a1" },
-          { id: "pr-3", artifactId: "a2" },
+          { id: "pr-1", documentId: "a1" },
+          { id: "pr-2", documentId: "a1" },
+          { id: "pr-3", documentId: "a2" },
         ]),
       },
       pullRequestRating: {

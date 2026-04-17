@@ -19,8 +19,8 @@ vi.mock("@repo/observability/log", () => ({
   log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
-vi.mock("@/app/artifacts/service", () => ({
-  artifactsService: {
+vi.mock("@/app/documents/service", () => ({
+  documentsService: {
     findByIdSimple: vi.fn(),
   },
 }));
@@ -37,7 +37,7 @@ vi.mock("@/app/entity-links/service", () => ({
   },
 }));
 
-vi.mock("@/lib/loops/loop-artifact-ingestion", () => ({
+vi.mock("@/lib/loops/loop-document-ingestion", () => ({
   parseJsonArtifact: vi.fn(),
 }));
 
@@ -53,16 +53,16 @@ import { FeatureStatus } from "@repo/api/src/types/feature";
 import type { DecomposeResult } from "@repo/api/src/types/loop";
 import { LoopCommand } from "@repo/database/generated/client";
 import { beforeEach, describe, expect, it } from "vitest";
-import { artifactsService } from "@/app/artifacts/service";
+import { documentsService } from "@/app/documents/service";
 import { entityLinksService } from "@/app/entity-links/service";
 import { featuresService } from "@/app/features/service";
-import { parseJsonArtifact } from "@/lib/loops/loop-artifact-ingestion";
 import { decomposeHandler } from "@/lib/loops/loop-commands/decompose-handler";
+import { parseJsonArtifact } from "@/lib/loops/loop-document-ingestion";
 import { downloadArtifactFile } from "@/lib/loops/loop-state";
 import { buildLoop } from "../fixtures/loop";
 
 type MockFn = ReturnType<typeof vi.fn>;
-const mockArtifactsService = artifactsService as unknown as {
+const mockArtifactsService = documentsService as unknown as {
   findByIdSimple: MockFn;
 };
 const mockFeaturesService = featuresService as unknown as { create: MockFn };
@@ -85,7 +85,7 @@ function buildDecomposeLoop() {
   return buildLoop({
     command: LoopCommand.DECOMPOSE,
     s3StateKey: "org/loops/loop-1/run-1",
-    artifactId: "prd-artifact-1",
+    documentId: "prd-artifact-1",
   });
 }
 
@@ -168,7 +168,7 @@ describe("decomposeHandler ingestion", () => {
     expect(mockEntityLinksService.createLink).toHaveBeenCalledTimes(2);
     expect(mockEntityLinksService.createLink).toHaveBeenCalledWith("org-1", {
       sourceId: "prd-artifact-1",
-      sourceType: EntityType.Artifact,
+      sourceType: EntityType.Document,
       targetId: "feature-1",
       targetType: EntityType.Feature,
       linkType: LinkType.Produces,
@@ -258,7 +258,7 @@ describe("decomposeHandler uploadAndIngest", () => {
     });
     expect(mockEntityLinksService.createLink).toHaveBeenCalledWith("org-1", {
       sourceId: "prd-artifact-1",
-      sourceType: EntityType.Artifact,
+      sourceType: EntityType.Document,
       targetId: "feature-1",
       targetType: EntityType.Feature,
       linkType: LinkType.Produces,

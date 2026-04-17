@@ -21,7 +21,7 @@ function buildLinkedEntity(
     sourceType: EntityType.Feature,
     sourceVersion: null,
     targetId: "artifact-1",
-    targetType: EntityType.Artifact,
+    targetType: EntityType.Document,
     targetVersion: null,
     linkType: LinkType.Produces,
     metadata: null,
@@ -71,7 +71,7 @@ describe("invalidateEntityLinkQueries", () => {
         sourceId: "feature-1",
         sourceType: EntityType.Feature,
         targetId: "artifact-1",
-        targetType: EntityType.Artifact,
+        targetType: EntityType.Document,
       }),
     ];
 
@@ -94,7 +94,7 @@ describe("invalidateEntityLinkQueries", () => {
         sourceId: "feature-1",
         sourceType: EntityType.Feature,
         targetId: "artifact-99",
-        targetType: EntityType.Artifact,
+        targetType: EntityType.Document,
       }),
     ];
 
@@ -103,7 +103,7 @@ describe("invalidateEntityLinkQueries", () => {
     invalidateEntityLinkQueries(
       queryClient,
       "artifact-99",
-      EntityType.Artifact
+      EntityType.Document
     );
 
     expect(isQueryStale(queryClient, filters)).toBe(true);
@@ -121,7 +121,7 @@ describe("invalidateEntityLinkQueries", () => {
         sourceId: "feature-1",
         sourceType: EntityType.Feature,
         targetId: "artifact-1",
-        targetType: EntityType.Artifact,
+        targetType: EntityType.Document,
       }),
     ];
 
@@ -148,7 +148,7 @@ describe("invalidateEntityLinkQueries", () => {
         sourceId: "feature-1",
         sourceType: EntityType.Feature,
         targetId: "artifact-1",
-        targetType: EntityType.Artifact,
+        targetType: EntityType.Document,
       }),
     ];
 
@@ -181,7 +181,7 @@ describe("invalidateEntityLinkQueries", () => {
         sourceId: "feature-1",
         sourceType: EntityType.Feature,
         targetId: "artifact-1",
-        targetType: EntityType.Artifact,
+        targetType: EntityType.Document,
       }),
     ];
 
@@ -230,13 +230,13 @@ describe("invalidateEntityLinkQueries", () => {
       sourceId: "feature-1",
       sourceType: EntityType.Feature,
       targetId: "artifact-shared",
-      targetType: EntityType.Artifact,
+      targetType: EntityType.Document,
     });
     const unrelatedLink = buildLinkedEntity({
       sourceId: "feature-3",
       sourceType: EntityType.Feature,
       targetId: "artifact-other",
-      targetType: EntityType.Artifact,
+      targetType: EntityType.Document,
     });
 
     const queryClient = createTestQueryClient();
@@ -246,7 +246,7 @@ describe("invalidateEntityLinkQueries", () => {
         sourceId: "feature-2",
         sourceType: EntityType.Feature,
         targetId: "artifact-shared",
-        targetType: EntityType.Artifact,
+        targetType: EntityType.Document,
       }),
     ]);
     queryClient.setQueryData(entityLinkKeys.list(filtersC), [unrelatedLink]);
@@ -254,7 +254,7 @@ describe("invalidateEntityLinkQueries", () => {
     invalidateEntityLinkQueries(
       queryClient,
       "artifact-shared",
-      EntityType.Artifact
+      EntityType.Document
     );
 
     expect(isQueryStale(queryClient, filtersA)).toBe(true);

@@ -4,7 +4,7 @@
  * Tests concurrence default (no human ratings → avgUserRating = judgeScore, delta = 0),
  * average computation, delta, sort order, coverage, and pagination.
  */
-import { ArtifactType } from "@repo/api/src/types/artifact";
+import { DocumentType } from "@repo/api/src/types/document";
 import { EvaluationReportType } from "@repo/api/src/types/evaluation";
 import { vi } from "vitest";
 import { mockWithDbCall } from "../utils/db-helpers";
@@ -12,7 +12,7 @@ import { mockWithDbCall } from "../utils/db-helpers";
 vi.mock("@repo/database", () => ({
   withDb: vi.fn(),
   PromptType: { JUDGE: "JUDGE" },
-  EntityType: { ARTIFACT: "ARTIFACT" },
+  EntityType: { DOCUMENT: "DOCUMENT" },
 }));
 
 import { judgesAnalyticsService } from "@/app/judges-analytics/service";
@@ -43,7 +43,7 @@ function makeJudgeScoreRow(
 function makeArtifactRow(id: string) {
   return {
     id,
-    type: ArtifactType.ImplementationPlan,
+    type: DocumentType.ImplementationPlan,
     title: `Artifact ${id}`,
     slug: id,
   };
@@ -70,7 +70,7 @@ function mockDb(
     judgeScore: {
       findMany: vi.fn().mockResolvedValue(judgeScores),
     },
-    artifact: {
+    document: {
       findMany: vi.fn().mockResolvedValue(artifactIds.map(makeArtifactRow)),
     },
   };
@@ -114,8 +114,8 @@ describe("judgesAnalyticsService.getJudgeScores", () => {
 
     expect(result).toEqual({
       rows: [],
-      totalArtifacts: 0,
-      ratedArtifacts: 0,
+      totalDocuments: 0,
+      ratedDocuments: 0,
       coveragePct: 0,
       pagination: { page: 1, pageSize: 20, totalRows: 0, totalPages: 0 },
     });
@@ -134,7 +134,7 @@ describe("judgesAnalyticsService.getJudgeScores", () => {
 
     expect(result?.rows).toHaveLength(1);
     expect(result?.rows[0]).toMatchObject({
-      artifactId: "a1",
+      documentId: "a1",
       judgeScore: 0.85,
       avgUserRating: 0.85,
       userRatingCount: 0,
@@ -193,7 +193,7 @@ describe("judgesAnalyticsService.getJudgeScores", () => {
       20
     );
 
-    const ids = result?.rows.map((r) => r.artifactId);
+    const ids = result?.rows.map((r) => r.documentId);
     // high-delta (0.6) first, low-delta (0.2) second, then unrated by judgeScore DESC
     expect(ids).toEqual([
       "high-delta",
@@ -203,7 +203,7 @@ describe("judgesAnalyticsService.getJudgeScores", () => {
     ]);
   });
 
-  it("computes coverage percentage: ratedArtifacts / totalArtifacts * 100", async () => {
+  it("computes coverage percentage: ratedDocuments / totalDocuments * 100", async () => {
     mockDb(
       ["clarity_judge"],
       [
@@ -222,8 +222,8 @@ describe("judgesAnalyticsService.getJudgeScores", () => {
       20
     );
 
-    expect(result?.totalArtifacts).toBe(4);
-    expect(result?.ratedArtifacts).toBe(2);
+    expect(result?.totalDocuments).toBe(4);
+    expect(result?.ratedDocuments).toBe(2);
     expect(result?.coveragePct).toBe(50); // 2/4 * 100
   });
 
@@ -241,7 +241,7 @@ describe("judgesAnalyticsService.getJudgeScores", () => {
       20
     );
 
-    expect(result?.ratedArtifacts).toBe(0);
+    expect(result?.ratedDocuments).toBe(0);
     expect(result?.coveragePct).toBe(0);
   });
 
@@ -289,11 +289,11 @@ describe("judgesAnalyticsService.getJudgeScores", () => {
           },
         ]),
       },
-      artifact: {
+      document: {
         findMany: vi.fn().mockResolvedValue([
           {
             id: "a1",
-            type: ArtifactType.ImplementationPlan,
+            type: DocumentType.ImplementationPlan,
             title: "A1",
             slug: "a1",
           },
@@ -311,8 +311,8 @@ describe("judgesAnalyticsService.getJudgeScores", () => {
     );
 
     expect(result?.rows[0]).toMatchObject({
-      artifactId: "a1",
-      artifactType: ArtifactType.ImplementationPlan,
+      documentId: "a1",
+      documentType: DocumentType.ImplementationPlan,
       evaluatedAt: "2026-03-01T12:00:00.000Z",
     });
   });
@@ -340,7 +340,7 @@ describe("judgesAnalyticsService.getJudgeScores", () => {
       judgeScore: {
         findMany: vi.fn().mockResolvedValue([]),
       },
-      artifact: {
+      document: {
         findMany: vi.fn().mockResolvedValue([]),
       },
     };

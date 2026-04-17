@@ -33,7 +33,7 @@ export type FindExternalLinksOptions = {
 
 export type CreateExternalLinkInput = {
   workstreamId?: string;
-  artifactId?: string;
+  documentId?: string;
   projectId: string;
   type: ExternalLinkType;
   title: string;

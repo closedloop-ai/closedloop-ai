@@ -213,7 +213,7 @@ type PullRequestUpsertOptions = {
   organizationId: string;
   repositoryId: string | null;
   workstreamId: string | null;
-  artifactId: string | null;
+  documentId: string | null;
   pullNumber: number;
   externalLinkId: string;
 };
@@ -224,7 +224,7 @@ async function applyPullRequestUpsert({
   organizationId,
   repositoryId,
   workstreamId,
-  artifactId,
+  documentId,
   pullNumber,
   externalLinkId,
 }: PullRequestUpsertOptions): Promise<void> {
@@ -271,7 +271,7 @@ async function applyPullRequestUpsert({
         workstreamId,
         organizationId,
         repositoryId,
-        artifactId,
+        documentId,
         githubId: freshPr.githubId,
         number: freshPr.number,
         title: freshPr.title,
@@ -363,10 +363,10 @@ async function repairSinglePrLink(
   }
 
   const entityContext = link.workstreamId
-    ? { workstreamId: link.workstreamId, artifactId: null as string | null }
+    ? { workstreamId: link.workstreamId, documentId: null as string | null }
     : await resolveEntityLinkContext(link.id, organizationId);
   const workstreamId = entityContext.workstreamId;
-  const artifactId = entityContext.artifactId;
+  const documentId = entityContext.documentId;
   const repositoryId = repoResolution?.repositoryId ?? null;
 
   await withDb.tx(async (tx) => {
@@ -384,7 +384,7 @@ async function repairSinglePrLink(
       organizationId,
       repositoryId,
       workstreamId,
-      artifactId,
+      documentId,
       pullNumber,
       externalLinkId: link.id,
     });
@@ -411,26 +411,26 @@ async function runPrReadRepair(
 
 type EntityLinkResolution = {
   workstreamId: string | null;
-  artifactId: string | null;
+  documentId: string | null;
 };
 
 /**
- * Walk the entity link tree to resolve workstreamId and artifactId for an
+ * Walk the entity link tree to resolve workstreamId and documentId for an
  * external link.
  *
  * Scans all incoming entity links (not just the first) to handle cases where
- * the external link has multiple parents (e.g., artifact + PRD). Checks:
- * 1. All parent artifacts — return the first artifact's workstream_id if present.
- * 2. For each artifact without a workstream, walk one more level to the parent
+ * the external link has multiple parents (e.g., document + PRD). Checks:
+ * 1. All parent documents — return the first document's workstream_id if present.
+ * 2. For each document without a workstream, walk one more level to the parent
  *    feature and return the feature's workstream_id.
  *
- * Always returns the first matched artifactId regardless of workstream resolution.
+ * Always returns the first matched documentId regardless of workstream resolution.
  */
 async function resolveEntityLinkContext(
   externalLinkId: string,
   organizationId: string
 ): Promise<EntityLinkResolution> {
-  let resolvedArtifactId: string | null = null;
+  let resolvedDocumentId: string | null = null;
 
   // Level 1: find all entities that target this external link
   const parentLinks = await withDb((db) =>
@@ -445,25 +445,25 @@ async function resolveEntityLinkContext(
   );
 
   for (const parentLink of parentLinks) {
-    if (parentLink.sourceType !== EntityType.Artifact) {
+    if (parentLink.sourceType !== EntityType.Document) {
       continue;
     }
 
-    if (!resolvedArtifactId) {
-      resolvedArtifactId = parentLink.sourceId;
+    if (!resolvedDocumentId) {
+      resolvedDocumentId = parentLink.sourceId;
     }
 
-    const artifact = await withDb((db) =>
-      db.artifact.findFirst({
+    const document = await withDb((db) =>
+      db.document.findFirst({
         where: { id: parentLink.sourceId, organizationId },
         select: { workstreamId: true },
       })
     );
 
-    if (artifact?.workstreamId) {
+    if (document?.workstreamId) {
       return {
-        workstreamId: artifact.workstreamId,
-        artifactId: resolvedArtifactId,
+        workstreamId: document.workstreamId,
+        documentId: resolvedDocumentId,
       };
     }
 
@@ -472,7 +472,7 @@ async function resolveEntityLinkContext(
       db.entityLink.findMany({
         where: {
           targetId: parentLink.sourceId,
-          targetType: EntityType.Artifact,
+          targetType: EntityType.Document,
           organizationId,
         },
         select: { sourceId: true, sourceType: true },
@@ -494,11 +494,11 @@ async function resolveEntityLinkContext(
       if (feature?.workstreamId) {
         return {
           workstreamId: feature.workstreamId,
-          artifactId: resolvedArtifactId,
+          documentId: resolvedDocumentId,
         };
       }
     }
   }
 
-  return { workstreamId: null, artifactId: resolvedArtifactId };
+  return { workstreamId: null, documentId: resolvedDocumentId };
 }

@@ -1,4 +1,4 @@
-import { ReviewDecision } from "@repo/api/src/types/artifact";
+import { ReviewDecision } from "@repo/api/src/types/document";
 import type { TransactionClient } from "@repo/database";
 
 /**

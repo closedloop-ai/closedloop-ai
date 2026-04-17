@@ -10,7 +10,7 @@ import type {
  */
 export type WorkflowContext = {
   correlationId: string;
-  artifactId: string;
+  documentId: string;
   workstreamId: string;
   runId: string;
   command?: string;

@@ -815,10 +815,10 @@ describe("repairSinglePrLink — new functionality", () => {
     const mockEntityLinkFindMany = vi.fn().mockResolvedValue([
       {
         sourceId: "artifact-uuid-1",
-        sourceType: EntityType.Artifact,
+        sourceType: EntityType.Document,
       },
     ]);
-    const mockArtifactFindFirst = vi.fn().mockResolvedValue({
+    const mockDocumentFindFirst = vi.fn().mockResolvedValue({
       workstreamId: "ws-from-artifact",
     });
 
@@ -836,8 +836,8 @@ describe("repairSinglePrLink — new functionality", () => {
         // resolveWorkstreamId call 2: artifact.findFirst
         (cb: any) =>
           cb({
-            artifact: {
-              findFirst: mockArtifactFindFirst,
+            document: {
+              findFirst: mockDocumentFindFirst,
             },
           }),
       ]
@@ -870,7 +870,7 @@ describe("repairSinglePrLink — new functionality", () => {
         where: expect.objectContaining({ organizationId: ORG_ID }),
       })
     );
-    expect(mockArtifactFindFirst).toHaveBeenCalledWith(
+    expect(mockDocumentFindFirst).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({ organizationId: ORG_ID }),
       })
@@ -887,10 +887,10 @@ describe("repairSinglePrLink — new functionality", () => {
     const mockEntityLinkFindManyArtifact = vi.fn().mockResolvedValue([
       {
         sourceId: "artifact-uuid-2",
-        sourceType: EntityType.Artifact,
+        sourceType: EntityType.Document,
       },
     ]);
-    const mockArtifactFindFirst = vi
+    const mockDocumentFindFirst = vi
       .fn()
       .mockResolvedValue({ workstreamId: null });
     const mockEntityLinkFindManyFeature = vi.fn().mockResolvedValue([
@@ -917,8 +917,8 @@ describe("repairSinglePrLink — new functionality", () => {
         // resolveWorkstreamId call 2: artifact.findFirst — workstreamId is null → continue to feature
         (cb: any) =>
           cb({
-            artifact: {
-              findFirst: mockArtifactFindFirst,
+            document: {
+              findFirst: mockDocumentFindFirst,
             },
           }),
         // resolveWorkstreamId call 3: entityLink.findMany (feature links)
@@ -965,7 +965,7 @@ describe("repairSinglePrLink — new functionality", () => {
         where: expect.objectContaining({ organizationId: ORG_ID }),
       })
     );
-    expect(mockArtifactFindFirst).toHaveBeenCalledWith(
+    expect(mockDocumentFindFirst).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({ organizationId: ORG_ID }),
       })
@@ -1090,15 +1090,15 @@ describe("repairSinglePrLink — new functionality", () => {
               findMany: vi.fn().mockResolvedValue([
                 {
                   sourceId: "artifact-uuid-3",
-                  sourceType: EntityType.Artifact,
+                  sourceType: EntityType.Document,
                 },
               ]),
             },
           }),
-        // resolveWorkstreamId call 2: artifact.findFirst
+        // resolveWorkstreamId call 2: document.findFirst
         (cb: any) =>
           cb({
-            artifact: {
+            document: {
               findFirst: vi.fn().mockResolvedValue({
                 workstreamId: "ws-resolved",
               }),

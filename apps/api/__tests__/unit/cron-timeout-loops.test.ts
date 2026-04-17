@@ -461,7 +461,7 @@ type AnomalyCandidateFixture = {
   id: string;
   organizationId: string;
   computeTargetId: string | null;
-  artifactId: string | null;
+  documentId: string | null;
   command: string;
   tokensInput: number;
   tokensOutput: number;
@@ -530,7 +530,7 @@ describe("GET /api/cron/timeout-loops -- anomaly detection", () => {
       id: loopId,
       organizationId: "org-1",
       computeTargetId,
-      artifactId,
+      documentId: artifactId,
       command: LoopCommand.Execute,
       tokensInput: 0,
       tokensOutput: 0,
@@ -550,7 +550,7 @@ describe("GET /api/cron/timeout-loops -- anomaly detection", () => {
       loopId,
       computeTargetId,
       durationMs,
-      artifactId,
+      documentId: artifactId,
     });
   });
 
@@ -565,7 +565,7 @@ describe("GET /api/cron/timeout-loops -- anomaly detection", () => {
       id: "loop-ghost-2",
       organizationId: "org-1",
       computeTargetId: "ct-1",
-      artifactId: "artifact-1",
+      documentId: "artifact-1",
       command: LoopCommand.Execute,
       tokensInput: 0,
       tokensOutput: 0,
@@ -596,7 +596,7 @@ describe("GET /api/cron/timeout-loops -- anomaly detection", () => {
       id: loopId,
       organizationId: "org-1",
       computeTargetId,
-      artifactId,
+      documentId: artifactId,
       command: LoopCommand.Execute,
       tokensInput: 0,
       tokensOutput: 0,
@@ -616,7 +616,7 @@ describe("GET /api/cron/timeout-loops -- anomaly detection", () => {
       loopId,
       computeTargetId,
       durationMs: 600_000,
-      artifactId,
+      documentId: artifactId,
     });
   });
 
@@ -630,7 +630,7 @@ describe("GET /api/cron/timeout-loops -- anomaly detection", () => {
       id: "loop-ghost-4",
       organizationId: "org-1",
       computeTargetId: "ct-1",
-      artifactId: "artifact-1",
+      documentId: "artifact-1",
       command: LoopCommand.Execute,
       tokensInput: 100, // non-zero — has consumed tokens, not a ghost
       tokensOutput: 0,
@@ -658,7 +658,7 @@ describe("GET /api/cron/timeout-loops -- anomaly detection", () => {
       id: "loop-ghost-5",
       organizationId: "org-1",
       computeTargetId: "ct-1",
-      artifactId: "artifact-1",
+      documentId: "artifact-1",
       command: LoopCommand.Plan, // PLAN, not EXECUTE — should not trigger
       tokensInput: 0,
       tokensOutput: 0,

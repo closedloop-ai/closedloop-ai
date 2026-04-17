@@ -170,7 +170,7 @@ describe("projectsService.findFavoritesByUser", () => {
           settings: null,
           assignee: null,
           teams: [],
-          artifacts: [],
+          documents: [],
         },
       },
     ];

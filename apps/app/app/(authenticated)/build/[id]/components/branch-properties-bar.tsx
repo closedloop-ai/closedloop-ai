@@ -1,7 +1,7 @@
 "use client";
 
-import { ArtifactType } from "@repo/api/src/types/artifact";
 import { ChecksStatus, ReviewDecision } from "@repo/api/src/types/branch-view";
+import { DocumentType } from "@repo/api/src/types/document";
 import {
   Avatar,
   AvatarFallback,
@@ -10,11 +10,11 @@ import {
 import { BoxIcon, CheckCircle2, Clock, XCircle } from "lucide-react";
 import Link from "next/link";
 import { useCurrentUser } from "@/hooks/queries/use-users";
-import { ARTIFACT_TYPE_ICONS } from "@/lib/project-constants";
+import { DOCUMENT_TYPE_ICONS } from "@/lib/project-constants";
 import { getUserInitials } from "@/lib/user-utils";
 import type { BranchViewData } from "../types";
 
-const PlanIcon = ARTIFACT_TYPE_ICONS[ArtifactType.ImplementationPlan];
+const PlanIcon = DOCUMENT_TYPE_ICONS[DocumentType.ImplementationPlan];
 
 const PLAN_TITLE_PREFIX = "Implementation plan: ";
 

@@ -290,15 +290,15 @@ const MCP_TOOL_GROUPS = [
     tools: ["list-projects", "get-project", "create-project", "update-project"],
   },
   {
-    label: "Artifacts",
+    label: "Documents",
     tools: [
-      "list-artifacts",
-      "get-artifact",
-      "create-artifact",
-      "update-artifact",
-      "create-artifact-version",
-      "list-artifact-versions",
-      "get-related-artifacts",
+      "list-documents",
+      "get-document",
+      "create-document",
+      "update-document",
+      "create-document-version",
+      "list-document-versions",
+      "get-related-documents",
     ],
   },
   {
@@ -382,7 +382,7 @@ function QuickStartGuide() {
         <div className="space-y-2">
           <p className="font-medium text-sm">REST API</p>
           <pre className="overflow-x-auto rounded-md bg-muted p-3 font-mono text-xs">
-            {`curl https://api.closedloop.ai/artifacts -H "Authorization: Bearer sk_live_YOUR_KEY"`}
+            {`curl https://api.closedloop.ai/documents -H "Authorization: Bearer sk_live_YOUR_KEY"`}
           </pre>
         </div>
         <div className="space-y-2">
