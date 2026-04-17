@@ -377,6 +377,14 @@ function matchesSearch(entry: GroupedEntry, query: string): boolean {
     return true;
   }
 
+  if (entry.data?.subtype?.toLowerCase().includes(lowerQuery)) {
+    return true;
+  }
+
+  if (entry.data?.resultText?.toLowerCase().includes(lowerQuery)) {
+    return true;
+  }
+
   // Search within subagent group content
   if (
     entry.subagentGroups?.some((group) => {
@@ -866,7 +874,7 @@ function LogEntryRow({
     if (
       isResult &&
       typeof entry.data?.totalCostUsd === "number" &&
-      entry.data.totalCostUsd > 0
+      entry.data.totalCostUsd >= 0
     ) {
       metadata.push(formatCurrency(entry.data.totalCostUsd));
     }

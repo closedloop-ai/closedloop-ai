@@ -91,6 +91,32 @@ describe("parseJsonlLine", () => {
     expect(result!.data?.resultText).toBe("done");
   });
 
+  it("normalizes result entries whose result is a content-block array", () => {
+    const line = JSON.stringify({
+      type: "result",
+      subtype: "success",
+      result: [
+        { type: "text", text: "first chunk " },
+        { type: "tool_use", id: "abc" },
+        { type: "text", text: "second chunk" },
+      ],
+    });
+    const result = parseJsonlLine(line);
+    expect(result).not.toBeNull();
+    expect(result!.data?.resultText).toBe("first chunk second chunk");
+  });
+
+  it("leaves resultText undefined when the result array has no text blocks", () => {
+    const line = JSON.stringify({
+      type: "result",
+      subtype: "success",
+      result: [{ type: "tool_use", id: "abc" }],
+    });
+    const result = parseJsonlLine(line);
+    expect(result).not.toBeNull();
+    expect(result!.data?.resultText).toBeUndefined();
+  });
+
   it("returns null for malformed JSON", () => {
     expect(parseJsonlLine("{broken")).toBeNull();
     expect(parseJsonlLine("")).toBeNull();

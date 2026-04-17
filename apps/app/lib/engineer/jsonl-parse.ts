@@ -81,8 +81,7 @@ export function parseJsonlLine(line: string): ParsedLogEntry | null {
         data: {
           type: entryType,
           subtype: parsed.subtype,
-          resultText:
-            typeof parsed.result === "string" ? parsed.result : undefined,
+          resultText: extractResultText(parsed.result),
           durationMs:
             typeof parsed.duration_ms === "number"
               ? parsed.duration_ms
@@ -170,4 +169,25 @@ function isSupportedLogEntryType(value: unknown): value is LogEntryType {
     typeof value === "string" &&
     SUPPORTED_LOG_ENTRY_TYPES.has(value as LogEntryType)
   );
+}
+
+function extractResultText(value: unknown): string | undefined {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const texts: string[] = [];
+  for (const block of value) {
+    if (
+      block &&
+      typeof block === "object" &&
+      (block as { type?: unknown }).type === "text" &&
+      typeof (block as { text?: unknown }).text === "string"
+    ) {
+      texts.push((block as { text: string }).text);
+    }
+  }
+  return texts.length > 0 ? texts.join("") : undefined;
 }
