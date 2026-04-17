@@ -4,7 +4,11 @@ import { Dialog, DialogTitle } from "@repo/design-system/components/ui/dialog";
 import { MessageCircle } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ExpandableDialogContent } from "@/components/engineer/ExpandableDialogContent";
-import { decodeText, extractZip } from "@/lib/engineer/run-viewer-utils";
+import {
+  buildFileTree,
+  decodeText,
+  extractZip,
+} from "@/lib/engineer/run-viewer-utils";
 import type { RunData } from "@/types/run-viewer";
 import { ContentViewer } from "./ContentViewer";
 import { FileTreeSidebar } from "./FileTreeSidebar";
@@ -16,6 +20,28 @@ type RunViewerDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
 };
+
+function getUploadType(file: File): "zip" | "jsonl" | null {
+  const normalizedName = file.name.toLowerCase();
+  const normalizedType = file.type.toLowerCase();
+
+  if (
+    normalizedName.endsWith(".zip") ||
+    normalizedType === "application/zip" ||
+    normalizedType === "application/x-zip-compressed"
+  ) {
+    return "zip";
+  }
+  if (
+    normalizedName.endsWith(".jsonl") ||
+    normalizedType === "application/x-ndjson" ||
+    normalizedType === "application/jsonl" ||
+    normalizedType === "application/jsonlines"
+  ) {
+    return "jsonl";
+  }
+  return null;
+}
 
 export function RunViewerDialog({
   open,
@@ -35,24 +61,43 @@ export function RunViewerDialog({
     setIsExtracting(true);
     setError(null);
     try {
-      const data = await extractZip(file);
-      setRunData(data);
-      setSessionName(file.name.replace(/\.zip$/, ""));
-      setSelectedFile(null);
+      const uploadType = getUploadType(file);
+      if (uploadType === "zip") {
+        const data = await extractZip(file);
+        setRunData(data);
+        setSessionName(file.name.replace(/\.zip$/i, ""));
+        setSelectedFile(null);
 
-      // Upload zip server-side for Claude file tools
-      const formData = new FormData();
-      formData.append("file", file);
-      const res = await fetch("/api/gateway/run-viewer-extract", {
-        method: "POST",
-        body: formData,
-      });
-      if (res.ok) {
-        const { runDir: dir } = await res.json();
-        setRunDir(dir);
+        // Upload zip server-side for Claude file tools
+        const formData = new FormData();
+        formData.append("file", file);
+        const res = await fetch("/api/gateway/run-viewer-extract", {
+          method: "POST",
+          body: formData,
+        });
+        if (res.ok) {
+          const { runDir: dir } = await res.json();
+          setRunDir(dir);
+        }
+        return;
       }
+
+      if (uploadType === "jsonl") {
+        const raw = new Uint8Array(await file.arrayBuffer());
+        const filePath = file.name;
+        setRunData({
+          files: new Map([[filePath, raw]]),
+          tree: buildFileTree([filePath]),
+        });
+        setSessionName(file.name.replace(/\.jsonl$/i, ""));
+        setSelectedFile(filePath);
+        setRunDir(null);
+        return;
+      }
+
+      setError("Unsupported file type. Upload a .zip or .jsonl file.");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to extract zip file");
+      setError(e instanceof Error ? e.message : "Failed to load selected file");
     } finally {
       setIsExtracting(false);
     }

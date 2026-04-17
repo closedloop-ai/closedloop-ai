@@ -32,8 +32,11 @@ export function ZipUploadZone({
     (e: React.DragEvent) => {
       e.preventDefault();
       setIsDragOver(false);
-      const file = e.dataTransfer.files[0];
-      if (file?.name.endsWith(".zip")) {
+      const itemFile = Array.from(e.dataTransfer.items)
+        .find((item) => item.kind === "file")
+        ?.getAsFile();
+      const file = e.dataTransfer.files[0] ?? itemFile;
+      if (file) {
         onFileSelected(file);
       }
     },
@@ -54,7 +57,7 @@ export function ZipUploadZone({
     return (
       <div className="flex h-full flex-col items-center justify-center gap-4">
         <Loader2 className="size-8 animate-spin text-muted-foreground" />
-        <p className="text-muted-foreground text-sm">Extracting archive...</p>
+        <p className="text-muted-foreground text-sm">Loading file...</p>
       </div>
     );
   }
@@ -85,7 +88,9 @@ export function ZipUploadZone({
         />
         <div className="text-center">
           <p className="font-medium text-sm">
-            {isDragOver ? "Drop zip file here" : "Drop a run zip file here"}
+            {isDragOver
+              ? "Drop file here"
+              : "Drop a run zip or .jsonl file here"}
           </p>
           <p className="mt-1 text-muted-foreground text-xs">
             or click to browse
@@ -94,7 +99,6 @@ export function ZipUploadZone({
       </div>
 
       <input
-        accept=".zip"
         className="hidden"
         onChange={handleInputChange}
         ref={inputRef}

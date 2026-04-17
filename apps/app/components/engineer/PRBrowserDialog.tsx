@@ -117,7 +117,7 @@ function addReviewEntry(
     [provider]: {
       config: {
         instructions: data.config?.instructions ?? "",
-        model: data.config?.model ?? "claude-opus-4-6",
+        model: data.config?.model ?? "claude-opus-4-7",
         reasoningEffort: data.config?.reasoningEffort ?? "medium",
         reviewMode: data.config?.reviewMode ?? "base",
         provider: (data.provider as "claude" | "codex") ?? provider,

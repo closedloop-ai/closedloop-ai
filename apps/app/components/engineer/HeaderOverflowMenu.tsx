@@ -9,11 +9,11 @@ import {
 } from "@repo/design-system/components/ui/dropdown-menu";
 import {
   Brain,
-  FolderOpen,
   GitPullRequest,
   Moon,
   MoreVertical,
   Sun,
+  Terminal,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { PRBrowserDialog } from "@/components/engineer/PRBrowserDialog";
@@ -94,8 +94,8 @@ export function HeaderOverflowMenu({
             className="cursor-pointer"
             onClick={() => setRunViewerOpen(true)}
           >
-            <FolderOpen className="size-4" />
-            View Run...
+            <Terminal className="size-4" />
+            Log Viewer...
           </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem

@@ -50,6 +50,13 @@ export type ParsedLogEntry = {
     hookEvent?: string;
     hookName?: string;
     command?: string;
+    resultText?: string;
+    durationMs?: number;
+    durationApiMs?: number;
+    numTurns?: number;
+    stopReason?: string | null;
+    totalCostUsd?: number;
+    isError?: boolean;
   };
 };
 
@@ -61,6 +68,45 @@ export function parseJsonlLine(line: string): ParsedLogEntry | null {
   try {
     const parsed = JSON.parse(line);
     const entryType = parsed.type;
+
+    // Result entries are lifecycle/system-like metadata emitted at turn/session boundaries.
+    // Normalize to system so they render in viewer progress streams instead of being dropped.
+    if (entryType === "result") {
+      return {
+        type: LogEntryType.System,
+        uuid: parsed.uuid,
+        timestamp: parsed.timestamp || "",
+        parentToolUseId: parsed.parent_tool_use_id,
+        message: undefined,
+        data: {
+          type: entryType,
+          subtype: parsed.subtype,
+          resultText:
+            typeof parsed.result === "string" ? parsed.result : undefined,
+          durationMs:
+            typeof parsed.duration_ms === "number"
+              ? parsed.duration_ms
+              : undefined,
+          durationApiMs:
+            typeof parsed.duration_api_ms === "number"
+              ? parsed.duration_api_ms
+              : undefined,
+          numTurns:
+            typeof parsed.num_turns === "number" ? parsed.num_turns : undefined,
+          stopReason:
+            typeof parsed.stop_reason === "string" ||
+            parsed.stop_reason === null
+              ? parsed.stop_reason
+              : undefined,
+          totalCostUsd:
+            typeof parsed.total_cost_usd === "number"
+              ? parsed.total_cost_usd
+              : undefined,
+          isError:
+            typeof parsed.is_error === "boolean" ? parsed.is_error : undefined,
+        },
+      };
+    }
 
     // Map system entries
     if (entryType === LogEntryType.System) {
@@ -79,7 +125,7 @@ export function parseJsonlLine(line: string): ParsedLogEntry | null {
       };
     }
 
-    // Skip unknown types (e.g. result, content_block_delta)
+    // Skip unknown types (e.g. content_block_delta)
     if (!isSupportedLogEntryType(entryType)) {
       return null;
     }

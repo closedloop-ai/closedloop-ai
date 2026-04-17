@@ -69,9 +69,26 @@ describe("parseJsonlLine", () => {
     expect(parseJsonlLine(line)).toBeNull();
   });
 
-  it("returns null for result type", () => {
-    const line = JSON.stringify({ type: "result" });
-    expect(parseJsonlLine(line)).toBeNull();
+  it("normalizes result type into a system entry", () => {
+    const line = JSON.stringify({
+      type: "result",
+      subtype: "success",
+      duration_ms: 421,
+      num_turns: 4,
+      total_cost_usd: 0,
+      is_error: false,
+      result: "done",
+    });
+    const result = parseJsonlLine(line);
+    expect(result).not.toBeNull();
+    expect(result!.type).toBe("system");
+    expect(result!.data?.type).toBe("result");
+    expect(result!.data?.subtype).toBe("success");
+    expect(result!.data?.durationMs).toBe(421);
+    expect(result!.data?.numTurns).toBe(4);
+    expect(result!.data?.totalCostUsd).toBe(0);
+    expect(result!.data?.isError).toBe(false);
+    expect(result!.data?.resultText).toBe("done");
   });
 
   it("returns null for malformed JSON", () => {

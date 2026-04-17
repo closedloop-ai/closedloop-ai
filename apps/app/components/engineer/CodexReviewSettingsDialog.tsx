@@ -60,9 +60,9 @@ export function CodexReviewSettingsDialog({
   });
   const [model, setModel] = useState(() => {
     if (globalThis.window === undefined) {
-      return "claude-opus-4-6";
+      return "claude-opus-4-7";
     }
-    return localStorage.getItem(LOCAL_STORAGE_KEYS.model) || "claude-opus-4-6";
+    return localStorage.getItem(LOCAL_STORAGE_KEYS.model) || "claude-opus-4-7";
   });
   const [reasoningEffort, setReasoningEffort] = useState(() => {
     if (globalThis.window === undefined) {
