@@ -2,7 +2,6 @@
 
 import { CURRENT_DESKTOP_API_NAMESPACE } from "@repo/api/src/desktop-api-namespace";
 import type { StartPlanLoopResponse } from "@repo/api/src/types/plan-loop";
-import { log } from "@repo/observability/log";
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -229,20 +228,10 @@ export function useStartPlanLoop(
       try {
         const computeResult = getRequiredLoopComputeTargetId();
         if (!computeResult.ok) {
-          log.warn(
-            "[engineer-debug] startPlanLoop aborted: no compute target",
-            { error: computeResult.error, ticketId: ticket.identifier }
-          );
           toast.error(computeResult.error);
           return { launched: false, alreadyRunning: false };
         }
         const desktopApiNamespace = await resolveDesktopApiNamespaceHint();
-
-        log.debug("[engineer-debug] startPlanLoop Phase 1: prepare", {
-          ticketId: ticket.identifier,
-          computeTargetId: computeResult.computeTargetId,
-          repoPath,
-        });
 
         // Phase 1: Gateway prepare -- filesystem-only, no API call
         const prepareResult = await gatewayPrepare(
@@ -250,11 +239,6 @@ export function useStartPlanLoop(
           repoPath,
           baseBranch
         );
-
-        log.debug("[engineer-debug] startPlanLoop Phase 2: API call", {
-          ticketId: ticket.identifier,
-          prepareResult,
-        });
 
         // Phase 2: Direct browser-to-API call with Clerk token
         const apiBody: Record<string, unknown> = {

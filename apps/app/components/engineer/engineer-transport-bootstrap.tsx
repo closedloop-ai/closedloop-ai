@@ -8,7 +8,6 @@ import {
 import type { ComputeTarget } from "@repo/api/src/types/compute-target";
 import { EngineerRoutingMode } from "@repo/api/src/types/relay";
 import { useAuth } from "@repo/auth/client";
-import { log } from "@repo/observability/log";
 import { useEffect } from "react";
 import { useComputeTargetStatusStream } from "@/hooks/queries/use-compute-target-status-stream";
 import { useComputeTargets } from "@/hooks/queries/use-compute-targets";
@@ -64,32 +63,12 @@ export function EngineerTransportBootstrap() {
 
     const current = getEngineerRoutingSelection();
 
-    log.debug("[engineer-debug] Transport bootstrap routing decision", {
-      electronDetected: detection.detected,
-      electronPort: detection.port,
-      electronMachineName: detection.machineName,
-      currentMode: current.mode,
-      currentSource: current.source,
-      currentComputeTargetId: current.computeTargetId,
-      cloudRelayEnabled: CLOUD_RELAY_ENABLED,
-      registeredTargets: targets?.map((t) => ({
-        id: t.id,
-        machineName: t.machineName,
-        isOnline: t.isOnline,
-      })),
-    });
-
     // Always preserve manual selection, including offline targets that may come
     // online later.
     if (
       current.source === "manual" &&
       (CLOUD_RELAY_ENABLED || current.mode !== EngineerRoutingMode.CloudRelay)
     ) {
-      log.debug(
-        "[engineer-debug] Preserving manual routing selection:",
-        current.mode,
-        current.computeTargetId
-      );
       return;
     }
 
@@ -103,13 +82,6 @@ export function EngineerTransportBootstrap() {
         userId,
         targets
       );
-      log.debug(
-        "[engineer-debug] Electron detected, setting LocalElectron mode",
-        {
-          machineName: detection.machineName,
-          matchedTargetId: localTarget?.id ?? null,
-        }
-      );
       setEngineerRoutingAutoSelection(
         EngineerRoutingMode.LocalElectron,
         localTarget?.id ?? null,
@@ -119,24 +91,14 @@ export function EngineerTransportBootstrap() {
     }
 
     if (!CLOUD_RELAY_ENABLED) {
-      log.debug(
-        "[engineer-debug] Electron not detected and cloud relay disabled -- no routing change"
-      );
       return;
     }
 
     // Hosted fallback: do not auto-select a cloud target. Users must choose one.
     if (current.mode === EngineerRoutingMode.CloudRelay) {
-      log.debug(
-        "[engineer-debug] Already in CloudRelay mode, computeTargetId:",
-        current.computeTargetId
-      );
       return;
     }
 
-    log.debug(
-      "[engineer-debug] Electron not detected from hosted origin -- falling back to CloudRelay with null computeTargetId"
-    );
     setEngineerRoutingAutoSelection(EngineerRoutingMode.CloudRelay, null, {
       force: true,
     });
@@ -198,12 +160,7 @@ export function EngineerTransportBootstrap() {
       });
     };
 
-    syncDesktopApiNamespace().catch((error) => {
-      log.warn("[engineer-debug] Failed to sync desktop API namespace", {
-        computeTargetId: localTarget.id,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    });
+    syncDesktopApiNamespace().catch(() => undefined);
 
     return () => {
       cancelled = true;
