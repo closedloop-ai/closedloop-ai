@@ -12,12 +12,10 @@ import { Toaster as Sonner, type ToasterProps, toast } from "sonner"
 
 const Toaster = ({ ...props }: ToasterProps) => {
   const { theme = "system" } = useTheme()
-  const sonnerTheme: ToasterProps["theme"] =
-    theme === "hybrid" ? "light" : (theme as ToasterProps["theme"])
 
   return (
     <Sonner
-      theme={sonnerTheme}
+      theme={theme as ToasterProps["theme"]}
       className="toaster group"
       icons={{
         success: <CircleCheckIcon className="size-4" />,

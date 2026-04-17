@@ -21,21 +21,8 @@ type ThemeProviderProperties = {
 const NextThemeProvider =
   BaseThemeProvider as unknown as FC<ThemeProviderProperties>;
 
-const defaultThemes = ["light", "dark", "hybrid", "system"];
-
-/** Maps theme id → class on <html>. Ensures classList.remove uses these three (next-themes uses
- *  Object.values(value) for removal when `value` is set; without it, a stale list can leave
- *  `hybrid` on the element when switching to light). `system` resolves to light/dark before apply. */
-const defaultThemeClassNames: Record<string, string> = {
-  dark: "dark",
-  hybrid: "hybrid",
-  light: "light",
-};
-
 export const ThemeProvider = ({
   children,
-  themes = defaultThemes,
-  value = defaultThemeClassNames,
   ...properties
 }: ThemeProviderProperties) => (
   <NextThemeProvider
@@ -43,8 +30,6 @@ export const ThemeProvider = ({
     defaultTheme="system"
     disableTransitionOnChange
     enableSystem
-    themes={themes}
-    value={value}
     {...properties}
   >
     {children}

@@ -14,7 +14,6 @@ import {
 
 const themes = [
   { label: "Light", value: "light" },
-  { label: "Hybrid", value: "hybrid" },
   { label: "Dark", value: "dark" },
   { label: "System", value: "system" },
 ];

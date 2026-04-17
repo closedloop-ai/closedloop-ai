@@ -1,6 +1,6 @@
 /* Liveblocks theme overrides.
    Maps --lb-* tokens to the design-system's CSS custom properties so
-   inbox notifications respect light / dark / hybrid theme changes. */
+   inbox notifications respect light / dark theme changes. */
 
 .lb-root {
   --lb-accent: var(--primary);
