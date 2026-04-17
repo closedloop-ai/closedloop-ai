@@ -50,7 +50,9 @@
           "performance": {
             // Remaining regex issues are mostly parser/streaming utilities that
             // require careful hoisting to avoid changing runtime behavior.
-            "useTopLevelRegex": "off"
+            "useTopLevelRegex": "off",
+            // Keep compatibility re-export shims until explicitly approved for removal.
+            "noBarrelFile": "off"
           },
           "correctness": {
             // Remaining exhaustive-deps findings need behavior-safe effect refactors.
