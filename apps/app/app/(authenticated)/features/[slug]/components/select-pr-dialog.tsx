@@ -152,7 +152,7 @@ export function SelectPullRequestDialog({
     try {
       const externalLink = await createExternalLink.mutateAsync({
         projectId,
-        documentId: planId,
+        documentId: planId ?? undefined,
         type: ExternalLinkType.PullRequest,
         title: `PR #${pr.number}: ${pr.title}`,
         externalUrl: pr.htmlUrl,
