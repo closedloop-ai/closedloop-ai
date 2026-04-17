@@ -7,7 +7,7 @@
  */
 
 import type { ChatMessage, ContentBlock } from "@/components/chat/types";
-import { readNdjsonLines } from "./stream-utils";
+import { readNdjsonLines } from "@/lib/chat/stream-utils";
 
 export type CodexStreamState = {
   accumulated: string;

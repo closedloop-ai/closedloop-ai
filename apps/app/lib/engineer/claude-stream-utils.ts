@@ -95,7 +95,7 @@ export function describeClaudeEvent(event: ClaudeEvent): string {
     }
     return `result (subtype=${event.subtype ?? "?"})`;
   }
-  return event.type;
+  return event.type ?? "unknown";
 }
 
 export function extractClaudeSessionId(event: ClaudeEvent): string | null {
