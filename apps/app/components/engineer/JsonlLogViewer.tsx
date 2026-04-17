@@ -377,6 +377,14 @@ function matchesSearch(entry: GroupedEntry, query: string): boolean {
     return true;
   }
 
+  if (entry.data?.subtype?.toLowerCase().includes(lowerQuery)) {
+    return true;
+  }
+
+  if (entry.data?.resultText?.toLowerCase().includes(lowerQuery)) {
+    return true;
+  }
+
   // Search within subagent group content
   if (
     entry.subagentGroups?.some((group) => {
@@ -437,6 +445,16 @@ function formatTimestamp(timestamp: string): string {
   } catch {
     return "";
   }
+}
+
+function formatCurrency(usd: number): string {
+  if (usd === 0) {
+    return "$0";
+  }
+  if (usd < 0.01) {
+    return "<$0.01";
+  }
+  return `$${usd.toFixed(2)}`;
 }
 
 /**
@@ -838,24 +856,51 @@ function LogEntryRow({
 
   // System/progress messages - compact centered style
   if (isSystem) {
+    const isResult = entry.data?.type === "result";
     const label =
       entry.data?.subtype ||
       entry.data?.hookName ||
       entry.data?.hookEvent ||
       "System event";
+    const metadata: string[] = [];
+    if (isResult && typeof entry.data?.durationMs === "number") {
+      metadata.push(`${entry.data.durationMs}ms`);
+    }
+    if (isResult && typeof entry.data?.numTurns === "number") {
+      metadata.push(
+        `${entry.data.numTurns} turn${entry.data.numTurns === 1 ? "" : "s"}`
+      );
+    }
+    if (
+      isResult &&
+      typeof entry.data?.totalCostUsd === "number" &&
+      entry.data.totalCostUsd >= 0
+    ) {
+      metadata.push(formatCurrency(entry.data.totalCostUsd));
+    }
     return (
-      <div className="px-5 py-2">
+      <div className="space-y-1 px-5 py-2">
         <div className="flex items-center justify-center gap-2 text-[11px] text-muted-foreground/50">
           <Activity className="size-3" />
           <span className="font-mono">
             {highlightMatches(label, searchQuery)}
           </span>
+          {metadata.length > 0 && (
+            <span className="font-mono text-muted-foreground/40">
+              {metadata.join(" • ")}
+            </span>
+          )}
           {entry.timestamp && (
             <span className="font-mono tabular-nums">
               {formatTimestamp(entry.timestamp)}
             </span>
           )}
         </div>
+        {isResult && entry.data?.resultText?.trim() && (
+          <div className="mx-auto max-w-[90%] whitespace-pre-wrap rounded-lg border border-border/50 bg-muted/30 px-3 py-2 font-mono text-muted-foreground text-xs">
+            {highlightMatches(entry.data.resultText, searchQuery)}
+          </div>
+        )}
       </div>
     );
   }
