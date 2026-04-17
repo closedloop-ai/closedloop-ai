@@ -41,9 +41,7 @@ async function assertDelivered(
       commandId: context.commandId,
       reason: result.reason,
     });
-    throw new Error(
-      `Relay dispatch not delivered: ${result.reason ?? "target offline"}`
-    );
+    throw new RelayDispatchNotDeliveredError(result.reason);
   }
 }
 
@@ -126,15 +124,26 @@ async function dispatchRelayOperation(
 
 export class DispatchError extends Error {
   readonly commandId: string;
-  constructor(message: string, commandId: string) {
+  readonly dispatchReason?: string;
+  constructor(message: string, commandId: string, dispatchReason?: string) {
     super(message);
     this.name = "DispatchError";
     this.commandId = commandId;
+    this.dispatchReason = dispatchReason;
   }
 }
 
 export function isDispatchError(error: unknown): error is DispatchError {
   return error instanceof DispatchError;
+}
+
+class RelayDispatchNotDeliveredError extends Error {
+  readonly reason?: string;
+  constructor(reason?: string) {
+    super(`Relay dispatch not delivered: ${reason ?? "target offline"}`);
+    this.name = "RelayDispatchNotDeliveredError";
+    this.reason = reason;
+  }
 }
 
 type LaunchDesktopOpts = {
@@ -243,9 +252,12 @@ export async function launchLoopOnDesktop(
       true
     );
   } catch (err) {
+    const dispatchReason =
+      err instanceof RelayDispatchNotDeliveredError ? err.reason : undefined;
     throw new DispatchError(
       err instanceof Error ? err.message : String(err),
-      commandId
+      commandId,
+      dispatchReason
     );
   }
 
