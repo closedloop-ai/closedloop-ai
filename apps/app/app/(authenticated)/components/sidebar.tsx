@@ -61,25 +61,25 @@ const orgSwitcherAppearance = {
       width: "100%",
       padding: "0.5rem",
       borderRadius: "0.375rem",
-      color: "hsl(var(--sidebar-foreground))",
+      color: "var(--sidebar-foreground)",
       backgroundColor: "transparent",
       "&:hover": {
-        backgroundColor: "hsl(var(--sidebar-accent))",
-        color: "hsl(var(--sidebar-accent-foreground))",
+        backgroundColor: "var(--sidebar-accent)",
+        color: "var(--sidebar-accent-foreground)",
       },
       "&:focus-visible": {
-        outline: "2px solid hsl(var(--sidebar-ring))",
+        outline: "2px solid var(--sidebar-ring)",
         outlineOffset: "2px",
       },
     },
     organizationSwitcherTriggerIcon: {
-      color: "hsl(var(--sidebar-foreground))",
+      color: "var(--sidebar-foreground)",
       opacity: "0.7",
     },
     organizationPreviewMainIdentifier: {
       fontSize: "0.875rem",
       fontWeight: "500",
-      color: "hsl(var(--sidebar-foreground))",
+      color: "var(--sidebar-foreground)",
     },
     organizationPreviewAvatarContainer: {
       width: "1.75rem",
@@ -339,9 +339,14 @@ export function GlobalSidebar({
                   <UserButton
                     appearance={{
                       elements: {
-                        rootBox: "flex overflow-hidden w-full",
-                        userButtonBox: "flex-row-reverse",
-                        userButtonOuterIdentifier: "truncate pl-0",
+                        rootBox:
+                          "flex overflow-hidden w-full text-sidebar-foreground",
+                        userButtonBox:
+                          "flex-row-reverse text-sidebar-foreground",
+                        userButtonOuterIdentifier:
+                          "truncate pl-0 text-sidebar-foreground",
+                        userButtonTrigger:
+                          "text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground rounded-md",
                       },
                     }}
                     showName
@@ -351,7 +356,7 @@ export function GlobalSidebar({
                 )}
               </div>
               <div className="flex shrink-0 items-center gap-px">
-                <ModeToggle />
+                <ModeToggle className="text-sidebar-foreground" />
               </div>
             </SidebarMenuItem>
           </SidebarMenu>

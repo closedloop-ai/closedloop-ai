@@ -111,7 +111,7 @@ export function PlanSection({
                   disabled={!isReady}
                   onClick={() => onGenerateModalChange(true)}
                   size="sm"
-                  variant="default"
+                  variant="secondary"
                 >
                   Generate Plan
                   <SparklesIcon className="h-4 w-4" />

@@ -110,7 +110,7 @@ export function BranchesSection({
                   disabled={isExecutingPlan}
                   onClick={onStartBuild}
                   size="sm"
-                  variant="default"
+                  variant="secondary"
                 >
                   Start Building
                   <PlayIcon className="h-4 w-4" />

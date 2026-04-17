@@ -38,7 +38,6 @@ import {
 
 type PlanEditorHeaderProps = {
   plan: DocumentWithWorkstream;
-  showMetadataPanel: boolean;
   canShowPanel?: boolean;
   isDraft: boolean;
   isApproved: boolean;
@@ -69,7 +68,6 @@ type PlanEditorHeaderProps = {
 
 export function PlanEditorHeader({
   plan,
-  showMetadataPanel,
   canShowPanel = true,
   isDraft,
   isApproved,
@@ -237,7 +235,7 @@ export function PlanEditorHeader({
           onClick={() => onToggleMetadataPanel()}
           size="icon"
           title="Toggle chat panel"
-          variant={showMetadataPanel ? "secondary" : "ghost"}
+          variant="ghost"
         >
           <PanelRightIcon className="h-4 w-4" />
         </Button>

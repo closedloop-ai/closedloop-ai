@@ -205,7 +205,7 @@ function NameCell({
 
   const statusButton = (
     <button
-      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md hover:bg-accent"
+      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md hover:bg-muted"
       onClick={(e) => e.stopPropagation()}
       type="button"
     >
@@ -235,7 +235,7 @@ function NameCell({
       {indented && <div className="w-7 shrink-0" />}
       {hasChevron && (
         <button
-          className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md ${onToggleExpand ? "hover:bg-accent" : "cursor-default opacity-30"}`}
+          className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md ${onToggleExpand ? "hover:bg-muted" : "cursor-default opacity-30"}`}
           onClick={(e) => {
             e.stopPropagation();
             if (onToggleExpand) {
@@ -259,7 +259,6 @@ function NameCell({
           <DropdownMenuContent align="start">
             {statusOptions.map((value) => (
               <DropdownMenuItem
-                className="hover:!bg-accent focus:!bg-accent data-[highlighted]:!bg-accent"
                 key={value}
                 onClick={(e) => {
                   e.stopPropagation();
@@ -504,7 +503,6 @@ function PriorityCell({ item }: { item: DocumentRowItem }) {
       <DropdownMenuContent align="start">
         {Object.entries(PRIORITY_LABELS).map(([value, label]) => (
           <DropdownMenuItem
-            className="hover:!bg-accent focus:!bg-accent data-[highlighted]:!bg-accent"
             key={value}
             onClick={(e) => {
               e.stopPropagation();
@@ -809,7 +807,7 @@ export function DocumentRow({
       value={{ ...(editHandlers ?? {}), parentHref, parentTitle }}
     >
       <div
-        className="group/row relative grid h-11 min-w-fit bg-background hover:bg-muted/50"
+        className={`group/row relative grid h-11 min-w-fit ${isSelected ? "bg-accent/40 hover:bg-accent/60" : "bg-background hover:bg-muted/40"}`}
         style={{ gridTemplateColumns }}
       >
         {useIndentedBottomBorder ? (
@@ -849,7 +847,7 @@ export function DocumentRow({
           <div className="flex h-11 items-center border-l px-3 py-2">
             {moreMenuContent ?? (
               <button
-                className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-accent"
+                className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted hover:text-foreground"
                 onClick={(e) => {
                   e.stopPropagation();
                   onMoreMenu?.(item, e.currentTarget);

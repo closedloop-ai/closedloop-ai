@@ -27,7 +27,7 @@ export function EmptyState({
         className
       )}
     >
-      <Icon className="mb-4 h-12 w-12 text-muted-foreground/50" />
+      <Icon className="mb-4 h-12 w-12 text-primary" />
       <h3 className="font-medium text-lg">{title}</h3>
       {description ? (
         <p className="mt-1 text-muted-foreground text-sm">{description}</p>

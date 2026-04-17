@@ -8,7 +8,7 @@ import { useTheme } from "next-themes";
  */
 export function useThemeContext() {
   const { theme, setTheme, resolvedTheme } = useTheme();
-  const current = (resolvedTheme ?? theme ?? "light") as "light" | "dark";
+  const current = resolvedTheme ?? theme ?? "light";
   return {
     theme: current,
     setTheme,

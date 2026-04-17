@@ -26,7 +26,7 @@ export function UnderlineTabsTrigger({
   return (
     <TabsTrigger
       className={cn(
-        "h-auto flex-none rounded-none border-0 border-transparent border-b-2 bg-transparent px-3 py-1.5 text-base text-muted-foreground shadow-none data-[state=active]:border-b-indigo-500 data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none",
+        "h-auto flex-none rounded-none border-0 border-transparent border-b-2 bg-transparent px-3 py-1.5 text-base text-muted-foreground shadow-none data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none dark:data-[state=active]:border-primary dark:data-[state=active]:bg-transparent",
         className
       )}
       {...props}

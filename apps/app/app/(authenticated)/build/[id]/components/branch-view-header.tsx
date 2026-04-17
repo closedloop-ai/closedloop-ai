@@ -21,13 +21,11 @@ import type { BranchViewData } from "../types";
 
 type BranchViewHeaderProps = {
   data: BranchViewData;
-  showChatPanel: boolean;
   onToggleChatPanel: () => void;
 };
 
 export function BranchViewHeader({
   data,
-  showChatPanel,
   onToggleChatPanel,
 }: Readonly<BranchViewHeaderProps>) {
   const breadcrumbs: BreadcrumbEntry[] = [
@@ -85,9 +83,9 @@ export function BranchViewHeader({
       <Button
         aria-label="Toggle chat panel"
         onClick={onToggleChatPanel}
-        size="icon"
+        size="icon-sm"
         title="Toggle chat panel"
-        variant={showChatPanel ? "secondary" : "ghost"}
+        variant="ghost"
       >
         <PanelRightIcon className="h-4 w-4" />
       </Button>

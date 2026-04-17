@@ -252,7 +252,6 @@ export function PlanEditor({
       onToggleMetadataPanel={uiState.toggleMetadataPanel}
       plan={plan}
       pullRequest={pullRequest ?? null}
-      showMetadataPanel={uiState.showMetadataPanel}
       showRestore={session.isViewingHistorical}
     />
   ) : null;
