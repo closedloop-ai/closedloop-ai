@@ -88,7 +88,7 @@ describe("RegeneratePlanModal", () => {
     expect(onOpenChange).toHaveBeenCalledWith(false);
   });
 
-  it("syncs additionalRepos when initialAdditionalRepos resolves after mount", () => {
+  it("re-initializes additionalRepos when the modal remounts", () => {
     const onConfirm = vi.fn();
     const onOpenChange = vi.fn();
     const baseProps: ModalProps = {
@@ -100,7 +100,9 @@ describe("RegeneratePlanModal", () => {
       open: true,
       targetRepo: "org/primary-repo",
     };
-    const { rerender } = render(<RegeneratePlanModal {...baseProps} />);
+    const { rerender } = render(
+      <RegeneratePlanModal key="plan-1-v1" {...baseProps} />
+    );
 
     const resolved: AdditionalRepoRef[] = [
       { fullName: "org/repo-one", branch: "main" },
@@ -108,6 +110,7 @@ describe("RegeneratePlanModal", () => {
     ];
     rerender(
       <RegeneratePlanModal
+        key="plan-1-v2"
         {...baseProps}
         initialAdditionalRepos={resolved}
         isLoadingInitialRepos={false}

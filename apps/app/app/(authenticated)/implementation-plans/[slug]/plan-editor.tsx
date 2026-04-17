@@ -466,6 +466,7 @@ export function PlanEditor({
           initialAdditionalRepos={initialAdditionalRepos}
           isLoadingInitialRepos={isLoadingInitialAdditionalRepos}
           isSubmitting={planActions.isRegenerating}
+          key={plan.id}
           onConfirm={planActions.handleRegenerate}
           onOpenChange={setShowRegenerateModal}
           open={showRegenerateModal}

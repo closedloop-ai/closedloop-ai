@@ -11,7 +11,7 @@ import {
   DialogTitle,
 } from "@repo/design-system/components/ui/dialog";
 import { Loader2Icon, RefreshCwIcon } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { AdditionalReposPicker } from "../../components/additional-repos-picker";
 import { normalizeAdditionalRepos } from "../../components/plan-form-utils";
 
@@ -38,17 +38,6 @@ export function RegeneratePlanModal({
     initialAdditionalRepos ?? []
   );
   const [hasIncompleteRepos, setHasIncompleteRepos] = useState(false);
-
-  // Reset to the prop whenever the modal opens so a prior cancel-with-edits
-  // doesn't leak stale selections into the next submission. Also covers the
-  // async initial load from useLoop — the useState initializer only runs once,
-  // so syncing on open ensures the latest saved repos are shown.
-  useEffect(() => {
-    if (open) {
-      setAdditionalRepos(initialAdditionalRepos ?? []);
-      setHasIncompleteRepos(false);
-    }
-  }, [open, initialAdditionalRepos]);
 
   const handleConfirm = () => {
     onConfirm(normalizeAdditionalRepos(additionalRepos));
