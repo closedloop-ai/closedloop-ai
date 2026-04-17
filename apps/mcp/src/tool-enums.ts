@@ -1,5 +1,5 @@
 export const ENTITY_TYPE_VALUES = [
-  "ARTIFACT",
+  "DOCUMENT",
   "FEATURE",
   "EXTERNAL_LINK",
 ] as const;

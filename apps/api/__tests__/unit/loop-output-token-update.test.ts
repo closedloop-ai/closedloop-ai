@@ -38,13 +38,13 @@ vi.mock("@repo/database", () => ({
   },
 }));
 
-vi.mock("@/app/artifacts/service", () => ({
+vi.mock("@/app/documents/service", () => ({
   getCommitterInfo: vi.fn(),
 }));
 
-vi.mock("@/app/artifacts/attachments-service", () => ({
+vi.mock("@/app/documents/attachments-service", () => ({
   attachmentsService: {
-    listWithSignedUrlsByArtifact: vi.fn().mockResolvedValue([]),
+    listWithSignedUrlsByDocument: vi.fn().mockResolvedValue([]),
     listWithSignedUrlsByFeature: vi.fn().mockResolvedValue([]),
   },
   ATTACHMENT_SIGNED_URL_MAX_FILES: 20,
@@ -73,7 +73,7 @@ vi.mock("@/app/settings/api-key-service", () => ({
   apiKeyService: { resolveApiKey: vi.fn() },
 }));
 
-vi.mock("@/lib/auth/loop-runner-jwt", () => ({
+vi.mock("@repo/auth/loop-runner-jwt", () => ({
   issueLoopRunnerToken: vi.fn(),
 }));
 

@@ -118,7 +118,7 @@ export function CodexReviewDialog({
 
   const recordLearningUse = useCallback(
     (used: LearningUsed[]) => {
-      fetch("/api/engineer/symphony/record-learning-use", {
+      fetch("/api/gateway/symphony/record-learning-use", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ticketId, repoPath, learnings: used }),
@@ -128,7 +128,7 @@ export function CodexReviewDialog({
   );
 
   const debateSaveEndpoint = findingId
-    ? `/api/engineer/codex/finding-chat/${encodeURIComponent(findingId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`
+    ? `/api/gateway/codex/finding-chat/${encodeURIComponent(findingId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`
     : undefined;
   const debateInvalidateKey = findingId
     ? queryKeys.findingChatHistory(ticketId, findingId, repoPath)
@@ -220,7 +220,7 @@ export function CodexReviewDialog({
 
     try {
       const response = await fetch(
-        `/api/engineer/codex/review/${encodeURIComponent(ticketId)}`,
+        `/api/gateway/codex/review/${encodeURIComponent(ticketId)}`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -280,7 +280,7 @@ export function CodexReviewDialog({
   const handleStopReview = useCallback(async () => {
     try {
       const response = await fetch(
-        `/api/engineer/codex/stop/${encodeURIComponent(ticketId)}`,
+        `/api/gateway/codex/stop/${encodeURIComponent(ticketId)}`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -315,7 +315,7 @@ export function CodexReviewDialog({
         "Analyze the Codex code review findings. Read the referenced source files and assess whether each finding is valid or a false positive.",
       timestamp: new Date().toISOString(),
     });
-    const url = `/api/engineer/symphony/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
+    const url = `/api/gateway/symphony/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
     stream.sendMessage(
       url,
       {
@@ -359,7 +359,7 @@ export function CodexReviewDialog({
       // Check server for existing history
       try {
         const res = await fetch(
-          `/api/engineer/codex/finding-chat/${encodeURIComponent(fId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`
+          `/api/gateway/codex/finding-chat/${encodeURIComponent(fId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`
         );
         if (res.ok) {
           const data = await res.json();
@@ -383,7 +383,7 @@ export function CodexReviewDialog({
         timestamp: new Date().toISOString(),
       });
 
-      const url = `/api/engineer/codex/finding-chat/${encodeURIComponent(fId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`;
+      const url = `/api/gateway/codex/finding-chat/${encodeURIComponent(fId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`;
       findingStream.sendMessage(
         url,
         {
@@ -446,7 +446,7 @@ export function CodexReviewDialog({
     });
 
     if (selectedFindingIndex !== null && findingId) {
-      const url = `/api/engineer/codex/finding-chat/${encodeURIComponent(findingId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`;
+      const url = `/api/gateway/codex/finding-chat/${encodeURIComponent(findingId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`;
       await findingStream.sendMessage(
         url,
         { message: trimmed },
@@ -464,7 +464,7 @@ export function CodexReviewDialog({
         }
       );
     } else {
-      const url = `/api/engineer/symphony/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
+      const url = `/api/gateway/symphony/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
       await stream.sendMessage(
         url,
         { message: trimmed, activeTab: "plan", codexReview: { model } },
@@ -586,7 +586,7 @@ export function CodexReviewDialog({
     try {
       if (selectedFindingIndex !== null && findingId) {
         await fetch(
-          `/api/engineer/codex/finding-chat/${encodeURIComponent(findingId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`,
+          `/api/gateway/codex/finding-chat/${encodeURIComponent(findingId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`,
           { method: "DELETE" }
         );
         queryClient.setQueryData(
@@ -600,7 +600,7 @@ export function CodexReviewDialog({
         );
       } else {
         await fetch(
-          `/api/engineer/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
+          `/api/gateway/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
           { method: "DELETE" }
         );
         queryClient.setQueryData(
@@ -624,7 +624,7 @@ export function CodexReviewDialog({
     const promises = findings.findings.map((_, idx) => {
       const fId = `finding-${idx}`;
       return fetch(
-        `/api/engineer/codex/finding-chat/${encodeURIComponent(fId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`,
+        `/api/gateway/codex/finding-chat/${encodeURIComponent(fId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`,
         { method: "DELETE" }
       ).catch(() => {});
     });
@@ -639,11 +639,11 @@ export function CodexReviewDialog({
     try {
       await Promise.all([
         fetch(
-          `/api/engineer/codex/status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
+          `/api/gateway/codex/status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
           { method: "DELETE" }
         ),
         fetch(
-          `/api/engineer/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
+          `/api/gateway/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
           { method: "DELETE" }
         ),
         clearAllFindingChats(),
@@ -674,7 +674,7 @@ export function CodexReviewDialog({
     try {
       await Promise.all([
         fetch(
-          `/api/engineer/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
+          `/api/gateway/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
           { method: "DELETE" }
         ),
         clearAllFindingChats(),
@@ -864,7 +864,7 @@ function handleDismissAction(ctx: DismissActionContext) {
     setCurrentDebateFindingIndex(null);
     const dId = `finding-${dismissIdx}`;
     fetch(
-      `/api/engineer/codex/finding-chat/${encodeURIComponent(dId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`,
+      `/api/gateway/codex/finding-chat/${encodeURIComponent(dId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`,
       { method: "DELETE" }
     ).catch(() => {});
     queryClient.setQueryData(
@@ -927,7 +927,7 @@ function sendActionMessage(ctx: SendActionContext, message: string) {
     onLearningsUsed,
   } = ctx;
   if (selectedFindingIndex !== null && findingId) {
-    const url = `/api/engineer/codex/finding-chat/${encodeURIComponent(findingId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`;
+    const url = `/api/gateway/codex/finding-chat/${encodeURIComponent(findingId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`;
     findingStream.sendMessage(
       url,
       { message },
@@ -945,7 +945,7 @@ function sendActionMessage(ctx: SendActionContext, message: string) {
       }
     );
   } else {
-    const url = `/api/engineer/symphony/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
+    const url = `/api/gateway/symphony/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
     stream.sendMessage(
       url,
       { message, activeTab: "plan", codexReview: { model } },

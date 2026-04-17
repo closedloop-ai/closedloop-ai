@@ -79,12 +79,12 @@ export function FeatureEditorHeader({
         <DropdownMenuContent align="end">
           <DropdownMenuItem
             disabled={!isReady || hasPlan}
-            onClick={onGeneratePlan}
+            onClick={() => onGeneratePlan()}
           >
             <SparklesIcon className="h-4 w-4" />
             Generate Plan
           </DropdownMenuItem>
-          <DropdownMenuItem disabled={!hasPlan} onClick={onStartBuild}>
+          <DropdownMenuItem disabled={!hasPlan} onClick={() => onStartBuild()}>
             <PlayIcon className="h-4 w-4" />
             Start Building
           </DropdownMenuItem>
@@ -97,11 +97,11 @@ export function FeatureEditorHeader({
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-[160px]">
-          <DropdownMenuItem onClick={onMoveToProject}>
+          <DropdownMenuItem onClick={() => onMoveToProject()}>
             <FolderInputIcon className="h-4 w-4" />
             Move to Project
           </DropdownMenuItem>
-          <DropdownMenuItem onClick={onDelete} variant="destructive">
+          <DropdownMenuItem onClick={() => onDelete()} variant="destructive">
             <TrashIcon className="h-4 w-4" />
             Delete
           </DropdownMenuItem>
@@ -109,7 +109,7 @@ export function FeatureEditorHeader({
       </DropdownMenu>
       <Button
         aria-label="Toggle chat panel"
-        onClick={onToggleMetadataPanel}
+        onClick={() => onToggleMetadataPanel()}
         size="icon"
         title="Toggle chat panel"
         variant={showMetadataPanel ? "secondary" : "ghost"}

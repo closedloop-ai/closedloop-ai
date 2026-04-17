@@ -32,7 +32,7 @@ vi.mock("@repo/database", () => ({
   EvaluationReportType: { PLAN: "PLAN", CODE: "CODE" },
 }));
 
-vi.mock("@/app/artifacts/service", () => ({
+vi.mock("@/app/documents/service", () => ({
   getCommitterInfo: vi.fn(),
 }));
 
@@ -55,7 +55,7 @@ vi.mock("@/app/settings/api-key-service", () => ({
   apiKeyService: { resolveApiKey: vi.fn() },
 }));
 
-vi.mock("@/lib/auth/loop-runner-jwt", () => ({
+vi.mock("@repo/auth/loop-runner-jwt", () => ({
   issueLoopRunnerToken: vi.fn(),
 }));
 
@@ -215,7 +215,7 @@ describe("handleLoopCompleted command dispatch", () => {
     const loop = buildLoop({
       command: command as "PLAN",
       s3StateKey: "org/loops/loop-1/run-1",
-      artifactId: "artifact-1",
+      documentId: "artifact-1",
     });
     mockLoopsService.findById.mockResolvedValue(loop);
     mockLoopsService.updateStatus.mockResolvedValue(undefined);
@@ -273,7 +273,7 @@ describe("handleLoopCompleted command dispatch", () => {
     const loop = buildLoop({
       command: "PLAN" as const,
       s3StateKey: null,
-      artifactId: "artifact-1",
+      documentId: "artifact-1",
     });
     mockLoopsService.findById.mockResolvedValue(loop);
 
@@ -282,11 +282,11 @@ describe("handleLoopCompleted command dispatch", () => {
     expect(mockPlanDownloadAndIngest).not.toHaveBeenCalled();
   });
 
-  it("loop without artifactId: skips artifact ingestion entirely", async () => {
+  it("loop without documentId: skips artifact ingestion entirely", async () => {
     const loop = buildLoop({
       command: "PLAN" as const,
       s3StateKey: "org/loops/loop-1/run-1",
-      artifactId: null,
+      documentId: null,
     });
     mockLoopsService.findById.mockResolvedValue(loop);
 

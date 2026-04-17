@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { env } from "@/env";
 
 /**
  * Ticket details to pass to Symphony
@@ -34,7 +35,7 @@ export type ActiveSession = {
   /** Loop ID for real plan loops (only set for issue-sourced tickets using the new plan-loop flow) */
   loopId?: string;
   /** Artifact ID for the linked implementation plan (only set for issue-sourced tickets using the new plan-loop flow) */
-  artifactId?: string;
+  documentId?: string;
 };
 
 /**
@@ -59,13 +60,13 @@ export type UseSymphonyLaunchResult = {
   clearAllSessions: () => void;
   /**
    * Merge new fields into an existing session (or create a minimal session).
-   * Used by the plan-loop flow to attach loopId/artifactId before the gateway
+   * Used by the plan-loop flow to attach loopId/documentId before the gateway
    * process starts, so ActiveTicketCard can use them immediately.
    */
   mergeSessionFields: (
     ticketId: string,
     fields: Partial<
-      Pick<ActiveSession, "loopId" | "artifactId" | "worktreePath" | "repoPath">
+      Pick<ActiveSession, "loopId" | "documentId" | "worktreePath" | "repoPath">
     >
   ) => void;
 
@@ -96,7 +97,7 @@ export function useSymphonyLaunch(): UseSymphonyLaunchResult {
 
   // Load all sessions from API on mount
   useEffect(() => {
-    fetch("/api/engineer/symphony/sessions")
+    fetch("/api/gateway/symphony/sessions")
       .then((res) => res.json())
       .then((data) => {
         const sessions: ActiveSession[] = data.sessions || [];
@@ -145,10 +146,10 @@ export function useSymphonyLaunch(): UseSymphonyLaunchResult {
 
       try {
         console.log(
-          "[useSymphonyLaunch] Making POST to /api/engineer/symphony/launch"
+          "[useSymphonyLaunch] Making POST to /api/gateway/symphony/launch"
         );
 
-        const url = "/api/engineer/symphony/launch";
+        const url = "/api/gateway/symphony/launch";
         const fetchOptions: RequestInit = {
           method: "POST",
           headers: {
@@ -159,6 +160,7 @@ export function useSymphonyLaunch(): UseSymphonyLaunchResult {
             repoPath,
             ticket,
             baseBranch,
+            expectedMcpUrl: env.NEXT_PUBLIC_MCP_SERVER_URL,
           }),
         };
 
@@ -188,7 +190,7 @@ export function useSymphonyLaunch(): UseSymphonyLaunchResult {
         // Local handler returns `workDir`, Electron relay returns `worktreePath`.
         const resolvedWorktreePath = data.workDir ?? data.worktreePath;
         const contextRepoPaths = ticket?.contextRepoPaths;
-        await fetch("/api/engineer/symphony/sessions", {
+        await fetch("/api/gateway/symphony/sessions", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -252,7 +254,7 @@ export function useSymphonyLaunch(): UseSymphonyLaunchResult {
 
       // Kill the process if we have a PID
       if (session?.pid) {
-        fetch("/api/engineer/symphony/kill", {
+        fetch("/api/gateway/symphony/kill", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ pid: session.pid }),
@@ -263,7 +265,7 @@ export function useSymphonyLaunch(): UseSymphonyLaunchResult {
 
       // Remove from API
       fetch(
-        `/api/engineer/symphony/sessions?ticketId=${encodeURIComponent(ticketId)}`,
+        `/api/gateway/symphony/sessions?ticketId=${encodeURIComponent(ticketId)}`,
         {
           method: "DELETE",
         }
@@ -283,7 +285,7 @@ export function useSymphonyLaunch(): UseSymphonyLaunchResult {
     activeSessions.forEach((session) => {
       // Kill the process if we have a PID
       if (session.pid) {
-        fetch("/api/engineer/symphony/kill", {
+        fetch("/api/gateway/symphony/kill", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ pid: session.pid }),
@@ -293,7 +295,7 @@ export function useSymphonyLaunch(): UseSymphonyLaunchResult {
       }
 
       fetch(
-        `/api/engineer/symphony/sessions?ticketId=${encodeURIComponent(session.ticketId)}`,
+        `/api/gateway/symphony/sessions?ticketId=${encodeURIComponent(session.ticketId)}`,
         {
           method: "DELETE",
         }
@@ -314,7 +316,7 @@ export function useSymphonyLaunch(): UseSymphonyLaunchResult {
       fields: Partial<
         Pick<
           ActiveSession,
-          "loopId" | "artifactId" | "worktreePath" | "repoPath"
+          "loopId" | "documentId" | "worktreePath" | "repoPath"
         >
       >
     ) => {

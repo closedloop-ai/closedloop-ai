@@ -125,7 +125,7 @@ export function ChangelogDialog({
     setLoading(true);
     setError(null);
 
-    fetch("/api/engineer/version")
+    fetch("/api/gateway/version")
       .then((res) => res.json())
       .then((json) => {
         if (json.error) {

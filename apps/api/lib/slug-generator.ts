@@ -1,4 +1,4 @@
-import { ArtifactType } from "@repo/api/src/types/artifact";
+import { DocumentType } from "@repo/api/src/types/document";
 import { withDb } from "@repo/database";
 import { nanoid } from "nanoid";
 
@@ -42,7 +42,7 @@ export async function generateSlug(
 
 export async function generateArtifactSlug(
   organizationId: string,
-  type: ArtifactType
+  type: DocumentType
 ): Promise<string> {
   const slugPrefix = ARTIFACT_SLUG_PREFIXES[type];
   return slugPrefix
@@ -50,8 +50,8 @@ export async function generateArtifactSlug(
     : nanoid(14);
 }
 
-const ARTIFACT_SLUG_PREFIXES: Partial<Record<ArtifactType, SlugPrefix>> = {
-  [ArtifactType.Prd]: SlugPrefix.Prd,
-  [ArtifactType.ImplementationPlan]: SlugPrefix.Plan,
-  [ArtifactType.Template]: SlugPrefix.Branch,
+const ARTIFACT_SLUG_PREFIXES: Partial<Record<DocumentType, SlugPrefix>> = {
+  [DocumentType.Prd]: SlugPrefix.Prd,
+  [DocumentType.ImplementationPlan]: SlugPrefix.Plan,
+  [DocumentType.Template]: SlugPrefix.Branch,
 };

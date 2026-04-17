@@ -1,7 +1,7 @@
 "use client";
 
-import type { Artifact } from "@repo/api/src/types/artifact";
 import type { FileAttachment } from "@repo/api/src/types/attachment";
+import type { Document } from "@repo/api/src/types/document";
 import type { LinkedEntity } from "@repo/api/src/types/entity-link";
 import { EntityType, LinkDirection } from "@repo/api/src/types/entity-link";
 import type { Feature } from "@repo/api/src/types/feature";
@@ -22,11 +22,11 @@ import {
   useDeleteEntityLink,
   useLinkedEntities,
 } from "@/hooks/queries/use-entity-links";
-import { getArtifactRoute, getFeatureRoute } from "@/lib/artifact-navigation";
+import { getDocumentRoute, getFeatureRoute } from "@/lib/document-navigation";
 import {
-  ARTIFACT_STATUS_TO_ICON,
-  ARTIFACT_TYPE_BADGE_LABELS,
-  ARTIFACT_TYPE_ICONS,
+  DOCUMENT_STATUS_TO_ICON,
+  DOCUMENT_TYPE_BADGE_LABELS,
+  DOCUMENT_TYPE_ICONS,
   FEATURE_ICON,
   FEATURE_STATUS_TO_ICON,
 } from "@/lib/project-constants";
@@ -73,7 +73,7 @@ export function ContextSection({
   const linkedArtifactIds = useMemo(() => {
     const ids = new Set<string>();
     for (const linked of contextLinks) {
-      if (linked.resolvedEntity?.type === EntityType.Artifact) {
+      if (linked.resolvedEntity?.type === EntityType.Document) {
         ids.add(linked.resolvedEntity.entity.id);
       }
     }
@@ -153,9 +153,9 @@ function ContextRow({ linked, onUnlink }: Readonly<ContextRowProps>) {
   }
 
   switch (resolved.type) {
-    case EntityType.Artifact: {
+    case EntityType.Document: {
       return (
-        <ArtifactRow
+        <DocumentRow
           artifact={resolved.entity}
           linkId={linked.id}
           onUnlink={onUnlink}
@@ -177,21 +177,21 @@ function ContextRow({ linked, onUnlink }: Readonly<ContextRowProps>) {
   }
 }
 
-type ArtifactRowProps = {
-  artifact: Artifact;
+type DocumentRowProps = {
+  artifact: Document;
   linkId: string;
   onUnlink: (linkId: string) => void;
 };
 
-function ArtifactRow({
+function DocumentRow({
   artifact,
   linkId,
   onUnlink,
-}: Readonly<ArtifactRowProps>) {
-  const Icon = ARTIFACT_TYPE_ICONS[artifact.type];
-  const badgeLabel = ARTIFACT_TYPE_BADGE_LABELS[artifact.type];
-  const statusIconStatus = ARTIFACT_STATUS_TO_ICON[artifact.status];
-  const route = getArtifactRoute(artifact);
+}: Readonly<DocumentRowProps>) {
+  const Icon = DOCUMENT_TYPE_ICONS[artifact.type];
+  const badgeLabel = DOCUMENT_TYPE_BADGE_LABELS[artifact.type];
+  const statusIconStatus = DOCUMENT_STATUS_TO_ICON[artifact.status];
+  const route = getDocumentRoute(artifact);
 
   return (
     <div className="flex items-center px-2 py-1">

@@ -35,7 +35,7 @@ vi.mock("@repo/database", () => ({
     CODE: "CODE",
   },
   EntityType: {
-    ARTIFACT: "ARTIFACT",
+    DOCUMENT: "DOCUMENT",
     FEATURE: "FEATURE",
     EXTERNAL_LINK: "EXTERNAL_LINK",
   },
@@ -61,8 +61,8 @@ vi.mock("@/app/webhooks/github/webhook-service", () => ({
   findActionRunByCorrelationId: vi.fn(),
 }));
 
-vi.mock("@/app/artifacts/artifact-version-service", () => ({
-  artifactVersionService: {
+vi.mock("@/app/documents/document-version-service", () => ({
+  documentVersionService: {
     createVersion: vi.fn().mockResolvedValue({ id: "version-1", version: 2 }),
   },
 }));
@@ -81,7 +81,7 @@ vi.mock("@/lib/pr-linkage", () => ({
 
 import { downloadWorkflowArtifacts } from "@repo/github";
 // Import after mocking
-import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
+import { documentVersionService } from "@/app/documents/document-version-service";
 import {
   handleExecutionSuccess,
   handleWorkflowFailure,
@@ -101,7 +101,7 @@ const mockDownloadWorkflowArtifacts =
 const mockFindActionRunByCorrelationId =
   findActionRunByCorrelationId as unknown as Mock;
 const mockCreateVersion =
-  artifactVersionService.createVersion as unknown as Mock;
+  documentVersionService.createVersion as unknown as Mock;
 const mockUpsertFromSnapshot = upsertFromSnapshot as unknown as Mock;
 const mockFanOutJudgeScores = fanOutJudgeScores as unknown as Mock;
 const mockEnsurePrLinkageRecords = ensurePrLinkageRecords as unknown as Mock;
@@ -119,7 +119,7 @@ describe("handleWorkflowSuccess", () => {
 
     const ctx: WorkflowContext = {
       correlationId,
-      artifactId,
+      documentId: artifactId,
       workstreamId,
       runId,
       command: "plan",
@@ -152,7 +152,7 @@ describe("handleWorkflowSuccess", () => {
           organizationId: "test-org-id",
         }),
       },
-      artifact: {
+      document: {
         findUnique: vi.fn().mockResolvedValue({
           id: artifactId,
           latestVersion: 1,
@@ -177,10 +177,11 @@ describe("handleWorkflowSuccess", () => {
     expect(mockDownloadWorkflowArtifacts).toHaveBeenCalledWith(runId);
     expect(mockCreateVersion).toHaveBeenCalledWith(
       artifactId,
+      "test-org-id",
       null,
       planContent
     );
-    expect(mockDb.artifact.update).toHaveBeenCalledWith({
+    expect(mockDb.document.update).toHaveBeenCalledWith({
       where: { id: artifactId, organizationId: "test-org-id" },
       data: {
         status: "DRAFT",
@@ -193,7 +194,7 @@ describe("handleWorkflowSuccess", () => {
         actorType: "system",
         data: expect.objectContaining({
           correlationId,
-          artifactId,
+          documentId: artifactId,
           runId,
           conclusion: "success",
         }),
@@ -209,7 +210,7 @@ describe("handleWorkflowSuccess", () => {
 
     const ctx: WorkflowContext = {
       correlationId,
-      artifactId,
+      documentId: artifactId,
       workstreamId,
       runId,
     };
@@ -241,7 +242,7 @@ describe("handleWorkflowSuccess", () => {
           organizationId: "test-org-id",
         }),
       },
-      artifact: {
+      document: {
         findUnique: vi.fn().mockResolvedValue({
           id: artifactId,
           latestVersion: 1,
@@ -266,10 +267,11 @@ describe("handleWorkflowSuccess", () => {
     expect(mockDownloadWorkflowArtifacts).toHaveBeenCalledWith(runId);
     expect(mockCreateVersion).toHaveBeenCalledWith(
       artifactId,
+      "test-org-id",
       null,
       planContent
     );
-    expect(mockDb.artifact.update).toHaveBeenCalledWith({
+    expect(mockDb.document.update).toHaveBeenCalledWith({
       where: { id: artifactId, organizationId: "test-org-id" },
       data: {
         status: "DRAFT",
@@ -286,7 +288,7 @@ describe("handleWorkflowSuccess", () => {
 
     const ctx: WorkflowContext = {
       correlationId,
-      artifactId,
+      documentId: artifactId,
       workstreamId,
       runId,
       actionRunId,
@@ -340,7 +342,7 @@ describe("handleWorkflowSuccess", () => {
           organizationId: "test-org-id",
         }),
       },
-      artifact: {
+      document: {
         findUnique: vi.fn().mockResolvedValue({
           id: artifactId,
           latestVersion: 1,
@@ -354,10 +356,10 @@ describe("handleWorkflowSuccess", () => {
       workstreamEvent: {
         create: vi.fn().mockResolvedValue({ id: "event-789" }),
       },
-      artifactEvaluation: {
+      documentEvaluation: {
         upsert: vi.fn().mockResolvedValue({
           id: "eval-789",
-          artifactId,
+          documentId: artifactId,
           reportId: judgesReport.report_id,
         }),
       },
@@ -371,7 +373,7 @@ describe("handleWorkflowSuccess", () => {
     });
     // SS8.3 scenario 2: where clause uses entityId_reportId
     // SS8.3 scenario 1: create block sets entityId, entityType=ARTIFACT, organizationId
-    expect(mockDb.artifactEvaluation.upsert).toHaveBeenCalledWith({
+    expect(mockDb.documentEvaluation.upsert).toHaveBeenCalledWith({
       where: {
         entityId_reportId: {
           entityId: artifactId,
@@ -381,8 +383,8 @@ describe("handleWorkflowSuccess", () => {
       create: {
         organizationId: "test-org-id",
         entityId: artifactId,
-        entityType: "ARTIFACT",
-        artifactId,
+        entityType: "DOCUMENT",
+        documentId: artifactId,
         actionRunId,
         reportType: EvaluationReportType.Plan,
         reportId: judgesReport.report_id,
@@ -403,7 +405,7 @@ describe("handleWorkflowSuccess", () => {
 
     const ctx: WorkflowContext = {
       correlationId,
-      artifactId,
+      documentId: artifactId,
       workstreamId,
       runId,
     };
@@ -446,7 +448,7 @@ describe("handleWorkflowSuccess", () => {
 
     const ctx: WorkflowContext = {
       correlationId,
-      artifactId,
+      documentId: artifactId,
       workstreamId,
       runId,
     };
@@ -477,7 +479,7 @@ describe("handleWorkflowSuccess", () => {
           organizationId: "test-org-id",
         }),
       },
-      artifact: {
+      document: {
         findUnique: vi.fn().mockResolvedValue(null),
       },
     };
@@ -496,7 +498,7 @@ describe("handleWorkflowSuccess", () => {
 
     const ctx: WorkflowContext = {
       correlationId,
-      artifactId,
+      documentId: artifactId,
       workstreamId,
       runId,
       actionRunId,
@@ -541,7 +543,7 @@ describe("handleWorkflowSuccess", () => {
           organizationId: "test-org-id",
         }),
       },
-      artifact: {
+      document: {
         findUnique: vi.fn().mockResolvedValue({
           id: artifactId,
           latestVersion: 1,
@@ -561,13 +563,13 @@ describe("handleWorkflowSuccess", () => {
 
     expect(mockDb.gitHubActionRunPerformance.upsert).toHaveBeenCalledWith({
       where: {
-        artifactId_actionRunId: {
-          artifactId,
+        documentId_actionRunId: {
+          documentId: artifactId,
           actionRunId,
         },
       },
       create: {
-        artifactId,
+        documentId: artifactId,
         actionRunId,
         summaryData: expect.objectContaining({ totalIterations: 1 }),
       },
@@ -585,7 +587,7 @@ describe("handleWorkflowSuccess", () => {
 
     const ctx: WorkflowContext = {
       correlationId,
-      artifactId,
+      documentId: artifactId,
       workstreamId,
       runId,
     };
@@ -616,7 +618,7 @@ describe("handleWorkflowSuccess", () => {
           organizationId: "test-org-id",
         }),
       },
-      artifact: {
+      document: {
         findUnique: vi.fn().mockResolvedValue({
           id: artifactId,
           latestVersion: 1,
@@ -644,7 +646,7 @@ describe("handleWorkflowSuccess", () => {
 
     const ctx: WorkflowContext = {
       correlationId,
-      artifactId: "",
+      documentId: "",
       workstreamId,
       runId,
       command: "plan",
@@ -671,7 +673,7 @@ describe("handleWorkflowSuccess", () => {
 
     const mockTx = {
       workstream: { findUnique: vi.fn() },
-      artifact: { findUnique: vi.fn(), update: vi.fn() },
+      document: { findUnique: vi.fn(), update: vi.fn() },
     };
 
     await handleWorkflowSuccess(asTx(mockTx), ctx);
@@ -688,7 +690,7 @@ describe("handleWorkflowSuccess", () => {
 
     const ctx: WorkflowContext = {
       correlationId,
-      artifactId,
+      documentId: artifactId,
       workstreamId,
       runId,
       command: "plan",
@@ -734,7 +736,7 @@ Plan the work carefully.
           organizationId: "org-prompts",
         }),
       },
-      artifact: {
+      document: {
         findUnique: vi.fn().mockResolvedValue({
           id: artifactId,
           latestVersion: 1,
@@ -768,7 +770,7 @@ Plan the work carefully.
 
     const ctx: WorkflowContext = {
       correlationId,
-      artifactId,
+      documentId: artifactId,
       workstreamId,
       runId,
       command: "plan",
@@ -800,7 +802,7 @@ Plan the work carefully.
           organizationId: "org-no-prompts",
         }),
       },
-      artifact: {
+      document: {
         findUnique: vi.fn().mockResolvedValue({
           id: artifactId,
           latestVersion: 1,
@@ -834,7 +836,7 @@ describe("handleExecutionSuccess", () => {
 
     const ctx: WorkflowContext = {
       correlationId,
-      artifactId,
+      documentId: artifactId,
       workstreamId,
       repositoryId,
       runId,
@@ -855,7 +857,7 @@ describe("handleExecutionSuccess", () => {
       workstream: {
         findUnique: vi.fn().mockResolvedValue({ organizationId: "org-123" }),
       },
-      artifact: {
+      document: {
         findUnique: vi.fn().mockResolvedValue({
           id: artifactId,
           organizationId: "org-123",
@@ -891,7 +893,7 @@ describe("handleExecutionSuccess", () => {
         workstreamId,
         organizationId: "org-123",
         repositoryId,
-        artifactId: "plan-artifact-123",
+        documentId: "plan-artifact-123",
         githubId: String(executionResult.github_id),
         number: 42,
         title: executionResult.pr_title,
@@ -908,7 +910,7 @@ describe("handleExecutionSuccess", () => {
         organizationId: "org-123",
         workstreamId,
         projectId: "project-123",
-        artifactId: "plan-artifact-123",
+        documentId: "plan-artifact-123",
         prUrl: executionResult.pr_url,
         prTitle: executionResult.pr_title,
         prNumber: 42,
@@ -924,7 +926,7 @@ describe("handleExecutionSuccess", () => {
         type: "GITHUB_PR_CREATED",
         actorType: "system",
         data: {
-          artifactId: "plan-artifact-123",
+          documentId: "plan-artifact-123",
           correlationId,
           prNumber: 42,
           prUrl: executionResult.pr_url,
@@ -940,7 +942,7 @@ describe("handleExecutionSuccess", () => {
   it("handles pr_number as string and converts to number", async () => {
     const ctx: WorkflowContext = {
       correlationId: "exec-correlation-456",
-      artifactId: "plan-artifact-456",
+      documentId: "plan-artifact-456",
       workstreamId: "ws-456",
       repositoryId: "repo-456",
       runId: "6666666666",
@@ -958,9 +960,9 @@ describe("handleExecutionSuccess", () => {
       workstream: {
         findUnique: vi.fn().mockResolvedValue({ organizationId: "org-456" }),
       },
-      artifact: {
+      document: {
         findUnique: vi.fn().mockResolvedValue({
-          id: ctx.artifactId,
+          id: ctx.documentId,
           organizationId: "org-456",
           projectId: "project-456",
           generatedBy: "user-456",
@@ -998,7 +1000,7 @@ describe("handleExecutionSuccess", () => {
   it("provides default PR title when not in execution result", async () => {
     const ctx: WorkflowContext = {
       correlationId: "exec-correlation-789",
-      artifactId: "plan-artifact-789",
+      documentId: "plan-artifact-789",
       workstreamId: "ws-789",
       repositoryId: "repo-789",
       runId: "7777777777",
@@ -1015,9 +1017,9 @@ describe("handleExecutionSuccess", () => {
       workstream: {
         findUnique: vi.fn().mockResolvedValue({ organizationId: "org-789" }),
       },
-      artifact: {
+      document: {
         findUnique: vi.fn().mockResolvedValue({
-          id: ctx.artifactId,
+          id: ctx.documentId,
           organizationId: "org-789",
           projectId: "project-789",
           generatedBy: "user-789",
@@ -1054,7 +1056,7 @@ describe("handleExecutionSuccess", () => {
   it("creates workstream event when execution has no changes", async () => {
     const ctx: WorkflowContext = {
       correlationId: "exec-correlation-no-changes",
-      artifactId: "plan-artifact-no-changes",
+      documentId: "plan-artifact-no-changes",
       workstreamId: "ws-no-changes",
       runId: "4444444444",
     };
@@ -1096,7 +1098,7 @@ describe("handleExecutionSuccess", () => {
   it("logs error and returns when repositoryId is missing", async () => {
     const ctx: WorkflowContext = {
       correlationId: "exec-correlation-no-repo",
-      artifactId: "plan-artifact-no-repo",
+      documentId: "plan-artifact-no-repo",
       workstreamId: "ws-no-repo",
       runId: "3333333333",
     };
@@ -1117,7 +1119,7 @@ describe("handleExecutionSuccess", () => {
   it("throws error when plan artifact is not found", async () => {
     const ctx: WorkflowContext = {
       correlationId: "exec-correlation-bad-artifact",
-      artifactId: "nonexistent-artifact",
+      documentId: "nonexistent-artifact",
       workstreamId: "ws-bad-artifact",
       repositoryId: "repo-bad-artifact",
       runId: "2222222222",
@@ -1137,7 +1139,7 @@ describe("handleExecutionSuccess", () => {
           .fn()
           .mockResolvedValue({ organizationId: "org-bad-artifact" }),
       },
-      artifact: {
+      document: {
         findUnique: vi.fn().mockResolvedValue(null),
       },
     };
@@ -1147,14 +1149,14 @@ describe("handleExecutionSuccess", () => {
     await expect(
       handleExecutionSuccess(ctx, executionResult, null, null)
     ).rejects.toThrow(
-      `Implementation plan artifact ${ctx.artifactId} not found`
+      `Implementation plan artifact ${ctx.documentId} not found`
     );
   });
 
   it("calls upsertFromSnapshot with resolved organizationId when promptsSnapshot is present", async () => {
     const ctx: WorkflowContext = {
       correlationId: "exec-correlation-prompts",
-      artifactId: "plan-artifact-prompts",
+      documentId: "plan-artifact-prompts",
       workstreamId: "ws-prompts-exec",
       repositoryId: "repo-prompts",
       runId: "5555001001",
@@ -1191,9 +1193,9 @@ describe("handleExecutionSuccess", () => {
           .fn()
           .mockResolvedValue({ organizationId: "org-exec-prompts" }),
       },
-      artifact: {
+      document: {
         findUnique: vi.fn().mockResolvedValue({
-          id: ctx.artifactId,
+          id: ctx.documentId,
           organizationId: "org-exec-prompts",
           projectId: "project-prompts",
           generatedBy: "user-prompts",
@@ -1228,7 +1230,7 @@ describe("handleExecutionSuccess", () => {
   it("calls upsertFromSnapshot with null when promptsSnapshot is null for execution", async () => {
     const ctx: WorkflowContext = {
       correlationId: "exec-correlation-null-prompts",
-      artifactId: "plan-artifact-null-prompts",
+      documentId: "plan-artifact-null-prompts",
       workstreamId: "ws-null-prompts-exec",
       repositoryId: "repo-null-prompts",
       runId: "5555001002",
@@ -1251,9 +1253,9 @@ describe("handleExecutionSuccess", () => {
           .fn()
           .mockResolvedValue({ organizationId: "org-null-prompts" }),
       },
-      artifact: {
+      document: {
         findUnique: vi.fn().mockResolvedValue({
-          id: ctx.artifactId,
+          id: ctx.documentId,
           organizationId: "org-null-prompts",
           projectId: "project-null-prompts",
           generatedBy: "user-null-prompts",
@@ -1300,7 +1302,7 @@ describe("handleWorkflowFailure", () => {
 
     const ctx: WorkflowContext = {
       correlationId,
-      artifactId,
+      documentId: artifactId,
       workstreamId,
       runId,
       command: "plan",
@@ -1321,7 +1323,7 @@ describe("handleWorkflowFailure", () => {
         actorType: "system",
         data: {
           correlationId,
-          artifactId,
+          documentId: artifactId,
           runId,
           command: "plan",
           conclusion: "failure",
@@ -1343,7 +1345,7 @@ describe("handleWorkflowFailure", () => {
 
     const ctx: WorkflowContext = {
       correlationId,
-      artifactId,
+      documentId: artifactId,
       workstreamId,
       runId,
     };
@@ -1363,7 +1365,7 @@ describe("handleWorkflowFailure", () => {
         actorType: "system",
         data: {
           correlationId,
-          artifactId,
+          documentId: artifactId,
           runId,
           command: undefined,
           conclusion: "failure",
@@ -1388,7 +1390,7 @@ describe("handleWorkflowSuccess fan-out", () => {
 
     const ctx: WorkflowContext = {
       correlationId,
-      artifactId,
+      documentId: artifactId,
       workstreamId,
       runId,
       actionRunId,
@@ -1441,7 +1443,7 @@ describe("handleWorkflowSuccess fan-out", () => {
           organizationId: "fanout-org-plan",
         }),
       },
-      artifact: {
+      document: {
         findUnique: vi.fn().mockResolvedValue({
           id: artifactId,
           latestVersion: 1,
@@ -1452,14 +1454,14 @@ describe("handleWorkflowSuccess fan-out", () => {
       workstreamEvent: {
         create: vi.fn().mockResolvedValue({ id: "event-fanout-plan" }),
       },
-      artifactEvaluation: {
+      documentEvaluation: {
         upsert: vi.fn().mockResolvedValue({ id: "eval-123" }),
       },
     };
 
     await handleWorkflowSuccess(asTx(mockDb), ctx);
 
-    expect(mockDb.artifactEvaluation.upsert).toHaveBeenCalledWith(
+    expect(mockDb.documentEvaluation.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         create: expect.objectContaining({
           reportData: judgesReport,
@@ -1484,7 +1486,7 @@ describe("handleWorkflowSuccess fan-out", () => {
 
     const ctx: WorkflowContext = {
       correlationId,
-      artifactId,
+      documentId: artifactId,
       workstreamId,
       runId,
       actionRunId,
@@ -1537,7 +1539,7 @@ describe("handleWorkflowSuccess fan-out", () => {
           organizationId: "fanout-org-plan-2",
         }),
       },
-      artifact: {
+      document: {
         findUnique: vi.fn().mockResolvedValue({
           id: artifactId,
           latestVersion: 1,
@@ -1548,14 +1550,14 @@ describe("handleWorkflowSuccess fan-out", () => {
       workstreamEvent: {
         create: vi.fn().mockResolvedValue({ id: "event-fanout-plan-2" }),
       },
-      artifactEvaluation: {
+      documentEvaluation: {
         upsert: vi.fn().mockResolvedValue({ id: "eval-123" }),
       },
     };
 
     await handleWorkflowSuccess(asTx(mockDb), ctx);
 
-    expect(mockDb.artifactEvaluation.upsert).toHaveBeenCalledWith({
+    expect(mockDb.documentEvaluation.upsert).toHaveBeenCalledWith({
       where: {
         entityId_reportId: {
           entityId: artifactId,
@@ -1565,8 +1567,8 @@ describe("handleWorkflowSuccess fan-out", () => {
       create: {
         organizationId: "fanout-org-plan-2",
         entityId: artifactId,
-        entityType: "ARTIFACT",
-        artifactId,
+        entityType: "DOCUMENT",
+        documentId: artifactId,
         actionRunId,
         reportType: EvaluationReportType.Plan,
         reportId: judgesReport.report_id,
@@ -1595,7 +1597,7 @@ describe("handleExecutionSuccess fan-out", () => {
 
     const ctx: WorkflowContext = {
       correlationId,
-      artifactId,
+      documentId: artifactId,
       workstreamId,
       repositoryId,
       runId,
@@ -1639,7 +1641,7 @@ describe("handleExecutionSuccess fan-out", () => {
           .fn()
           .mockResolvedValue({ organizationId: "fanout-org-code" }),
       },
-      artifact: {
+      document: {
         findUnique: vi.fn().mockResolvedValue({
           id: artifactId,
           organizationId: "fanout-org-code",
@@ -1661,7 +1663,7 @@ describe("handleExecutionSuccess fan-out", () => {
       workstreamEvent: {
         create: vi.fn().mockResolvedValue({ id: "fanout-event-code" }),
       },
-      artifactEvaluation: {
+      documentEvaluation: {
         upsert: vi.fn().mockResolvedValue({ id: "eval-code-123" }),
       },
     };
@@ -1670,7 +1672,7 @@ describe("handleExecutionSuccess fan-out", () => {
 
     await handleExecutionSuccess(ctx, executionResult, codeJudgesReport, null);
 
-    expect(mockTx.artifactEvaluation.upsert).toHaveBeenCalledWith(
+    expect(mockTx.documentEvaluation.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         create: expect.objectContaining({
           reportType: EvaluationReportType.Code,
@@ -1690,7 +1692,7 @@ describe("handleExecutionSuccess fan-out", () => {
   it("does not call fanOutJudgeScores when codeJudgesReport is null", async () => {
     const ctx: WorkflowContext = {
       correlationId: "fanout-correlation-no-code",
-      artifactId: "fanout-artifact-no-code",
+      documentId: "fanout-artifact-no-code",
       workstreamId: "fanout-ws-no-code",
       repositoryId: "fanout-repo-no-code",
       runId: "2234000002",
@@ -1713,9 +1715,9 @@ describe("handleExecutionSuccess fan-out", () => {
           .fn()
           .mockResolvedValue({ organizationId: "fanout-org-no-code" }),
       },
-      artifact: {
+      document: {
         findUnique: vi.fn().mockResolvedValue({
-          id: ctx.artifactId,
+          id: ctx.documentId,
           organizationId: "fanout-org-no-code",
           projectId: "fanout-project-no-code",
           generatedBy: "fanout-user-no-code",
@@ -1747,7 +1749,7 @@ describe("handleExecutionSuccess fan-out", () => {
   });
 
   // SS8.2: handleExecutionSuccess CODE upsert polymorphic write scenarios
-  it("SS8.2/1: CODE upsert sets entityId=ctx.artifactId, entityType=ARTIFACT, organizationId", async () => {
+  it("SS8.2/1: CODE upsert sets entityId=ctx.documentId, entityType=ARTIFACT, organizationId", async () => {
     const artifactId = "ss82-artifact-code";
     const workstreamId = "ss82-ws-code";
     const repositoryId = "ss82-repo-code";
@@ -1755,7 +1757,7 @@ describe("handleExecutionSuccess fan-out", () => {
 
     const ctx: WorkflowContext = {
       correlationId: "ss82-correlation-1",
-      artifactId,
+      documentId: artifactId,
       workstreamId,
       repositoryId,
       runId: "8200001001",
@@ -1797,7 +1799,7 @@ describe("handleExecutionSuccess fan-out", () => {
       workstream: {
         findUnique: vi.fn().mockResolvedValue({ organizationId: "ss82-org" }),
       },
-      artifact: {
+      document: {
         findUnique: vi.fn().mockResolvedValue({
           id: artifactId,
           organizationId: "ss82-org",
@@ -1814,7 +1816,7 @@ describe("handleExecutionSuccess fan-out", () => {
       workstreamEvent: {
         create: vi.fn().mockResolvedValue({ id: "ss82-evt" }),
       },
-      artifactEvaluation: {
+      documentEvaluation: {
         upsert: vi.fn().mockResolvedValue({ id: "ss82-eval" }),
       },
     };
@@ -1823,10 +1825,10 @@ describe("handleExecutionSuccess fan-out", () => {
 
     await handleExecutionSuccess(ctx, executionResult, codeJudgesReport, null);
 
-    const upsertCall = mockTx.artifactEvaluation.upsert.mock.calls[0][0];
+    const upsertCall = mockTx.documentEvaluation.upsert.mock.calls[0][0];
     expect(upsertCall.create).toMatchObject({
       entityId: artifactId,
-      entityType: "ARTIFACT",
+      entityType: "DOCUMENT",
       organizationId: "ss82-org",
     });
   });
@@ -1839,7 +1841,7 @@ describe("handleExecutionSuccess fan-out", () => {
 
     const ctx: WorkflowContext = {
       correlationId: "ss82-correlation-2",
-      artifactId,
+      documentId: artifactId,
       workstreamId,
       repositoryId,
       runId: "8200001002",
@@ -1881,7 +1883,7 @@ describe("handleExecutionSuccess fan-out", () => {
       workstream: {
         findUnique: vi.fn().mockResolvedValue({ organizationId: "ss82-org-2" }),
       },
-      artifact: {
+      document: {
         findUnique: vi.fn().mockResolvedValue({
           id: artifactId,
           organizationId: "ss82-org-2",
@@ -1898,7 +1900,7 @@ describe("handleExecutionSuccess fan-out", () => {
       workstreamEvent: {
         create: vi.fn().mockResolvedValue({ id: "ss82-evt-2" }),
       },
-      artifactEvaluation: {
+      documentEvaluation: {
         upsert: vi.fn().mockResolvedValue({ id: "ss82-eval-2" }),
       },
     };
@@ -1907,7 +1909,7 @@ describe("handleExecutionSuccess fan-out", () => {
 
     await handleExecutionSuccess(ctx, executionResult, codeJudgesReport, null);
 
-    expect(mockTx.artifactEvaluation.upsert).toHaveBeenCalledWith(
+    expect(mockTx.documentEvaluation.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         where: {
           entityId_reportId: {
@@ -1927,7 +1929,7 @@ describe("handleExecutionSuccess fan-out", () => {
 
     const ctx: WorkflowContext = {
       correlationId: "ss82-correlation-3",
-      artifactId,
+      documentId: artifactId,
       workstreamId,
       repositoryId,
       runId: "8200001003",
@@ -1969,7 +1971,7 @@ describe("handleExecutionSuccess fan-out", () => {
       workstream: {
         findUnique: vi.fn().mockResolvedValue({ organizationId: "ss82-org-3" }),
       },
-      artifact: {
+      document: {
         findUnique: vi.fn().mockResolvedValue({
           id: artifactId,
           organizationId: "ss82-org-3",
@@ -1986,7 +1988,7 @@ describe("handleExecutionSuccess fan-out", () => {
       workstreamEvent: {
         create: vi.fn().mockResolvedValue({ id: "ss82-evt-3" }),
       },
-      artifactEvaluation: {
+      documentEvaluation: {
         upsert: vi.fn().mockResolvedValue({ id: "ss82-eval-3" }),
       },
     };
@@ -1995,11 +1997,11 @@ describe("handleExecutionSuccess fan-out", () => {
 
     await handleExecutionSuccess(ctx, executionResult, codeJudgesReport, null);
 
-    const upsertCall = mockTx.artifactEvaluation.upsert.mock.calls[0][0];
+    const upsertCall = mockTx.documentEvaluation.upsert.mock.calls[0][0];
     // artifactId FK (denormalized) must equal entityId
-    expect(upsertCall.create.artifactId).toBe(artifactId);
+    expect(upsertCall.create.documentId).toBe(artifactId);
     expect(upsertCall.create.entityId).toBe(artifactId);
-    expect(upsertCall.create.artifactId).toBe(upsertCall.create.entityId);
+    expect(upsertCall.create.documentId).toBe(upsertCall.create.entityId);
   });
 });
 
@@ -2016,7 +2018,7 @@ describe("handleWorkflowSuccess — PLAN upsert (SS8.3)", () => {
 
     const ctx: WorkflowContext = {
       correlationId: "ss83-correlation-1",
-      artifactId,
+      documentId: artifactId,
       workstreamId,
       runId,
       actionRunId,
@@ -2069,7 +2071,7 @@ describe("handleWorkflowSuccess — PLAN upsert (SS8.3)", () => {
           organizationId: "ss83-org",
         }),
       },
-      artifact: {
+      document: {
         findUnique: vi.fn().mockResolvedValue({
           id: artifactId,
           latestVersion: 1,
@@ -2080,17 +2082,17 @@ describe("handleWorkflowSuccess — PLAN upsert (SS8.3)", () => {
       workstreamEvent: {
         create: vi.fn().mockResolvedValue({ id: "ss83-evt" }),
       },
-      artifactEvaluation: {
+      documentEvaluation: {
         upsert: vi.fn().mockResolvedValue({ id: "ss83-eval" }),
       },
     };
 
     await handleWorkflowSuccess(asTx(mockDb), ctx);
 
-    const upsertCall = mockDb.artifactEvaluation.upsert.mock.calls[0][0];
+    const upsertCall = mockDb.documentEvaluation.upsert.mock.calls[0][0];
     expect(upsertCall.create).toMatchObject({
       entityId: artifactId,
-      entityType: "ARTIFACT",
+      entityType: "DOCUMENT",
       organizationId: "ss83-org",
     });
   });
@@ -2103,7 +2105,7 @@ describe("handleWorkflowSuccess — PLAN upsert (SS8.3)", () => {
 
     const ctx: WorkflowContext = {
       correlationId: "ss83-correlation-2",
-      artifactId,
+      documentId: artifactId,
       workstreamId,
       runId,
       actionRunId,
@@ -2156,7 +2158,7 @@ describe("handleWorkflowSuccess — PLAN upsert (SS8.3)", () => {
           organizationId: "ss83-org-2",
         }),
       },
-      artifact: {
+      document: {
         findUnique: vi.fn().mockResolvedValue({
           id: artifactId,
           latestVersion: 1,
@@ -2167,14 +2169,14 @@ describe("handleWorkflowSuccess — PLAN upsert (SS8.3)", () => {
       workstreamEvent: {
         create: vi.fn().mockResolvedValue({ id: "ss83-evt-2" }),
       },
-      artifactEvaluation: {
+      documentEvaluation: {
         upsert: vi.fn().mockResolvedValue({ id: "ss83-eval-2" }),
       },
     };
 
     await handleWorkflowSuccess(asTx(mockDb), ctx);
 
-    expect(mockDb.artifactEvaluation.upsert).toHaveBeenCalledWith(
+    expect(mockDb.documentEvaluation.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         where: {
           entityId_reportId: {
@@ -2204,7 +2206,7 @@ describe("processWorkflowCompletion", () => {
       repositoryId: "repo-123",
       triggerData: {
         correlationId,
-        artifactId,
+        documentId: artifactId,
         command: "plan",
       },
     };
@@ -2247,7 +2249,7 @@ describe("processWorkflowCompletion", () => {
           organizationId: "test-org-id",
         }),
       },
-      artifact: {
+      document: {
         findUnique: vi.fn().mockResolvedValue({
           id: artifactId,
           latestVersion: 1,
@@ -2293,7 +2295,7 @@ describe("processWorkflowCompletion", () => {
 
     // T-2.2: Validates call ordering and side effects only.
     // ALS propagation correctness is validated by withdb-transaction.test.ts (T-2.1).
-    // Note: the artifactVersionService.createVersion mock (at top of file) bypasses
+    // Note: the documentVersionService.createVersion mock (at top of file) bypasses
     // withDb.tx() entirely, so ALS context cannot be verified at this layer.
 
     // Assert call ordering: createVersion must be called before gitHubActionRun.update
@@ -2324,7 +2326,7 @@ describe("processWorkflowCompletion", () => {
       repositoryId: "repo-fail",
       triggerData: {
         correlationId,
-        artifactId,
+        documentId: artifactId,
         command: "plan",
       },
     };
@@ -2363,7 +2365,7 @@ describe("processWorkflowCompletion", () => {
         actorType: "system",
         data: {
           correlationId,
-          artifactId,
+          documentId: artifactId,
           runId: String(runId),
           command: "plan",
           conclusion: "failure",
@@ -2429,7 +2431,7 @@ describe("processWorkflowCompletion", () => {
       repositoryId,
       triggerData: {
         correlationId,
-        artifactId,
+        documentId: artifactId,
         command: "execute",
       },
     };
@@ -2471,7 +2473,7 @@ describe("processWorkflowCompletion", () => {
           organizationId: "org-exec",
         }),
       },
-      artifact: {
+      document: {
         findUnique: vi.fn().mockResolvedValue({
           id: artifactId,
           organizationId: "org-exec",

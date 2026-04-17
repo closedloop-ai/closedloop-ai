@@ -1,3 +1,4 @@
+import "@repo/observability/telemetry/origin";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import {
   createServer,

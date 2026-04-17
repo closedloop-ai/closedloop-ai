@@ -51,7 +51,7 @@ export class EcsComputeProvider implements ComputeProvider {
       s3ContextUrl: prepared.s3ContextUrl!,
       repo: ctx.repo ?? undefined,
       closedLoopAuthToken: ctx.closedLoopAuthToken,
-      artifactId: ctx.artifactId ?? undefined,
+      documentId: ctx.documentId ?? undefined,
       parentS3StateKey: ctx.parentS3StateKey ?? undefined,
       parentSessionId: ctx.parentSessionId ?? undefined,
       parentBranchName: ctx.parentBranchName ?? undefined,

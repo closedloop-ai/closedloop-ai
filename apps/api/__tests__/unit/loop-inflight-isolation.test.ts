@@ -36,7 +36,7 @@ vi.mock("@repo/database", () => ({
   withDb: Object.assign(
     vi.fn((fn: (db: unknown) => unknown) =>
       fn({
-        artifact: { findUnique: vi.fn().mockResolvedValue(null) },
+        document: { findUnique: vi.fn().mockResolvedValue(null) },
         loop: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
       })
     ),
@@ -58,7 +58,7 @@ vi.mock("@/app/loops/service", () => ({
   InvalidStatusTransitionError: class extends Error {},
 }));
 
-vi.mock("@/app/artifacts/service", () => ({
+vi.mock("@/app/documents/service", () => ({
   getCommitterInfo: vi.fn().mockResolvedValue(null),
 }));
 
@@ -72,7 +72,7 @@ vi.mock("@/app/settings/api-key-service", () => ({
   apiKeyService: { resolveApiKey: vi.fn().mockResolvedValue("sk-test-key") },
 }));
 
-vi.mock("@/lib/auth/loop-runner-jwt", () => ({
+vi.mock("@repo/auth/loop-runner-jwt", () => ({
   issueLoopRunnerToken: vi.fn().mockResolvedValue("mock-token"),
 }));
 
@@ -99,6 +99,7 @@ const mockLaunchLoopOnDesktop = vi.fn().mockResolvedValue("cmd-abc");
 vi.mock("@/lib/loops/loop-desktop", () => ({
   launchLoopOnDesktop: (...args: unknown[]) => mockLaunchLoopOnDesktop(...args),
   stopDesktopLoop: vi.fn(),
+  isDispatchError: () => false,
 }));
 
 const mockRunEcsTask = vi.fn().mockResolvedValue("arn:aws:ecs:task/abc");

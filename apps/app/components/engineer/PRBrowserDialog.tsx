@@ -117,7 +117,7 @@ function addReviewEntry(
     [provider]: {
       config: {
         instructions: data.config?.instructions ?? "",
-        model: data.config?.model ?? "claude-opus-4-6",
+        model: data.config?.model ?? "claude-opus-4-7",
         reasoningEffort: data.config?.reasoningEffort ?? "medium",
         reviewMode: data.config?.reviewMode ?? "base",
         provider: (data.provider as "claude" | "codex") ?? provider,
@@ -281,7 +281,7 @@ export function PRBrowserDialog({
 
   const handleLearningsUsed = useCallback(
     (used: LearningUsed[]) => {
-      fetch("/api/engineer/symphony/record-learning-use", {
+      fetch("/api/gateway/symphony/record-learning-use", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -456,7 +456,7 @@ export function PRBrowserDialog({
     let cancelled = false;
     const encodedRepo = encodeURIComponent(selectedRepo.path);
     fetch(
-      `/api/engineer/git/pr/head-sha?repo=${encodedRepo}&pr=${selectedPR.number}`
+      `/api/gateway/git/pr/head-sha?repo=${encodedRepo}&pr=${selectedPR.number}`
     )
       .then((res) => res.json())
       .then((data) => {
@@ -534,7 +534,7 @@ export function PRBrowserDialog({
             ),
           });
           fetch(
-            `/api/engineer/symphony/comment-chat/${encodeURIComponent(comment.id)}?ticketId=${encodeURIComponent(tid)}&repo=${encodeURIComponent(selectedRepo.path)}`,
+            `/api/gateway/symphony/comment-chat/${encodeURIComponent(comment.id)}?ticketId=${encodeURIComponent(tid)}&repo=${encodeURIComponent(selectedRepo.path)}`,
             { method: "DELETE" }
           ).catch(() => {});
         }
@@ -670,7 +670,7 @@ export function PRBrowserDialog({
     const restoreProvider = async (provider: "claude" | "codex") => {
       try {
         const res = await fetch(
-          `/api/engineer/codex/status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(selectedRepo.path)}&provider=${provider}`
+          `/api/gateway/codex/status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(selectedRepo.path)}&provider=${provider}`
         );
         const data = await res.json();
         if (cancelled || !data.hasReview) {
@@ -817,7 +817,7 @@ export function PRBrowserDialog({
         }
 
         const dedupRes = await fetch(
-          `/api/engineer/codex/review-dedup/${encodeURIComponent(ticketId)}`,
+          `/api/gateway/codex/review-dedup/${encodeURIComponent(ticketId)}`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -865,7 +865,7 @@ export function PRBrowserDialog({
       try {
         // Fetch existing PR comments
         const commentsRes = await fetch(
-          `/api/engineer/git/pr/comments?repo=${encodeURIComponent(selectedRepo.path)}&pr=${selectedPR.number}`
+          `/api/gateway/git/pr/comments?repo=${encodeURIComponent(selectedRepo.path)}&pr=${selectedPR.number}`
         );
         const commentsData = await commentsRes.json();
         const allComments: Array<{
@@ -892,7 +892,7 @@ export function PRBrowserDialog({
         }));
 
         const dedupRes = await fetch(
-          `/api/engineer/codex/review-dedup/${encodeURIComponent(ticketId)}`,
+          `/api/gateway/codex/review-dedup/${encodeURIComponent(ticketId)}`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -981,11 +981,11 @@ export function PRBrowserDialog({
       if (selectedPR && selectedRepo) {
         const ticketId = `pr-${selectedPR.number}`;
         fetch(
-          `/api/engineer/codex/stop/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(selectedRepo.path)}&provider=${encodeURIComponent(provider)}`,
+          `/api/gateway/codex/stop/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(selectedRepo.path)}&provider=${encodeURIComponent(provider)}`,
           { method: "DELETE" }
         ).catch(() => {});
         fetch(
-          `/api/engineer/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(selectedRepo.path)}&provider=${encodeURIComponent(provider)}`,
+          `/api/gateway/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(selectedRepo.path)}&provider=${encodeURIComponent(provider)}`,
           { method: "DELETE" }
         ).catch(() => {});
       }
@@ -1642,7 +1642,7 @@ async function fetchPRFiles(
 ): Promise<string[]> {
   try {
     const res = await fetch(
-      `/api/engineer/git/pr/files?repo=${encodeURIComponent(repoPath)}&pr=${prNumber}`
+      `/api/gateway/git/pr/files?repo=${encodeURIComponent(repoPath)}&pr=${prNumber}`
     );
     if (!res.ok) {
       return [];
@@ -1732,7 +1732,7 @@ async function postReviewFindings(
   // Post inline findings as file-level comments (batched to avoid GitHub rate limits)
   const inlineTasks = inlineFindings.map(({ finding, fullPath }) => () => {
     const body = formatSingleFinding(providerLabel, finding);
-    return fetch("/api/engineer/git/pr/inline-comment", {
+    return fetch("/api/gateway/git/pr/inline-comment", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -1750,7 +1750,7 @@ async function postReviewFindings(
   // Post general findings (if any) as a top-level comment
   if (generalFindings.length > 0) {
     const body = formatReviewComment(providerLabel, generalFindings);
-    await fetch("/api/engineer/git/pr/reply", {
+    await fetch("/api/gateway/git/pr/reply", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ repoPath, prNumber, body }),
@@ -2021,7 +2021,7 @@ async function fetchProviderStatus(
 ) {
   try {
     const res = await fetch(
-      `/api/engineer/codex/status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${provider}`
+      `/api/gateway/codex/status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${provider}`
     );
     const data = await res.json();
     return { provider, data };

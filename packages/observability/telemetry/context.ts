@@ -30,7 +30,7 @@ function resolveEnvironment(): string {
   );
 }
 
-function resolveServerVersion(): string {
+export function resolveServerVersion(): string {
   return (
     process.env.RELEASE_VERSION ?? process.env.npm_package_version ?? "unknown"
   );

@@ -131,6 +131,7 @@ const engineerNavItem: NavItem = {
   url: "/engineer",
   icon: CodeIcon,
   disabled: false,
+  featureFlag: "engineer-view",
 };
 
 const workspaceItems: NavItem[] = [...baseWorkspaceItems, engineerNavItem];

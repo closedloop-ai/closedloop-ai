@@ -1,5 +1,11 @@
-import type { ArtifactChatPrCommentContext } from "@/components/artifact-editor/artifact-chat-panel";
 import type { BranchViewComment } from "./types";
+
+export type PrCommentContext = {
+  id: string;
+  filePath?: string;
+  line?: number;
+  body: string;
+};
 
 export function findCommentById(
   comments: BranchViewComment[],
@@ -13,7 +19,7 @@ export function findCommentById(
 
 export function buildPrCommentChatContext(
   comment: BranchViewComment
-): ArtifactChatPrCommentContext {
+): PrCommentContext {
   return {
     id: comment.id,
     filePath: comment.path ?? undefined,

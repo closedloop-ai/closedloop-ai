@@ -9,10 +9,10 @@ import type {
   PullRequestSynchronizeEvent,
 } from "@octokit/webhooks-types";
 import {
-  type Artifact,
-  ArtifactStatus,
-  ArtifactType,
-} from "@repo/api/src/types/artifact";
+  type Document,
+  DocumentStatus,
+  DocumentType,
+} from "@repo/api/src/types/document";
 import { EntityType, LinkType } from "@repo/api/src/types/entity-link";
 import {
   ExternalLinkType,
@@ -145,9 +145,9 @@ export async function handlePullRequest(
         id: true,
         workstreamId: true,
         organizationId: true,
-        artifactId: true,
+        documentId: true,
         checksStatus: true,
-        artifact: { select: { slug: true } },
+        document: { select: { slug: true } },
       },
     });
 
@@ -192,9 +192,9 @@ type ExistingPr = {
   id: string;
   workstreamId: string;
   organizationId: string;
-  artifactId: string | null;
+  documentId: string | null;
   checksStatus: string;
-  artifact: { slug: string } | null;
+  document: { slug: string } | null;
 };
 
 /**
@@ -207,12 +207,12 @@ async function attemptPlanLinkage(
   repo: RepoWithInstallation,
   existingPr: ExistingPr | null
 ): Promise<void> {
-  if (existingPr?.artifactId) {
+  if (existingPr?.documentId) {
     log.info(
       "[handlePullRequest] PR already linked to artifact, skipping linkage",
       {
         prNumber: pull_request.number,
-        existingArtifactId: existingPr.artifactId,
+        existingDocumentId: existingPr.documentId,
       }
     );
     return;
@@ -252,7 +252,7 @@ async function attemptPlanLinkage(
   });
 
   // Look up artifact by (organizationId, slug)
-  const artifact = await tx.artifact.findUnique({
+  const artifact = await tx.document.findUnique({
     where: {
       organizationId_slug: {
         organizationId,
@@ -274,7 +274,7 @@ async function attemptPlanLinkage(
 
   // AC-006: Invalid slug — do not fail, just skip
   if (!artifact) {
-    log.warn("[handlePullRequest] Artifact not found for plan reference", {
+    log.warn("[handlePullRequest] Document not found for plan reference", {
       prNumber: pull_request.number,
       slug: firstRef.slug,
       organizationId,
@@ -283,9 +283,9 @@ async function attemptPlanLinkage(
   }
 
   // AC-007: Only link IMPLEMENTATION_PLAN artifacts
-  if (artifact.type !== ArtifactType.ImplementationPlan) {
+  if (artifact.type !== DocumentType.ImplementationPlan) {
     log.info(
-      "[handlePullRequest] Artifact is not an implementation plan, skipping",
+      "[handlePullRequest] Document is not an implementation plan, skipping",
       {
         prNumber: pull_request.number,
         slug: firstRef.slug,
@@ -306,7 +306,7 @@ async function attemptPlanLinkage(
         {
           prNumber: pull_request.number,
           slug: firstRef.slug,
-          artifactId: artifact.id,
+          documentId: artifact.id,
         }
       );
       return;
@@ -315,7 +315,7 @@ async function attemptPlanLinkage(
 
   if (existingPr) {
     // Update existing PR with artifactId
-    await linkExistingPrToArtifact(
+    await linkExistingPrToDocument(
       tx,
       existingPr,
       artifact,
@@ -337,13 +337,13 @@ async function attemptPlanLinkage(
 
 /**
  * Auto-create a workstream for an artifact that lacks one.
- * Follows the same pattern as artifactsService.findOrCreateWorkstream.
+ * Follows the same pattern as documentsService.findOrCreateWorkstream.
  * Returns the new workstreamId, or null if the artifact has no projectId.
  */
 async function autoCreateWorkstream(
   tx: TransactionClient,
   artifact: Pick<
-    Artifact,
+    Document,
     | "id"
     | "title"
     | "organizationId"
@@ -373,14 +373,14 @@ async function autoCreateWorkstream(
   });
 
   // Attach the artifact to the new workstream
-  await tx.artifact.update({
+  await tx.document.update({
     where: { id: artifact.id, organizationId },
     data: { workstreamId: workstream.id },
   });
 
   log.info("[handlePullRequest] Auto-created workstream for artifact", {
     workstreamId: workstream.id,
-    artifactId: artifact.id,
+    documentId: artifact.id,
     slug: artifact.slug,
   });
 
@@ -391,7 +391,7 @@ async function autoCreateWorkstream(
  * Link an existing GitHubPullRequest record to a plan artifact.
  * Creates ExternalLink, EntityLink, and WorkstreamEvent records.
  */
-async function linkExistingPrToArtifact(
+async function linkExistingPrToDocument(
   tx: TransactionClient,
   existingPr: ExistingPr,
   artifact: {
@@ -406,14 +406,14 @@ async function linkExistingPrToArtifact(
   // Update artifactId on the PR
   await tx.gitHubPullRequest.update({
     where: { id: existingPr.id },
-    data: { artifactId: artifact.id },
+    data: { documentId: artifact.id },
   });
 
   await createLinkageRecords(tx, artifact, workstreamId, pull_request);
 
   log.info("[handlePullRequest] Linked existing PR to artifact", {
     prId: existingPr.id,
-    artifactId: artifact.id,
+    documentId: artifact.id,
     slug: artifact.slug,
   });
 }
@@ -425,7 +425,7 @@ async function linkExistingPrToArtifact(
 async function createAndLinkPr(
   tx: TransactionClient,
   repo: RepoWithInstallation,
-  artifact: Pick<Artifact, "id" | "organizationId" | "projectId" | "slug">,
+  artifact: Pick<Document, "id" | "organizationId" | "projectId" | "slug">,
   organizationId: string,
   workstreamId: string,
   pullRequest: HandledPullRequestEvent["pull_request"]
@@ -440,7 +440,7 @@ async function createAndLinkPr(
       workstreamId,
       organizationId,
       repositoryId: repo.id,
-      artifactId: artifact.id,
+      documentId: artifact.id,
       githubId: String(pullRequest.id),
       number: pullRequest.number,
       title: pullRequest.title,
@@ -457,7 +457,7 @@ async function createAndLinkPr(
 
   log.info("[handlePullRequest] Created and linked new PR to artifact", {
     prNumber: pullRequest.number,
-    artifactId: artifact.id,
+    documentId: artifact.id,
     slug: artifact.slug,
   });
 }
@@ -467,7 +467,7 @@ async function createAndLinkPr(
  */
 async function createLinkageRecords(
   tx: TransactionClient,
-  artifact: Pick<Artifact, "id" | "organizationId" | "projectId" | "slug">,
+  artifact: Pick<Document, "id" | "organizationId" | "projectId" | "slug">,
   workstreamId: string,
   pullRequest: HandledPullRequestEvent["pull_request"]
 ): Promise<void> {
@@ -523,7 +523,7 @@ async function createLinkageRecords(
       data: {
         organizationId: artifact.organizationId,
         sourceId: artifact.id,
-        sourceType: EntityType.Artifact,
+        sourceType: EntityType.Document,
         targetId: externalLinkId,
         targetType: EntityType.ExternalLink,
         linkType: LinkType.Produces,
@@ -545,7 +545,7 @@ async function createLinkageRecords(
         prUrl: pullRequest.html_url,
         prTitle: pullRequest.title,
         branch: pullRequest.head.ref,
-        artifactId: artifact.id,
+        documentId: artifact.id,
         slug: artifact.slug,
       },
     },
@@ -596,8 +596,8 @@ async function applyPrAction(
             prNumber: pullRequest.number,
             prTitle: pullRequest.title,
             prUrl: pullRequest.html_url,
-            artifactId: existingPr.artifactId,
-            slug: existingPr.artifact?.slug,
+            documentId: existingPr.documentId,
+            slug: existingPr.document?.slug,
             ...(isMerged
               ? {
                   mergedAt: pullRequest.merged_at,
@@ -608,17 +608,17 @@ async function applyPrAction(
         },
       });
 
-      if (isMerged && existingPr.artifactId) {
-        await tx.artifact.update({
-          where: { id: existingPr.artifactId },
-          data: { status: ArtifactStatus.Executed },
+      if (isMerged && existingPr.documentId) {
+        await tx.document.update({
+          where: { id: existingPr.documentId },
+          data: { status: DocumentStatus.Executed },
         });
         log.info("[handlePullRequest] Marked artifact as EXECUTED", {
-          artifactId: existingPr.artifactId,
+          documentId: existingPr.documentId,
         });
 
         // Cascade: mark linked Features as COMPLETED when their plan ships.
-        await markLinkedFeaturesCompleted(tx, existingPr.artifactId);
+        await markLinkedFeaturesCompleted(tx, existingPr.documentId);
       }
 
       log.info("[handlePullRequest] PR closed", {
@@ -673,8 +673,8 @@ async function applyPrAction(
             prNumber: pullRequest.number,
             prTitle: pullRequest.title,
             prUrl: pullRequest.html_url,
-            artifactId: existingPr.artifactId,
-            slug: existingPr.artifact?.slug,
+            documentId: existingPr.documentId,
+            slug: existingPr.document?.slug,
             checksStatus: ChecksStatus.PENDING,
             previousChecksStatus: existingPr.checksStatus,
             headSha: pullRequest.head.sha,
@@ -726,13 +726,13 @@ async function applyPrAction(
  */
 async function markLinkedFeaturesCompleted(
   tx: TransactionClient,
-  artifactId: string
+  documentId: string
 ): Promise<void> {
   const links = await tx.entityLink.findMany({
     where: {
       sourceType: EntityType.Feature,
-      targetId: artifactId,
-      targetType: EntityType.Artifact,
+      targetId: documentId,
+      targetType: EntityType.Document,
       linkType: LinkType.Produces,
     },
     select: {
@@ -757,7 +757,7 @@ async function markLinkedFeaturesCompleted(
 
   if (count > 0) {
     log.info("[handlePullRequest] Marked linked features as DONE", {
-      artifactId,
+      documentId,
       featureIds,
       updatedCount: count,
     });

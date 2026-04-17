@@ -293,7 +293,7 @@ describe("validateFieldNameNotReserved", () => {
 
   it("throws for 'Assignee' on ARTIFACT entity type", () => {
     expect(() =>
-      validateFieldNameNotReserved("Assignee", [CustomFieldEntityType.Artifact])
+      validateFieldNameNotReserved("Assignee", [CustomFieldEntityType.Document])
     ).toThrow(ReservedNameError);
   });
 
@@ -314,7 +314,7 @@ describe("validateFieldNameNotReserved", () => {
     expect(() =>
       validateFieldNameNotReserved("Approver", [
         CustomFieldEntityType.Feature,
-        CustomFieldEntityType.Artifact,
+        CustomFieldEntityType.Document,
       ])
     ).toThrow(ReservedNameError);
   });

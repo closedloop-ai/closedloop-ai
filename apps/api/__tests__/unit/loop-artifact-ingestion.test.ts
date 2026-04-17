@@ -22,7 +22,7 @@ vi.mock("@repo/database", () => ({
     CODE: "CODE",
   },
   EntityType: {
-    ARTIFACT: "ARTIFACT",
+    DOCUMENT: "DOCUMENT",
     FEATURE: "FEATURE",
     WORKSTREAM: "WORKSTREAM",
   },
@@ -36,14 +36,14 @@ vi.mock("@repo/observability/log", () => ({
   },
 }));
 
-vi.mock("@/app/artifacts/artifact-version-service", () => ({
-  artifactVersionService: {
+vi.mock("@/app/documents/document-version-service", () => ({
+  documentVersionService: {
     createVersion: vi.fn().mockResolvedValue({ id: "version-1", version: 2 }),
   },
 }));
 
-vi.mock("@/app/artifacts/room-utils", () => ({
-  resetArtifactRoom: vi.fn().mockResolvedValue(undefined),
+vi.mock("@/app/documents/room-utils", () => ({
+  resetDocumentRoom: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("@/lib/judge-score-fanout", () => ({
@@ -54,10 +54,10 @@ vi.mock("@/lib/prompts-service", () => ({
   upsertFromSnapshot: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock("@/lib/loops/loop-artifact-ingestion", async (importOriginal) => {
+vi.mock("@/lib/loops/loop-document-ingestion", async (importOriginal) => {
   const actual =
     await importOriginal<
-      typeof import("@/lib/loops/loop-artifact-ingestion")
+      typeof import("@/lib/loops/loop-document-ingestion")
     >();
   return {
     ...actual,
@@ -173,10 +173,10 @@ describe("ingestPlanArtifacts", () => {
 
     // withDb.tx callback receives a mock tx; upsert returns an evaluation row
     const mockTx = {
-      artifactEvaluation: {
+      documentEvaluation: {
         upsert: vi.fn().mockResolvedValue({
           id: evaluationId,
-          artifactId: loop.artifactId,
+          documentId: loop.documentId,
           reportId: JUDGES_REPORT.report_id,
         }),
       },
@@ -189,11 +189,11 @@ describe("ingestPlanArtifacts", () => {
 
     // withDb (non-transactional) used for artifact.update, entity validation, and workstreamEvent checks
     const mockDb = {
-      artifact: {
+      document: {
         update: vi
           .fn()
           .mockResolvedValue({ slug: "my-artifact", latestVersion: 2 }),
-        findFirst: vi.fn().mockResolvedValue({ id: loop.artifactId }),
+        findFirst: vi.fn().mockResolvedValue({ id: loop.documentId }),
       },
       workstreamEvent: {
         findFirst: vi.fn().mockResolvedValue(null),
@@ -217,10 +217,10 @@ describe("ingestPlanArtifacts", () => {
     const artifacts = buildPlanArtifacts({ judgesReport: JUDGES_REPORT });
 
     const mockTx = {
-      artifactEvaluation: {
+      documentEvaluation: {
         upsert: vi.fn().mockResolvedValue({
           id: "eval-plan-2",
-          artifactId: loop.artifactId,
+          documentId: loop.documentId,
           reportId: JUDGES_REPORT.report_id,
         }),
       },
@@ -228,11 +228,11 @@ describe("ingestPlanArtifacts", () => {
     mockWithDbTx(mockTx);
 
     const mockDb = {
-      artifact: {
+      document: {
         update: vi
           .fn()
           .mockResolvedValue({ slug: "my-artifact", latestVersion: 2 }),
-        findFirst: vi.fn().mockResolvedValue({ id: loop.artifactId }),
+        findFirst: vi.fn().mockResolvedValue({ id: loop.documentId }),
       },
       workstreamEvent: {
         findFirst: vi.fn().mockResolvedValue(null),
@@ -243,7 +243,7 @@ describe("ingestPlanArtifacts", () => {
 
     await ingestPlanArtifacts(loop, "org-1", artifacts);
 
-    expect(mockTx.artifactEvaluation.upsert).toHaveBeenCalledWith(
+    expect(mockTx.documentEvaluation.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         create: expect.objectContaining({
           reportData: JUDGES_REPORT,
@@ -277,25 +277,25 @@ describe("ingestExecutionArtifacts", () => {
       gitHubInstallationRepository: {
         findFirst: vi.fn().mockResolvedValue({ id: "install-repo-1" }),
       },
-      artifact: {
-        findFirst: vi.fn().mockResolvedValue({ id: loop.artifactId }),
+      document: {
+        findFirst: vi.fn().mockResolvedValue({ id: loop.documentId }),
       },
     };
     mockWithDbCall(mockDb);
 
     // withDb.tx callback receives a mock tx
     const mockTx = {
-      artifact: {
+      document: {
         findUnique: vi.fn().mockResolvedValue({
           organizationId: "org-1",
           projectId: "project-1",
           slug: "my-artifact",
         }),
       },
-      artifactEvaluation: {
+      documentEvaluation: {
         upsert: vi.fn().mockResolvedValue({
           id: evaluationId,
-          artifactId: loop.artifactId,
+          documentId: loop.documentId,
           reportId: CODE_JUDGES_REPORT.report_id,
         }),
       },
@@ -304,7 +304,7 @@ describe("ingestExecutionArtifacts", () => {
         create: vi.fn().mockResolvedValue({ id: "pr-1" }),
         upsert: vi
           .fn()
-          .mockResolvedValue({ id: "pr-1", artifactId: loop.artifactId }),
+          .mockResolvedValue({ id: "pr-1", documentId: loop.documentId }),
       },
       externalLink: {
         create: vi.fn().mockResolvedValue({ id: "ext-link-1" }),
@@ -338,24 +338,24 @@ describe("ingestExecutionArtifacts", () => {
       gitHubInstallationRepository: {
         findFirst: vi.fn().mockResolvedValue({ id: "install-repo-2" }),
       },
-      artifact: {
-        findFirst: vi.fn().mockResolvedValue({ id: loop.artifactId }),
+      document: {
+        findFirst: vi.fn().mockResolvedValue({ id: loop.documentId }),
       },
     };
     mockWithDbCall(mockDb);
 
     const mockTx = {
-      artifact: {
+      document: {
         findUnique: vi.fn().mockResolvedValue({
           organizationId: "org-1",
           projectId: "project-1",
           slug: "my-artifact",
         }),
       },
-      artifactEvaluation: {
+      documentEvaluation: {
         upsert: vi.fn().mockResolvedValue({
           id: "eval-code-2",
-          artifactId: loop.artifactId,
+          documentId: loop.documentId,
           reportId: CODE_JUDGES_REPORT.report_id,
         }),
       },
@@ -364,7 +364,7 @@ describe("ingestExecutionArtifacts", () => {
         create: vi.fn().mockResolvedValue({ id: "pr-2" }),
         upsert: vi
           .fn()
-          .mockResolvedValue({ id: "pr-2", artifactId: loop.artifactId }),
+          .mockResolvedValue({ id: "pr-2", documentId: loop.documentId }),
       },
       externalLink: {
         create: vi.fn().mockResolvedValue({ id: "ext-link-2" }),
@@ -380,7 +380,7 @@ describe("ingestExecutionArtifacts", () => {
 
     await ingestExecutionArtifacts(loop, artifacts);
 
-    expect(mockTx.artifactEvaluation.upsert).toHaveBeenCalledWith(
+    expect(mockTx.documentEvaluation.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         create: expect.objectContaining({
           reportData: CODE_JUDGES_REPORT,

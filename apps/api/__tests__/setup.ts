@@ -9,7 +9,13 @@ config({ path: ".env.local" });
 // These are only used when .env.local is absent (e.g., CI).
 process.env.STRIPE_SECRET_KEY ??= "sk_test_placeholder";
 process.env.STRIPE_WEBHOOK_SECRET ??= "whsec_test_placeholder";
-process.env.INTERNAL_API_SECRET ??= "test-internal-secret";
+
+// INTERNAL_API_SECRET is FORCED (not a fallback) because the compatibility
+// test fixtures send this exact value in the x-internal-secret header and
+// the route's constant-time HMAC compare will reject anything else. Devs
+// whose .env.local carries a different value would otherwise see ~18 compat
+// tests fail with 401 on /internal/relay/socket-event.
+process.env.INTERNAL_API_SECRET = "test-internal-secret";
 
 // Mock server-only to prevent "Client Component" errors in tests
 vi.mock("server-only", () => ({}));

@@ -1,5 +1,5 @@
 import type { AttachmentDownloadResponse } from "@repo/api/src/types/attachment";
-import { attachmentsService } from "@/app/artifacts/attachments-service";
+import { attachmentsService } from "@/app/documents/attachments-service";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { resolveFeatureId } from "@/lib/identifier-utils";
 import {

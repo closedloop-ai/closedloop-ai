@@ -2,27 +2,18 @@
 
 import { useFeatureFlag } from "@repo/analytics/client";
 import {
-  type ArtifactDetail,
-  ArtifactStatus,
-  ArtifactType,
+  type DocumentDetail,
+  DocumentStatus,
+  DocumentType,
   PullRequestState,
-} from "@repo/api/src/types/artifact";
-import type { Priority } from "@repo/api/src/types/common";
+} from "@repo/api/src/types/document";
 import { EntityType } from "@repo/api/src/types/entity-link";
-import { InlinePresence, OptionalArtifactRoom } from "@repo/collaboration";
-import { PriorityIcon } from "@repo/design-system/components/ui/priority-icon";
+import { InlinePresence, OptionalDocumentRoom } from "@repo/collaboration";
 import {
   ResizableHandle,
   ResizablePanel,
   ResizablePanelGroup,
 } from "@repo/design-system/components/ui/resizable";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@repo/design-system/components/ui/select";
 import {
   Tabs,
   TabsContent,
@@ -32,32 +23,29 @@ import {
 import { TiptapToolbar } from "@repo/rich-text";
 import { Loader2Icon } from "lucide-react";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
-import { ArtifactChatPanel } from "@/components/artifact-editor/artifact-chat-panel";
-import { CollaborativeEditor } from "@/components/artifact-editor/collaborative-editor";
-import { EditableArtifactTitle } from "@/components/artifact-editor/editable-artifact-title";
-import { EditorToolbarActions } from "@/components/artifact-editor/editor-toolbar-actions";
-import { EditorToolbarRow } from "@/components/artifact-editor/editor-toolbar-row";
-import { MetadataPanel } from "@/components/artifact-editor/metadata-panel";
-import { StatusMetadataSection } from "@/components/artifact-editor/status-metadata-section";
-import { TargetRepositoryFields } from "@/components/artifact-editor/target-repository-fields";
 import { BackendMismatchModal } from "@/components/backend-mismatch-modal";
+import { DocumentChatDrawer } from "@/components/chat/DocumentChatDrawer";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
+import { CollaborativeEditor } from "@/components/document-editor/collaborative-editor";
+import { EditableDocumentTitle } from "@/components/document-editor/editable-document-title";
+import { EditorToolbarActions } from "@/components/document-editor/editor-toolbar-actions";
+import { EditorToolbarRow } from "@/components/document-editor/editor-toolbar-row";
 import { LoopDispatchTargetSelector } from "@/components/engineer/LoopDispatchTargetSelector";
 import { ExecutionLogDialog } from "@/components/execution-log/execution-log-dialog";
 import { ExecutionLogSummary } from "@/components/execution-log/execution-log-summary";
 import { GenerationStatusBanner } from "@/components/generation-status-banner";
 import { MoveEntityDialog } from "@/components/move-entity-dialog";
-import { useArtifactActions } from "@/hooks/artifact-editing/use-artifact-actions";
-import { useArtifactContent } from "@/hooks/artifact-editing/use-artifact-content";
-import { useArtifactMetadata } from "@/hooks/artifact-editing/use-artifact-metadata";
-import { useArtifactUIState } from "@/hooks/artifact-editing/use-artifact-ui-state";
-import { useEditorSession } from "@/hooks/artifact-editing/use-editor-session";
-import { usePlanActions } from "@/hooks/artifact-editing/use-plan-actions";
+import { useDocumentActions } from "@/hooks/document-editing/use-document-actions";
+import { useDocumentContent } from "@/hooks/document-editing/use-document-content";
+import { useDocumentMetadata } from "@/hooks/document-editing/use-document-metadata";
+import { useDocumentUIState } from "@/hooks/document-editing/use-document-ui-state";
+import { useEditorSession } from "@/hooks/document-editing/use-editor-session";
+import { usePlanActions } from "@/hooks/document-editing/use-plan-actions";
 import {
-  useArtifactGenerationStatus,
-  useArtifactPullRequest,
-  useDismissArtifactGenerationStatus,
-} from "@/hooks/queries/use-artifacts";
+  useDismissDocumentGenerationStatus,
+  useDocumentGenerationStatus,
+  useDocumentPullRequest,
+} from "@/hooks/queries/use-documents";
 import { useWorkstreamPreviewDeployment } from "@/hooks/queries/use-external-links";
 import {
   useCodeJudgesFeedback,
@@ -65,16 +53,16 @@ import {
 } from "@/hooks/queries/use-judges";
 import { useExecutionLogDialog } from "@/hooks/use-execution-log-dialog";
 import { usePreviewDeploymentPolling } from "@/hooks/use-preview-deployment-polling";
-import { PRIORITY_LABELS } from "@/lib/project-constants";
 import { ExecutePlanModal } from "../components/execute-plan-modal";
 import { RequestChangesModal } from "../components/request-changes-modal";
 import { VersionSelector } from "../components/version-selector";
 import { LinearExportDialog } from "./components/linear-export-dialog";
 import { PlanEditorHeader } from "./components/plan-editor-header";
+import { PlanMetadataBar } from "./components/plan-metadata-bar";
 import { PlanMetadataPanel } from "./components/plan-metadata-panel";
 
 type PlanEditorProps = {
-  plan: ArtifactDetail;
+  plan: DocumentDetail;
   currentVersion: number;
   onVersionChange: (version: number) => void;
   showHeader?: boolean;
@@ -86,43 +74,39 @@ export function PlanEditor({
   onVersionChange,
   showHeader = true,
 }: Readonly<PlanEditorProps>) {
-  const chatFlag = useFeatureFlag("the-one-flag");
+  const chatFlag = useFeatureFlag("interactive-chat");
   const executionLogDialog = useExecutionLogDialog();
 
-  const contentController = useArtifactContent({
-    artifact: plan,
-    onVersionCreated: () => {
-      if (currentVersion !== plan.latestVersion) {
-        onVersionChange(plan.latestVersion);
-      }
-    },
-  });
+  const [showMoveDialog, setShowMoveDialog] = useState(false);
+  const [showComments, setShowComments] = useState(true);
 
   const session = useEditorSession({
     artifact: plan,
     currentVersion,
-    contentCallbacks: contentController,
     onVersionChange,
   });
-
-  const metadata = useArtifactMetadata({
+  const contentController = useDocumentContent({
+    artifact: plan,
+    isLatestVersion: currentVersion === plan.latestVersion,
+    setEditorContent: session.setEditorContent,
+    onVersionCreated: (updatedArtifact) =>
+      onVersionChange(updatedArtifact.version.version),
+  });
+  const metadata = useDocumentMetadata({
     artifact: plan,
   });
-
-  const actions = useArtifactActions({
+  const actions = useDocumentActions({
     artifact: plan,
     redirectPath: plan.project?.teams?.[0]?.id
       ? `/teams/${plan.project.teams[0].id}/projects/${plan.project.id}`
       : "/implementation-plans",
   });
-
   const planActions = usePlanActions({
-    artifactId: plan.id,
+    documentId: plan.id,
     slug: plan.slug,
   });
-
-  const uiState = useArtifactUIState({
-    artifactType: ArtifactType.ImplementationPlan,
+  const uiState = useDocumentUIState({
+    documentType: DocumentType.ImplementationPlan,
   });
 
   // Type assertion for Plan-specific UI state
@@ -138,14 +122,9 @@ export function PlanEditor({
     openExecuteModal,
   } = uiState;
 
-  // Move dialog state
-  const [showMoveDialog, setShowMoveDialog] = useState(false);
-
-  // Comments panel toggle state
-  const [showComments, setShowComments] = useState(true);
+  // Auto-reveal comments when threads reappear after being fully resolved.
+  // Edge-triggered only (0 -> >0) so we don't override the user's manual toggle.
   const prevThreadCount = useRef(session.openThreadCount);
-
-  // Auto-reveal comments when threads reappear after being fully resolved
   useEffect(() => {
     if (prevThreadCount.current === 0 && session.openThreadCount > 0) {
       setShowComments(true);
@@ -155,9 +134,9 @@ export function PlanEditor({
 
   // Fetch generation status with adaptive polling (stops when terminal)
   const { data: generationStatus, invalidateCache: invalidateArtifactCache } =
-    useArtifactGenerationStatus(plan.id, { polling: true });
-  const dismissGenerationStatus = useDismissArtifactGenerationStatus();
-  const { data: pullRequest } = useArtifactPullRequest(plan.id);
+    useDocumentGenerationStatus(plan.id, { polling: true });
+  const dismissGenerationStatus = useDismissDocumentGenerationStatus();
+  const { data: pullRequest } = useDocumentPullRequest(plan.id);
   const { data: judgesReport } = usePlanJudgesFeedback(plan.id);
   const { data: codeJudgesReport } = useCodeJudgesFeedback(plan.id);
 
@@ -185,8 +164,8 @@ export function PlanEditor({
   });
 
   // Derived state
-  const isDraft = metadata.status === ArtifactStatus.Draft;
-  const isApproved = metadata.status === ArtifactStatus.Approved;
+  const isDraft = metadata.status === DocumentStatus.Draft;
+  const isApproved = metadata.status === DocumentStatus.Approved;
   const isPending =
     contentController.isSaving ||
     metadata.isUpdating ||
@@ -198,9 +177,7 @@ export function PlanEditor({
     planActions.isEvaluatingCode;
 
   const canEvaluateCode =
-    pullRequest !== undefined &&
-    pullRequest !== null &&
-    pullRequest.state === PullRequestState.Open &&
+    pullRequest?.state === PullRequestState.Open &&
     pullRequest.headBranch.length > 0;
   const evaluateCodeHandler = useCallback(() => {
     if (!canEvaluateCode || pullRequest === undefined || pullRequest === null) {
@@ -240,21 +217,22 @@ export function PlanEditor({
       )}
       {versionDisplay}
       <EditorToolbarActions
-        isPending={isPending}
+        canRestoreVersion={true}
+        canSaveVersion={currentVersion === plan.latestVersion}
+        isRestoring={isPending}
         isSaving={contentController.isSaving}
-        onRestoreVersion={session.handleDiscard}
-        onSaveVersion={session.handlePublish}
+        onRestoreVersion={contentController.restoreVersion}
+        onSaveVersion={contentController.saveContent}
         onToggleComments={setShowComments}
         openThreadCount={session.openThreadCount}
         showComments={showComments}
-        showRestoreVersion={plan.latestVersion > 1}
       />
     </>
   );
 
   const header = showHeader ? (
     <PlanEditorHeader
-      canShowPanel={chatFlag?.enabled}
+      canShowPanel={chatFlag?.enabled === true}
       isApproved={isApproved}
       isDraft={isDraft}
       isExecuting={planActions.isExecuting}
@@ -270,7 +248,7 @@ export function PlanEditor({
       onMove={() => setShowMoveDialog(true)}
       onRegenerate={planActions.handleRegenerate}
       onRequestChanges={openRequestChangesModal}
-      onRestoreVersion={session.handleRestoreVersion}
+      onRestoreVersion={contentController.restoreVersion}
       onToggleMetadataPanel={uiState.toggleMetadataPanel}
       plan={plan}
       pullRequest={pullRequest ?? null}
@@ -287,14 +265,11 @@ export function PlanEditor({
       <ResizablePanelGroup autoSaveId="plan-editor" direction="horizontal">
         <ResizablePanel defaultSize={75} minSize={50}>
           <div className="h-full overflow-y-auto overflow-x-hidden bg-background">
-            <OptionalArtifactRoom
-              key={session.roomResetKey}
-              roomId={session.liveblocksRoomId}
-            >
+            <OptionalDocumentRoom roomId={session.liveblocksRoomId}>
               {/* Loading spinner — visible until editor content is fully loaded */}
               <div
                 className={
-                  session.isContentReady
+                  session.isEditorReady
                     ? "hidden"
                     : "flex flex-1 items-center justify-center py-24"
                 }
@@ -305,7 +280,7 @@ export function PlanEditor({
               {/* Content wrapper — hidden until Liveblocks Y.Doc sync completes */}
               <div
                 className={
-                  session.isContentReady
+                  session.isEditorReady
                     ? undefined
                     : "invisible h-0 overflow-hidden"
                 }
@@ -322,7 +297,7 @@ export function PlanEditor({
                   isDismissFailurePending={dismissGenerationStatus.isPending}
                   onDismissFailure={async (runKey) => {
                     await dismissGenerationStatus.mutateAsync({
-                      artifactId: plan.id,
+                      documentId: plan.id,
                       runKey,
                     });
                   }}
@@ -331,76 +306,20 @@ export function PlanEditor({
 
                 <div className="flex min-h-[200px] flex-col">
                   <CollaborativeEditor
-                    contentResetKey={session.contentResetKey}
-                    contentResetValue={session.contentResetValue}
                     externalToolbar
                     headerContent={
                       <div className="space-y-4 px-5 pt-10">
-                        <EditableArtifactTitle
-                          artifactId={plan.id}
+                        <EditableDocumentTitle
+                          documentId={plan.id}
                           initialTitle={plan.title}
                         />
-                        <MetadataPanel variant="bar">
-                          <StatusMetadataSection
-                            assignee={metadata.assignee}
-                            layout="horizontal"
-                            onAssigneeChange={metadata.handleAssigneeChange}
-                            onStatusChange={metadata.handleStatusChange}
-                            status={metadata.status}
-                            teamMembers={metadata.teamMembers}
-                          />
-                          <Select
-                            onValueChange={(v) =>
-                              metadata.handlePriorityChange(v as Priority)
-                            }
-                            value={metadata.priority}
-                          >
-                            <SelectTrigger
-                              className="min-w-0 justify-start gap-1 bg-transparent dark:bg-transparent [&>:last-child]:hidden"
-                              size="sm"
-                            >
-                              <SelectValue>
-                                <span className="inline-flex items-center gap-1.5">
-                                  <PriorityIcon priority={metadata.priority} />
-                                  {PRIORITY_LABELS[metadata.priority]}
-                                </span>
-                              </SelectValue>
-                            </SelectTrigger>
-                            <SelectContent>
-                              {Object.entries(PRIORITY_LABELS).map(
-                                ([value, label]) => (
-                                  <SelectItem key={value} value={value}>
-                                    <span className="inline-flex items-center gap-1.5">
-                                      <PriorityIcon
-                                        priority={value as Priority}
-                                      />
-                                      {label}
-                                    </span>
-                                  </SelectItem>
-                                )
-                              )}
-                            </SelectContent>
-                          </Select>
-                          <TargetRepositoryFields
-                            layout="horizontal"
-                            onTargetBranchBlur={metadata.handleTargetBranchBlur}
-                            onTargetBranchChange={
-                              metadata.handleTargetBranchChange
-                            }
-                            onTargetRepoBlur={metadata.handleTargetRepoBlur}
-                            onTargetRepoChange={metadata.handleTargetRepoChange}
-                            separator={false}
-                            targetBranch={metadata.targetBranch}
-                            targetRepo={metadata.targetRepo}
-                            title=""
-                          />
-                        </MetadataPanel>
+                        <PlanMetadataBar metadata={metadata} />
                       </div>
                     }
                     key={currentVersion}
                     liveblocksRoomId={session.liveblocksRoomId}
                     onChange={contentController.updateContent}
-                    onContentReady={session.handleContentReady}
+                    onContentReady={session.handleEditorReady}
                     onEditorInstance={session.handleEditorInstance}
                     onOpenThreadCountChange={session.handleThreadCountChange}
                     placeholder="Add description..."
@@ -425,14 +344,14 @@ export function PlanEditor({
                   />
                 </div>
               </div>
-            </OptionalArtifactRoom>
+            </OptionalDocumentRoom>
           </div>
         </ResizablePanel>
 
         {/* Right panel: Chat + Execution Log tabs */}
-        {chatFlag?.enabled !== false && uiState.showMetadataPanel && (
+        {chatFlag?.enabled === true && uiState.showMetadataPanel && (
           <>
-            <ResizableHandle className="after:!w-[3px] z-20 hover:after:bg-primary" />
+            <ResizableHandle className="z-20 after:w-[3px]! hover:after:bg-primary" />
             <ResizablePanel defaultSize={25} maxSize={40} minSize={15}>
               <Tabs className="flex h-full flex-col" defaultValue="chat">
                 <TabsList className="mx-3 mt-3 w-auto">
@@ -443,14 +362,19 @@ export function PlanEditor({
                   className="min-h-0 flex-1 overflow-hidden"
                   value="chat"
                 >
-                  <ArtifactChatPanel artifactId={plan.id} artifactType="plan" />
+                  <DocumentChatDrawer
+                    documentId={plan.id}
+                    documentSlug={plan.slug}
+                    documentTitle={plan.title}
+                    documentType="plan"
+                  />
                 </TabsContent>
                 <TabsContent
                   className="min-h-0 flex-1 overflow-y-auto p-4"
                   value="execution-log"
                 >
                   <ExecutionLogSummary
-                    artifactId={plan.id}
+                    documentId={plan.id}
                     onViewFullTrace={executionLogDialog.handleViewFullTrace}
                   />
                 </TabsContent>
@@ -480,7 +404,7 @@ export function PlanEditor({
 
       {/* Linear Export Dialog */}
       <LinearExportDialog
-        artifactId={plan.id}
+        documentId={plan.id}
         onOpenChange={setShowLinearExportDialog}
         open={showLinearExportDialog}
       />
@@ -489,7 +413,7 @@ export function PlanEditor({
       <MoveEntityDialog
         entity={{
           id: plan.id,
-          entityType: EntityType.Artifact,
+          entityType: EntityType.Document,
           projectId: plan.projectId,
         }}
         onOpenChange={setShowMoveDialog}
@@ -535,12 +459,12 @@ export function PlanEditor({
 function FloatingTargetPicker({
   multiTargetState,
   onSelect,
-}: {
+}: Readonly<{
   multiTargetState: {
     availableTargets: { id: string; machineName: string; status: string }[];
   } | null;
   onSelect: (targetId: string) => void;
-}) {
+}>) {
   if (!multiTargetState) {
     return null;
   }

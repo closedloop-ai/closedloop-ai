@@ -3,8 +3,8 @@
  * Maps Symphony FeatureWithWorkstream to the shape closedloop-dev components expect.
  */
 
-import { ArtifactStatus, ArtifactType } from "@repo/api/src/types/artifact";
 import { Priority } from "@repo/api/src/types/common";
+import { DocumentStatus, DocumentType } from "@repo/api/src/types/document";
 import { FeatureStatus } from "@repo/api/src/types/feature";
 
 export type TicketStatusType =
@@ -137,60 +137,60 @@ export function priorityToLabel(priority: Priority): string {
   }
 }
 
-/** Map ArtifactStatus to closedloop-dev status type */
-export function mapArtifactStatusToType(
-  status: ArtifactStatus
+/** Map DocumentStatus to closedloop-dev status type */
+export function mapDocumentStatusToType(
+  status: DocumentStatus
 ): TicketStatusType {
   switch (status) {
-    case ArtifactStatus.Draft:
+    case DocumentStatus.Draft:
       return "started";
-    case ArtifactStatus.InProgress:
+    case DocumentStatus.InProgress:
       return "started";
-    case ArtifactStatus.InReview:
+    case DocumentStatus.InReview:
       return "started";
-    case ArtifactStatus.Approved:
+    case DocumentStatus.Approved:
       return "started";
-    case ArtifactStatus.Executed:
+    case DocumentStatus.Executed:
       return "started";
-    case ArtifactStatus.Done:
+    case DocumentStatus.Done:
       return "completed";
-    case ArtifactStatus.Obsolete:
+    case DocumentStatus.Obsolete:
       return "canceled";
     default:
       return "unstarted";
   }
 }
 
-/** Map ArtifactStatus to display name */
-export function artifactStatusDisplayName(status: ArtifactStatus): string {
+/** Map DocumentStatus to display name */
+export function artifactStatusDisplayName(status: DocumentStatus): string {
   switch (status) {
-    case ArtifactStatus.Draft:
+    case DocumentStatus.Draft:
       return "Draft";
-    case ArtifactStatus.InProgress:
+    case DocumentStatus.InProgress:
       return "In Progress";
-    case ArtifactStatus.InReview:
+    case DocumentStatus.InReview:
       return "In Review";
-    case ArtifactStatus.Approved:
+    case DocumentStatus.Approved:
       return "Approved";
-    case ArtifactStatus.Executed:
+    case DocumentStatus.Executed:
       return "Executed";
-    case ArtifactStatus.Done:
+    case DocumentStatus.Done:
       return "Done";
-    case ArtifactStatus.Obsolete:
+    case DocumentStatus.Obsolete:
       return "Obsolete";
     default:
       return status;
   }
 }
 
-/** Map artifact type string to display label */
-export function artifactTypeToSourceType(type: ArtifactType): TicketSourceType {
+/** Map document type string to display label */
+export function documentTypeToSourceType(type: DocumentType): TicketSourceType {
   switch (type) {
-    case ArtifactType.Prd:
+    case DocumentType.Prd:
       return TicketSourceType.Prd;
-    case ArtifactType.ImplementationPlan:
+    case DocumentType.ImplementationPlan:
       return TicketSourceType.ImplementationPlan;
-    case ArtifactType.Template:
+    case DocumentType.Template:
       return TicketSourceType.Template;
     default:
       return TicketSourceType.Prd;

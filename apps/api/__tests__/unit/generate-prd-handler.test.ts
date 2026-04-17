@@ -14,7 +14,7 @@ vi.mock("@repo/database", () => ({
   withDb: Object.assign(
     vi.fn((fn: (db: unknown) => Promise<unknown>) =>
       fn({
-        artifact: { update: vi.fn() },
+        document: { update: vi.fn() },
         workstreamEvent: { findFirst: vi.fn(), create: vi.fn() },
       })
     ),
@@ -28,14 +28,18 @@ vi.mock("@repo/observability/log", () => ({
   log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
-vi.mock("@/app/artifacts/artifact-version-service", () => ({
-  artifactVersionService: {
+vi.mock("@/app/documents/document-version-service", () => ({
+  documentVersionService: {
     createVersion: vi.fn(),
   },
 }));
 
-vi.mock("@/app/artifacts/room-utils", () => ({
-  resetArtifactRoom: vi.fn(),
+vi.mock("@vercel/functions", () => ({
+  waitUntil: vi.fn(),
+}));
+
+vi.mock("@/app/documents/room-utils", () => ({
+  resetDocumentRoom: vi.fn(),
 }));
 
 vi.mock("@/lib/loops/loop-state", () => ({
@@ -47,15 +51,15 @@ vi.mock("@/lib/loops/loop-state", () => ({
 import type { Loop } from "@repo/api/src/types/loop";
 import { withDb } from "@repo/database";
 import { beforeEach, describe, expect, it } from "vitest";
-import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
-import { resetArtifactRoom } from "@/app/artifacts/room-utils";
+import { documentVersionService } from "@/app/documents/document-version-service";
+import { resetDocumentRoom } from "@/app/documents/room-utils";
 import { generatePrdHandler } from "@/lib/loops/loop-commands/generate-prd-handler";
 import { downloadArtifactFile } from "@/lib/loops/loop-state";
 import { buildLoop } from "../fixtures/loop";
 
 type MockFn = ReturnType<typeof vi.fn>;
-const mockCreateVersion = artifactVersionService.createVersion as MockFn;
-const mockResetArtifactRoom = resetArtifactRoom as MockFn;
+const mockCreateVersion = documentVersionService.createVersion as MockFn;
+const mockResetArtifactRoom = resetDocumentRoom as MockFn;
 const mockDownloadArtifactFile = downloadArtifactFile as MockFn;
 
 // ---------------------------------------------------------------------------
@@ -66,7 +70,7 @@ function buildGeneratePrdLoop(overrides: Partial<Loop> = {}) {
   return buildLoop({
     command: "GENERATE_PRD",
     s3StateKey: "org/loops/loop-1/run-1",
-    artifactId: "prd-artifact-1",
+    documentId: "prd-artifact-1",
     ...overrides,
   });
 }
@@ -85,7 +89,7 @@ function mockDbUpdate(slug: string | null = "test-slug") {
   (withDb as unknown as MockFn).mockImplementation(
     (fn: (db: unknown) => Promise<unknown>) =>
       fn({
-        artifact: { update: mockUpdate },
+        document: { update: mockUpdate },
         workstreamEvent: { findFirst: mockFindFirst, create: mockCreate },
       })
   );
@@ -124,6 +128,7 @@ describe("generatePrdHandler ingestion", () => {
 
     expect(mockCreateVersion).toHaveBeenCalledWith(
       "prd-artifact-1",
+      "org-1",
       null,
       prdContent
     );
@@ -179,7 +184,7 @@ describe("generatePrdHandler ingestion", () => {
         actorType: "system",
         data: expect.objectContaining({
           loopId: loop.id,
-          artifactId: "prd-artifact-1",
+          documentId: "prd-artifact-1",
           command: "GENERATE_PRD",
           conclusion: "success",
         }),
@@ -199,7 +204,7 @@ describe("generatePrdHandler ingestion", () => {
   });
 
   it("skips ingestion when no artifactId", async () => {
-    const loop = buildGeneratePrdLoop({ artifactId: null });
+    const loop = buildGeneratePrdLoop({ documentId: null });
     mockDownloadArtifactFile.mockResolvedValue(Buffer.from("# PRD content"));
 
     await generatePrdHandler.downloadAndIngest(loop.s3StateKey!, loop, "org-1");
@@ -226,6 +231,7 @@ describe("generatePrdHandler ingestion", () => {
 
     expect(mockCreateVersion).toHaveBeenCalledWith(
       "prd-artifact-1",
+      "org-1",
       null,
       "# Uploaded PRD"
     );

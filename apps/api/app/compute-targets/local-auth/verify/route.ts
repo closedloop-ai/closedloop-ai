@@ -105,7 +105,7 @@ export const POST = withApiKeyAuth<
   log.info("Local gateway challenge verified successfully", {
     userId: user.id,
     orgId: user.organizationId,
-    origin: claims.origin,
+    challengeOrigin: claims.origin,
     jti: claims.jti,
     userAgent,
   });

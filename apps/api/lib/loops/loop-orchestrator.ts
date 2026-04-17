@@ -1,3 +1,7 @@
+import {
+  DESKTOP_API_NAMESPACE_CAPABILITY_KEY,
+  isDesktopApiNamespace,
+} from "@repo/api/src/desktop-api-namespace";
 import type { JsonObject } from "@repo/api/src/types/common";
 import type {
   LoopEvent,
@@ -12,18 +16,18 @@ import {
   LoopStatus,
   MODEL_PRICING,
 } from "@repo/api/src/types/loop";
+import { issueLoopRunnerToken } from "@repo/auth/loop-runner-jwt";
 import { withDb } from "@repo/database";
 import { getInstallationAccessToken } from "@repo/github";
 import { log } from "@repo/observability/log";
 import { truncateUtf8 } from "@repo/observability/truncate-utf8";
-import { getCommitterInfo } from "@/app/artifacts/service";
+import { getCommitterInfo } from "@/app/documents/service";
 import { githubService } from "@/app/integrations/github/service";
 import {
   isInvalidStatusTransitionError,
   loopsService,
 } from "@/app/loops/service";
 import { apiKeyService } from "@/app/settings/api-key-service";
-import { issueLoopRunnerToken } from "@/lib/auth/loop-runner-jwt";
 import type {
   LaunchContext,
   LaunchResult,
@@ -431,21 +435,26 @@ async function resolveLoopLaunchContext(
   );
 
   // Resolve artifact slug for worktree/branch naming on desktop.
-  let artifactSlug: string | undefined;
-  if (loop.artifactId) {
+  let documentSlug: string | undefined;
+  if (loop.documentId) {
     const artifact = await withDb((db) =>
-      db.artifact.findUnique({
-        where: { id: loop.artifactId!, organizationId },
+      db.document.findUnique({
+        where: { id: loop.documentId!, organizationId },
         select: { slug: true },
       })
     );
-    artifactSlug = artifact?.slug;
+    documentSlug = artifact?.slug;
   }
 
   const localRepoPath =
     typeof loop.metadata?.localRepoPath === "string"
       ? loop.metadata.localRepoPath
       : undefined;
+  const desktopApiNamespace = isDesktopApiNamespace(
+    loop.metadata?.[DESKTOP_API_NAMESPACE_CAPABILITY_KEY]
+  )
+    ? loop.metadata[DESKTOP_API_NAMESPACE_CAPABILITY_KEY]
+    : undefined;
 
   return {
     loopId: loop.id,
@@ -458,8 +467,8 @@ async function resolveLoopLaunchContext(
     githubToken,
     committer,
     repo: loop.repo,
-    artifactId: loop.artifactId,
-    artifactSlug,
+    documentId: loop.documentId,
+    documentSlug,
     parentLoopId: loop.parentLoopId,
     parentS3StateKey:
       parentInfo.kind === "state-available"
@@ -475,6 +484,7 @@ async function resolveLoopLaunchContext(
         : null,
     localRepoPath,
     computeTargetId: loop.computeTargetId,
+    desktopApiNamespace,
   };
 }
 
@@ -524,7 +534,7 @@ export async function launchLoop(
     loopId,
     command: loop.command,
     repo: loop.repo,
-    hasArtifact: !!loop.artifactId,
+    hasDocument: !!loop.documentId,
     hasParent: !!loop.parentLoopId,
     computeTargetId: loop.computeTargetId,
   });
@@ -757,7 +767,7 @@ async function ingestLoopArtifacts(
   loop: NonNullable<Awaited<ReturnType<typeof loopsService.findById>>>,
   organizationId: string
 ): Promise<void> {
-  if (!loop.artifactId) {
+  if (!loop.documentId) {
     return;
   }
   if (!(loop.s3StateKey || loop.computeTargetId)) {

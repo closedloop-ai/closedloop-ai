@@ -94,8 +94,8 @@ export async function handleIssueComment(
       select: {
         id: true,
         workstreamId: true,
-        artifactId: true,
-        artifact: { select: { slug: true } },
+        documentId: true,
+        document: { select: { slug: true } },
       },
     });
 
@@ -144,8 +144,8 @@ export async function handleIssueComment(
               prTitle: issue.title,
               prUrl: issue.html_url,
               commentUrl: comment.html_url,
-              artifactId: existingPr.artifactId,
-              artifactSlug: existingPr.artifact?.slug,
+              documentId: existingPr.documentId,
+              documentSlug: existingPr.document?.slug,
               commentKind: "issue_comment",
             },
           },

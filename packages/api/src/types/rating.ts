@@ -2,7 +2,7 @@
 // These are explicitly defined to keep packages/api independent of database
 
 /**
- * Request body for submitting or updating an artifact rating (PUT).
+ * Request body for submitting or updating a document rating (PUT).
  * Score is required; comment is optional to support rating-only submissions.
  */
 export type SubmitRatingRequest = {
@@ -14,12 +14,12 @@ export type SubmitRatingRequest = {
  * Individual rating representation.
  * Used in responses for both GET and PUT endpoints.
  */
-export type ArtifactRatingResponse = {
+export type DocumentRatingResponse = {
   id: string;
   userId: string;
   score: number;
   comment?: string;
-  artifactVersion: number;
+  documentVersion: number;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -29,8 +29,8 @@ export type ArtifactRatingResponse = {
  * Returned by both GET (fetch summary) and PUT (after upsert) endpoints.
  * userRating is nullable to support "no rating yet" state.
  */
-export type ArtifactRatingSummary = {
+export type DocumentRatingSummary = {
   average: number;
   count: number;
-  userRating: ArtifactRatingResponse | null;
+  userRating: DocumentRatingResponse | null;
 };

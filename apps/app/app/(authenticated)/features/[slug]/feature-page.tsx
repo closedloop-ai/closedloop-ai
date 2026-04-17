@@ -1,5 +1,6 @@
 "use client";
 
+import { FeatureFlagged } from "@repo/analytics/components/feature-flagged";
 import { EntityType } from "@repo/api/src/types/entity-link";
 import type { FeatureWithWorkstream } from "@repo/api/src/types/feature";
 import { toast } from "@repo/design-system/components/ui/sonner";
@@ -7,11 +8,12 @@ import { useRouter } from "next/navigation";
 import { useCallback, useState } from "react";
 import { ExecutePlanModal } from "@/app/(authenticated)/implementation-plans/components/execute-plan-modal";
 import { BackendMismatchModal } from "@/components/backend-mismatch-modal";
+import { DocumentChatDrawer } from "@/components/chat/DocumentChatDrawer";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { LoopDispatchTargetSelector } from "@/components/engineer/LoopDispatchTargetSelector";
 import { MoveEntityDialog } from "@/components/move-entity-dialog";
-import { usePlanActions } from "@/hooks/artifact-editing/use-plan-actions";
-import { useArtifactGenerationStatus } from "@/hooks/queries/use-artifacts";
+import { usePlanActions } from "@/hooks/document-editing/use-plan-actions";
+import { useDocumentGenerationStatus } from "@/hooks/queries/use-documents";
 import { useDeleteFeature } from "@/hooks/queries/use-features";
 import { useLocalStorageState } from "@/hooks/use-local-storage-state";
 import { BranchesSection } from "./components/branches-section";
@@ -37,7 +39,7 @@ export function FeaturePage({ feature }: Readonly<FeaturePageProps>) {
   const [showGenerateModal, setShowGenerateModal] = useState(false);
   const [showExecuteModal, setShowExecuteModal] = useState(false);
   const [showMetadataPanel, setShowMetadataPanel] = useLocalStorageState(
-    "panel:metadata:FEATURE",
+    "panel:chat:FEATURE",
     true
   );
   const [displayTitle, setDisplayTitle] = useState(feature.title);
@@ -53,10 +55,10 @@ export function FeaturePage({ feature }: Readonly<FeaturePageProps>) {
     confirmPreferredBackend,
     dismissBackendMismatch,
   } = usePlanActions({
-    artifactId: linkedPlanId,
+    documentId: linkedPlanId,
   });
 
-  const { data: generationStatus } = useArtifactGenerationStatus(
+  const { data: generationStatus } = useDocumentGenerationStatus(
     linkedPlanId ?? "",
     {
       enabled: !!linkedPlanId,
@@ -137,13 +139,24 @@ export function FeaturePage({ feature }: Readonly<FeaturePageProps>) {
             </div>
           </div>
 
-          {/* Right Sidebar */}
+          {/* Right Sidebar: metadata */}
           {showMetadataPanel && (
             <FeatureMetadataPanel
               feature={feature}
               teamIds={feature.project?.teams.map((team) => team.id) ?? []}
             />
           )}
+          {/* Right Sidebar: interactive chat */}
+          <FeatureFlagged flag="interactive-chat">
+            <div className="flex w-[360px] flex-none flex-col border-l">
+              <DocumentChatDrawer
+                documentId={feature.id}
+                documentSlug={feature.slug}
+                documentTitle={feature.title}
+                documentType="feature"
+              />
+            </div>
+          </FeatureFlagged>
         </div>
       </main>
 

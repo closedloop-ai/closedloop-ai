@@ -19,7 +19,7 @@ vi.mock("@repo/observability/log", () => ({
   log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
-vi.mock("@/app/artifacts/service", () => ({
+vi.mock("@/app/documents/service", () => ({
   getCommitterInfo: vi.fn(),
 }));
 
@@ -31,7 +31,7 @@ vi.mock("@/app/settings/api-key-service", () => ({
   apiKeyService: { resolveApiKey: vi.fn() },
 }));
 
-vi.mock("@/lib/auth/loop-runner-jwt", () => ({
+vi.mock("@repo/auth/loop-runner-jwt", () => ({
   issueLoopRunnerToken: vi.fn(),
 }));
 

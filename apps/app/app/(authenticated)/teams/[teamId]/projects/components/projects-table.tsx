@@ -9,16 +9,16 @@ import { Button } from "@repo/design-system/components/ui/button";
 import type { User as PopoverUser } from "@repo/design-system/components/ui/user-select-popover";
 import { FolderIcon } from "lucide-react";
 import { useMemo } from "react";
-import type {
-  ArtifactRowItem,
-  RowEditHandlers,
-} from "@/components/artifact-table/artifact-row";
-import { ArtifactRow } from "@/components/artifact-table/artifact-row";
-import { ArtifactTableHeader } from "@/components/artifact-table/table-header";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
+import type {
+  DocumentRowItem,
+  RowEditHandlers,
+} from "@/components/document-table/document-row";
+import { DocumentRow } from "@/components/document-table/document-row";
+import { DocumentTableHeader } from "@/components/document-table/table-header";
 import { EmptyState } from "@/components/empty-state";
 import { useOrganizationUsers } from "@/hooks/queries/use-users";
-import type { ArtifactColumn } from "@/hooks/use-column-visibility";
+import type { DocumentColumn } from "@/hooks/use-column-visibility";
 import { PROJECT_DEFAULT_COLUMNS } from "@/hooks/use-column-visibility";
 import { useDeleteConfirmation } from "@/hooks/use-delete-confirmation";
 import { useSortParams } from "@/hooks/use-sort-params";
@@ -30,7 +30,7 @@ import { ProjectRowActions } from "./project-row-actions";
 type ProjectsTableProps = {
   projects: ProjectWithDetails[];
   teamId: string;
-  visibleColumns?: ArtifactColumn[];
+  visibleColumns?: DocumentColumn[];
   onUpdateAssignee?: (projectId: string, assigneeId: string | null) => void;
   onUpdateTargetDate?: (projectId: string, date: Date | null) => void;
   onUpdatePriority?: (projectId: string, priority: Priority) => void;
@@ -159,7 +159,7 @@ export function ProjectsTable({
   return (
     <>
       <div className="min-w-fit">
-        <ArtifactTableHeader
+        <DocumentTableHeader
           onSort={(column, dir: SortDirection) =>
             setSort(column as ProjectSortColumn, dir)
           }
@@ -168,9 +168,9 @@ export function ProjectsTable({
           visibleColumns={visibleColumns}
         />
         {sortedProjects.map((project) => {
-          const item: ArtifactRowItem = { kind: "project", data: project };
+          const item: DocumentRowItem = { kind: "project", data: project };
           return (
-            <ArtifactRow
+            <DocumentRow
               editHandlers={editHandlers}
               item={item}
               key={project.id}

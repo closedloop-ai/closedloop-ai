@@ -596,7 +596,7 @@ export function LearningsDialog({
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const refreshPatterns = useCallback(() => {
-    fetch("/api/engineer/learnings")
+    fetch("/api/gateway/learnings")
       .then((res) => res.json())
       .then((data) => {
         if (!data.error) {
@@ -619,8 +619,8 @@ export function LearningsDialog({
     const fetchAll = async () => {
       try {
         const [learningsRes, pendingRes] = await Promise.all([
-          fetch("/api/engineer/learnings"),
-          fetch("/api/engineer/symphony/pending-learnings"),
+          fetch("/api/gateway/learnings"),
+          fetch("/api/gateway/symphony/pending-learnings"),
         ]);
         const learningsData = await learningsRes.json();
         const pendingData = await pendingRes.json();
@@ -634,7 +634,7 @@ export function LearningsDialog({
 
         // Check if batch processing is already in progress
         const batchRes = await fetch(
-          "/api/engineer/symphony/process-all-learnings"
+          "/api/gateway/symphony/process-all-learnings"
         );
         const batchData = await batchRes.json();
         if (batchData.status === "processing") {
@@ -665,7 +665,7 @@ export function LearningsDialog({
 
     const poll = async () => {
       try {
-        const res = await fetch("/api/engineer/symphony/process-all-learnings");
+        const res = await fetch("/api/gateway/symphony/process-all-learnings");
         const data = await res.json();
         if (data.status === "completed" || data.status === "error") {
           setIsProcessingLocal(false);

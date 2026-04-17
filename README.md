@@ -33,7 +33,7 @@ The codebase contains references to "Symphony" in technical identifiers that pre
 
 - **GitHub Actions**: workflow name (`symphony.yml`), action names (`symphony-setup`, `symphony-artifact`, `symphony-post-results`)
 - **Component names**: `SymphonyChat`, `SymphonyStatus`, `useSymphonyLaunch`, and related React components in the Engineer feature
-- **API routes**: `/api/engineer/symphony/*` endpoints
+- **API routes**: `/api/gateway/symphony/*` endpoints
 - **Bot/plugin names**: references in CI/CD and plugin configuration
 - **Repository name**: `symphony-alpha`
 
@@ -126,7 +126,7 @@ Shared packages imported as `@repo/<package-name>`:
 | **collaboration** | Real-time collaboration via Liveblocks + Yjs |
 | **payments** | Stripe subscription management |
 | **analytics** | PostHog + Google Analytics + Vercel Analytics |
-| **observability** | Error tracking and logging (BetterStack) |
+| [**observability**](./packages/observability/README.md) | Structured logging with agentless Datadog export |
 | **security** | Security headers via Nosecone |
 | **notifications** | In-app notifications via Knock |
 | **feature-flags** | Feature flag management (Vercel Flags + PostHog) |

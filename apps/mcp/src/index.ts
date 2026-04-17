@@ -24,18 +24,18 @@ import {
   type ApiKeyScope,
   type VerifiedApiKeyContext,
 } from "./api-key-contract.js";
-import { registerCreateArtifact } from "./tools/create-artifact.js";
-import { registerCreateArtifactThread } from "./tools/create-artifact-thread.js";
-import { registerCreateArtifactVersion } from "./tools/create-artifact-version.js";
+import { registerCreateDocument } from "./tools/create-document.js";
+import { registerCreateDocumentThread } from "./tools/create-document-thread.js";
+import { registerCreateDocumentVersion } from "./tools/create-document-version.js";
 import { registerCreateEntityLink } from "./tools/create-entity-link.js";
 import { registerCreateExternalLink } from "./tools/create-external-link.js";
 import { registerCreateFeature } from "./tools/create-feature.js";
 import { registerCreateProject } from "./tools/create-project.js";
 import { registerCreateWorkstream } from "./tools/create-workstream.js";
 import { registerDownloadAttachment } from "./tools/download-attachment.js";
-import { registerGetArtifact } from "./tools/get-artifact.js";
-import { registerGetArtifactComments } from "./tools/get-artifact-comments.js";
 import { registerGetDashboardStats } from "./tools/get-dashboard-stats.js";
+import { registerGetDocument } from "./tools/get-document.js";
+import { registerGetDocumentComments } from "./tools/get-document-comments.js";
 import { registerGetFeature } from "./tools/get-feature.js";
 import { registerGetGithubStatus } from "./tools/get-github-status.js";
 import { registerGetGoogleStatus } from "./tools/get-google-status.js";
@@ -43,11 +43,11 @@ import { registerGetLinearStatus } from "./tools/get-linear-status.js";
 import { registerGetLoop } from "./tools/get-loop.js";
 import { registerGetMe } from "./tools/get-me.js";
 import { registerGetProject } from "./tools/get-project.js";
-import { registerGetRelatedArtifacts } from "./tools/get-related-artifacts.js";
+import { registerGetRelatedDocuments } from "./tools/get-related-documents.js";
 import { registerGetWorkstream } from "./tools/get-workstream.js";
-import { registerListArtifactVersions } from "./tools/list-artifact-versions.js";
-import { registerListArtifacts } from "./tools/list-artifacts.js";
 import { registerListAttachments } from "./tools/list-attachments.js";
+import { registerListDocumentVersions } from "./tools/list-document-versions.js";
+import { registerListDocuments } from "./tools/list-documents.js";
 import { registerListEntityLinks } from "./tools/list-entity-links.js";
 import { registerListExternalLinks } from "./tools/list-external-links.js";
 import { registerListFeatures } from "./tools/list-features.js";
@@ -56,7 +56,7 @@ import { registerListProjects } from "./tools/list-projects.js";
 import { registerListTemplates } from "./tools/list-templates.js";
 import { registerListUsers } from "./tools/list-users.js";
 import { registerListWorkstreams } from "./tools/list-workstreams.js";
-import { registerUpdateArtifact } from "./tools/update-artifact.js";
+import { registerUpdateDocument } from "./tools/update-document.js";
 import { registerUpdateFeature } from "./tools/update-feature.js";
 import { registerUpdateProject } from "./tools/update-project.js";
 import { registerUpdateWorkstream } from "./tools/update-workstream.js";
@@ -314,33 +314,33 @@ const TOOL_REGISTRATIONS: ToolRegistration[] = [
     register: registerUpdateProject,
     requiresWrite: true,
   },
-  { name: "list-artifacts", register: registerListArtifacts },
-  { name: "get-artifact", register: registerGetArtifact },
+  { name: "list-documents", register: registerListDocuments },
+  { name: "get-document", register: registerGetDocument },
   {
-    name: "create-artifact",
-    register: registerCreateArtifact,
+    name: "create-document",
+    register: registerCreateDocument,
     requiresWrite: true,
   },
   {
-    name: "create-artifact-thread",
-    register: registerCreateArtifactThread,
+    name: "create-document-thread",
+    register: registerCreateDocumentThread,
     requiresWrite: true,
   },
-  { name: "get-artifact-comments", register: registerGetArtifactComments },
+  { name: "get-document-comments", register: registerGetDocumentComments },
   {
-    name: "update-artifact",
-    register: registerUpdateArtifact,
+    name: "update-document",
+    register: registerUpdateDocument,
     requiresWrite: true,
   },
   {
-    name: "create-artifact-version",
-    register: registerCreateArtifactVersion,
+    name: "create-document-version",
+    register: registerCreateDocumentVersion,
     requiresWrite: true,
   },
-  { name: "list-artifact-versions", register: registerListArtifactVersions },
+  { name: "list-document-versions", register: registerListDocumentVersions },
   { name: "list-attachments", register: registerListAttachments },
   { name: "download-attachment", register: registerDownloadAttachment },
-  { name: "get-related-artifacts", register: registerGetRelatedArtifacts },
+  { name: "get-related-documents", register: registerGetRelatedDocuments },
   { name: "list-features", register: registerListFeatures },
   { name: "get-feature", register: registerGetFeature },
   {

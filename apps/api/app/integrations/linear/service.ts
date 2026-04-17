@@ -15,7 +15,7 @@ import {
 } from "@repo/linear";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
-import { artifactVersionService } from "../../artifacts/artifact-version-service";
+import { documentVersionService } from "../../documents/document-version-service";
 
 /**
  * Result types for service operations
@@ -273,16 +273,16 @@ export const linearService = {
    * Export an approved implementation plan to Linear as individual issues.
    */
   async exportImplementationPlan(
-    artifactId: string,
+    documentId: string,
     teamId: string,
     organizationId: string,
     userId: string
   ): Promise<ExportResult> {
     // Fetch the artifact
     const artifact = await withDb((db) =>
-      db.artifact.findFirst({
+      db.document.findFirst({
         where: {
-          id: artifactId,
+          id: documentId,
           project: { organizationId },
         },
       })
@@ -310,7 +310,7 @@ export const linearService = {
     }
 
     // Fetch latest version content (content is stored in ArtifactVersion, not on artifact)
-    const latestVersion = await artifactVersionService.getLatest(artifactId);
+    const latestVersion = await documentVersionService.getLatest(documentId);
     if (!latestVersion?.content) {
       return {
         success: false,
@@ -370,7 +370,7 @@ export const linearService = {
       log.error("[linear/export] Failed to extract tasks with LLM", {
         userId,
         organizationId,
-        artifactId,
+        documentId,
         error: parseError(error),
       });
       return {
@@ -414,7 +414,7 @@ export const linearService = {
       log.error("[linear/export] Failed to create Linear issues", {
         userId,
         organizationId,
-        artifactId,
+        documentId,
         error: parseError(error),
       });
       return {
@@ -444,7 +444,7 @@ export const linearService = {
     log.info("[linear/export] Exported implementation plan to Linear", {
       userId,
       organizationId,
-      artifactId,
+      documentId,
       teamId,
       issuesCreated: createdIssues.length,
     });

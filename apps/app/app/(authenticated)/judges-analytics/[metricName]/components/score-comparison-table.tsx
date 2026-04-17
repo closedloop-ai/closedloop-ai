@@ -1,6 +1,6 @@
 "use client";
 
-import { getRoutePrefixForType } from "@repo/api/src/types/artifact";
+import { getRoutePrefixForType } from "@repo/api/src/types/document";
 import type { JudgeScoreRow } from "@repo/api/src/types/judges-analytics";
 import {
   Table,
@@ -47,12 +47,12 @@ function formatAvgUserRating(row: JudgeScoreRow): string {
   return formatScorePercent(row.avgUserRating);
 }
 
-function getArtifactHref(row: JudgeScoreRow): string {
-  const routePrefix = getRoutePrefixForType(row.artifactType);
+function getDocumentHref(row: JudgeScoreRow): string {
+  const routePrefix = getRoutePrefixForType(row.documentType);
   if (routePrefix === null) {
-    return `/artifacts/${row.artifactSlug}`;
+    return `/documents/${row.documentSlug}`;
   }
-  return `/${routePrefix}/${row.artifactSlug}`;
+  return `/${routePrefix}/${row.documentSlug}`;
 }
 
 export function ScoreComparisonTable({ rows }: ScoreComparisonTableProps) {
@@ -102,9 +102,9 @@ export function ScoreComparisonTable({ rows }: ScoreComparisonTableProps) {
               <TableCell>
                 <Link
                   className="text-primary hover:underline"
-                  href={getArtifactHref(row)}
+                  href={getDocumentHref(row)}
                 >
-                  {row.artifactTitle}
+                  {row.documentTitle}
                 </Link>
               </TableCell>
               <TableCell className="text-right">

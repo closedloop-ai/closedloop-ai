@@ -1,8 +1,8 @@
 "use client";
 
 import { useFeatureFlag } from "@repo/analytics/client";
-import { ArtifactStatus } from "@repo/api/src/types/artifact";
 import { Priority } from "@repo/api/src/types/common";
+import { DocumentStatus } from "@repo/api/src/types/document";
 import { FeatureStatus } from "@repo/api/src/types/feature";
 import {
   LoopCommand,
@@ -43,18 +43,13 @@ export function StatusBadge({
   );
 }
 
-const COLOR_SUCCESS =
-  "bg-green-100 text-green-800 border-green-200 dark:bg-green-900/30 dark:text-green-400 dark:border-green-800";
+const COLOR_SUCCESS = "bg-success/10 text-success-foreground border-success/30";
 const COLOR_FAILURE =
-  "bg-red-100 text-red-800 border-red-200 dark:bg-red-900/30 dark:text-red-400 dark:border-red-800";
-const COLOR_PROGRESS =
-  "bg-blue-100 text-blue-800 border-blue-200 dark:bg-blue-900/30 dark:text-blue-400 dark:border-blue-800";
-const COLOR_PENDING =
-  "bg-yellow-100 text-yellow-800 border-yellow-200 dark:bg-yellow-900/30 dark:text-yellow-400 dark:border-yellow-800";
-const COLOR_INACTIVE =
-  "bg-gray-100 text-gray-600 border-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-700";
-const COLOR_PURPLE =
-  "bg-purple-100 text-purple-800 border-purple-200 dark:bg-purple-900/30 dark:text-purple-400 dark:border-purple-800";
+  "bg-destructive/10 text-destructive-foreground border-destructive/30";
+const COLOR_PROGRESS = "bg-info/10 text-info-foreground border-info/30";
+const COLOR_PENDING = "bg-warning/10 text-warning-foreground border-warning/30";
+const COLOR_INACTIVE = "bg-muted text-muted-foreground border-muted";
+const COLOR_AI = "bg-ai/10 text-ai-foreground border-ai/30";
 
 /**
  * PR status colors per PRD requirements (AC3.1):
@@ -95,30 +90,29 @@ export const previewDeploymentStateColors: Record<string, string> = {
 };
 
 // Pre-configured color maps for common use cases
-export const artifactStatusColors: Record<ArtifactStatus, string> = {
-  [ArtifactStatus.Draft]: "bg-muted text-muted-foreground border-muted",
-  [ArtifactStatus.InProgress]: COLOR_PROGRESS,
-  [ArtifactStatus.InReview]: COLOR_PROGRESS,
-  [ArtifactStatus.Approved]: COLOR_PROGRESS,
-  [ArtifactStatus.Executed]: COLOR_PROGRESS,
-  [ArtifactStatus.Done]: COLOR_SUCCESS,
-  [ArtifactStatus.Obsolete]:
-    "bg-gray-100 text-gray-600 border-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-700",
+export const artifactStatusColors: Record<DocumentStatus, string> = {
+  [DocumentStatus.Draft]: "bg-muted text-muted-foreground border-muted",
+  [DocumentStatus.InProgress]: COLOR_PROGRESS,
+  [DocumentStatus.InReview]: COLOR_PROGRESS,
+  [DocumentStatus.Approved]: COLOR_PROGRESS,
+  [DocumentStatus.Executed]: COLOR_PROGRESS,
+  [DocumentStatus.Done]: COLOR_SUCCESS,
+  [DocumentStatus.Obsolete]: COLOR_INACTIVE,
 };
 
-export const artifactStatusLabels: Record<ArtifactStatus, string> = {
-  [ArtifactStatus.Draft]: "Draft",
-  [ArtifactStatus.InProgress]: "In Progress",
-  [ArtifactStatus.InReview]: "In Review",
-  [ArtifactStatus.Approved]: "Approved",
-  [ArtifactStatus.Executed]: "Executed",
-  [ArtifactStatus.Done]: "Done",
-  [ArtifactStatus.Obsolete]: "Obsolete",
+export const artifactStatusLabels: Record<DocumentStatus, string> = {
+  [DocumentStatus.Draft]: "Draft",
+  [DocumentStatus.InProgress]: "In Progress",
+  [DocumentStatus.InReview]: "In Review",
+  [DocumentStatus.Approved]: "Approved",
+  [DocumentStatus.Executed]: "Executed",
+  [DocumentStatus.Done]: "Done",
+  [DocumentStatus.Obsolete]: "Obsolete",
 };
 
-export function ArtifactStatusBadge({
+export function DocumentStatusBadge({
   status,
-}: Readonly<{ status: ArtifactStatus }>) {
+}: Readonly<{ status: DocumentStatus }>) {
   const displayStatus = artifactStatusLabels[status] ?? status;
   return (
     <Badge
@@ -134,10 +128,10 @@ export function ArtifactStatusBadge({
 }
 
 // Alias for PRDs
-export const PrdStatusBadge = ArtifactStatusBadge;
+export const PrdStatusBadge = DocumentStatusBadge;
 
 // Alias for Implementation Plans
-export const ImplementationPlanStatusBadge = ArtifactStatusBadge;
+export const ImplementationPlanStatusBadge = DocumentStatusBadge;
 
 // Feature status colors
 export const featureStatusColors: Record<FeatureStatus, string> = {
@@ -147,8 +141,7 @@ export const featureStatusColors: Record<FeatureStatus, string> = {
   [FeatureStatus.Approved]: COLOR_PROGRESS,
   [FeatureStatus.Executed]: COLOR_PROGRESS,
   [FeatureStatus.Done]: COLOR_SUCCESS,
-  [FeatureStatus.Obsolete]:
-    "bg-gray-100 text-gray-600 border-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-700",
+  [FeatureStatus.Obsolete]: COLOR_INACTIVE,
 };
 
 export const featureStatusLabels: Record<FeatureStatus, string> = {
@@ -180,14 +173,10 @@ export function FeatureStatusBadge({
 
 // Feature priority colors
 export const featurePriorityColors: Record<Priority, string> = {
-  [Priority.Low]:
-    "bg-gray-100 text-gray-600 border-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-700",
-  [Priority.Medium]:
-    "bg-blue-100 text-blue-800 border-blue-200 dark:bg-blue-900/30 dark:text-blue-400 dark:border-blue-800",
-  [Priority.High]:
-    "bg-orange-100 text-orange-800 border-orange-200 dark:bg-orange-900/30 dark:text-orange-400 dark:border-orange-800",
-  [Priority.Urgent]:
-    "bg-red-100 text-red-800 border-red-200 dark:bg-red-900/30 dark:text-red-400 dark:border-red-800",
+  [Priority.Low]: COLOR_PROGRESS,
+  [Priority.Medium]: COLOR_PENDING,
+  [Priority.High]: COLOR_FAILURE,
+  [Priority.Urgent]: COLOR_FAILURE,
 };
 
 export const featurePriorityLabels: Record<Priority, string> = {
@@ -216,40 +205,23 @@ export function FeaturePriorityBadge({
 
 // Workstream state colors
 export const workstreamStateColors: Record<WorkstreamState, string> = {
-  INITIATED:
-    "bg-blue-100 text-blue-800 border-blue-200 dark:bg-blue-900/30 dark:text-blue-400 dark:border-blue-800",
-  REQUIREMENTS_GENERATING:
-    "bg-purple-100 text-purple-800 border-purple-200 dark:bg-purple-900/30 dark:text-purple-400 dark:border-purple-800",
-  REQUIREMENTS_PENDING_APPROVAL:
-    "bg-yellow-100 text-yellow-800 border-yellow-200 dark:bg-yellow-900/30 dark:text-yellow-400 dark:border-yellow-800",
-  DESIGN_IN_PROGRESS:
-    "bg-purple-100 text-purple-800 border-purple-200 dark:bg-purple-900/30 dark:text-purple-400 dark:border-purple-800",
-  DESIGN_PENDING_APPROVAL:
-    "bg-yellow-100 text-yellow-800 border-yellow-200 dark:bg-yellow-900/30 dark:text-yellow-400 dark:border-yellow-800",
-  IMPLEMENTATION_PLANNING:
-    "bg-purple-100 text-purple-800 border-purple-200 dark:bg-purple-900/30 dark:text-purple-400 dark:border-purple-800",
-  IMPLEMENTATION_IN_PROGRESS:
-    "bg-blue-100 text-blue-800 border-blue-200 dark:bg-blue-900/30 dark:text-blue-400 dark:border-blue-800",
-  IMPLEMENTATION_PENDING_REVIEW:
-    "bg-yellow-100 text-yellow-800 border-yellow-200 dark:bg-yellow-900/30 dark:text-yellow-400 dark:border-yellow-800",
-  CODE_REVIEW_RUNNING:
-    "bg-purple-100 text-purple-800 border-purple-200 dark:bg-purple-900/30 dark:text-purple-400 dark:border-purple-800",
-  CODE_REVIEW_PENDING_APPROVAL:
-    "bg-yellow-100 text-yellow-800 border-yellow-200 dark:bg-yellow-900/30 dark:text-yellow-400 dark:border-yellow-800",
-  VISUAL_QA_RUNNING:
-    "bg-purple-100 text-purple-800 border-purple-200 dark:bg-purple-900/30 dark:text-purple-400 dark:border-purple-800",
-  VISUAL_QA_PENDING_APPROVAL:
-    "bg-yellow-100 text-yellow-800 border-yellow-200 dark:bg-yellow-900/30 dark:text-yellow-400 dark:border-yellow-800",
-  MERGING:
-    "bg-blue-100 text-blue-800 border-blue-200 dark:bg-blue-900/30 dark:text-blue-400 dark:border-blue-800",
-  DEPLOYED:
-    "bg-green-100 text-green-800 border-green-200 dark:bg-green-900/30 dark:text-green-400 dark:border-green-800",
-  COMPLETED:
-    "bg-green-100 text-green-800 border-green-200 dark:bg-green-900/30 dark:text-green-400 dark:border-green-800",
-  BLOCKED:
-    "bg-red-100 text-red-800 border-red-200 dark:bg-red-900/30 dark:text-red-400 dark:border-red-800",
-  CANCELLED:
-    "bg-gray-100 text-gray-600 border-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-700",
+  INITIATED: COLOR_PROGRESS,
+  REQUIREMENTS_GENERATING: COLOR_AI,
+  REQUIREMENTS_PENDING_APPROVAL: COLOR_PENDING,
+  DESIGN_IN_PROGRESS: COLOR_AI,
+  DESIGN_PENDING_APPROVAL: COLOR_PENDING,
+  IMPLEMENTATION_PLANNING: COLOR_AI,
+  IMPLEMENTATION_IN_PROGRESS: COLOR_PROGRESS,
+  IMPLEMENTATION_PENDING_REVIEW: COLOR_PENDING,
+  CODE_REVIEW_RUNNING: COLOR_AI,
+  CODE_REVIEW_PENDING_APPROVAL: COLOR_PENDING,
+  VISUAL_QA_RUNNING: COLOR_AI,
+  VISUAL_QA_PENDING_APPROVAL: COLOR_PENDING,
+  MERGING: COLOR_PROGRESS,
+  DEPLOYED: COLOR_SUCCESS,
+  COMPLETED: COLOR_SUCCESS,
+  BLOCKED: COLOR_FAILURE,
+  CANCELLED: COLOR_INACTIVE,
 };
 
 const workstreamStateLabels: Record<WorkstreamState, string> = {
@@ -291,14 +263,10 @@ export function WorkstreamStateBadge({
 
 // Workstream type colors
 export const workstreamTypeColors: Record<WorkstreamType, string> = {
-  FEATURE_DELIVERY:
-    "bg-blue-100 text-blue-800 border-blue-200 dark:bg-blue-900/30 dark:text-blue-400 dark:border-blue-800",
-  BUG_FIX:
-    "bg-red-100 text-red-800 border-red-200 dark:bg-red-900/30 dark:text-red-400 dark:border-red-800",
-  TECH_DEBT:
-    "bg-orange-100 text-orange-800 border-orange-200 dark:bg-orange-900/30 dark:text-orange-400 dark:border-orange-800",
-  SPIKE:
-    "bg-purple-100 text-purple-800 border-purple-200 dark:bg-purple-900/30 dark:text-purple-400 dark:border-purple-800",
+  FEATURE_DELIVERY: COLOR_PROGRESS,
+  BUG_FIX: COLOR_FAILURE,
+  TECH_DEBT: COLOR_PENDING,
+  SPIKE: COLOR_AI,
 };
 
 const workstreamTypeLabels: Record<WorkstreamType, string> = {
@@ -353,8 +321,7 @@ export const loopErrorCodeLabels: Partial<Record<LoopErrorCode, string>> = {
 };
 
 export const loopErrorCodeColors: Partial<Record<LoopErrorCode, string>> = {
-  [LoopErrorCode.NoWorkProduced]:
-    "bg-amber-100 text-amber-800 border-amber-200 dark:bg-amber-900/30 dark:text-amber-400 dark:border-amber-800",
+  [LoopErrorCode.NoWorkProduced]: COLOR_PENDING,
   [LoopErrorCode.ContextLimitExceeded]: COLOR_FAILURE,
   [LoopErrorCode.PlanStateUnavailable]: COLOR_FAILURE,
 };
@@ -389,17 +356,16 @@ export function LoopStatusBadge({
 
 // Loop command colors
 export const loopCommandColors: Record<LoopCommand, string> = {
-  [LoopCommand.Plan]: COLOR_PURPLE,
+  [LoopCommand.Plan]: COLOR_AI,
   [LoopCommand.Execute]: COLOR_PROGRESS,
   [LoopCommand.Chat]: COLOR_PENDING,
-  [LoopCommand.Explore]:
-    "bg-teal-100 text-teal-800 border-teal-200 dark:bg-teal-900/30 dark:text-teal-400 dark:border-teal-800",
+  [LoopCommand.Explore]: COLOR_AI,
   [LoopCommand.RequestChanges]: COLOR_PENDING,
-  [LoopCommand.Decompose]: COLOR_PURPLE,
-  [LoopCommand.EvaluatePrd]: COLOR_PURPLE,
-  [LoopCommand.GeneratePrd]: COLOR_PURPLE,
-  [LoopCommand.EvaluatePlan]: COLOR_PURPLE,
-  [LoopCommand.EvaluateCode]: COLOR_PURPLE,
+  [LoopCommand.Decompose]: COLOR_AI,
+  [LoopCommand.EvaluatePrd]: COLOR_AI,
+  [LoopCommand.GeneratePrd]: COLOR_AI,
+  [LoopCommand.EvaluatePlan]: COLOR_AI,
+  [LoopCommand.EvaluateCode]: COLOR_AI,
   [LoopCommand.RequestPrdChanges]: COLOR_PENDING,
 };
 

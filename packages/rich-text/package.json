@@ -9,25 +9,25 @@
   },
   "dependencies": {
     "@repo/design-system": "workspace:*",
-    "@tiptap/core": "~3.19.0",
-    "@tiptap/extension-list": "~3.19.0",
-    "@tiptap/extension-table": "~3.19.0",
-    "@tiptap/extension-table-cell": "~3.19.0",
-    "@tiptap/extension-table-header": "~3.19.0",
-    "@tiptap/extension-table-row": "~3.19.0",
-    "@tiptap/extension-placeholder": "~3.19.0",
-    "@tiptap/markdown": "~3.19.0",
-    "@tiptap/pm": "~3.19.0",
-    "@tiptap/react": "~3.19.0",
-    "@tiptap/starter-kit": "~3.19.0",
+    "@tiptap/core": "~3.22.3",
+    "@tiptap/extension-list": "~3.22.3",
+    "@tiptap/extension-table": "~3.22.3",
+    "@tiptap/extension-table-cell": "~3.22.3",
+    "@tiptap/extension-table-header": "~3.22.3",
+    "@tiptap/extension-table-row": "~3.22.3",
+    "@tiptap/extension-placeholder": "~3.22.3",
+    "@tiptap/markdown": "~3.22.3",
+    "@tiptap/pm": "~3.22.3",
+    "@tiptap/react": "~3.22.3",
+    "@tiptap/starter-kit": "~3.22.3",
     "lucide-react": "^0.556.0",
     "mermaid": "^11.12.2",
-    "react": "19.2.4"
+    "react": "19.2.5"
   },
   "devDependencies": {
     "@repo/typescript-config": "workspace:*",
     "@types/node": "^25.3.5",
-    "@types/react": "^19.2.13",
+    "@types/react": "^19.2.14",
     "typescript": "^5.9.3",
     "vitest": "^4.0.18"
   }

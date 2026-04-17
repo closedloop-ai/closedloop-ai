@@ -6,6 +6,6 @@ export const connectLinearValidator = z.object({
 });
 
 export const exportToLinearValidator = z.object({
-  artifactId: z.uuid(),
+  documentId: z.uuid(),
   teamId: z.string().min(1, "Team ID is required"),
 });

@@ -1,8 +1,8 @@
-import { ArtifactType } from "@repo/api/src/types/artifact";
+import { DocumentType } from "@repo/api/src/types/document";
 import { EntityType, LinkType } from "@repo/api/src/types/entity-link";
 import { ExternalLinkType } from "@repo/api/src/types/external-link";
 import { keys } from "@repo/database/keys";
-import { artifactsService } from "@/app/artifacts/service";
+import { documentsService } from "@/app/documents/service";
 import { entityLinksService } from "@/app/entity-links/service";
 import { externalLinksService } from "@/app/external-links/service";
 import {
@@ -26,9 +26,9 @@ async function createArtifact(
   orgId: string,
   userId: string,
   projectId: string,
-  overrides: { type: ArtifactType; title: string }
+  overrides: { type: DocumentType; title: string }
 ) {
-  const artifact = await artifactsService.create(orgId, userId, {
+  const artifact = await documentsService.create(orgId, userId, {
     projectId,
     type: overrides.type,
     title: overrides.title,
@@ -49,21 +49,21 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
         testOrgId,
         testUser.id,
         testProjectId,
-        { type: ArtifactType.Prd, title: "Feature PRD" }
+        { type: DocumentType.Prd, title: "Feature PRD" }
       );
       const artifact2 = await createArtifact(
         testOrgId,
         testUser.id,
         testProjectId,
-        { type: ArtifactType.ImplementationPlan, title: "Implementation Plan" }
+        { type: DocumentType.ImplementationPlan, title: "Implementation Plan" }
       );
 
       const link = await entityLinksService.createLink(testOrgId, {
         sourceId: artifact1.id,
-        sourceType: EntityType.Artifact,
+        sourceType: EntityType.Document,
         sourceVersion: 1,
         targetId: artifact2.id,
-        targetType: EntityType.Artifact,
+        targetType: EntityType.Document,
         targetVersion: 1,
         linkType: LinkType.Produces,
       });
@@ -77,7 +77,7 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
       const links1 = await entityLinksService.findLinks(
         testOrgId,
         artifact1.id,
-        EntityType.Artifact
+        EntityType.Document
       );
       expect(links1).toHaveLength(1);
       expect(links1[0].id).toBe(link.id);
@@ -86,7 +86,7 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
       const links2 = await entityLinksService.findLinks(
         testOrgId,
         artifact2.id,
-        EntityType.Artifact
+        EntityType.Document
       );
       expect(links2).toHaveLength(1);
       expect(links2[0].id).toBe(link.id);
@@ -101,20 +101,20 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
         testOrgId,
         testUser.id,
         testProjectId,
-        { type: ArtifactType.Prd, title: "Feature PRD" }
+        { type: DocumentType.Prd, title: "Feature PRD" }
       );
       const artifact2 = await createArtifact(
         testOrgId,
         testUser.id,
         testProjectId,
-        { type: ArtifactType.ImplementationPlan, title: "Plan" }
+        { type: DocumentType.ImplementationPlan, title: "Plan" }
       );
 
       await entityLinksService.createLink(testOrgId, {
         sourceId: artifact1.id,
-        sourceType: EntityType.Artifact,
+        sourceType: EntityType.Document,
         targetId: artifact2.id,
-        targetType: EntityType.Artifact,
+        targetType: EntityType.Document,
         linkType: LinkType.Produces,
       });
 
@@ -122,7 +122,7 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
       const sourceLinks = await entityLinksService.findSourceLinks(
         testOrgId,
         artifact2.id,
-        EntityType.Artifact,
+        EntityType.Document,
         LinkType.Produces
       );
       expect(sourceLinks).toHaveLength(1);
@@ -132,7 +132,7 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
       const targetLinks = await entityLinksService.findTargetLinks(
         testOrgId,
         artifact1.id,
-        EntityType.Artifact,
+        EntityType.Document,
         LinkType.Produces
       );
       expect(targetLinks).toHaveLength(1);
@@ -142,7 +142,7 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
       const noSourceLinks = await entityLinksService.findSourceLinks(
         testOrgId,
         artifact1.id,
-        EntityType.Artifact,
+        EntityType.Document,
         LinkType.Produces
       );
       expect(noSourceLinks).toHaveLength(0);
@@ -157,7 +157,7 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
         testOrgId,
         testUser.id,
         testProjectId,
-        { type: ArtifactType.ImplementationPlan, title: "Plan" }
+        { type: DocumentType.ImplementationPlan, title: "Plan" }
       );
 
       const externalLink = await externalLinksService.create(testOrgId, {
@@ -169,20 +169,20 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
 
       const link = await entityLinksService.createLink(testOrgId, {
         sourceId: artifact.id,
-        sourceType: EntityType.Artifact,
+        sourceType: EntityType.Document,
         targetId: externalLink.id,
         targetType: EntityType.ExternalLink,
         linkType: LinkType.Produces,
       });
 
-      expect(link.sourceType).toBe(EntityType.Artifact);
+      expect(link.sourceType).toBe(EntityType.Document);
       expect(link.targetType).toBe(EntityType.ExternalLink);
 
       // Verify bidirectional lookup works
       const fromArtifact = await entityLinksService.findLinks(
         testOrgId,
         artifact.id,
-        EntityType.Artifact
+        EntityType.Document
       );
       expect(fromArtifact).toHaveLength(1);
 
@@ -203,17 +203,17 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
         testOrgId,
         testUser.id,
         testProjectId,
-        { type: ArtifactType.Prd, title: "Test PRD" }
+        { type: DocumentType.Prd, title: "Test PRD" }
       );
 
       const resolved = await entityLinksService.resolveEntity(
         testOrgId,
         artifact.id,
-        EntityType.Artifact
+        EntityType.Document
       );
 
       expect(resolved).not.toBeNull();
-      expect(resolved!.type).toBe(EntityType.Artifact);
+      expect(resolved!.type).toBe(EntityType.Document);
       expect(resolved!.entity.id).toBe(artifact.id);
     });
   });
@@ -247,7 +247,7 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
       const resolved = await entityLinksService.resolveEntity(
         testOrgId,
         "00000000-0000-0000-0000-000000000000",
-        EntityType.Artifact
+        EntityType.Document
       );
       expect(resolved).toBeNull();
     });
@@ -261,7 +261,7 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
         testOrgId,
         testUser.id,
         testProjectId,
-        { type: ArtifactType.Prd, title: "PRD" }
+        { type: DocumentType.Prd, title: "PRD" }
       );
       const artifact2 = await createArtifact(
         testOrgId,
@@ -272,9 +272,9 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
 
       const link = await entityLinksService.createLink(testOrgId, {
         sourceId: artifact1.id,
-        sourceType: EntityType.Artifact,
+        sourceType: EntityType.Document,
         targetId: artifact2.id,
-        targetType: EntityType.Artifact,
+        targetType: EntityType.Document,
         linkType: LinkType.Produces,
       });
 
@@ -283,7 +283,7 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
       const links = await entityLinksService.findLinks(
         testOrgId,
         artifact1.id,
-        EntityType.Artifact
+        EntityType.Document
       );
       expect(links).toHaveLength(0);
     });
@@ -297,7 +297,7 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
         testOrgId,
         testUser.id,
         testProjectId,
-        { type: ArtifactType.Prd, title: "PRD" }
+        { type: DocumentType.Prd, title: "PRD" }
       );
       const artifact2 = await createArtifact(
         testOrgId,
@@ -309,23 +309,23 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
         testOrgId,
         testUser.id,
         testProjectId,
-        { type: ArtifactType.ImplementationPlan, title: "Another Plan" }
+        { type: DocumentType.ImplementationPlan, title: "Another Plan" }
       );
 
       // Create links: artifact1 -> artifact2, artifact1 -> artifact3
       await entityLinksService.createLink(testOrgId, {
         sourceId: artifact1.id,
-        sourceType: EntityType.Artifact,
+        sourceType: EntityType.Document,
         targetId: artifact2.id,
-        targetType: EntityType.Artifact,
+        targetType: EntityType.Document,
         linkType: LinkType.Produces,
       });
 
       await entityLinksService.createLink(testOrgId, {
         sourceId: artifact1.id,
-        sourceType: EntityType.Artifact,
+        sourceType: EntityType.Document,
         targetId: artifact3.id,
-        targetType: EntityType.Artifact,
+        targetType: EntityType.Document,
         linkType: LinkType.Produces,
       });
 
@@ -333,7 +333,7 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
       const before = await entityLinksService.findLinks(
         testOrgId,
         artifact1.id,
-        EntityType.Artifact
+        EntityType.Document
       );
       expect(before).toHaveLength(2);
 
@@ -341,13 +341,13 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
       await entityLinksService.deleteAllLinks(
         testOrgId,
         artifact1.id,
-        EntityType.Artifact
+        EntityType.Document
       );
 
       const after = await entityLinksService.findLinks(
         testOrgId,
         artifact1.id,
-        EntityType.Artifact
+        EntityType.Document
       );
       expect(after).toHaveLength(0);
     });
@@ -362,40 +362,40 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
           testOrgId,
           testUser.id,
           testProjectId,
-          { type: ArtifactType.Prd, title: "PRD" }
+          { type: DocumentType.Prd, title: "PRD" }
         );
         const plan = await createArtifact(
           testOrgId,
           testUser.id,
           testProjectId,
-          { type: ArtifactType.ImplementationPlan, title: "Plan" }
+          { type: DocumentType.ImplementationPlan, title: "Plan" }
         );
         const strategy = await createArtifact(
           testOrgId,
           testUser.id,
           testProjectId,
-          { type: ArtifactType.Prd, title: "Strategy" }
+          { type: DocumentType.Prd, title: "Strategy" }
         );
 
         await entityLinksService.createLink(testOrgId, {
           sourceId: prd.id,
-          sourceType: EntityType.Artifact,
+          sourceType: EntityType.Document,
           targetId: plan.id,
-          targetType: EntityType.Artifact,
+          targetType: EntityType.Document,
           linkType: LinkType.Produces,
         });
         await entityLinksService.createLink(testOrgId, {
           sourceId: plan.id,
-          sourceType: EntityType.Artifact,
+          sourceType: EntityType.Document,
           targetId: strategy.id,
-          targetType: EntityType.Artifact,
+          targetType: EntityType.Document,
           linkType: LinkType.Produces,
         });
 
         const tree = await entityLinksService.findLinkTree(
           testOrgId,
           prd.id,
-          EntityType.Artifact,
+          EntityType.Document,
           "both",
           10
         );
@@ -414,7 +414,7 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
           testOrgId,
           testUser.id,
           testProjectId,
-          { type: ArtifactType.Prd, title: "PRD" }
+          { type: DocumentType.Prd, title: "PRD" }
         );
         const externalLink = await externalLinksService.create(testOrgId, {
           projectId: testProjectId,
@@ -425,7 +425,7 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
 
         await entityLinksService.createLink(testOrgId, {
           sourceId: artifact.id,
-          sourceType: EntityType.Artifact,
+          sourceType: EntityType.Document,
           targetId: externalLink.id,
           targetType: EntityType.ExternalLink,
           linkType: LinkType.Produces,
@@ -434,7 +434,7 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
         const tree = await entityLinksService.findLinkTree(
           testOrgId,
           artifact.id,
-          EntityType.Artifact,
+          EntityType.Document,
           "both",
           10
         );
@@ -450,30 +450,30 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
         const { testOrgId, testProjectId, testUser } = await setupTestData();
 
         const a = await createArtifact(testOrgId, testUser.id, testProjectId, {
-          type: ArtifactType.Prd,
+          type: DocumentType.Prd,
           title: "A",
         });
         const b = await createArtifact(testOrgId, testUser.id, testProjectId, {
-          type: ArtifactType.ImplementationPlan,
+          type: DocumentType.ImplementationPlan,
           title: "B",
         });
         const c = await createArtifact(testOrgId, testUser.id, testProjectId, {
-          type: ArtifactType.ImplementationPlan,
+          type: DocumentType.ImplementationPlan,
           title: "C",
         });
 
         await entityLinksService.createLink(testOrgId, {
           sourceId: a.id,
-          sourceType: EntityType.Artifact,
+          sourceType: EntityType.Document,
           targetId: b.id,
-          targetType: EntityType.Artifact,
+          targetType: EntityType.Document,
           linkType: LinkType.Produces,
         });
         await entityLinksService.createLink(testOrgId, {
           sourceId: b.id,
-          sourceType: EntityType.Artifact,
+          sourceType: EntityType.Document,
           targetId: c.id,
-          targetType: EntityType.Artifact,
+          targetType: EntityType.Document,
           linkType: LinkType.Produces,
         });
 
@@ -481,7 +481,7 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
         const shallow = await entityLinksService.findLinkTree(
           testOrgId,
           a.id,
-          EntityType.Artifact,
+          EntityType.Document,
           "both",
           1
         );
@@ -502,20 +502,20 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
           testOrgId,
           testUser.id,
           testProjectId,
-          { type: ArtifactType.Prd, title: "Feature PRD" }
+          { type: DocumentType.Prd, title: "Feature PRD" }
         );
         const plan = await createArtifact(
           testOrgId,
           testUser.id,
           testProjectId,
-          { type: ArtifactType.ImplementationPlan, title: "Plan" }
+          { type: DocumentType.ImplementationPlan, title: "Plan" }
         );
 
         const link = await entityLinksService.createLink(testOrgId, {
           sourceId: prd.id,
-          sourceType: EntityType.Artifact,
+          sourceType: EntityType.Document,
           targetId: plan.id,
-          targetType: EntityType.Artifact,
+          targetType: EntityType.Document,
           linkType: LinkType.Produces,
         });
 
@@ -527,7 +527,7 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
         expect(resolved).toHaveLength(1);
         expect(resolved[0].id).toBe(link.id);
         expect(resolved[0].resolvedEntity).not.toBeNull();
-        expect(resolved[0].resolvedEntity!.type).toBe("ARTIFACT");
+        expect(resolved[0].resolvedEntity!.type).toBe("DOCUMENT");
         expect(resolved[0].resolvedEntity!.entity.id).toBe(plan.id);
       });
     });
@@ -540,7 +540,7 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
           testOrgId,
           testUser.id,
           testProjectId,
-          { type: ArtifactType.ImplementationPlan, title: "Plan" }
+          { type: DocumentType.ImplementationPlan, title: "Plan" }
         );
 
         const externalLink = await externalLinksService.create(testOrgId, {
@@ -552,7 +552,7 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
 
         const link = await entityLinksService.createLink(testOrgId, {
           sourceId: artifact.id,
-          sourceType: "ARTIFACT",
+          sourceType: "DOCUMENT",
           targetId: externalLink.id,
           targetType: "EXTERNAL_LINK",
           linkType: "PRODUCES",
@@ -577,13 +577,13 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
           testOrgId,
           testUser.id,
           testProjectId,
-          { type: ArtifactType.Prd, title: "PRD" }
+          { type: DocumentType.Prd, title: "PRD" }
         );
         const plan = await createArtifact(
           testOrgId,
           testUser.id,
           testProjectId,
-          { type: ArtifactType.ImplementationPlan, title: "Plan" }
+          { type: DocumentType.ImplementationPlan, title: "Plan" }
         );
         const pr = await externalLinksService.create(testOrgId, {
           projectId: testProjectId,
@@ -594,14 +594,14 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
 
         await entityLinksService.createLink(testOrgId, {
           sourceId: prd.id,
-          sourceType: EntityType.Artifact,
+          sourceType: EntityType.Document,
           targetId: plan.id,
-          targetType: EntityType.Artifact,
+          targetType: EntityType.Document,
           linkType: LinkType.Produces,
         });
         await entityLinksService.createLink(testOrgId, {
           sourceId: plan.id,
-          sourceType: EntityType.Artifact,
+          sourceType: EntityType.Document,
           targetId: pr.id,
           targetType: EntityType.ExternalLink,
           linkType: LinkType.Produces,
@@ -611,7 +611,7 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
         const tree = await entityLinksService.findLinkTree(
           testOrgId,
           prd.id,
-          EntityType.Artifact,
+          EntityType.Document,
           "both",
           10
         );
@@ -623,7 +623,7 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
 
         expect(resolved).toHaveLength(2);
         // First link: PRD→Plan, discovered from PRD → resolves Plan
-        expect(resolved[0].resolvedEntity!.type).toBe(EntityType.Artifact);
+        expect(resolved[0].resolvedEntity!.type).toBe(EntityType.Document);
         expect(resolved[0].resolvedEntity!.entity.id).toBe(plan.id);
         // Second link: Plan→PR, discovered from Plan → resolves PR
         expect(resolved[1].resolvedEntity!.type).toBe(EntityType.ExternalLink);
@@ -640,34 +640,34 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
         testOrgId,
         testUser.id,
         testProjectId,
-        { type: ArtifactType.Prd, title: "PRD" }
+        { type: DocumentType.Prd, title: "PRD" }
       );
       const artifact2 = await createArtifact(
         testOrgId,
         testUser.id,
         testProjectId,
-        { type: ArtifactType.ImplementationPlan, title: "Plan" }
+        { type: DocumentType.ImplementationPlan, title: "Plan" }
       );
       const artifact3 = await createArtifact(
         testOrgId,
         testUser.id,
         testProjectId,
-        { type: ArtifactType.ImplementationPlan, title: "Another Plan" }
+        { type: DocumentType.ImplementationPlan, title: "Another Plan" }
       );
 
       await entityLinksService.createLink(testOrgId, {
         sourceId: artifact1.id,
-        sourceType: EntityType.Artifact,
+        sourceType: EntityType.Document,
         targetId: artifact2.id,
-        targetType: EntityType.Artifact,
+        targetType: EntityType.Document,
         linkType: LinkType.Produces,
       });
 
       await entityLinksService.createLink(testOrgId, {
         sourceId: artifact1.id,
-        sourceType: EntityType.Artifact,
+        sourceType: EntityType.Document,
         targetId: artifact3.id,
-        targetType: EntityType.Artifact,
+        targetType: EntityType.Document,
         linkType: LinkType.RelatesTo,
       });
 
@@ -675,7 +675,7 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
       const all = await entityLinksService.findLinks(
         testOrgId,
         artifact1.id,
-        EntityType.Artifact
+        EntityType.Document
       );
       expect(all).toHaveLength(2);
 
@@ -683,7 +683,7 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
       const produces = await entityLinksService.findLinks(
         testOrgId,
         artifact1.id,
-        EntityType.Artifact,
+        EntityType.Document,
         LinkType.Produces
       );
       expect(produces).toHaveLength(1);
@@ -693,7 +693,7 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
       const relatesTo = await entityLinksService.findLinks(
         testOrgId,
         artifact1.id,
-        EntityType.Artifact,
+        EntityType.Document,
         LinkType.RelatesTo
       );
       expect(relatesTo).toHaveLength(1);

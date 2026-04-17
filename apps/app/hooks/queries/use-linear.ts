@@ -41,14 +41,14 @@ export function useExportToLinear() {
 
   return useMutation({
     mutationFn: ({
-      artifactId,
+      documentId,
       teamId,
     }: {
-      artifactId: string;
+      documentId: string;
       teamId: string;
     }) =>
       apiClient.post<ExportToLinearResult>("/integrations/linear/export", {
-        artifactId,
+        documentId,
         teamId,
       }),
   });

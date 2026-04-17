@@ -98,21 +98,21 @@ export function TicketList({
 
   const {
     startPlanLoop,
-    pendingArtifacts,
-    selectArtifact,
-    clearPendingArtifacts,
+    pendingDocuments,
+    selectDocument,
+    clearPendingDocuments,
   } = useStartPlanLoop(
-    async (ticketIdentifier, repoPath, worktreePath, loopId, artifactId) => {
-      // Persist loopId + artifactId in the session immediately so ActiveTicketCard
+    async (ticketIdentifier, repoPath, worktreePath, loopId, documentId) => {
+      // Persist loopId + documentId in the session immediately so ActiveTicketCard
       // can use them before the gateway process starts.
       mergeSessionFields(ticketIdentifier, {
         repoPath,
         worktreePath,
         loopId,
-        artifactId,
+        documentId,
       });
       // Also persist to the sessions file via the API route
-      await fetch("/api/engineer/symphony/sessions", {
+      await fetch("/api/gateway/symphony/sessions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -120,7 +120,7 @@ export function TicketList({
           repoPath,
           worktreePath,
           loopId,
-          artifactId,
+          documentId,
         }),
       });
     }
@@ -332,7 +332,7 @@ export function TicketList({
 
     // Check repo sync status
     try {
-      const response = await fetch("/api/engineer/git", {
+      const response = await fetch("/api/gateway/git", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -516,7 +516,7 @@ export function TicketList({
         tickets.map(async (ticket) => {
           try {
             const response = await fetch(
-              `/api/engineer/work-directory/${ticket.identifier}`
+              `/api/gateway/work-directory/${ticket.identifier}`
             );
             if (response.ok) {
               const data = await response.json();
@@ -598,13 +598,13 @@ export function TicketList({
       }
 
       fetch(
-        `/api/engineer/deploy/status/${encodeURIComponent(ticketId)}?${params.toString()}`
+        `/api/gateway/deploy/status/${encodeURIComponent(ticketId)}?${params.toString()}`
       )
         .then((r) => r.json())
         .then((data) => {
           if (data.status === "completed") {
             // Process finished successfully — extract info
-            fetch("/api/engineer/deploy/extract-info", {
+            fetch("/api/gateway/deploy/extract-info", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ repoPath, logs: data.logs || "" }),
@@ -671,7 +671,7 @@ export function TicketList({
     }
 
     for (const [ticketId, info] of deployed) {
-      fetch("/api/engineer/deploy/health", {
+      fetch("/api/gateway/deploy/health", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url: info.deployedUrl }),
@@ -714,7 +714,7 @@ export function TicketList({
     if (last && Date.now() - Number(last) < ONE_HOUR) {
       return;
     }
-    fetch("/api/engineer/git/worktree", { method: "POST" })
+    fetch("/api/gateway/git/worktree", { method: "POST" })
       .then((res) => {
         if (res.ok) {
           globalThis.localStorage?.setItem(THROTTLE_KEY, Date.now().toString());
@@ -764,7 +764,7 @@ export function TicketList({
       const repoPath = getRepoPathForTicket(id)!;
       const worktreePath = workDirStatus[id]!.path!;
 
-      fetch("/api/engineer/deploy/check-existing", {
+      fetch("/api/gateway/deploy/check-existing", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ repoPath, worktreePath }),
@@ -1016,7 +1016,7 @@ export function TicketList({
   // Helper to remove worktree
   const removeWorktree = async (worktreePath: string, force = false) => {
     try {
-      const response = await fetch("/api/engineer/git/worktree", {
+      const response = await fetch("/api/gateway/git/worktree", {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ worktreePath, force }),
@@ -1040,7 +1040,7 @@ export function TicketList({
 
     try {
       // Check git status of the worktree
-      const response = await fetch("/api/engineer/git", {
+      const response = await fetch("/api/gateway/git", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1132,7 +1132,7 @@ export function TicketList({
     }
     try {
       // Check git status of the worktree
-      const response = await fetch("/api/engineer/git", {
+      const response = await fetch("/api/gateway/git", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1197,7 +1197,7 @@ export function TicketList({
 
     setCreatingPR(ticketId);
     try {
-      const response = await fetch("/api/engineer/git/pr", {
+      const response = await fetch("/api/gateway/git/pr", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1362,7 +1362,7 @@ export function TicketList({
     }
 
     try {
-      const response = await fetch("/api/engineer/deploy/teardown", {
+      const response = await fetch("/api/gateway/deploy/teardown", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1408,7 +1408,7 @@ export function TicketList({
       // The gateway cancels the Loop record in the DB and kills the local process.
       if (session?.loopId) {
         const response = await fetch(
-          `/api/engineer/symphony/plan-loop/${encodeURIComponent(ticketId)}/cancel`,
+          `/api/gateway/symphony/plan-loop/${encodeURIComponent(ticketId)}/cancel`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -1432,7 +1432,7 @@ export function TicketList({
             mergeSessionFields(ticketId, { loopId: undefined });
             // Persist the cleared loopId to the sessions file.
             if (session.worktreePath) {
-              fetch("/api/engineer/symphony/sessions", {
+              fetch("/api/gateway/symphony/sessions", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
@@ -1466,7 +1466,7 @@ export function TicketList({
       }
 
       // Legacy path: PID-only kill for non-loop sessions
-      const response = await fetch("/api/engineer/symphony/kill", {
+      const response = await fetch("/api/gateway/symphony/kill", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ticketId, repoPath }),
@@ -1771,7 +1771,7 @@ export function TicketList({
                       }
                       prInfo={prStatus[ticket.identifier] || null}
                       repoPath={repoPath}
-                      sessionArtifactId={session?.artifactId}
+                      sessionArtifactId={session?.documentId}
                       ticket={ticket}
                     />
                   </div>
@@ -2225,10 +2225,10 @@ export function TicketList({
         onOpenChange={(open) => {
           if (!open) {
             // Dismissing clears picker state; user can retry Start Planning
-            clearPendingArtifacts();
+            clearPendingDocuments();
           }
         }}
-        open={pendingArtifacts !== null && pendingArtifacts.length > 0}
+        open={pendingDocuments !== null && pendingDocuments.length > 0}
       >
         <DialogContent>
           <DialogHeader>
@@ -2239,14 +2239,14 @@ export function TicketList({
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2">
-            {pendingArtifacts?.map((artifact) => (
+            {pendingDocuments?.map((doc) => (
               <Button
                 className="h-auto w-full justify-start whitespace-normal text-left"
-                key={artifact.id}
-                onClick={() => selectArtifact(artifact.id)}
+                key={doc.id}
+                onClick={() => selectDocument(doc.id)}
                 variant="outline"
               >
-                {artifact.title}
+                {doc.title}
               </Button>
             ))}
           </div>

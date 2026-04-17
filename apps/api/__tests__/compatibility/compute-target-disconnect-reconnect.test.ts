@@ -107,7 +107,7 @@ describe("POST /internal/relay/socket-event — reconnect (re-hello with existin
         operationId: "op-1",
         status: "running",
         method: "POST",
-        path: "/api/engineer/symphony/chat/abc",
+        path: "/api/gateway/symphony/chat/abc",
         createdAt: new Date().toISOString(),
       } as any,
     ]);

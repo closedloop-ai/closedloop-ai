@@ -3,11 +3,18 @@
  * to the electron harness via the desktop gateway.
  */
 
+import {
+  CURRENT_DESKTOP_API_NAMESPACE,
+  type DesktopApiNamespace,
+  getDesktopApiNamespaceFromCapabilities,
+  rewriteDesktopApiPath,
+} from "@repo/api/src/desktop-api-namespace";
 import type { JsonValue } from "@repo/api/src/types/common";
 import type { LoopCommand } from "@repo/api/src/types/loop";
 import type { SymphonyLoopBody } from "@repo/api/src/types/symphony-loop-body";
 import { log } from "@repo/observability/log";
 import { toRelayOperation } from "@/app/compute-targets/relay-command-helpers";
+import { computeTargetsService } from "@/app/compute-targets/service";
 import { desktopCommandStore } from "@/lib/desktop-command-store";
 import {
   toEnvelope,
@@ -34,9 +41,7 @@ async function assertDelivered(
       commandId: context.commandId,
       reason: result.reason,
     });
-    throw new Error(
-      `Relay dispatch not delivered: ${result.reason ?? "target offline"}`
-    );
+    throw new RelayDispatchNotDeliveredError(result.reason);
   }
 }
 
@@ -119,10 +124,12 @@ async function dispatchRelayOperation(
 
 export class DispatchError extends Error {
   readonly commandId: string;
-  constructor(message: string, commandId: string) {
+  readonly dispatchReason?: string;
+  constructor(message: string, commandId: string, dispatchReason?: string) {
     super(message);
     this.name = "DispatchError";
     this.commandId = commandId;
+    this.dispatchReason = dispatchReason;
   }
 }
 
@@ -130,20 +137,46 @@ export function isDispatchError(error: unknown): error is DispatchError {
   return error instanceof DispatchError;
 }
 
+class RelayDispatchNotDeliveredError extends Error {
+  readonly reason?: string;
+  constructor(reason?: string) {
+    super(`Relay dispatch not delivered: ${reason ?? "target offline"}`);
+    this.name = "RelayDispatchNotDeliveredError";
+    this.reason = reason;
+  }
+}
+
 type LaunchDesktopOpts = {
   loopId: string;
   organizationId: string;
   command: LoopCommand;
   computeTargetId: string;
+  desktopApiNamespace?: DesktopApiNamespace;
   closedLoopAuthToken: string;
   apiBaseUrl: string;
   contextPack: ContextPack;
-  artifactSlug?: string;
+  documentSlug?: string;
   parentLoopId?: string;
   parentBranchName?: string;
   parentSessionId?: string;
   localRepoPath?: string;
 };
+
+async function resolveDesktopApiNamespace(
+  computeTargetId: string,
+  namespaceHint?: DesktopApiNamespace
+): Promise<DesktopApiNamespace> {
+  if (namespaceHint) {
+    return namespaceHint;
+  }
+
+  const target = await computeTargetsService.findById(computeTargetId);
+  return (
+    getDesktopApiNamespaceFromCapabilities(
+      target?.capabilities as Record<string, unknown> | null
+    ) ?? CURRENT_DESKTOP_API_NAMESPACE
+  );
+}
 
 /**
  * Launch a loop on a desktop compute target.
@@ -159,20 +192,25 @@ export async function launchLoopOnDesktop(
     loopId,
     command,
     computeTargetId,
+    desktopApiNamespace,
     closedLoopAuthToken,
     apiBaseUrl,
     contextPack,
-    artifactSlug,
+    documentSlug,
     parentLoopId,
     parentBranchName,
     parentSessionId,
     localRepoPath,
   } = opts;
+  const namespace = await resolveDesktopApiNamespace(
+    computeTargetId,
+    desktopApiNamespace
+  );
 
   const input = {
     operationId: "symphony_loop",
     method: "POST" as const,
-    path: "/api/engineer/symphony/loop",
+    path: rewriteDesktopApiPath("/api/gateway/symphony/loop", namespace),
     body: {
       loopId,
       command,
@@ -182,7 +220,7 @@ export async function launchLoopOnDesktop(
       prompt: contextPack.prompt ?? null,
       repo: contextPack.repoInfo ?? null,
       committer: contextPack.committer ?? null,
-      artifactSlug: artifactSlug ?? null,
+      artifactSlug: documentSlug ?? null,
       parentLoopId: parentLoopId ?? null,
       parentBranchName: parentBranchName ?? null,
       parentSessionId: parentSessionId ?? null,
@@ -208,9 +246,12 @@ export async function launchLoopOnDesktop(
       true
     );
   } catch (err) {
+    const dispatchReason =
+      err instanceof RelayDispatchNotDeliveredError ? err.reason : undefined;
     throw new DispatchError(
       err instanceof Error ? err.message : String(err),
-      commandId
+      commandId,
+      dispatchReason
     );
   }
 
@@ -231,10 +272,11 @@ export async function stopDesktopLoop(
   loopId: string,
   computeTargetId: string
 ): Promise<void> {
+  const namespace = await resolveDesktopApiNamespace(computeTargetId);
   const killInput = {
     operationId: "symphony_loop_kill",
     method: "POST" as const,
-    path: "/api/engineer/symphony/loop/kill",
+    path: rewriteDesktopApiPath("/api/gateway/symphony/loop/kill", namespace),
     body: { loopId },
   };
   const createResult = await desktopCommandStore.createCommand(

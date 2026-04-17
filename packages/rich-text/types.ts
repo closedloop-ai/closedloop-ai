@@ -1,14 +1,21 @@
 import type { AnyExtension, Editor } from "@tiptap/react";
 
+export type TiptapEditor = Editor & {
+  /**
+   * Reset the editor content from a markdown string.
+   * Temporarily makes the editor editable if it's read-only,
+   * so the command succeeds even in view mode.
+   */
+  resetContent: (markdown: string) => void;
+};
+
 export type RichTextEditorProps = {
   value: string;
   onChange: (value: string) => void;
-  onEditorReady?: (editor: Editor | null) => void;
+  onEditorReady?: (editor: TiptapEditor | null) => void;
   placeholder?: string;
   readOnly?: boolean;
   className?: string;
-  contentResetKey?: number;
-  contentResetValue?: string;
   liveblocksExtension?: AnyExtension;
   /**
    * Whether the Liveblocks editor has finished syncing and is ready.

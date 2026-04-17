@@ -14,7 +14,7 @@ vi.mock("@repo/database", () => ({
   withDb: Object.assign(
     vi.fn((fn: (db: unknown) => Promise<unknown>) =>
       fn({
-        artifact: { update: vi.fn(), findUnique: vi.fn() },
+        document: { update: vi.fn(), findUnique: vi.fn() },
         workstreamEvent: { findFirst: vi.fn(), create: vi.fn() },
       })
     ),
@@ -28,14 +28,18 @@ vi.mock("@repo/observability/log", () => ({
   log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
-vi.mock("@/app/artifacts/artifact-version-service", () => ({
-  artifactVersionService: {
+vi.mock("@/app/documents/document-version-service", () => ({
+  documentVersionService: {
     createVersion: vi.fn(),
   },
 }));
 
-vi.mock("@/app/artifacts/room-utils", () => ({
-  resetArtifactRoom: vi.fn(),
+vi.mock("@vercel/functions", () => ({
+  waitUntil: vi.fn(),
+}));
+
+vi.mock("@/app/documents/room-utils", () => ({
+  resetDocumentRoom: vi.fn(),
 }));
 
 vi.mock("@/lib/loops/loop-state", () => ({
@@ -44,19 +48,19 @@ vi.mock("@/lib/loops/loop-state", () => ({
 
 // --- Imports (after mocks) ---
 
-import { ArtifactStatus, ArtifactType } from "@repo/api/src/types/artifact";
+import { DocumentStatus, DocumentType } from "@repo/api/src/types/document";
 import { LoopCommand } from "@repo/api/src/types/loop";
 import { withDb } from "@repo/database";
 import { beforeEach, describe, expect, it } from "vitest";
-import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
-import { resetArtifactRoom } from "@/app/artifacts/room-utils";
+import { documentVersionService } from "@/app/documents/document-version-service";
+import { resetDocumentRoom } from "@/app/documents/room-utils";
 import { requestPrdChangesHandler } from "@/lib/loops/loop-commands/generate-prd-handler";
 import { downloadArtifactFile } from "@/lib/loops/loop-state";
 import { buildLoop } from "../fixtures/loop";
 
 type MockFn = ReturnType<typeof vi.fn>;
-const mockCreateVersion = artifactVersionService.createVersion as MockFn;
-const mockResetArtifactRoom = resetArtifactRoom as MockFn;
+const mockCreateVersion = documentVersionService.createVersion as MockFn;
+const mockResetArtifactRoom = resetDocumentRoom as MockFn;
 const mockDownloadArtifactFile = downloadArtifactFile as MockFn;
 
 // ---------------------------------------------------------------------------
@@ -66,13 +70,13 @@ const mockDownloadArtifactFile = downloadArtifactFile as MockFn;
 function buildRequestPrdChangesLoop() {
   return buildLoop({
     command: LoopCommand.RequestPrdChanges,
-    artifactId: "artifact-123",
+    documentId: "artifact-123",
     s3StateKey: "org/loops/loop-1/run-1",
   });
 }
 
 function mockDbCalls(
-  artifactType: string | null = ArtifactType.Prd,
+  artifactType: string | null = DocumentType.Prd,
   slug: string | null = "test-slug"
 ) {
   const mockFindUnique = vi
@@ -82,7 +86,7 @@ function mockDbCalls(
     id: "artifact-123",
     organizationId: "org-1",
     slug,
-    type: ArtifactType.Prd,
+    type: DocumentType.Prd,
     latestVersion: 2,
   });
   const mockFindFirst = vi.fn().mockResolvedValue(null);
@@ -91,7 +95,7 @@ function mockDbCalls(
   (withDb as unknown as MockFn).mockImplementation(
     (fn: (db: unknown) => Promise<unknown>) =>
       fn({
-        artifact: { update: mockUpdate, findUnique: mockFindUnique },
+        document: { update: mockUpdate, findUnique: mockFindUnique },
         workstreamEvent: { findFirst: mockFindFirst, create: mockCreate },
       })
   );
@@ -138,12 +142,13 @@ describe("requestPrdChangesHandler ingestion", () => {
     );
     expect(mockCreateVersion).toHaveBeenCalledWith(
       "artifact-123",
+      "org-1",
       null,
       prdContent
     );
     expect(mockUpdate).toHaveBeenCalledWith({
       where: { id: "artifact-123", organizationId: "org-1" },
-      data: { status: ArtifactStatus.Draft },
+      data: { status: DocumentStatus.Draft },
       select: {
         id: true,
         organizationId: true,
@@ -157,7 +162,7 @@ describe("requestPrdChangesHandler ingestion", () => {
   it("updates artifact status to DRAFT and resets room when slug is present", async () => {
     const loop = buildRequestPrdChangesLoop();
     mockDownloadArtifactFile.mockResolvedValue(Buffer.from("# PRD content"));
-    const { mockUpdate } = mockDbCalls(ArtifactType.Prd, "my-prd-slug");
+    const { mockUpdate } = mockDbCalls(DocumentType.Prd, "my-prd-slug");
     mockCreateVersion.mockResolvedValue({ id: "version-1" });
 
     await requestPrdChangesHandler.downloadAndIngest(
@@ -168,7 +173,7 @@ describe("requestPrdChangesHandler ingestion", () => {
 
     expect(mockUpdate).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: { status: ArtifactStatus.Draft },
+        data: { status: DocumentStatus.Draft },
       })
     );
     expect(mockResetArtifactRoom).toHaveBeenCalledWith(
@@ -179,7 +184,7 @@ describe("requestPrdChangesHandler ingestion", () => {
   it("does not reset room when artifact has no slug", async () => {
     const loop = buildRequestPrdChangesLoop();
     mockDownloadArtifactFile.mockResolvedValue(Buffer.from("# PRD content"));
-    mockDbCalls(ArtifactType.Prd, null);
+    mockDbCalls(DocumentType.Prd, null);
     mockCreateVersion.mockResolvedValue({ id: "version-1" });
 
     await requestPrdChangesHandler.downloadAndIngest(
@@ -194,7 +199,7 @@ describe("requestPrdChangesHandler ingestion", () => {
   it("throws when invoked with a non-PRD artifact type", async () => {
     const loop = buildRequestPrdChangesLoop();
     mockDownloadArtifactFile.mockResolvedValue(Buffer.from("# PRD content"));
-    mockDbCalls(ArtifactType.ImplementationPlan);
+    mockDbCalls(DocumentType.ImplementationPlan);
     mockCreateVersion.mockResolvedValue({ id: "version-1" });
 
     await expect(
@@ -204,7 +209,7 @@ describe("requestPrdChangesHandler ingestion", () => {
         "org-1"
       )
     ).rejects.toThrow(
-      `[request-prd-changes] Expected artifact type ${ArtifactType.Prd}`
+      `[request-prd-changes] Expected artifact type ${DocumentType.Prd}`
     );
   });
 });

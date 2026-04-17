@@ -45,6 +45,11 @@ Schema: `packages/database/prisma/schema.prisma`. Client: `packages/database/gen
 ### Background Work in API Routes (CRITICAL)
 **Never fire-and-forget promises in Vercel serverless.** Always wrap background work with `waitUntil()` from `@vercel/functions`. A `.catch()` without `waitUntil()` is a bug.
 
+### Breaking Changes (CRITICAL)
+Any breaking change to an API, contract, or interface (REST routes, request/response shapes, shared types in `packages/api/`, DB schema, public function signatures, etc.) requires BOTH:
+1. **Legacy migration logic** so existing users/clients/data are not broken. Accept the old shape, translate to the new one, and keep the old code path working until the migration is removed.
+2. **A ClosedLoop ticket** created via the ClosedLoop MCP (`mcp__closedloop__create-feature`) to track removal of the legacy migration code at a later date. Reference the ticket ID in a comment next to the legacy code so it can be found when the cleanup ticket is worked.
+
 ### Type Definitions (IMPORTANT)
 **Never duplicate types.** One canonical location, imported everywhere:
 - **Shared API types** (both frontend+backend) → `packages/api/src/types/`
@@ -55,10 +60,10 @@ Schema: `packages/database/prisma/schema.prisma`. Client: `packages/database/gen
 `packages/api/src/types/` only for types used by BOTH apps. Never define same type in multiple files.
 
 ### Engineer Feature (SECURITY CRITICAL)
-Located in `apps/app/app/api/engineer/` — spawns local CLI processes (Claude, git, codex). **Localhost-only**: proxy guard (`apps/app/proxy.ts`) rejects non-localhost with 403. `EngineerGuard` is UX-only. **Do NOT remove the proxy guard** (arbitrary command execution). **Do NOT move to `apps/api`** — requires local filesystem access.
+Spawns local CLI processes (Claude, git, codex) via the `closedloop-electron` gateway binary, NOT in `apps/app` or `apps/api`. The browser fetch interceptor (`apps/app/lib/engineer/engineer-fetch-interceptor.ts`) routes `/api/gateway/*` requests to either localhost (LocalElectron mode) or the `/api/gateway-relay/*` forwarder (CloudRelay mode). **Localhost-only enforcement**: proxy guard (`apps/app/proxy.ts`) rejects non-localhost `/api/gateway/*` requests with 403. The gateway binary enforces its own `isAuthorizedGatewayRequest` auth on top. `EngineerGuard` is UX-only. **Do NOT remove the proxy guard** (arbitrary command execution risk). **Do NOT reimplement gateway operations in `apps/app` or `apps/api`** — they require local filesystem access and live exclusively in the `closedloop-electron` repo under `apps/desktop/src/server/operations/`.
 
 ### System Health Check
-Runs on app launch via `SystemCheckBootstrap` in the authenticated layout (`apps/app/app/(authenticated)/layout.tsx`), not just on the engineer page. Eligibility gated by `useSystemCheckEligibility` — only fires when a compute target is active (cloud relay online or local Electron detected). In cloud relay mode, the fetch interceptor rewrites `/api/engineer/health-check` to `/api/engineer-relay/health-check` and routes to the remote compute target. The health check route resolves the user's login-shell PATH via `getShellPath()` to find tools like `python3`, `git`, `claude`, `gh`.
+Runs on app launch via `SystemCheckBootstrap` in the authenticated layout (`apps/app/app/(authenticated)/layout.tsx`), not just on the engineer page. Eligibility gated by `useSystemCheckEligibility` — only fires when a compute target is active (cloud relay online or local Electron detected). In cloud relay mode, the fetch interceptor rewrites `/api/gateway/health-check` to `/api/gateway-relay/health-check` and routes to the remote compute target. The health check route resolves the user's login-shell PATH via `getShellPath()` to find tools like `python3`, `git`, `claude`, `gh`.
 
 ## Self-Improving CLAUDE.md
 Discover undocumented patterns during PRs → add to relevant CLAUDE.md in same PR.
@@ -70,7 +75,7 @@ No sycophantic language. Brief, factual — state what changed.
 `turbo.json` (tasks) · `biome.jsonc` (lint config) · `packages/*/keys.ts` (env validation)
 
 ## Code Style
-- Use enum/const references, not hardcoded strings — `ArtifactType.IMPLEMENTATION_PLAN` not `"IMPLEMENTATION_PLAN"`, `EntityType.Issue` not `"ISSUE"`. This applies everywhere: type annotations, runtime comparisons, test fixtures, and object literals. Import from `packages/api/src/types/` or `@repo/database` for Prisma enums. For type annotations use `import type` with the const object's type alias (e.g., `sourceType?: EntityType`).
+- Use enum/const references, not hardcoded strings — `DocumentType.ImplementationPlan` not `"IMPLEMENTATION_PLAN"`, `EntityType.Document` not `"DOCUMENT"`. This applies everywhere: type annotations, runtime comparisons, test fixtures, and object literals. Import from `packages/api/src/types/` or `@repo/database` for Prisma enums. For type annotations use `import type` with the const object's type alias (e.g., `sourceType?: EntityType`).
 - Define string enums as const objects, never arrays: `export const Foo = { Bar: "bar" } as const; export type Foo = (typeof Foo)[keyof typeof Foo];` — not `const FOOS = ["bar"] as const`.
 - `RegExp.exec(str)` not `str.match(regex)` (S6594)
 - `String#replaceAll()` not `.replace()` with global regex (S7781)
@@ -98,21 +103,21 @@ No sycophantic language. Brief, factual — state what changed.
 Read `.gitmessage` first and follow its format.
 
 ## Background
-ClosedLoop: human-governed, AI-centric software delivery platform. AI produces artifacts; humans review at milestones. Hybrid: source on customer infra, cloud control plane orchestrates. 'Workflow' = user-defined step sequences, NOT generated artifacts.
+ClosedLoop: human-governed, AI-centric software delivery platform. AI produces artifacts (documents, features, etc.); humans review at milestones. Hybrid: source on customer infra, cloud control plane orchestrates. 'Workflow' = user-defined step sequences, NOT generated artifacts. 'Document' = a specific artifact type (PRD, Implementation Plan, Template) stored in the `document` table. 'Artifact' = the broader concept encompassing documents, features, and other primary records.
 
 ## Learned Patterns
 
 ### Planning & Verification
-- **[mistake]**: New artifact types — check existing support in: useArtifactUIState type union, isNavigableArtifact, getArtifactRoute switch, ARTIFACT_SECTIONS. Mark existing as verification, not implementation.
+- **[mistake]**: New document types — check existing support in: useDocumentUIState type union, isNavigableDocument, getDocumentRoute switch, DOCUMENT_SECTIONS. Mark existing as verification, not implementation.
 - **[convention]**: Check `plan.json` architectureDecisions before implementing entity types or schema changes.
 - **[mistake]**: Check investigation-log.md for already-imported components before writing import tasks. Mark as verification when already present.
 
 ### TypeScript & Imports
-- **[mistake]**: Const objects like ArtifactType need `import { ArtifactType }` not `import type` — runtime values can't use type-only imports.
+- **[mistake]**: Const objects like DocumentType need `import { DocumentType }` not `import type` — runtime values can't use type-only imports.
 - **[mistake]**: Adding re-exports to index.ts triggers Biome's `noBarrelFile`. Use direct subpath imports (`@repo/github/execution-log-parser`).
 - **[insight]**: Subpath imports (`@repo/github/execution-log-parser`) resolve without explicit `exports` in package.json — pnpm workspace + TS handles it.
 - **[convention]**: Never use inline `import()` types. Always top-level imports.
-- **[pattern]**: ArtifactStatus has 4 synchronized layers — when adding values, update Prisma schema + TypeScript const (packages/api/src/types/artifact.ts); the Zod validator and status dropdown auto-derive from the const, but exhaustive Record<ArtifactStatus, string> maps in status-badge.tsx and project-constants.ts require manual updates. (context: typescript|enum|ArtifactStatus|record)
+- **[pattern]**: DocumentStatus has 4 synchronized layers — when adding values, update Prisma schema + TypeScript const (packages/api/src/types/document.ts); the Zod validator and status dropdown auto-derive from the const, but exhaustive Record<DocumentStatus, string> maps in status-badge.tsx and project-constants.ts require manual updates. (context: typescript|enum|DocumentStatus|record)
 - **[convention]**: use zod validators to validate object shape. do not "manually" validate unknown objects using `typeof` and other related checks. zod can be used to validate any object, not just in route handlers.
 
 ### React Query & Mutations

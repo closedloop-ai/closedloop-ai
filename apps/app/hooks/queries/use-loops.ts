@@ -1,5 +1,6 @@
 "use client";
 
+import { CURRENT_DESKTOP_API_NAMESPACE } from "@repo/api/src/desktop-api-namespace";
 import type {
   CreateLoopRequest,
   CreateLoopResponse,
@@ -11,7 +12,6 @@ import type {
   LoopUsageSummary,
   LoopWithUser,
   ResumeLoopRequest,
-  RunLoopCommand as RunLoopCommandType,
 } from "@repo/api/src/types/loop";
 import { RunLoopCommand } from "@repo/api/src/types/loop";
 import {
@@ -22,6 +22,7 @@ import {
 } from "@tanstack/react-query";
 import { judgesKeys } from "@/hooks/queries/use-judges";
 import { useApiClient } from "@/hooks/use-api-client";
+import { resolveDesktopApiNamespaceHint } from "@/lib/engineer/local-gateway-api-namespace";
 import { buildSearchParams } from "@/lib/format-utils";
 
 // Query keys
@@ -108,19 +109,19 @@ export function useLoopEventsPaginated(
 }
 
 export function useLoopsByArtifact(
-  artifactId: string,
+  documentId: string,
   options?: Omit<UseQueryOptions<LoopWithUser[]>, "queryKey" | "queryFn">
 ) {
   const apiClient = useApiClient();
 
   return useQuery({
-    queryKey: loopKeys.list({ artifactId }),
+    queryKey: loopKeys.list({ documentId }),
     queryFn: () => {
       const params = new URLSearchParams();
-      params.set("artifactId", artifactId);
+      params.set("documentId", documentId);
       return apiClient.get<LoopWithUser[]>(`/loops?${params.toString()}`);
     },
-    enabled: !!artifactId,
+    enabled: !!documentId,
     ...options,
   });
 }
@@ -219,45 +220,55 @@ export function useRunLoop() {
   const apiClient = useApiClient();
 
   return useMutation({
-    mutationFn: ({
-      artifactId,
+    mutationFn: async ({
+      documentId,
       command,
       prompt,
       computeTargetId,
       backendOverride,
       repo,
     }: {
-      artifactId: string;
-      command: RunLoopCommandType;
+      documentId: string;
+      command: RunLoopCommand;
       prompt?: string;
       computeTargetId?: string | null;
       backendOverride?: boolean;
       repo?: CreateLoopRequest["repo"];
-    }) =>
-      apiClient.post<CreateLoopResponse>(`/artifacts/${artifactId}/run-loop`, {
-        command,
-        prompt,
-        ...(computeTargetId !== undefined ? { computeTargetId } : {}),
-        ...(backendOverride ? { backendOverride } : {}),
-        ...(repo ? { repo } : {}),
-      }),
-    onSuccess: (_, { artifactId, command }) => {
+    }) => {
+      const desktopApiNamespace = await resolveDesktopApiNamespaceHint();
+
+      return apiClient.post<CreateLoopResponse>(
+        `/documents/${documentId}/run-loop`,
+        {
+          command,
+          prompt,
+          ...(computeTargetId !== undefined ? { computeTargetId } : {}),
+          ...(backendOverride ? { backendOverride } : {}),
+          ...(repo ? { repo } : {}),
+          ...(desktopApiNamespace &&
+          desktopApiNamespace !== CURRENT_DESKTOP_API_NAMESPACE
+            ? { desktopApiNamespace }
+            : {}),
+        }
+      );
+    },
+    onSuccess: (_, { documentId, command }) => {
       queryClient.invalidateQueries({ queryKey: loopKeys.lists() });
       queryClient.invalidateQueries({
-        queryKey: loopKeys.list({ artifactId }),
+        queryKey: loopKeys.list({ documentId }),
       });
       // Also invalidate artifact generation status so the UI reflects the pending loop
       queryClient.invalidateQueries({
-        queryKey: ["artifacts", "detail", artifactId, "generation-status"],
+        queryKey: ["documents", "detail", documentId, "generation-status"],
       });
       if (command === RunLoopCommand.EvaluatePlan) {
         queryClient.invalidateQueries({
-          queryKey: judgesKeys.detail(artifactId),
+          queryKey: judgesKeys.detail(documentId),
         });
       }
       if (command === RunLoopCommand.EvaluateCode) {
         queryClient.invalidateQueries({
-          queryKey: judgesKeys.codeDetail(artifactId),
+          queryKey: judgesKeys.codeDetail(documentId),
         });
       }
     },

@@ -14,7 +14,7 @@ import { judgesAnalyticsService } from "@/app/judges-analytics/service";
 vi.mock("@repo/database", () => ({
   withDb: vi.fn(),
   PromptType: { JUDGE: "JUDGE" },
-  EntityType: { ARTIFACT: "ARTIFACT" },
+  EntityType: { DOCUMENT: "DOCUMENT" },
 }));
 
 const ORG_A = "org-alpha";
@@ -27,8 +27,8 @@ function makeDb(judgeScoreFindManyResult: unknown[] = []) {
     judgeScore: {
       findMany: vi.fn().mockResolvedValue(judgeScoreFindManyResult),
     },
-    artifact: { findMany: vi.fn().mockResolvedValue([]) },
-    artifactRating: { findMany: vi.fn().mockResolvedValue([]) },
+    document: { findMany: vi.fn().mockResolvedValue([]) },
+    documentRating: { findMany: vi.fn().mockResolvedValue([]) },
   };
 }
 
@@ -75,7 +75,7 @@ describe("judgesAnalyticsService — query structure (SS8.7)", () => {
       promptId: null,
       score: 0.9,
       evaluation: {
-        artifactId: "artifact-a1",
+        documentId: "artifact-a1",
         entityId: "artifact-a1",
         organizationId: ORG_A,
       },
@@ -87,7 +87,7 @@ describe("judgesAnalyticsService — query structure (SS8.7)", () => {
     const artifactFindMany = vi
       .fn()
       .mockResolvedValue([{ id: "artifact-a1", type: "IMPLEMENTATION_PLAN" }]);
-    mockDb.artifact.findMany = artifactFindMany;
+    mockDb.document.findMany = artifactFindMany;
 
     vi.mocked(withDb).mockImplementation((callback) =>
       Promise.resolve(

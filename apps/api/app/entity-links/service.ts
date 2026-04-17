@@ -16,12 +16,12 @@ import {
   type ExternalLink,
   ExternalLinkType,
 } from "@repo/api/src/types/external-link";
+import { Result, Status } from "@repo/api/src/types/result";
 import { Prisma, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { basicUserSelect } from "@/lib/db-utils";
 import { assertEntityInOrganization } from "@/lib/entity-validation";
 import { schedulePrReadRepair } from "@/lib/pr-read-repair";
-import { Result, Status } from "@/lib/result";
 import { externalLinksService } from "../external-links/service";
 
 export const entityLinksService = {
@@ -143,9 +143,9 @@ export const entityLinksService = {
     entityType: EntityType
   ): Promise<ResolvedEntity | null> {
     switch (entityType) {
-      case EntityType.Artifact: {
+      case EntityType.Document: {
         const artifact = await withDb((db) =>
-          db.artifact.findUnique({
+          db.document.findUnique({
             where: { id, organizationId },
             include: {
               assignee: basicUserSelect,
@@ -156,7 +156,7 @@ export const entityLinksService = {
         if (!artifact) {
           return null;
         }
-        return { type: EntityType.Artifact, entity: artifact };
+        return { type: EntityType.Document, entity: artifact };
       }
       case EntityType.Feature: {
         const feature = await withDb((db) =>
@@ -397,7 +397,7 @@ export const entityLinksService = {
     const externalLinkIds: string[] = [];
 
     for (const entity of entitiesToMove) {
-      if (entity.type === EntityType.Artifact) {
+      if (entity.type === EntityType.Document) {
         artifactIds.push(entity.id);
       } else if (entity.type === EntityType.Feature) {
         featureIds.push(entity.id);
@@ -410,7 +410,7 @@ export const entityLinksService = {
       let totalUpdated = 0;
 
       if (artifactIds.length > 0) {
-        const { count } = await tx.artifact.updateMany({
+        const { count } = await tx.document.updateMany({
           where: { id: { in: artifactIds }, organizationId },
           data: { projectId: input.targetProjectId },
         });
