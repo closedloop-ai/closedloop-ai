@@ -2,6 +2,7 @@ import {
   type CaseScore as EvaluationCaseScore,
   type MetricStatistics as EvaluationMetricStatistics,
   EvalStatus as EvaluationStatus,
+  type EvalStatus as EvaluationStatusType,
   type JudgesReport,
 } from "@repo/api/src/types/evaluation";
 import { queryOptions } from "@tanstack/react-query";
@@ -81,6 +82,7 @@ export type LogResponse = {
 };
 
 export const EvalStatus = EvaluationStatus;
+export type EvalStatus = EvaluationStatusType;
 export type CaseScore = EvaluationCaseScore;
 export type MetricStatistics = EvaluationMetricStatistics;
 export type EvaluationReport = JudgesReport;

@@ -310,7 +310,7 @@ function unwrapRelayBody(body: RelayEncodedBody): JsonValue | undefined {
     case "base64":
       return body.value as unknown as JsonValue;
     default:
-      throw new Error(`Unsupported relay body kind: ${body.kind}`);
+      throw new Error("Unsupported relay body kind");
   }
 }
 
