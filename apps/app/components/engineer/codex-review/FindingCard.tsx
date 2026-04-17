@@ -6,7 +6,7 @@ import {
   EyeOff,
   MessageSquare,
 } from "lucide-react";
-import { MessageContent } from "@/components/engineer/chat/MessageContent";
+import { MessageContent } from "@/components/chat/MessageContent";
 import {
   parseFindingTitle,
   type ReviewFinding,
@@ -190,49 +190,33 @@ function FindingCardActions({
   return (
     <div className="flex shrink-0 items-center gap-1">
       {!(chatMode || isDismissed) && (
-        <span
+        <button
           className="cursor-pointer rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-primary"
           onClick={(e) => {
             e.stopPropagation();
             onOpenChat(idx);
           }}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" || e.key === " ") {
-              e.stopPropagation();
-              e.preventDefault();
-              onOpenChat(idx);
-            }
-          }}
-          role="button"
-          tabIndex={0}
           title="Discuss this finding with Claude"
+          type="button"
         >
           <MessageSquare className="size-3.5" />
-        </span>
+        </button>
       )}
-      <span
+      <button
         className="cursor-pointer rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
         onClick={(e) => {
           e.stopPropagation();
           onToggleDismiss(idx);
         }}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" || e.key === " ") {
-            e.stopPropagation();
-            e.preventDefault();
-            onToggleDismiss(idx);
-          }
-        }}
-        role="button"
-        tabIndex={0}
         title={isDismissed ? "Reopen finding" : "Dismiss finding"}
+        type="button"
       >
         {isDismissed ? (
           <Eye className="size-3.5" />
         ) : (
           <EyeOff className="size-3.5" />
         )}
-      </span>
+      </button>
     </div>
   );
 }

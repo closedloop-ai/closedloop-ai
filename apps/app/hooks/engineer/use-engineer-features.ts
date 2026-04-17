@@ -152,7 +152,9 @@ export function useEngineerFeatures(): EngineerFeaturesResultWithUser {
         if (!cancelled) {
           setIsLoading(false);
           setIsFetching(false);
-          refetchResolversRef.current.splice(0).forEach((resolve) => resolve());
+          for (const resolve of refetchResolversRef.current.splice(0)) {
+            resolve();
+          }
         }
       }
     }
@@ -160,7 +162,9 @@ export function useEngineerFeatures(): EngineerFeaturesResultWithUser {
     fetchAll();
     return () => {
       cancelled = true;
-      refetchResolversRef.current.splice(0).forEach((resolve) => resolve());
+      for (const resolve of refetchResolversRef.current.splice(0)) {
+        resolve();
+      }
     };
   }, [apiClient, refetchCounter]);
 

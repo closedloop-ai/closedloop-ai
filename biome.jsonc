@@ -26,56 +26,35 @@
         "apps/app/components/engineer/**",
         "apps/app/components/chat/**",
         "apps/app/hooks/engineer/**",
-        "apps/app/hooks/chat/**",
+        // Narrowed from hooks/chat/** to the single remaining offender
+        "apps/app/hooks/chat/use-stream-dispatch.ts",
         "apps/app/lib/engineer/**",
-        "apps/app/lib/chat/**",
-        "apps/app/types/engineer.ts",
-        "apps/app/types/repos.ts",
-        "apps/app/types/run-viewer.ts",
-        "apps/app/app/(authenticated)/engineer/**"
+        "apps/app/lib/chat/**"
       ],
       "linter": {
         "rules": {
-          "a11y": {
-            "useButtonType": "off",
-            "useSemanticElements": "off",
-            "noSvgWithoutTitle": "off",
-            "useKeyWithClickEvents": "off",
-            "noStaticElementInteractions": "off",
-            "noNoninteractiveElementInteractions": "off"
-          },
           "complexity": {
+            // Tightened from 120 -> 110 in FEA-434.
+            // Remaining outliers are large orchestration handlers that need
+            // refactors across multiple modules/tests before dropping further.
             "noExcessiveCognitiveComplexity": {
               "level": "error",
-              "options": { "maxAllowedComplexity": 120 }
-            },
-            "noForEach": "off"
+              "options": { "maxAllowedComplexity": 110 }
+            }
           },
           "style": {
-            "useFilenamingConvention": "off",
-            "noNestedTernary": "off",
-            "useDefaultSwitchClause": "off",
-            "noEnum": "off",
-            "noExportedImports": "off"
+            // Remaining file naming violations are a bulk rename migration.
+            // Keep temporary carve-out until import graph updates can land safely.
+            "useFilenamingConvention": "off"
           },
           "performance": {
-            "useTopLevelRegex": "off",
-            "noBarrelFile": "off",
-            "noImgElement": "off"
-          },
-          "suspicious": {
-            "noArrayIndexKey": "off",
-            "noAlert": "off",
-            "useIterableCallbackReturn": "off",
-            "noControlCharactersInRegex": "off",
-            "noExplicitAny": "off",
-            "noMisleadingCharacterClass": "off"
+            // Remaining regex issues are mostly parser/streaming utilities that
+            // require careful hoisting to avoid changing runtime behavior.
+            "useTopLevelRegex": "off"
           },
           "correctness": {
-            "noUnusedFunctionParameters": "off",
-            "useImageSize": "off",
-            "useExhaustiveDependencies": "off",
-            "noInvalidUseBeforeDeclaration": "off"
+            // Remaining exhaustive-deps findings need behavior-safe effect refactors.
+            "useExhaustiveDependencies": "off"
           }
         }
       }

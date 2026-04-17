@@ -147,6 +147,7 @@ export function JudgesViewer({ data }: Readonly<JudgesViewerProps>) {
                   expandedScoreId === score.case_id ? null : score.case_id
                 )
               }
+              type="button"
             >
               <div className="flex items-center gap-3">
                 {renderStatusIcon(inferStatusFromScore(score))}

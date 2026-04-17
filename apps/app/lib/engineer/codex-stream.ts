@@ -6,10 +6,7 @@
  * readNdjsonLines (proper chunk buffering) instead of chunk.split("\n").
  */
 
-import type {
-  ChatMessage,
-  ContentBlock,
-} from "@/components/engineer/chat/types";
+import type { ChatMessage, ContentBlock } from "@/components/chat/types";
 import { readNdjsonLines } from "./stream-utils";
 
 export type CodexStreamState = {

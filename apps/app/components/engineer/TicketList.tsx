@@ -72,6 +72,26 @@ type TicketListProps = {
   viewMode?: "grid" | "list";
 };
 
+const LIST_SKELETON_KEYS = [
+  "list-skeleton-1",
+  "list-skeleton-2",
+  "list-skeleton-3",
+  "list-skeleton-4",
+  "list-skeleton-5",
+  "list-skeleton-6",
+  "list-skeleton-7",
+  "list-skeleton-8",
+];
+
+const GRID_SKELETON_KEYS = [
+  "grid-skeleton-1",
+  "grid-skeleton-2",
+  "grid-skeleton-3",
+  "grid-skeleton-4",
+  "grid-skeleton-5",
+  "grid-skeleton-6",
+];
+
 /**
  * TicketList component displays Linear tickets in a responsive grid layout.
  * When Symphony is running for a ticket, it shows in a dedicated "Active Planning" section.
@@ -416,7 +436,9 @@ export function TicketList({
     if (stale.length > 0) {
       setReopenedTickets((prev) => {
         const next = new Set(prev);
-        stale.forEach((id) => next.delete(id));
+        for (const id of stale) {
+          next.delete(id);
+        }
         localStorage.setItem("reopened-tickets", JSON.stringify([...next]));
         return next;
       });
@@ -547,9 +569,9 @@ export function TicketList({
   // Check pushed status for all tickets (from localStorage)
   useEffect(() => {
     const statusMap: Record<string, boolean> = {};
-    tickets.forEach((ticket) => {
+    for (const ticket of tickets) {
       statusMap[ticket.identifier] = isTicketPushed(ticket.identifier);
-    });
+    }
     setPushedStatus(statusMap);
   }, [tickets]);
 
@@ -559,12 +581,12 @@ export function TicketList({
       string,
       { url: string; number: number; repoPath?: string } | null
     > = {};
-    tickets.forEach((ticket) => {
+    for (const ticket of tickets) {
       const pr = getTicketPR(ticket.identifier);
       statusMap[ticket.identifier] = pr
         ? { url: pr.url, number: pr.number, repoPath: pr.repoPath }
         : null;
-    });
+    }
     setPrStatus(statusMap);
   }, [tickets]);
 
@@ -572,9 +594,9 @@ export function TicketList({
   useEffect(() => {
     const deploys = getDeployments();
     const statusMap: Record<string, DeployInfo | null> = {};
-    tickets.forEach((ticket) => {
+    for (const ticket of tickets) {
       statusMap[ticket.identifier] = deploys[ticket.identifier] || null;
-    });
+    }
     setDeployStatus(statusMap);
 
     // Reconcile any "deploying" entries — the process may have finished while the page was closed
@@ -838,7 +860,7 @@ export function TicketList({
 
   // Show toast when a ticket finishes launching (transitions out of launchingTickets)
   useEffect(() => {
-    activeSessions.forEach((session) => {
+    for (const session of activeSessions) {
       if (
         !(
           launchingTickets.has(session.ticketId) ||
@@ -848,7 +870,7 @@ export function TicketList({
         // New session that wasn't there before and isn't launching
         lastLaunchedTicketRef.current.add(session.ticketId);
       }
-    });
+    }
   }, [activeSessions, launchingTickets]);
 
   // Handler for starting planning - opens repo picker dialog OR resumes existing worktree
@@ -1535,16 +1557,16 @@ export function TicketList({
     if (viewMode === "list") {
       return (
         <div className="divide-y divide-border/50 overflow-hidden rounded-xl border border-border/50 bg-card">
-          {Array.from({ length: 8 }, (_, i) => (
-            <TicketListRowSkeleton key={`skeleton-${i}`} />
+          {LIST_SKELETON_KEYS.map((skeletonKey) => (
+            <TicketListRowSkeleton key={skeletonKey} />
           ))}
         </div>
       );
     }
     return (
       <div className="grid grid-cols-1 gap-4 sm:gap-6 md:grid-cols-2 lg:grid-cols-3">
-        {Array.from({ length: 6 }, (_, i) => (
-          <TicketCardSkeleton key={`skeleton-${i}`} />
+        {GRID_SKELETON_KEYS.map((skeletonKey) => (
+          <TicketCardSkeleton key={skeletonKey} />
         ))}
       </div>
     );
@@ -1888,6 +1910,7 @@ export function TicketList({
                 className="cursor-pointer rounded-md p-1.5 text-muted-foreground transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:opacity-30"
                 disabled={pendingPage === 0}
                 onClick={() => setPendingPage((p) => Math.max(0, p - 1))}
+                type="button"
               >
                 <ChevronLeft className="size-4" />
               </button>
@@ -1900,6 +1923,7 @@ export function TicketList({
                 onClick={() =>
                   setPendingPage((p) => Math.min(pendingPageCount - 1, p + 1))
                 }
+                type="button"
               >
                 <ChevronRight className="size-4" />
               </button>
@@ -2005,6 +2029,7 @@ export function TicketList({
               setShowCompleted(next);
               localStorage.setItem("show-completed-tickets", String(next));
             }}
+            type="button"
           >
             <span
               className={cn(
@@ -2020,6 +2045,7 @@ export function TicketList({
               )}
             >
               <svg
+                aria-hidden="true"
                 className="opacity-60"
                 fill="none"
                 height="10"
@@ -2046,6 +2072,7 @@ export function TicketList({
             <div className="h-px flex-1 bg-gradient-to-r from-transparent via-border to-transparent" />
             <span className="flex items-center gap-2 font-medium text-muted-foreground/70 text-xs uppercase tracking-wider">
               <svg
+                aria-hidden="true"
                 className="text-emerald-500/60"
                 fill="none"
                 height="12"
@@ -2070,6 +2097,7 @@ export function TicketList({
                 className="cursor-pointer rounded-md p-1.5 text-muted-foreground transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:opacity-30"
                 disabled={donePage === 0}
                 onClick={() => setDonePage((p) => Math.max(0, p - 1))}
+                type="button"
               >
                 <ChevronLeft className="size-4" />
               </button>
@@ -2082,6 +2110,7 @@ export function TicketList({
                 onClick={() =>
                   setDonePage((p) => Math.min(donePageCount - 1, p + 1))
                 }
+                type="button"
               >
                 <ChevronRight className="size-4" />
               </button>

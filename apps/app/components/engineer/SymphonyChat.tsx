@@ -1,5 +1,15 @@
 "use client";
 
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@repo/design-system/components/ui/alert-dialog";
 import { Dialog, DialogTitle } from "@repo/design-system/components/ui/dialog";
 import {
   Drawer,
@@ -30,22 +40,19 @@ import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 import remarkGfm from "remark-gfm";
 import { toast } from "sonner";
+import { ChatBubble } from "@/components/chat/ChatBubble";
+import { CollapsibleBlock } from "@/components/chat/CollapsibleBlock";
+import { CollapsibleBlockGroup } from "@/components/chat/CollapsibleBlockGroup";
+import { LearningsUsedDialog } from "@/components/chat/LearningsUsedDialog";
+import { MessageContent } from "@/components/chat/MessageContent";
+import { SlashCommandDropdown } from "@/components/chat/SlashCommandDropdown";
+import type { ChatMessage, ContentBlock } from "@/components/chat/types";
+import { UserMessageContent } from "@/components/chat/UserMessageContent";
 import { ChangedFilesViewer } from "@/components/engineer/ChangedFilesViewer";
 import {
   CommentChat,
   CommentEmptyState,
 } from "@/components/engineer/CommentChat";
-import {
-  type ChatMessage,
-  CollapsibleBlock,
-  CollapsibleBlockGroup,
-  type ContentBlock,
-  UserMessageContent,
-} from "@/components/engineer/chat";
-import { ChatBubble } from "@/components/engineer/chat/ChatBubble";
-import { LearningsUsedDialog } from "@/components/engineer/chat/LearningsUsedDialog";
-import { MessageContent } from "@/components/engineer/chat/MessageContent";
-import { SlashCommandDropdown } from "@/components/engineer/chat/SlashCommandDropdown";
 import { DEFAULT_CODEX_MODEL } from "@/components/engineer/codex-review/constants";
 import { ExpandableDialogContent } from "@/components/engineer/ExpandableDialogContent";
 import {
@@ -56,7 +63,7 @@ import {
 import type { PRComment } from "@/components/engineer/PRCommentCard";
 import { PRCommentsViewer } from "@/components/engineer/PRCommentsViewer";
 import { RepoFileAutocomplete } from "@/components/engineer/RepoFileAutocomplete";
-import { useChatStream } from "@/hooks/engineer/use-chat-stream";
+import { useChatStream } from "@/hooks/chat/use-chat-stream";
 import { useCodexAvailable } from "@/hooks/engineer/use-codex-available";
 import { useCodexDebate } from "@/hooks/engineer/use-codex-debate";
 import { useLearnings } from "@/hooks/engineer/use-learnings";
@@ -75,7 +82,7 @@ import {
   type SuggestedAction,
   sanitizeHistoryForModel,
   stripAssistantProtocol,
-} from "@/lib/engineer/chat-utils";
+} from "@/lib/chat/chat-utils";
 import {
   createCodexStreamState,
   readCodexStream,
@@ -130,6 +137,7 @@ export function SymphonyChat({
   const [currentDiffFile, setCurrentDiffFile] = useState<string | null>(null);
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
   const [isExpanded, setIsExpanded] = useState(false);
+  const [isClearChatDialogOpen, setIsClearChatDialogOpen] = useState(false);
   const [leftPaneFraction, setLeftPaneFraction] = useState(() => {
     if (globalThis.localStorage === undefined) {
       return 0.5;
@@ -865,7 +873,9 @@ export function SymphonyChat({
     setSelectedMentions([]);
     setExpandedStreamingBlocks(new Set());
 
-    pendingImages.forEach((img) => URL.revokeObjectURL(img.thumbnailUrl));
+    for (const img of pendingImages) {
+      URL.revokeObjectURL(img.thumbnailUrl);
+    }
     setPendingImages([]);
     setSelectedContext(null);
     globalThis.getSelection()?.removeAllRanges();
@@ -1327,7 +1337,9 @@ export function SymphonyChat({
   // Cleanup object URLs on unmount
   useEffect(() => {
     return () => {
-      pendingImages.forEach((img) => URL.revokeObjectURL(img.thumbnailUrl));
+      for (const img of pendingImages) {
+        URL.revokeObjectURL(img.thumbnailUrl);
+      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingImages.forEach]);
@@ -1389,9 +1401,6 @@ export function SymphonyChat({
 
   // Clear entire chat
   const handleClearChat = async () => {
-    if (!confirm("Clear all chat history?")) {
-      return;
-    }
     try {
       const response = await fetch(
         `/api/gateway/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
@@ -1519,6 +1528,7 @@ export function SymphonyChat({
               : "text-muted-foreground hover:bg-muted/50 hover:text-foreground"
           )}
           onClick={() => setActiveTab("plan")}
+          type="button"
         >
           <div className="flex items-center justify-center gap-2">
             <FileText className="size-3.5" />
@@ -1535,6 +1545,7 @@ export function SymphonyChat({
               : "text-muted-foreground hover:bg-muted/50 hover:text-foreground"
           )}
           onClick={() => setActiveTab("changes")}
+          type="button"
         >
           <div className="flex items-center justify-center gap-2">
             <GitBranch className="size-3.5" />
@@ -1551,6 +1562,7 @@ export function SymphonyChat({
               : "text-muted-foreground hover:bg-muted/50 hover:text-foreground"
           )}
           onClick={() => setActiveTab("comments")}
+          type="button"
         >
           <div className="flex items-center justify-center gap-2">
             <MessageSquare className="size-3.5" />
@@ -1673,7 +1685,7 @@ export function SymphonyChat({
       mentionRepos={mentionRepos}
       mentionState={mentionState}
       messageCount={messages.length}
-      onClearChat={handleClearChat}
+      onClearChat={() => setIsClearChatDialogOpen(true)}
       onClearContext={() => {
         setSelectedContext(null);
         globalThis.getSelection()?.removeAllRanges();
@@ -1747,16 +1759,90 @@ export function SymphonyChat({
     }
   };
 
+  const clearChatDialog = (
+    <AlertDialog
+      onOpenChange={setIsClearChatDialogOpen}
+      open={isClearChatDialogOpen}
+    >
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Clear chat history?</AlertDialogTitle>
+          <AlertDialogDescription>
+            This will remove all saved messages from this Symphony chat.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            onClick={() => {
+              handleClearChat();
+              setIsClearChatDialogOpen(false);
+            }}
+          >
+            Clear Chat
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+
   // Mobile: Full-screen drawer with vertical layout
   if (isMobile) {
     return (
-      <Drawer onOpenChange={handleDialogOpenChange} open={isOpen}>
-        <DrawerContent className="flex h-[90vh] max-h-[90vh] flex-col">
-          <DrawerTitle className="sr-only">
-            Closedloop.dev Chat for {ticketId}
-          </DrawerTitle>
+      <>
+        <Drawer onOpenChange={handleDialogOpenChange} open={isOpen}>
+          <DrawerContent className="flex h-[90vh] max-h-[90vh] flex-col">
+            <DrawerTitle className="sr-only">
+              Closedloop.dev Chat for {ticketId}
+            </DrawerTitle>
+            {ticketTitle && (
+              <div className="flex shrink-0 items-center gap-2 border-border border-b bg-muted/30 px-4 py-2.5">
+                <span className="shrink-0 font-mono font-semibold text-[11px] text-primary">
+                  {ticketId}
+                </span>
+                <span className="truncate font-mono text-[11px] text-muted-foreground">
+                  {ticketTitle}
+                </span>
+              </div>
+            )}
+
+            {/* Tabs at top */}
+            {tabBar}
+
+            {/* Plan/Changes content - scrollable */}
+            <div className="min-h-0 flex-1 overflow-y-auto border-border border-b">
+              {leftPaneContent}
+            </div>
+
+            {/* Chat section */}
+            <div className="flex max-h-[45vh] shrink-0 flex-col">
+              {chatHeader}
+              <div className="max-h-[200px] min-h-[100px] flex-1 overflow-y-auto">
+                {messagesArea}
+              </div>
+              {inputArea}
+            </div>
+          </DrawerContent>
+        </Drawer>
+        {clearChatDialog}
+      </>
+    );
+  }
+
+  // Desktop: Side-by-side dialog (unchanged)
+  return (
+    <>
+      <Dialog onOpenChange={handleDialogOpenChange} open={isOpen}>
+        <ExpandableDialogContent
+          className="flex h-[85vh] max-h-[900px] w-[95vw] max-w-3xl flex-col gap-0 overflow-hidden border-border bg-background p-0 lg:max-w-5xl xl:max-w-6xl 2xl:max-w-7xl"
+          isExpanded={isExpanded}
+          onToggleExpand={() => setIsExpanded((v) => !v)}
+        >
+          <DialogTitle className="sr-only">
+            ClosedLoop Chat for {ticketId}
+          </DialogTitle>
           {ticketTitle && (
-            <div className="flex shrink-0 items-center gap-2 border-border border-b bg-muted/30 px-4 py-2.5">
+            <div className="flex min-h-0 shrink-0 items-center gap-2 border-border border-b bg-muted/30 px-5 py-4 pr-24">
               <span className="shrink-0 font-mono font-semibold text-[11px] text-primary">
                 {ticketId}
               </span>
@@ -1766,75 +1852,34 @@ export function SymphonyChat({
             </div>
           )}
 
-          {/* Tabs at top */}
-          {tabBar}
-
-          {/* Plan/Changes content - scrollable */}
-          <div className="min-h-0 flex-1 overflow-y-auto border-border border-b">
-            {leftPaneContent}
-          </div>
-
-          {/* Chat section */}
-          <div className="flex max-h-[45vh] shrink-0 flex-col">
-            {chatHeader}
-            <div className="max-h-[200px] min-h-[100px] flex-1 overflow-y-auto">
-              {messagesArea}
+          {/* Two-column layout */}
+          <div className="flex min-h-0 flex-1" ref={splitContainerRef}>
+            {/* Left: Plan or Changes Viewer */}
+            <div
+              className="flex min-h-0 min-w-0 flex-col"
+              style={{ width: `${leftPaneFraction * 100}%` }}
+            >
+              {tabBar}
+              {leftPaneContent}
             </div>
-            {inputArea}
-          </div>
-        </DrawerContent>
-      </Drawer>
-    );
-  }
 
-  // Desktop: Side-by-side dialog (unchanged)
-  return (
-    <Dialog onOpenChange={handleDialogOpenChange} open={isOpen}>
-      <ExpandableDialogContent
-        className="flex h-[85vh] max-h-[900px] w-[95vw] max-w-3xl flex-col gap-0 overflow-hidden border-border bg-background p-0 lg:max-w-5xl xl:max-w-6xl 2xl:max-w-7xl"
-        isExpanded={isExpanded}
-        onToggleExpand={() => setIsExpanded((v) => !v)}
-      >
-        <DialogTitle className="sr-only">
-          ClosedLoop Chat for {ticketId}
-        </DialogTitle>
-        {ticketTitle && (
-          <div className="flex min-h-0 shrink-0 items-center gap-2 border-border border-b bg-muted/30 px-5 py-4 pr-24">
-            <span className="shrink-0 font-mono font-semibold text-[11px] text-primary">
-              {ticketId}
-            </span>
-            <span className="truncate font-mono text-[11px] text-muted-foreground">
-              {ticketTitle}
-            </span>
-          </div>
-        )}
+            {/* Drag handle */}
+            <button
+              aria-label="Resize panes"
+              className="w-1 shrink-0 cursor-col-resize border-y-0 border-r-0 border-l bg-transparent p-0 transition-colors hover:bg-primary/30 focus:outline-none active:bg-primary/50"
+              onMouseDown={handleSplitDragStart}
+              type="button"
+            />
 
-        {/* Two-column layout */}
-        <div className="flex min-h-0 flex-1" ref={splitContainerRef}>
-          {/* Left: Plan or Changes Viewer */}
-          <div
-            className="flex min-h-0 min-w-0 flex-col"
-            style={{ width: `${leftPaneFraction * 100}%` }}
-          >
-            {tabBar}
-            {leftPaneContent}
+            {/* Right: Chat or CommentChat */}
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+              {rightPaneContent}
+            </div>
           </div>
-
-          {/* Drag handle */}
-          <button
-            aria-label="Resize panes"
-            className="w-1 shrink-0 cursor-col-resize border-y-0 border-r-0 border-l bg-transparent p-0 transition-colors hover:bg-primary/30 focus:outline-none active:bg-primary/50"
-            onMouseDown={handleSplitDragStart}
-            type="button"
-          />
-
-          {/* Right: Chat or CommentChat */}
-          <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-            {rightPaneContent}
-          </div>
-        </div>
-      </ExpandableDialogContent>
-    </Dialog>
+        </ExpandableDialogContent>
+      </Dialog>
+      {clearChatDialog}
+    </>
   );
 }
 
@@ -2646,6 +2691,7 @@ export function SymphonyChatButton({
       )}
       onClick={onClick}
       title="Chat with ClosedLoop"
+      type="button"
     >
       <MessageSquare className="size-4" />
       {hasMessages && (
@@ -3529,16 +3575,12 @@ function SymphonyChatInputArea({
     /^\/\S*$/i.test(input);
 
   return (
-    <div
+    <fieldset
       aria-label="Message input with image drop zone"
       className={cn(
         "shrink-0 border-border border-t bg-muted/30 transition-all duration-200",
         isDragOver && "bg-primary/5 ring-2 ring-primary/50 ring-inset"
       )}
-      onDragLeave={onDragLeave}
-      onDragOver={onDragOver}
-      onDrop={onDrop}
-      role="group"
     >
       {/* Selected context display */}
       {selectedContext && (
@@ -3558,6 +3600,7 @@ function SymphonyChatInputArea({
               className="shrink-0 text-amber-600/60 transition-colors hover:text-amber-600 dark:text-amber-400/60 dark:hover:text-amber-400"
               onClick={onClearContext}
               title="Remove context"
+              type="button"
             >
               <X className="size-3.5" />
             </button>
@@ -3604,6 +3647,7 @@ function SymphonyChatInputArea({
                   e.stopPropagation();
                   onRemoveImage(img.id);
                 }}
+                type="button"
               >
                 <X className="size-2.5" />
               </button>
@@ -3679,6 +3723,9 @@ function SymphonyChatInputArea({
               needsHighlight && "text-transparent caret-foreground"
             )}
             onChange={onInputChange}
+            onDragLeave={onDragLeave}
+            onDragOver={onDragOver}
+            onDrop={onDrop}
             onKeyDown={onKeyDown}
             onPaste={onPaste}
             placeholder={getInputPlaceholder(activeTab)}
@@ -3701,6 +3748,7 @@ function SymphonyChatInputArea({
               )}
               onClick={onStop}
               title="Stop response"
+              type="button"
             >
               <Square className="size-2.5 fill-current" />
             </button>
@@ -3715,6 +3763,7 @@ function SymphonyChatInputArea({
               )}
               disabled={!canSend}
               onClick={onSend}
+              type="button"
             >
               <Send className="size-3.5" />
             </button>
@@ -3765,13 +3814,14 @@ function SymphonyChatInputArea({
               className="cursor-pointer font-mono text-[10px] text-muted-foreground/50 transition-colors hover:text-destructive"
               onClick={onClearChat}
               title="Clear chat history"
+              type="button"
             >
               clear
             </button>
           )}
         </div>
       </div>
-    </div>
+    </fieldset>
   );
 }
 

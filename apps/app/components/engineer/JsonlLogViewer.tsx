@@ -17,12 +17,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
+import { CollapsibleBlock } from "@/components/chat/CollapsibleBlock";
 import {
-  CollapsibleBlock,
   extractToolResultText,
   SubagentBlock,
-} from "@/components/engineer/chat";
-import { isTerminalOutput } from "@/lib/engineer/chat-utils";
+} from "@/components/chat/SubagentBlock";
+import { isTerminalOutput } from "@/lib/chat/chat-utils";
 import {
   type ContentBlock,
   isToolResultEntry as isToolResultEntryShared,
@@ -963,6 +963,7 @@ function FilterChip({
           : "bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground"
       )}
       onClick={() => onClick(filter)}
+      type="button"
     >
       <Icon className="size-3" />
       <span>{label}</span>
@@ -1099,6 +1100,7 @@ export function JsonlLogViewer({
             <button
               className="absolute top-1/2 right-3 flex size-5 -translate-y-1/2 items-center justify-center rounded-full bg-muted transition-colors hover:bg-muted-foreground/20"
               onClick={() => setSearchQuery("")}
+              type="button"
             >
               <X className="size-3 text-muted-foreground" />
             </button>
@@ -1174,6 +1176,7 @@ export function JsonlLogViewer({
               <button
                 className="mt-2 text-primary text-xs hover:underline"
                 onClick={() => setSearchQuery("")}
+                type="button"
               >
                 Clear search
               </button>
@@ -1205,6 +1208,7 @@ export function JsonlLogViewer({
           )}
           onClick={scrollToBottom}
           title="Scroll to bottom"
+          type="button"
         >
           <ArrowDown className="size-5" />
         </button>

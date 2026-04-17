@@ -3,9 +3,9 @@
 import { cn } from "@repo/design-system/lib/utils";
 import { Loader2, Square, Trash2, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { ContentBlock } from "@/components/engineer/chat";
-import { MessageContent } from "@/components/engineer/chat";
-import { formatTime } from "@/lib/engineer/chat-utils";
+import { MessageContent } from "@/components/chat/MessageContent";
+import type { ContentBlock } from "@/components/chat/types";
+import { formatTime } from "@/lib/chat/chat-utils";
 import { readTerminalStream } from "@/lib/engineer/terminal-stream";
 
 type RunViewerChatPanelProps = {
@@ -247,6 +247,7 @@ export function RunViewerChatPanel({
               className="flex size-6 cursor-pointer items-center justify-center rounded-md text-muted-foreground/50 transition-colors hover:bg-muted/50 hover:text-destructive"
               onClick={handleClearChat}
               title="Clear chat"
+              type="button"
             >
               <Trash2 className="size-3" />
             </button>
@@ -256,6 +257,7 @@ export function RunViewerChatPanel({
               className="flex size-6 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
               onClick={onClose}
               title="Close chat"
+              type="button"
             >
               <X className="size-3.5" />
             </button>
@@ -360,6 +362,7 @@ export function RunViewerChatPanel({
                 )}
                 onClick={stopStreaming}
                 title="Stop"
+                type="button"
               >
                 <Square className="size-2 fill-current" />
               </button>
@@ -375,6 +378,7 @@ export function RunViewerChatPanel({
                 disabled={!input.trim()}
                 onClick={handleSend}
                 title="Send"
+                type="button"
               >
                 <span className="font-bold text-[10px]">&#9654;</span>
               </button>

@@ -178,6 +178,7 @@ export const ChatBubble = memo(
                   key={action.label}
                   onClick={() => onAction(action)}
                   title={action.message}
+                  type="button"
                 >
                   <PlayCircle className="size-3" />
                   {action.label}

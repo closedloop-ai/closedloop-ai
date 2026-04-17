@@ -5,7 +5,7 @@
  * reading scenarios using a mocked ReadableStream with controlled chunks.
  */
 import { describe, expect, it } from "vitest";
-import { readNdjsonLines } from "@/lib/engineer/stream-utils";
+import { readNdjsonLines } from "@/lib/chat/stream-utils";
 
 // ---------------------------------------------------------------------------
 // Helpers

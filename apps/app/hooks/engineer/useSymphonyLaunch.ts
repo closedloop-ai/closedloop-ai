@@ -282,7 +282,7 @@ export function useSymphonyLaunch(): UseSymphonyLaunchResult {
   // Clear all sessions and kill all associated processes
   const clearAllSessions = useCallback(() => {
     // Kill processes and remove each session from API
-    activeSessions.forEach((session) => {
+    for (const session of activeSessions) {
       // Kill the process if we have a PID
       if (session.pid) {
         fetch("/api/gateway/symphony/kill", {
@@ -302,7 +302,7 @@ export function useSymphonyLaunch(): UseSymphonyLaunchResult {
       ).catch((err) => {
         console.error("[useSymphonyLaunch] Failed to delete session:", err);
       });
-    });
+    }
 
     // Clear local state
     setActiveSessions([]);

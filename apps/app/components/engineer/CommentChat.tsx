@@ -1,5 +1,15 @@
 "use client";
 
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@repo/design-system/components/ui/alert-dialog";
 import { Button } from "@repo/design-system/components/ui/button";
 import { cn } from "@repo/design-system/lib/utils";
 import { useQueryClient } from "@tanstack/react-query";
@@ -23,20 +33,18 @@ import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 import remarkGfm from "remark-gfm";
 import { toast } from "sonner";
-import {
-  type ContentBlock,
-  MessageContent,
-  SlashCommandDropdown,
-  UserMessageContent,
-} from "@/components/engineer/chat";
-import { ChatBubble } from "@/components/engineer/chat/ChatBubble";
-import { LearningsUsedDialog } from "@/components/engineer/chat/LearningsUsedDialog";
+import { ChatBubble } from "@/components/chat/ChatBubble";
+import { LearningsUsedDialog } from "@/components/chat/LearningsUsedDialog";
+import { MessageContent } from "@/components/chat/MessageContent";
+import { SlashCommandDropdown } from "@/components/chat/SlashCommandDropdown";
+import type { ContentBlock } from "@/components/chat/types";
+import { UserMessageContent } from "@/components/chat/UserMessageContent";
 import {
   dispatchMentionKeyDown,
   FileMentionAutocomplete,
 } from "@/components/engineer/FileMentionAutocomplete";
 import type { PRComment } from "@/components/engineer/PRCommentCard";
-import { useChatStream } from "@/hooks/engineer/use-chat-stream";
+import { useChatStream } from "@/hooks/chat/use-chat-stream";
 import { useCodexAvailable } from "@/hooks/engineer/use-codex-available";
 import { useCodexDebate } from "@/hooks/engineer/use-codex-debate";
 import {
@@ -53,7 +61,7 @@ import {
   type SuggestedAction,
   sanitizeHistoryForModel,
   stripAssistantProtocol,
-} from "@/lib/engineer/chat-utils";
+} from "@/lib/chat/chat-utils";
 import {
   createCodexStreamState,
   readCodexStream,
@@ -200,6 +208,7 @@ export function CommentChat({
 
   // Forward button gating — disable while forwarding
   const [isForwarding, setIsForwarding] = useState(false);
+  const [isClearChatDialogOpen, setIsClearChatDialogOpen] = useState(false);
   const prevStreamingRef = useRef(isAnyStreaming);
   useEffect(() => {
     if (prevStreamingRef.current && !isAnyStreaming) {
@@ -647,119 +656,147 @@ export function CommentChat({
   );
 
   return (
-    <div className={cn("flex h-full flex-col", className)}>
-      {/* Header with back button and learnings indicator */}
-      <div className="shrink-0 border-border border-b bg-muted/30 px-5 py-3 pr-10">
-        <div className="flex items-center gap-3">
-          {onDeselect && (
-            <button
-              className="-ml-1.5 rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-              onClick={onDeselect}
-              title="Back to comments list"
-            >
-              <ArrowLeft className="size-4" />
-            </button>
-          )}
-          <MessageSquare className="size-4 text-muted-foreground" />
-          <span className="flex flex-1 items-center gap-2 font-medium text-sm">
-            Propose Fix
-            {debate.debateMode && (
-              <span className="font-mono text-[10px] text-amber-600 uppercase tracking-wider dark:text-amber-400">
-                debate
+    <>
+      <div className={cn("flex h-full flex-col", className)}>
+        {/* Header with back button and learnings indicator */}
+        <div className="shrink-0 border-border border-b bg-muted/30 px-5 py-3 pr-10">
+          <div className="flex items-center gap-3">
+            {onDeselect && (
+              <button
+                className="-ml-1.5 rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                onClick={onDeselect}
+                title="Back to comments list"
+                type="button"
+              >
+                <ArrowLeft className="size-4" />
+              </button>
+            )}
+            <MessageSquare className="size-4 text-muted-foreground" />
+            <span className="flex flex-1 items-center gap-2 font-medium text-sm">
+              Propose Fix
+              {debate.debateMode && (
+                <span className="font-mono text-[10px] text-amber-600 uppercase tracking-wider dark:text-amber-400">
+                  debate
+                </span>
+              )}
+            </span>
+            {chat.learningsStatus === "processing" && (
+              <span
+                className="flex items-center gap-1 text-muted-foreground text-xs"
+                title="Extracting learnings from this conversation..."
+              >
+                <Brain className="h-3.5 w-3.5 animate-pulse" />
               </span>
             )}
-          </span>
-          {chat.learningsStatus === "processing" && (
-            <span
-              className="flex items-center gap-1 text-muted-foreground text-xs"
-              title="Extracting learnings from this conversation..."
-            >
-              <Brain className="h-3.5 w-3.5 animate-pulse" />
-            </span>
-          )}
-          {chat.learningsStatus === "completed" && chat.learningsCount > 0 && (
-            <span
-              className="flex items-center gap-1 text-muted-foreground text-xs"
-              title={`${chat.learningsCount} learning${chat.learningsCount === 1 ? "" : "s"} captured`}
-            >
-              <Brain className="h-3.5 w-3.5" />
-              {chat.learningsCount}
-            </span>
-          )}
+            {chat.learningsStatus === "completed" &&
+              chat.learningsCount > 0 && (
+                <span
+                  className="flex items-center gap-1 text-muted-foreground text-xs"
+                  title={`${chat.learningsCount} learning${chat.learningsCount === 1 ? "" : "s"} captured`}
+                >
+                  <Brain className="h-3.5 w-3.5" />
+                  {chat.learningsCount}
+                </span>
+              )}
+          </div>
+        </div>
+
+        <CommentContextHeader
+          comment={comment}
+          isCollapsed={chat.isHeaderCollapsed}
+          onToggleCollapse={chat.toggleHeaderCollapse}
+          replies={replies}
+        />
+
+        {/* Chat area - full width (Changes available in main tab) */}
+        <div className="flex min-h-0 flex-1 flex-col">
+          <ChatMessagesArea
+            canForward={canForward}
+            codexChatPending={codexChatStream.pendingUserMessage}
+            codexChatStreamStartedAt={codexChatStream.streamStartedAt}
+            contextPercent={chat.contextPercent}
+            debate={debate}
+            debateClaudeBlocks={debateClaudeStream.streamingBlocks}
+            debateClaudeContent={debateClaudeStream.streamingContent}
+            debateClaudeStreaming={debateClaudeStream.isStreaming}
+            debateClaudeStreamStartedAt={debateClaudeStream.streamStartedAt}
+            debateCodexPending={debate.codexStream.pendingUserMessage}
+            debateCodexStreamStartedAt={debate.codexStream.streamStartedAt}
+            debateMode={debate.debateMode}
+            error={chat.error}
+            hasAcceptedChanges={chat.hasAcceptedChanges}
+            isAnyStreaming={isAnyStreaming}
+            isLoadingHistory={chat.isLoadingHistory}
+            isStreaming={chat.isStreaming}
+            isWaitingForResponse={chat.isWaitingForResponse}
+            messages={chat.messages}
+            messagesEndRef={chat.messagesEndRef}
+            onAcceptChanges={chat.handleAcceptChanges}
+            onAction={sendActionMessage}
+            onCopy={undefined}
+            onForwardCodexMessage={handleForwardCodexMessage}
+            onForwardMessage={handleForwardMessage}
+            onSendResponse={chat.handleSendResponse}
+            respondedMessageIds={respondedMessageIds}
+            streamingBlocks={chat.streamingBlocks}
+            streamingContent={chat.streamingContent}
+            streamStartedAt={chat.streamStartedAt}
+          />
+          <ChatInputArea
+            autoDebate={debate.autoDebate}
+            autoProvider={autoProvider}
+            debateMode={debate.debateMode}
+            endDebateFromSlash={endDebateFromSlash}
+            hasAcceptedChanges={chat.hasAcceptedChanges}
+            hasChangedFiles={chat.hasChangedFiles}
+            historyMessageCount={chat.historyMessageCount}
+            input={chat.input}
+            inputRef={chat.inputRef}
+            isCommitting={chat.isCommitting}
+            isStreaming={chat.isStreaming}
+            messageCount={chat.messages.length}
+            onClearChat={() => setIsClearChatDialogOpen(true)}
+            onCommitAndResolve={chat.handleCommitAndResolve}
+            onInputChange={chat.setInput}
+            onKeyDown={handleKeyDown}
+            onReflect={() => {
+              chat.triggerLearningsExtraction();
+              chat.pollLearningsStatus();
+            }}
+            onSend={handleSend}
+            onSetAutoDebate={debate.setAutoDebate}
+            onStop={chat.handleStop}
+            repoPath={repoPath}
+            startDebateFromSlash={startDebateFromSlash}
+            ticketId={ticketId}
+          />
         </div>
       </div>
-
-      <CommentContextHeader
-        comment={comment}
-        isCollapsed={chat.isHeaderCollapsed}
-        onToggleCollapse={chat.toggleHeaderCollapse}
-        replies={replies}
-      />
-
-      {/* Chat area - full width (Changes available in main tab) */}
-      <div className="flex min-h-0 flex-1 flex-col">
-        <ChatMessagesArea
-          canForward={canForward}
-          codexChatPending={codexChatStream.pendingUserMessage}
-          codexChatStreamStartedAt={codexChatStream.streamStartedAt}
-          contextPercent={chat.contextPercent}
-          debate={debate}
-          debateClaudeBlocks={debateClaudeStream.streamingBlocks}
-          debateClaudeContent={debateClaudeStream.streamingContent}
-          debateClaudeStreaming={debateClaudeStream.isStreaming}
-          debateClaudeStreamStartedAt={debateClaudeStream.streamStartedAt}
-          debateCodexPending={debate.codexStream.pendingUserMessage}
-          debateCodexStreamStartedAt={debate.codexStream.streamStartedAt}
-          debateMode={debate.debateMode}
-          error={chat.error}
-          hasAcceptedChanges={chat.hasAcceptedChanges}
-          isAnyStreaming={isAnyStreaming}
-          isLoadingHistory={chat.isLoadingHistory}
-          isStreaming={chat.isStreaming}
-          isWaitingForResponse={chat.isWaitingForResponse}
-          messages={chat.messages}
-          messagesEndRef={chat.messagesEndRef}
-          onAcceptChanges={chat.handleAcceptChanges}
-          onAction={sendActionMessage}
-          onCopy={undefined}
-          onForwardCodexMessage={handleForwardCodexMessage}
-          onForwardMessage={handleForwardMessage}
-          onSendResponse={chat.handleSendResponse}
-          respondedMessageIds={respondedMessageIds}
-          streamingBlocks={chat.streamingBlocks}
-          streamingContent={chat.streamingContent}
-          streamStartedAt={chat.streamStartedAt}
-        />
-        <ChatInputArea
-          autoDebate={debate.autoDebate}
-          autoProvider={autoProvider}
-          debateMode={debate.debateMode}
-          endDebateFromSlash={endDebateFromSlash}
-          hasAcceptedChanges={chat.hasAcceptedChanges}
-          hasChangedFiles={chat.hasChangedFiles}
-          historyMessageCount={chat.historyMessageCount}
-          input={chat.input}
-          inputRef={chat.inputRef}
-          isCommitting={chat.isCommitting}
-          isStreaming={chat.isStreaming}
-          messageCount={chat.messages.length}
-          onClearChat={chat.handleClearChat}
-          onCommitAndResolve={chat.handleCommitAndResolve}
-          onInputChange={chat.setInput}
-          onKeyDown={handleKeyDown}
-          onReflect={() => {
-            chat.triggerLearningsExtraction();
-            chat.pollLearningsStatus();
-          }}
-          onSend={handleSend}
-          onSetAutoDebate={debate.setAutoDebate}
-          onStop={chat.handleStop}
-          repoPath={repoPath}
-          startDebateFromSlash={startDebateFromSlash}
-          ticketId={ticketId}
-        />
-      </div>
-    </div>
+      <AlertDialog
+        onOpenChange={setIsClearChatDialogOpen}
+        open={isClearChatDialogOpen}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Clear comment chat history?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will remove all saved messages for this review comment chat.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                chat.handleClearChat();
+                setIsClearChatDialogOpen(false);
+              }}
+            >
+              Clear Chat
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
   );
 }
 
@@ -875,6 +912,7 @@ const CommentContextHeader = memo(function CommentContextHeader({
       <button
         className="flex w-full cursor-pointer items-center gap-2.5 px-5 py-2.5 transition-colors hover:bg-muted/50"
         onClick={onToggleCollapse}
+        type="button"
       >
         {isCollapsed ? (
           <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
@@ -1456,6 +1494,7 @@ function ChatMessagesArea({
               "fade-in slide-in-from-bottom-3 animate-in duration-300"
             )}
             onClick={scrollToBottomAndDismiss}
+            type="button"
           >
             New message
             <ChevronDown className="size-3.5" />
@@ -1488,7 +1527,7 @@ function ChatInputArea({
   onCommitAndResolve,
   isStreaming,
   isCommitting,
-  hasAcceptedChanges,
+  hasAcceptedChanges: _hasAcceptedChanges,
   hasChangedFiles,
   messageCount,
   historyMessageCount,
@@ -1780,6 +1819,7 @@ function ChatInputArea({
               )}
               onClick={onStop}
               title="Stop response"
+              type="button"
             >
               <Square className="size-2.5 fill-current" />
             </button>
@@ -1794,6 +1834,7 @@ function ChatInputArea({
               )}
               disabled={!input.trim()}
               onClick={onSend}
+              type="button"
             >
               <Send className="size-3.5" />
             </button>
@@ -1840,6 +1881,7 @@ function ChatInputArea({
               className="cursor-pointer font-mono text-[10px] text-muted-foreground/50 transition-colors hover:text-destructive"
               onClick={onClearChat}
               title="Clear chat history"
+              type="button"
             >
               clear
             </button>

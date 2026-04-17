@@ -125,6 +125,12 @@ function getStatusBadge(status: CommentDisplayStatus, commitSha?: string) {
         label: "Dismissed",
         className: "bg-muted text-muted-foreground",
       };
+    default:
+      return {
+        icon: MessageSquare,
+        label: "Unknown",
+        className: "bg-muted text-muted-foreground",
+      };
   }
 }
 
@@ -162,12 +168,11 @@ export function PRCommentCard({
   return (
     <div
       className={cn(
-        "group cursor-pointer rounded-lg border bg-card p-4 transition-all duration-200",
+        "group rounded-lg border bg-card p-4 transition-all duration-200",
         isSelected && "border-l-[3px] border-l-blue-500 bg-blue-500/[0.04]",
         !isSelected && isPending && "hover:border-primary/30 hover:shadow-sm",
         !(isSelected || isPending) && "opacity-75 hover:opacity-100"
       )}
-      onClick={onViewChat}
     >
       {/* Header: Author + timestamp, file location below */}
       <div className="mb-2 space-y-1.5">
@@ -222,6 +227,7 @@ export function PRCommentCard({
               e.stopPropagation();
               setIsExpanded(!isExpanded);
             }}
+            type="button"
           >
             {isExpanded ? (
               <>
@@ -286,10 +292,7 @@ export function PRCommentCard({
         </span>
 
         {/* Action buttons */}
-        <div
-          className="flex items-center gap-2"
-          onClick={(e) => e.stopPropagation()}
-        >
+        <div className="flex items-center gap-2">
           {/* Pending: Overflow menu + Dismiss */}
           {isPending && (
             <>

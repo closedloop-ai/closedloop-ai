@@ -1,5 +1,5 @@
 import { toast } from "sonner";
-import { readNdjsonLines } from "@/lib/engineer/stream-utils";
+import { readNdjsonLines } from "@/lib/chat/stream-utils";
 
 export type StreamEventHandlers = {
   onSessionId?: (sessionId: string) => void;
@@ -18,8 +18,20 @@ export type StreamState = {
   lastSeq?: number;
 };
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- parsed JSON events
-export type StreamEvent = Record<string, any>;
+export type StreamEvent = {
+  _seq?: number;
+  type?: string;
+  commandId?: string;
+  reviewCommand?: string;
+  sessionId?: string;
+  content?: string;
+  contextPercent?: number;
+  exitCode?: number;
+  terminal?: boolean;
+  relay?: boolean;
+  error?: string;
+  [key: string]: unknown;
+};
 
 function handleErrorEvent(event: StreamEvent, state: StreamState): void {
   if (event.terminal === true) {

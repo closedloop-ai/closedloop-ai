@@ -153,6 +153,8 @@ export function PathAutocomplete({
         e.preventDefault();
         setIsOpen(false);
         break;
+      default:
+        break;
     }
   };
 
@@ -261,6 +263,7 @@ export function PathAutocomplete({
                     ref={(el) => {
                       itemRefs.current[index] = el;
                     }}
+                    type="button"
                   >
                     <Icon
                       className={cn(

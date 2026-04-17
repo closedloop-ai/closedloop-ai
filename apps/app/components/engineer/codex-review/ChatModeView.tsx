@@ -16,15 +16,15 @@ import {
 } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { toast } from "sonner";
-import { ChatBubble } from "@/components/engineer/chat/ChatBubble";
-import { ChatInput } from "@/components/engineer/chat/ChatInput";
-import { MessageContent } from "@/components/engineer/chat/MessageContent";
-import type { ChatMessage } from "@/components/engineer/chat/types";
+import { ChatBubble } from "@/components/chat/ChatBubble";
+import { ChatInput } from "@/components/chat/ChatInput";
+import { MessageContent } from "@/components/chat/MessageContent";
+import type { ChatMessage } from "@/components/chat/types";
 import { ExpandableDialogContent } from "@/components/engineer/ExpandableDialogContent";
-import type { useChatStream } from "@/hooks/engineer/use-chat-stream";
+import type { useChatStream } from "@/hooks/chat/use-chat-stream";
 import type { useCodexDebate } from "@/hooks/engineer/use-codex-debate";
-import type { SuggestedAction } from "@/lib/engineer/chat-utils";
-import { parseSuggestedActions } from "@/lib/engineer/chat-utils";
+import type { SuggestedAction } from "@/lib/chat/chat-utils";
+import { parseSuggestedActions } from "@/lib/chat/chat-utils";
 import type {
   ReviewFinding,
   ReviewFindings,

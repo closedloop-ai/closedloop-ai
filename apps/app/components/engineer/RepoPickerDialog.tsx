@@ -470,7 +470,7 @@ export function RepoPickerDialog({
                     return (
                       <div
                         className={cn(
-                          "group flex w-full cursor-pointer items-center gap-3 rounded-lg border p-3 text-left transition-colors",
+                          "group flex w-full items-center gap-3 rounded-lg border p-3 text-left transition-colors",
                           isPrimary && "border-primary bg-primary/5",
                           isContext &&
                             !isPrimary &&
@@ -479,36 +479,33 @@ export function RepoPickerDialog({
                             "border-border hover:bg-muted/50"
                         )}
                         key={repo.path}
-                        onClick={() => handleRepoSelect(repo.path)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter" || e.key === " ") {
-                            e.preventDefault();
-                            handleRepoSelect(repo.path);
-                          }
-                        }}
-                        role="button"
-                        tabIndex={0}
                       >
-                        <div
-                          className={cn(
-                            "flex h-10 w-10 shrink-0 items-center justify-center rounded-lg",
-                            isPrimary
-                              ? "bg-primary text-primary-foreground"
-                              : "bg-muted"
-                          )}
+                        <button
+                          className="flex min-w-0 flex-1 items-center gap-3 text-left"
+                          onClick={() => handleRepoSelect(repo.path)}
+                          type="button"
                         >
-                          {isPrimary ? (
-                            <Check className="h-5 w-5" />
-                          ) : (
-                            <FolderGit2 className="h-5 w-5" />
-                          )}
-                        </div>
-                        <div className="min-w-0 flex-1">
-                          <p className="truncate font-medium">{repo.name}</p>
-                          <p className="truncate text-muted-foreground text-sm">
-                            {repo.description || repo.path}
-                          </p>
-                        </div>
+                          <div
+                            className={cn(
+                              "flex h-10 w-10 shrink-0 items-center justify-center rounded-lg",
+                              isPrimary
+                                ? "bg-primary text-primary-foreground"
+                                : "bg-muted"
+                            )}
+                          >
+                            {isPrimary ? (
+                              <Check className="h-5 w-5" />
+                            ) : (
+                              <FolderGit2 className="h-5 w-5" />
+                            )}
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate font-medium">{repo.name}</p>
+                            <p className="truncate text-muted-foreground text-sm">
+                              {repo.description || repo.path}
+                            </p>
+                          </div>
+                        </button>
                         <div className="flex items-center gap-1">
                           {selectedRepo && !isPrimary && (
                             <button
@@ -570,6 +567,7 @@ export function RepoPickerDialog({
                             setNewRepoPath("~/");
                             setAddError(null);
                           }}
+                          type="button"
                         >
                           <X className="size-4 text-muted-foreground" />
                         </button>
@@ -600,6 +598,7 @@ export function RepoPickerDialog({
                         "cursor-pointer transition-colors"
                       )}
                       onClick={() => setShowAddRepo(true)}
+                      type="button"
                     >
                       <Plus className="size-4" />
                       <span className="text-sm">Add Repository</span>

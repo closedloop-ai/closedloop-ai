@@ -1,15 +1,18 @@
 import {
-  type CaseScore,
-  EvalStatus,
+  type CaseScore as EvaluationCaseScore,
+  type MetricStatistics as EvaluationMetricStatistics,
+  EvalStatus as EvaluationStatus,
   type JudgesReport,
-  type MetricStatistics,
 } from "@repo/api/src/types/evaluation";
 import { queryOptions } from "@tanstack/react-query";
-import type { ChatMessage } from "@/components/engineer/chat";
+import type {
+  ChatMessage as EngineerChatMessage,
+  ContentBlock as EngineerContentBlock,
+} from "@/components/chat/types";
 import { queryKeys } from "./keys";
 
-// Re-export shared chat types
-export type { ChatMessage, ContentBlock } from "@/components/engineer/chat";
+export type ChatMessage = EngineerChatMessage;
+export type ContentBlock = EngineerContentBlock;
 
 /* ---------- Response types ---------- */
 
@@ -77,8 +80,9 @@ export type LogResponse = {
   returnedLines?: number;
 };
 
-export { EvalStatus };
-export type { CaseScore, MetricStatistics };
+export const EvalStatus = EvaluationStatus;
+export type CaseScore = EvaluationCaseScore;
+export type MetricStatistics = EvaluationMetricStatistics;
 export type EvaluationReport = JudgesReport;
 
 export type SymphonyJudgesResponse = {

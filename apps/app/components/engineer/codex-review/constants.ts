@@ -1,6 +1,7 @@
+import { DEFAULT_CODEX_MODEL as DEFAULT_CODEX_MODEL_BASE } from "@/lib/engineer/codex-models";
 import type { ReviewFinding } from "@/lib/engineer/codex-review-parser";
 
-export { DEFAULT_CODEX_MODEL } from "@/lib/engineer/codex-models";
+export const DEFAULT_CODEX_MODEL = DEFAULT_CODEX_MODEL_BASE;
 
 export const MODELS = [
   { value: "gpt-5.4", label: "GPT-5.4" },
@@ -56,6 +57,8 @@ export function severityToPriority(
     case "info":
       return "P3";
     case "success":
+      return "P3";
+    default:
       return "P3";
   }
 }

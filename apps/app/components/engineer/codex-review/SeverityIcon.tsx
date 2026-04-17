@@ -13,5 +13,7 @@ export function SeverityIcon({
       return <Info className="size-4 text-blue-500" />;
     case "success":
       return <CheckCircle2 className="size-4 text-emerald-500" />;
+    default:
+      return <Info className="size-4 text-blue-500" />;
   }
 }
