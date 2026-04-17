@@ -88,9 +88,10 @@ export const CollapsibleBlock = memo(function CollapsibleBlock({
   // streamed token -- without it, the effect only re-runs on expand/collapse
   // and streaming updates never scroll.
   useEffect(() => {
-    if (isExpanded && contentRef.current) {
-      contentRef.current.scrollTop = contentRef.current.scrollHeight;
+    if (!(isExpanded && contentRef.current && contentLength !== undefined)) {
+      return;
     }
+    contentRef.current.scrollTop = contentRef.current.scrollHeight;
   }, [isExpanded, contentLength]);
 
   return (

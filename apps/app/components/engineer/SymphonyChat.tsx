@@ -169,6 +169,7 @@ export function SymphonyChat({
   const splitDragRef = useRef<{ startX: number; startFraction: number } | null>(
     null
   );
+  const pendingImagesRef = useRef<PendingImage[]>(pendingImages);
   const stream = useChatStream();
   const codexChatStream = useChatStream();
   const learnings = useLearnings({ ticketId, repoPath, activeTab });
@@ -189,6 +190,10 @@ export function SymphonyChat({
     }
     return repos;
   }, [repoPath, contextRepoPaths, hasContextRepos]);
+
+  useEffect(() => {
+    pendingImagesRef.current = pendingImages;
+  }, [pendingImages]);
 
   // Auto-resize textarea when input changes
   useEffect(() => {
@@ -1006,6 +1011,7 @@ export function SymphonyChat({
       contextRepoPaths,
       codexData?.available,
       streamCallbacks,
+      resetConferral,
     ]
   );
 
@@ -1337,12 +1343,11 @@ export function SymphonyChat({
   // Cleanup object URLs on unmount
   useEffect(() => {
     return () => {
-      for (const img of pendingImages) {
+      for (const img of pendingImagesRef.current) {
         URL.revokeObjectURL(img.thumbnailUrl);
       }
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pendingImages.forEach]);
+  }, []);
 
   // Slash command handler — execute the selected command
   const handleSlashCommandSelect = useCallback(
@@ -1499,7 +1504,13 @@ export function SymphonyChat({
       const codexPrompt = `Claude (Anthropic) provided the following response:\n\n${cleanContent}\n\nReview this critically. The goal is to converge on the best solution, not just provide a second opinion. Prefer simpler approaches where they work. If Claude's suggestion is overcomplicated, say so and propose a leaner alternative. If it's solid, confirm that and explain why. Be specific — cite code, name files, reference actual behavior.`;
       await sendToCodex(codexPrompt, CHAT_SENTINEL.FORWARDED_TO_CODEX, true);
     },
-    [messages, stream.isStreaming, codexData?.available, sendToCodex]
+    [
+      messages,
+      stream.isStreaming,
+      codexData?.available,
+      sendToCodex,
+      resetConferral,
+    ]
   );
 
   // Clear forwarding flag when all streams finish

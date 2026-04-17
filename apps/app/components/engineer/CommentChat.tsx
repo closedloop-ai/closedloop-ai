@@ -244,7 +244,7 @@ export function CommentChat({
         queryKey: queryKeys.commentChatHistory(ticketId, commentId, repoPath),
       });
     },
-    [commentApiBase, queryClient, ticketId, commentId]
+    [commentApiBase, queryClient, ticketId, commentId, repoPath]
   );
 
   // Start debate mode from /debate command
@@ -401,6 +401,8 @@ export function CommentChat({
       queryClient,
       chat.history?.messages,
       comment,
+      branchName,
+      prNumber,
     ]
   );
 
@@ -496,6 +498,7 @@ export function CommentChat({
     chat.history?.messages,
     codexData?.available,
     sendToCodex,
+    resetConferral,
   ]);
 
   // Forward a Codex message to Claude
@@ -511,7 +514,7 @@ export function CommentChat({
       const claudePrompt = `Codex (OpenAI) provided the following feedback:\n\n${cleanedContent}\n\nPlease review and provide your perspective.`;
       await chat.sendMessage(claudePrompt, CHAT_SENTINEL.FORWARDED_TO_CLAUDE);
     },
-    [chat, debateClaudeStream.isStreaming]
+    [chat, debateClaudeStream.isStreaming, resetConferral]
   );
 
   // Forward a Claude message to Codex
@@ -550,6 +553,7 @@ export function CommentChat({
       isAnyStreaming,
       codexData?.available,
       sendToCodex,
+      resetConferral,
     ]
   );
 

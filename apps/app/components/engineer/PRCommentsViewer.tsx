@@ -182,8 +182,10 @@ export function PRCommentsViewer({
   // Get local status for all comments — re-read from localStorage whenever
   // statusVersion (internal dismiss/reopen) or statusRefreshKey (parent signals) changes
   const commentStatuses = useMemo(() => {
+    if (statusVersion < 0 || statusRefreshKey < 0) {
+      return {};
+    }
     return getCommentStatuses(prNumber);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [prNumber, statusVersion, statusRefreshKey]);
 
   // Build threads from flat comments
@@ -196,6 +198,9 @@ export function PRCommentsViewer({
 
   // Get status counts (only root comments)
   const statusCounts = useMemo(() => {
+    if (statusVersion < 0 || statusRefreshKey < 0) {
+      return { pending: 0, addressed: 0, responded: 0, dismissed: 0 };
+    }
     if (!threads.length) {
       return { pending: 0, addressed: 0, responded: 0, dismissed: 0 };
     }
@@ -203,7 +208,6 @@ export function PRCommentsViewer({
       prNumber,
       threads.map((t) => t.root.id)
     );
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [prNumber, threads, statusVersion, statusRefreshKey]);
 
   // Filter threads based on selected filter, grouped into inline and general

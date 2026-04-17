@@ -116,6 +116,9 @@ export function useEngineerFeatures(): EngineerFeaturesResultWithUser {
 
   useEffect(() => {
     let cancelled = false;
+    if (refetchCounter < 0) {
+      return;
+    }
 
     async function fetchAll() {
       setIsFetching(true);
