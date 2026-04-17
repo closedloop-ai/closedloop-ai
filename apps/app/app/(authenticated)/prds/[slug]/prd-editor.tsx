@@ -162,7 +162,6 @@ export function PRDEditor({
         onRestoreVersion={contentController.restoreVersion}
         onToggleMetadataPanel={uiState.toggleMetadataPanel}
         prd={prd}
-        showMetadataPanel={uiState.showMetadataPanel}
         showRestore={session.isViewingHistorical}
       />
 

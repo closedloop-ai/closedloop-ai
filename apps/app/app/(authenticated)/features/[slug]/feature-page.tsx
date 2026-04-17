@@ -96,7 +96,6 @@ export function FeaturePage({ feature }: Readonly<FeaturePageProps>) {
         onMoveToProject={() => setShowMoveDialog(true)}
         onStartBuild={() => setShowExecuteModal(true)}
         onToggleMetadataPanel={() => setShowMetadataPanel((prev) => !prev)}
-        showMetadataPanel={showMetadataPanel}
       />
 
       <main className="flex-1 overflow-y-auto overflow-x-hidden">

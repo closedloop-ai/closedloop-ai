@@ -34,7 +34,6 @@ import { DOCUMENT_TYPE_ICONS } from "@/lib/project-constants";
 
 type PRDEditorHeaderProps = {
   prd: DocumentWithWorkstream;
-  showMetadataPanel: boolean;
   canShowPanel?: boolean;
   onToggleMetadataPanel: () => void;
   onDecomposeFeatures: () => void;
@@ -56,7 +55,6 @@ type PRDEditorHeaderProps = {
 
 export function PRDEditorHeader({
   prd,
-  showMetadataPanel,
   canShowPanel = true,
   onToggleMetadataPanel,
   onDecomposeFeatures,
@@ -181,7 +179,7 @@ export function PRDEditorHeader({
           onClick={() => onToggleMetadataPanel()}
           size="icon"
           title="Toggle chat panel"
-          variant={showMetadataPanel ? "secondary" : "ghost"}
+          variant="ghost"
         >
           <PanelRightIcon className="h-4 w-4" />
         </Button>

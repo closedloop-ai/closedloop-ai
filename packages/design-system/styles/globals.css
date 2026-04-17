@@ -15,7 +15,7 @@
   --popover-foreground: oklch(0.232 0 0);
   --primary: oklch(0.528 0.214 267);
   --primary-foreground: oklch(1 0 0);
-  --secondary: oklch(0.906 0.091 146.3);
+  --secondary: oklch(0.925 0.058 146.3);
   --secondary-foreground: oklch(0.381 0.113 149);
   --muted: oklch(0.7 0 0 / 0.12);
   --muted-foreground: oklch(0.466 0 0);
@@ -55,9 +55,9 @@
   --closedloop-violet: oklch(0.61 0.256 285.5);
 
   /* Progress badge (agent status pill): fill, stroke, text. Same in dark (cascade from :root). */
-  --progress-badge-bg: oklch(0.927 0.046 317.076);
-  --progress-badge-border: oklch(0.7 0.154 305.159);
-  --progress-badge-text: oklch(0.411 0.173 319.047);
+  --progress-badge-bg: oklch(0.94 0.035 317.076);
+  --progress-badge-border: oklch(0.94 0.035 317.076);
+  --progress-badge-text: oklch(0.5 0.2 319.047);
 
   --shadow-inset:
     0 1px 3px 0 rgb(0 0 0 / 0.08), 0 1px 2px -1px rgb(0 0 0 / 0.08);
@@ -111,6 +111,10 @@
   --progress-foreground: var(--primary);
   --thinking: var(--primary);
   --closedloop-violet: oklch(0.61 0.256 285.5);
+
+  --progress-badge-bg: oklch(0.3 0.04 317.076);
+  --progress-badge-border: oklch(0.3 0.04 317.076);
+  --progress-badge-text: oklch(0.74 0.23 319.047);
 
   --shadow-inset:
     0 1px 3px 0 rgb(0 0 0 / 0.35), 0 1px 2px -1px rgb(0 0 0 / 0.35);
