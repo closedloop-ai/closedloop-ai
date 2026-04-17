@@ -61,7 +61,7 @@ const CALLBACK_UNAVAILABLE_DISPATCH_REASONS = new Set([
 function isCallbackUnavailableDispatchReason(
   reason: string | undefined
 ): boolean {
-  if (!reason) {
+  if (!reason || typeof reason !== "string") {
     return false;
   }
   const normalizedReason = reason.trim().toLowerCase();

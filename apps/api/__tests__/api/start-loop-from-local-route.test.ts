@@ -1,34 +1,32 @@
 import { vi } from "vitest";
+import type { AuthContext } from "@/lib/auth/with-auth";
 
-let mockAuthContext: import("@/lib/auth/with-auth").AuthContext;
+const mockState = vi.hoisted(() => ({
+  authContext: undefined as AuthContext | undefined,
+  startPlanLoopFromLocal: vi.fn(),
+  launchPlanLoop: vi.fn(),
+}));
 
 vi.mock("@/lib/auth/with-any-auth", () => ({
   withAnyAuth: (handler: any) => async (request: any, context: any) =>
-    handler(mockAuthContext, request, context?.params),
+    handler(mockState.authContext, request, context?.params),
 }));
 
 vi.mock("@repo/observability/log", () => ({
   log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
-vi.mock("@/app/documents/service", async (importOriginal) => {
-  const original =
-    await importOriginal<typeof import("@/app/documents/service")>();
+vi.mock("@/app/documents/service", () => {
   return {
-    ...original,
     documentsService: {
-      ...original.documentsService,
-      startPlanLoopFromLocal: vi.fn(),
+      startPlanLoopFromLocal: mockState.startPlanLoopFromLocal,
     },
   };
 });
 
-vi.mock("@/lib/loops/launch-plan-loop", async (importOriginal) => {
-  const original =
-    await importOriginal<typeof import("@/lib/loops/launch-plan-loop")>();
+vi.mock("@/lib/loops/launch-plan-loop", () => {
   return {
-    ...original,
-    launchPlanLoop: vi.fn(),
+    launchPlanLoop: mockState.launchPlanLoop,
   };
 });
 
@@ -62,7 +60,7 @@ const readyToLaunchResult = {
 describe("POST /plans/start-loop-from-local", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockAuthContext = createTestAuthContext({
+    mockState.authContext = createTestAuthContext({
       user: { id: "user-1", organizationId: "org-1" } as any,
     });
 
