@@ -3,6 +3,7 @@
 import { Textarea } from "@repo/design-system/components/ui/textarea";
 import { useUpdateDocument } from "@/hooks/queries/use-documents";
 import { useInlineEdit } from "@/hooks/use-inline-edit";
+import { normalizeTitle } from "@/lib/ui-utils";
 
 type EditableDocumentTitleProps = {
   documentId: string;
@@ -27,7 +28,7 @@ export function EditableDocumentTitle({
     onSave: (title) =>
       updateArtifact.mutateAsync({
         id: documentId,
-        title: normalizeDocumentTitle(title),
+        title: normalizeTitle(title),
       }),
     emptyErrorMessage: "Title cannot be empty",
   });
@@ -47,7 +48,7 @@ export function EditableDocumentTitle({
       className="min-h-0 resize-none overflow-hidden rounded-none border-none bg-transparent px-0 py-0 font-semibold text-3xl tracking-[-0.6px] shadow-none focus-visible:ring-0 md:text-3xl dark:bg-transparent"
       disabled={isPending}
       onBlur={handleSave}
-      onChange={(e) => setInputValue(normalizeDocumentTitle(e.target.value))}
+      onChange={(e) => setInputValue(normalizeTitle(e.target.value))}
       onKeyDown={handleKeyDown}
       placeholder="Untitled document"
       ref={inputRef}
@@ -55,8 +56,4 @@ export function EditableDocumentTitle({
       value={inputValue}
     />
   );
-}
-
-function normalizeDocumentTitle(value: string) {
-  return value.replaceAll(/\s*[\r\n]+\s*/g, " ");
 }
