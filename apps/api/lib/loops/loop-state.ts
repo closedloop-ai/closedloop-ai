@@ -128,11 +128,22 @@ export async function scrubContextPackSecrets(
   stateKeyPrefix: string
 ): Promise<void> {
   const contextPack = await downloadContextPack(stateKeyPrefix);
-  if (!contextPack?.secrets) {
+  if (!contextPack) {
+    return;
+  }
+  const hasSecrets = !!contextPack.secrets;
+  const hasRepoTokens = contextPack.additionalRepos?.some((r) => r.githubToken);
+  if (!(hasSecrets || hasRepoTokens)) {
     return;
   }
 
-  const scrubbed: ContextPack = { ...contextPack, secrets: undefined };
+  const scrubbed: ContextPack = {
+    ...contextPack,
+    secrets: undefined,
+    additionalRepos: contextPack.additionalRepos?.map(
+      ({ githubToken: _, ...rest }) => rest
+    ),
+  };
   const key = `${stateKeyPrefix}/context-pack.json`;
   await putObject(key, JSON.stringify(scrubbed, null, 2), "application/json");
   log.info("Context pack secrets scrubbed", { stateKeyPrefix });

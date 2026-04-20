@@ -10,7 +10,7 @@ import {
   rewriteDesktopApiPath,
 } from "@repo/api/src/desktop-api-namespace";
 import type { JsonValue } from "@repo/api/src/types/common";
-import type { LoopCommand } from "@repo/api/src/types/loop";
+import type { AdditionalRepoRef, LoopCommand } from "@repo/api/src/types/loop";
 import type { SymphonyLoopBody } from "@repo/api/src/types/symphony-loop-body";
 import { log } from "@repo/observability/log";
 import { toRelayOperation } from "@/app/compute-targets/relay-command-helpers";
@@ -160,6 +160,7 @@ type LaunchDesktopOpts = {
   parentBranchName?: string;
   parentSessionId?: string;
   localRepoPath?: string;
+  additionalRepos?: AdditionalRepoRef[];
 };
 
 async function resolveDesktopApiNamespace(
@@ -201,6 +202,7 @@ export async function launchLoopOnDesktop(
     parentBranchName,
     parentSessionId,
     localRepoPath,
+    additionalRepos,
   } = opts;
   const namespace = await resolveDesktopApiNamespace(
     computeTargetId,
@@ -227,6 +229,10 @@ export async function launchLoopOnDesktop(
       localRepoPath: localRepoPath ?? null,
       userContext: contextPack.userContext,
       attachments: contextPack.attachments,
+      additionalRepos: additionalRepos?.map((r) => ({
+        fullName: r.fullName,
+        branch: r.branch,
+      })),
     } satisfies SymphonyLoopBody as JsonValue,
   };
 

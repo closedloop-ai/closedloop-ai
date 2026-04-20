@@ -4,7 +4,10 @@ import type {
   BackendMismatchBody,
   ComputeTargetConflictBody,
 } from "@repo/api/src/types/compute-target";
-import type { CreateLoopRequest } from "@repo/api/src/types/loop";
+import type {
+  AdditionalRepoRef,
+  CreateLoopRequest,
+} from "@repo/api/src/types/loop";
 import { RunLoopCommand } from "@repo/api/src/types/loop";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { useCallback, useRef, useState } from "react";
@@ -21,6 +24,7 @@ export type RunLoopParams = {
   computeTargetId?: string;
   backendOverride?: boolean;
   repo?: CreateLoopRequest["repo"];
+  additionalRepos?: AdditionalRepoRef[];
 };
 
 /**

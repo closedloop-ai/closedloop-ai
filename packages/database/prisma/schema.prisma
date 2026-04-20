@@ -1093,9 +1093,10 @@ model Loop {
   parentLoopId String? @map("parent_loop_id") @db.Uuid
 
   // Execution context
-  prompt      String? @db.Text
-  repo        Json? // { fullName: string, branch: string }
-  contextRefs Json?   @map("context_refs") // Array<{ sourceId, sourceType, include }>
+  prompt          String? @db.Text
+  repo            Json? // { fullName: string, branch: string }
+  additionalRepos Json?   @map("additional_repos") // Array<{ fullName: string, branch: string }>
+  contextRefs     Json?   @map("context_refs") // Array<{ sourceId, sourceType, include }>
 
   // Compute target (local machine) — null for cloud/legacy runs
   computeTargetId String? @map("compute_target_id") @db.Uuid

@@ -5,7 +5,15 @@
  * and resumable-status validation.
  */
 import { LoopStatus } from "@repo/api/src/types/loop";
-import { type Mock, vi } from "vitest";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  type Mock,
+  vi,
+} from "vitest";
 
 // Mock modules before importing the service
 vi.mock("@repo/database", () => ({

@@ -9,6 +9,7 @@
 import type { ContextPackAttachment } from "@closedloop-ai/loops-api/context-pack";
 import { DocumentType } from "@repo/api/src/types/document";
 import { EntityType } from "@repo/api/src/types/entity-link";
+import type { AdditionalRepoRefWithToken } from "@repo/api/src/types/loop";
 import { LoopCommand } from "@repo/api/src/types/loop";
 import { log } from "@repo/observability/log";
 import {
@@ -465,7 +466,8 @@ export async function buildContextPackInMemory(
   loop: LoopForContextPack,
   organizationId: string,
   secrets?: { anthropicApiKey?: string; githubToken?: string },
-  committer?: { name: string; email: string }
+  committer?: { name: string; email: string },
+  additionalRepos?: AdditionalRepoRefWithToken[]
 ): Promise<ContextPack> {
   const [
     primaryArtifacts,
@@ -507,6 +509,7 @@ export async function buildContextPackInMemory(
     secrets,
     userContext,
     attachments: attachments.length > 0 ? attachments : undefined,
+    additionalRepos: additionalRepos?.length ? additionalRepos : undefined,
   };
 }
 
@@ -526,15 +529,16 @@ export async function buildContextPack(
   organizationId: string,
   stateKeyPrefix: string,
   secrets?: { anthropicApiKey?: string; githubToken?: string },
-  committer?: { name: string; email: string }
+  committer?: { name: string; email: string },
+  additionalRepos?: AdditionalRepoRefWithToken[]
 ): Promise<string> {
   const contextPack = await buildContextPackInMemory(
     loop,
     organizationId,
     secrets,
-    committer
+    committer,
+    additionalRepos
   );
 
-  const s3Key = await uploadContextPack(stateKeyPrefix, contextPack);
-  return s3Key;
+  return uploadContextPack(stateKeyPrefix, contextPack);
 }

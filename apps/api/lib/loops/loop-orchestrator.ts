@@ -4,6 +4,8 @@ import {
 } from "@repo/api/src/desktop-api-namespace";
 import type { JsonObject } from "@repo/api/src/types/common";
 import type {
+  AdditionalRepoRef,
+  AdditionalRepoRefWithToken,
   LoopEvent,
   LoopEventCompleted,
   LoopEventError,
@@ -14,6 +16,7 @@ import {
   LoopCommand,
   LoopErrorCode,
   LoopStatus,
+  MAX_ADDITIONAL_REPOS,
   MODEL_PRICING,
 } from "@repo/api/src/types/loop";
 import { issueLoopRunnerToken } from "@repo/auth/loop-runner-jwt";
@@ -425,13 +428,20 @@ async function resolveLoopLaunchContext(
     );
   }
 
+  const resolvedAdditionalRepos = await resolveAdditionalRepos(
+    loop.additionalRepos,
+    organizationId,
+    isDesktop
+  );
+
   // Build context pack in memory (shared by both paths).
   // ECS provider uploads to S3; desktop provider sends inline.
   const contextPack = await buildContextPackInMemory(
     loop,
     organizationId,
     { anthropicApiKey, githubToken },
-    committer
+    committer,
+    resolvedAdditionalRepos
   );
 
   // Resolve artifact slug for worktree/branch naming on desktop.
@@ -484,6 +494,7 @@ async function resolveLoopLaunchContext(
         : null,
     localRepoPath,
     computeTargetId: loop.computeTargetId,
+    additionalRepos: resolvedAdditionalRepos,
     desktopApiNamespace,
   };
 }
@@ -1419,4 +1430,58 @@ async function handleZeroTokenExecute(
   });
 
   return [errorEvent];
+}
+
+// ---------------------------------------------------------------------------
+// Additional repos resolution (extracted to keep resolveLoopLaunchContext
+// below the cognitive-complexity limit)
+// ---------------------------------------------------------------------------
+
+/**
+ * Cap and resolve GitHub tokens for additional repos declared on the loop.
+ *
+ * - Enforces MAX_ADDITIONAL_REPOS defensively via slice.
+ * - Cloud/ECS: resolves a GitHub App installation token per repo (fail-fast).
+ * - Desktop: includes repo entries without tokens — the electron has its own
+ *   GitHub auth (gh CLI) locally.
+ * - User-level auth is deferred to the runner; only installation-level tokens
+ *   are resolved here.
+ */
+async function resolveAdditionalRepos(
+  additionalRepos: AdditionalRepoRef[] | null,
+  organizationId: string,
+  isDesktop: boolean
+): Promise<AdditionalRepoRefWithToken[] | undefined> {
+  // Defensive: enforce MAX_ADDITIONAL_REPOS cap regardless of how the list
+  // entered the system.
+  const cappedAdditionalRepos = (additionalRepos ?? []).slice(
+    0,
+    MAX_ADDITIONAL_REPOS
+  );
+
+  if (cappedAdditionalRepos.length === 0) {
+    return undefined;
+  }
+
+  if (isDesktop) {
+    return cappedAdditionalRepos.map((r) => ({
+      fullName: r.fullName,
+      branch: r.branch,
+    }));
+  }
+
+  // Cloud/ECS: resolve a GitHub installation token per repo.
+  // Fail-fast: if any token cannot be resolved, throw immediately so the loop
+  // fails before ECS dispatch rather than failing inside the container with a
+  // cryptic auth error.
+  const resolved: AdditionalRepoRefWithToken[] = [];
+  for (const repoRef of cappedAdditionalRepos) {
+    const token = await resolveGitHubToken(organizationId, repoRef.fullName);
+    resolved.push({
+      fullName: repoRef.fullName,
+      branch: repoRef.branch,
+      githubToken: token,
+    });
+  }
+  return resolved;
 }

@@ -18,6 +18,7 @@ export function createMockLoop(overrides: Partial<Loop> = {}): Loop {
     computeTargetId: null,
     prompt: "Do the thing",
     repo: null,
+    additionalRepos: null,
     contextRefs: null,
     containerId: null,
     s3StateKey: null,

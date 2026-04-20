@@ -2,6 +2,7 @@
 
 import { CURRENT_DESKTOP_API_NAMESPACE } from "@repo/api/src/desktop-api-namespace";
 import type {
+  AdditionalRepoRef,
   CreateLoopRequest,
   CreateLoopResponse,
   Loop,
@@ -227,6 +228,7 @@ export function useRunLoop() {
       computeTargetId,
       backendOverride,
       repo,
+      additionalRepos,
     }: {
       documentId: string;
       command: RunLoopCommand;
@@ -234,6 +236,7 @@ export function useRunLoop() {
       computeTargetId?: string | null;
       backendOverride?: boolean;
       repo?: CreateLoopRequest["repo"];
+      additionalRepos?: AdditionalRepoRef[];
     }) => {
       const desktopApiNamespace = await resolveDesktopApiNamespaceHint();
 
@@ -245,6 +248,7 @@ export function useRunLoop() {
           ...(computeTargetId !== undefined ? { computeTargetId } : {}),
           ...(backendOverride ? { backendOverride } : {}),
           ...(repo ? { repo } : {}),
+          ...(additionalRepos ? { additionalRepos } : {}),
           ...(desktopApiNamespace &&
           desktopApiNamespace !== CURRENT_DESKTOP_API_NAMESPACE
             ? { desktopApiNamespace }

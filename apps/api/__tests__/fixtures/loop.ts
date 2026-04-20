@@ -1,18 +1,20 @@
 import type { Loop } from "@repo/api/src/types/loop";
+import { LoopCommand, LoopStatus } from "@repo/api/src/types/loop";
 
 export function buildLoop(overrides: Partial<Loop> = {}): Loop {
   return {
     id: "loop-1",
     organizationId: "org-1",
     userId: "user-1",
-    status: "COMPLETED",
-    command: "PLAN",
+    status: LoopStatus.Completed,
+    command: LoopCommand.Plan,
     documentId: "artifact-1",
     workstreamId: "ws-1",
     parentLoopId: null,
     computeTargetId: null,
     prompt: null,
     repo: { fullName: "org/repo", branch: "main" },
+    additionalRepos: null,
     contextRefs: null,
     containerId: null,
     s3StateKey: null,

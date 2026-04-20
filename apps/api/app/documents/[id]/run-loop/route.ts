@@ -186,6 +186,7 @@ export const POST = withAnyAuth<RunLoopResponse, "/documents/[id]/run-loop">(
           repo: targetRepo
             ? { fullName: targetRepo, branch: targetBranch }
             : undefined,
+          additionalRepos: body.additionalRepos,
           contextRefs: contextRefs.length > 0 ? contextRefs : undefined,
           metadata: getLoopMetadata(body.desktopApiNamespace),
         }

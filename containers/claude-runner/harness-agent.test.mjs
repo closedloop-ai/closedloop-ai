@@ -2,13 +2,15 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { after, describe, test } from "node:test";
+import { after, afterEach, beforeEach, describe, test } from "node:test";
 
 import { LoopArtifactType } from "@closedloop-ai/loops-api/artifacts";
 
 import {
   buildClaudeDirectArgs,
   buildCommand,
+  buildRunLoopArgs,
+  cloneAdditionalRepos,
   config,
   ERROR_CODES,
   extractSessionId,
@@ -22,6 +24,9 @@ import {
   parseTokenUsageFromJsonl,
   parseTokenUsageFromJsonlFile,
   parseTokenUsageFromRegex,
+  redactSensitive,
+  refreshGitHubToken,
+  registerSecret,
   syncPlanFromContextPack,
   validateConfig,
   validatePreRunInputs,
@@ -1584,6 +1589,142 @@ describe("extractSessionId", () => {
 });
 
 // ---------------------------------------------------------------------------
+// registerSecret + redactSensitive
+// ---------------------------------------------------------------------------
+
+describe("registerSecret + redactSensitive", () => {
+  test("registered secret is replaced with [REDACTED] in subsequent calls", () => {
+    const unique = `test-secret-${Date.now()}-alpha`;
+    registerSecret(unique);
+    const result = redactSensitive(`prefix ${unique} suffix`);
+    assert.equal(result, "prefix [REDACTED] suffix");
+  });
+
+  test("redactSensitive applies x-access-token pattern even without registered secret", () => {
+    const result = redactSensitive(
+      "https://x-access-token:ghp_abc123@github.com/org/repo.git"
+    );
+    assert.equal(
+      result,
+      "https://x-access-token:[REDACTED]@github.com/org/repo.git"
+    );
+  });
+
+  test("registerSecret ignores empty string", () => {
+    // Empty string would cause all strings to be fully redacted — must be a no-op.
+    registerSecret("");
+    const result = redactSensitive("hello world");
+    assert.equal(result, "hello world");
+  });
+
+  test("registerSecret ignores non-string values", () => {
+    registerSecret(null);
+    registerSecret(undefined);
+    registerSecret(42);
+    const result = redactSensitive("hello");
+    assert.equal(result, "hello");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// cloneAdditionalRepos — validation
+// ---------------------------------------------------------------------------
+
+describe("cloneAdditionalRepos", () => {
+  test("rejects invalid fullName that fails RE_SAFE_REPO", () => {
+    assert.throws(
+      () =>
+        cloneAdditionalRepos(
+          [{ fullName: "../../etc/passwd", branch: "main", githubToken: null }],
+          "/tmp"
+        ),
+      (err) => {
+        assert.ok(err instanceof HarnessError, "must be a HarnessError");
+        assert.equal(err.code, ERROR_CODES.config);
+        assert.match(err.message, /fullName/);
+        return true;
+      }
+    );
+  });
+
+  test("rejects invalid branch that fails RE_SAFE_BRANCH", () => {
+    assert.throws(
+      () =>
+        cloneAdditionalRepos(
+          [
+            {
+              fullName: "org/repo",
+              branch: "branch with spaces",
+              githubToken: null,
+            },
+          ],
+          "/tmp"
+        ),
+      (err) => {
+        assert.ok(err instanceof HarnessError, "must be a HarnessError");
+        assert.equal(err.code, ERROR_CODES.config);
+        assert.match(err.message, /branch/);
+        return true;
+      }
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildRunLoopArgs — additionalRepoPaths and command gating
+// ---------------------------------------------------------------------------
+
+describe("buildRunLoopArgs", () => {
+  const fakePath = "/path/to/run-loop.sh";
+  const fakeWorkDir = "/workspace/repo";
+
+  test("PLAN command includes --add-dir for each additionalRepoPath", () => {
+    resetConfig({ command: "PLAN" });
+
+    const additionalRepoPaths = [
+      "/workspace/peers/org--repo-a",
+      "/workspace/peers/org--repo-b",
+    ];
+    const { cmd, args } = buildRunLoopArgs(
+      fakePath,
+      fakeWorkDir,
+      null,
+      additionalRepoPaths
+    );
+
+    assert.equal(cmd, "bash");
+
+    const addDirIndices = args.reduce((acc, val, idx) => {
+      if (val === "--add-dir") {
+        acc.push(idx);
+      }
+      return acc;
+    }, []);
+
+    assert.equal(
+      addDirIndices.length,
+      2,
+      "must have two --add-dir flags for two additionalRepoPaths"
+    );
+    assert.equal(args[addDirIndices[0] + 1], additionalRepoPaths[0]);
+    assert.equal(args[addDirIndices[1] + 1], additionalRepoPaths[1]);
+  });
+
+  test("EXECUTE command omits --add-dir even when additionalRepoPaths provided", () => {
+    resetConfig({ command: "EXECUTE" });
+
+    const { args } = buildRunLoopArgs(fakePath, fakeWorkDir, null, [
+      "/workspace/peers/org--repo",
+    ]);
+
+    assert.ok(
+      !args.includes("--add-dir"),
+      "EXECUTE command must not include --add-dir flags"
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // buildClaudeDirectArgs — --output-format stream-json flag
 // ---------------------------------------------------------------------------
 
@@ -1634,5 +1775,92 @@ describe("buildClaudeDirectArgs output format", () => {
     const fmtIdx = args.indexOf("--output-format");
     assert.ok(fmtIdx !== -1, "args must contain --output-format");
     assert.equal(args[fmtIdx + 1], "stream-json");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// refreshGitHubToken
+// ---------------------------------------------------------------------------
+
+describe("refreshGitHubToken", () => {
+  let originalFetch;
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  test("patches contextPack.additionalRepos with fresh tokens", async () => {
+    resetConfig({
+      authToken: "test-auth-token",
+      apiBaseUrl: "https://api.example.com",
+      loopId: "test-loop-id",
+      githubToken: "old-primary-token",
+    });
+
+    const contextPack = {
+      additionalRepos: [
+        { fullName: "owner/peer1", branch: "main", githubToken: "old-peer1" },
+        { fullName: "owner/peer2", branch: "main", githubToken: "old-peer2" },
+      ],
+    };
+
+    globalThis.fetch = async (url, options) => {
+      assert.equal(
+        url,
+        "https://api.example.com/loops/test-loop-id/github-token"
+      );
+      assert.equal(options.headers.Authorization, "Bearer test-auth-token");
+      return {
+        ok: true,
+        json: async () => ({
+          data: {
+            token: "new-primary-token",
+            additionalRepoTokens: [
+              { fullName: "owner/peer1", token: "new-peer1" },
+              { fullName: "owner/peer2", token: "new-peer2" },
+            ],
+          },
+        }),
+      };
+    };
+
+    await refreshGitHubToken(contextPack);
+
+    assert.equal(config.githubToken, "new-primary-token");
+    assert.equal(contextPack.additionalRepos[0].githubToken, "new-peer1");
+    assert.equal(contextPack.additionalRepos[1].githubToken, "new-peer2");
+  });
+
+  test("does not crash if additionalRepoTokens is missing", async () => {
+    resetConfig({
+      authToken: "test-auth-token",
+      apiBaseUrl: "https://api.example.com",
+      loopId: "test-loop-id",
+      githubToken: "old-primary-token",
+    });
+
+    const contextPack = {
+      additionalRepos: [
+        { fullName: "owner/peer1", branch: "main", githubToken: "old-peer1" },
+      ],
+    };
+
+    globalThis.fetch = async () => ({
+      ok: true,
+      json: async () => ({
+        data: {
+          token: "new-primary-token",
+        },
+      }),
+    });
+
+    await refreshGitHubToken(contextPack);
+
+    assert.equal(config.githubToken, "new-primary-token");
+    assert.equal(contextPack.additionalRepos[0].githubToken, "old-peer1");
   });
 });

@@ -3,9 +3,13 @@
 // API-specific types (Loop entity, request/response, usage) are defined here.
 
 /** biome-ignore-all lint/style/useImportType: imported type re-exported as values. */
-/** biome-ignore-all lint/style/noExportedImports: re-exoorting shared loop types for backwards compatibility. */
+/** biome-ignore-all lint/style/noExportedImports: re-exporting shared loop types for backwards compatibility. */
 
 import { LoopCommand, LoopStatus } from "@closedloop-ai/loops-api/commands";
+import type {
+  AdditionalRepoRef,
+  AdditionalRepoRefWithToken,
+} from "@closedloop-ai/loops-api/context-pack";
 import { TokensByModel } from "@closedloop-ai/loops-api/tokens";
 import type { JsonObject } from "./common";
 import type { EntityType } from "./entity-link";
@@ -76,6 +80,7 @@ export type Loop = {
   computeTargetId: string | null;
   prompt: string | null;
   repo: { fullName: string; branch: string } | null;
+  additionalRepos: AdditionalRepoRef[] | null;
   contextRefs: Array<{
     sourceId: string;
     sourceType?: SourceContextType;
@@ -113,6 +118,12 @@ export type LoopWithUser = Loop & {
   computeTarget: ComputeTargetSummary | null;
 };
 
+// Additional repository references for multi-repo loop execution
+// Canonical source: @closedloop-ai/loops-api/context-pack
+export type { AdditionalRepoRef, AdditionalRepoRefWithToken };
+
+export const MAX_ADDITIONAL_REPOS = 5;
+
 // Request/Response types
 export type CreateLoopRequest = {
   command: LoopCommand;
@@ -125,6 +136,7 @@ export type CreateLoopRequest = {
     fullName: string;
     branch: string;
   };
+  additionalRepos?: AdditionalRepoRef[];
   contextRefs?: Array<{
     sourceId: string;
     sourceType?: SourceContextType;
