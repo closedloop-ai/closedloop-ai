@@ -51,13 +51,12 @@ vi.mock("@repo/database", () => {
   };
 });
 
-vi.mock("@repo/github/plan-reference-parser", () => ({
-  parsePlanReferences: vi.fn().mockReturnValue([]),
+vi.mock("@repo/github/artifact-reference-parser", () => ({
+  parseArtifactReferences: vi.fn().mockReturnValue([]),
 }));
 
 vi.mock("@/lib/slug-generator", () => ({
   generateSlug: vi.fn().mockResolvedValue("WORK-99"),
-  SlugPrefix: { Workstream: "WORK" },
 }));
 
 // Import after mocking
@@ -69,11 +68,12 @@ import {
 import { EntityType, LinkType } from "@repo/api/src/types/entity-link";
 import { ExternalLinkType } from "@repo/api/src/types/external-link";
 import { GitHubPRState } from "@repo/api/src/types/github";
+import { SlugPrefix } from "@repo/api/src/types/slug-prefix";
 import { withDb } from "@repo/database";
-import { parsePlanReferences } from "@repo/github/plan-reference-parser";
+import { parseArtifactReferences } from "@repo/github/artifact-reference-parser";
 import { handlePullRequest } from "@/app/webhooks/github/handlers/pull-request-handler";
 
-const mockParsePlanReferences = parsePlanReferences as Mock;
+const mockParseArtifactReferences = parseArtifactReferences as Mock;
 
 // Type aliases for mocked functions
 const mockWithDb = withDb as unknown as Mock;
@@ -216,7 +216,7 @@ describe("handlePullRequest", () => {
     vi.clearAllMocks();
 
     // Reset parser mock
-    mockParsePlanReferences.mockReturnValue([]);
+    mockParseArtifactReferences.mockReturnValue([]);
 
     // Set up transaction mock
     mockTx = {
@@ -233,7 +233,9 @@ describe("handlePullRequest", () => {
       },
       document: {
         findUnique: vi.fn(),
+        findMany: vi.fn().mockResolvedValue([]),
         update: vi.fn(),
+        updateMany: vi.fn().mockResolvedValue({ count: 0 }),
       },
       workstream: {
         create: vi.fn(),
@@ -309,6 +311,20 @@ describe("handlePullRequest", () => {
 
       // Mock artifact status update
       mockTx.document.update.mockResolvedValue({});
+
+      // Mock merge cascade lookups: ExternalLink → EntityLink → Document
+      mockTx.externalLink.findFirst.mockResolvedValue({ id: "ext-link-uuid" });
+      mockTx.externalLink.update.mockResolvedValue({});
+      mockTx.entityLink.findMany.mockResolvedValue([
+        { sourceId: "artifact-uuid-123" },
+      ]);
+      mockTx.document.findMany.mockResolvedValue([
+        {
+          id: "artifact-uuid-123",
+          type: DocumentType.ImplementationPlan,
+          status: DocumentStatus.InProgress,
+        },
+      ]);
 
       await handlePullRequest(event);
 
@@ -805,13 +821,28 @@ describe("handlePullRequest", () => {
       mockTx.gitHubPullRequest.findUnique.mockResolvedValue({
         id: "pr-uuid-tx",
         workstreamId: "ws-uuid-tx",
+        organizationId: "org-uuid-tx",
         documentId: "artifact-uuid-tx",
+        checksStatus: ChecksStatus.Unknown,
         document: { slug: "plan-tx" },
       });
 
       mockTx.gitHubPullRequest.update.mockResolvedValue({});
       mockTx.workstreamEvent.create.mockResolvedValue({});
       mockTx.document.update.mockResolvedValue({});
+
+      mockTx.externalLink.findFirst.mockResolvedValue({ id: "ext-link-tx" });
+      mockTx.externalLink.update.mockResolvedValue({});
+      mockTx.entityLink.findMany.mockResolvedValue([
+        { sourceId: "artifact-uuid-tx" },
+      ]);
+      mockTx.document.findMany.mockResolvedValue([
+        {
+          id: "artifact-uuid-tx",
+          type: DocumentType.ImplementationPlan,
+          status: DocumentStatus.InProgress,
+        },
+      ]);
 
       await handlePullRequest(event);
 
@@ -864,9 +895,27 @@ describe("handlePullRequest", () => {
       });
     }
 
-    function setupPlanRef(slug = "PLAN-42") {
-      mockParsePlanReferences.mockReturnValue([
-        { slug, matchType: "slug", source: "title" },
+    function setupPlanRef(slug = "PLN-42") {
+      mockParseArtifactReferences.mockReturnValue([
+        {
+          slug,
+          prefix: SlugPrefix.Plan,
+          docType: DocumentType.ImplementationPlan,
+          matchType: "slug",
+          source: "title",
+        },
+      ]);
+    }
+
+    function setupFeatureRef(slug = "FEA-42") {
+      mockParseArtifactReferences.mockReturnValue([
+        {
+          slug,
+          prefix: SlugPrefix.Feature,
+          docType: DocumentType.Feature,
+          matchType: "slug",
+          source: "title",
+        },
       ]);
     }
 
@@ -1012,9 +1061,10 @@ describe("handlePullRequest", () => {
       expect(mockTx.entityLink.create).not.toHaveBeenCalled();
     });
 
-    it("does not link PRD-type artifact", async () => {
+    it("does not link when docType mismatches ref prefix (prefix collision)", async () => {
       setupRepoMock();
-      setupPlanRef("PLAN-42");
+      setupPlanRef("PLN-42");
+      // Document is a PRD even though the ref says PLN
       setupArtifactMock({ type: DocumentType.Prd });
       mockTx.gitHubPullRequest.findUnique.mockResolvedValue(null);
 
@@ -1023,7 +1073,7 @@ describe("handlePullRequest", () => {
         number: 103,
         pull_request: createPullRequest({
           number: 103,
-          title: "PLAN-42: PRD ref",
+          title: "PLN-42: PRD ref",
         }),
         repository: createRepository(789),
         sender: createSender(),
@@ -1120,7 +1170,7 @@ describe("handlePullRequest", () => {
       );
     });
 
-    it("PR merge with linked artifactId sets status to EXECUTED (existing behavior)", async () => {
+    it("PR merge with linked plan sets status to EXECUTED (existing behavior)", async () => {
       setupRepoMock();
 
       mockTx.gitHubPullRequest.findUnique.mockResolvedValue({
@@ -1128,18 +1178,29 @@ describe("handlePullRequest", () => {
         workstreamId: WORKSTREAM_ID,
         documentId: ARTIFACT_ID,
         checksStatus: "PASSING",
-        document: { slug: "PLAN-42" },
+        document: { slug: "PLN-42" },
       });
       mockTx.gitHubPullRequest.update.mockResolvedValue({});
       mockTx.workstreamEvent.create.mockResolvedValue({});
       mockTx.document.update.mockResolvedValue({});
+
+      mockTx.externalLink.findFirst.mockResolvedValue({ id: "ext-link-merge" });
+      mockTx.externalLink.update.mockResolvedValue({});
+      mockTx.entityLink.findMany.mockResolvedValue([{ sourceId: ARTIFACT_ID }]);
+      mockTx.document.findMany.mockResolvedValue([
+        {
+          id: ARTIFACT_ID,
+          type: DocumentType.ImplementationPlan,
+          status: DocumentStatus.InProgress,
+        },
+      ]);
 
       const event: PullRequestClosedEvent = {
         action: "closed",
         number: 106,
         pull_request: createPullRequest({
           number: 106,
-          title: "PLAN-42: Feature",
+          title: "PLN-42: Feature",
           state: "closed",
           merged: true,
           closed_at: "2026-03-01T12:00:00Z",
@@ -1155,6 +1216,274 @@ describe("handlePullRequest", () => {
       expect(mockTx.document.update).toHaveBeenCalledWith({
         where: { id: ARTIFACT_ID },
         data: { status: DocumentStatus.Executed },
+      });
+    });
+
+    it("PR opened with FEA slug links to feature document", async () => {
+      setupRepoMock();
+      setupFeatureRef("FEA-42");
+      setupArtifactMock({
+        type: DocumentType.Feature,
+        slug: "FEA-42",
+      });
+      setupLinkageMocks();
+      mockTx.gitHubPullRequest.findUnique.mockResolvedValue(null);
+      mockTx.gitHubPullRequest.create.mockResolvedValue({});
+
+      const event = {
+        action: "opened",
+        number: 200,
+        pull_request: createPullRequest({
+          number: 200,
+          title: "FEA-42: fix login timeout",
+        }),
+        repository: createRepository(789),
+        sender: createSender(),
+      } as any;
+
+      await handlePullRequest(event);
+
+      // PR row created with feature documentId
+      expect(mockTx.gitHubPullRequest.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          documentId: ARTIFACT_ID,
+        }),
+      });
+      // EntityLink created with Document[Feature] → ExternalLink
+      expect(mockTx.entityLink.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          sourceId: ARTIFACT_ID,
+          sourceType: EntityType.Document,
+          targetType: EntityType.ExternalLink,
+          linkType: LinkType.Produces,
+        }),
+      });
+      // GITHUB_PR_LINKED event
+      expect(mockTx.workstreamEvent.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          type: "GITHUB_PR_LINKED",
+          data: expect.objectContaining({
+            slug: "FEA-42",
+          }),
+        }),
+      });
+    });
+
+    it("skips linkage when FEA slug resolves to non-Feature document (prefix collision)", async () => {
+      setupRepoMock();
+      setupFeatureRef("FEA-42");
+      // Document exists but is a Plan (simulated collision)
+      setupArtifactMock({
+        type: DocumentType.ImplementationPlan,
+        slug: "FEA-42",
+      });
+      mockTx.gitHubPullRequest.findUnique.mockResolvedValue(null);
+
+      const event = {
+        action: "opened",
+        number: 201,
+        pull_request: createPullRequest({
+          number: 201,
+          title: "FEA-42: collision",
+        }),
+        repository: createRepository(789),
+        sender: createSender(),
+      } as any;
+
+      await handlePullRequest(event);
+
+      expect(mockTx.externalLink.create).not.toHaveBeenCalled();
+      expect(mockTx.entityLink.create).not.toHaveBeenCalled();
+      expect(mockTx.gitHubPullRequest.create).not.toHaveBeenCalled();
+    });
+
+    it("when PR references both PLN and FEA, plan wins and only one link is created", async () => {
+      setupRepoMock();
+      // Parser returns both refs — plan first (matches real behaviour of parser for same-source refs)
+      mockParseArtifactReferences.mockReturnValue([
+        {
+          slug: "PLN-17",
+          prefix: SlugPrefix.Plan,
+          docType: DocumentType.ImplementationPlan,
+          matchType: "slug",
+          source: "title",
+        },
+        {
+          slug: "FEA-42",
+          prefix: SlugPrefix.Feature,
+          docType: DocumentType.Feature,
+          matchType: "slug",
+          source: "title",
+        },
+      ]);
+      setupArtifactMock({ slug: "PLN-17" });
+      setupLinkageMocks();
+      mockTx.gitHubPullRequest.findUnique.mockResolvedValue(null);
+      mockTx.gitHubPullRequest.create.mockResolvedValue({});
+
+      const event = {
+        action: "opened",
+        number: 202,
+        pull_request: createPullRequest({
+          number: 202,
+          title: "FEA-42: implement PLN-17",
+        }),
+        repository: createRepository(789),
+        sender: createSender(),
+      } as any;
+
+      await handlePullRequest(event);
+
+      // Only the plan was looked up
+      expect(mockTx.document.findUnique).toHaveBeenCalledTimes(1);
+      expect(mockTx.document.findUnique).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            organizationId_slug: { organizationId: ORG_ID, slug: "PLN-17" },
+          }),
+        })
+      );
+      // Only one EntityLink + one WorkstreamEvent
+      expect(mockTx.entityLink.create).toHaveBeenCalledTimes(1);
+      expect(mockTx.workstreamEvent.create).toHaveBeenCalledTimes(1);
+      expect(mockTx.workstreamEvent.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            type: "GITHUB_PR_LINKED",
+            data: expect.objectContaining({
+              documentId: ARTIFACT_ID,
+              slug: "PLN-17",
+            }),
+          }),
+        })
+      );
+    });
+
+    it("merging a direct-FEA-linked PR sets the feature to DONE", async () => {
+      setupRepoMock();
+
+      const FEATURE_ID = "feature-uuid-merge";
+      mockTx.gitHubPullRequest.findUnique.mockResolvedValue({
+        id: "pr-uuid-feature-merge",
+        workstreamId: WORKSTREAM_ID,
+        organizationId: ORG_ID,
+        documentId: FEATURE_ID,
+        checksStatus: "PASSING",
+        document: { slug: "FEA-42" },
+      });
+      mockTx.gitHubPullRequest.update.mockResolvedValue({});
+      mockTx.workstreamEvent.create.mockResolvedValue({});
+      mockTx.document.update.mockResolvedValue({});
+
+      mockTx.externalLink.findFirst.mockResolvedValue({
+        id: "ext-link-feature-merge",
+      });
+      mockTx.externalLink.update.mockResolvedValue({});
+      mockTx.entityLink.findMany.mockResolvedValue([{ sourceId: FEATURE_ID }]);
+      mockTx.document.findMany.mockResolvedValue([
+        {
+          id: FEATURE_ID,
+          type: DocumentType.Feature,
+          status: DocumentStatus.InProgress,
+        },
+      ]);
+
+      const event: PullRequestClosedEvent = {
+        action: "closed",
+        number: 203,
+        pull_request: createPullRequest({
+          number: 203,
+          title: "FEA-42: fix login timeout",
+          state: "closed",
+          merged: true,
+          closed_at: "2026-03-01T12:00:00Z",
+          merged_at: "2026-03-01T12:00:00Z",
+          merge_commit_sha: "merge-sha-feature",
+        }),
+        repository: createRepository(789),
+        sender: createSender(),
+      } as any;
+
+      await handlePullRequest(event);
+
+      expect(mockTx.document.update).toHaveBeenCalledWith({
+        where: { id: FEATURE_ID },
+        data: { status: DocumentStatus.Done },
+      });
+      // Plan cascade (updateMany for features upstream of a plan) should NOT run
+      expect(mockTx.document.updateMany).not.toHaveBeenCalled();
+    });
+
+    it("merging a plan-linked PR cascades upstream features to DONE", async () => {
+      setupRepoMock();
+
+      const PLAN_ID = "plan-uuid-cascade";
+      mockTx.gitHubPullRequest.findUnique.mockResolvedValue({
+        id: "pr-uuid-cascade",
+        workstreamId: WORKSTREAM_ID,
+        organizationId: ORG_ID,
+        documentId: PLAN_ID,
+        checksStatus: "PASSING",
+        document: { slug: "PLN-17" },
+      });
+      mockTx.gitHubPullRequest.update.mockResolvedValue({});
+      mockTx.workstreamEvent.create.mockResolvedValue({});
+      mockTx.document.update.mockResolvedValue({});
+
+      mockTx.externalLink.findFirst.mockResolvedValue({
+        id: "ext-link-cascade",
+      });
+      mockTx.externalLink.update.mockResolvedValue({});
+      // First findMany: upstream documents of the ExternalLink — returns the plan.
+      // Second findMany: features upstream of the plan — returns two features.
+      mockTx.entityLink.findMany
+        .mockResolvedValueOnce([{ sourceId: PLAN_ID }])
+        .mockResolvedValueOnce([
+          { sourceId: "feat-a" },
+          { sourceId: "feat-b" },
+        ]);
+      mockTx.document.findMany.mockResolvedValue([
+        {
+          id: PLAN_ID,
+          type: DocumentType.ImplementationPlan,
+          status: DocumentStatus.InProgress,
+        },
+      ]);
+      mockTx.document.updateMany.mockResolvedValue({ count: 2 });
+
+      const event: PullRequestClosedEvent = {
+        action: "closed",
+        number: 204,
+        pull_request: createPullRequest({
+          number: 204,
+          title: "PLN-17: ship feature bundle",
+          state: "closed",
+          merged: true,
+          closed_at: "2026-03-01T12:00:00Z",
+          merged_at: "2026-03-01T12:00:00Z",
+          merge_commit_sha: "merge-sha-cascade",
+        }),
+        repository: createRepository(789),
+        sender: createSender(),
+      } as any;
+
+      await handlePullRequest(event);
+
+      // Plan → EXECUTED
+      expect(mockTx.document.update).toHaveBeenCalledWith({
+        where: { id: PLAN_ID },
+        data: { status: DocumentStatus.Executed },
+      });
+      // Feature cascade → DONE
+      expect(mockTx.document.updateMany).toHaveBeenCalledWith({
+        where: {
+          id: { in: ["feat-a", "feat-b"] },
+          type: DocumentType.Feature,
+          status: {
+            notIn: [DocumentStatus.Done, DocumentStatus.Obsolete],
+          },
+        },
+        data: { status: DocumentStatus.Done },
       });
     });
   });

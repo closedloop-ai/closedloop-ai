@@ -6,10 +6,11 @@ import {
   type ProjectWithDetails,
   type UpdateProjectInput,
 } from "@repo/api/src/types/project";
+import { SlugPrefix } from "@repo/api/src/types/slug-prefix";
 import type { Prisma } from "@repo/database";
 import { withDb } from "@repo/database";
 import { basicUserSelect } from "@/lib/db-utils";
-import { generateSlug, SlugPrefix } from "@/lib/slug-generator";
+import { generateSlug } from "@/lib/slug-generator";
 
 /**
  * Projects service - handles database operations for project management
