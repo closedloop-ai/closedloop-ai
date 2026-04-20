@@ -1,7 +1,6 @@
 import { Priority } from "@repo/api/src/types/common";
 import { DocumentStatus, DocumentType } from "@repo/api/src/types/document";
 import { ExternalLinkType } from "@repo/api/src/types/external-link";
-import { FeatureStatus } from "@repo/api/src/types/feature";
 import { ProjectStatus } from "@repo/api/src/types/project";
 import type { StatusIconStatus } from "@repo/design-system/components/ui/status-icon";
 import {
@@ -66,6 +65,7 @@ export const DOCUMENT_TYPE_ICONS: Record<DocumentType, React.ElementType> = {
   [DocumentType.Prd]: FileIcon,
   [DocumentType.ImplementationPlan]: FileCode2Icon,
   [DocumentType.Template]: FileTextIcon,
+  [DocumentType.Feature]: BoxIcon,
 };
 
 // Artifact type labels for display
@@ -73,6 +73,7 @@ export const DOCUMENT_TYPE_LABELS: Record<DocumentType, string> = {
   [DocumentType.Prd]: "PRD",
   [DocumentType.ImplementationPlan]: "Implementation Plan",
   [DocumentType.Template]: "Template",
+  [DocumentType.Feature]: "Feature",
 };
 
 // Artifact type colors for pills (bg + text)
@@ -92,6 +93,10 @@ export const DOCUMENT_TYPE_COLORS: Record<
     bg: "bg-indigo-100 dark:bg-indigo-900/50",
     text: "text-indigo-700 dark:text-indigo-300",
   },
+  [DocumentType.Feature]: {
+    bg: "bg-amber-100 dark:bg-amber-900/50",
+    text: "text-amber-700 dark:text-amber-300",
+  },
 };
 
 // Artifact type short badge labels (for compact displays like Context table)
@@ -99,38 +104,13 @@ export const DOCUMENT_TYPE_BADGE_LABELS: Record<DocumentType, string> = {
   [DocumentType.Prd]: "PRD",
   [DocumentType.ImplementationPlan]: "Plan",
   [DocumentType.Template]: "Template",
+  [DocumentType.Feature]: "Feature",
 };
 
-// Feature status labels and colors
-export const FEATURE_STATUS_LABELS: Record<FeatureStatus, string> = {
-  [FeatureStatus.Draft]: "Draft",
-  [FeatureStatus.InProgress]: "In Progress",
-  [FeatureStatus.InReview]: "In Review",
-  [FeatureStatus.Approved]: "Approved",
-  [FeatureStatus.Executed]: "Executed",
-  [FeatureStatus.Done]: "Done",
-  [FeatureStatus.Obsolete]: "Obsolete",
-};
-
-export const FEATURE_STATUS_COLORS: Record<FeatureStatus, string> = {
-  [FeatureStatus.Draft]: "text-muted-foreground",
-  [FeatureStatus.InProgress]: "text-blue-600 dark:text-blue-400",
-  [FeatureStatus.InReview]: "text-blue-600 dark:text-blue-400",
-  [FeatureStatus.Approved]: "text-blue-600 dark:text-blue-400",
-  [FeatureStatus.Executed]: "text-blue-600 dark:text-blue-400",
-  [FeatureStatus.Done]: "text-green-600 dark:text-green-400",
-  [FeatureStatus.Obsolete]: "text-muted-foreground",
-};
-
-export const FEATURE_STATUS_TO_ICON: Record<FeatureStatus, StatusIconStatus> = {
-  [FeatureStatus.Draft]: "todo",
-  [FeatureStatus.InProgress]: "started",
-  [FeatureStatus.InReview]: "in-progress",
-  [FeatureStatus.Approved]: "in-review",
-  [FeatureStatus.Executed]: "executed",
-  [FeatureStatus.Done]: "complete",
-  [FeatureStatus.Obsolete]: "wont-do",
-};
+// Feature status aliases — feature-typed documents share DocumentStatus.
+export const FEATURE_STATUS_LABELS = DOCUMENT_STATUS_LABELS;
+export const FEATURE_STATUS_COLORS = DOCUMENT_STATUS_COLORS;
+export const FEATURE_STATUS_TO_ICON = DOCUMENT_STATUS_TO_ICON;
 
 // External link type icons
 export const EXTERNAL_LINK_TYPE_ICONS: Record<

@@ -1,21 +1,21 @@
 "use client";
 
 import { Textarea } from "@repo/design-system/components/ui/textarea";
-import { useUpdateFeature } from "@/hooks/queries/use-features";
+import { useUpdateDocument } from "@/hooks/queries/use-documents";
 import { useInlineEdit } from "@/hooks/use-inline-edit";
 
 type EditableFeatureTitleProps = {
-  featureId: string;
+  documentId: string;
   initialTitle: string;
   onTitleChange?: (newTitle: string) => void;
 };
 
 export function EditableFeatureTitle({
-  featureId,
+  documentId,
   initialTitle,
   onTitleChange,
-}: EditableFeatureTitleProps) {
-  const updateFeature = useUpdateFeature();
+}: Readonly<EditableFeatureTitleProps>) {
+  const updateDocument = useUpdateDocument();
 
   const {
     inputValue,
@@ -27,8 +27,8 @@ export function EditableFeatureTitle({
   } = useInlineEdit<HTMLTextAreaElement>({
     initialValue: initialTitle,
     onSave: (title) =>
-      updateFeature.mutateAsync({
-        id: featureId,
+      updateDocument.mutateAsync({
+        id: documentId,
         title: normalizeFeatureTitle(title),
       }),
     onChange: onTitleChange,
@@ -61,5 +61,5 @@ export function EditableFeatureTitle({
 }
 
 function normalizeFeatureTitle(value: string) {
-  return value.replace(/\s*[\r\n]+\s*/g, " ");
+  return value.replaceAll(/\s*[\r\n]+\s*/g, " ");
 }

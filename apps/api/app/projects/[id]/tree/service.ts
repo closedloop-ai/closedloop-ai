@@ -18,16 +18,9 @@ export const projectTreeService = {
     projectId: string,
     organizationId: string
   ): Promise<ProjectTreeResponse> {
-    // Round trip 1: fetch all entities in parallel (3 queries)
-    const [artifacts, features, externalLinks] = await Promise.all([
+    const [artifacts, externalLinks] = await Promise.all([
       withDb((db) =>
         db.document.findMany({
-          where: { projectId, organizationId },
-          include: { assignee: basicUserSelect },
-        })
-      ),
-      withDb((db) =>
-        db.feature.findMany({
           where: { projectId, organizationId },
           include: { assignee: basicUserSelect },
         })
@@ -39,7 +32,6 @@ export const projectTreeService = {
       ),
     ]);
 
-    // Build entity map
     const entityMap = new Map<EntityKey, TreeEntity>();
 
     for (const a of artifacts) {
@@ -52,18 +44,6 @@ export const projectTreeService = {
         status: a.status,
         assignee: a.assignee ?? null,
         createdAt: a.createdAt,
-      });
-    }
-    for (const f of features) {
-      entityMap.set(entityKey(f.id, EntityType.Feature), {
-        entityType: EntityType.Feature,
-        id: f.id,
-        slug: f.slug,
-        title: f.title,
-        status: f.status,
-        priority: f.priority,
-        assignee: f.assignee ?? null,
-        createdAt: f.createdAt,
       });
     }
     for (const e of externalLinks) {
@@ -81,16 +61,12 @@ export const projectTreeService = {
       return { nodes: [] };
     }
 
-    // Collect IDs per type for the entity link query
     const artifactIds = artifacts.map((a) => a.id);
-    const featureIds = features.map((f) => f.id);
     const externalLinkIds = externalLinks.map((e) => e.id);
 
-    // Round trip 2: fetch all relevant entity links (1 query)
     const allLinks = await fetchEntityLinks(
       organizationId,
       artifactIds,
-      featureIds,
       externalLinkIds
     );
 
@@ -156,7 +132,6 @@ function entityKey(id: string, type: string): EntityKey {
 function fetchEntityLinks(
   organizationId: string,
   artifactIds: string[],
-  featureIds: string[],
   externalLinkIds: string[]
 ): Promise<EntityLink[]> {
   const orClauses: Record<string, unknown>[] = [];
@@ -165,12 +140,6 @@ function fetchEntityLinks(
     orClauses.push(
       { sourceId: { in: artifactIds }, sourceType: EntityType.Document },
       { targetId: { in: artifactIds }, targetType: EntityType.Document }
-    );
-  }
-  if (featureIds.length > 0) {
-    orClauses.push(
-      { sourceId: { in: featureIds }, sourceType: EntityType.Feature },
-      { targetId: { in: featureIds }, targetType: EntityType.Feature }
     );
   }
   if (externalLinkIds.length > 0) {

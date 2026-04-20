@@ -10,7 +10,7 @@ export function registerGetLinearStatus(
     "get-linear-status",
     {
       description:
-        "Check the Linear integration connection status for the organization",
+        "Check the Linear integration connection status for the organization.",
     },
     () =>
       withErrorHandling(async () => {

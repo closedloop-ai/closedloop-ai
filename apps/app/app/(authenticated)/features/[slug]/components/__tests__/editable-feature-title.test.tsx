@@ -2,22 +2,22 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EditableFeatureTitle } from "../editable-feature-title";
 
-const mockUseUpdateFeature = vi.fn();
+const mockUseUpdateDocument = vi.fn();
 const mockMutateAsync = vi.fn();
 const FEATURE_TITLE_PLACEHOLDER = "Untitled feature";
 
-vi.mock("@/hooks/queries/use-features", async () => {
-  const actual = await vi.importActual("@/hooks/queries/use-features");
+vi.mock("@/hooks/queries/use-documents", async () => {
+  const actual = await vi.importActual("@/hooks/queries/use-documents");
   return {
     ...actual,
-    useUpdateFeature: () => mockUseUpdateFeature(),
+    useUpdateDocument: () => mockUseUpdateDocument(),
   };
 });
 
 describe("EditableFeatureTitle", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockUseUpdateFeature.mockReturnValue({
+    mockUseUpdateDocument.mockReturnValue({
       mutateAsync: mockMutateAsync,
     });
     mockMutateAsync.mockResolvedValue({
@@ -33,7 +33,7 @@ describe("EditableFeatureTitle", () => {
   it("renders the title as a textarea so long titles can wrap", () => {
     render(
       <EditableFeatureTitle
-        featureId="feature-1"
+        documentId="feature-1"
         initialTitle="A very long feature title that should wrap naturally"
       />
     );
@@ -49,7 +49,7 @@ describe("EditableFeatureTitle", () => {
   it("saves the updated title when Enter is pressed", async () => {
     render(
       <EditableFeatureTitle
-        featureId="feature-1"
+        documentId="feature-1"
         initialTitle="Original feature title"
       />
     );
@@ -72,7 +72,7 @@ describe("EditableFeatureTitle", () => {
   it("collapses pasted line breaks before saving the title", async () => {
     render(
       <EditableFeatureTitle
-        featureId="feature-1"
+        documentId="feature-1"
         initialTitle="Original feature title"
       />
     );

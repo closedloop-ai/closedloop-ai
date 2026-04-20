@@ -27,11 +27,13 @@ export function registerGetDocument(
     "get-document",
     {
       description:
-        "Get one document, such as a PRD, implementation plan, or template, by ID or slug.",
+        'Get one document — a PRD (PRD-*), implementation plan (PLN-*), or feature (FEA-*) — by UUID or slug. When the user references a record by its slug (e.g. "show me FEA-42"), pass that slug as documentId directly; no UUID lookup is needed.',
       inputSchema: {
         documentId: z
           .string()
-          .describe(describeIdOrSlug("Document", ["PRD-7", "PLAN-12"])),
+          .describe(
+            describeIdOrSlug("Document", ["PRD-7", "PLN-12", "FEA-42"])
+          ),
         includeContent: z
           .boolean()
           .optional()

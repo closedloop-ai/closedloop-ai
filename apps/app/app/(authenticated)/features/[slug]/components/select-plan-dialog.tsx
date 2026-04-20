@@ -32,7 +32,7 @@ export function SelectPlanDialog({
         createEntityLink.mutate(
           {
             sourceId: featureId,
-            sourceType: EntityType.Feature,
+            sourceType: EntityType.Document,
             targetId: plan.id,
             targetType: EntityType.Document,
             linkType: LinkType.Produces,

@@ -52,7 +52,7 @@ export function BranchesSection({
   const [showSelectPr, setShowSelectPr] = useState(false);
   const { data: linkedEntities = [] } = useLinkedEntities(
     featureId,
-    EntityType.Feature,
+    EntityType.Document,
     { mode: LinkQueryMode.Tree, direction: LinkDirection.Target }
   );
   const deleteLink = useDeleteEntityLink();

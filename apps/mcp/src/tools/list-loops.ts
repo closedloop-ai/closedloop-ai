@@ -19,12 +19,14 @@ export function registerListLoops(
     "list-loops",
     {
       description:
-        "List automation runs, called loops, with optional filters by document or status.",
+        "List automation runs (loops) with optional filters by document or status. The documentId filter accepts a document slug (PRD-*, PLN-*, FEA-*) verbatim.",
       inputSchema: {
         documentId: z
           .string()
           .optional()
-          .describe(describeIdOrSlug("Document", ["PRD-7", "PLAN-12"])),
+          .describe(
+            describeIdOrSlug("Document", ["PRD-7", "PLN-12", "FEA-42"])
+          ),
         status: z.enum(LoopStatus).optional().describe("Filter by loop status"),
         limit: z
           .number()

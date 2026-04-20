@@ -46,18 +46,16 @@ export const additionalReposSchema = z
 
 export const createLoopValidator = z.object({
   command: LoopCommandSchema,
-  documentId: z.uuidv7().optional(),
-  workstreamId: z.uuidv7().optional(),
+  documentId: z.uuid().optional(),
+  workstreamId: z.uuid().optional(),
   prompt: z.string().max(100_000).optional(),
   repo: repoSchema.optional(),
   additionalRepos: additionalReposSchema,
   contextRefs: z
     .array(
       z.object({
-        sourceId: z.uuidv7(),
-        sourceType: z
-          .enum([EntityType.Document, EntityType.Feature])
-          .optional(),
+        sourceId: z.uuid(),
+        sourceType: z.enum([EntityType.Document]).optional(),
         include: z.enum(["full", "summary"]),
       })
     )

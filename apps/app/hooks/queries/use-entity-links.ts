@@ -22,7 +22,6 @@ import {
 import { useApiClient } from "@/hooks/use-api-client";
 import { dashboardKeys } from "./use-dashboard-stats";
 import { documentKeys } from "./use-documents";
-import { featureKeys } from "./use-features";
 import { projectTreeKeys } from "./use-project-tree";
 import { projectKeys } from "./use-projects";
 
@@ -233,7 +232,7 @@ export function useLinkedPlanId(
 ) {
   const { data: targetLinks = [] } = useTargetLinks(
     featureId,
-    EntityType.Feature,
+    EntityType.Document,
     LinkType.Produces,
     options
   );
@@ -288,7 +287,6 @@ export function useBatchMoveEntities() {
         input
       ),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: featureKeys.all });
       queryClient.invalidateQueries({ queryKey: documentKeys.all });
       queryClient.invalidateQueries({ queryKey: entityLinkKeys.all });
       queryClient.invalidateQueries({ queryKey: projectKeys.all });
@@ -381,9 +379,7 @@ export function useParentFallbackMap(items: ParentFallbackItem[]) {
           continue;
         }
         const linkedParent = query.data.find(
-          (linked) =>
-            linked.resolvedEntity?.type === EntityType.Document ||
-            linked.resolvedEntity?.type === EntityType.Feature
+          (linked) => linked.resolvedEntity?.type === EntityType.Document
         );
         if (!linkedParent?.resolvedEntity) {
           continue;
@@ -410,9 +406,6 @@ function resolveEntityHref(linked: LinkedEntity): string | null {
       return null;
     }
     return `/${routePrefix}/${linked.resolvedEntity.entity.slug}`;
-  }
-  if (linked.resolvedEntity.type === EntityType.Feature) {
-    return `/features/${linked.resolvedEntity.entity.slug}`;
   }
   return null;
 }

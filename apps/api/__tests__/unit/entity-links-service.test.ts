@@ -11,7 +11,6 @@ vi.mock("@repo/database", () => ({
   Prisma: { DbNull: "DbNull" },
   EntityType: {
     DOCUMENT: "DOCUMENT",
-    FEATURE: "FEATURE",
     EXTERNAL_LINK: "EXTERNAL_LINK",
   },
 }));
@@ -226,47 +225,6 @@ describe("entityLinksService", () => {
       });
     });
 
-    it("resolves FEATURE with assignee/createdBy includes", async () => {
-      const mockFeature = { id: "i-1", title: "Bug report" };
-      const mockDb = {
-        feature: {
-          findUnique: vi.fn().mockResolvedValue(mockFeature),
-        },
-      };
-      mockWithDbCall(mockDb);
-
-      const result = await entityLinksService.resolveEntity(
-        ORG_ID,
-        "i-1",
-        "FEATURE"
-      );
-
-      expect(result).toEqual({ type: "FEATURE", entity: mockFeature });
-      expect(mockDb.feature.findUnique).toHaveBeenCalledWith({
-        where: { id: "i-1", organizationId: ORG_ID },
-        include: {
-          assignee: {
-            select: {
-              id: true,
-              email: true,
-              firstName: true,
-              lastName: true,
-              avatarUrl: true,
-            },
-          },
-          createdBy: {
-            select: {
-              id: true,
-              email: true,
-              firstName: true,
-              lastName: true,
-              avatarUrl: true,
-            },
-          },
-        },
-      });
-    });
-
     it("resolves EXTERNAL_LINK without includes", async () => {
       const mockLink = { id: "el-1", title: "PR #42" };
       const mockDb = {
@@ -321,11 +279,11 @@ describe("entityLinksService", () => {
 
   describe("resolveLinkedEntities", () => {
     it("resolves the 'other' entity on each link", async () => {
-      const linkAB = makeLink("l1", "a", "DOCUMENT", "b", "FEATURE");
-      const mockFeature = { id: "b", title: "Bug report" };
+      const linkAB = makeLink("l1", "a", "DOCUMENT", "b", "DOCUMENT");
+      const mockDocument = { id: "b", title: "Bug report" };
       const mockDb = {
-        feature: {
-          findUnique: vi.fn().mockResolvedValue(mockFeature),
+        document: {
+          findUnique: vi.fn().mockResolvedValue(mockDocument),
         },
       };
       mockWithDbCall(mockDb);
@@ -336,13 +294,13 @@ describe("entityLinksService", () => {
 
       expect(result).toHaveLength(1);
       expect(result[0].resolvedEntity).toEqual({
-        type: "FEATURE",
-        entity: mockFeature,
+        type: "DOCUMENT",
+        entity: mockDocument,
       });
     });
 
     it("resolves source when known entity is on the target side", async () => {
-      const link = makeLink("l1", "a", "DOCUMENT", "b", "FEATURE");
+      const link = makeLink("l1", "a", "DOCUMENT", "b", "DOCUMENT");
       const mockArtifact = { id: "a", title: "My PRD" };
       const mockDb = {
         document: {
@@ -363,15 +321,13 @@ describe("entityLinksService", () => {
     });
 
     it("deduplicates entities appearing in multiple links", async () => {
-      const link1 = makeLink("l1", "a", "DOCUMENT", "b", "FEATURE");
-      const link2 = makeLink("l2", "c", "DOCUMENT", "b", "FEATURE");
-      const mockFeature = { id: "b", title: "Shared feature" };
+      const link1 = makeLink("l1", "a", "DOCUMENT", "b", "DOCUMENT");
+      const link2 = makeLink("l2", "c", "DOCUMENT", "b", "DOCUMENT");
+      const mockShared = { id: "b", title: "Shared document" };
+      const findUniqueMock = vi.fn().mockResolvedValue(mockShared);
       const mockDb = {
-        feature: {
-          findUnique: vi.fn().mockResolvedValue(mockFeature),
-        },
         document: {
-          findUnique: vi.fn().mockResolvedValue({ id: "c", title: "Other" }),
+          findUnique: findUniqueMock,
         },
       };
       mockWithDbCall(mockDb);
@@ -382,14 +338,14 @@ describe("entityLinksService", () => {
       ]);
 
       expect(result).toHaveLength(2);
-      // b:FEATURE should only be resolved once
-      expect(mockDb.feature.findUnique).toHaveBeenCalledTimes(1);
+      // Shared "b" should only be resolved once
+      expect(findUniqueMock).toHaveBeenCalledTimes(1);
     });
 
     it("returns null for missing entities", async () => {
-      const link = makeLink("l1", "a", "DOCUMENT", "b", "FEATURE");
+      const link = makeLink("l1", "a", "DOCUMENT", "b", "DOCUMENT");
       const mockDb = {
-        feature: {
+        document: {
           findUnique: vi.fn().mockResolvedValue(null),
         },
       };
@@ -406,15 +362,15 @@ describe("entityLinksService", () => {
     it("resolves correct entity at each hop in a tree traversal", async () => {
       // Chain: A→B→C. fromEntityId tracks which BFS node found each link.
       const linkAB = makeLink("l1", "a", "DOCUMENT", "b", "DOCUMENT");
-      const linkBC = makeLink("l2", "b", "DOCUMENT", "c", "FEATURE");
+      const linkBC = makeLink("l2", "b", "DOCUMENT", "c", "DOCUMENT");
       const mockArtifactB = { id: "b", title: "Plan" };
-      const mockFeatureC = { id: "c", title: "Bug" };
+      const mockArtifactC = { id: "c", title: "Plan child" };
       const mockDb = {
         document: {
-          findUnique: vi.fn().mockResolvedValue(mockArtifactB),
-        },
-        feature: {
-          findUnique: vi.fn().mockResolvedValue(mockFeatureC),
+          findUnique: vi
+            .fn()
+            .mockResolvedValueOnce(mockArtifactB)
+            .mockResolvedValueOnce(mockArtifactC),
         },
       };
       mockWithDbCall(mockDb);
@@ -430,8 +386,8 @@ describe("entityLinksService", () => {
         entity: mockArtifactB,
       });
       expect(result[1].resolvedEntity).toEqual({
-        type: "FEATURE",
-        entity: mockFeatureC,
+        type: "DOCUMENT",
+        entity: mockArtifactC,
       });
     });
   });
@@ -540,11 +496,11 @@ describe("entityLinksService", () => {
     });
 
     it("traverses across entity types", async () => {
-      const linkArtFeature = makeLink("l1", "a", "DOCUMENT", "i", "FEATURE");
+      const linkArtFeature = makeLink("l1", "a", "DOCUMENT", "i", "DOCUMENT");
       const linkFeatureExt = makeLink(
         "l2",
         "i",
-        "FEATURE",
+        "DOCUMENT",
         "e",
         "EXTERNAL_LINK"
       );

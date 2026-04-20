@@ -896,7 +896,7 @@ describe("repairSinglePrLink — new functionality", () => {
     const mockEntityLinkFindManyFeature = vi.fn().mockResolvedValue([
       {
         sourceId: "feature-uuid-1",
-        sourceType: EntityType.Feature,
+        sourceType: EntityType.Document,
       },
     ]);
     const mockFeatureFindFirst = vi.fn().mockResolvedValue({
@@ -928,10 +928,10 @@ describe("repairSinglePrLink — new functionality", () => {
               findMany: mockEntityLinkFindManyFeature,
             },
           }),
-        // resolveWorkstreamId call 4: feature.findFirst
+        // resolveWorkstreamId call 4: document.findFirst (looking up Feature doc)
         (cb: any) =>
           cb({
-            feature: {
+            document: {
               findFirst: mockFeatureFindFirst,
             },
           }),

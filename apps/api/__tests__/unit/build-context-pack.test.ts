@@ -23,12 +23,6 @@ vi.mock("@/app/documents/service", () => ({
   getCommitterInfo: vi.fn(),
 }));
 
-vi.mock("@/app/features/service", () => ({
-  featuresService: {
-    findById: vi.fn().mockResolvedValue(null),
-  },
-}));
-
 vi.mock("@/app/loops/service", () => ({
   loopsService: {
     findById: vi.fn().mockResolvedValue(null),
@@ -51,7 +45,6 @@ vi.mock("@/app/documents/attachments-service", () => ({
   attachmentsService: {
     findByIdSimple: vi.fn().mockResolvedValue(null),
     listWithSignedUrlsByDocument: vi.fn().mockResolvedValue([]),
-    listWithSignedUrlsByFeature: vi.fn().mockResolvedValue([]),
   },
 }));
 
@@ -61,7 +54,6 @@ import { LoopCommand } from "@repo/api/src/types/loop";
 import { attachmentsService } from "@/app/documents/attachments-service";
 import { documentVersionService } from "@/app/documents/document-version-service";
 import { documentsService } from "@/app/documents/service";
-import { featuresService } from "@/app/features/service";
 import {
   buildContextPack,
   fetchAttachmentsForContextPack,
@@ -71,10 +63,6 @@ import { uploadContextPack } from "@/lib/loops/loop-state";
 const mockAttachmentsService = attachmentsService as unknown as {
   findByIdSimple: ReturnType<typeof vi.fn>;
   listWithSignedUrlsByDocument: ReturnType<typeof vi.fn>;
-  listWithSignedUrlsByFeature: ReturnType<typeof vi.fn>;
-};
-const mockFeaturesService = featuresService as unknown as {
-  findById: ReturnType<typeof vi.fn>;
 };
 const mockArtifactsService = documentsService as unknown as {
   findByIdSimple: ReturnType<typeof vi.fn>;
@@ -93,12 +81,14 @@ describe("buildContextPack", () => {
     mockUploadContextPack.mockResolvedValue("s3://mock-key");
   });
 
-  it("includes issue as FEATURE artifact via contextRef with sourceType ISSUE", async () => {
-    mockFeaturesService.findById.mockResolvedValue({
-      id: "issue-1",
+  it("includes feature-typed document via contextRef with sourceType FEATURE", async () => {
+    mockArtifactsService.findByIdSimple.mockResolvedValue({
+      id: "feature-1",
+      type: DocumentType.Feature,
       title: "User login flow",
-      description: "Implement the user login flow with OAuth",
-      workstreamId: "ws-1",
+    });
+    mockArtifactVersionService.getLatest.mockResolvedValue({
+      content: "Implement the user login flow with OAuth",
     });
 
     await buildContextPack(
@@ -113,8 +103,8 @@ describe("buildContextPack", () => {
         repo: { fullName: "org/repo", branch: "main" },
         contextRefs: [
           {
-            sourceId: "issue-1",
-            sourceType: EntityType.Feature,
+            sourceId: "feature-1",
+            sourceType: EntityType.Document,
             include: "full" as const,
           },
         ],
@@ -123,17 +113,16 @@ describe("buildContextPack", () => {
       "state-prefix"
     );
 
-    expect(mockFeaturesService.findById).toHaveBeenCalledWith(
-      "issue-1",
+    expect(mockArtifactsService.findByIdSimple).toHaveBeenCalledWith(
+      "feature-1",
       "org-1"
     );
 
     const uploadCall = mockUploadContextPack.mock.calls[0];
     const contextPack = uploadCall[1];
 
-    // Feature artifact should be first in the array
     expect(contextPack.artifacts[0]).toEqual({
-      id: "issue-1",
+      id: "feature-1",
       type: "FEATURE",
       title: "User login flow",
       content: "Implement the user login flow with OAuth",
@@ -157,11 +146,11 @@ describe("buildContextPack", () => {
       "state-prefix"
     );
 
-    expect(mockFeaturesService.findById).not.toHaveBeenCalled();
+    expect(mockArtifactsService.findByIdSimple).not.toHaveBeenCalled();
   });
 
-  it("gracefully handles issue not found", async () => {
-    mockFeaturesService.findById.mockResolvedValue(null);
+  it("gracefully handles feature not found", async () => {
+    mockArtifactsService.findByIdSimple.mockResolvedValue(null);
 
     await buildContextPack(
       {
@@ -175,8 +164,8 @@ describe("buildContextPack", () => {
         repo: { fullName: "org/repo", branch: "main" },
         contextRefs: [
           {
-            sourceId: "nonexistent-issue",
-            sourceType: EntityType.Feature,
+            sourceId: "nonexistent-feature",
+            sourceType: EntityType.Document,
             include: "full" as const,
           },
         ],
@@ -190,22 +179,35 @@ describe("buildContextPack", () => {
     expect(contextPack.artifacts).toEqual([]);
   });
 
-  it("includes PRD from contextRefs alongside issue artifact", async () => {
-    mockFeaturesService.findById.mockResolvedValue({
-      id: "issue-1",
-      title: "User login flow",
-      description: "Implement the user login flow",
-      workstreamId: "ws-1",
+  it("includes PRD from contextRefs alongside feature-typed document", async () => {
+    mockArtifactsService.findByIdSimple.mockImplementation((id: string) => {
+      if (id === "feature-1") {
+        return Promise.resolve({
+          id: "feature-1",
+          type: DocumentType.Feature,
+          title: "User login flow",
+        });
+      }
+      if (id === "prd-1") {
+        return Promise.resolve({
+          id: "prd-1",
+          type: DocumentType.Prd,
+          title: "Auth PRD",
+        });
+      }
+      return Promise.resolve(null);
     });
 
-    mockArtifactsService.findByIdSimple.mockResolvedValue({
-      id: "prd-1",
-      type: DocumentType.Prd,
-      title: "Auth PRD",
-    });
-
-    mockArtifactVersionService.getLatest.mockResolvedValue({
-      content: "# Authentication PRD\n\nFull PRD content here.",
+    mockArtifactVersionService.getLatest.mockImplementation((id: string) => {
+      if (id === "feature-1") {
+        return Promise.resolve({ content: "Implement the user login flow" });
+      }
+      if (id === "prd-1") {
+        return Promise.resolve({
+          content: "# Authentication PRD\n\nFull PRD content here.",
+        });
+      }
+      return Promise.resolve(null);
     });
 
     await buildContextPack(
@@ -220,8 +222,8 @@ describe("buildContextPack", () => {
         repo: { fullName: "org/repo", branch: "main" },
         contextRefs: [
           {
-            sourceId: "issue-1",
-            sourceType: EntityType.Feature,
+            sourceId: "feature-1",
+            sourceType: EntityType.Document,
             include: "full" as const,
           },
           { sourceId: "prd-1", include: "full" as const },
@@ -234,12 +236,15 @@ describe("buildContextPack", () => {
     const uploadCall = mockUploadContextPack.mock.calls[0];
     const contextPack = uploadCall[1];
 
-    // Feature artifact should come first, then PRD from contextRefs
     expect(contextPack.artifacts).toHaveLength(2);
-    expect(contextPack.artifacts[0].type).toBe("FEATURE");
-    expect(contextPack.artifacts[0].id).toBe("issue-1");
-    expect(contextPack.artifacts[1].type).toBe(DocumentType.Prd);
-    expect(contextPack.artifacts[1].id).toBe("prd-1");
+    const featureEntry = contextPack.artifacts.find(
+      (a: { id: string }) => a.id === "feature-1"
+    );
+    const prdEntry = contextPack.artifacts.find(
+      (a: { id: string }) => a.id === "prd-1"
+    );
+    expect(featureEntry?.type).toBe(DocumentType.Feature);
+    expect(prdEntry?.type).toBe(DocumentType.Prd);
   });
 
   it("existing PRD-only flow still works without issue refs", async () => {
@@ -303,8 +308,8 @@ describe("fetchAttachmentsForContextPack", () => {
     vi.clearAllMocks();
   });
 
-  it("calls listWithSignedUrlsByFeature for Feature contextRef with attachments", async () => {
-    mockAttachmentsService.listWithSignedUrlsByFeature.mockResolvedValue([
+  it("calls listWithSignedUrlsByDocument for feature-typed contextRef", async () => {
+    mockAttachmentsService.listWithSignedUrlsByDocument.mockResolvedValue([
       mockAttachment,
     ]);
 
@@ -315,7 +320,7 @@ describe("fetchAttachmentsForContextPack", () => {
         contextRefs: [
           {
             sourceId: "feature-1",
-            sourceType: EntityType.Feature,
+            sourceType: EntityType.Document,
             include: "full" as const,
           },
         ],
@@ -324,7 +329,7 @@ describe("fetchAttachmentsForContextPack", () => {
     );
 
     expect(
-      mockAttachmentsService.listWithSignedUrlsByFeature
+      mockAttachmentsService.listWithSignedUrlsByDocument
     ).toHaveBeenCalledWith("feature-1", "org-1");
     expect(result).toHaveLength(1);
     expect(result[0].id).toBe("att-1");
@@ -364,24 +369,23 @@ describe("fetchAttachmentsForContextPack", () => {
     );
 
     expect(
-      mockAttachmentsService.listWithSignedUrlsByFeature
-    ).not.toHaveBeenCalled();
-    expect(
       mockAttachmentsService.listWithSignedUrlsByDocument
     ).not.toHaveBeenCalled();
     expect(result).toHaveLength(0);
   });
 
-  it("fetches attachments from both Feature and Artifact contextRefs", async () => {
+  it("fetches attachments from both feature-typed and PRD contextRefs", async () => {
     const featureAtt = { ...mockAttachment, id: "att-feature" };
     const artifactAtt = { ...mockAttachment, id: "att-artifact" };
 
-    mockAttachmentsService.listWithSignedUrlsByFeature.mockResolvedValue([
-      featureAtt,
-    ]);
-    mockAttachmentsService.listWithSignedUrlsByDocument.mockResolvedValue([
-      artifactAtt,
-    ]);
+    mockAttachmentsService.listWithSignedUrlsByDocument.mockImplementation(
+      (sourceId: string) => {
+        if (sourceId === "feature-1") {
+          return Promise.resolve([featureAtt]);
+        }
+        return Promise.resolve([artifactAtt]);
+      }
+    );
 
     const result = await fetchAttachmentsForContextPack(
       {
@@ -391,7 +395,7 @@ describe("fetchAttachmentsForContextPack", () => {
         contextRefs: [
           {
             sourceId: "feature-1",
-            sourceType: EntityType.Feature,
+            sourceType: EntityType.Document,
             include: "full" as const,
           },
           { sourceId: "artifact-2", include: "full" as const },
@@ -594,7 +598,7 @@ describe("fetchAttachmentsForContextPack", () => {
   });
 
   it("returns empty array without propagating when service throws", async () => {
-    mockAttachmentsService.listWithSignedUrlsByFeature.mockRejectedValue(
+    mockAttachmentsService.listWithSignedUrlsByDocument.mockRejectedValue(
       new Error("DB connection failed")
     );
 
@@ -605,7 +609,7 @@ describe("fetchAttachmentsForContextPack", () => {
         contextRefs: [
           {
             sourceId: "feature-1",
-            sourceType: EntityType.Feature,
+            sourceType: EntityType.Document,
             include: "full" as const,
           },
         ],

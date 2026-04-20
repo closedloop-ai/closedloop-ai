@@ -5,9 +5,8 @@ import { EntityType, LinkType } from "@repo/api/src/types/entity-link";
 import { attachmentsService } from "@/app/documents/attachments-service";
 import { documentsService } from "@/app/documents/service";
 import { entityLinksService } from "@/app/entity-links/service";
-import { featuresService } from "@/app/features/service";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
-import { resolveFeatureId } from "@/lib/identifier-utils";
+import { resolveDocumentId } from "@/lib/identifier-utils";
 import {
   badRequestResponse,
   errorResponse,
@@ -19,13 +18,13 @@ import { createContextAttachmentValidator } from "./validators";
 
 export const POST = withAnyAuth<
   CreateContextAttachmentResponse,
-  "/features/[id]/context-attachments"
+  "/documents/[id]/context-attachments"
 >(async ({ user }, request, params) => {
   try {
     const { id } = await params;
-    const featureId = await resolveFeatureId(id, user.organizationId);
-    if (!featureId) {
-      return notFoundResponse("Feature");
+    const documentId = await resolveDocumentId(id, user.organizationId);
+    if (!documentId) {
+      return notFoundResponse("Document");
     }
 
     const { body, errorResponse: parseError } = await parseBody(
@@ -36,20 +35,19 @@ export const POST = withAnyAuth<
       return parseError;
     }
 
-    const feature = await featuresService.findById(
-      featureId,
+    const document = await documentsService.findById(
+      documentId,
       user.organizationId
     );
-    if (!feature) {
-      return notFoundResponse("Feature");
+    if (!document) {
+      return notFoundResponse("Document");
     }
 
-    // Document types (md, pdf, doc, docx, html) → create a PRD artifact + entity link
-    // Non-document types (images, video, spreadsheets) → attach directly to the feature
     if (isDocumentMimeType(body.mimeType)) {
-      return handleDocumentUpload(user, feature, featureId, body);
+      return await handleDocumentUpload(user, document, body);
     }
-    return handleDirectAttachment(user, featureId, body);
+
+    return await handleDirectAttachment(user, documentId, body);
   } catch (error) {
     return errorResponse("Failed to create context attachment", error);
   }
@@ -57,8 +55,11 @@ export const POST = withAnyAuth<
 
 async function handleDocumentUpload(
   user: { organizationId: string; id: string },
-  feature: { projectId: string; workstreamId: string | null },
-  featureId: string,
+  document: {
+    id: string;
+    projectId: string | null;
+    workstreamId: string | null;
+  },
   body: {
     filename: string;
     mimeType: string;
@@ -66,11 +67,14 @@ async function handleDocumentUpload(
     projectId?: string;
   }
 ) {
-  const projectId = body.projectId ?? feature.projectId;
-  if (!(projectId || feature.workstreamId)) {
+  const projectId = body.projectId ?? document.projectId;
+  if (!(projectId || document.workstreamId)) {
     return badRequestResponse(
       "Either projectId or workstreamId is required to attach context"
     );
+  }
+  if (!projectId) {
+    return badRequestResponse("projectId is required to create context PRD");
   }
 
   const artifact = await documentsService.create(user.organizationId, user.id, {
@@ -109,13 +113,13 @@ async function handleDocumentUpload(
     await entityLinksService.createLink(user.organizationId, {
       sourceId: artifact.id,
       sourceType: EntityType.Document,
-      targetId: featureId,
-      targetType: EntityType.Feature,
-      linkType: LinkType.RelatesTo,
+      targetId: document.id,
+      targetType: EntityType.Document,
+      linkType: LinkType.Produces,
     });
   } catch (linkError) {
     await documentsService.delete(artifact.id, user.organizationId);
-    return errorResponse("Failed to link artifact to feature", linkError);
+    return errorResponse("Failed to link artifact to document", linkError);
   }
 
   return successResponse({
@@ -127,11 +131,11 @@ async function handleDocumentUpload(
 
 async function handleDirectAttachment(
   user: { organizationId: string; id: string },
-  featureId: string,
+  documentId: string,
   body: { filename: string; mimeType: string; sizeBytes: number }
 ) {
-  const uploadResult = await attachmentsService.requestFeatureUpload(
-    featureId,
+  const uploadResult = await attachmentsService.requestUpload(
+    documentId,
     user.organizationId,
     user.id,
     body.filename,

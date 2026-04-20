@@ -51,7 +51,6 @@ import {
 } from "@/lib/loops/loop-status-utils";
 import { generateArtifactSlug } from "@/lib/slug-generator";
 import { entityLinksService } from "../entity-links/service";
-import { featuresService } from "../features/service";
 import { loopsService } from "../loops/service";
 import {
   DocumentNotFoundError,
@@ -620,26 +619,13 @@ export const documentsService = {
         },
       });
 
-      if (foundSource.type === EntityType.Feature) {
-        // Source is a Feature — update the artifact and the feature separately
-        await tx.document.update({
-          where: { id: artifact.id, organizationId },
-          data: { workstreamId: newWorkstream.id },
-        });
-        await tx.feature.update({
-          where: { id: foundSource.id, organizationId },
-          data: { workstreamId: newWorkstream.id },
-        });
-      } else {
-        // Source is an Artifact — update both artifacts
-        await tx.document.updateMany({
-          where: {
-            id: { in: [foundSource.id, artifact.id] },
-            organizationId,
-          },
-          data: { workstreamId: newWorkstream.id },
-        });
-      }
+      await tx.document.updateMany({
+        where: {
+          id: { in: [foundSource.id, artifact.id] },
+          organizationId,
+        },
+        data: { workstreamId: newWorkstream.id },
+      });
 
       const workstream = await tx.workstream.findUnique({
         where: { id: newWorkstream.id },
@@ -693,65 +679,45 @@ export const documentsService = {
       return null;
     }
 
-    // Partition by source type
     const documentLinks = sourceLinks.filter(
       (link) => link.sourceType === EntityType.Document
     );
-    const featureLinks = sourceLinks.filter(
-      (link) => link.sourceType === EntityType.Feature
+
+    if (documentLinks.length === 0) {
+      return null;
+    }
+
+    const sourceDocuments = await withDb((db) =>
+      db.document.findMany({
+        where: {
+          id: { in: documentLinks.map((link) => link.sourceId) },
+          organizationId: artifact.organizationId,
+          type: { in: [DocumentType.Prd, DocumentType.Feature] },
+        },
+      })
     );
 
-    // Try Artifact sources first (existing behavior — find PRD)
-    if (documentLinks.length > 0) {
-      const sourceDocuments = await withDb((db) =>
-        db.document.findMany({
-          where: {
-            id: { in: documentLinks.map((link) => link.sourceId) },
-            organizationId: artifact.organizationId,
-            type: DocumentType.Prd,
-          },
-        })
-      );
-
-      const sourceDocument =
-        sourceDocuments.length > 0 ? sourceDocuments[0] : null;
-
-      if (sourceDocument) {
-        const latestVersion = await documentVersionService.getLatest(
-          sourceDocument.id
-        );
-        return {
-          id: sourceDocument.id,
-          type: EntityType.Document,
-          title: sourceDocument.title,
-          content: latestVersion?.content ?? null,
-          targetRepo: sourceDocument.targetRepo,
-          targetBranch: sourceDocument.targetBranch,
-          workstreamId: sourceDocument.workstreamId,
-        };
-      }
+    if (sourceDocuments.length === 0) {
+      return null;
     }
 
-    // Try Feature sources
-    if (featureLinks.length > 0) {
-      const feature = await featuresService.findById(
-        featureLinks[0].sourceId,
-        artifact.organizationId
-      );
-      if (feature) {
-        return {
-          id: feature.id,
-          type: EntityType.Feature,
-          title: feature.title,
-          content: feature.description,
-          targetRepo: null,
-          targetBranch: null,
-          workstreamId: feature.workstreamId,
-        };
-      }
-    }
+    const prdSource = sourceDocuments.find(
+      (doc) => doc.type === DocumentType.Prd
+    );
+    const sourceDocument = prdSource ?? sourceDocuments[0];
 
-    return null;
+    const latestVersion = await documentVersionService.getLatest(
+      sourceDocument.id
+    );
+    return {
+      id: sourceDocument.id,
+      type: EntityType.Document,
+      title: sourceDocument.title,
+      content: latestVersion?.content ?? null,
+      targetRepo: sourceDocument.targetRepo,
+      targetBranch: sourceDocument.targetBranch,
+      workstreamId: sourceDocument.workstreamId,
+    };
   },
 
   /**
@@ -2633,16 +2599,30 @@ Please try again or contact support if the issue persists.`
   ): Promise<StartPlanLoopFromLocalResult> {
     const { featureId, ticketTitle, selectedDocumentId } = input;
 
-    const feature = await featuresService.findById(featureId, organizationId);
-    if (!feature) {
+    const feature = await withDb((db) =>
+      db.document.findFirst({
+        where: {
+          id: featureId,
+          organizationId,
+          type: DocumentType.Feature,
+        },
+        select: { id: true, title: true, projectId: true },
+      })
+    );
+    if (!feature?.projectId) {
       throw new Error(`Feature not found: ${featureId}`);
     }
+    const featureDoc = {
+      id: feature.id,
+      title: feature.title,
+      projectId: feature.projectId,
+    };
 
     // Find existing FEATURE -> PRODUCES -> ARTIFACT (implementation-plan) entity links
     const targetLinks = await entityLinksService.findTargetLinks(
       organizationId,
       featureId,
-      EntityType.Feature,
+      EntityType.Document,
       LinkType.Produces
     );
 
@@ -2667,7 +2647,7 @@ Please try again or contact support if the issue persists.`
       organizationId,
       userId,
       featureId,
-      feature,
+      feature: featureDoc,
       linkedPlans,
       selectedDocumentId,
       ticketTitle,
@@ -2782,7 +2762,7 @@ async function resolveOrCreatePlanDocument(opts: {
           where: {
             organizationId,
             sourceId: featureId,
-            sourceType: EntityType.Feature,
+            sourceType: EntityType.Document,
             targetId: { in: allLinkedPlanIds },
             targetType: EntityType.Document,
             linkType: LinkType.Produces,
@@ -2794,7 +2774,7 @@ async function resolveOrCreatePlanDocument(opts: {
         data: {
           organizationId,
           sourceId: featureId,
-          sourceType: EntityType.Feature,
+          sourceType: EntityType.Document,
           targetId: selectedDocumentId,
           targetType: EntityType.Document,
           linkType: LinkType.Produces,
@@ -2820,7 +2800,7 @@ async function resolveOrCreatePlanDocument(opts: {
     title,
     content: "",
     sourceId: featureId,
-    sourceType: EntityType.Feature,
+    sourceType: EntityType.Document,
     projectId: feature.projectId,
     status: DocumentStatus.Draft,
   };

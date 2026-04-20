@@ -363,8 +363,8 @@ async function main() {
         | "OBSOLETE";
       priority: "LOW" | "MEDIUM" | "HIGH" | "URGENT";
     }) {
-      let feature = await prisma.feature.findFirst({
-        where: { organizationId, slug: data.slug },
+      let feature = await prisma.document.findFirst({
+        where: { organizationId, slug: data.slug, type: "FEATURE" },
       });
 
       if (feature) {
@@ -372,18 +372,26 @@ async function main() {
         return feature;
       }
 
-      feature = await prisma.feature.create({
+      feature = await prisma.document.create({
         data: {
           organizationId,
           projectId: data.projectId,
           workstreamId: data.workstreamId,
+          type: "FEATURE",
           title: data.title,
           slug: data.slug,
-          description: data.description,
           status: data.status,
           priority: data.priority,
           createdById: userId,
           assigneeId: userId,
+          latestVersion: 1,
+          versions: {
+            create: {
+              version: 1,
+              content: data.description,
+              createdById: userId,
+            },
+          },
         },
       });
       console.log(`  Feature: ${data.slug} (${feature.id})`);
@@ -486,8 +494,8 @@ async function main() {
     async function upsertEntityLink(data: {
       sourceId: string;
       targetId: string;
-      sourceType: "DOCUMENT" | "FEATURE" | "EXTERNAL_LINK";
-      targetType: "DOCUMENT" | "FEATURE" | "EXTERNAL_LINK";
+      sourceType: "DOCUMENT" | "EXTERNAL_LINK";
+      targetType: "DOCUMENT" | "EXTERNAL_LINK";
       linkType: "PRODUCES" | "BLOCKS" | "RELATES_TO";
     }) {
       const existing = await prisma.entityLink.findFirst({
@@ -540,12 +548,12 @@ async function main() {
       linkType: "PRODUCES",
     });
 
-    // Feature relates to feature
+    // Feature relates to feature (features are documents with type=FEATURE)
     await upsertEntityLink({
       sourceId: feature1.id,
       targetId: feature3.id,
-      sourceType: "FEATURE",
-      targetType: "FEATURE",
+      sourceType: "DOCUMENT",
+      targetType: "DOCUMENT",
       linkType: "RELATES_TO",
     });
 

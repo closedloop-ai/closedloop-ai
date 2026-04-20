@@ -15,8 +15,6 @@ export const attachmentKeys = {
   lists: () => [...attachmentKeys.all, "list"] as const,
   list: (documentId: string) =>
     [...attachmentKeys.lists(), documentId] as const,
-  issueList: (issueId: string) =>
-    [...attachmentKeys.all, "issue-list", issueId] as const,
   detail: (id: string) => [...attachmentKeys.all, "detail", id] as const,
 };
 
@@ -79,38 +77,6 @@ export function useDeleteAttachment(documentId: string) {
     onSuccess: () => {
       queryClient.invalidateQueries({
         queryKey: attachmentKeys.list(documentId),
-      });
-    },
-  });
-}
-
-export function useFeatureAttachments(
-  featureId: string,
-  options?: Omit<UseQueryOptions<FileAttachment[]>, "queryKey" | "queryFn">
-) {
-  const apiClient = useApiClient();
-
-  return useQuery({
-    queryKey: attachmentKeys.issueList(featureId),
-    queryFn: () =>
-      apiClient.get<FileAttachment[]>(`/features/${featureId}/attachments`),
-    enabled: !!featureId,
-    ...options,
-  });
-}
-
-export function useDeleteFeatureAttachment(featureId: string) {
-  const queryClient = useQueryClient();
-  const apiClient = useApiClient();
-
-  return useMutation({
-    mutationFn: (attachmentId: string) =>
-      apiClient.delete<{ deleted: true }>(
-        `/features/${featureId}/attachments/${attachmentId}`
-      ),
-    onSuccess: () => {
-      queryClient.invalidateQueries({
-        queryKey: attachmentKeys.issueList(featureId),
       });
     },
   });

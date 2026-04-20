@@ -79,7 +79,7 @@ describe("customFieldValuesService.setValueForEntity — ENUM validation", () =>
   ) {
     mockWithDb.mockImplementation((callback: any) => {
       const db = {
-        feature: {
+        document: {
           findFirst: vi.fn().mockResolvedValue({ id: TEST_ENTITY_ID }),
         },
         customField: {
@@ -93,7 +93,7 @@ describe("customFieldValuesService.setValueForEntity — ENUM validation", () =>
             id: "cfv-1",
             customFieldId: TEST_FIELD_ID,
             organizationId: TEST_ORG_ID,
-            entityType: CustomFieldEntityType.Feature,
+            entityType: CustomFieldEntityType.Document,
             entityId: TEST_ENTITY_ID,
             textValue: null,
             numberValue: null,
@@ -131,7 +131,7 @@ describe("customFieldValuesService.setValueForEntity — ENUM validation", () =>
     await expect(
       customFieldValuesService.setValueForEntity(
         TEST_FIELD_ID,
-        CustomFieldEntityType.Feature,
+        CustomFieldEntityType.Document,
         TEST_ENTITY_ID,
         TEST_ORG_ID,
         "opt-belongs-to-other-field"
@@ -161,7 +161,7 @@ describe("customFieldValuesService.setValueForEntity — ENUM validation", () =>
     await expect(
       customFieldValuesService.setValueForEntity(
         TEST_FIELD_ID,
-        CustomFieldEntityType.Feature,
+        CustomFieldEntityType.Document,
         TEST_ENTITY_ID,
         TEST_ORG_ID,
         TEST_OPTION_ID
@@ -194,7 +194,7 @@ describe("customFieldValuesService.setValueForEntity — PEOPLE validation", () 
 
     mockWithDb.mockImplementation((callback: any) => {
       const db = {
-        feature: {
+        document: {
           findFirst: vi.fn().mockResolvedValue({ id: TEST_ENTITY_ID }),
         },
         customField: {
@@ -212,7 +212,7 @@ describe("customFieldValuesService.setValueForEntity — PEOPLE validation", () 
     await expect(
       customFieldValuesService.setValueForEntity(
         TEST_FIELD_ID,
-        CustomFieldEntityType.Feature,
+        CustomFieldEntityType.Document,
         TEST_ENTITY_ID,
         TEST_ORG_ID,
         ["user-known", "user-unknown"]
@@ -295,8 +295,10 @@ describe("customFieldValuesService.attachField — Project cascade", () => {
         workstream: {
           findMany: vi.fn().mockResolvedValue([{ id: "ws-1" }, { id: "ws-2" }]),
         },
-        feature: {
-          findMany: vi.fn().mockResolvedValue([{ id: "iss-1" }]),
+        document: {
+          findMany: vi
+            .fn()
+            .mockResolvedValue([{ id: "doc-feat-1" }, { id: "doc-feat-2" }]),
         },
       };
       return callback(tx);
@@ -319,22 +321,24 @@ describe("customFieldValuesService.attachField — Project cascade", () => {
 
     const createManyArgs = mockCreateMany.mock.calls[0][0];
 
-    // 2 workstreams + 1 feature = 3 child setting records
-    expect(createManyArgs.data).toHaveLength(3);
+    // 2 workstreams + 2 feature-typed documents = 4 child setting records
+    expect(createManyArgs.data).toHaveLength(4);
 
     const workstreamRecords = createManyArgs.data.filter(
       (d: any) => d.entityType === CustomFieldEntityType.Workstream
     );
-    const featureRecords = createManyArgs.data.filter(
-      (d: any) => d.entityType === CustomFieldEntityType.Feature
+    const documentRecords = createManyArgs.data.filter(
+      (d: any) => d.entityType === CustomFieldEntityType.Document
     );
 
     expect(workstreamRecords).toHaveLength(2);
     expect(workstreamRecords.map((r: any) => r.entityId)).toEqual(
       expect.arrayContaining(["ws-1", "ws-2"])
     );
-    expect(featureRecords).toHaveLength(1);
-    expect(featureRecords[0].entityId).toBe("iss-1");
+    expect(documentRecords).toHaveLength(2);
+    expect(documentRecords.map((r: any) => r.entityId)).toEqual(
+      expect.arrayContaining(["doc-feat-1", "doc-feat-2"])
+    );
   });
 
   it("does not call createMany when the Project has no child Workstreams or Features", async () => {
@@ -394,7 +398,7 @@ describe("customFieldValuesService.attachField — Project cascade", () => {
         workstream: {
           findMany: vi.fn().mockResolvedValue([]),
         },
-        feature: {
+        document: {
           findMany: vi.fn().mockResolvedValue([]),
         },
       };

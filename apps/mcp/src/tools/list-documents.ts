@@ -27,16 +27,16 @@ export function registerListDocuments(
     "list-documents",
     {
       description:
-        "List documents: PRDs, implementation plans, and templates. Filter by project, workstream, type, or assignee.",
+        "List documents — PRDs (PRD-*), implementation plans (PLN-*), and features (FEA-*). Filter by project, workstream, type, or assignee. Returned `slug` values are the preferred user-facing handles for follow-up calls.",
       inputSchema: {
         projectId: z
           .string()
           .optional()
-          .describe(describeIdOrSlug("Project", "PROJ-7")),
+          .describe(describeIdOrSlug("Project", "PRO-7")),
         workstreamId: z
           .string()
           .optional()
-          .describe(describeIdOrSlug("Workstream", "WORK-3")),
+          .describe(describeIdOrSlug("Workstream", "WRK-3")),
         assigneeId: z
           .string()
           .optional()

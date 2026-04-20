@@ -2,10 +2,10 @@
 
 import {
   type Document,
+  type DocumentDetail,
   type GenerationStatus,
   isActiveGenerationStatus,
 } from "@repo/api/src/types/document";
-import type { FeatureWithWorkstream } from "@repo/api/src/types/feature";
 import { isDisplayableSlug } from "@repo/api/src/types/slug";
 import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
@@ -31,7 +31,7 @@ import { SectionHeader } from "./section-header";
 import { SelectPlanDialog } from "./select-plan-dialog";
 
 type PlanSectionProps = {
-  feature: FeatureWithWorkstream;
+  feature: DocumentDetail;
   showGenerateModal: boolean;
   onGenerateModalChange: (open: boolean) => void;
   generationStatus?: GenerationStatus;

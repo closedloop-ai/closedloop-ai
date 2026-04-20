@@ -1,32 +1,35 @@
 "use client";
 
+import type { DocumentDetail } from "@repo/api/src/types/document";
 import { EntityType } from "@repo/api/src/types/entity-link";
-import type { FeatureWithWorkstream } from "@repo/api/src/types/feature";
 import { useMemo } from "react";
 import type { PlanSource } from "@/app/(authenticated)/implementation-plans/components/plan-source";
 import { useLinkedPlanId } from "@/hooks/queries/use-entity-links";
 
 /**
- * Derives feature workflow state from the feature's entity links.
+ * Derives feature workflow state from the feature-typed document's entity links.
  *
  * Centralizes the plan-link query and derived booleans (`hasPlan`, `isReady`,
- * `linkedPlanId`) so that feature-page, PlanSection, and BranchesSection
- * don't each compute them independently.
+ * `linkedPlanId`) so feature-page, PlanSection, and BranchesSection don't each
+ * compute them independently.
  */
-export function useFeatureState(feature: FeatureWithWorkstream) {
+export function useFeatureState(feature: DocumentDetail) {
   const { targetLinks, linkedPlanLink, linkedPlanId } = useLinkedPlanId(
     feature.id
   );
 
   const hasPlan = !!linkedPlanId;
-  const isReady = !!feature.description?.trim();
+  const isReady = !!feature.version.content?.trim();
 
   const newPlanSource: PlanSource = useMemo(() => {
     return {
-      ...feature,
-      sourceType: EntityType.Feature,
+      id: feature.id,
+      title: feature.title,
+      projectId: feature.projectId,
+      workstreamId: feature.workstreamId,
+      sourceType: EntityType.Document,
     };
-  }, [feature]);
+  }, [feature.id, feature.title, feature.projectId, feature.workstreamId]);
 
   return {
     targetLinks,

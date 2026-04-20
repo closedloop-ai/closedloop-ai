@@ -8,15 +8,11 @@ import type { EntityType } from "./entity-link";
 import type { BasicUser } from "./user";
 import type { WorkstreamState } from "./workstream";
 
-/**
- * Document types in the new schema.
- * Only PRD, IMPLEMENTATION_PLAN, and TEMPLATE remain as document types.
- * Issues and external links (PR, Figma, etc.) are separate entities now.
- */
 export const DocumentType = {
   Prd: "PRD",
   ImplementationPlan: "IMPLEMENTATION_PLAN",
   Template: "TEMPLATE",
+  Feature: "FEATURE",
 } as const;
 export type DocumentType = (typeof DocumentType)[keyof typeof DocumentType];
 export const DOCUMENT_TYPE_OPTIONS = Object.values(DocumentType);
@@ -31,6 +27,7 @@ export const DOCUMENT_TYPE_OPTIONS = Object.values(DocumentType);
 export const TYPE_ROUTE_PREFIX: Partial<Record<DocumentType, string>> = {
   PRD: "prds",
   IMPLEMENTATION_PLAN: "implementation-plans",
+  FEATURE: "features",
 };
 
 /**

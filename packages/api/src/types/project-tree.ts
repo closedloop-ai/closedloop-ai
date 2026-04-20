@@ -2,11 +2,9 @@
 // Hierarchical view of all documents, features, and external links in a project,
 // organized by entity link chains.
 
-import type { Priority } from "./common";
 import type { DocumentStatus, DocumentType } from "./document";
 import type { EntityType, LinkType } from "./entity-link";
 import type { ExternalLinkType } from "./external-link";
-import type { FeatureStatus } from "./feature";
 import type { BasicUser } from "./user";
 
 /** Lightweight representation of any entity in the project tree. */
@@ -18,16 +16,6 @@ export type TreeEntity =
       title: string;
       type: DocumentType;
       status: DocumentStatus;
-      assignee: BasicUser | null;
-      createdAt: Date;
-    }
-  | {
-      entityType: typeof EntityType.Feature;
-      id: string;
-      slug: string;
-      title: string;
-      status: FeatureStatus;
-      priority: Priority;
       assignee: BasicUser | null;
       createdAt: Date;
     }

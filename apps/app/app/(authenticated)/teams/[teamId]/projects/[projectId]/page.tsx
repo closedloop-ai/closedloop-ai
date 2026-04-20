@@ -2,11 +2,9 @@
 
 import type { Priority } from "@repo/api/src/types/common";
 import {
-  type DocumentStatus,
   DocumentType,
   isActiveGenerationStatus,
 } from "@repo/api/src/types/document";
-import type { FeatureStatus } from "@repo/api/src/types/feature";
 import { ProjectStatus } from "@repo/api/src/types/project";
 import type { WorkstreamState } from "@repo/api/src/types/workstream";
 import { Button } from "@repo/design-system/components/ui/button";
@@ -56,11 +54,6 @@ import {
   useDocumentsByProject,
   useUpdateDocument,
 } from "@/hooks/queries/use-documents";
-import {
-  useDeleteFeature,
-  useFeatures,
-  useUpdateFeature,
-} from "@/hooks/queries/use-features";
 import { useLoopsByProject } from "@/hooks/queries/use-loops";
 import {
   useDeleteProject,
@@ -172,10 +165,11 @@ export default function ProjectDetailPage() {
   // Show toast notification when PRs are merged
   useMergeNotification(activityData, projectId, teamId);
 
-  // Poll artifacts when any workstream is actively running (e.g., execution in progress).
-  const { data: artifacts = [], isLoading: loadingArtifacts } =
+  // Single project-scoped fetch for all documents (PRDs, plans, features).
+  // Artifacts and features are derived client-side so mutations invalidating
+  // documentKeys.list({projectId}) keep both views consistent.
+  const { data: allDocuments = [], isLoading: loadingArtifacts } =
     useDocumentsByProject(projectId, {
-      staleTime: 4000,
       refetchInterval: (query) => {
         const data = query.state.data ?? [];
         const hasActiveWorkstream = data.some(
@@ -192,10 +186,6 @@ export default function ProjectDetailPage() {
       },
     });
 
-  const { data: features = [], isLoading: loadingFeatures } = useFeatures({
-    projectId,
-  });
-
   const { data: loops = [] } = useLoopsByProject(projectId, {
     refetchInterval: 10_000,
   });
@@ -204,14 +194,10 @@ export default function ProjectDetailPage() {
   const team = teamData ? { id: teamData.id, name: teamData.name } : null;
   const activities = activityData?.activities ?? [];
 
-  const hasArtifactItems = artifacts.length > 0 || features.length > 0;
+  const hasArtifactItems = allDocuments.length > 0;
 
   const loading =
-    loadingTeam ||
-    loadingProject ||
-    loadingActivity ||
-    loadingArtifacts ||
-    loadingFeatures;
+    loadingTeam || loadingProject || loadingActivity || loadingArtifacts;
   const error = teamError?.message || projectError?.message || null;
 
   // Team members for inline editing
@@ -228,8 +214,7 @@ export default function ProjectDetailPage() {
 
   // Project filters
   const filtersReturn = useProjectFilters({
-    artifacts,
-    features,
+    documents: allDocuments,
     filterCategory,
     currentUserId: currentUser?.id,
   });
@@ -259,10 +244,8 @@ export default function ProjectDetailPage() {
   } = useProjectStatusHandler({
     onArchived: () => router.push(`/teams/${teamId}/projects`),
   });
-  const updateArtifactMutation = useUpdateDocument();
-  const updateFeatureMutation = useUpdateFeature();
-  const deleteArtifactMutation = useDeleteDocument();
-  const deleteFeatureMutation = useDeleteFeature();
+  const updateDocumentMutation = useUpdateDocument();
+  const deleteDocumentMutation = useDeleteDocument();
 
   const handleUpdatePriority = (priority: Priority) => {
     if (!project) {
@@ -291,13 +274,6 @@ export default function ProjectDetailPage() {
     });
   };
 
-  const handleDocumentStatusChange = (
-    documentId: string,
-    status: DocumentStatus
-  ) => {
-    updateArtifactMutation.mutate({ id: documentId, status });
-  };
-
   const handleCreateArtifact = (type: DocumentType) => {
     setSelectedDocumentType(type);
     setCreateArtifactOpen(true);
@@ -313,11 +289,7 @@ export default function ProjectDetailPage() {
   const handleDeleteArtifact = async (
     item: DocumentRowItem
   ): Promise<boolean> => {
-    if (item.kind === "feature") {
-      const result = await deleteFeatureMutation.mutateAsync(item.data.id);
-      return result.deleted ?? false;
-    }
-    const result = await deleteArtifactMutation.mutateAsync(item.data.id);
+    const result = await deleteDocumentMutation.mutateAsync(item.data.id);
     return result.deleted ?? false;
   };
 
@@ -327,47 +299,19 @@ export default function ProjectDetailPage() {
       teamMembers,
       activeLoops,
       onUpdateAssignee: (itemId, assigneeId) => {
-        // Determine if it's an artifact or issue by checking both lists
-        const isArtifact = artifacts.some((a) => a.id === itemId);
-        if (isArtifact) {
-          updateArtifactMutation.mutate({ id: itemId, assigneeId });
-        } else {
-          updateFeatureMutation.mutate({ id: itemId, assigneeId });
-        }
+        updateDocumentMutation.mutate({ id: itemId, assigneeId });
       },
       onUpdatePriority: (itemId, priority) => {
-        const isArtifact = artifacts.some((a) => a.id === itemId);
-        if (isArtifact) {
-          updateArtifactMutation.mutate({ id: itemId, priority });
-        } else {
-          updateFeatureMutation.mutate({ id: itemId, priority });
-        }
+        updateDocumentMutation.mutate({ id: itemId, priority });
       },
       onUpdateDueDate: (_itemId, _date) => {
         // Due date update not yet supported on artifacts/issues — placeholder
       },
       onUpdateStatus: (itemId, status) => {
-        const isArtifact = artifacts.some((a) => a.id === itemId);
-        if (isArtifact) {
-          updateArtifactMutation.mutate({
-            id: itemId,
-            status: status as DocumentStatus,
-          });
-        } else {
-          updateFeatureMutation.mutate({
-            id: itemId,
-            status: status as FeatureStatus,
-          });
-        }
+        updateDocumentMutation.mutate({ id: itemId, status });
       },
     }),
-    [
-      teamMembers,
-      activeLoops,
-      artifacts,
-      updateArtifactMutation,
-      updateFeatureMutation,
-    ]
+    [teamMembers, activeLoops, updateDocumentMutation]
   );
 
   if (loading) {
@@ -611,16 +555,14 @@ export default function ProjectDetailPage() {
                   ? filtersReturn.applyFilters
                   : undefined
               }
-              artifacts={artifacts}
+              documents={allDocuments}
               editHandlers={artifactEditHandlers}
-              features={features}
               filterCategory={filterCategory}
               filterText={filterText}
               groupByStatus={groupByStatus}
               isFilterActive={filtersReturn.isAnyFilterActive}
               onClearFilters={filtersReturn.clearAllFilters}
               onDelete={handleDeleteArtifact}
-              onStatusChange={handleDocumentStatusChange}
               projectId={projectId}
               teamId={teamId}
               visibleColumns={visibleColumns}

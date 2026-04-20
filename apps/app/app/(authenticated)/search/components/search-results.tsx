@@ -1,12 +1,11 @@
 "use client";
 
 import {
-  type DocumentType,
+  DocumentType,
   getRoutePrefixForType,
 } from "@repo/api/src/types/document";
 import type {
   DocumentSearchResult,
-  FeatureSearchResult,
   ProjectSearchResult,
   WorkstreamSearchResult,
 } from "@repo/api/src/types/search";
@@ -49,17 +48,21 @@ export function SearchResults() {
   }
 
   const totalResults = data
-    ? data.documents.length +
-      data.features.length +
-      data.workstreams.length +
-      data.projects.length
+    ? data.documents.length + data.workstreams.length + data.projects.length
     : 0;
+
+  const notFeatures = data?.documents.filter(
+    (d) => d.type !== DocumentType.Feature
+  );
+  const features = data?.documents.filter(
+    (d) => d.type === DocumentType.Feature
+  );
 
   return (
     <>
       <div className="mb-2">
         <p className="text-muted-foreground">
-          {`${totalResults} result${totalResults !== 1 ? "s" : ""} for "${query}"`}
+          {`${totalResults} result${totalResults === 1 ? "" : "s"} for "${query}"`}
         </p>
       </div>
 
@@ -69,21 +72,15 @@ export function SearchResults() {
         </div>
       )}
 
-      {data && data.documents.length > 0 && (
-        <ArtifactsSection artifacts={data.documents} />
-      )}
+      {notFeatures?.length && <ArtifactsSection artifacts={notFeatures} />}
 
-      {data && data.features.length > 0 && (
-        <FeaturesSection features={data.features} />
-      )}
+      {features?.length && <FeaturesSection features={features} />}
 
-      {data && data.workstreams.length > 0 && (
+      {data?.workstreams.length && (
         <WorkstreamsSection workstreams={data.workstreams} />
       )}
 
-      {data && data.projects.length > 0 && (
-        <ProjectsSection projects={data.projects} />
-      )}
+      {data?.projects.length && <ProjectsSection projects={data.projects} />}
     </>
   );
 }
@@ -172,7 +169,7 @@ function ArtifactsSection({
 
 function FeaturesSection({
   features,
-}: Readonly<{ features: FeatureSearchResult[] }>) {
+}: Readonly<{ features: DocumentSearchResult[] }>) {
   return (
     <section>
       <SectionHeader count={features.length} title="Features" />

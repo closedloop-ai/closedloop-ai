@@ -19,7 +19,7 @@ export function registerListEntityLinks(
     "list-entity-links",
     {
       description:
-        "List typed relationships for an entity, such as PRD-to-plan or feature-to-feature.",
+        "List typed relationships for an entity, such as PRD-to-plan or feature-to-feature. Pass the user's slug (PRD-*, PLN-*, FEA-*) verbatim for entityId.",
       inputSchema: {
         entityId: z.string().describe(`Entity ID. ${ENTITY_LINK_SLUG_HELP}`),
         entityType: z.enum(ENTITY_TYPE_VALUES).describe("Type of the entity"),

@@ -41,7 +41,6 @@ vi.mock("@/app/documents/service", () => ({
 vi.mock("@/app/documents/attachments-service", () => ({
   attachmentsService: {
     listWithSignedUrlsByDocument: vi.fn().mockResolvedValue([]),
-    listWithSignedUrlsByFeature: vi.fn().mockResolvedValue([]),
   },
   ATTACHMENT_SIGNED_URL_MAX_FILES: 20,
 }));

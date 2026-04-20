@@ -82,7 +82,7 @@ export function SelectPullRequestDialog({
     if (featureId) {
       return {
         id: featureId,
-        type: EntityType.Feature,
+        type: EntityType.Document,
       };
     }
 
@@ -110,7 +110,7 @@ export function SelectPullRequestDialog({
     isLoading: isLoadingSourceLinkedEntities,
   } = useLinkedEntities(
     linkSource?.id ?? "",
-    linkSource?.type ?? EntityType.Feature,
+    linkSource?.type ?? EntityType.Document,
     {
       direction: LinkDirection.Target,
       enabled: open && !!linkSource,

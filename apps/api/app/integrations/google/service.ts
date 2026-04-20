@@ -11,7 +11,6 @@ import {
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
 import pLimit from "p-limit";
-import sanitizeHtml from "sanitize-html";
 import { documentsService } from "@/app/documents/service";
 import { projectsService } from "@/app/projects/service";
 
@@ -441,52 +440,20 @@ export const googleService = {
             return;
           }
 
-          // Sanitize markdown (remove scripts, limit tags)
-          const sanitized = sanitizeHtml(markdown, {
-            allowedTags: [
-              "b",
-              "i",
-              "em",
-              "strong",
-              "p",
-              "ul",
-              "ol",
-              "li",
-              "h1",
-              "h2",
-              "h3",
-              "h4",
-              "h5",
-              "h6",
-              "a",
-              "code",
-              "pre",
-              "blockquote",
-              "br",
-              "hr",
-              "table",
-              "thead",
-              "tbody",
-              "tr",
-              "th",
-              "td",
-            ],
-            allowedAttributes: {
-              a: ["href"],
-            },
-            allowedSchemes: ["http", "https"],
-          });
-
-          // Enforce size limit (1MB)
+          // Markdown is stored verbatim; the renderer sanitizes at render
+          // time (markdown → HTML). HTML-sanitizing raw markdown corrupts URL
+          // query strings (`&` → `&amp;`), strips `<https://…>` autolinks, and
+          // mangles code blocks that legitimately contain angle brackets.
           const MAX_SIZE = 1024 * 1024; // 1MB
-          let content = sanitized;
+          let content = markdown;
           if (content.length > MAX_SIZE) {
             content = content.substring(0, MAX_SIZE);
             log.warn("[google/import] Truncated doc to 1MB", {
               organizationId,
               docId: doc.id,
               docTitle: doc.name,
-              originalSize: sanitized.length,
+              originalSize: markdown.length,
+              truncatedSize: content.length,
             });
           }
 

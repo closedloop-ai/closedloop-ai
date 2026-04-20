@@ -163,7 +163,7 @@ describe("SelectPullRequestDialog", () => {
     expect(mockCreateEntityLink).toHaveBeenCalledWith({
       linkType: LinkType.Produces,
       sourceId: "feature-1",
-      sourceType: EntityType.Feature,
+      sourceType: EntityType.Document,
       targetId: "external-link-101",
       targetType: EntityType.ExternalLink,
     });

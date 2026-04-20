@@ -12,7 +12,6 @@ import {
   isUuid,
   resolveDocumentId,
   resolveEntityLinkIdentifier,
-  resolveFeatureId,
   resolveProjectId,
   resolveWorkstreamId,
   uuidOrSlug,
@@ -71,14 +70,7 @@ describe("uuidOrSlug", () => {
   });
 
   it("accepts all typed slug prefixes", () => {
-    for (const slug of [
-      "PRO-1",
-      "WRK-99",
-      "PRD-42",
-      "PLN-7",
-      "FEA-123",
-      "BRN-1",
-    ]) {
+    for (const slug of ["PRO-1", "WRK-99", "PRD-42", "PLN-7", "FEA-123"]) {
       expect(schema.safeParse(slug).success).toBe(true);
     }
   });
@@ -150,30 +142,6 @@ describe("resolveDocumentId", () => {
   });
 });
 
-describe("resolveFeatureId", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it("returns UUID directly when input is a UUID", async () => {
-    const uuid = "01932b3a-7e4d-7c8f-9a1b-2c3d4e5f6a7b";
-    const result = await resolveFeatureId(uuid, "org-1");
-    expect(result).toBe(uuid);
-  });
-
-  it("queries by slug when input is not a UUID", async () => {
-    const mockDb = {
-      feature: {
-        findUnique: vi.fn().mockResolvedValue({ id: "feature-uuid" }),
-      },
-    };
-    mockWithDbCall(mockDb);
-
-    const result = await resolveFeatureId("FEAT-42", "org-1");
-    expect(result).toBe("feature-uuid");
-  });
-});
-
 describe("resolveProjectId", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -241,22 +209,6 @@ describe("resolveEntityLinkIdentifier", () => {
       EntityType.Document
     );
     expect(result).toBe("art-uuid");
-  });
-
-  it("resolves feature slug via resolveFeatureId", async () => {
-    const mockDb = {
-      feature: {
-        findUnique: vi.fn().mockResolvedValue({ id: "feature-uuid" }),
-      },
-    };
-    mockWithDbCall(mockDb);
-
-    const result = await resolveEntityLinkIdentifier(
-      "FEAT-42",
-      "org-1",
-      EntityType.Feature
-    );
-    expect(result).toBe("feature-uuid");
   });
 
   it("returns UUID directly for ExternalLink when input is a UUID", async () => {

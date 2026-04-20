@@ -19,11 +19,14 @@ export function registerListDocumentVersions(
   server.registerTool(
     "list-document-versions",
     {
-      description: "List saved versions for a document by ID or slug.",
+      description:
+        "List saved versions for a document by UUID or slug (PRD-*, PLN-*, FEA-*). Pass the user's slug verbatim.",
       inputSchema: {
         documentId: z
           .string()
-          .describe(describeIdOrSlug("Document", ["PRD-7", "PLAN-12"])),
+          .describe(
+            describeIdOrSlug("Document", ["PRD-7", "PLN-12", "FEA-42"])
+          ),
         limit: z
           .number()
           .int()

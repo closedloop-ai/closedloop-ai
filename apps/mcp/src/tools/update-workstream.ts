@@ -16,11 +16,12 @@ export function registerUpdateWorkstream(
   server.registerTool(
     "update-workstream",
     {
-      description: "Update a workstream, meaning an initiative, by ID or slug.",
+      description:
+        "Update a workstream (an initiative or track of work) by UUID or slug (WRK-*). Pass the user's slug verbatim.",
       inputSchema: {
         workstreamId: z
           .string()
-          .describe(describeIdOrSlug("Workstream", "WORK-5")),
+          .describe(describeIdOrSlug("Workstream", "WRK-5")),
         title: z.string().optional().describe("New title for the workstream"),
         description: z
           .string()

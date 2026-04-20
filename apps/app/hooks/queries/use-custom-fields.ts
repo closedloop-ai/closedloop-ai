@@ -19,7 +19,6 @@ import {
 } from "@tanstack/react-query";
 import { useApiClient } from "@/hooks/use-api-client";
 import { documentKeys } from "./use-documents";
-import { featureKeys } from "./use-features";
 import { projectKeys } from "./use-projects";
 import { workstreamKeys } from "./use-workstreams";
 
@@ -187,10 +186,6 @@ function getEntityDetailKey(
   if (entityType === CustomFieldEntityType.Workstream) {
     return workstreamKeys.detail(entityId);
   }
-  if (entityType === CustomFieldEntityType.Feature) {
-    return featureKeys.detail(entityId);
-  }
-  // Artifact
   return documentKeys.detail(entityId);
 }
 

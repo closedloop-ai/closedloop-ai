@@ -13,7 +13,7 @@ export function registerCreateEntityLink(
     "create-entity-link",
     {
       description:
-        "Create a typed relationship between entities, such as PRD-to-plan or feature-to-artifact.",
+        "Create a typed relationship between entities, such as PRD-to-plan or feature-to-document. Pass the user's slug (PRD-7, PLN-4, FEA-42, PRO-3, WRK-5) verbatim for sourceId/targetId when available.",
       inputSchema: {
         sourceId: z
           .string()

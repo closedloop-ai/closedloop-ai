@@ -2,14 +2,7 @@
  * Known slug prefixes used by the typed slug generator.
  * Must stay in sync with SlugPrefix in apps/api/lib/slug-generator.ts.
  */
-export const TYPED_SLUG_PREFIXES = [
-  "PRO",
-  "WRK",
-  "PRD",
-  "PLN",
-  "FEA",
-  "BRN",
-] as const;
+export const TYPED_SLUG_PREFIXES = ["PRO", "WRK", "PRD", "PLN", "FEA"] as const;
 
 export const TYPED_SLUG_PATTERN = new RegExp(
   String.raw`^(${TYPED_SLUG_PREFIXES.join("|")})-\d+$`

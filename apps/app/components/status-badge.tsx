@@ -3,7 +3,6 @@
 import { useFeatureFlag } from "@repo/analytics/client";
 import { Priority } from "@repo/api/src/types/common";
 import { DocumentStatus } from "@repo/api/src/types/document";
-import { FeatureStatus } from "@repo/api/src/types/feature";
 import {
   LoopCommand,
   LoopErrorCode,
@@ -133,43 +132,10 @@ export const PrdStatusBadge = DocumentStatusBadge;
 // Alias for Implementation Plans
 export const ImplementationPlanStatusBadge = DocumentStatusBadge;
 
-// Feature status colors
-export const featureStatusColors: Record<FeatureStatus, string> = {
-  [FeatureStatus.Draft]: "bg-muted text-muted-foreground border-muted",
-  [FeatureStatus.InProgress]: COLOR_PROGRESS,
-  [FeatureStatus.InReview]: COLOR_PROGRESS,
-  [FeatureStatus.Approved]: COLOR_PROGRESS,
-  [FeatureStatus.Executed]: COLOR_PROGRESS,
-  [FeatureStatus.Done]: COLOR_SUCCESS,
-  [FeatureStatus.Obsolete]: COLOR_INACTIVE,
-};
-
-export const featureStatusLabels: Record<FeatureStatus, string> = {
-  [FeatureStatus.Draft]: "Draft",
-  [FeatureStatus.InProgress]: "In Progress",
-  [FeatureStatus.InReview]: "In Review",
-  [FeatureStatus.Approved]: "Approved",
-  [FeatureStatus.Executed]: "Executed",
-  [FeatureStatus.Done]: "Done",
-  [FeatureStatus.Obsolete]: "Obsolete",
-};
-
-export function FeatureStatusBadge({
-  status,
-}: Readonly<{ status: FeatureStatus }>) {
-  const displayStatus = featureStatusLabels[status] ?? status;
-  return (
-    <Badge
-      className={cn(
-        "font-medium",
-        featureStatusColors[status] ?? featureStatusColors.DRAFT
-      )}
-      variant="outline"
-    >
-      {displayStatus}
-    </Badge>
-  );
-}
+// Feature status badge — feature-typed documents share DocumentStatus.
+export const featureStatusColors = artifactStatusColors;
+export const featureStatusLabels = artifactStatusLabels;
+export const FeatureStatusBadge = DocumentStatusBadge;
 
 // Feature priority colors
 export const featurePriorityColors: Record<Priority, string> = {

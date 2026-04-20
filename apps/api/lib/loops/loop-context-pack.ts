@@ -8,7 +8,7 @@
 
 import type { ContextPackAttachment } from "@closedloop-ai/loops-api/context-pack";
 import { DocumentType } from "@repo/api/src/types/document";
-import { EntityType } from "@repo/api/src/types/entity-link";
+import type { EntityType } from "@repo/api/src/types/entity-link";
 import type { AdditionalRepoRefWithToken } from "@repo/api/src/types/loop";
 import { LoopCommand } from "@repo/api/src/types/loop";
 import { log } from "@repo/observability/log";
@@ -18,7 +18,6 @@ import {
 } from "@/app/documents/attachments-service";
 import { documentVersionService } from "@/app/documents/document-version-service";
 import { documentsService } from "@/app/documents/service";
-import { featuresService } from "@/app/features/service";
 import { loopsService } from "@/app/loops/service";
 import { getCommandHandler } from "./loop-commands";
 import {
@@ -111,46 +110,16 @@ async function fetchContextRefArtifacts(
 
   // Exclude the primary artifact from context refs to avoid duplication
   const refs = loop.contextRefs.filter(
-    (ref) =>
-      ref.sourceId !== loop.documentId || ref.sourceType === EntityType.Feature
+    (ref) => ref.sourceId !== loop.documentId
   );
 
   const results = await Promise.all(
-    refs.map((ref) => {
-      if (ref.sourceType === EntityType.Feature) {
-        return fetchFeatureRef(ref, organizationId, loop.id);
-      }
-      return fetchArtifactRef(ref, organizationId, loop.id);
-    })
+    refs.map((ref) => fetchArtifactRef(ref, organizationId, loop.id))
   );
 
   return results.filter((item): item is NonNullable<typeof item> =>
     Boolean(item)
   );
-}
-
-async function fetchFeatureRef(
-  ref: { sourceId: string; include: "full" | "summary" },
-  organizationId: string,
-  loopId: string
-): Promise<ContextPack["artifacts"][number] | null> {
-  const feature = await featuresService.findById(ref.sourceId, organizationId);
-  if (!feature) {
-    log.warn("[loop-context-pack] Feature not found for context ref", {
-      loopId,
-      featureId: ref.sourceId,
-    });
-    return null;
-  }
-
-  const content = feature.description ?? "";
-
-  return {
-    id: feature.id,
-    type: "FEATURE",
-    title: feature.title,
-    content: ref.include === "summary" ? truncateForSummary(content) : content,
-  };
 }
 
 async function fetchArtifactRef(
@@ -373,18 +342,11 @@ async function collectContextRefAttachments(
   const result: ContextPackAttachment[] = [];
   for (const ref of contextRefs) {
     try {
-      let refAttachments: ContextPackAttachment[];
-      if (ref.sourceType === EntityType.Feature) {
-        refAttachments = await attachmentsService.listWithSignedUrlsByFeature(
+      const refAttachments =
+        await attachmentsService.listWithSignedUrlsByDocument(
           ref.sourceId,
           organizationId
         );
-      } else {
-        refAttachments = await attachmentsService.listWithSignedUrlsByDocument(
-          ref.sourceId,
-          organizationId
-        );
-      }
       result.push(...refAttachments);
     } catch (error) {
       log.warn("[loop-context-pack] Failed to fetch context ref attachments", {

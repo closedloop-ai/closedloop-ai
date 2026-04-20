@@ -1,10 +1,6 @@
 "use client";
 
 import type { Priority } from "@repo/api/src/types/common";
-import type {
-  FeatureStatus,
-  FeatureWithWorkstream,
-} from "@repo/api/src/types/feature";
 import { Button } from "@repo/design-system/components/ui/button";
 import { Input } from "@repo/design-system/components/ui/input";
 import { BoxIcon, LayoutGridIcon, ListIcon, SearchIcon } from "lucide-react";
@@ -20,10 +16,10 @@ import { FilterPopover } from "@/components/document-table/filter-popover";
 import { FlatDocumentTable } from "@/components/document-table/flat-document-table";
 import { TableViewMenu } from "@/components/document-table/table-view-menu";
 import {
-  useDeleteFeature,
-  useFeatures,
-  useUpdateFeature,
-} from "@/hooks/queries/use-features";
+  useDeleteDocument,
+  useDocuments,
+  useUpdateDocument,
+} from "@/hooks/queries/use-documents";
 import { useProjects } from "@/hooks/queries/use-projects";
 import { useCurrentUser } from "@/hooks/queries/use-users";
 import {
@@ -56,7 +52,7 @@ export default function MyTasksPage() {
     () => buildFeatureListParams(assigneeId),
     [assigneeId]
   );
-  const { data: rawFeatures = [], isLoading: isFeaturesLoading } = useFeatures(
+  const { data: rawFeatures = [], isLoading: isFeaturesLoading } = useDocuments(
     listParams,
     { enabled: !!assigneeId && !isUserLoading }
   );
@@ -79,8 +75,8 @@ export default function MyTasksPage() {
 
   // ---- Edit handlers ----
 
-  const updateFeatureMutation = useUpdateFeature();
-  const deleteFeatureMutation = useDeleteFeature();
+  const updateFeatureMutation = useUpdateDocument();
+  const deleteFeatureMutation = useDeleteDocument();
 
   const orgUsers = useOrgUsersAsPopoverUsers();
 
@@ -92,7 +88,7 @@ export default function MyTasksPage() {
       onUpdatePriority: (id, priority: Priority) =>
         updateFeatureMutation.mutate({ id, priority }),
       onUpdateStatus: (id, status) =>
-        updateFeatureMutation.mutate({ id, status: status as FeatureStatus }),
+        updateFeatureMutation.mutate({ id, status }),
     }),
     [orgUsers, updateFeatureMutation.mutate]
   );
@@ -139,7 +135,7 @@ export default function MyTasksPage() {
     () =>
       displayItems
         .filter((item) => item.kind === "feature")
-        .map((item) => item.data as FeatureWithWorkstream),
+        .map((item) => item.data),
     [displayItems]
   );
 

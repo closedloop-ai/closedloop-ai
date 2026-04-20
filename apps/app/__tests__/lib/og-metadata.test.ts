@@ -77,7 +77,7 @@ describe("resolveOgMetadata", () => {
       const metadata = await resolveOgMetadata("features/fix-login-bug");
 
       expect(fetch).toHaveBeenCalledWith(
-        "http://localhost:3002/features/by-slug/fix-login-bug/meta",
+        "http://localhost:3002/documents/by-slug/fix-login-bug/meta",
         expect.any(Object)
       );
       expect(metadata.title).toBe("Fix login bug | ClosedLoop.ai");

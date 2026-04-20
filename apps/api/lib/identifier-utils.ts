@@ -64,22 +64,6 @@ export async function resolveDocumentId(
   return row?.id ?? null;
 }
 
-export async function resolveFeatureId(
-  id: string,
-  organizationId: string
-): Promise<string | null> {
-  if (isUuid(id)) {
-    return id;
-  }
-  const row = await withDb((db) =>
-    db.feature.findUnique({
-      where: { organizationId_slug: { organizationId, slug: id } },
-      select: { id: true },
-    })
-  );
-  return row?.id ?? null;
-}
-
 export async function resolveProjectId(
   id: string,
   organizationId: string
@@ -114,7 +98,7 @@ export async function resolveWorkstreamId(
 
 /**
  * Entity-type-aware resolver for entity-link params.
- * Supports slug resolution for ARTIFACT and FEATURE only.
+ * Supports slug resolution for DOCUMENT only.
  * EXTERNAL_LINK has no slug field — non-UUID input returns null immediately.
  */
 export function resolveEntityLinkIdentifier(
@@ -125,8 +109,6 @@ export function resolveEntityLinkIdentifier(
   switch (entityType) {
     case EntityType.Document:
       return resolveDocumentId(id, organizationId);
-    case EntityType.Feature:
-      return resolveFeatureId(id, organizationId);
     case EntityType.ExternalLink:
       return Promise.resolve(isUuid(id) ? id : null);
     default:

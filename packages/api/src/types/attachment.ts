@@ -8,7 +8,6 @@
 export type FileAttachment = {
   id: string;
   documentId: string;
-  featureId?: string;
   filename: string;
   mimeType: string;
   sizeBytes: number;

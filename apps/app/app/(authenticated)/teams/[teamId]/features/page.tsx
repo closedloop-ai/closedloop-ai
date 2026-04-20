@@ -1,7 +1,7 @@
 "use client";
 
 import type { Priority } from "@repo/api/src/types/common";
-import type { FeatureStatus } from "@repo/api/src/types/feature";
+import { DocumentType } from "@repo/api/src/types/document";
 import { Button } from "@repo/design-system/components/ui/button";
 import { Input } from "@repo/design-system/components/ui/input";
 import { BoxIcon, Loader2Icon, PlusIcon, SearchIcon } from "lucide-react";
@@ -19,10 +19,10 @@ import { FilterPopover } from "@/components/document-table/filter-popover";
 import { FlatDocumentTable } from "@/components/document-table/flat-document-table";
 import { TableViewMenu } from "@/components/document-table/table-view-menu";
 import {
-  useDeleteFeature,
-  useFeaturesByTeam,
-  useUpdateFeature,
-} from "@/hooks/queries/use-features";
+  useDeleteDocument,
+  useDocumentsByTeam,
+  useUpdateDocument,
+} from "@/hooks/queries/use-documents";
 import { useTeam } from "@/hooks/queries/use-teams";
 import { useCurrentUser } from "@/hooks/queries/use-users";
 import {
@@ -57,7 +57,7 @@ export default function TeamFeaturesPage() {
 
   const { data: team, isLoading: loadingTeam } = useTeam(teamId);
   const { data: features = [], isLoading: loadingFeatures } =
-    useFeaturesByTeam(teamId);
+    useDocumentsByTeam(teamId, DocumentType.Feature);
   const orgUsers = useOrgUsersAsPopoverUsers();
   const { data: currentUser } = useCurrentUser();
 
@@ -67,8 +67,8 @@ export default function TeamFeaturesPage() {
     error: teamMembersError,
   } = useTeamMembers({ teamIds: team ? [team.id] : [] });
 
-  const deleteFeatureMutation = useDeleteFeature();
-  const updateFeatureMutation = useUpdateFeature();
+  const deleteFeatureMutation = useDeleteDocument();
+  const updateFeatureMutation = useUpdateDocument();
 
   const allItems: DocumentRowItem[] = useMemo(
     () => features.map((f) => ({ kind: "feature" as const, data: f })),
@@ -124,7 +124,7 @@ export default function TeamFeaturesPage() {
       onUpdatePriority: (id, priority: Priority) =>
         updateFeatureMutation.mutate({ id, priority }),
       onUpdateStatus: (id, status) =>
-        updateFeatureMutation.mutate({ id, status: status as FeatureStatus }),
+        updateFeatureMutation.mutate({ id, status }),
     }),
     [orgUsers, updateFeatureMutation.mutate]
   );

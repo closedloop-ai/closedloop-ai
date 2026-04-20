@@ -7,16 +7,14 @@ import { EntityType, LinkType } from "@repo/api/src/types/entity-link";
 import { exportDocAsMarkdown, getDocName } from "@repo/google";
 import { log } from "@repo/observability/log";
 import pLimit from "p-limit";
-import sanitizeHtml from "sanitize-html";
 import { documentsService } from "@/app/documents/service";
 import { entityLinksService } from "@/app/entity-links/service";
-import { featuresService } from "@/app/features/service";
 import {
   ensureValidAccessToken,
   googleService,
 } from "@/app/integrations/google/service";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
-import { resolveFeatureId } from "@/lib/identifier-utils";
+import { resolveDocumentId } from "@/lib/identifier-utils";
 import {
   errorResponse,
   notFoundResponse,
@@ -25,21 +23,14 @@ import {
 } from "@/lib/route-utils";
 import { importGDriveContextValidator } from "../validators";
 
-/**
- * POST /features/[id]/context-attachments/gdrive
- *
- * Import one or more Google Drive documents as PRD artifacts linked to a feature.
- * Requires docIds and projectId in request body.
- * Returns per-document success/failure results.
- */
 export const POST = withAnyAuth<
   ImportGDriveContextResponse,
-  "/features/[id]/context-attachments/gdrive"
+  "/documents/[id]/context-attachments/gdrive"
 >(async ({ user }, request, params) => {
   const { id } = await params;
-  const featureId = await resolveFeatureId(id, user.organizationId);
-  if (!featureId) {
-    return notFoundResponse("Feature");
+  const documentId = await resolveDocumentId(id, user.organizationId);
+  if (!documentId) {
+    return notFoundResponse("Document");
   }
 
   const { body, errorResponse: parseError } = await parseBody(
@@ -51,16 +42,14 @@ export const POST = withAnyAuth<
     return parseError;
   }
 
-  // Validate feature exists
-  const feature = await featuresService.findById(
-    featureId,
+  const document = await documentsService.findById(
+    documentId,
     user.organizationId
   );
-  if (!feature) {
-    return notFoundResponse("Feature");
+  if (!document) {
+    return notFoundResponse("Document");
   }
 
-  // Fetch Google integration
   const googleIntegration = await googleService.getIntegration(
     user.organizationId
   );
@@ -89,59 +78,25 @@ export const POST = withAnyAuth<
   const failures: GDriveContextImportResult[] = [];
 
   const MAX_CONTENT_SIZE = 1024 * 1024; // 1MB
-  const SANITIZE_OPTIONS = {
-    allowedTags: [
-      "b",
-      "i",
-      "em",
-      "strong",
-      "p",
-      "ul",
-      "ol",
-      "li",
-      "h1",
-      "h2",
-      "h3",
-      "h4",
-      "h5",
-      "h6",
-      "a",
-      "code",
-      "pre",
-      "blockquote",
-      "br",
-      "hr",
-      "table",
-      "thead",
-      "tbody",
-      "tr",
-      "th",
-      "td",
-    ],
-    allowedAttributes: { a: ["href"] },
-    allowedSchemes: ["http", "https"],
-  };
 
   const importPromises = body.docIds.map((docId) =>
     limit(async () => {
       try {
-        // Fetch doc name and content in parallel
         const [docName, markdown] = await Promise.all([
           getDocName(docId, accessToken),
           exportDocAsMarkdown(docId, accessToken),
         ]);
 
-        // Sanitize and enforce size limit
-        let content = sanitizeHtml(markdown, SANITIZE_OPTIONS);
+        let content = markdown;
         if (content.length > MAX_CONTENT_SIZE) {
           content = content.substring(0, MAX_CONTENT_SIZE);
           log.warn("[gdrive-context] Truncated doc to 1MB", {
             docId,
             originalSize: markdown.length,
+            truncatedSize: content.length,
           });
         }
 
-        // Create PRD artifact with actual doc content
         const artifact = await documentsService.create(
           user.organizationId,
           user.id,
@@ -163,14 +118,13 @@ export const POST = withAnyAuth<
           return;
         }
 
-        // Link artifact to feature — clean up artifact on failure
         try {
           await entityLinksService.createLink(user.organizationId, {
             sourceId: artifact.id,
             sourceType: EntityType.Document,
-            targetId: featureId,
-            targetType: EntityType.Feature,
-            linkType: LinkType.RelatesTo,
+            targetId: documentId,
+            targetType: EntityType.Document,
+            linkType: LinkType.Produces,
           });
         } catch (linkError) {
           await documentsService.delete(artifact.id, user.organizationId);

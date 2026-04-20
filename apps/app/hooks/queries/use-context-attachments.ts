@@ -39,7 +39,7 @@ export function useCreateContextAttachment(
     ...options,
     mutationFn: (input: CreateContextAttachmentInput) =>
       apiClient.post<CreateContextAttachmentResponse>(
-        `/features/${featureId}/context-attachments`,
+        `/documents/${featureId}/context-attachments`,
         input
       ),
     onSuccess: (data, variables, onMutateResult, mutationContext) => {
@@ -64,7 +64,7 @@ export function useImportGDriveContext(
     ...options,
     mutationFn: (input: ImportGDriveContextInput) =>
       apiClient.post<ImportGDriveContextResponse>(
-        `/features/${featureId}/context-attachments/gdrive`,
+        `/documents/${featureId}/context-attachments/gdrive`,
         input
       ),
     onSuccess: (data, variables, onMutateResult, mutationContext) => {

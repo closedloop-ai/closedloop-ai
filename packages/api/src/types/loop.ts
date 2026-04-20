@@ -55,10 +55,7 @@ export { LoopCommand, LoopStatus, type TokensByModel };
 
 // --- API-specific types (not in shared contract) ---
 
-export type SourceContextType = (typeof EntityType)[keyof Pick<
-  typeof EntityType,
-  "Document" | "Feature"
->];
+export type SourceContextType = typeof EntityType.Document;
 
 // Compute target summary (for loop list/detail views)
 export type ComputeTargetSummary = {

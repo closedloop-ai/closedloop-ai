@@ -15,11 +15,13 @@ export function registerCreateDocumentVersion(
     "create-document-version",
     {
       description:
-        "Append a new version to a document by ID or slug. Older versions stay in history.",
+        "Append a new version to a document by UUID or slug (PRD-*, PLN-*, FEA-*). Older versions stay in history. Pass the user's slug verbatim.",
       inputSchema: {
         documentId: z
           .string()
-          .describe(describeIdOrSlug("Document", ["PRD-7", "PLAN-12"])),
+          .describe(
+            describeIdOrSlug("Document", ["PRD-7", "PLN-12", "FEA-42"])
+          ),
         content: z.string().describe("Full content for the new version"),
       },
     },

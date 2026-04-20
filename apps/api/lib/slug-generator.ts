@@ -8,7 +8,6 @@ export const SlugPrefix = {
   Prd: "PRD",
   Plan: "PLN",
   Feature: "FEA",
-  Branch: "BRN",
 } as const;
 export type SlugPrefix = (typeof SlugPrefix)[keyof typeof SlugPrefix];
 
@@ -53,5 +52,5 @@ export async function generateArtifactSlug(
 const ARTIFACT_SLUG_PREFIXES: Partial<Record<DocumentType, SlugPrefix>> = {
   [DocumentType.Prd]: SlugPrefix.Prd,
   [DocumentType.ImplementationPlan]: SlugPrefix.Plan,
-  [DocumentType.Template]: SlugPrefix.Branch,
+  [DocumentType.Feature]: SlugPrefix.Feature,
 };

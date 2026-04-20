@@ -24,11 +24,6 @@ export async function assertEntityInOrganization(
           where: { id: entityId, organizationId },
           select: { id: true },
         });
-      case EntityType.Feature:
-        return db.feature.findFirst({
-          where: { id: entityId, organizationId },
-          select: { id: true },
-        });
       case EntityType.ExternalLink:
         return db.externalLink.findFirst({
           where: { id: entityId, organizationId },

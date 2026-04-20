@@ -10,8 +10,6 @@ import {
   DocumentType,
 } from "@repo/api/src/types/document";
 import type { JudgeFeedbackItem } from "@repo/api/src/types/evaluation";
-import type { FeatureWithWorkstream } from "@repo/api/src/types/feature";
-import { FEATURE_STATUS_OPTIONS } from "@repo/api/src/types/feature";
 import type { LoopWithUser } from "@repo/api/src/types/loop";
 import type { ProjectWithDetails } from "@repo/api/src/types/project";
 import { isDisplayableSlug } from "@repo/api/src/types/slug";
@@ -71,8 +69,6 @@ import {
   DOCUMENT_STATUS_TO_ICON,
   DOCUMENT_TYPE_BADGE_LABELS,
   DOCUMENT_TYPE_COLORS,
-  FEATURE_STATUS_LABELS,
-  FEATURE_STATUS_TO_ICON,
   PRIORITY_LABELS,
 } from "@/lib/project-constants";
 import { getUserDisplayName } from "@/lib/user-utils";
@@ -81,7 +77,7 @@ import { getUserDisplayName } from "@/lib/user-utils";
 
 export type DocumentRowItem =
   | { kind: "artifact"; data: DocumentWithWorkstream }
-  | { kind: "feature"; data: FeatureWithWorkstream }
+  | { kind: "feature"; data: DocumentWithWorkstream }
   | { kind: "project"; data: ProjectWithDetails };
 
 // ---- Edit handlers context ----
@@ -90,7 +86,7 @@ export type RowEditHandlers = {
   onUpdateAssignee?: (itemId: string, assigneeId: string | null) => void;
   onUpdatePriority?: (itemId: string, priority: Priority) => void;
   onUpdateDueDate?: (itemId: string, date: Date | null) => void;
-  onUpdateStatus?: (itemId: string, status: string) => void;
+  onUpdateStatus?: (itemId: string, status: DocumentStatus) => void;
   /** Team members for the UserSelectPopover. */
   teamMembers?: User[];
   /** Active loops for displaying per-artifact loop status. */
@@ -179,11 +175,9 @@ function NameCell({
     );
   }
 
-  // Artifact / feature rows: status icon + title
+  // Artifact / feature rows: status icon + title (both are documents now)
   const statusIcon =
-    item.kind === "artifact"
-      ? DOCUMENT_STATUS_TO_ICON[item.data.status as DocumentStatus]
-      : FEATURE_STATUS_TO_ICON[item.data.status];
+    DOCUMENT_STATUS_TO_ICON[item.data.status as DocumentStatus];
 
   const thinking =
     item.kind === "artifact" &&
@@ -192,16 +186,9 @@ function NameCell({
       item.data.generationStatus.status
     );
 
-  const isArtifact = item.kind === "artifact";
-  const statusLabels = isArtifact
-    ? DOCUMENT_STATUS_LABELS
-    : FEATURE_STATUS_LABELS;
-  const statusIcons = isArtifact
-    ? DOCUMENT_STATUS_TO_ICON
-    : FEATURE_STATUS_TO_ICON;
-  const statusOptions = isArtifact
-    ? DOCUMENT_STATUS_OPTIONS
-    : FEATURE_STATUS_OPTIONS;
+  const statusLabels = DOCUMENT_STATUS_LABELS;
+  const statusIcons = DOCUMENT_STATUS_TO_ICON;
+  const statusOptions = DOCUMENT_STATUS_OPTIONS;
 
   const statusButton = (
     <button

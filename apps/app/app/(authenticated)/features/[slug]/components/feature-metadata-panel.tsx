@@ -6,10 +6,10 @@ import {
 } from "@repo/api/src/types/common";
 import { CustomFieldEntityType } from "@repo/api/src/types/custom-field";
 import {
-  FEATURE_STATUS_OPTIONS,
-  type FeatureStatus,
-  type FeatureWithWorkstream,
-} from "@repo/api/src/types/feature";
+  DOCUMENT_STATUS_OPTIONS,
+  type DocumentStatus,
+  type DocumentWithWorkstream,
+} from "@repo/api/src/types/document";
 import { Label } from "@repo/design-system/components/ui/label";
 import { PriorityIcon } from "@repo/design-system/components/ui/priority-icon";
 import {
@@ -35,12 +35,12 @@ import {
   featurePriorityLabels,
   featureStatusLabels,
 } from "@/components/status-badge";
-import { useUpdateFeature } from "@/hooks/queries/use-features";
+import { useUpdateDocument } from "@/hooks/queries/use-documents";
 import { useTeamMembers } from "@/hooks/use-team-members";
 import { transformApiUserToSelectUser } from "@/lib/user-utils";
 
 type FeatureMetadataPanelProps = {
-  feature: FeatureWithWorkstream;
+  feature: DocumentWithWorkstream;
   teamIds: string[];
 };
 
@@ -48,7 +48,7 @@ export function FeatureMetadataPanel({
   feature,
   teamIds,
 }: Readonly<FeatureMetadataPanelProps>) {
-  const updateFeature = useUpdateFeature();
+  const updateDocument = useUpdateDocument();
   const { members: teamMembers } = useTeamMembers({ teamIds });
 
   const assignee = useMemo(
@@ -59,22 +59,22 @@ export function FeatureMetadataPanel({
 
   const [isPropertiesOpen, setIsPropertiesOpen] = useState(true);
 
-  const handleStatusChange = (status: FeatureStatus) => {
-    updateFeature.mutate(
+  const handleStatusChange = (status: DocumentStatus) => {
+    updateDocument.mutate(
       { id: feature.id, status },
       { onSuccess: () => toast.success("Status updated") }
     );
   };
 
   const handlePriorityChange = (priority: PriorityType) => {
-    updateFeature.mutate(
+    updateDocument.mutate(
       { id: feature.id, priority },
       { onSuccess: () => toast.success("Priority updated") }
     );
   };
 
   const handleAssigneeChange = (user: User | null) => {
-    updateFeature.mutate(
+    updateDocument.mutate(
       { id: feature.id, assigneeId: user?.id ?? null },
       { onSuccess: () => toast.success("Assignee updated") }
     );
@@ -92,14 +92,14 @@ export function FeatureMetadataPanel({
             <div className="space-y-2">
               <Label>Status</Label>
               <Select
-                onValueChange={(v) => handleStatusChange(v as FeatureStatus)}
+                onValueChange={(v) => handleStatusChange(v as DocumentStatus)}
                 value={feature.status}
               >
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {FEATURE_STATUS_OPTIONS.map((statusOption) => (
+                  {DOCUMENT_STATUS_OPTIONS.map((statusOption) => (
                     <SelectItem key={statusOption} value={statusOption}>
                       {featureStatusLabels[statusOption] ?? statusOption}
                     </SelectItem>
@@ -168,7 +168,7 @@ export function FeatureMetadataPanel({
 
         <CustomFieldsSection
           entityId={feature.id}
-          entityType={CustomFieldEntityType.Feature}
+          entityType={CustomFieldEntityType.Document}
           values={feature.customFields}
         />
       </div>

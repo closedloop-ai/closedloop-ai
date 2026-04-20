@@ -4,7 +4,6 @@ import { ExternalLinkType } from "@repo/api/src/types/external-link";
 import { withDb } from "@repo/database";
 import { keys } from "@repo/database/keys";
 import { documentsService } from "@/app/documents/service";
-import { featuresService } from "@/app/features/service";
 import { projectTreeService } from "@/app/projects/[id]/tree/service";
 import {
   autoRollbackTransaction,
@@ -89,9 +88,11 @@ describe.skipIf(!hasDatabase)("Project Tree Service Integration", () => {
         title: "Alpha Plan",
         content: "content",
       });
-      await featuresService.create(orgId, user.id, {
+      await documentsService.create(orgId, user.id, {
         projectId,
+        type: DocumentType.Feature,
         title: "Middle Feature",
+        content: "",
       });
 
       const result = await projectTreeService.getProjectTree(projectId, orgId);
@@ -168,29 +169,36 @@ describe.skipIf(!hasDatabase)("Project Tree Service Integration", () => {
       const user = await createTestUser(orgId);
       const projectId = await createTestProject(orgId, user.id);
 
-      const feature = await featuresService.create(orgId, user.id, {
+      const feature = await documentsService.create(orgId, user.id, {
         projectId,
+        type: DocumentType.Feature,
         title: "Root Feature",
+        content: "",
       });
+      if (!feature) {
+        throw new Error("Failed to create feature document in test");
+      }
       const artifact = await documentsService.create(orgId, user.id, {
         projectId,
         type: DocumentType.Prd,
         title: "Child Artifact",
         content: "content",
       });
+      if (!artifact) {
+        throw new Error("Failed to create artifact document in test");
+      }
       const extLink = await createExternalLink(orgId, projectId, "Child PR");
 
-      // Feature → Artifact → ExternalLink
       await createEntityLink(
         orgId,
         feature.id,
-        EntityType.Feature,
-        artifact!.id,
+        EntityType.Document,
+        artifact.id,
         EntityType.Document
       );
       await createEntityLink(
         orgId,
-        artifact!.id,
+        artifact.id,
         EntityType.Document,
         extLink.id,
         EntityType.ExternalLink
@@ -200,7 +208,7 @@ describe.skipIf(!hasDatabase)("Project Tree Service Integration", () => {
 
       expect(result.nodes).toHaveLength(1);
       const node = result.nodes[0]!;
-      expect(node.root.entityType).toBe(EntityType.Feature);
+      expect(node.root.entityType).toBe(EntityType.Document);
       expect(node.children[0]!.entityType).toBe(EntityType.Document);
       expect(node.children[1]!.entityType).toBe(EntityType.ExternalLink);
     });

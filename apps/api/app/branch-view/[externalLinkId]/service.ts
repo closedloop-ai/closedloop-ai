@@ -813,7 +813,8 @@ async function resolveFeatureContext(
   // Path 1: Use artifactId shortcut from GitHubPullRequest
   const artifactId = ctx.gitHubPullRequest?.documentId;
 
-  // Path 2: Walk entity links from ExternalLink -> Artifact -> Feature
+  // Path 2: Walk entity links from ExternalLink -> Plan -> Feature
+  // OR ExternalLink -> Feature
   let resolvedArtifactId = artifactId;
   if (!resolvedArtifactId) {
     const linkToArtifact = await withDb((db) =>
@@ -849,20 +850,48 @@ async function resolveFeatureContext(
       : null;
   }
 
-  // Find feature linked to this artifact
+  // Go one more level up the source chain to find a feature.
   const featureLink = await withDb((db) =>
     db.entityLink.findFirst({
       where: {
         targetId: resolvedArtifactId,
         targetType: EntityType.Document,
         linkType: LinkType.Produces,
-        sourceType: EntityType.Feature,
+        sourceType: EntityType.Document,
       },
       select: { sourceId: true },
     })
   );
 
-  if (!featureLink) {
+  const sourceDocuments = await withDb((db) =>
+    db.document.findMany({
+      where: {
+        id: {
+          in: [featureLink?.sourceId, resolvedArtifactId].filter(
+            Boolean
+          ) as string[],
+        },
+      },
+      select: {
+        slug: true,
+        title: true,
+        type: true,
+        project: {
+          select: {
+            name: true,
+            teams: {
+              select: { team: { select: { id: true, name: true } } },
+              take: 1,
+            },
+          },
+        },
+      },
+    })
+  );
+
+  const feature = sourceDocuments.find((d) => d.type === DocumentType.Feature);
+
+  if (!feature) {
     const project = await withDb((db) =>
       db.project.findUnique({
         where: { id: ctx.externalLink.projectId },
@@ -878,29 +907,6 @@ async function resolveFeatureContext(
           projectName: project.name,
         }
       : null;
-  }
-
-  const feature = await withDb((db) =>
-    db.feature.findUnique({
-      where: { id: featureLink.sourceId },
-      select: {
-        slug: true,
-        title: true,
-        project: {
-          select: {
-            name: true,
-            teams: {
-              select: { team: { select: { id: true, name: true } } },
-              take: 1,
-            },
-          },
-        },
-      },
-    })
-  );
-
-  if (!feature) {
-    return null;
   }
 
   const firstTeam = feature.project?.teams?.[0]?.team ?? null;

@@ -25,7 +25,6 @@ import { log } from "@repo/observability/log";
 function toFileAttachment(record: {
   id: string;
   documentId: string | null;
-  featureId?: string | null;
   filename: string;
   mimeType: string;
   sizeBytes: number;
@@ -35,7 +34,6 @@ function toFileAttachment(record: {
   return {
     id: record.id,
     documentId: record.documentId ?? "",
-    featureId: record.featureId ?? undefined,
     filename: record.filename,
     mimeType: record.mimeType,
     sizeBytes: record.sizeBytes,
@@ -61,26 +59,6 @@ async function requireDocument(
 
   if (!artifact) {
     throw new Error("Document not found");
-  }
-}
-
-/**
- * Verify a feature exists and belongs to the given org.
- * Throws "Feature not found" if missing or org-mismatched.
- */
-async function requireFeature(
-  featureId: string,
-  organizationId: string
-): Promise<void> {
-  const feature = await withDb((db) =>
-    db.feature.findUnique({
-      where: { id: featureId, organizationId },
-      select: { id: true },
-    })
-  );
-
-  if (!feature) {
-    throw new Error("Feature not found");
   }
 }
 
@@ -228,71 +206,6 @@ export const attachmentsService = {
   },
 
   /**
-   * Initiate a file upload attached directly to a feature (not an artifact).
-   * Used for non-document context attachments (images, video, etc.).
-   */
-  async requestFeatureUpload(
-    featureId: string,
-    organizationId: string,
-    userId: string,
-    filename: string,
-    mimeType: string,
-    sizeBytes: number
-  ): Promise<CreateAttachmentResponse> {
-    const bucket = awsKeys().FILE_ATTACHMENTS_BUCKET;
-    if (!bucket) {
-      throw new Error("FILE_ATTACHMENTS_BUCKET is not configured");
-    }
-
-    const key = `attachments/${organizationId}/features/${featureId}/${createId()}`;
-
-    const uploadUrl = await getSignedUploadUrl(
-      key,
-      mimeType,
-      900,
-      bucket,
-      sizeBytes
-    );
-
-    const created = await withDb((db) =>
-      db.fileAttachment.create({
-        data: {
-          featureId,
-          bucket,
-          key,
-          filename,
-          mimeType,
-          sizeBytes,
-          createdById: userId,
-        },
-      })
-    );
-
-    return { attachmentId: created.id, uploadUrl, key };
-  },
-
-  /**
-   * List all attachments for a feature (org-scoped, newest first).
-   */
-  async listByFeature(
-    featureId: string,
-    organizationId: string
-  ): Promise<FileAttachment[]> {
-    await requireFeature(featureId, organizationId);
-
-    const records = await withDb((db) =>
-      db.fileAttachment.findMany({
-        where: { featureId, feature: { organizationId } },
-        orderBy: { createdAt: "desc" },
-      })
-    );
-
-    const attachments = records.map(toFileAttachment);
-    await populatePreviewUrls(records, attachments);
-    return attachments;
-  },
-
-  /**
    * List all attachments for a document (org-scoped, newest first).
    */
   async listByDocument(
@@ -327,33 +240,6 @@ export const attachmentsService = {
     const attachment = await withDb((db) =>
       db.fileAttachment.findUnique({
         where: { id: attachmentId, documentId },
-      })
-    );
-
-    if (!attachment) {
-      throw new Error("Attachment not found");
-    }
-
-    const downloadUrl = await getSignedDownloadUrlWithDisposition(
-      attachment.key,
-      attachment.filename,
-      3600,
-      attachment.bucket
-    );
-
-    return { downloadUrl };
-  },
-
-  async getFeatureDownloadUrl(
-    featureId: string,
-    organizationId: string,
-    attachmentId: string
-  ): Promise<AttachmentDownloadResponse> {
-    await requireFeature(featureId, organizationId);
-
-    const attachment = await withDb((db) =>
-      db.fileAttachment.findUnique({
-        where: { id: attachmentId, featureId },
       })
     );
 
@@ -424,57 +310,5 @@ export const attachmentsService = {
     );
 
     return toContextPackAttachments(records);
-  },
-
-  /**
-   * List all attachments for a feature with presigned download URLs (for context pack use).
-   */
-  async listWithSignedUrlsByFeature(
-    featureId: string,
-    organizationId: string
-  ): Promise<ContextPackAttachment[]> {
-    const records = await withDb((db) =>
-      db.fileAttachment.findMany({
-        where: { featureId, feature: { organizationId } },
-        select: signedUrlSelect,
-        orderBy: { createdAt: "desc" },
-        take: ATTACHMENT_SIGNED_URL_MAX_FILES,
-      })
-    );
-
-    return toContextPackAttachments(records);
-  },
-
-  /**
-   * Delete a feature attachment from the database and S3.
-   */
-  async deleteFeatureAttachment(
-    featureId: string,
-    organizationId: string,
-    attachmentId: string
-  ): Promise<void> {
-    await requireFeature(featureId, organizationId);
-    const attachment = await withDb.tx(async (tx) => {
-      const record = await tx.fileAttachment.findUnique({
-        where: { id: attachmentId, featureId },
-        select: { bucket: true, key: true },
-      });
-
-      if (!record) {
-        throw new Error("Attachment not found");
-      }
-
-      await tx.fileAttachment.delete({ where: { id: attachmentId } });
-      return record;
-    });
-
-    try {
-      await deleteArtifact(attachment.key, attachment.bucket);
-    } catch (error) {
-      log.error("[attachments-service] Failed to delete S3 object", {
-        key: attachment.key,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
   },
 };

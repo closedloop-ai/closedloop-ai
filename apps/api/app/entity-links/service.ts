@@ -158,21 +158,6 @@ export const entityLinksService = {
         }
         return { type: EntityType.Document, entity: artifact };
       }
-      case EntityType.Feature: {
-        const feature = await withDb((db) =>
-          db.feature.findUnique({
-            where: { id, organizationId },
-            include: {
-              assignee: basicUserSelect,
-              createdBy: basicUserSelect,
-            },
-          })
-        );
-        if (!feature) {
-          return null;
-        }
-        return { type: EntityType.Feature, entity: feature };
-      }
       case EntityType.ExternalLink: {
         const link = await withDb((db) =>
           db.externalLink.findUnique({ where: { id, organizationId } })
@@ -393,14 +378,11 @@ export const entityLinksService = {
     }
 
     const artifactIds: string[] = [];
-    const featureIds: string[] = [];
     const externalLinkIds: string[] = [];
 
     for (const entity of entitiesToMove) {
       if (entity.type === EntityType.Document) {
         artifactIds.push(entity.id);
-      } else if (entity.type === EntityType.Feature) {
-        featureIds.push(entity.id);
       } else if (entity.type === EntityType.ExternalLink) {
         externalLinkIds.push(entity.id);
       }
@@ -412,13 +394,6 @@ export const entityLinksService = {
       if (artifactIds.length > 0) {
         const { count } = await tx.document.updateMany({
           where: { id: { in: artifactIds }, organizationId },
-          data: { projectId: input.targetProjectId },
-        });
-        totalUpdated += count;
-      }
-      if (featureIds.length > 0) {
-        const { count } = await tx.feature.updateMany({
-          where: { id: { in: featureIds }, organizationId },
           data: { projectId: input.targetProjectId },
         });
         totalUpdated += count;

@@ -1,13 +1,14 @@
+import type { DocumentStatus } from "@repo/api/src/types/document";
 import { DocumentType } from "@repo/api/src/types/document";
-import type { FeatureStatus } from "@repo/api/src/types/feature";
 import type { Metadata } from "next";
 import { env } from "@/env";
-import { FEATURE_STATUS_LABELS } from "@/lib/project-constants";
+import { DOCUMENT_STATUS_LABELS } from "@/lib/project-constants";
 
 const DOCUMENT_TYPE_DISPLAY: Record<DocumentType, string> = {
   [DocumentType.Prd]: "PRD",
   [DocumentType.ImplementationPlan]: "Plan",
   [DocumentType.Template]: "Template",
+  [DocumentType.Feature]: "Feature",
 };
 
 const FALLBACK_METADATA: Metadata = {
@@ -87,12 +88,12 @@ const handlers: OgHandler[] = [
     pattern: /^features\/([^/]+)$/,
     async resolve(match, apiUrl) {
       const slug = match[1];
-      const data = await fetchJson(`${apiUrl}/features/by-slug/${slug}/meta`);
+      const data = await fetchJson(`${apiUrl}/documents/by-slug/${slug}/meta`);
       if (!data) {
         return FALLBACK_METADATA;
       }
       const description =
-        FEATURE_STATUS_LABELS[data.status as FeatureStatus] ??
+        DOCUMENT_STATUS_LABELS[data.status as DocumentStatus] ??
         data.status ??
         "Feature";
       return makeMetadata(data.title, `Feature — ${description}`);

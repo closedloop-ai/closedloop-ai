@@ -1,6 +1,6 @@
 "use client";
 
-import type { FeatureWithWorkstream } from "@repo/api/src/types/feature";
+import type { DocumentWithWorkstream } from "@repo/api/src/types/document";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   DropdownMenu,
@@ -23,7 +23,7 @@ import {
 } from "@/app/(authenticated)/components/header";
 
 type FeatureEditorHeaderProps = {
-  feature: FeatureWithWorkstream;
+  feature: DocumentWithWorkstream;
   displayTitle: string;
   hasPlan: boolean;
   isReady: boolean;

@@ -1,7 +1,7 @@
 import type { JsonObject } from "@repo/api/src/types/common";
 import { Priority } from "@repo/api/src/types/common";
+import { DocumentStatus, DocumentType } from "@repo/api/src/types/document";
 import { EntityType, LinkType } from "@repo/api/src/types/entity-link";
-import { FeatureStatus } from "@repo/api/src/types/feature";
 import type {
   DecomposeFeature,
   DecomposeResult,
@@ -13,7 +13,6 @@ import { log } from "@repo/observability/log";
 import { z } from "zod";
 import { documentsService } from "@/app/documents/service";
 import { entityLinksService } from "@/app/entity-links/service";
-import { featuresService } from "@/app/features/service";
 import { parseJsonArtifact } from "@/lib/loops/loop-document-ingestion";
 import { downloadArtifactFile } from "@/lib/loops/loop-state";
 import { defineHandler } from "./loop-command-handler";
@@ -160,24 +159,29 @@ async function ingestDecomposeArtifacts(
 
   await withDb.tx(async () => {
     for (const feature of result.features) {
-      const createdFeature = await featuresService.create(
+      const createdFeature = await documentsService.create(
         organizationId,
         loop.userId,
         {
           projectId: prd.projectId!,
+          type: DocumentType.Feature,
           title: feature.title,
-          description: buildFullDescription(feature),
+          content: buildFullDescription(feature),
           priority:
             PRIORITY_MAP[feature.priority ?? "MEDIUM"] ?? Priority.Medium,
-          status: FeatureStatus.Draft,
+          status: DocumentStatus.Draft,
         }
       );
+
+      if (!createdFeature) {
+        continue;
+      }
 
       await entityLinksService.createLink(organizationId, {
         sourceId: loop.documentId!,
         sourceType: EntityType.Document,
         targetId: createdFeature.id,
-        targetType: EntityType.Feature,
+        targetType: EntityType.Document,
         linkType: LinkType.Produces,
       });
 

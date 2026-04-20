@@ -182,7 +182,7 @@ function LinkExistingTab({
               sourceId: prd.id,
               sourceType: EntityType.Document,
               targetId: featureId,
-              targetType: EntityType.Feature,
+              targetType: EntityType.Document,
               linkType: LinkType.Produces,
             },
             {
@@ -254,7 +254,7 @@ function UploadFileTab({
       }
 
       queryClient.invalidateQueries({
-        queryKey: attachmentKeys.issueList(featureId),
+        queryKey: attachmentKeys.list(featureId),
       });
       toast.success("File uploaded as context");
       onOpenChange(false);

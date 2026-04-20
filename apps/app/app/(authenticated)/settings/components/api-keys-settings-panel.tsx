@@ -311,10 +311,6 @@ const MCP_TOOL_GROUPS = [
     ],
   },
   {
-    label: "Features",
-    tools: ["list-features", "get-feature", "create-feature", "update-feature"],
-  },
-  {
     label: "Links",
     tools: [
       "list-entity-links",

@@ -21,11 +21,13 @@ export function registerGetDocumentComments(
     "get-document-comments",
     {
       description:
-        "Get comment threads and their comments for a document by ID or slug.",
+        "Get comment threads and their comments for a document by UUID or slug (PRD-*, PLN-*, FEA-*). Pass the user's slug verbatim.",
       inputSchema: {
         documentId: z
           .string()
-          .describe(describeIdOrSlug("Document", ["PRD-7", "PLAN-12"])),
+          .describe(
+            describeIdOrSlug("Document", ["PRD-7", "PLN-12", "FEA-42"])
+          ),
         status: z
           .enum(ThreadStatus)
           .optional()

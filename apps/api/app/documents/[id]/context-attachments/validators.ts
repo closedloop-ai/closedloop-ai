@@ -1,5 +1,4 @@
 import { z } from "zod";
-
 import { ALLOWED_MIME_TYPES } from "@/app/documents/[id]/attachments/validators";
 
 export const CONTEXT_ATTACHMENT_MIME_TYPES = [

@@ -1,4 +1,5 @@
 import type { JsonObject } from "@repo/api/src/types/common";
+import { DocumentType } from "@repo/api/src/types/document";
 import { EntityType } from "@repo/api/src/types/entity-link";
 import type { ExternalLink } from "@repo/api/src/types/external-link";
 import { ExternalLinkType } from "@repo/api/src/types/external-link";
@@ -467,26 +468,27 @@ async function resolveEntityLinkContext(
       };
     }
 
-    // Level 2: find the feature that targets this artifact
+    // Level 2: find the parent Feature document that targets this document
     const featureLinks = await withDb((db) =>
       db.entityLink.findMany({
         where: {
           targetId: parentLink.sourceId,
           targetType: EntityType.Document,
+          sourceType: EntityType.Document,
           organizationId,
         },
-        select: { sourceId: true, sourceType: true },
+        select: { sourceId: true },
       })
     );
 
     for (const featureLink of featureLinks) {
-      if (featureLink.sourceType !== EntityType.Feature) {
-        continue;
-      }
-
       const feature = await withDb((db) =>
-        db.feature.findFirst({
-          where: { id: featureLink.sourceId, organizationId },
+        db.document.findFirst({
+          where: {
+            id: featureLink.sourceId,
+            organizationId,
+            type: DocumentType.Feature,
+          },
           select: { workstreamId: true },
         })
       );

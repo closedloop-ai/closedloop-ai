@@ -20,7 +20,7 @@ export function registerCreateDocument(
     "create-document",
     {
       description:
-        "Create a document, such as a PRD, implementation plan, or template, and attach it to a project or workstream.",
+        "Create a document — a PRD, implementation plan, feature, or template — and attach it to a project or workstream. The assigned slug (PRD-*, PLN-*, FEA-*) is returned in the response and is the preferred handle for future calls.",
       inputSchema: {
         title: z.string().describe("Title of the document"),
         type: z
@@ -29,11 +29,11 @@ export function registerCreateDocument(
         projectId: z
           .string()
           .optional()
-          .describe(describeIdOrSlug("Project", "PROJ-7")),
+          .describe(describeIdOrSlug("Project", "PRO-7")),
         workstreamId: z
           .string()
           .optional()
-          .describe(describeIdOrSlug("Workstream", "WORK-3")),
+          .describe(describeIdOrSlug("Workstream", "WRK-3")),
         content: z.string().describe("Initial document content/body"),
       },
     },

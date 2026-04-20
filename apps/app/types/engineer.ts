@@ -5,7 +5,6 @@
 
 import { Priority } from "@repo/api/src/types/common";
 import { DocumentStatus, DocumentType } from "@repo/api/src/types/document";
-import { FeatureStatus } from "@repo/api/src/types/feature";
 
 export type TicketStatusType =
   | "triage"
@@ -58,52 +57,6 @@ export type EngineerTicketsResult = {
   error: Error | null;
   refetch: () => Promise<unknown>;
 };
-
-/** Map Symphony FeatureStatus to closedloop-dev status type */
-export function mapFeatureStatusToType(
-  status: FeatureStatus
-): TicketStatusType {
-  switch (status) {
-    case FeatureStatus.Draft:
-      return "unstarted";
-    case FeatureStatus.InProgress:
-      return "started";
-    case FeatureStatus.InReview:
-      return "started";
-    case FeatureStatus.Approved:
-      return "started";
-    case FeatureStatus.Executed:
-      return "started";
-    case FeatureStatus.Done:
-      return "completed";
-    case FeatureStatus.Obsolete:
-      return "canceled";
-    default:
-      return "unstarted";
-  }
-}
-
-/** Map Symphony FeatureStatus to display name */
-export function statusDisplayName(status: FeatureStatus): string {
-  switch (status) {
-    case FeatureStatus.Draft:
-      return "Draft";
-    case FeatureStatus.InProgress:
-      return "In Progress";
-    case FeatureStatus.InReview:
-      return "In Review";
-    case FeatureStatus.Approved:
-      return "Approved";
-    case FeatureStatus.Executed:
-      return "Executed";
-    case FeatureStatus.Done:
-      return "Done";
-    case FeatureStatus.Obsolete:
-      return "Obsolete";
-    default:
-      return status;
-  }
-}
 
 /** Map Symphony FeaturePriority to numeric value (higher = more urgent) */
 export function priorityToNumber(priority: Priority): number {

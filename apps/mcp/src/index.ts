@@ -29,14 +29,12 @@ import { registerCreateDocumentThread } from "./tools/create-document-thread.js"
 import { registerCreateDocumentVersion } from "./tools/create-document-version.js";
 import { registerCreateEntityLink } from "./tools/create-entity-link.js";
 import { registerCreateExternalLink } from "./tools/create-external-link.js";
-import { registerCreateFeature } from "./tools/create-feature.js";
 import { registerCreateProject } from "./tools/create-project.js";
 import { registerCreateWorkstream } from "./tools/create-workstream.js";
 import { registerDownloadAttachment } from "./tools/download-attachment.js";
 import { registerGetDashboardStats } from "./tools/get-dashboard-stats.js";
 import { registerGetDocument } from "./tools/get-document.js";
 import { registerGetDocumentComments } from "./tools/get-document-comments.js";
-import { registerGetFeature } from "./tools/get-feature.js";
 import { registerGetGithubStatus } from "./tools/get-github-status.js";
 import { registerGetGoogleStatus } from "./tools/get-google-status.js";
 import { registerGetLinearStatus } from "./tools/get-linear-status.js";
@@ -50,14 +48,12 @@ import { registerListDocumentVersions } from "./tools/list-document-versions.js"
 import { registerListDocuments } from "./tools/list-documents.js";
 import { registerListEntityLinks } from "./tools/list-entity-links.js";
 import { registerListExternalLinks } from "./tools/list-external-links.js";
-import { registerListFeatures } from "./tools/list-features.js";
 import { registerListLoops } from "./tools/list-loops.js";
 import { registerListProjects } from "./tools/list-projects.js";
 import { registerListTemplates } from "./tools/list-templates.js";
 import { registerListUsers } from "./tools/list-users.js";
 import { registerListWorkstreams } from "./tools/list-workstreams.js";
 import { registerUpdateDocument } from "./tools/update-document.js";
-import { registerUpdateFeature } from "./tools/update-feature.js";
 import { registerUpdateProject } from "./tools/update-project.js";
 import { registerUpdateWorkstream } from "./tools/update-workstream.js";
 
@@ -341,18 +337,6 @@ const TOOL_REGISTRATIONS: ToolRegistration[] = [
   { name: "list-attachments", register: registerListAttachments },
   { name: "download-attachment", register: registerDownloadAttachment },
   { name: "get-related-documents", register: registerGetRelatedDocuments },
-  { name: "list-features", register: registerListFeatures },
-  { name: "get-feature", register: registerGetFeature },
-  {
-    name: "create-feature",
-    register: registerCreateFeature,
-    requiresWrite: true,
-  },
-  {
-    name: "update-feature",
-    register: registerUpdateFeature,
-    requiresWrite: true,
-  },
   { name: "get-me", register: registerGetMe },
   { name: "list-workstreams", register: registerListWorkstreams },
   { name: "get-workstream", register: registerGetWorkstream },

@@ -60,10 +60,9 @@ export const dashboardService = {
             where: { organizationId, type: DocumentType.PRD },
           })
         ),
-        // Features are a separate entity (Feature table)
         withDb((db) =>
-          db.feature.count({
-            where: { organizationId },
+          db.document.count({
+            where: { organizationId, type: DocumentType.FEATURE },
           })
         ),
         withDb((db) =>
@@ -105,11 +104,11 @@ export const dashboardService = {
             select: { createdAt: true },
           })
         ),
-        // Features trend from separate Feature table
         withDb((db) =>
-          db.feature.findMany({
+          db.document.findMany({
             where: {
               organizationId,
+              type: DocumentType.FEATURE,
               createdAt: { gte: fourteenDaysAgo },
             },
             select: { createdAt: true },

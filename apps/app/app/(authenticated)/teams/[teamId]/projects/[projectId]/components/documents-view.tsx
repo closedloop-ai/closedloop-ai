@@ -7,7 +7,7 @@ import {
   getRoutePrefixForType,
 } from "@repo/api/src/types/document";
 import { EntityType } from "@repo/api/src/types/entity-link";
-import type { FeatureWithWorkstream } from "@repo/api/src/types/feature";
+import type { ProjectStatus } from "@repo/api/src/types/project";
 import type { TreeEntity, TreeNode } from "@repo/api/src/types/project-tree";
 import type { WorkstreamState } from "@repo/api/src/types/workstream";
 import { Button } from "@repo/design-system/components/ui/button";
@@ -55,17 +55,13 @@ import { sortTableData } from "@/lib/table-utils";
 import type { FilterCategory } from "../page";
 import { MergeDocumentsDialog } from "./merge-documents-dialog";
 
-// ---- Types ----
-
-type DocumentsViewProps = {
-  artifacts: DocumentWithWorkstream[];
-  features: FeatureWithWorkstream[];
+export type DocumentsViewProps = {
+  documents: DocumentWithWorkstream[];
   projectId: string;
   teamId: string;
   filterText: string;
   filterCategory: FilterCategory;
   visibleColumns: DocumentColumn[];
-  onStatusChange?: (documentId: string, status: DocumentStatus) => void;
   onDelete?: (item: DocumentRowItem) => Promise<boolean>;
   /** Edit handlers for inline cell editing (assignee, priority, due date). */
   editHandlers?: RowEditHandlers;
@@ -79,6 +75,21 @@ type DocumentsViewProps = {
   groupByStatus?: boolean;
 };
 
+/**
+ * Convert a document to a DocumentRowItem. Feature-typed documents render
+ * with the "feature" kind so row-level components can style / route them
+ * differently from other document types.
+ */
+function toRowItem(doc: DocumentWithWorkstream): DocumentRowItem {
+  return doc.type === DocumentType.Feature
+    ? { kind: "feature", data: doc }
+    : { kind: "artifact", data: doc };
+}
+
+function isFeatureDoc(doc: DocumentWithWorkstream): boolean {
+  return doc.type === DocumentType.Feature;
+}
+
 // ---- Workstream grouping (reused from threaded view) ----
 
 type WorkstreamGroup = {
@@ -89,9 +100,9 @@ type WorkstreamGroup = {
   items: DocumentRowItem[];
 };
 
-const TYPE_ORDER: Record<string, number> = {
+const TYPE_ORDER: Record<DocumentType, number> = {
   [DocumentType.Prd]: 0,
-  feature: 1,
+  [DocumentType.Feature]: 1,
   [DocumentType.ImplementationPlan]: 2,
   [DocumentType.Template]: 3,
 };
@@ -99,9 +110,6 @@ const TYPE_ORDER: Record<string, number> = {
 const UNASSIGNED_KEY_PREFIX = "unassigned:" as const;
 
 function getItemTypeOrder(item: DocumentRowItem): number {
-  if (item.kind === "feature") {
-    return TYPE_ORDER.feature;
-  }
   if (item.kind === "project") {
     return 99;
   }
@@ -126,54 +134,43 @@ function deriveGroupTitle(
   if (workstreamTitle) {
     return workstreamTitle;
   }
-  const prd = items.find((i) => i.kind === "artifact" && i.data.type === "PRD");
-  if (prd?.kind === "artifact") {
+  const prd = items.find(
+    (i) => i.kind !== "project" && i.data.type === DocumentType.Prd
+  );
+  if (prd && prd.kind !== "project") {
     return prd.data.title;
   }
   return "Unassigned";
 }
 
+function buildUnassignedKey(doc: DocumentWithWorkstream): string {
+  // PRDs get their own unassigned bucket so each shows as its own group; every
+  // other document type shares a single "unassigned" bucket.
+  return doc.type === DocumentType.Prd
+    ? `${UNASSIGNED_KEY_PREFIX}${doc.id}`
+    : `${UNASSIGNED_KEY_PREFIX}shared`;
+}
+
 function groupByWorkstream(
-  artifacts: DocumentWithWorkstream[],
-  features: FeatureWithWorkstream[]
+  documents: DocumentWithWorkstream[]
 ): WorkstreamGroup[] {
   const groups = new Map<string, WorkstreamGroup>();
   const workstreamTitles = new Map<string, string | null | undefined>();
 
-  for (const artifact of artifacts) {
-    const key =
-      artifact.workstreamId ??
-      (artifact.type === "PRD"
-        ? `${UNASSIGNED_KEY_PREFIX}${artifact.id}`
-        : `${UNASSIGNED_KEY_PREFIX}shared`);
+  for (const doc of documents) {
+    const key = doc.workstreamId ?? buildUnassignedKey(doc);
 
     if (!groups.has(key)) {
       groups.set(key, {
-        id: artifact.workstreamId,
+        id: doc.workstreamId,
         groupKey: key,
         title: "",
-        state: artifact.workstream?.state ?? null,
+        state: doc.workstream?.state ?? null,
         items: [],
       });
-      workstreamTitles.set(key, artifact.workstream?.title);
+      workstreamTitles.set(key, doc.workstream?.title);
     }
-    groups.get(key)?.items.push({ kind: "artifact", data: artifact });
-  }
-
-  for (const feature of features) {
-    const key = feature.workstreamId ?? `${UNASSIGNED_KEY_PREFIX}shared`;
-
-    if (!groups.has(key)) {
-      groups.set(key, {
-        id: feature.workstreamId,
-        groupKey: key,
-        title: "",
-        state: (feature.workstream?.state as WorkstreamState) ?? null,
-        items: [],
-      });
-      workstreamTitles.set(key, feature.workstream?.title);
-    }
-    groups.get(key)?.items.push({ kind: "feature", data: feature });
+    groups.get(key)?.items.push(toRowItem(doc));
   }
 
   for (const [key, group] of groups) {
@@ -218,32 +215,25 @@ function toDisplayGroups(wsGroups: WorkstreamGroup[]): DisplayGroup[] {
 
 function treeEntityToRowItem(
   entity: TreeEntity,
-  artifactMap: Map<string, DocumentWithWorkstream>,
-  featureMap: Map<string, FeatureWithWorkstream>
+  documentMap: Map<string, DocumentWithWorkstream>
 ): DocumentRowItem | null {
   if (isArtifactTreeEntity(entity)) {
-    const data = artifactMap.get(entity.id);
-    return data ? { kind: "artifact", data } : null;
-  }
-  if (isFeatureTreeEntity(entity)) {
-    const data = featureMap.get(entity.id);
-    return data ? { kind: "feature", data } : null;
+    const doc = documentMap.get(entity.id);
+    return doc ? toRowItem(doc) : null;
   }
   return null; // ExternalLink — no row type yet
 }
 
 function groupByProjectTree(
   nodes: TreeNode[],
-  artifacts: DocumentWithWorkstream[],
-  features: FeatureWithWorkstream[]
+  documents: DocumentWithWorkstream[]
 ): DisplayGroup[] {
-  const artifactMap = new Map(artifacts.map((a) => [a.id, a]));
-  const featureMap = new Map(features.map((f) => [f.id, f]));
+  const documentMap = new Map(documents.map((d) => [d.id, d]));
   const seenIds = new Set<string>();
   const groups: DisplayGroup[] = [];
 
   for (const node of nodes) {
-    const root = treeEntityToRowItem(node.root, artifactMap, featureMap);
+    const root = treeEntityToRowItem(node.root, documentMap);
     if (!root) {
       continue;
     }
@@ -252,7 +242,7 @@ function groupByProjectTree(
     const children: DocumentRowItem[] = [];
     for (const child of node.children) {
       seenIds.add(child.id);
-      const childItem = treeEntityToRowItem(child, artifactMap, featureMap);
+      const childItem = treeEntityToRowItem(child, documentMap);
       if (childItem) {
         children.push(childItem);
       }
@@ -261,20 +251,11 @@ function groupByProjectTree(
   }
 
   // Orphans — items in filtered data but not in any tree node
-  for (const artifact of artifacts) {
-    if (!seenIds.has(artifact.id)) {
+  for (const doc of documents) {
+    if (!seenIds.has(doc.id)) {
       groups.push({
-        groupKey: artifact.id,
-        root: { kind: "artifact", data: artifact },
-        children: [],
-      });
-    }
-  }
-  for (const feature of features) {
-    if (!seenIds.has(feature.id)) {
-      groups.push({
-        groupKey: feature.id,
-        root: { kind: "feature", data: feature },
+        groupKey: doc.id,
+        root: toRowItem(doc),
         children: [],
       });
     }
@@ -286,57 +267,24 @@ function groupByProjectTree(
 // ---- Filter items by category ----
 
 function filterByCategory(
-  artifacts: DocumentWithWorkstream[],
-  features: FeatureWithWorkstream[],
+  documents: DocumentWithWorkstream[],
   category: FilterCategory,
   filterText: string
-): {
-  filteredArtifacts: DocumentWithWorkstream[];
-  filteredFeatures: FeatureWithWorkstream[];
-} {
-  let filteredArtifacts = artifacts.filter((a) => matchesFilter(a, filterText));
-  let filteredFeatures = features.filter((f) => {
-    if (!filterText.trim()) {
-      return true;
-    }
-    const q = filterText.toLowerCase().trim();
-    return (
-      f.title.toLowerCase().includes(q) || f.slug.toLowerCase().includes(q)
-    );
-  });
+): DocumentWithWorkstream[] {
+  const byText = documents.filter((d) => matchesFilter(d, filterText));
 
   switch (category) {
-    case "documents": {
-      filteredArtifacts = filteredArtifacts.filter(
-        (a) => a.type === DocumentType.Prd
-      );
-      filteredFeatures = [];
-      break;
-    }
-    case "features": {
-      filteredArtifacts = [];
-      break;
-    }
-    case "plans": {
-      filteredArtifacts = filteredArtifacts.filter(
-        (a) => a.type === DocumentType.ImplementationPlan
-      );
-      filteredFeatures = [];
-      break;
-    }
-    case "branches": {
-      filteredArtifacts = filteredArtifacts.filter(
-        (a) => a.type === DocumentType.Template
-      );
-      filteredFeatures = [];
-      break;
-    }
-    default: {
-      break;
-    }
+    case "documents":
+      return byText.filter((d) => d.type === DocumentType.Prd);
+    case "features":
+      return byText.filter(isFeatureDoc);
+    case "plans":
+      return byText.filter((d) => d.type === DocumentType.ImplementationPlan);
+    case "branches":
+      return byText.filter((d) => d.type === DocumentType.Template);
+    default:
+      return byText;
   }
-
-  return { filteredArtifacts, filteredFeatures };
 }
 
 // ---- Status grouping ----
@@ -359,11 +307,11 @@ type StatusSection = {
 };
 
 function getItemStatus(item: DocumentRowItem) {
-  return item.data.status as DocumentStatus;
+  return item.data.status;
 }
 
 function groupDisplayGroupsByStatus(groups: DisplayGroup[]): StatusSection[] {
-  const buckets = new Map<DocumentStatus, DisplayGroup[]>();
+  const buckets = new Map<DocumentStatus | ProjectStatus, DisplayGroup[]>();
 
   for (const group of groups) {
     const status = getItemStatus(group.root);
@@ -506,8 +454,7 @@ type MenuState = {
 // ---- Component ----
 
 export function DocumentsView({
-  artifacts,
-  features,
+  documents,
   projectId,
   teamId,
   filterText,
@@ -559,9 +506,9 @@ export function DocumentsView({
     defaultColumn: null,
   });
 
-  const { filteredArtifacts, filteredFeatures } = useMemo(
-    () => filterByCategory(artifacts, features, filterCategory, filterText),
-    [artifacts, features, filterCategory, filterText]
+  const filteredDocuments = useMemo(
+    () => filterByCategory(documents, filterCategory, filterText),
+    [documents, filterCategory, filterText]
   );
 
   const isGroupedView = filterCategory === "all";
@@ -571,7 +518,8 @@ export function DocumentsView({
     filterCategory === "features" ||
     filterCategory === "plans";
 
-  // Check if exactly 2 artifacts (not features) are selected for merge
+  // Check if exactly 2 non-feature documents are selected for merge.
+  // Features are excluded — merge is not supported for feature-typed docs.
   const selectedDocumentsForMerge = useMemo(():
     | [DocumentWithWorkstream, DocumentWithWorkstream]
     | null => {
@@ -579,13 +527,13 @@ export function DocumentsView({
       return null;
     }
     const ids = Array.from(selectedIds);
-    const a1 = artifacts.find((a) => a.id === ids[0]);
-    const a2 = artifacts.find((a) => a.id === ids[1]);
-    if (a1 && a2) {
-      return [a1, a2];
+    const d1 = documents.find((d) => d.id === ids[0]);
+    const d2 = documents.find((d) => d.id === ids[1]);
+    if (d1 && d2 && !(isFeatureDoc(d1) || isFeatureDoc(d2))) {
+      return [d1, d2];
     }
     return null;
-  }, [selectedIds, artifacts]);
+  }, [selectedIds, documents]);
 
   const { data: treeData } = useProjectTree(projectId);
 
@@ -617,8 +565,8 @@ export function DocumentsView({
   // Uses project tree structure when available; falls back to workstream grouping while loading.
   const groups: DisplayGroup[] = useMemo(() => {
     const ungrouped: DisplayGroup[] = treeData
-      ? groupByProjectTree(treeData.nodes, filteredArtifacts, filteredFeatures)
-      : toDisplayGroups(groupByWorkstream(filteredArtifacts, filteredFeatures));
+      ? groupByProjectTree(treeData.nodes, filteredDocuments)
+      : toDisplayGroups(groupByWorkstream(filteredDocuments));
 
     // Apply project filters to root items — children are preserved regardless
     const filtered = applyProjectFilters
@@ -637,25 +585,11 @@ export function DocumentsView({
     return [...filtered].sort(
       (a, b) => comparator(a.root, b.root) * dirMultiplier
     );
-  }, [
-    filteredArtifacts,
-    filteredFeatures,
-    sortBy,
-    sortDir,
-    treeData,
-    applyProjectFilters,
-  ]);
+  }, [filteredDocuments, sortBy, sortDir, treeData, applyProjectFilters]);
 
   // Build flat items for filtered views
   const flatItems: DocumentRowItem[] = useMemo(() => {
-    let items: DocumentRowItem[] = [
-      ...filteredArtifacts.map(
-        (a): DocumentRowItem => ({ kind: "artifact", data: a })
-      ),
-      ...filteredFeatures.map(
-        (f): DocumentRowItem => ({ kind: "feature", data: f })
-      ),
-    ];
+    let items: DocumentRowItem[] = filteredDocuments.map(toRowItem);
     // Apply project filters (assignee, status, priority, date)
     if (applyProjectFilters) {
       items = applyProjectFilters(items);
@@ -667,13 +601,7 @@ export function DocumentsView({
       }
     }
     return items;
-  }, [
-    filteredArtifacts,
-    filteredFeatures,
-    sortBy,
-    sortDir,
-    applyProjectFilters,
-  ]);
+  }, [filteredDocuments, sortBy, sortDir, applyProjectFilters]);
 
   // Build status sections when groupByStatus is enabled
   const statusSections: StatusSection[] = useMemo(() => {
@@ -718,8 +646,7 @@ export function DocumentsView({
         .filter((item) => !parentMap.has(item.data.id))
         .map((item) => ({
           id: item.data.id,
-          entityType:
-            item.kind === "feature" ? EntityType.Feature : EntityType.Document,
+          entityType: EntityType.Document,
         })),
     [renderedItems, parentMap]
   );
@@ -736,12 +663,11 @@ export function DocumentsView({
     return map;
   }, [parentMap, fallbackParentMap]);
 
-  const isSourceEmpty =
-    filteredArtifacts.length === 0 && filteredFeatures.length === 0;
+  const isSourceEmpty = filteredDocuments.length === 0;
   const isPostFilterEmpty = renderedItems.length === 0;
   const shouldShowEmptyState =
     isSourceEmpty || (isFilterActive === true && isPostFilterEmpty);
-  const hasAnyItems = artifacts.length > 0 || features.length > 0;
+  const hasAnyItems = documents.length > 0;
 
   // ---- Selection handlers ----
 
@@ -776,8 +702,7 @@ export function DocumentsView({
     if (treeData) {
       const treeNode = treeData.nodes.find((n) => n.root.id === item.data.id);
       if (treeNode && treeNode.children.length > 0) {
-        const rootEntityType =
-          item.kind === "artifact" ? EntityType.Document : EntityType.Feature;
+        const rootEntityType = EntityType.Document;
         const rootProjectId =
           item.kind === "artifact" || item.kind === "feature"
             ? item.data.projectId
@@ -798,16 +723,10 @@ export function DocumentsView({
       }
     }
 
-    if (item.kind === "artifact") {
+    if (item.kind === "artifact" || item.kind === "feature") {
       setMoveEntity({
         id: item.data.id,
         entityType: EntityType.Document,
-        projectId: item.data.projectId,
-      });
-    } else if (item.kind === "feature") {
-      setMoveEntity({
-        id: item.data.id,
-        entityType: EntityType.Feature,
         projectId: item.data.projectId,
       });
     }
@@ -820,14 +739,9 @@ export function DocumentsView({
     const itemsToDelete: DocumentRowItem[] = [];
     let hasMissing = false;
     for (const id of pendingBulkIds) {
-      const artifact = artifacts.find((a) => a.id === id);
-      if (artifact) {
-        itemsToDelete.push({ kind: "artifact", data: artifact });
-        continue;
-      }
-      const feature = features.find((f) => f.id === id);
-      if (feature) {
-        itemsToDelete.push({ kind: "feature", data: feature });
+      const doc = documents.find((d) => d.id === id);
+      if (doc) {
+        itemsToDelete.push(toRowItem(doc));
       } else {
         hasMissing = true;
       }
@@ -878,22 +792,12 @@ export function DocumentsView({
     }[] = [];
 
     for (const id of selectedIds) {
-      const artifact = artifacts.find((a) => a.id === id);
-      if (artifact) {
+      const doc = documents.find((d) => d.id === id);
+      if (doc) {
         entitiesToMove.push({
-          id: artifact.id,
+          id: doc.id,
           entityType: EntityType.Document,
-          projectId: artifact.projectId,
-        });
-        continue;
-      }
-
-      const feature = features.find((f) => f.id === id);
-      if (feature) {
-        entitiesToMove.push({
-          id: feature.id,
-          entityType: EntityType.Feature,
-          projectId: feature.projectId,
+          projectId: doc.projectId,
         });
       }
     }
@@ -1200,12 +1104,6 @@ function isArtifactTreeEntity(
   entity: TreeEntity
 ): entity is Extract<TreeEntity, { slug: string; type: DocumentType }> {
   return "slug" in entity && "type" in entity;
-}
-
-function isFeatureTreeEntity(
-  entity: TreeEntity
-): entity is Extract<TreeEntity, { slug: string; priority: string }> {
-  return "slug" in entity && "priority" in entity;
 }
 
 // ---- Tree group rows (shared between grouped and status-grouped views) ----

@@ -18,7 +18,6 @@ import {
   ExternalLinkType,
   type PullRequestMetadata,
 } from "@repo/api/src/types/external-link";
-import { FeatureStatus } from "@repo/api/src/types/feature";
 import { GitHubPRState } from "@repo/api/src/types/github";
 import type { TransactionClient } from "@repo/database";
 import { ChecksStatus, WorkstreamType, withDb } from "@repo/database";
@@ -730,7 +729,7 @@ async function markLinkedFeaturesCompleted(
 ): Promise<void> {
   const links = await tx.entityLink.findMany({
     where: {
-      sourceType: EntityType.Feature,
+      sourceType: EntityType.Document,
       targetId: documentId,
       targetType: EntityType.Document,
       linkType: LinkType.Produces,
@@ -746,13 +745,13 @@ async function markLinkedFeaturesCompleted(
     return;
   }
 
-  // Mark features as COMPLETED
-  const { count } = await tx.feature.updateMany({
+  const { count } = await tx.document.updateMany({
     where: {
       id: { in: featureIds },
-      status: { not: FeatureStatus.Done },
+      type: DocumentType.Feature,
+      status: { not: DocumentStatus.Done },
     },
-    data: { status: FeatureStatus.Done },
+    data: { status: DocumentStatus.Done },
   });
 
   if (count > 0) {

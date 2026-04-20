@@ -14,11 +14,14 @@ export function registerCreateDocumentThread(
   server.registerTool(
     "create-document-thread",
     {
-      description: "Create a comment thread on a document by ID or slug.",
+      description:
+        "Create a comment thread on a document by UUID or slug (PRD-*, PLN-*, FEA-*). Pass the user's slug verbatim.",
       inputSchema: {
         documentId: z
           .string()
-          .describe(describeIdOrSlug("Document", ["PRD-7", "PLAN-12"])),
+          .describe(
+            describeIdOrSlug("Document", ["PRD-7", "PLN-12", "FEA-42"])
+          ),
         body: z.string().min(1).describe("Comment body text"),
         anchorText: z
           .string()

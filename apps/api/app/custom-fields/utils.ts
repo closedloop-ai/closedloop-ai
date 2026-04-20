@@ -371,15 +371,6 @@ const RESERVED_NAMES_BY_ENTITY_TYPE: Record<
     "assignee",
     "slug",
   ]),
-  [CustomFieldEntityType.Feature]: new Set([
-    "title",
-    "description",
-    "status",
-    "priority",
-    "assignee",
-    "workstream",
-    "slug",
-  ]),
   [CustomFieldEntityType.Document]: new Set([
     "title",
     "description",
@@ -398,7 +389,6 @@ const RESERVED_NAMES_BY_ENTITY_TYPE: Record<
 const ENTITY_TYPE_DISPLAY_NAMES: Record<CustomFieldEntityType, string> = {
   [CustomFieldEntityType.Project]: "Project",
   [CustomFieldEntityType.Workstream]: "Workstream",
-  [CustomFieldEntityType.Feature]: "Feature",
   [CustomFieldEntityType.Document]: "Document",
 };
 

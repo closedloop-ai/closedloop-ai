@@ -1,7 +1,6 @@
 import { Priority } from "@repo/api/src/types/common";
 import { DocumentStatus, DocumentType } from "@repo/api/src/types/document";
 import { EvalStatus } from "@repo/api/src/types/evaluation";
-import { FeatureStatus } from "@repo/api/src/types/feature";
 import { render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -31,7 +30,6 @@ vi.mock("@/hooks/queries/use-judges", () => ({
 
 // Import after mocks
 import type { DocumentWithWorkstream } from "@repo/api/src/types/document";
-import type { FeatureWithWorkstream } from "@repo/api/src/types/feature";
 import type { DocumentRowItem } from "@/components/document-table/document-row";
 import { DocumentRow } from "@/components/document-table/document-row";
 import { DocumentColumn as Col } from "@/hooks/use-column-visibility";
@@ -81,23 +79,14 @@ const makePlanArtifact = (
 });
 
 const makeFeature = (
-  overrides?: Partial<FeatureWithWorkstream>
-): FeatureWithWorkstream => ({
+  overrides?: Partial<DocumentWithWorkstream>
+): DocumentWithWorkstream => ({
+  ...makePrdArtifact(),
   id: "feature-1",
-  organizationId: "org-1",
-  workstreamId: null,
-  projectId: "project-1",
+  type: DocumentType.Feature,
   title: "Test Feature",
   slug: "feature-1",
-  description: null,
-  status: FeatureStatus.Draft,
-  priority: Priority.Medium,
-  assigneeId: null,
-  assignee: null,
-  createdById: "user-1",
-  createdBy: null,
-  createdAt: new Date("2024-01-01"),
-  updatedAt: new Date("2024-01-02"),
+  status: DocumentStatus.Draft,
   project: { id: "project-1", name: "Test Project", teams: [] },
   ...overrides,
 });
