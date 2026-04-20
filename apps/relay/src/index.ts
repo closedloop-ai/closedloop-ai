@@ -6,7 +6,11 @@ import {
   type ServerResponse,
 } from "node:http";
 import { log } from "@repo/observability/log";
-import { emitProtocolMetric } from "@repo/observability/telemetry/metrics";
+import {
+  ConnectionState,
+  emitProtocolMetric,
+  type ProtocolMetric,
+} from "@repo/observability/telemetry/metrics";
 import {
   ErrorClass,
   TelemetryCategory,
@@ -28,6 +32,7 @@ const HEARTBEAT_DEGRADED_THRESHOLD_MS = Number(
   process.env.HEARTBEAT_DEGRADED_THRESHOLD_MS ??
     String(HEARTBEAT_INTERVAL_MS * 2)
 );
+const SHUTDOWN_FLUSH_DEADLINE_MS = 5000;
 const MAX_BODY_SIZE = 1_048_576; // 1 MB
 
 if (!INTERNAL_API_SECRET) {
@@ -51,12 +56,42 @@ type WorkerContext = {
   userId: string;
   heartbeatTimer: ReturnType<typeof setInterval> | null;
   degradedTimer: ReturnType<typeof setTimeout> | null;
+  wasDegraded: boolean;
   gatewaySessionId?: string;
   pluginVersion?: string;
 };
 
 const workersByTargetId = new Map<string, WorkerContext>();
 const socketToTarget = new Map<string, string>();
+
+function safeEmitConnectionStateCount(
+  metric: Extract<ProtocolMetric, { metric: "connection_state_count" }>
+): void {
+  try {
+    emitProtocolMetric(metric);
+  } catch (error) {
+    log.warn("ConnectionStateCountEmitFailed", {
+      targetId: metric.computeTargetId,
+      state: metric.state,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+function emitConnectionState(
+  state: ConnectionState,
+  targetId: string,
+  gatewaySessionId: string | null | undefined
+): void {
+  safeEmitConnectionStateCount({
+    metric: "connection_state_count",
+    state,
+    count: 1,
+    computeTargetId: targetId,
+    gatewaySessionId: gatewaySessionId ?? undefined,
+    timestamp: new Date().toISOString(),
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Connection churn / reconnect / heartbeat-freshness counters
@@ -507,6 +542,71 @@ namespace.use((socket, next) => {
     });
 });
 
+// Clean up if this socket was previously registered for a different target
+function cleanupOldWorker(socket: Socket, newTargetId: string): void {
+  const oldTargetId = socketToTarget.get(socket.id);
+  if (!oldTargetId || oldTargetId === newTargetId) {
+    return;
+  }
+
+  const oldWorker = workersByTargetId.get(oldTargetId);
+  if (oldWorker?.socket.id !== socket.id) {
+    return;
+  }
+
+  if (oldWorker.heartbeatTimer !== null) {
+    clearInterval(oldWorker.heartbeatTimer);
+  }
+  if (oldWorker.degradedTimer !== null) {
+    clearTimeout(oldWorker.degradedTimer);
+  }
+  workersByTargetId.delete(oldTargetId);
+}
+
+// Clean up if a different socket was previously registered for this target
+function cleanupExistingWorker(
+  targetId: string,
+  socket: Socket,
+  gatewaySessionId?: string
+): void {
+  const existingWorker = workersByTargetId.get(targetId);
+  if (!existingWorker || existingWorker.socket.id === socket.id) {
+    return;
+  }
+
+  if (existingWorker.heartbeatTimer !== null) {
+    clearInterval(existingWorker.heartbeatTimer);
+  }
+  if (existingWorker.degradedTimer !== null) {
+    clearTimeout(existingWorker.degradedTimer);
+  }
+  emitConnectionState(
+    ConnectionState.Disconnected,
+    targetId,
+    existingWorker.gatewaySessionId
+  );
+  socketToTarget.delete(existingWorker.socket.id);
+  // Emit reconnecting event — a new socket is taking over for an existing target
+  log.info(
+    JSON.stringify({
+      category: TelemetryCategory.ConnectionReconnecting,
+      timestamp: new Date().toISOString(),
+      computeTargetId: targetId,
+      gatewaySessionId: gatewaySessionId ?? null,
+      socketId: socket.id,
+      previousSocketId: existingWorker.socket.id,
+    })
+  );
+  reconnectCount += 1;
+  emitProtocolMetric({
+    metric: "reconnect_frequency",
+    count: reconnectCount,
+    computeTargetId: targetId,
+    gatewaySessionId: gatewaySessionId ?? undefined,
+    timestamp: new Date().toISOString(),
+  });
+}
+
 function registerWorker(
   socket: Socket,
   targetId: string,
@@ -514,51 +614,8 @@ function registerWorker(
   gatewaySessionId?: string,
   pluginVersion?: string
 ): void {
-  // Clean up if this socket was previously registered for a different target
-  const oldTargetId = socketToTarget.get(socket.id);
-  if (oldTargetId && oldTargetId !== targetId) {
-    const oldWorker = workersByTargetId.get(oldTargetId);
-    if (oldWorker?.socket.id === socket.id) {
-      if (oldWorker.heartbeatTimer !== null) {
-        clearInterval(oldWorker.heartbeatTimer);
-      }
-      if (oldWorker.degradedTimer !== null) {
-        clearTimeout(oldWorker.degradedTimer);
-      }
-      workersByTargetId.delete(oldTargetId);
-    }
-  }
-
-  // Clean up if a different socket was previously registered for this target
-  const existingWorker = workersByTargetId.get(targetId);
-  if (existingWorker && existingWorker.socket.id !== socket.id) {
-    if (existingWorker.heartbeatTimer !== null) {
-      clearInterval(existingWorker.heartbeatTimer);
-    }
-    if (existingWorker.degradedTimer !== null) {
-      clearTimeout(existingWorker.degradedTimer);
-    }
-    socketToTarget.delete(existingWorker.socket.id);
-    // Emit reconnecting event — a new socket is taking over for an existing target
-    log.info(
-      JSON.stringify({
-        category: TelemetryCategory.ConnectionReconnecting,
-        timestamp: new Date().toISOString(),
-        computeTargetId: targetId,
-        gatewaySessionId: gatewaySessionId ?? null,
-        socketId: socket.id,
-        previousSocketId: existingWorker.socket.id,
-      })
-    );
-    reconnectCount += 1;
-    emitProtocolMetric({
-      metric: "reconnect_frequency",
-      count: reconnectCount,
-      computeTargetId: targetId,
-      gatewaySessionId: gatewaySessionId ?? undefined,
-      timestamp: new Date().toISOString(),
-    });
-  }
+  cleanupOldWorker(socket, targetId);
+  cleanupExistingWorker(targetId, socket, gatewaySessionId);
 
   // Worker context object created first so heartbeat closure can reference it
   const workerContext: WorkerContext = {
@@ -568,6 +625,7 @@ function registerWorker(
     userId: auth.userId,
     heartbeatTimer: null,
     degradedTimer: null,
+    wasDegraded: false,
     gatewaySessionId,
     pluginVersion,
   };
@@ -604,6 +662,15 @@ function registerWorker(
           clearTimeout(workerContext.degradedTimer);
           workerContext.degradedTimer = null;
         }
+        // Emit recovery if connection was previously degraded
+        if (workerContext.wasDegraded) {
+          emitConnectionState(
+            ConnectionState.Online,
+            targetId,
+            gatewaySessionId
+          );
+          workerContext.wasDegraded = false;
+        }
       })
       .catch((error) => {
         log.error("Heartbeat failed", { targetId, gatewaySessionId, error });
@@ -630,14 +697,30 @@ function registerWorker(
               heartbeatFreshness: freshness,
             })
           );
+          emitConnectionState(
+            ConnectionState.Degraded,
+            targetId,
+            gatewaySessionId
+          );
+          workerContext.wasDegraded = true;
         }, HEARTBEAT_DEGRADED_THRESHOLD_MS);
       });
   }, HEARTBEAT_INTERVAL_MS);
 
   workerContext.heartbeatTimer = heartbeatTimer;
 
+  // Treat takeover (different socket displacing an existing worker) as a first
+  // registration so that an `online` metric is emitted for the new connection.
+  const isTakeover =
+    workersByTargetId.has(targetId) &&
+    workersByTargetId.get(targetId)?.socket.id !== socket.id;
+  const isFirstRegistration = !workersByTargetId.has(targetId) || isTakeover;
   workersByTargetId.set(targetId, workerContext);
   socketToTarget.set(socket.id, targetId);
+
+  if (isFirstRegistration) {
+    emitConnectionState(ConnectionState.Online, targetId, gatewaySessionId);
+  }
 
   log.info("Worker registered", {
     socketId: socket.id,
@@ -963,6 +1046,12 @@ namespace.on("connection", (socket) => {
           timestamp: new Date().toISOString(),
         });
 
+        emitConnectionState(
+          ConnectionState.Disconnected,
+          targetId,
+          gatewaySessionId
+        );
+
         // Only notify Vercel of disconnect if this socket is still the owner.
         // If another socket has taken over, Vercel already knows via its hello.
         forwardSocketEvent(
@@ -1059,9 +1148,44 @@ export async function stopRelayServer(): Promise<void> {
   relayServerStarted = false;
 }
 
+async function handleShutdown(): Promise<void> {
+  try {
+    for (const [targetId, ctx] of workersByTargetId) {
+      emitConnectionState(
+        ConnectionState.Disconnected,
+        targetId,
+        ctx.gatewaySessionId
+      );
+    }
+    // Clear the map BEFORE awaiting the flush. If a socket disconnect fires
+    // during the await window (e.g., a natural disconnect or io.close() from
+    // an external stop), its handler would otherwise look up the worker, find
+    // it still registered, and re-emit `disconnected` — producing a duplicate
+    // transition for the same logical event. Clearing here makes the handler's
+    // `isCurrentOwner` check fail-closed and skip the duplicate emission.
+    workersByTargetId.clear();
+
+    // Drain the observability buffer within a 5-second wall-clock deadline.
+    // log.flush() calls flushToDatadog(), which chains subsequent batches via
+    // its .finally() handler, so one awaited call drains all pending entries.
+    await Promise.race([
+      log.flush(),
+      new Promise<void>((resolve) => {
+        setTimeout(resolve, SHUTDOWN_FLUSH_DEADLINE_MS).unref?.();
+      }),
+    ]);
+  } catch {
+    // swallow — must still exit
+  }
+  process.exit(0);
+}
+
 if (process.env.NODE_ENV !== "test") {
   startRelayServer().catch((error) => {
     log.error("Failed to start relay server", { error });
     process.exit(1);
   });
+
+  process.once("SIGTERM", handleShutdown);
+  process.once("SIGINT", handleShutdown);
 }
