@@ -10,7 +10,7 @@ import {
   MessageSquare,
   RefreshCw,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { CommentChatDialog } from "@/components/engineer/CommentChatDialog";
 import {
   type PRComment,
@@ -20,7 +20,7 @@ import { useCodexAvailable } from "@/hooks/engineer/use-codex-available";
 import { useFeatureSeen } from "@/hooks/engineer/use-feature-seen";
 import {
   type CommentDisplayStatus,
-  getCommentStatusCounts,
+  type CommentStatus,
   getCommentStatuses,
   markChatStarted,
   markCommentDismissed,
@@ -159,7 +159,12 @@ export function PRCommentsViewer({
     null
   );
   const [addressingReplies, setAddressingReplies] = useState<PRComment[]>([]);
-  const [statusVersion, setStatusVersion] = useState(0);
+  const [commentStatuses, setCommentStatuses] = useState<
+    Record<string, CommentStatus>
+  >(() => getCommentStatuses(prNumber));
+  const refreshCommentStatuses = () => {
+    setCommentStatuses(getCommentStatuses(prNumber));
+  };
   const { data: codexData } = useCodexAvailable();
   const { seen: overflowSeen, markSeen: markOverflowSeen } = useFeatureSeen(
     "pr-comment-overflow"
@@ -179,14 +184,12 @@ export function PRCommentsViewer({
     staleTime: 10_000, // Consider data stale after 10 seconds
   });
 
-  // Get local status for all comments — re-read from localStorage whenever
-  // statusVersion (internal dismiss/reopen) or statusRefreshKey (parent signals) changes
-  const commentStatuses = useMemo(() => {
-    if (statusVersion < 0 || statusRefreshKey < 0) {
-      return {};
-    }
-    return getCommentStatuses(prNumber);
-  }, [prNumber, statusVersion, statusRefreshKey]);
+  // Re-read from localStorage when prNumber changes or parent signals a refresh.
+  // Dismiss/reopen/chat-start handlers below call refreshCommentStatuses() directly.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: statusRefreshKey is a prop and must trigger re-read
+  useEffect(() => {
+    setCommentStatuses(getCommentStatuses(prNumber));
+  }, [prNumber, statusRefreshKey]);
 
   // Build threads from flat comments
   const threads = useMemo(() => {
@@ -196,19 +199,19 @@ export function PRCommentsViewer({
     return buildThreads(commentsData.comments);
   }, [commentsData]);
 
-  // Get status counts (only root comments)
+  // Get status counts (only root comments) — derived purely from commentStatuses state
   const statusCounts = useMemo(() => {
-    if (statusVersion < 0 || statusRefreshKey < 0) {
-      return { pending: 0, addressed: 0, responded: 0, dismissed: 0 };
+    const counts = { pending: 0, addressed: 0, responded: 0, dismissed: 0 };
+    for (const t of threads) {
+      const entry = commentStatuses[t.root.id];
+      if (!entry || entry.status === "pending") {
+        counts.pending++;
+      } else {
+        counts[entry.status]++;
+      }
     }
-    if (!threads.length) {
-      return { pending: 0, addressed: 0, responded: 0, dismissed: 0 };
-    }
-    return getCommentStatusCounts(
-      prNumber,
-      threads.map((t) => t.root.id)
-    );
-  }, [prNumber, threads, statusVersion, statusRefreshKey]);
+    return counts;
+  }, [threads, commentStatuses]);
 
   // Filter threads based on selected filter, grouped into inline and general
   const filteredThreads = useMemo(() => {
@@ -225,16 +228,14 @@ export function PRCommentsViewer({
   // Handler for dismissing a comment
   const handleDismiss = (commentId: string) => {
     markCommentDismissed(prNumber, commentId);
-    // Force re-computation of statuses by incrementing version
-    setStatusVersion((v) => v + 1);
+    refreshCommentStatuses();
     onCommentDismissed?.(commentId);
   };
 
   // Handler for reopening a resolved/dismissed comment
   const handleReopen = (commentId: string) => {
     resetCommentStatus(prNumber, commentId);
-    // Force re-computation of statuses by incrementing version
-    setStatusVersion((v) => v + 1);
+    refreshCommentStatuses();
   };
 
   // Handler for opening chat to address a comment (Claude or Codex)
@@ -246,7 +247,7 @@ export function PRCommentsViewer({
   ) => {
     if (autoStart) {
       markChatStarted(prNumber, comment.id);
-      setStatusVersion((v) => v + 1);
+      refreshCommentStatuses();
     }
     if (onCommentSelected) {
       onCommentSelected(comment, replies, autoStart, provider);
@@ -360,7 +361,7 @@ export function PRCommentsViewer({
           onOpenChange={(open) => !open && setAddressingComment(null)}
           onResolved={() => {
             setAddressingComment(null);
-            setStatusVersion((v) => v + 1);
+            refreshCommentStatuses();
             refetch();
           }}
           open={!!addressingComment}
