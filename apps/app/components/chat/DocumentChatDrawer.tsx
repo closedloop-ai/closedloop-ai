@@ -15,6 +15,7 @@ export type DocumentChatDrawerProps = {
   documentSlug: string;
   documentTitle: string;
   documentType: string;
+  fillParent?: boolean;
 };
 
 const DOCUMENT_LABELS: Record<string, string> = {
@@ -34,6 +35,7 @@ export function DocumentChatDrawer({
   documentSlug,
   documentTitle,
   documentType,
+  fillParent = false,
 }: Readonly<DocumentChatDrawerProps>) {
   const routing = useEngineerRoutingSelection();
   const healthCheckTargetKey = getHealthCheckTargetKey(routing);
@@ -60,6 +62,7 @@ export function DocumentChatDrawer({
     <ChatDrawerPanel
       chatKey={chatKey}
       context={context}
+      fillParent={fillParent}
       welcomeMessage={welcomeMessage}
     />
   );

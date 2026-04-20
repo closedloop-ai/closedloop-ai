@@ -112,6 +112,7 @@ export type ChatDrawerPanelProps = {
   notice?: string | null;
   contextSelection?: PrCommentContext | null;
   onContextConsumed?: () => void;
+  fillParent?: boolean;
 };
 
 export function ChatDrawerPanel({
@@ -124,6 +125,7 @@ export function ChatDrawerPanel({
   notice,
   contextSelection,
   onContextConsumed,
+  fillParent = false,
 }: Readonly<ChatDrawerPanelProps>) {
   const { width, handleResizeStart } = useResizableWidth();
 
@@ -146,14 +148,16 @@ export function ChatDrawerPanel({
   return (
     <div
       className="flex h-full min-h-0 min-w-0 max-w-full overflow-hidden border-l bg-background"
-      style={{ width }}
+      style={fillParent ? undefined : { width }}
     >
-      <button
-        aria-label="Resize chat panel"
-        className="w-1 shrink-0 cursor-col-resize border-y-0 border-r-0 border-l bg-transparent p-0 transition-colors hover:bg-primary/30 focus:outline-none active:bg-primary/50"
-        onMouseDown={handleResizeStart}
-        type="button"
-      />
+      {!fillParent && (
+        <button
+          aria-label="Resize chat panel"
+          className="w-1 shrink-0 cursor-col-resize border-y-0 border-r-0 border-l bg-transparent p-0 transition-colors hover:bg-primary/30 focus:outline-none active:bg-primary/50"
+          onMouseDown={handleResizeStart}
+          type="button"
+        />
+      )}
       <ChatPanel
         className="flex-1"
         contextPercent={chat.contextPercent}
