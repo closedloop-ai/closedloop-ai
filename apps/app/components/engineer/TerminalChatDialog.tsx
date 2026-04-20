@@ -192,6 +192,21 @@ export function TerminalChatDialog({
     }
   }, [open]);
 
+  const handleClear = useCallback(async () => {
+    setEntries([]);
+    setActiveStream(null);
+    setRequestError(null);
+    setPendingRemoteResponse(null);
+    try {
+      await fetch("/api/gateway/terminal-chat", { method: "DELETE" });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.terminalChatHistory(),
+      });
+    } catch (err) {
+      console.error("Failed to clear:", err);
+    }
+  }, [queryClient]);
+
   // CMD+K to clear
   useEffect(() => {
     if (!open) {
@@ -205,7 +220,7 @@ export function TerminalChatDialog({
     };
     globalThis.addEventListener("keydown", handler);
     return () => globalThis.removeEventListener("keydown", handler);
-  }, [open]);
+  }, [open, handleClear]);
 
   // Reload and validate layout against current viewport each time dialog opens
   useEffect(() => {
@@ -577,21 +592,6 @@ export function TerminalChatDialog({
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSend();
-    }
-  };
-
-  const handleClear = async () => {
-    setEntries([]);
-    setActiveStream(null);
-    setRequestError(null);
-    setPendingRemoteResponse(null);
-    try {
-      await fetch("/api/gateway/terminal-chat", { method: "DELETE" });
-      queryClient.invalidateQueries({
-        queryKey: queryKeys.terminalChatHistory(),
-      });
-    } catch (err) {
-      console.error("Failed to clear:", err);
     }
   };
 

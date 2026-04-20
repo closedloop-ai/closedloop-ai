@@ -265,7 +265,7 @@ export function useReviewExecution(
       allCommentedFiredRef.current = true;
       onAllCommented?.();
     }
-  }, [submittedFindings.size, reviewSplit, onAllCommented]);
+  }, [reviewSplit, onAllCommented, submittedFindings]);
 
   // Notify parent when restoring a previous review. Do NOT re-save findings
   // here: on remount (e.g. after review completes and the React key flips from
@@ -374,11 +374,6 @@ export function useReviewExecution(
       provider: config.provider || "codex",
       useBaseRepo: config.useBaseRepo || undefined,
     };
-  }
-
-  // eslint-disable-next-line @typescript-eslint/no-shadow -- startReview is hoisted and used in the mount effect
-  async function startReview(signal: AbortSignal) {
-    await runReviewAttempt(signal, 0);
   }
 
   async function runReviewAttempt(
@@ -761,6 +756,7 @@ export function useReviewExecution(
   }, [ticketId, repoPath, config.provider]);
 
   // Start the review on mount (skip if restoring a previous result)
+  // biome-ignore lint/correctness/useExhaustiveDependencies: intentionally one-shot mount effect; adding runReviewAttempt would restart streams
   useEffect(() => {
     if (initialOutput) {
       return;
@@ -772,10 +768,12 @@ export function useReviewExecution(
 
     const controller = new AbortController();
     abortRef.current = controller;
-    startReview(controller.signal);
+    runReviewAttempt(controller.signal, 0).catch((error: unknown) => {
+      console.error("[review] Failed to start review", error);
+    });
     // NOTE: no cleanup abort — the stream continues across StrictMode re-mounts.
     // The Stop button calls handleStopReview which aborts via abortRef.
-  }, [initialOutput]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [initialOutput]);
 
   const handleSubmitComment = useCallback(
     async (index: number, finding: ReviewFinding) => {

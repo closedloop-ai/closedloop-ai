@@ -998,6 +998,11 @@ export function PRBrowserDialog({
     [selectedPR, selectedRepo]
   );
 
+  const incrementCommentStatusKey = useCallback(
+    () => setCommentStatusKey((k) => k + 1),
+    []
+  );
+
   const handleSubmitReviewAsComment = useCallback(
     async (provider: string) => {
       const entry = reviews[provider];
@@ -1095,10 +1100,16 @@ export function PRBrowserDialog({
         patchReview(provider, { isSubmitting: false });
       }
     },
-    [reviews, selectedRepo, selectedPR, commitSha, queryClient, patchReview]
+    [
+      reviews,
+      selectedRepo,
+      selectedPR,
+      commitSha,
+      queryClient,
+      patchReview,
+      incrementCommentStatusKey,
+    ]
   );
-
-  const incrementCommentStatusKey = () => setCommentStatusKey((k) => k + 1);
 
   const removeCommentChat = (key: string, commentId: string) => {
     setCommentChats((prev) => {

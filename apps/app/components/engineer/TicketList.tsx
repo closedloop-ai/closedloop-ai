@@ -745,6 +745,24 @@ export function TicketList({
       .catch(() => {});
   }, []);
 
+  // Derive base repo path from a ticket's worktree or active session
+  const getRepoPathForTicket = useCallback(
+    (ticketId: string): string | null => {
+      const session = getSession(ticketId);
+      if (session?.repoPath) {
+        return session.repoPath;
+      }
+
+      const worktree = workDirStatus[ticketId];
+      if (worktree?.exists && worktree.path) {
+        return deriveBaseRepoPath(worktree.path, ticketId);
+      }
+
+      return null;
+    },
+    [getSession, workDirStatus]
+  );
+
   // Discover external deployments (e.g., `vercel --yes` from CLI) on page load
   useEffect(() => {
     // Guard: wait for work directory status to be loaded
@@ -827,7 +845,15 @@ export function TicketList({
         });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tickets, workDirStatus, pushedStatus, prStatus, deployStatus, reposData]);
+  }, [
+    tickets,
+    workDirStatus,
+    pushedStatus,
+    prStatus,
+    deployStatus,
+    reposData,
+    getRepoPathForTicket,
+  ]);
 
   // Trigger LLM detection for repos that have a local deployment but no port
   useEffect(() => {
@@ -1309,28 +1335,6 @@ export function TicketList({
   const isTicketDeployable = (ticketId: string): boolean => {
     const repoPath = getRepoPathForTicket(ticketId);
     return repoPath ? deployableRepos.has(repoPath) : false;
-  };
-
-  // Derive base repo path from a ticket's worktree or active session
-  const getRepoPathForTicket = (ticketId: string): string | null => {
-    // Try active session first
-    const session = getSession(ticketId);
-    if (session?.repoPath) {
-      return session.repoPath;
-    }
-
-    // Fall back to deriving from worktree path
-    const worktree = workDirStatus[ticketId];
-    if (worktree?.exists && worktree.path) {
-      const pathParts = worktree.path.split("/");
-      const worktreeDirName = pathParts.at(-1)!;
-      const parentDir = pathParts.slice(0, -1).join("/");
-      const sanitizedTicket = ticketId.replaceAll(/[^a-zA-Z0-9-_]/g, "_");
-      const repoName = worktreeDirName.replace(`-${sanitizedTicket}`, "");
-      return `${parentDir}/${repoName}`;
-    }
-
-    return null;
   };
 
   // Handler for deploy button

@@ -45,6 +45,10 @@ export function ChatInput({
   useEffect(() => {
     const el = inputRef.current;
     if (el) {
+      if (value.length === 0) {
+        el.style.height = "40px";
+        return;
+      }
       el.style.height = "40px";
       el.style.height = `${el.scrollHeight}px`;
     }

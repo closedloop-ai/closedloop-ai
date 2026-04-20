@@ -66,6 +66,9 @@ export function ChatPanel({
   const transcriptEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    if (messages.length === 0 && streamingContent.length === 0) {
+      return;
+    }
     transcriptEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, streamingContent]);
 
