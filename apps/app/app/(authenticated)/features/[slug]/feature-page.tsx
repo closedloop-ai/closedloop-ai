@@ -149,7 +149,7 @@ export function FeaturePage({ feature }: Readonly<FeaturePageProps>) {
           )}
           {/* Right Sidebar: interactive chat */}
           <FeatureFlagged flag="interactive-chat">
-            <div className="flex w-[360px] flex-none flex-col border-l">
+            <div className="flex flex-col">
               <DocumentChatDrawer
                 documentId={feature.id}
                 documentSlug={feature.slug}

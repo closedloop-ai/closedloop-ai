@@ -386,6 +386,7 @@ export function PlanEditor({
                     documentSlug={plan.slug}
                     documentTitle={plan.title}
                     documentType="plan"
+                    fillParent
                   />
                 </TabsContent>
                 <TabsContent
