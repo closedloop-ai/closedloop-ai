@@ -8,6 +8,7 @@ import type {
 } from "@repo/api/src/types/document";
 import type { JudgeFeedbackItem } from "@repo/api/src/types/evaluation";
 import type { PreviewDeploymentInfo } from "@repo/api/src/types/external-link-utils";
+import type { AdditionalRepoRef } from "@repo/api/src/types/loop";
 import { Label } from "@repo/design-system/components/ui/label";
 import Link from "next/link";
 import { useState } from "react";
@@ -37,6 +38,7 @@ export type PlanMetadataPanelProps = {
   isPreviewRefreshing: boolean;
   judgeItems: JudgeFeedbackItem[] | null;
   codeJudgeItems: JudgeFeedbackItem[] | null;
+  additionalRepos?: AdditionalRepoRef[] | null;
   /**
    * When "detailsOnly", render content without sidebar wrapper.
    */
@@ -52,6 +54,7 @@ export function PlanMetadataPanel({
   isPreviewRefreshing,
   judgeItems,
   codeJudgeItems,
+  additionalRepos,
   variant = "sidebar",
 }: PlanMetadataPanelProps) {
   const [isRatingOpen, setIsRatingOpen] = useState(false);
@@ -62,7 +65,10 @@ export function PlanMetadataPanel({
     <div className="space-y-6">
       <SourceDocumentSection documentId={plan.id} projectId={projectId} />
 
-      <GenerationSection generationStatus={generationStatus} />
+      <GenerationSection
+        additionalRepos={additionalRepos}
+        generationStatus={generationStatus}
+      />
 
       {pullRequest ? <PullRequestSection pullRequest={pullRequest} /> : null}
 
@@ -133,8 +139,10 @@ export function PlanMetadataPanel({
 /** Renders loop generation info in the metadata sidebar. */
 function GenerationSection({
   generationStatus,
+  additionalRepos,
 }: {
   generationStatus: GenerationStatus | null;
+  additionalRepos?: AdditionalRepoRef[] | null;
 }) {
   if (generationStatus?.source === "loop" && generationStatus.loopId) {
     return (
@@ -156,6 +164,24 @@ function GenerationSection({
           >
             View loop details
           </Link>
+          {additionalRepos && additionalRepos.length > 0 ? (
+            <div className="space-y-1">
+              <span className="text-muted-foreground text-xs">
+                Additional Repositories
+              </span>
+              <ul className="space-y-0.5">
+                {additionalRepos.map((repo) => (
+                  <li
+                    className="text-muted-foreground text-xs"
+                    key={`${repo.fullName}:${repo.branch}`}
+                  >
+                    <span className="font-medium">{repo.fullName}</span>
+                    <span className="opacity-70"> ({repo.branch})</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
         </div>
       </MetadataSection>
     );

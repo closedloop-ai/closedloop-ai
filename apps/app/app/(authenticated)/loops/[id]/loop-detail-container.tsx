@@ -2,6 +2,7 @@
 
 import { useFeatureFlag } from "@repo/analytics/client";
 import type {
+  AdditionalRepoRef,
   LoopErrorCode,
   LoopEventError,
   TokensByModel,
@@ -282,6 +283,28 @@ function MetadataCards({ loop }: MetadataCardsProps) {
           )}
         </CardContent>
       </Card>
+
+      {/* Additional Repositories Card */}
+      {loop.additionalRepos && loop.additionalRepos.length > 0 && (
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="font-medium text-sm">
+              Additional Repositories
+            </CardTitle>
+            <GitBranchIcon className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-2">
+              {loop.additionalRepos.map((repo: AdditionalRepoRef) => (
+                <div key={`${repo.fullName}:${repo.branch}`}>
+                  <p className="font-medium text-sm">{repo.fullName}</p>
+                  <p className="text-muted-foreground text-xs">{repo.branch}</p>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }
@@ -335,23 +358,22 @@ export function LoopDetailContainer({ id }: LoopDetailContainerProps) {
     ? (errorEvents?.data?.[0] as LoopEventError | undefined)?.logTail
     : undefined;
 
-  const handleRestart = async () => {
-    try {
-      const result = await resumeLoop.mutateAsync({ id: loop.id });
-      toast.success("Loop restarted");
-      router.push(`/loops/${result.loopId}`);
-    } catch {
-      // Global QueryClient onError handler toasts the error
-    }
+  const handleRestart = () => {
+    resumeLoop.mutate(
+      { id: loop.id },
+      {
+        onSuccess: (result) => {
+          toast.success("Loop restarted");
+          router.push(`/loops/${result.loopId}`);
+        },
+      }
+    );
   };
 
-  const handleCancel = async () => {
-    try {
-      await cancelLoop.mutateAsync(loop.id);
-      toast.success("Loop cancelled");
-    } catch {
-      // Global QueryClient onError handler toasts the error
-    }
+  const handleCancel = () => {
+    cancelLoop.mutate(loop.id, {
+      onSuccess: () => toast.success("Loop cancelled"),
+    });
   };
 
   return (
@@ -382,9 +404,7 @@ export function LoopDetailContainer({ id }: LoopDetailContainerProps) {
         {RESTARTABLE_LOOP_STATUSES.has(loop.status) && (
           <Button
             disabled={resumeLoop.isPending}
-            onClick={async () => {
-              await handleRestart();
-            }}
+            onClick={handleRestart}
             size="sm"
             variant="outline"
           >

@@ -17,7 +17,10 @@ import {
 import type { DocumentVersion } from "@repo/api/src/types/document-version";
 import { EntityType } from "@repo/api/src/types/entity-link";
 import type { ExternalLink } from "@repo/api/src/types/external-link";
-import { RunLoopCommand } from "@repo/api/src/types/loop";
+import {
+  type AdditionalRepoRef,
+  RunLoopCommand,
+} from "@repo/api/src/types/loop";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import {
   type UseQueryOptions,
@@ -448,10 +451,17 @@ export function useCreateAndGenerateDocument() {
   const [multiTargetState, setMultiTargetState] = useState<{
     availableTargets: ComputeTargetConflictBody["availableTargets"];
     pendingDocumentId: string;
+    additionalRepos?: AdditionalRepoRef[];
   } | null>(null);
 
   const mutation = useMutation({
-    mutationFn: async (input: CreateDocumentInput) => {
+    mutationFn: async ({
+      input,
+      additionalRepos,
+    }: {
+      input: CreateDocumentInput;
+      additionalRepos?: AdditionalRepoRef[];
+    }) => {
       const artifact = await apiClient.post<Document>("/documents", input);
 
       // Trigger generation via Loops — compute target resolved server-side
@@ -459,6 +469,7 @@ export function useCreateAndGenerateDocument() {
         const desktopApiNamespace = await resolveDesktopApiNamespaceHint();
         await apiClient.post(`/documents/${artifact.id}/run-loop`, {
           command: RunLoopCommand.Plan,
+          ...(additionalRepos?.length ? { additionalRepos } : {}),
           ...(desktopApiNamespace &&
           desktopApiNamespace !== CURRENT_DESKTOP_API_NAMESPACE
             ? { desktopApiNamespace }
@@ -475,6 +486,7 @@ export function useCreateAndGenerateDocument() {
             setMultiTargetState({
               availableTargets: conflict.availableTargets,
               pendingDocumentId: artifact.id,
+              additionalRepos,
             }),
           onBackendMismatch: () => {
             // Backend mismatch modal handled in T-3.4
@@ -505,13 +517,14 @@ export function useCreateAndGenerateDocument() {
       if (!multiTargetState) {
         return;
       }
-      const { pendingDocumentId } = multiTargetState;
+      const { pendingDocumentId, additionalRepos } = multiTargetState;
       setMultiTargetState(null);
       try {
         const desktopApiNamespace = await resolveDesktopApiNamespaceHint();
         await apiClient.post(`/documents/${pendingDocumentId}/run-loop`, {
-          command: "plan",
+          command: RunLoopCommand.Plan,
           computeTargetId: targetId,
+          ...(additionalRepos?.length ? { additionalRepos } : {}),
           ...(desktopApiNamespace &&
           desktopApiNamespace !== CURRENT_DESKTOP_API_NAMESPACE
             ? { desktopApiNamespace }

@@ -1,6 +1,8 @@
 "use client";
 
+import { useFeatureFlag } from "@repo/analytics/client";
 import { EntityType } from "@repo/api/src/types/entity-link";
+import type { AdditionalRepoRef } from "@repo/api/src/types/loop";
 import { getProjectSettings } from "@repo/api/src/types/project";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
@@ -24,15 +26,21 @@ import {
   useDocuments,
 } from "@/hooks/queries/use-documents";
 import { useProject, useProjects } from "@/hooks/queries/use-projects";
+import { AdditionalReposPicker } from "./additional-repos-picker";
 import { PlanPreview, PrdSelector, ProjectSelector } from "./plan-form-fields";
-import { buildCreateInput, useModalOpenState } from "./plan-form-utils";
+import {
+  buildCreateInput,
+  type FormState,
+  normalizeAdditionalRepos,
+  useModalOpenState,
+} from "./plan-form-utils";
 import {
   generateFileNameFromTitle,
   generatePlanFileName,
   getFinalFileName,
   type PlanSource,
 } from "./plan-source";
-import { RepositoryBranchFields } from "./repository-branch-fields";
+import { RepoBranchSelector } from "./repo-branch-selector";
 
 type NewPlanModalProps = {
   source?: PlanSource;
@@ -52,9 +60,57 @@ function isCreateSubmitDisabled(
   isSubmitting: boolean,
   titleTrimmed: boolean,
   selectedSource: PlanSource | undefined,
-  missingRepo: boolean
+  missingRepo: boolean,
+  incompleteAdditionalRepos: boolean
 ): boolean {
-  return isSubmitting || !titleTrimmed || (!!selectedSource && missingRepo);
+  return (
+    isSubmitting ||
+    !titleTrimmed ||
+    (!!selectedSource && (missingRepo || incompleteAdditionalRepos))
+  );
+}
+
+type SubmitCreatePlanArgs = {
+  formState: FormState;
+  selectedSource: PlanSource | undefined;
+  showPicker: boolean;
+  additionalRepos: AdditionalRepoRef[];
+  createPlan: ReturnType<typeof useCreateDocument>;
+  createAndGeneratePlan: ReturnType<typeof useCreateAndGenerateDocument>;
+  onSuccess: (document: { slug: string }) => void;
+};
+
+function submitCreatePlan({
+  formState,
+  selectedSource,
+  showPicker,
+  additionalRepos,
+  createPlan,
+  createAndGeneratePlan,
+  onSuccess,
+}: SubmitCreatePlanArgs): void {
+  const finalFileName = getFinalFileName(
+    formState.fileName,
+    formState.title,
+    selectedSource
+  );
+  const createConfig = buildCreateInput(
+    formState,
+    finalFileName,
+    selectedSource
+  );
+
+  if (createConfig.type === "createAndGenerate") {
+    const submitAdditionalRepos = showPicker
+      ? normalizeAdditionalRepos(additionalRepos)
+      : undefined;
+    createAndGeneratePlan.mutate(
+      { input: createConfig.input, additionalRepos: submitAdditionalRepos },
+      { onSuccess }
+    );
+    return;
+  }
+  createPlan.mutate(createConfig.input, { onSuccess });
 }
 
 export function NewPlanModal({
@@ -70,6 +126,7 @@ export function NewPlanModal({
     controlledOnOpenChange
   );
   const [error, setError] = useState<string | null>(null);
+  const showPicker = useFeatureFlag("multi-repo-plan")?.enabled === true;
 
   // Form state
   const [selectedSourceId, setSelectedSourceId] = useState(source?.id ?? "");
@@ -86,6 +143,11 @@ export function NewPlanModal({
     () => source?.targetBranch ?? ""
   );
   const [selectedRepoId, setSelectedRepoId] = useState("");
+  const [additionalRepos, setAdditionalRepos] = useState<AdditionalRepoRef[]>(
+    []
+  );
+  const [incompleteAdditionalRepos, setIncompleteAdditionalRepos] =
+    useState(false);
   const hasPrePopulated = useRef(false);
 
   // Fetch project details for default repository
@@ -176,6 +238,8 @@ export function NewPlanModal({
     setTargetRepo(source?.targetRepo ?? "");
     setTargetBranch(source?.targetBranch ?? "");
     setSelectedRepoId("");
+    setAdditionalRepos([]);
+    setIncompleteAdditionalRepos(false);
     setError(null);
     hasPrePopulated.current = false;
   };
@@ -188,38 +252,27 @@ export function NewPlanModal({
       return;
     }
 
-    const formState = {
-      selectedSourceId,
-      selectedProjectId,
-      title,
-      fileName,
-      content,
-      targetRepo,
-      targetBranch,
-    };
-
-    const finalFileName = getFinalFileName(
-      formState.fileName,
-      formState.title,
-      selectedSource
-    );
-    const createConfig = buildCreateInput(
-      formState,
-      finalFileName,
-      selectedSource
-    );
-
-    const onSuccess = (document: { slug: string }) => {
-      setOpen(false);
-      resetForm();
-      router.push(`/implementation-plans/${document.slug}`);
-    };
-
-    if (createConfig.type === "createAndGenerate") {
-      createAndGeneratePlan.mutate(createConfig.input, { onSuccess });
-    } else {
-      createPlan.mutate(createConfig.input, { onSuccess });
-    }
+    submitCreatePlan({
+      formState: {
+        selectedSourceId,
+        selectedProjectId,
+        title,
+        fileName,
+        content,
+        targetRepo,
+        targetBranch,
+      },
+      selectedSource,
+      showPicker,
+      additionalRepos,
+      createPlan,
+      createAndGeneratePlan,
+      onSuccess: (document) => {
+        setOpen(false);
+        resetForm();
+        router.push(`/implementation-plans/${document.slug}`);
+      },
+    });
   };
 
   const handleOpenChange = (newOpen: boolean) => {
@@ -227,6 +280,12 @@ export function NewPlanModal({
     if (!newOpen) {
       resetForm();
     }
+  };
+
+  const handleRepositoryChange = (repoId: string, fullName: string) => {
+    setSelectedRepoId(repoId);
+    setTargetRepo(fullName);
+    setTargetBranch("");
   };
 
   const showProjectSelector = !selectedSource?.projectId;
@@ -324,17 +383,22 @@ export function NewPlanModal({
             </div>
           ) : null}
 
-          <RepositoryBranchFields
+          <TargetRepoBranchFields
             onBranchChange={setTargetBranch}
-            onRepositoryChange={(repoId, fullName) => {
-              setSelectedRepoId(repoId);
-              setTargetRepo(fullName);
-              setTargetBranch("");
-            }}
+            onRepoChange={handleRepositoryChange}
+            selectedBranch={targetBranch}
             selectedRepoId={selectedRepoId}
-            targetBranch={targetBranch}
             targetRepo={targetRepo}
           />
+
+          {showPicker ? (
+            <AdditionalReposPicker
+              initialValue={additionalRepos}
+              onChange={setAdditionalRepos}
+              onIncompleteChange={setIncompleteAdditionalRepos}
+              targetRepo={targetRepo}
+            />
+          ) : null}
 
           {selectedSource ? (
             <PlanPreview
@@ -356,12 +420,11 @@ export function NewPlanModal({
             />
           </div>
 
-          {missingRepo && selectedSource ? (
-            <p className="text-destructive text-sm">
-              No repository configured for this project. Select a repository
-              above or add a default repository in project settings.
-            </p>
-          ) : null}
+          <PlanSubmitValidationMessages
+            incompleteAdditionalRepos={incompleteAdditionalRepos}
+            missingRepo={missingRepo}
+            selectedSource={selectedSource}
+          />
         </div>
 
         <DialogFooter>
@@ -373,7 +436,8 @@ export function NewPlanModal({
               isSubmitting,
               title.trim().length > 0,
               selectedSource,
-              missingRepo
+              missingRepo,
+              incompleteAdditionalRepos
             )}
             onClick={handleSubmit}
           >
@@ -392,5 +456,67 @@ export function NewPlanModal({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+function TargetRepoBranchFields({
+  targetRepo,
+  selectedRepoId,
+  selectedBranch,
+  onRepoChange,
+  onBranchChange,
+}: {
+  targetRepo: string;
+  selectedRepoId: string;
+  selectedBranch: string;
+  onRepoChange: (repoId: string, fullName: string) => void;
+  onBranchChange: (branch: string) => void;
+}) {
+  return (
+    <RepoBranchSelector
+      branchInputId="target-branch"
+      branchLabel="Target Branch"
+      onBranchChange={onBranchChange}
+      onRepoChange={onRepoChange}
+      repoInputId="target-repo"
+      repoLabel={
+        <>
+          Target Repository{" "}
+          <span className="text-muted-foreground text-xs">(owner/repo)</span>
+        </>
+      }
+      repoTriggerFallback={targetRepo ? <span>{targetRepo}</span> : null}
+      selectedBranch={selectedBranch}
+      selectedRepoId={selectedRepoId}
+    />
+  );
+}
+
+function PlanSubmitValidationMessages({
+  selectedSource,
+  missingRepo,
+  incompleteAdditionalRepos,
+}: {
+  selectedSource: PlanSource | undefined;
+  missingRepo: boolean;
+  incompleteAdditionalRepos: boolean;
+}) {
+  if (!selectedSource) {
+    return null;
+  }
+  return (
+    <>
+      {missingRepo ? (
+        <p className="text-destructive text-sm">
+          No repository configured for this project. Select a repository above
+          or add a default repository in project settings.
+        </p>
+      ) : null}
+      {incompleteAdditionalRepos ? (
+        <p className="text-destructive text-sm">
+          Complete or remove every additional repository row before generating.
+        </p>
+      ) : null}
+    </>
   );
 }

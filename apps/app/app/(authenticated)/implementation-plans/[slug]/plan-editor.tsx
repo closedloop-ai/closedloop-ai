@@ -51,6 +51,7 @@ import {
   useCodeJudgesFeedback,
   usePlanJudgesFeedback,
 } from "@/hooks/queries/use-judges";
+import { useLatestPlanLoopByDocument } from "@/hooks/queries/use-loops";
 import { useExecutionLogDialog } from "@/hooks/use-execution-log-dialog";
 import { usePreviewDeploymentPolling } from "@/hooks/use-preview-deployment-polling";
 import { ExecutePlanModal } from "../components/execute-plan-modal";
@@ -60,6 +61,7 @@ import { LinearExportDialog } from "./components/linear-export-dialog";
 import { PlanEditorHeader } from "./components/plan-editor-header";
 import { PlanMetadataBar } from "./components/plan-metadata-bar";
 import { PlanMetadataPanel } from "./components/plan-metadata-panel";
+import { RegeneratePlanModal } from "./components/regenerate-plan-modal";
 
 type PlanEditorProps = {
   plan: DocumentDetail;
@@ -75,9 +77,11 @@ export function PlanEditor({
   showHeader = true,
 }: Readonly<PlanEditorProps>) {
   const chatFlag = useFeatureFlag("interactive-chat");
+  const multiRepoEnabled = useFeatureFlag("multi-repo-plan")?.enabled === true;
   const executionLogDialog = useExecutionLogDialog();
 
   const [showMoveDialog, setShowMoveDialog] = useState(false);
+  const [showRegenerateModal, setShowRegenerateModal] = useState(false);
   const [showComments, setShowComments] = useState(true);
 
   const session = useEditorSession({
@@ -136,6 +140,15 @@ export function PlanEditor({
   const { data: generationStatus, invalidateCache: invalidateArtifactCache } =
     useDocumentGenerationStatus(plan.id, { polling: true });
   const dismissGenerationStatus = useDismissDocumentGenerationStatus();
+
+  // Fetch additionalRepos from the latest PLAN loop for this document.
+  // generationStatus.loopId can point to newer non-PLAN loops (EVALUATE_PLAN,
+  // EXECUTE, etc.) that intentionally omit plan-specific state like
+  // additionalRepos — using it would cause regenerate to forget the last
+  // plan's multi-repo selection.
+  const { initialAdditionalRepos, isLoadingInitialAdditionalRepos } =
+    useInitialAdditionalRepos(plan.id);
+
   const { data: pullRequest } = useDocumentPullRequest(plan.id);
   const { data: judgesReport } = usePlanJudgesFeedback(plan.id);
   const { data: codeJudgesReport } = useCodeJudgesFeedback(plan.id);
@@ -180,7 +193,7 @@ export function PlanEditor({
     pullRequest?.state === PullRequestState.Open &&
     pullRequest.headBranch.length > 0;
   const evaluateCodeHandler = useCallback(() => {
-    if (!canEvaluateCode || pullRequest === undefined || pullRequest === null) {
+    if (!(canEvaluateCode && pullRequest)) {
       return;
     }
     planActions.handleEvaluateCode(pullRequest.headBranch, plan.targetRepo);
@@ -246,7 +259,13 @@ export function PlanEditor({
       onExportMarkdown={actions.handleDownload}
       onExportToLinear={openLinearExportDialog}
       onMove={() => setShowMoveDialog(true)}
-      onRegenerate={planActions.handleRegenerate}
+      onRegenerate={() => {
+        if (multiRepoEnabled) {
+          setShowRegenerateModal(true);
+        } else {
+          planActions.handleRegenerate(undefined);
+        }
+      }}
       onRequestChanges={openRequestChangesModal}
       onRestoreVersion={contentController.restoreVersion}
       onToggleMetadataPanel={uiState.toggleMetadataPanel}
@@ -331,6 +350,7 @@ export function PlanEditor({
                 {/* Details section */}
                 <div className="border-t px-4 py-4">
                   <PlanMetadataPanel
+                    additionalRepos={initialAdditionalRepos}
                     codeJudgeItems={codeJudgesReport ?? null}
                     generationStatus={generationStatus ?? null}
                     isPreviewRefreshing={isRefreshingPreviewDeployment}
@@ -435,6 +455,24 @@ export function PlanEditor({
         open={showExecuteModal}
       />
 
+      {/* Regenerate Plan Modal — prompts the user to confirm the additional
+          repos selection before regeneration, avoiding the race where a
+          still-loading useLoop silently drops the repos. Only mounted when the
+          multi-repo flag is on; otherwise onRegenerate calls handleRegenerate
+          directly. */}
+      {multiRepoEnabled && (
+        <RegeneratePlanModal
+          initialAdditionalRepos={initialAdditionalRepos}
+          isLoadingInitialRepos={isLoadingInitialAdditionalRepos}
+          isSubmitting={planActions.isRegenerating}
+          key={plan.id}
+          onConfirm={planActions.handleRegenerate}
+          onOpenChange={setShowRegenerateModal}
+          open={showRegenerateModal}
+          targetRepo={plan.targetRepo ?? ""}
+        />
+      )}
+
       <FloatingTargetPicker
         multiTargetState={planActions.multiTargetState}
         onSelect={planActions.selectTarget}
@@ -478,4 +516,16 @@ function FloatingTargetPicker({
       />
     </div>
   );
+}
+
+function useInitialAdditionalRepos(documentId: string | null | undefined) {
+  const enabled = Boolean(documentId);
+  const { data: loop, isLoading } = useLatestPlanLoopByDocument(
+    documentId ?? "",
+    { enabled }
+  );
+  return {
+    initialAdditionalRepos: loop?.additionalRepos ?? undefined,
+    isLoadingInitialAdditionalRepos: enabled && isLoading,
+  };
 }

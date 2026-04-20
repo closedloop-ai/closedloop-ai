@@ -9,6 +9,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockMutateAsync = vi.fn();
 const mockCancelMutateAsync = vi.fn();
+const mockMutate = vi.fn();
+const mockCancelMutate = vi.fn();
 const mockPush = vi.fn();
 
 const RESTART_BUTTON_NAME = /restart/i;
@@ -39,10 +41,12 @@ vi.mock("next/navigation", () => ({
 vi.mock("@/hooks/queries/use-loops", () => ({
   useLoop: vi.fn(),
   useResumeLoop: vi.fn(() => ({
+    mutate: mockMutate,
     mutateAsync: mockMutateAsync,
     isPending: false,
   })),
   useCancelLoop: vi.fn(() => ({
+    mutate: mockCancelMutate,
     mutateAsync: mockCancelMutateAsync,
     isPending: false,
   })),
@@ -86,11 +90,8 @@ import { createMockLoopWithUser } from "../fixtures/loops";
 describe("LoopDetailContainer — restart button visibility", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockMutateAsync.mockResolvedValue({
-      loopId: "new-loop-999",
-      status: LoopStatus.Pending,
-    });
     vi.mocked(useResumeLoop).mockReturnValue({
+      mutate: mockMutate,
       mutateAsync: mockMutateAsync,
       isPending: false,
     } as unknown as ReturnType<typeof useResumeLoop>);
@@ -206,11 +207,11 @@ describe("LoopDetailContainer — restart button visibility", () => {
 describe("LoopDetailContainer — restart button interaction", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockMutateAsync.mockResolvedValue({
-      loopId: "new-loop-999",
-      status: LoopStatus.Pending,
-    });
+    mockMutate.mockImplementation((_, opts) =>
+      opts?.onSuccess?.({ loopId: "new-loop-999", status: LoopStatus.Pending })
+    );
     vi.mocked(useResumeLoop).mockReturnValue({
+      mutate: mockMutate,
       mutateAsync: mockMutateAsync,
       isPending: false,
     } as unknown as ReturnType<typeof useResumeLoop>);
@@ -225,11 +226,6 @@ describe("LoopDetailContainer — restart button interaction", () => {
   });
 
   it("navigates to the new loop id returned by the resume response", async () => {
-    mockMutateAsync.mockResolvedValueOnce({
-      loopId: "new-loop-999",
-      status: LoopStatus.Pending,
-    });
-
     render(<LoopDetailContainer id="loop-001" />);
 
     fireEvent.click(screen.getByRole("button", { name: RESTART_BUTTON_NAME }));
@@ -240,11 +236,6 @@ describe("LoopDetailContainer — restart button interaction", () => {
   });
 
   it("does not navigate to the original loop id after restart", async () => {
-    mockMutateAsync.mockResolvedValueOnce({
-      loopId: "new-loop-999",
-      status: LoopStatus.Pending,
-    });
-
     render(<LoopDetailContainer id="loop-001" />);
 
     fireEvent.click(screen.getByRole("button", { name: RESTART_BUTTON_NAME }));
@@ -261,10 +252,12 @@ describe("LoopDetailContainer — cancel button visibility", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(useCancelLoop).mockReturnValue({
+      mutate: mockCancelMutate,
       mutateAsync: mockCancelMutateAsync,
       isPending: false,
     } as unknown as ReturnType<typeof useCancelLoop>);
     vi.mocked(useResumeLoop).mockReturnValue({
+      mutate: mockMutate,
       mutateAsync: mockMutateAsync,
       isPending: false,
     } as unknown as ReturnType<typeof useResumeLoop>);
@@ -331,10 +324,12 @@ describe("LoopDetailContainer — compute target display", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(useResumeLoop).mockReturnValue({
+      mutate: mockMutate,
       mutateAsync: mockMutateAsync,
       isPending: false,
     } as unknown as ReturnType<typeof useResumeLoop>);
     vi.mocked(useCancelLoop).mockReturnValue({
+      mutate: mockCancelMutate,
       mutateAsync: mockCancelMutateAsync,
       isPending: false,
     } as unknown as ReturnType<typeof useCancelLoop>);
@@ -395,12 +390,14 @@ describe("LoopDetailContainer — compute target display", () => {
 describe("LoopDetailContainer — cancel button interaction", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockCancelMutateAsync.mockResolvedValue({});
+    mockCancelMutate.mockImplementation((_, opts) => opts?.onSuccess?.());
     vi.mocked(useCancelLoop).mockReturnValue({
+      mutate: mockCancelMutate,
       mutateAsync: mockCancelMutateAsync,
       isPending: false,
     } as unknown as ReturnType<typeof useCancelLoop>);
     vi.mocked(useResumeLoop).mockReturnValue({
+      mutate: mockMutate,
       mutateAsync: mockMutateAsync,
       isPending: false,
     } as unknown as ReturnType<typeof useResumeLoop>);
@@ -414,7 +411,7 @@ describe("LoopDetailContainer — cancel button interaction", () => {
     } as ReturnType<typeof useLoop>);
   });
 
-  it("calls mutateAsync with the loop id after confirming the stop dialog", async () => {
+  it("calls mutate with the loop id after confirming the stop dialog", async () => {
     render(<LoopDetailContainer id="loop-001" />);
 
     fireEvent.click(screen.getByRole("button", { name: CANCEL_BUTTON_NAME }));
@@ -425,7 +422,10 @@ describe("LoopDetailContainer — cancel button interaction", () => {
     fireEvent.click(confirmButton);
 
     await waitFor(() => {
-      expect(mockCancelMutateAsync).toHaveBeenCalledWith("loop-001");
+      expect(mockCancelMutate).toHaveBeenCalledWith(
+        "loop-001",
+        expect.any(Object)
+      );
     });
   });
 
@@ -440,7 +440,7 @@ describe("LoopDetailContainer — cancel button interaction", () => {
     fireEvent.click(confirmButton);
 
     await waitFor(() => {
-      expect(mockCancelMutateAsync).toHaveBeenCalled();
+      expect(mockCancelMutate).toHaveBeenCalled();
     });
 
     expect(mockPush).not.toHaveBeenCalled();
@@ -451,10 +451,12 @@ describe("LoopDetailContainer — cache token display", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(useResumeLoop).mockReturnValue({
+      mutate: mockMutate,
       mutateAsync: mockMutateAsync,
       isPending: false,
     } as unknown as ReturnType<typeof useResumeLoop>);
     vi.mocked(useCancelLoop).mockReturnValue({
+      mutate: mockCancelMutate,
       mutateAsync: mockCancelMutateAsync,
       isPending: false,
     } as unknown as ReturnType<typeof useCancelLoop>);
@@ -633,10 +635,12 @@ describe("LoopDetailContainer -- NO_WORK_PRODUCED label rendering", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(useResumeLoop).mockReturnValue({
+      mutate: mockMutate,
       mutateAsync: mockMutateAsync,
       isPending: false,
     } as unknown as ReturnType<typeof useResumeLoop>);
     vi.mocked(useCancelLoop).mockReturnValue({
+      mutate: mockCancelMutate,
       mutateAsync: mockCancelMutateAsync,
       isPending: false,
     } as unknown as ReturnType<typeof useCancelLoop>);
@@ -738,14 +742,70 @@ describe("LoopDetailContainer -- NO_WORK_PRODUCED label rendering", () => {
   });
 });
 
-describe("LoopDetailContainer -- diagnostics UI", () => {
+describe("LoopDetailContainer — additional repositories display", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(useResumeLoop).mockReturnValue({
+      mutate: mockMutate,
       mutateAsync: mockMutateAsync,
       isPending: false,
     } as unknown as ReturnType<typeof useResumeLoop>);
     vi.mocked(useCancelLoop).mockReturnValue({
+      mutate: mockCancelMutate,
+      mutateAsync: mockCancelMutateAsync,
+      isPending: false,
+    } as unknown as ReturnType<typeof useCancelLoop>);
+  });
+
+  it("renders each additional repo fullName and branch when additionalRepos is non-empty", () => {
+    vi.mocked(useLoop).mockReturnValue({
+      data: createMockLoopWithUser({
+        status: LoopStatus.Completed,
+        additionalRepos: [
+          { fullName: "org/repo-alpha", branch: "main" },
+          { fullName: "org/repo-beta", branch: "develop" },
+        ],
+      }),
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoop>);
+
+    render(<LoopDetailContainer id="loop-001" />);
+
+    expect(screen.getByText("org/repo-alpha")).toBeInTheDocument();
+    expect(screen.getByText("main")).toBeInTheDocument();
+    expect(screen.getByText("org/repo-beta")).toBeInTheDocument();
+    expect(screen.getByText("develop")).toBeInTheDocument();
+  });
+
+  it("does not render additional repositories card when additionalRepos is null", () => {
+    vi.mocked(useLoop).mockReturnValue({
+      data: createMockLoopWithUser({
+        status: LoopStatus.Completed,
+        additionalRepos: null,
+      }),
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoop>);
+
+    render(<LoopDetailContainer id="loop-002" />);
+
+    expect(
+      screen.queryByText("Additional Repositories")
+    ).not.toBeInTheDocument();
+  });
+});
+
+describe("LoopDetailContainer -- diagnostics UI", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(useResumeLoop).mockReturnValue({
+      mutate: mockMutate,
+      mutateAsync: mockMutateAsync,
+      isPending: false,
+    } as unknown as ReturnType<typeof useResumeLoop>);
+    vi.mocked(useCancelLoop).mockReturnValue({
+      mutate: mockCancelMutate,
       mutateAsync: mockCancelMutateAsync,
       isPending: false,
     } as unknown as ReturnType<typeof useCancelLoop>);
