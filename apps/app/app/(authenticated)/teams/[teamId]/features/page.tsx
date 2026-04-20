@@ -29,7 +29,7 @@ import {
   FEATURE_DEFAULT_COLUMNS,
   useColumnVisibility,
 } from "@/hooks/use-column-visibility";
-import { useGroupByStatus } from "@/hooks/use-group-by-status";
+import { useGroupBy } from "@/hooks/use-group-by";
 import { useItemsParentTitles } from "@/hooks/use-items-parent-titles";
 import { useOrgUsersAsPopoverUsers } from "@/hooks/use-org-users-as-popover-users";
 import { useTableFilters } from "@/hooks/use-table-filters";
@@ -51,7 +51,7 @@ export default function TeamFeaturesPage() {
     [userVisibility]
   );
 
-  const { groupByStatus, toggleGroupByStatus } = useGroupByStatus(
+  const { groupBy, setGroupBy } = useGroupBy(
     "table:groupByStatus:team-features"
   );
 
@@ -208,9 +208,9 @@ export default function TeamFeaturesPage() {
               />
               <TableViewMenu
                 columns={FEATURE_DEFAULT_COLUMNS}
-                groupByStatus={groupByStatus}
+                groupBy={groupBy}
+                onChangeGroupBy={setGroupBy}
                 onToggle={toggleColumn}
-                onToggleGroupByStatus={toggleGroupByStatus}
                 visibility={visibility}
               />
             </div>
@@ -231,14 +231,14 @@ export default function TeamFeaturesPage() {
             emptyDescription={emptyDescription}
             emptyIcon={BoxIcon}
             emptyTitle={emptyTitle}
-            groupByStatus={groupByStatus}
+            groupBy={groupBy}
+            groupExpansionKey="table:expand:team-features-status"
             items={displayItems}
             moreMenuContent={(_item, onRequestDelete) => (
               <DeleteRowActions onDelete={onRequestDelete} />
             )}
             onDelete={handleDelete}
             parentTitleMap={parentTitleMap}
-            statusExpansionKey="table:expand:team-features-status"
             visibleColumns={visibleColumns}
           />
         </div>

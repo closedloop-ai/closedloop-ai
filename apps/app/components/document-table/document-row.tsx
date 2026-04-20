@@ -167,9 +167,7 @@ function NameCell({
           </TooltipContent>
         </Tooltip>
         <div className="ml-1.5 min-w-0 flex-1">
-          <span className="block truncate font-medium text-base text-foreground">
-            {item.data.name}
-          </span>
+          <TruncatedTitle text={item.data.name} />
         </div>
       </div>
     );
@@ -267,11 +265,22 @@ function NameCell({
         </div>
       )}
       <div className="ml-1.5 min-w-0 flex-1">
-        <span className="block truncate font-medium text-base text-foreground">
-          {item.data.title}
-        </span>
+        <TruncatedTitle text={item.data.title} />
       </div>
     </div>
+  );
+}
+
+function TruncatedTitle({ text }: { text: string }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="block truncate font-medium text-base text-foreground">
+          {text}
+        </span>
+      </TooltipTrigger>
+      <TooltipContent>{text}</TooltipContent>
+    </Tooltip>
   );
 }
 

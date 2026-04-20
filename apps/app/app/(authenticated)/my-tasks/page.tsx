@@ -26,7 +26,7 @@ import {
   MY_TASKS_DEFAULT_COLUMNS,
   useColumnVisibility,
 } from "@/hooks/use-column-visibility";
-import { useGroupByStatus } from "@/hooks/use-group-by-status";
+import { useGroupBy } from "@/hooks/use-group-by";
 import { useItemsParentTitles } from "@/hooks/use-items-parent-titles";
 import { useLocalStorageState } from "@/hooks/use-local-storage-state";
 import { useOrgUsersAsPopoverUsers } from "@/hooks/use-org-users-as-popover-users";
@@ -69,9 +69,7 @@ export default function MyTasksPage() {
     [userVisibility]
   );
 
-  const { groupByStatus, toggleGroupByStatus } = useGroupByStatus(
-    "table:groupByStatus:my-tasks"
-  );
+  const { groupBy, setGroupBy } = useGroupBy("table:groupByStatus:my-tasks");
 
   // ---- Edit handlers ----
 
@@ -173,9 +171,9 @@ export default function MyTasksPage() {
               {isListView && (
                 <TableViewMenu
                   columns={MY_TASKS_DEFAULT_COLUMNS}
-                  groupByStatus={groupByStatus}
+                  groupBy={groupBy}
+                  onChangeGroupBy={setGroupBy}
                   onToggle={toggleColumn}
-                  onToggleGroupByStatus={toggleGroupByStatus}
                   visibility={visibility}
                 />
               )}
@@ -244,14 +242,14 @@ export default function MyTasksPage() {
                 emptyDescription="Try adjusting your filters."
                 emptyIcon={BoxIcon}
                 emptyTitle="No matching tasks"
-                groupByStatus={groupByStatus}
+                groupBy={groupBy}
+                groupExpansionKey="table:expand:my-tasks-status"
                 items={displayItems}
                 moreMenuContent={(_item, onRequestDelete) => (
                   <DeleteRowActions onDelete={onRequestDelete} />
                 )}
                 onDelete={handleDelete}
                 parentTitleMap={parentTitleMap}
-                statusExpansionKey="table:expand:my-tasks-status"
                 visibleColumns={visibleColumns}
               />
             </div>

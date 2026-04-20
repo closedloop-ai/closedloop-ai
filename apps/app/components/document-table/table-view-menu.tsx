@@ -3,6 +3,12 @@
 import { Priority } from "@repo/api/src/types/common";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@repo/design-system/components/ui/dropdown-menu";
+import {
   Popover,
   PopoverContent,
   PopoverTrigger,
@@ -13,6 +19,7 @@ import { Switch } from "@repo/design-system/components/ui/switch";
 import {
   BadgeCheckIcon,
   CalendarIcon,
+  ChevronDownIcon,
   ClockIcon,
   FileIcon,
   FolderIcon,
@@ -29,6 +36,7 @@ import {
   type ColumnVisibility,
   type DocumentColumn,
 } from "@/hooks/use-column-visibility";
+import { GROUP_BY_LABELS, GroupByMode } from "@/lib/group-by";
 
 const COLUMN_ICONS: Partial<Record<DocumentColumn, ReactNode>> = {
   [Col.Type]: <FileIcon className="h-4 w-4 text-muted-foreground" />,
@@ -42,24 +50,70 @@ const COLUMN_ICONS: Partial<Record<DocumentColumn, ReactNode>> = {
   [Col.Project]: <FolderIcon className="h-4 w-4 text-muted-foreground" />,
 };
 
-type TableViewMenuProps = {
+type TableViewMenuProps = Readonly<{
   visibility: ColumnVisibility;
   onToggle: (column: DocumentColumn) => void;
   /** Override the list of columns shown in the panel. Defaults to ALL_ARTIFACT_COLUMNS. */
   columns?: DocumentColumn[];
-  /** Whether items are grouped by status. */
-  groupByStatus?: boolean;
-  /** Toggle group-by-status on/off. */
-  onToggleGroupByStatus?: () => void;
-};
+  /** Active group-by mode (none | status | assignee | priority). */
+  groupBy?: GroupByMode;
+  /** Change the active group-by mode. */
+  onChangeGroupBy?: (mode: GroupByMode) => void;
+}>;
+
+const GROUP_BY_OPTIONS: GroupByMode[] = [
+  GroupByMode.None,
+  GroupByMode.Status,
+  GroupByMode.Assignee,
+  GroupByMode.Priority,
+];
+
+function GroupByModeSelect({
+  groupBy,
+  onChangeGroupBy,
+}: Readonly<{
+  groupBy: GroupByMode;
+  onChangeGroupBy: (mode: GroupByMode) => void;
+}>) {
+  return (
+    <div className="flex flex-col px-4 pb-3">
+      <div className="flex h-9 items-center justify-between">
+        <span className="flex items-center gap-2 text-sm">
+          <StatusIcon size={16} status="decorative" />
+          Group by
+        </span>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button className="h-7 text-xs" size="sm" variant="outline">
+              {GROUP_BY_LABELS[groupBy]}
+              <ChevronDownIcon className="h-3.5 w-3.5" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            {GROUP_BY_OPTIONS.map((mode) => (
+              <DropdownMenuItem
+                key={mode}
+                onClick={() => onChangeGroupBy(mode)}
+              >
+                {GROUP_BY_LABELS[mode]}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
+    </div>
+  );
+}
 
 export function TableViewMenu({
   visibility,
   onToggle,
   columns = ALL_ARTIFACT_COLUMNS,
-  groupByStatus,
-  onToggleGroupByStatus,
+  groupBy,
+  onChangeGroupBy,
 }: TableViewMenuProps) {
+  const showGroupByMode = groupBy != null && onChangeGroupBy != null;
+
   return (
     <Popover>
       <PopoverTrigger asChild>
@@ -69,24 +123,15 @@ export function TableViewMenu({
         </Button>
       </PopoverTrigger>
       <PopoverContent align="end" className="w-72 p-0">
-        {onToggleGroupByStatus != null && (
+        {showGroupByMode && (
           <>
             <div className="px-4 pt-4 pb-2">
               <h4 className="font-semibold text-lg">View Options</h4>
             </div>
-            <div className="flex flex-col px-4 pb-3">
-              <div className="flex h-9 cursor-pointer items-center justify-between">
-                <span className="flex items-center gap-2 text-sm">
-                  <StatusIcon size={16} status="decorative" />
-                  Group by Status
-                </span>
-                <Switch
-                  checked={groupByStatus}
-                  id="group-by-status"
-                  onCheckedChange={onToggleGroupByStatus}
-                />
-              </div>
-            </div>
+            <GroupByModeSelect
+              groupBy={groupBy}
+              onChangeGroupBy={onChangeGroupBy}
+            />
             <div className="mx-4 border-t" />
           </>
         )}

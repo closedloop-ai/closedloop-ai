@@ -11,13 +11,13 @@ import type { DocumentColumn } from "@/hooks/use-column-visibility";
 import { useGroupExpansion } from "@/hooks/use-group-expansion";
 import { useSortParams } from "@/hooks/use-sort-params";
 import { ensureDate } from "@/lib/date-utils";
+import { GroupByMode, groupByMode } from "@/lib/group-by";
 import { comparePriorityValues } from "@/lib/priority-sort";
-import { groupItemsByStatus } from "@/lib/status-grouping";
 import type { SortDirection } from "@/lib/table-utils";
-import { getUserDisplayName } from "@/lib/user-utils";
+import { compareAssigneeNames } from "@/lib/user-utils";
 import type { DocumentRowItem, RowEditHandlers } from "./document-row";
 import { DocumentRow } from "./document-row";
-import { StatusSectionHeader } from "./status-section-header";
+import { GroupSectionHeader, sectionIcon } from "./group-section-header";
 import { DocumentTableHeader } from "./table-header";
 
 // ---- Sort columns ----
@@ -41,18 +41,7 @@ function getItemDisplayName(item: DocumentRowItem): string {
 }
 
 function compareByAssignee(a: DocumentRowItem, b: DocumentRowItem): number {
-  const aName = a.data.assignee ? getUserDisplayName(a.data.assignee) : "";
-  const bName = b.data.assignee ? getUserDisplayName(b.data.assignee) : "";
-  if (!(aName || bName)) {
-    return 0;
-  }
-  if (!aName) {
-    return 1;
-  }
-  if (!bName) {
-    return -1;
-  }
-  return aName.localeCompare(bName);
+  return compareAssigneeNames(a.data.assignee, b.data.assignee);
 }
 
 function compareByDueDate(a: DocumentRowItem, b: DocumentRowItem): number {
@@ -126,10 +115,10 @@ type FlatDocumentTableProps = {
   emptyIcon?: LucideIcon;
   emptyTitle?: string;
   emptyDescription?: string;
-  /** Whether to group items by their status. */
-  groupByStatus?: boolean;
-  /** localStorage key for status section expansion state. */
-  statusExpansionKey?: string;
+  /** How to group items (none / status / assignee / priority). */
+  groupBy?: GroupByMode;
+  /** localStorage key for group section expansion state. */
+  groupExpansionKey?: string;
 };
 
 // ---- Component ----
@@ -144,8 +133,8 @@ export function FlatDocumentTable({
   emptyIcon,
   emptyTitle = "No items",
   emptyDescription = "Nothing to show here yet.",
-  groupByStatus = false,
-  statusExpansionKey = "table:expand:flat-status-sections",
+  groupBy = GroupByMode.None,
+  groupExpansionKey = "table:expand:flat-group-sections",
 }: FlatDocumentTableProps) {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [deleteTarget, setDeleteTarget] = useState<DocumentRowItem | null>(
@@ -161,20 +150,20 @@ export function FlatDocumentTable({
     validColumns: FLAT_SORT_COLUMNS,
   });
 
-  const { isExpanded: isStatusExpanded, toggleGroup: toggleStatusSection } =
-    useGroupExpansion(statusExpansionKey, { defaultExpanded: true });
+  const { isExpanded: isSectionExpanded, toggleGroup: toggleSection } =
+    useGroupExpansion(groupExpansionKey, { defaultExpanded: true });
 
   const sortedItems = useMemo(
     () => sortFlatItems(items, sortBy, sortDir),
     [items, sortBy, sortDir]
   );
 
-  const statusSections = useMemo(() => {
-    if (!groupByStatus) {
+  const groupedSections = useMemo(() => {
+    if (groupBy === GroupByMode.None) {
       return [];
     }
-    return groupItemsByStatus(sortedItems);
-  }, [groupByStatus, sortedItems]);
+    return groupByMode(sortedItems, (item) => item, groupBy);
+  }, [groupBy, sortedItems]);
 
   function handleSelectionChange(id: string, checked: boolean) {
     setSelectedIds((prev) => {
@@ -287,19 +276,19 @@ export function FlatDocumentTable({
   const deleteTitle = isBulk ? "Items" : "Item";
 
   function renderTableBody() {
-    if (groupByStatus && statusSections.length > 0) {
-      return statusSections.map((section) => {
-        const sectionOpen = isStatusExpanded(section.status);
+    if (groupBy !== GroupByMode.None && groupedSections.length > 0) {
+      return groupedSections.map((section) => {
+        const sectionOpen = isSectionExpanded(section.descriptor.key);
         return (
-          <div key={section.status}>
-            <StatusSectionHeader
-              count={section.items.length}
+          <div key={section.descriptor.key}>
+            <GroupSectionHeader
+              count={section.values.length}
+              icon={sectionIcon(section.descriptor)}
               isOpen={sectionOpen}
-              label={section.label}
-              onToggle={() => toggleStatusSection(section.status)}
-              status={section.status}
+              label={section.descriptor.label}
+              onToggle={() => toggleSection(section.descriptor.key)}
             />
-            {sectionOpen && section.items.map(renderRow)}
+            {sectionOpen && section.values.map(renderRow)}
           </div>
         );
       });

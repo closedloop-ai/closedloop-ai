@@ -74,7 +74,7 @@ import {
   DocumentColumn,
   useColumnVisibility,
 } from "@/hooks/use-column-visibility";
-import { useGroupByStatus } from "@/hooks/use-group-by-status";
+import { useGroupBy } from "@/hooks/use-group-by";
 import { useTabParam } from "@/hooks/use-tab-param";
 import { useTeamMembers } from "@/hooks/use-team-members";
 import { ActiveLoopsStatus } from "./components/active-loops-status";
@@ -141,7 +141,7 @@ export default function ProjectDetailPage() {
     overrides: columnOverrides,
     storageKey: COLUMN_VISIBILITY_KEY,
   });
-  const { groupByStatus, toggleGroupByStatus } = useGroupByStatus(
+  const { groupBy, setGroupBy } = useGroupBy(
     "table:groupByStatus:project-artifacts"
   );
   const isFavorite = useIsFavorite(projectId);
@@ -501,9 +501,9 @@ export default function ProjectDetailPage() {
                   />
                 )}
                 <TableViewMenu
-                  groupByStatus={groupByStatus}
+                  groupBy={groupBy}
+                  onChangeGroupBy={setGroupBy}
                   onToggle={toggleColumn}
-                  onToggleGroupByStatus={toggleGroupByStatus}
                   visibility={userVisibility}
                 />
               </div>
@@ -559,7 +559,7 @@ export default function ProjectDetailPage() {
               editHandlers={artifactEditHandlers}
               filterCategory={filterCategory}
               filterText={filterText}
-              groupByStatus={groupByStatus}
+              groupBy={groupBy}
               isFilterActive={filtersReturn.isAnyFilterActive}
               onClearFilters={filtersReturn.clearAllFilters}
               onDelete={handleDeleteArtifact}

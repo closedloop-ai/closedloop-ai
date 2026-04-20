@@ -32,7 +32,7 @@ import {
   PRD_DEFAULT_COLUMNS,
   useColumnVisibility,
 } from "@/hooks/use-column-visibility";
-import { useGroupByStatus } from "@/hooks/use-group-by-status";
+import { useGroupBy } from "@/hooks/use-group-by";
 import { useOrgUsersAsPopoverUsers } from "@/hooks/use-org-users-as-popover-users";
 import { useTableFilters } from "@/hooks/use-table-filters";
 import { useTeamMembers } from "@/hooks/use-team-members";
@@ -55,9 +55,7 @@ export default function TeamPrdsPage() {
     [userVisibility]
   );
 
-  const { groupByStatus, toggleGroupByStatus } = useGroupByStatus(
-    "table:groupByStatus:team-prds"
-  );
+  const { groupBy, setGroupBy } = useGroupBy("table:groupByStatus:team-prds");
 
   const { data: team, isLoading: loadingTeam } = useTeam(teamId);
   const { data: artifacts, isLoading: loadingDocuments } = useDocumentsByTeam(
@@ -208,9 +206,9 @@ export default function TeamPrdsPage() {
               />
               <TableViewMenu
                 columns={PRD_DEFAULT_COLUMNS}
-                groupByStatus={groupByStatus}
+                groupBy={groupBy}
+                onChangeGroupBy={setGroupBy}
                 onToggle={toggleColumn}
-                onToggleGroupByStatus={toggleGroupByStatus}
                 visibility={visibility}
               />
             </div>
@@ -231,13 +229,13 @@ export default function TeamPrdsPage() {
             emptyDescription={emptyDescription}
             emptyIcon={FileIcon}
             emptyTitle={emptyTitle}
-            groupByStatus={groupByStatus}
+            groupBy={groupBy}
+            groupExpansionKey="table:expand:team-prds-status"
             items={displayItems}
             moreMenuContent={(_item, onRequestDelete) => (
               <DeleteRowActions onDelete={onRequestDelete} />
             )}
             onDelete={handleDelete}
-            statusExpansionKey="table:expand:team-prds-status"
             visibleColumns={visibleColumns}
           />
         </div>

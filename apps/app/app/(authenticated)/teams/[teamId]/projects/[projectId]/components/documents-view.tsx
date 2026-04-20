@@ -1,13 +1,11 @@
 "use client";
 
 import {
-  DocumentStatus,
   DocumentType,
   type DocumentWithWorkstream,
   getRoutePrefixForType,
 } from "@repo/api/src/types/document";
 import { EntityType } from "@repo/api/src/types/entity-link";
-import type { ProjectStatus } from "@repo/api/src/types/project";
 import type { TreeEntity, TreeNode } from "@repo/api/src/types/project-tree";
 import type { WorkstreamState } from "@repo/api/src/types/workstream";
 import { Button } from "@repo/design-system/components/ui/button";
@@ -17,7 +15,10 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@repo/design-system/components/ui/dropdown-menu";
+import { PriorityIcon } from "@repo/design-system/components/ui/priority-icon";
+import { StatusIcon } from "@repo/design-system/components/ui/status-icon";
 import {
+  CircleDashedIcon,
   ExternalLinkIcon,
   FileTextIcon,
   FilterXIcon,
@@ -28,14 +29,15 @@ import {
   TrashIcon,
 } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { AssigneeAvatar } from "@/components/assignee-avatar";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import {
   DocumentRow,
   type DocumentRowItem,
   type RowEditHandlers,
 } from "@/components/document-table/document-row";
-import { StatusSectionHeader } from "@/components/document-table/status-section-header";
+import { GroupSectionHeader } from "@/components/document-table/group-section-header";
 import { DocumentTableHeader } from "@/components/document-table/table-header";
 import { EmptyState } from "@/components/empty-state";
 import { MoveEntityDialog } from "@/components/move-entity-dialog";
@@ -47,11 +49,17 @@ import type { DocumentColumn } from "@/hooks/use-column-visibility";
 import { useGroupExpansion } from "@/hooks/use-group-expansion";
 import { useSortParams } from "@/hooks/use-sort-params";
 import { matchesFilter } from "@/lib/document-filter";
+import {
+  GroupByMode,
+  type GroupByNonNone,
+  type GroupSectionDescriptor,
+  groupByMode,
+} from "@/lib/group-by";
 import { comparePriorityValues } from "@/lib/priority-sort";
-import { DOCUMENT_STATUS_LABELS } from "@/lib/project-constants";
-import { groupItemsByStatus } from "@/lib/status-grouping";
+import { DOCUMENT_STATUS_TO_ICON } from "@/lib/project-constants";
 import type { SortConfig } from "@/lib/table-utils";
 import { sortTableData } from "@/lib/table-utils";
+import { compareAssigneeNames } from "@/lib/user-utils";
 import type { FilterCategory } from "../page";
 import { MergeDocumentsDialog } from "./merge-documents-dialog";
 
@@ -71,8 +79,8 @@ export type DocumentsViewProps = {
   isFilterActive?: boolean;
   /** Callback to clear all project filters. */
   onClearFilters?: () => void;
-  /** Whether to group items by their status. */
-  groupByStatus?: boolean;
+  /** How to group items (none / status / assignee / priority). */
+  groupBy?: GroupByMode;
 };
 
 /**
@@ -287,60 +295,55 @@ function filterByCategory(
   }
 }
 
-// ---- Status grouping ----
+// ---- Grouped sections (by status / assignee / priority) ----
 
-/** Fixed display order matching the DocumentStatus enum. */
-const STATUS_DISPLAY_ORDER: DocumentStatus[] = [
-  DocumentStatus.Draft,
-  DocumentStatus.InProgress,
-  DocumentStatus.InReview,
-  DocumentStatus.Approved,
-  DocumentStatus.Executed,
-  DocumentStatus.Done,
-  DocumentStatus.Obsolete,
-];
-
-type StatusSection = {
-  status: DocumentStatus;
-  label: string;
+type GroupedSection = {
+  descriptor: GroupSectionDescriptor;
   groups: DisplayGroup[];
 };
 
-function getItemStatus(item: DocumentRowItem) {
-  return item.data.status;
+function sectionIcon(descriptor: GroupSectionDescriptor): ReactNode {
+  if (descriptor.mode === GroupByMode.Status && descriptor.status) {
+    return (
+      <StatusIcon
+        size={16}
+        status={DOCUMENT_STATUS_TO_ICON[descriptor.status]}
+      />
+    );
+  }
+  if (descriptor.mode === GroupByMode.Priority) {
+    if (descriptor.priority) {
+      return <PriorityIcon priority={descriptor.priority} size={16} />;
+    }
+    return <CircleDashedIcon className="h-4 w-4 text-muted-foreground" />;
+  }
+  return (
+    <AssigneeAvatar
+      assignee={descriptor.assignee ?? null}
+      className="size-4"
+      disableLink
+      disableTooltip
+    />
+  );
 }
 
-function groupDisplayGroupsByStatus(groups: DisplayGroup[]): StatusSection[] {
-  const buckets = new Map<DocumentStatus | ProjectStatus, DisplayGroup[]>();
-
-  for (const group of groups) {
-    const status = getItemStatus(group.root);
-    if (!buckets.has(status)) {
-      buckets.set(status, []);
-    }
-    buckets.get(status)?.push(group);
-  }
-
-  const sections: StatusSection[] = [];
-  for (const status of STATUS_DISPLAY_ORDER) {
-    const sectionGroups = buckets.get(status);
-    if (sectionGroups && sectionGroups.length > 0) {
-      sections.push({
-        status,
-        label: DOCUMENT_STATUS_LABELS[status],
-        groups: sectionGroups,
-      });
-    }
-  }
-
-  return sections;
+function groupDisplayGroupsByMode(
+  groups: DisplayGroup[],
+  mode: GroupByNonNone
+): GroupedSection[] {
+  return groupByMode(groups, (g) => g.root, mode).map((bucket) => ({
+    descriptor: bucket.descriptor,
+    groups: bucket.values,
+  }));
 }
 
-function groupFlatItemsByStatus(items: DocumentRowItem[]): StatusSection[] {
-  return groupItemsByStatus(items).map((section) => ({
-    status: section.status,
-    label: section.label,
-    groups: section.items.map((item) => ({
+function groupFlatItemsByMode(
+  items: DocumentRowItem[],
+  mode: GroupByNonNone
+): GroupedSection[] {
+  return groupByMode(items, (item) => item, mode).map((bucket) => ({
+    descriptor: bucket.descriptor,
+    groups: bucket.values.map((item) => ({
       groupKey: item.data.id,
       root: item,
       children: [],
@@ -348,8 +351,8 @@ function groupFlatItemsByStatus(items: DocumentRowItem[]): StatusSection[] {
   }));
 }
 
-function flattenStatusSections(
-  sections: StatusSection[],
+function flattenGroupedSections(
+  sections: GroupedSection[],
   isGroupedView: boolean,
   isGroupExpanded: (key: string) => boolean
 ): DocumentRowItem[] {
@@ -415,24 +418,8 @@ const ITEM_SORT_CONFIGS: Record<string, SortConfig<DocumentRowItem>> = {
   },
   assignee: {
     key: "assignee",
-    comparator: (a, b) => {
-      const aName = a.data.assignee
-        ? `${a.data.assignee.firstName} ${a.data.assignee.lastName}`
-        : "";
-      const bName = b.data.assignee
-        ? `${b.data.assignee.firstName} ${b.data.assignee.lastName}`
-        : "";
-      if (!(aName || bName)) {
-        return 0;
-      }
-      if (!aName) {
-        return 1;
-      }
-      if (!bName) {
-        return -1;
-      }
-      return aName.localeCompare(bName);
-    },
+    comparator: (a, b) =>
+      compareAssigneeNames(a.data.assignee, b.data.assignee),
   },
   priority: {
     key: "priority",
@@ -465,13 +452,13 @@ export function DocumentsView({
   applyProjectFilters,
   isFilterActive,
   onClearFilters,
-  groupByStatus = false,
+  groupBy = GroupByMode.None,
 }: DocumentsViewProps) {
   const { isExpanded: isGroupExpanded, toggleGroup } = useGroupExpansion(
     `table:expand:project-artifacts:${projectId}`
   );
-  const { isExpanded: isStatusExpanded, toggleGroup: toggleStatusSection } =
-    useGroupExpansion(`table:expand:project-status-sections:${projectId}`, {
+  const { isExpanded: isSectionExpanded, toggleGroup: toggleSection } =
+    useGroupExpansion(`table:expand:project-group-sections:${projectId}`, {
       defaultExpanded: true,
     });
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -603,21 +590,21 @@ export function DocumentsView({
     return items;
   }, [filteredDocuments, sortBy, sortDir, applyProjectFilters]);
 
-  // Build status sections when groupByStatus is enabled
-  const statusSections: StatusSection[] = useMemo(() => {
-    if (!groupByStatus) {
+  // Build sections when a grouping mode is active
+  const groupedSections: GroupedSection[] = useMemo(() => {
+    if (groupBy === GroupByMode.None) {
       return [];
     }
     if (isGroupedView) {
-      return groupDisplayGroupsByStatus(groups);
+      return groupDisplayGroupsByMode(groups, groupBy);
     }
-    return groupFlatItemsByStatus(flatItems);
-  }, [groupByStatus, isGroupedView, groups, flatItems]);
+    return groupFlatItemsByMode(flatItems, groupBy);
+  }, [groupBy, isGroupedView, groups, flatItems]);
 
   const renderedItems = useMemo((): DocumentRowItem[] => {
-    if (groupByStatus) {
-      return flattenStatusSections(
-        statusSections,
+    if (groupBy !== GroupByMode.None) {
+      return flattenGroupedSections(
+        groupedSections,
         isGroupedView,
         isGroupExpanded
       );
@@ -627,8 +614,8 @@ export function DocumentsView({
     }
     return flattenDisplayGroups(groups, isGroupExpanded);
   }, [
-    groupByStatus,
-    statusSections,
+    groupBy,
+    groupedSections,
     isGroupedView,
     flatItems,
     groups,
@@ -828,17 +815,17 @@ export function DocumentsView({
   // ---- Table body rendering (extracted to avoid nested ternaries) ----
 
   function renderTableBody() {
-    if (groupByStatus) {
-      return statusSections.map((section) => {
-        const sectionOpen = isStatusExpanded(section.status);
+    if (groupBy !== GroupByMode.None) {
+      return groupedSections.map((section) => {
+        const sectionOpen = isSectionExpanded(section.descriptor.key);
         return (
-          <div key={section.status}>
-            <StatusSectionHeader
+          <div key={section.descriptor.key}>
+            <GroupSectionHeader
               count={section.groups.length}
+              icon={sectionIcon(section.descriptor)}
               isOpen={sectionOpen}
-              label={section.label}
-              onToggle={() => toggleStatusSection(section.status)}
-              status={section.status}
+              label={section.descriptor.label}
+              onToggle={() => toggleSection(section.descriptor.key)}
             />
             {sectionOpen &&
               section.groups.map((group) =>
