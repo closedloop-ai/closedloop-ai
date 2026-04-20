@@ -753,9 +753,9 @@ export function TicketList({
         return session.repoPath;
       }
 
-      const worktreePath = workDirStatus[ticketId]?.path;
-      if (worktreePath) {
-        return deriveBaseRepoPath(worktreePath, ticketId);
+      const worktree = workDirStatus[ticketId];
+      if (worktree?.exists && worktree.path) {
+        return deriveBaseRepoPath(worktree.path, ticketId);
       }
 
       return null;
