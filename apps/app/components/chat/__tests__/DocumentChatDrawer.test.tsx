@@ -70,6 +70,11 @@ vi.mock("@/lib/engineer/queries/health-check", () => ({
   healthCheckOptions: () => ({ queryKey: ["health"], queryFn: vi.fn() }),
 }));
 
+const mockUseRepoPath = vi.fn();
+vi.mock("@/lib/engineer/queries/repo-path", () => ({
+  useRepoPath: (...args: unknown[]) => mockUseRepoPath(...args),
+}));
+
 import { DocumentChatDrawer } from "../DocumentChatDrawer";
 
 const ARTIFACT_PROPS = {
@@ -83,6 +88,7 @@ beforeEach(() => {
   capturedUseChatSessionOptions.value = undefined;
   capturedChatPanelProps.value = null;
   vi.clearAllMocks();
+  mockUseRepoPath.mockReturnValue({ repoPath: null, showNotice: false });
 });
 
 describe("DocumentChatDrawer", () => {
@@ -108,9 +114,29 @@ describe("DocumentChatDrawer", () => {
     );
   });
 
-  test("does not pass a cwd (artifact mode never sets one)", () => {
+  test("does not pass a cwd when targetRepo is not provided", () => {
     mockUseQuery.mockReturnValue({ data: undefined });
     render(<DocumentChatDrawer {...ARTIFACT_PROPS} />);
+    expect(capturedUseChatSessionOptions.value?.cwd).toBeUndefined();
+  });
+
+  test("passes resolved repo path as cwd when targetRepo is provided", () => {
+    mockUseRepoPath.mockReturnValue({
+      repoPath: "/Users/alice/src/acme/web",
+      showNotice: false,
+    });
+    mockUseQuery.mockReturnValue({ data: undefined });
+    render(<DocumentChatDrawer {...ARTIFACT_PROPS} targetRepo="acme/web" />);
+    expect(mockUseRepoPath).toHaveBeenCalledWith("acme/web");
+    expect(capturedUseChatSessionOptions.value?.cwd).toBe(
+      "/Users/alice/src/acme/web"
+    );
+  });
+
+  test("does not pass a cwd when repo path resolves to null", () => {
+    mockUseRepoPath.mockReturnValue({ repoPath: null, showNotice: false });
+    mockUseQuery.mockReturnValue({ data: undefined });
+    render(<DocumentChatDrawer {...ARTIFACT_PROPS} targetRepo="acme/web" />);
     expect(capturedUseChatSessionOptions.value?.cwd).toBeUndefined();
   });
 

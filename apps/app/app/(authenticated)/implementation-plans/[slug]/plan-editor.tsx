@@ -387,6 +387,7 @@ export function PlanEditor({
                     documentTitle={plan.title}
                     documentType="plan"
                     fillParent
+                    targetRepo={plan.targetRepo}
                   />
                 </TabsContent>
                 <TabsContent
