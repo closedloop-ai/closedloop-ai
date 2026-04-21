@@ -1,10 +1,6 @@
 "use client";
 
-import type {
-  ApiKey,
-  ApiKeyScope,
-  CreateApiKeyResponse,
-} from "@repo/api/src/types/api-key";
+import type { ApiKey, CreateApiKeyResponse } from "@repo/api/src/types/api-key";
 import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
@@ -24,10 +20,6 @@ import {
 } from "@repo/design-system/components/ui/dialog";
 import { Input } from "@repo/design-system/components/ui/input";
 import { Label } from "@repo/design-system/components/ui/label";
-import {
-  RadioGroup,
-  RadioGroupItem,
-} from "@repo/design-system/components/ui/radio-group";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import {
   Table,
@@ -85,16 +77,12 @@ type CreateApiKeyDialogProps = {
   onCreated: (response: CreateApiKeyResponse) => void;
 };
 
-const READ_ONLY_SCOPES: ApiKeyScope[] = ["read"];
-const READ_WRITE_SCOPES: ApiKeyScope[] = ["read", "write", "delete"];
-
 function CreateApiKeyDialog({
   open,
   onOpenChange,
   onCreated,
 }: Readonly<CreateApiKeyDialogProps>) {
   const [name, setName] = useState("");
-  const [scopePreset, setScopePreset] = useState<"read" | "read-write">("read");
   const createApiKey = useCreatePlatformApiKey();
 
   const handleSubmit = async (e: FormEvent) => {
@@ -103,14 +91,10 @@ function CreateApiKeyDialog({
       return;
     }
     try {
-      const scopes =
-        scopePreset === "read-write" ? READ_WRITE_SCOPES : READ_ONLY_SCOPES;
       const response = await createApiKey.mutateAsync({
         name: name.trim(),
-        scopes,
       });
       setName("");
-      setScopePreset("read");
       onOpenChange(false);
       onCreated(response);
     } catch {
@@ -125,6 +109,7 @@ function CreateApiKeyDialog({
           <DialogTitle>Create API Key</DialogTitle>
           <DialogDescription>
             Give your API key a descriptive name so you can identify it later.
+            New keys have full read, write, and delete access.
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={handleSubmit}>
@@ -138,40 +123,6 @@ function CreateApiKeyDialog({
                 placeholder="e.g. CI/CD pipeline"
                 value={name}
               />
-            </div>
-            <div className="space-y-2">
-              <Label>Permissions</Label>
-              <RadioGroup
-                onValueChange={(v) =>
-                  setScopePreset(v as "read" | "read-write")
-                }
-                value={scopePreset}
-              >
-                <label
-                  className="flex cursor-pointer items-center gap-3 rounded-md border p-3 has-data-[state=checked]:border-primary"
-                  htmlFor="scope-read"
-                >
-                  <RadioGroupItem id="scope-read" value="read" />
-                  <div>
-                    <p className="font-medium text-sm">Read only</p>
-                    <p className="text-muted-foreground text-xs">
-                      View projects, artifacts, and workstreams
-                    </p>
-                  </div>
-                </label>
-                <label
-                  className="flex cursor-pointer items-center gap-3 rounded-md border p-3 has-data-[state=checked]:border-primary"
-                  htmlFor="scope-read-write"
-                >
-                  <RadioGroupItem id="scope-read-write" value="read-write" />
-                  <div>
-                    <p className="font-medium text-sm">Read & Write</p>
-                    <p className="text-muted-foreground text-xs">
-                      Full access: create, update, and delete resources
-                    </p>
-                  </div>
-                </label>
-              </RadioGroup>
             </div>
           </div>
           <DialogFooter className="mt-4">
@@ -346,7 +297,8 @@ function QuickStartGuide() {
         <CardTitle className="text-base">Quick Start</CardTitle>
         <CardDescription>
           Use your API key to connect ClosedLoop to Claude Code, Claude Desktop,
-          or your own scripts.
+          or your own scripts. Newly created API keys have full read, write, and
+          delete access.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
