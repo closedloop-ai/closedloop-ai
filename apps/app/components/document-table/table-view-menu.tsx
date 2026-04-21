@@ -14,15 +14,20 @@ import {
   PopoverTrigger,
 } from "@repo/design-system/components/ui/popover";
 import { PriorityIcon } from "@repo/design-system/components/ui/priority-icon";
-import { StatusIcon } from "@repo/design-system/components/ui/status-icon";
 import { Switch } from "@repo/design-system/components/ui/switch";
 import {
+  ToggleGroup,
+  ToggleGroupItem,
+} from "@repo/design-system/components/ui/toggle-group";
+import {
+  AlignLeftIcon,
   BadgeCheckIcon,
   CalendarIcon,
   ChevronDownIcon,
   ClockIcon,
   FileIcon,
   FolderIcon,
+  LayoutGridIcon,
   ListTreeIcon,
   RefreshCwIcon,
   Settings2Icon,
@@ -50,15 +55,21 @@ const COLUMN_ICONS: Partial<Record<DocumentColumn, ReactNode>> = {
   [Col.Project]: <FolderIcon className="h-4 w-4 text-muted-foreground" />,
 };
 
+export type TableViewMode = "list" | "card";
+
 type TableViewMenuProps = Readonly<{
-  visibility: ColumnVisibility;
-  onToggle: (column: DocumentColumn) => void;
+  visibility?: ColumnVisibility;
+  onToggle?: (column: DocumentColumn) => void;
   /** Override the list of columns shown in the panel. Defaults to ALL_ARTIFACT_COLUMNS. */
   columns?: DocumentColumn[];
   /** Active group-by mode (none | status | assignee | priority). */
   groupBy?: GroupByMode;
   /** Change the active group-by mode. */
   onChangeGroupBy?: (mode: GroupByMode) => void;
+  /** Active view mode (list | card). When provided with onChangeView, renders a view toggle at the top. */
+  view?: TableViewMode;
+  /** Change the active view mode. */
+  onChangeView?: (view: TableViewMode) => void;
 }>;
 
 const GROUP_BY_OPTIONS: GroupByMode[] = [
@@ -78,10 +89,7 @@ function GroupByModeSelect({
   return (
     <div className="flex flex-col px-4 pb-3">
       <div className="flex h-9 items-center justify-between">
-        <span className="flex items-center gap-2 text-sm">
-          <StatusIcon size={16} status="decorative" />
-          Group by
-        </span>
+        <span className="text-sm">Group by</span>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button className="h-7 text-xs" size="sm" variant="outline">
@@ -111,8 +119,14 @@ export function TableViewMenu({
   columns = ALL_ARTIFACT_COLUMNS,
   groupBy,
   onChangeGroupBy,
+  view,
+  onChangeView,
 }: TableViewMenuProps) {
+  const showViewToggle = view != null && onChangeView != null;
   const showGroupByMode = groupBy != null && onChangeGroupBy != null;
+  const showColumnVisibility = visibility != null && onToggle != null;
+  const showOptionsHeading = showViewToggle || showGroupByMode;
+  const showOptionsDivider = showOptionsHeading && showColumnVisibility;
 
   return (
     <Popover>
@@ -123,43 +137,80 @@ export function TableViewMenu({
         </Button>
       </PopoverTrigger>
       <PopoverContent align="end" className="w-72 p-0">
+        {showOptionsHeading && (
+          <div className="px-4 pt-4 pb-2">
+            <h4 className="font-semibold text-lg">View Options</h4>
+          </div>
+        )}
+        {showViewToggle && (
+          <ViewModeToggle onChangeView={onChangeView} view={view} />
+        )}
         {showGroupByMode && (
+          <GroupByModeSelect
+            groupBy={groupBy}
+            onChangeGroupBy={onChangeGroupBy}
+          />
+        )}
+        {showOptionsDivider && <div className="mx-4 border-t" />}
+        {showColumnVisibility && (
           <>
-            <div className="px-4 pt-4 pb-2">
-              <h4 className="font-semibold text-lg">View Options</h4>
+            <div className="flex items-center justify-between px-4 pt-4 pb-2">
+              <h4 className="font-semibold text-base">Show/Hide Columns</h4>
             </div>
-            <GroupByModeSelect
-              groupBy={groupBy}
-              onChangeGroupBy={onChangeGroupBy}
-            />
-            <div className="mx-4 border-t" />
+            <div className="flex flex-col divide-y px-4 pb-3">
+              {columns.map((column) => (
+                <div
+                  className="flex cursor-pointer items-center justify-between py-3"
+                  key={column}
+                >
+                  <span className="flex items-center gap-2 text-sm">
+                    {COLUMN_ICONS[column]}
+                    {ARTIFACT_COLUMN_LABELS[column]}
+                  </span>
+                  <Switch
+                    checked={visibility[column]}
+                    id={`col-${column}`}
+                    onCheckedChange={() => onToggle(column)}
+                  />
+                </div>
+              ))}
+            </div>
           </>
         )}
-        <div className="flex items-center justify-between px-4 pt-4 pb-2">
-          <h4 className="font-semibold text-lg">Show/Hide Columns</h4>
-        </div>
-        <p className="px-4 pb-3 text-muted-foreground text-xs">
-          Show or hide columns across all document types
-        </p>
-        <div className="flex flex-col divide-y px-4 pb-3">
-          {columns.map((column) => (
-            <div
-              className="flex cursor-pointer items-center justify-between py-3"
-              key={column}
-            >
-              <span className="flex items-center gap-2 text-sm">
-                {COLUMN_ICONS[column]}
-                {ARTIFACT_COLUMN_LABELS[column]}
-              </span>
-              <Switch
-                checked={visibility[column]}
-                id={`col-${column}`}
-                onCheckedChange={() => onToggle(column)}
-              />
-            </div>
-          ))}
-        </div>
       </PopoverContent>
     </Popover>
+  );
+}
+
+function ViewModeToggle({
+  view,
+  onChangeView,
+}: Readonly<{
+  view: TableViewMode;
+  onChangeView: (view: TableViewMode) => void;
+}>) {
+  return (
+    <div className="px-4 pt-2 pb-4">
+      <ToggleGroup
+        className="w-full"
+        onValueChange={(value) => {
+          if (value) {
+            onChangeView(value as TableViewMode);
+          }
+        }}
+        type="single"
+        value={view}
+        variant="outline"
+      >
+        <ToggleGroupItem className="h-7 flex-1 text-xs" value="list">
+          <AlignLeftIcon className="h-3.5 w-3.5" />
+          List
+        </ToggleGroupItem>
+        <ToggleGroupItem className="h-7 flex-1 text-xs" value="card">
+          <LayoutGridIcon className="h-3.5 w-3.5" />
+          Card
+        </ToggleGroupItem>
+      </ToggleGroup>
+    </div>
   );
 }

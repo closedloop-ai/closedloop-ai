@@ -1,9 +1,8 @@
 "use client";
 
 import type { Priority } from "@repo/api/src/types/common";
-import { Button } from "@repo/design-system/components/ui/button";
 import { Input } from "@repo/design-system/components/ui/input";
-import { BoxIcon, LayoutGridIcon, ListIcon, SearchIcon } from "lucide-react";
+import { BoxIcon, SearchIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Header } from "@/app/(authenticated)/components/header";
 import { ActiveFiltersBar } from "@/components/document-table/active-filters-bar";
@@ -170,36 +169,15 @@ export default function MyTasksPage() {
                 teamMembersError={null}
                 teamMembersLoading={false}
               />
-              {isListView && (
-                <TableViewMenu
-                  columns={MY_TASKS_DEFAULT_COLUMNS}
-                  groupBy={groupBy}
-                  onChangeGroupBy={setGroupBy}
-                  onToggle={toggleColumn}
-                  visibility={visibility}
-                />
-              )}
-              <Button
-                aria-label={
-                  isListView ? "Switch to card view" : "Switch to list view"
-                }
-                className="h-8 border border-input-border bg-transparent shadow-none"
-                onClick={() => setView(isListView ? "card" : "list")}
-                size="sm"
-                variant="ghost"
-              >
-                {isListView ? (
-                  <>
-                    <LayoutGridIcon />
-                    <span className="hidden sm:inline">Card</span>
-                  </>
-                ) : (
-                  <>
-                    <ListIcon />
-                    <span className="hidden sm:inline">List</span>
-                  </>
-                )}
-              </Button>
+              <TableViewMenu
+                columns={isListView ? MY_TASKS_DEFAULT_COLUMNS : undefined}
+                groupBy={isListView ? groupBy : undefined}
+                onChangeGroupBy={isListView ? setGroupBy : undefined}
+                onChangeView={setView}
+                onToggle={isListView ? toggleColumn : undefined}
+                view={view}
+                visibility={isListView ? visibility : undefined}
+              />
             </div>
           </div>
           {filtersReturn.isAnyFilterActive && (
