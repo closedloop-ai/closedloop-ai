@@ -293,6 +293,7 @@ export function PRDEditor({
                     documentTitle={prd.title}
                     documentType="prd"
                     fillParent
+                    targetRepo={prd.targetRepo}
                   />
                 </TabsContent>
                 <TabsContent

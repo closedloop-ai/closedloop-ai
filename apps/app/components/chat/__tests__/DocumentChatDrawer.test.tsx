@@ -70,6 +70,25 @@ vi.mock("@/lib/engineer/queries/health-check", () => ({
   healthCheckOptions: () => ({ queryKey: ["health"], queryFn: vi.fn() }),
 }));
 
+vi.mock("@/lib/engineer/queries/repo-path", () => ({
+  repoPathOptions: (repoFullName: string | null, routingKey: string) => ({
+    queryKey: ["repo-path", repoFullName ?? "", routingKey],
+    queryFn: vi.fn(),
+  }),
+}));
+
+vi.mock("@/lib/engineer/electron-detection", () => ({
+  useElectronDetection: () => ({
+    detected: false,
+    loading: false,
+    port: null,
+    version: null,
+    machineName: null,
+    capabilities: null,
+    checkedAt: null,
+  }),
+}));
+
 import { DocumentChatDrawer } from "../DocumentChatDrawer";
 
 const ARTIFACT_PROPS = {
@@ -108,9 +127,33 @@ describe("DocumentChatDrawer", () => {
     );
   });
 
-  test("does not pass a cwd (artifact mode never sets one)", () => {
+  test("does not pass a cwd when targetRepo is not provided", () => {
     mockUseQuery.mockReturnValue({ data: undefined });
     render(<DocumentChatDrawer {...ARTIFACT_PROPS} />);
+    expect(capturedUseChatSessionOptions.value?.cwd).toBeUndefined();
+  });
+
+  test("passes resolved repo path as cwd when targetRepo is provided", () => {
+    mockUseQuery.mockImplementation((options: { queryKey?: unknown[] }) => {
+      if (options?.queryKey?.[0] === "repo-path") {
+        return { data: { path: "/Users/alice/src/acme/web" } };
+      }
+      return { data: undefined };
+    });
+    render(<DocumentChatDrawer {...ARTIFACT_PROPS} targetRepo="acme/web" />);
+    expect(capturedUseChatSessionOptions.value?.cwd).toBe(
+      "/Users/alice/src/acme/web"
+    );
+  });
+
+  test("does not pass a cwd when repo path resolves to null", () => {
+    mockUseQuery.mockImplementation((options: { queryKey?: unknown[] }) => {
+      if (options?.queryKey?.[0] === "repo-path") {
+        return { data: { path: null } };
+      }
+      return { data: undefined };
+    });
+    render(<DocumentChatDrawer {...ARTIFACT_PROPS} targetRepo="acme/web" />);
     expect(capturedUseChatSessionOptions.value?.cwd).toBeUndefined();
   });
 

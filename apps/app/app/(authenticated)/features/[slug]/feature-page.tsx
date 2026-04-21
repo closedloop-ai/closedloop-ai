@@ -155,6 +155,7 @@ export function FeaturePage({ feature }: Readonly<FeaturePageProps>) {
                 documentSlug={feature.slug}
                 documentTitle={feature.title}
                 documentType="feature"
+                targetRepo={feature.targetRepo}
               />
             </div>
           </FeatureFlagged>
