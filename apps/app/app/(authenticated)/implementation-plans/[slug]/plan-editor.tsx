@@ -20,7 +20,7 @@ import {
   TabsList,
   TabsTrigger,
 } from "@repo/design-system/components/ui/tabs";
-import { TiptapToolbar } from "@repo/rich-text";
+import { RichTextToolbar } from "@repo/rich-text/rich-text-toolbar";
 import { Loader2Icon } from "lucide-react";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { BackendMismatchModal } from "@/components/backend-mismatch-modal";
@@ -214,10 +214,11 @@ export function PlanEditor({
   );
 
   const toolbarLeftContent = (
-    <TiptapToolbar
+    <RichTextToolbar
       className="border-0 bg-transparent p-0"
       editor={session.editor}
       hasLiveblocksExtension={!!session.liveblocksRoomId}
+      onPasteMarkdown={session.setEditorContent}
     />
   );
 
