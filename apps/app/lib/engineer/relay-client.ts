@@ -57,14 +57,19 @@ function parseRelayResponseEnvelope(
   }
 
   // Electron gateway uses { statusCode, data }, relay envelope uses { status, body }.
-  const status =
-    typeof value.status === "number"
-      ? value.status
-      : typeof value.statusCode === "number"
-        ? value.statusCode
-        : undefined;
-  const body =
-    "body" in value ? value.body : "data" in value ? value.data : undefined;
+  let status: number | undefined;
+  if (typeof value.status === "number") {
+    status = value.status;
+  } else if (typeof value.statusCode === "number") {
+    status = value.statusCode;
+  }
+
+  let body: unknown;
+  if ("body" in value) {
+    body = value.body;
+  } else if ("data" in value) {
+    body = value.data;
+  }
 
   if (status === undefined || body === undefined) {
     return null;
@@ -304,6 +309,8 @@ function unwrapRelayBody(body: RelayEncodedBody): JsonValue | undefined {
       return body.value as unknown as JsonValue;
     case "base64":
       return body.value as unknown as JsonValue;
+    default:
+      throw new Error("Unsupported relay body kind");
   }
 }
 

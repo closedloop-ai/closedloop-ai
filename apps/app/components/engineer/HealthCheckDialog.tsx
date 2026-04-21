@@ -22,6 +22,7 @@ import {
   type ReactNode,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -98,7 +99,10 @@ export function HealthCheckDialog({
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
   });
-  const renderableChecks = getRenderableHealthChecks(data, expectedMcpUrl);
+  const renderableChecks = useMemo(
+    () => getRenderableHealthChecks(data, expectedMcpUrl),
+    [data, expectedMcpUrl]
+  );
 
   // Auto-dismiss after all checks are revealed and all required pass
   const allRevealed =
@@ -126,14 +130,14 @@ export function HealthCheckDialog({
     setFailureDetected(true);
 
     return () => clearTimeout(timer);
-  }, [hasRequiredFailure]);
+  }, [hasRequiredFailure, targetKey]);
 
   // Staggered reveal: only run when dialog is showing (failure detected).
   // recheckKey ensures the stagger re-triggers even when the response is
   // structurally identical (TanStack Query structural sharing preserves the
   // same data reference in that case).
   useEffect(() => {
-    if (!(failureDetected && renderableChecks)) {
+    if (recheckKey < 0 || !(failureDetected && renderableChecks)) {
       return;
     }
 

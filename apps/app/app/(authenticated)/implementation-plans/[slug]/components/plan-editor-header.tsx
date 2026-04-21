@@ -2,9 +2,9 @@
 
 import { useFeatureFlag } from "@repo/analytics/client";
 import type {
-  ArtifactWithWorkstream,
+  DocumentWithWorkstream,
   PullRequestState,
-} from "@repo/api/src/types/artifact";
+} from "@repo/api/src/types/document";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   DropdownMenu,
@@ -37,8 +37,7 @@ import {
 } from "@/app/(authenticated)/components/header";
 
 type PlanEditorHeaderProps = {
-  plan: ArtifactWithWorkstream;
-  showMetadataPanel: boolean;
+  plan: DocumentWithWorkstream;
   canShowPanel?: boolean;
   isDraft: boolean;
   isApproved: boolean;
@@ -69,7 +68,6 @@ type PlanEditorHeaderProps = {
 
 export function PlanEditorHeader({
   plan,
-  showMetadataPanel,
   canShowPanel = true,
   isDraft,
   isApproved,
@@ -237,7 +235,7 @@ export function PlanEditorHeader({
           onClick={() => onToggleMetadataPanel()}
           size="icon"
           title="Toggle chat panel"
-          variant={showMetadataPanel ? "secondary" : "ghost"}
+          variant="ghost"
         >
           <PanelRightIcon className="h-4 w-4" />
         </Button>

@@ -150,7 +150,7 @@ const PlainTextLogViewer = memo(function PlainTextLogViewer({
               {lines.slice(startIndex, endIndex).map((line, i) => (
                 <div
                   className="whitespace-pre-wrap break-all leading-5"
-                  key={startIndex + i}
+                  key={`${startIndex + i}:${line.slice(0, 24)}`}
                   style={{ height: LINE_HEIGHT }}
                 >
                   {line}
@@ -165,6 +165,7 @@ const PlainTextLogViewer = memo(function PlainTextLogViewer({
           className="fade-in slide-in-from-bottom-2 absolute right-6 bottom-4 flex size-10 animate-in items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg transition-all duration-200 hover:scale-105 hover:bg-primary/90"
           onClick={scrollToBottom}
           title="Scroll to bottom"
+          type="button"
         >
           <ChevronDown className="size-5" />
         </button>

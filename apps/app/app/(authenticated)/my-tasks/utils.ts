@@ -1,8 +1,9 @@
-import type {
-  FeatureWithWorkstream,
-  FindFeaturesOptions,
-} from "@repo/api/src/types/feature";
-import { FeatureStatus } from "@repo/api/src/types/feature";
+import {
+  DocumentStatus,
+  DocumentType,
+  type DocumentWithWorkstream,
+  type FindDocumentsOptions,
+} from "@repo/api/src/types/document";
 import type { MyTasksFeatureFilters } from "./types";
 
 export const EMPTY_FILTERS: MyTasksFeatureFilters = {
@@ -14,23 +15,27 @@ export const EMPTY_FILTERS: MyTasksFeatureFilters = {
 export const DISPLAY_GROUPS: {
   key: string;
   label: string;
-  statuses: FeatureStatus[];
+  statuses: DocumentStatus[];
 }[] = [
   {
     key: "draft",
     label: "Draft",
-    statuses: [FeatureStatus.Draft],
+    statuses: [DocumentStatus.Draft],
   },
   {
     key: "in_progress",
     label: "In Progress",
-    statuses: [FeatureStatus.InProgress],
+    statuses: [DocumentStatus.InProgress],
   },
-  { key: "in_review", label: "In Review", statuses: [FeatureStatus.InReview] },
-  { key: "approved", label: "Approved", statuses: [FeatureStatus.Approved] },
-  { key: "executed", label: "Executed", statuses: [FeatureStatus.Executed] },
-  { key: "done", label: "Done", statuses: [FeatureStatus.Done] },
-  { key: "obsolete", label: "Obsolete", statuses: [FeatureStatus.Obsolete] },
+  {
+    key: "in_review",
+    label: "In Review",
+    statuses: [DocumentStatus.InReview],
+  },
+  { key: "approved", label: "Approved", statuses: [DocumentStatus.Approved] },
+  { key: "executed", label: "Executed", statuses: [DocumentStatus.Executed] },
+  { key: "done", label: "Done", statuses: [DocumentStatus.Done] },
+  { key: "obsolete", label: "Obsolete", statuses: [DocumentStatus.Obsolete] },
 ];
 
 /**
@@ -39,8 +44,9 @@ export const DISPLAY_GROUPS: {
  */
 export function buildFeatureListParams(
   assigneeId: string | null
-): FindFeaturesOptions {
+): FindDocumentsOptions {
   return {
+    type: DocumentType.Feature,
     assigneeId: assigneeId ?? undefined,
   };
 }
@@ -49,13 +55,13 @@ export function buildFeatureListParams(
  * Apply all selected filters client-side.
  */
 export function applyClientFilters(
-  features: FeatureWithWorkstream[],
+  features: DocumentWithWorkstream[],
   filters: MyTasksFeatureFilters
-): FeatureWithWorkstream[] {
+): DocumentWithWorkstream[] {
   return features.filter((feature) => {
     if (
       filters.projectIds.length > 0 &&
-      !filters.projectIds.includes(feature.projectId)
+      !(feature.projectId && filters.projectIds.includes(feature.projectId))
     ) {
       return false;
     }

@@ -7,9 +7,10 @@ export function registerGetLoop(server: McpServer, apiClient: ApiClient): void {
   server.registerTool(
     "get-loop",
     {
-      description: "Get one automation run, called a loop, by ID.",
+      description:
+        "Get one automation run (a loop) by UUID. Loops do not have user-facing slugs — pass the UUID returned by list-loops or a prior create call.",
       inputSchema: {
-        loopId: z.string().describe("ID of the loop to retrieve"),
+        loopId: z.string().describe("Loop UUID (no slug form available)"),
       },
     },
     ({ loopId }) =>

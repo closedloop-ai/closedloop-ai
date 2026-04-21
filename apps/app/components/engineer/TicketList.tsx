@@ -72,6 +72,26 @@ type TicketListProps = {
   viewMode?: "grid" | "list";
 };
 
+const LIST_SKELETON_KEYS = [
+  "list-skeleton-1",
+  "list-skeleton-2",
+  "list-skeleton-3",
+  "list-skeleton-4",
+  "list-skeleton-5",
+  "list-skeleton-6",
+  "list-skeleton-7",
+  "list-skeleton-8",
+];
+
+const GRID_SKELETON_KEYS = [
+  "grid-skeleton-1",
+  "grid-skeleton-2",
+  "grid-skeleton-3",
+  "grid-skeleton-4",
+  "grid-skeleton-5",
+  "grid-skeleton-6",
+];
+
 /**
  * TicketList component displays Linear tickets in a responsive grid layout.
  * When Symphony is running for a ticket, it shows in a dedicated "Active Planning" section.
@@ -98,18 +118,18 @@ export function TicketList({
 
   const {
     startPlanLoop,
-    pendingArtifacts,
-    selectArtifact,
-    clearPendingArtifacts,
+    pendingDocuments,
+    selectDocument,
+    clearPendingDocuments,
   } = useStartPlanLoop(
-    async (ticketIdentifier, repoPath, worktreePath, loopId, artifactId) => {
-      // Persist loopId + artifactId in the session immediately so ActiveTicketCard
+    async (ticketIdentifier, repoPath, worktreePath, loopId, documentId) => {
+      // Persist loopId + documentId in the session immediately so ActiveTicketCard
       // can use them before the gateway process starts.
       mergeSessionFields(ticketIdentifier, {
         repoPath,
         worktreePath,
         loopId,
-        artifactId,
+        documentId,
       });
       // Also persist to the sessions file via the API route
       await fetch("/api/gateway/symphony/sessions", {
@@ -120,7 +140,7 @@ export function TicketList({
           repoPath,
           worktreePath,
           loopId,
-          artifactId,
+          documentId,
         }),
       });
     }
@@ -416,7 +436,9 @@ export function TicketList({
     if (stale.length > 0) {
       setReopenedTickets((prev) => {
         const next = new Set(prev);
-        stale.forEach((id) => next.delete(id));
+        for (const id of stale) {
+          next.delete(id);
+        }
         localStorage.setItem("reopened-tickets", JSON.stringify([...next]));
         return next;
       });
@@ -547,9 +569,9 @@ export function TicketList({
   // Check pushed status for all tickets (from localStorage)
   useEffect(() => {
     const statusMap: Record<string, boolean> = {};
-    tickets.forEach((ticket) => {
+    for (const ticket of tickets) {
       statusMap[ticket.identifier] = isTicketPushed(ticket.identifier);
-    });
+    }
     setPushedStatus(statusMap);
   }, [tickets]);
 
@@ -559,12 +581,12 @@ export function TicketList({
       string,
       { url: string; number: number; repoPath?: string } | null
     > = {};
-    tickets.forEach((ticket) => {
+    for (const ticket of tickets) {
       const pr = getTicketPR(ticket.identifier);
       statusMap[ticket.identifier] = pr
         ? { url: pr.url, number: pr.number, repoPath: pr.repoPath }
         : null;
-    });
+    }
     setPrStatus(statusMap);
   }, [tickets]);
 
@@ -572,9 +594,9 @@ export function TicketList({
   useEffect(() => {
     const deploys = getDeployments();
     const statusMap: Record<string, DeployInfo | null> = {};
-    tickets.forEach((ticket) => {
+    for (const ticket of tickets) {
       statusMap[ticket.identifier] = deploys[ticket.identifier] || null;
-    });
+    }
     setDeployStatus(statusMap);
 
     // Reconcile any "deploying" entries — the process may have finished while the page was closed
@@ -723,6 +745,24 @@ export function TicketList({
       .catch(() => {});
   }, []);
 
+  // Derive base repo path from a ticket's worktree or active session
+  const getRepoPathForTicket = useCallback(
+    (ticketId: string): string | null => {
+      const session = getSession(ticketId);
+      if (session?.repoPath) {
+        return session.repoPath;
+      }
+
+      const worktree = workDirStatus[ticketId];
+      if (worktree?.exists && worktree.path) {
+        return deriveBaseRepoPath(worktree.path, ticketId);
+      }
+
+      return null;
+    },
+    [getSession, workDirStatus]
+  );
+
   // Discover external deployments (e.g., `vercel --yes` from CLI) on page load
   useEffect(() => {
     // Guard: wait for work directory status to be loaded
@@ -805,7 +845,15 @@ export function TicketList({
         });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tickets, workDirStatus, pushedStatus, prStatus, deployStatus, reposData]);
+  }, [
+    tickets,
+    workDirStatus,
+    pushedStatus,
+    prStatus,
+    deployStatus,
+    reposData,
+    getRepoPathForTicket,
+  ]);
 
   // Trigger LLM detection for repos that have a local deployment but no port
   useEffect(() => {
@@ -838,7 +886,7 @@ export function TicketList({
 
   // Show toast when a ticket finishes launching (transitions out of launchingTickets)
   useEffect(() => {
-    activeSessions.forEach((session) => {
+    for (const session of activeSessions) {
       if (
         !(
           launchingTickets.has(session.ticketId) ||
@@ -848,7 +896,7 @@ export function TicketList({
         // New session that wasn't there before and isn't launching
         lastLaunchedTicketRef.current.add(session.ticketId);
       }
-    });
+    }
   }, [activeSessions, launchingTickets]);
 
   // Handler for starting planning - opens repo picker dialog OR resumes existing worktree
@@ -1289,28 +1337,6 @@ export function TicketList({
     return repoPath ? deployableRepos.has(repoPath) : false;
   };
 
-  // Derive base repo path from a ticket's worktree or active session
-  const getRepoPathForTicket = (ticketId: string): string | null => {
-    // Try active session first
-    const session = getSession(ticketId);
-    if (session?.repoPath) {
-      return session.repoPath;
-    }
-
-    // Fall back to deriving from worktree path
-    const worktree = workDirStatus[ticketId];
-    if (worktree?.exists && worktree.path) {
-      const pathParts = worktree.path.split("/");
-      const worktreeDirName = pathParts.at(-1)!;
-      const parentDir = pathParts.slice(0, -1).join("/");
-      const sanitizedTicket = ticketId.replaceAll(/[^a-zA-Z0-9-_]/g, "_");
-      const repoName = worktreeDirName.replace(`-${sanitizedTicket}`, "");
-      return `${parentDir}/${repoName}`;
-    }
-
-    return null;
-  };
-
   // Handler for deploy button
   const handleDeploy = (ticketId: string) => {
     const repoPath = getRepoPathForTicket(ticketId);
@@ -1535,16 +1561,16 @@ export function TicketList({
     if (viewMode === "list") {
       return (
         <div className="divide-y divide-border/50 overflow-hidden rounded-xl border border-border/50 bg-card">
-          {Array.from({ length: 8 }, (_, i) => (
-            <TicketListRowSkeleton key={`skeleton-${i}`} />
+          {LIST_SKELETON_KEYS.map((skeletonKey) => (
+            <TicketListRowSkeleton key={skeletonKey} />
           ))}
         </div>
       );
     }
     return (
       <div className="grid grid-cols-1 gap-4 sm:gap-6 md:grid-cols-2 lg:grid-cols-3">
-        {Array.from({ length: 6 }, (_, i) => (
-          <TicketCardSkeleton key={`skeleton-${i}`} />
+        {GRID_SKELETON_KEYS.map((skeletonKey) => (
+          <TicketCardSkeleton key={skeletonKey} />
         ))}
       </div>
     );
@@ -1771,7 +1797,7 @@ export function TicketList({
                       }
                       prInfo={prStatus[ticket.identifier] || null}
                       repoPath={repoPath}
-                      sessionArtifactId={session?.artifactId}
+                      sessionArtifactId={session?.documentId}
                       ticket={ticket}
                     />
                   </div>
@@ -1888,6 +1914,7 @@ export function TicketList({
                 className="cursor-pointer rounded-md p-1.5 text-muted-foreground transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:opacity-30"
                 disabled={pendingPage === 0}
                 onClick={() => setPendingPage((p) => Math.max(0, p - 1))}
+                type="button"
               >
                 <ChevronLeft className="size-4" />
               </button>
@@ -1900,6 +1927,7 @@ export function TicketList({
                 onClick={() =>
                   setPendingPage((p) => Math.min(pendingPageCount - 1, p + 1))
                 }
+                type="button"
               >
                 <ChevronRight className="size-4" />
               </button>
@@ -2005,6 +2033,7 @@ export function TicketList({
               setShowCompleted(next);
               localStorage.setItem("show-completed-tickets", String(next));
             }}
+            type="button"
           >
             <span
               className={cn(
@@ -2020,6 +2049,7 @@ export function TicketList({
               )}
             >
               <svg
+                aria-hidden="true"
                 className="opacity-60"
                 fill="none"
                 height="10"
@@ -2046,6 +2076,7 @@ export function TicketList({
             <div className="h-px flex-1 bg-gradient-to-r from-transparent via-border to-transparent" />
             <span className="flex items-center gap-2 font-medium text-muted-foreground/70 text-xs uppercase tracking-wider">
               <svg
+                aria-hidden="true"
                 className="text-emerald-500/60"
                 fill="none"
                 height="12"
@@ -2070,6 +2101,7 @@ export function TicketList({
                 className="cursor-pointer rounded-md p-1.5 text-muted-foreground transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:opacity-30"
                 disabled={donePage === 0}
                 onClick={() => setDonePage((p) => Math.max(0, p - 1))}
+                type="button"
               >
                 <ChevronLeft className="size-4" />
               </button>
@@ -2082,6 +2114,7 @@ export function TicketList({
                 onClick={() =>
                   setDonePage((p) => Math.min(donePageCount - 1, p + 1))
                 }
+                type="button"
               >
                 <ChevronRight className="size-4" />
               </button>
@@ -2225,10 +2258,10 @@ export function TicketList({
         onOpenChange={(open) => {
           if (!open) {
             // Dismissing clears picker state; user can retry Start Planning
-            clearPendingArtifacts();
+            clearPendingDocuments();
           }
         }}
-        open={pendingArtifacts !== null && pendingArtifacts.length > 0}
+        open={pendingDocuments !== null && pendingDocuments.length > 0}
       >
         <DialogContent>
           <DialogHeader>
@@ -2239,14 +2272,14 @@ export function TicketList({
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2">
-            {pendingArtifacts?.map((artifact) => (
+            {pendingDocuments?.map((doc) => (
               <Button
                 className="h-auto w-full justify-start whitespace-normal text-left"
-                key={artifact.id}
-                onClick={() => selectArtifact(artifact.id)}
+                key={doc.id}
+                onClick={() => selectDocument(doc.id)}
                 variant="outline"
               >
-                {artifact.title}
+                {doc.title}
               </Button>
             ))}
           </div>

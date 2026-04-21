@@ -1,13 +1,11 @@
 "use client";
 
-import type { Artifact } from "@repo/api/src/types/artifact";
 import type { FileAttachment } from "@repo/api/src/types/attachment";
+import type { Document } from "@repo/api/src/types/document";
 import type { LinkedEntity } from "@repo/api/src/types/entity-link";
 import { EntityType, LinkDirection } from "@repo/api/src/types/entity-link";
-import type { Feature } from "@repo/api/src/types/feature";
 import { isDisplayableSlug } from "@repo/api/src/types/slug";
 import { Button } from "@repo/design-system/components/ui/button";
-import { PriorityIcon } from "@repo/design-system/components/ui/priority-icon";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { StatusIcon } from "@repo/design-system/components/ui/status-icon";
 import { FileIcon, PlusIcon, Trash2Icon } from "lucide-react";
@@ -15,20 +13,18 @@ import Link from "next/link";
 import { useMemo, useState } from "react";
 import { AssigneeAvatar } from "@/components/assignee-avatar";
 import {
-  useDeleteFeatureAttachment,
-  useFeatureAttachments,
+  useAttachments,
+  useDeleteAttachment,
 } from "@/hooks/queries/use-attachments";
 import {
   useDeleteEntityLink,
   useLinkedEntities,
 } from "@/hooks/queries/use-entity-links";
-import { getArtifactRoute, getFeatureRoute } from "@/lib/artifact-navigation";
+import { getDocumentRoute } from "@/lib/document-navigation";
 import {
-  ARTIFACT_STATUS_TO_ICON,
-  ARTIFACT_TYPE_BADGE_LABELS,
-  ARTIFACT_TYPE_ICONS,
-  FEATURE_ICON,
-  FEATURE_STATUS_TO_ICON,
+  DOCUMENT_STATUS_TO_ICON,
+  DOCUMENT_TYPE_BADGE_LABELS,
+  DOCUMENT_TYPE_ICONS,
 } from "@/lib/project-constants";
 import { AddContextDialog } from "./add-context-dialog";
 import { OverflowMenu } from "./overflow-menu";
@@ -47,11 +43,11 @@ export function ContextSection({
 
   const { data: linkedEntities = [] } = useLinkedEntities(
     featureId,
-    EntityType.Feature,
+    EntityType.Document,
     { direction: LinkDirection.Source }
   );
-  const { data: featureAttachments = [] } = useFeatureAttachments(featureId);
-  const deleteFeatureAttachment = useDeleteFeatureAttachment(featureId);
+  const { data: featureAttachments = [] } = useAttachments(featureId);
+  const deleteFeatureAttachment = useDeleteAttachment(featureId);
   const deleteLink = useDeleteEntityLink();
 
   function handleUnlink(linkId: string) {
@@ -73,7 +69,7 @@ export function ContextSection({
   const linkedArtifactIds = useMemo(() => {
     const ids = new Set<string>();
     for (const linked of contextLinks) {
-      if (linked.resolvedEntity?.type === EntityType.Artifact) {
+      if (linked.resolvedEntity?.type === EntityType.Document) {
         ids.add(linked.resolvedEntity.entity.id);
       }
     }
@@ -152,46 +148,33 @@ function ContextRow({ linked, onUnlink }: Readonly<ContextRowProps>) {
     return null;
   }
 
-  switch (resolved.type) {
-    case EntityType.Artifact: {
-      return (
-        <ArtifactRow
-          artifact={resolved.entity}
-          linkId={linked.id}
-          onUnlink={onUnlink}
-        />
-      );
-    }
-    case EntityType.Feature: {
-      return (
-        <FeatureRow
-          feature={resolved.entity}
-          linkId={linked.id}
-          onUnlink={onUnlink}
-        />
-      );
-    }
-    default: {
-      return null;
-    }
+  if (resolved.type === EntityType.Document) {
+    return (
+      <DocumentRow
+        artifact={resolved.entity}
+        linkId={linked.id}
+        onUnlink={onUnlink}
+      />
+    );
   }
+  return null;
 }
 
-type ArtifactRowProps = {
-  artifact: Artifact;
+type DocumentRowProps = {
+  artifact: Document;
   linkId: string;
   onUnlink: (linkId: string) => void;
 };
 
-function ArtifactRow({
+function DocumentRow({
   artifact,
   linkId,
   onUnlink,
-}: Readonly<ArtifactRowProps>) {
-  const Icon = ARTIFACT_TYPE_ICONS[artifact.type];
-  const badgeLabel = ARTIFACT_TYPE_BADGE_LABELS[artifact.type];
-  const statusIconStatus = ARTIFACT_STATUS_TO_ICON[artifact.status];
-  const route = getArtifactRoute(artifact);
+}: Readonly<DocumentRowProps>) {
+  const Icon = DOCUMENT_TYPE_ICONS[artifact.type];
+  const badgeLabel = DOCUMENT_TYPE_BADGE_LABELS[artifact.type];
+  const statusIconStatus = DOCUMENT_STATUS_TO_ICON[artifact.status];
+  const route = getDocumentRoute(artifact);
 
   return (
     <div className="flex items-center px-2 py-1">
@@ -211,43 +194,6 @@ function ArtifactRow({
       </Link>
       <div className="flex h-9 shrink-0 items-center gap-2">
         <AssigneeAvatar assignee={artifact.assignee} />
-        <StatusIcon size={20} status={statusIconStatus} />
-        <OverflowMenu linkId={linkId} onUnlink={onUnlink} />
-      </div>
-    </div>
-  );
-}
-
-type FeatureRowProps = {
-  feature: Feature;
-  linkId: string;
-  onUnlink: (linkId: string) => void;
-};
-
-function FeatureRow({ feature, linkId, onUnlink }: Readonly<FeatureRowProps>) {
-  const Icon = FEATURE_ICON;
-  const statusIconStatus = FEATURE_STATUS_TO_ICON[feature.status];
-  const route = getFeatureRoute(feature);
-
-  return (
-    <div className="flex items-center gap-4 px-2 py-1">
-      <Link
-        className="flex min-w-0 flex-1 items-center gap-2 rounded-md hover:bg-accent"
-        href={route}
-      >
-        <div className="flex shrink-0 items-center p-1">
-          <Icon className="h-4 w-4 text-muted-foreground" />
-        </div>
-        <span className="min-w-[60px] shrink-0 truncate font-medium text-muted-foreground text-xs">
-          {isDisplayableSlug(feature.slug) ? feature.slug : "Feature"}
-        </span>
-        <span className="truncate px-1 font-medium text-sm">
-          {feature.title}
-        </span>
-      </Link>
-      <div className="flex h-9 shrink-0 items-center gap-2">
-        <PriorityIcon priority={feature.priority} />
-        <AssigneeAvatar assignee={feature.assignee} />
         <StatusIcon size={20} status={statusIconStatus} />
         <OverflowMenu linkId={linkId} onUnlink={onUnlink} />
       </div>

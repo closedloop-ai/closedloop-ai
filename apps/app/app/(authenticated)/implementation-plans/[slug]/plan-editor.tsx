@@ -2,13 +2,13 @@
 
 import { useFeatureFlag } from "@repo/analytics/client";
 import {
-  type ArtifactDetail,
-  ArtifactStatus,
-  ArtifactType,
+  type DocumentDetail,
+  DocumentStatus,
+  DocumentType,
   PullRequestState,
-} from "@repo/api/src/types/artifact";
+} from "@repo/api/src/types/document";
 import { EntityType } from "@repo/api/src/types/entity-link";
-import { InlinePresence, OptionalArtifactRoom } from "@repo/collaboration";
+import { InlinePresence, OptionalDocumentRoom } from "@repo/collaboration";
 import {
   ResizableHandle,
   ResizablePanel,
@@ -23,34 +23,35 @@ import {
 import { TiptapToolbar } from "@repo/rich-text";
 import { Loader2Icon } from "lucide-react";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
-import { CollaborativeEditor } from "@/components/artifact-editor/collaborative-editor";
-import { EditableArtifactTitle } from "@/components/artifact-editor/editable-artifact-title";
-import { EditorToolbarActions } from "@/components/artifact-editor/editor-toolbar-actions";
-import { EditorToolbarRow } from "@/components/artifact-editor/editor-toolbar-row";
 import { BackendMismatchModal } from "@/components/backend-mismatch-modal";
-import { ArtifactChatDrawer } from "@/components/chat/ArtifactChatDrawer";
+import { DocumentChatDrawer } from "@/components/chat/DocumentChatDrawer";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
+import { CollaborativeEditor } from "@/components/document-editor/collaborative-editor";
+import { EditableDocumentTitle } from "@/components/document-editor/editable-document-title";
+import { EditorToolbarActions } from "@/components/document-editor/editor-toolbar-actions";
+import { EditorToolbarRow } from "@/components/document-editor/editor-toolbar-row";
 import { LoopDispatchTargetSelector } from "@/components/engineer/LoopDispatchTargetSelector";
 import { ExecutionLogDialog } from "@/components/execution-log/execution-log-dialog";
 import { ExecutionLogSummary } from "@/components/execution-log/execution-log-summary";
 import { GenerationStatusBanner } from "@/components/generation-status-banner";
 import { MoveEntityDialog } from "@/components/move-entity-dialog";
-import { useArtifactActions } from "@/hooks/artifact-editing/use-artifact-actions";
-import { useArtifactContent } from "@/hooks/artifact-editing/use-artifact-content";
-import { useArtifactMetadata } from "@/hooks/artifact-editing/use-artifact-metadata";
-import { useArtifactUIState } from "@/hooks/artifact-editing/use-artifact-ui-state";
-import { useEditorSession } from "@/hooks/artifact-editing/use-editor-session";
-import { usePlanActions } from "@/hooks/artifact-editing/use-plan-actions";
+import { useDocumentActions } from "@/hooks/document-editing/use-document-actions";
+import { useDocumentContent } from "@/hooks/document-editing/use-document-content";
+import { useDocumentMetadata } from "@/hooks/document-editing/use-document-metadata";
+import { useDocumentUIState } from "@/hooks/document-editing/use-document-ui-state";
+import { useEditorSession } from "@/hooks/document-editing/use-editor-session";
+import { usePlanActions } from "@/hooks/document-editing/use-plan-actions";
 import {
-  useArtifactGenerationStatus,
-  useArtifactPullRequest,
-  useDismissArtifactGenerationStatus,
-} from "@/hooks/queries/use-artifacts";
+  useDismissDocumentGenerationStatus,
+  useDocumentGenerationStatus,
+  useDocumentPullRequest,
+} from "@/hooks/queries/use-documents";
 import { useWorkstreamPreviewDeployment } from "@/hooks/queries/use-external-links";
 import {
   useCodeJudgesFeedback,
   usePlanJudgesFeedback,
 } from "@/hooks/queries/use-judges";
+import { useLatestPlanLoopByDocument } from "@/hooks/queries/use-loops";
 import { useExecutionLogDialog } from "@/hooks/use-execution-log-dialog";
 import { usePreviewDeploymentPolling } from "@/hooks/use-preview-deployment-polling";
 import { ExecutePlanModal } from "../components/execute-plan-modal";
@@ -60,9 +61,10 @@ import { LinearExportDialog } from "./components/linear-export-dialog";
 import { PlanEditorHeader } from "./components/plan-editor-header";
 import { PlanMetadataBar } from "./components/plan-metadata-bar";
 import { PlanMetadataPanel } from "./components/plan-metadata-panel";
+import { RegeneratePlanModal } from "./components/regenerate-plan-modal";
 
 type PlanEditorProps = {
-  plan: ArtifactDetail;
+  plan: DocumentDetail;
   currentVersion: number;
   onVersionChange: (version: number) => void;
   showHeader?: boolean;
@@ -75,9 +77,11 @@ export function PlanEditor({
   showHeader = true,
 }: Readonly<PlanEditorProps>) {
   const chatFlag = useFeatureFlag("interactive-chat");
+  const multiRepoEnabled = useFeatureFlag("multi-repo-plan")?.enabled === true;
   const executionLogDialog = useExecutionLogDialog();
 
   const [showMoveDialog, setShowMoveDialog] = useState(false);
+  const [showRegenerateModal, setShowRegenerateModal] = useState(false);
   const [showComments, setShowComments] = useState(true);
 
   const session = useEditorSession({
@@ -85,28 +89,28 @@ export function PlanEditor({
     currentVersion,
     onVersionChange,
   });
-  const contentController = useArtifactContent({
+  const contentController = useDocumentContent({
     artifact: plan,
     isLatestVersion: currentVersion === plan.latestVersion,
     setEditorContent: session.setEditorContent,
     onVersionCreated: (updatedArtifact) =>
       onVersionChange(updatedArtifact.version.version),
   });
-  const metadata = useArtifactMetadata({
+  const metadata = useDocumentMetadata({
     artifact: plan,
   });
-  const actions = useArtifactActions({
+  const actions = useDocumentActions({
     artifact: plan,
     redirectPath: plan.project?.teams?.[0]?.id
       ? `/teams/${plan.project.teams[0].id}/projects/${plan.project.id}`
       : "/implementation-plans",
   });
   const planActions = usePlanActions({
-    artifactId: plan.id,
+    documentId: plan.id,
     slug: plan.slug,
   });
-  const uiState = useArtifactUIState({
-    artifactType: ArtifactType.ImplementationPlan,
+  const uiState = useDocumentUIState({
+    documentType: DocumentType.ImplementationPlan,
   });
 
   // Type assertion for Plan-specific UI state
@@ -134,9 +138,18 @@ export function PlanEditor({
 
   // Fetch generation status with adaptive polling (stops when terminal)
   const { data: generationStatus, invalidateCache: invalidateArtifactCache } =
-    useArtifactGenerationStatus(plan.id, { polling: true });
-  const dismissGenerationStatus = useDismissArtifactGenerationStatus();
-  const { data: pullRequest } = useArtifactPullRequest(plan.id);
+    useDocumentGenerationStatus(plan.id, { polling: true });
+  const dismissGenerationStatus = useDismissDocumentGenerationStatus();
+
+  // Fetch additionalRepos from the latest PLAN loop for this document.
+  // generationStatus.loopId can point to newer non-PLAN loops (EVALUATE_PLAN,
+  // EXECUTE, etc.) that intentionally omit plan-specific state like
+  // additionalRepos — using it would cause regenerate to forget the last
+  // plan's multi-repo selection.
+  const { initialAdditionalRepos, isLoadingInitialAdditionalRepos } =
+    useInitialAdditionalRepos(plan.id);
+
+  const { data: pullRequest } = useDocumentPullRequest(plan.id);
   const { data: judgesReport } = usePlanJudgesFeedback(plan.id);
   const { data: codeJudgesReport } = useCodeJudgesFeedback(plan.id);
 
@@ -164,8 +177,8 @@ export function PlanEditor({
   });
 
   // Derived state
-  const isDraft = metadata.status === ArtifactStatus.Draft;
-  const isApproved = metadata.status === ArtifactStatus.Approved;
+  const isDraft = metadata.status === DocumentStatus.Draft;
+  const isApproved = metadata.status === DocumentStatus.Approved;
   const isPending =
     contentController.isSaving ||
     metadata.isUpdating ||
@@ -180,7 +193,7 @@ export function PlanEditor({
     pullRequest?.state === PullRequestState.Open &&
     pullRequest.headBranch.length > 0;
   const evaluateCodeHandler = useCallback(() => {
-    if (!canEvaluateCode || pullRequest === undefined || pullRequest === null) {
+    if (!(canEvaluateCode && pullRequest)) {
       return;
     }
     planActions.handleEvaluateCode(pullRequest.headBranch, plan.targetRepo);
@@ -246,13 +259,18 @@ export function PlanEditor({
       onExportMarkdown={actions.handleDownload}
       onExportToLinear={openLinearExportDialog}
       onMove={() => setShowMoveDialog(true)}
-      onRegenerate={planActions.handleRegenerate}
+      onRegenerate={() => {
+        if (multiRepoEnabled) {
+          setShowRegenerateModal(true);
+        } else {
+          planActions.handleRegenerate(undefined);
+        }
+      }}
       onRequestChanges={openRequestChangesModal}
       onRestoreVersion={contentController.restoreVersion}
       onToggleMetadataPanel={uiState.toggleMetadataPanel}
       plan={plan}
       pullRequest={pullRequest ?? null}
-      showMetadataPanel={uiState.showMetadataPanel}
       showRestore={session.isViewingHistorical}
     />
   ) : null;
@@ -265,7 +283,7 @@ export function PlanEditor({
       <ResizablePanelGroup autoSaveId="plan-editor" direction="horizontal">
         <ResizablePanel defaultSize={75} minSize={50}>
           <div className="h-full overflow-y-auto overflow-x-hidden bg-background">
-            <OptionalArtifactRoom roomId={session.liveblocksRoomId}>
+            <OptionalDocumentRoom roomId={session.liveblocksRoomId}>
               {/* Loading spinner — visible until editor content is fully loaded */}
               <div
                 className={
@@ -297,7 +315,7 @@ export function PlanEditor({
                   isDismissFailurePending={dismissGenerationStatus.isPending}
                   onDismissFailure={async (runKey) => {
                     await dismissGenerationStatus.mutateAsync({
-                      artifactId: plan.id,
+                      documentId: plan.id,
                       runKey,
                     });
                   }}
@@ -309,8 +327,8 @@ export function PlanEditor({
                     externalToolbar
                     headerContent={
                       <div className="space-y-4 px-5 pt-10">
-                        <EditableArtifactTitle
-                          artifactId={plan.id}
+                        <EditableDocumentTitle
+                          documentId={plan.id}
                           initialTitle={plan.title}
                         />
                         <PlanMetadataBar metadata={metadata} />
@@ -332,6 +350,7 @@ export function PlanEditor({
                 {/* Details section */}
                 <div className="border-t px-4 py-4">
                   <PlanMetadataPanel
+                    additionalRepos={initialAdditionalRepos}
                     codeJudgeItems={codeJudgesReport ?? null}
                     generationStatus={generationStatus ?? null}
                     isPreviewRefreshing={isRefreshingPreviewDeployment}
@@ -344,7 +363,7 @@ export function PlanEditor({
                   />
                 </div>
               </div>
-            </OptionalArtifactRoom>
+            </OptionalDocumentRoom>
           </div>
         </ResizablePanel>
 
@@ -362,11 +381,13 @@ export function PlanEditor({
                   className="min-h-0 flex-1 overflow-hidden"
                   value="chat"
                 >
-                  <ArtifactChatDrawer
-                    artifactId={plan.id}
-                    artifactSlug={plan.slug}
-                    artifactTitle={plan.title}
-                    artifactType="plan"
+                  <DocumentChatDrawer
+                    documentId={plan.id}
+                    documentSlug={plan.slug}
+                    documentTitle={plan.title}
+                    documentType="plan"
+                    fillParent
+                    targetRepo={plan.targetRepo}
                   />
                 </TabsContent>
                 <TabsContent
@@ -374,7 +395,7 @@ export function PlanEditor({
                   value="execution-log"
                 >
                   <ExecutionLogSummary
-                    artifactId={plan.id}
+                    documentId={plan.id}
                     onViewFullTrace={executionLogDialog.handleViewFullTrace}
                   />
                 </TabsContent>
@@ -404,7 +425,7 @@ export function PlanEditor({
 
       {/* Linear Export Dialog */}
       <LinearExportDialog
-        artifactId={plan.id}
+        documentId={plan.id}
         onOpenChange={setShowLinearExportDialog}
         open={showLinearExportDialog}
       />
@@ -413,7 +434,7 @@ export function PlanEditor({
       <MoveEntityDialog
         entity={{
           id: plan.id,
-          entityType: EntityType.Artifact,
+          entityType: EntityType.Document,
           projectId: plan.projectId,
         }}
         onOpenChange={setShowMoveDialog}
@@ -435,6 +456,24 @@ export function PlanEditor({
         onOpenChange={setShowExecuteModal}
         open={showExecuteModal}
       />
+
+      {/* Regenerate Plan Modal — prompts the user to confirm the additional
+          repos selection before regeneration, avoiding the race where a
+          still-loading useLoop silently drops the repos. Only mounted when the
+          multi-repo flag is on; otherwise onRegenerate calls handleRegenerate
+          directly. */}
+      {multiRepoEnabled && (
+        <RegeneratePlanModal
+          initialAdditionalRepos={initialAdditionalRepos}
+          isLoadingInitialRepos={isLoadingInitialAdditionalRepos}
+          isSubmitting={planActions.isRegenerating}
+          key={plan.id}
+          onConfirm={planActions.handleRegenerate}
+          onOpenChange={setShowRegenerateModal}
+          open={showRegenerateModal}
+          targetRepo={plan.targetRepo ?? ""}
+        />
+      )}
 
       <FloatingTargetPicker
         multiTargetState={planActions.multiTargetState}
@@ -479,4 +518,16 @@ function FloatingTargetPicker({
       />
     </div>
   );
+}
+
+function useInitialAdditionalRepos(documentId: string | null | undefined) {
+  const enabled = Boolean(documentId);
+  const { data: loop, isLoading } = useLatestPlanLoopByDocument(
+    documentId ?? "",
+    { enabled }
+  );
+  return {
+    initialAdditionalRepos: loop?.additionalRepos ?? undefined,
+    isLoadingInitialAdditionalRepos: enabled && isLoading,
+  };
 }

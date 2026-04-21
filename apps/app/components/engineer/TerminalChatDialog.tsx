@@ -6,10 +6,10 @@ import { cn } from "@repo/design-system/lib/utils";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2, Square } from "lucide-react";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
-import type { ContentBlock } from "@/components/engineer/chat";
-import { MessageContent } from "@/components/engineer/chat";
+import { MessageContent } from "@/components/chat/MessageContent";
+import type { ContentBlock } from "@/components/chat/types";
 import { ExpandableDialogContent } from "@/components/engineer/ExpandableDialogContent";
-import { formatTime } from "@/lib/engineer/chat-utils";
+import { formatTime } from "@/lib/chat/chat-utils";
 import {
   ensureElectronDetection,
   getElectronDetectionSnapshot,
@@ -192,6 +192,21 @@ export function TerminalChatDialog({
     }
   }, [open]);
 
+  const handleClear = useCallback(async () => {
+    setEntries([]);
+    setActiveStream(null);
+    setRequestError(null);
+    setPendingRemoteResponse(null);
+    try {
+      await fetch("/api/gateway/terminal-chat", { method: "DELETE" });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.terminalChatHistory(),
+      });
+    } catch (err) {
+      console.error("Failed to clear:", err);
+    }
+  }, [queryClient]);
+
   // CMD+K to clear
   useEffect(() => {
     if (!open) {
@@ -205,7 +220,7 @@ export function TerminalChatDialog({
     };
     globalThis.addEventListener("keydown", handler);
     return () => globalThis.removeEventListener("keydown", handler);
-  }, [open]);
+  }, [open, handleClear]);
 
   // Reload and validate layout against current viewport each time dialog opens
   useEffect(() => {
@@ -580,21 +595,6 @@ export function TerminalChatDialog({
     }
   };
 
-  const handleClear = async () => {
-    setEntries([]);
-    setActiveStream(null);
-    setRequestError(null);
-    setPendingRemoteResponse(null);
-    try {
-      await fetch("/api/gateway/terminal-chat", { method: "DELETE" });
-      queryClient.invalidateQueries({
-        queryKey: queryKeys.terminalChatHistory(),
-      });
-    } catch (err) {
-      console.error("Failed to clear:", err);
-    }
-  };
-
   const stopStreaming = () => {
     abortControllerRef.current?.abort();
   };
@@ -818,18 +818,21 @@ export function TerminalChatDialog({
                 onOpenChange(false);
               }}
               title="Clear & Close"
+              type="button"
             />
             <button
               aria-label="Minimize"
               className="size-3 cursor-pointer rounded-full bg-[#febc2e] shadow-[0_0_4px_rgba(254,188,46,0.3)] transition-colors hover:bg-[#f0a000]"
               onClick={handleMinimize}
               title="Minimize"
+              type="button"
             />
             <button
               aria-label={isExpanded ? "Exit fullscreen" : "Fullscreen"}
               className="size-3 cursor-pointer rounded-full bg-[#28c840] shadow-[0_0_4px_rgba(40,200,64,0.3)] transition-colors hover:bg-[#1fb835]"
               onClick={() => setIsExpanded((v) => !v)}
               title={isExpanded ? "Windowed" : "Fullscreen"}
+              type="button"
             />
             <span className="flex-1 select-none text-center font-mono text-[11px] text-muted-foreground tracking-wide">
               ~/cl.dev
@@ -955,6 +958,7 @@ export function TerminalChatDialog({
                     )}
                     onClick={stopStreaming}
                     title="Stop"
+                    type="button"
                   >
                     <Square className="size-2.5 fill-current" />
                   </button>
@@ -970,6 +974,7 @@ export function TerminalChatDialog({
                     disabled={!input.trim() || !!pendingRemoteResponse}
                     onClick={handleSend}
                     title="Send"
+                    type="button"
                   >
                     <span className="font-bold text-xs">&#9654;</span>
                   </button>
@@ -982,6 +987,7 @@ export function TerminalChatDialog({
               <button
                 className="cursor-pointer font-mono text-[10px] text-orange-400/60 transition-colors hover:text-orange-400"
                 onClick={() => insertPrefix("@codex")}
+                type="button"
               >
                 @codex <span className="text-muted-foreground/50">Codex</span>
               </button>
@@ -989,6 +995,7 @@ export function TerminalChatDialog({
                 className="cursor-pointer font-mono text-[10px] text-muted-foreground/50 transition-colors hover:text-muted-foreground"
                 onClick={handleClear}
                 title="Clear chat history"
+                type="button"
               >
                 {"\u2318"}K / ^K clear
               </button>

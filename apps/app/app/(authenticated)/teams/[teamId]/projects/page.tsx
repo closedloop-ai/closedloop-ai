@@ -8,7 +8,7 @@ import { useParams, useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { Header } from "@/app/(authenticated)/components/header";
-import { TableViewMenu } from "@/components/artifact-table/table-view-menu";
+import { TableViewMenu } from "@/components/document-table/table-view-menu";
 import {
   useCreateProject,
   useDeleteProject,

@@ -2,6 +2,7 @@
 
 import { CURRENT_DESKTOP_API_NAMESPACE } from "@repo/api/src/desktop-api-namespace";
 import type {
+  AdditionalRepoRef,
   CreateLoopRequest,
   CreateLoopResponse,
   Loop,
@@ -13,7 +14,7 @@ import type {
   LoopWithUser,
   ResumeLoopRequest,
 } from "@repo/api/src/types/loop";
-import { RunLoopCommand } from "@repo/api/src/types/loop";
+import { LoopCommand, RunLoopCommand } from "@repo/api/src/types/loop";
 import {
   type UseQueryOptions,
   useMutation,
@@ -109,19 +110,50 @@ export function useLoopEventsPaginated(
 }
 
 export function useLoopsByArtifact(
-  artifactId: string,
+  documentId: string,
   options?: Omit<UseQueryOptions<LoopWithUser[]>, "queryKey" | "queryFn">
 ) {
   const apiClient = useApiClient();
 
   return useQuery({
-    queryKey: loopKeys.list({ artifactId }),
+    queryKey: loopKeys.list({ documentId }),
     queryFn: () => {
       const params = new URLSearchParams();
-      params.set("artifactId", artifactId);
+      params.set("documentId", documentId);
       return apiClient.get<LoopWithUser[]>(`/loops?${params.toString()}`);
     },
-    enabled: !!artifactId,
+    enabled: !!documentId,
+    ...options,
+  });
+}
+
+/**
+ * Fetches the most recent PLAN loop for a document.
+ *
+ * Used to hydrate context (e.g., additionalRepos) from the last plan run,
+ * ignoring intervening non-PLAN loops (EVALUATE_PLAN, EXECUTE, etc.) that
+ * intentionally omit plan-specific state.
+ *
+ * Server-side ordering is `createdAt desc`, so the first element is the
+ * latest PLAN loop.
+ */
+export function useLatestPlanLoopByDocument(
+  documentId: string,
+  options?: Omit<UseQueryOptions<LoopWithUser | null>, "queryKey" | "queryFn">
+) {
+  const apiClient = useApiClient();
+  const filters = { documentId, command: LoopCommand.Plan, limit: 1 };
+
+  return useQuery({
+    queryKey: loopKeys.list(filters),
+    queryFn: async () => {
+      const params = buildSearchParams(filters);
+      const loops = await apiClient.get<LoopWithUser[]>(
+        `/loops?${params.toString()}`
+      );
+      return loops[0] ?? null;
+    },
+    enabled: !!documentId,
     ...options,
   });
 }
@@ -221,30 +253,33 @@ export function useRunLoop() {
 
   return useMutation({
     mutationFn: async ({
-      artifactId,
+      documentId,
       command,
       prompt,
       computeTargetId,
       backendOverride,
       repo,
+      additionalRepos,
     }: {
-      artifactId: string;
+      documentId: string;
       command: RunLoopCommand;
       prompt?: string;
       computeTargetId?: string | null;
       backendOverride?: boolean;
       repo?: CreateLoopRequest["repo"];
+      additionalRepos?: AdditionalRepoRef[];
     }) => {
       const desktopApiNamespace = await resolveDesktopApiNamespaceHint();
 
       return apiClient.post<CreateLoopResponse>(
-        `/artifacts/${artifactId}/run-loop`,
+        `/documents/${documentId}/run-loop`,
         {
           command,
           prompt,
           ...(computeTargetId !== undefined ? { computeTargetId } : {}),
           ...(backendOverride ? { backendOverride } : {}),
           ...(repo ? { repo } : {}),
+          ...(additionalRepos ? { additionalRepos } : {}),
           ...(desktopApiNamespace &&
           desktopApiNamespace !== CURRENT_DESKTOP_API_NAMESPACE
             ? { desktopApiNamespace }
@@ -252,23 +287,23 @@ export function useRunLoop() {
         }
       );
     },
-    onSuccess: (_, { artifactId, command }) => {
+    onSuccess: (_, { documentId, command }) => {
       queryClient.invalidateQueries({ queryKey: loopKeys.lists() });
       queryClient.invalidateQueries({
-        queryKey: loopKeys.list({ artifactId }),
+        queryKey: loopKeys.list({ documentId }),
       });
       // Also invalidate artifact generation status so the UI reflects the pending loop
       queryClient.invalidateQueries({
-        queryKey: ["artifacts", "detail", artifactId, "generation-status"],
+        queryKey: ["documents", "detail", documentId, "generation-status"],
       });
       if (command === RunLoopCommand.EvaluatePlan) {
         queryClient.invalidateQueries({
-          queryKey: judgesKeys.detail(artifactId),
+          queryKey: judgesKeys.detail(documentId),
         });
       }
       if (command === RunLoopCommand.EvaluateCode) {
         queryClient.invalidateQueries({
-          queryKey: judgesKeys.codeDetail(artifactId),
+          queryKey: judgesKeys.codeDetail(documentId),
         });
       }
     },

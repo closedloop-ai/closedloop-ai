@@ -1,15 +1,13 @@
 "use client";
 
 import {
-  type ArtifactDetail,
-  ArtifactType,
-  type ArtifactWithWorkstream,
+  type Document,
+  type DocumentDetail,
+  type DocumentStatus,
+  DocumentType,
+  type DocumentWithWorkstream,
   getRoutePrefixForType,
-} from "@repo/api/src/types/artifact";
-import type {
-  FeatureStatus,
-  FeatureWithWorkstream,
-} from "@repo/api/src/types/feature";
+} from "@repo/api/src/types/document";
 import type { User } from "@repo/api/src/types/user";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useApiClient } from "@/hooks/use-api-client";
@@ -17,12 +15,10 @@ import { ApiError } from "@/lib/api-error";
 import type { EngineerTicket, EngineerTicketsResult } from "@/types/engineer";
 import {
   artifactStatusDisplayName,
-  artifactTypeToSourceType,
-  mapArtifactStatusToType,
-  mapFeatureStatusToType,
+  documentTypeToSourceType,
+  mapDocumentStatusToType,
   priorityToLabel,
   priorityToNumber,
-  statusDisplayName,
 } from "@/types/engineer";
 
 export type FullTicketDetails = {
@@ -48,8 +44,8 @@ export type EngineerFeaturesResultWithUser = EngineerTicketsResult & {
   postComment: (ticketIdentifier: string, body: string) => Promise<void>;
 };
 
-/** Map closedloop-dev status names to Symphony FeatureStatus */
-function mapToSymphonyStatus(status: string): FeatureStatus {
+/** Map closedloop-dev status names to Symphony DocumentStatus */
+function mapToSymphonyStatus(status: string): DocumentStatus {
   const lower = status.toLowerCase();
   if (lower === "done" || lower === "completed") {
     return "DONE";
@@ -103,8 +99,8 @@ export function useEngineerFeatures(): EngineerFeaturesResultWithUser {
   const apiClient = useApiClient();
 
   const [apiUser, setApiUser] = useState<User | null>(null);
-  const [apiFeatures, setApiFeatures] = useState<FeatureWithWorkstream[]>([]);
-  const [apiArtifacts, setApiArtifacts] = useState<ArtifactWithWorkstream[]>(
+  const [apiFeatures, setApiFeatures] = useState<DocumentWithWorkstream[]>([]);
+  const [apiArtifacts, setApiArtifacts] = useState<DocumentWithWorkstream[]>(
     []
   );
   const [isLoading, setIsLoading] = useState(true);
@@ -116,6 +112,9 @@ export function useEngineerFeatures(): EngineerFeaturesResultWithUser {
 
   useEffect(() => {
     let cancelled = false;
+    if (refetchCounter < 0) {
+      return;
+    }
 
     async function fetchAll() {
       setIsFetching(true);
@@ -127,13 +126,20 @@ export function useEngineerFeatures(): EngineerFeaturesResultWithUser {
         }
         setApiUser(user);
 
-        const params = new URLSearchParams({ assigneeId: user.id });
+        const featureParams = new URLSearchParams({
+          assigneeId: user.id,
+          type: DocumentType.Feature,
+        });
+        const planParams = new URLSearchParams({
+          assigneeId: user.id,
+          type: DocumentType.ImplementationPlan,
+        });
         const [features, artifacts] = await Promise.all([
-          apiClient.get<FeatureWithWorkstream[]>(
-            `/features?${params.toString()}`
+          apiClient.get<DocumentWithWorkstream[]>(
+            `/documents?${featureParams.toString()}`
           ),
-          apiClient.get<ArtifactWithWorkstream[]>(
-            `/artifacts?${params.toString()}&type=${ArtifactType.ImplementationPlan}`
+          apiClient.get<DocumentWithWorkstream[]>(
+            `/documents?${planParams.toString()}`
           ),
         ]);
         if (cancelled) {
@@ -152,7 +158,9 @@ export function useEngineerFeatures(): EngineerFeaturesResultWithUser {
         if (!cancelled) {
           setIsLoading(false);
           setIsFetching(false);
-          refetchResolversRef.current.splice(0).forEach((resolve) => resolve());
+          for (const resolve of refetchResolversRef.current.splice(0)) {
+            resolve();
+          }
         }
       }
     }
@@ -160,7 +168,9 @@ export function useEngineerFeatures(): EngineerFeaturesResultWithUser {
     fetchAll();
     return () => {
       cancelled = true;
-      refetchResolversRef.current.splice(0).forEach((resolve) => resolve());
+      for (const resolve of refetchResolversRef.current.splice(0)) {
+        resolve();
+      }
     };
   }, [apiClient, refetchCounter]);
 
@@ -186,12 +196,9 @@ export function useEngineerFeatures(): EngineerFeaturesResultWithUser {
 
       const symphonyStatus = mapToSymphonyStatus(status);
       try {
-        await apiClient.put<FeatureWithWorkstream>(
-          `/features/${ticket.featureId}`,
-          {
-            status: symphonyStatus,
-          }
-        );
+        await apiClient.put<Document>(`/documents/${ticket.featureId}`, {
+          status: symphonyStatus,
+        });
         return true;
       } catch (err) {
         if (
@@ -213,16 +220,17 @@ export function useEngineerFeatures(): EngineerFeaturesResultWithUser {
           candidate.id === ticketId || candidate.identifier === ticketId
       );
 
-      if (ticket && ticket.sourceType !== "Feature") {
+      if (ticket) {
         try {
-          const detail = await apiClient.get<ArtifactDetail>(
-            `/artifacts/${ticket.id}`
+          const detail = await apiClient.get<DocumentDetail>(
+            `/documents/${ticket.id}`
           );
           return {
             identifier: ticket.identifier,
             title: ticket.title,
             description: detail.version.content || ticket.description || "",
             url: ticket.url,
+            featureId: ticket.featureId,
           };
         } catch {
           return {
@@ -230,29 +238,20 @@ export function useEngineerFeatures(): EngineerFeaturesResultWithUser {
             title: ticket.title,
             description: ticket.description || "",
             url: ticket.url,
+            featureId: ticket.featureId,
           };
         }
       }
 
-      if (ticket) {
-        return {
-          identifier: ticket.identifier,
-          title: ticket.title,
-          description: ticket.description || "",
-          url: ticket.url,
-          featureId: ticket.featureId,
-        };
-      }
-
-      const feature = await apiClient.get<FeatureWithWorkstream>(
-        `/features/${ticketId}`
+      const detail = await apiClient.get<DocumentDetail>(
+        `/documents/${ticketId}`
       );
       return {
-        identifier: feature.slug,
-        title: feature.title,
-        description: feature.description || "",
-        url: `/features/${feature.slug}`,
-        featureId: feature.id,
+        identifier: detail.slug,
+        title: detail.title,
+        description: detail.version.content ?? "",
+        url: `/features/${detail.slug}`,
+        featureId: detail.id,
       };
     },
     [tickets, apiClient]
@@ -269,7 +268,7 @@ export function useEngineerFeatures(): EngineerFeaturesResultWithUser {
 
       try {
         await apiClient.post<{ created: boolean }>(
-          `/features/${ticket.featureId}/comments`,
+          `/documents/${ticket.featureId}/comments`,
           { body }
         );
       } catch (err) {
@@ -314,7 +313,7 @@ export function useEngineerFeatures(): EngineerFeaturesResultWithUser {
 }
 
 function apiFeatureToEngineerTicket(
-  feature: FeatureWithWorkstream
+  feature: DocumentWithWorkstream
 ): EngineerTicket {
   const assignee = feature.assignee
     ? {
@@ -332,12 +331,12 @@ function apiFeatureToEngineerTicket(
     id: feature.id,
     identifier: feature.slug,
     title: feature.title,
-    description: feature.description ?? undefined,
+    description: feature.snippet ?? undefined,
     sourceType: "Feature",
     status: {
       id: feature.status,
-      name: statusDisplayName(feature.status),
-      type: mapFeatureStatusToType(feature.status),
+      name: artifactStatusDisplayName(feature.status),
+      type: mapDocumentStatusToType(feature.status),
     },
     assignee,
     priority: priorityToNumber(feature.priority),
@@ -352,7 +351,7 @@ function apiFeatureToEngineerTicket(
 }
 
 function apiArtifactToEngineerTicket(
-  artifact: ArtifactWithWorkstream
+  artifact: DocumentWithWorkstream
 ): EngineerTicket {
   const assignee = artifact.assignee
     ? {
@@ -366,18 +365,18 @@ function apiArtifactToEngineerTicket(
       }
     : undefined;
 
-  const routePrefix = getRoutePrefixForType(artifact.type) ?? "artifacts";
+  const routePrefix = getRoutePrefixForType(artifact.type) ?? "documents";
 
   return {
     id: artifact.id,
     identifier: artifact.slug,
     title: artifact.title,
     description: artifact.snippet ?? undefined,
-    sourceType: artifactTypeToSourceType(artifact.type),
+    sourceType: documentTypeToSourceType(artifact.type),
     status: {
       id: artifact.status,
       name: artifactStatusDisplayName(artifact.status),
-      type: mapArtifactStatusToType(artifact.status),
+      type: mapDocumentStatusToType(artifact.status),
     },
     assignee,
     priority: 3,

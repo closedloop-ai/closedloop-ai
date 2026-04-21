@@ -1,10 +1,10 @@
 "use client";
 
-import { ArtifactType } from "@repo/api/src/types/artifact";
+import { DocumentType } from "@repo/api/src/types/document";
 import { EntityType, LinkType } from "@repo/api/src/types/entity-link";
 import { FileCode2 } from "lucide-react";
 import { useCreateEntityLink } from "@/hooks/queries/use-entity-links";
-import { SelectArtifactDialog } from "./select-artifact-dialog";
+import { SelectDocumentDialog } from "./select-document-dialog";
 
 type SelectPlanDialogProps = {
   featureId: string;
@@ -22,9 +22,9 @@ export function SelectPlanDialog({
   const createEntityLink = useCreateEntityLink();
 
   return (
-    <SelectArtifactDialog
-      artifactType={ArtifactType.ImplementationPlan}
+    <SelectDocumentDialog
       description="Choose an implementation plan to link to this feature."
+      documentType={DocumentType.ImplementationPlan}
       emptyText="No implementation plans found."
       icon={FileCode2}
       onOpenChange={onOpenChange}
@@ -32,9 +32,9 @@ export function SelectPlanDialog({
         createEntityLink.mutate(
           {
             sourceId: featureId,
-            sourceType: EntityType.Feature,
+            sourceType: EntityType.Document,
             targetId: plan.id,
-            targetType: EntityType.Artifact,
+            targetType: EntityType.Document,
             linkType: LinkType.Produces,
           },
           { onSuccess: () => onOpenChange(false) }

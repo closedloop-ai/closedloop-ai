@@ -1,6 +1,6 @@
 "use client";
 
-import type { FeatureWithWorkstream } from "@repo/api/src/types/feature";
+import type { DocumentWithWorkstream } from "@repo/api/src/types/document";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   DropdownMenu,
@@ -23,11 +23,10 @@ import {
 } from "@/app/(authenticated)/components/header";
 
 type FeatureEditorHeaderProps = {
-  feature: FeatureWithWorkstream;
+  feature: DocumentWithWorkstream;
   displayTitle: string;
   hasPlan: boolean;
   isReady: boolean;
-  showMetadataPanel: boolean;
   onToggleMetadataPanel: () => void;
   onGeneratePlan: () => void;
   onStartBuild: () => void;
@@ -40,7 +39,6 @@ export function FeatureEditorHeader({
   displayTitle,
   hasPlan,
   isReady,
-  showMetadataPanel,
   onToggleMetadataPanel,
   onGeneratePlan,
   onStartBuild,
@@ -110,9 +108,9 @@ export function FeatureEditorHeader({
       <Button
         aria-label="Toggle chat panel"
         onClick={() => onToggleMetadataPanel()}
-        size="icon"
+        size="icon-sm"
         title="Toggle chat panel"
-        variant={showMetadataPanel ? "secondary" : "ghost"}
+        variant="ghost"
       >
         <PanelRightIcon className="h-4 w-4" />
       </Button>

@@ -24,32 +24,30 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { toast } from "sonner";
+import { ChatBubble } from "@/components/chat/ChatBubble";
+import { MessageContent } from "@/components/chat/MessageContent";
+import { SlashCommandDropdown } from "@/components/chat/SlashCommandDropdown";
+import type { ContentBlock } from "@/components/chat/types";
+import { UserMessageContent } from "@/components/chat/UserMessageContent";
 import type { ReviewConfig } from "@/components/engineer/CodexReviewSettingsDialog";
 import { StatusNote } from "@/components/engineer/CommentChat";
-import {
-  ChatBubble,
-  MessageContent,
-  SlashCommandDropdown,
-  UserMessageContent,
-} from "@/components/engineer/chat";
-import type { ContentBlock } from "@/components/engineer/chat/types";
 import { VerdictBanner } from "@/components/engineer/codex-review/VerdictBanner";
 import {
   FileMentionAutocomplete,
   type MentionState,
 } from "@/components/engineer/FileMentionAutocomplete";
-import { useChatStream } from "@/hooks/engineer/use-chat-stream";
+import { useChatStream } from "@/hooks/chat/use-chat-stream";
 import { useReviewChat } from "@/hooks/engineer/use-review-chat";
 import { useReviewExecution } from "@/hooks/engineer/use-review-execution";
 import type { useSlashCommands } from "@/hooks/engineer/use-slash-commands";
-import { chatMarkdownComponents } from "@/lib/engineer/chat-markdown";
+import { chatMarkdownComponents } from "@/lib/chat/chat-markdown";
 import {
   CHAT_SENTINEL,
   type LearningUsed,
   parseSuggestedActions,
   type SuggestedAction,
   stripProtocolMetadata,
-} from "@/lib/engineer/chat-utils";
+} from "@/lib/chat/chat-utils";
 import {
   parseFindingTitle,
   type ReviewFinding,
@@ -209,6 +207,7 @@ export function ReviewChatPane({
             className="-ml-1.5 rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
             onClick={onClose}
             title="Back"
+            type="button"
           >
             <ArrowLeft className="size-4" />
           </button>
@@ -232,6 +231,7 @@ export function ReviewChatPane({
               className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
               onClick={onNewReview}
               title="New review"
+              type="button"
             >
               <RotateCcw className="size-4" />
             </button>
@@ -673,6 +673,7 @@ function ReviewChatInput({
               )}
               onClick={onStopStreaming}
               title="Stop response"
+              type="button"
             >
               <Square className="size-2.5 fill-current" />
             </button>
@@ -687,6 +688,7 @@ function ReviewChatInput({
               )}
               disabled={!chatInput.trim()}
               onClick={onSendChat}
+              type="button"
             >
               <Send className="size-3.5" />
             </button>
@@ -940,6 +942,7 @@ function FindingCard({
           <button
             className="inline-flex cursor-pointer items-center gap-1.5 rounded-md bg-foreground/[0.05] px-2.5 py-1 font-medium text-[11px] text-muted-foreground transition-colors hover:bg-foreground/[0.1] hover:text-foreground"
             onClick={() => onChat(index, finding)}
+            type="button"
           >
             <MessageCircle className="size-3" />
             Explain
@@ -954,6 +957,7 @@ function FindingCard({
               )}
               disabled={isSubmitting || isDuplicate}
               onClick={() => onSubmitComment(index, finding)}
+              type="button"
             >
               <CommentButtonContent
                 duplicateLabel={duplicateLabel}

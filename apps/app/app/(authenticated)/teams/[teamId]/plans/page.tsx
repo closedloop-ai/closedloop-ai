@@ -1,43 +1,43 @@
 "use client";
 
 import {
-  type Artifact,
-  type ArtifactStatus,
-  ArtifactType,
-} from "@repo/api/src/types/artifact";
+  type Document,
+  type DocumentStatus,
+  DocumentType,
+} from "@repo/api/src/types/document";
 import { Button } from "@repo/design-system/components/ui/button";
 import { Input } from "@repo/design-system/components/ui/input";
 import { FileCodeIcon, Loader2Icon, PlusIcon, SearchIcon } from "lucide-react";
 import { useParams, useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import { Header } from "@/app/(authenticated)/components/header";
-import { CreateArtifactModal } from "@/app/(authenticated)/teams/[teamId]/projects/[projectId]/components/create-artifact-modal";
-import { ActiveFiltersBar } from "@/components/artifact-table/active-filters-bar";
+import { CreateDocumentModal } from "@/app/(authenticated)/teams/[teamId]/projects/[projectId]/components/create-document-modal";
+import { ActiveFiltersBar } from "@/components/document-table/active-filters-bar";
+import { DeleteRowActions } from "@/components/document-table/delete-row-actions";
 import type {
-  ArtifactRowItem,
+  DocumentRowItem,
   RowEditHandlers,
-} from "@/components/artifact-table/artifact-row";
-import { DeleteRowActions } from "@/components/artifact-table/delete-row-actions";
-import { FilterPopover } from "@/components/artifact-table/filter-popover";
-import { FlatArtifactTable } from "@/components/artifact-table/flat-artifact-table";
-import { TableViewMenu } from "@/components/artifact-table/table-view-menu";
+} from "@/components/document-table/document-row";
+import { FilterPopover } from "@/components/document-table/filter-popover";
+import { FlatDocumentTable } from "@/components/document-table/flat-document-table";
+import { TableViewMenu } from "@/components/document-table/table-view-menu";
 import {
-  useArtifactsByTeam,
-  useDeleteArtifact,
-  useUpdateArtifact,
-} from "@/hooks/queries/use-artifacts";
+  useDeleteDocument,
+  useDocumentsByTeam,
+  useUpdateDocument,
+} from "@/hooks/queries/use-documents";
 import { useTeam } from "@/hooks/queries/use-teams";
 import { useCurrentUser } from "@/hooks/queries/use-users";
 import {
   PLAN_DEFAULT_COLUMNS,
   useColumnVisibility,
 } from "@/hooks/use-column-visibility";
-import { useGroupByStatus } from "@/hooks/use-group-by-status";
+import { useGroupBy } from "@/hooks/use-group-by";
 import { useItemsParentTitles } from "@/hooks/use-items-parent-titles";
 import { useOrgUsersAsPopoverUsers } from "@/hooks/use-org-users-as-popover-users";
 import { useTableFilters } from "@/hooks/use-table-filters";
 import { useTeamMembers } from "@/hooks/use-team-members";
-import { matchesFilter } from "@/lib/artifact-filter";
+import { matchesFilter } from "@/lib/document-filter";
 
 const COLUMN_VISIBILITY_KEY = "table:columns:team-plans";
 
@@ -56,14 +56,12 @@ export default function TeamPlansPage() {
     [userVisibility]
   );
 
-  const { groupByStatus, toggleGroupByStatus } = useGroupByStatus(
-    "table:groupByStatus:team-plans"
-  );
+  const { groupBy, setGroupBy } = useGroupBy("table:groupByStatus:team-plans");
 
   const { data: team, isLoading: loadingTeam } = useTeam(teamId);
-  const { data: artifacts, isLoading: loadingArtifacts } = useArtifactsByTeam(
+  const { data: artifacts, isLoading: loadingDocuments } = useDocumentsByTeam(
     teamId,
-    ArtifactType.ImplementationPlan
+    DocumentType.ImplementationPlan
   );
   const orgUsers = useOrgUsersAsPopoverUsers();
   const { data: currentUser } = useCurrentUser();
@@ -74,10 +72,10 @@ export default function TeamPlansPage() {
     error: teamMembersError,
   } = useTeamMembers({ teamIds: team ? [team.id] : [] });
 
-  const deleteArtifactMutation = useDeleteArtifact();
-  const updateArtifactMutation = useUpdateArtifact();
+  const deleteDocumentMutation = useDeleteDocument();
+  const updateDocumentMutation = useUpdateDocument();
 
-  const allItems: ArtifactRowItem[] = useMemo(
+  const allItems: DocumentRowItem[] = useMemo(
     () =>
       (artifacts ?? []).map((a) => ({ kind: "artifact" as const, data: a })),
     [artifacts]
@@ -94,7 +92,7 @@ export default function TeamPlansPage() {
     const textFiltered = (artifacts ?? []).filter((a) =>
       matchesFilter(a, filterText)
     );
-    let items: ArtifactRowItem[] = textFiltered.map((a) => ({
+    let items: DocumentRowItem[] = textFiltered.map((a) => ({
       kind: "artifact" as const,
       data: a,
     }));
@@ -125,21 +123,21 @@ export default function TeamPlansPage() {
     () => ({
       teamMembers: orgUsers,
       onUpdateAssignee: (id, assigneeId) =>
-        updateArtifactMutation.mutate({ id, assigneeId }),
+        updateDocumentMutation.mutate({ id, assigneeId }),
       onUpdatePriority: (id, priority) =>
-        updateArtifactMutation.mutate({ id, priority }),
+        updateDocumentMutation.mutate({ id, priority }),
       onUpdateStatus: (id, status) =>
-        updateArtifactMutation.mutate({ id, status: status as ArtifactStatus }),
+        updateDocumentMutation.mutate({ id, status: status as DocumentStatus }),
     }),
-    [orgUsers, updateArtifactMutation]
+    [orgUsers, updateDocumentMutation]
   );
 
-  const handleDelete = async (item: ArtifactRowItem): Promise<boolean> => {
-    const result = await deleteArtifactMutation.mutateAsync(item.data.id);
+  const handleDelete = async (item: DocumentRowItem): Promise<boolean> => {
+    const result = await deleteDocumentMutation.mutateAsync(item.data.id);
     return result.deleted ?? false;
   };
 
-  const loading = loadingTeam || loadingArtifacts;
+  const loading = loadingTeam || loadingDocuments;
   const hasAnyPlans = (artifacts ?? []).length > 0;
   const hasActiveRefinements =
     filterText.trim().length > 0 || filtersReturn.isAnyFilterActive;
@@ -180,11 +178,11 @@ export default function TeamPlansPage() {
           Create Plan
         </Button>
       </Header>
-      <CreateArtifactModal
-        artifactType={ArtifactType.ImplementationPlan}
+      <CreateDocumentModal
+        documentType={DocumentType.ImplementationPlan}
         onOpenChange={setCreatePlanOpen}
-        onSuccess={(artifact: Artifact) =>
-          router.push(`/implementation-plans/${artifact.slug}`)
+        onSuccess={(doc: Document) =>
+          router.push(`/implementation-plans/${doc.slug}`)
         }
         open={createPlanOpen}
         teamId={teamId}
@@ -215,9 +213,9 @@ export default function TeamPlansPage() {
               />
               <TableViewMenu
                 columns={PLAN_DEFAULT_COLUMNS}
-                groupByStatus={groupByStatus}
+                groupBy={groupBy}
+                onChangeGroupBy={setGroupBy}
                 onToggle={toggleColumn}
-                onToggleGroupByStatus={toggleGroupByStatus}
                 visibility={visibility}
               />
             </div>
@@ -233,19 +231,19 @@ export default function TeamPlansPage() {
           )}
         </div>
         <div className="flex-1 overflow-auto">
-          <FlatArtifactTable
+          <FlatDocumentTable
             editHandlers={editHandlers}
             emptyDescription={emptyDescription}
             emptyIcon={FileCodeIcon}
             emptyTitle={emptyTitle}
-            groupByStatus={groupByStatus}
+            groupBy={groupBy}
+            groupExpansionKey="table:expand:team-plans-status"
             items={displayItems}
             moreMenuContent={(_item, onRequestDelete) => (
               <DeleteRowActions onDelete={onRequestDelete} />
             )}
             onDelete={handleDelete}
             parentTitleMap={parentTitleMap}
-            statusExpansionKey="table:expand:team-plans-status"
             visibleColumns={visibleColumns}
           />
         </div>

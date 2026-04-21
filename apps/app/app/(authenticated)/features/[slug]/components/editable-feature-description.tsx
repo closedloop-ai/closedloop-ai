@@ -2,18 +2,18 @@
 
 import { RichTextEditor } from "@repo/rich-text";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useUpdateFeature } from "@/hooks/queries/use-features";
+import { useCreateDocumentVersion } from "@/hooks/queries/use-documents";
 
 type EditableFeatureDescriptionProps = {
-  featureId: string;
+  documentId: string;
   initialDescription: string;
 };
 
 export function EditableFeatureDescription({
-  featureId,
+  documentId,
   initialDescription,
 }: Readonly<EditableFeatureDescriptionProps>) {
-  const updateFeature = useUpdateFeature();
+  const createVersion = useCreateDocumentVersion(documentId);
 
   const [markdown, setMarkdown] = useState(initialDescription);
   const [savedMarkdown, setSavedMarkdown] = useState(initialDescription);
@@ -47,11 +47,8 @@ export function EditableFeatureDescription({
       }
 
       setSaveStatus("saving");
-      updateFeature
-        .mutateAsync({
-          id: featureId,
-          description: trimmed || undefined,
-        })
+      createVersion
+        .mutateAsync({ content: trimmed })
         .then(() => {
           setSavedMarkdown(trimmed);
           setSaveStatus("saved");
@@ -66,7 +63,7 @@ export function EditableFeatureDescription({
           setSaveStatus("idle");
         });
     },
-    [featureId, savedMarkdown, updateFeature]
+    [createVersion, savedMarkdown]
   );
 
   const handleChange = useCallback(
@@ -117,5 +114,5 @@ export function EditableFeatureDescription({
 
 type SaveStatus = "idle" | "saving" | "saved";
 
-const DEBOUNCE_MS = 500;
+const DEBOUNCE_MS = 1000;
 const SAVED_DISPLAY_MS = 2000;

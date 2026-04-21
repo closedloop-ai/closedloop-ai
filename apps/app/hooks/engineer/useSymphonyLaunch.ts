@@ -35,7 +35,7 @@ export type ActiveSession = {
   /** Loop ID for real plan loops (only set for issue-sourced tickets using the new plan-loop flow) */
   loopId?: string;
   /** Artifact ID for the linked implementation plan (only set for issue-sourced tickets using the new plan-loop flow) */
-  artifactId?: string;
+  documentId?: string;
 };
 
 /**
@@ -60,13 +60,13 @@ export type UseSymphonyLaunchResult = {
   clearAllSessions: () => void;
   /**
    * Merge new fields into an existing session (or create a minimal session).
-   * Used by the plan-loop flow to attach loopId/artifactId before the gateway
+   * Used by the plan-loop flow to attach loopId/documentId before the gateway
    * process starts, so ActiveTicketCard can use them immediately.
    */
   mergeSessionFields: (
     ticketId: string,
     fields: Partial<
-      Pick<ActiveSession, "loopId" | "artifactId" | "worktreePath" | "repoPath">
+      Pick<ActiveSession, "loopId" | "documentId" | "worktreePath" | "repoPath">
     >
   ) => void;
 
@@ -282,7 +282,7 @@ export function useSymphonyLaunch(): UseSymphonyLaunchResult {
   // Clear all sessions and kill all associated processes
   const clearAllSessions = useCallback(() => {
     // Kill processes and remove each session from API
-    activeSessions.forEach((session) => {
+    for (const session of activeSessions) {
       // Kill the process if we have a PID
       if (session.pid) {
         fetch("/api/gateway/symphony/kill", {
@@ -302,7 +302,7 @@ export function useSymphonyLaunch(): UseSymphonyLaunchResult {
       ).catch((err) => {
         console.error("[useSymphonyLaunch] Failed to delete session:", err);
       });
-    });
+    }
 
     // Clear local state
     setActiveSessions([]);
@@ -316,7 +316,7 @@ export function useSymphonyLaunch(): UseSymphonyLaunchResult {
       fields: Partial<
         Pick<
           ActiveSession,
-          "loopId" | "artifactId" | "worktreePath" | "repoPath"
+          "loopId" | "documentId" | "worktreePath" | "repoPath"
         >
       >
     ) => {

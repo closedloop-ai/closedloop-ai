@@ -45,6 +45,8 @@ export const queryKeys = {
 
   // Repos domain
   repos: () => ["repos"] as const,
+  repoPath: (repoFullName: string, routingKey: string) =>
+    ["repo-path", repoFullName, routingKey] as const,
 
   // Files domain
   fileSearch: (ticketId: string, repoPath: string, query: string) =>

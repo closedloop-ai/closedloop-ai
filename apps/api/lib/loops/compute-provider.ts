@@ -7,7 +7,11 @@
  */
 
 import type { DesktopApiNamespace } from "@repo/api/src/desktop-api-namespace";
-import type { Loop, LoopCommand } from "@repo/api/src/types/loop";
+import type {
+  AdditionalRepoRefWithToken,
+  Loop,
+  LoopCommand,
+} from "@repo/api/src/types/loop";
 import type { LoopCommandHandler } from "./loop-commands/loop-command-handler";
 import type { ContextPack } from "./loop-state";
 
@@ -27,14 +31,15 @@ export type LaunchContext = {
   githubToken: string | undefined;
   committer: { name: string; email: string } | undefined;
   repo: { fullName: string; branch: string } | null;
-  artifactId: string | null;
-  artifactSlug: string | undefined;
+  documentId: string | null;
+  documentSlug: string | undefined;
   parentLoopId: string | null;
   parentS3StateKey: string | null;
   parentBranchName: string | null;
   parentSessionId: string | null;
   localRepoPath: string | undefined;
   computeTargetId: string | null;
+  additionalRepos?: AdditionalRepoRefWithToken[];
   desktopApiNamespace: DesktopApiNamespace | undefined;
 };
 

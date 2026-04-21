@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { AdditionalRepoRefSchema } from "@closedloop-ai/loops-api/context-pack";
 import type { JsonObject } from "@repo/api/src/types/common";
 import {
   type ComputeTargetSummary,
@@ -20,6 +21,7 @@ import {
 } from "@repo/api/src/types/loop";
 import { Prisma, type Loop as PrismaLoop, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
+import { z } from "zod";
 import { basicUserSelect } from "@/lib/db-utils";
 
 /**
@@ -164,6 +166,26 @@ function parseRepo(value: unknown): Loop["repo"] {
   return null;
 }
 
+const additionalReposColumnSchema = z.array(AdditionalRepoRefSchema);
+
+/**
+ * Validate a JSON value as a Loop["additionalRepos"] shape, returning null on
+ * mismatch.
+ */
+function parseAdditionalRepos(value: unknown): Loop["additionalRepos"] {
+  if (value == null) {
+    return null;
+  }
+
+  const result = additionalReposColumnSchema.safeParse(value);
+  if (result.success) {
+    return result.data;
+  }
+
+  log.warn("Malformed loop.additionalRepos JSON, returning null", { value });
+  return null;
+}
+
 /**
  * Validate a JSON value as a Loop["error"] shape, returning null on mismatch.
  */
@@ -197,7 +219,7 @@ const computeTargetSelect = {
 /**
  * Transform a Prisma loop record to the API Loop type.
  * Handles Decimal → number conversion for estimatedCost and
- * runtime-validated JSON field parsing for repo, error.
+ * runtime-validated JSON field parsing for repo, additionalRepos, and error.
  * contextRefs, metadata, and tokensByModel use structural casts
  * since they are always written by trusted backend code.
  */
@@ -207,13 +229,14 @@ function toLoop(record: PrismaLoop): Loop {
     estimatedCost:
       record.estimatedCost != null ? Number(record.estimatedCost) : null,
     repo: parseRepo(record.repo),
+    additionalRepos: parseAdditionalRepos(record.additionalRepos),
     contextRefs: record.contextRefs as Loop["contextRefs"],
     error: parseError(record.error),
     metadata: (record.metadata ?? {}) as Loop["metadata"],
     uploadedArtifacts:
       (record.uploadedArtifacts as Loop["uploadedArtifacts"]) ?? null,
     tokensByModel: record.tokensByModel as Loop["tokensByModel"],
-    artifactVersion: record.artifactVersion ?? null,
+    documentVersion: record.documentVersion ?? null,
   };
 }
 
@@ -294,22 +317,28 @@ export const loopsService = {
       throw new ConcurrentLoopLimitError(activeCount, maxConcurrentLoops);
     }
 
+    const additionalRepos = resolveAdditionalReposForCreate(
+      input.additionalRepos,
+      input.command
+    );
+
     const loop = await withDb((db) =>
       db.loop.create({
         data: {
           organizationId,
           userId,
           command: input.command,
-          artifactId: input.artifactId ?? null,
+          documentId: input.documentId ?? null,
           workstreamId: input.workstreamId ?? null,
           parentLoopId: input.parentLoopId ?? null,
           computeTargetId: input.computeTargetId ?? null,
           prompt: input.prompt ?? null,
           repo: input.repo ?? undefined,
+          additionalRepos: additionalRepos ?? undefined,
           contextRefs: input.contextRefs ?? undefined,
-          artifactVersion: input.artifactVersion ?? null,
+          documentVersion: input.documentVersion ?? null,
           metadata: input.metadata ?? undefined,
-          status: "PENDING",
+          status: LoopStatus.Pending,
         },
       })
     );
@@ -368,7 +397,7 @@ export const loopsService = {
     const {
       status,
       command,
-      artifactId,
+      documentId,
       workstreamId,
       projectId,
       userId,
@@ -382,9 +411,9 @@ export const loopsService = {
           organizationId,
           ...(status ? { status } : {}),
           ...(command ? { command } : {}),
-          ...(artifactId ? { artifactId } : {}),
+          ...(documentId ? { documentId } : {}),
           ...(workstreamId ? { workstreamId } : {}),
-          ...(projectId ? { artifact: { projectId } } : {}),
+          ...(projectId ? { document: { projectId } } : {}),
           ...(userId ? { userId } : {}),
         },
         include: {
@@ -686,7 +715,7 @@ export const loopsService = {
           organizationId,
           userId,
           command: parent.command,
-          artifactId: parent.artifactId,
+          documentId: parent.documentId,
           workstreamId: parent.workstreamId,
           parentLoopId: parent.id,
           prompt: input.prompt ?? parent.prompt,
@@ -1085,13 +1114,13 @@ export const loopsService = {
    * to them inherits broken context.
    */
   async findLatestCompletedForArtifact(
-    artifactId: string,
+    documentId: string,
     organizationId: string
   ): Promise<Loop | null> {
     const loop = await withDb((db) =>
       db.loop.findFirst({
         where: {
-          artifactId,
+          documentId,
           organizationId,
           status: "COMPLETED",
         },
@@ -1131,8 +1160,8 @@ export const loopsService = {
    * Find an active (PENDING/CLAIMED/RUNNING) PLAN loop for an artifact.
    * Returns the most recently created one, or null if none exist.
    */
-  async findActivePlanLoopForArtifact(
-    artifactId: string,
+  async findActivePlanLoopForDocument(
+    documentId: string,
     organizationId: string,
     computeTargetId?: string
   ): Promise<Loop | null> {
@@ -1147,7 +1176,7 @@ export const loopsService = {
     const loop = await withDb((db) =>
       db.loop.findFirst({
         where: {
-          artifactId,
+          documentId,
           organizationId,
           command: "PLAN",
           ...(computeTargetId ? { computeTargetId } : {}),
@@ -1173,7 +1202,7 @@ export const loopsService = {
 
   /**
    * Create a loop only if no row already exists for the same
-   * (artifactId, command, artifactVersion) combination.
+   * (documentId, command, documentVersion) combination.
    * Uses createManyAndReturn + skipDuplicates to push dedup atomically to the DB,
    * eliminating the TOCTOU window in a plain findFirst → create sequence.
    * Returns the new loop, or null if a duplicate was detected and skipped.
@@ -1181,7 +1210,7 @@ export const loopsService = {
   async createIfNotExists(
     organizationId: string,
     userId: string,
-    input: CreateLoopRequest & { artifactVersion: number; artifactId: string }
+    input: CreateLoopRequest & { documentVersion: number; documentId: string }
   ): Promise<CreateLoopResponse | null> {
     const maxConcurrentLoops = await fetchOrgLoopLimit(organizationId);
     const activeCount = await withDb((db) =>
@@ -1200,13 +1229,28 @@ export const loopsService = {
       throw new ConcurrentLoopLimitError(activeCount, maxConcurrentLoops);
     }
 
+    const additionalRepos = resolveAdditionalReposForCreate(
+      input.additionalRepos,
+      input.command
+    );
+
     const [loop] = await withDb((db) =>
       db.loop.createManyAndReturn({
         data: [
           {
             organizationId,
             userId,
-            ...input,
+            command: input.command,
+            documentId: input.documentId,
+            workstreamId: input.workstreamId ?? null,
+            parentLoopId: input.parentLoopId ?? null,
+            computeTargetId: input.computeTargetId ?? null,
+            prompt: input.prompt ?? null,
+            repo: input.repo ?? undefined,
+            additionalRepos: additionalRepos ?? undefined,
+            contextRefs: input.contextRefs ?? undefined,
+            documentVersion: input.documentVersion,
+            metadata: input.metadata ?? undefined,
             status: LoopStatus.Pending,
           },
         ],
@@ -1293,3 +1337,28 @@ export const loopsService = {
     return result.count;
   },
 };
+
+/**
+ * Apply PLAN-only gate to requested additionalRepos.
+ * Returns undefined when the command is not PLAN.
+ * Enforced at the service layer so every caller
+ * (POST /loops, /artifacts/[id]/run-loop, internal callers) is gated.
+ */
+function resolveAdditionalReposForCreate(
+  additionalRepos: CreateLoopRequest["additionalRepos"],
+  command: LoopCommand
+): CreateLoopRequest["additionalRepos"] {
+  if (!additionalRepos) {
+    return undefined;
+  }
+
+  if (command !== LoopCommand.Plan) {
+    log.warn(
+      "[loops.service] additionalRepos is only supported for PLAN loops — dropping",
+      { command }
+    );
+    return undefined;
+  }
+
+  return additionalRepos;
+}

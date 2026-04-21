@@ -10,11 +10,11 @@ import {
   pendingNewReview,
 } from "@/components/engineer/codex-review/constants";
 import { DefaultView } from "@/components/engineer/codex-review/DefaultView";
-import { useChatStream } from "@/hooks/engineer/use-chat-stream";
+import { useChatStream } from "@/hooks/chat/use-chat-stream";
 import { useCodexDebate } from "@/hooks/engineer/use-codex-debate";
 import { useCodexReviewStatus } from "@/hooks/engineer/use-codex-review-status";
 import { useLearnings } from "@/hooks/engineer/use-learnings";
-import type { LearningUsed, SuggestedAction } from "@/lib/engineer/chat-utils";
+import type { LearningUsed, SuggestedAction } from "@/lib/chat/chat-utils";
 import {
   formatFindingContextForChat,
   formatReviewContextForChat,

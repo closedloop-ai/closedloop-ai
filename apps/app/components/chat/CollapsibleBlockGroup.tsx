@@ -143,6 +143,7 @@ const TaskPairBlock = memo(function TaskPairBlock({
           "text-orange-700 dark:text-orange-300"
         )}
         onClick={() => onToggle(pair.id)}
+        type="button"
       >
         <span
           className="shrink-0 transition-transform duration-200"
@@ -237,6 +238,7 @@ export const CollapsibleBlockGroup = memo(function CollapsibleBlockGroup({
           "-ml-2 rounded-md px-2 py-1 hover:bg-muted/50"
         )}
         onClick={toggleGroup}
+        type="button"
       >
         <ChevronRight
           className={cn(

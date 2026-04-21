@@ -1,6 +1,7 @@
+import { DEFAULT_CODEX_MODEL as DEFAULT_CODEX_MODEL_BASE } from "@/lib/engineer/codex-models";
 import type { ReviewFinding } from "@/lib/engineer/codex-review-parser";
 
-export { DEFAULT_CODEX_MODEL } from "@/lib/engineer/codex-models";
+export const DEFAULT_CODEX_MODEL = DEFAULT_CODEX_MODEL_BASE;
 
 export const MODELS = [
   { value: "gpt-5.4", label: "GPT-5.4" },
@@ -18,6 +19,7 @@ export const REASONING_LEVELS = [
 ];
 
 export const CLAUDE_MODELS = [
+  { value: "claude-opus-4-7", label: "Claude Opus 4.7" },
   { value: "claude-opus-4-6", label: "Claude Opus 4.6" },
   { value: "claude-sonnet-4-5-20250929", label: "Claude Sonnet 4.5" },
 ];
@@ -56,6 +58,8 @@ export function severityToPriority(
     case "info":
       return "P3";
     case "success":
+      return "P3";
+    default:
       return "P3";
   }
 }

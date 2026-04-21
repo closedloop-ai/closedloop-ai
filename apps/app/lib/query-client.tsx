@@ -36,8 +36,19 @@ function makeQueryClient() {
     defaultOptions: {
       queries: {
         staleTime: 60 * 1000, // 1 minute
-        retry: false,
         refetchOnWindowFocus: false,
+        refetchOnReconnect: false,
+        retry: (failureCount, error) => {
+          // Retry once on network instability. If we received a response from the API, don't retry.
+          if (
+            error instanceof ApiError &&
+            (error.isClientError() || error.isServerError())
+          ) {
+            return false;
+          }
+          return failureCount < 1;
+        },
+        retryDelay: 1000,
       },
       mutations: {
         retry: false,

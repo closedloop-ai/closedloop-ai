@@ -23,7 +23,7 @@ export const CUSTOM_FIELD_TYPE_OPTIONS = Object.values(CustomFieldType);
  * The entity types that custom fields can be attached to.
  *
  * NOTE: This is intentionally distinct from `EntityType` in `entity-link.ts`.
- * `EntityType` (ARTIFACT, FEATURE, EXTERNAL_LINK) models polymorphic *link* relationships
+ * `EntityType` (DOCUMENT, EXTERNAL_LINK) models polymorphic *link* relationships
  * between entities. `CustomFieldEntityType` models which domain entities can have custom
  * field definitions attached — it includes PROJECT and WORKSTREAM (which are not link
  * targets) and omits EXTERNAL_LINK (which cannot hold custom field values).
@@ -31,8 +31,7 @@ export const CUSTOM_FIELD_TYPE_OPTIONS = Object.values(CustomFieldType);
 export const CustomFieldEntityType = {
   Project: "PROJECT",
   Workstream: "WORKSTREAM",
-  Feature: "FEATURE",
-  Artifact: "ARTIFACT",
+  Document: "DOCUMENT",
 } as const;
 export type CustomFieldEntityType =
   (typeof CustomFieldEntityType)[keyof typeof CustomFieldEntityType];

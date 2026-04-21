@@ -48,6 +48,7 @@ export function LearningsUsedDialog({
             "border border-violet-500/20 bg-violet-500/10 text-violet-700 dark:text-violet-400",
             "cursor-pointer transition-colors hover:border-violet-500/30 hover:bg-violet-500/20"
           )}
+          type="button"
         >
           <BookOpen className="size-3" />
           Learnings

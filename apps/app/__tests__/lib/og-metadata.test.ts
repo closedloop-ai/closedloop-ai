@@ -17,7 +17,7 @@ describe("resolveOgMetadata", () => {
     vi.restoreAllMocks();
   });
 
-  describe("artifact handlers (prds, implementation-plans, artifacts)", () => {
+  describe("document handlers (prds, implementation-plans, documents)", () => {
     it("fetches metadata for prds/<slug>", async () => {
       vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
         Response.json({ title: "My PRD", type: "PRD" })
@@ -26,7 +26,7 @@ describe("resolveOgMetadata", () => {
       const metadata = await resolveOgMetadata("prds/my-prd");
 
       expect(fetch).toHaveBeenCalledWith(
-        "http://localhost:3002/artifacts/by-slug/my-prd/meta",
+        "http://localhost:3002/documents/by-slug/my-prd/meta",
         expect.any(Object)
       );
       expect(metadata.title).toBe("My PRD | ClosedLoop.ai");
@@ -46,25 +46,25 @@ describe("resolveOgMetadata", () => {
       );
 
       expect(fetch).toHaveBeenCalledWith(
-        "http://localhost:3002/artifacts/by-slug/auth-plan/meta",
+        "http://localhost:3002/documents/by-slug/auth-plan/meta",
         expect.any(Object)
       );
       expect(metadata.title).toBe("Auth Plan | ClosedLoop.ai");
       expect(metadata.description).toBe("Plan");
     });
 
-    it("fetches metadata for artifacts/<slug> (fallback redirect)", async () => {
+    it("fetches metadata for documents/<slug> (fallback redirect)", async () => {
       vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
-        Response.json({ title: "Some Artifact", type: "PRD" })
+        Response.json({ title: "Some Document", type: "PRD" })
       );
 
-      const metadata = await resolveOgMetadata("artifacts/some-slug");
+      const metadata = await resolveOgMetadata("documents/some-slug");
 
       expect(fetch).toHaveBeenCalledWith(
-        "http://localhost:3002/artifacts/by-slug/some-slug/meta",
+        "http://localhost:3002/documents/by-slug/some-slug/meta",
         expect.any(Object)
       );
-      expect(metadata.title).toBe("Some Artifact | ClosedLoop.ai");
+      expect(metadata.title).toBe("Some Document | ClosedLoop.ai");
     });
   });
 
@@ -77,7 +77,7 @@ describe("resolveOgMetadata", () => {
       const metadata = await resolveOgMetadata("features/fix-login-bug");
 
       expect(fetch).toHaveBeenCalledWith(
-        "http://localhost:3002/features/by-slug/fix-login-bug/meta",
+        "http://localhost:3002/documents/by-slug/fix-login-bug/meta",
         expect.any(Object)
       );
       expect(metadata.title).toBe("Fix login bug | ClosedLoop.ai");

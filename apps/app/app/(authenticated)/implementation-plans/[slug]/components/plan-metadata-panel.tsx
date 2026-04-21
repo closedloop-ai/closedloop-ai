@@ -2,34 +2,35 @@
 
 import { FeatureFlagged } from "@repo/analytics/components/feature-flagged";
 import type {
-  ArtifactDetail,
+  DocumentDetail,
   GenerationStatus,
   PullRequestInfo,
-} from "@repo/api/src/types/artifact";
+} from "@repo/api/src/types/document";
 import type { JudgeFeedbackItem } from "@repo/api/src/types/evaluation";
 import type { PreviewDeploymentInfo } from "@repo/api/src/types/external-link-utils";
+import type { AdditionalRepoRef } from "@repo/api/src/types/loop";
 import { Label } from "@repo/design-system/components/ui/label";
 import Link from "next/link";
 import { useState } from "react";
-import { ArtifactVersionInfo } from "@/components/artifact-editor/artifact-version-info";
-import { AttachmentsSection } from "@/components/artifact-editor/attachments-section";
-import { CollapsibleSection } from "@/components/artifact-editor/collapsible-section";
-import { CommentsSection } from "@/components/artifact-editor/comments-section";
-import { EvaluationSection } from "@/components/artifact-editor/evaluation-section";
+import { AttachmentsSection } from "@/components/document-editor/attachments-section";
+import { CollapsibleSection } from "@/components/document-editor/collapsible-section";
+import { CommentsSection } from "@/components/document-editor/comments-section";
+import { DocumentVersionInfo } from "@/components/document-editor/document-version-info";
+import { EvaluationSection } from "@/components/document-editor/evaluation-section";
 import {
   MetadataPanel,
   MetadataSection,
-} from "@/components/artifact-editor/metadata-panel";
-import { RatingSection } from "@/components/artifact-editor/rating-section";
+} from "@/components/document-editor/metadata-panel";
+import { RatingSection } from "@/components/document-editor/rating-section";
 import { getUserDisplayName } from "@/lib/user-utils";
 import { PerformanceSection } from "./performance-section";
 import { PreviewDeploymentSection } from "./preview-deployment-section";
 import { PullRequestFeedbackSection } from "./pull-request-feedback-section";
 import { PullRequestSection } from "./pull-request-section";
-import { SourceArtifactSection } from "./source-artifact-section";
+import { SourceDocumentSection } from "./source-document-section";
 
 export type PlanMetadataPanelProps = {
-  plan: ArtifactDetail;
+  plan: DocumentDetail;
   generationStatus: GenerationStatus | null;
   pullRequest: PullRequestInfo | null;
   previewDeployment: PreviewDeploymentInfo | null;
@@ -37,6 +38,7 @@ export type PlanMetadataPanelProps = {
   isPreviewRefreshing: boolean;
   judgeItems: JudgeFeedbackItem[] | null;
   codeJudgeItems: JudgeFeedbackItem[] | null;
+  additionalRepos?: AdditionalRepoRef[] | null;
   /**
    * When "detailsOnly", render content without sidebar wrapper.
    */
@@ -52,6 +54,7 @@ export function PlanMetadataPanel({
   isPreviewRefreshing,
   judgeItems,
   codeJudgeItems,
+  additionalRepos,
   variant = "sidebar",
 }: PlanMetadataPanelProps) {
   const [isRatingOpen, setIsRatingOpen] = useState(false);
@@ -60,9 +63,12 @@ export function PlanMetadataPanel({
 
   const detailsContent = (
     <div className="space-y-6">
-      <SourceArtifactSection artifactId={plan.id} projectId={projectId} />
+      <SourceDocumentSection documentId={plan.id} projectId={projectId} />
 
-      <GenerationSection generationStatus={generationStatus} />
+      <GenerationSection
+        additionalRepos={additionalRepos}
+        generationStatus={generationStatus}
+      />
 
       {pullRequest ? <PullRequestSection pullRequest={pullRequest} /> : null}
 
@@ -78,23 +84,23 @@ export function PlanMetadataPanel({
         />
       ) : null}
 
-      <AttachmentsSection artifactId={plan.id} />
+      <AttachmentsSection documentId={plan.id} />
 
       <EvaluationSection
-        artifactId={plan.id}
+        documentId={plan.id}
         judgeItems={judgeItems}
         title="Agent Evaluation"
       />
 
       <EvaluationSection
-        artifactId={plan.id}
+        documentId={plan.id}
         emptyMessage="Code judge feedback is not available yet"
         judgeItems={codeJudgeItems}
         title="Code Evaluation"
       />
 
       <FeatureFlagged flag="the-one-flag">
-        <PerformanceSection artifactId={plan.id} />
+        <PerformanceSection documentId={plan.id} />
       </FeatureFlagged>
 
       <CollapsibleSection
@@ -103,16 +109,16 @@ export function PlanMetadataPanel({
         title="Rating"
       >
         <RatingSection
-          artifactId={plan.id}
           currentPlanVersion={plan.version.version}
+          documentId={plan.id}
         />
       </CollapsibleSection>
 
       <FeatureFlagged flag="the-one-flag">
-        <CommentsSection artifactId={plan.id} />
+        <CommentsSection documentId={plan.id} />
       </FeatureFlagged>
 
-      <ArtifactVersionInfo
+      <DocumentVersionInfo
         createdAt={plan.version.createdAt}
         updatedAt={plan.updatedAt}
       />
@@ -133,8 +139,10 @@ export function PlanMetadataPanel({
 /** Renders loop generation info in the metadata sidebar. */
 function GenerationSection({
   generationStatus,
+  additionalRepos,
 }: {
   generationStatus: GenerationStatus | null;
+  additionalRepos?: AdditionalRepoRef[] | null;
 }) {
   if (generationStatus?.source === "loop" && generationStatus.loopId) {
     return (
@@ -156,6 +164,24 @@ function GenerationSection({
           >
             View loop details
           </Link>
+          {additionalRepos && additionalRepos.length > 0 ? (
+            <div className="space-y-1">
+              <span className="text-muted-foreground text-xs">
+                Additional Repositories
+              </span>
+              <ul className="space-y-0.5">
+                {additionalRepos.map((repo) => (
+                  <li
+                    className="text-muted-foreground text-xs"
+                    key={`${repo.fullName}:${repo.branch}`}
+                  >
+                    <span className="font-medium">{repo.fullName}</span>
+                    <span className="opacity-70"> ({repo.branch})</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
         </div>
       </MetadataSection>
     );

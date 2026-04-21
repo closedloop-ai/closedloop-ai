@@ -66,6 +66,7 @@ function TreeNode({
           }`}
           onClick={() => setExpanded(!expanded)}
           style={{ paddingLeft: `${depth * 12 + 8}px` }}
+          type="button"
         >
           <ChevronRight
             className={`size-3 shrink-0 text-muted-foreground transition-transform ${expanded ? "rotate-90" : ""}`}
@@ -98,6 +99,7 @@ function TreeNode({
       }`}
       onClick={() => onSelectFile(node.path)}
       style={{ paddingLeft: `${depth * 12 + 8}px` }}
+      type="button"
     >
       {getFileIcon(node.name)}
       <span className="truncate text-xs">{node.name}</span>
@@ -119,6 +121,7 @@ export function FileTreeSidebar({
           isOverview ? "bg-accent text-accent-foreground" : "hover:bg-muted/50"
         }`}
         onClick={() => onSelectFile(null)}
+        type="button"
       >
         <LayoutDashboard className="size-3.5 text-muted-foreground" />
         <span className="font-medium text-xs">Overview</span>

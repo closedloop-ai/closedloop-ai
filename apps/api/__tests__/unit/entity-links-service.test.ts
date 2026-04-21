@@ -10,8 +10,7 @@ vi.mock("@repo/database", () => ({
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
   Prisma: { DbNull: "DbNull" },
   EntityType: {
-    ARTIFACT: "ARTIFACT",
-    FEATURE: "FEATURE",
+    DOCUMENT: "DOCUMENT",
     EXTERNAL_LINK: "EXTERNAL_LINK",
   },
 }));
@@ -54,7 +53,7 @@ describe("entityLinksService", () => {
       { label: "undefined", metadata: undefined },
     ])("uses DbNull when metadata is $label", async ({ metadata }) => {
       const mockDb = {
-        artifact: {
+        document: {
           findFirst: vi.fn().mockResolvedValue({ id: "a-1" }),
         },
         entityLink: {
@@ -65,9 +64,9 @@ describe("entityLinksService", () => {
 
       await entityLinksService.createLink(ORG_ID, {
         sourceId: "a-1",
-        sourceType: "ARTIFACT" as const,
+        sourceType: "DOCUMENT" as const,
         targetId: "a-2",
-        targetType: "ARTIFACT" as const,
+        targetType: "DOCUMENT" as const,
         linkType: "RELATES_TO" as const,
         ...(metadata !== undefined && { metadata }),
       });
@@ -94,14 +93,14 @@ describe("entityLinksService", () => {
     });
 
     it("queries both source and target sides", async () => {
-      await entityLinksService.findLinks(ORG_ID, "artifact-1", "ARTIFACT");
+      await entityLinksService.findLinks(ORG_ID, "artifact-1", "DOCUMENT");
 
       expect(mockDb.entityLink.findMany).toHaveBeenCalledWith({
         where: {
           organizationId: ORG_ID,
           OR: [
-            { sourceId: "artifact-1", sourceType: "ARTIFACT" },
-            { targetId: "artifact-1", targetType: "ARTIFACT" },
+            { sourceId: "artifact-1", sourceType: "DOCUMENT" },
+            { targetId: "artifact-1", targetType: "DOCUMENT" },
           ],
         },
         orderBy: { createdAt: "desc" },
@@ -112,7 +111,7 @@ describe("entityLinksService", () => {
       await entityLinksService.findLinks(
         ORG_ID,
         "artifact-1",
-        "ARTIFACT",
+        "DOCUMENT",
         "PRODUCES"
       );
 
@@ -122,12 +121,12 @@ describe("entityLinksService", () => {
           OR: [
             {
               sourceId: "artifact-1",
-              sourceType: "ARTIFACT",
+              sourceType: "DOCUMENT",
               linkType: "PRODUCES",
             },
             {
               targetId: "artifact-1",
-              targetType: "ARTIFACT",
+              targetType: "DOCUMENT",
               linkType: "PRODUCES",
             },
           ],
@@ -153,14 +152,14 @@ describe("entityLinksService", () => {
       await entityLinksService.findSourceLinks(
         ORG_ID,
         "artifact-1",
-        "ARTIFACT"
+        "DOCUMENT"
       );
 
       expect(mockDb.entityLink.findMany).toHaveBeenCalledWith({
         where: {
           organizationId: ORG_ID,
           targetId: "artifact-1",
-          targetType: "ARTIFACT",
+          targetType: "DOCUMENT",
         },
         orderBy: { createdAt: "desc" },
       });
@@ -170,14 +169,14 @@ describe("entityLinksService", () => {
       await entityLinksService.findTargetLinks(
         ORG_ID,
         "artifact-1",
-        "ARTIFACT"
+        "DOCUMENT"
       );
 
       expect(mockDb.entityLink.findMany).toHaveBeenCalledWith({
         where: {
           organizationId: ORG_ID,
           sourceId: "artifact-1",
-          sourceType: "ARTIFACT",
+          sourceType: "DOCUMENT",
         },
         orderBy: { createdAt: "desc" },
       });
@@ -188,7 +187,7 @@ describe("entityLinksService", () => {
     it("resolves ARTIFACT with assignee/approver includes", async () => {
       const mockArtifact = { id: "a-1", title: "My PRD" };
       const mockDb = {
-        artifact: {
+        document: {
           findUnique: vi.fn().mockResolvedValue(mockArtifact),
         },
       };
@@ -197,11 +196,11 @@ describe("entityLinksService", () => {
       const result = await entityLinksService.resolveEntity(
         ORG_ID,
         "a-1",
-        "ARTIFACT"
+        "DOCUMENT"
       );
 
-      expect(result).toEqual({ type: "ARTIFACT", entity: mockArtifact });
-      expect(mockDb.artifact.findUnique).toHaveBeenCalledWith({
+      expect(result).toEqual({ type: "DOCUMENT", entity: mockArtifact });
+      expect(mockDb.document.findUnique).toHaveBeenCalledWith({
         where: { id: "a-1", organizationId: ORG_ID },
         include: {
           assignee: {
@@ -214,47 +213,6 @@ describe("entityLinksService", () => {
             },
           },
           approver: {
-            select: {
-              id: true,
-              email: true,
-              firstName: true,
-              lastName: true,
-              avatarUrl: true,
-            },
-          },
-        },
-      });
-    });
-
-    it("resolves FEATURE with assignee/createdBy includes", async () => {
-      const mockFeature = { id: "i-1", title: "Bug report" };
-      const mockDb = {
-        feature: {
-          findUnique: vi.fn().mockResolvedValue(mockFeature),
-        },
-      };
-      mockWithDbCall(mockDb);
-
-      const result = await entityLinksService.resolveEntity(
-        ORG_ID,
-        "i-1",
-        "FEATURE"
-      );
-
-      expect(result).toEqual({ type: "FEATURE", entity: mockFeature });
-      expect(mockDb.feature.findUnique).toHaveBeenCalledWith({
-        where: { id: "i-1", organizationId: ORG_ID },
-        include: {
-          assignee: {
-            select: {
-              id: true,
-              email: true,
-              firstName: true,
-              lastName: true,
-              avatarUrl: true,
-            },
-          },
-          createdBy: {
             select: {
               id: true,
               email: true,
@@ -290,7 +248,7 @@ describe("entityLinksService", () => {
 
     it("returns null for missing entity", async () => {
       const mockDb = {
-        artifact: {
+        document: {
           findUnique: vi.fn().mockResolvedValue(null),
         },
       };
@@ -299,7 +257,7 @@ describe("entityLinksService", () => {
       const result = await entityLinksService.resolveEntity(
         ORG_ID,
         "nonexistent",
-        "ARTIFACT"
+        "DOCUMENT"
       );
 
       expect(result).toBeNull();
@@ -321,11 +279,11 @@ describe("entityLinksService", () => {
 
   describe("resolveLinkedEntities", () => {
     it("resolves the 'other' entity on each link", async () => {
-      const linkAB = makeLink("l1", "a", "ARTIFACT", "b", "FEATURE");
-      const mockFeature = { id: "b", title: "Bug report" };
+      const linkAB = makeLink("l1", "a", "DOCUMENT", "b", "DOCUMENT");
+      const mockDocument = { id: "b", title: "Bug report" };
       const mockDb = {
-        feature: {
-          findUnique: vi.fn().mockResolvedValue(mockFeature),
+        document: {
+          findUnique: vi.fn().mockResolvedValue(mockDocument),
         },
       };
       mockWithDbCall(mockDb);
@@ -336,16 +294,16 @@ describe("entityLinksService", () => {
 
       expect(result).toHaveLength(1);
       expect(result[0].resolvedEntity).toEqual({
-        type: "FEATURE",
-        entity: mockFeature,
+        type: "DOCUMENT",
+        entity: mockDocument,
       });
     });
 
     it("resolves source when known entity is on the target side", async () => {
-      const link = makeLink("l1", "a", "ARTIFACT", "b", "FEATURE");
+      const link = makeLink("l1", "a", "DOCUMENT", "b", "DOCUMENT");
       const mockArtifact = { id: "a", title: "My PRD" };
       const mockDb = {
-        artifact: {
+        document: {
           findUnique: vi.fn().mockResolvedValue(mockArtifact),
         },
       };
@@ -357,21 +315,19 @@ describe("entityLinksService", () => {
 
       expect(result).toHaveLength(1);
       expect(result[0].resolvedEntity).toEqual({
-        type: "ARTIFACT",
+        type: "DOCUMENT",
         entity: mockArtifact,
       });
     });
 
     it("deduplicates entities appearing in multiple links", async () => {
-      const link1 = makeLink("l1", "a", "ARTIFACT", "b", "FEATURE");
-      const link2 = makeLink("l2", "c", "ARTIFACT", "b", "FEATURE");
-      const mockFeature = { id: "b", title: "Shared feature" };
+      const link1 = makeLink("l1", "a", "DOCUMENT", "b", "DOCUMENT");
+      const link2 = makeLink("l2", "c", "DOCUMENT", "b", "DOCUMENT");
+      const mockShared = { id: "b", title: "Shared document" };
+      const findUniqueMock = vi.fn().mockResolvedValue(mockShared);
       const mockDb = {
-        feature: {
-          findUnique: vi.fn().mockResolvedValue(mockFeature),
-        },
-        artifact: {
-          findUnique: vi.fn().mockResolvedValue({ id: "c", title: "Other" }),
+        document: {
+          findUnique: findUniqueMock,
         },
       };
       mockWithDbCall(mockDb);
@@ -382,14 +338,14 @@ describe("entityLinksService", () => {
       ]);
 
       expect(result).toHaveLength(2);
-      // b:FEATURE should only be resolved once
-      expect(mockDb.feature.findUnique).toHaveBeenCalledTimes(1);
+      // Shared "b" should only be resolved once
+      expect(findUniqueMock).toHaveBeenCalledTimes(1);
     });
 
     it("returns null for missing entities", async () => {
-      const link = makeLink("l1", "a", "ARTIFACT", "b", "FEATURE");
+      const link = makeLink("l1", "a", "DOCUMENT", "b", "DOCUMENT");
       const mockDb = {
-        feature: {
+        document: {
           findUnique: vi.fn().mockResolvedValue(null),
         },
       };
@@ -405,16 +361,16 @@ describe("entityLinksService", () => {
 
     it("resolves correct entity at each hop in a tree traversal", async () => {
       // Chain: A→B→C. fromEntityId tracks which BFS node found each link.
-      const linkAB = makeLink("l1", "a", "ARTIFACT", "b", "ARTIFACT");
-      const linkBC = makeLink("l2", "b", "ARTIFACT", "c", "FEATURE");
+      const linkAB = makeLink("l1", "a", "DOCUMENT", "b", "DOCUMENT");
+      const linkBC = makeLink("l2", "b", "DOCUMENT", "c", "DOCUMENT");
       const mockArtifactB = { id: "b", title: "Plan" };
-      const mockFeatureC = { id: "c", title: "Bug" };
+      const mockArtifactC = { id: "c", title: "Plan child" };
       const mockDb = {
-        artifact: {
-          findUnique: vi.fn().mockResolvedValue(mockArtifactB),
-        },
-        feature: {
-          findUnique: vi.fn().mockResolvedValue(mockFeatureC),
+        document: {
+          findUnique: vi
+            .fn()
+            .mockResolvedValueOnce(mockArtifactB)
+            .mockResolvedValueOnce(mockArtifactC),
         },
       };
       mockWithDbCall(mockDb);
@@ -426,12 +382,12 @@ describe("entityLinksService", () => {
 
       expect(result).toHaveLength(2);
       expect(result[0].resolvedEntity).toEqual({
-        type: "ARTIFACT",
+        type: "DOCUMENT",
         entity: mockArtifactB,
       });
       expect(result[1].resolvedEntity).toEqual({
-        type: "FEATURE",
-        entity: mockFeatureC,
+        type: "DOCUMENT",
+        entity: mockArtifactC,
       });
     });
   });
@@ -448,8 +404,8 @@ describe("entityLinksService", () => {
     });
 
     it("returns annotated links in a simple chain A→B→C", async () => {
-      const linkAB = makeLink("l1", "a", "ARTIFACT", "b", "ARTIFACT");
-      const linkBC = makeLink("l2", "b", "ARTIFACT", "c", "ARTIFACT");
+      const linkAB = makeLink("l1", "a", "DOCUMENT", "b", "DOCUMENT");
+      const linkBC = makeLink("l2", "b", "DOCUMENT", "c", "DOCUMENT");
 
       spy
         .mockResolvedValueOnce([linkAB]) // query from A
@@ -459,7 +415,7 @@ describe("entityLinksService", () => {
       const result = await entityLinksService.findLinkTree(
         ORG_ID,
         "a",
-        "ARTIFACT",
+        "DOCUMENT",
         "both",
         10
       );
@@ -471,8 +427,8 @@ describe("entityLinksService", () => {
     });
 
     it("handles cycles without infinite loops", async () => {
-      const linkAB = makeLink("l1", "a", "ARTIFACT", "b", "ARTIFACT");
-      const linkBA = makeLink("l2", "b", "ARTIFACT", "a", "ARTIFACT");
+      const linkAB = makeLink("l1", "a", "DOCUMENT", "b", "DOCUMENT");
+      const linkBA = makeLink("l2", "b", "DOCUMENT", "a", "DOCUMENT");
 
       spy
         .mockResolvedValueOnce([linkAB]) // query from A: finds A→B
@@ -481,7 +437,7 @@ describe("entityLinksService", () => {
       const result = await entityLinksService.findLinkTree(
         ORG_ID,
         "a",
-        "ARTIFACT",
+        "DOCUMENT",
         "both",
         10
       );
@@ -495,8 +451,8 @@ describe("entityLinksService", () => {
     });
 
     it("respects maxDepth limit", async () => {
-      const linkAB = makeLink("l1", "a", "ARTIFACT", "b", "ARTIFACT");
-      const linkBC = makeLink("l2", "b", "ARTIFACT", "c", "ARTIFACT");
+      const linkAB = makeLink("l1", "a", "DOCUMENT", "b", "DOCUMENT");
+      const linkBC = makeLink("l2", "b", "DOCUMENT", "c", "DOCUMENT");
 
       spy
         .mockResolvedValueOnce([linkAB]) // depth 0: query from A
@@ -505,7 +461,7 @@ describe("entityLinksService", () => {
       const result = await entityLinksService.findLinkTree(
         ORG_ID,
         "a",
-        "ARTIFACT",
+        "DOCUMENT",
         "both",
         2
       );
@@ -524,7 +480,7 @@ describe("entityLinksService", () => {
       await entityLinksService.findLinkTree(
         ORG_ID,
         "a",
-        "ARTIFACT",
+        "DOCUMENT",
         "target",
         10,
         "PRODUCES"
@@ -533,18 +489,18 @@ describe("entityLinksService", () => {
       expect(spy).toHaveBeenCalledWith(
         ORG_ID,
         "a",
-        "ARTIFACT",
+        "DOCUMENT",
         "target",
         "PRODUCES"
       );
     });
 
     it("traverses across entity types", async () => {
-      const linkArtFeature = makeLink("l1", "a", "ARTIFACT", "i", "FEATURE");
+      const linkArtFeature = makeLink("l1", "a", "DOCUMENT", "i", "DOCUMENT");
       const linkFeatureExt = makeLink(
         "l2",
         "i",
-        "FEATURE",
+        "DOCUMENT",
         "e",
         "EXTERNAL_LINK"
       );
@@ -557,7 +513,7 @@ describe("entityLinksService", () => {
       const result = await entityLinksService.findLinkTree(
         ORG_ID,
         "a",
-        "ARTIFACT",
+        "DOCUMENT",
         "both",
         10
       );
@@ -569,7 +525,7 @@ describe("entityLinksService", () => {
     });
 
     it("deduplicates links seen from multiple entities", async () => {
-      const linkAB = makeLink("l1", "a", "ARTIFACT", "b", "ARTIFACT");
+      const linkAB = makeLink("l1", "a", "DOCUMENT", "b", "DOCUMENT");
 
       // Both A and B return the same link record
       spy
@@ -579,7 +535,7 @@ describe("entityLinksService", () => {
       const result = await entityLinksService.findLinkTree(
         ORG_ID,
         "a",
-        "ARTIFACT",
+        "DOCUMENT",
         "both",
         10
       );

@@ -2,7 +2,6 @@
 
 import { rewriteDesktopApiPath } from "@repo/api/src/desktop-api-namespace";
 import { EngineerRoutingMode } from "@repo/api/src/types/relay";
-import { log } from "@repo/observability/log";
 import { CLOUD_RELAY_ENABLED } from "./constants";
 import {
   ensureElectronDetection,
@@ -107,15 +106,17 @@ function createFetchInterceptor(
   originalFetch: typeof globalThis.fetch
 ): typeof globalThis.fetch {
   return async (input: RequestInfo | URL, init?: RequestInit) => {
-    const request =
-      input instanceof Request
-        ? new Request(input, init)
-        : input instanceof URL
-          ? new Request(input.toString(), init)
-          : new Request(
-              new URL(input, globalThis.location.origin).toString(),
-              init
-            );
+    let request: Request;
+    if (input instanceof Request) {
+      request = new Request(input, init);
+    } else if (input instanceof URL) {
+      request = new Request(input.toString(), init);
+    } else {
+      request = new Request(
+        new URL(input, globalThis.location.origin).toString(),
+        init
+      );
+    }
     const requestUrl = new URL(request.url, globalThis.location.origin);
 
     if (!isGatewayRequest(requestUrl)) {
@@ -123,13 +124,6 @@ function createFetchInterceptor(
     }
 
     const routingSelection = getEngineerRoutingSelection();
-
-    log.debug("[engineer-debug] Fetch interceptor routing", {
-      url: requestUrl.pathname,
-      mode: routingSelection.mode,
-      computeTargetId: routingSelection.computeTargetId,
-      cloudRelayEnabled: CLOUD_RELAY_ENABLED,
-    });
 
     if (
       CLOUD_RELAY_ENABLED &&
@@ -164,18 +158,6 @@ function createFetchInterceptor(
     }
 
     if (routingSelection.mode !== EngineerRoutingMode.LocalElectron) {
-      log.warn(
-        "[engineer-debug] Engineer request falling through to original fetch (will hit proxy guard)",
-        {
-          url: requestUrl.pathname,
-          mode: routingSelection.mode,
-          computeTargetId: routingSelection.computeTargetId,
-          reason:
-            routingSelection.mode === EngineerRoutingMode.CloudRelay
-              ? "CloudRelay mode but no computeTargetId -- request will be sent to Next.js app server (403 if hosted)"
-              : "Not in LocalElectron mode",
-        }
-      );
       return originalFetch(request);
     }
 

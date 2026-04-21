@@ -11,7 +11,7 @@ import { AlertCircleIcon } from "lucide-react";
 import { useExecutionLog } from "@/hooks/queries/use-execution-log";
 
 type ExecutionLogSummaryProps = {
-  artifactId: string;
+  documentId: string;
   onViewFullTrace: (trace: ExecutionTrace, sessionId?: string) => void;
 };
 
@@ -48,10 +48,10 @@ function formatDuration(ms: number | null): string {
  * - Success: Stats grid + session list + "View Full Trace" button
  */
 export function ExecutionLogSummary({
-  artifactId,
+  documentId,
   onViewFullTrace,
 }: Readonly<ExecutionLogSummaryProps>) {
-  const { data: trace, isLoading, error } = useExecutionLog(artifactId);
+  const { data: trace, isLoading, error } = useExecutionLog(documentId);
 
   // Loading state - skeleton matching actual content
   if (isLoading) {

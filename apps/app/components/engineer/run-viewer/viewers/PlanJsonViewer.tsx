@@ -141,6 +141,7 @@ function TaskItem({ task }: Readonly<{ task: PlanTask }>) {
       <button
         className="flex w-full items-center gap-3 p-3 text-left transition-colors hover:bg-muted/50"
         onClick={() => setExpanded(!expanded)}
+        type="button"
       >
         <ChevronRight
           className={`size-4 shrink-0 text-muted-foreground transition-transform ${expanded ? "rotate-90" : ""}`}

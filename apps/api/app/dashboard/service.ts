@@ -10,7 +10,7 @@ import type {
   UsageDashboardStats,
 } from "@repo/api/src/types/dashboard";
 import {
-  ArtifactType,
+  DocumentType,
   GitHubActionStatus,
   GitHubPRState,
   Prisma,
@@ -56,21 +56,20 @@ export const dashboardService = {
       ] = await Promise.all([
         // Aggregate counts
         withDb((db) =>
-          db.artifact.count({
-            where: { organizationId, type: ArtifactType.PRD },
-          })
-        ),
-        // Features are a separate entity (Feature table)
-        withDb((db) =>
-          db.feature.count({
-            where: { organizationId },
+          db.document.count({
+            where: { organizationId, type: DocumentType.PRD },
           })
         ),
         withDb((db) =>
-          db.artifact.count({
+          db.document.count({
+            where: { organizationId, type: DocumentType.FEATURE },
+          })
+        ),
+        withDb((db) =>
+          db.document.count({
             where: {
               organizationId,
-              type: ArtifactType.IMPLEMENTATION_PLAN,
+              type: DocumentType.IMPLEMENTATION_PLAN,
             },
           })
         ),
@@ -96,30 +95,30 @@ export const dashboardService = {
 
         // 14-day trend data
         withDb((db) =>
-          db.artifact.findMany({
+          db.document.findMany({
             where: {
               organizationId,
-              type: ArtifactType.PRD,
-              createdAt: { gte: fourteenDaysAgo },
-            },
-            select: { createdAt: true },
-          })
-        ),
-        // Features trend from separate Feature table
-        withDb((db) =>
-          db.feature.findMany({
-            where: {
-              organizationId,
+              type: DocumentType.PRD,
               createdAt: { gte: fourteenDaysAgo },
             },
             select: { createdAt: true },
           })
         ),
         withDb((db) =>
-          db.artifact.findMany({
+          db.document.findMany({
             where: {
               organizationId,
-              type: ArtifactType.IMPLEMENTATION_PLAN,
+              type: DocumentType.FEATURE,
+              createdAt: { gte: fourteenDaysAgo },
+            },
+            select: { createdAt: true },
+          })
+        ),
+        withDb((db) =>
+          db.document.findMany({
+            where: {
+              organizationId,
+              type: DocumentType.IMPLEMENTATION_PLAN,
               createdAt: { gte: fourteenDaysAgo },
             },
             select: { createdAt: true },

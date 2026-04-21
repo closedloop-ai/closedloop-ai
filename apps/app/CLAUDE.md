@@ -9,7 +9,7 @@ Authenticated Next.js app (App Router). Port 3000. For Server Component vs Clien
 ## TanStack Query Conventions
 
 All data fetching in `hooks/queries/use-*.ts`:
-- Export `<entity>Keys` factory (e.g., `artifactKeys`, `projectKeys`): `.all`, `.lists()`, `.list(filters)`, `.detail(id)`
+- Export `<entity>Keys` factory (e.g., `documentKeys`, `projectKeys`): `.all`, `.lists()`, `.list(filters)`, `.detail(id)`
 - Query hooks: `queryKey` + `queryFn` + `enabled` + `...options` spread
 - Mutations: invalidate relevant caches in `onSuccess`
 - Prefer `mutate` over `mutateAsync`. `mutateAsync` can throw and thus requires try/catch, which is overly verbose.
@@ -22,7 +22,7 @@ All data fetching in `hooks/queries/use-*.ts`:
 ```
 hooks/
 ├── queries/
-│   ├── use-artifacts.ts    # artifactKeys + useArtifact, useCreateArtifact, etc.
+│   ├── use-documents.ts    # documentKeys + useDocument, useCreateDocument, etc.
 │   ├── use-projects.ts     # projectKeys + useProject, useCreateProject, etc.
 │   ├── use-workstreams.ts
 │   ├── use-teams.ts
@@ -52,11 +52,10 @@ hooks/
 - **[convention]**: Async cancellation in useEffect: `let cancelled = false` + cleanup return, NOT AbortController/useRef.
 
 ### UI Patterns
-- **[pattern]**: Collapsible sections in artifact sidebar: PropertiesPanel pattern with CollapsibleTrigger/Content, ChevronUp/Down, default collapsed.
+- **[pattern]**: Collapsible sections in document sidebar: PropertiesPanel pattern with CollapsibleTrigger/Content, ChevronUp/Down, default collapsed.
 - **[pattern]**: Convert tabs to collapsible: MetadataPanel + space-y-6 + separate useState(bool) per section + Collapsible components.
-- **[pattern]**: Artifact metadata panels (PRD, Issue, Plan) follow identical TabbedMetadataPanel structure in `app/(authenticated)/{artifact}/[slug]/components/`.
-- **[pattern]**: Check artifact categories via `artifact.type === ArtifactType.DOCUMENT` not subtype enumeration.
-- **[mistake]**: Route lookups use `artifact.subtype` not `artifact.type`. Type = broad category, subtype = specific. `ARTIFACT_TYPE_ROUTES` keyed by subtype.
+- **[pattern]**: Document metadata panels (PRD, Issue, Plan) follow identical TabbedMetadataPanel structure in `app/(authenticated)/{document-type}/[slug]/components/`.
+- **[pattern]**: Check document type via `document.type === DocumentType.Prd` etc. Import from `@repo/api/src/types/document`.
 
 ### Testing
 - **[pattern]**: After adding required props, run typecheck to find test files with outdated mock/defaultProps.
@@ -70,7 +69,7 @@ hooks/
 - **[mistake]**: RoomProvider needs LiveblocksProvider ancestor. When Provider is conditional on user loading, mount minimal Provider during loading states.
 - **[mistake]**: Loading/bootstrap LiveblocksProvider needs LiveblocksErrorBoundary for auth/runtime errors.
 - **[pattern]**: Nesting LiveblocksErrorBoundary with manual LiveblocksAvailabilityContext.Provider: place manual override inside error boundary.
-- **[mistake]**: Room metadata: read keys must match write keys. Creation stores `artifactSubtype` in room-utils.ts.
+- **[mistake]**: Room metadata: read keys must match write keys. Creation stores `documentType` in room-utils.ts. Legacy rooms may still have `artifactType`/`artifactSubtype` — the resolver reads both.
 
 ### OAuth Integrations
 - **[pattern]**: Three-part architecture: (1) Frontend OAuth routes handle PKCE/state/redirect, (2) Callback validates state + calls API for token storage, (3) TanStack Query hooks for status/disconnect/mutations. Reference: Linear integration.

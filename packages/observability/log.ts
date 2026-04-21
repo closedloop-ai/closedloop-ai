@@ -12,6 +12,8 @@
 // ---------------------------------------------------------------------------
 
 import { keys } from "./keys";
+import { resolveServerVersion } from "./telemetry/context";
+import { KNOWN_ORIGINS, ORIGIN, type Origin } from "./telemetry/origin";
 
 function loadConfig() {
   try {
@@ -34,7 +36,22 @@ function loadConfig() {
   }
 }
 
-const DD = loadConfig();
+function resolveGitSha(): string {
+  return process.env.VERCEL_GIT_COMMIT_SHA ?? process.env.GIT_SHA ?? "unknown";
+}
+
+const DD: {
+  apiKey?: string;
+  site: string;
+  service: string;
+  env: string;
+  version: string;
+  gitSha: string;
+} = {
+  ...loadConfig(),
+  version: resolveServerVersion(),
+  gitSha: resolveGitSha(),
+};
 
 const FLUSH_INTERVAL_MS = 5000;
 const MAX_BATCH_SIZE = 100;
@@ -49,6 +66,7 @@ type DatadogLogEntry = {
   ddsource: string;
   ddtags: string;
   timestamp: string;
+  origin: Origin;
   [key: string]: unknown;
 };
 
@@ -133,14 +151,21 @@ function buildEntry(
   message: string,
   meta?: Record<string, unknown>
 ): DatadogLogEntry {
+  const metaOrigin =
+    typeof meta?.origin === "string" &&
+    (KNOWN_ORIGINS as readonly string[]).includes(meta.origin)
+      ? (meta.origin as Origin)
+      : undefined;
+  const origin = metaOrigin ?? ORIGIN;
   return {
     ...meta,
     message,
     level,
     service: DD.service,
     ddsource: "nodejs",
-    ddtags: `env:${DD.env}`,
+    ddtags: `env:${DD.env},version:${DD.version},git_sha:${DD.gitSha}`,
     timestamp: new Date().toISOString(),
+    origin,
   };
 }
 
@@ -209,3 +234,17 @@ export const log = {
    */
   flush: (): Promise<void> => flushToDatadog(),
 };
+
+// Server-only diagnostics: these warnings signal a misconfigured deploy to
+// ops. In client bundles (the logger is imported by client components), the
+// env vars are never defined, so emitting the warnings in browsers would
+// pollute every end-user's DevTools console on page load.
+if (typeof window === "undefined") {
+  if (DD.version === "unknown") {
+    log.warn("telemetry.version_fallback");
+  }
+
+  if (DD.gitSha === "unknown") {
+    log.warn("telemetry.git_sha_fallback");
+  }
+}

@@ -18,7 +18,17 @@
  * - Updates externalLink metadata with fresh state/title/timestamps on success
  * - Updates GitHubPullRequest row with fresh state data when githubId present
  * - Logs warning when GitHubPullRequest updateMany matches 0 rows
- * - Skips GitHubPullRequest update when githubId is absent from metadata
+ * - Proceeds to create github_pull_requests when original metadata lacks githubId but fresh PR data is fetched
+ *
+ * repairSinglePrLink — new functionality (T-4.1 through T-4.4):
+ * - creates github_pull_requests when none exists
+ * - resolves workstream from artifact
+ * - resolves workstream from feature when artifact has none
+ * - handles no-workstream case (logs warning, skips github_pull_requests creation)
+ * - no duplicate insert on P2002 unique constraint
+ * - fixes null workstream_id on external link
+ * - correctly resolves repositoryId from installation repositories
+ * - repositoryId memoized across two links for same repo (only one DB lookup)
  */
 
 import { vi } from "vitest";
@@ -35,7 +45,7 @@ vi.mock("@repo/database", () => ({
     ACTIVE: "ACTIVE",
     SUSPENDED: "SUSPENDED",
   },
-  withDb: vi.fn(),
+  withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
 }));
 
 vi.mock("@repo/github", () => ({
@@ -51,18 +61,23 @@ vi.mock("@repo/observability/log", () => ({
 }));
 
 import type { JsonObject } from "@repo/api/src/types/common";
+import { EntityType } from "@repo/api/src/types/entity-link";
 import { ExternalLinkType } from "@repo/api/src/types/external-link";
 import { GitHubPRState } from "@repo/api/src/types/github";
 import { withDb } from "@repo/database";
 import { getSinglePullRequest } from "@repo/github";
+import { log } from "@repo/observability/log";
 // Import after mocks
 import { waitUntil } from "@vercel/functions";
 import { schedulePrReadRepair } from "@/lib/pr-read-repair";
 
 // Typed mock references
 const mockWaitUntil = vi.mocked(waitUntil);
-const mockWithDb = vi.mocked(withDb) as unknown as ReturnType<typeof vi.fn>;
+const mockWithDb = vi.mocked(withDb) as unknown as ReturnType<typeof vi.fn> & {
+  tx: ReturnType<typeof vi.fn>;
+};
 const mockGetSinglePullRequest = vi.mocked(getSinglePullRequest);
+const mockLog = vi.mocked(log);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -82,13 +97,14 @@ type ExternalLinkOverride = {
   type?: ExternalLinkType;
   externalUrl?: string;
   metadata?: JsonObject | null;
+  workstreamId?: string | null;
 };
 
 function makeExternalLink(overrides: ExternalLinkOverride = {}) {
   return {
     id: "link-uuid-1",
     organizationId: ORG_ID,
-    workstreamId: "ws-uuid-1",
+    workstreamId: "ws-uuid-1" as string | null,
     projectId: "proj-uuid-1",
     type: ExternalLinkType.PullRequest,
     title: "My PR",
@@ -152,14 +168,27 @@ describe("schedulePrReadRepair — eligibility filtering", () => {
     expect(mockWaitUntil).not.toHaveBeenCalled();
   });
 
-  it("does not call waitUntil when the PR is already in MERGED state", () => {
+  it("does not call waitUntil when the PR is merged and has been verified", () => {
+    const link = makeExternalLink({
+      metadata: makePrMetadata({
+        state: GitHubPRState.Merged,
+        lastVerifiedAt: msAgo(60 * 60 * 1000),
+      }),
+    });
+
+    schedulePrReadRepair([link], ORG_ID);
+
+    expect(mockWaitUntil).not.toHaveBeenCalled();
+  });
+
+  it("calls waitUntil for a merged PR that was never verified", () => {
     const link = makeExternalLink({
       metadata: makePrMetadata({ state: GitHubPRState.Merged }),
     });
 
     schedulePrReadRepair([link], ORG_ID);
 
-    expect(mockWaitUntil).not.toHaveBeenCalled();
+    expect(mockWaitUntil).toHaveBeenCalledOnce();
   });
 
   it("does not call waitUntil when link was verified within the 24h staleness threshold", () => {
@@ -275,6 +304,8 @@ describe("runPrReadRepair — repair logic", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // Reinitialize withDb.tx after clearAllMocks (clearAllMocks resets the mock but preserves the property)
+    mockWithDb.tx = vi.fn();
   });
 
   it("stamps lastRefreshAttemptAt on the externalLink before calling GitHub API", async () => {
@@ -334,24 +365,30 @@ describe("runPrReadRepair — repair logic", () => {
   it("skips the GitHub API call when no installationId can be resolved", async () => {
     const link = makeExternalLink({ metadata: null });
 
-    // externalLink.update stamps attempt; then both resolution paths fail
-    mockWithDb
-      .mockImplementationOnce((cb: any) =>
-        cb({
-          externalLink: {
-            update: vi.fn().mockResolvedValue({ metadata: {} }),
-          },
-        })
-      )
-      // gitHubPullRequest.findFirst — no githubId in metadata so skip primary
-      // gitHubInstallation.findMany — returns 0 installations (cannot resolve)
-      .mockImplementationOnce((cb: any) =>
-        cb({
-          gitHubInstallation: {
-            findMany: vi.fn().mockResolvedValue([]),
-          },
-        })
-      );
+    // Call 1: externalLink.update stamps attempt
+    mockWithDb.mockImplementationOnce((cb: any) =>
+      cb({
+        externalLink: {
+          update: vi.fn().mockResolvedValue({ metadata: {} }),
+        },
+      })
+    );
+    // Call 2: resolveRepositoryId — gitHubInstallationRepository.findFirst returns null (no repo match)
+    mockWithDb.mockImplementationOnce((cb: any) =>
+      cb({
+        gitHubInstallationRepository: {
+          findFirst: vi.fn().mockResolvedValue(null),
+        },
+      })
+    );
+    // Call 3: resolveInstallationId fallback — gitHubInstallation.findMany returns 0 installations
+    mockWithDb.mockImplementationOnce((cb: any) =>
+      cb({
+        gitHubInstallation: {
+          findMany: vi.fn().mockResolvedValue([]),
+        },
+      })
+    );
 
     await runRepair([link]);
 
@@ -367,35 +404,35 @@ describe("runPrReadRepair — repair logic", () => {
     });
     const mockExternalLinkUpdate = vi.fn().mockResolvedValue({ metadata: {} });
 
-    mockWithDb
-      // stamp lastRefreshAttemptAt
-      .mockImplementationOnce((cb: any) =>
-        cb({
-          externalLink: { update: mockExternalLinkUpdate },
-        })
-      )
-      // installationId fallback — returns exactly 1 installation
-      .mockImplementationOnce((cb: any) =>
-        cb({
-          gitHubInstallation: {
-            findMany: vi
-              .fn()
-              .mockResolvedValue([{ installationId: "install-99" }]),
-          },
-        })
-      );
+    // Call 1: stamp lastRefreshAttemptAt
+    mockWithDb.mockImplementationOnce((cb: any) =>
+      cb({ externalLink: { update: mockExternalLinkUpdate } })
+    );
+    // Call 2: resolveRepositoryId — gitHubInstallationRepository.findFirst returns result
+    mockWithDb.mockImplementationOnce((cb: any) =>
+      cb({
+        gitHubInstallationRepository: {
+          findFirst: vi.fn().mockResolvedValue({
+            id: "repo-uuid-99",
+            installation: { installationId: "install-99" },
+          }),
+        },
+      })
+    );
 
     mockGetSinglePullRequest.mockResolvedValueOnce(null);
 
     await runRepair([link]);
 
-    // Only one withDb call (the stamp) + one installation lookup
-    // No second externalLink.update to write fresh state
+    // Only the stamp withDb call occurred for externalLink.update; tx was never entered
     expect(mockExternalLinkUpdate).toHaveBeenCalledTimes(1);
+    expect(mockWithDb.tx).not.toHaveBeenCalled();
   });
 
   it("updates externalLink metadata with fresh state, title, and timestamps on success", async () => {
+    // link.workstreamId is non-null so resolveWorkstreamId short-circuits immediately.
     const link = makeExternalLink({
+      workstreamId: "ws-uuid-1",
       metadata: makePrMetadata({
         githubId: "gh-pr-999",
         state: GitHubPRState.Open,
@@ -404,36 +441,40 @@ describe("runPrReadRepair — repair logic", () => {
       }),
     });
 
-    const mockExternalLinkUpdate = vi
-      .fn()
-      .mockResolvedValue({ metadata: link.metadata });
-    const mockPrFindFirst = vi.fn().mockResolvedValue(null);
-    const mockInstallationFindMany = vi
-      .fn()
-      .mockResolvedValue([{ installationId: "install-77" }]);
+    const mockExternalLinkUpdateMany = vi.fn().mockResolvedValue({ count: 1 });
     const mockPrUpdateMany = vi.fn().mockResolvedValue({ count: 1 });
 
-    mockWithDb
-      // Call 1: stamp lastRefreshAttemptAt
-      .mockImplementationOnce((cb: any) =>
-        cb({ externalLink: { update: mockExternalLinkUpdate } })
-      )
-      // Call 2: gitHubPullRequest.findFirst (primary installationId lookup)
-      .mockImplementationOnce((cb: any) =>
-        cb({ gitHubPullRequest: { findFirst: mockPrFindFirst } })
-      )
-      // Call 3: gitHubInstallation.findMany (fallback)
-      .mockImplementationOnce((cb: any) =>
-        cb({ gitHubInstallation: { findMany: mockInstallationFindMany } })
-      )
-      // Call 4: write fresh metadata to externalLink
-      .mockImplementationOnce((cb: any) =>
-        cb({ externalLink: { update: mockExternalLinkUpdate } })
-      )
-      // Call 5: gitHubPullRequest.updateMany
-      .mockImplementationOnce((cb: any) =>
-        cb({ gitHubPullRequest: { updateMany: mockPrUpdateMany } })
-      );
+    // Call 1: stamp lastRefreshAttemptAt
+    mockWithDb.mockImplementationOnce((cb: any) =>
+      cb({
+        externalLink: {
+          update: vi.fn().mockResolvedValue({ metadata: link.metadata }),
+        },
+      })
+    );
+    // Call 2: resolveRepositoryId — gitHubInstallationRepository.findFirst
+    mockWithDb.mockImplementationOnce((cb: any) =>
+      cb({
+        gitHubInstallationRepository: {
+          findFirst: vi.fn().mockResolvedValue({
+            id: "repo-uuid-77",
+            installation: { installationId: "install-77" },
+          }),
+        },
+      })
+    );
+
+    // withDb.tx: applyExternalLinkUpdate (updateMany) + applyPullRequestUpsert (findFirst → updateMany)
+    mockWithDb.tx.mockImplementationOnce((cb: any) =>
+      cb({
+        externalLink: { updateMany: mockExternalLinkUpdateMany },
+        gitHubPullRequest: {
+          findFirst: vi.fn().mockResolvedValue({ id: "existing-pr" }),
+          create: vi.fn(),
+          updateMany: mockPrUpdateMany,
+        },
+      })
+    );
 
     mockGetSinglePullRequest.mockResolvedValueOnce({
       githubId: "gh-pr-999",
@@ -453,54 +494,69 @@ describe("runPrReadRepair — repair logic", () => {
 
     await runRepair([link]);
 
-    // Second externalLink.update should include fresh state/title/timestamps
-    expect(mockExternalLinkUpdate).toHaveBeenCalledTimes(2);
-    const secondUpdateCall = mockExternalLinkUpdate.mock.calls[1][0];
-    expect(secondUpdateCall.data.title).toBe("Fresh title");
-    expect(secondUpdateCall.data.metadata).toMatchObject({
-      githubId: "gh-pr-999",
-      number: 42,
-      headBranch: "feature-x",
-      baseBranch: "main",
-      state: GitHubPRState.Merged,
-      lastVerifiedAt: expect.any(String),
-      lastRefreshAttemptAt: expect.any(String),
-    });
+    // externalLink.updateMany in tx should include fresh state/title/timestamps
+    expect(mockExternalLinkUpdateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          title: "Fresh title",
+          metadata: expect.objectContaining({
+            githubId: "gh-pr-999",
+            number: 42,
+            headBranch: "feature-x",
+            baseBranch: "main",
+            state: GitHubPRState.Merged,
+            lastVerifiedAt: expect.any(String),
+            lastRefreshAttemptAt: expect.any(String),
+          }),
+        }),
+      })
+    );
   });
 
   it("updates GitHubPullRequest row when githubId is present in metadata", async () => {
+    // link.workstreamId is non-null so resolveWorkstreamId short-circuits immediately.
     const link = makeExternalLink({
+      workstreamId: "ws-uuid-1",
       metadata: makePrMetadata({
         githubId: "gh-pr-888",
         state: GitHubPRState.Open,
       }),
     });
 
-    const mockExternalLinkUpdate = vi
-      .fn()
-      .mockResolvedValue({ metadata: link.metadata });
-    const mockPrFindFirst = vi.fn().mockResolvedValue(null);
-    const mockInstallationFindMany = vi
-      .fn()
-      .mockResolvedValue([{ installationId: "install-55" }]);
     const mockPrUpdateMany = vi.fn().mockResolvedValue({ count: 1 });
 
-    mockWithDb
-      .mockImplementationOnce((cb: any) =>
-        cb({ externalLink: { update: mockExternalLinkUpdate } })
-      )
-      .mockImplementationOnce((cb: any) =>
-        cb({ gitHubPullRequest: { findFirst: mockPrFindFirst } })
-      )
-      .mockImplementationOnce((cb: any) =>
-        cb({ gitHubInstallation: { findMany: mockInstallationFindMany } })
-      )
-      .mockImplementationOnce((cb: any) =>
-        cb({ externalLink: { update: mockExternalLinkUpdate } })
-      )
-      .mockImplementationOnce((cb: any) =>
-        cb({ gitHubPullRequest: { updateMany: mockPrUpdateMany } })
-      );
+    // Call 1: stamp lastRefreshAttemptAt
+    mockWithDb.mockImplementationOnce((cb: any) =>
+      cb({
+        externalLink: {
+          update: vi.fn().mockResolvedValue({ metadata: link.metadata }),
+        },
+      })
+    );
+    // Call 2: resolveRepositoryId — gitHubInstallationRepository.findFirst
+    mockWithDb.mockImplementationOnce((cb: any) =>
+      cb({
+        gitHubInstallationRepository: {
+          findFirst: vi.fn().mockResolvedValue({
+            id: "repo-uuid-55",
+            installation: { installationId: "install-55" },
+          }),
+        },
+      })
+    );
+
+    // withDb.tx: applyExternalLinkUpdate (updateMany) + applyPullRequestUpsert (findFirst → updateMany)
+    // findFirst returns a row → existing PR → calls updateMany
+    mockWithDb.tx.mockImplementationOnce((cb: any) =>
+      cb({
+        externalLink: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+        gitHubPullRequest: {
+          findFirst: vi.fn().mockResolvedValue({ id: "existing-pr-888" }),
+          create: vi.fn(),
+          updateMany: mockPrUpdateMany,
+        },
+      })
+    );
 
     mockGetSinglePullRequest.mockResolvedValueOnce({
       githubId: "gh-pr-888",
@@ -531,34 +587,54 @@ describe("runPrReadRepair — repair logic", () => {
     });
   });
 
-  it("skips GitHubPullRequest updateMany when githubId is absent from metadata", async () => {
-    // metadata with no githubId field
+  it("proceeds to create github_pull_requests when original metadata lacks githubId but fresh PR data is fetched successfully", async () => {
+    // T-4.4 changed behavior: missing githubId in original metadata no longer
+    // causes a skip. resolveRepositoryId now provides repositoryId+installationId
+    // from the URL, and the fresh PR response provides githubId. The function
+    // must proceed to applyPullRequestUpsert and create the row.
     const link = makeExternalLink({
+      workstreamId: "ws-uuid-1",
       metadata: {
         number: 42,
         headBranch: "feat",
         baseBranch: "main",
         state: GitHubPRState.Open,
-        // githubId deliberately absent
+        // githubId deliberately absent from original metadata
       },
     });
 
-    const mockExternalLinkUpdate = vi.fn().mockResolvedValue({ metadata: {} });
-    const mockInstallationFindMany = vi
-      .fn()
-      .mockResolvedValue([{ installationId: "install-33" }]);
-    const mockPrUpdateMany = vi.fn();
+    const mockExternalLinkUpdateMany = vi.fn().mockResolvedValue({ count: 1 });
+    const mockRepoFindFirst = vi.fn().mockResolvedValue({
+      id: "repo-uuid-1",
+      installation: { installationId: "install-33" },
+    });
+    const mockPrFindFirst = vi.fn().mockResolvedValue(null);
+    const mockPrCreate = vi.fn().mockResolvedValue({});
 
-    mockWithDb
-      .mockImplementationOnce((cb: any) =>
-        cb({ externalLink: { update: mockExternalLinkUpdate } })
-      )
-      .mockImplementationOnce((cb: any) =>
-        cb({ gitHubInstallation: { findMany: mockInstallationFindMany } })
-      )
-      .mockImplementationOnce((cb: any) =>
-        cb({ externalLink: { update: mockExternalLinkUpdate } })
-      );
+    // Call 1: stamp lastRefreshAttemptAt
+    mockWithDb.mockImplementationOnce((cb: any) =>
+      cb({
+        externalLink: {
+          update: vi.fn().mockResolvedValue({ metadata: {} }),
+        },
+      })
+    );
+    // Call 2: resolveRepositoryId — gitHubInstallationRepository.findFirst
+    mockWithDb.mockImplementationOnce((cb: any) =>
+      cb({ gitHubInstallationRepository: { findFirst: mockRepoFindFirst } })
+    );
+
+    // withDb.tx for the transactional update (applyExternalLinkUpdate + applyPullRequestUpsert)
+    mockWithDb.tx.mockImplementationOnce((cb: any) =>
+      cb({
+        externalLink: { updateMany: mockExternalLinkUpdateMany },
+        gitHubPullRequest: {
+          findFirst: mockPrFindFirst,
+          create: mockPrCreate,
+          updateMany: vi.fn(),
+        },
+      })
+    );
 
     mockGetSinglePullRequest.mockResolvedValueOnce({
       githubId: "gh-pr-000",
@@ -578,6 +654,617 @@ describe("runPrReadRepair — repair logic", () => {
 
     await runRepair([link]);
 
-    expect(mockPrUpdateMany).not.toHaveBeenCalled();
+    // Must have entered the tx and updated the externalLink
+    expect(mockWithDb.tx).toHaveBeenCalledOnce();
+    expect(mockExternalLinkUpdateMany).toHaveBeenCalledOnce();
+    // applyPullRequestUpsert must have attempted to create (findFirst returned null → no existing row)
+    expect(mockPrCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          githubId: "gh-pr-000",
+          workstreamId: "ws-uuid-1",
+          repositoryId: "repo-uuid-1",
+        }),
+      })
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// repairSinglePrLink — new functionality (T-4.1 through T-4.4)
+// ---------------------------------------------------------------------------
+
+describe("repairSinglePrLink — new functionality", () => {
+  /**
+   * Shared setup: stamp attempt + resolveRepositoryId returning a resolved repo,
+   * then an optional resolveWorkstreamId chain, then the tx.
+   *
+   * This helper wires up the standard happy-path withDb call sequence:
+   *   1. externalLink.update (stamp)
+   *   2. gitHubInstallationRepository.findFirst (resolveRepositoryId)
+   *   ...any extra withDb calls for resolveWorkstreamId...
+   *   then mockWithDb.tx is set up by the caller.
+   */
+  function setupStampAndRepo(
+    link: ReturnType<typeof makeExternalLink>,
+    repoResult: { id: string; installation: { installationId: string } } | null,
+    extraWithDbCalls: ((cb: any) => unknown)[] = []
+  ) {
+    // Call 1: stamp lastRefreshAttemptAt
+    mockWithDb.mockImplementationOnce((cb: any) =>
+      cb({
+        externalLink: {
+          update: vi.fn().mockResolvedValue({
+            metadata: link.metadata ?? {},
+          }),
+        },
+      })
+    );
+    // Call 2: resolveRepositoryId — gitHubInstallationRepository.findFirst
+    mockWithDb.mockImplementationOnce((cb: any) =>
+      cb({
+        gitHubInstallationRepository: {
+          findFirst: vi.fn().mockResolvedValue(repoResult),
+        },
+      })
+    );
+    // Additional withDb calls (e.g., resolveWorkstreamId entity link walks)
+    for (const impl of extraWithDbCalls) {
+      mockWithDb.mockImplementationOnce(impl);
+    }
+  }
+
+  function makeFreshPr(
+    overrides: Partial<{
+      githubId: string;
+      number: number;
+      title: string;
+      state: GitHubPRState;
+      mergedAt: string | null;
+      closedAt: string | null;
+      authorLogin: string | null;
+      isDraft: boolean;
+      headSha: string;
+      baseSha: string;
+    }> = {}
+  ) {
+    return {
+      githubId: "gh-pr-new",
+      number: 42,
+      title: "New PR",
+      htmlUrl: "https://github.com/acme/my-repo/pull/42",
+      headBranch: "feat",
+      baseBranch: "main",
+      state: GitHubPRState.Open,
+      mergedAt: null,
+      closedAt: null,
+      authorLogin: null,
+      isDraft: false,
+      headSha: "abc123",
+      baseSha: "def456",
+      ...overrides,
+    };
+  }
+
+  async function runRepair(links: ReturnType<typeof makeExternalLink>[]) {
+    schedulePrReadRepair(links, ORG_ID);
+    const capturedPromise = mockWaitUntil.mock.calls[0]?.[0] as
+      | Promise<void>
+      | undefined;
+    if (capturedPromise) {
+      await capturedPromise;
+    }
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Reset withDb.tx to a fresh mock after clearAllMocks resets the fn
+    mockWithDb.tx = vi.fn();
+  });
+
+  it("creates github_pull_requests when none exists", async () => {
+    const link = makeExternalLink({
+      workstreamId: "ws-uuid-1",
+      metadata: null,
+    });
+    const mockPrCreate = vi.fn().mockResolvedValue({});
+
+    setupStampAndRepo(link, {
+      id: "repo-uuid-1",
+      installation: { installationId: "install-1" },
+    });
+
+    mockGetSinglePullRequest.mockResolvedValueOnce(makeFreshPr());
+
+    // tx: externalLink.updateMany + gitHubPullRequest.findFirst (no existing) + create
+    mockWithDb.tx.mockImplementationOnce((cb: any) =>
+      cb({
+        externalLink: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+        gitHubPullRequest: {
+          findFirst: vi.fn().mockResolvedValue(null),
+          create: mockPrCreate,
+          updateMany: vi.fn(),
+        },
+      })
+    );
+
+    await runRepair([link]);
+
+    expect(mockPrCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          githubId: "gh-pr-new",
+          organizationId: ORG_ID,
+          repositoryId: "repo-uuid-1",
+          workstreamId: "ws-uuid-1",
+          number: 42,
+          title: "New PR",
+        }),
+      })
+    );
+  });
+
+  it("resolves workstream from artifact when link has no workstreamId", async () => {
+    // link.workstreamId is null — resolveWorkstreamId must walk the entity link tree
+    const link = makeExternalLink({
+      id: "link-no-ws",
+      workstreamId: null,
+      metadata: null,
+    });
+    const mockPrCreate = vi.fn().mockResolvedValue({});
+    const mockEntityLinkFindMany = vi.fn().mockResolvedValue([
+      {
+        sourceId: "artifact-uuid-1",
+        sourceType: EntityType.Document,
+      },
+    ]);
+    const mockDocumentFindFirst = vi.fn().mockResolvedValue({
+      workstreamId: "ws-from-artifact",
+    });
+
+    setupStampAndRepo(
+      link,
+      { id: "repo-uuid-2", installation: { installationId: "install-2" } },
+      [
+        // resolveWorkstreamId call 1: entityLink.findMany (parent links)
+        (cb: any) =>
+          cb({
+            entityLink: {
+              findMany: mockEntityLinkFindMany,
+            },
+          }),
+        // resolveWorkstreamId call 2: artifact.findFirst
+        (cb: any) =>
+          cb({
+            document: {
+              findFirst: mockDocumentFindFirst,
+            },
+          }),
+      ]
+    );
+
+    mockGetSinglePullRequest.mockResolvedValueOnce(makeFreshPr());
+
+    mockWithDb.tx.mockImplementationOnce((cb: any) =>
+      cb({
+        externalLink: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+        gitHubPullRequest: {
+          findFirst: vi.fn().mockResolvedValue(null),
+          create: mockPrCreate,
+          updateMany: vi.fn(),
+        },
+      })
+    );
+
+    await runRepair([link]);
+
+    expect(mockPrCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          workstreamId: "ws-from-artifact",
+        }),
+      })
+    );
+    expect(mockEntityLinkFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ organizationId: ORG_ID }),
+      })
+    );
+    expect(mockDocumentFindFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ organizationId: ORG_ID }),
+      })
+    );
+  });
+
+  it("resolves workstream from feature when artifact has no workstreamId", async () => {
+    const link = makeExternalLink({
+      id: "link-no-ws-2",
+      workstreamId: null,
+      metadata: null,
+    });
+    const mockPrCreate = vi.fn().mockResolvedValue({});
+    const mockEntityLinkFindManyArtifact = vi.fn().mockResolvedValue([
+      {
+        sourceId: "artifact-uuid-2",
+        sourceType: EntityType.Document,
+      },
+    ]);
+    const mockDocumentFindFirst = vi
+      .fn()
+      .mockResolvedValue({ workstreamId: null });
+    const mockEntityLinkFindManyFeature = vi.fn().mockResolvedValue([
+      {
+        sourceId: "feature-uuid-1",
+        sourceType: EntityType.Document,
+      },
+    ]);
+    const mockFeatureFindFirst = vi.fn().mockResolvedValue({
+      workstreamId: "ws-from-feature",
+    });
+
+    setupStampAndRepo(
+      link,
+      { id: "repo-uuid-3", installation: { installationId: "install-3" } },
+      [
+        // resolveWorkstreamId call 1: entityLink.findMany (parent links)
+        (cb: any) =>
+          cb({
+            entityLink: {
+              findMany: mockEntityLinkFindManyArtifact,
+            },
+          }),
+        // resolveWorkstreamId call 2: artifact.findFirst — workstreamId is null → continue to feature
+        (cb: any) =>
+          cb({
+            document: {
+              findFirst: mockDocumentFindFirst,
+            },
+          }),
+        // resolveWorkstreamId call 3: entityLink.findMany (feature links)
+        (cb: any) =>
+          cb({
+            entityLink: {
+              findMany: mockEntityLinkFindManyFeature,
+            },
+          }),
+        // resolveWorkstreamId call 4: document.findFirst (looking up Feature doc)
+        (cb: any) =>
+          cb({
+            document: {
+              findFirst: mockFeatureFindFirst,
+            },
+          }),
+      ]
+    );
+
+    mockGetSinglePullRequest.mockResolvedValueOnce(makeFreshPr());
+
+    mockWithDb.tx.mockImplementationOnce((cb: any) =>
+      cb({
+        externalLink: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+        gitHubPullRequest: {
+          findFirst: vi.fn().mockResolvedValue(null),
+          create: mockPrCreate,
+          updateMany: vi.fn(),
+        },
+      })
+    );
+
+    await runRepair([link]);
+
+    expect(mockPrCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          workstreamId: "ws-from-feature",
+        }),
+      })
+    );
+    expect(mockEntityLinkFindManyArtifact).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ organizationId: ORG_ID }),
+      })
+    );
+    expect(mockDocumentFindFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ organizationId: ORG_ID }),
+      })
+    );
+    expect(mockEntityLinkFindManyFeature).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ organizationId: ORG_ID }),
+      })
+    );
+    expect(mockFeatureFindFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ organizationId: ORG_ID }),
+      })
+    );
+  });
+
+  it("logs warning and skips github_pull_requests creation when workstream cannot be resolved", async () => {
+    const link = makeExternalLink({
+      id: "link-no-ws-3",
+      workstreamId: null,
+      metadata: null,
+    });
+    const mockPrCreate = vi.fn();
+    const mockEntityLinkFindMany = vi.fn().mockResolvedValue([]);
+
+    setupStampAndRepo(
+      link,
+      { id: "repo-uuid-4", installation: { installationId: "install-4" } },
+      [
+        // resolveWorkstreamId call 1: entityLink.findMany → returns empty (no parent links)
+        (cb: any) =>
+          cb({
+            entityLink: {
+              findMany: mockEntityLinkFindMany,
+            },
+          }),
+      ]
+    );
+
+    mockGetSinglePullRequest.mockResolvedValueOnce(makeFreshPr());
+
+    mockWithDb.tx.mockImplementationOnce((cb: any) =>
+      cb({
+        externalLink: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+        gitHubPullRequest: {
+          findFirst: vi.fn().mockResolvedValue(null),
+          create: mockPrCreate,
+          updateMany: vi.fn(),
+        },
+      })
+    );
+
+    await runRepair([link]);
+
+    // workstreamId is null and repositoryId is non-null — the guard in
+    // applyPullRequestUpsert must log a warning and return without creating
+    expect(mockLog.warn).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "GitHubPullRequest row not found and cannot backfill"
+      ),
+      expect.objectContaining({ workstreamId: null })
+    );
+    expect(mockPrCreate).not.toHaveBeenCalled();
+    expect(mockEntityLinkFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ organizationId: ORG_ID }),
+      })
+    );
+  });
+
+  it("does not throw on P2002 unique constraint violation (concurrent insert dedup)", async () => {
+    const link = makeExternalLink({
+      workstreamId: "ws-uuid-1",
+      metadata: null,
+    });
+    const p2002Error = Object.assign(new Error("Unique constraint"), {
+      code: "P2002",
+    });
+    const mockPrCreate = vi.fn().mockRejectedValue(p2002Error);
+
+    setupStampAndRepo(link, {
+      id: "repo-uuid-5",
+      installation: { installationId: "install-5" },
+    });
+
+    mockGetSinglePullRequest.mockResolvedValueOnce(makeFreshPr());
+
+    mockWithDb.tx.mockImplementationOnce((cb: any) =>
+      cb({
+        externalLink: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+        gitHubPullRequest: {
+          findFirst: vi.fn().mockResolvedValue(null),
+          create: mockPrCreate,
+          updateMany: vi.fn(),
+        },
+      })
+    );
+
+    // Must not throw — P2002 is silently swallowed as a concurrent-insert dedup
+    await expect(runRepair([link])).resolves.toBeUndefined();
+    expect(mockPrCreate).toHaveBeenCalledOnce();
+  });
+
+  it("fixes null workstream_id on external link by writing resolved workstreamId", async () => {
+    // link.workstreamId is null — after resolveWorkstreamId resolves it from artifact,
+    // applyExternalLinkUpdate should include workstreamId in the updateMany data
+    const link = makeExternalLink({
+      id: "link-ws-fix",
+      workstreamId: null,
+      metadata: null,
+    });
+    const mockExternalLinkUpdateMany = vi.fn().mockResolvedValue({ count: 1 });
+
+    setupStampAndRepo(
+      link,
+      { id: "repo-uuid-6", installation: { installationId: "install-6" } },
+      [
+        // resolveWorkstreamId call 1: entityLink.findMany (parent links)
+        (cb: any) =>
+          cb({
+            entityLink: {
+              findMany: vi.fn().mockResolvedValue([
+                {
+                  sourceId: "artifact-uuid-3",
+                  sourceType: EntityType.Document,
+                },
+              ]),
+            },
+          }),
+        // resolveWorkstreamId call 2: document.findFirst
+        (cb: any) =>
+          cb({
+            document: {
+              findFirst: vi.fn().mockResolvedValue({
+                workstreamId: "ws-resolved",
+              }),
+            },
+          }),
+      ]
+    );
+
+    mockGetSinglePullRequest.mockResolvedValueOnce(makeFreshPr());
+
+    mockWithDb.tx.mockImplementationOnce((cb: any) =>
+      cb({
+        externalLink: { updateMany: mockExternalLinkUpdateMany },
+        gitHubPullRequest: {
+          findFirst: vi.fn().mockResolvedValue(null),
+          create: vi.fn().mockResolvedValue({}),
+          updateMany: vi.fn(),
+        },
+      })
+    );
+
+    await runRepair([link]);
+
+    // applyExternalLinkUpdate: link.workstreamId === null and workstreamId !== null
+    // → must include workstreamId in the update
+    expect(mockExternalLinkUpdateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          workstreamId: "ws-resolved",
+        }),
+      })
+    );
+  });
+
+  it("correctly resolves repositoryId from installation repositories via resolveRepositoryId", async () => {
+    const link = makeExternalLink({
+      externalUrl: "https://github.com/acme/target-repo/pull/7",
+      workstreamId: "ws-uuid-1",
+      metadata: null,
+    });
+    const mockRepoFindFirst = vi.fn().mockResolvedValue({
+      id: "repo-uuid-target",
+      installation: { installationId: "install-target" },
+    });
+    const mockPrCreate = vi.fn().mockResolvedValue({});
+
+    // Call 1: stamp
+    mockWithDb.mockImplementationOnce((cb: any) =>
+      cb({
+        externalLink: {
+          update: vi.fn().mockResolvedValue({ metadata: {} }),
+        },
+      })
+    );
+    // Call 2: resolveRepositoryId with fullName "acme/target-repo"
+    mockWithDb.mockImplementationOnce((cb: any) =>
+      cb({
+        gitHubInstallationRepository: { findFirst: mockRepoFindFirst },
+      })
+    );
+
+    mockGetSinglePullRequest.mockResolvedValueOnce(
+      makeFreshPr({ githubId: "gh-pr-target", number: 7 })
+    );
+
+    mockWithDb.tx.mockImplementationOnce((cb: any) =>
+      cb({
+        externalLink: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+        gitHubPullRequest: {
+          findFirst: vi.fn().mockResolvedValue(null),
+          create: mockPrCreate,
+          updateMany: vi.fn(),
+        },
+      })
+    );
+
+    await runRepair([link]);
+
+    // resolveRepositoryId must have queried with fullName scoped to org
+    expect(mockRepoFindFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          fullName: "acme/target-repo",
+          installation: { organizationId: ORG_ID },
+        },
+      })
+    );
+    // The create must have used the resolved repositoryId
+    expect(mockPrCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ repositoryId: "repo-uuid-target" }),
+      })
+    );
+  });
+
+  it("memoizes repositoryId across two links for the same repo (only one DB lookup)", async () => {
+    // Two links for the same owner/repo — resolveRepositoryId should only
+    // call gitHubInstallationRepository.findFirst once; the second link hits the cache.
+    const linkA = makeExternalLink({
+      id: "link-a",
+      externalUrl: "https://github.com/acme/shared-repo/pull/10",
+      workstreamId: "ws-uuid-1",
+      metadata: null,
+    });
+    const linkB = makeExternalLink({
+      id: "link-b",
+      externalUrl: "https://github.com/acme/shared-repo/pull/11",
+      workstreamId: "ws-uuid-1",
+      metadata: null,
+    });
+
+    const mockRepoFindFirst = vi.fn().mockResolvedValue({
+      id: "repo-uuid-shared",
+      installation: { installationId: "install-shared" },
+    });
+
+    // Link A: stamp + resolveRepositoryId (DB hit)
+    mockWithDb
+      .mockImplementationOnce((cb: any) =>
+        cb({
+          externalLink: { update: vi.fn().mockResolvedValue({ metadata: {} }) },
+        })
+      )
+      .mockImplementationOnce((cb: any) =>
+        cb({ gitHubInstallationRepository: { findFirst: mockRepoFindFirst } })
+      );
+
+    // Link B: stamp only — resolveRepositoryId should use cache, no second DB call
+    mockWithDb.mockImplementationOnce((cb: any) =>
+      cb({
+        externalLink: { update: vi.fn().mockResolvedValue({ metadata: {} }) },
+      })
+    );
+
+    // getSinglePullRequest for both links
+    mockGetSinglePullRequest
+      .mockResolvedValueOnce(makeFreshPr({ githubId: "gh-pr-10", number: 10 }))
+      .mockResolvedValueOnce(makeFreshPr({ githubId: "gh-pr-11", number: 11 }));
+
+    // tx for link A
+    mockWithDb.tx
+      .mockImplementationOnce((cb: any) =>
+        cb({
+          externalLink: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+          gitHubPullRequest: {
+            findFirst: vi.fn().mockResolvedValue(null),
+            create: vi.fn().mockResolvedValue({}),
+            updateMany: vi.fn(),
+          },
+        })
+      )
+      // tx for link B
+      .mockImplementationOnce((cb: any) =>
+        cb({
+          externalLink: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+          gitHubPullRequest: {
+            findFirst: vi.fn().mockResolvedValue(null),
+            create: vi.fn().mockResolvedValue({}),
+            updateMany: vi.fn(),
+          },
+        })
+      );
+
+    await runRepair([linkA, linkB]);
+
+    // The repo findFirst DB call must have been invoked exactly once (cache hit on link B)
+    expect(mockRepoFindFirst).toHaveBeenCalledOnce();
   });
 });

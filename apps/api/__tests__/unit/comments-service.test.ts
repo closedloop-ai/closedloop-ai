@@ -8,6 +8,11 @@ vi.mock("@repo/database", () => ({
 
 vi.mock("@repo/collaboration/room-utils", () => ({
   parseArtifactRoomId: vi.fn(),
+  parseDocumentRoomId: vi.fn((roomId: string) => {
+    const parts = roomId.split(":");
+    return { organizationId: parts[0], slug: parts[2] };
+  }),
+  generateDocumentRoomId: vi.fn(),
 }));
 
 import { ThreadSource, ThreadStatus } from "@repo/api/src/types/comment";
@@ -66,7 +71,7 @@ describe("commentsService", () => {
     it("upserts a thread with entity from room lookup", async () => {
       const mockDb = {
         commentThread: { upsert: vi.fn().mockResolvedValue({ id: "db-th-1" }) },
-        artifact: {
+        document: {
           findUnique: vi.fn().mockResolvedValue({ id: "artifact-1" }),
         },
       };

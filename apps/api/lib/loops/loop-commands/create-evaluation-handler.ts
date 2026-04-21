@@ -9,7 +9,7 @@ import { log } from "@repo/observability/log";
 import {
   parseJsonArtifact,
   upsertEvaluationWithJudgeScores,
-} from "@/lib/loops/loop-artifact-ingestion";
+} from "@/lib/loops/loop-document-ingestion";
 import { downloadArtifactFile } from "@/lib/loops/loop-state";
 import { judgesReportSchema } from "../judges-report-schema";
 import type { LoopCommandHandler } from "./loop-command-handler";
@@ -71,9 +71,9 @@ export function createEvaluationHandler(
       organizationId: string,
       artifacts: JudgesArtifacts
     ) {
-      if (!loop.artifactId) {
+      if (!loop.documentId) {
         log.warn(
-          `[loop-artifact-ingestion] No artifactId on loop, skipping ${label} evaluation ingestion`,
+          `[loop-document-ingestion] No artifactId on loop, skipping ${label} evaluation ingestion`,
           { loopId: loop.id }
         );
         return;
@@ -83,32 +83,32 @@ export function createEvaluationHandler(
 
       if (!report) {
         log.info(
-          `[loop-artifact-ingestion] No ${label} judges report to ingest`,
-          { artifactId: loop.artifactId }
+          `[loop-document-ingestion] No ${label} judges report to ingest`,
+          { documentId: loop.documentId }
         );
         return;
       }
 
-      const artifactId = loop.artifactId;
+      const documentId = loop.documentId;
 
       await withDb.tx(async (tx) => {
         // Stale-write guard: if the artifact has advanced beyond the version this
         // loop was created for, a newer evaluation loop has already run (or is
         // in flight). Skip ingestion to prevent old scores from overwriting newer ones.
         // Check is inside the transaction to avoid a TOCTOU race between read and write.
-        if (loop.artifactVersion != null) {
-          const artifact = await tx.artifact.findUnique({
-            where: { id: artifactId, organizationId },
+        if (loop.documentVersion != null) {
+          const artifact = await tx.document.findUnique({
+            where: { id: documentId, organizationId },
             select: { latestVersion: true },
           });
 
-          if (artifact && artifact.latestVersion > loop.artifactVersion) {
+          if (artifact && artifact.latestVersion > loop.documentVersion) {
             log.info(
-              `[loop-artifact-ingestion] Skipping ${label} evaluation ingest — artifact has a newer version`,
+              `[loop-document-ingestion] Skipping ${label} evaluation ingest — artifact has a newer version`,
               {
-                artifactId,
+                documentId,
                 loopId: loop.id,
-                loopArtifactVersion: loop.artifactVersion,
+                loopArtifactVersion: loop.documentVersion,
                 currentArtifactVersion: artifact.latestVersion,
               }
             );
@@ -117,9 +117,9 @@ export function createEvaluationHandler(
         }
 
         await upsertEvaluationWithJudgeScores({
-          entityId: artifactId,
-          entityType: EntityType.ARTIFACT,
-          artifactId,
+          entityId: documentId,
+          entityType: EntityType.DOCUMENT,
+          documentId,
           loopId: loop.id,
           organizationId,
           reportType,

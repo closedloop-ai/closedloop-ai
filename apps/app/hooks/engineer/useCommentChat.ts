@@ -3,11 +3,11 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import type { ContentBlock } from "@/components/engineer/chat";
+import type { ContentBlock } from "@/components/chat/types";
 import type { PRComment } from "@/components/engineer/PRCommentCard";
-import { useChatStream } from "@/hooks/engineer/use-chat-stream";
+import { useChatStream } from "@/hooks/chat/use-chat-stream";
 import { useSelfLearningEnabled } from "@/hooks/engineer/use-self-learning-enabled";
-import { getWorktreePath, SENTINEL_VALUES } from "@/lib/engineer/chat-utils";
+import { getWorktreePath, SENTINEL_VALUES } from "@/lib/chat/chat-utils";
 import {
   markCommentAddressed,
   markCommentResponded,
@@ -721,9 +721,6 @@ export function useCommentChat({
 
   // Clear entire chat history
   const handleClearChat = async () => {
-    if (!confirm("Clear all chat history for this comment?")) {
-      return;
-    }
     try {
       const response = await fetch(
         `/api/gateway/symphony/comment-chat/${encodeURIComponent(comment.id)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}${branchParams}`,

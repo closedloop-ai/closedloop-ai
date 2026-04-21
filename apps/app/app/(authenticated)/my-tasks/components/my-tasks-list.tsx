@@ -1,7 +1,7 @@
 "use client";
 
 import type { CustomFieldValueDetail } from "@repo/api/src/types/custom-field";
-import type { FeatureWithWorkstream } from "@repo/api/src/types/feature";
+import type { DocumentWithWorkstream } from "@repo/api/src/types/document";
 import { isDisplayableSlug } from "@repo/api/src/types/slug";
 import {
   Collapsible,
@@ -31,10 +31,10 @@ import { AssigneeAvatar } from "@/components/assignee-avatar";
 import { CustomFieldCell } from "@/components/custom-fields/custom-field-cell";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { EmptyState } from "@/components/empty-state";
-import { useDeleteFeature, useFeatures } from "@/hooks/queries/use-features";
+import { useDeleteDocument, useDocuments } from "@/hooks/queries/use-documents";
 import { useDeleteConfirmation } from "@/hooks/use-delete-confirmation";
 import { deriveCustomFieldColumns } from "@/lib/custom-field-utils";
-import { FEATURE_STATUS_TO_ICON } from "@/lib/project-constants";
+import { DOCUMENT_STATUS_TO_ICON } from "@/lib/project-constants";
 import type { MyTasksFeatureFilters } from "../types";
 import {
   applyClientFilters,
@@ -57,7 +57,7 @@ export function MyTasksList({
     () => buildFeatureListParams(assigneeId),
     [assigneeId]
   );
-  const { data: rawFeatures = [], isLoading } = useFeatures(listParams, {
+  const { data: rawFeatures = [], isLoading } = useDocuments(listParams, {
     enabled: !!assigneeId && !isUserLoading,
   });
   const features = useMemo(
@@ -67,7 +67,7 @@ export function MyTasksList({
         : rawFeatures,
     [rawFeatures, featureFilters]
   );
-  const deleteFeatureMutation = useDeleteFeature();
+  const deleteFeatureMutation = useDeleteDocument();
 
   const customFieldColumns = useMemo(
     () => deriveCustomFieldColumns(features),
@@ -88,15 +88,15 @@ export function MyTasksList({
     itemToDelete,
     requestDelete,
     setOpen: setDeleteOpen,
-  } = useDeleteConfirmation<FeatureWithWorkstream>({
+  } = useDeleteConfirmation<DocumentWithWorkstream>({
     getId: (feature) => feature.id,
     onDelete: handleDelete,
   });
 
   const grouped = useMemo(() => {
-    const map = new Map<string, FeatureWithWorkstream[]>();
+    const map = new Map<string, DocumentWithWorkstream[]>();
     for (const group of DISPLAY_GROUPS) {
-      const items = features.filter((i: FeatureWithWorkstream) =>
+      const items = features.filter((i: DocumentWithWorkstream) =>
         group.statuses.includes(i.status)
       );
       if (items.length > 0) {
@@ -166,9 +166,9 @@ export function MyTasksList({
 
 type MyTasksStatusSectionProps = {
   customFieldColumns: CustomFieldValueDetail[];
-  items: FeatureWithWorkstream[];
+  items: DocumentWithWorkstream[];
   label: string;
-  onRequestDelete: (feature: FeatureWithWorkstream) => void;
+  onRequestDelete: (feature: DocumentWithWorkstream) => void;
 };
 
 function MyTasksStatusSection({
@@ -216,8 +216,8 @@ function MyTasksStatusSection({
 
 type MyTasksRowProps = {
   customFieldColumns: CustomFieldValueDetail[];
-  feature: FeatureWithWorkstream;
-  onRequestDelete: (feature: FeatureWithWorkstream) => void;
+  feature: DocumentWithWorkstream;
+  onRequestDelete: (feature: DocumentWithWorkstream) => void;
 };
 
 function MyTasksRow({
@@ -269,7 +269,7 @@ function MyTasksRow({
           <div className="flex size-8 shrink-0 items-center justify-center">
             <StatusIcon
               size={20}
-              status={FEATURE_STATUS_TO_ICON[feature.status]}
+              status={DOCUMENT_STATUS_TO_ICON[feature.status]}
             />
           </div>
         </div>

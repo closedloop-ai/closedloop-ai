@@ -241,6 +241,7 @@ export function TicketListRow({
                 onLearningsClick(ticket, pendingClaudeMdPath);
               }
             }}
+            type="button"
           >
             <BookMarked className="size-2.5 shrink-0" />
             Learnings
@@ -300,6 +301,7 @@ export function TicketListRow({
                   onTeardown(ticket.identifier);
                 }}
                 title="Stop dev server"
+                type="button"
               >
                 <Square className="size-2.5 text-muted-foreground transition-colors hover:text-destructive" />
               </button>
@@ -333,6 +335,7 @@ export function TicketListRow({
                 onToggleStar(ticket.identifier);
               }}
               title={isStarred ? "Remove from Next Up" : "Add to Next Up"}
+              type="button"
             >
               <Star className={cn("size-3.5", isStarred && "fill-current")} />
             </button>
@@ -345,6 +348,7 @@ export function TicketListRow({
                 onAskClaude(ticket);
               }}
               title="Ask Claude"
+              type="button"
             >
               <Sparkles className="size-3.5" />
             </button>
@@ -360,6 +364,7 @@ export function TicketListRow({
                   onDeleteWorktree(ticket.identifier, worktreePath);
                 }}
                 title="Delete worktree"
+                type="button"
               >
                 <Trash2 className="size-3.5" />
               </button>

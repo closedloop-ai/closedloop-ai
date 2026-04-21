@@ -125,6 +125,12 @@ function getStatusBadge(status: CommentDisplayStatus, commitSha?: string) {
         label: "Dismissed",
         className: "bg-muted text-muted-foreground",
       };
+    default:
+      return {
+        icon: MessageSquare,
+        label: "Unknown",
+        className: "bg-muted text-muted-foreground",
+      };
   }
 }
 
@@ -155,19 +161,37 @@ export function PRCommentCard({
   const isResolved =
     status === "addressed" || status === "responded" || status === "dismissed";
   const isLongComment = comment.body.length > TRUNCATE_LENGTH;
+  const isClickable = typeof onViewChat === "function";
 
   // Format the timestamp
   const timeAgo = formatRelativeTime(new Date(comment.createdAt));
 
   return (
+    // biome-ignore lint/a11y/useSemanticElements: Card-level click needs to coexist with nested action buttons.
     <div
       className={cn(
-        "group cursor-pointer rounded-lg border bg-card p-4 transition-all duration-200",
+        "group rounded-lg border bg-card p-4 transition-all duration-200",
+        isClickable && "cursor-pointer",
         isSelected && "border-l-[3px] border-l-blue-500 bg-blue-500/[0.04]",
         !isSelected && isPending && "hover:border-primary/30 hover:shadow-sm",
         !(isSelected || isPending) && "opacity-75 hover:opacity-100"
       )}
-      onClick={onViewChat}
+      onClick={() => {
+        if (isClickable) {
+          onViewChat();
+        }
+      }}
+      onKeyDown={(e) => {
+        if (!isClickable) {
+          return;
+        }
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onViewChat();
+        }
+      }}
+      role="button"
+      tabIndex={0}
     >
       {/* Header: Author + timestamp, file location below */}
       <div className="mb-2 space-y-1.5">
@@ -222,6 +246,7 @@ export function PRCommentCard({
               e.stopPropagation();
               setIsExpanded(!isExpanded);
             }}
+            type="button"
           >
             {isExpanded ? (
               <>
@@ -286,17 +311,17 @@ export function PRCommentCard({
         </span>
 
         {/* Action buttons */}
-        <div
-          className="flex items-center gap-2"
-          onClick={(e) => e.stopPropagation()}
-        >
+        <div className="flex items-center gap-2">
           {/* Pending: Overflow menu + Dismiss */}
           {isPending && (
             <>
               {onDismiss && (
                 <Button
                   className="h-7 text-muted-foreground text-xs hover:text-foreground"
-                  onClick={onDismiss}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onDismiss();
+                  }}
                   size="sm"
                   variant="ghost"
                 >
@@ -319,7 +344,10 @@ export function PRCommentCard({
               {onViewChat && status !== "dismissed" && (
                 <Button
                   className="h-7 text-xs"
-                  onClick={onViewChat}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onViewChat();
+                  }}
                   size="sm"
                   variant="ghost"
                 >
@@ -330,7 +358,10 @@ export function PRCommentCard({
               {onReopen && (
                 <Button
                   className="h-7 text-muted-foreground text-xs hover:text-foreground"
-                  onClick={onReopen}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onReopen();
+                  }}
                   size="sm"
                   variant="ghost"
                 >
@@ -378,7 +409,12 @@ function PendingOverflowMenu({
       }}
     >
       <DropdownMenuTrigger asChild>
-        <Button className="relative h-7 w-7 p-0" size="sm" variant="ghost">
+        <Button
+          className="relative h-7 w-7 p-0"
+          onClick={(e) => e.stopPropagation()}
+          size="sm"
+          variant="ghost"
+        >
           <MoreVertical className="size-4" />
           {!overflowSeen && (
             <span className="absolute -top-0.5 -right-0.5 size-2 rounded-full bg-emerald-500" />
@@ -387,7 +423,13 @@ function PendingOverflowMenu({
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
         {onProposeFix && (
-          <DropdownMenuItem className="cursor-pointer" onClick={onProposeFix}>
+          <DropdownMenuItem
+            className="cursor-pointer"
+            onClick={(e) => {
+              e.stopPropagation();
+              onProposeFix();
+            }}
+          >
             <Sparkles className="size-4" />
             Fix with Claude
           </DropdownMenuItem>
@@ -395,7 +437,10 @@ function PendingOverflowMenu({
         {onProposeFixCodex && (
           <DropdownMenuItem
             className="cursor-pointer"
-            onClick={onProposeFixCodex}
+            onClick={(e) => {
+              e.stopPropagation();
+              onProposeFixCodex();
+            }}
           >
             <Cpu className="size-4" />
             Fix with Codex
@@ -405,13 +450,14 @@ function PendingOverflowMenu({
         {comment.url && (
           <DropdownMenuItem
             className="cursor-pointer"
-            onClick={() =>
+            onClick={(e) => {
+              e.stopPropagation();
               globalThis.window?.open(
                 comment.url,
                 "_blank",
                 "noopener,noreferrer"
-              )
-            }
+              );
+            }}
           >
             <ExternalLink className="size-4" />
             View on GitHub
@@ -433,16 +479,22 @@ function GitHubOnlyOverflow({ url }: Readonly<{ url?: string }>) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button className="h-7 w-7 p-0" size="sm" variant="ghost">
+        <Button
+          className="h-7 w-7 p-0"
+          onClick={(e) => e.stopPropagation()}
+          size="sm"
+          variant="ghost"
+        >
           <MoreVertical className="size-4" />
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
         <DropdownMenuItem
           className="cursor-pointer"
-          onClick={() =>
-            globalThis.window?.open(url, "_blank", "noopener,noreferrer")
-          }
+          onClick={(e) => {
+            e.stopPropagation();
+            globalThis.window?.open(url, "_blank", "noopener,noreferrer");
+          }}
         >
           <ExternalLink className="size-4" />
           View on GitHub

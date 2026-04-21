@@ -1,16 +1,21 @@
 import { queryOptions } from "@tanstack/react-query";
+import {
+  type BranchDiffFiles as BranchDiffFilesBase,
+  type FileDiff as FileDiffBase,
+  type GitFiles as GitFilesBase,
+  gitBranchDiffOptions as gitBranchDiffOptionsBase,
+  gitDiffOptions as gitDiffOptionsBase,
+  gitStatusOptions as gitStatusOptionsBase,
+} from "@/lib/git/queries";
 import { queryKeys } from "./keys";
 
-export type {
-  BranchDiffFiles,
-  FileDiff,
-  GitFiles,
-} from "@/lib/git/queries";
-export {
-  gitBranchDiffOptions,
-  gitDiffOptions,
-  gitStatusOptions,
-} from "@/lib/git/queries";
+export type BranchDiffFiles = BranchDiffFilesBase;
+export type FileDiff = FileDiffBase;
+export type GitFiles = GitFilesBase;
+
+export const gitBranchDiffOptions = gitBranchDiffOptionsBase;
+export const gitDiffOptions = gitDiffOptionsBase;
+export const gitStatusOptions = gitStatusOptionsBase;
 
 export type PRReviewsResponse = {
   reviewDecision: "APPROVED" | "CHANGES_REQUESTED" | "REVIEW_REQUIRED" | null;

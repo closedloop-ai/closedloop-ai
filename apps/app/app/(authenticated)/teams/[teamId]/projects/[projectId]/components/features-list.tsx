@@ -1,9 +1,12 @@
 "use client";
 
 import type { CustomFieldValueDetail } from "@repo/api/src/types/custom-field";
+import {
+  DocumentStatus,
+  DocumentType,
+  type DocumentWithWorkstream,
+} from "@repo/api/src/types/document";
 import { EntityType } from "@repo/api/src/types/entity-link";
-import type { FeatureWithWorkstream } from "@repo/api/src/types/feature";
-import { FeatureStatus } from "@repo/api/src/types/feature";
 import { isDisplayableSlug } from "@repo/api/src/types/slug";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
@@ -38,7 +41,7 @@ import {
   FeatureStatusBadge,
   featureStatusLabels,
 } from "@/components/status-badge";
-import { useDeleteFeature, useFeatures } from "@/hooks/queries/use-features";
+import { useDeleteDocument, useDocuments } from "@/hooks/queries/use-documents";
 import { useDeleteConfirmation } from "@/hooks/use-delete-confirmation";
 import { deriveCustomFieldColumns } from "@/lib/custom-field-utils";
 
@@ -53,8 +56,11 @@ export function FeaturesList({
   teamId,
   onCreateFeature,
 }: Readonly<FeaturesListProps>) {
-  const { data: features = [], isLoading } = useFeatures({ projectId });
-  const deleteFeatureMutation = useDeleteFeature();
+  const { data: features = [], isLoading } = useDocuments({
+    projectId,
+    type: DocumentType.Feature,
+  });
+  const deleteDocument = useDeleteDocument();
 
   const customFieldColumns = useMemo(
     () => deriveCustomFieldColumns(features),
@@ -62,7 +68,7 @@ export function FeaturesList({
   );
 
   const handleDelete = (id: string) => {
-    return deleteFeatureMutation.mutateAsync(id).then((result) => {
+    return deleteDocument.mutateAsync(id).then((result) => {
       toast.success("Feature deleted");
       return result.deleted;
     });
@@ -70,9 +76,9 @@ export function FeaturesList({
 
   const [moveDialogOpen, setMoveDialogOpen] = useState(false);
   const [featureToMove, setFeatureToMove] =
-    useState<FeatureWithWorkstream | null>(null);
+    useState<DocumentWithWorkstream | null>(null);
 
-  const requestMove = (feature: FeatureWithWorkstream) => {
+  const requestMove = (feature: DocumentWithWorkstream) => {
     setFeatureToMove(feature);
     setMoveDialogOpen(true);
   };
@@ -84,13 +90,13 @@ export function FeaturesList({
     requestDelete,
     confirmDelete,
     setOpen: setDeleteOpen,
-  } = useDeleteConfirmation<FeatureWithWorkstream>({
+  } = useDeleteConfirmation<DocumentWithWorkstream>({
     onDelete: handleDelete,
     getId: (feature) => feature.id,
   });
 
   const groupedFeatures = useMemo(() => {
-    const groups = new Map<FeatureStatus, FeatureWithWorkstream[]>();
+    const groups = new Map<DocumentStatus, DocumentWithWorkstream[]>();
     for (const status of STATUS_ORDER) {
       const items = features.filter((f) => f.status === status);
       if (items.length > 0) {
@@ -156,7 +162,7 @@ export function FeaturesList({
           currentProjectId={projectId}
           entity={{
             id: featureToMove.id,
-            entityType: EntityType.Feature,
+            entityType: EntityType.Document,
             projectId: featureToMove.projectId,
           }}
           onOpenChange={setMoveDialogOpen}
@@ -169,10 +175,10 @@ export function FeaturesList({
 }
 
 type FeatureStatusSectionProps = {
-  status: FeatureStatus;
-  items: FeatureWithWorkstream[];
-  onRequestDelete: (feature: FeatureWithWorkstream) => void;
-  onRequestMove: (feature: FeatureWithWorkstream) => void;
+  status: DocumentStatus;
+  items: DocumentWithWorkstream[];
+  onRequestDelete: (feature: DocumentWithWorkstream) => void;
+  onRequestMove: (feature: DocumentWithWorkstream) => void;
   customFieldColumns: CustomFieldValueDetail[];
 };
 
@@ -221,20 +227,20 @@ function FeatureStatusSection({
   );
 }
 
-const STATUS_ORDER: FeatureStatus[] = [
-  FeatureStatus.Draft,
-  FeatureStatus.InProgress,
-  FeatureStatus.InReview,
-  FeatureStatus.Approved,
-  FeatureStatus.Executed,
-  FeatureStatus.Done,
-  FeatureStatus.Obsolete,
+const STATUS_ORDER: DocumentStatus[] = [
+  DocumentStatus.Draft,
+  DocumentStatus.InProgress,
+  DocumentStatus.InReview,
+  DocumentStatus.Approved,
+  DocumentStatus.Executed,
+  DocumentStatus.Done,
+  DocumentStatus.Obsolete,
 ];
 
 type FeatureRowProps = {
-  feature: FeatureWithWorkstream;
-  onRequestDelete: (feature: FeatureWithWorkstream) => void;
-  onRequestMove: (feature: FeatureWithWorkstream) => void;
+  feature: DocumentWithWorkstream;
+  onRequestDelete: (feature: DocumentWithWorkstream) => void;
+  onRequestMove: (feature: DocumentWithWorkstream) => void;
   customFieldColumns: CustomFieldValueDetail[];
 };
 

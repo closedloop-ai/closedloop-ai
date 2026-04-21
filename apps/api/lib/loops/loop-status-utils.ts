@@ -1,7 +1,7 @@
 import {
   type GenerationStatus,
   isActiveGenerationStatus,
-} from "@repo/api/src/types/artifact";
+} from "@repo/api/src/types/document";
 
 export const NONE_STATUS: GenerationStatus = {
   status: "NONE",

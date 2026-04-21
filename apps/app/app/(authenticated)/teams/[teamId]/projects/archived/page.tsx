@@ -6,7 +6,7 @@ import { Loader2Icon } from "lucide-react";
 import { useParams } from "next/navigation";
 import { useMemo } from "react";
 import { Header } from "@/app/(authenticated)/components/header";
-import { TableViewMenu } from "@/components/artifact-table/table-view-menu";
+import { TableViewMenu } from "@/components/document-table/table-view-menu";
 import {
   useDeleteProject,
   useProjectStatusHandler,

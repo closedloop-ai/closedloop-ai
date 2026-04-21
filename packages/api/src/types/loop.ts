@@ -3,9 +3,13 @@
 // API-specific types (Loop entity, request/response, usage) are defined here.
 
 /** biome-ignore-all lint/style/useImportType: imported type re-exported as values. */
-/** biome-ignore-all lint/style/noExportedImports: re-exoorting shared loop types for backwards compatibility. */
+/** biome-ignore-all lint/style/noExportedImports: re-exporting shared loop types for backwards compatibility. */
 
 import { LoopCommand, LoopStatus } from "@closedloop-ai/loops-api/commands";
+import type {
+  AdditionalRepoRef,
+  AdditionalRepoRefWithToken,
+} from "@closedloop-ai/loops-api/context-pack";
 import { TokensByModel } from "@closedloop-ai/loops-api/tokens";
 import type { JsonObject } from "./common";
 import type { EntityType } from "./entity-link";
@@ -51,10 +55,7 @@ export { LoopCommand, LoopStatus, type TokensByModel };
 
 // --- API-specific types (not in shared contract) ---
 
-export type SourceContextType = (typeof EntityType)[keyof Pick<
-  typeof EntityType,
-  "Artifact" | "Feature"
->];
+export type SourceContextType = typeof EntityType.Document;
 
 // Compute target summary (for loop list/detail views)
 export type ComputeTargetSummary = {
@@ -70,12 +71,13 @@ export type Loop = {
   userId: string;
   status: LoopStatus;
   command: LoopCommand;
-  artifactId: string | null;
+  documentId: string | null;
   workstreamId: string | null;
   parentLoopId: string | null;
   computeTargetId: string | null;
   prompt: string | null;
   repo: { fullName: string; branch: string } | null;
+  additionalRepos: AdditionalRepoRef[] | null;
   contextRefs: Array<{
     sourceId: string;
     sourceType?: SourceContextType;
@@ -94,7 +96,7 @@ export type Loop = {
   startedAt: Date | null;
   completedAt: Date | null;
   error: { code: string; message: string } | null;
-  artifactVersion: number | null;
+  documentVersion: number | null;
   metadata: JsonObject;
   uploadedArtifacts: JsonObject | null;
   createdAt: Date;
@@ -113,10 +115,16 @@ export type LoopWithUser = Loop & {
   computeTarget: ComputeTargetSummary | null;
 };
 
+// Additional repository references for multi-repo loop execution
+// Canonical source: @closedloop-ai/loops-api/context-pack
+export type { AdditionalRepoRef, AdditionalRepoRefWithToken };
+
+export const MAX_ADDITIONAL_REPOS = 5;
+
 // Request/Response types
 export type CreateLoopRequest = {
   command: LoopCommand;
-  artifactId?: string;
+  documentId?: string;
   workstreamId?: string;
   parentLoopId?: string;
   computeTargetId?: string;
@@ -125,12 +133,13 @@ export type CreateLoopRequest = {
     fullName: string;
     branch: string;
   };
+  additionalRepos?: AdditionalRepoRef[];
   contextRefs?: Array<{
     sourceId: string;
     sourceType?: SourceContextType;
     include: "full" | "summary";
   }>;
-  artifactVersion?: number;
+  documentVersion?: number;
   metadata?: JsonObject;
 };
 
@@ -147,7 +156,7 @@ export type ResumeLoopRequest = {
 export type LoopListFilters = {
   status?: LoopStatus;
   command?: LoopCommand;
-  artifactId?: string;
+  documentId?: string;
   workstreamId?: string;
   projectId?: string;
   userId?: string;

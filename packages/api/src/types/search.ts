@@ -1,27 +1,15 @@
-import type { ArtifactStatus, ArtifactType } from "./artifact";
 import type { Priority } from "./common";
-import type { FeatureStatus } from "./feature";
+import type { DocumentStatus, DocumentType } from "./document";
 import type { ProjectStatus } from "./project";
 import type { BasicUser } from "./user";
 import type { WorkstreamState } from "./workstream";
 
-export type ArtifactSearchResult = {
+export type DocumentSearchResult = {
   id: string;
   title: string;
   slug: string;
-  type: ArtifactType;
-  status: ArtifactStatus;
-  projectName: string | null;
-  workstreamTitle: string | null;
-  assignee: BasicUser | null;
-  updatedAt: Date;
-};
-
-export type FeatureSearchResult = {
-  id: string;
-  title: string;
-  slug: string;
-  status: FeatureStatus;
+  type: DocumentType;
+  status: DocumentStatus;
   priority: Priority;
   projectName: string | null;
   workstreamTitle: string | null;
@@ -52,8 +40,7 @@ export type ProjectSearchResult = {
 
 export type GlobalSearchResponse = {
   query: string;
-  artifacts: ArtifactSearchResult[];
-  features: FeatureSearchResult[];
+  documents: DocumentSearchResult[];
   workstreams: WorkstreamSearchResult[];
   projects: ProjectSearchResult[];
 };

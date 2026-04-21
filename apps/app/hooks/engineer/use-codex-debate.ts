@@ -3,18 +3,15 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import type {
-  ChatMessage,
-  ContentBlock,
-} from "@/components/engineer/chat/types";
-import { useChatStream } from "@/hooks/engineer/use-chat-stream";
+import type { ChatMessage, ContentBlock } from "@/components/chat/types";
+import { useChatStream } from "@/hooks/chat/use-chat-stream";
 import {
   CHAT_SENTINEL,
   type DebateStatus,
   parseDebateStatus,
   type SuggestedAction,
   stripAssistantProtocol,
-} from "@/lib/engineer/chat-utils";
+} from "@/lib/chat/chat-utils";
 import {
   createCodexStreamState,
   readCodexStream,

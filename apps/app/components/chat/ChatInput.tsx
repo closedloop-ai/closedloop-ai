@@ -45,6 +45,10 @@ export function ChatInput({
   useEffect(() => {
     const el = inputRef.current;
     if (el) {
+      if (value.length === 0) {
+        el.style.height = "40px";
+        return;
+      }
       el.style.height = "40px";
       el.style.height = `${el.scrollHeight}px`;
     }
@@ -107,6 +111,7 @@ export function ChatInput({
               )}
               onClick={onStop}
               title="Stop response"
+              type="button"
             >
               <Square className="size-2.5 fill-current" />
             </button>
@@ -121,6 +126,7 @@ export function ChatInput({
               )}
               disabled={!canSend}
               onClick={onSend}
+              type="button"
             >
               <Send className="size-3.5" />
             </button>

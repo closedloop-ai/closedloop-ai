@@ -1,65 +1,58 @@
 "use client";
 
 import {
-  ArtifactType,
-  type ArtifactWithWorkstream,
-} from "@repo/api/src/types/artifact";
-import type { FeatureWithWorkstream } from "@repo/api/src/types/feature";
+  DocumentType,
+  type DocumentWithWorkstream,
+} from "@repo/api/src/types/document";
 import { useMemo } from "react";
-import type { ArtifactRowItem } from "@/components/artifact-table/artifact-row";
+import type { DocumentRowItem } from "@/components/document-table/document-row";
 import { useTableFilters } from "@/hooks/use-table-filters";
 import type { FilterCategory } from "./page";
 
 // ---- Category helpers ----
 
-function isArtifactVisibleInCategory(
-  type: ArtifactType,
+function isDocumentVisibleInCategory(
+  type: DocumentType,
   category: FilterCategory
 ): boolean {
-  if (category === "features" || category === "branches") {
-    return false;
+  switch (category) {
+    case "branches":
+      return false;
+    case "documents":
+      return type === DocumentType.Prd;
+    case "plans":
+      return type === DocumentType.ImplementationPlan;
+    case "features":
+      return type === DocumentType.Feature;
+    default:
+      return true;
   }
-  if (category === "documents") {
-    return type === ArtifactType.Prd;
-  }
-  if (category === "plans") {
-    return type === ArtifactType.ImplementationPlan;
-  }
-  return true;
 }
 
-function includesFeatures(category: FilterCategory): boolean {
-  return (
-    category !== "documents" && category !== "plans" && category !== "branches"
-  );
+function toRowItem(doc: DocumentWithWorkstream): DocumentRowItem {
+  return doc.type === DocumentType.Feature
+    ? { kind: "feature", data: doc }
+    : { kind: "artifact", data: doc };
 }
 
 // ---- Hook ----
 
 type UseProjectFiltersOptions = {
-  artifacts: ArtifactWithWorkstream[];
-  features: FeatureWithWorkstream[];
+  documents: DocumentWithWorkstream[];
   filterCategory: FilterCategory;
   currentUserId?: string;
 };
 
 export function useProjectFilters({
-  artifacts,
-  features,
+  documents,
   filterCategory,
   currentUserId,
 }: UseProjectFiltersOptions) {
-  const rootItems = useMemo((): ArtifactRowItem[] => {
-    const items: ArtifactRowItem[] = artifacts
-      .filter((a) => isArtifactVisibleInCategory(a.type, filterCategory))
-      .map((a): ArtifactRowItem => ({ kind: "artifact", data: a }));
-    if (includesFeatures(filterCategory)) {
-      for (const f of features) {
-        items.push({ kind: "feature", data: f });
-      }
-    }
-    return items;
-  }, [artifacts, features, filterCategory]);
+  const rootItems = useMemo((): DocumentRowItem[] => {
+    return documents
+      .filter((d) => isDocumentVisibleInCategory(d.type, filterCategory))
+      .map(toRowItem);
+  }, [documents, filterCategory]);
 
   const tableFilters = useTableFilters({
     items: rootItems,

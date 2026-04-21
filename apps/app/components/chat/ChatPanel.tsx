@@ -66,6 +66,9 @@ export function ChatPanel({
   const transcriptEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    if (messages.length === 0 && streamingContent.length === 0) {
+      return;
+    }
     transcriptEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, streamingContent]);
 
@@ -100,12 +103,9 @@ export function ChatPanel({
       </div>
 
       {notice ? (
-        <div
-          className="shrink-0 border-amber-500/30 border-b bg-amber-500/10 px-3 py-2 text-amber-700 text-xs dark:text-amber-400"
-          role="status"
-        >
+        <output className="shrink-0 border-amber-500/30 border-b bg-amber-500/10 px-3 py-2 text-amber-700 text-xs dark:text-amber-400">
           {notice}
-        </div>
+        </output>
       ) : null}
 
       <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-3 py-3">

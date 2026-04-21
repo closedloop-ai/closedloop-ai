@@ -5,7 +5,15 @@
  * and resumable-status validation.
  */
 import { LoopStatus } from "@repo/api/src/types/loop";
-import { type Mock, vi } from "vitest";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  type Mock,
+  vi,
+} from "vitest";
 
 // Mock modules before importing the service
 vi.mock("@repo/database", () => ({
@@ -32,7 +40,7 @@ const makeParentFixture = (overrides?: Record<string, unknown>) => ({
   userId: TEST_USER_ID,
   command: "PLAN",
   status: LoopStatus.Completed,
-  artifactId: "artifact-111",
+  documentId: "artifact-111",
   workstreamId: null,
   prompt: "Original prompt",
   repo: null,

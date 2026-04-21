@@ -19,16 +19,16 @@ export function registerListExternalLinks(
     "list-external-links",
     {
       description:
-        "List external resources attached to a project or workstream.",
+        "List external resources (pull requests, Figma files, preview deployments) attached to a project or workstream. Pass the user's project slug (PRO-*) or workstream slug (WRK-*) verbatim.",
       inputSchema: {
         workstreamId: z
           .string()
           .optional()
-          .describe(describeIdOrSlug("Workstream", "WORK-3")),
+          .describe(describeIdOrSlug("Workstream", "WRK-3")),
         projectId: z
           .string()
           .optional()
-          .describe(describeIdOrSlug("Project", "PROJ-7")),
+          .describe(describeIdOrSlug("Project", "PRO-7")),
         type: z
           .enum(ExternalLinkType)
           .optional()

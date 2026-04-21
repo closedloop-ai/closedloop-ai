@@ -1,7 +1,7 @@
 "use client";
 
 import type { Priority } from "@repo/api/src/types/common";
-import type { FeatureStatus } from "@repo/api/src/types/feature";
+import { DocumentType } from "@repo/api/src/types/document";
 import { Button } from "@repo/design-system/components/ui/button";
 import { Input } from "@repo/design-system/components/ui/input";
 import { BoxIcon, Loader2Icon, PlusIcon, SearchIcon } from "lucide-react";
@@ -9,27 +9,27 @@ import { useParams } from "next/navigation";
 import { useMemo, useState } from "react";
 import { Header } from "@/app/(authenticated)/components/header";
 import { CreateFeatureModal } from "@/app/(authenticated)/teams/[teamId]/projects/[projectId]/components/create-feature-modal";
-import { ActiveFiltersBar } from "@/components/artifact-table/active-filters-bar";
+import { ActiveFiltersBar } from "@/components/document-table/active-filters-bar";
+import { DeleteRowActions } from "@/components/document-table/delete-row-actions";
 import type {
-  ArtifactRowItem,
+  DocumentRowItem,
   RowEditHandlers,
-} from "@/components/artifact-table/artifact-row";
-import { DeleteRowActions } from "@/components/artifact-table/delete-row-actions";
-import { FilterPopover } from "@/components/artifact-table/filter-popover";
-import { FlatArtifactTable } from "@/components/artifact-table/flat-artifact-table";
-import { TableViewMenu } from "@/components/artifact-table/table-view-menu";
+} from "@/components/document-table/document-row";
+import { FilterPopover } from "@/components/document-table/filter-popover";
+import { FlatDocumentTable } from "@/components/document-table/flat-document-table";
+import { TableViewMenu } from "@/components/document-table/table-view-menu";
 import {
-  useDeleteFeature,
-  useFeaturesByTeam,
-  useUpdateFeature,
-} from "@/hooks/queries/use-features";
+  useDeleteDocument,
+  useDocumentsByTeam,
+  useUpdateDocument,
+} from "@/hooks/queries/use-documents";
 import { useTeam } from "@/hooks/queries/use-teams";
 import { useCurrentUser } from "@/hooks/queries/use-users";
 import {
   FEATURE_DEFAULT_COLUMNS,
   useColumnVisibility,
 } from "@/hooks/use-column-visibility";
-import { useGroupByStatus } from "@/hooks/use-group-by-status";
+import { useGroupBy } from "@/hooks/use-group-by";
 import { useItemsParentTitles } from "@/hooks/use-items-parent-titles";
 import { useOrgUsersAsPopoverUsers } from "@/hooks/use-org-users-as-popover-users";
 import { useTableFilters } from "@/hooks/use-table-filters";
@@ -51,13 +51,13 @@ export default function TeamFeaturesPage() {
     [userVisibility]
   );
 
-  const { groupByStatus, toggleGroupByStatus } = useGroupByStatus(
+  const { groupBy, setGroupBy } = useGroupBy(
     "table:groupByStatus:team-features"
   );
 
   const { data: team, isLoading: loadingTeam } = useTeam(teamId);
   const { data: features = [], isLoading: loadingFeatures } =
-    useFeaturesByTeam(teamId);
+    useDocumentsByTeam(teamId, DocumentType.Feature);
   const orgUsers = useOrgUsersAsPopoverUsers();
   const { data: currentUser } = useCurrentUser();
 
@@ -67,10 +67,10 @@ export default function TeamFeaturesPage() {
     error: teamMembersError,
   } = useTeamMembers({ teamIds: team ? [team.id] : [] });
 
-  const deleteFeatureMutation = useDeleteFeature();
-  const updateFeatureMutation = useUpdateFeature();
+  const deleteFeatureMutation = useDeleteDocument();
+  const updateFeatureMutation = useUpdateDocument();
 
-  const allItems: ArtifactRowItem[] = useMemo(
+  const allItems: DocumentRowItem[] = useMemo(
     () => features.map((f) => ({ kind: "feature" as const, data: f })),
     [features]
   );
@@ -91,7 +91,7 @@ export default function TeamFeaturesPage() {
           f.title.toLowerCase().includes(q) || f.slug.toLowerCase().includes(q)
       );
     }
-    let items: ArtifactRowItem[] = filtered.map((f) => ({
+    let items: DocumentRowItem[] = filtered.map((f) => ({
       kind: "feature" as const,
       data: f,
     }));
@@ -126,12 +126,12 @@ export default function TeamFeaturesPage() {
       onUpdatePriority: (id, priority: Priority) =>
         updateFeatureMutation.mutate({ id, priority }),
       onUpdateStatus: (id, status) =>
-        updateFeatureMutation.mutate({ id, status: status as FeatureStatus }),
+        updateFeatureMutation.mutate({ id, status }),
     }),
     [orgUsers, updateFeatureMutation.mutate]
   );
 
-  const handleDelete = async (item: ArtifactRowItem): Promise<boolean> => {
+  const handleDelete = async (item: DocumentRowItem): Promise<boolean> => {
     const result = await deleteFeatureMutation.mutateAsync(item.data.id);
     return result.deleted ?? false;
   };
@@ -210,9 +210,9 @@ export default function TeamFeaturesPage() {
               />
               <TableViewMenu
                 columns={FEATURE_DEFAULT_COLUMNS}
-                groupByStatus={groupByStatus}
+                groupBy={groupBy}
+                onChangeGroupBy={setGroupBy}
                 onToggle={toggleColumn}
-                onToggleGroupByStatus={toggleGroupByStatus}
                 visibility={visibility}
               />
             </div>
@@ -228,19 +228,19 @@ export default function TeamFeaturesPage() {
           )}
         </div>
         <div className="flex-1 overflow-auto">
-          <FlatArtifactTable
+          <FlatDocumentTable
             editHandlers={editHandlers}
             emptyDescription={emptyDescription}
             emptyIcon={BoxIcon}
             emptyTitle={emptyTitle}
-            groupByStatus={groupByStatus}
+            groupBy={groupBy}
+            groupExpansionKey="table:expand:team-features-status"
             items={displayItems}
             moreMenuContent={(_item, onRequestDelete) => (
               <DeleteRowActions onDelete={onRequestDelete} />
             )}
             onDelete={handleDelete}
             parentTitleMap={parentTitleMap}
-            statusExpansionKey="table:expand:team-features-status"
             visibleColumns={visibleColumns}
           />
         </div>

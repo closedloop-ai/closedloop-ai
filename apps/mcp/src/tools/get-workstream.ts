@@ -15,11 +15,11 @@ export function registerGetWorkstream(
     "get-workstream",
     {
       description:
-        "Get one workstream, meaning an initiative, by ID or slug, including state and artifacts.",
+        'Get one workstream (an initiative or track of work) by UUID or slug (WRK-*), including state and attached documents. When the user references a workstream by its slug (e.g. "show me WRK-5"), pass that slug as workstreamId directly.',
       inputSchema: {
         workstreamId: z
           .string()
-          .describe(describeIdOrSlug("Workstream", "WORK-5")),
+          .describe(describeIdOrSlug("Workstream", "WRK-5")),
       },
     },
     ({ workstreamId }) =>

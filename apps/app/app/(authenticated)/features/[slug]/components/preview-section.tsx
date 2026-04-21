@@ -32,7 +32,7 @@ type PreviewSectionProps = {
 export function PreviewSection({ featureId }: Readonly<PreviewSectionProps>) {
   const { data: linkedEntities = [] } = useLinkedEntities(
     featureId,
-    EntityType.Feature,
+    EntityType.Document,
     { mode: LinkQueryMode.Tree, direction: LinkDirection.Target }
   );
 

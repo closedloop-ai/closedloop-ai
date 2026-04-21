@@ -12,16 +12,16 @@ export function registerCreateExternalLink(
     "create-external-link",
     {
       description:
-        "Attach an external resource, such as a pull request, Figma file, or preview deployment, to a project or workstream.",
+        "Attach an external resource (pull request, Figma file, preview deployment) to a project or workstream. Pass the user's project slug (PRO-*) or workstream slug (WRK-*) verbatim.",
       inputSchema: {
         workstreamId: z
           .string()
           .optional()
-          .describe(describeIdOrSlug("Workstream", "WORK-3")),
+          .describe(describeIdOrSlug("Workstream", "WRK-3")),
         projectId: z
           .string()
           .optional()
-          .describe(describeIdOrSlug("Project", "PROJ-7")),
+          .describe(describeIdOrSlug("Project", "PRO-7")),
         externalUrl: z.url().describe("URL of the external link"),
         type: z.enum(ExternalLinkType).describe("Type of the external link"),
         title: z.string().describe("Display title for the external link"),

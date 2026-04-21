@@ -2,17 +2,17 @@
 // These types are shared between the backend API and frontend query hooks.
 //
 // The judges analytics endpoint returns aggregate statistics for LLM judge evaluations
-// grouped by artifact type and judge name.
+// grouped by document type and judge name.
 
-import type { ArtifactType } from "./artifact";
+import type { DocumentType } from "./document";
 import type { EvaluationReportType } from "./evaluation";
 
 /**
- * Aggregate statistics for a single judge within an artifact type group.
+ * Aggregate statistics for a single judge within a document type group.
  *
  * Attributes:
  * - judgeName: Name of the judge
- * - artifactsEvaluated: Number of artifacts this judge has evaluated
+ * - documentsEvaluated: Number of documents this judge has evaluated
  * - min: Minimum score across all evaluations
  * - mean: Mean (average) score across all evaluations
  * - max: Maximum score across all evaluations
@@ -35,32 +35,32 @@ export type JudgeAggregateStats = {
   displayMetricName?: string | null;
   /** Latest prompt description from prompt registry for this judge, if available. */
   description?: string | null;
-  artifactsEvaluated: number;
+  documentsEvaluated: number;
   min: number;
   mean: number;
   max: number;
   stdDev: number;
-  /** Minimum normalized (0-1) human star rating across the artifacts this judge evaluated. null when no human ratings exist. */
+  /** Minimum normalized (0-1) human star rating across the documents this judge evaluated. null when no human ratings exist. */
   humanMin: number | null;
-  /** Maximum normalized (0-1) human star rating across the artifacts this judge evaluated. null when no human ratings exist. */
+  /** Maximum normalized (0-1) human star rating across the documents this judge evaluated. null when no human ratings exist. */
   humanMax: number | null;
-  /** Mean normalized (0-1) human star rating across the artifacts this judge evaluated. null when no human ratings exist. */
+  /** Mean normalized (0-1) human star rating across the documents this judge evaluated. null when no human ratings exist. */
   humanMean: number | null;
-  /** Standard deviation of normalized (0-1) human star ratings across the artifacts this judge evaluated. null when no human ratings exist. */
+  /** Standard deviation of normalized (0-1) human star ratings across the documents this judge evaluated. null when no human ratings exist. */
   humanStdDev: number | null;
 };
 
 /**
- * Group of judge statistics for a single artifact type.
+ * Group of judge statistics for a single document type.
  *
  * Attributes:
- * - artifactType: The artifact type (e.g., PRD, IMPLEMENTATION_PLAN)
+ * - documentType: The document type (e.g., PRD, IMPLEMENTATION_PLAN)
  * - judges: Array of aggregate statistics per judge, sorted descending by mean score
- * - humanRatingsCount: Number of human ratings (ArtifactRating) created in the same date range for artifacts of this type in the org
- * - humanCommentsCount: Number of artifact ratings with a non-empty comment (artifact_ratings.comment) in the same date range for artifacts of this type in the org
+ * - humanRatingsCount: Number of human ratings (DocumentRating) created in the same date range for documents of this type in the org
+ * - humanCommentsCount: Number of document ratings with a non-empty comment (document_ratings.comment) in the same date range for documents of this type in the org
  */
-export type ArtifactTypeGroup = {
-  artifactType: ArtifactType;
+export type DocumentTypeGroup = {
+  documentType: DocumentType;
   judges: JudgeAggregateStats[];
   humanRatingsCount: number;
   humanCommentsCount: number;
@@ -70,52 +70,52 @@ export type ArtifactTypeGroup = {
  * Top-level response structure for the judges analytics endpoint.
  *
  * Attributes:
- * - groups: Array of artifact type groups, each containing judge statistics
+ * - groups: Array of document type groups, each containing judge statistics
  */
 export type JudgeStatsResponse = {
   reportType: EvaluationReportType;
-  groups: ArtifactTypeGroup[];
+  groups: DocumentTypeGroup[];
 };
 
 // ---------------------------------------------------------------------------
-// Artifact creation counts (GET /judges-analytics/artifact-counts)
+// Document creation counts (GET /judges-analytics/artifact-counts)
 // ---------------------------------------------------------------------------
 
 /**
- * Single time bucket for artifact creation counts.
+ * Single time bucket for document creation counts.
  *
  * Attributes:
  * - bucket: ISO date string for the start of the period (e.g. "2025-02-01" for day,
  *   or start of week/month). Frontend can format with date-fns by groupBy.
- * - countsByType: Map of artifact type (ArtifactType value, e.g. "PRD", "IMPLEMENTATION_PLAN")
- *   to count of artifacts created in that period. Only types with count > 0 are included.
+ * - countsByType: Map of document type (DocumentType value, e.g. "PRD", "IMPLEMENTATION_PLAN")
+ *   to count of documents created in that period. Only types with count > 0 are included.
  */
-export type ArtifactCountBucket = {
+export type DocumentCountBucket = {
   bucket: string;
   countsByType: Record<string, number>;
 };
 
 /**
- * Response for the artifact counts endpoint.
+ * Response for the document counts endpoint.
  *
  * Attributes:
  * - buckets: Array of time buckets with counts, ordered by bucket ascending
  */
-export type ArtifactCountsResponse = {
-  buckets: ArtifactCountBucket[];
+export type DocumentCountsResponse = {
+  buckets: DocumentCountBucket[];
 };
 
 /**
- * Allowed values for grouping artifact counts by time period.
+ * Allowed values for grouping document counts by time period.
  */
-export const ARTIFACT_COUNTS_GROUP_BY_OPTIONS = [
+export const DOCUMENT_COUNTS_GROUP_BY_OPTIONS = [
   "day",
   "week",
   "month",
 ] as const;
 
-export type ArtifactCountsGroupBy =
-  (typeof ARTIFACT_COUNTS_GROUP_BY_OPTIONS)[number];
+export type DocumentCountsGroupBy =
+  (typeof DOCUMENT_COUNTS_GROUP_BY_OPTIONS)[number];
 
 // ---------------------------------------------------------------------------
 // Judge detail page types (GET /judges-analytics/:promptName)
@@ -186,14 +186,14 @@ export type JudgeDetailResponse = {
  * Concurrence default: when userRatingCount = 0, avgUserRating = judgeScore and delta = 0.
  */
 export type JudgeScoreRow = {
-  /** Unique ID of the JudgeScore row; use for React keys when artifactId can repeat. */
+  /** Unique ID of the JudgeScore row; use for React keys when documentId can repeat. */
   judgeScoreId: string;
   /** Metric name for this score row. Used for display and filtering. */
   metricName: string;
-  artifactId: string;
-  artifactType: ArtifactType;
-  artifactTitle: string;
-  artifactSlug: string;
+  documentId: string;
+  documentType: DocumentType;
+  documentTitle: string;
+  documentSlug: string;
   judgeScore: number;
   /** Average human rating (0-1). Defaults to judgeScore when no human ratings. */
   avgUserRating: number;
@@ -220,15 +220,15 @@ export type ScorePaginationMeta = {
  */
 export type JudgeScoresResponse = {
   rows: JudgeScoreRow[];
-  totalArtifacts: number;
-  ratedArtifacts: number;
-  /** Percentage of artifacts with at least one human rating. */
+  totalDocuments: number;
+  ratedDocuments: number;
+  /** Percentage of documents with at least one human rating. */
   coveragePct: number;
   pagination: ScorePaginationMeta;
 };
 
 // ---------------------------------------------------------------------------
-// Judge rating submission types (POST /artifacts/:artifactId/judge-ratings)
+// Judge rating submission types (POST /documents/:documentId/judge-ratings)
 // ---------------------------------------------------------------------------
 
 /**
@@ -254,7 +254,7 @@ export type SubmitJudgeRatingResponse = {
 };
 
 // ---------------------------------------------------------------------------
-// User judge ratings types (GET /artifacts/:artifactId/judge-ratings)
+// User judge ratings types (GET /documents/:documentId/judge-ratings)
 // ---------------------------------------------------------------------------
 
 /**
@@ -266,7 +266,7 @@ export type UserJudgeRating = {
 };
 
 /**
- * Response containing all of the current user's ratings for judge scores on an artifact.
+ * Response containing all of the current user's ratings for judge scores on a document.
  */
 export type UserJudgeRatingsResponse = {
   ratings: UserJudgeRating[];

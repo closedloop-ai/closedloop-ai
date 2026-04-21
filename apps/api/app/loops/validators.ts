@@ -9,6 +9,7 @@ import {
   LoopEventTypeSchema,
 } from "@closedloop-ai/loops-api/events";
 import { EntityType } from "@repo/api/src/types/entity-link";
+import { MAX_ADDITIONAL_REPOS } from "@repo/api/src/types/loop";
 import { z } from "zod";
 import { uuidOrSlug } from "@/lib/identifier-utils";
 
@@ -33,19 +34,28 @@ export const repoSchema = z.object({
     .regex(/^[a-zA-Z0-9._/-]+$/, "Branch name contains invalid characters"),
 });
 
+/**
+ * Validated additionalRepos schema — coerces empty arrays to undefined so
+ * downstream consumers receive either a non-empty list or nothing at all.
+ */
+export const additionalReposSchema = z
+  .array(repoSchema)
+  .max(MAX_ADDITIONAL_REPOS)
+  .optional()
+  .transform((value) => (value?.length ? value : undefined));
+
 export const createLoopValidator = z.object({
   command: LoopCommandSchema,
-  artifactId: z.uuidv7().optional(),
-  workstreamId: z.uuidv7().optional(),
+  documentId: z.uuid().optional(),
+  workstreamId: z.uuid().optional(),
   prompt: z.string().max(100_000).optional(),
   repo: repoSchema.optional(),
+  additionalRepos: additionalReposSchema,
   contextRefs: z
     .array(
       z.object({
-        sourceId: z.uuidv7(),
-        sourceType: z
-          .enum([EntityType.Artifact, EntityType.Feature])
-          .optional(),
+        sourceId: z.uuid(),
+        sourceType: z.enum([EntityType.Document]).optional(),
         include: z.enum(["full", "summary"]),
       })
     )
@@ -148,7 +158,7 @@ export const listLoopEventsQueryValidator = z.object({
 export const listLoopsQueryValidator = z.object({
   status: LoopStatusSchema.optional(),
   command: LoopCommandSchema.optional(),
-  artifactId: uuidOrSlug().optional(),
+  documentId: uuidOrSlug().optional(),
   workstreamId: z.uuid().optional(),
   projectId: z.uuid().optional(),
   limit: z.coerce.number().min(1).max(200).default(50).optional(),

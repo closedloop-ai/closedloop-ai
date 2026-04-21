@@ -1,15 +1,16 @@
-import { ArtifactStatus } from "@repo/api/src/types/artifact";
 import type { JsonObject } from "@repo/api/src/types/common";
+import { DocumentStatus } from "@repo/api/src/types/document";
 import {
   type CreateProjectInput,
   ProjectStatus,
   type ProjectWithDetails,
   type UpdateProjectInput,
 } from "@repo/api/src/types/project";
+import { SlugPrefix } from "@repo/api/src/types/slug-prefix";
 import type { Prisma } from "@repo/database";
 import { withDb } from "@repo/database";
 import { basicUserSelect } from "@/lib/db-utils";
-import { generateSlug, SlugPrefix } from "@/lib/slug-generator";
+import { generateSlug } from "@/lib/slug-generator";
 
 /**
  * Projects service - handles database operations for project management
@@ -286,14 +287,14 @@ export const projectsService = {
   /**
    * Calculate project status based on artifact completion
    */
-  calculateStatus(artifacts: Array<{ status: ArtifactStatus }>): number {
+  calculateStatus(artifacts: Array<{ status: DocumentStatus }>): number {
     if (artifacts.length === 0) {
       return 0;
     }
 
     const completedCount = artifacts.filter(
       (a) =>
-        a.status === ArtifactStatus.Done || a.status === ArtifactStatus.Obsolete
+        a.status === DocumentStatus.Done || a.status === DocumentStatus.Obsolete
     ).length;
 
     return Math.round((completedCount / artifacts.length) * 100);
@@ -321,7 +322,7 @@ const PROJECT_DETAIL_INCLUDE = {
       },
     },
   },
-  artifacts: {
+  documents: {
     select: { status: true },
   },
 } as const;
@@ -344,7 +345,7 @@ function toProjectWithDetails(project: ProjectFromDb): ProjectWithDetails {
           avatarUrl: project.assignee.avatarUrl,
         }
       : undefined,
-    completionPercentage: projectsService.calculateStatus(project.artifacts),
+    completionPercentage: projectsService.calculateStatus(project.documents),
     teams: project.teams.map((pt) => ({
       id: pt.team.id,
       name: pt.team.name,

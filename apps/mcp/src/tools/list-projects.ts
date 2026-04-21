@@ -21,7 +21,7 @@ export function registerListProjects(
     "list-projects",
     {
       description:
-        "List projects available to the authenticated user. Returned slugs are the preferred user-facing handles.",
+        "List projects available to the authenticated user. Returned `slug` values (PRO-*) are the preferred user-facing handles for follow-up calls.",
       inputSchema: {
         limit: z
           .number()

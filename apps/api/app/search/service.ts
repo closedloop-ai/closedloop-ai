@@ -1,7 +1,6 @@
 import { ProjectStatus } from "@repo/api/src/types/project";
 import type {
-  ArtifactSearchResult,
-  FeatureSearchResult,
+  DocumentSearchResult,
   GlobalSearchResponse,
   ProjectSearchResult,
   WorkstreamSearchResult,
@@ -24,23 +23,22 @@ export const searchService = {
     organizationId: string,
     query: string
   ): Promise<GlobalSearchResponse> {
-    const [artifacts, features, workstreams, projects] = await Promise.all([
-      searchArtifacts(organizationId, query),
-      searchFeatures(organizationId, query),
+    const [documents, workstreams, projects] = await Promise.all([
+      searchDocuments(organizationId, query),
       searchWorkstreams(organizationId, query),
       searchProjects(organizationId, query),
     ]);
 
-    return { query, artifacts, features, workstreams, projects };
+    return { query, documents, workstreams, projects };
   },
 };
 
-async function searchArtifacts(
+async function searchDocuments(
   organizationId: string,
   query: string
-): Promise<ArtifactSearchResult[]> {
+): Promise<DocumentSearchResult[]> {
   const rows = await withDb((db) =>
-    db.artifact.findMany({
+    db.document.findMany({
       where: {
         organizationId,
         OR: [{ title: ilike(query) }, { slug: ilike(query) }],
@@ -50,47 +48,6 @@ async function searchArtifacts(
         title: true,
         slug: true,
         type: true,
-        status: true,
-        updatedAt: true,
-        assignee: basicUserSelect,
-        project: { select: { name: true } },
-        workstream: { select: { title: true } },
-      },
-      ...SEARCH_ORDER,
-    })
-  );
-
-  return rows.map((r) => ({
-    id: r.id,
-    title: r.title,
-    slug: r.slug,
-    type: r.type,
-    status: r.status,
-    projectName: r.project?.name ?? null,
-    workstreamTitle: r.workstream?.title ?? null,
-    assignee: r.assignee,
-    updatedAt: r.updatedAt,
-  }));
-}
-
-async function searchFeatures(
-  organizationId: string,
-  query: string
-): Promise<FeatureSearchResult[]> {
-  const rows = await withDb((db) =>
-    db.feature.findMany({
-      where: {
-        organizationId,
-        OR: [
-          { title: ilike(query) },
-          { slug: ilike(query) },
-          { description: ilike(query) },
-        ],
-      },
-      select: {
-        id: true,
-        title: true,
-        slug: true,
         status: true,
         priority: true,
         updatedAt: true,
@@ -106,6 +63,7 @@ async function searchFeatures(
     id: r.id,
     title: r.title,
     slug: r.slug,
+    type: r.type,
     status: r.status,
     priority: r.priority,
     projectName: r.project?.name ?? null,

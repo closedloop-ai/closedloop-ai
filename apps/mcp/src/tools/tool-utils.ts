@@ -5,13 +5,12 @@ type ToolResult = {
 
 export const DEFAULT_PAGE_LIMIT = 25;
 export const MAX_PAGE_LIMIT = 100;
-export const ARTIFACT_DOC_HELP =
-  "Artifacts are documents such as PRDs, implementation plans, and templates.";
-export const FEATURE_HELP = "Features are issue-like work items.";
+export const DOCUMENT_DOC_HELP =
+  "User-facing documents are PRDs (PRD-*), implementation plans (PLN-*), and features (FEA-*). Templates exist but are internal and not exposed to end users.";
 export const WORKSTREAM_HELP =
   "Workstreams are initiatives or tracks of work inside a project.";
 export const ENTITY_LINK_SLUG_HELP =
-  "User-facing slugs are supported for artifacts (PRD-7, PLAN-4) and features (FEAT-42); other entities typically require IDs.";
+  "User-facing slugs are supported for documents (PRD-7, PLN-4, FEA-42), projects (PRO-3), and workstreams (WRK-5); other entities typically require UUIDs.";
 
 export function withErrorHandling(
   fn: () => Promise<ToolResult>
@@ -61,8 +60,8 @@ export function describeIdOrSlug(
   entityLabel: string,
   example: string | string[]
 ): string {
-  const exampleText = Array.isArray(example) ? example.join(" or ") : example;
-  return `${entityLabel} ID or user-facing slug like ${exampleText}`;
+  const exampleText = Array.isArray(example) ? example.join(", ") : example;
+  return `${entityLabel} UUID or user-facing slug (e.g. ${exampleText}). Pass the user's slug verbatim — the API resolves it server-side.`;
 }
 
 export function buildPaginatedPayload<T>(

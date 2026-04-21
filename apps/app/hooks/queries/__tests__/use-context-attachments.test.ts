@@ -100,7 +100,7 @@ describe("useCreateContextAttachment", () => {
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
     expect(mockApiClient.post).toHaveBeenCalledWith(
-      "/features/feature-123/context-attachments",
+      "/documents/feature-123/context-attachments",
       buildCreateInput()
     );
     expect(result.current.data).toEqual(mockResponse);
@@ -122,7 +122,7 @@ describe("useCreateContextAttachment", () => {
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
     expect(mockApiClient.post).toHaveBeenCalledWith(
-      "/features/feature-999/context-attachments",
+      "/documents/feature-999/context-attachments",
       input
     );
   });
@@ -206,7 +206,7 @@ describe("useImportGDriveContext", () => {
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
     expect(mockApiClient.post).toHaveBeenCalledWith(
-      "/features/feature-456/context-attachments/gdrive",
+      "/documents/feature-456/context-attachments/gdrive",
       input
     );
     expect(result.current.data).toEqual(mockResponse);

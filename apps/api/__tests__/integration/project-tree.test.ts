@@ -1,10 +1,9 @@
-import { ArtifactType } from "@repo/api/src/types/artifact";
+import { DocumentType } from "@repo/api/src/types/document";
 import { EntityType, LinkType } from "@repo/api/src/types/entity-link";
 import { ExternalLinkType } from "@repo/api/src/types/external-link";
 import { withDb } from "@repo/database";
 import { keys } from "@repo/database/keys";
-import { artifactsService } from "@/app/artifacts/service";
-import { featuresService } from "@/app/features/service";
+import { documentsService } from "@/app/documents/service";
 import { projectTreeService } from "@/app/projects/[id]/tree/service";
 import {
   autoRollbackTransaction,
@@ -77,21 +76,23 @@ describe.skipIf(!hasDatabase)("Project Tree Service Integration", () => {
       const user = await createTestUser(orgId);
       const projectId = await createTestProject(orgId, user.id);
 
-      await artifactsService.create(orgId, user.id, {
+      await documentsService.create(orgId, user.id, {
         projectId,
-        type: ArtifactType.Prd,
+        type: DocumentType.Prd,
         title: "Zebra PRD",
         content: "content",
       });
-      await artifactsService.create(orgId, user.id, {
+      await documentsService.create(orgId, user.id, {
         projectId,
-        type: ArtifactType.ImplementationPlan,
+        type: DocumentType.ImplementationPlan,
         title: "Alpha Plan",
         content: "content",
       });
-      await featuresService.create(orgId, user.id, {
+      await documentsService.create(orgId, user.id, {
         projectId,
+        type: DocumentType.Feature,
         title: "Middle Feature",
+        content: "",
       });
 
       const result = await projectTreeService.getProjectTree(projectId, orgId);
@@ -114,21 +115,21 @@ describe.skipIf(!hasDatabase)("Project Tree Service Integration", () => {
       const user = await createTestUser(orgId);
       const projectId = await createTestProject(orgId, user.id);
 
-      const a = await artifactsService.create(orgId, user.id, {
+      const a = await documentsService.create(orgId, user.id, {
         projectId,
-        type: ArtifactType.Prd,
+        type: DocumentType.Prd,
         title: "A - Root PRD",
         content: "content",
       });
-      const b = await artifactsService.create(orgId, user.id, {
+      const b = await documentsService.create(orgId, user.id, {
         projectId,
-        type: ArtifactType.ImplementationPlan,
+        type: DocumentType.ImplementationPlan,
         title: "B - Plan",
         content: "content",
       });
-      const c = await artifactsService.create(orgId, user.id, {
+      const c = await documentsService.create(orgId, user.id, {
         projectId,
-        type: ArtifactType.Prd,
+        type: DocumentType.Prd,
         title: "C - Sub PRD",
         content: "content",
       });
@@ -137,16 +138,16 @@ describe.skipIf(!hasDatabase)("Project Tree Service Integration", () => {
       await createEntityLink(
         orgId,
         a!.id,
-        EntityType.Artifact,
+        EntityType.Document,
         b!.id,
-        EntityType.Artifact
+        EntityType.Document
       );
       await createEntityLink(
         orgId,
         b!.id,
-        EntityType.Artifact,
+        EntityType.Document,
         c!.id,
-        EntityType.Artifact
+        EntityType.Document
       );
 
       const result = await projectTreeService.getProjectTree(projectId, orgId);
@@ -168,30 +169,37 @@ describe.skipIf(!hasDatabase)("Project Tree Service Integration", () => {
       const user = await createTestUser(orgId);
       const projectId = await createTestProject(orgId, user.id);
 
-      const feature = await featuresService.create(orgId, user.id, {
+      const feature = await documentsService.create(orgId, user.id, {
         projectId,
+        type: DocumentType.Feature,
         title: "Root Feature",
+        content: "",
       });
-      const artifact = await artifactsService.create(orgId, user.id, {
+      if (!feature) {
+        throw new Error("Failed to create feature document in test");
+      }
+      const artifact = await documentsService.create(orgId, user.id, {
         projectId,
-        type: ArtifactType.Prd,
+        type: DocumentType.Prd,
         title: "Child Artifact",
         content: "content",
       });
+      if (!artifact) {
+        throw new Error("Failed to create artifact document in test");
+      }
       const extLink = await createExternalLink(orgId, projectId, "Child PR");
 
-      // Feature → Artifact → ExternalLink
       await createEntityLink(
         orgId,
         feature.id,
-        EntityType.Feature,
-        artifact!.id,
-        EntityType.Artifact
+        EntityType.Document,
+        artifact.id,
+        EntityType.Document
       );
       await createEntityLink(
         orgId,
-        artifact!.id,
-        EntityType.Artifact,
+        artifact.id,
+        EntityType.Document,
         extLink.id,
         EntityType.ExternalLink
       );
@@ -200,8 +208,8 @@ describe.skipIf(!hasDatabase)("Project Tree Service Integration", () => {
 
       expect(result.nodes).toHaveLength(1);
       const node = result.nodes[0]!;
-      expect(node.root.entityType).toBe(EntityType.Feature);
-      expect(node.children[0]!.entityType).toBe(EntityType.Artifact);
+      expect(node.root.entityType).toBe(EntityType.Document);
+      expect(node.children[0]!.entityType).toBe(EntityType.Document);
       expect(node.children[1]!.entityType).toBe(EntityType.ExternalLink);
     });
   });
@@ -213,45 +221,45 @@ describe.skipIf(!hasDatabase)("Project Tree Service Integration", () => {
       const projectId = await createTestProject(orgId, user.id);
 
       // Chain 1: Z-Root → Z-Child
-      const z1 = await artifactsService.create(orgId, user.id, {
+      const z1 = await documentsService.create(orgId, user.id, {
         projectId,
-        type: ArtifactType.Prd,
+        type: DocumentType.Prd,
         title: "Z-Root",
         content: "content",
       });
-      const z2 = await artifactsService.create(orgId, user.id, {
+      const z2 = await documentsService.create(orgId, user.id, {
         projectId,
-        type: ArtifactType.Prd,
+        type: DocumentType.Prd,
         title: "Z-Child",
         content: "content",
       });
       await createEntityLink(
         orgId,
         z1!.id,
-        EntityType.Artifact,
+        EntityType.Document,
         z2!.id,
-        EntityType.Artifact
+        EntityType.Document
       );
 
       // Chain 2: A-Root → A-Child
-      const a1 = await artifactsService.create(orgId, user.id, {
+      const a1 = await documentsService.create(orgId, user.id, {
         projectId,
-        type: ArtifactType.Prd,
+        type: DocumentType.Prd,
         title: "A-Root",
         content: "content",
       });
-      const a2 = await artifactsService.create(orgId, user.id, {
+      const a2 = await documentsService.create(orgId, user.id, {
         projectId,
-        type: ArtifactType.Prd,
+        type: DocumentType.Prd,
         title: "A-Child",
         content: "content",
       });
       await createEntityLink(
         orgId,
         a1!.id,
-        EntityType.Artifact,
+        EntityType.Document,
         a2!.id,
-        EntityType.Artifact
+        EntityType.Document
       );
 
       const result = await projectTreeService.getProjectTree(projectId, orgId);
@@ -268,27 +276,27 @@ describe.skipIf(!hasDatabase)("Project Tree Service Integration", () => {
       const user = await createTestUser(orgId);
       const projectId = await createTestProject(orgId, user.id);
 
-      const root = await artifactsService.create(orgId, user.id, {
+      const root = await documentsService.create(orgId, user.id, {
         projectId,
-        type: ArtifactType.Prd,
+        type: DocumentType.Prd,
         title: "Root",
         content: "content",
       });
-      const child1 = await artifactsService.create(orgId, user.id, {
+      const child1 = await documentsService.create(orgId, user.id, {
         projectId,
-        type: ArtifactType.Prd,
+        type: DocumentType.Prd,
         title: "Child1",
         content: "content",
       });
-      const child2 = await artifactsService.create(orgId, user.id, {
+      const child2 = await documentsService.create(orgId, user.id, {
         projectId,
-        type: ArtifactType.Prd,
+        type: DocumentType.Prd,
         title: "Child2",
         content: "content",
       });
-      const grandchild = await artifactsService.create(orgId, user.id, {
+      const grandchild = await documentsService.create(orgId, user.id, {
         projectId,
-        type: ArtifactType.Prd,
+        type: DocumentType.Prd,
         title: "Grandchild",
         content: "content",
       });
@@ -297,23 +305,23 @@ describe.skipIf(!hasDatabase)("Project Tree Service Integration", () => {
       await createEntityLink(
         orgId,
         root!.id,
-        EntityType.Artifact,
+        EntityType.Document,
         child1!.id,
-        EntityType.Artifact
+        EntityType.Document
       );
       await createEntityLink(
         orgId,
         root!.id,
-        EntityType.Artifact,
+        EntityType.Document,
         child2!.id,
-        EntityType.Artifact
+        EntityType.Document
       );
       await createEntityLink(
         orgId,
         child1!.id,
-        EntityType.Artifact,
+        EntityType.Document,
         grandchild!.id,
-        EntityType.Artifact
+        EntityType.Document
       );
 
       const result = await projectTreeService.getProjectTree(projectId, orgId);
@@ -339,21 +347,21 @@ describe.skipIf(!hasDatabase)("Project Tree Service Integration", () => {
       const user = await createTestUser(orgId);
       const projectId = await createTestProject(orgId, user.id);
 
-      const a = await artifactsService.create(orgId, user.id, {
+      const a = await documentsService.create(orgId, user.id, {
         projectId,
-        type: ArtifactType.Prd,
+        type: DocumentType.Prd,
         title: "A",
         content: "content",
       });
-      const b = await artifactsService.create(orgId, user.id, {
+      const b = await documentsService.create(orgId, user.id, {
         projectId,
-        type: ArtifactType.Prd,
+        type: DocumentType.Prd,
         title: "B",
         content: "content",
       });
-      const c = await artifactsService.create(orgId, user.id, {
+      const c = await documentsService.create(orgId, user.id, {
         projectId,
-        type: ArtifactType.Prd,
+        type: DocumentType.Prd,
         title: "C",
         content: "content",
       });
@@ -362,23 +370,23 @@ describe.skipIf(!hasDatabase)("Project Tree Service Integration", () => {
       await createEntityLink(
         orgId,
         a!.id,
-        EntityType.Artifact,
+        EntityType.Document,
         b!.id,
-        EntityType.Artifact
+        EntityType.Document
       );
       await createEntityLink(
         orgId,
         b!.id,
-        EntityType.Artifact,
+        EntityType.Document,
         c!.id,
-        EntityType.Artifact
+        EntityType.Document
       );
       await createEntityLink(
         orgId,
         c!.id,
-        EntityType.Artifact,
+        EntityType.Document,
         a!.id,
-        EntityType.Artifact
+        EntityType.Document
       );
 
       const result = await projectTreeService.getProjectTree(projectId, orgId);
@@ -405,15 +413,15 @@ describe.skipIf(!hasDatabase)("Project Tree Service Integration", () => {
         name: "Project 2",
       });
 
-      const inProject = await artifactsService.create(orgId, user.id, {
+      const inProject = await documentsService.create(orgId, user.id, {
         projectId: project1,
-        type: ArtifactType.Prd,
+        type: DocumentType.Prd,
         title: "In Project 1",
         content: "content",
       });
-      const otherProject = await artifactsService.create(orgId, user.id, {
+      const otherProject = await documentsService.create(orgId, user.id, {
         projectId: project2,
-        type: ArtifactType.Prd,
+        type: DocumentType.Prd,
         title: "In Project 2",
         content: "content",
       });
@@ -422,9 +430,9 @@ describe.skipIf(!hasDatabase)("Project Tree Service Integration", () => {
       await createEntityLink(
         orgId,
         inProject!.id,
-        EntityType.Artifact,
+        EntityType.Document,
         otherProject!.id,
-        EntityType.Artifact
+        EntityType.Document
       );
 
       const result = await projectTreeService.getProjectTree(project1, orgId);
@@ -443,21 +451,21 @@ describe.skipIf(!hasDatabase)("Project Tree Service Integration", () => {
       const projectId = await createTestProject(orgId, user.id);
 
       // Create source1 first (earliest), then source2
-      const source1 = await artifactsService.create(orgId, user.id, {
+      const source1 = await documentsService.create(orgId, user.id, {
         projectId,
-        type: ArtifactType.Prd,
+        type: DocumentType.Prd,
         title: "Source 1 (earliest)",
         content: "content",
       });
-      const source2 = await artifactsService.create(orgId, user.id, {
+      const source2 = await documentsService.create(orgId, user.id, {
         projectId,
-        type: ArtifactType.Prd,
+        type: DocumentType.Prd,
         title: "Source 2 (later)",
         content: "content",
       });
-      const target = await artifactsService.create(orgId, user.id, {
+      const target = await documentsService.create(orgId, user.id, {
         projectId,
-        type: ArtifactType.Prd,
+        type: DocumentType.Prd,
         title: "Shared Target",
         content: "content",
       });
@@ -466,16 +474,16 @@ describe.skipIf(!hasDatabase)("Project Tree Service Integration", () => {
       await createEntityLink(
         orgId,
         source1!.id,
-        EntityType.Artifact,
+        EntityType.Document,
         target!.id,
-        EntityType.Artifact
+        EntityType.Document
       );
       await createEntityLink(
         orgId,
         source2!.id,
-        EntityType.Artifact,
+        EntityType.Document,
         target!.id,
-        EntityType.Artifact
+        EntityType.Document
       );
 
       const result = await projectTreeService.getProjectTree(projectId, orgId);

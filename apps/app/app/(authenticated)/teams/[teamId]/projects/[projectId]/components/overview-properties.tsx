@@ -37,7 +37,7 @@ import { DefaultRepositoryPicker } from "./default-repository-picker";
 
 /** Matches SelectTrigger size="sm" styling so all property cells look uniform. */
 const selectTriggerClassName =
-  "border-input-border bg-input/30 hover:bg-input/50 dark:bg-input/30 dark:hover:bg-input/50 flex h-8 w-full items-center gap-2 rounded-md border px-3 text-sm text-foreground shadow-none transition-[color,box-shadow] outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]";
+  "border-input-border bg-input hover:bg-muted dark:bg-input dark:hover:bg-muted flex h-8 w-full items-center gap-2 rounded-md border px-3 text-sm text-foreground shadow-none transition-[color,box-shadow] outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]";
 
 type OverviewPropertiesProps = {
   project: ProjectWithDetails;

@@ -1,36 +1,32 @@
 "use client";
 
 import type { Priority } from "@repo/api/src/types/common";
-import type {
-  FeatureStatus,
-  FeatureWithWorkstream,
-} from "@repo/api/src/types/feature";
 import { Button } from "@repo/design-system/components/ui/button";
 import { Input } from "@repo/design-system/components/ui/input";
 import { BoxIcon, LayoutGridIcon, ListIcon, SearchIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Header } from "@/app/(authenticated)/components/header";
-import { ActiveFiltersBar } from "@/components/artifact-table/active-filters-bar";
+import { ActiveFiltersBar } from "@/components/document-table/active-filters-bar";
+import { DeleteRowActions } from "@/components/document-table/delete-row-actions";
 import type {
-  ArtifactRowItem,
+  DocumentRowItem,
   RowEditHandlers,
-} from "@/components/artifact-table/artifact-row";
-import { DeleteRowActions } from "@/components/artifact-table/delete-row-actions";
-import { FilterPopover } from "@/components/artifact-table/filter-popover";
-import { FlatArtifactTable } from "@/components/artifact-table/flat-artifact-table";
-import { TableViewMenu } from "@/components/artifact-table/table-view-menu";
+} from "@/components/document-table/document-row";
+import { FilterPopover } from "@/components/document-table/filter-popover";
+import { FlatDocumentTable } from "@/components/document-table/flat-document-table";
+import { TableViewMenu } from "@/components/document-table/table-view-menu";
 import {
-  useDeleteFeature,
-  useFeatures,
-  useUpdateFeature,
-} from "@/hooks/queries/use-features";
+  useDeleteDocument,
+  useDocuments,
+  useUpdateDocument,
+} from "@/hooks/queries/use-documents";
 import { useProjects } from "@/hooks/queries/use-projects";
 import { useCurrentUser } from "@/hooks/queries/use-users";
 import {
   MY_TASKS_DEFAULT_COLUMNS,
   useColumnVisibility,
 } from "@/hooks/use-column-visibility";
-import { useGroupByStatus } from "@/hooks/use-group-by-status";
+import { useGroupBy } from "@/hooks/use-group-by";
 import { useItemsParentTitles } from "@/hooks/use-items-parent-titles";
 import { useLocalStorageState } from "@/hooks/use-local-storage-state";
 import { useOrgUsersAsPopoverUsers } from "@/hooks/use-org-users-as-popover-users";
@@ -56,7 +52,7 @@ export default function MyTasksPage() {
     () => buildFeatureListParams(assigneeId),
     [assigneeId]
   );
-  const { data: rawFeatures = [], isLoading: isFeaturesLoading } = useFeatures(
+  const { data: rawFeatures = [], isLoading: isFeaturesLoading } = useDocuments(
     listParams,
     { enabled: !!assigneeId && !isUserLoading }
   );
@@ -73,14 +69,12 @@ export default function MyTasksPage() {
     [userVisibility]
   );
 
-  const { groupByStatus, toggleGroupByStatus } = useGroupByStatus(
-    "table:groupByStatus:my-tasks"
-  );
+  const { groupBy, setGroupBy } = useGroupBy("table:groupByStatus:my-tasks");
 
   // ---- Edit handlers ----
 
-  const updateFeatureMutation = useUpdateFeature();
-  const deleteFeatureMutation = useDeleteFeature();
+  const updateFeatureMutation = useUpdateDocument();
+  const deleteFeatureMutation = useDeleteDocument();
 
   const orgUsers = useOrgUsersAsPopoverUsers();
 
@@ -92,19 +86,19 @@ export default function MyTasksPage() {
       onUpdatePriority: (id, priority: Priority) =>
         updateFeatureMutation.mutate({ id, priority }),
       onUpdateStatus: (id, status) =>
-        updateFeatureMutation.mutate({ id, status: status as FeatureStatus }),
+        updateFeatureMutation.mutate({ id, status }),
     }),
     [orgUsers, updateFeatureMutation.mutate]
   );
 
-  const handleDelete = async (item: ArtifactRowItem): Promise<boolean> => {
+  const handleDelete = async (item: DocumentRowItem): Promise<boolean> => {
     const result = await deleteFeatureMutation.mutateAsync(item.data.id);
     return result.deleted ?? false;
   };
 
   // ---- Items & filters ----
 
-  const allItems: ArtifactRowItem[] = useMemo(
+  const allItems: DocumentRowItem[] = useMemo(
     () => rawFeatures.map((f) => ({ kind: "feature" as const, data: f })),
     [rawFeatures]
   );
@@ -125,7 +119,7 @@ export default function MyTasksPage() {
           f.title.toLowerCase().includes(q) || f.slug.toLowerCase().includes(q)
       );
     }
-    let items: ArtifactRowItem[] = filtered.map((f) => ({
+    let items: DocumentRowItem[] = filtered.map((f) => ({
       kind: "feature" as const,
       data: f,
     }));
@@ -141,7 +135,7 @@ export default function MyTasksPage() {
     () =>
       displayItems
         .filter((item) => item.kind === "feature")
-        .map((item) => item.data as FeatureWithWorkstream),
+        .map((item) => item.data),
     [displayItems]
   );
 
@@ -179,9 +173,9 @@ export default function MyTasksPage() {
               {isListView && (
                 <TableViewMenu
                   columns={MY_TASKS_DEFAULT_COLUMNS}
-                  groupByStatus={groupByStatus}
+                  groupBy={groupBy}
+                  onChangeGroupBy={setGroupBy}
                   onToggle={toggleColumn}
-                  onToggleGroupByStatus={toggleGroupByStatus}
                   visibility={visibility}
                 />
               )}
@@ -245,19 +239,19 @@ export default function MyTasksPage() {
         {isListView &&
           (rawFeatures.length > 0 || isFeaturesLoading || isUserLoading) && (
             <div className="flex-1 overflow-auto">
-              <FlatArtifactTable
+              <FlatDocumentTable
                 editHandlers={editHandlers}
                 emptyDescription="Try adjusting your filters."
                 emptyIcon={BoxIcon}
                 emptyTitle="No matching tasks"
-                groupByStatus={groupByStatus}
+                groupBy={groupBy}
+                groupExpansionKey="table:expand:my-tasks-status"
                 items={displayItems}
                 moreMenuContent={(_item, onRequestDelete) => (
                   <DeleteRowActions onDelete={onRequestDelete} />
                 )}
                 onDelete={handleDelete}
                 parentTitleMap={parentTitleMap}
-                statusExpansionKey="table:expand:my-tasks-status"
                 visibleColumns={visibleColumns}
               />
             </div>

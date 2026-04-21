@@ -257,6 +257,7 @@ export function SymphonyStatus({
             onStop();
           }}
           title="Pause execution"
+          type="button"
         >
           <Pause className="size-4 fill-current" />
         </button>
@@ -270,6 +271,7 @@ export function SymphonyStatus({
             onResume();
           }}
           title="Resume execution"
+          type="button"
         >
           <Play className="size-4 fill-current" />
         </button>

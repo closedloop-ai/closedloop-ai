@@ -1,8 +1,8 @@
 import {
-  ARTIFACT_TYPE_OPTIONS,
-  type Artifact,
-  type ArtifactType,
-} from "@repo/api/src/types/artifact";
+  DOCUMENT_TYPE_OPTIONS,
+  type Document,
+  type DocumentType,
+} from "@repo/api/src/types/document";
 import { withAuth } from "@/lib/auth/with-auth";
 import {
   badRequestResponse,
@@ -10,32 +10,32 @@ import {
   notFoundResponse,
   successResponse,
 } from "@/lib/route-utils";
-import { artifactsService } from "../../artifacts/service";
+import { documentsService } from "../../documents/service";
 
 /**
- * GET /templates/[type] - Get a single template by artifact type
+ * GET /templates/[type] - Get a single template by document type
  * Ensures default templates exist (lazy seeding) before returning the requested template
  */
-export const GET = withAuth<Artifact, "/templates/[type]">(
+export const GET = withAuth<Document, "/templates/[type]">(
   async ({ user }, _request, params) => {
     try {
       const { type } = await params;
 
-      // Validate that type is a valid ArtifactType
-      if (!ARTIFACT_TYPE_OPTIONS.includes(type as ArtifactType)) {
-        return badRequestResponse("Invalid artifact type");
+      // Validate that type is a valid DocumentType
+      if (!DOCUMENT_TYPE_OPTIONS.includes(type as DocumentType)) {
+        return badRequestResponse("Invalid document type");
       }
 
       // Lazy seeding: ensure default templates exist
-      await artifactsService.ensureDefaultTemplates(
+      await documentsService.ensureDefaultTemplates(
         user.organizationId,
         user.id
       );
 
       // Fetch the template for this type
-      const template = await artifactsService.findOrgTemplate(
+      const template = await documentsService.findOrgTemplate(
         user.organizationId,
-        type as ArtifactType
+        type as DocumentType
       );
 
       if (!template) {

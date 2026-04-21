@@ -2,11 +2,10 @@
 
 import { CURRENT_DESKTOP_API_NAMESPACE } from "@repo/api/src/desktop-api-namespace";
 import type { StartPlanLoopResponse } from "@repo/api/src/types/plan-loop";
-import { log } from "@repo/observability/log";
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useRef, useState } from "react";
 import { toast } from "sonner";
-import { artifactKeys } from "@/hooks/queries/use-artifacts";
+import { documentKeys } from "@/hooks/queries/use-documents";
 import { entityLinkKeys } from "@/hooks/queries/use-entity-links";
 import { useApiClient } from "@/hooks/use-api-client";
 import { getRequiredLoopComputeTargetId } from "@/lib/engineer/get-required-loop-compute-target-id";
@@ -15,15 +14,15 @@ import type { EngineerTicket } from "@/types/engineer";
 
 export type UseStartPlanLoopResult = {
   /** Non-null when the backend returned needs-selection (multiple linked plans) */
-  pendingArtifacts: { id: string; title: string }[] | null;
+  pendingDocuments: { id: string; title: string }[] | null;
   startPlanLoop: (
     ticket: EngineerTicket,
     repoPath: string,
     baseBranch?: string
   ) => Promise<{ launched: boolean; alreadyRunning: boolean }>;
-  selectArtifact: (artifactId: string) => Promise<void>;
+  selectDocument: (documentId: string) => Promise<void>;
   /** Dismiss the multi-plan picker without making an API call */
-  clearPendingArtifacts: () => void;
+  clearPendingDocuments: () => void;
 };
 
 /** Result from the gateway prepare step (filesystem-only, no API call). */
@@ -63,12 +62,12 @@ export function useStartPlanLoop(
     repoPath: string,
     worktreePath: string,
     loopId: string,
-    artifactId: string
+    documentId: string
   ) => Promise<void>
 ): UseStartPlanLoopResult {
   const queryClient = useQueryClient();
   const apiClient = useApiClient();
-  const [pendingArtifacts, setPendingArtifacts] = useState<
+  const [pendingDocuments, setPendingDocuments] = useState<
     { id: string; title: string }[] | null
   >(null);
   const [pendingContext, setPendingContext] = useState<PendingContext | null>(
@@ -76,13 +75,13 @@ export function useStartPlanLoop(
   );
 
   const invalidateCaches = useCallback(
-    (artifactId: string) => {
+    (documentId: string) => {
       queryClient.invalidateQueries({ queryKey: entityLinkKeys.lists() });
       queryClient.invalidateQueries({
-        queryKey: artifactKeys.detail(artifactId),
+        queryKey: documentKeys.detail(documentId),
       });
       queryClient.invalidateQueries({
-        queryKey: artifactKeys.generationStatus(artifactId),
+        queryKey: documentKeys.generationStatus(documentId),
       });
     },
     [queryClient]
@@ -136,8 +135,8 @@ export function useStartPlanLoop(
       ticketIdentifier: string,
       repoPath: string,
       loopId: string,
-      artifactId: string,
-      artifactSlug: string,
+      documentId: string,
+      documentSlug: string,
       featureId: string,
       ticketTitle: string | undefined,
       outcome: "launched" | "already-running"
@@ -145,8 +144,8 @@ export function useStartPlanLoop(
       const confirmBody: Record<string, unknown> = {
         repoPath,
         loopId,
-        artifactId,
-        artifactSlug,
+        documentId,
+        documentSlug,
         featureId,
         outcome,
       };
@@ -189,7 +188,7 @@ export function useStartPlanLoop(
       worktreePath: string,
       canonicalRepoPath?: string
     ): Promise<{ launched: boolean; alreadyRunning: boolean }> => {
-      const { loopId, artifactId } = response;
+      const { loopId, documentId } = response;
       const alreadyRunning = response.outcome === "already-running";
 
       // For already-running, use the canonical repoPath from the existing loop
@@ -201,10 +200,10 @@ export function useStartPlanLoop(
         effectiveRepoPath,
         worktreePath,
         loopId,
-        artifactId
+        documentId
       );
 
-      invalidateCaches(artifactId);
+      invalidateCaches(documentId);
 
       return { launched: true, alreadyRunning };
     },
@@ -229,20 +228,10 @@ export function useStartPlanLoop(
       try {
         const computeResult = getRequiredLoopComputeTargetId();
         if (!computeResult.ok) {
-          log.warn(
-            "[engineer-debug] startPlanLoop aborted: no compute target",
-            { error: computeResult.error, ticketId: ticket.identifier }
-          );
           toast.error(computeResult.error);
           return { launched: false, alreadyRunning: false };
         }
         const desktopApiNamespace = await resolveDesktopApiNamespaceHint();
-
-        log.debug("[engineer-debug] startPlanLoop Phase 1: prepare", {
-          ticketId: ticket.identifier,
-          computeTargetId: computeResult.computeTargetId,
-          repoPath,
-        });
 
         // Phase 1: Gateway prepare -- filesystem-only, no API call
         const prepareResult = await gatewayPrepare(
@@ -250,11 +239,6 @@ export function useStartPlanLoop(
           repoPath,
           baseBranch
         );
-
-        log.debug("[engineer-debug] startPlanLoop Phase 2: API call", {
-          ticketId: ticket.identifier,
-          prepareResult,
-        });
 
         // Phase 2: Direct browser-to-API call with Clerk token
         const apiBody: Record<string, unknown> = {
@@ -291,8 +275,8 @@ export function useStartPlanLoop(
             ticket.identifier,
             canonicalRepoPath ?? prepareResult.repoPath,
             data.loopId,
-            data.artifactId,
-            data.artifactSlug,
+            data.documentId,
+            data.documentSlug,
             ticket.featureId,
             ticket.title,
             data.outcome
@@ -314,12 +298,12 @@ export function useStartPlanLoop(
         }
 
         if (data.outcome === "needs-selection") {
-          setPendingArtifacts(data.artifacts);
+          setPendingDocuments(data.documents);
           setPendingContext({ ticket, repoPath, baseBranch, prepareResult });
           return { launched: false, alreadyRunning: false };
         }
 
-        if (data.outcome === "invalid-artifact") {
+        if (data.outcome === "invalid-document") {
           toast.error(
             "The selected artifact is not a valid implementation plan."
           );
@@ -341,8 +325,8 @@ export function useStartPlanLoop(
     [apiClient, gatewayPrepare, gatewayConfirm, handleSuccessfulLaunch]
   );
 
-  const selectArtifact = useCallback(
-    async (artifactId: string): Promise<void> => {
+  const selectDocument = useCallback(
+    async (documentId: string): Promise<void> => {
       if (!pendingContext) {
         return;
       }
@@ -363,7 +347,7 @@ export function useStartPlanLoop(
       // Phase 2: Direct browser-to-API call with selected artifact
       const apiBody: Record<string, unknown> = {
         featureId: ticket.featureId,
-        selectedArtifactId: artifactId,
+        selectedArtifactId: documentId,
         computeTargetId: computeResult.computeTargetId,
         localRepoPath: prepareResult.repoPath,
       };
@@ -386,7 +370,7 @@ export function useStartPlanLoop(
       );
 
       if (data.outcome === "launched" || data.outcome === "already-running") {
-        setPendingArtifacts(null);
+        setPendingDocuments(null);
         setPendingContext(null);
 
         let canonicalRepoPath: string | undefined;
@@ -399,8 +383,8 @@ export function useStartPlanLoop(
           ticket.identifier,
           canonicalRepoPath ?? prepareResult.repoPath,
           data.loopId,
-          data.artifactId,
-          data.artifactSlug,
+          data.documentId,
+          data.documentSlug,
           ticket.featureId,
           ticket.title,
           data.outcome
@@ -416,30 +400,30 @@ export function useStartPlanLoop(
           canonicalRepoPath
         );
       } else if (
-        data.outcome === "invalid-artifact" &&
-        "existingArtifacts" in data
+        data.outcome === "invalid-document" &&
+        "existingDocuments" in data
       ) {
         // Picker data was stale -- replace with refreshed list from the server
-        setPendingArtifacts(data.existingArtifacts);
+        setPendingDocuments(data.existingDocuments);
       } else {
         // error or unexpected outcome -- dismiss picker
-        setPendingArtifacts(null);
+        setPendingDocuments(null);
         setPendingContext(null);
-        toast.error("Failed to select artifact for planning.");
+        toast.error("Failed to select document for planning.");
       }
     },
     [apiClient, pendingContext, gatewayConfirm, handleSuccessfulLaunch]
   );
 
-  const clearPendingArtifacts = useCallback(() => {
-    setPendingArtifacts(null);
+  const clearPendingDocuments = useCallback(() => {
+    setPendingDocuments(null);
     setPendingContext(null);
   }, []);
 
   return {
-    pendingArtifacts,
+    pendingDocuments,
     startPlanLoop,
-    selectArtifact,
-    clearPendingArtifacts,
+    selectDocument,
+    clearPendingDocuments,
   };
 }

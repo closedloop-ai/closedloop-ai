@@ -23,10 +23,32 @@ export type QueueMetric = {
 };
 
 // ---------------------------------------------------------------------------
+// ConnectionState — connection health state values
+// ---------------------------------------------------------------------------
+
+export const ConnectionState = {
+  Online: "online",
+  Degraded: "degraded",
+  Disconnected: "disconnected",
+} as const;
+export type ConnectionState =
+  (typeof ConnectionState)[keyof typeof ConnectionState];
+
+// ---------------------------------------------------------------------------
 // ProtocolMetric — connection/protocol health metrics
 // ---------------------------------------------------------------------------
 
-export type ProtocolMetric = {
+/** Emitted with count: 1 per state transition. Aggregate via sum(count) by {state} for transition-rate view; NOT a live gauge of currently-connected workers. The literal `count: 1` is the enforced invariant — any other numeric count on this metric is a bug. */
+type ConnectionStateCountMetric = {
+  metric: "connection_state_count";
+  state: ConnectionState;
+  count: 1;
+  computeTargetId?: string;
+  gatewaySessionId?: string;
+  timestamp?: string;
+};
+
+type ProtocolBaseMetric = {
   metric:
     | "ack_latency"
     | "terminal_event_latency"
@@ -42,6 +64,8 @@ export type ProtocolMetric = {
   gatewaySessionId?: string;
   timestamp?: string;
 };
+
+export type ProtocolMetric = ConnectionStateCountMetric | ProtocolBaseMetric;
 
 // ---------------------------------------------------------------------------
 // Emitters

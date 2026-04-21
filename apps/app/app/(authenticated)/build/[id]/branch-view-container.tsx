@@ -220,7 +220,6 @@ export function BranchViewContainer({
       <BranchViewHeader
         data={data}
         onToggleChatPanel={() => setShowChatPanel((prev) => !prev)}
-        showChatPanel={showChatPanel}
       />
       <main className="flex min-h-0 flex-1">
         <div

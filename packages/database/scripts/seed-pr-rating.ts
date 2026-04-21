@@ -205,7 +205,7 @@ Minimal PRD for testing the PR rating UI.
 Verify that users can rate pull requests from the Implementation Plan page.
 `;
 
-    const prdArtifact = await prisma.artifact.upsert({
+    const prdDocument = await prisma.document.upsert({
       where: {
         organizationId_slug: { organizationId, slug: PR_RATING_QA.prdSlug },
       },
@@ -222,18 +222,18 @@ Verify that users can rate pull requests from the Implementation Plan page.
       },
     });
 
-    await prisma.artifactVersion.upsert({
+    await prisma.documentVersion.upsert({
       where: {
-        artifactId_version: { artifactId: prdArtifact.id, version: 1 },
+        documentId_version: { documentId: prdDocument.id, version: 1 },
       },
       update: { content: prdContent },
       create: {
-        artifactId: prdArtifact.id,
+        documentId: prdDocument.id,
         version: 1,
         content: prdContent,
       },
     });
-    console.log(`✓ PRD artifact: ${prdArtifact.slug} (${prdArtifact.id})`);
+    console.log(`✓ PRD artifact: ${prdDocument.slug} (${prdDocument.id})`);
 
     // 8. Implementation Plan Artifact + version (must have workstreamId so getArtifactPullRequest finds the PR)
     const planContent = `# PR Rating QA Implementation Plan
@@ -246,7 +246,7 @@ Minimal plan for QA. Open this artifact in the UI to see the linked PR and rate 
 3. Confirm rating is persisted and aggregate stats update.
 `;
 
-    const planArtifact = await prisma.artifact.upsert({
+    const planDocument = await prisma.document.upsert({
       where: {
         organizationId_slug: { organizationId, slug: PR_RATING_QA.planSlug },
       },
@@ -264,29 +264,29 @@ Minimal plan for QA. Open this artifact in the UI to see the linked PR and rate 
       },
     });
 
-    await prisma.artifactVersion.upsert({
+    await prisma.documentVersion.upsert({
       where: {
-        artifactId_version: { artifactId: planArtifact.id, version: 1 },
+        documentId_version: { documentId: planDocument.id, version: 1 },
       },
       update: { content: planContent },
       create: {
-        artifactId: planArtifact.id,
+        documentId: planDocument.id,
         version: 1,
         content: planContent,
       },
     });
     console.log(
-      `✓ Implementation Plan artifact: ${planArtifact.slug} (${planArtifact.id})`
+      `✓ Implementation Plan artifact: ${planDocument.slug} (${planDocument.id})`
     );
 
     // 9. EntityLink: PRD PRODUCES Plan
     const existingLink = await prisma.entityLink.findFirst({
       where: {
         organizationId,
-        sourceId: prdArtifact.id,
-        sourceType: "ARTIFACT",
-        targetId: planArtifact.id,
-        targetType: "ARTIFACT",
+        sourceId: prdDocument.id,
+        sourceType: "DOCUMENT",
+        targetId: planDocument.id,
+        targetType: "DOCUMENT",
         linkType: "PRODUCES",
       },
     });
@@ -296,11 +296,11 @@ Minimal plan for QA. Open this artifact in the UI to see the linked PR and rate 
       await prisma.entityLink.create({
         data: {
           organizationId,
-          sourceId: prdArtifact.id,
-          sourceType: "ARTIFACT",
+          sourceId: prdDocument.id,
+          sourceType: "DOCUMENT",
           sourceVersion: 1,
-          targetId: planArtifact.id,
-          targetType: "ARTIFACT",
+          targetId: planDocument.id,
+          targetType: "DOCUMENT",
           targetVersion: 1,
           linkType: "PRODUCES",
         },
@@ -318,13 +318,13 @@ Minimal plan for QA. Open this artifact in the UI to see the linked PR and rate 
     });
     if (pullRequest) {
       // Ensure PR is linked to the plan artifact for rating auth
-      if (pullRequest.artifactId !== planArtifact.id) {
+      if (pullRequest.documentId !== planDocument.id) {
         await prisma.gitHubPullRequest.update({
           where: { id: pullRequest.id },
-          data: { artifactId: planArtifact.id },
+          data: { documentId: planDocument.id },
         });
         console.log(
-          `✓ GitHubPullRequest updated: artifactId → ${planArtifact.id}`
+          `✓ GitHubPullRequest updated: documentId → ${planDocument.id}`
         );
       }
       console.log(
@@ -336,7 +336,7 @@ Minimal plan for QA. Open this artifact in the UI to see the linked PR and rate 
           workstreamId: workstream.id,
           organizationId: workstream.organizationId,
           repositoryId: repository.id,
-          artifactId: planArtifact.id,
+          documentId: planDocument.id,
           githubId: PR_RATING_QA.prGitHubId,
           number: PR_RATING_QA.prNumber,
           title: PR_RATING_QA.prTitle,
@@ -359,10 +359,10 @@ Minimal plan for QA. Open this artifact in the UI to see the linked PR and rate 
     console.log(`   • Workstream: ${workstream.id}`);
     console.log(`   • Repository: ${repository.id}`);
     console.log(
-      `   • PRD artifact: ${prdArtifact.id} (slug: ${PR_RATING_QA.prdSlug})`
+      `   • PRD artifact: ${prdDocument.id} (slug: ${PR_RATING_QA.prdSlug})`
     );
     console.log(
-      `   • Plan artifact: ${planArtifact.id} (slug: ${PR_RATING_QA.planSlug})`
+      `   • Plan artifact: ${planDocument.id} (slug: ${PR_RATING_QA.planSlug})`
     );
     console.log(`   • Pull request: ${pullRequest.id}`);
     console.log("\nOpen in the UI:");

@@ -19,12 +19,14 @@ export function registerListLoops(
     "list-loops",
     {
       description:
-        "List automation runs, called loops, with optional filters by artifact or status.",
+        "List automation runs (loops) with optional filters by document or status. The documentId filter accepts a document slug (PRD-*, PLN-*, FEA-*) verbatim.",
       inputSchema: {
-        artifactId: z
+        documentId: z
           .string()
           .optional()
-          .describe(describeIdOrSlug("Artifact", ["PRD-7", "PLAN-12"])),
+          .describe(
+            describeIdOrSlug("Document", ["PRD-7", "PLN-12", "FEA-42"])
+          ),
         status: z.enum(LoopStatus).optional().describe("Filter by loop status"),
         limit: z
           .number()
@@ -41,11 +43,11 @@ export function registerListLoops(
           .describe("Starting offset for pagination (default 0)"),
       },
     },
-    ({ artifactId, status, limit, offset }) =>
+    ({ documentId, status, limit, offset }) =>
       withErrorHandling(async () => {
         const query: Record<string, string> = {};
-        if (artifactId !== undefined) {
-          query.artifactId = artifactId;
+        if (documentId !== undefined) {
+          query.documentId = documentId;
         }
         if (status !== undefined) {
           query.status = status;
@@ -61,7 +63,7 @@ export function registerListLoops(
               id: readString(row.id),
               status: readString(row.status),
               command: readString(row.command),
-              artifactId: readString(row.artifactId),
+              documentId: readString(row.documentId),
               workstreamId: readString(row.workstreamId),
               createdAt: readString(row.createdAt),
               startedAt: readString(row.startedAt),

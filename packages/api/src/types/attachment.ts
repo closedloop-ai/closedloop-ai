@@ -2,13 +2,12 @@
 // These are explicitly defined to keep packages/api independent of database
 
 /**
- * Represents a file attachment associated with an artifact.
+ * Represents a file attachment associated with a document.
  * createdAt is ISO 8601 string — use .toISOString() in service mapping.
  */
 export type FileAttachment = {
   id: string;
-  artifactId: string;
-  featureId?: string;
+  documentId: string;
   filename: string;
   mimeType: string;
   sizeBytes: number;

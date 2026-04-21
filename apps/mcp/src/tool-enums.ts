@@ -1,8 +1,4 @@
-export const ENTITY_TYPE_VALUES = [
-  "ARTIFACT",
-  "FEATURE",
-  "EXTERNAL_LINK",
-] as const;
+export const ENTITY_TYPE_VALUES = ["DOCUMENT", "EXTERNAL_LINK"] as const;
 
 export const LINK_TYPE_VALUES = ["PRODUCES", "BLOCKS", "RELATES_TO"] as const;
 

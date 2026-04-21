@@ -1,4 +1,5 @@
-import { ArtifactStatus, ArtifactType } from "@repo/api/src/types/artifact";
+import { DocumentStatus, DocumentType } from "@repo/api/src/types/document";
+import type { AdditionalRepoRef } from "@repo/api/src/types/loop";
 import { useState } from "react";
 import type { PlanSource } from "./plan-source";
 
@@ -18,11 +19,11 @@ export function buildCreateInput(
   selectedSource: PlanSource | undefined
 ) {
   const baseInput = {
-    type: ArtifactType.ImplementationPlan,
+    type: DocumentType.ImplementationPlan,
     title: formState.title.trim(),
     fileName: finalFileName,
     approverId: selectedSource?.approver?.id,
-    status: ArtifactStatus.Draft,
+    status: DocumentStatus.Draft,
     content: formState.content.trim() || "",
     projectId: selectedSource?.projectId ?? formState.selectedProjectId,
     targetRepo: formState.targetRepo || undefined,
@@ -54,4 +55,15 @@ export function useModalOpenState(
   const open = isControlled ? controlledOpen : internalOpen;
   const setOpen = controlledOnOpenChange ?? setInternalOpen;
   return { open, setOpen, isControlled };
+}
+
+export function normalizeAdditionalRepos(
+  repos: AdditionalRepoRef[]
+): AdditionalRepoRef[] | undefined {
+  // Defensive filter: callers should already drop placeholder rows, but
+  // guard against accidental submission of { fullName: "", branch: "" }.
+  const complete = repos.filter(
+    ({ fullName, branch }) => fullName.length > 0 && branch.length > 0
+  );
+  return complete.length > 0 ? complete : undefined;
 }

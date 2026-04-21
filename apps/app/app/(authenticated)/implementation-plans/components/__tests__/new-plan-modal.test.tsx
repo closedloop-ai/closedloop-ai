@@ -1,4 +1,4 @@
-import { ArtifactType } from "@repo/api/src/types/artifact";
+import { DocumentType } from "@repo/api/src/types/document";
 import { EntityType } from "@repo/api/src/types/entity-link";
 import {
   cleanup,
@@ -8,7 +8,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createMockArtifact } from "@/__tests__/fixtures/artifacts";
+import { createMockDocument } from "@/__tests__/fixtures/documents";
 import { NewPlanModal } from "../new-plan-modal";
 import type { PlanSource } from "../plan-source";
 
@@ -24,13 +24,13 @@ vi.mock("next/navigation", () => ({
   useRouter: () => mockUseRouter(),
 }));
 
-vi.mock("@/hooks/queries/use-artifacts", async () => {
-  const actual = await vi.importActual("@/hooks/queries/use-artifacts");
+vi.mock("@/hooks/queries/use-documents", async () => {
+  const actual = await vi.importActual("@/hooks/queries/use-documents");
   return {
     ...actual,
-    useArtifacts: () => mockUseArtifacts(),
-    useCreateArtifact: () => mockUseCreateArtifact(),
-    useCreateAndGenerateArtifact: () => mockUseCreateAndGenerateArtifact(),
+    useDocuments: () => mockUseArtifacts(),
+    useCreateDocument: () => mockUseCreateArtifact(),
+    useCreateAndGenerateDocument: () => mockUseCreateAndGenerateArtifact(),
   };
 });
 
@@ -64,7 +64,7 @@ function createMockSource(overrides?: Partial<PlanSource>): PlanSource {
   return {
     id: "source-1",
     title: "Test Source",
-    sourceType: EntityType.Artifact,
+    sourceType: EntityType.Document,
     ...overrides,
   } as PlanSource;
 }
@@ -162,10 +162,10 @@ describe("NewPlanModal", () => {
 
     it("should hide project selector when source PRD is selected", async () => {
       const mockPrds = [
-        createMockArtifact({
+        createMockDocument({
           id: "prd-1",
           title: "Dashboard PRD",
-          type: ArtifactType.Prd,
+          type: DocumentType.Prd,
           projectId: "project-1",
         }),
       ];
@@ -331,7 +331,7 @@ describe("NewPlanModal", () => {
 
       // Verify mutation input includes source-derived fields
       const mutationArg = mockCreateAndGenerateMutate.mock.calls[0][0];
-      expect(mutationArg).toMatchObject({
+      expect(mutationArg.input).toMatchObject({
         type: "IMPLEMENTATION_PLAN",
         sourceId: "prd-1",
         projectId: "project-1",
@@ -345,15 +345,15 @@ describe("NewPlanModal", () => {
   describe("PRD selector behavior", () => {
     it("should load PRDs when modal opens without source artifact", async () => {
       const mockPrds = [
-        createMockArtifact({
+        createMockDocument({
           id: "prd-1",
           title: "Dashboard PRD",
-          type: ArtifactType.Prd,
+          type: DocumentType.Prd,
         }),
-        createMockArtifact({
+        createMockDocument({
           id: "prd-2",
           title: "Authentication PRD",
-          type: ArtifactType.Prd,
+          type: DocumentType.Prd,
         }),
       ];
 
@@ -378,10 +378,10 @@ describe("NewPlanModal", () => {
 
     it("should update title and fileName when PRD is selected", async () => {
       const mockPrds = [
-        createMockArtifact({
+        createMockDocument({
           id: "prd-1",
           title: "Dashboard Redesign",
-          type: ArtifactType.Prd,
+          type: DocumentType.Prd,
           fileName: "dashboard-redesign.md",
         }),
       ];
@@ -420,10 +420,10 @@ describe("NewPlanModal", () => {
 
     it("should show PlanPreview when PRD is selected", async () => {
       const mockPrds = [
-        createMockArtifact({
+        createMockDocument({
           id: "prd-1",
           title: "Dashboard PRD",
-          type: ArtifactType.Prd,
+          type: DocumentType.Prd,
           targetRepo: "org/repo",
           targetBranch: "main",
         }),

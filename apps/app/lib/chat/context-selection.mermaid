@@ -8,25 +8,25 @@
 flowchart TD
   Start([User opens a chat on some screen]) --> Screen{Which screen?}
 
-  Screen -- "plan-editor<br/>prd-editor" --> ArtifactDrawer["ArtifactChatDrawer<br/>(components/chat/ArtifactChatDrawer.tsx)<br/>props: artifactId / slug / title / type"]
+  Screen -- "plan-editor<br/>prd-editor" --> DocumentDrawer["DocumentChatDrawer<br/>(components/chat/DocumentChatDrawer.tsx)<br/>props: documentId / slug / title / type"]
   Screen -- "branch-view-container" --> BranchDrawer["BranchChatDrawer<br/>(build/[id]/components/branch-chat-drawer.tsx)<br/>props: data / contextSelection / showFilesystemNotice / worktreePath"]
 
-  %% ----- Artifact wrapper -----
-  subgraph ArtifactPath [Artifact path]
-    ArtifactDrawer --> ArtifactHealth["useQuery(healthCheckOptions())<br/>mcpAvailability = claude.closedloopAvailable ?? null"]
-    ArtifactHealth --> ArtifactUrl["resolve url via globalThis.location.href<br/>(SSR-safe: empty string on server)"]
-    ArtifactUrl --> ArtifactBuilder["buildArtifactChatContext(artifact, mcpAvailability)<br/>(lib/chat/contexts/artifact-context.ts)"]
-    ArtifactBuilder --> ArtifactBase["emit metadata: type, title, slug, url"]
-    ArtifactBase --> ArtifactMcp{mcpAvailability}
-    ArtifactMcp -- "null (pending)" --> ArtifactMcpInstr["append MCP_INSTRUCTIONS<br/>(optimistic)"]
-    ArtifactMcp -- "closedloopAvailable = true" --> ArtifactMcpInstr
-    ArtifactMcp -- "closedloopAvailable = false" --> ArtifactInline{inlineContent?}
-    ArtifactInline -- "yes" --> ArtifactInlineBody["append '## Artifact Content' + inlineContent"]
-    ArtifactInline -- "no" --> ArtifactMcpDown["append 'MCP server unavailable' note"]
-    ArtifactMcpInstr --> ArtifactResult[(context string)]
-    ArtifactInlineBody --> ArtifactResult
-    ArtifactMcpDown --> ArtifactResult
-    ArtifactResult --> ArtifactKey["chatKey = 'artifact:' + artifactId<br/>cwd = undefined"]
+  %% ----- Document wrapper -----
+  subgraph DocumentPath [Document path]
+    DocumentDrawer --> DocumentHealth["useQuery(healthCheckOptions())<br/>mcpAvailability = claude.closedloopAvailable ?? null"]
+    DocumentHealth --> DocumentUrl["resolve url via globalThis.location.href<br/>(SSR-safe: empty string on server)"]
+    DocumentUrl --> DocumentBuilder["buildDocumentChatContext(doc, mcpAvailability)<br/>(lib/chat/contexts/document-context.ts)"]
+    DocumentBuilder --> DocumentBase["emit metadata: type, title, slug, url"]
+    DocumentBase --> DocumentMcp{mcpAvailability}
+    DocumentMcp -- "null (pending)" --> DocumentMcpInstr["append MCP_INSTRUCTIONS<br/>(optimistic)"]
+    DocumentMcp -- "closedloopAvailable = true" --> DocumentMcpInstr
+    DocumentMcp -- "closedloopAvailable = false" --> DocumentInline{inlineContent?}
+    DocumentInline -- "yes" --> DocumentInlineBody["append '## Document Content' + inlineContent"]
+    DocumentInline -- "no" --> DocumentMcpDown["append 'MCP server unavailable' note"]
+    DocumentMcpInstr --> DocumentResult[(context string)]
+    DocumentInlineBody --> DocumentResult
+    DocumentMcpDown --> DocumentResult
+    DocumentResult --> DocumentKey["chatKey = 'document:' + documentId<br/>cwd = undefined"]
   end
 
   %% ----- Branch wrapper -----
@@ -57,7 +57,7 @@ flowchart TD
   end
 
   %% ----- Shared drawer -----
-  ArtifactKey --> Drawer["ChatDrawerPanel<br/>(components/chat/ChatDrawerPanel.tsx)<br/>owns useResizableWidth + useChatSession"]
+  DocumentKey --> Drawer["ChatDrawerPanel<br/>(components/chat/ChatDrawerPanel.tsx)<br/>owns useResizableWidth + useChatSession"]
   BranchKey --> Drawer
   BranchNoticeYes --> Drawer
   BranchNoticeNo --> Drawer
@@ -66,13 +66,13 @@ flowchart TD
   Drawer --> Chat["useChatSession POSTs<br/>{ chatKey, userMessage, context, provider, cwd?, apiBaseUrl, apiAuthToken }<br/>to /api/gateway/chat"]
 
   classDef decision fill:#fef3c7,stroke:#b45309,color:#1f2937
-  classDef artifactbox fill:#fce7f3,stroke:#be185c,color:#1f2937
+  classDef documentbox fill:#fce7f3,stroke:#be185c,color:#1f2937
   classDef branchbox fill:#dbeafe,stroke:#1e40af,color:#1f2937
   classDef shared fill:#e0e7ff,stroke:#4338ca,color:#1f2937
   classDef terminal fill:#bbf7d0,stroke:#166534,color:#1f2937
 
-  class Screen,ArtifactMcp,ArtifactInline,FeatureCheck,PlanCheck,WorktreeCheck,BranchMcpCheck,BranchNotice,BranchSlot decision
-  class ArtifactDrawer,ArtifactHealth,ArtifactUrl,ArtifactBuilder,ArtifactBase,ArtifactMcpInstr,ArtifactInlineBody,ArtifactMcpDown,ArtifactKey artifactbox
+  class Screen,DocumentMcp,DocumentInline,FeatureCheck,PlanCheck,WorktreeCheck,BranchMcpCheck,BranchNotice,BranchSlot decision
+  class DocumentDrawer,DocumentHealth,DocumentUrl,DocumentBuilder,DocumentBase,DocumentMcpInstr,DocumentInlineBody,DocumentMcpDown,DocumentKey documentbox
   class BranchDrawer,BranchHealth,BranchBuilder,BranchBase,FeatureSection,PlanSection,WorktreeSection,BranchMcpInstr,BranchKey,BranchNoticeYes,BranchSlotYes branchbox
   class Drawer,Chat shared
-  class Start,ArtifactResult,BranchResult,BranchNoticeNo,BranchSlotNo terminal
+  class Start,DocumentResult,BranchResult,BranchNoticeNo,BranchSlotNo terminal

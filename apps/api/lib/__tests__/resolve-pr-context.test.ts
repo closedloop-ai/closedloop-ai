@@ -116,7 +116,7 @@ describe("resolvePrContext", () => {
     mockGitHubPullRequestFindFirst.mockResolvedValue({
       id: "pr-stale",
       repositoryId: "repo-stale",
-      artifactId: null,
+      documentId: null,
       workstreamId: "work-stale",
       headSha: "head-stale",
       number: 7,
@@ -132,7 +132,7 @@ describe("resolvePrContext", () => {
     mockGitHubPullRequestFindUnique.mockResolvedValue({
       id: "pr-correct",
       repositoryId: "repo-correct",
-      artifactId: "artifact-1",
+      documentId: "artifact-1",
       workstreamId: "work-correct",
       headSha: "head-correct",
     });
@@ -160,7 +160,7 @@ describe("resolvePrContext", () => {
       select: {
         id: true,
         repositoryId: true,
-        artifactId: true,
+        documentId: true,
         workstreamId: true,
         headSha: true,
       },

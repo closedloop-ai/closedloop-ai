@@ -1,12 +1,13 @@
 "use client";
 
-import type { ArtifactWithWorkstream } from "@repo/api/src/types/artifact";
 import { Priority } from "@repo/api/src/types/common";
-import { EntityType, LinkType } from "@repo/api/src/types/entity-link";
 import {
-  FEATURE_STATUS_OPTIONS,
-  FeatureStatus,
-} from "@repo/api/src/types/feature";
+  DOCUMENT_STATUS_OPTIONS,
+  DocumentStatus,
+  DocumentType,
+  type DocumentWithWorkstream,
+} from "@repo/api/src/types/document";
+import { EntityType, LinkType } from "@repo/api/src/types/entity-link";
 import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
@@ -51,12 +52,14 @@ import {
   featurePriorityLabels,
   featureStatusLabels,
 } from "@/components/status-badge";
-import { useArtifactsByProject } from "@/hooks/queries/use-artifacts";
+import {
+  useCreateDocument,
+  useDocumentsByProject,
+} from "@/hooks/queries/use-documents";
 import { useCreateEntityLink } from "@/hooks/queries/use-entity-links";
-import { useCreateFeature } from "@/hooks/queries/use-features";
 import { useProjectsByTeam } from "@/hooks/queries/use-projects";
 import { useTeamMembers } from "@/hooks/queries/use-teams";
-import { ARTIFACT_TYPE_LABELS } from "@/lib/project-constants";
+import { DOCUMENT_TYPE_LABELS } from "@/lib/project-constants";
 import { transformApiUserToSelectUser } from "@/lib/user-utils";
 
 type CreateFeatureModalProps = {
@@ -83,11 +86,11 @@ export function CreateFeatureModal({
   // Form state
   const [title, setTitle] = useState("");
   const [selectedArtifacts, setSelectedArtifacts] = useState<
-    ArtifactWithWorkstream[]
+    DocumentWithWorkstream[]
   >([]);
   const [selectedAssignee, setSelectedAssignee] = useState<User | null>(null);
   const [priority, setPriority] = useState<Priority>(Priority.Medium);
-  const [status, setStatus] = useState<FeatureStatus>(FeatureStatus.Draft);
+  const [status, setStatus] = useState<DocumentStatus>(DocumentStatus.Draft);
   const [error, setError] = useState<string | null>(null);
   const [relationshipsOpen, setRelationshipsOpen] = useState(false);
 
@@ -101,7 +104,7 @@ export function CreateFeatureModal({
     [teamMembers]
   );
 
-  const { data: artifacts = [] } = useArtifactsByProject(selectedProjectId, {
+  const { data: artifacts = [] } = useDocumentsByProject(selectedProjectId, {
     enabled: open && !!selectedProjectId,
   });
   // Filter out already-selected artifacts
@@ -111,19 +114,19 @@ export function CreateFeatureModal({
   }, [artifacts, selectedArtifacts]);
 
   // Mutations
-  const createFeatureMutation = useCreateFeature();
+  const createFeatureMutation = useCreateDocument();
   const createEntityLinkMutation = useCreateEntityLink();
 
   const isSubmitting =
     createFeatureMutation.isPending || createEntityLinkMutation.isPending;
 
-  const handleAddArtifact = (artifact: ArtifactWithWorkstream) => {
+  const handleAddArtifact = (artifact: DocumentWithWorkstream) => {
     setSelectedArtifacts((prev) => [...prev, artifact]);
     setRelationshipsOpen(false);
   };
 
-  const handleRemoveArtifact = (artifactId: string) => {
-    setSelectedArtifacts((prev) => prev.filter((a) => a.id !== artifactId));
+  const handleRemoveArtifact = (documentId: string) => {
+    setSelectedArtifacts((prev) => prev.filter((a) => a.id !== documentId));
   };
 
   const handleProjectChange = (newProjectId: string) => {
@@ -137,7 +140,7 @@ export function CreateFeatureModal({
     setSelectedArtifacts([]);
     setSelectedAssignee(null);
     setPriority(Priority.Medium);
-    setStatus(FeatureStatus.Draft);
+    setStatus(DocumentStatus.Draft);
     setError(null);
     setRelationshipsOpen(false);
     if (showProjectSelector) {
@@ -163,8 +166,10 @@ export function CreateFeatureModal({
 
     createFeatureMutation.mutate(
       {
+        type: DocumentType.Feature,
         projectId: selectedProjectId,
         title: title.trim(),
+        content: "",
         status,
         priority,
         assigneeId: selectedAssignee?.id,
@@ -177,9 +182,9 @@ export function CreateFeatureModal({
                 selectedArtifacts.map((artifact) =>
                   createEntityLinkMutation.mutateAsync({
                     sourceId: artifact.id,
-                    sourceType: EntityType.Artifact,
+                    sourceType: EntityType.Document,
                     targetId: feature.id,
-                    targetType: EntityType.Feature,
+                    targetType: EntityType.Document,
                     linkType: LinkType.Produces,
                   })
                 )
@@ -307,7 +312,7 @@ export function CreateFeatureModal({
                             {artifact.title}
                           </span>
                           <span className="ml-2 text-muted-foreground text-xs">
-                            {ARTIFACT_TYPE_LABELS[artifact.type] ??
+                            {DOCUMENT_TYPE_LABELS[artifact.type] ??
                               artifact.type}
                           </span>
                         </CommandItem>
@@ -382,14 +387,14 @@ export function CreateFeatureModal({
               Status
             </Label>
             <Select
-              onValueChange={(v: FeatureStatus) => setStatus(v)}
+              onValueChange={(v: DocumentStatus) => setStatus(v)}
               value={status}
             >
               <SelectTrigger>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {FEATURE_STATUS_OPTIONS.map((s) => (
+                {DOCUMENT_STATUS_OPTIONS.map((s) => (
                   <SelectItem key={s} value={s}>
                     {featureStatusLabels[s]}
                   </SelectItem>

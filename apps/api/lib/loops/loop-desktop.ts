@@ -10,7 +10,7 @@ import {
   rewriteDesktopApiPath,
 } from "@repo/api/src/desktop-api-namespace";
 import type { JsonValue } from "@repo/api/src/types/common";
-import type { LoopCommand } from "@repo/api/src/types/loop";
+import type { AdditionalRepoRef, LoopCommand } from "@repo/api/src/types/loop";
 import type { SymphonyLoopBody } from "@repo/api/src/types/symphony-loop-body";
 import { log } from "@repo/observability/log";
 import { toRelayOperation } from "@/app/compute-targets/relay-command-helpers";
@@ -41,9 +41,7 @@ async function assertDelivered(
       commandId: context.commandId,
       reason: result.reason,
     });
-    throw new Error(
-      `Relay dispatch not delivered: ${result.reason ?? "target offline"}`
-    );
+    throw new RelayDispatchNotDeliveredError(result.reason);
   }
 }
 
@@ -126,15 +124,26 @@ async function dispatchRelayOperation(
 
 export class DispatchError extends Error {
   readonly commandId: string;
-  constructor(message: string, commandId: string) {
+  readonly dispatchReason?: string;
+  constructor(message: string, commandId: string, dispatchReason?: string) {
     super(message);
     this.name = "DispatchError";
     this.commandId = commandId;
+    this.dispatchReason = dispatchReason;
   }
 }
 
 export function isDispatchError(error: unknown): error is DispatchError {
   return error instanceof DispatchError;
+}
+
+class RelayDispatchNotDeliveredError extends Error {
+  readonly reason?: string;
+  constructor(reason?: string) {
+    super(`Relay dispatch not delivered: ${reason ?? "target offline"}`);
+    this.name = "RelayDispatchNotDeliveredError";
+    this.reason = reason;
+  }
 }
 
 type LaunchDesktopOpts = {
@@ -146,11 +155,12 @@ type LaunchDesktopOpts = {
   closedLoopAuthToken: string;
   apiBaseUrl: string;
   contextPack: ContextPack;
-  artifactSlug?: string;
+  documentSlug?: string;
   parentLoopId?: string;
   parentBranchName?: string;
   parentSessionId?: string;
   localRepoPath?: string;
+  additionalRepos?: AdditionalRepoRef[];
 };
 
 async function resolveDesktopApiNamespace(
@@ -187,11 +197,12 @@ export async function launchLoopOnDesktop(
     closedLoopAuthToken,
     apiBaseUrl,
     contextPack,
-    artifactSlug,
+    documentSlug,
     parentLoopId,
     parentBranchName,
     parentSessionId,
     localRepoPath,
+    additionalRepos,
   } = opts;
   const namespace = await resolveDesktopApiNamespace(
     computeTargetId,
@@ -211,13 +222,17 @@ export async function launchLoopOnDesktop(
       prompt: contextPack.prompt ?? null,
       repo: contextPack.repoInfo ?? null,
       committer: contextPack.committer ?? null,
-      artifactSlug: artifactSlug ?? null,
+      artifactSlug: documentSlug ?? null,
       parentLoopId: parentLoopId ?? null,
       parentBranchName: parentBranchName ?? null,
       parentSessionId: parentSessionId ?? null,
       localRepoPath: localRepoPath ?? null,
       userContext: contextPack.userContext,
       attachments: contextPack.attachments,
+      additionalRepos: additionalRepos?.map((r) => ({
+        fullName: r.fullName,
+        branch: r.branch,
+      })),
     } satisfies SymphonyLoopBody as JsonValue,
   };
 
@@ -237,9 +252,12 @@ export async function launchLoopOnDesktop(
       true
     );
   } catch (err) {
+    const dispatchReason =
+      err instanceof RelayDispatchNotDeliveredError ? err.reason : undefined;
     throw new DispatchError(
       err instanceof Error ? err.message : String(err),
-      commandId
+      commandId,
+      dispatchReason
     );
   }
 

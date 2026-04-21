@@ -64,6 +64,7 @@ export const SubagentBlock = memo(function SubagentBlock({
           "text-orange-700 dark:text-orange-300"
         )}
         onClick={toggleExpanded}
+        type="button"
       >
         <span
           className="transition-transform duration-200"

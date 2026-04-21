@@ -135,7 +135,7 @@ function UserSelectPopover({
               {value && (
                 <CommandItem
                   onSelect={handleClear}
-                  className="cursor-pointer text-muted-foreground hover:bg-accent hover:text-foreground"
+                  className="cursor-pointer text-muted-foreground hover:bg-muted hover:text-foreground"
                 >
                   Clear selection
                 </CommandItem>
@@ -145,7 +145,7 @@ function UserSelectPopover({
                   key={user.id}
                   value={`${user.name} ${user.email || ""}`}
                   onSelect={() => handleSelect(user)}
-                  className="cursor-pointer hover:bg-accent"
+                  className="cursor-pointer hover:bg-muted"
                 >
                   <Avatar className="mr-2 h-6 w-6">
                     {user.avatarUrl && (

@@ -3,8 +3,11 @@
  */
 
 import { readNdjsonLines } from "@/lib/chat/stream-utils";
+import { getWorktreePath as getWorktreePathBase } from "@/lib/git/worktree";
 
-export { getWorktreePath } from "@/lib/git/worktree";
+export const getWorktreePath = getWorktreePathBase;
+
+const ANSI_ESCAPE_PREFIX = `${String.fromCharCode(0x1b)}[`;
 
 /**
  * Check if text looks like terminal/CLI output.
@@ -15,15 +18,11 @@ export function isTerminalOutput(text: string): boolean {
   const terminalPatterns =
     /[━│┃┄┅┆┇┈┉┊┋╌╍╎╏═║╒╓╔╕╖╗╘╙╚╛╜╝╞╟╠╡╢╣╤╥╦╧╨╩╪╫╬─├┤┬┴┼]/;
   // ANSI escape codes (may be partially stripped)
-  const ansiPattern = /\x1b\[|\u001b\[/;
+  const hasAnsiEscape = text.includes(ANSI_ESCAPE_PREFIX);
   // Common CLI tool output patterns (biome, eslint, etc.)
   const cliPatterns = /(?:✖|✓|⚠|ℹ|›)\s|^\s*>\s*\d+\s*│/m;
 
-  return (
-    terminalPatterns.test(text) ||
-    ansiPattern.test(text) ||
-    cliPatterns.test(text)
-  );
+  return terminalPatterns.test(text) || hasAnsiEscape || cliPatterns.test(text);
 }
 
 /**
@@ -384,11 +383,12 @@ export function extractContextBlocks(content: string): {
     const file = match[2] || undefined;
     const body = match[3].trim();
     const headingMatch = /^#+\s+(.+)$/m.exec(body);
-    const title = source
-      ? source.charAt(0).toUpperCase() + source.slice(1)
-      : headingMatch
-        ? headingMatch[1].slice(0, 60)
-        : "Context";
+    let title = "Context";
+    if (source) {
+      title = source.charAt(0).toUpperCase() + source.slice(1);
+    } else if (headingMatch) {
+      title = headingMatch[1].slice(0, 60);
+    }
     blocks.push({ id: `ctx-${idx}`, title, body, source, file });
     idx++;
   }

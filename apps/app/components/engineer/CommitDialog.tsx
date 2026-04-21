@@ -29,7 +29,7 @@ import {
   useState,
 } from "react";
 import { toast } from "sonner";
-import { getWorktreePath } from "@/lib/engineer/chat-utils";
+import { getWorktreePath } from "@/lib/chat/chat-utils";
 import { markTicketPushed } from "@/lib/engineer/push-tracker";
 import { reposOptions } from "@/lib/engineer/queries/repos";
 

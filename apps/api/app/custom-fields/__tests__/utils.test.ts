@@ -287,13 +287,13 @@ describe("validateFieldNameNotReserved", () => {
 
   it("throws for 'Status' on FEATURE entity type", () => {
     expect(() =>
-      validateFieldNameNotReserved("Status", [CustomFieldEntityType.Feature])
+      validateFieldNameNotReserved("Status", [CustomFieldEntityType.Document])
     ).toThrow(ReservedNameError);
   });
 
   it("throws for 'Assignee' on ARTIFACT entity type", () => {
     expect(() =>
-      validateFieldNameNotReserved("Assignee", [CustomFieldEntityType.Artifact])
+      validateFieldNameNotReserved("Assignee", [CustomFieldEntityType.Document])
     ).toThrow(ReservedNameError);
   });
 
@@ -301,7 +301,7 @@ describe("validateFieldNameNotReserved", () => {
     expect(() =>
       validateFieldNameNotReserved("Sprint Points", [
         CustomFieldEntityType.Project,
-        CustomFieldEntityType.Feature,
+        CustomFieldEntityType.Document,
       ])
     ).not.toThrow();
   });
@@ -313,8 +313,8 @@ describe("validateFieldNameNotReserved", () => {
   it("throws when name is reserved on any one of multiple entity types", () => {
     expect(() =>
       validateFieldNameNotReserved("Approver", [
-        CustomFieldEntityType.Feature,
-        CustomFieldEntityType.Artifact,
+        CustomFieldEntityType.Project,
+        CustomFieldEntityType.Document,
       ])
     ).toThrow(ReservedNameError);
   });
