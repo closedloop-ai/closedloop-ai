@@ -58,6 +58,7 @@ export function MyTasksKanban({
 }: Readonly<MyTasksKanbanProps>) {
   const queryClient = useQueryClient();
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const resizeObserverRef = useRef<ResizeObserver | null>(null);
   const [viewportHeight, setViewportHeight] = useState<number | null>(null);
   const listFilters = useMemo(
     () => buildFeatureListParams(assigneeId),
@@ -157,7 +158,17 @@ export function MyTasksKanban({
 
   const containerCallbackRef = useCallback(
     (node: HTMLDivElement | null) => {
+      const prev = containerRef.current;
       containerRef.current = node;
+      const observer = resizeObserverRef.current;
+      if (observer) {
+        if (prev) {
+          observer.unobserve(prev);
+        }
+        if (node) {
+          observer.observe(node);
+        }
+      }
       if (node) {
         updateViewportHeight();
       }
@@ -176,6 +187,7 @@ export function MyTasksKanban({
       typeof ResizeObserver !== "undefined"
         ? new ResizeObserver(() => updateViewportHeight())
         : null;
+    resizeObserverRef.current = observer;
 
     if (observer && containerRef.current) {
       observer.observe(containerRef.current);
@@ -184,6 +196,7 @@ export function MyTasksKanban({
     return () => {
       globalThis.removeEventListener("resize", onResize);
       observer?.disconnect();
+      resizeObserverRef.current = null;
     };
   }, [updateViewportHeight]);
 
