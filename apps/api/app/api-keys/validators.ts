@@ -1,7 +1,7 @@
 import { API_KEY_SCOPES } from "@repo/api/src/types/api-key";
 import { z } from "zod";
 
-// TODO: Remove this field from the validator once all API callers have been updated. Tracked in FEA-3 (T-1.4).
+// TODO: Remove the scopes field and superRefine block once the deprecation window closes. Tracked in FEA-563.
 const createApiKeyScopesValidator = z
   .array(z.enum(API_KEY_SCOPES))
   .nonempty("At least one scope is required")
