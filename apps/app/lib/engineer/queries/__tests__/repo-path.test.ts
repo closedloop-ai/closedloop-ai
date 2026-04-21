@@ -31,18 +31,20 @@ describe("fetchRepoPath", () => {
     expect(result).toEqual({ path: null });
   });
 
-  test("returns { path: null } on any non-2xx status (500, 501, etc.)", async () => {
+  test("throws on non-404 errors (500, 502, etc.) so React Query can retry", async () => {
     globalThis.fetch = vi
       .fn()
       .mockResolvedValue(new Response("boom", { status: 500 }));
-    const result = await fetchRepoPath("acme/web");
-    expect(result).toEqual({ path: null });
+    await expect(fetchRepoPath("acme/web")).rejects.toThrow(
+      "repo-path request failed: 500"
+    );
   });
 
-  test("returns { path: null } when fetch itself throws (network error)", async () => {
-    globalThis.fetch = vi.fn().mockRejectedValue(new TypeError("Failed"));
-    const result = await fetchRepoPath("acme/web");
-    expect(result).toEqual({ path: null });
+  test("throws when fetch itself throws (network error)", async () => {
+    globalThis.fetch = vi
+      .fn()
+      .mockRejectedValue(new TypeError("Failed to fetch"));
+    await expect(fetchRepoPath("acme/web")).rejects.toThrow("Failed to fetch");
   });
 
   test("returns { path: null } when response body is not valid JSON", async () => {
@@ -52,8 +54,7 @@ describe("fetchRepoPath", () => {
         headers: { "Content-Type": "text/html" },
       })
     );
-    const result = await fetchRepoPath("acme/web");
-    expect(result).toEqual({ path: null });
+    await expect(fetchRepoPath("acme/web")).rejects.toThrow();
   });
 
   test("returns { path: null } when response is JSON but path is not a string", async () => {

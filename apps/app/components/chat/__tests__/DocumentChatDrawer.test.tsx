@@ -70,23 +70,9 @@ vi.mock("@/lib/engineer/queries/health-check", () => ({
   healthCheckOptions: () => ({ queryKey: ["health"], queryFn: vi.fn() }),
 }));
 
+const mockUseRepoPath = vi.fn();
 vi.mock("@/lib/engineer/queries/repo-path", () => ({
-  repoPathOptions: (repoFullName: string | null, routingKey: string) => ({
-    queryKey: ["repo-path", repoFullName ?? "", routingKey],
-    queryFn: vi.fn(),
-  }),
-}));
-
-vi.mock("@/lib/engineer/electron-detection", () => ({
-  useElectronDetection: () => ({
-    detected: false,
-    loading: false,
-    port: null,
-    version: null,
-    machineName: null,
-    capabilities: null,
-    checkedAt: null,
-  }),
+  useRepoPath: (...args: unknown[]) => mockUseRepoPath(...args),
 }));
 
 import { DocumentChatDrawer } from "../DocumentChatDrawer";
@@ -102,6 +88,7 @@ beforeEach(() => {
   capturedUseChatSessionOptions.value = undefined;
   capturedChatPanelProps.value = null;
   vi.clearAllMocks();
+  mockUseRepoPath.mockReturnValue({ repoPath: null, showNotice: false });
 });
 
 describe("DocumentChatDrawer", () => {
@@ -134,25 +121,21 @@ describe("DocumentChatDrawer", () => {
   });
 
   test("passes resolved repo path as cwd when targetRepo is provided", () => {
-    mockUseQuery.mockImplementation((options: { queryKey?: unknown[] }) => {
-      if (options?.queryKey?.[0] === "repo-path") {
-        return { data: { path: "/Users/alice/src/acme/web" } };
-      }
-      return { data: undefined };
+    mockUseRepoPath.mockReturnValue({
+      repoPath: "/Users/alice/src/acme/web",
+      showNotice: false,
     });
+    mockUseQuery.mockReturnValue({ data: undefined });
     render(<DocumentChatDrawer {...ARTIFACT_PROPS} targetRepo="acme/web" />);
+    expect(mockUseRepoPath).toHaveBeenCalledWith("acme/web");
     expect(capturedUseChatSessionOptions.value?.cwd).toBe(
       "/Users/alice/src/acme/web"
     );
   });
 
   test("does not pass a cwd when repo path resolves to null", () => {
-    mockUseQuery.mockImplementation((options: { queryKey?: unknown[] }) => {
-      if (options?.queryKey?.[0] === "repo-path") {
-        return { data: { path: null } };
-      }
-      return { data: undefined };
-    });
+    mockUseRepoPath.mockReturnValue({ repoPath: null, showNotice: false });
+    mockUseQuery.mockReturnValue({ data: undefined });
     render(<DocumentChatDrawer {...ARTIFACT_PROPS} targetRepo="acme/web" />);
     expect(capturedUseChatSessionOptions.value?.cwd).toBeUndefined();
   });
