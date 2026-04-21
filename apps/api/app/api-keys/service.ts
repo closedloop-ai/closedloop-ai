@@ -62,7 +62,7 @@ export const apiKeysService = {
           organizationId,
           userId,
           name: input.name,
-          scopes: normalizeCreateScopes(input.scopes),
+          scopes: ["read", "write", "delete"],
           keyHash: hash,
           keyPrefix: "sk_live_",
           expiresAt: input.expiresAt ?? null,
@@ -160,18 +160,25 @@ export const apiKeysService = {
       });
     });
 
+    const scopes = normalizeStoredScopes(
+      sanitizeScopes(record.scopes),
+      record.scopes.length
+    );
+    if (scopes.length === 1 && scopes[0] === "read") {
+      log.warn("legacy_read_only_api_key_used", {
+        apiKeyId: record.id,
+        userId: record.userId,
+        organizationId: record.organizationId,
+      });
+    }
     return {
       userId: record.userId,
       organizationId: record.organizationId,
-      scopes: normalizeStoredScopes(
-        sanitizeScopes(record.scopes),
-        record.scopes.length
-      ),
+      scopes,
     };
   },
 };
 
-const DEFAULT_CREATE_SCOPES: ApiKeyScope[] = ["read"];
 const API_KEY_SCOPE_SET = new Set<ApiKeyScope>(API_KEY_SCOPES);
 
 function sanitizeScopes(scopes: string[] | undefined): ApiKeyScope[] {
@@ -181,15 +188,6 @@ function sanitizeScopes(scopes: string[] | undefined): ApiKeyScope[] {
   return scopes.filter((scope): scope is ApiKeyScope =>
     API_KEY_SCOPE_SET.has(scope as ApiKeyScope)
   );
-}
-
-function normalizeCreateScopes(
-  scopes: ApiKeyScope[] | undefined
-): ApiKeyScope[] {
-  if (!(scopes && scopes.length > 0)) {
-    return DEFAULT_CREATE_SCOPES;
-  }
-  return [...new Set(scopes)];
 }
 
 function normalizeStoredScopes(

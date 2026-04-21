@@ -40,7 +40,7 @@ export function DownloadElectronAppStep({
 
   const handleGenerateKey = () => {
     createApiKey.mutate(
-      { name: "ClosedLoop Desktop", scopes: ["read", "write"] },
+      { name: "ClosedLoop Desktop" },
       {
         onSuccess: (data) => {
           setGeneratedKey(data.plaintext);
@@ -104,7 +104,7 @@ export function DownloadElectronAppStep({
           </div>
           <p className="text-muted-foreground text-xs">
             Generate an API key to authenticate ClosedLoop Desktop with your
-            account.
+            account. The key will have full read, write, and delete access.
           </p>
 
           {generatedKey ? (

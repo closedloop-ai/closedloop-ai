@@ -248,7 +248,7 @@ describe("DownloadElectronAppStep", () => {
       fireEvent.click(generateButton);
 
       expect(mockMutate).toHaveBeenCalledWith(
-        { name: "ClosedLoop Desktop", scopes: ["read", "write"] },
+        { name: "ClosedLoop Desktop" },
         expect.objectContaining({ onSuccess: expect.any(Function) })
       );
     });

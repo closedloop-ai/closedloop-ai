@@ -52,7 +52,7 @@ function makeApiKeyRecord(
     name: "My Key",
     keyPrefix: "sk_live_xxxx",
     keyHash: "abc123",
-    scopes: ["read"],
+    scopes: ["read", "write", "delete"],
     expiresAt: null,
     lastUsedAt: null,
     createdAt: new Date("2024-01-01"),
@@ -198,6 +198,26 @@ describe("apiKeysService.generate", () => {
     await apiKeysService.generate(ORG_ID, USER_ID, { name: "No Expiry" });
 
     expect(storedExpiresAt).toBeNull();
+  });
+
+  it("stores full ['read', 'write', 'delete'] scopes when no scopes provided", async () => {
+    let capturedScopes: unknown;
+
+    mockWithDb.mockImplementation((callback: (db: unknown) => unknown) => {
+      const mockDb = {
+        apiKey: {
+          create: vi.fn((args: { data: Record<string, unknown> }) => {
+            capturedScopes = args.data.scopes;
+            return Promise.resolve(makeApiKeyRecord());
+          }),
+        },
+      };
+      return callback(mockDb);
+    });
+
+    await apiKeysService.generate(ORG_ID, USER_ID, { name: "Full Access" });
+
+    expect(capturedScopes).toEqual(["read", "write", "delete"]);
   });
 });
 
@@ -492,6 +512,29 @@ describe("apiKeysService.verifyKey", () => {
     expect(
       (updateArgs?.data as Record<string, unknown>).lastUsedAt
     ).toBeInstanceOf(Date);
+  });
+
+  it("returns stored scopes unchanged when record has ['read'] scopes", async () => {
+    const plaintext = "sk_live_readscopeonly";
+    const record = makeApiKeyRecord({ scopes: ["read"] });
+
+    mockWithDb
+      .mockImplementationOnce((callback: (db: unknown) => unknown) => {
+        const mockDb = {
+          apiKey: { findFirst: vi.fn().mockResolvedValue(record) },
+        };
+        return callback(mockDb);
+      })
+      .mockImplementationOnce((callback: (db: unknown) => unknown) => {
+        const mockDb = {
+          apiKey: { update: vi.fn().mockResolvedValue({}) },
+        };
+        return callback(mockDb);
+      });
+
+    const result = await apiKeysService.verifyKey(plaintext);
+
+    expect(result).toMatchObject({ scopes: ["read"] });
   });
 
   it("queries with revokedAt: null and expiresAt null-or-future guard", async () => {
