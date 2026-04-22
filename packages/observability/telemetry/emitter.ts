@@ -33,10 +33,27 @@ const ANSI_RE = new RegExp(
 // Sanitization
 // ---------------------------------------------------------------------------
 
+const SAFE_ENV_KEYS = new Set(["NODE_ENV"]);
+const SAFE_ENV_PREFIXES = ["CLAUDE_CODE_USE_"];
+
+function sanitizeTextTail(value: string): string {
+  const stripped = value.replaceAll(ANSI_RE, "");
+  const lines = stripped.split("\n");
+  const filtered = lines.filter((line: string) => {
+    const lower = line.toLowerCase();
+    return !CREDENTIAL_PATTERNS.some((pattern) =>
+      lower.includes(pattern.toLowerCase())
+    );
+  });
+  const joined = filtered.join("\n");
+  return truncateUtf8(joined, LOG_TAIL_MAX_BYTES);
+}
+
 /**
  * Sanitize diagnostics from a desktop-originated event:
- * - Truncate logTail to at most LOG_TAIL_MAX_BYTES bytes
+ * - Truncate logTail/stderrTail to at most LOG_TAIL_MAX_BYTES bytes
  * - Strip lines containing credential patterns
+ * - Allowlist spawnMeta.envSnapshot to only safe env var keys
  */
 export function sanitizeDesktopTelemetryDiagnostics(
   diagnostics: TelemetryDiagnostics | undefined
@@ -48,31 +65,26 @@ export function sanitizeDesktopTelemetryDiagnostics(
   const sanitized: TelemetryDiagnostics = { ...diagnostics };
 
   if (typeof sanitized.logTail === "string") {
-    const stripped = sanitized.logTail.replaceAll(ANSI_RE, "");
-    const lines = stripped.split("\n");
-    const filtered = lines.filter((line: string) => {
-      const lower = line.toLowerCase();
-      return !CREDENTIAL_PATTERNS.some((pattern) =>
-        lower.includes(pattern.toLowerCase())
-      );
-    });
-    const joined = filtered.join("\n");
-
-    sanitized.logTail = truncateUtf8(joined, LOG_TAIL_MAX_BYTES);
+    sanitized.logTail = sanitizeTextTail(sanitized.logTail);
   }
 
   if (typeof sanitized.stderrTail === "string") {
-    const stripped = sanitized.stderrTail.replaceAll(ANSI_RE, "");
-    const lines = stripped.split("\n");
-    const filtered = lines.filter((line: string) => {
-      const lower = line.toLowerCase();
-      return !CREDENTIAL_PATTERNS.some((pattern) =>
-        lower.includes(pattern.toLowerCase())
-      );
-    });
-    const joined = filtered.join("\n");
+    sanitized.stderrTail = sanitizeTextTail(sanitized.stderrTail);
+  }
 
-    sanitized.stderrTail = truncateUtf8(joined, LOG_TAIL_MAX_BYTES);
+  if (sanitized.spawnMeta?.envSnapshot) {
+    const filtered: Record<string, string> = {};
+    for (const [key, value] of Object.entries(
+      sanitized.spawnMeta.envSnapshot
+    )) {
+      if (
+        SAFE_ENV_KEYS.has(key) ||
+        SAFE_ENV_PREFIXES.some((p) => key.startsWith(p))
+      ) {
+        filtered[key] = value;
+      }
+    }
+    sanitized.spawnMeta = { ...sanitized.spawnMeta, envSnapshot: filtered };
   }
 
   return sanitized;
