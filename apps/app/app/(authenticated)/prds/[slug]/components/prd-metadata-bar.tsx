@@ -7,6 +7,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@repo/design-system/components/ui/select";
+import { AttachFilesButton } from "@/components/document-editor/attach-files-button";
 import { MetadataPanel } from "@/components/document-editor/metadata-panel";
 import { StatusMetadataSection } from "@/components/document-editor/status-metadata-section";
 import { TargetRepositoryFields } from "@/components/document-editor/target-repository-fields";
@@ -14,10 +15,14 @@ import type { useDocumentMetadata } from "@/hooks/document-editing/use-document-
 import { PRIORITY_LABELS } from "@/lib/project-constants";
 
 export type PRDMetadataBarProps = {
+  documentId: string;
   metadata: ReturnType<typeof useDocumentMetadata>;
 };
 
-export function PRDMetadataBar({ metadata }: Readonly<PRDMetadataBarProps>) {
+export function PRDMetadataBar({
+  documentId,
+  metadata,
+}: Readonly<PRDMetadataBarProps>) {
   return (
     <MetadataPanel variant="bar">
       <StatusMetadataSection
@@ -65,6 +70,7 @@ export function PRDMetadataBar({ metadata }: Readonly<PRDMetadataBarProps>) {
         targetRepo={metadata.targetRepo}
         title=""
       />
+      <AttachFilesButton documentId={documentId} />
     </MetadataPanel>
   );
 }

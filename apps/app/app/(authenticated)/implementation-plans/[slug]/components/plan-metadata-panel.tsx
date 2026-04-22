@@ -12,22 +12,15 @@ import type { AdditionalRepoRef } from "@repo/api/src/types/loop";
 import { Label } from "@repo/design-system/components/ui/label";
 import Link from "next/link";
 import { useState } from "react";
-import { AttachmentsSection } from "@/components/document-editor/attachments-section";
 import { CollapsibleSection } from "@/components/document-editor/collapsible-section";
-import { CommentsSection } from "@/components/document-editor/comments-section";
-import { DocumentVersionInfo } from "@/components/document-editor/document-version-info";
 import { EvaluationSection } from "@/components/document-editor/evaluation-section";
-import {
-  MetadataPanel,
-  MetadataSection,
-} from "@/components/document-editor/metadata-panel";
+import { MetadataSection } from "@/components/document-editor/metadata-panel";
 import { RatingSection } from "@/components/document-editor/rating-section";
 import { getUserDisplayName } from "@/lib/user-utils";
 import { PerformanceSection } from "./performance-section";
 import { PreviewDeploymentSection } from "./preview-deployment-section";
 import { PullRequestFeedbackSection } from "./pull-request-feedback-section";
 import { PullRequestSection } from "./pull-request-section";
-import { SourceDocumentSection } from "./source-document-section";
 
 export type PlanMetadataPanelProps = {
   plan: DocumentDetail;
@@ -36,15 +29,15 @@ export type PlanMetadataPanelProps = {
   previewDeployment: PreviewDeploymentInfo | null;
   onPreviewRefresh: () => void;
   isPreviewRefreshing: boolean;
-  judgeItems: JudgeFeedbackItem[] | null;
   codeJudgeItems: JudgeFeedbackItem[] | null;
   additionalRepos?: AdditionalRepoRef[] | null;
-  /**
-   * When "detailsOnly", render content without sidebar wrapper.
-   */
-  variant?: "detailsOnly" | "sidebar";
 };
 
+/**
+ * Plan-specific modules that aren't shared across document subtypes.
+ * Attachments, agent evaluation, source document, comments and version info
+ * live in the shared below-editor container in `plan-editor.tsx`.
+ */
 export function PlanMetadataPanel({
   plan,
   generationStatus,
@@ -52,19 +45,13 @@ export function PlanMetadataPanel({
   previewDeployment,
   onPreviewRefresh,
   isPreviewRefreshing,
-  judgeItems,
   codeJudgeItems,
   additionalRepos,
-  variant = "sidebar",
 }: PlanMetadataPanelProps) {
   const [isRatingOpen, setIsRatingOpen] = useState(false);
 
-  const projectId = plan.projectId ?? plan.project?.id;
-
-  const detailsContent = (
+  return (
     <div className="space-y-6">
-      <SourceDocumentSection documentId={plan.id} projectId={projectId} />
-
       <GenerationSection
         additionalRepos={additionalRepos}
         generationStatus={generationStatus}
@@ -83,14 +70,6 @@ export function PlanMetadataPanel({
           previewDeployment={previewDeployment}
         />
       ) : null}
-
-      <AttachmentsSection documentId={plan.id} />
-
-      <EvaluationSection
-        documentId={plan.id}
-        judgeItems={judgeItems}
-        title="Agent Evaluation"
-      />
 
       <EvaluationSection
         documentId={plan.id}
@@ -113,26 +92,7 @@ export function PlanMetadataPanel({
           documentId={plan.id}
         />
       </CollapsibleSection>
-
-      <FeatureFlagged flag="the-one-flag">
-        <CommentsSection documentId={plan.id} />
-      </FeatureFlagged>
-
-      <DocumentVersionInfo
-        createdAt={plan.version.createdAt}
-        updatedAt={plan.updatedAt}
-      />
     </div>
-  );
-
-  if (variant === "detailsOnly") {
-    return detailsContent;
-  }
-
-  return (
-    <MetadataPanel title="Implementation Plan Details">
-      {detailsContent}
-    </MetadataPanel>
   );
 }
 
