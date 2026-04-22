@@ -32,6 +32,11 @@ export const TelemetryCategory = {
   PreflightBinaryNotFound: "preflight.binary_not_found",
   PreflightScriptNotFound: "preflight.script_not_found",
   PreflightSpawnFailed: "preflight.spawn_failed",
+  ElectronUpdateInitiated: "electron_update.initiated",
+  // Q-001: ElectronUpdateSucceeded requires cross-repo coordination with closedloop-electron
+  ElectronUpdateSucceeded: "electron_update.succeeded",
+  // Q-001: ElectronUpdateFailed requires cross-repo coordination with closedloop-electron
+  ElectronUpdateFailed: "electron_update.failed",
 } as const;
 
 export type TelemetryCategory =

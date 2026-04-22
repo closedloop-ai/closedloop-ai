@@ -29,7 +29,7 @@ import {
   Trash2,
 } from "lucide-react";
 import Link from "next/link";
-import { type MouseEvent, useState } from "react";
+import { type MouseEvent, useCallback, useState } from "react";
 import { SystemCheckResults } from "@/components/system-check/system-check-results";
 import { env } from "@/env";
 import {
@@ -51,6 +51,21 @@ import { queryKeys } from "@/lib/engineer/queries/keys";
 import { resolveTargetLabel } from "@/lib/engineer/routing-label";
 import { useEngineerRoutingSelection } from "@/lib/engineer/routing-store";
 import { useSystemCheckEligibility } from "@/lib/system-check/use-system-check-eligibility";
+import { UpdateAndRestartButton } from "./update-and-restart-button";
+
+const DOWNLOAD_URL_ALLOWLIST = ["github.com", "objects.githubusercontent.com"];
+
+function isAllowedDownloadUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return (
+      parsed.protocol === "https:" &&
+      DOWNLOAD_URL_ALLOWLIST.includes(parsed.hostname)
+    );
+  } catch {
+    return false;
+  }
+}
 
 function formatLastSeen(value: Date): string {
   if (Number.isNaN(value.getTime())) {
@@ -143,11 +158,58 @@ function renderStatusIcon({
 export function LocalComputeTargetsCard() {
   const { user } = useUser();
   const [systemCheckOpen, setSystemCheckOpen] = useState(false);
+  const [updatingTargets, setUpdatingTargets] = useState<Set<string>>(
+    new Set()
+  );
   const { data: targets = [], isLoading } = useComputeTargets({
     ...COMPUTE_TARGETS_QUERY_OPTIONS,
   });
   const deleteTarget = useDeleteComputeTarget(user?.id ?? "");
   const toggleSharing = useToggleComputeTargetSharing();
+
+  const handleUpdateIsUpdatingChange = useCallback(
+    (targetId: string, isUpdating: boolean) => {
+      setUpdatingTargets((prev) => {
+        if (isUpdating) {
+          if (prev.has(targetId)) {
+            return prev;
+          }
+          const next = new Set(prev);
+          next.add(targetId);
+          return next;
+        }
+        if (!prev.has(targetId)) {
+          return prev;
+        }
+        const next = new Set(prev);
+        next.delete(targetId);
+        return next;
+      });
+    },
+    []
+  );
+
+  const handleUpdateSuccess = useCallback((machineName: string) => {
+    toast.success(`${machineName} updated and restarted successfully`);
+  }, []);
+
+  const handleUpdateError = useCallback(
+    (machineName: string, downloadUrl: string) => {
+      const safeUrl = isAllowedDownloadUrl(downloadUrl) ? downloadUrl : null;
+      if (safeUrl) {
+        toast.error(
+          `Update failed for ${machineName}. Download manually: ${safeUrl}`
+        );
+      } else {
+        toast.error(`Update failed for ${machineName}`);
+      }
+    },
+    []
+  );
+
+  const handleUpdateExpired = useCallback((machineName: string) => {
+    toast.warning(`Update command expired for ${machineName}. Please retry.`);
+  }, []);
   const { isLoading: systemCheckLoading, shouldRunSystemCheck } =
     useSystemCheckEligibility();
   const routing = useEngineerRoutingSelection();
@@ -240,67 +302,84 @@ export function LocalComputeTargetsCard() {
     const ownTargets = targets.filter((t) => !t.ownerName);
     content = (
       <div className="space-y-3">
-        {ownTargets.map((target) => (
-          <div className="rounded-lg border p-3" key={target.id}>
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2">
-                  <p className="truncate font-medium">{target.machineName}</p>
-                  <Badge
-                    className="capitalize"
-                    variant={target.isOnline ? "default" : "secondary"}
-                  >
-                    {target.isOnline ? "online" : "offline"}
-                  </Badge>
+        {ownTargets.map((target) => {
+          const isUpdating = updatingTargets.has(target.id);
+          return (
+            <div className="rounded-lg border p-3" key={target.id}>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <p className="truncate font-medium">{target.machineName}</p>
+                    <Badge
+                      className="capitalize"
+                      variant={target.isOnline ? "default" : "secondary"}
+                    >
+                      {target.isOnline ? "online" : "offline"}
+                    </Badge>
+                  </div>
+                  <p className="text-muted-foreground text-xs">
+                    {target.platform} - Last seen{" "}
+                    {formatLastSeen(target.lastSeenAt)}
+                  </p>
                 </div>
-                <p className="text-muted-foreground text-xs">
-                  {target.platform} - Last seen{" "}
-                  {formatLastSeen(target.lastSeenAt)}
-                </p>
-              </div>
 
-              <Button
-                disabled={deleteTarget.isPending}
-                onClick={() => handleDelete(target.id, target.machineName)}
-                size="sm"
-                variant="outline"
-              >
-                {deleteTarget.isPending ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Trash2 className="h-4 w-4" />
-                )}
-                Delete
-              </Button>
-            </div>
-
-            <div className="mt-2 flex items-center justify-between border-t pt-2">
-              <div>
-                <p className="text-sm">Share with team</p>
-                <p className="text-muted-foreground text-xs">
-                  Allow anyone in your org to run jobs on this machine
-                </p>
-              </div>
-              <Switch
-                checked={target.isSharedWithOrg}
-                disabled={toggleSharing.isPending}
-                onCheckedChange={(checked) =>
-                  toggleSharing.mutate(
-                    { id: target.id, isSharedWithOrg: checked },
-                    {
-                      onSuccess: () =>
-                        toast.success(
-                          checked
-                            ? `${target.machineName} is now shared with your org`
-                            : `${target.machineName} is no longer shared`
-                        ),
+                <div className="flex items-center gap-2">
+                  <UpdateAndRestartButton
+                    onError={(downloadUrl) =>
+                      handleUpdateError(target.machineName, downloadUrl)
                     }
-                  )
-                }
-              />
+                    onExpired={() => handleUpdateExpired(target.machineName)}
+                    onIsUpdatingChange={(updating) =>
+                      handleUpdateIsUpdatingChange(target.id, updating)
+                    }
+                    onSuccess={() => handleUpdateSuccess(target.machineName)}
+                    target={target}
+                  />
+
+                  <Button
+                    disabled={deleteTarget.isPending || isUpdating}
+                    onClick={() => handleDelete(target.id, target.machineName)}
+                    size="sm"
+                    variant="outline"
+                  >
+                    {deleteTarget.isPending ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Trash2 className="h-4 w-4" />
+                    )}
+                    Delete
+                  </Button>
+                </div>
+              </div>
+
+              <div className="mt-2 flex items-center justify-between border-t pt-2">
+                <div>
+                  <p className="text-sm">Share with team</p>
+                  <p className="text-muted-foreground text-xs">
+                    Allow anyone in your org to run jobs on this machine
+                  </p>
+                </div>
+                <Switch
+                  checked={target.isSharedWithOrg}
+                  disabled={toggleSharing.isPending || isUpdating}
+                  onCheckedChange={(checked) =>
+                    toggleSharing.mutate(
+                      { id: target.id, isSharedWithOrg: checked },
+                      {
+                        onSuccess: () =>
+                          toast.success(
+                            checked
+                              ? `${target.machineName} is now shared with your org`
+                              : `${target.machineName} is no longer shared`
+                          ),
+                      }
+                    )
+                  }
+                />
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     );
   }

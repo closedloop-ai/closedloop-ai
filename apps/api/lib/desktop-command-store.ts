@@ -8,6 +8,7 @@ import type {
   DesktopCommandSummary,
   RelayOperationDispatchRequest,
 } from "@repo/api/src/types/compute-target";
+import { isTerminalStatus } from "@repo/api/src/types/compute-target";
 import { type Prisma, type TransactionClient, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { emitCommandLifecycleEvent } from "@repo/observability/telemetry/emitter";
@@ -160,15 +161,6 @@ function isDesktopCommandStatus(value: string): value is DesktopCommandStatus {
 
 function toDesktopCommandStatus(value: string): DesktopCommandStatus {
   return isDesktopCommandStatus(value) ? value : "failed";
-}
-
-function isTerminalStatus(status: DesktopCommandStatus): boolean {
-  return (
-    status === "done" ||
-    status === "failed" ||
-    status === "cancelled" ||
-    status === "expired"
-  );
 }
 
 function toStoredCommand(row: StoredCommandRow): StoredCommand {

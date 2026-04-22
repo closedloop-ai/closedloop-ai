@@ -64,14 +64,18 @@ export type RelayResultIngestRequest =
       sequence?: number;
     };
 
+export const DesktopCommandStatus = {
+  Queued: "queued",
+  Accepted: "accepted",
+  Running: "running",
+  Done: "done",
+  Failed: "failed",
+  Cancelled: "cancelled",
+  Expired: "expired",
+} as const;
+
 export type DesktopCommandStatus =
-  | "queued"
-  | "accepted"
-  | "running"
-  | "done"
-  | "failed"
-  | "cancelled"
-  | "expired";
+  (typeof DesktopCommandStatus)[keyof typeof DesktopCommandStatus];
 
 export type DesktopCommandEventType =
   | "status"
@@ -176,3 +180,14 @@ export type SetComputeTargetSharingResponse = {
   id: string;
   isSharedWithOrg: boolean;
 };
+
+export const UPDATE_AND_RESTART_OPERATION_ID = "update-and-restart" as const;
+
+export function isTerminalStatus(status: DesktopCommandStatus): boolean {
+  return (
+    status === DesktopCommandStatus.Done ||
+    status === DesktopCommandStatus.Failed ||
+    status === DesktopCommandStatus.Cancelled ||
+    status === DesktopCommandStatus.Expired
+  );
+}

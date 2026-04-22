@@ -2,9 +2,17 @@
 
 import type {
   ComputeTarget,
+  CreateDesktopCommandInput,
+  CreateDesktopCommandResponse,
+  DesktopCommandSummary,
   SetComputeTargetSharingResponse,
 } from "@repo/api/src/types/compute-target";
 import {
+  isTerminalStatus,
+  UPDATE_AND_RESTART_OPERATION_ID,
+} from "@repo/api/src/types/compute-target";
+import {
+  type UseMutationResult,
   type UseQueryOptions,
   useMutation,
   useQuery,
@@ -34,6 +42,8 @@ function toComputeTarget(target: ComputeTargetWire): ComputeTarget {
 export const computeTargetKeys = {
   all: ["compute-targets"] as const,
   list: () => [...computeTargetKeys.all, "list"] as const,
+  commandKeys: (targetId: string, commandId: string) =>
+    [...computeTargetKeys.all, targetId, "commands", commandId] as const,
 };
 
 export function useComputeTargets(
@@ -87,5 +97,66 @@ export function useToggleComputeTargetSharing() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: computeTargetKeys.list() });
     },
+  });
+}
+
+type UpdateAndRestartCommandInput = Omit<
+  CreateDesktopCommandInput,
+  "operationId" | "idempotencyKey" | "path" | "method"
+> & {
+  operationId: typeof UPDATE_AND_RESTART_OPERATION_ID;
+  idempotencyKey: string;
+  path: string;
+  method: "POST";
+};
+
+export function useDesktopCommandStatus(
+  targetId: string,
+  commandId: string | null
+) {
+  const apiClient = useApiClient();
+
+  return useQuery({
+    queryKey: computeTargetKeys.commandKeys(targetId, commandId ?? ""),
+    queryFn: () =>
+      apiClient.get<DesktopCommandSummary>(
+        `/compute-targets/${targetId}/commands/${commandId}`
+      ),
+    enabled: commandId !== null,
+    refetchInterval: (query) =>
+      query.state.data && isTerminalStatus(query.state.data.status)
+        ? false
+        : 2000,
+    refetchIntervalInBackground: false,
+  });
+}
+
+export function useDispatchDesktopCommand(
+  targetId: string
+): UseMutationResult<
+  CreateDesktopCommandResponse,
+  Error,
+  { idempotencyKey: string }
+> {
+  const queryClient = useQueryClient();
+  const apiClient = useApiClient();
+
+  return useMutation({
+    mutationFn: ({ idempotencyKey }: { idempotencyKey: string }) => {
+      const payload: UpdateAndRestartCommandInput = {
+        operationId: UPDATE_AND_RESTART_OPERATION_ID,
+        idempotencyKey,
+        path: "/api/gateway/update-and-restart",
+        method: "POST",
+      };
+      return apiClient.post<CreateDesktopCommandResponse>(
+        `/compute-targets/${targetId}/commands`,
+        payload
+      );
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: computeTargetKeys.list() });
+    },
+    retry: 0,
   });
 }
