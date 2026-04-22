@@ -68,5 +68,11 @@ export function buildTelemetryTraceContext(
     ...(overrides.pluginVersion !== undefined && {
       pluginVersion: overrides.pluginVersion,
     }),
+    ...(overrides.desktopClientVersion !== undefined && {
+      desktopClientVersion: overrides.desktopClientVersion,
+    }),
+    ...(overrides.gatewayProtocolVersion !== undefined && {
+      gatewayProtocolVersion: overrides.gatewayProtocolVersion,
+    }),
   };
 }

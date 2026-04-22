@@ -100,7 +100,8 @@ export async function dispatchSocketEvent(
           payload,
           targetId,
           correlation,
-          pluginVersion
+          pluginVersion,
+          auth
         ),
       };
 
@@ -563,12 +564,15 @@ function handleRelayTelemetry(
   payload: unknown,
   targetId: string,
   correlation: Partial<CorrelationContext>,
-  pluginVersion: string | undefined
+  pluginVersion: string | undefined,
+  auth: { organizationId: string; userId: string } | null
 ): SocketEventResponse {
   const result = handleTelemetryEvent(payload, {
     authenticatedTargetId: targetId,
     pluginVersion,
     gatewaySessionId: correlation.gatewaySessionId,
+    organizationId: auth?.organizationId,
+    userId: auth?.userId,
   });
 
   if (!result.ok) {

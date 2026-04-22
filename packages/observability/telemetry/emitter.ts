@@ -23,6 +23,12 @@ const CREDENTIAL_PATTERNS = ["sk_", "token=", "password=", "authorization:"];
 
 const SAFE_CATEGORY_RE = /^[a-zA-Z0-9._]{1,64}$/;
 
+// biome-ignore lint/complexity/useRegexLiterals: Control characters (\u001b, \u009b) required for ANSI stripping
+const ANSI_RE = new RegExp(
+  String.raw`[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]`,
+  "g"
+);
+
 // ---------------------------------------------------------------------------
 // Sanitization
 // ---------------------------------------------------------------------------
@@ -42,7 +48,8 @@ export function sanitizeDesktopTelemetryDiagnostics(
   const sanitized: TelemetryDiagnostics = { ...diagnostics };
 
   if (typeof sanitized.logTail === "string") {
-    const lines = sanitized.logTail.split("\n");
+    const stripped = sanitized.logTail.replaceAll(ANSI_RE, "");
+    const lines = stripped.split("\n");
     const filtered = lines.filter((line: string) => {
       const lower = line.toLowerCase();
       return !CREDENTIAL_PATTERNS.some((pattern) =>
@@ -52,6 +59,20 @@ export function sanitizeDesktopTelemetryDiagnostics(
     const joined = filtered.join("\n");
 
     sanitized.logTail = truncateUtf8(joined, LOG_TAIL_MAX_BYTES);
+  }
+
+  if (typeof sanitized.stderrTail === "string") {
+    const stripped = sanitized.stderrTail.replaceAll(ANSI_RE, "");
+    const lines = stripped.split("\n");
+    const filtered = lines.filter((line: string) => {
+      const lower = line.toLowerCase();
+      return !CREDENTIAL_PATTERNS.some((pattern) =>
+        lower.includes(pattern.toLowerCase())
+      );
+    });
+    const joined = filtered.join("\n");
+
+    sanitized.stderrTail = truncateUtf8(joined, LOG_TAIL_MAX_BYTES);
   }
 
   return sanitized;

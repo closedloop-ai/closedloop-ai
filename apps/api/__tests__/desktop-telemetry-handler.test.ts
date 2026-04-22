@@ -1,9 +1,11 @@
 import { log } from "@repo/observability/log";
+import { sanitizeDesktopTelemetryDiagnostics } from "@repo/observability/telemetry/emitter";
 import { Origin } from "@repo/observability/telemetry/origin";
 import {
   desktopTelemetryEventSchema,
   TelemetryCategory,
   TelemetrySeverity,
+  telemetryDiagnosticsSchema,
 } from "@repo/observability/telemetry/schema";
 import { vi } from "vitest";
 import {
@@ -297,5 +299,170 @@ describe("handleTelemetryEvent — enrichment failure fallback", () => {
     expect(warnMeta).not.toHaveProperty("diagnostics");
     expect(warnMeta).not.toHaveProperty("message");
     expect(warnMeta).not.toHaveProperty("trace");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (f) Expanded diagnostics schema — new fields pass through validation
+// ---------------------------------------------------------------------------
+
+describe("telemetryDiagnosticsSchema — expanded fields", () => {
+  it("validates diagnostics with new fields (stderrTail, exitSignal, elapsedMs, spawnMeta, abortReason)", () => {
+    const diagnostics = {
+      logTail: "some log output",
+      exitCode: 1,
+      stderrTail: "error on stderr",
+      exitSignal: "SIGTERM",
+      elapsedMs: 12_345,
+      stdoutBytes: 8192,
+      abortReason: "timeout",
+      diagnosticsVersion: 2,
+      spawnMeta: {
+        command: "claude",
+        args: ["--model", "opus"],
+        cwd: "/home/user/project",
+        claudeVersion: "1.2.3",
+        binaryPath: "/usr/local/bin/claude",
+        authFilesExist: true,
+        envSnapshot: { PATH: "/usr/local/bin", HOME: "/home/user" },
+      },
+      tokenUsage: {
+        inputTokens: 100,
+        outputTokens: 200,
+        cacheCreationInputTokens: 50,
+        cacheReadInputTokens: 75,
+      },
+    };
+
+    const result = telemetryDiagnosticsSchema.safeParse(diagnostics);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.stderrTail).toBe("error on stderr");
+      expect(result.data.exitSignal).toBe("SIGTERM");
+      expect(result.data.elapsedMs).toBe(12_345);
+      expect(result.data.stdoutBytes).toBe(8192);
+      expect(result.data.abortReason).toBe("timeout");
+      expect(result.data.diagnosticsVersion).toBe(2);
+      expect(result.data.spawnMeta?.command).toBe("claude");
+      expect(result.data.tokenUsage?.cacheCreationInputTokens).toBe(50);
+      expect(result.data.tokenUsage?.cacheReadInputTokens).toBe(75);
+    }
+  });
+
+  it("validates old format (no new fields) for backward compatibility", () => {
+    const diagnostics = {
+      logTail: "some log output",
+      exitCode: 0,
+      tokenUsage: {
+        inputTokens: 100,
+        outputTokens: 200,
+      },
+    };
+
+    const result = telemetryDiagnosticsSchema.safeParse(diagnostics);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.stderrTail).toBeUndefined();
+      expect(result.data.exitSignal).toBeUndefined();
+      expect(result.data.elapsedMs).toBeUndefined();
+      expect(result.data.spawnMeta).toBeUndefined();
+      expect(result.data.tokenUsage?.cacheCreationInputTokens).toBeUndefined();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (g) handleTelemetryEvent — organizationId/userId from context appear in log
+// ---------------------------------------------------------------------------
+
+describe("handleTelemetryEvent — organizationId/userId enrichment", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("includes organizationId and userId in the log output when provided in context", () => {
+    const infoSpy = vi.spyOn(log, "info").mockImplementation(() => {});
+
+    const contextWithAuth: TelemetryHandlerContext = {
+      authenticatedTargetId: COMPUTE_TARGET_ID,
+      organizationId: "org-123",
+      userId: "user-456",
+    };
+
+    const result = handleTelemetryEvent(
+      validDesktopWirePayload,
+      contextWithAuth
+    );
+
+    expect(result.ok).toBe(true);
+
+    const infoCall = infoSpy.mock.calls.find(
+      (args) => args[0] === "Desktop telemetry event received"
+    );
+    expect(infoCall).toBeDefined();
+    const meta = infoCall?.[1] as Record<string, unknown>;
+    expect(meta.organizationId).toBe("org-123");
+    expect(meta.userId).toBe("user-456");
+  });
+
+  it("omits organizationId and userId from log when not provided in context", () => {
+    const infoSpy = vi.spyOn(log, "info").mockImplementation(() => {});
+
+    const result = handleTelemetryEvent(
+      validDesktopWirePayload,
+      defaultHandlerContext
+    );
+
+    expect(result.ok).toBe(true);
+
+    const infoCall = infoSpy.mock.calls.find(
+      (args) => args[0] === "Desktop telemetry event received"
+    );
+    expect(infoCall).toBeDefined();
+    const meta = infoCall?.[1] as Record<string, unknown>;
+    expect(meta).not.toHaveProperty("organizationId");
+    expect(meta).not.toHaveProperty("userId");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (h) sanitizeDesktopTelemetryDiagnostics — stderrTail ANSI + credential filter
+// ---------------------------------------------------------------------------
+
+describe("sanitizeDesktopTelemetryDiagnostics — stderrTail sanitization", () => {
+  it("strips ANSI codes and credential lines from stderrTail", () => {
+    const diagnostics = {
+      stderrTail:
+        "\u001b[31mError: something failed\u001b[0m\nauthorization: Bearer sk_live_secret\nclean line here",
+    };
+
+    const result = sanitizeDesktopTelemetryDiagnostics(diagnostics);
+
+    expect(result).toBeDefined();
+    expect(result?.stderrTail).toBe("Error: something failed\nclean line here");
+  });
+
+  it("strips ANSI codes from logTail", () => {
+    const diagnostics = {
+      logTail: "\u001b[32mSuccess\u001b[0m output here",
+    };
+
+    const result = sanitizeDesktopTelemetryDiagnostics(diagnostics);
+
+    expect(result).toBeDefined();
+    expect(result?.logTail).toBe("Success output here");
+  });
+
+  it("handles diagnostics with both logTail and stderrTail containing ANSI", () => {
+    const diagnostics = {
+      logTail: "\u001b[34mInfo:\u001b[0m normal log\ntoken=abc123",
+      stderrTail: "\u001b[31mError:\u001b[0m bad thing\npassword=secret",
+    };
+
+    const result = sanitizeDesktopTelemetryDiagnostics(diagnostics);
+
+    expect(result).toBeDefined();
+    expect(result?.logTail).toBe("Info: normal log");
+    expect(result?.stderrTail).toBe("Error: bad thing");
   });
 });
