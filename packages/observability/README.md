@@ -259,4 +259,4 @@ alone will not change it.
 
 ## See also
 
-<!-- TODO: FEA-491 will add link to apps/api/docs/command-correlation.md -->
+- [commandId Correlation Contract](../../apps/api/docs/command-correlation.md) — authoritative reference for `commandId` minting, propagation, and cardinality discipline across the relay pipeline.
