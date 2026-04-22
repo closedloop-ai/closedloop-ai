@@ -262,7 +262,7 @@ function toLoopWithUser(
  * Prevents resource exhaustion via rapid loop creation.
  * Can be overridden per organization via Organization.settings.maxConcurrentLoops.
  */
-export const DEFAULT_MAX_CONCURRENT_LOOPS = 5;
+export const DEFAULT_MAX_CONCURRENT_LOOPS = 10;
 
 /**
  * Resolve the effective concurrent loop limit for an organization.

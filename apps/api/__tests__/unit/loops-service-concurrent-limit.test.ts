@@ -110,28 +110,28 @@ const baseInput = {
 // ---------------------------------------------------------------------------
 
 describe("resolveOrgLoopLimit", () => {
-  it("returns DEFAULT (5) for null", () => {
-    expect(resolveOrgLoopLimit(null)).toBe(5);
+  it("returns DEFAULT (10) for null", () => {
+    expect(resolveOrgLoopLimit(null)).toBe(10);
   });
 
-  it("returns DEFAULT (5) for empty object (missing key)", () => {
-    expect(resolveOrgLoopLimit({})).toBe(5);
+  it("returns DEFAULT (10) for empty object (missing key)", () => {
+    expect(resolveOrgLoopLimit({})).toBe(10);
   });
 
   it("returns the configured value when maxConcurrentLoops is a positive integer", () => {
     expect(resolveOrgLoopLimit({ maxConcurrentLoops: 25 })).toBe(25);
   });
 
-  it("returns DEFAULT (5) when maxConcurrentLoops is 0", () => {
-    expect(resolveOrgLoopLimit({ maxConcurrentLoops: 0 })).toBe(5);
+  it("returns DEFAULT (10) when maxConcurrentLoops is 0", () => {
+    expect(resolveOrgLoopLimit({ maxConcurrentLoops: 0 })).toBe(10);
   });
 
-  it("returns DEFAULT (5) when maxConcurrentLoops is negative", () => {
-    expect(resolveOrgLoopLimit({ maxConcurrentLoops: -1 })).toBe(5);
+  it("returns DEFAULT (10) when maxConcurrentLoops is negative", () => {
+    expect(resolveOrgLoopLimit({ maxConcurrentLoops: -1 })).toBe(10);
   });
 
-  it("returns DEFAULT (5) when maxConcurrentLoops is a string (non-integer)", () => {
-    expect(resolveOrgLoopLimit({ maxConcurrentLoops: "25" })).toBe(5);
+  it("returns DEFAULT (10) when maxConcurrentLoops is a string (non-integer)", () => {
+    expect(resolveOrgLoopLimit({ maxConcurrentLoops: "25" })).toBe(10);
   });
 });
 
@@ -141,7 +141,7 @@ describe("loopsService.create — concurrent loop limit enforcement", () => {
   });
 
   it("throws ConcurrentLoopLimitError when active count meets the default limit", async () => {
-    mockCount.mockResolvedValue(5);
+    mockCount.mockResolvedValue(10);
 
     let caught: unknown;
     try {
@@ -152,8 +152,8 @@ describe("loopsService.create — concurrent loop limit enforcement", () => {
 
     expect(isConcurrentLoopLimitError(caught)).toBe(true);
     const limitError = caught as ConcurrentLoopLimitError;
-    expect(limitError.limit).toBe(5);
-    expect(limitError.activeCount).toBe(5);
+    expect(limitError.limit).toBe(10);
+    expect(limitError.activeCount).toBe(10);
   });
 
   it("does NOT throw when active count is below a custom org limit", async () => {
@@ -178,7 +178,7 @@ describe("loopsService.createIfNotExists — concurrent loop limit enforcement",
   });
 
   it("throws ConcurrentLoopLimitError (not returns null) when at the limit", async () => {
-    mockCount.mockResolvedValue(5);
+    mockCount.mockResolvedValue(10);
 
     let caught: unknown;
     try {
@@ -189,7 +189,7 @@ describe("loopsService.createIfNotExists — concurrent loop limit enforcement",
 
     expect(isConcurrentLoopLimitError(caught)).toBe(true);
     const limitError = caught as ConcurrentLoopLimitError;
-    expect(limitError.limit).toBe(5);
-    expect(limitError.activeCount).toBe(5);
+    expect(limitError.limit).toBe(10);
+    expect(limitError.activeCount).toBe(10);
   });
 });
