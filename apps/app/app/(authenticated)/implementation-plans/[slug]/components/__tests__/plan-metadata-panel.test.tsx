@@ -1,7 +1,6 @@
 import type { DocumentDetail } from "@repo/api/src/types/document";
 import type { JudgeFeedbackItem } from "@repo/api/src/types/evaluation";
 import { cleanup, render, screen } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   createMockDocument,
@@ -66,13 +65,6 @@ vi.mock("@/hooks/queries/use-entity-links", () => ({
   }),
 }));
 
-// Mock AttachmentsSection to avoid QueryClient dependencies
-vi.mock("@/components/document-editor/attachments-section", () => ({
-  AttachmentsSection: () => (
-    <div data-testid="attachments-section">Attachments Mock</div>
-  ),
-}));
-
 // Mock pull request rating hooks to avoid Clerk auth dependencies
 vi.mock("@/hooks/queries/use-pull-request-rating", () => ({
   usePullRequestRating: () => ({
@@ -87,9 +79,6 @@ vi.mock("@/hooks/queries/use-pull-request-rating", () => ({
 }));
 
 // Regex patterns for testing (hoisted to module level per Biome lint rules)
-const ACTIVITY_PATTERN = /activity/i;
-const CREATED_PATTERN = /created:/i;
-const UPDATED_PATTERN = /updated:/i;
 const PR_NUMBER_PATTERN = /#42:/i;
 const PR_TITLE_PATTERN = /add new feature/i;
 
@@ -114,7 +103,6 @@ const defaultProps = {
   previewDeployment: null,
   onPreviewRefresh: vi.fn().mockResolvedValue(null),
   isPreviewRefreshing: false,
-  judgeItems: null,
   codeJudgeItems: null,
 };
 
@@ -295,31 +283,15 @@ describe("PlanMetadataPanel", () => {
   });
 
   describe("Section structure", () => {
-    test("renders key sections: Agent Evaluation, Code Evaluation, Performance, and Comments", () => {
+    test("renders plan-specific sections: Code Evaluation and Rating", () => {
       render(<PlanMetadataPanel {...defaultProps} />);
 
-      expect(screen.getByText("Agent Evaluation")).toBeDefined();
       expect(screen.getByText("Code Evaluation")).toBeDefined();
-      expect(screen.getByText("Performance")).toBeDefined();
-      expect(screen.getByText("Comments")).toBeDefined();
+      expect(screen.getByText("Rating")).toBeDefined();
     });
   });
 
-  describe("Details content", () => {
-    test("displays activity section", () => {
-      render(<PlanMetadataPanel {...defaultProps} />);
-      expect(screen.getByText(ACTIVITY_PATTERN)).toBeDefined();
-    });
-
-    test("displays created and updated dates", async () => {
-      const user = userEvent.setup();
-      render(<PlanMetadataPanel {...defaultProps} />);
-      // Activity section is collapsed by default; expand it first
-      await user.click(screen.getByText(ACTIVITY_PATTERN));
-      expect(screen.getByText(CREATED_PATTERN)).toBeDefined();
-      expect(screen.getByText(UPDATED_PATTERN)).toBeDefined();
-    });
-
+  describe("Generation content", () => {
     test("displays loop link when generationStatus has loop source", () => {
       render(
         <PlanMetadataPanel
