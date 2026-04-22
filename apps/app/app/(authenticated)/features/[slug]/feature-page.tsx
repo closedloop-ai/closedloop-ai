@@ -138,7 +138,6 @@ export function FeaturePage({ feature }: Readonly<FeaturePageProps>) {
               >
                 <InlineEditEditorShell
                   isEditing={editMode.isEditing}
-                  onEnterEditMode={editMode.enterEditMode}
                   toolbar={
                     <EditorToolbarRow
                       leftContent={
@@ -188,6 +187,7 @@ export function FeaturePage({ feature }: Readonly<FeaturePageProps>) {
                       </div>
                     }
                     liveblocksRoomId={session.liveblocksRoomId}
+                    onBodyClick={editMode.enterEditMode}
                     onChange={contentController.updateContent}
                     onContentReady={session.handleEditorReady}
                     onEditorInstance={session.handleEditorInstance}

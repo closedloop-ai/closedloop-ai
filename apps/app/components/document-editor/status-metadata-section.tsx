@@ -96,7 +96,7 @@ export function StatusMetadataSection({
           value={status}
         >
           <SelectTrigger
-            className="min-w-0 justify-start gap-1 bg-transparent dark:bg-transparent [&>:last-child]:hidden"
+            className="min-w-0 justify-start gap-1 [&>:last-child]:hidden"
             size="sm"
           >
             <SelectValue />
@@ -104,7 +104,7 @@ export function StatusMetadataSection({
           <SelectContent>{statusOptions}</SelectContent>
         </Select>
         <UserSelectPopover
-          className="h-8 w-auto min-w-[7rem] bg-transparent px-3 dark:bg-transparent"
+          className="h-8 w-auto min-w-[7rem] px-3"
           disabled={teamMembers.length === 0}
           onSelect={onAssigneeChange}
           placeholder="Select assignee..."

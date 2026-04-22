@@ -152,7 +152,7 @@ export function PRDEditorHeader({
             disabled={isEvaluating}
             onClick={() => onEvaluatePrd()}
           >
-            <GaugeIcon className="mr-2 h-4 w-4" />
+            <GaugeIcon className="h-4 w-4" />
             {isEvaluating ? "Evaluating PRD..." : "Evaluate PRD"}
           </DropdownMenuItem>
           <DropdownMenuItem onClick={() => onGeneratePlan()}>

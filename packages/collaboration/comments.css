@@ -54,8 +54,8 @@
 .lb-collab-anchored-threads [data-thread] {
   margin: 0 1.25rem 1.25rem;
   padding: 0.9rem;
-  background: hsl(var(--background));
-  border: 1px solid hsl(var(--border));
+  background: var(--popover);
+  border: 1px solid var(--border);
   border-radius: 0.5rem;
   box-shadow: none;
   transition: box-shadow 0.2s ease-in-out;

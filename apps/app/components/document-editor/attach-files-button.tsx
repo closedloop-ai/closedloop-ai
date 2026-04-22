@@ -73,7 +73,7 @@ export function AttachFilesButton({
         disabled={isUploading}
         onClick={() => fileInputRef.current?.click()}
         size="sm"
-        variant="ghost"
+        variant="outline"
       >
         {isUploading ? (
           <Loader2Icon className="h-4 w-4 animate-spin" />

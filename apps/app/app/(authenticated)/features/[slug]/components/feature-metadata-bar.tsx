@@ -45,7 +45,7 @@ export function FeatureMetadataBar({
         value={metadata.priority}
       >
         <SelectTrigger
-          className="min-w-0 justify-start gap-1 bg-transparent *:last:hidden dark:bg-transparent"
+          className="min-w-0 justify-start gap-1 *:last:hidden"
           size="sm"
         >
           <SelectValue>

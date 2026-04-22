@@ -322,7 +322,6 @@ export function PlanEditor({
 
                 <InlineEditEditorShell
                   isEditing={editMode.isEditing}
-                  onEnterEditMode={editMode.enterEditMode}
                   toolbar={
                     <EditorToolbarRow
                       leftContent={toolbarLeftContent}
@@ -347,6 +346,7 @@ export function PlanEditor({
                     }
                     key={currentVersion}
                     liveblocksRoomId={session.liveblocksRoomId}
+                    onBodyClick={editMode.enterEditMode}
                     onChange={contentController.updateContent}
                     onContentReady={session.handleEditorReady}
                     onEditorInstance={session.handleEditorInstance}

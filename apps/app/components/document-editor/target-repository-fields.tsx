@@ -173,7 +173,7 @@ export function TargetRepositoryFields({
   };
 
   const compactTriggerClassName =
-    "min-w-0 w-auto justify-start gap-1 bg-transparent dark:bg-transparent [&>:last-child]:hidden";
+    "min-w-0 w-auto justify-start gap-1 [&>:last-child]:hidden";
 
   if (layout === "horizontal") {
     if (githubStatus?.connected === false) {
