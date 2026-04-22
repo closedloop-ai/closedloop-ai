@@ -14,7 +14,10 @@ import {
 import { type Prisma, type TransactionClient, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { emitCommandLifecycleEvent } from "@repo/observability/telemetry/emitter";
-import { emitQueueMetric } from "@repo/observability/telemetry/metrics";
+import {
+  emitProtocolMetric,
+  emitQueueMetric,
+} from "@repo/observability/telemetry/metrics";
 import { ORIGIN } from "@repo/observability/telemetry/origin";
 import type { TelemetryTraceContext } from "@repo/observability/telemetry/schema";
 import {
@@ -23,6 +26,7 @@ import {
   TelemetrySeverity,
 } from "@repo/observability/telemetry/schema";
 import { BoundedCache } from "@/lib/bounded-cache";
+import { safeEmit } from "@/lib/telemetry-utils";
 import { isRecord } from "@/lib/type-guards";
 
 type StoredCommand = {
@@ -513,6 +517,20 @@ function emitCommandLifecycleEventForStatus(
   }
 }
 
+function emitSequenceGapMetric(
+  gapDelta: number,
+  computeTargetId?: string
+): void {
+  safeEmit(() =>
+    emitProtocolMetric({
+      metric: "event_ordering_gaps",
+      origin: ORIGIN,
+      value: gapDelta,
+      ...(computeTargetId ? { computeTargetId } : {}),
+    })
+  );
+}
+
 export const desktopCommandStore = {
   async createCommand(
     computeTargetId: string,
@@ -715,6 +733,7 @@ export const desktopCommandStore = {
           expected,
           errorClass: ErrorClass.Protocol,
         });
+        emitSequenceGapMetric(sequence - expected, input.computeTargetId);
         return {
           accepted: false,
           reason: "sequence_gap",
@@ -1000,11 +1019,7 @@ export const desktopCommandStore = {
   async markCommandExpired(
     commandId: string,
     reason?: string,
-    context?: Pick<
-      TelemetryTraceContext,
-      "gatewaySessionId" | "schemaVersion"
-    > &
-      Partial<TelemetryTraceContext>
+    context?: Partial<TelemetryTraceContext>
   ): Promise<void> {
     const { count } = await withDb((db) =>
       db.desktopCommand.updateMany({
@@ -1027,6 +1042,17 @@ export const desktopCommandStore = {
         toStatus: DesktopCommandStatus.Expired,
         commandId,
       });
+
+      safeEmit(() =>
+        emitQueueMetric({
+          metric: "dropped_expired_work_items",
+          origin: ORIGIN,
+          count,
+          ...(context?.computeTargetId
+            ? { computeTargetId: context.computeTargetId }
+            : {}),
+        })
+      );
 
       if (context) {
         emitCommandLifecycleEvent(

@@ -47,17 +47,26 @@ describe("computeMetricSnapshot", () => {
     expect(snapshot.ack_latency).toBe(250);
   });
 
-  it("prefers count over value when both are present", () => {
+  it("prefers value over count when both are present — count is a per-occurrence sentinel", () => {
+    // Mirrors the replay_frequency shape emitted by relay-event-bus:
+    // `count: 1` per trigger, `value: replay.events.length` carries the
+    // depth. Summing count would collapse depth; summing value preserves it.
     const lines = [
       {
-        metric: "retry_attempts",
-        count: 2,
-        value: 99,
+        metric: "replay_frequency",
+        count: 1,
+        value: 3,
+        _telemetryMetric: true,
+      },
+      {
+        metric: "replay_frequency",
+        count: 1,
+        value: 500,
         _telemetryMetric: true,
       },
     ];
     const snapshot = computeMetricSnapshot(lines);
-    expect(snapshot.retry_attempts).toBe(2);
+    expect(snapshot.replay_frequency).toBe(503);
   });
 
   it("defaults numeric to 1 when neither count nor value is present", () => {

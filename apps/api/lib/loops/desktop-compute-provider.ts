@@ -116,7 +116,8 @@ export class DesktopComputeProvider implements ComputeProvider {
       try {
         await desktopCommandStore.markCommandExpired(
           orphanedCommandId,
-          `Launch failed: ${errorMessage}`
+          `Launch failed: ${errorMessage}`,
+          computeTargetId ? { computeTargetId } : undefined
         );
       } catch (expireError) {
         log.warn(

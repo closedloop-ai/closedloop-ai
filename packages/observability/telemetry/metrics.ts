@@ -111,8 +111,12 @@ export function emitValidationFailedCounter(context: {
 // ---------------------------------------------------------------------------
 
 /**
- * Filter log lines where _telemetryMetric === true and aggregate sum of
- * `count` and `value` fields by metric name.
+ * Filter log lines where _telemetryMetric === true and aggregate a single
+ * numeric per metric name. When both `count` and `value` are present on a
+ * line, `value` wins — `count` is typically a per-occurrence sentinel (e.g.
+ * `replay_frequency` emits `count: 1, value: events.length`), and summing
+ * the sentinel would collapse depth information. Lines with only `count`
+ * or only `value` sum that field directly; lines with neither fall back to 1.
  */
 export function computeMetricSnapshot(
   logLines: Record<string, unknown>[]
@@ -131,10 +135,10 @@ export function computeMetricSnapshot(
     }
 
     let numeric: number;
-    if (typeof line.count === "number") {
-      numeric = line.count;
-    } else if (typeof line.value === "number") {
+    if (typeof line.value === "number") {
       numeric = line.value;
+    } else if (typeof line.count === "number") {
+      numeric = line.count;
     } else {
       numeric = 1;
     }

@@ -337,7 +337,8 @@ describe("launchLoop orphaned command cleanup on relay failure", () => {
 
     expect(mockDesktopCommandStore.markCommandExpired).toHaveBeenCalledWith(
       "cmd-orphan-1",
-      expect.any(String)
+      expect.any(String),
+      { computeTargetId: "target-1" }
     );
 
     expect(mockLoopsService.cancel).toHaveBeenCalledWith("loop-1", "org-1");
