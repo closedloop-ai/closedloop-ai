@@ -59,7 +59,7 @@ function fetchDesktopExecuteRawPlanState(
   loop: LoopForContextPack,
   artifactType: string,
   parentLoop: ParentLoopForContextPack
-): Promise<Record<string, unknown> | undefined> {
+): Record<string, unknown> | undefined {
   if (
     loop.command !== LoopCommand.Execute ||
     artifactType !== DocumentType.ImplementationPlan ||
