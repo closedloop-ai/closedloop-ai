@@ -2,6 +2,7 @@ import type {
   DailyTokenUsage,
   DailyTrend,
   DashboardStats,
+  DeliveryStats,
   ModelUsage,
   ProjectUsage,
   PublicDashboardResponse,
@@ -17,6 +18,84 @@ import {
   withDb,
 } from "@repo/database";
 import { log } from "@repo/observability/log";
+
+// ── Anthropic API Pricing (USD per 1M tokens) ─────────────────────────────
+// https://docs.anthropic.com/en/docs/about-claude/models#model-comparison-table
+// Used to calculate API cost equivalent for subscription-based usage.
+
+type ModelPricing = {
+  input: number;
+  output: number;
+  cacheWrite: number;
+  cacheRead: number;
+};
+
+const MODEL_PRICING: Record<string, ModelPricing> = {
+  "claude-opus-4-6": {
+    input: 15,
+    output: 75,
+    cacheWrite: 18.75,
+    cacheRead: 3.75,
+  },
+  "claude-opus-4": {
+    input: 15,
+    output: 75,
+    cacheWrite: 18.75,
+    cacheRead: 3.75,
+  },
+  "claude-sonnet-4-6": {
+    input: 3,
+    output: 15,
+    cacheWrite: 3.75,
+    cacheRead: 0.3,
+  },
+  "claude-sonnet-4-5": {
+    input: 3,
+    output: 15,
+    cacheWrite: 3.75,
+    cacheRead: 0.3,
+  },
+  "claude-sonnet-4": { input: 3, output: 15, cacheWrite: 3.75, cacheRead: 0.3 },
+  "claude-haiku-4-5": { input: 0.8, output: 4, cacheWrite: 1, cacheRead: 0.08 },
+};
+
+const DEFAULT_PRICING: ModelPricing = {
+  input: 3,
+  output: 15,
+  cacheWrite: 3.75,
+  cacheRead: 0.3,
+};
+
+function getModelPricing(model: string): ModelPricing {
+  // Exact match first
+  if (model in MODEL_PRICING) {
+    return MODEL_PRICING[model];
+  }
+  // Prefix match: versioned model strings (e.g. "claude-sonnet-4-5-20251001")
+  // contain the canonical key as a prefix
+  for (const [key, pricing] of Object.entries(MODEL_PRICING)) {
+    if (model.startsWith(key)) {
+      return pricing;
+    }
+  }
+  return DEFAULT_PRICING;
+}
+
+function calculateModelCost(
+  model: string,
+  input: number,
+  output: number,
+  cacheCreation: number,
+  cacheRead: number
+): number {
+  const pricing = getModelPricing(model);
+  return (
+    (input / 1_000_000) * pricing.input +
+    (output / 1_000_000) * pricing.output +
+    (cacheCreation / 1_000_000) * pricing.cacheWrite +
+    (cacheRead / 1_000_000) * pricing.cacheRead
+  );
+}
 
 /**
  * Dashboard service - handles database operations for dashboard statistics
@@ -267,6 +346,15 @@ export const dashboardService = {
 
     type ModelRow = {
       model: string;
+      model_input: bigint;
+      model_output: bigint;
+      model_cache_creation: bigint;
+      model_cache_read: bigint;
+      total_tokens: bigint;
+    };
+
+    type OriginRow = {
+      is_electron: boolean;
       total_tokens: bigint;
     };
 
@@ -295,6 +383,8 @@ export const dashboardService = {
       projectResult,
       sessionResult,
       allModels,
+      originResult,
+      [prdCount, planCount, featureCount, prsMerged, agenticWorkflows],
     ] = await Promise.all([
       // Aggregate stats
       withDb((db) =>
@@ -356,17 +446,21 @@ export const dashboardService = {
           `)
       ),
 
-      // Token usage by model
+      // Token usage by model (with per-type breakdown for cost calculation)
       withDb((db) =>
         db.$queryRaw<ModelRow[]>(Prisma.sql`
             SELECT
               e.key AS model,
-              SUM(
+              COALESCE(SUM(CASE WHEN jsonb_typeof(e.value -> 'input') = 'number' THEN (e.value ->> 'input')::numeric::bigint ELSE 0 END), 0) AS model_input,
+              COALESCE(SUM(CASE WHEN jsonb_typeof(e.value -> 'output') = 'number' THEN (e.value ->> 'output')::numeric::bigint ELSE 0 END), 0) AS model_output,
+              COALESCE(SUM(CASE WHEN jsonb_typeof(e.value -> 'cacheCreation') = 'number' THEN (e.value ->> 'cacheCreation')::numeric::bigint ELSE 0 END), 0) AS model_cache_creation,
+              COALESCE(SUM(CASE WHEN jsonb_typeof(e.value -> 'cacheRead') = 'number' THEN (e.value ->> 'cacheRead')::numeric::bigint ELSE 0 END), 0) AS model_cache_read,
+              COALESCE(SUM(
                 COALESCE(CASE WHEN jsonb_typeof(e.value -> 'input') = 'number' THEN (e.value ->> 'input')::numeric::bigint ELSE 0 END, 0) +
                 COALESCE(CASE WHEN jsonb_typeof(e.value -> 'output') = 'number' THEN (e.value ->> 'output')::numeric::bigint ELSE 0 END, 0) +
                 COALESCE(CASE WHEN jsonb_typeof(e.value -> 'cacheCreation') = 'number' THEN (e.value ->> 'cacheCreation')::numeric::bigint ELSE 0 END, 0) +
                 COALESCE(CASE WHEN jsonb_typeof(e.value -> 'cacheRead') = 'number' THEN (e.value ->> 'cacheRead')::numeric::bigint ELSE 0 END, 0)
-              ) AS total_tokens
+              ), 0) AS total_tokens
             FROM loops,
             LATERAL jsonb_each(tokens_by_model) AS e(key, value)
             WHERE ${whereClause}
@@ -430,9 +524,123 @@ export const dashboardService = {
             ORDER BY e.key
           `)
       ),
+
+      // Subscription vs API token split (includes cache tokens for consistency with total)
+      withDb((db) =>
+        db.$queryRaw<OriginRow[]>(Prisma.sql`
+            SELECT
+              (compute_target_id IS NOT NULL) AS is_electron,
+              COALESCE(SUM(tokens_input), 0) + COALESCE(SUM(tokens_output), 0) +
+              COALESCE(SUM(
+                CASE WHEN jsonb_typeof(tokens_by_model) = 'object' THEN (
+                  SELECT COALESCE(SUM(
+                    COALESCE(CASE WHEN jsonb_typeof(e.value -> 'cacheCreation') = 'number' THEN (e.value ->> 'cacheCreation')::numeric::bigint ELSE 0 END, 0) +
+                    COALESCE(CASE WHEN jsonb_typeof(e.value -> 'cacheRead') = 'number' THEN (e.value ->> 'cacheRead')::numeric::bigint ELSE 0 END, 0)
+                  ), 0) FROM jsonb_each(tokens_by_model) AS e(key, value)
+                ) ELSE 0 END
+              ), 0) AS total_tokens
+            FROM loops
+            WHERE ${whereClause}
+            GROUP BY is_electron
+          `)
+      ),
+
+      // Delivery stats: documents, PRs, workflows
+      // Pre-fetch workstream IDs once for PR and workflow counts
+      withDb((db) =>
+        db.workstream.findMany({
+          where: { organizationId: org.id },
+          select: { id: true },
+        })
+      ).then((ws) => {
+        const wsIds = ws.map((w) => w.id);
+        return Promise.all([
+          withDb((db) =>
+            db.document.count({
+              where: {
+                organizationId: org.id,
+                type: DocumentType.PRD,
+                ...(startDate ? { createdAt: { gte: startDate } } : {}),
+              },
+            })
+          ),
+          withDb((db) =>
+            db.document.count({
+              where: {
+                organizationId: org.id,
+                type: DocumentType.IMPLEMENTATION_PLAN,
+                ...(startDate ? { createdAt: { gte: startDate } } : {}),
+              },
+            })
+          ),
+          withDb((db) =>
+            db.document.count({
+              where: {
+                organizationId: org.id,
+                type: DocumentType.FEATURE,
+                ...(startDate ? { createdAt: { gte: startDate } } : {}),
+              },
+            })
+          ),
+          withDb((db) =>
+            db.gitHubPullRequest.count({
+              where: {
+                workstreamId: { in: wsIds },
+                state: GitHubPRState.MERGED,
+                mergedAt: {
+                  not: null,
+                  ...(startDate ? { gte: startDate } : {}),
+                },
+              },
+            })
+          ),
+          withDb((db) =>
+            db.gitHubActionRun.count({
+              where: {
+                workstreamId: { in: wsIds },
+                status: { not: GitHubActionStatus.PENDING },
+                ...(startDate ? { createdAt: { gte: startDate } } : {}),
+              },
+            })
+          ),
+        ]);
+      }),
     ]);
 
     const agg = aggResult[0];
+
+    // Calculate API cost equivalent from per-model token breakdown
+    const byModel: ModelUsage[] = modelResult.map((r: ModelRow) => {
+      const mInput = Number(r.model_input);
+      const mOutput = Number(r.model_output);
+      const mCacheCreation = Number(r.model_cache_creation);
+      const mCacheRead = Number(r.model_cache_read);
+      return {
+        model: r.model,
+        totalTokens: Number(r.total_tokens),
+        apiCost: calculateModelCost(
+          r.model,
+          mInput,
+          mOutput,
+          mCacheCreation,
+          mCacheRead
+        ),
+      };
+    });
+
+    const apiCostEquivalent = byModel.reduce((sum, m) => sum + m.apiCost, 0);
+
+    // Subscription (electron) vs API (cloud) token split
+    let subscriptionTokens = 0;
+    let apiTokens = 0;
+    for (const row of originResult) {
+      const tokens = Number(row.total_tokens);
+      if (row.is_electron) {
+        subscriptionTokens = tokens;
+      } else {
+        apiTokens = tokens;
+      }
+    }
 
     const stats: UsageDashboardStats = {
       sessions: Number(agg?.distinct_sessions ?? 0),
@@ -441,10 +649,21 @@ export const dashboardService = {
       outputTokens: Number(agg?.total_output ?? 0),
       cacheRead: Number(agg?.total_cache_read ?? 0),
       cacheCreation: Number(agg?.total_cache_creation ?? 0),
-      estimatedCost: Number(agg?.total_cost ?? 0),
+      apiCostEquivalent,
+      estimatedCost: apiCostEquivalent,
+      subscriptionTokens,
+      apiTokens,
     };
 
-    const dailyUsage: DailyTokenUsage[] = dailyResult.map((r) => ({
+    const delivery: DeliveryStats = {
+      prdsCreated: prdCount,
+      plansCreated: planCount,
+      featuresCreated: featureCount,
+      prsMerged,
+      agenticWorkflows,
+    };
+
+    const dailyUsage: DailyTokenUsage[] = dailyResult.map((r: DailyRow) => ({
       date: r.day,
       input: Number(r.input),
       output: Number(r.output),
@@ -452,39 +671,37 @@ export const dashboardService = {
       cacheCreation: Number(r.cache_creation),
     }));
 
-    const byModel: ModelUsage[] = modelResult.map((r) => ({
-      model: r.model,
-      totalTokens: Number(r.total_tokens),
-    }));
-
-    const topProjects: ProjectUsage[] = projectResult.map((r) => ({
+    const topProjects: ProjectUsage[] = projectResult.map((r: ProjectRow) => ({
       project: r.project,
       inputTokens: Number(r.input_tokens),
       outputTokens: Number(r.output_tokens),
     }));
 
-    const recentSessions: RecentSession[] = sessionResult.map((r) => {
-      const lastActive = new Date(r.last_active);
-      const startedAt = r.started_at ? new Date(r.started_at) : lastActive;
-      const durationMs = lastActive.getTime() - startedAt.getTime();
-      return {
-        sessionId: r.session_id,
-        project: r.project,
-        lastActive: lastActive.toISOString(),
-        durationMinutes: Math.round((durationMs / 60_000) * 10) / 10,
-        model: r.primary_model,
-        turns: Number(r.turns),
-        inputTokens: Number(r.input_tokens),
-        outputTokens: Number(r.output_tokens),
-        estimatedCost: Number(r.total_cost ?? 0),
-      };
-    });
+    const recentSessions: RecentSession[] = sessionResult.map(
+      (r: SessionRow) => {
+        const lastActive = new Date(r.last_active);
+        const startedAt = r.started_at ? new Date(r.started_at) : lastActive;
+        const durationMs = lastActive.getTime() - startedAt.getTime();
+        return {
+          sessionId: r.session_id,
+          project: r.project,
+          lastActive: lastActive.toISOString(),
+          durationMinutes: Math.round((durationMs / 60_000) * 10) / 10,
+          model: r.primary_model,
+          turns: Number(r.turns),
+          inputTokens: Number(r.input_tokens),
+          outputTokens: Number(r.output_tokens),
+          estimatedCost: Number(r.total_cost ?? 0),
+        };
+      }
+    );
 
     return {
       organizationName: org.name,
       updatedAt: new Date().toISOString(),
-      models: allModels.map((m) => m.model),
+      models: allModels.map((m: { model: string }) => m.model),
       stats,
+      delivery,
       dailyUsage,
       byModel,
       topProjects,

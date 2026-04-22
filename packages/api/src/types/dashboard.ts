@@ -65,6 +65,7 @@ export type PublicUsageDashboardResponse = {
   updatedAt: string;
   models: string[];
   stats: UsageDashboardStats;
+  delivery: DeliveryStats;
   dailyUsage: DailyTokenUsage[];
   byModel: ModelUsage[];
   topProjects: ProjectUsage[];
@@ -78,7 +79,22 @@ export type UsageDashboardStats = {
   outputTokens: number;
   cacheRead: number;
   cacheCreation: number;
+  /** Calculated from Anthropic per-model API pricing applied to tokens_by_model */
+  apiCostEquivalent: number;
+  /** @deprecated Use apiCostEquivalent instead. Kept for backward compatibility. */
   estimatedCost: number;
+  /** Tokens consumed on electron targets (covered by personal subscription) */
+  subscriptionTokens: number;
+  /** Tokens consumed via cloud/API key */
+  apiTokens: number;
+};
+
+export type DeliveryStats = {
+  prdsCreated: number;
+  plansCreated: number;
+  featuresCreated: number;
+  prsMerged: number;
+  agenticWorkflows: number;
 };
 
 export type DailyTokenUsage = {
@@ -92,6 +108,7 @@ export type DailyTokenUsage = {
 export type ModelUsage = {
   model: string;
   totalTokens: number;
+  apiCost: number;
 };
 
 export type ProjectUsage = {

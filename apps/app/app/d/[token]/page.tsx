@@ -2,6 +2,7 @@
 
 import type {
   DailyTokenUsage,
+  DeliveryStats,
   ModelUsage,
   ProjectUsage,
   RecentSession,
@@ -69,6 +70,9 @@ function fmt(n: number): string {
 }
 
 function fmtCost(n: number): string {
+  if (n >= 1000) {
+    return `$${(n / 1000).toFixed(1)}K`;
+  }
   return `$${n.toFixed(2)}`;
 }
 
@@ -86,8 +90,11 @@ function fmtAxis(n: number): string {
 }
 
 function modelColor(model: string): string {
+  if (model in MODEL_COLORS) {
+    return MODEL_COLORS[model];
+  }
   for (const [key, color] of Object.entries(MODEL_COLORS)) {
-    if (model.includes(key) || key.includes(model)) {
+    if (model.startsWith(key)) {
       return color;
     }
   }
@@ -101,24 +108,84 @@ function truncateProject(name: string, maxLen = 25): string {
   return `...${name.slice(-(maxLen - 3))}`;
 }
 
+function rangeSuffix(range: DateRange): string {
+  return range === 0 ? "all time" : `last ${range} days`;
+}
+
 // ── Components ──────────────────────────────────────────────────────────────
 
 function StatCard({
   label,
   value,
   sub,
+  highlight,
 }: {
   label: string;
   value: string;
   sub?: string;
+  highlight?: boolean;
 }) {
   return (
-    <div className="rounded-lg border border-slate-700/50 bg-slate-800/60 px-5 py-4">
+    <div
+      className={`rounded-lg border px-5 py-4 ${
+        highlight
+          ? "border-green-700/50 bg-green-900/20"
+          : "border-slate-700/50 bg-slate-800/60"
+      }`}
+    >
       <div className="mb-1 font-medium text-slate-400 text-xs uppercase tracking-wider">
         {label}
       </div>
-      <div className="font-bold text-2xl text-white">{value}</div>
+      <div
+        className={`font-bold text-2xl ${highlight ? "text-green-400" : "text-white"}`}
+      >
+        {value}
+      </div>
       {sub && <div className="mt-0.5 text-slate-500 text-xs">{sub}</div>}
+    </div>
+  );
+}
+
+function DeliveryCards({
+  delivery,
+  range,
+}: {
+  delivery: DeliveryStats;
+  range: DateRange;
+}) {
+  const suffix = rangeSuffix(range);
+  return (
+    <div className="mb-6">
+      <h2 className="mb-3 font-semibold text-slate-300 text-sm uppercase tracking-wider">
+        Delivery Output
+      </h2>
+      <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
+        <StatCard
+          label="PRDs Created"
+          sub={suffix}
+          value={delivery.prdsCreated.toString()}
+        />
+        <StatCard
+          label="Plans Created"
+          sub={suffix}
+          value={delivery.plansCreated.toString()}
+        />
+        <StatCard
+          label="Features"
+          sub={suffix}
+          value={delivery.featuresCreated.toString()}
+        />
+        <StatCard
+          label="PRs Merged"
+          sub={suffix}
+          value={delivery.prsMerged.toString()}
+        />
+        <StatCard
+          label="Agentic Workflows"
+          sub={suffix}
+          value={fmt(delivery.agenticWorkflows)}
+        />
+      </div>
     </div>
   );
 }
@@ -207,7 +274,7 @@ function DailyUsageChart({ data }: { data: DailyTokenUsage[] }) {
   return (
     <div className="rounded-lg border border-slate-700/50 bg-slate-800/60 p-5">
       <h3 className="mb-4 font-semibold text-slate-300 text-sm uppercase tracking-wider">
-        Daily Token Usage &mdash; Last {data.length} Days
+        Daily Token Usage
       </h3>
       <ResponsiveContainer height={350} width="100%">
         <BarChart data={data}>
@@ -295,7 +362,12 @@ function ModelDonutChart({ data }: { data: ModelUsage[] }) {
               color: "#e2e8f0",
               fontSize: 12,
             }}
-            formatter={((v: number) => [fmt(v), "Tokens"]) as never}
+            formatter={
+              ((v: number, _n: string, entry: { payload: ModelUsage }) => [
+                `${fmt(v)} tokens (${fmtCost(entry.payload.apiCost)})`,
+                entry.payload.model,
+              ]) as never
+            }
           />
           <Legend
             formatter={(value: string) => (
@@ -391,8 +463,7 @@ function SessionsTable({ sessions }: { sessions: RecentSession[] }) {
               <th className="pr-4 pb-3 font-medium">Model</th>
               <th className="pr-4 pb-3 text-right font-medium">Turns</th>
               <th className="pr-4 pb-3 text-right font-medium">Input</th>
-              <th className="pr-4 pb-3 text-right font-medium">Output</th>
-              <th className="pb-3 text-right font-medium">Est. Cost</th>
+              <th className="pb-3 text-right font-medium">Output</th>
             </tr>
           </thead>
           <tbody>
@@ -427,15 +498,12 @@ function SessionsTable({ sessions }: { sessions: RecentSession[] }) {
                 </td>
                 <td className="py-3 pr-4 text-right">{s.turns}</td>
                 <td className="py-3 pr-4 text-right">{fmt(s.inputTokens)}</td>
-                <td className="py-3 pr-4 text-right">{fmt(s.outputTokens)}</td>
-                <td className="py-3 text-right font-medium text-green-400">
-                  {fmtCost(s.estimatedCost)}
-                </td>
+                <td className="py-3 text-right">{fmt(s.outputTokens)}</td>
               </tr>
             ))}
             {sessions.length === 0 && (
               <tr>
-                <td className="py-8 text-center text-slate-500" colSpan={9}>
+                <td className="py-8 text-center text-slate-500" colSpan={8}>
                   No sessions found for the selected filters.
                 </td>
               </tr>
@@ -444,6 +512,99 @@ function SessionsTable({ sessions }: { sessions: RecentSession[] }) {
         </table>
       </div>
     </div>
+  );
+}
+
+function DashboardContent({
+  data,
+  range,
+}: {
+  data: NonNullable<ReturnType<typeof usePublicDashboard>["data"]>;
+  range: DateRange;
+}) {
+  const { stats, delivery } = data;
+  const totalTokens =
+    stats.inputTokens +
+    stats.outputTokens +
+    stats.cacheRead +
+    stats.cacheCreation;
+  const suffix = rangeSuffix(range);
+
+  return (
+    <>
+      {/* Hero: API Cost Equivalent + Total Tokens */}
+      <div className="mb-6">
+        <h2 className="mb-3 font-semibold text-slate-300 text-sm uppercase tracking-wider">
+          Token Investment
+        </h2>
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
+          <StatCard
+            highlight
+            label="API Cost Equivalent"
+            sub="Anthropic API pricing by model"
+            value={fmtCost(stats.apiCostEquivalent ?? 0)}
+          />
+          <StatCard
+            label="Total Tokens"
+            sub={suffix}
+            value={fmt(totalTokens)}
+          />
+          <StatCard label="Sessions" sub={suffix} value={fmt(stats.sessions)} />
+          <StatCard
+            label="Subscription"
+            sub="electron targets (included)"
+            value={fmt(stats.subscriptionTokens ?? 0)}
+          />
+          <StatCard
+            label="API Tokens"
+            sub="cloud / API key usage"
+            value={fmt(stats.apiTokens ?? 0)}
+          />
+        </div>
+      </div>
+
+      {/* Token breakdown */}
+      <div className="mb-6">
+        <h2 className="mb-3 font-semibold text-slate-300 text-sm uppercase tracking-wider">
+          Token Breakdown
+        </h2>
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+          <StatCard label="Input" sub={suffix} value={fmt(stats.inputTokens)} />
+          <StatCard
+            label="Output"
+            sub={suffix}
+            value={fmt(stats.outputTokens)}
+          />
+          <StatCard
+            label="Cache Read"
+            sub="prompt cache hits"
+            value={fmt(stats.cacheRead)}
+          />
+          <StatCard
+            label="Cache Creation"
+            sub="prompt cache writes"
+            value={fmt(stats.cacheCreation)}
+          />
+        </div>
+      </div>
+
+      {/* Delivery Output */}
+      {delivery && <DeliveryCards delivery={delivery} range={range} />}
+
+      {/* Daily Usage Chart */}
+      <div className="mb-6">
+        <DailyUsageChart data={data.dailyUsage} />
+      </div>
+
+      {/* Model Donut + Top Projects */}
+      <div className="mb-6 grid gap-6 lg:grid-cols-2">
+        <ModelDonutChart data={data.byModel} />
+        <TopProjectsChart data={data.topProjects} />
+      </div>
+
+      {/* Recent Sessions */}
+      <SessionsTable sessions={data.recentSessions} />
+    </>
   );
 }
 
@@ -474,14 +635,11 @@ export default function PublicDashboardPage({ params }: Props) {
     filters
   );
 
-  // Initialize selected models from first data load, add new models on refresh
   useEffect(() => {
     if (!data) {
       return;
     }
-    const incoming = new Set(data.models);
     if (initializedRef.current) {
-      // Add newly discovered models to the selection
       setSelectedModels((prev) => {
         const newModels = data.models.filter((m) => !prev.has(m));
         if (newModels.length === 0) {
@@ -494,7 +652,7 @@ export default function PublicDashboardPage({ params }: Props) {
         return next;
       });
     } else {
-      setSelectedModels(incoming);
+      setSelectedModels(new Set(data.models));
       initializedRef.current = true;
     }
   }, [data]);
@@ -531,21 +689,31 @@ export default function PublicDashboardPage({ params }: Props) {
     );
   }
 
-  const stats = data?.stats;
   const updatedLabel = dataUpdatedAt
-    ? new Date(dataUpdatedAt).toISOString().replace("T", " ").slice(0, 19)
+    ? new Date(dataUpdatedAt).toLocaleString(undefined, {
+        month: "short",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      })
     : "";
 
   return (
-    <div className="min-h-screen bg-slate-900 text-slate-200">
+    <div className="h-screen overflow-y-auto bg-slate-900 text-slate-200">
       <div className="mx-auto max-w-7xl px-6 py-6">
         {/* Header */}
         <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
-          <h1 className="font-bold text-orange-400 text-xl">
-            Claude Code Usage Dashboard
-          </h1>
-          <div className="text-slate-500 text-xs">
-            Updated: {updatedLabel} &middot; Auto-refresh in 30s
+          <div>
+            <h1 className="font-bold text-orange-400 text-xl">
+              {data?.organizationName ?? "AI"} &mdash; Claude Code Usage
+            </h1>
+            <p className="mt-1 text-slate-500 text-xs">
+              Accelerating AI-driven software delivery
+            </p>
+          </div>
+          <div className="text-right text-slate-500 text-xs">
+            <div>Updated: {updatedLabel}</div>
+            <div>Auto-refresh 30s</div>
           </div>
         </div>
 
@@ -561,16 +729,19 @@ export default function PublicDashboardPage({ params }: Props) {
           <RangeSelector onChange={setRange} value={range} />
         </div>
 
-        {isLoading && !data ? (
+        {isLoading && !data && (
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
             {[
-              "sessions",
-              "turns",
-              "input",
-              "output",
-              "cache-read",
-              "cache-creation",
               "cost",
+              "tokens",
+              "sessions",
+              "sub",
+              "api",
+              "prds",
+              "plans",
+              "features",
+              "prs",
+              "workflows",
             ].map((id) => (
               <div
                 className="h-24 animate-pulse rounded-lg bg-slate-800/60"
@@ -578,64 +749,8 @@ export default function PublicDashboardPage({ params }: Props) {
               />
             ))}
           </div>
-        ) : (
-          <>
-            {/* Stat Cards */}
-            <div className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
-              <StatCard
-                label="Sessions"
-                sub={`last ${range || "all"} days`}
-                value={fmt(stats?.sessions ?? 0)}
-              />
-              <StatCard
-                label="Turns"
-                sub={`last ${range || "all"} days`}
-                value={fmt(stats?.turns ?? 0)}
-              />
-              <StatCard
-                label="Input Tokens"
-                sub={`last ${range || "all"} days`}
-                value={fmt(stats?.inputTokens ?? 0)}
-              />
-              <StatCard
-                label="Output Tokens"
-                sub={`last ${range || "all"} days`}
-                value={fmt(stats?.outputTokens ?? 0)}
-              />
-              <StatCard
-                label="Cache Read"
-                sub="from prompt cache"
-                value={fmt(stats?.cacheRead ?? 0)}
-              />
-            </div>
-            <div className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
-              <StatCard
-                label="Cache Creation"
-                sub="writes to prompt cache"
-                value={fmt(stats?.cacheCreation ?? 0)}
-              />
-              <StatCard
-                label="Est. Cost"
-                sub={`API pricing, ${new Date().toLocaleString("default", { month: "short", year: "numeric" })}`}
-                value={fmtCost(stats?.estimatedCost ?? 0)}
-              />
-            </div>
-
-            {/* Daily Usage Chart */}
-            <div className="mb-6">
-              <DailyUsageChart data={data?.dailyUsage ?? []} />
-            </div>
-
-            {/* Model Donut + Top Projects */}
-            <div className="mb-6 grid gap-6 lg:grid-cols-2">
-              <ModelDonutChart data={data?.byModel ?? []} />
-              <TopProjectsChart data={data?.topProjects ?? []} />
-            </div>
-
-            {/* Recent Sessions */}
-            <SessionsTable sessions={data?.recentSessions ?? []} />
-          </>
         )}
+        {data && <DashboardContent data={data} range={range} />}
       </div>
     </div>
   );
