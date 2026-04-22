@@ -97,7 +97,12 @@ export default function TeamFeaturesPage() {
       items = filtersReturn.applyFilters(items);
     }
     return items;
-  }, [features, filterText, filtersReturn]);
+  }, [
+    features,
+    filterText,
+    filtersReturn.isAnyFilterActive,
+    filtersReturn.applyFilters,
+  ]);
 
   const parentTitleMap = useItemsParentTitles(allItems);
 

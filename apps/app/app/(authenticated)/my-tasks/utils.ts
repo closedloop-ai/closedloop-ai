@@ -24,12 +24,12 @@ export const DISPLAY_GROUPS: {
   },
   {
     key: "in_progress",
-    label: "In progress",
+    label: "In Progress",
     statuses: [DocumentStatus.InProgress],
   },
   {
     key: "in_review",
-    label: "In review",
+    label: "In Review",
     statuses: [DocumentStatus.InReview],
   },
   { key: "approved", label: "Approved", statuses: [DocumentStatus.Approved] },

@@ -98,7 +98,12 @@ export default function TeamPlansPage() {
       items = filtersReturn.applyFilters(items);
     }
     return items;
-  }, [artifacts, filterText, filtersReturn]);
+  }, [
+    artifacts,
+    filterText,
+    filtersReturn.isAnyFilterActive,
+    filtersReturn.applyFilters,
+  ]);
 
   const parentTitleMap = useItemsParentTitles(allItems);
 

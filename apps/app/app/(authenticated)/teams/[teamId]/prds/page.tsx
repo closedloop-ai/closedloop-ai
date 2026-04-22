@@ -97,7 +97,12 @@ export default function TeamPrdsPage() {
       items = filtersReturn.applyFilters(items);
     }
     return items;
-  }, [artifacts, filterText, filtersReturn]);
+  }, [
+    artifacts,
+    filterText,
+    filtersReturn.isAnyFilterActive,
+    filtersReturn.applyFilters,
+  ]);
 
   const filterCurrentUser = useMemo(
     () =>

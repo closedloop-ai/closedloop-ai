@@ -19,14 +19,17 @@ import {
 import { isDisplayableSlug } from "@repo/api/src/types/slug";
 import { Card } from "@repo/design-system/components/ui/card";
 import { PriorityIcon } from "@repo/design-system/components/ui/priority-icon";
+import { ScrollArea } from "@repo/design-system/components/ui/scroll-area";
 import { StatusIcon } from "@repo/design-system/components/ui/status-icon";
+import { cn } from "@repo/design-system/lib/utils";
 import { useQueryClient } from "@tanstack/react-query";
-import { BoxIcon, CheckSquareIcon } from "lucide-react";
+import { CheckSquareIcon } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { AssigneeAvatar } from "@/components/assignee-avatar";
 import { EmptyState } from "@/components/empty-state";
 import { documentKeys, useUpdateDocument } from "@/hooks/queries/use-documents";
+import { useElementViewportHeight } from "@/hooks/use-element-viewport-height";
 import { DOCUMENT_STATUS_TO_ICON } from "@/lib/project-constants";
 import { buildFeatureListParams, DISPLAY_GROUPS } from "../utils";
 
@@ -55,6 +58,10 @@ export function MyTasksKanban({
   isUserLoading,
 }: Readonly<MyTasksKanbanProps>) {
   const queryClient = useQueryClient();
+  const [viewportHeight, setContainerRef] = useElementViewportHeight({
+    bottomGap: 12,
+    minHeight: 240,
+  });
   const listFilters = useMemo(
     () => buildFeatureListParams(assigneeId),
     [assigneeId]
@@ -173,29 +180,42 @@ export function MyTasksKanban({
     : null;
 
   return (
-    <DndContext
-      onDragEnd={handleDragEnd}
-      onDragStart={handleDragStart}
-      sensors={sensors}
-    >
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-5">
-        {DISPLAY_GROUPS.map((group) => {
-          const items = grouped.get(group.key) ?? [];
-          return (
-            <KanbanColumn
-              groupKey={group.key}
-              groupLabel={group.label}
-              items={items}
-              key={group.key}
-              lastDraggedFeatureIdRef={lastDraggedFeatureIdRef}
-            />
-          );
-        })}
-      </div>
-      <DragOverlay>
-        {activeFeature ? <KanbanCardPreview feature={activeFeature} /> : null}
-      </DragOverlay>
-    </DndContext>
+    <div className="flex h-full min-h-0 flex-col" ref={setContainerRef}>
+      <DndContext
+        onDragEnd={handleDragEnd}
+        onDragStart={handleDragStart}
+        sensors={sensors}
+      >
+        <ScrollArea
+          className="min-h-0 shrink-0"
+          scrollbars="horizontal"
+          style={viewportHeight ? { height: viewportHeight } : undefined}
+          type="always"
+        >
+          <div
+            className="flex min-w-max gap-3 px-4 pb-4"
+            style={viewportHeight ? { height: viewportHeight } : undefined}
+          >
+            {DISPLAY_GROUPS.map((group) => {
+              const items = grouped.get(group.key) ?? [];
+              return (
+                <KanbanColumn
+                  groupKey={group.key}
+                  groupLabel={group.label}
+                  items={items}
+                  key={group.key}
+                  lastDraggedFeatureIdRef={lastDraggedFeatureIdRef}
+                  status={group.statuses[0]}
+                />
+              );
+            })}
+          </div>
+        </ScrollArea>
+        <DragOverlay>
+          {activeFeature ? <KanbanCardPreview feature={activeFeature} /> : null}
+        </DragOverlay>
+      </DndContext>
+    </div>
   );
 }
 
@@ -204,6 +224,7 @@ type KanbanColumnProps = {
   groupLabel: string;
   items: DocumentWithWorkstream[];
   lastDraggedFeatureIdRef: React.MutableRefObject<string | null>;
+  status: DocumentStatus;
 };
 
 function KanbanColumn({
@@ -211,30 +232,35 @@ function KanbanColumn({
   groupLabel,
   items,
   lastDraggedFeatureIdRef,
+  status,
 }: Readonly<KanbanColumnProps>) {
   const { isOver, setNodeRef } = useDroppable({ id: groupKey });
 
   return (
     <div
-      className="flex flex-col rounded-lg border bg-muted/30"
+      className="flex min-h-0 w-[270px] shrink-0 flex-col overflow-hidden rounded-md border bg-muted/30"
       ref={setNodeRef}
     >
-      <div className="border-b px-2.5 py-1.5">
-        <span className="font-medium text-sm">{groupLabel}</span>
-        <span className="ml-1.5 text-muted-foreground text-sm">
-          {items.length}
-        </span>
+      <div className="flex shrink-0 items-center gap-2 px-2.5 py-3">
+        <StatusIcon size={16} status={DOCUMENT_STATUS_TO_ICON[status]} />
+        <span className="font-medium text-base">{groupLabel}</span>
+        <span className="text-muted-foreground text-sm">{items.length}</span>
       </div>
       <div
-        className={`flex flex-col gap-1.5 p-1.5 ${isOver ? "bg-accent/30" : ""}`}
+        className={cn(
+          "min-h-0 flex-1 overflow-y-auto",
+          isOver && "bg-accent/30"
+        )}
       >
-        {items.map((feature) => (
-          <MyTasksCard
-            feature={feature}
-            key={feature.id}
-            lastDraggedFeatureIdRef={lastDraggedFeatureIdRef}
-          />
-        ))}
+        <div className="flex flex-col gap-1.5 p-1.5">
+          {items.map((feature) => (
+            <MyTasksCard
+              feature={feature}
+              key={feature.id}
+              lastDraggedFeatureIdRef={lastDraggedFeatureIdRef}
+            />
+          ))}
+        </div>
       </div>
     </div>
   );
@@ -250,19 +276,16 @@ function KanbanCardContent({
 }>) {
   return (
     <div className="px-3 py-1">
-      <div className="flex min-w-0 items-start gap-2">
-        <BoxIcon className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-        <div className="min-w-0 flex-1">
-          <div className="flex min-w-0 items-baseline gap-1.5">
-            {isDisplayableSlug(feature.slug) && (
-              <span className="shrink-0 font-mono text-muted-foreground text-xs">
-                {feature.slug}
-              </span>
-            )}
-            <p className="min-w-0 truncate font-medium text-sm">
-              {feature.title}
-            </p>
-          </div>
+      <div className="min-w-0">
+        <div className="flex min-w-0 flex-col gap-0.5">
+          {isDisplayableSlug(feature.slug) && (
+            <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
+              {feature.slug}
+            </span>
+          )}
+          <p className="min-w-0 truncate font-medium text-sm">
+            {feature.title}
+          </p>
         </div>
       </div>
       <div className="mt-1.5 flex items-center justify-end gap-2">
@@ -294,7 +317,7 @@ function KanbanCardPreview({
   feature,
 }: Readonly<{ feature: DocumentWithWorkstream }>) {
   return (
-    <Card className="cursor-grabbing py-3 shadow-lg">
+    <Card className="cursor-grabbing rounded-md py-2 shadow-lg">
       <KanbanCardContent feature={feature} />
     </Card>
   );
@@ -329,14 +352,14 @@ function MyTasksCard({
 
   return (
     <div
-      className={`touch-none ${isDragging ? "invisible cursor-grabbing" : "cursor-grab"}`}
+      className={isDragging ? "invisible cursor-grabbing" : "cursor-grab"}
       ref={setNodeRef}
       style={style}
       {...attributes}
       {...listeners}
     >
       <Link href={`/features/${feature.slug}`} onClick={handleLinkClick}>
-        <Card className="py-3 transition-colors hover:bg-accent/50">
+        <Card className="rounded-md py-2 shadow-none transition-colors hover:bg-accent/50">
           <KanbanCardContent disableAvatarLink feature={feature} />
         </Card>
       </Link>
