@@ -239,6 +239,54 @@ describe("dispatchRelayOperation (via launchLoopOnDesktop)", () => {
     ).toEqual([]);
   });
 
+  it("forwards raw implementation plan state in the relay payload body", async () => {
+    vi.spyOn(globalThis, "fetch").mockReturnValue(
+      mockResponse(200, { delivered: true })
+    );
+
+    const opts = {
+      ...VALID_LAUNCH_OPTS,
+      command: "EXECUTE" as const,
+      contextPack: {
+        ...VALID_LAUNCH_OPTS.contextPack,
+        command: "EXECUTE",
+        artifacts: [
+          {
+            id: "plan-1",
+            type: "IMPLEMENTATION_PLAN",
+            title: "Plan",
+            content: "Latest markdown",
+            raw: {
+              content: "Older markdown",
+              pendingTasks: ["task-1"],
+            },
+          },
+        ],
+      },
+    };
+
+    await launchLoopOnDesktop(opts);
+
+    const toRelayOperationMock = vi.mocked(toRelayOperation);
+    expect(toRelayOperationMock).toHaveBeenCalledOnce();
+    const [, dispatchedInput] = toRelayOperationMock.mock.calls[0];
+    const dispatchedBody = (
+      dispatchedInput as unknown as {
+        body: { artifacts: Record<string, unknown>[] };
+      }
+    ).body;
+    expect(dispatchedBody.artifacts[0]).toEqual({
+      id: "plan-1",
+      type: "IMPLEMENTATION_PLAN",
+      title: "Plan",
+      content: "Latest markdown",
+      raw: {
+        content: "Older markdown",
+        pendingTasks: ["task-1"],
+      },
+    });
+  });
+
   it("does NOT throw when relay returns { delivered: false } on the kill (fire-and-forget) path", async () => {
     // The kill path uses stopDesktopLoop which calls dispatchRelayOperation with
     // throwOnFailure=false (the default). Verify that the same { delivered: false }

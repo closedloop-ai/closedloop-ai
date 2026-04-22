@@ -41,3 +41,39 @@ describe("LoopRequestBodySchema — additionalRepos", () => {
     expect(result.success).toBe(false);
   });
 });
+
+describe("LoopRequestBodySchema — implementation plan raw state", () => {
+  it("accepts implementation plan artifacts with raw plan state", () => {
+    const result = LoopRequestBodySchema.safeParse({
+      ...base,
+      artifacts: [
+        {
+          id: "plan-1",
+          type: "IMPLEMENTATION_PLAN",
+          title: "Plan",
+          content: "Latest markdown",
+          raw: {
+            content: "Previous markdown",
+            pendingTasks: ["task-1"],
+          },
+        },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("keeps raw plan state optional for older content-only payloads", () => {
+    const result = LoopRequestBodySchema.safeParse({
+      ...base,
+      artifacts: [
+        {
+          id: "plan-1",
+          type: "IMPLEMENTATION_PLAN",
+          title: "Plan",
+          content: "Latest markdown",
+        },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+});

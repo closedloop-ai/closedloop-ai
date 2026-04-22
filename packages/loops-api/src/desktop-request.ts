@@ -22,6 +22,7 @@ export type LoopRequestBody = {
     type: LoopArtifactType;
     title: string;
     content: string;
+    raw?: Record<string, unknown>;
   }>;
   repo?: { fullName: string; branch: string };
   committer?: { name: string; email: string };
@@ -56,6 +57,7 @@ export const LoopRequestBodySchema = z.object({
       type: z.enum(LoopArtifactType),
       title: z.string(),
       content: z.string(),
+      raw: z.record(z.string(), z.unknown()).optional(),
     })
   ),
   repo: z

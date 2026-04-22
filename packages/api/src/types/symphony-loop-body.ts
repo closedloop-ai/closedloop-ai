@@ -18,6 +18,7 @@ export type SymphonyLoopBody = {
     type: string;
     title: string;
     content: string;
+    raw?: Record<string, unknown>;
   }>;
   prompt: string | null;
   repo: {

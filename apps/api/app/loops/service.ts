@@ -240,6 +240,33 @@ function toLoop(record: PrismaLoop): Loop {
   };
 }
 
+function hasUploadedRawPlanState(
+  uploadedArtifacts: Loop["uploadedArtifacts"]
+): boolean {
+  if (!uploadedArtifacts || typeof uploadedArtifacts !== "object") {
+    return false;
+  }
+
+  const artifacts = (uploadedArtifacts as Record<string, unknown>).artifacts;
+  if (!artifacts || typeof artifacts !== "object" || Array.isArray(artifacts)) {
+    return false;
+  }
+
+  const plan = (artifacts as Record<string, unknown>).plan;
+  if (!plan || typeof plan !== "object" || Array.isArray(plan)) {
+    return false;
+  }
+
+  const raw = (plan as Record<string, unknown>).raw;
+  return Boolean(raw && typeof raw === "object" && !Array.isArray(raw));
+}
+
+function hasDesktopResumeMetadata(loop: Loop): boolean {
+  return Boolean(
+    loop.computeTargetId && loop.branchName?.trim() && loop.sessionId?.trim()
+  );
+}
+
 /**
  * Transform a Prisma loop record (with included user and optional compute target)
  * to the API LoopWithUser type.
@@ -1133,6 +1160,42 @@ export const loopsService = {
     }
 
     return toLoop(loop);
+  },
+
+  /**
+   * Find the most recent desktop loop whose uploaded plan artifacts include a
+   * reusable raw plan snapshot and whose persisted metadata is sufficient to
+   * resume on desktop.
+   */
+  async findLatestStateBearingDesktopForArtifact(
+    documentId: string,
+    organizationId: string
+  ): Promise<Loop | null> {
+    const loops = await withDb((db) =>
+      db.loop.findMany({
+        where: {
+          documentId,
+          organizationId,
+          computeTargetId: { not: null },
+          branchName: { not: null },
+          sessionId: { not: null },
+        },
+        orderBy: { createdAt: "desc" },
+        take: 50,
+      })
+    );
+
+    for (const record of loops) {
+      const loop = toLoop(record);
+      if (
+        hasDesktopResumeMetadata(loop) &&
+        hasUploadedRawPlanState(loop.uploadedArtifacts)
+      ) {
+        return loop;
+      }
+    }
+
+    return null;
   },
 
   /**

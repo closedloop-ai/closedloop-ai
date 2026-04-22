@@ -50,6 +50,55 @@ export type LoopForContextPack = {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
+function extractUploadedPlanRaw(
+  uploadedArtifacts: unknown
+): Record<string, unknown> | undefined {
+  if (!uploadedArtifacts || typeof uploadedArtifacts !== "object") {
+    return undefined;
+  }
+
+  const artifacts = (uploadedArtifacts as Record<string, unknown>).artifacts;
+  if (!artifacts || typeof artifacts !== "object" || Array.isArray(artifacts)) {
+    return undefined;
+  }
+
+  const plan = (artifacts as Record<string, unknown>).plan;
+  if (!plan || typeof plan !== "object" || Array.isArray(plan)) {
+    return undefined;
+  }
+
+  const raw = (plan as Record<string, unknown>).raw;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return undefined;
+  }
+
+  return raw as Record<string, unknown>;
+}
+
+async function fetchDesktopExecuteRawPlanState(
+  loop: LoopForContextPack,
+  organizationId: string,
+  artifactType: string
+): Promise<Record<string, unknown> | undefined> {
+  if (
+    loop.command !== LoopCommand.Execute ||
+    artifactType !== DocumentType.ImplementationPlan ||
+    !loop.parentLoopId
+  ) {
+    return undefined;
+  }
+
+  const parentLoop = await loopsService.findById(
+    loop.parentLoopId,
+    organizationId
+  );
+  if (!parentLoop?.computeTargetId) {
+    return undefined;
+  }
+
+  return extractUploadedPlanRaw(parentLoop.uploadedArtifacts);
+}
+
 async function fetchPrimaryArtifact(
   loop: LoopForContextPack,
   organizationId: string
@@ -89,6 +138,11 @@ async function fetchPrimaryArtifact(
           loop.documentVersion
         )
       : await documentVersionService.getLatest(artifact.id);
+  const rawPlan = await fetchDesktopExecuteRawPlanState(
+    loop,
+    organizationId,
+    String(artifact.type)
+  );
 
   return [
     {
@@ -96,6 +150,7 @@ async function fetchPrimaryArtifact(
       type: String(artifact.type),
       title: artifact.title,
       content: artifactVersion?.content ?? "",
+      ...(rawPlan ? { raw: rawPlan } : {}),
     },
   ];
 }

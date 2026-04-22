@@ -99,7 +99,8 @@ export async function resolveLoopContext(
   handler: ReturnType<typeof getCommandHandler>,
   organizationId: string,
   userId: string,
-  documentId: string
+  documentId: string,
+  resolvedComputeTargetId?: string
 ) {
   const { workstream: resolvedWorkstream, source } =
     await documentsService.findOrCreateWorkstream(
@@ -139,10 +140,17 @@ export async function resolveLoopContext(
   let parentLoopId: string | undefined;
   let parentLoopComputeTargetId: string | null | undefined;
   if (handler?.requiresParent) {
-    const parentLoop = await loopsService.findLatestCompletedForArtifact(
-      documentId,
-      organizationId
-    );
+    const parentLoop =
+      (resolvedComputeTargetId
+        ? await loopsService.findLatestStateBearingDesktopForArtifact(
+            documentId,
+            organizationId
+          )
+        : null) ??
+      (await loopsService.findLatestCompletedForArtifact(
+        documentId,
+        organizationId
+      ));
     parentLoopId = parentLoop?.id;
     parentLoopComputeTargetId = parentLoop
       ? (parentLoop.computeTargetId ?? null)
