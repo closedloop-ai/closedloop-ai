@@ -80,8 +80,6 @@ export default function TeamFeaturesPage() {
     currentUserId: currentUser?.id,
   });
 
-  const { isAnyFilterActive, applyFilters } = filtersReturn;
-
   const displayItems = useMemo(() => {
     let filtered = features;
     if (filterText.trim()) {
@@ -95,11 +93,16 @@ export default function TeamFeaturesPage() {
       kind: "feature" as const,
       data: f,
     }));
-    if (isAnyFilterActive) {
-      items = applyFilters(items);
+    if (filtersReturn.isAnyFilterActive) {
+      items = filtersReturn.applyFilters(items);
     }
     return items;
-  }, [features, filterText, isAnyFilterActive, applyFilters]);
+  }, [
+    features,
+    filterText,
+    filtersReturn.isAnyFilterActive,
+    filtersReturn.applyFilters,
+  ]);
 
   const parentTitleMap = useItemsParentTitles(allItems);
 

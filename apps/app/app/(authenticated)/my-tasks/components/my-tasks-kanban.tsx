@@ -25,10 +25,11 @@ import { cn } from "@repo/design-system/lib/utils";
 import { useQueryClient } from "@tanstack/react-query";
 import { CheckSquareIcon } from "lucide-react";
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { AssigneeAvatar } from "@/components/assignee-avatar";
 import { EmptyState } from "@/components/empty-state";
 import { documentKeys, useUpdateDocument } from "@/hooks/queries/use-documents";
+import { useElementViewportHeight } from "@/hooks/use-element-viewport-height";
 import { DOCUMENT_STATUS_TO_ICON } from "@/lib/project-constants";
 import { buildFeatureListParams, DISPLAY_GROUPS } from "../utils";
 
@@ -57,9 +58,10 @@ export function MyTasksKanban({
   isUserLoading,
 }: Readonly<MyTasksKanbanProps>) {
   const queryClient = useQueryClient();
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const resizeObserverRef = useRef<ResizeObserver | null>(null);
-  const [viewportHeight, setViewportHeight] = useState<number | null>(null);
+  const [viewportHeight, setContainerRef] = useElementViewportHeight({
+    bottomGap: 12,
+    minHeight: 240,
+  });
   const listFilters = useMemo(
     () => buildFeatureListParams(assigneeId),
     [assigneeId]
@@ -145,61 +147,6 @@ export function MyTasksKanban({
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } })
   );
 
-  const updateViewportHeight = useCallback(() => {
-    const el = containerRef.current;
-    if (!el) {
-      return;
-    }
-    const top = el.getBoundingClientRect().top;
-    // Keep a small bottom gap so the horizontal scrollbar remains visible.
-    const next = Math.max(240, Math.floor(globalThis.innerHeight - top - 12));
-    setViewportHeight((prev) => (prev === next ? prev : next));
-  }, []);
-
-  const containerCallbackRef = useCallback(
-    (node: HTMLDivElement | null) => {
-      const prev = containerRef.current;
-      containerRef.current = node;
-      const observer = resizeObserverRef.current;
-      if (observer) {
-        if (prev) {
-          observer.unobserve(prev);
-        }
-        if (node) {
-          observer.observe(node);
-        }
-      }
-      if (node) {
-        updateViewportHeight();
-      }
-    },
-    [updateViewportHeight]
-  );
-
-  useEffect(() => {
-    const onResize = () => {
-      updateViewportHeight();
-    };
-
-    globalThis.addEventListener("resize", onResize);
-
-    const observer =
-      typeof ResizeObserver !== "undefined"
-        ? new ResizeObserver(() => updateViewportHeight())
-        : null;
-    resizeObserverRef.current = observer;
-
-    if (observer && containerRef.current) {
-      observer.observe(containerRef.current);
-    }
-
-    return () => {
-      globalThis.removeEventListener("resize", onResize);
-      observer?.disconnect();
-      resizeObserverRef.current = null;
-    };
-  }, [updateViewportHeight]);
-
   if (isUserLoading || (assigneeId && isLoading)) {
     return (
       <div className="flex flex-1 items-center justify-center p-8 text-muted-foreground">
@@ -233,7 +180,7 @@ export function MyTasksKanban({
     : null;
 
   return (
-    <div className="flex h-full min-h-0 flex-col" ref={containerCallbackRef}>
+    <div className="flex h-full min-h-0 flex-col" ref={setContainerRef}>
       <DndContext
         onDragEnd={handleDragEnd}
         onDragStart={handleDragStart}

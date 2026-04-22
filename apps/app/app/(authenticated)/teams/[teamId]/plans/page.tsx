@@ -86,8 +86,6 @@ export default function TeamPlansPage() {
     currentUserId: currentUser?.id,
   });
 
-  const { isAnyFilterActive, applyFilters } = filtersReturn;
-
   const displayItems = useMemo(() => {
     const textFiltered = (artifacts ?? []).filter((a) =>
       matchesFilter(a, filterText)
@@ -96,11 +94,16 @@ export default function TeamPlansPage() {
       kind: "artifact" as const,
       data: a,
     }));
-    if (isAnyFilterActive) {
-      items = applyFilters(items);
+    if (filtersReturn.isAnyFilterActive) {
+      items = filtersReturn.applyFilters(items);
     }
     return items;
-  }, [artifacts, filterText, isAnyFilterActive, applyFilters]);
+  }, [
+    artifacts,
+    filterText,
+    filtersReturn.isAnyFilterActive,
+    filtersReturn.applyFilters,
+  ]);
 
   const parentTitleMap = useItemsParentTitles(allItems);
 
