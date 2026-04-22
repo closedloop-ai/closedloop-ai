@@ -1,5 +1,4 @@
 import { match as matchLocale } from "@formatjs/intl-localematcher";
-import { log } from "@repo/observability/log";
 import Negotiator from "negotiator";
 import { createI18nMiddleware } from "next-international/middleware";
 import languine from "./languine.json" with { type: "json" };
@@ -20,9 +19,6 @@ const I18nMiddleware = createI18nMiddleware({
       return matchLocale(acceptedLanguages, locales, DEFAULT_LOCALE);
     } catch (err) {
       if (err instanceof RangeError) {
-        log.warn("i18n locale resolution failed, falling back to default", {
-          error: err.message,
-        });
         return DEFAULT_LOCALE;
       }
       throw err;
