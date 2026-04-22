@@ -27,6 +27,7 @@ import { cn } from "@repo/design-system/lib/utils";
 import {
   CalendarIcon,
   CheckIcon,
+  EyeOffIcon,
   ListFilterIcon,
   UserIcon,
   UsersIcon,
@@ -116,6 +117,7 @@ export function FilterMenuContent({
     filters,
     toggleAssignee,
     toggleAssignToMe,
+    toggleHideCompletedItems,
     toggleStatus,
     togglePriority,
     setDateFilter,
@@ -130,32 +132,44 @@ export function FilterMenuContent({
 
   return (
     <DropdownMenuContent align="start" className="w-52">
-      {!hideAssignee && currentUser && (
-        <>
-          <DropdownMenuGroup>
-            <DropdownMenuItem
-              onSelect={(e) => {
-                e.preventDefault();
-                toggleAssignToMe();
-              }}
-            >
-              <Avatar className="size-5">
-                {currentUser.avatarUrl && (
-                  <AvatarImage src={currentUser.avatarUrl} />
-                )}
-                <AvatarFallback className="text-[10px]">
-                  {getInitials(currentUser.name)}
-                </AvatarFallback>
-              </Avatar>
-              <span className={cn(filters.assignToMe && "font-medium")}>
-                Assigned to me
-              </span>
-              {filters.assignToMe && <CheckIcon className="ml-auto size-4" />}
-            </DropdownMenuItem>
-          </DropdownMenuGroup>
-          <DropdownMenuSeparator />
-        </>
-      )}
+      <DropdownMenuGroup>
+        {!hideAssignee && currentUser && (
+          <DropdownMenuItem
+            onSelect={(e) => {
+              e.preventDefault();
+              toggleAssignToMe();
+            }}
+          >
+            <Avatar className="size-5">
+              {currentUser.avatarUrl && (
+                <AvatarImage src={currentUser.avatarUrl} />
+              )}
+              <AvatarFallback className="text-[10px]">
+                {getInitials(currentUser.name)}
+              </AvatarFallback>
+            </Avatar>
+            <span className={cn(filters.assignToMe && "font-medium")}>
+              Assigned to me
+            </span>
+            {filters.assignToMe && <CheckIcon className="ml-auto size-4" />}
+          </DropdownMenuItem>
+        )}
+        <DropdownMenuItem
+          onSelect={(e) => {
+            e.preventDefault();
+            toggleHideCompletedItems();
+          }}
+        >
+          <EyeOffIcon className="size-4" />
+          <span className={cn(filters.hideCompletedItems && "font-medium")}>
+            Hide completed items
+          </span>
+          {filters.hideCompletedItems && (
+            <CheckIcon className="ml-auto size-4" />
+          )}
+        </DropdownMenuItem>
+      </DropdownMenuGroup>
+      <DropdownMenuSeparator />
       <DropdownMenuGroup>
         {!hideAssignee && (
           <AssigneeSubmenu

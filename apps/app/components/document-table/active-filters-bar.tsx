@@ -49,13 +49,15 @@ export function ActiveFiltersBar({
           label={chip.label}
           onRemove={() => clearCategoryFilter(chip.category)}
         >
-          <ChipDropdownContent
-            category={chip.category}
-            filtersReturn={filtersReturn}
-            teamMembers={teamMembers}
-            teamMembersError={teamMembersError}
-            teamMembersLoading={teamMembersLoading}
-          />
+          {chip.category !== "hideCompleted" && (
+            <ChipDropdownContent
+              category={chip.category}
+              filtersReturn={filtersReturn}
+              teamMembers={teamMembers}
+              teamMembersError={teamMembersError}
+              teamMembersLoading={teamMembersLoading}
+            />
+          )}
         </FilterChip>
       ))}
       <DropdownMenu>

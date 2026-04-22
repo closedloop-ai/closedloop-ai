@@ -41,6 +41,7 @@ export type DateFilter = {
 export type TableFilters = {
   assigneeIds: string[];
   assignToMe: boolean;
+  hideCompletedItems: boolean;
   statuses: string[];
   priorities: Priority[];
   date: DateFilter | null;
@@ -86,6 +87,13 @@ function getDateRangeForPreset(
   }
   return { start, end: now };
 }
+
+// ---- Completed-status set ----
+
+const COMPLETED_STATUSES: ReadonlySet<string> = new Set([
+  DocumentStatus.Done,
+  DocumentStatus.Obsolete,
+]);
 
 // ---- Filter predicates ----
 
@@ -137,6 +145,7 @@ export function getStatusesForCategory(): DocumentStatus[] {
 const INITIAL_FILTERS: TableFilters = {
   assigneeIds: [],
   assignToMe: false,
+  hideCompletedItems: false,
   statuses: [],
   priorities: [],
   date: null,
@@ -153,7 +162,10 @@ export function useTableFilters({
   items,
   currentUserId,
 }: UseTableFiltersOptions) {
-  const [filters, setFilters] = useState<TableFilters>(INITIAL_FILTERS);
+  const [filters, setFilters] = useState<TableFilters>({
+    ...INITIAL_FILTERS,
+    hideCompletedItems: true,
+  });
 
   // ---- Mutators ----
 
@@ -234,7 +246,9 @@ export function useTableFilters({
   }, []);
 
   const clearCategoryFilter = useCallback(
-    (category: "assignee" | "status" | "priority" | "date") => {
+    (
+      category: "assignee" | "status" | "priority" | "date" | "hideCompleted"
+    ) => {
       setFilters((prev) => {
         switch (category) {
           case "assignee":
@@ -245,6 +259,8 @@ export function useTableFilters({
             return { ...prev, priorities: [] };
           case "date":
             return { ...prev, date: null };
+          case "hideCompleted":
+            return { ...prev, hideCompletedItems: false };
           default:
             return prev;
         }
@@ -252,6 +268,13 @@ export function useTableFilters({
     },
     []
   );
+
+  const toggleHideCompletedItems = useCallback(() => {
+    setFilters((prev) => ({
+      ...prev,
+      hideCompletedItems: !prev.hideCompletedItems,
+    }));
+  }, []);
 
   const clearAllFilters = useCallback(() => {
     setFilters(INITIAL_FILTERS);
@@ -294,8 +317,20 @@ export function useTableFilters({
 
   // ---- Active filter accounting ----
 
+  const hasCategoryFilters = useMemo(() => {
+    return (
+      filters.assigneeIds.length > 0 ||
+      filters.statuses.length > 0 ||
+      filters.priorities.length > 0 ||
+      filters.date !== null
+    );
+  }, [filters.assigneeIds, filters.statuses, filters.priorities, filters.date]);
+
   const activeFilterCount = useMemo(() => {
     let count = 0;
+    if (filters.hideCompletedItems) {
+      count++;
+    }
     if (filters.assigneeIds.length > 0) {
       count++;
     }
@@ -329,11 +364,17 @@ export function useTableFilters({
 
   const applyFilters = useCallback(
     (targetItems: DocumentRowItem[]): DocumentRowItem[] => {
-      if (!isAnyFilterActive) {
-        return targetItems;
+      const visibleItems = filters.hideCompletedItems
+        ? targetItems.filter(
+            (item) => !COMPLETED_STATUSES.has(item.data.status)
+          )
+        : targetItems;
+
+      if (!hasCategoryFilters) {
+        return visibleItems;
       }
 
-      return targetItems.filter((item) => {
+      return visibleItems.filter((item) => {
         if (!matchesAssigneeFilter(item, filters.assigneeIds)) {
           return false;
         }
@@ -358,16 +399,22 @@ export function useTableFilters({
         return true;
       });
     },
-    [filters, isAnyFilterActive, isCustomRangeValid]
+    [filters, hasCategoryFilters, isCustomRangeValid]
   );
 
   // ---- Chip labels ----
 
   const activeChips = useMemo(() => {
     const chips: {
-      category: "assignee" | "status" | "priority" | "date";
+      category: "assignee" | "status" | "priority" | "date" | "hideCompleted";
       label: string;
     }[] = [];
+    if (filters.hideCompletedItems) {
+      chips.push({
+        category: "hideCompleted",
+        label: "Hide completed items",
+      });
+    }
     if (filters.assigneeIds.length > 0) {
       chips.push({
         category: "assignee",
@@ -404,6 +451,7 @@ export function useTableFilters({
     setAssignees,
     toggleAssignee,
     toggleAssignToMe,
+    toggleHideCompletedItems,
     toggleStatus,
     togglePriority,
     setDateFilter,
