@@ -1,3 +1,4 @@
+import { FeatureFlagged } from "@repo/analytics/components/feature-flagged";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { Header } from "../components/header";
@@ -20,12 +21,14 @@ export default function LoopsPage() {
               Track AI agent executions across your organization
             </p>
           </div>
-          <Link
-            className="inline-flex h-9 items-center justify-center rounded-md border border-input-border bg-background px-4 font-medium text-sm hover:bg-accent hover:text-accent-foreground"
-            href="/loops/usage"
-          >
-            Usage
-          </Link>
+          <FeatureFlagged flag="loops-usage-page">
+            <Link
+              className="inline-flex h-9 items-center justify-center rounded-md border border-input-border bg-background px-4 font-medium text-sm hover:bg-accent hover:text-accent-foreground"
+              href="/loops/usage"
+            >
+              Usage
+            </Link>
+          </FeatureFlagged>
         </div>
         <LoopsTable />
       </div>
