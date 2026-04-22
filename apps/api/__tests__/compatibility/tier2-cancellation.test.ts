@@ -125,7 +125,8 @@ describe("tier-2: cancellation flow", () => {
         "cmd-1",
         false,
         "cancelled",
-        TARGET_ID
+        TARGET_ID,
+        expect.anything()
       );
     });
 

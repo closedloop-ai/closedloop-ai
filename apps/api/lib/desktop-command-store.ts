@@ -617,11 +617,24 @@ export const desktopCommandStore = {
     return this.createCommand(computeTargetId, input, context);
   },
 
+  /**
+   * Acknowledges a queued command as either accepted or rejected.
+   *
+   * @param context - Optional telemetry trace context. Note: `gatewaySessionId`
+   *   being set does not guarantee a registered gateway session —
+   *   `buildTelemetryTraceContext` defaults it to the zero-UUID sentinel
+   *   "00000000-0000-0000-0000-000000000000" when no session is registered.
+   */
   async acknowledgeCommand(
     commandId: string,
     accepted: boolean,
     reason?: string,
-    computeTargetId?: string
+    computeTargetId?: string,
+    context?: Pick<
+      TelemetryTraceContext,
+      "gatewaySessionId" | "schemaVersion"
+    > &
+      Partial<TelemetryTraceContext>
   ): Promise<DesktopCommandSummary | null> {
     const command = await findCommandByIdScoped(commandId, computeTargetId);
     if (!command) {
@@ -669,6 +682,33 @@ export const desktopCommandStore = {
         data,
       })
     );
+
+    const ackLatencyMs = Date.now() - command.createdAt.getTime();
+
+    // Emit CommandAcknowledged independently of the DB state transition.
+    // The ack and desktop.command.event travel independent paths, so a fast
+    // command can flip to `running` before this block runs — in that case
+    // `toStatus` would be undefined (or count === 0 from the queued→running
+    // race) and the ack-latency signal would be lost. Emitting per-call gives
+    // at-least-once semantics; downstream dedupes on (commandId, timestamp).
+    try {
+      emitCommandLifecycleEvent(
+        TelemetryCategory.CommandAcknowledged,
+        {
+          ...context,
+          commandId,
+          operationId: command.operationId,
+          computeTargetId: computeTargetId ?? command.computeTargetId,
+        },
+        { diagnostics: { ackLatencyMs } }
+      );
+    } catch (emitError) {
+      log.warn("CommandAcknowledged lifecycle emit failed", {
+        commandId,
+        computeTargetId: computeTargetId ?? command.computeTargetId,
+        error: emitError,
+      });
+    }
 
     // If no rows updated, re-fetch to return current state
     if (count === 0) {

@@ -454,7 +454,8 @@ async function handleCommandAck(
     commandId,
     accepted,
     reason,
-    targetId
+    targetId,
+    ctx
   );
 
   if (acknowledged) {

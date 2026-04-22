@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Server as HttpServer } from "node:http";
 import { log } from "@repo/observability/log";
+import { buildTelemetryTraceContext } from "@repo/observability/telemetry/context";
 import { Server, type Socket } from "socket.io";
 import { apiKeysService } from "../app/api-keys/service";
 import { computeTargetsService } from "../app/compute-targets/service";
@@ -438,12 +439,18 @@ function handleSocketConnection(socket: Socket): void {
       return;
     }
 
+    const ackCtx = buildTelemetryTraceContext({
+      gatewaySessionId: context.sessionId,
+      computeTargetId: context.targetId,
+    });
+
     desktopCommandStore
       .acknowledgeCommand(
         payload.commandId,
         payload.accepted,
         payload.reason,
-        context.targetId
+        context.targetId,
+        ackCtx
       )
       .catch((error) => {
         log.error("Failed handling desktop.command.ack", {

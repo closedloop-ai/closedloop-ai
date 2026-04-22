@@ -96,6 +96,23 @@ describe("telemetryDiagnosticsSchema", () => {
     });
     expect(result.success).toBe(false);
   });
+
+  it("accepts a numeric ackLatencyMs", () => {
+    const result = telemetryDiagnosticsSchema.safeParse({ ackLatencyMs: 123 });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts absence of ackLatencyMs (optional)", () => {
+    const result = telemetryDiagnosticsSchema.safeParse({});
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects a non-number ackLatencyMs", () => {
+    const result = telemetryDiagnosticsSchema.safeParse({
+      ackLatencyMs: "fast",
+    });
+    expect(result.success).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -169,6 +186,22 @@ describe("desktopTelemetryEventSchema", () => {
       message: "claude not found in PATH",
     });
     expect(result.success).toBe(true);
+  });
+
+  it("strips ackLatencyMs from desktop wire payloads (server-only field)", () => {
+    // telemetryDiagnosticsSchema (server emission) carries ackLatencyMs, but
+    // the desktop wire schema must not — otherwise desktop-origin payloads
+    // could masquerade as server ack-latency data. Zod's default .strip
+    // behavior drops the field at parse time.
+    const result = desktopTelemetryEventSchema.safeParse({
+      ...validDesktopWirePayload,
+      diagnostics: { exitCode: 0, ackLatencyMs: 42 },
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.diagnostics).toEqual({ exitCode: 0 });
+      expect(result.data.diagnostics).not.toHaveProperty("ackLatencyMs");
+    }
   });
 });
 

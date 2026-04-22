@@ -9,6 +9,7 @@ export const TelemetryCategory = {
   CommandQueued: "command.queued",
   CommandDispatched: "command.dispatched",
   CommandAcknowledged: "command.acknowledged",
+  /** @deprecated No active emission site. Removal tracked in FEA-535. */
   CommandStreamingStarted: "command.streaming_started",
   CommandCompleted: "command.completed",
   CommandFailed: "command.failed",
@@ -95,7 +96,11 @@ export type TelemetryTraceContext = z.infer<typeof telemetryTraceContextSchema>;
 // TelemetryDiagnostics
 // ---------------------------------------------------------------------------
 
-export const telemetryDiagnosticsSchema = z.object({
+// Desktop wire format — must not include server-only protocol fields.
+// Desktop-originated telemetry is parsed against this schema; any server-only
+// field (e.g. ackLatencyMs) carried in a desktop payload is stripped by Zod's
+// default `.strip` behavior before reaching the log emitter.
+const desktopTelemetryDiagnosticsSchema = z.object({
   logTail: z.string().optional(),
   exitCode: z.number().optional(),
   tokenUsage: z
@@ -105,6 +110,15 @@ export const telemetryDiagnosticsSchema = z.object({
     })
     .optional(),
 });
+
+// Server-emission format — extends desktop with server-only fields.
+// The schema split enforces the server-only invariant structurally, so the
+// JSDoc is backed by parsing behavior rather than documentation alone.
+export const telemetryDiagnosticsSchema =
+  desktopTelemetryDiagnosticsSchema.extend({
+    /** Server-only lifecycle-protocol field. Semantically scoped to CommandAcknowledged events; must not be set on other categories. Desktop wire parsing strips this field. */
+    ackLatencyMs: z.number().optional(),
+  });
 
 export type TelemetryDiagnostics = z.infer<typeof telemetryDiagnosticsSchema>;
 
@@ -131,7 +145,7 @@ const desktopTelemetryEventInputSchema = z.object({
     serverVersion: z.string().optional(),
     pluginVersion: z.string().optional(),
   }),
-  diagnostics: telemetryDiagnosticsSchema.optional(),
+  diagnostics: desktopTelemetryDiagnosticsSchema.optional(),
   message: z.string().optional(),
   errorClass: z.string().optional(),
 });
