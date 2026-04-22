@@ -331,7 +331,7 @@ describe("buildContextPack", () => {
 
     expect(pack.artifacts[0]).toEqual({
       id: "plan-1",
-      type: "IMPLEMENTATION_PLAN",
+      type: DocumentType.ImplementationPlan,
       title: "Implementation Plan",
       content: "Latest markdown",
       raw: {
@@ -340,6 +340,7 @@ describe("buildContextPack", () => {
         completedTasks: ["task-0"],
       },
     });
+    expect(mockLoopsService.findById).toHaveBeenCalledTimes(1);
   });
 
   it("omits raw plan state when the parent loop has no uploaded raw plan", async () => {
@@ -380,7 +381,7 @@ describe("buildContextPack", () => {
 
     expect(pack.artifacts[0]).toEqual({
       id: "plan-1",
-      type: "IMPLEMENTATION_PLAN",
+      type: DocumentType.ImplementationPlan,
       title: "Implementation Plan",
       content: "Latest markdown",
     });

@@ -23,6 +23,7 @@ import { Prisma, type Loop as PrismaLoop, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { z } from "zod";
 import { basicUserSelect } from "@/lib/db-utils";
+import { extractUploadedPlanRaw } from "@/lib/loops/uploaded-plan-artifacts";
 
 /**
  * Fetch the effective concurrent loop limit for an organization from the DB.
@@ -243,22 +244,7 @@ function toLoop(record: PrismaLoop): Loop {
 function hasUploadedRawPlanState(
   uploadedArtifacts: Loop["uploadedArtifacts"]
 ): boolean {
-  if (!uploadedArtifacts || typeof uploadedArtifacts !== "object") {
-    return false;
-  }
-
-  const artifacts = (uploadedArtifacts as Record<string, unknown>).artifacts;
-  if (!artifacts || typeof artifacts !== "object" || Array.isArray(artifacts)) {
-    return false;
-  }
-
-  const plan = (artifacts as Record<string, unknown>).plan;
-  if (!plan || typeof plan !== "object" || Array.isArray(plan)) {
-    return false;
-  }
-
-  const raw = (plan as Record<string, unknown>).raw;
-  return Boolean(raw && typeof raw === "object" && !Array.isArray(raw));
+  return Boolean(extractUploadedPlanRaw(uploadedArtifacts));
 }
 
 function hasDesktopResumeMetadata(loop: Loop): boolean {
@@ -1176,6 +1162,7 @@ export const loopsService = {
         where: {
           documentId,
           organizationId,
+          status: "COMPLETED",
           computeTargetId: { not: null },
           branchName: { not: null },
           sessionId: { not: null },

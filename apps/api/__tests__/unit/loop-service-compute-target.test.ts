@@ -232,3 +232,32 @@ describe("loopsService.findById — compute target", () => {
     });
   });
 });
+
+describe("loopsService.findLatestStateBearingDesktopForArtifact", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("filters to completed desktop loops before checking raw plan state", async () => {
+    mockFindMany.mockResolvedValue([]);
+
+    await loopsService.findLatestStateBearingDesktopForArtifact(
+      "doc-1",
+      "org-1"
+    );
+
+    const call = mockFindMany.mock.calls[0][0];
+    expect(call.where).toEqual(
+      expect.objectContaining({
+        documentId: "doc-1",
+        organizationId: "org-1",
+        status: "COMPLETED",
+        computeTargetId: { not: null },
+        branchName: { not: null },
+        sessionId: { not: null },
+      })
+    );
+    expect(call.orderBy).toEqual({ createdAt: "desc" });
+    expect(call.take).toBe(50);
+  });
+});

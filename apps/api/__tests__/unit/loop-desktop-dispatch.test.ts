@@ -60,6 +60,8 @@ vi.mock("@/lib/desktop-gateway-wire", () => ({
 
 // --- Imports (after mocks) ---
 
+import { DocumentType } from "@repo/api/src/types/document";
+import { LoopCommand } from "@repo/api/src/types/loop";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { toRelayOperation } from "@/app/compute-targets/relay-command-helpers";
 import {
@@ -246,14 +248,14 @@ describe("dispatchRelayOperation (via launchLoopOnDesktop)", () => {
 
     const opts = {
       ...VALID_LAUNCH_OPTS,
-      command: "EXECUTE" as const,
+      command: LoopCommand.Execute,
       contextPack: {
         ...VALID_LAUNCH_OPTS.contextPack,
-        command: "EXECUTE",
+        command: LoopCommand.Execute,
         artifacts: [
           {
             id: "plan-1",
-            type: "IMPLEMENTATION_PLAN",
+            type: DocumentType.ImplementationPlan,
             title: "Plan",
             content: "Latest markdown",
             raw: {
@@ -277,7 +279,7 @@ describe("dispatchRelayOperation (via launchLoopOnDesktop)", () => {
     ).body;
     expect(dispatchedBody.artifacts[0]).toEqual({
       id: "plan-1",
-      type: "IMPLEMENTATION_PLAN",
+      type: DocumentType.ImplementationPlan,
       title: "Plan",
       content: "Latest markdown",
       raw: {
