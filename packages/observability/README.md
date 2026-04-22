@@ -8,6 +8,7 @@ utilities shared across `apps/api` and `apps/relay`.
 - [Structured logger (`log`)](#structured-logger-log)
 - [ddtags env contract](#ddtags-env-contract)
 - [Naming conventions](#naming-conventions)
+- [Metric field semantics (`count:` vs `value:`)](#metric-field-semantics-count-vs-value)
 - [Origin semantics](#origin-semantics)
 - [Origin precedence in `buildEntry()`](#origin-precedence-in-buildentry)
 - [Metric-tag allowlist](#metric-tag-allowlist)
@@ -93,6 +94,24 @@ origin_fallback
 ```ts
 { commandId, gatewaySessionId, errorClass, fromStatus, toStatus }
 ```
+
+### Metric field semantics (`count:` vs `value:`)
+
+`QueueMetric` and `ProtocolMetric` both expose optional `count` and `value`
+fields. Use them consistently:
+
+| Field | Aggregation intent | Use for | Examples |
+|---|---|---|---|
+| `count:` | Additive (sum) | Counters — "this many things happened" | `dropped_expired_work_items`, `replay_frequency`, `command_state_transition`, `connection_churn_rate` |
+| `value:` | Gauge (last/avg) | Snapshots — "this is the current state" | `queued_command_count`, `in_flight_command_count`, `executor_saturation`, `ack_latency`, `heartbeat_freshness` |
+
+`computeMetricSnapshot()` sums both fields today (it is a test-only utility,
+not a production aggregator). The distinction matters for Datadog
+log-to-metrics rules configured downstream: `count:` metrics should use
+`sum` aggregation, `value:` metrics should use `last` or `avg`. Choosing the
+wrong field causes overcounting on reconnect (a gauge emitted twice with the
+same value looks like 2x under sum) or undercounting on rollup (a counter
+averaged across windows loses total throughput).
 
 ---
 

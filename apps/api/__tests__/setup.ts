@@ -10,6 +10,12 @@ config({ path: ".env.local" });
 process.env.STRIPE_SECRET_KEY ??= "sk_test_placeholder";
 process.env.STRIPE_WEBHOOK_SECRET ??= "whsec_test_placeholder";
 
+// DD_SERVICE identifies this process as the API service for telemetry/origin
+// resolution. Must be set before any test module imports
+// packages/observability/telemetry/origin.ts, which resolves ORIGIN once at
+// module load time.
+process.env.DD_SERVICE ??= "api";
+
 // INTERNAL_API_SECRET is FORCED (not a fallback) because the compatibility
 // test fixtures send this exact value in the x-internal-secret header and
 // the route's constant-time HMAC compare will reject anything else. Devs

@@ -1,4 +1,4 @@
-import type { DesktopCommandStatus } from "@repo/api/src/types/compute-target";
+import { DesktopCommandStatus } from "@repo/api/src/types/compute-target";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { POST } from "@/app/internal/relay/socket-event/route";
 import { desktopCommandStore } from "@/lib/desktop-command-store";
@@ -105,39 +105,39 @@ describe("POST /internal/relay/socket-event — desktop.command.ack", () => {
 describe("DesktopCommandStatus values", () => {
   it("includes all expected terminal and non-terminal statuses", () => {
     const allStatuses: DesktopCommandStatus[] = [
-      "queued",
-      "accepted",
-      "running",
-      "done",
-      "failed",
-      "cancelled",
-      "expired",
+      DesktopCommandStatus.Queued,
+      DesktopCommandStatus.Accepted,
+      DesktopCommandStatus.Running,
+      DesktopCommandStatus.Done,
+      DesktopCommandStatus.Failed,
+      DesktopCommandStatus.Cancelled,
+      DesktopCommandStatus.Expired,
     ];
 
     for (const status of allStatuses) {
       expect(typeof status).toBe("string");
     }
 
-    expect(allStatuses).toContain("queued");
-    expect(allStatuses).toContain("accepted");
-    expect(allStatuses).toContain("running");
-    expect(allStatuses).toContain("done");
-    expect(allStatuses).toContain("failed");
-    expect(allStatuses).toContain("cancelled");
-    expect(allStatuses).toContain("expired");
+    expect(allStatuses).toContain(DesktopCommandStatus.Queued);
+    expect(allStatuses).toContain(DesktopCommandStatus.Accepted);
+    expect(allStatuses).toContain(DesktopCommandStatus.Running);
+    expect(allStatuses).toContain(DesktopCommandStatus.Done);
+    expect(allStatuses).toContain(DesktopCommandStatus.Failed);
+    expect(allStatuses).toContain(DesktopCommandStatus.Cancelled);
+    expect(allStatuses).toContain(DesktopCommandStatus.Expired);
   });
 
   it("terminal statuses are done, failed, cancelled, and expired", () => {
     const terminalStatuses: DesktopCommandStatus[] = [
-      "done",
-      "failed",
-      "cancelled",
-      "expired",
+      DesktopCommandStatus.Done,
+      DesktopCommandStatus.Failed,
+      DesktopCommandStatus.Cancelled,
+      DesktopCommandStatus.Expired,
     ];
     const nonTerminalStatuses: DesktopCommandStatus[] = [
-      "queued",
-      "accepted",
-      "running",
+      DesktopCommandStatus.Queued,
+      DesktopCommandStatus.Accepted,
+      DesktopCommandStatus.Running,
     ];
 
     expect(terminalStatuses).toHaveLength(4);

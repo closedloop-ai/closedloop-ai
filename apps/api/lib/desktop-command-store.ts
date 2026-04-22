@@ -4,15 +4,18 @@ import type {
   CreateDesktopCommandInput,
   DesktopCommandEvent,
   DesktopCommandEventType,
-  DesktopCommandStatus,
   DesktopCommandSummary,
   RelayOperationDispatchRequest,
 } from "@repo/api/src/types/compute-target";
-import { isTerminalStatus } from "@repo/api/src/types/compute-target";
+import {
+  DesktopCommandStatus,
+  isTerminalStatus,
+} from "@repo/api/src/types/compute-target";
 import { type Prisma, type TransactionClient, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { emitCommandLifecycleEvent } from "@repo/observability/telemetry/emitter";
 import { emitQueueMetric } from "@repo/observability/telemetry/metrics";
+import { ORIGIN } from "@repo/observability/telemetry/origin";
 import type { TelemetryTraceContext } from "@repo/observability/telemetry/schema";
 import {
   ErrorClass,
@@ -149,18 +152,18 @@ function fingerprintCommand(input: CreateDesktopCommandInput): string {
 
 function isDesktopCommandStatus(value: string): value is DesktopCommandStatus {
   return (
-    value === "queued" ||
-    value === "accepted" ||
-    value === "running" ||
-    value === "done" ||
-    value === "failed" ||
-    value === "cancelled" ||
-    value === "expired"
+    value === DesktopCommandStatus.Queued ||
+    value === DesktopCommandStatus.Accepted ||
+    value === DesktopCommandStatus.Running ||
+    value === DesktopCommandStatus.Done ||
+    value === DesktopCommandStatus.Failed ||
+    value === DesktopCommandStatus.Cancelled ||
+    value === DesktopCommandStatus.Expired
   );
 }
 
 function toDesktopCommandStatus(value: string): DesktopCommandStatus {
-  return isDesktopCommandStatus(value) ? value : "failed";
+  return isDesktopCommandStatus(value) ? value : DesktopCommandStatus.Failed;
 }
 
 function toStoredCommand(row: StoredCommandRow): StoredCommand {
@@ -659,6 +662,7 @@ export const desktopCommandStore = {
     if (toStatus) {
       emitQueueMetric({
         metric: "command_state_transition",
+        origin: ORIGIN,
         fromStatus: command.status,
         toStatus,
         commandId,
@@ -766,6 +770,7 @@ export const desktopCommandStore = {
       if (result.nextStatus) {
         emitQueueMetric({
           metric: "command_state_transition",
+          origin: ORIGIN,
           fromStatus: result.prevStatus,
           toStatus: result.nextStatus,
           commandId: input.commandId,
@@ -960,6 +965,20 @@ export const desktopCommandStore = {
     return command.id;
   },
 
+  countCommandsForTarget(
+    computeTargetId: string,
+    statuses: DesktopCommandStatus | DesktopCommandStatus[]
+  ): Promise<number> {
+    return withDb((db) =>
+      db.desktopCommand.count({
+        where: {
+          computeTargetId,
+          status: Array.isArray(statuses) ? { in: statuses } : statuses,
+        },
+      })
+    );
+  },
+
   async listNonTerminalDispatchCommands(
     computeTargetId: string
   ): Promise<DispatchableCommand[]> {
@@ -1004,7 +1023,8 @@ export const desktopCommandStore = {
     if (count > 0) {
       emitQueueMetric({
         metric: "command_state_transition",
-        toStatus: "expired",
+        origin: ORIGIN,
+        toStatus: DesktopCommandStatus.Expired,
         commandId,
       });
 

@@ -1,4 +1,3 @@
-import "@repo/observability/telemetry/origin";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import {
   createServer,
@@ -11,6 +10,7 @@ import {
   emitProtocolMetric,
   type ProtocolMetric,
 } from "@repo/observability/telemetry/metrics";
+import { ORIGIN } from "@repo/observability/telemetry/origin";
 import {
   ErrorClass,
   TelemetryCategory,
@@ -600,6 +600,7 @@ function cleanupExistingWorker(
   reconnectCount += 1;
   emitProtocolMetric({
     metric: "reconnect_frequency",
+    origin: ORIGIN,
     count: reconnectCount,
     computeTargetId: targetId,
     gatewaySessionId: gatewaySessionId ?? undefined,
@@ -651,6 +652,7 @@ function registerWorker(
         if (prev !== undefined) {
           emitProtocolMetric({
             metric: "heartbeat_freshness",
+            origin: ORIGIN,
             value: now - prev,
             computeTargetId: targetId,
             gatewaySessionId: gatewaySessionId ?? undefined,
@@ -755,6 +757,7 @@ namespace.on("connection", (socket) => {
   connectCount += 1;
   emitProtocolMetric({
     metric: "connection_churn_rate",
+    origin: ORIGIN,
     count: connectCount,
     timestamp: new Date().toISOString(),
   });
@@ -1040,6 +1043,7 @@ namespace.on("connection", (socket) => {
         disconnectCount += 1;
         emitProtocolMetric({
           metric: "connection_churn_rate",
+          origin: ORIGIN,
           count: disconnectCount,
           computeTargetId: targetId,
           gatewaySessionId: gatewaySessionId ?? undefined,

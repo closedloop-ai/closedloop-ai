@@ -1,14 +1,20 @@
 import { randomUUID } from "node:crypto";
 import type { JsonObject, JsonValue } from "@repo/api/src/types/common";
+import { DesktopCommandStatus } from "@repo/api/src/types/compute-target";
 import { log } from "@repo/observability/log";
 import { buildTelemetryTraceContext } from "@repo/observability/telemetry/context";
 import { emitConnectionStateEvent } from "@repo/observability/telemetry/emitter";
-import { emitProtocolMetric } from "@repo/observability/telemetry/metrics";
+import {
+  emitProtocolMetric,
+  emitQueueMetric,
+} from "@repo/observability/telemetry/metrics";
+import { ORIGIN } from "@repo/observability/telemetry/origin";
 import type { TelemetryTraceContext } from "@repo/observability/telemetry/schema";
 import {
   ErrorClass,
   TelemetryCategory,
 } from "@repo/observability/telemetry/schema";
+import { waitUntil } from "@vercel/functions";
 import { computeTargetsService } from "@/app/compute-targets/service";
 import { desktopCommandStore } from "@/lib/desktop-command-store";
 import {
@@ -278,6 +284,16 @@ async function handleHello(
     emit.push(wireCommand(toWireCommandFromStore(command)));
   }
 
+  waitUntil(
+    emitFleetCapacityMetrics({
+      targetId,
+      maxInFlightCommands:
+        typeof payload.maxInFlightCommands === "number"
+          ? payload.maxInFlightCommands
+          : undefined,
+    })
+  );
+
   return { targetId, gatewaySessionId: sessionId, emit };
 }
 
@@ -348,6 +364,7 @@ async function handleCommandEvent(
           const latencyMs = Date.now() - new Date(command.createdAt).getTime();
           emitProtocolMetric({
             metric: "terminal_event_latency",
+            origin: ORIGIN,
             value: latencyMs,
             computeTargetId: targetId,
             gatewaySessionId: ctx.gatewaySessionId,
@@ -444,6 +461,7 @@ async function handleCommandAck(
     const latencyMs = Date.now() - new Date(acknowledged.createdAt).getTime();
     emitProtocolMetric({
       metric: "ack_latency",
+      origin: ORIGIN,
       value: latencyMs,
       computeTargetId: targetId,
       gatewaySessionId: ctx.gatewaySessionId,
@@ -513,6 +531,7 @@ async function handlePresence(
 
   emitProtocolMetric({
     metric: "presence_received_latency",
+    origin: ORIGIN,
     value: Date.now() - requestArrivedAt,
     computeTargetId: auth.targetId,
     gatewaySessionId: ctx.gatewaySessionId,
@@ -576,6 +595,73 @@ function handleRelayTelemetry(
   }
 
   return { emit: [] };
+}
+
+export async function emitFleetCapacityMetrics({
+  targetId,
+  maxInFlightCommands,
+}: {
+  targetId: string;
+  maxInFlightCommands: number | undefined;
+}): Promise<void> {
+  let queuedCount: number;
+  let inFlightCount: number;
+
+  try {
+    [queuedCount, inFlightCount] = await Promise.all([
+      desktopCommandStore.countCommandsForTarget(
+        targetId,
+        DesktopCommandStatus.Queued
+      ),
+      desktopCommandStore.countCommandsForTarget(targetId, [
+        DesktopCommandStatus.Accepted,
+        DesktopCommandStatus.Running,
+      ]),
+    ]);
+  } catch (error) {
+    log.warn("fleet_capacity_metrics_query_failed", {
+      event: "fleet_capacity_metrics_query_failed",
+      computeTargetId: targetId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return;
+  }
+
+  emitQueueMetric({
+    metric: "queued_command_count",
+    value: queuedCount,
+    computeTargetId: targetId,
+    origin: ORIGIN,
+  });
+  emitQueueMetric({
+    metric: "in_flight_command_count",
+    value: inFlightCount,
+    computeTargetId: targetId,
+    origin: ORIGIN,
+  });
+
+  if (
+    typeof maxInFlightCommands !== "number" ||
+    maxInFlightCommands <= 0 ||
+    !Number.isFinite(maxInFlightCommands)
+  ) {
+    log.warn("executor_saturation_skipped", {
+      event: "executor_saturation_skipped",
+      reason: "maxInFlightCommands_invalid",
+      computeTargetId: targetId,
+      maxInFlightCommands,
+    });
+    return;
+  }
+
+  // Intentionally unclamped: >1.0 signals overload (e.g. maxInFlightCommands lowered mid-flight).
+  const value = inFlightCount / maxInFlightCommands;
+  emitQueueMetric({
+    metric: "executor_saturation",
+    value,
+    computeTargetId: targetId,
+    origin: ORIGIN,
+  });
 }
 
 export function extractCorrelationContext(

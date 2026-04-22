@@ -1,4 +1,5 @@
 import { log } from "../log";
+import type { Origin } from "./origin";
 
 // ---------------------------------------------------------------------------
 // QueueMetric — executor/queue health metrics
@@ -13,6 +14,7 @@ export type QueueMetric = {
     | "executor_saturation"
     | "dropped_expired_work_items"
     | "command_state_transition";
+  origin: Origin;
   count?: number;
   value?: number;
   computeTargetId?: string;
@@ -58,6 +60,7 @@ type ProtocolBaseMetric = {
     | "event_ordering_gaps"
     | "connection_churn_rate"
     | "replay_window_usage";
+  origin: Origin;
   value?: number;
   count?: number;
   computeTargetId?: string;
