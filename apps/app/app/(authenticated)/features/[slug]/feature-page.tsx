@@ -1,30 +1,48 @@
 "use client";
 
-import { FeatureFlagged } from "@repo/analytics/components/feature-flagged";
-import type { DocumentDetail } from "@repo/api/src/types/document";
+import { useFeatureFlag } from "@repo/analytics/client";
+import {
+  type DocumentDetail,
+  DocumentType,
+} from "@repo/api/src/types/document";
 import { EntityType } from "@repo/api/src/types/entity-link";
-import { toast } from "@repo/design-system/components/ui/sonner";
-import { useRouter } from "next/navigation";
-import { useCallback, useState } from "react";
+import { InlinePresence, OptionalDocumentRoom } from "@repo/collaboration";
+import {
+  ResizablePanel,
+  ResizablePanelGroup,
+} from "@repo/design-system/components/ui/resizable";
+import { RichTextToolbar } from "@repo/rich-text/rich-text-toolbar";
+import { Loader2Icon } from "lucide-react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import { ExecutePlanModal } from "@/app/(authenticated)/implementation-plans/components/execute-plan-modal";
 import { BackendMismatchModal } from "@/components/backend-mismatch-modal";
-import { DocumentChatDrawer } from "@/components/chat/DocumentChatDrawer";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
+import { AttachmentsRow } from "@/components/document-editor/attachments-row";
+import { CollaborativeEditor } from "@/components/document-editor/collaborative-editor";
+import { DocumentChatPanel } from "@/components/document-editor/document-chat-panel";
+import { DocumentEditorDetails } from "@/components/document-editor/document-editor-details";
+import { EditableDocumentTitle } from "@/components/document-editor/editable-document-title";
+import { EditorToolbarActions } from "@/components/document-editor/editor-toolbar-actions";
+import { EditorToolbarRow } from "@/components/document-editor/editor-toolbar-row";
+import { EvaluationSection } from "@/components/document-editor/evaluation-section";
+import { InlineEditEditorShell } from "@/components/document-editor/inline-edit-editor-shell";
 import { BranchesSection } from "@/components/document-editor/relationships/branches-section";
 import { PreviewSection } from "@/components/document-editor/relationships/preview-section";
 import { LoopDispatchTargetSelector } from "@/components/engineer/LoopDispatchTargetSelector";
+import { ExecutionLogDialog } from "@/components/execution-log/execution-log-dialog";
 import { MoveEntityDialog } from "@/components/move-entity-dialog";
+import { useDocumentActions } from "@/hooks/document-editing/use-document-actions";
+import { useDocumentContent } from "@/hooks/document-editing/use-document-content";
+import { useDocumentMetadata } from "@/hooks/document-editing/use-document-metadata";
+import { useDocumentUIState } from "@/hooks/document-editing/use-document-ui-state";
+import { useEditorSession } from "@/hooks/document-editing/use-editor-session";
+import { useInlineEditMode } from "@/hooks/document-editing/use-inline-edit-mode";
 import { usePlanActions } from "@/hooks/document-editing/use-plan-actions";
-import {
-  useDeleteDocument,
-  useDocumentGenerationStatus,
-} from "@/hooks/queries/use-documents";
-import { useLocalStorageState } from "@/hooks/use-local-storage-state";
+import { useDocumentGenerationStatus } from "@/hooks/queries/use-documents";
+import { useExecutionLogDialog } from "@/hooks/use-execution-log-dialog";
 import { ContextSection } from "./components/context-section";
-import { EditableFeatureDescription } from "./components/editable-feature-description";
-import { EditableFeatureTitle } from "./components/editable-feature-title";
 import { FeatureEditorHeader } from "./components/feature-editor-header";
-import { FeatureMetadataPanel } from "./components/feature-metadata-panel";
+import { FeatureMetadataBar } from "./components/feature-metadata-bar";
 import { PlanSection } from "./components/plan-section";
 import { useFeatureState } from "./use-feature-state";
 
@@ -33,32 +51,37 @@ type FeaturePageProps = {
 };
 
 export function FeaturePage({ feature }: Readonly<FeaturePageProps>) {
-  const router = useRouter();
-  const deleteDocument = useDeleteDocument();
+  const chatFlag = useFeatureFlag("interactive-chat");
+  const executionLogDialog = useExecutionLogDialog();
 
-  const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [showMoveDialog, setShowMoveDialog] = useState(false);
   const [showGenerateModal, setShowGenerateModal] = useState(false);
   const [showExecuteModal, setShowExecuteModal] = useState(false);
-  const [showMetadataPanel, setShowMetadataPanel] = useLocalStorageState(
-    "panel:chat:FEATURE",
-    true
-  );
-  const [displayTitle, setDisplayTitle] = useState(feature.title);
+  const [showComments, setShowComments] = useState(true);
 
   const { hasPlan, isReady, linkedPlanId } = useFeatureState(feature);
-  const {
-    handleExecute,
-    isExecuting,
-    multiTargetState,
-    selectTarget,
-    backendMismatchState,
-    confirmOriginalBackend,
-    confirmPreferredBackend,
-    dismissBackendMismatch,
-  } = usePlanActions({
-    documentId: linkedPlanId,
+
+  const session = useEditorSession({
+    artifact: feature,
+    currentVersion: feature.latestVersion,
+    onVersionChange: noop,
   });
+  const contentController = useDocumentContent({
+    artifact: feature,
+    isLatestVersion: true,
+    setEditorContent: session.setEditorContent,
+    onVersionCreated: noop,
+  });
+  const metadata = useDocumentMetadata({ artifact: feature });
+  const actions = useDocumentActions({
+    artifact: feature,
+    redirectPath: getFeatureRedirectPath(feature),
+  });
+  const uiState = useDocumentUIState({ documentType: DocumentType.Feature });
+  const editMode = useInlineEditMode({
+    isLocked: session.isViewingHistorical,
+  });
+  const planActions = usePlanActions({ documentId: linkedPlanId });
 
   const { data: generationStatus } = useDocumentGenerationStatus(
     linkedPlanId ?? "",
@@ -68,106 +91,169 @@ export function FeaturePage({ feature }: Readonly<FeaturePageProps>) {
     }
   );
 
-  const teamId = feature.project?.teams?.length
-    ? feature.project.teams[0].id
-    : null;
-  const projectId = feature.project?.id;
-
-  const handleDelete = useCallback(async (): Promise<boolean> => {
-    const redirectPath =
-      teamId && projectId ? `/teams/${teamId}/projects/${projectId}` : "/";
-
-    const result = await deleteDocument.mutateAsync(feature.id, {
-      onSuccess: () => {
-        toast.success("Feature deleted");
-        router.push(redirectPath);
-      },
-    });
-    return !!result;
-  }, [deleteDocument, feature.id, teamId, projectId, router]);
+  // Auto-reveal comments when threads reappear after being fully resolved.
+  // Edge-triggered only (0 -> >0) so we don't override the user's manual toggle.
+  const prevThreadCount = useRef(session.openThreadCount);
+  useEffect(() => {
+    if (prevThreadCount.current === 0 && session.openThreadCount > 0) {
+      setShowComments(true);
+    }
+    prevThreadCount.current = session.openThreadCount;
+  }, [session.openThreadCount]);
 
   return (
     <>
       <FeatureEditorHeader
-        displayTitle={displayTitle}
+        displayTitle={feature.title}
         feature={feature}
         hasPlan={hasPlan}
         isReady={isReady}
-        onDelete={() => setShowDeleteDialog(true)}
+        onDelete={uiState.openDeleteDialog}
         onGeneratePlan={() => setShowGenerateModal(true)}
         onMoveToProject={() => setShowMoveDialog(true)}
         onStartBuild={() => setShowExecuteModal(true)}
-        onToggleMetadataPanel={() => setShowMetadataPanel((prev) => !prev)}
+        onToggleMetadataPanel={uiState.toggleMetadataPanel}
       />
 
-      <main className="flex-1 overflow-y-auto overflow-x-hidden">
-        <div className="flex min-h-full">
-          {/* Main Content Area */}
-          <div className="min-w-0 flex-1 overflow-x-hidden">
-            <div className="mx-auto flex max-w-[750px] flex-col py-8">
-              <div className="flex flex-col gap-1.5">
-                <EditableFeatureTitle
-                  documentId={feature.id}
-                  initialTitle={feature.title}
-                  onTitleChange={setDisplayTitle}
-                />
-                <EditableFeatureDescription
-                  documentId={feature.id}
-                  initialDescription={feature.version.content ?? ""}
-                />
+      <ResizablePanelGroup autoSaveId="feature-editor" direction="horizontal">
+        <ResizablePanel defaultSize={75} minSize={50}>
+          <div className="h-full overflow-y-auto overflow-x-hidden bg-background">
+            <OptionalDocumentRoom roomId={session.liveblocksRoomId}>
+              <div
+                className={
+                  session.isEditorReady
+                    ? "hidden"
+                    : "flex flex-1 items-center justify-center py-24"
+                }
+              >
+                <Loader2Icon className="h-6 w-6 animate-spin text-muted-foreground" />
               </div>
 
-              <div className="flex flex-col gap-4">
-                <ContextSection
-                  featureId={feature.id}
-                  projectId={feature.projectId ?? undefined}
-                />
-                <PlanSection
-                  feature={feature}
-                  generationStatus={generationStatus}
-                  onGenerateModalChange={setShowGenerateModal}
-                  showGenerateModal={showGenerateModal}
-                />
-                <BranchesSection
+              <div
+                className={
+                  session.isEditorReady
+                    ? undefined
+                    : "invisible h-0 overflow-hidden"
+                }
+              >
+                <InlineEditEditorShell
+                  isEditing={editMode.isEditing}
+                  onEnterEditMode={editMode.enterEditMode}
+                  toolbar={
+                    <EditorToolbarRow
+                      leftContent={
+                        <RichTextToolbar
+                          className="border-0 bg-transparent p-0"
+                          editor={session.editor}
+                          hasLiveblocksExtension={!!session.liveblocksRoomId}
+                          onPasteMarkdown={session.setEditorContent}
+                        />
+                      }
+                      rightContent={
+                        <>
+                          {session.liveblocksRoomId && (
+                            <Suspense fallback={null}>
+                              <InlinePresence />
+                            </Suspense>
+                          )}
+                          <EditorToolbarActions
+                            canRestoreVersion={false}
+                            canSaveVersion={true}
+                            isRestoring={false}
+                            isSaving={contentController.isSaving}
+                            onRestoreVersion={contentController.restoreVersion}
+                            onSaveVersion={contentController.saveContent}
+                            onToggleComments={setShowComments}
+                            openThreadCount={session.openThreadCount}
+                            showComments={showComments}
+                          />
+                        </>
+                      }
+                    />
+                  }
+                >
+                  <CollaborativeEditor
+                    externalToolbar
+                    headerContent={
+                      <div className="space-y-4 px-5 pt-10">
+                        <EditableDocumentTitle
+                          documentId={feature.id}
+                          initialTitle={feature.title}
+                        />
+                        <FeatureMetadataBar
+                          documentId={feature.id}
+                          metadata={metadata}
+                        />
+                        <AttachmentsRow documentId={feature.id} />
+                      </div>
+                    }
+                    liveblocksRoomId={session.liveblocksRoomId}
+                    onChange={contentController.updateContent}
+                    onContentReady={session.handleEditorReady}
+                    onEditorInstance={session.handleEditorInstance}
+                    onOpenThreadCountChange={session.handleThreadCountChange}
+                    placeholder="Add description..."
+                    readOnly={!editMode.isEditing}
+                    showComments={showComments}
+                    value={contentController.content}
+                  />
+                </InlineEditEditorShell>
+
+                <DocumentEditorDetails
+                  createdAt={feature.version.createdAt}
                   documentId={feature.id}
-                  generationStatus={generationStatus}
-                  onStartBuild={() => setShowExecuteModal(true)}
-                  planId={linkedPlanId}
-                  projectId={feature.projectId ?? ""}
-                />
-                <PreviewSection documentId={feature.id} />
+                  updatedAt={feature.updatedAt}
+                >
+                  <EvaluationSection
+                    documentId={feature.id}
+                    judgeItems={null}
+                    title="Agent Evaluation"
+                  />
+                  <ContextSection
+                    featureId={feature.id}
+                    projectId={feature.projectId ?? undefined}
+                  />
+                  <PlanSection
+                    feature={feature}
+                    generationStatus={generationStatus}
+                    onGenerateModalChange={setShowGenerateModal}
+                    showGenerateModal={showGenerateModal}
+                  />
+                  <BranchesSection
+                    documentId={feature.id}
+                    generationStatus={generationStatus}
+                    onStartBuild={() => setShowExecuteModal(true)}
+                    planId={linkedPlanId}
+                    projectId={feature.projectId ?? ""}
+                  />
+                  <PreviewSection documentId={feature.id} />
+                </DocumentEditorDetails>
               </div>
-            </div>
+            </OptionalDocumentRoom>
           </div>
+        </ResizablePanel>
 
-          {/* Right Sidebar: metadata */}
-          {showMetadataPanel && (
-            <FeatureMetadataPanel
-              feature={feature}
-              teamIds={feature.project?.teams?.map((team) => team.id) ?? []}
-            />
-          )}
-          {/* Right Sidebar: interactive chat */}
-          <FeatureFlagged flag="interactive-chat">
-            <div className="flex flex-col">
-              <DocumentChatDrawer
-                documentId={feature.id}
-                documentSlug={feature.slug}
-                documentTitle={feature.title}
-                documentType="feature"
-                targetRepo={feature.targetRepo}
-              />
-            </div>
-          </FeatureFlagged>
-        </div>
-      </main>
+        <DocumentChatPanel
+          document={feature}
+          documentType="feature"
+          onViewFullTrace={executionLogDialog.handleViewFullTrace}
+          visible={chatFlag?.enabled === true && uiState.showMetadataPanel}
+        />
+      </ResizablePanelGroup>
+
+      <ExecutionLogDialog
+        initialSessionId={executionLogDialog.selectedSessionId}
+        onOpenChange={executionLogDialog.setDialogOpen}
+        open={executionLogDialog.dialogOpen}
+        trace={executionLogDialog.dialogTrace}
+      />
 
       <DeleteConfirmationDialog
-        isPending={deleteDocument.isPending}
+        isPending={actions.isDeleting}
         itemName={feature.title}
-        onConfirm={handleDelete}
-        onOpenChange={setShowDeleteDialog}
-        open={showDeleteDialog}
+        onConfirm={actions.handleDelete}
+        onOpenChange={uiState.setShowDeleteDialog}
+        open={uiState.showDeleteDialog}
         title="Feature"
       />
 
@@ -179,39 +265,53 @@ export function FeaturePage({ feature }: Readonly<FeaturePageProps>) {
         }}
         onOpenChange={setShowMoveDialog}
         open={showMoveDialog}
-        teamId={teamId}
+        teamId={feature.project?.teams?.[0]?.id ?? null}
       />
 
       <ExecutePlanModal
-        isLoading={isExecuting}
-        onConfirm={handleExecute}
+        isLoading={planActions.isExecuting}
+        onConfirm={planActions.handleExecute}
         onOpenChange={setShowExecuteModal}
         open={showExecuteModal}
       />
 
-      {multiTargetState && (
+      {planActions.multiTargetState && (
         <div className="fixed right-4 bottom-4 z-50 rounded-lg border bg-background p-4 shadow-lg">
           <p className="mb-2 text-muted-foreground text-sm">
             Multiple compute targets are online. Select one:
           </p>
           <LoopDispatchTargetSelector
-            availableTargets={multiTargetState.availableTargets}
-            onSelect={selectTarget}
+            availableTargets={planActions.multiTargetState.availableTargets}
+            onSelect={planActions.selectTarget}
           />
         </div>
       )}
 
       <BackendMismatchModal
-        mismatchData={backendMismatchState}
-        onConfirmOriginal={confirmOriginalBackend}
-        onConfirmPreferred={confirmPreferredBackend}
+        mismatchData={planActions.backendMismatchState}
+        onConfirmOriginal={planActions.confirmOriginalBackend}
+        onConfirmPreferred={planActions.confirmPreferredBackend}
         onOpenChange={(open) => {
           if (!open) {
-            dismissBackendMismatch();
+            planActions.dismissBackendMismatch();
           }
         }}
-        open={!!backendMismatchState}
+        open={!!planActions.backendMismatchState}
       />
     </>
   );
+}
+
+function noop() {
+  // Features don't expose versioning in the UI; editor session/content hooks
+  // still require these callbacks, so we supply a no-op.
+}
+
+function getFeatureRedirectPath(feature: DocumentDetail): string {
+  const teamId = feature.project?.teams?.[0]?.id;
+  const projectId = feature.project?.id;
+  if (teamId && projectId) {
+    return `/teams/${teamId}/projects/${projectId}`;
+  }
+  return "/";
 }
