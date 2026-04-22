@@ -158,7 +158,8 @@ export async function launchPlanLoop(
       undefined,
       organizationId,
       userId,
-      documentId
+      documentId,
+      resolvedComputeTargetId
     );
 
   const command = COMMAND_MAP.plan;

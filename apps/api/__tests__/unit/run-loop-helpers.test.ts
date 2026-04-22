@@ -32,6 +32,7 @@ vi.mock("@/app/documents/service", () => ({
 vi.mock("@/app/loops/service", () => ({
   loopsService: {
     findLatestCompletedForArtifact: vi.fn(),
+    findLatestStateBearingDesktopForArtifact: vi.fn(),
   },
 }));
 
@@ -54,6 +55,7 @@ const mockArtifactsService = documentsService as unknown as {
 };
 const mockLoopsService = loopsService as unknown as {
   findLatestCompletedForArtifact: MockFn;
+  findLatestStateBearingDesktopForArtifact: MockFn;
 };
 
 // ---------------------------------------------------------------------------
@@ -376,6 +378,72 @@ describe("resolveLoopContext — parentLoopId", () => {
     expect(result.parentLoopId).toBe("parent-loop-1");
   });
 
+  it("prefers the latest state-bearing desktop parent when launching on desktop", async () => {
+    const artifact = buildArtifact();
+    mockArtifactsService.findOrCreateWorkstream.mockResolvedValue({
+      workstream: buildWorkstream(),
+      source: null,
+    });
+    mockLoopsService.findLatestStateBearingDesktopForArtifact.mockResolvedValue(
+      {
+        id: "desktop-parent-1",
+        computeTargetId: "target-1",
+      }
+    );
+
+    const result = await resolveLoopContext(
+      artifact as any,
+      { command: "execute" },
+      requiresParentHandler,
+      "org-1",
+      "user-1",
+      "artifact-1",
+      "target-1"
+    );
+
+    expect(
+      mockLoopsService.findLatestStateBearingDesktopForArtifact
+    ).toHaveBeenCalledWith("artifact-1", "org-1");
+    expect(
+      mockLoopsService.findLatestCompletedForArtifact
+    ).not.toHaveBeenCalled();
+    expect(result.parentLoopId).toBe("desktop-parent-1");
+    expect(result.parentLoopComputeTargetId).toBe("target-1");
+  });
+
+  it("falls back to the latest completed parent when no state-bearing desktop loop exists", async () => {
+    const artifact = buildArtifact();
+    mockArtifactsService.findOrCreateWorkstream.mockResolvedValue({
+      workstream: buildWorkstream(),
+      source: null,
+    });
+    mockLoopsService.findLatestStateBearingDesktopForArtifact.mockResolvedValue(
+      null
+    );
+    mockLoopsService.findLatestCompletedForArtifact.mockResolvedValue({
+      id: "completed-parent-1",
+      computeTargetId: "target-older",
+    });
+
+    const result = await resolveLoopContext(
+      artifact as any,
+      { command: "execute" },
+      requiresParentHandler,
+      "org-1",
+      "user-1",
+      "artifact-1",
+      "target-1"
+    );
+
+    expect(
+      mockLoopsService.findLatestStateBearingDesktopForArtifact
+    ).toHaveBeenCalledWith("artifact-1", "org-1");
+    expect(
+      mockLoopsService.findLatestCompletedForArtifact
+    ).toHaveBeenCalledWith("artifact-1", "org-1");
+    expect(result.parentLoopId).toBe("completed-parent-1");
+  });
+
   it("skips parentLoopId lookup when handler.requiresParent is false", async () => {
     const artifact = buildArtifact();
     mockArtifactsService.findOrCreateWorkstream.mockResolvedValue({
@@ -394,6 +462,9 @@ describe("resolveLoopContext — parentLoopId", () => {
 
     expect(
       mockLoopsService.findLatestCompletedForArtifact
+    ).not.toHaveBeenCalled();
+    expect(
+      mockLoopsService.findLatestStateBearingDesktopForArtifact
     ).not.toHaveBeenCalled();
     expect(result.parentLoopId).toBeUndefined();
   });

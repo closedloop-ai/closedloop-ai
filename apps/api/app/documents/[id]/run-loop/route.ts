@@ -91,6 +91,16 @@ export const POST = withAnyAuth<RunLoopResponse, "/documents/[id]/run-loop">(
 
       const handler = getCommandHandler(COMMAND_MAP[body.command]);
 
+      const ctRouteResult = await resolveRunLoopComputeTarget(
+        user.organizationId,
+        user.id,
+        body.computeTargetId
+      );
+      if ("errorResponse" in ctRouteResult) {
+        return ctRouteResult.errorResponse;
+      }
+      const { computeTargetId: resolvedComputeTargetId } = ctRouteResult;
+
       // Guard: prevent launching a loop for artifacts originally planned via
       // GH Actions. State cannot migrate between backends, so the earliest
       // execution determines the canonical backend.
@@ -121,7 +131,8 @@ export const POST = withAnyAuth<RunLoopResponse, "/documents/[id]/run-loop">(
         handler,
         user.organizationId,
         user.id,
-        documentId
+        documentId,
+        resolvedComputeTargetId
       );
 
       let targetBranch = resolvedTargetBranch;
@@ -142,16 +153,6 @@ export const POST = withAnyAuth<RunLoopResponse, "/documents/[id]/run-loop">(
         return evaluateBranchResult.response;
       }
       targetBranch = evaluateBranchResult.branch;
-
-      const ctRouteResult = await resolveRunLoopComputeTarget(
-        user.organizationId,
-        user.id,
-        body.computeTargetId
-      );
-      if ("errorResponse" in ctRouteResult) {
-        return ctRouteResult.errorResponse;
-      }
-      const { computeTargetId: resolvedComputeTargetId } = ctRouteResult;
 
       // Guard: detect backend mismatch for state-dependent commands.
       // When the resolved compute target differs from the one used by the

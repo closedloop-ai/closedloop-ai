@@ -25,6 +25,7 @@ import {
   downloadMetadata,
   uploadContextPack,
 } from "./loop-state";
+import { extractUploadedPlanRaw } from "./uploaded-plan-artifacts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -50,9 +51,30 @@ export type LoopForContextPack = {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
+type ParentLoopForContextPack = Awaited<
+  ReturnType<typeof loopsService.findById>
+>;
+
+function fetchDesktopExecuteRawPlanState(
+  loop: LoopForContextPack,
+  artifactType: string,
+  parentLoop: ParentLoopForContextPack
+): Record<string, unknown> | undefined {
+  if (
+    loop.command !== LoopCommand.Execute ||
+    artifactType !== DocumentType.ImplementationPlan ||
+    !parentLoop?.computeTargetId
+  ) {
+    return undefined;
+  }
+
+  return extractUploadedPlanRaw(parentLoop.uploadedArtifacts);
+}
+
 async function fetchPrimaryArtifact(
   loop: LoopForContextPack,
-  organizationId: string
+  organizationId: string,
+  parentLoop: ParentLoopForContextPack
 ): Promise<ContextPack["artifacts"]> {
   if (!loop.documentId) {
     return [];
@@ -89,6 +111,11 @@ async function fetchPrimaryArtifact(
           loop.documentVersion
         )
       : await documentVersionService.getLatest(artifact.id);
+  const rawPlan = await fetchDesktopExecuteRawPlanState(
+    loop,
+    String(artifact.type),
+    parentLoop
+  );
 
   return [
     {
@@ -96,6 +123,7 @@ async function fetchPrimaryArtifact(
       type: String(artifact.type),
       title: artifact.title,
       content: artifactVersion?.content ?? "",
+      ...(rawPlan ? { raw: rawPlan } : {}),
     },
   ];
 }
@@ -151,17 +179,9 @@ async function fetchArtifactRef(
 }
 
 async function fetchParentLoopSummary(
-  loop: LoopForContextPack,
-  organizationId: string
+  _loop: LoopForContextPack,
+  parentLoop: ParentLoopForContextPack
 ): Promise<NonNullable<ContextPack["priorLoopSummaries"]>> {
-  if (!loop.parentLoopId) {
-    return [];
-  }
-
-  const parentLoop = await loopsService.findById(
-    loop.parentLoopId,
-    organizationId
-  );
   if (!parentLoop) {
     return [];
   }
@@ -431,6 +451,9 @@ export async function buildContextPackInMemory(
   committer?: { name: string; email: string },
   additionalRepos?: AdditionalRepoRefWithToken[]
 ): Promise<ContextPack> {
+  const parentLoop = loop.parentLoopId
+    ? await loopsService.findById(loop.parentLoopId, organizationId)
+    : null;
   const [
     primaryArtifacts,
     refArtifacts,
@@ -439,10 +462,10 @@ export async function buildContextPackInMemory(
     userContext,
     attachments,
   ] = await Promise.all([
-    fetchPrimaryArtifact(loop, organizationId),
+    fetchPrimaryArtifact(loop, organizationId, parentLoop),
     fetchContextRefArtifacts(loop, organizationId),
     fetchTemplateForCommand(loop, organizationId),
-    fetchParentLoopSummary(loop, organizationId),
+    fetchParentLoopSummary(loop, parentLoop),
     fetchUserContext(loop),
     fetchAttachmentsForContextPack(loop, organizationId).catch((error) => {
       log.warn("[loop-context-pack] Failed to fetch attachments", {

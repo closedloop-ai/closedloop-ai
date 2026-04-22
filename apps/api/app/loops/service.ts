@@ -23,6 +23,7 @@ import { Prisma, type Loop as PrismaLoop, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { z } from "zod";
 import { basicUserSelect } from "@/lib/db-utils";
+import { extractUploadedPlanRaw } from "@/lib/loops/uploaded-plan-artifacts";
 
 /**
  * Fetch the effective concurrent loop limit for an organization from the DB.
@@ -238,6 +239,18 @@ function toLoop(record: PrismaLoop): Loop {
     tokensByModel: record.tokensByModel as Loop["tokensByModel"],
     documentVersion: record.documentVersion ?? null,
   };
+}
+
+function hasUploadedRawPlanState(
+  uploadedArtifacts: Loop["uploadedArtifacts"]
+): boolean {
+  return Boolean(extractUploadedPlanRaw(uploadedArtifacts));
+}
+
+function hasDesktopResumeMetadata(loop: Loop): boolean {
+  return Boolean(
+    loop.computeTargetId && loop.branchName?.trim() && loop.sessionId?.trim()
+  );
 }
 
 /**
@@ -1133,6 +1146,43 @@ export const loopsService = {
     }
 
     return toLoop(loop);
+  },
+
+  /**
+   * Find the most recent desktop loop whose uploaded plan artifacts include a
+   * reusable raw plan snapshot and whose persisted metadata is sufficient to
+   * resume on desktop.
+   */
+  async findLatestStateBearingDesktopForArtifact(
+    documentId: string,
+    organizationId: string
+  ): Promise<Loop | null> {
+    const loops = await withDb((db) =>
+      db.loop.findMany({
+        where: {
+          documentId,
+          organizationId,
+          status: "COMPLETED",
+          computeTargetId: { not: null },
+          branchName: { not: null },
+          sessionId: { not: null },
+        },
+        orderBy: { createdAt: "desc" },
+        take: 50,
+      })
+    );
+
+    for (const record of loops) {
+      const loop = toLoop(record);
+      if (
+        hasDesktopResumeMetadata(loop) &&
+        hasUploadedRawPlanState(loop.uploadedArtifacts)
+      ) {
+        return loop;
+      }
+    }
+
+    return null;
   },
 
   /**

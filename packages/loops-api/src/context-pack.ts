@@ -25,6 +25,7 @@ export type ContextPackArtifact = {
   type: string;
   title: string;
   content: string;
+  raw?: Record<string, unknown>;
 };
 
 export const ContextPackArtifactSchema = z.object({
@@ -32,6 +33,7 @@ export const ContextPackArtifactSchema = z.object({
   type: z.string(),
   title: z.string(),
   content: z.string(),
+  raw: z.record(z.string(), z.unknown()).optional(),
 });
 
 // Additional repository reference for multi-repo loop execution

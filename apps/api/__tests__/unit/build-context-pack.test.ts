@@ -54,8 +54,10 @@ import { LoopCommand } from "@repo/api/src/types/loop";
 import { attachmentsService } from "@/app/documents/attachments-service";
 import { documentVersionService } from "@/app/documents/document-version-service";
 import { documentsService } from "@/app/documents/service";
+import { loopsService } from "@/app/loops/service";
 import {
   buildContextPack,
+  buildContextPackInMemory,
   fetchAttachmentsForContextPack,
 } from "@/lib/loops/loop-context-pack";
 import { uploadContextPack } from "@/lib/loops/loop-state";
@@ -74,6 +76,10 @@ const mockArtifactVersionService = documentVersionService as unknown as {
 const mockUploadContextPack = uploadContextPack as unknown as ReturnType<
   typeof vi.fn
 >;
+const mockLoopsService = loopsService as unknown as {
+  findById: ReturnType<typeof vi.fn>;
+  updateStatus: ReturnType<typeof vi.fn>;
+};
 
 describe("buildContextPack", () => {
   beforeEach(() => {
@@ -280,6 +286,105 @@ describe("buildContextPack", () => {
     expect(contextPack.artifacts).toHaveLength(1);
     expect(contextPack.artifacts[0].type).toBe(DocumentType.Prd);
     expect(contextPack.artifacts[0].content).toBe("# PRD Content");
+  });
+
+  it("attaches raw plan state for desktop EXECUTE on implementation plans", async () => {
+    mockArtifactsService.findByIdSimple.mockResolvedValue({
+      id: "plan-1",
+      type: DocumentType.ImplementationPlan,
+      title: "Implementation Plan",
+    });
+    mockArtifactVersionService.getLatest.mockResolvedValue({
+      content: "Latest markdown",
+    });
+    mockLoopsService.findById.mockResolvedValue({
+      id: "parent-loop-1",
+      computeTargetId: "desktop-target-1",
+      uploadedArtifacts: {
+        artifacts: {
+          plan: {
+            content: "Older markdown",
+            raw: {
+              content: "Older markdown",
+              pendingTasks: ["task-1"],
+              completedTasks: ["task-0"],
+            },
+          },
+        },
+      },
+    });
+
+    const pack = await buildContextPackInMemory(
+      {
+        id: "loop-1",
+        userId: "user-1",
+        command: LoopCommand.Execute,
+        prompt: null,
+        documentId: "plan-1",
+        documentVersion: null,
+        parentLoopId: "parent-loop-1",
+        repo: { fullName: "org/repo", branch: "main" },
+        contextRefs: null,
+      },
+      "org-1"
+    );
+
+    expect(pack.artifacts[0]).toEqual({
+      id: "plan-1",
+      type: DocumentType.ImplementationPlan,
+      title: "Implementation Plan",
+      content: "Latest markdown",
+      raw: {
+        content: "Older markdown",
+        pendingTasks: ["task-1"],
+        completedTasks: ["task-0"],
+      },
+    });
+    expect(mockLoopsService.findById).toHaveBeenCalledTimes(1);
+  });
+
+  it("omits raw plan state when the parent loop has no uploaded raw plan", async () => {
+    mockArtifactsService.findByIdSimple.mockResolvedValue({
+      id: "plan-1",
+      type: DocumentType.ImplementationPlan,
+      title: "Implementation Plan",
+    });
+    mockArtifactVersionService.getLatest.mockResolvedValue({
+      content: "Latest markdown",
+    });
+    mockLoopsService.findById.mockResolvedValue({
+      id: "parent-loop-1",
+      computeTargetId: "desktop-target-1",
+      uploadedArtifacts: {
+        artifacts: {
+          plan: {
+            content: "Older markdown",
+          },
+        },
+      },
+    });
+
+    const pack = await buildContextPackInMemory(
+      {
+        id: "loop-1",
+        userId: "user-1",
+        command: LoopCommand.Execute,
+        prompt: null,
+        documentId: "plan-1",
+        documentVersion: null,
+        parentLoopId: "parent-loop-1",
+        repo: { fullName: "org/repo", branch: "main" },
+        contextRefs: null,
+      },
+      "org-1"
+    );
+
+    expect(pack.artifacts[0]).toEqual({
+      id: "plan-1",
+      type: DocumentType.ImplementationPlan,
+      title: "Implementation Plan",
+      content: "Latest markdown",
+    });
   });
 });
 

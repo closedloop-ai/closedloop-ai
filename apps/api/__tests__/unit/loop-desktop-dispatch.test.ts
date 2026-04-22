@@ -60,6 +60,8 @@ vi.mock("@/lib/desktop-gateway-wire", () => ({
 
 // --- Imports (after mocks) ---
 
+import { DocumentType } from "@repo/api/src/types/document";
+import { LoopCommand } from "@repo/api/src/types/loop";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { toRelayOperation } from "@/app/compute-targets/relay-command-helpers";
 import {
@@ -237,6 +239,54 @@ describe("dispatchRelayOperation (via launchLoopOnDesktop)", () => {
     expect(
       (dispatchedInput as { body: Record<string, unknown> }).body.attachments
     ).toEqual([]);
+  });
+
+  it("forwards raw implementation plan state in the relay payload body", async () => {
+    vi.spyOn(globalThis, "fetch").mockReturnValue(
+      mockResponse(200, { delivered: true })
+    );
+
+    const opts = {
+      ...VALID_LAUNCH_OPTS,
+      command: LoopCommand.Execute,
+      contextPack: {
+        ...VALID_LAUNCH_OPTS.contextPack,
+        command: LoopCommand.Execute,
+        artifacts: [
+          {
+            id: "plan-1",
+            type: DocumentType.ImplementationPlan,
+            title: "Plan",
+            content: "Latest markdown",
+            raw: {
+              content: "Older markdown",
+              pendingTasks: ["task-1"],
+            },
+          },
+        ],
+      },
+    };
+
+    await launchLoopOnDesktop(opts);
+
+    const toRelayOperationMock = vi.mocked(toRelayOperation);
+    expect(toRelayOperationMock).toHaveBeenCalledOnce();
+    const [, dispatchedInput] = toRelayOperationMock.mock.calls[0];
+    const dispatchedBody = (
+      dispatchedInput as unknown as {
+        body: { artifacts: Record<string, unknown>[] };
+      }
+    ).body;
+    expect(dispatchedBody.artifacts[0]).toEqual({
+      id: "plan-1",
+      type: DocumentType.ImplementationPlan,
+      title: "Plan",
+      content: "Latest markdown",
+      raw: {
+        content: "Older markdown",
+        pendingTasks: ["task-1"],
+      },
+    });
   });
 
   it("does NOT throw when relay returns { delivered: false } on the kill (fire-and-forget) path", async () => {
