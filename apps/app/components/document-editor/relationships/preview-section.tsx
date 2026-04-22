@@ -26,12 +26,12 @@ import { OverflowMenu } from "./overflow-menu";
 import { SectionHeader } from "./section-header";
 
 type PreviewSectionProps = {
-  featureId: string;
+  documentId: string;
 };
 
-export function PreviewSection({ featureId }: Readonly<PreviewSectionProps>) {
+export function PreviewSection({ documentId }: Readonly<PreviewSectionProps>) {
   const { data: linkedEntities = [] } = useLinkedEntities(
-    featureId,
+    documentId,
     EntityType.Document,
     { mode: LinkQueryMode.Tree, direction: LinkDirection.Target }
   );

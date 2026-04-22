@@ -12,6 +12,8 @@ import { FileIcon, PlusIcon, Trash2Icon } from "lucide-react";
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import { AssigneeAvatar } from "@/components/assignee-avatar";
+import { OverflowMenu } from "@/components/document-editor/relationships/overflow-menu";
+import { SectionHeader } from "@/components/document-editor/relationships/section-header";
 import {
   useAttachments,
   useDeleteAttachment,
@@ -27,8 +29,6 @@ import {
   DOCUMENT_TYPE_ICONS,
 } from "@/lib/project-constants";
 import { AddContextDialog } from "./add-context-dialog";
-import { OverflowMenu } from "./overflow-menu";
-import { SectionHeader } from "./section-header";
 
 type ContextSectionProps = {
   featureId: string;

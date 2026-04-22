@@ -7,7 +7,7 @@ import {
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { SelectPullRequestDialog } from "../select-pr-dialog";
+import { SelectPullRequestDialog } from "@/components/document-editor/relationships/select-pr-dialog";
 
 const mockUseProject = vi.fn();
 const mockUseGitHubPullRequests = vi.fn();
@@ -135,7 +135,7 @@ describe("SelectPullRequestDialog", () => {
 
     render(
       <SelectPullRequestDialog
-        featureId="feature-1"
+        documentId="feature-1"
         onOpenChange={vi.fn()}
         open={true}
         projectId="project-1"
@@ -174,7 +174,7 @@ describe("SelectPullRequestDialog", () => {
 
     render(
       <SelectPullRequestDialog
-        featureId="feature-1"
+        documentId="feature-1"
         onOpenChange={vi.fn()}
         open={true}
         planId="plan-1"
@@ -236,7 +236,7 @@ describe("SelectPullRequestDialog", () => {
 
     render(
       <SelectPullRequestDialog
-        featureId="feature-1"
+        documentId="feature-1"
         onOpenChange={vi.fn()}
         open={true}
         projectId="project-1"
@@ -268,7 +268,7 @@ describe("SelectPullRequestDialog", () => {
 
     render(
       <SelectPullRequestDialog
-        featureId="feature-1"
+        documentId="feature-1"
         onOpenChange={vi.fn()}
         open={true}
         projectId="project-1"

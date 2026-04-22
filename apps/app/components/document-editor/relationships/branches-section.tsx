@@ -35,7 +35,7 @@ import { SectionHeader } from "./section-header";
 import { SelectPullRequestDialog } from "./select-pr-dialog";
 
 type BranchesSectionProps = {
-  featureId: string;
+  documentId: string;
   projectId: string;
   planId: string | null;
   onStartBuild?: () => void;
@@ -43,7 +43,7 @@ type BranchesSectionProps = {
 };
 
 export function BranchesSection({
-  featureId,
+  documentId,
   projectId,
   planId,
   onStartBuild,
@@ -51,7 +51,7 @@ export function BranchesSection({
 }: Readonly<BranchesSectionProps>) {
   const [showSelectPr, setShowSelectPr] = useState(false);
   const { data: linkedEntities = [] } = useLinkedEntities(
-    featureId,
+    documentId,
     EntityType.Document,
     { mode: LinkQueryMode.Tree, direction: LinkDirection.Target }
   );
@@ -101,9 +101,7 @@ export function BranchesSection({
       ) : (
         <div className="flex items-center py-3">
           <div className="flex flex-1 flex-col gap-4">
-            <p className="text-base text-muted-foreground">
-              No PR exists for this feature
-            </p>
+            <p className="text-base text-muted-foreground">No PR exists yet</p>
             <div className="flex gap-4">
               {planId ? (
                 <Button
@@ -137,7 +135,7 @@ export function BranchesSection({
         </div>
       )}
       <SelectPullRequestDialog
-        featureId={featureId}
+        documentId={documentId}
         onOpenChange={setShowSelectPr}
         open={showSelectPr}
         planId={planId}

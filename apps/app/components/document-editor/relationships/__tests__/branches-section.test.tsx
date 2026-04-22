@@ -4,10 +4,10 @@ import { ExternalLinkType } from "@repo/api/src/types/external-link";
 import { GitHubPRState } from "@repo/api/src/types/github";
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { BranchRow } from "./branches-section";
+import { BranchRow } from "../branches-section";
 
 // OverflowMenu uses Radix DropdownMenu — mock to keep tests simple
-vi.mock("./overflow-menu", () => ({
+vi.mock("../overflow-menu", () => ({
   OverflowMenu: () => <div data-testid="overflow-menu" />,
 }));
 

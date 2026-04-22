@@ -10,6 +10,8 @@ import { ExecutePlanModal } from "@/app/(authenticated)/implementation-plans/com
 import { BackendMismatchModal } from "@/components/backend-mismatch-modal";
 import { DocumentChatDrawer } from "@/components/chat/DocumentChatDrawer";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
+import { BranchesSection } from "@/components/document-editor/relationships/branches-section";
+import { PreviewSection } from "@/components/document-editor/relationships/preview-section";
 import { LoopDispatchTargetSelector } from "@/components/engineer/LoopDispatchTargetSelector";
 import { MoveEntityDialog } from "@/components/move-entity-dialog";
 import { usePlanActions } from "@/hooks/document-editing/use-plan-actions";
@@ -18,14 +20,12 @@ import {
   useDocumentGenerationStatus,
 } from "@/hooks/queries/use-documents";
 import { useLocalStorageState } from "@/hooks/use-local-storage-state";
-import { BranchesSection } from "./components/branches-section";
 import { ContextSection } from "./components/context-section";
 import { EditableFeatureDescription } from "./components/editable-feature-description";
 import { EditableFeatureTitle } from "./components/editable-feature-title";
 import { FeatureEditorHeader } from "./components/feature-editor-header";
 import { FeatureMetadataPanel } from "./components/feature-metadata-panel";
 import { PlanSection } from "./components/plan-section";
-import { PreviewSection } from "./components/preview-section";
 import { useFeatureState } from "./use-feature-state";
 
 type FeaturePageProps = {
@@ -129,13 +129,13 @@ export function FeaturePage({ feature }: Readonly<FeaturePageProps>) {
                   showGenerateModal={showGenerateModal}
                 />
                 <BranchesSection
-                  featureId={feature.id}
+                  documentId={feature.id}
                   generationStatus={generationStatus}
                   onStartBuild={() => setShowExecuteModal(true)}
                   planId={linkedPlanId}
                   projectId={feature.projectId ?? ""}
                 />
-                <PreviewSection featureId={feature.id} />
+                <PreviewSection documentId={feature.id} />
               </div>
             </div>
           </div>

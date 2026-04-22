@@ -16,6 +16,8 @@ import Link from "next/link";
 import { useState } from "react";
 import { NewPlanModal } from "@/app/(authenticated)/implementation-plans/components/new-plan-modal";
 import { AssigneeAvatar } from "@/components/assignee-avatar";
+import { OverflowMenu } from "@/components/document-editor/relationships/overflow-menu";
+import { SectionHeader } from "@/components/document-editor/relationships/section-header";
 import { GenerationStatusIndicator } from "@/components/generation-status-indicator";
 import { useDocument } from "@/hooks/queries/use-documents";
 import { useDeleteEntityLink } from "@/hooks/queries/use-entity-links";
@@ -26,8 +28,6 @@ import {
   DOCUMENT_TYPE_ICONS,
 } from "@/lib/project-constants";
 import { useFeatureState } from "../use-feature-state";
-import { OverflowMenu } from "./overflow-menu";
-import { SectionHeader } from "./section-header";
 import { SelectPlanDialog } from "./select-plan-dialog";
 
 type PlanSectionProps = {
