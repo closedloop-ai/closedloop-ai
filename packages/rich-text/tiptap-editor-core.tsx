@@ -58,6 +58,10 @@ export function TiptapEditorCore({
       }),
       Placeholder.configure({
         placeholder,
+        // Keep the placeholder visible even when the editor is read-only so
+        // empty documents in the read-only-by-default shell still show a
+        // clickable "Add description" affordance.
+        showOnlyWhenEditable: false,
       }),
       MermaidExtension,
       Table.configure({
