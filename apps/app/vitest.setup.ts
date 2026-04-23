@@ -44,6 +44,15 @@ if (typeof Element !== "undefined") {
   Element.prototype.scrollIntoView = () => {};
 }
 
+// jsdom lacks ResizeObserver, which cmdk (used by Popover+Command) depends on.
+if (typeof globalThis.ResizeObserver === "undefined") {
+  globalThis.ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  } as unknown as typeof ResizeObserver;
+}
+
 function createStableLocalStorage(
   store: Map<string, string>
 ): Pick<
