@@ -26,6 +26,7 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       contents: write
       pull-requests: write
     steps:
@@ -118,6 +119,14 @@ jobs:
             echo "Changelog:"
             echo ""
             cat "$CHANGELOG_PATH"
+            echo ""
+            echo "## Deployment Scope"
+            echo ""
+            echo "This deploy rolls forward the production **app**, **api**, **MCP server**, and **relay** together."
+            echo ""
+            echo "- Vercel deploys (app, api, web) are triggered by the merge into \`production\`."
+            echo "- MCP server and relay ECS deployments are triggered by the same production push and their results are reported back into the deploy Slack thread."
+            echo "- A failure in either ECS service will turn the deploy check red **without rolling back Vercel**."
           } > deploy-pr-body.md
 
       - name: Create Or Update Deploy PR
@@ -445,8 +454,123 @@ jobs:
             echo "Database: $(jq -r 'if .ok then "✓ Healthy" elif .skipped then "⊘ Skipped" else "✗ Issues detected" end' db-status.json)"
           fi
 
+      - name: Poll ECS Workflow Runs
+        id: poll_ecs_workflows
+        # Gated on merge.outcome so a failed merge skips the 20-minute poll.
+        # Per PLN-311 T-3.1, this step must NOT fail on non-success ECS conclusions —
+        # it only fails on `gh` API errors. Enforcement of ECS outcomes is owned
+        # by the Enforce ECS Outcomes step below, per the single-terminal-Slack-message
+        # invariant in the plan.
+        if: steps.diff.outputs.has_changes == 'true' && steps.merge.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT_SHA: ${{ steps.merge.outputs.merge_sha }}
+        run: |
+          TIMEOUT=1200
+          INTERVAL=15
+          ELAPSED=0
+
+          MCP_RUN_ID=""
+          RELAY_RUN_ID=""
+          MCP_CONCLUSION=""
+          RELAY_CONCLUSION=""
+
+          echo "Polling for workflow runs triggered by commit $COMMIT_SHA..."
+
+          while [ $ELAPSED -lt $TIMEOUT ]; do
+            # Discover run IDs if not yet found
+            if [ -z "$MCP_RUN_ID" ]; then
+              MCP_RUN_ID=$(gh run list \
+                --workflow build-mcp-server.yml \
+                --event push \
+                --commit "$COMMIT_SHA" \
+                --json databaseId \
+                --jq '.[0].databaseId // ""' 2>/dev/null || true)
+              if [ -n "$MCP_RUN_ID" ]; then
+                echo "Found build-mcp-server.yml run: $MCP_RUN_ID"
+              fi
+            fi
+
+            if [ -z "$RELAY_RUN_ID" ]; then
+              RELAY_RUN_ID=$(gh run list \
+                --workflow build-relay.yml \
+                --event push \
+                --commit "$COMMIT_SHA" \
+                --json databaseId \
+                --jq '.[0].databaseId // ""' 2>/dev/null || true)
+              if [ -n "$RELAY_RUN_ID" ]; then
+                echo "Found build-relay.yml run: $RELAY_RUN_ID"
+              fi
+            fi
+
+            # Poll conclusions for discovered runs
+            if [ -n "$MCP_RUN_ID" ] && [ -z "$MCP_CONCLUSION" ]; then
+              MCP_STATUS=$(gh run view "$MCP_RUN_ID" --json status,conclusion \
+                --jq '{status: .status, conclusion: .conclusion}' 2>/dev/null || true)
+              MCP_RUN_STATUS=$(echo "$MCP_STATUS" | jq -r '.status // ""')
+              if [ "$MCP_RUN_STATUS" = "completed" ]; then
+                MCP_CONCLUSION=$(echo "$MCP_STATUS" | jq -r '.conclusion // "unknown"')
+                echo "build-mcp-server.yml run $MCP_RUN_ID completed: $MCP_CONCLUSION"
+              fi
+            fi
+
+            if [ -n "$RELAY_RUN_ID" ] && [ -z "$RELAY_CONCLUSION" ]; then
+              RELAY_STATUS=$(gh run view "$RELAY_RUN_ID" --json status,conclusion \
+                --jq '{status: .status, conclusion: .conclusion}' 2>/dev/null || true)
+              RELAY_RUN_STATUS=$(echo "$RELAY_STATUS" | jq -r '.status // ""')
+              if [ "$RELAY_RUN_STATUS" = "completed" ]; then
+                RELAY_CONCLUSION=$(echo "$RELAY_STATUS" | jq -r '.conclusion // "unknown"')
+                echo "build-relay.yml run $RELAY_RUN_ID completed: $RELAY_CONCLUSION"
+              fi
+            fi
+
+            # Both workflows found and completed — done
+            if [ -n "$MCP_CONCLUSION" ] && [ -n "$RELAY_CONCLUSION" ]; then
+              echo "Both ECS workflow runs have completed."
+              break
+            fi
+
+            echo "Waiting for ECS workflow runs... (${ELAPSED}s elapsed, mcp=${MCP_CONCLUSION:-pending}, relay=${RELAY_CONCLUSION:-pending})"
+            sleep $INTERVAL
+            ELAPSED=$((ELAPSED + INTERVAL))
+          done
+
+          if [ $ELAPSED -ge $TIMEOUT ]; then
+            echo "::warning::Timed out (${TIMEOUT}s) waiting for ECS workflow runs to complete."
+            [ -z "$MCP_CONCLUSION" ] && MCP_CONCLUSION="timed_out"
+            [ -z "$RELAY_CONCLUSION" ] && RELAY_CONCLUSION="timed_out"
+          fi
+
+          echo "mcp_run_id=${MCP_RUN_ID}" >> "$GITHUB_OUTPUT"
+          echo "relay_run_id=${RELAY_RUN_ID}" >> "$GITHUB_OUTPUT"
+          echo "mcp_conclusion=${MCP_CONCLUSION}" >> "$GITHUB_OUTPUT"
+          echo "relay_conclusion=${RELAY_CONCLUSION}" >> "$GITHUB_OUTPUT"
+          echo "commit_sha=${COMMIT_SHA}" >> "$GITHUB_OUTPUT"
+
+          echo "=== ECS Workflow Poll Results ==="
+          echo "Commit SHA:         $COMMIT_SHA"
+          echo "MCP run ID:         ${MCP_RUN_ID:-not found}"
+          echo "MCP conclusion:     ${MCP_CONCLUSION:-unknown}"
+          echo "Relay run ID:       ${RELAY_RUN_ID:-not found}"
+          echo "Relay conclusion:   ${RELAY_CONCLUSION:-unknown}"
+          # Polling step does NOT fail on non-success ECS conclusions (PLN-311 T-3.1).
+          # Enforcement is handled by the Enforce ECS Outcomes step below.
+
       - name: Post Success
-        if: success() && steps.diff.outputs.has_changes == 'true'
+        # Fires only when Vercel is green AND both ECS services reported success.
+        # Part of the single-terminal-Slack-message invariant: on ECS partial failure
+        # this step does NOT fire — Enforce ECS Outcomes posts the consolidated failure
+        # message instead.
+        if: |
+          success()
+          && steps.diff.outputs.has_changes == 'true'
+          && (
+            steps.poll_ecs_workflows.outcome == 'skipped'
+            || (
+              steps.poll_ecs_workflows.outputs.mcp_conclusion == 'success'
+              && steps.poll_ecs_workflows.outputs.relay_conclusion == 'success'
+            )
+          )
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_CHANNEL_ID: ${{ inputs.slack_channel_id }}
@@ -454,6 +578,12 @@ jobs:
           PR_URL: ${{ steps.deploy_pr.outputs.pr_url }}
           VERCEL_PROJECT_IDS: ${{ secrets.VERCEL_PROJECT_IDS }}
           VERCEL_PROJECT_LABELS: ${{ secrets.VERCEL_PROJECT_LABELS }}
+          MCP_CONCLUSION: ${{ steps.poll_ecs_workflows.outputs.mcp_conclusion }}
+          RELAY_CONCLUSION: ${{ steps.poll_ecs_workflows.outputs.relay_conclusion }}
+          MCP_RUN_ID: ${{ steps.poll_ecs_workflows.outputs.mcp_run_id }}
+          RELAY_RUN_ID: ${{ steps.poll_ecs_workflows.outputs.relay_run_id }}
+          REPO: ${{ github.repository }}
+          SERVER_URL: ${{ github.server_url }}
         run: |
           VERCEL_LINES=""
           if [ -f vercel-status.json ] && jq -e '.ok' vercel-status.json > /dev/null 2>&1; then
@@ -461,8 +591,40 @@ jobs:
             VERCEL_LINES+=$'\n'"  ▲ *web:* https://marketing.closedloop.ai"
             VERCEL_LINES+=$'\n'"  ▲ *api:* https://api.closedloop.ai/health"
           fi
-          if [ -n "$VERCEL_LINES" ]; then
+
+          conclusion_emoji() {
+            case "$1" in
+              success)   echo "✅" ;;
+              failure)   echo "❌" ;;
+              timed_out) echo "⚠️" ;;
+              *)         echo "❓" ;;
+            esac
+          }
+
+          ECS_LINES=""
+          if [ -n "$MCP_CONCLUSION" ]; then
+            MCP_EMOJI=$(conclusion_emoji "$MCP_CONCLUSION")
+            if [ -n "$MCP_RUN_ID" ]; then
+              ECS_LINES+=$'\n'"  ${MCP_EMOJI} *mcp:* ${SERVER_URL}/${REPO}/actions/runs/${MCP_RUN_ID} (${MCP_CONCLUSION})"
+            else
+              ECS_LINES+=$'\n'"  ${MCP_EMOJI} *mcp:* ${MCP_CONCLUSION}"
+            fi
+          fi
+          if [ -n "$RELAY_CONCLUSION" ]; then
+            RELAY_EMOJI=$(conclusion_emoji "$RELAY_CONCLUSION")
+            if [ -n "$RELAY_RUN_ID" ]; then
+              ECS_LINES+=$'\n'"  ${RELAY_EMOJI} *relay:* ${SERVER_URL}/${REPO}/actions/runs/${RELAY_RUN_ID} (${RELAY_CONCLUSION})"
+            else
+              ECS_LINES+=$'\n'"  ${RELAY_EMOJI} *relay:* ${RELAY_CONCLUSION}"
+            fi
+          fi
+
+          if [ -n "$VERCEL_LINES" ] && [ -n "$ECS_LINES" ]; then
+            MESSAGE=$(printf "✅ *Deploy succeeded*\n\n*PR:* %s\n\n*Live apps:*%s\n\n*ECS services:*%s" "$PR_URL" "$VERCEL_LINES" "$ECS_LINES")
+          elif [ -n "$VERCEL_LINES" ]; then
             MESSAGE=$(printf "✅ *Deploy succeeded*\n\n*PR:* %s\n\n*Live apps:*%s" "$PR_URL" "$VERCEL_LINES")
+          elif [ -n "$ECS_LINES" ]; then
+            MESSAGE=$(printf "✅ *Deploy succeeded*\n\n*PR:* %s\n\n*ECS services:*%s" "$PR_URL" "$ECS_LINES")
           else
             MESSAGE=$(printf "✅ *Deploy succeeded*\n\n*PR:* %s" "$PR_URL")
           fi
@@ -484,28 +646,230 @@ jobs:
             echo "SLACK_FAILED=1" >> "$GITHUB_ENV"
           fi
 
-      - name: Capture Release Metadata
-        if: success() && steps.diff.outputs.has_changes == 'true'
+      - name: Assemble ECS Failure Message
+        id: assemble_ecs_fail
+        # Runs only when poll step completed AND at least one ECS conclusion was non-success.
+        # Writes the consolidated failure message to $GITHUB_ENV so the Enforce step can post it.
+        if: |
+          always()
+          && steps.diff.outputs.has_changes == 'true'
+          && steps.poll_ecs_workflows.outcome == 'success'
+          && (
+            steps.poll_ecs_workflows.outputs.mcp_conclusion != 'success'
+            || steps.poll_ecs_workflows.outputs.relay_conclusion != 'success'
+          )
+        env:
+          PR_URL: ${{ steps.deploy_pr.outputs.pr_url }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          MCP_CONCLUSION: ${{ steps.poll_ecs_workflows.outputs.mcp_conclusion }}
+          RELAY_CONCLUSION: ${{ steps.poll_ecs_workflows.outputs.relay_conclusion }}
+          MCP_RUN_ID: ${{ steps.poll_ecs_workflows.outputs.mcp_run_id }}
+          RELAY_RUN_ID: ${{ steps.poll_ecs_workflows.outputs.relay_run_id }}
+          REPO: ${{ github.repository }}
+          SERVER_URL: ${{ github.server_url }}
         run: |
+          conclusion_emoji() {
+            case "$1" in
+              success)       echo "✅" ;;
+              failure)       echo "❌" ;;
+              timed_out)     echo "⚠️" ;;
+              cancelled)     echo "⊘" ;;
+              not_triggered) echo "⊘" ;;
+              *)             echo "❓" ;;
+            esac
+          }
+          mcp_line="  $(conclusion_emoji "$MCP_CONCLUSION") *mcp-server (prod):* ${MCP_CONCLUSION}"
+          relay_line="  $(conclusion_emoji "$RELAY_CONCLUSION") *relay-host (prod):* ${RELAY_CONCLUSION}"
+          if [ -n "$MCP_RUN_ID" ]; then
+            mcp_line+=" — ${SERVER_URL}/${REPO}/actions/runs/${MCP_RUN_ID}"
+          fi
+          if [ -n "$RELAY_RUN_ID" ]; then
+            relay_line+=" — ${SERVER_URL}/${REPO}/actions/runs/${RELAY_RUN_ID}"
+          fi
+          # Canonical shape matches docs/runbooks/prod-ecs-deploy-failure.md.
+          MESSAGE=$(printf "❌ *Deploy failed* — prod ECS partial failure\n\n*PR:* %s\n*Run:* %s\n\n*Live apps (Vercel):*\n  ▲ *app:* https://app.closedloop.ai\n  ▲ *web:* https://marketing.closedloop.ai\n  ▲ *api:* https://api.closedloop.ai/health\n\n*ECS services (prod):*\n%s\n%s\n\n*Note:* Vercel prod is live and has not been rolled back (PRD-188 FR-5). Investigate the failing ECS run(s) via the links above; see runbook at docs/runbooks/prod-ecs-deploy-failure.md." \
+            "$PR_URL" "$RUN_URL" "$mcp_line" "$relay_line")
+          # Write the multiline message to $GITHUB_ENV using the heredoc form.
+          {
+            echo "ECS_FAILURE_MESSAGE<<EOF_ECS"
+            printf "%s\n" "$MESSAGE"
+            echo "EOF_ECS"
+          } >> "$GITHUB_ENV"
+
+      - name: Enforce ECS Outcomes
+        id: enforce_ecs
+        # Posts the consolidated failure message (single terminal Slack post for the deploy)
+        # and then exit 1 so the deploy check turns red. Per PRD-188 FR-5, this does NOT
+        # roll back Vercel — the merge has already happened; only the GitHub check fails.
+        if: |
+          always()
+          && steps.diff.outputs.has_changes == 'true'
+          && steps.assemble_ecs_fail.outcome == 'success'
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ inputs.slack_channel_id }}
+          SLACK_THREAD_TS: ${{ inputs.slack_thread_ts }}
+          MCP_RUN_ID: ${{ steps.poll_ecs_workflows.outputs.mcp_run_id }}
+          RELAY_RUN_ID: ${{ steps.poll_ecs_workflows.outputs.relay_run_id }}
+          MCP_CONCLUSION: ${{ steps.poll_ecs_workflows.outputs.mcp_conclusion }}
+          RELAY_CONCLUSION: ${{ steps.poll_ecs_workflows.outputs.relay_conclusion }}
+          SERVER_URL: ${{ github.server_url }}
+          REPO: ${{ github.repository }}
+        run: |
+          FAILED=""
+          if [ "$MCP_CONCLUSION" != "success" ]; then
+            if [ -n "$MCP_RUN_ID" ]; then
+              FAILED+="mcp-server (${MCP_CONCLUSION}, ${SERVER_URL}/${REPO}/actions/runs/${MCP_RUN_ID}) "
+            else
+              FAILED+="mcp-server (${MCP_CONCLUSION}) "
+            fi
+          fi
+          if [ "$RELAY_CONCLUSION" != "success" ]; then
+            if [ -n "$RELAY_RUN_ID" ]; then
+              FAILED+="relay-host (${RELAY_CONCLUSION}, ${SERVER_URL}/${REPO}/actions/runs/${RELAY_RUN_ID}) "
+            else
+              FAILED+="relay-host (${RELAY_CONCLUSION}) "
+            fi
+          fi
+          echo "::error::ECS partial failure — $FAILED"
+
+          if [ "${SLACK_FAILED:-0}" -eq 1 ]; then
+            echo "Skipping Slack failure post due to prior Slack failure."
+          else
+            SLACK_RESP=$(jq -n \
+              --arg channel "$SLACK_CHANNEL_ID" \
+              --arg text "$ECS_FAILURE_MESSAGE" \
+              --arg thread_ts "$SLACK_THREAD_TS" \
+              '{channel: $channel, text: $text, thread_ts: $thread_ts}' \
+              | curl -sS https://slack.com/api/chat.postMessage \
+                -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+                -H "Content-Type: application/json; charset=utf-8" \
+                -d @-)
+            if echo "$SLACK_RESP" | jq -e '.ok' > /dev/null 2>&1; then
+              # Sentinel for Post Failure Report suppression: written ONLY when the
+              # consolidated ECS failure message actually reached Slack. If Slack itself
+              # failed (or was skipped due to a prior SLACK_FAILED), Post Failure Report
+              # remains free to try as a fallback (it has its own SLACK_FAILED guard and
+              # may benefit from recovered network or a different payload). This preserves
+              # the single-terminal-message invariant while avoiding a silent-no-notification
+              # path (PLN-311 v6 review).
+              echo "ECS_TERMINAL_POSTED=1" >> "$GITHUB_ENV"
+            else
+              echo "::warning::Slack notification failed: $(echo "$SLACK_RESP" | jq -r '.error // "unknown"')"
+              echo "SLACK_FAILED=1" >> "$GITHUB_ENV"
+            fi
+          fi
+          exit 1
+
+      - name: Capture Release Metadata
+        id: capture_release_metadata
+        # always() so the artifact is persisted even when Enforce ECS Outcomes fails —
+        # digests + ecsConclusion are needed for audit/rollback (PLN-311 T-3.5, round-2 Finding 1).
+        # healthCheck outcome is passed through from the prior step rather than hardcoded
+        # so release-metadata.json is truthful on partial-failure deploys (PLN-311 v5 review).
+        if: always() && steps.diff.outputs.has_changes == 'true' && steps.merge.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MCP_RUN_ID: ${{ steps.poll_ecs_workflows.outputs.mcp_run_id }}
+          RELAY_RUN_ID: ${{ steps.poll_ecs_workflows.outputs.relay_run_id }}
+          MCP_CONCLUSION: ${{ steps.poll_ecs_workflows.outputs.mcp_conclusion }}
+          RELAY_CONCLUSION: ${{ steps.poll_ecs_workflows.outputs.relay_conclusion }}
+          EXPECTED_COMMIT_SHA: ${{ steps.poll_ecs_workflows.outputs.commit_sha }}
+          HEALTH_CHECK_OUTCOME: ${{ steps.health_checks.outcome }}
+        run: |
+          # Download MCP image digest artifact
+          MCP_IMAGE_DIGEST=""
+          if [ -n "$MCP_RUN_ID" ]; then
+            if gh run download "$MCP_RUN_ID" --name mcp-image-digest-prod --dir mcp-digest 2>/dev/null; then
+              # Verify head_sha and conclusion match expected values
+              RUN_META=$(gh run view "$MCP_RUN_ID" --json headSha,conclusion 2>/dev/null || true)
+              RUN_HEAD_SHA=$(echo "$RUN_META" | jq -r '.headSha // ""')
+              RUN_CONCLUSION=$(echo "$RUN_META" | jq -r '.conclusion // ""')
+              if [ "$RUN_HEAD_SHA" != "$EXPECTED_COMMIT_SHA" ]; then
+                echo "::warning::MCP run $MCP_RUN_ID head_sha ($RUN_HEAD_SHA) does not match expected commit SHA ($EXPECTED_COMMIT_SHA)"
+              fi
+              if [ "$RUN_CONCLUSION" != "success" ]; then
+                echo "::warning::MCP run $MCP_RUN_ID conclusion is '$RUN_CONCLUSION', expected 'success'"
+              fi
+              if [ -f mcp-digest/digest.txt ]; then
+                MCP_IMAGE_DIGEST=$(cat mcp-digest/digest.txt)
+              else
+                echo "::warning::mcp-digest/digest.txt not found after artifact download"
+              fi
+            else
+              echo "::warning::Failed to download mcp-image-digest-prod artifact from run $MCP_RUN_ID"
+            fi
+          else
+            echo "::warning::MCP run ID not available; skipping MCP image digest download"
+          fi
+
+          # Download relay image digest artifact
+          RELAY_IMAGE_DIGEST=""
+          if [ -n "$RELAY_RUN_ID" ]; then
+            if gh run download "$RELAY_RUN_ID" --name relay-image-digest-prod --dir relay-digest 2>/dev/null; then
+              # Verify head_sha and conclusion match expected values
+              RUN_META=$(gh run view "$RELAY_RUN_ID" --json headSha,conclusion 2>/dev/null || true)
+              RUN_HEAD_SHA=$(echo "$RUN_META" | jq -r '.headSha // ""')
+              RUN_CONCLUSION=$(echo "$RUN_META" | jq -r '.conclusion // ""')
+              if [ "$RUN_HEAD_SHA" != "$EXPECTED_COMMIT_SHA" ]; then
+                echo "::warning::Relay run $RELAY_RUN_ID head_sha ($RUN_HEAD_SHA) does not match expected commit SHA ($EXPECTED_COMMIT_SHA)"
+              fi
+              if [ "$RUN_CONCLUSION" != "success" ]; then
+                echo "::warning::Relay run $RELAY_RUN_ID conclusion is '$RUN_CONCLUSION', expected 'success'"
+              fi
+              if [ -f relay-digest/digest.txt ]; then
+                RELAY_IMAGE_DIGEST=$(cat relay-digest/digest.txt)
+              else
+                echo "::warning::relay-digest/digest.txt not found after artifact download"
+              fi
+            else
+              echo "::warning::Failed to download relay-image-digest-prod artifact from run $RELAY_RUN_ID"
+            fi
+          else
+            echo "::warning::Relay run ID not available; skipping relay image digest download"
+          fi
+
           jq -n \
             --arg version "$(git describe --tags --always)" \
             --arg commitRef "${{ steps.merge.outputs.merge_sha }}" \
             --arg buildTimestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             --arg workflow "${{ github.workflow }}" \
             --arg runId "${{ github.run_id }}" \
+            --arg healthCheck "${HEALTH_CHECK_OUTCOME:-unknown}" \
+            --arg mcpImageDigest "$MCP_IMAGE_DIGEST" \
+            --arg mcpCommitRef "$EXPECTED_COMMIT_SHA" \
+            --arg mcpEcsConclusion "$MCP_CONCLUSION" \
+            --arg relayImageDigest "$RELAY_IMAGE_DIGEST" \
+            --arg relayCommitRef "$EXPECTED_COMMIT_SHA" \
+            --arg relayEcsConclusion "$RELAY_CONCLUSION" \
             '{
               version: $version,
               commitRef: $commitRef,
               buildTimestamp: $buildTimestamp,
-              validationOutcomes: { healthCheck: "passed" },
+              validationOutcomes: { healthCheck: $healthCheck },
               workflow: $workflow,
-              runId: $runId
+              runId: $runId,
+              components: {
+                mcpServer: {
+                  imageDigest: $mcpImageDigest,
+                  commitRef: $mcpCommitRef,
+                  ecsConclusion: $mcpEcsConclusion
+                },
+                relay: {
+                  imageDigest: $relayImageDigest,
+                  commitRef: $relayCommitRef,
+                  ecsConclusion: $relayEcsConclusion
+                }
+              }
             }' > release-metadata.json
           echo "Release metadata written:"
           cat release-metadata.json
 
       - name: Upload Release Metadata
-        if: success() && steps.diff.outputs.has_changes == 'true'
+        # Persist the release-metadata artifact even when Enforce ECS Outcomes failed,
+        # so operators can recover digests for rollback. Gate on capture_release_metadata
+        # outcome to avoid uploading a missing file (PLN-311 T-3.5, round-2 Finding 1).
+        if: always() && steps.diff.outputs.has_changes == 'true' && steps.merge.outcome == 'success' && steps.capture_release_metadata.outcome == 'success'
         uses: actions/upload-artifact@v7
         with:
           name: release-metadata
@@ -528,17 +892,59 @@ jobs:
         if: failure() && steps.diff.outputs.has_changes == 'true'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          MCP_CONCLUSION: ${{ steps.poll_ecs_workflows.outputs.mcp_conclusion }}
+          RELAY_CONCLUSION: ${{ steps.poll_ecs_workflows.outputs.relay_conclusion }}
+          MCP_RUN_ID: ${{ steps.poll_ecs_workflows.outputs.mcp_run_id }}
+          RELAY_RUN_ID: ${{ steps.poll_ecs_workflows.outputs.relay_run_id }}
+          REPO: ${{ github.repository }}
+          SERVER_URL: ${{ github.server_url }}
         run: |
-          # Determine which step failed
+          # Determine which step failed.
+          # Enforce ECS Outcomes is checked FIRST because it's the terminal failure step
+          # that owns the ECS-partial-failure Slack post — Post Failure Report is gated
+          # off when FAILED_STEP == 'Enforce ECS Outcomes' to avoid a duplicate terminal
+          # message (single-terminal-Slack-message invariant, PLN-311).
           FAILED_STEP="Unknown"
-          if [ "${{ steps.merge.outcome }}" = "failure" ]; then
+          if [ "${{ steps.enforce_ecs.outcome }}" = "failure" ]; then
+            FAILED_STEP="Enforce ECS Outcomes"
+          elif [ "${{ steps.merge.outcome }}" = "failure" ]; then
             FAILED_STEP="Merge Deploy PR"
           elif [ "${{ steps.health_checks.outcome }}" = "failure" ]; then
             FAILED_STEP="Run Post-Deploy Health Checks"
+          elif [ "${{ steps.poll_ecs_workflows.outcome }}" = "failure" ]; then
+            FAILED_STEP="Poll ECS Workflow Runs"
           elif [ "${{ steps.deploy_pr.outcome }}" = "failure" ]; then
             FAILED_STEP="Create Or Update Deploy PR"
           fi
           echo "failed_step=$FAILED_STEP" >> "$GITHUB_OUTPUT"
+          # Also export to $GITHUB_ENV so downstream step `if:` expressions can reference
+          # env.FAILED_STEP (needed by Post Failure Report suppression gate).
+          echo "FAILED_STEP=$FAILED_STEP" >> "$GITHUB_ENV"
+
+          # Detect ECS workflow failures from poll step outputs
+          ECS_FAILED_SERVICES=""
+          ECS_FAILURE_LINES=""
+          if [ -n "$MCP_CONCLUSION" ] && [ "$MCP_CONCLUSION" != "success" ]; then
+            ECS_FAILED_SERVICES="${ECS_FAILED_SERVICES}mcp,"
+            if [ -n "$MCP_RUN_ID" ]; then
+              ECS_FAILURE_LINES="${ECS_FAILURE_LINES}  ❌ *mcp* (${MCP_CONCLUSION}): ${SERVER_URL}/${REPO}/actions/runs/${MCP_RUN_ID}\n"
+            else
+              ECS_FAILURE_LINES="${ECS_FAILURE_LINES}  ❌ *mcp* (${MCP_CONCLUSION}): run ID not found\n"
+            fi
+          fi
+          if [ -n "$RELAY_CONCLUSION" ] && [ "$RELAY_CONCLUSION" != "success" ]; then
+            ECS_FAILED_SERVICES="${ECS_FAILED_SERVICES}relay,"
+            if [ -n "$RELAY_RUN_ID" ]; then
+              ECS_FAILURE_LINES="${ECS_FAILURE_LINES}  ❌ *relay* (${RELAY_CONCLUSION}): ${SERVER_URL}/${REPO}/actions/runs/${RELAY_RUN_ID}\n"
+            else
+              ECS_FAILURE_LINES="${ECS_FAILURE_LINES}  ❌ *relay* (${RELAY_CONCLUSION}): run ID not found\n"
+            fi
+          fi
+          # Strip trailing comma from service list
+          ECS_FAILED_SERVICES="${ECS_FAILED_SERVICES%,}"
+          echo "ecs_failed_services=${ECS_FAILED_SERVICES}" >> "$GITHUB_OUTPUT"
+          # Use printf for multiline output
+          printf 'ecs_failure_lines<<EOF\n%bEOF\n' "$ECS_FAILURE_LINES" >> "$GITHUB_OUTPUT"
 
           # Capture recent workflow logs (last 200 lines)
           gh run view ${{ github.run_id }} --log 2>/dev/null | tail -200 > error_context.log || true
@@ -559,23 +965,49 @@ jobs:
           DEPLOY_HEAD_BRANCH: ${{ env.DEPLOY_HEAD_BRANCH }}
           GITHUB_SHA: ${{ github.sha }}
           FAILED_STEP: ${{ steps.capture_errors.outputs.failed_step }}
+          ECS_FAILED_SERVICES: ${{ steps.capture_errors.outputs.ecs_failed_services }}
+          ECS_MCP_CONCLUSION: ${{ steps.poll_ecs_workflows.outputs.mcp_conclusion }}
+          ECS_RELAY_CONCLUSION: ${{ steps.poll_ecs_workflows.outputs.relay_conclusion }}
+          ECS_MCP_RUN_ID: ${{ steps.poll_ecs_workflows.outputs.mcp_run_id }}
+          ECS_RELAY_RUN_ID: ${{ steps.poll_ecs_workflows.outputs.relay_run_id }}
+          REPO: ${{ github.repository }}
+          SERVER_URL: ${{ github.server_url }}
         run: node scripts/deploy/diagnose-failure.mjs
 
       - name: Post Failure Report
-        if: failure() && steps.diff.outputs.has_changes == 'true'
+        # Suppress when Enforce ECS Outcomes is the failing step — that step owns the
+        # consolidated ECS partial-failure Slack post (single-terminal-message invariant).
+        # For every other failure (merge / health / deploy_pr / poll API), this remains
+        # the terminal Slack post.
+        # Two independent guards against a duplicate terminal message:
+        #   (1) env.FAILED_STEP != 'Enforce ECS Outcomes' — set by Capture Error Context
+        #   (2) env.ECS_TERMINAL_POSTED != '1'           — set directly by Enforce ECS Outcomes
+        # Guard (2) makes the suppression robust even when Capture Error Context itself
+        # fails to run or write to $GITHUB_ENV (PLN-311 v5 review).
+        if: failure() && steps.diff.outputs.has_changes == 'true' && env.FAILED_STEP != 'Enforce ECS Outcomes' && env.ECS_TERMINAL_POSTED != '1'
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_CHANNEL_ID: ${{ inputs.slack_channel_id }}
           SLACK_THREAD_TS: ${{ inputs.slack_thread_ts }}
+          ECS_FAILED_SERVICES: ${{ steps.capture_errors.outputs.ecs_failed_services }}
+          ECS_FAILURE_LINES: ${{ steps.capture_errors.outputs.ecs_failure_lines }}
         run: |
           SLACK_FAILED=0
           # Read the diagnosis report
+          # diagnosis.json already includes ECS failure context when the diagnostics
+          # script ran successfully. The fallback plain-text report needs ECS lines
+          # appended manually since the script was not able to produce them.
           if [ -f diagnosis.json ]; then
             REPORT=$(jq -r '.slackReport' diagnosis.json)
             LOG_CHUNKS=$(jq -r '.slackLogChunks[]? | @base64' diagnosis.json)
           else
             REPORT="Deploy failed. Check the GitHub Actions logs for details: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
             LOG_CHUNKS=""
+            # Append ECS failure context only when falling back to the plain report
+            if [ -n "$ECS_FAILED_SERVICES" ]; then
+              ECS_SECTION=$(printf "\n\n*Failed ECS services:* %s\n%b" "$ECS_FAILED_SERVICES" "$ECS_FAILURE_LINES")
+              REPORT="${REPORT}${ECS_SECTION}"
+            fi
           fi
 
           SLACK_RESP=$(jq -n \

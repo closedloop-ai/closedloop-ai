@@ -65,6 +65,18 @@ Spawns local CLI processes (Claude, git, codex) via the `closedloop-electron` ga
 ### System Health Check
 Runs on app launch via `SystemCheckBootstrap` in the authenticated layout (`apps/app/app/(authenticated)/layout.tsx`), not just on the engineer page. Eligibility gated by `useSystemCheckEligibility` — only fires when a compute target is active (cloud relay online or local Electron detected). In cloud relay mode, the fetch interceptor rewrites `/api/gateway/health-check` to `/api/gateway-relay/health-check` and routes to the remote compute target. The health check route resolves the user's login-shell PATH via `getShellPath()` to find tools like `python3`, `git`, `claude`, `gh`.
 
+## Deployment & Release
+
+Three paths trigger prod MCP/relay deploys:
+
+1. **Stage deploys**: Push to `main` with path changes in `apps/mcp/**`, `apps/relay/**`, or shared packages triggers `build-mcp-server.yml` and/or `build-relay.yml` via in-job path filters. Deploys to the stage environment automatically.
+
+2. **Prod deploys**: Every advance of the `production` branch (via `@loops deploy`, which merges `main` → `production`) triggers `deploy-production.yml`. That workflow orchestrates the Vercel deploy, then polls `build-mcp-server.yml` and `build-relay.yml` for completion and reports results in a Slack thread.
+
+3. **Manual override**: `workflow_dispatch` on `build-mcp-server.yml` or `build-relay.yml` with an `environment` input (`stage` or `prod`) to deploy either service independently.
+
+**Workflow relationships**: `deploy-production.yml` is the orchestrator — it does not build the MCP server or relay itself; it waits for `build-mcp-server.yml` and `build-relay.yml` to finish and aggregates their status for the Slack report.
+
 ## Self-Improving CLAUDE.md
 Discover undocumented patterns during PRs → add to relevant CLAUDE.md in same PR.
 

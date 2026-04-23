@@ -1,57 +1,128 @@
-# Deploys to BOTH stage and prod on every push to main.
-# The MCP server is a standalone ECS container (not gated by Vercel's
-# branch-based deploys), so we keep environments tightly coupled —
-# one merge deploys everywhere, matching the Claude Runner workflow.
+# Three-trigger deploy model:
+# (1) Stage: fires on every push to main. Preflight job checks paths via
+#     dorny/paths-filter@v3; build-and-push job only runs when relevant
+#     paths changed (apps/mcp/**, packages/api/**, packages/loops-api/**,
+#     packages/database/**).
+# (2) Prod: fires on every production branch advance (push to the production
+#     branch); unconditional — no path gating, force-rebuild per PRD-188 Q-002.
+# (3) Manual override: workflow_dispatch with an environment input (stage | prod)
+#     to force-deploy either environment on demand.
+# Image isolation: pushes ONLY :${{ github.sha }} (no :latest). ECS service is
+# rolled out by registering a SHA-pinned task definition revision and
+# --task-definition-ing to it, so a later stage build cannot contaminate prod.
 name: Build MCP Server Container
 
 on:
   push:
-    branches: [main]
-    paths:
-      - "apps/mcp/**"
-      - "packages/api/**"
-      - "packages/loops-api/**"
-      - "packages/database/**"
-  workflow_dispatch: {}
-
-concurrency:
-  group: build-mcp-server-${{ github.ref }}
-  cancel-in-progress: true
+    branches: [main, production] # direct pushes to production are blocked by branch protection; only merges land here
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment to deploy"
+        type: choice
+        options:
+          - stage
+          - prod
+        default: stage
 
 env:
   ECR_REPOSITORY: cl-ai-mcp-server
   AWS_REGION: us-east-1
 
 jobs:
-  build-and-push:
-    name: Build and Push (${{ matrix.environment }})
+  preflight:
+    name: Preflight
     runs-on: ubuntu-latest
+    outputs:
+      should_deploy: ${{ steps.gate.outputs.should_deploy }}
+      environment: ${{ steps.env.outputs.environment }}
+      role_arn: ${{ steps.env.outputs.role_arn }}
+      ecs_cluster: ${{ steps.env.outputs.ecs_cluster }}
+      ecs_service: ${{ steps.env.outputs.ecs_service }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 2 # minimum needed for push-event path diff
+
+      - name: Validate dispatch input
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          if [[ "${{ github.event.inputs.environment }}" != "stage" && "${{ github.event.inputs.environment }}" != "prod" ]]; then
+            echo "Error: inputs.environment must be 'stage' or 'prod', got '${{ github.event.inputs.environment }}'"
+            exit 1
+          fi
+
+      - name: Resolve environment
+        id: env
+        run: |
+          if [[ "${{ github.event_name }}" == "push" && "${{ github.ref_name }}" == "production" ]]; then
+            ENV=prod
+          elif [[ "${{ github.event_name }}" == "push" && "${{ github.ref_name }}" == "main" ]]; then
+            ENV=stage
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            ENV="${{ github.event.inputs.environment }}"
+          else
+            echo "Error: Unable to resolve target environment — unrecognised trigger combination (event=${{ github.event_name }}, ref=${{ github.ref_name }})"
+            exit 1
+          fi
+          echo "environment=$ENV" >> "$GITHUB_OUTPUT"
+          if [[ "$ENV" == "prod" ]]; then
+            echo "ecs_cluster=cl-ai-prod-mcp-server" >> "$GITHUB_OUTPUT"
+            echo "role_arn=arn:aws:iam::959853091217:role/github-actions/github-actions-terraform" >> "$GITHUB_OUTPUT"
+          else
+            echo "ecs_cluster=cl-ai-stage-mcp-server" >> "$GITHUB_OUTPUT"
+            echo "role_arn=arn:aws:iam::661041595751:role/github-actions/github-actions-terraform" >> "$GITHUB_OUTPUT"
+          fi
+          echo "ecs_service=mcp-server" >> "$GITHUB_OUTPUT"
+
+      - name: Check changed paths
+        if: github.event_name == 'push' && github.ref_name == 'main'
+        id: paths
+        uses: dorny/paths-filter@v3
+        with:
+          base: ${{ github.event.before }}
+          filters: |
+            relevant:
+              - 'apps/mcp/**'
+              - 'packages/api/**'
+              - 'packages/loops-api/**'
+              - 'packages/database/**'
+
+      - name: Compute should_deploy
+        id: gate
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "should_deploy=true" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ github.event_name }}" == "push" && "${{ github.ref_name }}" == "production" ]]; then
+            echo "should_deploy=true" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ github.event_name }}" == "push" && "${{ github.ref_name }}" == "main" ]]; then
+            echo "should_deploy=${{ steps.paths.outputs.relevant == 'true' }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_deploy=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  build-and-push:
+    name: Build and Push
+    needs: preflight
+    if: needs.preflight.outputs.should_deploy == 'true'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: build-mcp-server-${{ needs.preflight.outputs.environment }}
+      cancel-in-progress: ${{ needs.preflight.outputs.environment != 'prod' }}
     permissions:
       id-token: write # For OIDC and provenance attestation
       contents: read
       attestations: write
 
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - environment: stage
-            role_arn: arn:aws:iam::661041595751:role/github-actions/github-actions-terraform
-            ecs_cluster: cl-ai-stage-mcp-server
-            ecs_service: mcp-server
-          - environment: prod
-            role_arn: arn:aws:iam::959853091217:role/github-actions/github-actions-terraform
-            ecs_cluster: cl-ai-prod-mcp-server
-            ecs_service: mcp-server
-
     steps:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Configure AWS Credentials (${{ matrix.environment }})
+      - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v6
         with:
-          role-to-assume: ${{ matrix.role_arn }}
+          role-to-assume: ${{ needs.preflight.outputs.role_arn }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Login to Amazon ECR
@@ -72,7 +143,6 @@ jobs:
           sbom: true
           tags: |
             ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
-            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
           platforms: linux/amd64
@@ -83,18 +153,50 @@ jobs:
       - name: Upload image digest
         uses: actions/upload-artifact@v7
         with:
-          name: image-digest-${{ matrix.environment }}
+          name: mcp-image-digest-${{ needs.preflight.outputs.environment }}
           path: digest.txt
 
-      - name: Force new ECS deployment
+      - name: Register task definition pinned to SHA
+        id: register-taskdef
+        env:
+          RESOLVED_CLUSTER: ${{ needs.preflight.outputs.ecs_cluster }}
+          RESOLVED_SERVICE: ${{ needs.preflight.outputs.ecs_service }}
+          NEW_IMAGE: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+        run: |
+          CURRENT_TD=$(aws ecs describe-services \
+            --cluster "$RESOLVED_CLUSTER" \
+            --services "$RESOLVED_SERVICE" \
+            --query 'services[0].taskDefinition' \
+            --output text)
+          aws ecs describe-task-definition \
+            --task-definition "$CURRENT_TD" \
+            --query taskDefinition > td.json
+          jq --arg IMG "$NEW_IMAGE" --arg REPO "${{ env.ECR_REPOSITORY }}" '
+            .containerDefinitions |= map(
+              if (.image // "" | contains($REPO)) then .image = $IMG else . end
+            )
+            | del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy, .deregisteredAt)
+          ' td.json > td-new.json
+          NEW_TD_ARN=$(aws ecs register-task-definition \
+            --cli-input-json file://td-new.json \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+          echo "new_td_arn=$NEW_TD_ARN" >> "$GITHUB_OUTPUT"
+          echo "Registered task definition: $NEW_TD_ARN"
+
+      - name: Deploy new task definition
+        env:
+          RESOLVED_ENV: ${{ needs.preflight.outputs.environment }}
+          RESOLVED_CLUSTER: ${{ needs.preflight.outputs.ecs_cluster }}
+          RESOLVED_SERVICE: ${{ needs.preflight.outputs.ecs_service }}
         run: |
           aws ecs update-service \
-            --cluster ${{ matrix.ecs_cluster }} \
-            --service ${{ matrix.ecs_service }} \
-            --force-new-deployment \
+            --cluster "$RESOLVED_CLUSTER" \
+            --service "$RESOLVED_SERVICE" \
+            --task-definition ${{ steps.register-taskdef.outputs.new_td_arn }} \
             --no-cli-pager
-          echo "Waiting for ${{ matrix.environment }} service to stabilize..."
+          echo "Waiting for $RESOLVED_ENV service to stabilize..."
           aws ecs wait services-stable \
-            --cluster ${{ matrix.ecs_cluster }} \
-            --services ${{ matrix.ecs_service }}
-          echo "Deployed ${{ matrix.environment }}: cluster=${{ matrix.ecs_cluster }}, service=${{ matrix.ecs_service }}"
+            --cluster "$RESOLVED_CLUSTER" \
+            --services "$RESOLVED_SERVICE"
+          echo "Deployed $RESOLVED_ENV: cluster=$RESOLVED_CLUSTER, service=$RESOLVED_SERVICE, td=${{ steps.register-taskdef.outputs.new_td_arn }}"

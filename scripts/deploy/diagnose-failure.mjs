@@ -311,8 +311,42 @@ function formatDiagnosisFindings(diagnosis, categoryEmoji) {
   return lines;
 }
 
+function formatEcsFailures(ecsContext) {
+  // Caller guards on ecsContext?.failedServices at the call site, so destructuring here
+  // is safe without a redundant !failedServices guard.
+  const {
+    mcpConclusion,
+    relayConclusion,
+    mcpRunId,
+    relayRunId,
+    serverUrl,
+    repo,
+  } = ecsContext;
+
+  const lines = ["", "*Failed ECS services:*"];
+
+  if (mcpConclusion && mcpConclusion !== "success") {
+    const runLink =
+      mcpRunId && serverUrl && repo
+        ? `${serverUrl}/${repo}/actions/runs/${mcpRunId}`
+        : "run ID not found";
+    lines.push(`  ❌ *mcp* (${mcpConclusion}): ${runLink}`);
+  }
+
+  if (relayConclusion && relayConclusion !== "success") {
+    const runLink =
+      relayRunId && serverUrl && repo
+        ? `${serverUrl}/${repo}/actions/runs/${relayRunId}`
+        : "run ID not found";
+    lines.push(`  ❌ *relay* (${relayConclusion}): ${runLink}`);
+  }
+
+  return lines;
+}
+
 function formatSlackReport(diagnosis, context) {
-  const { prUrl, runUrl, branch, sha, step, healthStatuses } = context;
+  const { prUrl, runUrl, branch, sha, step, healthStatuses, ecsContext } =
+    context;
 
   const categoryEmoji = {
     DATABASE: "🗄️",
@@ -334,6 +368,10 @@ function formatSlackReport(diagnosis, context) {
   ];
 
   lines.push(...formatHealthChecks(healthStatuses));
+
+  if (ecsContext?.failedServices) {
+    lines.push(...formatEcsFailures(ecsContext));
+  }
 
   lines.push("");
   lines.push("─────────────────────────");
@@ -399,6 +437,22 @@ const errorLogPath = process.env.ERROR_LOG_PATH || "error_context.log";
 const errorLog = await readFile(errorLogPath, "utf-8").catch(() => "");
 const healthStatuses = await loadHealthCheckStatus();
 
+const ecsMcpConclusion = process.env.ECS_MCP_CONCLUSION || "";
+const ecsRelayConclusion = process.env.ECS_RELAY_CONCLUSION || "";
+const ecsFailedServices = process.env.ECS_FAILED_SERVICES || "";
+
+const ecsContext = ecsFailedServices
+  ? {
+      failedServices: ecsFailedServices,
+      mcpConclusion: ecsMcpConclusion,
+      relayConclusion: ecsRelayConclusion,
+      mcpRunId: process.env.ECS_MCP_RUN_ID || "",
+      relayRunId: process.env.ECS_RELAY_RUN_ID || "",
+      serverUrl: process.env.SERVER_URL || "",
+      repo: process.env.REPO || "",
+    }
+  : null;
+
 const context = {
   prUrl: process.env.PR_URL,
   runUrl: process.env.RUN_URL,
@@ -406,6 +460,7 @@ const context = {
   sha: process.env.GITHUB_SHA,
   step: process.env.FAILED_STEP,
   healthStatuses,
+  ecsContext,
 };
 
 console.log("Analyzing deployment failure...");
