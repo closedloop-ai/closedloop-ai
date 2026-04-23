@@ -57,6 +57,7 @@ const orgSwitcherAppearance = {
     organizationSwitcherTrigger: {
       display: "flex",
       alignItems: "center",
+      justifyContent: "flex-start",
       gap: "0.5rem",
       width: "100%",
       padding: "0.5rem",
@@ -194,10 +195,9 @@ export function GlobalSidebar({
                 className={cn(
                   "flex overflow-hidden transition-all",
                   sidebar.open && envBadge
-                    ? "flex-col items-start gap-1 px-2 py-1"
+                    ? "flex-col items-start gap-1 py-1"
                     : "h-[36px] items-center gap-2",
-                  !sidebar.open && "justify-center px-0",
-                  sidebar.open && !envBadge && "px-2"
+                  !sidebar.open && "justify-center"
                 )}
               >
                 {sidebar.open && (
