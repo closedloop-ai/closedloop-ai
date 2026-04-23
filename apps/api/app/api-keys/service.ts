@@ -10,10 +10,22 @@ import { API_KEY_SCOPES } from "@repo/api/src/types/api-key";
 import { withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 
-/**
- * Map a Prisma ApiKey record to the ApiKey API type (excludes keyHash).
- */
-function toApiKey(record: {
+const FULL_ACCESS_SCOPES = [
+  "read",
+  "write",
+  "delete",
+] as const satisfies readonly ApiKeyScope[];
+const USER_CREATED_SOURCE = "USER_CREATED";
+const DESKTOP_MANAGED_SOURCE = "DESKTOP_MANAGED";
+
+export class DesktopManagedKeyRotationConflictError extends Error {
+  constructor() {
+    super("Concurrent desktop-managed key rotation conflict");
+    this.name = "DesktopManagedKeyRotationConflictError";
+  }
+}
+
+type StoredApiKeyRecord = {
   id: string;
   organizationId: string;
   userId: string;
@@ -24,7 +36,36 @@ function toApiKey(record: {
   lastUsedAt: Date | null;
   createdAt: Date;
   revokedAt: Date | null;
-}): ApiKey {
+};
+
+/**
+ * Inputs for rotating the single active desktop-managed key bound to a gateway.
+ */
+type RotateDesktopManagedKeyInput = {
+  organizationId: string;
+  userId: string;
+  gatewayId: string;
+  /** PEM-encoded Ed25519 SPKI public key bound to the managed desktop key. */
+  boundPublicKey?: string | null;
+  name?: string;
+};
+
+function createPlaintextKey(): string {
+  return `sk_live_${randomBytes(32).toString("hex")}`;
+}
+
+function hashApiKey(plaintextKey: string): string {
+  return createHash("sha256").update(plaintextKey).digest("hex");
+}
+
+function defaultDesktopManagedKeyName(gatewayId: string): string {
+  return `Desktop ${gatewayId}`;
+}
+
+/**
+ * Map a Prisma ApiKey record to the ApiKey API type (excludes keyHash).
+ */
+function toApiKey(record: StoredApiKeyRecord): ApiKey {
   const scopes = normalizeStoredScopes(
     sanitizeScopes(record.scopes),
     record.scopes.length
@@ -53,8 +94,8 @@ export const apiKeysService = {
     userId: string,
     input: CreateApiKeyInput
   ): Promise<CreateApiKeyResponse> {
-    const plaintextKey = `sk_live_${randomBytes(32).toString("hex")}`;
-    const hash = createHash("sha256").update(plaintextKey).digest("hex");
+    const plaintextKey = createPlaintextKey();
+    const hash = hashApiKey(plaintextKey);
 
     const record = await withDb((db) =>
       db.apiKey.create({
@@ -62,10 +103,13 @@ export const apiKeysService = {
           organizationId,
           userId,
           name: input.name,
-          scopes: ["read", "write", "delete"],
+          scopes: [...FULL_ACCESS_SCOPES],
           keyHash: hash,
           keyPrefix: "sk_live_",
           expiresAt: input.expiresAt ?? null,
+          source: USER_CREATED_SOURCE,
+          gatewayId: null,
+          boundPublicKey: null,
         },
       })
     );
@@ -74,6 +118,57 @@ export const apiKeysService = {
       ...toApiKey(record),
       plaintext: plaintextKey,
     };
+  },
+
+  /**
+   * Ensures a gateway has exactly one active desktop-managed key per user by
+   * revoking any existing key for the same org/user/gateway before minting the replacement.
+   */
+  async rotateDesktopManagedKey(
+    input: RotateDesktopManagedKeyInput
+  ): Promise<CreateApiKeyResponse> {
+    const plaintextKey = createPlaintextKey();
+    const hash = hashApiKey(plaintextKey);
+    const now = new Date();
+
+    try {
+      const record = await withDb.tx(async (tx) => {
+        await tx.apiKey.updateMany({
+          where: {
+            organizationId: input.organizationId,
+            userId: input.userId,
+            source: DESKTOP_MANAGED_SOURCE,
+            gatewayId: input.gatewayId,
+            revokedAt: null,
+          },
+          data: { revokedAt: now },
+        });
+
+        return tx.apiKey.create({
+          data: {
+            organizationId: input.organizationId,
+            userId: input.userId,
+            name: input.name ?? defaultDesktopManagedKeyName(input.gatewayId),
+            scopes: [...FULL_ACCESS_SCOPES],
+            keyHash: hash,
+            keyPrefix: "sk_live_",
+            expiresAt: null,
+            source: DESKTOP_MANAGED_SOURCE,
+            gatewayId: input.gatewayId,
+            boundPublicKey: input.boundPublicKey ?? null,
+          },
+        });
+      });
+      return {
+        ...toApiKey(record),
+        plaintext: plaintextKey,
+      };
+    } catch (error) {
+      if ((error as { code?: string }).code === "P2002") {
+        throw new DesktopManagedKeyRotationConflictError();
+      }
+      throw error;
+    }
   },
 
   /**
@@ -130,7 +225,7 @@ export const apiKeysService = {
    * Updates lastUsedAt on successful verification.
    */
   async verifyKey(plaintextKey: string): Promise<VerifiedApiKeyContext | null> {
-    const hash = createHash("sha256").update(plaintextKey).digest("hex");
+    const hash = hashApiKey(plaintextKey);
     const now = new Date();
 
     const record = await withDb((db) =>
