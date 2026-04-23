@@ -4,6 +4,7 @@ import { log } from "@repo/observability/log";
 import { organizationsService } from "@/app/organizations/service";
 import { usersService } from "@/app/users/service";
 import { loopEventBus } from "@/lib/loops/loop-event-bus";
+import { scheduleLogFlush } from "@/lib/route-utils";
 import { loopsService } from "../../service";
 
 const KEEPALIVE_INTERVAL_MS = 15_000;
@@ -59,6 +60,7 @@ export async function GET(
       clerkOrgId,
       error,
     });
+    scheduleLogFlush();
     return new Response("Unauthorized", { status: 401 });
   }
 
@@ -71,6 +73,7 @@ export async function GET(
     loop = await loopsService.findById(loopId, organizationId);
   } catch (error) {
     log.error("Failed to verify loop for SSE stream", { loopId, error });
+    scheduleLogFlush();
     return new Response("Internal Server Error", { status: 500 });
   }
 
@@ -112,6 +115,7 @@ export async function GET(
   }
 
   log.info("SSE stream opened", { loopId, clerkUserId, organizationId });
+  scheduleLogFlush();
 
   // Shared cleanup state - accessible from both start() and cancel()
   let unsubscribe: (() => void) | null = null;
@@ -138,6 +142,7 @@ export async function GET(
       unsubscribe = null;
     }
     log.info("SSE stream closed", { loopId });
+    scheduleLogFlush();
   }
 
   // --- SSE Stream ---
@@ -197,6 +202,7 @@ export async function GET(
       // Clients should reconnect after receiving the close.
       maxDurationTimer = setTimeout(() => {
         log.info("SSE stream max duration reached", { loopId });
+        // cleanup() emits "SSE stream closed" and schedules the flush itself.
         cleanup();
         try {
           controller.close();

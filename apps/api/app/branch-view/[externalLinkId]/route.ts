@@ -6,6 +6,7 @@ import { resolvePrContext } from "@/lib/resolve-pr-context";
 import {
   errorResponse,
   notFoundResponse,
+  scheduleLogFlush,
   successResponse,
 } from "@/lib/route-utils";
 import { getBranchViewData } from "./service";
@@ -40,6 +41,7 @@ export const GET = withAnyAuth<BranchViewData, "/branch-view/[externalLinkId]">(
         );
       }
 
+      scheduleLogFlush();
       return successResponse(result.data);
     } catch (error) {
       return errorResponse("Failed to fetch branch view data", error);

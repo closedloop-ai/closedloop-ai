@@ -7,6 +7,7 @@ import { stripe } from "@repo/payments";
 import { headers } from "next/headers";
 import { NextResponse } from "next/server";
 import { env } from "@/env";
+import { scheduleLogFlush } from "@/lib/route-utils";
 
 const getUserFromCustomerId = async (customerId: string) => {
   const clerk = await clerkClient();
@@ -97,12 +98,14 @@ export const POST = async (request: Request): Promise<Response> => {
 
     await analytics.shutdown();
 
+    scheduleLogFlush();
     return NextResponse.json({ result: event, ok: true });
   } catch (error) {
     const message = parseError(error);
 
     log.error(message);
 
+    scheduleLogFlush();
     return NextResponse.json(
       {
         message: "something went wrong",

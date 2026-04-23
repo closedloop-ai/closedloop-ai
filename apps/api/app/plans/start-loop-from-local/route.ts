@@ -17,6 +17,7 @@ import {
   errorResponse,
   notFoundResponse,
   parseBody,
+  scheduleLogFlush,
 } from "@/lib/route-utils";
 
 // Accept both variants: with and without selectedArtifactId.
@@ -155,7 +156,7 @@ export const POST = withAnyAuth<StartPlanLoopResponse>(
         documentId: result.documentId,
         featureId: body.featureId,
       });
-
+      scheduleLogFlush();
       return NextResponse.json(
         success<StartPlanLoopResponse>({
           outcome: "launched",

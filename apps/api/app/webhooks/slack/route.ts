@@ -3,6 +3,7 @@ import { log } from "@repo/observability/log";
 import { headers } from "next/headers";
 import { NextResponse } from "next/server";
 import { env } from "@/env";
+import { scheduleLogFlush } from "@/lib/route-utils";
 import {
   handleCreateIdea,
   handleGetStatus,
@@ -17,6 +18,7 @@ export async function POST(request: Request): Promise<Response> {
 
   if (!signingSecret) {
     log.warn("[webhook/slack] SLACK_SIGNING_SECRET not set, rejecting request");
+    scheduleLogFlush();
     return NextResponse.json(
       { message: "Slack integration not configured", ok: false },
       { status: 401 }
@@ -40,6 +42,7 @@ export async function POST(request: Request): Promise<Response> {
 
     if (!isValid) {
       log.warn("[webhook/slack] Invalid signature, rejecting request");
+      scheduleLogFlush();
       return NextResponse.json(
         { message: "Invalid signature", ok: false },
         { status: 401 }
@@ -54,6 +57,7 @@ export async function POST(request: Request): Promise<Response> {
       };
       if (jsonBody.type === "url_verification") {
         log.info("[webhook/slack] Responding to URL verification challenge");
+        scheduleLogFlush();
         return NextResponse.json({ challenge: jsonBody.challenge });
       }
     } catch {
@@ -88,6 +92,7 @@ export async function POST(request: Request): Promise<Response> {
           text: text.trim().slice(subcommand.length).trim(),
         };
         const response = await handleCreateIdea(slashPayload);
+        scheduleLogFlush();
         return NextResponse.json(response);
       }
 
@@ -97,9 +102,11 @@ export async function POST(request: Request): Promise<Response> {
           text: text.trim().slice(subcommand.length).trim(),
         };
         const response = await handleGetStatus(slashPayload);
+        scheduleLogFlush();
         return NextResponse.json(response);
       }
 
+      scheduleLogFlush();
       return NextResponse.json({
         response_type: "ephemeral",
         text: "Unknown subcommand. Available commands: `create-idea`, `status`",
@@ -107,12 +114,14 @@ export async function POST(request: Request): Promise<Response> {
     }
 
     log.info("[webhook/slack] Ignoring unsupported command", { command });
+    scheduleLogFlush();
     return NextResponse.json({ message: "Command not handled", ok: true });
   } catch (error) {
     const message = parseError(error);
     log.error("[webhook/slack] Unhandled error processing webhook", {
       error: message,
     });
+    scheduleLogFlush();
     return NextResponse.json(
       { message: "Something went wrong", ok: false },
       { status: 500 }

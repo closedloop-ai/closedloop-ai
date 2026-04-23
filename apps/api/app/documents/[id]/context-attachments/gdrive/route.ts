@@ -19,6 +19,7 @@ import {
   errorResponse,
   notFoundResponse,
   parseBody,
+  scheduleLogFlush,
   successResponse,
 } from "@/lib/route-utils";
 import { importGDriveContextValidator } from "../validators";
@@ -146,6 +147,7 @@ export const POST = withAnyAuth<
 
   await Promise.all(importPromises);
 
+  scheduleLogFlush();
   return successResponse({
     results: [...successResults, ...failures],
   });

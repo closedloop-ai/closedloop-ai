@@ -1,7 +1,12 @@
 import type { JsonObject } from "@repo/api/src/types/common";
 import { log } from "@repo/observability/log";
 import { authenticateLoopRunner } from "@/lib/auth/loop-runner-jwt";
-import { errorResponse, parseBody, successResponse } from "@/lib/route-utils";
+import {
+  errorResponse,
+  parseBody,
+  scheduleLogFlush,
+  successResponse,
+} from "@/lib/route-utils";
 import { loopsService } from "../../service";
 import { uploadArtifactsSchema } from "./validators";
 
@@ -63,6 +68,7 @@ export async function POST(
       }
     }
 
+    scheduleLogFlush();
     return successResponse({ stored: true });
   } catch (error) {
     return errorResponse("Failed to upload artifacts", error);

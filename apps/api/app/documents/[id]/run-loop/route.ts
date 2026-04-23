@@ -14,7 +14,6 @@ import {
   RunLoopCommand,
 } from "@repo/api/src/types/loop";
 import { log } from "@repo/observability/log";
-import { waitUntil } from "@vercel/functions";
 import { NextResponse } from "next/server";
 import { isConcurrentLoopLimitError, loopsService } from "@/app/loops/service";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
@@ -29,6 +28,7 @@ import {
   errorResponse,
   notFoundResponse,
   parseBody,
+  scheduleLogFlushAfter,
 } from "@/lib/route-utils";
 import { documentsService } from "../../service";
 import {
@@ -212,7 +212,9 @@ export const POST = withAnyAuth<RunLoopResponse, "/documents/[id]/run-loop">(
           error: error instanceof Error ? error.message : String(error),
         });
       });
-      waitUntil(launchPromise);
+
+      // Flush after launchLoop() settles so its own log entries are captured.
+      scheduleLogFlushAfter(launchPromise);
 
       return NextResponse.json(success(loopResponse));
     } catch (error) {

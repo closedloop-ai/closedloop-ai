@@ -1,10 +1,14 @@
 import type { CreateLoopResponse } from "@repo/api/src/types/loop";
 import { log } from "@repo/observability/log";
-import { waitUntil } from "@vercel/functions";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { resolveComputeTargetForRoute } from "@/lib/loops/compute-target-route-helpers";
 import { launchLoop } from "@/lib/loops/loop-orchestrator";
-import { errorResponse, parseBody, successResponse } from "@/lib/route-utils";
+import {
+  errorResponse,
+  parseBody,
+  scheduleLogFlushAfter,
+  successResponse,
+} from "@/lib/route-utils";
 import { isConcurrentLoopLimitError, loopsService } from "../../service";
 import { resumeLoopValidator } from "../../validators";
 
@@ -66,8 +70,9 @@ export const POST = withAnyAuth<CreateLoopResponse, "/loops/[id]/resume">(
         resolvedComputeTargetId
       );
 
-      // Launch the resumed loop asynchronously. waitUntil() keeps the
-      // serverless function alive so deployments don't kill it mid-launch.
+      // Launch the resumed loop asynchronously. scheduleLogFlushAfter() keeps
+      // the serverless function alive via waitUntil until launchLoop() settles,
+      // then flushes — so launchLoop()'s own log entries are included.
       const launchPromise = launchLoop(
         result.loopId,
         user.organizationId
@@ -78,7 +83,7 @@ export const POST = withAnyAuth<CreateLoopResponse, "/loops/[id]/resume">(
           error: error instanceof Error ? error.message : String(error),
         });
       });
-      waitUntil(launchPromise);
+      scheduleLogFlushAfter(launchPromise);
 
       return successResponse(result);
     } catch (error) {

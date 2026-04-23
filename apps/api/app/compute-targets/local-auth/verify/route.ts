@@ -11,7 +11,7 @@ import {
   verifyLocalGatewayChallenge,
 } from "@/lib/auth/local-gateway-jwt";
 import { withApiKeyAuth } from "@/lib/auth/with-api-key-auth";
-import { parseBody } from "@/lib/route-utils";
+import { parseBody, scheduleLogFlush } from "@/lib/route-utils";
 
 const SESSION_TTL_SECONDS = 600;
 
@@ -55,6 +55,7 @@ export const POST = withApiKeyAuth<
       error: parseError(error),
       userAgent,
     });
+    scheduleLogFlush();
     return NextResponse.json(failure("Invalid or expired challenge token"), {
       status: 401,
     });
@@ -69,6 +70,7 @@ export const POST = withApiKeyAuth<
         userAgent,
       }
     );
+    scheduleLogFlush();
     return NextResponse.json(
       failure("Challenge has already been used or has expired"),
       { status: 403 }
@@ -83,6 +85,7 @@ export const POST = withApiKeyAuth<
       apiKeyOrgId: user.organizationId,
       userAgent,
     });
+    scheduleLogFlush();
     return NextResponse.json(
       failure("Challenge was not issued for this API key owner"),
       { status: 403 }
@@ -96,6 +99,7 @@ export const POST = withApiKeyAuth<
       userId: user.id,
       userAgent,
     });
+    scheduleLogFlush();
     return NextResponse.json(
       failure("Request origin does not match challenge origin"),
       { status: 403 }
@@ -109,6 +113,7 @@ export const POST = withApiKeyAuth<
     jti: claims.jti,
     userAgent,
   });
+  scheduleLogFlush();
 
   return NextResponse.json(
     success({

@@ -13,7 +13,12 @@ vi.mock("@/lib/auth/with-any-auth", () => ({
 }));
 
 vi.mock("@repo/observability/log", () => ({
-  log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+  log: {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    flush: vi.fn().mockResolvedValue(undefined),
+  },
 }));
 
 vi.mock("@/app/documents/service", () => {

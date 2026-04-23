@@ -27,6 +27,7 @@ import {
   errorResponse,
   notFoundResponse,
   parseBody,
+  scheduleLogFlush,
   successResponse,
 } from "@/lib/route-utils";
 import {
@@ -295,6 +296,7 @@ export const POST = withAnyAuth<
       emitDispatchedTelemetry(dispatchCtx);
     }
 
+    scheduleLogFlush();
     return successResponse({
       commandId,
       status: createResult.command.status,

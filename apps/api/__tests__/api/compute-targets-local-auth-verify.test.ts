@@ -13,7 +13,12 @@ const mockIsLocalGatewayJwtConfigured = vi.fn();
 let mockAuthContext: AuthContext;
 
 vi.mock("@repo/observability/log", () => ({
-  log: { error: vi.fn(), info: vi.fn(), warn: vi.fn() },
+  log: {
+    error: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    flush: vi.fn().mockResolvedValue(undefined),
+  },
 }));
 vi.mock("@repo/observability/error", () => ({
   parseError: (error: unknown) => String(error),

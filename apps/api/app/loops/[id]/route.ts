@@ -7,6 +7,7 @@ import { loopEventBus } from "@/lib/loops/loop-event-bus";
 import {
   errorResponse,
   notFoundResponse,
+  scheduleLogFlush,
   successResponse,
 } from "@/lib/route-utils";
 import { loopsService } from "../service";
@@ -71,6 +72,7 @@ export const DELETE = withAnyAuth<Loop, "/loops/[id]">(
       });
       loopEventBus.publish(id, cancelEvent);
 
+      scheduleLogFlush();
       return successResponse(cancelled);
     } catch (error) {
       return errorResponse("Failed to cancel loop", error);

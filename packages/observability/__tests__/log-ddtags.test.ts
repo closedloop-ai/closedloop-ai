@@ -249,3 +249,57 @@ describe("cross-cutting ddtags regression guard", () => {
     expect(secondBody[0].ddtags.includes("version:9.9.9")).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// (f) flush() behaviour — batching and empty-buffer short-circuit
+// ---------------------------------------------------------------------------
+
+describe("flush() batching and empty-buffer behaviour", () => {
+  it("sends all buffered log entries to Datadog when flush() is called", async () => {
+    vi.stubEnv("DD_API_KEY", "test-key");
+    vi.stubEnv("DD_ENV", "test");
+    vi.stubEnv("RELEASE_VERSION", "1.0.0");
+    vi.stubEnv("VERCEL_GIT_COMMIT_SHA", "abc123");
+
+    const fetchMock = vi.fn().mockResolvedValue(new Response("OK"));
+    const log = await importLogWithFetch(fetchMock);
+
+    log.info("first");
+    log.warn("second");
+    log.error("third");
+
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    await log.flush();
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain("http-intake.logs");
+    expect(init.method).toBe("POST");
+    expect((init.headers as Record<string, string>)["DD-API-KEY"]).toBe(
+      "test-key"
+    );
+
+    expect(typeof init.body).toBe("string");
+    const body = JSON.parse(init.body as string) as Array<{ message: string }>;
+    expect(body).toHaveLength(3);
+    expect(body[0].message).toBe("first");
+    expect(body[1].message).toBe("second");
+    expect(body[2].message).toBe("third");
+  });
+
+  it("resolves immediately without calling fetch when buffer is empty", async () => {
+    vi.stubEnv("DD_API_KEY", "test-key");
+    vi.stubEnv("DD_ENV", "test");
+    vi.stubEnv("RELEASE_VERSION", "1.0.0");
+    vi.stubEnv("VERCEL_GIT_COMMIT_SHA", "abc123");
+
+    const fetchMock = vi.fn().mockResolvedValue(new Response("OK"));
+    const log = await importLogWithFetch(fetchMock);
+
+    await log.flush();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});

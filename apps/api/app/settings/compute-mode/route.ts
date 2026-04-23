@@ -7,6 +7,7 @@ import {
   errorResponse,
   forbiddenResponse,
   parseBody,
+  scheduleLogFlush,
   successResponse,
 } from "@/lib/route-utils";
 import { computeModeService } from "../compute-mode-service";
@@ -48,6 +49,7 @@ export const PUT = withAuth<ComputeModeResponse, "/settings/compute-mode">(
           method: "PUT",
           route: "/settings/compute-mode",
         });
+        scheduleLogFlush();
         return forbiddenResponse();
       }
 

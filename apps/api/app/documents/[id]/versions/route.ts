@@ -7,6 +7,7 @@ import {
   errorResponse,
   notFoundResponse,
   parseBody,
+  scheduleLogFlush,
   successResponse,
 } from "@/lib/route-utils";
 import { DocumentNotFoundError } from "../../document-utils";
@@ -88,9 +89,11 @@ export const POST = withAnyAuth<DocumentDetail, "/documents/[id]/versions">(
             version: updatedArtifact.latestVersion,
             error: error instanceof Error ? error.message : String(error),
           });
+          scheduleLogFlush();
         });
       }
 
+      scheduleLogFlush();
       return successResponse(updatedArtifact);
     } catch (error) {
       if (error instanceof DocumentNotFoundError) {
