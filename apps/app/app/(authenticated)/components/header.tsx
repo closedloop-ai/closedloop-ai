@@ -34,22 +34,29 @@ export const Header = ({
       className
     )}
   >
-    <div className="flex items-center gap-2">
-      <SidebarTrigger className="-ml-1" />
-      <Breadcrumb>
-        <BreadcrumbList>
+    <div className="flex min-w-0 flex-1 items-center gap-2">
+      <SidebarTrigger className="-ml-1 shrink-0" />
+      <Breadcrumb className="min-w-0 flex-1">
+        <BreadcrumbList className="flex-nowrap">
           {breadcrumbs.map((entry, index) => {
             const isLast = index === breadcrumbs.length - 1;
             return (
               <Fragment key={`${entry.label}-${index}`}>
                 {index > 0 && (
-                  <BreadcrumbSeparator className="hidden md:block" />
+                  <BreadcrumbSeparator className="hidden shrink-0 md:block" />
                 )}
                 <BreadcrumbItem
-                  className={isLast ? undefined : "hidden md:block"}
+                  className={
+                    isLast ? "min-w-0 flex-1" : "hidden shrink-0 md:block"
+                  }
                 >
                   {isLast || !entry.href ? (
-                    <BreadcrumbPage>{entry.label}</BreadcrumbPage>
+                    <BreadcrumbPage
+                      className={isLast ? "block truncate" : undefined}
+                      title={isLast ? entry.label : undefined}
+                    >
+                      {entry.label}
+                    </BreadcrumbPage>
                   ) : (
                     <BreadcrumbLink href={entry.href}>
                       {entry.label}
@@ -61,7 +68,9 @@ export const Header = ({
           })}
         </BreadcrumbList>
       </Breadcrumb>
-      {afterBreadcrumbs}
+      {afterBreadcrumbs ? (
+        <div className="shrink-0">{afterBreadcrumbs}</div>
+      ) : null}
     </div>
     {children ? (
       <div className="flex items-center gap-2">{children}</div>
