@@ -3,8 +3,8 @@ import { Input } from "@repo/design-system/components/ui/input";
 import { ArrowRightIcon, SearchIcon } from "lucide-react";
 
 export const Search = () => (
-  <form action="/search" className="flex items-center gap-2 px-4">
-    <div className="relative">
+  <form action="/search" className="flex items-center px-2">
+    <div className="relative w-full">
       <div className="absolute top-px bottom-px left-px flex h-8 w-8 items-center justify-center">
         <SearchIcon className="text-muted-foreground" size={16} />
       </div>
