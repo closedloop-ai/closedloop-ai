@@ -1,6 +1,7 @@
 "use client";
 
 import type { DocumentDetail } from "@repo/api/src/types/document";
+import { DocumentType } from "@repo/api/src/types/document";
 import type { ExecutionTrace } from "@repo/api/src/types/execution-log";
 import {
   ResizableHandle,
@@ -17,9 +18,15 @@ import { ExecutionLogSummary } from "@/components/execution-log/execution-log-su
 
 type DocumentChatPanelProps = {
   document: DocumentDetail;
-  documentType: "prd" | "plan" | "feature";
   visible: boolean;
   onViewFullTrace: (trace: ExecutionTrace, sessionId?: string) => void;
+};
+
+const DOCUMENT_TYPE_CHAT_SLUG: Record<DocumentType, string> = {
+  [DocumentType.Prd]: "prd",
+  [DocumentType.ImplementationPlan]: "plan",
+  [DocumentType.Feature]: "feature",
+  [DocumentType.Template]: "template",
 };
 
 /**
@@ -29,13 +36,13 @@ type DocumentChatPanelProps = {
  */
 export function DocumentChatPanel({
   document,
-  documentType,
   visible,
   onViewFullTrace,
 }: Readonly<DocumentChatPanelProps>) {
   if (!visible) {
     return null;
   }
+  const documentType = DOCUMENT_TYPE_CHAT_SLUG[document.type];
   return (
     <>
       <ResizableHandle className="z-20 after:w-[3px]! hover:after:bg-primary" />

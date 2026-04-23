@@ -260,7 +260,6 @@ export function FeaturePage({
 
         <DocumentChatPanel
           document={feature}
-          documentType="feature"
           onViewFullTrace={executionLogDialog.handleViewFullTrace}
           visible={chatFlag?.enabled === true && uiState.showMetadataPanel}
         />

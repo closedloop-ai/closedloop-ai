@@ -408,7 +408,6 @@ export function PlanEditor({
 
         <DocumentChatPanel
           document={plan}
-          documentType="plan"
           onViewFullTrace={executionLogDialog.handleViewFullTrace}
           visible={chatFlag?.enabled === true && uiState.showMetadataPanel}
         />

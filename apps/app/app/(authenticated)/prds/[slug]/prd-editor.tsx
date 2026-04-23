@@ -290,7 +290,6 @@ export function PRDEditor({
 
         <DocumentChatPanel
           document={prd}
-          documentType="prd"
           onViewFullTrace={executionLogDialog.handleViewFullTrace}
           visible={chatFlag?.enabled === true && uiState.showMetadataPanel}
         />
