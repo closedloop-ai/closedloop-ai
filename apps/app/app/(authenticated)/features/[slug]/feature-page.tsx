@@ -15,6 +15,7 @@ import { RichTextToolbar } from "@repo/rich-text/rich-text-toolbar";
 import { Loader2Icon } from "lucide-react";
 import { Suspense, useEffect, useRef, useState } from "react";
 import { ExecutePlanModal } from "@/app/(authenticated)/implementation-plans/components/execute-plan-modal";
+import { VersionSelector } from "@/app/(authenticated)/implementation-plans/components/version-selector";
 import { BackendMismatchModal } from "@/components/backend-mismatch-modal";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { AttachmentsRow } from "@/components/document-editor/attachments-row";
@@ -48,9 +49,15 @@ import { useFeatureState } from "./use-feature-state";
 
 type FeaturePageProps = {
   feature: DocumentDetail;
+  currentVersion: number;
+  onVersionChange: (version: number) => void;
 };
 
-export function FeaturePage({ feature }: Readonly<FeaturePageProps>) {
+export function FeaturePage({
+  feature,
+  currentVersion,
+  onVersionChange,
+}: Readonly<FeaturePageProps>) {
   const chatFlag = useFeatureFlag("interactive-chat");
   const executionLogDialog = useExecutionLogDialog();
 
@@ -63,14 +70,15 @@ export function FeaturePage({ feature }: Readonly<FeaturePageProps>) {
 
   const session = useEditorSession({
     artifact: feature,
-    currentVersion: feature.latestVersion,
-    onVersionChange: noop,
+    currentVersion,
+    onVersionChange,
   });
   const contentController = useDocumentContent({
     artifact: feature,
-    isLatestVersion: true,
+    isLatestVersion: currentVersion === feature.latestVersion,
     setEditorContent: session.setEditorContent,
-    onVersionCreated: noop,
+    onVersionCreated: (updatedArtifact) =>
+      onVersionChange(updatedArtifact.version.version),
   });
   const metadata = useDocumentMetadata({ artifact: feature });
   const actions = useDocumentActions({
@@ -80,6 +88,7 @@ export function FeaturePage({ feature }: Readonly<FeaturePageProps>) {
   const uiState = useDocumentUIState({ documentType: DocumentType.Feature });
   const editMode = useInlineEditMode({
     isLocked: session.isViewingHistorical,
+    editor: session.editor,
   });
   const planActions = usePlanActions({ documentId: linkedPlanId });
 
@@ -137,7 +146,7 @@ export function FeaturePage({ feature }: Readonly<FeaturePageProps>) {
                 }
               >
                 <InlineEditEditorShell
-                  isEditing={editMode.isEditing}
+                  expanded={editMode.isEditing || session.isViewingHistorical}
                   toolbar={
                     <EditorToolbarRow
                       leftContent={
@@ -146,6 +155,7 @@ export function FeaturePage({ feature }: Readonly<FeaturePageProps>) {
                           editor={session.editor}
                           hasLiveblocksExtension={!!session.liveblocksRoomId}
                           onPasteMarkdown={session.setEditorContent}
+                          readOnly={!editMode.isEditing}
                         />
                       }
                       rightContent={
@@ -155,10 +165,17 @@ export function FeaturePage({ feature }: Readonly<FeaturePageProps>) {
                               <InlinePresence />
                             </Suspense>
                           )}
+                          <VersionSelector
+                            currentVersion={currentVersion}
+                            latestVersion={feature.latestVersion}
+                            onVersionChange={onVersionChange}
+                          />
                           <EditorToolbarActions
-                            canRestoreVersion={false}
-                            canSaveVersion={true}
-                            isRestoring={false}
+                            canRestoreVersion={true}
+                            canSaveVersion={
+                              currentVersion === feature.latestVersion
+                            }
+                            isRestoring={contentController.isSaving}
                             isSaving={contentController.isSaving}
                             onRestoreVersion={contentController.restoreVersion}
                             onSaveVersion={contentController.saveContent}
@@ -186,6 +203,7 @@ export function FeaturePage({ feature }: Readonly<FeaturePageProps>) {
                         <AttachmentsRow documentId={feature.id} />
                       </div>
                     }
+                    key={currentVersion}
                     liveblocksRoomId={session.liveblocksRoomId}
                     onBodyClick={editMode.enterEditMode}
                     onChange={contentController.updateContent}
@@ -194,7 +212,7 @@ export function FeaturePage({ feature }: Readonly<FeaturePageProps>) {
                     onOpenThreadCountChange={session.handleThreadCountChange}
                     placeholder="Add description..."
                     readOnly={!editMode.isEditing}
-                    showComments={showComments}
+                    showComments={editMode.isEditing && showComments}
                     value={contentController.content}
                   />
                 </InlineEditEditorShell>
@@ -300,11 +318,6 @@ export function FeaturePage({ feature }: Readonly<FeaturePageProps>) {
       />
     </>
   );
-}
-
-function noop() {
-  // Features don't expose versioning in the UI; editor session/content hooks
-  // still require these callbacks, so we supply a no-op.
 }
 
 function getFeatureRedirectPath(feature: DocumentDetail): string {

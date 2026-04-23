@@ -1,18 +1,33 @@
 "use client";
 
+import { keepPreviousData } from "@tanstack/react-query";
 import { Loader2Icon } from "lucide-react";
 import { notFound } from "next/navigation";
+import { useState } from "react";
 import { useDocumentBySlug } from "@/hooks/queries/use-documents";
 import { FeaturePage } from "./feature-page";
 
 type FeaturePageContainerProps = {
   slug: string;
+  version?: number;
 };
 
 export function FeaturePageContainer({
   slug,
+  version: initialVersion,
 }: Readonly<FeaturePageContainerProps>) {
-  const { data: feature, isLoading, error } = useDocumentBySlug(slug);
+  // Manage selected version in client state (avoids page remounts on version switch)
+  const [selectedVersion, setSelectedVersion] = useState<number | undefined>(
+    initialVersion
+  );
+
+  const {
+    data: feature,
+    isLoading,
+    error,
+  } = useDocumentBySlug(slug, selectedVersion, {
+    placeholderData: keepPreviousData,
+  });
 
   if (isLoading) {
     return (
@@ -26,5 +41,19 @@ export function FeaturePageContainer({
     notFound();
   }
 
-  return <FeaturePage feature={feature} />;
+  const currentVersion = feature.version.version;
+
+  const handleVersionChange = (version: number) => {
+    if (version !== currentVersion) {
+      setSelectedVersion(version);
+    }
+  };
+
+  return (
+    <FeaturePage
+      currentVersion={currentVersion}
+      feature={feature}
+      onVersionChange={handleVersionChange}
+    />
+  );
 }

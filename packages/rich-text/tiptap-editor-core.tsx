@@ -58,6 +58,7 @@ export function TiptapEditorCore({
       }),
       Placeholder.configure({
         placeholder,
+        showOnlyWhenEditable: false,
       }),
       MermaidExtension,
       Table.configure({

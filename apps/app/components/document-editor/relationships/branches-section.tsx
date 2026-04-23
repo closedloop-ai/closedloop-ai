@@ -50,6 +50,7 @@ export function BranchesSection({
   generationStatus,
 }: Readonly<BranchesSectionProps>) {
   const [showSelectPr, setShowSelectPr] = useState(false);
+  const [isOpen, setIsOpen] = useState(true);
   const { data: linkedEntities = [] } = useLinkedEntities(
     documentId,
     EntityType.Document,
@@ -79,7 +80,11 @@ export function BranchesSection({
 
   return (
     <div className="bg-background">
-      <SectionHeader title="Build">
+      <SectionHeader
+        isOpen={isOpen}
+        onToggle={() => setIsOpen((prev) => !prev)}
+        title="Build"
+      >
         <Button
           onClick={() => setShowSelectPr(true)}
           size="icon-sm"
@@ -88,52 +93,58 @@ export function BranchesSection({
           <PlusIcon className="h-4 w-4" />
         </Button>
       </SectionHeader>
-      {hasBranches ? (
-        <div className="flex flex-col">
-          {branchLinks.map((linked) => (
-            <BranchRow
-              key={linked.id}
-              linked={linked}
-              onUnlink={handleUnlink}
-            />
-          ))}
-        </div>
-      ) : (
-        <div className="flex items-center py-3">
-          <div className="flex flex-1 flex-col gap-4">
-            <p className="text-base text-muted-foreground">No PR exists yet</p>
-            <div className="flex gap-4">
-              {planId ? (
-                <Button
-                  disabled={isExecutingPlan}
-                  onClick={onStartBuild}
-                  size="sm"
-                  variant="secondary"
-                >
-                  Start Building
-                  <PlayIcon className="h-4 w-4" />
-                </Button>
-              ) : (
-                <Button disabled size="sm" variant="secondary">
-                  Need approved plan to build
-                </Button>
-              )}
-              <Button
-                onClick={() => setShowSelectPr(true)}
-                size="sm"
-                variant="outline"
-              >
-                Select Existing PR
-              </Button>
+      {isOpen ? (
+        <>
+          {hasBranches ? (
+            <div className="flex flex-col">
+              {branchLinks.map((linked) => (
+                <BranchRow
+                  key={linked.id}
+                  linked={linked}
+                  onUnlink={handleUnlink}
+                />
+              ))}
             </div>
-          </div>
-        </div>
-      )}
-      {isExecutingPlan && (
-        <div className="px-2 py-1">
-          <GenerationStatusIndicator generationStatus={generationStatus} />
-        </div>
-      )}
+          ) : (
+            <div className="flex items-center py-3">
+              <div className="flex flex-1 flex-col gap-4">
+                <p className="text-base text-muted-foreground">
+                  No PR exists yet
+                </p>
+                <div className="flex gap-4">
+                  {planId ? (
+                    <Button
+                      disabled={isExecutingPlan}
+                      onClick={onStartBuild}
+                      size="sm"
+                      variant="secondary"
+                    >
+                      Start Building
+                      <PlayIcon className="h-4 w-4" />
+                    </Button>
+                  ) : (
+                    <Button disabled size="sm" variant="secondary">
+                      Need approved plan to build
+                    </Button>
+                  )}
+                  <Button
+                    onClick={() => setShowSelectPr(true)}
+                    size="sm"
+                    variant="outline"
+                  >
+                    Select Existing PR
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
+          {isExecutingPlan && (
+            <div className="px-2 py-1">
+              <GenerationStatusIndicator generationStatus={generationStatus} />
+            </div>
+          )}
+        </>
+      ) : null}
       <SelectPullRequestDialog
         documentId={documentId}
         onOpenChange={setShowSelectPr}

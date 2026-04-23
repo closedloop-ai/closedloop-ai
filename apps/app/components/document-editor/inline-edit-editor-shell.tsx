@@ -3,7 +3,13 @@
 import type { ReactNode } from "react";
 
 type InlineEditEditorShellProps = {
-  isEditing: boolean;
+  /**
+   * When true: render the toolbar and let the editor body grow to fit its
+   * content. When false: hide the toolbar and clamp the body to a preview
+   * height. Hosts typically pass `isEditing || isViewingHistorical` so
+   * historical views keep the version selector and restore action visible.
+   */
+  expanded: boolean;
   toolbar: ReactNode;
   children: ReactNode;
 };
@@ -15,18 +21,18 @@ type InlineEditEditorShellProps = {
  * header (title, metadata bar) don't trigger edit mode.
  */
 export function InlineEditEditorShell({
-  isEditing,
+  expanded,
   toolbar,
   children,
 }: Readonly<InlineEditEditorShellProps>) {
   return (
     <>
-      {isEditing ? toolbar : null}
+      {expanded ? toolbar : null}
       <div
         className={
-          isEditing
-            ? "flex min-h-[200px] flex-col"
-            : "flex max-h-[420px] flex-col overflow-hidden"
+          expanded
+            ? "flex min-h-[200px] flex-col border-b"
+            : "flex max-h-[420px] flex-col overflow-hidden border-b"
         }
       >
         {children}

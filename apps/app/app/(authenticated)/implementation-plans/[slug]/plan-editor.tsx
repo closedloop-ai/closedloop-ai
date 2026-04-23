@@ -112,6 +112,7 @@ export function PlanEditor({
   });
   const editMode = useInlineEditMode({
     isLocked: session.isViewingHistorical,
+    editor: session.editor,
   });
 
   // Type assertion for Plan-specific UI state
@@ -136,6 +137,16 @@ export function PlanEditor({
     }
     prevThreadCount.current = session.openThreadCount;
   }, [session.openThreadCount]);
+
+  // Comments are only visible while editing — they're meaningless in read-only view.
+  const commentsVisible = resolveCommentsVisible(
+    editMode.isEditing,
+    showComments
+  );
+  const shellExpanded = resolveShellExpanded(
+    editMode.isEditing,
+    session.isViewingHistorical
+  );
 
   // Fetch generation status with adaptive polling (stops when terminal)
   const { data: generationStatus, invalidateCache: invalidateArtifactCache } =
@@ -228,6 +239,7 @@ export function PlanEditor({
       editor={session.editor}
       hasLiveblocksExtension={!!session.liveblocksRoomId}
       onPasteMarkdown={session.setEditorContent}
+      readOnly={!editMode.isEditing}
     />
   );
 
@@ -321,7 +333,7 @@ export function PlanEditor({
                 />
 
                 <InlineEditEditorShell
-                  isEditing={editMode.isEditing}
+                  expanded={shellExpanded}
                   toolbar={
                     <EditorToolbarRow
                       leftContent={toolbarLeftContent}
@@ -353,7 +365,7 @@ export function PlanEditor({
                     onOpenThreadCountChange={session.handleThreadCountChange}
                     placeholder="Add description..."
                     readOnly={!editMode.isEditing}
-                    showComments={showComments}
+                    showComments={commentsVisible}
                     value={contentController.content}
                   />
                 </InlineEditEditorShell>
@@ -532,4 +544,18 @@ function getPlanRedirectPath(plan: DocumentDetail): string {
     return `/teams/${teamId}/projects/${plan.project?.id ?? ""}`;
   }
   return "/implementation-plans";
+}
+
+function resolveCommentsVisible(
+  isEditing: boolean,
+  userToggledOn: boolean
+): boolean {
+  return isEditing && userToggledOn;
+}
+
+function resolveShellExpanded(
+  isEditing: boolean,
+  isViewingHistorical: boolean
+): boolean {
+  return isEditing || isViewingHistorical;
 }

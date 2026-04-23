@@ -26,9 +26,10 @@ export type EditorWithCommentsProps = {
   /**
    * Fired when the user clicks the editor body (not the header). Hosts use
    * this to enter inline edit mode without the header (title, metadata bar)
-   * triggering the transition.
+   * triggering the transition. Receives the mouse event so the host can
+   * place the cursor at the click position when entering edit mode.
    */
-  onBodyClick?: () => void;
+  onBodyClick?: (event: React.MouseEvent<HTMLDivElement>) => void;
   placeholder?: string;
   readOnly?: boolean;
   scrollMode?: "inner" | "outer";

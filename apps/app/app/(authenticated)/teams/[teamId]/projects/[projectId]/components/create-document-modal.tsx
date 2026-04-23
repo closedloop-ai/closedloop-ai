@@ -11,6 +11,14 @@ import { RunLoopCommand } from "@repo/api/src/types/loop";
 import { getProjectSettings } from "@repo/api/src/types/project";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@repo/design-system/components/ui/command";
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -20,6 +28,11 @@ import {
 } from "@repo/design-system/components/ui/dialog";
 import { Input } from "@repo/design-system/components/ui/input";
 import { Label } from "@repo/design-system/components/ui/label";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@repo/design-system/components/ui/popover";
 import {
   Select,
   SelectContent,
@@ -32,7 +45,14 @@ import {
   type User,
   UserSelectPopover,
 } from "@repo/design-system/components/ui/user-select-popover";
-import { LoaderIcon, SparklesIcon, UploadIcon } from "lucide-react";
+import { cn } from "@repo/design-system/lib/utils";
+import {
+  CheckIcon,
+  ChevronsUpDownIcon,
+  LoaderIcon,
+  SparklesIcon,
+  UploadIcon,
+} from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   HiddenFileInput,
@@ -52,6 +72,8 @@ import { useProject, useProjectsByTeam } from "@/hooks/queries/use-projects";
 import { useTeamMembers } from "@/hooks/queries/use-teams";
 import {
   DOCUMENT_STATUS_LABELS,
+  DOCUMENT_TYPE_BADGE_LABELS,
+  DOCUMENT_TYPE_ICONS,
   DOCUMENT_TYPE_LABELS,
 } from "@/lib/project-constants";
 import { transformApiUserToSelectUser } from "@/lib/user-utils";
@@ -94,8 +116,9 @@ export function CreateDocumentModal({
   const [selectedRepoId, setSelectedRepoId] = useState<string>("");
   const [reverseSynthesisLink, setReverseSynthesisLink] = useState("");
 
-  // PRD selection for implementation plans
-  const [selectedPrdId, setSelectedPrdId] = useState<string>("");
+  // Context source selection for implementation plans (PRD or Feature)
+  const [selectedSourceId, setSelectedSourceId] = useState<string>("");
+  const [sourcePopoverOpen, setSourcePopoverOpen] = useState(false);
 
   // Seed the default GH repository from the project settings
   const { data: project } = useProject(selectedProjectId, {
@@ -137,16 +160,24 @@ export function CreateDocumentModal({
     [repositories]
   );
 
-  // Fetch PRDs when modal opens for implementation plan
-  const { data: artifacts = [], isLoading: loadingPrds } =
+  // Fetch project documents when modal opens for implementation plan
+  const { data: artifacts = [], isLoading: loadingSources } =
     useDocumentsByProject(selectedProjectId, {
       enabled: open && isImplementationPlan && !!selectedProjectId,
     });
 
-  // Filter to get only PRDs
-  const prds = useMemo(
-    () => artifacts.filter((a) => a.type === "PRD"),
+  // Filter to PRDs and Features — either can serve as an implementation plan's context.
+  const contextSources = useMemo(
+    () =>
+      artifacts.filter(
+        (a) => a.type === DocumentType.Prd || a.type === DocumentType.Feature
+      ),
     [artifacts]
+  );
+
+  const selectedSource = useMemo(
+    () => contextSources.find((s) => s.id === selectedSourceId) ?? null,
+    [contextSources, selectedSourceId]
   );
 
   // Fetch team members for approver dropdown
@@ -173,15 +204,15 @@ export function CreateDocumentModal({
     }
   }, [branchesData, targetBranch]);
 
-  // Pre-populate fields from selected PRD for implementation plans
+  // Pre-populate fields from selected context source (PRD or Feature).
   useEffect(() => {
-    if (!(isImplementationPlan && selectedPrdId)) {
+    if (!(isImplementationPlan && selectedSourceId)) {
       return;
     }
 
-    const populatedFields = populateFieldsFromPrd(
-      selectedPrdId,
-      prds,
+    const populatedFields = populateFieldsFromSource(
+      selectedSourceId,
+      contextSources,
       repositories,
       transformedUsers
     );
@@ -195,8 +226,8 @@ export function CreateDocumentModal({
     }
   }, [
     isImplementationPlan,
-    selectedPrdId,
-    prds,
+    selectedSourceId,
+    contextSources,
     repositories,
     transformedUsers,
   ]);
@@ -222,7 +253,7 @@ export function CreateDocumentModal({
   const handleProjectChange = (newProjectId: string) => {
     setSelectedProjectId(newProjectId);
     // Clear project-scoped state so stale selections don't carry over
-    setSelectedPrdId("");
+    setSelectedSourceId("");
     hasSeededRepoRef.current = false;
   };
 
@@ -242,7 +273,7 @@ export function CreateDocumentModal({
     setContent("");
     setSelectedApprover(null);
     setStatus("DRAFT");
-    setSelectedPrdId("");
+    setSelectedSourceId("");
     setReverseSynthesisLink("");
     setError(null);
     fileInputRef.current?.reset();
@@ -287,11 +318,10 @@ export function CreateDocumentModal({
         targetRepo: targetRepo.trim() || undefined,
         targetBranch: targetBranch.trim() || undefined,
         ...(isImplementationPlan &&
-          selectedPrdId && {
-            sourceId: selectedPrdId,
+          selectedSourceId && {
+            sourceId: selectedSourceId,
             sourceType: "DOCUMENT",
-            sourceVersion: prds.find((p) => p.id === selectedPrdId)
-              ?.latestVersion,
+            sourceVersion: selectedSource?.latestVersion,
           }),
       },
       {
@@ -416,20 +446,20 @@ export function CreateDocumentModal({
             <div className="space-y-2">
               <Label
                 className="font-normal text-muted-foreground text-xs"
-                htmlFor="source-prd"
+                htmlFor="context-source"
               >
-                Source PRD (optional)
+                Context Source (optional)
               </Label>
-              <Select onValueChange={setSelectedPrdId} value={selectedPrdId}>
-                <SelectTrigger id="source-prd">
-                  <SelectValue placeholder="Select a PRD..." />
-                </SelectTrigger>
-                <SelectContent>
-                  <PrdSelectContent loading={loadingPrds} prds={prds} />
-                </SelectContent>
-              </Select>
+              <ContextSourceCombobox
+                loading={loadingSources}
+                onOpenChange={setSourcePopoverOpen}
+                onSelect={setSelectedSourceId}
+                open={sourcePopoverOpen}
+                selectedSource={selectedSource}
+                sources={contextSources}
+              />
               <p className="text-muted-foreground text-xs">
-                The implementation plan will be generated from this PRD.
+                The implementation plan will be generated from this document.
               </p>
             </div>
           ) : null}
@@ -545,45 +575,134 @@ export function CreateDocumentModal({
   );
 }
 
-function PrdSelectContent({
+type ContextSourceComboboxProps = {
+  loading: boolean;
+  onOpenChange: (open: boolean) => void;
+  onSelect: (id: string) => void;
+  open: boolean;
+  selectedSource: DocumentWithWorkstream | null;
+  sources: DocumentWithWorkstream[];
+};
+
+function ContextSourceCombobox({
   loading,
-  prds,
+  onOpenChange,
+  onSelect,
+  open,
+  selectedSource,
+  sources,
+}: Readonly<ContextSourceComboboxProps>) {
+  return (
+    <Popover onOpenChange={onOpenChange} open={open}>
+      <PopoverTrigger asChild>
+        <Button
+          aria-expanded={open}
+          className="w-full justify-between font-normal"
+          id="context-source"
+          role="combobox"
+          type="button"
+          variant="outline"
+        >
+          <ContextSourceTriggerLabel
+            loading={loading}
+            selectedSource={selectedSource}
+          />
+          <ChevronsUpDownIcon className="h-4 w-4 shrink-0 opacity-50" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="start"
+        className="w-[--radix-popover-trigger-width] p-0"
+      >
+        <Command>
+          <CommandInput placeholder="Search PRDs and features..." />
+          <CommandList>
+            <CommandEmpty>
+              {loading
+                ? "Loading…"
+                : "No PRDs or features in this project yet."}
+            </CommandEmpty>
+            <CommandGroup>
+              {sources.map((source) => (
+                <ContextSourceItem
+                  key={source.id}
+                  onSelect={(id) => {
+                    onSelect(id);
+                    onOpenChange(false);
+                  }}
+                  selected={selectedSource?.id === source.id}
+                  source={source}
+                />
+              ))}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+function ContextSourceTriggerLabel({
+  loading,
+  selectedSource,
 }: Readonly<{
   loading: boolean;
-  prds: DocumentWithWorkstream[];
+  selectedSource: DocumentWithWorkstream | null;
 }>) {
-  if (loading) {
+  if (selectedSource) {
+    const Icon = DOCUMENT_TYPE_ICONS[selectedSource.type];
     return (
-      <div className="flex items-center justify-center p-2">
-        <LoaderIcon className="h-4 w-4 animate-spin" />
-      </div>
-    );
-  }
-  if (prds.length === 0) {
-    return (
-      <div className="p-2 text-center text-muted-foreground text-sm">
-        No PRDs in this project. Create a PRD first.
-      </div>
+      <span className="flex min-w-0 items-center gap-2">
+        <Icon className="h-4 w-4 shrink-0 text-muted-foreground" />
+        <span className="truncate">{selectedSource.title}</span>
+      </span>
     );
   }
   return (
-    <>
-      {prds.map((prd) => (
-        <SelectItem key={prd.id} value={prd.id}>
-          {prd.title}
-        </SelectItem>
-      ))}
-    </>
+    <span className="text-muted-foreground">
+      {loading ? "Loading…" : "Select a PRD or feature…"}
+    </span>
+  );
+}
+
+function ContextSourceItem({
+  onSelect,
+  selected,
+  source,
+}: Readonly<{
+  onSelect: (id: string) => void;
+  selected: boolean;
+  source: DocumentWithWorkstream;
+}>) {
+  const Icon = DOCUMENT_TYPE_ICONS[source.type];
+  const badgeLabel = DOCUMENT_TYPE_BADGE_LABELS[source.type];
+  return (
+    <CommandItem
+      onSelect={() => onSelect(source.id)}
+      value={`${source.title} ${badgeLabel} ${source.slug ?? ""}`}
+    >
+      <Icon className="h-4 w-4 shrink-0 text-muted-foreground" />
+      <span className="min-w-[44px] shrink-0 font-medium text-muted-foreground text-xs">
+        {badgeLabel}
+      </span>
+      <span className="truncate">{source.title}</span>
+      <CheckIcon
+        className={cn(
+          "ml-auto h-4 w-4",
+          selected ? "opacity-100" : "opacity-0"
+        )}
+      />
+    </CommandItem>
   );
 }
 
 /**
- * Pre-populates form fields from a selected PRD.
- * Returns updated field values or null if PRD not found.
+ * Pre-populates form fields from a selected context source document.
+ * Returns updated field values or null if the source is not found.
  */
-function populateFieldsFromPrd(
-  prdId: string,
-  prds: DocumentWithWorkstream[],
+function populateFieldsFromSource(
+  sourceId: string,
+  sources: DocumentWithWorkstream[],
   repositories: Array<{ id: string; fullName: string }> | undefined,
   transformedUsers: User[]
 ): {
@@ -593,27 +712,27 @@ function populateFieldsFromPrd(
   targetBranch: string;
   selectedRepoId: string;
 } | null {
-  const selectedPrd = prds.find((p) => p.id === prdId);
-  if (!selectedPrd) {
+  const selectedSource = sources.find((s) => s.id === sourceId);
+  if (!selectedSource) {
     return null;
   }
 
-  const matchingApprover = selectedPrd.approver
-    ? transformedUsers.find((u) => u.id === selectedPrd.approver?.id)
+  const matchingApprover = selectedSource.approver
+    ? transformedUsers.find((u) => u.id === selectedSource.approver?.id)
     : null;
 
   const basicFields = {
     approver: matchingApprover || null,
-    status: selectedPrd.status ?? DocumentStatus.Draft,
-    targetRepo: selectedPrd.targetRepo ?? "",
-    targetBranch: selectedPrd.targetBranch ?? "main",
+    status: selectedSource.status ?? DocumentStatus.Draft,
+    targetRepo: selectedSource.targetRepo ?? "",
+    targetBranch: selectedSource.targetBranch ?? "main",
   };
 
-  // Resolve selectedRepoId from PRD's targetRepo
+  // Resolve selectedRepoId from the source's targetRepo
   let selectedRepoId = "";
-  if (selectedPrd.targetRepo && repositories) {
+  if (selectedSource.targetRepo && repositories) {
     const matchingRepo = repositories.find(
-      (repo) => repo.fullName === selectedPrd.targetRepo
+      (repo) => repo.fullName === selectedSource.targetRepo
     );
     if (matchingRepo) {
       selectedRepoId = matchingRepo.id;

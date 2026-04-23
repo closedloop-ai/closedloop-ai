@@ -63,6 +63,7 @@ export function PreviewSection({ documentId }: Readonly<PreviewSectionProps>) {
     () => groupDeployLinksByTimestamp(previewLinks),
     [previewLinks]
   );
+  const [isOpen, setIsOpen] = useState(true);
   const [openGroupIds, setOpenGroupIds] = useState<string[]>(() =>
     deployGroups[0] ? [deployGroups[0].id] : []
   );
@@ -71,8 +72,8 @@ export function PreviewSection({ documentId }: Readonly<PreviewSectionProps>) {
     setOpenGroupIds(deployGroups[0] ? [deployGroups[0].id] : []);
   }, [deployGroups]);
 
-  function handleGroupOpenChange(groupId: string, isOpen: boolean) {
-    if (isOpen) {
+  function handleGroupOpenChange(groupId: string, isGroupOpen: boolean) {
+    if (isGroupOpen) {
       setOpenGroupIds((previousOpenGroups) =>
         previousOpenGroups.includes(groupId)
           ? previousOpenGroups
@@ -88,111 +89,136 @@ export function PreviewSection({ documentId }: Readonly<PreviewSectionProps>) {
 
   return (
     <div className="bg-background">
-      <SectionHeader title="Deploy" />
-      {deployGroups.length > 0 ? (
-        <div className="flex flex-col">
-          {deployGroups.map((deployGroup) => {
-            const isOpen = openGroupIds.includes(deployGroup.id);
-
-            return (
-              <Collapsible
-                key={deployGroup.id}
-                onOpenChange={(nextOpenState) =>
-                  handleGroupOpenChange(deployGroup.id, nextOpenState)
-                }
-                open={isOpen}
-              >
-                <CollapsibleTrigger className="flex w-full items-center justify-between px-2 py-2 text-left text-sm hover:bg-accent/50">
-                  <div className="flex items-center gap-2">
-                    <span className="font-medium">
-                      {formatDateTime(deployGroup.timestamp)}
-                    </span>
-                    <Badge variant="secondary">
-                      {deployGroup.links.length}
-                    </Badge>
-                  </div>
-                  {isOpen ? (
-                    <ChevronUpIcon className="h-4 w-4 text-muted-foreground" />
-                  ) : (
-                    <ChevronDownIcon className="h-4 w-4 text-muted-foreground" />
-                  )}
-                </CollapsibleTrigger>
-                <CollapsibleContent>
-                  {deployGroup.links.map((linked) => {
-                    // Already filtered to ExternalLink by previewLinks
-                    const resolved = linked.resolvedEntity as Extract<
-                      typeof linked.resolvedEntity,
-                      { type: "EXTERNAL_LINK" }
-                    >;
-                    const externalLink = resolved.entity;
-                    const deployMeta = parseDeploymentMetadata(
-                      externalLink.metadata
-                    );
-                    if (!externalLink.externalUrl) {
-                      return (
-                        <div
-                          className="flex items-center gap-2 px-2 py-2 text-muted-foreground"
-                          key={linked.id}
-                        >
-                          <ExternalLinkIcon className="h-4 w-4 shrink-0" />
-                          <span className="truncate font-medium text-sm">
-                            {externalLink.title}
-                          </span>
-                          {deployMeta?.environment ? (
-                            <Badge className="shrink-0" variant="outline">
-                              {deployMeta.environment}
-                            </Badge>
-                          ) : (
-                            <span className="shrink-0 text-xs">
-                              Deploying...
-                            </span>
-                          )}
-                          <OverflowMenu
-                            linkId={linked.id}
-                            onUnlink={handleUnlink}
-                          />
-                        </div>
-                      );
-                    }
-                    return (
-                      <div
-                        className="flex items-center gap-2 px-2 py-2"
-                        key={linked.id}
-                      >
-                        <a
-                          className="flex min-w-0 flex-1 items-center gap-2 rounded-md hover:bg-accent"
-                          href={externalLink.externalUrl}
-                          rel="noopener noreferrer"
-                          target="_blank"
-                        >
-                          <ExternalLinkIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
-                          <span className="truncate font-medium text-sm">
-                            {externalLink.title}
-                          </span>
-                          <span className="truncate text-muted-foreground text-xs">
-                            {externalLink.externalUrl}
-                          </span>
-                        </a>
-                        {deployMeta?.environment ? (
-                          <Badge className="shrink-0" variant="outline">
-                            {deployMeta.environment}
-                          </Badge>
-                        ) : null}
-                        <OverflowMenu
-                          linkId={linked.id}
-                          onUnlink={handleUnlink}
-                        />
-                      </div>
-                    );
-                  })}
-                </CollapsibleContent>
-              </Collapsible>
-            );
-          })}
-        </div>
-      ) : (
-        <p className="py-3 text-base text-muted-foreground">No deployments</p>
+      <SectionHeader
+        isOpen={isOpen}
+        onToggle={() => setIsOpen((prev) => !prev)}
+        title="Deploy"
+      />
+      {isOpen && (
+        <DeployBody
+          deployGroups={deployGroups}
+          onGroupOpenChange={handleGroupOpenChange}
+          onUnlink={handleUnlink}
+          openGroupIds={openGroupIds}
+        />
       )}
+    </div>
+  );
+}
+
+type DeployBodyProps = {
+  deployGroups: DeployGroup[];
+  openGroupIds: string[];
+  onGroupOpenChange: (groupId: string, isGroupOpen: boolean) => void;
+  onUnlink: (linkId: string) => void;
+};
+
+function DeployBody({
+  deployGroups,
+  openGroupIds,
+  onGroupOpenChange,
+  onUnlink,
+}: Readonly<DeployBodyProps>) {
+  if (deployGroups.length === 0) {
+    return (
+      <p className="py-3 text-base text-muted-foreground">No deployments</p>
+    );
+  }
+  return (
+    <div className="flex flex-col">
+      {deployGroups.map((deployGroup) => {
+        const isGroupOpen = openGroupIds.includes(deployGroup.id);
+        return (
+          <Collapsible
+            key={deployGroup.id}
+            onOpenChange={(nextOpenState) =>
+              onGroupOpenChange(deployGroup.id, nextOpenState)
+            }
+            open={isGroupOpen}
+          >
+            <CollapsibleTrigger className="flex w-full items-center justify-between px-2 py-2 text-left text-sm hover:bg-accent/50">
+              <div className="flex items-center gap-2">
+                <span className="font-medium">
+                  {formatDateTime(deployGroup.timestamp)}
+                </span>
+                <Badge variant="secondary">{deployGroup.links.length}</Badge>
+              </div>
+              {isGroupOpen ? (
+                <ChevronUpIcon className="h-4 w-4 text-muted-foreground" />
+              ) : (
+                <ChevronDownIcon className="h-4 w-4 text-muted-foreground" />
+              )}
+            </CollapsibleTrigger>
+            <CollapsibleContent>
+              {deployGroup.links.map((linked) => (
+                <DeployRow
+                  key={linked.id}
+                  linked={linked}
+                  onUnlink={onUnlink}
+                />
+              ))}
+            </CollapsibleContent>
+          </Collapsible>
+        );
+      })}
+    </div>
+  );
+}
+
+type DeployRowProps = {
+  linked: LinkedEntity;
+  onUnlink: (linkId: string) => void;
+};
+
+function DeployRow({ linked, onUnlink }: Readonly<DeployRowProps>) {
+  const resolved = linked.resolvedEntity as Extract<
+    typeof linked.resolvedEntity,
+    { type: "EXTERNAL_LINK" }
+  >;
+  const externalLink = resolved.entity;
+  const deployMeta = parseDeploymentMetadata(externalLink.metadata);
+
+  if (!externalLink.externalUrl) {
+    return (
+      <div className="flex items-center gap-2 px-2 py-2 text-muted-foreground">
+        <ExternalLinkIcon className="h-4 w-4 shrink-0" />
+        <span className="truncate font-medium text-sm">
+          {externalLink.title}
+        </span>
+        {deployMeta?.environment ? (
+          <Badge className="shrink-0" variant="outline">
+            {deployMeta.environment}
+          </Badge>
+        ) : (
+          <span className="shrink-0 text-xs">Deploying...</span>
+        )}
+        <OverflowMenu linkId={linked.id} onUnlink={onUnlink} />
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex items-center gap-2 px-2 py-2">
+      <a
+        className="flex min-w-0 flex-1 items-center gap-2 rounded-md hover:bg-accent"
+        href={externalLink.externalUrl}
+        rel="noopener noreferrer"
+        target="_blank"
+      >
+        <ExternalLinkIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
+        <span className="truncate font-medium text-sm">
+          {externalLink.title}
+        </span>
+        <span className="truncate text-muted-foreground text-xs">
+          {externalLink.externalUrl}
+        </span>
+      </a>
+      {deployMeta?.environment ? (
+        <Badge className="shrink-0" variant="outline">
+          {deployMeta.environment}
+        </Badge>
+      ) : null}
+      <OverflowMenu linkId={linked.id} onUnlink={onUnlink} />
     </div>
   );
 }

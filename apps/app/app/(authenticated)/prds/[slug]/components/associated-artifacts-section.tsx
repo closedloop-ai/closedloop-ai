@@ -8,21 +8,13 @@ import {
   LinkQueryMode,
   LinkType,
 } from "@repo/api/src/types/entity-link";
-import { isDisplayableSlug } from "@repo/api/src/types/slug";
-import { StatusIcon } from "@repo/design-system/components/ui/status-icon";
-import { cn } from "@repo/design-system/lib/utils";
-import { ChevronDownIcon, ChevronRightIcon } from "lucide-react";
-import Link from "next/link";
 import { useMemo, useState } from "react";
-import { AssigneeAvatar } from "@/components/assignee-avatar";
+import { ArtifactRow } from "@/components/document-editor/relationships/artifact-row";
 import { SectionHeader } from "@/components/document-editor/relationships/section-header";
-import { useLinkedEntities } from "@/hooks/queries/use-entity-links";
-import { getDocumentRoute } from "@/lib/document-navigation";
 import {
-  DOCUMENT_STATUS_TO_ICON,
-  DOCUMENT_TYPE_BADGE_LABELS,
-  DOCUMENT_TYPE_ICONS,
-} from "@/lib/project-constants";
+  useDeleteEntityLink,
+  useLinkedEntities,
+} from "@/hooks/queries/use-entity-links";
 
 type AssociatedArtifactsSectionProps = {
   prdId: string;
@@ -31,19 +23,21 @@ type AssociatedArtifactsSectionProps = {
 type TreeNode = {
   document: Document;
   children: TreeNode[];
+  /** EntityLink id connecting this document to its parent in the tree. */
+  linkId: string | null;
 };
 
-const DEFAULT_EXPAND_DEPTH = 1;
-const INDENT_PER_DEPTH_PX = 20;
-
 /**
- * Nested list of all Documents transitively produced by a PRD —
+ * Flat, always-expanded list of all Documents transitively produced by a PRD —
  * typically Features at depth 1 and their Plans at depth 2, but renders
  * any depth so that future downstream doc types appear automatically.
+ * Parent/child relationships are conveyed purely through indentation.
  */
 export function AssociatedArtifactsSection({
   prdId,
 }: Readonly<AssociatedArtifactsSectionProps>) {
+  const [isOpen, setIsOpen] = useState(true);
+
   const { data: linkedEntities = [] } = useLinkedEntities(
     prdId,
     EntityType.Document,
@@ -54,109 +48,70 @@ export function AssociatedArtifactsSection({
     }
   );
 
-  const tree = useMemo(
-    () => buildTree(prdId, linkedEntities),
+  const flattened = useMemo(
+    () => flattenTree(buildTree(prdId, linkedEntities)),
     [prdId, linkedEntities]
   );
 
   return (
     <div className="bg-background">
-      <SectionHeader title="Associated Artifacts" />
-      {tree.length === 0 ? (
-        <p className="py-3 text-base text-muted-foreground">
-          No associated features yet. Generate features from this PRD to get
-          started.
-        </p>
-      ) : (
-        <div className="flex flex-col">
-          {tree.map((node) => (
-            <AssociatedArtifactRow
-              depth={1}
-              key={node.document.id}
-              node={node}
-            />
-          ))}
-        </div>
-      )}
+      <SectionHeader
+        isOpen={isOpen}
+        onToggle={() => setIsOpen((prev) => !prev)}
+        title="Associated Artifacts"
+      />
+      {isOpen && <AssociatedArtifactsBody flattened={flattened} />}
     </div>
   );
 }
 
-type AssociatedArtifactRowProps = {
-  node: TreeNode;
+type FlattenedRow = {
+  document: Document;
+  linkId: string | null;
   depth: number;
 };
 
-function AssociatedArtifactRow({
-  node,
-  depth,
-}: Readonly<AssociatedArtifactRowProps>) {
-  const { document: artifact, children } = node;
-  const [isExpanded, setIsExpanded] = useState(depth <= DEFAULT_EXPAND_DEPTH);
+type AssociatedArtifactsBodyProps = {
+  flattened: FlattenedRow[];
+};
 
-  const Icon = DOCUMENT_TYPE_ICONS[artifact.type];
-  const badgeLabel = DOCUMENT_TYPE_BADGE_LABELS[artifact.type];
-  const statusIconStatus = DOCUMENT_STATUS_TO_ICON[artifact.status];
-  const route = getDocumentRoute(artifact);
-  const hasChildren = children.length > 0;
-  const indentPx = (depth - 1) * INDENT_PER_DEPTH_PX;
+function AssociatedArtifactsBody({
+  flattened,
+}: Readonly<AssociatedArtifactsBodyProps>) {
+  const deleteEntityLink = useDeleteEntityLink();
 
+  if (flattened.length === 0) {
+    return (
+      <p className="py-3 text-base text-muted-foreground">
+        No associated features yet. Generate features from this PRD to get
+        started.
+      </p>
+    );
+  }
   return (
-    <>
-      <div
-        className="flex items-center px-2 py-1"
-        style={{ paddingLeft: `${indentPx + 8}px` }}
-      >
-        <div className="flex shrink-0 items-center">
-          {hasChildren ? (
-            <button
-              aria-label={isExpanded ? "Collapse" : "Expand"}
-              className="flex h-5 w-5 items-center justify-center rounded text-muted-foreground hover:bg-accent"
-              onClick={() => setIsExpanded((prev) => !prev)}
-              type="button"
-            >
-              {isExpanded ? (
-                <ChevronDownIcon className="h-3.5 w-3.5" />
-              ) : (
-                <ChevronRightIcon className="h-3.5 w-3.5" />
-              )}
-            </button>
-          ) : (
-            <span className="inline-block h-5 w-5" />
-          )}
-        </div>
-        <Link
-          className={cn(
-            "flex min-w-0 flex-1 items-center gap-2 rounded-md hover:bg-accent"
-          )}
-          href={route ?? "#"}
-        >
-          <div className="flex shrink-0 items-center p-1">
-            <Icon className="h-4 w-4 text-muted-foreground" />
-          </div>
-          <span className="min-w-[60px] shrink-0 truncate font-medium text-muted-foreground text-xs">
-            {isDisplayableSlug(artifact.slug) ? artifact.slug : badgeLabel}
-          </span>
-          <span className="truncate px-1 font-medium text-sm">
-            {artifact.title}
-          </span>
-        </Link>
-        <div className="flex h-9 shrink-0 items-center gap-2">
-          <AssigneeAvatar assignee={artifact.assignee} />
-          <StatusIcon size={20} status={statusIconStatus} />
-        </div>
-      </div>
-      {hasChildren && isExpanded
-        ? children.map((child) => (
-            <AssociatedArtifactRow
-              depth={depth + 1}
-              key={child.document.id}
-              node={child}
-            />
-          ))
-        : null}
-    </>
+    <div className="flex flex-col border-t">
+      {flattened.map((row) => (
+        <ArtifactRow
+          artifact={row.document}
+          depth={row.depth}
+          key={row.document.id}
+          linkId={row.linkId}
+          onDetach={(id) => deleteEntityLink.mutate(id)}
+        />
+      ))}
+    </div>
   );
+}
+
+function flattenTree(nodes: TreeNode[], depth = 1): FlattenedRow[] {
+  const rows: FlattenedRow[] = [];
+  for (const node of nodes) {
+    rows.push({ document: node.document, linkId: node.linkId, depth });
+    if (node.children.length > 0) {
+      rows.push(...flattenTree(node.children, depth + 1));
+    }
+  }
+  return rows;
 }
 
 /**
@@ -165,7 +120,10 @@ function AssociatedArtifactRow({
  * sourceId and walk from the root. Cycles and self-links are guarded.
  */
 function buildTree(rootId: string, linkedEntities: LinkedEntity[]): TreeNode[] {
-  const childrenByParent = new Map<string, Document[]>();
+  const childrenByParent = new Map<
+    string,
+    { doc: Document; linkId: string }[]
+  >();
 
   for (const link of linkedEntities) {
     if (
@@ -176,8 +134,8 @@ function buildTree(rootId: string, linkedEntities: LinkedEntity[]): TreeNode[] {
     }
     const child = link.resolvedEntity.entity;
     const existing = childrenByParent.get(link.sourceId) ?? [];
-    if (!existing.some((doc) => doc.id === child.id)) {
-      existing.push(child);
+    if (!existing.some((entry) => entry.doc.id === child.id)) {
+      existing.push({ doc: child, linkId: link.id });
     }
     childrenByParent.set(link.sourceId, existing);
   }
@@ -185,13 +143,14 @@ function buildTree(rootId: string, linkedEntities: LinkedEntity[]): TreeNode[] {
   function walk(parentId: string, visited: Set<string>): TreeNode[] {
     const directChildren = childrenByParent.get(parentId) ?? [];
     return directChildren
-      .filter((doc) => !visited.has(doc.id))
-      .map((doc) => {
+      .filter((entry) => !visited.has(entry.doc.id))
+      .map((entry) => {
         const nextVisited = new Set(visited);
-        nextVisited.add(doc.id);
+        nextVisited.add(entry.doc.id);
         return {
-          document: doc,
-          children: walk(doc.id, nextVisited),
+          document: entry.doc,
+          linkId: entry.linkId,
+          children: walk(entry.doc.id, nextVisited),
         };
       });
   }

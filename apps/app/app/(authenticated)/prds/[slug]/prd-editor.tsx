@@ -100,6 +100,7 @@ export function PRDEditor({
   const prdActions = usePrdActions({ documentId: prd.id });
   const editMode = useInlineEditMode({
     isLocked: session.isViewingHistorical,
+    editor: session.editor,
   });
 
   // Type assertion: useDocumentUIState returns a union; narrow to the PRD/Feature branch
@@ -203,7 +204,7 @@ export function PRDEditor({
                 />
 
                 <InlineEditEditorShell
-                  isEditing={editMode.isEditing}
+                  expanded={editMode.isEditing || session.isViewingHistorical}
                   toolbar={
                     <EditorToolbarRow
                       leftContent={
@@ -212,6 +213,7 @@ export function PRDEditor({
                           editor={session.editor}
                           hasLiveblocksExtension={!!session.liveblocksRoomId}
                           onPasteMarkdown={session.setEditorContent}
+                          readOnly={!editMode.isEditing}
                         />
                       }
                       rightContent={
@@ -264,7 +266,7 @@ export function PRDEditor({
                     onOpenThreadCountChange={session.handleThreadCountChange}
                     placeholder="Add description..."
                     readOnly={!editMode.isEditing}
-                    showComments={showComments}
+                    showComments={editMode.isEditing && showComments}
                     value={contentController.content}
                   />
                 </InlineEditEditorShell>

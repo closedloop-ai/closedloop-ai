@@ -49,15 +49,17 @@ export function EditorToolbarActions({
       >
         Restore Version
       </Button>
-      <Button
-        disabled={!canSaveVersion || isSaving}
-        // swallow the event
-        onClick={() => onSaveVersion()}
-        size="sm"
-        variant="outline"
-      >
-        {isSaving ? "Saving..." : "Save New Version"}
-      </Button>
+      {canSaveVersion && (
+        <Button
+          disabled={isSaving}
+          // swallow the event
+          onClick={() => onSaveVersion()}
+          size="sm"
+          variant="outline"
+        >
+          {isSaving ? "Saving..." : "Save New Version"}
+        </Button>
+      )}
     </>
   );
 }
