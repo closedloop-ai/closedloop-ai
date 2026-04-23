@@ -21,6 +21,16 @@ export type TelemetryHandlerContext = {
    * gatewaySessionId forwarded by relay or from SocketConnectionContext.
    */
   gatewaySessionId?: string;
+  /**
+   * Server-enriched organizationId from the authenticated socket context.
+   * NOT trusted from the desktop payload.
+   */
+  organizationId?: string;
+  /**
+   * Server-enriched userId from the authenticated socket context.
+   * NOT trusted from the desktop payload.
+   */
+  userId?: string;
 };
 
 export type TelemetryHandlerResult =
@@ -132,6 +142,10 @@ export function handleTelemetryEvent(
       ...(event.message !== undefined && { message: event.message }),
       ...(event.errorClass !== undefined && { errorClass: event.errorClass }),
       origin: Origin.Desktop,
+      ...(context.organizationId !== undefined && {
+        organizationId: context.organizationId,
+      }),
+      ...(context.userId !== undefined && { userId: context.userId }),
     });
   } catch (error) {
     const errorClass =
@@ -150,6 +164,10 @@ export function handleTelemetryEvent(
       ...(event.message !== undefined && { message: event.message }),
       ...(event.errorClass !== undefined && { errorClass: event.errorClass }),
       origin: Origin.Desktop,
+      ...(context.organizationId !== undefined && {
+        organizationId: context.organizationId,
+      }),
+      ...(context.userId !== undefined && { userId: context.userId }),
     });
 
     // Structured warning — only bounded-cardinality fields, no PII.

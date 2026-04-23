@@ -535,6 +535,8 @@ function handleSocketConnection(socket: Socket): void {
         authenticatedTargetId: context.targetId,
         pluginVersion: context.pluginVersion,
         gatewaySessionId: context.sessionId,
+        organizationId: context.organizationId,
+        userId: context.userId,
       });
       if (!result.ok) {
         for (const emit of result.emits) {

@@ -88,6 +88,8 @@ export const telemetryTraceContextSchema = z.object({
   serverVersion: z.string().optional(),
   pluginVersion: z.string().optional(),
   schemaVersion: z.string(),
+  desktopClientVersion: z.string().optional(),
+  gatewayProtocolVersion: z.string().optional(),
 });
 
 export type TelemetryTraceContext = z.infer<typeof telemetryTraceContextSchema>;
@@ -107,6 +109,25 @@ const desktopTelemetryDiagnosticsSchema = z.object({
     .object({
       inputTokens: z.number(),
       outputTokens: z.number(),
+      cacheCreationInputTokens: z.number().optional(),
+      cacheReadInputTokens: z.number().optional(),
+    })
+    .optional(),
+  stderrTail: z.string().optional(),
+  exitSignal: z.string().optional(),
+  elapsedMs: z.number().optional(),
+  stdoutBytes: z.number().optional(),
+  abortReason: z.string().optional(),
+  diagnosticsVersion: z.number().optional(),
+  spawnMeta: z
+    .object({
+      command: z.string(),
+      args: z.array(z.string()),
+      cwd: z.string(),
+      claudeVersion: z.string().optional(),
+      binaryPath: z.string(),
+      authFilesExist: z.boolean(),
+      envSnapshot: z.record(z.string(), z.string()),
     })
     .optional(),
 });
@@ -144,6 +165,8 @@ const desktopTelemetryEventInputSchema = z.object({
     environment: z.string().optional(),
     serverVersion: z.string().optional(),
     pluginVersion: z.string().optional(),
+    desktopClientVersion: z.string().optional(),
+    gatewayProtocolVersion: z.string().optional(),
   }),
   diagnostics: desktopTelemetryDiagnosticsSchema.optional(),
   message: z.string().optional(),
