@@ -8,7 +8,7 @@
 # ---------------------------------------------------------------------------
 # Stage 1: Builder — install deps & compile TypeScript
 # ---------------------------------------------------------------------------
-FROM test-pln311-partial-failure-does-not-exist:latest AS builder
+FROM node:22-slim AS builder
 
 RUN corepack enable && corepack prepare pnpm@10.28.2 --activate
 
