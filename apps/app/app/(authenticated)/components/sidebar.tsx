@@ -76,15 +76,25 @@ const orgSwitcherAppearance = {
     organizationSwitcherTriggerIcon: {
       color: "var(--sidebar-foreground)",
       opacity: "0.7",
+      marginLeft: "auto",
+      flexShrink: "0",
+    },
+    organizationPreview: {
+      minWidth: "0",
+      overflow: "hidden",
     },
     organizationPreviewMainIdentifier: {
       fontSize: "0.875rem",
       fontWeight: "500",
       color: "var(--sidebar-foreground)",
+      overflow: "hidden",
+      textOverflow: "ellipsis",
+      whiteSpace: "nowrap",
     },
     organizationPreviewAvatarContainer: {
       width: "1.75rem",
       height: "1.75rem",
+      flexShrink: "0",
     },
     organizationPreviewAvatarBox: {
       width: "1.75rem",
