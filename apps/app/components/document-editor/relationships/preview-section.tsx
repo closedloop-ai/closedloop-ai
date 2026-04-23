@@ -16,7 +16,7 @@ import {
 } from "@repo/design-system/components/ui/collapsible";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { ChevronDownIcon, ChevronUpIcon, ExternalLinkIcon } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   useDeleteEntityLink,
   useLinkedEntities,
@@ -67,9 +67,17 @@ export function PreviewSection({ documentId }: Readonly<PreviewSectionProps>) {
   const [openGroupIds, setOpenGroupIds] = useState<string[]>(() =>
     deployGroups[0] ? [deployGroups[0].id] : []
   );
+  const previousFirstGroupIdRef = useRef<string | undefined>(
+    deployGroups[0]?.id
+  );
 
   useEffect(() => {
-    setOpenGroupIds(deployGroups[0] ? [deployGroups[0].id] : []);
+    const firstGroupId = deployGroups[0]?.id;
+    if (firstGroupId === previousFirstGroupIdRef.current) {
+      return;
+    }
+    previousFirstGroupIdRef.current = firstGroupId;
+    setOpenGroupIds(firstGroupId ? [firstGroupId] : []);
   }, [deployGroups]);
 
   function handleGroupOpenChange(groupId: string, isGroupOpen: boolean) {
@@ -173,7 +181,7 @@ type DeployRowProps = {
 function DeployRow({ linked, onUnlink }: Readonly<DeployRowProps>) {
   const resolved = linked.resolvedEntity as Extract<
     typeof linked.resolvedEntity,
-    { type: "EXTERNAL_LINK" }
+    { type: typeof EntityType.ExternalLink }
   >;
   const externalLink = resolved.entity;
   const deployMeta = parseDeploymentMetadata(externalLink.metadata);

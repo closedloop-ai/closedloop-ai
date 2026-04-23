@@ -220,9 +220,18 @@ export function CreateDocumentModal({
     if (populatedFields) {
       setSelectedApprover(populatedFields.approver);
       setStatus(populatedFields.status);
-      setTargetRepo(populatedFields.targetRepo);
-      setTargetBranch(populatedFields.targetBranch);
-      setSelectedRepoId(populatedFields.selectedRepoId);
+      // Only overwrite repo/branch when the source explicitly defines them.
+      // Features inherit repo/branch from the project, so a null source value
+      // must not clobber the project-seeded defaults already in state.
+      if (populatedFields.targetRepo !== null) {
+        setTargetRepo(populatedFields.targetRepo);
+      }
+      if (populatedFields.targetBranch !== null) {
+        setTargetBranch(populatedFields.targetBranch);
+      }
+      if (populatedFields.selectedRepoId !== null) {
+        setSelectedRepoId(populatedFields.selectedRepoId);
+      }
     }
   }, [
     isImplementationPlan,
@@ -708,9 +717,9 @@ function populateFieldsFromSource(
 ): {
   approver: User | null;
   status: DocumentStatus;
-  targetRepo: string;
-  targetBranch: string;
-  selectedRepoId: string;
+  targetRepo: string | null;
+  targetBranch: string | null;
+  selectedRepoId: string | null;
 } | null {
   const selectedSource = sources.find((s) => s.id === sourceId);
   if (!selectedSource) {
@@ -721,15 +730,9 @@ function populateFieldsFromSource(
     ? transformedUsers.find((u) => u.id === selectedSource.approver?.id)
     : null;
 
-  const basicFields = {
-    approver: matchingApprover || null,
-    status: selectedSource.status ?? DocumentStatus.Draft,
-    targetRepo: selectedSource.targetRepo ?? "",
-    targetBranch: selectedSource.targetBranch ?? "main",
-  };
-
-  // Resolve selectedRepoId from the source's targetRepo
-  let selectedRepoId = "";
+  // Only resolve selectedRepoId when the source has an explicit targetRepo.
+  // A null return means "don't overwrite the caller's current value".
+  let selectedRepoId: string | null = null;
   if (selectedSource.targetRepo && repositories) {
     const matchingRepo = repositories.find(
       (repo) => repo.fullName === selectedSource.targetRepo
@@ -740,7 +743,10 @@ function populateFieldsFromSource(
   }
 
   return {
-    ...basicFields,
+    approver: matchingApprover || null,
+    status: selectedSource.status ?? DocumentStatus.Draft,
+    targetRepo: selectedSource.targetRepo ?? null,
+    targetBranch: selectedSource.targetBranch ?? null,
     selectedRepoId,
   };
 }

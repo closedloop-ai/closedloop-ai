@@ -1,6 +1,7 @@
 "use client";
 
 import { useFeatureFlag } from "@repo/analytics/client";
+import { CustomFieldEntityType } from "@repo/api/src/types/custom-field";
 import {
   type DocumentDetail,
   DocumentType,
@@ -17,6 +18,7 @@ import { Suspense, useEffect, useRef, useState } from "react";
 import { ExecutePlanModal } from "@/app/(authenticated)/implementation-plans/components/execute-plan-modal";
 import { VersionSelector } from "@/app/(authenticated)/implementation-plans/components/version-selector";
 import { BackendMismatchModal } from "@/components/backend-mismatch-modal";
+import { CustomFieldsSection } from "@/components/custom-fields/custom-fields-section";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { AttachmentsRow } from "@/components/document-editor/attachments-row";
 import { CollaborativeEditor } from "@/components/document-editor/collaborative-editor";
@@ -226,6 +228,11 @@ export function FeaturePage({
                     documentId={feature.id}
                     judgeItems={null}
                     title="Agent Evaluation"
+                  />
+                  <CustomFieldsSection
+                    entityId={feature.id}
+                    entityType={CustomFieldEntityType.Document}
+                    values={feature.customFields}
                   />
                   <ContextSection
                     featureId={feature.id}

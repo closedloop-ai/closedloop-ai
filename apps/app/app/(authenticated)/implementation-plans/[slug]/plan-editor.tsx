@@ -380,7 +380,10 @@ export function PlanEditor({
                     judgeItems={judgesReport ?? null}
                     title="Agent Evaluation"
                   />
-                  <PlanContextSection planId={plan.id} />
+                  <PlanContextSection
+                    planId={plan.id}
+                    projectId={plan.projectId}
+                  />
                   <BranchesSection
                     documentId={plan.id}
                     planId={plan.id}
