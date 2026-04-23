@@ -1,7 +1,5 @@
 "use client";
 
-import type { Document } from "@repo/api/src/types/document";
-import type { LinkedEntity } from "@repo/api/src/types/entity-link";
 import {
   EntityType,
   LinkDirection,
@@ -15,16 +13,13 @@ import {
   useDeleteEntityLink,
   useLinkedEntities,
 } from "@/hooks/queries/use-entity-links";
+import {
+  type FlattenedArtifactRow,
+  flattenAssociatedArtifacts,
+} from "./flatten-associated-artifacts";
 
 type AssociatedArtifactsSectionProps = {
   prdId: string;
-};
-
-type TreeNode = {
-  document: Document;
-  children: TreeNode[];
-  /** EntityLink id connecting this document to its parent in the tree. */
-  linkId: string | null;
 };
 
 /**
@@ -49,7 +44,7 @@ export function AssociatedArtifactsSection({
   );
 
   const flattened = useMemo(
-    () => flattenTree(buildTree(prdId, linkedEntities)),
+    () => flattenAssociatedArtifacts(prdId, linkedEntities),
     [prdId, linkedEntities]
   );
 
@@ -65,14 +60,8 @@ export function AssociatedArtifactsSection({
   );
 }
 
-type FlattenedRow = {
-  document: Document;
-  linkId: string | null;
-  depth: number;
-};
-
 type AssociatedArtifactsBodyProps = {
-  flattened: FlattenedRow[];
+  flattened: FlattenedArtifactRow[];
 };
 
 function AssociatedArtifactsBody({
@@ -101,59 +90,4 @@ function AssociatedArtifactsBody({
       ))}
     </div>
   );
-}
-
-function flattenTree(nodes: TreeNode[], depth = 1): FlattenedRow[] {
-  const rows: FlattenedRow[] = [];
-  for (const node of nodes) {
-    rows.push({ document: node.document, linkId: node.linkId, depth });
-    if (node.children.length > 0) {
-      rows.push(...flattenTree(node.children, depth + 1));
-    }
-  }
-  return rows;
-}
-
-/**
- * Flat LinkedEntity list (from a Tree query starting at `rootId`) → nested tree.
- * Each link encodes a parent→child edge via sourceId/targetId; we index by
- * sourceId and walk from the root. Cycles and self-links are guarded.
- */
-function buildTree(rootId: string, linkedEntities: LinkedEntity[]): TreeNode[] {
-  const childrenByParent = new Map<
-    string,
-    { doc: Document; linkId: string }[]
-  >();
-
-  for (const link of linkedEntities) {
-    if (
-      link.resolvedEntity?.type !== EntityType.Document ||
-      link.targetType !== EntityType.Document
-    ) {
-      continue;
-    }
-    const child = link.resolvedEntity.entity;
-    const existing = childrenByParent.get(link.sourceId) ?? [];
-    if (!existing.some((entry) => entry.doc.id === child.id)) {
-      existing.push({ doc: child, linkId: link.id });
-    }
-    childrenByParent.set(link.sourceId, existing);
-  }
-
-  function walk(parentId: string, visited: Set<string>): TreeNode[] {
-    const directChildren = childrenByParent.get(parentId) ?? [];
-    return directChildren
-      .filter((entry) => !visited.has(entry.doc.id))
-      .map((entry) => {
-        const nextVisited = new Set(visited);
-        nextVisited.add(entry.doc.id);
-        return {
-          document: entry.doc,
-          linkId: entry.linkId,
-          children: walk(entry.doc.id, nextVisited),
-        };
-      });
-  }
-
-  return walk(rootId, new Set([rootId]));
 }
