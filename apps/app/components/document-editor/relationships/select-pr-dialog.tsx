@@ -48,12 +48,15 @@ import {
   useCreateEntityLink,
   useLinkedEntities,
 } from "@/hooks/queries/use-entity-links";
-import { useCreateExternalLink } from "@/hooks/queries/use-external-links";
+import {
+  useCreateExternalLink,
+  useDeleteExternalLink,
+} from "@/hooks/queries/use-external-links";
 import { useGitHubPullRequests } from "@/hooks/queries/use-github-integration";
 import { useProject } from "@/hooks/queries/use-projects";
 
 type SelectPullRequestDialogProps = {
-  featureId?: string | null;
+  documentId?: string | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   planId?: string | null;
@@ -61,7 +64,7 @@ type SelectPullRequestDialogProps = {
 };
 
 export function SelectPullRequestDialog({
-  featureId,
+  documentId,
   open,
   onOpenChange,
   planId,
@@ -71,6 +74,7 @@ export function SelectPullRequestDialog({
   const { data: project } = useProject(projectId, { enabled: !!projectId });
   const createExternalLink = useCreateExternalLink();
   const createEntityLink = useCreateEntityLink();
+  const deleteExternalLink = useDeleteExternalLink();
   const linkSource = useMemo(() => {
     if (planId) {
       return {
@@ -79,15 +83,15 @@ export function SelectPullRequestDialog({
       };
     }
 
-    if (featureId) {
+    if (documentId) {
       return {
-        id: featureId,
+        id: documentId,
         type: EntityType.Document,
       };
     }
 
     return null;
-  }, [featureId, planId]);
+  }, [documentId, planId]);
 
   const repoId = useMemo(() => {
     if (!project?.settings) {
@@ -137,7 +141,7 @@ export function SelectPullRequestDialog({
     [linkedUrls, pullRequests, trackedUrls]
   );
 
-  async function handleSelect(pr: GitHubPullRequestSummary) {
+  function handleSelect(pr: GitHubPullRequestSummary) {
     if (
       !linkSource ||
       linkedUrls.has(pr.htmlUrl) ||
@@ -149,8 +153,8 @@ export function SelectPullRequestDialog({
     }
 
     setIsLinking(true);
-    try {
-      const externalLink = await createExternalLink.mutateAsync({
+    createExternalLink.mutate(
+      {
         projectId,
         documentId: planId ?? undefined,
         type: ExternalLinkType.PullRequest,
@@ -163,21 +167,32 @@ export function SelectPullRequestDialog({
           baseBranch: pr.baseBranch,
           state: pr.state,
         } satisfies PullRequestMetadata,
-      });
-
-      await createEntityLink.mutateAsync({
-        sourceId: linkSource.id,
-        sourceType: linkSource.type,
-        targetId: externalLink.id,
-        targetType: EntityType.ExternalLink,
-        linkType: LinkType.Produces,
-      });
-
-      toast.success(`Linked PR #${pr.number}`);
-      onOpenChange(false);
-    } finally {
-      setIsLinking(false);
-    }
+      },
+      {
+        onError: () => setIsLinking(false),
+        onSuccess: (externalLink) =>
+          createEntityLink.mutate(
+            {
+              sourceId: linkSource.id,
+              sourceType: linkSource.type,
+              targetId: externalLink.id,
+              targetType: EntityType.ExternalLink,
+              linkType: LinkType.Produces,
+            },
+            {
+              onError: () => {
+                deleteExternalLink.mutate(externalLink.id);
+                setIsLinking(false);
+              },
+              onSuccess: () => {
+                toast.success(`Linked PR #${pr.number}`);
+                onOpenChange(false);
+                setIsLinking(false);
+              },
+            }
+          ),
+      }
+    );
   }
 
   if (open && !linkSource) {
@@ -193,7 +208,7 @@ export function SelectPullRequestDialog({
           <div className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 dark:border-amber-900 dark:bg-amber-950/20">
             <AlertCircleIcon className="mt-0.5 h-4 w-4 flex-shrink-0 text-amber-600 dark:text-amber-500" />
             <p className="text-amber-900 text-sm dark:text-amber-200">
-              No feature or plan is available to link this pull request.
+              No document is available to link this pull request.
             </p>
           </div>
         </DialogContent>

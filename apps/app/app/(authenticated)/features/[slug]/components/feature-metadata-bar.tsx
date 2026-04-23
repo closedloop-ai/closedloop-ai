@@ -1,3 +1,5 @@
+"use client";
+
 import type { Priority } from "@repo/api/src/types/common";
 import { PriorityIcon } from "@repo/design-system/components/ui/priority-icon";
 import {
@@ -10,19 +12,24 @@ import {
 import { AttachFilesButton } from "@/components/document-editor/attach-files-button";
 import { MetadataPanel } from "@/components/document-editor/metadata-panel";
 import { StatusMetadataSection } from "@/components/document-editor/status-metadata-section";
-import { TargetRepositoryFields } from "@/components/document-editor/target-repository-fields";
 import type { useDocumentMetadata } from "@/hooks/document-editing/use-document-metadata";
 import { PRIORITY_LABELS } from "@/lib/project-constants";
 
-export type PlanMetadataBarProps = {
+export type FeatureMetadataBarProps = {
   documentId: string;
   metadata: ReturnType<typeof useDocumentMetadata>;
 };
 
-export function PlanMetadataBar({
+/**
+ * Inline Properties Bar for Feature detail pages. Features don't expose
+ * `target repo`/`target branch` in the bar (they inherit from the parent
+ * project), so this variant drops `TargetRepositoryFields` but otherwise
+ * mirrors the PRD/Plan bars.
+ */
+export function FeatureMetadataBar({
   documentId,
   metadata,
-}: Readonly<PlanMetadataBarProps>) {
+}: Readonly<FeatureMetadataBarProps>) {
   return (
     <MetadataPanel variant="bar">
       <StatusMetadataSection
@@ -59,17 +66,6 @@ export function PlanMetadataBar({
           ))}
         </SelectContent>
       </Select>
-      <TargetRepositoryFields
-        layout="horizontal"
-        onTargetBranchBlur={metadata.handleTargetBranchBlur}
-        onTargetBranchChange={metadata.handleTargetBranchChange}
-        onTargetRepoBlur={metadata.handleTargetRepoBlur}
-        onTargetRepoChange={metadata.handleTargetRepoChange}
-        separator={false}
-        targetBranch={metadata.targetBranch}
-        targetRepo={metadata.targetRepo}
-        title=""
-      />
       <AttachFilesButton documentId={documentId} />
     </MetadataPanel>
   );

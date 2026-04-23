@@ -1,6 +1,7 @@
 "use client";
 
 import { OptionalComments } from "@repo/collaboration";
+import { cn } from "@repo/design-system/lib/utils";
 import type { TiptapEditor } from "@repo/rich-text";
 import { RichTextToolbar } from "@repo/rich-text/rich-text-toolbar";
 import { Suspense, useState } from "react";
@@ -22,6 +23,13 @@ export type EditorWithCommentsProps = {
   liveblocksRoomId?: string | null;
   onEditorInstance?: (editor: TiptapEditor | null) => void;
   onContentReady?: () => void;
+  /**
+   * Fired when the user clicks the editor body (not the header). Hosts use
+   * this to enter inline edit mode without the header (title, metadata bar)
+   * triggering the transition. Receives the mouse event so the host can
+   * place the cursor at the click position when entering edit mode.
+   */
+  onBodyClick?: (event: React.MouseEvent<HTMLDivElement>) => void;
   placeholder?: string;
   readOnly?: boolean;
   scrollMode?: "inner" | "outer";
@@ -36,6 +44,7 @@ export function EditorWithComments({
   liveblocksRoomId,
   onEditorInstance,
   onContentReady,
+  onBodyClick,
   placeholder,
   readOnly,
   scrollMode = "outer",
@@ -61,22 +70,33 @@ export function EditorWithComments({
         <div className="relative flex min-h-full min-w-0 items-stretch">
           <div className="relative mx-auto flex min-w-0 max-w-[900px] flex-1 flex-col">
             {headerContent}
-            <EditorContent
-              externalToolbar
-              liveblocksRoomId={
-                liveblocksEnabled ? liveblocksRoomId : undefined
-              }
-              onChange={onChange}
-              onContentReady={onContentReady}
-              onEditorReady={(editor) => {
-                setEditor(editor);
-                onEditorInstance?.(editor);
-              }}
-              placeholder={placeholder}
-              readOnly={readOnly}
-              scrollMode={scrollMode}
-              value={value}
-            />
+            {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-to-edit wrapper; keyboard users enter edit mode by focusing the editor directly */}
+            {/* biome-ignore lint/a11y/noStaticElementInteractions: see above */}
+            {/* biome-ignore lint/a11y/noNoninteractiveElementInteractions: see above */}
+            <div
+              className={cn(
+                "flex min-h-0 flex-1 flex-col",
+                onBodyClick && readOnly && "cursor-text"
+              )}
+              onClick={onBodyClick}
+            >
+              <EditorContent
+                externalToolbar
+                liveblocksRoomId={
+                  liveblocksEnabled ? liveblocksRoomId : undefined
+                }
+                onChange={onChange}
+                onContentReady={onContentReady}
+                onEditorReady={(editor) => {
+                  setEditor(editor);
+                  onEditorInstance?.(editor);
+                }}
+                placeholder={placeholder}
+                readOnly={readOnly}
+                scrollMode={scrollMode}
+                value={value}
+              />
+            </div>
           </div>
 
           {liveblocksEnabled && (

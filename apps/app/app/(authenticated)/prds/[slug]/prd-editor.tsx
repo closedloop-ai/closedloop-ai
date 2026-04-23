@@ -8,30 +8,26 @@ import {
 import { EntityType } from "@repo/api/src/types/entity-link";
 import { InlinePresence, OptionalDocumentRoom } from "@repo/collaboration";
 import {
-  ResizableHandle,
   ResizablePanel,
   ResizablePanelGroup,
 } from "@repo/design-system/components/ui/resizable";
-import {
-  Tabs,
-  TabsContent,
-  TabsList,
-  TabsTrigger,
-} from "@repo/design-system/components/ui/tabs";
 import { RichTextToolbar } from "@repo/rich-text/rich-text-toolbar";
 import { Loader2Icon } from "lucide-react";
 import { Suspense, useEffect, useRef, useState } from "react";
 import { NewPlanModal } from "@/app/(authenticated)/implementation-plans/components/new-plan-modal";
 import { VersionSelector } from "@/app/(authenticated)/implementation-plans/components/version-selector";
-import { DocumentChatDrawer } from "@/components/chat/DocumentChatDrawer";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
+import { AttachmentsRow } from "@/components/document-editor/attachments-row";
 import { CollaborativeEditor } from "@/components/document-editor/collaborative-editor";
+import { DocumentChatPanel } from "@/components/document-editor/document-chat-panel";
+import { DocumentEditorDetails } from "@/components/document-editor/document-editor-details";
 import { EditableDocumentTitle } from "@/components/document-editor/editable-document-title";
 import { EditorToolbarActions } from "@/components/document-editor/editor-toolbar-actions";
 import { EditorToolbarRow } from "@/components/document-editor/editor-toolbar-row";
+import { EvaluationSection } from "@/components/document-editor/evaluation-section";
+import { InlineEditEditorShell } from "@/components/document-editor/inline-edit-editor-shell";
 import { LoopDispatchTargetSelector } from "@/components/engineer/LoopDispatchTargetSelector";
 import { ExecutionLogDialog } from "@/components/execution-log/execution-log-dialog";
-import { ExecutionLogSummary } from "@/components/execution-log/execution-log-summary";
 import { GenerationStatusBanner } from "@/components/generation-status-banner";
 import { MoveEntityDialog } from "@/components/move-entity-dialog";
 import { RenameDialog } from "@/components/rename-dialog";
@@ -40,6 +36,7 @@ import { useDocumentContent } from "@/hooks/document-editing/use-document-conten
 import { useDocumentMetadata } from "@/hooks/document-editing/use-document-metadata";
 import { useDocumentUIState } from "@/hooks/document-editing/use-document-ui-state";
 import { useEditorSession } from "@/hooks/document-editing/use-editor-session";
+import { useInlineEditMode } from "@/hooks/document-editing/use-inline-edit-mode";
 import { usePrdActions } from "@/hooks/document-editing/use-prd-actions";
 import {
   useDismissDocumentGenerationStatus,
@@ -48,8 +45,8 @@ import {
 import { usePrdJudgesFeedback } from "@/hooks/queries/use-judges";
 import { useExecutionLogDialog } from "@/hooks/use-execution-log-dialog";
 import { RequestChangesModal } from "../../implementation-plans/components/request-changes-modal";
+import { AssociatedArtifactsSection } from "./components/associated-artifacts-section";
 import { PRDEditorHeader } from "./components/prd-editor-header";
-import { PRDExtrasPanel } from "./components/prd-extras-panel";
 import { PRDMetadataBar } from "./components/prd-metadata-bar";
 
 type PRDEditorProps = {
@@ -101,6 +98,10 @@ export function PRDEditor({
     documentType: DocumentType.Prd,
   });
   const prdActions = usePrdActions({ documentId: prd.id });
+  const editMode = useInlineEditMode({
+    readOnly: session.isViewingHistorical,
+    editor: session.editor,
+  });
 
   // Type assertion: useDocumentUIState returns a union; narrow to the PRD/Feature branch
   const {
@@ -189,39 +190,6 @@ export function PRDEditor({
                     : "invisible h-0 overflow-hidden"
                 }
               >
-                {/* Toolbar Row: formatting + version/save controls */}
-                <EditorToolbarRow
-                  leftContent={
-                    <RichTextToolbar
-                      className="border-0 bg-transparent p-0"
-                      editor={session.editor}
-                      hasLiveblocksExtension={!!session.liveblocksRoomId}
-                      onPasteMarkdown={session.setEditorContent}
-                    />
-                  }
-                  rightContent={
-                    <>
-                      {session.liveblocksRoomId && (
-                        <Suspense fallback={null}>
-                          <InlinePresence />
-                        </Suspense>
-                      )}
-                      {versionDisplay}
-                      <EditorToolbarActions
-                        canRestoreVersion={true}
-                        canSaveVersion={currentVersion === prd.latestVersion}
-                        isRestoring={isPending}
-                        isSaving={contentController.isSaving}
-                        onRestoreVersion={contentController.restoreVersion}
-                        onSaveVersion={contentController.saveContent}
-                        onToggleComments={setShowComments}
-                        openThreadCount={session.openThreadCount}
-                        showComments={showComments}
-                      />
-                    </>
-                  }
-                />
-
                 {/* Generation Status Banner */}
                 <GenerationStatusBanner
                   generationStatus={generationStatus}
@@ -235,7 +203,45 @@ export function PRDEditor({
                   onGenerationComplete={invalidateArtifactCache}
                 />
 
-                <div className="flex min-h-[200px] flex-col">
+                <InlineEditEditorShell
+                  expanded={editMode.isEditing || session.isViewingHistorical}
+                  toolbar={
+                    <EditorToolbarRow
+                      leftContent={
+                        <RichTextToolbar
+                          className="border-0 bg-transparent p-0"
+                          editor={session.editor}
+                          hasLiveblocksExtension={!!session.liveblocksRoomId}
+                          onPasteMarkdown={session.setEditorContent}
+                          readOnly={!editMode.isEditing}
+                        />
+                      }
+                      rightContent={
+                        <>
+                          {session.liveblocksRoomId && (
+                            <Suspense fallback={null}>
+                              <InlinePresence />
+                            </Suspense>
+                          )}
+                          {versionDisplay}
+                          <EditorToolbarActions
+                            canRestoreVersion={true}
+                            canSaveVersion={
+                              currentVersion === prd.latestVersion
+                            }
+                            isRestoring={isPending}
+                            isSaving={contentController.isSaving}
+                            onRestoreVersion={contentController.restoreVersion}
+                            onSaveVersion={contentController.saveContent}
+                            onToggleComments={setShowComments}
+                            openThreadCount={session.openThreadCount}
+                            showComments={showComments}
+                          />
+                        </>
+                      }
+                    />
+                  }
+                >
                   <CollaborativeEditor
                     externalToolbar
                     headerContent={
@@ -244,71 +250,49 @@ export function PRDEditor({
                           documentId={prd.id}
                           initialTitle={prd.title}
                         />
-                        <PRDMetadataBar metadata={metadata} />
+                        <PRDMetadataBar
+                          documentId={prd.id}
+                          metadata={metadata}
+                        />
+                        <AttachmentsRow documentId={prd.id} />
                       </div>
                     }
                     key={currentVersion}
                     liveblocksRoomId={session.liveblocksRoomId}
+                    onBodyClick={editMode.enterEditMode}
                     onChange={contentController.updateContent}
                     onContentReady={session.handleEditorReady}
                     onEditorInstance={session.handleEditorInstance}
                     onOpenThreadCountChange={session.handleThreadCountChange}
                     placeholder="Add description..."
-                    readOnly={session.isViewingHistorical}
-                    showComments={showComments}
+                    readOnly={!editMode.isEditing}
+                    showComments={editMode.isEditing && showComments}
                     value={contentController.content}
                   />
-                </div>
+                </InlineEditEditorShell>
 
-                {/* Details (execution log, evaluation, comments, attachments) */}
-                <div className="border-t px-4 py-4">
-                  <PRDExtrasPanel
+                <DocumentEditorDetails
+                  createdAt={prd.version.createdAt}
+                  documentId={prd.id}
+                  updatedAt={prd.updatedAt}
+                >
+                  <EvaluationSection
+                    documentId={prd.id}
                     judgeItems={judgesReport ?? null}
-                    prd={prd}
-                    variant="detailsOnly"
+                    title="Agent Evaluation"
                   />
-                </div>
+                  <AssociatedArtifactsSection prdId={prd.id} />
+                </DocumentEditorDetails>
               </div>
             </OptionalDocumentRoom>
           </div>
         </ResizablePanel>
 
-        {/* Right panel: Chat + Execution Log tabs */}
-        {chatFlag?.enabled === true && uiState.showMetadataPanel && (
-          <>
-            <ResizableHandle className="z-20 after:w-[3px]! hover:after:bg-primary" />
-            <ResizablePanel defaultSize={25} maxSize={40} minSize={15}>
-              <Tabs className="flex h-full flex-col" defaultValue="chat">
-                <TabsList className="mx-3 mt-3 w-auto">
-                  <TabsTrigger value="chat">Chat</TabsTrigger>
-                  <TabsTrigger value="execution-log">Execution Log</TabsTrigger>
-                </TabsList>
-                <TabsContent
-                  className="min-h-0 flex-1 overflow-hidden"
-                  value="chat"
-                >
-                  <DocumentChatDrawer
-                    documentId={prd.id}
-                    documentSlug={prd.slug}
-                    documentTitle={prd.title}
-                    documentType="prd"
-                    fillParent
-                    targetRepo={prd.targetRepo}
-                  />
-                </TabsContent>
-                <TabsContent
-                  className="min-h-0 flex-1 overflow-y-auto p-4"
-                  value="execution-log"
-                >
-                  <ExecutionLogSummary
-                    documentId={prd.id}
-                    onViewFullTrace={executionLogDialog.handleViewFullTrace}
-                  />
-                </TabsContent>
-              </Tabs>
-            </ResizablePanel>
-          </>
-        )}
+        <DocumentChatPanel
+          document={prd}
+          onViewFullTrace={executionLogDialog.handleViewFullTrace}
+          visible={chatFlag?.enabled === true && uiState.showMetadataPanel}
+        />
       </ResizablePanelGroup>
 
       {/* Compute target selector for decompose command */}

@@ -53,6 +53,7 @@
   --progress-foreground: var(--primary);
   --thinking: var(--primary);
   --closedloop-violet: oklch(0.61 0.256 285.5);
+  --highlight: rgb(0 89 255 / 0.15);
 
   /* Progress badge (agent status pill): fill, stroke, text. Same in dark (cascade from :root). */
   --progress-badge-bg: oklch(0.94 0.035 317.076);
@@ -111,6 +112,7 @@
   --progress-foreground: var(--primary);
   --thinking: var(--primary);
   --closedloop-violet: oklch(0.61 0.256 285.5);
+  --highlight: rgb(0 89 255 / 0.25);
 
   --progress-badge-bg: oklch(0.3 0.04 317.076);
   --progress-badge-border: oklch(0.3 0.04 317.076);
@@ -170,6 +172,7 @@
   --color-progress-foreground: var(--progress-foreground);
   --color-thinking: var(--thinking);
   --color-closedloop-violet: var(--closedloop-violet);
+  --color-highlight: var(--highlight);
   --color-ai: var(--ai);
   --color-ai-foreground: var(--ai-foreground);
   --shadow-inset: var(--shadow-inset);

@@ -1,34 +1,18 @@
 "use client";
 
-import type { FileAttachment } from "@repo/api/src/types/attachment";
-import type { Document } from "@repo/api/src/types/document";
 import type { LinkedEntity } from "@repo/api/src/types/entity-link";
 import { EntityType, LinkDirection } from "@repo/api/src/types/entity-link";
-import { isDisplayableSlug } from "@repo/api/src/types/slug";
 import { Button } from "@repo/design-system/components/ui/button";
 import { toast } from "@repo/design-system/components/ui/sonner";
-import { StatusIcon } from "@repo/design-system/components/ui/status-icon";
-import { FileIcon, PlusIcon, Trash2Icon } from "lucide-react";
-import Link from "next/link";
+import { PlusIcon } from "lucide-react";
 import { useMemo, useState } from "react";
-import { AssigneeAvatar } from "@/components/assignee-avatar";
-import {
-  useAttachments,
-  useDeleteAttachment,
-} from "@/hooks/queries/use-attachments";
+import { ArtifactRow } from "@/components/document-editor/relationships/artifact-row";
+import { SectionHeader } from "@/components/document-editor/relationships/section-header";
 import {
   useDeleteEntityLink,
   useLinkedEntities,
 } from "@/hooks/queries/use-entity-links";
-import { getDocumentRoute } from "@/lib/document-navigation";
-import {
-  DOCUMENT_STATUS_TO_ICON,
-  DOCUMENT_TYPE_BADGE_LABELS,
-  DOCUMENT_TYPE_ICONS,
-} from "@/lib/project-constants";
 import { AddContextDialog } from "./add-context-dialog";
-import { OverflowMenu } from "./overflow-menu";
-import { SectionHeader } from "./section-header";
 
 type ContextSectionProps = {
   featureId: string;
@@ -40,14 +24,13 @@ export function ContextSection({
   projectId,
 }: Readonly<ContextSectionProps>) {
   const [showAddDialog, setShowAddDialog] = useState(false);
+  const [isOpen, setIsOpen] = useState(true);
 
   const { data: linkedEntities = [] } = useLinkedEntities(
     featureId,
     EntityType.Document,
     { direction: LinkDirection.Source }
   );
-  const { data: featureAttachments = [] } = useAttachments(featureId);
-  const deleteFeatureAttachment = useDeleteAttachment(featureId);
   const deleteLink = useDeleteEntityLink();
 
   function handleUnlink(linkId: string) {
@@ -58,14 +41,10 @@ export function ContextSection({
     });
   }
 
-  // Filter to only artifact and feature source links (not external links — those go in Branches)
   const contextLinks = linkedEntities.filter(
-    (linked) =>
-      linked.resolvedEntity &&
-      linked.resolvedEntity.type !== EntityType.ExternalLink
+    (linked) => linked.resolvedEntity?.type === EntityType.Document
   );
 
-  // Collect IDs of already-linked artifacts so the dialog can exclude them
   const linkedArtifactIds = useMemo(() => {
     const ids = new Set<string>();
     for (const linked of contextLinks) {
@@ -79,7 +58,11 @@ export function ContextSection({
   return (
     <>
       <div className="bg-background">
-        <SectionHeader title="Context">
+        <SectionHeader
+          isOpen={isOpen}
+          onToggle={() => setIsOpen((prev) => !prev)}
+          title="Context"
+        >
           <Button
             onClick={() => setShowAddDialog(true)}
             size="icon-sm"
@@ -88,41 +71,12 @@ export function ContextSection({
             <PlusIcon className="h-4 w-4" />
           </Button>
         </SectionHeader>
-        {contextLinks.length > 0 || featureAttachments.length > 0 ? (
-          <div className="flex flex-col">
-            {contextLinks.map((linked) => (
-              <ContextRow
-                key={linked.id}
-                linked={linked}
-                onUnlink={handleUnlink}
-              />
-            ))}
-            {featureAttachments.map((attachment) => (
-              <AttachmentRow
-                attachment={attachment}
-                key={attachment.id}
-                onDelete={() => deleteFeatureAttachment.mutate(attachment.id)}
-              />
-            ))}
-          </div>
-        ) : (
-          <div className="flex items-center py-3">
-            <div className="flex flex-1 flex-col gap-4">
-              <p className="text-base text-muted-foreground">
-                No context documents have been added to this feature
-              </p>
-              <div className="flex gap-4">
-                <Button
-                  onClick={() => setShowAddDialog(true)}
-                  size="sm"
-                  variant="outline"
-                >
-                  Add Documents
-                  <PlusIcon className="h-4 w-4" />
-                </Button>
-              </div>
-            </div>
-          </div>
+        {isOpen && (
+          <ContextBody
+            contextLinks={contextLinks}
+            onAdd={() => setShowAddDialog(true)}
+            onUnlink={handleUnlink}
+          />
         )}
       </div>
 
@@ -137,118 +91,49 @@ export function ContextSection({
   );
 }
 
-type ContextRowProps = {
-  linked: LinkedEntity;
+type ContextBodyProps = {
+  contextLinks: LinkedEntity[];
+  onAdd: () => void;
   onUnlink: (linkId: string) => void;
 };
 
-function ContextRow({ linked, onUnlink }: Readonly<ContextRowProps>) {
-  const resolved = linked.resolvedEntity;
-  if (!resolved) {
-    return null;
-  }
-
-  if (resolved.type === EntityType.Document) {
+function ContextBody({
+  contextLinks,
+  onAdd,
+  onUnlink,
+}: Readonly<ContextBodyProps>) {
+  if (contextLinks.length > 0) {
     return (
-      <DocumentRow
-        artifact={resolved.entity}
-        linkId={linked.id}
-        onUnlink={onUnlink}
-      />
+      <div className="flex flex-col border-t">
+        {contextLinks.map((linked) => {
+          if (linked.resolvedEntity?.type !== EntityType.Document) {
+            return null;
+          }
+          return (
+            <ArtifactRow
+              artifact={linked.resolvedEntity.entity}
+              key={linked.id}
+              linkId={linked.id}
+              onDetach={onUnlink}
+            />
+          );
+        })}
+      </div>
     );
   }
-  return null;
-}
-
-type DocumentRowProps = {
-  artifact: Document;
-  linkId: string;
-  onUnlink: (linkId: string) => void;
-};
-
-function DocumentRow({
-  artifact,
-  linkId,
-  onUnlink,
-}: Readonly<DocumentRowProps>) {
-  const Icon = DOCUMENT_TYPE_ICONS[artifact.type];
-  const badgeLabel = DOCUMENT_TYPE_BADGE_LABELS[artifact.type];
-  const statusIconStatus = DOCUMENT_STATUS_TO_ICON[artifact.status];
-  const route = getDocumentRoute(artifact);
-
   return (
-    <div className="flex items-center px-2 py-1">
-      <Link
-        className="flex min-w-0 flex-1 items-center gap-2 rounded-md hover:bg-accent"
-        href={route ?? "#"}
-      >
-        <div className="flex shrink-0 items-center p-1">
-          <Icon className="h-4 w-4 text-muted-foreground" />
+    <div className="flex items-center py-3">
+      <div className="flex flex-1 flex-col gap-4">
+        <p className="text-base text-muted-foreground">
+          No context documents have been added to this feature
+        </p>
+        <div className="flex gap-4">
+          <Button onClick={onAdd} size="sm" variant="outline">
+            Add Documents
+            <PlusIcon className="h-4 w-4" />
+          </Button>
         </div>
-        <span className="min-w-[60px] shrink-0 truncate font-medium text-muted-foreground text-xs">
-          {isDisplayableSlug(artifact.slug) ? artifact.slug : badgeLabel}
-        </span>
-        <span className="truncate px-1 font-medium text-sm">
-          {artifact.title}
-        </span>
-      </Link>
-      <div className="flex h-9 shrink-0 items-center gap-2">
-        <AssigneeAvatar assignee={artifact.assignee} />
-        <StatusIcon size={20} status={statusIconStatus} />
-        <OverflowMenu linkId={linkId} onUnlink={onUnlink} />
       </div>
-    </div>
-  );
-}
-
-function AttachmentRow({
-  attachment,
-  onDelete,
-}: Readonly<{ attachment: FileAttachment; onDelete: () => void }>) {
-  const sizeLabel =
-    attachment.sizeBytes < 1024 * 1024
-      ? `${Math.ceil(attachment.sizeBytes / 1024)} KB`
-      : `${(attachment.sizeBytes / (1024 * 1024)).toFixed(1)} MB`;
-
-  return (
-    <div className="group flex items-center px-2 py-1">
-      <div className="flex min-w-0 flex-1 items-center gap-2 rounded-md">
-        {attachment.previewUrl ? (
-          <a
-            className="hover:opacity-90"
-            href={attachment.previewUrl}
-            rel="noopener noreferrer"
-            target="_blank"
-          >
-            {/* biome-ignore lint/performance/noImgElement: S3 presigned URLs are external/dynamic */}
-            <img
-              alt={attachment.filename}
-              className="h-8 w-8 shrink-0 rounded object-cover"
-              height={8}
-              src={attachment.previewUrl}
-              width={8}
-            />
-          </a>
-        ) : (
-          <div className="flex shrink-0 items-center p-1">
-            <FileIcon className="h-4 w-4 text-muted-foreground" />
-          </div>
-        )}
-        <span className="truncate px-1 font-medium text-sm">
-          {attachment.filename}
-        </span>
-        <span className="shrink-0 text-muted-foreground text-xs">
-          {sizeLabel}
-        </span>
-      </div>
-      <Button
-        className="opacity-0 group-hover:opacity-100"
-        onClick={onDelete}
-        size="icon-sm"
-        variant="ghost"
-      >
-        <Trash2Icon className="h-3.5 w-3.5 text-muted-foreground" />
-      </Button>
     </div>
   );
 }

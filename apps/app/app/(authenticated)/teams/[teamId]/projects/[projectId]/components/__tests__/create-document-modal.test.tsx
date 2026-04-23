@@ -69,10 +69,17 @@ vi.mock("@/hooks/queries/use-templates", () => ({
     mockUseOrgTemplateByType(type, options),
 }));
 
+// cmdk (Popover+Command) needs ResizeObserver which jsdom doesn't provide.
+class MockResizeObserver {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+
 // Regex constants for testing
 const TITLE_REGEX = /title/i;
 const REQUIRED_REGEX = /\*/;
-const SOURCE_PRD_REGEX = /source prd/i;
+const SOURCE_PRD_REGEX = /context source/i;
 const OPTIONAL_REGEX = /\(optional\)/i;
 const FILE_NAME_REGEX = /file name/i;
 const _APPROVER_REGEX = /approver/i;
@@ -86,7 +93,8 @@ const GENERATE_PRD_REGEX = /^generate prd$/i;
 const PASTE_MARKDOWN_CONTENT_REGEX = /paste or upload markdown content/i;
 const CONNECT_GITHUB_REGEX = /connect github to select a repository/i;
 const CREATING_REGEX = /creating\.\.\./i;
-const NO_PRDS_REGEX = /no prds in this project/i;
+const NO_PRDS_REGEX = /no prds or features in this project/i;
+const LOADING_REGEX = /loading/i;
 
 describe("CreateDocumentModal", () => {
   const mockMutate = vi.fn();
@@ -96,6 +104,7 @@ describe("CreateDocumentModal", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.stubGlobal("ResizeObserver", MockResizeObserver);
 
     // Default mocks
     mockUseCreateArtifact.mockReturnValue({
@@ -155,6 +164,7 @@ describe("CreateDocumentModal", () => {
   });
 
   afterEach(() => {
+    vi.unstubAllGlobals();
     cleanup();
   });
 
@@ -895,7 +905,7 @@ describe("CreateDocumentModal", () => {
       );
     });
 
-    it("should show loading state in PRD selector", async () => {
+    it("should show loading state in PRD selector", () => {
       mockUseArtifactsByProject.mockReturnValue({
         data: [],
         isLoading: true,
@@ -912,12 +922,7 @@ describe("CreateDocumentModal", () => {
       );
 
       const prdSelector = screen.getByLabelText(SOURCE_PRD_REGEX);
-      prdSelector.click();
-
-      await waitFor(() => {
-        const loadingIcon = document.querySelector(".animate-spin");
-        expect(loadingIcon).toBeInTheDocument();
-      });
+      expect(prdSelector.textContent).toMatch(LOADING_REGEX);
     });
 
     it("should show message when no PRDs exist", async () => {

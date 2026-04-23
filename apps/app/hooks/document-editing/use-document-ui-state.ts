@@ -6,7 +6,8 @@ import { useLocalStorageState } from "@/hooks/use-local-storage-state";
 
 type EditableDocumentType =
   | typeof DocumentType.Prd
-  | typeof DocumentType.ImplementationPlan;
+  | typeof DocumentType.ImplementationPlan
+  | typeof DocumentType.Feature;
 
 type UseArtifactUIStateConfig<
   T extends EditableDocumentType = EditableDocumentType,
@@ -85,6 +86,9 @@ export function useDocumentUIState(
 export function useDocumentUIState(
   config: UseArtifactUIStateConfig<typeof DocumentType.ImplementationPlan>
 ): PlanState;
+export function useDocumentUIState(
+  config: UseArtifactUIStateConfig<typeof DocumentType.Feature>
+): CommonState;
 export function useDocumentUIState(config: UseArtifactUIStateConfig) {
   const { documentType } = config;
 

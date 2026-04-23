@@ -10,29 +10,27 @@ import {
 import { EntityType } from "@repo/api/src/types/entity-link";
 import { InlinePresence, OptionalDocumentRoom } from "@repo/collaboration";
 import {
-  ResizableHandle,
   ResizablePanel,
   ResizablePanelGroup,
 } from "@repo/design-system/components/ui/resizable";
-import {
-  Tabs,
-  TabsContent,
-  TabsList,
-  TabsTrigger,
-} from "@repo/design-system/components/ui/tabs";
 import { RichTextToolbar } from "@repo/rich-text/rich-text-toolbar";
 import { Loader2Icon } from "lucide-react";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { BackendMismatchModal } from "@/components/backend-mismatch-modal";
-import { DocumentChatDrawer } from "@/components/chat/DocumentChatDrawer";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
+import { AttachmentsRow } from "@/components/document-editor/attachments-row";
 import { CollaborativeEditor } from "@/components/document-editor/collaborative-editor";
+import { DocumentChatPanel } from "@/components/document-editor/document-chat-panel";
+import { DocumentEditorDetails } from "@/components/document-editor/document-editor-details";
 import { EditableDocumentTitle } from "@/components/document-editor/editable-document-title";
 import { EditorToolbarActions } from "@/components/document-editor/editor-toolbar-actions";
 import { EditorToolbarRow } from "@/components/document-editor/editor-toolbar-row";
+import { EvaluationSection } from "@/components/document-editor/evaluation-section";
+import { InlineEditEditorShell } from "@/components/document-editor/inline-edit-editor-shell";
+import { BranchesSection } from "@/components/document-editor/relationships/branches-section";
+import { PreviewSection } from "@/components/document-editor/relationships/preview-section";
 import { LoopDispatchTargetSelector } from "@/components/engineer/LoopDispatchTargetSelector";
 import { ExecutionLogDialog } from "@/components/execution-log/execution-log-dialog";
-import { ExecutionLogSummary } from "@/components/execution-log/execution-log-summary";
 import { GenerationStatusBanner } from "@/components/generation-status-banner";
 import { MoveEntityDialog } from "@/components/move-entity-dialog";
 import { useDocumentActions } from "@/hooks/document-editing/use-document-actions";
@@ -40,6 +38,7 @@ import { useDocumentContent } from "@/hooks/document-editing/use-document-conten
 import { useDocumentMetadata } from "@/hooks/document-editing/use-document-metadata";
 import { useDocumentUIState } from "@/hooks/document-editing/use-document-ui-state";
 import { useEditorSession } from "@/hooks/document-editing/use-editor-session";
+import { useInlineEditMode } from "@/hooks/document-editing/use-inline-edit-mode";
 import { usePlanActions } from "@/hooks/document-editing/use-plan-actions";
 import {
   useDismissDocumentGenerationStatus,
@@ -58,6 +57,7 @@ import { ExecutePlanModal } from "../components/execute-plan-modal";
 import { RequestChangesModal } from "../components/request-changes-modal";
 import { VersionSelector } from "../components/version-selector";
 import { LinearExportDialog } from "./components/linear-export-dialog";
+import { PlanContextSection } from "./components/plan-context-section";
 import { PlanEditorHeader } from "./components/plan-editor-header";
 import { PlanMetadataBar } from "./components/plan-metadata-bar";
 import { PlanMetadataPanel } from "./components/plan-metadata-panel";
@@ -101,9 +101,7 @@ export function PlanEditor({
   });
   const actions = useDocumentActions({
     artifact: plan,
-    redirectPath: plan.project?.teams?.[0]?.id
-      ? `/teams/${plan.project.teams[0].id}/projects/${plan.project.id}`
-      : "/implementation-plans",
+    redirectPath: getPlanRedirectPath(plan),
   });
   const planActions = usePlanActions({
     documentId: plan.id,
@@ -111,6 +109,10 @@ export function PlanEditor({
   });
   const uiState = useDocumentUIState({
     documentType: DocumentType.ImplementationPlan,
+  });
+  const editMode = useInlineEditMode({
+    readOnly: session.isViewingHistorical,
+    editor: session.editor,
   });
 
   // Type assertion for Plan-specific UI state
@@ -135,6 +137,16 @@ export function PlanEditor({
     }
     prevThreadCount.current = session.openThreadCount;
   }, [session.openThreadCount]);
+
+  // Comments are only visible while editing — they're meaningless in read-only view.
+  const commentsVisible = resolveCommentsVisible(
+    editMode.isEditing,
+    showComments
+  );
+  const shellExpanded = resolveShellExpanded(
+    editMode.isEditing,
+    session.isViewingHistorical
+  );
 
   // Fetch generation status with adaptive polling (stops when terminal)
   const { data: generationStatus, invalidateCache: invalidateArtifactCache } =
@@ -204,6 +216,14 @@ export function PlanEditor({
     planActions.handleEvaluateCode,
   ]);
 
+  const handleRegenerate = useCallback(() => {
+    if (multiRepoEnabled) {
+      setShowRegenerateModal(true);
+      return;
+    }
+    planActions.handleRegenerate(undefined);
+  }, [multiRepoEnabled, planActions.handleRegenerate]);
+
   // Create version display component for header
   const versionDisplay = (
     <VersionSelector
@@ -219,6 +239,7 @@ export function PlanEditor({
       editor={session.editor}
       hasLiveblocksExtension={!!session.liveblocksRoomId}
       onPasteMarkdown={session.setEditorContent}
+      readOnly={!editMode.isEditing}
     />
   );
 
@@ -260,13 +281,7 @@ export function PlanEditor({
       onExportMarkdown={actions.handleDownload}
       onExportToLinear={openLinearExportDialog}
       onMove={() => setShowMoveDialog(true)}
-      onRegenerate={() => {
-        if (multiRepoEnabled) {
-          setShowRegenerateModal(true);
-        } else {
-          planActions.handleRegenerate(undefined);
-        }
-      }}
+      onRegenerate={handleRegenerate}
       onRequestChanges={openRequestChangesModal}
       onRestoreVersion={contentController.restoreVersion}
       onToggleMetadataPanel={uiState.toggleMetadataPanel}
@@ -304,12 +319,6 @@ export function PlanEditor({
                     : "invisible h-0 overflow-hidden"
                 }
               >
-                {/* Toolbar Row */}
-                <EditorToolbarRow
-                  leftContent={toolbarLeftContent}
-                  rightContent={toolbarRightContent}
-                />
-
                 {/* Generation Status Banner */}
                 <GenerationStatusBanner
                   generationStatus={generationStatus}
@@ -323,7 +332,15 @@ export function PlanEditor({
                   onGenerationComplete={invalidateArtifactCache}
                 />
 
-                <div className="flex min-h-[200px] flex-col">
+                <InlineEditEditorShell
+                  expanded={shellExpanded}
+                  toolbar={
+                    <EditorToolbarRow
+                      leftContent={toolbarLeftContent}
+                      rightContent={toolbarRightContent}
+                    />
+                  }
+                >
                   <CollaborativeEditor
                     externalToolbar
                     headerContent={
@@ -332,78 +349,68 @@ export function PlanEditor({
                           documentId={plan.id}
                           initialTitle={plan.title}
                         />
-                        <PlanMetadataBar metadata={metadata} />
+                        <PlanMetadataBar
+                          documentId={plan.id}
+                          metadata={metadata}
+                        />
+                        <AttachmentsRow documentId={plan.id} />
                       </div>
                     }
                     key={currentVersion}
                     liveblocksRoomId={session.liveblocksRoomId}
+                    onBodyClick={editMode.enterEditMode}
                     onChange={contentController.updateContent}
                     onContentReady={session.handleEditorReady}
                     onEditorInstance={session.handleEditorInstance}
                     onOpenThreadCountChange={session.handleThreadCountChange}
                     placeholder="Add description..."
-                    readOnly={session.isViewingHistorical}
-                    showComments={showComments}
+                    readOnly={!editMode.isEditing}
+                    showComments={commentsVisible}
                     value={contentController.content}
                   />
-                </div>
+                </InlineEditEditorShell>
 
-                {/* Details section */}
-                <div className="border-t px-4 py-4">
+                <DocumentEditorDetails
+                  createdAt={plan.version.createdAt}
+                  documentId={plan.id}
+                  updatedAt={plan.updatedAt}
+                >
+                  <EvaluationSection
+                    documentId={plan.id}
+                    judgeItems={judgesReport ?? null}
+                    title="Agent Evaluation"
+                  />
+                  <PlanContextSection
+                    planId={plan.id}
+                    projectId={plan.projectId}
+                  />
+                  <BranchesSection
+                    documentId={plan.id}
+                    planId={plan.id}
+                    projectId={plan.projectId ?? ""}
+                  />
+                  <PreviewSection documentId={plan.id} />
                   <PlanMetadataPanel
                     additionalRepos={initialAdditionalRepos}
                     codeJudgeItems={codeJudgesReport ?? null}
                     generationStatus={generationStatus ?? null}
                     isPreviewRefreshing={isRefreshingPreviewDeployment}
-                    judgeItems={judgesReport ?? null}
                     onPreviewRefresh={refetchPreviewLinks}
                     plan={plan}
                     previewDeployment={previewDeployment}
                     pullRequest={pullRequest ?? null}
-                    variant="detailsOnly"
                   />
-                </div>
+                </DocumentEditorDetails>
               </div>
             </OptionalDocumentRoom>
           </div>
         </ResizablePanel>
 
-        {/* Right panel: Chat + Execution Log tabs */}
-        {chatFlag?.enabled === true && uiState.showMetadataPanel && (
-          <>
-            <ResizableHandle className="z-20 after:w-[3px]! hover:after:bg-primary" />
-            <ResizablePanel defaultSize={25} maxSize={40} minSize={15}>
-              <Tabs className="flex h-full flex-col" defaultValue="chat">
-                <TabsList className="mx-3 mt-3 w-auto">
-                  <TabsTrigger value="chat">Chat</TabsTrigger>
-                  <TabsTrigger value="execution-log">Execution Log</TabsTrigger>
-                </TabsList>
-                <TabsContent
-                  className="min-h-0 flex-1 overflow-hidden"
-                  value="chat"
-                >
-                  <DocumentChatDrawer
-                    documentId={plan.id}
-                    documentSlug={plan.slug}
-                    documentTitle={plan.title}
-                    documentType="plan"
-                    fillParent
-                    targetRepo={plan.targetRepo}
-                  />
-                </TabsContent>
-                <TabsContent
-                  className="min-h-0 flex-1 overflow-y-auto p-4"
-                  value="execution-log"
-                >
-                  <ExecutionLogSummary
-                    documentId={plan.id}
-                    onViewFullTrace={executionLogDialog.handleViewFullTrace}
-                  />
-                </TabsContent>
-              </Tabs>
-            </ResizablePanel>
-          </>
-        )}
+        <DocumentChatPanel
+          document={plan}
+          onViewFullTrace={executionLogDialog.handleViewFullTrace}
+          visible={chatFlag?.enabled === true && uiState.showMetadataPanel}
+        />
       </ResizablePanelGroup>
 
       {/* Delete Confirmation Dialog */}
@@ -531,4 +538,26 @@ function useInitialAdditionalRepos(documentId: string | null | undefined) {
     initialAdditionalRepos: loop?.additionalRepos ?? undefined,
     isLoadingInitialAdditionalRepos: enabled && isLoading,
   };
+}
+
+function getPlanRedirectPath(plan: DocumentDetail): string {
+  const teamId = plan.project?.teams?.[0]?.id;
+  if (teamId) {
+    return `/teams/${teamId}/projects/${plan.project?.id ?? ""}`;
+  }
+  return "/implementation-plans";
+}
+
+function resolveCommentsVisible(
+  isEditing: boolean,
+  userToggledOn: boolean
+): boolean {
+  return isEditing && userToggledOn;
+}
+
+function resolveShellExpanded(
+  isEditing: boolean,
+  isViewingHistorical: boolean
+): boolean {
+  return isEditing || isViewingHistorical;
 }

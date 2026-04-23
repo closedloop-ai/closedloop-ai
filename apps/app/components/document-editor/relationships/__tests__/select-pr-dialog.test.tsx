@@ -7,13 +7,14 @@ import {
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { SelectPullRequestDialog } from "../select-pr-dialog";
+import { SelectPullRequestDialog } from "@/components/document-editor/relationships/select-pr-dialog";
 
 const mockUseProject = vi.fn();
 const mockUseGitHubPullRequests = vi.fn();
 const mockUseLinkedEntities = vi.fn();
 const mockCreateExternalLink = vi.fn();
 const mockCreateEntityLink = vi.fn();
+const mockDeleteExternalLink = vi.fn();
 const mockToastSuccess = vi.fn();
 const CURRENT_SOURCE_LINKED_PR_REGEX = /already linked on this source/i;
 const DIFFERENT_SOURCE_LINKED_PR_REGEX = /linked somewhere else/i;
@@ -66,7 +67,10 @@ vi.mock("@/hooks/queries/use-external-links", async () => {
   return {
     ...actual,
     useCreateExternalLink: () => ({
-      mutateAsync: mockCreateExternalLink,
+      mutate: mockCreateExternalLink,
+    }),
+    useDeleteExternalLink: () => ({
+      mutate: mockDeleteExternalLink,
     }),
   };
 });
@@ -76,7 +80,7 @@ vi.mock("@/hooks/queries/use-entity-links", async () => {
   return {
     ...actual,
     useCreateEntityLink: () => ({
-      mutateAsync: mockCreateEntityLink,
+      mutate: mockCreateEntityLink,
     }),
     useLinkedEntities: (...args: unknown[]) => mockUseLinkedEntities(...args),
   };
@@ -119,10 +123,23 @@ describe("SelectPullRequestDialog", () => {
       data: [],
       isLoading: false,
     });
-    mockCreateExternalLink.mockResolvedValue({
-      id: "external-link-101",
-    });
-    mockCreateEntityLink.mockResolvedValue({ id: "entity-link-1" });
+    mockCreateExternalLink.mockImplementation(
+      (
+        _payload: unknown,
+        options?: { onSuccess?: (link: { id: string }) => void }
+      ) => {
+        options?.onSuccess?.({ id: "external-link-101" });
+      }
+    );
+    mockCreateEntityLink.mockImplementation(
+      (
+        _payload: unknown,
+        options?: { onSuccess?: (link: { id: string }) => void }
+      ) => {
+        options?.onSuccess?.({ id: "entity-link-1" });
+      }
+    );
+    mockDeleteExternalLink.mockImplementation(() => {});
   });
 
   afterEach(() => {
@@ -135,7 +152,7 @@ describe("SelectPullRequestDialog", () => {
 
     render(
       <SelectPullRequestDialog
-        featureId="feature-1"
+        documentId="feature-1"
         onOpenChange={vi.fn()}
         open={true}
         projectId="project-1"
@@ -145,28 +162,34 @@ describe("SelectPullRequestDialog", () => {
     await user.click(screen.getByText(PR_TITLE_REGEX));
 
     await waitFor(() => {
-      expect(mockCreateExternalLink).toHaveBeenCalledWith({
-        externalUrl: "https://github.com/acme/repo/pull/101",
-        metadata: {
-          baseBranch: "main",
-          githubId: "gh-pr-101",
-          headBranch: "feature/direct-link",
-          number: 101,
-          state: GitHubPRState.Open,
+      expect(mockCreateExternalLink).toHaveBeenCalledWith(
+        {
+          externalUrl: "https://github.com/acme/repo/pull/101",
+          metadata: {
+            baseBranch: "main",
+            githubId: "gh-pr-101",
+            headBranch: "feature/direct-link",
+            number: 101,
+            state: GitHubPRState.Open,
+          },
+          projectId: "project-1",
+          title: "PR #101: Fix direct feature PR linking",
+          type: ExternalLinkType.PullRequest,
         },
-        projectId: "project-1",
-        title: "PR #101: Fix direct feature PR linking",
-        type: ExternalLinkType.PullRequest,
-      });
+        expect.any(Object)
+      );
     });
 
-    expect(mockCreateEntityLink).toHaveBeenCalledWith({
-      linkType: LinkType.Produces,
-      sourceId: "feature-1",
-      sourceType: EntityType.Document,
-      targetId: "external-link-101",
-      targetType: EntityType.ExternalLink,
-    });
+    expect(mockCreateEntityLink).toHaveBeenCalledWith(
+      {
+        linkType: LinkType.Produces,
+        sourceId: "feature-1",
+        sourceType: EntityType.Document,
+        targetId: "external-link-101",
+        targetType: EntityType.ExternalLink,
+      },
+      expect.any(Object)
+    );
   });
 
   it("links a selected PR to the plan when a plan exists", async () => {
@@ -174,7 +197,7 @@ describe("SelectPullRequestDialog", () => {
 
     render(
       <SelectPullRequestDialog
-        featureId="feature-1"
+        documentId="feature-1"
         onOpenChange={vi.fn()}
         open={true}
         planId="plan-1"
@@ -185,13 +208,16 @@ describe("SelectPullRequestDialog", () => {
     await user.click(screen.getByText(PR_TITLE_REGEX));
 
     await waitFor(() => {
-      expect(mockCreateEntityLink).toHaveBeenCalledWith({
-        linkType: LinkType.Produces,
-        sourceId: "plan-1",
-        sourceType: EntityType.Document,
-        targetId: "external-link-101",
-        targetType: EntityType.ExternalLink,
-      });
+      expect(mockCreateEntityLink).toHaveBeenCalledWith(
+        {
+          linkType: LinkType.Produces,
+          sourceId: "plan-1",
+          sourceType: EntityType.Document,
+          targetId: "external-link-101",
+          targetType: EntityType.ExternalLink,
+        },
+        expect.any(Object)
+      );
     });
   });
 
@@ -236,7 +262,7 @@ describe("SelectPullRequestDialog", () => {
 
     render(
       <SelectPullRequestDialog
-        featureId="feature-1"
+        documentId="feature-1"
         onOpenChange={vi.fn()}
         open={true}
         projectId="project-1"
@@ -268,7 +294,7 @@ describe("SelectPullRequestDialog", () => {
 
     render(
       <SelectPullRequestDialog
-        featureId="feature-1"
+        documentId="feature-1"
         onOpenChange={vi.fn()}
         open={true}
         projectId="project-1"

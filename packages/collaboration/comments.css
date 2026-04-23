@@ -36,6 +36,18 @@
   overflow: visible;
   padding: 1.5rem 0;
   background-color: transparent;
+  /* Retint the Liveblocks tokens so both the outer wrapper
+   * (`.lb-tiptap-anchored-threads-thread`) and the inner `.lb-thread`
+   * render on our popover surface instead of `--lb-background` (white). */
+  --lb-background: var(--popover);
+  --lb-dynamic-background: var(--popover);
+}
+
+/* Thread mark — the inline highlight painted onto commented text.
+ * Uses the design-system `--highlight` token (brand blue at 20% alpha),
+ * which reads consistently in both light and dark mode. */
+.lb-tiptap-thread-mark:not([data-orphan="true"], [data-hidden]) {
+  background: var(--highlight);
 }
 
 /*
@@ -48,20 +60,4 @@
   .lb-collab-floating-threads {
     display: none !important;
   }
-}
-
-/* Style anchored thread items to match Google Docs aesthetic */
-.lb-collab-anchored-threads [data-thread] {
-  margin: 0 1.25rem 1.25rem;
-  padding: 0.9rem;
-  background: hsl(var(--background));
-  border: 1px solid hsl(var(--border));
-  border-radius: 0.5rem;
-  box-shadow: none;
-  transition: box-shadow 0.2s ease-in-out;
-}
-
-/* Ensure comments are visible in the sidebar */
-.lb-collab-anchored-threads [data-thread]:hover {
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
 }
