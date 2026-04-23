@@ -41,14 +41,10 @@ export function ContextSection({
     });
   }
 
-  // Filter to only artifact and feature source links (not external links — those go in Branches)
   const contextLinks = linkedEntities.filter(
-    (linked) =>
-      linked.resolvedEntity &&
-      linked.resolvedEntity.type !== EntityType.ExternalLink
+    (linked) => linked.resolvedEntity?.type === EntityType.Document
   );
 
-  // Collect IDs of already-linked artifacts so the dialog can exclude them
   const linkedArtifactIds = useMemo(() => {
     const ids = new Set<string>();
     for (const linked of contextLinks) {

@@ -111,7 +111,7 @@ export function PlanEditor({
     documentType: DocumentType.ImplementationPlan,
   });
   const editMode = useInlineEditMode({
-    isLocked: session.isViewingHistorical,
+    readOnly: session.isViewingHistorical,
     editor: session.editor,
   });
 

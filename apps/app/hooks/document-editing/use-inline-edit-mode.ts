@@ -4,7 +4,7 @@ import type { TiptapEditor } from "@repo/rich-text";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 type UseInlineEditModeConfig = {
-  isLocked: boolean;
+  readOnly: boolean;
   /**
    * Tiptap editor instance used to auto-focus the body when the user enters
    * edit mode, so they can start typing immediately without a second click.
@@ -21,11 +21,11 @@ type UseInlineEditModeConfig = {
  *   clicked position; otherwise it falls back to the document end.
  * - Once entered, it does NOT exit on outside click; the user stays in edit
  *   mode until the component unmounts (i.e. navigates away).
- * - When `isLocked` is true (e.g. viewing a historical version) the hook is
+ * - When `readOnly` is true (e.g. viewing a historical version) the hook is
  *   permanently read-only regardless of entry attempts.
  */
 export function useInlineEditMode({
-  isLocked,
+  readOnly,
   editor,
 }: UseInlineEditModeConfig) {
   const [isEditing, setIsEditing] = useState(false);
@@ -34,7 +34,7 @@ export function useInlineEditMode({
 
   const enterEditMode = useCallback(
     (event?: Pick<MouseEvent, "clientX" | "clientY">) => {
-      if (isLocked) {
+      if (readOnly) {
         return;
       }
       if (event && editor) {
@@ -46,10 +46,10 @@ export function useInlineEditMode({
       }
       setIsEditing(true);
     },
-    [isLocked, editor]
+    [readOnly, editor]
   );
 
-  const effectiveIsEditing = isEditing && !isLocked;
+  const effectiveIsEditing = isEditing && !readOnly;
 
   // Focus the editor the first time both edit mode is active AND the editor
   // instance is available. Runs after child effects have flipped `editable`.

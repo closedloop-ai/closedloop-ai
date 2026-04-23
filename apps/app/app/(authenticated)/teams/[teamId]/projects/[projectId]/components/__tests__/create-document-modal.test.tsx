@@ -69,6 +69,13 @@ vi.mock("@/hooks/queries/use-templates", () => ({
     mockUseOrgTemplateByType(type, options),
 }));
 
+// cmdk (Popover+Command) needs ResizeObserver which jsdom doesn't provide.
+class MockResizeObserver {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+
 // Regex constants for testing
 const TITLE_REGEX = /title/i;
 const REQUIRED_REGEX = /\*/;
@@ -97,6 +104,7 @@ describe("CreateDocumentModal", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.stubGlobal("ResizeObserver", MockResizeObserver);
 
     // Default mocks
     mockUseCreateArtifact.mockReturnValue({
@@ -156,6 +164,7 @@ describe("CreateDocumentModal", () => {
   });
 
   afterEach(() => {
+    vi.unstubAllGlobals();
     cleanup();
   });
 

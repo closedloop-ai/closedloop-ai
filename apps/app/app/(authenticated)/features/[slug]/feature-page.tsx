@@ -89,7 +89,7 @@ export function FeaturePage({
   });
   const uiState = useDocumentUIState({ documentType: DocumentType.Feature });
   const editMode = useInlineEditMode({
-    isLocked: session.isViewingHistorical,
+    readOnly: session.isViewingHistorical,
     editor: session.editor,
   });
   const planActions = usePlanActions({ documentId: linkedPlanId });

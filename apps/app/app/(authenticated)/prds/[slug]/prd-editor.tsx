@@ -99,7 +99,7 @@ export function PRDEditor({
   });
   const prdActions = usePrdActions({ documentId: prd.id });
   const editMode = useInlineEditMode({
-    isLocked: session.isViewingHistorical,
+    readOnly: session.isViewingHistorical,
     editor: session.editor,
   });
 
