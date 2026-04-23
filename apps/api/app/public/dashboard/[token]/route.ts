@@ -1,6 +1,9 @@
 import type { ApiResult } from "@repo/api/src/types/common";
 import { success } from "@repo/api/src/types/common";
-import type { PublicUsageDashboardResponse } from "@repo/api/src/types/dashboard";
+import type {
+  PublicUsageDashboardResponse,
+  TimeInterval,
+} from "@repo/api/src/types/dashboard";
 import { NextResponse } from "next/server";
 import { dashboardService } from "@/app/dashboard/service";
 import { errorResponse, notFoundResponse } from "@/lib/route-utils";
@@ -23,12 +26,20 @@ export async function GET(
       ? modelsParam.split(",").filter(Boolean)
       : undefined;
 
+    const intervalParam = url.searchParams.get("interval");
+    const validIntervals = new Set<TimeInterval>(["15min", "1h", "1d"]);
+    const interval: TimeInterval =
+      intervalParam && validIntervals.has(intervalParam as TimeInterval)
+        ? (intervalParam as TimeInterval)
+        : "1d";
+
     const result = await dashboardService.getPublicUsageDashboard(token, {
       rangeDays:
         rangeDays !== undefined && !Number.isNaN(rangeDays)
           ? rangeDays
           : undefined,
       models,
+      interval,
     });
 
     if (!result) {

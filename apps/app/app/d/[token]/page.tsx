@@ -1,14 +1,17 @@
 "use client";
 
 import type {
-  DailyTokenUsage,
+  AgentUsage,
   DeliveryStats,
   ModelUsage,
   ProjectUsage,
   RecentSession,
+  TimeSeriesBucket,
 } from "@repo/api/src/types/dashboard";
 import { use, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  Area,
+  AreaChart,
   Bar,
   BarChart,
   CartesianGrid,
@@ -36,6 +39,10 @@ const DATE_RANGES: { label: string; value: DateRange }[] = [
   { label: "All", value: 0 },
 ];
 
+type ChartMetric = "tokens" | "activeUsers" | "loops" | "apiCost";
+type ChartType = "bar" | "line";
+type TimeInterval = "15min" | "1h" | "1d";
+
 const MODEL_COLORS: Record<string, string> = {
   "claude-opus-4-6": "#f97316",
   "claude-opus-4": "#f97316",
@@ -46,6 +53,7 @@ const MODEL_COLORS: Record<string, string> = {
   "claude-haiku-4-5": "#22c55e",
 };
 const DEFAULT_MODEL_COLOR = "#8b5cf6";
+const ACCENT = "#10b981";
 
 const BAR_COLORS = {
   input: "#60a5fa",
@@ -118,31 +126,35 @@ function StatCard({
   label,
   value,
   sub,
-  highlight,
+  active,
+  onClick,
 }: {
   label: string;
   value: string;
   sub?: string;
-  highlight?: boolean;
+  active?: boolean;
+  onClick?: () => void;
 }) {
   return (
-    <div
-      className={`rounded-lg border px-5 py-4 ${
-        highlight
-          ? "border-green-700/50 bg-green-900/20"
-          : "border-slate-700/50 bg-slate-800/60"
-      }`}
+    <button
+      className={`rounded-lg border px-5 py-4 text-left transition-all ${
+        active
+          ? "border-emerald-500/70 bg-emerald-900/30 ring-1 ring-emerald-500/30"
+          : "border-slate-700/50 bg-slate-800/60 hover:border-slate-600"
+      } ${onClick ? "cursor-pointer" : ""}`}
+      onClick={onClick}
+      type="button"
     >
       <div className="mb-1 font-medium text-slate-400 text-xs uppercase tracking-wider">
         {label}
       </div>
       <div
-        className={`font-bold text-2xl ${highlight ? "text-green-400" : "text-white"}`}
+        className={`font-bold text-2xl ${active ? "text-emerald-400" : "text-white"}`}
       >
         {value}
       </div>
       {sub && <div className="mt-0.5 text-slate-500 text-xs">{sub}</div>}
-    </div>
+    </button>
   );
 }
 
@@ -256,7 +268,7 @@ function RangeSelector({
         <button
           className={`rounded px-3 py-1 font-medium text-xs transition-colors ${
             value === r.value
-              ? "bg-blue-600 text-white"
+              ? "bg-emerald-600 text-white"
               : "text-slate-400 hover:text-white"
           }`}
           key={r.value}
@@ -270,63 +282,199 @@ function RangeSelector({
   );
 }
 
-function DailyUsageChart({ data }: { data: DailyTokenUsage[] }) {
+function ChartControls({
+  interval,
+  onIntervalChange,
+  chartType,
+  onChartTypeChange,
+}: {
+  interval: TimeInterval;
+  onIntervalChange: (v: TimeInterval) => void;
+  chartType: ChartType;
+  onChartTypeChange: (v: ChartType) => void;
+}) {
+  return (
+    <div className="flex items-center gap-4">
+      <div className="flex items-center gap-1">
+        {(["15min", "1h", "1d"] as const).map((v) => (
+          <button
+            className={`rounded px-2 py-1 font-medium text-xs transition-colors ${
+              interval === v
+                ? "bg-slate-700 text-white"
+                : "text-slate-500 hover:text-white"
+            }`}
+            key={v}
+            onClick={() => onIntervalChange(v)}
+            type="button"
+          >
+            {{ "15min": "15m", "1h": "1h", "1d": "1d" }[v]}
+          </button>
+        ))}
+      </div>
+      <div className="flex items-center gap-1">
+        <button
+          className={`rounded px-2 py-1 font-medium text-xs transition-colors ${
+            chartType === "bar"
+              ? "bg-slate-700 text-white"
+              : "text-slate-500 hover:text-white"
+          }`}
+          onClick={() => onChartTypeChange("bar")}
+          type="button"
+        >
+          Bar
+        </button>
+        <button
+          className={`rounded px-2 py-1 font-medium text-xs transition-colors ${
+            chartType === "line"
+              ? "bg-slate-700 text-white"
+              : "text-slate-500 hover:text-white"
+          }`}
+          onClick={() => onChartTypeChange("line")}
+          type="button"
+        >
+          Line
+        </button>
+      </div>
+    </div>
+  );
+}
+
+const METRIC_CONFIG: Record<
+  ChartMetric,
+  {
+    label: string;
+    keys: string[];
+    colors: string[];
+    formatter: (v: number) => string;
+  }
+> = {
+  tokens: {
+    label: "Token Usage",
+    keys: ["input", "output", "cacheRead", "cacheCreation"],
+    colors: [
+      BAR_COLORS.input,
+      BAR_COLORS.output,
+      BAR_COLORS.cacheRead,
+      BAR_COLORS.cacheCreation,
+    ],
+    formatter: fmt,
+  },
+  activeUsers: {
+    label: "Active Users",
+    keys: ["activeUsers"],
+    colors: [ACCENT],
+    formatter: (v) => v.toString(),
+  },
+  loops: {
+    label: "Loops",
+    keys: ["loops"],
+    colors: ["#818cf8"],
+    formatter: fmt,
+  },
+  apiCost: {
+    label: "API Cost Equivalent",
+    keys: ["apiCost"],
+    colors: [ACCENT],
+    formatter: fmtCost,
+  },
+};
+
+const METRIC_NAMES: Record<string, string> = {
+  input: "Input",
+  output: "Output",
+  cacheRead: "Cache Read",
+  cacheCreation: "Cache Creation",
+  activeUsers: "Active Users",
+  loops: "Loops",
+  apiCost: "API Cost",
+};
+
+function TimeSeriesChart({
+  data,
+  metric,
+  chartType,
+}: {
+  data: TimeSeriesBucket[];
+  metric: ChartMetric;
+  chartType: ChartType;
+}) {
+  const config = METRIC_CONFIG[metric];
+
+  const tooltipStyle = {
+    backgroundColor: "#1e293b",
+    border: "1px solid #475569",
+    borderRadius: 8,
+    color: "#e2e8f0",
+    fontSize: 12,
+  };
+
+  const commonProps = {
+    data,
+    children: (
+      <>
+        <CartesianGrid stroke="#334155" strokeDasharray="3 3" />
+        <XAxis
+          axisLine={{ stroke: "#475569" }}
+          dataKey="date"
+          tick={{ fill: "#94a3b8", fontSize: 10 }}
+          tickLine={false}
+        />
+        <YAxis
+          axisLine={{ stroke: "#475569" }}
+          tick={{ fill: "#94a3b8", fontSize: 11 }}
+          tickFormatter={config.formatter}
+          tickLine={false}
+        />
+        <Tooltip
+          contentStyle={tooltipStyle}
+          formatter={
+            ((v: number, n: string) => [
+              config.formatter(v),
+              METRIC_NAMES[n] ?? n,
+            ]) as never
+          }
+        />
+        <Legend wrapperStyle={{ fontSize: 12, color: "#94a3b8" }} />
+      </>
+    ),
+  };
+
   return (
     <div className="rounded-lg border border-slate-700/50 bg-slate-800/60 p-5">
       <h3 className="mb-4 font-semibold text-slate-300 text-sm uppercase tracking-wider">
-        Daily Token Usage
+        {config.label}
       </h3>
       <ResponsiveContainer height={350} width="100%">
-        <BarChart data={data}>
-          <CartesianGrid stroke="#334155" strokeDasharray="3 3" />
-          <XAxis
-            axisLine={{ stroke: "#475569" }}
-            dataKey="date"
-            tick={{ fill: "#94a3b8", fontSize: 11 }}
-            tickLine={false}
-          />
-          <YAxis
-            axisLine={{ stroke: "#475569" }}
-            tick={{ fill: "#94a3b8", fontSize: 11 }}
-            tickFormatter={fmtAxis}
-            tickLine={false}
-          />
-          <Tooltip
-            contentStyle={{
-              backgroundColor: "#1e293b",
-              border: "1px solid #475569",
-              borderRadius: 8,
-              color: "#e2e8f0",
-              fontSize: 12,
-            }}
-            formatter={((v: number, n: string) => [fmt(v), n]) as never}
-          />
-          <Legend wrapperStyle={{ fontSize: 12, color: "#94a3b8" }} />
-          <Bar
-            dataKey="input"
-            fill={BAR_COLORS.input}
-            name="Input"
-            stackId="a"
-          />
-          <Bar
-            dataKey="output"
-            fill={BAR_COLORS.output}
-            name="Output"
-            stackId="a"
-          />
-          <Bar
-            dataKey="cacheRead"
-            fill={BAR_COLORS.cacheRead}
-            name="Cache Read"
-            stackId="a"
-          />
-          <Bar
-            dataKey="cacheCreation"
-            fill={BAR_COLORS.cacheCreation}
-            name="Cache Creation"
-            stackId="a"
-          />
-        </BarChart>
+        {chartType === "bar" ? (
+          <BarChart data={data}>
+            {commonProps.children}
+            {config.keys.map((key, i) => (
+              <Bar
+                dataKey={key}
+                fill={config.colors[i]}
+                key={key}
+                name={METRIC_NAMES[key] ?? key}
+                stackId={config.keys.length > 1 ? "a" : undefined}
+              />
+            ))}
+          </BarChart>
+        ) : (
+          <AreaChart data={data}>
+            {commonProps.children}
+            {config.keys.map((key, i) => (
+              <Area
+                dataKey={key}
+                fill={config.colors[i]}
+                fillOpacity={0.15}
+                key={key}
+                name={METRIC_NAMES[key] ?? key}
+                stackId={config.keys.length > 1 ? "a" : undefined}
+                stroke={config.colors[i]}
+                type="monotone"
+              />
+            ))}
+          </AreaChart>
+        )}
       </ResponsiveContainer>
     </div>
   );
@@ -384,13 +532,10 @@ function ModelDonutChart({ data }: { data: ModelUsage[] }) {
 function TopProjectsChart({ data }: { data: ProjectUsage[] }) {
   const chartData = useMemo(
     () =>
-      data
-        .slice(0, 10)
-        .map((p) => ({
-          ...p,
-          project: truncateProject(p.project),
-        }))
-        .reverse(),
+      data.slice(0, 10).map((p) => ({
+        ...p,
+        project: truncateProject(p.project),
+      })),
     [data]
   );
 
@@ -459,7 +604,6 @@ function SessionsTable({ sessions }: { sessions: RecentSession[] }) {
               <th className="pr-4 pb-3 font-medium">Session</th>
               <th className="pr-4 pb-3 font-medium">Project</th>
               <th className="pr-4 pb-3 font-medium">Last Active</th>
-              <th className="pr-4 pb-3 font-medium">Duration</th>
               <th className="pr-4 pb-3 font-medium">Model</th>
               <th className="pr-4 pb-3 text-right font-medium">Turns</th>
               <th className="pr-4 pb-3 text-right font-medium">Input</th>
@@ -484,7 +628,6 @@ function SessionsTable({ sessions }: { sessions: RecentSession[] }) {
                     minute: "2-digit",
                   })}
                 </td>
-                <td className="py-3 pr-4">{s.durationMinutes.toFixed(1)}m</td>
                 <td className="py-3 pr-4">
                   <span
                     className="rounded-full border px-2 py-0.5 text-xs"
@@ -503,7 +646,7 @@ function SessionsTable({ sessions }: { sessions: RecentSession[] }) {
             ))}
             {sessions.length === 0 && (
               <tr>
-                <td className="py-8 text-center text-slate-500" colSpan={8}>
+                <td className="py-8 text-center text-slate-500" colSpan={7}>
                   No sessions found for the selected filters.
                 </td>
               </tr>
@@ -515,95 +658,184 @@ function SessionsTable({ sessions }: { sessions: RecentSession[] }) {
   );
 }
 
+// ── Dashboard Content ────────────────────────────────────────────────────────
+
+function AgentUsageTable({ agents }: { agents: AgentUsage[] }) {
+  if (agents.length === 0) {
+    return null;
+  }
+  return (
+    <div className="rounded-lg border border-slate-700/50 bg-slate-800/60 p-5">
+      <h3 className="mb-4 font-semibold text-slate-300 text-sm uppercase tracking-wider">
+        Agent &amp; Skill Usage
+      </h3>
+      <div className="overflow-x-auto">
+        <table className="w-full text-left text-sm">
+          <thead>
+            <tr className="border-slate-700 border-b text-slate-400 text-xs uppercase tracking-wider">
+              <th className="pr-4 pb-3 font-medium">Agent</th>
+              <th className="pr-4 pb-3 font-medium">Type</th>
+              <th className="pr-4 pb-3 text-right font-medium">Calls</th>
+              <th className="pb-3 text-right font-medium">Total Time</th>
+            </tr>
+          </thead>
+          <tbody>
+            {agents.slice(0, 15).map((a) => (
+              <tr
+                className="border-slate-700/40 border-b text-slate-300"
+                key={`${a.agentName}:${a.agentType}`}
+              >
+                <td className="py-2 pr-4 text-xs">{a.agentName}</td>
+                <td className="py-2 pr-4 text-slate-400 text-xs">
+                  {a.agentType}
+                </td>
+                <td className="py-2 pr-4 text-right">{a.totalCalls}</td>
+                <td className="py-2 text-right text-slate-400">
+                  {Math.round(a.totalDurationS / 60)}m
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function DashboardContent({
   data,
   range,
+  interval,
+  onIntervalChange,
 }: {
   data: NonNullable<ReturnType<typeof usePublicDashboard>["data"]>;
   range: DateRange;
+  interval: TimeInterval;
+  onIntervalChange: (v: TimeInterval) => void;
 }) {
   const { stats, delivery } = data;
+  const [activeMetric, setActiveMetric] = useState<ChartMetric>("tokens");
+  const [chartType, setChartType] = useState<ChartType>("bar");
   const totalTokens =
     stats.inputTokens +
     stats.outputTokens +
-    stats.cacheRead +
-    stats.cacheCreation;
+    (stats.cacheRead ?? 0) +
+    (stats.cacheCreation ?? 0);
   const suffix = rangeSuffix(range);
 
   return (
     <>
-      {/* Hero: API Cost Equivalent + Total Tokens */}
+      {/* Hero: clickable stat cards */}
       <div className="mb-6">
         <h2 className="mb-3 font-semibold text-slate-300 text-sm uppercase tracking-wider">
           Token Investment
         </h2>
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
           <StatCard
-            highlight
+            active={activeMetric === "apiCost"}
             label="API Cost Equivalent"
+            onClick={() => setActiveMetric("apiCost")}
             sub="Anthropic API pricing by model"
             value={fmtCost(stats.apiCostEquivalent ?? 0)}
           />
           <StatCard
+            active={activeMetric === "tokens"}
             label="Total Tokens"
+            onClick={() => setActiveMetric("tokens")}
             sub={suffix}
             value={fmt(totalTokens)}
           />
-          <StatCard label="Sessions" sub={suffix} value={fmt(stats.sessions)} />
           <StatCard
-            label="Subscription"
-            sub="electron targets (included)"
-            value={fmt(stats.subscriptionTokens ?? 0)}
+            active={activeMetric === "activeUsers"}
+            label="Active Users"
+            onClick={() => setActiveMetric("activeUsers")}
+            sub={suffix}
+            value={(stats.activeUsers ?? 0).toString()}
           />
           <StatCard
-            label="API Tokens"
-            sub="cloud / API key usage"
-            value={fmt(stats.apiTokens ?? 0)}
+            label="Sessions"
+            sub="logins / session refreshes"
+            value={fmt(stats.sessions ?? 0)}
+          />
+          <StatCard
+            label="Active Nodes"
+            sub="compute targets"
+            value={(stats.activeNodes ?? 0).toString()}
           />
         </div>
       </div>
 
-      {/* Token breakdown */}
-      <div className="mb-6">
-        <h2 className="mb-3 font-semibold text-slate-300 text-sm uppercase tracking-wider">
-          Token Breakdown
-        </h2>
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-          <StatCard label="Input" sub={suffix} value={fmt(stats.inputTokens)} />
-          <StatCard
-            label="Output"
-            sub={suffix}
-            value={fmt(stats.outputTokens)}
-          />
-          <StatCard
-            label="Cache Read"
-            sub="prompt cache hits"
-            value={fmt(stats.cacheRead)}
-          />
-          <StatCard
-            label="Cache Creation"
-            sub="prompt cache writes"
-            value={fmt(stats.cacheCreation)}
-          />
-        </div>
+      {/* Operational metrics */}
+      <div className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
+        <StatCard
+          active={activeMetric === "loops"}
+          label="Total Loops"
+          onClick={() => setActiveMetric("loops")}
+          sub={`${stats.avgLoopsPerDay ?? 0}/day avg`}
+          value={fmt(stats.turns ?? 0)}
+        />
+        <StatCard
+          label="Avg Runtime"
+          sub="minutes per loop"
+          value={`${stats.avgRuntimeMinutes ?? 0}m`}
+        />
+      </div>
+
+      {/* Subscription vs API split */}
+      <div className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
+        <StatCard
+          label="Subscription"
+          sub={`${stats.subscriptionPct ?? 0}% of tokens`}
+          value={fmt(stats.subscriptionTokens ?? 0)}
+        />
+        <StatCard
+          label="API Tokens"
+          sub="cloud / API key usage"
+          value={fmt(stats.apiTokens ?? 0)}
+        />
+        <StatCard label="Input" sub={suffix} value={fmt(stats.inputTokens)} />
+        <StatCard label="Output" sub={suffix} value={fmt(stats.outputTokens)} />
       </div>
 
       {/* Delivery Output */}
       {delivery && <DeliveryCards delivery={delivery} range={range} />}
 
-      {/* Daily Usage Chart */}
+      {/* Time Series Chart with controls */}
       <div className="mb-6">
-        <DailyUsageChart data={data.dailyUsage} />
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="font-semibold text-slate-300 text-sm uppercase tracking-wider">
+            {METRIC_CONFIG[activeMetric].label} Over Time
+          </h2>
+          <ChartControls
+            chartType={chartType}
+            interval={interval}
+            onChartTypeChange={setChartType}
+            onIntervalChange={onIntervalChange}
+          />
+        </div>
+        <TimeSeriesChart
+          chartType={chartType}
+          data={data.timeSeries ?? []}
+          metric={activeMetric}
+        />
       </div>
 
       {/* Model Donut + Top Projects */}
       <div className="mb-6 grid gap-6 lg:grid-cols-2">
-        <ModelDonutChart data={data.byModel} />
-        <TopProjectsChart data={data.topProjects} />
+        <ModelDonutChart data={data.byModel ?? []} />
+        <TopProjectsChart data={data.topProjects ?? []} />
       </div>
 
       {/* Recent Sessions */}
-      <SessionsTable sessions={data.recentSessions} />
+      {/* Agent & Skill Usage */}
+      {(data.agentUsage ?? []).length > 0 && (
+        <div className="mb-6">
+          <AgentUsageTable agents={data.agentUsage} />
+        </div>
+      )}
+
+      {/* Recent Sessions */}
+      <SessionsTable sessions={data.recentSessions ?? []} />
     </>
   );
 }
@@ -617,17 +849,19 @@ type Props = {
 export default function PublicDashboardPage({ params }: Props) {
   const { token } = use(params);
   const [range, setRange] = useState<DateRange>(30);
+  const [interval, setInterval] = useState<TimeInterval>("1d");
   const [selectedModels, setSelectedModels] = useState<Set<string>>(new Set());
   const initializedRef = useRef(false);
 
   const filters: PublicDashboardFilters = useMemo(
     () => ({
       range,
+      interval,
       models: initializedRef.current
         ? Array.from(selectedModels).sort()
         : undefined,
     }),
-    [range, selectedModels]
+    [range, interval, selectedModels]
   );
 
   const { data, isLoading, error, dataUpdatedAt } = usePublicDashboard(
@@ -701,14 +935,15 @@ export default function PublicDashboardPage({ params }: Props) {
   return (
     <div className="h-screen overflow-y-auto bg-slate-900 text-slate-200">
       <div className="mx-auto max-w-7xl px-6 py-6">
-        {/* Header */}
+        {/* Header — ClosedLoop branding */}
         <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
           <div>
-            <h1 className="font-bold text-orange-400 text-xl">
-              {data?.organizationName ?? "AI"} &mdash; Claude Code Usage
+            <h1 className="font-bold text-emerald-400 text-xl">
+              ClosedLoop AI Usage Dashboard
             </h1>
             <p className="mt-1 text-slate-500 text-xs">
-              Accelerating AI-driven software delivery
+              {data?.organizationName ?? ""} &mdash; Accelerating AI-driven
+              software delivery
             </p>
           </div>
           <div className="text-right text-slate-500 text-xs">
@@ -731,26 +966,24 @@ export default function PublicDashboardPage({ params }: Props) {
 
         {isLoading && !data && (
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
-            {[
-              "cost",
-              "tokens",
-              "sessions",
-              "sub",
-              "api",
-              "prds",
-              "plans",
-              "features",
-              "prs",
-              "workflows",
-            ].map((id) => (
-              <div
-                className="h-24 animate-pulse rounded-lg bg-slate-800/60"
-                key={id}
-              />
-            ))}
+            {["c1", "c2", "c3", "c4", "c5", "c6", "c7", "c8", "c9", "c10"].map(
+              (id) => (
+                <div
+                  className="h-24 animate-pulse rounded-lg bg-slate-800/60"
+                  key={id}
+                />
+              )
+            )}
           </div>
         )}
-        {data && <DashboardContent data={data} range={range} />}
+        {data && (
+          <DashboardContent
+            data={data}
+            interval={interval}
+            onIntervalChange={setInterval}
+            range={range}
+          />
+        )}
       </div>
     </div>
   );

@@ -8,6 +8,7 @@ import { resolveApiUrl } from "@/hooks/use-api-client";
 export type PublicDashboardFilters = {
   range?: number;
   models?: string[];
+  interval?: "15min" | "1h" | "1d";
 };
 
 export const publicDashboardKeys = {
@@ -29,6 +30,9 @@ export function usePublicDashboard(
       }
       if (filters.models && filters.models.length > 0) {
         params.set("models", filters.models.join(","));
+      }
+      if (filters.interval) {
+        params.set("interval", filters.interval);
       }
       const qs = params.toString();
       const url = `${resolveApiUrl()}/public/dashboard/${token}${qs ? `?${qs}` : ""}`;

@@ -1,5 +1,5 @@
 import type {
-  DailyTokenUsage,
+  AgentUsage,
   DailyTrend,
   DashboardStats,
   DeliveryStats,
@@ -8,8 +8,11 @@ import type {
   PublicDashboardResponse,
   PublicUsageDashboardResponse,
   RecentSession,
+  TimeInterval,
+  TimeSeriesBucket,
   UsageDashboardStats,
 } from "@repo/api/src/types/dashboard";
+import type { PerfSummary } from "@repo/api/src/types/performance";
 import {
   DocumentType,
   GitHubActionStatus,
@@ -57,6 +60,8 @@ const MODEL_PRICING: Record<string, ModelPricing> = {
   },
   "claude-sonnet-4": { input: 3, output: 15, cacheWrite: 3.75, cacheRead: 0.3 },
   "claude-haiku-4-5": { input: 0.8, output: 4, cacheWrite: 1, cacheRead: 0.08 },
+  // "default" model key used by Claude Code when no explicit model is specified
+  default: { input: 3, output: 15, cacheWrite: 3.75, cacheRead: 0.3 },
 };
 
 const DEFAULT_PRICING: ModelPricing = {
@@ -94,6 +99,159 @@ function calculateModelCost(
     (output / 1_000_000) * pricing.output +
     (cacheCreation / 1_000_000) * pricing.cacheWrite +
     (cacheRead / 1_000_000) * pricing.cacheRead
+  );
+}
+
+// ── Query Helpers ──────────────────────────────────────────────────────────
+
+function buildWherePredicates(
+  orgId: string,
+  startDate: Date | undefined,
+  models: string[] | undefined
+): {
+  baseWhereClause: Prisma.Sql;
+  whereClause: Prisma.Sql;
+  /** Same as whereClause but with `l.` prefix for JOIN queries */
+  joinWhereClause: Prisma.Sql;
+} {
+  const basePreds: Prisma.Sql[] = [
+    Prisma.sql`organization_id = ${orgId}::uuid`,
+  ];
+  const joinBasePreds: Prisma.Sql[] = [
+    Prisma.sql`l.organization_id = ${orgId}::uuid`,
+  ];
+  if (startDate) {
+    basePreds.push(Prisma.sql`created_at >= ${startDate}`);
+    joinBasePreds.push(Prisma.sql`l.created_at >= ${startDate}`);
+  }
+  const baseWhereClause = Prisma.join([...basePreds], " AND ");
+  const rawPreds = [...basePreds];
+  const joinPreds = [...joinBasePreds];
+  if (models && models.length > 0) {
+    const modelPreds = models.map((m) => Prisma.sql`tokens_by_model ? ${m}`);
+    const joinModelPreds = models.map(
+      (m) => Prisma.sql`l.tokens_by_model ? ${m}`
+    );
+    rawPreds.push(Prisma.sql`(${Prisma.join(modelPreds, " OR ")})`);
+    joinPreds.push(Prisma.sql`(${Prisma.join(joinModelPreds, " OR ")})`);
+  }
+  const whereClause = Prisma.join(rawPreds, " AND ");
+  const joinWhereClause = Prisma.join(joinPreds, " AND ");
+  return { baseWhereClause, whereClause, joinWhereClause };
+}
+
+async function fetchDeliveryStats(
+  orgId: string,
+  startDate: Date | undefined
+): Promise<DeliveryStats> {
+  const dateFilter = startDate ? { createdAt: { gte: startDate } } : {};
+  const ws = await withDb((db) =>
+    db.workstream.findMany({
+      where: { organizationId: orgId },
+      select: { id: true },
+    })
+  );
+  const wsIds = ws.map((w) => w.id);
+
+  const [prdCount, planCount, featureCount, prsMerged, agenticWorkflows] =
+    await Promise.all([
+      withDb((db) =>
+        db.document.count({
+          where: {
+            organizationId: orgId,
+            type: DocumentType.PRD,
+            ...dateFilter,
+          },
+        })
+      ),
+      withDb((db) =>
+        db.document.count({
+          where: {
+            organizationId: orgId,
+            type: DocumentType.IMPLEMENTATION_PLAN,
+            ...dateFilter,
+          },
+        })
+      ),
+      withDb((db) =>
+        db.document.count({
+          where: {
+            organizationId: orgId,
+            type: DocumentType.FEATURE,
+            ...dateFilter,
+          },
+        })
+      ),
+      withDb((db) =>
+        db.gitHubPullRequest.count({
+          where: {
+            workstreamId: { in: wsIds },
+            state: GitHubPRState.MERGED,
+            mergedAt: { not: null, ...(startDate ? { gte: startDate } : {}) },
+          },
+        })
+      ),
+      withDb((db) =>
+        db.$queryRaw<[{ count: bigint }]>(Prisma.sql`
+          SELECT COUNT(DISTINCT workstream_id) AS count
+          FROM loops
+          WHERE organization_id = ${orgId}::uuid
+            AND workstream_id IS NOT NULL
+            ${startDate ? Prisma.sql`AND created_at >= ${startDate}` : Prisma.empty}
+        `)
+      ).then((r) => Number(r[0]?.count ?? 0)),
+    ]);
+
+  return {
+    prdsCreated: prdCount,
+    plansCreated: planCount,
+    featuresCreated: featureCount,
+    prsMerged,
+    agenticWorkflows,
+  };
+}
+
+async function fetchAgentUsage(
+  orgId: string,
+  startDate: Date | undefined
+): Promise<AgentUsage[]> {
+  const perfRecords = await withDb((db) =>
+    db.gitHubActionRunPerformance.findMany({
+      where: {
+        document: {
+          organizationId: orgId,
+          ...(startDate ? { createdAt: { gte: startDate } } : {}),
+        },
+      },
+      select: { summaryData: true },
+    })
+  );
+
+  const agentMap = new Map<string, AgentUsage>();
+  for (const record of perfRecords) {
+    const summary = record.summaryData as unknown as PerfSummary | null;
+    if (!summary?.agentBreakdown) {
+      continue;
+    }
+    for (const agent of summary.agentBreakdown) {
+      const key = `${agent.agentName}:${agent.agentType}`;
+      const existing = agentMap.get(key);
+      if (existing) {
+        existing.totalCalls += agent.callCount;
+        existing.totalDurationS += agent.totalDurationS;
+      } else {
+        agentMap.set(key, {
+          agentName: agent.agentName,
+          agentType: agent.agentType,
+          totalCalls: agent.callCount,
+          totalDurationS: agent.totalDurationS,
+        });
+      }
+    }
+  }
+
+  return Array.from(agentMap.values()).sort(
+    (a, b) => b.totalCalls - a.totalCalls
   );
 }
 
@@ -290,7 +448,7 @@ export const dashboardService = {
    */
   async getPublicUsageDashboard(
     token: string,
-    filters: { rangeDays?: number; models?: string[] }
+    filters: { rangeDays?: number; models?: string[]; interval?: TimeInterval }
   ): Promise<PublicUsageDashboardResponse | null> {
     const org = await withDb((db) =>
       db.organization.findUnique({
@@ -303,45 +461,51 @@ export const dashboardService = {
       return null;
     }
 
-    const { rangeDays, models } = filters;
+    const { rangeDays, models, interval = "1d" } = filters;
     const startDate =
       rangeDays !== undefined && rangeDays > 0
         ? new Date(Date.now() - rangeDays * 86_400_000)
         : undefined;
 
-    // Build raw SQL predicates for cache/model/project aggregation
-    const basePreds: Prisma.Sql[] = [
-      Prisma.sql`organization_id = ${org.id}::uuid`,
-    ];
-    if (startDate) {
-      basePreds.push(Prisma.sql`created_at >= ${startDate}`);
-    }
-    // baseWhereClause: org + date only (used for allModels enumeration)
-    const baseWhereClause = Prisma.join([...basePreds], " AND ");
-    // Model filter: restrict to loops whose tokens_by_model JSON contains at least one matching key
-    const rawPreds = [...basePreds];
-    if (models && models.length > 0) {
-      const modelPreds = models.map((m) => Prisma.sql`tokens_by_model ? ${m}`);
-      rawPreds.push(Prisma.sql`(${Prisma.join(modelPreds, " OR ")})`);
-    }
-    const whereClause = Prisma.join(rawPreds, " AND ");
+    // Time bucket format for GROUP BY depending on interval
+    const bucketFormatMap: Record<TimeInterval, string> = {
+      "15min": "YYYY-MM-DD HH24:MI",
+      "1h": "YYYY-MM-DD HH24:00",
+      "1d": "YYYY-MM-DD",
+    };
+    const bucketFormat = bucketFormatMap[interval];
+    // For 15-min buckets, truncate to 15-min boundary
+    const bucketExpr =
+      interval === "15min"
+        ? Prisma.sql`TO_CHAR(date_trunc('hour', created_at) + INTERVAL '15 min' * FLOOR(EXTRACT(MINUTE FROM created_at) / 15), ${bucketFormat})`
+        : Prisma.sql`TO_CHAR(created_at, ${bucketFormat})`;
+
+    // Days in range for avg calculations
+    const daysInRange = rangeDays && rangeDays > 0 ? rangeDays : 365;
+
+    const { baseWhereClause, whereClause, joinWhereClause } =
+      buildWherePredicates(org.id, startDate, models);
 
     type AggRow = {
-      distinct_sessions: bigint;
+      active_users: bigint;
+      sessions: bigint;
+      active_nodes: bigint;
       total_loops: bigint;
       total_input: bigint;
       total_output: bigint;
-      total_cost: string | null;
       total_cache_creation: bigint;
       total_cache_read: bigint;
+      avg_runtime_minutes: string | null;
     };
 
-    type DailyRow = {
-      day: string;
+    type TimeSeriesRow = {
+      bucket: string;
       input: bigint;
       output: bigint;
       cache_read: bigint;
       cache_creation: bigint;
+      active_users: bigint;
+      loops: bigint;
     };
 
     type ModelRow = {
@@ -384,17 +548,19 @@ export const dashboardService = {
       sessionResult,
       allModels,
       originResult,
-      [prdCount, planCount, featureCount, prsMerged, agenticWorkflows],
+      delivery,
+      agentUsage,
     ] = await Promise.all([
-      // Aggregate stats
+      // Aggregate stats (all loops including failed — no status filter)
       withDb((db) =>
         db.$queryRaw<AggRow[]>(Prisma.sql`
             SELECT
-              COUNT(DISTINCT session_id) AS distinct_sessions,
+              COUNT(DISTINCT user_id) AS active_users,
+              COUNT(DISTINCT session_id) AS sessions,
+              COUNT(DISTINCT compute_target_id) AS active_nodes,
               COUNT(*) AS total_loops,
               COALESCE(SUM(tokens_input), 0) AS total_input,
               COALESCE(SUM(tokens_output), 0) AS total_output,
-              SUM(estimated_cost) AS total_cost,
               COALESCE(SUM(
                 CASE WHEN jsonb_typeof(tokens_by_model) = 'object' THEN (
                   SELECT COALESCE(SUM(CASE
@@ -410,17 +576,18 @@ export const dashboardService = {
                     ELSE 0 END), 0)
                   FROM jsonb_each(tokens_by_model) AS e(key, value)
                 ) ELSE 0 END
-              ), 0) AS total_cache_read
+              ), 0) AS total_cache_read,
+              EXTRACT(EPOCH FROM AVG(completed_at - started_at)) / 60.0 AS avg_runtime_minutes
             FROM loops
             WHERE ${whereClause}
           `)
       ),
 
-      // Daily token breakdown
+      // Time series with parameterized interval bucket
       withDb((db) =>
-        db.$queryRaw<DailyRow[]>(Prisma.sql`
+        db.$queryRaw<TimeSeriesRow[]>(Prisma.sql`
             SELECT
-              TO_CHAR(created_at, 'YYYY-MM-DD') AS day,
+              ${bucketExpr} AS bucket,
               COALESCE(SUM(tokens_input), 0) AS input,
               COALESCE(SUM(tokens_output), 0) AS output,
               COALESCE(SUM(
@@ -438,11 +605,13 @@ export const dashboardService = {
                     ELSE 0 END), 0)
                   FROM jsonb_each(tokens_by_model) AS e(key, value)
                 ) ELSE 0 END
-              ), 0) AS cache_creation
+              ), 0) AS cache_creation,
+              COUNT(DISTINCT user_id) AS active_users,
+              COUNT(*) AS loops
             FROM loops
             WHERE ${whereClause}
-            GROUP BY day
-            ORDER BY day
+            GROUP BY bucket
+            ORDER BY bucket
           `)
       ),
 
@@ -470,18 +639,19 @@ export const dashboardService = {
           `)
       ),
 
-      // Top projects by tokens (from repo JSON field)
+      // Top projects by tokens (via workstream → project join, fallback to repo name)
       withDb((db) =>
         db.$queryRaw<ProjectRow[]>(Prisma.sql`
             SELECT
-              COALESCE(repo ->> 'fullName', 'Unknown') AS project,
-              COALESCE(SUM(tokens_input), 0) AS input_tokens,
-              COALESCE(SUM(tokens_output), 0) AS output_tokens
-            FROM loops
-            WHERE ${whereClause}
-              AND repo IS NOT NULL
+              COALESCE(p.name, l.repo ->> 'fullName', 'Unknown') AS project,
+              COALESCE(SUM(l.tokens_input), 0) AS input_tokens,
+              COALESCE(SUM(l.tokens_output), 0) AS output_tokens
+            FROM loops l
+            LEFT JOIN workstreams w ON l.workstream_id = w.id
+            LEFT JOIN projects p ON w.project_id = p.id
+            WHERE ${joinWhereClause}
             GROUP BY project
-            ORDER BY (COALESCE(SUM(tokens_input), 0) + COALESCE(SUM(tokens_output), 0)) DESC
+            ORDER BY (COALESCE(SUM(l.tokens_input), 0) + COALESCE(SUM(l.tokens_output), 0)) DESC
             LIMIT 10
           `)
       ),
@@ -545,66 +715,8 @@ export const dashboardService = {
           `)
       ),
 
-      // Delivery stats: documents, PRs, workflows
-      // Pre-fetch workstream IDs once for PR and workflow counts
-      withDb((db) =>
-        db.workstream.findMany({
-          where: { organizationId: org.id },
-          select: { id: true },
-        })
-      ).then((ws) => {
-        const wsIds = ws.map((w) => w.id);
-        return Promise.all([
-          withDb((db) =>
-            db.document.count({
-              where: {
-                organizationId: org.id,
-                type: DocumentType.PRD,
-                ...(startDate ? { createdAt: { gte: startDate } } : {}),
-              },
-            })
-          ),
-          withDb((db) =>
-            db.document.count({
-              where: {
-                organizationId: org.id,
-                type: DocumentType.IMPLEMENTATION_PLAN,
-                ...(startDate ? { createdAt: { gte: startDate } } : {}),
-              },
-            })
-          ),
-          withDb((db) =>
-            db.document.count({
-              where: {
-                organizationId: org.id,
-                type: DocumentType.FEATURE,
-                ...(startDate ? { createdAt: { gte: startDate } } : {}),
-              },
-            })
-          ),
-          withDb((db) =>
-            db.gitHubPullRequest.count({
-              where: {
-                workstreamId: { in: wsIds },
-                state: GitHubPRState.MERGED,
-                mergedAt: {
-                  not: null,
-                  ...(startDate ? { gte: startDate } : {}),
-                },
-              },
-            })
-          ),
-          withDb((db) =>
-            db.gitHubActionRun.count({
-              where: {
-                workstreamId: { in: wsIds },
-                status: { not: GitHubActionStatus.PENDING },
-                ...(startDate ? { createdAt: { gte: startDate } } : {}),
-              },
-            })
-          ),
-        ]);
-      }),
+      fetchDeliveryStats(org.id, startDate),
+      fetchAgentUsage(org.id, startDate),
     ]);
 
     const agg = aggResult[0];
@@ -628,23 +740,29 @@ export const dashboardService = {
       };
     });
 
-    const apiCostEquivalent = byModel.reduce((sum, m) => sum + m.apiCost, 0);
+    // Filter out synthetic/junk models and 0-token entries
+    const filteredByModel = byModel.filter(
+      (m) => m.totalTokens > 0 && !m.model.startsWith("<")
+    );
+    const apiCostEquivalent = filteredByModel.reduce(
+      (sum, m) => sum + m.apiCost,
+      0
+    );
 
     // Subscription (electron) vs API (cloud) token split
-    let subscriptionTokens = 0;
-    let apiTokens = 0;
-    for (const row of originResult) {
-      const tokens = Number(row.total_tokens);
-      if (row.is_electron) {
-        subscriptionTokens = tokens;
-      } else {
-        apiTokens = tokens;
-      }
-    }
+    const electronRow = originResult.find((r) => r.is_electron);
+    const cloudRow = originResult.find((r) => !r.is_electron);
+    const subscriptionTokens = Number(electronRow?.total_tokens ?? 0);
+    const apiTokens = Number(cloudRow?.total_tokens ?? 0);
+
+    const totalTokens = subscriptionTokens + apiTokens;
+    const totalLoops = Number(agg?.total_loops ?? 0);
 
     const stats: UsageDashboardStats = {
-      sessions: Number(agg?.distinct_sessions ?? 0),
-      turns: Number(agg?.total_loops ?? 0),
+      activeUsers: Number(agg?.active_users ?? 0),
+      sessions: Number(agg?.sessions ?? 0),
+      activeNodes: Number(agg?.active_nodes ?? 0),
+      turns: totalLoops,
       inputTokens: Number(agg?.total_input ?? 0),
       outputTokens: Number(agg?.total_output ?? 0),
       cacheRead: Number(agg?.total_cache_read ?? 0),
@@ -653,23 +771,42 @@ export const dashboardService = {
       estimatedCost: apiCostEquivalent,
       subscriptionTokens,
       apiTokens,
+      subscriptionPct:
+        totalTokens > 0
+          ? Math.round((subscriptionTokens / totalTokens) * 100)
+          : 0,
+      avgLoopsPerDay: Math.round((totalLoops / daysInRange) * 10) / 10,
+      avgRuntimeMinutes:
+        Math.round(Number(agg?.avg_runtime_minutes ?? 0) * 10) / 10,
     };
 
-    const delivery: DeliveryStats = {
-      prdsCreated: prdCount,
-      plansCreated: planCount,
-      featuresCreated: featureCount,
-      prsMerged,
-      agenticWorkflows,
-    };
+    // Compute blended cost-per-token rate from model breakdown
+    const totalModelTokens = filteredByModel.reduce(
+      (s, m) => s + m.totalTokens,
+      0
+    );
+    const blendedCostPerToken =
+      totalModelTokens > 0 ? apiCostEquivalent / totalModelTokens : 0;
 
-    const dailyUsage: DailyTokenUsage[] = dailyResult.map((r: DailyRow) => ({
-      date: r.day,
-      input: Number(r.input),
-      output: Number(r.output),
-      cacheRead: Number(r.cache_read),
-      cacheCreation: Number(r.cache_creation),
-    }));
+    const timeSeries: TimeSeriesBucket[] = dailyResult.map(
+      (r: TimeSeriesRow) => {
+        const bucketTokens =
+          Number(r.input) +
+          Number(r.output) +
+          Number(r.cache_read) +
+          Number(r.cache_creation);
+        return {
+          date: r.bucket,
+          input: Number(r.input),
+          output: Number(r.output),
+          cacheRead: Number(r.cache_read),
+          cacheCreation: Number(r.cache_creation),
+          activeUsers: Number(r.active_users),
+          loops: Number(r.loops),
+          apiCost: Math.round(bucketTokens * blendedCostPerToken * 100) / 100,
+        };
+      }
+    );
 
     const topProjects: ProjectUsage[] = projectResult.map((r: ProjectRow) => ({
       project: r.project,
@@ -702,10 +839,12 @@ export const dashboardService = {
       models: allModels.map((m: { model: string }) => m.model),
       stats,
       delivery,
-      dailyUsage,
-      byModel,
+      timeSeries,
+      dailyUsage: timeSeries,
+      byModel: filteredByModel,
       topProjects,
       recentSessions,
+      agentUsage,
     };
   },
 };

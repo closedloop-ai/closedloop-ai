@@ -60,20 +60,31 @@ export type PublicDashboardTokenResponse = {
 /**
  * Response for the public usage dashboard (Claude Code usage stats).
  */
+export type TimeInterval = "15min" | "1h" | "1d";
+
 export type PublicUsageDashboardResponse = {
   organizationName: string;
   updatedAt: string;
   models: string[];
   stats: UsageDashboardStats;
   delivery: DeliveryStats;
-  dailyUsage: DailyTokenUsage[];
+  /** Token breakdown by time bucket (interval controlled by query param) */
+  timeSeries: TimeSeriesBucket[];
+  /** @deprecated Use timeSeries instead. Kept for backward compatibility. */
+  dailyUsage: TimeSeriesBucket[];
   byModel: ModelUsage[];
   topProjects: ProjectUsage[];
   recentSessions: RecentSession[];
+  /** Aggregated agent usage from execution perf stats (empty if no perf data) */
+  agentUsage: AgentUsage[];
 };
 
 export type UsageDashboardStats = {
+  activeUsers: number;
+  /** Distinct session_id count (individual logins / session refreshes) */
   sessions: number;
+  /** Active compute targets (electron nodes) in the period */
+  activeNodes: number;
   turns: number;
   inputTokens: number;
   outputTokens: number;
@@ -87,6 +98,19 @@ export type UsageDashboardStats = {
   subscriptionTokens: number;
   /** Tokens consumed via cloud/API key */
   apiTokens: number;
+  /** % of tokens on subscription (electron) targets */
+  subscriptionPct: number;
+  /** Average loops per day in the selected range */
+  avgLoopsPerDay: number;
+  /** Average loop runtime in minutes (all loops including failed) */
+  avgRuntimeMinutes: number;
+};
+
+export type AgentUsage = {
+  agentName: string;
+  agentType: string;
+  totalCalls: number;
+  totalDurationS: number;
 };
 
 export type DeliveryStats = {
@@ -94,15 +118,23 @@ export type DeliveryStats = {
   plansCreated: number;
   featuresCreated: number;
   prsMerged: number;
+  /** Distinct workstreams with loop activity in the period */
   agenticWorkflows: number;
 };
 
-export type DailyTokenUsage = {
+/**
+ * Multi-metric time series bucket. Each bucket contains all metrics so the
+ * frontend can switch the chart to any metric by clicking a stat card.
+ */
+export type TimeSeriesBucket = {
   date: string;
   input: number;
   output: number;
   cacheRead: number;
   cacheCreation: number;
+  activeUsers: number;
+  loops: number;
+  apiCost: number;
 };
 
 export type ModelUsage = {
