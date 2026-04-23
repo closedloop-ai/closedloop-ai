@@ -2,6 +2,13 @@ import type { ComputeTarget } from "@repo/api/src/types/compute-target";
 
 const SEMVER_REGEX = /^(\d+)\.(\d+)\.(\d+)(?:[.-].*)?$/;
 const VERSION_VALIDATION_REGEX = /^\d+\.\d+\.\d+(?:[.-].*)?$/;
+
+/** Strip leading `v` or `V` prefix from version strings (e.g. `v1.2.3` → `1.2.3`). */
+function normalizeVersion(version: string): string {
+  return version.startsWith("v") || version.startsWith("V")
+    ? version.slice(1)
+    : version;
+}
 const MAX_VERSION_LENGTH = 50;
 
 /**
@@ -11,8 +18,8 @@ const MAX_VERSION_LENGTH = 50;
  * Compares major, minor, and patch components numerically.
  */
 export function compareVersions(a: string, b: string): -1 | 0 | 1 | null {
-  const matchA = SEMVER_REGEX.exec(a);
-  const matchB = SEMVER_REGEX.exec(b);
+  const matchA = SEMVER_REGEX.exec(normalizeVersion(a));
+  const matchB = SEMVER_REGEX.exec(normalizeVersion(b));
 
   if (!(matchA && matchB)) {
     return null;
@@ -86,9 +93,10 @@ export function validatePluginVersion(
     return undefined;
   }
 
-  if (!VERSION_VALIDATION_REGEX.exec(version)) {
+  const normalized = normalizeVersion(version);
+  if (!VERSION_VALIDATION_REGEX.exec(normalized)) {
     return undefined;
   }
 
-  return version.slice(0, MAX_VERSION_LENGTH);
+  return normalized.slice(0, MAX_VERSION_LENGTH);
 }

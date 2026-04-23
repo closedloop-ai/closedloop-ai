@@ -3,10 +3,10 @@ import { AnalyticsProvider } from "@repo/analytics/provider";
 import { DesignSystemProvider } from "@repo/design-system";
 import { fonts } from "@repo/design-system/lib/fonts";
 import { cn } from "@repo/design-system/lib/utils";
-import { getDictionary } from "@repo/internationalization";
+import { RootProvider } from "fumadocs-ui/provider/next";
+import type { Metadata } from "next";
 import type { ReactNode } from "react";
-import { Footer } from "./components/footer";
-import { Header } from "./components/header";
+import { locales } from "@/lib/site";
 
 type RootLayoutProperties = {
   readonly children: ReactNode;
@@ -15,22 +15,34 @@ type RootLayoutProperties = {
   }>;
 };
 
+export function generateStaticParams() {
+  return locales.map((locale) => ({ locale }));
+}
+
+const productionUrl = process.env.VERCEL_PROJECT_PRODUCTION_URL;
+const metadataBase = productionUrl
+  ? new URL(
+      `${productionUrl.startsWith("https") ? "https" : "http"}://${productionUrl}`
+    )
+  : new URL("https://closedloop.ai");
+
+export const metadata: Metadata = {
+  metadataBase,
+};
+
 const RootLayout = async ({ children, params }: RootLayoutProperties) => {
   const { locale } = await params;
-  const dictionary = await getDictionary(locale);
 
   return (
     <html
       className={cn(fonts, "scroll-smooth")}
-      lang="en"
+      lang={locale}
       suppressHydrationWarning
     >
-      <body>
+      <body className="min-h-screen bg-background text-foreground">
         <AnalyticsProvider>
           <DesignSystemProvider>
-            <Header dictionary={dictionary} />
-            {children}
-            <Footer dictionary={dictionary} />
+            <RootProvider>{children}</RootProvider>
           </DesignSystemProvider>
         </AnalyticsProvider>
       </body>

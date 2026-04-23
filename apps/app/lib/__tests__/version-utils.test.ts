@@ -159,8 +159,12 @@ describe("validatePluginVersion", () => {
 
   test("returns undefined for non-semver strings", () => {
     expect(validatePluginVersion("not-a-version")).toBeUndefined();
-    expect(validatePluginVersion("v1.2.3")).toBeUndefined();
     expect(validatePluginVersion("1.2")).toBeUndefined();
+  });
+
+  test("normalizes v-prefixed versions", () => {
+    expect(validatePluginVersion("v1.2.3")).toBe("1.2.3");
+    expect(validatePluginVersion("V1.2.3")).toBe("1.2.3");
   });
 
   test("truncates versions longer than 50 characters", () => {

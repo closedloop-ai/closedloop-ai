@@ -159,15 +159,19 @@ function UpdateAndRestartButtonInner({
   const [commandId, setCommandId] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const dispatch = useDispatchDesktopCommand(target.id);
-  const { data: commandStatus } = useDesktopCommandStatus(target.id, commandId);
+  const { data: commandStatus, isError: statusError } = useDesktopCommandStatus(
+    target.id,
+    commandId
+  );
 
   const buttonState = resolveButtonState(target, releaseInfo);
   const isDispatching = dispatch.isPending;
-  // Treat commandId being set as evidence of polling until proven terminal.
-  // This prevents the button from re-enabling during initial fetch or
-  // sessionStorage restore before the status query resolves.
+  // Treat commandId being set as evidence of polling until the status query
+  // either resolves as terminal or errors out (e.g. stale 404 from sessionStorage).
+  // statusError → stale commandId, clear it so the button becomes usable again.
   const isPolling =
     commandId !== null &&
+    !statusError &&
     (commandStatus === undefined || !isTerminalStatus(commandStatus.status));
   const isUpdating = isDispatching || isPolling;
 
@@ -190,6 +194,14 @@ function UpdateAndRestartButtonInner({
 
   // Guard to prevent terminal callbacks from firing more than once.
   const terminalFiredRef = useRef<string | null>(null);
+
+  // Clear stale commandId when status query errors (e.g. 404 from sessionStorage)
+  useEffect(() => {
+    if (statusError && commandId) {
+      clearStoredCommandId(target.id);
+      setCommandId(null);
+    }
+  }, [statusError, commandId, target.id]);
 
   useEffect(() => {
     const stored = readStoredCommandId(target.id);

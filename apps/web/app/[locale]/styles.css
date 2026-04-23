@@ -1,4 +1,6 @@
 @import "@repo/design-system/styles/globals.css";
+@import "fumadocs-ui/style.css";
+@import "fumadocs-ui/css/ocean.css";
 
 .shiki {
   background-color: var(--shiki-light-bg);
