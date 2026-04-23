@@ -5,6 +5,7 @@ import { Input } from "@repo/design-system/components/ui/input";
 import { Label } from "@repo/design-system/components/ui/label";
 import { cn } from "@repo/design-system/lib/utils";
 import {
+  AlertTriangleIcon,
   CheckCircleIcon,
   CheckIcon,
   CopyIcon,
@@ -17,6 +18,7 @@ import { useState } from "react";
 import { useLatestElectronRelease } from "@/hooks/queries/use-electron-release";
 import { useCreatePlatformApiKey } from "@/hooks/queries/use-platform-api-keys";
 import { useElectronDetection } from "@/lib/engineer/electron-detection";
+import { isUpdateAvailable } from "@/lib/version-utils";
 
 type DownloadElectronAppStepProps = {
   readonly onNext: () => void;
@@ -34,7 +36,21 @@ export function DownloadElectronAppStep({
   const [copied, setCopied] = useState(false);
 
   const downloadUrl = release?.downloadUrl ?? null;
-  const version = release?.version ?? null;
+  const latestVersion = release?.version ?? null;
+  const runningVersion = electron.detected ? electron.version : null;
+  let versionLabel = "Latest version";
+  if (electron.detected) {
+    versionLabel = runningVersion
+      ? `Version ${runningVersion}`
+      : "Version unavailable";
+  } else if (latestVersion) {
+    versionLabel = `Version ${latestVersion}`;
+  }
+  const isElectronOutdated =
+    electron.detected &&
+    runningVersion !== null &&
+    latestVersion !== null &&
+    isUpdateAvailable(runningVersion, latestVersion);
 
   const canContinue = electron.detected && generatedKey !== null;
 
@@ -76,14 +92,20 @@ export function DownloadElectronAppStep({
           </div>
           <div className="min-w-0 flex-1">
             <p className="font-medium text-sm">ClosedLoop Desktop</p>
-            <p className="text-muted-foreground text-xs">
-              {version ? `Version ${version}` : "Latest version"}
-            </p>
+            <p className="text-muted-foreground text-xs">{versionLabel}</p>
           </div>
           {electron.detected && (
-            <div className="flex items-center gap-1 text-green-500 text-sm">
-              <CheckCircleIcon className="h-4 w-4" />
-              Running
+            <div className="flex flex-wrap items-center justify-end gap-2 text-sm">
+              {isElectronOutdated ? (
+                <div className="flex items-center gap-1 text-amber-600">
+                  <AlertTriangleIcon className="h-4 w-4" />
+                  Update available
+                </div>
+              ) : null}
+              <div className="flex items-center gap-1 text-green-500">
+                <CheckCircleIcon className="h-4 w-4" />
+                Running
+              </div>
             </div>
           )}
         </div>
@@ -92,7 +114,10 @@ export function DownloadElectronAppStep({
           downloadUrl={downloadUrl}
           electronDetected={electron.detected}
           isDetecting={electron.loading}
+          isElectronOutdated={isElectronOutdated}
           isReleaseLoading={isReleaseLoading}
+          latestVersion={latestVersion}
+          runningVersion={runningVersion}
         />
       </div>
 
@@ -174,15 +199,49 @@ export function DownloadElectronAppStep({
 function DownloadAction({
   downloadUrl,
   electronDetected,
+  isElectronOutdated,
   isDetecting,
   isReleaseLoading,
+  latestVersion,
+  runningVersion,
 }: {
   readonly downloadUrl: string | null;
   readonly electronDetected: boolean;
+  readonly isElectronOutdated: boolean;
   readonly isDetecting: boolean;
   readonly isReleaseLoading: boolean;
+  readonly latestVersion: string | null;
+  readonly runningVersion: string | null;
 }) {
   if (electronDetected) {
+    if (isElectronOutdated) {
+      return (
+        <div className="space-y-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-amber-900 text-sm">
+          <div className="flex items-start gap-2">
+            <AlertTriangleIcon className="mt-0.5 h-4 w-4 shrink-0" />
+            <span>
+              ClosedLoop Desktop version {runningVersion} is running. Version{" "}
+              {latestVersion} is available.
+            </span>
+          </div>
+          <Button asChild className="w-full" size="sm" variant="outline">
+            <a
+              aria-disabled={!downloadUrl}
+              className={cn(!downloadUrl && "pointer-events-none opacity-50")}
+              download
+              href={downloadUrl ?? "#"}
+              onClick={downloadUrl ? undefined : (e) => e.preventDefault()}
+              rel="noopener noreferrer"
+              target="_blank"
+            >
+              <DownloadIcon className="h-4 w-4" />
+              Download latest version
+            </a>
+          </Button>
+        </div>
+      );
+    }
+
     return (
       <div className="flex items-center gap-2 rounded-md bg-muted/50 px-3 py-2 text-sm">
         <CheckCircleIcon className="h-4 w-4 text-green-500" />
