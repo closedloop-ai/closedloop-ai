@@ -16,11 +16,16 @@ const mocks = vi.hoisted(() => {
   const withDb = Object.assign(vi.fn(), {
     tx: vi.fn(),
   });
+  const ApiKeySource = {
+    USER_CREATED: "USER_CREATED",
+    DESKTOP_MANAGED: "DESKTOP_MANAGED",
+  } as const;
 
-  return { withDb };
+  return { withDb, ApiKeySource };
 });
 
 vi.mock("@repo/database", () => ({
+  ApiKeySource: mocks.ApiKeySource,
   withDb: mocks.withDb,
 }));
 

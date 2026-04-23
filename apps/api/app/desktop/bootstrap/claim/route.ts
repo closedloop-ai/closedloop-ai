@@ -12,6 +12,7 @@ import {
   DesktopManagedKeyRotationConflictError,
 } from "@/app/api-keys/service";
 import {
+  type BootstrapClaimResponse,
   desktopContractError,
   desktopContractSuccess,
 } from "@/app/desktop/contract";
@@ -38,12 +39,6 @@ const bootstrapClaimRequestValidator = z
     gatewayPublicKey: z.string().trim().min(1).max(16_384).optional(),
   })
   .strict();
-
-type BootstrapClaimResponse = {
-  apiKey: string;
-  source: "DESKTOP_MANAGED";
-  gatewayId: string;
-};
 
 /**
  * Returns the exact malformed-body error body required by the claim contract.
@@ -146,17 +141,19 @@ export async function POST(request: Request) {
       gatewayId: body.gatewayId,
     });
   } catch (error) {
+    // The attempt is already consumed once rotation starts, so callers must
+    // restart onboarding rather than blindly retrying the same claim.
     if (error instanceof DesktopManagedKeyRotationConflictError) {
       return desktopContractError(
         409,
         "DESKTOP_MANAGED_KEY_ROTATION_CONFLICT",
-        true
+        false
       );
     }
     return desktopContractError(
       503,
       "DESKTOP_MANAGED_KEY_ISSUANCE_FAILED",
-      true
+      false
     );
   }
 }

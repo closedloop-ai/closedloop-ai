@@ -10,6 +10,7 @@ import { z } from "zod";
 import {
   desktopContractError,
   desktopContractSuccess,
+  type OnboardingAttemptResponse,
 } from "@/app/desktop/contract";
 import { canonicalizeTrustedOrigin } from "@/lib/auth/canonical-trusted-origin";
 import { resolveSessionUser } from "@/lib/auth/session-user";
@@ -20,11 +21,6 @@ const onboardingAttemptRequestValidator = z
     webAppOrigin: z.string().trim().min(1).max(2048),
   })
   .strict();
-
-type OnboardingAttemptResponse = {
-  onboardingAttemptId: string;
-  expiresAt: string;
-};
 
 function invalidRequestResponse() {
   return desktopContractError(400, "INVALID_ONBOARDING_ATTEMPT_REQUEST", false);

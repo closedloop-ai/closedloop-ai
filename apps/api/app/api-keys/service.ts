@@ -7,7 +7,7 @@ import type {
   VerifiedApiKeyContext,
 } from "@repo/api/src/types/api-key";
 import { API_KEY_SCOPES } from "@repo/api/src/types/api-key";
-import { withDb } from "@repo/database";
+import { ApiKeySource, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 
 const FULL_ACCESS_SCOPES = [
@@ -15,8 +15,6 @@ const FULL_ACCESS_SCOPES = [
   "write",
   "delete",
 ] as const satisfies readonly ApiKeyScope[];
-const USER_CREATED_SOURCE = "USER_CREATED";
-const DESKTOP_MANAGED_SOURCE = "DESKTOP_MANAGED";
 
 export class DesktopManagedKeyRotationConflictError extends Error {
   constructor() {
@@ -107,7 +105,7 @@ export const apiKeysService = {
           keyHash: hash,
           keyPrefix: "sk_live_",
           expiresAt: input.expiresAt ?? null,
-          source: USER_CREATED_SOURCE,
+          source: ApiKeySource.USER_CREATED,
           gatewayId: null,
           boundPublicKey: null,
         },
@@ -123,6 +121,9 @@ export const apiKeysService = {
   /**
    * Ensures a gateway has exactly one active desktop-managed key per user by
    * revoking any existing key for the same org/user/gateway before minting the replacement.
+   *
+   * Concurrent claims rely on the partial unique index added in the matching
+   * migration to reject duplicate active rows with Prisma `P2002`.
    */
   async rotateDesktopManagedKey(
     input: RotateDesktopManagedKeyInput
@@ -137,7 +138,7 @@ export const apiKeysService = {
           where: {
             organizationId: input.organizationId,
             userId: input.userId,
-            source: DESKTOP_MANAGED_SOURCE,
+            source: ApiKeySource.DESKTOP_MANAGED,
             gatewayId: input.gatewayId,
             revokedAt: null,
           },
@@ -153,7 +154,7 @@ export const apiKeysService = {
             keyHash: hash,
             keyPrefix: "sk_live_",
             expiresAt: null,
-            source: DESKTOP_MANAGED_SOURCE,
+            source: ApiKeySource.DESKTOP_MANAGED,
             gatewayId: input.gatewayId,
             boundPublicKey: input.boundPublicKey ?? null,
           },

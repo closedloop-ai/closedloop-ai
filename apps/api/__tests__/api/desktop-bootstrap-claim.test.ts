@@ -236,7 +236,7 @@ describe("POST /desktop/bootstrap/claim", () => {
     expect(response.status).toBe(409);
     expect(await response.json()).toEqual({
       code: "DESKTOP_MANAGED_KEY_ROTATION_CONFLICT",
-      retryable: true,
+      retryable: false,
     });
     expect(desktopOnboardingAttemptsService.consume).toHaveBeenCalledWith(
       "attempt-123"
@@ -263,7 +263,7 @@ describe("POST /desktop/bootstrap/claim", () => {
     expect(response.status).toBe(503);
     expect(await response.json()).toEqual({
       code: "DESKTOP_MANAGED_KEY_ISSUANCE_FAILED",
-      retryable: true,
+      retryable: false,
     });
     expect(desktopOnboardingAttemptsService.consume).toHaveBeenCalledWith(
       "attempt-123"

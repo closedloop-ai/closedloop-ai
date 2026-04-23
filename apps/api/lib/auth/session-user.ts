@@ -2,9 +2,7 @@ import "server-only";
 
 import type { User } from "@repo/api/src/types/user";
 import { auth } from "@repo/auth/server";
-import { organizationsService } from "@/app/organizations/service";
-import { usersService } from "@/app/users/service";
-import { clerkService } from "@/lib/auth/clerk-service";
+import { findOrCreateUser } from "./find-or-create-user";
 
 export type SessionUserContext = {
   user: User;
@@ -22,28 +20,9 @@ export async function resolveSessionUser(): Promise<SessionUserContext | null> {
     return null;
   }
 
-  const organization =
-    await organizationsService.findOrCreateByClerkId(clerkOrgId);
+  const user = await findOrCreateUser(clerkUserId, clerkOrgId);
 
-  let user = await usersService.findByClerkIdAndOrg(
-    clerkUserId,
-    organization.id
-  );
-
-  if (!user) {
-    const clerkUser = await clerkService.getUser(clerkUserId);
-    user = await usersService.upsertByClerkIdAndOrg({
-      clerkId: clerkUserId,
-      organizationId: organization.id,
-      email: clerkUser.email,
-      firstName: clerkUser.firstName,
-      lastName: clerkUser.lastName,
-      avatarUrl: clerkUser.imageUrl,
-      phoneNumber: clerkUser.phoneNumber,
-    });
-  }
-
-  if (!user.active) {
+  if (!user?.active) {
     return null;
   }
 
