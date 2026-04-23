@@ -32,7 +32,7 @@ export function InlineEditEditorShell({
         className={
           expanded
             ? "flex min-h-[200px] flex-col border-b"
-            : "flex max-h-[420px] flex-col overflow-hidden border-b"
+            : "flex max-h-[72vh] flex-col overflow-hidden border-b"
         }
       >
         {children}
