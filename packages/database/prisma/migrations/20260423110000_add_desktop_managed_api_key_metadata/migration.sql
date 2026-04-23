@@ -6,6 +6,14 @@ ALTER TABLE "api_keys" ADD COLUMN     "bound_public_key" TEXT,
 ADD COLUMN     "gateway_id" TEXT,
 ADD COLUMN     "source" "ApiKeySource" NOT NULL DEFAULT 'USER_CREATED';
 
+-- Explicitly classify all rows that existed before this migration as manual keys.
+-- Prisma cannot express this data backfill; it keeps future PoP phases from
+-- mistaking existing bearer keys for desktop-managed credentials.
+UPDATE "api_keys"
+SET "source" = 'USER_CREATED',
+    "gateway_id" = NULL,
+    "bound_public_key" = NULL;
+
 -- CreateTable
 CREATE TABLE "desktop_onboarding_attempts" (
     "attempt_id" TEXT NOT NULL,

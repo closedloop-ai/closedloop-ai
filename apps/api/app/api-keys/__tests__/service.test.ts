@@ -237,7 +237,7 @@ describe("apiKeysService.generate", () => {
     expect(capturedScopes).toEqual(["read", "write", "delete"]);
   });
 
-  it("stores manual keys as USER_CREATED with no gateway binding", async () => {
+  it("defaults non-Desktop keys to USER_CREATED with no gateway binding", async () => {
     let capturedData: Record<string, unknown> | undefined;
 
     mockWithDb.mockImplementation((callback: (db: unknown) => unknown) => {
@@ -338,7 +338,7 @@ describe("apiKeysService.rotateDesktopManagedKey", () => {
     expect(result.plaintext).toMatch(SK_LIVE_REGEX);
   });
 
-  it("stores null boundPublicKey when older clients do not send one", async () => {
+  it("stores null boundPublicKey and DESKTOP_MANAGED source for legacy Desktop claims", async () => {
     let createData: Record<string, unknown> | undefined;
 
     mockWithDb.tx.mockImplementation((callback: (db: unknown) => unknown) => {
@@ -360,7 +360,11 @@ describe("apiKeysService.rotateDesktopManagedKey", () => {
       gatewayId: "gateway-legacy",
     });
 
-    expect(createData?.boundPublicKey).toBeNull();
+    expect(createData).toMatchObject({
+      source: "DESKTOP_MANAGED",
+      gatewayId: "gateway-legacy",
+      boundPublicKey: null,
+    });
   });
 
   it("maps Prisma unique violations to a rotation conflict error", async () => {
