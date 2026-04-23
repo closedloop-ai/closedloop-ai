@@ -57,7 +57,7 @@ export function PlanContextSection({
 
   const { data: projectDocuments = [] } = useDocumentsByProject(
     projectId ?? "",
-    { enabled: !!projectId }
+    { enabled: !!projectId && pickerOpen }
   );
 
   const createLink = useCreateEntityLink();
