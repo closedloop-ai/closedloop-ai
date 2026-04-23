@@ -89,6 +89,7 @@ function AttachmentChip({
       </span>
       {attachment.previewUrl ? null : (
         <Button
+          aria-label={`Download ${attachment.filename}`}
           className="h-6 w-6 opacity-0 group-hover:opacity-100"
           onClick={() =>
             downloadAttachment.mutate(
@@ -103,6 +104,7 @@ function AttachmentChip({
         </Button>
       )}
       <Button
+        aria-label={`Delete ${attachment.filename}`}
         className="h-6 w-6 opacity-0 group-hover:opacity-100"
         onClick={() =>
           deleteAttachment.mutate(attachment.id, {

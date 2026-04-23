@@ -53,17 +53,34 @@ describe("POST /api-keys", () => {
     );
   });
 
-  it("returns 400 when scopes is ['read'] only with error about read-only keys", async () => {
+  it("accepts legacy scopes:['read'] field and calls generate without scopes (FEA-563)", async () => {
+    const mockResult = {
+      id: "key-legacy",
+      organizationId: "test-org-id",
+      userId: "test-user-id",
+      name: "Legacy",
+      keyPrefix: "sk_live_",
+      expiresAt: null,
+      scopes: ["read", "write", "delete"],
+      lastUsedAt: null,
+      createdAt: new Date(),
+      revokedAt: null,
+      plaintext: "sk_live_legacy",
+    };
+
+    vi.mocked(apiKeysService.generate).mockResolvedValue(mockResult as any);
+
     const request = createMockRequest({
       method: "POST",
       body: { name: "Legacy", scopes: ["read"] },
     });
     const response = await POST(request, createMockRouteContext({}));
 
-    expect(response.status).toBe(400);
-    const json = await response.json();
-    expect(JSON.stringify(json)).toContain(
-      "Read-only API keys are no longer supported"
+    expect(response.status).toBe(200);
+    expect(apiKeysService.generate).toHaveBeenCalledWith(
+      "test-org-id",
+      "test-user-id",
+      expect.not.objectContaining({ scopes: expect.anything() })
     );
   });
 
@@ -107,6 +124,7 @@ describe("POST /api-keys", () => {
 describe("GET /api-keys", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockAuthContext = createTestAuthContext();
   });
 
   it("returns 200 with API keys including scopes from service", async () => {

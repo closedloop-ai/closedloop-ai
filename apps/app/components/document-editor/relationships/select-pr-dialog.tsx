@@ -277,7 +277,11 @@ export function SelectPullRequestDialog({
                   <CommandItem
                     disabled={isDisabled}
                     key={pr.number}
-                    onSelect={() => handleSelect(pr)}
+                    onSelect={() => {
+                      // Suppress unhandled rejection — global QueryClient
+                      // `mutations.onError` already surfaces the failure toast.
+                      handleSelect(pr).catch(() => {});
+                    }}
                     value={`#${pr.number} ${pr.title} ${pr.headBranch} ${pr.author}`}
                   >
                     <PrStateIcon pr={pr} />

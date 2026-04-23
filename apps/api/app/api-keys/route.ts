@@ -1,4 +1,5 @@
 import type { ApiKey, CreateApiKeyResponse } from "@repo/api/src/types/api-key";
+import { log } from "@repo/observability/log";
 import { withAuth } from "@/lib/auth/with-auth";
 import { errorResponse, parseBody, successResponse } from "@/lib/route-utils";
 import { apiKeysService } from "./service";
@@ -28,6 +29,15 @@ export const POST = withAuth<CreateApiKeyResponse, "/api-keys">(
       );
       if (parseError) {
         return parseError;
+      }
+
+      // FEA-563: callers still sending the deprecated `scopes` field get full access regardless; log so we can track migration progress.
+      if (body.scopes) {
+        log.warn("deprecated_api_key_scopes_field_received", {
+          userId: user.id,
+          organizationId: user.organizationId,
+          scopes: body.scopes,
+        });
       }
 
       const input = {

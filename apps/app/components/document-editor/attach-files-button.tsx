@@ -29,34 +29,46 @@ export function AttachFilesButton({
   const requestUpload = useRequestAttachmentUpload();
   const deleteAttachment = useDeleteAttachment(documentId);
 
-  async function handleFileChange(event: React.ChangeEvent<HTMLInputElement>) {
+  function resetFileInput() {
+    setIsUploading(false);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+  }
+
+  function handleFileChange(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     if (!file) {
       return;
     }
 
     setIsUploading(true);
-    try {
-      const { attachmentId, uploadUrl } = await requestUpload.mutateAsync({
+    requestUpload.mutate(
+      {
         documentId,
         filename: file.name,
         mimeType: file.type,
         sizeBytes: file.size,
-      });
-      try {
-        await uploadToS3(uploadUrl, file, file.type);
-      } catch (uploadError) {
-        await deleteAttachment.mutateAsync(attachmentId);
-        throw uploadError;
+      },
+      {
+        onSuccess: ({ attachmentId, uploadUrl }) => {
+          uploadToS3(uploadUrl, file, file.type)
+            .catch((uploadError) => {
+              toast.error(
+                uploadError instanceof Error
+                  ? uploadError.message
+                  : "Upload failed"
+              );
+              // Suppress the delete mutation's global error toast: the user-facing
+              // failure is the S3 upload, and surfacing a second "delete failed"
+              // toast would be misleading.
+              deleteAttachment.mutate(attachmentId, { onError: () => {} });
+            })
+            .finally(resetFileInput);
+        },
+        onError: resetFileInput,
       }
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Upload failed");
-    } finally {
-      setIsUploading(false);
-      if (fileInputRef.current) {
-        fileInputRef.current.value = "";
-      }
-    }
+    );
   }
 
   return (
