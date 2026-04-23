@@ -1,8 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildDesktopTelemetryPayload,
+  buildValidationFailedPayload,
   sanitizeDesktopTelemetryDiagnostics,
 } from "../telemetry/emitter";
+import type { TelemetryTraceContext } from "../telemetry/schema";
 import {
   desktopTelemetryEventSchema,
   TelemetryCategory,
@@ -10,6 +12,7 @@ import {
   telemetryDiagnosticsSchema,
   telemetryTraceContextSchema,
 } from "../telemetry/schema";
+import { parseFlushedBody } from "./test-helpers";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -352,5 +355,158 @@ describe("sanitizeDesktopTelemetryDiagnostics", () => {
     });
     expect(result?.exitCode).toBe(1);
     expect(result?.tokenUsage).toEqual({ inputTokens: 10, outputTokens: 5 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildValidationFailedPayload() cross-cutting guard
+// ---------------------------------------------------------------------------
+
+describe("buildValidationFailedPayload() cross-cutting guard", () => {
+  it("(a) SafeZodIssue payload structure — issues contain only path/code/expected, category is TelemetryValidationFailed", () => {
+    const issues = [
+      {
+        path: ["trace", "gatewaySessionId"],
+        code: "invalid_string",
+        expected: "uuid",
+      },
+      { path: ["severity"], code: "invalid_type" },
+    ];
+
+    const result = buildValidationFailedPayload("command.queued", issues);
+
+    expect(result.category).toBe(TelemetryCategory.TelemetryValidationFailed);
+    expect(result.failedCategory).toBe("command.queued");
+    expect(Array.isArray(result.issues)).toBe(true);
+
+    for (const issue of result.issues as Record<string, unknown>[]) {
+      const keys = Object.keys(issue);
+      expect(keys).toContain("path");
+      expect(keys).toContain("code");
+      expect(keys).not.toContain("message");
+      expect(keys).not.toContain("received");
+      // "expected" may or may not be present but no other keys are allowed
+      for (const key of keys) {
+        expect(["path", "code", "expected"]).toContain(key);
+      }
+    }
+  });
+
+  it("(b) SAFE_CATEGORY_RE edge cases — unsafe values produce undefined failedCategory", () => {
+    // Path traversal → rejected
+    const resultTraversal = buildValidationFailedPayload("../etc/passwd", []);
+    expect(resultTraversal.failedCategory).toBeUndefined();
+
+    // 65-char string → rejected (max is 64)
+    const longStr = "a".repeat(65);
+    const resultLong = buildValidationFailedPayload(longStr, []);
+    expect(resultLong.failedCategory).toBeUndefined();
+
+    // null → rejected
+    const resultNull = buildValidationFailedPayload(null, []);
+    expect(resultNull.failedCategory).toBeUndefined();
+
+    // Valid dotted category → accepted
+    const resultValid = buildValidationFailedPayload("custom.test", []);
+    expect(resultValid.failedCategory).toBe("custom.test");
+  });
+
+  it("(c) non-object rawEvent inputs to buildDesktopTelemetryPayload return validation_failed without throwing", () => {
+    const inputs: unknown[] = [null, undefined, "string", 42, []];
+
+    for (const input of inputs) {
+      const result = buildDesktopTelemetryPayload(input);
+      expect(result.category).toBe(TelemetryCategory.TelemetryValidationFailed);
+      expect(result).not.toHaveProperty("failedCategory");
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// emitCommandLifecycleEvent() validation failure paths
+// ---------------------------------------------------------------------------
+
+describe("emitCommandLifecycleEvent() validation failure paths", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  // Observe the validation-failed emission at the Datadog HTTP boundary. This
+  // exercises the full pipeline — emitter → log.warn → buildEntry → flush —
+  // and verifies severity routing (`level: "warn"`) alongside payload content.
+  // emitter.ts binds `log` at module load, so each test re-imports both
+  // emitter and log with vi.resetModules() so they share the same fresh
+  // module graph.
+  function importEmitterWithFetch(
+    fetchMock: ReturnType<typeof vi.fn>
+  ): Promise<typeof import("../telemetry/emitter")> {
+    vi.stubGlobal("fetch", fetchMock);
+    vi.resetModules();
+    return import("../telemetry/emitter");
+  }
+
+  it("(a) invalid trace — flushes validation_failed with level=warn and no secrets", async () => {
+    vi.stubEnv("DD_API_KEY", "test-key");
+    // Populate version + git_sha so log.ts's module-load fallback warnings
+    // do not enqueue and displace the validation_failed entry at body[0].
+    vi.stubEnv("RELEASE_VERSION", "1.0.0");
+    vi.stubEnv("VERCEL_GIT_COMMIT_SHA", "testsha");
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    const emitter = await importEmitterWithFetch(fetchMock);
+    const { log: freshLog } = await import("../log");
+
+    emitter.emitCommandLifecycleEvent(
+      TelemetryCategory.CommandQueued,
+      {} as TelemetryTraceContext
+    );
+    await freshLog.flush();
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const body = parseFlushedBody<{ level: string; message: string }>(
+      fetchMock
+    );
+    expect(body[0].level).toBe("warn");
+
+    const parsed = JSON.parse(body[0].message) as Record<string, unknown>;
+    expect(parsed.category).toBe(TelemetryCategory.TelemetryValidationFailed);
+    expect(parsed.failedCategory).toBe(TelemetryCategory.CommandQueued);
+
+    const serialized = JSON.stringify(body[0]);
+    expect(serialized).not.toContain("sk_");
+    expect(serialized).not.toContain("password");
+    expect(serialized).not.toContain("token=");
+    expect(serialized).not.toContain("authorization");
+  });
+
+  it("(b) valid trace + invalid diagnostics — flushes validation_failed with failedCategory", async () => {
+    vi.stubEnv("DD_API_KEY", "test-key");
+    // Populate version + git_sha so log.ts's module-load fallback warnings
+    // do not enqueue and displace the validation_failed entry at body[0].
+    vi.stubEnv("RELEASE_VERSION", "1.0.0");
+    vi.stubEnv("VERCEL_GIT_COMMIT_SHA", "testsha");
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    const emitter = await importEmitterWithFetch(fetchMock);
+    const { log: freshLog } = await import("../log");
+
+    emitter.emitCommandLifecycleEvent(
+      TelemetryCategory.CommandQueued,
+      validTraceContext,
+      {
+        diagnostics: null as any,
+      }
+    );
+    await freshLog.flush();
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const body = parseFlushedBody<{ level: string; message: string }>(
+      fetchMock
+    );
+    expect(body[0].level).toBe("warn");
+
+    const parsed = JSON.parse(body[0].message) as Record<string, unknown>;
+    expect(parsed.category).toBe(TelemetryCategory.TelemetryValidationFailed);
+    expect(parsed.failedCategory).toBe(TelemetryCategory.CommandQueued);
   });
 });
