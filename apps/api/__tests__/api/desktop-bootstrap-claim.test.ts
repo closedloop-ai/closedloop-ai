@@ -130,6 +130,49 @@ describe("POST /desktop/bootstrap/claim", () => {
     expect(desktopOnboardingAttemptsService.consume).not.toHaveBeenCalled();
   });
 
+  it("accepts missing gatewayPublicKeyPem for older clients and rotates with a null binding", async () => {
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        body: {
+          onboardingAttemptId: "attempt-123",
+          webAppOrigin: "https://app.closedloop.ai",
+          gatewayId: "550e8400-e29b-41d4-a716-446655440000",
+        },
+      })
+    );
+
+    expect(response.status).toBe(200);
+    expect(apiKeysService.rotateDesktopManagedKey).toHaveBeenCalledWith({
+      organizationId: "org-1",
+      userId: "user-1",
+      gatewayId: "550e8400-e29b-41d4-a716-446655440000",
+      boundPublicKey: null,
+    });
+  });
+
+  it("accepts the legacy gatewayPublicKey field name during staggered rollouts", async () => {
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        body: {
+          onboardingAttemptId: "attempt-123",
+          webAppOrigin: "https://app.closedloop.ai",
+          gatewayId: "550e8400-e29b-41d4-a716-446655440000",
+          gatewayPublicKey: "valid-pem",
+        },
+      })
+    );
+
+    expect(response.status).toBe(200);
+    expect(apiKeysService.rotateDesktopManagedKey).toHaveBeenCalledWith({
+      organizationId: "org-1",
+      userId: "user-1",
+      gatewayId: "550e8400-e29b-41d4-a716-446655440000",
+      boundPublicKey: "normalized-pem",
+    });
+  });
+
   it("returns 401 when the onboarding attempt is missing, consumed, or expired", async () => {
     vi.mocked(desktopOnboardingAttemptsService.get).mockResolvedValue(null);
 

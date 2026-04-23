@@ -4,7 +4,7 @@ import "server-only";
  * Desktop-facing route for the second half of onboarding.
  *
  * Desktop presents a one-time onboarding attempt, the confirmed web origin,
- * and its Ed25519 public key to receive a managed desktop API key.
+ * and an optional Ed25519 public key to receive a managed desktop API key.
  */
 import { z } from "zod";
 import {
@@ -33,7 +33,9 @@ const bootstrapClaimRequestValidator = z
           ["8", "9", "a", "b", "A", "B"].includes(value[19] ?? ""),
         { message: "gatewayId must be a UUID v4" }
       ),
-    gatewayPublicKeyPem: z.string().trim().min(1).max(16_384),
+    gatewayPublicKeyPem: z.string().trim().min(1).max(16_384).optional(),
+    // Keep the legacy field name as a compatibility alias during staggered rollouts.
+    gatewayPublicKey: z.string().trim().min(1).max(16_384).optional(),
   })
   .strict();
 
@@ -72,10 +74,12 @@ export async function POST(request: Request) {
     return invalidClaimRequestResponse();
   }
 
-  const gatewayPublicKeyPem = normalizeEd25519SpkiPublicKeyPem(
-    body.gatewayPublicKeyPem
-  );
-  if (!gatewayPublicKeyPem) {
+  const requestedGatewayPublicKey =
+    body.gatewayPublicKeyPem ?? body.gatewayPublicKey ?? null;
+  const gatewayPublicKeyPem = requestedGatewayPublicKey
+    ? normalizeEd25519SpkiPublicKeyPem(requestedGatewayPublicKey)
+    : null;
+  if (requestedGatewayPublicKey && !gatewayPublicKeyPem) {
     return desktopContractError(400, "INVALID_GATEWAY_PUBLIC_KEY", false);
   }
 

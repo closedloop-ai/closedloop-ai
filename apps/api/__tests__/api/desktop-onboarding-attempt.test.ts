@@ -74,6 +74,25 @@ describe("POST /desktop/onboarding-attempt", () => {
     });
   });
 
+  it("returns the exact 503 contract when session resolution throws", async () => {
+    vi.mocked(resolveSessionUser).mockRejectedValue(
+      new Error("clerk unavailable")
+    );
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        body: { webAppOrigin: "https://app.closedloop.ai" },
+      })
+    );
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({
+      code: "ONBOARDING_ATTEMPT_PERSIST_FAILED",
+      retryable: true,
+    });
+  });
+
   it("returns 400 for malformed request bodies", async () => {
     const response = await POST(
       createMockRequest({

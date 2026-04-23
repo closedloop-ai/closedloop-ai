@@ -31,7 +31,14 @@ function invalidRequestResponse() {
 }
 
 export async function POST(request: Request) {
-  const session = await resolveSessionUser();
+  let session: Awaited<ReturnType<typeof resolveSessionUser>>;
+  try {
+    session = await resolveSessionUser();
+  } catch {
+    // The contract exposes a single retryable 503 bucket for server-side failures.
+    return desktopContractError(503, "ONBOARDING_ATTEMPT_PERSIST_FAILED", true);
+  }
+
   if (!session) {
     return desktopContractError(401, "SESSION_REQUIRED", false);
   }
