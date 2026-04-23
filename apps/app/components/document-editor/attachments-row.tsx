@@ -2,7 +2,6 @@
 
 import type { FileAttachment } from "@repo/api/src/types/attachment";
 import { Button } from "@repo/design-system/components/ui/button";
-import { toast } from "@repo/design-system/components/ui/sonner";
 import { cn } from "@repo/design-system/lib/utils";
 import { DownloadIcon, FileIcon, Trash2Icon } from "lucide-react";
 import {
@@ -92,10 +91,10 @@ function AttachmentChip({
           aria-label={`Download ${attachment.filename}`}
           className="h-6 w-6 opacity-0 group-hover:opacity-100"
           onClick={() =>
-            downloadAttachment.mutate(
-              { documentId, attachmentId: attachment.id },
-              { onError: () => toast.error("Download failed") }
-            )
+            downloadAttachment.mutate({
+              documentId,
+              attachmentId: attachment.id,
+            })
           }
           size="icon"
           variant="ghost"
@@ -106,11 +105,7 @@ function AttachmentChip({
       <Button
         aria-label={`Delete ${attachment.filename}`}
         className="h-6 w-6 opacity-0 group-hover:opacity-100"
-        onClick={() =>
-          deleteAttachment.mutate(attachment.id, {
-            onError: () => toast.error("Delete failed"),
-          })
-        }
+        onClick={() => deleteAttachment.mutate(attachment.id)}
         size="icon"
         variant="ghost"
       >

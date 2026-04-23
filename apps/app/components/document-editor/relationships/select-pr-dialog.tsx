@@ -48,7 +48,10 @@ import {
   useCreateEntityLink,
   useLinkedEntities,
 } from "@/hooks/queries/use-entity-links";
-import { useCreateExternalLink } from "@/hooks/queries/use-external-links";
+import {
+  useCreateExternalLink,
+  useDeleteExternalLink,
+} from "@/hooks/queries/use-external-links";
 import { useGitHubPullRequests } from "@/hooks/queries/use-github-integration";
 import { useProject } from "@/hooks/queries/use-projects";
 
@@ -71,6 +74,7 @@ export function SelectPullRequestDialog({
   const { data: project } = useProject(projectId, { enabled: !!projectId });
   const createExternalLink = useCreateExternalLink();
   const createEntityLink = useCreateEntityLink();
+  const deleteExternalLink = useDeleteExternalLink();
   const linkSource = useMemo(() => {
     if (planId) {
       return {
@@ -137,7 +141,7 @@ export function SelectPullRequestDialog({
     [linkedUrls, pullRequests, trackedUrls]
   );
 
-  async function handleSelect(pr: GitHubPullRequestSummary) {
+  function handleSelect(pr: GitHubPullRequestSummary) {
     if (
       !linkSource ||
       linkedUrls.has(pr.htmlUrl) ||
@@ -149,8 +153,8 @@ export function SelectPullRequestDialog({
     }
 
     setIsLinking(true);
-    try {
-      const externalLink = await createExternalLink.mutateAsync({
+    createExternalLink.mutate(
+      {
         projectId,
         documentId: planId ?? undefined,
         type: ExternalLinkType.PullRequest,
@@ -163,21 +167,32 @@ export function SelectPullRequestDialog({
           baseBranch: pr.baseBranch,
           state: pr.state,
         } satisfies PullRequestMetadata,
-      });
-
-      await createEntityLink.mutateAsync({
-        sourceId: linkSource.id,
-        sourceType: linkSource.type,
-        targetId: externalLink.id,
-        targetType: EntityType.ExternalLink,
-        linkType: LinkType.Produces,
-      });
-
-      toast.success(`Linked PR #${pr.number}`);
-      onOpenChange(false);
-    } finally {
-      setIsLinking(false);
-    }
+      },
+      {
+        onError: () => setIsLinking(false),
+        onSuccess: (externalLink) =>
+          createEntityLink.mutate(
+            {
+              sourceId: linkSource.id,
+              sourceType: linkSource.type,
+              targetId: externalLink.id,
+              targetType: EntityType.ExternalLink,
+              linkType: LinkType.Produces,
+            },
+            {
+              onError: () => {
+                deleteExternalLink.mutate(externalLink.id);
+                setIsLinking(false);
+              },
+              onSuccess: () => {
+                toast.success(`Linked PR #${pr.number}`);
+                onOpenChange(false);
+                setIsLinking(false);
+              },
+            }
+          ),
+      }
+    );
   }
 
   if (open && !linkSource) {
@@ -277,11 +292,7 @@ export function SelectPullRequestDialog({
                   <CommandItem
                     disabled={isDisabled}
                     key={pr.number}
-                    onSelect={() => {
-                      // Suppress unhandled rejection — global QueryClient
-                      // `mutations.onError` already surfaces the failure toast.
-                      handleSelect(pr).catch(() => {});
-                    }}
+                    onSelect={() => handleSelect(pr)}
                     value={`#${pr.number} ${pr.title} ${pr.headBranch} ${pr.author}`}
                   >
                     <PrStateIcon pr={pr} />

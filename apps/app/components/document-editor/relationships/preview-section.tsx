@@ -179,10 +179,11 @@ type DeployRowProps = {
 };
 
 function DeployRow({ linked, onUnlink }: Readonly<DeployRowProps>) {
-  const resolved = linked.resolvedEntity as Extract<
-    typeof linked.resolvedEntity,
-    { type: typeof EntityType.ExternalLink }
-  >;
+  const resolved = linked.resolvedEntity;
+  if (resolved?.type !== EntityType.ExternalLink) {
+    return null;
+  }
+
   const externalLink = resolved.entity;
   const deployMeta = parseDeploymentMetadata(externalLink.metadata);
 
