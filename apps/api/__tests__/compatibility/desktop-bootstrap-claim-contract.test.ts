@@ -1,8 +1,8 @@
 /**
- * Compatibility coverage for the PLN-319 v8 claim contract.
+ * Compatibility coverage for the PLN-319 v10 claim contract.
  *
  * Verifies the route rejects the obsolete bootstrap-JWT payload while still
- * tolerating safe legacy field variations during staggered rollouts.
+ * tolerating safe legacy field variations and null-bound managed keys.
  */
 import { vi } from "vitest";
 import { apiKeysService } from "@/app/api-keys/service";
@@ -92,6 +92,32 @@ describe("POST /desktop/bootstrap/claim contract compatibility", () => {
       userId: "user-1",
       gatewayId: "550e8400-e29b-41d4-a716-446655440000",
       boundPublicKey: "normalized-pem",
+    });
+  });
+
+  it("accepts an unusable legacy public-key alias as a null-bound managed key", async () => {
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        url: "https://api.closedloop.ai/desktop/bootstrap/claim",
+        body: {
+          onboardingAttemptId: "attempt-123",
+          gatewayId: "550e8400-e29b-41d4-a716-446655440000",
+          webAppOrigin: "https://app.closedloop.ai",
+          gatewayPublicKey: "bad-pem",
+        },
+      })
+    );
+
+    expect(response.status).toBe(200);
+    expect(desktopOnboardingAttemptsService.consume).toHaveBeenCalledWith(
+      "attempt-123"
+    );
+    expect(apiKeysService.rotateDesktopManagedKey).toHaveBeenCalledWith({
+      organizationId: "org-1",
+      userId: "user-1",
+      gatewayId: "550e8400-e29b-41d4-a716-446655440000",
+      boundPublicKey: null,
     });
   });
 

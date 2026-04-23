@@ -1,8 +1,8 @@
 /**
  * Endpoint tests for POST /desktop/bootstrap/claim.
  *
- * Covers the exact PLN-319 v8 contract, including strict request validation,
- * origin checks, attempt consumption rules, and conflict/failure mapping.
+ * Covers the PLN-319 v10 claim contract, including strict preferred-key
+ * validation, legacy null-bound compatibility, and attempt consumption rules.
  */
 import { vi } from "vitest";
 import {
@@ -57,7 +57,7 @@ describe("POST /desktop/bootstrap/claim", () => {
     vi.useRealTimers();
   });
 
-  it("returns the exact claim response on success", async () => {
+  it("returns the exact modern bound claim response on success", async () => {
     const response = await POST(
       createMockRequest({
         method: "POST",
@@ -143,6 +143,39 @@ describe("POST /desktop/bootstrap/claim", () => {
     );
 
     expect(response.status).toBe(200);
+    expect(desktopOnboardingAttemptsService.consume).toHaveBeenCalledWith(
+      "attempt-123"
+    );
+    expect(apiKeysService.rotateDesktopManagedKey).toHaveBeenCalledWith({
+      organizationId: "org-1",
+      userId: "user-1",
+      gatewayId: "550e8400-e29b-41d4-a716-446655440000",
+      boundPublicKey: null,
+    });
+  });
+
+  it("accepts an unusable legacy public-key alias and rotates with a null binding", async () => {
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        body: {
+          onboardingAttemptId: "attempt-123",
+          webAppOrigin: "https://app.closedloop.ai",
+          gatewayId: "550e8400-e29b-41d4-a716-446655440000",
+          gatewayPublicKey: "bad-pem",
+        },
+      })
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      apiKey: "sk_live_desktop_managed",
+      source: "DESKTOP_MANAGED",
+      gatewayId: "550e8400-e29b-41d4-a716-446655440000",
+    });
+    expect(desktopOnboardingAttemptsService.consume).toHaveBeenCalledWith(
+      "attempt-123"
+    );
     expect(apiKeysService.rotateDesktopManagedKey).toHaveBeenCalledWith({
       organizationId: "org-1",
       userId: "user-1",

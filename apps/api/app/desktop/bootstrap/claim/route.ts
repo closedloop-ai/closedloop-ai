@@ -69,13 +69,19 @@ export async function POST(request: Request) {
     return invalidClaimRequestResponse();
   }
 
-  const requestedGatewayPublicKey =
-    body.gatewayPublicKeyPem ?? body.gatewayPublicKey ?? null;
-  const gatewayPublicKeyPem = requestedGatewayPublicKey
-    ? normalizeEd25519SpkiPublicKeyPem(requestedGatewayPublicKey)
-    : null;
-  if (requestedGatewayPublicKey && !gatewayPublicKeyPem) {
-    return desktopContractError(400, "INVALID_GATEWAY_PUBLIC_KEY", false);
+  let gatewayPublicKeyPem: string | null = null;
+  if (body.gatewayPublicKeyPem) {
+    gatewayPublicKeyPem = normalizeEd25519SpkiPublicKeyPem(
+      body.gatewayPublicKeyPem
+    );
+    if (!gatewayPublicKeyPem) {
+      return desktopContractError(400, "INVALID_GATEWAY_PUBLIC_KEY", false);
+    }
+  } else if (body.gatewayPublicKey) {
+    // Only the preferred v10 field is strict-validating; unusable legacy aliases
+    // degrade to a null-bound DESKTOP_MANAGED key for version-skew safety.
+    gatewayPublicKeyPem =
+      normalizeEd25519SpkiPublicKeyPem(body.gatewayPublicKey) ?? null;
   }
 
   let attempt: Awaited<ReturnType<typeof desktopOnboardingAttemptsService.get>>;
