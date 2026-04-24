@@ -1,6 +1,8 @@
 import { z } from "zod";
 
 import type { JsonObject } from "./common";
+import type { RepoExecutionResult } from "./execution-result";
+import { RepoExecutionResultBaseSchema } from "./execution-result";
 import type { TokensByModel, TokenUsage } from "./tokens";
 import { TokensByModelSchema, TokenUsageSchema } from "./tokens";
 
@@ -160,6 +162,7 @@ export type LoopEventCompleted = {
   correlationId?: string;
   loopId?: string;
   warnings?: string[];
+  results?: RepoExecutionResult[];
 };
 
 export const LoopEventCompletedSchema = z.object({
@@ -179,6 +182,7 @@ export const LoopEventCompletedSchema = z.object({
   correlationId: z.string().optional(),
   loopId: z.string().optional(),
   warnings: z.array(z.string()).optional(),
+  results: z.array(RepoExecutionResultBaseSchema).optional(),
 });
 
 export type LoopEventError = {
