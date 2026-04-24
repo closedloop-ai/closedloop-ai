@@ -3,17 +3,51 @@ title: Context Packs
 description: Bundled context that gives loops the exact docs, artifact references, and constraints needed to execute well.
 ---
 
-Context packs reduce ambiguity by packaging the right supporting material for a run.
+Context packs reduce ambiguity by packaging the right supporting material for a run. A good context pack is the difference between a loop that understands the code and one that invents it.
+
+## What a context pack is
+
+A context pack is the bundle of material the orchestrator and its subagents read during a loop. In practice this is:
+
+- the **primary artifact** (PRD or plan)
+- **investigation outputs** written by the `pre-explorer` subagent (`requirements-extract.json`, `code-map.json`, `investigation-log.md`)
+- **organization learnings** injected by the subagent-start hook from `~/.closedloop-ai/learnings/org-patterns.toon`
+- **environment context** (`<closedloop-environment>` block with workdir, plugin root, repo map)
+- **linked docs**: CLAUDE.md, AGENTS.md, README.md, architecture docs
+- optional **tool-specific learnings** injected by the pretooluse hook (for example, language-specific conventions before a Write)
 
 ## Good context packs are
 
-- scoped
-- artifact-linked
-- explicit about constraints
-- small enough to stay relevant
+- **scoped** – only the parts of the codebase relevant to the task
+- **artifact-linked** – every reference can be traced back to the PRD or plan
+- **explicit about constraints** – the acceptance criteria are visible to the orchestrator
+- **small enough to stay relevant** – the `context-manager-for-judges` compresses to a 30K token budget using a three-tier strategy (full content → intelligent compression → hard truncation at 1.5× budget)
 
 ## Bad context packs are
 
-- oversized
-- stale
-- disconnected from the task
+- **oversized** – they blow the context window and the LLM loses the ask
+- **stale** – they point at docs or patterns that have since changed
+- **disconnected from the task** – they include generic reference material unrelated to the artifact
+
+## How context packs are built
+
+Context assembly is automatic. The orchestrator does not read files directly; it delegates to subagents and skills that do, each with a budget:
+
+- **`pre-explorer`** produces `code-map.json` (a multi-repo-aware structural map) and `investigation-log.md` (a narrative of what it discovered).
+- **`artifact-type-tailored-context`** skill (in `judges`) assembles `plan-context.json` or `code-context.json` within 30K tokens.
+- **`iterative-retrieval`** skill (in `code`) lets the orchestrator ask for more context mid-run without re-reading the world.
+- **Hooks** inject learnings and environment blocks at session and tool boundaries.
+
+## Related reading
+
+<Cards>
+  <Card title="Orchestrator and subagents" href="./orchestrator">
+    What reads and writes the context pack during a loop.
+  </Card>
+  <Card title="Self-learning" href="./self-learning">
+    How organization patterns are captured and injected.
+  </Card>
+  <Card title="Artifacts" href="./artifacts">
+    The files a loop produces alongside its context pack.
+  </Card>
+</Cards>

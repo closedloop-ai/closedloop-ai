@@ -1,0 +1,58 @@
+---
+title: Spec-Driven AI Development
+description: "The philosophy behind ClosedLoop.ai: specs are the interface between humans and AI, and artifacts are the system of record."
+---
+
+ClosedLoop.ai is a bet on one claim about AI-native software delivery: **the spec is the interface**.
+
+In a chat-first workflow, intent is expressed in an ephemeral turn and lost the moment it runs. In a spec-driven workflow, intent is expressed as a durable artifact that can be versioned, reviewed, linked, judged, and replayed. The AI is a participant in the team's specification discipline, not a parallel improvisation channel.
+
+## What "spec-driven" means here
+
+Three commitments:
+
+1. **Intent is written down.** A PRD, a plan, or a ticket captures the problem, the desired outcome, and the acceptance criteria. This is what the AI reads.
+2. **Execution is bounded by the spec.** A loop inherits the artifact's scope and can only succeed by satisfying it. The orchestrator emits a `<promise>COMPLETE</promise>` only when the plan's `pendingTasks` are empty and the acceptance criteria validate.
+3. **Review is against the spec.** Judges score the plan or the code against the artifact that launched the loop. Human review closes against the same artifact.
+
+## Why this matters for AI-first processes
+
+- **Ambiguity is priced in early.** Under-specified PRDs are caught by the PRD judges (auditor, dependency, scope, testability) before a single line of code is generated. You will not waste a loop on a plan with no measurable success criteria.
+- **Work composes.** A plan amends a PRD. A PR closes a plan. A judge report gates a merge. Each step produces a durable artifact that the next step can reference.
+- **Autonomy is bounded.** Long-running loops are safe because they execute inside an artifact's scope, under a sandbox, with an approval policy. They are not open-ended agent excursions.
+- **Memory accrues.** Self-learning captures patterns, conventions, and mistakes across loops. The team's model of the codebase improves instead of resetting with every new chat.
+
+## How the product operationalizes this
+
+- **Bootstrap plugin** reads your codebase and generates project-specific expert agents plus a `critic-gates.json`. Your specs inherit your code's reality.
+- **`/code:code` orchestrator** runs an 18-phase flow that always starts from pre-exploration and the plan, never from a freeform prompt.
+- **Judges** run against the artifact's acceptance criteria and engineering principles (DRY, KISS, SSOT, SOLID, convention adherence, codebase grounding).
+- **Amendments** happen on the plan artifact (`/code:amend-plan`), not in a new chat. The change is captured, versioned, and attached.
+- **Post-loop code review** automatically runs `/code-review:start` against the diff and feeds the verdict into an optional fix cycle.
+
+## The operating model
+
+When a team adopts ClosedLoop.ai it usually evolves into a rhythm like this:
+
+1. A product owner drafts a PRD. PRD judges and teammates iterate until it passes.
+2. A plan is generated from the PRD. Plan judges and the team iterate until the plan is review-grade.
+3. The plan is executed as one or more loops. Implementation, testing, and visual QA run inside the loop.
+4. Post-loop code review produces a verdict. A fix cycle resolves non-approving findings.
+5. A PR is opened. Human review closes against the original artifact.
+6. Self-learning captures what worked and what did not, so the next loop starts smarter.
+
+That is spec-driven, AI-first delivery, and it is what the rest of this documentation describes in detail.
+
+## Related reading
+
+<Cards>
+  <Card title="Artifact-bound delivery" href="./artifact-bound-delivery">
+    Why every loop is attached to an artifact.
+  </Card>
+  <Card title="Team-based agentic development" href="./team-based-agentic-development">
+    Why the team is the unit of optimization.
+  </Card>
+  <Card title="ClosedLoop.ai vs chat-based workflows" href="../resources/closedloop-vs-chat-based-workflows">
+    When to pick each model.
+  </Card>
+</Cards>

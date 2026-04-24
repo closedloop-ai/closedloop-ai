@@ -3,15 +3,53 @@ title: Parallel Feature Development
 description: Running multiple bounded workstreams at once while preserving coordination and review quality.
 ---
 
-Parallel feature development only works when work is decomposed clearly.
+Parallel feature development is ClosedLoop's answer to "can we run more than one AI loop at a time?" The answer is yes, but only if the work is decomposed cleanly. Parallelism without structure becomes duplicated effort and merge-conflict churn.
 
 ## Requirements
 
-- bounded artifacts
-- clear ownership
-- isolated execution scopes
-- shared review standards
+- **Bounded artifacts.** Each parallel workstream is one PRD or one plan, not a shared queue.
+- **Clear ownership.** Each loop has a single artifact it is accountable to.
+- **Isolated execution scopes.** Each loop runs in its own git worktree, under its own branch.
+- **Shared review standards.** All loops run through the same judges and post-loop code review policy.
 
-## Failure mode
+## Desktop concurrency
 
-Parallelism without structure becomes duplicated effort and merge conflict churn.
+The desktop command executor runs a maximum of **two commands in flight per target** and serializes commands that share a `lockKey` (the worktree path, repo path, or run dir). This is intentional: multiple loops against the same worktree would corrupt state.
+
+To run more in parallel, use multiple compute targets — for example, a laptop and a dedicated dev machine both signed into the same workspace — or let loops that touch different repos run concurrently on the same target.
+
+## Multi-repo vs. parallel
+
+These are different concepts:
+
+- **Multi-repo** = one loop that touches multiple repositories via `--add-dir`. Coordination happens inside the loop.
+- **Parallel** = multiple loops each against its own artifact. Coordination happens at the control-plane level.
+
+Use multi-repo when a single feature spans repos that must ship together. Use parallel when you have several independent features that can land in any order.
+
+## Failure modes to avoid
+
+- **Shared branches.** Two loops writing to the same branch will fight each other. Every loop gets its own branch (`closedloop/<ticket>-<slug>` by default).
+- **Vague acceptance criteria.** Parallel loops are hardest to judge. Make sure every PRD and plan has measurable success criteria before you parallelize.
+- **Under-provisioned sandbox.** Clones, worktrees, and logs for several loops add up. Keep the sandbox on fast local storage with room to grow.
+- **Global approval policy at `low` or `none`.** You will spend your day clicking approvals. Either trust the default `high` tier for loop operations or use targeted Always-Allow rules per repo.
+
+## Observing parallel runs
+
+The **Requests → Running Jobs** list shows every live loop with its command, status badge, and live phase. The tray icon shows the total count of pending approvals across all loops.
+
+On the control-plane side, each loop appears as a distinct job in the web app with its own plan, judge report, and post-loop review.
+
+## Related reading
+
+<Cards>
+  <Card title="Multi-repo development" href="../mechanisms/multi-repo">
+    When a single feature needs to cross repo boundaries.
+  </Card>
+  <Card title="Approvals" href="../mechanisms/approvals">
+    How to parallelize without clicking approval prompts all day.
+  </Card>
+  <Card title="Loops" href="../mechanisms/loops">
+    The execution model every parallel workstream inherits.
+  </Card>
+</Cards>

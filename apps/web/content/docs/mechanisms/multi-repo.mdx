@@ -1,0 +1,97 @@
+---
+title: Multi-Repo Development
+description: Run a single loop across multiple sibling repositories and produce plans that cross repo boundaries.
+---
+
+Many teams ship features that span more than one repository: a backend API and a frontend app, a shared library and its consumers, a platform service and an SDK. ClosedLoop.ai's multi-repo mode lets a single loop plan and implement across those peers without context-switching.
+
+## Enabling multi-repo
+
+Pass `--add-dir` for every peer repo when you launch a loop:
+
+```bash
+./run-loop.sh .closedloop-ai/work --prd requirements.md \
+  --add-dir ../peer-backend \
+  --add-dir ../peer-mobile
+```
+
+`setup-closedloop.sh` resolves each flag to a canonical absolute path and builds a **repo map** that every subagent can read.
+
+## The three env vars
+
+Multi-repo state is carried entirely by environment variables, set in `$CLOSEDLOOP_WORKDIR/.closedloop-ai/config.env`:
+
+| Variable | Format | Meaning |
+| --- | --- | --- |
+| `CLOSEDLOOP_ADD_DIRS` | pipe-separated absolute paths | All resolved `--add-dir` values. |
+| `CLOSEDLOOP_ADD_DIR_NAMES` | pipe-separated short names | User-friendly names, disambiguated when collisions occur. |
+| `CLOSEDLOOP_REPO_MAP` | pipe-separated `name=path` | Canonical name-to-path map used by agents. |
+
+## How peer names are chosen
+
+Each peer repo is expected to have a `.closedloop-ai/.repo-identity.json` with at least:
+
+```json
+{
+  "name": "peer-backend",
+  "type": "service",
+  "discoverable": true
+}
+```
+
+When names collide, `make_unique_repo_name` walks path segments to build names like `peer-backend-acme`. Ancestors of the workdir are silently skipped.
+
+## Discovery tiers
+
+`discover-repos.sh` combines three sources:
+
+1. **Explicit** paths from `CLOSEDLOOP_ADD_DIRS` (tagged `"local": true`).
+2. **Env var** from `CLAUDE_WORKSPACE_REPOS` (format `name1:path1,name2:path2`).
+3. **Sibling scan** – any sibling directory containing a `.repo-identity.json` with `discoverable: true`.
+
+Results are deduplicated across tiers and emitted as JSON with `currentRepo`, `discoveryMethod`, `peers[]`, and a `monorepo` flag detected via `.repo-identity.json type=monorepo` or the presence of `apps/`/`packages/`.
+
+## Which agents are multi-repo aware
+
+- `pre-explorer` writes a `code-map-{name}.json` per repo.
+- `plan-draft-writer` emits plans with a `## Repositories` section and per-task `@{repo}:path` prefixes for cross-repo tasks.
+- `cross-repo-coordinator` decides which peers are needed and emits a `CAPABILITIES_LIST`.
+- `generic-discovery` probes each peer for capabilities and caches results to `.discovery-cache/{peer}.json`.
+- `cross-repo-prd-writer` produces `cross-repo-prd-{peer}.md` and tags plan tasks with `[CROSS-REPO: {peer}]`.
+- `api-spec-writer` captures the inter-repo contract as `api-requirements.md`.
+
+No orchestrator-level branching is required. Agents inspect the env vars themselves and act accordingly.
+
+## Plan schema addition
+
+`plan.json` has a `repositories` map keyed by short name:
+
+```json
+{
+  "repositories": {
+    "peer-backend": { "path": "/Users/me/code/peer-backend", "isPrimary": false },
+    "peer-mobile": { "path": "/Users/me/code/peer-mobile", "isPrimary": false },
+    "primary": { "path": "/Users/me/code/primary", "isPrimary": true }
+  }
+}
+```
+
+Tasks tagged `[CROSS-REPO: peer-backend]` are planned to land in that peer's working copy.
+
+## Running from the desktop app
+
+The desktop app auto-clones repositories that are referenced in a cloud command but missing locally (via `gh repo clone`, 120-second timeout). For multi-repo loops, ensure every peer repo either exists in your sandbox or is accessible via `gh` before dispatch. You can pre-populate `~/.closedloop-ai/config/repos.json` with the set you expect to use frequently.
+
+## Related reading
+
+<Cards>
+  <Card title="Artifacts" href="./artifacts">
+    How `plan.json` and the per-repo code maps live on disk.
+  </Card>
+  <Card title="Orchestrator and subagents" href="./orchestrator">
+    Which agents participate in cross-repo planning.
+  </Card>
+  <Card title="Parallel feature development" href="../workflows/parallel-feature-development">
+    When to run peers in parallel vs. in a single loop.
+  </Card>
+</Cards>

@@ -1,6 +1,12 @@
 ---
 title: Judge
-description: A scoring or review mechanism used to evaluate output quality.
+description: An LLM evaluator agent that scores an artifact against a single engineering principle.
 ---
 
-Judges convert review from ad hoc opinion into something more structured and repeatable.
+A **judge** is an evaluator agent that takes an artifact (plan, code, or PRD) and returns structured JSON: a `final_status` (PASS / FAIL / ERROR) and a set of metrics with thresholds, scores, and justifications.
+
+Judges run in parallel batches and aggregate into per-mode reports: `plan-judges.json`, `code-judges.json`, `prd-judges.json`.
+
+The `judges` plugin ships 21 judges covering accuracy, grounding, engineering principles (DRY, KISS, SSOT, SOLID), quality, and alignment.
+
+See [Judges](../mechanisms/judges) for the full reference.

@@ -1,0 +1,106 @@
+---
+title: Release Notes
+description: User-visible changes across the ClosedLoop desktop app and the Claude plugins.
+---
+
+The most recent user-facing changes, grouped by product surface. Internal refactors and dependency updates are not listed here.
+
+## Desktop app
+
+### 0.13.17 — harness failure telemetry
+
+When a loop crashes, the runtime now attaches a rich diagnostics payload: stderr tail (separate from stdout, ANSI-stripped, 4 KiB cap), exit signal, elapsed wall time, spawn command and args, cwd, binary path, auth-file presence, a redacted env snapshot, and the abort reason (`cancelled` / `process-exit` / `ghost-loop`). Spawn args are scrubbed for secrets. `diagnosticsVersion` is bumped to 2.
+
+Expect faster root-cause turnaround when reporting failed loops.
+
+### 0.13.16 — execute recovery replay
+
+If the desktop app restarts mid-EXECUTE and the loop had already finished, boot recovery now retries finalization after transient errors and correctly handles the "no work produced" case. EXECUTE finalization is no longer lost on restart. Also fixes a bug where a terminal job could persist as `RUNNING`.
+
+### 0.13.15 — plan preservation on failure
+
+On EXECUTE failure the runtime now falls back to the staged `imported-plan.md` if `plan.json` is absent, so the web app still shows the plan for a failed run. Plan artifacts now carry `{content, raw}` so raw state rehydrates in fresh worktrees on resume.
+
+### 0.13.14 — plan upload state preservation
+
+On EXECUTE terminal failure, the runtime reloads the latest job snapshot before writing final state, preserving `artifactsUploadedAt`. The web app now correctly shows that artifacts were uploaded even on failed runs.
+
+### 0.13.13 — auto-clone repos
+
+When a cloud command targets a repo that isn't in your local `repos.json`, the runtime now runs `gh repo clone <org/repo>` automatically into the first allowed sandbox directory (120 s timeout). Required for `PLAN`/`EXECUTE` and optional for other commands. Requires `gh auth login` to succeed first. Stderr from `gh` is sanitized in surfaced error messages.
+
+### 0.13.12 — gateway `repo-path` endpoint
+
+New `GET /api/gateway/git/repo-path?repoFullName=org/repo` returns `{ path }` so the web app can resolve a GitHub repo full name to a local filesystem path before dispatch. Read-only.
+
+### 0.13.11 — cloud hello handshake version split
+
+The `desktop.hello` payload now sends three distinct version fields: `desktopClientVersion`, `gatewayProtocolVersion`, `pluginVersion`. The `CL_PLUGIN_VERSION` env var overrides `pluginVersion` in sandboxed environments. Security hardening: path-allowlist now checks both expanded and canonicalized forms against the sensitive-path deny list.
+
+### 0.13.10 — CMD+Q fix
+
+Fixes a bug where quitting via CMD+Q could hang indefinitely. Added an eight-second hard-exit failsafe, a `.catch()` on the shutdown promise, a two-second cap on `Observability.shutdown()`, and `server.closeAllConnections()` to drop active NDJSON streams.
+
+### 0.13.9 — queue stats debounce
+
+`queue.stats_changed` telemetry events are now debounced so Datadog is not flooded on every job tick.
+
+## Claude plugins
+
+### `code` 1.9.3 — SendMessage subagent continuation
+
+The orchestrator's Phase 6 INCOMPLETE_DOCS and BLOCKED handlers now continue a running `visual-qa-subagent` via `SendMessage(to=<agent_id>)` instead of launching a new `Task`. Preserves full agent context. `SendMessage` returns immediately with a queued ack; the orchestrator waits for a `<task-notification>` before proceeding. `run-loop.sh` now pins `--model claude-opus-4-6` and `--effort high`.
+
+### `code` 1.9.2 — `CLAUDE_BIN` support
+
+`run-loop.sh`, `debate-loop.sh`, and `process-chat-learnings.sh` all read `CLAUDE_BIN` and fall back to bare `claude`. Fixes silent failures for users whose `claude` is outside the default Homebrew path. Pairs with the desktop app's resolved binary path.
+
+### `code` 1.9.1 — loop bootstrap argument handling
+
+`setup-closedloop.sh` parser now tolerates unquoted paths with spaces by joining consecutive non-flag tokens. Affects `--prd`, `--plan`, `--add-dir`, and positional workdir. `run-loop.sh` emits quoted arguments when writing loop state. `/code` invokes `setup-closedloop.sh` portably via `bash "${CLAUDE_PLUGIN_ROOT}/scripts/setup-closedloop.sh"`.
+
+### `code` 1.9.0 — multi-repo support
+
+`--add-dir` support for planning and exploration across sibling repositories. New env vars `CLOSEDLOOP_ADD_DIRS`, `CLOSEDLOOP_ADD_DIR_NAMES`, `CLOSEDLOOP_REPO_MAP`. Plans gain a `repositories` map. `pre-explorer` writes per-repo code maps. Cross-repo coordinator + discovery + PRD writer agents.
+
+### `code` 1.8.x — prompt compression
+
+Editorial compression of the orchestrator prompt, extraction of inline bash, and deduplication of repeated sequences. Materially shorter orchestrator context per iteration.
+
+### `code` 1.7.x — post-loop code review
+
+After a loop completes, `run-loop.sh` automatically runs `/code-review:start --base <start_sha>`, reads `<CR_DIR>/verdict.json`, and if the verdict is not `approve`, runs `/code-review:fix <cr_dir>` up to `POST_LOOP_REVIEW_CYCLES` (default 2) cycles. Aborts on two consecutive fix failures.
+
+### `code` 1.6.0 — `.closedloop-ai/` state directory
+
+Final phase of the migration from scattered `.claude/.closedloop/` and similar paths into a single `.closedloop-ai/` tree. All hooks, scripts, agents, skills, and the orchestrator prompt updated. A single `CLOSEDLOOP_STATE_DIR` constant unifies references.
+
+### `judges` 1.5.1 — canonical input envelope
+
+Judges now read `judge-input.json` as the SSOT envelope. Legacy filename assumptions are allowed only when `fallback_mode.active = true`. Ships the `artifact-type-tailored-context` skill with a three-tier compression strategy and a 30K-token budget.
+
+### `code-review` 1.5.2 — fast path and hygiene
+
+Small-diff fast path for ≤ 200 LOC routes to a single agent with three scoped passes plus a domain-critics pass, in one run. Deterministic hygiene check (CI artifacts, `.env`/`.pem`, path leakage) runs with zero LLM tokens. Findings below 0.5 confidence are discarded.
+
+### `self-learning` 1.1.2 — opt-in model
+
+Self-learning is opt-in via `--self-learning` on `run-loop.sh`. Config propagates as `CLOSEDLOOP_SELF_LEARNING=true` through `config.env` and loop state frontmatter; hooks check the flag and skip injection when off.
+
+### `bootstrap` 1.2.0 — `.closedloop-ai/` migration
+
+Bootstrap writes critic gates, schemas, and run artifacts into `.closedloop-ai/` alongside `.claude/agents/<name>.md`.
+
+## Related reading
+
+<Cards>
+  <Card title="Troubleshooting" href="./troubleshooting">
+    Resolve symptoms you see in any current release.
+  </Card>
+  <Card title="FAQ" href="./faq">
+    Short answers about capabilities and limits.
+  </Card>
+  <Card title="Install the desktop app" href="../getting-started/install-desktop">
+    How to pick up the latest release.
+  </Card>
+</Cards>

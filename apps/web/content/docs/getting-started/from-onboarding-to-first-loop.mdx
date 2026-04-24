@@ -10,65 +10,73 @@ This is the onboarding refresh path for teams that want to move from setup into 
 By the end of this guide you should have:
 
 - a connected repository
-- a usable compute target
+- a healthy compute target
 - one scoped artifact to execute against
 - a first loop run that produces reviewable output
 
 ## Step 1: Confirm the control plane is ready
 
-- Sign in to the app and confirm your team and project context are correct.
+- Sign in to the web app and confirm your team and project context are correct.
 - Create or open a PRD, implementation plan, or feature artifact that is small enough to execute in one loop.
-- Make sure the artifact has enough acceptance criteria to judge the output later.
+- Make sure the artifact has real **acceptance criteria**. Those become the scoring basis for the judges.
 
 :::note
-The fastest way to get low-quality results is to start a loop from an underspecified artifact.
+The fastest way to produce a low-quality result is to start a loop from an under-specified artifact. Acceptance criteria are how the judges decide whether to pass you.
 :::
 
 ## Step 2: Connect the execution surface
 
-- Install and launch the desktop client.
-- Confirm the gateway is healthy and a compute target is visible inside the app.
-- If the task depends on a specific provider, verify that the target supports it before launch.
+- Launch the desktop client and confirm all three Dashboard cards are green.
+- Open **Requests → Gateway Request Log** and send a test request from the web app (any health probe or repo listing). You should see it logged with a `200` status.
+- If you plan to execute against a repo that is not yet cloned locally, make sure `gh auth login` succeeded. Auto-clone depends on `gh`.
 
 ## Step 3: Choose a safe first task
 
 Use a narrow task such as:
 
-- small docs updates
-- targeted UI copy refinements
-- a focused bug fix
+- a small docs update (README clarifications, typo sweeps)
+- a targeted UI copy refinement
+- a focused bug fix with a reproducible test
 - an isolated workflow improvement
 
 Avoid broad feature work on the first run. The point is to prove the end-to-end path.
 
 ## Step 4: Launch the first loop
 
-1. Open the artifact.
-2. Confirm the repository and branch target.
-3. Pick the provider and compute target.
-4. Start the loop.
+1. Open the artifact in the web app.
+2. Confirm the repository and base branch target.
+3. Pick the provider (usually Claude Opus) and your desktop compute target.
+4. Click **Start Plan** (or **Execute** if the plan already exists).
 
-Watch for:
+What happens next:
 
-- context-pack generation
-- loop startup on the desktop target
-- streamed output or status updates
-- completion with reviewable diffs or artifact updates
+- The cloud relay dispatches a `symphony_loop` command to your desktop.
+- The desktop app evaluates the [approval policy](../mechanisms/approvals). On the default `high` tier, `medium`-risk commands auto-approve.
+- The gateway ensures a git worktree on the chosen base branch, cloning the repo first if needed (`gh repo clone`, 120s timeout).
+- `claude` is spawned with the `code` plugin's orchestrator prompt. Its streaming JSON output is tailed into `claude-output.jsonl` and forwarded to the web app.
 
-## Step 5: Review like a system owner
+## Step 5: Watch the right things
+
+- The **Requests → Running Jobs** list shows a live status badge (`STARTING → RUNNING → COMPLETED`) and a human-readable phase ("Planning: analyzing ticket", "Task 2/5: implementing …").
+- The web app shows the same progress plus streaming diffs, plan artifacts, and judge scores.
+- If the loop asks a clarifying question, the job will transition to `AWAITING_USER`; resolve it from the web app.
+
+## Step 6: Review like a system owner
 
 After the loop completes:
 
-- compare output to the original artifact
-- check whether the task stayed in scope
-- decide whether the result should be accepted, refined, or regenerated
+- compare output to the original artifact's acceptance criteria
+- look at the judge report (`plan-judges.json` or `code-judges.json`) for any FAIL or conditional signals
+- check whether the work stayed in scope
+- decide whether the result should be accepted, refined with `/code:amend-plan`, or regenerated
 
-## Step 6: Capture the pattern
+## Step 7: Capture the pattern
 
 Your first successful loop should become reusable team knowledge:
 
 - document which artifact shape worked well
 - save the task framing that produced useful output
 - note any provider or target constraints
+- if self-learning is enabled, the `code` plugin has already extracted patterns into `.closedloop-ai/learnings/` for future runs
 
 That is how onboarding turns into an operating model instead of a one-off success.

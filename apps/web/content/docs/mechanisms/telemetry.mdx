@@ -1,0 +1,94 @@
+---
+title: Telemetry and Events
+description: How ClosedLoop observes loops, commands, and failures across the three planes.
+---
+
+ClosedLoop emits two parallel event streams: **PostHog** for user-behavior analytics, and **structured telemetry** routed through the relay to Datadog for operational signal. The event taxonomy is defined in the desktop app and mirrored by the cloud.
+
+## PostHog events
+
+Naming convention: `<domain>_<action>`, past tense. Common properties include `release_version` (the desktop app version) and `distinct_id` (the `desktop_id` from the hello-ack).
+
+### Command funnel
+
+- `command_initiated`
+- `command_started`
+- `command_completed`
+- `command_failed` – with `error_class`: `timeout`, `cancelled`, `gateway_error`
+
+### Approval workflow
+
+- `approval_requested`
+- `approval_resolved` – with `outcome` (`granted` / `denied` / `timed_out`) and `time_to_resolve_ms`
+
+### Connection lifecycle
+
+- `desktop_connection_established`
+- `desktop_reconnection_resumed` – with `reason` and `replay_command_count`
+
+### Sandbox
+
+- `sandbox_blocked_operation` – with `operation_class`
+
+## Structured telemetry
+
+Emitted as `desktop.telemetry` frames over the Socket.IO channel. Each event carries:
+
+- `schemaVersion: "1"`
+- ISO-8601 `timestamp`
+- `computeTargetId`
+- `gatewaySessionId`
+- `commandId`
+- `operationId`
+
+### Connection lifecycle
+
+`connection.established`, `connection.reconnection_resumed`, `connection.degraded`, `connection.lost`.
+
+### Command lifecycle
+
+`command.initiated`, `command.started`, `command.completed` (latency), `command.timeout`, `command.cancelled`, `command.gateway_error`.
+
+### Job (loop) lifecycle
+
+`job.started`, `job.completed`, `job.failed`, `job.cancelled`, `job.auth_challenge`, `job.recovery.finalize_replayed`.
+
+Job events carry `loopId`, `jobId`, and `loopSessionId` for tracing across the web app and the cloud.
+
+### Harness failure detail
+
+When a loop crashes, the runtime attaches rich diagnostics (`diagnostics.logTail` + `diagnostics.stderrTail`, ANSI-stripped, 4 KiB cap), spawn metadata (command, args, cwd, binary path, auth-file presence, redacted env snapshot), and the abort reason (`cancelled` / `process-exit` / `ghost-loop`). Spawn args are redacted for secrets. `diagnosticsVersion` is bumped when the payload shape changes.
+
+:::note
+Diagnostic log tails are truncated to 4 KiB but are not PII-scrubbed before transmission. If your subprocess output contains sensitive strings, treat those tails as sensitive.
+:::
+
+### Preflight
+
+- `preflight.binary_not_found` (error) – typically "`claude` CLI not found in PATH"
+- `preflight.script_not_found` – "`run-loop.sh` not found in plugin cache"
+- `preflight.spawn_failed`
+
+### Queue
+
+- `queue.stats_changed` – debounced to avoid flooding.
+
+## Where to look
+
+- **Diagnostics** tab in the desktop app – structured gateway logger tail.
+- **Requests** tab – activity log, security events, running jobs, completed jobs.
+- **Web app** – job pages show the telemetry that was forwarded for each run.
+
+## Related reading
+
+<Cards>
+  <Card title="Recovery and resilience" href="./recovery">
+    How telemetry drives boot recovery and ghost-loop detection.
+  </Card>
+  <Card title="Approvals" href="./approvals">
+    How approval outcomes are recorded.
+  </Card>
+  <Card title="Desktop gateway" href="./desktop-gateway">
+    The underlying request stream that produces command events.
+  </Card>
+</Cards>

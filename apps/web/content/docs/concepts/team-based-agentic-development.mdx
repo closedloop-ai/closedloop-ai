@@ -3,23 +3,46 @@ title: Team-Based Agentic Development
 description: A model where teams, artifacts, and agents are coordinated together instead of optimizing only for individual output.
 ---
 
-Team-based agentic development treats the team as the unit of optimization.
+Team-based agentic development treats the **team** as the unit of optimization, not the individual prompt.
 
 ## Problem
 
-Most AI workflows focus on helping one person produce output faster.
+Most AI workflows optimize for a single person producing output faster. That is useful, but it does not solve:
 
-That is useful, but it does not solve:
+- unclear ownership of generated work
+- artifact drift between the intent and what actually shipped
+- broken review loops that cannot tell whether the output matched the ask
+- inconsistent execution environments across contributors
+- memoryless agents that relearn the same project conventions every session
 
-- unclear ownership
-- artifact drift
-- broken review loops
-- inconsistent execution environments
+The net effect of chat-based AI workflows is high local velocity and high organizational ambiguity. Individual engineers move faster; teams ship less coherently.
 
-## What changes
+## What changes with ClosedLoop.ai
 
-ClosedLoop.ai uses artifacts, plans, loops, and judges to keep execution connected to team intent.
+ClosedLoop.ai inverts that. A team is a first-class object. Work is attached to artifacts the team already recognizes (PRDs, plans, features, tickets). Execution happens inside bounded loops that inherit the artifact's scope, run against the team's real repositories, and emit reviewable outputs back into the team's workflow.
+
+The result is a delivery model with five properties:
+
+- **Durable intent.** A PRD is not a chat message. It persists, it is versioned, and every loop dispatched from it is traceable back to it.
+- **Bounded execution.** A loop is a finite run with a workdir, a budget, and a terminal promise. It has a beginning and an end.
+- **Artifact-linked review.** Judges and humans score the output against the artifact that launched the work, not against vibes.
+- **Shared memory.** Self-learning captures patterns across runs so the team's model of the codebase improves instead of resetting.
+- **Repeatable environment.** The desktop runtime enforces the same sandbox, binary paths, and approval policy for every member.
 
 ## Why it matters
 
-The result is not just faster code generation. It is a tighter system for turning intent into shipped work.
+The result is not just faster code generation. It is a tighter system for turning intent into shipped work. The team stops losing signal between the idea and the diff; the AI stops inventing conventions that were already decided.
+
+## Related reading
+
+<Cards>
+  <Card title="Control plane" href="./control-plane">
+    Where work is defined, reviewed, and governed.
+  </Card>
+  <Card title="Artifact-bound delivery" href="./artifact-bound-delivery">
+    Why execution attaches to objects, not threads.
+  </Card>
+  <Card title="Spec-driven AI development" href="./spec-driven-ai-development">
+    How this model operationalizes a spec-driven philosophy.
+  </Card>
+</Cards>

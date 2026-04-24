@@ -1,0 +1,76 @@
+---
+title: Recovery and Resilience
+description: How ClosedLoop survives crashes, restarts, and ghost loops without losing progress.
+---
+
+Loops are long-running, and long-running work eventually collides with an app restart, a CMD+Q, a hung process, or a transient network blip. ClosedLoop's recovery layer is designed so the state you see in the web app always matches what happened on disk.
+
+## Persistent job store
+
+Every loop dispatched to a desktop target is recorded in the job store (`desktop-job-store.json`) as a `LocalJob`. Statuses progress through:
+
+```
+QUEUED → STARTING → RUNNING → COMPLETED / FAILED / CANCELLED
+```
+
+With intermediate states `AWAITING_USER`, `STOPPED`, `CANCEL_PENDING`, and `UNKNOWN` when the desktop cannot determine the real outcome.
+
+The store is split between `activeJobs` (map) and `terminalJobs` (capped ring of the last 100) so the UI can render both quickly.
+
+## Boot recovery
+
+When the desktop app launches, `BootRecoveryService` reconciles the active-job list with reality:
+
+1. For each active job with a persisted PID:
+   - if the process is alive, **reattach** the NDJSON tailer and the PID watcher (default 3 second poll)
+   - if the process is dead, **finalize** it from state on disk
+2. Finalization reads `state.json` and the `claude-output.jsonl` tail to derive the terminal status (`COMPLETED` / `FAILED` / `no-changes` / `skipped`), uploads any produced artifacts (plans, diffs), and posts a completion or error event to the API.
+
+Each active job has a maximum of three recovery attempts. The finalizer also maps the "unexpectedly still `RUNNING`" case to `FAILED` so a `PROCESS_FAILED` event is always emitted.
+
+## Graceful quit
+
+Quitting the desktop app triggers a deterministic shutdown:
+
+1. Mark the window as `quitting` so the close handler does not re-hide to the tray.
+2. Call `server.closeAllConnections()` to drop active NDJSON streams.
+3. Cap `Observability.shutdown()` at two seconds using `Promise.race`.
+4. Attach a `.catch()` on the shutdown promise so any rejection still exits.
+5. If the orderly shutdown does not complete in eight seconds, a hard-exit failsafe terminates the process.
+
+This is the fix that guarantees CMD+Q reliably quits the app.
+
+## Ghost loop detection
+
+A **ghost loop** is a run that keeps emitting output but never progresses. `run-loop.sh` aborts when:
+
+- `is_error: true` appears in the iteration's result JSON (session or context limit)
+- three consecutive iterations produce no material output
+- stderr patterns match "prompt is too long", "context limit reached", etc.
+
+Aborted ghost loops finalize with a reason of `ghost-loop` and emit the full diagnostics payload for the telemetry pipeline.
+
+## Recovery replay for EXECUTE
+
+When a desktop restart interrupts an EXECUTE loop that had already finished, the finalizer replays its work:
+
+- Retries finalization after transient errors.
+- Falls back to the staged `imported-plan.md` if `plan.json` is missing.
+- Reloads the latest job snapshot before writing final state, so `artifactsUploadedAt` is preserved even when the run ultimately failed.
+- Handles the 0-tokens "no work produced" case explicitly.
+
+This means an EXECUTE loop does not silently lose its artifacts just because your laptop went to sleep at the wrong moment.
+
+## Related reading
+
+<Cards>
+  <Card title="Loops" href="./loops">
+    The execution flow that recovery restores.
+  </Card>
+  <Card title="Telemetry and events" href="./telemetry">
+    The job.* event stream that records recovery outcomes.
+  </Card>
+  <Card title="Troubleshooting" href="../resources/troubleshooting">
+    What to do when recovery does not finish cleanly.
+  </Card>
+</Cards>

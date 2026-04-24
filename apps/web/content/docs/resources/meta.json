@@ -3,6 +3,9 @@
   "pages": [
     "closedloop-vs-chat-based-workflows",
     "prd-template",
-    "implementation-plan-template"
+    "implementation-plan-template",
+    "troubleshooting",
+    "faq",
+    "release-notes"
   ]
 }

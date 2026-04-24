@@ -2,6 +2,9 @@
   "title": "Getting Started",
   "pages": [
     "index",
+    "install-desktop",
+    "install-claude-plugins",
+    "first-launch",
     "from-onboarding-to-first-loop",
     "prepare-your-repo-and-targets"
   ]

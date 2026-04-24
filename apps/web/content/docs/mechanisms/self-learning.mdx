@@ -1,0 +1,105 @@
+---
+title: Self-Learning
+description: How ClosedLoop captures patterns across runs and improves the team's model of its codebase over time.
+---
+
+The `self-learning` plugin turns every loop into an input to future loops. It captures patterns, classifies them, deduplicates them, computes goal-weighted success rates, and injects the best of them back into subagents at start time.
+
+Self-learning is **opt-in**. Enable it with the `--self-learning` flag on `run-loop.sh` (or the equivalent desktop toggle). When enabled it runs the 11-step post-iteration pipeline described below.
+
+## What gets captured
+
+Agents write pending learnings to `$CLOSEDLOOP_WORKDIR/.learnings/pending/*.json` during runs. Each learning is validated against `learning.schema.json` and classified into one of:
+
+- **Scope:** `closedloop` (tool-level) or `organization` (project-level)
+- **Category:** `mistake`, `pattern`, `convention`, `insight`
+
+The `self-learning:learning-quality` skill enforces a decision tree with hard rejection criteria. Low-quality or PII-adjacent learnings are dropped before merge.
+
+## TOON format
+
+Learnings are stored in TOON (Tabular Object-Oriented Notation) at `.closedloop-ai/learnings/org-patterns.toon`. TOON is a compact, row-major representation that reduces token cost by about 40% compared to equivalent JSON when injected into a context window.
+
+```text
+patterns[2]{id,category,summary,confidence,seen_count,success_rate,flags,applies_to,context,repo}:
+  P-001,pattern,"Always check token expiry before API calls",high,5,0.85,,implementation-subagent,auth|API,*
+  P-002,mistake,"Check for None before accessing optional dict keys",medium,3,0.60,[REVIEW],*,python|safety,astoria-frontend
+```
+
+Pipe-separated values encode multi-value fields (for example, multiple `applies_to` tags).
+
+## The 11-step post-iteration pipeline
+
+At the end of every iteration, `run-loop.sh` runs:
+
+1. `git diff` → `changed-files.json`
+2. `pattern_relevance.py` → `relevance-scores.json`
+3. `merge_relevance.py` → appends `relevance_score` and `relevance_method` to `outcomes.log`
+4. `evaluate_goal.py` → `goal-outcome.json`
+5. `merge_goal_outcome.py` → appends `goal_name`, `goal_success`, `goal_score` to `outcomes.log`
+6. `verify_citations.py` → marks `|unverified` in `outcomes.log`
+7. `merge_build_result.py` → appends `|build_passed|build_failed`
+8. `/self-learning:process-learnings` – LLM classification and aggregation → `merge-result.json`
+8.5. `write_merged_patterns.py` – deterministic TOON serialization with `.bak` backup and atomic rename
+9. `compute_success_rates.py` – update success rates, confidence, and flags
+10. `/self-learning:export-closedloop-learnings` – merge closedloop-scoped learnings to the user-level store
+
+## Commands
+
+| Command | Purpose |
+| --- | --- |
+| `/process-learnings [workdir]` | Classify → validate → merge → dedupe → prune. |
+| `/export-closedloop-learnings [workdir]` | Merge closedloop-scoped learnings into `~/.closedloop-ai/learnings/closedloop-learnings.json`. |
+| `/push-learnings` | With `CLAUDE_ORG_ID`, push `org-patterns.toon` to a shared repo. |
+| `/pull-learnings` | With `CLAUDE_ORG_ID`, import shared patterns, skipping echoes from the current project. |
+| `/prune-learnings` | Manual pruning per `retention.yaml`. |
+| `/goal-stats` | Report pass rate, top contributors, underperformers, trends from `runs.log` + `outcomes.log`. |
+
+## Success rate computation
+
+Deterministic (`compute_success_rates.py`). Formula: `applied_without_unverified / total_injected`. Goal-weighted mode weights `goal_success=1` at full weight; `goal_success=0` contributes `relevance_score * 0.5`. Confidence thresholds: high ≥ 0.70, medium ≥ 0.40.
+
+### Pattern flags
+
+- `[PRUNE]` – more than 20 applications and under 40% success
+- `[STALE]` – no application in the last 10 iterations
+- `[REVIEW]` – under 40% success
+- `[UNTESTED]` – no applications yet
+
+## Goals
+
+`evaluate_goal.py` supports built-in goals and custom ones:
+
+- `reduce-failures`
+- `swe-bench`
+- `minimize-tokens`
+- `maximize-coverage`
+- custom via `GOAL_EVALUATOR_SCRIPT`
+
+Active goal configuration lives in `.closedloop-ai/learnings/goal.yaml`.
+
+## Retention
+
+`retention.yaml` controls `max_runs`, `max_sessions`, `max_log_lines`, `max_archive_age_days`, `lock_stale_hours`, and `protected_window_minutes`. `/prune-learnings` runs manually or automatically in the background after each loop.
+
+## Org-wide sharing
+
+With `CLAUDE_ORG_ID` set, learnings can be pushed to and pulled from a shared repo. The exporter handles:
+
+- ID collision resolution
+- source tracking via `sources.json`
+- echo prevention (patterns that originated from the current project are skipped on pull)
+
+## Related reading
+
+<Cards>
+  <Card title="Hooks and runtime" href="./hooks">
+    How learnings are injected into every subagent start.
+  </Card>
+  <Card title="Artifacts" href="./artifacts">
+    Where on disk the self-learning state lives.
+  </Card>
+  <Card title="Code plugin" href="./plugins">
+    How the orchestrator invokes the learning pipeline each iteration.
+  </Card>
+</Cards>

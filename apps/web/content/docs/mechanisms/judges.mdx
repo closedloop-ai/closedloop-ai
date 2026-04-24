@@ -1,16 +1,100 @@
 ---
 title: Judges
-description: Structured review systems that score and gate outputs against the artifact that launched the work.
+description: Structured review systems that score and gate plans, code, and PRDs against engineering principles.
 ---
 
-Judges turn review into a repeatable system.
+Judges turn review into a repeatable system. In ClosedLoop.ai a **judge** is an LLM evaluator agent that scores an artifact against a single engineering principle and returns structured JSON. Judges run in parallel batches, and their results aggregate into one machine-readable report per run.
 
-## What they do
+## What judges do
 
-- compare output to scope
-- surface risks or regressions
-- support gating decisions
+- compare output to the artifact's scope and acceptance criteria
+- surface risks, regressions, and principle violations
+- support gating decisions — merges, follow-up loops, or amendments
+- run fast in parallel and cheaply (typically Sonnet for evaluators, Haiku for support)
 
-## Why they matter
+## The 21 judges
 
-Execution without judgment produces velocity without trust.
+The `judges` plugin ships 21 evaluator agents plus a support agent.
+
+### Plan mode (16 judges, 4 parallel batches of 4)
+
+- **Accuracy and grounding:** `brownfield-accuracy-judge`, `codebase-grounding-judge`, `convention-adherence-judge`
+- **Engineering principles:** `dry-judge`, `kiss-judge`, `ssot-judge`, `solid-isp-dip-judge`, `solid-liskov-substitution-judge`, `solid-open-closed-judge`
+- **Quality:** `readability-judge`, `verbosity-judge`, `code-organization-judge`, `technical-accuracy-judge`, `test-judge`, `custom-best-practices-judge`
+- **Alignment:** `goal-alignment-judge`
+
+### Code mode (11 judges, 3 batches)
+
+A subset of the plan judges relevant to compiled code artifacts.
+
+### PRD mode (4 judges, 1 batch)
+
+- `prd-auditor` – structural completeness
+- `prd-dependency-judge` – dependency completeness and integration risk
+- `prd-scope-judge` – scope discipline, ≤ 8 stories check
+- `prd-testability-judge` – measurability of acceptance criteria
+
+### Support
+
+- `context-manager-for-judges` – compresses context to a 30K-token budget before handing off to evaluators.
+
+## How to run judges
+
+Judges are invoked via the `judges:run-judges` skill, not a slash command. From a Claude Code session:
+
+```
+@judges:run-judges                            # default plan mode
+@judges:run-judges --artifact-type code
+@judges:run-judges --artifact-type prd
+@judges:run-judges --workdir /path            # standalone
+```
+
+From the platform, judges can also be invoked as a standalone loop command (`EVALUATE_PLAN`, `EVALUATE_CODE`).
+
+## Judge output
+
+Every judge returns a `CaseScore` with:
+
+- `final_status` – `1` PASS, `2` FAIL/conditional, `3` ERROR
+- `metrics[]` – each with `metric_name`, `threshold` (typically 0.8), `score` (0.0–1.0), `justification`
+
+Results aggregate into:
+
+- `plan-judges.json`
+- `code-judges.json`
+- `prd-judges.json`
+
+All three live in the loop's workdir and are validated by `validate_judge_report.py`.
+
+## Judge input contract
+
+Judges read a single canonical envelope, `judge-input.json`, defined by `schemas/judge-input.schema.json`. It contains:
+
+- `evaluation_type` – `plan` / `code` / `prd`
+- `task` – a natural-language objective
+- `primary_artifact`
+- `supporting_artifacts[]`
+- `source_of_truth` – priority order for conflicting signals
+- `fallback_mode` – legacy filename assumptions, off by default
+
+## Caching
+
+The `judges:eval-cache` skill short-circuits plan evaluation when `plan-evaluation.json` is newer than `plan.json`. This keeps iterative planning fast.
+
+## Why judges matter
+
+Execution without judgment produces velocity without trust. Judges make it safe to run AI at scale: every plan and every diff has a cheap, structured second opinion before it reaches human review.
+
+## Related reading
+
+<Cards>
+  <Card title="Loops" href="./loops">
+    Where judges are invoked in the execution flow.
+  </Card>
+  <Card title="Code review" href="./code-review">
+    Multi-agent code review for diffs.
+  </Card>
+  <Card title="Bootstrap" href="./bootstrap">
+    How project-specific critics are chosen per module.
+  </Card>
+</Cards>

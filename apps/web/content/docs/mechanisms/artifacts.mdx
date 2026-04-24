@@ -1,0 +1,101 @@
+---
+title: Artifacts
+description: The files, states, and objects a loop reads and writes on disk.
+---
+
+Every loop produces a durable set of artifacts. This page is the map.
+
+## The two `.closedloop-ai/` locations
+
+Artifacts live in two places:
+
+- **Project root `.closedloop-ai/`** – state shared across loops for this repo (loop state files, code-review results, learnings, bootstrap outputs).
+- **Workdir `.closedloop-ai/`** – state for a single run (inside `$CLOSEDLOOP_WORKDIR`, typically `.closedloop-ai/work/`).
+
+Both directories are created automatically. Both are governed by a single constant `CLOSEDLOOP_STATE_DIR=".closedloop-ai"` defined at the top of every shell script, so they are consistent across the runtime.
+
+## Project root artifacts
+
+| Path | Contents |
+| --- | --- |
+| `closedloop-loop.local.md` | `run-loop.sh` state: frontmatter with `active`, `iteration`, `max_iterations`, `completion_promise`, `workdir`, `prd_file`, `run_id`, `start_sha`, `self_learning`, `started_at`, plus the `/code:code …` prompt body. |
+| `closedloop-progress.log` | Human-readable progress log. |
+| `pid-<PPID>.session` | Session-to-PID mapping written by `session-start-hook.sh`. |
+| `session-<SESSION_ID>.workdir` | Session-to-workdir mapping written by `setup-closedloop.sh`. |
+| `code-review/cr-<RANDOM>/` | Per-review working directory. Contains `setup.json`, `scope.json`, `diff_data.json`, `intent.json`, `intent_context.json`, `cache_result.json`, `hygiene.json`, `validate_output.json`, `verdict.json`, `shared_prompt.txt`, `bha_suffix.txt`, and per-partition patches. |
+| `code-review-findings.json` | GitHub-mode inline-comments handoff. |
+| `code-review-threads.json` | Stale thread IDs for CI to resolve. |
+| `code-review-summary.md` | PR summary comment content. |
+| `settings/critic-gates.json` | Bootstrap-generated critic selection rules. |
+| `settings/threshold-overrides.json` | Judge threshold overrides. |
+| `schemas/` | Bootstrap schemas. |
+| `learnings/org-patterns.toon` | Organization pattern store (TOON format). |
+| `learnings/goal.yaml` | Active goal configuration. |
+| `learnings/retention.yaml` | Pattern retention rules. |
+| `bootstrap/<timestamp>/$RUN/` | Bootstrap run artifacts: `discovery/`, `synthesis/`, `validation-report.json`, `bootstrap-report.md`. |
+| `bootstrap-metadata.json` | Tracks generated agents for `--update` mode. |
+| `runs/` | Agent run artifacts. |
+
+## Workdir artifacts
+
+Alongside `.closedloop-ai/config.env` and per-loop-agent state files:
+
+| Path | Contents |
+| --- | --- |
+| `prd.md` / `requirements.md` / `ticket.md` | The user's PRD (auto-detected). |
+| `plan.json` | The canonical implementation plan. Schema: `content`, `pendingTasks`, `completedTasks`, `acceptanceCriteria`, `openQuestions`, `answeredQuestions`, `gaps`, `manualTasks`, `amendments`, `repositories`. |
+| `plan.md` | Human-readable version of the plan. |
+| `plan-evaluation.json` | Simple-mode evaluation result. |
+| `investigation-log.md` | Narrative of pre-exploration discoveries. |
+| `requirements-extract.json` | Structured extract of the PRD. |
+| `code-map.json` | Structural map of the primary repo. |
+| `code-map-{name}.json` | Per-peer code maps in multi-repo mode. |
+| `code-context.json` / `plan-context.json` | Judge context bundles (30K token budget). |
+| `judge-input.json` | Canonical judge input envelope. |
+| `plan-judges.json` / `code-judges.json` / `prd-judges.json` | Judge reports. |
+| `agents-snapshot/` | Snapshotted judge agent `.md` files. |
+| `state.json` | Current phase and terminal status. Polled by the desktop app and the web app. |
+| `log.md` | Change log appended each phase. |
+| `visual-requirements.md` | QA test steps appended by the implementation subagent on UI changes. |
+| `perf.jsonl` | Performance telemetry (iteration events, pipeline steps, post-loop review/fix events). |
+| `reviews/*.review.json` | Critic outputs. |
+| `.discovery-cache/{peer}.json` | Cross-repo discovery results. |
+| `.cross-repo-needs.json` | Cross-repo coordinator output. |
+| `claude-output.jsonl` | Full stream-JSON transcript of the iteration. |
+| `.learnings/` | Self-learning state (ephemeral: `pending/`, `outcomes.log`, `runs.log`; durable: `org-patterns.toon`, `goal.yaml`, `retention.yaml`). |
+| `.agent-types/{agent_id}` | Per-subagent start-time tracking. |
+
+## Canonical artifact types on the platform
+
+Independent of on-disk layout, the platform recognizes these artifact types for upload and review:
+
+- `PRD`
+- `IMPLEMENTATION_PLAN`
+- `TEMPLATE`
+
+Use the `platform:upload-artifact` skill (or the MCP fallback `mcp__closedloop__create-artifact`) to upload. The skill reads `CLOSEDLOOP_API_KEY` and `NEXT_PUBLIC_MCP_SERVER_URL` from the environment.
+
+## Plan schema highlights
+
+- `pendingTasks` and `completedTasks` track the implementation queue.
+- `acceptanceCriteria` is the judges' ground truth.
+- `openQuestions` drives the plan review checkpoint.
+- `answeredQuestions` incorporates user responses into the plan.
+- `gaps` are discovered-but-unaddressed requirements that phase 1.2a converts into tasks.
+- `manualTasks` flag work that must be done by a human.
+- `amendments` records every `/code:amend-plan` edit.
+- `repositories` maps short-names to paths (multi-repo support).
+
+## Related reading
+
+<Cards>
+  <Card title="Loops" href="./loops">
+    How these artifacts flow through the 18-phase execution.
+  </Card>
+  <Card title="Self-learning" href="./self-learning">
+    The learning store and success-rate computation.
+  </Card>
+  <Card title="Multi-repo development" href="./multi-repo">
+    How peer repos appear in plans and code maps.
+  </Card>
+</Cards>

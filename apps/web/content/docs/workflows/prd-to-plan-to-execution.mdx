@@ -1,22 +1,88 @@
 ---
 title: PRD to Plan to Execution to PR
-description: The core delivery workflow that turns defined intent into reviewable output.
+description: The core delivery workflow that turns defined intent into a reviewable PR.
 ---
+
+The canonical ClosedLoop workflow has four movements: write a PRD, plan it, execute the plan, and ship a PR. Each movement is an artifact operation; each artifact flows into the next.
 
 ## Input
 
-- a PRD or feature request with clear scope
+A PRD or feature request with:
 
-## Steps
+- a clear problem statement
+- a desired outcome
+- constraints
+- **measurable success criteria**
+- known risks
 
-1. Generate or refine an implementation plan.
-2. Choose the repository and compute target.
-3. Launch loops against the plan.
-4. Review output with judges and humans.
-5. Produce a PR or equivalent reviewable change.
+See the [PRD template](../resources/prd-template) for a shape that passes the four PRD judges.
+
+## Step 1 — Plan
+
+From the web app, dispatch a `PLAN` loop against the PRD. The desktop runtime:
+
+1. Ensures a git worktree on the target base branch.
+2. Launches `claude` with the `code` orchestrator.
+3. Runs pre-exploration (`pre-explorer` → `code-map.json`, `investigation-log.md`).
+4. Drafts `plan.json` and `plan.md` via `plan-draft-writer`.
+5. Stops at the **plan review checkpoint** for human review.
+
+The plan contains `pendingTasks`, `completedTasks`, `acceptanceCriteria`, `openQuestions`, `gaps`, and (optionally) a `repositories` map for multi-repo work. Plan judges score the draft and highlight any principle violations before you approve it.
+
+## Step 2 — Amend (as needed)
+
+Use `/code:amend-plan` or the web app's plan editor to refine the plan:
+
+- answer open questions
+- add or remove tasks
+- tighten acceptance criteria
+- adjust multi-repo routing
+
+Amendments are tracked in the plan's `amendments` array. Every amendment is traceable.
+
+## Step 3 — Execute
+
+Dispatch an `EXECUTE` loop. Phase 3 iterates per task:
+
+1. `verification-subagent` returns `VERIFIED` or `NOT_IMPLEMENTED`.
+2. If not implemented, `implementation-subagent` applies the task with its 4-gate self-verification.
+3. `build-validator` runs tests/lint/typecheck/build until they pass (max 20 iterations).
+4. UI-touching tasks append to `visual-requirements.md`; `visual-qa-subagent` runs Playwright against them.
+5. Completed tasks move to `completedTasks` in `plan.json`.
+
+Phase 5 runs validation; phase 6 runs visual QA; phase 7 finalizes the run and emits `<promise>COMPLETE</promise>`.
+
+## Step 4 — Post-loop review
+
+When the loop completes, `run-loop.sh` automatically runs `/code-review:start --base <start_sha>`. The review writes a `verdict.json`:
+
+- `approve` – done
+- `needs_attention` – runs `/code-review:fix <cr_dir>` to resolve HIGH findings
+- `decline` – runs the fix cycle and then re-reviews
+
+Two cycles by default; the cycle aborts after two consecutive fix failures.
+
+## Step 5 — PR
+
+The desktop app constructs a PR body from `plan.md`, the diff summary, and the code-review result, then opens the PR via `gh` on the configured branch. From here, human review closes against the original PRD.
 
 ## Output
 
-- a tracked execution record
-- review context
-- a concrete code or docs change
+- a tracked execution record linked to the PRD
+- structured judge and code-review reports
+- a real PR with a reviewable diff
+- captured learnings for future runs (if self-learning is enabled)
+
+## Related reading
+
+<Cards>
+  <Card title="PRD template" href="../resources/prd-template">
+    A PRD shape that survives judge scoring.
+  </Card>
+  <Card title="Implementation plan template" href="../resources/implementation-plan-template">
+    The `plan.json` shape.
+  </Card>
+  <Card title="Parallel feature development" href="./parallel-feature-development">
+    Running multiple bounded workstreams at once.
+  </Card>
+</Cards>

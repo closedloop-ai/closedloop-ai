@@ -1,29 +1,51 @@
 ---
 title: Documentation
-description: A docs-first content graph for understanding team-based agentic development and how ClosedLoop.ai works.
+description: Learn how ClosedLoop.ai turns artifacts and spec-driven intent into reviewable, shipped work across humans and agents.
 ---
 
 Welcome to the ClosedLoop.ai documentation hub.
 
+ClosedLoop.ai is a team-oriented control plane for AI-native software delivery. It lets a team describe what should be built as durable artifacts (PRDs, plans, tickets), dispatch bounded execution runs called **loops** against real repositories, judge the output against the original intent, and merge reviewable changes back into the codebase. The platform is built to make spec-driven, AI-first development repeatable instead of improvised.
+
 This site is organized to support both human readers and AI systems:
 
-- **Getting started** covers the fast path from onboarding to a first successful loop.
+- **Getting started** covers the fast path from install to a first successful loop.
 - **Concepts** defines the category and the mental models behind the product.
-- **Mechanisms** explains how the system works in practice.
+- **Mechanisms** explains the objects, services, and runtimes that make it work.
 - **Workflows** maps the delivery paths that connect requirements to shipped output.
-- **Resources** provides comparisons and templates for high-intent readers.
+- **Resources** provides comparisons, templates, troubleshooting, and release notes.
 - **Glossary** keeps the language precise and reusable.
 
 ## Start here
 
 <Cards>
-  <Card title="Refresh onboarding" href="./getting-started/from-onboarding-to-first-loop">
-    Convert the desktop onboarding flow into a durable setup and first-loop checklist.
+  <Card title="Install and first loop" href="./getting-started/from-onboarding-to-first-loop">
+    Go from a fresh machine to a running loop that produces reviewable output.
   </Card>
   <Card title="Understand the control plane" href="./concepts/control-plane">
     Learn why ClosedLoop.ai treats coordination as a first-class system.
   </Card>
   <Card title="See the delivery workflow" href="./workflows/prd-to-plan-to-execution">
-    Walk through the PRD to plan to execution to PR path.
+    Walk through the PRD → plan → execution → PR path.
   </Card>
 </Cards>
+
+## How the product is organized
+
+ClosedLoop.ai ships as three cooperating surfaces:
+
+- **The web app (app.closedloop.ai)** is where humans create and review artifacts, dispatch loops, and watch results. It is the control plane.
+- **The desktop app (ClosedLoop Desktop)** runs on a developer machine. It exposes a local gateway, executes loops against real clones of your repositories, and gates sensitive operations with an approval UI. It is the runtime surface.
+- **The Claude plugins** (published as `closedloop-ai/claude-plugins`) provide the orchestrator, subagents, judges, and self-learning systems that actually drive each loop inside Claude Code. They are the execution engine.
+
+A loop is a conversation among these three surfaces: the web app defines intent, the desktop app hosts the work, and the plugins carry the loop from plan to merged code.
+
+## Who this is for
+
+- **Engineering leaders** who want AI-generated work to inherit the same review, scope, and artifact discipline as human work.
+- **Developers** who want long-running, bounded agent runs against their real repos without giving up safety.
+- **Platform teams** who want a control plane that turns spec-driven development into a repeatable operating model.
+
+## Philosophy
+
+ClosedLoop.ai is built around a single claim: in an AI-first delivery model, the unit of value is not the prompt but the **artifact**. PRDs, plans, and features are first-class objects. Execution is attached to them. Judges score against them. Reviews close against them. Chat is a tool; artifacts are the system of record.

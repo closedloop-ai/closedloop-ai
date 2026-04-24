@@ -3,13 +3,45 @@ title: Artifact-Bound Delivery
 description: Keeping execution attached to PRDs, plans, features, and other artifacts instead of detached chat threads.
 ---
 
-Artifact-bound delivery means the work stays connected to the object that defines it.
+**Artifact-bound delivery** means that the work stays connected to the object that defines it. Every loop, every diff, every review, every judge score is linked to a specific artifact and traceable back to it.
+
+This is the core difference between a delivery system and a chat workflow.
+
+## Artifact types
+
+ClosedLoop.ai recognizes a small set of durable artifact types. Each has a shape, a lifecycle, and a set of operations that can be dispatched from it.
+
+| Artifact | Purpose | Typical operations |
+| --- | --- | --- |
+| **PRD** | States the problem, desired outcome, constraints, success criteria, and risks. | Generate a plan. Evaluate with PRD judges. |
+| **Implementation plan** | Decomposes the PRD into pending and completed tasks with acceptance criteria, open questions, and (optionally) multi-repo routing. | Execute, amend, evaluate with plan judges. |
+| **Feature** / **ticket** | Scoped unit of work, typically one PR's worth. | Plan, execute, review. |
+| **Judge report** | Structured evaluation of a plan or code artifact against engineering principles. | Gate merges; inform amendments. |
+| **Loop run** | The record of a single execution: input artifact, commands, telemetry, artifacts produced, terminal status. | Replay, recover, audit. |
+| **Context pack** | Bounded package of supporting material attached to a run (linked docs, prior plans, code maps). | Attach, refresh, trim. |
 
 ## Benefits
 
-- clearer review context
-- better handoffs
-- more reusable execution history
-- easier judgment against the original goal
+- **Clearer review context.** Reviewers know exactly what was being asked and can score the output against it.
+- **Better handoffs.** A partial result plus its artifact is enough to continue; a chat transcript is not.
+- **Reusable execution history.** Every loop is addressable, replayable, and cite-able in future work.
+- **Easier judgment against the original goal.** Judges compare output to the artifact, not to an ephemeral prompt.
+- **Governance at the artifact level.** Ownership, access, and acceptance criteria live on the artifact, not on a user's chat session.
 
-This is a core difference between a delivery system and a chat workflow.
+## The promise of a terminal artifact
+
+A well-formed loop ends by producing a terminal artifact that matches the one that launched it. A loop launched from a plan should leave behind a diff and a PR description that map cleanly to the plan's tasks. A loop launched from a PRD should leave behind a plan that cites the PRD's success criteria. The contract between input and output is what makes the system closable.
+
+## Related reading
+
+<Cards>
+  <Card title="Artifacts" href="../mechanisms/artifacts">
+    The full lifecycle of each artifact type, its files, and its operations.
+  </Card>
+  <Card title="Judges" href="../mechanisms/judges">
+    How structured review closes the loop against the artifact.
+  </Card>
+  <Card title="PRD template" href="../resources/prd-template">
+    A reusable PRD shape that passes the four PRD judges.
+  </Card>
+</Cards>

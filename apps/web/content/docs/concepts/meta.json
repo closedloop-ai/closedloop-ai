@@ -3,6 +3,7 @@
   "pages": [
     "team-based-agentic-development",
     "control-plane",
-    "artifact-bound-delivery"
+    "artifact-bound-delivery",
+    "spec-driven-ai-development"
   ]
 }

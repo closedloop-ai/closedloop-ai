@@ -3,11 +3,54 @@ title: Runtime
 description: The execution environment that actually runs loops and determines what providers and tools are available.
 ---
 
-The runtime is where loops become real work.
+The runtime is where loops become real work. In ClosedLoop.ai the runtime is the **desktop app plus its local gateway plus the Claude plugins**. It is the only surface that touches your filesystem, runs your CLIs, or signs commits.
 
 ## Responsibilities
 
-- expose provider support
-- run execution safely
-- report health and availability
-- return structured output back to the control plane
+- **Expose provider support.** Report which models (Claude Opus, Sonnet, Haiku, Codex) can be used on this machine.
+- **Run execution safely.** Enforce the sandbox, the approval policy, and the deny list for sensitive paths.
+- **Report health and availability.** Heartbeat to the relay; surface a `degraded` state when a binary or provider is missing.
+- **Return structured output.** Stream NDJSON events and uploaded artifacts back to the control plane.
+
+## What makes up the runtime
+
+| Component | Role |
+| --- | --- |
+| **Desktop app** | Electron shell; renders the UI; owns the settings and secrets stores. |
+| **Local gateway** | HTTP server on `127.0.0.1` (port `19432` by default). Exposes all operations the cloud can invoke. |
+| **Cloud socket** | Outbound Socket.IO connection to `relay.closedloop.ai`. Receives commands; emits telemetry, presence, and command events. |
+| **Claude plugins** | The orchestrator, subagents, judges, and self-learning system that drive the loop inside `claude`. |
+| **Git worktrees** | Each loop runs inside a dedicated worktree under a configurable parent directory. |
+
+## Health and capabilities
+
+The gateway exposes `GET /health` without authentication. The response contains:
+
+- `status: "ok"`
+- `version` – the desktop app's semver
+- `port` – the active bound port
+- `machineName` – a human-readable identifier for this target
+- `capabilities` – a map of `tools` (which CLIs were detected) and `versions` (provider versions)
+
+The web app's Runtime picker calls this endpoint (via the relay) to show your target's health and its capabilities.
+
+## Runtime states
+
+- **online** – healthy, commands accepted.
+- **degraded** – a capability is missing (for example `claude` not found on PATH) or heartbeats have failed twice in a row. The gateway still serves local traffic.
+- **paused** – the user toggled **Pause incoming commands**. New cloud commands are refused.
+- **offline** – no heartbeat for an extended period.
+
+## Related reading
+
+<Cards>
+  <Card title="Desktop gateway" href="./desktop-gateway">
+    The contract between the cloud and your machine.
+  </Card>
+  <Card title="Settings reference" href="./desktop-settings">
+    What the runtime stores and how to configure it.
+  </Card>
+  <Card title="Approvals" href="./approvals">
+    The gate between cloud commands and local execution.
+  </Card>
+</Cards>

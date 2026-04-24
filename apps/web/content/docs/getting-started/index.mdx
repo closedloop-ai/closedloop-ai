@@ -1,24 +1,50 @@
 ---
 title: Getting Started
-description: The shortest path to a usable docs, planning, and loop execution setup.
+description: The shortest path to a usable install, configured runtime, and first successful loop.
 ---
 
-ClosedLoop.ai works best when the initial setup is treated as system configuration, not as a one-time demo.
+ClosedLoop.ai works best when the initial setup is treated as system configuration, not a one-time demo. Three layers must be ready before you launch a loop: an **account and project** in the web app, a **desktop runtime** with a healthy gateway, and a **target repository** with a real artifact to execute against.
 
 ## What you need
 
-1. A repository with clear ownership and a meaningful first task.
-2. The API and app running so you can create or review artifacts.
-3. At least one compute target ready to execute loops.
-4. A habit of treating docs, PRDs, plans, and features as linked artifacts.
+1. An account at [app.closedloop.ai](https://app.closedloop.ai) with at least one team and project.
+2. The ClosedLoop Desktop app installed and signed in to your workspace.
+3. The ClosedLoop Claude plugins installed (one-line installer; see [Install the plugins](./install-claude-plugins)).
+4. Claude Code CLI (`claude`), GitHub CLI (`gh`), Python 3.11+, Node.js 22+ (for source builds), and `jq` available on your PATH.
+5. A repository you own with a clear first task and reviewable acceptance criteria.
 
 ## Recommended path
 
 <Cards>
+  <Card title="Install the desktop app" href="./install-desktop">
+    Install ClosedLoop Desktop, grant it a sandbox directory, and confirm the local gateway is healthy.
+  </Card>
+  <Card title="Install the Claude plugins" href="./install-claude-plugins">
+    Register the ClosedLoop marketplace and install the six plugins that make the loop execute.
+  </Card>
+  <Card title="First launch and onboarding" href="./first-launch">
+    Walk through the onboarding overlay: relay origin, API key, sandbox, binary paths.
+  </Card>
   <Card title="From onboarding to first loop" href="./from-onboarding-to-first-loop">
-    Refresh the onboarding flow with the steps that matter once you want repeatable execution.
+    Turn a scoped artifact into a running loop that produces reviewable output.
   </Card>
   <Card title="Prepare repo and targets" href="./prepare-your-repo-and-targets">
-    Make sure local or desktop execution targets are ready before you ask agents to ship work.
+    Make local execution predictable before you scale up docs or code generation.
   </Card>
 </Cards>
+
+## Setup order that actually works
+
+Follow this order and you will avoid the most common first-run failures:
+
+1. Install Claude Code CLI and log in (`claude` on your PATH).
+2. Install and authenticate GitHub CLI (`gh auth login`). Auto-clone depends on it.
+3. Install the Claude plugins (one-line installer).
+4. Install the desktop app (signed macOS DMG or a source build for Linux).
+5. Complete the onboarding overlay: relay origin, web origin, API key, sandbox directory.
+6. In the web app, open or create an artifact (PRD or plan) with real acceptance criteria.
+7. Dispatch a plan or execute loop and approve it from the desktop Approvals tab.
+
+:::note
+The fastest way to produce a low-quality result is to start a loop from an under-specified artifact. Acceptance criteria are how the judges decide whether to pass you.
+:::

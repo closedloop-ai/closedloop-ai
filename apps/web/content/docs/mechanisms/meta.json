@@ -1,4 +1,22 @@
 {
   "title": "Mechanisms",
-  "pages": ["judges", "loops", "context-packs", "runtime"]
+  "pages": [
+    "loops",
+    "orchestrator",
+    "judges",
+    "code-review",
+    "context-packs",
+    "artifacts",
+    "runtime",
+    "desktop-gateway",
+    "desktop-settings",
+    "approvals",
+    "plugins",
+    "hooks",
+    "bootstrap",
+    "multi-repo",
+    "self-learning",
+    "telemetry",
+    "recovery"
+  ]
 }

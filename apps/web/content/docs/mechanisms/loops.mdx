@@ -3,17 +3,81 @@ title: Loops
 description: Execution runs that take structured context, operate on a target, and return reviewable output.
 ---
 
-Loops are the execution backbone.
+Loops are the execution backbone of ClosedLoop.ai. A loop is a **bounded, artifact-linked run** that drives Claude Code through a sequence of phases until it produces a terminal result: a plan, a diff, a PR body, or a judged artifact.
+
+Internally a loop is a bash process (`run-loop.sh`) spawned by the desktop app. It repeatedly relaunches `claude -p` with a fresh 200K-token context window, using a single system prompt — the **orchestrator** in the `code` plugin — to drive every iteration. The orchestrator is stateless across iterations; all state lives on disk in the workdir.
 
 ## Inputs
 
-- an artifact
-- a repository target
-- provider and compute target selection
-- context pack and task framing
+- an **artifact** (PRD, plan, or ticket)
+- a **repository target** (git clone, worktree, base branch)
+- a **provider and compute target** (usually Claude Opus on your desktop runtime)
+- a **context pack** and task framing
+- an optional set of `--add-dir` peer repositories for multi-repo work
 
 ## Outputs
 
-- status and telemetry
-- diffs or generated changes
-- material for judgment and follow-up
+- **status and telemetry** (streamed back to the web app)
+- **artifacts** (`plan.json`, `plan.md`, diffs, judge reports, commit messages, PR body)
+- **material for judgment and follow-up** (verdict, review findings, fix cycles)
+
+## Loop commands
+
+A loop is parameterized by its command. The platform understands:
+
+| Command | Purpose | Repo required |
+| --- | --- | --- |
+| `PLAN` | Produce an implementation plan from a ticket's PRD. | Yes |
+| `EXECUTE` | Apply a plan, commit, and optionally open a PR. | Yes |
+| `REQUEST_CHANGES` | Apply feedback to an existing plan or branch. | Yes |
+| `DECOMPOSE` | Break a ticket into sub-tickets. | No |
+| `GENERATE_PRD` | Generate a PRD from a scratch request. | Yes |
+| `EVALUATE_PLAN` / `EVALUATE_CODE` | Run the judges standalone. | Yes |
+| `CHAT` / `EXPLORE` | Conversational or exploratory runs. | No |
+
+## The 18-phase orchestrator flow
+
+Every `PLAN` or `EXECUTE` loop passes through a deterministic phase progression. The orchestrator emits a `TodoWrite` enumerating these phases as its first action.
+
+1. **0.9 Pre-exploration** – the `pre-explorer` subagent produces `requirements-extract.json`, `code-map.json`, and `investigation-log.md`. Skipped if the plan is being resumed.
+2. **1 Planning** – either import an existing plan or draft a new one with the `plan-draft-writer` (Opus). Emits `<promise>PLAN_VALIDATED</promise>`.
+3. **1.1 Plan review checkpoint** – hard stop for human review (`AWAITING_USER_SEQUENCE`) when a new plan was just created.
+4. **1.2 Answered questions** – the plan's `answeredQuestions` are incorporated.
+5. **1.2a Addressed gaps** – open gaps are converted into tasks.
+6. **1.3 Simple-mode evaluation** – six-signal gate that short-circuits expensive validation when the plan is trivially simple.
+7. **1.4.1–1.4.3 Cross-repo planning** – for multi-repo work, discover peer capabilities and produce per-peer PRDs.
+8. **2.5 Critic validation** – parallel critic runs driven by `critic-gates.json`.
+9. **2.6 Plan refinement** – reconcile critic feedback via the plan writer's merge mode.
+10. **2.7 Plan finalization** – enrich task descriptions for the implementation phase.
+11. **3 Implementation** – per task: the `verification-subagent` checks whether the work is already done; if not, the `implementation-subagent` applies it with a 4-gate self-verification loop (max 4 iterations per task).
+12. **4 Code simplification** – external simplifier plugin if available.
+13. **5 Testing and validation** – write tests; `build-validator` loops until `VALIDATION_PASSED`.
+14. **6 Visual inspection** – Playwright-driven visual QA for UI changes.
+15. **7 Logging and completion** – append to `log.md`, final validation, write `state.json` COMPLETED, emit `<promise>COMPLETE</promise>`.
+
+## Loop state file
+
+Loop state lives in the repo's `.closedloop-ai/closedloop-loop.local.md`. It has YAML frontmatter (`active`, `iteration`, `max_iterations`, `completion_promise`, `workdir`, `prd_file`, `run_id`, `start_sha`, `self_learning`, `started_at`) followed by the prompt body that each iteration of `claude -p` receives. The loop ends when the body contains the completion promise or when `max_iterations` is reached.
+
+## Post-loop code review
+
+When a loop completes, `run-loop.sh` automatically runs `/code-review:start --base <start_sha>` against the diff. The result is written to `.closedloop-ai/code-review/cr-<id>/verdict.json` with a verdict of `approve`, `needs_attention`, or `decline`. If the verdict is not `approve`, an optional fix cycle runs `/code-review:fix <cr_dir>` to apply the recommended changes. Cycles default to 2 and are capped by `POST_LOOP_REVIEW_CYCLES`.
+
+## Cancelling and recovering loops
+
+- **Cancelling** from the web app sends a `symphony_kill` command to your desktop; the gateway signals the process group, marks the job `CANCEL_PENDING`, and transitions to `CANCELLED` when the process exits.
+- **Recovering** from a desktop crash is automatic. On startup, boot recovery reattaches live processes and finalizes dead ones by reading `state.json` and the last log tail. See [Recovery and resilience](./recovery).
+
+## Related reading
+
+<Cards>
+  <Card title="Orchestrator and subagents" href="./orchestrator">
+    The system prompt and agents that drive every iteration.
+  </Card>
+  <Card title="Artifacts" href="./artifacts">
+    What a loop reads and writes on disk.
+  </Card>
+  <Card title="Recovery and resilience" href="./recovery">
+    How loops survive restarts and crashes.
+  </Card>
+</Cards>

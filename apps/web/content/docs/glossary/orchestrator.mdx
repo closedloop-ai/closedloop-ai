@@ -1,0 +1,10 @@
+---
+title: Orchestrator
+description: The system prompt loaded on every loop iteration.
+---
+
+The **orchestrator** is the system prompt defined in `plugins/code/prompts/prompt.md` and loaded at the start of every `claude -p` iteration during a loop.
+
+It coordinates (via `Task`, `Bash`, `TodoWrite`, `AskUserQuestion`, `SendMessage`); it does not read files directly (no `Read`, `Grep`, `Glob`, `Edit`, `Write`). All I/O runs through subagents.
+
+See [Orchestrator and subagents](../mechanisms/orchestrator) for the details.

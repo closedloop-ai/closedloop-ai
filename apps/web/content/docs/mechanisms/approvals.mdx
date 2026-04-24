@@ -1,0 +1,74 @@
+---
+title: Approvals and Risk Tiers
+description: The gate between cloud commands and local execution. Every operation has a risk tier, every tier has a policy.
+---
+
+Approvals are how the desktop runtime gives you fine-grained control over what the cloud is allowed to do on your machine. Every gateway operation is tagged with a risk tier; every tier has a default policy you can override per operation and per scope.
+
+## Risk tiers
+
+- **high** – destructive or sensitive (`deploy`, writing files, anything that modifies the system beyond the sandbox in practice).
+- **medium** – normal loop and git operations (`symphony_loop`, `git_action`, `pr_reply`, `learnings_record`).
+- **low** – read-only health and status (`health_check`, `symphony_status`).
+- **none** – effectively unclassified; always prompts unless auto-approved by your default tier.
+
+## Default approval tier
+
+Configurable under **Settings → Policies → Default Approval Tier**:
+
+- **high** – auto-approve everything up to and including `high`-risk operations. This is the default for personal productivity setups; it is equivalent to "trust the platform".
+- **medium** – auto-approve low and medium; prompt on high.
+- **low** – auto-approve low only; prompt on medium and high.
+- **none** – prompt on every operation.
+
+## Per-operation overrides
+
+**Settings → Policies → Risk Tier Overrides** lets you raise or lower the effective tier per operation id. For example, you can keep the global default at **high** but force `deploy` to always prompt.
+
+## Always-Allow rules
+
+When an approval prompt appears you can choose **Always Allow**. This creates a 7-day TTL rule scoped by `operationId + method + path + scopePath`. The rule is narrow on purpose: it lets you allow a specific repo's deploys without blanket-allowing every repo. Rules are visible (and removable) under **Settings → Policies**.
+
+## The Approvals tab
+
+Pending approvals appear under **Approvals** with:
+
+- operation id and path
+- the request's human-readable reason (when supplied by the cloud)
+- **Approve**, **Decline**, **Always Allow** buttons
+
+The tray icon shows a badge with the count of pending approvals. Use **Clear Queue** to decline every pending approval in one action.
+
+Recently resolved approvals appear in a collapsible section so you can audit what was auto-approved over the last session.
+
+## Auto-Approve All
+
+The header contains a danger toggle labeled **Auto-Approve All**. Turning it on is equivalent to setting every operation to auto-approve regardless of tier. It is explicitly styled as dangerous because it bypasses all policy. Use it only for trusted demos or internal dogfood targets.
+
+## Pause incoming commands
+
+Separate from approvals, the header (and the tray menu) exposes **Pause incoming commands**. While paused the desktop accepts no new cloud commands and any in-flight ones continue until they finish. Running loops are unaffected. The pause state persists across app restarts — intentionally, so you can pause, quit, and open the app again tomorrow and remain paused.
+
+## How cloud commands carry approval intent
+
+The cloud can request an **explicit approval prompt** by setting headers:
+
+- `x-desktop-force-approval: 1` – always prompt regardless of policy
+- `x-desktop-approval-reason: <string>` – shown in the Approvals card
+- `x-desktop-source: cloud-socket` – identifies the caller
+
+This is what the web app uses when a human clicks "Run on my machine" for a high-risk operation and wants an explicit local confirmation.
+
+## Related reading
+
+<Cards>
+  <Card title="Desktop gateway" href="./desktop-gateway">
+    The routes and auth that the approval policy guards.
+  </Card>
+  <Card title="Settings reference" href="./desktop-settings">
+    Every setting that changes approval behavior.
+  </Card>
+  <Card title="Troubleshooting" href="../resources/troubleshooting">
+    Approval-related failure modes and recovery.
+  </Card>
+</Cards>

@@ -1,0 +1,63 @@
+---
+title: First Launch and Onboarding
+description: Complete the onboarding overlay so the desktop app can accept commands from the cloud.
+---
+
+The first time you open ClosedLoop Desktop it shows a blocking onboarding overlay. Until the four required fields are saved, the app will reject any cloud command with an `"onboarding not completed"` error. This is intentional. Nothing runs on your machine until you have chosen the origins, authenticated, and picked a sandbox.
+
+## The four required settings
+
+### Relay origin
+
+The Socket.IO origin that the desktop app dials out to. Default: `https://relay.closedloop.ai`. Only change this if you are pointing at a staging cluster or a self-hosted relay.
+
+### API origin
+
+The REST API origin for auth verification and artifact uploads. Default: `https://api.closedloop.ai`.
+
+### Web app origin
+
+The origin allowed by CORS for browser-originated gateway calls. Default: `https://app.closedloop.ai`. If you host the web app on a custom domain, enter it here.
+
+### Cloud API key
+
+A `sk_live_…` key minted from the web app's API Keys page. Stored encrypted on disk via Electron `safeStorage`. The desktop app also reads `CLOSEDLOOP_API_KEY` from the environment as a precedence override, and falls back to `SYMPHONY_API_KEY` if present.
+
+### Sandbox base directory
+
+The single root directory that all loops are allowed to touch. Pick a dedicated folder such as `~/work/closedloop-sandbox`. The app hard-denies sensitive paths (`~/.ssh`, `~/.gnupg`, `~/.aws`, `~/Library/Keychains`, `/etc`, `/bin`, `/sbin`) even when they fall inside your sandbox, and it canonicalizes symlinks before checking.
+
+## Optional: binary path overrides
+
+Electron apps on macOS launch with a stripped PATH. If `claude`, `gh`, `codex`, `python3`, or `git` are installed in non-standard locations, expand **Configure binary paths** in the onboarding overlay and enter an absolute path for each tool the app failed to auto-detect.
+
+The app resolves each binary in three tiers:
+
+1. Your manual override.
+2. `which <tool>` using the current process PATH.
+3. `bash -lc 'which <tool>'` using a login shell to pick up your shell profile.
+
+You can change these later under **Settings → CLI Tools**.
+
+## After the overlay
+
+Once you click **Complete Setup** the app:
+
+1. Persists the four settings and the binary paths.
+2. Starts the local gateway on the first free port in `19432..19435`.
+3. Creates a signed Socket.IO connection to the relay and emits a `desktop.hello` handshake with your computer name, the gateway protocol version, the desktop version, and the plugin version.
+4. Performs a boot-recovery pass that reattaches any loops that were running when the app last exited (see [Recovery and resilience](../mechanisms/recovery)).
+
+The Dashboard tab should now show three green status cards: **Gateway Port**, **Cloud Connection**, and **Remote Commands**.
+
+## The system tray
+
+ClosedLoop lives in the system tray. Closing the window hides the app; it does **not** quit. The tray menu exposes:
+
+- **Open ClosedLoop** – show the window.
+- **Pause incoming commands** – refuse all new cloud commands until you resume. Persists across restarts.
+- **Quit** – fully stop the app, shut down the gateway, and close streams.
+
+## Confirm end-to-end
+
+Open the web app, navigate to any project, and check the **Runtime** picker. Your desktop target should appear under your machine name with `healthy` status and the correct `pluginVersion`. If it is marked `degraded`, check the Diagnostics tab in the desktop app for a missing binary or a failed heartbeat.

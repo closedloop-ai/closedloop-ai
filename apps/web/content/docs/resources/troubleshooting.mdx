@@ -1,0 +1,144 @@
+---
+title: Troubleshooting
+description: Common failure modes across install, gateway, loops, and recovery, and how to resolve each one.
+---
+
+This is the runbook. Each entry links a symptom to a likely cause and a concrete fix.
+
+## Install and bootstrap
+
+### "claude CLI not found in PATH"
+
+**Symptom.** Diagnostics tab shows a red `Not found` next to `claude`. Loops fail with a `preflight.binary_not_found` telemetry event.
+
+**Cause.** Electron apps on macOS launch with a stripped PATH. Your `claude` binary is installed outside the default detection locations.
+
+**Fix.** Open **Settings → CLI Tools** and enter the absolute path to `claude` (for example, `/opt/homebrew/bin/claude` or your nvm-managed location). The resolver also tries `bash -lc 'which claude'` so a correctly configured shell profile usually works.
+
+### Plugin install fails
+
+**Symptom.** `install.sh` prints a non-zero exit and the plugin list is incomplete.
+
+**Cause.** Most commonly: missing Claude Code CLI, Python < 3.11, or `jq` not installed.
+
+**Fix.** Install prerequisites and re-run the one-line installer. The installer is idempotent and will skip already-installed plugins.
+
+### `/plugin marketplace install closedloop` says "marketplace not registered"
+
+**Fix.** Run the explicit registration command:
+
+```bash
+claude plugin marketplace add closedloop-ai/claude-plugins
+```
+
+Then retry.
+
+## Desktop app
+
+### Onboarding overlay rejects the API key
+
+**Cause.** The key is for the wrong environment. Staging and production keys are not interchangeable.
+
+**Fix.** Make sure the **API Origin** matches the environment the key belongs to. If you use staging, set `API Origin` to the staging REST origin and paste the staging key.
+
+### Port 19432 already in use
+
+**Symptom.** Dashboard shows a port other than 19432.
+
+**Cause.** Another process (or a stale ClosedLoop instance) holds the port. The gateway walks through `19433`, `19434`, `19435` automatically.
+
+**Fix.** Usually nothing. Web-app callers read `~/.closedloop-ai/electron-port` or call `/health` to discover the port. If an integration is hardcoded to `19432`, update it to read from the port file.
+
+### CMD+Q does not quit (pre-0.13.10)
+
+**Cause.** Shutdown hung on a promise that never rejected.
+
+**Fix.** Update to ≥ 0.13.10. Shutdown now has an eight-second hard-exit failsafe, drops active streams, and catches rejected shutdown promises.
+
+### Gateway returns 401 on `/api/gateway/...` calls
+
+**Cause.** No valid session or internal token. In practice this usually means the API key is missing, since `POST /gateway-auth/exchange` returns `503 "Local gateway auth unavailable: API key required"` without it.
+
+**Fix.** Open **Settings → Relay / Gateway** and set the Cloud API Key. The gateway's `/health` endpoint will still respond even with no key; everything else requires it.
+
+### Gateway returns 403 `directory not allowed`
+
+**Cause.** The operation targeted a path outside your Sandbox Base Directory, or a canonicalized symlink points at a denied path.
+
+**Fix.** Widen the sandbox (Settings → Security) to include the target path, or clone the repo into the existing sandbox. Sensitive paths (`~/.ssh`, `~/.gnupg`, `~/.aws`, `~/Library/Keychains`, `/etc`, `/bin`, `/sbin`) are always denied and cannot be allowed.
+
+### Auto-clone fails with a `gh` error
+
+**Cause.** `gh auth login` has not been completed for your user, or the repo requires SSO that `gh` has not unlocked.
+
+**Fix.** Run `gh auth login` from a terminal, then `gh auth status` to confirm. Stderr from `gh` is sanitized (credential URLs and hex tokens redacted) in the surfaced error.
+
+## Loops
+
+### Loop is stuck in `AWAITING_USER`
+
+**Cause.** The plan has unanswered `openQuestions` or the plan review checkpoint needs a human decision.
+
+**Fix.** Open the plan in the web app, answer the questions, and resume. Alternatively, use `/code:amend-plan --message "..."` to answer in-place.
+
+### Loop aborts as "ghost loop"
+
+**Cause.** Three consecutive iterations with no material output, or stderr patterns matching context/session limits.
+
+**Fix.** Check the `claude-output.jsonl` tail. Most common underlying causes: the plan is too big for the context window (break it into smaller plans), a subagent is looping on a flaky validator (widen the validator or check the test env), or the model provider returned empty responses.
+
+### Build-validator times out at 20 iterations
+
+**Cause.** The discovered test command fails in a way the implementation subagent cannot fix automatically.
+
+**Fix.** Inspect the last `build-result.json`. If the root cause is environmental (missing dep, wrong Node version), fix the environment and resume. If the plan's acceptance criteria are unachievable, amend the plan.
+
+### Visual QA returns `AUTH_REQUIRED` or `BLOCKED`
+
+**Cause.** The Playwright-driven QA could not sign in or the dev server is unreachable.
+
+**Fix.** Ensure `visual-requirements.md` points at a running dev environment. The `dev-environment` subagent produces `.dev-environment.json` documenting how to boot the app; verify its contents.
+
+## Approvals
+
+### Every action requires approval
+
+**Cause.** Default Approval Tier is set to `none` or `low`.
+
+**Fix.** Open **Settings → Policies** and raise the default tier. For most single-user dev setups, `high` is appropriate. Combine with Risk Tier Overrides to prompt on specific high-risk operations (for example, keep `deploy` prompting even when the default is `high`).
+
+### Approval prompt does not appear
+
+**Check.** The tray badge count and the Approvals tab. If a prompt is queued but not visible, the renderer may have lost focus; click the tray icon to reopen.
+
+### Always-Allow rule is too permissive
+
+**Fix.** Remove the rule under **Settings → Policies → Always-Allow rules**. Rules are scoped by `operationId + method + path + scopePath`; if you need a narrower rule, create a new one from a fresh approval prompt.
+
+## Recovery
+
+### Job shows `RUNNING` but the process is gone
+
+**Cause.** The desktop app exited without finalizing, and boot recovery has not yet run.
+
+**Fix.** Boot recovery runs on app startup. If the job is still stuck after restart, check `state.json` in the loop's workdir. If `state.json` does not reflect a terminal status, the finalizer maps it to `FAILED` and emits a `PROCESS_FAILED` event so the UI shows the correct outcome.
+
+### EXECUTE result not visible in the web app
+
+**Cause.** Artifact upload did not complete before the app exited.
+
+**Fix.** With 0.13.14+, the finalizer preserves `artifactsUploadedAt` across restarts and falls back to `imported-plan.md` when `plan.json` is missing. If artifacts still fail to show, check the loop's `state.json` and re-run a new EXECUTE cycle against the amended plan.
+
+## Related reading
+
+<Cards>
+  <Card title="FAQ" href="./faq">
+    Short answers to common questions.
+  </Card>
+  <Card title="Release notes" href="./release-notes">
+    Recent fixes and user-facing changes.
+  </Card>
+  <Card title="Settings reference" href="../mechanisms/desktop-settings">
+    Every setting and environment variable.
+  </Card>
+</Cards>

@@ -1,0 +1,10 @@
+---
+title: Sandbox
+description: The single root directory the desktop runtime is allowed to touch.
+---
+
+The **sandbox** (or "Sandbox Base Directory") is the single root directory under which all desktop gateway file-system operations are allowed. It is chosen during onboarding and editable under **Settings → Security**.
+
+Sensitive paths are always denied even when they fall inside your sandbox: `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/Library/Keychains`, `/etc`, `/bin`, `/sbin`. Symlinks are canonicalized before the check.
+
+See [Settings reference](../mechanisms/desktop-settings) for how to configure the sandbox and related deny-list behavior.

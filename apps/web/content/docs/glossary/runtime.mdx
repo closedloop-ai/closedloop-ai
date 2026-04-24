@@ -1,6 +1,10 @@
 ---
 title: Runtime
-description: The environment that executes work and determines what tools or providers are available.
+description: The environment that executes loops and determines what tools and providers are available.
 ---
 
-The runtime is where configured capabilities become real execution.
+The **runtime** is the desktop app plus its local gateway plus the installed Claude plugins. It is the only surface that touches your filesystem or runs your CLIs.
+
+Runtime states: `online`, `degraded`, `paused`, `offline`.
+
+See [Runtime](../mechanisms/runtime) for the full reference.

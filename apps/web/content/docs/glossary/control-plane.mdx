@@ -3,4 +3,8 @@ title: Control Plane
 description: The system where work is defined, coordinated, reviewed, and governed.
 ---
 
-The control plane is the coordination layer for people, agents, and artifacts.
+The **control plane** is the web app at `app.closedloop.ai` and the cloud API and relay behind it. It is where humans define artifacts, dispatch loops, and review results.
+
+The control plane never touches your filesystem. It dispatches commands to the runtime plane (the desktop app), which does.
+
+See [Control plane](../concepts/control-plane) for the philosophy and [Runtime](../mechanisms/runtime) for the execution surface.

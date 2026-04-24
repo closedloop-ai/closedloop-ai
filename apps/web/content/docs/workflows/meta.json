@@ -1,4 +1,9 @@
 {
   "title": "Workflows",
-  "pages": ["prd-to-plan-to-execution", "parallel-feature-development"]
+  "pages": [
+    "prd-to-plan-to-execution",
+    "amending-a-plan",
+    "planning-with-codex",
+    "parallel-feature-development"
+  ]
 }

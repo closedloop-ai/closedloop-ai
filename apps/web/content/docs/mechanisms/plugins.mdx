@@ -1,0 +1,121 @@
+---
+title: Claude Plugins
+description: "The six Claude Code plugins that make ClosedLoop loops executable: bootstrap, code, code-review, judges, platform, and self-learning."
+---
+
+ClosedLoop's execution engine ships as a bundle of six Claude Code plugins published at `closedloop-ai/claude-plugins`. Each plugin has a clear responsibility; together they drive the full plan → implement → review → learn loop.
+
+Install them with the [one-line installer](../getting-started/install-claude-plugins).
+
+## Overview
+
+| Plugin | Version | Role |
+| --- | --- | --- |
+| [`bootstrap`](#bootstrap) | 1.2.0 | Project onboarding. Reads your codebase and generates project-specific expert agents. |
+| [`code`](#code) | 1.9.3 | The hub. Orchestrator prompt, 23 subagents, 12 skills, 5 hooks, `run-loop.sh`. |
+| [`code-review`](#code-review) | 1.5.2 | Multi-agent code review, with an optional GitHub inline-comments mode. |
+| [`judges`](#judges) | 1.5.1 | 21 LLM-as-judge evaluator agents for plans, code, and PRDs. |
+| [`platform`](#platform) | 1.1.1 | Foundational skills. Claude-Code-expert, context engineering, Mermaid, artifact upload, skill creator. |
+| [`self-learning`](#self-learning) | 1.1.2 | Pattern capture, TOON-format knowledge store, goal-weighted success rates. |
+
+## bootstrap
+
+Reads `CLAUDE.md`, `README.md`, `ARCHITECTURE.md`, package manifests, and the source tree. Identifies work domains (API, data, caching, frontend, mobile, auth, analytics, testing, etc.) and generates one expert agent `.md` per domain plus a `critic-gates.json` that tells the `code` plugin which critics to run per module.
+
+Single command:
+
+```
+/agent-bootstrap [options]
+```
+
+Key options: `--target-command <name>` (default `code`), `--depth quick|medium|deep`, `--focus frontend|backend|infra|mobile|web`, `--dry-run`, `--interactive`, `--update`, `--minimal`, `--enhance`, `--add-domain <domain>`, `--strategy backup|skip|overwrite|interactive`.
+
+Durable outputs:
+
+- `.claude/agents/<name>.md` – one expert agent per identified domain
+- `.closedloop-ai/bootstrap-metadata.json` – tracks generated agents for `--update` mode
+- `.closedloop-ai/settings/critic-gates.json` – which critics to run per module
+
+## code
+
+The hub plugin. It contains:
+
+- The **orchestrator prompt** (`prompts/prompt.md`) loaded on every iteration of `run-loop.sh`.
+- **Four slash commands:** `/code:code`, `/code:amend-plan`, `/code:cancel-code`, `/code:plan-with-codex`.
+- **23 subagents** across planning, implementation, and cross-repo roles:
+  - planning: `plan-draft-writer` (opus), `plan-writer`, `plan-validator`, `plan-evaluator`, `plan-importer`, `answered-questions-subagent`, `plan-agent`
+  - implementation: `pre-explorer`, `verification-subagent`, `implementation-subagent`, `build-validator`, `code-reviewer`
+  - cross-repo: `cross-repo-coordinator`, `generic-discovery`, `repo-coordinator`, `cross-repo-prd-writer`, `api-spec-writer`
+  - support: `visual-qa-subagent`, `dev-environment`, `learning-capture`, `amend-extractor`, `code-review-worker`, `code-review-guidelines`
+- **12 skills:** `plan-validate`, `critic-cache`, `build-status-cache`, `cross-repo-cache`, `plan-structure`, `plan-editing-conventions`, `extract-plan-md`, `closedloop-env`, `prd-creator`, `find-plugin-file`, `iterative-retrieval`, `codex-review`.
+- **5 hooks** that inject learnings, track agent state, and enforce loop promises (see [Hooks and runtime](./hooks)).
+- **Scripts:** `run-loop.sh`, `setup-closedloop.sh`, `setup-loop.sh`, `discover-repos.sh`, `debate-loop.sh`, `install-dependencies.sh`.
+- **Schemas:** `plan-schema.json`, `review-delta.schema.json`, `code-map.schema.json`.
+
+See [Loops](./loops) for the 18-phase execution flow the orchestrator drives.
+
+## code-review
+
+Partitions changed files, spawns parallel reviewer sub-agents (Bug Hunter plus domain specialists), runs deterministic zero-LLM hygiene checks, validates findings, caches by prompt hash plus diff tip, and either prints results or writes file-based handoffs for a GitHub CI workflow.
+
+Single command:
+
+```
+/code-review:start [scope] [--github] [--hygiene-only] [--base <ref>]
+                   [--since-last-review] [--full-review]
+```
+
+Findings have three severities:
+
+- **BLOCKING** (P0) – security, crash, data-loss
+- **HIGH** (P1) – production errors, race conditions
+- **MEDIUM** (P2/P3) – code quality, suggestions
+
+In GitHub CI mode, findings are written to:
+
+- `.closedloop-ai/code-review-findings.json`
+- `.closedloop-ai/code-review-threads.json`
+- `.closedloop-ai/code-review-summary.md`
+
+Summary labels: **Changes Requested** (BLOCKING), **Needs Attention** (HIGH), **Approved** (MEDIUM or less).
+
+## judges
+
+See [Judges](./judges) for the full reference.
+
+## platform
+
+Foundational skills, no agents, no commands. All are auto-triggered from context:
+
+- `claude-code-expert` – reference for all 10 hook events, matchers, settings, CLI flags.
+- `context-engineering` – nine prioritized prompting techniques.
+- `mermaid-visualizer` – Mermaid syntax, diagram types, and best practices.
+- `upload-artifact` – upload a file as a PRD, implementation plan, or template via script or MCP.
+- `claude-creator` – scaffold a new skill with `init_skill.py`, `package_skill.py`, `quick_validate.py`.
+
+## self-learning
+
+See [Self-learning](./self-learning) for the full reference.
+
+## How the plugins interact
+
+- `code` is the hub. Every loop starts from the `code` orchestrator.
+- `code ↔ judges` is a two-way dependency; the orchestrator invokes judges at phase 1.3 and phase 5.
+- `code → self-learning` is the deepest coupling; `run-loop.sh` calls seven Python scripts from `self-learning/tools/python/` in its post-iteration pipeline.
+- `code-review → code + judges` – the reviewer sub-agents live in `code` and consume judge-style scoring.
+- `bootstrap → code` – `bootstrap` writes the `critic-gates.json` that the `code` critic phase reads.
+- `platform` is standalone and auto-loaded.
+
+## Related reading
+
+<Cards>
+  <Card title="Orchestrator and subagents" href="./orchestrator">
+    The system prompt that drives every loop iteration.
+  </Card>
+  <Card title="Hooks and runtime" href="./hooks">
+    Five hooks that inject context and gate loop completion.
+  </Card>
+  <Card title="Multi-repo development" href="./multi-repo">
+    How the code plugin plans across sibling repositories.
+  </Card>
+</Cards>

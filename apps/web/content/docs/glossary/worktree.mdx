@@ -1,0 +1,8 @@
+---
+title: Worktree
+description: The isolated git worktree each loop executes inside.
+---
+
+A **worktree** is an isolated git working directory created from a base branch for a single loop run. Loops do not execute against your main working copy; they get their own worktree under a parent directory (configurable via `SYMPHONY_WORKTREE_PARENT_DIR`).
+
+This keeps every loop's edits isolated and makes cancellation, recovery, and concurrent runs safe.

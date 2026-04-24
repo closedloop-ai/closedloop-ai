@@ -1,0 +1,71 @@
+---
+title: FAQ
+description: Short answers to common questions about ClosedLoop.ai.
+---
+
+## What is ClosedLoop.ai?
+
+A team-oriented control plane for AI-native software delivery. It lets a team describe intent as durable artifacts (PRDs, plans), dispatch bounded execution runs called **loops** against real repos, judge the output, and merge reviewable changes.
+
+## Does the cloud run code on my machine?
+
+No. The cloud never touches your filesystem directly. It sends commands to the desktop app, which runs a local gateway on `127.0.0.1`. Every operation is authenticated, sandbox-checked, and subject to your approval policy.
+
+## What models do you use?
+
+Loops default to Claude Opus for planning and Sonnet for implementation. Haiku is used for lightweight utility subagents. `/code:plan-with-codex` opens a debate channel with Codex (default `gpt-5.3-codex`). The web app's Runtime picker shows which providers are available on your target.
+
+## Can I use ClosedLoop without the desktop app?
+
+No — not for any operation that needs to touch your code. The desktop app is the runtime. The web app is the control plane. You need both.
+
+## Does ClosedLoop support Linux and Windows?
+
+- **macOS** is fully supported as a signed universal DMG.
+- **Linux** is supported from source via `just desktop-dev`.
+- **Windows** is not supported today.
+
+## Where are my API keys stored?
+
+Encrypted on disk via Electron `safeStorage` in `desktop-secrets`. The app also reads `CLOSEDLOOP_API_KEY` and `SYMPHONY_API_KEY` from the environment as overrides.
+
+## What does "self-learning" actually learn?
+
+Patterns. Specifically, it captures classifications (`mistake` / `pattern` / `convention` / `insight`) from every run, deduplicates them, and stores them in a TOON file. Hooks inject the most relevant patterns into every subagent so future runs benefit from what prior runs figured out.
+
+## Is self-learning on by default?
+
+No. It is opt-in. Pass `--self-learning` to `run-loop.sh` or enable the equivalent flag when dispatching a loop.
+
+## Can I run two loops at once?
+
+Yes, subject to:
+
+- max 2 in-flight commands per desktop target
+- commands serialized by `lockKey` (so two loops cannot share a worktree)
+
+For more concurrency, use multiple compute targets, or run loops in different repos.
+
+## How do I amend a plan without restarting?
+
+`/code:amend-plan --workdir <path> --message "<text>"`. The amend handler classifies the intent and updates the plan via MERGE mode. The change is recorded in `plan.json`'s `amendments` array.
+
+## How are cross-repo features handled?
+
+Pass `--add-dir <path>` for each peer repo. `setup-closedloop.sh` builds a `CLOSEDLOOP_REPO_MAP` that subagents read. Plans gain a `repositories` map; tasks are tagged `[CROSS-REPO: <peer>]`. See [Multi-repo development](../mechanisms/multi-repo).
+
+## Can judges gate a merge?
+
+Yes. The judges return structured `final_status` plus metric scores. You can require `final_status == 1` (PASS) on a specific judge set before a merge. In most setups, the post-loop code-review verdict is the primary gate and the judges are used as a finer-grained signal.
+
+## What happens if the desktop app crashes mid-loop?
+
+Boot recovery runs on next launch. Active jobs with live PIDs are reattached; dead ones are finalized from `state.json` and the log tail. EXECUTE recovery replay (PLN-338) retries finalization after transient errors and preserves uploaded artifacts.
+
+## How do I pause the desktop without quitting?
+
+Header toggle or tray menu: **Pause incoming commands**. Persists across restarts.
+
+## Where do I find the release notes?
+
+See [Release notes](./release-notes).
