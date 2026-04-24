@@ -12,7 +12,7 @@ import {
   telemetryDiagnosticsSchema,
   telemetryTraceContextSchema,
 } from "../telemetry/schema";
-import { parseFlushedBody } from "./test-helpers";
+import { importModuleWithFetch, parseFlushedBody } from "./test-helpers";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -373,10 +373,13 @@ describe("buildValidationFailedPayload() cross-cutting guard", () => {
       { path: ["severity"], code: "invalid_type" },
     ];
 
-    const result = buildValidationFailedPayload("command.queued", issues);
+    const result = buildValidationFailedPayload(
+      TelemetryCategory.CommandQueued,
+      issues
+    );
 
     expect(result.category).toBe(TelemetryCategory.TelemetryValidationFailed);
-    expect(result.failedCategory).toBe("command.queued");
+    expect(result.failedCategory).toBe(TelemetryCategory.CommandQueued);
     expect(Array.isArray(result.issues)).toBe(true);
 
     for (const issue of result.issues as Record<string, unknown>[]) {
@@ -437,15 +440,8 @@ describe("emitCommandLifecycleEvent() validation failure paths", () => {
   // exercises the full pipeline — emitter → log.warn → buildEntry → flush —
   // and verifies severity routing (`level: "warn"`) alongside payload content.
   // emitter.ts binds `log` at module load, so each test re-imports both
-  // emitter and log with vi.resetModules() so they share the same fresh
+  // emitter and log via importModuleWithFetch so they share the same fresh
   // module graph.
-  function importEmitterWithFetch(
-    fetchMock: ReturnType<typeof vi.fn>
-  ): Promise<typeof import("../telemetry/emitter")> {
-    vi.stubGlobal("fetch", fetchMock);
-    vi.resetModules();
-    return import("../telemetry/emitter");
-  }
 
   it("(a) invalid trace — flushes validation_failed with level=warn and no secrets", async () => {
     vi.stubEnv("DD_API_KEY", "test-key");
@@ -454,7 +450,10 @@ describe("emitCommandLifecycleEvent() validation failure paths", () => {
     vi.stubEnv("RELEASE_VERSION", "1.0.0");
     vi.stubEnv("VERCEL_GIT_COMMIT_SHA", "testsha");
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
-    const emitter = await importEmitterWithFetch(fetchMock);
+    const emitter = await importModuleWithFetch(
+      fetchMock,
+      () => import("../telemetry/emitter")
+    );
     const { log: freshLog } = await import("../log");
 
     emitter.emitCommandLifecycleEvent(
@@ -487,7 +486,10 @@ describe("emitCommandLifecycleEvent() validation failure paths", () => {
     vi.stubEnv("RELEASE_VERSION", "1.0.0");
     vi.stubEnv("VERCEL_GIT_COMMIT_SHA", "testsha");
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
-    const emitter = await importEmitterWithFetch(fetchMock);
+    const emitter = await importModuleWithFetch(
+      fetchMock,
+      () => import("../telemetry/emitter")
+    );
     const { log: freshLog } = await import("../log");
 
     emitter.emitCommandLifecycleEvent(
