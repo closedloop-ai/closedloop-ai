@@ -33,6 +33,11 @@ import {
 } from "@closedloop-ai/loops-api/commands";
 import { ContextPackSchema } from "@closedloop-ai/loops-api/context-pack";
 import { LoopErrorCode } from "@closedloop-ai/loops-api/error-codes";
+import {
+  normalizeV1ExecutionResult,
+  parseExecutionResultFile,
+  RepoExecutionResultSchema,
+} from "@closedloop-ai/loops-api/execution-result";
 import { normalizeModelName } from "@closedloop-ai/loops-api/tokens";
 
 // ---------------------------------------------------------------------------
@@ -1273,6 +1278,19 @@ function cloneAdditionalRepos(entries, peersDir = "/workspace/peers") {
   for (const entry of entries) {
     const cloneDirName = entry.fullName.replaceAll("/", "--");
     const cloneTarget = path.join(peersDir, cloneDirName);
+    const resolvedPeersDir = path.resolve(peersDir);
+    const resolvedCloneTarget = path.resolve(cloneTarget);
+    if (
+      !resolvedCloneTarget.startsWith(resolvedPeersDir + path.sep) &&
+      resolvedCloneTarget !== resolvedPeersDir
+    ) {
+      throw new HarnessError(
+        ERROR_CODES.config,
+        redactSensitive(
+          `Path traversal attempt blocked for peer repo: "${entry.fullName}"`
+        )
+      );
+    }
     const cloneUrl = `https://github.com/${entry.fullName}.git`;
 
     log(
@@ -1307,6 +1325,59 @@ function cloneAdditionalRepos(entries, peersDir = "/workspace/peers") {
       );
     }
 
+    // Configure git identity for any commits the agent might make in this peer repo.
+    // Use committer info from the context pack (triggering user) when available,
+    // falling back to generic identity.
+    const gitName = config.committerName || "ClosedLoop.AI Agent";
+    const gitEmail = config.committerEmail || "agent@closedloop.ai";
+    execFileSync("git", ["config", "user.name", gitName], {
+      cwd: cloneTarget,
+      stdio: "pipe",
+    });
+    execFileSync("git", ["config", "user.email", gitEmail], {
+      cwd: cloneTarget,
+      stdio: "pipe",
+    });
+
+    // Create and checkout the same working branch used for the primary repo so
+    // the agent operates on a named branch rather than the cloned base branch.
+    // Uses the same branch-naming pattern as createWorkingBranch(): symphony/${loopSuffix}.
+    //
+    // Note: peer repos are cloned with --depth 1 (shallow). The rev-list check in
+    // createPullRequest() (`origin/${targetBranch}..HEAD`) may fail for peer repos
+    // because shallow clones lack the full commit ancestry needed to compare ranges.
+    // This is benign — the existing catch block in createPullRequest() proceeds with
+    // the PR attempt regardless of that check's outcome.
+    const peerLoopSuffix = (config.loopId || randomUUID())
+      .toLowerCase()
+      .replace(/[^a-z0-9-]/g, "-")
+      .slice(0, 50);
+    const peerBranchName = `symphony/${peerLoopSuffix}`;
+    try {
+      try {
+        execFileSync("git", ["checkout", "-b", peerBranchName], {
+          cwd: cloneTarget,
+          stdio: "pipe",
+        });
+      } catch {
+        // Branch may already exist in local clone (e.g., retry). Reuse it.
+        execFileSync("git", ["checkout", peerBranchName], {
+          cwd: cloneTarget,
+          stdio: "pipe",
+        });
+      }
+      log(
+        "info",
+        `Peer repo ${entry.fullName}: created/checked out working branch ${peerBranchName}`
+      );
+    } catch (err) {
+      throw new HarnessError(
+        ERROR_CODES.branchCreate,
+        `Failed to create or checkout working branch ${peerBranchName} in peer repo ${entry.fullName}`,
+        err
+      );
+    }
+
     log("info", `Peer repo ${entry.fullName} cloned successfully`);
     clonedDirs.push(cloneTarget);
   }
@@ -1319,9 +1390,12 @@ function cloneAdditionalRepos(entries, peersDir = "/workspace/peers") {
 // ---------------------------------------------------------------------------
 function attemptSafetyCommit(
   workDir,
-  commitMessage = "[INCOMPLETE] WIP: Safety commit — loop interrupted"
+  commitMessage = "[INCOMPLETE] WIP: Safety commit — loop interrupted",
+  { githubToken: overrideToken, targetBranch: overrideBranch } = {}
 ) {
-  if (!(config.targetRepo && config.githubToken)) {
+  const resolvedToken = overrideToken ?? config.githubToken;
+  const resolvedBranch = overrideBranch ?? config.targetBranch;
+  if (!(config.targetRepo && resolvedToken)) {
     return;
   }
   try {
@@ -1364,7 +1438,7 @@ function attemptSafetyCommit(
       .trim();
 
     // Never push a safety commit directly to the target branch.
-    if (currentBranch === config.targetBranch) {
+    if (currentBranch === resolvedBranch) {
       log(
         "error",
         `Safety commit created on target branch (${currentBranch}); skipping push`
@@ -1376,7 +1450,7 @@ function attemptSafetyCommit(
     execFileSync("git", ["push", "--no-verify", "origin", "HEAD"], {
       cwd: workDir,
       stdio: "pipe",
-      env: buildGitAuthEnv(),
+      env: buildGitAuthEnv(resolvedToken),
     });
 
     log("info", "Safety commit pushed successfully");
@@ -1581,8 +1655,9 @@ function attemptLlmCommit(workDir, resultFilePath) {
 // ---------------------------------------------------------------------------
 // Ensure working branch is pushed (even if safety commit was a no-op)
 // ---------------------------------------------------------------------------
-function ensureBranchPushed(workDir) {
-  if (!(config.targetRepo && config.githubToken)) {
+function ensureBranchPushed(workDir, { githubToken: overrideToken } = {}) {
+  const resolvedToken = overrideToken ?? config.githubToken;
+  if (!(config.targetRepo && resolvedToken)) {
     return;
   }
   const branchName = detectBranchName(workDir);
@@ -1594,7 +1669,7 @@ function ensureBranchPushed(workDir) {
     execFileSync("git", ["push", "--no-verify", "origin", "HEAD"], {
       cwd: workDir,
       stdio: "pipe",
-      env: buildGitAuthEnv(),
+      env: buildGitAuthEnv(resolvedToken),
     });
   } catch (err) {
     // Push may fail if already up to date (non-fast-forward), or token expired.
@@ -1676,11 +1751,24 @@ function parsePrInfo(workDir, outputLines) {
  */
 const PR_NUMBER_REGEX = /\/pull\/(\d+)/;
 
-function createPullRequest(workDir, existingPrInfo) {
+function createPullRequest(
+  workDir,
+  existingPrInfo,
+  {
+    targetRepo: overrideRepo,
+    targetBranch: overrideBranch,
+    githubToken: overrideToken,
+  } = {}
+) {
   if (existingPrInfo?.prUrl) {
     return existingPrInfo;
   }
-  if (!(config.targetRepo && config.githubToken)) {
+
+  const resolvedRepo = overrideRepo ?? config.targetRepo;
+  const resolvedBranch = overrideBranch ?? config.targetBranch;
+  const resolvedToken = overrideToken ?? config.githubToken;
+
+  if (!(resolvedRepo && resolvedToken)) {
     return existingPrInfo;
   }
 
@@ -1693,7 +1781,7 @@ function createPullRequest(workDir, existingPrInfo) {
   try {
     const count = execFileSync(
       "git",
-      ["rev-list", "--count", `origin/${config.targetBranch}..HEAD`],
+      ["rev-list", "--count", `origin/${resolvedBranch}..HEAD`],
       { cwd: workDir, stdio: "pipe" }
     )
       .toString()
@@ -1736,28 +1824,29 @@ function createPullRequest(workDir, existingPrInfo) {
       ].join("\n");
     }
 
-    const result = execFileSync(
-      "gh",
-      [
-        "pr",
-        "create",
-        "--title",
-        title,
-        "--body",
-        body,
-        "--label",
-        "symphony",
-        "--head",
-        branchName,
-        "--base",
-        config.targetBranch,
-      ],
-      {
-        cwd: workDir,
-        stdio: "pipe",
-        env: { ...buildGitAuthEnv(), GH_TOKEN: config.githubToken },
-      }
-    );
+    const ghArgs = [
+      "pr",
+      "create",
+      "--title",
+      title,
+      "--body",
+      body,
+      "--label",
+      "symphony",
+      "--head",
+      branchName,
+      "--base",
+      resolvedBranch,
+    ];
+    if (overrideRepo) {
+      ghArgs.push("--repo", overrideRepo);
+    }
+
+    const result = execFileSync("gh", ghArgs, {
+      cwd: workDir,
+      stdio: "pipe",
+      env: { ...buildGitAuthEnv(resolvedToken), GH_TOKEN: resolvedToken },
+    });
 
     const prUrl = result.toString().trim();
     const prMatch = PR_NUMBER_REGEX.exec(prUrl);
@@ -2622,6 +2711,14 @@ let shuttingDown = false;
 let liveOutputChunks = [];
 // ClosedLoop.AI workdir inside the repo (e.g., .closedloop-ai/runs/YYYYMMDD-HHMMSS-loop-xxx/)
 let symphonyWorkDir = null;
+// Module-level reference to the downloaded context pack so reportFinalStatus and
+// error/shutdown paths can pass it to refreshGitHubToken() for peer-repo token
+// refresh during finalization.
+// SECURITY: contextPackRef MUST NEVER be passed to console.log or JSON.stringify
+// without sanitization — it contains raw GitHub tokens and other secrets.
+let contextPackRef = null;
+// Timestamp of the last successful GitHub token refresh (used for staleness checks).
+let lastTokenRefreshAt = null;
 
 function setupShutdownHandlers(workDir) {
   async function handleShutdown(signal) {
@@ -2660,7 +2757,7 @@ function setupShutdownHandlers(workDir) {
     }
 
     // Refresh token before safety commit (may have expired during run)
-    await refreshGitHubToken();
+    await refreshGitHubToken(contextPackRef);
 
     // Attempt safety commit before uploading state (only for code-producing commands)
     const shouldCommitAndPush = config.command === LoopCommand.Execute;
@@ -3049,6 +3146,260 @@ function writeExecutionResult(workDir, prInfo) {
   }
 }
 
+/**
+ * Write execution-result.json (schema version 2) to the work directory.
+ *
+ * Validates each RepoExecutionResult entry against RepoExecutionResultSchema,
+ * wraps them in { schemaVersion: 2, results: [...] }, and performs an atomic
+ * write via a temp file + rename so readers never see a partial file.
+ *
+ * Must be called BEFORE uploadState() so the file is included in the
+ * artifacts/ prefix upload.
+ *
+ * @param {string} workDir - The work directory to write execution-result.json to.
+ * @param {import("@closedloop-ai/loops-api/execution-result").RepoExecutionResult[]} results
+ */
+function writeExecutionResultV2(workDir, results) {
+  for (const entry of results) {
+    const parsed = RepoExecutionResultSchema.safeParse(entry);
+    if (!parsed.success) {
+      log(
+        "warn",
+        `RepoExecutionResult validation failed for ${entry.fullName}: ${parsed.error.message}`
+      );
+    }
+  }
+
+  const envelope = { schemaVersion: 2, results };
+  const resultFilePath = path.join(workDir, LoopArtifactFile.ExecutionResult);
+  const tmpPath = `${resultFilePath}.tmp`;
+
+  fs.writeFileSync(tmpPath, JSON.stringify(envelope, null, 2));
+  fs.renameSync(tmpPath, resultFilePath);
+
+  log("info", `Wrote v2 execution result with ${results.length} repo(s)`);
+}
+
+// ---------------------------------------------------------------------------
+// Per-repo finalization helper
+// ---------------------------------------------------------------------------
+/**
+ * Finalize a single repository: check for changes, safety-commit, push, and
+ * create a pull request. Returns a discriminated-union result object.
+ *
+ * @param {{ workDir: string, fullName: string, baseBranch: string, githubToken: string, safetyCommitMsg: string }} repoCtx
+ * @returns {{ fullName: string, status: "success"|"failed"|"skipped", ... }}
+ */
+async function finalizeRepo({
+  workDir,
+  fullName,
+  baseBranch,
+  githubToken,
+  safetyCommitMsg,
+}) {
+  // Defense-in-depth: ensure this repo's token is redacted from all log output.
+  registerSecret(githubToken);
+
+  try {
+    // Check for any working-tree or staged changes.
+    const statusOutput = execFileSync("git", ["status", "--porcelain"], {
+      cwd: workDir,
+      stdio: "pipe",
+    })
+      .toString()
+      .trim();
+
+    if (!statusOutput) {
+      return { fullName, status: "skipped", reason: "no_changes" };
+    }
+
+    // Stage + commit any uncommitted changes (best-effort safety commit).
+    attemptSafetyCommit(workDir, safetyCommitMsg, {
+      githubToken,
+      targetBranch: baseBranch,
+    });
+
+    // Ensure the working branch is pushed to origin.
+    ensureBranchPushed(workDir, { githubToken });
+
+    // Create a pull request. The PR template is read fresh here (not cached)
+    // because Claude may have modified it during the run.
+    const prInfo = createPullRequest(workDir, null, {
+      targetRepo: fullName,
+      targetBranch: baseBranch,
+      githubToken,
+    });
+
+    // PR creation failed (e.g., `gh` CLI unavailable or returned no PR). The
+    // branch was still pushed, but RepoExecutionResultSchema requires non-null
+    // prUrl/prNumber for the "success" variant — return "failed" so the
+    // envelope passes schema validation downstream.
+    if (!prInfo || prInfo.prNumber == null) {
+      return {
+        fullName,
+        status: "failed",
+        error: "PR creation failed",
+      };
+    }
+
+    // Build a canonical PR URL so callers have a consistent shape regardless
+    // of whether `gh pr create` returned a full URL or just a number.
+    const prNumber = prInfo.prNumber;
+    const branchName = prInfo.branchName;
+    const prUrl =
+      prInfo.prUrl ?? `https://github.com/${fullName}/pull/${prNumber}`;
+
+    // Capture the HEAD SHA after all commits have been made.
+    const commitSha = getHeadCommitSha(workDir);
+
+    return {
+      fullName,
+      status: "success",
+      hasChanges: true,
+      prUrl,
+      prNumber,
+      branchName,
+      baseBranch,
+      commitSha,
+    };
+  } catch (err) {
+    return {
+      fullName,
+      status: "failed",
+      error: redactSensitive(err.message || String(err)),
+    };
+  }
+}
+
+/**
+ * Extract a flat prInfo object from a results array for a given primary repo.
+ * Returns null when the primary repo did not produce a successful result.
+ * Used for backward-compat bridging between the v2 per-repo results array and
+ * callers that expect a single { prUrl, prNumber, branchName, commitSha }.
+ */
+function extractPrimaryPrInfo(results, primaryFullName) {
+  const primaryResult = results.find((r) => r.fullName === primaryFullName);
+  if (!primaryResult || primaryResult.status !== "success") {
+    return null;
+  }
+  return {
+    prUrl: primaryResult.prUrl,
+    prNumber: primaryResult.prNumber,
+    branchName: primaryResult.branchName,
+    commitSha: primaryResult.commitSha,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Multi-repo finalization helpers (shared by reportFinalStatus + error path)
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a list of repo descriptors from config + contextPackRef.
+ * The primary repo is first, followed by peer repos from additionalRepos.
+ */
+function buildRepoList(primaryWorkDir) {
+  const repos = [
+    {
+      workDir: primaryWorkDir,
+      fullName: config.targetRepo,
+      baseBranch: config.targetBranch,
+      githubToken: config.githubToken,
+    },
+  ];
+
+  const additionalRepos = contextPackRef?.additionalRepos || [];
+  for (const r of additionalRepos) {
+    repos.push({
+      workDir: path.join("/workspace/peers", r.fullName.replaceAll("/", "--")),
+      fullName: r.fullName,
+      baseBranch: r.baseBranch,
+      githubToken: r.githubToken,
+    });
+  }
+
+  return repos;
+}
+
+/**
+ * Create a mutable token snapshot from a repo list.
+ * Callers use the snapshot to look up the freshest token for each repo.
+ */
+function snapshotTokens(repos) {
+  return new Map(repos.map((r) => [r.fullName, r.githubToken]));
+}
+
+/**
+ * Refresh GitHub tokens if more than 45 minutes have elapsed since the last
+ * refresh. Updates the snapshot map and module-level lastTokenRefreshAt.
+ */
+async function refreshStaleTokens(tokenSnapshot) {
+  if (
+    !lastTokenRefreshAt ||
+    Date.now() - lastTokenRefreshAt <= 45 * 60 * 1000
+  ) {
+    return;
+  }
+  try {
+    await refreshGitHubToken(contextPackRef);
+    lastTokenRefreshAt = Date.now();
+    // Re-snapshot tokens from contextPackRef after refresh.
+    if (contextPackRef?.additionalRepos) {
+      for (const r of contextPackRef.additionalRepos) {
+        tokenSnapshot.set(r.fullName, r.githubToken);
+      }
+    }
+    tokenSnapshot.set(config.targetRepo, config.githubToken);
+  } catch {
+    log(
+      "warn",
+      "Token refresh failed during finalization, continuing with existing tokens"
+    );
+  }
+}
+
+/**
+ * Finalize a list of repos: for each, refresh stale tokens and call
+ * finalizeRepo(), catching errors into a { status: "failed" } result.
+ * Returns the collected results array.
+ */
+async function finalizeRepos(repos, tokenSnapshot, safetyCommitMsg) {
+  const results = [];
+  for (const repo of repos) {
+    await refreshStaleTokens(tokenSnapshot);
+    let repoResult;
+    try {
+      repoResult = await finalizeRepo({
+        workDir: repo.workDir,
+        fullName: repo.fullName,
+        baseBranch: repo.baseBranch,
+        githubToken: tokenSnapshot.get(repo.fullName) || repo.githubToken,
+        safetyCommitMsg,
+      });
+    } catch (err) {
+      repoResult = {
+        fullName: repo.fullName,
+        status: "failed",
+        error: redactSensitive(err.message || String(err)),
+      };
+    }
+    results.push(repoResult);
+  }
+  return results;
+}
+
+/**
+ * Build a flat event result payload with optional prInfo, sessionId, and repos.
+ */
+function buildEventResult(prInfo, results, extra) {
+  return {
+    ...prInfo,
+    ...(capturedSessionId ? { sessionId: capturedSessionId } : {}),
+    ...(results.length > 0 ? { repos: results } : {}),
+    ...extra,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Report final status (completed, failed, or timed out)
 // ---------------------------------------------------------------------------
@@ -3067,7 +3418,8 @@ async function reportFinalStatus(
 ) {
   // Step 0: Refresh GitHub token before commit/push (token may have expired
   // during the run)
-  await refreshGitHubToken();
+  await refreshGitHubToken(contextPackRef);
+  lastTokenRefreshAt = Date.now();
 
   const shouldCommitAndPush = config.command === LoopCommand.Execute;
 
@@ -3076,7 +3428,14 @@ async function reportFinalStatus(
     ? "[INCOMPLETE] WIP: Safety commit — leftover changes"
     : "Post-run: uncommitted changes from loop execution";
 
+  const repos = buildRepoList(swDir || workDir);
+  const tokenSnapshot = snapshotTokens(repos);
+
+  // Flat prInfo for backward-compat with reportEvent() / extractPrSessionInfo()
   let prInfo = null;
+
+  // results array collecting RepoExecutionResult for each repo
+  const results = [];
 
   if (shouldCommitAndPush) {
     const resultFilePath = path.join(
@@ -3084,38 +3443,95 @@ async function reportFinalStatus(
       LoopArtifactFile.ExecutionResult
     );
 
-    // Step 1: LLM-assisted commit — standalone Claude call that reviews
-    // changes, writes a good commit message, pushes, creates a PR, and
-    // writes execution-result.json directly with first-hand info.
-    // The LLM ONLY writes execution-result.json on successful commit+push.
+    // Step 1: LLM-assisted commit — primary repo only.
+    // Standalone Claude call that reviews changes, writes a good commit
+    // message, pushes, creates a PR, and writes execution-result.json with
+    // first-hand info. The LLM ONLY writes execution-result.json on
+    // successful commit+push.
     const llmPrInfo = attemptLlmCommit(workDir, resultFilePath);
 
-    // Step 2: Check if the LLM handled everything.
+    // Step 2: Check if the LLM handled everything for the primary repo.
     // execution-result.json exists = LLM committed + pushed successfully.
     // No need for safety commit, branch push, or mechanical PR creation.
     if (llmPrInfo && fs.existsSync(resultFilePath)) {
       log("info", "LLM commit handled everything — skipping safety commit");
       prInfo = llmPrInfo;
+
+      // Read the LLM-written v1 file and normalize to v2 format.
+      const rawV1 = JSON.parse(fs.readFileSync(resultFilePath, "utf-8"));
+      const parsedV1 = parseExecutionResultFile(rawV1);
+      if (parsedV1) {
+        const primaryResults = normalizeV1ExecutionResult(
+          parsedV1,
+          config.targetRepo
+        );
+        results.push(...primaryResults);
+      } else {
+        log(
+          "warn",
+          "Failed to parse LLM-written execution-result.json — recording synthetic result"
+        );
+        if (llmPrInfo.prUrl && llmPrInfo.prNumber) {
+          results.push({
+            fullName: config.targetRepo,
+            status: "success",
+            hasChanges: true,
+            prUrl: llmPrInfo.prUrl,
+            prNumber: llmPrInfo.prNumber,
+            branchName: llmPrInfo.branchName ?? "",
+            baseBranch: config.targetBranch,
+            commitSha: llmPrInfo.commitSha ?? undefined,
+          });
+        } else {
+          results.push({
+            fullName: config.targetRepo,
+            status: "failed",
+            error:
+              "LLM commit succeeded but prUrl or prNumber is missing from llmPrInfo",
+          });
+        }
+      }
     } else {
-      // Fallback: safety commit + push + mechanical PR creation
+      // Fallback: run finalizeRepo() for the primary repo (safety commit path).
       log(
         "info",
         "LLM commit did not produce execution-result.json — running safety fallback"
       );
-      attemptSafetyCommit(workDir, safetyCommitMsg);
-      ensureBranchPushed(workDir);
 
-      prInfo = parsePrInfo(workDir, output);
-      if (llmPrInfo?.prUrl) {
-        prInfo = { ...(prInfo || {}), ...llmPrInfo };
-      }
-      prInfo = createPullRequest(workDir, prInfo);
+      // Finalize only the primary repo via safety-commit path.
+      const primaryResults = await finalizeRepos(
+        [repos[0]],
+        tokenSnapshot,
+        safetyCommitMsg
+      );
+      results.push(...primaryResults);
+
+      // Build flat prInfo from primary result for backward-compat
+      prInfo = extractPrimaryPrInfo(results, config.targetRepo);
 
       // Write execution-result.json ourselves since the LLM didn't
-      writeExecutionResult(swDir || workDir, prInfo);
+      writeExecutionResultV2(swDir || workDir, results);
     }
 
-    // Label incomplete PRs regardless of which path created the PR
+    // Step 3: Finalize peer repos independently.
+    const peerRepos = repos.slice(1);
+    if (peerRepos.length > 0) {
+      const peerResults = await finalizeRepos(
+        peerRepos,
+        tokenSnapshot,
+        safetyCommitMsg
+      );
+      results.push(...peerResults);
+    }
+
+    // Overwrite the LLM-written v1 file with a v2 envelope that also
+    // includes any peer repo results collected above. Write unconditionally
+    // so peer repo results are persisted even when the fallback path already
+    // wrote a primary-only envelope earlier.
+    writeExecutionResultV2(swDir || workDir, results);
+
+    // Label incomplete PRs for the primary repo regardless of which path
+    // created the PR.
     if (isIncomplete && prInfo?.prNumber) {
       labelPrIncomplete(workDir, prInfo.prNumber);
     }
@@ -3136,16 +3552,13 @@ async function reportFinalStatus(
   await uploadMetadata(workDir, output, tokenUsage, startTime);
 
   // Step 7: Report event
+  const durationSeconds = Number.parseFloat(duration);
   if (timedOut) {
     await reportEvent({
       type: "error",
       code: LoopErrorCode.TimedOut,
       message: `Loop exceeded maximum runtime of ${MAX_RUNTIME_MS / 1000}s`,
-      result: {
-        ...prInfo,
-        ...(capturedSessionId ? { sessionId: capturedSessionId } : {}),
-        durationSeconds: Number.parseFloat(duration),
-      },
+      result: buildEventResult(prInfo, results, { durationSeconds }),
       correlationId: config.correlationId,
       loopId: config.loopId,
     });
@@ -3156,13 +3569,11 @@ async function reportFinalStatus(
   if (exitCode === 0) {
     await reportEvent({
       type: "completed",
-      result: {
+      result: buildEventResult(prInfo, results, {
         exitCode,
         signal,
-        durationSeconds: Number.parseFloat(duration),
-        ...prInfo,
-        ...(capturedSessionId ? { sessionId: capturedSessionId } : {}),
-      },
+        durationSeconds,
+      }),
       tokensUsed: {
         input: tokenUsage.totalInput,
         output: tokenUsage.totalOutput,
@@ -3179,10 +3590,7 @@ async function reportFinalStatus(
       type: "error",
       code: LoopErrorCode.ProcessFailed,
       message: `Process exited with code ${exitCode}`,
-      result: {
-        ...prInfo,
-        ...(capturedSessionId ? { sessionId: capturedSessionId } : {}),
-      },
+      result: buildEventResult(prInfo, results),
       correlationId: config.correlationId,
       loopId: config.loopId,
     });
@@ -3219,6 +3627,9 @@ async function main() {
     // The "started" event triggers secret scrubbing on the backend, so we must
     // consume the secrets first to avoid a race condition.
     const contextPack = await downloadContextPack();
+    // Store at module level so finalization paths (reportFinalStatus, shutdown,
+    // error handler) can pass it to refreshGitHubToken() for peer-repo refresh.
+    contextPackRef = contextPack;
     validateSecrets();
 
     // Register per-repo tokens so they are redacted from all subsequent log output
@@ -3392,17 +3803,31 @@ async function main() {
     const shouldCommitAndPush = config.command === LoopCommand.Execute;
 
     try {
-      await refreshGitHubToken();
+      await refreshGitHubToken(contextPackRef);
+      lastTokenRefreshAt = Date.now();
     } catch (_) {
       // ignore
     }
 
+    // Flat prInfo for backward-compat with reportEvent()
     let prInfo = null;
+
+    // results array collecting RepoExecutionResult for each repo
+    const results = [];
+
     if (shouldCommitAndPush) {
       const errorResultPath = path.join(
         symphonyWorkDir || workDir,
         LoopArtifactFile.ExecutionResult
       );
+
+      // Build repo list up front so peer repos can be finalized after either
+      // the LLM-commit branch or the safety-commit fallback. If contextPackRef
+      // is null (error occurred before downloadContextPack), buildRepoList
+      // only returns the primary repo — peer repos are unknown.
+      const repos = buildRepoList(workDir);
+      const tokenSnapshot = snapshotTokens(repos);
+      const safetyCommitMsg = "[INCOMPLETE] WIP: Safety commit — harness error";
 
       // Try LLM commit first (writes execution-result.json on success)
       let llmPrInfo = null;
@@ -3412,40 +3837,68 @@ async function main() {
         // ignore
       }
 
-      // Check if LLM handled everything
+      // Check if LLM handled everything for the primary repo
       if (llmPrInfo && fs.existsSync(errorResultPath)) {
         prInfo = llmPrInfo;
+
+        // Record a synthetic result for the primary repo so the results array
+        // is consistent regardless of which commit path ran.
+        if (llmPrInfo.prUrl && llmPrInfo.prNumber) {
+          results.push({
+            fullName: config.targetRepo,
+            status: "success",
+            hasChanges: true,
+            prUrl: llmPrInfo.prUrl,
+            prNumber: llmPrInfo.prNumber,
+            branchName: llmPrInfo.branchName ?? "",
+            baseBranch: config.targetBranch,
+            commitSha: llmPrInfo.commitSha ?? undefined,
+          });
+        } else {
+          results.push({
+            fullName: config.targetRepo,
+            status: "failed",
+            error:
+              "LLM commit succeeded but prUrl or prNumber is missing from llmPrInfo",
+          });
+        }
       } else {
-        // Fallback: safety commit + push + mechanical PR
-        try {
-          attemptSafetyCommit(
-            workDir,
-            "[INCOMPLETE] WIP: Safety commit — harness error"
-          );
-          ensureBranchPushed(workDir);
-        } catch {
-          // ignore
-        }
+        // Fallback: finalize only the primary repo via safety-commit path.
+        const primaryResults = await finalizeRepos(
+          [repos[0]],
+          tokenSnapshot,
+          safetyCommitMsg
+        );
+        results.push(...primaryResults);
 
-        try {
-          prInfo = parsePrInfo(workDir, output);
-          if (llmPrInfo?.prUrl) {
-            prInfo = { ...(prInfo || {}), ...llmPrInfo };
-          }
-          prInfo = createPullRequest(workDir, prInfo);
-        } catch {
-          // ignore
-        }
-
-        // Write execution-result.json ourselves since LLM didn't
-        try {
-          writeExecutionResult(symphonyWorkDir || workDir, prInfo);
-        } catch {
-          // ignore
-        }
+        // Extract primary result and build flat prInfo for backward-compat
+        prInfo = extractPrimaryPrInfo(results, config.targetRepo);
       }
 
-      // Label incomplete PRs regardless of path
+      // Finalize peer repos independently, mirroring reportFinalStatus. This
+      // ensures peer changes are committed/pushed even when the primary LLM
+      // commit succeeded.
+      const peerRepos = repos.slice(1);
+      if (peerRepos.length > 0) {
+        const peerResults = await finalizeRepos(
+          peerRepos,
+          tokenSnapshot,
+          safetyCommitMsg
+        );
+        results.push(...peerResults);
+      }
+
+      // Write execution-result.json with the full multi-repo envelope.
+      // Wrapped in try/catch so a write failure doesn't prevent
+      // uploadState/reportEvent from running.
+      try {
+        writeExecutionResultV2(symphonyWorkDir || workDir, results);
+      } catch {
+        // ignore
+      }
+
+      // Label incomplete PRs for the primary repo regardless of which path
+      // created the PR.
       if (prInfo?.prNumber) {
         try {
           labelPrIncomplete(workDir, prInfo.prNumber);
@@ -3471,10 +3924,7 @@ async function main() {
         type: "error",
         code: harnessError.code,
         message: redactSensitive(errorMessage),
-        result: {
-          ...prInfo,
-          ...(capturedSessionId ? { sessionId: capturedSessionId } : {}),
-        },
+        result: buildEventResult(prInfo, results),
         correlationId: config.correlationId,
         loopId: config.loopId,
       });
@@ -3499,12 +3949,14 @@ export {
   cloneAdditionalRepos,
   config,
   ERROR_CODES,
+  extractPrimaryPrInfo,
+  extractSessionId,
+  finalizeRepo,
   findExistingRunDir,
   getHomeStateTransferPrefix,
   getWorkspaceStateRestorePrefixes,
   getWorkspaceStateUploadPrefixes,
   HarnessError,
-  extractSessionId,
   parseTokenUsage,
   parseTokenUsageFromJsonl,
   parseTokenUsageFromJsonlFile,
@@ -3519,6 +3971,7 @@ export {
   validateSecrets,
   writeContextPackFiles,
   writeExecutionResult,
+  writeExecutionResultV2,
   writePrdFile,
 };
 

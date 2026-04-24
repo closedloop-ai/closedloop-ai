@@ -1,3 +1,8 @@
+import {
+  ExecutionResultV2Schema,
+  getPrimaryRepoResult,
+  normalizeV2ExecutionResult,
+} from "@closedloop-ai/loops-api/execution-result";
 import type { JsonObject } from "@repo/api/src/types/common";
 import {
   EvaluationReportType,
@@ -43,7 +48,8 @@ export type ExecutionArtifacts = {
  * Only fetches execution-result.json, code-judges.json, and prompt snapshots.
  */
 async function downloadExecutionArtifacts(
-  stateKeyPrefix: string
+  stateKeyPrefix: string,
+  primaryFullName: string
 ): Promise<ExecutionArtifacts> {
   const [executionResultBuf, codeJudgesReportBuf, promptMarkdownEntries] =
     await Promise.all([
@@ -55,7 +61,42 @@ async function downloadExecutionArtifacts(
   const executionResult = parseJsonArtifact<ExecutionResult>(
     executionResultBuf,
     "execution-result.json",
-    (p) => p
+    (p) => {
+      // Check for v2 envelope: { schemaVersion: 2, results: RepoExecutionResult[] }
+      const asAny = p as Record<string, unknown>;
+      if (asAny?.schemaVersion === 2) {
+        const v2Parse = ExecutionResultV2Schema.safeParse(asAny);
+        if (!v2Parse.success) {
+          log.warn(
+            "[loop-document-ingestion] Failed to parse v2 execution-result.json",
+            { issues: v2Parse.error.issues }
+          );
+          return null;
+        }
+        const repoResults = normalizeV2ExecutionResult(v2Parse.data);
+        const primaryResult = getPrimaryRepoResult(
+          repoResults,
+          primaryFullName
+        );
+        if (!primaryResult || primaryResult.status !== "success") {
+          return null;
+        }
+        // Convert camelCase RepoExecutionResult to snake_case ExecutionResult
+        const v1Compat: ExecutionResult = {
+          has_changes: primaryResult.hasChanges,
+          pr_url: primaryResult.prUrl,
+          pr_number: primaryResult.prNumber,
+          pr_title: primaryResult.prTitle,
+          branch_name: primaryResult.branchName,
+          base_branch: primaryResult.baseBranch,
+          github_id: primaryResult.githubId,
+          commit_sha: primaryResult.commitSha,
+        };
+        return v1Compat;
+      }
+      // v1 format: return as-is for backward compatibility
+      return p;
+    }
   ) as ExecutionResult | null;
 
   const codeJudgesReport = parseJsonArtifact<JudgesReport>(
@@ -408,8 +449,11 @@ export const executeHandler = defineHandler<ExecutionArtifacts>({
   requiresParent: true,
   includePrimaryArtifact: true,
 
-  downloadArtifacts(stateKeyPrefix: string) {
-    return downloadExecutionArtifacts(stateKeyPrefix);
+  downloadArtifacts(stateKeyPrefix: string, loop: Loop) {
+    return downloadExecutionArtifacts(
+      stateKeyPrefix,
+      loop.repo?.fullName ?? ""
+    );
   },
 
   downloadFromUpload: executionArtifactsFromUpload,

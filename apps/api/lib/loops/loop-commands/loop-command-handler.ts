@@ -49,7 +49,7 @@ export function defineHandler<T>(config: {
   requiresRepo: boolean;
   requiresParent: boolean;
   includePrimaryArtifact: boolean;
-  downloadArtifacts: (stateKeyPrefix: string) => Promise<T>;
+  downloadArtifacts: (stateKeyPrefix: string, loop: Loop) => Promise<T>;
   downloadFromUpload?: (uploadedArtifacts: JsonObject) => T;
   ingest: (loop: Loop, organizationId: string, artifacts: T) => Promise<void>;
 }): LoopCommandHandler {
@@ -58,7 +58,7 @@ export function defineHandler<T>(config: {
     requiresParent: config.requiresParent,
     includePrimaryArtifact: config.includePrimaryArtifact,
     async downloadAndIngest(stateKeyPrefix, loop, organizationId) {
-      const artifacts = await config.downloadArtifacts(stateKeyPrefix);
+      const artifacts = await config.downloadArtifacts(stateKeyPrefix, loop);
       await config.ingest(loop, organizationId, artifacts);
     },
     async uploadAndIngest(uploadedArtifacts, loop, organizationId) {
