@@ -188,25 +188,45 @@ export function normalizeV1ExecutionResult(
   result: ExecutionResult & { error?: string },
   fullName: string
 ): RepoExecutionResult[] {
-  if (!result.hasChanges) {
-    return [{ status: "skipped" as const, fullName, reason: "no_changes" }];
-  }
   if (result.error) {
     return [{ status: "failed" as const, fullName, error: result.error }];
+  }
+  if (!result.hasChanges) {
+    return [{ status: "skipped" as const, fullName, reason: "no_changes" }];
   }
 
   const prNumber =
     typeof result.prNumber === "string"
       ? Number.parseInt(result.prNumber, 10)
-      : (result.prNumber ?? 0);
+      : result.prNumber;
+  const branchName = result.branchName;
+  const baseBranch = result.baseBranch ?? result.baseRef;
+  const prUrl = result.prUrl;
+
+  if (
+    prUrl == null ||
+    prNumber == null ||
+    Number.isNaN(prNumber) ||
+    branchName == null ||
+    baseBranch == null
+  ) {
+    return [
+      {
+        status: "failed" as const,
+        fullName,
+        error:
+          "execution reported hasChanges but missing required PR fields (prUrl, prNumber, branchName, baseBranch)",
+      },
+    ];
+  }
 
   const entry: RepoExecutionResult & { status: "success" } = {
     status: "success",
     fullName,
-    prUrl: result.prUrl ?? "",
+    prUrl,
     prNumber,
-    branchName: result.branchName ?? "",
-    baseBranch: result.baseBranch ?? result.baseRef ?? "",
+    branchName,
+    baseBranch,
     hasChanges: true,
   };
   if (result.prTitle != null) {

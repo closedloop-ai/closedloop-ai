@@ -199,6 +199,76 @@ describe("RepoExecutionResult v2", () => {
     }
   });
 
+  it("normalizeV1ExecutionResult prefers error over hasChanges:false", () => {
+    const executionResult = {
+      hasChanges: false,
+      prUrl: null,
+      prNumber: null,
+      prTitle: null,
+      branchName: null,
+      baseRef: "main",
+      baseBranch: null,
+      commitSha: null,
+      githubId: null,
+      error: "executor crashed",
+    };
+    const result = normalizeV1ExecutionResult(executionResult, "owner/repo");
+    expect(result[0].status).toBe("failed");
+    if (result[0].status === "failed") {
+      expect(result[0].error).toBe("executor crashed");
+    }
+  });
+
+  it("normalizeV1ExecutionResult returns failed when hasChanges:true but PR fields missing", () => {
+    const executionResult = {
+      hasChanges: true,
+      prUrl: null,
+      prNumber: null,
+      prTitle: null,
+      branchName: null,
+      baseRef: null,
+      baseBranch: null,
+      commitSha: null,
+      githubId: null,
+    };
+    const result = normalizeV1ExecutionResult(executionResult, "owner/repo");
+    expect(result[0].status).toBe("failed");
+    expect(RepoExecutionResultSchema.safeParse(result[0]).success).toBe(true);
+  });
+
+  it("normalizeV1ExecutionResult returns failed when prNumber is null even with real prUrl", () => {
+    const executionResult = {
+      hasChanges: true,
+      prUrl: "https://github.com/owner/repo/pull/42",
+      prNumber: null,
+      prTitle: null,
+      branchName: "feat/feature-branch",
+      baseRef: "main",
+      baseBranch: "main",
+      commitSha: null,
+      githubId: null,
+    };
+    const result = normalizeV1ExecutionResult(executionResult, "owner/repo");
+    expect(result[0].status).toBe("failed");
+    expect(RepoExecutionResultSchema.safeParse(result[0]).success).toBe(true);
+  });
+
+  it("normalizeV1ExecutionResult success entries pass RepoExecutionResultSchema", () => {
+    const executionResult = {
+      hasChanges: true,
+      prUrl: "https://github.com/owner/repo/pull/42",
+      prNumber: 42,
+      prTitle: "Add feature",
+      branchName: "feat/feature-branch",
+      baseRef: "main",
+      baseBranch: "main",
+      commitSha: "abc123",
+      githubId: null,
+    };
+    const result = normalizeV1ExecutionResult(executionResult, "owner/repo");
+    expect(RepoExecutionResultSchema.safeParse(result[0]).success).toBe(true);
+  });
+
   it("getPrimaryRepoResult returns matching entry", () => {
     const entries = [
       {
@@ -226,6 +296,27 @@ describe("RepoExecutionResult v2", () => {
     ];
     const found = getPrimaryRepoResult(entries, "owner/nonexistent");
     expect(found).toBeNull();
+  });
+
+  it("LoopEventSchema rejects success entry with malformed prUrl in results", () => {
+    const event = {
+      type: "completed",
+      result: {},
+      tokensUsed: { input: 100, output: 50 },
+      timestamp: "2024-01-01T00:00:00Z",
+      results: [
+        {
+          status: "success",
+          fullName: "owner/repo",
+          prUrl: "https://github.com/owner/repo/pull/999",
+          prNumber: 42,
+          branchName: "feat/feature-branch",
+          baseBranch: "main",
+          hasChanges: true,
+        },
+      ],
+    };
+    expect(LoopEventSchema.safeParse(event).success).toBe(false);
   });
 
   it("LoopEventCompleted with results parses through LoopEventSchema", () => {
