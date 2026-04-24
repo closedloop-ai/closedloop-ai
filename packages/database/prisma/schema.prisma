@@ -307,8 +307,10 @@ model Organization {
   computeTargets     ComputeTarget[]
   chatSessions       ChatSession[]
   judgeHumanScores   JudgeHumanScore[]
-  customFields       CustomField[]
-  commentThreads     CommentThread[]
+  customFields          CustomField[]
+  commentThreads        CommentThread[]
+  agents                Agent[]
+  repoBootstrapConfigs  RepoBootstrapConfig[]
 
   @@map("organizations")
 }
@@ -356,6 +358,8 @@ model User {
   createdCustomFields         CustomField[]
   updatedCustomFieldValues    CustomFieldValue[]
   dismissedGenerationStatuses DocumentGenerationStatusDismissal[]
+  createdAgents               Agent[]                             @relation("AgentCreatedBy")
+  agentVersionChanges         AgentVersion[]                      @relation("AgentVersionChangedBy")
 
   @@unique([organizationId, email])
   @@unique([clerkId, organizationId])
@@ -1607,4 +1611,71 @@ model GoogleIntegration {
   updatedAt      DateTime  @updatedAt @map("updated_at")
 
   @@map("google_integrations")
+}
+
+// =============================================================================
+// AGENTS
+// =============================================================================
+
+model Agent {
+  id             String  @id @default(uuid(7)) @db.Uuid
+  organizationId String  @map("organization_id") @db.Uuid
+  name           String
+  slug           String
+  role           String
+  description    String?
+  prompt         String  @db.Text
+  enabled        Boolean @default(true)
+  sourceRepo     String? @map("source_repo")
+  bootstrapRunId String? @map("bootstrap_run_id")
+  currentVersion Int     @default(1) @map("current_version")
+  createdById    String  @map("created_by_id") @db.Uuid
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  organization Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdBy    User           @relation("AgentCreatedBy", fields: [createdById], references: [id])
+  versions     AgentVersion[]
+
+  @@unique([organizationId, slug])
+  @@index([organizationId])
+  @@index([organizationId, enabled])
+  @@map("agents")
+}
+
+model AgentVersion {
+  id         String  @id @default(uuid(7)) @db.Uuid
+  agentId    String  @map("agent_id") @db.Uuid
+  version    Int
+  name       String
+  prompt     String  @db.Text
+  changeNote String? @map("change_note")
+  changedById String @map("changed_by_id") @db.Uuid
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  // Relations
+  agent     Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  changedBy User  @relation("AgentVersionChangedBy", fields: [changedById], references: [id])
+
+  @@unique([agentId, version])
+  @@index([agentId])
+  @@map("agent_versions")
+}
+
+model RepoBootstrapConfig {
+  id             String  @id @default(uuid(7)) @db.Uuid
+  organizationId String  @map("organization_id") @db.Uuid
+  repoFullName   String  @map("repo_full_name")
+  criticGates    Json    @map("critic_gates")
+  bootstrapRunId String? @map("bootstrap_run_id")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, repoFullName])
+  @@index([organizationId])
+  @@map("repo_bootstrap_configs")
 }
