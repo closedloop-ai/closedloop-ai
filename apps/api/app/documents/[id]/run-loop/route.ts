@@ -15,7 +15,12 @@ import {
 } from "@repo/api/src/types/loop";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
-import { isConcurrentLoopLimitError, loopsService } from "@/app/loops/service";
+import {
+  isBranchNotFoundError,
+  isConcurrentLoopLimitError,
+  isUnauthorizedRepoError,
+  loopsService,
+} from "@/app/loops/service";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { resolveDocumentId } from "@/lib/identifier-utils";
 import { scheduleAutoEvaluatePrd } from "@/lib/loops/auto-evaluate-prd";
@@ -43,6 +48,12 @@ import { runLoopSchema } from "./validators";
 function handleRunLoopError(error: unknown) {
   if (isConcurrentLoopLimitError(error)) {
     return errorResponse(error.message, error, 429);
+  }
+  if (isUnauthorizedRepoError(error)) {
+    return errorResponse(error.message, error, 403);
+  }
+  if (isBranchNotFoundError(error)) {
+    return errorResponse(error.message, error, 400);
   }
   return errorResponse("Failed to run loop", error);
 }
