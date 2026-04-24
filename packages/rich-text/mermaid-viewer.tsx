@@ -68,7 +68,6 @@ import {
 import {
   Tooltip,
   TooltipContent,
-  TooltipProvider,
   TooltipTrigger,
 } from "@repo/design-system/components/ui/tooltip";
 import {
@@ -373,16 +372,22 @@ function ViewerCore({
     exportSvg(processedSvg, "mermaid-diagram.svg");
   }, [processedSvg]);
 
-  const handleExportPng = useCallback(() => {
+  const handleExportPng = useCallback(async () => {
     if (!svgDimensions) {
       return;
     }
-    exportPng(
-      processedSvg,
-      svgDimensions.width,
-      svgDimensions.height,
-      "mermaid-diagram.png"
-    );
+    try {
+      await exportPng(
+        processedSvg,
+        svgDimensions.width,
+        svgDimensions.height,
+        "mermaid-diagram.png"
+      );
+    } catch (err) {
+      // exportPng can reject (foreignObject taint, canvas 2D context missing,
+      // etc.). Log so failures don't disappear silently.
+      console.error("Failed to export mermaid diagram as PNG:", err);
+    }
   }, [processedSvg, svgDimensions]);
 
   // Hide the minimap at or near fit-to-view — there's nothing to navigate to.
@@ -484,6 +489,7 @@ function ToolbarButton({
     <Tooltip>
       <TooltipTrigger asChild>
         <button
+          aria-label={label}
           className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
           onClick={onClick}
           type="button"
@@ -535,71 +541,73 @@ function ViewerToolbar({
       // Prevent the pan gesture from starting when a toolbar button is clicked.
       onPointerDown={(e) => e.stopPropagation()}
     >
-      <TooltipProvider delayDuration={300}>
-        <ToolbarButton label="Zoom out" onClick={onZoomOut}>
-          <Minus className="size-3.5" />
-        </ToolbarButton>
+      {/* No outer <TooltipProvider>: the design-system <Tooltip> already wraps
+          its children in its own provider, so a wrapping TooltipProvider would
+          be shadowed by the inner one and have no effect. */}
+      <ToolbarButton label="Zoom out" onClick={onZoomOut}>
+        <Minus className="size-3.5" />
+      </ToolbarButton>
 
-        <span className="min-w-[3rem] select-none text-center font-mono text-[11px] text-muted-foreground">
-          {zoomPercent}%
-        </span>
+      <span className="min-w-[3rem] select-none text-center font-mono text-[11px] text-muted-foreground">
+        {zoomPercent}%
+      </span>
 
-        <ToolbarButton label="Zoom in" onClick={onZoomIn}>
-          <Plus className="size-3.5" />
-        </ToolbarButton>
+      <ToolbarButton label="Zoom in" onClick={onZoomIn}>
+        <Plus className="size-3.5" />
+      </ToolbarButton>
 
-        <div className="mx-0.5 h-4 w-px bg-border/50" />
+      <div className="mx-0.5 h-4 w-px bg-border/50" />
 
-        <ToolbarButton label="Fit to view" onClick={onFitToView}>
-          <RotateCcw className="size-3.5" />
-        </ToolbarButton>
+      <ToolbarButton label="Fit to view" onClick={onFitToView}>
+        <RotateCcw className="size-3.5" />
+      </ToolbarButton>
 
-        <ToolbarButton
-          label={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
-          onClick={onToggleFullscreen}
-        >
-          {isFullscreen ? (
-            <Minimize2 className="size-3.5" />
-          ) : (
-            <Maximize2 className="size-3.5" />
-          )}
-        </ToolbarButton>
-
-        <DropdownMenu>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <DropdownMenuTrigger asChild>
-                <button
-                  className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                  type="button"
-                >
-                  <Download className="size-3.5" />
-                </button>
-              </DropdownMenuTrigger>
-            </TooltipTrigger>
-            <TooltipContent side="bottom">
-              <p>Download</p>
-            </TooltipContent>
-          </Tooltip>
-          <DropdownMenuContent align="end">
-            <DropdownMenuItem onClick={onExportPng}>
-              Download as PNG
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={onExportSvg}>
-              Download as SVG
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-
-        {onEdit && (
-          <>
-            <div className="mx-0.5 h-4 w-px bg-border/50" />
-            <ToolbarButton label="Edit source" onClick={onEdit}>
-              <Pencil className="size-3.5" />
-            </ToolbarButton>
-          </>
+      <ToolbarButton
+        label={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
+        onClick={onToggleFullscreen}
+      >
+        {isFullscreen ? (
+          <Minimize2 className="size-3.5" />
+        ) : (
+          <Maximize2 className="size-3.5" />
         )}
-      </TooltipProvider>
+      </ToolbarButton>
+
+      <DropdownMenu>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <DropdownMenuTrigger asChild>
+              <button
+                aria-label="Download"
+                className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                type="button"
+              >
+                <Download className="size-3.5" />
+              </button>
+            </DropdownMenuTrigger>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">
+            <p>Download</p>
+          </TooltipContent>
+        </Tooltip>
+        <DropdownMenuContent align="end">
+          <DropdownMenuItem onClick={onExportPng}>
+            Download as PNG
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={onExportSvg}>
+            Download as SVG
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+
+      {onEdit && (
+        <>
+          <div className="mx-0.5 h-4 w-px bg-border/50" />
+          <ToolbarButton label="Edit source" onClick={onEdit}>
+            <Pencil className="size-3.5" />
+          </ToolbarButton>
+        </>
+      )}
     </div>
   );
 }
@@ -664,6 +672,13 @@ function Minimap({
   const vpHeight = visibleHeightSvg * minimapScale;
 
   function handleClick(e: React.MouseEvent) {
+    // Keyboard activation (Enter/Space) synthesizes a click with detail=0 and
+    // no meaningful pointer coordinates. Without this guard we'd navigate the
+    // viewport to SVG (0, 0) — an unhelpful jump. Ignoring keyboard clicks is
+    // the right behavior here since the minimap's value is spatial.
+    if (e.detail === 0) {
+      return;
+    }
     // Reverse of the viewport math: click point in minimap pixels → SVG coords.
     const rect = e.currentTarget.getBoundingClientRect();
     const svgX = originX + (e.clientX - rect.left) / minimapScale;

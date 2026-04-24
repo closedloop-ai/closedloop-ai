@@ -12,6 +12,33 @@ import { useEffect, useState } from "react";
 import { MermaidTransformPlugin } from "./mermaid-transform-plugin";
 import { MermaidViewer } from "./mermaid-viewer";
 
+type MermaidTheme = "dark" | "default";
+
+/**
+ * `mermaid.initialize` mutates a module-global config object. Two diagrams
+ * rendering concurrently (e.g. the same page containing multiple mermaid
+ * blocks) can race — the second component's call can overwrite the first's
+ * theme between when that first component initialized and when its async
+ * `render()` actually executes.
+ *
+ * Cache the last theme we initialized with and skip redundant calls. All
+ * viewer instances on a given page derive `theme` from the same
+ * `resolvedTheme`, so in practice this turns N concurrent calls into 1.
+ */
+let lastInitializedTheme: MermaidTheme | null = null;
+
+function ensureMermaidInitialized(theme: MermaidTheme) {
+  if (lastInitializedTheme === theme) {
+    return;
+  }
+  mermaid.initialize({
+    startOnLoad: false,
+    theme,
+    securityLevel: "loose",
+  });
+  lastInitializedTheme = theme;
+}
+
 type MermaidExtensionOptions = {
   /**
    * When true, render the rendered SVG via the interactive `MermaidViewer`
@@ -72,11 +99,7 @@ function MermaidComponent({
         return;
       }
 
-      mermaid.initialize({
-        startOnLoad: false,
-        theme: isDark ? "dark" : "default",
-        securityLevel: "loose",
-      });
+      ensureMermaidInitialized(isDark ? "dark" : "default");
 
       try {
         const id = `mermaid-${Math.random().toString(36).substring(2, 11)}`;
