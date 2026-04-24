@@ -1098,6 +1098,58 @@ export async function listPullRequestIssueComments(
   }
 }
 
+/**
+ * Verify that a branch exists in a repository.
+ * Returns true if the branch exists, false if it does not (404).
+ * Throws a descriptive error for any other failure (permission denied, network error, etc.).
+ */
+export async function verifyBranchExists(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  branch: string
+): Promise<boolean> {
+  try {
+    await octokit.rest.repos.getBranch({ owner, repo, branch });
+    return true;
+  } catch (error) {
+    const status = (error as { status?: number }).status;
+    if (status === 404) {
+      return false;
+    }
+    const errorMessage =
+      error instanceof Error ? error.message : "Unknown error";
+    log.error("[github/branch] Failed to verify branch existence", {
+      owner,
+      repo,
+      branch,
+      error: errorMessage,
+    });
+    throw new Error(
+      `Failed to verify branch "${branch}" in ${owner}/${repo}: ${errorMessage}`
+    );
+  }
+}
+
+/**
+ * Verify that a branch exists in a repository using an installation token.
+ * Convenience wrapper around verifyBranchExists that creates the Octokit
+ * instance from the given installation ID, so callers do not need to import
+ * Octokit directly.
+ *
+ * Returns true if the branch exists, false if it does not (404).
+ * Throws a descriptive error for any other failure.
+ */
+export async function verifyInstallationBranchExists(
+  installationId: string,
+  owner: string,
+  repo: string,
+  branch: string
+): Promise<boolean> {
+  const octokit = await getInstallationOctokit(installationId);
+  return verifyBranchExists(octokit, owner, repo, branch);
+}
+
 export async function replyToPullRequestReviewComment(
   installationId: string,
   owner: string,

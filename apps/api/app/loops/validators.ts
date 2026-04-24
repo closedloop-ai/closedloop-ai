@@ -38,11 +38,36 @@ export const repoSchema = z.object({
  * Validated additionalRepos schema — coerces empty arrays to undefined so
  * downstream consumers receive either a non-empty list or nothing at all.
  */
-export const additionalReposSchema = z
+const additionalReposArraySchema = z
   .array(repoSchema)
   .max(MAX_ADDITIONAL_REPOS)
+  .superRefine((repos, ctx) => {
+    const seen = new Set<string>();
+    for (let i = 0; i < repos.length; i++) {
+      const { fullName } = repos[i];
+      if (seen.has(fullName)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Duplicate repository: "${fullName}"`,
+          path: [i, "fullName"],
+        });
+      } else {
+        seen.add(fullName);
+      }
+    }
+  });
+
+export const additionalReposSchema = additionalReposArraySchema
   .optional()
   .transform((value) => (value?.length ? value : undefined));
+
+/**
+ * Token refreshes use additionalRepos as an explicit subset selector. Empty
+ * arrays mean "refresh only the primary token", so preserve [] instead of
+ * normalizing it to an omitted field.
+ */
+export const tokenRefreshAdditionalReposSchema =
+  additionalReposArraySchema.optional();
 
 export const createLoopValidator = z.object({
   command: LoopCommandSchema,
