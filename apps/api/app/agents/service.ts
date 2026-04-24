@@ -352,13 +352,16 @@ export const agentsService = {
     const results: AgentSummary[] = [];
 
     await withDb.tx(async (tx) => {
-      const roles = input.agents.map((a) => a.role);
+      const dedupedAgents = [
+        ...new Map(input.agents.map((a) => [a.role, a])).values(),
+      ];
+      const roles = dedupedAgents.map((a) => a.role);
       const existingAgents = await tx.agent.findMany({
         where: { organizationId, role: { in: roles } },
       });
       const byRole = new Map(existingAgents.map((a) => [a.role, a]));
 
-      for (const agentInput of input.agents) {
+      for (const agentInput of dedupedAgents) {
         const existingByRole = byRole.get(agentInput.role);
 
         if (existingByRole) {
