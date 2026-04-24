@@ -31,6 +31,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import type { LucideIcon } from "lucide-react";
 import {
   BarChart3,
+  BotIcon,
   Boxes,
   CodeIcon,
   InboxIcon,
@@ -133,6 +134,12 @@ const baseWorkspaceItems: NavItem[] = [
     title: "Loops",
     url: "/loops",
     icon: RotateCcwIcon,
+    disabled: false,
+  },
+  {
+    title: "Agents",
+    url: "/agents",
+    icon: BotIcon,
     disabled: false,
   },
 ];
