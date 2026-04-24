@@ -27,8 +27,15 @@ export const updateAgentValidator = z
     { message: "changeNote required when updating prompt or name" }
   );
 
+const bulkIngestAgentItemValidator = z.object({
+  name: z.string().min(1).max(200),
+  role: z.string().min(1).max(100),
+  description: z.string().max(500).optional(),
+  prompt: z.string().min(1),
+});
+
 export const bulkIngestValidator = z.object({
-  agents: z.array(createAgentValidator).min(1).max(100),
+  agents: z.array(bulkIngestAgentItemValidator).min(1).max(100),
   bootstrapRunId: z.string().min(1),
   sourceRepo: z.string().min(1),
   criticGates: z.record(z.string(), z.unknown()).optional(),

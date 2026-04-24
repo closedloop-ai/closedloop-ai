@@ -1639,6 +1639,7 @@ model Agent {
   versions     AgentVersion[]
 
   @@unique([organizationId, slug])
+  @@unique([organizationId, role])
   @@index([organizationId])
   @@index([organizationId, enabled])
   @@map("agents")
