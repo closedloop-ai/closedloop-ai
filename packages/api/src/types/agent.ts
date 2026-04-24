@@ -47,8 +47,15 @@ export type UpdateAgentRequest = {
   changeNote?: string;
 };
 
+export type BulkIngestAgentItem = {
+  name: string;
+  role: string;
+  description?: string;
+  prompt: string;
+};
+
 export type BulkIngestAgentRequest = {
-  agents: CreateAgentRequest[];
+  agents: BulkIngestAgentItem[];
   bootstrapRunId: string;
   sourceRepo: string;
   criticGates?: Record<string, unknown>;

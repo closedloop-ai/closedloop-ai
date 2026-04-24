@@ -8,14 +8,19 @@ import {
 } from "@/lib/route-utils";
 import { agentsService } from "../../../service";
 
+const DIGITS_ONLY = /^\d+$/;
+
 export const GET = withAnyAuth<
   AgentVersionDetail,
   "/agents/[idOrSlug]/versions/[version]"
 >(async ({ user }, _request, params) => {
   try {
     const { idOrSlug, version: versionStr } = await params;
-    const version = Number.parseInt(versionStr, 10);
-    if (Number.isNaN(version) || version < 1) {
+    if (!DIGITS_ONLY.test(versionStr)) {
+      return badRequestResponse("Version must be a positive integer");
+    }
+    const version = Number(versionStr);
+    if (version < 1) {
       return badRequestResponse("Version must be a positive integer");
     }
 

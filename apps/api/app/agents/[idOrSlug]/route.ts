@@ -2,6 +2,7 @@ import type { AgentDetail } from "@repo/api/src/types/agent";
 import { isOrgAdmin } from "@/lib/auth/org-admin";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import {
+  conflictResponse,
   deleteResponse,
   errorResponse,
   forbiddenResponse,
@@ -62,6 +63,9 @@ export const PATCH = withAnyAuth<AgentDetail, "/agents/[idOrSlug]">(
 
       return successResponse(agent);
     } catch (error) {
+      if ((error as { code?: string }).code === "P2002") {
+        return conflictResponse("Concurrent update conflict — please retry");
+      }
       return errorResponse("Failed to update agent", error);
     }
   }

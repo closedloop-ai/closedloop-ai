@@ -2,6 +2,7 @@ import type { AgentDetail, AgentListResponse } from "@repo/api/src/types/agent";
 import { isOrgAdmin } from "@/lib/auth/org-admin";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import {
+  conflictResponse,
   errorResponse,
   forbiddenResponse,
   parseBody,
@@ -55,6 +56,11 @@ export const POST = withAnyAuth<AgentDetail, "/agents">(
 
       return successResponse(agent);
     } catch (error) {
+      if ((error as { code?: string }).code === "P2002") {
+        return conflictResponse(
+          "An agent with this role already exists in the organization"
+        );
+      }
       return errorResponse("Failed to create agent", error);
     }
   }
