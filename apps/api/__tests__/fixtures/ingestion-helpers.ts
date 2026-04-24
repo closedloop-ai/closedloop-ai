@@ -5,10 +5,9 @@ import type { IngestionContext } from "@/lib/loops/ingest-repo-execution-results
 /**
  * Test alias for the production ingestion context.
  */
-export type IngestionTestContext = IngestionContext;
 
 /** Default IDs for unit tests (ingest-repo-execution-results, etc.) */
-export const unitIngestionCtxDefaults: IngestionTestContext = {
+export const unitIngestionCtxDefaults: IngestionContext = {
   organizationId: "org-1",
   workstreamId: "ws-1",
   documentId: "doc-1",
@@ -18,7 +17,7 @@ export const unitIngestionCtxDefaults: IngestionTestContext = {
 };
 
 /** Default IDs for multi-repo E2E-style tests */
-export const e2eIngestionCtxDefaults: IngestionTestContext = {
+export const e2eIngestionCtxDefaults: IngestionContext = {
   organizationId: "org-e2e",
   workstreamId: "ws-e2e",
   documentId: "doc-e2e",
@@ -32,9 +31,9 @@ export const e2eIngestionCtxDefaults: IngestionTestContext = {
  * {@link e2eIngestionCtxDefaults} as the second arg for E2E-style fixtures.
  */
 export function makeIngestionCtx(
-  overrides: Partial<IngestionTestContext> = {},
-  base: IngestionTestContext = unitIngestionCtxDefaults
-): IngestionTestContext {
+  overrides: Partial<IngestionContext> = {},
+  base: IngestionContext = unitIngestionCtxDefaults
+): IngestionContext {
   return { ...base, ...overrides };
 }
 
