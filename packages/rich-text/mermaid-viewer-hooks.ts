@@ -57,16 +57,22 @@ export function useFullscreen(wrapperRef: RefObject<HTMLElement | null>): {
   const [isFullscreen, setIsFullscreen] = useState(false);
 
   useEffect(() => {
+    // Scope the check to *our* wrapper. Multiple mermaid viewers can live on
+    // one page; a global `!!document.fullscreenElement` would flip every
+    // viewer into fullscreen mode whenever any one of them went fullscreen.
     function onFullscreenChange() {
-      setIsFullscreen(!!document.fullscreenElement);
+      setIsFullscreen(document.fullscreenElement === wrapperRef.current);
     }
     document.addEventListener("fullscreenchange", onFullscreenChange);
     return () =>
       document.removeEventListener("fullscreenchange", onFullscreenChange);
-  }, []);
+  }, [wrapperRef]);
 
   function toggle() {
-    if (document.fullscreenElement) {
+    // Only exit if *we're* the fullscreen element. Otherwise request
+    // fullscreen for our wrapper — even if another viewer is currently
+    // fullscreen, the browser will transition to ours.
+    if (document.fullscreenElement === wrapperRef.current) {
       document.exitFullscreen();
     } else {
       wrapperRef.current?.requestFullscreen();
