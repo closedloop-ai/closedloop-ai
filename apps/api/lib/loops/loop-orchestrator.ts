@@ -1111,6 +1111,7 @@ async function handleLoopCompleted(
         result: event.result,
         tokensUsed: event.tokensUsed ?? null,
         timestamp: event.timestamp,
+        ...(event.results ? { results: event.results } : {}),
       } as Record<string, unknown>,
     },
     replayContext

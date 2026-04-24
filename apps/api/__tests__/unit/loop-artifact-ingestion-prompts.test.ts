@@ -399,17 +399,20 @@ describe("ingestExecutionArtifacts — upsertFromSnapshot ordering", () => {
       });
 
     const artifacts = {
-      executionResult: {
-        has_changes: true,
-        pr_url: "https://github.com/org/repo/pull/10",
-        pr_number: 10,
-        pr_title: "Symphony: test feature",
-        branch_name: "symphony/test-feature",
-        base_branch: "main",
-        base_ref: "main",
-        github_id: 999,
-        commit_sha: "abc123",
-      },
+      executionResult: [
+        {
+          status: "success" as const,
+          fullName: "org/repo",
+          prUrl: "https://github.com/org/repo/pull/10",
+          prNumber: 10,
+          prTitle: "Symphony: test feature",
+          branchName: "symphony/test-feature",
+          baseBranch: "main",
+          hasChanges: true,
+          githubId: 999,
+          commitSha: "abc123",
+        },
+      ],
       codeJudgesReport,
       promptsSnapshot: {
         prompts: [
@@ -426,7 +429,7 @@ describe("ingestExecutionArtifacts — upsertFromSnapshot ordering", () => {
       },
     };
 
-    await ingestExecutionArtifacts(loop, artifacts);
+    await ingestExecutionArtifacts(loop, ORG_ID, artifacts);
 
     expect(mockFanOutJudgeScores).toHaveBeenCalledTimes(1);
     const upsertIdx = callOrder.indexOf("upsertFromSnapshot");
@@ -484,24 +487,27 @@ describe("ingestExecutionArtifacts — upsertFromSnapshot ordering", () => {
       });
 
     const artifacts = {
-      executionResult: {
-        has_changes: true,
-        pr_url: "https://github.com/org/repo/pull/11",
-        pr_number: 11,
-        pr_title: "Symphony: null snapshot test",
-        branch_name: "symphony/null-snapshot",
-        base_branch: "main",
-        base_ref: "main",
-        github_id: 1000,
-        commit_sha: "def456",
-      },
+      executionResult: [
+        {
+          status: "success" as const,
+          fullName: "org/repo",
+          prUrl: "https://github.com/org/repo/pull/11",
+          prNumber: 11,
+          prTitle: "Symphony: null snapshot test",
+          branchName: "symphony/null-snapshot",
+          baseBranch: "main",
+          hasChanges: true,
+          githubId: 1000,
+          commitSha: "def456",
+        },
+      ],
       codeJudgesReport: null,
       promptsSnapshot: null,
     };
 
     // Should not throw
     await expect(
-      ingestExecutionArtifacts(loop, artifacts)
+      ingestExecutionArtifacts(loop, ORG_ID, artifacts)
     ).resolves.toBeUndefined();
 
     expect(mockUpsertFromSnapshot).toHaveBeenCalledWith(ORG_ID, null);

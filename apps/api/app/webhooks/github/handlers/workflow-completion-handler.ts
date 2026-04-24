@@ -1,3 +1,4 @@
+import { parseExecutionResultFile } from "@closedloop-ai/loops-api/execution-result";
 import type { WorkflowRunCompletedEvent } from "@octokit/webhooks-types";
 import {
   EvaluationReportType,
@@ -14,264 +15,89 @@ import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
 import { documentVersionService } from "@/app/documents/document-version-service";
 import { fanOutJudgeScores } from "@/lib/judge-score-fanout";
-import { ensurePrLinkageRecords } from "@/lib/pr-linkage";
+import {
+  type IngestionContext,
+  ingestRepoExecutionResults,
+} from "@/lib/loops/ingest-repo-execution-results";
 import { upsertFromSnapshot } from "@/lib/prompts-service";
-import type { ExecutionResult, WorkflowContext } from "../types";
+import type { WorkflowContext } from "../types";
 import { findActionRunByCorrelationId } from "../webhook-service";
 import { processArtifactDownloads } from "./workflow-artifacts";
 
 /**
- * Metadata structure for GITHUB_PR_CREATED and GITHUB_PR_MERGED events.
- * Used for type-safe event data serialization in WorkstreamEvent.data.
- */
-type PrEventMetadata = {
-  prTitle: string;
-  prUrl: string;
-  documentId: string;
-  slug?: string;
-  branch: string;
-  prNumber: number;
-  correlationId: string;
-  runId: string;
-};
-
-/**
- * Handle successful execution workflow - creates a PR record and
- * ExternalLink/EntityLink entries if changes were made.
+ * Handle successful execution workflow — delegates to the shared
+ * ingestRepoExecutionResults routine for PR creation/dedup logic.
  */
 export async function handleExecutionSuccess(
   ctx: WorkflowContext,
-  executionResult: ExecutionResult,
+  executionResult: unknown,
   codeJudgesReport: JudgesReport | null,
-  promptsSnapshot: PromptsSnapshot | null
+  promptsSnapshot: PromptsSnapshot | null,
+  opts: { tx?: TransactionClient } = {}
 ): Promise<void> {
-  const { correlationId, workstreamId, repositoryId, runId } = ctx;
+  const {
+    correlationId,
+    workstreamId,
+    documentId,
+    runId,
+    actionRunId,
+    fullName,
+  } = ctx;
 
-  // Check if execution actually produced changes and a PR
-  if (!(executionResult.has_changes && executionResult.pr_url)) {
-    log.info(
-      `Execution completed with no changes for workflow run ${runId}, correlation ${correlationId}`
-    );
-    // Create event to indicate execution completed but no PR was needed
-    await withDb((db) =>
-      db.workstreamEvent.create({
-        data: {
-          workstreamId,
-          type: "GITHUB_ACTION_COMPLETED",
-          actorType: "system",
-          data: {
-            correlationId,
-            runId,
-            command: "execute",
-            conclusion: "success",
-            hasChanges: false,
-            message: "Execution completed - no changes to commit",
-          },
-        },
-      })
-    );
-    return;
-  }
+  const parsed = parseExecutionResultFile(executionResult, fullName);
 
-  if (!repositoryId) {
-    if (codeJudgesReport) {
-      log.warn(
-        "[handleExecutionSuccess] Dropping codeJudgesReport — no repositoryId in context",
-        {
-          reportId: codeJudgesReport.report_id,
-        }
-      );
-    }
+  if (!parsed.ok) {
     log.error(
-      `[handleExecutionSuccess] No repositoryId in context for correlation ${correlationId}`
+      "[handleExecutionSuccess] Failed to parse execution result file",
+      {
+        correlationId,
+        runId,
+        error: parsed.error,
+        schemaVersion: parsed.schemaVersion,
+      }
     );
     return;
   }
 
-  // Convert pr_number from string to number (GitHub Actions outputs strings)
-  const prNumber =
-    typeof executionResult.pr_number === "string"
-      ? Number.parseInt(executionResult.pr_number, 10)
-      : executionResult.pr_number;
+  log.info("[handleExecutionSuccess] Parsed execution result file", {
+    correlationId,
+    runId,
+    schemaVersion: parsed.schemaVersion,
+    repoCount: parsed.repoCount,
+  });
 
-  // Provide defaults for optional fields
-  const prTitle =
-    executionResult.pr_title ||
-    `ClosedLoop: ${executionResult.branch_name || `PR #${prNumber}`}`;
-  const baseBranch =
-    executionResult.base_branch || executionResult.base_ref || "main";
-
-  await withDb.tx(async (tx) => {
-    // Look up workstream to get organizationId for org-scoped queries
-    const workstream = await tx.workstream.findUnique({
+  // Look up workstream to get organizationId for IngestionContext
+  const workstream = await withDb((db) =>
+    db.workstream.findUnique({
       where: { id: workstreamId },
       select: { organizationId: true },
-    });
+    })
+  );
 
-    if (!workstream) {
-      throw new Error(
-        `[handleExecutionSuccess] Workstream ${workstreamId} not found for correlation ${correlationId}`
-      );
-    }
+  if (!workstream) {
+    log.error(
+      `[handleExecutionSuccess] Workstream ${workstreamId} not found for correlation ${correlationId}`
+    );
+    return;
+  }
 
-    // Query plan artifact scoped to organization for defense-in-depth
-    const planArtifact = await tx.document.findUnique({
-      where: { id: ctx.documentId, organizationId: workstream.organizationId },
-      select: {
-        organizationId: true,
-        projectId: true,
-        slug: true,
-      },
-    });
+  const ingestionCtx: IngestionContext = {
+    organizationId: workstream.organizationId,
+    workstreamId,
+    documentId,
+    loopId: correlationId,
+    correlationId,
+    actionRunId,
+  };
 
-    if (!planArtifact) {
-      throw new Error(
-        `[handleExecutionSuccess] Implementation plan artifact ${ctx.documentId} not found in organization for correlation ${correlationId}`
-      );
-    }
-
-    // Check if a PR record already exists (may have been created by the
-    // pull_request webhook or loop execute handler racing with this handler).
-    const existingPr = await tx.gitHubPullRequest.findUnique({
-      where: {
-        repositoryId_number: {
-          repositoryId,
-          number: prNumber,
-        },
-      },
-      select: { id: true, documentId: true },
-    });
-
-    // Determine the effective documentId for linkage. If the PR row already
-    // exists with a different artifact, respect the existing link to avoid
-    // creating contradictory entity-link edges.
-    let effectiveDocumentId = ctx.documentId;
-
-    if (existingPr) {
-      if (!existingPr.documentId) {
-        // PR exists without an artifact link — claim it
-        await tx.gitHubPullRequest.update({
-          where: { id: existingPr.id },
-          data: { documentId: ctx.documentId },
-        });
-      } else if (existingPr.documentId !== ctx.documentId) {
-        // PR is already linked to a different artifact — don't overwrite
-        effectiveDocumentId = existingPr.documentId;
-        log.warn(
-          "[handleExecutionSuccess] PR already linked to a different artifact",
-          {
-            existingDocumentId: existingPr.documentId,
-            requestedArtifactId: ctx.documentId,
-            prNumber,
-            correlationId,
-          }
-        );
-      }
-      log.info(
-        "[handleExecutionSuccess] PR already exists; skipping duplicate PR row create",
-        {
-          repositoryId,
-          prNumber,
-          pullRequestId: existingPr.id,
-          correlationId,
-        }
-      );
-    } else {
-      // Create GitHubPullRequest record
-      await tx.gitHubPullRequest.create({
-        data: {
-          workstreamId,
-          organizationId: workstream.organizationId,
-          repositoryId,
-          documentId: ctx.documentId,
-          githubId: String(executionResult.github_id ?? prNumber),
-          number: prNumber,
-          title: prTitle,
-          htmlUrl: executionResult.pr_url,
-          headBranch: executionResult.branch_name,
-          baseBranch,
-          state: "OPEN",
-        },
-      });
-    }
-
-    // Create ExternalLink, EntityLink, and preview deployment records (with dedup)
-    await ensurePrLinkageRecords(tx, {
-      organizationId: workstream.organizationId,
-      workstreamId,
-      projectId: planArtifact.projectId!,
-      documentId: effectiveDocumentId,
-      prUrl: executionResult.pr_url,
-      prTitle,
-      prNumber,
-      githubId: String(executionResult.github_id ?? prNumber),
-      headBranch: executionResult.branch_name,
-      baseBranch,
-      commitSha: executionResult.commit_sha ?? null,
-    });
-
-    // Create workstream event (always — events are an append-only log)
-    await tx.workstreamEvent.create({
-      data: {
-        workstreamId,
-        type: "GITHUB_PR_CREATED",
-        actorType: "system",
-        data: {
-          correlationId,
-          prNumber,
-          prUrl: executionResult.pr_url,
-          prTitle,
-          branch: executionResult.branch_name,
-          runId,
-          documentId: ctx.documentId,
-          slug: planArtifact.slug,
-        } as PrEventMetadata,
-      },
-    });
-
-    await upsertFromSnapshot(workstream.organizationId, promptsSnapshot);
-
-    if (codeJudgesReport && ctx.actionRunId) {
-      const evaluation = await tx.documentEvaluation.upsert({
-        where: {
-          entityId_reportId: {
-            entityId: ctx.documentId,
-            reportId: codeJudgesReport.report_id,
-          },
-        },
-        create: {
-          organizationId: workstream.organizationId,
-          entityId: ctx.documentId,
-          entityType: EntityType.DOCUMENT,
-          documentId: ctx.documentId,
-          actionRunId: ctx.actionRunId,
-          reportType: EvaluationReportType.Code,
-          reportId: codeJudgesReport.report_id,
-          reportData: codeJudgesReport,
-        },
-        update: {
-          reportType: EvaluationReportType.Code,
-          reportData: codeJudgesReport,
-        },
-      });
-
-      await fanOutJudgeScores({
-        evaluationId: evaluation.id,
-        organizationId: workstream.organizationId,
-        report: codeJudgesReport,
-        tx,
-      });
-
-      log.info("[handleExecutionSuccess] Persisted code judges report", {
-        documentId: ctx.documentId,
-        reportId: codeJudgesReport.report_id,
-        judgesCount: codeJudgesReport.stats.length,
-      });
-    }
+  await ingestRepoExecutionResults(ingestionCtx, parsed.results, {
+    codeJudgesReport,
+    promptsSnapshot,
+    tx: opts.tx,
   });
 
   log.info(
-    `Successfully created PR record for workflow run ${runId}, PR #${prNumber}`
+    `[handleExecutionSuccess] Completed ingestion for workflow run ${runId}, correlation ${correlationId}`
   );
 }
 
@@ -305,7 +131,10 @@ export async function handleWorkflowSuccess(
       ctx,
       executionResult,
       codeJudgesReport,
-      promptsSnapshot
+      promptsSnapshot,
+      {
+        tx,
+      }
     );
     return;
   }
@@ -554,6 +383,7 @@ export async function processWorkflowCompletion(
     command: triggerData.command,
     runId,
     actionRunId: actionRun.id,
+    fullName: event.repository.full_name,
   };
 
   // Use transaction to ensure artifact content and status are updated atomically.

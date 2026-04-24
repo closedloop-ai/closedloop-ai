@@ -10,73 +10,143 @@ import {
 } from "../src/execution-result";
 
 describe("parseExecutionResultFile", () => {
-  it("normalizes ECS sentinel values to null", () => {
+  it("normalizes ECS sentinel values to null (v1)", () => {
+    const result = parseExecutionResultFile(
+      {
+        has_changes: false,
+        pr_url: "",
+        pr_number: 0,
+        branch_name: "",
+        base_ref: "main",
+        commit_sha: null,
+      },
+      "owner/repo"
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.schemaVersion).toBe(1);
+      expect(result.repoCount).toBe(1);
+      expect(result.results[0].status).toBe("skipped");
+    }
+  });
+
+  it("parses string pr_number (v1)", () => {
+    const result = parseExecutionResultFile(
+      {
+        has_changes: true,
+        pr_url: "https://github.com/owner/repo/pull/42",
+        pr_number: "42",
+        branch_name: "feat/login",
+        base_ref: "main",
+        commit_sha: "abc123",
+      },
+      "owner/repo"
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok && result.results[0].status === "success") {
+      expect(result.results[0].prNumber).toBe(42);
+    }
+  });
+
+  it("maps pr_title, base_branch, and github_id when present (v1)", () => {
+    const result = parseExecutionResultFile(
+      {
+        has_changes: true,
+        pr_url: "https://github.com/owner/repo/pull/42",
+        pr_number: 42,
+        pr_title: "Symphony: feature",
+        branch_name: "feat/login",
+        base_ref: "main",
+        base_branch: "develop",
+        commit_sha: "abc123",
+        github_id: 999,
+      },
+      "owner/repo"
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok && result.results[0].status === "success") {
+      expect(result.results[0].prTitle).toBe("Symphony: feature");
+      expect(result.results[0].baseBranch).toBe("develop");
+      expect(result.results[0].githubId).toBe(999);
+    }
+  });
+
+  it("returns failure for invalid v1 input", () => {
+    expect(parseExecutionResultFile({}, "owner/repo").ok).toBe(false);
+    expect(parseExecutionResultFile(null, "owner/repo").ok).toBe(false);
+    expect(parseExecutionResultFile("string", "owner/repo").ok).toBe(false);
+  });
+
+  it("returns failure when fullName is absent for v1 payload", () => {
     const result = parseExecutionResultFile({
       has_changes: false,
       pr_url: "",
       pr_number: 0,
       branch_name: "",
       base_ref: "main",
-      commit_sha: null,
     });
-    expect(result).toEqual({
-      hasChanges: false,
-      prUrl: null,
-      prNumber: null,
-      prTitle: null,
-      branchName: null,
-      baseRef: "main",
-      baseBranch: null,
-      commitSha: null,
-      githubId: null,
-    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain("fullName is required");
+    }
   });
 
-  it("parses string pr_number", () => {
+  it("returns failure for NaN pr_number string with changes (v1 hasChanges:true missing fields)", () => {
+    const result = parseExecutionResultFile(
+      {
+        has_changes: true,
+        pr_url: "https://github.com/owner/repo/pull/42",
+        pr_number: "not-a-number",
+        branch_name: "feat/login",
+        base_ref: "main",
+        commit_sha: "abc123",
+      },
+      "owner/repo"
+    );
+    // prNumber normalizes to null → normalizeV1ExecutionResult returns failed
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.results[0].status).toBe("failed");
+    }
+  });
+
+  it("dispatches to v2 path when schemaVersion is 2", () => {
     const result = parseExecutionResultFile({
-      has_changes: true,
-      pr_url: "https://github.com/org/repo/pull/42",
-      pr_number: "42",
-      branch_name: "feat/login",
-      base_ref: "main",
-      commit_sha: "abc123",
+      schemaVersion: 2,
+      results: [
+        {
+          status: "skipped",
+          fullName: "owner/repo",
+          reason: "no_changes",
+        },
+      ],
     });
-    expect(result?.prNumber).toBe(42);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.schemaVersion).toBe(2);
+      expect(result.repoCount).toBe(1);
+      expect(result.results[0].status).toBe("skipped");
+    }
   });
 
-  it("maps pr_title, base_branch, and github_id when present", () => {
+  it("returns failure for unsupported schemaVersion", () => {
+    const result = parseExecutionResultFile({ schemaVersion: 3 });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.schemaVersion).toBe(3);
+      expect(result.error).toContain("Unsupported schemaVersion");
+    }
+  });
+
+  it("returns failure for invalid v2 envelope content", () => {
     const result = parseExecutionResultFile({
-      has_changes: true,
-      pr_url: "https://github.com/org/repo/pull/42",
-      pr_number: 42,
-      pr_title: "Symphony: feature",
-      branch_name: "feat/login",
-      base_ref: "main",
-      base_branch: "develop",
-      commit_sha: "abc123",
-      github_id: 999,
+      schemaVersion: 2,
+      results: "not-an-array",
     });
-    expect(result?.prTitle).toBe("Symphony: feature");
-    expect(result?.baseBranch).toBe("develop");
-    expect(result?.githubId).toBe(999);
-  });
-
-  it("returns null for invalid input", () => {
-    expect(parseExecutionResultFile({})).toBeNull();
-    expect(parseExecutionResultFile(null)).toBeNull();
-    expect(parseExecutionResultFile("string")).toBeNull();
-  });
-
-  it("returns null for NaN pr_number string", () => {
-    const result = parseExecutionResultFile({
-      has_changes: true,
-      pr_url: "https://github.com/org/repo/pull/42",
-      pr_number: "not-a-number",
-      branch_name: "feat/login",
-      base_ref: "main",
-      commit_sha: "abc123",
-    });
-    expect(result?.prNumber).toBeNull();
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.schemaVersion).toBe(2);
+    }
   });
 });
 
@@ -158,6 +228,15 @@ describe("RepoExecutionResult v2", () => {
       results: [validSuccessEntry],
     };
     expect(ExecutionResultV2Schema.safeParse(input).success).toBe(true);
+  });
+
+  it("v2 envelope with empty results array yields ok:true, repoCount:0, results:[]", () => {
+    const result = parseExecutionResultFile({ schemaVersion: 2, results: [] });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.repoCount).toBe(0);
+      expect(result.results).toEqual([]);
+    }
   });
 
   it("normalizeV1ExecutionResult converts hasChanges:true to success", () => {

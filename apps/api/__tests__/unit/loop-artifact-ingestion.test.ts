@@ -140,17 +140,20 @@ function buildExecutionArtifacts(
   overrides: Partial<ExecutionArtifacts> = {}
 ): ExecutionArtifacts {
   return {
-    executionResult: {
-      has_changes: true,
-      pr_url: "https://github.com/org/repo/pull/42",
-      pr_number: 42,
-      pr_title: "Symphony: feature",
-      branch_name: "symphony/feature",
-      base_branch: "main",
-      base_ref: "main",
-      github_id: 999,
-      commit_sha: "abc123",
-    },
+    executionResult: [
+      {
+        status: "success",
+        fullName: "org/repo",
+        prUrl: "https://github.com/org/repo/pull/42",
+        prNumber: 42,
+        prTitle: "Symphony: feature",
+        branchName: "symphony/feature",
+        baseBranch: "main",
+        hasChanges: true,
+        githubId: 999,
+        commitSha: "abc123",
+      },
+    ],
     codeJudgesReport: null,
     promptsSnapshot: null,
     ...overrides,
@@ -318,7 +321,7 @@ describe("ingestExecutionArtifacts", () => {
     };
     mockWithDbTx(mockTx);
 
-    await ingestExecutionArtifacts(loop, artifacts);
+    await ingestExecutionArtifacts(loop, loop.organizationId, artifacts);
 
     expect(mockFanOutJudgeScores).toHaveBeenCalledWith({
       evaluationId,
@@ -378,7 +381,7 @@ describe("ingestExecutionArtifacts", () => {
     };
     mockWithDbTx(mockTx);
 
-    await ingestExecutionArtifacts(loop, artifacts);
+    await ingestExecutionArtifacts(loop, loop.organizationId, artifacts);
 
     expect(mockTx.documentEvaluation.upsert).toHaveBeenCalledWith(
       expect.objectContaining({

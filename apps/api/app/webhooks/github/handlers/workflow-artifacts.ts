@@ -5,7 +5,6 @@ import { downloadWorkflowArtifacts } from "@repo/github";
 import { extractInnerZips } from "@repo/github/zip-utils";
 import { log } from "@repo/observability/log";
 import AdmZip from "adm-zip";
-import type { ExecutionResult } from "../types";
 import { findPlanInZip, type ZipContent } from "../zip-parser";
 
 /**
@@ -14,7 +13,7 @@ import { findPlanInZip, type ZipContent } from "../zip-parser";
 export type ProcessArtifactResult = {
   planContent: string | null;
   questionsContent: string | null;
-  executionResult: ExecutionResult | null;
+  executionResult: unknown;
   judgesReport: JudgesReport | null;
   codeJudgesReport: JudgesReport | null;
   perfSummary: PerfSummary | null;
