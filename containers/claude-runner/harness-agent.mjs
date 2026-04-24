@@ -3313,7 +3313,7 @@ function buildRepoList(primaryWorkDir) {
     repos.push({
       workDir: path.join("/workspace/peers", r.fullName.replaceAll("/", "--")),
       fullName: r.fullName,
-      baseBranch: r.baseBranch,
+      baseBranch: r.branch,
       githubToken: r.githubToken,
     });
   }
