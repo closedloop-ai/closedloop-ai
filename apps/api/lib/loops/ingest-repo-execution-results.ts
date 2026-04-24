@@ -43,11 +43,16 @@ export type IngestionContext = {
  * Ingest a single successful repo result into the database within an own
  * transaction. Resolves the repo by fullName, upserts the GitHubPullRequest
  * row (race-safe), and calls ensurePrLinkageRecords.
+ *
+ * Returns `true` when the per-repo writes actually landed, `false` when the
+ * entry was skipped (missing installation repo or missing artifact). The
+ * caller uses the return value to gate the "ingested" success log so that
+ * skipped entries aren't misreported as ingested.
  */
 async function ingestSuccessEntry(
   ctx: IngestionContext,
   result: RepoExecutionResult & { status: "success" }
-): Promise<void> {
+): Promise<boolean> {
   const { organizationId, workstreamId, documentId, loopId, correlationId } =
     ctx;
 
@@ -71,12 +76,14 @@ async function ingestSuccessEntry(
         fullName: result.fullName,
       }
     );
-    return;
+    return false;
   }
 
   const prTitle =
     result.prTitle ||
     `ClosedLoop: ${result.branchName || `PR #${result.prNumber}`}`;
+
+  let ingested = false;
 
   await withDb.tx(async (tx) => {
     const artifact = await tx.document.findUnique({
@@ -207,18 +214,24 @@ async function ingestSuccessEntry(
         },
       },
     });
+
+    ingested = true;
   });
 
-  log.info(
-    "[ingest-repo-execution-results] Ingested execution result for repo",
-    {
-      loopId,
-      correlationId,
-      fullName: result.fullName,
-      prUrl: result.prUrl,
-      prNumber: result.prNumber,
-    }
-  );
+  if (ingested) {
+    log.info(
+      "[ingest-repo-execution-results] Ingested execution result for repo",
+      {
+        loopId,
+        correlationId,
+        fullName: result.fullName,
+        prUrl: result.prUrl,
+        prNumber: result.prNumber,
+      }
+    );
+  }
+
+  return ingested;
 }
 
 // ---------------------------------------------------------------------------

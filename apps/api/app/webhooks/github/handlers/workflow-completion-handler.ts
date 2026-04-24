@@ -56,7 +56,9 @@ export async function handleExecutionSuccess(
         schemaVersion: parsed.schemaVersion,
       }
     );
-    return;
+    throw new Error(
+      `[handleExecutionSuccess] Failed to parse execution result file for correlation ${correlationId}: ${parsed.error}`
+    );
   }
 
   log.info("[handleExecutionSuccess] Parsed execution result file", {
@@ -78,7 +80,9 @@ export async function handleExecutionSuccess(
     log.error(
       `[handleExecutionSuccess] Workstream ${workstreamId} not found for correlation ${correlationId}`
     );
-    return;
+    throw new Error(
+      `[handleExecutionSuccess] Workstream ${workstreamId} not found for correlation ${correlationId}`
+    );
   }
 
   const ingestionCtx: IngestionContext = {
@@ -104,9 +108,15 @@ export async function handleExecutionSuccess(
 /**
  * Handle successful workflow completion.
  * Persists prompts snapshot for non-execute path; execute path persists via handleExecutionSuccess.
+ *
+ * `tx` is required for the non-execute path (artifact content must land
+ * atomically with the action run status update). For the execute path
+ * it is always passed as `null` by `processWorkflowCompletion` so the
+ * inner per-repo withDb.tx calls can own their own transactions instead
+ * of joining an outer tx via AsyncLocalStorage.
  */
 export async function handleWorkflowSuccess(
-  tx: TransactionClient,
+  tx: TransactionClient | null,
   ctx: WorkflowContext
 ): Promise<void> {
   const { correlationId, documentId, workstreamId, runId, command } = ctx;
@@ -132,11 +142,15 @@ export async function handleWorkflowSuccess(
       executionResult,
       codeJudgesReport,
       promptsSnapshot,
-      {
-        tx,
-      }
+      tx ? { tx } : {}
     );
     return;
+  }
+
+  if (!tx) {
+    throw new Error(
+      "handleWorkflowSuccess: tx is required for non-execute command paths"
+    );
   }
 
   // TODO: Handle questionsContent with needs_answers status in future
@@ -385,6 +399,33 @@ export async function processWorkflowCompletion(
     actionRunId: actionRun.id,
     fullName: event.repository.full_name,
   };
+
+  // For execute-success we deliberately run ingestion OUTSIDE an outer
+  // withDb.tx wrapper. ingestRepoExecutionResults opens a per-repo
+  // withDb.tx internally, and withDb's AsyncLocalStorage would cause that
+  // inner tx to join an outer webhook tx — defeating the per-repo
+  // isolation contract (a DB error in one repo would poison the outer
+  // transaction and abort the subsequent gitHubActionRun.update as well
+  // as every other repo's writes).
+  //
+  // See apps/api/app/webhooks/github/CLAUDE.md (nested withDb calls
+  // participate in the parent transaction via ALS).
+  if (conclusion === "success" && triggerData.command === "execute") {
+    await handleWorkflowSuccess(null, ctx);
+    await withDb((db) =>
+      db.gitHubActionRun.update({
+        where: { id: actionRun.id },
+        data: {
+          runId: String(runId),
+          status: "SUCCESS",
+          conclusion,
+          htmlUrl: event.workflow_run.html_url,
+          completedAt: new Date(),
+        },
+      })
+    );
+    return NextResponse.json({ result: "processed", ok: true });
+  }
 
   // Use transaction to ensure artifact content and status are updated atomically.
   // This prevents race condition where frontend sees SUCCESS before content is ready.

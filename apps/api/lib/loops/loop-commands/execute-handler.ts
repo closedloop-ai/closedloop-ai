@@ -54,25 +54,39 @@ async function downloadExecutionArtifacts(
   let executionResult: RepoExecutionResult[] | null = null;
 
   if (executionResultBuf) {
-    const rawData = JSON.parse(executionResultBuf.toString("utf-8")) as unknown;
-    const parsed = parseExecutionResultFile(rawData, loop.repo?.fullName);
-
-    if (parsed.ok) {
-      executionResult = parsed.results;
-      log.info("[loop-document-ingestion] Parsed execution result file", {
-        loopId: loop.id,
-        schemaVersion: parsed.schemaVersion,
-        repoCount: parsed.repoCount,
-      });
-    } else {
+    let rawData: unknown = null;
+    try {
+      rawData = JSON.parse(executionResultBuf.toString("utf-8"));
+    } catch (err) {
       log.error(
-        "[loop-document-ingestion] Failed to parse execution result file",
+        "[loop-document-ingestion] Malformed execution-result.json — skipping execution ingestion",
         {
           loopId: loop.id,
-          error: parsed.error,
-          schemaVersion: parsed.schemaVersion,
+          error: err instanceof Error ? err.message : String(err),
         }
       );
+    }
+
+    if (rawData !== null) {
+      const parsed = parseExecutionResultFile(rawData, loop.repo?.fullName);
+
+      if (parsed.ok) {
+        executionResult = parsed.results;
+        log.info("[loop-document-ingestion] Parsed execution result file", {
+          loopId: loop.id,
+          schemaVersion: parsed.schemaVersion,
+          repoCount: parsed.repoCount,
+        });
+      } else {
+        log.error(
+          "[loop-document-ingestion] Failed to parse execution result file",
+          {
+            loopId: loop.id,
+            error: parsed.error,
+            schemaVersion: parsed.schemaVersion,
+          }
+        );
+      }
     }
   }
 
@@ -144,16 +158,30 @@ const executionUploadBodySchema = z.object({
 });
 
 function executionArtifactsFromUpload(
-  uploaded: JsonObject
+  uploaded: JsonObject,
+  loop: Loop
 ): ExecutionArtifacts {
   const parsed = executionUploadBodySchema.parse(uploaded);
   const codeJudgesReport = (parsed.codeJudges as JudgesReport) ?? null;
 
   let executionResult: RepoExecutionResult[] | null = null;
   if (parsed.executionResult !== undefined) {
-    const result = parseExecutionResultFile(parsed.executionResult);
+    const result = parseExecutionResultFile(
+      parsed.executionResult,
+      loop.repo?.fullName
+    );
     if (result.ok) {
       executionResult = result.results;
+    } else {
+      log.error(
+        "[loop-document-ingestion] Failed to parse execution result from upload",
+        {
+          loopId: loop.id,
+          error: result.error,
+          schemaVersion: result.schemaVersion,
+          hasFullName: Boolean(loop.repo?.fullName),
+        }
+      );
     }
   }
 

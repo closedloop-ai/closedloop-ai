@@ -18,6 +18,7 @@ import {
   EvalStatus,
   EvaluationReportType,
 } from "@repo/api/src/types/evaluation";
+import type { TransactionClient } from "@repo/database";
 import { type Mock, vi } from "vitest";
 import { buildZipWithEntries } from "../fixtures/zip-helpers";
 import {
@@ -120,6 +121,10 @@ const mockParseExecutionResultFile =
   parseExecutionResultFile as unknown as Mock;
 const mockIngestRepoExecutionResults =
   ingestRepoExecutionResults as unknown as Mock;
+
+const FAILED_TO_PARSE_EXECUTION_RESULT_RE =
+  /Failed to parse execution result file/;
+const WORKSTREAM_NOT_FOUND_RE = /Workstream ws-missing not found/;
 
 describe("handleWorkflowSuccess", () => {
   beforeEach(() => {
@@ -884,7 +889,7 @@ describe("handleExecutionSuccess", () => {
     );
   });
 
-  it("logs error and returns early when parseExecutionResultFile fails", async () => {
+  it("logs error and throws when parseExecutionResultFile fails", async () => {
     const ctx: WorkflowContext = {
       correlationId: "exec-parse-fail",
       documentId: "plan-artifact-fail",
@@ -899,7 +904,9 @@ describe("handleExecutionSuccess", () => {
       schemaVersion: 1,
     });
 
-    await handleExecutionSuccess(ctx, { invalid: true }, null, null);
+    await expect(
+      handleExecutionSuccess(ctx, { invalid: true }, null, null)
+    ).rejects.toThrow(FAILED_TO_PARSE_EXECUTION_RESULT_RE);
 
     expect(mockIngestRepoExecutionResults).not.toHaveBeenCalled();
     expect(mockWithDb).not.toHaveBeenCalled();
@@ -994,7 +1001,7 @@ describe("handleExecutionSuccess", () => {
       },
     });
 
-    const fakeTx = {} as import("@repo/database").TransactionClient;
+    const fakeTx = {} as TransactionClient;
     await handleExecutionSuccess(ctx, {}, null, null, { tx: fakeTx });
 
     expect(mockIngestRepoExecutionResults).toHaveBeenCalledWith(
@@ -1004,7 +1011,7 @@ describe("handleExecutionSuccess", () => {
     );
   });
 
-  it("returns early when workstream is not found", async () => {
+  it("throws when workstream is not found", async () => {
     const ctx: WorkflowContext = {
       correlationId: "exec-no-workstream",
       documentId: "plan-no-workstream",
@@ -1024,7 +1031,9 @@ describe("handleExecutionSuccess", () => {
       workstream: { findUnique: vi.fn().mockResolvedValue(null) },
     });
 
-    await handleExecutionSuccess(ctx, {}, null, null);
+    await expect(handleExecutionSuccess(ctx, {}, null, null)).rejects.toThrow(
+      WORKSTREAM_NOT_FOUND_RE
+    );
 
     expect(mockIngestRepoExecutionResults).not.toHaveBeenCalled();
   });
@@ -1394,7 +1403,9 @@ describe("handleExecutionSuccess — ingestRepoExecutionResults delegation", () 
       error: "parse failed",
     });
 
-    await handleExecutionSuccess(ctx, {}, null, null);
+    await expect(handleExecutionSuccess(ctx, {}, null, null)).rejects.toThrow(
+      FAILED_TO_PARSE_EXECUTION_RESULT_RE
+    );
 
     expect(mockIngestRepoExecutionResults).not.toHaveBeenCalled();
     expect(mockFanOutJudgeScores).not.toHaveBeenCalled();

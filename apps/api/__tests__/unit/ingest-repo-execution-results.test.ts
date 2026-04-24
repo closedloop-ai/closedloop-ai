@@ -513,14 +513,15 @@ describe("ingestRepoExecutionResults", () => {
         return originalCreate(...args);
       });
 
-      // withDb.tx for judges report (first call) and for per-repo transaction (second call)
-      let _txCallCount = 0;
+      // withDb.tx is invoked twice:
+      //  1. By ingestRepoExecutionResults itself to persist the code judges
+      //     report (when opts.tx is not provided).
+      //     upsertEvaluationWithJudgeScores is mocked here and does NOT
+      //     call withDb.tx — it accepts tx as a parameter in real code.
+      //  2. By ingestSuccessEntry for the per-repo PR/linkage writes.
       mockWithDb.tx = vi
         .fn()
         .mockImplementation((callback: (tx: unknown) => unknown) => {
-          _txCallCount++;
-          // First tx call is for judges report (via upsertEvaluationWithJudgeScores → withDb.tx wrapper)
-          // Second tx call is for ingestSuccessEntry
           return callback(mockTx);
         });
 
