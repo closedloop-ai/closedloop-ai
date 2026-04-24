@@ -157,6 +157,14 @@ const executionUploadBodySchema = z.object({
   codeJudges: judgesReportSchema.optional(),
 });
 
+const legacyV1ExecutionUploadSchema = z
+  .object({
+    schemaVersion: z.literal(1).optional(),
+    base_ref: z.string().optional(),
+    base_branch: z.string().optional(),
+  })
+  .passthrough();
+
 function executionArtifactsFromUpload(
   uploaded: JsonObject,
   loop: Loop
@@ -167,7 +175,7 @@ function executionArtifactsFromUpload(
   let executionResult: RepoExecutionResult[] | null = null;
   if (parsed.executionResult !== undefined) {
     const result = parseExecutionResultFile(
-      parsed.executionResult,
+      withLegacyUploadBaseRefFallback(parsed.executionResult),
       loop.repo?.fullName
     );
     if (result.ok) {
@@ -189,6 +197,18 @@ function executionArtifactsFromUpload(
   const promptsSnapshot: PromptsSnapshot | null = null;
 
   return { executionResult, codeJudgesReport, promptsSnapshot };
+}
+
+function withLegacyUploadBaseRefFallback(executionResult: unknown): unknown {
+  const legacyUpload = legacyV1ExecutionUploadSchema.safeParse(executionResult);
+  if (!legacyUpload.success || legacyUpload.data.base_ref !== undefined) {
+    return executionResult;
+  }
+
+  return {
+    ...legacyUpload.data,
+    base_ref: legacyUpload.data.base_branch || "main",
+  };
 }
 
 // ---------------------------------------------------------------------------
