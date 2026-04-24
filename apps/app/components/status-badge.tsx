@@ -44,7 +44,7 @@ export function StatusBadge({
 
 const COLOR_SUCCESS = "bg-success/10 text-success-foreground border-success/30";
 const COLOR_FAILURE =
-  "bg-destructive/10 text-destructive-foreground border-destructive/30";
+  "bg-destructive/10 text-destructive border-destructive/30";
 const COLOR_PROGRESS = "bg-info/10 text-info-foreground border-info/30";
 const COLOR_PENDING = "bg-warning/10 text-warning-foreground border-warning/30";
 const COLOR_INACTIVE = "bg-muted text-muted-foreground border-muted";
