@@ -178,6 +178,12 @@ enum GitHubInstallationStatus {
   UNINSTALLED
 }
 
+// Distinguishes manually created API keys from desktop-managed bootstrap keys.
+enum ApiKeySource {
+  USER_CREATED
+  DESKTOP_MANAGED
+}
+
 enum TeamRole {
   OWNER
   ADMIN
@@ -1392,19 +1398,24 @@ model SlackIntegration {
 // =============================================================================
 
 model ApiKey {
-  id             String    @id @default(uuid(7)) @db.Uuid
-  organizationId String    @map("organization_id") @db.Uuid
-  userId         String    @map("user_id") @db.Uuid
+  id             String       @id @default(uuid(7)) @db.Uuid
+  organizationId String       @map("organization_id") @db.Uuid
+  userId         String       @map("user_id") @db.Uuid
   name           String
-  scopes         String[]  @default([])
-  keyHash        String    @unique @map("key_hash")
-  keyPrefix      String    @map("key_prefix")
-  expiresAt      DateTime? @map("expires_at")
-  lastUsedAt     DateTime? @map("last_used_at")
-  createdAt      DateTime  @default(now()) @map("created_at")
-  revokedAt      DateTime? @map("revoked_at")
+  scopes         String[]     @default([])
+  keyHash        String       @unique @map("key_hash")
+  keyPrefix      String       @map("key_prefix")
+  expiresAt      DateTime?    @map("expires_at")
+  lastUsedAt     DateTime?    @map("last_used_at")
+  createdAt      DateTime     @default(now()) @map("created_at")
+  revokedAt      DateTime?    @map("revoked_at")
+  // Phase A stores desktop bootstrap provenance and gateway binding metadata.
+  source         ApiKeySource @default(USER_CREATED)
+  gatewayId      String?      @map("gateway_id")
+  boundPublicKey String?      @map("bound_public_key")
 
   @@index([organizationId])
+  @@index([organizationId, userId, gatewayId])
   @@map("api_keys")
 }
 
@@ -1481,6 +1492,19 @@ model LocalGatewayChallengeJti {
 
   @@index([expiresAt])
   @@map("local_gateway_challenge_jtis")
+}
+
+model DesktopOnboardingAttempt {
+  attemptId      String    @id @map("attempt_id")
+  userId         String    @map("user_id") @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  webAppOrigin   String    @map("web_app_origin")
+  expiresAt      DateTime  @map("expires_at")
+  consumedAt     DateTime? @map("consumed_at")
+
+  @@index([organizationId, userId])
+  @@index([expiresAt])
+  @@map("desktop_onboarding_attempts")
 }
 
 // =============================================================================

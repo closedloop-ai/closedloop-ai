@@ -10,15 +10,29 @@
  */
 import { createHash } from "node:crypto";
 import { type Mock, vi } from "vitest";
+import { DesktopManagedKeyRotationConflictError } from "../service";
+
+const mocks = vi.hoisted(() => {
+  const withDb = Object.assign(vi.fn(), {
+    tx: vi.fn(),
+  });
+  const ApiKeySource = {
+    USER_CREATED: "USER_CREATED",
+    DESKTOP_MANAGED: "DESKTOP_MANAGED",
+  } as const;
+
+  return { withDb, ApiKeySource };
+});
 
 vi.mock("@repo/database", () => ({
-  withDb: vi.fn(),
+  ApiKeySource: mocks.ApiKeySource,
+  withDb: mocks.withDb,
 }));
 
 import { withDb } from "@repo/database";
 import { apiKeysService } from "../service";
 
-const mockWithDb = withDb as unknown as Mock;
+const mockWithDb = withDb as unknown as Mock & { tx: Mock };
 
 const SK_LIVE_REGEX = /^sk_live_[0-9a-f]{64}$/;
 const SK_LIVE_PREFIX_REGEX = /^sk_live_/;
@@ -43,6 +57,9 @@ function makeApiKeyRecord(
     lastUsedAt: Date | null;
     createdAt: Date;
     revokedAt: Date | null;
+    source: string;
+    gatewayId: string | null;
+    boundPublicKey: string | null;
   }> = {}
 ) {
   return {
@@ -218,6 +235,151 @@ describe("apiKeysService.generate", () => {
     await apiKeysService.generate(ORG_ID, USER_ID, { name: "Full Access" });
 
     expect(capturedScopes).toEqual(["read", "write", "delete"]);
+  });
+
+  it("defaults non-Desktop keys to USER_CREATED with no gateway binding", async () => {
+    let capturedData: Record<string, unknown> | undefined;
+
+    mockWithDb.mockImplementation((callback: (db: unknown) => unknown) => {
+      const mockDb = {
+        apiKey: {
+          create: vi.fn((args: { data: Record<string, unknown> }) => {
+            capturedData = args.data;
+            return Promise.resolve(makeApiKeyRecord());
+          }),
+        },
+      };
+      return callback(mockDb);
+    });
+
+    await apiKeysService.generate(ORG_ID, USER_ID, { name: "Manual Key" });
+
+    expect(capturedData).toMatchObject({
+      source: "USER_CREATED",
+      gatewayId: null,
+      boundPublicKey: null,
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// rotateDesktopManagedKey()
+// ---------------------------------------------------------------------------
+
+describe("apiKeysService.rotateDesktopManagedKey", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("revokes the prior managed key for the same org/user/gateway before creating the replacement", async () => {
+    let revokeArgs: Record<string, unknown> | undefined;
+    let createArgs: Record<string, unknown> | undefined;
+
+    mockWithDb.tx.mockImplementation((callback: (db: unknown) => unknown) => {
+      const mockDb = {
+        apiKey: {
+          updateMany: vi.fn(
+            (args: {
+              where: Record<string, unknown>;
+              data: Record<string, unknown>;
+            }) => {
+              revokeArgs = args;
+              return Promise.resolve({ count: 1 });
+            }
+          ),
+          create: vi.fn((args: { data: Record<string, unknown> }) => {
+            createArgs = args;
+            return Promise.resolve(
+              makeApiKeyRecord({
+                id: "managed-key-1",
+                name: "Desktop gateway-123",
+              })
+            );
+          }),
+        },
+      };
+      return callback(mockDb);
+    });
+
+    const result = await apiKeysService.rotateDesktopManagedKey({
+      organizationId: ORG_ID,
+      userId: USER_ID,
+      gatewayId: "gateway-123",
+      boundPublicKey: "public-key-pem",
+    });
+
+    expect(revokeArgs).toMatchObject({
+      where: {
+        organizationId: ORG_ID,
+        userId: USER_ID,
+        source: "DESKTOP_MANAGED",
+        gatewayId: "gateway-123",
+        revokedAt: null,
+      },
+      data: {
+        revokedAt: expect.any(Date),
+      },
+    });
+
+    expect(createArgs).toMatchObject({
+      data: {
+        organizationId: ORG_ID,
+        userId: USER_ID,
+        name: "Desktop gateway-123",
+        scopes: ["read", "write", "delete"],
+        keyPrefix: "sk_live_",
+        source: "DESKTOP_MANAGED",
+        gatewayId: "gateway-123",
+        boundPublicKey: "public-key-pem",
+      },
+    });
+
+    expect(result.id).toBe("managed-key-1");
+    expect(result.plaintext).toMatch(SK_LIVE_REGEX);
+  });
+
+  it("stores null boundPublicKey and DESKTOP_MANAGED source for legacy Desktop claims", async () => {
+    let createData: Record<string, unknown> | undefined;
+
+    mockWithDb.tx.mockImplementation((callback: (db: unknown) => unknown) => {
+      const mockDb = {
+        apiKey: {
+          updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+          create: vi.fn((args: { data: Record<string, unknown> }) => {
+            createData = args.data;
+            return Promise.resolve(makeApiKeyRecord());
+          }),
+        },
+      };
+      return callback(mockDb);
+    });
+
+    await apiKeysService.rotateDesktopManagedKey({
+      organizationId: ORG_ID,
+      userId: USER_ID,
+      gatewayId: "gateway-legacy",
+    });
+
+    expect(createData).toMatchObject({
+      source: "DESKTOP_MANAGED",
+      gatewayId: "gateway-legacy",
+      boundPublicKey: null,
+    });
+  });
+
+  it("maps Prisma unique violations to a rotation conflict error", async () => {
+    mockWithDb.tx.mockRejectedValue(
+      Object.assign(new Error("Unique violation"), { code: "P2002" })
+    );
+
+    await expect(
+      apiKeysService.rotateDesktopManagedKey({
+        organizationId: ORG_ID,
+        userId: USER_ID,
+        gatewayId: "gateway-123",
+        boundPublicKey: "public-key-pem",
+      })
+    ).rejects.toBeInstanceOf(DesktopManagedKeyRotationConflictError);
   });
 });
 
@@ -473,6 +635,37 @@ describe("apiKeysService.verifyKey", () => {
       userId: "user-verified",
       organizationId: "org-verified",
       scopes: [],
+    });
+  });
+
+  it("accepts DESKTOP_MANAGED keys without extra PoP checks in Phase A", async () => {
+    const plaintext = "sk_live_desktopmanagedkey";
+    const record = makeApiKeyRecord({
+      source: "DESKTOP_MANAGED",
+      gatewayId: "gateway-123",
+      boundPublicKey: "public-key-pem",
+    });
+
+    mockWithDb
+      .mockImplementationOnce((callback: (db: unknown) => unknown) => {
+        const mockDb = {
+          apiKey: { findFirst: vi.fn().mockResolvedValue(record) },
+        };
+        return callback(mockDb);
+      })
+      .mockImplementationOnce((callback: (db: unknown) => unknown) => {
+        const mockDb = {
+          apiKey: { update: vi.fn().mockResolvedValue({}) },
+        };
+        return callback(mockDb);
+      });
+
+    const result = await apiKeysService.verifyKey(plaintext);
+
+    expect(result).toEqual({
+      userId: record.userId,
+      organizationId: record.organizationId,
+      scopes: ["read", "write", "delete"],
     });
   });
 
