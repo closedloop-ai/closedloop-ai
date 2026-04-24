@@ -267,6 +267,19 @@ describe("authorizeAdditionalRepos", () => {
     expect(result.map((r) => r.fullName)).toEqual(
       expect.arrayContaining(["acme/frontend", "acme/backend"])
     );
+    expect(mockVerifyBranch).toHaveBeenCalledTimes(2);
+    expect(mockVerifyBranch).toHaveBeenCalledWith(
+      "12345",
+      "acme",
+      "frontend",
+      "main"
+    );
+    expect(mockVerifyBranch).toHaveBeenCalledWith(
+      "12345",
+      "acme",
+      "backend",
+      "develop"
+    );
   });
 
   it("throws UnauthorizedRepoError when a repo is not found in the installation", async () => {

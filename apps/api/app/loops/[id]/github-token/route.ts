@@ -64,6 +64,28 @@ export async function POST(
       // Body absent or not valid JSON — use DB value as fallback
     }
 
+    // Body-provided additionalRepos must be a strict subset of the loop's
+    // DB-authorized list (authorized via authorizeAdditionalRepos at loop
+    // creation). Without this check, a compromised harness holding a valid
+    // loop-runner JWT could request tokens for any repo the org's GitHub App
+    // installation covers, escalating beyond the loop's authorized scope.
+    const authorizedAdditionalRepos = loop.additionalRepos ?? [];
+    if (bodyAdditionalRepos !== undefined) {
+      const authorizedKeys = new Set(
+        authorizedAdditionalRepos.map((r) => `${r.fullName}:${r.branch}`)
+      );
+      const unauthorized = bodyAdditionalRepos.filter(
+        (r) => !authorizedKeys.has(`${r.fullName}:${r.branch}`)
+      );
+      if (unauthorized.length > 0) {
+        return errorResponse(
+          "Additional repos not authorized for this loop",
+          new Error("Forbidden"),
+          403
+        );
+      }
+    }
+
     // Resolve the primary and additional-repo tokens in parallel. Each
     // resolveGitHubToken() call is an independent GitHub App installation-token
     // round-trip, so serializing them would add 100-500ms per additional repo
@@ -72,7 +94,7 @@ export async function POST(
     const additionalRepos =
       bodyAdditionalRepos !== undefined
         ? bodyAdditionalRepos
-        : (loop.additionalRepos ?? []);
+        : authorizedAdditionalRepos;
     const [freshToken, additionalRepoTokens] = await Promise.all([
       resolveGitHubToken(claims.organizationId, loop.repo.fullName),
       Promise.all(

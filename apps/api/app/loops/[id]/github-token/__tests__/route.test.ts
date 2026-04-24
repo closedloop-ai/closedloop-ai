@@ -135,7 +135,49 @@ describe("POST /api/loops/:id/github-token", () => {
       );
     });
 
-    test("valid body additionalRepos overrides DB record additionalRepos", async () => {
+    test("body additionalRepos that match DB-authorized subset are honored", async () => {
+      vi.mocked(loopsService.findById).mockResolvedValue({
+        id: loopId,
+        repo: { fullName: "owner/primary" },
+        additionalRepos: [
+          { fullName: "owner/db-repo-1", branch: "main" },
+          { fullName: "owner/db-repo-2", branch: "main" },
+        ],
+      } as any);
+
+      const req = new NextRequest(
+        `http://localhost/api/loops/${loopId}/github-token`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            additionalRepos: [{ fullName: "owner/db-repo-1", branch: "main" }],
+          }),
+        }
+      );
+
+      const res = await POST(req, { params: Promise.resolve({ id: loopId }) });
+      expect(res.status).toBe(200);
+
+      const body = await res.json();
+      expect(body.data).toEqual({
+        token: "token-for-owner/primary",
+        additionalRepoTokens: [
+          { fullName: "owner/db-repo-1", token: "token-for-owner/db-repo-1" },
+        ],
+      });
+
+      expect(resolveGitHubToken).toHaveBeenCalledWith(orgId, "owner/db-repo-1");
+      expect(resolveGitHubToken).not.toHaveBeenCalledWith(
+        orgId,
+        "owner/db-repo-2"
+      );
+    });
+
+    test("body additionalRepos not in DB-authorized list returns 403", async () => {
       vi.mocked(loopsService.findById).mockResolvedValue({
         id: loopId,
         repo: { fullName: "owner/primary" },
@@ -151,27 +193,56 @@ describe("POST /api/loops/:id/github-token", () => {
             "Content-Type": "application/json",
           },
           body: JSON.stringify({
-            additionalRepos: [{ fullName: "owner/body-repo", branch: "main" }],
+            additionalRepos: [
+              { fullName: "owner/unauthorized-repo", branch: "main" },
+            ],
           }),
         }
       );
 
       const res = await POST(req, { params: Promise.resolve({ id: loopId }) });
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(403);
 
-      const body = await res.json();
-      expect(body.data).toEqual({
-        token: "token-for-owner/primary",
-        additionalRepoTokens: [
-          { fullName: "owner/body-repo", token: "token-for-owner/body-repo" },
-        ],
-      });
+      expect(resolveGitHubToken).not.toHaveBeenCalledWith(
+        orgId,
+        "owner/unauthorized-repo"
+      );
+      expect(resolveGitHubToken).not.toHaveBeenCalledWith(
+        orgId,
+        "owner/primary"
+      );
+    });
+
+    test("body additionalRepos with mismatched branch returns 403", async () => {
+      vi.mocked(loopsService.findById).mockResolvedValue({
+        id: loopId,
+        repo: { fullName: "owner/primary" },
+        additionalRepos: [{ fullName: "owner/db-repo", branch: "main" }],
+      } as any);
+
+      const req = new NextRequest(
+        `http://localhost/api/loops/${loopId}/github-token`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            additionalRepos: [
+              { fullName: "owner/db-repo", branch: "malicious-branch" },
+            ],
+          }),
+        }
+      );
+
+      const res = await POST(req, { params: Promise.resolve({ id: loopId }) });
+      expect(res.status).toBe(403);
 
       expect(resolveGitHubToken).not.toHaveBeenCalledWith(
         orgId,
         "owner/db-repo"
       );
-      expect(resolveGitHubToken).toHaveBeenCalledWith(orgId, "owner/body-repo");
     });
 
     test("invalid body additionalRepos falls back to DB record additionalRepos", async () => {
