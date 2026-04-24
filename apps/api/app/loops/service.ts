@@ -19,7 +19,13 @@ import {
   type ResumeLoopRequest,
   type TokensByModel,
 } from "@repo/api/src/types/loop";
-import { Prisma, type Loop as PrismaLoop, withDb } from "@repo/database";
+import {
+  type GitHubInstallationRepository,
+  Prisma,
+  type Loop as PrismaLoop,
+  withDb,
+} from "@repo/database";
+import { verifyInstallationBranchExists } from "@repo/github";
 import { log } from "@repo/observability/log";
 import { z } from "zod";
 import { basicUserSelect } from "@/lib/db-utils";
@@ -330,10 +336,9 @@ export const loopsService = {
       throw new ConcurrentLoopLimitError(activeCount, maxConcurrentLoops);
     }
 
-    const additionalRepos = resolveAdditionalReposForCreate(
-      input.additionalRepos,
-      input.command
-    );
+    if (input.additionalRepos) {
+      await authorizeAdditionalRepos(input.additionalRepos, organizationId);
+    }
 
     const loop = await withDb((db) =>
       db.loop.create({
@@ -347,7 +352,7 @@ export const loopsService = {
           computeTargetId: input.computeTargetId ?? null,
           prompt: input.prompt ?? null,
           repo: input.repo ?? undefined,
-          additionalRepos: additionalRepos ?? undefined,
+          additionalRepos: input.additionalRepos ?? undefined,
           contextRefs: input.contextRefs ?? undefined,
           documentVersion: input.documentVersion ?? null,
           metadata: input.metadata ?? undefined,
@@ -1279,10 +1284,9 @@ export const loopsService = {
       throw new ConcurrentLoopLimitError(activeCount, maxConcurrentLoops);
     }
 
-    const additionalRepos = resolveAdditionalReposForCreate(
-      input.additionalRepos,
-      input.command
-    );
+    if (input.additionalRepos) {
+      await authorizeAdditionalRepos(input.additionalRepos, organizationId);
+    }
 
     const [loop] = await withDb((db) =>
       db.loop.createManyAndReturn({
@@ -1297,7 +1301,7 @@ export const loopsService = {
             computeTargetId: input.computeTargetId ?? null,
             prompt: input.prompt ?? null,
             repo: input.repo ?? undefined,
-            additionalRepos: additionalRepos ?? undefined,
+            additionalRepos: input.additionalRepos ?? undefined,
             contextRefs: input.contextRefs ?? undefined,
             documentVersion: input.documentVersion,
             metadata: input.metadata ?? undefined,
@@ -1388,27 +1392,138 @@ export const loopsService = {
   },
 };
 
-/**
- * Apply PLAN-only gate to requested additionalRepos.
- * Returns undefined when the command is not PLAN.
- * Enforced at the service layer so every caller
- * (POST /loops, /artifacts/[id]/run-loop, internal callers) is gated.
- */
-function resolveAdditionalReposForCreate(
-  additionalRepos: CreateLoopRequest["additionalRepos"],
-  command: LoopCommand
-): CreateLoopRequest["additionalRepos"] {
-  if (!additionalRepos) {
-    return undefined;
-  }
-
-  if (command !== LoopCommand.Plan) {
-    log.warn(
-      "[loops.service] additionalRepos is only supported for PLAN loops — dropping",
-      { command }
+export class UnauthorizedRepoError extends Error {
+  readonly unauthorizedRepos: string[];
+  constructor(unauthorizedRepos: string[]) {
+    super(
+      `GitHub App installation does not have access to the following repositories: ${unauthorizedRepos.join(", ")}`
     );
-    return undefined;
+    this.name = "UnauthorizedRepoError";
+    this.unauthorizedRepos = unauthorizedRepos;
+  }
+}
+
+export function isUnauthorizedRepoError(
+  error: unknown
+): error is UnauthorizedRepoError {
+  return error instanceof UnauthorizedRepoError;
+}
+
+export class BranchNotFoundError extends Error {
+  readonly repoFullName: string;
+  readonly branch: string;
+  constructor(repoFullName: string, branch: string) {
+    super(`Branch "${branch}" does not exist in repository ${repoFullName}`);
+    this.name = "BranchNotFoundError";
+    this.repoFullName = repoFullName;
+    this.branch = branch;
+  }
+}
+
+export function isBranchNotFoundError(
+  error: unknown
+): error is BranchNotFoundError {
+  return error instanceof BranchNotFoundError;
+}
+
+/**
+ * Verify the GitHub App installation has access to every repo in `additionalRepos`.
+ * Performs a single batch query against GitHubInstallationRepository scoped to
+ * the org's ACTIVE installation. Throws UnauthorizedRepoError if any repos are
+ * not accessible. Returns the verified repository records on success.
+ *
+ * @param additionalRepos - List of repos to check (each with a fullName field)
+ * @param organizationId - Organization ID used to scope the installation lookup
+ */
+export async function authorizeAdditionalRepos(
+  additionalRepos: Array<{ fullName: string; branch: string }>,
+  organizationId: string
+): Promise<GitHubInstallationRepository[]> {
+  if (additionalRepos.length === 0) {
+    return [];
   }
 
-  return additionalRepos;
+  const fullNames = additionalRepos.map((r) => r.fullName);
+
+  log.info("authorizeAdditionalRepos: checking repos", {
+    count: additionalRepos.length,
+    repos: fullNames,
+    organizationId,
+  });
+
+  const authorizedRepos = await withDb((db) =>
+    db.gitHubInstallationRepository.findMany({
+      where: {
+        fullName: { in: fullNames },
+        installation: {
+          organizationId,
+          status: "ACTIVE",
+        },
+      },
+      select: {
+        id: true,
+        fullName: true,
+        name: true,
+        owner: true,
+        private: true,
+        githubRepoId: true,
+        installationId: true,
+        lastPushedAt: true,
+        createdAt: true,
+        updatedAt: true,
+        installation: {
+          select: {
+            installationId: true,
+          },
+        },
+      },
+    })
+  );
+
+  const authorizedNames = new Set(authorizedRepos.map((r) => r.fullName));
+  const unauthorizedRepos = fullNames.filter((n) => !authorizedNames.has(n));
+
+  if (unauthorizedRepos.length > 0) {
+    log.warn("authorizeAdditionalRepos: unauthorized repos detected", {
+      unauthorizedRepos,
+      organizationId,
+    });
+    throw new UnauthorizedRepoError(unauthorizedRepos);
+  }
+
+  // Build a lookup map so we can find the branch for each authorized repo
+  const branchByFullName = new Map(
+    additionalRepos.map((r) => [r.fullName, r.branch])
+  );
+
+  await Promise.all(
+    authorizedRepos.map(async (repo) => {
+      const branch = branchByFullName.get(repo.fullName);
+      if (!branch) {
+        return;
+      }
+      const exists = await verifyInstallationBranchExists(
+        repo.installation.installationId,
+        repo.owner,
+        repo.name,
+        branch
+      );
+      if (!exists) {
+        log.warn("authorizeAdditionalRepos: branch not found", {
+          repo: repo.fullName,
+          branch,
+          organizationId,
+        });
+        throw new BranchNotFoundError(repo.fullName, branch);
+      }
+    })
+  );
+
+  log.info("authorizeAdditionalRepos: authorization succeeded", {
+    count: authorizedRepos.length,
+    repos: authorizedRepos.map((r) => r.fullName),
+    organizationId,
+  });
+
+  return authorizedRepos;
 }

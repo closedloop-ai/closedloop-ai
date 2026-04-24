@@ -11,7 +11,12 @@ import {
   parseBody,
   successResponse,
 } from "@/lib/route-utils";
-import { isConcurrentLoopLimitError, loopsService } from "./service";
+import {
+  isBranchNotFoundError,
+  isConcurrentLoopLimitError,
+  isUnauthorizedRepoError,
+  loopsService,
+} from "./service";
 import { createLoopValidator, listLoopsQueryValidator } from "./validators";
 
 export const GET = withAnyAuth<LoopWithUser[], "/loops">(
@@ -75,6 +80,12 @@ export const POST = withAnyAuth<CreateLoopResponse, "/loops">(
     } catch (error) {
       if (isConcurrentLoopLimitError(error)) {
         return errorResponse(error.message, error, 429);
+      }
+      if (isUnauthorizedRepoError(error)) {
+        return errorResponse(error.message, error, 403);
+      }
+      if (isBranchNotFoundError(error)) {
+        return errorResponse(error.message, error, 400);
       }
       return errorResponse("Failed to create loop", error);
     }

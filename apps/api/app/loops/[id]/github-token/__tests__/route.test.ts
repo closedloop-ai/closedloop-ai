@@ -118,4 +118,128 @@ describe("POST /api/loops/:id/github-token", () => {
 
     expect(resolveGitHubToken).toHaveBeenCalledTimes(1);
   });
+
+  describe("request body additionalRepos handling", () => {
+    const loopId = "loop-123";
+    const orgId = "org-456";
+    const token = "mock-jwt-token";
+
+    beforeEach(() => {
+      vi.mocked(extractBearerToken).mockReturnValue(token);
+      vi.mocked(verifyLoopRunnerToken).mockResolvedValue({
+        loopId,
+        organizationId: orgId,
+      } as any);
+      vi.mocked(resolveGitHubToken).mockImplementation(
+        async (_orgId, repoFullName) => `token-for-${repoFullName}`
+      );
+    });
+
+    test("valid body additionalRepos overrides DB record additionalRepos", async () => {
+      vi.mocked(loopsService.findById).mockResolvedValue({
+        id: loopId,
+        repo: { fullName: "owner/primary" },
+        additionalRepos: [{ fullName: "owner/db-repo", branch: "main" }],
+      } as any);
+
+      const req = new NextRequest(
+        `http://localhost/api/loops/${loopId}/github-token`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            additionalRepos: [{ fullName: "owner/body-repo", branch: "main" }],
+          }),
+        }
+      );
+
+      const res = await POST(req, { params: Promise.resolve({ id: loopId }) });
+      expect(res.status).toBe(200);
+
+      const body = await res.json();
+      expect(body.data).toEqual({
+        token: "token-for-owner/primary",
+        additionalRepoTokens: [
+          { fullName: "owner/body-repo", token: "token-for-owner/body-repo" },
+        ],
+      });
+
+      expect(resolveGitHubToken).not.toHaveBeenCalledWith(
+        orgId,
+        "owner/db-repo"
+      );
+      expect(resolveGitHubToken).toHaveBeenCalledWith(orgId, "owner/body-repo");
+    });
+
+    test("invalid body additionalRepos falls back to DB record additionalRepos", async () => {
+      vi.mocked(loopsService.findById).mockResolvedValue({
+        id: loopId,
+        repo: { fullName: "owner/primary" },
+        additionalRepos: [{ fullName: "owner/db-repo", branch: "main" }],
+      } as any);
+
+      const req = new NextRequest(
+        `http://localhost/api/loops/${loopId}/github-token`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            additionalRepos: [{ fullName: "not-a-valid-repo-name" }],
+          }),
+        }
+      );
+
+      const res = await POST(req, { params: Promise.resolve({ id: loopId }) });
+      expect(res.status).toBe(200);
+
+      const body = await res.json();
+      expect(body.data).toEqual({
+        token: "token-for-owner/primary",
+        additionalRepoTokens: [
+          { fullName: "owner/db-repo", token: "token-for-owner/db-repo" },
+        ],
+      });
+
+      expect(resolveGitHubToken).toHaveBeenCalledWith(orgId, "owner/db-repo");
+      expect(resolveGitHubToken).not.toHaveBeenCalledWith(
+        orgId,
+        "not-a-valid-repo-name"
+      );
+    });
+
+    test("empty/missing body falls back to DB record additionalRepos", async () => {
+      vi.mocked(loopsService.findById).mockResolvedValue({
+        id: loopId,
+        repo: { fullName: "owner/primary" },
+        additionalRepos: [{ fullName: "owner/db-repo", branch: "main" }],
+      } as any);
+
+      const req = new NextRequest(
+        `http://localhost/api/loops/${loopId}/github-token`,
+        {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+
+      const res = await POST(req, { params: Promise.resolve({ id: loopId }) });
+      expect(res.status).toBe(200);
+
+      const body = await res.json();
+      expect(body.data).toEqual({
+        token: "token-for-owner/primary",
+        additionalRepoTokens: [
+          { fullName: "owner/db-repo", token: "token-for-owner/db-repo" },
+        ],
+      });
+
+      expect(resolveGitHubToken).toHaveBeenCalledWith(orgId, "owner/db-repo");
+    });
+  });
 });

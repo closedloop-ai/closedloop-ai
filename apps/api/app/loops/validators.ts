@@ -41,6 +41,21 @@ export const repoSchema = z.object({
 export const additionalReposSchema = z
   .array(repoSchema)
   .max(MAX_ADDITIONAL_REPOS)
+  .superRefine((repos, ctx) => {
+    const seen = new Set<string>();
+    for (let i = 0; i < repos.length; i++) {
+      const { fullName } = repos[i];
+      if (seen.has(fullName)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Duplicate repository: "${fullName}"`,
+          path: [i, "fullName"],
+        });
+      } else {
+        seen.add(fullName);
+      }
+    }
+  })
   .optional()
   .transform((value) => (value?.length ? value : undefined));
 
