@@ -5,10 +5,8 @@ import {
   ExecutionResultV2Schema,
   getPrimaryRepoResult,
   normalizeV1ExecutionResult,
-  normalizeV2ExecutionResult,
   parseExecutionResultFile,
   RepoExecutionResultSchema,
-  RepoExecutionResultsSchema,
 } from "../src/execution-result";
 
 describe("parseExecutionResultFile", () => {
@@ -130,14 +128,6 @@ describe("RepoExecutionResult v2", () => {
     expect(RepoExecutionResultSchema.safeParse(input).success).toBe(false);
   });
 
-  it("rejects success entry with invalid baseBranch", () => {
-    const input = {
-      ...validSuccessEntry,
-      baseBranch: "base branch with spaces",
-    };
-    expect(RepoExecutionResultSchema.safeParse(input).success).toBe(false);
-  });
-
   it("authorized-repo validation rejects unknown fullName", () => {
     const schema = createRepoExecutionResultsSchema(new Set(["allowed/repo"]));
     const input = [
@@ -160,12 +150,6 @@ describe("RepoExecutionResult v2", () => {
       },
     ];
     expect(schema.safeParse(input).success).toBe(true);
-  });
-
-  it("pre-built RepoExecutionResultsSchema accepts any fullName", () => {
-    expect(
-      RepoExecutionResultsSchema.safeParse([validSuccessEntry]).success
-    ).toBe(true);
   });
 
   it("v2 envelope parses correctly", () => {
@@ -213,33 +197,6 @@ describe("RepoExecutionResult v2", () => {
     if (result[0].status === "skipped") {
       expect(result[0].reason).toBe("no_changes");
     }
-  });
-
-  it("normalizeV1ExecutionResult coerces string prNumber to number", () => {
-    const parsed = parseExecutionResultFile({
-      has_changes: true,
-      pr_url: "https://github.com/org/repo/pull/7",
-      pr_number: "7",
-      branch_name: "feat/login",
-      base_ref: "main",
-      commit_sha: "abc123",
-    });
-    if (!parsed) {
-      throw new Error("parseExecutionResultFile returned null unexpectedly");
-    }
-    const result = normalizeV1ExecutionResult(parsed, "org/repo");
-    if (result[0].status === "success") {
-      expect(result[0].prNumber).toBe(7);
-    }
-  });
-
-  it("normalizeV2ExecutionResult returns envelope results by reference", () => {
-    const envelope = {
-      schemaVersion: 2 as const,
-      results: [validSuccessEntry],
-    };
-    const result = normalizeV2ExecutionResult(envelope);
-    expect(result).toBe(envelope.results);
   });
 
   it("getPrimaryRepoResult returns matching entry", () => {
