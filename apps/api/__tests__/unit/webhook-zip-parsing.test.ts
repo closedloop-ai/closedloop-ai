@@ -20,6 +20,39 @@ import { buildZipWithEntries } from "../fixtures/zip-helpers";
 
 describe("ZIP parsing for judges.json", () => {
   describe("findPlanInZip", () => {
+    it("preserves a validated v2 execution result envelope", () => {
+      const zipBuffer = buildZipWithEntries([
+        {
+          name: "execution-result.json",
+          content: JSON.stringify({
+            schemaVersion: 2,
+            results: [
+              {
+                status: "skipped",
+                fullName: "owner/repo",
+                reason: "no_changes",
+              },
+            ],
+          }),
+        },
+      ]);
+
+      const AdmZip = require("adm-zip");
+      const zip = new AdmZip(zipBuffer);
+      const result = findPlanInZip(zip);
+
+      expect(result.executionResult).toEqual({
+        schemaVersion: 2,
+        results: [
+          {
+            status: "skipped",
+            fullName: "owner/repo",
+            reason: "no_changes",
+          },
+        ],
+      });
+    });
+
     it("extracts judges.json when present in ZIP", () => {
       const mockJudgesReport: JudgesReport = {
         report_id: "test-report-123",

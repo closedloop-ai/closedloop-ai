@@ -1,4 +1,8 @@
-import { parseExecutionResultFile } from "@closedloop-ai/loops-api/execution-result";
+import {
+  type ExecutionResultFile,
+  type ExecutionResultV2,
+  normalizeExecutionResultFile,
+} from "@closedloop-ai/loops-api/execution-result";
 import type { WorkflowRunCompletedEvent } from "@octokit/webhooks-types";
 import {
   EvaluationReportType,
@@ -30,7 +34,7 @@ import { processArtifactDownloads } from "./workflow-artifacts";
  */
 export async function handleExecutionSuccess(
   ctx: WorkflowContext,
-  executionResult: unknown,
+  executionResult: ExecutionResultFile | ExecutionResultV2,
   codeJudgesReport: JudgesReport | null,
   promptsSnapshot: PromptsSnapshot | null,
   opts: { tx?: TransactionClient } = {}
@@ -44,7 +48,29 @@ export async function handleExecutionSuccess(
     fullName,
   } = ctx;
 
-  const parsed = parseExecutionResultFile(executionResult, fullName);
+  let parsed:
+    | {
+        ok: true;
+        results: ExecutionResultV2["results"];
+        schemaVersion: 1 | 2;
+        repoCount: number;
+      }
+    | {
+        ok: false;
+        error: string;
+        schemaVersion?: number;
+      };
+
+  if (isExecutionResultV2(executionResult)) {
+    parsed = {
+      ok: true,
+      results: executionResult.results,
+      schemaVersion: 2,
+      repoCount: executionResult.results.length,
+    };
+  } else {
+    parsed = normalizeExecutionResultFile(executionResult, fullName);
+  }
 
   if (!parsed.ok) {
     log.error(
@@ -102,6 +128,14 @@ export async function handleExecutionSuccess(
 
   log.info(
     `[handleExecutionSuccess] Completed ingestion for workflow run ${runId}, correlation ${correlationId}`
+  );
+}
+
+function isExecutionResultV2(
+  executionResult: ExecutionResultFile | ExecutionResultV2
+): executionResult is ExecutionResultV2 {
+  return (
+    "schemaVersion" in executionResult && executionResult.schemaVersion === 2
   );
 }
 

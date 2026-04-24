@@ -83,7 +83,7 @@ vi.mock("@closedloop-ai/loops-api/execution-result", async (importActual) => {
     >();
   return {
     ...actual,
-    parseExecutionResultFile: vi.fn(),
+    normalizeExecutionResultFile: vi.fn(),
   };
 });
 
@@ -91,7 +91,7 @@ vi.mock("@/lib/loops/ingest-repo-execution-results", () => ({
   ingestRepoExecutionResults: vi.fn().mockResolvedValue(undefined),
 }));
 
-import { parseExecutionResultFile } from "@closedloop-ai/loops-api/execution-result";
+import { normalizeExecutionResultFile } from "@closedloop-ai/loops-api/execution-result";
 import { downloadWorkflowArtifacts } from "@repo/github";
 // Import after mocking
 import { documentVersionService } from "@/app/documents/document-version-service";
@@ -117,14 +117,21 @@ const mockCreateVersion =
   documentVersionService.createVersion as unknown as Mock;
 const mockUpsertFromSnapshot = upsertFromSnapshot as unknown as Mock;
 const mockFanOutJudgeScores = fanOutJudgeScores as unknown as Mock;
-const mockParseExecutionResultFile =
-  parseExecutionResultFile as unknown as Mock;
+const mockNormalizeExecutionResultFile =
+  normalizeExecutionResultFile as unknown as Mock;
 const mockIngestRepoExecutionResults =
   ingestRepoExecutionResults as unknown as Mock;
 
 const FAILED_TO_PARSE_EXECUTION_RESULT_RE =
   /Failed to parse execution result file/;
-const WORKSTREAM_NOT_FOUND_RE = /Workstream ws-missing not found/;
+const WORKSTREAM_NOT_FOUND_RE = /Workstream .+ not found/;
+const RAW_V1_EXECUTION_RESULT = {
+  has_changes: false,
+  pr_url: "",
+  pr_number: 0,
+  branch_name: "",
+  base_ref: "main",
+};
 
 describe("handleWorkflowSuccess", () => {
   beforeEach(() => {
@@ -848,7 +855,7 @@ describe("handleExecutionSuccess", () => {
     vi.clearAllMocks();
   });
 
-  it("calls parseExecutionResultFile with executionResult and fullName from context", async () => {
+  it("normalizes v1 executionResult with fullName from context", async () => {
     const ctx: WorkflowContext = {
       correlationId: "exec-correlation-123",
       documentId: "plan-artifact-123",
@@ -867,7 +874,7 @@ describe("handleExecutionSuccess", () => {
       base_ref: "",
     };
 
-    mockParseExecutionResultFile.mockReturnValue({
+    mockNormalizeExecutionResultFile.mockReturnValue({
       ok: true,
       results: [
         { status: "skipped", fullName: "owner/repo", reason: "no_changes" },
@@ -884,13 +891,13 @@ describe("handleExecutionSuccess", () => {
 
     await handleExecutionSuccess(ctx, rawResult, null, null);
 
-    expect(mockParseExecutionResultFile).toHaveBeenCalledWith(
+    expect(mockNormalizeExecutionResultFile).toHaveBeenCalledWith(
       rawResult,
       "owner/repo"
     );
   });
 
-  it("logs error and throws when parseExecutionResultFile fails", async () => {
+  it("logs error and throws when v1 normalization fails", async () => {
     const ctx: WorkflowContext = {
       correlationId: "exec-parse-fail",
       documentId: "plan-artifact-fail",
@@ -899,14 +906,14 @@ describe("handleExecutionSuccess", () => {
       fullName: "owner/repo",
     };
 
-    mockParseExecutionResultFile.mockReturnValue({
+    mockNormalizeExecutionResultFile.mockReturnValue({
       ok: false,
       error: "Invalid v1 execution result",
       schemaVersion: 1,
     });
 
     await expect(
-      handleExecutionSuccess(ctx, { invalid: true }, null, null)
+      handleExecutionSuccess(ctx, RAW_V1_EXECUTION_RESULT, null, null)
     ).rejects.toThrow(FAILED_TO_PARSE_EXECUTION_RESULT_RE);
 
     expect(mockIngestRepoExecutionResults).not.toHaveBeenCalled();
@@ -943,7 +950,7 @@ describe("handleExecutionSuccess", () => {
       },
     ];
 
-    mockParseExecutionResultFile.mockReturnValue({
+    mockNormalizeExecutionResultFile.mockReturnValue({
       ok: true,
       results: parsedResults,
       schemaVersion: 1,
@@ -960,7 +967,12 @@ describe("handleExecutionSuccess", () => {
     const codeJudgesReport: JudgesReport | null = null;
     const promptsSnapshot: null = null;
 
-    await handleExecutionSuccess(ctx, {}, codeJudgesReport, promptsSnapshot);
+    await handleExecutionSuccess(
+      ctx,
+      RAW_V1_EXECUTION_RESULT,
+      codeJudgesReport,
+      promptsSnapshot
+    );
 
     expect(mockIngestRepoExecutionResults).toHaveBeenCalledWith(
       {
@@ -989,7 +1001,7 @@ describe("handleExecutionSuccess", () => {
       fullName: "owner/repo",
     };
 
-    mockParseExecutionResultFile.mockReturnValue({
+    mockNormalizeExecutionResultFile.mockReturnValue({
       ok: true,
       results: [],
       schemaVersion: 1,
@@ -1003,7 +1015,9 @@ describe("handleExecutionSuccess", () => {
     });
 
     const fakeTx = {} as TransactionClient;
-    await handleExecutionSuccess(ctx, {}, null, null, { tx: fakeTx });
+    await handleExecutionSuccess(ctx, RAW_V1_EXECUTION_RESULT, null, null, {
+      tx: fakeTx,
+    });
 
     expect(mockIngestRepoExecutionResults).toHaveBeenCalledWith(
       expect.any(Object),
@@ -1021,7 +1035,7 @@ describe("handleExecutionSuccess", () => {
       fullName: "owner/repo",
     };
 
-    mockParseExecutionResultFile.mockReturnValue({
+    mockNormalizeExecutionResultFile.mockReturnValue({
       ok: true,
       results: [],
       schemaVersion: 1,
@@ -1032,9 +1046,9 @@ describe("handleExecutionSuccess", () => {
       workstream: { findUnique: vi.fn().mockResolvedValue(null) },
     });
 
-    await expect(handleExecutionSuccess(ctx, {}, null, null)).rejects.toThrow(
-      WORKSTREAM_NOT_FOUND_RE
-    );
+    await expect(
+      handleExecutionSuccess(ctx, RAW_V1_EXECUTION_RESULT, null, null)
+    ).rejects.toThrow(WORKSTREAM_NOT_FOUND_RE);
 
     expect(mockIngestRepoExecutionResults).not.toHaveBeenCalled();
   });
@@ -1369,7 +1383,7 @@ describe("handleExecutionSuccess — ingestRepoExecutionResults delegation", () 
       fullName: "owner/repo",
     };
 
-    mockParseExecutionResultFile.mockReturnValue({
+    mockNormalizeExecutionResultFile.mockReturnValue({
       ok: true,
       results: [],
       schemaVersion: 1,
@@ -1382,7 +1396,12 @@ describe("handleExecutionSuccess — ingestRepoExecutionResults delegation", () 
       },
     });
 
-    await handleExecutionSuccess(ctx, {}, codeJudgesReport, null);
+    await handleExecutionSuccess(
+      ctx,
+      RAW_V1_EXECUTION_RESULT,
+      codeJudgesReport,
+      null
+    );
 
     expect(mockIngestRepoExecutionResults).toHaveBeenCalledWith(
       expect.any(Object),
@@ -1391,7 +1410,7 @@ describe("handleExecutionSuccess — ingestRepoExecutionResults delegation", () 
     );
   });
 
-  it("does not call ingestRepoExecutionResults when parseExecutionResultFile fails", async () => {
+  it("does not call ingestRepoExecutionResults when v1 normalization fails", async () => {
     const ctx: WorkflowContext = {
       correlationId: "fanout-fail",
       documentId: "fanout-fail-doc",
@@ -1400,17 +1419,59 @@ describe("handleExecutionSuccess — ingestRepoExecutionResults delegation", () 
       fullName: "owner/repo",
     };
 
-    mockParseExecutionResultFile.mockReturnValue({
+    mockNormalizeExecutionResultFile.mockReturnValue({
       ok: false,
       error: "parse failed",
     });
 
-    await expect(handleExecutionSuccess(ctx, {}, null, null)).rejects.toThrow(
-      FAILED_TO_PARSE_EXECUTION_RESULT_RE
-    );
+    await expect(
+      handleExecutionSuccess(ctx, RAW_V1_EXECUTION_RESULT, null, null)
+    ).rejects.toThrow(FAILED_TO_PARSE_EXECUTION_RESULT_RE);
 
     expect(mockIngestRepoExecutionResults).not.toHaveBeenCalled();
     expect(mockFanOutJudgeScores).not.toHaveBeenCalled();
+  });
+
+  it("bypasses v2 normalization and ingests validated results directly", async () => {
+    const v2Results = [
+      {
+        status: "skipped" as const,
+        fullName: "owner/repo",
+        reason: "no_changes",
+      },
+    ];
+    const ctx: WorkflowContext = {
+      correlationId: "fanout-v2",
+      documentId: "fanout-v2-doc",
+      workstreamId: "fanout-v2-ws",
+      runId: "2234000003",
+      fullName: "owner/repo",
+    };
+
+    mockWithDbCall({
+      workstream: {
+        findUnique: vi
+          .fn()
+          .mockResolvedValue({ organizationId: "fanout-v2-org" }),
+      },
+    });
+
+    await handleExecutionSuccess(
+      ctx,
+      {
+        schemaVersion: 2,
+        results: v2Results,
+      },
+      null,
+      null
+    );
+
+    expect(mockNormalizeExecutionResultFile).not.toHaveBeenCalled();
+    expect(mockIngestRepoExecutionResults).toHaveBeenCalledWith(
+      expect.any(Object),
+      v2Results,
+      expect.objectContaining({ tx: undefined })
+    );
   });
 });
 
@@ -1830,7 +1891,7 @@ describe("processWorkflowCompletion", () => {
     });
   });
 
-  it("delegates to handleExecutionSuccess for execute command", async () => {
+  it("delegates v1 execute payloads through normalization", async () => {
     const correlationId = "proc-correlation-exec";
     const artifactId = "proc-artifact-exec";
     const workstreamId = "proc-ws-exec";
@@ -1881,8 +1942,7 @@ describe("processWorkflowCompletion", () => {
       },
     } as WorkflowRunCompletedEvent;
 
-    // parseExecutionResultFile returns a success with empty results for simplicity
-    mockParseExecutionResultFile.mockReturnValue({
+    mockNormalizeExecutionResultFile.mockReturnValue({
       ok: true,
       results: [],
       schemaVersion: 1,
@@ -1910,7 +1970,7 @@ describe("processWorkflowCompletion", () => {
 
     const response = await processWorkflowCompletion(event, correlationId);
 
-    expect(mockParseExecutionResultFile).toHaveBeenCalledWith(
+    expect(mockNormalizeExecutionResultFile).toHaveBeenCalledWith(
       expect.any(Object),
       "owner/repo"
     );
@@ -1984,7 +2044,7 @@ describe("processWorkflowCompletion", () => {
 
     const response = await processWorkflowCompletion(event, correlationId);
 
-    expect(mockParseExecutionResultFile).not.toHaveBeenCalled();
+    expect(mockNormalizeExecutionResultFile).not.toHaveBeenCalled();
     expect(mockIngestRepoExecutionResults).not.toHaveBeenCalled();
     expect(mockDb.gitHubActionRun.update).toHaveBeenCalledWith({
       where: { id: mockActionRun.id },
@@ -2038,7 +2098,7 @@ describe("processWorkflowCompletion", () => {
       { name: "artifact.zip", data: zipBuffer },
     ]);
 
-    mockParseExecutionResultFile.mockReturnValue({
+    mockNormalizeExecutionResultFile.mockReturnValue({
       ok: false,
       error: "Invalid execution payload",
       schemaVersion: 1,

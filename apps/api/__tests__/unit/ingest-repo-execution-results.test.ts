@@ -340,6 +340,62 @@ describe("ingestRepoExecutionResults", () => {
       expect(mockEnsurePrLinkageRecords).toHaveBeenCalledTimes(1);
     });
 
+    it("does not call ensurePrLinkageRecords when the artifact is not found for a success entry", async () => {
+      const ctx = makeIngestionCtx();
+      const results: RepoExecutionResult[] = [
+        makeSuccessResult({
+          fullName: "org/repo-artifact-missing",
+          prNumber: 1,
+          prUrl: "https://github.com/org/repo-artifact-missing/pull/1",
+        }),
+        makeSuccessResult({
+          fullName: "org/repo-ok",
+          prNumber: 2,
+          prUrl: "https://github.com/org/repo-ok/pull/2",
+        }),
+      ];
+
+      let repoLookupCount = 0;
+      mockWithDb.mockImplementation((callback: (db: unknown) => unknown) => {
+        repoLookupCount++;
+        return callback({
+          gitHubInstallationRepository: {
+            findFirst: vi
+              .fn()
+              .mockResolvedValue({ id: `install-repo-${repoLookupCount}` }),
+          },
+        });
+      });
+
+      const missingArtifactTx = makeIngestionSuccessMockTx();
+      missingArtifactTx.document.findUnique.mockResolvedValue(null);
+      const successTx = makeIngestionSuccessMockTx();
+
+      let txCallCount = 0;
+      mockWithDb.tx = vi
+        .fn()
+        .mockImplementation((callback: (tx: unknown) => unknown) => {
+          txCallCount++;
+          const tx = txCallCount === 1 ? missingArtifactTx : successTx;
+          return callback(tx);
+        });
+
+      await expect(
+        ingestRepoExecutionResults(ctx, results)
+      ).resolves.toBeUndefined();
+
+      expect(mockWithDb.tx).toHaveBeenCalledTimes(2);
+      expect(mockEnsurePrLinkageRecords).toHaveBeenCalledTimes(1);
+      expect(mockEnsurePrLinkageRecords).toHaveBeenCalledWith(
+        successTx,
+        expect.objectContaining({
+          prNumber: 2,
+          prUrl: "https://github.com/org/repo-ok/pull/2",
+        })
+      );
+      expect(missingArtifactTx.workstreamEvent.create).not.toHaveBeenCalled();
+    });
+
     it("does not abort remaining entries when ingestSuccessEntry throws for one entry", async () => {
       const ctx = makeIngestionCtx();
       const results: RepoExecutionResult[] = [

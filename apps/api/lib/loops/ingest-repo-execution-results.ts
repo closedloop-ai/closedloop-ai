@@ -48,17 +48,14 @@ export type IngestionContext = {
 /**
  * Ingest a single successful repo result into the database within an own
  * transaction. Resolves the repo by fullName, upserts the GitHubPullRequest
- * row (race-safe), and calls ensurePrLinkageRecords.
- *
- * Returns `true` when the per-repo writes actually landed, `false` when the
- * entry was skipped (missing installation repo or missing artifact). The
- * caller uses the return value to gate the "ingested" success log so that
- * skipped entries aren't misreported as ingested.
+ * row (race-safe), and calls ensurePrLinkageRecords. Logs an info line when
+ * writes land; skipped entries (missing installation repo or artifact) are
+ * warn-logged and silently dropped.
  */
 async function ingestSuccessEntry(
   ctx: IngestionContext,
   result: RepoExecutionResult & { status: "success" }
-): Promise<boolean> {
+): Promise<void> {
   const { organizationId, workstreamId, documentId, loopId, correlationId } =
     ctx;
 
@@ -82,7 +79,7 @@ async function ingestSuccessEntry(
         fullName: result.fullName,
       }
     );
-    return false;
+    return;
   }
 
   const prTitle =
@@ -159,7 +156,7 @@ async function ingestSuccessEntry(
         }
       );
     } else {
-      await tx.gitHubPullRequest.upsert({
+      const upsertedPr = await tx.gitHubPullRequest.upsert({
         where: {
           repositoryId_number: {
             repositoryId: installationRepo.id,
@@ -184,6 +181,23 @@ async function ingestSuccessEntry(
         update: {},
         select: { id: true, documentId: true },
       });
+
+      // Concurrent-race guard: if another writer set documentId between the
+      // findUnique and the upsert, respect that link rather than overwriting.
+      if (upsertedPr.documentId && upsertedPr.documentId !== documentId) {
+        effectiveDocumentId = upsertedPr.documentId;
+        log.warn(
+          "[ingest-repo-execution-results] PR upsert found concurrent documentId; using existing link",
+          {
+            loopId,
+            correlationId,
+            existingDocumentId: upsertedPr.documentId,
+            requestedDocumentId: documentId,
+            prNumber: result.prNumber,
+            fullName: result.fullName,
+          }
+        );
+      }
     }
 
     // Create ExternalLink, EntityLink, and preview deployment records (with dedup)
@@ -236,8 +250,6 @@ async function ingestSuccessEntry(
       }
     );
   }
-
-  return ingested;
 }
 
 // ---------------------------------------------------------------------------

@@ -179,6 +179,7 @@ describe("mergeZipContent", () => {
       pr_url: "https://github.com/owner/repo/pull/1",
       pr_number: 1,
       branch_name: "feature-branch",
+      base_ref: "main",
     };
     const mockPerfSummary = {
       totalIterations: 2,

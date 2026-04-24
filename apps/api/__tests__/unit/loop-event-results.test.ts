@@ -112,19 +112,6 @@ describe("results[] round-trip fidelity through Prisma JSON column", () => {
     mockDownloadMetadata.mockResolvedValue(null);
   });
 
-  function setupLoop(overrides: Partial<Parameters<typeof buildLoop>[0]> = {}) {
-    const loop = buildLoop({
-      command: "CHAT" as "PLAN",
-      s3StateKey: null,
-      documentId: null,
-      status: "RUNNING",
-      ...overrides,
-    });
-    mockLoopsService.findById.mockResolvedValue(loop);
-    mockLoopsService.updateStatus.mockResolvedValue(undefined);
-    mockLoopsService.addEvent.mockResolvedValue(true);
-  }
-
   it("passes results[] to addEvent data when present on completed event", async () => {
     setupLoop();
 
@@ -227,19 +214,6 @@ describe("handleLoopCompleted SSE propagation of results[]", () => {
     vi.clearAllMocks();
     mockDownloadMetadata.mockResolvedValue(null);
   });
-
-  function setupLoop(overrides: Partial<Parameters<typeof buildLoop>[0]> = {}) {
-    const loop = buildLoop({
-      command: "CHAT" as "PLAN",
-      s3StateKey: null,
-      documentId: null,
-      status: "RUNNING",
-      ...overrides,
-    });
-    mockLoopsService.findById.mockResolvedValue(loop);
-    mockLoopsService.updateStatus.mockResolvedValue(undefined);
-    mockLoopsService.addEvent.mockResolvedValue(true);
-  }
 
   it("returned event includes results[] so the route handler can publish it to SSE", async () => {
     setupLoop();
@@ -436,3 +410,16 @@ describe("backward compatibility: completed event without results[] is valid", (
     expect(processedResults).toEqual([]);
   });
 });
+
+function setupLoop(overrides: Partial<Parameters<typeof buildLoop>[0]> = {}) {
+  const loop = buildLoop({
+    command: "CHAT" as "PLAN",
+    s3StateKey: null,
+    documentId: null,
+    status: "RUNNING",
+    ...overrides,
+  });
+  mockLoopsService.findById.mockResolvedValue(loop);
+  mockLoopsService.updateStatus.mockResolvedValue(undefined);
+  mockLoopsService.addEvent.mockResolvedValue(true);
+}

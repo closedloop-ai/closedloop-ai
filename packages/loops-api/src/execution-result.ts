@@ -51,6 +51,8 @@ export const ExecutionResultFileSchema = z.object({
   github_id: z.number().optional(),
 });
 
+export type ExecutionResultFile = z.infer<typeof ExecutionResultFileSchema>;
+
 /** Normalize empty-string/zero sentinels to null. */
 function emptyToNull(value: string): string | null {
   return value === "" ? null : value;
@@ -142,14 +144,6 @@ export function parseExecutionResultFile(
   }
 
   // v1 flat format path (schemaVersion absent or 1).
-  if (!fullName) {
-    return {
-      ok: false,
-      error: "fullName is required for v1 execution result normalization",
-      schemaVersion: 1,
-    };
-  }
-
   const result = ExecutionResultFileSchema.safeParse(data);
   if (!result.success) {
     return {
@@ -159,7 +153,22 @@ export function parseExecutionResultFile(
     };
   }
 
-  const f = result.data;
+  return normalizeExecutionResultFile(result.data, fullName);
+}
+
+export function normalizeExecutionResultFile(
+  data: ExecutionResultFile,
+  fullName?: string
+): ParsedExecutionResult {
+  // v1 flat format path (schemaVersion absent or 1).
+  if (!fullName) {
+    return {
+      ok: false,
+      error: "fullName is required for v1 execution result normalization",
+      schemaVersion: 1,
+    };
+  }
+  const f = data;
   const executionResult: ExecutionResult = {
     hasChanges: f.has_changes,
     prUrl: emptyToNull(f.pr_url),

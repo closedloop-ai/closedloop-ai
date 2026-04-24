@@ -1,5 +1,7 @@
 import {
+  type ExecutionResultFile,
   ExecutionResultFileSchema,
+  type ExecutionResultV2,
   ExecutionResultV2Schema,
 } from "@closedloop-ai/loops-api/execution-result";
 import type { PlanJson } from "@repo/api/src/types/document";
@@ -15,7 +17,7 @@ import { z } from "zod";
 export type ZipContent = {
   planContent: string | null;
   questionsContent: string | null;
-  executionResult: unknown;
+  executionResult: ExecutionResultFile | ExecutionResultV2 | null;
   judgesReport: JudgesReport | null;
   codeJudgesReport: JudgesReport | null;
   perfSummary: PerfSummary | null;
@@ -27,10 +29,13 @@ const schemaVersionCheck = z.object({ schemaVersion: z.number().optional() });
 
 /**
  * Parse execution result JSON safely using structural Zod validation.
- * Returns the validated raw parsed data as unknown.
+ * Returns the validated raw parsed data so callers can distinguish v1 vs v2.
  * Normalization (fullName-aware) is deferred to the completion handler.
  */
-function parseExecutionResult(content: Buffer, entryName: string): unknown {
+function parseExecutionResult(
+  content: Buffer,
+  entryName: string
+): ExecutionResultFile | ExecutionResultV2 | null {
   try {
     const jsonContent = content.toString("utf-8");
     const parsed: unknown = JSON.parse(jsonContent);
@@ -121,7 +126,7 @@ export function findPlanInZip(zip: AdmZip): ZipContent {
   const entries: { name: string; data: Buffer }[] = [];
   let planContent: string | null = null;
   let questionsContent: string | null = null;
-  let executionResult: unknown = null;
+  let executionResult: ExecutionResultFile | ExecutionResultV2 | null = null;
   let judgesReport: JudgesReport | null = null;
   let codeJudgesReport: JudgesReport | null = null;
   let perfSummary: PerfSummary | null = null;
@@ -173,7 +178,7 @@ type ZipEntryContentArgs = {
   name: string;
   planContent: string | null;
   questionsContent: string | null;
-  executionResult: unknown;
+  executionResult: ExecutionResultFile | ExecutionResultV2 | null;
   judgesReport: JudgesReport | null;
   codeJudgesReport: JudgesReport | null;
   perfSummary: PerfSummary | null;
