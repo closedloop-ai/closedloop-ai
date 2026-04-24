@@ -7,7 +7,7 @@
  */
 export const DEFAULT_CHAT_MODELS = {
   claude: "claude-sonnet-4-5",
-  codex: "gpt-5.5",
+  codex: "gpt-5.3-codex",
 } as const satisfies Record<string, string>;
 
 export type DefaultChatModelProvider = keyof typeof DEFAULT_CHAT_MODELS;
