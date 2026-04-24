@@ -1,6 +1,7 @@
 "use client";
 
 import { useRoom } from "@liveblocks/react";
+import { useFeatureFlag } from "@repo/analytics/client";
 import { useIsEditorReady, useLiveblocksExtension } from "@repo/collaboration";
 import { cn } from "@repo/design-system/lib/utils";
 import type { TiptapEditor } from "@repo/rich-text";
@@ -67,6 +68,8 @@ export function EditorContent({
   externalToolbar,
 }: Readonly<EditorContentProps>) {
   const shouldUseLiveblocks = !!liveblocksRoomId;
+  const mermaidEnhancementsFlag = useFeatureFlag("mermaid-enhancements");
+  const mermaidEnhancementsEnabled = mermaidEnhancementsFlag?.enabled === true;
 
   // If no roomId, render without Liveblocks
   if (!shouldUseLiveblocks) {
@@ -80,6 +83,7 @@ export function EditorContent({
       >
         <RichTextEditor
           externalToolbar={externalToolbar}
+          mermaidEnhancementsEnabled={mermaidEnhancementsEnabled}
           onChange={onChange}
           onEditorReady={onEditorReady}
           placeholder={placeholder}
@@ -96,6 +100,7 @@ export function EditorContent({
     <EditorContentWithLiveblocks
       className={className}
       externalToolbar={externalToolbar}
+      mermaidEnhancementsEnabled={mermaidEnhancementsEnabled}
       onChange={onChange}
       onContentReady={onContentReady}
       onEditorReady={onEditorReady}
@@ -114,7 +119,9 @@ export function EditorContent({
 type EditorContentWithLiveblocksProps = Omit<
   EditorContentProps,
   "liveblocksRoomId" | "enableLiveblocks"
->;
+> & {
+  mermaidEnhancementsEnabled: boolean;
+};
 
 function EditorContentWithLiveblocks({
   value,
@@ -126,6 +133,7 @@ function EditorContentWithLiveblocks({
   className,
   scrollMode = "inner",
   externalToolbar,
+  mermaidEnhancementsEnabled,
 }: Readonly<EditorContentWithLiveblocksProps>) {
   const liveblocksExtension = useLiveblocksExtension();
   const isEditorReady = useIsEditorReady();
@@ -166,6 +174,7 @@ function EditorContentWithLiveblocks({
         key={editorKeyRef.current}
         liveblocksExtension={liveblocksExtension}
         liveblocksIsReady={isEditorReady}
+        mermaidEnhancementsEnabled={mermaidEnhancementsEnabled}
         onChange={onChange}
         onEditorReady={onEditorReady}
         placeholder={placeholder}
