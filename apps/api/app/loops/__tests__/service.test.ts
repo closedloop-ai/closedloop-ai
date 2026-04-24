@@ -18,6 +18,12 @@ import {
 // Mock modules before importing the service
 vi.mock("@repo/database", () => ({
   withDb: vi.fn(),
+  GitHubInstallationStatus: {
+    PENDING_CLAIM: "PENDING_CLAIM",
+    ACTIVE: "ACTIVE",
+    SUSPENDED: "SUSPENDED",
+    UNINSTALLED: "UNINSTALLED",
+  },
 }));
 
 vi.mock("@repo/github", () => ({

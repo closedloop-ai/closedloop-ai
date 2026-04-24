@@ -21,6 +21,7 @@ import {
 } from "@repo/api/src/types/loop";
 import {
   type GitHubInstallationRepository,
+  GitHubInstallationStatus,
   Prisma,
   type Loop as PrismaLoop,
   withDb,
@@ -1457,7 +1458,7 @@ export async function authorizeAdditionalRepos(
         fullName: { in: fullNames },
         installation: {
           organizationId,
-          status: "ACTIVE",
+          status: GitHubInstallationStatus.ACTIVE,
         },
       },
       select: {
