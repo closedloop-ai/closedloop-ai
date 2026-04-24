@@ -4,6 +4,7 @@ import {
   ExecutionResultFileSchema,
   type ExecutionResultV2,
   ExecutionResultV2Schema,
+  isSupportedExecutionResultSchemaVersion,
 } from "@closedloop-ai/loops-api/execution-result";
 import type { PlanJson } from "@repo/api/src/types/document";
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
@@ -39,6 +40,13 @@ function parseExecutionResult(
     const parsed: unknown = JSON.parse(jsonContent);
 
     const schemaVersion = detectExecutionResultSchemaVersion(parsed);
+
+    if (!isSupportedExecutionResultSchemaVersion(schemaVersion)) {
+      log.error(
+        `Unsupported execution-result.json schemaVersion: ${schemaVersion}`
+      );
+      return null;
+    }
 
     if (schemaVersion === 2) {
       const result = ExecutionResultV2Schema.safeParse(parsed);

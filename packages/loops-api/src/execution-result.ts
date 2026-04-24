@@ -89,11 +89,27 @@ const ExecutionResultSchemaVersionSchema = z.object({
   schemaVersion: z.number().optional(),
 });
 
+export const SUPPORTED_EXECUTION_RESULT_SCHEMA_VERSIONS = [1, 2] as const;
+
+export type SupportedExecutionResultSchemaVersion =
+  (typeof SUPPORTED_EXECUTION_RESULT_SCHEMA_VERSIONS)[number];
+
 export function detectExecutionResultSchemaVersion(
   data: unknown
 ): number | undefined {
   const versionCheck = ExecutionResultSchemaVersionSchema.safeParse(data);
   return versionCheck.success ? versionCheck.data.schemaVersion : undefined;
+}
+
+export function isSupportedExecutionResultSchemaVersion(
+  schemaVersion: number | undefined
+): schemaVersion is SupportedExecutionResultSchemaVersion | undefined {
+  return (
+    schemaVersion === undefined ||
+    SUPPORTED_EXECUTION_RESULT_SCHEMA_VERSIONS.includes(
+      schemaVersion as SupportedExecutionResultSchemaVersion
+    )
+  );
 }
 
 /**
@@ -115,12 +131,8 @@ export function parseExecutionResultFile(
 ): ParsedExecutionResult {
   const schemaVersion = detectExecutionResultSchemaVersion(data);
 
-  // Reject explicitly unsupported schema versions (anything other than 1/absent or 2).
-  if (
-    schemaVersion !== undefined &&
-    schemaVersion !== 1 &&
-    schemaVersion !== 2
-  ) {
+  // Reject explicitly unsupported schema versions.
+  if (!isSupportedExecutionResultSchemaVersion(schemaVersion)) {
     return {
       ok: false,
       error: `Unsupported schemaVersion: ${schemaVersion}`,
