@@ -1,18 +1,11 @@
 import type { Mock } from "vitest";
 import { vi } from "vitest";
+import type { IngestionContext } from "@/lib/loops/ingest-repo-execution-results";
 
 /**
- * Fields aligned with {@link IngestionContext} in
- * `apps/api/lib/loops/ingest-repo-execution-results.ts` (used only in tests).
+ * Test alias for the production ingestion context.
  */
-export type IngestionTestContext = {
-  organizationId: string;
-  workstreamId: string;
-  documentId: string;
-  loopId: string;
-  correlationId?: string;
-  actionRunId?: string;
-};
+export type IngestionTestContext = IngestionContext;
 
 /** Default IDs for unit tests (ingest-repo-execution-results, etc.) */
 export const unitIngestionCtxDefaults: IngestionTestContext = {
