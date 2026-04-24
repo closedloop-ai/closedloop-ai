@@ -80,7 +80,9 @@ export function useDeleteAgent() {
 
   return useMutation({
     mutationFn: (idOrSlug: string) => apiClient.delete(`/agents/${idOrSlug}`),
-    onSuccess: () => {
+    onSuccess: (_, idOrSlug) => {
+      queryClient.removeQueries({ queryKey: agentKeys.detail(idOrSlug) });
+      queryClient.removeQueries({ queryKey: agentKeys.versions(idOrSlug) });
       queryClient.invalidateQueries({ queryKey: agentKeys.lists() });
     },
   });
