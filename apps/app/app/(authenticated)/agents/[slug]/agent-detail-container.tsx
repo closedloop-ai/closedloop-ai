@@ -164,11 +164,11 @@ export function AgentDetailContainer({ slug }: AgentDetailContainerProps) {
     <div className="space-y-6">
       <div className="flex items-start justify-between">
         <div className="flex items-center gap-4">
-          <Link href="/agents">
-            <Button size="sm" variant="ghost">
+          <Button aria-label="Back to agents" asChild size="sm" variant="ghost">
+            <Link href="/agents">
               <ArrowLeftIcon className="h-4 w-4" />
-            </Button>
-          </Link>
+            </Link>
+          </Button>
           <div>
             {editingName ? (
               <div className="space-y-2">
@@ -639,7 +639,12 @@ function VersionDetail({
     <Card>
       <CardHeader className="flex-row items-center justify-between">
         <div className="flex items-center gap-3">
-          <Button onClick={onBack} size="sm" variant="ghost">
+          <Button
+            aria-label="Back to version list"
+            onClick={onBack}
+            size="sm"
+            variant="ghost"
+          >
             <ArrowLeftIcon className="h-4 w-4" />
           </Button>
           <div>
