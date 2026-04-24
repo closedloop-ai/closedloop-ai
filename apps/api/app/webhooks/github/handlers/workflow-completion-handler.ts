@@ -274,6 +274,7 @@ export async function handleWorkflowSuccess(
         reportData: judgesReport,
       },
       update: {
+        actionRunId: ctx.actionRunId,
         reportType: EvaluationReportType.Plan,
         reportData: judgesReport,
       },
@@ -421,19 +422,41 @@ export async function processWorkflowCompletion(
   // See apps/api/app/webhooks/github/CLAUDE.md (nested withDb calls
   // participate in the parent transaction via ALS).
   if (conclusion === "success" && triggerData.command === "execute") {
-    await handleWorkflowSuccess(null, ctx);
+    let executeProcessingError: Error | null = null;
+
+    try {
+      await handleWorkflowSuccess(null, ctx);
+    } catch (error) {
+      executeProcessingError =
+        error instanceof Error ? error : new Error(String(error));
+      log.error(
+        "[processWorkflowCompletion] Execute workflow ingestion failed",
+        {
+          correlationId: triggerData.correlationId,
+          actionRunId: actionRun.id,
+          runId,
+          error: executeProcessingError.message,
+        }
+      );
+    }
+
     await withDb((db) =>
       db.gitHubActionRun.update({
         where: { id: actionRun.id },
         data: {
           runId: String(runId),
-          status: "SUCCESS",
+          status: executeProcessingError ? "FAILURE" : "SUCCESS",
           conclusion,
           htmlUrl: event.workflow_run.html_url,
           completedAt: new Date(),
         },
       })
     );
+
+    if (executeProcessingError) {
+      throw executeProcessingError;
+    }
+
     return NextResponse.json({ result: "processed", ok: true });
   }
 

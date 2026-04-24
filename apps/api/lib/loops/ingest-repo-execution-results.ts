@@ -283,6 +283,7 @@ export async function ingestRepoExecutionResults(
         entityType: EntityType.DOCUMENT,
         documentId,
         loopId,
+        actionRunId,
         organizationId,
         reportType: EvaluationReportType.Code,
         report: codeJudgesReport,

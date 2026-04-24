@@ -439,6 +439,7 @@ describe("ingestRepoExecutionResults", () => {
           documentId: "doc-1",
           organizationId: "org-1",
           loopId: "loop-1",
+          actionRunId: "action-run-1",
           report: codeJudgesReport,
         })
       );

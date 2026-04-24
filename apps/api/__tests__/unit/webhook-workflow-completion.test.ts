@@ -411,6 +411,7 @@ describe("handleWorkflowSuccess", () => {
         reportData: judgesReport,
       },
       update: {
+        actionRunId,
         reportType: EvaluationReportType.Plan,
         reportData: judgesReport,
       },
@@ -1326,6 +1327,7 @@ describe("handleWorkflowSuccess fan-out", () => {
         reportData: judgesReport,
       },
       update: {
+        actionRunId,
         reportType: EvaluationReportType.Plan,
         reportData: judgesReport,
       },
@@ -1998,5 +2000,84 @@ describe("processWorkflowCompletion", () => {
 
     const responseData = await response.json();
     expect(responseData).toEqual({ result: "processed", ok: true });
+  });
+
+  it("updates action run to FAILURE when execute success ingestion throws", async () => {
+    const correlationId = "proc-correlation-exec-parse-fail";
+    const artifactId = "proc-artifact-exec-parse-fail";
+    const workstreamId = "proc-ws-exec-parse-fail";
+    const repositoryId = "proc-repo-exec-parse-fail";
+    const runId = 6_260_606_060;
+
+    const mockActionRun = {
+      id: "action-run-exec-parse-fail",
+      workstreamId,
+      repositoryId,
+      triggerData: {
+        correlationId,
+        documentId: artifactId,
+        command: "execute",
+      },
+    };
+
+    mockFindActionRunByCorrelationId.mockResolvedValue(mockActionRun);
+
+    const zipBuffer = buildZipWithEntries([
+      {
+        name: "execution-result.json",
+        content: JSON.stringify({
+          has_changes: true,
+          pr_url: "https://github.com/owner/repo/pull/88",
+          pr_number: 88,
+          branch_name: "symphony/parse-fail",
+          base_ref: "main",
+        }),
+      },
+    ]);
+    mockDownloadWorkflowArtifacts.mockResolvedValue([
+      { name: "artifact.zip", data: zipBuffer },
+    ]);
+
+    mockParseExecutionResultFile.mockReturnValue({
+      ok: false,
+      error: "Invalid execution payload",
+      schemaVersion: 1,
+    });
+
+    const mockDb = {
+      gitHubActionRun: {
+        update: vi.fn().mockResolvedValue({
+          id: mockActionRun.id,
+          status: "FAILURE",
+        }),
+      },
+    };
+    mockWithDbCall(mockDb);
+
+    const event: WorkflowRunCompletedEvent = {
+      action: "completed",
+      workflow_run: {
+        id: runId,
+        conclusion: "success",
+        html_url: `https://github.com/owner/repo/actions/runs/${runId}`,
+      },
+      repository: { full_name: "owner/repo" },
+    } as WorkflowRunCompletedEvent;
+
+    await expect(
+      processWorkflowCompletion(event, correlationId)
+    ).rejects.toThrow(FAILED_TO_PARSE_EXECUTION_RESULT_RE);
+
+    expect(mockDb.gitHubActionRun.update).toHaveBeenCalledWith({
+      where: { id: mockActionRun.id },
+      data: {
+        runId: String(runId),
+        status: "FAILURE",
+        conclusion: "success",
+        htmlUrl: event.workflow_run.html_url,
+        completedAt: expect.any(Date),
+      },
+    });
+    expect(getMockWithDb().tx).not.toHaveBeenCalled();
   });
 });
