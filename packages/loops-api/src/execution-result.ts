@@ -195,10 +195,7 @@ export function normalizeV1ExecutionResult(
     return [{ status: "skipped" as const, fullName, reason: "no_changes" }];
   }
 
-  const prNumber =
-    typeof result.prNumber === "string"
-      ? Number.parseInt(result.prNumber, 10)
-      : result.prNumber;
+  const prNumber = result.prNumber;
   const branchName = result.branchName;
   const baseBranch = result.baseBranch ?? result.baseRef;
   const prUrl = result.prUrl;
@@ -206,7 +203,6 @@ export function normalizeV1ExecutionResult(
   if (
     prUrl == null ||
     prNumber == null ||
-    Number.isNaN(prNumber) ||
     branchName == null ||
     baseBranch == null
   ) {
