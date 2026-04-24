@@ -1,10 +1,10 @@
 ---
 title: Sandbox
-description: The single root directory the desktop runtime is allowed to touch.
+description: The allowlist of filesystem paths the desktop gateway will permit an operation to touch.
 ---
 
-The **sandbox** (or "Sandbox Base Directory") is the single root directory under which all desktop gateway file-system operations are allowed. It is chosen during onboarding and editable under **Settings → Security**.
+The sandbox is derived from `sandboxBaseDirectory` in desktop settings. Paths outside the sandbox return `HTTP 403 directory not allowed`. Certain paths are hard-denied even inside the sandbox: `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/Library/Keychains`, `/etc`, `/bin`, `/sbin`.
 
-Sensitive paths are always denied even when they fall inside your sandbox: `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/Library/Keychains`, `/etc`, `/bin`, `/sbin`. Symlinks are canonicalized before the check.
+Paths are canonicalized with `fs.realpathSync.native` to prevent symlink escapes.
 
-See [Settings reference](../mechanisms/desktop-settings) for how to configure the sandbox and related deny-list behavior.
+See [Approvals and sandbox (mechanisms)](../mechanisms/approvals-and-sandbox).

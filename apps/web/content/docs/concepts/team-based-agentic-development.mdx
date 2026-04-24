@@ -1,48 +1,38 @@
 ---
-title: Team-Based Agentic Development
+title: Team-based agentic development
 description: A model where teams, artifacts, and agents are coordinated together instead of optimizing only for individual output.
 ---
 
-Team-based agentic development treats the **team** as the unit of optimization, not the individual prompt.
+Team-based agentic development treats the team as the unit of optimization.
 
 ## Problem
 
-Most AI workflows optimize for a single person producing output faster. That is useful, but it does not solve:
+Most AI workflows focus on helping one person produce output faster.
 
-- unclear ownership of generated work
-- artifact drift between the intent and what actually shipped
-- broken review loops that cannot tell whether the output matched the ask
-- inconsistent execution environments across contributors
-- memoryless agents that relearn the same project conventions every session
+That is useful, but it does not solve:
 
-The net effect of chat-based AI workflows is high local velocity and high organizational ambiguity. Individual engineers move faster; teams ship less coherently.
+- unclear ownership of agent-produced work
+- artifact drift between chats and shipped code
+- inconsistent review standards across a team
+- fragile environments that only work on one engineer's machine
+- organizational knowledge stuck in one person's head
 
-## What changes with ClosedLoop.ai
+## What changes
 
-ClosedLoop.ai inverts that. A team is a first-class object. Work is attached to artifacts the team already recognizes (PRDs, plans, features, tickets). Execution happens inside bounded loops that inherit the artifact's scope, run against the team's real repositories, and emit reviewable outputs back into the team's workflow.
+ClosedLoop.ai uses artifacts, plans, loops, critics, judges, and self-learning to keep execution connected to team intent.
 
-The result is a delivery model with five properties:
-
-- **Durable intent.** A PRD is not a chat message. It persists, it is versioned, and every loop dispatched from it is traceable back to it.
-- **Bounded execution.** A loop is a finite run with a workdir, a budget, and a terminal promise. It has a beginning and an end.
-- **Artifact-linked review.** Judges and humans score the output against the artifact that launched the work, not against vibes.
-- **Shared memory.** Self-learning captures patterns across runs so the team's model of the codebase improves instead of resetting.
-- **Repeatable environment.** The desktop runtime enforces the same sandbox, binary paths, and approval policy for every member.
+- **Artifacts** are the durable unit of work, not chat history.
+- **Loops** are executed by agents against registered compute targets with audit trails.
+- **Critics** review plans before implementation.
+- **Judges** score outputs against artifacts.
+- **Self-learning** turns individual run patterns into organizational knowledge through `org-patterns.toon` and `/push-learnings` / `/pull-learnings`.
 
 ## Why it matters
 
-The result is not just faster code generation. It is a tighter system for turning intent into shipped work. The team stops losing signal between the idea and the diff; the AI stops inventing conventions that were already decided.
+The result is not just faster code generation. It is a tighter system for turning intent into shipped work:
 
-## Related reading
+- Tickets become tasks. A ticket maps cleanly to a plan with acceptance criteria and a loop.
+- Epics become features. A PRD generates a plan that can decompose into many loops, potentially in parallel.
+- Sections of your quarterly roadmap land in a few PRs. When the system is running, review and approvals scale, not typing speed.
 
-<Cards>
-  <Card title="Control plane" href="./control-plane">
-    Where work is defined, reviewed, and governed.
-  </Card>
-  <Card title="Artifact-bound delivery" href="./artifact-bound-delivery">
-    Why execution attaches to objects, not threads.
-  </Card>
-  <Card title="Spec-driven AI development" href="./spec-driven-ai-development">
-    How this model operationalizes a spec-driven philosophy.
-  </Card>
-</Cards>
+Team-based agentic development is what produces the step change from "AI helped me code this module" to "the team shipped this feature while engineers reviewed."

@@ -1,55 +1,64 @@
 ---
-title: Parallel Feature Development
+title: Parallel feature development
 description: Running multiple bounded workstreams at once while preserving coordination and review quality.
 ---
 
-Parallel feature development is ClosedLoop's answer to "can we run more than one AI loop at a time?" The answer is yes, but only if the work is decomposed cleanly. Parallelism without structure becomes duplicated effort and merge-conflict churn.
+Parallel feature development is how teams land big scopes without piling up merge conflicts and lost context. ClosedLoop.ai supports it natively because loops are serialized by lock key, not globally.
 
 ## Requirements
 
-- **Bounded artifacts.** Each parallel workstream is one PRD or one plan, not a shared queue.
-- **Clear ownership.** Each loop has a single artifact it is accountable to.
-- **Isolated execution scopes.** Each loop runs in its own git worktree, under its own branch.
-- **Shared review standards.** All loops run through the same judges and post-loop code review policy.
+- **Bounded artifacts** — each feature has its own PRD and its own plan.
+- **Clear ownership** — who approves merges, who handles PR review.
+- **Isolated execution scopes** — each feature runs in its own git worktree.
+- **Shared review standards** — judges and code-review run for every feature with the same thresholds.
 
-## Desktop concurrency
+## How it works
 
-The desktop command executor runs a maximum of **two commands in flight per target** and serializes commands that share a `lockKey` (the worktree path, repo path, or run dir). This is intentional: multiple loops against the same worktree would corrupt state.
+Loops are serialized per **lock key**. The default lock key is derived from the operation ID plus the scoped path from the command body (`repoPath | worktreePath | workDir | runDir | path`).
 
-To run more in parallel, use multiple compute targets — for example, a laptop and a dedicated dev machine both signed into the same workspace — or let loops that touch different repos run concurrently on the same target.
+This means:
 
-## Multi-repo vs. parallel
+- Two loops in the same worktree cannot run concurrently — they contend on the lock.
+- Two loops in different worktrees run fully in parallel.
+- Each feature gets its own worktree, so you can run many loops on one machine.
 
-These are different concepts:
+## Recommended setup
 
-- **Multi-repo** = one loop that touches multiple repositories via `--add-dir`. Coordination happens inside the loop.
-- **Parallel** = multiple loops each against its own artifact. Coordination happens at the control-plane level.
+1. Create a worktree per feature:
 
-Use multi-repo when a single feature spans repos that must ship together. Use parallel when you have several independent features that can land in any order.
+   ```bash
+   git worktree add ../feature-a feat/a
+   git worktree add ../feature-b feat/b
+   ```
 
-## Failure modes to avoid
+2. Connect each repository or worktree path in the ClosedLoop.ai web app.
+3. Launch loops per feature, each against its own worktree.
+4. The desktop client's cloud executor serializes by lock key; independent worktrees run in parallel up to `MAX_IN_FLIGHT_COMMANDS`.
 
-- **Shared branches.** Two loops writing to the same branch will fight each other. Every loop gets its own branch (`closedloop/<ticket>-<slug>` by default).
-- **Vague acceptance criteria.** Parallel loops are hardest to judge. Make sure every PRD and plan has measurable success criteria before you parallelize.
-- **Under-provisioned sandbox.** Clones, worktrees, and logs for several loops add up. Keep the sandbox on fast local storage with room to grow.
-- **Global approval policy at `low` or `none`.** You will spend your day clicking approvals. Either trust the default `high` tier for loop operations or use targeted Always-Allow rules per repo.
+Override the worktree parent with `SYMPHONY_WORKTREE_PARENT_DIR` if you want a centralized worktree tree.
 
-## Observing parallel runs
+## Cross-repo coordination
 
-The **Requests → Running Jobs** list shows every live loop with its command, status badge, and live phase. The tray icon shows the total count of pending approvals across all loops.
+When a feature spans multiple repositories:
 
-On the control-plane side, each loop appears as a distinct job in the web app with its own plan, judge report, and post-loop review.
+- The `code` plugin runs the cross-repo discovery phases (1.4.x):
+  - `cross-repo-coordinator` discovers peer repos via `CLAUDE_WORKSPACE_REPOS`.
+  - `generic-discovery` verifies peer capabilities → `.discovery-cache/{peer}.json`.
+  - `cross-repo-prd-writer` generates `cross-repo-prd-{peer}.md` per peer.
+- Each peer PRD can be executed independently as its own loop.
 
-## Related reading
+## Failure modes
 
-<Cards>
-  <Card title="Multi-repo development" href="../mechanisms/multi-repo">
-    When a single feature needs to cross repo boundaries.
-  </Card>
-  <Card title="Approvals" href="../mechanisms/approvals">
-    How to parallelize without clicking approval prompts all day.
-  </Card>
-  <Card title="Loops" href="../mechanisms/loops">
-    The execution model every parallel workstream inherits.
-  </Card>
-</Cards>
+- **Unbounded scope per feature** — if a "feature" is actually three features, the plan will be too large to execute in one loop. Split before launching.
+- **Shared mutable state** — if two loops touch the same module, they will either contend on the lock or produce conflicting diffs. Bound scope to prevent this.
+- **Uneven review standards** — some PRs get rubber-stamped, others get scrutinized. Use judges + code-review consistently to prevent drift.
+
+## Scaling
+
+Once parallelism works for a team:
+
+- Review PRs with judge reports attached for fast triage.
+- Use `/push-learnings` and `/pull-learnings` to share patterns across features.
+- Monitor compute target capacity; the cloud executor caps `MAX_IN_FLIGHT_COMMANDS` per target.
+
+Parallelism without structure becomes duplicated effort and merge conflict churn. Parallelism with structure is how a small team lands a quarter's work in a week.

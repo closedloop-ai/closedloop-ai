@@ -1,0 +1,11 @@
+{
+  "what_happened": "Workflow had workflow-level permissions (contents: write, pull-requests: write) but all write operations used a GitHub App token or GH_PAT secret, not GITHUB_TOKEN",
+  "why": "GitHub Actions GITHUB_TOKEN permissions are separate from secrets. The gh CLI uses GH_TOKEN/GITHUB_TOKEN env var when set, but in this workflow every gh command explicitly sets GH_TOKEN to the App token or PAT secret. Only actions/checkout uses GITHUB_TOKEN implicitly.",
+  "fix_applied": "Removed workflow-level permissions block, added job-level permissions block with only contents: read, and added inline comment explaining why write permissions are not needed",
+  "pattern_to_remember": "In GitHub Actions workflows: audit whether GITHUB_TOKEN is actually used for write operations before granting write permissions. If all gh CLI calls set GH_TOKEN explicitly to an App token or PAT, the GITHUB_TOKEN only needs contents: read for checkout. Always prefer job-level permissions over workflow-level to apply least privilege.",
+  "applies_to": ["implementation-subagent", "plan-writer"],
+  "context": {
+    "file": ".github/workflows/deploy-production.yml",
+    "line": 28
+  }
+}

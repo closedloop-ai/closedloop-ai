@@ -1,10 +1,8 @@
 ---
 title: Runtime
-description: The environment that executes loops and determines what tools and providers are available.
+description: The environment that executes work and determines what tools or providers are available.
 ---
 
-The **runtime** is the desktop app plus its local gateway plus the installed Claude plugins. It is the only surface that touches your filesystem or runs your CLIs.
+The runtime is where configured capabilities become real execution. In ClosedLoop.ai, the runtime is a registered compute target plus the tools on that machine plus the resolved Claude Code plugins plus the sandbox the gateway enforces.
 
-Runtime states: `online`, `degraded`, `paused`, `offline`.
-
-See [Runtime](../mechanisms/runtime) for the full reference.
+See [Runtime (mechanisms)](../mechanisms/runtime).

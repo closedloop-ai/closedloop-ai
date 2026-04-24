@@ -1,51 +1,53 @@
 ---
-title: Prepare Your Repo and Targets
+title: Prepare your repo and targets
 description: Make local execution predictable before you scale up docs or code generation.
 ---
 
-Most first-loop failures are not AI failures. They are environment failures: wrong PATH, a missing `gh` auth, an under-specified artifact, or a sandbox that excludes the repo. Fix these three checklists before you start issuing loops.
+Before you run your first loop, take a few minutes to make sure three layers are ready: your repository, your compute target, and the artifact you will execute against. Each layer reduces an entire class of failures.
 
 ## Repository checklist
 
-- the default branch is stable and up to date
+- the default branch is stable and protected
 - contributor permissions are clear
-- there is a clean branch-naming strategy for loop output (ClosedLoop uses `closedloop/<ticket>-<slug>` by default)
-- core project commands are documented in `CLAUDE.md` or `AGENTS.md` so agents can find them
-- the repo can be cloned by `gh repo clone <org/repo>` without interactive prompts
-- tests, lint, and typecheck can each be run with a single command
-
-:::note
-If your project does not already have a `CLAUDE.md`, consider running `/agent-bootstrap` from a checkout inside the sandbox. It produces a set of project-specific expert agents plus a `critic-gates.json` that tells the code plugin which critics to run for each module.
-:::
+- there is a clean branch strategy for loop output (the `code` plugin will usually create worktrees and feature branches)
+- the repository builds cleanly with a single command
+- tests, linters, typecheckers, and the build run without manual steps
+- a `CLAUDE.md` or `AGENTS.md` exists at the repo root with conventions, commands, and guardrails (optional but strongly recommended — bootstrap uses it)
 
 ## Compute target checklist
 
-- the desktop client is installed and its three Dashboard cards are green
-- required CLIs (`claude`, `gh`, `codex`, `python3`, `git`) are detected under **Settings → CLI Tools**
-- the target reports its provider support accurately in the web app's Runtime picker
-- the sandbox base directory contains (or can contain) a clone of the repo you plan to execute against
-- network access is sufficient to reach `relay.closedloop.ai`, `api.closedloop.ai`, and GitHub
+- the desktop client is installed, healthy, and shows `ready` in the tray
+- your sandbox base directory is set to the parent directory that holds your repositories (nothing outside this path is writable by the gateway)
+- `claude`, `git`, `gh`, `python3`, and optionally `codex` are on `PATH` in your login shell
+- if a specific binary lives outside the default `PATH`, override it at **Settings → Binary paths**
+- the `PATH` your login shell exports is discoverable (the gateway invokes `$SHELL -ilc` with sentinels to capture it)
+
+### Sandbox hard-denies
+
+Certain paths are always denied, even inside your sandbox:
+
+- `~/.ssh`
+- `~/.gnupg`
+- `~/.aws`
+- `~/Library/Keychains`
+- `/etc`, `/bin`, `/sbin`
+
+Any attempt to read or write these paths returns `HTTP 403 {"error":"directory not allowed"}` and emits a `sandbox_blocked_operation` event.
 
 ## Artifact checklist
 
-- the artifact has a clear title and a single-paragraph goal statement
-- the scope is concrete (what is in, what is out)
-- **acceptance criteria** are listed and each one is independently reviewable
-- context is attached where needed (linked PRDs, existing designs, related tickets)
-- the artifact passes the four PRD judges (auditor, dependency, scope, testability) when evaluated in plan mode
+- the artifact has a clear title
+- the goal is concrete and phrased as an outcome, not as a step
+- success criteria are reviewable by a judge
+- any necessary PRD, design, or context is attached
+- the scope is small enough for one loop — resist the urge to point at a whole feature on the first try
 
-When these three layers are ready, loops are much less likely to fail for environmental reasons.
+See [PRD template](../resources/prd-template) and [Implementation plan template](../resources/implementation-plan-template) for starting shapes.
 
-## Multi-repo setups
+## Register the repository
 
-If your work touches more than one repository (for example, a backend and a frontend that ship together), prepare the peer repos the same way you prepare the primary:
+In the web app, connect the repository you plan to work in. This writes a repo entry used by the desktop gateway's `/api/gateway/repos` endpoint.
 
-- clone them into your sandbox
-- ensure each has a `.closedloop-ai/.repo-identity.json` with a stable `name`
-- verify each can be discovered from the primary via `discover-repos.sh` or by passing `--add-dir <path>`
+You can also manage repos from the tray app's Settings tab. Each repo entry stores its path, default branch, and worktree parent so loops know where to operate.
 
-See [Multi-repo development](../mechanisms/multi-repo) for the full mechanism.
-
-## What success looks like
-
-A well-prepared project produces its first loop end-to-end without any approvals hanging, without a single missing-binary telemetry event, and with a judge report that cleanly scores against a PRD that was reviewable before the loop started.
+When these three layers are ready, loops are much less likely to fail for environmental reasons and you can focus review on whether the output actually matches the intent.

@@ -1,0 +1,84 @@
+---
+title: Approvals and sandbox
+description: The policy layer that governs which operations run without prompting and which paths they can touch.
+---
+
+The desktop client's security model has two layers: a sandbox that constrains the filesystem, and an approval policy that constrains which operations can run unattended.
+
+## Sandbox
+
+Every path input on the gateway is filtered by `isPathAllowed` in `src/server/security.ts`:
+
+- The allowlist is derived solely from `sandboxBaseDirectory` in settings, expanded by `buildAllowedDirectories()` in `src/shared/sandbox-policy.ts`.
+- Paths are canonicalized with `fs.realpathSync.native` to prevent symlink escapes.
+- Violations return `HTTP 403 {"error":"directory not allowed"}` and emit a `sandbox_blocked_operation` event plus a `SECURITY` entry in the activity log.
+
+### Hard-denies
+
+Certain paths are always blocked, even inside the sandbox:
+
+- `~/.ssh`
+- `~/.gnupg`
+- `~/.aws`
+- `~/Library/Keychains`
+- `/etc`
+- `/bin`
+- `/sbin`
+
+## Approvals
+
+The approval policy uses three pieces of state:
+
+- `OPERATION_RISK_TIERS` — per-operation tier (`low`, `medium`, `high`). Deploy is high, health check is low.
+- `defaultApprovalTier` — the user's minimum risk tier that requires approval (default `high`).
+- `alwaysAllowRules[]` — scoped rules that auto-approve specific operations.
+
+### Auto-approval
+
+`shouldAutoApprove()` compares the operation's risk tier against `defaultApprovalTier`. If an always-allow rule matches, the operation is approved without prompt.
+
+Always-allow rules are scoped to `{ operationId, method, path, scopePath? }` with a default 7-day TTL.
+
+### Forced approval
+
+The cloud can force an approval by sending `x-desktop-force-approval: 1` with `x-desktop-approval-reason`. This overrides auto-approval.
+
+### Decisions
+
+Every approval resolves to one of:
+
+- `approved` — one-time approval
+- `denied` — request rejected
+- `always_allow` — creates an always-allow rule
+- `expired` — approval timed out
+
+Pending approvals are persisted in `desktop-approvals`. The tray badges the pending count.
+
+## Tiering examples
+
+| Operation | Risk tier |
+|---|---|
+| `health_check` | low |
+| `git_action` (read) | low |
+| `filesystem` (read) | low |
+| `symphony_chat` | medium |
+| `git_pr` (create) | medium |
+| `symphony_loop` | medium |
+| `deploy` | high |
+| `binary_paths_settings` | high |
+
+(Tiers are read from `OPERATION_RISK_TIERS` at runtime; the list above reflects the defaults.)
+
+## Dangerous auto-approve
+
+A dev-only setting (`desktop:set-dangerous-auto-approve` IPC) bypasses approval evaluation entirely. It is guarded by UI warnings and is not intended for normal use.
+
+## Why two layers
+
+The sandbox constrains *what* an operation can touch; the approval policy constrains *when* it can run without asking. Together they give you:
+
+- a hard guarantee that nothing outside the sandbox is writable
+- a scoped way to auto-approve known safe operations (for example, read-only git on a specific repo)
+- a forced-review path for anything above your configured tier
+
+That is enough policy to run an autonomous system safely while still letting humans see and gate risky work.

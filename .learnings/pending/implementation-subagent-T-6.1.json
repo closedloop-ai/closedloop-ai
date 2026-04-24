@@ -1,0 +1,24 @@
+[
+  {
+    "what_happened": "Created a GitHub Actions workflow template for the closedloop-electron repo",
+    "why": "The template lives in .github/workflow-templates/ (not .github/workflows/) so it is not executed by this repo's GitHub Actions runner — it is only a reference artifact for the target repo",
+    "fix_applied": "Placed file under .github/workflow-templates/electron-ci.yml with a header comment directing consumers to copy it to the target repo's .github/workflows/",
+    "pattern_to_remember": "Workflow templates destined for external repos go in .github/workflow-templates/, not .github/workflows/. Add a comment at the top clarifying the intended destination and any TODO placeholders for project-specific values.",
+    "applies_to": ["implementation-subagent", "plan-writer"],
+    "context": {
+      "file": ".github/workflow-templates/electron-ci.yml",
+      "line": 1
+    }
+  },
+  {
+    "what_happened": "Needed to reference SHA-pinned action versions matching the codebase convention",
+    "why": "Existing workflows in .github/workflows/ already use SHA-pinned actions with inline version comments (e.g. actions/checkout@<sha> # v4.2.2). The task specified exact SHAs.",
+    "fix_applied": "Used the exact SHAs specified in the task for checkout, setup-node, and dependency-review-action; matched the comment style # vX.Y.Z from existing workflows",
+    "pattern_to_remember": "All GitHub Actions in this repo are SHA-pinned. When adding new actions, use the full commit SHA with a # vX.Y.Z comment. Check existing workflows in .github/workflows/ to see already-pinned versions before looking up new ones.",
+    "applies_to": ["implementation-subagent"],
+    "context": {
+      "file": ".github/workflow-templates/electron-ci.yml",
+      "line": 22
+    }
+  }
+]

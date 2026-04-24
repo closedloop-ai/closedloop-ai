@@ -1,12 +1,10 @@
 ---
 title: Judge
-description: An LLM evaluator agent that scores an artifact against a single engineering principle.
+description: An LLM-as-judge evaluator that scores an artifact or output against the artifact that launched the work.
 ---
 
-A **judge** is an evaluator agent that takes an artifact (plan, code, or PRD) and returns structured JSON: a `final_status` (PASS / FAIL / ERROR) and a set of metrics with thresholds, scores, and justifications.
+Judges convert review from ad hoc opinion into structured, repeatable scoring. Every judge emits a `CaseScore` with per-metric thresholds and a `pass / fail / error` final status.
 
-Judges run in parallel batches and aggregate into per-mode reports: `plan-judges.json`, `code-judges.json`, `prd-judges.json`.
+ClosedLoop.ai ships 21 judges (plan, code, PRD) in the `judges` plugin.
 
-The `judges` plugin ships 21 judges covering accuracy, grounding, engineering principles (DRY, KISS, SSOT, SOLID), quality, and alignment.
-
-See [Judges](../mechanisms/judges) for the full reference.
+See [Judges (mechanisms)](../mechanisms/judges).

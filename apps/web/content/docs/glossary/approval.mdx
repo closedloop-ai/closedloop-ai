@@ -1,10 +1,10 @@
 ---
 title: Approval
-description: The per-operation gate between a cloud command and its local execution.
+description: A human or rule-based decision that gates a specific gateway operation before it runs.
 ---
 
-An **approval** is a user decision on a specific gateway operation. Every cloud command is tagged with a risk tier (`high`, `medium`, `low`, `none`); your default-tier setting decides which auto-approve and which prompt.
+Approvals are governed by per-operation risk tiers (`low`, `medium`, `high`), a user-configured `defaultApprovalTier` (default `high`), and scoped `alwaysAllowRules[]` with default 7-day TTL. The cloud can force an approval with `x-desktop-force-approval: 1`.
 
-Approvals appear in the **Approvals** tab and on the dashboard. They carry an operation id, a path, and (sometimes) a reason supplied by the cloud caller. You can **Approve**, **Decline**, or **Always Allow** (7-day TTL, scoped by `operationId + method + path + scopePath`).
+Decisions resolve to `approved | denied | always_allow | expired`.
 
-See [Approvals and risk tiers](../mechanisms/approvals) for details.
+See [Approvals and sandbox (mechanisms)](../mechanisms/approvals-and-sandbox).

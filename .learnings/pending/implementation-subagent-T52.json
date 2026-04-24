@@ -1,0 +1,24 @@
+[
+  {
+    "what_happened": "deploy-production.yml had contents: read which blocks gh release create",
+    "why": "The gh CLI uses GITHUB_TOKEN (or GH_TOKEN set from it) for release creation, which requires contents: write permission at the job level. The original comment incorrectly stated write was not needed.",
+    "fix_applied": "Changed job-level permissions from contents: read to contents: write and updated comment to explain why.",
+    "pattern_to_remember": "When adding gh release create to a GitHub Actions workflow, the job must have contents: write permission. The gh CLI's GH_TOKEN env var for release creation maps to GITHUB_TOKEN permissions, not app token permissions.",
+    "applies_to": ["implementation-subagent"],
+    "context": {
+      "file": ".github/workflows/deploy-production.yml",
+      "line": 35
+    }
+  },
+  {
+    "what_happened": "gh release create accepts --notes-file to read release body from a file",
+    "why": "The changelog was already written to $CHANGELOG_PATH (changelog.md) by an earlier step, so --notes-file avoids shell quoting issues with multi-line content.",
+    "fix_applied": "Used --notes-file \"$CHANGELOG_PATH\" instead of --notes \"$(cat $CHANGELOG_PATH)\".",
+    "pattern_to_remember": "For gh release create with multi-line bodies, use --notes-file <path> rather than --notes \"$(cat file)\" to avoid quoting/newline issues.",
+    "applies_to": ["implementation-subagent"],
+    "context": {
+      "file": ".github/workflows/deploy-production.yml",
+      "line": 528
+    }
+  }
+]

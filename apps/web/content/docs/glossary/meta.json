@@ -1,19 +1,21 @@
 {
   "title": "Glossary",
   "pages": [
+    "approval",
+    "artifact",
+    "artifact-bound",
+    "compute-target",
+    "context-pack",
     "control-plane",
-    "runtime",
-    "gateway",
+    "critic",
+    "judge",
     "loop",
     "orchestrator",
-    "subagent",
-    "context-pack",
-    "judge",
-    "artifact",
-    "plan",
-    "prd",
-    "approval",
+    "pattern",
+    "promise",
+    "runtime",
     "sandbox",
+    "toon",
     "worktree"
   ]
 }

@@ -1,0 +1,25 @@
+[
+  {
+    "what_happened": "GitHub Actions workflow permissions audit: distinguish between workflow-level GITHUB_TOKEN permissions and GitHub App Token permissions",
+    "why": "When a job uses actions/create-github-app-token to generate an App Token, the App Token's permissions are separately configured via permission-* parameters. The workflow-level GITHUB_TOKEN permissions (in the job's `permissions:` block) only govern what GITHUB_TOKEN itself can do — not what the App Token can do. The App Token is a different credential entirely.",
+    "fix_applied": "Removed pull-requests: write from the plan job's GITHUB_TOKEN permissions block because the plan job never creates PRs using GITHUB_TOKEN. The App Token still has permission-pull-requests: write (needed to post comments and check PR status). Only the execute job creates PRs via GH_TOKEN (the App Token), not GITHUB_TOKEN.",
+    "pattern_to_remember": "In GitHub Actions workflows using GitHub App Tokens: (1) workflow-level `permissions:` blocks scope the built-in GITHUB_TOKEN only, (2) actions/create-github-app-token `permission-*` parameters scope the App Token separately, (3) auditing permissions means checking both layers independently. A job can have narrow GITHUB_TOKEN permissions while the App Token has broader permissions for actual work.",
+    "applies_to": ["implementation-subagent", "plan-writer"],
+    "context": {
+      "file": ".github/workflows/symphony.yml",
+      "task": "T-3.2"
+    }
+  },
+  {
+    "what_happened": "Workflow-level `permissions: {}` default-deny placement: goes between `on:` and `env:` blocks, or directly after `name:`",
+    "why": "GitHub Actions documentation says workflow-level permissions can be placed at the top level (outside `jobs:`). Placing it between `on:` and `env:` is clean and visible.",
+    "fix_applied": "Added `permissions: {}` after the `on:` block and before `env:` in symphony.yml",
+    "pattern_to_remember": "For least-privilege GitHub Actions workflows: always add `permissions: {}` at the workflow level (before `jobs:`) as a default-deny, then explicitly grant permissions per-job. The `detect` job running only shell scripts needs `permissions: {}` explicitly since it inherits from workflow default.",
+    "applies_to": ["implementation-subagent"],
+    "context": {
+      "file": ".github/workflows/symphony.yml",
+      "line": 7,
+      "task": "T-3.2"
+    }
+  }
+]

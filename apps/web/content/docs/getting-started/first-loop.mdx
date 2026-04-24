@@ -1,0 +1,98 @@
+---
+title: Run your first loop
+description: A concrete walkthrough from a scoped artifact to a reviewable PR with judges attached.
+---
+
+This page follows one task through the full ClosedLoop.ai pipeline so you know exactly what to expect.
+
+## Scenario
+
+You want to add a single unit test to an existing utility function. The change should be one PR, under 50 lines of diff, and it has obvious success criteria.
+
+## Prepare the artifact
+
+Create a PRD in the web app that looks roughly like:
+
+```md
+# Problem
+The `formatDuration` utility in `src/utils/time.ts` has no unit tests.
+
+# Desired outcome
+Add unit tests that cover at least the three documented inputs.
+
+# Constraints
+- Use the existing test framework.
+- No production code changes.
+
+# Success criteria
+- Test file exists next to the utility.
+- All new tests pass locally.
+- Existing tests still pass.
+```
+
+## Launch the loop
+
+From the artifact:
+
+1. Pick the repository that contains `src/utils/time.ts`.
+2. Pick your compute target (the desktop client you installed).
+3. Pick the provider — Claude is the default.
+4. Start the loop.
+
+## What happens inside the desktop client
+
+1. The web app sends a `desktop.command` envelope over the cloud relay to your compute target.
+2. The desktop client's cloud command executor serializes commands by a lock key (so two loops in the same worktree do not collide).
+3. It calls the matching localhost gateway route — here, `/api/gateway/symphony/launch`.
+4. The gateway's `ProcessManager` resolves `claude` from your login shell's PATH, enforces the sandbox allowlist on the working directory, and spawns the coding session as a detached process group.
+5. Streamed NDJSON lines from the subprocess are parsed, throttled, and sent back over the socket as `desktop.command.event` messages.
+
+## What the `code` plugin does
+
+The orchestrator prompt drives the phased workflow:
+
+1. **Pre-exploration** — produces `requirements-extract.json`, `code-map.json`, and an investigation log.
+2. **Plan draft** — writes `plan.json` and `plan.md` with tasks and acceptance criteria.
+3. **Plan review checkpoint** — hard stop for human review.
+4. **Critic validation** — parallel critics write `reviews/*.review.json`.
+5. **Plan refinement and finalization** — `plan-writer` reconciles feedback and enriches tasks.
+6. **Implementation** — per-task `verification-subagent` then `implementation-subagent`, with self-verification gates.
+7. **Build validation** — lint, typecheck, and tests run; failures loop until fixed or budget exhausts.
+8. **Visual QA** — Playwright runs against any requirements in `visual-requirements.md`.
+9. **Logging and completion** — `log.md` is updated and the orchestrator exits with `<promise>COMPLETE</promise>`.
+
+## Judges grade the output
+
+Once implementation completes, the `judges` plugin grades the run:
+
+- **Plan judges** (16 judges in 4 batches) score the plan on DRY, SSOT, KISS, SOLID, testability, codebase grounding, and conventions.
+- **Code judges** (11 judges in 3 batches) score the implementation on the same axes minus goal alignment and verbosity.
+- Each judge returns a `CaseScore` JSON with per-metric thresholds and a final `pass / fail` status.
+
+Judge reports are written to `plan-judges.json` and `code-judges.json` in the session work directory.
+
+## Review the output
+
+The loop surfaces:
+
+- a diff or PR link (created via `gh` using the gateway's `git_pr` operations)
+- the judge reports
+- a session work directory with every artifact from the run
+
+Read `log.md` for a phase-by-phase changelog. Open `plan.md` to see the executed plan. Open the judge reports to see structured quality scores.
+
+## Accept, refine, or regenerate
+
+If the output matches the acceptance criteria, merge the PR. If not, use `/code:amend-plan` with a directive to adjust the plan and relaunch, or cancel with `/code:cancel-code` and start fresh with a better PRD.
+
+## What you just proved
+
+You now have:
+
+- a working control plane
+- a working desktop gateway
+- a working plugin orchestration layer
+- a working judge pipeline
+- one reviewable output with its artifacts preserved
+
+Everything after this is repeating the same path at larger scope, in parallel, and across repos.

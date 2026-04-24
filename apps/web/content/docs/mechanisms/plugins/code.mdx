@@ -1,0 +1,101 @@
+---
+title: code plugin
+description: The hub plugin that implements the full ClosedLoop.ai autonomous SDLC.
+---
+
+The `code` plugin is the hub of ClosedLoop.ai. It implements the full autonomous SDLC — PRD → plan → critics → implementation → tests → visual QA → validation — through an orchestrator prompt and a roughly 1,351-line shell loop runner.
+
+## Commands
+
+| Command | Purpose |
+|---|---|
+| `/code:code` | Begin a ClosedLoop coding session. Flags: `[working-directory]`, `--prompt <name>`, `--prd <file>`, `--plan <file>`. |
+| `/code:amend-plan` | Interactively amend a running plan. Flags: `--workdir <path>`, `--message "<text>"`, `--state-file <path>`. |
+| `/code:cancel-code` | Stop a running loop by removing the state file. |
+| `/code:plan-with-codex` | Run a Claude-vs-Codex debate loop to refine a plan. Flags: `--max-rounds N` (default 15), `--plan-file PATH`, `--codex-model MODEL` (default `gpt-5.4`), then a `<prompt>`. |
+
+## Agents (23)
+
+**Planning**
+
+- `plan-draft-writer` (opus, loop max 10) — draft from PRD
+- `plan-writer` (sonnet, loop max 5) — merge, finalize, gap modes
+- `plan-validator` (sonnet, loop) — semantic validation
+- `plan-evaluator` (sonnet) — simple-mode threshold
+- `plan-importer` (sonnet, loop max 3) — import external plan markdown
+- `answered-questions-subagent` (haiku) — merge Q&A into tasks
+- `plan-agent` (opus) — used by the `plan-with-codex` debate loop
+
+**Implementation**
+
+- `pre-explorer` (haiku)
+- `verification-subagent` (sonnet)
+- `implementation-subagent` (sonnet, loop max 4)
+- `build-validator` (haiku)
+- `code-reviewer` (sonnet, loop max 5)
+
+**Cross-repo**
+
+- `cross-repo-coordinator` (haiku)
+- `generic-discovery` (haiku)
+- `repo-coordinator` (haiku)
+- `cross-repo-prd-writer` (sonnet)
+- `api-spec-writer` (sonnet)
+
+**Support**
+
+- `visual-qa-subagent` (sonnet) — Playwright
+- `dev-environment` (haiku)
+- `learning-capture` (sonnet)
+- `amend-extractor` (sonnet)
+- `code-review-worker`, `code-review-guidelines`
+
+## Skills (12)
+
+- `plan-validate`, `plan-structure`, `plan-editing-conventions`, `extract-plan-md`
+- `critic-cache`, `build-status-cache`, `cross-repo-cache`
+- `closedloop-env`, `find-plugin-file`
+- `iterative-retrieval`
+- `prd-creator`
+- `codex-review`
+
+## The orchestrator prompt
+
+`plugins/code/prompts/prompt.md` (~271 lines) drives the phased workflow. It is read-only and never touches project files. It uses `Bash` (for directory listing, `echo`, `mkdir`), `Task` (for subagents), `TodoWrite`, `AskUserQuestion`, and `SendMessage`.
+
+The first action is always a TodoWrite with the 18-entry phase list.
+
+## The loop runner
+
+`plugins/code/scripts/run-loop.sh` relaunches `claude -p` with a fresh 200K-token context each iteration until the orchestrator writes `<promise>COMPLETE</promise>` or `CLOSEDLOOP_MAX_ITERATIONS` (default 10) is hit.
+
+After each iteration, `run-loop.sh` runs an 11-step post-iteration pipeline (changed-files, relevance, goal eval, citation verification, outcomes merge, build-result merge, pattern processing, success-rate computation, closedloop-learnings export). See [Self-learning](../self-learning).
+
+## Environment variables
+
+All prefixed `CLOSEDLOOP_*` unless noted. Written to `{WORKDIR}/.closedloop-ai/config.env` by `setup-closedloop.sh` and injected into agent contexts via `subagent-start-hook.sh`:
+
+| Variable | Purpose |
+|---|---|
+| `CLOSEDLOOP_WORKDIR` | Absolute path to the work directory |
+| `CLAUDE_PLUGIN_ROOT` | Plugin install dir |
+| `CLOSEDLOOP_PRD_FILE` | PRD file path (auto-detected) |
+| `CLOSEDLOOP_PLAN_FILE` | Pre-supplied plan file path |
+| `CLOSEDLOOP_MAX_ITERATIONS` | Loop iteration cap (default 10) |
+| `CLOSEDLOOP_AGENT_ID` | Current agent's unique ID |
+| `CLOSEDLOOP_PROMPT_FILE` | Orchestrator prompt file |
+| `CLOSEDLOOP_RUN_ID` | `YYYYMMDD-HHMMSS-<hex>` |
+| `CLOSEDLOOP_ITERATION` | Current iteration |
+| `CLOSEDLOOP_ACTIVE_GOAL` | Goal (default `reduce-failures`) |
+| `CLOSEDLOOP_REPO_MAP` | Multi-repo mapping |
+| `CLOSEDLOOP_ADD_DIRS` | Additional directories |
+| `CLOSEDLOOP_ADD_DIR_NAMES` | Names for add dirs |
+
+Plus:
+
+- `CLAUDE_BIN` — claude executable path (set by closedloop-electron when launching)
+- `POST_LOOP_REVIEW_CYCLES` — default 2 post-loop review cycles
+
+## Artifacts produced
+
+See [Artifacts](../artifacts) for the full list. The most important session artifacts: `plan.json`, `plan.md`, `reviews/*.review.json`, `state.json`, `log.md`, `requirements-extract.json`, `code-map.json`, `visual-requirements.md`, and the full `.learnings/` tree.

@@ -1,45 +1,37 @@
 ---
-title: Control Plane
+title: Control plane
 description: The place where work is defined, reviewed, coordinated, and governed across humans and agents.
 ---
 
-The control plane is where coordination happens. In ClosedLoop.ai it lives in the web app at `app.closedloop.ai` and is backed by the REST API and relay that together form the cloud side of the platform.
+The control plane is where coordination happens. In ClosedLoop.ai, the browser-based web app is the control plane, the desktop client is the execution surface, and the Claude Code plugins supply the orchestration.
 
 ## Responsibilities
 
-- **Define work** as durable artifacts (PRDs, implementation plans, features, tickets).
-- **Structure artifacts** with review-ready shapes and acceptance criteria.
-- **Launch execution** by dispatching loops to a chosen compute target.
-- **Review outputs** by pairing judge reports with human review.
-- **Govern access** via projects, teams, API keys, and per-target approval policies.
-- **Preserve decision history** so every loop is traceable back to the artifact and team decisions that produced it.
-
-## What the control plane is not
-
-The control plane is not the execution surface. It does not run Claude. It does not touch your filesystem. It dispatches commands to the desktop runtime, which does. This separation is what makes it safe to give an AI-native system real code access: the cloud never reaches into your machine directly.
-
-## The three planes of the product
-
-1. **The control plane** – the web app and cloud API. Humans define and review work here.
-2. **The runtime plane** – the desktop app and its local gateway. Loops execute here against real repos.
-3. **The execution plane** – the Claude plugins inside the desktop-spawned Claude Code session. The orchestrator, subagents, and judges live here.
-
-A single loop touches all three. The control plane emits a command envelope; the runtime plane authenticates, approves, and dispatches it against a sandboxed workdir; the execution plane drives the actual planning and implementation.
+- **Define work** — create PRDs, implementation plans, and feature artifacts.
+- **Structure artifacts** — attach context, acceptance criteria, and ownership.
+- **Launch execution** — route commands to compute targets over the cloud relay.
+- **Review outputs** — surface diffs, judge reports, and activity for human approval.
+- **Preserve decision history** — maintain the audit trail of who approved what, when.
+- **Govern access** — manage team membership, repo connections, and compute target registration.
 
 ## Why ClosedLoop.ai centers this concept
 
-Without a control plane, agent output floats free from the process that decides what should be built. That increases local speed while increasing organizational ambiguity. A control plane re-anchors agent output to the objects humans already use to coordinate: PRDs, plans, reviews, and owners.
+Without a control plane, agent output floats free from the process that decides what should be built.
 
-## Related reading
+That increases local speed while increasing organizational ambiguity. Work gets done faster but scope drift, duplicated effort, inconsistent review standards, and environmental fragility all get worse.
 
-<Cards>
-  <Card title="Runtime" href="../mechanisms/runtime">
-    The execution environment that makes loop dispatch real.
-  </Card>
-  <Card title="Desktop gateway" href="../mechanisms/desktop-gateway">
-    The contract the control plane speaks to your machine.
-  </Card>
-  <Card title="Team-based agentic development" href="./team-based-agentic-development">
-    Why teams, not prompts, are the unit of optimization.
-  </Card>
-</Cards>
+The control plane makes the following things observable and governable:
+
+- Which artifact launched which run.
+- Which compute target executed it.
+- Who approved high-risk operations.
+- What the judges scored.
+- Whether the PR that resulted from it was merged, and when.
+
+## How it talks to execution
+
+The control plane does not touch your machine directly. It sends structured `desktop.command` envelopes over a Socket.IO relay to a specific compute target. The desktop client dispatches each command into its localhost HTTP gateway, which enforces sandbox policy, runs the operation, and streams results back. See [Desktop gateway](../mechanisms/desktop-gateway) and [Cloud relay](../mechanisms/cloud-relay).
+
+## What control means
+
+A working control plane lets you treat agentic execution like you treat any other governed system: with audit trails, approvals, and rollback. That is the difference between a demo and a delivery model.

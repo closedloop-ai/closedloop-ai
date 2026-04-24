@@ -1,0 +1,79 @@
+---
+title: Install the Claude Code plugins
+description: Install the six ClosedLoop.ai Claude Code plugins and keep them auto-updated.
+---
+
+The ClosedLoop plugins are the agent and orchestration layer that runs inside Claude Code. They are installed globally per-user and cached under `~/.claude/plugins/cache/closedloop-ai/`.
+
+## One-line install
+
+The recommended install is a single command that installs every plugin at user scope and enables auto-update.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/closedloop-ai/claude-plugins/main/install.sh | bash
+```
+
+The installer will:
+
+1. Preflight the Claude CLI, Python 3.11+, and `jq`.
+2. Add the marketplace: `claude plugin marketplace add closedloop-ai/claude-plugins`.
+3. Install every plugin at user scope: `claude plugin install <plugin>@closedloop-ai --scope user`.
+4. Report `installed / updated / up-to-date / failed` counts for each plugin.
+5. Enable auto-update by default so the plugins stay current.
+
+## Interactive install
+
+You can also install from within Claude Code:
+
+```bash
+claude /plugin marketplace install closedloop
+```
+
+This gives you per-plugin prompts instead of installing all six at once.
+
+## What gets installed
+
+| Plugin | Purpose |
+|---|---|
+| `bootstrap` | Meta-orchestrator that analyzes a codebase and generates a project-specific suite of expert agents and a `critic-gates.json` config. |
+| `code` | The hub plugin. Implements the full ClosedLoop autonomous SDLC: PRD → plan → critics → implementation → tests → visual QA → validation. |
+| `code-review` | Multi-agent partitioned code review with deterministic hygiene checks, risk-based routing, caching, and GitHub PR inline comments. |
+| `judges` | LLM-as-judge framework — 21 judge agents that grade plans, code, and PRDs with structured `CaseScore` reports. |
+| `platform` | Claude Code expert guide, prompt engineering, mermaid diagrams, artifact upload, and skill scaffolding. |
+| `self-learning` | Pattern capture and organizational knowledge sharing. Stores patterns in TOON format and tracks deterministic success rates. |
+
+## Install Python runtime dependencies
+
+Several plugins use Python tooling. Install the runtime dependencies once per machine:
+
+```bash
+# Run from the claude-plugins repo root if you cloned it,
+# or after the installer places scripts under ~/.claude/plugins/cache/closedloop-ai/
+bash ~/.claude/plugins/cache/closedloop-ai/code/*/scripts/install-dependencies.sh
+```
+
+The script detects your OS, verifies Python 3.11+, installs `jq` and `awk` if missing, and installs Python dependencies. On systems with PEP 668 ("externally managed") Python, it falls back to a local venv at `./.venv`.
+
+Pass `--yes` or `-y` to skip confirmation prompts.
+
+## Development install (for contributors)
+
+```bash
+git clone git@github.com:closedloop-ai/claude-plugins.git
+cd claude-plugins
+git config core.hooksPath .githooks
+```
+
+The `core.hooksPath` line enables the repo's pre-push hook, which enforces `CHANGELOG.md` updates whenever you change a plugin.
+
+## Verify the install
+
+```bash
+claude plugin list
+```
+
+You should see all six ClosedLoop plugins listed with their versions.
+
+## Next step
+
+Once the plugins are installed, continue to [Install the desktop client](./install-desktop).

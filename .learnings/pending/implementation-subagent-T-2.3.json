@@ -1,0 +1,10 @@
+{
+  "what_happened": "Pinned GitHub Actions to full commit SHAs in build-container.yml",
+  "why": "Tag-based action references (e.g. @v4) are mutable and can be silently updated, creating supply chain risk",
+  "fix_applied": "Replaced all tag references with full 40-char commit SHAs plus version comment annotations (e.g. # v4.2.2)",
+  "pattern_to_remember": "GitHub Actions in .github/workflows/ should always use full commit SHAs pinned with a version comment annotation (e.g. `uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2`). Never use mutable tags like @v4 or @main.",
+  "applies_to": ["implementation-subagent", "plan-writer"],
+  "context": {
+    "file": ".github/workflows/build-container.yml"
+  }
+}

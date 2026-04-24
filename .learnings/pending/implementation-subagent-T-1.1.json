@@ -1,0 +1,4 @@
+{
+  "no_learnings": true,
+  "reason": "Standard GitHub Actions job addition following the existing typecheck/test job pattern. The lint job mirrors the typecheck job structure with pnpm install + pnpm lint, adding explicit permissions: contents: read as required."
+}

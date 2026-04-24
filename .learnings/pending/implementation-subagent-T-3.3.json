@@ -1,0 +1,17 @@
+{
+  "what_happened": "Added security audit comments to GitHub Actions workflow files documenting that secrets are scoped to the step or job level",
+  "why": "Task required documenting an existing security posture (no workflow-level env: blocks containing secrets) as inline comments for future maintainers",
+  "fix_applied": "Added a single comment line immediately before the `jobs:` keyword in each of the six affected workflows",
+  "pattern_to_remember": "When workflows have a top-level `env:` block for non-secret values (NODE_VERSION, ECR_REPOSITORY, etc.) but all `secrets.*` references appear only inside step-level `env:` blocks, place the security comment between the top-level `env:` block and `jobs:`. For workflows with no top-level `env:`, place it directly before `jobs:`.",
+  "applies_to": ["implementation-subagent"],
+  "context": {
+    "files": [
+      ".github/workflows/symphony.yml",
+      ".github/workflows/deploy-production.yml",
+      ".github/workflows/claude-code-review.yml",
+      ".github/workflows/dependabot-autofix.yml",
+      ".github/workflows/build-container.yml",
+      ".github/workflows/build-mcp-server.yml"
+    ]
+  }
+}

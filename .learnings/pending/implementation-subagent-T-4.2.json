@@ -1,0 +1,4 @@
+{
+  "no_learnings": true,
+  "reason": "Straightforward GitHub Actions workflow edit — added attestations: write permission, id: build step ID, provenance/sbom flags, and digest capture/upload steps to match the existing build-container.yml pattern exactly."
+}

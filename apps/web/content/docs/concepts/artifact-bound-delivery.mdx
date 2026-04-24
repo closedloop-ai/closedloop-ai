@@ -1,47 +1,71 @@
 ---
-title: Artifact-Bound Delivery
+title: Artifact-bound delivery
 description: Keeping execution attached to PRDs, plans, features, and other artifacts instead of detached chat threads.
 ---
 
-**Artifact-bound delivery** means that the work stays connected to the object that defines it. Every loop, every diff, every review, every judge score is linked to a specific artifact and traceable back to it.
+Artifact-bound delivery means the work stays connected to the object that defines it. Every loop reads from an artifact and writes back durable, reviewable outputs tied to that same artifact.
 
-This is the core difference between a delivery system and a chat workflow.
+## What counts as an artifact
 
-## Artifact types
+ClosedLoop.ai treats several object types as first-class:
 
-ClosedLoop.ai recognizes a small set of durable artifact types. Each has a shape, a lifecycle, and a set of operations that can be dispatched from it.
+- **PRDs** — the problem, outcome, constraints, and success criteria.
+- **Implementation plans** — the task-level decomposition a loop executes against.
+- **Critic reviews** — structured feedback on a plan from the `code` plugin's critics.
+- **Judge reports** — structured grades on a plan, code, or PRD from the `judges` plugin.
+- **Code maps** — a structural snapshot of the codebase the loop explored.
+- **Learnings** — patterns, pitfalls, and conventions extracted from a run.
+- **Code review findings** — multi-agent review outputs attached to a PR.
 
-| Artifact | Purpose | Typical operations |
-| --- | --- | --- |
-| **PRD** | States the problem, desired outcome, constraints, success criteria, and risks. | Generate a plan. Evaluate with PRD judges. |
-| **Implementation plan** | Decomposes the PRD into pending and completed tasks with acceptance criteria, open questions, and (optionally) multi-repo routing. | Execute, amend, evaluate with plan judges. |
-| **Feature** / **ticket** | Scoped unit of work, typically one PR's worth. | Plan, execute, review. |
-| **Judge report** | Structured evaluation of a plan or code artifact against engineering principles. | Gate merges; inform amendments. |
-| **Loop run** | The record of a single execution: input artifact, commands, telemetry, artifacts produced, terminal status. | Replay, recover, audit. |
-| **Context pack** | Bounded package of supporting material attached to a run (linked docs, prior plans, code maps). | Attach, refresh, trim. |
+Each of these has a schema, a storage location, and a lifecycle.
+
+## Where they live
+
+Session artifacts live in the session work directory (`$CLOSEDLOOP_WORKDIR`, typically `.closedloop-ai/work/`):
+
+```
+prd.md
+plan.json
+plan.md
+plan-evaluation.json
+investigation-log.md
+requirements-extract.json
+code-map.json
+code-context.json
+plan-context.json
+judge-input.json
+plan-judges.json
+code-judges.json
+prd-judges.json
+state.json
+log.md
+perf.jsonl
+visual-requirements.md
+reviews/*.review.json
+agents-snapshot/
+.cross-repo-needs.json
+.workspace-repos.json
+.dev-environment.json
+.learnings/...
+```
+
+Organization-level artifacts live under `~/.closedloop-ai/`:
+
+```
+learnings/org-patterns.toon
+learnings/closedloop-learnings.json
+electron-port
+```
 
 ## Benefits
 
-- **Clearer review context.** Reviewers know exactly what was being asked and can score the output against it.
-- **Better handoffs.** A partial result plus its artifact is enough to continue; a chat transcript is not.
-- **Reusable execution history.** Every loop is addressable, replayable, and cite-able in future work.
-- **Easier judgment against the original goal.** Judges compare output to the artifact, not to an ephemeral prompt.
-- **Governance at the artifact level.** Ownership, access, and acceptance criteria live on the artifact, not on a user's chat session.
+- **Clearer review context** — reviewers see the plan, the critics, the judges, and the diff together.
+- **Better handoffs** — the next person (or agent) inherits the durable work, not a chat transcript.
+- **Reusable execution history** — prior runs become training data for relevance scoring and pattern matching.
+- **Easier judgment against the goal** — the judge reads the PRD, the plan, and the output, and scores per-metric.
 
-## The promise of a terminal artifact
+## Why this is different from chat
 
-A well-formed loop ends by producing a terminal artifact that matches the one that launched it. A loop launched from a plan should leave behind a diff and a PR description that map cleanly to the plan's tasks. A loop launched from a PRD should leave behind a plan that cites the PRD's success criteria. The contract between input and output is what makes the system closable.
+Chat workflows optimize for local velocity at the cost of organizational memory. Artifact-bound delivery optimizes for **compounding leverage** — every run leaves the organization better equipped for the next one.
 
-## Related reading
-
-<Cards>
-  <Card title="Artifacts" href="../mechanisms/artifacts">
-    The full lifecycle of each artifact type, its files, and its operations.
-  </Card>
-  <Card title="Judges" href="../mechanisms/judges">
-    How structured review closes the loop against the artifact.
-  </Card>
-  <Card title="PRD template" href="../resources/prd-template">
-    A reusable PRD shape that passes the four PRD judges.
-  </Card>
-</Cards>
+That is a core difference between a delivery system and a chat workflow.

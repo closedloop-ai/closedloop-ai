@@ -1,0 +1,11 @@
+{
+  "what_happened": "build-mcp-server.yml used floating version tags (e.g., @v6, @v2) instead of pinned commit SHAs",
+  "why": "Security best practice: floating tags can be hijacked via tag mutation; pinned SHAs are immutable",
+  "fix_applied": "Replaced all 5 action version tags with full commit SHAs matching build-container.yml, with inline version comments (e.g., # v4.2.2)",
+  "pattern_to_remember": "When adding or updating GitHub Actions in this repo, always pin to full commit SHA with a trailing version comment. Reference build-container.yml as the canonical source of approved SHAs for: actions/checkout, aws-actions/configure-aws-credentials, aws-actions/amazon-ecr-login, docker/setup-buildx-action, docker/build-push-action.",
+  "applies_to": ["implementation-subagent", "plan-writer"],
+  "context": {
+    "file": ".github/workflows/build-mcp-server.yml",
+    "reference_file": ".github/workflows/build-container.yml"
+  }
+}

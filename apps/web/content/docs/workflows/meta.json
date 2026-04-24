@@ -2,8 +2,10 @@
   "title": "Workflows",
   "pages": [
     "prd-to-plan-to-execution",
-    "amending-a-plan",
-    "planning-with-codex",
-    "parallel-feature-development"
+    "parallel-feature-development",
+    "code-review",
+    "bootstrap-a-repo",
+    "plan-with-codex-debate",
+    "push-pull-learnings"
   ]
 }

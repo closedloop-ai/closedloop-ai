@@ -1,71 +1,134 @@
 ---
 title: FAQ
-description: Short answers to common questions about ClosedLoop.ai.
+description: Common questions about ClosedLoop.ai — what it is, what it replaces, and how to use it well.
 ---
 
-## What is ClosedLoop.ai?
+## General
 
-A team-oriented control plane for AI-native software delivery. It lets a team describe intent as durable artifacts (PRDs, plans), dispatch bounded execution runs called **loops** against real repos, judge the output, and merge reviewable changes.
+### What is ClosedLoop.ai?
 
-## Does the cloud run code on my machine?
+A spec-driven, AI-first delivery platform. It combines a browser-based control plane, a desktop client with a localhost gateway, and six Claude Code plugins into one system that turns scoped artifacts into shipped code through gated loops.
 
-No. The cloud never touches your filesystem directly. It sends commands to the desktop app, which runs a local gateway on `127.0.0.1`. Every operation is authenticated, sandbox-checked, and subject to your approval policy.
+### How is this different from a chat-based coding workflow?
 
-## What models do you use?
+Chat optimizes for local velocity. ClosedLoop.ai optimizes for organizational leverage. Every run is bound to a durable artifact, gated by deterministic validation, scored by judges, and captured back into organizational patterns. See [ClosedLoop.ai vs chat-based workflows](./closedloop-vs-chat-based-workflows).
 
-Loops default to Claude Opus for planning and Sonnet for implementation. Haiku is used for lightweight utility subagents. `/code:plan-with-codex` opens a debate channel with Codex (default `gpt-5.3-codex`). The web app's Runtime picker shows which providers are available on your target.
+### What does "closed loop" mean?
 
-## Can I use ClosedLoop without the desktop app?
+A loop is closed when its output is tied back to its input. In ClosedLoop.ai, every agent output is grounded in and graded against the artifact that launched the run.
 
-No — not for any operation that needs to touch your code. The desktop app is the runtime. The web app is the control plane. You need both.
+## Install and setup
 
-## Does ClosedLoop support Linux and Windows?
+### Do I have to install everything?
 
-- **macOS** is fully supported as a signed universal DMG.
-- **Linux** is supported from source via `just desktop-dev`.
-- **Windows** is not supported today.
+Yes, if you want the full experience. The plugins provide the orchestration; the desktop client provides the execution surface. You can run the plugins alone in Claude Code without the desktop client, but you lose the web control plane, approvals, and safe cross-machine execution.
 
-## Where are my API keys stored?
+### Does it run on Linux or Windows?
 
-Encrypted on disk via Electron `safeStorage` in `desktop-secrets`. The app also reads `CLOSEDLOOP_API_KEY` and `SYMPHONY_API_KEY` from the environment as overrides.
+- macOS — fully supported; packaged DMG.
+- Linux — supported for development via `just desktop-dev`; not packaged.
+- Windows — not supported for the desktop client.
 
-## What does "self-learning" actually learn?
+### What Python version do I need?
 
-Patterns. Specifically, it captures classifications (`mistake` / `pattern` / `convention` / `insight`) from every run, deduplicates them, and stores them in a TOON file. Hooks inject the most relevant patterns into every subagent so future runs benefit from what prior runs figured out.
+Python 3.11+ (3.13 recommended).
 
-## Is self-learning on by default?
+### What about PATH issues with `claude`, `git`, `gh`, etc.?
 
-No. It is opt-in. Pass `--self-learning` to `run-loop.sh` or enable the equivalent flag when dispatching a loop.
+The desktop client spawns `$SHELL -ilc` with sentinels to extract your login shell PATH. If that does not work, override specific binaries at **Settings → Binary paths**.
 
-## Can I run two loops at once?
+## Security
 
-Yes, subject to:
+### Where is my API key stored?
 
-- max 2 in-flight commands per desktop target
-- commands serialized by `lockKey` (so two loops cannot share a worktree)
+Encrypted via Electron `safeStorage` (operating system keychain) in `desktop-secrets.json`. Environment variables (`CLOSEDLOOP_API_KEY`, then `SYMPHONY_API_KEY`) take precedence over the stored value.
 
-For more concurrency, use multiple compute targets, or run loops in different repos.
+### Can the web app access anything outside my sandbox?
 
-## How do I amend a plan without restarting?
+No. Every path is filtered through `isPathAllowed`. Only paths under your `sandboxBaseDirectory` are touchable, and certain paths are hard-denied even inside the sandbox (see [Approvals and sandbox](../mechanisms/approvals-and-sandbox)).
 
-`/code:amend-plan --workdir <path> --message "<text>"`. The amend handler classifies the intent and updates the plan via MERGE mode. The change is recorded in `plan.json`'s `amendments` array.
+### Does the desktop need an inbound port open?
 
-## How are cross-repo features handled?
+No. The cloud relay is outbound-only. The desktop maintains a Socket.IO connection to `https://relay.closedloop.ai`; nothing listens for incoming public traffic. The localhost gateway on port `19432` is bound to `127.0.0.1` and requires auth.
 
-Pass `--add-dir <path>` for each peer repo. `setup-closedloop.sh` builds a `CLOSEDLOOP_REPO_MAP` that subagents read. Plans gain a `repositories` map; tasks are tagged `[CROSS-REPO: <peer>]`. See [Multi-repo development](../mechanisms/multi-repo).
+### How do I disable gateway auth for testing?
 
-## Can judges gate a merge?
+Do not, unless you are in a dev environment. Set `CL_LOCAL_GATEWAY_NO_AUTH=1` (dev-only, blocked in packaged builds). Prefer `CL_LOCAL_GATEWAY_DEBUG_AUTH=1` to mint short-lived tokens for curl tests.
 
-Yes. The judges return structured `final_status` plus metric scores. You can require `final_status == 1` (PASS) on a specific judge set before a merge. In most setups, the post-loop code-review verdict is the primary gate and the judges are used as a finer-grained signal.
+## Loops and plans
 
-## What happens if the desktop app crashes mid-loop?
+### How long does a loop take?
 
-Boot recovery runs on next launch. Active jobs with live PIDs are reattached; dead ones are finalized from `state.json` and the log tail. EXECUTE recovery replay (PLN-338) retries finalization after transient errors and preserves uploaded artifacts.
+Small loops (unit test, doc edit) complete in minutes. Feature-sized loops take tens of minutes. The `CLOSEDLOOP_MAX_ITERATIONS` cap (default 10) bounds the worst case.
 
-## How do I pause the desktop without quitting?
+### What happens if the plan is wrong?
 
-Header toggle or tray menu: **Pause incoming commands**. Persists across restarts.
+Use `/code:amend-plan` with a directive to adjust. The amend extractor classifies your input (directive, question, confirmation, unstructured) and updates `plan.json` accordingly.
 
-## Where do I find the release notes?
+### Can I skip judges?
 
-See [Release notes](./release-notes).
+Yes, though you lose the scoring signal. Judges run automatically inside the `code` loop and can be triggered manually with `@judges:run-judges`.
+
+### How do I stop a running loop?
+
+`/code:cancel-code` removes the state file. The desktop client will also kill the process group on cancel commands.
+
+## Judges and review
+
+### Are judge scores reliable?
+
+Judges are LLMs, so scores are not perfectly deterministic. They are reliable **in aggregate** — you should look at trends across judges, not single points. The default threshold is `0.8`, overridable per metric.
+
+### Can I add my own judges?
+
+Yes. Judges are agent files with YAML frontmatter and a prompt. Drop one into `plugins/judges/agents/`, add it to the batch configuration in `run-judges`, and it will run. See the existing judges for the CaseScore output shape.
+
+### What is the difference between critics and judges?
+
+- **Critics** run before implementation to improve the plan.
+- **Judges** run after implementation to grade plan, code, or PRD quality.
+
+Both are LLM-driven, but they sit at different points in the loop.
+
+## Self-learning
+
+### Does self-learning share my code?
+
+Only the patterns you capture are shared — not raw code. Pattern citations reference file paths but not content. `/push-learnings` and `/pull-learnings` sync pattern metadata, not source.
+
+### How do I reset learnings?
+
+Delete `.learnings/` in a project to reset per-project state, and `~/.closedloop-ai/learnings/org-patterns.toon` to reset user-level patterns. Keep a backup if you have captured valuable patterns.
+
+### How often should I run `/process-learnings`?
+
+The `code` loop runs it automatically after every iteration. Run it manually when you want to promote pending learnings explicitly.
+
+## Integrations
+
+### Does it work with Codex?
+
+Yes. Codex is supported as a chat provider and as a plan debate partner. See [Refine a plan with Codex](../workflows/plan-with-codex-debate).
+
+### Does it work with GitHub?
+
+Yes. The gateway exposes `git_pr` operations that use `gh` under the hood for PR creation, comments, reviews, and inline annotations.
+
+### Can I run it without GitHub?
+
+Yes. The `code` loop produces diffs and can commit locally. The `git_pr` operations just will not be usable.
+
+## Contributions
+
+### Where do I file bugs?
+
+Use the repository issues for `closedloop-ai/closedloop-electron` and `closedloop-ai/claude-plugins`.
+
+### Where is the source?
+
+- Desktop client: `closedloop-ai/closedloop-electron` on GitHub.
+- Claude Code plugins: `closedloop-ai/claude-plugins` on GitHub (Apache 2.0).
+
+### How do I propose a new judge or agent?
+
+Open a PR with the new agent file and the necessary wiring (critic gates, batch config, or skill frontmatter). Follow the style in existing files and include tests for any Python tooling you change.

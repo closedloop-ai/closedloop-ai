@@ -3,16 +3,6 @@ title: Loop
 description: A concrete execution run launched from an artifact against a target environment.
 ---
 
-A **loop** is the unit of execution used to turn scoped intent into reviewable output.
+A loop is the unit of execution used to turn scoped intent into reviewable output. Every loop reads from an artifact, runs through gated phases, and produces durable outputs scored against the artifact.
 
-A loop has:
-
-- an input artifact (PRD, plan, or ticket)
-- a repository target and a worktree
-- a compute target and provider
-- a bounded lifecycle with a terminal promise
-- a durable record of artifacts, telemetry, and judge reports
-
-Loops are driven by the `code` plugin's orchestrator and executed by `run-loop.sh`. They end when the orchestrator emits `<promise>COMPLETE</promise>` or when the max-iteration cap is reached.
-
-See [Loops](../mechanisms/loops) for the full mechanism.
+See [Loops (mechanisms)](../mechanisms/loops) and [The closed loop](../concepts/closed-loop-sdlc).

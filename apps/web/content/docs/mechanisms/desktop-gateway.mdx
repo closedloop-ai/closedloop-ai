@@ -1,84 +1,123 @@
 ---
-title: Desktop Gateway
-description: The local HTTP gateway that the cloud and the web app use to run operations on your machine.
+title: Desktop gateway
+description: The signed localhost HTTP API that brokers every operation from the control plane into your machine.
 ---
 
-The **desktop gateway** is a local HTTP server the desktop app runs on `127.0.0.1`. It is the only surface that exposes your machine to the ClosedLoop platform. Everything the cloud or the web app wants to do locally — read a file, start a loop, open a PR, upload an artifact — goes through a gateway route.
+The desktop gateway is a localhost HTTP server that handles every operation the control plane needs to perform on your machine. It runs inside the desktop client and binds to `127.0.0.1:19432` by default.
 
-## Why it exists
+## Bind and discovery
 
-A local gateway makes the division of responsibility explicit:
+- Preferred port: `19432`
+- Fallback probe order: `19432 → 19433 → 19434 → 19435`
+- Bind host: `127.0.0.1` (loopback only)
+- Discovery file: `~/.closedloop-ai/electron-port` (plaintext active port)
 
-- The **cloud** never reaches into your filesystem directly.
-- The **web app** never executes on your machine without the gateway's consent.
-- Every request is authenticated, CORS-checked, sandbox-verified, and approval-gated.
+Constants live in `src/shared/contracts.ts`:
 
-This is what lets the platform orchestrate AI work against real code safely.
+```ts
+DEFAULT_GATEWAY_PORT = 19432
+FALLBACK_GATEWAY_PORTS = [19433, 19434, 19435]
+GATEWAY_PROTOCOL_VERSION = "0.1.0"
+```
 
-## Port selection
+## Unauthenticated endpoint
 
-On launch the gateway tries ports in order: `19432`, `19433`, `19434`, `19435`. The active port is written to `~/.closedloop-ai/electron-port` so external callers can discover it without hardcoding.
+`GET /health` is the only unauthenticated route and is used for liveness and capability detection.
 
-## Authentication
+```json
+{
+  "status": "ok",
+  "machineName": "string",
+  "capabilities": { "tools": { "...": true }, "versions": { "...": "..." } },
+  "version": "string",
+  "port": 19432
+}
+```
 
-The gateway accepts three credentials:
+The response carries the CORS headers mandated by contract DG-001.
 
-1. **Internal gateway token** (`X-Desktop-Gateway-Token`) – minted once per desktop process; used by the cloud executor for internal calls. Checked first.
-2. **Browser session token** (`X-Desktop-Session-Token`) – issued by `POST /gateway-auth/exchange` after a challenge/verify against the API. Must be paired with an allowed `Origin` header.
-3. **Debug token** (dev-only) – mintable from the Settings UI when `CL_LOCAL_GATEWAY_DEBUG_AUTH=1`. 10 minutes, memory-only, bound to `http://localhost`.
+## Authenticated endpoints
 
-`GET /health` is always unauthenticated. All other routes require one of the three above.
+All `/api/gateway/*` routes require authentication. The gateway accepts two mechanisms:
 
-## Sandbox check
+### Internal gateway token
 
-Every operation that touches the filesystem runs through `assertPathAllowed`. The rules are:
+A `X-Desktop-Gateway-Token` header carrying a process-local random 24-byte hex token generated at boot (`randomBytes(24).toString("hex")` in `app.ts`). This is used by the cloud command executor.
 
-- the canonical realpath of the target must fall under your Sandbox Base Directory
-- no matter what, paths under `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/Library/Keychains`, `/etc`, `/bin`, `/sbin` are denied
-- symlinks are canonicalized before the check so a link inside the sandbox cannot traverse to a protected directory
+### Browser session token
 
-A disallowed path returns `HTTP 403 { "error": "directory not allowed" }`.
+A `X-Desktop-Session-Token` header paired with a bound `Origin` header. Sessions are issued after the challenge-exchange flow.
 
-## The route families
+The `Origin` header alone is not sufficient. Sessions are in-memory only (`LocalSessionStore`) — 32-byte hex tokens, sha256-digested for comparison, default TTL 10 minutes, max 8 concurrent.
 
-The gateway exposes roughly forty `/api/gateway/*` route families. They cluster as follows.
+## CORS
 
-| Family | Purpose |
-| --- | --- |
-| **Health / meta** | `/health`, `/api/gateway/version`, `/api/gateway/health-check`, `/api/gateway/symphony/status`, `/api/gateway/work-directory/:ticketId` |
-| **Filesystem** | `/api/gateway/directories`, `/api/gateway/files/search`, `/api/gateway/run-viewer-extract` |
-| **Git (plain)** | `/api/gateway/git` (status/branch/commit/push/pull/branch-diff/sync-status), `/git/branches`, `/git/branch-worktree`, `/git/diff`, `/git/worktree`, `/git/repo-path` |
-| **GitHub PRs** | `/api/gateway/git/pr` and sub-routes for list, comments, reviews, replies, files, head-sha, inline comments |
-| **Symphony loop** | `POST /api/gateway/symphony/loop`, `/loop/kill`, `/launch`, `/kill`, `/status/:ticketId`, `/logs/:ticketId`, `/plan/:ticketId`, `/judges/:ticketId`, `/plan-loop/*` |
-| **Sessions & attachments** | `/symphony/sessions`, `/sessions/unread-count`, `/symphony/attachments/:path*`, `/symphony/upload/:ticketId`, `/symphony/chat-history/:ticketId`, `/symphony/commit-message/:ticketId` |
-| **Chat (streaming NDJSON)** | `/symphony/chat/:ticketId`, `/symphony/comment-chat/:commentId`, `/terminal-chat`, `/ticket-chat`, `/run-viewer-chat` |
-| **Codex (review + debate)** | `/codex/review/:ticketId`, `/codex/status/:ticketId`, `/codex/stop/:ticketId`, `/codex/review-findings`, `/codex/review-extract`, `/codex/review-dedup`, `/codex/review-verdict`, `/codex/argue`, `/codex/chat`, `/codex/finding-chat`, `/codex/available` |
-| **Deploys** | `/deploy`, `/deploy/health`, `/deploy/kill`, `/deploy/teardown`, `/deploy/status/:ticketId`, `/deploy/check-existing`, `/deploy/detect`, `/deploy/redetect`, `/deploy/extract-info` |
-| **Repos config** | `/api/gateway/repos` (GET/POST/DELETE/PATCH) |
-| **Learnings** | `/api/gateway/learnings`, `/symphony/extract-learnings`, `/process-learnings`, `/process-all-learnings`, `/learnings-status/:ticketId`, `/record-learning-use`, `/pending-learnings` |
-| **Settings** | `/api/gateway/settings/binary-paths` |
-| **Auth** | `POST /gateway-auth/exchange` |
+Allowed headers:
 
-## Cloud → local dispatch
+```
+Content-Type, Authorization, X-Desktop-Gateway-Token, X-Desktop-Session-Token,
+X-Desktop-Source, X-Desktop-Force-Approval, X-Desktop-Approval-Reason
+```
 
-The cloud does not call the gateway directly. Instead it sends `desktop.command` over the Socket.IO channel; the desktop's **cloud command executor** converts that to an internal HTTP call against the gateway with the internal token, then streams the response back as NDJSON over `desktop.command.event`. Commands are scheduled with a maximum of two in flight and serialized by `lockKey` so operations targeting the same worktree never interleave.
+Private-network preflight is supported — `Access-Control-Request-Private-Network: true` is answered with `Access-Control-Allow-Private-Network: true` for allowed origins.
 
-## Observing the gateway
+## Fallback proxy
 
-- **Activity log** (Requests tab) records every request with method, path, status code, and duration.
-- **Security events** (within the same tab) records 401s and other blocked attempts.
-- **Diagnostics** tab tails the structured gateway logger.
+If `SYMPHONY_GATEWAY_FALLBACK_ORIGIN` is set and a route is not implemented locally, the router proxies the request upstream.
 
-## Related reading
+## Activity logging
 
-<Cards>
-  <Card title="Approvals" href="./approvals">
-    The per-operation gate that runs before the gateway dispatches work.
-  </Card>
-  <Card title="Settings reference" href="./desktop-settings">
-    What the runtime stores, and every env var that changes its behavior.
-  </Card>
-  <Card title="Telemetry and events" href="./telemetry">
-    How the gateway's activity and failures are observable.
-  </Card>
-</Cards>
+Every request (and every security event) is captured to `ActivityLogStore`, persisted in `desktop-activity-log` as a 200-entry ring buffer with 8 KiB body truncation. The UI surfaces these entries in the Activity Log tab.
+
+## Operations the gateway exposes
+
+The operation dispatcher supports `:param` and `*splat` path patterns. The full set of supported operation IDs is defined in `src/main/approval-operations.ts` (28 IDs):
+
+```
+symphony_launch, symphony_loop, symphony_loop_kill, symphony_plan_loop,
+symphony_status, symphony_kill, symphony_chat, symphony_comment_chat,
+symphony_commit_message, symphony_sessions, symphony_plan, symphony_judges,
+symphony_logs, symphony_chat_history, terminal_chat, ticket_chat,
+run_viewer_chat, codex_review, codex_argue, git_action, git_pr,
+git_branch_worktree, health_check, repos_config, deploy, learnings,
+filesystem, binary_paths_settings
+```
+
+See the [gateway endpoints reference](../resources/gateway-endpoints-reference) for the full route table.
+
+## Contracts
+
+| Contract | Purpose |
+|---|---|
+| DG-001 | Health probe response shape and CORS. |
+| DG-002 | Port selection and discovery file. |
+| DG-003 | Registration and 30-second heartbeat with 1–30 second backoff. |
+| DG-004 | Operation parity matrix — one source of truth for route, methods, and status per operation. |
+
+Contracts are documented in `docs/artifacts/desktop-gateway-contracts.md` in the desktop repo.
+
+## Cloud-to-gateway request signing
+
+When the cloud executor calls the gateway, it adds:
+
+- `x-desktop-gateway-token` — the internal token
+- `x-desktop-source: cloud-socket`
+- `x-desktop-command-id: <UUID>`
+- `x-desktop-operation-id: <id>`
+- `x-desktop-force-approval: 1` and `x-desktop-approval-reason` (when required)
+
+## Debug modes (dev only)
+
+Guarded by `!app.isPackaged`:
+
+- `CL_LOCAL_GATEWAY_DEBUG_AUTH=1` — enables a UI button to mint short-lived tokens for local curl testing.
+- `CL_LOCAL_GATEWAY_NO_AUTH=1` — disables gateway auth. Dangerous. Dev only.
+- `CL_LOCAL_GATEWAY_PROD_ORIGINS_ONLY=1` — stricter origin whitelist when dev is pointed at a production relay.
+
+Invoke via `just desktop-debug-auth`, `just desktop-no-auth`, or `just desktop-prod-origins`.
+
+## Fail-closed behavior
+
+- With no API key configured: `/health` still works; `POST /gateway-auth/exchange` returns 503; every `/api/gateway/*` route returns 401.
+- On port conflicts: auto-falls back within the configured range. Full failure moves the tray to `error`.
+- On sandbox violations: `HTTP 403 {"error":"directory not allowed"}` plus a `sandbox_blocked_operation` telemetry event plus a `SECURITY` entry in the activity log.

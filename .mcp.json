@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "clawforce": {
+      "command": "npm",
+      "args": ["run", "mcp"],
+      "cwd": "/Users/mike.angstadt/Me/clawforce"
+    }
+  }
+}

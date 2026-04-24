@@ -1,45 +1,46 @@
 ---
-title: ClosedLoop.ai vs Chat-Based Workflows
-description: A comparison page for teams deciding between a control plane and loosely structured chat execution.
+title: ClosedLoop.ai vs chat-based workflows
+description: A comparison for teams deciding between a control plane and loosely structured chat execution.
 ---
 
 ## Chat-based workflows
 
 - fast to start
-- useful for ideation, one-off scripts, and exploratory research
+- useful for ideation
 - weak on coordination and artifact history
-- no durable link between intent and output
-- no structured review
-- no team-level memory between sessions
+- no shared review trail
+- no pattern capture
+- inconsistent across team members
+
+Chat wins when the task is exploratory and single-user. It loses when coordination, audit, or repeatability matter.
 
 ## ClosedLoop.ai
 
-- slower to set up initially (install, onboarding, sandbox)
+- slower to set up initially
 - stronger for repeatable execution
 - keeps artifacts, loops, and review connected
-- bounded execution with approval policy and sandbox
-- structured judgment via 21 judges plus multi-agent code review
-- team-level memory via self-learning patterns
+- durable PRDs, plans, critics, judges, learnings
+- sandbox and approval policy on every operation
+- self-learning that compounds across runs and teams
+
+## Shared review trail
+
+| Dimension | Chat | ClosedLoop.ai |
+|---|---|---|
+| Durable artifact | no | yes (`plan.json`, `plan.md`) |
+| Critics | no | parallel critics with cache |
+| Judges | no | 21 LLM-as-judge agents |
+| Approvals | no | per-operation risk tier + always-allow rules |
+| Sandbox | implicit | explicit allowlist + hard-denies |
+| Learning | per-user | per-team via `org-patterns.toon` |
+| Cross-repo | manual | native discovery + peer PRDs |
+| Observability | none | PostHog + Datadog telemetry streams |
+| Reproducibility | low | every run archived |
 
 ## When to use each
 
-- **Chat.** The task is exploratory, throwaway, or fits in a single turn. Examples: scratch scripts, research about an API, quick debugging.
-- **ClosedLoop.** The task needs to move through a team reliably: a PRD that should ship, a migration that spans repos, a feature that needs review, a workflow that will be repeated.
+Use chat when the task is exploratory, single-user, and disposable.
 
-## Mixing the two
+Use ClosedLoop.ai when the work needs to move through a team reliably.
 
-It is reasonable to start in chat and graduate to ClosedLoop as soon as a piece of work survives long enough to deserve an artifact. The upload-artifact skill lets you convert a chat-produced PRD into a platform PRD in one command.
-
-## Related reading
-
-<Cards>
-  <Card title="Spec-driven AI development" href="../concepts/spec-driven-ai-development">
-    Why artifacts beat chat for team delivery.
-  </Card>
-  <Card title="Artifact-bound delivery" href="../concepts/artifact-bound-delivery">
-    The core of the control-plane model.
-  </Card>
-  <Card title="From onboarding to first loop" href="../getting-started/from-onboarding-to-first-loop">
-    Your path from chat-style to artifact-bound.
-  </Card>
-</Cards>
+Teams usually use both: chat for ideation, ClosedLoop.ai for shipped work. The boundary moves over time as the team gets comfortable running more work through the loop.

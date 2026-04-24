@@ -1,0 +1,4 @@
+{
+  "no_learnings": true,
+  "reason": "Straightforward YAML edit — added permissions: contents: read blocks to two GitHub Actions jobs (typecheck and test) to match the pattern already in place for the lint and security-scan jobs in the same file."
+}

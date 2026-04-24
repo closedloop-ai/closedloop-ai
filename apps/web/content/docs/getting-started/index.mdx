@@ -1,50 +1,46 @@
 ---
 title: Getting Started
-description: The shortest path to a usable install, configured runtime, and first successful loop.
+description: The shortest path to a usable install, onboarding, and first completed loop.
 ---
 
-ClosedLoop.ai works best when the initial setup is treated as system configuration, not a one-time demo. Three layers must be ready before you launch a loop: an **account and project** in the web app, a **desktop runtime** with a healthy gateway, and a **target repository** with a real artifact to execute against.
+ClosedLoop.ai works best when the initial setup is treated as system configuration, not as a one-time demo.
 
-## What you need
+There are three things to install before you can run a loop end-to-end:
 
-1. An account at [app.closedloop.ai](https://app.closedloop.ai) with at least one team and project.
-2. The ClosedLoop Desktop app installed and signed in to your workspace.
-3. The ClosedLoop Claude plugins installed (one-line installer; see [Install the plugins](./install-claude-plugins)).
-4. Claude Code CLI (`claude`), GitHub CLI (`gh`), Python 3.11+, Node.js 22+ (for source builds), and `jq` available on your PATH.
-5. A repository you own with a clear first task and reviewable acceptance criteria.
+1. The **Claude Code plugins** — the agents, skills, and orchestration that power the closed loop.
+2. The **desktop client** — the localhost gateway that lets the web app drive local tools safely.
+3. A **connected repository** with at least one scoped artifact worth executing against.
 
 ## Recommended path
 
 <Cards>
-  <Card title="Install the desktop app" href="./install-desktop">
-    Install ClosedLoop Desktop, grant it a sandbox directory, and confirm the local gateway is healthy.
+  <Card title="Prerequisites" href="./prerequisites">
+    The exact versions of Node, pnpm, Python, Claude Code, and system tools you need before you install anything.
   </Card>
-  <Card title="Install the Claude plugins" href="./install-claude-plugins">
-    Register the ClosedLoop marketplace and install the six plugins that make the loop execute.
+  <Card title="Install the plugins" href="./install-plugins">
+    One-line install for the six Claude Code plugins, plus interactive and development install paths.
   </Card>
-  <Card title="First launch and onboarding" href="./first-launch">
-    Walk through the onboarding overlay: relay origin, API key, sandbox, binary paths.
+  <Card title="Install the desktop client" href="./install-desktop">
+    Install, launch, and authenticate the desktop client and its localhost gateway.
+  </Card>
+  <Card title="Prepare your repo and targets" href="./prepare-your-repo-and-targets">
+    Make local execution predictable before you scale up docs or code generation.
   </Card>
   <Card title="From onboarding to first loop" href="./from-onboarding-to-first-loop">
-    Turn a scoped artifact into a running loop that produces reviewable output.
+    Convert the desktop onboarding flow into a durable setup and your first successful loop.
   </Card>
-  <Card title="Prepare repo and targets" href="./prepare-your-repo-and-targets">
-    Make local execution predictable before you scale up docs or code generation.
+  <Card title="Run your first loop" href="./first-loop">
+    A concrete walkthrough from an artifact to a reviewable PR with judges attached.
   </Card>
 </Cards>
 
-## Setup order that actually works
+## What success looks like
 
-Follow this order and you will avoid the most common first-run failures:
+By the end of this section you should have:
 
-1. Install Claude Code CLI and log in (`claude` on your PATH).
-2. Install and authenticate GitHub CLI (`gh auth login`). Auto-clone depends on it.
-3. Install the Claude plugins (one-line installer).
-4. Install the desktop app (signed macOS DMG or a source build for Linux).
-5. Complete the onboarding overlay: relay origin, web origin, API key, sandbox directory.
-6. In the web app, open or create an artifact (PRD or plan) with real acceptance criteria.
-7. Dispatch a plan or execute loop and approve it from the desktop Approvals tab.
+- the six ClosedLoop Claude Code plugins installed in `~/.claude/plugins/cache/closedloop-ai/`
+- the desktop client running, with its tray icon reporting `ready` and a registered compute target
+- a sandbox directory configured, an API key stored, and a connected repository
+- one scoped artifact, executed through a full loop, landing a reviewable change
 
-:::note
-The fastest way to produce a low-quality result is to start a loop from an under-specified artifact. Acceptance criteria are how the judges decide whether to pass you.
-:::
+Once that path works once, it works repeatably. Everything after is tuning.

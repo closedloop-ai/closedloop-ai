@@ -1,70 +1,97 @@
 ---
-title: Install the Desktop App
-description: Install ClosedLoop Desktop, grant it a sandbox directory, and confirm the local gateway is healthy.
+title: Install the desktop client
+description: Install, launch, and authenticate the ClosedLoop desktop client and its localhost gateway.
 ---
 
-ClosedLoop Desktop is the local runtime for your workspace. It runs a sandboxed HTTP gateway on `127.0.0.1`, maintains an outbound connection to the ClosedLoop cloud relay, and executes loops against real clones of your repositories using Claude Code.
+The desktop client is the execution surface for ClosedLoop.ai. It runs a localhost HTTP gateway on port `19432` that brokers local git, filesystem, code review, and AI coding session operations, and maintains an outbound Socket.IO connection to the cloud relay so the control plane can drive work safely.
 
-## System requirements
+## Download
 
-- **macOS** on Apple Silicon or Intel (signed universal DMG is the supported distribution).
-- **Linux** is supported from source via `just desktop-dev`.
-- **Node.js 22+** and **pnpm 9.15+** are required only for source builds.
-- **Disk**: at least a few GB free inside the sandbox directory for clones and loop artifacts.
+- **macOS:** download the latest signed, notarized universal DMG from GitHub Releases under `closedloop-ai/closedloop-electron`. Drag the `ClosedLoop.app` bundle into `/Applications`.
+- **Linux:** run the app from source with `just desktop-dev` (see below). Linux is supported for development but not yet packaged.
+- **Windows:** not supported.
 
-## Install from the signed DMG
+Packaged macOS builds auto-update via `electron-updater`. The client checks on boot and every five minutes after that, downloading updates in the background and installing them on the next quit.
 
-1. Download the latest **ClosedLoop.dmg** from the releases page linked in the web app.
-2. Open the DMG and drag **ClosedLoop** into `Applications`.
-3. Launch the app. The first launch shows the onboarding overlay described in [First launch](./first-launch).
-4. Packaged builds auto-update. The app checks GitHub Releases every five minutes and shows an **Update & Restart** banner when a new version is available.
+## First launch
 
-## Install from source (macOS or Linux)
+When you launch the app for the first time, the tray icon appears in your menu bar. The tray cycles through four states:
 
-```bash
-git clone https://github.com/closedloop-ai/closedloop-electron
-cd closedloop-electron
-corepack enable
-corepack prepare pnpm@9.15.0 --activate
-just install
-just desktop-dev
-```
+| State | Meaning |
+|---|---|
+| `starting` | The gateway is booting and the cloud socket is connecting. |
+| `ready` | The gateway is bound, capabilities detected, and the cloud socket has received a hello-ack. |
+| `degraded` | The cloud socket is disconnected or has not yet received a hello-ack. Local work still succeeds. |
+| `error` | Startup failed. Open the app to read the error. |
 
-The `just desktop-dev` recipe builds the app and launches Electron in dev mode. Available dev recipes:
+Clicking the tray icon opens the main window. The tray also badges with the number of pending approvals so you notice high-risk operations even with the window closed.
 
-- `just desktop-build` – TypeScript build only.
-- `just desktop-start` – run from an existing build.
-- `just desktop-dev` – build and start.
-- `just desktop-test` / `desktop-lint` / `desktop-typecheck` – standard checks.
-- `just desktop-package` – produce a universal macOS DMG in `dist-dmg/` (macOS hosts only).
+## Authenticate
 
-:::note
-Dev builds do not auto-update. If you are running from source, pull `origin/main` and rebuild periodically.
-:::
+1. Open the main window.
+2. Paste your ClosedLoop API key into **Settings → API key**. The key is encrypted with the operating system's keychain via Electron `safeStorage` and stored in `desktop-secrets`.
+3. Confirm the status indicator flips to `ready`. If it does not, see [Troubleshooting](../resources/troubleshooting).
 
-## What gets installed
+Alternatively, export `CLOSEDLOOP_API_KEY` in your shell before launching. Environment values take precedence over stored values. The `SYMPHONY_API_KEY` variable is accepted as a legacy fallback.
 
-When the app first runs it creates:
+## Complete onboarding
 
-- A persistent settings store at the platform-standard Electron location (on macOS: `~/Library/Application Support/ClosedLoop/`).
-- A port file at `~/.closedloop-ai/electron-port` recording the bound gateway port.
-- A seeded repo config at `~/.closedloop-ai/config/repos.json` that you can grow over time.
-- A system tray icon that lets you open the app, pause incoming commands, or quit.
+The built-in onboarding overlay walks you through:
 
-## Confirm the gateway is healthy
+- confirming the API key works against the ClosedLoop API
+- registering this machine as a compute target via `POST /compute-targets/register`
+- choosing a sandbox base directory (the only path the gateway will let operations touch)
+- selecting a default approval tier (`low`, `medium`, or `high`, default `high`)
 
-Open a terminal and run:
+Onboarding completion is persisted in `desktop-settings` so the overlay does not return.
+
+## Verify the gateway
+
+With the desktop client running, you can probe the public health route from any loopback process:
 
 ```bash
 curl http://127.0.0.1:19432/health
 ```
 
-You should see a `200 OK` JSON response with `status: "ok"`, the app version, the detected machine name, and a capabilities map that reports which CLIs (`claude`, `gh`, `codex`, `python3`, `git`) were found on your PATH.
+A ready gateway responds with:
 
-If `19432` is already in use the gateway walks through `19433`, `19434`, and `19435`. The active port is always written to `~/.closedloop-ai/electron-port`.
+```json
+{
+  "status": "ok",
+  "machineName": "<your-host>",
+  "capabilities": {
+    "tools": { "claude": true, "codex": true, "gh": true, "git": true, "python3": true },
+    "versions": {}
+  },
+  "version": "<package version>",
+  "port": 19432
+}
+```
 
-## Permissions and what the app can see
+The active port is also written in plaintext to `~/.closedloop-ai/electron-port` so other tools can discover it.
 
-The desktop app **does not** have unrestricted access to your filesystem. Every file-system operation must pass a sandbox check against the single **Sandbox Base Directory** you pick during onboarding. Paths under `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/Library/Keychains`, `/etc`, `/bin`, and `/sbin` are always denied, even if they fall inside your sandbox. Canonicalized symlinks are also checked, so a link inside your sandbox cannot traverse to a protected directory.
+If the default port is in use, the client will fall back through `19433 → 19434 → 19435`. The discovery file always reflects the active port.
 
-See [Settings reference](../mechanisms/desktop-settings) for a full map of what the app stores, where, and how to configure it.
+## Run from source (Linux or contributors)
+
+```bash
+git clone git@github.com:closedloop-ai/closedloop-electron.git
+cd closedloop-electron
+just install
+just desktop-dev
+```
+
+Useful `just` recipes:
+
+| Command | What it does |
+|---|---|
+| `just desktop-dev` | Build and start the Electron app. |
+| `just desktop-start` | Run Electron from an existing build. |
+| `just desktop-package` | Build and package a macOS DMG under `dist-dmg/`. |
+| `just desktop-lint` | Run ESLint for desktop sources. |
+| `just desktop-typecheck` | Run `tsc --noEmit`. |
+| `just desktop-test` | Run the desktop test suite. |
+
+## Next step
+
+With the desktop client running and authenticated, continue to [Prepare your repo and targets](./prepare-your-repo-and-targets).

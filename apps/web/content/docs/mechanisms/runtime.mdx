@@ -3,54 +3,71 @@ title: Runtime
 description: The execution environment that actually runs loops and determines what providers and tools are available.
 ---
 
-The runtime is where loops become real work. In ClosedLoop.ai the runtime is the **desktop app plus its local gateway plus the Claude plugins**. It is the only surface that touches your filesystem, runs your CLIs, or signs commits.
+The runtime is where loops become real work. In ClosedLoop.ai, the runtime is the combination of:
+
+- a registered compute target (the desktop client on a specific machine)
+- that machine's installed tools (`claude`, `codex`, `git`, `gh`, `python3`)
+- the Claude Code plugins resolved under `~/.claude/plugins/cache/closedloop-ai/`
+- the process-level sandbox the gateway enforces on every operation
 
 ## Responsibilities
 
-- **Expose provider support.** Report which models (Claude Opus, Sonnet, Haiku, Codex) can be used on this machine.
-- **Run execution safely.** Enforce the sandbox, the approval policy, and the deny list for sensitive paths.
-- **Report health and availability.** Heartbeat to the relay; surface a `degraded` state when a binary or provider is missing.
-- **Return structured output.** Stream NDJSON events and uploaded artifacts back to the control plane.
+- **Expose provider support** — capabilities are reported via the `/health` endpoint and via `desktop.hello` when the cloud socket connects.
+- **Run execution safely** — every path input is filtered through the sandbox allowlist. Certain paths are hard-denied even inside the sandbox.
+- **Report health and availability** — tray state (`starting`, `ready`, `degraded`, `error`) plus heartbeat against the API (`POST /compute-targets/:id/heartbeat` every 30 seconds).
+- **Return structured output** — operation handlers emit NDJSON streams or JSON responses, which the cloud executor forwards as `desktop.command.event` messages.
 
-## What makes up the runtime
+## Capabilities
 
-| Component | Role |
-| --- | --- |
-| **Desktop app** | Electron shell; renders the UI; owns the settings and secrets stores. |
-| **Local gateway** | HTTP server on `127.0.0.1` (port `19432` by default). Exposes all operations the cloud can invoke. |
-| **Cloud socket** | Outbound Socket.IO connection to `relay.closedloop.ai`. Receives commands; emits telemetry, presence, and command events. |
-| **Claude plugins** | The orchestrator, subagents, judges, and self-learning system that drive the loop inside `claude`. |
-| **Git worktrees** | Each loop runs inside a dedicated worktree under a configurable parent directory. |
+The runtime reports a capabilities object shaped like:
 
-## Health and capabilities
+```ts
+ComputeTargetCapabilities {
+  tools: Record<"claude"|"codex"|"git"|"gh"|"python3", boolean>
+  versions: Partial<Record<CapabilityToolName, string>>
+}
+```
 
-The gateway exposes `GET /health` without authentication. The response contains:
+The server starts with empty capabilities and fills them in via health-check routes. If a required binary is missing, telemetry emits `preflight.binary_not_found`.
 
-- `status: "ok"`
-- `version` – the desktop app's semver
-- `port` – the active bound port
-- `machineName` – a human-readable identifier for this target
-- `capabilities` – a map of `tools` (which CLIs were detected) and `versions` (provider versions)
+## Binary resolution
 
-The web app's Runtime picker calls this endpoint (via the relay) to show your target's health and its capabilities.
+Electron on macOS inherits a minimal PATH, so the server spawns the user's login shell (`$SHELL -ilc`) wrapped in sentinels to extract the real PATH. `~/` is expanded, `npm_config_prefix` and `NPM_CONFIG_PREFIX` are sanitized for nvm compatibility, and the result is cached for the session.
 
-## Runtime states
+Override specific binaries at **Settings → Binary paths** or via `PATCH /api/gateway/settings/binary-paths`. The override sources are `override`, `override_invalid`, `path`, or `fallback`.
 
-- **online** – healthy, commands accepted.
-- **degraded** – a capability is missing (for example `claude` not found on PATH) or heartbeats have failed twice in a row. The gateway still serves local traffic.
-- **paused** – the user toggled **Pause incoming commands**. New cloud commands are refused.
-- **offline** – no heartbeat for an extended period.
+## Process management
 
-## Related reading
+The `ProcessManager` in `src/server/process-manager.ts` supports three spawn modes:
 
-<Cards>
-  <Card title="Desktop gateway" href="./desktop-gateway">
-    The contract between the cloud and your machine.
-  </Card>
-  <Card title="Settings reference" href="./desktop-settings">
-    What the runtime stores and how to configure it.
-  </Card>
-  <Card title="Approvals" href="./approvals">
-    The gate between cloud commands and local execution.
-  </Card>
-</Cards>
+- `spawnStreaming` — detached process with stdout/stderr readers, NDJSON line parsing, auto-kill 30s after a terminal `result` line, 5s grace for SIGTERM before SIGKILL.
+- `spawnDetached` — detached with stdio redirected to a log file, unreferenced after spawn. Used for long-running background jobs.
+- `exec` — wraps `execFileAsync` for one-shot calls.
+
+Every spawn calls `assertOperationPath(cwd)` to enforce the sandbox allowlist before launching.
+
+## Job lifecycle
+
+Long-running symphony loop jobs are tracked in the `JobStore`:
+
+- 11 lifecycle states: `QUEUED`, `STARTING`, `RUNNING`, `AWAITING_USER`, `STOPPED`, `CANCEL_PENDING`, `COMPLETED`, `FAILED`, `CANCELLED`, `UNKNOWN`
+- Per-job `pid`, `statePath`, `logPath`, `jsonlPath`, `worktreeDir`
+- Terminal jobs roll into a capped array (max 100)
+
+On startup, the `BootRecoveryService`:
+
+1. Reattaches live jobs (any `pid` that is still running gets re-tailed).
+2. Finalizes dead jobs (processes that died while the app was down are resolved from their state file).
+3. Sweeps orphaned loop tokens no longer in the JobStore.
+
+## Output tailing
+
+The server polls the claude-output JSONL files (`CLOSEDLOOP_TAILER_POLL_MS`) and throttles replay (`CLOSEDLOOP_TAILER_THROTTLE_MS`). Each job tracks a `lastObservedJsonlOffset` so replays are safe even after a cloud disconnect.
+
+## Plugin resolution
+
+Plugin scripts are resolved under `~/.claude/plugins/cache/closedloop-ai/<plugin-name>/<semver>/scripts/`. Registered plugins come from `~/.claude/plugins/installed_plugins.json`. The `code@closedloop-ai` plugin version is reported in `desktop.hello.pluginVersion` and can be overridden for tests via `CL_PLUGIN_VERSION` (semver, max 64 chars).
+
+## Why the runtime is a first-class concept
+
+A loop that works on one machine and fails on another is a failure of the runtime, not of the plan. Making the runtime explicit — with reported capabilities, sandbox policy, and binary overrides — turns environment issues into diagnosable failures instead of mysterious breakage.

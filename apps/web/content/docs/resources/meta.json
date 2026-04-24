@@ -1,6 +1,11 @@
 {
   "title": "Resources",
   "pages": [
+    "troubleshooting",
+    "faq",
+    "commands-reference",
+    "gateway-endpoints-reference",
+    "env-vars-reference",
     "closedloop-vs-chat-based-workflows",
     "prd-template",
     "implementation-plan-template",

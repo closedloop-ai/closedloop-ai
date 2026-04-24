@@ -1,0 +1,16 @@
+{
+  "what_happened": "GitHub Actions workflow used tag-based references (e.g., @v6) instead of pinned SHA commits",
+  "why": "Tag references are mutable and can be changed by action maintainers, creating supply-chain security risks",
+  "fix_applied": "Replaced all tag references with full commit SHAs and added version comment annotations (e.g., # v4.2.2)",
+  "pattern_to_remember": "When pinning GitHub Actions to SHAs: the file may show @v6 but the canonical SHAs provided correspond to v4 releases. Always verify which SHA corresponds to which version using the comment annotation. Format: uses: actions/checkout@<full-sha> # v<major.minor.patch>",
+  "applies_to": ["implementation-subagent"],
+  "context": {
+    "file": ".github/workflows/pr-test.yml",
+    "shas_used": {
+      "actions/checkout": "11bd71901bbe5b1630ceea73d27597364c9af683",
+      "pnpm/action-setup": "a3252b7a1b56a178b52fdf4936d7adab69e4bdad",
+      "actions/setup-node": "49933ea5288caeca8642d1e84afbd3f7d6820020",
+      "actions/dependency-review-action": "38ecb5b593bf4a9b024c5c5cde0f23fa4c551fef"
+    }
+  }
+}

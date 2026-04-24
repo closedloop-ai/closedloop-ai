@@ -1,0 +1,10 @@
+{
+  "what_happened": "Added Docker build provenance attestation and digest capture to GitHub Actions workflow",
+  "why": "buildx provenance and SBOM attestation require both `attestations: write` and `id-token: write` permissions on the job",
+  "fix_applied": "Added `attestations: write` alongside the existing `id-token: write` in job permissions; added `provenance: true` and `sbom: true` to docker/build-push-action; referenced step output via `steps.build.outputs.digest`",
+  "pattern_to_remember": "GitHub Actions: docker/build-push-action provenance/SBOM requires `attestations: write` + `id-token: write` job permissions. The step needs `id: build` to expose `outputs.digest`. Capture digest with `echo \"${{ steps.build.outputs.digest }}\" > digest.txt` then upload with actions/upload-artifact.",
+  "applies_to": ["implementation-subagent", "plan-writer"],
+  "context": {
+    "file": ".github/workflows/build-container.yml"
+  }
+}

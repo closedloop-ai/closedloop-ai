@@ -1,0 +1,11 @@
+{
+  "what_happened": "Added release metadata capture and artifact upload to deploy-production.yml",
+  "why": "Task required a structured JSON artifact capturing version, commitRef, buildTimestamp, validationOutcomes, workflow, and runId after successful health checks",
+  "fix_applied": "Inserted two steps between Post Success and Capture Error Context: one using jq -n with --arg flags to build the JSON and write to release-metadata.json, and one using SHA-pinned actions/upload-artifact@v4.6.2",
+  "pattern_to_remember": "In deploy-production.yml, metadata/artifact steps that should only run on the success path go between 'Post Success' (line ~452) and 'Capture Error Context' (which is failure-only). Use `if: success() && steps.diff.outputs.has_changes == 'true'` to gate on both success and actual deploy. Use `jq -n --arg key value '{ key: $key }'` pattern for safe JSON construction in bash (avoids shell injection and quoting issues).",
+  "applies_to": ["implementation-subagent"],
+  "context": {
+    "file": ".github/workflows/deploy-production.yml",
+    "lines": "491-516"
+  }
+}

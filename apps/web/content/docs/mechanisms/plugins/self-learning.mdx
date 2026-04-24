@@ -1,0 +1,98 @@
+---
+title: self-learning plugin
+description: Pattern capture and organizational knowledge sharing with TOON-encoded patterns and deterministic success rates.
+---
+
+The `self-learning` plugin turns individual run patterns into organizational knowledge. It captures what agents do well (and what they do poorly), classifies the patterns, computes deterministic success rates, and optionally syncs across teams.
+
+## Commands
+
+| Command | Purpose |
+|---|---|
+| `/self-learning:process-learnings [workdir]` | Classify pending learnings, validate, dedupe, merge into `org-patterns.toon`; prune low performers. |
+| `/self-learning:export-closedloop-learnings [workdir]` | Merge ClosedLoop-specific pending learnings into `~/.closedloop-ai/learnings/closedloop-learnings.json`. |
+| `/self-learning:push-learnings` | Export local patterns to a shared team repo (requires `CLAUDE_ORG_ID`). |
+| `/self-learning:pull-learnings` | Import organization patterns (prevents echo from your own project). |
+| `/self-learning:prune-learnings` | Manual pruning per `retention.yaml`. |
+| `/self-learning:goal-stats` | Pass rate, top patterns, and trends (requires at least 5 runs). |
+
+## Skills (2)
+
+- `toon-format` — TOON syntax spec (tabular arrays, quoting, flag semantics `[REVIEW]`, `[STALE]`, `[UNTESTED]`, `[PRUNE]`).
+- `learning-quality` — 5-step decision tree with hard rejection criteria, used by agents that capture learnings.
+
+## Post-iteration pipeline
+
+The `code` plugin's `run-loop.sh` calls into self-learning through an 11-step pipeline after each iteration:
+
+1. `changed-files.json` from git diff
+2. `pattern_relevance.py` → `relevance-scores.json`
+3. `merge_relevance.py` → appends `|relevance_score|relevance_method` to `outcomes.log`
+4. `evaluate_goal.py` → `goal-outcome.json`
+5. `merge_goal_outcome.py` → appends `|goal_name|goal_success|goal_score`
+6. `verify_citations.py` → marks `|unverified` entries
+7. `merge_build_result.py` → appends `|build_passed` or `|build_failed`
+8. `claude -p '/self-learning:process-learnings'` — LLM classification
+9. `write_merged_patterns.py` — atomic TOON write with `.bak`, 50-pattern cap, sorted by confidence and flags
+10. `compute_success_rates.py` — per-pattern success rates and flag assignment
+11. `claude -p '/self-learning:export-closedloop-learnings'`
+
+## TOON format
+
+TOON (tabular object-oriented notation) reduces tokens by ~40% versus JSON. Tabular arrays look like:
+
+```
+patterns[N]{id,category,summary,confidence,seen_count,success_rate,flags,applies_to,context,repo}:
+  P-001,pattern,"Always check token expiry...",high,5,0.85,,implementation-subagent,auth|API,*
+```
+
+### Pattern flags
+
+- `[REVIEW]` — success rate below 40%
+- `[STALE]` — no application in the last 10 iterations
+- `[UNTESTED]` — no applications
+- `[PRUNE]` — more than 20 applications with success rate below 40%
+
+### Confidence thresholds
+
+- `high` >= 0.70
+- `medium` >= 0.40
+- `low` < 0.40
+
+## Success rate computation
+
+Simple mode: pass count / application count. Goal-weighted mode: `goal_success=1` contributes full weight; `goal_success=0` contributes `relevance_score * 0.5`. Matching is tiered: exact → case-insensitive → substring → Jaccard > 0.6.
+
+## Built-in goals
+
+Defined in `.learnings/goal.yaml`:
+
+- `reduce-failures`
+- `swe-bench`
+- `minimize-tokens`
+- `maximize-coverage`
+- custom via `GOAL_EVALUATOR_SCRIPT`
+
+## Retention
+
+`retention.yaml` controls pruning:
+
+- `max_runs`, `max_sessions`, `max_log_lines`
+- `max_archive_age_days`
+- `lock_stale_hours`, `protected_window_minutes`
+
+## Organization sharing
+
+`CLAUDE_ORG_ID` enables `/push-learnings` and `/pull-learnings`. Echo prevention skips patterns that originated from the current project, so contributions do not cycle back.
+
+## Where learnings live
+
+- Per-project: `.learnings/pending/*.json`, `.learnings/outcomes.log`, `.learnings/runs.log`, `.learnings/acknowledgments.log`
+- Per-user (global): `~/.closedloop-ai/learnings/org-patterns.toon`, `~/.closedloop-ai/learnings/closedloop-learnings.json`
+- Schemas: `schemas/learning.schema.json` (with `L-###` IDs, `schema_version 1.0`), `schemas/goal.schema.json`
+
+## Why this matters
+
+Individual engineers get better over time by remembering what worked. Teams without shared memory do not — each engineer re-learns the same lessons.
+
+Self-learning turns that team-level forgetting into team-level compounding. Runs become data; patterns become shared practice; pitfalls become hard-encoded rejections. That is the outer loop that makes the inner loop better every run.
