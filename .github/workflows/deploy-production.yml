@@ -69,7 +69,7 @@ jobs:
           fi
 
       - name: Fetch Branches
-        run: git fetch origin $DEPLOY_BASE_BRANCH $DEPLOY_HEAD_BRANCH --prune
+        run: git fetch origin "$DEPLOY_BASE_BRANCH" "$DEPLOY_HEAD_BRANCH" --prune
 
       - name: Build Changelog
         env:
@@ -201,6 +201,7 @@ jobs:
 
           REPO_OWNER="${REPO%/*}"
           REPO_NAME="${REPO#*/}"
+          # shellcheck disable=SC2016
           QUERY='query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
             repository(owner: $owner, name: $name) {
               pullRequest(number: $number) {
@@ -541,11 +542,13 @@ jobs:
             [ -z "$RELAY_CONCLUSION" ] && RELAY_CONCLUSION="timed_out"
           fi
 
-          echo "mcp_run_id=${MCP_RUN_ID}" >> "$GITHUB_OUTPUT"
-          echo "relay_run_id=${RELAY_RUN_ID}" >> "$GITHUB_OUTPUT"
-          echo "mcp_conclusion=${MCP_CONCLUSION}" >> "$GITHUB_OUTPUT"
-          echo "relay_conclusion=${RELAY_CONCLUSION}" >> "$GITHUB_OUTPUT"
-          echo "commit_sha=${COMMIT_SHA}" >> "$GITHUB_OUTPUT"
+          {
+            echo "mcp_run_id=${MCP_RUN_ID}"
+            echo "relay_run_id=${RELAY_RUN_ID}"
+            echo "mcp_conclusion=${MCP_CONCLUSION}"
+            echo "relay_conclusion=${RELAY_CONCLUSION}"
+            echo "commit_sha=${COMMIT_SHA}"
+          } >> "$GITHUB_OUTPUT"
 
           echo "=== ECS Workflow Poll Results ==="
           echo "Commit SHA:         $COMMIT_SHA"
@@ -715,6 +718,8 @@ jobs:
           RELAY_CONCLUSION: ${{ steps.poll_ecs_workflows.outputs.relay_conclusion }}
           SERVER_URL: ${{ github.server_url }}
           REPO: ${{ github.repository }}
+          SLACK_SYMPHONY_CHANNEL_ID: ${{ secrets.SLACK_SYMPHONY_CHANNEL_ID }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           FAILED=""
           if [ "$MCP_CONCLUSION" != "success" ]; then
@@ -754,6 +759,30 @@ jobs:
               # the single-terminal-message invariant while avoiding a silent-no-notification
               # path (PLN-311 v6 review).
               echo "ECS_TERMINAL_POSTED=1" >> "$GITHUB_ENV"
+              # Channel elevation — see also Post Failure Report for the parallel copy (PLN-367).
+              # Subshell isolates failures so exit 1 at step end is always reached.
+              # printf builds the text with real newlines so Slack renders line breaks; bash
+              # double-quoted strings do not expand \n, matching the Post Success pattern above.
+              (
+                CHANNEL_ID=$(echo "${SLACK_SYMPHONY_CHANNEL_ID:-}" | tr -d '[:space:]')
+                CHANNEL_ID="${CHANNEL_ID:-$SLACK_CHANNEL_ID}"
+                echo "Channel elevation target: ${CHANNEL_ID:0:4}..."
+                THREAD_LINK="https://closedloop-ai.slack.com/archives/${SLACK_CHANNEL_ID}/p${SLACK_THREAD_TS/./}"
+                CHAN_TEXT=$(printf ":x: *Deploy failed* — prod ECS partial failure\n\n*Failed:* %s\n*Thread:* %s\n*Run:* %s" "$FAILED" "$THREAD_LINK" "$RUN_URL")
+                CH_RESP=$(jq -n \
+                  --arg channel "$CHANNEL_ID" \
+                  --arg text "$CHAN_TEXT" \
+                  '{channel: $channel, text: $text}' \
+                  | curl --max-time 10 -sS https://slack.com/api/chat.postMessage \
+                    -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+                    -H "Content-Type: application/json; charset=utf-8" \
+                    -d @-)
+                if echo "$CH_RESP" | jq -e '.ok' > /dev/null 2>&1; then
+                  echo "CHANNEL_TERMINAL_POSTED=1" >> "$GITHUB_ENV"
+                else
+                  echo "::warning::Channel post to ${CHANNEL_ID:0:8}... failed: $(echo "$CH_RESP" | jq -r '.error // "unknown"')"
+                fi
+              ) || echo '::warning::Channel post block failed unexpectedly'
             else
               echo "::warning::Slack notification failed: $(echo "$SLACK_RESP" | jq -r '.error // "unknown"')"
               echo "SLACK_FAILED=1" >> "$GITHUB_ENV"
@@ -991,6 +1020,8 @@ jobs:
           SLACK_THREAD_TS: ${{ inputs.slack_thread_ts }}
           ECS_FAILED_SERVICES: ${{ steps.capture_errors.outputs.ecs_failed_services }}
           ECS_FAILURE_LINES: ${{ steps.capture_errors.outputs.ecs_failure_lines }}
+          SLACK_SYMPHONY_CHANNEL_ID: ${{ secrets.SLACK_SYMPHONY_CHANNEL_ID }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           SLACK_FAILED=0
           # Read the diagnosis report
@@ -1023,6 +1054,35 @@ jobs:
             echo "::warning::Slack failure report failed: $(echo "$SLACK_RESP" | jq -r '.error // "unknown"')"
             SLACK_FAILED=1
             echo "SLACK_FAILED=1" >> "$GITHUB_ENV"
+          fi
+
+          # Channel elevation — see also Enforce ECS Outcomes for the parallel copy (PLN-367).
+          # CHANNEL_TERMINAL_POSTED guard is defensive future-proofing: currently unreachable because
+          # the step-level if: gate already excludes the ECS path.
+          # Subshell + `|| ::warning` keeps this best-effort: a curl timeout must not trip
+          # `set -e` and suppress the failure-log chunk posting below.
+          # printf builds the text with real newlines so Slack renders line breaks.
+          if [ "$SLACK_FAILED" -ne 1 ] && [ "${CHANNEL_TERMINAL_POSTED:-}" != "1" ]; then
+            (
+              CHANNEL_ID=$(echo "${SLACK_SYMPHONY_CHANNEL_ID:-}" | tr -d '[:space:]')
+              CHANNEL_ID="${CHANNEL_ID:-$SLACK_CHANNEL_ID}"
+              echo "Channel elevation target: ${CHANNEL_ID:0:4}..."
+              THREAD_LINK="https://closedloop-ai.slack.com/archives/${SLACK_CHANNEL_ID}/p${SLACK_THREAD_TS/./}"
+              CHAN_TEXT=$(printf ":x: *Deploy failed* — %s\n\n*Thread:* %s\n*Run:* %s" "$FAILED_STEP" "$THREAD_LINK" "$RUN_URL")
+              CH_RESP=$(jq -n \
+                --arg channel "$CHANNEL_ID" \
+                --arg text "$CHAN_TEXT" \
+                '{channel: $channel, text: $text}' \
+                | curl --max-time 10 -sS https://slack.com/api/chat.postMessage \
+                  -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+                  -H "Content-Type: application/json; charset=utf-8" \
+                  -d @-)
+              if echo "$CH_RESP" | jq -e '.ok' > /dev/null 2>&1; then
+                echo "CHANNEL_TERMINAL_POSTED=1" >> "$GITHUB_ENV"
+              else
+                echo "::warning::Channel post to ${CHANNEL_ID:0:8}... failed: $(echo "$CH_RESP" | jq -r '.error // "unknown"')"
+              fi
+            ) || echo '::warning::Channel post block failed unexpectedly'
           fi
 
           # Post failure logs as thread comments (chunked)
