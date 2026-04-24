@@ -85,6 +85,17 @@ export type ParsedExecutionResult =
       schemaVersion?: number;
     };
 
+const ExecutionResultSchemaVersionSchema = z.object({
+  schemaVersion: z.number().optional(),
+});
+
+export function detectExecutionResultSchemaVersion(
+  data: unknown
+): number | undefined {
+  const versionCheck = ExecutionResultSchemaVersionSchema.safeParse(data);
+  return versionCheck.success ? versionCheck.data.schemaVersion : undefined;
+}
+
 /**
  * Parse the on-disk execution-result.json format and normalize to a list of
  * per-repo results.
@@ -102,14 +113,7 @@ export function parseExecutionResultFile(
   data: unknown,
   fullName?: string
 ): ParsedExecutionResult {
-  // Detect schemaVersion field to decide which path to take.
-  const versionCheck = z
-    .object({ schemaVersion: z.number().optional() })
-    .safeParse(data);
-
-  const schemaVersion = versionCheck.success
-    ? versionCheck.data.schemaVersion
-    : undefined;
+  const schemaVersion = detectExecutionResultSchemaVersion(data);
 
   // Reject explicitly unsupported schema versions (anything other than 1/absent or 2).
   if (

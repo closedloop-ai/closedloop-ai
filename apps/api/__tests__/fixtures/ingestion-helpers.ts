@@ -1,3 +1,5 @@
+import type { RepoExecutionResult } from "@closedloop-ai/loops-api/execution-result";
+import { EvalStatus, type JudgesReport } from "@repo/api/src/types/evaluation";
 import type { Mock } from "vitest";
 import { vi } from "vitest";
 import type { IngestionContext } from "@/lib/loops/ingest-repo-execution-results";
@@ -35,6 +37,89 @@ export function makeIngestionCtx(
   base: IngestionContext = unitIngestionCtxDefaults
 ): IngestionContext {
   return { ...base, ...overrides };
+}
+
+export function makeSuccessResult(
+  overrides: Partial<RepoExecutionResult & { status: "success" }> = {}
+): RepoExecutionResult & { status: "success" } {
+  return {
+    status: "success",
+    fullName: "org/repo",
+    prUrl: "https://github.com/org/repo/pull/42",
+    prNumber: 42,
+    prTitle: "Symphony: feature",
+    branchName: "symphony/feature",
+    baseBranch: "main",
+    hasChanges: true,
+    commitSha: "abc123",
+    githubId: 999,
+    ...overrides,
+  };
+}
+
+export function makeFailedResult(
+  fullName = "org/repo-failed",
+  error = "execution failed"
+): RepoExecutionResult & { status: "failed" } {
+  return { status: "failed", fullName, error };
+}
+
+export function makeSkippedResult(
+  fullName = "org/repo-skipped",
+  reason = "no_changes"
+): RepoExecutionResult & { status: "skipped" } {
+  return { status: "skipped", fullName, reason };
+}
+
+export function makeJudgesReport(
+  overrides: string | Partial<JudgesReport> = {}
+): JudgesReport {
+  const normalizedOverrides =
+    typeof overrides === "string" ? { report_id: overrides } : overrides;
+  return {
+    report_id: "report-1",
+    timestamp: "2026-01-01T00:00:00Z",
+    stats: [
+      {
+        type: "case_score",
+        case_id: "test-judge",
+        final_status: EvalStatus.Passed,
+        metrics: [
+          {
+            metric_name: "test_score",
+            threshold: 0.8,
+            score: 0.95,
+            justification: "Test passed",
+          },
+        ],
+      },
+    ],
+    ...normalizedOverrides,
+  };
+}
+
+export function makeCodeJudgesReport(
+  overrides: Partial<JudgesReport> = {}
+): JudgesReport {
+  return makeJudgesReport({
+    report_id: "report-code-1",
+    stats: [
+      {
+        type: "case_score",
+        case_id: "security-judge",
+        final_status: EvalStatus.Passed,
+        metrics: [
+          {
+            metric_name: "security",
+            threshold: 0.9,
+            score: 0.95,
+            justification: "No issues found.",
+          },
+        ],
+      },
+    ],
+    ...overrides,
+  });
 }
 
 type IngestionMockTxValues = {

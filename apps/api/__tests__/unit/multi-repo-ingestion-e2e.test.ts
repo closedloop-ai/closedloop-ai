@@ -19,44 +19,36 @@ import {
 // Mocks — must be declared before module imports
 // ---------------------------------------------------------------------------
 
-vi.mock("@repo/database", () => ({
-  withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
-  EntityType: {
-    DOCUMENT: "DOCUMENT",
-    FEATURE: "FEATURE",
-    WORKSTREAM: "WORKSTREAM",
-  },
-  GitHubPRState: {
-    OPEN: "OPEN",
-  },
-  WorkstreamEventType: {
-    GITHUB_PR_CREATED: "GITHUB_PR_CREATED",
-  },
-  EvaluationReportType: {
-    PLAN: "PLAN",
-    CODE: "CODE",
-  },
-}));
+vi.mock("@repo/database", async () => {
+  const { createDatabaseMockModule } = await import("../fixtures/mock-modules");
+  return createDatabaseMockModule();
+});
 
-vi.mock("@repo/observability/log", () => ({
-  log: {
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  },
-}));
+vi.mock("@repo/observability/log", async () => {
+  const { createLogMockModule } = await import("../fixtures/mock-modules");
+  return createLogMockModule();
+});
 
-vi.mock("@/lib/loops/loop-document-ingestion", () => ({
-  upsertEvaluationWithJudgeScores: vi.fn().mockResolvedValue(undefined),
-}));
+vi.mock("@/lib/loops/loop-document-ingestion", async () => {
+  const { createLoopDocumentIngestionMockModule } = await import(
+    "../fixtures/mock-modules"
+  );
+  return createLoopDocumentIngestionMockModule();
+});
 
-vi.mock("@/lib/pr-linkage", () => ({
-  ensurePrLinkageRecords: vi.fn().mockResolvedValue(undefined),
-}));
+vi.mock("@/lib/pr-linkage", async () => {
+  const { createPrLinkageMockModule } = await import(
+    "../fixtures/mock-modules"
+  );
+  return createPrLinkageMockModule();
+});
 
-vi.mock("@/lib/prompts-service", () => ({
-  upsertFromSnapshot: vi.fn().mockResolvedValue(undefined),
-}));
+vi.mock("@/lib/prompts-service", async () => {
+  const { createPromptsServiceMockModule } = await import(
+    "../fixtures/mock-modules"
+  );
+  return createPromptsServiceMockModule();
+});
 
 // ---------------------------------------------------------------------------
 // Imports — after mocks
@@ -68,8 +60,11 @@ import { ingestRepoExecutionResults } from "@/lib/loops/ingest-repo-execution-re
 import { ensurePrLinkageRecords } from "@/lib/pr-linkage";
 import {
   e2eIngestionCtxDefaults,
+  makeFailedResult,
   makeIngestionCtx,
   makeIngestionSuccessMockTx,
+  makeSkippedResult,
+  makeSuccessResult,
 } from "../fixtures/ingestion-helpers";
 
 // ---------------------------------------------------------------------------
@@ -91,28 +86,20 @@ function makeV2Payload() {
   return {
     schemaVersion: 2,
     results: [
-      {
-        status: "success",
+      makeSuccessResult({
         fullName: "org/repo-success",
         prUrl: "https://github.com/org/repo-success/pull/100",
         prNumber: 100,
         prTitle: "Symphony: success feature",
         branchName: "symphony/success-feature",
-        baseBranch: "main",
-        hasChanges: true,
         commitSha: "abc123def456",
         githubId: 9001,
-      },
-      {
-        status: "failed",
-        fullName: "org/repo-failed",
-        error: "Execution failed: command exited with code 1",
-      },
-      {
-        status: "skipped",
-        fullName: "org/repo-skipped",
-        reason: "no_changes",
-      },
+      }),
+      makeFailedResult(
+        "org/repo-failed",
+        "Execution failed: command exited with code 1"
+      ),
+      makeSkippedResult("org/repo-skipped"),
     ],
   };
 }

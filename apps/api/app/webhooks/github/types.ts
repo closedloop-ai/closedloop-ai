@@ -12,6 +12,7 @@ export type WorkflowContext = {
   correlationId: string;
   documentId: string;
   workstreamId: string;
+  organizationId: string;
   runId: string;
   command?: string;
   repositoryId?: string;

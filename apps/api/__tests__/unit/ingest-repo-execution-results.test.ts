@@ -10,8 +10,6 @@
  */
 
 import type { RepoExecutionResult } from "@closedloop-ai/loops-api/execution-result";
-import type { JudgesReport } from "@repo/api/src/types/evaluation";
-import { EvalStatus } from "@repo/api/src/types/evaluation";
 import { vi } from "vitest";
 import { getMockWithDb } from "../utils/db-helpers";
 
@@ -19,44 +17,36 @@ import { getMockWithDb } from "../utils/db-helpers";
 // Mocks — must be declared before module imports
 // ---------------------------------------------------------------------------
 
-vi.mock("@repo/database", () => ({
-  withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
-  EntityType: {
-    DOCUMENT: "DOCUMENT",
-    FEATURE: "FEATURE",
-    WORKSTREAM: "WORKSTREAM",
-  },
-  GitHubPRState: {
-    OPEN: "OPEN",
-  },
-  WorkstreamEventType: {
-    GITHUB_PR_CREATED: "GITHUB_PR_CREATED",
-  },
-  EvaluationReportType: {
-    PLAN: "PLAN",
-    CODE: "CODE",
-  },
-}));
+vi.mock("@repo/database", async () => {
+  const { createDatabaseMockModule } = await import("../fixtures/mock-modules");
+  return createDatabaseMockModule();
+});
 
-vi.mock("@repo/observability/log", () => ({
-  log: {
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  },
-}));
+vi.mock("@repo/observability/log", async () => {
+  const { createLogMockModule } = await import("../fixtures/mock-modules");
+  return createLogMockModule();
+});
 
-vi.mock("@/lib/loops/loop-document-ingestion", () => ({
-  upsertEvaluationWithJudgeScores: vi.fn().mockResolvedValue(undefined),
-}));
+vi.mock("@/lib/loops/loop-document-ingestion", async () => {
+  const { createLoopDocumentIngestionMockModule } = await import(
+    "../fixtures/mock-modules"
+  );
+  return createLoopDocumentIngestionMockModule();
+});
 
-vi.mock("@/lib/pr-linkage", () => ({
-  ensurePrLinkageRecords: vi.fn().mockResolvedValue(undefined),
-}));
+vi.mock("@/lib/pr-linkage", async () => {
+  const { createPrLinkageMockModule } = await import(
+    "../fixtures/mock-modules"
+  );
+  return createPrLinkageMockModule();
+});
 
-vi.mock("@/lib/prompts-service", () => ({
-  upsertFromSnapshot: vi.fn().mockResolvedValue(undefined),
-}));
+vi.mock("@/lib/prompts-service", async () => {
+  const { createPromptsServiceMockModule } = await import(
+    "../fixtures/mock-modules"
+  );
+  return createPromptsServiceMockModule();
+});
 
 // ---------------------------------------------------------------------------
 // Imports — after mocks
@@ -68,8 +58,12 @@ import { upsertEvaluationWithJudgeScores } from "@/lib/loops/loop-document-inges
 import { ensurePrLinkageRecords } from "@/lib/pr-linkage";
 import { upsertFromSnapshot } from "@/lib/prompts-service";
 import {
+  makeCodeJudgesReport,
+  makeFailedResult,
   makeIngestionCtx,
   makeIngestionSuccessMockTx,
+  makeSkippedResult,
+  makeSuccessResult,
 } from "../fixtures/ingestion-helpers";
 
 // ---------------------------------------------------------------------------
@@ -81,64 +75,6 @@ const mockUpsertEvaluationWithJudgeScores =
   upsertEvaluationWithJudgeScores as unknown as Mock;
 const mockEnsurePrLinkageRecords = ensurePrLinkageRecords as unknown as Mock;
 const mockUpsertFromSnapshot = upsertFromSnapshot as unknown as Mock;
-
-// ---------------------------------------------------------------------------
-// Fixtures
-// ---------------------------------------------------------------------------
-
-function makeSuccessResult(
-  overrides: Partial<RepoExecutionResult & { status: "success" }> = {}
-): RepoExecutionResult & { status: "success" } {
-  return {
-    status: "success",
-    fullName: "org/repo",
-    prUrl: "https://github.com/org/repo/pull/42",
-    prNumber: 42,
-    prTitle: "Symphony: feature",
-    branchName: "symphony/feature",
-    baseBranch: "main",
-    hasChanges: true,
-    commitSha: "abc123",
-    githubId: 999,
-    ...overrides,
-  };
-}
-
-function makeFailedResult(
-  fullName = "org/repo-failed",
-  error = "execution failed"
-): RepoExecutionResult & { status: "failed" } {
-  return { status: "failed", fullName, error };
-}
-
-function makeSkippedResult(
-  fullName = "org/repo-skipped",
-  reason = "no_changes"
-): RepoExecutionResult & { status: "skipped" } {
-  return { status: "skipped", fullName, reason };
-}
-
-function makeCodeJudgesReport(): JudgesReport {
-  return {
-    report_id: "report-code-1",
-    timestamp: "2026-01-01T00:00:00Z",
-    stats: [
-      {
-        type: "case_score",
-        case_id: "security-judge",
-        final_status: EvalStatus.Passed,
-        metrics: [
-          {
-            metric_name: "security",
-            threshold: 0.9,
-            score: 0.95,
-            justification: "No issues found.",
-          },
-        ],
-      },
-    ],
-  };
-}
 
 // ---------------------------------------------------------------------------
 // Scenario harness

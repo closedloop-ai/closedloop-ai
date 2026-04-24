@@ -1,4 +1,5 @@
 import {
+  detectExecutionResultSchemaVersion,
   type ExecutionResultFile,
   ExecutionResultFileSchema,
   type ExecutionResultV2,
@@ -12,7 +13,6 @@ import { parsePerfSummary } from "@repo/github/perf-parser";
 import { parsePromptsSnapshotFromMarkdownEntries } from "@repo/github/prompt-snapshot-parser";
 import { log } from "@repo/observability/log";
 import type AdmZip from "adm-zip";
-import { z } from "zod";
 
 export type ZipContent = {
   planContent: string | null;
@@ -24,8 +24,6 @@ export type ZipContent = {
   promptsSnapshot: PromptsSnapshot | null;
   entries: { name: string; data: Buffer }[];
 };
-
-const schemaVersionCheck = z.object({ schemaVersion: z.number().optional() });
 
 /**
  * Parse execution result JSON safely using structural Zod validation.
@@ -40,10 +38,7 @@ function parseExecutionResult(
     const jsonContent = content.toString("utf-8");
     const parsed: unknown = JSON.parse(jsonContent);
 
-    const versionCheck = schemaVersionCheck.safeParse(parsed);
-    const schemaVersion = versionCheck.success
-      ? versionCheck.data.schemaVersion
-      : undefined;
+    const schemaVersion = detectExecutionResultSchemaVersion(parsed);
 
     if (schemaVersion === 2) {
       const result = ExecutionResultV2Schema.safeParse(parsed);

@@ -20,6 +20,7 @@ import {
 } from "@repo/api/src/types/evaluation";
 import type { TransactionClient } from "@repo/database";
 import { type Mock, vi } from "vitest";
+import { RAW_V1_EXECUTION_RESULT } from "../../../../packages/loops-api/__tests__/fixtures/execution-result-fixtures";
 import { buildZipWithEntries } from "../fixtures/zip-helpers";
 import {
   asTx,
@@ -83,7 +84,7 @@ vi.mock("@closedloop-ai/loops-api/execution-result", async (importActual) => {
     >();
   return {
     ...actual,
-    normalizeExecutionResultFile: vi.fn(),
+    parseExecutionResultFile: vi.fn(),
   };
 });
 
@@ -91,7 +92,7 @@ vi.mock("@/lib/loops/ingest-repo-execution-results", () => ({
   ingestRepoExecutionResults: vi.fn().mockResolvedValue(undefined),
 }));
 
-import { normalizeExecutionResultFile } from "@closedloop-ai/loops-api/execution-result";
+import { parseExecutionResultFile } from "@closedloop-ai/loops-api/execution-result";
 import { downloadWorkflowArtifacts } from "@repo/github";
 // Import after mocking
 import { documentVersionService } from "@/app/documents/document-version-service";
@@ -117,22 +118,13 @@ const mockCreateVersion =
   documentVersionService.createVersion as unknown as Mock;
 const mockUpsertFromSnapshot = upsertFromSnapshot as unknown as Mock;
 const mockFanOutJudgeScores = fanOutJudgeScores as unknown as Mock;
-const mockNormalizeExecutionResultFile =
-  normalizeExecutionResultFile as unknown as Mock;
+const mockParseExecutionResultFile =
+  parseExecutionResultFile as unknown as Mock;
 const mockIngestRepoExecutionResults =
   ingestRepoExecutionResults as unknown as Mock;
 
 const FAILED_TO_PARSE_EXECUTION_RESULT_RE =
   /Failed to parse execution result file/;
-const WORKSTREAM_NOT_FOUND_RE = /Workstream .+ not found/;
-const RAW_V1_EXECUTION_RESULT = {
-  has_changes: false,
-  pr_url: "",
-  pr_number: 0,
-  branch_name: "",
-  base_ref: "main",
-};
-
 describe("handleWorkflowSuccess", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -145,6 +137,7 @@ describe("handleWorkflowSuccess", () => {
     const runId = "1234567890";
 
     const ctx: WorkflowContext = {
+      organizationId: "test-org-id",
       correlationId,
       documentId: artifactId,
       workstreamId,
@@ -236,6 +229,7 @@ describe("handleWorkflowSuccess", () => {
     const runId = "9876543210";
 
     const ctx: WorkflowContext = {
+      organizationId: "test-org-id",
       correlationId,
       documentId: artifactId,
       workstreamId,
@@ -314,6 +308,7 @@ describe("handleWorkflowSuccess", () => {
     const actionRunId = "action-run-789";
 
     const ctx: WorkflowContext = {
+      organizationId: "test-org-id",
       correlationId,
       documentId: artifactId,
       workstreamId,
@@ -432,6 +427,7 @@ describe("handleWorkflowSuccess", () => {
     const runId = "8888888888";
 
     const ctx: WorkflowContext = {
+      organizationId: "test-org-id",
       correlationId,
       documentId: artifactId,
       workstreamId,
@@ -475,6 +471,7 @@ describe("handleWorkflowSuccess", () => {
     const runId = "9999999999";
 
     const ctx: WorkflowContext = {
+      organizationId: "test-org-id",
       correlationId,
       documentId: artifactId,
       workstreamId,
@@ -525,6 +522,7 @@ describe("handleWorkflowSuccess", () => {
     const actionRunId = "action-run-perf";
 
     const ctx: WorkflowContext = {
+      organizationId: "test-org-id",
       correlationId,
       documentId: artifactId,
       workstreamId,
@@ -614,6 +612,7 @@ describe("handleWorkflowSuccess", () => {
     const runId = "5555555001";
 
     const ctx: WorkflowContext = {
+      organizationId: "test-org-id",
       correlationId,
       documentId: artifactId,
       workstreamId,
@@ -673,6 +672,7 @@ describe("handleWorkflowSuccess", () => {
     const runId = "8888888888";
 
     const ctx: WorkflowContext = {
+      organizationId: "test-org-id",
       correlationId,
       documentId: "",
       workstreamId,
@@ -717,6 +717,7 @@ describe("handleWorkflowSuccess", () => {
     const runId = "1234000001";
 
     const ctx: WorkflowContext = {
+      organizationId: "test-org-id",
       correlationId,
       documentId: artifactId,
       workstreamId,
@@ -797,6 +798,7 @@ Plan the work carefully.
     const runId = "1234000002";
 
     const ctx: WorkflowContext = {
+      organizationId: "test-org-id",
       correlationId,
       documentId: artifactId,
       workstreamId,
@@ -857,6 +859,7 @@ describe("handleExecutionSuccess", () => {
 
   it("normalizes v1 executionResult with fullName from context", async () => {
     const ctx: WorkflowContext = {
+      organizationId: "test-org-id",
       correlationId: "exec-correlation-123",
       documentId: "plan-artifact-123",
       workstreamId: "ws-123",
@@ -874,7 +877,7 @@ describe("handleExecutionSuccess", () => {
       base_ref: "",
     };
 
-    mockNormalizeExecutionResultFile.mockReturnValue({
+    mockParseExecutionResultFile.mockReturnValue({
       ok: true,
       results: [
         { status: "skipped", fullName: "owner/repo", reason: "no_changes" },
@@ -883,22 +886,18 @@ describe("handleExecutionSuccess", () => {
       repoCount: 1,
     });
 
-    mockWithDbCall({
-      workstream: {
-        findUnique: vi.fn().mockResolvedValue({ organizationId: "org-123" }),
-      },
-    });
-
     await handleExecutionSuccess(ctx, rawResult, null, null);
 
-    expect(mockNormalizeExecutionResultFile).toHaveBeenCalledWith(
+    expect(mockParseExecutionResultFile).toHaveBeenCalledWith(
       rawResult,
       "owner/repo"
     );
+    expect(mockWithDb).not.toHaveBeenCalled();
   });
 
   it("logs error and throws when v1 normalization fails", async () => {
     const ctx: WorkflowContext = {
+      organizationId: "test-org-id",
       correlationId: "exec-parse-fail",
       documentId: "plan-artifact-fail",
       workstreamId: "ws-fail",
@@ -906,7 +905,7 @@ describe("handleExecutionSuccess", () => {
       fullName: "owner/repo",
     };
 
-    mockNormalizeExecutionResultFile.mockReturnValue({
+    mockParseExecutionResultFile.mockReturnValue({
       ok: false,
       error: "Invalid v1 execution result",
       schemaVersion: 1,
@@ -928,6 +927,7 @@ describe("handleExecutionSuccess", () => {
     const fullName = "owner/repo";
 
     const ctx: WorkflowContext = {
+      organizationId: "org-ingest",
       correlationId,
       documentId,
       workstreamId,
@@ -950,19 +950,12 @@ describe("handleExecutionSuccess", () => {
       },
     ];
 
-    mockNormalizeExecutionResultFile.mockReturnValue({
+    mockParseExecutionResultFile.mockReturnValue({
       ok: true,
       results: parsedResults,
       schemaVersion: 1,
       repoCount: 1,
     });
-
-    const mockDb = {
-      workstream: {
-        findUnique: vi.fn().mockResolvedValue({ organizationId: "org-ingest" }),
-      },
-    };
-    mockWithDbCall(mockDb);
 
     const codeJudgesReport: JudgesReport | null = null;
     const promptsSnapshot: null = null;
@@ -994,6 +987,7 @@ describe("handleExecutionSuccess", () => {
 
   it("passes opts.tx to ingestRepoExecutionResults when provided", async () => {
     const ctx: WorkflowContext = {
+      organizationId: "test-org-id",
       correlationId: "exec-tx-test",
       documentId: "plan-tx-test",
       workstreamId: "ws-tx-test",
@@ -1001,17 +995,11 @@ describe("handleExecutionSuccess", () => {
       fullName: "owner/repo",
     };
 
-    mockNormalizeExecutionResultFile.mockReturnValue({
+    mockParseExecutionResultFile.mockReturnValue({
       ok: true,
       results: [],
       schemaVersion: 1,
       repoCount: 0,
-    });
-
-    mockWithDbCall({
-      workstream: {
-        findUnique: vi.fn().mockResolvedValue({ organizationId: "org-tx" }),
-      },
     });
 
     const fakeTx = {} as TransactionClient;
@@ -1026,31 +1014,27 @@ describe("handleExecutionSuccess", () => {
     );
   });
 
-  it("throws when workstream is not found", async () => {
+  it("does not look up workstream when parsing succeeds", async () => {
     const ctx: WorkflowContext = {
-      correlationId: "exec-no-workstream",
-      documentId: "plan-no-workstream",
-      workstreamId: "ws-missing",
+      organizationId: "test-org-id",
+      correlationId: "exec-no-workstream-lookup",
+      documentId: "plan-no-workstream-lookup",
+      workstreamId: "ws-no-lookup",
       runId: "4444444444",
       fullName: "owner/repo",
     };
 
-    mockNormalizeExecutionResultFile.mockReturnValue({
+    mockParseExecutionResultFile.mockReturnValue({
       ok: true,
       results: [],
       schemaVersion: 1,
       repoCount: 0,
     });
 
-    mockWithDbCall({
-      workstream: { findUnique: vi.fn().mockResolvedValue(null) },
-    });
+    await handleExecutionSuccess(ctx, RAW_V1_EXECUTION_RESULT, null, null);
 
-    await expect(
-      handleExecutionSuccess(ctx, RAW_V1_EXECUTION_RESULT, null, null)
-    ).rejects.toThrow(WORKSTREAM_NOT_FOUND_RE);
-
-    expect(mockIngestRepoExecutionResults).not.toHaveBeenCalled();
+    expect(mockWithDb).not.toHaveBeenCalled();
+    expect(mockIngestRepoExecutionResults).toHaveBeenCalled();
   });
 });
 
@@ -1067,6 +1051,7 @@ describe("handleWorkflowFailure", () => {
     const htmlUrl = "https://github.com/owner/repo/actions/runs/1010101010";
 
     const ctx: WorkflowContext = {
+      organizationId: "test-org-id",
       correlationId,
       documentId: artifactId,
       workstreamId,
@@ -1110,6 +1095,7 @@ describe("handleWorkflowFailure", () => {
     const htmlUrl = "https://github.com/owner/repo/actions/runs/2020202020";
 
     const ctx: WorkflowContext = {
+      organizationId: "test-org-id",
       correlationId,
       documentId: artifactId,
       workstreamId,
@@ -1155,6 +1141,7 @@ describe("handleWorkflowSuccess fan-out", () => {
     const actionRunId = "fanout-action-run-plan";
 
     const ctx: WorkflowContext = {
+      organizationId: "test-org-id",
       correlationId,
       documentId: artifactId,
       workstreamId,
@@ -1251,6 +1238,7 @@ describe("handleWorkflowSuccess fan-out", () => {
     const actionRunId = "fanout-action-run-plan-2";
 
     const ctx: WorkflowContext = {
+      organizationId: "test-org-id",
       correlationId,
       documentId: artifactId,
       workstreamId,
@@ -1376,6 +1364,7 @@ describe("handleExecutionSuccess — ingestRepoExecutionResults delegation", () 
     };
 
     const ctx: WorkflowContext = {
+      organizationId: "test-org-id",
       correlationId: "fanout-exec",
       documentId: "fanout-doc",
       workstreamId: "fanout-ws",
@@ -1383,17 +1372,11 @@ describe("handleExecutionSuccess — ingestRepoExecutionResults delegation", () 
       fullName: "owner/repo",
     };
 
-    mockNormalizeExecutionResultFile.mockReturnValue({
+    mockParseExecutionResultFile.mockReturnValue({
       ok: true,
       results: [],
       schemaVersion: 1,
       repoCount: 0,
-    });
-
-    mockWithDbCall({
-      workstream: {
-        findUnique: vi.fn().mockResolvedValue({ organizationId: "fanout-org" }),
-      },
     });
 
     await handleExecutionSuccess(
@@ -1412,6 +1395,7 @@ describe("handleExecutionSuccess — ingestRepoExecutionResults delegation", () 
 
   it("does not call ingestRepoExecutionResults when v1 normalization fails", async () => {
     const ctx: WorkflowContext = {
+      organizationId: "test-org-id",
       correlationId: "fanout-fail",
       documentId: "fanout-fail-doc",
       workstreamId: "fanout-fail-ws",
@@ -1419,7 +1403,7 @@ describe("handleExecutionSuccess — ingestRepoExecutionResults delegation", () 
       fullName: "owner/repo",
     };
 
-    mockNormalizeExecutionResultFile.mockReturnValue({
+    mockParseExecutionResultFile.mockReturnValue({
       ok: false,
       error: "parse failed",
     });
@@ -1432,7 +1416,7 @@ describe("handleExecutionSuccess — ingestRepoExecutionResults delegation", () 
     expect(mockFanOutJudgeScores).not.toHaveBeenCalled();
   });
 
-  it("bypasses v2 normalization and ingests validated results directly", async () => {
+  it("parses v2 payloads through the shared parser", async () => {
     const v2Results = [
       {
         status: "skipped" as const,
@@ -1441,6 +1425,7 @@ describe("handleExecutionSuccess — ingestRepoExecutionResults delegation", () 
       },
     ];
     const ctx: WorkflowContext = {
+      organizationId: "test-org-id",
       correlationId: "fanout-v2",
       documentId: "fanout-v2-doc",
       workstreamId: "fanout-v2-ws",
@@ -1448,12 +1433,11 @@ describe("handleExecutionSuccess — ingestRepoExecutionResults delegation", () 
       fullName: "owner/repo",
     };
 
-    mockWithDbCall({
-      workstream: {
-        findUnique: vi
-          .fn()
-          .mockResolvedValue({ organizationId: "fanout-v2-org" }),
-      },
+    mockParseExecutionResultFile.mockReturnValue({
+      ok: true,
+      results: v2Results,
+      schemaVersion: 2,
+      repoCount: v2Results.length,
     });
 
     await handleExecutionSuccess(
@@ -1466,7 +1450,13 @@ describe("handleExecutionSuccess — ingestRepoExecutionResults delegation", () 
       null
     );
 
-    expect(mockNormalizeExecutionResultFile).not.toHaveBeenCalled();
+    expect(mockParseExecutionResultFile).toHaveBeenCalledWith(
+      {
+        schemaVersion: 2,
+        results: v2Results,
+      },
+      "owner/repo"
+    );
     expect(mockIngestRepoExecutionResults).toHaveBeenCalledWith(
       expect.any(Object),
       v2Results,
@@ -1487,6 +1477,7 @@ describe("handleWorkflowSuccess — PLAN upsert (SS8.3)", () => {
     const runId = "8300001001";
 
     const ctx: WorkflowContext = {
+      organizationId: "test-org-id",
       correlationId: "ss83-correlation-1",
       documentId: artifactId,
       workstreamId,
@@ -1574,6 +1565,7 @@ describe("handleWorkflowSuccess — PLAN upsert (SS8.3)", () => {
     const runId = "8300001002";
 
     const ctx: WorkflowContext = {
+      organizationId: "test-org-id",
       correlationId: "ss83-correlation-2",
       documentId: artifactId,
       workstreamId,
@@ -1743,6 +1735,7 @@ describe("processWorkflowCompletion", () => {
     };
 
     mockWithDbTx(mockDb);
+    mockWithDbCall(mockDb);
 
     const response = await processWorkflowCompletion(event, correlationId);
 
@@ -1815,6 +1808,12 @@ describe("processWorkflowCompletion", () => {
     } as WorkflowRunCompletedEvent;
 
     const mockDb = {
+      workstream: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: workstreamId,
+          organizationId: "test-org-id",
+        }),
+      },
       workstreamEvent: {
         create: vi.fn().mockResolvedValue({ id: "event-proc-fail" }),
       },
@@ -1827,6 +1826,7 @@ describe("processWorkflowCompletion", () => {
     };
 
     mockWithDbTx(mockDb);
+    mockWithDbCall(mockDb);
 
     const response = await processWorkflowCompletion(event, correlationId);
 
@@ -1942,7 +1942,7 @@ describe("processWorkflowCompletion", () => {
       },
     } as WorkflowRunCompletedEvent;
 
-    mockNormalizeExecutionResultFile.mockReturnValue({
+    mockParseExecutionResultFile.mockReturnValue({
       ok: true,
       results: [],
       schemaVersion: 1,
@@ -1965,12 +1965,12 @@ describe("processWorkflowCompletion", () => {
     };
 
     mockWithDbTx(mockDb);
-    // mockWithDb (non-tx) is called by handleExecutionSuccess to look up workstream
+    // mockWithDb (non-tx) resolves WorkflowContext.organizationId and updates the action run.
     mockWithDbCall(mockDb);
 
     const response = await processWorkflowCompletion(event, correlationId);
 
-    expect(mockNormalizeExecutionResultFile).toHaveBeenCalledWith(
+    expect(mockParseExecutionResultFile).toHaveBeenCalledWith(
       expect.any(Object),
       "owner/repo"
     );
@@ -2020,6 +2020,12 @@ describe("processWorkflowCompletion", () => {
     ]);
 
     const mockDb = {
+      workstream: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: workstreamId,
+          organizationId: "org-exec-missing-result",
+        }),
+      },
       gitHubActionRun: {
         update: vi.fn().mockResolvedValue({
           id: mockActionRun.id,
@@ -2044,7 +2050,7 @@ describe("processWorkflowCompletion", () => {
 
     const response = await processWorkflowCompletion(event, correlationId);
 
-    expect(mockNormalizeExecutionResultFile).not.toHaveBeenCalled();
+    expect(mockParseExecutionResultFile).not.toHaveBeenCalled();
     expect(mockIngestRepoExecutionResults).not.toHaveBeenCalled();
     expect(mockDb.gitHubActionRun.update).toHaveBeenCalledWith({
       where: { id: mockActionRun.id },
@@ -2098,13 +2104,19 @@ describe("processWorkflowCompletion", () => {
       { name: "artifact.zip", data: zipBuffer },
     ]);
 
-    mockNormalizeExecutionResultFile.mockReturnValue({
+    mockParseExecutionResultFile.mockReturnValue({
       ok: false,
       error: "Invalid execution payload",
       schemaVersion: 1,
     });
 
     const mockDb = {
+      workstream: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: workstreamId,
+          organizationId: "org-exec-parse-fail",
+        }),
+      },
       gitHubActionRun: {
         update: vi.fn().mockResolvedValue({
           id: mockActionRun.id,

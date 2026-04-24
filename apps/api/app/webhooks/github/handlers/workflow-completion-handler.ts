@@ -1,8 +1,7 @@
 import {
   type ExecutionResultFile,
   type ExecutionResultV2,
-  normalizeExecutionResultFile,
-  type ParsedExecutionResult,
+  parseExecutionResultFile,
 } from "@closedloop-ai/loops-api/execution-result";
 import type { WorkflowRunCompletedEvent } from "@octokit/webhooks-types";
 import {
@@ -43,24 +42,14 @@ export async function handleExecutionSuccess(
   const {
     correlationId,
     workstreamId,
+    organizationId,
     documentId,
     runId,
     actionRunId,
     fullName,
   } = ctx;
 
-  let parsed: ParsedExecutionResult;
-
-  if (isExecutionResultV2(executionResult)) {
-    parsed = {
-      ok: true,
-      results: executionResult.results,
-      schemaVersion: 2,
-      repoCount: executionResult.results.length,
-    };
-  } else {
-    parsed = normalizeExecutionResultFile(executionResult, fullName);
-  }
+  const parsed = parseExecutionResultFile(executionResult, fullName);
 
   if (!parsed.ok) {
     log.error(
@@ -84,25 +73,8 @@ export async function handleExecutionSuccess(
     repoCount: parsed.repoCount,
   });
 
-  // Look up workstream to get organizationId for IngestionContext
-  const workstream = await withDb((db) =>
-    db.workstream.findUnique({
-      where: { id: workstreamId },
-      select: { organizationId: true },
-    })
-  );
-
-  if (!workstream) {
-    log.error(
-      `[handleExecutionSuccess] Workstream ${workstreamId} not found for correlation ${correlationId}`
-    );
-    throw new Error(
-      `[handleExecutionSuccess] Workstream ${workstreamId} not found for correlation ${correlationId}`
-    );
-  }
-
   const ingestionCtx: IngestionContext = {
-    organizationId: workstream.organizationId,
+    organizationId,
     workstreamId,
     documentId,
     loopId: correlationId,
@@ -118,14 +90,6 @@ export async function handleExecutionSuccess(
 
   log.info(
     `[handleExecutionSuccess] Completed ingestion for workflow run ${runId}, correlation ${correlationId}`
-  );
-}
-
-function isExecutionResultV2(
-  executionResult: ExecutionResultFile | ExecutionResultV2
-): executionResult is ExecutionResultV2 {
-  return (
-    "schemaVersion" in executionResult && executionResult.schemaVersion === 2
   );
 }
 
@@ -423,11 +387,25 @@ export async function processWorkflowCompletion(
     command: triggerData.command,
   });
 
+  const workstream = await withDb((db) =>
+    db.workstream.findUnique({
+      where: { id: actionRun.workstreamId },
+      select: { organizationId: true },
+    })
+  );
+
+  if (!workstream) {
+    throw new Error(
+      `Workstream ${actionRun.workstreamId} not found - cannot process workflow completion`
+    );
+  }
+
   const conclusion = event.workflow_run.conclusion;
   const ctx: WorkflowContext = {
     correlationId: triggerData.correlationId,
     documentId: triggerData.documentId,
     workstreamId: actionRun.workstreamId,
+    organizationId: workstream.organizationId,
     repositoryId: actionRun.repositoryId,
     command: triggerData.command,
     runId,

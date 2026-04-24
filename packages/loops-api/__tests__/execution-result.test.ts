@@ -8,18 +8,12 @@ import {
   parseExecutionResultFile,
   RepoExecutionResultSchema,
 } from "../src/execution-result";
+import { RAW_V1_EXECUTION_RESULT } from "./fixtures/execution-result-fixtures";
 
 describe("parseExecutionResultFile", () => {
   it("normalizes ECS sentinel values to null (v1)", () => {
     const result = parseExecutionResultFile(
-      {
-        has_changes: false,
-        pr_url: "",
-        pr_number: 0,
-        branch_name: "",
-        base_ref: "main",
-        commit_sha: null,
-      },
+      { ...RAW_V1_EXECUTION_RESULT, commit_sha: null },
       "owner/repo"
     );
     expect(result.ok).toBe(true);
@@ -78,13 +72,7 @@ describe("parseExecutionResultFile", () => {
   });
 
   it("returns failure when fullName is absent for v1 payload", () => {
-    const result = parseExecutionResultFile({
-      has_changes: false,
-      pr_url: "",
-      pr_number: 0,
-      branch_name: "",
-      base_ref: "main",
-    });
+    const result = parseExecutionResultFile(RAW_V1_EXECUTION_RESULT);
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error).toContain("fullName is required");

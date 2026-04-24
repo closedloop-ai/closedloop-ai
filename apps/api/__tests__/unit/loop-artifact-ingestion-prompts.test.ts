@@ -10,42 +10,27 @@
  * - null snapshot: upsertFromSnapshot is called with null and does not throw
  */
 
-import { EvalStatus, type JudgesReport } from "@repo/api/src/types/evaluation";
 import type { Loop } from "@repo/api/src/types/loop";
 import { vi } from "vitest";
 
 // --- Mocks (must come before imports of the module under test) ---
 
-vi.mock("@repo/database", () => ({
-  withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
-  EvaluationReportType: {
-    PLAN: "PLAN",
-    CODE: "CODE",
-  },
-  EntityType: {
-    DOCUMENT: "DOCUMENT",
-    FEATURE: "FEATURE",
-    EXTERNAL_LINK: "EXTERNAL_LINK",
-  },
-  Prisma: {
-    sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({
-      strings,
-      values,
-    }),
-  },
-}));
+vi.mock("@repo/database", async () => {
+  const { createDatabaseMockModule } = await import("../fixtures/mock-modules");
+  return createDatabaseMockModule();
+});
 
-vi.mock("@repo/observability/log", () => ({
-  log: {
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  },
-}));
+vi.mock("@repo/observability/log", async () => {
+  const { createLogMockModule } = await import("../fixtures/mock-modules");
+  return createLogMockModule();
+});
 
-vi.mock("@/lib/prompts-service", () => ({
-  upsertFromSnapshot: vi.fn().mockResolvedValue(undefined),
-}));
+vi.mock("@/lib/prompts-service", async () => {
+  const { createPromptsServiceMockModule } = await import(
+    "../fixtures/mock-modules"
+  );
+  return createPromptsServiceMockModule();
+});
 
 vi.mock("@/app/documents/document-version-service", () => ({
   documentVersionService: {
@@ -70,9 +55,12 @@ vi.mock("@/lib/loops/loop-state", () => ({
   downloadPromptSnapshotMarkdownEntries: vi.fn(),
 }));
 
-vi.mock("@/lib/pr-linkage", () => ({
-  ensurePrLinkageRecords: vi.fn().mockResolvedValue(undefined),
-}));
+vi.mock("@/lib/pr-linkage", async () => {
+  const { createPrLinkageMockModule } = await import(
+    "../fixtures/mock-modules"
+  );
+  return createPrLinkageMockModule();
+});
 
 vi.mock("@/lib/entity-validation", () => ({
   assertEntityInOrganization: vi.fn().mockResolvedValue(undefined),
@@ -96,6 +84,7 @@ import {
   downloadPromptSnapshotMarkdownEntries,
 } from "@/lib/loops/loop-state";
 import { upsertFromSnapshot } from "@/lib/prompts-service";
+import { makeJudgesReport } from "../fixtures/ingestion-helpers";
 import { buildLoop } from "../fixtures/loop";
 
 const mockDownloadArtifactFile = downloadArtifactFile as unknown as Mock;
@@ -128,28 +117,6 @@ function makeLoop(overrides: Partial<Loop> = {}): Loop {
     updatedAt: new Date("2026-01-01"),
     ...overrides,
   });
-}
-
-function makeJudgesReport(reportId = "report-1"): JudgesReport {
-  return {
-    report_id: reportId,
-    timestamp: "2026-01-01T00:00:00Z",
-    stats: [
-      {
-        type: "case_score",
-        case_id: "test-judge",
-        final_status: EvalStatus.Passed,
-        metrics: [
-          {
-            metric_name: "test_score",
-            threshold: 0.8,
-            score: 0.95,
-            justification: "Test passed",
-          },
-        ],
-      },
-    ],
-  };
 }
 
 // ---------------------------------------------------------------------------

@@ -21,14 +21,15 @@ vi.mock("@repo/github", () => ({
   getInstallationAccessToken: vi.fn(),
 }));
 
-vi.mock("@repo/observability/log", () => ({
-  log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-}));
+vi.mock("@repo/observability/log", async () => {
+  const { createLogMockModule } = await import("../fixtures/mock-modules");
+  return createLogMockModule();
+});
 
-vi.mock("@repo/database", () => ({
-  withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
-  EvaluationReportType: { PLAN: "PLAN", CODE: "CODE" },
-}));
+vi.mock("@repo/database", async () => {
+  const { createDatabaseMockModule } = await import("../fixtures/mock-modules");
+  return createDatabaseMockModule();
+});
 
 vi.mock("@/app/documents/service", () => ({
   getCommitterInfo: vi.fn(),
