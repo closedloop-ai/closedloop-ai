@@ -177,6 +177,49 @@ describe("POST /api/loops/:id/github-token", () => {
       );
     });
 
+    test("body additionalRepos empty array refreshes only the primary token", async () => {
+      vi.mocked(loopsService.findById).mockResolvedValue({
+        id: loopId,
+        repo: { fullName: "owner/primary" },
+        additionalRepos: [
+          { fullName: "owner/db-repo-1", branch: "main" },
+          { fullName: "owner/db-repo-2", branch: "main" },
+        ],
+      } as any);
+
+      const req = new NextRequest(
+        `http://localhost/api/loops/${loopId}/github-token`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ additionalRepos: [] }),
+        }
+      );
+
+      const res = await POST(req, { params: Promise.resolve({ id: loopId }) });
+      expect(res.status).toBe(200);
+
+      const body = await res.json();
+      expect(body.data).toEqual({
+        token: "token-for-owner/primary",
+        additionalRepoTokens: [],
+      });
+
+      expect(resolveGitHubToken).toHaveBeenCalledTimes(1);
+      expect(resolveGitHubToken).toHaveBeenCalledWith(orgId, "owner/primary");
+      expect(resolveGitHubToken).not.toHaveBeenCalledWith(
+        orgId,
+        "owner/db-repo-1"
+      );
+      expect(resolveGitHubToken).not.toHaveBeenCalledWith(
+        orgId,
+        "owner/db-repo-2"
+      );
+    });
+
     test("body additionalRepos not in DB-authorized list returns 403", async () => {
       vi.mocked(loopsService.findById).mockResolvedValue({
         id: loopId,

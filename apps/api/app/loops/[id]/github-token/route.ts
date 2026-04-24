@@ -4,10 +4,10 @@ import { extractBearerToken } from "@/lib/auth/loop-runner-jwt";
 import { resolveGitHubToken } from "@/lib/loops/loop-orchestrator";
 import { errorResponse, successResponse } from "@/lib/route-utils";
 import { loopsService } from "../../service";
-import { additionalReposSchema } from "../../validators";
+import { tokenRefreshAdditionalReposSchema } from "../../validators";
 
 const githubTokenBodySchema = z.object({
-  additionalRepos: additionalReposSchema,
+  additionalRepos: tokenRefreshAdditionalReposSchema,
 });
 
 /**
@@ -53,7 +53,7 @@ export async function POST(
 
     // Parse optional request body — body may be absent on older harness versions.
     // A missing/empty/invalid body is not an error; fall back to the DB record.
-    let bodyAdditionalRepos: z.infer<typeof additionalReposSchema>;
+    let bodyAdditionalRepos: z.infer<typeof tokenRefreshAdditionalReposSchema>;
     try {
       const rawBody = await request.json();
       const parsed = githubTokenBodySchema.safeParse(rawBody);
