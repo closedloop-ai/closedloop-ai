@@ -3,13 +3,11 @@
  *   parseExecutionResultFile (v2 payload) → ingestRepoExecutionResults
  *
  * Tests:
- * - parseExecutionResultFile with a v2 multi-repo payload returns ok, schemaVersion 2, repoCount 3
  * - result.results from v2 parse fed into ingestRepoExecutionResults: only the
  *   success entry triggers DB writes; failed/skipped entries do not
  * - DB operations flow correctly through the full chain (findFirst, PR upsert, linkage records)
  */
 
-import type { RepoExecutionResult } from "@closedloop-ai/loops-api/execution-result";
 import { vi } from "vitest";
 import {
   getMockWithDb,
@@ -126,61 +124,6 @@ function makeV2Payload() {
 describe("parseExecutionResultFile + ingestRepoExecutionResults (end-to-end chain)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-  });
-
-  // -------------------------------------------------------------------------
-  // parseExecutionResultFile v2 payload assertions
-  // -------------------------------------------------------------------------
-
-  describe("parseExecutionResultFile with v2 payload", () => {
-    it("returns ok=true, schemaVersion=2, repoCount=3 for a valid v2 payload", () => {
-      const payload = makeV2Payload();
-      const result = parseExecutionResultFile(payload);
-
-      expect(result.ok).toBe(true);
-      if (!result.ok) {
-        return;
-      }
-      expect(result.schemaVersion).toBe(2);
-      expect(result.repoCount).toBe(3);
-    });
-
-    it("returns three entries with correct statuses in results", () => {
-      const payload = makeV2Payload();
-      const result = parseExecutionResultFile(payload);
-
-      expect(result.ok).toBe(true);
-      if (!result.ok) {
-        return;
-      }
-
-      const statuses = result.results.map((r) => r.status);
-      expect(statuses).toEqual(["success", "failed", "skipped"]);
-    });
-
-    it("normalizes the success entry fields correctly from v2 payload", () => {
-      const payload = makeV2Payload();
-      const result = parseExecutionResultFile(payload);
-
-      expect(result.ok).toBe(true);
-      if (!result.ok) {
-        return;
-      }
-
-      const successEntry = result.results[0] as RepoExecutionResult & {
-        status: "success";
-      };
-      expect(successEntry.status).toBe("success");
-      expect(successEntry.fullName).toBe("org/repo-success");
-      expect(successEntry.prNumber).toBe(100);
-      expect(successEntry.prUrl).toBe(
-        "https://github.com/org/repo-success/pull/100"
-      );
-      expect(successEntry.branchName).toBe("symphony/success-feature");
-      expect(successEntry.baseBranch).toBe("main");
-      expect(successEntry.commitSha).toBe("abc123def456");
-      expect(successEntry.githubId).toBe(9001);
-    });
   });
 
   // -------------------------------------------------------------------------

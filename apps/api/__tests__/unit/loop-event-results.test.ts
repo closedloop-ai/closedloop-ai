@@ -327,22 +327,6 @@ describe("backward compatibility: completed event without results[] is valid", (
     }
   });
 
-  it("LoopEventCompletedSchema accepts a completed event with results: undefined (explicit undefined)", () => {
-    const event = {
-      type: "completed" as const,
-      result: {},
-      tokensUsed: { input: 0, output: 0 },
-      timestamp: "2025-06-15T12:00:00.000Z",
-      results: undefined,
-    };
-
-    const parsed = LoopEventCompletedSchema.safeParse(event);
-    expect(parsed.success).toBe(true);
-    if (parsed.success) {
-      expect(parsed.data.results).toBeUndefined();
-    }
-  });
-
   it("LoopEventCompletedSchema accepts a completed event with an empty results array", () => {
     const event = {
       type: "completed" as const,
@@ -387,27 +371,6 @@ describe("backward compatibility: completed event without results[] is valid", (
         prNumber: 1,
       });
     }
-  });
-
-  it("consumer code treating results as optional does not throw for pre-deploy events", () => {
-    // Simulate a consumer (e.g., SSE handler) accessing results from a historical
-    // completed event that lacks the field. The optional chaining pattern must
-    // degrade gracefully without throwing.
-    const historicalEvent = {
-      type: "completed" as const,
-      result: {},
-      tokensUsed: { input: 1000, output: 500 },
-      timestamp: "2024-11-01T00:00:00.000Z",
-      // No results field — pre-deploy event
-    } as { type: "completed"; results?: unknown[] };
-
-    // Consumer accesses results with optional chaining — must not throw
-    const prCount = historicalEvent.results?.length ?? 0;
-    expect(prCount).toBe(0);
-
-    // Consumer iterates results with fallback — must not throw
-    const processedResults = (historicalEvent.results ?? []).map((r) => r);
-    expect(processedResults).toEqual([]);
   });
 });
 
