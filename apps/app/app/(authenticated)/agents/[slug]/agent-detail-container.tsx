@@ -607,6 +607,7 @@ function VersionDetail({
     }
     updateAgent.mutate(
       {
+        name: versionDetail.name,
         prompt: versionDetail.prompt,
         changeNote: `Restored from v${version}`,
       },

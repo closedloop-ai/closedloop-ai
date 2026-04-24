@@ -1,3 +1,4 @@
+import { FeatureFlagged } from "@repo/analytics/components/feature-flagged";
 import type { Metadata } from "next";
 import { Header } from "@/app/(authenticated)/components/header";
 import { AgentDetailContainer } from "./agent-detail-container";
@@ -24,9 +25,11 @@ export default async function AgentDetailPage({
           { label: "Agent Detail" },
         ]}
       />
-      <main className="flex min-h-0 flex-1 flex-col overflow-auto p-6">
-        <AgentDetailContainer slug={slug} />
-      </main>
+      <FeatureFlagged flag="agents">
+        <main className="flex min-h-0 flex-1 flex-col overflow-auto p-6">
+          <AgentDetailContainer slug={slug} />
+        </main>
+      </FeatureFlagged>
     </>
   );
 }
