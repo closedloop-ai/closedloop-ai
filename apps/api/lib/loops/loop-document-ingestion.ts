@@ -46,7 +46,7 @@ export async function upsertEvaluationWithJudgeScores(params: {
   entityId: string;
   entityType: EntityType;
   documentId?: string | null;
-  loopId: string;
+  loopId?: string;
   actionRunId?: string;
   organizationId: string;
   reportType: EvaluationReportType;
@@ -79,14 +79,14 @@ export async function upsertEvaluationWithJudgeScores(params: {
       entityId,
       entityType,
       documentId: documentId ?? null,
-      loopId,
+      ...(loopId ? { loopId } : {}),
       ...(actionRunId ? { actionRunId } : {}),
       reportType,
       reportId: report.report_id,
       reportData: report,
     },
     update: {
-      loopId,
+      ...(loopId ? { loopId } : {}),
       ...(actionRunId ? { actionRunId } : {}),
       reportType,
       reportData: report,

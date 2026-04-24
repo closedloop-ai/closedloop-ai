@@ -972,7 +972,6 @@ describe("handleExecutionSuccess", () => {
         organizationId: "org-ingest",
         workstreamId,
         documentId,
-        loopId: correlationId,
         correlationId,
         actionRunId,
       },

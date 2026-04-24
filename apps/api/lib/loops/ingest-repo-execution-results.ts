@@ -29,14 +29,14 @@ import { upsertFromSnapshot } from "@/lib/prompts-service";
 // ---------------------------------------------------------------------------
 
 /**
- * Context required for ingestion — identifies the loop run and the artifact
- * being produced.
+ * Context required for ingestion — identifies the artifact being produced and,
+ * when available, the loop run that produced it.
  */
 export type IngestionContext = {
   organizationId: string;
   workstreamId: string;
   documentId: string;
-  loopId: string;
+  loopId?: string;
   correlationId?: string;
   actionRunId?: string;
 };
@@ -222,7 +222,7 @@ async function ingestSuccessEntry(
         type: WorkstreamEventType.GITHUB_PR_CREATED,
         actorType: "system",
         data: {
-          loopId,
+          ...(loopId ? { loopId } : {}),
           correlationId,
           prNumber: result.prNumber,
           prUrl: result.prUrl,
@@ -294,7 +294,7 @@ export async function ingestRepoExecutionResults(
         entityId: documentId,
         entityType: EntityType.DOCUMENT,
         documentId,
-        loopId,
+        ...(loopId ? { loopId } : {}),
         actionRunId,
         organizationId,
         reportType: EvaluationReportType.Code,

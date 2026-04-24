@@ -53,7 +53,10 @@ vi.mock("@/lib/prompts-service", async () => {
 // ---------------------------------------------------------------------------
 
 import type { Mock } from "vitest";
-import { ingestRepoExecutionResults } from "@/lib/loops/ingest-repo-execution-results";
+import {
+  type IngestionContext,
+  ingestRepoExecutionResults,
+} from "@/lib/loops/ingest-repo-execution-results";
 import { upsertEvaluationWithJudgeScores } from "@/lib/loops/loop-document-ingestion";
 import { ensurePrLinkageRecords } from "@/lib/pr-linkage";
 import { upsertFromSnapshot } from "@/lib/prompts-service";
@@ -100,6 +103,7 @@ type ScenarioExpect = {
 type Scenario = {
   name: string;
   results: RepoExecutionResult[];
+  ctx?: IngestionContext;
   /** One entry per withDb() call in order. null = repo not found. */
   repoLookups?: Array<null | { id: string }>;
   /** One entry per withDb.tx() call in order. Defaults to all "success". */
@@ -111,7 +115,7 @@ type Scenario = {
 type HarnessResult = { callOrder: readonly string[] };
 
 async function invokeScenario(s: Scenario): Promise<HarnessResult> {
-  const ctx = makeIngestionCtx();
+  const ctx = s.ctx ?? makeIngestionCtx();
 
   const lookups =
     s.repoLookups ??
@@ -326,6 +330,27 @@ const scenarios: Scenario[] = [
     },
   },
   {
+    name: "code judges report without loopId → persisted without loop linkage",
+    ctx: {
+      organizationId: "org-1",
+      workstreamId: "ws-1",
+      documentId: "doc-1",
+      correlationId: "corr-1",
+      actionRunId: "action-run-1",
+    },
+    results: [],
+    options: { codeJudgesReport },
+    expect: {
+      evaluationCalls: 1,
+      evaluationArgs: {
+        documentId: "doc-1",
+        organizationId: "org-1",
+        actionRunId: "action-run-1",
+        report: codeJudgesReport,
+      },
+    },
+  },
+  {
     name: "code judges report null → no evaluation persisted",
     results: [makeSuccessResult()],
     options: { codeJudgesReport: null },
@@ -387,6 +412,11 @@ describe("ingestRepoExecutionResults", () => {
       expect(mockUpsertEvaluationWithJudgeScores).toHaveBeenCalledWith(
         expect.objectContaining(e.evaluationArgs)
       );
+    }
+    if (s.ctx && !s.ctx.loopId) {
+      const [evaluationParams] =
+        mockUpsertEvaluationWithJudgeScores.mock.calls[0] ?? [];
+      expect(evaluationParams).not.toHaveProperty("loopId");
     }
     if (e.promptsSnapshotArgs) {
       expect(mockUpsertFromSnapshot).toHaveBeenCalledWith(

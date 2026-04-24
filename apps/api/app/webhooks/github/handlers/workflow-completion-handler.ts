@@ -77,7 +77,6 @@ export async function handleExecutionSuccess(
     organizationId,
     workstreamId,
     documentId,
-    loopId: correlationId,
     correlationId,
     actionRunId,
   };
