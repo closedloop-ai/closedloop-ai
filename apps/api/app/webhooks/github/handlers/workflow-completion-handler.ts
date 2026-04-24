@@ -136,14 +136,24 @@ export async function handleWorkflowSuccess(
   // Handle execute command differently - create PR record instead of updating artifact.
   // Performance data is intentionally not persisted for execute runs: perf.jsonl tracks
   // Symphony orchestrator iterations, which are only produced by plan-generation runs.
-  if (command === "execute" && executionResult) {
-    await handleExecutionSuccess(
-      ctx,
-      executionResult,
-      codeJudgesReport,
-      promptsSnapshot,
-      tx ? { tx } : {}
-    );
+  if (command === "execute") {
+    if (executionResult) {
+      await handleExecutionSuccess(
+        ctx,
+        executionResult,
+        codeJudgesReport,
+        promptsSnapshot,
+        tx ? { tx } : {}
+      );
+    } else {
+      log.warn(
+        "[handleWorkflowSuccess] No execution result for execute command",
+        {
+          correlationId,
+          runId,
+        }
+      );
+    }
     return;
   }
 

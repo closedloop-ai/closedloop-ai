@@ -33,6 +33,12 @@ vi.mock("@repo/database", () => ({
     FEATURE: "FEATURE",
     WORKSTREAM: "WORKSTREAM",
   },
+  GitHubPRState: {
+    OPEN: "OPEN",
+  },
+  WorkstreamEventType: {
+    GITHUB_PR_CREATED: "GITHUB_PR_CREATED",
+  },
   EvaluationReportType: {
     PLAN: "PLAN",
     CODE: "CODE",
@@ -64,11 +70,14 @@ vi.mock("@/lib/prompts-service", () => ({
 // ---------------------------------------------------------------------------
 
 import type { Mock } from "vitest";
-import type { IngestionContext } from "@/lib/loops/ingest-repo-execution-results";
 import { ingestRepoExecutionResults } from "@/lib/loops/ingest-repo-execution-results";
 import { upsertEvaluationWithJudgeScores } from "@/lib/loops/loop-document-ingestion";
 import { ensurePrLinkageRecords } from "@/lib/pr-linkage";
 import { upsertFromSnapshot } from "@/lib/prompts-service";
+import {
+  makeIngestionCtx,
+  makeIngestionSuccessMockTx,
+} from "../fixtures/ingestion-helpers";
 
 // ---------------------------------------------------------------------------
 // Typed mock references
@@ -83,18 +92,6 @@ const mockUpsertFromSnapshot = upsertFromSnapshot as unknown as Mock;
 // ---------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------
-
-function makeCtx(overrides: Partial<IngestionContext> = {}): IngestionContext {
-  return {
-    organizationId: "org-1",
-    workstreamId: "ws-1",
-    documentId: "doc-1",
-    loopId: "loop-1",
-    correlationId: "corr-1",
-    actionRunId: "action-run-1",
-    ...overrides,
-  };
-}
 
 function makeSuccessResult(
   overrides: Partial<RepoExecutionResult & { status: "success" }> = {}
@@ -150,29 +147,6 @@ function makeCodeJudgesReport(): JudgesReport {
   };
 }
 
-/**
- * Build the mock TX object used inside withDb.tx for ingestSuccessEntry.
- */
-function makeSuccessMockTx(documentId = "doc-1") {
-  return {
-    document: {
-      findUnique: vi.fn().mockResolvedValue({
-        organizationId: "org-1",
-        projectId: "project-1",
-        slug: "my-artifact",
-      }),
-    },
-    gitHubPullRequest: {
-      findUnique: vi.fn().mockResolvedValue(null),
-      upsert: vi.fn().mockResolvedValue({ id: "pr-1", documentId }),
-      update: vi.fn().mockResolvedValue({ id: "pr-1", documentId }),
-    },
-    workstreamEvent: {
-      create: vi.fn().mockResolvedValue({ id: "event-1" }),
-    },
-  };
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -188,9 +162,9 @@ describe("ingestRepoExecutionResults", () => {
 
   describe("single-repo success array", () => {
     it("creates PR record and linkage records for a single success entry", async () => {
-      const ctx = makeCtx();
+      const ctx = makeIngestionCtx();
       const results: RepoExecutionResult[] = [makeSuccessResult()];
-      const mockTx = makeSuccessMockTx();
+      const mockTx = makeIngestionSuccessMockTx();
 
       // withDb (non-tx) returns the installation repo
       mockWithDbCall({
@@ -225,7 +199,7 @@ describe("ingestRepoExecutionResults", () => {
 
   describe("all-success multi-repo scenario", () => {
     it("processes each success entry independently and creates PR + linkage for each", async () => {
-      const ctx = makeCtx();
+      const ctx = makeIngestionCtx();
       const results: RepoExecutionResult[] = [
         makeSuccessResult({
           fullName: "org/repo-a",
@@ -255,8 +229,8 @@ describe("ingestRepoExecutionResults", () => {
       });
 
       // withDb.tx is called once per success entry
-      const mockTxA = makeSuccessMockTx();
-      const mockTxB = makeSuccessMockTx();
+      const mockTxA = makeIngestionSuccessMockTx();
+      const mockTxB = makeIngestionSuccessMockTx();
       let txCallCount = 0;
       mockWithDb.tx = vi
         .fn()
@@ -293,7 +267,7 @@ describe("ingestRepoExecutionResults", () => {
 
   describe("mixed-outcome array", () => {
     it("success entries produce PR + linkage; failed/skipped entries do not call DB helpers", async () => {
-      const ctx = makeCtx();
+      const ctx = makeIngestionCtx();
       const results: RepoExecutionResult[] = [
         makeSuccessResult({
           fullName: "org/repo-ok",
@@ -310,7 +284,7 @@ describe("ingestRepoExecutionResults", () => {
         },
       });
 
-      const mockTx = makeSuccessMockTx();
+      const mockTx = makeIngestionSuccessMockTx();
       mockWithDbTx(mockTx);
 
       await ingestRepoExecutionResults(ctx, results);
@@ -327,7 +301,7 @@ describe("ingestRepoExecutionResults", () => {
 
   describe("repo lookup failure", () => {
     it("continues to the next entry when installation repo is not found for a success entry", async () => {
-      const ctx = makeCtx();
+      const ctx = makeIngestionCtx();
       const results: RepoExecutionResult[] = [
         makeSuccessResult({
           fullName: "org/repo-missing",
@@ -353,7 +327,7 @@ describe("ingestRepoExecutionResults", () => {
         });
       });
 
-      const mockTx = makeSuccessMockTx();
+      const mockTx = makeIngestionSuccessMockTx();
       mockWithDbTx(mockTx);
 
       // Should not throw
@@ -367,7 +341,7 @@ describe("ingestRepoExecutionResults", () => {
     });
 
     it("does not abort remaining entries when ingestSuccessEntry throws for one entry", async () => {
-      const ctx = makeCtx();
+      const ctx = makeIngestionCtx();
       const results: RepoExecutionResult[] = [
         makeSuccessResult({
           fullName: "org/repo-throws",
@@ -401,7 +375,7 @@ describe("ingestRepoExecutionResults", () => {
           if (txCallCount === 1) {
             throw new Error("DB transaction failed");
           }
-          return callback(makeSuccessMockTx());
+          return callback(makeIngestionSuccessMockTx());
         });
 
       // Should not throw despite the first entry failing
@@ -421,7 +395,7 @@ describe("ingestRepoExecutionResults", () => {
 
   describe("code judges report", () => {
     it("calls upsertEvaluationWithJudgeScores exactly once regardless of repo count", async () => {
-      const ctx = makeCtx();
+      const ctx = makeIngestionCtx();
       const codeJudgesReport = makeCodeJudgesReport();
       const results: RepoExecutionResult[] = [
         makeSuccessResult({
@@ -453,7 +427,7 @@ describe("ingestRepoExecutionResults", () => {
       mockWithDb.tx = vi
         .fn()
         .mockImplementation((callback: (tx: unknown) => unknown) =>
-          callback(makeSuccessMockTx())
+          callback(makeIngestionSuccessMockTx())
         );
 
       await ingestRepoExecutionResults(ctx, results, { codeJudgesReport });
@@ -471,7 +445,7 @@ describe("ingestRepoExecutionResults", () => {
     });
 
     it("does not call upsertEvaluationWithJudgeScores when codeJudgesReport is null", async () => {
-      const ctx = makeCtx();
+      const ctx = makeIngestionCtx();
       const results: RepoExecutionResult[] = [makeSuccessResult()];
 
       mockWithDbCall({
@@ -479,7 +453,7 @@ describe("ingestRepoExecutionResults", () => {
           findFirst: vi.fn().mockResolvedValue({ id: "install-repo-1" }),
         },
       });
-      mockWithDbTx(makeSuccessMockTx());
+      mockWithDbTx(makeIngestionSuccessMockTx());
 
       await ingestRepoExecutionResults(ctx, results, {
         codeJudgesReport: null,
@@ -489,7 +463,7 @@ describe("ingestRepoExecutionResults", () => {
     });
 
     it("persists code judges report before per-repo loop when report is supplied", async () => {
-      const ctx = makeCtx();
+      const ctx = makeIngestionCtx();
       const codeJudgesReport = makeCodeJudgesReport();
       const results: RepoExecutionResult[] = [makeSuccessResult()];
 
@@ -506,7 +480,7 @@ describe("ingestRepoExecutionResults", () => {
         },
       });
 
-      const mockTx = makeSuccessMockTx();
+      const mockTx = makeIngestionSuccessMockTx();
       const originalCreate = mockTx.workstreamEvent.create;
       mockTx.workstreamEvent.create = vi.fn().mockImplementation((...args) => {
         callOrder.push("workstreamEvent.create");
@@ -543,7 +517,7 @@ describe("ingestRepoExecutionResults", () => {
 
   describe("prompts snapshot", () => {
     it("calls upsertFromSnapshot with organizationId and null when no snapshot is provided", async () => {
-      const ctx = makeCtx();
+      const ctx = makeIngestionCtx();
       const results: RepoExecutionResult[] = [];
 
       await ingestRepoExecutionResults(ctx, results);
@@ -552,7 +526,7 @@ describe("ingestRepoExecutionResults", () => {
     });
 
     it("calls upsertFromSnapshot with the provided snapshot", async () => {
-      const ctx = makeCtx();
+      const ctx = makeIngestionCtx();
       const results: RepoExecutionResult[] = [];
       const promptsSnapshot = {
         prompts: [

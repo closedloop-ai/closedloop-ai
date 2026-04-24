@@ -12,7 +12,13 @@ import {
   type JudgesReport,
 } from "@repo/api/src/types/evaluation";
 import type { PromptsSnapshot } from "@repo/api/src/types/prompt";
-import { EntityType, type TransactionClient, withDb } from "@repo/database";
+import {
+  EntityType,
+  GitHubPRState,
+  type TransactionClient,
+  WorkstreamEventType,
+  withDb,
+} from "@repo/database";
 import { log } from "@repo/observability/log";
 import { upsertEvaluationWithJudgeScores } from "@/lib/loops/loop-document-ingestion";
 import { ensurePrLinkageRecords } from "@/lib/pr-linkage";
@@ -171,7 +177,7 @@ async function ingestSuccessEntry(
           htmlUrl: result.prUrl,
           headBranch: result.branchName,
           baseBranch: result.baseBranch,
-          state: "OPEN",
+          state: GitHubPRState.OPEN,
         },
         // Don't overwrite fields that a concurrent handler may have set
         // more accurately (e.g. state from a webhook).
@@ -199,7 +205,7 @@ async function ingestSuccessEntry(
     await tx.workstreamEvent.create({
       data: {
         workstreamId,
-        type: "GITHUB_PR_CREATED",
+        type: WorkstreamEventType.GITHUB_PR_CREATED,
         actorType: "system",
         data: {
           loopId,

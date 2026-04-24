@@ -1917,4 +1917,86 @@ describe("processWorkflowCompletion", () => {
     const responseData = await response.json();
     expect(responseData).toEqual({ result: "processed", ok: true });
   });
+
+  it("marks execute workflows successful even when execution-result.json is missing", async () => {
+    const correlationId = "proc-correlation-exec-missing-result";
+    const artifactId = "proc-artifact-exec-missing-result";
+    const workstreamId = "proc-ws-exec-missing-result";
+    const repositoryId = "proc-repo-exec-missing-result";
+    const runId = 6_160_606_060;
+
+    const mockActionRun = {
+      id: "action-run-exec-missing-result",
+      workstreamId,
+      repositoryId,
+      triggerData: {
+        correlationId,
+        documentId: artifactId,
+        command: "execute",
+      },
+    };
+
+    mockFindActionRunByCorrelationId.mockResolvedValue(mockActionRun);
+
+    const zipBuffer = buildZipWithEntries([
+      {
+        name: "plan.json",
+        content: JSON.stringify({
+          content: "# Not used for execute",
+          acceptanceCriteria: [],
+          pendingTasks: [],
+          completedTasks: [],
+          openQuestions: [],
+          answeredQuestions: [],
+          gaps: [],
+        }),
+      },
+    ]);
+
+    mockDownloadWorkflowArtifacts.mockResolvedValue([
+      { name: "artifact.zip", data: zipBuffer },
+    ]);
+
+    const mockDb = {
+      gitHubActionRun: {
+        update: vi.fn().mockResolvedValue({
+          id: mockActionRun.id,
+          status: "SUCCESS",
+        }),
+      },
+    };
+
+    mockWithDbCall(mockDb);
+
+    const event: WorkflowRunCompletedEvent = {
+      action: "completed",
+      workflow_run: {
+        id: runId,
+        conclusion: "success",
+        html_url: `https://github.com/owner/repo/actions/runs/${runId}`,
+      },
+      repository: {
+        full_name: "owner/repo",
+      },
+    } as WorkflowRunCompletedEvent;
+
+    const response = await processWorkflowCompletion(event, correlationId);
+
+    expect(mockParseExecutionResultFile).not.toHaveBeenCalled();
+    expect(mockIngestRepoExecutionResults).not.toHaveBeenCalled();
+    expect(mockDb.gitHubActionRun.update).toHaveBeenCalledWith({
+      where: { id: mockActionRun.id },
+      data: {
+        runId: String(runId),
+        status: "SUCCESS",
+        conclusion: "success",
+        htmlUrl: event.workflow_run.html_url,
+        completedAt: expect.any(Date),
+      },
+    });
+    expect(getMockWithDb().tx).not.toHaveBeenCalled();
+
+    const responseData = await response.json();
+    expect(responseData).toEqual({ result: "processed", ok: true });
+  });
 });

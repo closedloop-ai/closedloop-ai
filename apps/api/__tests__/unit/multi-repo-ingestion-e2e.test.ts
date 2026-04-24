@@ -28,6 +28,12 @@ vi.mock("@repo/database", () => ({
     FEATURE: "FEATURE",
     WORKSTREAM: "WORKSTREAM",
   },
+  GitHubPRState: {
+    OPEN: "OPEN",
+  },
+  WorkstreamEventType: {
+    GITHUB_PR_CREATED: "GITHUB_PR_CREATED",
+  },
   EvaluationReportType: {
     PLAN: "PLAN",
     CODE: "CODE",
@@ -60,9 +66,13 @@ vi.mock("@/lib/prompts-service", () => ({
 
 import { parseExecutionResultFile } from "@closedloop-ai/loops-api/execution-result";
 import type { Mock } from "vitest";
-import type { IngestionContext } from "@/lib/loops/ingest-repo-execution-results";
 import { ingestRepoExecutionResults } from "@/lib/loops/ingest-repo-execution-results";
 import { ensurePrLinkageRecords } from "@/lib/pr-linkage";
+import {
+  e2eIngestionCtxDefaults,
+  makeIngestionCtx,
+  makeIngestionSuccessMockTx,
+} from "../fixtures/ingestion-helpers";
 
 // ---------------------------------------------------------------------------
 // Typed mock references
@@ -74,41 +84,6 @@ const mockEnsurePrLinkageRecords = ensurePrLinkageRecords as unknown as Mock;
 // ---------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------
-
-function makeCtx(overrides: Partial<IngestionContext> = {}): IngestionContext {
-  return {
-    organizationId: "org-e2e",
-    workstreamId: "ws-e2e",
-    documentId: "doc-e2e",
-    loopId: "loop-e2e",
-    correlationId: "corr-e2e",
-    actionRunId: "action-run-e2e",
-    ...overrides,
-  };
-}
-
-/**
- * Build the mock TX object used inside withDb.tx for ingestSuccessEntry.
- */
-function makeSuccessMockTx(documentId = "doc-e2e") {
-  return {
-    document: {
-      findUnique: vi.fn().mockResolvedValue({
-        organizationId: "org-e2e",
-        projectId: "project-e2e",
-        slug: "my-artifact",
-      }),
-    },
-    gitHubPullRequest: {
-      findUnique: vi.fn().mockResolvedValue(null),
-      upsert: vi.fn().mockResolvedValue({ id: "pr-e2e-1", documentId }),
-      update: vi.fn().mockResolvedValue({ id: "pr-e2e-1", documentId }),
-    },
-    workstreamEvent: {
-      create: vi.fn().mockResolvedValue({ id: "event-e2e-1" }),
-    },
-  };
-}
 
 /**
  * Build a v2 multi-repo execution result payload with three entries:
@@ -222,7 +197,7 @@ describe("parseExecutionResultFile + ingestRepoExecutionResults (end-to-end chai
         return;
       }
 
-      const ctx = makeCtx();
+      const ctx = makeIngestionCtx({}, e2eIngestionCtxDefaults);
 
       // withDb (non-tx) returns the installation repo for the success entry
       mockWithDbCall({
@@ -232,7 +207,7 @@ describe("parseExecutionResultFile + ingestRepoExecutionResults (end-to-end chai
       });
 
       // withDb.tx runs the per-entry transaction for the success entry
-      const mockTx = makeSuccessMockTx();
+      const mockTx = makeIngestionSuccessMockTx({ preset: "e2e" });
       mockWithDbTx(mockTx);
 
       await ingestRepoExecutionResults(ctx, parsed.results);
@@ -251,7 +226,7 @@ describe("parseExecutionResultFile + ingestRepoExecutionResults (end-to-end chai
         return;
       }
 
-      const ctx = makeCtx();
+      const ctx = makeIngestionCtx({}, e2eIngestionCtxDefaults);
 
       mockWithDbCall({
         gitHubInstallationRepository: {
@@ -259,7 +234,7 @@ describe("parseExecutionResultFile + ingestRepoExecutionResults (end-to-end chai
         },
       });
 
-      const mockTx = makeSuccessMockTx();
+      const mockTx = makeIngestionSuccessMockTx({ preset: "e2e" });
       mockWithDbTx(mockTx);
 
       await ingestRepoExecutionResults(ctx, parsed.results);
@@ -286,7 +261,7 @@ describe("parseExecutionResultFile + ingestRepoExecutionResults (end-to-end chai
         return;
       }
 
-      const ctx = makeCtx();
+      const ctx = makeIngestionCtx({}, e2eIngestionCtxDefaults);
 
       // Only one DB lookup for the single success entry
       mockWithDbCall({
@@ -295,7 +270,7 @@ describe("parseExecutionResultFile + ingestRepoExecutionResults (end-to-end chai
         },
       });
 
-      const mockTx = makeSuccessMockTx();
+      const mockTx = makeIngestionSuccessMockTx({ preset: "e2e" });
       mockWithDbTx(mockTx);
 
       await ingestRepoExecutionResults(ctx, parsed.results);
@@ -317,7 +292,7 @@ describe("parseExecutionResultFile + ingestRepoExecutionResults (end-to-end chai
         return;
       }
 
-      const ctx = makeCtx();
+      const ctx = makeIngestionCtx({}, e2eIngestionCtxDefaults);
 
       mockWithDbCall({
         gitHubInstallationRepository: {
@@ -325,7 +300,7 @@ describe("parseExecutionResultFile + ingestRepoExecutionResults (end-to-end chai
         },
       });
 
-      const mockTx = makeSuccessMockTx();
+      const mockTx = makeIngestionSuccessMockTx({ preset: "e2e" });
       mockWithDbTx(mockTx);
 
       await ingestRepoExecutionResults(ctx, parsed.results);
