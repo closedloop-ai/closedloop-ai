@@ -10,6 +10,7 @@ import {
   RunLoopCommand,
 } from "@repo/api/src/types/loop";
 import { getProjectSettings } from "@repo/api/src/types/project";
+import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
 import { computeTargetsService } from "@/app/compute-targets/service";
 import { loopsService } from "@/app/loops/service";
@@ -18,6 +19,7 @@ import {
   resolveComputeTargetForRoute,
 } from "@/lib/loops/compute-target-route-helpers";
 import type { getCommandHandler } from "@/lib/loops/loop-commands";
+import { extractUploadedPlanRaw } from "@/lib/loops/uploaded-plan-artifacts";
 import { badRequestResponse } from "@/lib/route-utils";
 import { documentsService } from "../../service";
 
@@ -35,6 +37,107 @@ export const COMMAND_MAP = {
   [RunLoopCommand.EvaluatePlan]: LoopCommand.EvaluatePlan,
   [RunLoopCommand.EvaluateCode]: LoopCommand.EvaluateCode,
 } as const;
+
+type ParentLoopForRunContext = Awaited<
+  ReturnType<typeof loopsService.findLatestCompletedForArtifact>
+>;
+
+type ParentLoopSelection =
+  | "not-required"
+  | "state-bearing-desktop"
+  | "latest-completed"
+  | "none";
+
+function logParentLoopResolution({
+  command,
+  documentId,
+  parentLoop,
+  parentSelection,
+  resolvedComputeTargetId,
+}: {
+  command: keyof typeof COMMAND_MAP;
+  documentId: string;
+  parentLoop: ParentLoopForRunContext;
+  parentSelection: ParentLoopSelection;
+  resolvedComputeTargetId?: string;
+}): void {
+  if (parentSelection === "not-required") {
+    return;
+  }
+
+  const parentLoopComputeTargetId = parentLoop
+    ? (parentLoop.computeTargetId ?? null)
+    : undefined;
+
+  log.info("[run-loop] Parent loop resolved", {
+    documentId,
+    command,
+    resolvedComputeTargetId: resolvedComputeTargetId ?? null,
+    parentSelection,
+    parentLoopId: parentLoop?.id ?? null,
+    parentLoopStatus: parentLoop?.status ?? null,
+    parentLoopComputeTargetId: parentLoopComputeTargetId ?? null,
+    parentLoopHasUploadedArtifacts: Boolean(parentLoop?.uploadedArtifacts),
+    parentLoopUploadedRawPlanPresent: parentLoop
+      ? Boolean(extractUploadedPlanRaw(parentLoop.uploadedArtifacts))
+      : false,
+  });
+}
+
+async function resolveParentLoopForRunContext({
+  command,
+  documentId,
+  handler,
+  organizationId,
+  resolvedComputeTargetId,
+}: {
+  command: keyof typeof COMMAND_MAP;
+  documentId: string;
+  handler: ReturnType<typeof getCommandHandler>;
+  organizationId: string;
+  resolvedComputeTargetId?: string;
+}): Promise<{
+  parentLoop: ParentLoopForRunContext;
+  parentSelection: ParentLoopSelection;
+}> {
+  if (!handler?.requiresParent) {
+    return { parentLoop: null, parentSelection: "not-required" };
+  }
+
+  const stateBearingDesktopParent = resolvedComputeTargetId
+    ? await loopsService.findLatestStateBearingDesktopForArtifact(
+        documentId,
+        organizationId
+      )
+    : null;
+  if (stateBearingDesktopParent) {
+    logParentLoopResolution({
+      command,
+      documentId,
+      parentLoop: stateBearingDesktopParent,
+      parentSelection: "state-bearing-desktop",
+      resolvedComputeTargetId,
+    });
+    return {
+      parentLoop: stateBearingDesktopParent,
+      parentSelection: "state-bearing-desktop",
+    };
+  }
+
+  const fallbackParent = await loopsService.findLatestCompletedForArtifact(
+    documentId,
+    organizationId
+  );
+  const parentSelection = fallbackParent ? "latest-completed" : "none";
+  logParentLoopResolution({
+    command,
+    documentId,
+    parentLoop: fallbackParent,
+    parentSelection,
+    resolvedComputeTargetId,
+  });
+  return { parentLoop: fallbackParent, parentSelection };
+}
 
 /**
  * For EVALUATE_CODE loops: require an open PR linked to the artifact workstream
@@ -137,25 +240,17 @@ export async function resolveLoopContext(
     });
   }
 
-  let parentLoopId: string | undefined;
-  let parentLoopComputeTargetId: string | null | undefined;
-  if (handler?.requiresParent) {
-    const parentLoop =
-      (resolvedComputeTargetId
-        ? await loopsService.findLatestStateBearingDesktopForArtifact(
-            documentId,
-            organizationId
-          )
-        : null) ??
-      (await loopsService.findLatestCompletedForArtifact(
-        documentId,
-        organizationId
-      ));
-    parentLoopId = parentLoop?.id;
-    parentLoopComputeTargetId = parentLoop
-      ? (parentLoop.computeTargetId ?? null)
-      : undefined;
-  }
+  const { parentLoop } = await resolveParentLoopForRunContext({
+    command: body.command,
+    documentId,
+    handler,
+    organizationId,
+    resolvedComputeTargetId,
+  });
+  const parentLoopId = parentLoop?.id;
+  const parentLoopComputeTargetId = parentLoop
+    ? (parentLoop.computeTargetId ?? null)
+    : undefined;
 
   return {
     workstream,

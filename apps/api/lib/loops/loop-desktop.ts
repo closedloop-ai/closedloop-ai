@@ -10,6 +10,7 @@ import {
   rewriteDesktopApiPath,
 } from "@repo/api/src/desktop-api-namespace";
 import type { JsonValue } from "@repo/api/src/types/common";
+import { DocumentType } from "@repo/api/src/types/document";
 import type { AdditionalRepoRef, LoopCommand } from "@repo/api/src/types/loop";
 import type { SymphonyLoopBody } from "@repo/api/src/types/symphony-loop-body";
 import { log } from "@repo/observability/log";
@@ -43,6 +44,37 @@ async function assertDelivered(
     });
     throw new RelayDispatchNotDeliveredError(result.reason);
   }
+}
+
+function getImplementationPlanPayloadDiagnostics(contextPack: ContextPack): {
+  artifactCount: number;
+  implementationPlanArtifactPresent: boolean;
+  implementationPlanRawRecordPresent: boolean;
+  implementationPlanRawContentPresent: boolean;
+  implementationPlanRawContentMatchesArtifact: boolean | null;
+  implementationPlanContentLength: number | null;
+  implementationPlanRawContentLength: number | null;
+} {
+  const planArtifact = contextPack.artifacts.find(
+    (artifact) => artifact.type === DocumentType.ImplementationPlan
+  );
+  const rawPlanContent =
+    typeof planArtifact?.raw?.content === "string"
+      ? planArtifact.raw.content
+      : undefined;
+
+  return {
+    artifactCount: contextPack.artifacts.length,
+    implementationPlanArtifactPresent: planArtifact !== undefined,
+    implementationPlanRawRecordPresent: planArtifact?.raw !== undefined,
+    implementationPlanRawContentPresent: rawPlanContent !== undefined,
+    implementationPlanRawContentMatchesArtifact:
+      planArtifact && rawPlanContent !== undefined
+        ? rawPlanContent === planArtifact.content
+        : null,
+    implementationPlanContentLength: planArtifact?.content.length ?? null,
+    implementationPlanRawContentLength: rawPlanContent?.length ?? null,
+  };
 }
 
 /**
@@ -264,7 +296,9 @@ export async function launchLoopOnDesktop(
   log.info("[loop-desktop] Desktop loop command dispatched", {
     loopId,
     commandId,
+    command,
     computeTargetId,
+    ...getImplementationPlanPayloadDiagnostics(contextPack),
   });
 
   return commandId;

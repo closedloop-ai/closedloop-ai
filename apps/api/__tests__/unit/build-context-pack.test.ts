@@ -301,14 +301,12 @@ describe("buildContextPack", () => {
       id: "parent-loop-1",
       computeTargetId: "desktop-target-1",
       uploadedArtifacts: {
-        artifacts: {
-          plan: {
+        plan: {
+          content: "Older markdown",
+          raw: {
             content: "Older markdown",
-            raw: {
-              content: "Older markdown",
-              pendingTasks: ["task-1"],
-              completedTasks: ["task-0"],
-            },
+            pendingTasks: ["task-1"],
+            completedTasks: ["task-0"],
           },
         },
       },
@@ -356,10 +354,8 @@ describe("buildContextPack", () => {
       id: "parent-loop-1",
       computeTargetId: "desktop-target-1",
       uploadedArtifacts: {
-        artifacts: {
-          plan: {
-            content: "Older markdown",
-          },
+        plan: {
+          content: "Older markdown",
         },
       },
     });

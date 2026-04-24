@@ -71,6 +71,75 @@ function fetchDesktopExecuteRawPlanState(
   return extractUploadedPlanRaw(parentLoop.uploadedArtifacts);
 }
 
+function getDesktopExecuteRawPlanOmissionReason(
+  loop: LoopForContextPack,
+  artifactType: string,
+  parentLoop: ParentLoopForContextPack
+): string | null {
+  if (loop.command !== LoopCommand.Execute) {
+    return "non_execute_command";
+  }
+  if (artifactType !== DocumentType.ImplementationPlan) {
+    return "non_implementation_plan";
+  }
+  if (!parentLoop) {
+    return "missing_parent_loop";
+  }
+  if (!parentLoop.computeTargetId) {
+    return "parent_not_desktop";
+  }
+  if (!parentLoop.uploadedArtifacts) {
+    return "parent_uploaded_artifacts_missing";
+  }
+  if (!extractUploadedPlanRaw(parentLoop.uploadedArtifacts)) {
+    return "parent_uploaded_plan_raw_missing";
+  }
+  return null;
+}
+
+function logDesktopExecuteRawPlanDecision({
+  loop,
+  artifactType,
+  artifactContent,
+  parentLoop,
+  rawPlan,
+}: {
+  loop: LoopForContextPack;
+  artifactType: string;
+  artifactContent: string;
+  parentLoop: ParentLoopForContextPack;
+  rawPlan: Record<string, unknown> | undefined;
+}): void {
+  if (
+    loop.command !== LoopCommand.Execute ||
+    artifactType !== DocumentType.ImplementationPlan
+  ) {
+    return;
+  }
+
+  const rawPlanContent =
+    typeof rawPlan?.content === "string" ? rawPlan.content : undefined;
+
+  log.info("[loop-context-pack] Desktop EXECUTE plan raw state decision", {
+    loopId: loop.id,
+    documentId: loop.documentId,
+    parentLoopId: parentLoop?.id ?? null,
+    parentLoopStatus: parentLoop?.status ?? null,
+    parentComputeTargetId: parentLoop?.computeTargetId ?? null,
+    parentUploadedArtifactsPresent: Boolean(parentLoop?.uploadedArtifacts),
+    rawPlanRecordAttached: rawPlan !== undefined,
+    rawPlanContentPresent: rawPlanContent !== undefined,
+    rawPlanContentMatchesArtifact:
+      rawPlanContent !== undefined ? rawPlanContent === artifactContent : null,
+    rawPlanContentLength: rawPlanContent?.length ?? null,
+    artifactContentLength: artifactContent.length,
+    omissionReason:
+      rawPlan === undefined
+        ? getDesktopExecuteRawPlanOmissionReason(loop, artifactType, parentLoop)
+        : null,
+  });
+}
+
 async function fetchPrimaryArtifact(
   loop: LoopForContextPack,
   organizationId: string,
@@ -116,13 +185,21 @@ async function fetchPrimaryArtifact(
     String(artifact.type),
     parentLoop
   );
+  const artifactContent = artifactVersion?.content ?? "";
+  logDesktopExecuteRawPlanDecision({
+    loop,
+    artifactType: String(artifact.type),
+    artifactContent,
+    parentLoop,
+    rawPlan,
+  });
 
   return [
     {
       id: artifact.id,
       type: String(artifact.type),
       title: artifact.title,
-      content: artifactVersion?.content ?? "",
+      content: artifactContent,
       ...(rawPlan ? { raw: rawPlan } : {}),
     },
   ];
