@@ -386,6 +386,8 @@ export function PlanEditor({
                   />
                   <BranchesSection
                     documentId={plan.id}
+                    generationStatus={generationStatus}
+                    onStartBuild={openExecuteModal}
                     planId={plan.id}
                     projectId={plan.projectId ?? ""}
                   />
