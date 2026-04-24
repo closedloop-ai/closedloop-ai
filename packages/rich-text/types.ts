@@ -39,4 +39,11 @@ export type RichTextEditorProps = {
    * "focus" hides the toolbar until the editor receives focus.
    */
   toolbarMode?: "always" | "focus";
+  /**
+   * Opt into the interactive mermaid viewer (pan/zoom, fullscreen, minimap,
+   * export). When false (or unset), mermaid diagrams render as a static SVG
+   * with a hover-reveal edit button. Gated by the `mermaid-enhancements`
+   * feature flag at call sites.
+   */
+  mermaidEnhancementsEnabled?: boolean;
 };
