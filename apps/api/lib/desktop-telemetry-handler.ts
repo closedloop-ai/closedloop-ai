@@ -2,7 +2,10 @@ import { log } from "@repo/observability/log";
 import { buildTelemetryTraceContext } from "@repo/observability/telemetry/context";
 import { sanitizeDesktopTelemetryDiagnostics } from "@repo/observability/telemetry/emitter";
 import { Origin } from "@repo/observability/telemetry/origin";
-import { desktopTelemetryEventSchema } from "@repo/observability/telemetry/schema";
+import {
+  desktopTelemetryEventSchema,
+  TelemetryCategory,
+} from "@repo/observability/telemetry/schema";
 
 export type TelemetryEmitInstruction = { event: string; payload: unknown };
 
@@ -69,6 +72,7 @@ export function handleTelemetryEvent(
     }));
 
     log.warn("Desktop telemetry validation failed", {
+      category: TelemetryCategory.TelemetryValidationFailed,
       authenticatedTargetId: context.authenticatedTargetId,
       issues: safeIssues,
     });
@@ -98,6 +102,7 @@ export function handleTelemetryEvent(
     ];
 
     log.warn("Desktop telemetry computeTargetId mismatch", {
+      category: TelemetryCategory.TelemetryValidationFailed,
       authenticatedTargetId: context.authenticatedTargetId,
       traceComputeTargetId: event.trace.computeTargetId,
     });

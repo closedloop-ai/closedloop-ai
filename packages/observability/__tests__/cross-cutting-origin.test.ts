@@ -8,11 +8,14 @@
 // JSON body reflects the DD_SERVICE-resolved Origin value.
 //
 // NOTE: Relay-native connection lifecycle events emitted via
-// `log.info(JSON.stringify({ category: ... }))` directly in
-// apps/relay/src/index.ts do NOT include an `origin` field because they bypass
-// the structured emitter (they pass a plain string message with no meta object
-// that maps to a known origin). This is a known gap documented in the
-// verification procedure.
+// `log.*(JSON.stringify({ category: ... }))` directly in apps/relay/src/index.ts
+// DO carry an `origin` field. `buildEntry()` in log.ts always stamps
+// `origin = metaOrigin ?? ORIGIN`, and with no meta arg, ORIGIN is the
+// module-level constant resolved from DD_SERVICE (resolves to "relay" when
+// DD_SERVICE=relay). The real distinction vs emitter.ts events is that
+// `category`, `trace`, etc. land inside the stringified `message` (pipeline
+// rule required for facet queries), while `origin` is always top-level and
+// facet-queryable without the rule — see apps/api/docs/telemetry-verification.md.
 // ---------------------------------------------------------------------------
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -51,6 +54,11 @@ describe("origin propagation into flushed log entry — three known paths", () =
       vi.useFakeTimers();
       vi.stubEnv("DD_API_KEY", "test-key");
       vi.stubEnv("DD_SERVICE", ddServiceValue);
+      // Populate version + git_sha so log.ts's module-load fallback warnings
+      // do not enqueue entries ahead of the intended "test message" at body[0]
+      // (matches the pattern in T-1.2 below).
+      vi.stubEnv("RELEASE_VERSION", "1.0.0");
+      vi.stubEnv("VERCEL_GIT_COMMIT_SHA", "testsha");
 
       const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
       const log = await importLogWithFetch(fetchMock);
@@ -73,6 +81,11 @@ describe("origin propagation — DD_SERVICE-unset fallback path", () => {
   it("sets origin=unknown in the flushed payload when DD_SERVICE is unset", async () => {
     vi.useFakeTimers();
     vi.stubEnv("DD_API_KEY", "test-key");
+    // Populate version + git_sha so log.ts's module-load fallback warnings
+    // do not enqueue `telemetry.version_fallback` / `telemetry.git_sha_fallback`
+    // entries ahead of the intended "fallback test" entry at body[0].
+    vi.stubEnv("RELEASE_VERSION", "1.0.0");
+    vi.stubEnv("VERCEL_GIT_COMMIT_SHA", "testsha");
     // `vi.stubEnv(key, undefined)` coerces to the literal string "undefined",
     // which exercises the off-whitelist branch. To exercise the truly-absent
     // branch (process.env.DD_SERVICE === undefined), delete the key and let
@@ -106,6 +119,10 @@ describe("origin propagation — post-import env mutation does not change origin
     vi.useFakeTimers();
     vi.stubEnv("DD_API_KEY", "test-key");
     vi.stubEnv("DD_SERVICE", "api");
+    // Populate version + git_sha so module-load fallback warnings do not
+    // enqueue entries ahead of the "first"/"second" entries at body[0].
+    vi.stubEnv("RELEASE_VERSION", "1.0.0");
+    vi.stubEnv("VERCEL_GIT_COMMIT_SHA", "testsha");
 
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
     const log = await importLogWithFetch(fetchMock);
