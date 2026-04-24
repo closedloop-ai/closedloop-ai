@@ -2,6 +2,7 @@ import {
   type ExecutionResultFile,
   type ExecutionResultV2,
   normalizeExecutionResultFile,
+  type ParsedExecutionResult,
 } from "@closedloop-ai/loops-api/execution-result";
 import type { WorkflowRunCompletedEvent } from "@octokit/webhooks-types";
 import {
@@ -48,18 +49,7 @@ export async function handleExecutionSuccess(
     fullName,
   } = ctx;
 
-  let parsed:
-    | {
-        ok: true;
-        results: ExecutionResultV2["results"];
-        schemaVersion: 1 | 2;
-        repoCount: number;
-      }
-    | {
-        ok: false;
-        error: string;
-        schemaVersion?: number;
-      };
+  let parsed: ParsedExecutionResult;
 
   if (isExecutionResultV2(executionResult)) {
     parsed = {
