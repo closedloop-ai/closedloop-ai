@@ -1,0 +1,63 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "mint",
+  "name": "Documentation",
+  "colors": {
+    "primary": "#0D9373"
+  },
+  "navigation": {
+    "groups": [
+      {
+        "group": "Getting Started",
+        "pages": [
+          "getting-started/from-onboarding-to-first-loop",
+          "getting-started/prepare-your-repo-and-targets",
+          "getting-started/index",
+          "index"
+        ]
+      },
+      {
+        "group": "Mechanisms",
+        "pages": [
+          "mechanisms/context-packs",
+          "mechanisms/judges",
+          "mechanisms/runtime",
+          "mechanisms/loops"
+        ]
+      },
+      {
+        "group": "Glossary",
+        "pages": [
+          "glossary/context-pack",
+          "glossary/control-plane",
+          "glossary/judge",
+          "glossary/loop",
+          "glossary/runtime"
+        ]
+      },
+      {
+        "group": "Concepts",
+        "pages": [
+          "concepts/artifact-bound-delivery",
+          "concepts/team-based-agentic-development",
+          "concepts/control-plane"
+        ]
+      },
+      {
+        "group": "Resources",
+        "pages": [
+          "resources/closedloop-vs-chat-based-workflows",
+          "resources/prd-template",
+          "resources/implementation-plan-template"
+        ]
+      },
+      {
+        "group": "Workflows",
+        "pages": [
+          "workflows/parallel-feature-development",
+          "workflows/prd-to-plan-to-execution"
+        ]
+      }
+    ]
+  }
+}
