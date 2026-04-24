@@ -141,6 +141,7 @@ const baseWorkspaceItems: NavItem[] = [
     url: "/agents",
     icon: BotIcon,
     disabled: false,
+    featureFlag: "agents",
   },
 ];
 
