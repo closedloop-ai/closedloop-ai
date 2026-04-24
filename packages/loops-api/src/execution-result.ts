@@ -51,6 +51,8 @@ export const ExecutionResultFileSchema = z.object({
   github_id: z.number().optional(),
 });
 
+export type ExecutionResultFile = z.infer<typeof ExecutionResultFileSchema>;
+
 /** Normalize empty-string/zero sentinels to null. */
 function emptyToNull(value: string): string | null {
   return value === "" ? null : value;
@@ -64,16 +66,126 @@ function prNumberToNull(value: string | number): number | null {
   return value === 0 ? null : value;
 }
 
-/** Parse the on-disk snake_case format into the canonical camelCase type. */
-export function parseExecutionResultFile(
+/**
+ * Discriminated union result from parseExecutionResultFile.
+ *
+ * - `ok: true`: parsing and normalization succeeded
+ * - `ok: false`: parsing failed (invalid data, missing required fields, unsupported version)
+ */
+export type ParsedExecutionResult =
+  | {
+      ok: true;
+      results: RepoExecutionResult[];
+      schemaVersion: 1 | 2;
+      repoCount: number;
+    }
+  | {
+      ok: false;
+      error: string;
+      schemaVersion?: number;
+    };
+
+const ExecutionResultSchemaVersionSchema = z.object({
+  schemaVersion: z.number().optional(),
+});
+
+export const SUPPORTED_EXECUTION_RESULT_SCHEMA_VERSIONS = [1, 2] as const;
+
+export type SupportedExecutionResultSchemaVersion =
+  (typeof SUPPORTED_EXECUTION_RESULT_SCHEMA_VERSIONS)[number];
+
+export function detectExecutionResultSchemaVersion(
   data: unknown
-): ExecutionResult | null {
+): number | undefined {
+  const versionCheck = ExecutionResultSchemaVersionSchema.safeParse(data);
+  return versionCheck.success ? versionCheck.data.schemaVersion : undefined;
+}
+
+export function isSupportedExecutionResultSchemaVersion(
+  schemaVersion: number | undefined
+): schemaVersion is SupportedExecutionResultSchemaVersion | undefined {
+  return (
+    schemaVersion === undefined ||
+    SUPPORTED_EXECUTION_RESULT_SCHEMA_VERSIONS.includes(
+      schemaVersion as SupportedExecutionResultSchemaVersion
+    )
+  );
+}
+
+/**
+ * Parse the on-disk execution-result.json format and normalize to a list of
+ * per-repo results.
+ *
+ * Supports two envelope formats:
+ * - **v2**: `{ schemaVersion: 2, results: [...] }` — dispatched to the v2 path;
+ *   `fullName` is carried by each result entry and the parameter is ignored.
+ * - **v1**: flat snake_case fields (`has_changes`, `pr_url`, …) — `fullName`
+ *   must be supplied as the second argument or the failure variant is returned.
+ *
+ * Any `schemaVersion` other than 1 (implicit/absent) or 2 returns the failure
+ * variant. The function never calls any logger.
+ */
+export function parseExecutionResultFile(
+  data: unknown,
+  fullName?: string
+): ParsedExecutionResult {
+  const schemaVersion = detectExecutionResultSchemaVersion(data);
+
+  // Reject explicitly unsupported schema versions.
+  if (!isSupportedExecutionResultSchemaVersion(schemaVersion)) {
+    return {
+      ok: false,
+      error: `Unsupported schemaVersion: ${schemaVersion}`,
+      schemaVersion,
+    };
+  }
+
+  // v2 envelope path.
+  if (schemaVersion === 2) {
+    const v2Result = ExecutionResultV2Schema.safeParse(data);
+    if (!v2Result.success) {
+      return {
+        ok: false,
+        error: `Invalid v2 execution result: ${v2Result.error.message}`,
+        schemaVersion: 2,
+      };
+    }
+    const results = normalizeV2ExecutionResult(v2Result.data);
+    return {
+      ok: true,
+      results,
+      schemaVersion: 2,
+      repoCount: results.length,
+    };
+  }
+
+  // v1 flat format path (schemaVersion absent or 1).
   const result = ExecutionResultFileSchema.safeParse(data);
   if (!result.success) {
-    return null;
+    return {
+      ok: false,
+      error: `Invalid v1 execution result: ${result.error.message}`,
+      schemaVersion: 1,
+    };
   }
-  const f = result.data;
-  return {
+
+  return normalizeExecutionResultFile(result.data, fullName);
+}
+
+export function normalizeExecutionResultFile(
+  data: ExecutionResultFile,
+  fullName?: string
+): ParsedExecutionResult {
+  // v1 flat format path (schemaVersion absent or 1).
+  if (!fullName) {
+    return {
+      ok: false,
+      error: "fullName is required for v1 execution result normalization",
+      schemaVersion: 1,
+    };
+  }
+  const f = data;
+  const executionResult: ExecutionResult = {
     hasChanges: f.has_changes,
     prUrl: emptyToNull(f.pr_url),
     prNumber: prNumberToNull(f.pr_number),
@@ -83,6 +195,14 @@ export function parseExecutionResultFile(
     baseBranch: f.base_branch ? emptyToNull(f.base_branch) : null,
     commitSha: f.commit_sha ?? null,
     githubId: f.github_id ?? null,
+  };
+
+  const results = normalizeV1ExecutionResult(executionResult, fullName);
+  return {
+    ok: true,
+    results,
+    schemaVersion: 1,
+    repoCount: results.length,
   };
 }
 

@@ -7,7 +7,6 @@
  * - ingestExecutionArtifacts: fanOutJudgeScores is called when codeJudgesReport is present
  * - ingestExecutionArtifacts: reportData dual-write is preserved in the upsert
  */
-import { EvalStatus, type JudgesReport } from "@repo/api/src/types/evaluation";
 import { vi } from "vitest";
 import {
   getMockWithDb,
@@ -15,26 +14,15 @@ import {
   mockWithDbTx,
 } from "../utils/db-helpers";
 
-vi.mock("@repo/database", () => ({
-  withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
-  EvaluationReportType: {
-    PLAN: "PLAN",
-    CODE: "CODE",
-  },
-  EntityType: {
-    DOCUMENT: "DOCUMENT",
-    FEATURE: "FEATURE",
-    WORKSTREAM: "WORKSTREAM",
-  },
-}));
+vi.mock("@repo/database", async () => {
+  const { createDatabaseMockModule } = await import("../fixtures/mock-modules");
+  return createDatabaseMockModule();
+});
 
-vi.mock("@repo/observability/log", () => ({
-  log: {
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  },
-}));
+vi.mock("@repo/observability/log", async () => {
+  const { createLogMockModule } = await import("../fixtures/mock-modules");
+  return createLogMockModule();
+});
 
 vi.mock("@/app/documents/document-version-service", () => ({
   documentVersionService: {
@@ -50,9 +38,12 @@ vi.mock("@/lib/judge-score-fanout", () => ({
   fanOutJudgeScores: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock("@/lib/prompts-service", () => ({
-  upsertFromSnapshot: vi.fn().mockResolvedValue(undefined),
-}));
+vi.mock("@/lib/prompts-service", async () => {
+  const { createPromptsServiceMockModule } = await import(
+    "../fixtures/mock-modules"
+  );
+  return createPromptsServiceMockModule();
+});
 
 vi.mock("@/lib/loops/loop-document-ingestion", async (importOriginal) => {
   const actual =
@@ -65,9 +56,12 @@ vi.mock("@/lib/loops/loop-document-ingestion", async (importOriginal) => {
   };
 });
 
-vi.mock("@/lib/pr-linkage", () => ({
-  ensurePrLinkageRecords: vi.fn().mockResolvedValue(undefined),
-}));
+vi.mock("@/lib/pr-linkage", async () => {
+  const { createPrLinkageMockModule } = await import(
+    "../fixtures/mock-modules"
+  );
+  return createPrLinkageMockModule();
+});
 
 import { fanOutJudgeScores } from "@/lib/judge-score-fanout";
 import type { ExecutionArtifacts } from "@/lib/loops/loop-commands/execute-handler";
@@ -75,6 +69,10 @@ import { ingestExecutionArtifacts } from "@/lib/loops/loop-commands/execute-hand
 import type { PlanArtifacts } from "@/lib/loops/loop-commands/plan-handler";
 import { ingestPlanArtifacts } from "@/lib/loops/loop-commands/plan-handler";
 // Imports after mocks
+import {
+  makeCodeJudgesReport,
+  makeJudgesReport,
+} from "../fixtures/ingestion-helpers";
 import { buildLoop } from "../fixtures/loop";
 
 const _mockWithDb = getMockWithDb();
@@ -84,45 +82,14 @@ const mockFanOutJudgeScores = fanOutJudgeScores as ReturnType<typeof vi.fn>;
 // Test fixtures
 // ---------------------------------------------------------------------------
 
-const JUDGES_REPORT: JudgesReport = {
+const JUDGES_REPORT = makeJudgesReport({
   report_id: "report-plan-1",
   timestamp: "2026-02-25T00:00:00Z",
-  stats: [
-    {
-      type: "case_score",
-      case_id: "clarity-judge",
-      final_status: EvalStatus.Passed,
-      metrics: [
-        {
-          metric_name: "clarity",
-          threshold: 0.8,
-          score: 0.92,
-          justification: "Clear and concise.",
-        },
-      ],
-    },
-  ],
-};
+});
 
-const CODE_JUDGES_REPORT: JudgesReport = {
-  report_id: "report-code-1",
+const CODE_JUDGES_REPORT = makeCodeJudgesReport({
   timestamp: "2026-02-25T01:00:00Z",
-  stats: [
-    {
-      type: "case_score",
-      case_id: "security-judge",
-      final_status: EvalStatus.Passed,
-      metrics: [
-        {
-          metric_name: "security",
-          threshold: 0.9,
-          score: 0.95,
-          justification: "No vulnerabilities found.",
-        },
-      ],
-    },
-  ],
-};
+});
 
 function buildPlanArtifacts(
   overrides: Partial<PlanArtifacts> = {}
@@ -140,17 +107,20 @@ function buildExecutionArtifacts(
   overrides: Partial<ExecutionArtifacts> = {}
 ): ExecutionArtifacts {
   return {
-    executionResult: {
-      has_changes: true,
-      pr_url: "https://github.com/org/repo/pull/42",
-      pr_number: 42,
-      pr_title: "Symphony: feature",
-      branch_name: "symphony/feature",
-      base_branch: "main",
-      base_ref: "main",
-      github_id: 999,
-      commit_sha: "abc123",
-    },
+    executionResult: [
+      {
+        status: "success",
+        fullName: "org/repo",
+        prUrl: "https://github.com/org/repo/pull/42",
+        prNumber: 42,
+        prTitle: "Symphony: feature",
+        branchName: "symphony/feature",
+        baseBranch: "main",
+        hasChanges: true,
+        githubId: 999,
+        commitSha: "abc123",
+      },
+    ],
     codeJudgesReport: null,
     promptsSnapshot: null,
     ...overrides,
@@ -318,7 +288,7 @@ describe("ingestExecutionArtifacts", () => {
     };
     mockWithDbTx(mockTx);
 
-    await ingestExecutionArtifacts(loop, artifacts);
+    await ingestExecutionArtifacts(loop, loop.organizationId, artifacts);
 
     expect(mockFanOutJudgeScores).toHaveBeenCalledWith({
       evaluationId,
@@ -378,7 +348,7 @@ describe("ingestExecutionArtifacts", () => {
     };
     mockWithDbTx(mockTx);
 
-    await ingestExecutionArtifacts(loop, artifacts);
+    await ingestExecutionArtifacts(loop, loop.organizationId, artifacts);
 
     expect(mockTx.documentEvaluation.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
