@@ -6,6 +6,8 @@ const DOWNLOAD_FOR_MACOS = /download for macos/i;
 const WAITING_FOR_DESKTOP = /waiting for closedloop desktop to start/i;
 const DESKTOP_DETECTED = /closedloop desktop detected and running/i;
 const GENERATE_API_KEY = /generate api key/i;
+const DOWNLOAD_LATEST_VERSION = /download latest version/i;
+const UPDATE_AVAILABLE = /update available/i;
 const YOUR_API_KEY = /your api key/i;
 const CONTINUE_BTN = /continue/i;
 const SKIP_FOR_NOW = /skip for now/i;
@@ -180,6 +182,61 @@ describe("DownloadElectronAppStep", () => {
 
       render(<DownloadElectronAppStep onNext={mockOnNext} />);
 
+      expect(screen.getByText(DESKTOP_DETECTED)).toBeInTheDocument();
+    });
+
+    it("shows the detected running version instead of the latest release version", () => {
+      mockUseElectronDetection.mockReturnValue({
+        ...DEFAULT_ELECTRON_STATE,
+        detected: true,
+        loading: false,
+        port: 19_432,
+        version: "0.9.0",
+        checkedAt: Date.now(),
+      });
+
+      render(<DownloadElectronAppStep onNext={mockOnNext} />);
+
+      expect(screen.getByText("Version 0.9.0")).toBeInTheDocument();
+      expect(screen.queryByText("Version 1.0.0")).not.toBeInTheDocument();
+    });
+
+    it("calls out when the detected Electron version is older than the latest release", () => {
+      mockUseElectronDetection.mockReturnValue({
+        ...DEFAULT_ELECTRON_STATE,
+        detected: true,
+        loading: false,
+        port: 19_432,
+        version: "0.9.0",
+        checkedAt: Date.now(),
+      });
+
+      render(<DownloadElectronAppStep onNext={mockOnNext} />);
+
+      expect(screen.getByText(UPDATE_AVAILABLE)).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          "ClosedLoop Desktop version 0.9.0 is running. Version 1.0.0 is available."
+        )
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole("link", { name: DOWNLOAD_LATEST_VERSION })
+      ).toHaveAttribute("href", "https://example.com/closedloop-1.0.0.dmg");
+    });
+
+    it("does not call out an update when the detected version matches the latest release", () => {
+      mockUseElectronDetection.mockReturnValue({
+        ...DEFAULT_ELECTRON_STATE,
+        detected: true,
+        loading: false,
+        port: 19_432,
+        version: "1.0.0",
+        checkedAt: Date.now(),
+      });
+
+      render(<DownloadElectronAppStep onNext={mockOnNext} />);
+
+      expect(screen.queryByText(UPDATE_AVAILABLE)).not.toBeInTheDocument();
       expect(screen.getByText(DESKTOP_DETECTED)).toBeInTheDocument();
     });
 

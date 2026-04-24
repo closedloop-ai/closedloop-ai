@@ -13,7 +13,7 @@ This document is the authoritative verification guide for structured telemetry e
 
 ## Prerequisites — Datadog Pipeline
 
-`log.ts` batches `DatadogLogEntry[]` and flushes them to `https://http-intake.logs.{DD_SITE}/api/v2/logs`. For events emitted through `emitter.ts`, `logAtSeverity()` calls `log.info(JSON.stringify(payload))`, so the telemetry payload fields (`category`, `severity`, `schemaVersion`, `trace`, etc.) land inside the `message` string, not as top-level log attributes. `origin` is the exception — it is always set as a top-level `DatadogLogEntry` attribute by `buildEntry()` in `log.ts`, so `@origin:` is facet-queryable without the pipeline rule regardless of emission path.
+`log.ts` batches `DatadogLogEntry[]` and flushes them to `https://http-intake.logs.{DD_SITE}/api/v2/logs`. For events emitted through `emitter.ts`, `logAtSeverity()` dispatches to `log.error`, `log.warn`, or `log.info` based on the event's `severity` — the resulting Datadog `level` attribute reflects that choice. In all three cases the event is emitted as a stringified JSON payload, so the telemetry fields (`category`, `severity`, `schemaVersion`, `trace`, etc.) land inside the `message` string rather than as top-level Datadog attributes. `origin` is the exception — it is always set as a top-level `DatadogLogEntry` attribute by `buildEntry()` in `log.ts`, so `@origin:` is facet-queryable without the pipeline rule regardless of emission path.
 
 ### Pipeline rule required
 

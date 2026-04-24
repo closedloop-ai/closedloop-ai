@@ -553,3 +553,112 @@ describe("sanitizeDesktopTelemetryDiagnostics — envSnapshot filtering", () => 
     expect(result?.spawnMeta?.envSnapshot).toEqual({});
   });
 });
+
+// ---------------------------------------------------------------------------
+// (j) validation-failure paths carry category: TelemetryValidationFailed
+//
+// The handler's two rejection sites (schema parse failure and
+// computeTargetId mismatch) both log.warn with category in meta so the
+// documented Datadog query @category:"telemetry.validation_failed" matches
+// regardless of whether the failure came from the server emitter.ts path or
+// this handler. Observes the flushed Datadog entry rather than spying on
+// log.warn, matching the "assert on observable behavior" convention in
+// CLAUDE.md.
+// ---------------------------------------------------------------------------
+
+describe("handleTelemetryEvent — validation failures emit category attribute", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  type ValidationEntry = {
+    category?: string;
+    message?: string;
+    level?: string;
+  };
+
+  async function importFreshHandlerWithFetch(
+    fetchMock: ReturnType<typeof vi.fn>
+  ): Promise<{
+    freshLog: typeof import("@repo/observability/log").log;
+    freshHandler: typeof handleTelemetryEvent;
+  }> {
+    vi.stubGlobal("fetch", fetchMock);
+    vi.resetModules();
+    const { log: freshLog } = await import("@repo/observability/log");
+    const { handleTelemetryEvent: freshHandler } = await import(
+      "@/lib/desktop-telemetry-handler"
+    );
+    return { freshLog, freshHandler };
+  }
+
+  it("(a) schema parse failure flushes entry with category: TelemetryValidationFailed", async () => {
+    vi.stubEnv("DD_API_KEY", "test-key");
+    // Populate version + git_sha so log.ts's module-load fallback warnings
+    // do not displace the validation-failed entry in the flushed batch.
+    vi.stubEnv("RELEASE_VERSION", "1.0.0");
+    vi.stubEnv("VERCEL_GIT_COMMIT_SHA", "testsha");
+
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    const { freshLog, freshHandler } =
+      await importFreshHandlerWithFetch(fetchMock);
+
+    // Missing required schemaVersion — triggers the parse-failure branch.
+    const invalidPayload = {
+      category: TelemetryCategory.JobStarted,
+      severity: TelemetrySeverity.Info,
+      timestamp: "2024-01-01T00:00:00.000Z",
+      trace: {
+        commandId: "cmd-1",
+        operationId: "op-1",
+        computeTargetId: COMPUTE_TARGET_ID,
+      },
+    };
+
+    const result = freshHandler(invalidPayload, defaultHandlerContext);
+    expect(result.ok).toBe(false);
+
+    await freshLog.flush();
+    expect(fetchMock).toHaveBeenCalledOnce();
+
+    const body = JSON.parse(
+      fetchMock.mock.calls[0][1].body as string
+    ) as ValidationEntry[];
+    const entry = body.find(
+      (e) => e.message === "Desktop telemetry validation failed"
+    );
+    expect(entry).toBeDefined();
+    expect(entry?.category).toBe(TelemetryCategory.TelemetryValidationFailed);
+    expect(entry?.level).toBe("warn");
+  });
+
+  it("(b) computeTargetId mismatch flushes entry with category: TelemetryValidationFailed", async () => {
+    vi.stubEnv("DD_API_KEY", "test-key");
+    vi.stubEnv("RELEASE_VERSION", "1.0.0");
+    vi.stubEnv("VERCEL_GIT_COMMIT_SHA", "testsha");
+
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    const { freshLog, freshHandler } =
+      await importFreshHandlerWithFetch(fetchMock);
+
+    const result = freshHandler(validDesktopWirePayload, {
+      authenticatedTargetId: "different-target",
+    });
+    expect(result.ok).toBe(false);
+
+    await freshLog.flush();
+    expect(fetchMock).toHaveBeenCalledOnce();
+
+    const body = JSON.parse(
+      fetchMock.mock.calls[0][1].body as string
+    ) as ValidationEntry[];
+    const entry = body.find(
+      (e) => e.message === "Desktop telemetry computeTargetId mismatch"
+    );
+    expect(entry).toBeDefined();
+    expect(entry?.category).toBe(TelemetryCategory.TelemetryValidationFailed);
+    expect(entry?.level).toBe("warn");
+  });
+});
