@@ -173,6 +173,7 @@ const COMMAND_OPTIONS = [
   { label: "Request Changes", value: LoopCommand.RequestChanges },
   { label: "Decompose", value: LoopCommand.Decompose },
   { label: "Generate PRD", value: LoopCommand.GeneratePrd },
+  { label: "Bootstrap", value: LoopCommand.Bootstrap },
 ];
 
 const STATUS_OPTIONS = [
