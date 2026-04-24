@@ -495,13 +495,23 @@ function VersionsTab({
   slug,
   active,
 }: Readonly<{ slug: string; active: boolean }>) {
-  const { data, isLoading } = useAgentVersions(slug, { enabled: active });
+  const { data, isLoading, error } = useAgentVersions(slug, {
+    enabled: active,
+  });
   const [viewingVersion, setViewingVersion] = useState<number | null>(null);
 
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-12">
         <Loader2Icon className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="rounded-md border border-destructive/20 bg-destructive/10 p-4 text-destructive">
+        {error.message ?? "Failed to load version history"}
       </div>
     );
   }
@@ -584,7 +594,11 @@ function VersionDetail({
   version: number;
   onBack: () => void;
 }>) {
-  const { data: versionDetail, isLoading } = useAgentVersion(slug, version);
+  const {
+    data: versionDetail,
+    isLoading,
+    error,
+  } = useAgentVersion(slug, version);
   const updateAgent = useUpdateAgent(slug);
 
   const handleRestore = () => {
@@ -605,10 +619,18 @@ function VersionDetail({
     );
   };
 
-  if (isLoading || !versionDetail) {
+  if (isLoading) {
     return (
       <div className="flex items-center justify-center py-12">
         <Loader2Icon className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  if (error || !versionDetail) {
+    return (
+      <div className="rounded-md border border-destructive/20 bg-destructive/10 p-4 text-destructive">
+        {error?.message ?? "Failed to load version"}
       </div>
     );
   }
