@@ -1,7 +1,7 @@
 import {
   ExecutionResultV2Schema,
   getPrimaryRepoResult,
-  normalizeV2ExecutionResult,
+  repoExecutionResultToExecutionResultFile,
 } from "@closedloop-ai/loops-api/execution-result";
 import type { JsonObject } from "@repo/api/src/types/common";
 import {
@@ -47,7 +47,7 @@ export type ExecutionArtifacts = {
  * Download and parse artifacts relevant to execute commands from S3.
  * Only fetches execution-result.json, code-judges.json, and prompt snapshots.
  */
-async function downloadExecutionArtifacts(
+export async function downloadExecutionArtifacts(
   stateKeyPrefix: string,
   primaryFullName: string
 ): Promise<ExecutionArtifacts> {
@@ -73,26 +73,14 @@ async function downloadExecutionArtifacts(
           );
           return null;
         }
-        const repoResults = normalizeV2ExecutionResult(v2Parse.data);
         const primaryResult = getPrimaryRepoResult(
-          repoResults,
+          v2Parse.data.results,
           primaryFullName
         );
-        if (!primaryResult || primaryResult.status !== "success") {
+        if (!primaryResult) {
           return null;
         }
-        // Convert camelCase RepoExecutionResult to snake_case ExecutionResult
-        const v1Compat: ExecutionResult = {
-          has_changes: primaryResult.hasChanges,
-          pr_url: primaryResult.prUrl,
-          pr_number: primaryResult.prNumber,
-          pr_title: primaryResult.prTitle,
-          branch_name: primaryResult.branchName,
-          base_branch: primaryResult.baseBranch,
-          github_id: primaryResult.githubId,
-          commit_sha: primaryResult.commitSha,
-        };
-        return v1Compat;
+        return repoExecutionResultToExecutionResultFile(primaryResult);
       }
       // v1 format: return as-is for backward compatibility
       return p;

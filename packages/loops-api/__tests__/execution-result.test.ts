@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { LoopEventSchema } from "../src/events";
+import type {
+  ExecutionResult,
+  RepoExecutionResult,
+} from "../src/execution-result";
 import {
   createRepoExecutionResultsSchema,
   ExecutionResultV2Schema,
@@ -7,7 +11,12 @@ import {
   normalizeV1ExecutionResult,
   parseExecutionResultFile,
   RepoExecutionResultSchema,
+  repoExecutionResultToExecutionResultFile,
 } from "../src/execution-result";
+
+type ExecutionResultFile = NonNullable<
+  ReturnType<typeof repoExecutionResultToExecutionResultFile>
+>;
 
 describe("parseExecutionResultFile", () => {
   it("normalizes ECS sentinel values to null", () => {
@@ -90,6 +99,88 @@ describe("RepoExecutionResult v2", () => {
     baseBranch: "main",
     hasChanges: true,
   };
+
+  const repoExecutionResultToExecutionResultFileScenarios: {
+    name: string;
+    input: RepoExecutionResult;
+    expectedFile: ExecutionResultFile | null;
+    expectedParsed: ExecutionResult | null;
+  }[] = [
+    {
+      name: "minimal success entry",
+      input: validSuccessEntry,
+      expectedFile: {
+        has_changes: true,
+        pr_url: "https://github.com/owner/repo/pull/42",
+        pr_number: 42,
+        branch_name: "feat/feature-branch",
+        base_ref: "main",
+        base_branch: "main",
+      },
+      expectedParsed: {
+        hasChanges: true,
+        prUrl: "https://github.com/owner/repo/pull/42",
+        prNumber: 42,
+        prTitle: null,
+        branchName: "feat/feature-branch",
+        baseRef: "main",
+        baseBranch: "main",
+        commitSha: null,
+        githubId: null,
+      },
+    },
+    {
+      name: "success entry with optional metadata",
+      input: {
+        ...validSuccessEntry,
+        prTitle: "Add feature",
+        commitSha: "abc123",
+        githubId: 123,
+      },
+      expectedFile: {
+        has_changes: true,
+        pr_url: "https://github.com/owner/repo/pull/42",
+        pr_number: 42,
+        pr_title: "Add feature",
+        branch_name: "feat/feature-branch",
+        base_ref: "main",
+        base_branch: "main",
+        commit_sha: "abc123",
+        github_id: 123,
+      },
+      expectedParsed: {
+        hasChanges: true,
+        prUrl: "https://github.com/owner/repo/pull/42",
+        prNumber: 42,
+        prTitle: "Add feature",
+        branchName: "feat/feature-branch",
+        baseRef: "main",
+        baseBranch: "main",
+        commitSha: "abc123",
+        githubId: 123,
+      },
+    },
+    {
+      name: "skipped entry",
+      input: {
+        status: "skipped",
+        fullName: "owner/repo",
+        reason: "no_changes",
+      },
+      expectedFile: null,
+      expectedParsed: null,
+    },
+    {
+      name: "failed entry",
+      input: {
+        status: "failed",
+        fullName: "owner/repo",
+        error: "executor crashed",
+      },
+      expectedFile: null,
+      expectedParsed: null,
+    },
+  ];
 
   it("parses valid success entry", () => {
     expect(RepoExecutionResultSchema.safeParse(validSuccessEntry).success).toBe(
@@ -267,6 +358,23 @@ describe("RepoExecutionResult v2", () => {
     };
     const result = normalizeV1ExecutionResult(executionResult, "owner/repo");
     expect(RepoExecutionResultSchema.safeParse(result[0]).success).toBe(true);
+  });
+
+  it.each(
+    repoExecutionResultToExecutionResultFileScenarios
+  )("repoExecutionResultToExecutionResultFile handles $name", ({
+    input,
+    expectedFile,
+    expectedParsed,
+  }) => {
+    const result = repoExecutionResultToExecutionResultFile(input);
+
+    expect(result).toEqual(expectedFile);
+    if (result === null) {
+      expect(expectedParsed).toBeNull();
+      return;
+    }
+    expect(parseExecutionResultFile(result)).toEqual(expectedParsed);
   });
 
   it("getPrimaryRepoResult returns matching entry", () => {

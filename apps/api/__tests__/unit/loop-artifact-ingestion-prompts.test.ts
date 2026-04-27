@@ -10,6 +10,7 @@
  * - null snapshot: upsertFromSnapshot is called with null and does not throw
  */
 
+import { repoExecutionResultToExecutionResultFile } from "@closedloop-ai/loops-api/execution-result";
 import { EvalStatus, type JudgesReport } from "@repo/api/src/types/evaluation";
 import type { Loop } from "@repo/api/src/types/loop";
 import { vi } from "vitest";
@@ -85,7 +86,10 @@ import { withDb } from "@repo/database";
 import type { Mock } from "vitest";
 import { assertEntityInOrganization } from "@/lib/entity-validation";
 import { fanOutJudgeScores } from "@/lib/judge-score-fanout";
-import { ingestExecutionArtifacts } from "@/lib/loops/loop-commands/execute-handler";
+import {
+  downloadExecutionArtifacts,
+  ingestExecutionArtifacts,
+} from "@/lib/loops/loop-commands/execute-handler";
 import {
   downloadPlanArtifacts,
   ingestPlanArtifacts,
@@ -152,6 +156,24 @@ function makeJudgesReport(reportId = "report-1"): JudgesReport {
   };
 }
 
+function mockExecutionDownloadArtifacts(
+  executionResult: unknown,
+  codeJudgesReport: JudgesReport | null = null
+): void {
+  mockDownloadArtifactFile.mockImplementation(
+    (_stateKeyPrefix: string, artifactName: string) => {
+      if (artifactName === "execution-result.json") {
+        return Promise.resolve(Buffer.from(JSON.stringify(executionResult)));
+      }
+      if (artifactName === "code-judges.json" && codeJudgesReport !== null) {
+        return Promise.resolve(Buffer.from(JSON.stringify(codeJudgesReport)));
+      }
+      return Promise.resolve(null);
+    }
+  );
+  mockDownloadPromptSnapshotMarkdownEntries.mockResolvedValue([]);
+}
+
 // ---------------------------------------------------------------------------
 // downloadPlanArtifacts — prompt snapshot parsing
 // ---------------------------------------------------------------------------
@@ -203,6 +225,121 @@ You are a helpful agent.
     expect(artifacts.promptsSnapshot).toBeNull();
     expect(artifacts.planContent).toBeNull();
     expect(artifacts.judgesReport).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// downloadExecutionArtifacts — execution result parsing
+// ---------------------------------------------------------------------------
+
+describe("downloadExecutionArtifacts — execution result parsing", () => {
+  const primaryRepo = "owner/primary";
+  const otherRepo = "owner/other";
+  const primarySuccess = {
+    status: "success" as const,
+    fullName: primaryRepo,
+    prUrl: "https://github.com/owner/primary/pull/42",
+    prNumber: 42,
+    branchName: "feat/primary",
+    baseBranch: "main",
+    hasChanges: true,
+  };
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("passes through v1 execution results and parses code judges", async () => {
+    const v1ExecutionResult = {
+      has_changes: true,
+      pr_url: "https://github.com/owner/primary/pull/42",
+      pr_number: 42,
+      pr_title: "Symphony: primary",
+      branch_name: "feat/primary",
+      base_ref: "main",
+      github_id: 123,
+      commit_sha: "abc123",
+    };
+    const codeJudgesReport = makeJudgesReport("code-report");
+    mockExecutionDownloadArtifacts(v1ExecutionResult, codeJudgesReport);
+
+    const artifacts = await downloadExecutionArtifacts(
+      STATE_KEY_PREFIX,
+      primaryRepo
+    );
+
+    expect(artifacts).toMatchObject({
+      executionResult: v1ExecutionResult,
+      codeJudgesReport,
+      promptsSnapshot: null,
+    });
+  });
+
+  it("selects the primary repo from v2 execution results", async () => {
+    const otherSuccess = {
+      status: "success" as const,
+      fullName: otherRepo,
+      prUrl: "https://github.com/owner/other/pull/7",
+      prNumber: 7,
+      branchName: "feat/other",
+      baseBranch: "main",
+      hasChanges: true,
+    };
+    mockExecutionDownloadArtifacts({
+      schemaVersion: 2,
+      results: [otherSuccess, primarySuccess],
+    });
+
+    const artifacts = await downloadExecutionArtifacts(
+      STATE_KEY_PREFIX,
+      primaryRepo
+    );
+
+    expect(artifacts.executionResult).toEqual(
+      repoExecutionResultToExecutionResultFile(primarySuccess)
+    );
+  });
+
+  it.each([
+    {
+      name: "missing primary repo",
+      results: [
+        {
+          status: "skipped" as const,
+          fullName: otherRepo,
+          reason: "no_changes",
+        },
+      ],
+    },
+    {
+      name: "skipped primary repo",
+      results: [
+        {
+          status: "skipped" as const,
+          fullName: primaryRepo,
+          reason: "no_changes",
+        },
+      ],
+    },
+    {
+      name: "failed primary repo",
+      results: [
+        {
+          status: "failed" as const,
+          fullName: primaryRepo,
+          error: "executor crashed",
+        },
+      ],
+    },
+  ])("returns null for v2 results with $name", async ({ results }) => {
+    mockExecutionDownloadArtifacts({ schemaVersion: 2, results });
+
+    const artifacts = await downloadExecutionArtifacts(
+      STATE_KEY_PREFIX,
+      primaryRepo
+    );
+
+    expect(artifacts.executionResult).toBeNull();
   });
 });
 

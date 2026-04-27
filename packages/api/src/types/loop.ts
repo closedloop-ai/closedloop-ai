@@ -226,8 +226,8 @@ export {
   ExecutionResultV2Schema,
   getPrimaryRepoResult,
   normalizeV1ExecutionResult,
-  normalizeV2ExecutionResult,
   RepoExecutionResultBaseSchema,
   RepoExecutionResultSchema,
   RepoExecutionResultsSchema,
+  repoExecutionResultToExecutionResultFile,
 } from "@closedloop-ai/loops-api/execution-result";

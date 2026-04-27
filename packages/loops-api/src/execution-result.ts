@@ -237,15 +237,36 @@ export function normalizeV1ExecutionResult(
   return [entry];
 }
 
-export function normalizeV2ExecutionResult(
-  envelope: ExecutionResultV2
-): RepoExecutionResult[] {
-  return envelope.results;
-}
-
 export function getPrimaryRepoResult(
   results: RepoExecutionResult[],
   primaryFullName: string
 ): RepoExecutionResult | null {
   return results.find((r) => r.fullName === primaryFullName) ?? null;
+}
+
+export function repoExecutionResultToExecutionResultFile(
+  result: RepoExecutionResult
+): z.infer<typeof ExecutionResultFileSchema> | null {
+  if (result.status !== "success") {
+    return null;
+  }
+
+  const executionResultFile: z.infer<typeof ExecutionResultFileSchema> = {
+    has_changes: result.hasChanges,
+    pr_url: result.prUrl,
+    pr_number: result.prNumber,
+    branch_name: result.branchName,
+    base_ref: result.baseBranch,
+    base_branch: result.baseBranch,
+  };
+  if (result.prTitle !== undefined) {
+    executionResultFile.pr_title = result.prTitle;
+  }
+  if (result.commitSha !== undefined) {
+    executionResultFile.commit_sha = result.commitSha;
+  }
+  if (result.githubId !== undefined) {
+    executionResultFile.github_id = result.githubId;
+  }
+  return executionResultFile;
 }
