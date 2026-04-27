@@ -96,7 +96,7 @@ export async function downloadExecutionArtifacts(
     ]);
 
   const repoResults =
-    (parseJsonArtifact<unknown>(
+    (parseJsonArtifact<RepoExecutionResult[] | null>(
       executionResultBuf,
       "execution-result.json",
       (parsed) => normalizeExecutionResultPayload(parsed, primaryFullName)
