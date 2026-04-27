@@ -8,13 +8,17 @@
     "context-pack",
     "control-plane",
     "critic",
+    "gateway",
     "judge",
     "loop",
     "orchestrator",
     "pattern",
+    "plan",
+    "prd",
     "promise",
     "runtime",
     "sandbox",
+    "subagent",
     "toon",
     "worktree"
   ]

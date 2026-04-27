@@ -82,3 +82,13 @@ The sandbox constrains *what* an operation can touch; the approval policy constr
 - a forced-review path for anything above your configured tier
 
 That is enough policy to run an autonomous system safely while still letting humans see and gate risky work.
+
+## Automated enforcement testing
+
+The desktop ships with an automated security test suite that runs on every CI build and exercises the sandbox boundary directly:
+
+- **Symlink escape attempts** — paths that resolve outside the configured sandbox via symlink (verified against `/etc` for CI portability) must return `403 directory not allowed`.
+- **Hard-deny coverage** — every entry in the deny list (`~/.ssh`, `~/.gnupg`, `~/.aws`, `~/Library/Keychains`, `/etc`, `/bin`, `/sbin`) is asserted to fail even when explicitly added to the sandbox base directory.
+- **Path canonicalization** — `..` traversals, mixed-case path components, and trailing slashes all canonicalize to the same allow/deny decision.
+
+The suite is the deterministic backstop behind every release. If a code change weakens path enforcement, the build fails before the change ships.

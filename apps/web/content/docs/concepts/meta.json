@@ -2,10 +2,11 @@
   "title": "Concepts",
   "pages": [
     "spec-driven-ai-first-delivery",
+    "spec-driven-ai-development",
     "team-based-agentic-development",
-    "control-plane",
-    "artifact-bound-delivery",
     "closed-loop-sdlc",
-    "loop-until-correct"
+    "artifact-bound-delivery",
+    "loop-until-correct",
+    "control-plane"
   ]
 }

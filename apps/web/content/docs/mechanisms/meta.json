@@ -2,17 +2,25 @@
   "title": "Mechanisms",
   "pages": [
     "loops",
+    "orchestrator",
+    "runtime",
+    "artifacts",
     "context-packs",
     "judges",
-    "runtime",
+    "bootstrap",
+    "code-review",
+    "self-learning",
+    "multi-repo",
+    "hooks",
+    "approvals",
+    "approvals-and-sandbox",
     "desktop-client",
     "desktop-gateway",
+    "desktop-settings",
     "cloud-relay",
-    "approvals-and-sandbox",
     "process-management",
+    "recovery",
     "telemetry",
-    "plugins",
-    "self-learning",
-    "artifacts"
+    "plugins"
   ]
 }

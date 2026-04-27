@@ -7,6 +7,14 @@ The most recent user-facing changes, grouped by product surface. Internal refact
 
 ## Desktop app
 
+### 0.13.18 — preserve matching plan.json on recovery
+
+Boot recovery now detects when an existing `plan.json` is consistent with the in-progress run and preserves it instead of overwriting with a stale snapshot. Combined with the earlier import-plan fallback, the desktop now keeps the right plan visible to the web app across crash, restart, and partial-failure scenarios.
+
+### 0.13.17 — automated sandbox enforcement tests
+
+Every release now runs an automated security test suite that exercises the sandbox boundary directly: symlink-escape attempts, full hard-deny path coverage, and `..`/casing canonicalization. The build fails if path enforcement weakens.
+
 ### 0.13.17 — harness failure telemetry
 
 When a loop crashes, the runtime now attaches a rich diagnostics payload: stderr tail (separate from stdout, ANSI-stripped, 4 KiB cap), exit signal, elapsed wall time, spawn command and args, cwd, binary path, auth-file presence, a redacted env snapshot, and the abort reason (`cancelled` / `process-exit` / `ghost-loop`). Spawn args are scrubbed for secrets. `diagnosticsVersion` is bumped to 2.
