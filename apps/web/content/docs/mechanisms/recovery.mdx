@@ -56,7 +56,7 @@ When a desktop restart interrupts an EXECUTE loop that had already finished, the
 
 - Retries finalization after transient errors.
 - Falls back to the staged `imported-plan.md` if `plan.json` is missing.
-- Preserves a matching `plan.json` when one is already present and consistent with the run, so recovery does not overwrite a successfully synthesized plan with a stale snapshot.
+- **Preserves a matching local `plan.json`** when its content equals the hosted markdown plan. The `imported-plan.md` fallback only kicks in when local content has drifted, so resumed runs do not rewrite a canonical plan that already agrees with the source of truth.
 - Reloads the latest job snapshot before writing final state, so `artifactsUploadedAt` is preserved even when the run ultimately failed.
 - Handles the 0-tokens "no work produced" case explicitly.
 
