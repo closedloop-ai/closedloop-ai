@@ -10,7 +10,6 @@
  * - null snapshot: upsertFromSnapshot is called with null and does not throw
  */
 
-import { repoExecutionResultToExecutionResultFile } from "@closedloop-ai/loops-api/execution-result";
 import { EvalStatus, type JudgesReport } from "@repo/api/src/types/evaluation";
 import type { Loop } from "@repo/api/src/types/loop";
 import { vi } from "vitest";
@@ -249,7 +248,7 @@ describe("downloadExecutionArtifacts — execution result parsing", () => {
     vi.resetAllMocks();
   });
 
-  it("passes through v1 execution results and parses code judges", async () => {
+  it("normalizes v1 execution results into a single success repo entry", async () => {
     const v1ExecutionResult = {
       has_changes: true,
       pr_url: "https://github.com/owner/primary/pull/42",
@@ -268,14 +267,23 @@ describe("downloadExecutionArtifacts — execution result parsing", () => {
       primaryRepo
     );
 
-    expect(artifacts).toMatchObject({
-      executionResult: v1ExecutionResult,
-      codeJudgesReport,
-      promptsSnapshot: null,
+    expect(artifacts.codeJudgesReport).toEqual(codeJudgesReport);
+    expect(artifacts.promptsSnapshot).toBeNull();
+    expect(artifacts.repoResults).toHaveLength(1);
+    expect(artifacts.repoResults[0]).toMatchObject({
+      status: "success",
+      fullName: primaryRepo,
+      prNumber: 42,
+      prUrl: "https://github.com/owner/primary/pull/42",
+      branchName: "feat/primary",
+      baseBranch: "main",
+      prTitle: "Symphony: primary",
+      commitSha: "abc123",
+      githubId: 123,
     });
   });
 
-  it("selects the primary repo from v2 execution results", async () => {
+  it("returns every repo entry from v2 execution results", async () => {
     const otherSuccess = {
       status: "success" as const,
       fullName: otherRepo,
@@ -295,43 +303,23 @@ describe("downloadExecutionArtifacts — execution result parsing", () => {
       primaryRepo
     );
 
-    expect(artifacts.executionResult).toEqual(
-      repoExecutionResultToExecutionResultFile(primarySuccess)
-    );
+    expect(artifacts.repoResults).toEqual([otherSuccess, primarySuccess]);
   });
 
-  it.each([
-    {
-      name: "missing primary repo",
-      results: [
-        {
-          status: "skipped" as const,
-          fullName: otherRepo,
-          reason: "no_changes",
-        },
-      ],
-    },
-    {
-      name: "skipped primary repo",
-      results: [
-        {
-          status: "skipped" as const,
-          fullName: primaryRepo,
-          reason: "no_changes",
-        },
-      ],
-    },
-    {
-      name: "failed primary repo",
-      results: [
-        {
-          status: "failed" as const,
-          fullName: primaryRepo,
-          error: "executor crashed",
-        },
-      ],
-    },
-  ])("returns null for v2 results with $name", async ({ results }) => {
+  it("preserves skipped and failed peer entries from v2 results", async () => {
+    const results = [
+      primarySuccess,
+      {
+        status: "skipped" as const,
+        fullName: otherRepo,
+        reason: "no_changes",
+      },
+      {
+        status: "failed" as const,
+        fullName: "owner/peer-c",
+        error: "executor crashed",
+      },
+    ];
     mockExecutionDownloadArtifacts({ schemaVersion: 2, results });
 
     const artifacts = await downloadExecutionArtifacts(
@@ -339,7 +327,21 @@ describe("downloadExecutionArtifacts — execution result parsing", () => {
       primaryRepo
     );
 
-    expect(artifacts.executionResult).toBeNull();
+    expect(artifacts.repoResults).toEqual(results);
+  });
+
+  it("returns an empty repoResults array when v2 envelope fails to parse", async () => {
+    mockExecutionDownloadArtifacts({
+      schemaVersion: 2,
+      results: [{ status: "success", fullName: "owner/repo" }],
+    });
+
+    const artifacts = await downloadExecutionArtifacts(
+      STATE_KEY_PREFIX,
+      primaryRepo
+    );
+
+    expect(artifacts.repoResults).toEqual([]);
   });
 });
 
@@ -536,17 +538,20 @@ describe("ingestExecutionArtifacts — upsertFromSnapshot ordering", () => {
       });
 
     const artifacts = {
-      executionResult: {
-        has_changes: true,
-        pr_url: "https://github.com/org/repo/pull/10",
-        pr_number: 10,
-        pr_title: "Symphony: test feature",
-        branch_name: "symphony/test-feature",
-        base_branch: "main",
-        base_ref: "main",
-        github_id: 999,
-        commit_sha: "abc123",
-      },
+      repoResults: [
+        {
+          status: "success" as const,
+          fullName: "org/repo",
+          prUrl: "https://github.com/org/repo/pull/10",
+          prNumber: 10,
+          prTitle: "Symphony: test feature",
+          branchName: "symphony/test-feature",
+          baseBranch: "main",
+          hasChanges: true,
+          githubId: 999,
+          commitSha: "abc123",
+        },
+      ],
       codeJudgesReport,
       promptsSnapshot: {
         prompts: [
@@ -621,17 +626,20 @@ describe("ingestExecutionArtifacts — upsertFromSnapshot ordering", () => {
       });
 
     const artifacts = {
-      executionResult: {
-        has_changes: true,
-        pr_url: "https://github.com/org/repo/pull/11",
-        pr_number: 11,
-        pr_title: "Symphony: null snapshot test",
-        branch_name: "symphony/null-snapshot",
-        base_branch: "main",
-        base_ref: "main",
-        github_id: 1000,
-        commit_sha: "def456",
-      },
+      repoResults: [
+        {
+          status: "success" as const,
+          fullName: "org/repo",
+          prUrl: "https://github.com/org/repo/pull/11",
+          prNumber: 11,
+          prTitle: "Symphony: null snapshot test",
+          branchName: "symphony/null-snapshot",
+          baseBranch: "main",
+          hasChanges: true,
+          githubId: 1000,
+          commitSha: "def456",
+        },
+      ],
       codeJudgesReport: null,
       promptsSnapshot: null,
     };

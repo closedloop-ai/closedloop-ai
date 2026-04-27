@@ -1,7 +1,8 @@
 import {
   ExecutionResultV2Schema,
-  getPrimaryRepoResult,
-  repoExecutionResultToExecutionResultFile,
+  normalizeV1ExecutionResult,
+  parseExecutionResultFile,
+  type RepoExecutionResult,
 } from "@closedloop-ai/loops-api/execution-result";
 import type { JsonObject } from "@repo/api/src/types/common";
 import {
@@ -10,11 +11,10 @@ import {
 } from "@repo/api/src/types/evaluation";
 import type { Loop } from "@repo/api/src/types/loop";
 import type { PromptsSnapshot } from "@repo/api/src/types/prompt";
-import { EntityType, withDb } from "@repo/database";
+import { EntityType, type TransactionClient, withDb } from "@repo/database";
 import { parsePromptsSnapshotFromMarkdownEntries } from "@repo/github/prompt-snapshot-parser";
 import { log } from "@repo/observability/log";
 import { z } from "zod";
-import type { ExecutionResult } from "@/app/webhooks/github/types";
 import {
   parseJsonArtifact,
   upsertEvaluationWithJudgeScores,
@@ -32,9 +32,16 @@ import { defineHandler } from "./loop-command-handler";
 // Types
 // ---------------------------------------------------------------------------
 
-/** Parsed artifacts relevant to the EXECUTE command. */
+/**
+ * Parsed artifacts relevant to the EXECUTE command.
+ *
+ * `repoResults` carries one entry per repo (primary plus every entry in
+ * `loop.additionalRepos`). Both v1 and v2 envelopes are normalized into this
+ * shape at the boundary so downstream ingestion never branches on schema
+ * version.
+ */
 export type ExecutionArtifacts = {
-  executionResult: ExecutionResult | null;
+  repoResults: RepoExecutionResult[];
   codeJudgesReport: JudgesReport | null;
   promptsSnapshot: PromptsSnapshot | null;
 };
@@ -42,6 +49,36 @@ export type ExecutionArtifacts = {
 // ---------------------------------------------------------------------------
 // Download
 // ---------------------------------------------------------------------------
+
+/**
+ * Normalize an arbitrary execution-result.json payload (v1 or v2) into a
+ * `RepoExecutionResult[]`. Returns an empty array on parse failure so the
+ * ingestion fan-out can simply iterate.
+ */
+function normalizeExecutionResultPayload(
+  payload: unknown,
+  primaryFullName: string
+): RepoExecutionResult[] {
+  const asObject = payload as Record<string, unknown> | null;
+
+  if (asObject?.schemaVersion === 2) {
+    const v2Parse = ExecutionResultV2Schema.safeParse(asObject);
+    if (!v2Parse.success) {
+      log.warn(
+        "[loop-document-ingestion] Failed to parse v2 execution-result.json",
+        { issues: v2Parse.error.issues }
+      );
+      return [];
+    }
+    return v2Parse.data.results;
+  }
+
+  const v1 = parseExecutionResultFile(payload);
+  if (!v1) {
+    return [];
+  }
+  return normalizeV1ExecutionResult(v1, primaryFullName);
+}
 
 /**
  * Download and parse artifacts relevant to execute commands from S3.
@@ -58,34 +95,12 @@ export async function downloadExecutionArtifacts(
       downloadPromptSnapshotMarkdownEntries(stateKeyPrefix),
     ]);
 
-  const executionResult = parseJsonArtifact<ExecutionResult>(
-    executionResultBuf,
-    "execution-result.json",
-    (p) => {
-      // Check for v2 envelope: { schemaVersion: 2, results: RepoExecutionResult[] }
-      const asAny = p as Record<string, unknown>;
-      if (asAny?.schemaVersion === 2) {
-        const v2Parse = ExecutionResultV2Schema.safeParse(asAny);
-        if (!v2Parse.success) {
-          log.warn(
-            "[loop-document-ingestion] Failed to parse v2 execution-result.json",
-            { issues: v2Parse.error.issues }
-          );
-          return null;
-        }
-        const primaryResult = getPrimaryRepoResult(
-          v2Parse.data.results,
-          primaryFullName
-        );
-        if (!primaryResult) {
-          return null;
-        }
-        return repoExecutionResultToExecutionResultFile(primaryResult);
-      }
-      // v1 format: return as-is for backward compatibility
-      return p;
-    }
-  ) as ExecutionResult | null;
+  const repoResults =
+    (parseJsonArtifact<unknown>(
+      executionResultBuf,
+      "execution-result.json",
+      (parsed) => normalizeExecutionResultPayload(parsed, primaryFullName)
+    ) as RepoExecutionResult[] | null) ?? [];
 
   const codeJudgesReport = parseJsonArtifact<JudgesReport>(
     codeJudgesReportBuf,
@@ -99,7 +114,7 @@ export async function downloadExecutionArtifacts(
       "[loop-document-ingestion]"
     );
 
-  return { executionResult, codeJudgesReport, promptsSnapshot };
+  return { repoResults, codeJudgesReport, promptsSnapshot };
 }
 
 // ---------------------------------------------------------------------------
@@ -112,7 +127,7 @@ export async function downloadExecutionArtifacts(
  * webhook or workflow-completion handler won the insert race.
  */
 async function upsertPrRow(
-  tx: Parameters<Parameters<typeof withDb.tx>[0]>[0],
+  tx: TransactionClient,
   data: {
     workstreamId: string;
     organizationId: string;
@@ -157,30 +172,220 @@ async function upsertPrRow(
   return row;
 }
 
+/**
+ * Resolve the active `GitHubInstallationRepository` row for a repo full name
+ * within an organization. Returns null when the install is missing or
+ * inactive — callers should log and skip the entry.
+ */
+async function findInstallationRepoId(
+  organizationId: string,
+  repoFullName: string
+): Promise<string | null> {
+  const row = await withDb((db) =>
+    db.gitHubInstallationRepository.findFirst({
+      where: {
+        fullName: repoFullName,
+        installation: { organizationId, status: "ACTIVE" },
+      },
+      select: { id: true },
+    })
+  );
+  return row?.id ?? null;
+}
+
+/**
+ * Ingest a single `success` repo result: upsert the PR row, ensure linkage,
+ * and emit a `GITHUB_PR_CREATED` workstream event.
+ */
+async function ingestSuccessRepoResult(
+  tx: TransactionClient,
+  loop: Loop,
+  result: Extract<RepoExecutionResult, { status: "success" }>,
+  installationRepoId: string,
+  artifact: { organizationId: string; projectId: string | null; slug: string }
+): Promise<void> {
+  const prTitle =
+    result.prTitle ??
+    `ClosedLoop: ${result.branchName || `PR #${result.prNumber}`}`;
+  const githubId = String(result.githubId ?? result.prNumber);
+
+  // Check if a PR record already exists (may have been created by the
+  // pull_request webhook or workflow-completion handler racing with this handler).
+  const existingPr = await tx.gitHubPullRequest.findUnique({
+    where: {
+      repositoryId_number: {
+        repositoryId: installationRepoId,
+        number: result.prNumber,
+      },
+    },
+    select: { id: true, documentId: true },
+  });
+
+  // Determine the effective artifactId for linkage. If the PR row already
+  // exists with a different artifact, respect the existing link to avoid
+  // creating contradictory entity-link edges.
+  let effectiveArtifactId = loop.documentId!;
+
+  if (existingPr) {
+    if (!existingPr.documentId) {
+      // PR exists without an artifact link — claim it
+      await tx.gitHubPullRequest.update({
+        where: { id: existingPr.id },
+        data: { documentId: loop.documentId! },
+      });
+    } else if (existingPr.documentId !== loop.documentId) {
+      // PR is already linked to a different artifact — don't overwrite
+      effectiveArtifactId = existingPr.documentId;
+      log.warn(
+        "[loop-document-ingestion] PR already linked to a different artifact",
+        {
+          existingArtifactId: existingPr.documentId,
+          requestedArtifactId: loop.documentId,
+          loopId: loop.id,
+          prNumber: result.prNumber,
+          repoFullName: result.fullName,
+        }
+      );
+    }
+    log.info(
+      "[loop-document-ingestion] PR already exists; skipping duplicate PR row create",
+      {
+        loopId: loop.id,
+        repositoryId: installationRepoId,
+        prNumber: result.prNumber,
+        pullRequestId: existingPr.id,
+        repoFullName: result.fullName,
+      }
+    );
+  } else {
+    const upsertedPr = await upsertPrRow(
+      tx,
+      {
+        workstreamId: loop.workstreamId!,
+        organizationId: loop.organizationId,
+        repositoryId: installationRepoId,
+        documentId: loop.documentId!,
+        githubId,
+        number: result.prNumber,
+        title: prTitle,
+        htmlUrl: result.prUrl,
+        headBranch: result.branchName,
+        baseBranch: result.baseBranch,
+      },
+      loop.id
+    );
+    if (upsertedPr.documentId && upsertedPr.documentId !== loop.documentId) {
+      effectiveArtifactId = upsertedPr.documentId;
+    }
+  }
+
+  if (!artifact.projectId) {
+    log.warn(
+      "[loop-document-ingestion] Document missing projectId; skipping PR linkage",
+      {
+        loopId: loop.id,
+        documentId: loop.documentId,
+        repoFullName: result.fullName,
+      }
+    );
+    return;
+  }
+
+  await ensurePrLinkageRecords(tx, {
+    organizationId: artifact.organizationId,
+    workstreamId: loop.workstreamId!,
+    projectId: artifact.projectId,
+    documentId: effectiveArtifactId,
+    prUrl: result.prUrl,
+    prTitle,
+    prNumber: result.prNumber,
+    githubId,
+    headBranch: result.branchName,
+    baseBranch: result.baseBranch,
+    commitSha: result.commitSha ?? null,
+  });
+
+  await tx.workstreamEvent.create({
+    data: {
+      workstreamId: loop.workstreamId!,
+      type: "GITHUB_PR_CREATED",
+      actorType: "system",
+      data: {
+        loopId: loop.id,
+        repoFullName: result.fullName,
+        prNumber: result.prNumber,
+        prUrl: result.prUrl,
+        prTitle,
+        branch: result.branchName,
+        documentId: loop.documentId!,
+        slug: artifact.slug,
+      },
+    },
+  });
+}
+
+/**
+ * Emit a `GITHUB_ACTION_COMPLETED` event for a non-success peer outcome.
+ * Skipped/failed peers do not produce a PR, so no linkage records are created.
+ */
+async function ingestNonSuccessRepoResult(
+  tx: TransactionClient,
+  loop: Loop,
+  result: Exclude<RepoExecutionResult, { status: "success" }>
+): Promise<void> {
+  const eventData =
+    result.status === "skipped"
+      ? {
+          loopId: loop.id,
+          command: "execute",
+          repoFullName: result.fullName,
+          status: result.status,
+          hasChanges: false,
+          reason: result.reason,
+        }
+      : {
+          loopId: loop.id,
+          command: "execute",
+          repoFullName: result.fullName,
+          status: result.status,
+          hasChanges: false,
+          error: result.error,
+        };
+
+  await tx.workstreamEvent.create({
+    data: {
+      workstreamId: loop.workstreamId!,
+      type: "GITHUB_ACTION_COMPLETED",
+      actorType: "system",
+      data: eventData,
+    },
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Ingestion
 // ---------------------------------------------------------------------------
 
 /**
  * Ingest execution artifacts into the platform.
- * Creates PR record, ExternalLinks, EntityLinks, and WorkstreamEvent.
+ *
+ * Iterates every `RepoExecutionResult` in `artifacts.repoResults` and:
+ * - on `success`, creates a PR record, ExternalLink, EntityLink, and a
+ *   `GITHUB_PR_CREATED` workstream event scoped to that repo.
+ * - on `skipped`/`failed`, emits a `GITHUB_ACTION_COMPLETED` workstream event
+ *   recording the outcome (no PR, no linkage).
+ *
+ * The `codeJudgesReport` and prompts snapshot are plan-level (not per-repo),
+ * so they are persisted exactly once.
+ *
  * Mirrors handleExecutionSuccess() in workflow-completion-handler.ts.
  */
 export async function ingestExecutionArtifacts(
   loop: Loop,
   artifacts: ExecutionArtifacts
 ): Promise<void> {
-  const executionResult = artifacts.executionResult;
-
-  if (!executionResult) {
-    log.info("[loop-document-ingestion] No execution result to ingest", {
-      loopId: loop.id,
-    });
-    return;
-  }
-
-  if (!(executionResult.has_changes && executionResult.pr_url)) {
-    log.info("[loop-document-ingestion] Execution completed with no changes", {
+  if (artifacts.repoResults.length === 0) {
+    log.info("[loop-document-ingestion] No repo results to ingest", {
       loopId: loop.id,
     });
     return;
@@ -196,54 +401,30 @@ export async function ingestExecutionArtifacts(
     return;
   }
 
-  const repoFullName = loop.repo?.fullName;
-  if (!repoFullName) {
-    log.warn("[loop-document-ingestion] Loop missing repo.fullName", {
-      loopId: loop.id,
-    });
-    return;
-  }
-
-  // Look up via GitHubInstallationRepository (the canonical repo table).
-  const installationRepo = await withDb((db) =>
-    db.gitHubInstallationRepository.findFirst({
-      where: {
-        fullName: repoFullName,
-        installation: { organizationId: loop.organizationId, status: "ACTIVE" },
-      },
-      select: { id: true },
-    })
+  // Resolve installationRepo ids per success entry up-front so the transaction
+  // body stays focused on writes. Skipped/failed entries do not need a lookup.
+  const successEntries = artifacts.repoResults.filter(
+    (r): r is Extract<RepoExecutionResult, { status: "success" }> =>
+      r.status === "success"
   );
-
-  if (!installationRepo) {
-    log.warn(
-      "[loop-document-ingestion] GitHubInstallationRepository not found",
-      {
-        loopId: loop.id,
-        repoFullName,
-      }
+  const installationRepoIds = new Map<string, string>();
+  for (const entry of successEntries) {
+    const id = await findInstallationRepoId(
+      loop.organizationId,
+      entry.fullName
     );
-    return;
+    if (id) {
+      installationRepoIds.set(entry.fullName, id);
+    } else {
+      log.warn(
+        "[loop-document-ingestion] GitHubInstallationRepository not found; skipping repo result",
+        {
+          loopId: loop.id,
+          repoFullName: entry.fullName,
+        }
+      );
+    }
   }
-
-  const prNumber =
-    typeof executionResult.pr_number === "string"
-      ? Number.parseInt(executionResult.pr_number, 10)
-      : executionResult.pr_number;
-
-  if (Number.isNaN(prNumber)) {
-    log.warn(
-      "[loop-document-ingestion] Invalid pr_number, skipping execution ingestion",
-      { loopId: loop.id, raw: executionResult.pr_number }
-    );
-    return;
-  }
-
-  const prTitle =
-    executionResult.pr_title ||
-    `ClosedLoop: ${executionResult.branch_name || `PR #${prNumber}`}`;
-  const baseBranch =
-    executionResult.base_branch || executionResult.base_ref || "main";
 
   await upsertFromSnapshot(loop.organizationId, artifacts.promptsSnapshot);
 
@@ -284,114 +465,27 @@ export async function ingestExecutionArtifacts(
       });
     }
 
-    // Check if a PR record already exists (may have been created by the
-    // pull_request webhook or workflow-completion handler racing with this handler).
-    const existingPr = await tx.gitHubPullRequest.findUnique({
-      where: {
-        repositoryId_number: {
-          repositoryId: installationRepo.id,
-          number: prNumber,
-        },
-      },
-      select: { id: true, documentId: true },
-    });
-
-    // Determine the effective artifactId for linkage. If the PR row already
-    // exists with a different artifact, respect the existing link to avoid
-    // creating contradictory entity-link edges.
-    let effectiveArtifactId = loop.documentId!;
-
-    if (existingPr) {
-      if (!existingPr.documentId) {
-        // PR exists without an artifact link — claim it
-        await tx.gitHubPullRequest.update({
-          where: { id: existingPr.id },
-          data: { documentId: loop.documentId! },
-        });
-      } else if (existingPr.documentId !== loop.documentId) {
-        // PR is already linked to a different artifact — don't overwrite
-        effectiveArtifactId = existingPr.documentId;
-        log.warn(
-          "[loop-document-ingestion] PR already linked to a different artifact",
-          {
-            existingArtifactId: existingPr.documentId,
-            requestedArtifactId: loop.documentId,
-            loopId: loop.id,
-            prNumber,
-          }
-        );
-      }
-      log.info(
-        "[loop-document-ingestion] PR already exists; skipping duplicate PR row create",
-        {
-          loopId: loop.id,
-          repositoryId: installationRepo.id,
-          prNumber,
-          pullRequestId: existingPr.id,
+    for (const result of artifacts.repoResults) {
+      if (result.status === "success") {
+        const installationRepoId = installationRepoIds.get(result.fullName);
+        if (!installationRepoId) {
+          continue;
         }
-      );
-    } else {
-      const upsertedPr = await upsertPrRow(
-        tx,
-        {
-          workstreamId: loop.workstreamId!,
-          organizationId: loop.organizationId,
-          repositoryId: installationRepo.id,
-          documentId: loop.documentId!,
-          githubId: String(executionResult.github_id ?? prNumber),
-          number: prNumber,
-          title: prTitle,
-          htmlUrl: executionResult.pr_url,
-          headBranch: executionResult.branch_name,
-          baseBranch,
-        },
-        loop.id
-      );
-      // If the row already existed with a different artifact, use that
-      // to avoid contradictory linkage records.
-      if (upsertedPr.documentId && upsertedPr.documentId !== loop.documentId) {
-        effectiveArtifactId = upsertedPr.documentId;
+        await ingestSuccessRepoResult(tx, loop, result, installationRepoId, {
+          organizationId: artifact.organizationId,
+          projectId: artifact.projectId,
+          slug: artifact.slug ?? "",
+        });
+      } else {
+        await ingestNonSuccessRepoResult(tx, loop, result);
       }
     }
-
-    // Create ExternalLink, EntityLink, and preview deployment records (with dedup)
-    await ensurePrLinkageRecords(tx, {
-      organizationId: artifact.organizationId,
-      workstreamId: loop.workstreamId!,
-      projectId: artifact.projectId!,
-      documentId: effectiveArtifactId,
-      prUrl: executionResult.pr_url,
-      prTitle,
-      prNumber,
-      githubId: String(executionResult.github_id ?? prNumber),
-      headBranch: executionResult.branch_name,
-      baseBranch,
-      commitSha: executionResult.commit_sha ?? null,
-    });
-
-    // Create workstream event
-    await tx.workstreamEvent.create({
-      data: {
-        workstreamId: loop.workstreamId!,
-        type: "GITHUB_PR_CREATED",
-        actorType: "system",
-        data: {
-          loopId: loop.id,
-          prNumber,
-          prUrl: executionResult.pr_url,
-          prTitle,
-          branch: executionResult.branch_name,
-          documentId: loop.documentId!,
-          slug: artifact.slug,
-        },
-      },
-    });
   });
 
   log.info("[loop-document-ingestion] Execution artifacts ingested", {
     loopId: loop.id,
-    prUrl: executionResult.pr_url,
-    prNumber,
+    repoCount: artifacts.repoResults.length,
+    successCount: successEntries.length,
   });
 }
 
@@ -399,20 +493,8 @@ export async function ingestExecutionArtifacts(
 // Upload-based loading (desktop path)
 // ---------------------------------------------------------------------------
 
-const executionResultSchema = z.object({
-  has_changes: z.boolean(),
-  pr_url: z.string(),
-  pr_number: z.union([z.string(), z.number()]),
-  pr_title: z.string().optional(),
-  branch_name: z.string(),
-  base_ref: z.string().optional(),
-  base_branch: z.string().optional(),
-  github_id: z.number().optional(),
-  commit_sha: z.string().optional(),
-});
-
 const executionUploadSchema = z.object({
-  executionResult: executionResultSchema.optional(),
+  executionResult: z.record(z.string(), z.unknown()).optional(),
   codeJudges: judgesReportSchema.optional(),
 });
 
@@ -420,12 +502,19 @@ function executionArtifactsFromUpload(
   uploaded: JsonObject
 ): ExecutionArtifacts {
   const parsed = executionUploadSchema.parse(uploaded);
-  const executionResult = (parsed.executionResult as ExecutionResult) ?? null;
+  // Desktop uploads currently carry a single repo's result. The v1 normalizer
+  // tags the resulting RepoExecutionResult with this primaryFullName; the
+  // desktop client always reports the loop's primary repo, and the empty
+  // fallback is acceptable because validation only enforces fullName presence
+  // for "success" entries, where the repo url already encodes it.
+  const repoResults = parsed.executionResult
+    ? normalizeExecutionResultPayload(parsed.executionResult, "")
+    : [];
   const codeJudgesReport = (parsed.codeJudges as JudgesReport) ?? null;
   // Prompt snapshots not available in desktop upload path
   const promptsSnapshot: PromptsSnapshot | null = null;
 
-  return { executionResult, codeJudgesReport, promptsSnapshot };
+  return { repoResults, codeJudgesReport, promptsSnapshot };
 }
 
 // ---------------------------------------------------------------------------
