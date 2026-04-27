@@ -1746,35 +1746,31 @@ function parsePrInfo(workDir, outputLines) {
  * responsible, just like the "Commit and Push Changes" + "Create Pull
  * Request" steps in symphony-dispatch.yml.
  *
- * Skips creation if a PR was already detected (e.g., Claude created one
- * during execution) or if there are no commits ahead of the target branch.
+ * Returns null if there is nothing to PR (still on target branch, no
+ * commits ahead, missing repo/token, or `gh pr create` failed). Callers
+ * are responsible for detecting any pre-existing PR before invoking this.
  */
 const PR_NUMBER_REGEX = /\/pull\/(\d+)/;
 
 function createPullRequest(
   workDir,
-  existingPrInfo,
   {
     targetRepo: overrideRepo,
     targetBranch: overrideBranch,
     githubToken: overrideToken,
   } = {}
 ) {
-  if (existingPrInfo?.prUrl) {
-    return existingPrInfo;
-  }
-
   const resolvedRepo = overrideRepo ?? config.targetRepo;
   const resolvedBranch = overrideBranch ?? config.targetBranch;
   const resolvedToken = overrideToken ?? config.githubToken;
 
   if (!(resolvedRepo && resolvedToken)) {
-    return existingPrInfo;
+    return null;
   }
 
   const branchName = detectBranchName(workDir);
   if (!branchName) {
-    return existingPrInfo; // still on target branch
+    return null; // still on target branch
   }
 
   // Check if there are commits ahead of the target branch
@@ -1787,7 +1783,7 @@ function createPullRequest(
       .toString()
       .trim();
     if (count === "0") {
-      return existingPrInfo;
+      return null;
     }
   } catch {
     // Remote tracking may not exist; proceed with PR attempt anyway
@@ -1859,7 +1855,7 @@ function createPullRequest(
     };
   } catch (err) {
     log("error", `PR creation failed (best-effort): ${err.message}`);
-    return existingPrInfo;
+    return null;
   }
 }
 
@@ -3224,7 +3220,7 @@ async function finalizeRepo({
 
     // Create a pull request. The PR template is read fresh here (not cached)
     // because Claude may have modified it during the run.
-    const prInfo = createPullRequest(workDir, null, {
+    const prInfo = createPullRequest(workDir, {
       targetRepo: fullName,
       targetBranch: baseBranch,
       githubToken,

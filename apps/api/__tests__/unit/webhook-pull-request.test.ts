@@ -72,6 +72,11 @@ import { SlugPrefix } from "@repo/api/src/types/slug-prefix";
 import { withDb } from "@repo/database";
 import { parseArtifactReferences } from "@repo/github/artifact-reference-parser";
 import { handlePullRequest } from "@/app/webhooks/github/handlers/pull-request-handler";
+import {
+  createPullRequest,
+  createRepository,
+  createSender,
+} from "../fixtures/github-webhook-fixtures";
 
 const mockParseArtifactReferences = parseArtifactReferences as Mock;
 
@@ -81,135 +86,6 @@ const mockWithDbTx = withDb.tx as unknown as Mock;
 
 // Mock database transaction client
 let mockTx: any;
-
-/**
- * Helper to create minimal repository object for webhook events
- */
-function createRepository(githubId: number) {
-  return {
-    id: githubId,
-    node_id: `R_${githubId}`,
-    name: "test-repo",
-    full_name: "owner/test-repo",
-    private: false,
-    owner: {
-      login: "owner",
-      id: 12_345,
-      node_id: "U_12345",
-      avatar_url: "",
-      gravatar_id: "",
-      url: "",
-      html_url: "",
-      followers_url: "",
-      following_url: "",
-      gists_url: "",
-      starred_url: "",
-      subscriptions_url: "",
-      organizations_url: "",
-      repos_url: "",
-      events_url: "",
-      received_events_url: "",
-      type: "User" as const,
-      site_admin: false,
-    },
-    html_url: "",
-    description: null,
-    fork: false,
-    url: "",
-    // ... other required fields omitted for brevity
-  };
-}
-
-/**
- * Helper to create minimal pull request object
- */
-function createPullRequest(partial: {
-  number: number;
-  title?: string;
-  body?: string | null;
-  state?: string;
-  draft?: boolean;
-  merged?: boolean;
-  closed_at?: string | null;
-  merged_at?: string | null;
-  merge_commit_sha?: string | null;
-  head?: { sha: string; ref?: string };
-}) {
-  return {
-    id: 1,
-    node_id: "PR_1",
-    number: partial.number,
-    title: partial.title ?? "Test PR",
-    body: partial.body ?? null,
-    user: {
-      login: "test-user",
-      id: 1,
-      node_id: "U_1",
-      avatar_url: "",
-      gravatar_id: "",
-      url: "",
-      html_url: "",
-      followers_url: "",
-      following_url: "",
-      gists_url: "",
-      starred_url: "",
-      subscriptions_url: "",
-      organizations_url: "",
-      repos_url: "",
-      events_url: "",
-      received_events_url: "",
-      type: "User" as const,
-      site_admin: false,
-    },
-    state: partial.state ?? "open",
-    draft: partial.draft ?? false,
-    merged: partial.merged ?? false,
-    closed_at: partial.closed_at ?? null,
-    merged_at: partial.merged_at ?? null,
-    merge_commit_sha: partial.merge_commit_sha ?? null,
-    head: { sha: "abc123", ref: "feature-branch", ...partial.head },
-    base: { ref: "main" },
-    // Required fields for webhook type
-    url: "",
-    html_url: "https://github.com/owner/test-repo/pull/1",
-    diff_url: "",
-    patch_url: "",
-    issue_url: "",
-    commits_url: "",
-    review_comments_url: "",
-    review_comment_url: "",
-    comments_url: "",
-    statuses_url: "",
-    created_at: "2026-02-10T00:00:00Z",
-    updated_at: "2026-02-10T00:00:00Z",
-  } as any;
-}
-
-/**
- * Helper to create minimal sender object
- */
-function createSender() {
-  return {
-    login: "test-user",
-    id: 1,
-    node_id: "U_1",
-    avatar_url: "",
-    gravatar_id: "",
-    url: "",
-    html_url: "",
-    followers_url: "",
-    following_url: "",
-    gists_url: "",
-    starred_url: "",
-    subscriptions_url: "",
-    organizations_url: "",
-    repos_url: "",
-    events_url: "",
-    received_events_url: "",
-    type: "User" as const,
-    site_admin: false,
-  };
-}
 
 describe("handlePullRequest", () => {
   beforeEach(() => {
