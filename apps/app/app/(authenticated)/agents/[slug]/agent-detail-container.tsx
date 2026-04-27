@@ -32,7 +32,6 @@ import {
 import { Textarea } from "@repo/design-system/components/ui/textarea";
 import {
   ArrowLeftIcon,
-  HistoryIcon,
   Loader2Icon,
   SaveIcon,
   Trash2Icon,
@@ -248,10 +247,7 @@ export function AgentDetailContainer({ slug }: AgentDetailContainerProps) {
         <TabsList>
           <TabsTrigger value="prompt">Prompt</TabsTrigger>
           <TabsTrigger value="details">Details</TabsTrigger>
-          <TabsTrigger value="versions">
-            <HistoryIcon className="mr-1 h-4 w-4" />
-            Version History
-          </TabsTrigger>
+          <TabsTrigger value="versions">Versions</TabsTrigger>
         </TabsList>
 
         <TabsContent className="mt-4" value="prompt">
