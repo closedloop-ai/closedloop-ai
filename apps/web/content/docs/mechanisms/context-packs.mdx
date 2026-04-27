@@ -1,19 +1,55 @@
 ---
-title: Context Packs
-description: Bundled context that gives loops the exact docs, artifact references, and constraints needed to execute well.
+title: Context packs
+description: Bundled context that gives loops and judges exactly the material they need to execute well.
 ---
 
-Context packs reduce ambiguity by packaging the right supporting material for a run.
+Context packs reduce ambiguity by packaging the right supporting material for a run. They are the input side of every loop and every judge evaluation.
 
-## Good context packs are
+## What a context pack contains
 
-- scoped
-- artifact-linked
-- explicit about constraints
-- small enough to stay relevant
+A good context pack is assembled from several well-scoped pieces:
 
-## Bad context packs are
+- the source artifact (PRD, plan, ticket)
+- relevant code references (file paths, module boundaries)
+- constraints and acceptance criteria
+- prior learnings relevant to the task
+- environmental context (repo map, workspace repos, workdir paths)
+- discovery output for cross-repo runs (peer capabilities, API contracts)
 
-- oversized
-- stale
-- disconnected from the task
+## How they are built
+
+The `code` plugin builds context packs through `pre-explorer` and `iterative-retrieval`:
+
+- `@code:pre-explorer` produces `requirements-extract.json`, `code-map.json`, and `investigation-log.md`.
+- The `code:iterative-retrieval` skill runs a 4-phase dispatch/evaluate/refine/loop protocol (max 3 cycles) to pull in just enough context for the task at hand.
+
+The `judges` plugin builds judge-specific context packs through `context-manager-for-judges` and `artifact-type-tailored-context`:
+
+- The context manager allocates a ~30K token budget across primary artifact, supporting artifacts, and source of truth.
+- Tailored context uses compression tiers (full, intelligent, hard truncation) to fit large inputs.
+- Output is written to `plan-context.json`, `code-context.json`, or judge-input contracts per `judge-input.schema.json`.
+
+## Organization-wide context injection
+
+The `subagent-start-hook.sh` automatically injects up to 15 relevant patterns from `org-patterns.toon` into every agent's context. Patterns are filtered and sorted by category (mistake > convention > pattern > insight) and relevance.
+
+The `pretooluse-hook.sh` adds tool-specific pattern injection:
+
+- `Bash` calls get build and test patterns.
+- `Write` and `Edit` calls get language-specific patterns (chosen by file extension).
+
+## Good context packs
+
+- scoped — only the material needed for this task
+- artifact-linked — connected to the PRD, plan, or ticket that launched the run
+- explicit about constraints — the rules are in the pack, not implicit
+- small enough to stay relevant — fit within the context budget without crowding out the work
+- refreshable — regenerated when the underlying code or artifact changes
+
+## Bad context packs
+
+- oversized — saturate the context with low-signal material
+- stale — built before the latest code or artifact revision
+- disconnected from the task — include everything the repo has, with no ranking
+
+Context pack quality is one of the strongest predictors of loop quality. The `iterative-retrieval` skill and the judges' context manager exist specifically to keep it tight.

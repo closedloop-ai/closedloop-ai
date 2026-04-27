@@ -30,6 +30,7 @@ export function TiptapEditorCore({
   scrollMode = "inner",
   externalToolbar = false,
   toolbarMode = "always",
+  mermaidEnhancementsEnabled = false,
 }: Readonly<RichTextEditorProps>) {
   const hasSeededContent = useRef(false);
   // Capture initial content on first render to avoid it being cleared by onChange
@@ -63,7 +64,9 @@ export function TiptapEditorCore({
         // clickable "Add description" affordance.
         showOnlyWhenEditable: false,
       }),
-      MermaidExtension,
+      MermaidExtension.configure({
+        enhancementsEnabled: mermaidEnhancementsEnabled,
+      }),
       Table.configure({
         resizable: true,
       }),

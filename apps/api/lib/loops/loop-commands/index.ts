@@ -31,4 +31,5 @@ const COMMAND_HANDLERS: Record<LoopCommand, LoopCommandHandler | undefined> = {
   [LoopCommand.EvaluatePlan]: evaluatePlanHandler,
   [LoopCommand.EvaluateCode]: evaluateCodeHandler,
   [LoopCommand.RequestPrdChanges]: requestPrdChangesHandler,
+  [LoopCommand.Bootstrap]: undefined,
 };

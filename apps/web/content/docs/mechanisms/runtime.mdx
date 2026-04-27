@@ -3,11 +3,71 @@ title: Runtime
 description: The execution environment that actually runs loops and determines what providers and tools are available.
 ---
 
-The runtime is where loops become real work.
+The runtime is where loops become real work. In ClosedLoop.ai, the runtime is the combination of:
+
+- a registered compute target (the desktop client on a specific machine)
+- that machine's installed tools (`claude`, `codex`, `git`, `gh`, `python3`)
+- the Claude Code plugins resolved under `~/.claude/plugins/cache/closedloop-ai/`
+- the process-level sandbox the gateway enforces on every operation
 
 ## Responsibilities
 
-- expose provider support
-- run execution safely
-- report health and availability
-- return structured output back to the control plane
+- **Expose provider support** — capabilities are reported via the `/health` endpoint and via `desktop.hello` when the cloud socket connects.
+- **Run execution safely** — every path input is filtered through the sandbox allowlist. Certain paths are hard-denied even inside the sandbox.
+- **Report health and availability** — tray state (`starting`, `ready`, `degraded`, `error`) plus heartbeat against the API (`POST /compute-targets/:id/heartbeat` every 30 seconds).
+- **Return structured output** — operation handlers emit NDJSON streams or JSON responses, which the cloud executor forwards as `desktop.command.event` messages.
+
+## Capabilities
+
+The runtime reports a capabilities object shaped like:
+
+```ts
+ComputeTargetCapabilities {
+  tools: Record<"claude"|"codex"|"git"|"gh"|"python3", boolean>
+  versions: Partial<Record<CapabilityToolName, string>>
+}
+```
+
+The server starts with empty capabilities and fills them in via health-check routes. If a required binary is missing, telemetry emits `preflight.binary_not_found`.
+
+## Binary resolution
+
+Electron on macOS inherits a minimal PATH, so the server spawns the user's login shell (`$SHELL -ilc`) wrapped in sentinels to extract the real PATH. `~/` is expanded, `npm_config_prefix` and `NPM_CONFIG_PREFIX` are sanitized for nvm compatibility, and the result is cached for the session.
+
+Override specific binaries at **Settings → Binary paths** or via `PATCH /api/gateway/settings/binary-paths`. The override sources are `override`, `override_invalid`, `path`, or `fallback`.
+
+## Process management
+
+The `ProcessManager` in `src/server/process-manager.ts` supports three spawn modes:
+
+- `spawnStreaming` — detached process with stdout/stderr readers, NDJSON line parsing, auto-kill 30s after a terminal `result` line, 5s grace for SIGTERM before SIGKILL.
+- `spawnDetached` — detached with stdio redirected to a log file, unreferenced after spawn. Used for long-running background jobs.
+- `exec` — wraps `execFileAsync` for one-shot calls.
+
+Every spawn calls `assertOperationPath(cwd)` to enforce the sandbox allowlist before launching.
+
+## Job lifecycle
+
+Long-running symphony loop jobs are tracked in the `JobStore`:
+
+- 11 lifecycle states: `QUEUED`, `STARTING`, `RUNNING`, `AWAITING_USER`, `STOPPED`, `CANCEL_PENDING`, `COMPLETED`, `FAILED`, `CANCELLED`, `UNKNOWN`
+- Per-job `pid`, `statePath`, `logPath`, `jsonlPath`, `worktreeDir`
+- Terminal jobs roll into a capped array (max 100)
+
+On startup, the `BootRecoveryService`:
+
+1. Reattaches live jobs (any `pid` that is still running gets re-tailed).
+2. Finalizes dead jobs (processes that died while the app was down are resolved from their state file).
+3. Sweeps orphaned loop tokens no longer in the JobStore.
+
+## Output tailing
+
+The server polls the claude-output JSONL files (`CLOSEDLOOP_TAILER_POLL_MS`) and throttles replay (`CLOSEDLOOP_TAILER_THROTTLE_MS`). Each job tracks a `lastObservedJsonlOffset` so replays are safe even after a cloud disconnect.
+
+## Plugin resolution
+
+Plugin scripts are resolved under `~/.claude/plugins/cache/closedloop-ai/<plugin-name>/<semver>/scripts/`. Registered plugins come from `~/.claude/plugins/installed_plugins.json`. The `code@closedloop-ai` plugin version is reported in `desktop.hello.pluginVersion` and can be overridden for tests via `CL_PLUGIN_VERSION` (semver, max 64 chars).
+
+## Why the runtime is a first-class concept
+
+A loop that works on one machine and fails on another is a failure of the runtime, not of the plan. Making the runtime explicit — with reported capabilities, sandbox policy, and binary overrides — turns environment issues into diagnosable failures instead of mysterious breakage.

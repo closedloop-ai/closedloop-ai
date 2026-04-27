@@ -1,0 +1,88 @@
+---
+title: bootstrap plugin
+description: Read a codebase and generate a project-specific suite of domain-expert agents plus a critic gates config.
+---
+
+The `bootstrap` plugin analyzes a project and generates a custom suite of agents that know your codebase. It does not use static templates — agents write agents.
+
+## What it does
+
+Given a project, bootstrap:
+
+1. Ingests docs (`CLAUDE.md`, `README`, `ARCHITECTURE.md`, manifests) into `discovery/project-context.md`.
+2. Detects languages by file count (`discovery/languages.json`).
+3. Identifies domains (api-backend, data-persistence, caching, auth, analytics, testing, and so on) (`discovery/domains.json`).
+4. Maps domains and languages to candidate agent roles (`synthesis/expert-agents.json`), always including `test-strategist` and `security-privacy`.
+5. Decomposes complex agents into specialists and emits `critic-gates.json` (`synthesis/decomposed-agents.json`).
+6. Validates agent specs pre-generation (`synthesis/generation-validation.json`).
+7. Generates each agent with an LLM (colors assigned by domain) → `.claude/agents/<name>.md`, `.closedloop-ai/bootstrap-metadata.json`.
+8. Runs a 6-step validation per generated agent (`synthesis/agent-validation.json`).
+9. Writes the final `validation-report.json` and `bootstrap-report.md`.
+
+## Command
+
+```bash
+claude /bootstrap:start
+```
+
+Or the underlying slash command:
+
+```bash
+claude /bootstrap:agent-bootstrap
+```
+
+### Flags
+
+- `--target-command <name>` — target command name
+- `--depth quick|medium|deep` — how deeply to explore
+- `--focus <area>` — focus on a specific domain
+- `--output-dir <path>` — override output directory
+- `--dry-run` — plan without writing files
+- `--interactive` — step through each phase
+- `--update` — update agents when project-context hash changes
+- `--minimal` / `--enhance` / `--add-domain <domain>`
+- `--strategy backup|skip|overwrite|interactive` — conflict strategy (default `backup`)
+
+## Supported domains
+
+`web-frontend`, `mobile-native`, `api-backend`, `data-persistence`, `caching`, `real-time-communication`, `authentication`, `authorization`, `analytics`, `testing`, `build-deployment`, `monitoring-observability`.
+
+## Universal agents
+
+Bootstrap assumes these already exist and does not regenerate them:
+
+- `prd-analyst`
+- `feature-locator`
+- `plan-writer`
+- `plan-stager`
+- `plan-verifier`
+- `agent-trainer`
+
+## Colors by domain
+
+database=blue, API=green, frontend/state=purple, mobile=cyan, security=red, testing=yellow, performance=orange, analytics/monitoring=pink.
+
+## Architecture agents
+
+Agents whose names end with `-architect`, `-expert`, or `-specialist` get a two-phase relevance check: a 30-second relevance gate first, then focused analysis — so they do not burn tokens on out-of-scope work.
+
+## Output locations
+
+| File | Purpose |
+|---|---|
+| `.claude/agents/<name>.md` | Generated agent file. |
+| `.closedloop-ai/bootstrap-metadata.json` | SHA-256 hashes for `--update` detection. |
+| `.closedloop-ai/settings/critic-gates.json` | Critic wiring used by the `code` plugin. |
+| `.closedloop-ai/bootstrap/<timestamp>/discovery/` | Raw discovery artifacts. |
+| `.closedloop-ai/bootstrap/<timestamp>/synthesis/` | Synthesis artifacts. |
+| `.closedloop-ai/bootstrap/<timestamp>/validation-report.json` | Final validation report. |
+| `.closedloop-ai/bootstrap/<timestamp>/bootstrap-report.md` | Human-readable summary. |
+
+## Resilience
+
+- Retryable with 1-second base, 8-second max exponential backoff plus jitter, 2 attempts per agent.
+- Continues if at least 80% of agents generate successfully (`min_success_ratio`).
+
+## When to run
+
+Run bootstrap once per new repository, then again whenever `project-context.md` changes materially (detected via its SHA-256 hash in `bootstrap-metadata.json`). The `--update` flag limits regeneration to agents whose inputs have changed.

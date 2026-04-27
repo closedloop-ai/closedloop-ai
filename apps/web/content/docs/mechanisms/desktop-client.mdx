@@ -1,0 +1,99 @@
+---
+title: Desktop client
+description: The Electron app that hosts the localhost gateway, the cloud relay connection, the tray UI, and the persistent stores.
+---
+
+The desktop client is the single Electron process that runs three logical planes: the local HTTP gateway, the cloud control connection, and the UI plane.
+
+## Three planes in one process
+
+| Plane | Purpose |
+|---|---|
+| UI plane (renderer) | Onboarding overlay, Dashboard, Approvals, Activity Log, Settings. Rendered from a single preload bridge. |
+| Local gateway plane (main + HTTP server) | The localhost HTTP API on `127.0.0.1:19432` with NDJSON and SSE streaming, CORS, challenge-token auth, and approval gates. |
+| Cloud control plane (main + Socket.IO client) | Outbound Socket.IO connection to the relay; receives `desktop.command` envelopes, dispatches into the local gateway, and streams events back. |
+
+## Tray UI
+
+The tray is the primary surface when the window is closed.
+
+States:
+
+| State | Meaning |
+|---|---|
+| `starting` | The gateway is booting and the cloud socket is connecting. |
+| `ready` | Gateway bound, capabilities detected, cloud hello-ack received. |
+| `degraded` | Cloud socket disconnected or awaiting hello-ack. Local work still runs. |
+| `error` | Startup failed. Open the window to see the reason. |
+
+Tray menu items:
+
+1. **Open Symphony** — opens the main window. Shows `Open Symphony (N pending)` when approvals are pending.
+2. **Pause / Resume** — toggles acceptance of cloud commands.
+3. **Quit** — standard quit.
+
+The tray badges the macOS title with pending approval counts (capped at `99`) so you notice high-risk operations even with the window hidden. Window close hides to tray; the app keeps running.
+
+## Persistent stores
+
+The client uses `electron-store` under `app.getPath("userData")`:
+
+| Store | Purpose |
+|---|---|
+| `desktop-settings` | User-configurable settings and saved configs. |
+| `desktop-secrets` | API key encrypted via `safeStorage`. |
+| `desktop-approvals` | Pending approval queue. |
+| `desktop-activity-log` | 200-entry ring buffer of gateway requests (8 KiB body truncation). |
+| `desktop-job-store` | Symphony loop job records, including terminal history. |
+| `desktop-loop-tokens` | Per-loop auth tokens, encrypted. |
+
+Plus:
+
+- `~/.closedloop-ai/electron-port` — plaintext active port.
+- `<userData>/gateway-identity.json` — stable `gatewayId` UUID.
+- Auto-generated `src/shared/build-info.ts` stamped at prebuild.
+
+## IPC surface for the renderer
+
+The preload script exposes `window.desktopApi` with over 35 methods including:
+
+- Settings: `getSettings`, `updateSettings`
+- Runtime: `getRuntimeStatus`, `getActivityEvents`, `getLogs`, `clearLogs`
+- Approvals: `getPendingApprovals`, `approveApproval`, `denyApproval`, `alwaysAllowApproval`, `removeAlwaysAllowRule`
+- API key: `getApiKeyStatus`, `setApiKey`, `clearApiKey`
+- Cloud: `getCloudCommandsPaused` / `setCloudCommandsPaused`, `getCloudConnectionEnabled` / `setCloudConnectionEnabled`
+- Onboarding: `getOnboardingState`, `completeOnboarding`, `pickSandboxDirectory`
+- Debug: `getDangerousAutoApprove` / `setDangerousAutoApprove`, `isDebugAuthEnabled`, `mintDebugToken`
+- Updates: `checkForUpdate`, `applyUpdate`
+- Jobs: `listRunningJobs`, `listCompletedJobs`, `getJob`, `getJobLogTail`
+- Binary paths: `getBinaryPaths`, `patchBinaryPaths`, `detectCliTools`
+- Saved configs: `saveConfig`, `listConfigs`, `deleteConfig`, `renameConfig`, `applyConfig`, `findMatchingConfig`
+
+Two push events to the renderer:
+
+- `desktop:navigate-tab` — programmatic tab change.
+- `desktop:update-available` — emitted when `electron-updater` finds a new build.
+
+## Composition root
+
+Everything wires together in `src/main/app.ts` — the `DesktopApplication` class boots stores, the gateway server, the cloud socket, the approval policy, the tray, and IPC. The entry point is `src/main/index.ts`.
+
+## Auto-update
+
+Packaged builds use `electron-updater` against GitHub Releases:
+
+- `autoDownload = true`, `autoInstallOnAppQuit = true`
+- Initial check on boot, then every 5 minutes
+- In-app `desktop:update-available` event surfaces in the renderer
+
+Dev builds (`!app.isPackaged`) compare `origin/main` commit hashes via `git fetch` and offer to pull and rebuild.
+
+## Packaging
+
+`electron-builder.yml` targets macOS only — universal DMG and zip, hardened runtime, notarized, signed, published to GitHub Releases owned by `closedloop-ai/closedloop-electron`. Output goes to `dist-dmg/`. Release builds trigger from CI when a PR bumps `apps/desktop/package.json`.
+
+## Breaking change policy
+
+Any breaking change to gateway routes, cloud relay messages, IPC, or persisted store schemas requires legacy migration logic and a tracking ticket. Stored settings include forward-compatible migrations (for example, `apiOrigin → relayOrigin` rename, `authApiOrigin → apiOrigin` promotion, `"auto"` tier → `"high"`).
+
+See the [desktop gateway](./desktop-gateway), [cloud relay](./cloud-relay), [approvals and sandbox](./approvals-and-sandbox), and [telemetry](./telemetry) pages for the details of each subsystem.

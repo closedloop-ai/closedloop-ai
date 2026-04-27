@@ -1,4 +1,13 @@
 {
   "title": "Workflows",
-  "pages": ["prd-to-plan-to-execution", "parallel-feature-development"]
+  "pages": [
+    "prd-to-plan-to-execution",
+    "parallel-feature-development",
+    "bootstrap-a-repo",
+    "planning-with-codex",
+    "plan-with-codex-debate",
+    "amending-a-plan",
+    "code-review",
+    "push-pull-learnings"
+  ]
 }

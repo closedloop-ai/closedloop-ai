@@ -2,7 +2,13 @@
   "title": "Getting Started",
   "pages": [
     "index",
+    "prerequisites",
+    "install-plugins",
+    "install-claude-plugins",
+    "install-desktop",
+    "first-launch",
+    "prepare-your-repo-and-targets",
     "from-onboarding-to-first-loop",
-    "prepare-your-repo-and-targets"
+    "first-loop"
   ]
 }

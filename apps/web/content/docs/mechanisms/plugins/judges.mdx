@@ -1,0 +1,66 @@
+---
+title: judges plugin
+description: 21 LLM-as-judge agents that grade plans, code, and PRDs with structured CaseScore reports.
+---
+
+The `judges` plugin is the ClosedLoop.ai LLM-as-judge framework. It turns review from an ad hoc opinion into a repeatable, structured, deterministic system.
+
+See the full behavior in [Judges (mechanisms)](../judges). This page documents the plugin's commands, layout, and configuration.
+
+## No slash commands
+
+Everything in `judges` is invoked via the `run-judges` skill, either directly by users (`@judges:run-judges --artifact-type plan`) or implicitly by the `code` loop.
+
+## Skills
+
+- `run-judges` — orchestrates the 16-judge plan batch, 11-judge code batch, or 4-judge PRD batch. Writes `plan-judges.json`, `code-judges.json`, or `prd-judges.json`.
+- `artifact-type-tailored-context` — compression tiers (full, intelligent, hard truncation). Prepends `common_input_preamble.md` plus the artifact-type-specific preamble.
+- `eval-cache` — short-circuits plan evaluation when `plan-evaluation.json` is newer than `plan.json`.
+
+## Judge roster (21)
+
+See [Judges (mechanisms)](../judges) for the complete roster per mode. In summary:
+
+- 16 judges across plan mode (plus `goal-alignment-judge` and `verbosity-judge`, plan-only).
+- 11 judges for code mode (plan mode minus plan-only judges).
+- 4 judges for PRD mode (`prd-auditor`, `prd-dependency-judge`, `prd-scope-judge`, `prd-testability-judge`).
+
+## CaseScore output
+
+Every judge emits:
+
+```json
+{
+  "type": "case_score",
+  "case_id": "...",
+  "final_status": 1,
+  "metrics": [
+    { "metric_name": "...", "threshold": 0.8, "score": 0.92, "justification": "..." }
+  ]
+}
+```
+
+## Context manager
+
+`context-manager-for-judges` allocates a ~30K token budget across primary artifact, supporting artifacts, and source-of-truth documents. It writes `plan-context.json` or `code-context.json` that judges consume.
+
+## Python tooling
+
+- `scripts/validate_judge_report.py` — Pydantic validation for aggregated reports.
+- `scripts/ensure_agents_snapshot.sh` — captures an idempotent agent snapshot into `agents-snapshot/` before batch launch.
+
+## Configuration
+
+- Default threshold: `0.8`.
+- Override per-metric in JSON config with keys like `"code:test-judge": 0.75`.
+- Judges run in 3–4 batches, max 4 concurrent per batch.
+
+## Fallbacks
+
+- Plan mode probes `@code:pre-explorer`; falls back to internal best-effort investigation.
+- Code mode attempts best-effort pre-explorer; continues non-blocking on failure.
+- Context-manager failure: one-run compatibility fallback using `plan.json` + `prd.md`.
+
+## Reading reports
+
+Aggregated reports in `{WORKDIR}/plan-judges.json` and `code-judges.json` contain per-judge `CaseScore`s. Summarize by `final_status` counts and dig into per-metric justifications to understand why specific scores landed where they did.

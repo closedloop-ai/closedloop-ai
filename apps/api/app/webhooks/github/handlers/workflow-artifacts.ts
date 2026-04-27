@@ -1,3 +1,7 @@
+import type {
+  ExecutionResultFile,
+  ExecutionResultV2,
+} from "@closedloop-ai/loops-api/execution-result";
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
 import type { PerfSummary } from "@repo/api/src/types/performance";
 import type { PromptsSnapshot } from "@repo/api/src/types/prompt";
@@ -5,7 +9,6 @@ import { downloadWorkflowArtifacts } from "@repo/github";
 import { extractInnerZips } from "@repo/github/zip-utils";
 import { log } from "@repo/observability/log";
 import AdmZip from "adm-zip";
-import type { ExecutionResult } from "../types";
 import { findPlanInZip, type ZipContent } from "../zip-parser";
 
 /**
@@ -14,7 +17,7 @@ import { findPlanInZip, type ZipContent } from "../zip-parser";
 export type ProcessArtifactResult = {
   planContent: string | null;
   questionsContent: string | null;
-  executionResult: ExecutionResult | null;
+  executionResult: ExecutionResultFile | ExecutionResultV2 | null;
   judgesReport: JudgesReport | null;
   codeJudgesReport: JudgesReport | null;
   perfSummary: PerfSummary | null;

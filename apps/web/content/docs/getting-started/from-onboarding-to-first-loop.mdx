@@ -1,74 +1,103 @@
 ---
-title: From Onboarding to First Loop
-description: A refreshed get-started guide that turns onboarding into a repeatable first successful execution.
+title: "From onboarding to first Loop"
+description: "A get-started guide that takes you step-by-step, from onboarding to a repeatable first successful execution."
 ---
 
-This is the onboarding refresh path for teams that want to move from setup into real execution quickly.
+This is the onboarding guide for teams that want to move from setup into real execution quickly.
 
 ## Outcome
 
 By the end of this guide you should have:
 
-- a connected repository
-- a usable compute target
-- one scoped artifact to execute against
-- a first loop run that produces reviewable output
+- a connected repository to ClosedLoop
+- ClosedLoop's Desktop app downloaded, running, and connected to ClosedLoop web
+- a usable compute target for executing jobs or "Loops" within ClosedLoop
+- one scoped artifact (e.g. PRD) to execute against
+- a first Loop run that produces a reviewable artifact
 
-## Step 1: Confirm the control plane is ready
+## Step 1: Onboarding
 
-- Sign in to the app and confirm your team and project context are correct.
-- Create or open a PRD, implementation plan, or feature artifact that is small enough to execute in one loop.
-- Make sure the artifact has enough acceptance criteria to judge the output later.
+- Create an account or sign in.
+- Create your Organization.
+- Download the ClosedLoop Desktop app.
+- Confirm the ClosedLoop Desktop app is connected to the ClosedLoop web app by returning to the onboarding flow and seeing "Running" as the status.
+- Create a team name - this may be a subset of your team that typically works together or it may be your full team.
+- Create a project.
+- Connect your GitHub account that has access to the repo you want to work in.
+- Install & Authorize [ClosedLoop.ai](http://ClosedLoop.ai).
+- Land on 'My Tasks' in ClosedLoop to either complete your setup, invite your teammates, or get started with creating your first artifact!
 
-:::note
-The fastest way to get low-quality results is to start a loop from an underspecified artifact.
-:::
+## Step 2: Confirm all apps are connected & updated
 
-## Step 2: Connect the execution surface
+### Web connection to Desktop app
 
-- Install and launch the desktop client.
-- Confirm the gateway is healthy and a compute target is visible inside the app.
-- If the task depends on a specific provider, verify that the target supports it before launch.
+- Confirm in the bottom left corner, above your name, a compute target is visible in the web app. The desktop client registers itself via `POST /compute-targets/register` and heartbeats every 30 seconds. If you have setup the desktop app correctly, your compute target should look something like "Compute: \<your-computer's-name\>".
 
-## Step 3: Choose a safe first task
+### Desktop connection & version
 
-Use a narrow task such as:
+- Return to the desktop app.
+- Confirm the status under the app title reports `Healthy`.
+- Confirm you have the latest version of the desktop app. If you don't, you will see a banner near the top of the app that says "A new version is available...". If you see this banner, click 'Update & Restart' to update to the latest version and restarting the app after the update. You may need to confirm the app does complete quitting and restarting.
+
+### Capabilities & System Check
+
+If the task depends on a specific provider — Claude, Codex, or a specific plugin version — verify that the target's reported capabilities include it.
+
+- Navigate to Settings (click on your name in the bottom left) \> Integrations
+- Under the 'Local Compute Targets' section, you'll see a 'System Check' section
+- A system check should automatically kick off once you land on this page.
+  - If it doesn't, click 'Re-check' to kick off a new system check.
+- Once the system check completes, confirm you do not have any failures within the 'Required' section.
+  - Follow included instructions to resolve failures if any exist.
+
+## Step 3: Choose a smaller first task to test
+
+Avoid broad feature work on the first run. The point is to prove the end-to-end path. Use a narrow task such as:
 
 - small docs updates
 - targeted UI copy refinements
 - a focused bug fix
 - an isolated workflow improvement
 
-Avoid broad feature work on the first run. The point is to prove the end-to-end path.
-
 ## Step 4: Launch the first loop
 
-1. Open the artifact.
-2. Confirm the repository and branch target.
-3. Pick the provider and compute target.
-4. Start the loop.
+- Navigate to your team name in the left navigation pane \> Projects \> your project
+- Click 'Actions' in the top right corner
+- Choose 'Create PRD'
+  - Enter a title and select an Approver if you've already invited other teammates to your organization and project.
+  - Confirm the repository. Once you've selected a repo, the list of available target branches will auto-populate.
+  - The status will stay in 'Draft'.
+  - Give ClosedLoop AI an idea of what it will be building. You can do this by:
+    - entering a description of the task in the 'Content' text area,
+    - pasting the PRD or description into the Content text area, or
+    - upload an .md file of an existing PRD or description of the task you want to execute.
+  - ClosedLoop AI will already be looking at a summary of the selected repo's codebase to produce a brownfield, relevant PRD. However, if there is additional information you would like it to consider, for example, a website that pulls from more repos than the one you've selected, or a linkable vision document, you can paste that URL in the 'Source URL' field.
+- Select 'Save' if you are uploading or pasting in an already existing PRD, or 'Generate PRD' if you want ClosedLoop AI to produce a PRD artifact based on the Content you've entered.
+- If you selected to 'Generate PRD', congratulations! You've kicked off your first Loop!
 
-Watch for:
+Behind the scenes, the web app sends a `desktop.command` envelope over the relay. The desktop client dispatches it into the localhost gateway, which may require your approval.
 
-- context-pack generation
-- loop startup on the desktop target
-- streamed output or status updates
-- completion with reviewable diffs or artifact updates
+## Step 5: Watch the Loop run
 
-## Step 5: Review like a system owner
+- If you kicked off your first loop, you should now see a banner pop in near the top of the project page that says "1 loop running" with a spinner to the left.
+- You should also see the title of the PRD you created in the list of project artifacts. Click on that artifact to open it.
+- At the top of the screen, you will see a banner that says, "\<Your Name\> is generating..." with a link on the right that says 'View loop'. Click on that link to view the details of the Loop you're currently running and watch it in action.
 
-After the loop completes:
+## Step 6: Review like a system owner
 
-- compare output to the original artifact
+After the loop completes, click on the Artifact link below the two rows of cards and the 2 lines of details to navigate back to the artifact.
+
+- compare output to the original task's description
 - check whether the task stayed in scope
 - decide whether the result should be accepted, refined, or regenerated
 
-## Step 6: Capture the pattern
+## Step 7: Evaluate
 
-Your first successful loop should become reusable team knowledge:
+To make evaluating the output easier, we've included judges that will evaluate any artifact. If you want to evaluate the PRD that was produced:
 
-- document which artifact shape worked well
-- save the task framing that produced useful output
-- note any provider or target constraints
+- Click 'Actions'
+- Click 'Evaluate PRD' (you've just kicked off your 2nd loop!)
+- Once the loop completes, navigate to the bottom of the artifact and click to expand the 'Agent Evaluation' section.
+- Read the judge report summaries — they score each output dimension against the intent
 
-That is how onboarding turns into an operating model instead of a one-off success.
+This PRD will be the input for the next artifact you might want to generate, an Implementation Plan or just Plan.

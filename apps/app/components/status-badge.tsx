@@ -44,7 +44,7 @@ export function StatusBadge({
 
 const COLOR_SUCCESS = "bg-success/10 text-success-foreground border-success/30";
 const COLOR_FAILURE =
-  "bg-destructive/10 text-destructive-foreground border-destructive/30";
+  "bg-destructive/10 text-destructive border-destructive/30";
 const COLOR_PROGRESS = "bg-info/10 text-info-foreground border-info/30";
 const COLOR_PENDING = "bg-warning/10 text-warning-foreground border-warning/30";
 const COLOR_INACTIVE = "bg-muted text-muted-foreground border-muted";
@@ -333,6 +333,7 @@ export const loopCommandColors: Record<LoopCommand, string> = {
   [LoopCommand.EvaluatePlan]: COLOR_AI,
   [LoopCommand.EvaluateCode]: COLOR_AI,
   [LoopCommand.RequestPrdChanges]: COLOR_PENDING,
+  [LoopCommand.Bootstrap]: COLOR_AI,
 };
 
 const loopCommandLabels: Record<LoopCommand, string> = {
@@ -347,6 +348,7 @@ const loopCommandLabels: Record<LoopCommand, string> = {
   [LoopCommand.EvaluatePlan]: "Evaluate Plan",
   [LoopCommand.EvaluateCode]: "Evaluate PR",
   [LoopCommand.RequestPrdChanges]: "Request PRD Changes",
+  [LoopCommand.Bootstrap]: "Bootstrap",
 };
 
 export function LoopCommandBadge({

@@ -1,17 +1,64 @@
 ---
-title: Parallel Feature Development
+title: Parallel feature development
 description: Running multiple bounded workstreams at once while preserving coordination and review quality.
 ---
 
-Parallel feature development only works when work is decomposed clearly.
+Parallel feature development is how teams land big scopes without piling up merge conflicts and lost context. ClosedLoop.ai supports it natively because loops are serialized by lock key, not globally.
 
 ## Requirements
 
-- bounded artifacts
-- clear ownership
-- isolated execution scopes
-- shared review standards
+- **Bounded artifacts** — each feature has its own PRD and its own plan.
+- **Clear ownership** — who approves merges, who handles PR review.
+- **Isolated execution scopes** — each feature runs in its own git worktree.
+- **Shared review standards** — judges and code-review run for every feature with the same thresholds.
 
-## Failure mode
+## How it works
 
-Parallelism without structure becomes duplicated effort and merge conflict churn.
+Loops are serialized per **lock key**. The default lock key is derived from the operation ID plus the scoped path from the command body (`repoPath | worktreePath | workDir | runDir | path`).
+
+This means:
+
+- Two loops in the same worktree cannot run concurrently — they contend on the lock.
+- Two loops in different worktrees run fully in parallel.
+- Each feature gets its own worktree, so you can run many loops on one machine.
+
+## Recommended setup
+
+1. Create a worktree per feature:
+
+   ```bash
+   git worktree add ../feature-a feat/a
+   git worktree add ../feature-b feat/b
+   ```
+
+2. Connect each repository or worktree path in the ClosedLoop.ai web app.
+3. Launch loops per feature, each against its own worktree.
+4. The desktop client's cloud executor serializes by lock key; independent worktrees run in parallel up to `MAX_IN_FLIGHT_COMMANDS`.
+
+Override the worktree parent with `SYMPHONY_WORKTREE_PARENT_DIR` if you want a centralized worktree tree.
+
+## Cross-repo coordination
+
+When a feature spans multiple repositories:
+
+- The `code` plugin runs the cross-repo discovery phases (1.4.x):
+  - `cross-repo-coordinator` discovers peer repos via `CLAUDE_WORKSPACE_REPOS`.
+  - `generic-discovery` verifies peer capabilities → `.discovery-cache/{peer}.json`.
+  - `cross-repo-prd-writer` generates `cross-repo-prd-{peer}.md` per peer.
+- Each peer PRD can be executed independently as its own loop.
+
+## Failure modes
+
+- **Unbounded scope per feature** — if a "feature" is actually three features, the plan will be too large to execute in one loop. Split before launching.
+- **Shared mutable state** — if two loops touch the same module, they will either contend on the lock or produce conflicting diffs. Bound scope to prevent this.
+- **Uneven review standards** — some PRs get rubber-stamped, others get scrutinized. Use judges + code-review consistently to prevent drift.
+
+## Scaling
+
+Once parallelism works for a team:
+
+- Review PRs with judge reports attached for fast triage.
+- Use `/push-learnings` and `/pull-learnings` to share patterns across features.
+- Monitor compute target capacity; the cloud executor caps `MAX_IN_FLIGHT_COMMANDS` per target.
+
+Parallelism without structure becomes duplicated effort and merge conflict churn. Parallelism with structure is how a small team lands a quarter's work in a week.

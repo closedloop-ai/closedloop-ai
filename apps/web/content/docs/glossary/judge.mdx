@@ -1,6 +1,10 @@
 ---
 title: Judge
-description: A scoring or review mechanism used to evaluate output quality.
+description: An LLM-as-judge evaluator that scores an artifact or output against the artifact that launched the work.
 ---
 
-Judges convert review from ad hoc opinion into something more structured and repeatable.
+Judges convert review from ad hoc opinion into structured, repeatable scoring. Every judge emits a `CaseScore` with per-metric thresholds and a `pass / fail / error` final status.
+
+ClosedLoop.ai ships 21 judges (plan, code, PRD) in the `judges` plugin.
+
+See [Judges (mechanisms)](../mechanisms/judges).

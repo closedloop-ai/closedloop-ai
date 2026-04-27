@@ -215,3 +215,23 @@ export type DecomposeFeature = {
 export type DecomposeResult = {
   features: DecomposeFeature[];
 };
+
+export type {
+  ExecutionResultV2,
+  ParsedExecutionResult,
+  RepoExecutionResult,
+} from "@closedloop-ai/loops-api/execution-result";
+export {
+  BRANCH_NAME_REGEX,
+  createRepoExecutionResultsSchema,
+  ExecutionResultV2Schema,
+  getPrimaryRepoResult,
+  isSupportedExecutionResultSchemaVersion,
+  normalizeV1ExecutionResult,
+  normalizeV2ExecutionResult,
+  parseExecutionResultFile,
+  RepoExecutionResultBaseSchema,
+  RepoExecutionResultSchema,
+  RepoExecutionResultsSchema,
+  SUPPORTED_EXECUTION_RESULT_SCHEMA_VERSIONS,
+} from "@closedloop-ai/loops-api/execution-result";

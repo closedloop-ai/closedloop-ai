@@ -1,8 +1,8 @@
 /**
- * Unit tests for loopsService.resume method.
+ * Unit tests for loopsService.resume method and authorizeAdditionalRepos.
  *
  * Tests computeTargetId propagation, s3StateKey exclusion from resumed loops,
- * and resumable-status validation.
+ * resumable-status validation, and additional repos authorization behaviors.
  */
 import { LoopStatus } from "@repo/api/src/types/loop";
 import {
@@ -18,14 +18,31 @@ import {
 // Mock modules before importing the service
 vi.mock("@repo/database", () => ({
   withDb: vi.fn(),
+  GitHubInstallationStatus: {
+    PENDING_CLAIM: "PENDING_CLAIM",
+    ACTIVE: "ACTIVE",
+    SUSPENDED: "SUSPENDED",
+    UNINSTALLED: "UNINSTALLED",
+  },
+}));
+
+vi.mock("@repo/github", () => ({
+  verifyInstallationBranchExists: vi.fn(),
 }));
 
 // Import after mocking
 import { withDb } from "@repo/database";
-import { loopsService } from "../service";
+import { verifyInstallationBranchExists } from "@repo/github";
+import {
+  authorizeAdditionalRepos,
+  BranchNotFoundError,
+  loopsService,
+  UnauthorizedRepoError,
+} from "../service";
 
-// Type alias for mocked function
+// Type aliases for mocked functions
 const mockWithDb = withDb as unknown as Mock;
+const mockVerifyBranch = verifyInstallationBranchExists as unknown as Mock;
 
 const TEST_ORG_ID = "org-123";
 const TEST_USER_ID = "user-456";
@@ -185,5 +202,145 @@ describe("loopsService.resume", () => {
     ).resolves.not.toThrow();
 
     expect(mockCreate).toHaveBeenCalledTimes(1);
+  });
+});
+
+const TEST_ORG_ID_AUTH = "org-auth-111";
+
+/** A minimal GitHubInstallationRepository fixture. */
+const makeInstallationRepo = (
+  fullName: string,
+  overrides?: Record<string, unknown>
+) => {
+  const [owner, name] = fullName.split("/");
+  return {
+    id: `repo-id-${fullName}`,
+    fullName,
+    name,
+    owner,
+    private: false,
+    githubRepoId: 1,
+    installationId: "installation-abc",
+    lastPushedAt: null,
+    createdAt: new Date("2024-01-01"),
+    updatedAt: new Date("2024-01-01"),
+    installation: {
+      installationId: "12345",
+    },
+    ...overrides,
+  };
+};
+
+describe("authorizeAdditionalRepos", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("returns authorized repo records when all repos are in the installation and branches exist", async () => {
+    const repo1 = makeInstallationRepo("acme/frontend");
+    const repo2 = makeInstallationRepo("acme/backend");
+
+    mockWithDb.mockImplementation((callback: (db: unknown) => unknown) => {
+      const mockDb = {
+        gitHubInstallationRepository: {
+          findMany: vi.fn().mockResolvedValue([repo1, repo2]),
+        },
+      };
+      return callback(mockDb);
+    });
+
+    mockVerifyBranch.mockResolvedValue(true);
+
+    const result = await authorizeAdditionalRepos(
+      [
+        { fullName: "acme/frontend", branch: "main" },
+        { fullName: "acme/backend", branch: "develop" },
+      ],
+      TEST_ORG_ID_AUTH
+    );
+
+    expect(result).toHaveLength(2);
+    expect(result.map((r) => r.fullName)).toEqual(
+      expect.arrayContaining(["acme/frontend", "acme/backend"])
+    );
+    expect(mockVerifyBranch).toHaveBeenCalledTimes(2);
+    expect(mockVerifyBranch).toHaveBeenCalledWith(
+      "12345",
+      "acme",
+      "frontend",
+      "main"
+    );
+    expect(mockVerifyBranch).toHaveBeenCalledWith(
+      "12345",
+      "acme",
+      "backend",
+      "develop"
+    );
+  });
+
+  it("throws UnauthorizedRepoError when a repo is not found in the installation", async () => {
+    // Only acme/frontend is found; acme/missing is not in the installation
+    const repo1 = makeInstallationRepo("acme/frontend");
+
+    mockWithDb.mockImplementation((callback: (db: unknown) => unknown) => {
+      const mockDb = {
+        gitHubInstallationRepository: {
+          findMany: vi.fn().mockResolvedValue([repo1]),
+        },
+      };
+      return callback(mockDb);
+    });
+
+    mockVerifyBranch.mockResolvedValue(true);
+
+    await expect(
+      authorizeAdditionalRepos(
+        [
+          { fullName: "acme/frontend", branch: "main" },
+          { fullName: "acme/missing", branch: "main" },
+        ],
+        TEST_ORG_ID_AUTH
+      )
+    ).rejects.toSatisfy((error: unknown) => {
+      expect(error).toBeInstanceOf(UnauthorizedRepoError);
+      expect(error).toMatchObject({
+        unauthorizedRepos: ["acme/missing"],
+      });
+      return true;
+    });
+  });
+
+  it("throws BranchNotFoundError when a branch does not exist in an authorized repo", async () => {
+    const repo1 = makeInstallationRepo("acme/frontend");
+
+    mockWithDb.mockImplementation((callback: (db: unknown) => unknown) => {
+      const mockDb = {
+        gitHubInstallationRepository: {
+          findMany: vi.fn().mockResolvedValue([repo1]),
+        },
+      };
+      return callback(mockDb);
+    });
+
+    // The branch does not exist
+    mockVerifyBranch.mockResolvedValue(false);
+
+    await expect(
+      authorizeAdditionalRepos(
+        [{ fullName: "acme/frontend", branch: "nonexistent-branch" }],
+        TEST_ORG_ID_AUTH
+      )
+    ).rejects.toSatisfy((error: unknown) => {
+      expect(error).toBeInstanceOf(BranchNotFoundError);
+      expect(error).toMatchObject({
+        repoFullName: "acme/frontend",
+        branch: "nonexistent-branch",
+      });
+      return true;
+    });
   });
 });

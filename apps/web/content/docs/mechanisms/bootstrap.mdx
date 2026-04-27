@@ -1,0 +1,89 @@
+---
+title: Bootstrap
+description: Generate project-specific expert agents and critic gates by reading your codebase.
+---
+
+The `bootstrap` plugin is what makes ClosedLoop aware of your project. It reads your codebase and docs, identifies the work domains that exist in your system, and writes a tailored set of expert agents plus a `critic-gates.json` that tells the `code` plugin which critics to run for which modules.
+
+## When to run it
+
+- On a new project, after installing the plugins but before your first serious loop.
+- After a significant architectural change (new service, new domain, new language).
+- When you onboard a new team and want everyone's Claude sessions to inherit the same project context.
+
+## The command
+
+```
+/agent-bootstrap [options]
+```
+
+Useful options:
+
+- `--target-command <name>` – which consumer plugin to write for (default `code`).
+- `--depth quick|medium|deep` – how hard to explore.
+- `--focus frontend|backend|infra|mobile|web` – bias the identification.
+- `--output-dir <path>` – where the generated agent files go (default `.claude/agents/`).
+- `--dry-run` – show what would be written without writing.
+- `--interactive` – prompt for each decision.
+- `--update` – re-run only for domains whose hashes have changed.
+- `--minimal` – only write `test-strategist` and `security-privacy`.
+- `--enhance` – augment an existing agent rather than overwrite.
+- `--add-domain <domain>` – add a single named domain.
+- `--strategy backup|skip|overwrite|interactive` – conflict resolution.
+
+## The eight-phase flow
+
+Bootstrap runs its own orchestrator via `commands/agent-bootstrap.json`:
+
+1. **Project doc ingestion** (`project-doc-ingestor`) – read `CLAUDE.md`, `README.md`, `ARCHITECTURE.md`, manifests.
+2. **Language detection** (`language-detector`) – file-counting, not heuristics.
+3. **Domain identification** (`domain-identifier`) – 12 recognized domains. Domain-first, not framework-first.
+4. **Expertise mapping** (`expertise-mapper`) – always adds `test-strategist` and `security-privacy` as universal agents.
+5. **Agent decomposition** (`agent-decomposer`) – emits `critic-gates.json` alongside the agent roster.
+6. **Generation validation** (`generation-validator`) – pre-flight before writing.
+7. **Agent prompt generation** (`agent-prompt-generator`) – fan-out up to 5 in parallel; LLM-driven (no static templates).
+8. **Validation and reporting** (`agent-prompt-validator`, `bootstrap-validator`) – YAML header, structure, artifact contracts, content budget, anti-patterns, file quality.
+
+## Outputs
+
+**Durable:**
+
+- `.claude/agents/<name>.md` – one expert agent per identified domain.
+- `.closedloop-ai/bootstrap-metadata.json` – tracks generated agents for `--update`.
+- `.closedloop-ai/settings/critic-gates.json` – per-module critic selection.
+
+**Audit trail** (under `.closedloop-ai/bootstrap/<timestamp>/$RUN/`):
+
+- `discovery/project-context.md`
+- `discovery/languages.json`
+- `discovery/domains.json`
+- `synthesis/expert-agents.json`
+- `synthesis/decomposed-agents.json`
+- `synthesis/generation-validation.json`
+- `validation-report.json`
+- `bootstrap-report.md`
+- `open-questions.md` (when the bootstrapper needs input)
+
+## What bootstrap does not write
+
+Agents that are assumed to already exist in the `code` plugin are not regenerated:
+
+- `prd-analyst`, `feature-locator`, `plan-writer`, `plan-stager`, `plan-verifier`, `agent-trainer`
+
+## Why `critic-gates.json` matters
+
+Generic code review is expensive and noisy. `critic-gates.json` is a small map from modules to the set of domain critics the `code` plugin should invoke at phase 2.5. For example, the mobile code paths might route only to a mobile-testing critic and an accessibility critic, while the backend routes to a security critic and a database-migration critic. This keeps critic runs focused and cheap.
+
+## Related reading
+
+<Cards>
+  <Card title="Plugins" href="./plugins">
+    How bootstrap fits in with the other plugins.
+  </Card>
+  <Card title="Orchestrator and subagents" href="./orchestrator">
+    Where the generated agents are used.
+  </Card>
+  <Card title="Code review" href="./code-review">
+    How `critic-gates.json` guides domain-specific review.
+  </Card>
+</Cards>
