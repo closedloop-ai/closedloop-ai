@@ -121,8 +121,11 @@ function NameCell({
 
   // Project rows: folder icon + optional slug + name
   if (item.kind === "project") {
-    const content = (
-      <>
+    const className =
+      "flex h-full w-full min-w-0 items-center overflow-hidden pr-3 pl-3";
+
+    return (
+      <div className={className}>
         {showCheckbox && (
           <div className="flex h-7 w-7 shrink-0 items-center justify-center">
             <Checkbox
@@ -130,7 +133,6 @@ function NameCell({
               onCheckedChange={(checked) =>
                 onSelectionChange?.(item.data.id, checked === true)
               }
-              onClick={(e) => e.stopPropagation()}
             />
           </div>
         )}
@@ -139,13 +141,7 @@ function NameCell({
         </span>
         <Tooltip>
           <TooltipTrigger asChild>
-            {/* biome-ignore lint/a11y/useKeyWithClickEvents: stop propagation only */}
-            {/* biome-ignore lint/a11y/noStaticElementInteractions: stop propagation only */}
-            {/* biome-ignore lint/a11y/noNoninteractiveElementInteractions: stop propagation only */}
-            <div
-              className="flex h-7 w-7 shrink-0 items-center justify-center"
-              onClick={(e) => e.stopPropagation()}
-            >
+            <div className="flex h-7 w-7 shrink-0 items-center justify-center">
               <StatusPercentageIcon
                 size={16}
                 value={item.data.completionPercentage}
@@ -156,23 +152,17 @@ function NameCell({
             {Math.round(item.data.completionPercentage)}% of artifacts complete
           </TooltipContent>
         </Tooltip>
-        <div className="ml-1.5 min-w-0 flex-1">
-          <TruncatedTitle text={item.data.name} />
-        </div>
-      </>
+        {href ? (
+          <Link className="ml-1.5 min-w-0 flex-1" href={href} prefetch={false}>
+            <TruncatedTitle text={item.data.name} />
+          </Link>
+        ) : (
+          <div className="ml-1.5 min-w-0 flex-1">
+            <TruncatedTitle text={item.data.name} />
+          </div>
+        )}
+      </div>
     );
-
-    const className = `flex h-full w-full min-w-0 items-center overflow-hidden pr-3 pl-3 ${href ? "cursor-pointer" : ""}`;
-
-    if (href) {
-      return (
-        <Link className={className} href={href} prefetch={false}>
-          {content}
-        </Link>
-      );
-    }
-
-    return <div className={className}>{content}</div>;
   }
 
   // Artifact / feature rows: status icon + title (both are documents now)
@@ -193,15 +183,17 @@ function NameCell({
   const statusButton = (
     <button
       className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md hover:bg-muted"
-      onClick={(e) => e.stopPropagation()}
       type="button"
     >
       <StatusIcon size={16} status={statusIcon} thinking={thinking} />
     </button>
   );
 
-  const content = (
-    <>
+  const className =
+    "flex h-full w-full min-w-0 items-center overflow-hidden pr-3 pl-3";
+
+  return (
+    <div className={className}>
       {showCheckbox && (
         <div className="flex h-7 w-7 shrink-0 items-center justify-center">
           <Checkbox
@@ -209,7 +201,6 @@ function NameCell({
             onCheckedChange={(checked) =>
               onSelectionChange?.(item.data.id, checked === true)
             }
-            onClick={(e) => e.stopPropagation()}
           />
         </div>
       )}
@@ -217,8 +208,7 @@ function NameCell({
       {hasChevron && (
         <button
           className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md ${onToggleExpand ? "hover:bg-muted" : "cursor-default opacity-30"}`}
-          onClick={(e) => {
-            e.stopPropagation();
+          onClick={() => {
             if (onToggleExpand) {
               onToggleExpand();
             }
@@ -241,8 +231,7 @@ function NameCell({
             {statusOptions.map((value) => (
               <DropdownMenuItem
                 key={value}
-                onClick={(e) => {
-                  e.stopPropagation();
+                onClick={() => {
                   onUpdateStatus(item.data.id, value);
                 }}
               >
@@ -260,23 +249,17 @@ function NameCell({
           <StatusIcon size={16} status={statusIcon} thinking={thinking} />
         </div>
       )}
-      <div className="ml-1.5 min-w-0 flex-1">
-        <TruncatedTitle text={item.data.title} />
-      </div>
-    </>
+      {href ? (
+        <Link className="ml-1.5 min-w-0 flex-1" href={href} prefetch={false}>
+          <TruncatedTitle text={item.data.title} />
+        </Link>
+      ) : (
+        <div className="ml-1.5 min-w-0 flex-1">
+          <TruncatedTitle text={item.data.title} />
+        </div>
+      )}
+    </div>
   );
-
-  const className = `flex h-full w-full min-w-0 items-center overflow-hidden pr-3 pl-3 ${href ? "cursor-pointer" : ""}`;
-
-  if (href) {
-    return (
-      <Link className={className} href={href} prefetch={false}>
-        {content}
-      </Link>
-    );
-  }
-
-  return <div className={className}>{content}</div>;
 }
 
 function TruncatedTitle({ text }: { text: string }) {

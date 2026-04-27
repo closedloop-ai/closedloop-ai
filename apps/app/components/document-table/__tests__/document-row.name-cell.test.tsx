@@ -1,6 +1,5 @@
 import { Priority } from "@repo/api/src/types/common";
 import { DocumentStatus, DocumentType } from "@repo/api/src/types/document";
-import type { ProjectWithDetails } from "@repo/api/src/types/project";
 import { render } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
@@ -8,12 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("next/navigation", () => ({
   useRouter: vi.fn(() => ({ push: vi.fn(), replace: vi.fn() })),
   usePathname: vi.fn(() => "/"),
-  useSearchParams: vi.fn(
-    () =>
-      new URLSearchParams() as unknown as ReturnType<
-        typeof import("next/navigation").useSearchParams
-      >
-  ),
+  useSearchParams: vi.fn(() => new URLSearchParams()),
   useParams: vi.fn(() => ({})),
 }));
 
@@ -25,6 +19,7 @@ vi.mock("@/hooks/queries/use-judges", () => ({
 
 // Import after mocks
 import type { DocumentWithWorkstream } from "@repo/api/src/types/document";
+import { makeProject } from "@/__tests__/fixtures/project";
 import type { DocumentRowItem } from "@/components/document-table/document-row";
 import { DocumentRow } from "@/components/document-table/document-row";
 
@@ -58,30 +53,6 @@ const makeArtifact = (
   sortOrder: null,
   createdAt: new Date("2024-01-01"),
   updatedAt: new Date("2024-01-02"),
-  ...overrides,
-});
-
-const makeProject = (
-  overrides?: Partial<ProjectWithDetails>
-): ProjectWithDetails => ({
-  id: "project-1",
-  organizationId: "org-1",
-  name: "Test Project",
-  description: null,
-  priority: "MEDIUM",
-  assigneeId: null,
-  createdById: "user-1",
-  slug: null,
-  targetDate: null,
-  codebaseSummary: null,
-  lastIndexedAt: null,
-  settings: {},
-  sortOrder: null,
-  createdAt: new Date("2024-01-01"),
-  updatedAt: new Date("2024-01-02"),
-  status: "IN_PROGRESS",
-  completionPercentage: 0,
-  teams: [{ id: "team-1", name: "Team One" }],
   ...overrides,
 });
 
