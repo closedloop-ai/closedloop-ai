@@ -3364,28 +3364,26 @@ async function refreshStaleTokens(tokenSnapshot) {
  * Returns the collected results array.
  */
 async function finalizeRepos(repos, tokenSnapshot, safetyCommitMsg) {
-  const results = [];
-  for (const repo of repos) {
-    await refreshStaleTokens(tokenSnapshot);
-    let repoResult;
-    try {
-      repoResult = await finalizeRepo({
+  // Refresh once before fan-out: refreshStaleTokens mutates module-level
+  // lastTokenRefreshAt and the shared tokenSnapshot, so calling it from
+  // concurrent branches would race and could trigger redundant refreshes.
+  await refreshStaleTokens(tokenSnapshot);
+
+  return Promise.all(
+    repos.map((repo) =>
+      finalizeRepo({
         workDir: repo.workDir,
         fullName: repo.fullName,
         baseBranch: repo.baseBranch,
         githubToken: tokenSnapshot.get(repo.fullName) || repo.githubToken,
         safetyCommitMsg,
-      });
-    } catch (err) {
-      repoResult = {
+      }).catch((err) => ({
         fullName: repo.fullName,
         status: "failed",
         error: redactSensitive(err.message || String(err)),
-      };
-    }
-    results.push(repoResult);
-  }
-  return results;
+      }))
+    )
+  );
 }
 
 /**
