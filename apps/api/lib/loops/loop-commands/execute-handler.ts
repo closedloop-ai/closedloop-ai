@@ -1,4 +1,5 @@
 import {
+  ExecutionResultFileSchema,
   ExecutionResultV2Schema,
   normalizeV1ExecutionResult,
   parseExecutionResultFile,
@@ -493,12 +494,18 @@ export async function ingestExecutionArtifacts(
 // Upload-based loading (desktop path)
 // ---------------------------------------------------------------------------
 
+const legacyExecutionUploadSchema = ExecutionResultFileSchema.extend({
+  schemaVersion: z.never().optional(),
+});
+
 const executionUploadSchema = z.object({
-  executionResult: z.record(z.string(), z.unknown()).optional(),
+  executionResult: z
+    .union([ExecutionResultV2Schema, legacyExecutionUploadSchema])
+    .optional(),
   codeJudges: judgesReportSchema.optional(),
 });
 
-function executionArtifactsFromUpload(
+export function executionArtifactsFromUpload(
   uploaded: JsonObject
 ): ExecutionArtifacts {
   const parsed = executionUploadSchema.parse(uploaded);

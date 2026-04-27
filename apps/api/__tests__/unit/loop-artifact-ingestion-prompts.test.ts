@@ -87,6 +87,7 @@ import { assertEntityInOrganization } from "@/lib/entity-validation";
 import { fanOutJudgeScores } from "@/lib/judge-score-fanout";
 import {
   downloadExecutionArtifacts,
+  executionArtifactsFromUpload,
   ingestExecutionArtifacts,
 } from "@/lib/loops/loop-commands/execute-handler";
 import {
@@ -342,6 +343,55 @@ describe("downloadExecutionArtifacts — execution result parsing", () => {
     );
 
     expect(artifacts.repoResults).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// executionArtifactsFromUpload — execution result validation
+// ---------------------------------------------------------------------------
+
+describe("executionArtifactsFromUpload — execution result validation", () => {
+  it("normalizes legacy v1 uploaded execution results", () => {
+    const artifacts = executionArtifactsFromUpload({
+      executionResult: {
+        has_changes: false,
+        pr_url: "",
+        pr_number: 0,
+        branch_name: "",
+        base_ref: "main",
+        commit_sha: null,
+      },
+    });
+
+    expect(artifacts.repoResults).toEqual([
+      { status: "skipped", fullName: "", reason: "no_changes" },
+    ]);
+    expect(artifacts.codeJudgesReport).toBeNull();
+    expect(artifacts.promptsSnapshot).toBeNull();
+  });
+
+  it("preserves v2 uploaded execution result entries", () => {
+    const results = [
+      {
+        status: "failed" as const,
+        fullName: "owner/repo",
+        error: "executor crashed",
+      },
+    ];
+
+    const artifacts = executionArtifactsFromUpload({
+      executionResult: { schemaVersion: 2, results },
+    });
+
+    expect(artifacts.repoResults).toEqual(results);
+  });
+
+  it("fails invalid uploaded execution results before ingestion", () => {
+    expect(() =>
+      executionArtifactsFromUpload({
+        executionResult: { schemaVersion: 2, results: [{ status: "success" }] },
+      })
+    ).toThrow();
   });
 });
 
