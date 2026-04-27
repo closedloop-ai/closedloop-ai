@@ -66,6 +66,68 @@ function makeTempDir() {
 }
 
 /**
+ * Build a self-contained local git fixture for cloneAdditionalRepos tests:
+ *   - bare repo at <parentDir>/origin.git on `main` with one empty commit
+ *   - fake HOME with .gitconfig rewriting https://github.com/<repo>.git to
+ *     the bare repo path (so cloneAdditionalRepos performs no network I/O)
+ *   - empty peers/ dir for the clone target
+ *
+ * The fake HOME is only consulted by git when buildGitAuthEnv() forwards it,
+ * which happens whenever a non-null githubToken is provided.
+ */
+function makeLocalGitFixture({ rewriteFullName = "org/repo" } = {}) {
+  const parentDir = makeTempDir();
+  const bareRepoPath = path.join(parentDir, "origin.git");
+  const wcDir = path.join(parentDir, "wc");
+  const fakeHome = path.join(parentDir, "fakehome");
+  const peersDir = path.join(parentDir, "peers");
+
+  const gitCommitEnv = {
+    ...process.env,
+    GIT_AUTHOR_NAME: "Test",
+    GIT_AUTHOR_EMAIL: "test@test.com",
+    GIT_COMMITTER_NAME: "Test",
+    GIT_COMMITTER_EMAIL: "test@test.com",
+  };
+
+  execFileSync("git", ["init", "--bare", "-b", "main", bareRepoPath]);
+  execFileSync("git", ["clone", bareRepoPath, wcDir]);
+  execFileSync("git", ["-C", wcDir, "commit", "--allow-empty", "-m", "init"], {
+    env: gitCommitEnv,
+  });
+  execFileSync("git", ["-C", wcDir, "push", "origin", "main"]);
+
+  fs.mkdirSync(fakeHome, { recursive: true });
+  fs.writeFileSync(
+    path.join(fakeHome, ".gitconfig"),
+    `[url "${bareRepoPath}"]\n\tinsteadOf = https://github.com/${rewriteFullName}.git\n`
+  );
+
+  return { parentDir, bareRepoPath, peersDir, fakeHome };
+}
+
+/**
+ * Run `fn` with process.env.HOME swapped to `fakeHome`, restoring the original
+ * value (including the unset case) on completion. Use to guarantee that the
+ * git subprocess in cloneAdditionalRepos picks up the fake gitconfig without
+ * leaking HOME into other tests.
+ */
+function withFakeHome(fakeHome, fn) {
+  const hadHome = Object.hasOwn(process.env, "HOME");
+  const origHome = process.env.HOME;
+  process.env.HOME = fakeHome;
+  try {
+    return fn();
+  } finally {
+    if (hadHome) {
+      process.env.HOME = origHome;
+    } else {
+      delete process.env.HOME;
+    }
+  }
+}
+
+/**
  * Write prompt.md into the expected context directory under workDir.
  */
 function writePromptFile(workDir, content = "Evaluate this PRD.") {
@@ -1168,9 +1230,9 @@ describe("writeExecutionResultV2", () => {
       {
         fullName: "org/single-repo",
         status: "success",
-        hasChanges: false,
-        prUrl: "",
-        prNumber: 0,
+        hasChanges: true,
+        prUrl: "https://github.com/org/single-repo/pull/7",
+        prNumber: 7,
         branchName: "symphony/branch",
         baseBranch: "main",
         commitSha: "def456",
@@ -1210,18 +1272,27 @@ describe("writeExecutionResultV2", () => {
     assert.ok(Array.isArray(envelope.results));
   });
 
-  test("handles validation warning for invalid entries without crashing", () => {
+  test("throws HarnessError on invalid entries and refuses to write", () => {
     const dir = makeTempDir();
-    // Missing required fields — should trigger validation warning but not throw
+    // Missing required fields — schema validation must reject and throw,
+    // not warn-and-write a malformed envelope downstream consumers can't parse.
     const results = [{ status: "success" }];
 
-    assert.doesNotThrow(() => writeExecutionResultV2(dir, results));
+    assert.throws(
+      () => writeExecutionResultV2(dir, results),
+      (err) => err instanceof HarnessError
+    );
 
     const filePath = path.join(dir, "execution-result.json");
-    assert.ok(fs.existsSync(filePath));
-    const envelope = JSON.parse(fs.readFileSync(filePath, "utf-8"));
-    assert.equal(envelope.schemaVersion, 2);
-    assert.ok(Array.isArray(envelope.results));
+    assert.ok(
+      !fs.existsSync(filePath),
+      "execution-result.json must not be written when validation fails"
+    );
+    const tmpPath = `${filePath}.tmp`;
+    assert.ok(
+      !fs.existsSync(tmpPath),
+      "temp file must not be left behind when validation fails"
+    );
   });
 });
 
@@ -1784,39 +1855,9 @@ describe("cloneAdditionalRepos", () => {
   // ---------------------------------------------------------------------------
 
   test("sets git identity after clone", () => {
-    const parentDir = makeTempDir();
-    const bareRepoPath = path.join(parentDir, "origin.git");
-    const gitCommitEnv = {
-      ...process.env,
-      GIT_AUTHOR_NAME: "Test",
-      GIT_AUTHOR_EMAIL: "test@test.com",
-      GIT_COMMITTER_NAME: "Test",
-      GIT_COMMITTER_EMAIL: "test@test.com",
-    };
+    const { peersDir, fakeHome } = makeLocalGitFixture();
 
-    execFileSync("git", ["init", "--bare", "-b", "main", bareRepoPath]);
-    const wcDir = path.join(parentDir, "wc");
-    execFileSync("git", ["clone", bareRepoPath, wcDir]);
-    execFileSync(
-      "git",
-      ["-C", wcDir, "commit", "--allow-empty", "-m", "init"],
-      {
-        env: gitCommitEnv,
-      }
-    );
-    execFileSync("git", ["-C", wcDir, "push", "origin", "main"]);
-
-    const fakeHome = path.join(parentDir, "fakehome");
-    fs.mkdirSync(fakeHome, { recursive: true });
-    fs.writeFileSync(
-      path.join(fakeHome, ".gitconfig"),
-      `[url "${bareRepoPath}"]\n\tinsteadOf = https://github.com/org/repo.git\n`
-    );
-
-    const peersDir = path.join(parentDir, "peers");
-    const origHome = process.env.HOME;
-    process.env.HOME = fakeHome;
-    try {
+    withFakeHome(fakeHome, () => {
       resetConfig({
         committerName: "Alice Tester",
         committerEmail: "alice@example.com",
@@ -1850,45 +1891,13 @@ describe("cloneAdditionalRepos", () => {
         "alice@example.com",
         "user.email must match committerEmail"
       );
-    } finally {
-      process.env.HOME = origHome;
-    }
+    });
   });
 
   test("creates and checks out working branch", () => {
-    const parentDir = makeTempDir();
-    const bareRepoPath = path.join(parentDir, "origin.git");
-    const gitCommitEnv = {
-      ...process.env,
-      GIT_AUTHOR_NAME: "Test",
-      GIT_AUTHOR_EMAIL: "test@test.com",
-      GIT_COMMITTER_NAME: "Test",
-      GIT_COMMITTER_EMAIL: "test@test.com",
-    };
+    const { peersDir, fakeHome } = makeLocalGitFixture();
 
-    execFileSync("git", ["init", "--bare", "-b", "main", bareRepoPath]);
-    const wcDir = path.join(parentDir, "wc");
-    execFileSync("git", ["clone", bareRepoPath, wcDir]);
-    execFileSync(
-      "git",
-      ["-C", wcDir, "commit", "--allow-empty", "-m", "init"],
-      {
-        env: gitCommitEnv,
-      }
-    );
-    execFileSync("git", ["-C", wcDir, "push", "origin", "main"]);
-
-    const fakeHome = path.join(parentDir, "fakehome");
-    fs.mkdirSync(fakeHome, { recursive: true });
-    fs.writeFileSync(
-      path.join(fakeHome, ".gitconfig"),
-      `[url "${bareRepoPath}"]\n\tinsteadOf = https://github.com/org/repo.git\n`
-    );
-
-    const peersDir = path.join(parentDir, "peers");
-    const origHome = process.env.HOME;
-    process.env.HOME = fakeHome;
-    try {
+    withFakeHome(fakeHome, () => {
       const loopId = "test-loop-abc123";
       resetConfig({ loopId });
       const clonedDirs = cloneAdditionalRepos(
@@ -1901,7 +1910,7 @@ describe("cloneAdditionalRepos", () => {
 
       const loopSuffix = loopId
         .toLowerCase()
-        .replace(/[^a-z0-9-]/g, "-")
+        .replaceAll(/[^a-z0-9-]/g, "-")
         .slice(0, 50);
       const expectedBranch = `symphony/${loopSuffix}`;
 
@@ -1920,9 +1929,7 @@ describe("cloneAdditionalRepos", () => {
         expectedBranch,
         `working branch must be ${expectedBranch}`
       );
-    } finally {
-      process.env.HOME = origHome;
-    }
+    });
   });
 });
 

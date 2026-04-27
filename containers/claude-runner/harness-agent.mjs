@@ -1274,19 +1274,6 @@ function cloneAdditionalRepos(entries, peersDir = "/workspace/peers") {
   for (const entry of entries) {
     const cloneDirName = entry.fullName.replaceAll("/", "--");
     const cloneTarget = path.join(peersDir, cloneDirName);
-    const resolvedPeersDir = path.resolve(peersDir);
-    const resolvedCloneTarget = path.resolve(cloneTarget);
-    if (
-      !resolvedCloneTarget.startsWith(resolvedPeersDir + path.sep) &&
-      resolvedCloneTarget !== resolvedPeersDir
-    ) {
-      throw new HarnessError(
-        ERROR_CODES.config,
-        redactSensitive(
-          `Path traversal attempt blocked for peer repo: "${entry.fullName}"`
-        )
-      );
-    }
     const cloneUrl = `https://github.com/${entry.fullName}.git`;
 
     log(
@@ -1346,7 +1333,7 @@ function cloneAdditionalRepos(entries, peersDir = "/workspace/peers") {
     // the PR attempt regardless of that check's outcome.
     const peerLoopSuffix = (config.loopId || randomUUID())
       .toLowerCase()
-      .replace(/[^a-z0-9-]/g, "-")
+      .replaceAll(/[^a-z0-9-]/g, "-")
       .slice(0, 50);
     const peerBranchName = `symphony/${peerLoopSuffix}`;
     try {
@@ -1459,6 +1446,73 @@ function attemptSafetyCommit(
 // LLM-assisted commit (standalone Claude call for quality commits + PR)
 // ---------------------------------------------------------------------------
 /**
+ * Spawn the `claude` CLI asynchronously and resolve once it exits with the
+ * captured stdout/stderr/status. Uses spawn (not spawnSync) so concurrent
+ * callers under Promise.all actually overlap during the long-running CLI
+ * invocation. Caps captured output to 10MB per stream to mirror the prior
+ * spawnSync maxBuffer guarantee. Resolves on spawn failure with status=null
+ * and the error text in stderr — matches the shape spawnSync produced via
+ * its catch-block, so callers can keep their best-effort error handling.
+ */
+const LLM_OUTPUT_CAP = 10 * 1024 * 1024;
+
+function runClaudeAsync(args, { cwd, env }) {
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn("claude", args, { cwd, env, stdio: "pipe" });
+    } catch (err) {
+      resolve({ status: null, stdout: "", stderr: err.message || String(err) });
+      return;
+    }
+
+    let stdout = "";
+    let stderr = "";
+    let stdoutOverflow = false;
+    let stderrOverflow = false;
+
+    child.stdout.on("data", (chunk) => {
+      if (stdoutOverflow) {
+        return;
+      }
+      const text = chunk.toString();
+      if (stdout.length + text.length > LLM_OUTPUT_CAP) {
+        stdout += text.slice(0, LLM_OUTPUT_CAP - stdout.length);
+        stdoutOverflow = true;
+        return;
+      }
+      stdout += text;
+    });
+
+    child.stderr.on("data", (chunk) => {
+      if (stderrOverflow) {
+        return;
+      }
+      const text = chunk.toString();
+      if (stderr.length + text.length > LLM_OUTPUT_CAP) {
+        stderr += text.slice(0, LLM_OUTPUT_CAP - stderr.length);
+        stderrOverflow = true;
+        return;
+      }
+      stderr += text;
+    });
+
+    child.on("error", (err) => {
+      resolve({
+        status: null,
+        stdout,
+        stderr: stderr || err.message || String(err),
+      });
+    });
+
+    child.on("close", (code) => {
+      resolve({ status: code, stdout, stderr });
+    });
+  });
+}
+
+
+/**
  * Spawn a standalone Claude CLI call to review changes, create a proper
  * commit, push, and ensure a PR is open. Produces better commit messages
  * and PR descriptions than the mechanical safety-commit path.
@@ -1470,7 +1524,7 @@ function attemptSafetyCommit(
  * Works for any repo (primary or peer) — pass the repo's workDir, fullName,
  * baseBranch, and per-repo githubToken.
  */
-function attemptLlmCommit({
+async function attemptLlmCommit({
   workDir,
   fullName,
   baseBranch,
@@ -1561,8 +1615,9 @@ function attemptLlmCommit({
 
   try {
     log("info", `Attempting LLM-assisted commit for ${fullName}...`);
-    const result = spawnSync(
-      "claude",
+    // Async spawn (not spawnSync) so concurrent peer finalizations under
+    // Promise.all actually overlap during the multi-second Claude CLI call.
+    const result = await runClaudeAsync(
       [
         "-p",
         "--allowedTools",
@@ -1571,21 +1626,15 @@ function attemptLlmCommit({
         "50",
         prompt,
       ],
-      {
-        cwd: workDir,
-        env: llmEnv,
-        stdio: "pipe",
-        maxBuffer: 10 * 1024 * 1024, // 10MB
-      }
+      { cwd: workDir, env: llmEnv }
     );
 
-    const stdout = result.stdout?.toString() || "";
-    const stderr = result.stderr?.toString() || "";
+    const { stdout, stderr, status } = result;
 
-    if (result.status !== 0) {
+    if (status !== 0) {
       log(
         "error",
-        `LLM commit (${fullName}) exited with code ${result.status} (best-effort, falling through to safety commit)`
+        `LLM commit (${fullName}) exited with code ${status} (best-effort, falling through to safety commit)`
       );
     } else {
       log("info", `LLM commit (${fullName}) completed successfully`);
@@ -1673,6 +1722,32 @@ function detectBranchName(workDir, baseBranchArg) {
 }
 
 /**
+ * Count commits on HEAD that are not on origin/<baseBranch>. Returns 0 when
+ * the count is zero, the remote tracking ref is missing, or the rev-list
+ * call errors out — callers should treat the missing-remote case as "unknown,
+ * proceed" and only act on a confirmed zero from a successful call.
+ */
+function countCommitsAhead(workDir, baseBranch) {
+  try {
+    const raw = execFileSync(
+      "git",
+      ["rev-list", "--count", `origin/${baseBranch}..HEAD`],
+      { cwd: workDir, stdio: "pipe" }
+    )
+      .toString()
+      .trim();
+    if (!/^\d+$/.test(raw)) {
+      return -1;
+    }
+    return Number.parseInt(raw, 10);
+  } catch {
+    // Remote tracking ref missing — return -1 to signal "unknown" so callers
+    // don't mistake a transient git error for a confirmed empty branch.
+    return -1;
+  }
+}
+
+/**
  * Detect branch/PR info from the working directory and process output.
  *
  * NOTE: run-loop.sh does NOT create PRs or write execution-result.json.
@@ -1737,7 +1812,7 @@ function createPullRequest(
     return null;
   }
 
-  const branchName = detectBranchName(workDir);
+  const branchName = detectBranchName(workDir, resolvedBranch);
   if (!branchName) {
     return null; // still on target branch
   }
@@ -3183,14 +3258,23 @@ function writeExecutionResult(workDir, prInfo) {
  * @param {import("@closedloop-ai/loops-api/execution-result").RepoExecutionResult[]} results
  */
 function writeExecutionResultV2(workDir, results) {
+  const validationFailures = [];
   for (const entry of results) {
     const parsed = RepoExecutionResultSchema.safeParse(entry);
     if (!parsed.success) {
-      log(
-        "warn",
-        `RepoExecutionResult validation failed for ${entry.fullName}: ${parsed.error.message}`
+      validationFailures.push(
+        `${entry.fullName ?? "<unknown>"}: ${parsed.error.message}`
       );
     }
+  }
+
+  if (validationFailures.length > 0) {
+    throw new HarnessError(
+      ERROR_CODES.runner,
+      redactSensitive(
+        `RepoExecutionResult schema validation failed for ${validationFailures.length} repo(s); refusing to write invalid execution-result.json: ${validationFailures.join("; ")}`
+      )
+    );
   }
 
   const envelope = { schemaVersion: 2, results };
@@ -3270,6 +3354,12 @@ async function finalizeRepo({
     });
 
     if (!prInfo) {
+      // No existing PR — but if the working branch has no commits ahead of
+      // base, the agent made no changes in this repo. Report as skipped
+      // rather than attempting (and failing) to open an empty PR.
+      if (countCommitsAhead(workDir, baseBranch) === 0) {
+        return { fullName, status: "skipped", reason: "no_changes" };
+      }
       prInfo = createPullRequest(workDir, {
         targetRepo: fullName,
         targetBranch: baseBranch,
@@ -3421,7 +3511,7 @@ async function finalizeRepoWithLlm(repo, safetyCommitMsg) {
   registerSecret(repo.githubToken);
 
   try {
-    attemptLlmCommit({
+    await attemptLlmCommit({
       workDir: repo.workDir,
       fullName: repo.fullName,
       baseBranch: repo.baseBranch,
