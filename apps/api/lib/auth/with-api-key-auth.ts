@@ -1,6 +1,9 @@
 import "server-only";
 
-import type { ApiKeyScope } from "@repo/api/src/types/api-key";
+import type {
+  ApiKeyScope,
+  VerifiedApiKeyContext,
+} from "@repo/api/src/types/api-key";
 import { failure } from "@repo/api/src/types/common";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
@@ -10,12 +13,26 @@ import { organizationsService } from "@/app/organizations/service";
 import { usersService } from "@/app/users/service";
 import { forbiddenResponse, unauthorizedResponse } from "../route-utils";
 import { hasApiKeyScopes } from "./api-key-scopes";
+import {
+  getDesktopManagedPopFailure,
+  resolveDesktopManagedPopMode,
+  verifyDesktopManagedPop,
+} from "./desktop-managed-pop";
 import type {
   AuthContext,
   AuthenticatedHandler,
   AuthenticatedJsonResponse,
   RouteContext,
 } from "./with-auth";
+
+type ApiKeyAuthOptions = {
+  desktopManagedPop?: boolean;
+  requiredScopes?: ApiKeyScope[];
+};
+
+type ResolveApiKeyResult =
+  | { context: VerifiedApiKeyContext; response: null }
+  | { context: null; response: NextResponse };
 
 /**
  * Higher-order function that wraps route handlers with API key authentication.
@@ -36,7 +53,7 @@ import type {
  */
 export function withApiKeyAuth<TResponse, TRoute extends string = string>(
   handler: AuthenticatedHandler<TResponse, TRoute>,
-  options?: { requiredScopes?: ApiKeyScope[] }
+  options?: ApiKeyAuthOptions
 ): (
   request: NextRequest,
   context: RouteContext<TRoute>
@@ -46,20 +63,17 @@ export function withApiKeyAuth<TResponse, TRoute extends string = string>(
     routeContext: RouteContext<TRoute>
   ): Promise<AuthenticatedJsonResponse<TResponse>> => {
     try {
-      const authHeader = request.headers.get("authorization");
-      const token = authHeader?.startsWith("Bearer ")
-        ? authHeader.slice(7)
-        : null;
+      const token = getBearerToken(request);
 
       if (!token?.startsWith("sk_live_")) {
         return unauthorizedResponse();
       }
 
-      const keyContext = await apiKeysService.verifyKey(token);
-
-      if (!keyContext) {
-        return unauthorizedResponse();
+      const apiKeyResult = await resolveApiKeyContext(token, request, options);
+      if (apiKeyResult.response) {
+        return apiKeyResult.response as AuthenticatedJsonResponse<TResponse>;
       }
+      const keyContext = apiKeyResult.context;
 
       const user = await usersService.findById(
         keyContext.userId,
@@ -98,9 +112,61 @@ export function withApiKeyAuth<TResponse, TRoute extends string = string>(
     } catch (error) {
       const errorMessage = parseError(error);
       log.error("API key authentication failed", { error: errorMessage });
-      return NextResponse.json(failure("Authentication failed"), {
-        status: 500,
-      });
+      return NextResponse.json(
+        failure(getAuthenticationFailureMessage(options)),
+        { status: options?.desktopManagedPop ? 503 : 500 }
+      );
     }
   };
+}
+
+function getBearerToken(request: NextRequest): string | null {
+  const authHeader = request.headers.get("authorization");
+  return authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
+}
+
+async function resolveApiKeyContext(
+  token: string,
+  request: NextRequest,
+  options: ApiKeyAuthOptions | undefined
+): Promise<ResolveApiKeyResult> {
+  if (!options?.desktopManagedPop) {
+    const context = await apiKeysService.verifyKey(token);
+    return context ? { context, response: null } : unauthorizedResult();
+  }
+
+  const context = await apiKeysService.verifyKeyWithMetadata(token, {
+    updateLastUsedAt: false,
+  });
+  if (!context) {
+    return unauthorizedResult();
+  }
+
+  const popDecision = verifyDesktopManagedPop({
+    keyContext: context,
+    mode: await resolveDesktopManagedPopMode(context),
+    request,
+  });
+  const popFailure = getDesktopManagedPopFailure(popDecision);
+  if (popFailure) {
+    return {
+      context: null,
+      response: NextResponse.json(failure(popFailure.message), {
+        status: popFailure.status,
+      }),
+    };
+  }
+
+  apiKeysService.touchLastUsedAt(context.apiKeyId);
+  return { context, response: null };
+}
+
+function unauthorizedResult(): ResolveApiKeyResult {
+  return { context: null, response: unauthorizedResponse() };
+}
+
+function getAuthenticationFailureMessage(options?: ApiKeyAuthOptions): string {
+  return options?.desktopManagedPop
+    ? "Desktop managed PoP verifier unavailable"
+    : "Authentication failed";
 }

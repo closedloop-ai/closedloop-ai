@@ -1,7 +1,14 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { failure } from "@repo/api/src/types/common";
+import { NextResponse } from "next/server";
 import { z } from "zod";
 import { apiKeysService } from "@/app/api-keys/service";
 import { env } from "@/env";
+import {
+  getDesktopManagedPopFailure,
+  resolveDesktopManagedPopMode,
+  verifyDesktopManagedPop,
+} from "@/lib/auth/desktop-managed-pop";
 import {
   errorResponse,
   parseBody,
@@ -40,16 +47,33 @@ export async function POST(request: Request) {
   }
 
   try {
-    const context = await apiKeysService.verifyKey(body.key);
+    const context = await apiKeysService.verifyKeyWithMetadata(body.key, {
+      updateLastUsedAt: false,
+    });
     if (!context) {
       return unauthorizedResponse();
     }
+
+    const popDecision = verifyDesktopManagedPop({
+      keyContext: context,
+      mode: await resolveDesktopManagedPopMode(context),
+      request,
+    });
+    const popFailure = getDesktopManagedPopFailure(popDecision);
+    if (popFailure) {
+      return NextResponse.json(failure(popFailure.message), {
+        status: popFailure.status,
+      });
+    }
+
+    apiKeysService.touchLastUsedAt(context.apiKeyId);
+
     return successResponse({
       userId: context.userId,
       organizationId: context.organizationId,
       scopes: context.scopes,
     });
   } catch (error) {
-    return errorResponse("Failed to verify API key", error);
+    return errorResponse("Failed to verify API key", error, 503);
   }
 }

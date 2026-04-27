@@ -313,6 +313,57 @@ describe("auth middleware", () => {
       userId: TEST_USER_ID,
     });
   });
+
+  it("forwards desktop PoP handshake headers unchanged to API validation", async () => {
+    if (!capturedMiddleware) {
+      throw new Error("Middleware not captured — module may not have loaded");
+    }
+
+    const socket = makeMockSocket("socket-auth-pop");
+    socket.handshake.headers = {
+      "x-desktop-gateway-id": "gateway-123",
+      "x-desktop-timestamp": "1800000000",
+      "x-desktop-signature": "signature_base64url",
+    };
+    globalThis.fetch = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      url: "http://127.0.0.1:19878/internal/api-keys/verify",
+      text: () =>
+        Promise.resolve(
+          JSON.stringify({
+            success: true,
+            data: {
+              organizationId: TEST_ORG_ID,
+              userId: TEST_USER_ID,
+              scopes: ["write"],
+            },
+          })
+        ),
+      headers: { get: () => "application/json" },
+    } as unknown as Response);
+
+    await new Promise<void>((resolve, reject) => {
+      (capturedMiddleware as SocketMiddlewareFn)(socket, (err) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve();
+        }
+      });
+    });
+
+    const fetchCall = (
+      globalThis.fetch as unknown as {
+        mock: { calls: [string, RequestInit][] };
+      }
+    ).mock.calls[0];
+    const headers = fetchCall[1].headers as Record<string, string>;
+
+    expect(headers["X-Desktop-Gateway-Id"]).toBe("gateway-123");
+    expect(headers["X-Desktop-Timestamp"]).toBe("1800000000");
+    expect(headers["X-Desktop-Signature"]).toBe("signature_base64url");
+  });
 });
 
 // ---------------------------------------------------------------------------

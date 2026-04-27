@@ -5,6 +5,7 @@ import type {
   CreateApiKeyInput,
   CreateApiKeyResponse,
   VerifiedApiKeyContext,
+  VerifiedApiKeyContextWithMetadata,
 } from "@repo/api/src/types/api-key";
 import { API_KEY_SCOPES } from "@repo/api/src/types/api-key";
 import { ApiKeySource, withDb } from "@repo/database";
@@ -48,6 +49,14 @@ type RotateDesktopManagedKeyInput = {
   name?: string;
 };
 
+type VerifyApiKeyOptions = {
+  /**
+   * Controls when callers apply the last-used side effect. PoP-enabled routes
+   * defer this until after enforcement accepts the request.
+   */
+  updateLastUsedAt?: boolean;
+};
+
 function createPlaintextKey(): string {
   return `sk_live_${randomBytes(32).toString("hex")}`;
 }
@@ -58,6 +67,20 @@ function hashApiKey(plaintextKey: string): string {
 
 function defaultDesktopManagedKeyName(gatewayId: string): string {
   return `Desktop ${gatewayId}`;
+}
+
+function scheduleLastUsedAtUpdate(apiKeyId: string, lastUsedAt: Date): void {
+  withDb((db) =>
+    db.apiKey.update({
+      where: { id: apiKeyId },
+      data: { lastUsedAt },
+    })
+  ).catch((error: unknown) => {
+    log.error("Failed to update API key lastUsedAt", {
+      apiKeyId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
 }
 
 /**
@@ -221,11 +244,14 @@ export const apiKeysService = {
   },
 
   /**
-   * Verify a plaintext API key.
-   * Returns the userId and organizationId if valid, null otherwise.
-   * Updates lastUsedAt on successful verification.
+   * Verify a plaintext API key and return internal provenance metadata used by
+   * desktop-managed PoP policy. By default this updates lastUsedAt on success;
+   * PoP-enabled callers can defer that side effect until after enforcement.
    */
-  async verifyKey(plaintextKey: string): Promise<VerifiedApiKeyContext | null> {
+  async verifyKeyWithMetadata(
+    plaintextKey: string,
+    options: VerifyApiKeyOptions = {}
+  ): Promise<VerifiedApiKeyContextWithMetadata | null> {
     const hash = hashApiKey(plaintextKey);
     const now = new Date();
 
@@ -243,18 +269,9 @@ export const apiKeysService = {
       return null;
     }
 
-    // Update lastUsedAt asynchronously (best-effort, non-blocking)
-    withDb((db) =>
-      db.apiKey.update({
-        where: { id: record.id },
-        data: { lastUsedAt: now },
-      })
-    ).catch((error: unknown) => {
-      log.error("Failed to update API key lastUsedAt", {
-        apiKeyId: record.id,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    });
+    if (options.updateLastUsedAt !== false) {
+      scheduleLastUsedAtUpdate(record.id, now);
+    }
 
     const scopes = normalizeStoredScopes(
       sanitizeScopes(record.scopes),
@@ -268,10 +285,40 @@ export const apiKeysService = {
       });
     }
     return {
+      apiKeyId: record.id,
       userId: record.userId,
       organizationId: record.organizationId,
       scopes,
+      source: record.source,
+      gatewayId: record.gatewayId,
+      boundPublicKey: record.boundPublicKey,
     };
+  },
+
+  /**
+   * Verify a plaintext API key.
+   * Returns the userId and organizationId if valid, null otherwise.
+   * Updates lastUsedAt on successful verification.
+   */
+  async verifyKey(plaintextKey: string): Promise<VerifiedApiKeyContext | null> {
+    const context = await apiKeysService.verifyKeyWithMetadata(plaintextKey);
+    if (!context) {
+      return null;
+    }
+
+    return {
+      userId: context.userId,
+      organizationId: context.organizationId,
+      scopes: context.scopes,
+    };
+  },
+
+  /**
+   * Mark an already accepted API-key request as used without blocking the
+   * response path.
+   */
+  touchLastUsedAt(apiKeyId: string): void {
+    scheduleLastUsedAtUpdate(apiKeyId, new Date());
   },
 };
 

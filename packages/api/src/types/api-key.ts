@@ -31,3 +31,14 @@ export type VerifiedApiKeyContext = {
   organizationId: string;
   scopes: ApiKeyScope[];
 };
+
+/**
+ * Internal verification context that carries API-key provenance metadata.
+ * Route contracts must not expose key material, signatures, or public keys to clients.
+ */
+export type VerifiedApiKeyContextWithMetadata = VerifiedApiKeyContext & {
+  apiKeyId: string;
+  source: "USER_CREATED" | "DESKTOP_MANAGED";
+  gatewayId: string | null;
+  boundPublicKey: string | null;
+};
