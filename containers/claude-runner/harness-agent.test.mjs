@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -13,7 +14,9 @@ import {
   cloneAdditionalRepos,
   config,
   ERROR_CODES,
+  extractPrimaryPrInfo,
   extractSessionId,
+  finalizeRepo,
   findExistingRunDir,
   getHomeStateTransferPrefix,
   getWorkspaceStateRestorePrefixes,
@@ -33,6 +36,7 @@ import {
   validateSecrets,
   writeContextPackFiles,
   writeExecutionResult,
+  writeExecutionResultV2,
   writePrdFile,
 } from "./harness-agent.mjs";
 
@@ -59,6 +63,69 @@ function makeTempDir() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "harness-test-"));
   tempDirs.push(dir);
   return dir;
+}
+
+/**
+ * Build a self-contained local git fixture for cloneAdditionalRepos tests:
+ *   - bare repo at <parentDir>/origin.git on `main` with one empty commit
+ *   - fake HOME with .gitconfig rewriting https://github.com/<repo>.git to
+ *     the bare repo path (so cloneAdditionalRepos performs no network I/O)
+ *   - empty peers/ dir for the clone target
+ *
+ * The fake HOME is only consulted by git when buildGitAuthEnv() forwards it,
+ * which happens whenever a non-null githubToken is provided.
+ */
+function makeLocalGitFixture({ rewriteFullName = "org/repo" } = {}) {
+  const parentDir = makeTempDir();
+  const bareRepoPath = path.join(parentDir, "origin.git");
+  const wcDir = path.join(parentDir, "wc");
+  const fakeHome = path.join(parentDir, "fakehome");
+  const peersDir = path.join(parentDir, "peers");
+
+  const gitCommitEnv = {
+    ...process.env,
+    GIT_AUTHOR_NAME: "Test",
+    GIT_AUTHOR_EMAIL: "test@test.com",
+    GIT_COMMITTER_NAME: "Test",
+    GIT_COMMITTER_EMAIL: "test@test.com",
+  };
+
+  execFileSync("git", ["init", "--bare", "-b", "main", bareRepoPath]);
+  execFileSync("git", ["clone", bareRepoPath, wcDir]);
+  execFileSync("git", ["-C", wcDir, "commit", "--allow-empty", "-m", "init"], {
+    env: gitCommitEnv,
+  });
+  execFileSync("git", ["-C", wcDir, "push", "origin", "main"]);
+
+  fs.mkdirSync(fakeHome, { recursive: true });
+  fs.writeFileSync(
+    path.join(fakeHome, ".gitconfig"),
+    `[url "${bareRepoPath}"]\n\tinsteadOf = https://github.com/${rewriteFullName}.git\n`
+  );
+
+  return { parentDir, bareRepoPath, peersDir, fakeHome };
+}
+
+/**
+ * Run `fn` with process.env.HOME swapped to `fakeHome`, restoring the original
+ * value (including the unset case) on completion. Use to guarantee that the
+ * git subprocess in cloneAdditionalRepos picks up the fake gitconfig without
+ * leaking HOME into other tests.
+ */
+function withFakeHome(fakeHome, fn) {
+  const hadHome = Object.hasOwn(process.env, "HOME");
+  const origHome = process.env.HOME;
+  process.env.HOME = fakeHome;
+  try {
+    return fn();
+  } finally {
+    if (hadHome) {
+      process.env.HOME = origHome;
+    } else {
+      // biome-ignore lint/performance/noDelete: assigning undefined sets the env var to the string "undefined" in Node, which is wrong here — we need to fully unset HOME.
+      delete process.env.HOME;
+    }
+  }
 }
 
 /**
@@ -1128,6 +1195,109 @@ describe("writeExecutionResult", () => {
 });
 
 // ---------------------------------------------------------------------------
+// writeExecutionResultV2 — v2 envelope with schemaVersion + results array
+// ---------------------------------------------------------------------------
+
+describe("writeExecutionResultV2", () => {
+  test("writes v2 envelope with schemaVersion 2 and results array", () => {
+    const dir = makeTempDir();
+    const results = [
+      {
+        fullName: "org/repo",
+        status: "success",
+        hasChanges: true,
+        prUrl: "https://github.com/org/repo/pull/1",
+        prNumber: 1,
+        branchName: "symphony/test",
+        baseBranch: "main",
+        commitSha: "abc123",
+      },
+    ];
+
+    writeExecutionResultV2(dir, results);
+
+    const filePath = path.join(dir, "execution-result.json");
+    assert.ok(fs.existsSync(filePath));
+    const envelope = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+    assert.equal(envelope.schemaVersion, 2);
+    assert.ok(Array.isArray(envelope.results));
+    assert.equal(envelope.results.length, 1);
+    assert.deepEqual(envelope.results[0], results[0]);
+  });
+
+  test("single-repo runs produce length-1 results array", () => {
+    const dir = makeTempDir();
+    const results = [
+      {
+        fullName: "org/single-repo",
+        status: "success",
+        hasChanges: true,
+        prUrl: "https://github.com/org/single-repo/pull/7",
+        prNumber: 7,
+        branchName: "symphony/branch",
+        baseBranch: "main",
+        commitSha: "def456",
+      },
+    ];
+
+    writeExecutionResultV2(dir, results);
+
+    const filePath = path.join(dir, "execution-result.json");
+    const envelope = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+    assert.equal(envelope.results.length, 1);
+  });
+
+  test("overwrites existing file unconditionally", () => {
+    const dir = makeTempDir();
+    const filePath = path.join(dir, "execution-result.json");
+    fs.writeFileSync(filePath, JSON.stringify({ old: true }));
+
+    const results = [
+      {
+        fullName: "org/repo",
+        status: "success",
+        hasChanges: true,
+        prUrl: "https://github.com/org/repo/pull/2",
+        prNumber: 2,
+        branchName: "symphony/new",
+        baseBranch: "main",
+        commitSha: "ghi789",
+      },
+    ];
+
+    writeExecutionResultV2(dir, results);
+
+    const envelope = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+    assert.equal(envelope.schemaVersion, 2);
+    assert.equal(envelope.old, undefined);
+    assert.ok(Array.isArray(envelope.results));
+  });
+
+  test("throws HarnessError on invalid entries and refuses to write", () => {
+    const dir = makeTempDir();
+    // Missing required fields — schema validation must reject and throw,
+    // not warn-and-write a malformed envelope downstream consumers can't parse.
+    const results = [{ status: "success" }];
+
+    assert.throws(
+      () => writeExecutionResultV2(dir, results),
+      (err) => err instanceof HarnessError
+    );
+
+    const filePath = path.join(dir, "execution-result.json");
+    assert.ok(
+      !fs.existsSync(filePath),
+      "execution-result.json must not be written when validation fails"
+    );
+    const tmpPath = `${filePath}.tmp`;
+    assert.ok(
+      !fs.existsSync(tmpPath),
+      "temp file must not be left behind when validation fails"
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // parseTokenUsageFromJsonl — structured JSONL parsing
 // ---------------------------------------------------------------------------
 
@@ -1668,6 +1838,100 @@ describe("cloneAdditionalRepos", () => {
       }
     );
   });
+
+  // ---------------------------------------------------------------------------
+  // The tests below verify post-clone git operations (identity setup and working
+  // branch creation) by running against a real local git repository.
+  //
+  // Strategy:
+  //   1. Create a local bare git repository with one empty commit on `main`.
+  //   2. Write a fake HOME/.gitconfig that rewrites the hardcoded
+  //      https://github.com/org/repo.git URL to the local bare repo path.
+  //      This avoids any network access.
+  //   3. Temporarily override process.env.HOME so that buildGitAuthEnv() passes
+  //      the fake HOME to the git subprocess (HOME is included in the env only
+  //      when a non-null githubToken is provided — so a fake token is used).
+  //   4. Assert observable state in the cloned repo directory: git config values
+  //      and the current branch name.
+  // ---------------------------------------------------------------------------
+
+  test("sets git identity after clone", () => {
+    const { peersDir, fakeHome } = makeLocalGitFixture();
+
+    withFakeHome(fakeHome, () => {
+      resetConfig({
+        committerName: "Alice Tester",
+        committerEmail: "alice@example.com",
+      });
+      const clonedDirs = cloneAdditionalRepos(
+        [{ fullName: "org/repo", branch: "main", githubToken: "fake-token" }],
+        peersDir
+      );
+
+      assert.equal(clonedDirs.length, 1, "expected one cloned directory");
+      const cloneDir = clonedDirs[0];
+
+      const actualName = execFileSync("git", ["config", "user.name"], {
+        cwd: cloneDir,
+      })
+        .toString()
+        .trim();
+      const actualEmail = execFileSync("git", ["config", "user.email"], {
+        cwd: cloneDir,
+      })
+        .toString()
+        .trim();
+
+      assert.equal(
+        actualName,
+        "Alice Tester",
+        "user.name must match committerName"
+      );
+      assert.equal(
+        actualEmail,
+        "alice@example.com",
+        "user.email must match committerEmail"
+      );
+    });
+  });
+
+  test("creates and checks out working branch", () => {
+    const { peersDir, fakeHome } = makeLocalGitFixture();
+
+    withFakeHome(fakeHome, () => {
+      const loopId = "test-loop-abc123";
+      resetConfig({ loopId });
+      const clonedDirs = cloneAdditionalRepos(
+        [{ fullName: "org/repo", branch: "main", githubToken: "fake-token" }],
+        peersDir
+      );
+
+      assert.equal(clonedDirs.length, 1, "expected one cloned directory");
+      const cloneDir = clonedDirs[0];
+
+      const loopSuffix = loopId
+        .toLowerCase()
+        .replaceAll(/[^a-z0-9-]/g, "-")
+        .slice(0, 50);
+      const expectedBranch = `symphony/${loopSuffix}`;
+
+      const actualBranch = execFileSync(
+        "git",
+        ["rev-parse", "--abbrev-ref", "HEAD"],
+        {
+          cwd: cloneDir,
+        }
+      )
+        .toString()
+        .trim();
+
+      assert.equal(
+        actualBranch,
+        expectedBranch,
+        `working branch must be ${expectedBranch}`
+      );
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1862,5 +2126,253 @@ describe("refreshGitHubToken", () => {
 
     assert.equal(config.githubToken, "new-primary-token");
     assert.equal(contextPack.additionalRepos[0].githubToken, "old-peer1");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// finalizeRepo — per-repo finalization helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Initialize a minimal local git repository with one empty commit.
+ * Returns the working-copy directory path.
+ */
+function makeGitRepo(parentDir, branchName = "main") {
+  const gitCommitEnv = {
+    ...process.env,
+    GIT_AUTHOR_NAME: "Test Author",
+    GIT_AUTHOR_EMAIL: "test@test.com",
+    GIT_COMMITTER_NAME: "Test Author",
+    GIT_COMMITTER_EMAIL: "test@test.com",
+  };
+
+  const repoDir = path.join(parentDir, "repo");
+  execFileSync("git", ["init", "-b", branchName, repoDir]);
+  execFileSync(
+    "git",
+    ["-C", repoDir, "commit", "--allow-empty", "-m", "init"],
+    {
+      env: gitCommitEnv,
+    }
+  );
+  // Set git identity so future commits succeed
+  execFileSync("git", ["-C", repoDir, "config", "user.email", "test@test.com"]);
+  execFileSync("git", ["-C", repoDir, "config", "user.name", "Test Author"]);
+  return repoDir;
+}
+
+describe("finalizeRepo", () => {
+  test("returns skipped result when repo has no changes", async () => {
+    const parentDir = makeTempDir();
+    const repoDir = makeGitRepo(parentDir);
+
+    resetConfig({ targetRepo: null, targetBranch: "main" });
+
+    const result = await finalizeRepo({
+      workDir: repoDir,
+      fullName: "test/repo",
+      baseBranch: "main",
+      githubToken: "ghp_test123",
+      safetyCommitMsg: "test commit",
+    });
+
+    assert.deepEqual(result, {
+      fullName: "test/repo",
+      status: "skipped",
+      reason: "no_changes",
+    });
+  });
+
+  test("returns failed result when PR creation returns null", async () => {
+    const parentDir = makeTempDir();
+    const repoDir = makeGitRepo(parentDir);
+
+    // Create a new branch so detectBranchName returns non-null
+    execFileSync("git", [
+      "-C",
+      repoDir,
+      "checkout",
+      "-b",
+      "symphony/test-loop",
+    ]);
+
+    // Stage an uncommitted change
+    const testFile = path.join(repoDir, "work.txt");
+    fs.writeFileSync(testFile, "some work content");
+    execFileSync("git", ["-C", repoDir, "add", "work.txt"]);
+
+    // config.targetRepo = null → attemptSafetyCommit and ensureBranchPushed are no-ops.
+    // createPullRequest receives override targetRepo="test/repo" so it tries, but gh
+    // is unavailable in tests — the error is caught internally and returns null.
+    // finalizeRepo must return status:"failed" when prInfo is null so the envelope
+    // does not violate RepoExecutionResultSchema (which requires non-null
+    // prUrl/prNumber for the "success" variant).
+    resetConfig({ targetRepo: null, targetBranch: "main" });
+
+    const result = await finalizeRepo({
+      workDir: repoDir,
+      fullName: "test/repo",
+      baseBranch: "main",
+      githubToken: "ghp_test123",
+      safetyCommitMsg: "test commit",
+    });
+
+    assert.equal(result.status, "failed");
+    assert.equal(result.fullName, "test/repo");
+    assert.equal(result.error, "PR creation failed");
+  });
+
+  test("returns failed result with string error when git status throws", async () => {
+    // Pass a workDir that is not a git repository so git status throws.
+    // This test only verifies the failure-shape contract; actual token
+    // scrubbing is exercised in the registerSecret/redactSensitive test
+    // below, since `git status` failure messages do not contain the token.
+    const nonGitDir = makeTempDir();
+    const sensitiveToken = `ghp_secret-${Date.now()}`;
+
+    resetConfig({ targetRepo: null, targetBranch: "main" });
+
+    const result = await finalizeRepo({
+      workDir: nonGitDir,
+      fullName: "test/repo",
+      baseBranch: "main",
+      githubToken: sensitiveToken,
+      safetyCommitMsg: "test commit",
+    });
+
+    assert.equal(result.status, "failed");
+    assert.ok(
+      typeof result.error === "string",
+      "result.error should be a string"
+    );
+  });
+
+  test("calls registerSecret with the provided token (observable via redactSensitive)", async () => {
+    const parentDir = makeTempDir();
+    const repoDir = makeGitRepo(parentDir);
+
+    // Use a token unique enough not to collide with other test registrations
+    const uniqueToken = `ghp_unique-finalize-token-${Date.now()}`;
+
+    resetConfig({ targetRepo: null, targetBranch: "main" });
+
+    await finalizeRepo({
+      workDir: repoDir,
+      fullName: "test/repo",
+      baseBranch: "main",
+      githubToken: uniqueToken,
+      safetyCommitMsg: "test commit",
+    });
+
+    // registerSecret is called inside finalizeRepo. Its observable effect is that
+    // redactSensitive now scrubs occurrences of the token.
+    const scrubbed = redactSensitive(`Authorization: Bearer ${uniqueToken}`);
+    assert.ok(
+      !scrubbed.includes(uniqueToken),
+      "token must be scrubbed after finalizeRepo registers it as a secret"
+    );
+    assert.ok(
+      scrubbed.includes("[REDACTED]"),
+      "scrubbed string must contain [REDACTED]"
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// extractPrimaryPrInfo — flat prInfo extraction from per-repo results array
+// ---------------------------------------------------------------------------
+
+describe("extractPrimaryPrInfo", () => {
+  test("extracts flat prInfo from primary success result", () => {
+    const results = [
+      {
+        fullName: "org/repo",
+        status: "success",
+        prUrl: "https://github.com/org/repo/pull/42",
+        prNumber: 42,
+        branchName: "symphony/test",
+        commitSha: "abc123",
+      },
+    ];
+    const result = extractPrimaryPrInfo(results, "org/repo");
+    assert.deepEqual(result, {
+      prUrl: "https://github.com/org/repo/pull/42",
+      prNumber: 42,
+      branchName: "symphony/test",
+      commitSha: "abc123",
+    });
+  });
+
+  test("returns null when primary repo not found", () => {
+    const results = [
+      {
+        fullName: "org/other-repo",
+        status: "success",
+        prUrl: "https://github.com/org/other-repo/pull/7",
+        prNumber: 7,
+        branchName: "symphony/test",
+        commitSha: "def456",
+      },
+    ];
+    const result = extractPrimaryPrInfo(results, "nonexistent/repo");
+    assert.equal(result, null);
+  });
+
+  test("returns null when primary repo has failed status", () => {
+    const results = [
+      {
+        fullName: "org/repo",
+        status: "failed",
+        prUrl: null,
+        prNumber: null,
+        branchName: "symphony/test",
+        commitSha: null,
+      },
+    ];
+    const result = extractPrimaryPrInfo(results, "org/repo");
+    assert.equal(result, null);
+  });
+
+  test("returns null when primary repo has skipped status", () => {
+    const results = [
+      {
+        fullName: "org/repo",
+        status: "skipped",
+        prUrl: null,
+        prNumber: null,
+        branchName: "symphony/test",
+        commitSha: null,
+      },
+    ];
+    const result = extractPrimaryPrInfo(results, "org/repo");
+    assert.equal(result, null);
+  });
+
+  test("selects correct repo from multi-repo results", () => {
+    const results = [
+      {
+        fullName: "org/peer-repo",
+        status: "success",
+        prUrl: "https://github.com/org/peer-repo/pull/10",
+        prNumber: 10,
+        branchName: "symphony/test",
+        commitSha: "peer999",
+      },
+      {
+        fullName: "org/primary-repo",
+        status: "success",
+        prUrl: "https://github.com/org/primary-repo/pull/42",
+        prNumber: 42,
+        branchName: "symphony/test",
+        commitSha: "primary123",
+      },
+    ];
+    const result = extractPrimaryPrInfo(results, "org/primary-repo");
+    assert.deepEqual(result, {
+      prUrl: "https://github.com/org/primary-repo/pull/42",
+      prNumber: 42,
+      branchName: "symphony/test",
+      commitSha: "primary123",
+    });
   });
 });

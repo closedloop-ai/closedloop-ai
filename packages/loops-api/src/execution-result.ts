@@ -150,7 +150,7 @@ export function parseExecutionResultFile(
         schemaVersion: 2,
       };
     }
-    const results = normalizeV2ExecutionResult(v2Result.data);
+    const results = v2Result.data.results;
     return {
       ok: true,
       results,
@@ -355,12 +355,6 @@ export function normalizeV1ExecutionResult(
     entry.githubId = result.githubId;
   }
   return [entry];
-}
-
-export function normalizeV2ExecutionResult(
-  envelope: ExecutionResultV2
-): RepoExecutionResult[] {
-  return envelope.results;
 }
 
 export function getPrimaryRepoResult(

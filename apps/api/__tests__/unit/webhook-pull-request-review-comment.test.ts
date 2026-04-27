@@ -25,175 +25,30 @@ vi.mock("@repo/database", () => ({
 
 // Import after mocking
 import { handlePullRequestReviewComment } from "@/app/webhooks/github/handlers/pull-request-review-comment-handler";
+import {
+  createPullRequest,
+  createRepository,
+  createReviewComment,
+  createSender as createUserSender,
+} from "../fixtures/github-webhook-fixtures";
 
 // Mock database transaction client
 let mockTx: any;
 
-/**
- * Helper to create minimal repository object for webhook events
- */
-function createRepository(githubId: number) {
-  return {
-    id: githubId,
-    node_id: `R_${githubId}`,
-    name: "test-repo",
-    full_name: "owner/test-repo",
-    private: false,
-    owner: {
-      login: "owner",
-      id: 12_345,
-      node_id: "U_12345",
-      avatar_url: "",
-      gravatar_id: "",
-      url: "",
-      html_url: "",
-      followers_url: "",
-      following_url: "",
-      gists_url: "",
-      starred_url: "",
-      subscriptions_url: "",
-      organizations_url: "",
-      repos_url: "",
-      events_url: "",
-      received_events_url: "",
-      type: "User" as const,
-      site_admin: false,
-    },
-    html_url: "",
-    description: null,
-    fork: false,
-    url: "",
-    // ... other required fields omitted for brevity
-  };
-}
+const REVIEWER_USER = {
+  login: "reviewer",
+  id: 99_999,
+  avatar_url: "https://example.com/avatar.png",
+};
 
-/**
- * Helper to create minimal pull request object
- */
-function createPullRequest(partial: {
-  number: number;
-  title?: string;
-  html_url?: string;
-}) {
-  return {
-    id: 1,
-    node_id: "PR_1",
-    number: partial.number,
-    title: partial.title ?? "Test PR",
-    html_url: partial.html_url ?? "https://github.com/owner/test-repo/pull/1",
-    user: {
-      login: "test-user",
-      id: 1,
-      node_id: "U_1",
-      avatar_url: "",
-      gravatar_id: "",
-      url: "",
-      html_url: "",
-      followers_url: "",
-      following_url: "",
-      gists_url: "",
-      starred_url: "",
-      subscriptions_url: "",
-      organizations_url: "",
-      repos_url: "",
-      events_url: "",
-      received_events_url: "",
-      type: "User" as const,
-      site_admin: false,
-    },
-    state: "open",
-    // Required fields for webhook type
-    url: "",
-    diff_url: "",
-    patch_url: "",
-    issue_url: "",
-    commits_url: "",
-    review_comments_url: "",
-    review_comment_url: "",
-    comments_url: "",
-    statuses_url: "",
-    created_at: "2026-02-10T00:00:00Z",
-    updated_at: "2026-02-10T00:00:00Z",
-  } as any;
-}
-
-/**
- * Helper to create minimal review comment object
- */
-function createComment(partial: {
-  id: number;
-  body: string;
-  path?: string;
-  line?: number;
-  pull_request_review_id?: number;
-}) {
-  return {
-    id: partial.id,
-    node_id: `PRRC_${partial.id}`,
-    diff_hunk: "@@ -1,1 +1,1 @@",
-    path: partial.path ?? "src/file.ts",
-    line: partial.line ?? 42,
-    body: partial.body,
-    pull_request_review_id: partial.pull_request_review_id ?? null,
-    user: {
-      login: "reviewer",
-      id: 99_999,
-      node_id: "U_99999",
-      avatar_url: "https://example.com/avatar.png",
-      gravatar_id: "",
-      url: "",
-      html_url: "",
-      followers_url: "",
-      following_url: "",
-      gists_url: "",
-      starred_url: "",
-      subscriptions_url: "",
-      organizations_url: "",
-      repos_url: "",
-      events_url: "",
-      received_events_url: "",
-      type: "User" as const,
-      site_admin: false,
-    },
-    created_at: "2026-02-10T12:00:00Z",
-    updated_at: "2026-02-10T12:00:00Z",
-    html_url: `https://github.com/owner/test-repo/pull/1#discussion_r${partial.id}`,
-    pull_request_url: "",
-    author_association: "CONTRIBUTOR" as const,
-    url: "",
-    _links: {
-      self: { href: "" },
-      html: { href: "" },
-      pull_request: { href: "" },
-    },
-  } as any;
-}
-
-/**
- * Helper to create minimal sender object
- */
+// This handler's sender is the reviewer commenting on the PR, not the PR
+// author. The fixture default sender is "test-user" (the PR author), so
+// override with the reviewer identity at every call site.
 function createSender() {
-  return {
-    login: "reviewer",
-    id: 99_999,
-    node_id: "U_99999",
-    avatar_url: "https://example.com/avatar.png",
-    gravatar_id: "",
-    url: "",
-    html_url: "",
-    followers_url: "",
-    following_url: "",
-    gists_url: "",
-    starred_url: "",
-    subscriptions_url: "",
-    organizations_url: "",
-    repos_url: "",
-    events_url: "",
-    received_events_url: "",
-    type: "User" as const,
-    site_admin: false,
-  };
+  return createUserSender(REVIEWER_USER);
 }
+
+const createComment = createReviewComment;
 
 describe("handlePullRequestReviewComment", () => {
   beforeEach(() => {

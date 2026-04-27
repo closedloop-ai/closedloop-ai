@@ -73,7 +73,11 @@ import { withDb } from "@repo/database";
 import type { Mock } from "vitest";
 import { assertEntityInOrganization } from "@/lib/entity-validation";
 import { fanOutJudgeScores } from "@/lib/judge-score-fanout";
-import { ingestExecutionArtifacts } from "@/lib/loops/loop-commands/execute-handler";
+import {
+  downloadExecutionArtifacts,
+  executionArtifactsFromUpload,
+  ingestExecutionArtifacts,
+} from "@/lib/loops/loop-commands/execute-handler";
 import {
   downloadPlanArtifacts,
   ingestPlanArtifacts,
@@ -117,6 +121,24 @@ function makeLoop(overrides: Partial<Loop> = {}): Loop {
     updatedAt: new Date("2026-01-01"),
     ...overrides,
   });
+}
+
+function mockExecutionDownloadArtifacts(
+  executionResult: unknown,
+  codeJudgesReport: unknown = null
+): void {
+  mockDownloadArtifactFile.mockImplementation(
+    (_stateKeyPrefix: string, artifactName: string) => {
+      if (artifactName === "execution-result.json") {
+        return Promise.resolve(Buffer.from(JSON.stringify(executionResult)));
+      }
+      if (artifactName === "code-judges.json" && codeJudgesReport !== null) {
+        return Promise.resolve(Buffer.from(JSON.stringify(codeJudgesReport)));
+      }
+      return Promise.resolve(null);
+    }
+  );
+  mockDownloadPromptSnapshotMarkdownEntries.mockResolvedValue([]);
 }
 
 // ---------------------------------------------------------------------------
@@ -170,6 +192,192 @@ You are a helpful agent.
     expect(artifacts.promptsSnapshot).toBeNull();
     expect(artifacts.planContent).toBeNull();
     expect(artifacts.judgesReport).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// downloadExecutionArtifacts — execution result parsing
+// ---------------------------------------------------------------------------
+
+describe("downloadExecutionArtifacts — execution result parsing", () => {
+  const primaryRepo = "owner/primary";
+  const otherRepo = "owner/other";
+  const primaryLoop = makeLoop({
+    repo: { fullName: primaryRepo, branch: "main" },
+  });
+  const primarySuccess = {
+    status: "success" as const,
+    fullName: primaryRepo,
+    prUrl: "https://github.com/owner/primary/pull/42",
+    prNumber: 42,
+    branchName: "feat/primary",
+    baseBranch: "main",
+    hasChanges: true,
+  };
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("normalizes v1 execution results into a single success repo entry", async () => {
+    const v1ExecutionResult = {
+      has_changes: true,
+      pr_url: "https://github.com/owner/primary/pull/42",
+      pr_number: 42,
+      pr_title: "Symphony: primary",
+      branch_name: "feat/primary",
+      base_ref: "main",
+      github_id: 123,
+      commit_sha: "abc123",
+    };
+    const codeJudgesReport = makeJudgesReport("code-report");
+    mockExecutionDownloadArtifacts(v1ExecutionResult, codeJudgesReport);
+
+    const artifacts = await downloadExecutionArtifacts(
+      STATE_KEY_PREFIX,
+      primaryLoop
+    );
+
+    expect(artifacts.codeJudgesReport).toEqual(codeJudgesReport);
+    expect(artifacts.promptsSnapshot).toBeNull();
+    expect(artifacts.executionResult).toHaveLength(1);
+    expect(artifacts.executionResult?.[0]).toMatchObject({
+      status: "success",
+      fullName: primaryRepo,
+      prNumber: 42,
+      prUrl: "https://github.com/owner/primary/pull/42",
+      branchName: "feat/primary",
+      baseBranch: "main",
+      prTitle: "Symphony: primary",
+      commitSha: "abc123",
+      githubId: 123,
+    });
+  });
+
+  it("returns every repo entry from v2 execution results", async () => {
+    const otherSuccess = {
+      status: "success" as const,
+      fullName: otherRepo,
+      prUrl: "https://github.com/owner/other/pull/7",
+      prNumber: 7,
+      branchName: "feat/other",
+      baseBranch: "main",
+      hasChanges: true,
+    };
+    mockExecutionDownloadArtifacts({
+      schemaVersion: 2,
+      results: [otherSuccess, primarySuccess],
+    });
+
+    const artifacts = await downloadExecutionArtifacts(
+      STATE_KEY_PREFIX,
+      primaryLoop
+    );
+
+    expect(artifacts.executionResult).toEqual([otherSuccess, primarySuccess]);
+  });
+
+  it("preserves skipped and failed peer entries from v2 results", async () => {
+    const results = [
+      primarySuccess,
+      {
+        status: "skipped" as const,
+        fullName: otherRepo,
+        reason: "no_changes",
+      },
+      {
+        status: "failed" as const,
+        fullName: "owner/peer-c",
+        error: "executor crashed",
+      },
+    ];
+    mockExecutionDownloadArtifacts({ schemaVersion: 2, results });
+
+    const artifacts = await downloadExecutionArtifacts(
+      STATE_KEY_PREFIX,
+      primaryLoop
+    );
+
+    expect(artifacts.executionResult).toEqual(results);
+  });
+
+  it("returns null executionResult when v2 envelope fails to parse", async () => {
+    mockExecutionDownloadArtifacts({
+      schemaVersion: 2,
+      results: [{ status: "success", fullName: "owner/repo" }],
+    });
+
+    const artifacts = await downloadExecutionArtifacts(
+      STATE_KEY_PREFIX,
+      primaryLoop
+    );
+
+    expect(artifacts.executionResult).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// executionArtifactsFromUpload — execution result validation
+// ---------------------------------------------------------------------------
+
+describe("executionArtifactsFromUpload — execution result validation", () => {
+  const uploadLoop = makeLoop({
+    repo: { fullName: "owner/repo", branch: "main" },
+  });
+
+  it("normalizes legacy v1 uploaded execution results", () => {
+    const artifacts = executionArtifactsFromUpload(
+      {
+        executionResult: {
+          has_changes: false,
+          pr_url: "",
+          pr_number: 0,
+          branch_name: "",
+          base_ref: "main",
+          commit_sha: null,
+        },
+      },
+      uploadLoop
+    );
+
+    expect(artifacts.executionResult).toEqual([
+      { status: "skipped", fullName: "owner/repo", reason: "no_changes" },
+    ]);
+    expect(artifacts.codeJudgesReport).toBeNull();
+    expect(artifacts.promptsSnapshot).toBeNull();
+  });
+
+  it("preserves v2 uploaded execution result entries", () => {
+    const results = [
+      {
+        status: "failed" as const,
+        fullName: "owner/repo",
+        error: "executor crashed",
+      },
+    ];
+
+    const artifacts = executionArtifactsFromUpload(
+      {
+        executionResult: { schemaVersion: 2, results },
+      },
+      uploadLoop
+    );
+
+    expect(artifacts.executionResult).toEqual(results);
+  });
+
+  it("fails invalid uploaded execution results before ingestion", () => {
+    expect(() =>
+      executionArtifactsFromUpload(
+        {
+          executionResult: {
+            schemaVersion: 2,
+            results: [{ status: "success" }],
+          },
+        },
+        uploadLoop
+      )
+    ).toThrow();
   });
 });
 

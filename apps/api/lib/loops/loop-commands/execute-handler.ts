@@ -1,4 +1,6 @@
 import {
+  ExecutionResultFileSchema,
+  ExecutionResultV2Schema,
   parseExecutionResultFile,
   type RepoExecutionResult,
 } from "@closedloop-ai/loops-api/execution-result";
@@ -40,7 +42,7 @@ export type ExecutionArtifacts = {
  * Download and parse artifacts relevant to execute commands from S3.
  * Only fetches execution-result.json, code-judges.json, and prompt snapshots.
  */
-async function downloadExecutionArtifacts(
+export async function downloadExecutionArtifacts(
   stateKeyPrefix: string,
   loop: Loop
 ): Promise<ExecutionArtifacts> {
@@ -152,8 +154,16 @@ export async function ingestExecutionArtifacts(
 // Upload-based loading (desktop path)
 // ---------------------------------------------------------------------------
 
-const executionUploadBodySchema = z.object({
-  executionResult: z.unknown().optional(),
+// FEAT-55: validate desktop execute uploads with a strict v1/v2 schema union so
+// malformed payloads fail the command instead of being silently ignored.
+const legacyExecutionUploadSchema = ExecutionResultFileSchema.extend({
+  schemaVersion: z.never().optional(),
+});
+
+const executionUploadSchema = z.object({
+  executionResult: z
+    .union([ExecutionResultV2Schema, legacyExecutionUploadSchema])
+    .optional(),
   codeJudges: judgesReportSchema.optional(),
 });
 
@@ -165,17 +175,29 @@ const legacyV1ExecutionUploadSchema = z
   })
   .passthrough();
 
-function executionArtifactsFromUpload(
+export function executionArtifactsFromUpload(
   uploaded: JsonObject,
   loop: Loop
 ): ExecutionArtifacts {
-  const parsed = executionUploadBodySchema.parse(uploaded);
+  // Apply main's legacy base_ref→base_branch fallback before strict validation
+  // so v1 desktop payloads that only carry base_branch still parse.
+  const normalizedUploaded =
+    uploaded.executionResult !== undefined
+      ? {
+          ...uploaded,
+          executionResult: withLegacyUploadBaseRefFallback(
+            uploaded.executionResult
+          ),
+        }
+      : uploaded;
+
+  const parsed = executionUploadSchema.parse(normalizedUploaded);
   const codeJudgesReport = (parsed.codeJudges as JudgesReport) ?? null;
 
   let executionResult: RepoExecutionResult[] | null = null;
   if (parsed.executionResult !== undefined) {
     const result = parseExecutionResultFile(
-      withLegacyUploadBaseRefFallback(parsed.executionResult),
+      parsed.executionResult,
       loop.repo?.fullName
     );
     if (result.ok) {

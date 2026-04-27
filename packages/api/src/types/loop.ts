@@ -228,8 +228,6 @@ export {
   getPrimaryRepoResult,
   isSupportedExecutionResultSchemaVersion,
   normalizeV1ExecutionResult,
-  normalizeV2ExecutionResult,
-  parseExecutionResultFile,
   RepoExecutionResultBaseSchema,
   RepoExecutionResultSchema,
   RepoExecutionResultsSchema,
