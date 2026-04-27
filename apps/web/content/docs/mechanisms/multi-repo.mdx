@@ -82,6 +82,35 @@ Tasks tagged `[CROSS-REPO: peer-backend]` are planned to land in that peer's wor
 
 The desktop app auto-clones repositories that are referenced in a cloud command but missing locally (via `gh repo clone`, 120-second timeout). For multi-repo loops, ensure every peer repo either exists in your sandbox or is accessible via `gh` before dispatch. You can pre-populate `~/.closedloop-ai/config/repos.json` with the set you expect to use frequently.
 
+## Authorization at loop create
+
+`additionalRepos` is now authorized and verified the moment a loop is created — not only when a `PLAN` runs. The control plane validates each peer against the calling org's GitHub installation and confirms the requested branch exists. Failures surface as structured errors:
+
+| Error | Status | Meaning |
+|---|---|---|
+| `UnauthorizedRepoError` | `403` | The peer repo is not installed for this org. Install or re-authorize it in the GitHub app. |
+| `BranchNotFoundError` | `400` | The base branch does not exist on the peer. Push the branch or correct the name. |
+| Duplicate-repo validation error | `400` | The same repo appears more than once in `additionalRepos`. |
+
+`POST /loops/{id}/github-token` also accepts an optional `additionalRepos` body so a desktop harness can scope the token request to the actual peer set. When the body is omitted (or invalid), the route falls back to the loop record on file.
+
+## Multi-repo execution results (v2)
+
+When a multi-repo loop completes, the runtime publishes a v2 completion event whose `results[]` field is a discriminated union per peer:
+
+```json
+{
+  "schemaVersion": 2,
+  "results": [
+    { "status": "success", "repo": "primary", "branch": "feat/payments", "prUrl": "https://github.com/acme/primary/pull/142" },
+    { "status": "skipped", "repo": "peer-mobile", "reason": "no changes required" },
+    { "status": "failed", "repo": "peer-backend", "error": "build-validator failed" }
+  ]
+}
+```
+
+Single-repo loops continue to publish the v1 event shape. The platform normalizes both into a unified result so judges, the activity feed, and downstream automation see one consistent structure.
+
 ## Related reading
 
 <Cards>

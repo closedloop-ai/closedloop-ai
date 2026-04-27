@@ -21,6 +21,9 @@
     "process-management",
     "recovery",
     "telemetry",
-    "plugins"
+    "plugins",
+    "self-learning",
+    "artifacts",
+    "agents-api"
   ]
 }

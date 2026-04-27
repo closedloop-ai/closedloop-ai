@@ -1,0 +1,85 @@
+---
+title: Agents API
+description: Store, version, and bulk-ingest the expert agents that drive ClosedLoop.ai loops.
+---
+
+The agents API is the durable home for the expert agents that the `code` and `judges` plugins use to plan, implement, and grade work. Where the [`bootstrap`](./plugins/bootstrap) plugin generates a per-repo agent roster on disk, the agents API stores those agents at the organization level so they can be reused across repos, versioned, and pulled into context packs.
+
+## What an agent record holds
+
+Each agent is org-scoped and identified by a stable slug. The current version's prompt is the canonical text the loop runtime reads when assembling context.
+
+| Field | Meaning |
+|---|---|
+| `id` | Internal UUID. |
+| `slug` | URL-safe identifier auto-derived from the role and disambiguated within the org. |
+| `role` | Canonical role name, e.g. `test-strategist`, `security-privacy`, or a domain-specific role like `payments-domain`. |
+| `name` | Human-readable display name. |
+| `description` | One-line summary of the agent's purpose. |
+| `currentVersion` | Pointer to the live `AgentVersion`. |
+| `versions[]` | Full history of every prompt and metadata change. |
+
+Every prompt edit creates a new `AgentVersion` automatically. Versions are append-only — older versions remain queryable so loops in flight can continue to use the version they were started with.
+
+## Endpoints
+
+All endpoints live under `/agents` on the ClosedLoop API and are scoped to the caller's organization.
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/agents` | List agents for the organization. |
+| `POST` | `/agents` | Create a new agent (auto-generates slug, writes initial version). |
+| `GET` | `/agents/{idOrSlug}` | Fetch an agent by id or slug, including the current version. |
+| `PATCH` | `/agents/{idOrSlug}` | Update name, description, or prompt. Prompt and name updates require a non-empty `changeNote`. |
+| `DELETE` | `/agents/{idOrSlug}` | Remove an agent and all of its versions. |
+| `GET` | `/agents/{idOrSlug}/versions` | List every historical version. |
+| `GET` | `/agents/{idOrSlug}/versions/{version}` | Fetch a specific version. |
+| `POST` | `/agents/bulk-ingest` | Upsert a roster of agents in a single call (described below). |
+
+### Auto-versioning rules
+
+- Editing `prompt` or `name` always creates a new version.
+- Editing only `description` updates the agent record in place — no new version is written.
+- The `changeNote` field is required whenever a new version is produced and is preserved on the version record so reviewers know why it changed.
+- Slugs are immutable once assigned. To rename, create a new agent and migrate consumers.
+
+### Bulk ingest
+
+`POST /agents/bulk-ingest` is the path the [`bootstrap`](./plugins/bootstrap) plugin uses to push a freshly generated agent roster into the platform. It accepts a list of agents keyed by `role` and:
+
+- Deduplicates roles within the request before write so concurrent bootstraps cannot collide.
+- Upserts by `(organizationId, role)` — a uniqueness invariant enforced at the database level.
+- Creates a new version when the prompt or name changes; leaves the agent untouched when nothing has changed.
+- Returns each agent's current version and a per-row status (`created`, `updated`, `unchanged`).
+
+This makes bootstrap re-runs idempotent: running `/bootstrap:start` against a repo whose agents already exist will only produce versions for the agents that actually changed.
+
+## How agents flow into a loop
+
+1. `bootstrap` produces `.claude/agents/<name>.md` files on disk and a `critic-gates.json`.
+2. The desktop client (or a CI harness) calls `POST /agents/bulk-ingest` with the same roster so the org-level store stays in sync.
+3. When a loop starts, the orchestrator loads agents from the file system for execution; the platform pulls org-level agents into the [context pack](./context-packs) and into [judge](./judges) prompts.
+4. If the prompt for `payments-domain` is sharpened in the web app, the change is captured as a new version and propagates to subsequent loops the next time bootstrap or the runtime refreshes context.
+
+See [Bootstrap a repo](../workflows/bootstrap-a-repo) for the end-to-end flow.
+
+## Validators and guardrails
+
+- `changeNote` is required on prompt and name updates. The API rejects empty or whitespace-only notes.
+- `role` is normalized (lowercased, hyphenated). Two requests trying to claim the same role collide on `(organizationId, role)` and return a clear conflict error.
+- All endpoints validate request bodies with Zod. Schema errors return `400` with a structured `issues[]` payload.
+- Per-org querying means you cannot read or write agents owned by a different organization, even if you know the id.
+
+## Related reading
+
+<Cards>
+  <Card title="bootstrap plugin" href="./plugins/bootstrap">
+    Where the agent roster on disk is generated.
+  </Card>
+  <Card title="Context packs" href="./context-packs">
+    How agents and other artifacts are assembled into the prompt sent to a loop.
+  </Card>
+  <Card title="Judges" href="./judges">
+    How judge prompts use the same agent roster to grade outputs.
+  </Card>
+</Cards>

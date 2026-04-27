@@ -13,6 +13,20 @@ Loops are the execution backbone of ClosedLoop.ai. A loop is one concrete run of
 - a compute target (the desktop client to execute on)
 - a context pack and task framing
 
+## Loop commands
+
+A loop carries a `command` value that determines what it does. The control plane exposes the full set in the loops table command filter, and each command has its own status badge.
+
+| Command | Runs on | Inputs | Outputs |
+|---|---|---|---|
+| `PLAN` | desktop or cloud | PRD or ticket | `plan.json`, `plan.md`, critic reviews |
+| `EXECUTE` | desktop | finalized plan + repo | code changes, PR(s), judge reports |
+| `CODE_REVIEW` | desktop or cloud | base ref + PR | review verdict, suggested fixes |
+| `CHAT` | cloud | conversation | reply messages |
+| `BOOTSTRAP` | desktop only | repo (current workdir) | structured agent roster (no artifact files) |
+
+`BOOTSTRAP` is the newest member of the family. It runs the [`bootstrap` plugin](./plugins/bootstrap), produces structured results (no prompt, artifacts, or repo are passed in by the caller), and pushes the generated agent roster into the [agents API](./agents-api) via `POST /agents/bulk-ingest`.
+
 ## Lifecycle
 
 A loop is driven by `plugins/code/scripts/run-loop.sh`, which relaunches `claude -p` with a fresh 200K-token context for each iteration. The orchestrator prompt at `plugins/code/prompts/prompt.md` drives the phased workflow; state persists entirely in files under the work directory.
