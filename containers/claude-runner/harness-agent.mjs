@@ -1511,7 +1511,6 @@ function runClaudeAsync(args, { cwd, env }) {
   });
 }
 
-
 /**
  * Spawn a standalone Claude CLI call to review changes, create a proper
  * commit, push, and ensure a PR is open. Produces better commit messages

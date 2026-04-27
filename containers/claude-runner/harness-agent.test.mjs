@@ -122,6 +122,7 @@ function withFakeHome(fakeHome, fn) {
     if (hadHome) {
       process.env.HOME = origHome;
     } else {
+      // biome-ignore lint/performance/noDelete: assigning undefined sets the env var to the string "undefined" in Node, which is wrong here — we need to fully unset HOME.
       delete process.env.HOME;
     }
   }
