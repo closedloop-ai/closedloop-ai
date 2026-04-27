@@ -1,26 +1,81 @@
 ---
 title: PRD Template
-description: A simple PRD template for creating artifacts that agents and reviewers can execute against reliably.
+description: A reusable PRD template that produces artifacts agents and reviewers can execute against reliably.
 ---
 
-## Inputs
+Strong PRDs reduce ambiguity before a loop ever starts. They are also what the four PRD judges (`prd-auditor`, `prd-dependency-judge`, `prd-scope-judge`, `prd-testability-judge`) evaluate against.
+
+## Inputs you need
 
 - problem statement
 - user impact
-- constraints
+- constraints (tech, policy, business)
+- measurable success criteria
+- known risks
 
 ## Template
 
 ```md
-# Problem
+# <Feature name>
 
-# Desired Outcome
+## Problem
+What's broken, missing, or underserved today? Keep it one or two paragraphs.
 
-# Constraints
+## Desired Outcome
+What does the world look like once this ships? State the behavior change, not the implementation.
 
-# Success Criteria
+## User Stories
+- As a <role>, I want to <action> so that <outcome>.
+- As a <role>, I want to <action> so that <outcome>.
 
-# Risks
+Keep this list at or below eight stories per PRD. The scope judge enforces this.
+
+## Constraints
+- Technical constraints (existing stack, API contracts, migration budgets)
+- Policy / compliance constraints
+- Business constraints (deadlines, cost ceilings)
+
+## Success Criteria
+Each criterion must be independently measurable.
+- Metric: <what you will measure>. Target: <threshold>.
+- Behavior: <observable behavior>. Target: <true/false>.
+
+## Out of Scope
+What you are explicitly deciding not to build in this PRD.
+
+## Dependencies
+- Upstream: <other work that must land first>
+- Downstream: <work that will depend on this>
+- External: <third-party services, APIs, vendors>
+
+## Risks and Mitigations
+- Risk: <summary>. Mitigation: <plan>.
+
+## Kill Criteria
+What would cause you to stop this work mid-flight?
 ```
 
-Strong PRDs reduce ambiguity before a loop ever starts.
+## Why this shape
+
+Every section maps to one or more judges:
+
+- **Problem + Desired Outcome** → `prd-auditor` checks structural completeness.
+- **Success Criteria** → `prd-testability-judge` checks that every criterion is measurable.
+- **User Stories** → `prd-scope-judge` enforces the ≤ 8 stories check.
+- **Dependencies** → `prd-dependency-judge` checks for integration risk.
+
+If your PRD passes all four, you will start planning from an artifact that the orchestrator can faithfully execute against.
+
+## Related reading
+
+<Cards>
+  <Card title="Implementation plan template" href="./implementation-plan-template">
+    The next artifact in the workflow.
+  </Card>
+  <Card title="PRD to plan to execution" href="../workflows/prd-to-plan-to-execution">
+    How a PRD becomes a shipped PR.
+  </Card>
+  <Card title="Judges" href="../mechanisms/judges">
+    The PRD judges that score this template.
+  </Card>
+</Cards>

@@ -50,7 +50,7 @@ export function defineHandler<T>(config: {
   requiresParent: boolean;
   includePrimaryArtifact: boolean;
   downloadArtifacts: (stateKeyPrefix: string, loop: Loop) => Promise<T>;
-  downloadFromUpload?: (uploadedArtifacts: JsonObject) => T;
+  downloadFromUpload?: (uploadedArtifacts: JsonObject, loop: Loop) => T;
   ingest: (loop: Loop, organizationId: string, artifacts: T) => Promise<void>;
 }): LoopCommandHandler {
   return {
@@ -67,7 +67,7 @@ export function defineHandler<T>(config: {
           "Command handler does not support desktop upload ingestion"
         );
       }
-      const artifacts = config.downloadFromUpload(uploadedArtifacts);
+      const artifacts = config.downloadFromUpload(uploadedArtifacts, loop);
       await config.ingest(loop, organizationId, artifacts);
     },
   };

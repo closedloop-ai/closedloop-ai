@@ -10,42 +10,27 @@
  * - null snapshot: upsertFromSnapshot is called with null and does not throw
  */
 
-import { EvalStatus, type JudgesReport } from "@repo/api/src/types/evaluation";
 import type { Loop } from "@repo/api/src/types/loop";
 import { vi } from "vitest";
 
 // --- Mocks (must come before imports of the module under test) ---
 
-vi.mock("@repo/database", () => ({
-  withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
-  EvaluationReportType: {
-    PLAN: "PLAN",
-    CODE: "CODE",
-  },
-  EntityType: {
-    DOCUMENT: "DOCUMENT",
-    FEATURE: "FEATURE",
-    EXTERNAL_LINK: "EXTERNAL_LINK",
-  },
-  Prisma: {
-    sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({
-      strings,
-      values,
-    }),
-  },
-}));
+vi.mock("@repo/database", async () => {
+  const { createDatabaseMockModule } = await import("../fixtures/mock-modules");
+  return createDatabaseMockModule();
+});
 
-vi.mock("@repo/observability/log", () => ({
-  log: {
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  },
-}));
+vi.mock("@repo/observability/log", async () => {
+  const { createLogMockModule } = await import("../fixtures/mock-modules");
+  return createLogMockModule();
+});
 
-vi.mock("@/lib/prompts-service", () => ({
-  upsertFromSnapshot: vi.fn().mockResolvedValue(undefined),
-}));
+vi.mock("@/lib/prompts-service", async () => {
+  const { createPromptsServiceMockModule } = await import(
+    "../fixtures/mock-modules"
+  );
+  return createPromptsServiceMockModule();
+});
 
 vi.mock("@/app/documents/document-version-service", () => ({
   documentVersionService: {
@@ -70,9 +55,12 @@ vi.mock("@/lib/loops/loop-state", () => ({
   downloadPromptSnapshotMarkdownEntries: vi.fn(),
 }));
 
-vi.mock("@/lib/pr-linkage", () => ({
-  ensurePrLinkageRecords: vi.fn().mockResolvedValue(undefined),
-}));
+vi.mock("@/lib/pr-linkage", async () => {
+  const { createPrLinkageMockModule } = await import(
+    "../fixtures/mock-modules"
+  );
+  return createPrLinkageMockModule();
+});
 
 vi.mock("@/lib/entity-validation", () => ({
   assertEntityInOrganization: vi.fn().mockResolvedValue(undefined),
@@ -100,6 +88,7 @@ import {
   downloadPromptSnapshotMarkdownEntries,
 } from "@/lib/loops/loop-state";
 import { upsertFromSnapshot } from "@/lib/prompts-service";
+import { makeJudgesReport } from "../fixtures/ingestion-helpers";
 import { buildLoop } from "../fixtures/loop";
 
 const mockDownloadArtifactFile = downloadArtifactFile as unknown as Mock;
@@ -134,31 +123,9 @@ function makeLoop(overrides: Partial<Loop> = {}): Loop {
   });
 }
 
-function makeJudgesReport(reportId = "report-1"): JudgesReport {
-  return {
-    report_id: reportId,
-    timestamp: "2026-01-01T00:00:00Z",
-    stats: [
-      {
-        type: "case_score",
-        case_id: "test-judge",
-        final_status: EvalStatus.Passed,
-        metrics: [
-          {
-            metric_name: "test_score",
-            threshold: 0.8,
-            score: 0.95,
-            justification: "Test passed",
-          },
-        ],
-      },
-    ],
-  };
-}
-
 function mockExecutionDownloadArtifacts(
   executionResult: unknown,
-  codeJudgesReport: JudgesReport | null = null
+  codeJudgesReport: unknown = null
 ): void {
   mockDownloadArtifactFile.mockImplementation(
     (_stateKeyPrefix: string, artifactName: string) => {
@@ -235,6 +202,9 @@ You are a helpful agent.
 describe("downloadExecutionArtifacts — execution result parsing", () => {
   const primaryRepo = "owner/primary";
   const otherRepo = "owner/other";
+  const primaryLoop = makeLoop({
+    repo: { fullName: primaryRepo, branch: "main" },
+  });
   const primarySuccess = {
     status: "success" as const,
     fullName: primaryRepo,
@@ -265,13 +235,13 @@ describe("downloadExecutionArtifacts — execution result parsing", () => {
 
     const artifacts = await downloadExecutionArtifacts(
       STATE_KEY_PREFIX,
-      primaryRepo
+      primaryLoop
     );
 
     expect(artifacts.codeJudgesReport).toEqual(codeJudgesReport);
     expect(artifacts.promptsSnapshot).toBeNull();
-    expect(artifacts.repoResults).toHaveLength(1);
-    expect(artifacts.repoResults[0]).toMatchObject({
+    expect(artifacts.executionResult).toHaveLength(1);
+    expect(artifacts.executionResult?.[0]).toMatchObject({
       status: "success",
       fullName: primaryRepo,
       prNumber: 42,
@@ -301,10 +271,10 @@ describe("downloadExecutionArtifacts — execution result parsing", () => {
 
     const artifacts = await downloadExecutionArtifacts(
       STATE_KEY_PREFIX,
-      primaryRepo
+      primaryLoop
     );
 
-    expect(artifacts.repoResults).toEqual([otherSuccess, primarySuccess]);
+    expect(artifacts.executionResult).toEqual([otherSuccess, primarySuccess]);
   });
 
   it("preserves skipped and failed peer entries from v2 results", async () => {
@@ -325,13 +295,13 @@ describe("downloadExecutionArtifacts — execution result parsing", () => {
 
     const artifacts = await downloadExecutionArtifacts(
       STATE_KEY_PREFIX,
-      primaryRepo
+      primaryLoop
     );
 
-    expect(artifacts.repoResults).toEqual(results);
+    expect(artifacts.executionResult).toEqual(results);
   });
 
-  it("returns an empty repoResults array when v2 envelope fails to parse", async () => {
+  it("returns null executionResult when v2 envelope fails to parse", async () => {
     mockExecutionDownloadArtifacts({
       schemaVersion: 2,
       results: [{ status: "success", fullName: "owner/repo" }],
@@ -339,10 +309,10 @@ describe("downloadExecutionArtifacts — execution result parsing", () => {
 
     const artifacts = await downloadExecutionArtifacts(
       STATE_KEY_PREFIX,
-      primaryRepo
+      primaryLoop
     );
 
-    expect(artifacts.repoResults).toEqual([]);
+    expect(artifacts.executionResult).toBeNull();
   });
 });
 
@@ -351,20 +321,27 @@ describe("downloadExecutionArtifacts — execution result parsing", () => {
 // ---------------------------------------------------------------------------
 
 describe("executionArtifactsFromUpload — execution result validation", () => {
-  it("normalizes legacy v1 uploaded execution results", () => {
-    const artifacts = executionArtifactsFromUpload({
-      executionResult: {
-        has_changes: false,
-        pr_url: "",
-        pr_number: 0,
-        branch_name: "",
-        base_ref: "main",
-        commit_sha: null,
-      },
-    });
+  const uploadLoop = makeLoop({
+    repo: { fullName: "owner/repo", branch: "main" },
+  });
 
-    expect(artifacts.repoResults).toEqual([
-      { status: "skipped", fullName: "", reason: "no_changes" },
+  it("normalizes legacy v1 uploaded execution results", () => {
+    const artifacts = executionArtifactsFromUpload(
+      {
+        executionResult: {
+          has_changes: false,
+          pr_url: "",
+          pr_number: 0,
+          branch_name: "",
+          base_ref: "main",
+          commit_sha: null,
+        },
+      },
+      uploadLoop
+    );
+
+    expect(artifacts.executionResult).toEqual([
+      { status: "skipped", fullName: "owner/repo", reason: "no_changes" },
     ]);
     expect(artifacts.codeJudgesReport).toBeNull();
     expect(artifacts.promptsSnapshot).toBeNull();
@@ -379,18 +356,27 @@ describe("executionArtifactsFromUpload — execution result validation", () => {
       },
     ];
 
-    const artifacts = executionArtifactsFromUpload({
-      executionResult: { schemaVersion: 2, results },
-    });
+    const artifacts = executionArtifactsFromUpload(
+      {
+        executionResult: { schemaVersion: 2, results },
+      },
+      uploadLoop
+    );
 
-    expect(artifacts.repoResults).toEqual(results);
+    expect(artifacts.executionResult).toEqual(results);
   });
 
   it("fails invalid uploaded execution results before ingestion", () => {
     expect(() =>
-      executionArtifactsFromUpload({
-        executionResult: { schemaVersion: 2, results: [{ status: "success" }] },
-      })
+      executionArtifactsFromUpload(
+        {
+          executionResult: {
+            schemaVersion: 2,
+            results: [{ status: "success" }],
+          },
+        },
+        uploadLoop
+      )
     ).toThrow();
   });
 });
@@ -588,7 +574,7 @@ describe("ingestExecutionArtifacts — upsertFromSnapshot ordering", () => {
       });
 
     const artifacts = {
-      repoResults: [
+      executionResult: [
         {
           status: "success" as const,
           fullName: "org/repo",
@@ -618,7 +604,7 @@ describe("ingestExecutionArtifacts — upsertFromSnapshot ordering", () => {
       },
     };
 
-    await ingestExecutionArtifacts(loop, artifacts);
+    await ingestExecutionArtifacts(loop, ORG_ID, artifacts);
 
     expect(mockFanOutJudgeScores).toHaveBeenCalledTimes(1);
     const upsertIdx = callOrder.indexOf("upsertFromSnapshot");
@@ -676,7 +662,7 @@ describe("ingestExecutionArtifacts — upsertFromSnapshot ordering", () => {
       });
 
     const artifacts = {
-      repoResults: [
+      executionResult: [
         {
           status: "success" as const,
           fullName: "org/repo",
@@ -696,7 +682,7 @@ describe("ingestExecutionArtifacts — upsertFromSnapshot ordering", () => {
 
     // Should not throw
     await expect(
-      ingestExecutionArtifacts(loop, artifacts)
+      ingestExecutionArtifacts(loop, ORG_ID, artifacts)
     ).resolves.toBeUndefined();
 
     expect(mockUpsertFromSnapshot).toHaveBeenCalledWith(ORG_ID, null);

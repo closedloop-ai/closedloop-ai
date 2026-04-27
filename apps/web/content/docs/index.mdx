@@ -1,29 +1,67 @@
 ---
-title: Documentation
-description: A docs-first content graph for understanding team-based agentic development and how ClosedLoop.ai works.
+title: "Documentation"
+description: "The full reference for ClosedLoop.ai — the spec-driven, AI-first delivery platform that closes the loop on your SDLC."
 ---
 
 Welcome to the ClosedLoop.ai documentation hub.
 
-This site is organized to support both human readers and AI systems:
+ClosedLoop.ai is a platform for team-based agentic software development. It combines a browser-based control plane, a desktop execution client, and a suite of Claude Code plugins into a single system that turns scoped intent into shipped code through repeatable, artifact-bound loops.
 
-- **Getting started** covers the fast path from onboarding to a first successful loop.
-- **Concepts** defines the category and the mental models behind the product.
-- **Mechanisms** explains how the system works in practice.
-- **Workflows** maps the delivery paths that connect requirements to shipped output.
-- **Resources** provides comparisons and templates for high-intent readers.
-- **Glossary** keeps the language precise and reusable.
+This documentation is organized so both humans and AI agents can use it as ground truth:
+
+- **Getting started** — the fastest path from install to a first completed loop.
+- **Mechanisms** — how the control plane, desktop gateway, runtime, loops, judges, and self-learning actually work.
+- **Concepts** — the mental models behind the product and the philosophy of spec-driven AI-first delivery.
+- **Workflows** — the delivery paths from PRD to PR, including parallel features, code review, and cross-repo coordination.
+- **Resources** — troubleshooting, FAQs, reference tables, comparisons, and templates.
+- **Glossary** — precise, reusable definitions of every first-class concept.
 
 ## Start here
 
 <Cards>
-  <Card title="Refresh onboarding" href="./getting-started/from-onboarding-to-first-loop">
-    Convert the desktop onboarding flow into a durable setup and first-loop checklist.
+  <Card title="Install and onboard" href="./getting-started">
+    Install the desktop client, install the Claude Code plugins, and prepare your environment for your first loop.
   </Card>
+
   <Card title="Understand the control plane" href="./concepts/control-plane">
-    Learn why ClosedLoop.ai treats coordination as a first-class system.
+    Learn why ClosedLoop.ai treats coordination, artifacts, and execution as one coherent system.
   </Card>
-  <Card title="See the delivery workflow" href="./workflows/prd-to-plan-to-execution">
-    Walk through the PRD to plan to execution to PR path.
+
+  <Card title="Run the canonical workflow" href="./workflows/prd-to-plan-to-execution">
+    Walk through the PRD → plan → critics → implementation → judges → PR path.
+  </Card>
+</Cards>
+
+## What ships with ClosedLoop.ai
+
+| Surface | What it does |
+| --- | --- |
+| **Web app (control plane)** | Defines work, stores artifacts, coordinates teams, launches loops, surfaces approvals, renders activity. |
+| **Desktop client** | Electron app that exposes a signed localhost HTTP gateway and a cloud relay so the control plane can safely drive local git, filesystem, code review, and AI coding sessions. |
+| **Claude Code plugins** | Six installable plugins — `bootstrap`, `code`, `code-review`, `judges`, `platform`, `self-learning` — that ship the multi-agent orchestration used by loops. |
+| **Runtime** | The execution layer (your machine plus cloud-assisted orchestration) that runs loops inside a sandbox and returns reviewable output. |
+| **Artifacts** | PRDs, implementation plans, critic reviews, judge reports, code maps, learnings, and code review findings — stored per-session and per-org. |
+
+## Why ClosedLoop.ai exists
+
+LLMs are extraordinary at generating content. They are unreliable at being repeatably correct.
+
+ClosedLoop.ai closes that gap by attaching every loop to a durable artifact, gating every phase with deterministic validation, and grading every output with LLM-as-judge evaluators that score against the original intent.
+
+The result is a system where tickets _are_ the work (not just tracking the work that's done elsewhere), context is captured, the progress of work across a team is immediately visible to everyone, and sprints of scope can land in a few PRs with minimal revisions.
+
+## Read this next
+
+<Cards>
+  <Card title="Spec-driven, AI-first delivery" href="./concepts/spec-driven-ai-first-delivery">
+    The philosophical foundation for how ClosedLoop.ai works and why.
+  </Card>
+
+  <Card title="The closed loop" href="./concepts/closed-loop-sdlc">
+    How phased, artifact-bound gates replace ad-hoc chat workflows.
+  </Card>
+
+  <Card title="Commands reference" href="./resources/commands-reference">
+    Every slash command exposed by the Claude Code plugins.
   </Card>
 </Cards>

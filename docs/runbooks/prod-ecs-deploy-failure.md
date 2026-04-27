@@ -11,6 +11,19 @@ Per the single-terminal-Slack-message invariant, every deploy produces exactly o
 - **ECS partial failure** — from the `Enforce ECS Outcomes` step in `deploy-production.yml`. Uses the canonical shape below. Includes Vercel live-app URLs plus per-service ECS lines with run URLs.
 - **Other failures** (merge / health check / deploy_pr / poll API error) — from `Post Failure Report`. Now includes MCP/relay lines appended below the diagnosis report.
 
+**Dual-post behavior on non-success terminal outcomes.** In addition to the in-thread terminal message described above, non-success terminal outcomes also produce a standalone channel-level post in #symphony. The channel-level post contains:
+
+- The failure type/category (e.g. "ECS partial failure", "merge failure").
+- The failing service(s) where applicable (e.g. `mcp-server`, `relay-host`).
+- An archive-style link to the deploy thread.
+- The workflow run URL.
+
+The `CHANNEL_TERMINAL_POSTED` sentinel ensures exactly one channel-level post fires per run, regardless of how many retries or concurrent steps execute. The in-thread message shape is unchanged by this feature.
+
+When `SLACK_SYMPHONY_CHANNEL_ID` targets the same channel as the deploy thread, operators will see both a thread reply and a standalone channel post for the same event — this is intentional for on-call visibility.
+
+`Post Early Failure` does **not** produce a channel-level post (deferred per FR4/PLN-367).
+
 ### Canonical ECS partial-failure message shape
 
 This is the single source of truth for the message rendered by `Assemble ECS Failure Message` (T-3.4b). `deploy-production.yml` reproduces this shape inline; any change to the shape must update both sides.
@@ -103,6 +116,8 @@ gh release create "$RELEASE_TAG" \
 - **Do not roll back Vercel** unless the failure is user-visible on the app/api surface. The whole point of `Enforce ECS Outcomes` is that Vercel stays up; only the GitHub check turns red.
 
 ## 6. Escalation
+
+The channel-level post in #symphony is typically the first signal on-call engineers see — it contains the deploy thread link and the failing workflow run URL, making it the natural starting point for gathering escalation context.
 
 If neither 4a nor 4b resolves within 30 minutes, page the platform on-call rotation. Include the Slack thread link, the failing run URL, and the release-metadata artifact (digests + ecsConclusion).
 

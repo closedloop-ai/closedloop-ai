@@ -1,19 +1,83 @@
 ---
 title: Loops
-description: Execution runs that take structured context, operate on a target, and return reviewable output.
+description: Execution runs that take a scoped artifact, run through gated phases, and return reviewable output.
 ---
 
-Loops are the execution backbone.
+Loops are the execution backbone of ClosedLoop.ai. A loop is one concrete run of the `code` plugin's orchestrator against a PRD or implementation plan in a specific work directory.
 
 ## Inputs
 
-- an artifact
-- a repository target
-- provider and compute target selection
-- context pack and task framing
+- an artifact (PRD, plan, or ticket)
+- a repository target (path and branch, often a worktree)
+- a provider (Claude by default, Codex optional)
+- a compute target (the desktop client to execute on)
+- a context pack and task framing
+
+## Loop commands
+
+A loop carries a `command` value that determines what it does. The control plane exposes the full set in the loops table command filter, and each command has its own status badge.
+
+| Command | Runs on | Inputs | Outputs |
+|---|---|---|---|
+| `PLAN` | desktop or cloud | PRD or ticket | `plan.json`, `plan.md`, critic reviews |
+| `EXECUTE` | desktop | finalized plan + repo | code changes, PR(s), judge reports |
+| `CODE_REVIEW` | desktop or cloud | base ref + PR | review verdict, suggested fixes |
+| `CHAT` | cloud | conversation | reply messages |
+| `BOOTSTRAP` | desktop only | repo (current workdir) | structured agent roster (no artifact files) |
+
+`BOOTSTRAP` is the newest member of the family. It runs the [`bootstrap` plugin](./plugins/bootstrap), produces structured results (no prompt, artifacts, or repo are passed in by the caller), and pushes the generated agent roster into the [agents API](./agents-api) via `POST /agents/bulk-ingest`.
+
+## Lifecycle
+
+A loop is driven by `plugins/code/scripts/run-loop.sh`, which relaunches `claude -p` with a fresh 200K-token context for each iteration. The orchestrator prompt at `plugins/code/prompts/prompt.md` drives the phased workflow; state persists entirely in files under the work directory.
+
+### Phases
+
+| # | Phase | Primary agent or skill |
+|---|---|---|
+| 0.9 | Pre-exploration | `@code:pre-explorer` |
+| 1 | Plan draft | `@code:plan-draft-writer` or `@code:plan-importer` |
+| 1.1 | Plan review checkpoint (hard stop) | human |
+| 1.2 | Process answered questions | `@code:answered-questions-subagent` |
+| 1.2a | Process addressed gaps | `@code:plan-writer` (gap mode) |
+| 1.3 | Simple-mode evaluation | `judges:eval-cache` then `@code:plan-evaluator` |
+| 1.4.x | Cross-repo discovery and PRDs | `cross-repo-coordinator`, `generic-discovery`, `cross-repo-prd-writer` |
+| 2.5 | Critic validation | parallel critics (gated by `critic-cache`) |
+| 2.6 | Plan refinement | `@code:plan-writer` (merge mode) |
+| 2.7 | Plan finalization | `@code:plan-writer` (finalize mode) |
+| 3 | Implementation | per-task `verification-subagent` → `implementation-subagent` |
+| 4 | Code simplification | `@code-simplifier:code-simplifier` |
+| 5 | Testing and validation | `@test-engineer` and `@code:build-validator` |
+| 6 | Visual QA | `@code:visual-qa-subagent` (Playwright) |
+| 7 | Logging and completion | orchestrator writes `log.md` and exits |
+
+The orchestrator is read-only: it never touches project files directly. It uses `Bash`, `Task`, `TodoWrite`, `AskUserQuestion`, and `SendMessage` and delegates every file operation.
+
+## Bounded retries
+
+Loop agents exit a phase by emitting a promise token such as `<promise>PLAN_VALIDATED</promise>`. A `SubagentStop` hook verifies the promise with a deterministic validation script; if validation fails, the iteration counter increments and the agent is forced to retry up to its configured budget. See [Loop until correct](../concepts/loop-until-correct).
 
 ## Outputs
 
-- status and telemetry
-- diffs or generated changes
-- material for judgment and follow-up
+- `plan.json` and `plan.md`
+- `reviews/*.review.json`
+- `requirements-extract.json`, `code-map.json`, `investigation-log.md`
+- `state.json` (polled by UIs), `log.md`, `perf.jsonl`
+- diffs, commits, and usually a PR via the `git_pr` operations
+- judge reports (`plan-judges.json`, `code-judges.json`) when the `judges` plugin is invoked
+- `.learnings/` pending and processed learnings
+
+## Concurrency and locking
+
+The desktop client's cloud command executor serializes commands by lock key. The default lock key is derived from the operation ID and the scoped path from the request body (`repoPath | worktreePath | workDir | runDir | path`). This prevents two loops from stepping on the same worktree.
+
+A loop can safely run in parallel with another loop in a different worktree. That is the foundation for [parallel feature development](../workflows/parallel-feature-development).
+
+## Cancel and amend
+
+- `/code:cancel-code` stops a running loop by removing its state file.
+- `/code:amend-plan` lets you inject directives, answer questions, or confirm changes without restarting the loop.
+
+## Where the code lives
+
+The canonical entrypoint is `plugins/code/scripts/run-loop.sh` and the orchestrator is `plugins/code/prompts/prompt.md`. Phase-level contracts are encoded in the orchestrator prompt and enforced by the hooks in `plugins/code/hooks/hooks.json`.

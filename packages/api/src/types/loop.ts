@@ -218,6 +218,7 @@ export type DecomposeResult = {
 
 export type {
   ExecutionResultV2,
+  ParsedExecutionResult,
   RepoExecutionResult,
 } from "@closedloop-ai/loops-api/execution-result";
 export {
@@ -225,8 +226,10 @@ export {
   createRepoExecutionResultsSchema,
   ExecutionResultV2Schema,
   getPrimaryRepoResult,
+  isSupportedExecutionResultSchemaVersion,
   normalizeV1ExecutionResult,
   RepoExecutionResultBaseSchema,
   RepoExecutionResultSchema,
   RepoExecutionResultsSchema,
+  SUPPORTED_EXECUTION_RESULT_SCHEMA_VERSIONS,
 } from "@closedloop-ai/loops-api/execution-result";

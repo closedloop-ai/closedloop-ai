@@ -1,16 +1,110 @@
 ---
 title: Judges
-description: Structured review systems that score and gate outputs against the artifact that launched the work.
+description: Structured LLM-as-judge scoring that gates outputs against the artifact that launched the work.
 ---
 
-Judges turn review into a repeatable system.
+Judges turn review into a repeatable system. ClosedLoop.ai ships 21 judge agents in the `judges` plugin, plus a `context-manager-for-judges` that builds compressed context packs, plus the deterministic aggregators that validate output.
 
-## What they do
+## The judge contract
 
-- compare output to scope
-- surface risks or regressions
-- support gating decisions
+Every judge reads a `judge-input.json` envelope (per `schemas/judge-input.schema.json`) with:
 
-## Why they matter
+- `evaluation_type` (one of `plan`, `code`, `prd`)
+- `task` — the task or phase under review
+- `primary_artifact` — the artifact being scored
+- `supporting_artifacts[]` — references and context
+- `source_of_truth[]` — the PRD or contract the output must match
+- `fallback_mode` — how to proceed if context is missing
+- `metadata` — run IDs, timestamps, and ticket references
+
+Each judge returns a `CaseScore`:
+
+```json
+{
+  "type": "case_score",
+  "case_id": "...",
+  "final_status": 1,
+  "metrics": [
+    { "metric_name": "...", "threshold": 0.8, "score": 0.92, "justification": "..." }
+  ]
+}
+```
+
+`final_status`: `1 = pass`, `2 = fail`, `3 = error`.
+
+## Judge rosters
+
+### Plan judges (16 judges, 4 batches, max 4 concurrent)
+
+Core principles, best practices and response quality, SOLID, plan grounding and testing — including:
+
+- `brownfield-accuracy-judge`, `codebase-grounding-judge`, `convention-adherence-judge`
+- `code-organization-judge`, `custom-best-practices-judge`, `dry-judge`
+- `goal-alignment-judge` (plan-only), `kiss-judge`, `readability-judge`
+- `solid-isp-dip-judge`, `solid-liskov-substitution-judge`, `solid-open-closed-judge`
+- `ssot-judge`, `technical-accuracy-judge`, `test-judge`
+- `verbosity-judge` (plan-only)
+
+### Code judges (11 judges, 3 batches)
+
+The plan-judges roster minus `goal-alignment-judge` and `verbosity-judge`.
+
+### PRD judges (4 judges, single parallel batch)
+
+- `prd-auditor` — structural completeness
+- `prd-dependency-judge`
+- `prd-scope-judge`
+- `prd-testability-judge`
+
+## How judges run
+
+The `judges:run-judges` skill orchestrates the batches:
+
+```bash
+# Invoked implicitly by the code loop, or directly:
+@judges:run-judges --artifact-type plan
+@judges:run-judges --artifact-type code
+@judges:run-judges --artifact-type prd
+```
+
+It:
+
+1. Builds the judge-input contract and the context pack.
+2. Takes an idempotent agent snapshot under `agents-snapshot/`.
+3. Runs the configured batches in parallel.
+4. Aggregates `CaseScore` outputs.
+5. Validates the aggregated report with `validate_judge_report.py` (Pydantic).
+6. Writes `plan-judges.json`, `code-judges.json`, or `prd-judges.json`.
+
+## Thresholds and overrides
+
+Default metric threshold is `0.8`. Override per-judge or per-metric with a JSON config using keys like:
+
+```json
+{ "code:test-judge": 0.75 }
+```
+
+## Caching
+
+The `judges:eval-cache` skill short-circuits plan evaluation when `plan-evaluation.json` is newer than `plan.json`. Judges do not re-run when the plan hasn't changed.
+
+## Model selection
+
+Judges use a mix of Opus (creative evaluators like `brownfield-accuracy-judge` and `codebase-grounding-judge`), Sonnet (complex structural judges), and Haiku (lightweight check judges). This balances cost and signal.
+
+## Fallback behavior
+
+- **Plan mode:** probes `@code:pre-explorer`, falls back to an internal best-effort investigation log if unavailable.
+- **Code mode:** attempts best-effort pre-explorer, continues non-blocking on failure.
+- **Context-manager failure:** one-run compatibility fallback using `plan.json` plus `prd.md` directly.
+
+## Why judges matter
 
 Execution without judgment produces velocity without trust.
+
+Judges make quality a first-class, structured output. You can:
+
+- gate merges on judge scores
+- surface judge summaries in review UIs
+- track judge score trends over time as a leading indicator of plan quality
+- tune judges per-organization by overriding thresholds

@@ -1,0 +1,10 @@
+---
+title: Gateway
+description: The local HTTP server the desktop app exposes on 127.0.0.1.
+---
+
+The **gateway** is the local HTTP server the desktop app runs on `127.0.0.1` (port `19432` by default). Every cloud-issued operation that touches your machine goes through it.
+
+It is authenticated (internal token, browser session token, or dev debug token), CORS-checked, sandbox-verified, and approval-gated.
+
+See [Desktop gateway](../mechanisms/desktop-gateway) for the full contract.

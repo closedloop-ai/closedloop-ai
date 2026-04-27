@@ -8,10 +8,8 @@ import { auth } from "@repo/auth/server";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
 import { type NextRequest, NextResponse } from "next/server";
-import { organizationsService } from "@/app/organizations/service";
-import { usersService } from "@/app/users/service";
-import { clerkService } from "@/lib/auth/clerk-service";
 import { unauthorizedResponse } from "../route-utils";
+import { findOrCreateUser } from "./find-or-create-user";
 
 /**
  * Next.js route context - matches generated type from @/.next/types/routes
@@ -115,45 +113,6 @@ export function withAuth<TResponse, TRoute extends string = string>(
       return authErrorResponse("Authentication failed", error);
     }
   };
-}
-
-async function findOrCreateUser(
-  clerkUserId: string,
-  clerkOrgId: string
-): Promise<User | null> {
-  const organization =
-    await organizationsService.findOrCreateByClerkId(clerkOrgId);
-
-  const existingUser = await usersService.findByClerkIdAndOrg(
-    clerkUserId,
-    organization.id
-  );
-
-  if (existingUser) {
-    return existingUser;
-  }
-
-  log.info("User not found, fetching from Clerk", { clerkUserId });
-
-  const clerkUser = await clerkService.getUser(clerkUserId);
-
-  const user = await usersService.upsertByClerkIdAndOrg({
-    clerkId: clerkUserId,
-    organizationId: organization.id,
-    email: clerkUser.email,
-    firstName: clerkUser.firstName,
-    lastName: clerkUser.lastName,
-    avatarUrl: clerkUser.imageUrl,
-    phoneNumber: clerkUser.phoneNumber,
-  });
-
-  log.info("Created/updated user from Clerk", {
-    userId: user.id,
-    clerkUserId,
-    organizationId: organization.id,
-  });
-
-  return user;
 }
 
 function authErrorResponse(

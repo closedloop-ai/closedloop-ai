@@ -274,6 +274,7 @@ $RECYCLE.BIN/
 .github/copilot-instructions.md
 
 # ClosedLoop
+.learnings
 .closedloop
 .closedloop-ai/*
 !.closedloop-ai/loops-setup.sh

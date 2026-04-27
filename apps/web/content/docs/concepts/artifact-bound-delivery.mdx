@@ -1,15 +1,71 @@
 ---
-title: Artifact-Bound Delivery
+title: Artifact-bound delivery
 description: Keeping execution attached to PRDs, plans, features, and other artifacts instead of detached chat threads.
 ---
 
-Artifact-bound delivery means the work stays connected to the object that defines it.
+Artifact-bound delivery means the work stays connected to the object that defines it. Every loop reads from an artifact and writes back durable, reviewable outputs tied to that same artifact.
+
+## What counts as an artifact
+
+ClosedLoop.ai treats several object types as first-class:
+
+- **PRDs** — the problem, outcome, constraints, and success criteria.
+- **Implementation plans** — the task-level decomposition a loop executes against.
+- **Critic reviews** — structured feedback on a plan from the `code` plugin's critics.
+- **Judge reports** — structured grades on a plan, code, or PRD from the `judges` plugin.
+- **Code maps** — a structural snapshot of the codebase the loop explored.
+- **Learnings** — patterns, pitfalls, and conventions extracted from a run.
+- **Code review findings** — multi-agent review outputs attached to a PR.
+
+Each of these has a schema, a storage location, and a lifecycle.
+
+## Where they live
+
+Session artifacts live in the session work directory (`$CLOSEDLOOP_WORKDIR`, typically `.closedloop-ai/work/`):
+
+```
+prd.md
+plan.json
+plan.md
+plan-evaluation.json
+investigation-log.md
+requirements-extract.json
+code-map.json
+code-context.json
+plan-context.json
+judge-input.json
+plan-judges.json
+code-judges.json
+prd-judges.json
+state.json
+log.md
+perf.jsonl
+visual-requirements.md
+reviews/*.review.json
+agents-snapshot/
+.cross-repo-needs.json
+.workspace-repos.json
+.dev-environment.json
+.learnings/...
+```
+
+Organization-level artifacts live under `~/.closedloop-ai/`:
+
+```
+learnings/org-patterns.toon
+learnings/closedloop-learnings.json
+electron-port
+```
 
 ## Benefits
 
-- clearer review context
-- better handoffs
-- more reusable execution history
-- easier judgment against the original goal
+- **Clearer review context** — reviewers see the plan, the critics, the judges, and the diff together.
+- **Better handoffs** — the next person (or agent) inherits the durable work, not a chat transcript.
+- **Reusable execution history** — prior runs become training data for relevance scoring and pattern matching.
+- **Easier judgment against the goal** — the judge reads the PRD, the plan, and the output, and scores per-metric.
 
-This is a core difference between a delivery system and a chat workflow.
+## Why this is different from chat
+
+Chat workflows optimize for local velocity at the cost of organizational memory. Artifact-bound delivery optimizes for **compounding leverage** — every run leaves the organization better equipped for the next one.
+
+That is a core difference between a delivery system and a chat workflow.

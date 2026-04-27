@@ -1,5 +1,5 @@
 ---
-title: Team-Based Agentic Development
+title: Team-based agentic development
 description: A model where teams, artifacts, and agents are coordinated together instead of optimizing only for individual output.
 ---
 
@@ -11,15 +11,28 @@ Most AI workflows focus on helping one person produce output faster.
 
 That is useful, but it does not solve:
 
-- unclear ownership
-- artifact drift
-- broken review loops
-- inconsistent execution environments
+- unclear ownership of agent-produced work
+- artifact drift between chats and shipped code
+- inconsistent review standards across a team
+- fragile environments that only work on one engineer's machine
+- organizational knowledge stuck in one person's head
 
 ## What changes
 
-ClosedLoop.ai uses artifacts, plans, loops, and judges to keep execution connected to team intent.
+ClosedLoop.ai uses artifacts, plans, loops, critics, judges, and self-learning to keep execution connected to team intent.
+
+- **Artifacts** are the durable unit of work, not chat history.
+- **Loops** are executed by agents against registered compute targets with audit trails.
+- **Critics** review plans before implementation.
+- **Judges** score outputs against artifacts.
+- **Self-learning** turns individual run patterns into organizational knowledge through `org-patterns.toon` and `/push-learnings` / `/pull-learnings`.
 
 ## Why it matters
 
-The result is not just faster code generation. It is a tighter system for turning intent into shipped work.
+The result is not just faster code generation. It is a tighter system for turning intent into shipped work:
+
+- Tickets become tasks. A ticket maps cleanly to a plan with acceptance criteria and a loop.
+- Epics become features. A PRD generates a plan that can decompose into many loops, potentially in parallel.
+- Sections of your quarterly roadmap land in a few PRs. When the system is running, review and approvals scale, not typing speed.
+
+Team-based agentic development is what produces the step change from "AI helped me code this module" to "the team shipped this feature while engineers reviewed."

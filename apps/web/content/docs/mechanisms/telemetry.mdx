@@ -1,0 +1,62 @@
+---
+title: Telemetry
+description: Two complementary event streams that make the desktop client observable without leaking user content by default.
+---
+
+The desktop client emits two telemetry streams with different destinations and different semantics: a PostHog product-analytics stream and a Datadog-bound diagnostics stream sent over the cloud relay.
+
+## PostHog (product analytics)
+
+- Configured via `CL_POSTHOG_API_KEY` and host `CL_POSTHOG_HOST` (default `https://us.i.posthog.com`).
+- Batched flush: 20 events per 30 seconds.
+- Underscore-named events.
+- Auto-added properties: `release_version`, `distinct_id` (= `computeTargetId`).
+
+Event taxonomy:
+
+- **Command funnel:** `command_initiated`, `command_started`, `command_completed`, `command_failed`
+- **Approvals:** `approval_requested`, `approval_resolved`
+- **Connection:** `desktop_connection_established`, `desktop_reconnection_resumed`, `desktop_connection_degraded`, `desktop_connection_lost`
+- **Sandbox:** `sandbox_blocked_operation`
+- **Healthcheck:** `healthcheck.failure_detected`, `healthcheck.recovered`, `healthcheck.failure_persistent`
+
+## Datadog-bound diagnostics
+
+Sent as `desktop.telemetry` events through the cloud relay. Dot-named, past-tense categories:
+
+```
+command.initiated, command.started, command.completed,
+command.timeout, command.cancelled, command.gateway_error,
+connection.established, connection.reconnection_resumed,
+connection.degraded, connection.lost,
+job.started, job.completed, job.failed, job.cancelled,
+job.auth_challenge, job.recovery.finalize_replayed,
+preflight.binary_not_found, preflight.script_not_found, preflight.spawn_failed,
+queue.stats_changed,
+healthcheck.failure_detected, healthcheck.recovered, healthcheck.failure_persistent
+```
+
+## Enriched envelope
+
+Every telemetry event is auto-enriched:
+
+- `schemaVersion: "1"`
+- `timestamp` (ISO-8601 UTC)
+- `computeTargetId`, `gatewaySessionId`, `commandId`, `operationId`
+
+And may include:
+
+- `diagnostics` — `exitCode`, `logTail`, `stderrTail` (both truncated to 4 KiB), `exitSignal`, `elapsedMs`, `stdoutBytes`, `abortReason`, `spawnMeta`, `tokenUsage`, `errorStack`, `extra`
+- trace context — `loopId`, `jobId`, `loopSessionId`
+
+:::warning Privacy note
+`diagnostics.logTail` is raw subprocess output. It is not sanitized for secrets or PII. Only enable verbose telemetry in environments you control.
+:::
+
+## Activity log
+
+In addition to telemetry, the UI surfaces an Activity Log tab backed by `ActivityLogStore` (a 200-entry ring buffer with 8 KiB body truncation) that records `REQUEST` and `SECURITY` events. Activity Log data is local-only and separate from the upstream telemetry streams.
+
+## Verifying telemetry
+
+An end-to-end runbook in `apps/desktop/docs/event-taxonomy.md` walks through confirming that `connection.established` appears in Datadog within 60 seconds with the expected `trace.schemaVersion` and non-empty `trace.computeTargetId`.
