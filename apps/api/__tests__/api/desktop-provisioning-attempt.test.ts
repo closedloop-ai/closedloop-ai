@@ -1,3 +1,4 @@
+import { DesktopProvisioningPlatform } from "@repo/api/src/types/electron";
 import { NextRequest } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { desktopOnboardingAttemptsService } from "@/app/desktop/onboarding-attempt/service";
@@ -30,7 +31,7 @@ describe("POST /desktop/provisioning-attempt", () => {
     vi.clearAllMocks();
     authContext = createTestAuthContext();
     vi.mocked(isDesktopManagedPopPlatformSupported).mockImplementation(
-      (platform) => platform === "darwin"
+      (platform) => platform === DesktopProvisioningPlatform.Darwin
     );
     vi.mocked(isDesktopManagedPopProvisioningEnabled).mockResolvedValue(true);
     vi.mocked(desktopOnboardingAttemptsService.create).mockResolvedValue({
@@ -44,7 +45,10 @@ describe("POST /desktop/provisioning-attempt", () => {
       createMockRequest({
         method: "POST",
         headers: { origin: "https://app.closedloop.ai" },
-        body: { platform: "darwin", webAppOrigin: "https://app.closedloop.ai" },
+        body: {
+          platform: DesktopProvisioningPlatform.Darwin,
+          webAppOrigin: "https://app.closedloop.ai",
+        },
       }),
       { params: Promise.resolve({}) }
     );
@@ -71,7 +75,10 @@ describe("POST /desktop/provisioning-attempt", () => {
       createMockRequest({
         method: "POST",
         headers: { origin: "https://app.closedloop.ai" },
-        body: { platform: "darwin", webAppOrigin: "https://app.closedloop.ai" },
+        body: {
+          platform: DesktopProvisioningPlatform.Darwin,
+          webAppOrigin: "https://app.closedloop.ai",
+        },
       }),
       { params: Promise.resolve({}) }
     );
@@ -85,7 +92,10 @@ describe("POST /desktop/provisioning-attempt", () => {
       createMockRequest({
         method: "POST",
         headers: { origin: "https://app.closedloop.ai" },
-        body: { platform: "linux", webAppOrigin: "https://app.closedloop.ai" },
+        body: {
+          platform: DesktopProvisioningPlatform.Linux,
+          webAppOrigin: "https://app.closedloop.ai",
+        },
       }),
       { params: Promise.resolve({}) }
     );
@@ -100,7 +110,10 @@ describe("POST /desktop/provisioning-attempt", () => {
       createMockRequest({
         method: "POST",
         headers: { origin: "https://admin.closedloop.ai" },
-        body: { platform: "darwin", webAppOrigin: "https://app.closedloop.ai" },
+        body: {
+          platform: DesktopProvisioningPlatform.Darwin,
+          webAppOrigin: "https://app.closedloop.ai",
+        },
       }),
       { params: Promise.resolve({}) }
     );
@@ -114,7 +127,10 @@ describe("POST /desktop/provisioning-attempt", () => {
     const response = await POST(
       createMockRequest({
         method: "POST",
-        body: { platform: "darwin", webAppOrigin: "https://app.closedloop.ai" },
+        body: {
+          platform: DesktopProvisioningPlatform.Darwin,
+          webAppOrigin: "https://app.closedloop.ai",
+        },
       }),
       { params: Promise.resolve({}) }
     );

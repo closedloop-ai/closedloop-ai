@@ -1,10 +1,12 @@
 import "server-only";
 
 import { analytics } from "@repo/analytics/server";
+import { DesktopProvisioningPlatform } from "@repo/api/src/types/electron";
 
 export const DESKTOP_MANAGED_POP_PROVISIONING_FLAG =
   "desktop-managed-pop-provisioning";
-export const DESKTOP_MANAGED_POP_SUPPORTED_PLATFORM = "darwin";
+export const DESKTOP_MANAGED_POP_SUPPORTED_PLATFORM =
+  DesktopProvisioningPlatform.Darwin;
 
 /**
  * Returns whether automated installer provisioning is supported for a client platform.

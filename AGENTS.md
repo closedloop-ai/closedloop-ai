@@ -45,6 +45,10 @@ For API routes with fixed request/response/error contracts, wrap auth/session an
 - When route handlers, middleware, or internal routes enforce the same policy, extract a shared helper or add focused parity tests so their behavior cannot drift silently.
 - In `apps/api` serverless routes, do not fire-and-forget promises for response-path side effects. Await the work, pass the promise to `waitUntil`, or persist it for later processing.
 - Define regex literals as module-level constants instead of inline inside functions or tests so Ultracite's `useTopLevelRegex` rule stays satisfied.
+- For generated shell commands or installer scripts, do not execute unchecked network downloads through command substitution. Download to a temporary file or otherwise make the download a checked step before executing the result, and preserve the nonzero exit status on network failure.
+- React hooks, components, and utilities that schedule timers must clear superseded timers and clean them up on unmount or disposal.
+- Tests that mutate `process.env` must restore the exact previous state. If a variable was originally unset, remove the property, for example with `Reflect.deleteProperty(process.env, "KEY")`; assigning `undefined` creates the string value `"undefined"` in Node.
+- Tests for ignored, optional, or compatibility-only request fields must assert the downstream call shape, not only that the downstream dependency was called.
 
 ## Compatibility Guardrail
 Compatibility shims and backward-compatibility code paths (for example legacy namespace adapters, re-export shims, or migration fallbacks) must not be removed without explicit human approval in the current task. If there is no explicit approval, preserve the compatibility layer and raise the cleanup as a separate follow-up.

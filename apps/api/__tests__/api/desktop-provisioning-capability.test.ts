@@ -1,3 +1,4 @@
+import { DesktopProvisioningPlatform } from "@repo/api/src/types/electron";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { GET } from "@/app/desktop/provisioning-capability/route";
 import {
@@ -23,7 +24,7 @@ describe("GET /desktop/provisioning-capability", () => {
     vi.clearAllMocks();
     authContext = createTestAuthContext();
     vi.mocked(isDesktopManagedPopPlatformSupported).mockImplementation(
-      (platform) => platform === "darwin"
+      (platform) => platform === DesktopProvisioningPlatform.Darwin
     );
     vi.mocked(isDesktopManagedPopProvisioningEnabled).mockResolvedValue(true);
   });
@@ -32,7 +33,7 @@ describe("GET /desktop/provisioning-capability", () => {
     const response = await GET(
       createMockRequest({
         method: "GET",
-        url: "https://api.closedloop.ai/desktop/provisioning-capability?platform=darwin",
+        url: `https://api.closedloop.ai/desktop/provisioning-capability?platform=${DesktopProvisioningPlatform.Darwin}`,
       }),
       { params: Promise.resolve({}) }
     );
@@ -42,12 +43,12 @@ describe("GET /desktop/provisioning-capability", () => {
       success: true,
       data: {
         automatedManagedProvisioningEnabled: true,
-        supportedPlatform: "darwin",
+        supportedPlatform: DesktopProvisioningPlatform.Darwin,
       },
     });
     expect(isDesktopManagedPopProvisioningEnabled).toHaveBeenCalledWith(
       authContext.user.id,
-      "darwin"
+      DesktopProvisioningPlatform.Darwin
     );
   });
 
@@ -57,7 +58,7 @@ describe("GET /desktop/provisioning-capability", () => {
     const response = await GET(
       createMockRequest({
         method: "GET",
-        url: "https://api.closedloop.ai/desktop/provisioning-capability?platform=linux",
+        url: `https://api.closedloop.ai/desktop/provisioning-capability?platform=${DesktopProvisioningPlatform.Linux}`,
       }),
       { params: Promise.resolve({}) }
     );

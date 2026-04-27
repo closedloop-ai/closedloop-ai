@@ -122,12 +122,10 @@ export function DownloadElectronAppStep({
             })
           );
         },
-        onError: (error) => {
+        onError: () => {
           setProvisioningCommand(null);
           setProvisioningError(
-            error instanceof Error
-              ? error.message
-              : "Failed to start automated onboarding."
+            "Failed to generate install command. Please try again."
           );
         },
       }

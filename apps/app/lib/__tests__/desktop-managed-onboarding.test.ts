@@ -19,6 +19,10 @@ describe("buildDesktopOnboardingCommand", () => {
     );
     expect(command).toContain("CL_SANDBOX_BASE_DIRECTORY='~/Source'");
     expect(command).toContain("/api/desktop/install.sh");
+    expect(command).toContain("curl -fsSL");
+    expect(command).toContain('-o "$install_script"');
+    expect(command).toContain('/bin/bash "$install_script"');
+    expect(command).not.toContain("$(curl");
     expect(command).not.toContain("api.closedloop.ai");
     expect(command).not.toContain("relay.closedloop.ai");
     expect(command).not.toContain("sk_live_");

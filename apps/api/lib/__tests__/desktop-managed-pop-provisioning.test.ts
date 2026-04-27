@@ -1,3 +1,4 @@
+import { DesktopProvisioningPlatform } from "@repo/api/src/types/electron";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const { mockIsFeatureEnabled } = vi.hoisted(() => ({
@@ -52,11 +53,18 @@ describe("isDesktopManagedPopProvisioningEnabled", () => {
 
   it("fails closed before flag evaluation when the platform is unsupported", async () => {
     await expect(
-      isDesktopManagedPopProvisioningEnabled("user-1", "linux")
+      isDesktopManagedPopProvisioningEnabled(
+        "user-1",
+        DesktopProvisioningPlatform.Linux
+      )
     ).resolves.toBe(false);
 
     expect(mockIsFeatureEnabled).not.toHaveBeenCalled();
-    expect(isDesktopManagedPopPlatformSupported("darwin")).toBe(true);
-    expect(isDesktopManagedPopPlatformSupported("win32")).toBe(false);
+    expect(
+      isDesktopManagedPopPlatformSupported(DesktopProvisioningPlatform.Darwin)
+    ).toBe(true);
+    expect(
+      isDesktopManagedPopPlatformSupported(DesktopProvisioningPlatform.Win32)
+    ).toBe(false);
   });
 });

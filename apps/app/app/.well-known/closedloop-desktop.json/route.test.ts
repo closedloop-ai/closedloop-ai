@@ -22,7 +22,7 @@ describe("GET /.well-known/closedloop-desktop.json", () => {
     const originalPublicRelayOrigin = process.env.NEXT_PUBLIC_RELAY_ORIGIN;
     const originalRelayOrigin = process.env.CL_RELAY_ORIGIN;
     process.env.NEXT_PUBLIC_RELAY_ORIGIN = "relay.closedloop.ai";
-    process.env.CL_RELAY_ORIGIN = undefined;
+    Reflect.deleteProperty(process.env, "CL_RELAY_ORIGIN");
 
     try {
       const response = GET(
@@ -36,16 +36,16 @@ describe("GET /.well-known/closedloop-desktop.json", () => {
         relayOrigin: "https://relay.closedloop.ai",
       });
     } finally {
-      if (originalPublicRelayOrigin === undefined) {
-        process.env.NEXT_PUBLIC_RELAY_ORIGIN = undefined;
-      } else {
-        process.env.NEXT_PUBLIC_RELAY_ORIGIN = originalPublicRelayOrigin;
-      }
-      if (originalRelayOrigin === undefined) {
-        process.env.CL_RELAY_ORIGIN = undefined;
-      } else {
-        process.env.CL_RELAY_ORIGIN = originalRelayOrigin;
-      }
+      restoreProcessEnv("NEXT_PUBLIC_RELAY_ORIGIN", originalPublicRelayOrigin);
+      restoreProcessEnv("CL_RELAY_ORIGIN", originalRelayOrigin);
     }
   });
 });
+
+function restoreProcessEnv(key: string, value: string | undefined) {
+  if (value === undefined) {
+    Reflect.deleteProperty(process.env, key);
+    return;
+  }
+  process.env[key] = value;
+}

@@ -1,4 +1,4 @@
-import type { DesktopProvisioningPlatform } from "@repo/api/src/types/electron";
+import { DesktopProvisioningPlatform } from "@repo/api/src/types/electron";
 
 /**
  * Normalizes browser platform hints into the server-side Desktop provisioning contract.
@@ -9,7 +9,7 @@ export function getClientDesktopProvisioningPlatform(
   const source =
     navigatorLike ?? (typeof navigator === "undefined" ? null : navigator);
   if (!source) {
-    return "unknown";
+    return DesktopProvisioningPlatform.Unknown;
   }
 
   const platform = source.platform.toLowerCase();
@@ -18,23 +18,23 @@ export function getClientDesktopProvisioningPlatform(
     platform.includes("iphone") ||
     platform.includes("ipod")
   ) {
-    return "unknown";
+    return DesktopProvisioningPlatform.Unknown;
   }
   if (platform.includes("mac")) {
-    return "darwin";
+    return DesktopProvisioningPlatform.Darwin;
   }
   if (platform.includes("linux")) {
-    return "linux";
+    return DesktopProvisioningPlatform.Linux;
   }
   if (platform.includes("win")) {
-    return "win32";
+    return DesktopProvisioningPlatform.Win32;
   }
   const userAgent = source.userAgent.toLowerCase();
   if (userAgent.includes("linux")) {
-    return "linux";
+    return DesktopProvisioningPlatform.Linux;
   }
   if (userAgent.includes("windows")) {
-    return "win32";
+    return DesktopProvisioningPlatform.Win32;
   }
-  return "unknown";
+  return DesktopProvisioningPlatform.Unknown;
 }

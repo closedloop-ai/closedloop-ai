@@ -24,11 +24,17 @@ export function buildDesktopOnboardingCommand(
     ]);
   }
 
+  const installerScript = [
+    "set -e",
+    'install_script="$(mktemp)"',
+    "trap 'rm -f \"$install_script\"' EXIT",
+    `curl -fsSL ${shellQuote(input.installerScriptUrl)} -o "$install_script"`,
+    '/bin/bash "$install_script"',
+  ].join(" && ");
+
   return `${assignments
     .map(([key, value]) => `${key}=${shellQuote(value)}`)
-    .join(" ")} /bin/bash -c "$(curl -fsSL ${shellQuote(
-    input.installerScriptUrl
-  )})"`;
+    .join(" ")} /bin/bash -c ${shellQuote(installerScript)}`;
 }
 
 function shellQuote(value: string): string {

@@ -4,6 +4,7 @@
  * Covers the exact request/response contract, session gating, origin checks,
  * and persistence failures required by PLN-319 v8.
  */
+import { DesktopProvisioningPlatform } from "@repo/api/src/types/electron";
 import { vi } from "vitest";
 import { POST } from "@/app/desktop/onboarding-attempt/route";
 import { desktopOnboardingAttemptsService } from "@/app/desktop/onboarding-attempt/service";
@@ -39,7 +40,10 @@ describe("POST /desktop/onboarding-attempt", () => {
       method: "POST",
       url: "https://api.closedloop.ai/desktop/onboarding-attempt",
       headers: { origin: "https://app.closedloop.ai" },
-      body: { platform: "darwin", webAppOrigin: "https://app.closedloop.ai" },
+      body: {
+        platform: DesktopProvisioningPlatform.Darwin,
+        webAppOrigin: "https://app.closedloop.ai",
+      },
     });
 
     const response = await POST(request);
@@ -85,7 +89,10 @@ describe("POST /desktop/onboarding-attempt", () => {
     const response = await POST(
       createMockRequest({
         method: "POST",
-        body: { platform: "darwin", webAppOrigin: "https://app.closedloop.ai" },
+        body: {
+          platform: DesktopProvisioningPlatform.Darwin,
+          webAppOrigin: "https://app.closedloop.ai",
+        },
       })
     );
 
@@ -104,7 +111,10 @@ describe("POST /desktop/onboarding-attempt", () => {
     const response = await POST(
       createMockRequest({
         method: "POST",
-        body: { platform: "darwin", webAppOrigin: "https://app.closedloop.ai" },
+        body: {
+          platform: DesktopProvisioningPlatform.Darwin,
+          webAppOrigin: "https://app.closedloop.ai",
+        },
       })
     );
 
@@ -121,7 +131,7 @@ describe("POST /desktop/onboarding-attempt", () => {
         method: "POST",
         headers: { origin: "https://app.closedloop.ai" },
         body: {
-          platform: "darwin",
+          platform: DesktopProvisioningPlatform.Darwin,
           webAppOrigin: "https://app.closedloop.ai",
           extraField: true,
         },
@@ -141,7 +151,7 @@ describe("POST /desktop/onboarding-attempt", () => {
         method: "POST",
         headers: { origin: "https://app.closedloop.ai" },
         body: {
-          platform: "darwin",
+          platform: DesktopProvisioningPlatform.Darwin,
           webAppOrigin: "https://admin.closedloop.ai",
         },
       })
@@ -159,7 +169,10 @@ describe("POST /desktop/onboarding-attempt", () => {
       createMockRequest({
         method: "POST",
         headers: { origin: "https://app.closedloop.ai" },
-        body: { platform: "linux", webAppOrigin: "https://app.closedloop.ai" },
+        body: {
+          platform: DesktopProvisioningPlatform.Linux,
+          webAppOrigin: "https://app.closedloop.ai",
+        },
       })
     );
 
@@ -168,7 +181,11 @@ describe("POST /desktop/onboarding-attempt", () => {
       onboardingAttemptId: "attempt-123",
       expiresAt: "2026-04-23T18:00:00.000Z",
     });
-    expect(desktopOnboardingAttemptsService.create).toHaveBeenCalled();
+    expect(desktopOnboardingAttemptsService.create).toHaveBeenCalledWith({
+      organizationId: "test-org-id",
+      userId: "test-user-id",
+      webAppOrigin: "https://app.closedloop.ai",
+    });
   });
 
   it("returns 503 when attempt persistence fails", async () => {
@@ -180,7 +197,10 @@ describe("POST /desktop/onboarding-attempt", () => {
       createMockRequest({
         method: "POST",
         headers: { origin: "https://app.closedloop.ai" },
-        body: { platform: "darwin", webAppOrigin: "https://app.closedloop.ai" },
+        body: {
+          platform: DesktopProvisioningPlatform.Darwin,
+          webAppOrigin: "https://app.closedloop.ai",
+        },
       })
     );
 

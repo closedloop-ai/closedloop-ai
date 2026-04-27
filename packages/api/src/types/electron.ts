@@ -15,8 +15,12 @@ export type DesktopProvisioningAttempt = {
   expiresAt: string;
 };
 
+export const DesktopProvisioningPlatform = {
+  Darwin: "darwin",
+  Linux: "linux",
+  Win32: "win32",
+  Unknown: "unknown",
+} as const;
+
 export type DesktopProvisioningPlatform =
-  | "darwin"
-  | "linux"
-  | "win32"
-  | "unknown";
+  (typeof DesktopProvisioningPlatform)[keyof typeof DesktopProvisioningPlatform];
