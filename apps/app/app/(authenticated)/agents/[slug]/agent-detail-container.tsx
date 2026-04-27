@@ -539,22 +539,15 @@ function VersionsTab({
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Version History</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <div className="space-y-2">
-          {versions.map((v) => (
-            <VersionRow
-              key={v.id}
-              onView={() => setViewingVersion(v.version)}
-              version={v}
-            />
-          ))}
-        </div>
-      </CardContent>
-    </Card>
+    <div className="space-y-2">
+      {versions.map((v) => (
+        <VersionRow
+          key={v.id}
+          onView={() => setViewingVersion(v.version)}
+          version={v}
+        />
+      ))}
+    </div>
   );
 }
 
