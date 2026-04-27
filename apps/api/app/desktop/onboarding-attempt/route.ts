@@ -19,6 +19,7 @@ import { desktopOnboardingAttemptsService } from "./service";
 const onboardingAttemptRequestValidator = z
   .object({
     webAppOrigin: z.string().trim().min(1).max(2048),
+    platform: z.string().trim().min(1).max(64).optional(),
   })
   .strict();
 

@@ -26,6 +26,14 @@ Use Node 20+ with `pnpm`.
 - `pnpm migrate` or `just db-migrate name=my_change` creates/applies Prisma migrations.
 - For Prisma schema changes, generate migrations with `prisma migrate dev` or `prisma migrate dev --create-only`; only hand-edit the generated SQL for constructs Prisma cannot express, such as partial unique indexes.
 
+## Dockerized Workspace Apps
+Some apps, including `apps/mcp` and `apps/relay`, build from narrow Docker contexts instead of the full monorepo. When adding or changing any `@repo/*` import or `workspace:*` dependency in a Dockerized app, update that app's Dockerfile in the same change.
+
+- Copy every required workspace package into the builder stage before `pnpm install`, including transitive workspace dependencies needed by that package.
+- Copy package manifests for those workspace packages into the runtime stage before `pnpm install --prod`.
+- If runtime executes TypeScript with `tsx` or uses deep imports such as `@repo/api/src/...`, copy the needed `src/` or built `dist/` output into the runtime image so module resolution works after deploy.
+- Validate both the builder target and full image for the changed app, for example `docker buildx build --file apps/relay/Dockerfile --target builder .` and `docker buildx build --file apps/relay/Dockerfile .`. A local `pnpm build` or `pnpm typecheck` is not enough for these Dockerized apps because it does not prove the container has the same workspace package files.
+
 ## Coding Style & Naming Conventions
 TypeScript and ESM are standard across the repo. Formatting and linting are enforced by Biome with Ultracite presets; run `pnpm lint:fix` before opening a PR. Follow the existing 2-space indentation, prefer `type` aliases when practical, and keep `@repo/*` imports ahead of local alias imports. File names are typically kebab-case (`pull-request-status-badge.tsx`), while exported React components and types use PascalCase. In `apps/api`, keep route handlers thin and move business logic into nearby `service.ts` modules.
 
