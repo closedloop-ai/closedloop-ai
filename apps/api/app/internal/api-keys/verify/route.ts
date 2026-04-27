@@ -1,14 +1,12 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { DESKTOP_POP_HEADER_NAMES } from "@repo/api/src/types/api-key";
 import { failure } from "@repo/api/src/types/common";
+import { waitUntil } from "@vercel/functions";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { apiKeysService } from "@/app/api-keys/service";
 import { env } from "@/env";
-import {
-  getDesktopManagedPopFailure,
-  resolveDesktopManagedPopMode,
-  verifyDesktopManagedPop,
-} from "@/lib/auth/desktop-managed-pop";
+import { getDesktopManagedPopRequestFailure } from "@/lib/auth/desktop-managed-pop";
 import {
   errorResponse,
   parseBody,
@@ -18,6 +16,7 @@ import {
 
 const verifyApiKeyValidator = z.object({
   key: z.string().min(1, "Key is required"),
+  desktopPopRequired: z.boolean().optional(),
 });
 
 export async function POST(request: Request) {
@@ -54,19 +53,19 @@ export async function POST(request: Request) {
       return unauthorizedResponse();
     }
 
-    const popDecision = verifyDesktopManagedPop({
-      keyContext: context,
-      mode: await resolveDesktopManagedPopMode(context),
-      request,
-    });
-    const popFailure = getDesktopManagedPopFailure(popDecision);
-    if (popFailure) {
-      return NextResponse.json(failure(popFailure.message), {
-        status: popFailure.status,
+    if (shouldApplyDesktopManagedPop(body.desktopPopRequired, request)) {
+      const popFailure = await getDesktopManagedPopRequestFailure({
+        keyContext: context,
+        request,
       });
+      if (popFailure) {
+        return NextResponse.json(failure(popFailure.message), {
+          status: popFailure.status,
+        });
+      }
     }
 
-    apiKeysService.touchLastUsedAt(context.apiKeyId);
+    waitUntil(apiKeysService.touchLastUsedAt(context.apiKeyId));
 
     return successResponse({
       userId: context.userId,
@@ -76,4 +75,16 @@ export async function POST(request: Request) {
   } catch (error) {
     return errorResponse("Failed to verify API key", error, 503);
   }
+}
+
+function shouldApplyDesktopManagedPop(
+  desktopPopRequired: boolean | undefined,
+  request: Request
+): boolean {
+  return (
+    desktopPopRequired === true ||
+    DESKTOP_POP_HEADER_NAMES.some((headerName) =>
+      request.headers.has(headerName)
+    )
+  );
 }

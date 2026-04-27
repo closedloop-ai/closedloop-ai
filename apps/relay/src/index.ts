@@ -5,6 +5,10 @@ import {
   type IncomingMessage,
   type ServerResponse,
 } from "node:http";
+import {
+  DESKTOP_POP_HEADER_NAMES,
+  type DesktopPopHeaderName,
+} from "@repo/api/src/types/api-key";
 import { log } from "@repo/observability/log";
 import {
   ConnectionState,
@@ -35,14 +39,6 @@ const HEARTBEAT_DEGRADED_THRESHOLD_MS = Number(
 );
 const SHUTDOWN_FLUSH_DEADLINE_MS = 5000;
 const MAX_BODY_SIZE = 1_048_576; // 1 MB
-const DESKTOP_POP_GATEWAY_ID_HEADER = "X-Desktop-Gateway-Id";
-const DESKTOP_POP_TIMESTAMP_HEADER = "X-Desktop-Timestamp";
-const DESKTOP_POP_SIGNATURE_HEADER = "X-Desktop-Signature";
-const DESKTOP_POP_HEADER_NAMES = [
-  DESKTOP_POP_GATEWAY_ID_HEADER,
-  DESKTOP_POP_TIMESTAMP_HEADER,
-  DESKTOP_POP_SIGNATURE_HEADER,
-] as const;
 
 if (!INTERNAL_API_SECRET) {
   log.error("INTERNAL_API_SECRET is required");
@@ -70,9 +66,7 @@ type WorkerContext = {
   pluginVersion?: string;
 };
 
-type DesktopPopHeaders = Partial<
-  Record<(typeof DESKTOP_POP_HEADER_NAMES)[number], string>
->;
+type DesktopPopHeaders = Partial<Record<DesktopPopHeaderName, string>>;
 
 const workersByTargetId = new Map<string, WorkerContext>();
 const socketToTarget = new Map<string, string>();
@@ -223,6 +217,7 @@ async function validateApiKeyViaApi(
       "/internal/api-keys/verify",
       {
         key: apiKey,
+        desktopPopRequired: true,
       },
       desktopPopHeaders
     );

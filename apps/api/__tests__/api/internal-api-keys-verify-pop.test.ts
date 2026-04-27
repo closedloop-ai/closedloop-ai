@@ -1,10 +1,12 @@
 import { generateKeyPairSync } from "node:crypto";
+import { ApiKeySource } from "@repo/database";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { POST } from "@/app/internal/api-keys/verify/route";
 
 const mockVerifyKeyWithMetadata = vi.hoisted(() => vi.fn());
 const mockTouchLastUsedAt = vi.hoisted(() => vi.fn());
 const mockIsFeatureEnabled = vi.hoisted(() => vi.fn());
+const mockWaitUntil = vi.hoisted(() => vi.fn());
 
 vi.mock("@/app/api-keys/service", () => ({
   apiKeysService: {
@@ -19,16 +21,20 @@ vi.mock("@repo/analytics/server", () => ({
   },
 }));
 
+vi.mock("@vercel/functions", () => ({
+  waitUntil: mockWaitUntil,
+}));
+
 const INTERNAL_SECRET = "test-internal-secret";
 
-function makeRequest() {
+function makeRequest(input: { desktopPopRequired?: boolean } = {}) {
   return new Request("https://api.closedloop.ai/internal/api-keys/verify", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       "X-Internal-Secret": INTERNAL_SECRET,
     },
-    body: JSON.stringify({ key: "sk_live_test" }),
+    body: JSON.stringify({ key: "sk_live_test", ...input }),
   });
 }
 
@@ -41,6 +47,7 @@ describe("POST /internal/api-keys/verify desktop managed PoP", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockIsFeatureEnabled.mockResolvedValue(true);
+    mockTouchLastUsedAt.mockResolvedValue(undefined);
   });
 
   it("preserves bearer compatibility for USER_CREATED keys without PoP headers", async () => {
@@ -49,12 +56,12 @@ describe("POST /internal/api-keys/verify desktop managed PoP", () => {
       userId: "user-1",
       organizationId: "org-1",
       scopes: ["write"],
-      source: "USER_CREATED",
+      source: ApiKeySource.USER_CREATED,
       gatewayId: null,
       boundPublicKey: null,
     });
 
-    const response = await POST(makeRequest());
+    const response = await POST(makeRequest({ desktopPopRequired: true }));
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
@@ -74,28 +81,45 @@ describe("POST /internal/api-keys/verify desktop managed PoP", () => {
       userId: "user-1",
       organizationId: "org-1",
       scopes: ["write"],
-      source: "DESKTOP_MANAGED",
+      source: ApiKeySource.DESKTOP_MANAGED,
       gatewayId: "gateway-1",
       boundPublicKey: null,
     });
 
-    const response = await POST(makeRequest());
+    const response = await POST(makeRequest({ desktopPopRequired: true }));
 
     expect(response.status).toBe(200);
   });
 
-  it("returns 401 for enforce-eligible keys missing PoP headers", async () => {
+  it("preserves non-relay verifier callers for enforce-eligible keys without PoP headers", async () => {
     mockVerifyKeyWithMetadata.mockResolvedValue({
       apiKeyId: "api-key-bound",
       userId: "user-1",
       organizationId: "org-1",
       scopes: ["write"],
-      source: "DESKTOP_MANAGED",
+      source: ApiKeySource.DESKTOP_MANAGED,
       gatewayId: "gateway-1",
       boundPublicKey: validPublicKeyPem(),
     });
 
     const response = await POST(makeRequest());
+
+    expect(response.status).toBe(200);
+    expect(mockTouchLastUsedAt).toHaveBeenCalledWith("api-key-bound");
+  });
+
+  it("returns 401 for relay enforce-eligible keys missing PoP headers", async () => {
+    mockVerifyKeyWithMetadata.mockResolvedValue({
+      apiKeyId: "api-key-bound",
+      userId: "user-1",
+      organizationId: "org-1",
+      scopes: ["write"],
+      source: ApiKeySource.DESKTOP_MANAGED,
+      gatewayId: "gateway-1",
+      boundPublicKey: validPublicKeyPem(),
+    });
+
+    const response = await POST(makeRequest({ desktopPopRequired: true }));
 
     expect(response.status).toBe(401);
     expect(mockTouchLastUsedAt).not.toHaveBeenCalled();
@@ -112,12 +136,12 @@ describe("POST /internal/api-keys/verify desktop managed PoP", () => {
       userId: "user-1",
       organizationId: "org-1",
       scopes: ["write"],
-      source: "DESKTOP_MANAGED",
+      source: ApiKeySource.DESKTOP_MANAGED,
       gatewayId: "gateway-1",
       boundPublicKey: validPublicKeyPem(),
     });
 
-    const response = await POST(makeRequest());
+    const response = await POST(makeRequest({ desktopPopRequired: true }));
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({

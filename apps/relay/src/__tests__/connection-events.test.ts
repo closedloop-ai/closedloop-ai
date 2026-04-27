@@ -359,10 +359,12 @@ describe("auth middleware", () => {
       }
     ).mock.calls[0];
     const headers = fetchCall[1].headers as Record<string, string>;
+    const body = JSON.parse(String(fetchCall[1].body));
 
     expect(headers["X-Desktop-Gateway-Id"]).toBe("gateway-123");
     expect(headers["X-Desktop-Timestamp"]).toBe("1800000000");
     expect(headers["X-Desktop-Signature"]).toBe("signature_base64url");
+    expect(body.desktopPopRequired).toBe(true);
   });
 });
 

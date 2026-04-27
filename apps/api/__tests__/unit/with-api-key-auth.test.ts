@@ -6,9 +6,11 @@
  *   - Returns 401 when API key is invalid, user not found, or org not found
  */
 import { generateKeyPairSync } from "node:crypto";
+import { ApiKeySource } from "@repo/database";
 import { type Mock, vi } from "vitest";
 
 const mockIsFeatureEnabled = vi.hoisted(() => vi.fn());
+const mockWaitUntil = vi.hoisted(() => vi.fn());
 
 vi.mock("@repo/observability/log", () => ({
   log: { error: vi.fn(), info: vi.fn(), warn: vi.fn() },
@@ -20,6 +22,9 @@ vi.mock("@repo/analytics/server", () => ({
   analytics: {
     isFeatureEnabled: mockIsFeatureEnabled,
   },
+}));
+vi.mock("@vercel/functions", () => ({
+  waitUntil: mockWaitUntil,
 }));
 
 vi.mock("@/app/api-keys/service", () => ({
@@ -67,6 +72,7 @@ describe("withApiKeyAuth", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockIsFeatureEnabled.mockResolvedValue(true);
+    mockTouchLastUsedAt.mockResolvedValue(undefined);
   });
 
   it("sets clerkOrgId to the organization's Clerk ID, not the internal DB ID", async () => {
@@ -141,7 +147,7 @@ describe("withApiKeyAuth", () => {
       userId: "user-1",
       organizationId: INTERNAL_ORG_ID,
       scopes: ["read", "write"],
-      source: "DESKTOP_MANAGED",
+      source: ApiKeySource.DESKTOP_MANAGED,
       gatewayId: "gateway-1",
       boundPublicKey: publicKey
         .export({ format: "pem", type: "spki" })
@@ -161,5 +167,35 @@ describe("withApiKeyAuth", () => {
     expect(mockFindUser).not.toHaveBeenCalled();
     expect(mockFindOrg).not.toHaveBeenCalled();
     expect(mockTouchLastUsedAt).not.toHaveBeenCalled();
+  });
+
+  it("does not report non-PoP lookup exceptions as PoP verifier outages", async () => {
+    const handler = vi.fn(async () => new Response());
+
+    mockVerifyKeyWithMetadata.mockResolvedValue({
+      apiKeyId: "api-key-user-created",
+      userId: "user-1",
+      organizationId: INTERNAL_ORG_ID,
+      scopes: ["read", "write"],
+      source: ApiKeySource.USER_CREATED,
+      gatewayId: null,
+      boundPublicKey: null,
+    });
+    mockFindUser.mockRejectedValue(new Error("db unavailable"));
+
+    const wrapped = withApiKeyAuth(handler as never, {
+      desktopManagedPop: true,
+    });
+    const response = await wrapped(
+      createRequest("Bearer sk_live_testkey") as never,
+      { params: Promise.resolve({}) } as never
+    );
+
+    await expect(response.json()).resolves.toEqual({
+      success: false,
+      error: "Authentication failed",
+    });
+    expect(response.status).toBe(500);
+    expect(handler).not.toHaveBeenCalled();
   });
 });

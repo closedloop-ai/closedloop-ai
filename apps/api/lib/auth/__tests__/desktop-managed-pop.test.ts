@@ -1,6 +1,12 @@
 import { generateKeyPairSync, sign } from "node:crypto";
-import type { VerifiedApiKeyContextWithMetadata } from "@repo/api/src/types/api-key";
+import {
+  DESKTOP_POP_GATEWAY_ID_HEADER,
+  DESKTOP_POP_SIGNATURE_HEADER,
+  DESKTOP_POP_TIMESTAMP_HEADER,
+} from "@repo/api/src/types/api-key";
+import { ApiKeySource } from "@repo/database";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { VerifiedApiKeyContextWithMetadata } from "../api-key-context";
 
 const mockIsFeatureEnabled = vi.hoisted(() => vi.fn());
 
@@ -11,9 +17,6 @@ vi.mock("@repo/analytics/server", () => ({
 }));
 
 import {
-  DESKTOP_POP_GATEWAY_ID_HEADER,
-  DESKTOP_POP_SIGNATURE_HEADER,
-  DESKTOP_POP_TIMESTAMP_HEADER,
   resolveDesktopManagedPopMode,
   verifyDesktopManagedPop,
 } from "../desktop-managed-pop";
@@ -31,7 +34,7 @@ function makeKeyContext(
     userId: "user-1",
     organizationId: "org-1",
     scopes: ["read", "write", "delete"],
-    source: "DESKTOP_MANAGED",
+    source: ApiKeySource.DESKTOP_MANAGED,
     gatewayId: GATEWAY_ID,
     boundPublicKey: publicKey
       .export({ format: "pem", type: "spki" })
@@ -142,12 +145,18 @@ describe("resolveDesktopManagedPopMode", () => {
   it("does not evaluate the feature flag for keys that cannot be enforced", async () => {
     await expect(
       resolveDesktopManagedPopMode(
-        makeKeyContext({ boundPublicKey: null, source: "DESKTOP_MANAGED" })
+        makeKeyContext({
+          boundPublicKey: null,
+          source: ApiKeySource.DESKTOP_MANAGED,
+        })
       )
     ).resolves.toBe("monitor");
     await expect(
       resolveDesktopManagedPopMode(
-        makeKeyContext({ gatewayId: null, source: "DESKTOP_MANAGED" })
+        makeKeyContext({
+          gatewayId: null,
+          source: ApiKeySource.DESKTOP_MANAGED,
+        })
       )
     ).resolves.toBe("monitor");
     await expect(
@@ -155,7 +164,7 @@ describe("resolveDesktopManagedPopMode", () => {
         makeKeyContext({
           boundPublicKey: null,
           gatewayId: null,
-          source: "USER_CREATED",
+          source: ApiKeySource.USER_CREATED,
         })
       )
     ).resolves.toBe("monitor");
@@ -256,8 +265,7 @@ describe("verifyDesktopManagedPop", () => {
   });
 
   it("returns 403 for invalid signatures", () => {
-    const { keyContext } = makeSignedPair();
-    const invalidHeaders = makeSignedHeaders({
+    const { keyContext, headers: invalidHeaders } = makeSignedPair({
       pathname: "/different-path",
     });
 
@@ -278,7 +286,7 @@ describe("verifyDesktopManagedPop", () => {
     });
   });
 
-  it("keeps invalid bound public keys monitor-only for compatibility", () => {
+  it("returns 503 for invalid bound public keys in enforce mode", () => {
     const decision = verifyDesktopManagedPop({
       keyContext: makeKeyContext({ boundPublicKey: "not-a-pem" }),
       request: makeRequest("/compute-targets/local-auth/verify"),
@@ -287,16 +295,33 @@ describe("verifyDesktopManagedPop", () => {
     });
 
     expect(decision).toMatchObject({
+      accepted: false,
+      enforceEligible: true,
+      reason: "verifier_unavailable",
+      status: 503,
+    });
+  });
+
+  it("records invalid bound public keys without rejecting in monitor mode", () => {
+    const decision = verifyDesktopManagedPop({
+      keyContext: makeKeyContext({ boundPublicKey: "not-a-pem" }),
+      request: makeRequest("/compute-targets/local-auth/verify"),
+      mode: "monitor",
+      now: NOW,
+    });
+
+    expect(decision).toMatchObject({
       accepted: true,
-      enforceEligible: false,
+      enforceEligible: true,
       reason: "verifier_unavailable",
     });
+    expect(decision.status).toBeUndefined();
   });
 
   it("bypasses USER_CREATED keys even in enforce mode", () => {
     const decision = verifyDesktopManagedPop({
       keyContext: makeKeyContext({
-        source: "USER_CREATED",
+        source: ApiKeySource.USER_CREATED,
         gatewayId: null,
         boundPublicKey: null,
       }),

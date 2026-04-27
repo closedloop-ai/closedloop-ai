@@ -7,17 +7,14 @@ import type {
 import { failure } from "@repo/api/src/types/common";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
+import { waitUntil } from "@vercel/functions";
 import { type NextRequest, NextResponse } from "next/server";
 import { apiKeysService } from "@/app/api-keys/service";
 import { organizationsService } from "@/app/organizations/service";
 import { usersService } from "@/app/users/service";
 import { forbiddenResponse, unauthorizedResponse } from "../route-utils";
 import { hasApiKeyScopes } from "./api-key-scopes";
-import {
-  getDesktopManagedPopFailure,
-  resolveDesktopManagedPopMode,
-  verifyDesktopManagedPop,
-} from "./desktop-managed-pop";
+import { getDesktopManagedPopRequestFailure } from "./desktop-managed-pop";
 import type {
   AuthContext,
   AuthenticatedHandler,
@@ -112,10 +109,9 @@ export function withApiKeyAuth<TResponse, TRoute extends string = string>(
     } catch (error) {
       const errorMessage = parseError(error);
       log.error("API key authentication failed", { error: errorMessage });
-      return NextResponse.json(
-        failure(getAuthenticationFailureMessage(options)),
-        { status: options?.desktopManagedPop ? 503 : 500 }
-      );
+      return NextResponse.json(failure("Authentication failed"), {
+        status: 500,
+      });
     }
   };
 }
@@ -142,12 +138,10 @@ async function resolveApiKeyContext(
     return unauthorizedResult();
   }
 
-  const popDecision = verifyDesktopManagedPop({
+  const popFailure = await getDesktopManagedPopRequestFailure({
     keyContext: context,
-    mode: await resolveDesktopManagedPopMode(context),
     request,
   });
-  const popFailure = getDesktopManagedPopFailure(popDecision);
   if (popFailure) {
     return {
       context: null,
@@ -157,16 +151,10 @@ async function resolveApiKeyContext(
     };
   }
 
-  apiKeysService.touchLastUsedAt(context.apiKeyId);
+  waitUntil(apiKeysService.touchLastUsedAt(context.apiKeyId));
   return { context, response: null };
 }
 
 function unauthorizedResult(): ResolveApiKeyResult {
   return { context: null, response: unauthorizedResponse() };
-}
-
-function getAuthenticationFailureMessage(options?: ApiKeyAuthOptions): string {
-  return options?.desktopManagedPop
-    ? "Desktop managed PoP verifier unavailable"
-    : "Authentication failed";
 }

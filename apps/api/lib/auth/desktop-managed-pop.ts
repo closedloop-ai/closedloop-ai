@@ -4,13 +4,15 @@ import {
   verify as verifySignature,
 } from "node:crypto";
 import { analytics } from "@repo/analytics/server";
-import type { VerifiedApiKeyContextWithMetadata } from "@repo/api/src/types/api-key";
+import {
+  DESKTOP_POP_GATEWAY_ID_HEADER,
+  DESKTOP_POP_SIGNATURE_HEADER,
+  DESKTOP_POP_TIMESTAMP_HEADER,
+} from "@repo/api/src/types/api-key";
+import { ApiKeySource } from "@repo/database";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
-
-export const DESKTOP_POP_GATEWAY_ID_HEADER = "X-Desktop-Gateway-Id";
-export const DESKTOP_POP_TIMESTAMP_HEADER = "X-Desktop-Timestamp";
-export const DESKTOP_POP_SIGNATURE_HEADER = "X-Desktop-Signature";
+import type { VerifiedApiKeyContextWithMetadata } from "./api-key-context";
 
 const POP_TIMESTAMP_FRESHNESS_SECONDS = 60;
 const TIMESTAMP_SECONDS_PATTERN = /^\d+$/;
@@ -36,6 +38,11 @@ export type DesktopManagedPopDecision = {
   status?: 401 | 403 | 503;
 };
 
+export type DesktopManagedPopFailure = {
+  message: string;
+  status: 401 | 403 | 503;
+};
+
 type DesktopManagedPopVerificationInput = {
   keyContext: VerifiedApiKeyContextWithMetadata;
   request: Request;
@@ -55,7 +62,7 @@ export async function resolveDesktopManagedPopMode(
   >
 ): Promise<DesktopManagedPopMode> {
   if (
-    keyContext.source !== "DESKTOP_MANAGED" ||
+    keyContext.source !== ApiKeySource.DESKTOP_MANAGED ||
     !(keyContext.boundPublicKey && keyContext.gatewayId)
   ) {
     return "monitor";
@@ -92,7 +99,7 @@ export function verifyDesktopManagedPop(
   const mode = input.mode ?? "monitor";
   const { keyContext, request } = input;
 
-  if (keyContext.source !== "DESKTOP_MANAGED") {
+  if (keyContext.source !== ApiKeySource.DESKTOP_MANAGED) {
     return logAndReturn(input, {
       accepted: true,
       enforceEligible: false,
@@ -112,12 +119,7 @@ export function verifyDesktopManagedPop(
 
   const publicKey = createEd25519PublicKey(keyContext.boundPublicKey);
   if (!publicKey) {
-    return logAndReturn(input, {
-      accepted: true,
-      enforceEligible: false,
-      mode,
-      reason: "verifier_unavailable",
-    });
+    return logAndReturn(input, toDecision(mode, "verifier_unavailable"));
   }
 
   const headers = readDesktopPopHeaders(request.headers);
@@ -203,7 +205,7 @@ export function verifyDesktopManagedPop(
  */
 export function getDesktopManagedPopFailure(
   decision: DesktopManagedPopDecision
-): { message: string; status: 401 | 403 | 503 } | null {
+): DesktopManagedPopFailure | null {
   if (decision.accepted || !decision.status) {
     return null;
   }
@@ -219,6 +221,22 @@ export function getDesktopManagedPopFailure(
     status: decision.status,
     message: "Desktop managed PoP verification failed",
   };
+}
+
+/**
+ * Resolve rollout mode, evaluate PoP, and return the HTTP failure contract for
+ * callers that share desktop-managed PoP enforcement.
+ */
+export async function getDesktopManagedPopRequestFailure(input: {
+  keyContext: VerifiedApiKeyContextWithMetadata;
+  request: Request;
+}): Promise<DesktopManagedPopFailure | null> {
+  const popDecision = verifyDesktopManagedPop({
+    keyContext: input.keyContext,
+    mode: await resolveDesktopManagedPopMode(input.keyContext),
+    request: input.request,
+  });
+  return getDesktopManagedPopFailure(popDecision);
 }
 
 function createEd25519PublicKey(pem: string): KeyObject | null {

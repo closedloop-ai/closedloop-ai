@@ -5,11 +5,11 @@ import type {
   CreateApiKeyInput,
   CreateApiKeyResponse,
   VerifiedApiKeyContext,
-  VerifiedApiKeyContextWithMetadata,
 } from "@repo/api/src/types/api-key";
 import { API_KEY_SCOPES } from "@repo/api/src/types/api-key";
 import { ApiKeySource, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
+import type { VerifiedApiKeyContextWithMetadata } from "@/lib/auth/api-key-context";
 
 const FULL_ACCESS_SCOPES = [
   "read",
@@ -69,18 +69,20 @@ function defaultDesktopManagedKeyName(gatewayId: string): string {
   return `Desktop ${gatewayId}`;
 }
 
-function scheduleLastUsedAtUpdate(apiKeyId: string, lastUsedAt: Date): void {
-  withDb((db) =>
+function updateLastUsedAt(apiKeyId: string, lastUsedAt: Date): Promise<void> {
+  return withDb((db) =>
     db.apiKey.update({
       where: { id: apiKeyId },
       data: { lastUsedAt },
     })
-  ).catch((error: unknown) => {
-    log.error("Failed to update API key lastUsedAt", {
-      apiKeyId,
-      error: error instanceof Error ? error.message : String(error),
+  )
+    .then(() => undefined)
+    .catch((error: unknown) => {
+      log.error("Failed to update API key lastUsedAt", {
+        apiKeyId,
+        error: error instanceof Error ? error.message : String(error),
+      });
     });
-  });
 }
 
 /**
@@ -270,7 +272,7 @@ export const apiKeysService = {
     }
 
     if (options.updateLastUsedAt !== false) {
-      scheduleLastUsedAtUpdate(record.id, now);
+      await updateLastUsedAt(record.id, now);
     }
 
     const scopes = normalizeStoredScopes(
@@ -314,11 +316,12 @@ export const apiKeysService = {
   },
 
   /**
-   * Mark an already accepted API-key request as used without blocking the
-   * response path.
+   * Mark an already accepted API-key request as used. Serverless route callers
+   * that do not want this on the response path should pass the promise to
+   * `waitUntil`.
    */
-  touchLastUsedAt(apiKeyId: string): void {
-    scheduleLastUsedAtUpdate(apiKeyId, new Date());
+  touchLastUsedAt(apiKeyId: string): Promise<void> {
+    return updateLastUsedAt(apiKeyId, new Date());
   },
 };
 

@@ -1,6 +1,20 @@
 export const API_KEY_SCOPES = ["read", "write", "delete", "admin"] as const;
 export type ApiKeyScope = (typeof API_KEY_SCOPES)[number];
 
+/**
+ * Desktop proof-of-possession header names shared by Electron, relay, and API
+ * callers that forward or verify desktop-managed API key requests.
+ */
+export const DESKTOP_POP_GATEWAY_ID_HEADER = "X-Desktop-Gateway-Id";
+export const DESKTOP_POP_TIMESTAMP_HEADER = "X-Desktop-Timestamp";
+export const DESKTOP_POP_SIGNATURE_HEADER = "X-Desktop-Signature";
+export const DESKTOP_POP_HEADER_NAMES = [
+  DESKTOP_POP_GATEWAY_ID_HEADER,
+  DESKTOP_POP_TIMESTAMP_HEADER,
+  DESKTOP_POP_SIGNATURE_HEADER,
+] as const;
+export type DesktopPopHeaderName = (typeof DESKTOP_POP_HEADER_NAMES)[number];
+
 // API key types for API contract
 // These are explicitly defined to keep packages/api independent of database
 
@@ -30,15 +44,4 @@ export type VerifiedApiKeyContext = {
   userId: string;
   organizationId: string;
   scopes: ApiKeyScope[];
-};
-
-/**
- * Internal verification context that carries API-key provenance metadata.
- * Route contracts must not expose key material, signatures, or public keys to clients.
- */
-export type VerifiedApiKeyContextWithMetadata = VerifiedApiKeyContext & {
-  apiKeyId: string;
-  source: "USER_CREATED" | "DESKTOP_MANAGED";
-  gatewayId: string | null;
-  boundPublicKey: string | null;
 };
