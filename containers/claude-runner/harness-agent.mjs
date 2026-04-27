@@ -3389,6 +3389,32 @@ async function finalizeRepos(repos, tokenSnapshot, safetyCommitMsg) {
 }
 
 /**
+ * Build a synthetic primary-repo RepoExecutionResult from an LLM commit's
+ * prInfo. Used when the LLM committed+pushed but execution-result.json was
+ * unparseable or missing — keeps the results array consistent across paths.
+ */
+function buildPrimaryLlmResult(llmPrInfo) {
+  if (llmPrInfo.prUrl && llmPrInfo.prNumber) {
+    return {
+      fullName: config.targetRepo,
+      status: "success",
+      hasChanges: true,
+      prUrl: llmPrInfo.prUrl,
+      prNumber: llmPrInfo.prNumber,
+      branchName: llmPrInfo.branchName ?? "",
+      baseBranch: config.targetBranch,
+      commitSha: llmPrInfo.commitSha ?? undefined,
+    };
+  }
+  return {
+    fullName: config.targetRepo,
+    status: "failed",
+    error:
+      "LLM commit succeeded but prUrl or prNumber is missing from llmPrInfo",
+  };
+}
+
+/**
  * Build a flat event result payload with optional prInfo, sessionId, and repos.
  */
 function buildEventResult(prInfo, results, extra) {
@@ -3471,25 +3497,7 @@ async function reportFinalStatus(
           "warn",
           "Failed to parse LLM-written execution-result.json — recording synthetic result"
         );
-        if (llmPrInfo.prUrl && llmPrInfo.prNumber) {
-          results.push({
-            fullName: config.targetRepo,
-            status: "success",
-            hasChanges: true,
-            prUrl: llmPrInfo.prUrl,
-            prNumber: llmPrInfo.prNumber,
-            branchName: llmPrInfo.branchName ?? "",
-            baseBranch: config.targetBranch,
-            commitSha: llmPrInfo.commitSha ?? undefined,
-          });
-        } else {
-          results.push({
-            fullName: config.targetRepo,
-            status: "failed",
-            error:
-              "LLM commit succeeded but prUrl or prNumber is missing from llmPrInfo",
-          });
-        }
+        results.push(buildPrimaryLlmResult(llmPrInfo));
       }
     } else {
       // Fallback: run finalizeRepo() for the primary repo (safety commit path).
@@ -3843,25 +3851,7 @@ async function main() {
 
         // Record a synthetic result for the primary repo so the results array
         // is consistent regardless of which commit path ran.
-        if (llmPrInfo.prUrl && llmPrInfo.prNumber) {
-          results.push({
-            fullName: config.targetRepo,
-            status: "success",
-            hasChanges: true,
-            prUrl: llmPrInfo.prUrl,
-            prNumber: llmPrInfo.prNumber,
-            branchName: llmPrInfo.branchName ?? "",
-            baseBranch: config.targetBranch,
-            commitSha: llmPrInfo.commitSha ?? undefined,
-          });
-        } else {
-          results.push({
-            fullName: config.targetRepo,
-            status: "failed",
-            error:
-              "LLM commit succeeded but prUrl or prNumber is missing from llmPrInfo",
-          });
-        }
+        results.push(buildPrimaryLlmResult(llmPrInfo));
       } else {
         // Fallback: finalize only the primary repo via safety-commit path.
         const primaryResults = await finalizeRepos(

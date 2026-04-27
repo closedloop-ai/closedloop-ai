@@ -527,10 +527,16 @@ export const executeHandler = defineHandler<ExecutionArtifacts>({
   includePrimaryArtifact: true,
 
   downloadArtifacts(stateKeyPrefix: string, loop: Loop) {
-    return downloadExecutionArtifacts(
-      stateKeyPrefix,
-      loop.repo?.fullName ?? ""
-    );
+    // requiresRepo: true guarantees loop.repo is present at this entry point.
+    // Fail loudly rather than silently passing an empty primaryFullName, which
+    // would tag any v1 envelope with "" and break downstream lookups.
+    const primaryFullName = loop.repo?.fullName;
+    if (!primaryFullName) {
+      throw new Error(
+        `executeHandler.downloadArtifacts: loop ${loop.id} has no primary repo fullName`
+      );
+    }
+    return downloadExecutionArtifacts(stateKeyPrefix, primaryFullName);
   },
 
   downloadFromUpload: executionArtifactsFromUpload,

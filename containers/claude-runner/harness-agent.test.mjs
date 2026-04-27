@@ -1794,7 +1794,7 @@ describe("cloneAdditionalRepos", () => {
       GIT_COMMITTER_EMAIL: "test@test.com",
     };
 
-    execFileSync("git", ["init", "--bare", bareRepoPath]);
+    execFileSync("git", ["init", "--bare", "-b", "main", bareRepoPath]);
     const wcDir = path.join(parentDir, "wc");
     execFileSync("git", ["clone", bareRepoPath, wcDir]);
     execFileSync(
@@ -1866,7 +1866,7 @@ describe("cloneAdditionalRepos", () => {
       GIT_COMMITTER_EMAIL: "test@test.com",
     };
 
-    execFileSync("git", ["init", "--bare", bareRepoPath]);
+    execFileSync("git", ["init", "--bare", "-b", "main", bareRepoPath]);
     const wcDir = path.join(parentDir, "wc");
     execFileSync("git", ["clone", bareRepoPath, wcDir]);
     execFileSync(
@@ -2214,8 +2214,11 @@ describe("finalizeRepo", () => {
     assert.equal(result.error, "PR creation failed");
   });
 
-  test("returns failed result with scrubbed token on git error", async () => {
-    // Pass a workDir that is not a git repository so git status throws
+  test("returns failed result with string error when git status throws", async () => {
+    // Pass a workDir that is not a git repository so git status throws.
+    // This test only verifies the failure-shape contract; actual token
+    // scrubbing is exercised in the registerSecret/redactSensitive test
+    // below, since `git status` failure messages do not contain the token.
     const nonGitDir = makeTempDir();
     const sensitiveToken = `ghp_secret-${Date.now()}`;
 
@@ -2233,10 +2236,6 @@ describe("finalizeRepo", () => {
     assert.ok(
       typeof result.error === "string",
       "result.error should be a string"
-    );
-    assert.ok(
-      !result.error.includes(sensitiveToken),
-      "result.error must not contain the raw token"
     );
   });
 
