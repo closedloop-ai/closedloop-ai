@@ -1354,29 +1354,29 @@ function cloneAdditionalRepos(entries, peersDir = "/workspace/peers") {
       .slice(0, 50);
     const peerBranchName = `symphony/${peerLoopSuffix}`;
     try {
+      execFileSync("git", ["checkout", "-b", peerBranchName], {
+        cwd: cloneTarget,
+        stdio: "pipe",
+      });
+    } catch {
+      // Branch may already exist in local clone (e.g., retry). Reuse it.
       try {
-        execFileSync("git", ["checkout", "-b", peerBranchName], {
-          cwd: cloneTarget,
-          stdio: "pipe",
-        });
-      } catch {
-        // Branch may already exist in local clone (e.g., retry). Reuse it.
         execFileSync("git", ["checkout", peerBranchName], {
           cwd: cloneTarget,
           stdio: "pipe",
         });
+      } catch (err) {
+        throw new HarnessError(
+          ERROR_CODES.branchCreate,
+          `Failed to create or checkout working branch ${peerBranchName} in peer repo ${entry.fullName}`,
+          err
+        );
       }
-      log(
-        "info",
-        `Peer repo ${entry.fullName}: created/checked out working branch ${peerBranchName}`
-      );
-    } catch (err) {
-      throw new HarnessError(
-        ERROR_CODES.branchCreate,
-        `Failed to create or checkout working branch ${peerBranchName} in peer repo ${entry.fullName}`,
-        err
-      );
     }
+    log(
+      "info",
+      `Peer repo ${entry.fullName}: created/checked out working branch ${peerBranchName}`
+    );
 
     log("info", `Peer repo ${entry.fullName} cloned successfully`);
     clonedDirs.push(cloneTarget);
