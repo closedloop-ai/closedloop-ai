@@ -1,9 +1,14 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import {
   createServer,
+  type IncomingHttpHeaders,
   type IncomingMessage,
   type ServerResponse,
 } from "node:http";
+import {
+  DESKTOP_POP_HEADER_NAMES,
+  type DesktopPopHeaderName,
+} from "@repo/api/src/types/api-key";
 import { log } from "@repo/observability/log";
 import {
   ConnectionState,
@@ -61,6 +66,8 @@ type WorkerContext = {
   pluginVersion?: string;
 };
 
+type DesktopPopHeaders = Partial<Record<DesktopPopHeaderName, string>>;
+
 const workersByTargetId = new Map<string, WorkerContext>();
 const socketToTarget = new Map<string, string>();
 
@@ -93,6 +100,46 @@ function emitConnectionState(
   });
 }
 
+function extractDesktopPopHeaders(
+  headers: IncomingHttpHeaders
+): DesktopPopHeaders {
+  const result: DesktopPopHeaders = {};
+  for (const headerName of DESKTOP_POP_HEADER_NAMES) {
+    const value = getHeaderValue(headers, headerName);
+    if (value) {
+      result[headerName] = value;
+    }
+  }
+  return result;
+}
+
+function toDesktopPopHeaders(value: unknown): DesktopPopHeaders | undefined {
+  if (!(typeof value === "object" && value !== null)) {
+    return undefined;
+  }
+
+  const result: DesktopPopHeaders = {};
+  for (const headerName of DESKTOP_POP_HEADER_NAMES) {
+    const headerValue = (value as Record<string, unknown>)[headerName];
+    if (typeof headerValue === "string" && headerValue.trim().length > 0) {
+      result[headerName] = headerValue;
+    }
+  }
+
+  return result;
+}
+
+function getHeaderValue(
+  headers: IncomingHttpHeaders,
+  headerName: string
+): string | undefined {
+  const headerValue = headers[headerName] ?? headers[headerName.toLowerCase()];
+  const value = Array.isArray(headerValue) ? headerValue[0] : headerValue;
+  return typeof value === "string" && value.trim().length > 0
+    ? value
+    : undefined;
+}
+
 // ---------------------------------------------------------------------------
 // Connection churn / reconnect / heartbeat-freshness counters
 // Relay is a long-lived process; counters are monotonically increasing and
@@ -111,7 +158,8 @@ const lastHeartbeatAckAt = new Map<string, number>();
 
 async function callVercel<T = Record<string, unknown>>(
   path: string,
-  body: unknown
+  body: unknown,
+  extraHeaders?: DesktopPopHeaders
 ): Promise<{
   ok: boolean;
   status: number;
@@ -125,6 +173,7 @@ async function callVercel<T = Record<string, unknown>>(
     headers: {
       "Content-Type": "application/json",
       "x-internal-secret": INTERNAL_API_SECRET as string,
+      ...(extraHeaders ?? {}),
     },
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(10_000),
@@ -148,19 +197,30 @@ async function callVercel<T = Record<string, unknown>>(
   };
 }
 
-async function validateApiKeyViaApi(apiKey: string): Promise<{
+async function validateApiKeyViaApi(
+  apiKey: string,
+  desktopPopHeaders?: DesktopPopHeaders
+): Promise<{
   ok: boolean;
   context?: { organizationId: string; userId: string };
 }> {
   log.info("validateApiKeyViaApi: calling API", {
     keyPrefix: `${apiKey.slice(0, 8)}...`,
     url: `${VERCEL_API_URL}/internal/api-keys/verify`,
+    hasDesktopPopHeaders:
+      Object.keys(desktopPopHeaders ?? {}).length ===
+      DESKTOP_POP_HEADER_NAMES.length,
   });
 
   const { ok, data, status, responseUrl, contentType, rawBody } =
-    await callVercel("/internal/api-keys/verify", {
-      key: apiKey,
-    });
+    await callVercel(
+      "/internal/api-keys/verify",
+      {
+        key: apiKey,
+        desktopPopRequired: true,
+      },
+      desktopPopHeaders
+    );
 
   log.info("validateApiKeyViaApi: API response", {
     ok,
@@ -253,12 +313,18 @@ async function forwardSocketEvent(
       typeof (payload as Record<string, unknown>).apiKey === "string"
         ? ((payload as Record<string, unknown>).apiKey as string)
         : null;
+    const desktopPopHeaders =
+      typeof payload === "object" && payload !== null
+        ? toDesktopPopHeaders(
+            (payload as Record<string, unknown>).desktopPopHeaders
+          )
+        : undefined;
 
     if (!apiKey) {
       return { emit: [], disconnect: true };
     }
 
-    const result = await validateApiKeyViaApi(apiKey);
+    const result = await validateApiKeyViaApi(apiKey, desktopPopHeaders);
     if (!(result.ok && result.context)) {
       return { emit: [], disconnect: true };
     }
@@ -491,7 +557,10 @@ namespace.use((socket, next) => {
   });
 
   // Validate via Vercel
-  forwardSocketEvent("_relay.validate", { apiKey })
+  forwardSocketEvent("_relay.validate", {
+    apiKey,
+    desktopPopHeaders: extractDesktopPopHeaders(socket.handshake.headers),
+  })
     .then((result) => {
       log.info("Socket auth middleware: validation response", {
         socketId: socket.id,

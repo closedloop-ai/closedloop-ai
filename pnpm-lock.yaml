@@ -500,6 +500,9 @@ importers:
 
   apps/relay:
     dependencies:
+      '@repo/api':
+        specifier: workspace:*
+        version: link:../../packages/api
       '@repo/observability':
         specifier: workspace:*
         version: link:../../packages/observability

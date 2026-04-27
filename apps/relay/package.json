@@ -11,8 +11,9 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "socket.io": "^4.8.1",
+    "@repo/api": "workspace:*",
     "@repo/observability": "workspace:*",
+    "socket.io": "^4.8.1",
     "tsx": "^4.21.0"
   },
   "devDependencies": {
