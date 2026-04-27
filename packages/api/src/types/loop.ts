@@ -229,5 +229,4 @@ export {
   RepoExecutionResultBaseSchema,
   RepoExecutionResultSchema,
   RepoExecutionResultsSchema,
-  repoExecutionResultToExecutionResultFile,
 } from "@closedloop-ai/loops-api/execution-result";
