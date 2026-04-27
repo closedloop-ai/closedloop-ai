@@ -1,4 +1,0 @@
-{
-  "no_learnings": true,
-  "reason": "Straightforward SHA-pinning of GitHub Actions in a workflow YAML file. No code patterns, TypeScript, or architecture decisions involved."
-}

@@ -1,8 +1,0 @@
-{
-  "what_happened": "Pinned third-party GitHub Actions to full commit SHAs in symphony.yml",
-  "why": "Security best practice to prevent supply chain attacks via mutable version tags",
-  "fix_applied": "Used replace_all on each action pattern to update all 14 occurrences across 4 jobs (plan, answer, execute, chat)",
-  "pattern_to_remember": "When pinning GitHub Actions: (1) actions/create-github-app-token@v2 in this repo maps to SHA d72941d797746b7f83e251beff207c8b53f4b638 # v1.11.4, (2) actions/checkout@v6 -> 11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2, (3) actions/upload-artifact@v7 -> ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2, (4) anthropics/claude-code-action@v1 -> 8b26f0dcd05cf58de044cb56c6a2e2e66524b66f # v1. Always include a version comment annotation after the SHA.",
-  "applies_to": ["implementation-subagent"],
-  "context": { "file": ".github/workflows/symphony.yml" }
-}
