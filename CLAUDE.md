@@ -93,6 +93,7 @@ No sycophantic language. Brief, factual — state what changed.
 - `String#replaceAll()` not `.replace()` with global regex (S7781)
 - `globalThis` not `window` (S7764); SSR guards: `globalThis.window === undefined` in client-only, keep `typeof` if server-possible
 - `next/image` over `<img>`
+- `<Link href="...">` (from `next/link`) for all in-app navigation — never `<Button onClick={() => router.push(...)}>`; `<Link>` enables middle-click, Cmd/Ctrl+click, and right-click context menu behaviors that `router.push` silently breaks
 - No JSX comments between `(` and root element — JS comments above assignment
 - Single `Array#push(a, b, c)` not consecutive calls (S7778)
 - `String.raw` for literal backslash sequences (Sonar80)

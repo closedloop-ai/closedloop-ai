@@ -2,7 +2,7 @@
 
 import { Button } from "@repo/design-system/components/ui/button";
 import { Home, LayoutGrid, List, MessageCircle, RefreshCw } from "lucide-react";
-import { useRouter } from "next/navigation";
+import Link from "next/link";
 import {
   useCallback,
   useEffect,
@@ -23,7 +23,6 @@ import type { EngineerTicket } from "@/types/engineer";
 import { ComputeTargetSelector } from "./compute-target-selector";
 
 export function EngineerDashboard() {
-  const router = useRouter();
   const {
     tickets,
     isLoading,
@@ -205,14 +204,11 @@ export function EngineerDashboard() {
           </div>
           <div className="ml-auto flex items-center gap-2">
             <ComputeTargetSelector />
-            <Button
-              className="gap-2"
-              onClick={() => router.push("/")}
-              size="sm"
-              variant="outline"
-            >
-              <Home className="size-4" />
-              Home
+            <Button asChild className="gap-2" size="sm" variant="outline">
+              <Link href="/">
+                <Home className="size-4" />
+                Home
+              </Link>
             </Button>
             <Button
               className="size-10 cursor-pointer rounded-full"
