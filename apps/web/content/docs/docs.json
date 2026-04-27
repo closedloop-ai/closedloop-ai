@@ -85,6 +85,13 @@
         ]
       },
       {
+        "group": "Workflows",
+        "pages": [
+          "workflows/parallel-feature-development",
+          "workflows/prd-to-plan-to-execution"
+        ]
+      },
+      {
         "group": "Resources",
         "pages": [
           "resources/troubleshooting",
