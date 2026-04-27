@@ -5,6 +5,13 @@ description: Install the six ClosedLoop.ai Claude Code plugins and keep them aut
 
 The ClosedLoop plugins are the agent and orchestration layer that runs inside Claude Code. They are installed globally per-user and cached under `~/.claude/plugins/cache/closedloop-ai/`.
 
+## Prerequisites
+
+- **Claude Code CLI** (`claude --version` must work).
+- **Python 3.11+**.
+- **`jq`** on your PATH.
+- **Bash 3.2+**.
+
 ## One-line install
 
 The recommended install is a single command that installs every plugin at user scope and enables auto-update.
@@ -73,6 +80,34 @@ claude plugin list
 ```
 
 You should see all six ClosedLoop plugins listed with their versions.
+
+## What the plugins add to your tooling
+
+After install you have new slash commands and skills available in every Claude Code session:
+
+- `/code:code` – start a planning/execution loop against a workdir.
+- `/code:amend-plan` – conversationally amend an existing plan.
+- `/code:plan-with-codex` – run a multi-round plan debate between Claude and Codex.
+- `/code:cancel-code` – clear the current loop state for a workdir.
+- `/code-review:start` – run multi-agent code review on the current diff.
+- `/agent-bootstrap` – generate project-specific expert agents from your codebase.
+- `/process-learnings`, `/export-closedloop-learnings`, `/push-learnings`, `/pull-learnings`, `/prune-learnings`, `/goal-stats` – self-learning pipeline.
+
+Skills are discovered automatically by Claude Code from context and do not need to be invoked by name.
+
+## How the desktop app uses the plugins
+
+The desktop app resolves the `claude` binary (honoring a `CLAUDE_BIN` override), spawns it with a plan or execute command, and tails the NDJSON stream to produce live progress in the web app. If the plugins are missing you will see a `preflight.script_not_found` telemetry event and the loop will refuse to start. Install or update the plugins and restart the desktop app to recover.
+
+## Update path
+
+Plugin versions live under `plugins/<name>/.claude-plugin/plugin.json` in the repository. Auto-update is on by default. To force a refresh:
+
+```bash
+claude /plugin marketplace update closedloop-ai
+```
+
+Then `/exit` and restart your Claude Code session.
 
 ## Next step
 

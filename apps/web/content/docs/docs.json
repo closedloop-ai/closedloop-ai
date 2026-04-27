@@ -14,21 +14,19 @@
           "getting-started/index",
           "getting-started/prerequisites",
           "getting-started/install-plugins",
-          "getting-started/install-claude-plugins",
           "getting-started/install-desktop",
+          "getting-started/from-onboarding-to-first-loop",
           "getting-started/first-launch",
           "getting-started/prepare-your-repo-and-targets",
-          "getting-started/from-onboarding-to-first-loop",
           "getting-started/first-loop"
         ]
       },
       {
         "group": "Concepts",
         "pages": [
-          "concepts/spec-driven-ai-first-delivery",
-          "concepts/spec-driven-ai-development",
-          "concepts/team-based-agentic-development",
           "concepts/closed-loop-sdlc",
+          "concepts/spec-driven-ai-first-delivery",
+          "concepts/team-based-agentic-development",
           "concepts/artifact-bound-delivery",
           "concepts/loop-until-correct",
           "concepts/control-plane"
@@ -48,7 +46,6 @@
           "mechanisms/self-learning",
           "mechanisms/multi-repo",
           "mechanisms/hooks",
-          "mechanisms/approvals",
           "mechanisms/approvals-and-sandbox",
           "mechanisms/desktop-client",
           "mechanisms/desktop-gateway",
@@ -74,21 +71,12 @@
       {
         "group": "Workflows",
         "pages": [
-          "workflows/prd-to-plan-to-execution",
-          "workflows/parallel-feature-development",
           "workflows/bootstrap-a-repo",
           "workflows/planning-with-codex",
           "workflows/plan-with-codex-debate",
           "workflows/amending-a-plan",
           "workflows/code-review",
           "workflows/push-pull-learnings"
-        ]
-      },
-      {
-        "group": "Workflows",
-        "pages": [
-          "workflows/parallel-feature-development",
-          "workflows/prd-to-plan-to-execution"
         ]
       },
       {

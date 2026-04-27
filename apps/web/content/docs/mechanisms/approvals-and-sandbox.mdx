@@ -1,6 +1,6 @@
 ---
-title: Approvals and sandbox
-description: The policy layer that governs which operations run without prompting and which paths they can touch.
+title: "Approvals and sandbox"
+description: "The policy layer that governs which operations run without prompting and which paths they can touch."
 ---
 
 The desktop client's security model has two layers: a sandbox that constrains the filesystem, and an approval policy that constrains which operations can run unattended.
@@ -54,10 +54,30 @@ Every approval resolves to one of:
 
 Pending approvals are persisted in `desktop-approvals`. The tray badges the pending count.
 
-## Tiering examples
+### Risk tiers
+
+- **high** – destructive or sensitive (`deploy`, writing files, anything that modifies the system beyond the sandbox in practice).
+- **medium** – normal loop and git operations (`symphony_loop`, `git_action`, `pr_reply`, `learnings_record`).
+- **low** – read-only health and status (`health_check`, `symphony_status`).
+- **none** – effectively unclassified; always prompts unless auto-approved by your default tier.
+
+### Default approval tier
+
+Configurable under **Settings → Policies → Default Approval Tier**:
+
+- **high** – auto-approve everything up to and including `high`-risk operations. This is the default for personal productivity setups; it is equivalent to "trust the platform".
+- **medium** – auto-approve low and medium; prompt on high.
+- **low** – auto-approve low only; prompt on medium and high.
+- **none** – prompt on every operation.
+
+### Per-operation overrides
+
+**Settings → Policies → Risk Tier Overrides** lets you raise or lower the effective tier per operation id. For example, you can keep the global default at **high** but force `deploy` to always prompt.
+
+### Tiering examples
 
 | Operation | Risk tier |
-|---|---|
+| --- | --- |
 | `health_check` | low |
 | `git_action` (read) | low |
 | `filesystem` (read) | low |
@@ -75,7 +95,7 @@ A dev-only setting (`desktop:set-dangerous-auto-approve` IPC) bypasses approval 
 
 ## Why two layers
 
-The sandbox constrains *what* an operation can touch; the approval policy constrains *when* it can run without asking. Together they give you:
+The sandbox constrains _what_ an operation can touch; the approval policy constrains _when_ it can run without asking. Together they give you:
 
 - a hard guarantee that nothing outside the sandbox is writable
 - a scoped way to auto-approve known safe operations (for example, read-only git on a specific repo)

@@ -1,11 +1,19 @@
 ---
-title: Spec-driven, AI-first delivery
-description: The philosophy behind ClosedLoop.ai and why specs, not chats, are the durable unit of AI-assisted work.
+title: "Spec-driven, AI-first delivery"
+description: "The philosophy behind ClosedLoop.ai and why specs, not chats, are the durable unit of AI-assisted work."
 ---
 
 ClosedLoop.ai is built around a specific belief: AI-assisted software delivery only scales when the specification is the source of truth. Every loop is grounded in an artifact — a PRD, an implementation plan, or a feature description — and every agent output is judged against that artifact.
 
 This is what we mean by **spec-driven, AI-first delivery**.
+
+## What "spec-driven" means here
+
+Three commitments:
+
+1. **Intent is written down.** A PRD, a plan, or a ticket captures the problem, the desired outcome, and the acceptance criteria. This is what the AI reads.
+2. **Execution is bounded by the spec.** A loop inherits the artifact's scope and can only succeed by satisfying it. The orchestrator emits a `<promise>COMPLETE</promise>` only when the plan's `pendingTasks` are empty and the acceptance criteria validate.
+3. **Review is against the spec.** Judges score the plan or the code against the artifact that launched the loop. Human review closes against the same artifact.
 
 ## Spec-driven
 
@@ -52,6 +60,20 @@ ClosedLoop.ai replaces three common failure modes:
 - **Chat-driven coding** — fast at the start, but produces no shared artifact, no review trail, and no pattern capture.
 - **One-shot agent tools** — produce a patch but do not gate, judge, or learn.
 - **Manual ticket-to-PR flows** — predictable but slow, and do not benefit from AI leverage.
+
+## The operating model
+
+When a team adopts ClosedLoop.ai it usually evolves into a rhythm like this:
+
+1. A product owner drafts a PRD. PRD judges and teammates iterate until it passes.
+2. The PRD is decomposed into features. Each feature is a shippable, testable chunk of work.
+3. A plan is generated for each feature. Plan judges and the team iterate until the plan is review-grade.
+4. The plan is executed as a loop. Implementation, testing, and visual QA run inside the loop.
+5. Post-loop code review produces a verdict. A fix cycle resolves non-approving findings.
+6. A PR is opened. Human review closes against the original artifact.
+7. Self-learning captures what worked and what did not, so the next loop starts smarter.
+
+That is spec-driven, AI-first delivery, and it is what the rest of this documentation describes in detail.
 
 ## Philosophical shift
 
