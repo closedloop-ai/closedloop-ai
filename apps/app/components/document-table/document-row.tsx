@@ -43,7 +43,7 @@ import {
   XCircleIcon,
 } from "lucide-react";
 import Link from "next/link";
-import { useParams, useRouter } from "next/navigation";
+import { useParams } from "next/navigation";
 import type { MouseEvent } from "react";
 import { createContext, useContext } from "react";
 import { AssigneeAvatar } from "@/components/assignee-avatar";
@@ -58,11 +58,7 @@ import {
   formatDateCompact,
   formatRelativeTime,
 } from "@/lib/date-utils";
-import {
-  getDocumentRoute,
-  getFeatureRoute,
-  isNavigableDocument,
-} from "@/lib/document-navigation";
+import { getDocumentRoute, getFeatureRoute } from "@/lib/document-navigation";
 import { deriveScoreDisplay } from "@/lib/evaluation-utils";
 import {
   DOCUMENT_STATUS_LABELS,
@@ -109,7 +105,7 @@ function NameCell({
   isExpanded,
   onToggleExpand,
   indented,
-  onNavigate,
+  href,
 }: {
   item: DocumentRowItem;
   showCheckbox: boolean;
@@ -118,21 +114,18 @@ function NameCell({
   isExpanded?: boolean;
   onToggleExpand?: () => void;
   indented?: boolean;
-  onNavigate?: () => void;
+  href?: string | null;
 }) {
   const hasChevron = isExpanded !== undefined;
   const { onUpdateStatus } = useContext(RowEditContext);
 
   // Project rows: folder icon + optional slug + name
   if (item.kind === "project") {
+    const className =
+      "flex h-full w-full min-w-0 items-center overflow-hidden pr-3 pl-3";
+
     return (
-      // biome-ignore lint/a11y/useKeyWithClickEvents: keyboard nav handled by inner elements
-      // biome-ignore lint/a11y/noNoninteractiveElementInteractions: clickable name cell for navigation
-      // biome-ignore lint/a11y/noStaticElementInteractions: clickable name cell
-      <div
-        className={`flex h-full w-full min-w-0 items-center overflow-hidden pr-3 pl-3 ${onNavigate ? "cursor-pointer" : ""}`}
-        onClick={onNavigate}
-      >
+      <div className={className}>
         {showCheckbox && (
           <div className="flex h-7 w-7 shrink-0 items-center justify-center">
             <Checkbox
@@ -140,7 +133,6 @@ function NameCell({
               onCheckedChange={(checked) =>
                 onSelectionChange?.(item.data.id, checked === true)
               }
-              onClick={(e) => e.stopPropagation()}
             />
           </div>
         )}
@@ -149,13 +141,7 @@ function NameCell({
         </span>
         <Tooltip>
           <TooltipTrigger asChild>
-            {/* biome-ignore lint/a11y/useKeyWithClickEvents: stop propagation only, no interactive action */}
-            {/* biome-ignore lint/a11y/noStaticElementInteractions: stop propagation only */}
-            {/* biome-ignore lint/a11y/noNoninteractiveElementInteractions: stop propagation only */}
-            <div
-              className="flex h-7 w-7 shrink-0 items-center justify-center"
-              onClick={(e) => e.stopPropagation()}
-            >
+            <div className="flex h-7 w-7 shrink-0 items-center justify-center">
               <StatusPercentageIcon
                 size={16}
                 value={item.data.completionPercentage}
@@ -166,9 +152,15 @@ function NameCell({
             {Math.round(item.data.completionPercentage)}% of artifacts complete
           </TooltipContent>
         </Tooltip>
-        <div className="ml-1.5 min-w-0 flex-1">
-          <TruncatedTitle text={item.data.name} />
-        </div>
+        {href ? (
+          <Link className="ml-1.5 min-w-0 flex-1" href={href} prefetch={false}>
+            <TruncatedTitle text={item.data.name} />
+          </Link>
+        ) : (
+          <div className="ml-1.5 min-w-0 flex-1">
+            <TruncatedTitle text={item.data.name} />
+          </div>
+        )}
       </div>
     );
   }
@@ -191,21 +183,17 @@ function NameCell({
   const statusButton = (
     <button
       className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md hover:bg-muted"
-      onClick={(e) => e.stopPropagation()}
       type="button"
     >
       <StatusIcon size={16} status={statusIcon} thinking={thinking} />
     </button>
   );
 
+  const className =
+    "flex h-full w-full min-w-0 items-center overflow-hidden pr-3 pl-3";
+
   return (
-    // biome-ignore lint/a11y/useKeyWithClickEvents: keyboard nav handled by inner elements
-    // biome-ignore lint/a11y/noNoninteractiveElementInteractions: clickable name cell for navigation
-    // biome-ignore lint/a11y/noStaticElementInteractions: clickable name cell
-    <div
-      className={`flex h-full w-full min-w-0 items-center overflow-hidden pr-3 pl-3 ${onNavigate ? "cursor-pointer" : ""}`}
-      onClick={onNavigate}
-    >
+    <div className={className}>
       {showCheckbox && (
         <div className="flex h-7 w-7 shrink-0 items-center justify-center">
           <Checkbox
@@ -213,7 +201,6 @@ function NameCell({
             onCheckedChange={(checked) =>
               onSelectionChange?.(item.data.id, checked === true)
             }
-            onClick={(e) => e.stopPropagation()}
           />
         </div>
       )}
@@ -221,8 +208,7 @@ function NameCell({
       {hasChevron && (
         <button
           className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md ${onToggleExpand ? "hover:bg-muted" : "cursor-default opacity-30"}`}
-          onClick={(e) => {
-            e.stopPropagation();
+          onClick={() => {
             if (onToggleExpand) {
               onToggleExpand();
             }
@@ -245,8 +231,7 @@ function NameCell({
             {statusOptions.map((value) => (
               <DropdownMenuItem
                 key={value}
-                onClick={(e) => {
-                  e.stopPropagation();
+                onClick={() => {
                   onUpdateStatus(item.data.id, value);
                 }}
               >
@@ -264,9 +249,15 @@ function NameCell({
           <StatusIcon size={16} status={statusIcon} thinking={thinking} />
         </div>
       )}
-      <div className="ml-1.5 min-w-0 flex-1">
-        <TruncatedTitle text={item.data.title} />
-      </div>
+      {href ? (
+        <Link className="ml-1.5 min-w-0 flex-1" href={href} prefetch={false}>
+          <TruncatedTitle text={item.data.title} />
+        </Link>
+      ) : (
+        <div className="ml-1.5 min-w-0 flex-1">
+          <TruncatedTitle text={item.data.title} />
+        </div>
+      )}
     </div>
   );
 }
@@ -767,36 +758,26 @@ export function DocumentRow({
   parentHref,
   extendIndentedBottomBorderLeft = false,
 }: DocumentRowProps) {
-  const router = useRouter();
   const params = useParams();
   const activeTeamId = params?.teamId as string | undefined;
 
-  const isClickable =
-    item.kind === "project" ||
-    item.kind === "feature" ||
-    (item.kind === "artifact" && isNavigableDocument(item.data));
   const gridTemplateColumns = getDocumentRowGridTemplateColumns(
     visibleColumns.length
   );
   const useIndentedBottomBorder = indented || isExpanded === true;
 
-  function handleClick() {
+  function computeHref(): string | null {
     if (item.kind === "project") {
       const teamId = activeTeamId ?? item.data.teams[0]?.id;
-      if (teamId) {
-        router.push(`/teams/${teamId}/projects/${item.data.id}`);
-      }
-      return;
+      return teamId ? `/teams/${teamId}/projects/${item.data.id}` : null;
     }
-    if (item.kind === "artifact") {
-      const route = getDocumentRoute(item.data);
-      if (route) {
-        router.push(route);
-      }
-    } else {
-      router.push(getFeatureRoute(item.data));
+    if (item.kind === "feature") {
+      return getFeatureRoute(item.data);
     }
+    return getDocumentRoute(item.data);
   }
+
+  const href = computeHref();
 
   return (
     <RowEditContext.Provider
@@ -818,11 +799,11 @@ export function DocumentRow({
         )}
         <div>
           <NameCell
+            href={href}
             indented={indented}
             isExpanded={isExpanded}
             isSelected={isSelected}
             item={item}
-            onNavigate={isClickable ? handleClick : undefined}
             onSelectionChange={onSelectionChange}
             onToggleExpand={onToggleExpand}
             showCheckbox={showCheckbox}

@@ -5,7 +5,7 @@ import type { ProjectWithDetails } from "@repo/api/src/types/project";
 import { Button } from "@repo/design-system/components/ui/button";
 import { Card } from "@repo/design-system/components/ui/card";
 import { BoxIcon, FileTextIcon } from "lucide-react";
-import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { useState } from "react";
 import { CreateDocumentModal } from "@/app/(authenticated)/teams/[teamId]/projects/[projectId]/components/create-document-modal";
 import { CreateFeatureModal } from "@/app/(authenticated)/teams/[teamId]/projects/[projectId]/components/create-feature-modal";
@@ -15,7 +15,6 @@ type MyTasksEmptyStateProps = {
 };
 
 export function MyTasksEmptyState({ projects }: MyTasksEmptyStateProps) {
-  const router = useRouter();
   const [showPrdModal, setShowPrdModal] = useState(false);
   const [showFeatureModal, setShowFeatureModal] = useState(false);
 
@@ -68,12 +67,8 @@ export function MyTasksEmptyState({ projects }: MyTasksEmptyStateProps) {
           </Card>
         </div>
       ) : (
-        <Button
-          className="mt-8"
-          onClick={() => router.push("/teams")}
-          variant="outline"
-        >
-          Go to Teams
+        <Button asChild className="mt-8" variant="outline">
+          <Link href="/teams">Go to Teams</Link>
         </Button>
       )}
 
