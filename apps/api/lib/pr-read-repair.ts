@@ -1,12 +1,12 @@
-import type { JsonObject } from "@repo/api/src/types/common";
-import { DocumentType } from "@repo/api/src/types/document";
-import { EntityType } from "@repo/api/src/types/entity-link";
-import type { ExternalLink } from "@repo/api/src/types/external-link";
-import { ExternalLinkType } from "@repo/api/src/types/external-link";
-import { parsePullRequestMetadata } from "@repo/api/src/types/external-link-utils";
+import { LinkType } from "@repo/api/src/types/artifact";
 import { GitHubPRState } from "@repo/api/src/types/github";
-import type { TransactionClient } from "@repo/database";
-import { GitHubInstallationStatus, withDb } from "@repo/database";
+import {
+  ArtifactSubtype,
+  ArtifactType,
+  GitHubInstallationStatus,
+  type TransactionClient,
+  withDb,
+} from "@repo/database";
 import { getSinglePullRequest } from "@repo/github";
 import { log } from "@repo/observability/log";
 import { waitUntil } from "@vercel/functions";
@@ -15,47 +15,62 @@ const STALENESS_THRESHOLD_MS = 24 * 60 * 60 * 1000;
 const DEBOUNCE_WINDOW_MS = 60 * 60 * 1000;
 
 /**
- * Schedule a background read-repair pass for stale PR external links.
+ * Shape used as input to the read-repair pass. Callers derive this from
+ * `PullRequestDetail` rows (joined with their parent Artifact) — no more
+ * ExternalLink / ExternalLink.metadata after the artifact cutover.
+ */
+export type PrReadRepairInput = {
+  /** PR artifact id (= PullRequestDetail.artifactId). */
+  id: string;
+  /** Parent artifact's externalUrl — used to reach the GitHub REST API. */
+  externalUrl: string;
+  /** Parent artifact's workstreamId (may be null for orphaned PRs). */
+  workstreamId: string | null;
+  /** Parent artifact's projectId — used when backfilling a missing detail row. */
+  projectId: string;
+  /** Parent artifact's organizationId. */
+  organizationId: string;
+  /** PullRequestDetail.prState — used to filter "already merged" rows out. */
+  prState: GitHubPRState;
+  /** PullRequestDetail.lastVerifiedAt. */
+  lastVerifiedAt: Date | null;
+  /** PullRequestDetail.lastRefreshAttemptAt. */
+  lastRefreshAttemptAt: Date | null;
+};
+
+/**
+ * Schedule a background read-repair pass for stale PR artifacts.
  * Synchronous — fires via waitUntil so it does not block the caller.
  */
 export function schedulePrReadRepair(
-  externalLinks: ExternalLink[],
+  inputs: PrReadRepairInput[],
   organizationId: string
 ): void {
-  if (externalLinks.length === 0) {
+  if (inputs.length === 0) {
     return;
   }
 
   const now = Date.now();
 
-  const eligible = externalLinks.filter((link) => {
-    if (link.type !== ExternalLinkType.PullRequest) {
-      return false;
-    }
-
-    const parsed = parsePullRequestMetadata(link.metadata);
-
-    // Needs refresh if metadata is missing, PR is not yet merged, or
-    // PR is merged but was never verified (e.g., linked via SelectPullRequestDialog
-    // where mergedAt/closedAt are not populated at creation time).
-    const neverVerified = !parsed?.lastVerifiedAt;
+  const eligible = inputs.filter((input) => {
+    const neverVerified = !input.lastVerifiedAt;
     const needsStateCheck =
-      parsed === null || parsed.state !== GitHubPRState.Merged || neverVerified;
+      input.prState !== GitHubPRState.Merged || neverVerified;
     if (!needsStateCheck) {
       return false;
     }
 
     // Staleness check: skip if verified recently
-    const lastVerified = parsed?.lastVerifiedAt
-      ? new Date(parsed.lastVerifiedAt).getTime()
+    const lastVerified = input.lastVerifiedAt
+      ? input.lastVerifiedAt.getTime()
       : null;
     if (lastVerified !== null && now - lastVerified < STALENESS_THRESHOLD_MS) {
       return false;
     }
 
     // Debounce check: skip if a refresh attempt was made recently
-    const lastAttempt = parsed?.lastRefreshAttemptAt
-      ? new Date(parsed.lastRefreshAttemptAt).getTime()
+    const lastAttempt = input.lastRefreshAttemptAt
+      ? input.lastRefreshAttemptAt.getTime()
       : null;
     if (lastAttempt !== null && now - lastAttempt < DEBOUNCE_WINDOW_MS) {
       return false;
@@ -80,36 +95,33 @@ export function schedulePrReadRepair(
 const PR_URL_REGEX = /github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/;
 
 /**
- * Resolve the GitHub App installationId for a PR external link.
+ * Resolve the GitHub App installationId for a PR artifact id.
  *
- * Primary: look up via the GitHubPullRequest row's repository.
+ * Primary: look up via the PullRequestDetail's repository.
  * Fallback: use the org's single active installation.
  * Returns null if neither path resolves.
  */
 async function resolveInstallationId(
-  githubId: string | undefined,
-  organizationId: string,
-  externalLinkId: string
+  pullRequestArtifactId: string,
+  organizationId: string
 ): Promise<string | null> {
-  if (githubId) {
-    const prRow = await withDb((db) =>
-      db.gitHubPullRequest.findFirst({
-        where: { githubId, organizationId },
-        select: { repositoryId: true },
+  const prRow = await withDb((db) =>
+    db.pullRequestDetail.findUnique({
+      where: { artifactId: pullRequestArtifactId },
+      select: { repositoryId: true },
+    })
+  );
+
+  if (prRow?.repositoryId) {
+    const repoRow = await withDb((db) =>
+      db.gitHubInstallationRepository.findUnique({
+        where: { id: prRow.repositoryId },
+        select: { installation: { select: { installationId: true } } },
       })
     );
 
-    if (prRow?.repositoryId) {
-      const repoRow = await withDb((db) =>
-        db.gitHubInstallationRepository.findUnique({
-          where: { id: prRow.repositoryId },
-          select: { installation: { select: { installationId: true } } },
-        })
-      );
-
-      if (repoRow?.installation?.installationId) {
-        return repoRow.installation.installationId;
-      }
+    if (repoRow?.installation?.installationId) {
+      return repoRow.installation.installationId;
     }
   }
 
@@ -124,7 +136,11 @@ async function resolveInstallationId(
   if (installations.length !== 1) {
     log.warn(
       "[pr-read-repair] Cannot resolve installationId — expected exactly 1 active installation",
-      { externalLinkId, organizationId, count: installations.length }
+      {
+        pullRequestArtifactId,
+        organizationId,
+        count: installations.length,
+      }
     );
     return null;
   }
@@ -177,111 +193,96 @@ async function resolveRepositoryId(
 
 type FreshPr = NonNullable<Awaited<ReturnType<typeof getSinglePullRequest>>>;
 
-async function applyExternalLinkUpdate(
+/**
+ * Apply the refreshed PR data to the PR Artifact + PullRequestDetail rows.
+ */
+async function applyPullRequestUpdate(
   tx: TransactionClient,
-  link: ExternalLink,
+  pullRequestArtifactId: string,
   freshPr: FreshPr,
-  currentMetadata: JsonObject,
-  workstreamId: string | null,
-  now: string
+  resolvedWorkstreamId: string | null,
+  input: PrReadRepairInput,
+  now: Date
 ): Promise<void> {
-  const updatedMetadata = {
-    ...currentMetadata,
-    githubId: freshPr.githubId,
-    number: freshPr.number,
-    headBranch: freshPr.headBranch,
-    baseBranch: freshPr.baseBranch,
-    state: freshPr.state,
-    lastVerifiedAt: now,
-    lastRefreshAttemptAt: now,
-  } as JsonObject;
-
-  await tx.externalLink.updateMany({
-    where: { id: link.id },
+  await tx.artifact.update({
+    where: { id: pullRequestArtifactId },
     data: {
-      title: freshPr.title,
-      metadata: updatedMetadata,
-      ...(workstreamId !== null && link.workstreamId === null
-        ? { workstreamId }
+      name: freshPr.title,
+      externalUrl: freshPr.htmlUrl,
+      ...(resolvedWorkstreamId !== null && input.workstreamId === null
+        ? { workstreamId: resolvedWorkstreamId }
         : {}),
+    },
+  });
+
+  await tx.pullRequestDetail.update({
+    where: { artifactId: pullRequestArtifactId },
+    data: {
+      number: freshPr.number,
+      githubId: freshPr.githubId,
+      headBranch: freshPr.headBranch,
+      baseBranch: freshPr.baseBranch,
+      prState: freshPr.state,
+      mergedAt: freshPr.mergedAt ? new Date(freshPr.mergedAt) : null,
+      closedAt: freshPr.closedAt ? new Date(freshPr.closedAt) : null,
+      lastVerifiedAt: now,
     },
   });
 }
 
-type PullRequestUpsertOptions = {
+type PullRequestBackfillOptions = {
   tx: TransactionClient;
   freshPr: FreshPr;
   organizationId: string;
+  projectId: string;
   repositoryId: string | null;
   workstreamId: string | null;
-  documentId: string | null;
-  pullNumber: number;
-  externalLinkId: string;
 };
 
-async function applyPullRequestUpsert({
+/**
+ * Create a brand-new PR Artifact + PullRequestDetail row when the detail row
+ * is missing. No-op if we lack the required context.
+ */
+async function backfillPullRequestArtifact({
   tx,
   freshPr,
   organizationId,
+  projectId,
   repositoryId,
   workstreamId,
-  documentId,
-  pullNumber,
-  externalLinkId,
-}: PullRequestUpsertOptions): Promise<void> {
-  const existingPr = await tx.gitHubPullRequest.findFirst({
-    where: {
+}: PullRequestBackfillOptions): Promise<void> {
+  if (repositoryId === null || workstreamId === null) {
+    log.warn("[pr-read-repair] PullRequestDetail missing and cannot backfill", {
+      githubId: freshPr.githubId,
       organizationId,
-      number: pullNumber,
-      ...(repositoryId !== null ? { repositoryId } : {}),
-    },
-    select: { id: true },
-  });
-
-  if (existingPr) {
-    await tx.gitHubPullRequest.updateMany({
-      where: { githubId: freshPr.githubId, organizationId },
-      data: {
-        state: freshPr.state,
-        title: freshPr.title,
-        mergedAt: freshPr.mergedAt ? new Date(freshPr.mergedAt) : null,
-        closedAt: freshPr.closedAt ? new Date(freshPr.closedAt) : null,
-      },
+      repositoryId,
+      workstreamId,
     });
     return;
   }
 
-  if (repositoryId === null || workstreamId === null) {
-    log.warn(
-      "[pr-read-repair] GitHubPullRequest row not found and cannot backfill",
-      {
-        githubId: freshPr.githubId,
-        organizationId,
-        repositoryId,
-        workstreamId,
-        externalLinkId,
-      }
-    );
-    return;
-  }
-
-  // Backfill: create the row if it doesn't exist yet
   try {
-    await tx.gitHubPullRequest.create({
+    await tx.artifact.create({
       data: {
-        workstreamId,
+        type: ArtifactType.PULL_REQUEST,
         organizationId,
-        repositoryId,
-        documentId,
-        githubId: freshPr.githubId,
-        number: freshPr.number,
-        title: freshPr.title,
-        htmlUrl: freshPr.htmlUrl,
-        headBranch: freshPr.headBranch,
-        baseBranch: freshPr.baseBranch,
-        state: freshPr.state,
-        mergedAt: freshPr.mergedAt ? new Date(freshPr.mergedAt) : null,
-        closedAt: freshPr.closedAt ? new Date(freshPr.closedAt) : null,
+        projectId,
+        workstreamId,
+        name: freshPr.title,
+        status: freshPr.state,
+        externalUrl: freshPr.htmlUrl,
+        pullRequest: {
+          create: {
+            repositoryId,
+            githubId: freshPr.githubId,
+            number: freshPr.number,
+            headBranch: freshPr.headBranch,
+            baseBranch: freshPr.baseBranch,
+            prState: freshPr.state,
+            mergedAt: freshPr.mergedAt ? new Date(freshPr.mergedAt) : null,
+            closedAt: freshPr.closedAt ? new Date(freshPr.closedAt) : null,
+          },
+        },
       },
     });
   } catch (createError) {
@@ -294,41 +295,31 @@ async function applyPullRequestUpsert({
 }
 
 async function repairSinglePrLink(
-  link: ExternalLink,
+  input: PrReadRepairInput,
   organizationId: string,
   repoCache: Map<string, RepoResolution | null>
 ): Promise<void> {
-  const match = PR_URL_REGEX.exec(link.externalUrl);
+  const match = PR_URL_REGEX.exec(input.externalUrl);
   if (!match) {
     log.warn("[pr-read-repair] Could not parse PR URL, skipping", {
-      externalLinkId: link.id,
-      externalUrl: link.externalUrl,
+      pullRequestArtifactId: input.id,
+      externalUrl: input.externalUrl,
     });
     return;
   }
 
   const [, owner, repo, pullNumberStr] = match;
   const pullNumber = Number(pullNumberStr);
-  const now = new Date().toISOString();
+  const now = new Date();
 
-  // Stamp lastRefreshAttemptAt before making the GitHub API call (debounce write-ahead)
-  const updated = await withDb((db) =>
-    db.externalLink.update({
-      where: { id: link.id },
-      data: {
-        metadata: {
-          ...(link.metadata as JsonObject),
-          lastRefreshAttemptAt: now,
-        } as JsonObject,
-      },
-      select: { metadata: true },
+  // Stamp lastRefreshAttemptAt before making the GitHub API call (debounce
+  // write-ahead). The PR artifact id is shared with the legacy externalLinkId.
+  await withDb((db) =>
+    db.pullRequestDetail.update({
+      where: { artifactId: input.id },
+      data: { lastRefreshAttemptAt: now },
     })
   );
-
-  const currentMetadata = (updated.metadata ?? {}) as JsonObject;
-
-  const parsed = parsePullRequestMetadata(currentMetadata);
-  const githubId = parsed?.githubId;
 
   // Try the fast path: resolve both repositoryId and installationId in one lookup
   const repoResolution = await resolveRepositoryId(
@@ -340,7 +331,7 @@ async function repairSinglePrLink(
 
   const installationId =
     repoResolution?.installationId ??
-    (await resolveInstallationId(githubId, organizationId, link.id));
+    (await resolveInstallationId(input.id, organizationId));
 
   if (!installationId) {
     return;
@@ -355,7 +346,7 @@ async function repairSinglePrLink(
 
   if (!freshPr) {
     log.warn("[pr-read-repair] getSinglePullRequest returned null, skipping", {
-      externalLinkId: link.id,
+      pullRequestArtifactId: input.id,
       owner,
       repo,
       pullNumber,
@@ -363,47 +354,53 @@ async function repairSinglePrLink(
     return;
   }
 
-  const entityContext = link.workstreamId
-    ? { workstreamId: link.workstreamId, documentId: null as string | null }
-    : await resolveEntityLinkContext(link.id, organizationId);
-  const workstreamId = entityContext.workstreamId;
-  const documentId = entityContext.documentId;
+  const entityContext = input.workstreamId
+    ? { workstreamId: input.workstreamId, documentId: null as string | null }
+    : await resolveArtifactLinkContext(input.id, organizationId);
+  const resolvedWorkstreamId = entityContext.workstreamId;
   const repositoryId = repoResolution?.repositoryId ?? null;
 
   await withDb.tx(async (tx) => {
-    await applyExternalLinkUpdate(
-      tx,
-      link,
-      freshPr,
-      currentMetadata,
-      workstreamId,
-      now
-    );
-    await applyPullRequestUpsert({
+    const existingDetail = await tx.pullRequestDetail.findUnique({
+      where: { artifactId: input.id },
+      select: { artifactId: true },
+    });
+
+    if (existingDetail) {
+      await applyPullRequestUpdate(
+        tx,
+        input.id,
+        freshPr,
+        resolvedWorkstreamId,
+        input,
+        now
+      );
+      return;
+    }
+
+    await backfillPullRequestArtifact({
       tx,
       freshPr,
       organizationId,
+      projectId: input.projectId,
       repositoryId,
-      workstreamId,
-      documentId,
-      pullNumber,
-      externalLinkId: link.id,
+      workstreamId: resolvedWorkstreamId,
     });
   });
 }
 
 async function runPrReadRepair(
-  eligibleLinks: ExternalLink[],
+  eligibleInputs: PrReadRepairInput[],
   organizationId: string
 ): Promise<void> {
   const repoCache = new Map<string, RepoResolution | null>();
 
-  for (const link of eligibleLinks) {
+  for (const input of eligibleInputs) {
     try {
-      await repairSinglePrLink(link, organizationId, repoCache);
+      await repairSinglePrLink(input, organizationId, repoCache);
     } catch (err) {
       log.warn("[pr-read-repair] Failed to repair link, continuing", {
-        externalLinkId: link.id,
+        pullRequestArtifactId: input.id,
         error: err instanceof Error ? err.message : String(err),
       });
     }
@@ -416,66 +413,68 @@ type EntityLinkResolution = {
 };
 
 /**
- * Walk the entity link tree to resolve workstreamId and documentId for an
- * external link.
+ * Walk the artifact link tree to resolve workstreamId and documentId for a
+ * PR artifact.
  *
- * Scans all incoming entity links (not just the first) to handle cases where
- * the external link has multiple parents (e.g., document + PRD). Checks:
- * 1. All parent documents — return the first document's workstream_id if present.
- * 2. For each document without a workstream, walk one more level to the parent
- *    feature and return the feature's workstream_id.
+ * Scans all incoming ArtifactLink rows (not just the first) to handle cases
+ * where the PR has multiple parents (e.g., document + PRD). Checks:
+ * 1. All parent DOCUMENT artifacts — return the first document's
+ *    workstreamId if present.
+ * 2. For each document without a workstream, walk one more level to a parent
+ *    FEATURE-subtyped document and return its workstreamId.
  *
- * Always returns the first matched documentId regardless of workstream resolution.
+ * Always returns the first matched parent document id regardless of
+ * workstream resolution.
  */
-async function resolveEntityLinkContext(
-  externalLinkId: string,
+async function resolveArtifactLinkContext(
+  pullRequestArtifactId: string,
   organizationId: string
 ): Promise<EntityLinkResolution> {
   let resolvedDocumentId: string | null = null;
 
-  // Level 1: find all entities that target this external link
+  // Level 1: find all DOCUMENT-typed artifacts that target this PR artifact.
   const parentLinks = await withDb((db) =>
-    db.entityLink.findMany({
+    db.artifactLink.findMany({
       where: {
-        targetId: externalLinkId,
-        targetType: EntityType.ExternalLink,
+        targetId: pullRequestArtifactId,
         organizationId,
+        source: { type: ArtifactType.DOCUMENT },
       },
-      select: { sourceId: true, sourceType: true },
+      select: { sourceId: true },
     })
   );
 
   for (const parentLink of parentLinks) {
-    if (parentLink.sourceType !== EntityType.Document) {
-      continue;
-    }
-
     if (!resolvedDocumentId) {
       resolvedDocumentId = parentLink.sourceId;
     }
 
-    const document = await withDb((db) =>
-      db.document.findFirst({
-        where: { id: parentLink.sourceId, organizationId },
+    const parentArtifact = await withDb((db) =>
+      db.artifact.findFirst({
+        where: {
+          id: parentLink.sourceId,
+          organizationId,
+          type: ArtifactType.DOCUMENT,
+        },
         select: { workstreamId: true },
       })
     );
 
-    if (document?.workstreamId) {
+    if (parentArtifact?.workstreamId) {
       return {
-        workstreamId: document.workstreamId,
+        workstreamId: parentArtifact.workstreamId,
         documentId: resolvedDocumentId,
       };
     }
 
-    // Level 2: find the parent Feature document that targets this document
+    // Level 2: find a parent Feature-subtype document that targets this doc.
     const featureLinks = await withDb((db) =>
-      db.entityLink.findMany({
+      db.artifactLink.findMany({
         where: {
           targetId: parentLink.sourceId,
-          targetType: EntityType.Document,
-          sourceType: EntityType.Document,
           organizationId,
+          linkType: LinkType.Produces,
+          source: { type: ArtifactType.DOCUMENT },
         },
         select: { sourceId: true },
       })
@@ -483,11 +482,12 @@ async function resolveEntityLinkContext(
 
     for (const featureLink of featureLinks) {
       const feature = await withDb((db) =>
-        db.document.findFirst({
+        db.artifact.findFirst({
           where: {
             id: featureLink.sourceId,
             organizationId,
-            type: DocumentType.Feature,
+            type: ArtifactType.DOCUMENT,
+            subtype: ArtifactSubtype.FEATURE,
           },
           select: { workstreamId: true },
         })

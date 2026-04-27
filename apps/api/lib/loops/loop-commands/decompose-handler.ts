@@ -1,7 +1,7 @@
+import { LinkType } from "@repo/api/src/types/artifact";
 import type { JsonObject } from "@repo/api/src/types/common";
 import { Priority } from "@repo/api/src/types/common";
 import { DocumentStatus, DocumentType } from "@repo/api/src/types/document";
-import { EntityType, LinkType } from "@repo/api/src/types/entity-link";
 import type {
   DecomposeFeature,
   DecomposeResult,
@@ -11,8 +11,8 @@ import type {
 import { withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { z } from "zod";
+import { artifactLinksService } from "@/app/artifact-links/service";
 import { documentsService } from "@/app/documents/service";
-import { entityLinksService } from "@/app/entity-links/service";
 import { parseJsonArtifact } from "@/lib/loops/loop-document-ingestion";
 import { downloadArtifactFile } from "@/lib/loops/loop-state";
 import { defineHandler } from "./loop-command-handler";
@@ -177,11 +177,9 @@ async function ingestDecomposeArtifacts(
         continue;
       }
 
-      await entityLinksService.createLink(organizationId, {
+      await artifactLinksService.createLink(organizationId, {
         sourceId: loop.documentId!,
-        sourceType: EntityType.Document,
         targetId: createdFeature.id,
-        targetType: EntityType.Document,
         linkType: LinkType.Produces,
       });
 

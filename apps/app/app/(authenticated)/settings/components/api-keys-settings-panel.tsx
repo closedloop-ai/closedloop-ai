@@ -263,12 +263,7 @@ const MCP_TOOL_GROUPS = [
   },
   {
     label: "Links",
-    tools: [
-      "list-entity-links",
-      "create-entity-link",
-      "list-external-links",
-      "create-external-link",
-    ],
+    tools: ["list-artifact-links", "create-artifact-link"],
   },
   {
     label: "Integrations",

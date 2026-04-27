@@ -1,5 +1,5 @@
 import { DocumentType } from "@repo/api/src/types/document";
-import { withDb } from "@repo/database";
+import { ArtifactType, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { documentsService } from "../../documents/service";
 import { WHITESPACE_REGEX } from "./webhook-utils";
@@ -135,7 +135,7 @@ export async function handleCreateIdea(
   // Step 4: Validate projectId belongs to the org
   {
     const project = await withDb((db) =>
-      db.project.findFirst({
+      db.project.findUnique({
         where: { id: projectId, organizationId },
         select: { id: true },
       })
@@ -238,7 +238,7 @@ export async function handleGetStatus(
 
   // Try to find a project by ID
   const project = await withDb((db) =>
-    db.project.findFirst({
+    db.project.findUnique({
       where: { id: identifier, organizationId },
       select: {
         id: true,
@@ -247,7 +247,7 @@ export async function handleGetStatus(
         _count: {
           select: {
             workstreams: true,
-            documents: true,
+            artifacts: { where: { type: ArtifactType.DOCUMENT } },
           },
         },
       },
@@ -259,7 +259,7 @@ export async function handleGetStatus(
       `*${project.name}*`,
       `Priority: ${project.priority}`,
       `Workstreams: ${project._count.workstreams}`,
-      `Documents: ${project._count.documents}`,
+      `Documents: ${project._count.artifacts}`,
     ].join("\n");
 
     return {

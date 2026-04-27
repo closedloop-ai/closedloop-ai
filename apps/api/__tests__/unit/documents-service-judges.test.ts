@@ -1,11 +1,12 @@
 /**
  * Unit tests for documentsService.getEvaluationFeedback and getBatchJudgeScores.
  *
- * Tests the polymorphic read paths that use entityId + entityType + organizationId
- * for org-scoped queries (no longer relies on artifactId FK chain).
+ * Tests the artifactEvaluation read paths that use artifactId + organizationId
+ * for org-scoped queries (single `artifactId` FK after artifact cutover).
  *
  * Uses scenario registry pattern for maintainable, DRY test structure.
  */
+
 import type {
   JudgeFeedbackItem,
   JudgesFeedbackResponse,
@@ -14,12 +15,22 @@ import {
   EvalStatus,
   EvaluationReportType,
 } from "@repo/api/src/types/evaluation";
-import { EntityType } from "@repo/database";
 import { type Mock, vi } from "vitest";
 
 // Mock modules before importing the service
 vi.mock("@repo/database", () => ({
   withDb: vi.fn(),
+  ArtifactType: {
+    DOCUMENT: "DOCUMENT",
+    PULL_REQUEST: "PULL_REQUEST",
+    DEPLOYMENT: "DEPLOYMENT",
+  },
+  ArtifactSubtype: {
+    PRD: "PRD",
+    IMPLEMENTATION_PLAN: "IMPLEMENTATION_PLAN",
+    TEMPLATE: "TEMPLATE",
+    FEATURE: "FEATURE",
+  },
   EntityType: {
     DOCUMENT: "DOCUMENT",
     FEATURE: "FEATURE",
@@ -67,6 +78,37 @@ const EXPECTED_FEEDBACK_ITEMS: JudgeFeedbackItem[] = [
 ];
 
 /**
+ * Helper to build an ArtifactEvaluation row with artifactId only
+ * (no entityId/entityType after cutover).
+ */
+function buildEvalRow(overrides?: {
+  id?: string;
+  artifactId?: string;
+  organizationId?: string;
+  reportType?: EvaluationReportType;
+  createdAt?: Date;
+}) {
+  const base = createMockEvaluationRow({
+    id: overrides?.id,
+    entityId: overrides?.artifactId,
+    organizationId: overrides?.organizationId,
+    reportType: overrides?.reportType,
+    createdAt: overrides?.createdAt,
+  });
+  // After cutover, only artifactId exists (no entityId/entityType).
+  return {
+    id: base.id,
+    artifactId: overrides?.artifactId ?? base.entityId,
+    organizationId: base.organizationId,
+    actionRunId: base.actionRunId,
+    reportType: base.reportType,
+    reportId: base.reportId,
+    reportData: base.reportData,
+    createdAt: base.createdAt,
+  };
+}
+
+/**
  * Scenario configuration for parametrized testing.
  */
 type ScenarioConfig = {
@@ -88,11 +130,11 @@ const SCENARIO_REGISTRY: ScenarioConfig[] = [
     setupMocks: () => {
       mockWithDb.mockImplementation((callback: any) =>
         callback({
-          documentEvaluation: {
+          artifactEvaluation: {
             findFirst: vi.fn().mockResolvedValue({
-              ...createMockEvaluationRow({
+              ...buildEvalRow({
                 id: "eval-123",
-                entityId: "artifact-123",
+                artifactId: "artifact-123",
                 organizationId: "org-123",
               }),
               judgeScores: [MOCK_JUDGE_SCORE_ROW],
@@ -110,7 +152,7 @@ const SCENARIO_REGISTRY: ScenarioConfig[] = [
     setupMocks: () => {
       mockWithDb.mockImplementation((callback: any) =>
         callback({
-          documentEvaluation: {
+          artifactEvaluation: {
             findFirst: vi.fn().mockResolvedValue(null),
           },
         })
@@ -125,11 +167,11 @@ const SCENARIO_REGISTRY: ScenarioConfig[] = [
     setupMocks: () => {
       mockWithDb.mockImplementation((callback: any) =>
         callback({
-          documentEvaluation: {
+          artifactEvaluation: {
             findFirst: vi.fn().mockResolvedValue({
-              ...createMockEvaluationRow({
+              ...buildEvalRow({
                 id: "eval-123",
-                entityId: "artifact-123",
+                artifactId: "artifact-123",
                 organizationId: "org-123",
               }),
               judgeScores: [],
@@ -166,18 +208,18 @@ describe("documentsService.getEvaluationFeedback (PLAN)", () => {
     });
   });
 
-  it("returns feedback when entityId and organizationId match (org isolation via direct column)", async () => {
+  it("returns feedback when artifactId and organizationId match (org isolation via direct column)", async () => {
     const findFirst = vi.fn().mockResolvedValue({
-      ...createMockEvaluationRow({
+      ...buildEvalRow({
         id: "eval-123",
-        entityId: "artifact-123",
+        artifactId: "artifact-123",
         organizationId: "org-123",
       }),
       judgeScores: [MOCK_JUDGE_SCORE_ROW],
     });
 
     mockWithDb.mockImplementation((callback: any) =>
-      callback({ documentEvaluation: { findFirst } })
+      callback({ artifactEvaluation: { findFirst } })
     );
 
     const result = await documentsService.getEvaluationFeedback(
@@ -186,11 +228,11 @@ describe("documentsService.getEvaluationFeedback (PLAN)", () => {
       EvaluationReportType.Plan
     );
 
-    // Verify where clause includes entityId and organizationId
+    // Verify where clause includes artifactId and organizationId
     expect(findFirst).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          entityId: "artifact-123",
+          artifactId: "artifact-123",
           organizationId: "org-123",
         }),
       })
@@ -207,7 +249,7 @@ describe("documentsService.getEvaluationFeedback (PLAN)", () => {
     const findFirst = vi.fn().mockResolvedValue(null);
 
     mockWithDb.mockImplementation((callback: any) =>
-      callback({ documentEvaluation: { findFirst } })
+      callback({ artifactEvaluation: { findFirst } })
     );
 
     const result = await documentsService.getEvaluationFeedback(
@@ -227,33 +269,11 @@ describe("documentsService.getEvaluationFeedback (PLAN)", () => {
     expect(result).toEqual({ status: "not_found", data: null });
   });
 
-  it("where clause includes entityType: EntityType.Document (type discrimination)", async () => {
-    const findFirst = vi.fn().mockResolvedValue(null);
-
-    mockWithDb.mockImplementation((callback: any) =>
-      callback({ documentEvaluation: { findFirst } })
-    );
-
-    await documentsService.getEvaluationFeedback(
-      "artifact-123",
-      "org-123",
-      EvaluationReportType.Plan
-    );
-
-    expect(findFirst).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({
-          entityType: EntityType.DOCUMENT,
-        }),
-      })
-    );
-  });
-
   it("queries only PLAN evaluations via reportType", async () => {
     const findFirst = vi.fn().mockResolvedValue(null);
     mockWithDb.mockImplementation((callback: any) =>
       callback({
-        documentEvaluation: { findFirst },
+        artifactEvaluation: { findFirst },
       })
     );
 
@@ -265,8 +285,7 @@ describe("documentsService.getEvaluationFeedback (PLAN)", () => {
 
     expect(findFirst).toHaveBeenCalledWith({
       where: {
-        entityId: "artifact-123",
-        entityType: EntityType.DOCUMENT,
+        artifactId: "artifact-123",
         organizationId: "org-123",
         reportType: EvaluationReportType.Plan,
       },
@@ -289,10 +308,10 @@ describe("documentsService.getEvaluationFeedback (PLAN)", () => {
 
     mockWithDb.mockImplementation((callback: any) =>
       callback({
-        documentEvaluation: {
+        artifactEvaluation: {
           findFirst: vi.fn().mockResolvedValue({
-            ...createMockEvaluationRow({
-              entityId: "artifact-123",
+            ...buildEvalRow({
+              artifactId: "artifact-123",
               organizationId: "org-123",
             }),
             judgeScores: [scoreWithPrompt],
@@ -332,7 +351,7 @@ describe("documentsService.getEvaluationFeedback (PRD)", () => {
     const findFirst = vi.fn().mockResolvedValue(null);
     mockWithDb.mockImplementation((callback: any) =>
       callback({
-        documentEvaluation: { findFirst },
+        artifactEvaluation: { findFirst },
       })
     );
 
@@ -344,8 +363,7 @@ describe("documentsService.getEvaluationFeedback (PRD)", () => {
 
     expect(findFirst).toHaveBeenCalledWith({
       where: {
-        entityId: "artifact-123",
-        entityType: EntityType.DOCUMENT,
+        artifactId: "artifact-123",
         organizationId: "org-123",
         reportType: EvaluationReportType.Prd,
       },
@@ -368,11 +386,11 @@ describe("documentsService.getEvaluationFeedback (PRD)", () => {
 
     mockWithDb.mockImplementation((callback: any) =>
       callback({
-        documentEvaluation: {
+        artifactEvaluation: {
           findFirst: vi.fn().mockResolvedValue({
-            ...createMockEvaluationRow({
+            ...buildEvalRow({
               id: "eval-prd-123",
-              entityId: "artifact-prd-123",
+              artifactId: "artifact-prd-123",
               organizationId: "org-123",
               reportType: EvaluationReportType.Prd,
             }),
@@ -403,7 +421,7 @@ describe("documentsService.getEvaluationFeedback (PRD)", () => {
   it("returns not_found when no PRD evaluation exists", async () => {
     mockWithDb.mockImplementation((callback: any) =>
       callback({
-        documentEvaluation: {
+        artifactEvaluation: {
           findFirst: vi.fn().mockResolvedValue(null),
         },
       })
@@ -432,7 +450,7 @@ describe("documentsService.getEvaluationFeedback (CODE)", () => {
     const findFirst = vi.fn().mockResolvedValue(null);
     mockWithDb.mockImplementation((callback: any) =>
       callback({
-        documentEvaluation: { findFirst },
+        artifactEvaluation: { findFirst },
       })
     );
 
@@ -444,8 +462,7 @@ describe("documentsService.getEvaluationFeedback (CODE)", () => {
 
     expect(findFirst).toHaveBeenCalledWith({
       where: {
-        entityId: "artifact-123",
-        entityType: EntityType.DOCUMENT,
+        artifactId: "artifact-123",
         organizationId: "org-123",
         reportType: EvaluationReportType.Code,
       },
@@ -469,7 +486,7 @@ describe("documentsService.getEvaluationFeedback (error path)", () => {
   it("returns error status when database throws", async () => {
     mockWithDb.mockImplementation((callback: any) =>
       callback({
-        documentEvaluation: {
+        artifactEvaluation: {
           findFirst: vi.fn().mockRejectedValue(new Error("DB connection lost")),
         },
       })
@@ -490,7 +507,7 @@ describe("documentsService.getEvaluationFeedback (error path)", () => {
   it("returns error status with stringified error when non-Error is thrown", async () => {
     mockWithDb.mockImplementation((callback: any) =>
       callback({
-        documentEvaluation: {
+        artifactEvaluation: {
           findFirst: vi.fn().mockRejectedValue("unexpected string error"),
         },
       })
@@ -520,12 +537,12 @@ describe("documentsService.getBatchJudgeScores", () => {
 
   /**
    * Helper to set up the two-step mock pattern for getBatchJudgeScores.
-   * First call: artifact.findMany (returns artifact IDs).
-   * Second call: documentEvaluation.findMany (returns evaluations).
+   * First call: artifact.findMany (returns artifact IDs, DOCUMENT-typed).
+   * Second call: artifactEvaluation.findMany (returns evaluations).
    */
   function setupTwoStepMock(
     artifactIds: string[],
-    evaluations: ReturnType<typeof createMockEvaluationRow>[]
+    evaluations: ReturnType<typeof buildEvalRow>[]
   ) {
     const artifactFindMany = vi
       .fn()
@@ -534,16 +551,16 @@ describe("documentsService.getBatchJudgeScores", () => {
 
     mockWithDb
       .mockImplementationOnce((callback: any) =>
-        callback({ document: { findMany: artifactFindMany } })
+        callback({ artifact: { findMany: artifactFindMany } })
       )
       .mockImplementationOnce((callback: any) =>
-        callback({ documentEvaluation: { findMany: evaluationFindMany } })
+        callback({ artifactEvaluation: { findMany: evaluationFindMany } })
       );
 
     return { artifactFindMany, evaluationFindMany };
   }
 
-  it("uses two-step query: first fetches artifact IDs then queries evaluations by entityId IN list", async () => {
+  it("uses two-step query: first fetches artifact IDs then queries evaluations by artifactId IN list", async () => {
     const { artifactFindMany, evaluationFindMany } = setupTwoStepMock(
       ["artifact-123"],
       []
@@ -553,43 +570,33 @@ describe("documentsService.getBatchJudgeScores", () => {
       EvaluationReportType.Plan,
     ]);
 
-    // Step 1: fetch artifact IDs scoped to project + org
-    expect(artifactFindMany).toHaveBeenCalledWith({
-      where: { projectId: "project-123", organizationId: "org-123" },
-      select: { id: true },
-    });
+    // Step 1: fetch artifact IDs scoped to project + org + DOCUMENT type
+    expect(artifactFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          projectId: "project-123",
+          organizationId: "org-123",
+          type: "DOCUMENT",
+        }),
+        select: { id: true },
+      })
+    );
 
     // Step 2: fetch evaluations using IN list of artifact IDs
     expect(evaluationFindMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          entityId: { in: ["artifact-123"] },
+          artifactId: { in: ["artifact-123"] },
         }),
       })
     );
   });
 
-  it("second query includes entityType: EntityType.Document filter (does not pick up future ISSUE evaluations)", async () => {
-    const { evaluationFindMany } = setupTwoStepMock(["artifact-123"], []);
-
-    await documentsService.getBatchJudgeScores("project-123", "org-123", [
-      EvaluationReportType.Plan,
-    ]);
-
-    expect(evaluationFindMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({
-          entityType: EntityType.DOCUMENT,
-        }),
-      })
-    );
-  });
-
-  it("groups by entityId and keeps only latest per (entityId, reportType) when multiple evaluations exist for same artifact", async () => {
+  it("groups by artifactId and keeps only latest per (artifactId, reportType) when multiple evaluations exist for same artifact", async () => {
     const olderEvaluation = {
-      ...createMockEvaluationRow({
+      ...buildEvalRow({
         id: "eval-old",
-        entityId: "artifact-shared",
+        artifactId: "artifact-shared",
         organizationId: "org-123",
         reportType: EvaluationReportType.Plan,
         createdAt: new Date("2024-01-01"),
@@ -607,9 +614,9 @@ describe("documentsService.getBatchJudgeScores", () => {
     };
 
     const newerEvaluation = {
-      ...createMockEvaluationRow({
+      ...buildEvalRow({
         id: "eval-new",
-        entityId: "artifact-shared",
+        artifactId: "artifact-shared",
         organizationId: "org-123",
         reportType: EvaluationReportType.Plan,
         createdAt: new Date("2024-06-01"),
@@ -696,9 +703,9 @@ describe("documentsService.getBatchJudgeScores", () => {
 
   it("prd_and_plan_evaluations_returns_both_artifacts — returns map with both artifactIds when evaluations of different types exist", async () => {
     const planEvaluation = {
-      ...createMockEvaluationRow({
+      ...buildEvalRow({
         id: "eval-plan-1",
-        entityId: "artifact-plan-1",
+        artifactId: "artifact-plan-1",
         organizationId: "org-123",
         reportType: EvaluationReportType.Plan,
       }),
@@ -716,9 +723,9 @@ describe("documentsService.getBatchJudgeScores", () => {
     };
 
     const prdEvaluation = {
-      ...createMockEvaluationRow({
+      ...buildEvalRow({
         id: "eval-prd-1",
-        entityId: "artifact-prd-1",
+        artifactId: "artifact-prd-1",
         organizationId: "org-123",
         reportType: EvaluationReportType.Prd,
       }),
@@ -760,9 +767,9 @@ describe("documentsService.getBatchJudgeScores", () => {
 
   it("prd_only_evaluation_returns_correct_entry — returns map with PRD artifactId when only PRD evaluation exists", async () => {
     const prdEvaluation = {
-      ...createMockEvaluationRow({
+      ...buildEvalRow({
         id: "eval-prd-2",
-        entityId: "artifact-prd-2",
+        artifactId: "artifact-prd-2",
         organizationId: "org-123",
         reportType: EvaluationReportType.Prd,
       }),
@@ -798,9 +805,9 @@ describe("documentsService.getBatchJudgeScores", () => {
 
   it("code_evaluation_populates_code_key — CODE evaluations are stored under the code key", async () => {
     const codeEvaluation = {
-      ...createMockEvaluationRow({
+      ...buildEvalRow({
         id: "eval-code-1",
-        entityId: "artifact-code-1",
+        artifactId: "artifact-code-1",
         organizationId: "org-123",
         reportType: EvaluationReportType.Code,
       }),
@@ -850,9 +857,9 @@ describe("documentsService.getBatchJudgeScores", () => {
 
   it("plan_only_returns_correctly — PLAN evaluations populate the plan key", async () => {
     const planEvaluation = {
-      ...createMockEvaluationRow({
+      ...buildEvalRow({
         id: "eval-plan-2",
-        entityId: "artifact-plan-2",
+        artifactId: "artifact-plan-2",
         organizationId: "org-123",
         reportType: EvaluationReportType.Plan,
       }),

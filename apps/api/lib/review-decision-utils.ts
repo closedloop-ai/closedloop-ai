@@ -43,13 +43,17 @@ export function computeAggregateReviewDecision(
 
 /**
  * Recompute aggregate reviewDecision from all per-reviewer reviews and update the PR.
+ *
+ * `pullRequestArtifactId` is the id of the PULL_REQUEST artifact (which also
+ * serves as the `pullRequestDetail.artifactId` primary key, and the
+ * `gitHubPRReview.pullRequestId` FK target).
  */
 export async function recomputeAndUpdateAggregate(
   tx: TransactionClient,
-  pullRequestId: string
+  pullRequestArtifactId: string
 ): Promise<ReviewDecision | null> {
   const allReviews = await tx.gitHubPRReview.findMany({
-    where: { pullRequestId },
+    where: { pullRequestId: pullRequestArtifactId },
     select: { state: true },
   });
 
@@ -57,8 +61,8 @@ export async function recomputeAndUpdateAggregate(
     allReviews.map((r: { state: string }) => r.state as ReviewDecision)
   );
 
-  await tx.gitHubPullRequest.update({
-    where: { id: pullRequestId },
+  await tx.pullRequestDetail.update({
+    where: { artifactId: pullRequestArtifactId },
     data: { reviewDecision: aggregateDecision },
   });
 

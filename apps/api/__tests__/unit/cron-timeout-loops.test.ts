@@ -466,7 +466,7 @@ type AnomalyCandidateFixture = {
   id: string;
   organizationId: string;
   computeTargetId: string | null;
-  documentId: string | null;
+  artifactId: string | null;
   command: string;
   tokensInput: number;
   tokensOutput: number;
@@ -535,7 +535,7 @@ describe("GET /api/cron/timeout-loops -- anomaly detection", () => {
       id: loopId,
       organizationId: "org-1",
       computeTargetId,
-      documentId: artifactId,
+      artifactId,
       command: LoopCommand.Execute,
       tokensInput: 0,
       tokensOutput: 0,
@@ -570,7 +570,7 @@ describe("GET /api/cron/timeout-loops -- anomaly detection", () => {
       id: "loop-ghost-2",
       organizationId: "org-1",
       computeTargetId: "ct-1",
-      documentId: "artifact-1",
+      artifactId: "artifact-1",
       command: LoopCommand.Execute,
       tokensInput: 0,
       tokensOutput: 0,
@@ -601,7 +601,7 @@ describe("GET /api/cron/timeout-loops -- anomaly detection", () => {
       id: loopId,
       organizationId: "org-1",
       computeTargetId,
-      documentId: artifactId,
+      artifactId,
       command: LoopCommand.Execute,
       tokensInput: 0,
       tokensOutput: 0,
@@ -635,7 +635,7 @@ describe("GET /api/cron/timeout-loops -- anomaly detection", () => {
       id: "loop-ghost-4",
       organizationId: "org-1",
       computeTargetId: "ct-1",
-      documentId: "artifact-1",
+      artifactId: "artifact-1",
       command: LoopCommand.Execute,
       tokensInput: 100, // non-zero — has consumed tokens, not a ghost
       tokensOutput: 0,
@@ -663,7 +663,7 @@ describe("GET /api/cron/timeout-loops -- anomaly detection", () => {
       id: "loop-ghost-5",
       organizationId: "org-1",
       computeTargetId: "ct-1",
-      documentId: "artifact-1",
+      artifactId: "artifact-1",
       command: LoopCommand.Plan, // PLAN, not EXECUTE — should not trigger
       tokensInput: 0,
       tokensOutput: 0,

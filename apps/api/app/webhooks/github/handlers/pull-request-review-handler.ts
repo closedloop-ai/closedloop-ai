@@ -2,8 +2,9 @@ import type {
   PullRequestReviewDismissedEvent,
   PullRequestReviewSubmittedEvent,
 } from "@octokit/webhooks-types";
+import { LinkType } from "@repo/api/src/types/artifact";
 import { ReviewDecision } from "@repo/api/src/types/document";
-import { type TransactionClient, withDb } from "@repo/database";
+import { ArtifactType, type TransactionClient, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
 
@@ -48,7 +49,7 @@ async function handleSubmittedReview(
   pull_request: HandledPullRequestReviewEvent["pull_request"],
   existingPr: {
     id: string;
-    workstreamId: string;
+    workstreamId: string | null;
     documentId: string | null;
     reviewDecision: string | null;
     document: { slug: string } | null;
@@ -121,27 +122,30 @@ async function handleSubmittedReview(
     }
   );
 
-  // Create workstream event for submitted review
-  await tx.workstreamEvent.create({
-    data: {
-      workstreamId: existingPr.workstreamId,
-      type: "GITHUB_PR_REVIEW_SUBMITTED",
-      actorType: "system",
+  // Create workstream event for submitted review — only when the PR artifact
+  // has a workstream.
+  if (existingPr.workstreamId) {
+    await tx.workstreamEvent.create({
       data: {
-        reviewId: review.id,
-        reviewState: review.state,
-        reviewDecision,
-        reviewerLogin,
-        reviewBody: review.body,
-        prNumber: pull_request.number,
-        prTitle: pull_request.title,
-        prUrl: pull_request.html_url,
-        reviewUrl: review.html_url,
-        documentId: existingPr.documentId,
-        documentSlug: existingPr.document?.slug,
+        workstreamId: existingPr.workstreamId,
+        type: "GITHUB_PR_REVIEW_SUBMITTED",
+        actorType: "system",
+        data: {
+          reviewId: review.id,
+          reviewState: review.state,
+          reviewDecision,
+          reviewerLogin,
+          reviewBody: review.body,
+          prNumber: pull_request.number,
+          prTitle: pull_request.title,
+          prUrl: pull_request.html_url,
+          reviewUrl: review.html_url,
+          documentId: existingPr.documentId,
+          documentSlug: existingPr.document?.slug,
+        },
       },
-    },
-  });
+    });
+  }
 }
 
 /**
@@ -154,7 +158,7 @@ async function handleDismissedReview(
   pull_request: HandledPullRequestReviewEvent["pull_request"],
   existingPr: {
     id: string;
-    workstreamId: string;
+    workstreamId: string | null;
     documentId: string | null;
     reviewDecision: string | null;
     document: { slug: string } | null;
@@ -198,27 +202,30 @@ async function handleDismissedReview(
     newAggregate: aggregateDecision,
   });
 
-  // Create workstream event for dismissed review
-  await tx.workstreamEvent.create({
-    data: {
-      workstreamId: existingPr.workstreamId,
-      type: "GITHUB_PR_REVIEW_SUBMITTED",
-      actorType: "system",
+  // Create workstream event for dismissed review — only when the PR artifact
+  // has a workstream.
+  if (existingPr.workstreamId) {
+    await tx.workstreamEvent.create({
       data: {
-        reviewId: review.id,
-        reviewState: "dismissed",
-        reviewDecision: ReviewDecision.Dismissed,
-        reviewerLogin,
-        reviewBody: review.body,
-        prNumber: pull_request.number,
-        prTitle: pull_request.title,
-        prUrl: pull_request.html_url,
-        reviewUrl: review.html_url,
-        documentId: existingPr.documentId,
-        documentSlug: existingPr.document?.slug,
+        workstreamId: existingPr.workstreamId,
+        type: "GITHUB_PR_REVIEW_SUBMITTED",
+        actorType: "system",
+        data: {
+          reviewId: review.id,
+          reviewState: "dismissed",
+          reviewDecision: ReviewDecision.Dismissed,
+          reviewerLogin,
+          reviewBody: review.body,
+          prNumber: pull_request.number,
+          prTitle: pull_request.title,
+          prUrl: pull_request.html_url,
+          reviewUrl: review.html_url,
+          documentId: existingPr.documentId,
+          documentSlug: existingPr.document?.slug,
+        },
       },
-    },
-  });
+    });
+  }
 }
 
 /**
@@ -280,7 +287,7 @@ export async function handlePullRequestReview(
       return;
     }
 
-    const existingPr = await tx.gitHubPullRequest.findUnique({
+    const prDetail = await tx.pullRequestDetail.findUnique({
       where: {
         repositoryId_number: {
           repositoryId: repo.id,
@@ -288,15 +295,29 @@ export async function handlePullRequestReview(
         },
       },
       select: {
-        id: true,
-        workstreamId: true,
-        documentId: true,
+        artifactId: true,
         reviewDecision: true,
-        document: { select: { slug: true } },
+        artifact: {
+          select: {
+            workstreamId: true,
+            // PR is the TARGET of a DOCUMENT → produces → PR link.
+            targetLinks: {
+              where: {
+                linkType: LinkType.Produces,
+                source: { type: ArtifactType.DOCUMENT },
+              },
+              select: {
+                source: { select: { id: true, slug: true } },
+              },
+              orderBy: { createdAt: "asc" },
+              take: 1,
+            },
+          },
+        },
       },
     });
 
-    if (!existingPr) {
+    if (!prDetail) {
       log.warn("[handlePullRequestReview] Pull request not found in database", {
         repositoryId: repo.id,
         prNumber: pull_request.number,
@@ -305,6 +326,16 @@ export async function handlePullRequestReview(
       });
       return;
     }
+
+    const linkedDoc = prDetail.artifact.targetLinks[0]?.source ?? null;
+    const existingPr = {
+      id: prDetail.artifactId,
+      // Preserve null — empty string is not a valid workstream id.
+      workstreamId: prDetail.artifact.workstreamId,
+      documentId: linkedDoc?.id ?? null,
+      reviewDecision: prDetail.reviewDecision,
+      document: linkedDoc ? { slug: linkedDoc.slug ?? "" } : null,
+    };
 
     if (action === "submitted") {
       await handleSubmittedReview(tx, review, pull_request, existingPr);

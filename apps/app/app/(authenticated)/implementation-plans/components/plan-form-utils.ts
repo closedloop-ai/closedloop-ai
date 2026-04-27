@@ -39,8 +39,6 @@ export function buildCreateInput(
     input: {
       ...baseInput,
       sourceId: selectedSource.id,
-      sourceType: selectedSource.sourceType,
-      sourceVersion: selectedSource.latestVersion,
       workstreamId: selectedSource.workstreamId ?? undefined,
     },
   };

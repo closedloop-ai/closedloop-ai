@@ -1,14 +1,9 @@
 import type { DeploymentStatusEvent } from "@octokit/webhooks-types";
-import { EntityType, LinkType } from "@repo/api/src/types/entity-link";
-import {
-  type DeploymentMetadata,
-  ExternalLinkType,
-} from "@repo/api/src/types/external-link";
+import { LinkType } from "@repo/api/src/types/artifact";
 import { withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
-import { entityLinksService } from "@/app/entity-links/service";
-import { externalLinksService } from "@/app/external-links/service";
+import { deploymentService } from "@/lib/services/deployment-service";
 
 /**
  * Handle GitHub deployment_status webhook events.
@@ -65,38 +60,48 @@ export async function handleDeploymentStatus(
       return { repo: null, pr: null, prExternalLink: null };
     }
 
-    // Match PR by headSha or headBranch
-    const foundPr = await db.gitHubPullRequest.findFirst({
+    // Match PR detail by headSha or headBranch
+    const foundPrDetail = await db.pullRequestDetail.findFirst({
       where: {
         repositoryId: foundRepo.id,
         OR: [{ headSha: sha }, { headBranch: ref }],
       },
-      orderBy: { createdAt: "desc" },
+      orderBy: { artifact: { createdAt: "desc" } },
       select: {
-        id: true,
-        workstreamId: true,
+        artifactId: true,
         headBranch: true,
-        organizationId: true,
-        workstream: { select: { projectId: true } },
-        htmlUrl: true,
+        artifact: {
+          select: {
+            organizationId: true,
+            workstreamId: true,
+            externalUrl: true,
+            workstream: { select: { projectId: true } },
+          },
+        },
       },
     });
 
-    if (!foundPr) {
+    if (!foundPrDetail) {
       return { repo: foundRepo, pr: null, prExternalLink: null };
     }
 
-    const prExternalLink = await db.externalLink.findFirst({
-      where: {
-        organizationId: foundPr.organizationId,
-        workstreamId: foundPr.workstreamId,
-        type: ExternalLinkType.PullRequest,
-        externalUrl: foundPr.htmlUrl,
-      },
-      select: { id: true },
-    });
+    // The PR artifact's id is the "external link" id for linkage graphs —
+    // the legacy ExternalLink.id and the new Artifact.id are the same value
+    // (IDs were reused during the migration).
+    const foundPr = {
+      id: foundPrDetail.artifactId,
+      workstreamId: foundPrDetail.artifact.workstreamId,
+      headBranch: foundPrDetail.headBranch,
+      organizationId: foundPrDetail.artifact.organizationId,
+      workstream: foundPrDetail.artifact.workstream,
+      htmlUrl: foundPrDetail.artifact.externalUrl ?? "",
+    };
 
-    return { repo: foundRepo, pr: foundPr, prExternalLink };
+    return {
+      repo: foundRepo,
+      pr: foundPr,
+      prExternalLink: { id: foundPrDetail.artifactId },
+    };
   });
 
   if (!repo) {
@@ -112,7 +117,7 @@ export async function handleDeploymentStatus(
     });
   }
 
-  if (!pr?.workstreamId) {
+  if (!(pr?.workstreamId && pr.workstream)) {
     log.info("[handleDeploymentStatus] No PR found for deployment ref", {
       ref,
       sha,
@@ -123,38 +128,58 @@ export async function handleDeploymentStatus(
     });
   }
 
+  const resolvedWorkstream = pr.workstream;
   const branchRef = pr.headBranch ?? ref;
   const title = `${branchRef} deployed to ${deployment.environment}`;
-  const metadata: DeploymentMetadata = {
-    statusUrl: status.url,
-    deploymentUrl: status.deployment_url,
-    state,
-    environment: deployment.environment,
-    ref: branchRef,
-    sha,
-    transient: deployment.transient_environment,
-    production: deployment.production_environment,
-  };
 
-  const created = await externalLinksService.create(pr.organizationId, {
-    workstreamId: pr.workstreamId,
-    projectId: pr.workstream.projectId,
-    type: ExternalLinkType.PreviewDeployment,
-    title,
-    externalUrl: environmentUrl,
-    metadata,
+  const created = await withDb.tx(async (tx) => {
+    const deploymentArtifact = await deploymentService.recordDeployment(
+      {
+        organizationId: pr.organizationId,
+        projectId: resolvedWorkstream.projectId,
+        workstreamId: pr.workstreamId,
+        environment: deployment.environment,
+        ref: branchRef,
+        sha,
+        state,
+        externalUrl: environmentUrl,
+        githubStatusUrl: status.url,
+        githubDeploymentUrl: status.deployment_url,
+        transient: deployment.transient_environment,
+        production: deployment.production_environment,
+        pullRequestArtifactId: prExternalLink?.id ?? null,
+        title,
+      },
+      tx
+    );
+
+    // Link the deployment artifact to the PR artifact. ArtifactLink is a
+    // pure (sourceId, targetId, linkType) tuple — the polymorphic
+    // sourceType/targetType fields were dropped in the cutover.
+    if (prExternalLink) {
+      const existingLink = await tx.artifactLink.findFirst({
+        where: {
+          organizationId: pr.organizationId,
+          sourceId: prExternalLink.id,
+          targetId: deploymentArtifact.id,
+          linkType: LinkType.Produces,
+        },
+        select: { id: true },
+      });
+      if (!existingLink) {
+        await tx.artifactLink.create({
+          data: {
+            organizationId: pr.organizationId,
+            sourceId: prExternalLink.id,
+            targetId: deploymentArtifact.id,
+            linkType: LinkType.Produces,
+          },
+        });
+      }
+    }
+
+    return deploymentArtifact;
   });
-
-  // Link the deployment to the PR external link record.
-  if (prExternalLink) {
-    await entityLinksService.createLink(pr.organizationId, {
-      sourceId: prExternalLink.id,
-      sourceType: EntityType.ExternalLink,
-      targetId: created.id,
-      targetType: EntityType.ExternalLink,
-      linkType: LinkType.Produces,
-    });
-  }
 
   log.info("[handleDeploymentStatus] Created preview deployment record", {
     externalLinkId: created.id,

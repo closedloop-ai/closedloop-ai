@@ -144,7 +144,7 @@ async function invokeScenario(s: Scenario): Promise<HarnessResult> {
       }
       const tx = makeIngestionSuccessMockTx();
       if (behavior.kind === "missingArtifact") {
-        tx.document.findUnique.mockResolvedValue(null);
+        tx.artifact.findUnique.mockResolvedValue(null);
       }
       if (s.expect.assertEvalBeforeWorkstreamEvent) {
         const originalCreate = tx.workstreamEvent.create;
@@ -321,7 +321,7 @@ const scenarios: Scenario[] = [
     expect: {
       evaluationCalls: 1,
       evaluationArgs: {
-        documentId: "doc-1",
+        artifactId: "doc-1",
         organizationId: "org-1",
         loopId: "loop-1",
         actionRunId: "action-run-1",
@@ -343,7 +343,7 @@ const scenarios: Scenario[] = [
     expect: {
       evaluationCalls: 1,
       evaluationArgs: {
-        documentId: "doc-1",
+        artifactId: "doc-1",
         organizationId: "org-1",
         actionRunId: "action-run-1",
         report: codeJudgesReport,

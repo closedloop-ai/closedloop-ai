@@ -26,8 +26,8 @@ vi.mock("@/app/documents/service", () => ({
   },
 }));
 
-vi.mock("@/app/entity-links/service", () => ({
-  entityLinksService: {
+vi.mock("@/app/artifact-links/service", () => ({
+  artifactLinksService: {
     createLink: vi.fn(),
   },
 }));
@@ -42,14 +42,14 @@ vi.mock("@/lib/loops/loop-state", () => ({
 
 // --- Imports (after mocks) ---
 
+import { LinkType } from "@repo/api/src/types/artifact";
 import { Priority } from "@repo/api/src/types/common";
 import { DocumentStatus, DocumentType } from "@repo/api/src/types/document";
-import { EntityType, LinkType } from "@repo/api/src/types/entity-link";
 import type { DecomposeResult } from "@repo/api/src/types/loop";
 import { LoopCommand } from "@repo/database/generated/client";
 import { beforeEach, describe, expect, it } from "vitest";
+import { artifactLinksService } from "@/app/artifact-links/service";
 import { documentsService } from "@/app/documents/service";
-import { entityLinksService } from "@/app/entity-links/service";
 import { decomposeHandler } from "@/lib/loops/loop-commands/decompose-handler";
 import { parseJsonArtifact } from "@/lib/loops/loop-document-ingestion";
 import { downloadArtifactFile } from "@/lib/loops/loop-state";
@@ -60,7 +60,7 @@ const mockDocumentsService = documentsService as unknown as {
   findByIdSimple: MockFn;
   create: MockFn;
 };
-const mockEntityLinksService = entityLinksService as unknown as {
+const mockEntityLinksService = artifactLinksService as unknown as {
   createLink: MockFn;
 };
 const mockParseJsonArtifact = parseJsonArtifact as MockFn;
@@ -167,9 +167,7 @@ describe("decomposeHandler ingestion", () => {
     expect(mockEntityLinksService.createLink).toHaveBeenCalledTimes(2);
     expect(mockEntityLinksService.createLink).toHaveBeenCalledWith("org-1", {
       sourceId: "prd-artifact-1",
-      sourceType: EntityType.Document,
       targetId: "feature-1",
-      targetType: EntityType.Document,
       linkType: LinkType.Produces,
     });
   });
@@ -262,9 +260,7 @@ describe("decomposeHandler uploadAndIngest", () => {
     );
     expect(mockEntityLinksService.createLink).toHaveBeenCalledWith("org-1", {
       sourceId: "prd-artifact-1",
-      sourceType: EntityType.Document,
       targetId: "feature-1",
-      targetType: EntityType.Document,
       linkType: LinkType.Produces,
     });
   });

@@ -10,10 +10,9 @@ import {
   CustomFieldEntityType,
   CustomFieldType,
 } from "@repo/api/src/types/custom-field";
-import { DocumentType } from "@repo/api/src/types/document";
 import type { BasicUser } from "@repo/api/src/types/user";
 import type { Prisma } from "@repo/database";
-import { withDb } from "@repo/database";
+import { ArtifactSubtype, ArtifactType, withDb } from "@repo/database";
 import { computeDisplayValue, validateValueType } from "./utils";
 
 /**
@@ -325,8 +324,12 @@ async function verifyEntityExists(
         return record !== null;
       }
       case CustomFieldEntityType.Document: {
-        const record = await db.document.findFirst({
-          where: { id: entityId, organizationId },
+        const record = await db.artifact.findFirst({
+          where: {
+            id: entityId,
+            organizationId,
+            type: ArtifactType.DOCUMENT,
+          },
           select: { id: true },
         });
         return record !== null;
@@ -743,17 +746,20 @@ async function cascadeProjectFieldToChildren(
   tx: Prisma.TransactionClient,
   { fieldId, organizationId, projectId, input }: CascadeInput
 ): Promise<void> {
-  // Features are feature-typed documents — cascade only against the document
-  // table. The legacy `issues` table still exists during the migration window
-  // but holds the same UUIDs, so querying it would create duplicate settings
-  // (skipDuplicates can't help because the entityType differs).
+  // Features are feature-typed document artifacts — cascade only against
+  // the artifact table.
   const [childWorkstreams, childFeatureDocuments] = await Promise.all([
     tx.workstream.findMany({
       where: { projectId, organizationId },
       select: { id: true },
     }),
-    tx.document.findMany({
-      where: { projectId, organizationId, type: DocumentType.Feature },
+    tx.artifact.findMany({
+      where: {
+        projectId,
+        organizationId,
+        type: ArtifactType.DOCUMENT,
+        subtype: ArtifactSubtype.FEATURE,
+      },
       select: { id: true },
     }),
   ]);
@@ -767,16 +773,20 @@ async function cascadeProjectFieldToChildren(
   };
 
   const childSettingsData: Prisma.CustomFieldSettingCreateManyInput[] = [
-    ...childWorkstreams.map((ws) => ({
-      ...defaults,
-      entityType: CustomFieldEntityType.Workstream,
-      entityId: ws.id,
-    })),
-    ...childFeatureDocuments.map((doc) => ({
-      ...defaults,
-      entityType: CustomFieldEntityType.Document,
-      entityId: doc.id,
-    })),
+    ...childWorkstreams.map(
+      (ws): Prisma.CustomFieldSettingCreateManyInput => ({
+        ...defaults,
+        entityType: CustomFieldEntityType.Workstream,
+        entityId: ws.id,
+      })
+    ),
+    ...childFeatureDocuments.map(
+      (doc): Prisma.CustomFieldSettingCreateManyInput => ({
+        ...defaults,
+        entityType: CustomFieldEntityType.Document,
+        entityId: doc.id,
+      })
+    ),
   ];
 
   if (childSettingsData.length > 0) {

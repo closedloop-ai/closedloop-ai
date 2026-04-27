@@ -1,35 +1,25 @@
 "use client";
 
 import {
+  type ArtifactLinkWithEndpoints,
+  ArtifactType,
+  LinkDirection,
+  LinkQueryMode,
+} from "@repo/api/src/types/artifact";
+import {
   type GenerationStatus,
   isActiveGenerationStatus,
 } from "@repo/api/src/types/document";
-import type { LinkedEntity } from "@repo/api/src/types/entity-link";
-import {
-  EntityType,
-  LinkDirection,
-  LinkQueryMode,
-} from "@repo/api/src/types/entity-link";
-import { ExternalLinkType } from "@repo/api/src/types/external-link";
-import { parsePullRequestMetadata } from "@repo/api/src/types/external-link-utils";
-import { GitHubPRState } from "@repo/api/src/types/github";
-import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
 import { toast } from "@repo/design-system/components/ui/sonner";
-import {
-  GitBranchIcon,
-  GitMergeIcon,
-  GitPullRequestIcon,
-  PlayIcon,
-  PlusIcon,
-} from "lucide-react";
+import { GitBranchIcon, PlayIcon, PlusIcon } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
 import { GenerationStatusIndicator } from "@/components/generation-status-indicator";
 import {
-  useDeleteEntityLink,
-  useLinkedEntities,
-} from "@/hooks/queries/use-entity-links";
+  useDeleteArtifactLink,
+  useResolvedArtifactLinks,
+} from "@/hooks/queries/use-artifact-links";
 import { OverflowMenu } from "./overflow-menu";
 import { SectionHeader } from "./section-header";
 import { SelectPullRequestDialog } from "./select-pr-dialog";
@@ -51,12 +41,11 @@ export function BranchesSection({
 }: Readonly<BranchesSectionProps>) {
   const [showSelectPr, setShowSelectPr] = useState(false);
   const [isOpen, setIsOpen] = useState(true);
-  const { data: linkedEntities = [] } = useLinkedEntities(
-    documentId,
-    EntityType.Document,
-    { mode: LinkQueryMode.Tree, direction: LinkDirection.Target }
-  );
-  const deleteLink = useDeleteEntityLink();
+  const { data: resolvedLinks = [] } = useResolvedArtifactLinks(documentId, {
+    mode: LinkQueryMode.Tree,
+    direction: LinkDirection.Target,
+  });
+  const deleteLink = useDeleteArtifactLink();
 
   function handleUnlink(linkId: string) {
     deleteLink.mutate(linkId, {
@@ -66,11 +55,9 @@ export function BranchesSection({
     });
   }
 
-  // Filter to only external link entities (PRs, branches, etc.)
-  const branchLinks = linkedEntities.filter(
-    (linked) =>
-      linked.resolvedEntity?.type === EntityType.ExternalLink &&
-      linked.resolvedEntity.entity.type === ExternalLinkType.PullRequest
+  // Filter to only PR artifact endpoints (other ends from the document).
+  const branchLinks = resolvedLinks.filter(
+    (link) => link.target.type === ArtifactType.PullRequest
   );
 
   const hasBranches = branchLinks.length > 0;
@@ -97,12 +84,8 @@ export function BranchesSection({
         <>
           {hasBranches ? (
             <div className="flex flex-col">
-              {branchLinks.map((linked) => (
-                <BranchRow
-                  key={linked.id}
-                  linked={linked}
-                  onUnlink={handleUnlink}
-                />
+              {branchLinks.map((link) => (
+                <BranchRow key={link.id} link={link} onUnlink={handleUnlink} />
               ))}
             </div>
           ) : (
@@ -157,110 +140,35 @@ export function BranchesSection({
 }
 
 type BranchRowProps = {
-  linked: LinkedEntity;
+  link: ArtifactLinkWithEndpoints;
   onUnlink: (linkId: string) => void;
 };
 
-export function BranchRow({ linked, onUnlink }: Readonly<BranchRowProps>) {
-  const resolved = linked.resolvedEntity;
-  if (resolved?.type !== EntityType.ExternalLink) {
+export function BranchRow({ link, onUnlink }: Readonly<BranchRowProps>) {
+  const prEndpoint = link.target;
+  if (prEndpoint.type !== ArtifactType.PullRequest) {
     return null;
   }
-
-  const externalLink = resolved.entity;
-  const prMeta = parsePullRequestMetadata(externalLink.metadata);
 
   return (
     <div className="flex items-center gap-4 px-2 py-1">
       <Link
         className="flex min-w-0 flex-1 items-center gap-1 rounded-md hover:bg-accent"
-        href={`/build/${externalLink.id}`}
+        href={`/build/${prEndpoint.id}`}
       >
         <div className="flex shrink-0 items-center p-1">
-          <PrStateIcon state={prMeta?.state ?? null} />
+          <GitBranchIcon
+            className="h-4 w-4 shrink-0 text-muted-foreground"
+            data-testid="pr-state-icon"
+          />
         </div>
         <span className="truncate px-1 font-medium text-sm">
-          {externalLink.title}
+          {prEndpoint.name}
         </span>
       </Link>
       <div className="flex h-9 shrink-0 items-center gap-2">
-        <PrStateBadge state={prMeta?.state ?? null} />
-        <OverflowMenu linkId={linked.id} onUnlink={onUnlink} />
+        <OverflowMenu linkId={link.id} onUnlink={onUnlink} />
       </div>
     </div>
-  );
-}
-
-function PrStateIcon({ state }: Readonly<{ state: GitHubPRState | null }>) {
-  if (state === null) {
-    return (
-      <GitPullRequestIcon
-        className="h-4 w-4 shrink-0 text-gray-400 dark:text-gray-600"
-        data-testid="pr-state-icon-unknown"
-      />
-    );
-  }
-  if (state === GitHubPRState.Merged) {
-    return (
-      <GitMergeIcon
-        className="h-4 w-4 shrink-0 text-muted-foreground"
-        data-testid="pr-state-icon-merged"
-      />
-    );
-  }
-  if (state === GitHubPRState.Closed) {
-    return (
-      <GitBranchIcon
-        className="h-4 w-4 shrink-0 text-muted-foreground"
-        data-testid="pr-state-icon-closed"
-      />
-    );
-  }
-  return (
-    <GitBranchIcon
-      className="h-4 w-4 shrink-0 text-muted-foreground"
-      data-testid="pr-state-icon-open"
-    />
-  );
-}
-
-function PrStateBadge({ state }: Readonly<{ state: GitHubPRState | null }>) {
-  if (state === null) {
-    return (
-      <Badge
-        className="border-gray-200 bg-gray-50 text-gray-500 dark:border-gray-700 dark:bg-gray-900/30 dark:text-gray-400"
-        variant="outline"
-      >
-        Unknown
-      </Badge>
-    );
-  }
-  if (state === GitHubPRState.Merged) {
-    return (
-      <Badge
-        className="border-purple-200 bg-purple-50 text-purple-700 dark:border-purple-800 dark:bg-purple-950/30 dark:text-purple-300"
-        variant="outline"
-      >
-        Merged
-      </Badge>
-    );
-  }
-  if (state === GitHubPRState.Closed) {
-    return (
-      <Badge
-        className="border-red-200 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-950/30 dark:text-red-300"
-        variant="outline"
-      >
-        Closed
-      </Badge>
-    );
-  }
-  return (
-    <Badge
-      className="border-green-200 bg-green-50 text-green-700 dark:border-green-800 dark:bg-green-950/30 dark:text-green-300"
-      variant="outline"
-    >
-      Open
-    </Badge>
   );
 }

@@ -3,6 +3,7 @@ import { withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { waitUntil } from "@vercel/functions";
 import { isConcurrentLoopLimitError, loopsService } from "@/app/loops/service";
+import { documentWhere } from "@/lib/artifact-adapters";
 import { resolveComputeTarget } from "./compute-target-resolver";
 import { launchLoop } from "./loop-orchestrator";
 
@@ -46,9 +47,9 @@ async function runAutoEvaluatePrd(
 ): Promise<void> {
   // Fetch the artifact's current version to use as the evaluation anchor.
   const artifact = await withDb((db) =>
-    db.document.findUnique({
-      where: { id: documentId, organizationId },
-      select: { latestVersion: true },
+    db.artifact.findUnique({
+      where: documentWhere({ id: documentId, organizationId }),
+      select: { document: { select: { latestVersion: true } } },
     })
   );
 
@@ -59,7 +60,7 @@ async function runAutoEvaluatePrd(
     return;
   }
 
-  const latestVersion = artifact.latestVersion;
+  const latestVersion = artifact.document?.latestVersion ?? 1;
 
   // Fetch the user's preferred compute mode to route to local vs cloud.
   const user = await withDb((db) =>

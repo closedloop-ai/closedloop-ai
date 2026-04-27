@@ -7,6 +7,7 @@ import { waitUntil } from "@vercel/functions";
 import { z } from "zod";
 import { documentVersionService } from "@/app/documents/document-version-service";
 import { resetDocumentRoom } from "@/app/documents/room-utils";
+import { documentWhere } from "@/lib/artifact-adapters";
 import { downloadArtifactFile } from "@/lib/loops/loop-state";
 import { defineHandler } from "./loop-command-handler";
 
@@ -60,22 +61,30 @@ export async function ingestGeneratePrdArtifacts(
   );
 
   const updatedArtifact = await withDb((db) =>
-    db.document.update({
-      where: { id: documentId, organizationId },
+    db.artifact.update({
+      where: documentWhere({ id: documentId, organizationId }),
       data: { status: DocumentStatus.Draft },
       select: {
         id: true,
         organizationId: true,
         slug: true,
-        type: true,
-        latestVersion: true,
+        subtype: true,
+        document: { select: { latestVersion: true } },
       },
     })
   );
 
   // Reset the Liveblocks room so any stale Y.Doc content is cleared.
   if (updatedArtifact.slug) {
-    waitUntil(resetDocumentRoom(updatedArtifact));
+    waitUntil(
+      resetDocumentRoom({
+        id: updatedArtifact.id,
+        organizationId: updatedArtifact.organizationId,
+        slug: updatedArtifact.slug,
+        type: updatedArtifact.subtype as DocumentType,
+        latestVersion: updatedArtifact.document?.latestVersion ?? 1,
+      })
+    );
   }
 
   // Create workstream completion event (idempotent — skip if already exists)
@@ -170,16 +179,16 @@ export const requestPrdChangesHandler = defineHandler<GeneratePrdArtifacts>({
     // loop reaching this handler with a non-PRD artifact.
     const artifact = loop.documentId
       ? await withDb((db) =>
-          db.document.findUnique({
-            where: { id: loop.documentId!, organizationId },
-            select: { type: true },
+          db.artifact.findUnique({
+            where: documentWhere({ id: loop.documentId!, organizationId }),
+            select: { subtype: true },
           })
         )
       : null;
 
-    if (artifact?.type !== DocumentType.Prd) {
+    if (artifact?.subtype !== DocumentType.Prd) {
       throw new Error(
-        `[request-prd-changes] Expected artifact type ${DocumentType.Prd}, got ${artifact?.type ?? "none"} — marking loop failed`
+        `[request-prd-changes] Expected artifact type ${DocumentType.Prd}, got ${artifact?.subtype ?? "none"} — marking loop failed`
       );
     }
 

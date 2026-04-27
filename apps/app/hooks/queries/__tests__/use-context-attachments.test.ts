@@ -127,7 +127,7 @@ describe("useCreateContextAttachment", () => {
     );
   });
 
-  test("invalidates entity-link list queries on success", async () => {
+  test("invalidates artifact-link list queries on success", async () => {
     mockApiClient.post.mockResolvedValueOnce(buildCreateResponse());
 
     const queryClient = createTestQueryClient();
@@ -144,7 +144,7 @@ describe("useCreateContextAttachment", () => {
 
     expect(invalidateSpy).toHaveBeenCalledWith(
       expect.objectContaining({
-        queryKey: ["entity-links", "list"],
+        queryKey: ["artifact-links", "list"],
       })
     );
   });
@@ -240,7 +240,7 @@ describe("useImportGDriveContext", () => {
     });
   });
 
-  test("invalidates entity-link list queries on success", async () => {
+  test("invalidates artifact-link list queries on success", async () => {
     mockApiClient.post.mockResolvedValueOnce(buildImportResponse());
 
     const queryClient = createTestQueryClient();
@@ -256,7 +256,7 @@ describe("useImportGDriveContext", () => {
 
     expect(invalidateSpy).toHaveBeenCalledWith(
       expect.objectContaining({
-        queryKey: ["entity-links", "list"],
+        queryKey: ["artifact-links", "list"],
       })
     );
   });

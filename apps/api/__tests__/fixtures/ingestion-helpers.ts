@@ -126,7 +126,6 @@ type IngestionMockTxValues = {
   documentId: string;
   organizationId: string;
   projectId: string;
-  prId: string;
   eventId: string;
 };
 
@@ -139,7 +138,6 @@ const TX_UNIT: IngestionMockTxValues = {
   documentId: "doc-1",
   organizationId: "org-1",
   projectId: "project-1",
-  prId: "pr-1",
   eventId: "event-1",
 };
 
@@ -147,7 +145,6 @@ const TX_E2E: IngestionMockTxValues = {
   documentId: "doc-e2e",
   organizationId: "org-e2e",
   projectId: "project-e2e",
-  prId: "pr-e2e-1",
   eventId: "event-e2e-1",
 };
 
@@ -156,8 +153,7 @@ function txPreset(p: "unit" | "e2e"): IngestionMockTxValues {
 }
 
 export type IngestionSuccessMockTx = {
-  document: { findUnique: Mock };
-  gitHubPullRequest: { findUnique: Mock; upsert: Mock; update: Mock };
+  artifact: { findUnique: Mock };
   workstreamEvent: { create: Mock };
 };
 
@@ -165,6 +161,10 @@ export type IngestionSuccessMockTx = {
  * Mock Prisma client fragment used inside `withDb.tx` for successful repo
  * ingestion. The first parameter may be a `documentId` string (unit preset)
  * or an options object; use `{ preset: "e2e" }` for E2E default IDs.
+ *
+ * The new ingestion path delegates PR creation to `ensurePrLinkageRecords`
+ * (mocked separately by callers), so this mock only needs to cover the
+ * source-artifact lookup and the workstream event write.
  */
 export function makeIngestionSuccessMockTx(
   arg?: string | IngestionSuccessMockTxOptions
@@ -177,20 +177,15 @@ export function makeIngestionSuccessMockTx(
     const { preset: _p, ...overrides } = arg ?? {};
     v = { ...txPreset(preset), ...overrides };
   }
-  const { documentId, organizationId, projectId, prId, eventId } = v;
+  const { organizationId, projectId, eventId } = v;
 
   return {
-    document: {
+    artifact: {
       findUnique: vi.fn().mockResolvedValue({
         organizationId,
         projectId,
         slug: "my-artifact",
       }),
-    },
-    gitHubPullRequest: {
-      findUnique: vi.fn().mockResolvedValue(null),
-      upsert: vi.fn().mockResolvedValue({ id: prId, documentId }),
-      update: vi.fn().mockResolvedValue({ id: prId, documentId }),
     },
     workstreamEvent: {
       create: vi.fn().mockResolvedValue({ id: eventId }),

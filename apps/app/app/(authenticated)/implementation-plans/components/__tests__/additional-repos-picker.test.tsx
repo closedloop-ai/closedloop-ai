@@ -1,5 +1,4 @@
 import { useFeatureFlag } from "@repo/analytics/client";
-import { EntityType } from "@repo/api/src/types/entity-link";
 import { MAX_ADDITIONAL_REPOS } from "@repo/api/src/types/loop";
 import {
   cleanup,
@@ -291,7 +290,6 @@ describe("NewPlanModal — feature flag behavior for AdditionalReposPicker", () 
         open={true}
         source={{
           id: "prd-1",
-          sourceType: EntityType.Document,
           targetBranch: "main",
           targetRepo: "org/primary-repo",
           title: "Dashboard PRD",

@@ -5,7 +5,6 @@ import {
   type DocumentDetail,
   DocumentType,
 } from "@repo/api/src/types/document";
-import { EntityType } from "@repo/api/src/types/entity-link";
 import { InlinePresence, OptionalDocumentRoom } from "@repo/collaboration";
 import {
   ResizablePanel,
@@ -338,7 +337,6 @@ export function PRDEditor({
       <MoveEntityDialog
         entity={{
           id: prd.id,
-          entityType: EntityType.Document,
           projectId: prd.projectId,
         }}
         onOpenChange={setShowMoveDialog}
@@ -359,10 +357,7 @@ export function PRDEditor({
       <NewPlanModal
         onOpenChange={setShowGeneratePlanModal}
         open={showGeneratePlanModal}
-        source={{
-          ...prd,
-          sourceType: EntityType.Document,
-        }}
+        source={prd}
       />
     </>
   );

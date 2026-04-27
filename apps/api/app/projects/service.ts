@@ -7,8 +7,7 @@ import {
   type UpdateProjectInput,
 } from "@repo/api/src/types/project";
 import { SlugPrefix } from "@repo/api/src/types/slug-prefix";
-import type { Prisma } from "@repo/database";
-import { withDb } from "@repo/database";
+import { ArtifactType, type Prisma, withDb } from "@repo/database";
 import { basicUserSelect } from "@/lib/db-utils";
 import { generateSlug } from "@/lib/slug-generator";
 
@@ -28,6 +27,7 @@ export const projectsService = {
       db.project.findMany({
         where: {
           organizationId,
+          isTemplatesSentinel: false,
           ...(statusFilter ? { status: statusFilter } : {}),
         },
         include: PROJECT_DETAIL_INCLUDE,
@@ -49,10 +49,11 @@ export const projectsService = {
     const projects = await withDb((db) =>
       db.project.findMany({
         where: {
+          organizationId,
+          isTemplatesSentinel: false,
           teams: {
             some: { teamId },
           },
-          organizationId,
           ...(statusFilter ? { status: statusFilter } : {}),
         },
         include: PROJECT_DETAIL_INCLUDE,
@@ -87,8 +88,8 @@ export const projectsService = {
     organizationId: string
   ): Promise<ProjectWithDetails | null> {
     const project = await withDb((db) =>
-      db.project.findFirst({
-        where: { organizationId, slug },
+      db.project.findUnique({
+        where: { organizationId_slug: { organizationId, slug } },
         include: PROJECT_DETAIL_INCLUDE,
       })
     );
@@ -287,7 +288,7 @@ export const projectsService = {
   /**
    * Calculate project status based on artifact completion
    */
-  calculateStatus(artifacts: Array<{ status: DocumentStatus }>): number {
+  calculateStatus(artifacts: Array<{ status: string }>): number {
     if (artifacts.length === 0) {
       return 0;
     }
@@ -322,7 +323,8 @@ const PROJECT_DETAIL_INCLUDE = {
       },
     },
   },
-  documents: {
+  artifacts: {
+    where: { type: ArtifactType.DOCUMENT },
     select: { status: true },
   },
 } as const;
@@ -345,7 +347,7 @@ function toProjectWithDetails(project: ProjectFromDb): ProjectWithDetails {
           avatarUrl: project.assignee.avatarUrl,
         }
       : undefined,
-    completionPercentage: projectsService.calculateStatus(project.documents),
+    completionPercentage: projectsService.calculateStatus(project.artifacts),
     teams: project.teams.map((pt) => ({
       id: pt.team.id,
       name: pt.team.name,

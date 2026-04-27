@@ -48,18 +48,18 @@ vi.mock("@/hooks/queries/use-documents", () => ({
   }),
 }));
 
-// Mock entity links hooks to avoid Clerk auth dependencies
-vi.mock("@/hooks/queries/use-entity-links", () => ({
-  useLinkedEntities: () => ({
+// Mock artifact links hooks to avoid Clerk auth dependencies
+vi.mock("@/hooks/queries/use-artifact-links", () => ({
+  useResolvedArtifactLinks: () => ({
     data: [],
     isLoading: false,
     error: null,
   }),
-  useCreateEntityLink: () => ({
+  useCreateArtifactLink: () => ({
     mutateAsync: vi.fn(),
     isPending: false,
   }),
-  useDeleteEntityLink: () => ({
+  useDeleteArtifactLink: () => ({
     mutateAsync: vi.fn(),
     isPending: false,
   }),

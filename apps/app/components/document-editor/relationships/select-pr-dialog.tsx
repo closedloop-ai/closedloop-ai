@@ -1,16 +1,11 @@
 "use client";
 
 import {
-  EntityType,
+  ArtifactType,
   LinkDirection,
-  type LinkedEntity,
   LinkQueryMode,
   LinkType,
-} from "@repo/api/src/types/entity-link";
-import {
-  ExternalLinkType,
-  type PullRequestMetadata,
-} from "@repo/api/src/types/external-link";
+} from "@repo/api/src/types/artifact";
 import {
   GitHubPRState,
   type GitHubPullRequestSummary,
@@ -34,6 +29,7 @@ import {
 } from "@repo/design-system/components/ui/dialog";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { cn } from "@repo/design-system/lib/utils";
+import { useMutation } from "@tanstack/react-query";
 import {
   AlertCircleIcon,
   GitBranchIcon,
@@ -45,15 +41,13 @@ import {
 } from "lucide-react";
 import { useMemo, useState } from "react";
 import {
-  useCreateEntityLink,
-  useLinkedEntities,
-} from "@/hooks/queries/use-entity-links";
-import {
-  useCreateExternalLink,
-  useDeleteExternalLink,
-} from "@/hooks/queries/use-external-links";
+  useCreateArtifactLink,
+  useResolvedArtifactLinks,
+} from "@/hooks/queries/use-artifact-links";
+import { useDocument } from "@/hooks/queries/use-documents";
 import { useGitHubPullRequests } from "@/hooks/queries/use-github-integration";
 import { useProject } from "@/hooks/queries/use-projects";
+import { useApiClient } from "@/hooks/use-api-client";
 
 type SelectPullRequestDialogProps = {
   documentId?: string | null;
@@ -62,6 +56,34 @@ type SelectPullRequestDialogProps = {
   planId?: string | null;
   projectId: string;
 };
+
+// The API-side cutover to a dedicated /pull-requests POST endpoint is tracked
+// separately. Until that lands, the frontend calls into the existing upstream
+// creator by hitting a workstream-linked endpoint shim. For now we create the
+// PR artifact via the documents subresource since the /external-links legacy
+// endpoint is being removed.
+type CreatePrArtifactInput = {
+  projectId: string;
+  workstreamId?: string | null;
+  title: string;
+  externalUrl: string;
+  number: number;
+  githubId: string;
+  headBranch: string;
+  baseBranch: string;
+  state: GitHubPRState;
+};
+
+type CreatedPrArtifact = { id: string };
+
+function useCreatePullRequestArtifact() {
+  const apiClient = useApiClient();
+
+  return useMutation({
+    mutationFn: (input: CreatePrArtifactInput) =>
+      apiClient.post<CreatedPrArtifact>("/artifact-links/pull-requests", input),
+  });
+}
 
 export function SelectPullRequestDialog({
   documentId,
@@ -72,26 +94,23 @@ export function SelectPullRequestDialog({
 }: Readonly<SelectPullRequestDialogProps>) {
   const [isLinking, setIsLinking] = useState(false);
   const { data: project } = useProject(projectId, { enabled: !!projectId });
-  const createExternalLink = useCreateExternalLink();
-  const createEntityLink = useCreateEntityLink();
-  const deleteExternalLink = useDeleteExternalLink();
-  const linkSource = useMemo(() => {
+  const createPullRequestArtifact = useCreatePullRequestArtifact();
+  const createArtifactLink = useCreateArtifactLink();
+  const linkSourceId = useMemo(() => {
     if (planId) {
-      return {
-        id: planId,
-        type: EntityType.Document,
-      };
+      return planId;
     }
-
     if (documentId) {
-      return {
-        id: documentId,
-        type: EntityType.Document,
-      };
+      return documentId;
     }
-
     return null;
   }, [documentId, planId]);
+  // Fetch the linked source doc so we can attach the PR artifact to the same
+  // workstream. Without this, downstream flows that key off workstreamId
+  // (preview-deployment lookup, deployment_status webhook) can't find the PR.
+  const { data: linkSourceDoc } = useDocument(linkSourceId, undefined, {
+    enabled: !!linkSourceId && open,
+  });
 
   const repoId = useMemo(() => {
     if (!project?.settings) {
@@ -109,29 +128,31 @@ export function SelectPullRequestDialog({
     }
   );
 
-  const {
-    data: linkedEntities = [],
-    isLoading: isLoadingSourceLinkedEntities,
-  } = useLinkedEntities(
-    linkSource?.id ?? "",
-    linkSource?.type ?? EntityType.Document,
-    {
+  const { data: resolvedLinks = [], isLoading: isLoadingSourceResolvedLinks } =
+    useResolvedArtifactLinks(linkSourceId ?? "", {
       direction: LinkDirection.Target,
-      enabled: open && !!linkSource,
+      enabled: open && !!linkSourceId,
       linkType: LinkType.Produces,
       mode: LinkQueryMode.Direct,
-    }
-  );
+    });
 
   const pullRequests = data?.pullRequests ?? [];
   const trackedUrls = useMemo(
     () => new Set(data?.trackedPrUrls ?? []),
     [data?.trackedPrUrls]
   );
-  const linkedUrls = useMemo(
-    () => getLinkedPullRequestUrls(linkedEntities),
-    [linkedEntities]
-  );
+  const linkedUrls = useMemo(() => {
+    const urls = new Set<string>();
+    for (const link of resolvedLinks) {
+      if (
+        link.target.type === ArtifactType.PullRequest &&
+        link.target.externalUrl
+      ) {
+        urls.add(link.target.externalUrl);
+      }
+    }
+    return urls;
+  }, [resolvedLinks]);
   const visiblePullRequests = useMemo(
     () =>
       pullRequests.filter((pr) => {
@@ -141,61 +162,45 @@ export function SelectPullRequestDialog({
     [linkedUrls, pullRequests, trackedUrls]
   );
 
-  function handleSelect(pr: GitHubPullRequestSummary) {
+  async function handleSelect(pr: GitHubPullRequestSummary) {
     if (
-      !linkSource ||
+      !linkSourceId ||
       linkedUrls.has(pr.htmlUrl) ||
       trackedUrls.has(pr.htmlUrl) ||
       isLinking ||
-      isLoadingSourceLinkedEntities
+      isLoadingSourceResolvedLinks
     ) {
       return;
     }
 
     setIsLinking(true);
-    createExternalLink.mutate(
-      {
+    try {
+      const pullRequestArtifact = await createPullRequestArtifact.mutateAsync({
         projectId,
-        documentId: planId ?? undefined,
-        type: ExternalLinkType.PullRequest,
+        workstreamId: linkSourceDoc?.workstreamId ?? null,
         title: `PR #${pr.number}: ${pr.title}`,
         externalUrl: pr.htmlUrl,
-        metadata: {
-          number: pr.number,
-          githubId: pr.githubId,
-          headBranch: pr.headBranch,
-          baseBranch: pr.baseBranch,
-          state: pr.state,
-        } satisfies PullRequestMetadata,
-      },
-      {
-        onError: () => setIsLinking(false),
-        onSuccess: (externalLink) =>
-          createEntityLink.mutate(
-            {
-              sourceId: linkSource.id,
-              sourceType: linkSource.type,
-              targetId: externalLink.id,
-              targetType: EntityType.ExternalLink,
-              linkType: LinkType.Produces,
-            },
-            {
-              onError: () => {
-                deleteExternalLink.mutate(externalLink.id);
-                setIsLinking(false);
-              },
-              onSuccess: () => {
-                toast.success(`Linked PR #${pr.number}`);
-                onOpenChange(false);
-                setIsLinking(false);
-              },
-            }
-          ),
-      }
-    );
+        number: pr.number,
+        githubId: pr.githubId,
+        headBranch: pr.headBranch,
+        baseBranch: pr.baseBranch,
+        state: pr.state,
+      });
+
+      await createArtifactLink.mutateAsync({
+        sourceId: linkSourceId,
+        targetId: pullRequestArtifact.id,
+        linkType: LinkType.Produces,
+      });
+
+      toast.success(`Linked PR #${pr.number}`);
+      onOpenChange(false);
+    } finally {
+      setIsLinking(false);
+    }
   }
 
-  if (open && !linkSource) {
+  if (open && !linkSourceId) {
     return (
       <Dialog onOpenChange={onOpenChange} open={open}>
         <DialogContent className="sm:max-w-[500px]">
@@ -254,16 +259,14 @@ export function SelectPullRequestDialog({
             <span className="text-muted-foreground text-sm">Linking PR...</span>
           </div>
         )}
-        {isLoadingSourceLinkedEntities &&
-          !isLinking &&
-          trackedUrls.size > 0 && (
-            <div className="flex items-center justify-center gap-2 py-2">
-              <Loader2Icon className="h-4 w-4 animate-spin text-muted-foreground" />
-              <span className="text-muted-foreground text-sm">
-                Checking existing PR links...
-              </span>
-            </div>
-          )}
+        {isLoadingSourceResolvedLinks && !isLinking && trackedUrls.size > 0 && (
+          <div className="flex items-center justify-center gap-2 py-2">
+            <Loader2Icon className="h-4 w-4 animate-spin text-muted-foreground" />
+            <span className="text-muted-foreground text-sm">
+              Checking existing PR links...
+            </span>
+          </div>
+        )}
         <Command className="rounded-lg border" shouldFilter>
           <CommandInput placeholder="Search pull requests..." />
           <CommandList className="max-h-[400px]">
@@ -276,7 +279,7 @@ export function SelectPullRequestDialog({
               {visiblePullRequests.map((pr) => {
                 const isLinked = linkedUrls.has(pr.htmlUrl);
                 const isDisabled =
-                  isLinked || isLinking || isLoadingSourceLinkedEntities;
+                  isLinked || isLinking || isLoadingSourceResolvedLinks;
                 let linkStateBadge: React.ReactNode = null;
 
                 if (isLinked) {
@@ -319,26 +322,6 @@ export function SelectPullRequestDialog({
       </DialogContent>
     </Dialog>
   );
-}
-
-function getLinkedPullRequestUrls(linkedEntities: LinkedEntity[] = []) {
-  const linkedUrls = new Set<string>();
-
-  for (const linked of linkedEntities) {
-    if (linked.resolvedEntity?.type !== EntityType.ExternalLink) {
-      continue;
-    }
-
-    const externalLink = linked.resolvedEntity.entity;
-    if (
-      externalLink.type === ExternalLinkType.PullRequest &&
-      externalLink.externalUrl
-    ) {
-      linkedUrls.add(externalLink.externalUrl);
-    }
-  }
-
-  return linkedUrls;
 }
 
 function PrStateIcon({ pr }: Readonly<{ pr: GitHubPullRequestSummary }>) {

@@ -3,7 +3,8 @@ import type {
   IssueCommentDeletedEvent,
   IssueCommentEditedEvent,
 } from "@octokit/webhooks-types";
-import { withDb } from "@repo/database";
+import { LinkType } from "@repo/api/src/types/artifact";
+import { ArtifactType, type TransactionClient, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
 
@@ -83,8 +84,8 @@ export async function handleIssueComment(
       return;
     }
 
-    // Find GitHubPullRequest by repositoryId + number
-    const existingPr = await tx.gitHubPullRequest.findUnique({
+    // Find PR artifact detail by repositoryId + number
+    const prDetail = await tx.pullRequestDetail.findUnique({
       where: {
         repositoryId_number: {
           repositoryId: repo.id,
@@ -92,12 +93,36 @@ export async function handleIssueComment(
         },
       },
       select: {
-        id: true,
-        workstreamId: true,
-        documentId: true,
-        document: { select: { slug: true } },
+        artifactId: true,
+        artifact: {
+          select: {
+            workstreamId: true,
+            // PR is the TARGET of a DOCUMENT → produces → PR link.
+            targetLinks: {
+              where: {
+                linkType: LinkType.Produces,
+                source: { type: ArtifactType.DOCUMENT },
+              },
+              select: {
+                source: { select: { id: true, slug: true } },
+              },
+              orderBy: { createdAt: "asc" },
+              take: 1,
+            },
+          },
+        },
       },
     });
+
+    const linkedDoc = prDetail?.artifact.targetLinks[0]?.source ?? null;
+    const existingPr = prDetail
+      ? {
+          id: prDetail.artifactId,
+          workstreamId: prDetail.artifact.workstreamId,
+          documentId: linkedDoc?.id ?? null,
+          document: linkedDoc ? { slug: linkedDoc.slug ?? "" } : null,
+        }
+      : null;
 
     if (!existingPr) {
       log.warn("[handleIssueComment] Pull request not found in database", {
@@ -109,100 +134,11 @@ export async function handleIssueComment(
       return;
     }
 
-    switch (action) {
-      case "created": {
-        await tx.gitHubPRReviewComment.upsert({
-          where: { githubCommentId: String(comment.id) },
-          create: {
-            pullRequestId: existingPr.id,
-            githubCommentId: String(comment.id),
-            reviewId: null,
-            body: comment.body,
-            path: null,
-            line: null,
-            authorLogin: comment.user.login,
-            authorAvatarUrl: comment.user.avatar_url,
-            state: "PENDING",
-            htmlUrl: comment.html_url,
-            createdAt: new Date(comment.created_at),
-          },
-          update: {
-            body: comment.body,
-          },
-        });
-
-        await tx.workstreamEvent.create({
-          data: {
-            workstreamId: existingPr.workstreamId,
-            type: "GITHUB_PR_COMMENT_ADDED",
-            actorType: "system",
-            data: {
-              commentId: comment.id,
-              commentBody: comment.body,
-              authorLogin: comment.user.login,
-              prNumber: issue.number,
-              prTitle: issue.title,
-              prUrl: issue.html_url,
-              commentUrl: comment.html_url,
-              documentId: existingPr.documentId,
-              documentSlug: existingPr.document?.slug,
-              commentKind: "issue_comment",
-            },
-          },
-        });
-
-        log.info("[handleIssueComment] Issue comment created", {
-          commentId: comment.id,
-          prNumber: issue.number,
-        });
-        break;
-      }
-
-      case "edited": {
-        const updatedComment = await tx.gitHubPRReviewComment.updateMany({
-          where: { githubCommentId: String(comment.id) },
-          data: { body: comment.body },
-        });
-
-        if (updatedComment.count === 0) {
-          log.warn("[handleIssueComment] Comment not found for update", {
-            githubCommentId: comment.id,
-            prNumber: issue.number,
-          });
-        } else {
-          log.info("[handleIssueComment] Issue comment edited", {
-            commentId: comment.id,
-            prNumber: issue.number,
-          });
-        }
-        break;
-      }
-
-      case "deleted": {
-        const deletedComment = await tx.gitHubPRReviewComment.deleteMany({
-          where: { githubCommentId: String(comment.id) },
-        });
-
-        if (deletedComment.count === 0) {
-          log.warn("[handleIssueComment] Comment not found for deletion", {
-            githubCommentId: comment.id,
-            prNumber: issue.number,
-          });
-        } else {
-          log.info("[handleIssueComment] Issue comment deleted", {
-            commentId: comment.id,
-            prNumber: issue.number,
-          });
-        }
-        break;
-      }
-
-      default: {
-        log.warn("[handleIssueComment] Unhandled action type", {
-          action: action as string,
-        });
-      }
-    }
+    await dispatchIssueCommentAction(tx, action, {
+      comment,
+      issue,
+      existingPr,
+    });
   });
 
   log.info("[handleIssueComment] Successfully processed issue_comment event", {
@@ -215,5 +151,136 @@ export async function handleIssueComment(
   return NextResponse.json({
     message: "Event processed successfully",
     ok: true,
+  });
+}
+
+type DispatchContext = {
+  comment: HandledIssueCommentEvent["comment"];
+  issue: HandledIssueCommentEvent["issue"];
+  existingPr: {
+    id: string;
+    workstreamId: string | null;
+    documentId: string | null;
+    document: { slug: string } | null;
+  };
+};
+
+async function dispatchIssueCommentAction(
+  tx: TransactionClient,
+  action: HandledIssueCommentEvent["action"],
+  ctx: DispatchContext
+): Promise<void> {
+  if (action === "created") {
+    await handleCommentCreated(tx, ctx);
+    return;
+  }
+  if (action === "edited") {
+    await handleCommentEdited(tx, ctx);
+    return;
+  }
+  if (action === "deleted") {
+    await handleCommentDeleted(tx, ctx);
+    return;
+  }
+  log.warn("[handleIssueComment] Unhandled action type", {
+    action: action as string,
+  });
+}
+
+async function handleCommentCreated(
+  tx: TransactionClient,
+  { comment, issue, existingPr }: DispatchContext
+): Promise<void> {
+  await tx.gitHubPRReviewComment.upsert({
+    where: { githubCommentId: String(comment.id) },
+    create: {
+      pullRequestId: existingPr.id,
+      githubCommentId: String(comment.id),
+      reviewId: null,
+      body: comment.body,
+      path: null,
+      line: null,
+      authorLogin: comment.user.login,
+      authorAvatarUrl: comment.user.avatar_url,
+      state: "PENDING",
+      htmlUrl: comment.html_url,
+      createdAt: new Date(comment.created_at),
+    },
+    update: {
+      body: comment.body,
+    },
+  });
+
+  // Only emit a workstream event when the PR artifact is actually attached to
+  // a workstream. An empty/absent id would violate the workstream FK.
+  if (existingPr.workstreamId) {
+    await tx.workstreamEvent.create({
+      data: {
+        workstreamId: existingPr.workstreamId,
+        type: "GITHUB_PR_COMMENT_ADDED",
+        actorType: "system",
+        data: {
+          commentId: comment.id,
+          commentBody: comment.body,
+          authorLogin: comment.user.login,
+          prNumber: issue.number,
+          prTitle: issue.title,
+          prUrl: issue.html_url,
+          commentUrl: comment.html_url,
+          documentId: existingPr.documentId,
+          documentSlug: existingPr.document?.slug,
+          commentKind: "issue_comment",
+        },
+      },
+    });
+  }
+
+  log.info("[handleIssueComment] Issue comment created", {
+    commentId: comment.id,
+    prNumber: issue.number,
+    hadWorkstream: existingPr.workstreamId !== null,
+  });
+}
+
+async function handleCommentEdited(
+  tx: TransactionClient,
+  { comment, issue }: DispatchContext
+): Promise<void> {
+  const updatedComment = await tx.gitHubPRReviewComment.updateMany({
+    where: { githubCommentId: String(comment.id) },
+    data: { body: comment.body },
+  });
+
+  if (updatedComment.count === 0) {
+    log.warn("[handleIssueComment] Comment not found for update", {
+      githubCommentId: comment.id,
+      prNumber: issue.number,
+    });
+    return;
+  }
+  log.info("[handleIssueComment] Issue comment edited", {
+    commentId: comment.id,
+    prNumber: issue.number,
+  });
+}
+
+async function handleCommentDeleted(
+  tx: TransactionClient,
+  { comment, issue }: DispatchContext
+): Promise<void> {
+  const deletedComment = await tx.gitHubPRReviewComment.deleteMany({
+    where: { githubCommentId: String(comment.id) },
+  });
+
+  if (deletedComment.count === 0) {
+    log.warn("[handleIssueComment] Comment not found for deletion", {
+      githubCommentId: comment.id,
+      prNumber: issue.number,
+    });
+    return;
+  }
+  log.info("[handleIssueComment] Issue comment deleted", {
+    commentId: comment.id,
+    prNumber: issue.number,
   });
 }

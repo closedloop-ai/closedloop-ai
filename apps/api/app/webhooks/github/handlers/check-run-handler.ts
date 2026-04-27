@@ -1,6 +1,7 @@
 import type { CheckRunEvent } from "@octokit/webhooks-types";
+import { LinkType } from "@repo/api/src/types/artifact";
 import { ChecksStatus } from "@repo/api/src/types/document";
-import { withDb } from "@repo/database";
+import { ArtifactType, withDb } from "@repo/database";
 import { queryStatusCheckRollup } from "@repo/github";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
@@ -103,9 +104,9 @@ export async function handleCheckRun(event: CheckRunEvent): Promise<Response> {
 
     // Match by headSha, or fall back to headBranch for PRs created
     // without headSha (e.g., via workflow-completion-handler).
-    const foundPr = await db.gitHubPullRequest.findFirst({
+    const foundPrDetail = await db.pullRequestDetail.findFirst({
       where: {
-        state: "OPEN",
+        prState: "OPEN",
         repositoryId: foundRepo.id,
         OR: [
           { headSha },
@@ -113,17 +114,50 @@ export async function handleCheckRun(event: CheckRunEvent): Promise<Response> {
         ],
       },
       select: {
-        id: true,
+        artifactId: true,
         number: true,
-        title: true,
-        htmlUrl: true,
         checksStatus: true,
         headSha: true,
-        workstreamId: true,
-        documentId: true,
-        document: { select: { slug: true } },
+        artifact: {
+          select: {
+            name: true,
+            externalUrl: true,
+            workstreamId: true,
+            // The PR is the TARGET of a DOCUMENT → produces → PR link, so
+            // query targetLinks here. (sourceLinks would filter
+            // links-where-PR-is-source, which never match.)
+            targetLinks: {
+              where: {
+                linkType: LinkType.Produces,
+                source: { type: ArtifactType.DOCUMENT },
+              },
+              select: {
+                source: { select: { id: true, slug: true } },
+              },
+              orderBy: { createdAt: "asc" },
+              take: 1,
+            },
+          },
+        },
       },
     });
+
+    const linkedDoc = foundPrDetail?.artifact.targetLinks[0]?.source ?? null;
+    const foundPr = foundPrDetail
+      ? {
+          id: foundPrDetail.artifactId,
+          number: foundPrDetail.number,
+          title: foundPrDetail.artifact.name,
+          htmlUrl: foundPrDetail.artifact.externalUrl ?? "",
+          checksStatus: foundPrDetail.checksStatus,
+          headSha: foundPrDetail.headSha,
+          // Preserve null — empty string is not a valid workstreams.id and
+          // would FK-fail in tx.workstreamEvent.create below.
+          workstreamId: foundPrDetail.artifact.workstreamId,
+          documentId: linkedDoc?.id ?? null,
+          document: linkedDoc ? { slug: linkedDoc.slug ?? "" } : null,
+        }
+      : null;
 
     return { repo: foundRepo, pr: foundPr };
   });
@@ -174,9 +208,9 @@ export async function handleCheckRun(event: CheckRunEvent): Promise<Response> {
   await withDb.tx(async (tx) => {
     // Re-read to guard against TOCTOU: a synchronize event may have arrived
     // between our non-tx read above and now, changing headSha or state.
-    const currentPr = await tx.gitHubPullRequest.findUnique({
-      where: { id: pr.id },
-      select: { headSha: true, checksStatus: true, state: true },
+    const currentPr = await tx.pullRequestDetail.findUnique({
+      where: { artifactId: pr.id },
+      select: { headSha: true, checksStatus: true, prState: true },
     });
 
     if (!currentPr) {
@@ -201,10 +235,10 @@ export async function handleCheckRun(event: CheckRunEvent): Promise<Response> {
     }
 
     // PR must still be open
-    if (currentPr.state !== "OPEN") {
+    if (currentPr.prState !== "OPEN") {
       log.info("[handleCheckRun] PR is no longer open, skipping update", {
         prId: pr.id,
-        state: currentPr.state,
+        state: currentPr.prState,
       });
       return;
     }
@@ -218,30 +252,33 @@ export async function handleCheckRun(event: CheckRunEvent): Promise<Response> {
       return;
     }
 
-    // Update checksStatus
-    await tx.gitHubPullRequest.update({
-      where: { id: pr.id },
+    // Update checksStatus on the PR detail
+    await tx.pullRequestDetail.update({
+      where: { artifactId: pr.id },
       data: { checksStatus: newStatus },
     });
 
-    // Create workstream event — payload keys match pull-request-handler synchronize
-    await tx.workstreamEvent.create({
-      data: {
-        workstreamId: pr.workstreamId,
-        type: "GITHUB_CI_STATUS_CHANGED",
-        actorType: "system",
+    // Create workstream event — only when the PR artifact has a workstream.
+    // Payload keys match pull-request-handler synchronize.
+    if (pr.workstreamId) {
+      await tx.workstreamEvent.create({
         data: {
-          prNumber: pr.number,
-          prTitle: pr.title,
-          prUrl: pr.htmlUrl,
-          documentId: pr.documentId,
-          slug: pr.document?.slug,
-          checksStatus: newStatus,
-          previousChecksStatus: currentPr.checksStatus,
-          headSha,
+          workstreamId: pr.workstreamId,
+          type: "GITHUB_CI_STATUS_CHANGED",
+          actorType: "system",
+          data: {
+            prNumber: pr.number,
+            prTitle: pr.title,
+            prUrl: pr.htmlUrl,
+            documentId: pr.documentId,
+            slug: pr.document?.slug,
+            checksStatus: newStatus,
+            previousChecksStatus: currentPr.checksStatus,
+            headSha,
+          },
         },
-      },
-    });
+      });
+    }
 
     log.info(
       "[handleCheckRun] Updated checksStatus and created workstream event",

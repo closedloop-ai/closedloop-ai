@@ -6,7 +6,6 @@ import {
   type DocumentDetail,
   DocumentType,
 } from "@repo/api/src/types/document";
-import { EntityType } from "@repo/api/src/types/entity-link";
 import { InlinePresence, OptionalDocumentRoom } from "@repo/collaboration";
 import {
   ResizablePanel,
@@ -284,7 +283,6 @@ export function FeaturePage({
       <MoveEntityDialog
         entity={{
           id: feature.id,
-          entityType: EntityType.Document,
           projectId: feature.projectId,
         }}
         onOpenChange={setShowMoveDialog}

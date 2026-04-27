@@ -96,7 +96,7 @@ describe("loopsService.findAll — compute target and projectId", () => {
     const call = mockFindMany.mock.calls[0][0];
     expect(call.where).toEqual(
       expect.objectContaining({
-        document: { projectId: "proj-1" },
+        artifact: { projectId: "proj-1" },
       })
     );
   });
@@ -123,7 +123,8 @@ describe("loopsService.findAll — compute target and projectId", () => {
         userId: "user-1",
         status: "RUNNING",
         command: "PLAN",
-        documentId: null,
+        artifactId: null,
+        artifactVersion: null,
         workstreamId: null,
         parentLoopId: null,
         computeTargetId: "ct-1",
@@ -172,7 +173,8 @@ describe("loopsService.findAll — compute target and projectId", () => {
         userId: "user-1",
         status: "RUNNING",
         command: "PLAN",
-        documentId: null,
+        artifactId: null,
+        artifactVersion: null,
         workstreamId: null,
         parentLoopId: null,
         computeTargetId: null,
@@ -249,7 +251,7 @@ describe("loopsService.findLatestStateBearingDesktopForArtifact", () => {
     const call = mockFindMany.mock.calls[0][0];
     expect(call.where).toEqual(
       expect.objectContaining({
-        documentId: "doc-1",
+        artifactId: "doc-1",
         organizationId: "org-1",
         status: "COMPLETED",
         computeTargetId: { not: null },

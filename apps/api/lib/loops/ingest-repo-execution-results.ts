@@ -13,13 +13,12 @@ import {
 } from "@repo/api/src/types/evaluation";
 import type { PromptsSnapshot } from "@repo/api/src/types/prompt";
 import {
-  EntityType,
-  GitHubPRState,
   type TransactionClient,
   WorkstreamEventType,
   withDb,
 } from "@repo/database";
 import { log } from "@repo/observability/log";
+import { documentWhere } from "@/lib/artifact-adapters";
 import { upsertEvaluationWithJudgeScores } from "@/lib/loops/loop-document-ingestion";
 import { ensurePrLinkageRecords } from "@/lib/pr-linkage";
 import { upsertFromSnapshot } from "@/lib/prompts-service";
@@ -47,9 +46,9 @@ export type IngestionContext = {
 
 /**
  * Ingest a single successful repo result into the database within an own
- * transaction. Resolves the repo by fullName, upserts the GitHubPullRequest
- * row (race-safe), and calls ensurePrLinkageRecords. Logs an info line when
- * writes land; skipped entries (missing installation repo or artifact) are
+ * transaction. Resolves the repo by fullName, creates the PR Artifact + detail
+ * (race-safe via ensurePrLinkageRecords), and writes a workstream event.
+ * Skipped entries (missing installation repo or source artifact) are
  * warn-logged and silently dropped.
  */
 async function ingestSuccessEntry(
@@ -89,14 +88,17 @@ async function ingestSuccessEntry(
   let ingested = false;
 
   await withDb.tx(async (tx) => {
-    const artifact = await tx.document.findUnique({
-      where: { id: documentId, organizationId },
+    // Verify the source DOCUMENT artifact exists (used for projectId scoping
+    // + linkage creation). The cross-repo check in documentWhere also confines
+    // the lookup to organizationId.
+    const sourceArtifact = await tx.artifact.findUnique({
+      where: documentWhere({ id: documentId, organizationId }),
       select: { organizationId: true, projectId: true, slug: true },
     });
 
-    if (!artifact) {
+    if (!sourceArtifact) {
       log.warn(
-        "[ingest-repo-execution-results] Artifact not found for PR record creation",
+        "[ingest-repo-execution-results] Source artifact not found for PR record creation",
         {
           loopId,
           correlationId,
@@ -106,106 +108,14 @@ async function ingestSuccessEntry(
       return;
     }
 
-    // Check if a PR record already exists (may have been created by the
-    // pull_request webhook or workflow-completion handler racing with this handler).
-    const existingPr = await tx.gitHubPullRequest.findUnique({
-      where: {
-        repositoryId_number: {
-          repositoryId: installationRepo.id,
-          number: result.prNumber,
-        },
-      },
-      select: { id: true, documentId: true },
-    });
-
-    // Determine the effective documentId for linkage. If the PR row already
-    // exists with a different artifact, respect the existing link to avoid
-    // creating contradictory entity-link edges.
-    let effectiveDocumentId = documentId;
-
-    if (existingPr) {
-      if (!existingPr.documentId) {
-        // PR exists without an artifact link — claim it
-        await tx.gitHubPullRequest.update({
-          where: { id: existingPr.id },
-          data: { documentId },
-        });
-      } else if (existingPr.documentId !== documentId) {
-        // PR is already linked to a different artifact — don't overwrite
-        effectiveDocumentId = existingPr.documentId;
-        log.warn(
-          "[ingest-repo-execution-results] PR already linked to a different artifact",
-          {
-            loopId,
-            correlationId,
-            existingDocumentId: existingPr.documentId,
-            requestedDocumentId: documentId,
-            prNumber: result.prNumber,
-            fullName: result.fullName,
-          }
-        );
-      }
-      log.info(
-        "[ingest-repo-execution-results] PR already exists; skipping duplicate PR row create",
-        {
-          loopId,
-          correlationId,
-          repositoryId: installationRepo.id,
-          prNumber: result.prNumber,
-          pullRequestId: existingPr.id,
-        }
-      );
-    } else {
-      const upsertedPr = await tx.gitHubPullRequest.upsert({
-        where: {
-          repositoryId_number: {
-            repositoryId: installationRepo.id,
-            number: result.prNumber,
-          },
-        },
-        create: {
-          workstreamId,
-          organizationId,
-          repositoryId: installationRepo.id,
-          documentId,
-          githubId: String(result.githubId ?? result.prNumber),
-          number: result.prNumber,
-          title: prTitle,
-          htmlUrl: result.prUrl,
-          headBranch: result.branchName,
-          baseBranch: result.baseBranch,
-          state: GitHubPRState.OPEN,
-        },
-        // Don't overwrite fields that a concurrent handler may have set
-        // more accurately (e.g. state from a webhook).
-        update: {},
-        select: { id: true, documentId: true },
-      });
-
-      // Concurrent-race guard: if another writer set documentId between the
-      // findUnique and the upsert, respect that link rather than overwriting.
-      if (upsertedPr.documentId && upsertedPr.documentId !== documentId) {
-        effectiveDocumentId = upsertedPr.documentId;
-        log.warn(
-          "[ingest-repo-execution-results] PR upsert found concurrent documentId; using existing link",
-          {
-            loopId,
-            correlationId,
-            existingDocumentId: upsertedPr.documentId,
-            requestedDocumentId: documentId,
-            prNumber: result.prNumber,
-            fullName: result.fullName,
-          }
-        );
-      }
-    }
-
-    // Create ExternalLink, EntityLink, and preview deployment records (with dedup)
+    // Create PR artifact + detail and the source → PRODUCES → PR link, with
+    // race-safe dedup against records that may have been created by the
+    // pull_request webhook or another command handler.
     await ensurePrLinkageRecords(tx, {
-      organizationId: artifact.organizationId,
+      organizationId: sourceArtifact.organizationId,
       workstreamId,
-      projectId: artifact.projectId!,
-      documentId: effectiveDocumentId,
+      projectId: sourceArtifact.projectId,
+      documentId,
       prUrl: result.prUrl,
       prTitle,
       prNumber: result.prNumber,
@@ -215,7 +125,7 @@ async function ingestSuccessEntry(
       commitSha: result.commitSha ?? null,
     });
 
-    // Create workstream event
+    // Create workstream event (always — events are an append-only log)
     await tx.workstreamEvent.create({
       data: {
         workstreamId,
@@ -229,7 +139,7 @@ async function ingestSuccessEntry(
           prTitle,
           branch: result.branchName,
           documentId,
-          slug: artifact.slug,
+          slug: sourceArtifact.slug,
           fullName: result.fullName,
         },
       },
@@ -291,11 +201,9 @@ export async function ingestRepoExecutionResults(
   if (codeJudgesReport) {
     const persist = async (tx: TransactionClient) => {
       await upsertEvaluationWithJudgeScores({
-        entityId: documentId,
-        entityType: EntityType.DOCUMENT,
-        documentId,
+        artifactId: documentId,
         ...(loopId ? { loopId } : {}),
-        actionRunId,
+        ...(actionRunId ? { actionRunId } : {}),
         organizationId,
         reportType: EvaluationReportType.Code,
         report: codeJudgesReport,

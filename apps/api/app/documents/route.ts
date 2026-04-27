@@ -5,7 +5,7 @@ import type {
 } from "@repo/api/src/types/document";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import {
-  resolveEntityLinkIdentifier,
+  resolveArtifactIdentifier,
   resolveProjectId,
   resolveWorkstreamId,
 } from "@/lib/identifier-utils";
@@ -135,14 +135,13 @@ export const POST = withAnyAuth<Document, "/documents">(
         resolvedWorkstreamId = wId;
       }
       let resolvedSourceId: string | undefined;
-      if (body.sourceId && body.sourceType) {
-        const sId = await resolveEntityLinkIdentifier(
+      if (body.sourceId) {
+        const sId = await resolveArtifactIdentifier(
           body.sourceId,
-          user.organizationId,
-          body.sourceType
+          user.organizationId
         );
         if (!sId) {
-          return notFoundResponse("Source entity");
+          return notFoundResponse("Source artifact");
         }
         resolvedSourceId = sId;
       }

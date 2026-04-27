@@ -15,7 +15,7 @@ import {
   getSignedUploadUrl,
 } from "@repo/aws";
 import { keys as awsKeys } from "@repo/aws/keys";
-import { withDb } from "@repo/database";
+import { ArtifactType, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 
 /**
@@ -24,7 +24,7 @@ import { log } from "@repo/observability/log";
  */
 function toFileAttachment(record: {
   id: string;
-  documentId: string | null;
+  artifactId: string | null;
   filename: string;
   mimeType: string;
   sizeBytes: number;
@@ -33,7 +33,7 @@ function toFileAttachment(record: {
 }): FileAttachment {
   return {
     id: record.id,
-    documentId: record.documentId ?? "",
+    artifactId: record.artifactId ?? "",
     filename: record.filename,
     mimeType: record.mimeType,
     sizeBytes: record.sizeBytes,
@@ -43,7 +43,7 @@ function toFileAttachment(record: {
 }
 
 /**
- * Verify a document exists and belongs to the given org.
+ * Verify a document artifact exists and belongs to the given org.
  * Throws "Document not found" if missing or org-mismatched.
  */
 async function requireDocument(
@@ -51,8 +51,12 @@ async function requireDocument(
   organizationId: string
 ): Promise<void> {
   const artifact = await withDb((db) =>
-    db.document.findUnique({
-      where: { id: documentId, organizationId },
+    db.artifact.findFirst({
+      where: {
+        id: documentId,
+        organizationId,
+        type: ArtifactType.DOCUMENT,
+      },
       select: { id: true },
     })
   );
@@ -191,7 +195,7 @@ export const attachmentsService = {
     const created = await withDb((db) =>
       db.fileAttachment.create({
         data: {
-          documentId,
+          artifactId: documentId,
           bucket,
           key,
           filename,
@@ -216,7 +220,7 @@ export const attachmentsService = {
 
     const records = await withDb((db) =>
       db.fileAttachment.findMany({
-        where: { documentId, document: { organizationId } },
+        where: { artifactId: documentId, artifact: { organizationId } },
         orderBy: { createdAt: "desc" },
       })
     );
@@ -238,8 +242,8 @@ export const attachmentsService = {
     await requireDocument(documentId, organizationId);
 
     const attachment = await withDb((db) =>
-      db.fileAttachment.findUnique({
-        where: { id: attachmentId, documentId },
+      db.fileAttachment.findFirst({
+        where: { id: attachmentId, artifactId: documentId },
       })
     );
 
@@ -270,8 +274,8 @@ export const attachmentsService = {
 
     // Use transaction to atomically find + delete, avoiding TOCTOU race
     const attachment = await withDb.tx(async (tx) => {
-      const record = await tx.fileAttachment.findUnique({
-        where: { id: attachmentId, documentId },
+      const record = await tx.fileAttachment.findFirst({
+        where: { id: attachmentId, artifactId: documentId },
         select: { bucket: true, key: true },
       });
 
@@ -302,7 +306,7 @@ export const attachmentsService = {
   ): Promise<ContextPackAttachment[]> {
     const records = await withDb((db) =>
       db.fileAttachment.findMany({
-        where: { documentId, document: { organizationId } },
+        where: { artifactId: documentId, artifact: { organizationId } },
         select: signedUrlSelect,
         orderBy: { createdAt: "desc" },
         take: ATTACHMENT_SIGNED_URL_MAX_FILES,

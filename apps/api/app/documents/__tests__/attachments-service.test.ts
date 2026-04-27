@@ -15,7 +15,14 @@ import { type Mock, vi } from "vitest";
 vi.mock("@repo/database", () => {
   const tx = vi.fn();
   const withDbFn = Object.assign(vi.fn(), { tx });
-  return { withDb: withDbFn };
+  return {
+    withDb: withDbFn,
+    ArtifactType: {
+      DOCUMENT: "DOCUMENT",
+      PULL_REQUEST: "PULL_REQUEST",
+      DEPLOYMENT: "DEPLOYMENT",
+    },
+  };
 });
 
 vi.mock("@repo/aws", () => ({
@@ -67,7 +74,7 @@ const MOCK_CUID = "cuid2mockval01";
 function makeAttachmentRecord(
   overrides: Partial<{
     id: string;
-    documentId: string | undefined;
+    artifactId: string | undefined;
     filename: string;
     mimeType: string;
     sizeBytes: number;
@@ -79,7 +86,7 @@ function makeAttachmentRecord(
 ) {
   return {
     id: ATTACHMENT_ID,
-    documentId: ARTIFACT_ID,
+    artifactId: ARTIFACT_ID,
     filename: "report.pdf",
     mimeType: "application/pdf",
     sizeBytes: 4096,
@@ -115,8 +122,8 @@ describe("attachmentsService.requestUpload", () => {
     mockWithDb
       .mockImplementationOnce((callback: (db: unknown) => unknown) =>
         callback({
-          document: {
-            findUnique: vi.fn().mockResolvedValue({ id: ARTIFACT_ID }),
+          artifact: {
+            findFirst: vi.fn().mockResolvedValue({ id: ARTIFACT_ID }),
           },
         })
       )
@@ -156,8 +163,8 @@ describe("attachmentsService.requestUpload", () => {
     mockWithDb
       .mockImplementationOnce((callback: (db: unknown) => unknown) =>
         callback({
-          document: {
-            findUnique: vi.fn().mockResolvedValue({ id: ARTIFACT_ID }),
+          artifact: {
+            findFirst: vi.fn().mockResolvedValue({ id: ARTIFACT_ID }),
           },
         })
       )
@@ -200,8 +207,8 @@ describe("attachmentsService.requestUpload", () => {
     mockWithDb
       .mockImplementationOnce((callback: (db: unknown) => unknown) =>
         callback({
-          document: {
-            findUnique: vi.fn().mockResolvedValue({ id: ARTIFACT_ID }),
+          artifact: {
+            findFirst: vi.fn().mockResolvedValue({ id: ARTIFACT_ID }),
           },
         })
       )
@@ -232,8 +239,8 @@ describe("attachmentsService.requestUpload", () => {
   it("throws 'Artifact not found' when artifact ownership check returns null", async () => {
     mockWithDb.mockImplementationOnce((callback: (db: unknown) => unknown) =>
       callback({
-        document: {
-          findUnique: vi.fn().mockResolvedValue(null),
+        artifact: {
+          findFirst: vi.fn().mockResolvedValue(null),
         },
       })
     );
@@ -267,8 +274,8 @@ describe("attachmentsService.listByDocument", () => {
     mockWithDb
       .mockImplementationOnce((callback: (db: unknown) => unknown) =>
         callback({
-          document: {
-            findUnique: vi.fn().mockResolvedValue({ id: ARTIFACT_ID }),
+          artifact: {
+            findFirst: vi.fn().mockResolvedValue({ id: ARTIFACT_ID }),
           },
         })
       )
@@ -295,8 +302,8 @@ describe("attachmentsService.listByDocument", () => {
     mockWithDb
       .mockImplementationOnce((callback: (db: unknown) => unknown) =>
         callback({
-          document: {
-            findUnique: vi.fn().mockResolvedValue({ id: ARTIFACT_ID }),
+          artifact: {
+            findFirst: vi.fn().mockResolvedValue({ id: ARTIFACT_ID }),
           },
         })
       )
@@ -314,7 +321,7 @@ describe("attachmentsService.listByDocument", () => {
     await attachmentsService.listByDocument(ARTIFACT_ID, ORG_ID);
 
     expect(capturedArgs).toEqual({
-      where: { documentId: ARTIFACT_ID, document: { organizationId: ORG_ID } },
+      where: { artifactId: ARTIFACT_ID, artifact: { organizationId: ORG_ID } },
       orderBy: { createdAt: "desc" },
     });
   });
@@ -322,8 +329,8 @@ describe("attachmentsService.listByDocument", () => {
   it("throws 'Artifact not found' when artifact ownership check returns null", async () => {
     mockWithDb.mockImplementationOnce((callback: (db: unknown) => unknown) =>
       callback({
-        document: {
-          findUnique: vi.fn().mockResolvedValue(null),
+        artifact: {
+          findFirst: vi.fn().mockResolvedValue(null),
         },
       })
     );
@@ -359,8 +366,8 @@ describe("attachmentsService.deleteAttachment", () => {
     // requireArtifact uses withDb
     mockWithDb.mockImplementationOnce((callback: (db: unknown) => unknown) =>
       callback({
-        document: {
-          findUnique: vi.fn().mockResolvedValue({ id: ARTIFACT_ID }),
+        artifact: {
+          findFirst: vi.fn().mockResolvedValue({ id: ARTIFACT_ID }),
         },
       })
     );
@@ -370,7 +377,7 @@ describe("attachmentsService.deleteAttachment", () => {
       async (callback: (tx: unknown) => unknown) =>
         callback({
           fileAttachment: {
-            findUnique: vi.fn().mockResolvedValue(record),
+            findFirst: vi.fn().mockResolvedValue(record),
             delete: mockDbDelete,
           },
         })
@@ -391,8 +398,8 @@ describe("attachmentsService.deleteAttachment", () => {
 
     mockWithDb.mockImplementationOnce((callback: (db: unknown) => unknown) =>
       callback({
-        document: {
-          findUnique: vi.fn().mockResolvedValue({ id: ARTIFACT_ID }),
+        artifact: {
+          findFirst: vi.fn().mockResolvedValue({ id: ARTIFACT_ID }),
         },
       })
     );
@@ -401,7 +408,7 @@ describe("attachmentsService.deleteAttachment", () => {
       async (callback: (tx: unknown) => unknown) =>
         callback({
           fileAttachment: {
-            findUnique: vi.fn().mockResolvedValue(record),
+            findFirst: vi.fn().mockResolvedValue(record),
             delete: vi.fn().mockResolvedValue(record),
           },
         })
@@ -418,8 +425,8 @@ describe("attachmentsService.deleteAttachment", () => {
 
     mockWithDb.mockImplementationOnce((callback: (db: unknown) => unknown) =>
       callback({
-        document: {
-          findUnique: vi.fn().mockResolvedValue({ id: ARTIFACT_ID }),
+        artifact: {
+          findFirst: vi.fn().mockResolvedValue({ id: ARTIFACT_ID }),
         },
       })
     );
@@ -428,7 +435,7 @@ describe("attachmentsService.deleteAttachment", () => {
       async (callback: (tx: unknown) => unknown) =>
         callback({
           fileAttachment: {
-            findUnique: vi.fn().mockResolvedValue(record),
+            findFirst: vi.fn().mockResolvedValue(record),
             delete: vi.fn().mockResolvedValue(record),
           },
         })
@@ -446,8 +453,8 @@ describe("attachmentsService.deleteAttachment", () => {
   it("throws 'Artifact not found' when artifact ownership check returns null", async () => {
     mockWithDb.mockImplementationOnce((callback: (db: unknown) => unknown) =>
       callback({
-        document: {
-          findUnique: vi.fn().mockResolvedValue(null),
+        artifact: {
+          findFirst: vi.fn().mockResolvedValue(null),
         },
       })
     );
@@ -464,8 +471,8 @@ describe("attachmentsService.deleteAttachment", () => {
   it("throws 'Attachment not found' when attachment lookup returns null", async () => {
     mockWithDb.mockImplementationOnce((callback: (db: unknown) => unknown) =>
       callback({
-        document: {
-          findUnique: vi.fn().mockResolvedValue({ id: ARTIFACT_ID }),
+        artifact: {
+          findFirst: vi.fn().mockResolvedValue({ id: ARTIFACT_ID }),
         },
       })
     );
@@ -474,7 +481,7 @@ describe("attachmentsService.deleteAttachment", () => {
       async (callback: (tx: unknown) => unknown) =>
         callback({
           fileAttachment: {
-            findUnique: vi.fn().mockResolvedValue(null),
+            findFirst: vi.fn().mockResolvedValue(null),
           },
         })
     );
@@ -510,15 +517,15 @@ describe("attachmentsService.getDownloadUrl", () => {
     mockWithDb
       .mockImplementationOnce((callback: (db: unknown) => unknown) =>
         callback({
-          document: {
-            findUnique: vi.fn().mockResolvedValue({ id: ARTIFACT_ID }),
+          artifact: {
+            findFirst: vi.fn().mockResolvedValue({ id: ARTIFACT_ID }),
           },
         })
       )
       .mockImplementationOnce((callback: (db: unknown) => unknown) =>
         callback({
           fileAttachment: {
-            findUnique: vi.fn().mockResolvedValue(record),
+            findFirst: vi.fn().mockResolvedValue(record),
           },
         })
       );
@@ -541,15 +548,15 @@ describe("attachmentsService.getDownloadUrl", () => {
     mockWithDb
       .mockImplementationOnce((callback: (db: unknown) => unknown) =>
         callback({
-          document: {
-            findUnique: vi.fn().mockResolvedValue({ id: ARTIFACT_ID }),
+          artifact: {
+            findFirst: vi.fn().mockResolvedValue({ id: ARTIFACT_ID }),
           },
         })
       )
       .mockImplementationOnce((callback: (db: unknown) => unknown) =>
         callback({
           fileAttachment: {
-            findUnique: vi.fn().mockResolvedValue(record),
+            findFirst: vi.fn().mockResolvedValue(record),
           },
         })
       );
@@ -566,8 +573,8 @@ describe("attachmentsService.getDownloadUrl", () => {
   it("throws 'Artifact not found' when artifact ownership check returns null", async () => {
     mockWithDb.mockImplementationOnce((callback: (db: unknown) => unknown) =>
       callback({
-        document: {
-          findUnique: vi.fn().mockResolvedValue(null),
+        artifact: {
+          findFirst: vi.fn().mockResolvedValue(null),
         },
       })
     );
@@ -585,15 +592,15 @@ describe("attachmentsService.getDownloadUrl", () => {
     mockWithDb
       .mockImplementationOnce((callback: (db: unknown) => unknown) =>
         callback({
-          document: {
-            findUnique: vi.fn().mockResolvedValue({ id: ARTIFACT_ID }),
+          artifact: {
+            findFirst: vi.fn().mockResolvedValue({ id: ARTIFACT_ID }),
           },
         })
       )
       .mockImplementationOnce((callback: (db: unknown) => unknown) =>
         callback({
           fileAttachment: {
-            findUnique: vi.fn().mockResolvedValue(null),
+            findFirst: vi.fn().mockResolvedValue(null),
           },
         })
       );
@@ -660,7 +667,7 @@ describe("attachmentsService.listWithSignedUrlsByDocument", () => {
     await attachmentsService.listWithSignedUrlsByDocument(ARTIFACT_ID, ORG_ID);
 
     expect(capturedArgs).toMatchObject({
-      where: { documentId: ARTIFACT_ID, document: { organizationId: ORG_ID } },
+      where: { artifactId: ARTIFACT_ID, artifact: { organizationId: ORG_ID } },
       orderBy: { createdAt: "desc" },
     });
   });

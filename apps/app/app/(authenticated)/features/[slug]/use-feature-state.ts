@@ -1,10 +1,9 @@
 "use client";
 
 import type { DocumentDetail } from "@repo/api/src/types/document";
-import { EntityType } from "@repo/api/src/types/entity-link";
 import { useMemo } from "react";
 import type { PlanSource } from "@/app/(authenticated)/implementation-plans/components/plan-source";
-import { useLinkedPlanId } from "@/hooks/queries/use-entity-links";
+import { useLinkedPlanId } from "@/hooks/queries/use-artifact-links";
 
 /**
  * Derives feature workflow state from the feature-typed document's entity links.
@@ -14,7 +13,7 @@ import { useLinkedPlanId } from "@/hooks/queries/use-entity-links";
  * compute them independently.
  */
 export function useFeatureState(feature: DocumentDetail) {
-  const { targetLinks, linkedPlanLink, linkedPlanId } = useLinkedPlanId(
+  const { resolvedLinks, linkedPlanLink, linkedPlanId } = useLinkedPlanId(
     feature.id
   );
 
@@ -27,12 +26,11 @@ export function useFeatureState(feature: DocumentDetail) {
       title: feature.title,
       projectId: feature.projectId,
       workstreamId: feature.workstreamId,
-      sourceType: EntityType.Document,
     };
   }, [feature.id, feature.title, feature.projectId, feature.workstreamId]);
 
   return {
-    targetLinks,
+    resolvedLinks,
     linkedPlanLink,
     linkedPlanId,
     hasPlan,

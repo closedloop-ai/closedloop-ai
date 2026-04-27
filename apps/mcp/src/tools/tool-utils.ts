@@ -9,8 +9,8 @@ export const DOCUMENT_DOC_HELP =
   "User-facing documents are PRDs (PRD-*), implementation plans (PLN-*), and features (FEA-*). Templates exist but are internal and not exposed to end users.";
 export const WORKSTREAM_HELP =
   "Workstreams are initiatives or tracks of work inside a project.";
-export const ENTITY_LINK_SLUG_HELP =
-  "User-facing slugs are supported for documents (PRD-7, PLN-4, FEA-42), projects (PRO-3), and workstreams (WRK-5); other entities typically require UUIDs.";
+export const ARTIFACT_LINK_SLUG_HELP =
+  "User-facing slugs are supported for documents (PRD-7, PLN-4, FEA-42); other artifacts (pull requests, deployments) require UUIDs.";
 
 export function withErrorHandling(
   fn: () => Promise<ToolResult>

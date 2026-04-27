@@ -1,6 +1,4 @@
 import type { BranchViewData } from "@repo/api/src/types/branch-view";
-import { log } from "@repo/observability/log";
-import { waitUntil } from "@vercel/functions";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { resolvePrContext } from "@/lib/resolve-pr-context";
 import {
@@ -27,17 +25,6 @@ export const GET = withAnyAuth<BranchViewData, "/branch-view/[externalLinkId]">(
           result.error ?? "Branch view data unavailable",
           result.error,
           404
-        );
-      }
-
-      if (result.backfillPromise) {
-        waitUntil(
-          result.backfillPromise.catch((error) => {
-            log.error("[branch-view/backfill] Background backfill failed", {
-              externalLinkId,
-              error: error instanceof Error ? error.message : String(error),
-            });
-          })
         );
       }
 

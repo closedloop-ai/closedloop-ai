@@ -1,6 +1,5 @@
 import { failure, success } from "@repo/api/src/types/common";
-import type { Document } from "@repo/api/src/types/document";
-import { DocumentType as PrismaDocumentType } from "@repo/database";
+import { type Document, DocumentType } from "@repo/api/src/types/document";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { withAuth } from "@/lib/auth/with-auth";
@@ -49,7 +48,7 @@ export const POST = withAuth<Document, "/documents/[id]/regenerate">(
         ReturnType<typeof documentsService.regenerateImplementationPlan>
       >;
 
-      if (artifact.type === PrismaDocumentType.PRD) {
+      if (artifact.type === DocumentType.Prd) {
         result = await documentsService.generatePRD(
           resolvedId,
           user.organizationId,

@@ -11,8 +11,8 @@ import type {
   AdditionalRepoRefWithToken,
 } from "@closedloop-ai/loops-api/context-pack";
 import { TokensByModel } from "@closedloop-ai/loops-api/tokens";
+import { ArtifactType } from "./artifact";
 import type { JsonObject } from "./common";
-import type { EntityType } from "./entity-link";
 
 // --- Re-exports from @closedloop-ai/loops-api ---
 
@@ -55,7 +55,7 @@ export { LoopCommand, LoopStatus, type TokensByModel };
 
 // --- API-specific types (not in shared contract) ---
 
-export type SourceContextType = typeof EntityType.Document;
+export type SourceContextType = typeof ArtifactType.Document;
 
 // Compute target summary (for loop list/detail views)
 export type ComputeTargetSummary = {

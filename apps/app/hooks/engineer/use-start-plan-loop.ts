@@ -5,8 +5,8 @@ import type { StartPlanLoopResponse } from "@repo/api/src/types/plan-loop";
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useRef, useState } from "react";
 import { toast } from "sonner";
+import { artifactLinkKeys } from "@/hooks/queries/use-artifact-links";
 import { documentKeys } from "@/hooks/queries/use-documents";
-import { entityLinkKeys } from "@/hooks/queries/use-entity-links";
 import { useApiClient } from "@/hooks/use-api-client";
 import { getRequiredLoopComputeTargetId } from "@/lib/engineer/get-required-loop-compute-target-id";
 import { resolveDesktopApiNamespaceHint } from "@/lib/engineer/local-gateway-api-namespace";
@@ -76,7 +76,7 @@ export function useStartPlanLoop(
 
   const invalidateCaches = useCallback(
     (documentId: string) => {
-      queryClient.invalidateQueries({ queryKey: entityLinkKeys.lists() });
+      queryClient.invalidateQueries({ queryKey: artifactLinkKeys.lists() });
       queryClient.invalidateQueries({
         queryKey: documentKeys.detail(documentId),
       });

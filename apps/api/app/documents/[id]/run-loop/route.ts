@@ -3,12 +3,12 @@ import {
   type DesktopApiNamespace,
   LEGACY_DESKTOP_API_NAMESPACE,
 } from "@repo/api/src/desktop-api-namespace";
+import { ArtifactType } from "@repo/api/src/types/artifact";
 import { success } from "@repo/api/src/types/common";
 import type {
   BackendMismatchBody,
   ComputeTargetConflictBody,
 } from "@repo/api/src/types/compute-target";
-import { EntityType } from "@repo/api/src/types/entity-link";
 import {
   type CreateLoopResponse,
   RunLoopCommand,
@@ -208,7 +208,7 @@ export const POST = withAnyAuth<RunLoopResponse, "/documents/[id]/run-loop">(
       // Skipped if a loop already exists for that PRD's current version.
       if (
         body.command === RunLoopCommand.Plan &&
-        source?.type === EntityType.Document
+        source?.type === ArtifactType.Document
       ) {
         scheduleAutoEvaluatePrd(source.id, user.organizationId, user.id);
       }

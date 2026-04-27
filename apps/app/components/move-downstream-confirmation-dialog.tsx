@@ -1,7 +1,6 @@
 "use client";
 
-import type { LinkedEntity } from "@repo/api/src/types/entity-link";
-import { EntityType } from "@repo/api/src/types/entity-link";
+import type { ArtifactLinkWithEndpoints } from "@repo/api/src/types/artifact";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   Dialog,
@@ -15,7 +14,7 @@ import {
 type MoveDownstreamConfirmationDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  downstreamEntities: LinkedEntity[];
+  downstreamEntities: ArtifactLinkWithEndpoints[];
   onConfirm: (moveAll: boolean) => void;
 };
 
@@ -41,11 +40,10 @@ export function MoveDownstreamConfirmationDialog({
         <div className="py-4">
           <p className="mb-2 font-medium text-sm">Downstream entities:</p>
           <ul className="list-inside list-disc space-y-1">
-            {downstreamEntities.map((linked) => {
-              const title = resolveTitle(linked);
+            {downstreamEntities.map((link) => {
               return (
-                <li className="text-muted-foreground text-sm" key={linked.id}>
-                  {title}
+                <li className="text-muted-foreground text-sm" key={link.id}>
+                  {link.target.name}
                 </li>
               );
             })}
@@ -73,15 +71,4 @@ export function MoveDownstreamConfirmationDialog({
       </DialogContent>
     </Dialog>
   );
-}
-
-function resolveTitle(linked: LinkedEntity): string {
-  if (!linked.resolvedEntity) {
-    return `${linked.targetType} (${linked.targetId.slice(0, 8)}...)`;
-  }
-  const { type, entity } = linked.resolvedEntity;
-  if (type === EntityType.Document || type === EntityType.ExternalLink) {
-    return (entity as { title: string }).title;
-  }
-  return linked.targetId;
 }

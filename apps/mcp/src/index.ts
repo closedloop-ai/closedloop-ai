@@ -24,11 +24,10 @@ import {
   type ApiKeyScope,
   type VerifiedApiKeyContext,
 } from "./api-key-contract.js";
+import { registerCreateArtifactLink } from "./tools/create-artifact-link.js";
 import { registerCreateDocument } from "./tools/create-document.js";
 import { registerCreateDocumentThread } from "./tools/create-document-thread.js";
 import { registerCreateDocumentVersion } from "./tools/create-document-version.js";
-import { registerCreateEntityLink } from "./tools/create-entity-link.js";
-import { registerCreateExternalLink } from "./tools/create-external-link.js";
 import { registerCreateProject } from "./tools/create-project.js";
 import { registerCreateWorkstream } from "./tools/create-workstream.js";
 import { registerDownloadAttachment } from "./tools/download-attachment.js";
@@ -43,11 +42,10 @@ import { registerGetMe } from "./tools/get-me.js";
 import { registerGetProject } from "./tools/get-project.js";
 import { registerGetRelatedDocuments } from "./tools/get-related-documents.js";
 import { registerGetWorkstream } from "./tools/get-workstream.js";
+import { registerListArtifactLinks } from "./tools/list-artifact-links.js";
 import { registerListAttachments } from "./tools/list-attachments.js";
 import { registerListDocumentVersions } from "./tools/list-document-versions.js";
 import { registerListDocuments } from "./tools/list-documents.js";
-import { registerListEntityLinks } from "./tools/list-entity-links.js";
-import { registerListExternalLinks } from "./tools/list-external-links.js";
 import { registerListLoops } from "./tools/list-loops.js";
 import { registerListProjects } from "./tools/list-projects.js";
 import { registerListTemplates } from "./tools/list-templates.js";
@@ -354,16 +352,10 @@ const TOOL_REGISTRATIONS: ToolRegistration[] = [
   { name: "get-loop", register: registerGetLoop },
   { name: "list-users", register: registerListUsers },
   { name: "get-dashboard-stats", register: registerGetDashboardStats },
-  { name: "list-entity-links", register: registerListEntityLinks },
+  { name: "list-artifact-links", register: registerListArtifactLinks },
   {
-    name: "create-entity-link",
-    register: registerCreateEntityLink,
-    requiresWrite: true,
-  },
-  { name: "list-external-links", register: registerListExternalLinks },
-  {
-    name: "create-external-link",
-    register: registerCreateExternalLink,
+    name: "create-artifact-link",
+    register: registerCreateArtifactLink,
     requiresWrite: true,
   },
   { name: "list-templates", register: registerListTemplates },

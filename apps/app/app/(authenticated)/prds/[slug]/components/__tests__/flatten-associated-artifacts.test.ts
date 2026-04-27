@@ -1,55 +1,82 @@
+import {
+  type ArtifactLinkEndpoint,
+  type ArtifactLinkWithEndpoints,
+  ArtifactType,
+  LinkType,
+} from "@repo/api/src/types/artifact";
 import type { Document } from "@repo/api/src/types/document";
-import type { LinkedEntity } from "@repo/api/src/types/entity-link";
-import { EntityType, LinkType } from "@repo/api/src/types/entity-link";
 import { describe, expect, test } from "vitest";
 import { createMockDocument } from "@/__tests__/fixtures/documents";
 import { flattenAssociatedArtifacts } from "../flatten-associated-artifacts";
 
 const ROOT_ID = "prd-root";
 
+function endpointFromDocument(child: Document): ArtifactLinkEndpoint {
+  return {
+    id: child.id,
+    organizationId: child.organizationId,
+    projectId: child.projectId ?? "",
+    workstreamId: child.workstreamId,
+    type: ArtifactType.Document,
+    subtype: null,
+    name: child.title,
+    slug: child.slug,
+    status: child.status,
+    priority: child.priority,
+    assigneeId: child.assigneeId,
+    dueDate: null,
+    externalUrl: null,
+    sortOrder: child.sortOrder,
+    createdAt: child.createdAt,
+    createdById: child.createdById,
+    updatedAt: child.updatedAt,
+  };
+}
+
 function makeLink(overrides: {
   id: string;
   sourceId: string;
   child: Document;
-  targetType?: EntityType;
-  resolvedType?: "DOCUMENT" | "EXTERNAL_LINK" | "NONE";
-}): LinkedEntity {
-  const {
-    id,
-    sourceId,
-    child,
-    targetType = EntityType.Document,
-    resolvedType = "DOCUMENT",
-  } = overrides;
-  let resolvedEntity: LinkedEntity["resolvedEntity"];
-  if (resolvedType === "DOCUMENT") {
-    resolvedEntity = { type: EntityType.Document, entity: child };
-  } else if (resolvedType === "EXTERNAL_LINK") {
-    resolvedEntity = {
-      type: EntityType.ExternalLink,
-      entity: { id: child.id } as never,
-    };
-  } else {
-    resolvedEntity = null;
-  }
+  targetType?: ArtifactType;
+}): ArtifactLinkWithEndpoints {
+  const { id, sourceId, child, targetType = ArtifactType.Document } = overrides;
+  const targetEndpoint: ArtifactLinkEndpoint = {
+    ...endpointFromDocument(child),
+    type: targetType,
+  };
   return {
     id,
     organizationId: "org-1",
     sourceId,
-    sourceType: EntityType.Document,
-    sourceVersion: null,
     targetId: child.id,
-    targetType,
-    targetVersion: null,
     linkType: LinkType.Produces,
     metadata: null,
     createdAt: new Date("2026-01-01T00:00:00Z"),
-    resolvedEntity,
+    source: {
+      id: sourceId,
+      organizationId: "org-1",
+      projectId: "",
+      workstreamId: null,
+      type: ArtifactType.Document,
+      subtype: null,
+      name: "Source",
+      slug: null,
+      status: "DRAFT",
+      priority: null,
+      assigneeId: null,
+      dueDate: null,
+      externalUrl: null,
+      sortOrder: null,
+      createdAt: new Date("2026-01-01T00:00:00Z"),
+      createdById: null,
+      updatedAt: new Date("2026-01-01T00:00:00Z"),
+    },
+    target: targetEndpoint,
   };
 }
 
 describe("flattenAssociatedArtifacts", () => {
-  test("returns an empty array when there are no linked entities", () => {
+  test("returns an empty array when there are no resolved links", () => {
     expect(flattenAssociatedArtifacts(ROOT_ID, [])).toEqual([]);
   });
 
@@ -63,10 +90,13 @@ describe("flattenAssociatedArtifacts", () => {
 
     const rows = flattenAssociatedArtifacts(ROOT_ID, links);
 
-    expect(rows).toEqual([
-      { document: featureA, linkId: "link-a", depth: 1 },
-      { document: featureB, linkId: "link-b", depth: 1 },
-    ]);
+    expect(rows).toHaveLength(2);
+    expect(rows[0]?.linkId).toBe("link-a");
+    expect(rows[0]?.endpoint.id).toBe("feat-a");
+    expect(rows[0]?.depth).toBe(1);
+    expect(rows[1]?.linkId).toBe("link-b");
+    expect(rows[1]?.endpoint.id).toBe("feat-b");
+    expect(rows[1]?.depth).toBe(1);
   });
 
   test("recurses depth-first and tags descendant depth", () => {
@@ -83,7 +113,7 @@ describe("flattenAssociatedArtifacts", () => {
 
     const rows = flattenAssociatedArtifacts(ROOT_ID, links);
 
-    expect(rows.map((r) => [r.document.id, r.depth])).toEqual([
+    expect(rows.map((r) => [r.endpoint.id, r.depth])).toEqual([
       ["feat-1", 1],
       ["plan-a", 2],
       ["plan-b", 2],
@@ -103,7 +133,7 @@ describe("flattenAssociatedArtifacts", () => {
 
     const rows = flattenAssociatedArtifacts(ROOT_ID, links);
 
-    expect(rows.map((r) => r.document.id)).toEqual(["a", "b"]);
+    expect(rows.map((r) => r.endpoint.id)).toEqual(["a", "b"]);
   });
 
   test("deduplicates repeated parent→child edges", () => {
@@ -119,39 +149,14 @@ describe("flattenAssociatedArtifacts", () => {
     expect(rows[0]?.linkId).toBe("l1");
   });
 
-  test("skips links that do not resolve to a Document", () => {
-    const docChild = createMockDocument({ id: "doc-child" });
-    const externalChild = createMockDocument({ id: "ext-child" });
-    const unresolvedChild = createMockDocument({ id: "nil-child" });
-    const links = [
-      makeLink({ id: "l-doc", sourceId: ROOT_ID, child: docChild }),
-      makeLink({
-        id: "l-ext",
-        sourceId: ROOT_ID,
-        child: externalChild,
-        resolvedType: "EXTERNAL_LINK",
-      }),
-      makeLink({
-        id: "l-nil",
-        sourceId: ROOT_ID,
-        child: unresolvedChild,
-        resolvedType: "NONE",
-      }),
-    ];
-
-    const rows = flattenAssociatedArtifacts(ROOT_ID, links);
-
-    expect(rows.map((r) => r.document.id)).toEqual(["doc-child"]);
-  });
-
-  test("skips links where targetType is not Document", () => {
+  test("skips links whose target is not a Document", () => {
     const child = createMockDocument({ id: "child" });
     const links = [
       makeLink({
         id: "l-bad",
         sourceId: ROOT_ID,
         child,
-        targetType: EntityType.ExternalLink,
+        targetType: ArtifactType.PullRequest,
       }),
     ];
 

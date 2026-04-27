@@ -1,5 +1,6 @@
 import { createId } from "@paralleldrive/cuid2";
 import { generateText, models } from "@repo/ai/server";
+import { LinkType } from "@repo/api/src/types/artifact";
 import {
   BATCH_META_MAX_SLUGS,
   type CreateDocumentInput,
@@ -15,7 +16,6 @@ import {
   type PullRequestInfo,
   type UpdateDocumentInput,
 } from "@repo/api/src/types/document";
-import { EntityType, LinkType } from "@repo/api/src/types/entity-link";
 import {
   type BatchJudgeScoresResponse,
   type DocumentJudgeScores,
@@ -27,8 +27,12 @@ import type { SourceContextType } from "@repo/api/src/types/loop";
 import type { PerfSummary } from "@repo/api/src/types/performance";
 import type { DocumentRatingSummary } from "@repo/api/src/types/rating";
 import type { ExecutionBackendResponse } from "@repo/api/src/types/settings";
+import type { BasicUser } from "@repo/api/src/types/user";
 import {
-  type Document as PrismaDocument,
+  ArtifactType,
+  type Prisma,
+  type Artifact as PrismaArtifact,
+  type DocumentDetail as PrismaDocumentDetail,
   type TransactionClient,
   type WorkstreamState,
   withDb,
@@ -44,22 +48,29 @@ import {
 import { SYMPHONY_RUN_ARTIFACT_PREFIXES } from "@repo/github/zip-utils";
 import { log } from "@repo/observability/log";
 import {
+  documentWhere,
+  pullRequestArtifactToInfo,
+  pullRequestWhere,
+} from "@/lib/artifact-adapters";
+import {
   mapLoopCommand,
   mapLoopStatus,
   NONE_STATUS,
   pickBestStatus,
 } from "@/lib/loops/loop-status-utils";
 import { generateArtifactSlug } from "@/lib/slug-generator";
-import { entityLinksService } from "../entity-links/service";
+import { artifactLinksService } from "../artifact-links/service";
 import { loopsService } from "../loops/service";
 import {
+  type ArtifactWithDocumentDetail,
   DocumentNotFoundError,
   documentIncludeWithContext,
   documentIncludeWithSnippet,
   documentIncludeWithUser,
   generateSlug,
   parseTriggerData,
-  pullRequestSelect,
+  splitDocumentPayload,
+  toDocument,
 } from "./document-utils";
 import { documentVersionService } from "./document-version-service";
 import { createDocumentRoom, deleteDocumentRoom } from "./room-utils";
@@ -79,14 +90,14 @@ export const documentsService = {
       options;
 
     const artifacts = await withDb((db) =>
-      db.document.findMany({
-        where: {
+      db.artifact.findMany({
+        where: documentWhere({
           organizationId,
           ...(workstreamId ? { workstreamId } : {}),
           ...(!workstreamId && projectId ? { projectId } : {}),
-          ...(type ? { type } : {}),
+          ...(type ? { subtype: type } : {}),
           ...(assigneeId ? { assigneeId } : {}),
-        },
+        }),
         include: documentIncludeWithSnippet,
         orderBy: { createdAt: "desc" },
       })
@@ -96,8 +107,8 @@ export const documentsService = {
     const uniqueWorkstreamIds = [
       ...new Set(
         artifacts
-          .map((a) => a.workstreamId)
-          .filter((id): id is string => id !== null)
+          .map((a: { workstreamId: string | null }) => a.workstreamId)
+          .filter((id: string | null): id is string => id !== null)
       ),
     ];
 
@@ -165,27 +176,26 @@ export const documentsService = {
       generationStatusMap
     );
 
-    // Batch-fetch GitHubPullRequest records for each workstream
-    const pullRequestRecords =
+    // Batch-fetch PR artifacts for each workstream
+    const prArtifacts =
       uniqueWorkstreamIds.length > 0
         ? await withDb((db) =>
-            db.gitHubPullRequest.findMany({
-              where: { workstreamId: { in: uniqueWorkstreamIds } },
-              select: {
-                ...pullRequestSelect,
-                workstreamId: true,
+            db.artifact.findMany({
+              where: {
+                type: ArtifactType.PULL_REQUEST,
+                organizationId,
+                workstreamId: { in: uniqueWorkstreamIds },
               },
+              include: { pullRequest: true },
               orderBy: { createdAt: "desc" },
               take: 100,
             })
           )
         : [];
 
-    const pullRequestMap = buildPullRequestMap(
-      pullRequestRecords.map((pr) => ({ ...pr, externalLinkId: null }))
-    );
+    const pullRequestMap = buildPullRequestMapFromArtifacts(prArtifacts);
 
-    return artifacts.map((a) =>
+    return artifacts.map((a: RawDocumentWithContext) =>
       toDocumentWithWorkstream(a, { generationStatusMap, pullRequestMap })
     );
   },
@@ -198,17 +208,17 @@ export const documentsService = {
     organizationId: string
   ): Promise<DocumentWithWorkstream | null> {
     const artifact = await withDb((db) =>
-      db.document.findUnique({
+      db.artifact.findUnique({
         where: { id, organizationId },
         include: documentIncludeWithContext,
       })
     );
 
-    if (!artifact) {
+    if (!artifact || artifact.type !== ArtifactType.DOCUMENT) {
       return null;
     }
 
-    return toDocumentWithWorkstream(artifact, {});
+    return toDocumentWithWorkstream(artifact as RawDocumentWithContext, {});
   },
 
   /**
@@ -219,17 +229,17 @@ export const documentsService = {
     organizationId: string
   ): Promise<DocumentWithWorkstream | null> {
     const artifact = await withDb((db) =>
-      db.document.findUnique({
+      db.artifact.findUnique({
         where: { organizationId_slug: { organizationId, slug } },
         include: documentIncludeWithContext,
       })
     );
 
-    if (!artifact) {
+    if (!artifact || artifact.type !== ArtifactType.DOCUMENT) {
       return null;
     }
 
-    return toDocumentWithWorkstream(artifact, {});
+    return toDocumentWithWorkstream(artifact as RawDocumentWithContext, {});
   },
 
   /**
@@ -239,13 +249,16 @@ export const documentsService = {
     id: string,
     organizationId: string
   ): Promise<Document | null> {
-    const result = await withDb((db) =>
-      db.document.findUnique({
+    const artifact = await withDb((db) =>
+      db.artifact.findUnique({
         where: { id, organizationId },
         include: documentIncludeWithUser,
       })
     );
-    return result;
+    if (!artifact || artifact.type !== ArtifactType.DOCUMENT) {
+      return null;
+    }
+    return toDocument(artifact);
   },
 
   /**
@@ -257,18 +270,20 @@ export const documentsService = {
     organizationId: string,
     templateForType: DocumentType
   ): Promise<Document | null> {
-    const result = await withDb((db) =>
-      db.document.findUnique({
+    const artifact = await withDb((db) =>
+      db.artifact.findFirst({
         where: {
-          organizationId_templateForType: {
-            organizationId,
-            templateForType,
-          },
+          type: ArtifactType.DOCUMENT,
+          organizationId,
+          document: { templateForType },
         },
         include: documentIncludeWithUser,
       })
     );
-    return result;
+    if (!artifact) {
+      return null;
+    }
+    return toDocument(artifact);
   },
 
   /**
@@ -279,35 +294,54 @@ export const documentsService = {
     organizationId: string,
     userId: string
   ): Promise<void> {
-    const template = await withDb((db) =>
-      db.document.upsert({
+    // Try to find an existing template first
+    const existing = await withDb((db) =>
+      db.documentDetail.findFirst({
         where: {
-          organizationId_templateForType: {
-            organizationId,
-            templateForType: DocumentType.Prd,
-          },
-        },
-        create: {
-          type: DocumentType.Template,
           templateForType: DocumentType.Prd,
-          organizationId,
-          createdById: userId,
-          title: "Product Requirements Document Template",
-          slug: generateSlug(),
-          latestVersion: 1,
+          artifact: { organizationId, type: ArtifactType.DOCUMENT },
         },
-        // On conflict, do nothing - preserve existing template content
-        // (user may have edited the template)
-        update: {},
-        select: { id: true },
+        select: { artifactId: true },
       })
     );
 
+    let templateId: string;
+    if (existing) {
+      templateId = existing.artifactId;
+    } else {
+      const sentinelProjectId = await resolveTemplatesSentinelProjectId(
+        organizationId,
+        userId
+      );
+      const created = await withDb((db) =>
+        db.artifact.create({
+          data: {
+            type: ArtifactType.DOCUMENT,
+            subtype: DocumentType.Template,
+            organizationId,
+            projectId: sentinelProjectId,
+            createdById: userId,
+            name: "Product Requirements Document Template",
+            slug: generateSlug(),
+            status: DocumentStatus.Draft,
+            document: {
+              create: {
+                templateForType: DocumentType.Prd,
+                latestVersion: 1,
+              },
+            },
+          },
+          select: { id: true },
+        })
+      );
+      templateId = created.id;
+    }
+
     // Create the initial version with template content if it doesn't exist yet
-    const existingVersion = await documentVersionService.getLatest(template.id);
+    const existingVersion = await documentVersionService.getLatest(templateId);
     if (!existingVersion) {
       await documentVersionService.createVersion(
-        template.id,
+        templateId,
         organizationId,
         null,
         PRD_TEMPLATE
@@ -325,43 +359,39 @@ export const documentsService = {
   ): Promise<PullRequestInfo | null> {
     // Get the artifact to find its workstreamId
     const artifact = await withDb((db) =>
-      db.document.findUnique({
+      db.artifact.findUnique({
         where: { id: documentId, organizationId },
-        select: { workstreamId: true },
+        select: { workstreamId: true, type: true },
       })
     );
 
-    if (!artifact?.workstreamId) {
+    if (
+      !artifact ||
+      artifact.type !== ArtifactType.DOCUMENT ||
+      !artifact.workstreamId
+    ) {
       return null;
     }
 
-    // Find the most recent PR for this workstream, selecting only the fields we need
-    const pr = await withDb((db) =>
-      db.gitHubPullRequest.findFirst({
-        where: { workstreamId: artifact.workstreamId! },
+    // Find the most recent PR artifact for this workstream
+    const prArtifact = await withDb((db) =>
+      db.artifact.findFirst({
+        where: pullRequestWhere({
+          organizationId,
+          workstreamId: artifact.workstreamId!,
+        }),
+        include: { pullRequest: true },
         orderBy: { createdAt: "desc" },
-        select: pullRequestSelect,
       })
     );
 
-    if (!pr) {
+    if (!prArtifact) {
       return null;
     }
 
-    // Resolve ExternalLink ID via entity links (Artifact -> PRODUCES -> ExternalLink)
-    const entityLink = await withDb((db) =>
-      db.entityLink.findFirst({
-        where: {
-          sourceId: documentId,
-          sourceType: "DOCUMENT",
-          targetType: "EXTERNAL_LINK",
-          linkType: "PRODUCES",
-        },
-        select: { targetId: true },
-      })
-    );
-
-    return { ...pr, externalLinkId: entityLink?.targetId ?? null };
+    return pullRequestArtifactToInfo(prArtifact, {
+      externalLinkId: prArtifact.id,
+    });
   },
 
   /**
@@ -384,6 +414,30 @@ export const documentsService = {
       throw new Error(
         "Artifacts (except templates) must be associated with a project or workstream"
       );
+    }
+
+    // Plan Decision #9: templateForType uniqueness is enforced at the app
+    // layer (no DB trigger). Reject a second template for the same subtype in
+    // the same org.
+    if (isTemplate && input.templateForType) {
+      const duplicate = await withDb((db) =>
+        db.documentDetail.findFirst({
+          where: {
+            templateForType: input.templateForType,
+            artifact: {
+              organizationId,
+              type: ArtifactType.DOCUMENT,
+              subtype: DocumentType.Template,
+            },
+          },
+          select: { artifactId: true },
+        })
+      );
+      if (duplicate) {
+        throw new Error(
+          `A template already exists for ${input.templateForType} in this organization`
+        );
+      }
     }
 
     const createdDocument = await withDb.tx((tx) =>
@@ -414,7 +468,7 @@ export const documentsService = {
     }
     if (input.projectId) {
       const project = await withDb((db) =>
-        db.project.findFirst({
+        db.project.findUnique({
           where: { id: input.projectId!, organizationId },
           select: { id: true },
         })
@@ -426,13 +480,21 @@ export const documentsService = {
       }
     }
 
-    return withDb((db) =>
-      db.document.update({
+    const { artifact: artifactData, detail: detailData } =
+      splitDocumentPayload(input);
+    const updated = await withDb((db) =>
+      db.artifact.update({
         where: { id, organizationId },
-        data: input,
+        data: {
+          ...artifactData,
+          ...(Object.keys(detailData).length > 0 && {
+            document: { update: detailData },
+          }),
+        },
         include: documentIncludeWithUser,
       })
     );
+    return toDocument(updated);
   },
 
   /**
@@ -440,53 +502,50 @@ export const documentsService = {
    */
   async delete(id: string, organizationId: string): Promise<void> {
     const artifact = await withDb((db) =>
-      db.document.findUnique({
+      db.artifact.findUnique({
         where: { id, organizationId },
         select: {
           slug: true,
           organizationId: true,
+          type: true,
         },
       })
     );
 
-    if (!artifact) {
+    if (!artifact || artifact.type !== ArtifactType.DOCUMENT) {
       return;
     }
 
-    // Delete entity links referencing this artifact, then delete the artifact.
-    // Loops are preserved (onDelete: SetNull) to retain execution history.
-    await withDb.tx(async (tx) => {
-      await tx.entityLink.deleteMany({
-        where: {
-          organizationId,
-          OR: [
-            { sourceId: id, sourceType: "DOCUMENT" },
-            { targetId: id, targetType: "DOCUMENT" },
-          ],
-        },
-      });
-      await tx.document.delete({ where: { id } });
-    });
+    // ArtifactLink cascades via FK ON DELETE CASCADE — no separate deleteMany
+    // needed. Loops are preserved (onDelete: SetNull) to retain execution history.
+    await withDb((db) => db.artifact.delete({ where: { id, organizationId } }));
 
-    await deleteDocumentRoom(organizationId, artifact.slug);
+    if (artifact.slug) {
+      await deleteDocumentRoom(organizationId, artifact.slug);
+    }
   },
 
   /**
    * Find an artifact with full regeneration context (workstream, project, source artifact)
    */
-  findWithRegenerationContext(id: string, organizationId: string) {
-    return withDb((db) =>
-      db.document.findUnique({
+  async findWithRegenerationContext(
+    id: string,
+    organizationId: string
+  ): Promise<DocumentWithRegenerationContext | null> {
+    const artifact = await withDb((db) =>
+      db.artifact.findUnique({
         where: { id, organizationId },
         include: {
+          ...documentIncludeWithUser,
           workstream: {
             include: {
               project: true,
-              // Find the PRD in this workstream (source document for plan generation)
-              documents: {
+              artifacts: {
                 where: {
-                  type: DocumentType.Prd,
+                  type: ArtifactType.DOCUMENT,
+                  subtype: DocumentType.Prd,
                 },
+                include: documentIncludeWithUser,
                 take: 1,
               },
             },
@@ -494,6 +553,35 @@ export const documentsService = {
         },
       })
     );
+    if (!artifact || artifact.type !== ArtifactType.DOCUMENT) {
+      return null;
+    }
+    const base = toDocument(artifact);
+    const workstream = workstreamToWithDocuments(artifact.workstream);
+    return {
+      ...base,
+      workstream: workstream
+        ? {
+            id: workstream.id,
+            organizationId: workstream.organizationId,
+            projectId: workstream.projectId,
+            title: workstream.title,
+            description: workstream.description,
+            state: workstream.state,
+            createdAt: workstream.createdAt,
+            updatedAt: workstream.updatedAt,
+            project: workstream.project
+              ? {
+                  id: workstream.project.id,
+                  organizationId: workstream.project.organizationId,
+                  name: workstream.project.name,
+                  settings: workstream.project.settings,
+                }
+              : null,
+            documents: workstream.documents,
+          }
+        : null,
+    };
   },
 
   /**
@@ -536,23 +624,28 @@ export const documentsService = {
       const titleFallback = artifact.title
         .replace("Implementation Plan: ", "")
         .replace("Plan: ", "");
-      const matchedDocument = await withDb((db) =>
-        db.document.findFirst({
+      const matchedArtifact = await withDb((db) =>
+        db.artifact.findFirst({
           where: {
+            type: ArtifactType.DOCUMENT,
             organizationId,
-            projectId: artifact.projectId,
-            type: DocumentType.Prd,
-            title: titleFallback,
+            projectId: artifact.projectId ?? undefined,
+            subtype: DocumentType.Prd,
+            name: titleFallback,
           },
+          include: documentIncludeWithUser,
         })
       );
-      if (matchedDocument) {
+      if (matchedArtifact) {
+        const matchedDocument = toDocument(
+          matchedArtifact as ArtifactWithDocumentDetail
+        );
         const latestVersion = await documentVersionService.getLatest(
           matchedDocument.id
         );
         foundSource = {
           id: matchedDocument.id,
-          type: EntityType.Document,
+          type: ArtifactType.DOCUMENT,
           title: matchedDocument.title,
           content: latestVersion?.content ?? null,
           targetRepo: matchedDocument.targetRepo,
@@ -561,11 +654,9 @@ export const documentsService = {
         };
 
         // Persist the PRODUCES link so subsequent calls resolve via findSourceWithContent
-        await entityLinksService.createLink(organizationId, {
+        await artifactLinksService.createLink(organizationId, {
           sourceId: matchedDocument.id,
-          sourceType: "DOCUMENT",
           targetId: artifact.id,
-          targetType: "DOCUMENT",
           linkType: LinkType.Produces,
         });
       }
@@ -583,7 +674,7 @@ export const documentsService = {
     // the source away from its existing workstream and breaking related artifacts).
     if (foundSource.workstreamId) {
       return withDb.tx(async (tx) => {
-        await tx.document.update({
+        await tx.artifact.update({
           where: { id: artifact.id, organizationId },
           data: { workstreamId: foundSource.workstreamId },
         });
@@ -592,15 +683,19 @@ export const documentsService = {
           where: { id: foundSource.workstreamId! },
           include: {
             project: true,
-            documents: {
-              where: { type: DocumentType.Prd },
+            artifacts: {
+              where: {
+                type: ArtifactType.DOCUMENT,
+                subtype: DocumentType.Prd,
+              },
+              include: documentIncludeWithUser,
               take: 1,
             },
           },
         });
 
         return {
-          workstream,
+          workstream: workstreamToWithDocuments(workstream),
           source: foundSource,
         };
       });
@@ -619,10 +714,11 @@ export const documentsService = {
         },
       });
 
-      await tx.document.updateMany({
+      await tx.artifact.updateMany({
         where: {
           id: { in: [foundSource.id, artifact.id] },
           organizationId,
+          type: ArtifactType.DOCUMENT,
         },
         data: { workstreamId: newWorkstream.id },
       });
@@ -631,15 +727,19 @@ export const documentsService = {
         where: { id: newWorkstream.id },
         include: {
           project: true,
-          documents: {
-            where: { type: DocumentType.Prd },
+          artifacts: {
+            where: {
+              type: ArtifactType.DOCUMENT,
+              subtype: DocumentType.Prd,
+            },
+            include: documentIncludeWithUser,
             take: 1,
           },
         },
       });
 
       return {
-        workstream,
+        workstream: workstreamToWithDocuments(workstream),
         source: foundSource,
       };
     });
@@ -669,38 +769,34 @@ export const documentsService = {
       Awaited<ReturnType<typeof this.findWithRegenerationContext>>
     >
   ): Promise<SourceContext | null> {
-    const sourceLinks = await entityLinksService.findSourceLinks(
+    const sourceLinks = await artifactLinksService.findSourceLinks(
       artifact.organizationId,
       artifact.id,
-      EntityType.Document,
       LinkType.Produces
     );
     if (!sourceLinks.length) {
       return null;
     }
 
-    const documentLinks = sourceLinks.filter(
-      (link) => link.sourceType === EntityType.Document
-    );
-
-    if (documentLinks.length === 0) {
-      return null;
-    }
-
-    const sourceDocuments = await withDb((db) =>
-      db.document.findMany({
+    // Narrow to DOCUMENT-typed source artifacts via the parent Artifact row
+    // (ArtifactLink no longer carries a sourceType/targetType discriminator).
+    const sourceArtifacts = await withDb((db) =>
+      db.artifact.findMany({
         where: {
-          id: { in: documentLinks.map((link) => link.sourceId) },
+          id: { in: sourceLinks.map((link) => link.sourceId) },
           organizationId: artifact.organizationId,
-          type: { in: [DocumentType.Prd, DocumentType.Feature] },
+          type: ArtifactType.DOCUMENT,
+          subtype: { in: [DocumentType.Prd, DocumentType.Feature] },
         },
+        include: documentIncludeWithUser,
       })
     );
 
-    if (sourceDocuments.length === 0) {
+    if (sourceArtifacts.length === 0) {
       return null;
     }
 
+    const sourceDocuments = sourceArtifacts.map(toDocument);
     const prdSource = sourceDocuments.find(
       (doc) => doc.type === DocumentType.Prd
     );
@@ -711,7 +807,7 @@ export const documentsService = {
     );
     return {
       id: sourceDocument.id,
-      type: EntityType.Document,
+      type: ArtifactType.DOCUMENT,
       title: sourceDocument.title,
       content: latestVersion?.content ?? null,
       targetRepo: sourceDocument.targetRepo,
@@ -848,10 +944,10 @@ Analyze the content at this link and identify capabilities or features that coul
             startedAt: new Date(),
           },
         }),
-        db.document.update({
+        db.artifact.update({
           where: { id: documentId, organizationId },
           data: {
-            status: "DRAFT",
+            status: DocumentStatus.Draft,
             // Correlation tracked via GitHubActionRun.triggerData.correlationId
           },
           include: documentIncludeWithUser,
@@ -875,7 +971,7 @@ Analyze the content at this link and identify capabilities or features that coul
         }),
       ]);
 
-      return updatedDocument;
+      return toDocument(updatedDocument);
     });
   },
 
@@ -897,13 +993,14 @@ Analyze the content at this link and identify capabilities or features that coul
     );
 
     // Update status to DRAFT
-    return withDb((db) =>
-      db.document.update({
+    const updated = await withDb((db) =>
+      db.artifact.update({
         where: { id, organizationId },
-        data: { status: "DRAFT" },
+        data: { status: DocumentStatus.Draft },
         include: documentIncludeWithUser,
       })
     );
+    return toDocument(updated);
   },
 
   /**
@@ -924,14 +1021,17 @@ Analyze the content at this link and identify capabilities or features that coul
     );
 
     // Re-fetch the artifact to get the updated latestVersion
-    const updated = await withDb((db) =>
-      db.document.findUnique({
+    const artifact = await withDb((db) =>
+      db.artifact.findUnique({
         where: { id, organizationId },
         include: documentIncludeWithUser,
       })
     );
 
-    return updated && newVersion ? { ...updated, version: newVersion } : null;
+    if (!artifact || artifact.type !== ArtifactType.DOCUMENT || !newVersion) {
+      return null;
+    }
+    return { ...toDocument(artifact), version: newVersion };
   },
 
   /**
@@ -1234,7 +1334,7 @@ Analyze the content at this link and identify capabilities or features that coul
       repositoryId,
       documentId: artifact.id,
       sourceId: artifact.id,
-      sourceType: EntityType.Document, // PRD generates itself
+      sourceType: ArtifactType.DOCUMENT, // PRD generates itself
       correlationId,
       targetRepo,
       targetBranch,
@@ -1554,10 +1654,9 @@ Please try again or contact support if the issue persists.`
   ): Promise<JudgesFeedbackResponse> {
     try {
       const evaluation = await withDb((db) =>
-        db.documentEvaluation.findFirst({
+        db.artifactEvaluation.findFirst({
           where: {
-            entityId: documentId,
-            entityType: EntityType.Document,
+            artifactId: documentId,
             organizationId,
             reportType,
           },
@@ -1605,19 +1704,18 @@ Please try again or contact support if the issue persists.`
     organizationId: string,
     reportTypes: EvaluationReportType[]
   ): Promise<BatchJudgeScoresResponse> {
-    const projectDocuments = await withDb((db) =>
-      db.document.findMany({
-        where: { projectId, organizationId },
+    const projectArtifacts = await withDb((db) =>
+      db.artifact.findMany({
+        where: documentWhere({ projectId, organizationId }),
         select: { id: true },
       })
     );
 
     const evaluations = await withDb((db) =>
-      db.documentEvaluation.findMany({
+      db.artifactEvaluation.findMany({
         where: {
           organizationId,
-          entityType: EntityType.Document,
-          entityId: { in: projectDocuments.map((a) => a.id) },
+          artifactId: { in: projectArtifacts.map((a) => a.id) },
           reportType: { in: reportTypes },
         },
         include: {
@@ -1627,13 +1725,13 @@ Please try again or contact support if the issue persists.`
       })
     );
 
-    // Group by (entityId, reportType), keep only the latest per combination
+    // Group by (artifactId, reportType), keep only the latest per combination
     const latestByDocumentAndType = new Map<
       string,
       (typeof evaluations)[number]
     >();
     for (const evaluation of evaluations) {
-      const key = `${evaluation.entityId}:${evaluation.reportType}`;
+      const key = `${evaluation.artifactId}:${evaluation.reportType}`;
       if (!latestByDocumentAndType.has(key)) {
         latestByDocumentAndType.set(key, evaluation);
       }
@@ -1641,13 +1739,13 @@ Please try again or contact support if the issue persists.`
 
     const result: BatchJudgeScoresResponse = {};
     for (const evaluation of latestByDocumentAndType.values()) {
-      const { entityId, reportType } = evaluation;
-      if (!result[entityId]) {
-        result[entityId] = Object.fromEntries(
+      const { artifactId, reportType } = evaluation;
+      if (!result[artifactId]) {
+        result[artifactId] = Object.fromEntries(
           Object.values(EvaluationReportType).map((t) => [t, null])
         ) as DocumentJudgeScores;
       }
-      result[entityId][reportType] = evaluation.judgeScores.map((js) => ({
+      result[artifactId][reportType] = evaluation.judgeScores.map((js) => ({
         judgeScoreId: js.id,
         caseId: js.caseId,
         metricName: js.metricName,
@@ -1671,12 +1769,12 @@ Please try again or contact support if the issue persists.`
     documentId: string,
     organizationId: string
   ): Promise<PerfSummary | null> {
-    // Single query: join through artifact relation to enforce org-scoping
+    // Single query: join through documentDetail → artifact to enforce org-scoping
     const perfRecord = await withDb((db) =>
       db.gitHubActionRunPerformance.findFirst({
         where: {
-          documentId,
-          document: { organizationId },
+          artifactId: documentId,
+          documentDetail: { artifact: { organizationId } },
         },
         orderBy: { createdAt: "desc" },
       })
@@ -1889,10 +1987,10 @@ Please try again or contact support if the issue persists.`
   ): Promise<DocumentRatingSummary> {
     // Fetch user's rating (if exists)
     const userRating = await withDb((db) =>
-      db.documentRating.findUnique({
+      db.artifactRating.findUnique({
         where: {
-          documentId_userId_organizationId: {
-            documentId,
+          artifactId_userId_organizationId: {
+            artifactId: documentId,
             userId,
             organizationId,
           },
@@ -1900,25 +1998,31 @@ Please try again or contact support if the issue persists.`
       })
     );
 
-    // Fetch aggregate statistics (MUST filter by both documentId AND organizationId for multi-tenant isolation)
-    const aggregate = await withDb((db) =>
-      db.documentRating.aggregate({
-        where: { documentId, organizationId },
-        _avg: { score: true },
-        _count: true,
-      })
-    );
+    // Fetch aggregate statistics (MUST filter by both artifactId AND organizationId for multi-tenant isolation)
+    const [avgResult, count] = await Promise.all([
+      withDb((db) =>
+        db.artifactRating.aggregate({
+          where: { artifactId: documentId, organizationId },
+          _avg: { score: true },
+        })
+      ),
+      withDb((db) =>
+        db.artifactRating.count({
+          where: { artifactId: documentId, organizationId },
+        })
+      ),
+    ]);
 
     return {
-      average: aggregate._avg.score ?? 0,
-      count: aggregate._count,
+      average: avgResult._avg?.score ?? 0,
+      count,
       userRating: userRating
         ? {
             id: userRating.id,
             userId: userRating.userId,
             score: userRating.score,
             comment: userRating.comment ?? undefined,
-            documentVersion: userRating.documentVersion,
+            documentVersion: userRating.artifactVersion ?? 0,
             createdAt: userRating.createdAt,
             updatedAt: userRating.updatedAt,
           }
@@ -1942,20 +2046,23 @@ Please try again or contact support if the issue persists.`
     // even if version increments during operation. Single org-scoped lookup does both
     // authorization (artifact in org) and version fetch.
     return withDb.tx(async (tx) => {
-      const currentDocument = await tx.document.findFirst({
-        where: { id: documentId, organizationId },
+      const currentDetail = await tx.documentDetail.findFirst({
+        where: {
+          artifactId: documentId,
+          artifact: { organizationId, type: ArtifactType.DOCUMENT },
+        },
         select: { latestVersion: true },
       });
 
-      if (!currentDocument) {
+      if (!currentDetail) {
         throw new DocumentNotFoundError(documentId);
       }
 
       // Upsert rating
-      const rating = await tx.documentRating.upsert({
+      const rating = await tx.artifactRating.upsert({
         where: {
-          documentId_userId_organizationId: {
-            documentId,
+          artifactId_userId_organizationId: {
+            artifactId: documentId,
             userId,
             organizationId,
           },
@@ -1963,35 +2070,39 @@ Please try again or contact support if the issue persists.`
         update: {
           score,
           comment,
-          documentVersion: currentDocument.latestVersion,
+          artifactVersion: currentDetail.latestVersion,
           updatedAt: new Date(),
         },
         create: {
-          documentId,
+          artifactId: documentId,
           userId,
           organizationId,
           score,
           comment,
-          documentVersion: currentDocument.latestVersion,
+          artifactVersion: currentDetail.latestVersion,
         },
       });
 
       // Recalculate aggregate (same logic as getRating())
-      const aggregate = await tx.documentRating.aggregate({
-        where: { documentId, organizationId },
-        _avg: { score: true },
-        _count: true,
-      });
+      const [avgResult, count] = await Promise.all([
+        tx.artifactRating.aggregate({
+          where: { artifactId: documentId, organizationId },
+          _avg: { score: true },
+        }),
+        tx.artifactRating.count({
+          where: { artifactId: documentId, organizationId },
+        }),
+      ]);
 
       return {
-        average: aggregate._avg.score ?? 0,
-        count: aggregate._count,
+        average: avgResult._avg?.score ?? 0,
+        count,
         userRating: {
           id: rating.id,
           userId: rating.userId,
           score: rating.score,
           comment: rating.comment ?? undefined,
-          documentVersion: rating.documentVersion,
+          documentVersion: rating.artifactVersion ?? 0,
           createdAt: rating.createdAt,
           updatedAt: rating.updatedAt,
         },
@@ -2019,17 +2130,17 @@ Please try again or contact support if the issue persists.`
 
     return withDb.tx(async (tx) => {
       // Verify all artifacts exist and belong to the organization
-      const artifacts = await tx.document.findMany({
-        where: {
+      const artifacts = await tx.artifact.findMany({
+        where: documentWhere({
           id: { in: uniqueIds },
           organizationId,
-        },
+        }),
         select: { id: true },
       });
 
       // Check if any artifacts were not found or don't belong to the org
       if (artifacts.length !== uniqueIds.length) {
-        const foundIds = new Set(artifacts.map((a) => a.id));
+        const foundIds = new Set(artifacts.map((a: { id: string }) => a.id));
         const missingIds = uniqueIds.filter((id) => !foundIds.has(id));
         throw new Error(
           `Invalid artifact IDs: ${missingIds.join(", ")} not found in organization`
@@ -2039,7 +2150,7 @@ Please try again or contact support if the issue persists.`
       // Update sortOrder for each artifact atomically
       await Promise.all(
         uniqueIds.map((id, index) =>
-          tx.document.update({
+          tx.artifact.update({
             where: { id, organizationId },
             data: { sortOrder: index },
           })
@@ -2082,17 +2193,17 @@ Please try again or contact support if the issue persists.`
       }
 
       // Verify all artifacts exist and belong to the organization
-      const artifacts = await tx.document.findMany({
-        where: {
+      const artifacts = await tx.artifact.findMany({
+        where: documentWhere({
           id: { in: uniqueIds },
           organizationId,
-        },
+        }),
         select: { id: true },
       });
 
       // Check if any artifacts were not found or don't belong to the org
       if (artifacts.length !== uniqueIds.length) {
-        const foundIds = new Set(artifacts.map((a) => a.id));
+        const foundIds = new Set(artifacts.map((a: { id: string }) => a.id));
         const missingIds = uniqueIds.filter((id) => !foundIds.has(id));
         throw new Error(
           `Invalid artifact IDs: ${missingIds.join(", ")} not found in organization`
@@ -2100,11 +2211,11 @@ Please try again or contact support if the issue persists.`
       }
 
       // Batch update all artifacts to the target project
-      await tx.document.updateMany({
-        where: {
+      await tx.artifact.updateMany({
+        where: documentWhere({
           id: { in: uniqueIds },
           organizationId,
-        },
+        }),
         data: {
           projectId: targetProjectId,
         },
@@ -2118,22 +2229,23 @@ Please try again or contact support if the issue persists.`
    * Find all approved PRDs for a project (org-scoped).
    * Used to enumerate PRDs before batch-regenerating implementation plans.
    */
-  findApprovedPrds(
+  async findApprovedPrds(
     projectId: string,
     organizationId: string
   ): Promise<Document[]> {
-    return withDb((db) =>
-      db.document.findMany({
-        where: {
+    const artifacts = await withDb((db) =>
+      db.artifact.findMany({
+        where: documentWhere({
           projectId,
           organizationId,
-          type: DocumentType.Prd,
-          status: "APPROVED",
-        },
+          subtype: DocumentType.Prd,
+          status: DocumentStatus.Approved,
+        }),
         include: documentIncludeWithUser,
         orderBy: { createdAt: "asc" },
       })
     );
+    return artifacts.map(toDocument);
   },
 
   /**
@@ -2158,15 +2270,22 @@ Please try again or contact support if the issue persists.`
           `batchFetchDocumentTitles: too many slugs (max ${BATCH_META_MAX_SLUGS})`
         );
       }
-      const artifacts = await db.document.findMany({
-        where: {
+      const artifacts = await db.artifact.findMany({
+        where: documentWhere({
           organizationId,
           slug: { in: slugs },
-        },
-        select: { slug: true, title: true },
+        }),
+        select: { slug: true, name: true },
       });
 
-      return Object.fromEntries(artifacts.map((a) => [a.slug, a.title]));
+      return Object.fromEntries(
+        artifacts
+          .filter(
+            (a: { slug: string | null }): a is { slug: string; name: string } =>
+              a.slug !== null
+          )
+          .map((a: { slug: string; name: string }) => [a.slug, a.name])
+      );
     });
   },
 
@@ -2257,14 +2376,14 @@ Please try again or contact support if the issue persists.`
 
     // 6. Execute single transaction: new version on primary, delete entity links + secondary
     await withDb.tx(async (tx) => {
-      const currentDocument = await tx.document.findUnique({
-        where: { id: primary.id },
+      const currentDetail = await tx.documentDetail.findUnique({
+        where: { artifactId: primary.id },
         select: { latestVersion: true },
       });
-      if (!currentDocument) {
+      if (!currentDetail) {
         throw new DocumentNotFoundError();
       }
-      const nextVersion = currentDocument.latestVersion + 1;
+      const nextVersion = currentDetail.latestVersion + 1;
 
       await Promise.all([
         tx.documentVersion.create({
@@ -2275,23 +2394,17 @@ Please try again or contact support if the issue persists.`
             createdById: userId,
           },
         }),
-        tx.document.update({
-          where: { id: primary.id },
+        tx.documentDetail.update({
+          where: { artifactId: primary.id },
           data: { latestVersion: nextVersion },
         }),
       ]);
 
-      await tx.entityLink.deleteMany({
-        where: {
-          organizationId,
-          OR: [
-            { sourceId: secondary.id, sourceType: "DOCUMENT" },
-            { targetId: secondary.id, targetType: "DOCUMENT" },
-          ],
-        },
+      // ArtifactLink FK cascades on Artifact delete — deleting secondary
+      // removes its links automatically.
+      await tx.artifact.delete({
+        where: { id: secondary.id, organizationId },
       });
-
-      await tx.document.delete({ where: { id: secondary.id } });
     });
 
     // 7. Clean up Liveblocks room for deleted secondary artifact
@@ -2352,12 +2465,12 @@ Please try again or contact support if the issue persists.`
 
       // Find entity link where this artifact is the target (i.e., find its source/parent)
       const parentLink = await withDb((db) =>
-        db.entityLink.findFirst({
+        db.artifactLink.findFirst({
           where: {
             organizationId,
             targetId: currentId,
-            targetType: "DOCUMENT",
-            sourceType: "DOCUMENT",
+            target: { type: ArtifactType.DOCUMENT },
+            source: { type: ArtifactType.DOCUMENT },
           },
           select: { sourceId: true },
         })
@@ -2390,12 +2503,12 @@ Please try again or contact support if the issue persists.`
 
       // Find entity links where this artifact is the source (i.e., find its children)
       const childLinks = await withDb((db) =>
-        db.entityLink.findMany({
+        db.artifactLink.findMany({
           where: {
             organizationId,
             sourceId: currentId,
-            sourceType: "DOCUMENT",
-            targetType: "DOCUMENT",
+            source: { type: ArtifactType.DOCUMENT },
+            target: { type: ArtifactType.DOCUMENT },
           },
           select: { targetId: true },
         })
@@ -2410,9 +2523,9 @@ Please try again or contact support if the issue persists.`
 
     // Verify starting artifact exists
     const startingDocument = await withDb((db) =>
-      db.document.findUnique({
+      db.artifact.findUnique({
         where: { id: documentId, organizationId },
-        select: { id: true },
+        select: { id: true, type: true },
       })
     );
 
@@ -2477,7 +2590,7 @@ Please try again or contact support if the issue persists.`
     const earlierLoop = await withDb((db) =>
       db.loop.findFirst({
         where: {
-          documentId,
+          artifactId: documentId,
           organizationId,
           status: "COMPLETED",
           createdAt: { lte: earliestGhAction.createdAt },
@@ -2503,13 +2616,13 @@ Please try again or contact support if the issue persists.`
     organizationId: string
   ): Promise<GenerationStatus | null> {
     const artifact = await withDb((db) =>
-      db.document.findUnique({
+      db.artifact.findUnique({
         where: { id: documentId, organizationId },
-        select: { id: true, workstreamId: true },
+        select: { id: true, workstreamId: true, type: true },
       })
     );
 
-    if (!artifact) {
+    if (!artifact || artifact.type !== ArtifactType.DOCUMENT) {
       return null;
     }
 
@@ -2533,13 +2646,13 @@ Please try again or contact support if the issue persists.`
     expectedRunKey: string | null
   ): Promise<GenerationStatus | null> {
     const artifact = await withDb((db) =>
-      db.document.findUnique({
+      db.artifact.findUnique({
         where: { id: documentId, organizationId },
-        select: { id: true, workstreamId: true },
+        select: { id: true, workstreamId: true, type: true },
       })
     );
 
-    if (!artifact) {
+    if (!artifact || artifact.type !== ArtifactType.DOCUMENT) {
       return null;
     }
 
@@ -2557,9 +2670,9 @@ Please try again or contact support if the issue persists.`
     if (canDismiss) {
       await withDb((db) =>
         db.documentGenerationStatusDismissal.upsert({
-          where: { documentId: artifact.id },
+          where: { artifactId: artifact.id },
           create: {
-            documentId: artifact.id,
+            artifactId: artifact.id,
             dismissedById: userId,
             runKey: currentRunKey,
             dismissedAt: new Date(),
@@ -2600,13 +2713,14 @@ Please try again or contact support if the issue persists.`
     const { featureId, ticketTitle, selectedDocumentId } = input;
 
     const feature = await withDb((db) =>
-      db.document.findFirst({
+      db.artifact.findFirst({
         where: {
           id: featureId,
           organizationId,
-          type: DocumentType.Feature,
+          type: ArtifactType.DOCUMENT,
+          subtype: DocumentType.Feature,
         },
-        select: { id: true, title: true, projectId: true },
+        select: { id: true, name: true, projectId: true },
       })
     );
     if (!feature?.projectId) {
@@ -2614,15 +2728,14 @@ Please try again or contact support if the issue persists.`
     }
     const featureDoc = {
       id: feature.id,
-      title: feature.title,
+      title: feature.name,
       projectId: feature.projectId,
     };
 
-    // Find existing FEATURE -> PRODUCES -> ARTIFACT (implementation-plan) entity links
-    const targetLinks = await entityLinksService.findTargetLinks(
+    // Find existing FEATURE -> PRODUCES -> ARTIFACT (implementation-plan) links
+    const targetLinks = await artifactLinksService.findTargetLinks(
       organizationId,
       featureId,
-      EntityType.Document,
       LinkType.Produces
     );
 
@@ -2631,16 +2744,20 @@ Please try again or contact support if the issue persists.`
     let linkedPlans: { id: string; title: string }[] = [];
     if (linkedDocumentIds.length > 0) {
       const artifacts = await withDb((db) =>
-        db.document.findMany({
+        db.artifact.findMany({
           where: {
             id: { in: linkedDocumentIds },
             organizationId,
-            type: DocumentType.ImplementationPlan,
+            type: ArtifactType.DOCUMENT,
+            subtype: DocumentType.ImplementationPlan,
           },
-          select: { id: true, title: true },
+          select: { id: true, name: true },
         })
       );
-      linkedPlans = artifacts.map((a) => ({ id: a.id, title: a.title }));
+      linkedPlans = artifacts.map((a: { id: string; name: string }) => ({
+        id: a.id,
+        title: a.name,
+      }));
     }
 
     const documentIdResult = await resolveOrCreatePlanDocument({
@@ -2670,7 +2787,7 @@ Please try again or contact support if the issue persists.`
           : null;
 
       const slugResult = await withDb((db) =>
-        db.document.findUnique({
+        db.artifact.findUnique({
           where: { id: documentId, organizationId },
           select: { slug: true },
         })
@@ -2745,12 +2862,15 @@ async function resolveOrCreatePlanDocument(opts: {
 
     // Verify it's an implementation plan (type guard)
     const artifact = await withDb((db) =>
-      db.document.findUnique({
+      db.artifact.findUnique({
         where: { id: selectedDocumentId, organizationId },
-        select: { type: true },
+        select: { type: true, subtype: true },
       })
     );
-    if (artifact?.type !== DocumentType.ImplementationPlan) {
+    if (
+      artifact?.type !== ArtifactType.DOCUMENT ||
+      artifact.subtype !== DocumentType.ImplementationPlan
+    ) {
       return { outcome: "invalid-document", existingDocuments: linkedPlans };
     }
 
@@ -2758,25 +2878,21 @@ async function resolveOrCreatePlanDocument(opts: {
     const allLinkedPlanIds = linkedPlans.map((p) => p.id);
     await withDb.tx(async (tx) => {
       if (allLinkedPlanIds.length > 0) {
-        await tx.entityLink.deleteMany({
+        await tx.artifactLink.deleteMany({
           where: {
             organizationId,
             sourceId: featureId,
-            sourceType: EntityType.Document,
             targetId: { in: allLinkedPlanIds },
-            targetType: EntityType.Document,
             linkType: LinkType.Produces,
           },
         });
       }
 
-      await tx.entityLink.create({
+      await tx.artifactLink.create({
         data: {
           organizationId,
           sourceId: featureId,
-          sourceType: EntityType.Document,
           targetId: selectedDocumentId,
-          targetType: EntityType.Document,
           linkType: LinkType.Produces,
         },
       });
@@ -2800,7 +2916,6 @@ async function resolveOrCreatePlanDocument(opts: {
     title,
     content: "",
     sourceId: featureId,
-    sourceType: EntityType.Document,
     projectId: feature.projectId,
     status: DocumentStatus.Draft,
   };
@@ -2814,10 +2929,37 @@ async function resolveOrCreatePlanDocument(opts: {
   return { documentId: newDocument.id };
 }
 
-// Artifact shape returned by findWithRegenerationContext (used by launch helpers)
-type DocumentWithRegenerationContext = NonNullable<
-  Awaited<ReturnType<typeof documentsService.findWithRegenerationContext>>
->;
+// Artifact shape returned by findWithRegenerationContext (used by launch helpers).
+// Returns a Document wire shape augmented with the workstream + PRD documents
+// needed for plan/loop context resolution.
+export type DocumentWithRegenerationContext = Document & {
+  workstream:
+    | (WorkstreamSummary & {
+        project: WorkstreamProject | null;
+        documents: Document[];
+      })
+    | null;
+};
+
+type WorkstreamSummary = {
+  id: string;
+  organizationId: string;
+  projectId: string;
+  title: string;
+  description: string | null;
+  state: WorkstreamState;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+// Matches the Prisma `Project` model shape with `settings` kept as the raw
+// JSON value (consumers coerce via getProjectSettings).
+type WorkstreamProject = {
+  id: string;
+  organizationId: string;
+  name: string;
+  settings: unknown;
+};
 
 export type StartPlanLoopFromLocalResult =
   | { outcome: "needs-selection"; documents: { id: string; title: string }[] }
@@ -2865,24 +3007,16 @@ export type SourceContext = {
 
 // Type for raw Prisma result before transformation.
 // Must stay in sync with documentIncludeWithContext / documentIncludeWithSnippet
-// in artifact-utils.ts. versions is optional because findAll uses
-// documentIncludeWithSnippet (includes versions) while findById/findBySlug use
-// documentIncludeWithContext (omits versions — they load content via /versions).
-type RawDocumentWithContext = PrismaDocument & {
-  assignee: {
-    id: string;
-    email: string;
-    firstName: string | null;
-    lastName: string | null;
-    avatarUrl: string | null;
-  } | null;
-  approver: {
-    id: string;
-    email: string;
-    firstName: string | null;
-    lastName: string | null;
-    avatarUrl: string | null;
-  } | null;
+// in document-utils.ts. The inner `document` detail carries the approver and
+// (optionally) the latest version snippet.
+type RawDocumentWithContext = PrismaArtifact & {
+  assignee: BasicUser | null;
+  document:
+    | (PrismaDocumentDetail & {
+        approver: BasicUser | null;
+        versions?: { content: string | null }[];
+      })
+    | null;
   workstream: { id: string; title: string; state: WorkstreamState } | null;
   project: {
     id: string;
@@ -2890,7 +3024,6 @@ type RawDocumentWithContext = PrismaDocument & {
     name: string;
     teams: { team: { id: string; name: string } }[];
   } | null;
-  versions?: { content: string | null }[];
 };
 
 /**
@@ -2910,6 +3043,41 @@ async function validateUserInOrg(
   if (!user) {
     throw new Error("Invalid user ID: user not found in this organization");
   }
+}
+
+/**
+ * Resolve the organization's templates-sentinel project id, creating the
+ * sentinel lazily on the first template write for orgs that were skipped by
+ * the 2a backfill (zero-user orgs at migration time). Decision #10 on the
+ * plan: templates live on a hidden sentinel project per org, filtered out of
+ * user-facing project queries.
+ */
+async function resolveTemplatesSentinelProjectId(
+  organizationId: string,
+  userId: string
+): Promise<string> {
+  const existing = await withDb((db) =>
+    db.project.findFirst({
+      where: { organizationId, isTemplatesSentinel: true },
+      select: { id: true },
+    })
+  );
+  if (existing) {
+    return existing.id;
+  }
+  const created = await withDb((db) =>
+    db.project.create({
+      data: {
+        organizationId,
+        name: "Templates",
+        slug: `templates-${organizationId.slice(0, 8)}`,
+        createdById: userId,
+        isTemplatesSentinel: true,
+      },
+      select: { id: true },
+    })
+  );
+  return created.id;
 }
 
 /**
@@ -2972,8 +3140,18 @@ async function createDocumentRecord(
 ): Promise<Document | null> {
   const isTemplate = input.type === DocumentType.Template;
 
-  // Resolve projectId from workstream if needed (non-templates only)
-  if (!(isTemplate || input.projectId)) {
+  // Resolve projectId:
+  // - Templates live on the org's templates-sentinel project (Decision #10).
+  //   Artifact.projectId is NOT NULL, so we must resolve the sentinel here
+  //   before splitDocumentPayload hands data to the Prisma create.
+  // - Non-templates fall back to the workstream's project when the caller
+  //   didn't pass a projectId directly.
+  if (isTemplate) {
+    input.projectId = await resolveTemplatesSentinelProjectId(
+      organizationId,
+      userId
+    );
+  } else if (!input.projectId) {
     const workstream = await tx.workstream.findUnique({
       where: { id: input.workstreamId, organizationId },
     });
@@ -2991,47 +3169,56 @@ async function createDocumentRecord(
   }
 
   const slug = await generateArtifactSlug(organizationId, input.type);
-  const { sourceId, sourceType, sourceVersion, content, ...documentInput } =
-    input;
+  // Exclude fields that don't belong on Artifact/DocumentDetail payload:
+  // sourceId (used for link creation after insert) and content (written to
+  // DocumentVersion). The remainder is handed to splitDocumentPayload, which
+  // separates Artifact vs DocumentDetail columns.
+  const { sourceId, content, ...documentInput } = input;
 
-  const artifact = await tx.document.create({
+  const { artifact: artifactData, detail: detailData } = splitDocumentPayload({
+    ...documentInput,
+    slug,
+    latestVersion: 1,
+    assigneeId: resolvedAssigneeId,
+    status: documentInput.status ?? DocumentStatus.Draft,
+  });
+
+  // splitDocumentPayload now returns Prisma-typed update inputs. Compose the
+  // required create fields (organizationId, createdById, nested detail) on
+  // top; Prisma validates the shape.
+  const createdArtifact = await tx.artifact.create({
     data: {
-      ...documentInput,
+      ...artifactData,
       organizationId,
-      slug,
-      latestVersion: 1,
       createdById: userId,
-      assigneeId: resolvedAssigneeId,
-    },
+      document: { create: detailData },
+    } as Prisma.ArtifactUncheckedCreateInput,
     include: documentIncludeWithUser,
   });
 
-  // Create initial artifact version
+  // Create initial artifact version (documentId field on DocumentVersion maps
+  // to DocumentDetail.artifactId, which equals the parent artifact.id).
   await tx.documentVersion.create({
     data: {
-      documentId: artifact.id,
+      documentId: createdArtifact.id,
       version: 1,
       content,
       createdById: userId,
     },
   });
 
-  if (sourceId && sourceType) {
-    await tx.entityLink.create({
+  if (sourceId) {
+    await tx.artifactLink.create({
       data: {
         organizationId,
         sourceId,
-        sourceType,
-        sourceVersion,
-        targetId: artifact.id,
-        targetType: EntityType.Document,
-        targetVersion: artifact.latestVersion,
+        targetId: createdArtifact.id,
         linkType: LinkType.Produces,
       },
     });
   }
 
-  return artifact;
+  return toDocument(createdArtifact as ArtifactWithDocumentDetail);
 }
 
 /**
@@ -3053,7 +3240,7 @@ function extractContentSnippet(content: string): string | null {
   return stripped.length > 300 ? `${stripped.slice(0, 300)}…` : stripped;
 }
 
-/** Transform Prisma result to flatten teams structure for API response */
+/** Transform Artifact + detail into the DocumentWithWorkstream wire shape. */
 function toDocumentWithWorkstream(
   artifact: RawDocumentWithContext,
   maps?: {
@@ -3065,11 +3252,14 @@ function toDocumentWithWorkstream(
   const pullRequest = artifact.workstreamId
     ? (maps?.pullRequestMap?.get(artifact.workstreamId) ?? null)
     : null;
-  const rawContent = artifact.versions?.[0]?.content ?? null;
+  const rawContent = artifact.document?.versions?.[0]?.content ?? null;
   const snippet = rawContent ? extractContentSnippet(rawContent) : null;
 
+  const base = toDocument(artifact);
+
   return {
-    ...artifact,
+    ...base,
+    workstream: artifact.workstream ?? null,
     project: artifact.project
       ? {
           id: artifact.project.id,
@@ -3174,19 +3364,56 @@ Please merge the primary and secondary artifacts into a single unified document.
   return prompt;
 }
 
-/** Build Map keyed by workstreamId (one PR per workstream — most recent wins). */
-function buildPullRequestMap(
-  records: (PullRequestInfo & {
-    workstreamId: string | null;
+/**
+ * Build Map keyed by workstreamId (one PR per workstream — most recent wins).
+ * Input: PR-typed Artifact rows with `pullRequest` detail included.
+ */
+function buildPullRequestMapFromArtifacts(
+  artifacts: (PrismaArtifact & {
+    pullRequest: import("@repo/database").PullRequestDetail | null;
   })[]
 ): Map<string, PullRequestInfo> {
   const map = new Map<string, PullRequestInfo>();
-  for (const pr of records) {
-    if (pr.workstreamId && !map.has(pr.workstreamId)) {
-      map.set(pr.workstreamId, pr);
+  for (const artifact of artifacts) {
+    if (!artifact.workstreamId || map.has(artifact.workstreamId)) {
+      continue;
+    }
+    const info = pullRequestArtifactToInfo(artifact, {
+      externalLinkId: artifact.id,
+    });
+    if (info) {
+      map.set(artifact.workstreamId, info);
     }
   }
   return map;
+}
+
+/**
+ * Flatten a workstream row with nested `artifacts` (PRD documents) into the
+ * legacy `{ ...workstream, documents: Document[] }` shape used by callers.
+ */
+function workstreamToWithDocuments<
+  W extends {
+    artifacts: (PrismaArtifact & {
+      assignee: BasicUser | null;
+      document: (PrismaDocumentDetail & { approver: BasicUser | null }) | null;
+    })[];
+  },
+>(
+  workstream: W | null
+):
+  | (Omit<W, "artifacts"> & {
+      documents: Document[];
+      artifacts: W["artifacts"];
+    })
+  | null {
+  if (!workstream) {
+    return null;
+  }
+  return {
+    ...workstream,
+    documents: workstream.artifacts.map(toDocument),
+  };
 }
 
 type EarliestRecord = { id: string; createdAt: Date } | null;
@@ -3199,7 +3426,7 @@ function findEarliestCompletedLoop(
   return withDb((db) =>
     db.loop.findFirst({
       where: {
-        documentId,
+        artifactId: documentId,
         organizationId,
         status: "COMPLETED",
       },
@@ -3296,7 +3523,7 @@ async function getDismissedFailureRunKey(
 ): Promise<string | null> {
   const dismissal = await withDb((db) =>
     db.documentGenerationStatusDismissal.findUnique({
-      where: { documentId },
+      where: { artifactId: documentId },
       select: { runKey: true },
     })
   );
@@ -3328,14 +3555,14 @@ async function suppressDismissedFailuresForDocumentMap(
 
   const dismissals = await withDb((db) =>
     db.documentGenerationStatusDismissal.findMany({
-      where: { documentId: { in: documentIds } },
-      select: { documentId: true, runKey: true },
+      where: { artifactId: { in: documentIds } },
+      select: { artifactId: true, runKey: true },
     })
   );
 
   const dismissedRunKeysByDocument = new Map<string, string>();
   for (const dismissal of dismissals) {
-    dismissedRunKeysByDocument.set(dismissal.documentId, dismissal.runKey);
+    dismissedRunKeysByDocument.set(dismissal.artifactId, dismissal.runKey);
   }
 
   for (const [documentId, status] of generationStatusMap) {
@@ -3369,11 +3596,11 @@ async function mergeLoopStatuses(
   // can prefer an active loop over a newer-but-terminal one.
   const loops = await withDb((db) =>
     db.loop.findMany({
-      where: { documentId: { in: documentIds } },
+      where: { artifactId: { in: documentIds } },
       orderBy: { createdAt: "desc" },
       select: {
         id: true,
-        documentId: true,
+        artifactId: true,
         status: true,
         command: true,
         startedAt: true,
@@ -3386,7 +3613,7 @@ async function mergeLoopStatuses(
   );
 
   for (const loop of loops) {
-    if (!loop.documentId) {
+    if (!loop.artifactId) {
       continue;
     }
 
@@ -3396,9 +3623,9 @@ async function mergeLoopStatuses(
     }
 
     const loopGenStatus = toLoopGenerationStatus(loop, mappedStatus);
-    const existing = generationStatusMap.get(loop.documentId) ?? null;
+    const existing = generationStatusMap.get(loop.artifactId) ?? null;
     generationStatusMap.set(
-      loop.documentId,
+      loop.artifactId,
       pickBestStatus(existing, loopGenStatus)
     );
   }
@@ -3453,7 +3680,7 @@ async function fetchLoopStatus(
   // active loop over a newer-but-terminal one.
   const loops = await withDb((db) =>
     db.loop.findMany({
-      where: { documentId },
+      where: { artifactId: documentId },
       orderBy: { createdAt: "desc" },
       select: {
         id: true,

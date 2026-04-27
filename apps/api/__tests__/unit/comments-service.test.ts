@@ -10,6 +10,9 @@ vi.mock("@repo/collaboration/room-utils", () => ({
   parseArtifactRoomId: vi.fn(),
   parseDocumentRoomId: vi.fn((roomId: string) => {
     const parts = roomId.split(":");
+    if (parts.length < 3 || parts[1] !== "artifact") {
+      throw new Error("Invalid room ID format");
+    }
     return { organizationId: parts[0], slug: parts[2] };
   }),
   generateDocumentRoomId: vi.fn(),
@@ -71,7 +74,7 @@ describe("commentsService", () => {
     it("upserts a thread with entity from room lookup", async () => {
       const mockDb = {
         commentThread: { upsert: vi.fn().mockResolvedValue({ id: "db-th-1" }) },
-        document: {
+        artifact: {
           findUnique: vi.fn().mockResolvedValue({ id: "artifact-1" }),
         },
       };
@@ -96,7 +99,7 @@ describe("commentsService", () => {
             source: ThreadSource.Liveblocks,
             externalId: THREAD_ID,
             roomId: ROOM_ID,
-            entityId: "artifact-1",
+            artifactId: "artifact-1",
           }),
         })
       );
@@ -121,8 +124,7 @@ describe("commentsService", () => {
       expect(mockDb.commentThread.upsert).toHaveBeenCalledWith(
         expect.objectContaining({
           create: expect.objectContaining({
-            entityId: null,
-            entityType: null,
+            artifactId: null,
           }),
         })
       );

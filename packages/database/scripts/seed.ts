@@ -1,524 +1,334 @@
 #!/usr/bin/env tsx
 /**
  * Seed script for LOCAL DEVELOPMENT ONLY.
- * Creates:
- * - 2 Teams
- * - 1 Project per team
- * - PRD and Implementation Plan artifacts for each project
- * - Connects everything to the existing user
  *
- * Run: pnpm seed (from packages/database)
+ * Seeds an Artifact-shaped fixture set against the new (post-PLN-321) schema:
+ *   - Test organization + user + project
+ *   - Templates sentinel project (isTemplatesSentinel: true)
+ *   - PRD-typed DOCUMENT artifact (+ DocumentDetail + DocumentVersion)
+ *   - Implementation-Plan DOCUMENT artifact, linked to the PRD via ArtifactLink.PRODUCES
+ *   - Feature DOCUMENT artifact, linked to the PRD via ArtifactLink.PRODUCES
+ *
+ * Run: pnpm --filter=@repo/database exec tsx scripts/seed.ts
  */
 
 import "dotenv/config";
-import { PrismaPg } from "@prisma/adapter-pg";
-import pg from "pg";
-import { PrismaClient } from "../generated/client";
+import { ArtifactSubtype, ArtifactType, LinkType, withDb } from "../index";
 
-function getClient(): InstanceType<typeof PrismaClient> {
-  const databaseUrl = process.env.DATABASE_URL;
+const SEED_ORG_SLUG = "seed-org";
+const SEED_ORG_NAME = "Seed Org";
+const SEED_ORG_CLERK_ID = "org_seed_local_dev";
+const SEED_USER_EMAIL = "seed-user@local.dev";
+const SEED_USER_CLERK_ID = "user_seed_local_dev";
+const SEED_PROJECT_SLUG = "seed-project";
+const SEED_PROJECT_NAME = "Seed Project";
+const TEMPLATES_SENTINEL_NAME = "Templates";
+const PRD_SLUG = "seed-prd";
+const PLAN_SLUG = "seed-implementation-plan";
+const FEATURE_SLUG = "seed-feature";
 
-  if (!databaseUrl) {
-    throw new Error("DATABASE_URL environment variable is required");
-  }
-
-  const url = new URL(databaseUrl);
-  url.searchParams.delete("sslmode");
-
-  const pool = new pg.Pool({
-    connectionString: url.toString(),
-    ssl: false,
-  });
-
-  const adapter = new PrismaPg(pool);
-  return new PrismaClient({ adapter });
-}
-
-async function main() {
-  console.log("🌱 Starting seed...\n");
-
-  const prisma = getClient();
-
-  try {
-    // 1. Find or create organization and user for local dev
-    const existingUser = await prisma.user.findFirst({
-      include: { organization: true },
-    });
-
-    if (!existingUser) {
-      console.log("❌ No user found in database.\n");
-      console.log("To seed the database, you must first sign in via the app:");
-      console.log("  1. Start the dev server: pnpm dev");
-      console.log("  2. Open http://localhost:3000 and sign in with Clerk");
-      console.log("  3. This will sync your Clerk user to the database");
-      console.log("  4. Then run: pnpm seed\n");
-      process.exit(1);
-    }
-
-    console.log(`✓ Using user: ${existingUser.email}`);
-    const organizationId = existingUser.organizationId;
-    const userId = existingUser.id;
-
-    // 2. Create teams
-    console.log("\n📁 Creating teams...");
-
-    const team1 = await prisma.team.upsert({
-      where: {
-        organizationId_slug: {
-          organizationId,
-          slug: "engineering",
-        },
-      },
-      update: {},
-      create: {
-        organizationId,
-        name: "Engineering",
-        slug: "engineering",
-      },
-    });
-    console.log(`   ✓ Team: ${team1.name}`);
-
-    const team2 = await prisma.team.upsert({
-      where: {
-        organizationId_slug: {
-          organizationId,
-          slug: "product",
-        },
-      },
-      update: {},
-      create: {
-        organizationId,
-        name: "Product",
-        slug: "product",
-      },
-    });
-    console.log(`   ✓ Team: ${team2.name}`);
-
-    // 3. Add user as OWNER to both teams
-    console.log("\n👤 Adding user to teams...");
-
-    await prisma.teamMember.upsert({
-      where: {
-        teamId_userId: {
-          teamId: team1.id,
-          userId,
-        },
-      },
-      update: { role: "OWNER" },
-      create: {
-        teamId: team1.id,
-        userId,
-        role: "OWNER",
-      },
-    });
-    console.log(`   ✓ Added to ${team1.name} as OWNER`);
-
-    await prisma.teamMember.upsert({
-      where: {
-        teamId_userId: {
-          teamId: team2.id,
-          userId,
-        },
-      },
-      update: { role: "OWNER" },
-      create: {
-        teamId: team2.id,
-        userId,
-        role: "OWNER",
-      },
-    });
-    console.log(`   ✓ Added to ${team2.name} as OWNER`);
-
-    // 4. Create projects
-    console.log("\n📂 Creating projects...");
-
-    // Check if projects already exist
-    let project1 = await prisma.project.findFirst({
-      where: {
-        organizationId,
-        name: "User Authentication System",
-      },
-    });
-
-    project1 ??= await prisma.project.create({
-      data: {
-        organizationId,
-        name: "User Authentication System",
-        description:
-          "Implement secure authentication with OAuth2, MFA, and session management",
-        priority: "HIGH",
-        assigneeId: userId,
-        createdById: userId,
-        targetDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days from now
-      },
-    });
-    console.log(`   ✓ Project: ${project1.name}`);
-
-    let project2 = await prisma.project.findFirst({
-      where: {
-        organizationId,
-        name: "Analytics Dashboard",
-      },
-    });
-
-    project2 ??= await prisma.project.create({
-      data: {
-        organizationId,
-        name: "Analytics Dashboard",
-        description:
-          "Build a real-time analytics dashboard with customizable widgets",
-        priority: "MEDIUM",
-        assigneeId: userId,
-        createdById: userId,
-        targetDate: new Date(Date.now() + 60 * 24 * 60 * 60 * 1000), // 60 days from now
-      },
-    });
-    console.log(`   ✓ Project: ${project2.name}`);
-
-    // 5. Link projects to teams
-    console.log("\n🔗 Linking projects to teams...");
-
-    await prisma.projectTeam.upsert({
-      where: {
-        projectId_teamId: {
-          projectId: project1.id,
-          teamId: team1.id,
-        },
-      },
-      update: {},
-      create: {
-        projectId: project1.id,
-        teamId: team1.id,
-      },
-    });
-    console.log(`   ✓ ${project1.name} → ${team1.name}`);
-
-    await prisma.projectTeam.upsert({
-      where: {
-        projectId_teamId: {
-          projectId: project2.id,
-          teamId: team2.id,
-        },
-      },
-      update: {},
-      create: {
-        projectId: project2.id,
-        teamId: team2.id,
-      },
-    });
-    console.log(`   ✓ ${project2.name} → ${team2.name}`);
-
-    // 6. Create artifacts (PRD and Implementation Plan for each project)
-    console.log("\n📄 Creating artifacts...");
-
-    // Project 1 artifacts
-    const prd1Content = `# User Authentication System - Product Requirements Document
+const PRD_BODY = `# Seed PRD
 
 ## Overview
-This document outlines the requirements for implementing a secure user authentication system.
+Minimal PRD fixture for local development. Demonstrates an Artifact-shaped
+DOCUMENT with subtype=PRD and a first DocumentVersion.
 
 ## Goals
-- Implement secure OAuth2-based authentication
-- Support multi-factor authentication (MFA)
-- Provide seamless session management
+- Exercise the Artifact + DocumentDetail + DocumentVersion write path.
+- Provide a stable link target for the seeded Implementation Plan and Feature.
 
 ## User Stories
+1. As a developer running the app locally, I want seeded PRD/plan/feature
+   artifacts so that I can hit document pages without manual authoring.
 
-### US-1: User Sign Up
-As a new user, I want to create an account using my email or social login so that I can access the platform.
+## Out of Scope
+- Production-realistic content. This body exists only to make the seed
+  artifact navigable in the UI.
+`;
 
-**Acceptance Criteria:**
-- Users can sign up with email/password
-- Users can sign up with Google, GitHub, or Microsoft
-- Email verification is required
-- Password must meet security requirements (8+ chars, mixed case, numbers)
+const PLAN_BODY = `# Seed Implementation Plan
 
-### US-2: User Sign In
-As a registered user, I want to sign in securely so that I can access my account.
+## Phase 1
+- Boot the app locally.
+- Confirm the seeded PRD and Plan load.
 
-**Acceptance Criteria:**
-- Support email/password login
-- Support social login
-- Implement rate limiting for failed attempts
-- Show helpful error messages
+## Phase 2
+- Follow the PRODUCES link back to the PRD.
+- Confirm the Feature artifact is linked off the same PRD.
+`;
 
-### US-3: Multi-Factor Authentication
-As a security-conscious user, I want to enable MFA so that my account is more secure.
+const FEATURE_BODY = `# Seed Feature
 
-**Acceptance Criteria:**
-- Support TOTP-based MFA (Google Authenticator, etc.)
-- Support SMS-based MFA as backup
-- Allow users to enable/disable MFA
-- Provide recovery codes
+Minimal feature artifact linked off the seed PRD.
+`;
 
-## Non-Functional Requirements
-- Authentication response time < 500ms
-- Support 10,000 concurrent sessions
-- 99.9% uptime SLA
-- GDPR and SOC2 compliant`;
+function log(message: string): void {
+  process.stdout.write(`${message}\n`);
+}
 
-    const implPlan1Content = `# User Authentication System - Implementation Plan
+async function main(): Promise<void> {
+  log("Seeding local dev fixtures...");
 
-## Phase 1: Foundation (Week 1-2)
+  await withDb.tx(async (tx) => {
+    // Organization -----------------------------------------------------------
+    const organization = await tx.organization.upsert({
+      where: { clerkId: SEED_ORG_CLERK_ID },
+      update: {},
+      create: {
+        clerkId: SEED_ORG_CLERK_ID,
+        name: SEED_ORG_NAME,
+        slug: SEED_ORG_SLUG,
+      },
+    });
+    log(`  organization: ${organization.name} (${organization.id})`);
 
-### Task 1.1: Database Schema
-- Create users table with auth fields
-- Create sessions table
-- Create MFA tokens table
-- Set up migrations
+    // User -------------------------------------------------------------------
+    const user = await tx.user.upsert({
+      where: {
+        organizationId_email: {
+          organizationId: organization.id,
+          email: SEED_USER_EMAIL,
+        },
+      },
+      update: {},
+      create: {
+        clerkId: SEED_USER_CLERK_ID,
+        organizationId: organization.id,
+        email: SEED_USER_EMAIL,
+        firstName: "Seed",
+        lastName: "User",
+      },
+    });
+    log(`  user: ${user.email} (${user.id})`);
 
-### Task 1.2: Auth Service Setup
-- Initialize auth service module
-- Configure Clerk/Auth0 integration
-- Set up JWT token handling
+    // Primary project --------------------------------------------------------
+    const project = await tx.project.upsert({
+      where: {
+        organizationId_slug: {
+          organizationId: organization.id,
+          slug: SEED_PROJECT_SLUG,
+        },
+      },
+      update: {},
+      create: {
+        organizationId: organization.id,
+        name: SEED_PROJECT_NAME,
+        slug: SEED_PROJECT_SLUG,
+        description: "Local dev seed project",
+        createdById: user.id,
+        assigneeId: user.id,
+      },
+    });
+    log(`  project: ${project.name} (${project.id})`);
 
-## Phase 2: Core Authentication (Week 3-4)
+    // Templates sentinel project --------------------------------------------
+    const existingSentinel = await tx.project.findFirst({
+      where: { organizationId: organization.id, isTemplatesSentinel: true },
+    });
+    const sentinel =
+      existingSentinel ??
+      (await tx.project.create({
+        data: {
+          organizationId: organization.id,
+          name: TEMPLATES_SENTINEL_NAME,
+          slug: `templates-${organization.id.slice(0, 8)}`,
+          createdById: user.id,
+          isTemplatesSentinel: true,
+        },
+      }));
+    log(`  templates sentinel project: ${sentinel.id}`);
 
-### Task 2.1: Email/Password Auth
-- Implement registration endpoint
-- Implement login endpoint
-- Add password hashing with bcrypt
-- Email verification flow
+    // PRD artifact -----------------------------------------------------------
+    const existingPrd = await tx.artifact.findFirst({
+      where: {
+        organizationId: organization.id,
+        slug: PRD_SLUG,
+        type: ArtifactType.DOCUMENT,
+      },
+    });
+    const prd =
+      existingPrd ??
+      (await tx.artifact.create({
+        data: {
+          organizationId: organization.id,
+          projectId: project.id,
+          type: ArtifactType.DOCUMENT,
+          subtype: ArtifactSubtype.PRD,
+          name: "Seed PRD",
+          slug: PRD_SLUG,
+          status: "APPROVED",
+          createdById: user.id,
+          assigneeId: user.id,
+          document: {
+            create: {
+              latestVersion: 1,
+              versions: {
+                create: {
+                  version: 1,
+                  content: PRD_BODY,
+                  createdById: user.id,
+                },
+              },
+            },
+          },
+        },
+      }));
+    log(`  PRD artifact: ${prd.id}`);
 
-### Task 2.2: Social Login
-- Google OAuth integration
-- GitHub OAuth integration
-- Microsoft OAuth integration
-- Account linking logic
-
-## Phase 3: MFA Implementation (Week 5-6)
-
-### Task 3.1: TOTP Setup
-- TOTP secret generation
-- QR code generation for authenticator apps
-- Verification logic
-- Recovery codes generation
-
-### Task 3.2: Session Management
-- Secure session tokens
-- Session invalidation
-- Concurrent session handling
-- Remember me functionality
-
-## Technical Decisions
-- Use Clerk for managed auth
-- JWT for session tokens
-- bcrypt for password hashing
-
-## Testing Strategy
-- Unit tests for all auth functions
-- Integration tests for OAuth flows
-- Load testing for 10k concurrent users
-- Security penetration testing`;
-
-    // Helper to upsert artifact with initial version content
-    async function upsertArtifact(data: {
-      projectId: string;
-      type: "PRD" | "IMPLEMENTATION_PLAN";
-      slug: string;
-      title: string;
-      content: string;
-    }) {
-      const existing = await prisma.document.findFirst({
-        where: {
-          projectId: data.projectId,
-          type: data.type,
-          slug: data.slug,
+    // If the PRD already existed, make sure it has a DocumentDetail + v1
+    // version row (idempotency for older partial seeds).
+    await tx.documentDetail.upsert({
+      where: { artifactId: prd.id },
+      update: {},
+      create: { artifactId: prd.id, latestVersion: 1 },
+    });
+    const existingPrdVersion = await tx.documentVersion.findUnique({
+      where: { documentId_version: { documentId: prd.id, version: 1 } },
+    });
+    if (!existingPrdVersion) {
+      await tx.documentVersion.create({
+        data: {
+          documentId: prd.id,
+          version: 1,
+          content: PRD_BODY,
+          createdById: user.id,
         },
       });
-
-      if (existing) {
-        // Update the latest version's content
-        await prisma.documentVersion.updateMany({
-          where: {
-            documentId: existing.id,
-            version: existing.latestVersion,
-          },
-          data: { content: data.content },
-        });
-      } else {
-        // Create artifact + initial version in a transaction
-        await prisma.$transaction(async (tx) => {
-          const doc = await tx.document.create({
-            data: {
-              organizationId,
-              projectId: data.projectId,
-              type: data.type,
-              title: data.title,
-              slug: data.slug,
-              status: "APPROVED",
-              createdById: userId,
-              latestVersion: 1,
-            },
-          });
-
-          await tx.documentVersion.create({
-            data: {
-              documentId: doc.id,
-              version: 1,
-              content: data.content,
-            },
-          });
-        });
-      }
     }
 
-    await upsertArtifact({
-      projectId: project1.id,
-      type: "PRD",
-      slug: "seed-auth-prd",
-      title: "User Authentication System PRD",
-      content: prd1Content,
+    // Implementation Plan artifact ------------------------------------------
+    const existingPlan = await tx.artifact.findFirst({
+      where: {
+        organizationId: organization.id,
+        slug: PLAN_SLUG,
+        type: ArtifactType.DOCUMENT,
+      },
     });
-    console.log(`   ✓ PRD for ${project1.name}`);
-
-    await upsertArtifact({
-      projectId: project1.id,
-      type: "IMPLEMENTATION_PLAN",
-      slug: "seed-auth-plan",
-      title: "User Authentication System Implementation Plan",
-      content: implPlan1Content,
+    const plan =
+      existingPlan ??
+      (await tx.artifact.create({
+        data: {
+          organizationId: organization.id,
+          projectId: project.id,
+          type: ArtifactType.DOCUMENT,
+          subtype: ArtifactSubtype.IMPLEMENTATION_PLAN,
+          name: "Seed Implementation Plan",
+          slug: PLAN_SLUG,
+          status: "DRAFT",
+          createdById: user.id,
+          assigneeId: user.id,
+          document: {
+            create: {
+              latestVersion: 1,
+              versions: {
+                create: {
+                  version: 1,
+                  content: PLAN_BODY,
+                  createdById: user.id,
+                },
+              },
+            },
+          },
+        },
+      }));
+    log(`  Implementation Plan artifact: ${plan.id}`);
+    await tx.documentDetail.upsert({
+      where: { artifactId: plan.id },
+      update: {},
+      create: { artifactId: plan.id, latestVersion: 1 },
     });
-    console.log(`   ✓ Implementation Plan for ${project1.name}`);
 
-    // Project 2 artifacts
-    const prd2Content = `# Analytics Dashboard - Product Requirements Document
-
-## Overview
-Build a real-time analytics dashboard that provides actionable insights through customizable widgets.
-
-## Goals
-- Display real-time metrics and KPIs
-- Support customizable dashboard layouts
-- Enable data export and reporting
-
-## User Stories
-
-### US-1: Dashboard View
-As a user, I want to view my analytics dashboard so that I can monitor key metrics at a glance.
-
-**Acceptance Criteria:**
-- Display configurable widgets
-- Real-time data updates (< 5 second refresh)
-- Responsive design for all screen sizes
-- Dark/light mode support
-
-### US-2: Widget Customization
-As a power user, I want to customize my dashboard widgets so that I see the most relevant data.
-
-**Acceptance Criteria:**
-- Drag-and-drop widget arrangement
-- Resize widgets
-- Configure data sources per widget
-- Save dashboard layouts
-
-### US-3: Data Export
-As an analyst, I want to export dashboard data so that I can perform deeper analysis.
-
-**Acceptance Criteria:**
-- Export to CSV, Excel, PDF
-- Schedule recurring exports
-- Email delivery option
-- Custom date range selection
-
-## Non-Functional Requirements
-- Page load time < 2 seconds
-- Support 1000 concurrent dashboard views
-- Data accuracy within 5 second delay
-- Mobile-responsive design`;
-
-    const implPlan2Content = `# Analytics Dashboard - Implementation Plan
-
-## Phase 1: Infrastructure (Week 1-2)
-
-### Task 1.1: Data Pipeline
-- Set up event streaming infrastructure
-- Configure data aggregation jobs
-- Create materialized views for fast queries
-
-### Task 1.2: API Layer
-- Design GraphQL schema for dashboard queries
-- Implement real-time subscriptions
-- Add caching layer
-
-## Phase 2: Dashboard Core (Week 3-4)
-
-### Task 2.1: Widget System
-- Create widget component architecture
-- Implement base widget types:
-  - Line chart
-  - Bar chart
-  - Pie chart
-  - Number card
-  - Table
-- Add widget configuration UI
-
-### Task 2.2: Layout Engine
-- Implement grid-based layout system
-- Drag-and-drop functionality
-- Widget resizing
-- Layout persistence
-
-## Phase 3: Features (Week 5-6)
-
-### Task 3.1: Real-time Updates
-- WebSocket connection management
-- Incremental data updates
-- Optimistic UI updates
-- Connection recovery
-
-### Task 3.2: Export System
-- CSV/Excel generation
-- PDF report generation
-- Scheduled export jobs
-- Email delivery integration
-
-## Technical Stack
-- React with TanStack Query for data fetching
-- Recharts for visualizations
-- react-grid-layout for dashboard layouts
-- WebSocket for real-time updates
-- Node.js workers for export jobs
-
-## Testing Strategy
-- Component tests for all widgets
-- E2E tests for user flows
-- Performance testing for 1000 concurrent users
-- Visual regression testing`;
-
-    await upsertArtifact({
-      projectId: project2.id,
-      type: "PRD",
-      slug: "seed-analytics-prd",
-      title: "Analytics Dashboard PRD",
-      content: prd2Content,
+    // Feature artifact -------------------------------------------------------
+    const existingFeature = await tx.artifact.findFirst({
+      where: {
+        organizationId: organization.id,
+        slug: FEATURE_SLUG,
+        type: ArtifactType.DOCUMENT,
+      },
     });
-    console.log(`   ✓ PRD for ${project2.name}`);
-
-    await upsertArtifact({
-      projectId: project2.id,
-      type: "IMPLEMENTATION_PLAN",
-      slug: "seed-analytics-plan",
-      title: "Analytics Dashboard Implementation Plan",
-      content: implPlan2Content,
+    const feature =
+      existingFeature ??
+      (await tx.artifact.create({
+        data: {
+          organizationId: organization.id,
+          projectId: project.id,
+          type: ArtifactType.DOCUMENT,
+          subtype: ArtifactSubtype.FEATURE,
+          name: "Seed Feature",
+          slug: FEATURE_SLUG,
+          status: "DRAFT",
+          createdById: user.id,
+          assigneeId: user.id,
+          document: {
+            create: {
+              latestVersion: 1,
+              versions: {
+                create: {
+                  version: 1,
+                  content: FEATURE_BODY,
+                  createdById: user.id,
+                },
+              },
+            },
+          },
+        },
+      }));
+    log(`  Feature artifact: ${feature.id}`);
+    await tx.documentDetail.upsert({
+      where: { artifactId: feature.id },
+      update: {},
+      create: { artifactId: feature.id, latestVersion: 1 },
     });
-    console.log(`   ✓ Implementation Plan for ${project2.name}`);
 
-    console.log("\n✅ Seed completed successfully!\n");
-    console.log("Summary:");
-    console.log(`   • 2 Teams: ${team1.name}, ${team2.name}`);
-    console.log(`   • 2 Projects: ${project1.name}, ${project2.name}`);
-    console.log("   • 4 Artifacts: 2 PRDs, 2 Implementation Plans");
-    console.log(`   • All connected to user: ${existingUser.email}\n`);
-  } catch (error) {
-    console.error("\n❌ Seed failed:", error);
-    throw error;
-  } finally {
-    await prisma.$disconnect();
-  }
+    // ArtifactLinks (PRD -> Plan, PRD -> Feature) ----------------------------
+    await tx.artifactLink.upsert({
+      where: {
+        sourceId_targetId_linkType: {
+          sourceId: prd.id,
+          targetId: plan.id,
+          linkType: LinkType.PRODUCES,
+        },
+      },
+      update: {},
+      create: {
+        organizationId: organization.id,
+        sourceId: prd.id,
+        targetId: plan.id,
+        linkType: "PRODUCES",
+      },
+    });
+    log("  ArtifactLink: PRD -> Plan (PRODUCES)");
+
+    await tx.artifactLink.upsert({
+      where: {
+        sourceId_targetId_linkType: {
+          sourceId: prd.id,
+          targetId: feature.id,
+          linkType: LinkType.PRODUCES,
+        },
+      },
+      update: {},
+      create: {
+        organizationId: organization.id,
+        sourceId: prd.id,
+        targetId: feature.id,
+        linkType: "PRODUCES",
+      },
+    });
+    log("  ArtifactLink: PRD -> Feature (PRODUCES)");
+  });
+
+  log("Seed completed.");
 }
 
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+main()
+  .then(() => process.exit(0))
+  .catch((error: unknown) => {
+    process.stderr.write(
+      `Seed failed: ${error instanceof Error ? error.message : String(error)}\n`
+    );
+    if (error instanceof Error && error.stack) {
+      process.stderr.write(`${error.stack}\n`);
+    }
+    process.exit(1);
+  });

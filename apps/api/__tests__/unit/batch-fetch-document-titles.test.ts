@@ -8,6 +8,11 @@ import { mockWithDbCall } from "../utils/db-helpers";
 
 vi.mock("@repo/database", () => ({
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
+  ArtifactType: {
+    DOCUMENT: "DOCUMENT",
+    PULL_REQUEST: "PULL_REQUEST",
+    DEPLOYMENT: "DEPLOYMENT",
+  },
 }));
 
 import { withDb } from "@repo/database";
@@ -20,10 +25,10 @@ describe("documentsService.batchFetchDocumentTitles", () => {
 
   it("slugs that exist returns correct mapping", async () => {
     const mockDb = {
-      document: {
+      artifact: {
         findMany: vi.fn().mockResolvedValue([
-          { slug: "prd-abc", title: "My PRD" },
-          { slug: "plan-xyz", title: "My Plan" },
+          { slug: "prd-abc", name: "My PRD" },
+          { slug: "plan-xyz", name: "My Plan" },
         ]),
       },
     };
@@ -38,21 +43,22 @@ describe("documentsService.batchFetchDocumentTitles", () => {
       "prd-abc": "My PRD",
       "plan-xyz": "My Plan",
     });
-    expect(mockDb.document.findMany).toHaveBeenCalledWith({
+    expect(mockDb.artifact.findMany).toHaveBeenCalledWith({
       where: {
         organizationId: "org-1",
         slug: { in: ["prd-abc", "plan-xyz"] },
+        type: "DOCUMENT",
       },
-      select: { slug: true, title: true },
+      select: { slug: true, name: true },
     });
   });
 
   it("slugs that do not exist are omitted from result", async () => {
     const mockDb = {
-      document: {
+      artifact: {
         findMany: vi
           .fn()
-          .mockResolvedValue([{ slug: "prd-abc", title: "My PRD" }]),
+          .mockResolvedValue([{ slug: "prd-abc", name: "My PRD" }]),
       },
     };
     mockWithDbCall(mockDb);
@@ -76,7 +82,7 @@ describe("documentsService.batchFetchDocumentTitles", () => {
   it("input exceeding max slugs throws", async () => {
     const slugs = Array.from({ length: 51 }, (_, i) => `slug-${i}`);
     const mockDb = {
-      document: {
+      artifact: {
         findMany: vi.fn(),
       },
     };
@@ -85,17 +91,17 @@ describe("documentsService.batchFetchDocumentTitles", () => {
     await expect(
       documentsService.batchFetchDocumentTitles("org-1", slugs)
     ).rejects.toThrow("batchFetchDocumentTitles: too many slugs");
-    expect(mockDb.document.findMany).not.toHaveBeenCalled();
+    expect(mockDb.artifact.findMany).not.toHaveBeenCalled();
   });
 
   it("slugs from a different organization are absent from returned map", async () => {
     // Only org-1's artifacts are returned; org-2 artifacts are not
     // because the query is scoped to organizationId: "org-1"
     const mockDb = {
-      document: {
+      artifact: {
         findMany: vi
           .fn()
-          .mockResolvedValue([{ slug: "prd-abc", title: "Org 1 PRD" }]),
+          .mockResolvedValue([{ slug: "prd-abc", name: "Org 1 PRD" }]),
       },
     };
     mockWithDbCall(mockDb);
@@ -109,7 +115,7 @@ describe("documentsService.batchFetchDocumentTitles", () => {
     expect(result).toEqual({ "prd-abc": "Org 1 PRD" });
     expect(result).not.toHaveProperty("other-org-slug");
     // Verify the query was org-scoped
-    expect(mockDb.document.findMany).toHaveBeenCalledWith(
+    expect(mockDb.artifact.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({ organizationId: "org-1" }),
       })

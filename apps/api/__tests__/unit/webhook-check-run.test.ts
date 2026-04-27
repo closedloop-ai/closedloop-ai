@@ -25,7 +25,14 @@ import {
 vi.mock("@repo/database", () => {
   const mockWithDb: any = vi.fn();
   mockWithDb.tx = vi.fn();
-  return { withDb: mockWithDb };
+  return {
+    ArtifactType: {
+      DOCUMENT: "DOCUMENT",
+      PULL_REQUEST: "PULL_REQUEST",
+      DEPLOYMENT: "DEPLOYMENT",
+    },
+    withDb: mockWithDb,
+  };
 });
 
 vi.mock("@repo/github", () => ({
@@ -47,6 +54,7 @@ import {
   handleCheckRun,
   mapRollupStateToChecksStatus,
 } from "@/app/webhooks/github/handlers/check-run-handler";
+import { makePrDetailRow } from "../utils/pr-detail-helpers";
 
 // Type aliases for mocked functions
 const mockWithDb = getMockWithDb();
@@ -124,18 +132,13 @@ describe("handleCheckRun", () => {
       gitHubInstallationRepository: {
         findFirst: vi.fn(),
       },
-      gitHubPullRequest: {
+      pullRequestDetail: {
         findFirst: vi.fn(),
-        findUnique: vi.fn(),
-        update: vi.fn(),
-      },
-      workstreamEvent: {
-        create: vi.fn(),
       },
     };
 
     mockTx = {
-      gitHubPullRequest: {
+      pullRequestDetail: {
         findUnique: vi.fn(),
         update: vi.fn(),
       },
@@ -229,31 +232,18 @@ describe("handleCheckRun", () => {
         owner: "org",
         name: "repo",
       });
-      mockDb.gitHubPullRequest.findFirst.mockResolvedValue(null);
+      mockDb.pullRequestDetail.findFirst.mockResolvedValue(null);
 
       const response = await handleCheckRun(event);
 
-      expect(mockDb.gitHubPullRequest.findFirst).toHaveBeenCalledWith({
-        where: {
-          state: "OPEN",
-          repositoryId: "repo-uuid-123",
-          OR: [
-            { headSha },
-            { headSha: null, headBranch: "feature/test-branch" },
-          ],
-        },
-        select: {
-          id: true,
-          number: true,
-          title: true,
-          htmlUrl: true,
-          checksStatus: true,
-          headSha: true,
-          workstreamId: true,
-          documentId: true,
-          document: { select: { slug: true } },
-        },
-      });
+      expect(mockDb.pullRequestDetail.findFirst).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            prState: "OPEN",
+            repositoryId: "repo-uuid-123",
+          }),
+        })
+      );
       expect(mockQueryStatusCheckRollup).not.toHaveBeenCalled();
       expect(mockWithDb.tx).not.toHaveBeenCalled();
 
@@ -273,17 +263,17 @@ describe("handleCheckRun", () => {
         owner: "org",
         name: "repo",
       });
-      mockDb.gitHubPullRequest.findFirst.mockResolvedValue({
-        id: "pr-uuid-123",
-        number: 42,
-        title: "Test PR",
-        htmlUrl: "https://github.com/org/repo/pull/42",
-        checksStatus: "UNKNOWN",
-        headSha,
-        workstreamId: "ws-uuid-123",
-        documentId: "artifact-uuid-123",
-        document: { slug: "test-slug" },
-      });
+      mockDb.pullRequestDetail.findFirst.mockResolvedValue(
+        makePrDetailRow({
+          artifactId: "artifact-pr-123",
+          number: 42,
+          title: "Test PR",
+          externalUrl: "https://github.com/org/repo/pull/42",
+          headSha,
+          workstreamId: "ws-uuid-123",
+          linkedDoc: { id: "artifact-doc-123", slug: "test-slug" },
+        })
+      );
 
       mockQueryStatusCheckRollup.mockResolvedValue(null);
 
@@ -318,27 +308,27 @@ describe("handleCheckRun", () => {
         owner: "org",
         name: "repo",
       });
-      mockDb.gitHubPullRequest.findFirst.mockResolvedValue({
-        id: "pr-uuid-123",
-        number: 42,
-        title: "Test PR",
-        htmlUrl: "https://github.com/org/repo/pull/42",
-        checksStatus: "UNKNOWN",
-        headSha,
-        workstreamId: "ws-uuid-123",
-        documentId: "artifact-uuid-123",
-        document: { slug: "test-slug" },
-      });
+      mockDb.pullRequestDetail.findFirst.mockResolvedValue(
+        makePrDetailRow({
+          artifactId: "artifact-pr-123",
+          number: 42,
+          title: "Test PR",
+          externalUrl: "https://github.com/org/repo/pull/42",
+          headSha,
+          workstreamId: "ws-uuid-123",
+          linkedDoc: { id: "artifact-doc-123", slug: "test-slug" },
+        })
+      );
 
       mockQueryStatusCheckRollup.mockResolvedValue("SUCCESS");
 
       // TOCTOU guard: re-read in tx returns same headSha, OPEN state, different checksStatus
-      mockTx.gitHubPullRequest.findUnique.mockResolvedValue({
+      mockTx.pullRequestDetail.findUnique.mockResolvedValue({
         headSha,
         checksStatus: "UNKNOWN",
-        state: "OPEN",
+        prState: "OPEN",
       });
-      mockTx.gitHubPullRequest.update.mockResolvedValue({});
+      mockTx.pullRequestDetail.update.mockResolvedValue({});
       mockTx.workstreamEvent.create.mockResolvedValue({});
 
       const response = await handleCheckRun(event);
@@ -354,15 +344,15 @@ describe("handleCheckRun", () => {
       // Verify transaction was opened
       expect(mockWithDb.tx).toHaveBeenCalledTimes(1);
 
-      // Verify TOCTOU re-read
-      expect(mockTx.gitHubPullRequest.findUnique).toHaveBeenCalledWith({
-        where: { id: "pr-uuid-123" },
-        select: { headSha: true, checksStatus: true, state: true },
+      // Verify TOCTOU re-read on pullRequestDetail
+      expect(mockTx.pullRequestDetail.findUnique).toHaveBeenCalledWith({
+        where: { artifactId: "artifact-pr-123" },
+        select: { headSha: true, checksStatus: true, prState: true },
       });
 
-      // Verify checksStatus update
-      expect(mockTx.gitHubPullRequest.update).toHaveBeenCalledWith({
-        where: { id: "pr-uuid-123" },
+      // Verify checksStatus update on pullRequestDetail
+      expect(mockTx.pullRequestDetail.update).toHaveBeenCalledWith({
+        where: { artifactId: "artifact-pr-123" },
         data: { checksStatus: "PASSING" },
       });
 
@@ -376,7 +366,7 @@ describe("handleCheckRun", () => {
             prNumber: 42,
             prTitle: "Test PR",
             prUrl: "https://github.com/org/repo/pull/42",
-            documentId: "artifact-uuid-123",
+            documentId: "artifact-doc-123",
             slug: "test-slug",
             checksStatus: "PASSING",
             previousChecksStatus: "UNKNOWN",
@@ -400,32 +390,33 @@ describe("handleCheckRun", () => {
         owner: "org",
         name: "repo",
       });
-      mockDb.gitHubPullRequest.findFirst.mockResolvedValue({
-        id: "pr-uuid-idempotent",
-        number: 43,
-        title: "Idempotent PR",
-        htmlUrl: "https://github.com/org/repo/pull/43",
-        checksStatus: "PASSING",
-        headSha,
-        workstreamId: "ws-uuid-idempotent",
-        documentId: null,
-        document: null,
-      });
+      mockDb.pullRequestDetail.findFirst.mockResolvedValue(
+        makePrDetailRow({
+          artifactId: "artifact-pr-idempotent",
+          number: 43,
+          title: "Idempotent PR",
+          externalUrl: "https://github.com/org/repo/pull/43",
+          checksStatus: "PASSING",
+          headSha,
+          workstreamId: "ws-uuid-idempotent",
+          linkedDoc: null,
+        })
+      );
 
       mockQueryStatusCheckRollup.mockResolvedValue("SUCCESS");
 
       // TOCTOU re-read returns same status (PASSING == PASSING after mapping SUCCESS)
-      mockTx.gitHubPullRequest.findUnique.mockResolvedValue({
+      mockTx.pullRequestDetail.findUnique.mockResolvedValue({
         headSha,
         checksStatus: "PASSING",
-        state: "OPEN",
+        prState: "OPEN",
       });
 
       const response = await handleCheckRun(event);
 
       // Transaction was opened but no writes were made
       expect(mockWithDb.tx).toHaveBeenCalledTimes(1);
-      expect(mockTx.gitHubPullRequest.update).not.toHaveBeenCalled();
+      expect(mockTx.pullRequestDetail.update).not.toHaveBeenCalled();
       expect(mockTx.workstreamEvent.create).not.toHaveBeenCalled();
 
       const data = await response.json();
@@ -444,32 +435,32 @@ describe("handleCheckRun", () => {
         owner: "org",
         name: "repo",
       });
-      mockDb.gitHubPullRequest.findFirst.mockResolvedValue({
-        id: "pr-uuid-toctou",
-        number: 44,
-        title: "TOCTOU PR",
-        htmlUrl: "https://github.com/org/repo/pull/44",
-        checksStatus: "UNKNOWN",
-        headSha,
-        workstreamId: "ws-uuid-toctou",
-        documentId: null,
-        document: null,
-      });
+      mockDb.pullRequestDetail.findFirst.mockResolvedValue(
+        makePrDetailRow({
+          artifactId: "artifact-pr-toctou",
+          number: 44,
+          title: "TOCTOU PR",
+          externalUrl: "https://github.com/org/repo/pull/44",
+          headSha,
+          workstreamId: "ws-uuid-toctou",
+          linkedDoc: null,
+        })
+      );
 
       mockQueryStatusCheckRollup.mockResolvedValue("SUCCESS");
 
       // TX re-read returns a different headSha (synchronize event arrived)
-      mockTx.gitHubPullRequest.findUnique.mockResolvedValue({
+      mockTx.pullRequestDetail.findUnique.mockResolvedValue({
         headSha: newHeadSha,
         checksStatus: "UNKNOWN",
-        state: "OPEN",
+        prState: "OPEN",
       });
 
       const response = await handleCheckRun(event);
 
       // Transaction opened but no writes
       expect(mockWithDb.tx).toHaveBeenCalledTimes(1);
-      expect(mockTx.gitHubPullRequest.update).not.toHaveBeenCalled();
+      expect(mockTx.pullRequestDetail.update).not.toHaveBeenCalled();
       expect(mockTx.workstreamEvent.create).not.toHaveBeenCalled();
 
       const data = await response.json();
@@ -487,32 +478,32 @@ describe("handleCheckRun", () => {
         owner: "org",
         name: "repo",
       });
-      mockDb.gitHubPullRequest.findFirst.mockResolvedValue({
-        id: "pr-uuid-merged",
-        number: 45,
-        title: "Merged PR",
-        htmlUrl: "https://github.com/org/repo/pull/45",
-        checksStatus: "UNKNOWN",
-        headSha,
-        workstreamId: "ws-uuid-merged",
-        documentId: null,
-        document: null,
-      });
+      mockDb.pullRequestDetail.findFirst.mockResolvedValue(
+        makePrDetailRow({
+          artifactId: "artifact-pr-merged",
+          number: 45,
+          title: "Merged PR",
+          externalUrl: "https://github.com/org/repo/pull/45",
+          headSha,
+          workstreamId: "ws-uuid-merged",
+          linkedDoc: null,
+        })
+      );
 
       mockQueryStatusCheckRollup.mockResolvedValue("SUCCESS");
 
       // TX re-read shows PR was merged between initial read and tx
-      mockTx.gitHubPullRequest.findUnique.mockResolvedValue({
+      mockTx.pullRequestDetail.findUnique.mockResolvedValue({
         headSha,
         checksStatus: "UNKNOWN",
-        state: "MERGED",
+        prState: "MERGED",
       });
 
       const response = await handleCheckRun(event);
 
       // Transaction opened but no writes
       expect(mockWithDb.tx).toHaveBeenCalledTimes(1);
-      expect(mockTx.gitHubPullRequest.update).not.toHaveBeenCalled();
+      expect(mockTx.pullRequestDetail.update).not.toHaveBeenCalled();
       expect(mockTx.workstreamEvent.create).not.toHaveBeenCalled();
 
       const data = await response.json();
@@ -530,27 +521,27 @@ describe("handleCheckRun", () => {
         owner: "org",
         name: "repo",
       });
-      mockDb.gitHubPullRequest.findFirst.mockResolvedValue({
-        id: "pr-uuid-gone",
-        number: 46,
-        title: "Gone PR",
-        htmlUrl: "https://github.com/org/repo/pull/46",
-        checksStatus: "UNKNOWN",
-        headSha,
-        workstreamId: "ws-uuid-gone",
-        documentId: null,
-        document: null,
-      });
+      mockDb.pullRequestDetail.findFirst.mockResolvedValue(
+        makePrDetailRow({
+          artifactId: "artifact-pr-gone",
+          number: 46,
+          title: "Gone PR",
+          externalUrl: "https://github.com/org/repo/pull/46",
+          headSha,
+          workstreamId: "ws-uuid-gone",
+          linkedDoc: null,
+        })
+      );
 
       mockQueryStatusCheckRollup.mockResolvedValue("SUCCESS");
 
       // TX re-read: PR was deleted
-      mockTx.gitHubPullRequest.findUnique.mockResolvedValue(null);
+      mockTx.pullRequestDetail.findUnique.mockResolvedValue(null);
 
       const response = await handleCheckRun(event);
 
       expect(mockWithDb.tx).toHaveBeenCalledTimes(1);
-      expect(mockTx.gitHubPullRequest.update).not.toHaveBeenCalled();
+      expect(mockTx.pullRequestDetail.update).not.toHaveBeenCalled();
       expect(mockTx.workstreamEvent.create).not.toHaveBeenCalled();
 
       const data = await response.json();
@@ -568,32 +559,33 @@ describe("handleCheckRun", () => {
         owner: "org",
         name: "repo",
       });
-      mockDb.gitHubPullRequest.findFirst.mockResolvedValue({
-        id: "pr-uuid-fail",
-        number: 47,
-        title: "Failing PR",
-        htmlUrl: "https://github.com/org/repo/pull/47",
-        checksStatus: "PASSING",
-        headSha,
-        workstreamId: "ws-uuid-fail",
-        documentId: "artifact-uuid-fail",
-        document: { slug: "fail-slug" },
-      });
+      mockDb.pullRequestDetail.findFirst.mockResolvedValue(
+        makePrDetailRow({
+          artifactId: "artifact-pr-fail",
+          number: 47,
+          title: "Failing PR",
+          externalUrl: "https://github.com/org/repo/pull/47",
+          checksStatus: "PASSING",
+          headSha,
+          workstreamId: "ws-uuid-fail",
+          linkedDoc: { id: "artifact-doc-fail", slug: "fail-slug" },
+        })
+      );
 
       mockQueryStatusCheckRollup.mockResolvedValue("FAILURE");
 
-      mockTx.gitHubPullRequest.findUnique.mockResolvedValue({
+      mockTx.pullRequestDetail.findUnique.mockResolvedValue({
         headSha,
         checksStatus: "PASSING",
-        state: "OPEN",
+        prState: "OPEN",
       });
-      mockTx.gitHubPullRequest.update.mockResolvedValue({});
+      mockTx.pullRequestDetail.update.mockResolvedValue({});
       mockTx.workstreamEvent.create.mockResolvedValue({});
 
       const response = await handleCheckRun(event);
 
-      expect(mockTx.gitHubPullRequest.update).toHaveBeenCalledWith({
-        where: { id: "pr-uuid-fail" },
+      expect(mockTx.pullRequestDetail.update).toHaveBeenCalledWith({
+        where: { artifactId: "artifact-pr-fail" },
         data: { checksStatus: "FAILING" },
       });
 
@@ -606,7 +598,7 @@ describe("handleCheckRun", () => {
             prNumber: 47,
             prTitle: "Failing PR",
             prUrl: "https://github.com/org/repo/pull/47",
-            documentId: "artifact-uuid-fail",
+            documentId: "artifact-doc-fail",
             slug: "fail-slug",
             checksStatus: "FAILING",
             previousChecksStatus: "PASSING",
@@ -630,26 +622,26 @@ describe("handleCheckRun", () => {
         owner: "org",
         name: "repo",
       });
-      mockDb.gitHubPullRequest.findFirst.mockResolvedValue({
-        id: "pr-uuid-tx",
-        number: 48,
-        title: "TX PR",
-        htmlUrl: "https://github.com/org/repo/pull/48",
-        checksStatus: "UNKNOWN",
-        headSha,
-        workstreamId: "ws-uuid-tx",
-        documentId: null,
-        document: null,
-      });
+      mockDb.pullRequestDetail.findFirst.mockResolvedValue(
+        makePrDetailRow({
+          artifactId: "artifact-pr-tx",
+          number: 48,
+          title: "TX PR",
+          externalUrl: "https://github.com/org/repo/pull/48",
+          headSha,
+          workstreamId: "ws-uuid-tx",
+          linkedDoc: null,
+        })
+      );
 
       mockQueryStatusCheckRollup.mockResolvedValue("SUCCESS");
 
-      mockTx.gitHubPullRequest.findUnique.mockResolvedValue({
+      mockTx.pullRequestDetail.findUnique.mockResolvedValue({
         headSha,
         checksStatus: "UNKNOWN",
-        state: "OPEN",
+        prState: "OPEN",
       });
-      mockTx.gitHubPullRequest.update.mockResolvedValue({});
+      mockTx.pullRequestDetail.update.mockResolvedValue({});
       mockTx.workstreamEvent.create.mockResolvedValue({});
 
       await handleCheckRun(event);

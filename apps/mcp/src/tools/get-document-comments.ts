@@ -43,8 +43,7 @@ export function registerGetDocumentComments(
         const mappedThreads = threads.map((thread) => ({
           id: thread.id,
           status: thread.status,
-          entityId: thread.entityId,
-          entityType: thread.entityType,
+          artifactId: thread.artifactId,
           createdAt: thread.createdAt,
           comments: thread.comments.map((c) => ({
             id: c.id,

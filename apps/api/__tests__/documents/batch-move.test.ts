@@ -2,7 +2,8 @@
  * Integration tests for batch move artifacts service method.
  * Tests cross-project artifact moves with atomicity.
  */
-import { withDb } from "@repo/database";
+import { DocumentStatus } from "@repo/api/src/types/document";
+import { ArtifactSubtype, ArtifactType, withDb } from "@repo/database";
 import { keys } from "@repo/database/keys";
 import { describe, expect, it } from "vitest";
 import { generateSlug } from "@/app/documents/document-utils";
@@ -32,11 +33,13 @@ describe.skipIf(!hasDatabase)("batchMove artifacts", () => {
 
       // Create 3 artifacts in project A
       const artifact1 = await withDb((db) =>
-        db.document.create({
+        db.artifact.create({
           data: {
-            title: "Artifact 1",
+            name: "Artifact 1",
             slug: generateSlug(),
-            type: "PRD",
+            type: ArtifactType.DOCUMENT,
+            subtype: ArtifactSubtype.PRD,
+            status: DocumentStatus.Draft,
             organizationId: orgId,
             createdById: user.id,
             projectId: projectAId,
@@ -45,11 +48,13 @@ describe.skipIf(!hasDatabase)("batchMove artifacts", () => {
       );
 
       const artifact2 = await withDb((db) =>
-        db.document.create({
+        db.artifact.create({
           data: {
-            title: "Artifact 2",
+            name: "Artifact 2",
             slug: generateSlug(),
-            type: "PRD",
+            type: ArtifactType.DOCUMENT,
+            subtype: ArtifactSubtype.PRD,
+            status: DocumentStatus.Draft,
             organizationId: orgId,
             createdById: user.id,
             projectId: projectAId,
@@ -58,11 +63,13 @@ describe.skipIf(!hasDatabase)("batchMove artifacts", () => {
       );
 
       const artifact3 = await withDb((db) =>
-        db.document.create({
+        db.artifact.create({
           data: {
-            title: "Artifact 3",
+            name: "Artifact 3",
             slug: generateSlug(),
-            type: "PRD",
+            type: ArtifactType.DOCUMENT,
+            subtype: ArtifactSubtype.PRD,
+            status: DocumentStatus.Draft,
             organizationId: orgId,
             createdById: user.id,
             projectId: projectAId,
@@ -79,7 +86,7 @@ describe.skipIf(!hasDatabase)("batchMove artifacts", () => {
 
       // Verify all artifacts now have projectId: projectBId
       const artifacts = await withDb((db) =>
-        db.document.findMany({
+        db.artifact.findMany({
           where: {
             id: { in: [artifact1.id, artifact2.id, artifact3.id] },
           },
@@ -103,11 +110,13 @@ describe.skipIf(!hasDatabase)("batchMove artifacts", () => {
       const fakeProjectId = "01FAKE000000000000000000";
 
       const artifact = await withDb((db) =>
-        db.document.create({
+        db.artifact.create({
           data: {
-            title: "Artifact",
+            name: "Artifact",
             slug: generateSlug(),
-            type: "PRD",
+            type: ArtifactType.DOCUMENT,
+            subtype: ArtifactSubtype.PRD,
+            status: DocumentStatus.Draft,
             organizationId: orgId,
             createdById: user.id,
             projectId: projectAId,

@@ -18,6 +18,11 @@ import { mockWithDbTx as setupMockWithDbTx } from "../utils/db-helpers";
 
 // Mock modules before importing
 vi.mock("@repo/database", () => ({
+  ArtifactType: {
+    DOCUMENT: "DOCUMENT",
+    PULL_REQUEST: "PULL_REQUEST",
+    DEPLOYMENT: "DEPLOYMENT",
+  },
   withDb: vi.fn(),
 }));
 
@@ -29,6 +34,7 @@ import {
   createReview,
   createSender,
 } from "../fixtures/github-webhook-fixtures";
+import { makePrDetailRow } from "../utils/pr-detail-helpers";
 
 // Mock database transaction client
 let mockTx: any;
@@ -42,9 +48,9 @@ describe("handlePullRequestReview", () => {
       gitHubInstallationRepository: {
         findFirst: vi.fn(),
       },
-      gitHubPullRequest: {
+      pullRequestDetail: {
         findUnique: vi.fn(),
-        update: vi.fn(),
+        update: vi.fn().mockResolvedValue({}),
       },
       gitHubPRReview: {
         upsert: vi.fn().mockResolvedValue({}),
@@ -84,32 +90,27 @@ describe("handlePullRequestReview", () => {
         sender: createSender(),
       } as any;
 
-      // Mock repository lookup
       mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
         id: "repo-uuid-123",
       });
 
-      // Mock PR lookup with null reviewDecision
-      mockTx.gitHubPullRequest.findUnique.mockResolvedValue({
-        id: "pr-uuid-456",
-        workstreamId: "ws-uuid-789",
-        documentId: "artifact-uuid-123",
-        reviewDecision: null,
-        document: { slug: "plan-feature-x" },
-      });
-
-      // Mock update
-      mockTx.gitHubPullRequest.update.mockResolvedValue({});
+      // PR detail lookup with null reviewDecision initially
+      mockTx.pullRequestDetail.findUnique.mockResolvedValue(
+        makePrDetailRow({
+          artifactId: "artifact-pr-456",
+          reviewDecision: null,
+          workstreamId: "ws-uuid-789",
+          linkedDoc: { id: "artifact-doc-123", slug: "plan-feature-x" },
+        })
+      );
 
       // Mock per-reviewer review query (after upsert, this reviewer's APPROVED is the only review)
       mockTx.gitHubPRReview.findMany.mockResolvedValue([{ state: "APPROVED" }]);
 
-      // Mock event creation
       mockTx.workstreamEvent.create.mockResolvedValue({});
 
       await handlePullRequestReview(event);
 
-      // Verify repository lookup
       expect(
         mockTx.gitHubInstallationRepository.findFirst
       ).toHaveBeenCalledWith({
@@ -117,34 +118,28 @@ describe("handlePullRequestReview", () => {
         select: { id: true },
       });
 
-      // Verify PR lookup
-      expect(mockTx.gitHubPullRequest.findUnique).toHaveBeenCalledWith({
-        where: {
-          repositoryId_number: {
-            repositoryId: "repo-uuid-123",
-            number: 42,
+      expect(mockTx.pullRequestDetail.findUnique).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            repositoryId_number: {
+              repositoryId: "repo-uuid-123",
+              number: 42,
+            },
           },
-        },
-        select: {
-          id: true,
-          workstreamId: true,
-          documentId: true,
-          reviewDecision: true,
-          document: { select: { slug: true } },
-        },
-      });
+        })
+      );
 
       // Verify per-reviewer upsert
       expect(mockTx.gitHubPRReview.upsert).toHaveBeenCalledWith(
         expect.objectContaining({
           where: {
             pullRequestId_authorLogin: {
-              pullRequestId: "pr-uuid-456",
+              pullRequestId: "artifact-pr-456",
               authorLogin: "reviewer",
             },
           },
           create: expect.objectContaining({
-            pullRequestId: "pr-uuid-456",
+            pullRequestId: "artifact-pr-456",
             authorLogin: "reviewer",
             state: "APPROVED",
           }),
@@ -154,9 +149,9 @@ describe("handlePullRequestReview", () => {
         })
       );
 
-      // Verify aggregate PR update with APPROVED decision
-      expect(mockTx.gitHubPullRequest.update).toHaveBeenCalledWith({
-        where: { id: "pr-uuid-456" },
+      // Aggregate PR detail update with APPROVED decision (via recomputeAndUpdateAggregate)
+      expect(mockTx.pullRequestDetail.update).toHaveBeenCalledWith({
+        where: { artifactId: "artifact-pr-456" },
         data: { reviewDecision: "APPROVED" },
       });
 
@@ -177,7 +172,7 @@ describe("handlePullRequestReview", () => {
             prUrl: "https://github.com/owner/test-repo/pull/1",
             reviewUrl:
               "https://github.com/owner/test-repo/pull/1#pullrequestreview-1",
-            documentId: "artifact-uuid-123",
+            documentId: "artifact-doc-123",
             documentSlug: "plan-feature-x",
           },
         },
@@ -210,15 +205,15 @@ describe("handlePullRequestReview", () => {
         id: "repo-uuid-123",
       });
 
-      mockTx.gitHubPullRequest.findUnique.mockResolvedValue({
-        id: "pr-uuid-789",
-        workstreamId: "ws-uuid-abc",
-        documentId: null,
-        reviewDecision: null,
-        document: null,
-      });
+      mockTx.pullRequestDetail.findUnique.mockResolvedValue(
+        makePrDetailRow({
+          artifactId: "artifact-pr-789",
+          reviewDecision: null,
+          workstreamId: "ws-uuid-abc",
+          linkedDoc: null,
+        })
+      );
 
-      mockTx.gitHubPullRequest.update.mockResolvedValue({});
       mockTx.gitHubPRReview.findMany.mockResolvedValue([
         { state: "CHANGES_REQUESTED" },
       ]);
@@ -226,8 +221,8 @@ describe("handlePullRequestReview", () => {
 
       await handlePullRequestReview(event);
 
-      expect(mockTx.gitHubPullRequest.update).toHaveBeenCalledWith({
-        where: { id: "pr-uuid-789" },
+      expect(mockTx.pullRequestDetail.update).toHaveBeenCalledWith({
+        where: { artifactId: "artifact-pr-789" },
         data: { reviewDecision: "CHANGES_REQUESTED" },
       });
 
@@ -280,16 +275,16 @@ describe("handlePullRequestReview", () => {
         id: "repo-uuid-dismiss",
       });
 
-      // PR has existing CHANGES_REQUESTED decision
-      mockTx.gitHubPullRequest.findUnique.mockResolvedValue({
-        id: "pr-uuid-dismiss",
-        workstreamId: "ws-uuid-dismiss",
-        documentId: "artifact-uuid-dismiss",
-        reviewDecision: "CHANGES_REQUESTED",
-        document: { slug: "plan-docs" },
-      });
+      // PR detail has existing CHANGES_REQUESTED decision
+      mockTx.pullRequestDetail.findUnique.mockResolvedValue(
+        makePrDetailRow({
+          artifactId: "artifact-pr-dismiss",
+          reviewDecision: "CHANGES_REQUESTED",
+          workstreamId: "ws-uuid-dismiss",
+          linkedDoc: { id: "artifact-doc-dismiss", slug: "plan-docs" },
+        })
+      );
 
-      mockTx.gitHubPullRequest.update.mockResolvedValue({});
       mockTx.gitHubPRReview.findMany.mockResolvedValue([
         { state: "DISMISSED" },
       ]);
@@ -301,7 +296,7 @@ describe("handlePullRequestReview", () => {
         expect.objectContaining({
           where: {
             pullRequestId_authorLogin: {
-              pullRequestId: "pr-uuid-dismiss",
+              pullRequestId: "artifact-pr-dismiss",
               authorLogin: "reviewer",
             },
           },
@@ -310,8 +305,8 @@ describe("handlePullRequestReview", () => {
       );
 
       // Aggregate should be null (no active reviews after dismissal)
-      expect(mockTx.gitHubPullRequest.update).toHaveBeenCalledWith({
-        where: { id: "pr-uuid-dismiss" },
+      expect(mockTx.pullRequestDetail.update).toHaveBeenCalledWith({
+        where: { artifactId: "artifact-pr-dismiss" },
         data: { reviewDecision: null },
       });
 
@@ -355,15 +350,15 @@ describe("handlePullRequestReview", () => {
         id: "repo-uuid-priority",
       });
 
-      mockTx.gitHubPullRequest.findUnique.mockResolvedValue({
-        id: "pr-uuid-priority",
-        workstreamId: "ws-uuid-priority",
-        documentId: null,
-        reviewDecision: "CHANGES_REQUESTED",
-        document: null,
-      });
+      mockTx.pullRequestDetail.findUnique.mockResolvedValue(
+        makePrDetailRow({
+          artifactId: "artifact-pr-priority",
+          reviewDecision: "CHANGES_REQUESTED",
+          workstreamId: "ws-uuid-priority",
+          linkedDoc: null,
+        })
+      );
 
-      mockTx.gitHubPullRequest.update.mockResolvedValue({});
       // After upsert: reviewer-A has CHANGES_REQUESTED, reviewer (current) has COMMENTED
       mockTx.gitHubPRReview.findMany.mockResolvedValue([
         { state: "CHANGES_REQUESTED" },
@@ -377,8 +372,8 @@ describe("handlePullRequestReview", () => {
       expect(mockTx.gitHubPRReview.upsert).toHaveBeenCalled();
 
       // Aggregate should be CHANGES_REQUESTED (highest priority across all reviewers)
-      expect(mockTx.gitHubPullRequest.update).toHaveBeenCalledWith({
-        where: { id: "pr-uuid-priority" },
+      expect(mockTx.pullRequestDetail.update).toHaveBeenCalledWith({
+        where: { artifactId: "artifact-pr-priority" },
         data: { reviewDecision: "CHANGES_REQUESTED" },
       });
 
@@ -410,16 +405,15 @@ describe("handlePullRequestReview", () => {
         id: "repo-uuid-dismiss-priority",
       });
 
-      mockTx.gitHubPullRequest.findUnique.mockResolvedValue({
-        id: "pr-uuid-dismiss-priority",
-        workstreamId: "ws-uuid-dismiss-priority",
-        documentId: null,
-        reviewDecision: "CHANGES_REQUESTED",
-        document: null,
-      });
+      mockTx.pullRequestDetail.findUnique.mockResolvedValue(
+        makePrDetailRow({
+          artifactId: "artifact-pr-dismiss-priority",
+          reviewDecision: "CHANGES_REQUESTED",
+          workstreamId: "ws-uuid-dismiss-priority",
+          linkedDoc: null,
+        })
+      );
 
-      mockTx.gitHubPullRequest.update.mockResolvedValue({});
-      // After upsert: reviewer-A dismissed, reviewer-B still has CHANGES_REQUESTED
       mockTx.gitHubPRReview.findMany.mockResolvedValue([
         { state: "DISMISSED" },
         { state: "CHANGES_REQUESTED" },
@@ -427,9 +421,8 @@ describe("handlePullRequestReview", () => {
 
       await handlePullRequestReview(event);
 
-      // Aggregate should be CHANGES_REQUESTED (DISMISSED is filtered out)
-      expect(mockTx.gitHubPullRequest.update).toHaveBeenCalledWith({
-        where: { id: "pr-uuid-dismiss-priority" },
+      expect(mockTx.pullRequestDetail.update).toHaveBeenCalledWith({
+        where: { artifactId: "artifact-pr-dismiss-priority" },
         data: { reviewDecision: "CHANGES_REQUESTED" },
       });
     });
@@ -458,16 +451,15 @@ describe("handlePullRequestReview", () => {
         id: "repo-uuid-resubmit",
       });
 
-      mockTx.gitHubPullRequest.findUnique.mockResolvedValue({
-        id: "pr-uuid-resubmit",
-        workstreamId: "ws-uuid-resubmit",
-        documentId: null,
-        reviewDecision: "DISMISSED",
-        document: null,
-      });
+      mockTx.pullRequestDetail.findUnique.mockResolvedValue(
+        makePrDetailRow({
+          artifactId: "artifact-pr-resubmit",
+          reviewDecision: "DISMISSED",
+          workstreamId: "ws-uuid-resubmit",
+          linkedDoc: null,
+        })
+      );
 
-      mockTx.gitHubPullRequest.update.mockResolvedValue({});
-      // After upsert, this reviewer's record is now CHANGES_REQUESTED (overwrites their old DISMISSED)
       mockTx.gitHubPRReview.findMany.mockResolvedValue([
         { state: "CHANGES_REQUESTED" },
       ]);
@@ -475,7 +467,6 @@ describe("handlePullRequestReview", () => {
 
       await handlePullRequestReview(event);
 
-      // Per-reviewer upsert should set CHANGES_REQUESTED
       expect(mockTx.gitHubPRReview.upsert).toHaveBeenCalledWith(
         expect.objectContaining({
           update: expect.objectContaining({
@@ -484,13 +475,11 @@ describe("handlePullRequestReview", () => {
         })
       );
 
-      // Aggregate recomputed from all reviews = CHANGES_REQUESTED
-      expect(mockTx.gitHubPullRequest.update).toHaveBeenCalledWith({
-        where: { id: "pr-uuid-resubmit" },
+      expect(mockTx.pullRequestDetail.update).toHaveBeenCalledWith({
+        where: { artifactId: "artifact-pr-resubmit" },
         data: { reviewDecision: "CHANGES_REQUESTED" },
       });
 
-      // Still creates workstream event
       expect(mockTx.workstreamEvent.create).toHaveBeenCalled();
     });
   });
@@ -515,14 +504,12 @@ describe("handlePullRequestReview", () => {
         sender: createSender(),
       } as any;
 
-      // Mock repository not found
       mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue(null);
 
       await handlePullRequestReview(event);
 
-      // Should not attempt to find PR or update
-      expect(mockTx.gitHubPullRequest.findUnique).not.toHaveBeenCalled();
-      expect(mockTx.gitHubPullRequest.update).not.toHaveBeenCalled();
+      expect(mockTx.pullRequestDetail.findUnique).not.toHaveBeenCalled();
+      expect(mockTx.pullRequestDetail.update).not.toHaveBeenCalled();
       expect(mockTx.workstreamEvent.create).not.toHaveBeenCalled();
     });
   });
@@ -547,18 +534,15 @@ describe("handlePullRequestReview", () => {
         sender: createSender(),
       } as any;
 
-      // Repository exists
       mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
         id: "repo-uuid-exists",
       });
 
-      // PR not found
-      mockTx.gitHubPullRequest.findUnique.mockResolvedValue(null);
+      mockTx.pullRequestDetail.findUnique.mockResolvedValue(null);
 
       await handlePullRequestReview(event);
 
-      // Should not attempt update or create event
-      expect(mockTx.gitHubPullRequest.update).not.toHaveBeenCalled();
+      expect(mockTx.pullRequestDetail.update).not.toHaveBeenCalled();
       expect(mockTx.workstreamEvent.create).not.toHaveBeenCalled();
     });
   });
@@ -589,16 +573,15 @@ describe("handlePullRequestReview", () => {
         id: "repo-uuid-multi2",
       });
 
-      mockTx.gitHubPullRequest.findUnique.mockResolvedValue({
-        id: "pr-uuid-multi2",
-        workstreamId: "ws-uuid-multi2",
-        documentId: null,
-        reviewDecision: "CHANGES_REQUESTED",
-        document: null,
-      });
+      mockTx.pullRequestDetail.findUnique.mockResolvedValue(
+        makePrDetailRow({
+          artifactId: "artifact-pr-multi2",
+          reviewDecision: "CHANGES_REQUESTED",
+          workstreamId: "ws-uuid-multi2",
+          linkedDoc: null,
+        })
+      );
 
-      mockTx.gitHubPullRequest.update.mockResolvedValue({});
-      // After reviewer-b updates to APPROVED: both reviewers now approved
       mockTx.gitHubPRReview.findMany.mockResolvedValue([
         { state: "APPROVED" },
         { state: "APPROVED" },
@@ -607,9 +590,8 @@ describe("handlePullRequestReview", () => {
 
       await handlePullRequestReview(event);
 
-      // Aggregate = APPROVED (all reviewers approved)
-      expect(mockTx.gitHubPullRequest.update).toHaveBeenCalledWith({
-        where: { id: "pr-uuid-multi2" },
+      expect(mockTx.pullRequestDetail.update).toHaveBeenCalledWith({
+        where: { artifactId: "artifact-pr-multi2" },
         data: { reviewDecision: "APPROVED" },
       });
     });
@@ -639,31 +621,30 @@ describe("handlePullRequestReview", () => {
         id: "repo-uuid-upsert",
       });
 
-      mockTx.gitHubPullRequest.findUnique.mockResolvedValue({
-        id: "pr-uuid-upsert",
-        workstreamId: "ws-uuid-upsert",
-        documentId: null,
-        reviewDecision: null,
-        document: null,
-      });
+      mockTx.pullRequestDetail.findUnique.mockResolvedValue(
+        makePrDetailRow({
+          artifactId: "artifact-pr-upsert",
+          reviewDecision: null,
+          workstreamId: "ws-uuid-upsert",
+          linkedDoc: null,
+        })
+      );
 
-      mockTx.gitHubPullRequest.update.mockResolvedValue({});
       mockTx.gitHubPRReview.findMany.mockResolvedValue([{ state: "APPROVED" }]);
       mockTx.workstreamEvent.create.mockResolvedValue({});
 
       await handlePullRequestReview(event);
 
-      // Verify upsert uses correct composite key
       expect(mockTx.gitHubPRReview.upsert).toHaveBeenCalledWith(
         expect.objectContaining({
           where: {
             pullRequestId_authorLogin: {
-              pullRequestId: "pr-uuid-upsert",
+              pullRequestId: "artifact-pr-upsert",
               authorLogin: "specific-reviewer",
             },
           },
           create: expect.objectContaining({
-            pullRequestId: "pr-uuid-upsert",
+            pullRequestId: "artifact-pr-upsert",
             authorLogin: "specific-reviewer",
             state: "APPROVED",
             githubReviewId: "23",

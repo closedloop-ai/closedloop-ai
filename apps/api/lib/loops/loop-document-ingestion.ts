@@ -6,14 +6,12 @@
  * - execute-handler.ts (EXECUTE)
  */
 
-import type { EntityType } from "@repo/api/src/types/entity-link";
 import type {
   EvaluationReportType,
   JudgesReport,
 } from "@repo/api/src/types/evaluation";
 import type { TransactionClient } from "@repo/database";
 import { log } from "@repo/observability/log";
-import { assertEntityInOrganization } from "@/lib/entity-validation";
 import { fanOutJudgeScores } from "@/lib/judge-score-fanout";
 
 export function parseJsonArtifact<T>(
@@ -36,16 +34,14 @@ export function parseJsonArtifact<T>(
 }
 
 /**
- * Upsert a DocumentEvaluation record and fan out judge scores within a transaction.
+ * Upsert an ArtifactEvaluation record and fan out judge scores within a transaction.
  *
  * Encapsulates the repeated pattern across plan-handler and execute-handler of:
- * 1. Upserting a DocumentEvaluation row (keyed by documentId + reportId)
+ * 1. Upserting an ArtifactEvaluation row (keyed by artifactId + reportId)
  * 2. Fanning out per-judge scores via fanOutJudgeScores
  */
 export async function upsertEvaluationWithJudgeScores(params: {
-  entityId: string;
-  entityType: EntityType;
-  documentId?: string | null;
+  artifactId: string;
   loopId?: string;
   actionRunId?: string;
   organizationId: string;
@@ -54,9 +50,7 @@ export async function upsertEvaluationWithJudgeScores(params: {
   tx: TransactionClient;
 }): Promise<void> {
   const {
-    entityId,
-    entityType,
-    documentId,
+    artifactId,
     loopId,
     actionRunId,
     organizationId,
@@ -65,20 +59,16 @@ export async function upsertEvaluationWithJudgeScores(params: {
     tx,
   } = params;
 
-  await assertEntityInOrganization(organizationId, entityId, entityType);
-
-  const evaluation = await tx.documentEvaluation.upsert({
+  const evaluation = await tx.artifactEvaluation.upsert({
     where: {
-      entityId_reportId: {
-        entityId,
+      artifactId_reportId: {
+        artifactId,
         reportId: report.report_id,
       },
     },
     create: {
       organizationId,
-      entityId,
-      entityType,
-      documentId: documentId ?? null,
+      artifactId,
       ...(loopId ? { loopId } : {}),
       ...(actionRunId ? { actionRunId } : {}),
       reportType,

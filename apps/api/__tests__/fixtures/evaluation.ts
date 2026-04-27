@@ -1,3 +1,4 @@
+import { ArtifactType } from "@repo/api/src/types/artifact";
 import {
   type CaseScore,
   EvalStatus,
@@ -6,7 +7,6 @@ import {
   type JudgesReport,
   type MetricStatistics,
 } from "@repo/api/src/types/evaluation";
-import { EntityType } from "@repo/database";
 import { normalizeJudgeName } from "@/lib/judge-name-utils";
 
 /** Builds a MetricStatistics entry for tests. */
@@ -62,7 +62,7 @@ export function buildCaseScore(
 export function createMockEvaluationRow(overrides?: {
   id?: string;
   entityId?: string;
-  entityType?: EntityType;
+  entityType?: ArtifactType;
   organizationId?: string;
   documentId?: string | null;
   actionRunId?: string;
@@ -82,7 +82,7 @@ export function createMockEvaluationRow(overrides?: {
   return {
     id: "eval-123",
     entityId,
-    entityType: EntityType.DOCUMENT,
+    entityType: ArtifactType.Document,
     organizationId: "org-123",
     documentId: entityId,
     actionRunId: "action-run-123",

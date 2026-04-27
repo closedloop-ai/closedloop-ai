@@ -1,5 +1,4 @@
 import { DocumentType } from "@repo/api/src/types/document";
-import { EntityType } from "@repo/api/src/types/entity-link";
 import {
   cleanup,
   fireEvent,
@@ -64,7 +63,6 @@ function createMockSource(overrides?: Partial<PlanSource>): PlanSource {
   return {
     id: "source-1",
     title: "Test Source",
-    sourceType: EntityType.Document,
     ...overrides,
   } as PlanSource;
 }

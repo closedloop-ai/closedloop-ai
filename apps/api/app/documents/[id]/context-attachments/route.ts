@@ -1,10 +1,10 @@
+import { LinkType } from "@repo/api/src/types/artifact";
 import { isDocumentMimeType } from "@repo/api/src/types/attachment";
 import type { CreateContextAttachmentResponse } from "@repo/api/src/types/context-attachment";
 import { DocumentStatus, DocumentType } from "@repo/api/src/types/document";
-import { EntityType, LinkType } from "@repo/api/src/types/entity-link";
+import { artifactLinksService } from "@/app/artifact-links/service";
 import { attachmentsService } from "@/app/documents/attachments-service";
 import { documentsService } from "@/app/documents/service";
-import { entityLinksService } from "@/app/entity-links/service";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { resolveDocumentId } from "@/lib/identifier-utils";
 import {
@@ -110,11 +110,9 @@ async function handleDocumentUpload(
   }
 
   try {
-    await entityLinksService.createLink(user.organizationId, {
+    await artifactLinksService.createLink(user.organizationId, {
       sourceId: artifact.id,
-      sourceType: EntityType.Document,
       targetId: document.id,
-      targetType: EntityType.Document,
       linkType: LinkType.Produces,
     });
   } catch (linkError) {

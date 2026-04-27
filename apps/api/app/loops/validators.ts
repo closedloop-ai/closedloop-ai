@@ -8,7 +8,7 @@ import {
   LoopEventOutputSchema,
   LoopEventTypeSchema,
 } from "@closedloop-ai/loops-api/events";
-import { EntityType } from "@repo/api/src/types/entity-link";
+import { ArtifactType } from "@repo/api/src/types/artifact";
 import { MAX_ADDITIONAL_REPOS } from "@repo/api/src/types/loop";
 import { z } from "zod";
 import { uuidOrSlug } from "@/lib/identifier-utils";
@@ -80,7 +80,7 @@ export const createLoopValidator = z.object({
     .array(
       z.object({
         sourceId: z.uuid(),
-        sourceType: z.enum([EntityType.Document]).optional(),
+        sourceType: z.enum([ArtifactType.Document]).optional(),
         include: z.enum(["full", "summary"]),
       })
     )

@@ -1,5 +1,5 @@
 import type { LinearIntegration } from "@repo/database";
-import { withDb } from "@repo/database";
+import { ArtifactSubtype, ArtifactType, withDb } from "@repo/database";
 import {
   type CreateIssueInput,
   createIssues,
@@ -280,9 +280,10 @@ export const linearService = {
   ): Promise<ExportResult> {
     // Fetch the artifact
     const artifact = await withDb((db) =>
-      db.document.findFirst({
+      db.artifact.findFirst({
         where: {
           id: documentId,
+          type: ArtifactType.DOCUMENT,
           project: { organizationId },
         },
       })
@@ -293,7 +294,7 @@ export const linearService = {
     }
 
     // Validate artifact type and status
-    if (artifact.type !== "IMPLEMENTATION_PLAN") {
+    if (artifact.subtype !== ArtifactSubtype.IMPLEMENTATION_PLAN) {
       return {
         success: false,
         error: "Only implementation plans can be exported to Linear",

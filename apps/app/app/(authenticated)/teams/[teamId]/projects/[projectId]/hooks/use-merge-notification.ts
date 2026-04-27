@@ -1,7 +1,7 @@
 "use client";
 
 import type { ActivityResponse } from "@repo/api/src/types/activity";
-import type { ExternalLink } from "@repo/api/src/types/external-link";
+import type { DeploymentArtifact } from "@repo/api/src/types/artifact";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { useQueries } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef } from "react";
@@ -16,7 +16,7 @@ type MergeMetadata = {
 
 function showMergeToast(
   activity: ActivityResponse["activities"][number],
-  previewDeploymentMap: Map<string, ExternalLink>,
+  previewDeploymentMap: Map<string, DeploymentArtifact>,
   projectId: string,
   teamId: string
 ): void {
@@ -44,7 +44,7 @@ function showMergeToast(
       label: hasPreview ? "View Preview" : "View Artifact",
       onClick: (event: React.MouseEvent) => {
         event.preventDefault();
-        if (hasPreview) {
+        if (hasPreview && previewDeployment?.externalUrl) {
           window.open(previewDeployment.externalUrl, "_blank");
         } else {
           window.open(artifactRoute, "_blank");
@@ -93,7 +93,7 @@ export function useMergeNotification(
     queries: unseenArtifactIds.map((documentId) => ({
       queryKey: documentKeys.previewDeployment(documentId),
       queryFn: () =>
-        apiClient.get<ExternalLink | null>(
+        apiClient.get<DeploymentArtifact | null>(
           `/documents/${documentId}/preview-deployment`
         ),
       enabled: !!documentId,
@@ -104,7 +104,7 @@ export function useMergeNotification(
   // Build documentId → previewDeployment map
   const queryData = previewDeploymentQueries.map((q) => q.data);
   const previewDeploymentMap = useMemo(() => {
-    const map = new Map<string, ExternalLink>();
+    const map = new Map<string, DeploymentArtifact>();
     for (let i = 0; i < unseenArtifactIds.length; i++) {
       const documentId = unseenArtifactIds[i];
       const data = queryData[i];

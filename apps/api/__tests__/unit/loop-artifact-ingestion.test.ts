@@ -143,10 +143,10 @@ describe("ingestPlanArtifacts", () => {
 
     // withDb.tx callback receives a mock tx; upsert returns an evaluation row
     const mockTx = {
-      documentEvaluation: {
+      artifactEvaluation: {
         upsert: vi.fn().mockResolvedValue({
           id: evaluationId,
-          documentId: loop.documentId,
+          artifactId: loop.documentId,
           reportId: JUDGES_REPORT.report_id,
         }),
       },
@@ -159,10 +159,14 @@ describe("ingestPlanArtifacts", () => {
 
     // withDb (non-transactional) used for artifact.update, entity validation, and workstreamEvent checks
     const mockDb = {
-      document: {
-        update: vi
-          .fn()
-          .mockResolvedValue({ slug: "my-artifact", latestVersion: 2 }),
+      artifact: {
+        update: vi.fn().mockResolvedValue({
+          id: loop.documentId,
+          organizationId: "org-1",
+          slug: "my-artifact",
+          subtype: "PRD",
+          document: { latestVersion: 2 },
+        }),
         findFirst: vi.fn().mockResolvedValue({ id: loop.documentId }),
       },
       workstreamEvent: {
@@ -187,10 +191,10 @@ describe("ingestPlanArtifacts", () => {
     const artifacts = buildPlanArtifacts({ judgesReport: JUDGES_REPORT });
 
     const mockTx = {
-      documentEvaluation: {
+      artifactEvaluation: {
         upsert: vi.fn().mockResolvedValue({
           id: "eval-plan-2",
-          documentId: loop.documentId,
+          artifactId: loop.documentId,
           reportId: JUDGES_REPORT.report_id,
         }),
       },
@@ -198,10 +202,14 @@ describe("ingestPlanArtifacts", () => {
     mockWithDbTx(mockTx);
 
     const mockDb = {
-      document: {
-        update: vi
-          .fn()
-          .mockResolvedValue({ slug: "my-artifact", latestVersion: 2 }),
+      artifact: {
+        update: vi.fn().mockResolvedValue({
+          id: loop.documentId,
+          organizationId: "org-1",
+          slug: "my-artifact",
+          subtype: "PRD",
+          document: { latestVersion: 2 },
+        }),
         findFirst: vi.fn().mockResolvedValue({ id: loop.documentId }),
       },
       workstreamEvent: {
@@ -213,7 +221,7 @@ describe("ingestPlanArtifacts", () => {
 
     await ingestPlanArtifacts(loop, "org-1", artifacts);
 
-    expect(mockTx.documentEvaluation.upsert).toHaveBeenCalledWith(
+    expect(mockTx.artifactEvaluation.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         create: expect.objectContaining({
           reportData: JUDGES_REPORT,
@@ -242,12 +250,9 @@ describe("ingestExecutionArtifacts", () => {
     });
     const evaluationId = "eval-code-1";
 
-    // withDb (non-transactional) used for gitHubInstallationRepository.findFirst and entity validation
+    // withDb (non-transactional) used for entity validation
     const mockDb = {
-      gitHubInstallationRepository: {
-        findFirst: vi.fn().mockResolvedValue({ id: "install-repo-1" }),
-      },
-      document: {
+      artifact: {
         findFirst: vi.fn().mockResolvedValue({ id: loop.documentId }),
       },
     };
@@ -255,32 +260,19 @@ describe("ingestExecutionArtifacts", () => {
 
     // withDb.tx callback receives a mock tx
     const mockTx = {
-      document: {
+      artifact: {
         findUnique: vi.fn().mockResolvedValue({
           organizationId: "org-1",
           projectId: "project-1",
           slug: "my-artifact",
         }),
       },
-      documentEvaluation: {
+      artifactEvaluation: {
         upsert: vi.fn().mockResolvedValue({
           id: evaluationId,
-          documentId: loop.documentId,
+          artifactId: loop.documentId,
           reportId: CODE_JUDGES_REPORT.report_id,
         }),
-      },
-      gitHubPullRequest: {
-        findUnique: vi.fn().mockResolvedValue(null),
-        create: vi.fn().mockResolvedValue({ id: "pr-1" }),
-        upsert: vi
-          .fn()
-          .mockResolvedValue({ id: "pr-1", documentId: loop.documentId }),
-      },
-      externalLink: {
-        create: vi.fn().mockResolvedValue({ id: "ext-link-1" }),
-      },
-      entityLink: {
-        create: vi.fn().mockResolvedValue({ id: "entity-link-1" }),
       },
       workstreamEvent: {
         create: vi.fn().mockResolvedValue({ id: "event-exec-1" }),
@@ -305,42 +297,26 @@ describe("ingestExecutionArtifacts", () => {
     });
 
     const mockDb = {
-      gitHubInstallationRepository: {
-        findFirst: vi.fn().mockResolvedValue({ id: "install-repo-2" }),
-      },
-      document: {
+      artifact: {
         findFirst: vi.fn().mockResolvedValue({ id: loop.documentId }),
       },
     };
     mockWithDbCall(mockDb);
 
     const mockTx = {
-      document: {
+      artifact: {
         findUnique: vi.fn().mockResolvedValue({
           organizationId: "org-1",
           projectId: "project-1",
           slug: "my-artifact",
         }),
       },
-      documentEvaluation: {
+      artifactEvaluation: {
         upsert: vi.fn().mockResolvedValue({
           id: "eval-code-2",
-          documentId: loop.documentId,
+          artifactId: loop.documentId,
           reportId: CODE_JUDGES_REPORT.report_id,
         }),
-      },
-      gitHubPullRequest: {
-        findUnique: vi.fn().mockResolvedValue(null),
-        create: vi.fn().mockResolvedValue({ id: "pr-2" }),
-        upsert: vi
-          .fn()
-          .mockResolvedValue({ id: "pr-2", documentId: loop.documentId }),
-      },
-      externalLink: {
-        create: vi.fn().mockResolvedValue({ id: "ext-link-2" }),
-      },
-      entityLink: {
-        create: vi.fn().mockResolvedValue({ id: "entity-link-2" }),
       },
       workstreamEvent: {
         create: vi.fn().mockResolvedValue({ id: "event-exec-2" }),
@@ -350,7 +326,7 @@ describe("ingestExecutionArtifacts", () => {
 
     await ingestExecutionArtifacts(loop, loop.organizationId, artifacts);
 
-    expect(mockTx.documentEvaluation.upsert).toHaveBeenCalledWith(
+    expect(mockTx.artifactEvaluation.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         create: expect.objectContaining({
           reportData: CODE_JUDGES_REPORT,

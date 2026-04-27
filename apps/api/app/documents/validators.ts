@@ -1,12 +1,10 @@
 import { Priority } from "@repo/api/src/types/common";
 import { DocumentStatus, DocumentType } from "@repo/api/src/types/document";
-import { EntityType } from "@repo/api/src/types/entity-link";
 import { z } from "zod";
 import { uuidOrSlug } from "@/lib/identifier-utils";
 
 const documentStatusEnum = z.enum(DocumentStatus);
 const documentTypeEnum = z.enum(DocumentType);
-const entityTypeEnum = z.enum(EntityType);
 const priorityEnum = z.enum(Priority);
 
 // Validate owner/repo format (e.g., "closedloop/astoria-service")
@@ -16,8 +14,6 @@ export const createDocumentValidator = z.object({
   workstreamId: uuidOrSlug().optional(),
   projectId: uuidOrSlug(),
   sourceId: uuidOrSlug().optional(),
-  sourceType: entityTypeEnum.optional(),
-  sourceVersion: z.number().int().positive().optional(),
   type: documentTypeEnum,
   title: z.string().min(1, "Title is required"),
   fileName: z.string().optional(),

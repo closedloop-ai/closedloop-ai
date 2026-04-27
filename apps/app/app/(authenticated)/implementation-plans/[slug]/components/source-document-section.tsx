@@ -1,14 +1,14 @@
 "use client";
 
 import {
+  ArtifactType,
+  LinkDirection,
+  LinkType,
+} from "@repo/api/src/types/artifact";
+import {
   DocumentType,
   getRoutePrefixForType,
 } from "@repo/api/src/types/document";
-import {
-  EntityType,
-  LinkDirection,
-  LinkType,
-} from "@repo/api/src/types/entity-link";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   Command,
@@ -28,12 +28,12 @@ import { FileTextIcon, LinkIcon, UnlinkIcon } from "lucide-react";
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import { MetadataSection } from "@/components/document-editor/metadata-panel";
-import { useDocumentsByProject } from "@/hooks/queries/use-documents";
 import {
-  useCreateEntityLink,
-  useDeleteEntityLink,
-  useLinkedEntities,
-} from "@/hooks/queries/use-entity-links";
+  useCreateArtifactLink,
+  useDeleteArtifactLink,
+  useResolvedArtifactLinks,
+} from "@/hooks/queries/use-artifact-links";
+import { useDocumentsByProject } from "@/hooks/queries/use-documents";
 import {
   DOCUMENT_TYPE_ICONS,
   DOCUMENT_TYPE_LABELS,
@@ -50,30 +50,32 @@ export function SourceDocumentSection({
 }: SourceDocumentSectionProps) {
   const [isOpen, setIsOpen] = useState(false);
 
-  const { data: sourceLinkedEntities = [] } = useLinkedEntities(
+  const { data: resolvedSourceLinks = [] } = useResolvedArtifactLinks(
     documentId,
-    EntityType.Document,
     {
       direction: LinkDirection.Source,
       linkType: LinkType.Produces,
     }
   );
-  const createEntityLink = useCreateEntityLink();
-  const deleteEntityLink = useDeleteEntityLink();
+  const createArtifactLink = useCreateArtifactLink();
+  const deleteArtifactLink = useDeleteArtifactLink();
 
   const { data: projectArtifacts = [] } = useDocumentsByProject(
     projectId ?? "",
     { enabled: !!projectId }
   );
 
-  const sourceLinkedEntity = sourceLinkedEntities.find(
-    (linked) => linked.resolvedEntity?.type === EntityType.Document
+  const sourceLink = resolvedSourceLinks.find(
+    (link) =>
+      link.targetId === documentId && link.source.type === ArtifactType.Document
   );
 
-  const sourceArtifact =
-    sourceLinkedEntity?.resolvedEntity?.type === EntityType.Document
-      ? sourceLinkedEntity.resolvedEntity.entity
-      : null;
+  const sourceArtifact = useMemo(() => {
+    if (!sourceLink) {
+      return null;
+    }
+    return projectArtifacts.find((a) => a.id === sourceLink.source.id) ?? null;
+  }, [sourceLink, projectArtifacts]);
 
   const sourceArtifactRoute = useMemo(() => {
     if (!sourceArtifact) {
@@ -92,19 +94,17 @@ export function SourceDocumentSection({
   );
 
   const handleLinkSource = (sourceId: string) => {
-    createEntityLink.mutate({
+    createArtifactLink.mutate({
       sourceId,
-      sourceType: EntityType.Document,
       targetId: documentId,
-      targetType: EntityType.Document,
       linkType: LinkType.Produces,
     });
     setIsOpen(false);
   };
 
   const handleUnlinkSource = () => {
-    if (sourceLinkedEntity) {
-      deleteEntityLink.mutate(sourceLinkedEntity.id);
+    if (sourceLink) {
+      deleteArtifactLink.mutate(sourceLink.id);
     }
   };
 

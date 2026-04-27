@@ -14,7 +14,7 @@ vi.mock("@repo/database", () => ({
   withDb: Object.assign(
     vi.fn((fn: (db: unknown) => Promise<unknown>) =>
       fn({
-        document: { update: vi.fn() },
+        artifact: { update: vi.fn() },
         workstreamEvent: { findFirst: vi.fn(), create: vi.fn() },
       })
     ),
@@ -22,6 +22,11 @@ vi.mock("@repo/database", () => ({
       tx: vi.fn((fn: () => Promise<unknown>) => fn()),
     }
   ),
+  ArtifactType: {
+    DOCUMENT: "DOCUMENT",
+    PULL_REQUEST: "PULL_REQUEST",
+    DEPLOYMENT: "DEPLOYMENT",
+  },
 }));
 
 vi.mock("@repo/observability/log", () => ({
@@ -80,8 +85,8 @@ function mockDbUpdate(slug: string | null = "test-slug") {
     id: "prd-artifact-1",
     organizationId: "org-1",
     slug,
-    type: "PRD",
-    latestVersion: 2,
+    subtype: "PRD",
+    document: { latestVersion: 2 },
   });
   const mockFindFirst = vi.fn().mockResolvedValue(null);
   const mockCreate = vi.fn().mockResolvedValue({ id: "event-1" });
@@ -89,7 +94,7 @@ function mockDbUpdate(slug: string | null = "test-slug") {
   (withDb as unknown as MockFn).mockImplementation(
     (fn: (db: unknown) => Promise<unknown>) =>
       fn({
-        document: { update: mockUpdate },
+        artifact: { update: mockUpdate },
         workstreamEvent: { findFirst: mockFindFirst, create: mockCreate },
       })
   );
@@ -133,14 +138,18 @@ describe("generatePrdHandler ingestion", () => {
       prdContent
     );
     expect(mockUpdate).toHaveBeenCalledWith({
-      where: { id: "prd-artifact-1", organizationId: "org-1" },
+      where: {
+        id: "prd-artifact-1",
+        organizationId: "org-1",
+        type: "DOCUMENT",
+      },
       data: { status: "DRAFT" },
       select: {
         id: true,
         organizationId: true,
         slug: true,
-        type: true,
-        latestVersion: true,
+        subtype: true,
+        document: { select: { latestVersion: true } },
       },
     });
   });

@@ -41,18 +41,6 @@ enum WorkstreamState {
   CANCELLED
 }
 
-enum ExternalLinkType {
-  PULL_REQUEST
-  FIGMA_DESIGN
-  PREVIEW_DEPLOYMENT
-}
-
-// Entity types for polymorphic EntityLink
-enum EntityType {
-  DOCUMENT
-  EXTERNAL_LINK
-}
-
 // Relationship types between entities (source → target, where source is the origin/cause)
 enum LinkType {
   PRODUCES // source produces target (PRD → Plan, Plan → PR, PR → Preview)
@@ -68,13 +56,6 @@ enum DocumentStatus {
   EXECUTED
   DONE
   OBSOLETE
-}
-
-enum DocumentType {
-  PRD
-  IMPLEMENTATION_PLAN
-  TEMPLATE
-  FEATURE
 }
 
 enum EvaluationReportType {
@@ -271,6 +252,23 @@ enum PreferredComputeMode {
   CLOUD
 }
 
+// Kinds of first-class artifacts tracked in the `artifacts` parent table.
+// Added in Chunk 2a of PLN-321 alongside the Artifact/DocumentDetail models.
+enum ArtifactType {
+  DOCUMENT
+  PULL_REQUEST
+  DEPLOYMENT
+}
+
+// Narrower classification for DOCUMENT-typed artifacts (carries values that
+// used to live on the legacy DocumentType enum). Null for PRs and deployments.
+enum ArtifactSubtype {
+  PRD
+  IMPLEMENTATION_PLAN
+  TEMPLATE
+  FEATURE
+}
+
 // =============================================================================
 // CORE ENTITIES
 // =============================================================================
@@ -302,12 +300,10 @@ model Organization {
   // Relations
   users              User[]
   teams              Team[]
-  pullRequestRatings PullRequestRating[]
-  pullRequests       GitHubPullRequest[]
+  artifactRatings    ArtifactRating[]
   projects           Project[]
   workstreams        Workstream[]
-  documents          Document[]
-  externalLinks      ExternalLink[]
+  artifacts          Artifact[]
   githubInstallation GitHubInstallation?
   loops              Loop[]
   prompts            Prompt[]
@@ -349,13 +345,13 @@ model User {
   organization                Organization                        @relation(fields: [organizationId], references: [id])
   preferredComputeTarget      ComputeTarget?                      @relation("UserPreferredComputeTarget", fields: [preferredComputeTargetId], references: [id])
   teamMemberships             TeamMember[]
-  pullRequestRatings          PullRequestRating[]
+  artifactRatings             ArtifactRating[]
   favoriteProjects            FavoriteProject[]
   assignedProjects            Project[]                           @relation("ProjectAssignee")
   createdProjects             Project[]                           @relation("ProjectCreatedBy")
-  assignedDocuments           Document[]                          @relation("DocumentAssignee")
-  createdDocuments            Document[]                          @relation("DocumentCreatedBy")
-  approvedDocuments           Document[]                          @relation("DocumentApprover")
+  assignedArtifacts           Artifact[]                          @relation("ArtifactAssignee")
+  createdArtifacts            Artifact[]                          @relation("ArtifactCreatedBy")
+  approvedDocumentDetails     DocumentDetail[]                    @relation("DocumentDetailApprover")
   createdWorkstreams          Workstream[]                        @relation("WorkstreamCreatedBy")
   assignedWorkstreams         Workstream[]                        @relation("WorkstreamAssignee")
   loops                       Loop[]
@@ -447,36 +443,37 @@ model DesktopCommandEvent {
 }
 
 model Project {
-  id              String        @id @default(uuid(7)) @db.Uuid
-  organizationId  String        @map("organization_id") @db.Uuid
-  name            String
-  description     String?
-  priority        Priority      @default(MEDIUM)
-  status          ProjectStatus @default(NOT_STARTED)
-  assigneeId      String?       @map("assignee_id") @db.Uuid
-  createdById     String        @map("created_by_id") @db.Uuid
-  slug            String?
-  targetDate      DateTime?     @map("target_date")
-  codebaseSummary String?       @map("codebase_summary")
-  lastIndexedAt   DateTime?     @map("last_indexed_at")
-  settings        Json          @default("{}")
-  sortOrder       Int?          @map("sort_order")
-  createdAt       DateTime      @default(now()) @map("created_at")
-  updatedAt       DateTime      @updatedAt @map("updated_at")
+  id                  String        @id @default(uuid(7)) @db.Uuid
+  organizationId      String        @map("organization_id") @db.Uuid
+  name                String
+  description         String?
+  priority            Priority      @default(MEDIUM)
+  status              ProjectStatus @default(NOT_STARTED)
+  assigneeId          String?       @map("assignee_id") @db.Uuid
+  createdById         String        @map("created_by_id") @db.Uuid
+  slug                String?
+  targetDate          DateTime?     @map("target_date")
+  codebaseSummary     String?       @map("codebase_summary")
+  lastIndexedAt       DateTime?     @map("last_indexed_at")
+  settings            Json          @default("{}")
+  sortOrder           Int?          @map("sort_order")
+  isTemplatesSentinel Boolean       @default(false) @map("is_templates_sentinel")
+  createdAt           DateTime      @default(now()) @map("created_at")
+  updatedAt           DateTime      @updatedAt @map("updated_at")
 
   // Relations
   organization  Organization      @relation(fields: [organizationId], references: [id])
   assignee      User?             @relation("ProjectAssignee", fields: [assigneeId], references: [id])
   createdBy     User              @relation("ProjectCreatedBy", fields: [createdById], references: [id])
   workstreams   Workstream[]
-  documents     Document[]
-  externalLinks ExternalLink[]
+  artifacts     Artifact[]
   teams         ProjectTeam[]
   favoritedBy   FavoriteProject[]
 
   @@unique([organizationId, slug])
   @@index([assigneeId])
   @@index([createdById])
+  @@index([organizationId, isTemplatesSentinel])
   @@map("projects")
 }
 
@@ -578,10 +575,8 @@ model Workstream {
   project       Project             @relation(fields: [projectId], references: [id], onDelete: Cascade)
   createdBy     User                @relation("WorkstreamCreatedBy", fields: [createdById], references: [id])
   assignee      User?               @relation("WorkstreamAssignee", fields: [assigneeId], references: [id])
-  documents     Document[]
-  externalLinks ExternalLink[]
+  artifacts     Artifact[]
   loops         Loop[]
-  pullRequests  GitHubPullRequest[]
 
   @@unique([organizationId, slug])
   @@index([organizationId, projectId, state])
@@ -610,65 +605,16 @@ model WorkstreamEvent {
 // DOCUMENTS
 // =============================================================================
 
-model Document {
-  id              String         @id @default(uuid(7)) @db.Uuid
-  organizationId  String         @map("organization_id") @db.Uuid
-  workstreamId    String?        @map("workstream_id") @db.Uuid
-  projectId       String?        @map("project_id") @db.Uuid // template documents don't have a project
-  type            DocumentType   @map("type")
-  title           String
-  slug            String
-  fileName        String?        @map("file_name")
-  assigneeId      String?        @map("assignee_id") @db.Uuid
-  approverId      String?        @map("approver_id") @db.Uuid
-  status          DocumentStatus @default(DRAFT)
-  priority        Priority       @default(MEDIUM)
-  latestVersion   Int            @default(1) @map("latest_version")
-  createdById     String         @map("created_by_id") @db.Uuid
-  tokenUsage      Json?          @map("token_usage")
-  targetRepo      String?        @map("target_repo")
-  targetBranch    String?        @map("target_branch")
-  templateForType DocumentType?  @map("template_for_type")
-  sortOrder       Int?           @map("sort_order")
-  createdAt       DateTime       @default(now()) @map("created_at")
-  updatedAt       DateTime       @updatedAt @map("updated_at")
-
-  // Relations
-  organization              Organization                       @relation(fields: [organizationId], references: [id])
-  workstream                Workstream?                        @relation(fields: [workstreamId], references: [id], onDelete: Cascade)
-  project                   Project?                           @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  assignee                  User?                              @relation("DocumentAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
-  createdBy                 User                               @relation("DocumentCreatedBy", fields: [createdById], references: [id])
-  approver                  User?                              @relation("DocumentApprover", fields: [approverId], references: [id], onDelete: SetNull)
-  versions                  DocumentVersion[]
-  ratings                   DocumentRating[]
-  evaluations               DocumentEvaluation[]
-  performances              GitHubActionRunPerformance[]
-  pullRequests              GitHubPullRequest[]
-  loops                     Loop[]
-  fileAttachments           FileAttachment[]
-  generationStatusDismissal DocumentGenerationStatusDismissal?
-
-  @@unique([organizationId, slug])
-  @@unique([organizationId, templateForType])
-  @@index([organizationId, type])
-  @@index([organizationId, workstreamId, type])
-  @@index([organizationId, projectId, type])
-  @@index([workstreamId])
-  @@index([projectId])
-  @@map("documents")
-}
-
 model DocumentGenerationStatusDismissal {
   id            String   @id @default(uuid(7)) @db.Uuid
-  documentId    String   @unique @map("artifact_id") @db.Uuid
+  artifactId    String   @unique @map("artifact_id") @db.Uuid
   dismissedById String   @map("dismissed_by_id") @db.Uuid
   runKey        String   @map("run_key")
   dismissedAt   DateTime @default(now()) @map("dismissed_at")
   createdAt     DateTime @default(now()) @map("created_at")
   updatedAt     DateTime @updatedAt @map("updated_at")
 
-  document    Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  artifact    Artifact @relation(fields: [artifactId], references: [id], onDelete: Cascade)
   dismissedBy User     @relation(fields: [dismissedById], references: [id], onDelete: Restrict)
 
   @@index([dismissedById])
@@ -684,18 +630,161 @@ model DocumentVersion {
   createdAt   DateTime @default(now()) @map("created_at")
 
   // Relations
-  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  documentDetail DocumentDetail @relation(fields: [documentId], references: [artifactId], onDelete: Cascade)
 
   @@unique([documentId, version])
   @@map("document_versions")
 }
 
-model DocumentEvaluation {
+model Artifact {
+  id             String           @id @default(uuid(7)) @db.Uuid
+  organizationId String           @map("organization_id") @db.Uuid
+  projectId      String           @map("project_id") @db.Uuid
+  workstreamId   String?          @map("workstream_id") @db.Uuid
+  type           ArtifactType
+  subtype        ArtifactSubtype?
+  name           String
+  slug           String?
+  assigneeId     String?          @map("assignee_id") @db.Uuid
+  status         String
+  priority       Priority?
+  dueDate        DateTime?        @map("due_date")
+  externalUrl    String?          @map("external_url")
+  sortOrder      Int?             @map("sort_order")
+  createdAt      DateTime         @default(now()) @map("created_at")
+  createdById    String?          @map("created_by_id") @db.Uuid
+  updatedAt      DateTime         @updatedAt @map("updated_at")
+
+  // Relations
+  organization Organization    @relation(fields: [organizationId], references: [id])
+  project      Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  workstream   Workstream?     @relation(fields: [workstreamId], references: [id], onDelete: Cascade)
+  assignee     User?           @relation("ArtifactAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  createdBy    User?           @relation("ArtifactCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  document                  DocumentDetail?
+  pullRequest               PullRequestDetail?
+  deployment                DeploymentDetail?
+  deployments               DeploymentDetail[]                 @relation("DeploymentOfPullRequest")
+  sourceLinks               ArtifactLink[]                     @relation("ArtifactLinkSource")
+  targetLinks               ArtifactLink[]                     @relation("ArtifactLinkTarget")
+  ratings                   ArtifactRating[]
+  evaluations               ArtifactEvaluation[]
+  commentThreads            CommentThread[]
+  fileAttachments           FileAttachment[]
+  loops                     Loop[]
+  generationStatusDismissal DocumentGenerationStatusDismissal?
+
+  @@unique([organizationId, slug])
+  @@index([organizationId, projectId, type])
+  @@index([organizationId, workstreamId, type])
+  @@index([organizationId, type, status])
+  @@index([organizationId, assigneeId])
+  @@map("artifacts")
+}
+
+// Type-specific detail for DOCUMENT-typed artifacts. 1:1 with `Artifact` via
+// shared `artifact_id` primary key. Other detail tables (pull_request_detail,
+// deployment_detail) arrive in Chunk 2b.
+model DocumentDetail {
+  artifactId      String           @id @map("artifact_id") @db.Uuid
+  fileName        String?          @map("file_name")
+  approverId      String?          @map("approver_id") @db.Uuid
+  templateForType ArtifactSubtype? @map("template_for_type")
+  latestVersion   Int              @default(1) @map("latest_version")
+  targetRepo      String?          @map("target_repo")
+  targetBranch    String?          @map("target_branch")
+
+  artifact     Artifact                     @relation(fields: [artifactId], references: [id], onDelete: Cascade)
+  approver     User?                        @relation("DocumentDetailApprover", fields: [approverId], references: [id], onDelete: SetNull)
+  versions     DocumentVersion[]
+  performances GitHubActionRunPerformance[]
+
+  @@map("document_detail")
+}
+
+// Type-specific detail for PULL_REQUEST-typed artifacts. 1:1 with `Artifact`
+// via shared `artifact_id` primary key. Rows are backfilled from the legacy
+// `github_pull_requests` table in Chunk 2B; that table is retired in the
+// final contract migration.
+model PullRequestDetail {
+  artifactId           String          @id @map("artifact_id") @db.Uuid
+  repositoryId         String          @map("repository_id") @db.Uuid
+  githubId             String          @unique @map("github_id")
+  number               Int
+  body                 String?         @db.Text
+  headBranch           String          @map("head_branch")
+  baseBranch           String          @map("base_branch")
+  headSha              String?         @map("head_sha")
+  prState              GitHubPRState   @default(OPEN) @map("pr_state")
+  isDraft              Boolean         @default(false) @map("is_draft")
+  checksStatus         ChecksStatus    @default(UNKNOWN) @map("checks_status")
+  reviewDecision       ReviewDecision? @map("review_decision")
+  closedAt             DateTime?       @map("closed_at")
+  mergedAt             DateTime?       @map("merged_at")
+  mergeCommitSha       String?         @map("merge_commit_sha")
+  lastVerifiedAt       DateTime?       @map("last_verified_at")
+  lastRefreshAttemptAt DateTime?       @map("last_refresh_attempt_at")
+
+  artifact       Artifact                     @relation(fields: [artifactId], references: [id], onDelete: Cascade)
+  repository     GitHubInstallationRepository @relation(fields: [repositoryId], references: [id])
+  reviews        GitHubPRReview[]
+  reviewComments GitHubPRReviewComment[]
+
+  @@unique([repositoryId, number])
+  @@index([headSha])
+  @@map("pull_request_detail")
+}
+
+// Type-specific detail for DEPLOYMENT-typed artifacts. 1:1 with `Artifact`
+// via shared `artifact_id` primary key. Rows are backfilled from the
+// PREVIEW_DEPLOYMENT rows in the legacy `external_links` table in
+// Chunk 2B. All columns nullable because today's `DeploymentMetadata` is
+// loosely shaped. Deployment state lives only on the parent `artifact.status`
+// (plain TEXT so any vendor value round-trips).
+model DeploymentDetail {
+  artifactId            String   @id @map("artifact_id") @db.Uuid
+  environment           String?
+  ref                   String?
+  sha                   String?
+  githubStatusUrl       String?  @map("github_status_url")
+  githubDeploymentUrl   String?  @map("github_deployment_url")
+  transient             Boolean?
+  production            Boolean?
+  pullRequestArtifactId String?  @map("pull_request_artifact_id") @db.Uuid
+
+  artifact            Artifact  @relation(fields: [artifactId], references: [id], onDelete: Cascade)
+  pullRequestArtifact Artifact? @relation("DeploymentOfPullRequest", fields: [pullRequestArtifactId], references: [id], onDelete: SetNull)
+
+  @@index([pullRequestArtifactId])
+  @@index([ref, sha])
+  @@map("deployment_detail")
+}
+
+// Replacement for polymorphic `EntityLink` with real FKs. Rows for
+// DOCUMENT↔DOCUMENT links are backfilled in 2A; PR/Deployment links are
+// added in 2B. Legacy `entity_links` table continues to coexist until 2F.
+model ArtifactLink {
+  id             String   @id @default(uuid(7)) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  sourceId       String   @map("source_id") @db.Uuid
+  targetId       String   @map("target_id") @db.Uuid
+  linkType       LinkType @map("link_type")
+  metadata       Json?
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  source Artifact @relation("ArtifactLinkSource", fields: [sourceId], references: [id], onDelete: Cascade)
+  target Artifact @relation("ArtifactLinkTarget", fields: [targetId], references: [id], onDelete: Cascade)
+
+  @@unique([sourceId, targetId, linkType])
+  @@index([organizationId, sourceId, linkType])
+  @@index([organizationId, targetId, linkType])
+  @@map("artifact_links")
+}
+
+model ArtifactEvaluation {
   id             String               @id @default(uuid(7)) @db.Uuid
   organizationId String               @map("organization_id") @db.Uuid
-  entityId       String               @map("entity_id") @db.Uuid
-  entityType     EntityType           @map("entity_type")
-  documentId     String?              @map("artifact_id") @db.Uuid
+  artifactId     String               @map("artifact_id") @db.Uuid
   actionRunId    String?              @map("action_run_id") @db.Uuid
   loopId         String?              @map("loop_id") @db.Uuid
   reportType     EvaluationReportType @map("report_type")
@@ -703,21 +792,17 @@ model DocumentEvaluation {
   reportData     Json?                @map("report_data")
   createdAt      DateTime             @default(now()) @map("created_at")
 
-  document         Document?         @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  artifact         Artifact          @relation(fields: [artifactId], references: [id], onDelete: Cascade)
   loop             Loop?             @relation(fields: [loopId], references: [id], onDelete: SetNull)
   judgeScores      JudgeScore[]
   judgeHumanScores JudgeHumanScore[]
 
-  @@unique([entityId, reportId])
-  @@index([entityId, createdAt])
-  @@index([organizationId, entityType, createdAt])
+  @@unique([artifactId, reportId])
+  @@index([artifactId, createdAt])
+  @@index([organizationId, createdAt])
   @@map("artifact_evaluations")
 }
 
-// SECURITY: No organizationId column — org isolation is enforced via DocumentEvaluation.organizationId.
-// JudgeScore rows are scoped to an org through the evaluationId FK:
-// judgeScore.evaluationId → DocumentEvaluation.organizationId.
-// All read-path queries MUST join through DocumentEvaluation and filter by organizationId directly.
 model JudgeScore {
   id            String     @id @default(uuid(7)) @db.Uuid
   evaluationId  String     @map("evaluation_id") @db.Uuid
@@ -731,7 +816,7 @@ model JudgeScore {
   createdAt     DateTime   @default(now()) @map("created_at")
 
   // Relations
-  evaluation       DocumentEvaluation @relation(fields: [evaluationId], references: [id], onDelete: Cascade)
+  evaluation       ArtifactEvaluation @relation(fields: [evaluationId], references: [id], onDelete: Cascade)
   prompt           Prompt?            @relation(fields: [promptId], references: [id], onDelete: SetNull)
   judgeHumanScores JudgeHumanScore[]
 
@@ -752,7 +837,7 @@ model JudgeHumanScore {
   updatedAt      DateTime @updatedAt @map("updated_at")
 
   // Relations
-  evaluation   DocumentEvaluation @relation(fields: [evaluationId], references: [id], onDelete: Cascade)
+  evaluation   ArtifactEvaluation @relation(fields: [evaluationId], references: [id], onDelete: Cascade)
   judgeScore   JudgeScore         @relation(fields: [judgeScoreId], references: [id], onDelete: Cascade)
   organization Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   user         User               @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -763,46 +848,49 @@ model JudgeHumanScore {
   @@map("judge_human_scores")
 }
 
-// SECURITY: No organizationId column — org isolation is enforced exclusively
-// via the document FK. All read-path queries MUST join through Document
-// and filter by organizationId. This is an intentional design decision.
 model GitHubActionRunPerformance {
   id          String   @id @default(uuid(7)) @db.Uuid
-  documentId  String   @map("artifact_id") @db.Uuid
+  artifactId  String   @map("artifact_id") @db.Uuid
   // Soft reference - no Prisma relation defined intentionally. Query GitHubActionRun separately if needed.
   actionRunId String   @map("action_run_id") @db.Uuid
   summaryData Json     @map("summary_data")
   createdAt   DateTime @default(now()) @map("created_at")
 
-  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  documentDetail DocumentDetail @relation(fields: [artifactId], references: [artifactId], onDelete: Cascade)
 
-  @@unique([documentId, actionRunId])
+  @@unique([artifactId, actionRunId])
   @@map("github_action_run_performances")
 }
 
-model DocumentRating {
+// Consolidated ratings for any artifact. Absorbs the prior DocumentRating
+// and PullRequestRating tables — both now live at @@map("artifact_ratings").
+// `artifactVersion` is nullable because PR/deployment ratings aren't
+// version-scoped; document ratings keep it populated.
+model ArtifactRating {
   id              String   @id @default(uuid(7)) @map("id") @db.Uuid
-  documentId      String   @map("artifact_id") @db.Uuid
+  artifactId      String   @map("artifact_id") @db.Uuid
   userId          String   @map("user_id") @db.Uuid
   organizationId  String   @map("organization_id") @db.Uuid
   // Score validation (1-5) enforced at API layer via Zod schema.
   score           Int
   comment         String?  @db.VarChar(500)
-  documentVersion Int      @map("artifact_version")
+  artifactVersion Int?     @map("artifact_version")
   createdAt       DateTime @default(now()) @map("created_at")
   updatedAt       DateTime @updatedAt @map("updated_at")
 
   // Relations
-  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  artifact     Artifact     @relation(fields: [artifactId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
-  @@unique([documentId, userId, organizationId])
-  @@index([documentId, organizationId])
+  @@unique([artifactId, userId, organizationId])
+  @@index([artifactId, organizationId])
   @@map("artifact_ratings")
 }
 
 model FileAttachment {
   id          String   @id @default(uuid(7)) @db.Uuid
-  documentId  String?  @map("artifact_id") @db.Uuid
+  artifactId  String?  @map("artifact_id") @db.Uuid
   bucket      String
   key         String
   filename    String
@@ -812,31 +900,10 @@ model FileAttachment {
   createdById String   @map("created_by_id") @db.Uuid
 
   // Relations
-  document Document? @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  artifact Artifact? @relation(fields: [artifactId], references: [id], onDelete: Cascade)
 
-  @@index([documentId])
+  @@index([artifactId])
   @@map("file_attachments")
-}
-
-model PullRequestRating {
-  id             String   @id @default(uuid(7)) @db.Uuid
-  pullRequestId  String   @map("pull_request_id") @db.Uuid
-  userId         String   @map("user_id") @db.Uuid
-  organizationId String   @map("organization_id") @db.Uuid // Enforced by check_pull_request_rating_organization_id trigger - must match github_pull_requests.organization_id
-  // Score validation (1-5) enforced at API layer via Zod schema
-  score          Int
-  comment        String   @db.VarChar(500)
-  createdAt      DateTime @default(now()) @map("created_at")
-  updatedAt      DateTime @updatedAt @map("updated_at")
-
-  // Relations
-  pullRequest  GitHubPullRequest @relation(fields: [pullRequestId], references: [id], onDelete: Cascade)
-  user         User              @relation(fields: [userId], references: [id], onDelete: Cascade)
-  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-
-  @@unique([pullRequestId, userId, organizationId])
-  @@index([pullRequestId, organizationId])
-  @@map("pull_request_ratings")
 }
 
 // =============================================================================
@@ -851,48 +918,6 @@ model SlugCounter {
 
   @@unique([organizationId, typePrefix])
   @@map("slug_counters")
-}
-
-model ExternalLink {
-  id             String           @id @default(uuid(7)) @db.Uuid
-  organizationId String           @map("organization_id") @db.Uuid
-  workstreamId   String?          @map("workstream_id") @db.Uuid
-  projectId      String           @map("project_id") @db.Uuid
-  type           ExternalLinkType
-  title          String
-  externalUrl    String           @map("external_url")
-  metadata       Json?
-  createdAt      DateTime         @default(now()) @map("created_at")
-  updatedAt      DateTime         @updatedAt @map("updated_at")
-
-  // Relations
-  organization Organization @relation(fields: [organizationId], references: [id])
-  workstream   Workstream?  @relation(fields: [workstreamId], references: [id], onDelete: Cascade)
-  project      Project?     @relation(fields: [projectId], references: [id], onDelete: Cascade)
-
-  @@index([organizationId, workstreamId, type])
-  @@index([organizationId, projectId, type])
-  @@index([workstreamId])
-  @@index([projectId])
-  @@map("external_links")
-}
-
-model EntityLink {
-  id             String     @id @default(uuid(7)) @db.Uuid
-  organizationId String     @map("organization_id") @db.Uuid
-  sourceId       String     @map("source_id") @db.Uuid
-  sourceType     EntityType @map("source_type")
-  sourceVersion  Int?       @map("source_version")
-  targetId       String     @map("target_id") @db.Uuid
-  targetType     EntityType @map("target_type")
-  targetVersion  Int?       @map("target_version")
-  linkType       LinkType   @map("link_type")
-  metadata       Json?
-  createdAt      DateTime   @default(now()) @map("created_at")
-
-  @@index([organizationId, sourceId, sourceType, linkType])
-  @@index([organizationId, targetId, targetType, linkType])
-  @@map("entity_links")
 }
 
 // =============================================================================
@@ -955,8 +980,7 @@ model CommentThread {
   source         ThreadSource @default(NATIVE)
   externalId     String?      @map("external_id")
   roomId         String?      @map("room_id")
-  entityId       String?      @map("entity_id") @db.Uuid
-  entityType     EntityType?  @map("entity_type")
+  artifactId     String?      @map("artifact_id") @db.Uuid
   status         ThreadStatus @default(OPEN)
   metadata       Json?
   resolvedAt     DateTime?    @map("resolved_at")
@@ -966,10 +990,11 @@ model CommentThread {
   updatedAt      DateTime     @updatedAt @map("updated_at")
 
   organization Organization @relation(fields: [organizationId], references: [id])
+  artifact     Artifact?    @relation(fields: [artifactId], references: [id], onDelete: Cascade)
   comments     Comment[]
 
   @@unique([organizationId, externalId])
-  @@index([organizationId, entityId, entityType, status])
+  @@index([organizationId, artifactId, status])
   @@index([organizationId, roomId])
   @@index([organizationId, status, updatedAt])
   @@index([createdById])
@@ -1040,7 +1065,7 @@ model Loop {
   command        LoopCommand
 
   // Optional relationships
-  documentId   String? @map("artifact_id") @db.Uuid
+  artifactId   String? @map("artifact_id") @db.Uuid
   workstreamId String? @map("workstream_id") @db.Uuid
   parentLoopId String? @map("parent_loop_id") @db.Uuid
 
@@ -1076,9 +1101,9 @@ model Loop {
   // Error info
   error Json? // { code: string, message: string }
 
-  // Document version at loop creation time — used to detect stale evaluations
+  // Artifact version at loop creation time — used to detect stale evaluations
   // when a new document version is published while an evaluation is in flight.
-  documentVersion Int? @map("artifact_version")
+  artifactVersion Int? @map("artifact_version")
 
   // Extensible metadata
   metadata          Json  @default("{}") @map("metadata")
@@ -1090,23 +1115,23 @@ model Loop {
   // Relations
   organization  Organization         @relation(fields: [organizationId], references: [id])
   user          User                 @relation(fields: [userId], references: [id])
-  document      Document?            @relation(fields: [documentId], references: [id], onDelete: SetNull)
+  artifact      Artifact?            @relation(fields: [artifactId], references: [id], onDelete: SetNull)
   workstream    Workstream?          @relation(fields: [workstreamId], references: [id], onDelete: Cascade)
   computeTarget ComputeTarget?       @relation(fields: [computeTargetId], references: [id])
   parentLoop    Loop?                @relation("LoopParent", fields: [parentLoopId], references: [id], onDelete: Restrict, onUpdate: Restrict)
   childLoops    Loop[]               @relation("LoopParent")
-  evaluations   DocumentEvaluation[]
+  evaluations   ArtifactEvaluation[]
   events        LoopEvent[]
 
   // NOTE: A partial unique index on (artifact_id, command, artifact_version)
   // WHERE status IN ('PENDING', 'CLAIMED', 'RUNNING') is maintained via raw migrations.
   // Prisma cannot express partial indexes. Prisma 7.4+ falsely flags this as drift —
   // we pin to 7.3.0 until resolved. Do NOT drop it.
-  // Only applies when both documentId and documentVersion are non-null (Postgres
+  // Only applies when both artifactId and artifactVersion are non-null (Postgres
   // treats NULL != NULL in unique indexes, so nullable rows never conflict).
   // Terminal loops (COMPLETED/FAILED/CANCELLED/TIMED_OUT) allow re-runs of the same
-  // document+command+version without conflict.
-  @@index([documentId, command, documentVersion])
+  // artifact+command+version without conflict.
+  @@index([artifactId, command, artifactVersion])
   @@index([organizationId, status])
   @@index([organizationId, userId, createdAt])
   @@index([workstreamId])
@@ -1261,50 +1286,11 @@ model GitHubInstallationRepository {
   lastPushedAt   DateTime? @map("last_pushed_at")
 
   // Relations
-  installation GitHubInstallation @relation(fields: [installationId], references: [id], onDelete: Cascade)
+  installation       GitHubInstallation  @relation(fields: [installationId], references: [id], onDelete: Cascade)
+  pullRequestDetails PullRequestDetail[]
 
   @@unique([installationId, githubRepoId])
   @@map("github_installation_repositories")
-}
-
-model GitHubPullRequest {
-  id             String          @id @default(uuid(7)) @db.Uuid
-  workstreamId   String          @map("workstream_id") @db.Uuid
-  organizationId String          @map("organization_id") @db.Uuid // Denormalized from workstream for defense-in-depth (org-scoped queries)
-  repositoryId   String          @map("repository_id") @db.Uuid
-  documentId     String?         @map("artifact_id") @db.Uuid
-  githubId       String          @map("github_id")
-  number         Int
-  title          String
-  body           String?         @db.Text
-  htmlUrl        String          @map("html_url")
-  headBranch     String          @map("head_branch")
-  baseBranch     String          @map("base_branch")
-  headSha        String?         @map("head_sha")
-  state          GitHubPRState   @default(OPEN)
-  isDraft        Boolean         @default(false) @map("is_draft")
-  checksStatus   ChecksStatus    @default(UNKNOWN) @map("checks_status")
-  reviewDecision ReviewDecision? @map("review_decision")
-  closedAt       DateTime?       @map("closed_at")
-  mergedAt       DateTime?       @map("merged_at")
-  mergeCommitSha String?         @map("merge_commit_sha")
-  createdAt      DateTime        @default(now()) @map("created_at")
-  updatedAt      DateTime        @updatedAt @map("updated_at")
-
-  // Relations
-  workstream     Workstream              @relation(fields: [workstreamId], references: [id], onDelete: Cascade)
-  organization   Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  document       Document?               @relation(fields: [documentId], references: [id], onDelete: SetNull)
-  ratings        PullRequestRating[]
-  reviewComments GitHubPRReviewComment[]
-  reviews        GitHubPRReview[]
-
-  @@unique([repositoryId, number])
-  @@index([workstreamId, state])
-  @@index([headSha])
-  @@index([organizationId])
-  @@index([documentId])
-  @@map("github_pull_requests")
 }
 
 model GitHubPRReviewComment {
@@ -1324,7 +1310,7 @@ model GitHubPRReviewComment {
   updatedAt       DateTime             @updatedAt @map("updated_at")
 
   // Relations
-  pullRequest GitHubPullRequest @relation(fields: [pullRequestId], references: [id], onDelete: Cascade)
+  pullRequestDetail PullRequestDetail @relation(fields: [pullRequestId], references: [artifactId], onDelete: Cascade)
 
   @@index([pullRequestId, state])
   @@map("github_pr_review_comments")
@@ -1344,7 +1330,7 @@ model GitHubPRReview {
   updatedAt       DateTime       @updatedAt @map("updated_at")
 
   // Relations
-  pullRequest GitHubPullRequest @relation(fields: [pullRequestId], references: [id], onDelete: Cascade)
+  pullRequestDetail PullRequestDetail @relation(fields: [pullRequestId], references: [artifactId], onDelete: Cascade)
 
   @@unique([pullRequestId, authorLogin])
   @@map("github_pr_reviews")

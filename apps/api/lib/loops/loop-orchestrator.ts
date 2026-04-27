@@ -31,6 +31,7 @@ import {
   loopsService,
 } from "@/app/loops/service";
 import { apiKeyService } from "@/app/settings/api-key-service";
+import { documentWhere } from "@/lib/artifact-adapters";
 import type {
   LaunchContext,
   LaunchResult,
@@ -448,12 +449,12 @@ async function resolveLoopLaunchContext(
   let documentSlug: string | undefined;
   if (loop.documentId) {
     const artifact = await withDb((db) =>
-      db.document.findUnique({
-        where: { id: loop.documentId!, organizationId },
+      db.artifact.findUnique({
+        where: documentWhere({ id: loop.documentId!, organizationId }),
         select: { slug: true },
       })
     );
-    documentSlug = artifact?.slug;
+    documentSlug = artifact?.slug ?? undefined;
   }
 
   const localRepoPath =

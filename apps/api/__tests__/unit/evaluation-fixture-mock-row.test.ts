@@ -6,22 +6,26 @@
  * 2. artifactId defaults to the same value as entityId (denormalized FK default)
  * 3. artifactId can be overridden to null (for future issue-only rows)
  */
-import { EntityType } from "@repo/database";
+import { ArtifactType } from "@repo/api/src/types/artifact";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@repo/database", () => ({
-  EntityType: { DOCUMENT: "DOCUMENT", FEATURE: "FEATURE" },
+  ArtifactType: {
+    DOCUMENT: "DOCUMENT",
+    PULL_REQUEST: "PULL_REQUEST",
+    DEPLOYMENT: "DEPLOYMENT",
+  },
 }));
 
 import { createMockEvaluationRow } from "../fixtures/evaluation";
 
 describe("createMockEvaluationRow fixture (SS8.10)", () => {
-  it("default row includes entityId, entityType = ARTIFACT, and organizationId", () => {
+  it("default row includes entityId, entityType = DOCUMENT, and organizationId", () => {
     const row = createMockEvaluationRow();
 
     expect(row.entityId).toBeDefined();
     expect(typeof row.entityId).toBe("string");
-    expect(row.entityType).toBe(EntityType.DOCUMENT);
+    expect(row.entityType).toBe(ArtifactType.Document);
     expect(row.organizationId).toBeDefined();
     expect(typeof row.organizationId).toBe("string");
   });

@@ -36,12 +36,17 @@ vi.mock("@repo/database", () => ({
   withDb: Object.assign(
     vi.fn((fn: (db: unknown) => unknown) =>
       fn({
-        document: { findUnique: vi.fn().mockResolvedValue(null) },
+        artifact: { findUnique: vi.fn().mockResolvedValue(null) },
         loop: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
       })
     ),
     { tx: vi.fn() }
   ),
+  ArtifactType: {
+    DOCUMENT: "DOCUMENT",
+    PULL_REQUEST: "PULL_REQUEST",
+    DEPLOYMENT: "DEPLOYMENT",
+  },
   EvaluationReportType: { PLAN: "PLAN", CODE: "CODE" },
 }));
 

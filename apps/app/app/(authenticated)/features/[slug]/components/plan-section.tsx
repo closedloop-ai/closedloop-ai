@@ -14,8 +14,8 @@ import { NewPlanModal } from "@/app/(authenticated)/implementation-plans/compone
 import { ArtifactRow } from "@/components/document-editor/relationships/artifact-row";
 import { SectionHeader } from "@/components/document-editor/relationships/section-header";
 import { GenerationStatusIndicator } from "@/components/generation-status-indicator";
+import { useDeleteArtifactLink } from "@/hooks/queries/use-artifact-links";
 import { useDocument } from "@/hooks/queries/use-documents";
-import { useDeleteEntityLink } from "@/hooks/queries/use-entity-links";
 import { useFeatureState } from "../use-feature-state";
 import { SelectPlanDialog } from "./select-plan-dialog";
 
@@ -45,7 +45,7 @@ export function PlanSection({
 
   const { data: plan, isLoading: isLoadingPlan } = useDocument(linkedPlanId);
 
-  const deleteLink = useDeleteEntityLink();
+  const deleteLink = useDeleteArtifactLink();
 
   function handleUnlink(linkId: string) {
     deleteLink.mutate(linkId, {

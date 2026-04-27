@@ -1,7 +1,6 @@
 import type { CommentThreadWithComments } from "@repo/api/src/types/comment";
 import { ThreadSource, ThreadStatus } from "@repo/api/src/types/comment";
 import type { JsonObject } from "@repo/api/src/types/common";
-import { EntityType } from "@repo/api/src/types/entity-link";
 import { createArtifactThread as createLiveblocksThread } from "@repo/collaboration/room-management";
 import {
   generateDocumentRoomId,
@@ -22,7 +21,7 @@ export const commentsService = {
     thread: ThreadData,
     createdBy?: string
   ) {
-    const entity = await findEntityForRoom(organizationId, thread.roomId);
+    const artifact = await findArtifactForRoom(organizationId, thread.roomId);
     const metadata = thread.metadata ?? Prisma.JsonNull;
 
     return withDb((db) =>
@@ -38,8 +37,7 @@ export const commentsService = {
           source: ThreadSource.Liveblocks,
           externalId: thread.id,
           roomId: thread.roomId,
-          entityId: entity?.entityId ?? null,
-          entityType: entity?.entityType ?? null,
+          artifactId: artifact?.artifactId ?? null,
           status: thread.resolved ? ThreadStatus.Resolved : ThreadStatus.Open,
           resolvedAt: thread.resolved ? thread.updatedAt : null,
           metadata,
@@ -48,8 +46,7 @@ export const commentsService = {
         },
         update: {
           roomId: thread.roomId,
-          entityId: entity?.entityId,
-          entityType: entity?.entityType,
+          artifactId: artifact?.artifactId,
           status: thread.resolved ? ThreadStatus.Resolved : ThreadStatus.Open,
           resolvedAt: thread.resolved ? thread.updatedAt : null,
           metadata,
@@ -250,8 +247,7 @@ export const commentsService = {
       const rows = await db.commentThread.findMany({
         where: {
           organizationId,
-          entityId,
-          entityType: EntityType.Document,
+          artifactId: entityId,
           status: options?.status,
         },
         include: {
@@ -344,15 +340,15 @@ function toCommentThreadWithComments(
  * Parse roomId to find the associated artifact entity.
  * Returns null for non-artifact rooms or if artifact not found.
  */
-async function findEntityForRoom(
+async function findArtifactForRoom(
   organizationId: string,
   roomId: string
-): Promise<{ entityId: string; entityType: EntityType } | null> {
+): Promise<{ artifactId: string } | null> {
   try {
     const { slug } = parseDocumentRoomId(roomId);
 
     const artifact = await withDb((db) =>
-      db.document.findUnique({
+      db.artifact.findUnique({
         where: { organizationId_slug: { organizationId, slug } },
         select: { id: true },
       })
@@ -362,7 +358,7 @@ async function findEntityForRoom(
       return null;
     }
 
-    return { entityId: artifact.id, entityType: EntityType.Document };
+    return { artifactId: artifact.id };
   } catch {
     // Non-artifact room format — expected, not an error
     return null;

@@ -1,14 +1,14 @@
+import { LinkType } from "@repo/api/src/types/artifact";
 import type {
   GDriveContextImportResult,
   ImportGDriveContextResponse,
 } from "@repo/api/src/types/context-attachment";
 import { DocumentStatus, DocumentType } from "@repo/api/src/types/document";
-import { EntityType, LinkType } from "@repo/api/src/types/entity-link";
 import { exportDocAsMarkdown, getDocName } from "@repo/google";
 import { log } from "@repo/observability/log";
 import pLimit from "p-limit";
+import { artifactLinksService } from "@/app/artifact-links/service";
 import { documentsService } from "@/app/documents/service";
-import { entityLinksService } from "@/app/entity-links/service";
 import {
   ensureValidAccessToken,
   googleService,
@@ -120,11 +120,9 @@ export const POST = withAnyAuth<
         }
 
         try {
-          await entityLinksService.createLink(user.organizationId, {
+          await artifactLinksService.createLink(user.organizationId, {
             sourceId: artifact.id,
-            sourceType: EntityType.Document,
             targetId: documentId,
-            targetType: EntityType.Document,
             linkType: LinkType.Produces,
           });
         } catch (linkError) {

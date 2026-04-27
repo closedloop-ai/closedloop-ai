@@ -1,11 +1,15 @@
 import { analytics } from "@repo/analytics/server";
 import type { PullRequestRatingSummary } from "@repo/api/src/types/pull-request-rating";
-import { withDb } from "@repo/database";
+import { ArtifactType, withDb } from "@repo/database";
 import { PullRequestNotFoundError } from "./errors";
 
 /**
  * Service for managing pull request ratings.
- * Follows the same pattern as documentsService rating methods (lines 1439-1554).
+ *
+ * After the PLN-321 artifact cutover, PR ratings are stored in the unified
+ * `artifact_ratings` table keyed by `artifactId` (where artifactId is the
+ * PULL_REQUEST artifact id — preserved from the legacy PR id during
+ * migration). Rating rows carry `artifactVersion: null` for PR ratings.
  */
 export const pullRequestRatingsService = {
   /**
@@ -19,12 +23,14 @@ export const pullRequestRatingsService = {
     organizationId: string
   ): Promise<PullRequestRatingSummary> {
     const { userRating, aggregate } = await withDb(async (db) => {
-      // Verify PR belongs to user's organization (organizationId denormalized for defense-in-depth)
-      const pullRequest = await db.gitHubPullRequest.findFirst({
+      // Verify PR artifact belongs to user's organization.
+      const pullRequest = await db.artifact.findFirst({
         where: {
           id: pullRequestId,
           organizationId,
+          type: ArtifactType.PULL_REQUEST,
         },
+        select: { id: true },
       });
 
       if (!pullRequest) {
@@ -33,19 +39,19 @@ export const pullRequestRatingsService = {
 
       // Fetch user's rating and aggregate in parallel within same connection for atomic read
       const [userRating, aggregate] = await Promise.all([
-        db.pullRequestRating.findUnique({
+        db.artifactRating.findUnique({
           where: {
-            pullRequestId_userId_organizationId: {
-              pullRequestId,
+            artifactId_userId_organizationId: {
+              artifactId: pullRequestId,
               userId,
               organizationId,
             },
           },
         }),
-        db.pullRequestRating.aggregate({
-          where: { pullRequestId, organizationId },
+        db.artifactRating.aggregate({
+          where: { artifactId: pullRequestId, organizationId },
           _avg: { score: true },
-          _count: true,
+          _count: { _all: true },
         }),
       ]);
 
@@ -53,14 +59,14 @@ export const pullRequestRatingsService = {
     });
 
     return {
-      average: aggregate._avg.score ?? 0,
-      count: aggregate._count,
+      average: aggregate._avg?.score ?? 0,
+      count: aggregate._count._all,
       userRating: userRating
         ? {
             id: userRating.id,
             userId: userRating.userId,
             score: userRating.score,
-            comment: userRating.comment,
+            comment: userRating.comment ?? "",
             createdAt: userRating.createdAt,
             updatedAt: userRating.updatedAt,
           }
@@ -83,12 +89,14 @@ export const pullRequestRatingsService = {
     // Use transaction for atomicity: PR lookup + rating upsert + aggregate recalculation
     // must happen atomically to ensure data consistency.
     return withDb.tx(async (tx) => {
-      // Verify PR belongs to user's organization (organizationId denormalized for defense-in-depth)
-      const pullRequest = await tx.gitHubPullRequest.findFirst({
+      // Verify PR artifact belongs to user's organization.
+      const pullRequest = await tx.artifact.findFirst({
         where: {
           id: pullRequestId,
           organizationId,
+          type: ArtifactType.PULL_REQUEST,
         },
+        select: { id: true },
       });
 
       if (!pullRequest) {
@@ -96,10 +104,10 @@ export const pullRequestRatingsService = {
       }
 
       // Check if rating exists to determine if this is a create or update
-      const existingRating = await tx.pullRequestRating.findUnique({
+      const existingRating = await tx.artifactRating.findUnique({
         where: {
-          pullRequestId_userId_organizationId: {
-            pullRequestId,
+          artifactId_userId_organizationId: {
+            artifactId: pullRequestId,
             userId,
             organizationId,
           },
@@ -109,10 +117,10 @@ export const pullRequestRatingsService = {
       const isUpdate = !!existingRating;
 
       // Upsert rating
-      const rating = await tx.pullRequestRating.upsert({
+      const rating = await tx.artifactRating.upsert({
         where: {
-          pullRequestId_userId_organizationId: {
-            pullRequestId,
+          artifactId_userId_organizationId: {
+            artifactId: pullRequestId,
             userId,
             organizationId,
           },
@@ -122,7 +130,7 @@ export const pullRequestRatingsService = {
           comment,
         },
         create: {
-          pullRequestId,
+          artifactId: pullRequestId,
           userId,
           organizationId,
           score,
@@ -131,10 +139,10 @@ export const pullRequestRatingsService = {
       });
 
       // Recalculate aggregate (same logic as getRating())
-      const aggregate = await tx.pullRequestRating.aggregate({
-        where: { pullRequestId, organizationId },
+      const aggregate = await tx.artifactRating.aggregate({
+        where: { artifactId: pullRequestId, organizationId },
         _avg: { score: true },
-        _count: true,
+        _count: { _all: true },
       });
 
       // AC-017 & AC-018: Track PR Rating Submitted (new) or PR Rating Updated
@@ -147,19 +155,19 @@ export const pullRequestRatingsService = {
           score,
           hasComment: !!comment,
           previousScore: existingRating?.score,
-          averageRating: aggregate._avg.score ?? 0,
-          totalRatings: aggregate._count,
+          averageRating: aggregate._avg?.score ?? 0,
+          totalRatings: aggregate._count._all,
         },
       });
 
       return {
-        average: aggregate._avg.score ?? 0,
-        count: aggregate._count,
+        average: aggregate._avg?.score ?? 0,
+        count: aggregate._count._all,
         userRating: {
           id: rating.id,
           userId: rating.userId,
           score: rating.score,
-          comment: rating.comment,
+          comment: rating.comment ?? "",
           createdAt: rating.createdAt,
           updatedAt: rating.updatedAt,
         },

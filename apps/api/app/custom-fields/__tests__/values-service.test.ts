@@ -11,6 +11,17 @@ import { type Mock, vi } from "vitest";
 
 vi.mock("@repo/database", () => ({
   withDb: vi.fn(),
+  ArtifactType: {
+    DOCUMENT: "DOCUMENT",
+    PULL_REQUEST: "PULL_REQUEST",
+    DEPLOYMENT: "DEPLOYMENT",
+  },
+  ArtifactSubtype: {
+    PRD: "PRD",
+    IMPLEMENTATION_PLAN: "IMPLEMENTATION_PLAN",
+    TEMPLATE: "TEMPLATE",
+    FEATURE: "FEATURE",
+  },
 }));
 
 import {
@@ -79,7 +90,7 @@ describe("customFieldValuesService.setValueForEntity — ENUM validation", () =>
   ) {
     mockWithDb.mockImplementation((callback: any) => {
       const db = {
-        document: {
+        artifact: {
           findFirst: vi.fn().mockResolvedValue({ id: TEST_ENTITY_ID }),
         },
         customField: {
@@ -194,7 +205,7 @@ describe("customFieldValuesService.setValueForEntity — PEOPLE validation", () 
 
     mockWithDb.mockImplementation((callback: any) => {
       const db = {
-        document: {
+        artifact: {
           findFirst: vi.fn().mockResolvedValue({ id: TEST_ENTITY_ID }),
         },
         customField: {
@@ -295,7 +306,7 @@ describe("customFieldValuesService.attachField — Project cascade", () => {
         workstream: {
           findMany: vi.fn().mockResolvedValue([{ id: "ws-1" }, { id: "ws-2" }]),
         },
-        document: {
+        artifact: {
           findMany: vi
             .fn()
             .mockResolvedValue([{ id: "doc-feat-1" }, { id: "doc-feat-2" }]),
@@ -398,7 +409,7 @@ describe("customFieldValuesService.attachField — Project cascade", () => {
         workstream: {
           findMany: vi.fn().mockResolvedValue([]),
         },
-        document: {
+        artifact: {
           findMany: vi.fn().mockResolvedValue([]),
         },
       };

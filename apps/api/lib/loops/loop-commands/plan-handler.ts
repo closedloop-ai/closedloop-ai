@@ -1,18 +1,20 @@
 import type { JsonObject } from "@repo/api/src/types/common";
-import type { PlanJson } from "@repo/api/src/types/document";
+import type { DocumentType, PlanJson } from "@repo/api/src/types/document";
+
 import {
   EvaluationReportType,
   type JudgesReport,
 } from "@repo/api/src/types/evaluation";
 import type { Loop } from "@repo/api/src/types/loop";
 import type { PromptsSnapshot } from "@repo/api/src/types/prompt";
-import { EntityType, withDb } from "@repo/database";
+import { withDb } from "@repo/database";
 import { parsePromptsSnapshotFromMarkdownEntries } from "@repo/github/prompt-snapshot-parser";
 import { log } from "@repo/observability/log";
 import { waitUntil } from "@vercel/functions";
 import { z } from "zod";
 import { documentVersionService } from "@/app/documents/document-version-service";
 import { resetDocumentRoom } from "@/app/documents/room-utils";
+import { documentWhere } from "@/lib/artifact-adapters";
 import {
   parseJsonArtifact,
   upsertEvaluationWithJudgeScores,
@@ -119,22 +121,30 @@ export async function ingestPlanArtifacts(
   );
 
   const updatedArtifact = await withDb((db) =>
-    db.document.update({
-      where: { id: documentId, organizationId },
+    db.artifact.update({
+      where: documentWhere({ id: documentId, organizationId }),
       data: { status: "DRAFT" },
       select: {
         id: true,
         organizationId: true,
         slug: true,
-        type: true,
-        latestVersion: true,
+        subtype: true,
+        document: { select: { latestVersion: true } },
       },
     })
   );
 
   // Reset the Liveblocks room so any stale Y.Doc content is cleared.
   if (updatedArtifact.slug) {
-    waitUntil(resetDocumentRoom(updatedArtifact));
+    waitUntil(
+      resetDocumentRoom({
+        id: updatedArtifact.id,
+        organizationId: updatedArtifact.organizationId,
+        slug: updatedArtifact.slug,
+        type: updatedArtifact.subtype as DocumentType,
+        latestVersion: updatedArtifact.document?.latestVersion ?? 1,
+      })
+    );
   }
 
   // Persist prompt registry entries from snapshot (idempotent upsert)
@@ -144,9 +154,7 @@ export async function ingestPlanArtifacts(
   if (artifacts.judgesReport) {
     await withDb.tx(async (tx) => {
       await upsertEvaluationWithJudgeScores({
-        entityId: documentId,
-        entityType: EntityType.DOCUMENT,
-        documentId,
+        artifactId: documentId,
         loopId: loop.id,
         organizationId,
         reportType: EvaluationReportType.Plan,

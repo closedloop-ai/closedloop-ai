@@ -1,16 +1,8 @@
 import { Priority } from "@repo/api/src/types/common";
 import { DocumentStatus, DocumentType } from "@repo/api/src/types/document";
-import { ExternalLinkType } from "@repo/api/src/types/external-link";
 import { ProjectStatus } from "@repo/api/src/types/project";
 import type { StatusIconStatus } from "@repo/design-system/components/ui/status-icon";
-import {
-  BoxIcon,
-  FileCode2Icon,
-  FileIcon,
-  FileTextIcon,
-  GitBranchIcon,
-  PaintbrushIcon,
-} from "lucide-react";
+import { BoxIcon, FileCode2Icon, FileIcon, FileTextIcon } from "lucide-react";
 import type * as React from "react";
 
 // Priority configuration (unified across all entities)
@@ -106,58 +98,6 @@ export const DOCUMENT_TYPE_BADGE_LABELS: Record<DocumentType, string> = {
   [DocumentType.Template]: "Template",
   [DocumentType.Feature]: "Feature",
 };
-
-// Feature status aliases — feature-typed documents share DocumentStatus.
-export const FEATURE_STATUS_LABELS = DOCUMENT_STATUS_LABELS;
-export const FEATURE_STATUS_COLORS = DOCUMENT_STATUS_COLORS;
-export const FEATURE_STATUS_TO_ICON = DOCUMENT_STATUS_TO_ICON;
-
-// External link type icons
-export const EXTERNAL_LINK_TYPE_ICONS: Record<
-  ExternalLinkType,
-  React.ElementType
-> = {
-  [ExternalLinkType.PullRequest]: GitBranchIcon,
-  [ExternalLinkType.FigmaDesign]: PaintbrushIcon,
-  [ExternalLinkType.PreviewDeployment]: FileTextIcon,
-};
-
-// External link type labels
-export const EXTERNAL_LINK_TYPE_LABELS: Record<ExternalLinkType, string> = {
-  [ExternalLinkType.PullRequest]: "Pull Request",
-  [ExternalLinkType.FigmaDesign]: "Design",
-  [ExternalLinkType.PreviewDeployment]: "Preview",
-};
-
-// External link type colors
-export const EXTERNAL_LINK_TYPE_COLORS: Record<
-  ExternalLinkType,
-  { bg: string; text: string }
-> = {
-  [ExternalLinkType.PullRequest]: {
-    bg: "bg-cyan-100 dark:bg-cyan-900/50",
-    text: "text-cyan-700 dark:text-cyan-300",
-  },
-  [ExternalLinkType.FigmaDesign]: {
-    bg: "bg-purple-100 dark:bg-purple-900/50",
-    text: "text-purple-700 dark:text-purple-300",
-  },
-  [ExternalLinkType.PreviewDeployment]: {
-    bg: "bg-slate-100 dark:bg-slate-800",
-    text: "text-slate-700 dark:text-slate-300",
-  },
-};
-
-// External link type short badge labels (for compact displays like Context table)
-export const EXTERNAL_LINK_TYPE_BADGE_LABELS: Record<ExternalLinkType, string> =
-  {
-    [ExternalLinkType.PullRequest]: "PR",
-    [ExternalLinkType.FigmaDesign]: "Figma",
-    [ExternalLinkType.PreviewDeployment]: "Preview",
-  };
-
-// Feature icon
-export const FEATURE_ICON: React.ElementType = BoxIcon;
 
 // Project status labels
 export const PROJECT_STATUS_LABELS: Record<ProjectStatus, string> = {

@@ -1,16 +1,34 @@
 // Project Tree types for API contract
-// Hierarchical view of all documents, features, and external links in a project,
-// organized by entity link chains.
+// Hierarchical view of every artifact in a project, organized by artifact-link chains.
 
+import type { LinkType } from "./artifact";
 import type { DocumentStatus, DocumentType } from "./document";
-import type { EntityType, LinkType } from "./entity-link";
-import type { ExternalLinkType } from "./external-link";
 import type { BasicUser } from "./user";
+
+/**
+ * Wire-level discriminator for the project tree. After the artifact cutover
+ * every row is an artifact, but the tree's legacy shape still groups
+ * PR/DEPLOYMENT entries under a single `EXTERNAL_LINK` bucket so the
+ * frontend can render them uniformly.
+ */
+export const TreeEntityType = {
+  Document: "DOCUMENT",
+  ExternalLink: "EXTERNAL_LINK",
+} as const;
+export type TreeEntityType =
+  (typeof TreeEntityType)[keyof typeof TreeEntityType];
+
+export const TreeExternalLinkType = {
+  PullRequest: "PULL_REQUEST",
+  PreviewDeployment: "PREVIEW_DEPLOYMENT",
+} as const;
+export type TreeExternalLinkType =
+  (typeof TreeExternalLinkType)[keyof typeof TreeExternalLinkType];
 
 /** Lightweight representation of any entity in the project tree. */
 export type TreeEntity =
   | {
-      entityType: typeof EntityType.Document;
+      entityType: typeof TreeEntityType.Document;
       id: string;
       slug: string;
       title: string;
@@ -20,11 +38,11 @@ export type TreeEntity =
       createdAt: Date;
     }
   | {
-      entityType: typeof EntityType.ExternalLink;
+      entityType: typeof TreeEntityType.ExternalLink;
       id: string;
       title: string;
       externalUrl: string;
-      type: ExternalLinkType;
+      type: TreeExternalLinkType;
       createdAt: Date;
     };
 

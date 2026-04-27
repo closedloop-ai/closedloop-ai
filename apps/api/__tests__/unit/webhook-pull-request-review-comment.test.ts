@@ -20,6 +20,11 @@ import { mockWithDbTx as setupMockWithDbTx } from "../utils/db-helpers";
 
 // Mock modules before importing
 vi.mock("@repo/database", () => ({
+  ArtifactType: {
+    DOCUMENT: "DOCUMENT",
+    PULL_REQUEST: "PULL_REQUEST",
+    DEPLOYMENT: "DEPLOYMENT",
+  },
   withDb: vi.fn(),
 }));
 
@@ -31,6 +36,7 @@ import {
   createReviewComment,
   createSender as createUserSender,
 } from "../fixtures/github-webhook-fixtures";
+import { makePrDetailRow } from "../utils/pr-detail-helpers";
 
 // Mock database transaction client
 let mockTx: any;
@@ -59,7 +65,7 @@ describe("handlePullRequestReviewComment", () => {
       gitHubInstallationRepository: {
         findFirst: vi.fn(),
       },
-      gitHubPullRequest: {
+      pullRequestDetail: {
         findUnique: vi.fn(),
       },
       gitHubPRReviewComment: {
@@ -109,13 +115,14 @@ describe("handlePullRequestReviewComment", () => {
         id: "repo-uuid-123",
       });
 
-      // Mock PR lookup
-      mockTx.gitHubPullRequest.findUnique.mockResolvedValue({
-        id: "pr-uuid-456",
-        workstreamId: "ws-uuid-789",
-        documentId: "artifact-uuid-123",
-        document: { slug: "plan-feature-x" },
-      });
+      // Mock PR detail lookup
+      mockTx.pullRequestDetail.findUnique.mockResolvedValue(
+        makePrDetailRow({
+          artifactId: "artifact-pr-456",
+          workstreamId: "ws-uuid-789",
+          linkedDoc: { id: "artifact-doc-123", slug: "plan-feature-x" },
+        })
+      );
 
       // Mock comment upsert (idempotent for webhook retries)
       mockTx.gitHubPRReviewComment.upsert.mockResolvedValue({});
@@ -133,27 +140,23 @@ describe("handlePullRequestReviewComment", () => {
         select: { id: true },
       });
 
-      // Verify PR lookup
-      expect(mockTx.gitHubPullRequest.findUnique).toHaveBeenCalledWith({
-        where: {
-          repositoryId_number: {
-            repositoryId: "repo-uuid-123",
-            number: 42,
+      // Verify PR detail lookup
+      expect(mockTx.pullRequestDetail.findUnique).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            repositoryId_number: {
+              repositoryId: "repo-uuid-123",
+              number: 42,
+            },
           },
-        },
-        select: {
-          id: true,
-          workstreamId: true,
-          documentId: true,
-          document: { select: { slug: true } },
-        },
-      });
+        })
+      );
 
       // Verify comment upsert with String (idempotent for webhook retries)
       expect(mockTx.gitHubPRReviewComment.upsert).toHaveBeenCalledWith({
         where: { githubCommentId: String(123_456_789) },
         create: {
-          pullRequestId: "pr-uuid-456",
+          pullRequestId: "artifact-pr-456",
           githubCommentId: String(123_456_789),
           inReplyToId: null,
           reviewId: "555",
@@ -191,7 +194,7 @@ describe("handlePullRequestReviewComment", () => {
             prUrl: "https://github.com/owner/test-repo/pull/42",
             commentUrl:
               "https://github.com/owner/test-repo/pull/1#discussion_r123456789",
-            documentId: "artifact-uuid-123",
+            documentId: "artifact-doc-123",
             documentSlug: "plan-feature-x",
           },
         },
@@ -223,12 +226,13 @@ describe("handlePullRequestReviewComment", () => {
       mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
         id: "repo-uuid",
       });
-      mockTx.gitHubPullRequest.findUnique.mockResolvedValue({
-        id: "pr-uuid",
-        workstreamId: "ws-uuid",
-        documentId: null,
-        document: null,
-      });
+      mockTx.pullRequestDetail.findUnique.mockResolvedValue(
+        makePrDetailRow({
+          artifactId: "artifact-pr",
+          workstreamId: "ws-uuid",
+          linkedDoc: null,
+        })
+      );
       mockTx.gitHubPRReviewComment.upsert.mockResolvedValue({});
       mockTx.workstreamEvent.create.mockResolvedValue({});
 
@@ -275,10 +279,13 @@ describe("handlePullRequestReviewComment", () => {
         id: "repo-uuid-456",
       });
 
-      mockTx.gitHubPullRequest.findUnique.mockResolvedValue({
-        id: "pr-uuid-789",
-        workstreamId: "ws-uuid-abc",
-      });
+      mockTx.pullRequestDetail.findUnique.mockResolvedValue(
+        makePrDetailRow({
+          artifactId: "artifact-pr-789",
+          workstreamId: "ws-uuid-abc",
+          linkedDoc: null,
+        })
+      );
 
       // Mock updateMany returns count of updated records
       mockTx.gitHubPRReviewComment.updateMany.mockResolvedValue({ count: 1 });
@@ -326,10 +333,13 @@ describe("handlePullRequestReviewComment", () => {
         id: "repo-uuid-delete",
       });
 
-      mockTx.gitHubPullRequest.findUnique.mockResolvedValue({
-        id: "pr-uuid-delete",
-        workstreamId: "ws-uuid-delete",
-      });
+      mockTx.pullRequestDetail.findUnique.mockResolvedValue(
+        makePrDetailRow({
+          artifactId: "artifact-pr-delete",
+          workstreamId: "ws-uuid-delete",
+          linkedDoc: null,
+        })
+      );
 
       // Mock deleteMany returns count of deleted records
       mockTx.gitHubPRReviewComment.deleteMany.mockResolvedValue({ count: 1 });
@@ -374,7 +384,7 @@ describe("handlePullRequestReviewComment", () => {
       await handlePullRequestReviewComment(event);
 
       // Should not attempt to find PR or create comment
-      expect(mockTx.gitHubPullRequest.findUnique).not.toHaveBeenCalled();
+      expect(mockTx.pullRequestDetail.findUnique).not.toHaveBeenCalled();
       expect(mockTx.gitHubPRReviewComment.upsert).not.toHaveBeenCalled();
       expect(mockTx.workstreamEvent.create).not.toHaveBeenCalled();
     });
@@ -405,8 +415,8 @@ describe("handlePullRequestReviewComment", () => {
         id: "repo-uuid-exists",
       });
 
-      // PR not found
-      mockTx.gitHubPullRequest.findUnique.mockResolvedValue(null);
+      // PR detail not found
+      mockTx.pullRequestDetail.findUnique.mockResolvedValue(null);
 
       await handlePullRequestReviewComment(event);
 
@@ -443,7 +453,7 @@ describe("handlePullRequestReviewComment", () => {
       expect(
         mockTx.gitHubInstallationRepository.findFirst
       ).not.toHaveBeenCalled();
-      expect(mockTx.gitHubPullRequest.findUnique).not.toHaveBeenCalled();
+      expect(mockTx.pullRequestDetail.findUnique).not.toHaveBeenCalled();
       expect(mockTx.gitHubPRReviewComment.upsert).not.toHaveBeenCalled();
       expect(mockTx.gitHubPRReviewComment.updateMany).not.toHaveBeenCalled();
       expect(mockTx.gitHubPRReviewComment.deleteMany).not.toHaveBeenCalled();

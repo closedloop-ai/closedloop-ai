@@ -1,4 +1,5 @@
 import { JUDGE_RADAR_METRICS, JUDGE_THRESHOLDS } from "@repo/api/src/constants";
+import { LinkType } from "@repo/api/src/types/artifact";
 import type { DocumentType } from "@repo/api/src/types/document";
 import {
   type EvaluationReportType,
@@ -19,7 +20,7 @@ import type {
   RadarAxes,
 } from "@repo/api/src/types/judges-analytics";
 import { computeMean as computeMeanFromUtils } from "@repo/api/src/utils/math";
-import { EntityType, PromptType, withDb } from "@repo/database";
+import { ArtifactType, PromptType, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { normalizeJudgeName } from "@/lib/judge-name-utils";
 
@@ -147,30 +148,35 @@ export async function getHumanCountsByType(
   }
 
   const artifacts = await withDb((db) =>
-    db.document.findMany({
+    db.artifact.findMany({
       where: {
         organizationId,
-        type: { in: types },
+        type: ArtifactType.DOCUMENT,
+        subtype: { in: types },
       },
-      select: { id: true, type: true },
+      select: { id: true, subtype: true },
     })
   );
 
-  const idToType = new Map(artifacts.map((a) => [a.id, a.type] as const));
-  const orgArtifactIds = artifacts.map((a) => a.id);
+  const idToType = new Map<string, DocumentType>(
+    artifacts.flatMap((a) =>
+      a.subtype === null ? [] : [[a.id, a.subtype as DocumentType] as const]
+    )
+  );
+  const orgArtifactIds = Array.from(idToType.keys());
 
   if (orgArtifactIds.length === 0) {
     return { humanRatingsByType, humanCommentsByType };
   }
 
   const ratings = await withDb((db) =>
-    db.documentRating.findMany({
+    db.artifactRating.findMany({
       where: {
         organizationId,
-        documentId: { in: orgArtifactIds },
+        artifactId: { in: orgArtifactIds },
         createdAt: { gte: startDate, lte: endDate },
       },
-      select: { documentId: true, comment: true },
+      select: { artifactId: true, comment: true },
     })
   );
 
@@ -179,7 +185,7 @@ export async function getHumanCountsByType(
     idToType,
     humanRatingsByType,
     humanCommentsByType,
-    (rating) => rating.documentId
+    (rating) => rating.artifactId
   );
 
   return { humanRatingsByType, humanCommentsByType };
@@ -202,17 +208,17 @@ export async function getHumanRatingsByArtifact(
   }
 
   const ratings = await withDb((db) =>
-    db.documentRating.findMany({
+    db.artifactRating.findMany({
       where: {
         organizationId,
-        documentId: { in: artifactIds },
+        artifactId: { in: artifactIds },
         createdAt: { gte: startDate, lte: endDate },
       },
-      select: { documentId: true, score: true },
+      select: { artifactId: true, score: true },
     })
   );
 
-  return collectNormalizedScores(ratings, (rating) => rating.documentId);
+  return collectNormalizedScores(ratings, (rating) => rating.artifactId);
 }
 
 /**
@@ -235,12 +241,13 @@ export async function getCodeHumanCountsByType(
   }
 
   const artifacts = await withDb((db) =>
-    db.document.findMany({
+    db.artifact.findMany({
       where: {
         organizationId,
-        type: { in: types },
+        type: ArtifactType.DOCUMENT,
+        subtype: { in: types },
       },
-      select: { id: true, type: true },
+      select: { id: true, subtype: true },
     })
   );
 
@@ -248,33 +255,36 @@ export async function getCodeHumanCountsByType(
     return { humanRatingsByType, humanCommentsByType };
   }
 
-  const idToType = new Map(
-    artifacts.map((artifact) => [artifact.id, artifact.type] as const)
+  const idToType = new Map<string, DocumentType>(
+    artifacts.flatMap((a) =>
+      a.subtype === null ? [] : [[a.id, a.subtype as DocumentType] as const]
+    )
   );
-  const artifactIds = artifacts.map((artifact) => artifact.id);
+  const artifactIds = Array.from(idToType.keys());
 
-  const pullRequests = await withDb((db) =>
-    db.gitHubPullRequest.findMany({
+  // PR artifacts that were produced by these document artifacts are linked via
+  // ArtifactLink (source = plan, target = PR, linkType = PRODUCES).
+  const prLinks = await withDb((db) =>
+    db.artifactLink.findMany({
       where: {
         organizationId,
-        documentId: { in: artifactIds },
+        sourceId: { in: artifactIds },
+        linkType: LinkType.Produces,
+        target: { type: ArtifactType.PULL_REQUEST },
       },
-      select: { id: true, documentId: true },
+      select: { sourceId: true, targetId: true },
     })
   );
 
-  if (pullRequests.length === 0) {
+  if (prLinks.length === 0) {
     return { humanRatingsByType, humanCommentsByType };
   }
 
   const prIdToType = new Map<string, DocumentType>();
-  for (const pullRequest of pullRequests) {
-    if (pullRequest.documentId == null) {
-      continue;
-    }
-    const type = idToType.get(pullRequest.documentId);
+  for (const link of prLinks) {
+    const type = idToType.get(link.sourceId);
     if (type !== undefined) {
-      prIdToType.set(pullRequest.id, type);
+      prIdToType.set(link.targetId, type);
     }
   }
 
@@ -283,13 +293,13 @@ export async function getCodeHumanCountsByType(
   }
 
   const ratings = await withDb((db) =>
-    db.pullRequestRating.findMany({
+    db.artifactRating.findMany({
       where: {
         organizationId,
-        pullRequestId: { in: Array.from(prIdToType.keys()) },
+        artifactId: { in: Array.from(prIdToType.keys()) },
         createdAt: { gte: startDate, lte: endDate },
       },
-      select: { pullRequestId: true, comment: true },
+      select: { artifactId: true, comment: true },
     })
   );
 
@@ -298,7 +308,7 @@ export async function getCodeHumanCountsByType(
     prIdToType,
     humanRatingsByType,
     humanCommentsByType,
-    (rating) => rating.pullRequestId
+    (rating) => rating.artifactId
   );
 
   return { humanRatingsByType, humanCommentsByType };
@@ -320,40 +330,40 @@ export async function getCodeHumanRatingsByArtifact(
     return new Map();
   }
 
-  const pullRequests = await withDb((db) =>
-    db.gitHubPullRequest.findMany({
+  const prLinks = await withDb((db) =>
+    db.artifactLink.findMany({
       where: {
         organizationId,
-        documentId: { in: artifactIds },
+        sourceId: { in: artifactIds },
+        linkType: LinkType.Produces,
+        target: { type: ArtifactType.PULL_REQUEST },
       },
-      select: { id: true, documentId: true },
+      select: { sourceId: true, targetId: true },
     })
   );
 
-  if (pullRequests.length === 0) {
+  if (prLinks.length === 0) {
     return new Map();
   }
 
   const prIdToArtifactId = new Map<string, string>();
-  for (const pullRequest of pullRequests) {
-    if (pullRequest.documentId != null) {
-      prIdToArtifactId.set(pullRequest.id, pullRequest.documentId);
-    }
+  for (const link of prLinks) {
+    prIdToArtifactId.set(link.targetId, link.sourceId);
   }
 
   const ratings = await withDb((db) =>
-    db.pullRequestRating.findMany({
+    db.artifactRating.findMany({
       where: {
         organizationId,
-        pullRequestId: { in: Array.from(prIdToArtifactId.keys()) },
+        artifactId: { in: Array.from(prIdToArtifactId.keys()) },
         createdAt: { gte: startDate, lte: endDate },
       },
-      select: { pullRequestId: true, score: true },
+      select: { artifactId: true, score: true },
     })
   );
 
   return collectNormalizedScores(ratings, (rating) =>
-    prIdToArtifactId.get(rating.pullRequestId)
+    prIdToArtifactId.get(rating.artifactId)
   );
 }
 
@@ -851,14 +861,16 @@ export const judgesAnalyticsService = {
     const judgeDescriptionByPromptName =
       await getJudgeDescriptionByPromptName(organizationId);
 
-    // Query JudgeScore rows joined through ArtifactEvaluation
+    // Query JudgeScore rows joined through ArtifactEvaluation. The evaluation
+    // now always points to an Artifact directly (no more entity polymorphism);
+    // we filter DOCUMENT-typed artifacts for the legacy Plan/PRD path.
     const rawJudgeScores = await withDb((db) =>
       db.judgeScore.findMany({
         where: {
           evaluation: {
             reportType,
-            entityType: EntityType.DOCUMENT,
             organizationId,
+            artifact: { type: ArtifactType.DOCUMENT },
             createdAt: { gte: startDate, lte: endDate },
           },
         },
@@ -869,8 +881,7 @@ export const judgesAnalyticsService = {
           score: true,
           evaluation: {
             select: {
-              documentId: true,
-              entityId: true,
+              artifactId: true,
             },
           },
         },
@@ -887,21 +898,27 @@ export const judgesAnalyticsService = {
       return { reportType, groups: [] };
     }
 
-    // Batch-fetch artifact types by entityId to populate JudgeScoreInput
+    // Batch-fetch artifact subtypes to populate JudgeScoreInput
     const evalEntityIds = [
-      ...new Set(rawJudgeScores.map((js) => js.evaluation.entityId)),
+      ...new Set(rawJudgeScores.map((js) => js.evaluation.artifactId)),
     ];
     const evalArtifactRows = await withDb((db) =>
-      db.document.findMany({
-        where: { id: { in: evalEntityIds }, organizationId },
-        select: { id: true, type: true },
+      db.artifact.findMany({
+        where: {
+          id: { in: evalEntityIds },
+          organizationId,
+          type: ArtifactType.DOCUMENT,
+        },
+        select: { id: true, subtype: true },
       })
     );
-    const documentTypeByEntityId = new Map(
-      evalArtifactRows.map((a) => [a.id, a.type])
+    const documentTypeByEntityId = new Map<string, DocumentType>(
+      evalArtifactRows.flatMap((a) =>
+        a.subtype === null ? [] : [[a.id, a.subtype as DocumentType] as const]
+      )
     );
     const judgeScores: JudgeScoreInput[] = rawJudgeScores.flatMap((js) => {
-      const documentType = documentTypeByEntityId.get(js.evaluation.entityId);
+      const documentType = documentTypeByEntityId.get(js.evaluation.artifactId);
       if (!documentType) {
         return [];
       }
@@ -909,8 +926,8 @@ export const judgesAnalyticsService = {
         {
           ...js,
           evaluation: {
-            documentId: js.evaluation.documentId,
-            entityId: js.evaluation.entityId,
+            documentId: js.evaluation.artifactId,
+            entityId: js.evaluation.artifactId,
             documentType,
           },
         },
@@ -1005,24 +1022,27 @@ export const judgesAnalyticsService = {
     groupBy: DocumentCountsGroupBy
   ): Promise<DocumentCountsResponse> {
     const artifacts = await withDb((db) =>
-      db.document.findMany({
+      db.artifact.findMany({
         where: {
           organizationId,
+          type: ArtifactType.DOCUMENT,
           createdAt: { gte: startDate, lte: endDate },
         },
-        select: { createdAt: true, type: true },
+        select: { createdAt: true, subtype: true },
       })
     );
 
     const bucketTypeCounts = new Map<string, Map<string, number>>();
-    for (const { createdAt, type } of artifacts) {
+    for (const { createdAt, subtype } of artifacts) {
+      if (subtype === null) {
+        continue;
+      }
       const key = bucketKey(createdAt, groupBy);
       if (!bucketTypeCounts.has(key)) {
         bucketTypeCounts.set(key, new Map());
       }
       const typeMap = bucketTypeCounts.get(key)!;
-      const typeStr = type;
-      typeMap.set(typeStr, (typeMap.get(typeStr) ?? 0) + 1);
+      typeMap.set(subtype, (typeMap.get(subtype) ?? 0) + 1);
     }
 
     const buckets: DocumentCountBucket[] = [...bucketTypeCounts.entries()]
@@ -1060,15 +1080,17 @@ export const judgesAnalyticsService = {
     const latestPrompt = matchingPrompts[0];
     const promptIdSet = new Set(promptIds);
 
-    // 3. Load score rows — match by promptId (relational) scoped to org
+    // 3. Load score rows — match by promptId (relational) scoped to org.
+    // Evaluations now always target an artifact directly; filter DOCUMENT
+    // artifacts for the legacy Plan/PRD path.
     const allScores = await withDb((db) =>
       db.judgeScore.findMany({
         where: {
           promptId: { in: promptIds },
           evaluation: {
             reportType,
-            entityType: EntityType.DOCUMENT,
             organizationId,
+            artifact: { type: ArtifactType.DOCUMENT },
           },
         },
         select: {
@@ -1198,8 +1220,8 @@ export const judgesAnalyticsService = {
           promptId: { in: promptIds },
           evaluation: {
             reportType,
-            entityType: EntityType.DOCUMENT,
             organizationId,
+            artifact: { type: ArtifactType.DOCUMENT },
           },
         },
         select: {
@@ -1209,7 +1231,7 @@ export const judgesAnalyticsService = {
           createdAt: true,
           evaluation: {
             select: {
-              entityId: true,
+              artifactId: true,
             },
           },
           judgeHumanScores: {
@@ -1230,22 +1252,26 @@ export const judgesAnalyticsService = {
       };
     }
 
-    // Batch-fetch artifact data by entityId
+    // Batch-fetch artifact data by artifactId
     const entityIds = [
-      ...new Set(judgeScores.map((js) => js.evaluation.entityId)),
+      ...new Set(judgeScores.map((js) => js.evaluation.artifactId)),
     ];
     const artifactRows = await withDb((db) =>
-      db.document.findMany({
-        where: { id: { in: entityIds }, organizationId },
-        select: { id: true, type: true, title: true, slug: true },
+      db.artifact.findMany({
+        where: {
+          id: { in: entityIds },
+          organizationId,
+          type: ArtifactType.DOCUMENT,
+        },
+        select: { id: true, subtype: true, name: true, slug: true },
       })
     );
     const artifactsByEntityId = new Map(artifactRows.map((a) => [a.id, a]));
 
     // 3. Build rows with concurrence default
     const rows: JudgeScoreRow[] = judgeScores.flatMap((js) => {
-      const artifact = artifactsByEntityId.get(js.evaluation.entityId);
-      if (!artifact) {
+      const artifact = artifactsByEntityId.get(js.evaluation.artifactId);
+      if (!artifact || artifact.subtype === null) {
         return [];
       }
 
@@ -1261,9 +1287,9 @@ export const judgesAnalyticsService = {
           judgeScoreId: js.id,
           metricName: js.metricName,
           documentId: artifact.id,
-          documentType: artifact.type,
-          documentTitle: artifact.title,
-          documentSlug: artifact.slug,
+          documentType: artifact.subtype as DocumentType,
+          documentTitle: artifact.name,
+          documentSlug: artifact.slug ?? "",
           judgeScore: js.score,
           avgUserRating,
           userRatingCount,

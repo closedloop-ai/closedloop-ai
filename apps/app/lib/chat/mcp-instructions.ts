@@ -3,7 +3,7 @@ export const MCP_INSTRUCTIONS = [
   "- get-document, list-documents, list-document-versions, get-document-comments, get-related-documents, list-attachments, download-attachment",
   "- get-workstream, list-workstreams",
   "- get-project, list-projects",
-  "- list-entity-links, list-external-links",
+  "- list-artifact-links",
   "- get-loop, list-loops",
   "- get-github-status, get-linear-status, get-google-status",
   "- get-me, get-dashboard-stats, list-users, list-templates, ping",

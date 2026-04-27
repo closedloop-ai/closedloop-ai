@@ -6,7 +6,6 @@ import {
   DocumentType,
   type DocumentWithWorkstream,
 } from "@repo/api/src/types/document";
-import { EntityType } from "@repo/api/src/types/entity-link";
 import { isDisplayableSlug } from "@repo/api/src/types/slug";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
@@ -162,7 +161,6 @@ export function FeaturesList({
           currentProjectId={projectId}
           entity={{
             id: featureToMove.id,
-            entityType: EntityType.Document,
             projectId: featureToMove.projectId,
           }}
           onOpenChange={setMoveDialogOpen}

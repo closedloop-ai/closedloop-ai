@@ -48,8 +48,8 @@ vi.mock("@/app/documents/attachments-service", () => ({
   },
 }));
 
+import { ArtifactType } from "@repo/api/src/types/artifact";
 import { DocumentType } from "@repo/api/src/types/document";
-import { EntityType } from "@repo/api/src/types/entity-link";
 import { LoopCommand } from "@repo/api/src/types/loop";
 import { attachmentsService } from "@/app/documents/attachments-service";
 import { documentVersionService } from "@/app/documents/document-version-service";
@@ -110,7 +110,7 @@ describe("buildContextPack", () => {
         contextRefs: [
           {
             sourceId: "feature-1",
-            sourceType: EntityType.Document,
+            sourceType: ArtifactType.Document,
             include: "full" as const,
           },
         ],
@@ -171,7 +171,7 @@ describe("buildContextPack", () => {
         contextRefs: [
           {
             sourceId: "nonexistent-feature",
-            sourceType: EntityType.Document,
+            sourceType: ArtifactType.Document,
             include: "full" as const,
           },
         ],
@@ -229,7 +229,7 @@ describe("buildContextPack", () => {
         contextRefs: [
           {
             sourceId: "feature-1",
-            sourceType: EntityType.Document,
+            sourceType: ArtifactType.Document,
             include: "full" as const,
           },
           { sourceId: "prd-1", include: "full" as const },
@@ -421,7 +421,7 @@ describe("fetchAttachmentsForContextPack", () => {
         contextRefs: [
           {
             sourceId: "feature-1",
-            sourceType: EntityType.Document,
+            sourceType: ArtifactType.Document,
             include: "full" as const,
           },
         ],
@@ -496,7 +496,7 @@ describe("fetchAttachmentsForContextPack", () => {
         contextRefs: [
           {
             sourceId: "feature-1",
-            sourceType: EntityType.Document,
+            sourceType: ArtifactType.Document,
             include: "full" as const,
           },
           { sourceId: "artifact-2", include: "full" as const },
@@ -710,7 +710,7 @@ describe("fetchAttachmentsForContextPack", () => {
         contextRefs: [
           {
             sourceId: "feature-1",
-            sourceType: EntityType.Document,
+            sourceType: ArtifactType.Document,
             include: "full" as const,
           },
         ],

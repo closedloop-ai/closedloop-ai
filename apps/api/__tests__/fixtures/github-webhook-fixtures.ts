@@ -58,6 +58,7 @@ export function createRepository(githubId: number) {
 }
 
 type PullRequestOverrides = Partial<{
+  id: number;
   number: number;
   title: string;
   body: string | null;
@@ -73,7 +74,7 @@ type PullRequestOverrides = Partial<{
 
 export function createPullRequest(overrides: PullRequestOverrides = {}) {
   return {
-    id: 1,
+    id: overrides.id ?? 1,
     node_id: "PR_1",
     number: overrides.number ?? 1,
     title: overrides.title ?? "Test PR",

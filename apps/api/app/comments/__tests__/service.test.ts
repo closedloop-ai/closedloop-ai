@@ -14,9 +14,7 @@ vi.mock("@repo/database", () => {
   return { withDb: withDbFn };
 });
 
-import type { CommentThreadWithComments } from "@repo/api/src/types/comment";
 import { ThreadSource, ThreadStatus } from "@repo/api/src/types/comment";
-import { EntityType } from "@repo/api/src/types/entity-link";
 import { withDb } from "@repo/database";
 import { commentsService } from "../service";
 
@@ -26,23 +24,26 @@ const mockWithDb = withDb as unknown as Mock;
 // Shared test fixtures
 // ---------------------------------------------------------------------------
 
+/**
+ * Returns a raw Prisma CommentThread row (with `artifactId`, not `entityId`) —
+ * the service's `toCommentThreadWithComments` mapper translates this to the
+ * legacy `entityId`/`entityType` wire shape.
+ */
 function makeCommentThreadFixture(
   overrides: Partial<{
     organizationId: string;
-    entityId: string;
-    entityType: EntityType;
+    artifactId: string | null;
     status: ThreadStatus;
     comments: unknown[];
   }> = {}
-): CommentThreadWithComments {
+) {
   return {
     id: "thread-1",
     organizationId: "org-1",
     source: ThreadSource.Liveblocks,
     externalId: "ext-1",
     roomId: "room-1",
-    entityId: "art-1",
-    entityType: EntityType.Document,
+    artifactId: "art-1",
     status: ThreadStatus.Open,
     metadata: null,
     resolvedAt: null,
@@ -65,10 +66,8 @@ function makeCommentThreadFixture(
         author: { id: "u-1" },
       },
     ],
-    resolvedBy: null,
-    createdBy: null,
     ...overrides,
-  } as unknown as CommentThreadWithComments;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -79,8 +78,7 @@ describe("commentsService.findThreadsByDocument", () => {
   it("returns threads scoped to artifact and organization", async () => {
     const thread = makeCommentThreadFixture({
       organizationId: "org-1",
-      entityId: "art-1",
-      entityType: EntityType.Document,
+      artifactId: "art-1",
       status: ThreadStatus.Open,
     });
 
@@ -96,15 +94,14 @@ describe("commentsService.findThreadsByDocument", () => {
     );
 
     expect(result).toHaveLength(1);
-    expect(result[0]).toEqual(thread);
+    expect(result[0].artifactId).toBe("art-1");
 
     const callArgs = mockFindMany.mock.calls[0][0] as {
       where: Record<string, unknown>;
     };
     expect(callArgs.where).toMatchObject({
       organizationId: "org-1",
-      entityId: "art-1",
-      entityType: EntityType.Document,
+      artifactId: "art-1",
     });
   });
 
@@ -160,7 +157,7 @@ describe("commentsService.findThreadsByDocument", () => {
     };
     expect(callArgs.where).toMatchObject({
       organizationId: "different-org",
-      entityId: "art-1",
+      artifactId: "art-1",
     });
   });
 });

@@ -14,7 +14,7 @@ vi.mock("@repo/database", () => ({
   withDb: Object.assign(
     vi.fn((fn: (db: unknown) => Promise<unknown>) =>
       fn({
-        document: { update: vi.fn(), findUnique: vi.fn() },
+        artifact: { update: vi.fn(), findUnique: vi.fn() },
         workstreamEvent: { findFirst: vi.fn(), create: vi.fn() },
       })
     ),
@@ -22,6 +22,11 @@ vi.mock("@repo/database", () => ({
       tx: vi.fn((fn: () => Promise<unknown>) => fn()),
     }
   ),
+  ArtifactType: {
+    DOCUMENT: "DOCUMENT",
+    PULL_REQUEST: "PULL_REQUEST",
+    DEPLOYMENT: "DEPLOYMENT",
+  },
 }));
 
 vi.mock("@repo/observability/log", () => ({
@@ -76,18 +81,20 @@ function buildRequestPrdChangesLoop() {
 }
 
 function mockDbCalls(
-  artifactType: string | null = DocumentType.Prd,
+  artifactSubtype: string | null = DocumentType.Prd,
   slug: string | null = "test-slug"
 ) {
   const mockFindUnique = vi
     .fn()
-    .mockResolvedValue(artifactType !== null ? { type: artifactType } : null);
+    .mockResolvedValue(
+      artifactSubtype !== null ? { subtype: artifactSubtype } : null
+    );
   const mockUpdate = vi.fn().mockResolvedValue({
     id: "artifact-123",
     organizationId: "org-1",
     slug,
-    type: DocumentType.Prd,
-    latestVersion: 2,
+    subtype: DocumentType.Prd,
+    document: { latestVersion: 2 },
   });
   const mockFindFirst = vi.fn().mockResolvedValue(null);
   const mockCreate = vi.fn().mockResolvedValue({ id: "event-1" });
@@ -95,7 +102,7 @@ function mockDbCalls(
   (withDb as unknown as MockFn).mockImplementation(
     (fn: (db: unknown) => Promise<unknown>) =>
       fn({
-        document: { update: mockUpdate, findUnique: mockFindUnique },
+        artifact: { update: mockUpdate, findUnique: mockFindUnique },
         workstreamEvent: { findFirst: mockFindFirst, create: mockCreate },
       })
   );
@@ -147,14 +154,14 @@ describe("requestPrdChangesHandler ingestion", () => {
       prdContent
     );
     expect(mockUpdate).toHaveBeenCalledWith({
-      where: { id: "artifact-123", organizationId: "org-1" },
+      where: { id: "artifact-123", organizationId: "org-1", type: "DOCUMENT" },
       data: { status: DocumentStatus.Draft },
       select: {
         id: true,
         organizationId: true,
         slug: true,
-        type: true,
-        latestVersion: true,
+        subtype: true,
+        document: { select: { latestVersion: true } },
       },
     });
   });

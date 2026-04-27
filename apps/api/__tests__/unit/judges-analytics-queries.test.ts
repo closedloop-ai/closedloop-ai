@@ -1,9 +1,9 @@
 /**
  * Unit tests for judges-analytics service query structure.
  *
- * SS8.7 requirements:
- * 1. Judge score queries filter by evaluation.organizationId directly,
- *    NOT via evaluation.artifact.organizationId join.
+ * After artifact cutover:
+ * 1. Judge score queries filter by evaluation.organizationId directly
+ *    AND require evaluation.artifact.type = DOCUMENT for the Plan/PRD path.
  * 2. Multi-org isolation: scores from one org are not returned for another.
  */
 import { EvaluationReportType } from "@repo/api/src/types/evaluation";
@@ -14,7 +14,17 @@ import { judgesAnalyticsService } from "@/app/judges-analytics/service";
 vi.mock("@repo/database", () => ({
   withDb: vi.fn(),
   PromptType: { JUDGE: "JUDGE" },
-  EntityType: { DOCUMENT: "DOCUMENT" },
+  ArtifactType: {
+    DOCUMENT: "DOCUMENT",
+    PULL_REQUEST: "PULL_REQUEST",
+    DEPLOYMENT: "DEPLOYMENT",
+  },
+  ArtifactSubtype: {
+    PRD: "PRD",
+    IMPLEMENTATION_PLAN: "IMPLEMENTATION_PLAN",
+    TEMPLATE: "TEMPLATE",
+    FEATURE: "FEATURE",
+  },
 }));
 
 const ORG_A = "org-alpha";
@@ -27,17 +37,18 @@ function makeDb(judgeScoreFindManyResult: unknown[] = []) {
     judgeScore: {
       findMany: vi.fn().mockResolvedValue(judgeScoreFindManyResult),
     },
-    document: { findMany: vi.fn().mockResolvedValue([]) },
-    documentRating: { findMany: vi.fn().mockResolvedValue([]) },
+    artifact: { findMany: vi.fn().mockResolvedValue([]) },
+    artifactRating: { findMany: vi.fn().mockResolvedValue([]) },
+    artifactLink: { findMany: vi.fn().mockResolvedValue([]) },
   };
 }
 
-describe("judgesAnalyticsService — query structure (SS8.7)", () => {
+describe("judgesAnalyticsService — query structure", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it("where clause uses evaluation.organizationId not evaluation.artifact.organizationId", async () => {
+  it("where clause uses evaluation.organizationId directly for org scoping", async () => {
     const mockDb = makeDb();
 
     vi.mocked(withDb).mockImplementation((callback) =>
@@ -63,9 +74,6 @@ describe("judgesAnalyticsService — query structure (SS8.7)", () => {
 
     // Must scope via evaluation.organizationId directly
     expect(where.evaluation).toMatchObject({ organizationId: ORG_A });
-
-    // Must NOT use nested artifact relation for org scoping
-    expect(where.evaluation?.artifact).toBeUndefined();
   });
 
   it("scores from org-B are not returned when querying org-A", async () => {
@@ -75,9 +83,7 @@ describe("judgesAnalyticsService — query structure (SS8.7)", () => {
       promptId: null,
       score: 0.9,
       evaluation: {
-        documentId: "artifact-a1",
-        entityId: "artifact-a1",
-        organizationId: ORG_A,
+        artifactId: "artifact-a1",
       },
     };
 
@@ -86,8 +92,10 @@ describe("judgesAnalyticsService — query structure (SS8.7)", () => {
     const mockDb = makeDb([orgAScore]);
     const artifactFindMany = vi
       .fn()
-      .mockResolvedValue([{ id: "artifact-a1", type: "IMPLEMENTATION_PLAN" }]);
-    mockDb.document.findMany = artifactFindMany;
+      .mockResolvedValue([
+        { id: "artifact-a1", subtype: "IMPLEMENTATION_PLAN" },
+      ]);
+    mockDb.artifact.findMany = artifactFindMany;
 
     vi.mocked(withDb).mockImplementation((callback) =>
       Promise.resolve(

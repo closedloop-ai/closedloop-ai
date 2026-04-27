@@ -142,9 +142,9 @@ describe("parseExecutionResultFile + ingestRepoExecutionResults (end-to-end chai
 
       await ingestRepoExecutionResults(ctx, parsed.results);
 
-      // Only the success entry triggers a transaction and PR upsert
+      // Only the success entry triggers a transaction and a linkage write
       expect(mockWithDb.tx).toHaveBeenCalledTimes(1);
-      expect(mockTx.gitHubPullRequest.upsert).toHaveBeenCalledTimes(1);
+      expect(mockEnsurePrLinkageRecords).toHaveBeenCalledTimes(1);
     });
 
     it("success entry produces linkage records with correct PR details from v2 payload", async () => {

@@ -45,11 +45,6 @@ Schema: `packages/database/prisma/schema.prisma`. Client: `packages/database/gen
 ### Background Work in API Routes (CRITICAL)
 **Never fire-and-forget promises in Vercel serverless.** Always wrap background work with `waitUntil()` from `@vercel/functions`. A `.catch()` without `waitUntil()` is a bug.
 
-### Breaking Changes (CRITICAL)
-Any breaking change to an API, contract, or interface (REST routes, request/response shapes, shared types in `packages/api/`, DB schema, public function signatures, etc.) requires BOTH:
-1. **Legacy migration logic** so existing users/clients/data are not broken. Accept the old shape, translate to the new one, and keep the old code path working until the migration is removed.
-2. **A ClosedLoop ticket** created via the ClosedLoop MCP (`mcp__closedloop__create-feature`) to track removal of the legacy migration code at a later date. Reference the ticket ID in a comment next to the legacy code so it can be found when the cleanup ticket is worked.
-
 ### Type Definitions (IMPORTANT)
 **Never duplicate types.** One canonical location, imported everywhere:
 - **Shared API types** (both frontend+backend) → `packages/api/src/types/`

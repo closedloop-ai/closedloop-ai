@@ -5,7 +5,7 @@ import type {
   ProjectSearchResult,
   WorkstreamSearchResult,
 } from "@repo/api/src/types/search";
-import { withDb } from "@repo/database";
+import { ArtifactType, withDb } from "@repo/database";
 import { basicUserSelect } from "@/lib/db-utils";
 
 const SEARCH_LIMIT = 25;
@@ -38,16 +38,17 @@ async function searchDocuments(
   query: string
 ): Promise<DocumentSearchResult[]> {
   const rows = await withDb((db) =>
-    db.document.findMany({
+    db.artifact.findMany({
       where: {
         organizationId,
-        OR: [{ title: ilike(query) }, { slug: ilike(query) }],
+        type: ArtifactType.DOCUMENT,
+        OR: [{ name: ilike(query) }, { slug: ilike(query) }],
       },
       select: {
         id: true,
-        title: true,
+        name: true,
         slug: true,
-        type: true,
+        subtype: true,
         status: true,
         priority: true,
         updatedAt: true,
@@ -59,18 +60,25 @@ async function searchDocuments(
     })
   );
 
-  return rows.map((r) => ({
-    id: r.id,
-    title: r.title,
-    slug: r.slug,
-    type: r.type,
-    status: r.status,
-    priority: r.priority,
-    projectName: r.project?.name ?? null,
-    workstreamTitle: r.workstream?.title ?? null,
-    assignee: r.assignee,
-    updatedAt: r.updatedAt,
-  }));
+  return rows.flatMap((r) => {
+    if (r.subtype === null) {
+      return [];
+    }
+    return [
+      {
+        id: r.id,
+        title: r.name,
+        slug: r.slug ?? "",
+        type: r.subtype,
+        status: r.status as DocumentSearchResult["status"],
+        priority: r.priority,
+        projectName: r.project.name,
+        workstreamTitle: r.workstream?.title ?? null,
+        assignee: r.assignee,
+        updatedAt: r.updatedAt,
+      },
+    ];
+  });
 }
 
 async function searchWorkstreams(
@@ -113,6 +121,7 @@ async function searchProjects(
     db.project.findMany({
       where: {
         organizationId,
+        isTemplatesSentinel: false,
         status: { not: ProjectStatus.Archived },
         OR: [{ name: ilike(query) }, { description: ilike(query) }],
       },

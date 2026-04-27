@@ -8,26 +8,29 @@ import type {
   PullRequestReopenedEvent,
   PullRequestSynchronizeEvent,
 } from "@octokit/webhooks-types";
+import { LinkType } from "@repo/api/src/types/artifact";
 import {
   type Document,
   DocumentStatus,
   DocumentType,
 } from "@repo/api/src/types/document";
-import { EntityType, LinkType } from "@repo/api/src/types/entity-link";
-import {
-  ExternalLinkType,
-  type PullRequestMetadata,
-} from "@repo/api/src/types/external-link";
 import { GitHubPRState } from "@repo/api/src/types/github";
 import { SlugPrefix } from "@repo/api/src/types/slug-prefix";
 import type { TransactionClient } from "@repo/database";
-import { ChecksStatus, WorkstreamType, withDb } from "@repo/database";
+import {
+  ArtifactType,
+  ChecksStatus,
+  WorkstreamType,
+  withDb,
+} from "@repo/database";
 import {
   type ArtifactReference,
   parseArtifactReferences,
 } from "@repo/github/artifact-reference-parser";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
+import { documentWhere } from "@/lib/artifact-adapters";
+import { pullRequestService } from "@/lib/services/pull-request-service";
 import { generateSlug } from "@/lib/slug-generator";
 
 /**
@@ -136,8 +139,8 @@ export async function handlePullRequest(
       return;
     }
 
-    // Step 2: Find GitHubPullRequest by repositoryId + number
-    const existingPr = await tx.gitHubPullRequest.findUnique({
+    // Step 2: Find PullRequestDetail (PR artifact) by repositoryId + number
+    const prDetail = await tx.pullRequestDetail.findUnique({
       where: {
         repositoryId_number: {
           repositoryId: repo.id,
@@ -145,14 +148,40 @@ export async function handlePullRequest(
         },
       },
       select: {
-        id: true,
-        workstreamId: true,
-        organizationId: true,
-        documentId: true,
+        artifactId: true,
         checksStatus: true,
-        document: { select: { slug: true } },
+        artifact: {
+          select: {
+            organizationId: true,
+            workstreamId: true,
+            // PR is the TARGET of a DOCUMENT → produces → PR link.
+            targetLinks: {
+              where: {
+                linkType: LinkType.Produces,
+                source: { type: ArtifactType.DOCUMENT },
+              },
+              select: {
+                source: { select: { id: true, slug: true } },
+              },
+              orderBy: { createdAt: "asc" },
+              take: 1,
+            },
+          },
+        },
       },
     });
+
+    const linkedDocForPr = prDetail?.artifact.targetLinks[0]?.source ?? null;
+    const existingPr: ExistingPr | null = prDetail
+      ? {
+          id: prDetail.artifactId,
+          workstreamId: prDetail.artifact.workstreamId,
+          organizationId: prDetail.artifact.organizationId,
+          documentId: linkedDocForPr?.id ?? null,
+          checksStatus: prDetail.checksStatus,
+          document: linkedDocForPr ? { slug: linkedDocForPr.slug ?? "" } : null,
+        }
+      : null;
 
     // For linkage actions, attempt artifact reference linking even if PR doesn't exist yet
     if (LINKAGE_ACTIONS.has(action)) {
@@ -193,7 +222,7 @@ type RepoWithInstallation = {
 
 type ExistingPr = {
   id: string;
-  workstreamId: string;
+  workstreamId: string | null;
   organizationId: string;
   documentId: string | null;
   checksStatus: string;
@@ -277,7 +306,7 @@ async function attemptArtifactLinkage(
     source: primaryRef.source,
   });
 
-  const artifact = await tx.document.findUnique({
+  const artifactRow = await tx.artifact.findUnique({
     where: {
       organizationId_slug: {
         organizationId,
@@ -287,7 +316,8 @@ async function attemptArtifactLinkage(
     select: {
       id: true,
       type: true,
-      title: true,
+      subtype: true,
+      name: true,
       organizationId: true,
       projectId: true,
       workstreamId: true,
@@ -297,7 +327,7 @@ async function attemptArtifactLinkage(
     },
   });
 
-  if (!artifact) {
+  if (!artifactRow || artifactRow.type !== ArtifactType.DOCUMENT) {
     log.warn("[handlePullRequest] Document not found for artifact reference", {
       prNumber: pull_request.number,
       slug: primaryRef.slug,
@@ -308,18 +338,33 @@ async function attemptArtifactLinkage(
 
   // Protect against slug-prefix collisions: a document with slug "FEA-42"
   // whose type is not Feature should not be linked.
-  if (artifact.type !== primaryRef.docType) {
+  if (artifactRow.subtype !== primaryRef.docType) {
     log.warn(
       "[handlePullRequest] Document type does not match ref prefix, skipping",
       {
         prNumber: pull_request.number,
         slug: primaryRef.slug,
         expectedType: primaryRef.docType,
-        actualType: artifact.type,
+        actualType: artifactRow.subtype,
       }
     );
     return;
   }
+
+  // createdById is nullable on Artifact but the legacy Document Pick shape
+  // expects string. Use Omit + intersection so we can preserve the true
+  // nullable type here and let autoCreateWorkstream short-circuit when
+  // neither assigneeId nor createdById is present.
+  const artifact = {
+    id: artifactRow.id,
+    title: artifactRow.name,
+    organizationId: artifactRow.organizationId,
+    projectId: artifactRow.projectId,
+    workstreamId: artifactRow.workstreamId,
+    assigneeId: artifactRow.assigneeId,
+    createdById: artifactRow.createdById,
+    slug: artifactRow.slug ?? "",
+  };
 
   let workstreamId: string | null | undefined =
     artifact.workstreamId ?? existingPr?.workstreamId;
@@ -367,17 +412,22 @@ async function autoCreateWorkstream(
   tx: TransactionClient,
   artifact: Pick<
     Document,
-    | "id"
-    | "title"
-    | "organizationId"
-    | "projectId"
-    | "assigneeId"
-    | "createdById"
-    | "slug"
-  >,
+    "id" | "title" | "organizationId" | "projectId" | "assigneeId" | "slug"
+  > & { createdById: string | null },
   organizationId: string
 ): Promise<string | null> {
   if (!artifact.projectId) {
+    return null;
+  }
+
+  const createdById = artifact.assigneeId ?? artifact.createdById;
+  if (!createdById) {
+    // No valid user to own the new workstream. Skip auto-creation rather
+    // than FK-fail on workstream.createdById.
+    log.warn(
+      "[handlePullRequest] Cannot auto-create workstream — artifact has no assignee or creator",
+      { documentId: artifact.id, slug: artifact.slug }
+    );
     return null;
   }
 
@@ -390,13 +440,13 @@ async function autoCreateWorkstream(
       title: artifact.title,
       description: `Auto-created for PR linkage: ${artifact.title}`,
       type: WorkstreamType.FEATURE_DELIVERY,
-      createdById: artifact.assigneeId ?? artifact.createdById,
+      createdById,
       slug,
     },
   });
 
   // Attach the artifact to the new workstream
-  await tx.document.update({
+  await tx.artifact.update({
     where: { id: artifact.id, organizationId },
     data: { workstreamId: workstream.id },
   });
@@ -411,8 +461,8 @@ async function autoCreateWorkstream(
 }
 
 /**
- * Link an existing GitHubPullRequest record to a plan artifact.
- * Creates ExternalLink, EntityLink, and WorkstreamEvent records.
+ * Link an existing PR artifact to a plan/feature document artifact.
+ * The link itself lives as an ArtifactLink row (DOCUMENT -> produces -> PR).
  */
 async function linkExistingPrToDocument(
   tx: TransactionClient,
@@ -426,12 +476,6 @@ async function linkExistingPrToDocument(
   workstreamId: string,
   pull_request: HandledPullRequestEvent["pull_request"]
 ): Promise<void> {
-  // Update artifactId on the PR
-  await tx.gitHubPullRequest.update({
-    where: { id: existingPr.id },
-    data: { documentId: artifact.id },
-  });
-
   await createLinkageRecords(tx, artifact, workstreamId, pull_request);
 
   log.info("[handlePullRequest] Linked existing PR to artifact", {
@@ -458,23 +502,36 @@ async function createAndLinkPr(
     state = pullRequest.merged ? GitHubPRState.Merged : GitHubPRState.Closed;
   }
 
-  await tx.gitHubPullRequest.create({
-    data: {
-      workstreamId,
+  if (!artifact.projectId) {
+    log.warn(
+      "[handlePullRequest] Cannot create PR artifact — artifact has no projectId",
+      {
+        prNumber: pullRequest.number,
+        documentId: artifact.id,
+      }
+    );
+    return;
+  }
+
+  await pullRequestService.upsertPullRequestArtifact(
+    {
       organizationId,
+      projectId: artifact.projectId,
+      workstreamId,
       repositoryId: repo.id,
-      documentId: artifact.id,
       githubId: String(pullRequest.id),
       number: pullRequest.number,
       title: pullRequest.title,
+      body: pullRequest.body ?? null,
       htmlUrl: pullRequest.html_url,
       headBranch: pullRequest.head.ref,
       baseBranch: pullRequest.base.ref,
       headSha: pullRequest.head.sha,
-      state,
+      prState: state,
       isDraft: pullRequest.draft ?? false,
     },
-  });
+    tx
+  );
 
   await createLinkageRecords(tx, artifact, workstreamId, pullRequest);
 
@@ -486,7 +543,9 @@ async function createAndLinkPr(
 }
 
 /**
- * Create ExternalLink, EntityLink, and WorkstreamEvent records for a PR-to-plan link.
+ * Create ArtifactLink and WorkstreamEvent records for a PR-to-plan link.
+ * The PR artifact itself carries title/url/state — we update it in-place
+ * when it already exists (idempotent replay), then link DOCUMENT -> produces -> PR.
  */
 async function createLinkageRecords(
   tx: TransactionClient,
@@ -494,74 +553,73 @@ async function createLinkageRecords(
   workstreamId: string,
   pullRequest: HandledPullRequestEvent["pull_request"]
 ): Promise<void> {
-  // AC-008: Check for existing ExternalLink to prevent duplicates
-  const existingExternalLink = await tx.externalLink.findFirst({
-    where: {
-      organizationId: artifact.organizationId,
-      type: ExternalLinkType.PullRequest,
-      externalUrl: pullRequest.html_url,
-    },
-    select: { id: true },
+  // Find the PR artifact by github id (unique on PullRequestDetail)
+  const existingPrDetail = await tx.pullRequestDetail.findUnique({
+    where: { githubId: String(pullRequest.id) },
+    select: { artifactId: true },
   });
 
-  let externalLinkId: string;
+  let prArtifactId: string | null = existingPrDetail?.artifactId ?? null;
 
-  if (existingExternalLink) {
-    externalLinkId = existingExternalLink.id;
-
-    await tx.externalLink.update({
-      where: { id: externalLinkId },
-      data: {
-        title: pullRequest.title,
-        metadata: pullRequestToMetadata(pullRequest),
-      },
-    });
-  } else {
-    const prLink = await tx.externalLink.create({
-      data: {
+  // Fall back to looking up by externalUrl on artifact
+  if (!prArtifactId) {
+    const existingByUrl = await tx.artifact.findFirst({
+      where: {
         organizationId: artifact.organizationId,
-        workstreamId,
-        projectId: artifact.projectId!,
-        type: ExternalLinkType.PullRequest,
-        title: pullRequest.title,
+        type: ArtifactType.PULL_REQUEST,
         externalUrl: pullRequest.html_url,
-        metadata: pullRequestToMetadata(pullRequest),
       },
+      select: { id: true },
     });
-    externalLinkId = prLink.id;
+    prArtifactId = existingByUrl?.id ?? null;
   }
 
-  // AC-008: Check for existing EntityLink to prevent duplicates
-  const existingEntityLink = await tx.entityLink.findFirst({
-    where: {
-      sourceId: artifact.id,
-      targetId: externalLinkId,
-      linkType: LinkType.Produces,
-    },
-    select: { id: true },
-  });
-
-  if (!existingEntityLink) {
-    await tx.entityLink.create({
+  if (prArtifactId) {
+    await tx.artifact.update({
+      where: { id: prArtifactId },
       data: {
-        organizationId: artifact.organizationId,
-        sourceId: artifact.id,
-        sourceType: EntityType.Document,
-        targetId: externalLinkId,
-        targetType: EntityType.ExternalLink,
-        linkType: LinkType.Produces,
+        name: pullRequest.title,
+        status: pullRequestState(pullRequest),
+        pullRequest: {
+          update: pullRequestToDetailUpdate(pullRequest),
+        },
       },
     });
+  }
+  // If no PR artifact exists yet, createAndLinkPr handles the create path;
+  // this helper is only responsible for wiring links + events.
+
+  // Dedup ArtifactLink — enforced by the unique constraint but we check first
+  // to avoid the round-trip when it already exists.
+  if (prArtifactId) {
+    const existingLink = await tx.artifactLink.findFirst({
+      where: {
+        organizationId: artifact.organizationId,
+        sourceId: artifact.id,
+        targetId: prArtifactId,
+        linkType: LinkType.Produces,
+      },
+      select: { id: true },
+    });
+
+    if (!existingLink) {
+      await tx.artifactLink.create({
+        data: {
+          organizationId: artifact.organizationId,
+          sourceId: artifact.id,
+          targetId: prArtifactId,
+          linkType: LinkType.Produces,
+        },
+      });
+    }
   }
 
   // Create WorkstreamEvent — use GITHUB_PR_LINKED for all linkage actions
   // (opened/edited/reopened all represent a PR being linked to a plan, not a comment)
-  const eventType = "GITHUB_PR_LINKED";
-
   await tx.workstreamEvent.create({
     data: {
       workstreamId,
-      type: eventType,
+      type: "GITHUB_PR_LINKED",
       actorType: "system",
       data: {
         prNumber: pullRequest.number,
@@ -587,68 +645,44 @@ async function applyPrAction(
       const isMerged = (event as PullRequestClosedEvent).pull_request.merged;
       const newState = isMerged ? GitHubPRState.Merged : GitHubPRState.Closed;
 
-      await tx.gitHubPullRequest.update({
-        where: { id: existingPr.id },
-        data: {
-          state: newState,
+      await pullRequestService.updateReviewState(
+        existingPr.id,
+        {
+          prState: newState,
           closedAt: parseDateOrNow(pullRequest.closed_at),
           mergedAt: pullRequest.merged_at
             ? new Date(pullRequest.merged_at)
             : null,
           mergeCommitSha: pullRequest.merge_commit_sha,
         },
-      });
+        tx
+      );
 
-      const externalLink = await tx.externalLink.findFirst({
-        where: {
-          organizationId: existingPr.organizationId,
-          type: ExternalLinkType.PullRequest,
-          metadata: { path: ["githubId"], equals: String(pullRequest.id) },
-        },
-        select: { id: true },
-      });
-
-      if (externalLink) {
-        await tx.externalLink.update({
-          where: { id: externalLink.id },
+      if (existingPr.workstreamId) {
+        await tx.workstreamEvent.create({
           data: {
-            metadata: pullRequestToMetadata(pullRequest),
+            workstreamId: existingPr.workstreamId,
+            type: isMerged ? "GITHUB_PR_MERGED" : "GITHUB_PR_CLOSED",
+            actorType: "system",
+            data: {
+              prNumber: pullRequest.number,
+              prTitle: pullRequest.title,
+              prUrl: pullRequest.html_url,
+              documentId: existingPr.documentId,
+              slug: existingPr.document?.slug,
+              ...(isMerged
+                ? {
+                    mergedAt: pullRequest.merged_at,
+                    mergeCommitSha: pullRequest.merge_commit_sha,
+                  }
+                : {}),
+            },
           },
         });
       }
 
-      await tx.workstreamEvent.create({
-        data: {
-          workstreamId: existingPr.workstreamId,
-          type: isMerged ? "GITHUB_PR_MERGED" : "GITHUB_PR_CLOSED",
-          actorType: "system",
-          data: {
-            prNumber: pullRequest.number,
-            prTitle: pullRequest.title,
-            prUrl: pullRequest.html_url,
-            documentId: existingPr.documentId,
-            slug: existingPr.document?.slug,
-            ...(isMerged
-              ? {
-                  mergedAt: pullRequest.merged_at,
-                  mergeCommitSha: pullRequest.merge_commit_sha,
-                }
-              : {}),
-          },
-        },
-      });
-
-      if (isMerged && externalLink) {
-        await markLinkedArtifactsOnMerge(tx, externalLink.id);
-      } else if (isMerged && existingPr.documentId) {
-        log.warn(
-          "[handlePullRequest] Merged PR has documentId but no ExternalLink found — skipping artifact status cascade",
-          {
-            prNumber: pullRequest.number,
-            documentId: existingPr.documentId,
-            organizationId: existingPr.organizationId,
-          }
-        );
+      if (isMerged) {
+        await markLinkedArtifactsOnMerge(tx, existingPr.id);
       }
 
       log.info("[handlePullRequest] PR closed", {
@@ -660,24 +694,14 @@ async function applyPrAction(
     }
 
     case "reopened": {
-      await tx.gitHubPullRequest.update({
-        where: { id: existingPr.id },
-        data: {
-          state: GitHubPRState.Open,
+      await pullRequestService.updateReviewState(
+        existingPr.id,
+        {
+          prState: GitHubPRState.Open,
           closedAt: null,
         },
-      });
-
-      await tx.externalLink.updateMany({
-        where: {
-          organizationId: existingPr.organizationId,
-          type: ExternalLinkType.PullRequest,
-          metadata: { path: ["githubId"], equals: String(pullRequest.id) },
-        },
-        data: {
-          metadata: pullRequestToMetadata(pullRequest),
-        },
-      });
+        tx
+      );
 
       log.info("[handlePullRequest] PR reopened", {
         prNumber: pullRequest.number,
@@ -686,31 +710,37 @@ async function applyPrAction(
     }
 
     case "synchronize": {
-      await tx.gitHubPullRequest.update({
+      await tx.artifact.update({
         where: { id: existingPr.id },
         data: {
-          headSha: pullRequest.head.sha,
-          checksStatus: ChecksStatus.PENDING,
-        },
-      });
-
-      await tx.workstreamEvent.create({
-        data: {
-          workstreamId: existingPr.workstreamId,
-          type: "GITHUB_CI_STATUS_CHANGED",
-          actorType: "system",
-          data: {
-            prNumber: pullRequest.number,
-            prTitle: pullRequest.title,
-            prUrl: pullRequest.html_url,
-            documentId: existingPr.documentId,
-            slug: existingPr.document?.slug,
-            checksStatus: ChecksStatus.PENDING,
-            previousChecksStatus: existingPr.checksStatus,
-            headSha: pullRequest.head.sha,
+          pullRequest: {
+            update: {
+              headSha: pullRequest.head.sha,
+              checksStatus: ChecksStatus.PENDING,
+            },
           },
         },
       });
+
+      if (existingPr.workstreamId) {
+        await tx.workstreamEvent.create({
+          data: {
+            workstreamId: existingPr.workstreamId,
+            type: "GITHUB_CI_STATUS_CHANGED",
+            actorType: "system",
+            data: {
+              prNumber: pullRequest.number,
+              prTitle: pullRequest.title,
+              prUrl: pullRequest.html_url,
+              documentId: existingPr.documentId,
+              slug: existingPr.document?.slug,
+              checksStatus: ChecksStatus.PENDING,
+              previousChecksStatus: existingPr.checksStatus,
+              headSha: pullRequest.head.sha,
+            },
+          },
+        });
+      }
 
       log.info("[handlePullRequest] PR synchronized", {
         prNumber: pullRequest.number,
@@ -722,9 +752,9 @@ async function applyPrAction(
     }
 
     case "converted_to_draft": {
-      await tx.gitHubPullRequest.update({
+      await tx.artifact.update({
         where: { id: existingPr.id },
-        data: { isDraft: true },
+        data: { pullRequest: { update: { isDraft: true } } },
       });
 
       log.info("[handlePullRequest] PR converted to draft", {
@@ -734,9 +764,9 @@ async function applyPrAction(
     }
 
     case "ready_for_review": {
-      await tx.gitHubPullRequest.update({
+      await tx.artifact.update({
         where: { id: existingPr.id },
-        data: { isDraft: false },
+        data: { pullRequest: { update: { isDraft: false } } },
       });
 
       log.info("[handlePullRequest] PR ready for review", {
@@ -751,25 +781,25 @@ async function applyPrAction(
 }
 
 /**
- * On PR merge, apply terminal status to every document linked upstream of the
- * merged PR's ExternalLink:
+ * On PR merge, apply terminal status to every document artifact linked
+ * upstream of the merged PR artifact:
  *  - ImplementationPlan: set to EXECUTED, then cascade Feature documents
  *    linked upstream of the plan to DONE (unless already DONE or OBSOLETE).
  *  - Feature: set to DONE (unless already DONE or OBSOLETE).
  *
  * Since PRD-177 a PR can be directly linked to a Feature document (not just
- * a Plan). This helper walks the EntityLink graph so it works regardless of
- * which docType owns the link.
+ * a Plan). This helper walks the ArtifactLink graph so it works regardless
+ * of which docType owns the link.
  */
 async function markLinkedArtifactsOnMerge(
   tx: TransactionClient,
-  externalLinkId: string
+  prArtifactId: string
 ): Promise<void> {
-  const links = await tx.entityLink.findMany({
+  const links = await tx.artifactLink.findMany({
     where: {
-      targetId: externalLinkId,
-      targetType: EntityType.ExternalLink,
-      sourceType: EntityType.Document,
+      targetId: prArtifactId,
+      target: { type: ArtifactType.PULL_REQUEST },
+      source: { type: ArtifactType.DOCUMENT },
       linkType: LinkType.Produces,
     },
     select: { sourceId: true },
@@ -779,14 +809,14 @@ async function markLinkedArtifactsOnMerge(
     return;
   }
 
-  const documents = await tx.document.findMany({
-    where: { id: { in: links.map((link) => link.sourceId) } },
-    select: { id: true, type: true, status: true },
+  const documents = await tx.artifact.findMany({
+    where: documentWhere({ id: { in: links.map((link) => link.sourceId) } }),
+    select: { id: true, subtype: true, status: true },
   });
 
   for (const document of documents) {
-    if (document.type === DocumentType.ImplementationPlan) {
-      await tx.document.update({
+    if (document.subtype === DocumentType.ImplementationPlan) {
+      await tx.artifact.update({
         where: { id: document.id },
         data: { status: DocumentStatus.Executed },
       });
@@ -797,14 +827,14 @@ async function markLinkedArtifactsOnMerge(
       continue;
     }
 
-    if (document.type === DocumentType.Feature) {
+    if (document.subtype === DocumentType.Feature) {
       if (
         document.status === DocumentStatus.Done ||
         document.status === DocumentStatus.Obsolete
       ) {
         continue;
       }
-      await tx.document.update({
+      await tx.artifact.update({
         where: { id: document.id },
         data: { status: DocumentStatus.Done },
       });
@@ -824,11 +854,11 @@ async function cascadeFeaturesLinkedToPlan(
   tx: TransactionClient,
   planId: string
 ): Promise<void> {
-  const links = await tx.entityLink.findMany({
+  const links = await tx.artifactLink.findMany({
     where: {
-      sourceType: EntityType.Document,
+      source: { type: ArtifactType.DOCUMENT },
       targetId: planId,
-      targetType: EntityType.Document,
+      target: { type: ArtifactType.DOCUMENT },
       linkType: LinkType.Produces,
     },
     select: { sourceId: true },
@@ -839,12 +869,12 @@ async function cascadeFeaturesLinkedToPlan(
     return;
   }
 
-  const { count } = await tx.document.updateMany({
-    where: {
+  const { count } = await tx.artifact.updateMany({
+    where: documentWhere({
       id: { in: featureIds },
-      type: DocumentType.Feature,
+      subtype: DocumentType.Feature,
       status: { notIn: [DocumentStatus.Done, DocumentStatus.Obsolete] },
-    },
+    }),
     data: { status: DocumentStatus.Done },
   });
 
@@ -857,18 +887,25 @@ async function cascadeFeaturesLinkedToPlan(
   }
 }
 
-function pullRequestToMetadata(pullRequest: PullRequest): PullRequestMetadata {
-  let state: GitHubPRState = GitHubPRState.Open;
-
+/** Derive the PR state from a webhook pull_request payload. */
+function pullRequestState(pullRequest: PullRequest): GitHubPRState {
   if (pullRequest.state === "closed") {
-    state = pullRequest.merged ? GitHubPRState.Merged : GitHubPRState.Closed;
+    return pullRequest.merged ? GitHubPRState.Merged : GitHubPRState.Closed;
   }
+  return GitHubPRState.Open;
+}
 
+/**
+ * Build a PullRequestDetail update payload from a webhook pull_request payload.
+ * Only covers fields that may change on edit/reopen/sync.
+ */
+function pullRequestToDetailUpdate(pullRequest: PullRequest) {
   return {
     number: pullRequest.number,
-    githubId: String(pullRequest.id),
     headBranch: pullRequest.head.ref,
     baseBranch: pullRequest.base.ref,
-    state,
+    headSha: pullRequest.head.sha,
+    prState: pullRequestState(pullRequest),
+    isDraft: pullRequest.draft ?? false,
   };
 }

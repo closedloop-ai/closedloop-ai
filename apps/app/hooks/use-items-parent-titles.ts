@@ -1,8 +1,10 @@
 "use client";
 
 import { getRoutePrefixForType } from "@repo/api/src/types/document";
-import { EntityType } from "@repo/api/src/types/entity-link";
-import type { ProjectTreeResponse } from "@repo/api/src/types/project-tree";
+import type {
+  ProjectTreeResponse,
+  TreeEntity,
+} from "@repo/api/src/types/project-tree";
 import { useQueries } from "@tanstack/react-query";
 import { useMemo } from "react";
 import type { DocumentRowItem } from "@/components/document-table/document-row";
@@ -57,7 +59,7 @@ export function useItemsParentTitles(
     }
     for (const node of query.data.nodes) {
       let parentHref: string | null = null;
-      if (node.root.entityType === EntityType.Document) {
+      if (isDocumentTreeEntity(node.root)) {
         const routePrefix = getRoutePrefixForType(node.root.type);
         if (routePrefix) {
           parentHref = `/${routePrefix}/${node.root.slug}`;
@@ -72,4 +74,10 @@ export function useItemsParentTitles(
     }
   }
   return parentTitles;
+}
+
+function isDocumentTreeEntity(
+  entity: TreeEntity
+): entity is Extract<TreeEntity, { slug: string }> {
+  return "slug" in entity;
 }

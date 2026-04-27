@@ -1,13 +1,11 @@
 "use client";
 
 import {
-  EntityType,
+  type ArtifactLinkWithEndpoints,
+  ArtifactType,
   LinkDirection,
-  type LinkedEntity,
   LinkQueryMode,
-} from "@repo/api/src/types/entity-link";
-import { ExternalLinkType } from "@repo/api/src/types/external-link";
-import { parseDeploymentMetadata } from "@repo/api/src/types/external-link-utils";
+} from "@repo/api/src/types/artifact";
 import { Badge } from "@repo/design-system/components/ui/badge";
 import {
   Collapsible,
@@ -18,9 +16,9 @@ import { toast } from "@repo/design-system/components/ui/sonner";
 import { ChevronDownIcon, ChevronUpIcon, ExternalLinkIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  useDeleteEntityLink,
-  useLinkedEntities,
-} from "@/hooks/queries/use-entity-links";
+  useDeleteArtifactLink,
+  useResolvedArtifactLinks,
+} from "@/hooks/queries/use-artifact-links";
 import { formatDateTime } from "@/lib/date-utils";
 import { OverflowMenu } from "./overflow-menu";
 import { SectionHeader } from "./section-header";
@@ -30,13 +28,12 @@ type PreviewSectionProps = {
 };
 
 export function PreviewSection({ documentId }: Readonly<PreviewSectionProps>) {
-  const { data: linkedEntities = [] } = useLinkedEntities(
-    documentId,
-    EntityType.Document,
-    { mode: LinkQueryMode.Tree, direction: LinkDirection.Target }
-  );
+  const { data: resolvedLinks = [] } = useResolvedArtifactLinks(documentId, {
+    mode: LinkQueryMode.Tree,
+    direction: LinkDirection.Target,
+  });
 
-  const deleteLink = useDeleteEntityLink();
+  const deleteLink = useDeleteArtifactLink();
 
   function handleUnlink(linkId: string) {
     deleteLink.mutate(linkId, {
@@ -48,15 +45,10 @@ export function PreviewSection({ documentId }: Readonly<PreviewSectionProps>) {
 
   const previewLinks = useMemo(
     () =>
-      linkedEntities
-        .filter(
-          (linked) =>
-            linked.resolvedEntity?.type === EntityType.ExternalLink &&
-            linked.resolvedEntity.entity.type ===
-              ExternalLinkType.PreviewDeployment
-        )
+      resolvedLinks
+        .filter((link) => link.target.type === ArtifactType.Deployment)
         .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime()),
-    [linkedEntities]
+    [resolvedLinks]
   );
 
   const deployGroups = useMemo(
@@ -158,12 +150,8 @@ function DeployBody({
               )}
             </CollapsibleTrigger>
             <CollapsibleContent>
-              {deployGroup.links.map((linked) => (
-                <DeployRow
-                  key={linked.id}
-                  linked={linked}
-                  onUnlink={onUnlink}
-                />
+              {deployGroup.links.map((link) => (
+                <DeployRow key={link.id} link={link} onUnlink={onUnlink} />
               ))}
             </CollapsibleContent>
           </Collapsible>
@@ -174,34 +162,25 @@ function DeployBody({
 }
 
 type DeployRowProps = {
-  linked: LinkedEntity;
+  link: ArtifactLinkWithEndpoints;
   onUnlink: (linkId: string) => void;
 };
 
-function DeployRow({ linked, onUnlink }: Readonly<DeployRowProps>) {
-  const resolved = linked.resolvedEntity;
-  if (resolved?.type !== EntityType.ExternalLink) {
+function DeployRow({ link, onUnlink }: Readonly<DeployRowProps>) {
+  const deployEndpoint = link.target;
+  if (deployEndpoint.type !== ArtifactType.Deployment) {
     return null;
   }
 
-  const externalLink = resolved.entity;
-  const deployMeta = parseDeploymentMetadata(externalLink.metadata);
-
-  if (!externalLink.externalUrl) {
+  if (!deployEndpoint.externalUrl) {
     return (
       <div className="flex items-center gap-2 px-2 py-2 text-muted-foreground">
         <ExternalLinkIcon className="h-4 w-4 shrink-0" />
         <span className="truncate font-medium text-sm">
-          {externalLink.title}
+          {deployEndpoint.name}
         </span>
-        {deployMeta?.environment ? (
-          <Badge className="shrink-0" variant="outline">
-            {deployMeta.environment}
-          </Badge>
-        ) : (
-          <span className="shrink-0 text-xs">Deploying...</span>
-        )}
-        <OverflowMenu linkId={linked.id} onUnlink={onUnlink} />
+        <span className="shrink-0 text-xs">Deploying...</span>
+        <OverflowMenu linkId={link.id} onUnlink={onUnlink} />
       </div>
     );
   }
@@ -210,24 +189,19 @@ function DeployRow({ linked, onUnlink }: Readonly<DeployRowProps>) {
     <div className="flex items-center gap-2 px-2 py-2">
       <a
         className="flex min-w-0 flex-1 items-center gap-2 rounded-md hover:bg-accent"
-        href={externalLink.externalUrl}
+        href={deployEndpoint.externalUrl}
         rel="noopener noreferrer"
         target="_blank"
       >
         <ExternalLinkIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
         <span className="truncate font-medium text-sm">
-          {externalLink.title}
+          {deployEndpoint.name}
         </span>
         <span className="truncate text-muted-foreground text-xs">
-          {externalLink.externalUrl}
+          {deployEndpoint.externalUrl}
         </span>
       </a>
-      {deployMeta?.environment ? (
-        <Badge className="shrink-0" variant="outline">
-          {deployMeta.environment}
-        </Badge>
-      ) : null}
-      <OverflowMenu linkId={linked.id} onUnlink={onUnlink} />
+      <OverflowMenu linkId={link.id} onUnlink={onUnlink} />
     </div>
   );
 }
@@ -235,11 +209,11 @@ function DeployRow({ linked, onUnlink }: Readonly<DeployRowProps>) {
 type DeployGroup = {
   id: string;
   timestamp: Date;
-  links: LinkedEntity[];
+  links: ArtifactLinkWithEndpoints[];
 };
 
 function groupDeployLinksByTimestamp(
-  sortedLinks: LinkedEntity[]
+  sortedLinks: ArtifactLinkWithEndpoints[]
 ): DeployGroup[] {
   const groups: DeployGroup[] = [];
 
@@ -267,7 +241,10 @@ function groupDeployLinksByTimestamp(
   return groups;
 }
 
-function createDeployGroup(link: LinkedEntity, index: number): DeployGroup {
+function createDeployGroup(
+  link: ArtifactLinkWithEndpoints,
+  index: number
+): DeployGroup {
   return {
     id: `${link.createdAt.toISOString()}-${index}`,
     timestamp: link.createdAt,

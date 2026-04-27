@@ -7,8 +7,8 @@
  */
 
 import type { ContextPackAttachment } from "@closedloop-ai/loops-api/context-pack";
+import type { ArtifactType } from "@repo/api/src/types/artifact";
 import { DocumentType } from "@repo/api/src/types/document";
-import type { EntityType } from "@repo/api/src/types/entity-link";
 import type { AdditionalRepoRefWithToken } from "@repo/api/src/types/loop";
 import { LoopCommand } from "@repo/api/src/types/loop";
 import { log } from "@repo/observability/log";
@@ -42,7 +42,7 @@ export type LoopForContextPack = {
   repo: { fullName: string; branch: string } | null;
   contextRefs: Array<{
     sourceId: string;
-    sourceType?: EntityType;
+    sourceType?: ArtifactType;
     include: "full" | "summary";
   }> | null;
 };

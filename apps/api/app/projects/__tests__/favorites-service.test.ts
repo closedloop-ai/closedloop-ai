@@ -8,6 +8,11 @@ import { type Mock, vi } from "vitest";
 // Mock modules before importing the service
 vi.mock("@repo/database", () => ({
   withDb: vi.fn(),
+  ArtifactType: {
+    DOCUMENT: "DOCUMENT",
+    PULL_REQUEST: "PULL_REQUEST",
+    DEPLOYMENT: "DEPLOYMENT",
+  },
 }));
 
 // Import after mocking
@@ -170,7 +175,7 @@ describe("projectsService.findFavoritesByUser", () => {
           settings: null,
           assignee: null,
           teams: [],
-          documents: [],
+          artifacts: [],
         },
       },
     ];

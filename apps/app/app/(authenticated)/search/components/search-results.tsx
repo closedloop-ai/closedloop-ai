@@ -196,7 +196,9 @@ function FeaturesSection({
                 <FeatureStatusBadge status={feature.status} />
               </TableCell>
               <TableCell>
-                <FeaturePriorityBadge priority={feature.priority} />
+                {feature.priority && (
+                  <FeaturePriorityBadge priority={feature.priority} />
+                )}
               </TableCell>
               <TableCell className="text-muted-foreground">
                 {feature.projectName ?? "-"}
@@ -284,7 +286,9 @@ function ProjectsSection({
                   {PROJECT_STATUS_LABELS[project.status] ?? project.status}
                 </TableCell>
                 <TableCell>
-                  <FeaturePriorityBadge priority={project.priority} />
+                  {project.priority && (
+                    <FeaturePriorityBadge priority={project.priority} />
+                  )}
                 </TableCell>
                 <TableCell className="text-muted-foreground">
                   {project.teamName ?? "-"}

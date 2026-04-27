@@ -10,6 +10,11 @@ import { type Mock, vi } from "vitest";
 // Mock modules before importing the service
 vi.mock("@repo/database", () => ({
   withDb: vi.fn(),
+  ArtifactType: {
+    DOCUMENT: "DOCUMENT",
+    PULL_REQUEST: "PULL_REQUEST",
+    DEPLOYMENT: "DEPLOYMENT",
+  },
 }));
 
 // Import after mocking
@@ -30,7 +35,7 @@ describe("projectsService.findByTeam", () => {
     organizationId: TEST_ORG_ID,
     createdAt: new Date("2024-01-01"),
     updatedAt: new Date("2024-01-02"),
-    documents: [],
+    artifacts: [],
     teams: [
       {
         team: {
@@ -66,10 +71,11 @@ describe("projectsService.findByTeam", () => {
 
     expect(mockFindMany).toHaveBeenCalledWith({
       where: {
+        organizationId: TEST_ORG_ID,
+        isTemplatesSentinel: false,
         teams: {
           some: { teamId: TEST_TEAM_ID },
         },
-        organizationId: TEST_ORG_ID,
       },
       include: expect.any(Object),
       orderBy: [{ sortOrder: "asc" }, { updatedAt: "desc" }],
@@ -95,10 +101,11 @@ describe("projectsService.findByTeam", () => {
 
     expect(callArgs).toEqual({
       where: {
+        organizationId: TEST_ORG_ID,
+        isTemplatesSentinel: false,
         teams: {
           some: { teamId: TEST_TEAM_ID },
         },
-        organizationId: TEST_ORG_ID,
       },
       include: expect.any(Object),
       orderBy: [{ sortOrder: "asc" }, { updatedAt: "desc" }],

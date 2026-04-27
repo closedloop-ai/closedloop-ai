@@ -1,5 +1,6 @@
 "use client";
 
+import { LinkType } from "@repo/api/src/types/artifact";
 import { Priority } from "@repo/api/src/types/common";
 import {
   DOCUMENT_STATUS_OPTIONS,
@@ -7,7 +8,6 @@ import {
   DocumentType,
   type DocumentWithWorkstream,
 } from "@repo/api/src/types/document";
-import { EntityType, LinkType } from "@repo/api/src/types/entity-link";
 import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
@@ -52,11 +52,11 @@ import {
   featurePriorityLabels,
   featureStatusLabels,
 } from "@/components/status-badge";
+import { useCreateArtifactLink } from "@/hooks/queries/use-artifact-links";
 import {
   useCreateDocument,
   useDocumentsByProject,
 } from "@/hooks/queries/use-documents";
-import { useCreateEntityLink } from "@/hooks/queries/use-entity-links";
 import { useProjectsByTeam } from "@/hooks/queries/use-projects";
 import { useTeamMembers } from "@/hooks/queries/use-teams";
 import { DOCUMENT_TYPE_LABELS } from "@/lib/project-constants";
@@ -115,10 +115,10 @@ export function CreateFeatureModal({
 
   // Mutations
   const createFeatureMutation = useCreateDocument();
-  const createEntityLinkMutation = useCreateEntityLink();
+  const createArtifactLinkMutation = useCreateArtifactLink();
 
   const isSubmitting =
-    createFeatureMutation.isPending || createEntityLinkMutation.isPending;
+    createFeatureMutation.isPending || createArtifactLinkMutation.isPending;
 
   const handleAddArtifact = (artifact: DocumentWithWorkstream) => {
     setSelectedArtifacts((prev) => [...prev, artifact]);
@@ -180,11 +180,9 @@ export function CreateFeatureModal({
             try {
               await Promise.all(
                 selectedArtifacts.map((artifact) =>
-                  createEntityLinkMutation.mutateAsync({
+                  createArtifactLinkMutation.mutateAsync({
                     sourceId: artifact.id,
-                    sourceType: EntityType.Document,
                     targetId: feature.id,
-                    targetType: EntityType.Document,
                     linkType: LinkType.Produces,
                   })
                 )

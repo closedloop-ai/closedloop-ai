@@ -73,7 +73,8 @@ function buildPrismaLoopRow(overrides: {
     userId: "user-1",
     status: overrides.status,
     command: overrides.command ?? "PLAN",
-    documentId: "artifact-1",
+    artifactId: "artifact-1",
+    artifactVersion: null,
     workstreamId: null,
     parentLoopId: null,
     computeTargetId: null,
@@ -251,7 +252,7 @@ describe("loopsService.findActivePlanLoopForDocument", () => {
     await loopsService.findActivePlanLoopForDocument("artifact-abc", "org-xyz");
 
     const callArgs = mockFindFirst.mock.calls[0][0];
-    expect(callArgs.where.documentId).toBe("artifact-abc");
+    expect(callArgs.where.artifactId).toBe("artifact-abc");
     expect(callArgs.where.organizationId).toBe("org-xyz");
   });
 });

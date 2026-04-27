@@ -9,15 +9,11 @@ import {
   type JudgesReport,
 } from "@repo/api/src/types/evaluation";
 import type { PromptsSnapshot } from "@repo/api/src/types/prompt";
-import {
-  EntityType,
-  type Prisma,
-  type TransactionClient,
-  withDb,
-} from "@repo/database";
+import { type Prisma, type TransactionClient, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
 import { documentVersionService } from "@/app/documents/document-version-service";
+import { documentWhere } from "@/lib/artifact-adapters";
 import { fanOutJudgeScores } from "@/lib/judge-score-fanout";
 import {
   type IngestionContext,
@@ -185,9 +181,16 @@ export async function handleWorkflowSuccess(
     );
   }
 
-  const existingDocument = await tx.document.findUnique({
-    where: { id: documentId, organizationId: workstream.organizationId },
-    select: { id: true, organizationId: true, latestVersion: true },
+  const existingDocument = await tx.artifact.findUnique({
+    where: documentWhere({
+      id: documentId,
+      organizationId: workstream.organizationId,
+    }),
+    select: {
+      id: true,
+      organizationId: true,
+      document: { select: { latestVersion: true } },
+    },
   });
 
   if (!existingDocument) {
@@ -198,7 +201,7 @@ export async function handleWorkflowSuccess(
 
   log.info("[handleWorkflowSuccess] Found existing artifact", {
     documentId,
-    latestVersion: existingDocument.latestVersion,
+    latestVersion: existingDocument.document?.latestVersion,
   });
 
   // Store content via ArtifactVersion instead of directly on Artifact
@@ -211,7 +214,7 @@ export async function handleWorkflowSuccess(
     );
   }
 
-  await tx.document.update({
+  await tx.artifact.update({
     where: {
       id: documentId,
       organizationId: existingDocument.organizationId,
@@ -243,18 +246,16 @@ export async function handleWorkflowSuccess(
   await upsertFromSnapshot(workstream.organizationId, promptsSnapshot);
 
   if (judgesReport && ctx.actionRunId) {
-    const evaluation = await tx.documentEvaluation.upsert({
+    const evaluation = await tx.artifactEvaluation.upsert({
       where: {
-        entityId_reportId: {
-          entityId: documentId,
+        artifactId_reportId: {
+          artifactId: documentId,
           reportId: judgesReport.report_id,
         },
       },
       create: {
         organizationId: workstream.organizationId,
-        entityId: documentId,
-        entityType: EntityType.DOCUMENT,
-        documentId,
+        artifactId: documentId,
         actionRunId: ctx.actionRunId,
         reportType: EvaluationReportType.Plan,
         reportId: judgesReport.report_id,
@@ -285,13 +286,13 @@ export async function handleWorkflowSuccess(
   if (perfSummary !== null && perfSummary !== undefined && ctx.actionRunId) {
     await tx.gitHubActionRunPerformance.upsert({
       where: {
-        documentId_actionRunId: {
-          documentId,
+        artifactId_actionRunId: {
+          artifactId: documentId,
           actionRunId: ctx.actionRunId,
         },
       },
       create: {
-        documentId,
+        artifactId: documentId,
         actionRunId: ctx.actionRunId,
         summaryData: perfSummary as unknown as Prisma.InputJsonValue,
       },

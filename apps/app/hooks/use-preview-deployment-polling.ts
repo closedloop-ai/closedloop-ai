@@ -19,7 +19,7 @@ type UsePreviewDeploymentPollingOptions = {
   /** Whether artifact generation is still running. */
   isGenerationRunning: boolean;
   /** Refetch function from the preview deployment query. */
-  refetch: () => Promise<{ data?: unknown[] }>;
+  refetch: () => Promise<{ data?: unknown }>;
 };
 
 /**
@@ -98,7 +98,7 @@ export function usePreviewDeploymentPolling({
       pollTimeoutRef.current = setTimeout(async () => {
         try {
           const result = await refetchRef.current();
-          if (result.data?.length) {
+          if (result.data) {
             emptyRefreshCountRef.current = 0;
           } else {
             trackEmptyPollResponse();

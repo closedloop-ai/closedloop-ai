@@ -7,7 +7,6 @@ import {
   DocumentType,
   PullRequestState,
 } from "@repo/api/src/types/document";
-import { EntityType } from "@repo/api/src/types/entity-link";
 import { InlinePresence, OptionalDocumentRoom } from "@repo/collaboration";
 import {
   ResizablePanel,
@@ -44,8 +43,8 @@ import {
   useDismissDocumentGenerationStatus,
   useDocumentGenerationStatus,
   useDocumentPullRequest,
+  usePreviewDeployment,
 } from "@/hooks/queries/use-documents";
-import { useWorkstreamPreviewDeployment } from "@/hooks/queries/use-external-links";
 import {
   useCodeJudgesFeedback,
   usePlanJudgesFeedback,
@@ -165,13 +164,12 @@ export function PlanEditor({
   const { data: judgesReport } = usePlanJudgesFeedback(plan.id);
   const { data: codeJudgesReport } = useCodeJudgesFeedback(plan.id);
 
-  // Preview deployment via ExternalLink
-  const workstreamId = plan.workstreamId ?? "";
+  // Preview deployment artifact (Artifact of type DEPLOYMENT)
   const {
-    previewDeployment,
+    data: previewDeployment = null,
     refetch: refetchPreviewLinks,
     isRefetching: isRefreshingPreviewDeployment,
-  } = useWorkstreamPreviewDeployment(workstreamId);
+  } = usePreviewDeployment(plan.id);
 
   // Adaptive polling for preview deployment status
   const isGenerationRunning = !!(
@@ -181,8 +179,8 @@ export function PlanEditor({
     )
   );
   usePreviewDeploymentPolling({
-    previewState: previewDeployment?.state ?? null,
-    hasPreviewRef: !!previewDeployment?.ref,
+    previewState: previewDeployment?.status ?? null,
+    hasPreviewRef: !!previewDeployment?.deployment.ref,
     pullRequestNumber: pullRequest?.number,
     isGenerationRunning,
     refetch: refetchPreviewLinks,
@@ -444,7 +442,6 @@ export function PlanEditor({
       <MoveEntityDialog
         entity={{
           id: plan.id,
-          entityType: EntityType.Document,
           projectId: plan.projectId,
         }}
         onOpenChange={setShowMoveDialog}

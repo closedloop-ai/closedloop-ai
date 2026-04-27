@@ -1,8 +1,8 @@
 "use client";
 
 import { useFeatureFlag } from "@repo/analytics/client";
+import { LinkType } from "@repo/api/src/types/artifact";
 import { DocumentType } from "@repo/api/src/types/document";
-import { EntityType, LinkType } from "@repo/api/src/types/entity-link";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   Dialog,
@@ -27,12 +27,12 @@ import {
   UploadIcon,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { useCreateArtifactLink } from "@/hooks/queries/use-artifact-links";
 import { attachmentKeys } from "@/hooks/queries/use-attachments";
 import {
   useCreateContextAttachment,
   useImportGDriveContext,
 } from "@/hooks/queries/use-context-attachments";
-import { useCreateEntityLink } from "@/hooks/queries/use-entity-links";
 import {
   GDRIVE_FOLDER_ID_REGEX,
   useGDriveFolderFiles,
@@ -137,7 +137,7 @@ function LinkExistingTab({
   onOpenChange,
 }: Readonly<LinkExistingTabProps>) {
   const [selectOpen, setSelectOpen] = useState(false);
-  const createEntityLink = useCreateEntityLink();
+  const createArtifactLink = useCreateArtifactLink();
 
   if (!projectId) {
     return (
@@ -177,12 +177,10 @@ function LinkExistingTab({
           }
         }}
         onSelect={(prd) => {
-          createEntityLink.mutate(
+          createArtifactLink.mutate(
             {
               sourceId: prd.id,
-              sourceType: EntityType.Document,
               targetId: featureId,
-              targetType: EntityType.Document,
               linkType: LinkType.Produces,
             },
             {

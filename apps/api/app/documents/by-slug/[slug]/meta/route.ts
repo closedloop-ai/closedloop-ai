@@ -1,4 +1,4 @@
-import { withDb } from "@repo/database";
+import { ArtifactType, withDb } from "@repo/database";
 import { NextResponse } from "next/server";
 
 type RouteParams = { params: Promise<{ slug: string }> };
@@ -12,9 +12,9 @@ export async function GET(_: Request, { params }: RouteParams) {
   const { slug } = await params;
 
   const artifact = await withDb((db) =>
-    db.document.findFirst({
-      where: { slug },
-      select: { title: true, type: true, status: true },
+    db.artifact.findFirst({
+      where: { slug, type: ArtifactType.DOCUMENT },
+      select: { name: true, subtype: true, status: true },
     })
   );
 
@@ -22,5 +22,9 @@ export async function GET(_: Request, { params }: RouteParams) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
-  return NextResponse.json(artifact);
+  return NextResponse.json({
+    title: artifact.name,
+    type: artifact.subtype,
+    status: artifact.status,
+  });
 }

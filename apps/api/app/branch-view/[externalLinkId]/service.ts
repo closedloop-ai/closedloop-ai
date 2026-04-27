@@ -1,5 +1,6 @@
 import "server-only";
 
+import { LinkType } from "@repo/api/src/types/artifact";
 import type {
   BranchViewComment,
   BranchViewData,
@@ -12,10 +13,13 @@ import {
   CommentKind,
   ReviewDecision,
 } from "@repo/api/src/types/branch-view";
-import { DocumentType } from "@repo/api/src/types/document";
-import { EntityType, LinkType } from "@repo/api/src/types/entity-link";
 import type { User } from "@repo/api/src/types/user";
-import { type TransactionClient, withDb } from "@repo/database";
+import {
+  ArtifactSubtype,
+  ArtifactType,
+  type TransactionClient,
+  withDb,
+} from "@repo/database";
 import {
   getSinglePullRequest,
   listPullRequestFiles,
@@ -100,11 +104,14 @@ const VALID_REVIEW_STATES = new Set([
 ]);
 
 export type GetBranchViewResult =
-  | { data: BranchViewData; error: null; backfillPromise?: Promise<void> }
+  | { data: BranchViewData; error: null }
   | { data: null; error: string };
 
 /**
- * Assemble the full BranchViewData response.
+ * Assemble the full BranchViewData response. Always reads comments/reviews
+ * from the DB — resolvePrContext guarantees `ctx.gitHubPullRequest` is
+ * non-null on success. The user-initiated `/sync` endpoint reconciles with
+ * GitHub when the DB is out of date; no on-demand fallback is needed here.
  */
 export async function getBranchViewData(
   ctx: PrContext,
@@ -132,114 +139,30 @@ export async function getBranchViewData(
     patch: f.patch ?? null,
   }));
 
-  // Determine comments/reviews source: DB or GitHub API fallback
-  let comments: BranchViewComment[];
-  let reviews: BranchViewReview[];
-  let backfillPromise: Promise<void> | undefined;
-  let dbPr: {
-    checksStatus: string | null;
-    reviewDecision: string | null;
-  } | null = null;
-
-  if (gitHubPullRequest) {
-    // DB-backed path
-    const [dbComments, dbReviews, featureCtx, planCtx, prStatus] =
-      await Promise.all([
-        fetchComments(gitHubPullRequest.id),
-        fetchReviews(gitHubPullRequest.id),
-        resolveFeatureContext(ctx),
-        resolvePlanContext(ctx),
-        withDb((db) =>
-          db.gitHubPullRequest.findUnique({
-            where: { id: gitHubPullRequest.id },
-            select: { checksStatus: true, reviewDecision: true },
-          })
-        ),
-      ]);
-
-    comments = dbComments;
-    reviews = dbReviews;
-    dbPr = prStatus;
-
-    return buildResult(
-      ctx,
-      livePr,
-      committedFiles,
-      comments,
-      reviews,
-      dbPr,
-      featureCtx,
-      planCtx,
-      user
-    );
-  }
-
-  // Fallback path: no GitHubPullRequest row -- fetch from GitHub API
-  const [apiInlineComments, apiGeneralComments, apiReviews] = await Promise.all(
-    [
-      listPullRequestReviewComments(installationId, owner, repo, pullNumber),
-      listPullRequestIssueComments(installationId, owner, repo, pullNumber),
-      listPullRequestReviews(installationId, owner, repo, pullNumber),
-    ]
-  );
-
-  comments = mapFallbackComments(apiInlineComments, apiGeneralComments);
-  reviews = mapFallbackReviews(apiReviews);
-
-  // Trigger background backfill if all API calls succeeded
-  if (
-    apiInlineComments !== null &&
-    apiGeneralComments !== null &&
-    apiReviews !== null
-  ) {
-    backfillPromise = backfillPullRequestData(
-      ctx,
-      livePr,
-      apiInlineComments,
-      apiGeneralComments,
-      apiReviews
-    );
-  }
-
-  const [featureContext, planContext] = await Promise.all([
+  const [dbComments, dbReviews, featureCtx, planCtx, dbPr] = await Promise.all([
+    fetchComments(gitHubPullRequest.id),
+    fetchReviews(gitHubPullRequest.id),
     resolveFeatureContext(ctx),
     resolvePlanContext(ctx),
+    withDb((db) =>
+      db.pullRequestDetail.findUnique({
+        where: { artifactId: gitHubPullRequest.id },
+        select: { checksStatus: true, reviewDecision: true },
+      })
+    ),
   ]);
 
-  const data: BranchViewData = {
-    externalLinkId: ctx.externalLink.id,
-    prTitle: livePr.title,
-    externalUrl: ctx.externalLink.externalUrl,
-    prNumber: livePr.number,
-    prHtmlUrl: livePr.htmlUrl,
-    featureSlug: featureContext?.slug ?? null,
-    featureTitle: featureContext?.title ?? null,
-    teamId: featureContext?.teamId ?? null,
-    teamName: featureContext?.teamName ?? null,
-    projectId: ctx.externalLink.projectId,
-    projectName: featureContext?.projectName ?? null,
-    headBranch: livePr.headBranch,
-    baseBranch: livePr.baseBranch,
-    headSha: livePr.headSha,
-    prState: livePr.state,
-    reviewDecision: null,
-    checksStatus: null,
-    isDraft: livePr.isDraft,
-    authorLogin: livePr.authorLogin,
-    isAuthor: Boolean(
-      user.githubUsername &&
-        livePr.authorLogin &&
-        user.githubUsername.toLowerCase() === livePr.authorLogin.toLowerCase()
-    ),
-    repoFullName: `${owner}/${repo}`,
+  return buildResult(
+    ctx,
+    livePr,
     committedFiles,
-    reviews,
-    comments,
-    producedByPlanSlug: planContext?.slug ?? null,
-    producedByPlanTitle: planContext?.title ?? null,
-  };
-
-  return { data, error: null, backfillPromise };
+    dbComments,
+    dbReviews,
+    dbPr,
+    featureCtx,
+    planCtx,
+    user
+  );
 }
 
 // --- API response type aliases ---
@@ -253,56 +176,6 @@ type ApiGeneralComment = NonNullable<
 type ApiReview = NonNullable<
   Awaited<ReturnType<typeof listPullRequestReviews>>
 >[number];
-
-/** Map GitHub API inline + general comments to BranchViewComment[]. */
-function mapFallbackComments(
-  apiInlineComments: ApiInlineComment[] | null,
-  apiGeneralComments: ApiGeneralComment[] | null
-): BranchViewComment[] {
-  const inlineComments: BranchViewComment[] = (apiInlineComments ?? []).map(
-    (c) => ({
-      id: String(c.id),
-      githubCommentId: String(c.id),
-      author: c.user?.login ?? "unknown",
-      authorAvatar: c.user?.avatar_url ?? null,
-      authorKind: detectAuthorKind(c.user?.login ?? "unknown"),
-      body: c.body,
-      createdAt: c.created_at,
-      path: c.path,
-      line: c.line,
-      state: "PENDING" as BranchViewComment["state"],
-      reviewId: c.pull_request_review_id
-        ? String(c.pull_request_review_id)
-        : null,
-      htmlUrl: c.html_url,
-      inReplyToId: c.in_reply_to_id ? String(c.in_reply_to_id) : null,
-      kind: CommentKind.ReviewComment,
-    })
-  );
-
-  const generalComments: BranchViewComment[] = (apiGeneralComments ?? []).map(
-    (c) => ({
-      id: String(c.id),
-      githubCommentId: String(c.id),
-      author: c.user?.login ?? "unknown",
-      authorAvatar: c.user?.avatar_url ?? null,
-      authorKind: detectAuthorKind(c.user?.login ?? "unknown"),
-      body: c.body,
-      createdAt: c.created_at,
-      path: null,
-      line: null,
-      state: "PENDING" as BranchViewComment["state"],
-      reviewId: null,
-      htmlUrl: c.html_url,
-      inReplyToId: null,
-      kind: CommentKind.IssueComment,
-    })
-  );
-
-  return [...inlineComments, ...generalComments].sort(
-    (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
-  );
-}
 
 /** Normalize latest-per-author from GitHub API reviews. */
 function keepLatestReviewPerAuthor(
@@ -321,35 +194,6 @@ function keepLatestReviewPerAuthor(
     }
   }
   return latestByAuthor;
-}
-
-/** Map GitHub API reviews to BranchViewReview[]. */
-function mapFallbackReviews(
-  apiReviews: ApiReview[] | null
-): BranchViewReview[] {
-  const validApiReviews = (apiReviews ?? []).filter(
-    (r) =>
-      VALID_REVIEW_STATES.has(r.state) &&
-      r.submitted_at !== null &&
-      r.user?.login != null
-  );
-
-  const latestByAuthor = keepLatestReviewPerAuthor(validApiReviews);
-
-  return [...latestByAuthor.values()]
-    .map((r) => ({
-      id: String(r.id),
-      author: r.user!.login,
-      authorAvatar: r.user!.avatar_url,
-      state: r.state as BranchViewReview["state"],
-      body: r.body,
-      submittedAt: r.submitted_at!,
-      htmlUrl: r.html_url,
-    }))
-    .sort(
-      (a, b) =>
-        new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime()
-    );
 }
 
 function buildResult(
@@ -450,89 +294,6 @@ async function fetchReviews(
     submittedAt: row.submittedAt.toISOString(),
     htmlUrl: row.htmlUrl,
   }));
-}
-
-// --- Backfill ---
-
-type LivePr = NonNullable<Awaited<ReturnType<typeof getSinglePullRequest>>>;
-
-/**
- * Background DB backfill: creates GitHubPullRequest + comments + reviews rows
- * so future requests use the DB path and webhooks have a parent row.
- * Entire operation is wrapped in a single transaction.
- */
-async function backfillPullRequestData(
-  ctx: PrContext,
-  livePr: LivePr,
-  apiInlineComments: ApiInlineComment[],
-  apiGeneralComments: ApiGeneralComment[],
-  apiReviews: ApiReview[]
-): Promise<void> {
-  // Guard: need repositoryId to create PR row
-  if (!ctx.repositoryId) {
-    log.info("[branch-view/backfill] Skipping: no repositoryId", {
-      externalLinkId: ctx.externalLink.id,
-    });
-    return;
-  }
-
-  // Resolve workstreamId
-  const workstreamId = await resolveWorkstreamForBackfill(ctx);
-  if (!workstreamId) {
-    return;
-  }
-
-  const organizationId = ctx.externalLink.organizationId;
-
-  await withDb.tx(async (tx) => {
-    // 1. Upsert GitHubPullRequest
-    const effectivePr = await tx.gitHubPullRequest.upsert({
-      where: {
-        repositoryId_number: {
-          repositoryId: ctx.repositoryId!,
-          number: livePr.number,
-        },
-      },
-      create: {
-        workstreamId,
-        organizationId,
-        repositoryId: ctx.repositoryId!,
-        githubId: livePr.githubId,
-        number: livePr.number,
-        title: livePr.title,
-        htmlUrl: livePr.htmlUrl,
-        headBranch: livePr.headBranch,
-        baseBranch: livePr.baseBranch,
-        state: livePr.state,
-        isDraft: livePr.isDraft,
-        headSha: livePr.headSha,
-      },
-      update: {},
-      select: { id: true, documentId: true },
-    });
-
-    // 2-3. Upsert comments
-    await upsertBackfillComments(
-      tx,
-      effectivePr.id,
-      apiInlineComments,
-      apiGeneralComments
-    );
-
-    // 4. Upsert reviews
-    await upsertBackfillReviews(tx, effectivePr.id, apiReviews);
-
-    // 5. Recompute aggregate reviewDecision
-    await recomputeAndUpdateAggregate(tx, effectivePr.id);
-  });
-
-  log.info("[branch-view/backfill] Completed", {
-    externalLinkId: ctx.externalLink.id,
-    prNumber: livePr.number,
-    inlineComments: apiInlineComments.length,
-    generalComments: apiGeneralComments.length,
-    reviews: apiReviews.length,
-  });
 }
 
 type PrismaReviewDecision =
@@ -640,79 +401,6 @@ async function upsertBackfillReviews(
   );
 }
 
-/**
- * Resolve a workstreamId for the backfill.
- * Tries ExternalLink.workstreamId first, then walks entity links.
- */
-async function resolveWorkstreamForBackfill(
-  ctx: PrContext
-): Promise<string | null> {
-  // Direct workstreamId on ExternalLink
-  if (ctx.externalLink.workstreamId) {
-    return ctx.externalLink.workstreamId;
-  }
-
-  // Walk entity links: ExternalLink -> Artifact (via PRODUCES) -> workstreamId
-  const entityLinks = await withDb((db) =>
-    db.entityLink.findMany({
-      where: {
-        organizationId: ctx.externalLink.organizationId,
-        targetId: ctx.externalLink.id,
-        targetType: EntityType.ExternalLink,
-        sourceType: EntityType.Document,
-        linkType: LinkType.Produces,
-      },
-      select: { sourceId: true },
-    })
-  );
-
-  if (entityLinks.length === 0) {
-    log.warn(
-      "[branch-view/backfill] Skipping: no linked artifacts for workstream resolution",
-      {
-        externalLinkId: ctx.externalLink.id,
-      }
-    );
-    return null;
-  }
-
-  const artifactIds = entityLinks.map((l) => l.sourceId);
-  const artifacts = await withDb((db) =>
-    db.document.findMany({
-      where: { id: { in: artifactIds } },
-      select: { workstreamId: true },
-    })
-  );
-
-  const distinctWorkstreamIds = [
-    ...new Set(
-      artifacts
-        .map((a) => a.workstreamId)
-        .filter((id): id is string => id !== null)
-    ),
-  ];
-
-  if (distinctWorkstreamIds.length === 1) {
-    return distinctWorkstreamIds[0];
-  }
-
-  if (distinctWorkstreamIds.length === 0) {
-    log.warn(
-      "[branch-view/backfill] Skipping: no workstreamId on linked artifacts",
-      {
-        externalLinkId: ctx.externalLink.id,
-      }
-    );
-  } else {
-    log.warn("[branch-view/backfill] Skipping: ambiguous workstream", {
-      externalLinkId: ctx.externalLink.id,
-      workstreamIds: distinctWorkstreamIds,
-    });
-  }
-
-  return null;
-}
-
 // --- Sync (user-initiated read-repair) ---
 
 export type SyncResult =
@@ -810,20 +498,18 @@ type FeatureContext = {
 async function resolveFeatureContext(
   ctx: PrContext
 ): Promise<FeatureContext | null> {
-  // Path 1: Use artifactId shortcut from GitHubPullRequest
-  const artifactId = ctx.gitHubPullRequest?.documentId;
+  // Path 1: Use documentId shortcut from the resolved PR context.
+  const producingDocumentId = ctx.gitHubPullRequest?.documentId;
 
-  // Path 2: Walk entity links from ExternalLink -> Plan -> Feature
-  // OR ExternalLink -> Feature
-  let resolvedArtifactId = artifactId;
+  // Path 2: Walk artifact links from PR artifact -> producing Document.
+  let resolvedArtifactId = producingDocumentId;
   if (!resolvedArtifactId) {
     const linkToArtifact = await withDb((db) =>
-      db.entityLink.findFirst({
+      db.artifactLink.findFirst({
         where: {
           targetId: ctx.externalLink.id,
-          targetType: EntityType.ExternalLink,
           linkType: LinkType.Produces,
-          sourceType: EntityType.Document,
+          source: { type: ArtifactType.DOCUMENT },
         },
         select: { sourceId: true },
       })
@@ -852,30 +538,30 @@ async function resolveFeatureContext(
 
   // Go one more level up the source chain to find a feature.
   const featureLink = await withDb((db) =>
-    db.entityLink.findFirst({
+    db.artifactLink.findFirst({
       where: {
         targetId: resolvedArtifactId,
-        targetType: EntityType.Document,
         linkType: LinkType.Produces,
-        sourceType: EntityType.Document,
+        source: { type: ArtifactType.DOCUMENT },
       },
       select: { sourceId: true },
     })
   );
 
-  const sourceDocuments = await withDb((db) =>
-    db.document.findMany({
+  const candidateIds = [featureLink?.sourceId, resolvedArtifactId].filter(
+    Boolean
+  ) as string[];
+
+  const sourceArtifacts = await withDb((db) =>
+    db.artifact.findMany({
       where: {
-        id: {
-          in: [featureLink?.sourceId, resolvedArtifactId].filter(
-            Boolean
-          ) as string[],
-        },
+        id: { in: candidateIds },
+        type: ArtifactType.DOCUMENT,
       },
       select: {
         slug: true,
-        title: true,
-        type: true,
+        name: true,
+        subtype: true,
         project: {
           select: {
             name: true,
@@ -889,7 +575,9 @@ async function resolveFeatureContext(
     })
   );
 
-  const feature = sourceDocuments.find((d) => d.type === DocumentType.Feature);
+  const feature = sourceArtifacts.find(
+    (a) => a.subtype === ArtifactSubtype.FEATURE
+  );
 
   if (!feature) {
     const project = await withDb((db) =>
@@ -912,8 +600,8 @@ async function resolveFeatureContext(
   const firstTeam = feature.project?.teams?.[0]?.team ?? null;
 
   return {
-    slug: feature.slug,
-    title: feature.title,
+    slug: feature.slug ?? "",
+    title: feature.name,
     teamId: firstTeam?.id ?? null,
     teamName: firstTeam?.name ?? null,
     projectName: feature.project?.name ?? null,
@@ -933,24 +621,23 @@ async function resolvePlanContext(ctx: PrContext): Promise<PlanContext | null> {
 
   // Check if this artifact IS a plan
   const artifact = await withDb((db) =>
-    db.document.findUnique({
-      where: { id: artifactId },
-      select: { slug: true, title: true, type: true },
+    db.artifact.findFirst({
+      where: { id: artifactId, type: ArtifactType.DOCUMENT },
+      select: { slug: true, name: true, subtype: true },
     })
   );
 
-  if (artifact?.type === DocumentType.ImplementationPlan) {
-    return { slug: artifact.slug, title: artifact.title };
+  if (artifact?.subtype === ArtifactSubtype.IMPLEMENTATION_PLAN) {
+    return { slug: artifact.slug ?? "", title: artifact.name };
   }
 
-  // Walk entity links to find a plan that produced this artifact
+  // Walk artifact links to find a plan that produced this artifact.
   const planLink = await withDb((db) =>
-    db.entityLink.findFirst({
+    db.artifactLink.findFirst({
       where: {
         targetId: artifactId,
-        targetType: EntityType.Document,
         linkType: LinkType.Produces,
-        sourceType: EntityType.Document,
+        source: { type: ArtifactType.DOCUMENT },
       },
       select: { sourceId: true },
     })
@@ -961,14 +648,14 @@ async function resolvePlanContext(ctx: PrContext): Promise<PlanContext | null> {
   }
 
   const plan = await withDb((db) =>
-    db.document.findUnique({
-      where: { id: planLink.sourceId },
-      select: { slug: true, title: true, type: true },
+    db.artifact.findFirst({
+      where: { id: planLink.sourceId, type: ArtifactType.DOCUMENT },
+      select: { slug: true, name: true, subtype: true },
     })
   );
 
-  if (plan?.type === DocumentType.ImplementationPlan) {
-    return { slug: plan.slug, title: plan.title };
+  if (plan?.subtype === ArtifactSubtype.IMPLEMENTATION_PLAN) {
+    return { slug: plan.slug ?? "", title: plan.name };
   }
 
   return null;

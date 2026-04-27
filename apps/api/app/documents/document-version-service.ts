@@ -5,17 +5,17 @@ import { DocumentNotFoundError } from "./document-utils";
 export const documentVersionService = {
   /**
    * Get the latest version for a document.
-   * Fetches the version row where version = document.latestVersion.
+   * Fetches the version row where version = detail.latestVersion.
    */
   async getLatest(documentId: string): Promise<DocumentVersion | null> {
-    const document = await withDb((db) =>
-      db.document.findUnique({
-        where: { id: documentId },
+    const detail = await withDb((db) =>
+      db.documentDetail.findUnique({
+        where: { artifactId: documentId },
         select: { latestVersion: true },
       })
     );
 
-    if (!document) {
+    if (!detail) {
       return null;
     }
 
@@ -24,7 +24,7 @@ export const documentVersionService = {
         where: {
           documentId_version: {
             documentId,
-            version: document.latestVersion,
+            version: detail.latestVersion,
           },
         },
       })
@@ -75,7 +75,8 @@ export const documentVersionService = {
 
   /**
    * Create a new version of a document with content.
-   * Atomically increments latestVersion on the document and inserts the DocumentVersion row.
+   * Atomically increments latestVersion on the documentDetail and inserts
+   * the DocumentVersion row.
    */
   createVersion(
     documentId: string,
@@ -84,16 +85,16 @@ export const documentVersionService = {
     content: string | null
   ): Promise<DocumentVersion> {
     return withDb.tx(async (tx) => {
-      const document = await tx.document.findUnique({
-        where: { id: documentId, organizationId },
+      const detail = await tx.documentDetail.findFirst({
+        where: { artifactId: documentId, artifact: { organizationId } },
         select: { latestVersion: true },
       });
 
-      if (!document) {
+      if (!detail) {
         throw new DocumentNotFoundError(documentId);
       }
 
-      const nextVersion = document.latestVersion + 1;
+      const nextVersion = detail.latestVersion + 1;
 
       const [version] = await Promise.all([
         tx.documentVersion.create({
@@ -104,8 +105,8 @@ export const documentVersionService = {
             createdById: userId,
           },
         }),
-        tx.document.update({
-          where: { id: documentId },
+        tx.documentDetail.update({
+          where: { artifactId: documentId },
           data: { latestVersion: nextVersion },
         }),
       ]);

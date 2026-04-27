@@ -16,7 +16,6 @@ import type {
   JudgesReport,
 } from "@repo/api/src/types/evaluation";
 import type { Loop, LoopCommand } from "@repo/api/src/types/loop";
-import { EntityType } from "@repo/database";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   parseJsonArtifact,
@@ -72,7 +71,7 @@ function setupDownload(
 
 function setupMockTx(extra: Record<string, unknown> = {}) {
   const mockTx = {
-    documentEvaluation: { upsert: vi.fn() },
+    artifactEvaluation: { upsert: vi.fn() },
     ...extra,
   };
   mockWithDbTx(mockTx);
@@ -127,9 +126,7 @@ export function registerEvaluationHandlerTests(
       expect(mocks.mockUpsertEvaluationWithJudgeScores).toHaveBeenCalledOnce();
       expect(mocks.mockUpsertEvaluationWithJudgeScores).toHaveBeenCalledWith(
         expect.objectContaining({
-          entityId: documentId,
-          entityType: EntityType.DOCUMENT,
-          documentId,
+          artifactId: documentId,
           loopId: loop.id,
           organizationId: "org-1",
           reportType,
@@ -189,8 +186,10 @@ export function registerEvaluationHandlerTests(
       const loop = buildTestLoop({ documentVersion: 1 });
       setupDownload(report, mocks);
       setupMockTx({
-        document: {
-          findUnique: vi.fn().mockResolvedValue({ latestVersion: 2 }),
+        artifact: {
+          findUnique: vi.fn().mockResolvedValue({
+            document: { latestVersion: 2 },
+          }),
         },
       });
 
@@ -203,8 +202,10 @@ export function registerEvaluationHandlerTests(
       const loop = buildTestLoop({ documentVersion: 2 });
       setupDownload(report, mocks);
       setupMockTx({
-        document: {
-          findUnique: vi.fn().mockResolvedValue({ latestVersion: 2 }),
+        artifact: {
+          findUnique: vi.fn().mockResolvedValue({
+            document: { latestVersion: 2 },
+          }),
         },
       });
 
@@ -227,7 +228,7 @@ export function registerEvaluationHandlerTests(
       const loop = buildTestLoop({ documentVersion: 1 });
       setupDownload(report, mocks);
       setupMockTx({
-        document: { findUnique: vi.fn().mockResolvedValue(null) },
+        artifact: { findUnique: vi.fn().mockResolvedValue(null) },
       });
 
       await handler.downloadAndIngest(loop.s3StateKey!, loop, "org-1");

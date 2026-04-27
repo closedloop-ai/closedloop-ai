@@ -1,8 +1,7 @@
 import "server-only";
 
-import { EntityType } from "@repo/api/src/types/entity-link";
 import { TYPED_SLUG_PATTERN } from "@repo/api/src/types/slug";
-import { withDb } from "@repo/database";
+import { ArtifactType, withDb } from "@repo/database";
 import { z } from "zod";
 
 const UUID_REGEX =
@@ -56,8 +55,11 @@ export async function resolveDocumentId(
     return id;
   }
   const row = await withDb((db) =>
-    db.document.findUnique({
-      where: { organizationId_slug: { organizationId, slug: id } },
+    db.artifact.findUnique({
+      where: {
+        organizationId_slug: { organizationId, slug: id },
+        type: ArtifactType.DOCUMENT,
+      },
       select: { id: true },
     })
   );
@@ -97,21 +99,23 @@ export async function resolveWorkstreamId(
 }
 
 /**
- * Entity-type-aware resolver for entity-link params.
- * Supports slug resolution for DOCUMENT only.
- * EXTERNAL_LINK has no slug field — non-UUID input returns null immediately.
+ * Resolve an artifact identifier that may be a UUID or a document slug.
+ * Non-document artifacts (PR, deployment) don't carry slugs, so non-UUID
+ * input falls back to a document lookup first, then returns the raw UUID
+ * if the caller insists.
  */
-export function resolveEntityLinkIdentifier(
+export async function resolveArtifactIdentifier(
   id: string,
-  organizationId: string,
-  entityType: EntityType
+  organizationId: string
 ): Promise<string | null> {
-  switch (entityType) {
-    case EntityType.Document:
-      return resolveDocumentId(id, organizationId);
-    case EntityType.ExternalLink:
-      return Promise.resolve(isUuid(id) ? id : null);
-    default:
-      return Promise.resolve(isUuid(id) ? id : null);
+  if (isUuid(id)) {
+    const row = await withDb((db) =>
+      db.artifact.findFirst({
+        where: { id, organizationId },
+        select: { id: true },
+      })
+    );
+    return row?.id ?? null;
   }
+  return resolveDocumentId(id, organizationId);
 }

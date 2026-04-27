@@ -1,7 +1,6 @@
 "use client";
 
 import { useFeatureFlag } from "@repo/analytics/client";
-import { EntityType } from "@repo/api/src/types/entity-link";
 import type { AdditionalRepoRef } from "@repo/api/src/types/loop";
 import { getProjectSettings } from "@repo/api/src/types/project";
 import { Button } from "@repo/design-system/components/ui/button";
@@ -179,15 +178,7 @@ export function NewPlanModal({
   // Get the selected source (either from prop or from dropdown PRD)
   const selectedPrd = prds.find((p) => p.id === selectedSourceId);
   const selectedSource: PlanSource | undefined = useMemo(() => {
-    return (
-      source ??
-      (selectedPrd
-        ? {
-            ...selectedPrd,
-            sourceType: EntityType.Document,
-          }
-        : undefined)
-    );
+    return source ?? selectedPrd ?? undefined;
   }, [source, selectedPrd]);
 
   // Update title, filename, and repo/branch when source is selected from dropdown

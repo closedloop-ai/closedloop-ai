@@ -10,7 +10,7 @@ export type DocumentSearchResult = {
   slug: string;
   type: DocumentType;
   status: DocumentStatus;
-  priority: Priority;
+  priority: Priority | null;
   projectName: string | null;
   workstreamTitle: string | null;
   assignee: BasicUser | null;
@@ -31,7 +31,7 @@ export type ProjectSearchResult = {
   name: string;
   slug: string | null;
   status: ProjectStatus;
-  priority: Priority;
+  priority: Priority | null;
   teamName: string | null;
   teamId: string | null;
   assignee: BasicUser | null;

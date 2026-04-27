@@ -3,7 +3,8 @@ import type {
   PullRequestReviewCommentDeletedEvent,
   PullRequestReviewCommentEditedEvent,
 } from "@octokit/webhooks-types";
-import { type TransactionClient, withDb } from "@repo/database";
+import { LinkType } from "@repo/api/src/types/artifact";
+import { ArtifactType, type TransactionClient, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
 
@@ -79,8 +80,8 @@ export async function handlePullRequestReviewComment(
       return;
     }
 
-    // Step 2: Find GitHubPullRequest by repositoryId + number
-    const existingPr = await tx.gitHubPullRequest.findUnique({
+    // Step 2: Find PR artifact detail by repositoryId + number
+    const prDetail = await tx.pullRequestDetail.findUnique({
       where: {
         repositoryId_number: {
           repositoryId: repo.id,
@@ -88,12 +89,39 @@ export async function handlePullRequestReviewComment(
         },
       },
       select: {
-        id: true,
-        workstreamId: true,
-        documentId: true,
-        document: { select: { slug: true } },
+        artifactId: true,
+        artifact: {
+          select: {
+            workstreamId: true,
+            // PR is the TARGET of a DOCUMENT → produces → PR link — query
+            // targetLinks, not sourceLinks. sourceLinks would filter
+            // links-where-PR-is-source, which never match this direction.
+            targetLinks: {
+              where: {
+                linkType: LinkType.Produces,
+                source: { type: ArtifactType.DOCUMENT },
+              },
+              select: {
+                source: { select: { id: true, slug: true } },
+              },
+              orderBy: { createdAt: "asc" },
+              take: 1,
+            },
+          },
+        },
       },
     });
+
+    const linkedDoc = prDetail?.artifact.targetLinks[0]?.source ?? null;
+    const existingPr = prDetail
+      ? {
+          id: prDetail.artifactId,
+          // Preserve null — empty string is not a valid workstream id.
+          workstreamId: prDetail.artifact.workstreamId,
+          documentId: linkedDoc?.id ?? null,
+          document: linkedDoc ? { slug: linkedDoc.slug ?? "" } : null,
+        }
+      : null;
 
     if (!existingPr) {
       log.warn(
@@ -151,7 +179,7 @@ export async function handlePullRequestReviewComment(
 
 type ExistingPr = {
   id: string;
-  workstreamId: string;
+  workstreamId: string | null;
   documentId: string | null;
   document: { slug: string } | null;
 };
@@ -191,26 +219,28 @@ async function handleCreatedComment(
     },
   });
 
-  await tx.workstreamEvent.create({
-    data: {
-      workstreamId: existingPr.workstreamId,
-      type: "GITHUB_PR_COMMENT_ADDED",
-      actorType: "system",
+  if (existingPr.workstreamId) {
+    await tx.workstreamEvent.create({
       data: {
-        commentId: comment.id,
-        commentBody: comment.body,
-        commentPath: comment.path,
-        commentLine: comment.line,
-        authorLogin: comment.user.login,
-        prNumber: pull_request.number,
-        prTitle: pull_request.title,
-        prUrl: pull_request.html_url,
-        commentUrl: comment.html_url,
-        documentId: existingPr.documentId,
-        documentSlug: existingPr.document?.slug,
+        workstreamId: existingPr.workstreamId,
+        type: "GITHUB_PR_COMMENT_ADDED",
+        actorType: "system",
+        data: {
+          commentId: comment.id,
+          commentBody: comment.body,
+          commentPath: comment.path,
+          commentLine: comment.line,
+          authorLogin: comment.user.login,
+          prNumber: pull_request.number,
+          prTitle: pull_request.title,
+          prUrl: pull_request.html_url,
+          commentUrl: comment.html_url,
+          documentId: existingPr.documentId,
+          documentSlug: existingPr.document?.slug,
+        },
       },
-    },
-  });
+    });
+  }
 
   log.info("[handlePullRequestReviewComment] Review comment created", {
     commentId: comment.id,

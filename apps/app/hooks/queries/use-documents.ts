@@ -1,6 +1,7 @@
 "use client";
 
 import { CURRENT_DESKTOP_API_NAMESPACE } from "@repo/api/src/desktop-api-namespace";
+import type { DeploymentArtifact } from "@repo/api/src/types/artifact";
 import type { ComputeTargetConflictBody } from "@repo/api/src/types/compute-target";
 import {
   type CreateDocumentInput,
@@ -15,8 +16,6 @@ import {
   type UpdateDocumentInput,
 } from "@repo/api/src/types/document";
 import type { DocumentVersion } from "@repo/api/src/types/document-version";
-import { EntityType } from "@repo/api/src/types/entity-link";
-import type { ExternalLink } from "@repo/api/src/types/external-link";
 import {
   type AdditionalRepoRef,
   RunLoopCommand,
@@ -33,8 +32,8 @@ import { useCallback, useState } from "react";
 import { useApiClient } from "@/hooks/use-api-client";
 import { resolveDesktopApiNamespaceHint } from "@/lib/engineer/local-gateway-api-namespace";
 import { handleRunLoopResponse } from "@/lib/run-loop-response";
+import { invalidateArtifactLinkQueries } from "./use-artifact-links";
 import { dashboardKeys } from "./use-dashboard-stats";
-import { invalidateEntityLinkQueries } from "./use-entity-links";
 import { executionLogKeys } from "./use-execution-log";
 import { judgesKeys } from "./use-judges";
 import { projectTreeKeys } from "./use-project-tree";
@@ -314,7 +313,7 @@ export function useUpdateDocument() {
       if (input.projectId) {
         queryClient.invalidateQueries({ queryKey: projectKeys.all });
       }
-      invalidateEntityLinkQueries(queryClient, input.id, EntityType.Document);
+      invalidateArtifactLinkQueries(queryClient, input.id);
     },
   });
 }
@@ -329,7 +328,7 @@ export function useDeleteDocument() {
     onSuccess: (_, id) => {
       queryClient.invalidateQueries({ queryKey: documentKeys.all });
       queryClient.invalidateQueries({ queryKey: dashboardKeys.all });
-      invalidateEntityLinkQueries(queryClient, id, EntityType.Document);
+      invalidateArtifactLinkQueries(queryClient, id);
     },
   });
 }
@@ -709,19 +708,22 @@ export function useRelatedDocuments(
 }
 
 /**
- * Fetch the preview deployment URL for an artifact's workstream.
+ * Fetch the preview deployment artifact for a document's workstream.
  * Returns null if no preview deployment exists.
  */
 export function usePreviewDeployment(
   documentId: string,
-  options?: Omit<UseQueryOptions<ExternalLink | null>, "queryKey" | "queryFn">
+  options?: Omit<
+    UseQueryOptions<DeploymentArtifact | null>,
+    "queryKey" | "queryFn"
+  >
 ) {
   const apiClient = useApiClient();
 
   return useQuery({
     queryKey: documentKeys.previewDeployment(documentId),
     queryFn: () =>
-      apiClient.get<ExternalLink | null>(
+      apiClient.get<DeploymentArtifact | null>(
         `/documents/${documentId}/preview-deployment`
       ),
     enabled: !!documentId,

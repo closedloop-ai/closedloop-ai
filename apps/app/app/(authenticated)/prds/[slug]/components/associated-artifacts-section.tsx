@@ -1,18 +1,24 @@
 "use client";
 
 import {
-  EntityType,
+  type ArtifactLinkEndpoint,
   LinkDirection,
   LinkQueryMode,
   LinkType,
-} from "@repo/api/src/types/entity-link";
+} from "@repo/api/src/types/artifact";
+import { Priority } from "@repo/api/src/types/common";
+import {
+  type Document,
+  DocumentStatus,
+  DocumentType,
+} from "@repo/api/src/types/document";
 import { useMemo, useState } from "react";
 import { ArtifactRow } from "@/components/document-editor/relationships/artifact-row";
 import { SectionHeader } from "@/components/document-editor/relationships/section-header";
 import {
-  useDeleteEntityLink,
-  useLinkedEntities,
-} from "@/hooks/queries/use-entity-links";
+  useDeleteArtifactLink,
+  useResolvedArtifactLinks,
+} from "@/hooks/queries/use-artifact-links";
 import {
   type FlattenedArtifactRow,
   flattenAssociatedArtifacts,
@@ -33,19 +39,15 @@ export function AssociatedArtifactsSection({
 }: Readonly<AssociatedArtifactsSectionProps>) {
   const [isOpen, setIsOpen] = useState(true);
 
-  const { data: linkedEntities = [] } = useLinkedEntities(
-    prdId,
-    EntityType.Document,
-    {
-      direction: LinkDirection.Target,
-      linkType: LinkType.Produces,
-      mode: LinkQueryMode.Tree,
-    }
-  );
+  const { data: resolvedLinks = [] } = useResolvedArtifactLinks(prdId, {
+    direction: LinkDirection.Target,
+    linkType: LinkType.Produces,
+    mode: LinkQueryMode.Tree,
+  });
 
   const flattened = useMemo(
-    () => flattenAssociatedArtifacts(prdId, linkedEntities),
-    [prdId, linkedEntities]
+    () => flattenAssociatedArtifacts(prdId, resolvedLinks),
+    [prdId, resolvedLinks]
   );
 
   return (
@@ -67,7 +69,7 @@ type AssociatedArtifactsBodyProps = {
 function AssociatedArtifactsBody({
   flattened,
 }: Readonly<AssociatedArtifactsBodyProps>) {
-  const deleteEntityLink = useDeleteEntityLink();
+  const deleteArtifactLink = useDeleteArtifactLink();
 
   if (flattened.length === 0) {
     return (
@@ -81,13 +83,47 @@ function AssociatedArtifactsBody({
     <div className="flex flex-col border-t">
       {flattened.map((row) => (
         <ArtifactRow
-          artifact={row.document}
+          artifact={endpointToDocument(row.endpoint)}
           depth={row.depth}
-          key={row.document.id}
+          key={row.endpoint.id}
           linkId={row.linkId}
-          onDetach={(id) => deleteEntityLink.mutate(id)}
+          onDetach={(id) => deleteArtifactLink.mutate(id)}
         />
       ))}
     </div>
   );
+}
+
+/**
+ * Adapts an ArtifactLinkEndpoint to the legacy Document shape that ArtifactRow
+ * still expects. The endpoint omits some fields that ArtifactRow doesn't use
+ * for navigation (assignee object, approver, etc.) so this lossy adapter is
+ * acceptable here.
+ */
+function endpointToDocument(endpoint: ArtifactLinkEndpoint): Document {
+  return {
+    id: endpoint.id,
+    organizationId: endpoint.organizationId,
+    workstreamId: endpoint.workstreamId,
+    projectId: endpoint.projectId,
+    type: (endpoint.subtype ?? DocumentType.Feature) as DocumentType,
+    title: endpoint.name,
+    slug: endpoint.slug ?? "",
+    fileName: null,
+    status: (endpoint.status as DocumentStatus) ?? DocumentStatus.Draft,
+    priority: endpoint.priority ?? Priority.Medium,
+    latestVersion: 1,
+    createdById: endpoint.createdById ?? "",
+    assigneeId: endpoint.assigneeId,
+    assignee: null,
+    approverId: null,
+    approver: null,
+    tokenUsage: null,
+    targetRepo: null,
+    targetBranch: null,
+    templateForType: null,
+    sortOrder: endpoint.sortOrder,
+    createdAt: endpoint.createdAt,
+    updatedAt: endpoint.updatedAt,
+  };
 }

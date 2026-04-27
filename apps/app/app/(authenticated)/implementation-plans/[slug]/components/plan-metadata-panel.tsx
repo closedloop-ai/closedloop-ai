@@ -1,13 +1,13 @@
 "use client";
 
 import { FeatureFlagged } from "@repo/analytics/components/feature-flagged";
+import type { DeploymentArtifact } from "@repo/api/src/types/artifact";
 import type {
   DocumentDetail,
   GenerationStatus,
   PullRequestInfo,
 } from "@repo/api/src/types/document";
 import type { JudgeFeedbackItem } from "@repo/api/src/types/evaluation";
-import type { PreviewDeploymentInfo } from "@repo/api/src/types/external-link-utils";
 import type { AdditionalRepoRef } from "@repo/api/src/types/loop";
 import { Label } from "@repo/design-system/components/ui/label";
 import Link from "next/link";
@@ -26,7 +26,7 @@ export type PlanMetadataPanelProps = {
   plan: DocumentDetail;
   generationStatus: GenerationStatus | null;
   pullRequest: PullRequestInfo | null;
-  previewDeployment: PreviewDeploymentInfo | null;
+  previewDeployment: DeploymentArtifact | null;
   onPreviewRefresh: () => void;
   isPreviewRefreshing: boolean;
   codeJudgeItems: JudgeFeedbackItem[] | null;

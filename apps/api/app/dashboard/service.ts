@@ -14,7 +14,8 @@ import type {
 } from "@repo/api/src/types/dashboard";
 import type { PerfSummary } from "@repo/api/src/types/performance";
 import {
-  DocumentType,
+  ArtifactSubtype,
+  ArtifactType,
   GitHubActionStatus,
   GitHubPRState,
   Prisma,
@@ -156,38 +157,48 @@ async function fetchDeliveryStats(
   const [prdCount, planCount, featureCount, prsMerged, agenticWorkflows] =
     await Promise.all([
       withDb((db) =>
-        db.document.count({
+        db.artifact.count({
           where: {
             organizationId: orgId,
-            type: DocumentType.PRD,
+            type: ArtifactType.DOCUMENT,
+            subtype: ArtifactSubtype.PRD,
             ...dateFilter,
           },
         })
       ),
       withDb((db) =>
-        db.document.count({
+        db.artifact.count({
           where: {
             organizationId: orgId,
-            type: DocumentType.IMPLEMENTATION_PLAN,
+            type: ArtifactType.DOCUMENT,
+            subtype: ArtifactSubtype.IMPLEMENTATION_PLAN,
             ...dateFilter,
           },
         })
       ),
       withDb((db) =>
-        db.document.count({
+        db.artifact.count({
           where: {
             organizationId: orgId,
-            type: DocumentType.FEATURE,
+            type: ArtifactType.DOCUMENT,
+            subtype: ArtifactSubtype.FEATURE,
             ...dateFilter,
           },
         })
       ),
       withDb((db) =>
-        db.gitHubPullRequest.count({
+        db.artifact.count({
           where: {
+            organizationId: orgId,
+            type: ArtifactType.PULL_REQUEST,
             workstreamId: { in: wsIds },
-            state: GitHubPRState.MERGED,
-            mergedAt: { not: null, ...(startDate ? { gte: startDate } : {}) },
+            status: GitHubPRState.MERGED,
+            pullRequest: {
+              mergedAt: {
+                not: null,
+                ...(startDate ? { gte: startDate } : {}),
+              },
+            },
           },
         })
       ),
@@ -218,9 +229,11 @@ async function fetchAgentUsage(
   const perfRecords = await withDb((db) =>
     db.gitHubActionRunPerformance.findMany({
       where: {
-        document: {
-          organizationId: orgId,
-          ...(startDate ? { createdAt: { gte: startDate } } : {}),
+        documentDetail: {
+          artifact: {
+            organizationId: orgId,
+            ...(startDate ? { createdAt: { gte: startDate } } : {}),
+          },
         },
       },
       select: { summaryData: true },
@@ -291,32 +304,44 @@ export const dashboardService = {
         landedCodeTrendData,
         agenticWorkflowsTrendData,
       ] = await Promise.all([
-        // Aggregate counts
+        // Aggregate counts — DOCUMENT artifacts by subtype
         withDb((db) =>
-          db.document.count({
-            where: { organizationId, type: DocumentType.PRD },
-          })
-        ),
-        withDb((db) =>
-          db.document.count({
-            where: { organizationId, type: DocumentType.FEATURE },
-          })
-        ),
-        withDb((db) =>
-          db.document.count({
+          db.artifact.count({
             where: {
               organizationId,
-              type: DocumentType.IMPLEMENTATION_PLAN,
+              type: ArtifactType.DOCUMENT,
+              subtype: ArtifactSubtype.PRD,
             },
           })
         ),
-        // Landed code: merged PRs with defensive null check on mergedAt
         withDb((db) =>
-          db.gitHubPullRequest.count({
+          db.artifact.count({
             where: {
+              organizationId,
+              type: ArtifactType.DOCUMENT,
+              subtype: ArtifactSubtype.FEATURE,
+            },
+          })
+        ),
+        withDb((db) =>
+          db.artifact.count({
+            where: {
+              organizationId,
+              type: ArtifactType.DOCUMENT,
+              subtype: ArtifactSubtype.IMPLEMENTATION_PLAN,
+            },
+          })
+        ),
+        // Landed code: merged PR artifacts with defensive null check on mergedAt
+        withDb((db) =>
+          db.artifact.count({
+            where: {
+              type: ArtifactType.PULL_REQUEST,
               workstreamId: { in: orgWorkstreamIds },
-              state: GitHubPRState.MERGED,
-              mergedAt: { not: null },
+              pullRequest: {
+                prState: GitHubPRState.MERGED,
+                mergedAt: { not: null },
+              },
             },
           })
         ),
@@ -332,42 +357,47 @@ export const dashboardService = {
 
         // 14-day trend data
         withDb((db) =>
-          db.document.findMany({
+          db.artifact.findMany({
             where: {
               organizationId,
-              type: DocumentType.PRD,
+              type: ArtifactType.DOCUMENT,
+              subtype: ArtifactSubtype.PRD,
               createdAt: { gte: fourteenDaysAgo },
             },
             select: { createdAt: true },
           })
         ),
         withDb((db) =>
-          db.document.findMany({
+          db.artifact.findMany({
             where: {
               organizationId,
-              type: DocumentType.FEATURE,
+              type: ArtifactType.DOCUMENT,
+              subtype: ArtifactSubtype.FEATURE,
               createdAt: { gte: fourteenDaysAgo },
             },
             select: { createdAt: true },
           })
         ),
         withDb((db) =>
-          db.document.findMany({
+          db.artifact.findMany({
             where: {
               organizationId,
-              type: DocumentType.IMPLEMENTATION_PLAN,
+              type: ArtifactType.DOCUMENT,
+              subtype: ArtifactSubtype.IMPLEMENTATION_PLAN,
               createdAt: { gte: fourteenDaysAgo },
             },
             select: { createdAt: true },
           })
         ),
-        // For GitHubPullRequest trends use mergedAt field instead of createdAt
+        // For PR trends use mergedAt on the pullRequest detail
         withDb((db) =>
-          db.gitHubPullRequest.findMany({
+          db.pullRequestDetail.findMany({
             where: {
-              workstreamId: { in: orgWorkstreamIds },
-              state: GitHubPRState.MERGED,
+              prState: GitHubPRState.MERGED,
               mergedAt: { gte: fourteenDaysAgo, not: null },
+              artifact: {
+                workstreamId: { in: orgWorkstreamIds },
+              },
             },
             select: { mergedAt: true },
           })

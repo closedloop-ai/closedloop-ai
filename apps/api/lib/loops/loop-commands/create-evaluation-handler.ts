@@ -4,8 +4,9 @@ import type {
   JudgesReport,
 } from "@repo/api/src/types/evaluation";
 import type { Loop } from "@repo/api/src/types/loop";
-import { EntityType, withDb } from "@repo/database";
+import { withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
+import { documentWhere } from "@/lib/artifact-adapters";
 import {
   parseJsonArtifact,
   upsertEvaluationWithJudgeScores,
@@ -97,19 +98,20 @@ export function createEvaluationHandler(
         // in flight). Skip ingestion to prevent old scores from overwriting newer ones.
         // Check is inside the transaction to avoid a TOCTOU race between read and write.
         if (loop.documentVersion != null) {
-          const artifact = await tx.document.findUnique({
-            where: { id: documentId, organizationId },
-            select: { latestVersion: true },
+          const artifact = await tx.artifact.findUnique({
+            where: documentWhere({ id: documentId, organizationId }),
+            select: { document: { select: { latestVersion: true } } },
           });
 
-          if (artifact && artifact.latestVersion > loop.documentVersion) {
+          const latestVersion = artifact?.document?.latestVersion;
+          if (latestVersion != null && latestVersion > loop.documentVersion) {
             log.info(
               `[loop-document-ingestion] Skipping ${label} evaluation ingest — artifact has a newer version`,
               {
                 documentId,
                 loopId: loop.id,
                 loopArtifactVersion: loop.documentVersion,
-                currentArtifactVersion: artifact.latestVersion,
+                currentArtifactVersion: latestVersion,
               }
             );
             return;
@@ -117,9 +119,7 @@ export function createEvaluationHandler(
         }
 
         await upsertEvaluationWithJudgeScores({
-          entityId: documentId,
-          entityType: EntityType.DOCUMENT,
-          documentId,
+          artifactId: documentId,
           loopId: loop.id,
           organizationId,
           reportType,

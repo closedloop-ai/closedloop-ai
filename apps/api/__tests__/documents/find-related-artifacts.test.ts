@@ -1,8 +1,9 @@
 /**
  * Integration tests for findRelatedDocuments service method.
- * Tests entity link chain traversal for artifact relationships.
+ * Tests artifact link chain traversal for artifact relationships.
  */
-import { withDb } from "@repo/database";
+import { DocumentStatus } from "@repo/api/src/types/document";
+import { ArtifactSubtype, ArtifactType, withDb } from "@repo/database";
 import { keys } from "@repo/database/keys";
 import { describe, expect, it } from "vitest";
 import { generateSlug } from "@/app/documents/document-utils";
@@ -26,11 +27,13 @@ describe.skipIf(!hasDatabase)("findRelatedDocuments", () => {
       const projectId = await createTestProject(orgId, user.id);
 
       const artifact = await withDb((db) =>
-        db.document.create({
+        db.artifact.create({
           data: {
-            title: "Standalone Artifact",
+            name: "Standalone Artifact",
             slug: generateSlug(),
-            type: "PRD",
+            type: ArtifactType.DOCUMENT,
+            subtype: ArtifactSubtype.PRD,
+            status: DocumentStatus.Draft,
             organizationId: orgId,
             createdById: user.id,
             projectId,
@@ -55,11 +58,13 @@ describe.skipIf(!hasDatabase)("findRelatedDocuments", () => {
 
       // Create PRD (root, no source)
       const prd = await withDb((db) =>
-        db.document.create({
+        db.artifact.create({
           data: {
-            title: "PRD",
+            name: "PRD",
             slug: generateSlug(),
-            type: "PRD",
+            type: ArtifactType.DOCUMENT,
+            subtype: ArtifactSubtype.PRD,
+            status: DocumentStatus.Draft,
             organizationId: orgId,
             createdById: user.id,
             projectId,
@@ -69,11 +74,13 @@ describe.skipIf(!hasDatabase)("findRelatedDocuments", () => {
 
       // Create Plan (source: PRD)
       const plan = await withDb((db) =>
-        db.document.create({
+        db.artifact.create({
           data: {
-            title: "Implementation Plan",
+            name: "Implementation Plan",
             slug: generateSlug(),
-            type: "IMPLEMENTATION_PLAN",
+            type: ArtifactType.DOCUMENT,
+            subtype: ArtifactSubtype.IMPLEMENTATION_PLAN,
+            status: DocumentStatus.Draft,
             organizationId: orgId,
             createdById: user.id,
             projectId,
@@ -83,13 +90,11 @@ describe.skipIf(!hasDatabase)("findRelatedDocuments", () => {
 
       // Link PRD → Plan
       await withDb((db) =>
-        db.entityLink.create({
+        db.artifactLink.create({
           data: {
             organizationId: orgId,
             sourceId: prd.id,
-            sourceType: "DOCUMENT",
             targetId: plan.id,
-            targetType: "DOCUMENT",
             linkType: "PRODUCES",
           },
         })
@@ -97,11 +102,13 @@ describe.skipIf(!hasDatabase)("findRelatedDocuments", () => {
 
       // Create third artifact (source: Plan)
       const strategy = await withDb((db) =>
-        db.document.create({
+        db.artifact.create({
           data: {
-            title: "Implementation Strategy",
+            name: "Implementation Strategy",
             slug: generateSlug(),
-            type: "IMPLEMENTATION_PLAN",
+            type: ArtifactType.DOCUMENT,
+            subtype: ArtifactSubtype.IMPLEMENTATION_PLAN,
+            status: DocumentStatus.Draft,
             organizationId: orgId,
             createdById: user.id,
             projectId,
@@ -111,13 +118,11 @@ describe.skipIf(!hasDatabase)("findRelatedDocuments", () => {
 
       // Link Plan → Strategy
       await withDb((db) =>
-        db.entityLink.create({
+        db.artifactLink.create({
           data: {
             organizationId: orgId,
             sourceId: plan.id,
-            sourceType: "DOCUMENT",
             targetId: strategy.id,
-            targetType: "DOCUMENT",
             linkType: "PRODUCES",
           },
         })
@@ -153,11 +158,13 @@ describe.skipIf(!hasDatabase)("findRelatedDocuments", () => {
 
       // Create root
       const root = await withDb((db) =>
-        db.document.create({
+        db.artifact.create({
           data: {
-            title: "Root",
+            name: "Root",
             slug: generateSlug(),
-            type: "PRD",
+            type: ArtifactType.DOCUMENT,
+            subtype: ArtifactSubtype.PRD,
+            status: DocumentStatus.Draft,
             organizationId: orgId,
             createdById: user.id,
             projectId,
@@ -167,11 +174,13 @@ describe.skipIf(!hasDatabase)("findRelatedDocuments", () => {
 
       // Create 2 children
       const child1 = await withDb((db) =>
-        db.document.create({
+        db.artifact.create({
           data: {
-            title: "Child 1",
+            name: "Child 1",
             slug: generateSlug(),
-            type: "IMPLEMENTATION_PLAN",
+            type: ArtifactType.DOCUMENT,
+            subtype: ArtifactSubtype.IMPLEMENTATION_PLAN,
+            status: DocumentStatus.Draft,
             organizationId: orgId,
             createdById: user.id,
             projectId,
@@ -181,24 +190,24 @@ describe.skipIf(!hasDatabase)("findRelatedDocuments", () => {
 
       // Link root → child1
       await withDb((db) =>
-        db.entityLink.create({
+        db.artifactLink.create({
           data: {
             organizationId: orgId,
             sourceId: root.id,
-            sourceType: "DOCUMENT",
             targetId: child1.id,
-            targetType: "DOCUMENT",
             linkType: "PRODUCES",
           },
         })
       );
 
       const child2 = await withDb((db) =>
-        db.document.create({
+        db.artifact.create({
           data: {
-            title: "Child 2",
+            name: "Child 2",
             slug: generateSlug(),
-            type: "IMPLEMENTATION_PLAN",
+            type: ArtifactType.DOCUMENT,
+            subtype: ArtifactSubtype.IMPLEMENTATION_PLAN,
+            status: DocumentStatus.Draft,
             organizationId: orgId,
             createdById: user.id,
             projectId,
@@ -208,13 +217,11 @@ describe.skipIf(!hasDatabase)("findRelatedDocuments", () => {
 
       // Link root → child2
       await withDb((db) =>
-        db.entityLink.create({
+        db.artifactLink.create({
           data: {
             organizationId: orgId,
             sourceId: root.id,
-            sourceType: "DOCUMENT",
             targetId: child2.id,
-            targetType: "DOCUMENT",
             linkType: "PRODUCES",
           },
         })
@@ -222,11 +229,13 @@ describe.skipIf(!hasDatabase)("findRelatedDocuments", () => {
 
       // Create 2 grandchildren
       const grandchild1 = await withDb((db) =>
-        db.document.create({
+        db.artifact.create({
           data: {
-            title: "Grandchild 1",
+            name: "Grandchild 1",
             slug: generateSlug(),
-            type: "PRD",
+            type: ArtifactType.DOCUMENT,
+            subtype: ArtifactSubtype.PRD,
+            status: DocumentStatus.Draft,
             organizationId: orgId,
             createdById: user.id,
             projectId,
@@ -236,24 +245,24 @@ describe.skipIf(!hasDatabase)("findRelatedDocuments", () => {
 
       // Link child1 → grandchild1
       await withDb((db) =>
-        db.entityLink.create({
+        db.artifactLink.create({
           data: {
             organizationId: orgId,
             sourceId: child1.id,
-            sourceType: "DOCUMENT",
             targetId: grandchild1.id,
-            targetType: "DOCUMENT",
             linkType: "PRODUCES",
           },
         })
       );
 
       const grandchild2 = await withDb((db) =>
-        db.document.create({
+        db.artifact.create({
           data: {
-            title: "Grandchild 2",
+            name: "Grandchild 2",
             slug: generateSlug(),
-            type: "PRD",
+            type: ArtifactType.DOCUMENT,
+            subtype: ArtifactSubtype.PRD,
+            status: DocumentStatus.Draft,
             organizationId: orgId,
             createdById: user.id,
             projectId,
@@ -263,13 +272,11 @@ describe.skipIf(!hasDatabase)("findRelatedDocuments", () => {
 
       // Link child2 → grandchild2
       await withDb((db) =>
-        db.entityLink.create({
+        db.artifactLink.create({
           data: {
             organizationId: orgId,
             sourceId: child2.id,
-            sourceType: "DOCUMENT",
             targetId: grandchild2.id,
-            targetType: "DOCUMENT",
             linkType: "PRODUCES",
           },
         })

@@ -81,7 +81,7 @@ export const onboardingService = {
       withDb((db) => db.team.count({ where: { organizationId } })),
       withDb((db) =>
         db.project.count({
-          where: { organizationId },
+          where: { organizationId, isTemplatesSentinel: false },
         })
       ),
       withDb((db) =>

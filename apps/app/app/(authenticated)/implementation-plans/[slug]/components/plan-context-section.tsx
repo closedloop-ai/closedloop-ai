@@ -1,12 +1,13 @@
 "use client";
 
-import { type Document, DocumentType } from "@repo/api/src/types/document";
-import type { LinkedEntity } from "@repo/api/src/types/entity-link";
 import {
-  EntityType,
+  type ArtifactLinkWithEndpoints,
+  ArtifactSubtype,
+  ArtifactType,
   LinkDirection,
   LinkType,
-} from "@repo/api/src/types/entity-link";
+} from "@repo/api/src/types/artifact";
+import { type Document, DocumentType } from "@repo/api/src/types/document";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   Command,
@@ -26,12 +27,12 @@ import { FileTextIcon, LinkIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 import { ArtifactRow } from "@/components/document-editor/relationships/artifact-row";
 import { SectionHeader } from "@/components/document-editor/relationships/section-header";
-import { useDocumentsByProject } from "@/hooks/queries/use-documents";
 import {
-  useCreateEntityLink,
-  useDeleteEntityLink,
-  useLinkedEntities,
-} from "@/hooks/queries/use-entity-links";
+  useCreateArtifactLink,
+  useDeleteArtifactLink,
+  useResolvedArtifactLinks,
+} from "@/hooks/queries/use-artifact-links";
+import { useDocumentsByProject } from "@/hooks/queries/use-documents";
 import { DOCUMENT_TYPE_ICONS } from "@/lib/project-constants";
 
 type PlanContextSectionProps = {
@@ -46,25 +47,23 @@ export function PlanContextSection({
   const [isOpen, setIsOpen] = useState(true);
   const [pickerOpen, setPickerOpen] = useState(false);
 
-  const { data: linkedEntities = [] } = useLinkedEntities(
-    planId,
-    EntityType.Document,
-    {
-      direction: LinkDirection.Source,
-      linkType: LinkType.Produces,
-    }
-  );
+  const { data: resolvedLinks = [] } = useResolvedArtifactLinks(planId, {
+    direction: LinkDirection.Source,
+    linkType: LinkType.Produces,
+  });
 
   const { data: projectDocuments = [] } = useDocumentsByProject(
     projectId ?? "",
     { enabled: !!projectId && pickerOpen }
   );
 
-  const createLink = useCreateEntityLink();
-  const deleteLink = useDeleteEntityLink();
+  const createLink = useCreateArtifactLink();
+  const deleteLink = useDeleteArtifactLink();
 
-  const parentLink = findParentSourceLink(linkedEntities);
-  const parentDocument = parentLink ? getDocumentFromLink(parentLink) : null;
+  const parentLink = findParentSourceLink(resolvedLinks);
+  const parentDocument = parentLink
+    ? findDocumentForLink(parentLink, projectDocuments)
+    : null;
 
   const candidates = useMemo(
     () =>
@@ -81,9 +80,7 @@ export function PlanContextSection({
     createLink.mutate(
       {
         sourceId,
-        sourceType: EntityType.Document,
         targetId: planId,
-        targetType: EntityType.Document,
         linkType: LinkType.Produces,
       },
       {
@@ -214,23 +211,31 @@ function PlanContextBody({
 }
 
 function findParentSourceLink(
-  linkedEntities: LinkedEntity[]
-): LinkedEntity | null {
-  for (const linked of linkedEntities) {
-    if (linked.resolvedEntity?.type !== EntityType.Document) {
+  resolvedLinks: ArtifactLinkWithEndpoints[]
+): ArtifactLinkWithEndpoints | null {
+  for (const link of resolvedLinks) {
+    if (link.source.type !== ArtifactType.Document) {
       continue;
     }
-    const doc = linked.resolvedEntity.entity;
-    if (doc.type === DocumentType.Feature || doc.type === DocumentType.Prd) {
-      return linked;
+    if (
+      link.source.subtype === ArtifactSubtype.Feature ||
+      link.source.subtype === ArtifactSubtype.Prd
+    ) {
+      return link;
     }
   }
   return null;
 }
 
-function getDocumentFromLink(linked: LinkedEntity): Document | null {
-  if (linked.resolvedEntity?.type !== EntityType.Document) {
-    return null;
-  }
-  return linked.resolvedEntity.entity;
+/**
+ * Look up the full Document for a link's source endpoint inside the current
+ * project's document list. Cross-project parents fall back to null because the
+ * picker only loads docs from the active project; the section then falls back
+ * to its empty state until the user navigates to the parent's project.
+ */
+function findDocumentForLink(
+  link: ArtifactLinkWithEndpoints,
+  projectDocuments: Document[]
+): Document | null {
+  return projectDocuments.find((doc) => doc.id === link.source.id) ?? null;
 }

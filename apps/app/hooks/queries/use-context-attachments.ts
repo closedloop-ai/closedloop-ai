@@ -9,7 +9,7 @@ import {
   useMutation,
   useQueryClient,
 } from "@tanstack/react-query";
-import { entityLinkKeys } from "@/hooks/queries/use-entity-links";
+import { artifactLinkKeys } from "@/hooks/queries/use-artifact-links";
 import { useApiClient } from "@/hooks/use-api-client";
 
 export type CreateContextAttachmentInput = {
@@ -43,7 +43,7 @@ export function useCreateContextAttachment(
         input
       ),
     onSuccess: (data, variables, onMutateResult, mutationContext) => {
-      queryClient.invalidateQueries({ queryKey: entityLinkKeys.lists() });
+      queryClient.invalidateQueries({ queryKey: artifactLinkKeys.lists() });
       options?.onSuccess?.(data, variables, onMutateResult, mutationContext);
     },
   });
@@ -68,7 +68,7 @@ export function useImportGDriveContext(
         input
       ),
     onSuccess: (data, variables, onMutateResult, mutationContext) => {
-      queryClient.invalidateQueries({ queryKey: entityLinkKeys.lists() });
+      queryClient.invalidateQueries({ queryKey: artifactLinkKeys.lists() });
       options?.onSuccess?.(data, variables, onMutateResult, mutationContext);
     },
   });

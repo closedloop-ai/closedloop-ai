@@ -5,8 +5,11 @@ import {
   type DocumentWithWorkstream,
   getRoutePrefixForType,
 } from "@repo/api/src/types/document";
-import { EntityType } from "@repo/api/src/types/entity-link";
-import type { TreeEntity, TreeNode } from "@repo/api/src/types/project-tree";
+import {
+  type TreeEntity,
+  TreeEntityType,
+  type TreeNode,
+} from "@repo/api/src/types/project-tree";
 import type { WorkstreamState } from "@repo/api/src/types/workstream";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
@@ -41,9 +44,8 @@ import { GroupSectionHeader } from "@/components/document-table/group-section-he
 import { DocumentTableHeader } from "@/components/document-table/table-header";
 import { EmptyState } from "@/components/empty-state";
 import { MoveEntityDialog } from "@/components/move-entity-dialog";
+import { useParentFallbackMap } from "@/hooks/queries/use-artifact-links";
 import { useMergeDocuments } from "@/hooks/queries/use-documents";
-import { useParentFallbackMap } from "@/hooks/queries/use-entity-links";
-import { useExternalLinks } from "@/hooks/queries/use-external-links";
 import { useProjectTree } from "@/hooks/queries/use-project-tree";
 import type { DocumentColumn } from "@/hooks/use-column-visibility";
 import { useGroupExpansion } from "@/hooks/use-group-expansion";
@@ -475,11 +477,10 @@ export function DocumentsView({
   );
   const [pendingBulkIds, setPendingBulkIds] = useState<Set<string>>(new Set());
   const [moveEntities, setMoveEntities] = useState<
-    { id: string; entityType: EntityType; projectId?: string | null }[]
+    { id: string; projectId?: string | null }[]
   >([]);
   const [moveEntity, setMoveEntity] = useState<{
     id: string;
-    entityType: EntityType;
     projectId?: string | null;
   } | null>(null);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
@@ -522,7 +523,8 @@ export function DocumentsView({
     return null;
   }, [selectedIds, documents]);
 
-  const { data: treeData } = useProjectTree(projectId);
+  const { data: treeData, isLoading: isLoadingTree } =
+    useProjectTree(projectId);
 
   // Build parent map: child entity id → parent title + optional parent artifact route.
   const parentMap = useMemo((): Map<
@@ -633,7 +635,6 @@ export function DocumentsView({
         .filter((item) => !parentMap.has(item.data.id))
         .map((item) => ({
           id: item.data.id,
-          entityType: EntityType.Document,
         })),
     [renderedItems, parentMap]
   );
@@ -689,7 +690,6 @@ export function DocumentsView({
     if (treeData) {
       const treeNode = treeData.nodes.find((n) => n.root.id === item.data.id);
       if (treeNode && treeNode.children.length > 0) {
-        const rootEntityType = EntityType.Document;
         const rootProjectId =
           item.kind === "artifact" || item.kind === "feature"
             ? item.data.projectId
@@ -697,12 +697,10 @@ export function DocumentsView({
         setMoveEntities([
           {
             id: item.data.id,
-            entityType: rootEntityType,
             projectId: rootProjectId,
           },
           ...treeNode.children.map((child) => ({
             id: child.id,
-            entityType: child.entityType,
           })),
         ]);
         setMenuState(null);
@@ -713,7 +711,6 @@ export function DocumentsView({
     if (item.kind === "artifact" || item.kind === "feature") {
       setMoveEntity({
         id: item.data.id,
-        entityType: EntityType.Document,
         projectId: item.data.projectId,
       });
     }
@@ -772,18 +769,13 @@ export function DocumentsView({
   }
 
   function handleRequestBulkMove() {
-    const entitiesToMove: {
-      id: string;
-      entityType: EntityType;
-      projectId?: string | null;
-    }[] = [];
+    const entitiesToMove: { id: string; projectId?: string | null }[] = [];
 
     for (const id of selectedIds) {
       const doc = documents.find((d) => d.id === id);
       if (doc) {
         entitiesToMove.push({
           id: doc.id,
-          entityType: EntityType.Document,
           projectId: doc.projectId,
         });
       }
@@ -797,7 +789,12 @@ export function DocumentsView({
   // ---- Branches: render ExternalLinks instead of artifacts ----
 
   if (filterCategory === "branches") {
-    return <BranchesList projectId={projectId} />;
+    return (
+      <BranchesList
+        isLoading={isLoadingTree}
+        prNodes={collectPullRequestTreeEntries(treeData?.nodes ?? [])}
+      />
+    );
   }
 
   // ---- Empty state ----
@@ -1159,12 +1156,13 @@ function TreeGroupRows({
 
 // ---- Branches list (ExternalLinks with type=PULL_REQUEST) ----
 
-function BranchesList({ projectId }: { projectId: string }) {
-  const { data: links, isLoading } = useExternalLinks({
-    projectId,
-    type: "PULL_REQUEST",
-  });
-
+function BranchesList({
+  isLoading,
+  prNodes,
+}: {
+  isLoading: boolean;
+  prNodes: PrTreeEntry[];
+}) {
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-12">
@@ -1173,7 +1171,7 @@ function BranchesList({ projectId }: { projectId: string }) {
     );
   }
 
-  if (!links || links.length === 0) {
+  if (prNodes.length === 0) {
     return (
       <EmptyState
         description="No pull requests linked to this project yet."
@@ -1185,26 +1183,59 @@ function BranchesList({ projectId }: { projectId: string }) {
 
   return (
     <div className="flex flex-col">
-      {links.map((link) => (
+      {prNodes.map((node) => (
         <Link
           className="flex items-center gap-3 border-border border-b px-4 py-3 transition-colors hover:bg-accent/50"
-          href={`/build/${link.id}`}
-          key={link.id}
+          href={`/build/${node.id}`}
+          key={node.id}
         >
           <GitPullRequestIcon className="h-4 w-4 shrink-0 text-emerald-500" />
           <div className="flex min-w-0 flex-1 flex-col gap-0.5">
             <span className="truncate font-medium text-foreground text-sm">
-              {link.title}
+              {node.title}
             </span>
-            <span className="truncate text-muted-foreground text-xs">
-              {link.externalUrl}
-            </span>
+            {node.externalUrl ? (
+              <span className="truncate text-muted-foreground text-xs">
+                {node.externalUrl}
+              </span>
+            ) : null}
           </div>
           <ExternalLinkIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         </Link>
       ))}
     </div>
   );
+}
+
+type PrTreeEntry = {
+  id: string;
+  title: string;
+  externalUrl: string;
+};
+
+function collectPullRequestTreeEntries(nodes: TreeNode[]): PrTreeEntry[] {
+  const seen = new Set<string>();
+  const out: PrTreeEntry[] = [];
+  for (const node of nodes) {
+    for (const entity of [node.root, ...node.children]) {
+      if (!isPullRequestTreeEntity(entity) || seen.has(entity.id)) {
+        continue;
+      }
+      seen.add(entity.id);
+      out.push({
+        id: entity.id,
+        title: entity.title,
+        externalUrl: entity.externalUrl,
+      });
+    }
+  }
+  return out;
+}
+
+function isPullRequestTreeEntity(
+  entity: TreeEntity
+): entity is Extract<TreeEntity, { externalUrl: string }> {
+  return entity.entityType === TreeEntityType.ExternalLink;
 }
 
 function DocumentsEmptyState({

@@ -9,10 +9,10 @@ import { vi } from "vitest";
 // --- Mocks (must come before imports — Vitest hoists these) ---
 
 vi.mock("@repo/database", () => ({
-  EntityType: {
+  ArtifactType: {
     DOCUMENT: "DOCUMENT",
-    FEATURE: "FEATURE",
-    EXTERNAL_LINK: "EXTERNAL_LINK",
+    PULL_REQUEST: "PULL_REQUEST",
+    DEPLOYMENT: "DEPLOYMENT",
   },
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
 }));

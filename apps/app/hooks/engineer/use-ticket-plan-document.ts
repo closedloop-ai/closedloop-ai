@@ -1,8 +1,8 @@
 "use client";
 
 import { DocumentStatus } from "@repo/api/src/types/document";
+import { useLinkedPlanId } from "@/hooks/queries/use-artifact-links";
 import { useDocument } from "@/hooks/queries/use-documents";
-import { useLinkedPlanId } from "@/hooks/queries/use-entity-links";
 import { type EngineerTicket, TicketSourceType } from "@/types/engineer";
 
 /**

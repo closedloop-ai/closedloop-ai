@@ -234,6 +234,7 @@ const computeTargetSelect = {
 function toLoop(record: PrismaLoop): Loop {
   return {
     ...record,
+    documentId: record.artifactId,
     estimatedCost:
       record.estimatedCost != null ? Number(record.estimatedCost) : null,
     repo: parseRepo(record.repo),
@@ -244,7 +245,7 @@ function toLoop(record: PrismaLoop): Loop {
     uploadedArtifacts:
       (record.uploadedArtifacts as Loop["uploadedArtifacts"]) ?? null,
     tokensByModel: record.tokensByModel as Loop["tokensByModel"],
-    documentVersion: record.documentVersion ?? null,
+    documentVersion: record.artifactVersion ?? null,
   };
 }
 
@@ -347,7 +348,7 @@ export const loopsService = {
           organizationId,
           userId,
           command: input.command,
-          documentId: input.documentId ?? null,
+          artifactId: input.documentId ?? null,
           workstreamId: input.workstreamId ?? null,
           parentLoopId: input.parentLoopId ?? null,
           computeTargetId: input.computeTargetId ?? null,
@@ -355,7 +356,7 @@ export const loopsService = {
           repo: input.repo ?? undefined,
           additionalRepos: input.additionalRepos ?? undefined,
           contextRefs: input.contextRefs ?? undefined,
-          documentVersion: input.documentVersion ?? null,
+          artifactVersion: input.documentVersion ?? null,
           metadata: input.metadata ?? undefined,
           status: LoopStatus.Pending,
         },
@@ -430,9 +431,9 @@ export const loopsService = {
           organizationId,
           ...(status ? { status } : {}),
           ...(command ? { command } : {}),
-          ...(documentId ? { documentId } : {}),
+          ...(documentId ? { artifactId: documentId } : {}),
           ...(workstreamId ? { workstreamId } : {}),
-          ...(projectId ? { document: { projectId } } : {}),
+          ...(projectId ? { artifact: { projectId } } : {}),
           ...(userId ? { userId } : {}),
         },
         include: {
@@ -734,7 +735,7 @@ export const loopsService = {
           organizationId,
           userId,
           command: parent.command,
-          documentId: parent.documentId,
+          artifactId: parent.artifactId,
           workstreamId: parent.workstreamId,
           parentLoopId: parent.id,
           prompt: input.prompt ?? parent.prompt,
@@ -1139,7 +1140,7 @@ export const loopsService = {
     const loop = await withDb((db) =>
       db.loop.findFirst({
         where: {
-          documentId,
+          artifactId: documentId,
           organizationId,
           status: "COMPLETED",
         },
@@ -1166,7 +1167,7 @@ export const loopsService = {
     const loops = await withDb((db) =>
       db.loop.findMany({
         where: {
-          documentId,
+          artifactId: documentId,
           organizationId,
           status: "COMPLETED",
           computeTargetId: { not: null },
@@ -1232,7 +1233,7 @@ export const loopsService = {
     const loop = await withDb((db) =>
       db.loop.findFirst({
         where: {
-          documentId,
+          artifactId: documentId,
           organizationId,
           command: "PLAN",
           ...(computeTargetId ? { computeTargetId } : {}),
@@ -1296,7 +1297,7 @@ export const loopsService = {
             organizationId,
             userId,
             command: input.command,
-            documentId: input.documentId,
+            artifactId: input.documentId,
             workstreamId: input.workstreamId ?? null,
             parentLoopId: input.parentLoopId ?? null,
             computeTargetId: input.computeTargetId ?? null,
@@ -1304,7 +1305,7 @@ export const loopsService = {
             repo: input.repo ?? undefined,
             additionalRepos: input.additionalRepos ?? undefined,
             contextRefs: input.contextRefs ?? undefined,
-            documentVersion: input.documentVersion,
+            artifactVersion: input.documentVersion,
             metadata: input.metadata ?? undefined,
             status: LoopStatus.Pending,
           },

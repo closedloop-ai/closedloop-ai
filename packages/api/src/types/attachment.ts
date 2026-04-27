@@ -7,7 +7,7 @@
  */
 export type FileAttachment = {
   id: string;
-  documentId: string;
+  artifactId: string;
   filename: string;
   mimeType: string;
   sizeBytes: number;
@@ -17,7 +17,7 @@ export type FileAttachment = {
   previewUrl?: string;
 };
 
-const IMAGE_MIME_TYPES = [
+const IMAGE_MIME_TYPES: readonly string[] = [
   "image/jpeg",
   "image/png",
   "image/gif",
@@ -25,10 +25,10 @@ const IMAGE_MIME_TYPES = [
 ] as const;
 
 export function isImageMimeType(mimeType: string): boolean {
-  return IMAGE_MIME_TYPES.some((t) => mimeType === t);
+  return IMAGE_MIME_TYPES.includes(mimeType);
 }
 
-const DOCUMENT_MIME_TYPES = [
+const DOCUMENT_MIME_TYPES: readonly string[] = [
   "application/pdf",
   "application/msword",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -37,7 +37,7 @@ const DOCUMENT_MIME_TYPES = [
 ] as const;
 
 export function isDocumentMimeType(mimeType: string): boolean {
-  return DOCUMENT_MIME_TYPES.some((t) => mimeType === t);
+  return DOCUMENT_MIME_TYPES.includes(mimeType);
 }
 
 /**

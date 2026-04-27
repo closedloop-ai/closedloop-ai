@@ -7,14 +7,24 @@ export function createDatabaseMockModule(
 ): MockModule {
   return {
     withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
-    EntityType: {
+    ArtifactType: {
       DOCUMENT: "DOCUMENT",
+      PULL_REQUEST: "PULL_REQUEST",
+      DEPLOYMENT: "DEPLOYMENT",
+    },
+    ArtifactSubtype: {
+      PRD: "PRD",
+      IMPLEMENTATION_PLAN: "IMPLEMENTATION_PLAN",
+      TEMPLATE: "TEMPLATE",
       FEATURE: "FEATURE",
-      WORKSTREAM: "WORKSTREAM",
-      EXTERNAL_LINK: "EXTERNAL_LINK",
     },
     GitHubPRState: {
       OPEN: "OPEN",
+      CLOSED: "CLOSED",
+      MERGED: "MERGED",
+    },
+    GitHubInstallationStatus: {
+      ACTIVE: "ACTIVE",
     },
     WorkstreamEventType: {
       GITHUB_PR_CREATED: "GITHUB_PR_CREATED",

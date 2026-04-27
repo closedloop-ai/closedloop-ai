@@ -1,20 +1,30 @@
-import { EntityType, LinkType } from "@repo/api/src/types/entity-link";
-import { ExternalLinkType } from "@repo/api/src/types/external-link";
+import { ArtifactType, LinkType } from "@repo/api/src/types/artifact";
 import {
   GitHubPRState,
   type GitHubPullRequestSummary,
 } from "@repo/api/src/types/github";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SelectPullRequestDialog } from "@/components/document-editor/relationships/select-pr-dialog";
 
+function renderWithQueryClient(ui: ReactNode) {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+  return render(
+    <QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>
+  );
+}
+
 const mockUseProject = vi.fn();
 const mockUseGitHubPullRequests = vi.fn();
-const mockUseLinkedEntities = vi.fn();
-const mockCreateExternalLink = vi.fn();
-const mockCreateEntityLink = vi.fn();
-const mockDeleteExternalLink = vi.fn();
+const mockUseResolvedArtifactLinks = vi.fn();
+const mockUseDocument = vi.fn();
+const mockPost = vi.fn();
+const mockCreateArtifactLink = vi.fn();
 const mockToastSuccess = vi.fn();
 const CURRENT_SOURCE_LINKED_PR_REGEX = /already linked on this source/i;
 const DIFFERENT_SOURCE_LINKED_PR_REGEX = /linked somewhere else/i;
@@ -62,27 +72,29 @@ vi.mock("@/hooks/queries/use-github-integration", async () => {
   };
 });
 
-vi.mock("@/hooks/queries/use-external-links", async () => {
-  const actual = await vi.importActual("@/hooks/queries/use-external-links");
+vi.mock("@/hooks/use-api-client", () => ({
+  useApiClient: () => ({
+    post: (...args: unknown[]) => mockPost(...args),
+  }),
+}));
+
+vi.mock("@/hooks/queries/use-documents", async () => {
+  const actual = await vi.importActual("@/hooks/queries/use-documents");
   return {
     ...actual,
-    useCreateExternalLink: () => ({
-      mutate: mockCreateExternalLink,
-    }),
-    useDeleteExternalLink: () => ({
-      mutate: mockDeleteExternalLink,
-    }),
+    useDocument: (...args: unknown[]) => mockUseDocument(...args),
   };
 });
 
-vi.mock("@/hooks/queries/use-entity-links", async () => {
-  const actual = await vi.importActual("@/hooks/queries/use-entity-links");
+vi.mock("@/hooks/queries/use-artifact-links", async () => {
+  const actual = await vi.importActual("@/hooks/queries/use-artifact-links");
   return {
     ...actual,
-    useCreateEntityLink: () => ({
-      mutate: mockCreateEntityLink,
+    useCreateArtifactLink: () => ({
+      mutateAsync: mockCreateArtifactLink,
     }),
-    useLinkedEntities: (...args: unknown[]) => mockUseLinkedEntities(...args),
+    useResolvedArtifactLinks: (...args: unknown[]) =>
+      mockUseResolvedArtifactLinks(...args),
   };
 });
 
@@ -119,27 +131,13 @@ describe("SelectPullRequestDialog", () => {
       },
       isLoading: false,
     });
-    mockUseLinkedEntities.mockReturnValue({
+    mockUseResolvedArtifactLinks.mockReturnValue({
       data: [],
       isLoading: false,
     });
-    mockCreateExternalLink.mockImplementation(
-      (
-        _payload: unknown,
-        options?: { onSuccess?: (link: { id: string }) => void }
-      ) => {
-        options?.onSuccess?.({ id: "external-link-101" });
-      }
-    );
-    mockCreateEntityLink.mockImplementation(
-      (
-        _payload: unknown,
-        options?: { onSuccess?: (link: { id: string }) => void }
-      ) => {
-        options?.onSuccess?.({ id: "entity-link-1" });
-      }
-    );
-    mockDeleteExternalLink.mockImplementation(() => {});
+    mockUseDocument.mockReturnValue({ data: undefined });
+    mockPost.mockResolvedValue({ id: "pr-artifact-101" });
+    mockCreateArtifactLink.mockResolvedValue({ id: "artifact-link-1" });
   });
 
   afterEach(() => {
@@ -150,7 +148,7 @@ describe("SelectPullRequestDialog", () => {
   it("links a selected PR directly to the feature without requiring a plan", async () => {
     const user = userEvent.setup();
 
-    render(
+    renderWithQueryClient(
       <SelectPullRequestDialog
         documentId="feature-1"
         onOpenChange={vi.fn()}
@@ -162,40 +160,32 @@ describe("SelectPullRequestDialog", () => {
     await user.click(screen.getByText(PR_TITLE_REGEX));
 
     await waitFor(() => {
-      expect(mockCreateExternalLink).toHaveBeenCalledWith(
-        {
+      expect(mockPost).toHaveBeenCalledWith(
+        "/artifact-links/pull-requests",
+        expect.objectContaining({
           externalUrl: "https://github.com/acme/repo/pull/101",
-          metadata: {
-            baseBranch: "main",
-            githubId: "gh-pr-101",
-            headBranch: "feature/direct-link",
-            number: 101,
-            state: GitHubPRState.Open,
-          },
+          number: 101,
+          githubId: "gh-pr-101",
+          headBranch: "feature/direct-link",
+          baseBranch: "main",
+          state: GitHubPRState.Open,
           projectId: "project-1",
           title: "PR #101: Fix direct feature PR linking",
-          type: ExternalLinkType.PullRequest,
-        },
-        expect.any(Object)
+        })
       );
     });
 
-    expect(mockCreateEntityLink).toHaveBeenCalledWith(
-      {
-        linkType: LinkType.Produces,
-        sourceId: "feature-1",
-        sourceType: EntityType.Document,
-        targetId: "external-link-101",
-        targetType: EntityType.ExternalLink,
-      },
-      expect.any(Object)
-    );
+    expect(mockCreateArtifactLink).toHaveBeenCalledWith({
+      linkType: LinkType.Produces,
+      sourceId: "feature-1",
+      targetId: "pr-artifact-101",
+    });
   });
 
   it("links a selected PR to the plan when a plan exists", async () => {
     const user = userEvent.setup();
 
-    render(
+    renderWithQueryClient(
       <SelectPullRequestDialog
         documentId="feature-1"
         onOpenChange={vi.fn()}
@@ -208,16 +198,11 @@ describe("SelectPullRequestDialog", () => {
     await user.click(screen.getByText(PR_TITLE_REGEX));
 
     await waitFor(() => {
-      expect(mockCreateEntityLink).toHaveBeenCalledWith(
-        {
-          linkType: LinkType.Produces,
-          sourceId: "plan-1",
-          sourceType: EntityType.Document,
-          targetId: "external-link-101",
-          targetType: EntityType.ExternalLink,
-        },
-        expect.any(Object)
-      );
+      expect(mockCreateArtifactLink).toHaveBeenCalledWith({
+        linkType: LinkType.Produces,
+        sourceId: "plan-1",
+        targetId: "pr-artifact-101",
+      });
     });
   });
 
@@ -244,23 +229,34 @@ describe("SelectPullRequestDialog", () => {
       },
       isLoading: false,
     });
-    mockUseLinkedEntities.mockReturnValue({
+    mockUseResolvedArtifactLinks.mockReturnValue({
       data: [
         {
-          id: "entity-link-102",
-          resolvedEntity: {
-            type: EntityType.ExternalLink,
-            entity: {
-              externalUrl: visiblePullRequest.htmlUrl,
-              type: ExternalLinkType.PullRequest,
-            },
+          id: "artifact-link-102",
+          sourceId: "feature-1",
+          targetId: "pr-artifact-102",
+          source: {
+            id: "feature-1",
+            type: ArtifactType.Document,
+            subtype: null,
+            name: "Feature",
+            slug: "feature-1",
+            externalUrl: null,
+          },
+          target: {
+            id: "pr-artifact-102",
+            type: ArtifactType.PullRequest,
+            subtype: null,
+            name: "PR",
+            slug: null,
+            externalUrl: visiblePullRequest.htmlUrl,
           },
         },
       ],
       isLoading: false,
     });
 
-    render(
+    renderWithQueryClient(
       <SelectPullRequestDialog
         documentId="feature-1"
         onOpenChange={vi.fn()}
@@ -287,12 +283,12 @@ describe("SelectPullRequestDialog", () => {
       },
       isLoading: false,
     });
-    mockUseLinkedEntities.mockReturnValue({
+    mockUseResolvedArtifactLinks.mockReturnValue({
       data: [],
       isLoading: true,
     });
 
-    render(
+    renderWithQueryClient(
       <SelectPullRequestDialog
         documentId="feature-1"
         onOpenChange={vi.fn()}
@@ -303,7 +299,7 @@ describe("SelectPullRequestDialog", () => {
 
     expect(screen.getByText(EXISTING_PR_LINKS_REGEX)).toBeInTheDocument();
     expect(screen.queryByText(PR_TITLE_REGEX)).not.toBeInTheDocument();
-    expect(mockCreateExternalLink).not.toHaveBeenCalled();
-    expect(mockCreateEntityLink).not.toHaveBeenCalled();
+    expect(mockPost).not.toHaveBeenCalled();
+    expect(mockCreateArtifactLink).not.toHaveBeenCalled();
   });
 });

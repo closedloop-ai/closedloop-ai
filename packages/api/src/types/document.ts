@@ -4,7 +4,6 @@
 import type { Priority } from "./common";
 import type { CustomFieldValueDetail } from "./custom-field";
 import type { DocumentVersion } from "./document-version";
-import type { EntityType } from "./entity-link";
 import type { BasicUser } from "./user";
 import type { WorkstreamState } from "./workstream";
 
@@ -131,8 +130,6 @@ export type CreateDocumentInput = {
   workstreamId?: string;
   projectId: string;
   sourceId?: string;
-  sourceType?: EntityType;
-  sourceVersion?: number;
   type: DocumentType;
   title: string;
   fileName?: string;

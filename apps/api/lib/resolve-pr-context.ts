@@ -1,7 +1,6 @@
 import "server-only";
 
-import { parsePullRequestMetadata } from "@repo/api/src/types/external-link-utils";
-import { GitHubInstallationStatus, withDb } from "@repo/database";
+import { ArtifactType, GitHubInstallationStatus, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 
 const PR_URL_REGEX = /github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/;
@@ -52,13 +51,16 @@ export type PrContext = {
     baseBranch: string;
     state: string;
   } | null;
+  // Always present on a non-null PrContext: resolvePrContext early-returns
+  // null when the PR artifact has no PullRequestDetail row. Narrowing here
+  // lets callers drop the GitHub-API fallback branch entirely.
   gitHubPullRequest: {
     id: string;
     repositoryId: string;
     documentId: string | null;
-    workstreamId: string;
+    workstreamId: string | null;
     headSha: string | null;
-  } | null;
+  };
   repositoryId: string | null;
   installationId: string;
   owner: string;
@@ -68,71 +70,83 @@ export type PrContext = {
 
 type GitHubPullRequestContext = NonNullable<PrContext["gitHubPullRequest"]>;
 
-type PrLookupResult = {
-  gitHubPullRequest: PrContext["gitHubPullRequest"];
-  repositoryId: string | null;
-  installationId: string | null;
-};
-
 /**
- * Resolve all context needed to interact with a PR via its ExternalLink ID.
+ * Resolve all context needed to interact with a PR via its artifact id
+ * (which is passed in the URL as `externalLinkId` for backwards
+ * compatibility — IDs were preserved when external_links rows migrated into
+ * the artifacts table).
  *
  * Resolution order with fallbacks:
- * 1. Parse owner/repo/pullNumber from externalUrl (always available).
- * 2. Try githubId from PullRequestMetadata -> GitHubPullRequest lookup.
- * 3. If metadata missing/stale, resolve by fullName + number within org.
- * 4. From matched PR's repositoryId -> installation.installationId.
- * 5. Fallback: org's single active GitHubInstallation.
+ * 1. Load the PR artifact (+ detail) directly — this gives us title, URL,
+ *    repositoryId, and all PR metadata.
+ * 2. Parse owner/repo/pullNumber from `artifact.externalUrl`.
+ * 3. Resolve the installationId from the repo row. Fallback: org's single
+ *    active installation.
  *
- * Returns null when installationId cannot be resolved.
+ * Returns null when the artifact is not a PR, is cross-org, the URL is
+ * unparseable, or installationId cannot be resolved.
  */
 export async function resolvePrContext(
   externalLinkId: string,
   organizationId: string
 ): Promise<PrContext | null> {
-  const externalLink = await withDb((db) =>
-    db.externalLink.findFirst({
-      where: { id: externalLinkId, organizationId },
-      select: {
-        id: true,
-        title: true,
-        externalUrl: true,
-        metadata: true,
-        projectId: true,
-        workstreamId: true,
-        organizationId: true,
+  const artifact = await withDb((db) =>
+    db.artifact.findFirst({
+      where: {
+        id: externalLinkId,
+        organizationId,
+        type: ArtifactType.PULL_REQUEST,
       },
+      include: { pullRequest: true },
     })
   );
 
-  if (!externalLink) {
+  if (!artifact?.pullRequest) {
     return null;
   }
 
   const parsedIdentity = parsePullRequestIdentity(
     externalLinkId,
-    externalLink.externalUrl
+    artifact.externalUrl ?? ""
   );
   if (!parsedIdentity) {
     return null;
   }
 
-  const prMetadata = parsePullRequestMetadata(externalLink.metadata);
-  let lookup = await resolvePrFromMetadata({
-    externalLinkId,
-    organizationId,
-    githubId: prMetadata?.githubId ?? null,
+  // Derive prMetadata directly from the PullRequestDetail row — no more need
+  // to parse the ExternalLink.metadata JSON blob after the artifact cutover.
+  const prMetadata = artifact.pullRequest
+    ? {
+        number: artifact.pullRequest.number,
+        githubId: artifact.pullRequest.githubId,
+        headBranch: artifact.pullRequest.headBranch,
+        baseBranch: artifact.pullRequest.baseBranch,
+        state: artifact.pullRequest.prState,
+      }
+    : null;
+
+  // The PR artifact always has a detail row when we got here — the early
+  // return above bails out when `artifact.pullRequest` is falsy.
+  const detail = artifact.pullRequest;
+  const gitHubPullRequest: GitHubPullRequestContext = {
+    id: artifact.id,
+    repositoryId: detail.repositoryId,
+    documentId: await resolveProducingDocumentId(artifact.id, organizationId),
+    workstreamId: artifact.workstreamId,
+    headSha: detail.headSha,
+  };
+
+  let repositoryId: string | null = detail.repositoryId;
+  // Resolve installationId via the PR's repository; validate match against
+  // the parsed URL identity (guards against metadata/URL drift).
+  let installationId: string | null = await resolveInstallationFromRepository(
+    detail.repositoryId,
     parsedIdentity,
-  });
+    detail.number,
+    externalLinkId
+  );
 
-  if (!lookup.gitHubPullRequest) {
-    lookup = await resolvePrByRepositoryAndNumber(
-      parsedIdentity,
-      organizationId
-    );
-  }
-
-  if (!lookup.installationId) {
+  if (installationId === null) {
     const fallback = await resolveInstallationFallback({
       externalLinkId,
       organizationId,
@@ -141,24 +155,23 @@ export async function resolvePrContext(
     if (!fallback) {
       return null;
     }
-
-    lookup = {
-      ...lookup,
-      installationId: fallback.installationId,
-      repositoryId: lookup.repositoryId ?? fallback.repositoryId,
-    };
-  }
-
-  const installationId = lookup.installationId;
-  if (!installationId) {
-    return null;
+    installationId = fallback.installationId;
+    repositoryId = repositoryId ?? fallback.repositoryId;
   }
 
   return {
-    externalLink,
+    externalLink: {
+      id: artifact.id,
+      title: artifact.name,
+      externalUrl: artifact.externalUrl ?? "",
+      metadata: null,
+      projectId: artifact.projectId,
+      workstreamId: artifact.workstreamId,
+      organizationId: artifact.organizationId,
+    },
     prMetadata,
-    gitHubPullRequest: lookup.gitHubPullRequest,
-    repositoryId: lookup.repositoryId,
+    gitHubPullRequest,
+    repositoryId,
     installationId,
     owner: parsedIdentity.owner,
     repo: parsedIdentity.repo,
@@ -187,41 +200,20 @@ function parsePullRequestIdentity(
   };
 }
 
-async function resolvePrFromMetadata(params: {
-  externalLinkId: string;
-  organizationId: string;
-  githubId: string | null;
-  parsedIdentity: ParsedPullRequestIdentity;
-}): Promise<PrLookupResult> {
-  const githubId = params.githubId;
-  if (!githubId) {
-    return emptyPrLookupResult();
-  }
-
-  const prRow = await withDb((db) =>
-    db.gitHubPullRequest.findFirst({
-      where: {
-        githubId,
-        organizationId: params.organizationId,
-      },
-      select: {
-        id: true,
-        repositoryId: true,
-        documentId: true,
-        workstreamId: true,
-        headSha: true,
-        number: true,
-      },
-    })
-  );
-
-  if (!prRow) {
-    return emptyPrLookupResult();
-  }
-
+/**
+ * Given a PR's `repositoryId` and parsed URL identity, return the active
+ * GitHub installationId for that repo — or null if the installation is
+ * inactive or the URL/repo/number don't line up.
+ */
+async function resolveInstallationFromRepository(
+  repositoryId: string,
+  parsedIdentity: ParsedPullRequestIdentity,
+  pullNumber: number,
+  externalLinkId: string
+): Promise<string | null> {
   const repoRow = await withDb((db) =>
     db.gitHubInstallationRepository.findUnique({
-      where: { id: prRow.repositoryId },
+      where: { id: repositoryId },
       select: {
         fullName: true,
         installation: { select: { installationId: true, status: true } },
@@ -229,91 +221,34 @@ async function resolvePrFromMetadata(params: {
     })
   );
 
-  // Skip if the installation is no longer active (uninstalled/suspended)
-  if (repoRow?.installation.status !== GitHubInstallationStatus.ACTIVE) {
-    return {
-      gitHubPullRequest: toPrContextPullRequest(prRow),
-      repositoryId: prRow.repositoryId,
-      installationId: null,
-    };
+  if (!repoRow) {
+    return null;
+  }
+
+  if (repoRow.installation.status !== GitHubInstallationStatus.ACTIVE) {
+    return null;
   }
 
   if (
-    !matchesParsedPullRequestIdentity(params.parsedIdentity, {
-      repositoryFullName: repoRow?.fullName ?? null,
-      pullNumber: prRow.number,
+    !matchesParsedPullRequestIdentity(parsedIdentity, {
+      repositoryFullName: repoRow.fullName,
+      pullNumber,
     })
   ) {
     log.warn(
-      "[resolve-pr-context] Ignoring metadata-backed PR row that does not match parsed URL",
+      "[resolve-pr-context] Ignoring detail-backed PR row that does not match parsed URL",
       {
-        externalLinkId: params.externalLinkId,
-        githubId,
-        parsedFullName: toRepositoryFullName(params.parsedIdentity),
-        parsedPullNumber: params.parsedIdentity.pullNumber,
-        resolvedFullName: repoRow?.fullName ?? null,
-        resolvedPullNumber: prRow.number,
+        externalLinkId,
+        parsedFullName: toRepositoryFullName(parsedIdentity),
+        parsedPullNumber: parsedIdentity.pullNumber,
+        resolvedFullName: repoRow.fullName,
+        resolvedPullNumber: pullNumber,
       }
     );
-    return emptyPrLookupResult();
+    return null;
   }
 
-  return {
-    gitHubPullRequest: toPrContextPullRequest(prRow),
-    repositoryId: prRow.repositoryId,
-    installationId: repoRow?.installation.installationId ?? null,
-  };
-}
-
-async function resolvePrByRepositoryAndNumber(
-  parsedIdentity: ParsedPullRequestIdentity,
-  organizationId: string
-): Promise<PrLookupResult> {
-  const repoRow = await withDb((db) =>
-    db.gitHubInstallationRepository.findFirst({
-      where: {
-        fullName: normalizeRepositoryFullName(
-          toRepositoryFullName(parsedIdentity)
-        ),
-        installation: {
-          organizationId,
-          status: GitHubInstallationStatus.ACTIVE,
-        },
-      },
-      select: {
-        id: true,
-        installation: { select: { installationId: true } },
-      },
-    })
-  );
-
-  if (!repoRow) {
-    return emptyPrLookupResult();
-  }
-
-  const prRow = await withDb((db) =>
-    db.gitHubPullRequest.findUnique({
-      where: {
-        repositoryId_number: {
-          repositoryId: repoRow.id,
-          number: parsedIdentity.pullNumber,
-        },
-      },
-      select: {
-        id: true,
-        repositoryId: true,
-        documentId: true,
-        workstreamId: true,
-        headSha: true,
-      },
-    })
-  );
-
-  return {
-    gitHubPullRequest: prRow ? toPrContextPullRequest(prRow) : null,
-    repositoryId: repoRow.id,
-    installationId: repoRow.installation.installationId,
-  };
+  return repoRow.installation.installationId;
 }
 
 async function resolveInstallationFallback(params: {
@@ -366,28 +301,29 @@ async function resolveInstallationFallback(params: {
   };
 }
 
+/**
+ * Find the artifact that PRODUCES the PR (typically a Document), if any.
+ * Returns the source artifact id — used to populate `PrContext.documentId`.
+ */
+async function resolveProducingDocumentId(
+  pullRequestArtifactId: string,
+  organizationId: string
+): Promise<string | null> {
+  const link = await withDb((db) =>
+    db.artifactLink.findFirst({
+      where: {
+        organizationId,
+        targetId: pullRequestArtifactId,
+        source: { type: ArtifactType.DOCUMENT },
+      },
+      select: { sourceId: true },
+    })
+  );
+  return link?.sourceId ?? null;
+}
+
 function toRepositoryFullName(
   parsedIdentity: ParsedPullRequestIdentity
 ): string {
   return `${parsedIdentity.owner}/${parsedIdentity.repo}`;
-}
-
-function toPrContextPullRequest(
-  prRow: GitHubPullRequestContext
-): GitHubPullRequestContext {
-  return {
-    id: prRow.id,
-    repositoryId: prRow.repositoryId,
-    documentId: prRow.documentId,
-    workstreamId: prRow.workstreamId,
-    headSha: prRow.headSha,
-  };
-}
-
-function emptyPrLookupResult(): PrLookupResult {
-  return {
-    gitHubPullRequest: null,
-    repositoryId: null,
-    installationId: null,
-  };
 }
