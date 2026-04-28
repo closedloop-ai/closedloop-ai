@@ -3,6 +3,9 @@
 import type { AdditionalRepoRef } from "@repo/api/src/types/loop";
 import { Loader2Icon, PlayIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { useDocument } from "@/hooks/queries/use-documents";
+import { useInitialAdditionalRepos } from "@/hooks/queries/use-loops";
+import { useMultiRepoExecuteEnabled } from "@/hooks/use-multi-repo-execute-enabled";
 import { AdditionalReposPicker } from "./additional-repos-picker";
 import { PlanActionModal } from "./plan-action-modal";
 import { normalizeAdditionalRepos } from "./plan-form-utils";
@@ -15,10 +18,7 @@ type ExecutePlanModalProps = {
     onSuccess?: () => void
   ) => void;
   isLoading: boolean;
-  multiRepoEnabled: boolean;
-  initialAdditionalRepos: AdditionalRepoRef[] | undefined;
-  isLoadingInitialRepos: boolean;
-  targetRepo: string;
+  planId: string | null;
 };
 
 type MultiRepoExecuteBodyProps = {
@@ -78,15 +78,28 @@ export function ExecutePlanModal({
   onOpenChange,
   onConfirm,
   isLoading,
-  multiRepoEnabled,
-  initialAdditionalRepos,
-  isLoadingInitialRepos,
-  targetRepo,
+  planId,
 }: ExecutePlanModalProps) {
+  const multiRepoEnabled = useMultiRepoExecuteEnabled();
+  const { data: plan, isLoading: isLoadingPlan } = useDocument(
+    planId,
+    undefined,
+    { enabled: !!planId }
+  );
+  const { initialAdditionalRepos, isLoadingInitialAdditionalRepos } =
+    useInitialAdditionalRepos(planId);
+  const targetRepo = plan?.targetRepo ?? "";
+  const isLoadingInitialRepos =
+    (!!planId && isLoadingPlan) || isLoadingInitialAdditionalRepos;
+
   const [currentRepos, setCurrentRepos] = useState<AdditionalRepoRef[]>(
     initialAdditionalRepos ?? []
   );
   const [hasIncompleteRepos, setHasIncompleteRepos] = useState(false);
+
+  // Sync once from the latest plan loop after it resolves. The modal is
+  // remounted on each open by the parent (no `open` reset effect needed),
+  // so this fires at most once per open session.
   const hasSyncedInitialReposRef = useRef(false);
   useEffect(() => {
     if (
@@ -97,19 +110,6 @@ export function ExecutePlanModal({
       hasSyncedInitialReposRef.current = true;
     }
   }, [initialAdditionalRepos]);
-
-  // The parent mounts ExecutePlanModal persistently (no key, not conditional),
-  // so closing the dialog only unmounts Radix's DialogContent — `currentRepos`
-  // and `hasIncompleteRepos` would otherwise persist across open/close cycles
-  // and a Confirm-without-edit on reopen would submit stale edits the picker
-  // no longer shows.
-  useEffect(() => {
-    if (!open) {
-      hasSyncedInitialReposRef.current = false;
-      setCurrentRepos(initialAdditionalRepos ?? []);
-      setHasIncompleteRepos(false);
-    }
-  }, [open, initialAdditionalRepos]);
 
   const handleConfirm = () => {
     if (!multiRepoEnabled) {

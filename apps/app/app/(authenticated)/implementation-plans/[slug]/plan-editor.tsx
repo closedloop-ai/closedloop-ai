@@ -52,7 +52,6 @@ import {
 import { useInitialAdditionalRepos } from "@/hooks/queries/use-loops";
 import { useExecutionLogDialog } from "@/hooks/use-execution-log-dialog";
 import { useMultiRepoExecuteEnabled } from "@/hooks/use-multi-repo-execute-enabled";
-import { useMultiRepoPlanEnabled } from "@/hooks/use-multi-repo-plan-enabled";
 import { usePreviewDeploymentPolling } from "@/hooks/use-preview-deployment-polling";
 import { ExecutePlanModal } from "../components/execute-plan-modal";
 import { RequestChangesModal } from "../components/request-changes-modal";
@@ -78,8 +77,7 @@ export function PlanEditor({
   showHeader = true,
 }: Readonly<PlanEditorProps>) {
   const chatFlag = useFeatureFlag("interactive-chat");
-  const multiRepoEnabled = useMultiRepoPlanEnabled();
-  const multiRepoExecuteEnabled = useMultiRepoExecuteEnabled();
+  const multiRepoEnabled = useMultiRepoExecuteEnabled();
   const executionLogDialog = useExecutionLogDialog();
 
   const [showMoveDialog, setShowMoveDialog] = useState(false);
@@ -459,17 +457,17 @@ export function PlanEditor({
         trace={executionLogDialog.dialogTrace}
       />
 
-      {/* Execute Plan Modal */}
-      <ExecutePlanModal
-        initialAdditionalRepos={initialAdditionalRepos}
-        isLoading={planActions.isExecuting}
-        isLoadingInitialRepos={isLoadingInitialAdditionalRepos}
-        multiRepoEnabled={multiRepoExecuteEnabled}
-        onConfirm={planActions.handleExecute}
-        onOpenChange={setShowExecuteModal}
-        open={showExecuteModal}
-        targetRepo={plan.targetRepo ?? ""}
-      />
+      {/* Execute Plan Modal — conditionally mounted so each open is a fresh
+          instance (no need to reset internal state on close). */}
+      {showExecuteModal && (
+        <ExecutePlanModal
+          isLoading={planActions.isExecuting}
+          onConfirm={planActions.handleExecute}
+          onOpenChange={setShowExecuteModal}
+          open={showExecuteModal}
+          planId={plan.id}
+        />
+      )}
 
       {/* Regenerate Plan Modal — prompts the user to confirm the additional
           repos selection before regeneration, avoiding the race where a

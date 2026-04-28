@@ -24,7 +24,7 @@ import {
   useDocuments,
 } from "@/hooks/queries/use-documents";
 import { useProject, useProjects } from "@/hooks/queries/use-projects";
-import { useMultiRepoPlanEnabled } from "@/hooks/use-multi-repo-plan-enabled";
+import { useMultiRepoExecuteEnabled } from "@/hooks/use-multi-repo-execute-enabled";
 import { AdditionalReposPicker } from "./additional-repos-picker";
 import { PlanPreview, PrdSelector, ProjectSelector } from "./plan-form-fields";
 import {
@@ -125,7 +125,7 @@ export function NewPlanModal({
     controlledOnOpenChange
   );
   const [error, setError] = useState<string | null>(null);
-  const showPicker = useMultiRepoPlanEnabled();
+  const showPicker = useMultiRepoExecuteEnabled();
 
   // Form state
   const [selectedSourceId, setSelectedSourceId] = useState(source?.id ?? "");

@@ -4,7 +4,7 @@ import type { AdditionalRepoRef } from "@repo/api/src/types/loop";
 import { MAX_ADDITIONAL_REPOS } from "@repo/api/src/types/loop";
 import { Button } from "@repo/design-system/components/ui/button";
 import { PlusIcon, TrashIcon } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { RepoBranchSelector } from "./repo-branch-selector";
 
 // Internal type — repoId is needed for Select value binding but is not part of AdditionalRepoRef
@@ -111,21 +111,16 @@ export function AdditionalReposPicker({
     new Set()
   );
 
-  // Report initial incomplete state once on mount. Without this, parents that
-  // seed the picker with placeholder rows (e.g. inherited repos missing branch)
-  // would see hasIncomplete=false until the user interacts, leaving submit
-  // buttons enabled for invalid form state.
-  const didReportInitialIncompleteRef = useRef(false);
+  // Report initial incomplete state once on mount. Parents that seed the
+  // picker with placeholder rows (e.g. inherited repos missing branch) would
+  // otherwise see hasIncomplete=false until the user interacts, leaving submit
+  // buttons enabled for invalid form state. `unavailableRowIds` is empty at
+  // mount (initial state), so it doesn't enter the calculation here — the
+  // seed-resolution path reports its own update via handleSeedResolutionFailed.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: mount-only on purpose
   useEffect(() => {
-    if (didReportInitialIncompleteRef.current) {
-      return;
-    }
-    didReportInitialIncompleteRef.current = true;
-    const completeRows = rows.filter(
-      (r) => isRowComplete(r) && !unavailableRowIds.has(r.id)
-    );
-    onIncompleteChange?.(completeRows.length !== rows.length);
-  }, [rows, unavailableRowIds, onIncompleteChange]);
+    onIncompleteChange?.(rows.some((r) => !isRowComplete(r)));
+  }, []);
 
   // Compute per-row validation errors (keyed by row.id)
   const rowErrors = useMemo<Record<string, string>>(() => {
