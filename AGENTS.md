@@ -49,6 +49,7 @@ For API routes with fixed request/response/error contracts, wrap auth/session an
 - For expected service outcomes such as conflicts, rate limits, or invalid state transitions, return typed domain results instead of throwing custom Error classes for control flow. Reserve thrown errors for unexpected failures.
 - Avoid unnecessary TypeScript casts in service modules. Prefer importing concrete shared types, narrowing with type guards, or shaping helper return types so call sites do not need `as` to satisfy the compiler.
 - Prefer built-in Zod validators such as `z.uuid()` over custom refinements unless the route contract explicitly requires a narrower UUID version or format.
+- Prefer Zod schemas for object-shape validation and JSON boundary narrowing instead of ad hoc `Record<string, unknown>` casts or manual `typeof value === "object"` guards. Reuse or colocate schemas in validator modules when the shape is shared.
 - In `apps/api` serverless routes, do not fire-and-forget promises for response-path side effects. Await the work, pass the promise to `waitUntil`, or persist it for later processing.
 - Define regex literals as module-level constants instead of inline inside functions or tests so Ultracite's `useTopLevelRegex` rule stays satisfied.
 - For generated shell commands or installer scripts, do not execute unchecked network downloads through command substitution. Download to a temporary file or otherwise make the download a checked step before executing the result, and preserve the nonzero exit status on network failure.

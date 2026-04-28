@@ -1,5 +1,6 @@
 import type { JsonObject } from "@repo/api/src/types/common";
 import { log } from "@repo/observability/log";
+import { z } from "zod";
 import { authenticateLoopRunner } from "@/lib/auth/loop-runner-jwt";
 import { shortContentHash } from "@/lib/content-hash";
 import {
@@ -11,10 +12,11 @@ import {
 import { loopsService } from "../../service";
 import { uploadArtifactsSchema } from "./validators";
 
+const recordSchema = z.record(z.string(), z.unknown());
+
 function getRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
+  const parsed = recordSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
 }
 
 function getPlanUploadDiagnostics(artifacts: JsonObject): {
