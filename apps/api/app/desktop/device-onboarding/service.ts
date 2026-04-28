@@ -5,6 +5,7 @@ import { desktopOnboardingAttemptsService } from "@/app/desktop/onboarding-attem
 export const DESKTOP_DEVICE_SESSION_TTL_MS = 10 * 60 * 1000;
 export const DESKTOP_DEVICE_POLL_INTERVAL_SECONDS = 5;
 export const DESKTOP_DEVICE_SESSION_RATE_LIMIT_MAX = 5;
+const NON_ALPHANUMERIC_CODE_CHARS_RE = /[^A-Z0-9]/gi;
 
 export type DesktopDeviceSessionStartInput = {
   webAppOrigin: string;
@@ -80,7 +81,7 @@ function hashRequestIp(requestIp: string | null | undefined): string | null {
 function createUserCode(): string {
   return randomBytes(8)
     .toString("base64url")
-    .replace(/[^A-Z0-9]/gi, "")
+    .replaceAll(NON_ALPHANUMERIC_CODE_CHARS_RE, "")
     .slice(0, 8)
     .toUpperCase();
 }
@@ -227,17 +228,27 @@ export const desktopDeviceOnboardingService = {
     });
   },
 
-  async deny(userCode: string): Promise<DesktopDeviceSessionRecord | null> {
+  async deny(input: {
+    userCode: string;
+    userId: string;
+    organizationId: string;
+  }): Promise<DesktopDeviceSessionRecord | null> {
     const now = new Date();
     const result = await withDb((db) =>
       asDeviceSessionDb(db).desktopOnboardingDeviceSession.updateMany({
         where: {
-          userCode,
+          userCode: input.userCode,
           status: "pending",
           expiresAt: { gt: now },
+          OR: [
+            { userId: null, organizationId: null },
+            { userId: input.userId, organizationId: input.organizationId },
+          ],
         },
         data: {
           status: "denied",
+          userId: input.userId,
+          organizationId: input.organizationId,
           deniedAt: now,
         },
       })
@@ -247,7 +258,7 @@ export const desktopDeviceOnboardingService = {
       return null;
     }
 
-    return this.getByUserCode(userCode);
+    return this.getByUserCode(input.userCode);
   },
 
   async poll(input: {

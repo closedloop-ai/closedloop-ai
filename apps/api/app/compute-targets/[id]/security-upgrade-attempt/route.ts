@@ -4,24 +4,21 @@ import type {
   DesktopSecurityUpgradeErrorBody,
   StartDesktopSecurityUpgradeResponse,
 } from "@repo/api/src/types/compute-target";
-import { DESKTOP_SECURITY_UPGRADE_OPERATION_ID } from "@repo/api/src/types/compute-target";
+import {
+  DESKTOP_SECURITY_STATUS,
+  DESKTOP_SECURITY_UPGRADE_OPERATION_ID,
+} from "@repo/api/src/types/compute-target";
 import { log } from "@repo/observability/log";
 import { buildTelemetryTraceContext } from "@repo/observability/telemetry/context";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { desktopOnboardingAttemptsService } from "@/app/desktop/onboarding-attempt/service";
-import { env } from "@/env";
 import { canonicalizeTrustedOrigin } from "@/lib/auth/canonical-trusted-origin";
 import { resolveSessionUser } from "@/lib/auth/session-user";
 import { desktopCommandStore } from "@/lib/desktop-command-store";
 import {
-  toEnvelope,
-  toWireCommandFromRelayOperation,
-} from "@/lib/desktop-gateway-wire";
-import { relayEventBus } from "@/lib/relay-event-bus";
-import {
+  dispatchRelayCommandToRelay,
   toRelayOperation,
-  withCorrelationContext,
 } from "../../relay-command-helpers";
 import { computeTargetsService } from "../../service";
 
@@ -37,51 +34,6 @@ function errorBody(
     status,
     headers: { "Cache-Control": "no-store" },
   });
-}
-
-async function dispatchUpgradeCommand(
-  targetId: string,
-  commandId: string,
-  relayOperation: ReturnType<typeof toRelayOperation>,
-  requestId: string
-): Promise<boolean> {
-  const wireCommand = toWireCommandFromRelayOperation(relayOperation);
-  if (!wireCommand) {
-    return false;
-  }
-
-  const relayApiUrl = env.RELAY_API_URL;
-  const internalSecret = env.INTERNAL_API_SECRET;
-  if (!(relayApiUrl && internalSecret)) {
-    relayEventBus.publishOperation(targetId, relayOperation);
-    return true;
-  }
-
-  const operation = toEnvelope(
-    withCorrelationContext(wireCommand, {
-      requestId,
-      computeTargetId: targetId,
-    })
-  );
-  try {
-    const response = await fetch(`${relayApiUrl}/dispatch`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-internal-secret": internalSecret,
-      },
-      body: JSON.stringify({ targetId, operation }),
-      signal: AbortSignal.timeout(5000),
-    });
-    return response.ok;
-  } catch (error) {
-    log.warn("Desktop security-upgrade relay dispatch failed", {
-      targetId,
-      commandId,
-      error,
-    });
-    return false;
-  }
 }
 
 /**
@@ -125,7 +77,7 @@ export async function POST(
     return errorBody(404, { code: "TARGET_NOT_FOUND", retryable: false });
   }
   if (
-    target.security?.status !== "upgrade_available" ||
+    target.security?.status !== DESKTOP_SECURITY_STATUS.UpgradeAvailable ||
     !target.gatewayId ||
     !target.isOnline
   ) {
@@ -135,14 +87,28 @@ export async function POST(
     });
   }
 
-  const attempt = await desktopOnboardingAttemptsService.create({
-    organizationId: session.user.organizationId,
-    userId: session.user.id,
-    webAppOrigin,
-    flowType: "compute_target_upgrade",
-    computeTargetId: target.id,
-    gatewayId: target.gatewayId,
-  });
+  const attempt = await desktopOnboardingAttemptsService
+    .create({
+      organizationId: session.user.organizationId,
+      userId: session.user.id,
+      webAppOrigin,
+      flowType: "compute_target_upgrade",
+      computeTargetId: target.id,
+      gatewayId: target.gatewayId,
+    })
+    .catch((error) => {
+      log.warn("Desktop security-upgrade attempt creation failed", {
+        targetId: target.id,
+        error,
+      });
+      return null;
+    });
+  if (!attempt) {
+    return errorBody(503, {
+      code: "UPGRADE_ATTEMPT_CREATE_FAILED",
+      retryable: true,
+    });
+  }
 
   const commandBody = {
     onboardingAttemptId: attempt.onboardingAttemptId,
@@ -170,12 +136,12 @@ export async function POST(
     })
   );
   const commandId = createResult.command.commandId;
-  const dispatched = await dispatchUpgradeCommand(
-    target.id,
+  const dispatched = await dispatchRelayCommandToRelay({
+    targetId: target.id,
     commandId,
-    toRelayOperation(commandId, commandInput),
-    requestId
-  );
+    relayOperation: toRelayOperation(commandId, commandInput),
+    requestId,
+  });
   if (!dispatched) {
     await desktopCommandStore.markCommandExpired(
       commandId,

@@ -50,6 +50,10 @@ For API routes with fixed request/response/error contracts, wrap auth/session an
 - React hooks, components, and utilities that schedule timers must clear superseded timers and clean them up on unmount or disposal.
 - Tests that mutate `process.env` must restore the exact previous state. If a variable was originally unset, remove the property, for example with `Reflect.deleteProperty(process.env, "KEY")`; assigning `undefined` creates the string value `"undefined"` in Node.
 - Tests for ignored, optional, or compatibility-only request fields must assert the downstream call shape, not only that the downstream dependency was called.
+- In `apps/app`, use TanStack Query hooks for server state and server mutations instead of component-level `useEffect` plus raw `fetch`, unless the fetch is not cacheable server state and the exception is documented.
+- Before adding mount-time data fetching in `apps/app`, especially on editor or project pages, confirm the data is required for the initial render. Prefer deferring optional or rarely used backend reads until the user action, visible panel, route state, or workflow step that actually needs the data, so page mount does not accumulate many small requests.
+- Fetch helpers that read structured error bodies must tolerate non-JSON responses with `response.json().catch(() => null)` before branching on `response.ok`.
+- Tests for expiry, freshness, timeout, or clock-boundary behavior must pin time with fake timers and `setSystemTime` instead of relying on the real wall clock.
 
 ## Compatibility Guardrail
 Compatibility shims and backward-compatibility code paths (for example legacy namespace adapters, re-export shims, or migration fallbacks) must not be removed without explicit human approval in the current task. If there is no explicit approval, preserve the compatibility layer and raise the cleanup as a separate follow-up.

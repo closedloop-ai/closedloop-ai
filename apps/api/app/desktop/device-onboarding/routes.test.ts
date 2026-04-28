@@ -159,6 +159,11 @@ describe("Desktop device-onboarding route contracts", () => {
       code: "DEVICE_SESSION_APPROVAL_FAILED",
       retryable: true,
     });
+    expect(mocks.desktopDeviceOnboardingService.deny).toHaveBeenCalledWith({
+      userCode: "ABCD1234",
+      organizationId: "org-1",
+      userId: "user-1",
+    });
   });
 
   it("returns an exact retryable session lookup failure when persistence throws", async () => {

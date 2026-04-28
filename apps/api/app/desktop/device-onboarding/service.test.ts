@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DesktopDeviceSessionRecord } from "./service";
 
 const mocks = vi.hoisted(() => ({
@@ -134,10 +134,16 @@ describe("desktopDeviceOnboardingService.start", () => {
 describe("desktopDeviceOnboardingService approval and poll", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
     mocks.desktopOnboardingAttemptsService.create.mockResolvedValue({
       onboardingAttemptId: "attempt-1",
       expiresAt: new Date(Date.now() + 60_000),
     });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("approves a pending session by creating a bound desktop-first attempt", async () => {
@@ -222,7 +228,11 @@ describe("desktopDeviceOnboardingService approval and poll", () => {
     });
 
     await expect(
-      desktopDeviceOnboardingService.deny("ABCD1234")
+      desktopDeviceOnboardingService.deny({
+        userCode: "ABCD1234",
+        userId: "user-1",
+        organizationId: "org-1",
+      })
     ).resolves.toBeNull();
 
     expect(updateMany).toHaveBeenCalledWith({
@@ -230,9 +240,15 @@ describe("desktopDeviceOnboardingService approval and poll", () => {
         userCode: "ABCD1234",
         status: "pending",
         expiresAt: { gt: expect.any(Date) },
+        OR: [
+          { userId: null, organizationId: null },
+          { userId: "user-1", organizationId: "org-1" },
+        ],
       },
       data: {
         status: "denied",
+        userId: "user-1",
+        organizationId: "org-1",
         deniedAt: expect.any(Date),
       },
     });
@@ -249,7 +265,11 @@ describe("desktopDeviceOnboardingService approval and poll", () => {
     });
 
     await expect(
-      desktopDeviceOnboardingService.deny("ABCD1234")
+      desktopDeviceOnboardingService.deny({
+        userCode: "ABCD1234",
+        userId: "user-1",
+        organizationId: "org-1",
+      })
     ).resolves.toEqual(denied);
   });
 

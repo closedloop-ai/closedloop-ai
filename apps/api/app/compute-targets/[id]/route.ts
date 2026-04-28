@@ -12,7 +12,10 @@ import {
   parseBody,
   successResponse,
 } from "@/lib/route-utils";
-import { computeTargetsService } from "../service";
+import {
+  ComputeTargetGatewayConflictError,
+  computeTargetsService,
+} from "../service";
 import { updateComputeTargetValidator } from "../validators";
 
 function isUniqueConstraintError(error: unknown): boolean {
@@ -57,6 +60,11 @@ export const PUT = withAnyAuth<ComputeTarget, "/compute-targets/[id]">(
       if (isUniqueConstraintError(error)) {
         return conflictResponse(
           "A compute target with that machine name already exists"
+        );
+      }
+      if (error instanceof ComputeTargetGatewayConflictError) {
+        return conflictResponse(
+          "That Desktop gateway is already registered to another compute target"
         );
       }
       return errorResponse("Failed to update compute target", error);

@@ -230,6 +230,7 @@ export type DesktopSecurityUpgradeErrorCode =
   | "SESSION_REQUIRED"
   | "TARGET_NOT_FOUND"
   | "TARGET_NOT_UPGRADEABLE"
+  | "UPGRADE_ATTEMPT_CREATE_FAILED"
   | "UPGRADE_COMMAND_DISPATCH_FAILED";
 
 export type DesktopSecurityUpgradeErrorBody = {

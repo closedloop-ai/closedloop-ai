@@ -49,7 +49,11 @@ export async function POST(request: Request) {
         organizationId: session.user.organizationId,
         userId: session.user.id,
       })
-    : desktopDeviceOnboardingService.deny(userCode)
+    : desktopDeviceOnboardingService.deny({
+        userCode,
+        organizationId: session.user.organizationId,
+        userId: session.user.id,
+      })
   ).catch(() => undefined);
 
   if (row === undefined) {

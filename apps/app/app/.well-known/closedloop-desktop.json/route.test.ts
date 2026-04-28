@@ -2,16 +2,18 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 describe("GET /.well-known/closedloop-desktop.json", () => {
   afterEach(() => {
+    vi.doUnmock("@/env");
     vi.unstubAllEnvs();
     vi.resetModules();
   });
 
   it("uses the local API origin as relay origin when no relay env is configured", async () => {
-    vi.stubEnv("NEXT_PUBLIC_API_URL", "http://localhost:3002");
-    vi.stubEnv("NEXT_PUBLIC_RELAY_ORIGIN", "");
-    vi.stubEnv("CL_RELAY_ORIGIN", "");
-    vi.stubEnv("RELAY_API_URL", "");
-    const { GET } = await import("./route");
+    const { GET } = await importRouteWithEnv({
+      NEXT_PUBLIC_API_URL: "http://localhost:3002",
+      NEXT_PUBLIC_RELAY_ORIGIN: "",
+      CL_RELAY_ORIGIN: "",
+      RELAY_API_URL: "",
+    });
 
     const response = GET(
       new Request("http://localhost:3000/.well-known/closedloop-desktop.json")
@@ -25,11 +27,12 @@ describe("GET /.well-known/closedloop-desktop.json", () => {
   });
 
   it("treats blank relay env values as unset for local development", async () => {
-    vi.stubEnv("NEXT_PUBLIC_API_URL", "http://localhost:3002");
-    vi.stubEnv("NEXT_PUBLIC_RELAY_ORIGIN", "");
-    vi.stubEnv("CL_RELAY_ORIGIN", "");
-    vi.stubEnv("RELAY_API_URL", "");
-    const { GET } = await import("./route");
+    const { GET } = await importRouteWithEnv({
+      NEXT_PUBLIC_API_URL: "http://localhost:3002",
+      NEXT_PUBLIC_RELAY_ORIGIN: "",
+      CL_RELAY_ORIGIN: "",
+      RELAY_API_URL: "",
+    });
 
     const response = GET(
       new Request("http://localhost:3000/.well-known/closedloop-desktop.json")
@@ -43,10 +46,11 @@ describe("GET /.well-known/closedloop-desktop.json", () => {
   });
 
   it("prefers the server-only relay override over the public fallback", async () => {
-    vi.stubEnv("NEXT_PUBLIC_RELAY_ORIGIN", "https://public-relay.example.test");
-    vi.stubEnv("CL_RELAY_ORIGIN", "https://server-relay.example.test");
-    vi.stubEnv("RELAY_API_URL", "http://localhost:3020");
-    const { GET } = await import("./route");
+    const { GET } = await importRouteWithEnv({
+      NEXT_PUBLIC_RELAY_ORIGIN: "https://public-relay.example.test",
+      CL_RELAY_ORIGIN: "https://server-relay.example.test",
+      RELAY_API_URL: "http://localhost:3020",
+    });
 
     const response = GET(
       new Request(
@@ -61,11 +65,12 @@ describe("GET /.well-known/closedloop-desktop.json", () => {
   });
 
   it("uses local RELAY_API_URL as the relay origin when app runs in local dev", async () => {
-    vi.stubEnv("NEXT_PUBLIC_API_URL", "http://localhost:3002");
-    vi.stubEnv("NEXT_PUBLIC_RELAY_ORIGIN", "");
-    vi.stubEnv("CL_RELAY_ORIGIN", "");
-    vi.stubEnv("RELAY_API_URL", "http://localhost:3020");
-    const { GET } = await import("./route");
+    const { GET } = await importRouteWithEnv({
+      NEXT_PUBLIC_API_URL: "http://localhost:3002",
+      NEXT_PUBLIC_RELAY_ORIGIN: "",
+      CL_RELAY_ORIGIN: "",
+      RELAY_API_URL: "http://localhost:3020",
+    });
 
     const response = GET(
       new Request("http://localhost:3000/.well-known/closedloop-desktop.json")
@@ -79,7 +84,7 @@ describe("GET /.well-known/closedloop-desktop.json", () => {
   });
 
   it("returns the exact trusted Desktop config contract", async () => {
-    const { GET } = await import("./route");
+    const { GET } = await importRouteWithEnv();
 
     const response = GET(
       new Request(
@@ -97,9 +102,10 @@ describe("GET /.well-known/closedloop-desktop.json", () => {
   });
 
   it("falls back to the default relay origin when relay env is malformed", async () => {
-    vi.stubEnv("NEXT_PUBLIC_RELAY_ORIGIN", "relay.closedloop.ai");
-    vi.stubEnv("CL_RELAY_ORIGIN", "");
-    const { GET } = await import("./route");
+    const { GET } = await importRouteWithEnv({
+      NEXT_PUBLIC_RELAY_ORIGIN: "relay.closedloop.ai",
+      CL_RELAY_ORIGIN: "",
+    });
 
     const response = GET(
       new Request(
@@ -113,3 +119,30 @@ describe("GET /.well-known/closedloop-desktop.json", () => {
     });
   });
 });
+
+async function importRouteWithEnv(
+  overrides: {
+    NEXT_PUBLIC_API_URL?: string;
+    NEXT_PUBLIC_RELAY_ORIGIN?: string;
+    CL_RELAY_ORIGIN?: string;
+    RELAY_API_URL?: string;
+  } = {}
+) {
+  vi.resetModules();
+  vi.stubEnv("NEXT_PUBLIC_API_URL", overrides.NEXT_PUBLIC_API_URL ?? undefined);
+  vi.stubEnv(
+    "NEXT_PUBLIC_RELAY_ORIGIN",
+    overrides.NEXT_PUBLIC_RELAY_ORIGIN ?? undefined
+  );
+  vi.stubEnv("CL_RELAY_ORIGIN", overrides.CL_RELAY_ORIGIN ?? undefined);
+  vi.stubEnv("RELAY_API_URL", overrides.RELAY_API_URL ?? undefined);
+  vi.doMock("@/env", () => ({
+    env: {
+      NEXT_PUBLIC_API_URL: overrides.NEXT_PUBLIC_API_URL,
+      NEXT_PUBLIC_RELAY_ORIGIN: overrides.NEXT_PUBLIC_RELAY_ORIGIN,
+      CL_RELAY_ORIGIN: overrides.CL_RELAY_ORIGIN,
+      RELAY_API_URL: overrides.RELAY_API_URL,
+    },
+  }));
+  return await import("./route");
+}

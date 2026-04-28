@@ -15,7 +15,10 @@ import {
   TelemetryCategory,
 } from "@repo/observability/telemetry/schema";
 import { waitUntil } from "@vercel/functions";
-import { computeTargetsService } from "@/app/compute-targets/service";
+import {
+  ComputeTargetGatewayConflictError,
+  computeTargetsService,
+} from "@/app/compute-targets/service";
 import { desktopCommandStore } from "@/lib/desktop-command-store";
 import {
   PROTOCOL_VERSION,
@@ -284,10 +287,22 @@ async function handleHello(
     return { emit: [], disconnect: true };
   }
 
-  const { targetId, targetCreated } = await resolveRelayHelloTarget(
-    input,
-    auth
+  const resolvedTarget = await resolveRelayHelloTarget(input, auth).catch(
+    (error) => {
+      if (error instanceof ComputeTargetGatewayConflictError) {
+        log.warn("Relay hello rejected due to gateway conflict", {
+          gatewayId: input.gatewayId,
+          errorClass: ErrorClass.Protocol,
+        });
+        return null;
+      }
+      throw error;
+    }
   );
+  if (!resolvedTarget) {
+    return { emit: [], disconnect: true };
+  }
+  const { targetId, targetCreated } = resolvedTarget;
 
   const [pendingCommands] = await Promise.all([
     desktopCommandStore.listNonTerminalDispatchCommands(targetId),
