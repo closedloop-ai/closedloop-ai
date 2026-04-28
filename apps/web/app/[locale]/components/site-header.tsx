@@ -16,11 +16,7 @@ type NavLink = {
 };
 
 const getNavLinks = (locale: string): NavLink[] => [
-  {
-    label: "Documentation",
-    href: "https://marketing.closedloop.ai/docs",
-    external: true,
-  },
+  { label: "Documentation", href: localize(locale, "/docs") },
   { label: "Blog", href: localize(locale, "/blog") },
   { label: "Resources", href: localize(locale, "/resources") },
   { label: "Community", href: localize(locale, "/community") },

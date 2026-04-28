@@ -23,7 +23,7 @@ export function getSiteLinks(locale: string) {
       type: "icon" as const,
       label: "GitHub",
       text: "GitHub",
-      url: "https://github.com/closedloop-ai/symphony-alpha",
+      url: "https://github.com/closedloop-ai",
       external: true,
       icon: <Github className="size-4" />,
     },
