@@ -16,12 +16,19 @@ export function registerUpdateDocument(
     "update-document",
     {
       description:
-        "Update a document's title or status by UUID or slug (PRD-*, PLN-*, FEA-*). Pass the user's slug verbatim. Use create-document-version for content edits.",
+        "Update a document's title, status, or project by UUID or slug (PRD-*, PLN-*, FEA-*). Pass the user's slug verbatim. Use create-document-version for content edits.",
       inputSchema: {
         documentId: z
           .string()
           .describe(
             describeIdOrSlug("Document", ["PRD-7", "PLN-12", "FEA-42"])
+          ),
+        projectId: z
+          .string()
+          .optional()
+          .describe(
+            describeIdOrSlug("Project", "PRO-7") +
+              ". Moves the document to this project."
           ),
         title: z.string().optional().describe("New title for the document"),
         status: z
@@ -30,9 +37,12 @@ export function registerUpdateDocument(
           .describe("New status for the document"),
       },
     },
-    ({ documentId, title, status }) =>
+    ({ documentId, projectId, title, status }) =>
       withErrorHandling(async () => {
         const body: Record<string, unknown> = {};
+        if (projectId !== undefined) {
+          body.projectId = projectId;
+        }
         if (title !== undefined) {
           body.title = title;
         }
