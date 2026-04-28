@@ -90,7 +90,7 @@ export function withApiKeyAuth<TResponse, TRoute extends string = string>(
       if (popFailure) {
         return NextResponse.json(failure(popFailure.message), {
           status: popFailure.status,
-        }) as AuthenticatedJsonResponse<TResponse>;
+        });
       }
       waitUntil(apiKeysService.touchLastUsedAt(keyContext.apiKeyId));
 

@@ -27,7 +27,6 @@ import {
 import {
   isDesktopCommandEventType,
   isTerminalEventData,
-  isUuidV4,
   toWireCommandFromStore,
 } from "@/lib/desktop-gateway-wire";
 import { publishLegacyRelayEvent } from "@/lib/desktop-relay-event-bridge";
@@ -224,7 +223,8 @@ function parseRelayHelloInput(payload: unknown): RelayHelloInput | null {
       typeof payload.pluginVersion === "string"
         ? payload.pluginVersion
         : undefined,
-    gatewayId: isUuidV4(payload.gatewayId) ? payload.gatewayId : undefined,
+    gatewayId:
+      typeof payload.gatewayId === "string" ? payload.gatewayId : undefined,
     desktopSecurityUpgradeProtocolVersion,
     maxInFlightCommands:
       typeof payload.maxInFlightCommands === "number"

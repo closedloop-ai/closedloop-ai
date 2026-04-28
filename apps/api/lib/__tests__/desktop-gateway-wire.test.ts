@@ -31,7 +31,7 @@ describe("parseHelloPayload", () => {
     });
   });
 
-  it("ignores invalid gateway metadata instead of rejecting old connections", () => {
+  it("preserves string gateway IDs without format validation", () => {
     expect(
       parseHelloPayload({
         ...legacyHello,
@@ -39,7 +39,7 @@ describe("parseHelloPayload", () => {
         desktopSecurityUpgradeProtocolVersion: 99,
       })
     ).toMatchObject({
-      gatewayId: undefined,
+      gatewayId: "not-a-uuid",
       desktopSecurityUpgradeProtocolVersion: undefined,
     });
   });
