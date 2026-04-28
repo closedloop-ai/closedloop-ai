@@ -17,9 +17,7 @@ type NavLink = {
 
 const getNavLinks = (locale: string): NavLink[] => [
   { label: "Documentation", href: localize(locale, "/docs") },
-  { label: "Blog", href: localize(locale, "/blog") },
   { label: "Resources", href: localize(locale, "/resources") },
-  { label: "Community", href: localize(locale, "/community") },
 ];
 
 export const SiteHeader = ({ locale }: SiteHeaderProps) => {

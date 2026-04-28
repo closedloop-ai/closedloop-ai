@@ -28,11 +28,7 @@ const getFooterColumns = (locale: string): FooterColumn[] => [
   },
   {
     title: "Community",
-    links: [
-      { label: "Community", href: localize(locale, "/community") },
-      { label: "Blog", href: localize(locale, "/blog") },
-      { label: "GitHub", href: GITHUB_REPO_URL, external: true },
-    ],
+    links: [{ label: "GitHub", href: GITHUB_REPO_URL, external: true }],
   },
   {
     title: "Company",
