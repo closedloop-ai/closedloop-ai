@@ -4,7 +4,6 @@ import {
   CardHeader,
   CardTitle,
 } from "@repo/design-system/components/ui/card";
-import Link from "next/link";
 import { createPageMetadata, localize } from "@/lib/site";
 
 type ResourcesPageProps = {
@@ -63,7 +62,7 @@ const ResourcesPage = async ({ params }: ResourcesPageProps) => {
 
       <div className="grid gap-4 md:grid-cols-3">
         {items.map((item) => (
-          <Link href={item.href} key={item.title}>
+          <a href={item.href} key={item.title}>
             <Card className="h-full transition-colors hover:border-primary/50">
               <CardHeader>
                 <CardTitle className="text-lg">{item.title}</CardTitle>
@@ -72,7 +71,7 @@ const ResourcesPage = async ({ params }: ResourcesPageProps) => {
                 {item.description}
               </CardContent>
             </Card>
-          </Link>
+          </a>
         ))}
       </div>
     </div>

@@ -290,12 +290,15 @@ export function FeaturePage({
         teamId={feature.project?.teams?.[0]?.id ?? null}
       />
 
-      <ExecutePlanModal
-        isLoading={planActions.isExecuting}
-        onConfirm={planActions.handleExecute}
-        onOpenChange={setShowExecuteModal}
-        open={showExecuteModal}
-      />
+      {showExecuteModal && (
+        <ExecutePlanModal
+          isLoading={planActions.isExecuting}
+          onConfirm={planActions.handleExecute}
+          onOpenChange={setShowExecuteModal}
+          open={showExecuteModal}
+          planId={linkedPlanId}
+        />
+      )}
 
       {planActions.multiTargetState && (
         <div className="fixed right-4 bottom-4 z-50 rounded-lg border bg-background p-4 shadow-lg">

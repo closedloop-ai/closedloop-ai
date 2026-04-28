@@ -13,10 +13,19 @@ type NavLink = {
   label: string;
   href: string;
   external?: boolean;
+  hardNavigate?: boolean;
 };
 
 const getNavLinks = (locale: string): NavLink[] => [
-  { label: "Documentation", href: localize(locale, "/docs") },
+  // Use a hard navigation for /docs so that fumadocs CSS (a full Tailwind v4
+  // reset) does not get loaded into the marketing page DOM via client-side
+  // routing — once loaded, its `.hidden` utility cascades after the marketing
+  // site's `.lg\:block` and hides the header nav.
+  {
+    label: "Documentation",
+    href: localize(locale, "/docs"),
+    hardNavigate: true,
+  },
   { label: "Resources", href: localize(locale, "/resources") },
 ];
 
@@ -39,18 +48,40 @@ export const SiteHeader = ({ locale }: SiteHeaderProps) => {
           className="absolute left-1/2 hidden -translate-x-1/2 lg:block"
         >
           <ul className="flex items-center gap-8">
-            {navLinks.map((link) => (
-              <li key={link.href}>
-                <Link
-                  className="font-medium text-foreground/80 text-lg transition-colors hover:text-primary"
-                  href={link.href}
-                  rel={link.external ? "noopener noreferrer" : undefined}
-                  target={link.external ? "_blank" : undefined}
-                >
-                  {link.label}
-                </Link>
-              </li>
-            ))}
+            {navLinks.map((link) => {
+              const className =
+                "font-medium text-foreground/80 text-lg transition-colors hover:text-primary";
+              const rel = link.external ? "noopener noreferrer" : undefined;
+              const target = link.external ? "_blank" : undefined;
+
+              if (link.hardNavigate) {
+                return (
+                  <li key={link.href}>
+                    <a
+                      className={className}
+                      href={link.href}
+                      rel={rel}
+                      target={target}
+                    >
+                      {link.label}
+                    </a>
+                  </li>
+                );
+              }
+
+              return (
+                <li key={link.href}>
+                  <Link
+                    className={className}
+                    href={link.href}
+                    rel={rel}
+                    target={target}
+                  >
+                    {link.label}
+                  </Link>
+                </li>
+              );
+            })}
           </ul>
         </nav>
 
