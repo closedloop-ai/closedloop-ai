@@ -1,4 +1,5 @@
 import { LinkType } from "@repo/api/src/types/artifact";
+import type { DocumentStatus } from "@repo/api/src/types/document";
 import {
   type ProjectTreeResponse,
   type TreeChild,
@@ -129,10 +130,10 @@ function toTreeEntity(artifact: ArtifactWithAssignee): TreeEntity | null {
       slug: artifact.slug,
       title: artifact.name,
       type: artifact.subtype,
-      status: artifact.status,
+      status: artifact.status as DocumentStatus,
       assignee: artifact.assignee,
       createdAt: artifact.createdAt,
-    } as TreeEntity;
+    };
   }
 
   if (artifact.type === ArtifactType.PULL_REQUEST) {
@@ -140,10 +141,10 @@ function toTreeEntity(artifact: ArtifactWithAssignee): TreeEntity | null {
       entityType: TreeEntityType.ExternalLink,
       id: artifact.id,
       title: artifact.name,
-      externalUrl: artifact.externalUrl,
+      externalUrl: artifact.externalUrl!,
       type: TreeExternalLinkType.PullRequest,
       createdAt: artifact.createdAt,
-    } as TreeEntity;
+    };
   }
 
   if (artifact.type === ArtifactType.DEPLOYMENT) {
@@ -151,10 +152,10 @@ function toTreeEntity(artifact: ArtifactWithAssignee): TreeEntity | null {
       entityType: TreeEntityType.ExternalLink,
       id: artifact.id,
       title: artifact.name,
-      externalUrl: artifact.externalUrl,
+      externalUrl: artifact.externalUrl!,
       type: TreeExternalLinkType.PreviewDeployment,
       createdAt: artifact.createdAt,
-    } as TreeEntity;
+    };
   }
 
   return null;

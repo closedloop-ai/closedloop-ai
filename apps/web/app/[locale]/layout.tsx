@@ -36,14 +36,14 @@ const RootLayout = async ({ children, params }: RootLayoutProperties) => {
 
   return (
     <html
-      className={cn(fonts, "scroll-smooth")}
+      className={cn(fonts, "scroll-smooth", "light")}
       lang={locale}
       suppressHydrationWarning
     >
       <GoogleTagManager gtmId="GTM-MV8VKHSF" />
       <body className="min-h-screen bg-background text-foreground">
         <AnalyticsProvider>
-          <DesignSystemProvider>
+          <DesignSystemProvider forcedTheme="light">
             <RootProvider>{children}</RootProvider>
           </DesignSystemProvider>
         </AnalyticsProvider>

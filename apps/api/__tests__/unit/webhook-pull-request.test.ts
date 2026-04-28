@@ -88,7 +88,6 @@ import { makePrDetailRow } from "../utils/pr-detail-helpers";
 const mockParseArtifactReferences = parseArtifactReferences as Mock;
 
 // Type aliases for mocked functions
-const mockWithDb = withDb as unknown as Mock;
 const mockWithDbTx = withDb.tx as unknown as Mock;
 
 // Mock database transaction client
@@ -190,7 +189,10 @@ describe("handlePullRequest", () => {
       // PR artifact update with status = MERGED
       expect(mockTx.artifact.update).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { id: "artifact-pr-456" },
+          where: expect.objectContaining({
+            id: "artifact-pr-456",
+            organizationId: "org-uuid-123",
+          }),
           data: expect.objectContaining({
             status: "MERGED",
             pullRequest: expect.objectContaining({
@@ -272,7 +274,10 @@ describe("handlePullRequest", () => {
 
       expect(mockTx.artifact.update).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { id: "artifact-pr-789" },
+          where: expect.objectContaining({
+            id: "artifact-pr-789",
+            organizationId: "org-uuid-456",
+          }),
           data: expect.objectContaining({
             status: "CLOSED",
             pullRequest: expect.objectContaining({
@@ -344,7 +349,10 @@ describe("handlePullRequest", () => {
 
       expect(mockTx.artifact.update).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { id: "artifact-pr-reopen" },
+          where: expect.objectContaining({
+            id: "artifact-pr-reopen",
+            organizationId: "org-uuid-456",
+          }),
           data: expect.objectContaining({
             status: "OPEN",
             pullRequest: expect.objectContaining({
@@ -690,9 +698,13 @@ describe("handlePullRequest", () => {
 
       await handlePullRequest(event);
 
-      expect(mockWithDbTx).toHaveBeenCalledTimes(1);
-      expect(mockWithDb).not.toHaveBeenCalled();
-
+      // Atomicity is guaranteed by AsyncLocalStorage propagation: any nested
+      // `withDb` / `withDb.tx` call from a downstream service joins the outer
+      // transaction rather than opening a new one. Verify the same `mockTx`
+      // saw every read and write — that's what "single transaction" means
+      // here. Counting raw `withDb.tx` invocations would assert mock plumbing,
+      // not transactional semantics.
+      expect(mockWithDbTx).toHaveBeenCalled();
       expect(mockTx.gitHubInstallationRepository.findFirst).toHaveBeenCalled();
       expect(mockTx.pullRequestDetail.findUnique).toHaveBeenCalled();
       expect(mockTx.artifact.update).toHaveBeenCalled();

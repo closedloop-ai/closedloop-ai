@@ -12,7 +12,7 @@ vi.mock("@repo/database", () => ({
 }));
 
 import { ArtifactType } from "@repo/database";
-import { artifactService } from "@/lib/services/artifact-service";
+import { artifactService } from "@/app/artifacts/artifact-service";
 
 const ORG_ID = "org-1";
 

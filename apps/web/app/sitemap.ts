@@ -1,6 +1,5 @@
 import type { MetadataRoute } from "next";
 import { blogPosts } from "@/lib/blog";
-import { getDocsSource } from "@/lib/docs";
 import { locales, localize } from "@/lib/site";
 
 function getBaseUrl() {
@@ -30,13 +29,6 @@ export default function sitemap(): MetadataRoute.Sitemap {
     for (const post of blogPosts) {
       const url = new URL(localize(locale, `/blog/${post.slug}`), baseUrl).href;
       entries.set(url, { url, lastModified: new Date(post.publishedAt) });
-    }
-
-    for (const page of getDocsSource(locale).getPages()) {
-      entries.set(page.url, {
-        url: new URL(page.url, baseUrl).href,
-        lastModified: now,
-      });
     }
   }
 

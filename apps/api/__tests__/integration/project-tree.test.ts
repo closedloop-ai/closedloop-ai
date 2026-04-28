@@ -2,8 +2,8 @@ import { LinkType } from "@repo/api/src/types/artifact";
 import { DocumentType } from "@repo/api/src/types/document";
 import { ArtifactType, withDb } from "@repo/database";
 import { keys } from "@repo/database/keys";
+import { projectTreeService } from "@/app/artifacts/project-tree-service";
 import { documentsService } from "@/app/documents/service";
-import { projectTreeService } from "@/app/projects/[id]/tree/service";
 import {
   autoRollbackTransaction,
   createTestOrganization,
