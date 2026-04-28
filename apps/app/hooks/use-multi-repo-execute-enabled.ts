@@ -1,7 +1,7 @@
 "use client";
 
-import { useFeatureFlag } from "@repo/analytics/client";
+import { useFeatureFlagEnabled } from "@/hooks/use-feature-flag-enabled";
 
 export function useMultiRepoExecuteEnabled(): boolean {
-  return useFeatureFlag("multi-repo-execute")?.enabled === true;
+  return useFeatureFlagEnabled("multi-repo-execute");
 }
