@@ -2844,5 +2844,4 @@ describe("buildEventResult", () => {
       "sessionId must equal capturedSessionId"
     );
   });
-
 });
