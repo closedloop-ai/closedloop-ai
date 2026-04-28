@@ -28,11 +28,11 @@ export const SiteBanner = () => {
           Looking for the healthcare data science platform?{" "}
           <a
             className="ml-1 inline-flex items-center gap-1 font-medium underline-offset-4 hover:underline"
-            href="https://healthy.com"
+            href="https://www.gethealthy.com"
             rel="noopener noreferrer"
             target="_blank"
           >
-            Visit Healthy.com
+            Visit GetHealthy.com
             <ArrowRight className="size-3.5" />
           </a>
         </p>
