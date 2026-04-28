@@ -1,3 +1,4 @@
+import { Result, Status, type StatusCode } from "@repo/api/src/types/result";
 import {
   type Artifact,
   ArtifactType,
@@ -8,13 +9,13 @@ import {
 } from "@repo/database";
 
 /**
- * Per-type deployment artifact service (Chunk 2a of PLN-321, decision #12).
+ * Deployment artifact service. Owns CRUD on DEPLOYMENT artifacts and their
+ * 1:1 DeploymentDetail rows.
  *
- * Owns the atomic create/update of DEPLOYMENT artifacts with their
- * DeploymentDetail row. Deployment state is carried on the parent
- * `Artifact.status` (plain text) and the vendor-specific metadata lives on
- * DeploymentDetail. Write paths go through `pullRequest`/`deployment`
- * nested Prisma writes so the pair stays consistent.
+ * Deployment state is carried on the parent `Artifact.status` (plain text)
+ * and the vendor-specific metadata lives on DeploymentDetail. Writes go
+ * through nested Prisma writes so the parent and detail rows stay
+ * consistent.
  */
 
 export type ArtifactWithDeploymentDetail = Artifact & {
@@ -38,27 +39,15 @@ export type RecordDeploymentInput = {
   title: string;
 };
 
+export type ListDeploymentsInput = {
+  organizationId: string;
+  projectId?: string;
+  workstreamId?: string;
+  state?: string;
+};
+
 const deploymentInclude = { deployment: true } as const;
 
-function runWithOptionalTx<T>(
-  tx: TransactionClient | undefined,
-  fn: (db: TransactionClient) => Promise<T>
-): Promise<T> {
-  if (tx) {
-    return fn(tx);
-  }
-  return withDb.tx(fn);
-}
-
-/**
- * Create (or update, if a deployment artifact already exists for the same
- * `externalUrl` within the org) a DEPLOYMENT artifact + DeploymentDetail
- * atomically.
- *
- * The "same externalUrl" dedup mirrors the legacy external_links upsert
- * path: Vercel (et al) reuse the preview URL for subsequent deploys to the
- * same branch, so we update in place instead of stacking rows.
- */
 function buildDeploymentDetailCreate(
   input: RecordDeploymentInput
 ): Prisma.DeploymentDetailCreateWithoutArtifactInput {
@@ -123,7 +112,7 @@ async function updateExistingDeployment(
     data,
     include: deploymentInclude,
   });
-  return updated as ArtifactWithDeploymentDetail;
+  return updated;
 }
 
 async function createDeployment(
@@ -143,14 +132,22 @@ async function createDeployment(
     },
     include: deploymentInclude,
   });
-  return created as ArtifactWithDeploymentDetail;
+  return created;
 }
 
+/**
+ * Create (or update, if a deployment artifact already exists for the same
+ * `externalUrl` within the org) a DEPLOYMENT artifact + DeploymentDetail
+ * atomically.
+ *
+ * The "same externalUrl" dedup mirrors the legacy external_links upsert
+ * path: Vercel (et al) reuse the preview URL for subsequent deploys to the
+ * same branch, so we update in place instead of stacking rows.
+ */
 function recordDeployment(
-  input: RecordDeploymentInput,
-  tx?: TransactionClient
+  input: RecordDeploymentInput
 ): Promise<ArtifactWithDeploymentDetail> {
-  return runWithOptionalTx(tx, async (db) => {
+  return withDb.tx(async (db) => {
     const existing = await db.artifact.findFirst({
       where: {
         organizationId: input.organizationId,
@@ -167,15 +164,78 @@ function recordDeployment(
 }
 
 /**
+ * Find a single deployment artifact + its detail by id within an
+ * organization. Returns null when no matching row exists.
+ */
+async function findById(
+  id: string,
+  organizationId: string
+): Promise<ArtifactWithDeploymentDetail | null> {
+  const artifact = await withDb((db) =>
+    db.artifact.findFirst({
+      where: { id, organizationId, type: ArtifactType.DEPLOYMENT },
+      include: deploymentInclude,
+    })
+  );
+  return artifact;
+}
+
+/**
+ * List deployment artifacts within an organization, optionally scoped by
+ * project, workstream, or state.
+ */
+async function list(
+  options: ListDeploymentsInput
+): Promise<ArtifactWithDeploymentDetail[]> {
+  const { organizationId, projectId, workstreamId, state } = options;
+  const artifacts = await withDb((db) =>
+    db.artifact.findMany({
+      where: {
+        organizationId,
+        type: ArtifactType.DEPLOYMENT,
+        ...(projectId ? { projectId } : {}),
+        ...(workstreamId ? { workstreamId } : {}),
+        ...(state ? { status: state } : {}),
+      },
+      include: deploymentInclude,
+      orderBy: { createdAt: "desc" },
+    })
+  );
+  return artifacts;
+}
+
+/**
+ * Hard-delete a deployment artifact. The parent `artifact` row is the
+ * system of record; DeploymentDetail and ArtifactLink rows that reference
+ * it cascade automatically (see schema: `onDelete: Cascade`).
+ *
+ * Returns `Status.NotFound` when no deployment artifact with this id
+ * exists in the caller's organization.
+ */
+async function deleteDeployment(
+  id: string,
+  organizationId: string
+): Promise<Result<void, StatusCode>> {
+  const { count } = await withDb((db) =>
+    db.artifact.deleteMany({
+      where: { id, organizationId, type: ArtifactType.DEPLOYMENT },
+    })
+  );
+  if (count === 0) {
+    return Result.err(Status.NotFound);
+  }
+  return Result.ok(undefined);
+}
+
+/**
  * Look up a deployment artifact + detail by the preview URL within an
  * organization.
  */
 async function findByExternalUrl(
   externalUrl: string,
-  organizationId: string,
-  tx?: TransactionClient
+  organizationId: string
 ): Promise<ArtifactWithDeploymentDetail | null> {
-  const exec = (db: TransactionClient) =>
+  const artifact = await withDb((db) =>
     db.artifact.findFirst({
       where: {
         organizationId,
@@ -183,31 +243,15 @@ async function findByExternalUrl(
         externalUrl,
       },
       include: deploymentInclude,
-    });
-  const artifact = await (tx ? exec(tx) : withDb(exec));
-  return artifact as ArtifactWithDeploymentDetail | null;
-}
-
-/**
- * Update only the deployment state on the parent artifact. Deployment state
- * lives on `Artifact.status` (plain TEXT) so vendor-specific values like
- * `success`, `failure`, `in_progress` round-trip verbatim.
- */
-function updateState(
-  artifactId: string,
-  state: string,
-  tx?: TransactionClient
-): Promise<Artifact> {
-  const exec = (db: TransactionClient) =>
-    db.artifact.update({
-      where: { id: artifactId },
-      data: { status: state },
-    });
-  return tx ? exec(tx) : withDb.tx(exec);
+    })
+  );
+  return artifact;
 }
 
 export const deploymentService = {
   recordDeployment,
+  findById,
+  list,
+  delete: deleteDeployment,
   findByExternalUrl,
-  updateState,
 };

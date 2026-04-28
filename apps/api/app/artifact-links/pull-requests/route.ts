@@ -3,6 +3,7 @@ import { GitHubPRState } from "@repo/api/src/types/github";
 import { getProjectSettings } from "@repo/api/src/types/project";
 import { withDb } from "@repo/database";
 import { z } from "zod";
+import { pullRequestService } from "@/app/pull-requests/pull-request-service";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import {
   badRequestResponse,
@@ -11,7 +12,6 @@ import {
   parseBody,
   successResponse,
 } from "@/lib/route-utils";
-import { pullRequestService } from "@/lib/services/pull-request-service";
 
 const createPrArtifactValidator = z.object({
   projectId: z.uuid(),
@@ -73,7 +73,7 @@ export const POST = withAnyAuth<
         );
       }
 
-      const artifact = await pullRequestService.upsertPullRequestArtifact({
+      const result = await pullRequestService.upsertPullRequestArtifact({
         organizationId: user.organizationId,
         repositoryId: defaultRepository.repoId,
         githubId: body.githubId,
@@ -88,7 +88,11 @@ export const POST = withAnyAuth<
         workstreamId: body.workstreamId ?? null,
       });
 
-      return successResponse({ id: artifact.id });
+      if (!result.ok) {
+        return notFoundResponse("Pull request artifact");
+      }
+
+      return successResponse({ id: result.value.id });
     } catch (error) {
       return errorResponse("Failed to create pull request artifact", error);
     }

@@ -1,6 +1,7 @@
-import { HomeLayout } from "fumadocs-ui/layouts/home";
 import type { ReactNode } from "react";
-import { getSiteLinks, localize, siteTitle } from "@/lib/site";
+import { SiteBanner } from "@/app/[locale]/components/site-banner";
+import { SiteFooter } from "@/app/[locale]/components/site-footer";
+import { SiteHeader } from "@/app/[locale]/components/site-header";
 
 type SiteLayoutProps = {
   children: ReactNode;
@@ -13,17 +14,12 @@ const SiteLayout = async ({ children, params }: SiteLayoutProps) => {
   const { locale } = await params;
 
   return (
-    <HomeLayout
-      links={getSiteLinks(locale)}
-      nav={{
-        title: siteTitle,
-        url: localize(locale, "/"),
-      }}
-      searchToggle={{ enabled: false }}
-      themeSwitch={{ enabled: true }}
-    >
-      {children}
-    </HomeLayout>
+    <div className="flex min-h-screen flex-col">
+      <SiteHeader locale={locale} />
+      <SiteBanner />
+      <main className="flex-1">{children}</main>
+      <SiteFooter locale={locale} />
+    </div>
   );
 };
 

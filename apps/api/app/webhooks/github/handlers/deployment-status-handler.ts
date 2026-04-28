@@ -3,7 +3,7 @@ import { LinkType } from "@repo/api/src/types/artifact";
 import { withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
-import { deploymentService } from "@/lib/services/deployment-service";
+import { deploymentService } from "@/app/deployments/deployment-service";
 
 /**
  * Handle GitHub deployment_status webhook events.
@@ -133,25 +133,22 @@ export async function handleDeploymentStatus(
   const title = `${branchRef} deployed to ${deployment.environment}`;
 
   const created = await withDb.tx(async (tx) => {
-    const deploymentArtifact = await deploymentService.recordDeployment(
-      {
-        organizationId: pr.organizationId,
-        projectId: resolvedWorkstream.projectId,
-        workstreamId: pr.workstreamId,
-        environment: deployment.environment,
-        ref: branchRef,
-        sha,
-        state,
-        externalUrl: environmentUrl,
-        githubStatusUrl: status.url,
-        githubDeploymentUrl: status.deployment_url,
-        transient: deployment.transient_environment,
-        production: deployment.production_environment,
-        pullRequestArtifactId: prExternalLink?.id ?? null,
-        title,
-      },
-      tx
-    );
+    const deploymentArtifact = await deploymentService.recordDeployment({
+      organizationId: pr.organizationId,
+      projectId: resolvedWorkstream.projectId,
+      workstreamId: pr.workstreamId,
+      environment: deployment.environment,
+      ref: branchRef,
+      sha,
+      state,
+      externalUrl: environmentUrl,
+      githubStatusUrl: status.url,
+      githubDeploymentUrl: status.deployment_url,
+      transient: deployment.transient_environment,
+      production: deployment.production_environment,
+      pullRequestArtifactId: prExternalLink?.id ?? null,
+      title,
+    });
 
     // Link the deployment artifact to the PR artifact. ArtifactLink is a
     // pure (sourceId, targetId, linkType) tuple — the polymorphic

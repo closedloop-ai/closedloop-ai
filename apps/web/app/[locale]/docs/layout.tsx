@@ -1,3 +1,5 @@
+import "fumadocs-ui/style.css";
+import "fumadocs-ui/css/ocean.css";
 import { DocsLayout } from "fumadocs-ui/layouts/docs";
 import type { ReactNode } from "react";
 import { getDocsSource } from "@/lib/docs";

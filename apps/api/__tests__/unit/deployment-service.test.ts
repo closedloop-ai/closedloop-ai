@@ -1,5 +1,6 @@
+import { Status } from "@repo/api/src/types/result";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { asTx, mockWithDbCall, mockWithDbTx } from "../utils/db-helpers";
+import { mockWithDbCall, mockWithDbTx } from "../utils/db-helpers";
 
 vi.mock("@repo/database", () => ({
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
@@ -14,7 +15,7 @@ import { ArtifactType } from "@repo/database";
 import {
   deploymentService,
   type RecordDeploymentInput,
-} from "@/lib/services/deployment-service";
+} from "@/app/deployments/deployment-service";
 
 const ORG_ID = "org-1";
 const PROJECT_ID = "proj-1";
@@ -210,21 +211,112 @@ describe("deploymentService", () => {
       const data = mockDb.artifact.update.mock.calls[0][0].data;
       expect(data.workstream).toEqual({ connect: { id: "ws-1" } });
     });
+  });
 
-    it("uses the supplied tx instead of opening withDb.tx", async () => {
-      const mockTx = {
-        artifact: {
-          findFirst: vi.fn().mockResolvedValue(null),
-          create: vi.fn().mockResolvedValue({ id: "dep-1", deployment: null }),
-        },
+  describe("findById", () => {
+    it("returns the artifact + detail when present in the org", async () => {
+      const found = { id: "dep-1", deployment: { artifactId: "dep-1" } };
+      const mockDb = {
+        artifact: { findFirst: vi.fn().mockResolvedValue(found) },
       };
-      const { withDb } = await import("@repo/database");
-      const txSpy = withDb.tx as unknown as ReturnType<typeof vi.fn>;
+      mockWithDbCall(mockDb);
 
-      await deploymentService.recordDeployment(baseInput(), asTx(mockTx));
+      const result = await deploymentService.findById("dep-1", ORG_ID);
 
-      expect(txSpy).not.toHaveBeenCalled();
-      expect(mockTx.artifact.create).toHaveBeenCalled();
+      expect(mockDb.artifact.findFirst).toHaveBeenCalledWith({
+        where: {
+          id: "dep-1",
+          organizationId: ORG_ID,
+          type: ArtifactType.DEPLOYMENT,
+        },
+        include: { deployment: true },
+      });
+      expect(result).toBe(found);
+    });
+
+    it("returns null when no row matches in the org", async () => {
+      const mockDb = {
+        artifact: { findFirst: vi.fn().mockResolvedValue(null) },
+      };
+      mockWithDbCall(mockDb);
+
+      const result = await deploymentService.findById("missing", ORG_ID);
+
+      expect(result).toBeNull();
+    });
+  });
+
+  describe("list", () => {
+    it("scopes to organizationId and DEPLOYMENT type, ordered desc by createdAt", async () => {
+      const mockDb = {
+        artifact: { findMany: vi.fn().mockResolvedValue([]) },
+      };
+      mockWithDbCall(mockDb);
+
+      await deploymentService.list({ organizationId: ORG_ID });
+
+      expect(mockDb.artifact.findMany).toHaveBeenCalledWith({
+        where: { organizationId: ORG_ID, type: ArtifactType.DEPLOYMENT },
+        include: { deployment: true },
+        orderBy: { createdAt: "desc" },
+      });
+    });
+
+    it("forwards optional projectId, workstreamId, and state filters", async () => {
+      const mockDb = {
+        artifact: { findMany: vi.fn().mockResolvedValue([]) },
+      };
+      mockWithDbCall(mockDb);
+
+      await deploymentService.list({
+        organizationId: ORG_ID,
+        projectId: PROJECT_ID,
+        workstreamId: "ws-1",
+        state: "success",
+      });
+
+      expect(mockDb.artifact.findMany).toHaveBeenCalledWith({
+        where: {
+          organizationId: ORG_ID,
+          type: ArtifactType.DEPLOYMENT,
+          projectId: PROJECT_ID,
+          workstreamId: "ws-1",
+          status: "success",
+        },
+        include: { deployment: true },
+        orderBy: { createdAt: "desc" },
+      });
+    });
+  });
+
+  describe("delete", () => {
+    it("returns Result.ok when the row was deleted", async () => {
+      const mockDb = {
+        artifact: { deleteMany: vi.fn().mockResolvedValue({ count: 1 }) },
+      };
+      mockWithDbCall(mockDb);
+
+      const result = await deploymentService.delete("dep-1", ORG_ID);
+
+      expect(mockDb.artifact.deleteMany).toHaveBeenCalledWith({
+        where: {
+          id: "dep-1",
+          organizationId: ORG_ID,
+          type: ArtifactType.DEPLOYMENT,
+        },
+      });
+      expect(result).toEqual({ ok: true, value: undefined });
+    });
+
+    it("returns Status.NotFound when no deployment artifact matches in the org", async () => {
+      const mockDb = {
+        artifact: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
+      };
+      mockWithDbCall(mockDb);
+
+      const result = await deploymentService.delete("missing", ORG_ID);
+
+      expect(result).toEqual({ ok: false, error: Status.NotFound });
     });
   });
 
@@ -268,58 +360,6 @@ describe("deploymentService", () => {
       );
 
       expect(result).toBeNull();
-    });
-
-    it("uses the supplied tx instead of withDb", async () => {
-      const mockTx = {
-        artifact: {
-          findFirst: vi.fn().mockResolvedValue(null),
-        },
-      };
-      const { withDb } = await import("@repo/database");
-      const dbSpy = withDb as unknown as ReturnType<typeof vi.fn>;
-
-      await deploymentService.findByExternalUrl(
-        PREVIEW_URL,
-        ORG_ID,
-        asTx(mockTx)
-      );
-
-      expect(dbSpy).not.toHaveBeenCalled();
-      expect(mockTx.artifact.findFirst).toHaveBeenCalled();
-    });
-  });
-
-  describe("updateState", () => {
-    it("updates only the artifact.status field", async () => {
-      const mockDb = {
-        artifact: {
-          update: vi.fn().mockResolvedValue({ id: "dep-1", status: "error" }),
-        },
-      };
-      mockWithDbTx(mockDb);
-
-      await deploymentService.updateState("dep-1", "error");
-
-      expect(mockDb.artifact.update).toHaveBeenCalledWith({
-        where: { id: "dep-1" },
-        data: { status: "error" },
-      });
-    });
-
-    it("uses the supplied tx instead of opening withDb.tx", async () => {
-      const mockTx = {
-        artifact: {
-          update: vi.fn().mockResolvedValue({ id: "dep-1", status: "success" }),
-        },
-      };
-      const { withDb } = await import("@repo/database");
-      const txSpy = withDb.tx as unknown as ReturnType<typeof vi.fn>;
-
-      await deploymentService.updateState("dep-1", "success", asTx(mockTx));
-
-      expect(txSpy).not.toHaveBeenCalled();
-      expect(mockTx.artifact.update).toHaveBeenCalled();
     });
   });
 });

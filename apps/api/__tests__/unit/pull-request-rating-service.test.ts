@@ -1,3 +1,4 @@
+import { Status } from "@repo/api/src/types/result";
 import { vi } from "vitest";
 import {
   getMockWithDb,
@@ -20,8 +21,7 @@ vi.mock("@repo/analytics/server", () => ({
   },
 }));
 
-import { PullRequestNotFoundError } from "@/app/pull-requests/errors";
-import { pullRequestRatingsService } from "@/app/pull-requests/service";
+import { pullRequestRatingsService } from "@/app/pull-requests/ratings-service";
 
 describe("pullRequestRatingsService", () => {
   beforeEach(() => {
@@ -88,15 +88,18 @@ describe("pullRequestRatingsService", () => {
       });
 
       expect(result).toEqual({
-        average: 4.5,
-        count: 2,
-        userRating: {
-          id: "rating-1",
-          userId: "user-1",
-          score: 5,
-          comment: "Excellent work!",
-          createdAt: mockUserRating.createdAt,
-          updatedAt: mockUserRating.updatedAt,
+        ok: true,
+        value: {
+          average: 4.5,
+          count: 2,
+          userRating: {
+            id: "rating-1",
+            userId: "user-1",
+            score: 5,
+            comment: "Excellent work!",
+            createdAt: mockUserRating.createdAt,
+            updatedAt: mockUserRating.updatedAt,
+          },
         },
       });
     });
@@ -124,9 +127,12 @@ describe("pullRequestRatingsService", () => {
       );
 
       expect(result).toEqual({
-        average: 3.0,
-        count: 1,
-        userRating: null,
+        ok: true,
+        value: {
+          average: 3.0,
+          count: 1,
+          userRating: null,
+        },
       });
     });
 
@@ -153,9 +159,12 @@ describe("pullRequestRatingsService", () => {
       );
 
       expect(result).toEqual({
-        average: 0,
-        count: 0,
-        userRating: null,
+        ok: true,
+        value: {
+          average: 0,
+          count: 0,
+          userRating: null,
+        },
       });
     });
 
@@ -190,10 +199,13 @@ describe("pullRequestRatingsService", () => {
         "org-1"
       );
 
-      expect(result.userRating?.comment).toBe("Required feedback text");
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.value.userRating?.comment).toBe("Required feedback text");
+      }
     });
 
-    it("throws PullRequestNotFoundError when PR does not exist", async () => {
+    it("returns Status.NotFound when PR does not exist", async () => {
       const mockDb = {
         artifact: {
           findFirst: vi.fn().mockResolvedValue(null),
@@ -202,12 +214,16 @@ describe("pullRequestRatingsService", () => {
 
       mockWithDbCall(mockDb);
 
-      await expect(
-        pullRequestRatingsService.getRating("pr-not-found", "user-1", "org-1")
-      ).rejects.toThrow(PullRequestNotFoundError);
+      const result = await pullRequestRatingsService.getRating(
+        "pr-not-found",
+        "user-1",
+        "org-1"
+      );
+
+      expect(result).toEqual({ ok: false, error: Status.NotFound });
     });
 
-    it("throws PullRequestNotFoundError when PR belongs to different organization", async () => {
+    it("returns Status.NotFound when PR belongs to different organization", async () => {
       const mockDb = {
         artifact: {
           findFirst: vi.fn().mockResolvedValue(null),
@@ -216,10 +232,13 @@ describe("pullRequestRatingsService", () => {
 
       mockWithDbCall(mockDb);
 
-      await expect(
-        pullRequestRatingsService.getRating("pr-1", "user-1", "org-1")
-      ).rejects.toThrow(PullRequestNotFoundError);
+      const result = await pullRequestRatingsService.getRating(
+        "pr-1",
+        "user-1",
+        "org-1"
+      );
 
+      expect(result).toEqual({ ok: false, error: Status.NotFound });
       // Verify the query includes organizationId filter (authorization)
       expect(mockDb.artifact.findFirst).toHaveBeenCalledWith({
         where: {
@@ -355,15 +374,18 @@ describe("pullRequestRatingsService", () => {
       });
 
       expect(result).toEqual({
-        average: 5.0,
-        count: 1,
-        userRating: {
-          id: "rating-1",
-          userId: "user-1",
-          score: 5,
-          comment: "New rating comment",
-          createdAt: mockNewRating.createdAt,
-          updatedAt: mockNewRating.updatedAt,
+        ok: true,
+        value: {
+          average: 5.0,
+          count: 1,
+          userRating: {
+            id: "rating-1",
+            userId: "user-1",
+            score: 5,
+            comment: "New rating comment",
+            createdAt: mockNewRating.createdAt,
+            updatedAt: mockNewRating.updatedAt,
+          },
         },
       });
     });
@@ -410,20 +432,23 @@ describe("pullRequestRatingsService", () => {
       );
 
       expect(result).toEqual({
-        average: 4.0,
-        count: 2,
-        userRating: {
-          id: "rating-1",
-          userId: "user-1",
-          score: 4,
-          comment: "Updated comment",
-          createdAt: mockUpdatedRating.createdAt,
-          updatedAt: mockUpdatedRating.updatedAt,
+        ok: true,
+        value: {
+          average: 4.0,
+          count: 2,
+          userRating: {
+            id: "rating-1",
+            userId: "user-1",
+            score: 4,
+            comment: "Updated comment",
+            createdAt: mockUpdatedRating.createdAt,
+            updatedAt: mockUpdatedRating.updatedAt,
+          },
         },
       });
     });
 
-    it("throws PullRequestNotFoundError when PR does not exist", async () => {
+    it("returns Status.NotFound when PR does not exist", async () => {
       const mockTx = {
         artifact: {
           findFirst: vi.fn().mockResolvedValue(null),
@@ -432,18 +457,18 @@ describe("pullRequestRatingsService", () => {
 
       mockWithDbTx(mockTx);
 
-      await expect(
-        pullRequestRatingsService.upsertRating(
-          "pr-not-found",
-          "user-1",
-          "org-1",
-          5,
-          "Comment"
-        )
-      ).rejects.toThrow(PullRequestNotFoundError);
+      const result = await pullRequestRatingsService.upsertRating(
+        "pr-not-found",
+        "user-1",
+        "org-1",
+        5,
+        "Comment"
+      );
+
+      expect(result).toEqual({ ok: false, error: Status.NotFound });
     });
 
-    it("throws PullRequestNotFoundError when PR belongs to different organization", async () => {
+    it("returns Status.NotFound when PR belongs to different organization", async () => {
       const mockTx = {
         artifact: {
           findFirst: vi.fn().mockResolvedValue(null),
@@ -452,15 +477,15 @@ describe("pullRequestRatingsService", () => {
 
       mockWithDbTx(mockTx);
 
-      await expect(
-        pullRequestRatingsService.upsertRating(
-          "pr-1",
-          "user-1",
-          "org-1",
-          5,
-          "Comment"
-        )
-      ).rejects.toThrow(PullRequestNotFoundError);
+      const result = await pullRequestRatingsService.upsertRating(
+        "pr-1",
+        "user-1",
+        "org-1",
+        5,
+        "Comment"
+      );
+
+      expect(result).toEqual({ ok: false, error: Status.NotFound });
     });
 
     it("verifies organization via artifact org-scoping", async () => {
@@ -589,24 +614,10 @@ describe("pullRequestRatingsService", () => {
         })
       );
 
-      expect(result.userRating?.comment).toBe("My feedback");
-    });
-  });
-
-  describe("PullRequestNotFoundError", () => {
-    it("has status 404", () => {
-      const error = new PullRequestNotFoundError("pr-1");
-      expect(error.status).toBe(404);
-    });
-
-    it("includes pullRequestId in message", () => {
-      const error = new PullRequestNotFoundError("pr-123");
-      expect(error.message).toContain("pr-123");
-    });
-
-    it("has correct name", () => {
-      const error = new PullRequestNotFoundError("pr-1");
-      expect(error.name).toBe("PullRequestNotFoundError");
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.value.userRating?.comment).toBe("My feedback");
+      }
     });
   });
 });
