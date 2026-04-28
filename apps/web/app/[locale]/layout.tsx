@@ -1,4 +1,5 @@
 import "./styles.css";
+import { GoogleTagManager } from "@next/third-parties/google";
 import { AnalyticsProvider } from "@repo/analytics/provider";
 import { DesignSystemProvider } from "@repo/design-system";
 import { fonts } from "@repo/design-system/lib/fonts";
@@ -39,6 +40,7 @@ const RootLayout = async ({ children, params }: RootLayoutProperties) => {
       lang={locale}
       suppressHydrationWarning
     >
+      <GoogleTagManager gtmId="GTM-MV8VKHSF" />
       <body className="min-h-screen bg-background text-foreground">
         <AnalyticsProvider>
           <DesignSystemProvider>
