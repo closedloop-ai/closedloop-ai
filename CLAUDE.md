@@ -154,3 +154,7 @@ ClosedLoop: human-governed, AI-centric software delivery platform. AI produces a
 - **[insight]**: run-loop.sh deletes state file on success. Check output artifacts (plan.json, plan.md) for success, not file existence.
 - **[convention]**: State file at `.closedloop-ai/closedloop-loop.local.md` (repo root), NOT inside `.closedloop-ai/runs/`. Not part of artifact bundle.
 - **[convention]**: closedloop-ai plugins installed from `https://github.com/closedloop-ai/claude-plugins.git`.
+
+### Multi-repo
+- **[pattern]**: Harness peer-repo filesystem access flows: `cloneAdditionalRepos` (writes to `/workspace/peers/...`) → `buildRunLoopArgs` emits `--add-dir <path>` per peer → `run-loop.sh` appends them to the `claude -p` prompt. The flow is uniform for PLAN and EXECUTE — do not gate `--add-dir` injection by command. (context: harness-agent.mjs|buildRunLoopArgs|--add-dir|PLAN|EXECUTE)
+- **[convention]**: State-dependent commands (`handler.requiresParent`) inherit `additionalRepos` from the parent loop record when the request body omits them — `resolveLoopContext` in `apps/api/app/documents/[id]/run-loop/run-loop-helpers.ts` performs the fallback. Don't drop `additionalRepos` on the body when chaining EXECUTE; the inheritance is automatic, but explicit values still override. (context: run-loop|additionalRepos|requiresParent|EXECUTE)

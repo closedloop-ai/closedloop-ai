@@ -768,11 +768,17 @@ async function refreshGitHubToken(contextPack) {
   }
   try {
     const url = `${config.apiBaseUrl}/loops/${config.loopId}/github-token`;
+    const additionalRepos = (contextPack?.additionalRepos ?? []).map((r) => ({
+      fullName: r.fullName,
+      branch: r.branch,
+    }));
     const resp = await fetch(url, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${config.authToken}`,
+        "Content-Type": "application/json",
       },
+      body: JSON.stringify({ additionalRepos }),
     });
     if (!resp.ok) {
       log(
@@ -2654,12 +2660,6 @@ function buildRunLoopArgs(runLoopPath, workDir, prdPath, additionalRepoPaths) {
   switch (config.command) {
     case LoopCommand.Plan:
       args.push("--max-iterations", String(config.maxIterations || 50));
-      // Append --add-dir for each additional repo path (PLAN only)
-      if (Array.isArray(additionalRepoPaths)) {
-        for (const repoPath of additionalRepoPaths) {
-          args.push("--add-dir", repoPath);
-        }
-      }
       break;
     case LoopCommand.Execute:
       args.push("--max-iterations", String(config.maxIterations || 150));
@@ -2667,6 +2667,15 @@ function buildRunLoopArgs(runLoopPath, workDir, prdPath, additionalRepoPaths) {
     default:
       args.push("--max-iterations", String(config.maxIterations || 50));
       break;
+  }
+
+  // Append --add-dir for each additional repo path. buildRunLoopArgs is only
+  // invoked for PLAN and EXECUTE (see buildCommand → usesRunLoop), so peers
+  // are wired into both commands' workspaces uniformly.
+  if (Array.isArray(additionalRepoPaths)) {
+    for (const repoPath of additionalRepoPaths) {
+      args.push("--add-dir", repoPath);
+    }
   }
 
   if (prdPath) {
@@ -3540,7 +3549,12 @@ async function finalizeRepoWithLlm(repo, safetyCommitMsg) {
  * finalizeRepoWithLlm(), catching errors into a { status: "failed" } result.
  * Returns the collected results array.
  */
-async function finalizeRepos(repos, tokenSnapshot, safetyCommitMsg) {
+async function finalizeRepos(
+  repos,
+  tokenSnapshot,
+  safetyCommitMsg,
+  finalizeFn = finalizeRepoWithLlm
+) {
   // Refresh once before fan-out: refreshStaleTokens mutates module-level
   // lastTokenRefreshAt and the shared tokenSnapshot, so calling it from
   // concurrent branches would race and could trigger redundant refreshes.
@@ -3548,7 +3562,7 @@ async function finalizeRepos(repos, tokenSnapshot, safetyCommitMsg) {
 
   return Promise.all(
     repos.map((repo) =>
-      finalizeRepoWithLlm(
+      finalizeFn(
         {
           ...repo,
           githubToken: tokenSnapshot.get(repo.fullName) || repo.githubToken,
@@ -4003,11 +4017,26 @@ async function main() {
 }
 
 // ---------------------------------------------------------------------------
+// Test helper — directly sets module-level state for unit tests
+// ---------------------------------------------------------------------------
+function resetHarnessState({
+  contextPackRef: newContextPackRef,
+  lastTokenRefreshAt: newLastTokenRefreshAt,
+  capturedSessionId: newCapturedSessionId,
+} = {}) {
+  contextPackRef = newContextPackRef ?? null;
+  lastTokenRefreshAt = newLastTokenRefreshAt ?? null;
+  capturedSessionId = newCapturedSessionId ?? null;
+}
+
+// ---------------------------------------------------------------------------
 // Exports — testable pure functions (no I/O side effects at import time)
 // ---------------------------------------------------------------------------
 export {
   buildClaudeDirectArgs,
   buildCommand,
+  buildEventResult,
+  buildRepoList,
   buildRunLoopArgs,
   cloneAdditionalRepos,
   config,
@@ -4015,6 +4044,7 @@ export {
   extractPrimaryPrInfo,
   extractSessionId,
   finalizeRepo,
+  finalizeRepos,
   findExistingRunDir,
   getHomeStateTransferPrefix,
   getWorkspaceStateRestorePrefixes,
@@ -4028,6 +4058,8 @@ export {
   redactSensitive,
   refreshGitHubToken,
   registerSecret,
+  resetHarnessState,
+  snapshotTokens,
   syncPlanFromContextPack,
   validateConfig,
   validatePreRunInputs,

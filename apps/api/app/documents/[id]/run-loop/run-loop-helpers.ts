@@ -5,6 +5,7 @@ import {
   PullRequestState,
 } from "@repo/api/src/types/document";
 import {
+  type AdditionalRepoRef,
   type CreateLoopRequest,
   LoopCommand,
   RunLoopCommand,
@@ -198,6 +199,7 @@ export async function resolveLoopContext(
   body: {
     repo?: { fullName?: string; branch?: string };
     command: keyof typeof COMMAND_MAP;
+    additionalRepos?: AdditionalRepoRef[];
   },
   handler: ReturnType<typeof getCommandHandler>,
   organizationId: string,
@@ -252,6 +254,22 @@ export async function resolveLoopContext(
     ? (parentLoop.computeTargetId ?? null)
     : undefined;
 
+  // For state-dependent commands (EXECUTE, REQUEST_CHANGES, etc.), inherit
+  // peer repos from the parent loop when the body omits them. Without this,
+  // a chained EXECUTE that doesn't re-supply additionalRepos would lose the
+  // peer set the PLAN was authored against, leaving the harness with only
+  // primary-repo access despite the orchestrator having cloned peers.
+  const inheritedAdditionalRepos =
+    handler?.requiresParent &&
+    !body.additionalRepos &&
+    parentLoop?.additionalRepos?.length
+      ? parentLoop.additionalRepos.map((repo) => ({
+          fullName: repo.fullName,
+          branch: repo.branch,
+        }))
+      : undefined;
+  const additionalRepos = body.additionalRepos ?? inheritedAdditionalRepos;
+
   return {
     workstream,
     targetRepo,
@@ -260,6 +278,7 @@ export async function resolveLoopContext(
     parentLoopId,
     parentLoopComputeTargetId,
     source,
+    additionalRepos,
   };
 }
 

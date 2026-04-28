@@ -136,6 +136,7 @@ export const POST = withAnyAuth<RunLoopResponse, "/documents/[id]/run-loop">(
         parentLoopId,
         parentLoopComputeTargetId,
         source,
+        additionalRepos: resolvedAdditionalRepos,
       } = await resolveLoopContext(
         artifact,
         body,
@@ -198,7 +199,7 @@ export const POST = withAnyAuth<RunLoopResponse, "/documents/[id]/run-loop">(
           repo: targetRepo
             ? { fullName: targetRepo, branch: targetBranch }
             : undefined,
-          additionalRepos: body.additionalRepos,
+          additionalRepos: resolvedAdditionalRepos,
           contextRefs: contextRefs.length > 0 ? contextRefs : undefined,
           metadata: getLoopMetadata(body.desktopApiNamespace),
         }

@@ -10,6 +10,8 @@ import { LoopArtifactType } from "@closedloop-ai/loops-api/artifacts";
 import {
   buildClaudeDirectArgs,
   buildCommand,
+  buildEventResult,
+  buildRepoList,
   buildRunLoopArgs,
   cloneAdditionalRepos,
   config,
@@ -17,6 +19,7 @@ import {
   extractPrimaryPrInfo,
   extractSessionId,
   finalizeRepo,
+  finalizeRepos,
   findExistingRunDir,
   getHomeStateTransferPrefix,
   getWorkspaceStateRestorePrefixes,
@@ -30,6 +33,8 @@ import {
   redactSensitive,
   refreshGitHubToken,
   registerSecret,
+  resetHarnessState,
+  snapshotTokens,
   syncPlanFromContextPack,
   validateConfig,
   validatePreRunInputs,
@@ -1974,16 +1979,57 @@ describe("buildRunLoopArgs", () => {
     assert.equal(args[addDirIndices[1] + 1], additionalRepoPaths[1]);
   });
 
-  test("EXECUTE command omits --add-dir even when additionalRepoPaths provided", () => {
+  test("EXECUTE command includes --add-dir for each additionalRepoPath", () => {
     resetConfig({ command: "EXECUTE" });
 
-    const { args } = buildRunLoopArgs(fakePath, fakeWorkDir, null, [
-      "/workspace/peers/org--repo",
-    ]);
+    const additionalRepoPaths = [
+      "/workspace/peers/org--repo-a",
+      "/workspace/peers/org--repo-b",
+    ];
+    const { cmd, args } = buildRunLoopArgs(
+      fakePath,
+      fakeWorkDir,
+      null,
+      additionalRepoPaths
+    );
+
+    assert.equal(cmd, "bash");
+
+    const addDirIndices = args.reduce((acc, val, idx) => {
+      if (val === "--add-dir") {
+        acc.push(idx);
+      }
+      return acc;
+    }, []);
+
+    assert.equal(
+      addDirIndices.length,
+      2,
+      "EXECUTE must emit two --add-dir flags for two additionalRepoPaths"
+    );
+    assert.equal(args[addDirIndices[0] + 1], additionalRepoPaths[0]);
+    assert.equal(args[addDirIndices[1] + 1], additionalRepoPaths[1]);
+  });
+
+  test("EXECUTE command emits no --add-dir when additionalRepoPaths is empty", () => {
+    resetConfig({ command: "EXECUTE" });
+
+    const { args } = buildRunLoopArgs(fakePath, fakeWorkDir, null, []);
 
     assert.ok(
       !args.includes("--add-dir"),
-      "EXECUTE command must not include --add-dir flags"
+      "empty additionalRepoPaths must not produce any --add-dir flags"
+    );
+  });
+
+  test("PLAN command emits no --add-dir when additionalRepoPaths is empty", () => {
+    resetConfig({ command: "PLAN" });
+
+    const { args } = buildRunLoopArgs(fakePath, fakeWorkDir, null, []);
+
+    assert.ok(
+      !args.includes("--add-dir"),
+      "empty additionalRepoPaths must not produce any --add-dir flags"
     );
   });
 });
@@ -2078,6 +2124,12 @@ describe("refreshGitHubToken", () => {
         "https://api.example.com/loops/test-loop-id/github-token"
       );
       assert.equal(options.headers.Authorization, "Bearer test-auth-token");
+      // (a) Assert fetch body contains fullName and branch entries matching additionalRepos
+      const parsedBody = JSON.parse(options.body);
+      assert.deepEqual(parsedBody.additionalRepos, [
+        { fullName: "owner/peer1", branch: "main" },
+        { fullName: "owner/peer2", branch: "main" },
+      ]);
       return {
         ok: true,
         json: async () => ({
@@ -2097,6 +2149,58 @@ describe("refreshGitHubToken", () => {
     assert.equal(config.githubToken, "new-primary-token");
     assert.equal(contextPack.additionalRepos[0].githubToken, "new-peer1");
     assert.equal(contextPack.additionalRepos[1].githubToken, "new-peer2");
+  });
+
+  // (c) registerSecret called for each new token in additionalRepoTokens
+  test("calls registerSecret for each new token in additionalRepoTokens", async () => {
+    resetConfig({
+      authToken: "test-auth-token",
+      apiBaseUrl: "https://api.example.com",
+      loopId: "test-loop-id",
+      githubToken: "old-primary-token",
+    });
+
+    const uniqueSuffix = Date.now();
+    const newPeer1Token = `new-peer1-secret-${uniqueSuffix}-a`;
+    const newPeer2Token = `new-peer2-secret-${uniqueSuffix}-b`;
+
+    const contextPack = {
+      additionalRepos: [
+        { fullName: "owner/peer1", branch: "main", githubToken: "old-peer1" },
+        { fullName: "owner/peer2", branch: "main", githubToken: "old-peer2" },
+      ],
+    };
+
+    globalThis.fetch = async () => ({
+      ok: true,
+      json: async () => ({
+        data: {
+          token: "new-primary-token",
+          additionalRepoTokens: [
+            { fullName: "owner/peer1", token: newPeer1Token },
+            { fullName: "owner/peer2", token: newPeer2Token },
+          ],
+        },
+      }),
+    });
+
+    await refreshGitHubToken(contextPack);
+
+    // Observable effect: secrets registered via registerSecret are scrubbed by redactSensitive
+    for (const [label, token] of [
+      ["peer1", newPeer1Token],
+      ["peer2", newPeer2Token],
+    ]) {
+      const scrubbed = redactSensitive(`token: ${token}`);
+      assert.ok(
+        !scrubbed.includes(token),
+        `${label} token must be registered as a secret and scrubbed by redactSensitive`
+      );
+      assert.ok(
+        scrubbed.includes("[REDACTED]"),
+        `${label} scrubbed string must contain [REDACTED]`
+      );
+    }
   });
 
   test("does not crash if additionalRepoTokens is missing", async () => {
@@ -2126,6 +2230,40 @@ describe("refreshGitHubToken", () => {
 
     assert.equal(config.githubToken, "new-primary-token");
     assert.equal(contextPack.additionalRepos[0].githubToken, "old-peer1");
+  });
+
+  // (b) refreshGitHubToken(null) sends { additionalRepos: [] } rather than throwing
+  test("called with null contextPack sends body { additionalRepos: [] } and does not throw", async () => {
+    resetConfig({
+      authToken: "test-auth-token",
+      apiBaseUrl: "https://api.example.com",
+      loopId: "test-loop-id",
+      githubToken: "old-primary-token",
+    });
+
+    let capturedBody;
+    globalThis.fetch = async (_url, options) => {
+      capturedBody = JSON.parse(options.body);
+      return {
+        ok: true,
+        json: async () => ({
+          data: {
+            token: "new-primary-token",
+          },
+        }),
+      };
+    };
+
+    await assert.doesNotReject(
+      () => refreshGitHubToken(null),
+      "refreshGitHubToken(null) must not throw or reject"
+    );
+
+    assert.deepEqual(
+      capturedBody,
+      { additionalRepos: [] },
+      "fetch body must be { additionalRepos: [] } when contextPack is null"
+    );
   });
 });
 
@@ -2245,6 +2383,10 @@ describe("finalizeRepo", () => {
       typeof result.error === "string",
       "result.error should be a string"
     );
+    assert.ok(
+      !result.error.includes(sensitiveToken),
+      "result.error must not contain the raw token (catch block must redact it)"
+    );
   });
 
   test("calls registerSecret with the provided token (observable via redactSensitive)", async () => {
@@ -2274,6 +2416,398 @@ describe("finalizeRepo", () => {
     assert.ok(
       scrubbed.includes("[REDACTED]"),
       "scrubbed string must contain [REDACTED]"
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildRepoList — repo descriptor array construction
+// ---------------------------------------------------------------------------
+
+describe("buildRepoList", () => {
+  function setupPrimaryConfig() {
+    resetConfig({
+      targetRepo: "org/primary",
+      targetBranch: "main",
+      githubToken: "primary-token",
+    });
+  }
+
+  function setupWithTwoPeers() {
+    setupPrimaryConfig();
+    resetHarnessState({
+      contextPackRef: {
+        additionalRepos: [
+          {
+            fullName: "org/peer-a",
+            branch: "develop",
+            githubToken: "peer-a-token",
+          },
+          {
+            fullName: "org/peer-b",
+            branch: "staging",
+            githubToken: "peer-b-token",
+          },
+        ],
+      },
+    });
+  }
+
+  test("primary-only when no additionalRepos exist", () => {
+    setupPrimaryConfig();
+    resetHarnessState({ contextPackRef: null });
+
+    const repos = buildRepoList("/workspace/primary");
+
+    assert.equal(
+      repos.length,
+      1,
+      "must have exactly one entry for primary repo"
+    );
+    assert.equal(repos[0].workDir, "/workspace/primary");
+    assert.equal(repos[0].fullName, "org/primary");
+    assert.equal(repos[0].baseBranch, "main");
+    assert.equal(repos[0].githubToken, "primary-token");
+  });
+
+  test("primary-only when additionalRepos is empty array", () => {
+    setupPrimaryConfig();
+    resetHarnessState({ contextPackRef: { additionalRepos: [] } });
+
+    const repos = buildRepoList("/workspace/primary");
+
+    assert.equal(
+      repos.length,
+      1,
+      "must have exactly one entry when additionalRepos is empty"
+    );
+    assert.equal(repos[0].fullName, "org/primary");
+  });
+
+  test("primary + multiple peers have correct workDir path construction", () => {
+    setupWithTwoPeers();
+
+    const repos = buildRepoList("/workspace/primary");
+
+    assert.equal(repos.length, 3, "must have primary + 2 peer entries");
+    assert.equal(repos[1].workDir, "/workspace/peers/org--peer-a");
+    assert.equal(repos[2].workDir, "/workspace/peers/org--peer-b");
+  });
+
+  test("primary + multiple peers have correct baseBranch per repo", () => {
+    setupWithTwoPeers();
+
+    const repos = buildRepoList("/workspace/primary");
+
+    assert.equal(
+      repos[0].baseBranch,
+      "main",
+      "primary baseBranch must be config.targetBranch"
+    );
+    assert.equal(
+      repos[1].baseBranch,
+      "develop",
+      "peer-a baseBranch must be its own branch"
+    );
+    assert.equal(
+      repos[2].baseBranch,
+      "staging",
+      "peer-b baseBranch must be its own branch"
+    );
+  });
+
+  test("each peer repo uses its own githubToken (not config.githubToken)", () => {
+    setupPrimaryConfig();
+    resetHarnessState({
+      contextPackRef: {
+        additionalRepos: [
+          {
+            fullName: "org/peer-a",
+            branch: "main",
+            githubToken: "peer-a-own-token",
+          },
+          {
+            fullName: "org/peer-b",
+            branch: "main",
+            githubToken: "peer-b-own-token",
+          },
+        ],
+      },
+    });
+
+    const repos = buildRepoList("/workspace/primary");
+
+    assert.equal(
+      repos[0].githubToken,
+      "primary-token",
+      "primary repo must use config.githubToken"
+    );
+    assert.equal(
+      repos[1].githubToken,
+      "peer-a-own-token",
+      "peer-a must use its own githubToken"
+    );
+    assert.equal(
+      repos[2].githubToken,
+      "peer-b-own-token",
+      "peer-b must use its own githubToken"
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// snapshotTokens — token map creation, isolation, and serialization safety
+// ---------------------------------------------------------------------------
+
+describe("snapshotTokens", () => {
+  function makeThreeRepoFixture() {
+    return [
+      { fullName: "org/primary", githubToken: "primary-token" },
+      { fullName: "org/peer-a", githubToken: "peer-a-token" },
+      { fullName: "org/peer-b", githubToken: "peer-b-token" },
+    ];
+  }
+
+  test("Map keys exactly match the fullName of each repo", () => {
+    const tokenMap = snapshotTokens(makeThreeRepoFixture());
+
+    assert.ok(
+      tokenMap.has("org/primary"),
+      "Map must have key matching primary fullName"
+    );
+    assert.ok(
+      tokenMap.has("org/peer-a"),
+      "Map must have key matching peer-a fullName"
+    );
+    assert.ok(
+      tokenMap.has("org/peer-b"),
+      "Map must have key matching peer-b fullName"
+    );
+    assert.equal(tokenMap.size, 3, "Map must have exactly one entry per repo");
+  });
+
+  test("Map values match each repo's githubToken", () => {
+    const tokenMap = snapshotTokens(makeThreeRepoFixture());
+
+    assert.equal(tokenMap.get("org/primary"), "primary-token");
+    assert.equal(tokenMap.get("org/peer-a"), "peer-a-token");
+    assert.equal(tokenMap.get("org/peer-b"), "peer-b-token");
+  });
+
+  test("snapshot is isolated — mutating repos entry after snapshot does not change snapshot value", () => {
+    const repos = [
+      { fullName: "org/primary", githubToken: "original-token" },
+      { fullName: "org/peer-a", githubToken: "peer-a-token" },
+    ];
+
+    const tokenMap = snapshotTokens(repos);
+
+    repos[0].githubToken = "mutated-token";
+
+    assert.equal(
+      tokenMap.get("org/primary"),
+      "original-token",
+      "Snapshot must not reflect mutation of the source repos entry"
+    );
+  });
+
+  test("JSON.stringify of the snapshot Map does not expose any token values", () => {
+    const repos = [
+      { fullName: "org/primary", githubToken: "secret-primary-token" },
+      { fullName: "org/peer-a", githubToken: "secret-peer-a-token" },
+      { fullName: "org/peer-b", githubToken: "secret-peer-b-token" },
+    ];
+
+    const tokenMap = snapshotTokens(repos);
+    const serialized = JSON.stringify(tokenMap);
+
+    for (const { githubToken } of repos) {
+      assert.ok(
+        !serialized.includes(githubToken),
+        `JSON.stringify must not expose token "${githubToken}"`
+      );
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// finalizeRepos — parallel finalization, error tolerance, and token routing
+// ---------------------------------------------------------------------------
+
+describe("finalizeRepos", () => {
+  afterEach(() => {
+    resetHarnessState({ lastTokenRefreshAt: Date.now() });
+  });
+
+  test("all repos finalized in parallel via injectable finalizeFn returning predetermined results", async () => {
+    const repos = [
+      {
+        fullName: "org/repo-a",
+        githubToken: "token-a",
+        workDir: "/workspace/a",
+        baseBranch: "main",
+      },
+      {
+        fullName: "org/repo-b",
+        githubToken: "token-b",
+        workDir: "/workspace/b",
+        baseBranch: "main",
+      },
+      {
+        fullName: "org/repo-c",
+        githubToken: "token-c",
+        workDir: "/workspace/c",
+        baseBranch: "main",
+      },
+    ];
+    const predetermined = {
+      "org/repo-a": {
+        fullName: "org/repo-a",
+        status: "success",
+        prNumber: 1,
+        prUrl: "https://github.com/org/repo-a/pull/1",
+      },
+      "org/repo-b": {
+        fullName: "org/repo-b",
+        status: "success",
+        prNumber: 2,
+        prUrl: "https://github.com/org/repo-b/pull/2",
+      },
+      "org/repo-c": { fullName: "org/repo-c", status: "skipped" },
+    };
+    const calls = [];
+    const finalizeFn = async (repo) => {
+      calls.push(repo.fullName);
+      return predetermined[repo.fullName];
+    };
+
+    const tokenSnapshot = snapshotTokens(repos);
+    const results = await finalizeRepos(
+      repos,
+      tokenSnapshot,
+      "safety commit",
+      finalizeFn
+    );
+
+    assert.equal(results.length, 3, "must return one result per repo");
+    assert.deepEqual(results[0], predetermined["org/repo-a"]);
+    assert.deepEqual(results[1], predetermined["org/repo-b"]);
+    assert.deepEqual(results[2], predetermined["org/repo-c"]);
+    assert.equal(
+      calls.length,
+      3,
+      "finalizeFn must be called once for every repo"
+    );
+  });
+
+  test("partial failure tolerance — failed repo gets { status: 'failed', error } with redacted error; other repos still produce results", async () => {
+    const sensitiveToken = "ghp_supersecret99";
+    const repos = [
+      {
+        fullName: "org/repo-ok",
+        githubToken: "token-ok",
+        workDir: "/workspace/ok",
+        baseBranch: "main",
+      },
+      {
+        fullName: "org/repo-fail",
+        githubToken: sensitiveToken,
+        workDir: "/workspace/fail",
+        baseBranch: "main",
+      },
+    ];
+    const successResult = {
+      fullName: "org/repo-ok",
+      status: "success",
+      prNumber: 7,
+    };
+
+    // Register the sensitive token so redactSensitive can mask it in the error
+    registerSecret(sensitiveToken);
+
+    const finalizeFn = async (repo) => {
+      if (repo.fullName === "org/repo-fail") {
+        throw new Error(
+          `git push failed: x-access-token:${sensitiveToken}@github.com`
+        );
+      }
+      return successResult;
+    };
+
+    const tokenSnapshot = snapshotTokens(repos);
+    const results = await finalizeRepos(
+      repos,
+      tokenSnapshot,
+      "safety commit",
+      finalizeFn
+    );
+
+    assert.equal(
+      results.length,
+      2,
+      "must return one result per repo even when one fails"
+    );
+
+    const okResult = results.find((r) => r.fullName === "org/repo-ok");
+    assert.deepEqual(
+      okResult,
+      successResult,
+      "successful repo result must be the predetermined value"
+    );
+
+    const failResult = results.find((r) => r.fullName === "org/repo-fail");
+    assert.equal(
+      failResult.status,
+      "failed",
+      "failed repo result must have status 'failed'"
+    );
+    assert.ok(
+      failResult.error,
+      "failed repo result must include an error field"
+    );
+    assert.ok(
+      !failResult.error.includes(sensitiveToken),
+      "error message must be redacted and must not expose the sensitive token"
+    );
+  });
+
+  test("token snapshot consulted for each repo — finalizeFn receives correct per-repo token from snapshot", async () => {
+    const repos = [
+      {
+        fullName: "org/repo-x",
+        githubToken: "token-x-original",
+        workDir: "/workspace/x",
+        baseBranch: "main",
+      },
+      {
+        fullName: "org/repo-y",
+        githubToken: "token-y-original",
+        workDir: "/workspace/y",
+        baseBranch: "main",
+      },
+    ];
+    const tokenSnapshot = snapshotTokens(repos);
+    // Override snapshot entries to simulate a post-refresh token value
+    tokenSnapshot.set("org/repo-x", "token-x-refreshed");
+    tokenSnapshot.set("org/repo-y", "token-y-refreshed");
+
+    const receivedTokens = {};
+    const finalizeFn = async (repo) => {
+      receivedTokens[repo.fullName] = repo.githubToken;
+      return { fullName: repo.fullName, status: "success" };
+    };
+
+    await finalizeRepos(repos, tokenSnapshot, "safety commit", finalizeFn);
+
+    assert.equal(
+      receivedTokens["org/repo-x"],
+      "token-x-refreshed",
+      "repo-x must receive the snapshot token, not the original"
+    );
+    assert.equal(
+      receivedTokens["org/repo-y"],
+      "token-y-refreshed",
+      "repo-y must receive the snapshot token, not the original"
     );
   });
 });
@@ -2374,5 +2908,154 @@ describe("extractPrimaryPrInfo", () => {
       branchName: "symphony/test",
       commitSha: "primary123",
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildEventResult — flat event payload construction
+// ---------------------------------------------------------------------------
+
+describe("buildEventResult", () => {
+  afterEach(() => {
+    resetHarnessState({ capturedSessionId: null });
+  });
+
+  test("(a) prInfo fields are spread into the result", () => {
+    const prInfo = {
+      prUrl: "https://github.com/org/repo/pull/42",
+      prNumber: 42,
+      branchName: "symphony/feature",
+      commitSha: "abc123",
+    };
+    const result = buildEventResult(prInfo, [], {});
+    assert.equal(
+      result.prUrl,
+      prInfo.prUrl,
+      "prUrl must be spread from prInfo"
+    );
+    assert.equal(
+      result.prNumber,
+      prInfo.prNumber,
+      "prNumber must be spread from prInfo"
+    );
+    assert.equal(
+      result.branchName,
+      prInfo.branchName,
+      "branchName must be spread from prInfo"
+    );
+    assert.equal(
+      result.commitSha,
+      prInfo.commitSha,
+      "commitSha must be spread from prInfo"
+    );
+  });
+
+  test("(b) repos array included only when non-empty", () => {
+    const prInfo = { prUrl: "https://github.com/org/repo/pull/1", prNumber: 1 };
+    const repoResult = {
+      status: "success",
+      fullName: "org/repo",
+      prUrl: "https://github.com/org/repo/pull/1",
+      prNumber: 1,
+      branchName: "symphony/feat",
+      baseBranch: "main",
+      hasChanges: true,
+    };
+
+    const withRepos = buildEventResult(prInfo, [repoResult], {});
+    assert.ok(
+      Array.isArray(withRepos.repos),
+      "repos must be present when results is non-empty"
+    );
+    assert.equal(withRepos.repos.length, 1, "repos must contain one entry");
+
+    const withoutRepos = buildEventResult(prInfo, [], {});
+    assert.equal(
+      withoutRepos.repos,
+      undefined,
+      "repos must be absent when results is empty"
+    );
+  });
+
+  test("(c) sessionId included when capturedSessionId is set", () => {
+    const sessionId = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
+    resetHarnessState({ capturedSessionId: sessionId });
+
+    const result = buildEventResult(null, [], {});
+    assert.equal(
+      result.sessionId,
+      sessionId,
+      "sessionId must equal capturedSessionId"
+    );
+  });
+
+  test("(d) buildEventResult(null, [], {}) produces object with no prInfo fields", () => {
+    const result = buildEventResult(null, [], {});
+    assert.equal(
+      result.prUrl,
+      undefined,
+      "prUrl must not be present when prInfo is null"
+    );
+    assert.equal(
+      result.prNumber,
+      undefined,
+      "prNumber must not be present when prInfo is null"
+    );
+    assert.equal(
+      result.branchName,
+      undefined,
+      "branchName must not be present when prInfo is null"
+    );
+    assert.equal(
+      result.commitSha,
+      undefined,
+      "commitSha must not be present when prInfo is null"
+    );
+  });
+
+  test("(e) returned object does not contain any token strings from the snapshot", () => {
+    const tokenA = "ghp_supersecret_token_alpha";
+    const tokenB = "ghp_supersecret_token_beta";
+    const repos = [
+      { fullName: "org/repo-a", githubToken: tokenA },
+      { fullName: "org/repo-b", githubToken: tokenB },
+    ];
+    const tokenSnapshot = snapshotTokens(repos);
+    const tokenValues = [...tokenSnapshot.values()];
+
+    // Build results that do NOT include token fields (RepoExecutionResult shape)
+    const repoResults = [
+      {
+        status: "success",
+        fullName: "org/repo-a",
+        prUrl: "https://github.com/org/repo-a/pull/1",
+        prNumber: 1,
+        branchName: "symphony/feat",
+        baseBranch: "main",
+        hasChanges: true,
+      },
+      {
+        status: "skipped",
+        fullName: "org/repo-b",
+        reason: "no_changes",
+      },
+    ];
+
+    const prInfo = {
+      prUrl: "https://github.com/org/repo-a/pull/1",
+      prNumber: 1,
+      branchName: "symphony/feat",
+      commitSha: "deadbeef",
+    };
+
+    const eventResult = buildEventResult(prInfo, repoResults, {});
+    const serialized = JSON.stringify(eventResult);
+
+    for (const token of tokenValues) {
+      assert.ok(
+        !serialized.includes(token),
+        `Result must not contain token "${token.slice(0, 8)}…" from snapshot`
+      );
+    }
   });
 });
