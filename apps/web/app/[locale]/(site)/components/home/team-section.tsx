@@ -4,7 +4,7 @@ const rolePanels = [
   {
     title: "Product",
     description:
-      "Define requirements that stay attached to execution, not scattered across docs and threads. Collaborate on implementation plans before code is written, ship bug fixes and small features without consuming engineering sprints, and see progress in real time with no status meetings required.",
+      "Define requirements that stay attached to execution, not scattered across docs and threads. Collaborate on implementation plans before code is written. Ship bug fixes and small features without consuming engineering sprints. See progress in real time with no status meetings required.",
     image: {
       src: "/illustrations/illustration-product.png",
       alt: "Compass illustration representing product direction",
@@ -22,7 +22,7 @@ const rolePanels = [
   {
     title: "Engineering",
     description:
-      "Build from structured, team-reviewed implementation plans and run multiple agent workflows in parallel with shared context. Manage agent context including PRDs and acceptance criteria, and maintain quality through visible execution and review before merge.",
+      "Build from structured, team-reviewed implementation plans and run multiple agent workflows in parallel with shared context. Manage agent context, not just within produced artifacts like PRDs but also across them. Maintain quality through visible execution and receiving reviews from agents and teammates before merging.",
     image: {
       src: "/illustrations/illustration-engineering.png",
       alt: "Illustration representing engineering",
