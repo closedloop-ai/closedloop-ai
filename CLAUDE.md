@@ -60,6 +60,14 @@ Spawns local CLI processes (Claude, git, codex) via the `closedloop-electron` ga
 ### System Health Check
 Runs on app launch via `SystemCheckBootstrap` in the authenticated layout (`apps/app/app/(authenticated)/layout.tsx`), not just on the engineer page. Eligibility gated by `useSystemCheckEligibility` — only fires when a compute target is active (cloud relay online or local Electron detected). In cloud relay mode, the fetch interceptor rewrites `/api/gateway/health-check` to `/api/gateway-relay/health-check` and routes to the remote compute target. The health check route resolves the user's login-shell PATH via `getShellPath()` to find tools like `python3`, `git`, `claude`, `gh`.
 
+## Dockerized Workspace Apps
+Some apps, including `apps/mcp` and `apps/relay`, build from narrow Docker contexts instead of the full monorepo. When adding or changing any `@repo/*` import or `workspace:*` dependency in a Dockerized app, update that app's Dockerfile in the same change.
+
+- Copy every required workspace package into the builder stage before `pnpm install`, including transitive workspace dependencies needed by that package.
+- Copy package manifests for those workspace packages into the runtime stage before `pnpm install --prod`.
+- If runtime executes TypeScript with `tsx` or uses deep imports such as `@repo/api/src/...`, copy the needed `src/` or built `dist/` output into the runtime image so module resolution works after deploy.
+- Validate both the builder target and full image for the changed app, for example `docker buildx build --file apps/relay/Dockerfile --target builder .` and `docker buildx build --file apps/relay/Dockerfile .`. A local `pnpm build` or `pnpm typecheck` is not enough for these Dockerized apps because it does not prove the container has the same workspace package files.
+
 ## Deployment & Release
 
 Three paths trigger prod MCP/relay deploys:

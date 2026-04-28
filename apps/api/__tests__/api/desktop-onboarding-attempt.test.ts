@@ -4,6 +4,7 @@
  * Covers the exact request/response contract, session gating, origin checks,
  * and persistence failures required by PLN-319 v8.
  */
+import { DesktopProvisioningPlatform } from "@repo/api/src/types/electron";
 import { vi } from "vitest";
 import { POST } from "@/app/desktop/onboarding-attempt/route";
 import { desktopOnboardingAttemptsService } from "@/app/desktop/onboarding-attempt/service";
@@ -39,7 +40,10 @@ describe("POST /desktop/onboarding-attempt", () => {
       method: "POST",
       url: "https://api.closedloop.ai/desktop/onboarding-attempt",
       headers: { origin: "https://app.closedloop.ai" },
-      body: { webAppOrigin: "https://app.closedloop.ai" },
+      body: {
+        platform: DesktopProvisioningPlatform.Darwin,
+        webAppOrigin: "https://app.closedloop.ai",
+      },
     });
 
     const response = await POST(request);
@@ -57,13 +61,38 @@ describe("POST /desktop/onboarding-attempt", () => {
     expect(response.headers.get("cache-control")).toBe("no-store");
   });
 
+  it("keeps the previous request shape compatible when platform is omitted", async () => {
+    const request = createMockRequest({
+      method: "POST",
+      url: "https://api.closedloop.ai/desktop/onboarding-attempt",
+      headers: { origin: "https://app.closedloop.ai" },
+      body: { webAppOrigin: "https://app.closedloop.ai" },
+    });
+
+    const response = await POST(request);
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      onboardingAttemptId: "attempt-123",
+      expiresAt: "2026-04-23T18:00:00.000Z",
+    });
+    expect(desktopOnboardingAttemptsService.create).toHaveBeenCalledWith({
+      organizationId: "test-org-id",
+      userId: "test-user-id",
+      webAppOrigin: "https://app.closedloop.ai",
+    });
+  });
+
   it("returns 401 when no browser session is present", async () => {
     vi.mocked(resolveSessionUser).mockResolvedValue(null);
 
     const response = await POST(
       createMockRequest({
         method: "POST",
-        body: { webAppOrigin: "https://app.closedloop.ai" },
+        body: {
+          platform: DesktopProvisioningPlatform.Darwin,
+          webAppOrigin: "https://app.closedloop.ai",
+        },
       })
     );
 
@@ -82,7 +111,10 @@ describe("POST /desktop/onboarding-attempt", () => {
     const response = await POST(
       createMockRequest({
         method: "POST",
-        body: { webAppOrigin: "https://app.closedloop.ai" },
+        body: {
+          platform: DesktopProvisioningPlatform.Darwin,
+          webAppOrigin: "https://app.closedloop.ai",
+        },
       })
     );
 
@@ -99,6 +131,7 @@ describe("POST /desktop/onboarding-attempt", () => {
         method: "POST",
         headers: { origin: "https://app.closedloop.ai" },
         body: {
+          platform: DesktopProvisioningPlatform.Darwin,
           webAppOrigin: "https://app.closedloop.ai",
           extraField: true,
         },
@@ -117,7 +150,10 @@ describe("POST /desktop/onboarding-attempt", () => {
       createMockRequest({
         method: "POST",
         headers: { origin: "https://app.closedloop.ai" },
-        body: { webAppOrigin: "https://admin.closedloop.ai" },
+        body: {
+          platform: DesktopProvisioningPlatform.Darwin,
+          webAppOrigin: "https://admin.closedloop.ai",
+        },
       })
     );
 
@@ -125,6 +161,30 @@ describe("POST /desktop/onboarding-attempt", () => {
     expect(await response.json()).toEqual({
       code: "ONBOARDING_ATTEMPT_FORBIDDEN",
       retryable: false,
+    });
+  });
+
+  it("ignores optional platform on the legacy onboarding-attempt contract", async () => {
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        headers: { origin: "https://app.closedloop.ai" },
+        body: {
+          platform: DesktopProvisioningPlatform.Linux,
+          webAppOrigin: "https://app.closedloop.ai",
+        },
+      })
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      onboardingAttemptId: "attempt-123",
+      expiresAt: "2026-04-23T18:00:00.000Z",
+    });
+    expect(desktopOnboardingAttemptsService.create).toHaveBeenCalledWith({
+      organizationId: "test-org-id",
+      userId: "test-user-id",
+      webAppOrigin: "https://app.closedloop.ai",
     });
   });
 
@@ -137,7 +197,10 @@ describe("POST /desktop/onboarding-attempt", () => {
       createMockRequest({
         method: "POST",
         headers: { origin: "https://app.closedloop.ai" },
-        body: { webAppOrigin: "https://app.closedloop.ai" },
+        body: {
+          platform: DesktopProvisioningPlatform.Darwin,
+          webAppOrigin: "https://app.closedloop.ai",
+        },
       })
     );
 

@@ -1,3 +1,4 @@
+import { DesktopProvisioningPlatform } from "@repo/api/src/types/electron";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DownloadElectronAppStep } from "../download-electron-app-step";
@@ -11,10 +12,18 @@ const UPDATE_AVAILABLE = /update available/i;
 const YOUR_API_KEY = /your api key/i;
 const CONTINUE_BTN = /continue/i;
 const SKIP_FOR_NOW = /skip for now/i;
+const GENERATE_INSTALL_COMMAND = /generate install command/i;
+const INSTALL_COMMAND = /install command/i;
+const AUTOMATED_SETUP_UNAVAILABLE = /automated setup is unavailable/i;
+const SANDBOX_DIRECTORY = /sandbox directory/i;
+const SANDBOX_CONTROL_CHARACTER_ERROR =
+  /sandbox directory cannot contain control characters/i;
 
 const mockUseLatestElectronRelease = vi.fn();
 const mockUseElectronDetection = vi.fn();
 const mockUseCreatePlatformApiKey = vi.fn();
+const mockUseDesktopProvisioningCapability = vi.fn();
+const mockUseCreateDesktopProvisioningAttempt = vi.fn();
 
 vi.mock("@/hooks/queries/use-electron-release", () => ({
   useLatestElectronRelease: () => mockUseLatestElectronRelease(),
@@ -26,6 +35,13 @@ vi.mock("@/lib/engineer/electron-detection", () => ({
 
 vi.mock("@/hooks/queries/use-platform-api-keys", () => ({
   useCreatePlatformApiKey: () => mockUseCreatePlatformApiKey(),
+}));
+
+vi.mock("@/hooks/queries/use-desktop-provisioning", () => ({
+  useDesktopProvisioningCapability: () =>
+    mockUseDesktopProvisioningCapability(),
+  useCreateDesktopProvisioningAttempt: () =>
+    mockUseCreateDesktopProvisioningAttempt(),
 }));
 
 const DEFAULT_ELECTRON_STATE = {
@@ -64,6 +80,10 @@ describe("DownloadElectronAppStep", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    Object.defineProperty(navigator, "platform", {
+      configurable: true,
+      value: "MacIntel",
+    });
 
     mockUseLatestElectronRelease.mockReturnValue({
       data: {
@@ -78,6 +98,17 @@ describe("DownloadElectronAppStep", () => {
 
     mockUseCreatePlatformApiKey.mockReturnValue({
       mutate: mockMutate,
+      isPending: false,
+    });
+    mockUseDesktopProvisioningCapability.mockReturnValue({
+      data: {
+        automatedManagedProvisioningEnabled: false,
+        supportedPlatform: DesktopProvisioningPlatform.Darwin,
+      },
+      isLoading: false,
+    });
+    mockUseCreateDesktopProvisioningAttempt.mockReturnValue({
+      mutate: vi.fn(),
       isPending: false,
     });
   });
@@ -393,6 +424,153 @@ describe("DownloadElectronAppStep", () => {
     });
   });
 
+  describe("automated provisioning flow", () => {
+    it("renders manual fallback when server-side provisioning is disabled", () => {
+      render(<DownloadElectronAppStep onNext={mockOnNext} />);
+
+      expect(screen.getByText(AUTOMATED_SETUP_UNAVAILABLE)).toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: GENERATE_INSTALL_COMMAND })
+      ).not.toBeInTheDocument();
+    });
+
+    it("creates an attempt-backed command without API or relay origins", async () => {
+      const mutate = vi.fn().mockImplementation((_input, options) => {
+        options?.onSuccess?.({
+          onboardingAttemptId: "attempt-123",
+          expiresAt: "2026-04-27T18:00:00.000Z",
+        });
+      });
+      mockUseDesktopProvisioningCapability.mockReturnValue({
+        data: {
+          automatedManagedProvisioningEnabled: true,
+          supportedPlatform: DesktopProvisioningPlatform.Darwin,
+        },
+        isLoading: false,
+      });
+      mockUseCreateDesktopProvisioningAttempt.mockReturnValue({
+        mutate,
+        isPending: false,
+      });
+
+      render(<DownloadElectronAppStep onNext={mockOnNext} />);
+
+      fireEvent.click(
+        screen.getByRole("button", { name: GENERATE_INSTALL_COMMAND })
+      );
+
+      expect(mutate).toHaveBeenCalledWith(
+        {
+          platform: DesktopProvisioningPlatform.Darwin,
+          webAppOrigin: globalThis.location.origin,
+        },
+        expect.objectContaining({ onSuccess: expect.any(Function) })
+      );
+
+      await waitFor(() => {
+        const command = screen.getByRole("textbox", {
+          name: INSTALL_COMMAND,
+        }) as HTMLTextAreaElement;
+        expect(command.value).toContain(
+          "CL_ONBOARDING_ATTEMPT_ID='attempt-123'"
+        );
+        expect(command.value).toContain(
+          `CL_WEB_APP_ORIGIN='${globalThis.location.origin}'`
+        );
+        expect(command.value).toContain(
+          "CL_DESKTOP_DOWNLOAD_URL='https://example.com/closedloop-1.0.0.dmg'"
+        );
+        expect(command.value).toContain("/api/desktop/install.sh");
+        expect(command.value).not.toContain("api.closedloop.ai");
+        expect(command.value).not.toContain("relay.closedloop.ai");
+        expect(command.value).not.toContain("sk_live_");
+      });
+    });
+
+    it("clears stale commands and shows generic inline copy when attempt creation fails", async () => {
+      let mutateCallCount = 0;
+      const mutate = vi.fn().mockImplementation((_input, options) => {
+        mutateCallCount += 1;
+        if (mutateCallCount === 1) {
+          options?.onSuccess?.({
+            onboardingAttemptId: "attempt-123",
+            expiresAt: "2026-04-27T18:00:00.000Z",
+          });
+          return;
+        }
+        options?.onError?.(new Error("raw backend error"));
+      });
+      mockUseDesktopProvisioningCapability.mockReturnValue({
+        data: {
+          automatedManagedProvisioningEnabled: true,
+          supportedPlatform: DesktopProvisioningPlatform.Darwin,
+        },
+        isLoading: false,
+      });
+      mockUseCreateDesktopProvisioningAttempt.mockReturnValue({
+        mutate,
+        isPending: false,
+      });
+
+      render(<DownloadElectronAppStep onNext={mockOnNext} />);
+
+      fireEvent.click(
+        screen.getByRole("button", { name: GENERATE_INSTALL_COMMAND })
+      );
+
+      await waitFor(() => {
+        expect(
+          screen.getByRole("textbox", { name: INSTALL_COMMAND })
+        ).toBeInTheDocument();
+      });
+
+      fireEvent.click(
+        screen.getByRole("button", { name: GENERATE_INSTALL_COMMAND })
+      );
+
+      await waitFor(() => {
+        expect(
+          screen.queryByRole("textbox", { name: INSTALL_COMMAND })
+        ).not.toBeInTheDocument();
+      });
+      expect(
+        screen.getByText(
+          "Failed to generate install command. Please try again."
+        )
+      ).toBeInTheDocument();
+      expect(screen.queryByText("raw backend error")).not.toBeInTheDocument();
+    });
+
+    it("rejects sandbox values with control characters before creating an attempt", () => {
+      const mutate = vi.fn();
+      mockUseDesktopProvisioningCapability.mockReturnValue({
+        data: {
+          automatedManagedProvisioningEnabled: true,
+          supportedPlatform: DesktopProvisioningPlatform.Darwin,
+        },
+        isLoading: false,
+      });
+      mockUseCreateDesktopProvisioningAttempt.mockReturnValue({
+        mutate,
+        isPending: false,
+      });
+
+      render(<DownloadElectronAppStep onNext={mockOnNext} />);
+
+      fireEvent.change(screen.getByLabelText(SANDBOX_DIRECTORY), {
+        target: { value: "~/Source\tsecrets" },
+      });
+      fireEvent.click(
+        screen.getByRole("button", { name: GENERATE_INSTALL_COMMAND })
+      );
+
+      expect(mutate).not.toHaveBeenCalled();
+      expect(
+        screen.getByText(SANDBOX_CONTROL_CHARACTER_ERROR)
+      ).toBeInTheDocument();
+    });
+  });
+
   describe("Continue button and navigation", () => {
     it("disables Continue button when Electron is not detected", () => {
       mockUseElectronDetection.mockReturnValue({
@@ -423,6 +601,47 @@ describe("DownloadElectronAppStep", () => {
       render(<DownloadElectronAppStep onNext={mockOnNext} />);
 
       fireEvent.click(screen.getByRole("button", { name: GENERATE_API_KEY }));
+
+      await waitFor(() => {
+        expect(
+          screen.getByRole("button", { name: CONTINUE_BTN })
+        ).not.toBeDisabled();
+      });
+    });
+
+    it("keeps Continue disabled until an automated provisioning command is generated", async () => {
+      const mutate = vi.fn().mockImplementation((_input, options) => {
+        options?.onSuccess?.({
+          onboardingAttemptId: "attempt-123",
+          expiresAt: "2026-04-27T18:00:00.000Z",
+        });
+      });
+      mockUseElectronDetection.mockReturnValue({
+        ...DEFAULT_ELECTRON_STATE,
+        detected: true,
+        loading: false,
+        port: 19_432,
+        checkedAt: Date.now(),
+      });
+      mockUseDesktopProvisioningCapability.mockReturnValue({
+        data: {
+          automatedManagedProvisioningEnabled: true,
+          supportedPlatform: DesktopProvisioningPlatform.Darwin,
+        },
+        isLoading: false,
+      });
+      mockUseCreateDesktopProvisioningAttempt.mockReturnValue({
+        mutate,
+        isPending: false,
+      });
+
+      render(<DownloadElectronAppStep onNext={mockOnNext} />);
+
+      expect(screen.getByRole("button", { name: CONTINUE_BTN })).toBeDisabled();
+
+      fireEvent.click(
+        screen.getByRole("button", { name: GENERATE_INSTALL_COMMAND })
+      );
 
       await waitFor(() => {
         expect(
