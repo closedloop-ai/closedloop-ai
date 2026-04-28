@@ -29,7 +29,6 @@ const OLD_SITE_PREFIXES = [
 ];
 
 const OLD_SITE_PAGES = new Set([
-  "/",
   "/cms-challenge",
   "/security-and-compliance",
   "/blog",
