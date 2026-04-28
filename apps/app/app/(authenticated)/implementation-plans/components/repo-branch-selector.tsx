@@ -35,6 +35,7 @@ type RepoBranchSelectorProps = {
   // Does not touch the branch.
   seedFullName?: string;
   onSeedRepoResolved?: (repoId: string) => void;
+  onSeedResolutionFailed?: () => void;
 };
 
 export function RepoBranchSelector({
@@ -50,6 +51,7 @@ export function RepoBranchSelector({
   repoTriggerFallback,
   seedFullName,
   onSeedRepoResolved,
+  onSeedResolutionFailed,
 }: RepoBranchSelectorProps) {
   const { data: githubStatus, isLoading: isLoadingGitHubStatus } =
     useGitHubIntegrationStatus();
@@ -85,9 +87,17 @@ export function RepoBranchSelector({
       );
       if (match) {
         onSeedRepoResolved(match.id);
+      } else if (repositories.length > 0) {
+        onSeedResolutionFailed?.();
       }
     }
-  }, [repositories, seedFullName, selectedRepoId, onSeedRepoResolved]);
+  }, [
+    repositories,
+    seedFullName,
+    selectedRepoId,
+    onSeedRepoResolved,
+    onSeedResolutionFailed,
+  ]);
 
   // Auto-select the default branch when branches load and none is set yet.
   useEffect(() => {

@@ -23,7 +23,7 @@ vi.mock("@/hooks/queries/use-github-integration", () => ({
 }));
 
 vi.mock("@repo/analytics/client", () => ({
-  useFeatureFlag: vi.fn(() => ({ key: "multi-repo-plan", enabled: true })),
+  useFeatureFlag: vi.fn(() => ({ key: "multi-repo-execute", enabled: true })),
 }));
 
 // NewPlanModal dependencies (only needed for feature-flag tests)
@@ -229,7 +229,7 @@ describe("NewPlanModal — feature flag behavior for AdditionalReposPicker", () 
 
   it("renders AdditionalReposPicker when feature flag is enabled", async () => {
     vi.mocked(useFeatureFlag).mockReturnValue({
-      key: "multi-repo-plan",
+      key: "multi-repo-execute",
       enabled: true,
       variant: undefined,
       payload: undefined,
@@ -247,7 +247,7 @@ describe("NewPlanModal — feature flag behavior for AdditionalReposPicker", () 
 
   it("does not render AdditionalReposPicker when feature flag is explicitly disabled", async () => {
     vi.mocked(useFeatureFlag).mockReturnValue({
-      key: "multi-repo-plan",
+      key: "multi-repo-execute",
       enabled: false,
       variant: undefined,
       payload: undefined,
@@ -278,7 +278,7 @@ describe("NewPlanModal — feature flag behavior for AdditionalReposPicker", () 
 
   it("disables Generate Plan when an added repository row is incomplete", async () => {
     vi.mocked(useFeatureFlag).mockReturnValue({
-      key: "multi-repo-plan",
+      key: "multi-repo-execute",
       enabled: true,
       variant: undefined,
       payload: undefined,
