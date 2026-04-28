@@ -49,8 +49,10 @@ import {
   useCodeJudgesFeedback,
   usePlanJudgesFeedback,
 } from "@/hooks/queries/use-judges";
-import { useLatestPlanLoopByDocument } from "@/hooks/queries/use-loops";
+import { useInitialAdditionalRepos } from "@/hooks/queries/use-loops";
 import { useExecutionLogDialog } from "@/hooks/use-execution-log-dialog";
+import { useMultiRepoExecuteEnabled } from "@/hooks/use-multi-repo-execute-enabled";
+import { useMultiRepoPlanEnabled } from "@/hooks/use-multi-repo-plan-enabled";
 import { usePreviewDeploymentPolling } from "@/hooks/use-preview-deployment-polling";
 import { ExecutePlanModal } from "../components/execute-plan-modal";
 import { RequestChangesModal } from "../components/request-changes-modal";
@@ -76,7 +78,8 @@ export function PlanEditor({
   showHeader = true,
 }: Readonly<PlanEditorProps>) {
   const chatFlag = useFeatureFlag("interactive-chat");
-  const multiRepoEnabled = useFeatureFlag("multi-repo-plan")?.enabled === true;
+  const multiRepoEnabled = useMultiRepoPlanEnabled();
+  const multiRepoExecuteEnabled = useMultiRepoExecuteEnabled();
   const executionLogDialog = useExecutionLogDialog();
 
   const [showMoveDialog, setShowMoveDialog] = useState(false);
@@ -458,10 +461,14 @@ export function PlanEditor({
 
       {/* Execute Plan Modal */}
       <ExecutePlanModal
+        initialAdditionalRepos={initialAdditionalRepos}
         isLoading={planActions.isExecuting}
+        isLoadingInitialRepos={isLoadingInitialAdditionalRepos}
+        multiRepoEnabled={multiRepoExecuteEnabled}
         onConfirm={planActions.handleExecute}
         onOpenChange={setShowExecuteModal}
         open={showExecuteModal}
+        targetRepo={plan.targetRepo ?? ""}
       />
 
       {/* Regenerate Plan Modal — prompts the user to confirm the additional
@@ -525,18 +532,6 @@ function FloatingTargetPicker({
       />
     </div>
   );
-}
-
-function useInitialAdditionalRepos(documentId: string | null | undefined) {
-  const enabled = Boolean(documentId);
-  const { data: loop, isLoading } = useLatestPlanLoopByDocument(
-    documentId ?? "",
-    { enabled }
-  );
-  return {
-    initialAdditionalRepos: loop?.additionalRepos ?? undefined,
-    isLoadingInitialAdditionalRepos: enabled && isLoading,
-  };
 }
 
 function getPlanRedirectPath(plan: DocumentDetail): string {

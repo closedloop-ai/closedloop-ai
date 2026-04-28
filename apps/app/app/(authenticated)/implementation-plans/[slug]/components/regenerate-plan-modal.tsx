@@ -1,18 +1,10 @@
 "use client";
 
 import type { AdditionalRepoRef } from "@repo/api/src/types/loop";
-import { Button } from "@repo/design-system/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@repo/design-system/components/ui/dialog";
 import { Loader2Icon, RefreshCwIcon } from "lucide-react";
 import { useState } from "react";
 import { AdditionalReposPicker } from "../../components/additional-repos-picker";
+import { PlanActionModal } from "../../components/plan-action-modal";
 import { normalizeAdditionalRepos } from "../../components/plan-form-utils";
 
 type RegeneratePlanModalProps = {
@@ -45,65 +37,30 @@ export function RegeneratePlanModal({
   };
 
   return (
-    <Dialog onOpenChange={onOpenChange} open={open}>
-      <DialogContent className="sm:max-w-[500px]">
-        <DialogHeader>
-          <DialogTitle>
-            <div className="flex items-center gap-2">
-              <RefreshCwIcon className="h-5 w-5" />
-              Confirm Regeneration
-            </div>
-          </DialogTitle>
-          <DialogDescription>
-            Confirm the repositories that should be used as context for the
-            regenerated plan.
-          </DialogDescription>
-        </DialogHeader>
-
-        <div className="py-4">
-          {isLoadingInitialRepos ? (
-            <div className="flex items-center gap-2 text-muted-foreground text-sm">
-              <Loader2Icon className="h-4 w-4 animate-spin" />
-              Loading previously selected repositories…
-            </div>
-          ) : (
-            <AdditionalReposPicker
-              initialValue={initialAdditionalRepos ?? []}
-              onChange={setAdditionalRepos}
-              onIncompleteChange={setHasIncompleteRepos}
-              targetRepo={targetRepo}
-            />
-          )}
+    <PlanActionModal
+      confirmLabel="Regenerate Plan"
+      icon={<RefreshCwIcon className="h-5 w-5" />}
+      isDisabled={isSubmitting || isLoadingInitialRepos || hasIncompleteRepos}
+      isLoading={isSubmitting}
+      loadingLabel="Starting Regeneration…"
+      onConfirm={handleConfirm}
+      onOpenChange={onOpenChange}
+      open={open}
+      title="Confirm Regeneration"
+    >
+      {isLoadingInitialRepos ? (
+        <div className="flex items-center gap-2 text-muted-foreground text-sm">
+          <Loader2Icon className="h-4 w-4 animate-spin" />
+          Loading previously selected repositories…
         </div>
-
-        <DialogFooter>
-          <Button
-            disabled={isSubmitting}
-            onClick={() => onOpenChange(false)}
-            variant="outline"
-          >
-            Cancel
-          </Button>
-          <Button
-            disabled={
-              isSubmitting || isLoadingInitialRepos || hasIncompleteRepos
-            }
-            onClick={handleConfirm}
-          >
-            {isSubmitting ? (
-              <>
-                <Loader2Icon className="h-4 w-4 animate-spin" />
-                Starting Regeneration…
-              </>
-            ) : (
-              <>
-                <RefreshCwIcon className="h-4 w-4" />
-                Regenerate Plan
-              </>
-            )}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+      ) : (
+        <AdditionalReposPicker
+          initialValue={initialAdditionalRepos ?? []}
+          onChange={setAdditionalRepos}
+          onIncompleteChange={setHasIncompleteRepos}
+          targetRepo={targetRepo}
+        />
+      )}
+    </PlanActionModal>
   );
 }

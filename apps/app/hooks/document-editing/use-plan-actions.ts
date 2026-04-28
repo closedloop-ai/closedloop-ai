@@ -135,29 +135,31 @@ export function usePlanActions(config: UsePlanActionsConfig) {
    * Execute the approved implementation plan via Loops.
    * Creates a Loop with command="execute". Compute target is resolved server-side.
    */
-  const handleExecute = useCallback(async (): Promise<boolean> => {
-    if (!documentId) {
-      return false;
-    }
-    prepareConflictRefs({ command: RunLoopCommand.Execute });
-    try {
-      await runLoop.mutateAsync(
-        { documentId, command: RunLoopCommand.Execute },
+  const handleExecute = useCallback(
+    (additionalRepos?: AdditionalRepoRef[], onSuccess?: () => void): void => {
+      if (!documentId) {
+        return;
+      }
+      const params = {
+        command: RunLoopCommand.Execute,
+        ...(additionalRepos?.length ? { additionalRepos } : {}),
+      };
+      prepareConflictRefs(params);
+      runLoop.mutate(
+        { documentId, ...params },
         {
           onSuccess: () => {
             toast.success(
               "Plan execution started via Loop - a PR will be created shortly"
             );
+            onSuccess?.();
           },
+          onError: routeConflictError,
         }
       );
-      return true;
-    } catch (error) {
-      routeConflictError(error);
-      // Non-conflict errors are toasted by the global QueryClient mutations.onError handler.
-      return false;
-    }
-  }, [documentId, runLoop, prepareConflictRefs, routeConflictError]);
+    },
+    [documentId, runLoop, prepareConflictRefs, routeConflictError]
+  );
 
   /**
    * Evaluate the implementation plan via Loops.

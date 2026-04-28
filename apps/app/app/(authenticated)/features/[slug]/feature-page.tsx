@@ -40,8 +40,13 @@ import { useDocumentUIState } from "@/hooks/document-editing/use-document-ui-sta
 import { useEditorSession } from "@/hooks/document-editing/use-editor-session";
 import { useInlineEditMode } from "@/hooks/document-editing/use-inline-edit-mode";
 import { usePlanActions } from "@/hooks/document-editing/use-plan-actions";
-import { useDocumentGenerationStatus } from "@/hooks/queries/use-documents";
+import {
+  useDocument,
+  useDocumentGenerationStatus,
+} from "@/hooks/queries/use-documents";
+import { useInitialAdditionalRepos } from "@/hooks/queries/use-loops";
 import { useExecutionLogDialog } from "@/hooks/use-execution-log-dialog";
+import { useMultiRepoExecuteEnabled } from "@/hooks/use-multi-repo-execute-enabled";
 import { ContextSection } from "./components/context-section";
 import { FeatureEditorHeader } from "./components/feature-editor-header";
 import { FeatureMetadataBar } from "./components/feature-metadata-bar";
@@ -92,6 +97,12 @@ export function FeaturePage({
     editor: session.editor,
   });
   const planActions = usePlanActions({ documentId: linkedPlanId });
+  const multiRepoEnabled = useMultiRepoExecuteEnabled();
+  const { data: linkedPlan } = useDocument(linkedPlanId ?? null, undefined, {
+    enabled: !!linkedPlanId,
+  });
+  const { initialAdditionalRepos, isLoadingInitialAdditionalRepos } =
+    useInitialAdditionalRepos(linkedPlanId);
 
   const { data: generationStatus } = useDocumentGenerationStatus(
     linkedPlanId ?? "",
@@ -291,10 +302,14 @@ export function FeaturePage({
       />
 
       <ExecutePlanModal
+        initialAdditionalRepos={initialAdditionalRepos}
         isLoading={planActions.isExecuting}
+        isLoadingInitialRepos={isLoadingInitialAdditionalRepos}
+        multiRepoEnabled={multiRepoEnabled}
         onConfirm={planActions.handleExecute}
         onOpenChange={setShowExecuteModal}
         open={showExecuteModal}
+        targetRepo={linkedPlan?.targetRepo ?? ""}
       />
 
       {planActions.multiTargetState && (

@@ -158,6 +158,20 @@ export function useLatestPlanLoopByDocument(
   });
 }
 
+export function useInitialAdditionalRepos(
+  documentId: string | null | undefined
+) {
+  const enabled = Boolean(documentId);
+  const { data: loop, isLoading } = useLatestPlanLoopByDocument(
+    documentId ?? "",
+    { enabled }
+  );
+  return {
+    initialAdditionalRepos: loop?.additionalRepos ?? undefined,
+    isLoadingInitialAdditionalRepos: enabled && isLoading,
+  };
+}
+
 export type LoopUsageFilters = {
   startDate?: string;
   endDate?: string;
