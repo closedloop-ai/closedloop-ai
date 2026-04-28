@@ -42,6 +42,7 @@ For API routes with fixed request/response/error contracts, wrap auth/session an
 - When multiple desktop route files share the same wire-contract types, define those types in `apps/api/app/desktop/contract.ts` instead of duplicating route-local copies.
 - Keep backend-only API metadata types in `apps/api`; `packages/api` should expose transport contracts and cross-process constants, not database provenance or auth-policy internals.
 - For wire contracts crossing apps, packages, repos, or processes, define header names, reason strings, modes, and response-shape constants in one shared module and import them instead of duplicating literals.
+- For enum-like exported constants in `packages/api`, follow the local PascalCase object convention used by types such as `DesktopCommandStatus` and `ComputePreference`; do not introduce all-caps constant names for the same pattern.
 - When the same helper logic is introduced in multiple files in one change, extract it into the nearest shared module owned by that surface instead of committing parallel copies.
 - When route handlers, middleware, or internal routes enforce the same policy, extract a shared helper or add focused parity tests so their behavior cannot drift silently.
 - In `apps/api` serverless routes, do not fire-and-forget promises for response-path side effects. Await the work, pass the promise to `waitUntil`, or persist it for later processing.
@@ -54,6 +55,10 @@ For API routes with fixed request/response/error contracts, wrap auth/session an
 - Before adding mount-time data fetching in `apps/app`, especially on editor or project pages, confirm the data is required for the initial render. Prefer deferring optional or rarely used backend reads until the user action, visible panel, route state, or workflow step that actually needs the data, so page mount does not accumulate many small requests.
 - Fetch helpers that read structured error bodies must tolerate non-JSON responses with `response.json().catch(() => null)` before branching on `response.ok`.
 - Tests for expiry, freshness, timeout, or clock-boundary behavior must pin time with fake timers and `setSystemTime` instead of relying on the real wall clock.
+- For Prisma schema changes, add indexes only for a concrete current access path: query filters, sort order, uniqueness, rate limiting, cleanup, or ownership checks. Do not add indexes for write-only metadata or speculative future queries; prefer composite indexes that match the full predicate when the current code filters on multiple columns.
+
+## GitHub Review Replies
+When replying to existing GitHub PR review comments, use the review-comment REST reply endpoint (`POST /repos/{owner}/{repo}/pulls/{pull_number}/comments/{comment_id}/replies`) with the original review comment database ID. Do not use GraphQL `addPullRequestReviewThreadReply` unless you have verified in the GitHub UI or REST response model that it renders as a normal inline reply. After posting, verify the new comment has `in_reply_to_id` set to the original comment ID.
 
 ## Compatibility Guardrail
 Compatibility shims and backward-compatibility code paths (for example legacy namespace adapters, re-export shims, or migration fallbacks) must not be removed without explicit human approval in the current task. If there is no explicit approval, preserve the compatibility layer and raise the cleanup as a separate follow-up.

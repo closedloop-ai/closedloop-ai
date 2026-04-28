@@ -5,8 +5,8 @@ import type {
   StartDesktopSecurityUpgradeResponse,
 } from "@repo/api/src/types/compute-target";
 import {
-  DESKTOP_SECURITY_STATUS,
   DESKTOP_SECURITY_UPGRADE_OPERATION_ID,
+  DesktopSecurityStatus,
 } from "@repo/api/src/types/compute-target";
 import { log } from "@repo/observability/log";
 import { buildTelemetryTraceContext } from "@repo/observability/telemetry/context";
@@ -77,7 +77,7 @@ export async function POST(
     return errorBody(404, { code: "TARGET_NOT_FOUND", retryable: false });
   }
   if (
-    target.security?.status !== DESKTOP_SECURITY_STATUS.UpgradeAvailable ||
+    target.security?.status !== DesktopSecurityStatus.UpgradeAvailable ||
     !target.gatewayId ||
     !target.isOnline
   ) {

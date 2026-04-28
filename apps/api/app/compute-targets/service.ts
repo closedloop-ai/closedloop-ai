@@ -5,7 +5,7 @@ import type {
   RegisterComputeTargetInput,
   UpdateComputeTargetInput,
 } from "@repo/api/src/types/compute-target";
-import { DESKTOP_SECURITY_STATUS } from "@repo/api/src/types/compute-target";
+import { DesktopSecurityStatus } from "@repo/api/src/types/compute-target";
 import { ApiKeySource, withDb } from "@repo/database";
 import { isDesktopManagedPopEnforcementEnabled } from "@/lib/auth/desktop-managed-pop";
 import { isRecord } from "@/lib/type-guards";
@@ -106,7 +106,7 @@ function buildSecurity(
 ): ComputeTargetSecurity {
   if (!desktopSecurityEnabled) {
     return {
-      status: DESKTOP_SECURITY_STATUS.LegacyManual,
+      status: DesktopSecurityStatus.LegacyManual,
       reason: "FEATURE_DISABLED",
       upgradeSupported: false,
     };
@@ -115,35 +115,35 @@ function buildSecurity(
   const isOwnedByViewer = viewerUserId ? target.userId === viewerUserId : true;
   if (!isOwnedByViewer) {
     return {
-      status: DESKTOP_SECURITY_STATUS.UpdateRequired,
+      status: DesktopSecurityStatus.UpdateRequired,
       reason: "SHARED_TARGET",
       upgradeSupported: false,
     };
   }
   if (lookupFailed) {
     return {
-      status: DESKTOP_SECURITY_STATUS.Unknown,
+      status: DesktopSecurityStatus.Unknown,
       reason: "LOOKUP_FAILED",
       upgradeSupported: false,
     };
   }
   if (target.gatewayId && protectedGateways.has(target.gatewayId)) {
     return {
-      status: DESKTOP_SECURITY_STATUS.Protected,
+      status: DesktopSecurityStatus.Protected,
       reason: "BOUND_DESKTOP_MANAGED_KEY",
       upgradeSupported: false,
     };
   }
   if (!target.isOnline) {
     return {
-      status: DESKTOP_SECURITY_STATUS.LegacyManual,
+      status: DesktopSecurityStatus.LegacyManual,
       reason: "TARGET_OFFLINE",
       upgradeSupported: false,
     };
   }
   if (!target.gatewayId) {
     return {
-      status: DESKTOP_SECURITY_STATUS.UpdateRequired,
+      status: DesktopSecurityStatus.UpdateRequired,
       reason: "MISSING_GATEWAY_ID",
       upgradeSupported: false,
     };
@@ -153,13 +153,13 @@ function buildSecurity(
     DESKTOP_SECURITY_UPGRADE_PROTOCOL_VERSION
   ) {
     return {
-      status: DESKTOP_SECURITY_STATUS.UpdateRequired,
+      status: DesktopSecurityStatus.UpdateRequired,
       reason: "UNSUPPORTED_DESKTOP_VERSION",
       upgradeSupported: false,
     };
   }
   return {
-    status: DESKTOP_SECURITY_STATUS.UpgradeAvailable,
+    status: DesktopSecurityStatus.UpgradeAvailable,
     reason: "NO_BOUND_MANAGED_KEY",
     upgradeSupported: true,
   };

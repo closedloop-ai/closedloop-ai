@@ -9,15 +9,6 @@ ALTER TABLE "desktop_onboarding_attempts"
   ADD COLUMN "compute_target_id" UUID,
   ADD COLUMN "gateway_id" TEXT;
 
-CREATE INDEX "desktop_onboarding_attempts_organization_id_user_id_flow_ty_idx"
-  ON "desktop_onboarding_attempts"("organization_id", "user_id", "flow_type");
-
-CREATE INDEX "desktop_onboarding_attempts_compute_target_id_idx"
-  ON "desktop_onboarding_attempts"("compute_target_id");
-
-CREATE INDEX "desktop_onboarding_attempts_gateway_id_idx"
-  ON "desktop_onboarding_attempts"("gateway_id");
-
 CREATE TABLE "desktop_onboarding_device_sessions" (
   "id" UUID NOT NULL,
   "device_session_secret_hash" TEXT NOT NULL,
@@ -45,14 +36,11 @@ CREATE TABLE "desktop_onboarding_device_sessions" (
 CREATE UNIQUE INDEX "desktop_onboarding_device_sessions_user_code_key"
   ON "desktop_onboarding_device_sessions"("user_code");
 
-CREATE INDEX "desktop_onboarding_device_sessions_gateway_id_status_idx"
-  ON "desktop_onboarding_device_sessions"("gateway_id", "status");
+CREATE INDEX "desktop_device_sessions_gateway_status_exp_idx"
+  ON "desktop_onboarding_device_sessions"("gateway_id", "status", "expires_at");
 
-CREATE INDEX "desktop_onboarding_device_sessions_request_ip_hash_status_idx"
-  ON "desktop_onboarding_device_sessions"("request_ip_hash", "status");
+CREATE INDEX "desktop_device_sessions_ip_status_exp_idx"
+  ON "desktop_onboarding_device_sessions"("request_ip_hash", "status", "expires_at");
 
 CREATE INDEX "desktop_onboarding_device_sessions_expires_at_idx"
   ON "desktop_onboarding_device_sessions"("expires_at");
-
-CREATE INDEX "desktop_onboarding_device_sessions_organization_id_user_id_idx"
-  ON "desktop_onboarding_device_sessions"("organization_id", "user_id");

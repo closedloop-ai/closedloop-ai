@@ -1,4 +1,4 @@
-import { DESKTOP_SECURITY_STATUS } from "@repo/api/src/types/compute-target";
+import { DesktopSecurityStatus } from "@repo/api/src/types/compute-target";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -51,7 +51,7 @@ const target = {
   gatewayId: "550e8400-e29b-41d4-a716-446655440000",
   isOnline: true,
   security: {
-    status: DESKTOP_SECURITY_STATUS.UpgradeAvailable,
+    status: DesktopSecurityStatus.UpgradeAvailable,
     reason: "NO_BOUND_MANAGED_KEY",
     upgradeSupported: true,
   },

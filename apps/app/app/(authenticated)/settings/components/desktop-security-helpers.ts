@@ -1,6 +1,6 @@
 import {
   type ComputeTarget,
-  DESKTOP_SECURITY_STATUS,
+  DesktopSecurityStatus,
 } from "@repo/api/src/types/compute-target";
 
 export type TargetSecurity = NonNullable<ComputeTarget["security"]>;
@@ -11,7 +11,7 @@ export function getTargetSecurity(
 ): TargetSecurity {
   return (
     target?.security ?? {
-      status: DESKTOP_SECURITY_STATUS.Unknown,
+      status: DesktopSecurityStatus.Unknown,
       reason: "LOOKUP_FAILED",
       upgradeSupported: false,
     }
@@ -23,16 +23,16 @@ export function getSecurityLabel(security: TargetSecurity): string {
   if (security.reason === "FEATURE_DISABLED") {
     return "Standard";
   }
-  if (security.status === DESKTOP_SECURITY_STATUS.Protected) {
+  if (security.status === DesktopSecurityStatus.Protected) {
     return "Protected";
   }
-  if (security.status === DESKTOP_SECURITY_STATUS.UpgradeAvailable) {
+  if (security.status === DesktopSecurityStatus.UpgradeAvailable) {
     return "Upgrade available";
   }
-  if (security.status === DESKTOP_SECURITY_STATUS.LegacyManual) {
+  if (security.status === DesktopSecurityStatus.LegacyManual) {
     return "Reconnect Desktop";
   }
-  if (security.status === DESKTOP_SECURITY_STATUS.Unknown) {
+  if (security.status === DesktopSecurityStatus.Unknown) {
     return "Status unavailable";
   }
   if (

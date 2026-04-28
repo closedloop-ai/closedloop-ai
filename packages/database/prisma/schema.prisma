@@ -1494,9 +1494,6 @@ model DesktopOnboardingAttempt {
   gatewayId      String?   @map("gateway_id")
 
   @@index([organizationId, userId])
-  @@index([organizationId, userId, flowType])
-  @@index([computeTargetId])
-  @@index([gatewayId])
   @@index([expiresAt])
   @@map("desktop_onboarding_attempts")
 }
@@ -1523,10 +1520,9 @@ model DesktopOnboardingDeviceSession {
   createdAt                             DateTime  @default(now()) @map("created_at")
   updatedAt                             DateTime  @updatedAt @map("updated_at")
 
-  @@index([gatewayId, status])
-  @@index([requestIpHash, status])
+  @@index([gatewayId, status, expiresAt], map: "desktop_device_sessions_gateway_status_exp_idx")
+  @@index([requestIpHash, status, expiresAt], map: "desktop_device_sessions_ip_status_exp_idx")
   @@index([expiresAt])
-  @@index([organizationId, userId])
   @@map("desktop_onboarding_device_sessions")
 }
 

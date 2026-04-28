@@ -19,7 +19,7 @@ export type ComputeTarget = {
   updatedAt: Date;
 };
 
-export const DESKTOP_SECURITY_STATUS = {
+export const DesktopSecurityStatus = {
   Protected: "protected",
   UpgradeAvailable: "upgrade_available",
   UpdateRequired: "update_required",
@@ -28,7 +28,7 @@ export const DESKTOP_SECURITY_STATUS = {
 } as const;
 
 export type DesktopSecurityStatus =
-  (typeof DESKTOP_SECURITY_STATUS)[keyof typeof DESKTOP_SECURITY_STATUS];
+  (typeof DesktopSecurityStatus)[keyof typeof DesktopSecurityStatus];
 
 export type DesktopSecurityReason =
   | "BOUND_DESKTOP_MANAGED_KEY"

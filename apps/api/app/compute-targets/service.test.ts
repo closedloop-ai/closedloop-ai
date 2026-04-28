@@ -1,4 +1,4 @@
-import { DESKTOP_SECURITY_STATUS } from "@repo/api/src/types/compute-target";
+import { DesktopSecurityStatus } from "@repo/api/src/types/compute-target";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -105,32 +105,32 @@ describe("computeTargetsService security status", () => {
       clerkUserId: "clerk-user-1",
     });
     expect(byId.get("protected")?.security).toEqual({
-      status: DESKTOP_SECURITY_STATUS.Protected,
+      status: DesktopSecurityStatus.Protected,
       reason: "BOUND_DESKTOP_MANAGED_KEY",
       upgradeSupported: false,
     });
     expect(byId.get("upgrade")?.security).toEqual({
-      status: DESKTOP_SECURITY_STATUS.UpgradeAvailable,
+      status: DesktopSecurityStatus.UpgradeAvailable,
       reason: "NO_BOUND_MANAGED_KEY",
       upgradeSupported: true,
     });
     expect(byId.get("missing-gateway")?.security).toEqual({
-      status: DESKTOP_SECURITY_STATUS.UpdateRequired,
+      status: DesktopSecurityStatus.UpdateRequired,
       reason: "MISSING_GATEWAY_ID",
       upgradeSupported: false,
     });
     expect(byId.get("unsupported")?.security).toEqual({
-      status: DESKTOP_SECURITY_STATUS.UpdateRequired,
+      status: DesktopSecurityStatus.UpdateRequired,
       reason: "UNSUPPORTED_DESKTOP_VERSION",
       upgradeSupported: false,
     });
     expect(byId.get("offline")?.security).toEqual({
-      status: DESKTOP_SECURITY_STATUS.LegacyManual,
+      status: DesktopSecurityStatus.LegacyManual,
       reason: "TARGET_OFFLINE",
       upgradeSupported: false,
     });
     expect(byId.get("shared")?.security).toEqual({
-      status: DESKTOP_SECURITY_STATUS.UpdateRequired,
+      status: DesktopSecurityStatus.UpdateRequired,
       reason: "SHARED_TARGET",
       upgradeSupported: false,
     });
@@ -153,7 +153,7 @@ describe("computeTargetsService security status", () => {
     );
 
     expect(target?.security).toEqual({
-      status: DESKTOP_SECURITY_STATUS.Unknown,
+      status: DesktopSecurityStatus.Unknown,
       reason: "LOOKUP_FAILED",
       upgradeSupported: false,
     });
@@ -179,7 +179,7 @@ describe("computeTargetsService security status", () => {
 
     expect(apiKeyFindMany).not.toHaveBeenCalled();
     expect(target?.security).toEqual({
-      status: DESKTOP_SECURITY_STATUS.LegacyManual,
+      status: DesktopSecurityStatus.LegacyManual,
       reason: "FEATURE_DISABLED",
       upgradeSupported: false,
     });
