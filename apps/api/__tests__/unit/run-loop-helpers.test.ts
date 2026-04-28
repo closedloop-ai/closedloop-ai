@@ -491,6 +491,97 @@ describe("resolveLoopContext — parentLoopId", () => {
 });
 
 // ---------------------------------------------------------------------------
+// additionalRepos inheritance from parent loop
+// ---------------------------------------------------------------------------
+
+describe("resolveLoopContext — additionalRepos inheritance", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("inherits additionalRepos from parent loop on EXECUTE when body omits them", async () => {
+    const artifact = buildArtifact();
+    mockArtifactsService.findOrCreateWorkstream.mockResolvedValue({
+      workstream: buildWorkstream(),
+      source: null,
+    });
+    mockLoopsService.findLatestStateBearingDesktopForArtifact.mockResolvedValue(
+      null
+    );
+    mockLoopsService.findLatestCompletedForArtifact.mockResolvedValue({
+      id: "parent-plan-1",
+      additionalRepos: [
+        { fullName: "org/peer-a", branch: "main" },
+        { fullName: "org/peer-b", branch: "develop" },
+      ],
+    });
+
+    const result = await resolveLoopContext(
+      artifact as any,
+      { command: "execute" },
+      requiresParentHandler,
+      "org-1",
+      "user-1",
+      "artifact-1"
+    );
+
+    expect(result.additionalRepos).toEqual([
+      { fullName: "org/peer-a", branch: "main" },
+      { fullName: "org/peer-b", branch: "develop" },
+    ]);
+  });
+
+  it("body.additionalRepos overrides parent loop additionalRepos", async () => {
+    const artifact = buildArtifact();
+    mockArtifactsService.findOrCreateWorkstream.mockResolvedValue({
+      workstream: buildWorkstream(),
+      source: null,
+    });
+    mockLoopsService.findLatestStateBearingDesktopForArtifact.mockResolvedValue(
+      null
+    );
+    mockLoopsService.findLatestCompletedForArtifact.mockResolvedValue({
+      id: "parent-plan-1",
+      additionalRepos: [{ fullName: "org/parent-peer", branch: "main" }],
+    });
+
+    const bodyRepos = [{ fullName: "org/body-peer", branch: "feature" }];
+    const result = await resolveLoopContext(
+      artifact as any,
+      { command: "execute", additionalRepos: bodyRepos },
+      requiresParentHandler,
+      "org-1",
+      "user-1",
+      "artifact-1"
+    );
+
+    expect(result.additionalRepos).toEqual(bodyRepos);
+  });
+
+  it("does not inherit when handler.requiresParent is false (e.g., PLAN)", async () => {
+    const artifact = buildArtifact();
+    mockArtifactsService.findOrCreateWorkstream.mockResolvedValue({
+      workstream: buildWorkstream(),
+      source: null,
+    });
+
+    const result = await resolveLoopContext(
+      artifact as any,
+      { command: "plan" },
+      noParentHandler,
+      "org-1",
+      "user-1",
+      "artifact-1"
+    );
+
+    expect(result.additionalRepos).toBeUndefined();
+    expect(
+      mockLoopsService.findLatestCompletedForArtifact
+    ).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // workstream resolution
 // ---------------------------------------------------------------------------
 
