@@ -30,7 +30,7 @@ export const FinalCtaSection = ({ locale }: FinalCtaSectionProps) => {
               </Link>
             </Button>
             <Button asChild size="lg" variant="outline">
-              <Link href={localize(locale, "/docs")}>Read the docs</Link>
+              <a href={localize(locale, "/docs")}>Read the docs</a>
             </Button>
           </div>
         </div>
