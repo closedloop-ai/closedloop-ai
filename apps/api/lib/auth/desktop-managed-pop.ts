@@ -44,12 +44,10 @@ export type DesktopManagedPopFailure = {
   status: 401 | 403 | 503;
 };
 
-export type DesktopManagedFeatureFlagIdentity =
-  | string
-  | {
-      userId: string;
-      clerkUserId?: string | null;
-    };
+export type DesktopManagedFeatureFlagIdentity = {
+  userId: string;
+  clerkUserId?: string | null;
+};
 
 type DesktopManagedPopVerificationInput = {
   keyContext: VerifiedApiKeyContextWithMetadata & {
@@ -142,6 +140,8 @@ async function loadFeatureFlagAnalyticsClient(
   flag: string
 ): Promise<FeatureFlagAnalyticsClient | null> {
   try {
+    // Next server routes can load the server analytics module, while the custom
+    // API runtime needs the node client because server-only modules throw there.
     const serverAnalytics = await import("@repo/analytics/server");
     return serverAnalytics.analytics as FeatureFlagAnalyticsClient;
   } catch (serverOnlyError) {
@@ -162,10 +162,13 @@ async function loadFeatureFlagAnalyticsClient(
 function resolveFeatureFlagDistinctIds(
   identity: DesktopManagedFeatureFlagIdentity
 ): string[] {
-  const userId = typeof identity === "string" ? identity : identity.userId;
-  const clerkUserId =
-    typeof identity === "string" ? null : identity.clerkUserId;
-  return [...new Set([clerkUserId, userId].filter(Boolean) as string[])];
+  return [
+    ...new Set(
+      [identity.clerkUserId, identity.userId].filter(
+        (distinctId): distinctId is string => Boolean(distinctId)
+      )
+    ),
+  ];
 }
 
 /**

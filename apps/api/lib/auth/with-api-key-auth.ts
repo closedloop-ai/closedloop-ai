@@ -21,12 +21,6 @@ import type {
 } from "./with-auth";
 
 type ApiKeyAuthOptions = {
-  /**
-   * @deprecated Desktop-managed PoP is evaluated for every API-key request.
-   * The server-side enforcement feature flag controls whether failures reject
-   * the request or degrade to bearer-compatible monitor mode.
-   */
-  desktopManagedPop?: boolean;
   requiredScopes?: ApiKeyScope[];
 };
 

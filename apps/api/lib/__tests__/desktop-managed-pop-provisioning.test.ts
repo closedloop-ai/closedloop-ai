@@ -27,7 +27,7 @@ describe("isDesktopManagedPopProvisioningEnabled", () => {
     mockIsFeatureEnabled.mockResolvedValue(true);
 
     await expect(
-      isDesktopManagedPopProvisioningEnabled("user-1")
+      isDesktopManagedPopProvisioningEnabled({ userId: "user-1" })
     ).resolves.toBe(true);
     expect(mockIsFeatureEnabled).toHaveBeenCalledWith(
       DESKTOP_MANAGED_POP_PROVISIONING_FLAG,
@@ -67,31 +67,31 @@ describe("isDesktopManagedPopProvisioningEnabled", () => {
       .mockResolvedValueOnce(false);
 
     await expect(
-      isDesktopManagedPopProvisioningEnabled("user-1")
+      isDesktopManagedPopProvisioningEnabled({ userId: "user-1" })
     ).resolves.toBe(false);
   });
 
   it("fails closed when the flag is false, missing, or unavailable", async () => {
     mockIsFeatureEnabled.mockResolvedValueOnce(false);
     await expect(
-      isDesktopManagedPopProvisioningEnabled("user-1")
+      isDesktopManagedPopProvisioningEnabled({ userId: "user-1" })
     ).resolves.toBe(false);
 
     mockIsFeatureEnabled.mockResolvedValueOnce(undefined);
     await expect(
-      isDesktopManagedPopProvisioningEnabled("user-1")
+      isDesktopManagedPopProvisioningEnabled({ userId: "user-1" })
     ).resolves.toBe(false);
 
     mockIsFeatureEnabled.mockRejectedValueOnce(new Error("posthog down"));
     await expect(
-      isDesktopManagedPopProvisioningEnabled("user-1")
+      isDesktopManagedPopProvisioningEnabled({ userId: "user-1" })
     ).resolves.toBe(false);
   });
 
   it("fails closed before flag evaluation when the platform is unsupported", async () => {
     await expect(
       isDesktopManagedPopProvisioningEnabled(
-        "user-1",
+        { userId: "user-1" },
         DesktopProvisioningPlatform.Linux
       )
     ).resolves.toBe(false);
