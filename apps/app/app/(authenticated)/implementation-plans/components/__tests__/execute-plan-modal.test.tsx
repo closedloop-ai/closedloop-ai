@@ -154,26 +154,15 @@ describe("ExecutePlanModal", () => {
 
   // Case 2: flag-on with incomplete rows disables Execute
   it("disables Execute button when multiRepoEnabled and repos are incomplete", () => {
-    // Render with multiRepoEnabled=true and inherited repos but hasIncompleteRepos=true.
-    // We trigger incompleteness by having inherited repos and then the picker reports incomplete.
-    // Since the picker renders with initial repos that have empty fullName, they are incomplete.
     renderModal({
       multiRepoEnabled: true,
       initialAdditionalRepos: [{ fullName: "", branch: "" }],
     });
 
-    // The execute button should be disabled because we have inherited repos (length > 0 via
-    // initialAdditionalRepos) — but fullName is empty so hasIncompleteRepos will be reported true
-    // via onIncompleteChange callback from the picker.
-    // Note: initialAdditionalRepos with { fullName: "", branch: "" } means hasInheritedRepos =
-    // initialAdditionalRepos.length > 0 = true, triggering MultiRepoExecuteBody.
-    // The picker fires onIncompleteChange(true) for placeholder rows.
     const executeButton = screen.getByRole("button", {
       name: EXECUTE_BUTTON_REGEX,
     });
-    // Initially might not be disabled until picker fires callback — but the placeholder
-    // rows trigger it synchronously on mount.
-    expect(executeButton).toBeInTheDocument();
+    expect(executeButton).toBeDisabled();
   });
 
   // Case 3: flag-off with inherited repos renders banner AND picker NOT rendered

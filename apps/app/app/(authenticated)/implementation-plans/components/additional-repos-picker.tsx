@@ -4,7 +4,7 @@ import type { AdditionalRepoRef } from "@repo/api/src/types/loop";
 import { MAX_ADDITIONAL_REPOS } from "@repo/api/src/types/loop";
 import { Button } from "@repo/design-system/components/ui/button";
 import { PlusIcon, TrashIcon } from "lucide-react";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { RepoBranchSelector } from "./repo-branch-selector";
 
 // Internal type — repoId is needed for Select value binding but is not part of AdditionalRepoRef
@@ -111,6 +111,22 @@ export function AdditionalReposPicker({
     new Set()
   );
 
+  // Report initial incomplete state once on mount. Without this, parents that
+  // seed the picker with placeholder rows (e.g. inherited repos missing branch)
+  // would see hasIncomplete=false until the user interacts, leaving submit
+  // buttons enabled for invalid form state.
+  const didReportInitialIncompleteRef = useRef(false);
+  useEffect(() => {
+    if (didReportInitialIncompleteRef.current) {
+      return;
+    }
+    didReportInitialIncompleteRef.current = true;
+    const completeRows = rows.filter(
+      (r) => isRowComplete(r) && !unavailableRowIds.has(r.id)
+    );
+    onIncompleteChange?.(completeRows.length !== rows.length);
+  }, [rows, unavailableRowIds, onIncompleteChange]);
+
   // Compute per-row validation errors (keyed by row.id)
   const rowErrors = useMemo<Record<string, string>>(() => {
     const errors: Record<string, string> = {};
@@ -161,7 +177,17 @@ export function AdditionalReposPicker({
 
   const handleSeedResolutionFailed = useCallback(
     (id: string) => {
-      setUnavailableRowIds((prev) => new Set([...prev, id]));
+      // Early-return when this row is already known unavailable. Without this
+      // guard, RepoBranchSelector's seed-resolution effect re-fires on every
+      // re-render (the inline arrow passed as onSeedResolutionFailed gets a
+      // fresh identity each render), which would otherwise produce an infinite
+      // update loop on rows whose seeded fullName cannot be matched.
+      if (unavailableRowIds.has(id)) {
+        return;
+      }
+      setUnavailableRowIds((prev) =>
+        prev.has(id) ? prev : new Set([...prev, id])
+      );
       // Treat unavailable rows as incomplete so the parent disables submit.
       // Pass the new set explicitly to avoid stale closure on unavailableRowIds.
       projectToParent(

@@ -4,6 +4,7 @@ import { Button } from "@repo/design-system/components/ui/button";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -16,6 +17,8 @@ type PlanActionModalProps = {
   onOpenChange: (open: boolean) => void;
   title: string;
   icon: ReactNode;
+  description?: ReactNode;
+  confirmIcon?: ReactNode;
   isLoading: boolean;
   isDisabled: boolean;
   onConfirm: () => void;
@@ -29,6 +32,8 @@ export function PlanActionModal({
   onOpenChange,
   title,
   icon,
+  description,
+  confirmIcon,
   isLoading,
   isDisabled,
   onConfirm,
@@ -36,6 +41,7 @@ export function PlanActionModal({
   loadingLabel,
   children,
 }: PlanActionModalProps) {
+  const buttonIcon = confirmIcon ?? icon;
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
       <DialogContent className="sm:max-w-[500px]">
@@ -46,6 +52,7 @@ export function PlanActionModal({
               {title}
             </div>
           </DialogTitle>
+          {description && <DialogDescription>{description}</DialogDescription>}
         </DialogHeader>
 
         <div className="py-4">{children}</div>
@@ -66,7 +73,7 @@ export function PlanActionModal({
               </>
             ) : (
               <>
-                {icon}
+                {buttonIcon}
                 {confirmLabel}
               </>
             )}

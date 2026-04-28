@@ -38,7 +38,9 @@ export function RegeneratePlanModal({
 
   return (
     <PlanActionModal
+      confirmIcon={<RefreshCwIcon className="h-4 w-4" />}
       confirmLabel="Regenerate Plan"
+      description="Confirm the repositories that should be used as context for the regenerated plan."
       icon={<RefreshCwIcon className="h-5 w-5" />}
       isDisabled={isSubmitting || isLoadingInitialRepos || hasIncompleteRepos}
       isLoading={isSubmitting}

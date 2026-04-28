@@ -28,6 +28,9 @@ type MultiRepoExecuteBodyProps = {
   onIncompleteChange: (hasIncomplete: boolean) => void;
 };
 
+const EXECUTE_DIALOG_DESCRIPTION =
+  "This will generate code based on the implementation plan and create a pull request for review.";
+
 function MultiRepoExecuteBody({
   initialAdditionalRepos,
   targetRepo,
@@ -37,9 +40,7 @@ function MultiRepoExecuteBody({
   return (
     <div className="space-y-3">
       <p className="text-muted-foreground text-sm">
-        This will generate code based on the implementation plan and create a
-        pull request for review. The following additional repositories will be
-        targeted.
+        The following additional repositories will be targeted.
       </p>
       <AdditionalReposPicker
         initialValue={initialAdditionalRepos}
@@ -65,9 +66,8 @@ function SimpleExecuteBody({ showFlagOffBanner }: SimpleExecuteBodyProps) {
         </div>
       )}
       <p className="text-muted-foreground text-sm">
-        This will generate code based on the implementation plan and create a
-        pull request for review. A new branch will be created with the generated
-        code changes. You can review and merge the PR once it&apos;s ready.
+        A new branch will be created with the generated code changes. You can
+        review and merge the PR once it&apos;s ready.
       </p>
     </div>
   );
@@ -97,6 +97,19 @@ export function ExecutePlanModal({
       hasSyncedInitialReposRef.current = true;
     }
   }, [initialAdditionalRepos]);
+
+  // The parent mounts ExecutePlanModal persistently (no key, not conditional),
+  // so closing the dialog only unmounts Radix's DialogContent — `currentRepos`
+  // and `hasIncompleteRepos` would otherwise persist across open/close cycles
+  // and a Confirm-without-edit on reopen would submit stale edits the picker
+  // no longer shows.
+  useEffect(() => {
+    if (!open) {
+      hasSyncedInitialReposRef.current = false;
+      setCurrentRepos(initialAdditionalRepos ?? []);
+      setHasIncompleteRepos(false);
+    }
+  }, [open, initialAdditionalRepos]);
 
   const handleConfirm = () => {
     if (!multiRepoEnabled) {
@@ -150,7 +163,9 @@ export function ExecutePlanModal({
 
   return (
     <PlanActionModal
+      confirmIcon={<PlayIcon className="h-4 w-4" />}
       confirmLabel="Execute Plan"
+      description={EXECUTE_DIALOG_DESCRIPTION}
       icon={<PlayIcon className="h-5 w-5" />}
       isDisabled={isDisabled}
       isLoading={isLoading}
