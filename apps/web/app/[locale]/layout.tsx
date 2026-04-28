@@ -44,7 +44,7 @@ const RootLayout = async ({ children, params }: RootLayoutProperties) => {
       <body className="min-h-screen bg-background text-foreground">
         <AnalyticsProvider>
           <DesignSystemProvider forcedTheme="light">
-            <RootProvider>{children}</RootProvider>
+            <RootProvider search={{ enabled: false }}>{children}</RootProvider>
           </DesignSystemProvider>
         </AnalyticsProvider>
       </body>
