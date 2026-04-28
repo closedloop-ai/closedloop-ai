@@ -55,6 +55,11 @@ export function useApiClient() {
           method: "DELETE",
         });
       },
+
+      request: async (path: string, options?: RequestInit) => {
+        await waitForAuthLoaded();
+        return apiRequest(path, await getToken(), options);
+      },
     }),
     [getToken, waitForAuthLoaded]
   );
@@ -69,22 +74,8 @@ async function apiFetch<T>(
   token: string | null,
   options?: RequestInit
 ): Promise<T> {
-  const url = `${resolveApiUrl()}${path}`;
-
   try {
-    const authHeaders: Record<string, string> = token
-      ? { Authorization: `Bearer ${token}` }
-      : {};
-
-    const response = await fetch(url, {
-      ...options,
-      headers: {
-        "Content-Type": "application/json",
-        ...authHeaders,
-        ...options?.headers,
-      },
-    });
-
+    const response = await apiRequest(path, token, options);
     const result: ApiResult<T> = JSON.parse(
       await response.text(),
       reviveWithDates
@@ -113,4 +104,23 @@ async function apiFetch<T>(
       0
     );
   }
+}
+
+function apiRequest(
+  path: string,
+  token: string | null,
+  options?: RequestInit
+): Promise<Response> {
+  const authHeaders: Record<string, string> = token
+    ? { Authorization: `Bearer ${token}` }
+    : {};
+
+  return fetch(`${resolveApiUrl()}${path}`, {
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...authHeaders,
+      ...options?.headers,
+    },
+  });
 }

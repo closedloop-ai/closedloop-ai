@@ -16,8 +16,8 @@ import {
 } from "@repo/observability/telemetry/schema";
 import { waitUntil } from "@vercel/functions";
 import {
-  ComputeTargetGatewayConflictError,
   computeTargetsService,
+  isComputeTargetGatewayConflictResult,
 } from "@/app/compute-targets/service";
 import { desktopCommandStore } from "@/lib/desktop-command-store";
 import {
@@ -252,6 +252,9 @@ async function resolveRelayHelloTarget(
           input.desktopSecurityUpgradeProtocolVersion,
       }
     );
+    if (isComputeTargetGatewayConflictResult(updated)) {
+      return { targetId: "", targetCreated: false };
+    }
     if (updated) {
       return { targetId: input.computeTargetId, targetCreated: false };
     }
@@ -271,6 +274,9 @@ async function resolveRelayHelloTarget(
         input.desktopSecurityUpgradeProtocolVersion,
     }
   );
+  if (isComputeTargetGatewayConflictResult(target)) {
+    return { targetId: "", targetCreated: false };
+  }
   return { targetId: target.id, targetCreated: true };
 }
 
@@ -287,19 +293,12 @@ async function handleHello(
     return { emit: [], disconnect: true };
   }
 
-  const resolvedTarget = await resolveRelayHelloTarget(input, auth).catch(
-    (error) => {
-      if (error instanceof ComputeTargetGatewayConflictError) {
-        log.warn("Relay hello rejected due to gateway conflict", {
-          gatewayId: input.gatewayId,
-          errorClass: ErrorClass.Protocol,
-        });
-        return null;
-      }
-      throw error;
-    }
-  );
-  if (!resolvedTarget) {
+  const resolvedTarget = await resolveRelayHelloTarget(input, auth);
+  if (!resolvedTarget.targetId) {
+    log.warn("Relay hello rejected due to gateway conflict", {
+      gatewayId: input.gatewayId,
+      errorClass: ErrorClass.Protocol,
+    });
     return { emit: [], disconnect: true };
   }
   const { targetId, targetCreated } = resolvedTarget;

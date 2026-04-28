@@ -12,7 +12,6 @@ import {
   isTerminalStatus,
   UPDATE_AND_RESTART_OPERATION_ID,
 } from "@repo/api/src/types/compute-target";
-import { useAuth } from "@repo/auth/client";
 import {
   type UseMutationResult,
   type UseQueryOptions,
@@ -21,7 +20,7 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { computePreferenceKeys } from "@/hooks/queries/use-compute-preference";
-import { resolveApiUrl, useApiClient } from "@/hooks/use-api-client";
+import { useApiClient } from "@/hooks/use-api-client";
 
 type ComputeTargetWire = Omit<
   ComputeTarget,
@@ -165,7 +164,7 @@ export function useDispatchDesktopCommand(
 
 export function useStartDesktopSecurityUpgrade() {
   const queryClient = useQueryClient();
-  const { getToken } = useAuth();
+  const apiClient = useApiClient();
 
   return useMutation({
     mutationFn: async ({
@@ -175,15 +174,10 @@ export function useStartDesktopSecurityUpgrade() {
       targetId: string;
       webAppOrigin: string;
     }) => {
-      const token = await getToken();
-      const response = await fetch(
-        `${resolveApiUrl()}/compute-targets/${targetId}/security-upgrade-attempt`,
+      const response = await apiClient.request(
+        `/compute-targets/${targetId}/security-upgrade-attempt`,
         {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            ...(token ? { Authorization: `Bearer ${token}` } : {}),
-          },
           body: JSON.stringify({ webAppOrigin }),
         }
       );

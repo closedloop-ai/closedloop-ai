@@ -20,8 +20,8 @@ vi.mock("@/lib/auth/desktop-managed-pop", () => ({
 }));
 
 import {
-  ComputeTargetGatewayConflictError,
   computeTargetsService,
+  isComputeTargetGatewayConflictResult,
 } from "./service";
 
 const now = new Date("2026-04-28T17:00:00.000Z");
@@ -345,15 +345,15 @@ describe("computeTargetsService gateway reconciliation", () => {
       },
     });
 
-    await expect(
-      computeTargetsService.register("org-1", "user-1", {
-        machineName: "machine-1",
-        platform: "darwin",
-        gatewayId: "gateway-1",
-        capabilities: {},
-        supportedOperations: ["symphony_plan_loop"],
-      })
-    ).rejects.toBeInstanceOf(ComputeTargetGatewayConflictError);
+    const result = await computeTargetsService.register("org-1", "user-1", {
+      machineName: "machine-1",
+      platform: "darwin",
+      gatewayId: "gateway-1",
+      capabilities: {},
+      supportedOperations: ["symphony_plan_loop"],
+    });
+
+    expect(isComputeTargetGatewayConflictResult(result)).toBe(true);
     expect(update).not.toHaveBeenCalled();
     expect(upsert).not.toHaveBeenCalled();
   });

@@ -4,7 +4,10 @@ import { log } from "@repo/observability/log";
 import { buildTelemetryTraceContext } from "@repo/observability/telemetry/context";
 import { Server, type Socket } from "socket.io";
 import { apiKeysService } from "../app/api-keys/service";
-import { computeTargetsService } from "../app/compute-targets/service";
+import {
+  computeTargetsService,
+  isComputeTargetGatewayConflictResult,
+} from "../app/compute-targets/service";
 import { usersService } from "../app/users/service";
 import { getDesktopManagedPopRequestFailure } from "./auth/desktop-managed-pop";
 import { desktopCommandStore } from "./desktop-command-store";
@@ -217,6 +220,10 @@ async function handleSocketHello(
           payload.desktopSecurityUpgradeProtocolVersion,
       }
     );
+    if (isComputeTargetGatewayConflictResult(updated)) {
+      socket.disconnect(true);
+      return;
+    }
     if (!updated) {
       targetId = undefined;
     }
@@ -237,6 +244,10 @@ async function handleSocketHello(
           payload.desktopSecurityUpgradeProtocolVersion,
       }
     );
+    if (isComputeTargetGatewayConflictResult(target)) {
+      socket.disconnect(true);
+      return;
+    }
     targetId = target.id;
     targetCreated = true;
   }

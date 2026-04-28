@@ -2,16 +2,7 @@ import { isDesktopApiPath } from "@repo/api/src/desktop-api-namespace";
 import { z } from "zod";
 import { jsonObjectValidator } from "@/lib/validators/json";
 
-export const uuidV4Validator = z
-  .string()
-  .trim()
-  .uuid()
-  .refine(
-    (value) =>
-      value[14] === "4" &&
-      ["8", "9", "a", "b", "A", "B"].includes(value[19] ?? ""),
-    { message: "gatewayId must be a UUID v4" }
-  );
+export const uuidValidator = z.uuid();
 
 export const registerComputeTargetValidator = z.object({
   machineName: z.string().trim().min(1).max(120),
@@ -20,7 +11,7 @@ export const registerComputeTargetValidator = z.object({
   supportedOperations: z.array(z.string().trim().min(1)),
   allowedDirectories: z.array(z.string().trim().min(1)).optional(),
   pluginVersion: z.string().trim().min(1).max(120).optional(),
-  gatewayId: uuidV4Validator.optional(),
+  gatewayId: uuidValidator.optional(),
   desktopSecurityUpgradeProtocolVersion: z.literal(1).optional(),
 });
 
@@ -30,7 +21,7 @@ export const updateComputeTargetValidator = z
     platform: z.string().trim().min(1).max(80).optional(),
     capabilities: jsonObjectValidator.optional(),
     supportedOperations: z.array(z.string().trim().min(1)).optional(),
-    gatewayId: uuidV4Validator.optional(),
+    gatewayId: uuidValidator.optional(),
     desktopSecurityUpgradeProtocolVersion: z.literal(1).optional(),
   })
   .refine((payload) => Object.keys(payload).length > 0, {

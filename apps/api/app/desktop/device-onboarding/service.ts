@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { withDb } from "@repo/database";
 import { desktopOnboardingAttemptsService } from "@/app/desktop/onboarding-attempt/service";
+import { isRecord } from "@/lib/type-guards";
 
 export const DESKTOP_DEVICE_SESSION_TTL_MS = 10 * 60 * 1000;
 export const DESKTOP_DEVICE_POLL_INTERVAL_SECONDS = 5;
@@ -19,6 +20,7 @@ export type DesktopDeviceSessionStartInput = {
 };
 
 export type DesktopDeviceSessionStartResult = {
+  status: "started";
   deviceSessionId: string;
   deviceSessionSecret: string;
   userCode: string;
@@ -26,6 +28,14 @@ export type DesktopDeviceSessionStartResult = {
   expiresAt: Date;
   pollIntervalSeconds: number;
 };
+
+export type DesktopDeviceSessionStartRateLimitedResult = {
+  status: "rate_limited";
+};
+
+export type DesktopDeviceSessionStartOutcome =
+  | DesktopDeviceSessionStartResult
+  | DesktopDeviceSessionStartRateLimitedResult;
 
 export type DesktopDeviceSessionRecord = {
   id: string;
@@ -49,21 +59,6 @@ export type DesktopDeviceSessionRecord = {
   createdAt: Date;
   updatedAt: Date;
 };
-
-type DeviceSessionDb = {
-  desktopOnboardingDeviceSession: {
-    count(args: unknown): Promise<number>;
-    create(args: unknown): Promise<DesktopDeviceSessionRecord>;
-    findFirst(args: unknown): Promise<DesktopDeviceSessionRecord | null>;
-    findUnique(args: unknown): Promise<DesktopDeviceSessionRecord | null>;
-    update(args: unknown): Promise<DesktopDeviceSessionRecord>;
-    updateMany(args: unknown): Promise<{ count: number }>;
-  };
-};
-
-function asDeviceSessionDb(db: unknown): DeviceSessionDb {
-  return db as DeviceSessionDb;
-}
 
 function hashSecret(secret: string): string {
   return createHash("sha256").update(secret, "utf8").digest("hex");
@@ -90,11 +85,10 @@ function createDeviceSecret(): string {
   return randomBytes(32).toString("base64url");
 }
 
-export class DesktopDeviceSessionRateLimitError extends Error {
-  constructor() {
-    super("Too many pending Desktop device sessions");
-    this.name = "DesktopDeviceSessionRateLimitError";
-  }
+function getPrismaErrorCode(error: unknown): string | undefined {
+  return isRecord(error) && typeof error.code === "string"
+    ? error.code
+    : undefined;
 }
 
 export const desktopDeviceOnboardingService = {
@@ -103,14 +97,14 @@ export const desktopDeviceOnboardingService = {
    */
   async start(
     input: DesktopDeviceSessionStartInput
-  ): Promise<DesktopDeviceSessionStartResult> {
+  ): Promise<DesktopDeviceSessionStartOutcome> {
     const deviceSessionSecret = createDeviceSecret();
     const expiresAt = new Date(Date.now() + DESKTOP_DEVICE_SESSION_TTL_MS);
     const requestIpHash = hashRequestIp(input.requestIp);
     let lastError: unknown;
 
     const activeSessionCount = await withDb((db) =>
-      asDeviceSessionDb(db).desktopOnboardingDeviceSession.count({
+      db.desktopOnboardingDeviceSession.count({
         where: {
           status: "pending",
           expiresAt: { gt: new Date() },
@@ -122,14 +116,14 @@ export const desktopDeviceOnboardingService = {
       })
     );
     if (activeSessionCount >= DESKTOP_DEVICE_SESSION_RATE_LIMIT_MAX) {
-      throw new DesktopDeviceSessionRateLimitError();
+      return { status: "rate_limited" };
     }
 
     for (let attempt = 0; attempt < 5; attempt += 1) {
       const userCode = createUserCode();
       try {
         const row = await withDb((db) =>
-          asDeviceSessionDb(db).desktopOnboardingDeviceSession.create({
+          db.desktopOnboardingDeviceSession.create({
             data: {
               deviceSessionSecretHash: hashSecret(deviceSessionSecret),
               userCode,
@@ -149,6 +143,7 @@ export const desktopDeviceOnboardingService = {
         );
 
         return {
+          status: "started",
           deviceSessionId: row.id,
           deviceSessionSecret,
           userCode,
@@ -158,7 +153,7 @@ export const desktopDeviceOnboardingService = {
         };
       } catch (error) {
         lastError = error;
-        if ((error as { code?: string }).code !== "P2002") {
+        if (getPrismaErrorCode(error) !== "P2002") {
           throw error;
         }
       }
@@ -169,7 +164,7 @@ export const desktopDeviceOnboardingService = {
 
   getByUserCode(userCode: string): Promise<DesktopDeviceSessionRecord | null> {
     return withDb((db) =>
-      asDeviceSessionDb(db).desktopOnboardingDeviceSession.findUnique({
+      db.desktopOnboardingDeviceSession.findUnique({
         where: { userCode },
       })
     );
@@ -181,8 +176,7 @@ export const desktopDeviceOnboardingService = {
     organizationId: string;
   }): Promise<DesktopDeviceSessionRecord | null> {
     return withDb.tx(async (db) => {
-      const tx = asDeviceSessionDb(db);
-      const session = await tx.desktopOnboardingDeviceSession.findUnique({
+      const session = await db.desktopOnboardingDeviceSession.findUnique({
         where: { userCode: input.userCode },
       });
       const now = new Date();
@@ -194,7 +188,7 @@ export const desktopDeviceOnboardingService = {
         return null;
       }
 
-      const claimed = await tx.desktopOnboardingDeviceSession.updateMany({
+      const claimed = await db.desktopOnboardingDeviceSession.updateMany({
         where: {
           id: session.id,
           status: "pending",
@@ -219,7 +213,7 @@ export const desktopDeviceOnboardingService = {
         gatewayId: session.gatewayId,
       });
 
-      return tx.desktopOnboardingDeviceSession.update({
+      return db.desktopOnboardingDeviceSession.update({
         where: { id: session.id },
         data: {
           onboardingAttemptId: attempt.onboardingAttemptId,
@@ -235,7 +229,7 @@ export const desktopDeviceOnboardingService = {
   }): Promise<DesktopDeviceSessionRecord | null> {
     const now = new Date();
     const result = await withDb((db) =>
-      asDeviceSessionDb(db).desktopOnboardingDeviceSession.updateMany({
+      db.desktopOnboardingDeviceSession.updateMany({
         where: {
           userCode: input.userCode,
           status: "pending",
@@ -275,7 +269,7 @@ export const desktopDeviceOnboardingService = {
     | null
   > {
     const row = await withDb((db) =>
-      asDeviceSessionDb(db).desktopOnboardingDeviceSession.findFirst({
+      db.desktopOnboardingDeviceSession.findFirst({
         where: {
           id: input.deviceSessionId,
           deviceSessionSecretHash: hashSecret(input.deviceSessionSecret),
@@ -287,7 +281,7 @@ export const desktopDeviceOnboardingService = {
     }
     if (row.expiresAt <= new Date() && row.status === "pending") {
       await withDb((db) =>
-        asDeviceSessionDb(db).desktopOnboardingDeviceSession.update({
+        db.desktopOnboardingDeviceSession.update({
           where: { id: row.id },
           data: { status: "expired" },
         })

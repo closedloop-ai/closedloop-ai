@@ -1,30 +1,19 @@
 import { generateKeyPairSync } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => {
-  class DesktopDeviceSessionRateLimitError extends Error {
-    constructor() {
-      super("Too many pending Desktop device sessions");
-      this.name = "DesktopDeviceSessionRateLimitError";
-    }
-  }
-
-  return {
-    DesktopDeviceSessionRateLimitError,
-    desktopDeviceOnboardingService: {
-      start: vi.fn(),
-      poll: vi.fn(),
-      approve: vi.fn(),
-      deny: vi.fn(),
-      getByUserCode: vi.fn(),
-    },
-    isDesktopManagedPopEnforcementEnabled: vi.fn(),
-    resolveSessionUser: vi.fn(),
-  };
-});
+const mocks = vi.hoisted(() => ({
+  desktopDeviceOnboardingService: {
+    start: vi.fn(),
+    poll: vi.fn(),
+    approve: vi.fn(),
+    deny: vi.fn(),
+    getByUserCode: vi.fn(),
+  },
+  isDesktopManagedPopEnforcementEnabled: vi.fn(),
+  resolveSessionUser: vi.fn(),
+}));
 
 vi.mock("./service", () => ({
-  DesktopDeviceSessionRateLimitError: mocks.DesktopDeviceSessionRateLimitError,
   desktopDeviceOnboardingService: mocks.desktopDeviceOnboardingService,
 }));
 
@@ -75,9 +64,9 @@ describe("Desktop device-onboarding route contracts", () => {
   });
 
   it("returns an exact retryable rate-limit contract on start", async () => {
-    mocks.desktopDeviceOnboardingService.start.mockRejectedValue(
-      new mocks.DesktopDeviceSessionRateLimitError()
-    );
+    mocks.desktopDeviceOnboardingService.start.mockResolvedValue({
+      status: "rate_limited",
+    });
 
     const response = await startPOST(
       jsonRequest(

@@ -18,7 +18,6 @@ vi.mock("@/app/desktop/onboarding-attempt/service", () => ({
 
 import {
   DESKTOP_DEVICE_SESSION_RATE_LIMIT_MAX,
-  DesktopDeviceSessionRateLimitError,
   desktopDeviceOnboardingService,
 } from "./service";
 
@@ -100,6 +99,10 @@ describe("desktopDeviceOnboardingService.start", () => {
       requestIp: "203.0.113.10",
     });
 
+    expect(result.status).toBe("started");
+    if (result.status !== "started") {
+      throw new Error("expected started result");
+    }
     expect(result.deviceSessionSecret).toEqual(expect.any(String));
     expect(createData?.deviceSessionSecretHash).toMatch(SHA256_HEX_RE);
     expect(createData?.deviceSessionSecretHash).not.toBe(
@@ -126,7 +129,7 @@ describe("desktopDeviceOnboardingService.start", () => {
         ...startInput,
         requestIp: "203.0.113.10",
       })
-    ).rejects.toBeInstanceOf(DesktopDeviceSessionRateLimitError);
+    ).resolves.toEqual({ status: "rate_limited" });
     expect(create).not.toHaveBeenCalled();
   });
 });

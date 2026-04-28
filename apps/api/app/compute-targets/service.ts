@@ -1,4 +1,4 @@
-import type { JsonObject } from "@repo/api/src/types/common";
+import type { JsonObject, JsonValue } from "@repo/api/src/types/common";
 import type {
   ComputeTarget,
   ComputeTargetSecurity,
@@ -13,12 +13,19 @@ import { isRecord } from "@/lib/type-guards";
 export const COMPUTE_TARGET_STALE_MS = 90_000;
 export const DESKTOP_SECURITY_UPGRADE_PROTOCOL_VERSION = 1;
 
-export class ComputeTargetGatewayConflictError extends Error {
-  constructor() {
-    super("Desktop gateway identity is already bound to another target");
-    this.name = "ComputeTargetGatewayConflictError";
-  }
+export type ComputeTargetGatewayConflictResult = {
+  status: "gateway_conflict";
+};
+
+export function isComputeTargetGatewayConflictResult(
+  result: unknown
+): result is ComputeTargetGatewayConflictResult {
+  return isRecord(result) && result.status === "gateway_conflict";
 }
+
+const computeTargetGatewayConflictResult: ComputeTargetGatewayConflictResult = {
+  status: "gateway_conflict",
+};
 
 type ComputeTargetRecord = {
   id: string;
@@ -37,27 +44,39 @@ type ComputeTargetRecord = {
   user?: { firstName: string | null; lastName: string | null } | null;
 };
 
-type ExtendedDbClient = {
-  computeTarget: {
-    findFirst(args: unknown): Promise<unknown>;
-    findMany(args: unknown): Promise<unknown[]>;
-    findUnique(args: unknown): Promise<unknown>;
-    update(args: unknown): Promise<unknown>;
-    updateMany(args: unknown): Promise<{ count: number }>;
-    upsert(args: unknown): Promise<unknown>;
-    deleteMany(args: unknown): Promise<{ count: number }>;
-  };
-  apiKey: {
-    findMany(args: unknown): Promise<Array<{ gatewayId: string | null }>>;
-  };
-};
+function toJsonObject(value: unknown): JsonObject {
+  if (!isRecord(value)) {
+    return {};
+  }
 
-function asExtendedDb(db: unknown): ExtendedDbClient {
-  return db as ExtendedDbClient;
+  const result: JsonObject = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (isJsonValue(entry)) {
+      result[key] = entry;
+    }
+  }
+  return result;
 }
 
-function toJsonObject(value: unknown): JsonObject {
-  return isRecord(value) ? (value as JsonObject) : {};
+function isJsonValue(value: unknown): value is JsonValue {
+  if (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  ) {
+    return true;
+  }
+  if (Array.isArray(value)) {
+    return value.every(isJsonValue);
+  }
+  return isRecord(value) && Object.values(value).every(isJsonValue);
+}
+
+function getPrismaErrorCode(error: unknown): string | undefined {
+  return isRecord(error) && typeof error.code === "string"
+    ? error.code
+    : undefined;
 }
 
 function toStringArray(value: unknown): string[] {
@@ -79,9 +98,10 @@ function buildCapabilitiesPayload(
   payload: RegisterComputeTargetInput | UpdateComputeTargetInput,
   existingCapabilities?: unknown
 ): JsonObject {
-  const capabilities = {
-    ...(payload.capabilities ?? toJsonObject(existingCapabilities)),
-  } as JsonObject;
+  const capabilities: JsonObject = {
+    ...toJsonObject(existingCapabilities),
+    ...toJsonObject(payload.capabilities),
+  };
 
   if ("allowedDirectories" in payload && payload.allowedDirectories) {
     capabilities.allowedDirectories = payload.allowedDirectories;
@@ -175,7 +195,7 @@ async function loadProtectedGateways(
   }
   try {
     const keys = await withDb((db) =>
-      asExtendedDb(db).apiKey.findMany({
+      db.apiKey.findMany({
         where: {
           organizationId,
           userId,
@@ -240,6 +260,14 @@ function toComputeTarget(
   };
 }
 
+function toRequiredComputeTarget(target: ComputeTargetRecord): ComputeTarget {
+  const mapped = toComputeTarget(target);
+  if (!mapped) {
+    throw new Error("Expected persisted compute target");
+  }
+  return mapped;
+}
+
 async function toComputeTargetList(
   targets: ComputeTargetRecord[],
   viewerUserId?: string,
@@ -293,14 +321,13 @@ export const computeTargetsService = {
     organizationId: string,
     userId: string,
     payload: RegisterComputeTargetInput
-  ): Promise<ComputeTarget> {
+  ): Promise<ComputeTarget | ComputeTargetGatewayConflictResult> {
     const now = new Date();
     const capabilities = buildCapabilitiesPayload(payload);
 
     if (payload.gatewayId) {
       const target = await withDb(async (db) => {
-        const extendedDb = asExtendedDb(db);
-        const conflictingGateway = await extendedDb.computeTarget.findFirst({
+        const conflictingGateway = await db.computeTarget.findFirst({
           where: {
             gatewayId: payload.gatewayId,
             OR: [
@@ -311,10 +338,10 @@ export const computeTargetsService = {
           select: { id: true },
         });
         if (conflictingGateway) {
-          throw new ComputeTargetGatewayConflictError();
+          return computeTargetGatewayConflictResult;
         }
 
-        const gatewayTarget = await extendedDb.computeTarget.findFirst({
+        const gatewayTarget = await db.computeTarget.findFirst({
           where: {
             organizationId,
             userId,
@@ -322,8 +349,8 @@ export const computeTargetsService = {
           },
         });
         if (gatewayTarget) {
-          return extendedDb.computeTarget.update({
-            where: { id: (gatewayTarget as ComputeTargetRecord).id },
+          return db.computeTarget.update({
+            where: { id: gatewayTarget.id },
             data: {
               machineName: payload.machineName,
               platform: payload.platform,
@@ -335,7 +362,7 @@ export const computeTargetsService = {
           });
         }
 
-        const machineTarget = await extendedDb.computeTarget.findFirst({
+        const machineTarget = await db.computeTarget.findFirst({
           where: {
             organizationId,
             userId,
@@ -343,8 +370,8 @@ export const computeTargetsService = {
           },
         });
         if (machineTarget) {
-          return extendedDb.computeTarget.update({
-            where: { id: (machineTarget as ComputeTargetRecord).id },
+          return db.computeTarget.update({
+            where: { id: machineTarget.id },
             data: {
               gatewayId: payload.gatewayId,
               platform: payload.platform,
@@ -356,7 +383,7 @@ export const computeTargetsService = {
           });
         }
 
-        return extendedDb.computeTarget.upsert({
+        return db.computeTarget.upsert({
           where: {
             userId_machineName: {
               userId,
@@ -385,11 +412,15 @@ export const computeTargetsService = {
         });
       });
 
-      return toComputeTarget(target as ComputeTargetRecord) as ComputeTarget;
+      if (isComputeTargetGatewayConflictResult(target)) {
+        return target;
+      }
+
+      return toRequiredComputeTarget(target);
     }
 
     const target = await withDb((db) =>
-      asExtendedDb(db).computeTarget.upsert({
+      db.computeTarget.upsert({
         where: {
           userId_machineName: {
             userId,
@@ -416,7 +447,7 @@ export const computeTargetsService = {
       })
     );
 
-    return toComputeTarget(target as ComputeTargetRecord) as ComputeTarget;
+    return toRequiredComputeTarget(target);
   },
 
   async listByOwner(
@@ -434,11 +465,7 @@ export const computeTargetsService = {
       })
     );
 
-    return toComputeTargetList(
-      targets as ComputeTargetRecord[],
-      userId,
-      clerkUserId
-    );
+    return toComputeTargetList(targets, userId, clerkUserId);
   },
 
   findById(id: string): Promise<ComputeTargetRecord | null> {
@@ -446,7 +473,7 @@ export const computeTargetsService = {
       db.computeTarget.findUnique({
         where: { id },
       })
-    ) as Promise<ComputeTargetRecord | null>;
+    );
   },
 
   async findOwnedById(
@@ -465,8 +492,7 @@ export const computeTargetsService = {
       })
     );
 
-    const record = target as ComputeTargetRecord | null;
-    if (!record) {
+    if (!target) {
       return null;
     }
     const desktopSecurityEnabled = await isDesktopManagedPopEnforcementEnabled({
@@ -477,14 +503,14 @@ export const computeTargetsService = {
       ? await loadProtectedGateways(
           organizationId,
           userId,
-          record.gatewayId ? [record.gatewayId] : []
+          target.gatewayId ? [target.gatewayId] : []
         )
       : { protectedGateways: new Set<string>(), lookupFailed: false };
     return toComputeTarget(
-      record,
+      target,
       userId,
       buildSecurity(
-        record,
+        target,
         userId,
         protectedGateways,
         lookupFailed,
@@ -499,11 +525,11 @@ export const computeTargetsService = {
     userId: string,
     payload: UpdateComputeTargetInput,
     clerkUserId?: string | null
-  ): Promise<ComputeTarget | null> {
+  ): Promise<ComputeTarget | ComputeTargetGatewayConflictResult | null> {
     try {
       if (payload.gatewayId) {
         const conflictingGateway = await withDb((db) =>
-          asExtendedDb(db).computeTarget.findFirst({
+          db.computeTarget.findFirst({
             where: {
               gatewayId: payload.gatewayId,
               OR: [
@@ -516,12 +542,12 @@ export const computeTargetsService = {
           })
         );
         if (conflictingGateway) {
-          throw new ComputeTargetGatewayConflictError();
+          return computeTargetGatewayConflictResult;
         }
       }
 
       const existing = await withDb((db) =>
-        asExtendedDb(db).computeTarget.findFirst({
+        db.computeTarget.findFirst({
           where: { id, organizationId, userId },
           select: { capabilities: true },
         })
@@ -530,11 +556,9 @@ export const computeTargetsService = {
         return null;
       }
 
-      const existingCapabilities = (
-        existing as Pick<ComputeTargetRecord, "capabilities">
-      ).capabilities;
+      const existingCapabilities = existing.capabilities;
       const updated = await withDb((db) =>
-        asExtendedDb(db).computeTarget.update({
+        db.computeTarget.update({
           where: { id, organizationId, userId },
           data: {
             ...(payload.machineName
@@ -557,7 +581,6 @@ export const computeTargetsService = {
           },
         })
       );
-      const record = updated as ComputeTargetRecord;
       const desktopSecurityEnabled =
         await isDesktopManagedPopEnforcementEnabled({
           userId,
@@ -567,14 +590,14 @@ export const computeTargetsService = {
         ? await loadProtectedGateways(
             organizationId,
             userId,
-            record.gatewayId ? [record.gatewayId] : []
+            updated.gatewayId ? [updated.gatewayId] : []
           )
         : { protectedGateways: new Set<string>(), lookupFailed: false };
       return toComputeTarget(
-        record,
+        updated,
         userId,
         buildSecurity(
-          record,
+          updated,
           userId,
           protectedGateways,
           lookupFailed,
@@ -582,7 +605,7 @@ export const computeTargetsService = {
         )
       );
     } catch (error) {
-      if ((error as { code?: string }).code === "P2025") {
+      if (getPrismaErrorCode(error) === "P2025") {
         return null;
       }
       throw error;
@@ -713,11 +736,7 @@ export const computeTargetsService = {
       })
     );
 
-    return toComputeTargetList(
-      targets as ComputeTargetRecord[],
-      userId,
-      clerkUserId
-    );
+    return toComputeTargetList(targets, userId, clerkUserId);
   },
 
   /**
@@ -739,7 +758,7 @@ export const computeTargetsService = {
       })
     );
 
-    return toComputeTarget(target as ComputeTargetRecord | null);
+    return toComputeTarget(target);
   },
 
   async setSharing(
@@ -758,7 +777,7 @@ export const computeTargetsService = {
       );
       return updated;
     } catch (error) {
-      if ((error as { code?: string }).code === "P2025") {
+      if (getPrismaErrorCode(error) === "P2025") {
         return null;
       }
       throw error;

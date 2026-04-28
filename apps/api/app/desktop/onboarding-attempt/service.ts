@@ -32,18 +32,6 @@ function createAttemptId(): string {
   return randomBytes(32).toString("base64url");
 }
 
-type DesktopOnboardingAttemptDb = {
-  desktopOnboardingAttempt: {
-    create(args: unknown): Promise<unknown>;
-    findUnique(args: unknown): Promise<DesktopOnboardingAttemptRecord | null>;
-    updateMany(args: unknown): Promise<{ count: number }>;
-  };
-};
-
-function asDesktopOnboardingAttemptDb(db: unknown): DesktopOnboardingAttemptDb {
-  return db as DesktopOnboardingAttemptDb;
-}
-
 export const desktopOnboardingAttemptsService = {
   /**
    * Persists a new onboarding attempt with a fixed 60 minute TTL.
@@ -55,7 +43,7 @@ export const desktopOnboardingAttemptsService = {
     const expiresAt = new Date(Date.now() + DESKTOP_ONBOARDING_ATTEMPT_TTL_MS);
 
     await withDb((db) =>
-      asDesktopOnboardingAttemptDb(db).desktopOnboardingAttempt.create({
+      db.desktopOnboardingAttempt.create({
         data: {
           attemptId: onboardingAttemptId,
           userId: input.userId,
@@ -80,7 +68,7 @@ export const desktopOnboardingAttemptsService = {
     onboardingAttemptId: string
   ): Promise<DesktopOnboardingAttemptRecord | null> {
     return withDb((db) =>
-      asDesktopOnboardingAttemptDb(db).desktopOnboardingAttempt.findUnique({
+      db.desktopOnboardingAttempt.findUnique({
         where: { attemptId: onboardingAttemptId },
       })
     );
@@ -92,7 +80,7 @@ export const desktopOnboardingAttemptsService = {
   async consume(onboardingAttemptId: string): Promise<boolean> {
     const now = new Date();
     const { count } = await withDb((db) =>
-      asDesktopOnboardingAttemptDb(db).desktopOnboardingAttempt.updateMany({
+      db.desktopOnboardingAttempt.updateMany({
         where: {
           attemptId: onboardingAttemptId,
           consumedAt: null,

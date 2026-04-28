@@ -1,22 +1,19 @@
 import "server-only";
 
 import { z } from "zod";
-import { uuidV4Validator } from "@/app/compute-targets/validators";
+import { uuidValidator } from "@/app/compute-targets/validators";
 import {
   desktopContractError,
   desktopContractSuccess,
 } from "@/app/desktop/contract";
 import { canonicalizeTrustedOrigin } from "@/lib/auth/canonical-trusted-origin";
 import { normalizeEd25519SpkiPublicKeyPem } from "@/lib/auth/ed25519-spki-pem";
-import {
-  DesktopDeviceSessionRateLimitError,
-  desktopDeviceOnboardingService,
-} from "../service";
+import { desktopDeviceOnboardingService } from "../service";
 
 const startRequestValidator = z
   .object({
     webAppOrigin: z.string().trim().min(1).max(2048),
-    gatewayId: uuidV4Validator,
+    gatewayId: uuidValidator,
     gatewayPublicKeyPem: z.string().trim().min(1).max(16_384),
     machineName: z.string().trim().min(1).max(120),
     platform: z.string().trim().min(1).max(80),
@@ -59,6 +56,9 @@ export async function POST(request: Request) {
       gatewayPublicKeyPem,
       requestIp: getRequestIp(request),
     });
+    if (result.status === "rate_limited") {
+      return desktopContractError(429, "DEVICE_SESSION_RATE_LIMITED", true);
+    }
     return desktopContractSuccess({
       deviceSessionId: result.deviceSessionId,
       deviceSessionSecret: result.deviceSessionSecret,
@@ -67,10 +67,7 @@ export async function POST(request: Request) {
       expiresAt: result.expiresAt.toISOString(),
       pollIntervalSeconds: result.pollIntervalSeconds,
     });
-  } catch (error) {
-    if (error instanceof DesktopDeviceSessionRateLimitError) {
-      return desktopContractError(429, "DEVICE_SESSION_RATE_LIMITED", true);
-    }
+  } catch {
     return desktopContractError(503, "DEVICE_SESSION_PERSIST_FAILED", true);
   }
 }

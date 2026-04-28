@@ -13,8 +13,8 @@ import {
   successResponse,
 } from "@/lib/route-utils";
 import {
-  ComputeTargetGatewayConflictError,
   computeTargetsService,
+  isComputeTargetGatewayConflictResult,
 } from "../service";
 import { updateComputeTargetValidator } from "../validators";
 
@@ -51,6 +51,12 @@ export const PUT = withAnyAuth<ComputeTarget, "/compute-targets/[id]">(
         user.clerkId
       );
 
+      if (isComputeTargetGatewayConflictResult(target)) {
+        return conflictResponse(
+          "That Desktop gateway is already registered to another compute target"
+        );
+      }
+
       if (!target) {
         return notFoundResponse("Compute target");
       }
@@ -60,11 +66,6 @@ export const PUT = withAnyAuth<ComputeTarget, "/compute-targets/[id]">(
       if (isUniqueConstraintError(error)) {
         return conflictResponse(
           "A compute target with that machine name already exists"
-        );
-      }
-      if (error instanceof ComputeTargetGatewayConflictError) {
-        return conflictResponse(
-          "That Desktop gateway is already registered to another compute target"
         );
       }
       return errorResponse("Failed to update compute target", error);
