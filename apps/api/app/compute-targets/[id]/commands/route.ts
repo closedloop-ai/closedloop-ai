@@ -49,6 +49,7 @@ async function dispatchToRelay(
   if (!wireCommand) {
     log.error("Failed to convert relay operation to wire command", {
       targetId,
+      computeTargetId: targetId,
       commandId,
     });
     return false;
@@ -76,6 +77,7 @@ async function dispatchToRelay(
       const result = await response.json().catch(() => ({ delivered: true }));
       log.info("Relay dispatch result", {
         targetId,
+        computeTargetId: targetId,
         commandId,
         delivered: result.delivered,
         reason: result.reason,
@@ -85,6 +87,7 @@ async function dispatchToRelay(
     const body = await response.text().catch(() => "");
     log.error("Relay dispatch failed", {
       targetId,
+      computeTargetId: targetId,
       commandId,
       status: response.status,
       body,
@@ -93,6 +96,7 @@ async function dispatchToRelay(
   } catch (dispatchError) {
     log.error("Failed to dispatch command to relay", {
       targetId,
+      computeTargetId: targetId,
       commandId,
       error: dispatchError,
     });
@@ -273,6 +277,7 @@ export const POST = withAnyAuth<
       log.info("Dispatching command to relay", {
         relayApiUrl,
         targetId: target.id,
+        computeTargetId: target.id,
         commandId,
         deduped: createResult.deduped,
       });
@@ -290,6 +295,7 @@ export const POST = withAnyAuth<
     } else {
       log.info("Using in-process relay bus (no RELAY_API_URL)", {
         targetId: target.id,
+        computeTargetId: target.id,
         commandId,
       });
       relayEventBus.publishOperation(target.id, relayOperation);

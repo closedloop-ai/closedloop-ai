@@ -10,6 +10,9 @@ export type DesktopOnboardingAttemptRecord = {
   webAppOrigin: string;
   expiresAt: Date;
   consumedAt: Date | null;
+  flowType?: string | null;
+  computeTargetId?: string | null;
+  gatewayId?: string | null;
 };
 
 /** Creates and persists a single-use onboarding attempt for desktop bootstrap. */
@@ -17,10 +20,28 @@ type CreateDesktopOnboardingAttemptInput = {
   userId: string;
   organizationId: string;
   webAppOrigin: string;
+  flowType?:
+    | "installer_handoff"
+    | "compute_target_upgrade"
+    | "desktop_first_connect";
+  computeTargetId?: string;
+  gatewayId?: string;
 };
 
 function createAttemptId(): string {
   return randomBytes(32).toString("base64url");
+}
+
+type DesktopOnboardingAttemptDb = {
+  desktopOnboardingAttempt: {
+    create(args: unknown): Promise<unknown>;
+    findUnique(args: unknown): Promise<DesktopOnboardingAttemptRecord | null>;
+    updateMany(args: unknown): Promise<{ count: number }>;
+  };
+};
+
+function asDesktopOnboardingAttemptDb(db: unknown): DesktopOnboardingAttemptDb {
+  return db as DesktopOnboardingAttemptDb;
 }
 
 export const desktopOnboardingAttemptsService = {
@@ -34,7 +55,7 @@ export const desktopOnboardingAttemptsService = {
     const expiresAt = new Date(Date.now() + DESKTOP_ONBOARDING_ATTEMPT_TTL_MS);
 
     await withDb((db) =>
-      db.desktopOnboardingAttempt.create({
+      asDesktopOnboardingAttemptDb(db).desktopOnboardingAttempt.create({
         data: {
           attemptId: onboardingAttemptId,
           userId: input.userId,
@@ -42,6 +63,9 @@ export const desktopOnboardingAttemptsService = {
           webAppOrigin: input.webAppOrigin,
           expiresAt,
           consumedAt: null,
+          flowType: input.flowType ?? null,
+          computeTargetId: input.computeTargetId ?? null,
+          gatewayId: input.gatewayId ?? null,
         },
       })
     );
@@ -56,7 +80,7 @@ export const desktopOnboardingAttemptsService = {
     onboardingAttemptId: string
   ): Promise<DesktopOnboardingAttemptRecord | null> {
     return withDb((db) =>
-      db.desktopOnboardingAttempt.findUnique({
+      asDesktopOnboardingAttemptDb(db).desktopOnboardingAttempt.findUnique({
         where: { attemptId: onboardingAttemptId },
       })
     );
@@ -68,7 +92,7 @@ export const desktopOnboardingAttemptsService = {
   async consume(onboardingAttemptId: string): Promise<boolean> {
     const now = new Date();
     const { count } = await withDb((db) =>
-      db.desktopOnboardingAttempt.updateMany({
+      asDesktopOnboardingAttemptDb(db).desktopOnboardingAttempt.updateMany({
         where: {
           attemptId: onboardingAttemptId,
           consumedAt: null,

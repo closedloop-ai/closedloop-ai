@@ -142,6 +142,8 @@ The pipeline rule requirement varies by emission path:
 
 `@origin:` is always top-level and queryable without the rule regardless of path (see [Prerequisites](#prerequisites--datadog-pipeline)).
 
+For desktop target traceability, prefer `@computeTargetId:"<compute-target-id>"` on API/app logs and `@trace.computeTargetId:"<compute-target-id>"` on structured telemetry. `targetId` may still appear in relay protocol payloads, path params, and older log rows, but new logs should expose `computeTargetId` as the stable Datadog field.
+
 ### API-origin events (origin: `api`)
 
 | Query | Category |
@@ -164,6 +166,7 @@ These arrive via `handleTelemetryEvent()` which sets `origin = Origin.Desktop`. 
 | Query | Category |
 |---|---|
 | `@category:"job.started" @origin:"desktop"` | `TelemetryCategory.JobStarted` |
+| `@category:"job.plan_source_resolved" @origin:"desktop" @trace.loopId:"<loop-id>"` | `TelemetryCategory.JobPlanSourceResolved` — EXECUTE plan staging source plus safe plan hashes/lengths in `diagnostics.planSource` |
 | `@category:"job.completed" @origin:"desktop"` | `TelemetryCategory.JobCompleted` |
 | `@category:"job.failed" @origin:"desktop"` | `TelemetryCategory.JobFailed` |
 | `@category:"command.timeout" @origin:"desktop"` | `TelemetryCategory.CommandTimeout` |

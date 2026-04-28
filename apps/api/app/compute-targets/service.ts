@@ -1,13 +1,24 @@
 import type { JsonObject } from "@repo/api/src/types/common";
 import type {
   ComputeTarget,
+  ComputeTargetSecurity,
   RegisterComputeTargetInput,
   UpdateComputeTargetInput,
 } from "@repo/api/src/types/compute-target";
-import { withDb } from "@repo/database";
+import { DESKTOP_SECURITY_STATUS } from "@repo/api/src/types/compute-target";
+import { ApiKeySource, withDb } from "@repo/database";
+import { isDesktopManagedPopEnforcementEnabled } from "@/lib/auth/desktop-managed-pop";
 import { isRecord } from "@/lib/type-guards";
 
 export const COMPUTE_TARGET_STALE_MS = 90_000;
+export const DESKTOP_SECURITY_UPGRADE_PROTOCOL_VERSION = 1;
+
+export class ComputeTargetGatewayConflictError extends Error {
+  constructor() {
+    super("Desktop gateway identity is already bound to another target");
+    this.name = "ComputeTargetGatewayConflictError";
+  }
+}
 
 type ComputeTargetRecord = {
   id: string;
@@ -20,10 +31,30 @@ type ComputeTargetRecord = {
   lastSeenAt: Date;
   isOnline: boolean;
   isSharedWithOrg: boolean;
+  gatewayId?: string | null;
   createdAt: Date;
   updatedAt: Date;
   user?: { firstName: string | null; lastName: string | null } | null;
 };
+
+type ExtendedDbClient = {
+  computeTarget: {
+    findFirst(args: unknown): Promise<unknown>;
+    findMany(args: unknown): Promise<unknown[]>;
+    findUnique(args: unknown): Promise<unknown>;
+    update(args: unknown): Promise<unknown>;
+    updateMany(args: unknown): Promise<{ count: number }>;
+    upsert(args: unknown): Promise<unknown>;
+    deleteMany(args: unknown): Promise<{ count: number }>;
+  };
+  apiKey: {
+    findMany(args: unknown): Promise<Array<{ gatewayId: string | null }>>;
+  };
+};
+
+function asExtendedDb(db: unknown): ExtendedDbClient {
+  return db as ExtendedDbClient;
+}
 
 function toJsonObject(value: unknown): JsonObject {
   return isRecord(value) ? (value as JsonObject) : {};
@@ -34,6 +65,137 @@ function toStringArray(value: unknown): string[] {
     return [];
   }
   return value.filter((entry): entry is string => typeof entry === "string");
+}
+
+function getDesktopSecurityProtocolVersion(
+  target: Pick<ComputeTargetRecord, "capabilities">
+): number | null {
+  const capabilities = toJsonObject(target.capabilities);
+  const value = capabilities.desktopSecurityUpgradeProtocolVersion;
+  return typeof value === "number" && Number.isInteger(value) ? value : null;
+}
+
+function buildCapabilitiesPayload(
+  payload: RegisterComputeTargetInput | UpdateComputeTargetInput,
+  existingCapabilities?: unknown
+): JsonObject {
+  const capabilities = {
+    ...(payload.capabilities ?? toJsonObject(existingCapabilities)),
+  } as JsonObject;
+
+  if ("allowedDirectories" in payload && payload.allowedDirectories) {
+    capabilities.allowedDirectories = payload.allowedDirectories;
+  }
+  if ("pluginVersion" in payload && payload.pluginVersion) {
+    capabilities.pluginVersion = payload.pluginVersion;
+  }
+  if (payload.desktopSecurityUpgradeProtocolVersion) {
+    capabilities.desktopSecurityUpgradeProtocolVersion =
+      payload.desktopSecurityUpgradeProtocolVersion;
+  }
+
+  return capabilities;
+}
+
+function buildSecurity(
+  target: ComputeTargetRecord,
+  viewerUserId: string | undefined,
+  protectedGateways: Set<string>,
+  lookupFailed: boolean,
+  desktopSecurityEnabled: boolean
+): ComputeTargetSecurity {
+  if (!desktopSecurityEnabled) {
+    return {
+      status: DESKTOP_SECURITY_STATUS.LegacyManual,
+      reason: "FEATURE_DISABLED",
+      upgradeSupported: false,
+    };
+  }
+
+  const isOwnedByViewer = viewerUserId ? target.userId === viewerUserId : true;
+  if (!isOwnedByViewer) {
+    return {
+      status: DESKTOP_SECURITY_STATUS.UpdateRequired,
+      reason: "SHARED_TARGET",
+      upgradeSupported: false,
+    };
+  }
+  if (lookupFailed) {
+    return {
+      status: DESKTOP_SECURITY_STATUS.Unknown,
+      reason: "LOOKUP_FAILED",
+      upgradeSupported: false,
+    };
+  }
+  if (target.gatewayId && protectedGateways.has(target.gatewayId)) {
+    return {
+      status: DESKTOP_SECURITY_STATUS.Protected,
+      reason: "BOUND_DESKTOP_MANAGED_KEY",
+      upgradeSupported: false,
+    };
+  }
+  if (!target.isOnline) {
+    return {
+      status: DESKTOP_SECURITY_STATUS.LegacyManual,
+      reason: "TARGET_OFFLINE",
+      upgradeSupported: false,
+    };
+  }
+  if (!target.gatewayId) {
+    return {
+      status: DESKTOP_SECURITY_STATUS.UpdateRequired,
+      reason: "MISSING_GATEWAY_ID",
+      upgradeSupported: false,
+    };
+  }
+  if (
+    getDesktopSecurityProtocolVersion(target) !==
+    DESKTOP_SECURITY_UPGRADE_PROTOCOL_VERSION
+  ) {
+    return {
+      status: DESKTOP_SECURITY_STATUS.UpdateRequired,
+      reason: "UNSUPPORTED_DESKTOP_VERSION",
+      upgradeSupported: false,
+    };
+  }
+  return {
+    status: DESKTOP_SECURITY_STATUS.UpgradeAvailable,
+    reason: "NO_BOUND_MANAGED_KEY",
+    upgradeSupported: true,
+  };
+}
+
+async function loadProtectedGateways(
+  organizationId: string,
+  userId: string,
+  gatewayIds: string[]
+): Promise<{ protectedGateways: Set<string>; lookupFailed: boolean }> {
+  if (gatewayIds.length === 0) {
+    return { protectedGateways: new Set(), lookupFailed: false };
+  }
+  try {
+    const keys = await withDb((db) =>
+      asExtendedDb(db).apiKey.findMany({
+        where: {
+          organizationId,
+          userId,
+          source: ApiKeySource.DESKTOP_MANAGED,
+          revokedAt: null,
+          gatewayId: { in: gatewayIds },
+          boundPublicKey: { not: null },
+        },
+        select: { gatewayId: true },
+      })
+    );
+    return {
+      protectedGateways: new Set(
+        keys.flatMap((key) => (key.gatewayId ? [key.gatewayId] : []))
+      ),
+      lookupFailed: false,
+    };
+  } catch {
+    return { protectedGateways: new Set(), lookupFailed: true };
+  }
 }
 
 function formatOwnerName(
@@ -49,7 +211,8 @@ function formatOwnerName(
 function toComputeTarget(
   target: ComputeTargetRecord | null,
   /** When set, ownerName is populated for targets not owned by this user. */
-  viewerUserId?: string
+  viewerUserId?: string,
+  security?: ComputeTargetSecurity
 ): ComputeTarget | null {
   if (!target) {
     return null;
@@ -63,42 +226,66 @@ function toComputeTarget(
     userId: target.userId,
     machineName: target.machineName,
     platform: target.platform,
+    gatewayId: target.gatewayId ?? undefined,
     capabilities: toJsonObject(target.capabilities),
     supportedOperations: toStringArray(target.supportedOperations),
     lastSeenAt: target.lastSeenAt,
     isOnline: target.isOnline,
     isSharedWithOrg: target.isSharedWithOrg,
+    security:
+      security ?? buildSecurity(target, viewerUserId, new Set(), false, false),
     ownerName: isOwnedByViewer ? undefined : formatOwnerName(target.user),
     createdAt: target.createdAt,
     updatedAt: target.updatedAt,
   };
 }
 
-function toComputeTargetList(
+async function toComputeTargetList(
   targets: ComputeTargetRecord[],
-  viewerUserId?: string
-): ComputeTarget[] {
+  viewerUserId?: string,
+  viewerClerkUserId?: string | null
+): Promise<ComputeTarget[]> {
+  const desktopSecurityEnabled = viewerUserId
+    ? await isDesktopManagedPopEnforcementEnabled({
+        userId: viewerUserId,
+        clerkUserId: viewerClerkUserId,
+      })
+    : false;
+  const viewerOwnedGateways = Array.from(
+    new Set(
+      targets.flatMap((target) =>
+        target.userId === viewerUserId && target.gatewayId
+          ? [target.gatewayId]
+          : []
+      )
+    )
+  );
+  const firstViewerTarget = targets.find(
+    (target) => target.userId === viewerUserId
+  );
+  const { protectedGateways, lookupFailed } =
+    firstViewerTarget && viewerUserId && desktopSecurityEnabled
+      ? await loadProtectedGateways(
+          firstViewerTarget.organizationId,
+          viewerUserId,
+          viewerOwnedGateways
+        )
+      : { protectedGateways: new Set<string>(), lookupFailed: false };
+
   return targets.flatMap((target) => {
-    const mapped = toComputeTarget(target, viewerUserId);
+    const mapped = toComputeTarget(
+      target,
+      viewerUserId,
+      buildSecurity(
+        target,
+        viewerUserId,
+        protectedGateways,
+        lookupFailed,
+        desktopSecurityEnabled
+      )
+    );
     return mapped ? [mapped] : [];
   });
-}
-
-function buildCapabilitiesPayload(
-  payload: RegisterComputeTargetInput
-): JsonObject {
-  const capabilities = {
-    ...(payload.capabilities ?? {}),
-  } as JsonObject;
-
-  if (payload.allowedDirectories) {
-    capabilities.allowedDirectories = payload.allowedDirectories;
-  }
-  if (payload.pluginVersion) {
-    capabilities.pluginVersion = payload.pluginVersion;
-  }
-
-  return capabilities;
 }
 
 export const computeTargetsService = {
@@ -108,8 +295,101 @@ export const computeTargetsService = {
     payload: RegisterComputeTargetInput
   ): Promise<ComputeTarget> {
     const now = new Date();
+    const capabilities = buildCapabilitiesPayload(payload);
+
+    if (payload.gatewayId) {
+      const target = await withDb(async (db) => {
+        const extendedDb = asExtendedDb(db);
+        const conflictingGateway = await extendedDb.computeTarget.findFirst({
+          where: {
+            gatewayId: payload.gatewayId,
+            OR: [
+              { organizationId: { not: organizationId } },
+              { userId: { not: userId } },
+            ],
+          },
+          select: { id: true },
+        });
+        if (conflictingGateway) {
+          throw new ComputeTargetGatewayConflictError();
+        }
+
+        const gatewayTarget = await extendedDb.computeTarget.findFirst({
+          where: {
+            organizationId,
+            userId,
+            gatewayId: payload.gatewayId,
+          },
+        });
+        if (gatewayTarget) {
+          return extendedDb.computeTarget.update({
+            where: { id: (gatewayTarget as ComputeTargetRecord).id },
+            data: {
+              machineName: payload.machineName,
+              platform: payload.platform,
+              capabilities,
+              supportedOperations: payload.supportedOperations,
+              isOnline: true,
+              lastSeenAt: now,
+            },
+          });
+        }
+
+        const machineTarget = await extendedDb.computeTarget.findFirst({
+          where: {
+            organizationId,
+            userId,
+            machineName: payload.machineName,
+          },
+        });
+        if (machineTarget) {
+          return extendedDb.computeTarget.update({
+            where: { id: (machineTarget as ComputeTargetRecord).id },
+            data: {
+              gatewayId: payload.gatewayId,
+              platform: payload.platform,
+              capabilities,
+              supportedOperations: payload.supportedOperations,
+              isOnline: true,
+              lastSeenAt: now,
+            },
+          });
+        }
+
+        return extendedDb.computeTarget.upsert({
+          where: {
+            userId_machineName: {
+              userId,
+              machineName: payload.machineName,
+            },
+          },
+          update: {
+            gatewayId: payload.gatewayId,
+            platform: payload.platform,
+            capabilities,
+            supportedOperations: payload.supportedOperations,
+            isOnline: true,
+            lastSeenAt: now,
+          },
+          create: {
+            organizationId,
+            userId,
+            gatewayId: payload.gatewayId,
+            machineName: payload.machineName,
+            platform: payload.platform,
+            capabilities,
+            supportedOperations: payload.supportedOperations,
+            isOnline: true,
+            lastSeenAt: now,
+          },
+        });
+      });
+
+      return toComputeTarget(target as ComputeTargetRecord) as ComputeTarget;
+    }
+
     const target = await withDb((db) =>
-      db.computeTarget.upsert({
+      asExtendedDb(db).computeTarget.upsert({
         where: {
           userId_machineName: {
             userId,
@@ -118,7 +398,7 @@ export const computeTargetsService = {
         },
         update: {
           platform: payload.platform,
-          capabilities: buildCapabilitiesPayload(payload),
+          capabilities,
           supportedOperations: payload.supportedOperations,
           isOnline: true,
           lastSeenAt: now,
@@ -128,7 +408,7 @@ export const computeTargetsService = {
           userId,
           machineName: payload.machineName,
           platform: payload.platform,
-          capabilities: buildCapabilitiesPayload(payload),
+          capabilities,
           supportedOperations: payload.supportedOperations,
           isOnline: true,
           lastSeenAt: now,
@@ -141,7 +421,8 @@ export const computeTargetsService = {
 
   async listByOwner(
     organizationId: string,
-    userId: string
+    userId: string,
+    clerkUserId?: string | null
   ): Promise<ComputeTarget[]> {
     const targets = await withDb((db) =>
       db.computeTarget.findMany({
@@ -153,7 +434,11 @@ export const computeTargetsService = {
       })
     );
 
-    return toComputeTargetList(targets);
+    return toComputeTargetList(
+      targets as ComputeTargetRecord[],
+      userId,
+      clerkUserId
+    );
   },
 
   findById(id: string): Promise<ComputeTargetRecord | null> {
@@ -167,7 +452,8 @@ export const computeTargetsService = {
   async findOwnedById(
     id: string,
     organizationId: string,
-    userId: string
+    userId: string,
+    clerkUserId?: string | null
   ): Promise<ComputeTarget | null> {
     const target = await withDb((db) =>
       db.computeTarget.findFirst({
@@ -179,34 +465,122 @@ export const computeTargetsService = {
       })
     );
 
-    return toComputeTarget(target as ComputeTargetRecord | null);
+    const record = target as ComputeTargetRecord | null;
+    if (!record) {
+      return null;
+    }
+    const desktopSecurityEnabled = await isDesktopManagedPopEnforcementEnabled({
+      userId,
+      clerkUserId,
+    });
+    const { protectedGateways, lookupFailed } = desktopSecurityEnabled
+      ? await loadProtectedGateways(
+          organizationId,
+          userId,
+          record.gatewayId ? [record.gatewayId] : []
+        )
+      : { protectedGateways: new Set<string>(), lookupFailed: false };
+    return toComputeTarget(
+      record,
+      userId,
+      buildSecurity(
+        record,
+        userId,
+        protectedGateways,
+        lookupFailed,
+        desktopSecurityEnabled
+      )
+    );
   },
 
   async updateOwned(
     id: string,
     organizationId: string,
     userId: string,
-    payload: UpdateComputeTargetInput
+    payload: UpdateComputeTargetInput,
+    clerkUserId?: string | null
   ): Promise<ComputeTarget | null> {
     try {
+      if (payload.gatewayId) {
+        const conflictingGateway = await withDb((db) =>
+          asExtendedDb(db).computeTarget.findFirst({
+            where: {
+              gatewayId: payload.gatewayId,
+              OR: [
+                { organizationId: { not: organizationId } },
+                { userId: { not: userId } },
+                { id: { not: id } },
+              ],
+            },
+            select: { id: true },
+          })
+        );
+        if (conflictingGateway) {
+          throw new ComputeTargetGatewayConflictError();
+        }
+      }
+
+      const existing = await withDb((db) =>
+        asExtendedDb(db).computeTarget.findFirst({
+          where: { id, organizationId, userId },
+          select: { capabilities: true },
+        })
+      );
+      if (!existing) {
+        return null;
+      }
+
+      const existingCapabilities = (
+        existing as Pick<ComputeTargetRecord, "capabilities">
+      ).capabilities;
       const updated = await withDb((db) =>
-        db.computeTarget.update({
+        asExtendedDb(db).computeTarget.update({
           where: { id, organizationId, userId },
           data: {
             ...(payload.machineName
               ? { machineName: payload.machineName }
               : {}),
             ...(payload.platform ? { platform: payload.platform } : {}),
-            ...(payload.capabilities
-              ? { capabilities: payload.capabilities }
+            ...(payload.capabilities !== undefined ||
+            payload.desktopSecurityUpgradeProtocolVersion !== undefined
+              ? {
+                  capabilities: buildCapabilitiesPayload(
+                    payload,
+                    existingCapabilities
+                  ),
+                }
               : {}),
             ...(payload.supportedOperations
               ? { supportedOperations: payload.supportedOperations }
               : {}),
+            ...(payload.gatewayId ? { gatewayId: payload.gatewayId } : {}),
           },
         })
       );
-      return toComputeTarget(updated as ComputeTargetRecord);
+      const record = updated as ComputeTargetRecord;
+      const desktopSecurityEnabled =
+        await isDesktopManagedPopEnforcementEnabled({
+          userId,
+          clerkUserId,
+        });
+      const { protectedGateways, lookupFailed } = desktopSecurityEnabled
+        ? await loadProtectedGateways(
+            organizationId,
+            userId,
+            record.gatewayId ? [record.gatewayId] : []
+          )
+        : { protectedGateways: new Set<string>(), lookupFailed: false };
+      return toComputeTarget(
+        record,
+        userId,
+        buildSecurity(
+          record,
+          userId,
+          protectedGateways,
+          lookupFailed,
+          desktopSecurityEnabled
+        )
+      );
     } catch (error) {
       if ((error as { code?: string }).code === "P2025") {
         return null;
@@ -323,7 +697,8 @@ export const computeTargetsService = {
    */
   async listAvailableForOrg(
     organizationId: string,
-    userId: string
+    userId: string,
+    clerkUserId?: string | null
   ): Promise<ComputeTarget[]> {
     const targets = await withDb((db) =>
       db.computeTarget.findMany({
@@ -338,7 +713,11 @@ export const computeTargetsService = {
       })
     );
 
-    return toComputeTargetList(targets as ComputeTargetRecord[], userId);
+    return toComputeTargetList(
+      targets as ComputeTargetRecord[],
+      userId,
+      clerkUserId
+    );
   },
 
   /**

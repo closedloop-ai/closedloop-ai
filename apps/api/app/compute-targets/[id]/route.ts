@@ -44,7 +44,8 @@ export const PUT = withAnyAuth<ComputeTarget, "/compute-targets/[id]">(
         id,
         user.organizationId,
         user.id,
-        body as UpdateComputeTargetInput
+        body as UpdateComputeTargetInput,
+        user.clerkId
       );
 
       if (!target) {

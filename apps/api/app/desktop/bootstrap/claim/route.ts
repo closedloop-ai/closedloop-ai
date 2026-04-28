@@ -11,34 +11,34 @@ import {
   apiKeysService,
   DesktopManagedKeyRotationConflictError,
 } from "@/app/api-keys/service";
+import { computeTargetsService } from "@/app/compute-targets/service";
+import { uuidV4Validator } from "@/app/compute-targets/validators";
 import {
   type BootstrapClaimResponse,
   desktopContractError,
   desktopContractSuccess,
 } from "@/app/desktop/contract";
 import { desktopOnboardingAttemptsService } from "@/app/desktop/onboarding-attempt/service";
+import { usersService } from "@/app/users/service";
 import { canonicalizeTrustedOrigin } from "@/lib/auth/canonical-trusted-origin";
+import { isDesktopManagedPopEnforcementEnabled } from "@/lib/auth/desktop-managed-pop";
 import { normalizeEd25519SpkiPublicKeyPem } from "@/lib/auth/ed25519-spki-pem";
 
 const bootstrapClaimRequestValidator = z
   .object({
     onboardingAttemptId: z.string().trim().min(1).max(255),
     webAppOrigin: z.string().min(1).max(2048),
-    gatewayId: z
-      .string()
-      .trim()
-      .uuid()
-      .refine(
-        (value) =>
-          value[14] === "4" &&
-          ["8", "9", "a", "b", "A", "B"].includes(value[19] ?? ""),
-        { message: "gatewayId must be a UUID v4" }
-      ),
+    gatewayId: uuidV4Validator,
     gatewayPublicKeyPem: z.string().trim().min(1).max(16_384).optional(),
     // Keep the legacy field name as a compatibility alias during staggered rollouts.
     gatewayPublicKey: z.string().trim().min(1).max(16_384).optional(),
   })
   .strict();
+
+type BootstrapClaimRequest = z.infer<typeof bootstrapClaimRequestValidator>;
+type BootstrapClaimAttempt = Awaited<
+  ReturnType<typeof desktopOnboardingAttemptsService.get>
+>;
 
 /**
  * Returns the exact malformed-body error body required by the claim contract.
@@ -47,10 +47,9 @@ function invalidClaimRequestResponse() {
   return desktopContractError(400, "INVALID_BOOTSTRAP_CLAIM_REQUEST", false);
 }
 
-/**
- * Exchanges a validated onboarding attempt for a desktop-managed API key.
- */
-export async function POST(request: Request) {
+async function readBootstrapClaimRequest(
+  request: Request
+): Promise<BootstrapClaimRequest | Response> {
   let rawBody: unknown;
   try {
     rawBody = await request.json();
@@ -59,36 +58,36 @@ export async function POST(request: Request) {
   }
 
   const parsedBody = bootstrapClaimRequestValidator.safeParse(rawBody);
-  if (!parsedBody.success) {
-    return invalidClaimRequestResponse();
-  }
+  return parsedBody.success ? parsedBody.data : invalidClaimRequestResponse();
+}
 
-  const body = parsedBody.data;
-  const webAppOrigin = canonicalizeTrustedOrigin(body.webAppOrigin);
-  if (!webAppOrigin) {
-    return invalidClaimRequestResponse();
-  }
-
-  let gatewayPublicKeyPem: string | null = null;
+function normalizeGatewayPublicKey(
+  body: BootstrapClaimRequest
+): string | null | Response {
   if (body.gatewayPublicKeyPem) {
-    gatewayPublicKeyPem = normalizeEd25519SpkiPublicKeyPem(
+    const gatewayPublicKeyPem = normalizeEd25519SpkiPublicKeyPem(
       body.gatewayPublicKeyPem
     );
-    if (!gatewayPublicKeyPem) {
-      return desktopContractError(400, "INVALID_GATEWAY_PUBLIC_KEY", false);
-    }
-  } else if (body.gatewayPublicKey) {
-    // Only the preferred v10 field is strict-validating; unusable legacy aliases
-    // degrade to a null-bound DESKTOP_MANAGED key for version-skew safety.
-    gatewayPublicKeyPem =
-      normalizeEd25519SpkiPublicKeyPem(body.gatewayPublicKey) ?? null;
+    return (
+      gatewayPublicKeyPem ??
+      desktopContractError(400, "INVALID_GATEWAY_PUBLIC_KEY", false)
+    );
   }
 
-  let attempt: Awaited<ReturnType<typeof desktopOnboardingAttemptsService.get>>;
+  if (body.gatewayPublicKey) {
+    // Only the preferred v10 field is strict-validating; unusable legacy aliases
+    // degrade to a null-bound DESKTOP_MANAGED key for version-skew safety.
+    return normalizeEd25519SpkiPublicKeyPem(body.gatewayPublicKey) ?? null;
+  }
+
+  return null;
+}
+
+async function loadBootstrapClaimAttempt(
+  onboardingAttemptId: string
+): Promise<BootstrapClaimAttempt | Response> {
   try {
-    attempt = await desktopOnboardingAttemptsService.get(
-      body.onboardingAttemptId
-    );
+    return await desktopOnboardingAttemptsService.get(onboardingAttemptId);
   } catch {
     return desktopContractError(
       503,
@@ -96,9 +95,15 @@ export async function POST(request: Request) {
       true
     );
   }
+}
 
+async function validateBoundClaimAttempt(
+  attempt: NonNullable<BootstrapClaimAttempt>,
+  body: BootstrapClaimRequest,
+  webAppOrigin: string
+): Promise<Response | null> {
   const now = new Date();
-  if (!attempt || attempt.consumedAt || attempt.expiresAt <= now) {
+  if (attempt.consumedAt || attempt.expiresAt <= now) {
     return desktopContractError(
       401,
       "ONBOARDING_ATTEMPT_INVALID_OR_EXPIRED",
@@ -112,6 +117,103 @@ export async function POST(request: Request) {
       "ONBOARDING_ATTEMPT_ORIGIN_MISMATCH",
       false
     );
+  }
+
+  if (attempt.gatewayId && attempt.gatewayId !== body.gatewayId) {
+    return desktopContractError(
+      403,
+      "ONBOARDING_ATTEMPT_GATEWAY_MISMATCH",
+      false
+    );
+  }
+
+  if (!attempt.computeTargetId) {
+    return null;
+  }
+
+  try {
+    const target = await computeTargetsService.findOwnedById(
+      attempt.computeTargetId,
+      attempt.organizationId,
+      attempt.userId
+    );
+    return target && target.gatewayId === body.gatewayId
+      ? null
+      : desktopContractError(403, "ONBOARDING_ATTEMPT_GATEWAY_MISMATCH", false);
+  } catch {
+    return desktopContractError(
+      503,
+      "DESKTOP_MANAGED_KEY_ISSUANCE_FAILED",
+      true
+    );
+  }
+}
+
+/**
+ * Exchanges a validated onboarding attempt for a desktop-managed API key.
+ */
+export async function POST(request: Request) {
+  const body = await readBootstrapClaimRequest(request);
+  if (body instanceof Response) {
+    return body;
+  }
+  const webAppOrigin = canonicalizeTrustedOrigin(body.webAppOrigin);
+  if (!webAppOrigin) {
+    return invalidClaimRequestResponse();
+  }
+
+  const gatewayPublicKeyPem = normalizeGatewayPublicKey(body);
+  if (gatewayPublicKeyPem instanceof Response) {
+    return gatewayPublicKeyPem;
+  }
+
+  const attempt = await loadBootstrapClaimAttempt(body.onboardingAttemptId);
+  if (attempt instanceof Response) {
+    return attempt;
+  }
+  if (!attempt) {
+    return desktopContractError(
+      401,
+      "ONBOARDING_ATTEMPT_INVALID_OR_EXPIRED",
+      false
+    );
+  }
+  let attemptUser: Awaited<ReturnType<typeof usersService.findById>>;
+  try {
+    attemptUser = await usersService.findById(
+      attempt.userId,
+      attempt.organizationId
+    );
+  } catch {
+    return desktopContractError(
+      503,
+      "DESKTOP_MANAGED_KEY_ISSUANCE_FAILED",
+      true
+    );
+  }
+  if (
+    !(
+      attemptUser?.active &&
+      (await isDesktopManagedPopEnforcementEnabled({
+        userId: attempt.userId,
+        clerkUserId: attemptUser.clerkId,
+      }))
+    )
+  ) {
+    return desktopContractError(
+      403,
+      "DESKTOP_SECURITY_UPGRADE_DISABLED",
+      false
+    );
+  }
+
+  const validationError = await validateBoundClaimAttempt(
+    attempt,
+    body,
+    webAppOrigin
+  );
+  if (validationError) {
+    return validationError;
   }
 
   try {

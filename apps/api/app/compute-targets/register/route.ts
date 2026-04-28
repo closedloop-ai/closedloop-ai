@@ -2,9 +2,13 @@ import type {
   RegisterComputeTargetInput,
   RegisterComputeTargetResponse,
 } from "@repo/api/src/types/compute-target";
+import { NextResponse } from "next/server";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { errorResponse, parseBody, successResponse } from "@/lib/route-utils";
-import { computeTargetsService } from "../service";
+import {
+  ComputeTargetGatewayConflictError,
+  computeTargetsService,
+} from "../service";
 import { registerComputeTargetValidator } from "../validators";
 
 /**
@@ -37,6 +41,15 @@ export const POST = withAnyAuth<
       isOnline: true,
     });
   } catch (error) {
+    if (error instanceof ComputeTargetGatewayConflictError) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Desktop gateway identity is already bound to another target",
+        },
+        { status: 409 }
+      );
+    }
     return errorResponse("Failed to register compute target", error);
   }
 });

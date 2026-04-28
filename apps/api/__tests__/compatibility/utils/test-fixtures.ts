@@ -48,11 +48,17 @@ export const mockTarget: ComputeTarget = {
   userId: "user-1",
   machineName: "test-machine",
   platform: "darwin",
+  gatewayId: "550e8400-e29b-41d4-a716-446655440000",
   capabilities: {},
   supportedOperations: ["symphony_chat"],
   lastSeenAt: new Date(),
   isOnline: true,
   isSharedWithOrg: false,
+  security: {
+    status: "protected",
+    reason: "BOUND_DESKTOP_MANAGED_KEY",
+    upgradeSupported: false,
+  },
   createdAt: new Date(),
   updatedAt: new Date(),
 };

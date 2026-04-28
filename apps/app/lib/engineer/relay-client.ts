@@ -562,6 +562,7 @@ export class RelayClient {
         if (resultEvent) {
           const line = mapCommandEventToNdjsonLine(resultEvent);
           log.info("Recovered missed result event via poll fallback", {
+            computeTargetId: targetId,
             commandId,
             attempt,
           });
@@ -572,6 +573,7 @@ export class RelayClient {
         }
       } catch (err) {
         log.warn("Poll fallback for missed result failed", {
+          computeTargetId: targetId,
           commandId,
           attempt,
           error: err instanceof Error ? err.message : String(err),
@@ -732,6 +734,7 @@ export class RelayClient {
         } catch (error) {
           log.error("Relay command event polling failed", {
             targetId,
+            computeTargetId: targetId,
             commandId,
             error,
           });

@@ -56,7 +56,11 @@ export async function POST(request: Request): Promise<Response> {
     }
     return NextResponse.json(result.response);
   } catch (error) {
-    log.error("Internal relay socket-event handler failed", { event, error });
+    log.error("Internal relay socket-event handler failed", {
+      event,
+      computeTargetId: targetId ?? correlation.computeTargetId ?? null,
+      error,
+    });
     scheduleLogFlush();
     return NextResponse.json(
       { error: "Internal server error" },

@@ -56,6 +56,7 @@ beforeEach(() => {
   mockAuthContext = createTestAuthContext({
     user: {
       id: "user-1",
+      clerkId: "clerk-user-1",
       organizationId: "org-1",
     } as any,
   });
@@ -84,7 +85,8 @@ describe("GET /compute-targets", () => {
     });
     expect(computeTargetsService.listAvailableForOrg).toHaveBeenCalledWith(
       "org-1",
-      "user-1"
+      "user-1",
+      "clerk-user-1"
     );
   });
 });

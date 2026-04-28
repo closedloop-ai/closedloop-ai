@@ -126,6 +126,30 @@ describe("resolveDesktopManagedPopMode", () => {
     );
   });
 
+  it("uses the Clerk distinct ID before the database user ID for rollout flags", async () => {
+    mockIsFeatureEnabled
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+
+    await expect(
+      resolveDesktopManagedPopMode({
+        ...makeKeyContext(),
+        clerkUserId: "clerk-user-1",
+      })
+    ).resolves.toBe("enforce");
+
+    expect(mockIsFeatureEnabled).toHaveBeenNthCalledWith(
+      1,
+      "desktop-managed-pop-enforcement",
+      "clerk-user-1"
+    );
+    expect(mockIsFeatureEnabled).toHaveBeenNthCalledWith(
+      2,
+      "desktop-managed-pop-enforcement",
+      "user-1"
+    );
+  });
+
   it("defaults to monitor when the server feature flag is disabled", async () => {
     mockIsFeatureEnabled.mockResolvedValue(false);
 

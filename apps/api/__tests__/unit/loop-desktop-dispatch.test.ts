@@ -62,6 +62,7 @@ vi.mock("@/lib/desktop-gateway-wire", () => ({
 
 import { DocumentType } from "@repo/api/src/types/document";
 import { LoopCommand } from "@repo/api/src/types/loop";
+import { log } from "@repo/observability/log";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { toRelayOperation } from "@/app/compute-targets/relay-command-helpers";
 import {
@@ -287,6 +288,20 @@ describe("dispatchRelayOperation (via launchLoopOnDesktop)", () => {
         pendingTasks: ["task-1"],
       },
     });
+
+    expect(log.info).toHaveBeenCalledWith(
+      "[loop-desktop] Desktop loop command dispatched",
+      expect.objectContaining({
+        implementationPlanArtifactPresent: true,
+        implementationPlanRawContentPresent: true,
+        implementationPlanRawContentMatchesArtifact: false,
+        implementationPlanRawReusableByDesktop: false,
+        implementationPlanContentLength: "Latest markdown".length,
+        implementationPlanRawContentLength: "Older markdown".length,
+        implementationPlanContentHash: expect.any(String),
+        implementationPlanRawContentHash: expect.any(String),
+      })
+    );
   });
 
   it("does NOT throw when relay returns { delivered: false } on the kill (fire-and-forget) path", async () => {

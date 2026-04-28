@@ -1,6 +1,7 @@
 import type { JsonObject } from "@repo/api/src/types/common";
 import { log } from "@repo/observability/log";
 import { authenticateLoopRunner } from "@/lib/auth/loop-runner-jwt";
+import { shortContentHash } from "@/lib/content-hash";
 import {
   errorResponse,
   parseBody,
@@ -9,6 +10,54 @@ import {
 } from "@/lib/route-utils";
 import { loopsService } from "../../service";
 import { uploadArtifactsSchema } from "./validators";
+
+function getRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function getPlanUploadDiagnostics(artifacts: JsonObject): {
+  planArtifactPresent: boolean;
+  planRawRecordPresent: boolean;
+  planRawContentPresent: boolean;
+  planRawContentMatchesArtifact: boolean | null;
+  planRawReusableByDesktop: boolean | null;
+  planContentLength: number | null;
+  planRawContentLength: number | null;
+  planContentHash: string | null;
+  planRawContentHash: string | null;
+} {
+  const planArtifact = getRecord(artifacts.plan);
+  const planContent =
+    typeof planArtifact?.content === "string"
+      ? planArtifact.content
+      : undefined;
+  const rawPlan = getRecord(planArtifact?.raw);
+  const rawPlanContent =
+    typeof rawPlan?.content === "string" ? rawPlan.content : undefined;
+  let planRawReusableByDesktop: boolean | null = null;
+  if (planContent !== undefined && rawPlanContent !== undefined) {
+    planRawReusableByDesktop = rawPlanContent === planContent;
+  } else if (planContent !== undefined) {
+    planRawReusableByDesktop = false;
+  }
+
+  return {
+    planArtifactPresent: planArtifact !== null,
+    planRawRecordPresent: rawPlan !== null,
+    planRawContentPresent: rawPlanContent !== undefined,
+    planRawContentMatchesArtifact:
+      planContent !== undefined && rawPlanContent !== undefined
+        ? rawPlanContent === planContent
+        : null,
+    planRawReusableByDesktop,
+    planContentLength: planContent?.length ?? null,
+    planRawContentLength: rawPlanContent?.length ?? null,
+    planContentHash: shortContentHash(planContent),
+    planRawContentHash: shortContentHash(rawPlanContent),
+  };
+}
 
 /**
  * POST /api/loops/:id/upload-artifacts
@@ -49,23 +98,31 @@ export async function POST(
       });
     }
 
+    const loop = await loopsService.findById(
+      loopId,
+      auth.claims.organizationId
+    );
+    log.info("[upload-artifacts] Desktop artifacts stored", {
+      loopId,
+      organizationId: auth.claims.organizationId,
+      computeTargetId: loop?.computeTargetId ?? null,
+      updatedCount,
+      artifactKeys: Object.keys(body.artifacts),
+      executionResultPresent: body.artifacts.executionResult !== undefined,
+      ...getPlanUploadDiagnostics(body.artifacts as JsonObject),
+    });
+
     // Merge metadata if provided
-    if (body.metadata) {
-      const loop = await loopsService.findById(
+    if (body.metadata && loop) {
+      const mergedMetadata = {
+        ...(loop.metadata ?? {}),
+        ...body.metadata,
+      } as JsonObject;
+      await loopsService.updateMetadata(
         loopId,
-        auth.claims.organizationId
+        auth.claims.organizationId,
+        mergedMetadata
       );
-      if (loop) {
-        const mergedMetadata = {
-          ...(loop.metadata ?? {}),
-          ...body.metadata,
-        } as JsonObject;
-        await loopsService.updateMetadata(
-          loopId,
-          auth.claims.organizationId,
-          mergedMetadata
-        );
-      }
     }
 
     scheduleLogFlush();
