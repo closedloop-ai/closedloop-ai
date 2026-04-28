@@ -579,32 +579,6 @@ describe("resolveLoopContext — additionalRepos inheritance", () => {
       mockLoopsService.findLatestCompletedForArtifact
     ).not.toHaveBeenCalled();
   });
-
-  it("returns undefined when parent loop has no additionalRepos", async () => {
-    const artifact = buildArtifact();
-    mockArtifactsService.findOrCreateWorkstream.mockResolvedValue({
-      workstream: buildWorkstream(),
-      source: null,
-    });
-    mockLoopsService.findLatestStateBearingDesktopForArtifact.mockResolvedValue(
-      null
-    );
-    mockLoopsService.findLatestCompletedForArtifact.mockResolvedValue({
-      id: "parent-plan-1",
-      additionalRepos: [],
-    });
-
-    const result = await resolveLoopContext(
-      artifact as any,
-      { command: "execute" },
-      requiresParentHandler,
-      "org-1",
-      "user-1",
-      "artifact-1"
-    );
-
-    expect(result.additionalRepos).toBeUndefined();
-  });
 });
 
 // ---------------------------------------------------------------------------

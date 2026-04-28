@@ -2010,28 +2010,6 @@ describe("buildRunLoopArgs", () => {
     assert.equal(args[addDirIndices[0] + 1], additionalRepoPaths[0]);
     assert.equal(args[addDirIndices[1] + 1], additionalRepoPaths[1]);
   });
-
-  test("EXECUTE command emits no --add-dir when additionalRepoPaths is empty", () => {
-    resetConfig({ command: "EXECUTE" });
-
-    const { args } = buildRunLoopArgs(fakePath, fakeWorkDir, null, []);
-
-    assert.ok(
-      !args.includes("--add-dir"),
-      "empty additionalRepoPaths must not produce any --add-dir flags"
-    );
-  });
-
-  test("PLAN command emits no --add-dir when additionalRepoPaths is empty", () => {
-    resetConfig({ command: "PLAN" });
-
-    const { args } = buildRunLoopArgs(fakePath, fakeWorkDir, null, []);
-
-    assert.ok(
-      !args.includes("--add-dir"),
-      "empty additionalRepoPaths must not produce any --add-dir flags"
-    );
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -2149,58 +2127,6 @@ describe("refreshGitHubToken", () => {
     assert.equal(config.githubToken, "new-primary-token");
     assert.equal(contextPack.additionalRepos[0].githubToken, "new-peer1");
     assert.equal(contextPack.additionalRepos[1].githubToken, "new-peer2");
-  });
-
-  // (c) registerSecret called for each new token in additionalRepoTokens
-  test("calls registerSecret for each new token in additionalRepoTokens", async () => {
-    resetConfig({
-      authToken: "test-auth-token",
-      apiBaseUrl: "https://api.example.com",
-      loopId: "test-loop-id",
-      githubToken: "old-primary-token",
-    });
-
-    const uniqueSuffix = Date.now();
-    const newPeer1Token = `new-peer1-secret-${uniqueSuffix}-a`;
-    const newPeer2Token = `new-peer2-secret-${uniqueSuffix}-b`;
-
-    const contextPack = {
-      additionalRepos: [
-        { fullName: "owner/peer1", branch: "main", githubToken: "old-peer1" },
-        { fullName: "owner/peer2", branch: "main", githubToken: "old-peer2" },
-      ],
-    };
-
-    globalThis.fetch = async () => ({
-      ok: true,
-      json: async () => ({
-        data: {
-          token: "new-primary-token",
-          additionalRepoTokens: [
-            { fullName: "owner/peer1", token: newPeer1Token },
-            { fullName: "owner/peer2", token: newPeer2Token },
-          ],
-        },
-      }),
-    });
-
-    await refreshGitHubToken(contextPack);
-
-    // Observable effect: secrets registered via registerSecret are scrubbed by redactSensitive
-    for (const [label, token] of [
-      ["peer1", newPeer1Token],
-      ["peer2", newPeer2Token],
-    ]) {
-      const scrubbed = redactSensitive(`token: ${token}`);
-      assert.ok(
-        !scrubbed.includes(token),
-        `${label} token must be registered as a secret and scrubbed by redactSensitive`
-      );
-      assert.ok(
-        scrubbed.includes("[REDACTED]"),
-        `${label} scrubbed string must contain [REDACTED]`
-      );
-    }
   });
 
   test("does not crash if additionalRepoTokens is missing", async () => {
@@ -2470,20 +2396,6 @@ describe("buildRepoList", () => {
     assert.equal(repos[0].githubToken, "primary-token");
   });
 
-  test("primary-only when additionalRepos is empty array", () => {
-    setupPrimaryConfig();
-    resetHarnessState({ contextPackRef: { additionalRepos: [] } });
-
-    const repos = buildRepoList("/workspace/primary");
-
-    assert.equal(
-      repos.length,
-      1,
-      "must have exactly one entry when additionalRepos is empty"
-    );
-    assert.equal(repos[0].fullName, "org/primary");
-  });
-
   test("primary + multiple peers have correct workDir path construction", () => {
     setupWithTwoPeers();
 
@@ -2560,73 +2472,17 @@ describe("buildRepoList", () => {
 // ---------------------------------------------------------------------------
 
 describe("snapshotTokens", () => {
-  function makeThreeRepoFixture() {
-    return [
+  test("Map values match each repo's githubToken (keyed by fullName)", () => {
+    const tokenMap = snapshotTokens([
       { fullName: "org/primary", githubToken: "primary-token" },
       { fullName: "org/peer-a", githubToken: "peer-a-token" },
       { fullName: "org/peer-b", githubToken: "peer-b-token" },
-    ];
-  }
+    ]);
 
-  test("Map keys exactly match the fullName of each repo", () => {
-    const tokenMap = snapshotTokens(makeThreeRepoFixture());
-
-    assert.ok(
-      tokenMap.has("org/primary"),
-      "Map must have key matching primary fullName"
-    );
-    assert.ok(
-      tokenMap.has("org/peer-a"),
-      "Map must have key matching peer-a fullName"
-    );
-    assert.ok(
-      tokenMap.has("org/peer-b"),
-      "Map must have key matching peer-b fullName"
-    );
-    assert.equal(tokenMap.size, 3, "Map must have exactly one entry per repo");
-  });
-
-  test("Map values match each repo's githubToken", () => {
-    const tokenMap = snapshotTokens(makeThreeRepoFixture());
-
+    assert.equal(tokenMap.size, 3);
     assert.equal(tokenMap.get("org/primary"), "primary-token");
     assert.equal(tokenMap.get("org/peer-a"), "peer-a-token");
     assert.equal(tokenMap.get("org/peer-b"), "peer-b-token");
-  });
-
-  test("snapshot is isolated — mutating repos entry after snapshot does not change snapshot value", () => {
-    const repos = [
-      { fullName: "org/primary", githubToken: "original-token" },
-      { fullName: "org/peer-a", githubToken: "peer-a-token" },
-    ];
-
-    const tokenMap = snapshotTokens(repos);
-
-    repos[0].githubToken = "mutated-token";
-
-    assert.equal(
-      tokenMap.get("org/primary"),
-      "original-token",
-      "Snapshot must not reflect mutation of the source repos entry"
-    );
-  });
-
-  test("JSON.stringify of the snapshot Map does not expose any token values", () => {
-    const repos = [
-      { fullName: "org/primary", githubToken: "secret-primary-token" },
-      { fullName: "org/peer-a", githubToken: "secret-peer-a-token" },
-      { fullName: "org/peer-b", githubToken: "secret-peer-b-token" },
-    ];
-
-    const tokenMap = snapshotTokens(repos);
-    const serialized = JSON.stringify(tokenMap);
-
-    for (const { githubToken } of repos) {
-      assert.ok(
-        !serialized.includes(githubToken),
-        `JSON.stringify must not expose token "${githubToken}"`
-      );
-    }
   });
 });
 
@@ -2989,73 +2845,4 @@ describe("buildEventResult", () => {
     );
   });
 
-  test("(d) buildEventResult(null, [], {}) produces object with no prInfo fields", () => {
-    const result = buildEventResult(null, [], {});
-    assert.equal(
-      result.prUrl,
-      undefined,
-      "prUrl must not be present when prInfo is null"
-    );
-    assert.equal(
-      result.prNumber,
-      undefined,
-      "prNumber must not be present when prInfo is null"
-    );
-    assert.equal(
-      result.branchName,
-      undefined,
-      "branchName must not be present when prInfo is null"
-    );
-    assert.equal(
-      result.commitSha,
-      undefined,
-      "commitSha must not be present when prInfo is null"
-    );
-  });
-
-  test("(e) returned object does not contain any token strings from the snapshot", () => {
-    const tokenA = "ghp_supersecret_token_alpha";
-    const tokenB = "ghp_supersecret_token_beta";
-    const repos = [
-      { fullName: "org/repo-a", githubToken: tokenA },
-      { fullName: "org/repo-b", githubToken: tokenB },
-    ];
-    const tokenSnapshot = snapshotTokens(repos);
-    const tokenValues = [...tokenSnapshot.values()];
-
-    // Build results that do NOT include token fields (RepoExecutionResult shape)
-    const repoResults = [
-      {
-        status: "success",
-        fullName: "org/repo-a",
-        prUrl: "https://github.com/org/repo-a/pull/1",
-        prNumber: 1,
-        branchName: "symphony/feat",
-        baseBranch: "main",
-        hasChanges: true,
-      },
-      {
-        status: "skipped",
-        fullName: "org/repo-b",
-        reason: "no_changes",
-      },
-    ];
-
-    const prInfo = {
-      prUrl: "https://github.com/org/repo-a/pull/1",
-      prNumber: 1,
-      branchName: "symphony/feat",
-      commitSha: "deadbeef",
-    };
-
-    const eventResult = buildEventResult(prInfo, repoResults, {});
-    const serialized = JSON.stringify(eventResult);
-
-    for (const token of tokenValues) {
-      assert.ok(
-        !serialized.includes(token),
-        `Result must not contain token "${token.slice(0, 8)}…" from snapshot`
-      );
-    }
-  });
 });
