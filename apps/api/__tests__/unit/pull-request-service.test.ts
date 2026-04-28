@@ -1,5 +1,6 @@
+import { Status } from "@repo/api/src/types/result";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { asTx, mockWithDbCall, mockWithDbTx } from "../utils/db-helpers";
+import { mockWithDbCall, mockWithDbTx } from "../utils/db-helpers";
 
 vi.mock("@repo/database", () => ({
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
@@ -35,7 +36,7 @@ import {
 import {
   pullRequestService,
   type UpsertPullRequestArtifactInput,
-} from "@/lib/services/pull-request-service";
+} from "@/app/pull-requests/pull-request-service";
 
 const ORG_ID = "org-1";
 const PROJECT_ID = "proj-1";
@@ -116,7 +117,7 @@ describe("pullRequestService", () => {
         include: { pullRequest: true },
       });
       expect(mockDb.artifact.update).not.toHaveBeenCalled();
-      expect(result).toBe(created);
+      expect(result).toEqual({ ok: true, value: created });
     });
 
     it("updates an existing artifact when detail already exists", async () => {
@@ -162,7 +163,7 @@ describe("pullRequestService", () => {
           mergeCommitSha: "deadbeef",
         }),
       });
-      expect(result).toBe(updated);
+      expect(result).toEqual({ ok: true, value: updated });
     });
 
     it("disconnects workstream when workstreamId is null on update", async () => {
@@ -261,28 +262,7 @@ describe("pullRequestService", () => {
       );
     });
 
-    it("uses the supplied tx instead of opening withDb.tx", async () => {
-      const mockTx = {
-        pullRequestDetail: {
-          findUnique: vi.fn().mockResolvedValue(null),
-        },
-        artifact: {
-          create: vi.fn().mockResolvedValue({ id: "art-1", pullRequest: null }),
-        },
-      };
-      const { withDb } = await import("@repo/database");
-      const txSpy = withDb.tx as unknown as ReturnType<typeof vi.fn>;
-
-      await pullRequestService.upsertPullRequestArtifact(
-        baseUpsertInput(),
-        asTx(mockTx)
-      );
-
-      expect(txSpy).not.toHaveBeenCalled();
-      expect(mockTx.artifact.create).toHaveBeenCalled();
-    });
-
-    it("refuses to update a PR artifact that belongs to a different org", async () => {
+    it("returns Status.NotFound when the PR artifact belongs to a different org", async () => {
       // PullRequestDetail.githubId is globally unique. If a reinstalled App
       // reuses ids, findUnique({ githubId }) can match another org's row.
       // updateExistingPullRequest must re-scope by organizationId via the
@@ -299,16 +279,127 @@ describe("pullRequestService", () => {
       };
       mockWithDbTx(mockDb);
 
-      await expect(
-        pullRequestService.upsertPullRequestArtifact(baseUpsertInput())
-      ).rejects.toThrow("not found in organization");
+      const result = await pullRequestService.upsertPullRequestArtifact(
+        baseUpsertInput()
+      );
 
+      expect(result).toEqual({ ok: false, error: Status.NotFound });
       expect(mockDb.artifact.updateMany).toHaveBeenCalledWith(
         expect.objectContaining({
           where: { id: "cross-org-99", organizationId: ORG_ID },
         })
       );
       expect(mockDb.pullRequestDetail.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("findById", () => {
+    it("returns the artifact + detail when present in the org", async () => {
+      const found = { id: "art-1", pullRequest: { githubId: "gh-1" } };
+      const mockDb = {
+        artifact: { findFirst: vi.fn().mockResolvedValue(found) },
+      };
+      mockWithDbCall(mockDb);
+
+      const result = await pullRequestService.findById("art-1", ORG_ID);
+
+      expect(mockDb.artifact.findFirst).toHaveBeenCalledWith({
+        where: {
+          id: "art-1",
+          organizationId: ORG_ID,
+          type: ArtifactType.PULL_REQUEST,
+        },
+        include: { pullRequest: true },
+      });
+      expect(result).toBe(found);
+    });
+
+    it("returns null when no row matches in the org (cross-org row not returned)", async () => {
+      const mockDb = {
+        artifact: { findFirst: vi.fn().mockResolvedValue(null) },
+      };
+      mockWithDbCall(mockDb);
+
+      const result = await pullRequestService.findById("art-1", ORG_ID);
+
+      expect(result).toBeNull();
+    });
+  });
+
+  describe("list", () => {
+    it("scopes to organizationId and PULL_REQUEST type, ordered desc by createdAt", async () => {
+      const mockDb = {
+        artifact: { findMany: vi.fn().mockResolvedValue([]) },
+      };
+      mockWithDbCall(mockDb);
+
+      await pullRequestService.list({ organizationId: ORG_ID });
+
+      expect(mockDb.artifact.findMany).toHaveBeenCalledWith({
+        where: {
+          organizationId: ORG_ID,
+          type: ArtifactType.PULL_REQUEST,
+        },
+        include: { pullRequest: true },
+        orderBy: { createdAt: "desc" },
+      });
+    });
+
+    it("forwards optional projectId, workstreamId, and prState filters", async () => {
+      const mockDb = {
+        artifact: { findMany: vi.fn().mockResolvedValue([]) },
+      };
+      mockWithDbCall(mockDb);
+
+      await pullRequestService.list({
+        organizationId: ORG_ID,
+        projectId: PROJECT_ID,
+        workstreamId: "ws-1",
+        prState: GitHubPRState.OPEN,
+      });
+
+      expect(mockDb.artifact.findMany).toHaveBeenCalledWith({
+        where: {
+          organizationId: ORG_ID,
+          type: ArtifactType.PULL_REQUEST,
+          projectId: PROJECT_ID,
+          workstreamId: "ws-1",
+          pullRequest: { prState: GitHubPRState.OPEN },
+        },
+        include: { pullRequest: true },
+        orderBy: { createdAt: "desc" },
+      });
+    });
+  });
+
+  describe("delete", () => {
+    it("returns Result.ok when the row was deleted", async () => {
+      const mockDb = {
+        artifact: { deleteMany: vi.fn().mockResolvedValue({ count: 1 }) },
+      };
+      mockWithDbCall(mockDb);
+
+      const result = await pullRequestService.delete("art-1", ORG_ID);
+
+      expect(mockDb.artifact.deleteMany).toHaveBeenCalledWith({
+        where: {
+          id: "art-1",
+          organizationId: ORG_ID,
+          type: ArtifactType.PULL_REQUEST,
+        },
+      });
+      expect(result).toEqual({ ok: true, value: undefined });
+    });
+
+    it("returns Status.NotFound when no PR artifact matches in the org", async () => {
+      const mockDb = {
+        artifact: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
+      };
+      mockWithDbCall(mockDb);
+
+      const result = await pullRequestService.delete("missing", ORG_ID);
+
+      expect(result).toEqual({ ok: false, error: Status.NotFound });
     });
   });
 
@@ -332,21 +423,6 @@ describe("pullRequestService", () => {
         include: { pullRequest: true },
       });
       expect(result).toEqual({ id: "art-1" });
-    });
-
-    it("uses the supplied tx instead of withDb", async () => {
-      const mockTx = {
-        artifact: {
-          findFirst: vi.fn().mockResolvedValue(null),
-        },
-      };
-      const { withDb } = await import("@repo/database");
-      const dbSpy = withDb as unknown as ReturnType<typeof vi.fn>;
-
-      await pullRequestService.findByGithubId("gh-123", ORG_ID, asTx(mockTx));
-
-      expect(dbSpy).not.toHaveBeenCalled();
-      expect(mockTx.artifact.findFirst).toHaveBeenCalled();
     });
   });
 
@@ -412,7 +488,7 @@ describe("pullRequestService", () => {
       };
       mockWithDbTx(mockDb);
 
-      await pullRequestService.updateReviewState("art-1", {
+      await pullRequestService.updateReviewState("art-1", ORG_ID, {
         checksStatus: ChecksStatus.FAILING,
       });
 
@@ -432,7 +508,7 @@ describe("pullRequestService", () => {
       };
       mockWithDbTx(mockDb);
 
-      await pullRequestService.updateReviewState("art-1", {
+      await pullRequestService.updateReviewState("art-1", ORG_ID, {
         prState: GitHubPRState.CLOSED,
         closedAt: new Date("2026-02-02"),
       });
@@ -453,7 +529,7 @@ describe("pullRequestService", () => {
       };
       mockWithDbTx(mockDb);
 
-      await pullRequestService.updateReviewState("art-1", {
+      await pullRequestService.updateReviewState("art-1", ORG_ID, {
         reviewDecision: null,
       });
 
@@ -473,6 +549,7 @@ describe("pullRequestService", () => {
 
       await pullRequestService.recordReviewDecision(
         "art-1",
+        ORG_ID,
         ReviewDecision.CHANGES_REQUESTED
       );
 

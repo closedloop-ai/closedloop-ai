@@ -1,3 +1,4 @@
+import { Result, Status, type StatusCode } from "@repo/api/src/types/result";
 import {
   type Artifact,
   ArtifactType,
@@ -11,15 +12,20 @@ import {
 } from "@repo/database";
 
 /**
- * Per-type PR artifact service (Chunk 2a of PLN-321, decision #12).
+ * PR artifact service. Owns CRUD on PULL_REQUEST artifacts and their
+ * 1:1 PullRequestDetail rows.
  *
- * Centralises atomic create/update of PULL_REQUEST artifacts with their
- * PullRequestDetail row. All write APIs use nested Prisma writes
- * (`pullRequest: { create }` / `pullRequest: { update }`) so the parent
- * `Artifact` row and its detail row mutate together.
+ * Writes use nested Prisma writes (`pullRequest: { create }` /
+ * `pullRequest: { update }`) so the parent `Artifact` row and its detail row
+ * mutate together. Webhook handlers call into this service instead of
+ * hand-rolling `tx.artifact.upsert` + `tx.pullRequestDetail.*` pairs.
  *
- * Webhook handlers call into this service instead of hand-rolling
- * `tx.artifact.upsert` + `tx.pullRequestDetail.*` pairs.
+ * When a caller is already inside `withDb.tx`, the inner `withDb` /
+ * `withDb.tx` calls below automatically participate in that transaction via
+ * AsyncLocalStorage — no `tx` parameter threading is needed.
+ *
+ * Fallible writes return `Result<T, StatusCode>` so routes can map failures
+ * to non-500 HTTP statuses without try/catch boilerplate.
  */
 
 export type ArtifactWithPullRequestDetail = Artifact & {
@@ -57,29 +63,15 @@ export type UpdateReviewStateInput = {
   mergeCommitSha?: string | null;
 };
 
+export type ListPullRequestsInput = {
+  organizationId: string;
+  projectId?: string;
+  workstreamId?: string;
+  prState?: GitHubPRState;
+};
+
 const pullRequestInclude = { pullRequest: true } as const;
 
-function runWithOptionalTx<T>(
-  tx: TransactionClient | undefined,
-  fn: (db: TransactionClient) => Promise<T>
-): Promise<T> {
-  if (tx) {
-    return fn(tx);
-  }
-  return withDb.tx(fn);
-}
-
-/**
- * Create or update a PULL_REQUEST artifact + its PullRequestDetail row
- * atomically. Dedup key is `pullRequestDetail.githubId` (unique). If no row
- * exists for that githubId, a new artifact (with nested detail) is created.
- * Otherwise the existing artifact is updated through the detail's
- * `artifactId` PK.
- *
- * The caller may pass a `tx` to participate in an outer transaction. When
- * omitted, a dedicated `withDb.tx` is opened so the create-or-update stays
- * atomic.
- */
 function buildPullRequestDetailCreate(
   input: UpsertPullRequestArtifactInput
 ): Prisma.PullRequestDetailUncheckedCreateWithoutArtifactInput {
@@ -140,14 +132,14 @@ async function updateExistingPullRequest(
   db: TransactionClient,
   artifactId: string,
   input: UpsertPullRequestArtifactInput
-): Promise<ArtifactWithPullRequestDetail> {
+): Promise<Result<ArtifactWithPullRequestDetail, StatusCode>> {
   // Defence in depth: PullRequestDetail.githubId is globally unique, but
   // we still scope the mutation to the caller's org so a cross-org row
   // (e.g. from a reinstalled GitHub App with reused id) cannot be clobbered.
   // Artifact has no composite unique on (id, organizationId), so we combine
   // the two into an updateMany (atomic DB-level guard) and split the PR
-  // detail update into its own call. Both run inside the caller's tx
-  // (via runWithOptionalTx) so they commit atomically.
+  // detail update into its own call. Both run inside the same transaction
+  // (the enclosing withDb.tx) so they commit atomically.
   const { count } = await db.artifact.updateMany({
     where: { id: artifactId, organizationId: input.organizationId },
     data: {
@@ -155,15 +147,13 @@ async function updateExistingPullRequest(
       status: input.prState,
       externalUrl: input.htmlUrl,
       ...(input.projectId ? { projectId: input.projectId } : {}),
-      ...(input.workstreamId !== undefined
-        ? { workstreamId: input.workstreamId }
-        : {}),
+      ...(input.workstreamId === undefined
+        ? {}
+        : { workstreamId: input.workstreamId }),
     },
   });
   if (count === 0) {
-    throw new Error(
-      `Pull request artifact ${artifactId} not found in organization`
-    );
+    return Result.err(Status.NotFound);
   }
 
   // Detail update + re-read with include. Safe now that the parent row is
@@ -174,11 +164,11 @@ async function updateExistingPullRequest(
     data: buildPullRequestDetailUpdate(input),
   });
 
-  const updated = await db.artifact.findUnique({
+  const updated = (await db.artifact.findUnique({
     where: { id: artifactId },
     include: pullRequestInclude,
-  });
-  return updated as ArtifactWithPullRequestDetail;
+  })) as ArtifactWithPullRequestDetail;
+  return Result.ok(updated);
 }
 
 async function createPullRequest(
@@ -201,11 +191,21 @@ async function createPullRequest(
   return created as ArtifactWithPullRequestDetail;
 }
 
+/**
+ * Create or update a PULL_REQUEST artifact + its PullRequestDetail row
+ * atomically. Dedup key is `pullRequestDetail.githubId` (unique). If no row
+ * exists for that githubId, a new artifact (with nested detail) is created.
+ * Otherwise the existing artifact is updated through the detail's
+ * `artifactId` PK.
+ *
+ * Returns `Result.err(Status.NotFound)` when an existing detail row points
+ * to a parent artifact that does not belong to the caller's organization
+ * (defence-in-depth against cross-org GitHub PR id collisions).
+ */
 function upsertPullRequestArtifact(
-  input: UpsertPullRequestArtifactInput,
-  tx?: TransactionClient
-): Promise<ArtifactWithPullRequestDetail> {
-  return runWithOptionalTx(tx, async (db) => {
+  input: UpsertPullRequestArtifactInput
+): Promise<Result<ArtifactWithPullRequestDetail, StatusCode>> {
+  return withDb.tx(async (db) => {
     const existingDetail = await db.pullRequestDetail.findUnique({
       where: { githubId: input.githubId },
       select: { artifactId: true },
@@ -213,8 +213,73 @@ function upsertPullRequestArtifact(
     if (existingDetail) {
       return updateExistingPullRequest(db, existingDetail.artifactId, input);
     }
-    return createPullRequest(db, input);
+    const created = await createPullRequest(db, input);
+    return Result.ok(created);
   });
+}
+
+/**
+ * Find a single PR artifact + its detail by id within an organization.
+ * Returns null when no matching row exists.
+ */
+async function findById(
+  id: string,
+  organizationId: string
+): Promise<ArtifactWithPullRequestDetail | null> {
+  const artifact = await withDb((db) =>
+    db.artifact.findFirst({
+      where: { id, organizationId, type: ArtifactType.PULL_REQUEST },
+      include: pullRequestInclude,
+    })
+  );
+  return artifact as ArtifactWithPullRequestDetail | null;
+}
+
+/**
+ * List PR artifacts within an organization, optionally scoped by project,
+ * workstream, or PR state.
+ */
+async function list(
+  options: ListPullRequestsInput
+): Promise<ArtifactWithPullRequestDetail[]> {
+  const { organizationId, projectId, workstreamId, prState } = options;
+  const artifacts = await withDb((db) =>
+    db.artifact.findMany({
+      where: {
+        organizationId,
+        type: ArtifactType.PULL_REQUEST,
+        ...(projectId ? { projectId } : {}),
+        ...(workstreamId ? { workstreamId } : {}),
+        ...(prState ? { pullRequest: { prState } } : {}),
+      },
+      include: pullRequestInclude,
+      orderBy: { createdAt: "desc" },
+    })
+  );
+  return artifacts as ArtifactWithPullRequestDetail[];
+}
+
+/**
+ * Hard-delete a PR artifact. The parent `artifact` row is the system of
+ * record; PullRequestDetail and ArtifactLink rows that reference it cascade
+ * automatically (see schema: `onDelete: Cascade`).
+ *
+ * Returns `Status.NotFound` when no PR artifact with this id exists in the
+ * caller's organization.
+ */
+async function deletePullRequest(
+  id: string,
+  organizationId: string
+): Promise<Result<void, StatusCode>> {
+  const { count } = await withDb((db) =>
+    db.artifact.deleteMany({
+      where: { id, organizationId, type: ArtifactType.PULL_REQUEST },
+    })
+  );
+  if (count === 0) {
+    return Result.err(Status.NotFound);
+  }
+  return Result.ok(undefined);
 }
 
 /**
@@ -223,10 +288,9 @@ function upsertPullRequestArtifact(
  */
 async function findByGithubId(
   githubId: string,
-  organizationId: string,
-  tx?: TransactionClient
+  organizationId: string
 ): Promise<ArtifactWithPullRequestDetail | null> {
-  const exec = (db: TransactionClient) =>
+  const artifact = await withDb((db) =>
     db.artifact.findFirst({
       where: {
         organizationId,
@@ -234,8 +298,8 @@ async function findByGithubId(
         pullRequest: { githubId },
       },
       include: pullRequestInclude,
-    });
-  const artifact = await (tx ? exec(tx) : withDb(exec));
+    })
+  );
   return artifact as ArtifactWithPullRequestDetail | null;
 }
 
@@ -245,10 +309,9 @@ async function findByGithubId(
  */
 async function findByRepositoryAndNumber(
   repositoryId: string,
-  number: number,
-  tx?: TransactionClient
+  number: number
 ): Promise<ArtifactWithPullRequestDetail | null> {
-  const exec = async (db: TransactionClient) => {
+  const artifact = await withDb(async (db) => {
     const detail = await db.pullRequestDetail.findUnique({
       where: { repositoryId_number: { repositoryId, number } },
       select: { artifactId: true },
@@ -260,8 +323,7 @@ async function findByRepositoryAndNumber(
       where: { id: detail.artifactId },
       include: pullRequestInclude,
     });
-  };
-  const artifact = await (tx ? exec(tx) : withDb(exec));
+  });
   return artifact as ArtifactWithPullRequestDetail | null;
 }
 
@@ -271,9 +333,9 @@ async function findByRepositoryAndNumber(
  * state string (parity with the existing webhook handlers).
  */
 async function updateReviewState(
-  artifactId: string,
-  input: UpdateReviewStateInput,
-  tx?: TransactionClient
+  id: string,
+  organizationId: string,
+  input: UpdateReviewStateInput
 ): Promise<ArtifactWithPullRequestDetail> {
   const detailUpdate: Prisma.PullRequestDetailUpdateWithoutArtifactInput = {};
   if (input.checksStatus !== undefined) {
@@ -302,14 +364,14 @@ async function updateReviewState(
     artifactData.status = input.prState;
   }
 
-  const exec = (db: TransactionClient) =>
+  const updated = await withDb.tx((db) =>
     db.artifact.update({
-      where: { id: artifactId },
+      where: { id, organizationId },
       data: artifactData,
       include: pullRequestInclude,
-    });
-  const updated = await (tx ? exec(tx) : withDb.tx(exec));
-  return updated as ArtifactWithPullRequestDetail;
+    })
+  );
+  return updated;
 }
 
 /**
@@ -317,15 +379,18 @@ async function updateReviewState(
  * state fields.
  */
 function recordReviewDecision(
-  artifactId: string,
-  reviewDecision: ReviewDecision | null,
-  tx?: TransactionClient
+  id: string,
+  organizationId: string,
+  reviewDecision: ReviewDecision | null
 ): Promise<ArtifactWithPullRequestDetail> {
-  return updateReviewState(artifactId, { reviewDecision }, tx);
+  return updateReviewState(id, organizationId, { reviewDecision });
 }
 
 export const pullRequestService = {
   upsertPullRequestArtifact,
+  findById,
+  list,
+  delete: deletePullRequest,
   findByGithubId,
   findByRepositoryAndNumber,
   updateReviewState,

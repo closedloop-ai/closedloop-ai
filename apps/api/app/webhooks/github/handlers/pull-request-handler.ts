@@ -29,8 +29,8 @@ import {
 } from "@repo/github/artifact-reference-parser";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
+import { pullRequestService } from "@/app/pull-requests/pull-request-service";
 import { documentWhere } from "@/lib/artifact-adapters";
-import { pullRequestService } from "@/lib/services/pull-request-service";
 import { generateSlug } from "@/lib/slug-generator";
 
 /**
@@ -513,25 +513,38 @@ async function createAndLinkPr(
     return;
   }
 
-  await pullRequestService.upsertPullRequestArtifact(
-    {
-      organizationId,
-      projectId: artifact.projectId,
-      workstreamId,
-      repositoryId: repo.id,
-      githubId: String(pullRequest.id),
-      number: pullRequest.number,
-      title: pullRequest.title,
-      body: pullRequest.body ?? null,
-      htmlUrl: pullRequest.html_url,
-      headBranch: pullRequest.head.ref,
-      baseBranch: pullRequest.base.ref,
-      headSha: pullRequest.head.sha,
-      prState: state,
-      isDraft: pullRequest.draft ?? false,
-    },
-    tx
-  );
+  const upsertResult = await pullRequestService.upsertPullRequestArtifact({
+    organizationId,
+    projectId: artifact.projectId,
+    workstreamId,
+    repositoryId: repo.id,
+    githubId: String(pullRequest.id),
+    number: pullRequest.number,
+    title: pullRequest.title,
+    body: pullRequest.body ?? null,
+    htmlUrl: pullRequest.html_url,
+    headBranch: pullRequest.head.ref,
+    baseBranch: pullRequest.base.ref,
+    headSha: pullRequest.head.sha,
+    prState: state,
+    isDraft: pullRequest.draft ?? false,
+  });
+
+  if (!upsertResult.ok) {
+    // PullRequestDetail.githubId is globally unique; an existing row owned
+    // by another organization (e.g. reinstalled GitHub App with a reused id)
+    // would surface here. We skip the linkage rather than corrupt the
+    // foreign org's row.
+    log.warn(
+      "[handlePullRequest] Skipping linkage — PR artifact not in this org",
+      {
+        prNumber: pullRequest.number,
+        organizationId,
+        githubPrId: pullRequest.id,
+      }
+    );
+    return;
+  }
 
   await createLinkageRecords(tx, artifact, workstreamId, pullRequest);
 
@@ -647,6 +660,7 @@ async function applyPrAction(
 
       await pullRequestService.updateReviewState(
         existingPr.id,
+        existingPr.organizationId,
         {
           prState: newState,
           closedAt: parseDateOrNow(pullRequest.closed_at),
@@ -654,8 +668,7 @@ async function applyPrAction(
             ? new Date(pullRequest.merged_at)
             : null,
           mergeCommitSha: pullRequest.merge_commit_sha,
-        },
-        tx
+        }
       );
 
       if (existingPr.workstreamId) {
@@ -696,11 +709,11 @@ async function applyPrAction(
     case "reopened": {
       await pullRequestService.updateReviewState(
         existingPr.id,
+        existingPr.organizationId,
         {
           prState: GitHubPRState.Open,
           closedAt: null,
-        },
-        tx
+        }
       );
 
       log.info("[handlePullRequest] PR reopened", {

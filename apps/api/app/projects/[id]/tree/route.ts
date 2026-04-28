@@ -1,4 +1,5 @@
 import type { ProjectTreeResponse } from "@repo/api/src/types/project-tree";
+import { projectTreeService } from "@/app/artifacts/project-tree-service";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import {
   errorResponse,
@@ -6,7 +7,6 @@ import {
   successResponse,
 } from "@/lib/route-utils";
 import { projectsService } from "../../service";
-import { projectTreeService } from "./service";
 
 /**
  * GET /projects/:id/tree - Get project entity tree

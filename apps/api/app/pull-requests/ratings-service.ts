@@ -1,28 +1,32 @@
 import { analytics } from "@repo/analytics/server";
 import type { PullRequestRatingSummary } from "@repo/api/src/types/pull-request-rating";
+import { Result, Status } from "@repo/api/src/types/result";
 import { ArtifactType, withDb } from "@repo/database";
-import { PullRequestNotFoundError } from "./errors";
 
 /**
  * Service for managing pull request ratings.
  *
- * After the PLN-321 artifact cutover, PR ratings are stored in the unified
- * `artifact_ratings` table keyed by `artifactId` (where artifactId is the
- * PULL_REQUEST artifact id — preserved from the legacy PR id during
- * migration). Rating rows carry `artifactVersion: null` for PR ratings.
+ * Ratings are stored in the unified `artifact_ratings` table keyed by
+ * `artifactId` (the PULL_REQUEST artifact id). Rating rows carry
+ * `artifactVersion: null` for PR ratings.
+ *
+ * Both methods are org-scoped: the PR artifact is verified to belong to the
+ * caller's organization before the rating row is read or upserted. When the
+ * PR is missing or belongs to another org, methods return
+ * `Result.err(Status.NotFound)` so the route can map to a 404 without
+ * try/catch boilerplate.
  */
 export const pullRequestRatingsService = {
   /**
-   * Get rating summary for a pull request (org-scoped).
-   * Returns the user's rating (if exists) plus aggregate statistics.
-   * Authorization: PR lookup filters by organizationId (denormalized for defense-in-depth).
+   * Get rating summary for a pull request (org-scoped). Returns the user's
+   * rating (if any) plus aggregate statistics.
    */
   async getRating(
     pullRequestId: string,
     userId: string,
     organizationId: string
-  ): Promise<PullRequestRatingSummary> {
-    const { userRating, aggregate } = await withDb(async (db) => {
+  ): Promise<Result<PullRequestRatingSummary>> {
+    const fetched = await withDb(async (db) => {
       // Verify PR artifact belongs to user's organization.
       const pullRequest = await db.artifact.findFirst({
         where: {
@@ -34,10 +38,11 @@ export const pullRequestRatingsService = {
       });
 
       if (!pullRequest) {
-        throw new PullRequestNotFoundError(pullRequestId);
+        return null;
       }
 
-      // Fetch user's rating and aggregate in parallel within same connection for atomic read
+      // Fetch user's rating and aggregate in parallel within same connection
+      // for atomic read.
       const [userRating, aggregate] = await Promise.all([
         db.artifactRating.findUnique({
           where: {
@@ -58,7 +63,12 @@ export const pullRequestRatingsService = {
       return { userRating, aggregate };
     });
 
-    return {
+    if (!fetched) {
+      return Result.err(Status.NotFound);
+    }
+
+    const { userRating, aggregate } = fetched;
+    return Result.ok({
       average: aggregate._avg?.score ?? 0,
       count: aggregate._count._all,
       userRating: userRating
@@ -71,13 +81,12 @@ export const pullRequestRatingsService = {
             updatedAt: userRating.updatedAt,
           }
         : null,
-    };
+    });
   },
 
   /**
-   * Upsert a rating for a pull request (org-scoped).
-   * Creates a new rating or updates an existing one, then returns updated aggregate statistics.
-   * Validates PR ownership via organizationId (denormalized for defense-in-depth).
+   * Upsert a rating for a pull request (org-scoped). Creates a new rating or
+   * updates an existing one, then returns updated aggregate statistics.
    */
   upsertRating(
     pullRequestId: string,
@@ -85,9 +94,9 @@ export const pullRequestRatingsService = {
     organizationId: string,
     score: number,
     comment: string
-  ): Promise<PullRequestRatingSummary> {
-    // Use transaction for atomicity: PR lookup + rating upsert + aggregate recalculation
-    // must happen atomically to ensure data consistency.
+  ): Promise<Result<PullRequestRatingSummary>> {
+    // Use transaction for atomicity: PR lookup + rating upsert + aggregate
+    // recalculation must happen atomically to ensure data consistency.
     return withDb.tx(async (tx) => {
       // Verify PR artifact belongs to user's organization.
       const pullRequest = await tx.artifact.findFirst({
@@ -100,10 +109,10 @@ export const pullRequestRatingsService = {
       });
 
       if (!pullRequest) {
-        throw new PullRequestNotFoundError(pullRequestId);
+        return Result.err(Status.NotFound);
       }
 
-      // Check if rating exists to determine if this is a create or update
+      // Check if rating exists to determine if this is a create or update.
       const existingRating = await tx.artifactRating.findUnique({
         where: {
           artifactId_userId_organizationId: {
@@ -116,7 +125,6 @@ export const pullRequestRatingsService = {
 
       const isUpdate = !!existingRating;
 
-      // Upsert rating
       const rating = await tx.artifactRating.upsert({
         where: {
           artifactId_userId_organizationId: {
@@ -125,10 +133,7 @@ export const pullRequestRatingsService = {
             organizationId,
           },
         },
-        update: {
-          score,
-          comment,
-        },
+        update: { score, comment },
         create: {
           artifactId: pullRequestId,
           userId,
@@ -138,14 +143,14 @@ export const pullRequestRatingsService = {
         },
       });
 
-      // Recalculate aggregate (same logic as getRating())
+      // Recalculate aggregate (same logic as getRating()).
       const aggregate = await tx.artifactRating.aggregate({
         where: { artifactId: pullRequestId, organizationId },
         _avg: { score: true },
         _count: { _all: true },
       });
 
-      // AC-017 & AC-018: Track PR Rating Submitted (new) or PR Rating Updated
+      // AC-017 & AC-018: Track PR Rating Submitted (new) or PR Rating Updated.
       analytics.capture({
         event: isUpdate ? "PR Rating Updated" : "PR Rating Submitted",
         distinctId: userId,
@@ -160,7 +165,7 @@ export const pullRequestRatingsService = {
         },
       });
 
-      return {
+      return Result.ok({
         average: aggregate._avg?.score ?? 0,
         count: aggregate._count._all,
         userRating: {
@@ -171,7 +176,7 @@ export const pullRequestRatingsService = {
           createdAt: rating.createdAt,
           updatedAt: rating.updatedAt,
         },
-      };
+      });
     });
   },
 };

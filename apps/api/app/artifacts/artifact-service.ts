@@ -2,12 +2,11 @@ import { ArtifactSubtype } from "@repo/api/src/types/artifact";
 import { type Artifact, ArtifactType, withDb } from "@repo/database";
 
 /**
- * Read-only cross-type artifact helpers (Chunk 2a of PLN-321).
+ * Cross-type artifact reads. Owns the general/CRUD surface that does not
+ * depend on a particular detail row (PullRequestDetail / DeploymentDetail).
  *
- * Callers flip to this service progressively during Chunk 2d. Until then the
- * rows are populated by the dual-write in `artifact-sync.ts`, so reads here
- * are guaranteed consistent with the legacy `documents` shape for DOCUMENT
- * artifacts. PR/deployment artifacts arrive in Chunk 2b.
+ * Type-specific operations live in sibling services (`pullRequestService`,
+ * `deploymentService`); per-type detail joins live in `detail-service.ts`.
  */
 export const artifactService = {
   /**
