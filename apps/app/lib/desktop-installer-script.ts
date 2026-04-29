@@ -99,6 +99,19 @@ ensure_brew_package() {
   run_external_step "brew_install_${SHELL_VAR}{package}" "github.com/Homebrew" brew install "$package"
 }
 
+quit_running_desktop() {
+  osascript -e "quit app id \"$BUNDLE_ID\"" >/dev/null 2>&1 || true
+
+  local attempts=0
+  while pgrep -x "$APP_NAME" >/dev/null 2>&1; do
+    if [ "$attempts" -ge 10 ]; then
+      fail_step "desktop_quit" "local" "ClosedLoop Desktop is still running. Quit it, then rerun the onboarding command."
+    fi
+    attempts=$((attempts + 1))
+    sleep 1
+  done
+}
+
 install_desktop_app() {
   if [ -z "${SHELL_VAR}{CL_DESKTOP_DOWNLOAD_URL:-}" ]; then
     fail_step "desktop_download" "closedloop-electron release" "CL_DESKTOP_DOWNLOAD_URL is required."
@@ -180,7 +193,7 @@ write_handoff_file() {
 }
 
 dispatch_handoff() {
-  if open -b "$BUNDLE_ID" "$HANDOFF_FILE"; then
+  if open -a "$APP_PATH" "$HANDOFF_FILE"; then
     printf 'Opened ClosedLoop Desktop with the onboarding handoff.\n'
     return 0
   fi
@@ -195,6 +208,7 @@ main() {
   ensure_homebrew
   ensure_brew_package git
   ensure_brew_package gh
+  quit_running_desktop
   install_desktop_app
 
   if [ "$NONINTERACTIVE" = "1" ] || { [ ! -t 0 ] && [ ! -t 1 ]; }; then

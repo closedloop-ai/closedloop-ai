@@ -8,14 +8,16 @@ export type ElectronDetectionState = {
   port: number | null;
   version: string | null;
   machineName: string | null;
+  gatewayId: string | null;
   capabilities: Record<string, unknown> | null;
+  onboardingCompleted: boolean | null;
   checkedAt: number | null;
 };
 
 const PROBE_PORTS = [19_432, 19_433, 19_434, 19_435] as const;
 const PROBE_TIMEOUT_MS = 2000;
 const CACHE_TTL_MS = 60_000;
-const POLL_INTERVAL_MS = 30_000;
+const POLL_INTERVAL_MS = 10_000;
 
 const DEFAULT_STATE: ElectronDetectionState = {
   detected: false,
@@ -23,7 +25,9 @@ const DEFAULT_STATE: ElectronDetectionState = {
   port: null,
   version: null,
   machineName: null,
+  gatewayId: null,
   capabilities: null,
+  onboardingCompleted: null,
   checkedAt: null,
 };
 
@@ -32,6 +36,17 @@ let expiresAt = 0;
 let inFlight: Promise<ElectronDetectionState> | null = null;
 
 const listeners = new Set<() => void>();
+
+type ElectronProbeResult = Pick<
+  ElectronDetectionState,
+  | "detected"
+  | "port"
+  | "version"
+  | "machineName"
+  | "gatewayId"
+  | "capabilities"
+  | "onboardingCompleted"
+>;
 
 function emitChange(): void {
   for (const listener of listeners) {
@@ -43,12 +58,39 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-async function probeElectron(): Promise<
-  Pick<
-    ElectronDetectionState,
-    "detected" | "port" | "version" | "machineName" | "capabilities"
-  >
-> {
+function parseHealthPayload(
+  payload: Record<string, unknown> | null,
+  fallbackPort: number
+): ElectronProbeResult | null {
+  if (!(payload && payload.status === "ok")) {
+    return null;
+  }
+
+  const reportedPort =
+    typeof payload.port === "number" ? payload.port : fallbackPort;
+  if (reportedPort !== fallbackPort) {
+    return null;
+  }
+
+  return {
+    detected: true,
+    port: reportedPort,
+    version: typeof payload.version === "string" ? payload.version : null,
+    machineName:
+      typeof payload.machineName === "string" ? payload.machineName : null,
+    gatewayId:
+      typeof payload.gatewayId === "string" && payload.gatewayId.trim()
+        ? payload.gatewayId
+        : null,
+    capabilities: isObject(payload.capabilities) ? payload.capabilities : {},
+    onboardingCompleted:
+      typeof payload.onboardingCompleted === "boolean"
+        ? payload.onboardingCompleted
+        : null,
+  };
+}
+
+async function probeElectron(): Promise<ElectronProbeResult> {
   for (const port of PROBE_PORTS) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
@@ -68,26 +110,10 @@ async function probeElectron(): Promise<
         string,
         unknown
       > | null;
-      if (!(payload && payload.status === "ok")) {
-        continue;
+      const result = parseHealthPayload(payload, port);
+      if (result) {
+        return result;
       }
-
-      const reportedPort =
-        typeof payload.port === "number" ? payload.port : port;
-      if (reportedPort !== port) {
-        continue;
-      }
-
-      return {
-        detected: true,
-        port: reportedPort,
-        version: typeof payload.version === "string" ? payload.version : null,
-        machineName:
-          typeof payload.machineName === "string" ? payload.machineName : null,
-        capabilities: isObject(payload.capabilities)
-          ? payload.capabilities
-          : {},
-      };
     } catch {
       // Ignore probe errors and continue to next fallback port.
     } finally {
@@ -100,7 +126,9 @@ async function probeElectron(): Promise<
     port: null,
     version: null,
     machineName: null,
+    gatewayId: null,
     capabilities: null,
+    onboardingCompleted: null,
   };
 }
 
@@ -158,7 +186,9 @@ export function ensureElectronDetection(options?: {
         port: null,
         version: null,
         machineName: null,
+        gatewayId: null,
         capabilities: null,
+        onboardingCompleted: null,
         checkedAt,
       };
       expiresAt = checkedAt + CACHE_TTL_MS;
@@ -178,7 +208,9 @@ const DISABLED_STATE: ElectronDetectionState = {
   port: null,
   version: null,
   machineName: null,
+  gatewayId: null,
   capabilities: null,
+  onboardingCompleted: null,
   checkedAt: null,
 };
 

@@ -1,8 +1,14 @@
-import { DesktopProvisioningPlatform } from "@repo/api/src/types/electron";
+import {
+  DesktopProvisioningAttemptStatus,
+  DesktopProvisioningPlatform,
+  DesktopProvisioningReadinessStatus,
+} from "@repo/api/src/types/electron";
 import { NextRequest } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { desktopOnboardingAttemptsService } from "@/app/desktop/onboarding-attempt/service";
+import { GET as GET_STATUS } from "@/app/desktop/provisioning-attempt/[attemptId]/route";
 import { POST } from "@/app/desktop/provisioning-attempt/route";
+import { GET as GET_READINESS } from "@/app/desktop/provisioning-readiness/route";
 import {
   isDesktopManagedPopPlatformSupported,
   isDesktopManagedPopProvisioningEnabled,
@@ -166,5 +172,120 @@ describe("POST /desktop/provisioning-attempt", () => {
     });
     expect(desktopOnboardingAttemptsService.create).not.toHaveBeenCalled();
     expect(isDesktopManagedPopProvisioningEnabled).not.toHaveBeenCalled();
+  });
+});
+
+describe("GET /desktop/provisioning-attempt/:attemptId", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    authContext = createTestAuthContext();
+  });
+
+  it("returns the authenticated user's correlated provisioning status", async () => {
+    vi.mocked(desktopOnboardingAttemptsService.getStatus).mockResolvedValue({
+      onboardingAttemptId: "attempt-123",
+      status: DesktopProvisioningAttemptStatus.Complete,
+      expiresAt: "2026-04-27T18:00:00.000Z",
+      gatewayId: "gateway-1",
+      computeTargetId: "target-1",
+    });
+
+    const response = await GET_STATUS(
+      createMockRequest({
+        method: "GET",
+        url: "https://api.closedloop.ai/desktop/provisioning-attempt/attempt-123",
+      }),
+      { params: Promise.resolve({ attemptId: "attempt-123" }) }
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      success: true,
+      data: {
+        onboardingAttemptId: "attempt-123",
+        status: DesktopProvisioningAttemptStatus.Complete,
+        expiresAt: "2026-04-27T18:00:00.000Z",
+        gatewayId: "gateway-1",
+        computeTargetId: "target-1",
+      },
+    });
+    expect(desktopOnboardingAttemptsService.getStatus).toHaveBeenCalledWith(
+      "attempt-123",
+      authContext.user.organizationId,
+      authContext.user.id
+    );
+  });
+
+  it("returns 404 when the attempt is not owned by the authenticated user", async () => {
+    vi.mocked(desktopOnboardingAttemptsService.getStatus).mockResolvedValue(
+      null
+    );
+
+    const response = await GET_STATUS(
+      createMockRequest({
+        method: "GET",
+        url: "https://api.closedloop.ai/desktop/provisioning-attempt/attempt-123",
+      }),
+      { params: Promise.resolve({ attemptId: "attempt-123" }) }
+    );
+
+    expect(response.status).toBe(404);
+  });
+});
+
+describe("GET /desktop/provisioning-readiness", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    authContext = createTestAuthContext();
+  });
+
+  it("returns the authenticated user's existing Desktop readiness", async () => {
+    vi.mocked(desktopOnboardingAttemptsService.getReadiness).mockResolvedValue({
+      status: DesktopProvisioningReadinessStatus.Complete,
+      gatewayId: "gateway-1",
+      computeTargetId: "target-1",
+    });
+
+    const response = await GET_READINESS(
+      createMockRequest({
+        method: "GET",
+        url: "https://api.closedloop.ai/desktop/provisioning-readiness",
+      }),
+      { params: Promise.resolve({}) }
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      success: true,
+      data: {
+        status: DesktopProvisioningReadinessStatus.Complete,
+        gatewayId: "gateway-1",
+        computeTargetId: "target-1",
+      },
+    });
+    expect(desktopOnboardingAttemptsService.getReadiness).toHaveBeenCalledWith(
+      authContext.user.organizationId,
+      authContext.user.id
+    );
+  });
+
+  it("returns incomplete when no Desktop-managed target is ready", async () => {
+    vi.mocked(desktopOnboardingAttemptsService.getReadiness).mockResolvedValue({
+      status: DesktopProvisioningReadinessStatus.Incomplete,
+    });
+
+    const response = await GET_READINESS(
+      createMockRequest({
+        method: "GET",
+        url: "https://api.closedloop.ai/desktop/provisioning-readiness",
+      }),
+      { params: Promise.resolve({}) }
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      success: true,
+      data: { status: DesktopProvisioningReadinessStatus.Incomplete },
+    });
   });
 });

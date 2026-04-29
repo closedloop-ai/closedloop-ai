@@ -98,7 +98,8 @@ describe("POST /desktop/bootstrap/claim", () => {
       gatewayId: "550e8400-e29b-41d4-a716-446655440000",
     });
     expect(desktopOnboardingAttemptsService.consume).toHaveBeenCalledWith(
-      "attempt-123"
+      "attempt-123",
+      { gatewayId: "550e8400-e29b-41d4-a716-446655440000" }
     );
     expect(apiKeysService.rotateDesktopManagedKey).toHaveBeenCalledWith({
       organizationId: "org-1",
@@ -164,7 +165,8 @@ describe("POST /desktop/bootstrap/claim", () => {
 
     expect(response.status).toBe(200);
     expect(desktopOnboardingAttemptsService.consume).toHaveBeenCalledWith(
-      "attempt-123"
+      "attempt-123",
+      { gatewayId: "550e8400-e29b-41d4-a716-446655440000" }
     );
     expect(apiKeysService.rotateDesktopManagedKey).toHaveBeenCalledWith({
       organizationId: "org-1",
@@ -194,7 +196,8 @@ describe("POST /desktop/bootstrap/claim", () => {
       gatewayId: "550e8400-e29b-41d4-a716-446655440000",
     });
     expect(desktopOnboardingAttemptsService.consume).toHaveBeenCalledWith(
-      "attempt-123"
+      "attempt-123",
+      { gatewayId: "550e8400-e29b-41d4-a716-446655440000" }
     );
     expect(apiKeysService.rotateDesktopManagedKey).toHaveBeenCalledWith({
       organizationId: "org-1",
@@ -324,7 +327,8 @@ describe("POST /desktop/bootstrap/claim", () => {
       retryable: false,
     });
     expect(desktopOnboardingAttemptsService.consume).toHaveBeenCalledWith(
-      "attempt-123"
+      "attempt-123",
+      { gatewayId: "550e8400-e29b-41d4-a716-446655440000" }
     );
   });
 
@@ -351,7 +355,8 @@ describe("POST /desktop/bootstrap/claim", () => {
       retryable: false,
     });
     expect(desktopOnboardingAttemptsService.consume).toHaveBeenCalledWith(
-      "attempt-123"
+      "attempt-123",
+      { gatewayId: "550e8400-e29b-41d4-a716-446655440000" }
     );
   });
 });

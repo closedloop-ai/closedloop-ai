@@ -14,9 +14,14 @@ const mocks = vi.hoisted(() => {
 });
 
 vi.mock("@repo/database", () => ({
+  ApiKeySource: { DESKTOP_MANAGED: "DESKTOP_MANAGED" },
   withDb: mocks.withDb,
 }));
 
+import {
+  DesktopProvisioningAttemptStatus,
+  DesktopProvisioningReadinessStatus,
+} from "@repo/api/src/types/electron";
 import { withDb } from "@repo/database";
 import {
   DESKTOP_ONBOARDING_ATTEMPT_TTL_MS,
@@ -95,7 +100,9 @@ describe("desktopOnboardingAttemptsService", () => {
     });
 
     await expect(
-      desktopOnboardingAttemptsService.consume("attempt-123")
+      desktopOnboardingAttemptsService.consume("attempt-123", {
+        gatewayId: "gateway-1",
+      })
     ).resolves.toBe(true);
 
     expect(updateArgs).toMatchObject({
@@ -104,7 +111,223 @@ describe("desktopOnboardingAttemptsService", () => {
         consumedAt: null,
         expiresAt: { gt: expect.any(Date) },
       },
-      data: { consumedAt: expect.any(Date) },
+      data: { consumedAt: expect.any(Date), gatewayId: "gateway-1" },
+    });
+  });
+
+  it("reports complete status when a consumed attempt has an online protected target", async () => {
+    mockWithDb
+      .mockImplementationOnce((callback: (db: unknown) => unknown) => {
+        const mockDb = {
+          desktopOnboardingAttempt: {
+            findFirst: vi.fn().mockResolvedValue({
+              attemptId: "attempt-123",
+              organizationId: "org-1",
+              userId: "user-1",
+              webAppOrigin: "https://app.closedloop.ai",
+              expiresAt: new Date(Date.now() + 60_000),
+              consumedAt: new Date(),
+              gatewayId: "gateway-1",
+              computeTargetId: null,
+            }),
+          },
+        };
+        return callback(mockDb);
+      })
+      .mockImplementationOnce((callback: (db: unknown) => unknown) => {
+        const mockDb = {
+          computeTarget: {
+            findFirst: vi
+              .fn()
+              .mockResolvedValue({ id: "target-1", gatewayId: "gateway-1" }),
+          },
+          apiKey: {
+            findMany: vi.fn().mockResolvedValue([{ gatewayId: "gateway-1" }]),
+          },
+        };
+        return callback(mockDb);
+      });
+
+    await expect(
+      desktopOnboardingAttemptsService.getStatus(
+        "attempt-123",
+        "org-1",
+        "user-1"
+      )
+    ).resolves.toMatchObject({
+      onboardingAttemptId: "attempt-123",
+      status: DesktopProvisioningAttemptStatus.Complete,
+      gatewayId: "gateway-1",
+      computeTargetId: "target-1",
+    });
+  });
+
+  it("reports null status when an attempt is not owned by the user", async () => {
+    mockWithDb.mockImplementation((callback: (db: unknown) => unknown) => {
+      const mockDb = {
+        desktopOnboardingAttempt: {
+          findFirst: vi.fn().mockResolvedValue(null),
+        },
+      };
+      return callback(mockDb);
+    });
+
+    await expect(
+      desktopOnboardingAttemptsService.getStatus(
+        "attempt-123",
+        "org-1",
+        "user-1"
+      )
+    ).resolves.toBeNull();
+    expect(mockWithDb).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports expired status without probing readiness", async () => {
+    mockWithDb.mockImplementation((callback: (db: unknown) => unknown) => {
+      const mockDb = {
+        desktopOnboardingAttempt: {
+          findFirst: vi.fn().mockResolvedValue({
+            attemptId: "attempt-123",
+            organizationId: "org-1",
+            userId: "user-1",
+            webAppOrigin: "https://app.closedloop.ai",
+            expiresAt: new Date(Date.now() - 60_000),
+            consumedAt: null,
+            gatewayId: null,
+            computeTargetId: null,
+          }),
+        },
+      };
+      return callback(mockDb);
+    });
+
+    await expect(
+      desktopOnboardingAttemptsService.getStatus(
+        "attempt-123",
+        "org-1",
+        "user-1"
+      )
+    ).resolves.toMatchObject({
+      status: DesktopProvisioningAttemptStatus.Expired,
+    });
+    expect(mockWithDb).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports pending status until the attempt is consumed with a gateway id", async () => {
+    mockWithDb.mockImplementation((callback: (db: unknown) => unknown) => {
+      const mockDb = {
+        desktopOnboardingAttempt: {
+          findFirst: vi.fn().mockResolvedValue({
+            attemptId: "attempt-123",
+            organizationId: "org-1",
+            userId: "user-1",
+            webAppOrigin: "https://app.closedloop.ai",
+            expiresAt: new Date(Date.now() + 60_000),
+            consumedAt: null,
+            gatewayId: null,
+            computeTargetId: null,
+          }),
+        },
+      };
+      return callback(mockDb);
+    });
+
+    await expect(
+      desktopOnboardingAttemptsService.getStatus(
+        "attempt-123",
+        "org-1",
+        "user-1"
+      )
+    ).resolves.toMatchObject({
+      status: DesktopProvisioningAttemptStatus.Pending,
+    });
+    expect(mockWithDb).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports claimed status when a consumed attempt has not reached protected online readiness", async () => {
+    mockWithDb
+      .mockImplementationOnce((callback: (db: unknown) => unknown) => {
+        const mockDb = {
+          desktopOnboardingAttempt: {
+            findFirst: vi.fn().mockResolvedValue({
+              attemptId: "attempt-123",
+              organizationId: "org-1",
+              userId: "user-1",
+              webAppOrigin: "https://app.closedloop.ai",
+              expiresAt: new Date(Date.now() + 60_000),
+              consumedAt: new Date(),
+              gatewayId: "gateway-1",
+              computeTargetId: null,
+            }),
+          },
+        };
+        return callback(mockDb);
+      })
+      .mockImplementationOnce((callback: (db: unknown) => unknown) => {
+        const mockDb = {
+          computeTarget: {
+            findFirst: vi.fn().mockResolvedValue(null),
+          },
+          apiKey: {
+            findMany: vi.fn().mockResolvedValue([{ gatewayId: "gateway-1" }]),
+          },
+        };
+        return callback(mockDb);
+      });
+
+    await expect(
+      desktopOnboardingAttemptsService.getStatus(
+        "attempt-123",
+        "org-1",
+        "user-1"
+      )
+    ).resolves.toMatchObject({
+      status: DesktopProvisioningAttemptStatus.Claimed,
+      gatewayId: "gateway-1",
+    });
+  });
+
+  it("reports complete readiness for any online protected Desktop target", async () => {
+    mockWithDb.mockImplementation((callback: (db: unknown) => unknown) => {
+      const mockDb = {
+        computeTarget: {
+          findFirst: vi
+            .fn()
+            .mockResolvedValue({ id: "target-1", gatewayId: "gateway-1" }),
+        },
+        apiKey: {
+          findMany: vi.fn().mockResolvedValue([{ gatewayId: "gateway-1" }]),
+        },
+      };
+      return callback(mockDb);
+    });
+
+    await expect(
+      desktopOnboardingAttemptsService.getReadiness("org-1", "user-1")
+    ).resolves.toEqual({
+      status: DesktopProvisioningReadinessStatus.Complete,
+      gatewayId: "gateway-1",
+      computeTargetId: "target-1",
+    });
+  });
+
+  it("reports incomplete readiness when no protected gateway is online", async () => {
+    mockWithDb.mockImplementation((callback: (db: unknown) => unknown) => {
+      const mockDb = {
+        computeTarget: {
+          findFirst: vi.fn(),
+        },
+        apiKey: {
+          findMany: vi.fn().mockResolvedValue([]),
+        },
+      };
+      return callback(mockDb);
+    });
+
+    await expect(
+      desktopOnboardingAttemptsService.getReadiness("org-1", "user-1")
+    ).resolves.toEqual({
+      status: DesktopProvisioningReadinessStatus.Incomplete,
     });
   });
 });
