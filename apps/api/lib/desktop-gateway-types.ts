@@ -11,6 +11,8 @@ export type DesktopAuthContext = {
 
 export type DesktopHelloPayload = {
   computeTargetId?: string;
+  gatewayId?: string;
+  desktopSecurityUpgradeProtocolVersion?: number;
   machineName: string;
   platform: string;
   pluginVersion: string;

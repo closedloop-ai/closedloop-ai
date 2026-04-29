@@ -53,7 +53,12 @@ export const POST = withAnyAuth<
     return forbiddenResponse();
   }
 
-  if (!(await isDesktopManagedPopProvisioningEnabled(user.id, body.platform))) {
+  if (
+    !(await isDesktopManagedPopProvisioningEnabled(
+      { userId: user.id, clerkUserId: user.clerkId },
+      body.platform
+    ))
+  ) {
     return forbiddenResponse();
   }
 

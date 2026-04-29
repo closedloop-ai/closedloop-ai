@@ -63,6 +63,7 @@ export async function resolveComputeTarget(
   log.info("[compute-target-resolver] Resolving compute target", {
     organizationId,
     userId,
+    computeTargetId: computeTargetIdHint ?? null,
     hasHint: !!computeTargetIdHint,
     preferredComputeMode: preferredComputeMode ?? "none",
     fallbackToCloud,
@@ -136,6 +137,7 @@ export async function resolveComputeTarget(
           "[compute-target-resolver] Resolved to preferred target among multiple online targets",
           {
             targetId: preferredTarget.id,
+            computeTargetId: preferredTarget.id,
             machineName: preferredTarget.machineName,
           }
         );
@@ -147,6 +149,7 @@ export async function resolveComputeTarget(
       "[compute-target-resolver] Multiple online targets — auto-selecting most recently active",
       {
         targetId: mostRecentTarget.id,
+        computeTargetId: mostRecentTarget.id,
         machineName: mostRecentTarget.machineName,
         lastSeenAt: mostRecentTarget.lastSeenAt,
         totalOnline: onlineTargets.length,
@@ -157,6 +160,7 @@ export async function resolveComputeTarget(
 
   log.info("[compute-target-resolver] Resolved to single online target", {
     targetId: onlineTargets[0].id,
+    computeTargetId: onlineTargets[0].id,
     machineName: onlineTargets[0].machineName,
   });
   return { reason: "resolved", target: onlineTargets[0] };

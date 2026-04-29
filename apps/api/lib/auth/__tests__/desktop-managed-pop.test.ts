@@ -10,10 +10,8 @@ import type { VerifiedApiKeyContextWithMetadata } from "../api-key-context";
 
 const mockIsFeatureEnabled = vi.hoisted(() => vi.fn());
 
-vi.mock("@repo/analytics/server", () => ({
-  analytics: {
-    isFeatureEnabled: mockIsFeatureEnabled,
-  },
+vi.mock("@repo/analytics/feature-flags", () => ({
+  isFeatureFlagEnabledForDistinctId: mockIsFeatureEnabled,
 }));
 
 import {
@@ -121,6 +119,30 @@ describe("resolveDesktopManagedPopMode", () => {
     );
 
     expect(mockIsFeatureEnabled).toHaveBeenCalledWith(
+      "desktop-managed-pop-enforcement",
+      "user-1"
+    );
+  });
+
+  it("uses the Clerk distinct ID before the database user ID for rollout flags", async () => {
+    mockIsFeatureEnabled
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+
+    await expect(
+      resolveDesktopManagedPopMode({
+        ...makeKeyContext(),
+        clerkUserId: "clerk-user-1",
+      })
+    ).resolves.toBe("enforce");
+
+    expect(mockIsFeatureEnabled).toHaveBeenNthCalledWith(
+      1,
+      "desktop-managed-pop-enforcement",
+      "clerk-user-1"
+    );
+    expect(mockIsFeatureEnabled).toHaveBeenNthCalledWith(
+      2,
       "desktop-managed-pop-enforcement",
       "user-1"
     );

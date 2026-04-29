@@ -10,6 +10,9 @@ export type DesktopOnboardingAttemptRecord = {
   webAppOrigin: string;
   expiresAt: Date;
   consumedAt: Date | null;
+  flowType?: string | null;
+  computeTargetId?: string | null;
+  gatewayId?: string | null;
 };
 
 /** Creates and persists a single-use onboarding attempt for desktop bootstrap. */
@@ -17,6 +20,12 @@ type CreateDesktopOnboardingAttemptInput = {
   userId: string;
   organizationId: string;
   webAppOrigin: string;
+  flowType?:
+    | "installer_handoff"
+    | "compute_target_upgrade"
+    | "desktop_first_connect";
+  computeTargetId?: string;
+  gatewayId?: string;
 };
 
 function createAttemptId(): string {
@@ -42,6 +51,9 @@ export const desktopOnboardingAttemptsService = {
           webAppOrigin: input.webAppOrigin,
           expiresAt,
           consumedAt: null,
+          flowType: input.flowType ?? null,
+          computeTargetId: input.computeTargetId ?? null,
+          gatewayId: input.gatewayId ?? null,
         },
       })
     );

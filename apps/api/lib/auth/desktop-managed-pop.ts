@@ -3,7 +3,7 @@ import {
   type KeyObject,
   verify as verifySignature,
 } from "node:crypto";
-import { analytics } from "@repo/analytics/server";
+import { isFeatureFlagEnabledForDistinctId } from "@repo/analytics/feature-flags";
 import {
   DESKTOP_POP_GATEWAY_ID_HEADER,
   DESKTOP_POP_SIGNATURE_HEADER,
@@ -17,6 +17,8 @@ import type { VerifiedApiKeyContextWithMetadata } from "./api-key-context";
 const POP_TIMESTAMP_FRESHNESS_SECONDS = 60;
 const TIMESTAMP_SECONDS_PATTERN = /^\d+$/;
 const BASE64URL_SIGNATURE_PATTERN = /^[A-Za-z0-9_-]+={0,2}$/;
+export const DESKTOP_MANAGED_POP_ENFORCEMENT_FLAG =
+  "desktop-managed-pop-enforcement";
 
 export type DesktopManagedPopMode = "monitor" | "enforce";
 
@@ -43,8 +45,15 @@ export type DesktopManagedPopFailure = {
   status: 401 | 403 | 503;
 };
 
+export type DesktopManagedFeatureFlagIdentity = {
+  userId: string;
+  clerkUserId?: string | null;
+};
+
 type DesktopManagedPopVerificationInput = {
-  keyContext: VerifiedApiKeyContextWithMetadata;
+  keyContext: VerifiedApiKeyContextWithMetadata & {
+    clerkUserId?: string | null;
+  };
   request: Request;
   now?: Date;
   mode?: DesktopManagedPopMode;
@@ -59,7 +68,7 @@ export async function resolveDesktopManagedPopMode(
   keyContext: Pick<
     VerifiedApiKeyContextWithMetadata,
     "boundPublicKey" | "gatewayId" | "source" | "userId"
-  >
+  > & { clerkUserId?: string | null }
 ): Promise<DesktopManagedPopMode> {
   if (
     keyContext.source !== ApiKeySource.DESKTOP_MANAGED ||
@@ -68,25 +77,67 @@ export async function resolveDesktopManagedPopMode(
     return "monitor";
   }
 
-  if (typeof analytics.isFeatureEnabled !== "function") {
-    return "monitor";
-  }
+  return (await isDesktopManagedPopEnforcementEnabled(keyContext))
+    ? "enforce"
+    : "monitor";
+}
 
+/**
+ * Returns whether bound desktop-managed API keys should be treated as protected
+ * and enforce PoP. Missing or unavailable flag evaluation stays off so managed
+ * keys remain bearer-compatible during rollout.
+ */
+export async function isDesktopManagedPopEnforcementEnabled(
+  identity: DesktopManagedFeatureFlagIdentity
+): Promise<boolean> {
+  return await isDesktopManagedFeatureFlagEnabled(
+    DESKTOP_MANAGED_POP_ENFORCEMENT_FLAG,
+    identity
+  );
+}
+
+/**
+ * Evaluates a Desktop-managed rollout flag using the same Clerk distinct ID
+ * that the browser identifies in PostHog. The database user UUID is retained as
+ * a temporary fallback for any server-side-only flags created before this
+ * identity alignment.
+ */
+export async function isDesktopManagedFeatureFlagEnabled(
+  flag: string,
+  identity: DesktopManagedFeatureFlagIdentity
+): Promise<boolean> {
+  const distinctIds = resolveFeatureFlagDistinctIds(identity);
   try {
-    const enabled = await analytics.isFeatureEnabled(
-      "desktop-managed-pop-enforcement",
-      keyContext.userId
-    );
-    return enabled === true ? "enforce" : "monitor";
+    for (const distinctId of distinctIds) {
+      if (
+        (await isFeatureFlagEnabledForDistinctId(flag, distinctId)) === true
+      ) {
+        return true;
+      }
+    }
+    return false;
   } catch (error) {
     log.warn(
-      "desktop_managed_pop_feature_flag_unavailable_defaulting_to_monitor",
+      "desktop_managed_pop_feature_flag_unavailable_defaulting_to_disabled",
       {
+        flag,
         error: parseError(error),
       }
     );
-    return "monitor";
+    return false;
   }
+}
+
+function resolveFeatureFlagDistinctIds(
+  identity: DesktopManagedFeatureFlagIdentity
+): string[] {
+  return [
+    ...new Set(
+      [identity.clerkUserId, identity.userId].filter(
+        (distinctId): distinctId is string => Boolean(distinctId)
+      )
+    ),
+  ];
 }
 
 /**
@@ -228,7 +279,9 @@ export function getDesktopManagedPopFailure(
  * callers that share desktop-managed PoP enforcement.
  */
 export async function getDesktopManagedPopRequestFailure(input: {
-  keyContext: VerifiedApiKeyContextWithMetadata;
+  keyContext: VerifiedApiKeyContextWithMetadata & {
+    clerkUserId?: string | null;
+  };
   request: Request;
 }): Promise<DesktopManagedPopFailure | null> {
   const popDecision = verifyDesktopManagedPop({

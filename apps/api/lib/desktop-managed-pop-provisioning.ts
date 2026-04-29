@@ -1,7 +1,11 @@
 import "server-only";
 
-import { analytics } from "@repo/analytics/server";
 import { DesktopProvisioningPlatform } from "@repo/api/src/types/electron";
+import {
+  type DesktopManagedFeatureFlagIdentity,
+  isDesktopManagedFeatureFlagEnabled,
+  isDesktopManagedPopEnforcementEnabled,
+} from "./auth/desktop-managed-pop";
 
 export const DESKTOP_MANAGED_POP_PROVISIONING_FLAG =
   "desktop-managed-pop-provisioning";
@@ -22,23 +26,21 @@ export function isDesktopManagedPopPlatformSupported(
  * Missing, disabled, or unavailable flag evaluation fails closed.
  */
 export async function isDesktopManagedPopProvisioningEnabled(
-  userId: string,
+  identity: DesktopManagedFeatureFlagIdentity,
   platform: string | null | undefined = DESKTOP_MANAGED_POP_SUPPORTED_PLATFORM
 ): Promise<boolean> {
   if (!isDesktopManagedPopPlatformSupported(platform)) {
     return false;
   }
 
-  if (typeof analytics.isFeatureEnabled !== "function") {
-    return false;
-  }
-
   try {
+    const provisioningEnabled = await isDesktopManagedFeatureFlagEnabled(
+      DESKTOP_MANAGED_POP_PROVISIONING_FLAG,
+      identity
+    );
     return (
-      (await analytics.isFeatureEnabled(
-        DESKTOP_MANAGED_POP_PROVISIONING_FLAG,
-        userId
-      )) === true
+      provisioningEnabled &&
+      (await isDesktopManagedPopEnforcementEnabled(identity))
     );
   } catch {
     return false;

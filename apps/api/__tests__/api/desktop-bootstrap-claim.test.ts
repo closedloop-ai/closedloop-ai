@@ -11,10 +11,23 @@ import {
 } from "@/app/api-keys/service";
 import { POST } from "@/app/desktop/bootstrap/claim/route";
 import { desktopOnboardingAttemptsService } from "@/app/desktop/onboarding-attempt/service";
+import { usersService } from "@/app/users/service";
 import { createMockRequest } from "../utils/auth-helpers";
+
+const mockIsFeatureEnabled = vi.hoisted(() => vi.fn());
 
 vi.mock("@/app/api-keys/service");
 vi.mock("@/app/desktop/onboarding-attempt/service");
+vi.mock("@/app/users/service", () => ({
+  usersService: {
+    findById: vi.fn(),
+  },
+}));
+vi.mock("@repo/analytics/server", () => ({
+  analytics: {
+    isFeatureEnabled: mockIsFeatureEnabled,
+  },
+}));
 vi.mock("@/lib/auth/canonical-trusted-origin", () => ({
   canonicalizeTrustedOrigin: (origin: string) =>
     origin.startsWith("https://") ? origin : null,
@@ -29,6 +42,7 @@ describe("POST /desktop/bootstrap/claim", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-23T17:30:00.000Z"));
     vi.clearAllMocks();
+    mockIsFeatureEnabled.mockResolvedValue(true);
     vi.mocked(desktopOnboardingAttemptsService.get).mockResolvedValue({
       attemptId: "attempt-123",
       organizationId: "org-1",
@@ -38,6 +52,12 @@ describe("POST /desktop/bootstrap/claim", () => {
       consumedAt: null,
     });
     vi.mocked(desktopOnboardingAttemptsService.consume).mockResolvedValue(true);
+    vi.mocked(usersService.findById).mockResolvedValue({
+      id: "user-1",
+      clerkId: "clerk-user-1",
+      organizationId: "org-1",
+      active: true,
+    } as Awaited<ReturnType<typeof usersService.findById>>);
     vi.mocked(apiKeysService.rotateDesktopManagedKey).mockResolvedValue({
       id: "managed-key-1",
       organizationId: "org-1",
@@ -247,6 +267,38 @@ describe("POST /desktop/bootstrap/claim", () => {
       retryable: false,
     });
     expect(desktopOnboardingAttemptsService.consume).not.toHaveBeenCalled();
+  });
+
+  it("returns 403 for bound attempt gateway mismatches before consuming the attempt", async () => {
+    vi.mocked(desktopOnboardingAttemptsService.get).mockResolvedValue({
+      attemptId: "attempt-123",
+      organizationId: "org-1",
+      userId: "user-1",
+      webAppOrigin: "https://app.closedloop.ai",
+      expiresAt: new Date("2026-04-23T18:00:00.000Z"),
+      consumedAt: null,
+      gatewayId: "550e8400-e29b-41d4-a716-446655440001",
+    });
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        body: {
+          onboardingAttemptId: "attempt-123",
+          webAppOrigin: "https://app.closedloop.ai",
+          gatewayId: "550e8400-e29b-41d4-a716-446655440000",
+          gatewayPublicKeyPem: "valid-pem",
+        },
+      })
+    );
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({
+      code: "ONBOARDING_ATTEMPT_GATEWAY_MISMATCH",
+      retryable: false,
+    });
+    expect(desktopOnboardingAttemptsService.consume).not.toHaveBeenCalled();
+    expect(apiKeysService.rotateDesktopManagedKey).not.toHaveBeenCalled();
   });
 
   it("returns 409 when rotation hits the managed-key uniqueness conflict after attempt consumption", async () => {

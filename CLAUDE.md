@@ -138,6 +138,7 @@ ClosedLoop: human-governed, AI-centric software delivery platform. AI produces a
 
 ### React Query & Mutations
 - **[convention]**: Do not add `.catch()` error toasts when calling `mutateAsync`. The global `QueryClient` in `apps/app/lib/query-client.tsx` has a default `mutations.onError` handler that toasts the error message. Only catch rejections to suppress unhandled promise warnings or reset local state.
+- **[convention]**: Avoid reflexive on-mount data fetching. Adding a new `useQuery` hook to a component is cheap individually, but editor pages and project pages already mount many components at once and can balloon to 10-20 parallel requests on first paint. Before adding a query that runs on mount, ask: is this data needed for the initial render, or only when the user opens a panel/tab/menu/dialog? If the latter, gate it (`enabled: isOpen`, fetch in an event handler, or lazy-load the component). Prefer deferring fetches until a user action makes the data necessary; reserve on-mount fetches for data the page cannot render without.
 
 ### Code Organization
 - **[pattern]**: Check `@repo/github` (`packages/github/index.ts`) before implementing new GitHub API functions.

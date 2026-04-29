@@ -19,7 +19,10 @@ export const GET = withAnyAuth<
   const platformSupported = isDesktopManagedPopPlatformSupported(platform);
   const automatedManagedProvisioningEnabled =
     platformSupported &&
-    (await isDesktopManagedPopProvisioningEnabled(user.id, platform));
+    (await isDesktopManagedPopProvisioningEnabled(
+      { userId: user.id, clerkUserId: user.clerkId },
+      platform
+    ));
 
   return successResponse({
     automatedManagedProvisioningEnabled,

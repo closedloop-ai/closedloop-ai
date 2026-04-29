@@ -1,4 +1,7 @@
-import type { ComputeTarget } from "@repo/api/src/types/compute-target";
+import {
+  type ComputeTarget,
+  DesktopSecurityStatus,
+} from "@repo/api/src/types/compute-target";
 import { vi } from "vitest";
 import { PROTOCOL_VERSION } from "@/lib/desktop-gateway-types";
 
@@ -48,11 +51,17 @@ export const mockTarget: ComputeTarget = {
   userId: "user-1",
   machineName: "test-machine",
   platform: "darwin",
+  gatewayId: "550e8400-e29b-41d4-a716-446655440000",
   capabilities: {},
   supportedOperations: ["symphony_chat"],
   lastSeenAt: new Date(),
   isOnline: true,
   isSharedWithOrg: false,
+  security: {
+    status: DesktopSecurityStatus.Protected,
+    reason: "BOUND_DESKTOP_MANAGED_KEY",
+    upgradeSupported: false,
+  },
   createdAt: new Date(),
   updatedAt: new Date(),
 };

@@ -47,7 +47,10 @@ describe("GET /desktop/provisioning-capability", () => {
       },
     });
     expect(isDesktopManagedPopProvisioningEnabled).toHaveBeenCalledWith(
-      authContext.user.id,
+      {
+        userId: authContext.user.id,
+        clerkUserId: authContext.user.clerkId,
+      },
       DesktopProvisioningPlatform.Darwin
     );
   });

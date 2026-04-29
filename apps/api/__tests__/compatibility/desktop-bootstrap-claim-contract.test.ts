@@ -8,9 +8,17 @@ import { vi } from "vitest";
 import { apiKeysService } from "@/app/api-keys/service";
 import { POST } from "@/app/desktop/bootstrap/claim/route";
 import { desktopOnboardingAttemptsService } from "@/app/desktop/onboarding-attempt/service";
+import { usersService } from "@/app/users/service";
 import { normalizeEd25519SpkiPublicKeyPem } from "@/lib/auth/ed25519-spki-pem";
 import { createMockRequest } from "../utils/auth-helpers";
 
+const mockIsFeatureEnabled = vi.hoisted(() => vi.fn());
+
+vi.mock("@repo/analytics/server", () => ({
+  analytics: {
+    isFeatureEnabled: mockIsFeatureEnabled,
+  },
+}));
 vi.mock("@/app/desktop/onboarding-attempt/service", () => ({
   desktopOnboardingAttemptsService: {
     get: vi.fn(),
@@ -23,6 +31,11 @@ vi.mock("@/app/api-keys/service", () => ({
   },
   DesktopManagedKeyRotationConflictError: class extends Error {},
 }));
+vi.mock("@/app/users/service", () => ({
+  usersService: {
+    findById: vi.fn(),
+  },
+}));
 vi.mock("@/lib/auth/ed25519-spki-pem", () => ({
   normalizeEd25519SpkiPublicKeyPem: vi.fn(),
 }));
@@ -34,6 +47,7 @@ vi.mock("@/lib/auth/canonical-trusted-origin", () => ({
 describe("POST /desktop/bootstrap/claim contract compatibility", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockIsFeatureEnabled.mockResolvedValue(true);
     vi.mocked(desktopOnboardingAttemptsService.get).mockResolvedValue({
       attemptId: "attempt-123",
       organizationId: "org-1",
@@ -43,6 +57,12 @@ describe("POST /desktop/bootstrap/claim contract compatibility", () => {
       consumedAt: null,
     });
     vi.mocked(desktopOnboardingAttemptsService.consume).mockResolvedValue(true);
+    vi.mocked(usersService.findById).mockResolvedValue({
+      id: "user-1",
+      clerkId: "clerk-user-1",
+      organizationId: "org-1",
+      active: true,
+    } as Awaited<ReturnType<typeof usersService.findById>>);
     vi.mocked(apiKeysService.rotateDesktopManagedKey).mockResolvedValue({
       plaintext: "sk_live_desktop_managed",
     } as never);

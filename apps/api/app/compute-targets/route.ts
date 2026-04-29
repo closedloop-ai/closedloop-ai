@@ -23,7 +23,8 @@ export const GET = withAnyAuth<ComputeTarget[], "/compute-targets">(
 
       const targets = await computeTargetsService.listAvailableForOrg(
         user.organizationId,
-        user.id
+        user.id,
+        user.clerkId
       );
 
       return successResponse(targets);

@@ -26,6 +26,8 @@ import {
   Laptop,
   Loader2,
   RefreshCw,
+  ShieldAlert,
+  ShieldCheck,
   Trash2,
 } from "lucide-react";
 import Link from "next/link";
@@ -37,6 +39,7 @@ import {
   useDeleteComputeTarget,
   useToggleComputeTargetSharing,
 } from "@/hooks/queries/use-compute-targets";
+import { useLatestElectronRelease } from "@/hooks/queries/use-electron-release";
 import {
   COMPUTE_TARGETS_QUERY_OPTIONS,
   DESKTOP_SETUP_URL,
@@ -51,6 +54,12 @@ import { queryKeys } from "@/lib/engineer/queries/keys";
 import { resolveTargetLabel } from "@/lib/engineer/routing-label";
 import { useEngineerRoutingSelection } from "@/lib/engineer/routing-store";
 import { useSystemCheckEligibility } from "@/lib/system-check/use-system-check-eligibility";
+import {
+  getSecurityLabel,
+  getTargetSecurity,
+  requiresDesktopUpdateAction,
+} from "./desktop-security-helpers";
+import { DesktopUpdateDownloadButton } from "./desktop-update-download-button";
 import { UpdateAndRestartButton } from "./update-and-restart-button";
 
 const DOWNLOAD_URL_ALLOWLIST = ["github.com", "objects.githubusercontent.com"];
@@ -164,8 +173,11 @@ export function LocalComputeTargetsCard() {
   const { data: targets = [], isLoading } = useComputeTargets({
     ...COMPUTE_TARGETS_QUERY_OPTIONS,
   });
+  const { data: latestDesktopRelease, isLoading: isDesktopReleaseLoading } =
+    useLatestElectronRelease();
   const deleteTarget = useDeleteComputeTarget(user?.id ?? "");
   const toggleSharing = useToggleComputeTargetSharing();
+  const desktopUpdateUrl = latestDesktopRelease?.downloadUrl ?? null;
 
   const handleUpdateIsUpdatingChange = useCallback(
     (targetId: string, isUpdating: boolean) => {
@@ -304,6 +316,7 @@ export function LocalComputeTargetsCard() {
       <div className="space-y-3">
         {ownTargets.map((target) => {
           const isUpdating = updatingTargets.has(target.id);
+          const security = getTargetSecurity(target);
           return (
             <div className="rounded-lg border p-3" key={target.id}>
               <div className="flex flex-wrap items-center justify-between gap-3">
@@ -316,6 +329,14 @@ export function LocalComputeTargetsCard() {
                     >
                       {target.isOnline ? "online" : "offline"}
                     </Badge>
+                    <Badge className="gap-1" variant="outline">
+                      {security.status === "protected" ? (
+                        <ShieldCheck className="size-3" />
+                      ) : (
+                        <ShieldAlert className="size-3" />
+                      )}
+                      {getSecurityLabel(security)}
+                    </Badge>
                   </div>
                   <p className="text-muted-foreground text-xs">
                     {target.platform} - Last seen{" "}
@@ -324,6 +345,28 @@ export function LocalComputeTargetsCard() {
                 </div>
 
                 <div className="flex items-center gap-2">
+                  {security.upgradeSupported && (
+                    <Button asChild size="sm" variant="outline">
+                      <Link
+                        aria-disabled={isUpdating}
+                        className={
+                          isUpdating ? "pointer-events-none opacity-50" : ""
+                        }
+                        href={`/settings/compute-targets/${target.id}/security-upgrade`}
+                      >
+                        <ShieldCheck className="h-4 w-4" />
+                        Upgrade security
+                      </Link>
+                    </Button>
+                  )}
+
+                  {requiresDesktopUpdateAction(security) && (
+                    <DesktopUpdateDownloadButton
+                      downloadUrl={desktopUpdateUrl}
+                      isLoading={isDesktopReleaseLoading}
+                    />
+                  )}
+
                   <UpdateAndRestartButton
                     onError={(downloadUrl) =>
                       handleUpdateError(target.machineName, downloadUrl)
