@@ -46,8 +46,8 @@ export const POST = withAnyAuth<
     }
 
     return successResponse({
-      id: target.id,
-      machineName: target.machineName,
+      id: target.value.id,
+      machineName: target.value.machineName,
       isOnline: true,
     });
   } catch (error) {

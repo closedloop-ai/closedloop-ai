@@ -3,6 +3,7 @@ import type {
   UpdateComputeTargetInput,
 } from "@repo/api/src/types/compute-target";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
+import { getPrismaErrorCode } from "@/lib/db-utils";
 import { relayEventBus } from "@/lib/relay-event-bus";
 import {
   conflictResponse,
@@ -19,12 +20,7 @@ import {
 import { updateComputeTargetValidator } from "../validators";
 
 function isUniqueConstraintError(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    (error as { code?: string }).code === "P2002"
-  );
+  return getPrismaErrorCode(error) === "P2002";
 }
 
 /**
@@ -57,11 +53,11 @@ export const PUT = withAnyAuth<ComputeTarget, "/compute-targets/[id]">(
         );
       }
 
-      if (!target) {
+      if (!target.value) {
         return notFoundResponse("Compute target");
       }
 
-      return successResponse(target);
+      return successResponse(target.value);
     } catch (error) {
       if (isUniqueConstraintError(error)) {
         return conflictResponse(

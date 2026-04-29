@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { withDb } from "@repo/database";
 import { desktopOnboardingAttemptsService } from "@/app/desktop/onboarding-attempt/service";
-import { isRecord } from "@/lib/type-guards";
+import { getPrismaErrorCode } from "@/lib/db-utils";
 
 export const DESKTOP_DEVICE_SESSION_TTL_MS = 10 * 60 * 1000;
 export const DESKTOP_DEVICE_POLL_INTERVAL_SECONDS = 5;
@@ -83,12 +83,6 @@ function createUserCode(): string {
 
 function createDeviceSecret(): string {
   return randomBytes(32).toString("base64url");
-}
-
-function getPrismaErrorCode(error: unknown): string | undefined {
-  return isRecord(error) && typeof error.code === "string"
-    ? error.code
-    : undefined;
 }
 
 export const desktopDeviceOnboardingService = {

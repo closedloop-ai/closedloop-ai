@@ -26,7 +26,6 @@ export const DesktopSecurityStatus = {
   LegacyManual: "legacy_manual",
   Unknown: "unknown",
 } as const;
-
 export type DesktopSecurityStatus =
   (typeof DesktopSecurityStatus)[keyof typeof DesktopSecurityStatus];
 
@@ -106,7 +105,6 @@ export const DesktopCommandStatus = {
   Cancelled: "cancelled",
   Expired: "expired",
 } as const;
-
 export type DesktopCommandStatus =
   (typeof DesktopCommandStatus)[keyof typeof DesktopCommandStatus];
 
@@ -191,7 +189,6 @@ export const ComputePreference = {
   Local: "LOCAL",
   Cloud: "CLOUD",
 } as const;
-
 export type ComputePreference =
   (typeof ComputePreference)[keyof typeof ComputePreference];
 

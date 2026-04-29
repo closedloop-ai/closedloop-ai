@@ -1,4 +1,7 @@
-import type { ComputeTarget } from "@repo/api/src/types/compute-target";
+import {
+  type ComputeTarget,
+  DesktopSecurityStatus,
+} from "@repo/api/src/types/compute-target";
 import { vi } from "vitest";
 import { PROTOCOL_VERSION } from "@/lib/desktop-gateway-types";
 
@@ -55,7 +58,7 @@ export const mockTarget: ComputeTarget = {
   isOnline: true,
   isSharedWithOrg: false,
   security: {
-    status: "protected",
+    status: DesktopSecurityStatus.Protected,
     reason: "BOUND_DESKTOP_MANAGED_KEY",
     upgradeSupported: false,
   },

@@ -224,7 +224,7 @@ async function handleSocketHello(
       socket.disconnect(true);
       return;
     }
-    if (!updated) {
+    if (!updated.value) {
       targetId = undefined;
     }
   }
@@ -248,7 +248,7 @@ async function handleSocketHello(
       socket.disconnect(true);
       return;
     }
-    targetId = target.id;
+    targetId = target.value.id;
     targetCreated = true;
   }
 

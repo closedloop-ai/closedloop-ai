@@ -255,7 +255,7 @@ async function resolveRelayHelloTarget(
     if (isComputeTargetGatewayConflictResult(updated)) {
       return { targetId: "", targetCreated: false };
     }
-    if (updated) {
+    if (updated.value) {
       return { targetId: input.computeTargetId, targetCreated: false };
     }
   }
@@ -277,7 +277,7 @@ async function resolveRelayHelloTarget(
   if (isComputeTargetGatewayConflictResult(target)) {
     return { targetId: "", targetCreated: false };
   }
-  return { targetId: target.id, targetCreated: true };
+  return { targetId: target.value.id, targetCreated: true };
 }
 
 // ---------------------------------------------------------------------------

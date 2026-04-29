@@ -167,29 +167,17 @@ export function useStartDesktopSecurityUpgrade() {
   const apiClient = useApiClient();
 
   return useMutation({
-    mutationFn: async ({
+    mutationFn: ({
       targetId,
       webAppOrigin,
     }: {
       targetId: string;
       webAppOrigin: string;
     }) => {
-      const response = await apiClient.request(
+      return apiClient.postRaw<StartDesktopSecurityUpgradeResponse>(
         `/compute-targets/${targetId}/security-upgrade-attempt`,
-        {
-          method: "POST",
-          body: JSON.stringify({ webAppOrigin }),
-        }
+        { webAppOrigin }
       );
-      const body = await response.json().catch(() => null);
-      if (!response.ok) {
-        throw new Error(
-          typeof body?.code === "string"
-            ? body.code
-            : "DESKTOP_SECURITY_UPGRADE_FAILED"
-        );
-      }
-      return body as StartDesktopSecurityUpgradeResponse;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: computeTargetKeys.list() });

@@ -3,10 +3,18 @@
 import type { ApiResult } from "@repo/api/src/types/common";
 import { useAuth } from "@repo/auth/client";
 import { useMemo } from "react";
+import { z } from "zod";
 import { useWaitForAuthLoaded } from "@/hooks/use-wait-for-auth-loaded";
 import { ApiError } from "@/lib/api-error";
 import { resolveApiOrigin } from "@/lib/api-origin";
 import { reviveWithDates } from "@/lib/revive-with-dates";
+
+const rawErrorBodySchema = z
+  .object({
+    code: z.string().optional(),
+    error: z.string().optional(),
+  })
+  .passthrough();
 
 /**
  * This hook provides an HTTP client for interacting with the REST API.
@@ -56,9 +64,17 @@ export function useApiClient() {
         });
       },
 
-      request: async (path: string, options?: RequestInit) => {
+      getRaw: async <T>(path: string, options?: RequestInit) => {
         await waitForAuthLoaded();
-        return apiRequest(path, await getToken(), options);
+        return apiFetchRaw<T>(path, await getToken(), options);
+      },
+
+      postRaw: async <T>(path: string, data: unknown) => {
+        await waitForAuthLoaded();
+        return apiFetchRaw<T>(path, await getToken(), {
+          method: "POST",
+          body: JSON.stringify(data),
+        });
       },
     }),
     [getToken, waitForAuthLoaded]
@@ -104,6 +120,43 @@ async function apiFetch<T>(
       0
     );
   }
+}
+
+async function apiFetchRaw<T>(
+  path: string,
+  token: string | null,
+  options?: RequestInit
+): Promise<T> {
+  try {
+    const response = await apiRequest(path, token, options);
+    const body = await response.json().catch(() => null);
+
+    if (!response.ok) {
+      throw new ApiError(extractRawErrorMessage(body), response.status);
+    }
+
+    return body as T;
+  } catch (error) {
+    if (error instanceof ApiError) {
+      throw error;
+    }
+
+    throw new ApiError(
+      error instanceof Error ? error.message : "Network error",
+      0
+    );
+  }
+}
+
+function extractRawErrorMessage(body: unknown): string {
+  const parsed = rawErrorBodySchema.safeParse(body);
+  const message = parsed.success
+    ? (parsed.data.code ?? parsed.data.error)
+    : null;
+  if (message) {
+    return message;
+  }
+  return "API request failed";
 }
 
 function apiRequest(

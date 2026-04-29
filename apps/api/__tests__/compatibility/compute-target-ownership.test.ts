@@ -1,3 +1,4 @@
+import { Result } from "@repo/api/src/types/result";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { computeTargetsService } from "@/app/compute-targets/service";
 import { POST } from "@/app/internal/relay/socket-event/route";
@@ -56,8 +57,12 @@ beforeAll(() => {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.mocked(computeTargetsService.updateOwned).mockResolvedValue(null);
-  vi.mocked(computeTargetsService.register).mockResolvedValue(mockNewTarget);
+  vi.mocked(computeTargetsService.updateOwned).mockResolvedValue(
+    Result.ok(null)
+  );
+  vi.mocked(computeTargetsService.register).mockResolvedValue(
+    Result.ok(mockNewTarget)
+  );
   vi.mocked(computeTargetsService.setOnlineState).mockResolvedValue(true);
   vi.mocked(
     desktopCommandStore.listNonTerminalDispatchCommands

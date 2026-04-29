@@ -1,8 +1,8 @@
 import type { JsonObject } from "@repo/api/src/types/common";
 import { log } from "@repo/observability/log";
-import { z } from "zod";
 import { authenticateLoopRunner } from "@/lib/auth/loop-runner-jwt";
 import { shortContentHash } from "@/lib/content-hash";
+import { parseJsonObject } from "@/lib/json-schema";
 import {
   errorResponse,
   parseBody,
@@ -11,13 +11,6 @@ import {
 } from "@/lib/route-utils";
 import { loopsService } from "../../service";
 import { uploadArtifactsSchema } from "./validators";
-
-const recordSchema = z.record(z.string(), z.unknown());
-
-function getRecord(value: unknown): Record<string, unknown> | null {
-  const parsed = recordSchema.safeParse(value);
-  return parsed.success ? parsed.data : null;
-}
 
 function getPlanUploadDiagnostics(artifacts: JsonObject): {
   planArtifactPresent: boolean;
@@ -30,12 +23,12 @@ function getPlanUploadDiagnostics(artifacts: JsonObject): {
   planContentHash: string | null;
   planRawContentHash: string | null;
 } {
-  const planArtifact = getRecord(artifacts.plan);
+  const planArtifact = parseJsonObject(artifacts.plan);
   const planContent =
     typeof planArtifact?.content === "string"
       ? planArtifact.content
       : undefined;
-  const rawPlan = getRecord(planArtifact?.raw);
+  const rawPlan = parseJsonObject(planArtifact?.raw);
   const rawPlanContent =
     typeof rawPlan?.content === "string" ? rawPlan.content : undefined;
   let planRawReusableByDesktop: boolean | null = null;
@@ -92,7 +85,7 @@ export async function POST(
     const updatedCount = await loopsService.updateUploadedArtifacts(
       loopId,
       auth.claims.organizationId,
-      body.artifacts as JsonObject
+      body.artifacts
     );
     if (updatedCount === 0) {
       log.warn("[upload-artifacts] No rows updated — loop may be terminal", {
@@ -111,7 +104,7 @@ export async function POST(
       updatedCount,
       artifactKeys: Object.keys(body.artifacts),
       executionResultPresent: body.artifacts.executionResult !== undefined,
-      ...getPlanUploadDiagnostics(body.artifacts as JsonObject),
+      ...getPlanUploadDiagnostics(body.artifacts),
     });
 
     // Merge metadata if provided
@@ -119,7 +112,7 @@ export async function POST(
       const mergedMetadata = {
         ...(loop.metadata ?? {}),
         ...body.metadata,
-      } as JsonObject;
+      } satisfies JsonObject;
       await loopsService.updateMetadata(
         loopId,
         auth.claims.organizationId,

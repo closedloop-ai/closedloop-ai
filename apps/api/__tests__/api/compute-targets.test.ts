@@ -1,3 +1,4 @@
+import { Result } from "@repo/api/src/types/result";
 import { vi } from "vitest";
 import { POST as heartbeatPOST } from "@/app/compute-targets/[id]/heartbeat/route";
 import { DELETE, PUT } from "@/app/compute-targets/[id]/route";
@@ -94,7 +95,7 @@ describe("GET /compute-targets", () => {
 describe("POST /compute-targets/register", () => {
   it("registers a compute target", async () => {
     vi.mocked(computeTargetsService.register).mockResolvedValue(
-      mockTarget as any
+      Result.ok(mockTarget)
     );
 
     const response = await registerPOST(
@@ -170,10 +171,12 @@ describe("POST /compute-targets/:id/heartbeat", () => {
 
 describe("PUT /compute-targets/:id", () => {
   it("updates owned compute target", async () => {
-    vi.mocked(computeTargetsService.updateOwned).mockResolvedValue({
-      ...mockTarget,
-      machineName: "Renamed-Machine",
-    } as any);
+    vi.mocked(computeTargetsService.updateOwned).mockResolvedValue(
+      Result.ok({
+        ...mockTarget,
+        machineName: "Renamed-Machine",
+      })
+    );
 
     const response = await PUT(
       createMockRequest({
