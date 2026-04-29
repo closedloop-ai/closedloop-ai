@@ -210,6 +210,7 @@ export const desktopOnboardingAttemptsService = {
       };
     }
 
+    // The target-readiness lookup can cross the attempt TTL boundary.
     if (attempt.expiresAt <= new Date()) {
       return { ...base, status: DesktopProvisioningAttemptStatus.Expired };
     }

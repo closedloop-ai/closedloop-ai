@@ -22,7 +22,7 @@ describe("desktop provisioning query polling", () => {
           data: {
             onboardingAttemptId: "attempt-1",
             expiresAt: "2026-04-27T18:00:00.000Z",
-            status: DesktopProvisioningAttemptStatus.Claimed,
+            status: DesktopProvisioningAttemptStatus.Complete,
           },
         },
       })
@@ -41,7 +41,7 @@ describe("desktop provisioning query polling", () => {
     ).toBe(false);
   });
 
-  it("continues attempt polling before a terminal status", () => {
+  it("continues attempt polling before terminal statuses", () => {
     expect(
       getDesktopProvisioningAttemptRefetchInterval({
         state: {
@@ -50,6 +50,18 @@ describe("desktop provisioning query polling", () => {
             onboardingAttemptId: "attempt-1",
             expiresAt: "2026-04-27T18:00:00.000Z",
             status: DesktopProvisioningAttemptStatus.Pending,
+          },
+        },
+      })
+    ).toBe(5000);
+    expect(
+      getDesktopProvisioningAttemptRefetchInterval({
+        state: {
+          status: "success",
+          data: {
+            onboardingAttemptId: "attempt-1",
+            expiresAt: "2026-04-27T18:00:00.000Z",
+            status: DesktopProvisioningAttemptStatus.Claimed,
           },
         },
       })

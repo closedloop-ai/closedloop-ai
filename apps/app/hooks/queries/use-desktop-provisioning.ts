@@ -110,7 +110,6 @@ export function getDesktopProvisioningAttemptRefetchInterval(
   }
 
   switch (query.state.data?.status) {
-    case DesktopProvisioningAttemptStatus.Claimed:
     case DesktopProvisioningAttemptStatus.Complete:
     case DesktopProvisioningAttemptStatus.Expired:
       return false;
