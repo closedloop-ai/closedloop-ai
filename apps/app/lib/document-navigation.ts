@@ -1,4 +1,9 @@
-import { type Document, DocumentType } from "@repo/api/src/types/document";
+import { type Artifact, ArtifactType } from "@repo/api/src/types/artifact";
+import {
+  type Document,
+  DocumentType,
+  getRoutePrefixForType,
+} from "@repo/api/src/types/document";
 
 const FEATURE_ROUTE_PREFIX = "features";
 
@@ -33,4 +38,19 @@ export function getDocumentRoute(artifact: Document): string | null {
  */
 export function getFeatureRoute(feature: { slug: string }): string {
   return `/${FEATURE_ROUTE_PREFIX}/${feature.slug}`;
+}
+
+/**
+ * Get the route to navigate to for an Artifact wire object. Returns null for
+ * non-Document artifacts and for documents without a slug or routable subtype.
+ */
+export function getArtifactRoute(artifact: Artifact): string | null {
+  if (artifact.type !== ArtifactType.Document) {
+    return null;
+  }
+  if (!(artifact.slug && artifact.subtype)) {
+    return null;
+  }
+  const routePrefix = getRoutePrefixForType(artifact.subtype);
+  return routePrefix ? `/${routePrefix}/${artifact.slug}` : null;
 }

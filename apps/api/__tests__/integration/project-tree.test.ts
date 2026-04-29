@@ -1,6 +1,6 @@
-import { LinkType } from "@repo/api/src/types/artifact";
+import { ArtifactType, LinkType } from "@repo/api/src/types/artifact";
 import { DocumentType } from "@repo/api/src/types/document";
-import { ArtifactType, withDb } from "@repo/database";
+import { withDb } from "@repo/database";
 import { keys } from "@repo/database/keys";
 import { projectTreeService } from "@/app/artifacts/project-tree-service";
 import { documentService } from "@/app/documents/document-service";
@@ -48,7 +48,7 @@ function createExternalLinkArtifact(
       data: {
         organizationId,
         projectId,
-        type: ArtifactType.DEPLOYMENT,
+        type: ArtifactType.Deployment,
         name: title,
         status: "ACTIVE",
         externalUrl: `https://example.com/deployments/${Date.now()}`,
@@ -67,6 +67,7 @@ describe.skipIf(!hasDatabase)("Project Tree Service Integration", () => {
       const result = await projectTreeService.getProjectTree(projectId, orgId);
 
       expect(result.nodes).toEqual([]);
+      expect(result.externalParents).toEqual([]);
     });
   });
 
@@ -99,9 +100,9 @@ describe.skipIf(!hasDatabase)("Project Tree Service Integration", () => {
 
       expect(result.nodes).toHaveLength(3);
       // Lexicographic sort
-      expect(result.nodes[0]!.root.title).toBe("Alpha Plan");
-      expect(result.nodes[1]!.root.title).toBe("Middle Feature");
-      expect(result.nodes[2]!.root.title).toBe("Zebra PRD");
+      expect(result.nodes[0]!.root.name).toBe("Alpha Plan");
+      expect(result.nodes[1]!.root.name).toBe("Middle Feature");
+      expect(result.nodes[2]!.root.name).toBe("Zebra PRD");
       // All orphans have empty children
       for (const node of result.nodes) {
         expect(node.children).toEqual([]);
@@ -188,11 +189,10 @@ describe.skipIf(!hasDatabase)("Project Tree Service Integration", () => {
 
       expect(result.nodes).toHaveLength(1);
       const node = result.nodes[0]!;
-      // Tree nodes expose a wire-shape entityType — "DOCUMENT" for document
-      // artifacts, "EXTERNAL_LINK" for PR / DEPLOYMENT artifacts.
-      expect(node.root.entityType).toBe("DOCUMENT");
-      expect(node.children[0]!.entityType).toBe("DOCUMENT");
-      expect(node.children[1]!.entityType).toBe("EXTERNAL_LINK");
+      // Tree nodes expose Artifact rows directly — narrow on `type`.
+      expect(node.root.type).toBe(ArtifactType.Document);
+      expect(node.children[0]!.type).toBe(ArtifactType.Document);
+      expect(node.children[1]!.type).toBe(ArtifactType.Deployment);
     });
   });
 
@@ -235,8 +235,8 @@ describe.skipIf(!hasDatabase)("Project Tree Service Integration", () => {
       const result = await projectTreeService.getProjectTree(projectId, orgId);
 
       expect(result.nodes).toHaveLength(2);
-      expect(result.nodes[0]!.root.title).toBe("A-Root");
-      expect(result.nodes[1]!.root.title).toBe("Z-Root");
+      expect(result.nodes[0]!.root.name).toBe("A-Root");
+      expect(result.nodes[1]!.root.name).toBe("Z-Root");
     });
   });
 
@@ -360,7 +360,7 @@ describe.skipIf(!hasDatabase)("Project Tree Service Integration", () => {
         content: "content",
       });
 
-      // Cross-project link
+      // Cross-project link: in-project source → out-of-project target.
       await createArtifactLink(orgId, inProject!.id, otherProject!.id);
 
       const result = await projectTreeService.getProjectTree(project1, orgId);
@@ -369,6 +369,109 @@ describe.skipIf(!hasDatabase)("Project Tree Service Integration", () => {
       expect(result.nodes).toHaveLength(1);
       expect(result.nodes[0]!.root.id).toBe(inProject!.id);
       expect(result.nodes[0]!.children).toEqual([]);
+      // Outgoing cross-project link does not produce an external parent entry.
+      expect(result.externalParents).toEqual([]);
+    });
+  });
+
+  it("returns out-of-project parents in externalParents", async () => {
+    await autoRollbackTransaction(async () => {
+      const orgId = await createTestOrganization();
+      const user = await createTestUser(orgId);
+      const projectA = await createTestProject(orgId, user.id, {
+        name: "Project A",
+      });
+      const projectB = await createTestProject(orgId, user.id, {
+        name: "Project B",
+      });
+
+      const externalParent = await documentService.create(orgId, user.id, {
+        projectId: projectB,
+        type: DocumentType.Prd,
+        title: "External Parent PRD",
+        content: "content",
+      });
+      const inProjectChild = await documentService.create(orgId, user.id, {
+        projectId: projectA,
+        type: DocumentType.ImplementationPlan,
+        title: "In-project Child Plan",
+        content: "content",
+      });
+
+      // External parent (projectB) → in-project child (projectA).
+      await createArtifactLink(
+        orgId,
+        externalParent!.id,
+        inProjectChild!.id,
+        LinkType.Produces
+      );
+
+      const result = await projectTreeService.getProjectTree(projectA, orgId);
+
+      // The child appears in the in-project tree as an orphan root (no
+      // in-project parent links it).
+      expect(result.nodes).toHaveLength(1);
+      expect(result.nodes[0]!.root.id).toBe(inProjectChild!.id);
+
+      // The external parent surfaces in externalParents, not in nodes.
+      const nodeIds = result.nodes.flatMap((n) => [
+        n.root.id,
+        ...n.children.map((c) => c.id),
+      ]);
+      expect(nodeIds).not.toContain(externalParent!.id);
+
+      expect(result.externalParents).toHaveLength(1);
+      const entry = result.externalParents[0]!;
+      expect(entry.childId).toBe(inProjectChild!.id);
+      expect(entry.parent.id).toBe(externalParent!.id);
+      expect(entry.parent.name).toBe("External Parent PRD");
+      expect(entry.linkType).toBe(LinkType.Produces);
+    });
+  });
+
+  it("collapses duplicate external parents per child link", async () => {
+    await autoRollbackTransaction(async () => {
+      const orgId = await createTestOrganization();
+      const user = await createTestUser(orgId);
+      const projectA = await createTestProject(orgId, user.id, {
+        name: "Project A",
+      });
+      const projectB = await createTestProject(orgId, user.id, {
+        name: "Project B",
+      });
+
+      const externalParent = await documentService.create(orgId, user.id, {
+        projectId: projectB,
+        type: DocumentType.Prd,
+        title: "Shared External Parent",
+        content: "content",
+      });
+      const child1 = await documentService.create(orgId, user.id, {
+        projectId: projectA,
+        type: DocumentType.ImplementationPlan,
+        title: "Child 1",
+        content: "content",
+      });
+      const child2 = await documentService.create(orgId, user.id, {
+        projectId: projectA,
+        type: DocumentType.ImplementationPlan,
+        title: "Child 2",
+        content: "content",
+      });
+
+      await createArtifactLink(orgId, externalParent!.id, child1!.id);
+      await createArtifactLink(orgId, externalParent!.id, child2!.id);
+
+      const result = await projectTreeService.getProjectTree(projectA, orgId);
+
+      // One entry per (child, parent) link — parent fetched once but appears
+      // alongside both children.
+      expect(result.externalParents).toHaveLength(2);
+      const childIds = result.externalParents.map((e) => e.childId).sort();
+      expect(childIds).toEqual([child1!.id, child2!.id].sort());
+      for (const entry of result.externalParents) {
+        expect(entry.parent.id).toBe(externalParent!.id);
+      }
     });
   });
 
