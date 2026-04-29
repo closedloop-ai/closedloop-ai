@@ -14,9 +14,16 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { EmptyState } from "@/components/empty-state";
 import { useAgents, useUpdateAgent } from "@/hooks/queries/use-agents";
+import {
+  BootstrapStatus,
+  useBootstrapAgents,
+} from "@/hooks/queries/use-bootstrap-agents";
 import { useLocalStorageState } from "@/hooks/use-local-storage-state";
 import { formatRelativeTime } from "@/lib/date-utils";
+import { useElectronDetection } from "@/lib/engineer/electron-detection";
+import { BootstrapProgress } from "./bootstrap-progress";
 import { CreateAgentDialog } from "./create-agent-dialog";
+import { RepoPickerDialog } from "./repo-picker-dialog";
 
 function EnableToggle({ agent }: Readonly<{ agent: AgentSummary }>) {
   const updateAgent = useUpdateAgent(agent.slug);
@@ -94,13 +101,26 @@ export function AgentsTable() {
   const router = useRouter();
   const { data, isLoading, error } = useAgents();
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
+  const [repoPickerOpen, setRepoPickerOpen] = useState(false);
   const [pageSize, setPageSize] = useLocalStorageState(
     "agents:table:pageSize",
     DEFAULT_PAGE_SIZE
   );
 
+  const electron = useElectronDetection();
+  const bootstrap = useBootstrapAgents();
+  const isBootstrapBusy =
+    bootstrap.state.status === BootstrapStatus.Running ||
+    bootstrap.state.status === BootstrapStatus.Ingesting;
+
   const handleGenerateClick = () => {
-    toast.info("Connect to Electron desktop app to generate agents.");
+    if (!electron.detected) {
+      toast.error(
+        "Desktop app not connected. Install and start the ClosedLoop desktop app to generate agents."
+      );
+      return;
+    }
+    setRepoPickerOpen(true);
   };
 
   if (isLoading) {
@@ -133,7 +153,7 @@ export function AgentsTable() {
         </div>
         {!isEmpty && (
           <div className="flex items-center gap-2">
-            <Button onClick={handleGenerateClick}>
+            <Button disabled={isBootstrapBusy} onClick={handleGenerateClick}>
               <SparklesIcon className="h-4 w-4" />
               Generate Agents
             </Button>
@@ -144,7 +164,10 @@ export function AgentsTable() {
           </div>
         )}
       </div>
-      {isEmpty ? (
+
+      <BootstrapProgress onDismiss={bootstrap.reset} state={bootstrap.state} />
+
+      {isEmpty && bootstrap.state.status === BootstrapStatus.Idle && (
         <EmptyState
           action={
             <div className="flex items-center gap-2">
@@ -165,7 +188,9 @@ export function AgentsTable() {
           icon={BotIcon}
           title="No agents yet"
         />
-      ) : (
+      )}
+
+      {!isEmpty && (
         <DataTable
           columns={columns}
           data={agents}
@@ -178,6 +203,12 @@ export function AgentsTable() {
           searchPlaceholder="Search agents..."
         />
       )}
+
+      <RepoPickerDialog
+        onOpenChange={setRepoPickerOpen}
+        onSubmit={bootstrap.dispatch}
+        open={repoPickerOpen}
+      />
       <CreateAgentDialog
         onOpenChange={setCreateDialogOpen}
         open={createDialogOpen}
