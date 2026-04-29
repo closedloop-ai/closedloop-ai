@@ -188,10 +188,10 @@ export const desktopOnboardingAttemptsService = {
         ? { computeTargetId: attempt.computeTargetId }
         : {}),
     };
-    if (attempt.expiresAt <= new Date()) {
-      return { ...base, status: DesktopProvisioningAttemptStatus.Expired };
-    }
     if (!(attempt.consumedAt && attempt.gatewayId)) {
+      if (attempt.expiresAt <= new Date()) {
+        return { ...base, status: DesktopProvisioningAttemptStatus.Expired };
+      }
       return { ...base, status: DesktopProvisioningAttemptStatus.Pending };
     }
 

@@ -16,7 +16,7 @@ import {
   MonitorIcon,
   TerminalIcon,
 } from "lucide-react";
-import type { DesktopSetupStatus } from "./use-desktop-setup-readiness";
+import { DesktopSetupStatus } from "./use-desktop-setup-readiness";
 
 type AutomatedProvisioningCardProps = {
   readonly automatedProvisioningEnabled: boolean;
@@ -341,7 +341,7 @@ function DesktopStatusMessage({
   readonly runningVersion: string | null;
   readonly setupStatus: DesktopSetupStatus;
 }) {
-  if (electronDetected && setupStatus === "complete") {
+  if (electronDetected && setupStatus === DesktopSetupStatus.Complete) {
     return (
       <div className="mt-4 flex items-center gap-2 rounded-md bg-green-500/10 px-3 py-2 text-green-700 text-sm dark:text-green-300">
         <CheckCircleIcon className="h-4 w-4" />
@@ -351,7 +351,7 @@ function DesktopStatusMessage({
   }
 
   if (electronDetected) {
-    if (setupStatus === "unknown") {
+    if (setupStatus === DesktopSetupStatus.Unknown) {
       return (
         <div className="mt-4 flex items-start gap-2 rounded-md bg-muted/50 px-3 py-2 text-muted-foreground text-sm">
           <CheckCircleIcon className="mt-0.5 h-4 w-4 shrink-0 text-green-600 dark:text-green-400" />
@@ -419,7 +419,7 @@ function DownloadAction({
   readonly runningVersion: string | null;
 }) {
   if (electronDetected) {
-    if (isElectronOutdated) {
+    if (isElectronOutdated && runningVersion && latestVersion) {
       return (
         <div className="space-y-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-amber-950 text-sm dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100">
           <div className="flex items-start gap-2">

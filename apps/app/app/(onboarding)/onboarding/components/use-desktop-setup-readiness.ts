@@ -12,7 +12,13 @@ import {
 } from "@/hooks/queries/use-desktop-provisioning";
 import { useElectronDetection } from "@/lib/engineer/electron-detection";
 
-export type DesktopSetupStatus = "complete" | "incomplete" | "unknown";
+export const DesktopSetupStatus = {
+  Complete: "complete",
+  Incomplete: "incomplete",
+  Unknown: "unknown",
+} as const;
+export type DesktopSetupStatus =
+  (typeof DesktopSetupStatus)[keyof typeof DesktopSetupStatus];
 
 type UseDesktopSetupReadinessInput = {
   readonly generatedKeyPresent: boolean;
@@ -66,19 +72,23 @@ export function useDesktopSetupReadiness({
   });
   const serverConfirmedReady =
     provisioningAttemptComplete || existingManagedTargetReady;
+  const legacySetupStatusUnknown = electron.onboardingCompleted === null;
+  const detectedDesktopCanContinue =
+    electron.detected &&
+    (desktopSetupStatus === DesktopSetupStatus.Complete ||
+      (desktopSetupStatus === DesktopSetupStatus.Unknown &&
+        legacySetupStatusUnknown));
 
   return {
     canContinue:
-      generatedKeyPresent ||
-      serverConfirmedReady ||
-      (electron.detected && desktopSetupStatus !== "incomplete"),
+      generatedKeyPresent || serverConfirmedReady || detectedDesktopCanContinue,
     desktopSetupStatus,
     electron,
     shouldAutoContinue:
       serverConfirmedReady ||
       (provisioningCommandPresent &&
         electron.detected &&
-        desktopSetupStatus === "complete"),
+        desktopSetupStatus === DesktopSetupStatus.Complete),
   };
 }
 
@@ -94,14 +104,14 @@ function getDesktopSetupStatus({
   readonly securityLookupPending: boolean;
 }): DesktopSetupStatus {
   if (localOnboardingCompleted === true || managedComputeTargetDetected) {
-    return "complete";
+    return DesktopSetupStatus.Complete;
   }
   if (
     localOnboardingCompleted === null ||
     securityLookupPending ||
     securityLookupFailed
   ) {
-    return "unknown";
+    return DesktopSetupStatus.Unknown;
   }
-  return "incomplete";
+  return DesktopSetupStatus.Incomplete;
 }

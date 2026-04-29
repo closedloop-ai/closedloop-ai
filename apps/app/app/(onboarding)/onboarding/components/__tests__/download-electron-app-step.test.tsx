@@ -274,6 +274,13 @@ describe("DownloadElectronAppStep", () => {
         configurable: true,
         value: "Win32",
       });
+      mockUseDesktopProvisioningCapability.mockReturnValue({
+        data: {
+          automatedManagedProvisioningEnabled: true,
+          supportedPlatform: DesktopProvisioningPlatform.Darwin,
+        },
+        isLoading: false,
+      });
 
       render(<DownloadElectronAppStep onNext={mockOnNext} />);
 
@@ -323,6 +330,7 @@ describe("DownloadElectronAppStep", () => {
       expect(
         screen.queryByText(DESKTOP_SETUP_INCOMPLETE)
       ).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: CONTINUE_BTN })).toBeDisabled();
 
       mockUseDesktopProvisioningReadiness.mockReturnValue({
         data: undefined,
@@ -336,6 +344,7 @@ describe("DownloadElectronAppStep", () => {
       expect(
         screen.queryByText(DESKTOP_SETUP_INCOMPLETE)
       ).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: CONTINUE_BTN })).toBeDisabled();
       expect(mockOnNext).not.toHaveBeenCalled();
     });
 

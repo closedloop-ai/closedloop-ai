@@ -68,7 +68,8 @@ export function useDesktopProvisioningAttemptStatus(
       ),
     enabled: onboardingAttemptId !== null,
     refetchInterval: (query) =>
-      query.state.data?.status === DesktopProvisioningAttemptStatus.Complete
+      query.state.data?.status === DesktopProvisioningAttemptStatus.Complete ||
+      query.state.data?.status === DesktopProvisioningAttemptStatus.Expired
         ? false
         : 5000,
   });

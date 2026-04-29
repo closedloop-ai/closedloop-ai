@@ -8,6 +8,7 @@ Changes in this repo must not assume another repo (for example `closedloop-elect
 
 - Treat all cross-repo contracts (desktop gateway payloads, relay events, error reasons, callback semantics) as version-skewed.
 - New fields must be additive and optional; missing/unknown values must degrade gracefully to safe defaults.
+- For optional cross-repo payload fields, preserve omission when a value is absent. Do not serialize absent optional fields as `null` unless the receiving contract explicitly declares that field nullable and old clients are known to accept it.
 - When external payload fields are renamed, keep the previous field accepted as a compatibility alias until a human explicitly approves removing the shim, as long as the server can map it to the new behavior safely.
 - Never crash, throw unhandled errors, or block core flows solely because a peer repo is on an older/newer version.
 - For behavior/classification changes, include a backward-compatible fallback path (for example, map unknown reasons to generic `launch_failed`).
@@ -41,6 +42,7 @@ For API routes with fixed request/response/error contracts, wrap auth/session an
 - Do not import `@repo/database` in `apps/app`; frontend code must go through `apps/api` routes and shared API types.
 - Prefer generated Prisma enums from `@repo/database` over duplicated string literals when a model field already has an enum type.
 - Use shared constants, generated enums, or exported enum-like objects for statuses, reasons, protocol modes, channel names, storage keys, and other contract values. Do not duplicate hardcoded strings when a constant or enum exists.
+- For status/state values shared between hooks, components, tests, or transport code, export a const object plus matching type alias and compare against the const members instead of repeating string literals or bare string unions.
 - Biome forbids TypeScript `enum`. In `packages/api/src/types`, define exported API contract value sets as PascalCase const objects with matching type aliases, such as `export const Foo = { Bar: "bar" } as const; export type Foo = (typeof Foo)[keyof typeof Foo];`. Use the runtime const reference everywhere instead of duplicating strings.
 - When multiple desktop route files share the same wire-contract types, define those types in `apps/api/app/desktop/contract.ts` instead of duplicating route-local copies.
 - Keep backend-only API metadata types in `apps/api`; `packages/api` should expose transport contracts and cross-process constants, not database provenance or auth-policy internals.
@@ -62,9 +64,12 @@ For API routes with fixed request/response/error contracts, wrap auth/session an
 - React hooks, components, and utilities that schedule timers must clear superseded timers and clean them up on unmount or disposal.
 - Tests that mutate `process.env` must restore the exact previous state. If a variable was originally unset, remove the property, for example with `Reflect.deleteProperty(process.env, "KEY")`; assigning `undefined` creates the string value `"undefined"` in Node.
 - Tests for ignored, optional, or compatibility-only request fields must assert the downstream call shape, not only that the downstream dependency was called.
+- Tests for feature-gated defaults must set mocks so the opposite/default branch would fail the assertion; avoid tests that pass only because the feature gate is disabled or unavailable.
+- When rendering nullable values behind a boolean flag, guard the actual render branch with the nullable values too, or encode the props as a discriminated union so the compiler enforces the required values.
 - In `apps/app`, use TanStack Query hooks for server state and server mutations instead of component-level `useEffect` plus raw `fetch`, unless the fetch is not cacheable server state and the exception is documented.
 - Before adding mount-time data fetching in `apps/app`, especially on editor or project pages, confirm the data is required for the initial render. Prefer deferring optional or rarely used backend reads until the user action, visible panel, route state, or workflow step that actually needs the data, so page mount does not accumulate many small requests.
 - In `apps/app` query hooks, use `useApiClient` for authenticated API requests instead of manually calling `fetch`, `getToken`, and `resolveApiUrl`. If a route intentionally does not use the standard `ApiResult` envelope, use `getRaw`/`postRaw` on `useApiClient` so auth, API-origin behavior, JSON parsing, and raw error fallback stay centralized.
+- Polling query hooks must stop polling on every terminal status for the workflow, including failure or expiry states, not only the success state.
 - Fetch helpers that read structured error bodies must tolerate non-JSON responses with `response.json().catch(() => null)` before branching on `response.ok`.
 - Do not add local `.catch()` error toasts around `mutateAsync`; the global `QueryClient` mutation error handler owns default error toasts. Catch only to suppress unhandled rejections or update local state.
 - Use `globalThis` instead of `window` when reading browser globals in shared/client code, and keep SSR guards explicit.
