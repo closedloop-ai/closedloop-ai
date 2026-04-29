@@ -3,11 +3,11 @@ import { ThreadStatus } from "@repo/api/src/types/comment";
 import { success } from "@repo/api/src/types/common";
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { documentService } from "@/app/documents/document-service";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { resolveDocumentId } from "@/lib/identifier-utils";
 import { errorResponse, notFoundResponse, parseBody } from "@/lib/route-utils";
 import { commentsService } from "../../../comments/service";
-import { documentsService } from "../../service";
 
 const getThreadsValidator = z.object({
   status: z.enum(ThreadStatus).optional(),
@@ -30,7 +30,7 @@ export const POST = withAnyAuth<
       return notFoundResponse("Artifact");
     }
 
-    const artifact = await documentsService.findById(
+    const artifact = await documentService.findById(
       resolvedId,
       user.organizationId
     );

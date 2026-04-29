@@ -43,7 +43,6 @@ import {
   useDismissDocumentGenerationStatus,
   useDocumentGenerationStatus,
   useDocumentPullRequest,
-  usePreviewDeployment,
 } from "@/hooks/queries/use-documents";
 import {
   useCodeJudgesFeedback,
@@ -52,7 +51,6 @@ import {
 import { useInitialAdditionalRepos } from "@/hooks/queries/use-loops";
 import { useExecutionLogDialog } from "@/hooks/use-execution-log-dialog";
 import { useMultiRepoExecuteEnabled } from "@/hooks/use-multi-repo-execute-enabled";
-import { usePreviewDeploymentPolling } from "@/hooks/use-preview-deployment-polling";
 import { ExecutePlanModal } from "../components/execute-plan-modal";
 import { RequestChangesModal } from "../components/request-changes-modal";
 import { VersionSelector } from "../components/version-selector";
@@ -164,28 +162,6 @@ export function PlanEditor({
   const { data: pullRequest } = useDocumentPullRequest(plan.id);
   const { data: judgesReport } = usePlanJudgesFeedback(plan.id);
   const { data: codeJudgesReport } = useCodeJudgesFeedback(plan.id);
-
-  // Preview deployment artifact (Artifact of type DEPLOYMENT)
-  const {
-    data: previewDeployment = null,
-    refetch: refetchPreviewLinks,
-    isRefetching: isRefreshingPreviewDeployment,
-  } = usePreviewDeployment(plan.id);
-
-  // Adaptive polling for preview deployment status
-  const isGenerationRunning = !!(
-    generationStatus?.status &&
-    ["RUNNING", "QUEUED", "IN_PROGRESS", "PENDING"].includes(
-      generationStatus.status.toUpperCase()
-    )
-  );
-  usePreviewDeploymentPolling({
-    previewState: previewDeployment?.status ?? null,
-    hasPreviewRef: !!previewDeployment?.deployment.ref,
-    pullRequestNumber: pullRequest?.number,
-    isGenerationRunning,
-    refetch: refetchPreviewLinks,
-  });
 
   // Derived state
   const isDraft = metadata.status === DocumentStatus.Draft;
@@ -395,11 +371,7 @@ export function PlanEditor({
                     additionalRepos={initialAdditionalRepos}
                     codeJudgeItems={codeJudgesReport ?? null}
                     generationStatus={generationStatus ?? null}
-                    isPreviewRefreshing={isRefreshingPreviewDeployment}
-                    onPreviewRefresh={refetchPreviewLinks}
                     plan={plan}
-                    previewDeployment={previewDeployment}
-                    pullRequest={pullRequest ?? null}
                   />
                 </DocumentEditorDetails>
               </div>

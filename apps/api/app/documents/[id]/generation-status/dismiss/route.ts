@@ -7,7 +7,7 @@ import {
   parseBody,
   successResponse,
 } from "@/lib/route-utils";
-import { documentsService } from "../../../service";
+import { documentGenerationStatusService } from "../../../generation-status-service";
 import { dismissGenerationStatusValidator } from "./validators";
 
 export const PUT = withAuth<
@@ -29,12 +29,13 @@ export const PUT = withAuth<
   }
 
   try {
-    const status = await documentsService.dismissGenerationStatus(
-      resolvedId,
-      user.organizationId,
-      user.id,
-      body.runKey ?? null
-    );
+    const status =
+      await documentGenerationStatusService.dismissGenerationStatus(
+        resolvedId,
+        user.organizationId,
+        user.id,
+        body.runKey ?? null
+      );
     if (!status) {
       return notFoundResponse("Artifact");
     }

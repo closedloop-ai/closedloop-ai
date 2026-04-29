@@ -16,9 +16,10 @@ import {
   ATTACHMENT_SIGNED_URL_MAX_FILES,
   attachmentsService,
 } from "@/app/documents/attachments-service";
+import { documentService } from "@/app/documents/document-service";
 import { documentVersionService } from "@/app/documents/document-version-service";
-import { documentsService } from "@/app/documents/service";
 import { loopsService } from "@/app/loops/service";
+import { documentTemplatesService } from "@/app/templates/service";
 import { getCommandHandler } from "./loop-commands";
 import {
   type ContextPack,
@@ -156,7 +157,7 @@ async function fetchPrimaryArtifact(
     return [];
   }
 
-  const artifact = await documentsService.findByIdSimple(
+  const artifact = await documentService.findByIdSimple(
     loop.documentId,
     organizationId
   );
@@ -232,7 +233,7 @@ async function fetchArtifactRef(
   organizationId: string,
   loopId: string
 ): Promise<ContextPack["artifacts"][number] | null> {
-  const artifact = await documentsService.findByIdSimple(
+  const artifact = await documentService.findByIdSimple(
     ref.sourceId,
     organizationId
   );
@@ -291,13 +292,16 @@ async function fetchTemplateForCommand(
     return [];
   }
 
-  let template = await documentsService.findOrgTemplate(
+  let template = await documentTemplatesService.findOrgTemplate(
     organizationId,
     DocumentType.Prd
   );
   if (!template) {
-    await documentsService.ensureDefaultTemplates(organizationId, loop.userId);
-    template = await documentsService.findOrgTemplate(
+    await documentTemplatesService.ensureDefaultTemplates(
+      organizationId,
+      loop.userId
+    );
+    template = await documentTemplatesService.findOrgTemplate(
       organizationId,
       DocumentType.Prd
     );

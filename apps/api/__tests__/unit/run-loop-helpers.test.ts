@@ -15,6 +15,7 @@ import {
 } from "@repo/api/src/types/document";
 import { RunLoopCommand } from "@repo/api/src/types/loop";
 import { vi } from "vitest";
+import { documentWorkstreamService } from "@/app/documents/workstream-service";
 
 // --- Mocks (must come before imports) ---
 
@@ -22,8 +23,8 @@ vi.mock("@repo/observability/log", () => ({
   log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
-vi.mock("@/app/documents/service", () => ({
-  documentsService: {
+vi.mock("@/app/documents/workstream-service", () => ({
+  documentWorkstreamService: {
     findOrCreateWorkstream: vi.fn(),
     getDocumentPullRequest: vi.fn(),
   },
@@ -44,12 +45,12 @@ import {
   resolveEvaluateCodeTargetBranch,
   resolveLoopContext,
 } from "@/app/documents/[id]/run-loop/run-loop-helpers";
-import { documentsService } from "@/app/documents/service";
+
 import { loopsService } from "@/app/loops/service";
 
 type MockFn = ReturnType<typeof vi.fn>;
 
-const mockArtifactsService = documentsService as unknown as {
+const mockArtifactsService = documentWorkstreamService as unknown as {
   findOrCreateWorkstream: MockFn;
   getDocumentPullRequest: MockFn;
 };

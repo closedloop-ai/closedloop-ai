@@ -12,7 +12,7 @@ import { withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { z } from "zod";
 import { artifactLinksService } from "@/app/artifact-links/service";
-import { documentsService } from "@/app/documents/service";
+import { documentService } from "@/app/documents/document-service";
 import { parseJsonArtifact } from "@/lib/loops/loop-document-ingestion";
 import { downloadArtifactFile } from "@/lib/loops/loop-state";
 import { defineHandler } from "./loop-command-handler";
@@ -140,7 +140,7 @@ async function ingestDecomposeArtifacts(
   }
 
   // Resolve projectId from the source PRD artifact
-  const prd = await documentsService.findByIdSimple(
+  const prd = await documentService.findByIdSimple(
     loop.documentId,
     organizationId
   );
@@ -159,7 +159,7 @@ async function ingestDecomposeArtifacts(
 
   await withDb.tx(async () => {
     for (const feature of result.features) {
-      const createdFeature = await documentsService.create(
+      const createdFeature = await documentService.create(
         organizationId,
         loop.userId,
         {

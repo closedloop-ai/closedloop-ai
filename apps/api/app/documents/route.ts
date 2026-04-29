@@ -3,6 +3,7 @@ import type {
   Document,
   DocumentWithWorkstream,
 } from "@repo/api/src/types/document";
+import { documentService } from "@/app/documents/document-service";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import {
   resolveArtifactIdentifier,
@@ -17,7 +18,6 @@ import {
   successResponse,
 } from "@/lib/route-utils";
 import { customFieldValuesService } from "../custom-fields/values-service";
-import { documentsService } from "./service";
 import {
   createDocumentValidator,
   findDocumentsQueryValidator,
@@ -65,7 +65,7 @@ export const GET = withAnyAuth<DocumentWithWorkstream[], "/documents">(
         resolvedWorkstreamId = wId;
       }
 
-      const documents = await documentsService.findAll({
+      const documents = await documentService.findAll({
         organizationId: user.organizationId,
         projectId: resolvedProjectId,
         workstreamId: resolvedWorkstreamId,
@@ -146,7 +146,7 @@ export const POST = withAnyAuth<Document, "/documents">(
         resolvedSourceId = sId;
       }
 
-      const document = await documentsService.create(
+      const document = await documentService.create(
         user.organizationId,
         user.id,
         {

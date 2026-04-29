@@ -1,8 +1,8 @@
+import { Result, Status } from "@repo/api/src/types/result";
 import { v7 as uuidv7 } from "uuid";
 import { vi } from "vitest";
-import { DocumentNotFoundError } from "@/app/documents/document-utils";
 import { POST } from "@/app/documents/merge/route";
-import { documentsService } from "@/app/documents/service";
+import { documentMergeService } from "@/app/documents/merge-service";
 import type { AuthContext } from "@/lib/auth/with-auth";
 import {
   createMockRequest,
@@ -25,7 +25,7 @@ vi.mock("@/lib/auth/with-auth", () => ({
   withAuth: (handler: any) => async (request: any, context: any) =>
     handler(mockAuthContext, request, context.params),
 }));
-vi.mock("@/app/documents/service");
+vi.mock("@/app/documents/merge-service");
 vi.mock("@repo/ai/server", () => ({
   generateText: vi.fn(),
   models: { sonnet: "mock-model" },
@@ -49,7 +49,9 @@ describe("POST /api/artifacts/merge", () => {
       type: "PRD",
     };
 
-    vi.mocked(documentsService.merge).mockResolvedValue(mockArtifact as any);
+    vi.mocked(documentMergeService.merge).mockResolvedValue(
+      Result.ok(mockArtifact as any)
+    );
 
     const request = createMockRequest({
       method: "POST",
@@ -76,7 +78,9 @@ describe("POST /api/artifacts/merge", () => {
       type: "PRD",
     };
 
-    vi.mocked(documentsService.merge).mockResolvedValue(mockArtifact as any);
+    vi.mocked(documentMergeService.merge).mockResolvedValue(
+      Result.ok(mockArtifact as any)
+    );
 
     const request = createMockRequest({
       method: "POST",
@@ -88,7 +92,7 @@ describe("POST /api/artifacts/merge", () => {
     const routeContext = createMockRouteContext({});
     await POST(request, routeContext);
 
-    expect(documentsService.merge).toHaveBeenCalledWith(
+    expect(documentMergeService.merge).toHaveBeenCalledWith(
       primaryId,
       secondaryId,
       "org-123",
@@ -100,8 +104,8 @@ describe("POST /api/artifacts/merge", () => {
     const primaryId = uuidv7();
     const secondaryId = uuidv7();
 
-    vi.mocked(documentsService.merge).mockRejectedValue(
-      new DocumentNotFoundError()
+    vi.mocked(documentMergeService.merge).mockResolvedValue(
+      Result.err(Status.NotFound)
     );
 
     const request = createMockRequest({
@@ -123,7 +127,7 @@ describe("POST /api/artifacts/merge", () => {
     const primaryId = uuidv7();
     const secondaryId = uuidv7();
 
-    vi.mocked(documentsService.merge).mockRejectedValue(
+    vi.mocked(documentMergeService.merge).mockRejectedValue(
       new Error("Artifacts must be in the same project")
     );
 
@@ -160,14 +164,14 @@ describe("POST /api/artifacts/merge", () => {
     const json = await response.json();
     expect(json.success).toBe(false);
     // merge should not have been called — validation rejected it
-    expect(documentsService.merge).not.toHaveBeenCalled();
+    expect(documentMergeService.merge).not.toHaveBeenCalled();
   });
 
   it("returns 400 when a TEMPLATE artifact is involved in the merge", async () => {
     const primaryId = uuidv7();
     const secondaryId = uuidv7();
 
-    vi.mocked(documentsService.merge).mockRejectedValue(
+    vi.mocked(documentMergeService.merge).mockRejectedValue(
       new Error("Cannot merge TEMPLATE artifacts")
     );
 
@@ -191,7 +195,7 @@ describe("POST /api/artifacts/merge", () => {
     const primaryId = uuidv7();
     const secondaryId = uuidv7();
 
-    vi.mocked(documentsService.merge).mockRejectedValue(
+    vi.mocked(documentMergeService.merge).mockRejectedValue(
       new Error("LLM returned empty merged content")
     );
 
@@ -219,7 +223,9 @@ describe("POST /api/artifacts/merge", () => {
       user: { id: "user-abc", organizationId: "specific-org-id" } as any,
     });
 
-    vi.mocked(documentsService.merge).mockResolvedValue(mockArtifact as any);
+    vi.mocked(documentMergeService.merge).mockResolvedValue(
+      Result.ok(mockArtifact as any)
+    );
 
     const request = createMockRequest({
       method: "POST",
@@ -231,7 +237,7 @@ describe("POST /api/artifacts/merge", () => {
     const routeContext = createMockRouteContext({});
     await POST(request, routeContext);
 
-    expect(documentsService.merge).toHaveBeenCalledWith(
+    expect(documentMergeService.merge).toHaveBeenCalledWith(
       primaryId,
       secondaryId,
       "specific-org-id",

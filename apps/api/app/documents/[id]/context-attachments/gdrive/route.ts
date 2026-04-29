@@ -8,7 +8,7 @@ import { exportDocAsMarkdown, getDocName } from "@repo/google";
 import { log } from "@repo/observability/log";
 import pLimit from "p-limit";
 import { artifactLinksService } from "@/app/artifact-links/service";
-import { documentsService } from "@/app/documents/service";
+import { documentService } from "@/app/documents/document-service";
 import {
   ensureValidAccessToken,
   googleService,
@@ -43,7 +43,7 @@ export const POST = withAnyAuth<
     return parseError;
   }
 
-  const document = await documentsService.findById(
+  const document = await documentService.findById(
     documentId,
     user.organizationId
   );
@@ -98,7 +98,7 @@ export const POST = withAnyAuth<
           });
         }
 
-        const artifact = await documentsService.create(
+        const artifact = await documentService.create(
           user.organizationId,
           user.id,
           {
@@ -126,7 +126,7 @@ export const POST = withAnyAuth<
             linkType: LinkType.Produces,
           });
         } catch (linkError) {
-          await documentsService.delete(artifact.id, user.organizationId);
+          await documentService.delete(artifact.id, user.organizationId);
           throw linkError;
         }
 

@@ -1,10 +1,10 @@
 import { success } from "@repo/api/src/types/common";
 import type { PullRequestInfo } from "@repo/api/src/types/document";
 import { NextResponse } from "next/server";
+import { documentWorkstreamService } from "@/app/documents/workstream-service";
 import { withAuth } from "@/lib/auth/with-auth";
 import { resolveDocumentId } from "@/lib/identifier-utils";
 import { errorResponse, notFoundResponse } from "@/lib/route-utils";
-import { documentsService } from "../../service";
 
 export const GET = withAuth<
   PullRequestInfo | null,
@@ -17,7 +17,7 @@ export const GET = withAuth<
       return notFoundResponse("Artifact");
     }
 
-    const pullRequest = await documentsService.getDocumentPullRequest(
+    const pullRequest = await documentWorkstreamService.getDocumentPullRequest(
       resolvedId,
       user.organizationId
     );

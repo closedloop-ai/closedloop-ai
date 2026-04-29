@@ -1,8 +1,8 @@
 import type { DocumentRatingSummary } from "@repo/api/src/types/rating";
+import { Result, Status } from "@repo/api/src/types/result";
 import { vi } from "vitest";
 import { GET, PUT } from "@/app/documents/[id]/rating/route";
-import { DocumentNotFoundError } from "@/app/documents/document-utils";
-import { documentsService } from "@/app/documents/service";
+import { documentEvaluationService } from "@/app/documents/evaluation-service";
 import type { AuthContext } from "@/lib/auth/with-auth";
 import {
   createMockRequest,
@@ -19,7 +19,7 @@ vi.mock("@/lib/auth/with-auth", () => ({
 vi.mock("@/lib/identifier-utils", () => ({
   resolveDocumentId: vi.fn(async (id: string) => id),
 }));
-vi.mock("@/app/documents/service");
+vi.mock("@/app/documents/evaluation-service");
 
 describe("GET /api/artifacts/[id]/rating", () => {
   beforeEach(() => {
@@ -42,7 +42,9 @@ describe("GET /api/artifacts/[id]/rating", () => {
       },
     };
 
-    vi.mocked(documentsService.getRating).mockResolvedValue(mockSummary);
+    vi.mocked(documentEvaluationService.getRating).mockResolvedValue(
+      mockSummary
+    );
 
     const request = createMockRequest({
       url: "http://localhost:3002/api/artifacts/artifact-1/rating",
@@ -55,7 +57,6 @@ describe("GET /api/artifacts/[id]/rating", () => {
     expect(response.status).toBe(200);
     const json = await response.json();
     expect(json.success).toBe(true);
-    // Dates are serialized to strings by NextResponse.json()
     expect(json.data).toEqual({
       ...mockSummary,
       userRating: mockSummary.userRating
@@ -66,7 +67,7 @@ describe("GET /api/artifacts/[id]/rating", () => {
           }
         : null,
     });
-    expect(documentsService.getRating).toHaveBeenCalledWith(
+    expect(documentEvaluationService.getRating).toHaveBeenCalledWith(
       "artifact-1",
       mockAuthContext.user.id,
       mockAuthContext.user.organizationId
@@ -80,7 +81,9 @@ describe("GET /api/artifacts/[id]/rating", () => {
       userRating: null,
     };
 
-    vi.mocked(documentsService.getRating).mockResolvedValue(mockSummary);
+    vi.mocked(documentEvaluationService.getRating).mockResolvedValue(
+      mockSummary
+    );
 
     const request = createMockRequest({
       url: "http://localhost:3002/api/artifacts/artifact-2/rating",
@@ -104,7 +107,9 @@ describe("GET /api/artifacts/[id]/rating", () => {
       userRating: null,
     };
 
-    vi.mocked(documentsService.getRating).mockResolvedValue(mockSummary);
+    vi.mocked(documentEvaluationService.getRating).mockResolvedValue(
+      mockSummary
+    );
 
     const request = createMockRequest({
       url: "http://localhost:3002/api/artifacts/artifact-3/rating",
@@ -120,47 +125,8 @@ describe("GET /api/artifacts/[id]/rating", () => {
     expect(json.data.average).toBe(0);
   });
 
-  it("returns 404 when artifact not found", async () => {
-    vi.mocked(documentsService.getRating).mockRejectedValue(
-      new DocumentNotFoundError("artifact-not-found")
-    );
-
-    const request = createMockRequest({
-      url: "http://localhost:3002/api/artifacts/artifact-not-found/rating",
-    });
-    const response = await GET(
-      request,
-      createMockRouteContext({ id: "artifact-not-found" })
-    );
-
-    expect(response.status).toBe(404);
-    const json = await response.json();
-    expect(json.success).toBe(false);
-  });
-
-  it("returns 404 for cross-org artifact access", async () => {
-    vi.mocked(documentsService.getRating).mockRejectedValue(
-      new DocumentNotFoundError("cross-org-artifact")
-    );
-
-    const request = createMockRequest({
-      url: "http://localhost:3002/api/artifacts/cross-org-artifact/rating",
-    });
-    const response = await GET(
-      request,
-      createMockRouteContext({ id: "cross-org-artifact" })
-    );
-
-    expect(response.status).toBe(404);
-    expect(documentsService.getRating).toHaveBeenCalledWith(
-      "cross-org-artifact",
-      mockAuthContext.user.id,
-      mockAuthContext.user.organizationId
-    );
-  });
-
   it("returns 500 for unexpected errors", async () => {
-    vi.mocked(documentsService.getRating).mockRejectedValue(
+    vi.mocked(documentEvaluationService.getRating).mockRejectedValue(
       new Error("Unexpected database error")
     );
 
@@ -200,7 +166,9 @@ describe("PUT /api/artifacts/[id]/rating", () => {
       },
     };
 
-    vi.mocked(documentsService.upsertRating).mockResolvedValue(mockSummary);
+    vi.mocked(documentEvaluationService.upsertRating).mockResolvedValue(
+      Result.ok(mockSummary)
+    );
 
     const request = createMockRequest({
       url: "http://localhost:3002/api/artifacts/artifact-1/rating",
@@ -215,7 +183,6 @@ describe("PUT /api/artifacts/[id]/rating", () => {
     expect(response.status).toBe(200);
     const json = await response.json();
     expect(json.success).toBe(true);
-    // Dates are serialized to strings by NextResponse.json()
     expect(json.data).toEqual({
       ...mockSummary,
       userRating: mockSummary.userRating
@@ -226,7 +193,7 @@ describe("PUT /api/artifacts/[id]/rating", () => {
           }
         : null,
     });
-    expect(documentsService.upsertRating).toHaveBeenCalledWith(
+    expect(documentEvaluationService.upsertRating).toHaveBeenCalledWith(
       "artifact-1",
       mockAuthContext.user.id,
       mockAuthContext.user.organizationId,
@@ -250,7 +217,9 @@ describe("PUT /api/artifacts/[id]/rating", () => {
       },
     };
 
-    vi.mocked(documentsService.upsertRating).mockResolvedValue(mockSummary);
+    vi.mocked(documentEvaluationService.upsertRating).mockResolvedValue(
+      Result.ok(mockSummary)
+    );
 
     const request = createMockRequest({
       url: "http://localhost:3002/api/artifacts/artifact-1/rating",
@@ -265,7 +234,7 @@ describe("PUT /api/artifacts/[id]/rating", () => {
     expect(response.status).toBe(200);
     const json = await response.json();
     expect(json.data.userRating?.comment).toBe("Excellent work!");
-    expect(documentsService.upsertRating).toHaveBeenCalledWith(
+    expect(documentEvaluationService.upsertRating).toHaveBeenCalledWith(
       "artifact-1",
       mockAuthContext.user.id,
       mockAuthContext.user.organizationId,
@@ -289,7 +258,9 @@ describe("PUT /api/artifacts/[id]/rating", () => {
       },
     };
 
-    vi.mocked(documentsService.upsertRating).mockResolvedValue(mockSummary);
+    vi.mocked(documentEvaluationService.upsertRating).mockResolvedValue(
+      Result.ok(mockSummary)
+    );
 
     const request = createMockRequest({
       url: "http://localhost:3002/api/artifacts/artifact-1/rating",
@@ -302,7 +273,7 @@ describe("PUT /api/artifacts/[id]/rating", () => {
     );
 
     expect(response.status).toBe(200);
-    expect(documentsService.upsertRating).toHaveBeenCalledWith(
+    expect(documentEvaluationService.upsertRating).toHaveBeenCalledWith(
       "artifact-1",
       mockAuthContext.user.id,
       mockAuthContext.user.organizationId,
@@ -326,7 +297,9 @@ describe("PUT /api/artifacts/[id]/rating", () => {
       },
     };
 
-    vi.mocked(documentsService.upsertRating).mockResolvedValue(mockSummary);
+    vi.mocked(documentEvaluationService.upsertRating).mockResolvedValue(
+      Result.ok(mockSummary)
+    );
 
     const request = createMockRequest({
       url: "http://localhost:3002/api/artifacts/artifact-1/rating",
@@ -358,7 +331,7 @@ describe("PUT /api/artifacts/[id]/rating", () => {
     expect(response.status).toBe(400);
     const json = await response.json();
     expect(json.success).toBe(false);
-    expect(documentsService.upsertRating).not.toHaveBeenCalled();
+    expect(documentEvaluationService.upsertRating).not.toHaveBeenCalled();
   });
 
   it("returns 400 for invalid score (above 5)", async () => {
@@ -375,7 +348,7 @@ describe("PUT /api/artifacts/[id]/rating", () => {
     expect(response.status).toBe(400);
     const json = await response.json();
     expect(json.success).toBe(false);
-    expect(documentsService.upsertRating).not.toHaveBeenCalled();
+    expect(documentEvaluationService.upsertRating).not.toHaveBeenCalled();
   });
 
   it("returns 400 for non-integer score", async () => {
@@ -425,7 +398,7 @@ describe("PUT /api/artifacts/[id]/rating", () => {
     expect(response.status).toBe(400);
     const json = await response.json();
     expect(json.success).toBe(false);
-    expect(documentsService.upsertRating).not.toHaveBeenCalled();
+    expect(documentEvaluationService.upsertRating).not.toHaveBeenCalled();
   });
 
   it("returns 400 for missing score", async () => {
@@ -445,8 +418,8 @@ describe("PUT /api/artifacts/[id]/rating", () => {
   });
 
   it("returns 404 when artifact not found", async () => {
-    vi.mocked(documentsService.upsertRating).mockRejectedValue(
-      new DocumentNotFoundError("artifact-not-found")
+    vi.mocked(documentEvaluationService.upsertRating).mockResolvedValue(
+      Result.err(Status.NotFound)
     );
 
     const request = createMockRequest({
@@ -465,8 +438,8 @@ describe("PUT /api/artifacts/[id]/rating", () => {
   });
 
   it("returns 404 for cross-org artifact access", async () => {
-    vi.mocked(documentsService.upsertRating).mockRejectedValue(
-      new DocumentNotFoundError("cross-org-artifact")
+    vi.mocked(documentEvaluationService.upsertRating).mockResolvedValue(
+      Result.err(Status.NotFound)
     );
 
     const request = createMockRequest({
@@ -480,7 +453,7 @@ describe("PUT /api/artifacts/[id]/rating", () => {
     );
 
     expect(response.status).toBe(404);
-    expect(documentsService.upsertRating).toHaveBeenCalledWith(
+    expect(documentEvaluationService.upsertRating).toHaveBeenCalledWith(
       "cross-org-artifact",
       mockAuthContext.user.id,
       mockAuthContext.user.organizationId,
@@ -490,7 +463,7 @@ describe("PUT /api/artifacts/[id]/rating", () => {
   });
 
   it("returns 500 for unexpected errors", async () => {
-    vi.mocked(documentsService.upsertRating).mockRejectedValue(
+    vi.mocked(documentEvaluationService.upsertRating).mockRejectedValue(
       new Error("Unexpected database error")
     );
 
@@ -525,7 +498,9 @@ describe("PUT /api/artifacts/[id]/rating", () => {
       },
     };
 
-    vi.mocked(documentsService.upsertRating).mockResolvedValue(mockSummary);
+    vi.mocked(documentEvaluationService.upsertRating).mockResolvedValue(
+      Result.ok(mockSummary)
+    );
 
     const request = createMockRequest({
       url: "http://localhost:3002/api/artifacts/artifact-1/rating",

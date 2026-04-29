@@ -8,7 +8,7 @@ import type { StartPlanLoopResponse } from "@repo/api/src/types/plan-loop";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { documentsService } from "@/app/documents/service";
+import { documentExecutionService } from "@/app/documents/execution-service";
 import { repoSchema } from "@/app/loops/validators";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { launchPlanLoop } from "@/lib/loops/launch-plan-loop";
@@ -47,7 +47,7 @@ export const POST = withAnyAuth<StartPlanLoopResponse>(
         return parseError;
       }
 
-      const result = await documentsService.startPlanLoopFromLocal(
+      const result = await documentExecutionService.startPlanLoopFromLocal(
         user.organizationId,
         user.id,
         {

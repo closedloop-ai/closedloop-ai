@@ -4,7 +4,7 @@ import type { CreateContextAttachmentResponse } from "@repo/api/src/types/contex
 import { DocumentStatus, DocumentType } from "@repo/api/src/types/document";
 import { artifactLinksService } from "@/app/artifact-links/service";
 import { attachmentsService } from "@/app/documents/attachments-service";
-import { documentsService } from "@/app/documents/service";
+import { documentService } from "@/app/documents/document-service";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { resolveDocumentId } from "@/lib/identifier-utils";
 import {
@@ -35,7 +35,7 @@ export const POST = withAnyAuth<
       return parseError;
     }
 
-    const document = await documentsService.findById(
+    const document = await documentService.findById(
       documentId,
       user.organizationId
     );
@@ -77,7 +77,7 @@ async function handleDocumentUpload(
     return badRequestResponse("projectId is required to create context PRD");
   }
 
-  const artifact = await documentsService.create(user.organizationId, user.id, {
+  const artifact = await documentService.create(user.organizationId, user.id, {
     title: body.filename,
     type: DocumentType.Prd,
     status: DocumentStatus.Draft,
@@ -105,7 +105,7 @@ async function handleDocumentUpload(
       body.sizeBytes
     );
   } catch (uploadError) {
-    await documentsService.delete(artifact.id, user.organizationId);
+    await documentService.delete(artifact.id, user.organizationId);
     return errorResponse("Failed to request upload", uploadError);
   }
 
@@ -116,7 +116,7 @@ async function handleDocumentUpload(
       linkType: LinkType.Produces,
     });
   } catch (linkError) {
-    await documentsService.delete(artifact.id, user.organizationId);
+    await documentService.delete(artifact.id, user.organizationId);
     return errorResponse("Failed to link artifact to document", linkError);
   }
 

@@ -16,10 +16,7 @@ export function matchesFilter(
   if (!q) {
     return true;
   }
-  return [
-    artifact.title,
-    artifact.slug,
-    artifact.snippet ?? "",
-    artifact.workstream?.title ?? "",
-  ].some((field) => field.toLowerCase().includes(q));
+  return [artifact.title, artifact.slug, artifact.workstream?.title ?? ""].some(
+    (field) => field.toLowerCase().includes(q)
+  );
 }

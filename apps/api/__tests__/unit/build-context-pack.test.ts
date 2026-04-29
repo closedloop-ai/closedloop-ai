@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { documentService } from "@/app/documents/document-service";
 
 // Mock all external dependencies before imports
 vi.mock("@repo/observability/log", () => ({
@@ -16,8 +17,8 @@ vi.mock("@/app/documents/document-version-service", () => ({
   },
 }));
 
-vi.mock("@/app/documents/service", () => ({
-  documentsService: {
+vi.mock("@/app/documents/document-service", () => ({
+  documentService: {
     findByIdSimple: vi.fn().mockResolvedValue(null),
   },
   getCommitterInfo: vi.fn(),
@@ -53,7 +54,7 @@ import { DocumentType } from "@repo/api/src/types/document";
 import { LoopCommand } from "@repo/api/src/types/loop";
 import { attachmentsService } from "@/app/documents/attachments-service";
 import { documentVersionService } from "@/app/documents/document-version-service";
-import { documentsService } from "@/app/documents/service";
+
 import { loopsService } from "@/app/loops/service";
 import {
   buildContextPack,
@@ -66,7 +67,7 @@ const mockAttachmentsService = attachmentsService as unknown as {
   findByIdSimple: ReturnType<typeof vi.fn>;
   listWithSignedUrlsByDocument: ReturnType<typeof vi.fn>;
 };
-const mockArtifactsService = documentsService as unknown as {
+const mockArtifactsService = documentService as unknown as {
   findByIdSimple: ReturnType<typeof vi.fn>;
 };
 const mockArtifactVersionService = documentVersionService as unknown as {

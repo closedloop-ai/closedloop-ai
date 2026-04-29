@@ -331,7 +331,6 @@ function apiFeatureToEngineerTicket(
     id: feature.id,
     identifier: feature.slug,
     title: feature.title,
-    description: feature.snippet ?? undefined,
     sourceType: "Feature",
     status: {
       id: feature.status,
@@ -371,7 +370,6 @@ function apiArtifactToEngineerTicket(
     id: artifact.id,
     identifier: artifact.slug,
     title: artifact.title,
-    description: artifact.snippet ?? undefined,
     sourceType: documentTypeToSourceType(artifact.type),
     status: {
       id: artifact.status,

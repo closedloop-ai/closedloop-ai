@@ -3,7 +3,7 @@ import { DocumentType } from "@repo/api/src/types/document";
 import { ArtifactType, withDb } from "@repo/database";
 import { keys } from "@repo/database/keys";
 import { projectTreeService } from "@/app/artifacts/project-tree-service";
-import { documentsService } from "@/app/documents/service";
+import { documentService } from "@/app/documents/document-service";
 import {
   autoRollbackTransaction,
   createTestOrganization,
@@ -76,19 +76,19 @@ describe.skipIf(!hasDatabase)("Project Tree Service Integration", () => {
       const user = await createTestUser(orgId);
       const projectId = await createTestProject(orgId, user.id);
 
-      await documentsService.create(orgId, user.id, {
+      await documentService.create(orgId, user.id, {
         projectId,
         type: DocumentType.Prd,
         title: "Zebra PRD",
         content: "content",
       });
-      await documentsService.create(orgId, user.id, {
+      await documentService.create(orgId, user.id, {
         projectId,
         type: DocumentType.ImplementationPlan,
         title: "Alpha Plan",
         content: "content",
       });
-      await documentsService.create(orgId, user.id, {
+      await documentService.create(orgId, user.id, {
         projectId,
         type: DocumentType.Feature,
         title: "Middle Feature",
@@ -115,19 +115,19 @@ describe.skipIf(!hasDatabase)("Project Tree Service Integration", () => {
       const user = await createTestUser(orgId);
       const projectId = await createTestProject(orgId, user.id);
 
-      const a = await documentsService.create(orgId, user.id, {
+      const a = await documentService.create(orgId, user.id, {
         projectId,
         type: DocumentType.Prd,
         title: "A - Root PRD",
         content: "content",
       });
-      const b = await documentsService.create(orgId, user.id, {
+      const b = await documentService.create(orgId, user.id, {
         projectId,
         type: DocumentType.ImplementationPlan,
         title: "B - Plan",
         content: "content",
       });
-      const c = await documentsService.create(orgId, user.id, {
+      const c = await documentService.create(orgId, user.id, {
         projectId,
         type: DocumentType.Prd,
         title: "C - Sub PRD",
@@ -157,7 +157,7 @@ describe.skipIf(!hasDatabase)("Project Tree Service Integration", () => {
       const user = await createTestUser(orgId);
       const projectId = await createTestProject(orgId, user.id);
 
-      const feature = await documentsService.create(orgId, user.id, {
+      const feature = await documentService.create(orgId, user.id, {
         projectId,
         type: DocumentType.Feature,
         title: "Root Feature",
@@ -166,7 +166,7 @@ describe.skipIf(!hasDatabase)("Project Tree Service Integration", () => {
       if (!feature) {
         throw new Error("Failed to create feature document in test");
       }
-      const artifact = await documentsService.create(orgId, user.id, {
+      const artifact = await documentService.create(orgId, user.id, {
         projectId,
         type: DocumentType.Prd,
         title: "Child Artifact",
@@ -203,13 +203,13 @@ describe.skipIf(!hasDatabase)("Project Tree Service Integration", () => {
       const projectId = await createTestProject(orgId, user.id);
 
       // Chain 1: Z-Root → Z-Child
-      const z1 = await documentsService.create(orgId, user.id, {
+      const z1 = await documentService.create(orgId, user.id, {
         projectId,
         type: DocumentType.Prd,
         title: "Z-Root",
         content: "content",
       });
-      const z2 = await documentsService.create(orgId, user.id, {
+      const z2 = await documentService.create(orgId, user.id, {
         projectId,
         type: DocumentType.Prd,
         title: "Z-Child",
@@ -218,13 +218,13 @@ describe.skipIf(!hasDatabase)("Project Tree Service Integration", () => {
       await createArtifactLink(orgId, z1!.id, z2!.id);
 
       // Chain 2: A-Root → A-Child
-      const a1 = await documentsService.create(orgId, user.id, {
+      const a1 = await documentService.create(orgId, user.id, {
         projectId,
         type: DocumentType.Prd,
         title: "A-Root",
         content: "content",
       });
-      const a2 = await documentsService.create(orgId, user.id, {
+      const a2 = await documentService.create(orgId, user.id, {
         projectId,
         type: DocumentType.Prd,
         title: "A-Child",
@@ -246,25 +246,25 @@ describe.skipIf(!hasDatabase)("Project Tree Service Integration", () => {
       const user = await createTestUser(orgId);
       const projectId = await createTestProject(orgId, user.id);
 
-      const root = await documentsService.create(orgId, user.id, {
+      const root = await documentService.create(orgId, user.id, {
         projectId,
         type: DocumentType.Prd,
         title: "Root",
         content: "content",
       });
-      const child1 = await documentsService.create(orgId, user.id, {
+      const child1 = await documentService.create(orgId, user.id, {
         projectId,
         type: DocumentType.Prd,
         title: "Child1",
         content: "content",
       });
-      const child2 = await documentsService.create(orgId, user.id, {
+      const child2 = await documentService.create(orgId, user.id, {
         projectId,
         type: DocumentType.Prd,
         title: "Child2",
         content: "content",
       });
-      const grandchild = await documentsService.create(orgId, user.id, {
+      const grandchild = await documentService.create(orgId, user.id, {
         projectId,
         type: DocumentType.Prd,
         title: "Grandchild",
@@ -299,19 +299,19 @@ describe.skipIf(!hasDatabase)("Project Tree Service Integration", () => {
       const user = await createTestUser(orgId);
       const projectId = await createTestProject(orgId, user.id);
 
-      const a = await documentsService.create(orgId, user.id, {
+      const a = await documentService.create(orgId, user.id, {
         projectId,
         type: DocumentType.Prd,
         title: "A",
         content: "content",
       });
-      const b = await documentsService.create(orgId, user.id, {
+      const b = await documentService.create(orgId, user.id, {
         projectId,
         type: DocumentType.Prd,
         title: "B",
         content: "content",
       });
-      const c = await documentsService.create(orgId, user.id, {
+      const c = await documentService.create(orgId, user.id, {
         projectId,
         type: DocumentType.Prd,
         title: "C",
@@ -347,13 +347,13 @@ describe.skipIf(!hasDatabase)("Project Tree Service Integration", () => {
         name: "Project 2",
       });
 
-      const inProject = await documentsService.create(orgId, user.id, {
+      const inProject = await documentService.create(orgId, user.id, {
         projectId: project1,
         type: DocumentType.Prd,
         title: "In Project 1",
         content: "content",
       });
-      const otherProject = await documentsService.create(orgId, user.id, {
+      const otherProject = await documentService.create(orgId, user.id, {
         projectId: project2,
         type: DocumentType.Prd,
         title: "In Project 2",
@@ -379,19 +379,19 @@ describe.skipIf(!hasDatabase)("Project Tree Service Integration", () => {
       const projectId = await createTestProject(orgId, user.id);
 
       // Create source1 first (earliest), then source2
-      const source1 = await documentsService.create(orgId, user.id, {
+      const source1 = await documentService.create(orgId, user.id, {
         projectId,
         type: DocumentType.Prd,
         title: "Source 1 (earliest)",
         content: "content",
       });
-      const source2 = await documentsService.create(orgId, user.id, {
+      const source2 = await documentService.create(orgId, user.id, {
         projectId,
         type: DocumentType.Prd,
         title: "Source 2 (later)",
         content: "content",
       });
-      const target = await documentsService.create(orgId, user.id, {
+      const target = await documentService.create(orgId, user.id, {
         projectId,
         type: DocumentType.Prd,
         title: "Shared Target",

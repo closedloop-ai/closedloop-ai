@@ -1,11 +1,10 @@
 import { withAuth } from "@/lib/auth/with-auth";
 import { errorResponse, successResponse } from "@/lib/route-utils";
-import { documentsService } from "../../documents/service";
-
+import { documentTemplatesService } from "../service";
 export const POST = withAuth<{ message: string }, "/templates/seed">(
   async ({ user }) => {
     try {
-      await documentsService.ensureDefaultTemplates(
+      await documentTemplatesService.ensureDefaultTemplates(
         user.organizationId,
         user.id
       );

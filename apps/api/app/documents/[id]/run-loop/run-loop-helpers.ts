@@ -14,6 +14,8 @@ import { getProjectSettings } from "@repo/api/src/types/project";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
 import { computeTargetsService } from "@/app/compute-targets/service";
+import type { documentGenerationService } from "@/app/documents/generation-service";
+import { documentWorkstreamService } from "@/app/documents/workstream-service";
 import { loopsService } from "@/app/loops/service";
 import {
   type ComputeTargetRouteResult,
@@ -22,7 +24,6 @@ import {
 import type { getCommandHandler } from "@/lib/loops/loop-commands";
 import { extractUploadedPlanRaw } from "@/lib/loops/uploaded-plan-artifacts";
 import { badRequestResponse } from "@/lib/route-utils";
-import { documentsService } from "../../service";
 
 /**
  * Map route body commands (lowercase) to LoopCommand enum values (uppercase).
@@ -177,7 +178,7 @@ export async function resolveEvaluateCodeBranchForRunLoop(
     return { ok: true, branch: fallbackBranch };
   }
 
-  const pr = await documentsService.getDocumentPullRequest(
+  const pr = await documentWorkstreamService.getDocumentPullRequest(
     documentId,
     organizationId
   );
@@ -194,7 +195,9 @@ export async function resolveEvaluateCodeBranchForRunLoop(
  */
 export async function resolveLoopContext(
   artifact: NonNullable<
-    Awaited<ReturnType<typeof documentsService.findWithRegenerationContext>>
+    Awaited<
+      ReturnType<typeof documentGenerationService.findWithRegenerationContext>
+    >
   >,
   body: {
     repo?: { fullName?: string; branch?: string };
@@ -208,7 +211,7 @@ export async function resolveLoopContext(
   resolvedComputeTargetId?: string
 ) {
   const { workstream: resolvedWorkstream, source } =
-    await documentsService.findOrCreateWorkstream(
+    await documentWorkstreamService.findOrCreateWorkstream(
       organizationId,
       artifact,
       userId

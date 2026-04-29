@@ -5,12 +5,14 @@ import type {
   DocumentStatus,
   DocumentType,
 } from "@repo/api/src/types/document";
+import type { SourceContextType } from "@repo/api/src/types/loop";
 import type { BasicUser } from "@repo/api/src/types/user";
 import type {
   Prisma,
   Artifact as PrismaArtifact,
   DocumentDetail as PrismaDocumentDetail,
   Priority as PrismaPriority,
+  WorkstreamState,
 } from "@repo/database";
 import { nanoid } from "nanoid";
 import { basicUserSelect } from "@/lib/db-utils";
@@ -150,14 +152,6 @@ export function splitDocumentPayload(
   return { artifact, detail };
 }
 
-export class DocumentNotFoundError extends Error {
-  readonly status = 404;
-  constructor(message = "Document not found") {
-    super(message);
-    this.name = "DocumentNotFoundError";
-  }
-}
-
 /**
  * Artifact include that loads DocumentDetail + approver + assignee. Use for
  * document-typed artifact queries that need the full legacy Document shape.
@@ -213,26 +207,6 @@ export const documentIncludeWithContext = {
   ...documentIncludeWithUser,
 } as const;
 
-/**
- * Extends documentIncludeWithContext with the latest document version content.
- * Use only for list queries that need a snippet (e.g. engineer ticket cards).
- */
-export const documentIncludeWithSnippet = {
-  workstream: documentIncludeWithContext.workstream,
-  project: documentIncludeWithContext.project,
-  assignee: basicUserSelect,
-  document: {
-    include: {
-      approver: basicUserSelect,
-      versions: {
-        orderBy: { version: "desc" as const },
-        take: 1,
-        select: { content: true },
-      },
-    },
-  },
-} as const;
-
 const VALID_COMMANDS = new Set(["plan", "execute", "chat"]);
 
 export type TriggerData = {
@@ -277,4 +251,174 @@ export function parseTriggerData(triggerData: unknown): TriggerData | null {
     documentId: data.documentId,
     command: data.command as TriggerData["command"],
   };
+}
+
+// Workstream summary used by `DocumentWithRegenerationContext`.
+export type WorkstreamSummary = {
+  id: string;
+  organizationId: string;
+  projectId: string;
+  title: string;
+  description: string | null;
+  state: WorkstreamState;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+// Project summary used inside `DocumentWithRegenerationContext`. Mirrors the
+// Prisma `Project` shape with `settings` kept as the raw JSON value
+// (consumers coerce via `getProjectSettings`).
+export type WorkstreamProject = {
+  id: string;
+  organizationId: string;
+  name: string;
+  settings: unknown;
+};
+
+/**
+ * Document wire shape augmented with the workstream + PRD documents needed
+ * for plan/loop context resolution. Returned by
+ * `documentGenerationService.findWithRegenerationContext` and consumed by
+ * `documentWorkstreamService.findOrCreateWorkstream` and the various generation/
+ * execution flows that branch off it.
+ */
+export type DocumentWithRegenerationContext = Document & {
+  workstream:
+    | (WorkstreamSummary & {
+        project: WorkstreamProject | null;
+        documents: Document[];
+      })
+    | null;
+};
+
+/**
+ * Source artifact context used when resolving regeneration inputs.
+ */
+export type SourceContext = {
+  id: string;
+  type: SourceContextType;
+  title: string;
+  content: string | null;
+  targetRepo: string | null;
+  targetBranch: string | null;
+  workstreamId: string | null;
+};
+
+/**
+ * Raw Prisma artifact shape returned by queries that use
+ * `documentIncludeWithContext`. Must stay in sync with that include shape.
+ */
+export type RawDocumentWithContext = PrismaArtifact & {
+  assignee: BasicUser | null;
+  document:
+    | (PrismaDocumentDetail & {
+        approver: BasicUser | null;
+        versions?: { content: string | null }[];
+      })
+    | null;
+  workstream: { id: string; title: string; state: WorkstreamState } | null;
+  project: {
+    id: string;
+    organizationId: string;
+    name: string;
+    teams: { team: { id: string; name: string } }[];
+  } | null;
+};
+
+/**
+ * Flatten a workstream row with nested `artifacts` (PRD documents) into the
+ * legacy `{ ...workstream, documents: Document[] }` shape used by callers.
+ */
+export function workstreamToWithDocuments<
+  W extends {
+    artifacts: ArtifactWithDocumentDetail[];
+  },
+>(
+  workstream: W | null
+):
+  | (Omit<W, "artifacts"> & {
+      documents: Document[];
+      artifacts: W["artifacts"];
+    })
+  | null {
+  if (!workstream) {
+    return null;
+  }
+  return {
+    ...workstream,
+    documents: workstream.artifacts.map(toDocument),
+  };
+}
+
+// Result types shared across regenerate / execute / request-changes flows.
+export type RegenerateResult =
+  | { success: true; document: Document }
+  | { success: false; error: string; status: 400 | 404 | 409 | 500 };
+
+export type ExecuteResult =
+  | { success: true; correlationId: string }
+  | { success: false; error: string; status: 400 | 404 | 409 | 500 };
+
+export type RequestChangesResult =
+  | { success: true; message: string; documentId: string }
+  | { success: false; error: string; status: 400 | 404 | 409 | 500 };
+
+export type StartPlanLoopFromLocalResult =
+  | { outcome: "needs-selection"; documents: { id: string; title: string }[] }
+  | {
+      outcome: "invalid-document";
+      existingDocuments: { id: string; title: string }[];
+    }
+  | {
+      outcome: "already-running";
+      loopId: string;
+      documentId: string;
+      documentSlug: string;
+      localRepoPath: string;
+    }
+  | { outcome: "error"; reason: "missing-local-path" }
+  | {
+      outcome: "ready-to-launch";
+      documentId: string;
+      documentSlug: string;
+      document: DocumentWithRegenerationContext;
+    };
+
+/**
+ * Returns true when GitHub App env vars are configured. Used by generation,
+ * regenerate, execute, and request-changes flows to decide whether to issue
+ * the workflow_dispatch call or fall back to placeholder content.
+ */
+export function isGitHubConfigured(): boolean {
+  return Boolean(
+    process.env.GITHUB_APP_ID &&
+      process.env.GITHUB_APP_PRIVATE_KEY &&
+      process.env.GITHUB_APP_WEBHOOK_SECRET &&
+      process.env.GITHUB_APP_DISPATCH_REPO
+  );
+}
+
+/**
+ * Placeholder content used when GitHub Actions integration is not configured.
+ */
+export function getPlaceholderContent(title: string, version: number): string {
+  return `# ${title}
+
+## Overview
+
+This implementation plan outlines the technical approach for ${title}.
+
+**Version:** v${version}
+**Status:** Generating...
+
+## Note
+
+GitHub Actions integration is not configured. This is placeholder content.
+Configure the following environment variables to enable plan generation:
+- GITHUB_APP_ID
+- GITHUB_APP_PRIVATE_KEY
+- GITHUB_APP_WEBHOOK_SECRET
+- GITHUB_APP_DISPATCH_REPO
+- WEBAPP_ENV
+`;
 }

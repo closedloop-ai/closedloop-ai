@@ -11,7 +11,7 @@ import {
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
 import pLimit from "p-limit";
-import { documentsService } from "@/app/documents/service";
+import { documentService } from "@/app/documents/document-service";
 import { projectsService } from "@/app/projects/service";
 
 /**
@@ -458,7 +458,7 @@ export const googleService = {
           }
 
           // Create artifact
-          const artifact = await documentsService.create(
+          const artifact = await documentService.create(
             organizationId,
             userId,
             {
