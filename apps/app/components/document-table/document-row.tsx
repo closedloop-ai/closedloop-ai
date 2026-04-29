@@ -10,7 +10,12 @@ import {
   DocumentType,
 } from "@repo/api/src/types/document";
 import type { JudgeFeedbackItem } from "@repo/api/src/types/evaluation";
-import type { LoopWithUser } from "@repo/api/src/types/loop";
+import type {
+  LoopSummariesResponse,
+  LoopSummary,
+  LoopSummaryEntry,
+  LoopWithUser,
+} from "@repo/api/src/types/loop";
 import type { ProjectWithDetails } from "@repo/api/src/types/project";
 import { isDisplayableSlug } from "@repo/api/src/types/slug";
 import { Badge } from "@repo/design-system/components/ui/badge";
@@ -35,6 +40,7 @@ import { UserSelectPopover } from "@repo/design-system/components/ui/user-select
 import type { UseQueryResult } from "@tanstack/react-query";
 import {
   CalendarIcon,
+  CheckCircleIcon,
   ChevronRightIcon,
   CloudIcon,
   EllipsisIcon,
@@ -60,6 +66,7 @@ import {
 } from "@/lib/date-utils";
 import { getDocumentRoute, getFeatureRoute } from "@/lib/document-navigation";
 import { deriveScoreDisplay } from "@/lib/evaluation-utils";
+import { getCommandLabels, terminalLabel } from "@/lib/loop-display";
 import {
   DOCUMENT_STATUS_LABELS,
   DOCUMENT_STATUS_TO_ICON,
@@ -91,6 +98,10 @@ export type RowEditHandlers = {
   parentTitle?: string;
   /** Parent entity route, injected per-row for the Parent column cell. */
   parentHref?: string | null;
+  /** Selects which LoopCell variant to render. Default = legacy behavior. */
+  loopVariant?: "team" | "my-tasks";
+  /** Per-document loop summaries (recursive descendant aggregation). */
+  loopSummaries?: LoopSummariesResponse;
 };
 
 export const RowEditContext = createContext<RowEditHandlers>({});
@@ -574,7 +585,86 @@ function ScoreCell({ item }: { item: DocumentRowItem }) {
   return <ScoreCellDash />;
 }
 
-function LoopCell({ item }: { item: DocumentRowItem }) {
+// ---- Loop cell base building blocks ----
+
+const LOOP_CELL_BASE_CLASS =
+  "flex h-11 w-[124px] shrink-0 items-center gap-1.5 border-l px-3 py-2";
+const LOOP_CELL_LINK_CLASS = `${LOOP_CELL_BASE_CLASS} hover:bg-muted/50`;
+
+function LoopCellDash() {
+  return (
+    <div className="flex h-11 w-[124px] shrink-0 items-center border-l px-3 py-2">
+      <span className="font-medium text-muted-foreground text-xs">—</span>
+    </div>
+  );
+}
+
+function LoopLink({
+  loopId,
+  children,
+}: {
+  loopId: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <Link
+      className={LOOP_CELL_LINK_CLASS}
+      href={`/loops/${loopId}`}
+      onClick={(e: MouseEvent<HTMLAnchorElement>) => e.stopPropagation()}
+    >
+      {children}
+    </Link>
+  );
+}
+
+function LoopCellRunningContent({
+  isLocal,
+  label,
+  labelMuted = true,
+}: {
+  isLocal: boolean;
+  label: string;
+  labelMuted?: boolean;
+}) {
+  const labelClass = labelMuted
+    ? "truncate font-medium text-muted-foreground text-xs"
+    : "truncate font-medium text-foreground text-xs";
+  return (
+    <>
+      <Loader2Icon className="h-3.5 w-3.5 shrink-0 animate-spin text-blue-500" />
+      {isLocal ? (
+        <MonitorIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+      ) : (
+        <CloudIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+      )}
+      <span className={labelClass}>{label}</span>
+    </>
+  );
+}
+
+function LoopCellCompletedContent({ label }: { label: string }) {
+  return (
+    <>
+      <CheckCircleIcon className="h-3.5 w-3.5 shrink-0 text-green-500" />
+      <span className="truncate font-medium text-foreground text-xs">
+        {label}
+      </span>
+    </>
+  );
+}
+
+function LoopCellFailedContent({ label }: { label: string }) {
+  return (
+    <>
+      <XCircleIcon className="h-3.5 w-3.5 shrink-0 text-red-500" />
+      <span className="truncate font-medium text-red-500 text-xs">{label}</span>
+    </>
+  );
+}
+
+// ---- Default LoopCell (legacy behavior preserved) ----
+
+function DefaultLoopCell({ item }: { item: DocumentRowItem }) {
   const { activeLoops } = useContext(RowEditContext);
   const documentId = item.data.id;
 
@@ -586,60 +676,187 @@ function LoopCell({ item }: { item: DocumentRowItem }) {
 
   if (isFailed) {
     const failedLoopId = genStatus?.loopId;
-    const cellContent = (
-      <>
-        <XCircleIcon className="h-3.5 w-3.5 shrink-0 text-red-500" />
-        <span className="truncate font-medium text-red-500 text-xs">
-          Loop Failed
-        </span>
-      </>
-    );
+    const content = <LoopCellFailedContent label="Loop Failed" />;
     if (failedLoopId) {
-      return (
-        <Link
-          className="flex h-11 w-[124px] shrink-0 items-center gap-1.5 border-l px-3 py-2 hover:bg-muted/50"
-          href={`/loops/${failedLoopId}`}
-          onClick={(e: MouseEvent<HTMLAnchorElement>) => e.stopPropagation()}
-        >
-          {cellContent}
-        </Link>
-      );
+      return <LoopLink loopId={failedLoopId}>{content}</LoopLink>;
     }
-    return (
-      <div className="flex h-11 w-[124px] shrink-0 items-center gap-1.5 border-l px-3 py-2">
-        {cellContent}
-      </div>
-    );
+    return <div className={LOOP_CELL_BASE_CLASS}>{content}</div>;
   }
 
   if (!loop) {
-    return (
-      <div className="flex h-11 w-[124px] shrink-0 items-center border-l px-3 py-2">
-        <span className="font-medium text-muted-foreground text-xs">—</span>
-      </div>
-    );
+    return <LoopCellDash />;
   }
 
   const isLocal = loop.computeTarget != null;
   const userName = getUserDisplayName(loop.user);
-
   return (
-    <Link
-      className="flex h-11 w-[124px] shrink-0 items-center gap-1.5 border-l px-3 py-2 hover:bg-muted/50"
-      href={`/loops/${loop.id}`}
-      onClick={(e: MouseEvent<HTMLAnchorElement>) => e.stopPropagation()}
-    >
-      <Loader2Icon className="h-3.5 w-3.5 shrink-0 animate-spin text-blue-500" />
-      {isLocal ? (
-        <MonitorIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-      ) : (
-        <CloudIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-      )}
-      <span className="truncate font-medium text-muted-foreground text-xs">
-        {userName}
-      </span>
-    </Link>
+    <LoopLink loopId={loop.id}>
+      <LoopCellRunningContent isLocal={isLocal} label={userName} />
+    </LoopLink>
   );
+}
+
+// ---- Team variant ----
+//
+// Running state comes from activeLoops (existing scope: documentId-only, NOT
+// recursive). This preserves existing Team View behavior — the running indicator
+// matches the artifact you're looking at, not its children. Completed/failed
+// state comes from loopSummaries (recursive scope).
+
+function TeamLoopCell({ item }: { item: DocumentRowItem }) {
+  const { activeLoops, loopSummaries } = useContext(RowEditContext);
+  const documentId = item.data.id;
+
+  const genStatus =
+    item.kind === "artifact" ? item.data.generationStatus : undefined;
+  const isFailedGen = genStatus?.status === "FAILURE";
+  const directLoop = activeLoops?.find((l) => l.documentId === documentId);
+  const summary = loopSummaries?.[documentId];
+
+  // Direct active loop wins (existing Team View behavior).
+  if (directLoop) {
+    const userName = getUserDisplayName(directLoop.user);
+    return (
+      <LoopLink loopId={directLoop.id}>
+        <LoopCellRunningContent
+          isLocal={directLoop.computeTarget != null}
+          label={userName}
+        />
+      </LoopLink>
+    );
+  }
+
+  // Failed-newer-than-active priority. Active is null here, but check failed
+  // before completed regardless: failures should surface aggressively.
+  if (summary?.latestFailed) {
+    const f = summary.latestFailed;
+    return (
+      <LoopLink loopId={f.loopId}>
+        <LoopCellFailedContent label={terminalLabel(f.status, f.command)} />
+      </LoopLink>
+    );
+  }
+
+  if (isFailedGen) {
+    const failedLoopId = genStatus?.loopId;
+    const content = <LoopCellFailedContent label="Loop Failed" />;
+    return failedLoopId ? (
+      <LoopLink loopId={failedLoopId}>{content}</LoopLink>
+    ) : (
+      <div className={LOOP_CELL_BASE_CLASS}>{content}</div>
+    );
+  }
+
+  if (summary?.latestCompleted) {
+    const c = summary.latestCompleted;
+    const userName = c.userName;
+    const relativeTime = c.completedAt
+      ? formatRelativeTime(c.completedAt)
+      : null;
+    const label = relativeTime ? `${userName} · ${relativeTime}` : userName;
+    return (
+      <LoopLink loopId={c.loopId}>
+        <LoopCellCompletedContent label={label} />
+      </LoopLink>
+    );
+  }
+
+  return <LoopCellDash />;
+}
+
+// ---- My Tasks variant ----
+//
+// Reads exclusively from loopSummaries. Apply full priority logic:
+// 1. failed-newer-than-active wins
+// 2. else active
+// 3. else failed
+// 4. else completed
+// 5. else dash
+
+function pickMyTasksEntry(summary: LoopSummary): {
+  kind: "active" | "failed" | "completed";
+  entry: LoopSummaryEntry;
+} | null {
+  const { activeLoop, latestFailed, latestCompleted } = summary;
+  if (latestFailed && activeLoop) {
+    const failedTs = latestFailed.failedAt
+      ? Date.parse(latestFailed.failedAt)
+      : 0;
+    const activeStarted = activeLoop.startedAt
+      ? Date.parse(activeLoop.startedAt)
+      : 0;
+    if (failedTs > activeStarted) {
+      return { kind: "failed", entry: latestFailed };
+    }
+  }
+  if (activeLoop) {
+    return { kind: "active", entry: activeLoop };
+  }
+  if (latestFailed) {
+    return { kind: "failed", entry: latestFailed };
+  }
+  if (latestCompleted) {
+    return { kind: "completed", entry: latestCompleted };
+  }
+  return null;
+}
+
+function MyTasksLoopCell({ item }: { item: DocumentRowItem }) {
+  const { loopSummaries } = useContext(RowEditContext);
+  const summary = loopSummaries?.[item.data.id];
+
+  if (!summary) {
+    return <LoopCellDash />;
+  }
+
+  const picked = pickMyTasksEntry(summary);
+  if (!picked) {
+    return <LoopCellDash />;
+  }
+
+  const { kind, entry } = picked;
+  if (kind === "active") {
+    const labels = getCommandLabels(entry.command);
+    return (
+      <LoopLink loopId={entry.loopId}>
+        <LoopCellRunningContent
+          isLocal={entry.isLocal}
+          label={labels.progress}
+          labelMuted={false}
+        />
+      </LoopLink>
+    );
+  }
+  if (kind === "failed") {
+    return (
+      <LoopLink loopId={entry.loopId}>
+        <LoopCellFailedContent
+          label={terminalLabel(entry.status, entry.command)}
+        />
+      </LoopLink>
+    );
+  }
+  // completed
+  return (
+    <LoopLink loopId={entry.loopId}>
+      <LoopCellCompletedContent
+        label={getCommandLabels(entry.command).completed}
+      />
+    </LoopLink>
+  );
+}
+
+// ---- LoopCell dispatcher ----
+
+function LoopCell({ item }: { item: DocumentRowItem }) {
+  const { loopVariant } = useContext(RowEditContext);
+  if (loopVariant === "team") {
+    return <TeamLoopCell item={item} />;
+  }
+  if (loopVariant === "my-tasks") {
+    return <MyTasksLoopCell item={item} />;
+  }
+  return <DefaultLoopCell item={item} />;
 }
 
 function ProjectCell({ item }: { item: DocumentRowItem }) {

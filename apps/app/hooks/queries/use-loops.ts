@@ -10,17 +10,23 @@ import type {
   LoopEventsFilters,
   LoopEventsPaginatedResponse,
   LoopListFilters,
+  LoopSummariesResponse,
   LoopUsageSummary,
   LoopWithUser,
   ResumeLoopRequest,
 } from "@repo/api/src/types/loop";
-import { LoopCommand, RunLoopCommand } from "@repo/api/src/types/loop";
+import {
+  LOOP_SUMMARIES_MAX_DOCUMENT_IDS,
+  LoopCommand,
+  RunLoopCommand,
+} from "@repo/api/src/types/loop";
 import {
   type UseQueryOptions,
   useMutation,
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
+import { useMemo } from "react";
 import { judgesKeys } from "@/hooks/queries/use-judges";
 import { useApiClient } from "@/hooks/use-api-client";
 import { resolveDesktopApiNamespaceHint } from "@/lib/engineer/local-gateway-api-namespace";
@@ -39,6 +45,8 @@ export const loopKeys = {
     [...loopKeys.detail(id), "events-paginated", filters] as const,
   usage: (filters: Record<string, unknown>) =>
     [...loopKeys.all, "usage", filters] as const,
+  summaries: (cacheKey: string) =>
+    [...loopKeys.all, "summaries", cacheKey] as const,
 };
 
 // Queries
@@ -307,5 +315,39 @@ export function useRunLoop() {
         });
       }
     },
+  });
+}
+
+/**
+ * Fetch loop summaries for a set of documents. Returns one summary per requested
+ * documentId, aggregating loop activity across the document's PRODUCES descendants.
+ * Powers the LoopCell variants in My Tasks and Team View.
+ */
+export function useLoopSummaries(
+  documentIds: string[],
+  options?: Omit<UseQueryOptions<LoopSummariesResponse>, "queryKey" | "queryFn">
+) {
+  const apiClient = useApiClient();
+  // String cache key: stable across re-renders even when parent rebuilds the
+  // documentIds array with identical contents.
+  const cacheKey = useMemo(
+    () => [...documentIds].sort().join(","),
+    [documentIds]
+  );
+  const sortedIds = useMemo(
+    () => (cacheKey ? cacheKey.split(",") : []),
+    [cacheKey]
+  );
+  const tooMany = sortedIds.length > LOOP_SUMMARIES_MAX_DOCUMENT_IDS;
+  return useQuery({
+    queryKey: loopKeys.summaries(cacheKey),
+    queryFn: () =>
+      apiClient.post<LoopSummariesResponse>("/loops/summaries", {
+        documentIds: sortedIds,
+      }),
+    enabled: sortedIds.length > 0 && !tooMany,
+    refetchInterval: 10_000,
+    staleTime: 5000,
+    ...options,
   });
 }

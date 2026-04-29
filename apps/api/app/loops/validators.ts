@@ -9,7 +9,10 @@ import {
   LoopEventTypeSchema,
 } from "@closedloop-ai/loops-api/events";
 import { ArtifactType } from "@repo/api/src/types/artifact";
-import { MAX_ADDITIONAL_REPOS } from "@repo/api/src/types/loop";
+import {
+  LOOP_SUMMARIES_MAX_DOCUMENT_IDS,
+  MAX_ADDITIONAL_REPOS,
+} from "@repo/api/src/types/loop";
 import { z } from "zod";
 import { uuidOrSlug } from "@/lib/identifier-utils";
 
@@ -188,4 +191,8 @@ export const listLoopsQueryValidator = z.object({
   projectId: z.uuid().optional(),
   limit: z.coerce.number().min(1).max(200).default(50).optional(),
   offset: z.coerce.number().min(0).default(0).optional(),
+});
+
+export const loopSummariesBodyValidator = z.object({
+  documentIds: z.array(z.uuid()).min(1).max(LOOP_SUMMARIES_MAX_DOCUMENT_IDS),
 });

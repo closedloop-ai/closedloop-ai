@@ -19,6 +19,7 @@ import {
   useDocuments,
   useUpdateDocument,
 } from "@/hooks/queries/use-documents";
+import { useLoopSummaries } from "@/hooks/queries/use-loops";
 import { useProjects } from "@/hooks/queries/use-projects";
 import { useCurrentUser } from "@/hooks/queries/use-users";
 import {
@@ -77,9 +78,14 @@ export default function MyTasksPage() {
 
   const orgUsers = useOrgUsersAsPopoverUsers();
 
+  const featureIds = useMemo(() => rawFeatures.map((f) => f.id), [rawFeatures]);
+  const { data: loopSummaries } = useLoopSummaries(featureIds);
+
   const editHandlers: RowEditHandlers = useMemo(
     () => ({
       teamMembers: orgUsers,
+      loopVariant: "my-tasks",
+      loopSummaries,
       onUpdateAssignee: (id, assigneeId) =>
         updateFeatureMutation.mutate({ id, assigneeId }),
       onUpdatePriority: (id, priority: Priority) =>
@@ -87,7 +93,7 @@ export default function MyTasksPage() {
       onUpdateStatus: (id, status) =>
         updateFeatureMutation.mutate({ id, status }),
     }),
-    [orgUsers, updateFeatureMutation.mutate]
+    [orgUsers, loopSummaries, updateFeatureMutation.mutate]
   );
 
   const handleDelete = async (item: DocumentRowItem): Promise<boolean> => {

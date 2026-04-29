@@ -54,7 +54,7 @@ import {
   useDocumentsByProject,
   useUpdateDocument,
 } from "@/hooks/queries/use-documents";
-import { useLoopsByProject } from "@/hooks/queries/use-loops";
+import { useLoopSummaries, useLoopsByProject } from "@/hooks/queries/use-loops";
 import {
   useDeleteProject,
   useIsFavorite,
@@ -191,6 +191,12 @@ export default function ProjectDetailPage() {
   });
   const activeLoops = useActiveLoops(loops);
 
+  const documentSummaryIds = useMemo(
+    () => allDocuments.map((d) => d.id),
+    [allDocuments]
+  );
+  const { data: loopSummaries } = useLoopSummaries(documentSummaryIds);
+
   const team = teamData ? { id: teamData.id, name: teamData.name } : null;
   const activities = activityData?.activities ?? [];
 
@@ -298,6 +304,8 @@ export default function ProjectDetailPage() {
     (): RowEditHandlers => ({
       teamMembers,
       activeLoops,
+      loopVariant: "team",
+      loopSummaries,
       onUpdateAssignee: (itemId, assigneeId) => {
         updateDocumentMutation.mutate({ id: itemId, assigneeId });
       },
@@ -311,7 +319,7 @@ export default function ProjectDetailPage() {
         updateDocumentMutation.mutate({ id: itemId, status });
       },
     }),
-    [teamMembers, activeLoops, updateDocumentMutation]
+    [teamMembers, activeLoops, loopSummaries, updateDocumentMutation]
   );
 
   if (loading) {
