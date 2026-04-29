@@ -66,7 +66,11 @@ const DynamicDocsPage = async ({ params }: DocsPageProps) => {
       <DocsDescription>{page.data.description}</DocsDescription>
       <DocsBody>
         <MDXContent
-          components={{ ...defaultMdxComponents, a: LinkComponent, CardGroup: Cards }}
+          components={{
+            ...defaultMdxComponents,
+            a: LinkComponent,
+            CardGroup: Cards,
+          }}
         />
       </DocsBody>
     </DocsPage>
