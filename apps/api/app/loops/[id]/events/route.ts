@@ -16,18 +16,14 @@ import {
 import {
   listLoopEventsQueryValidator,
   loopEventPayloadValidator,
+  normalizeLoopEvent,
+  TERMINAL_LOOP_EVENTS,
+  TERMINAL_LOOP_STATUSES,
   validateNormalizedEvent,
 } from "../../validators";
 
 const NONCE_UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const TERMINAL_STATUSES = new Set([
-  "COMPLETED",
-  "FAILED",
-  "CANCELLED",
-  "TIMED_OUT",
-]);
-const TERMINAL_EVENTS = new Set(["completed", "error", "cancelled"]);
 
 function extractEventNonce(request: Request): string | Response {
   const nonce = request.headers.get("x-loop-event-nonce");
@@ -48,25 +44,10 @@ function extractEventNonce(request: Request): string | Response {
   return nonce;
 }
 
-function normalizeLoopEvent(body: unknown): LoopEvent {
-  if (
-    body &&
-    typeof body === "object" &&
-    "data" in body &&
-    typeof (body as { data?: unknown }).data === "object" &&
-    (body as { data?: unknown }).data !== null
-  ) {
-    const b = body as {
-      type: LoopEvent["type"];
-      data: Record<string, unknown>;
-    };
-    return { type: b.type, ...b.data } as LoopEvent;
-  }
-  return body as LoopEvent;
-}
-
 function isIgnoredForTerminalLoop(status: string, eventType: string): boolean {
-  return TERMINAL_STATUSES.has(status) && !TERMINAL_EVENTS.has(eventType);
+  return (
+    TERMINAL_LOOP_STATUSES.has(status) && !TERMINAL_LOOP_EVENTS.has(eventType)
+  );
 }
 
 function mapEventHandlingError(error: unknown): Response | null {
@@ -76,7 +57,7 @@ function mapEventHandlingError(error: unknown): Response | null {
 
   if (isInvalidStatusTransitionError(error)) {
     const transitionError = error as InvalidStatusTransitionError;
-    if (TERMINAL_STATUSES.has(transitionError.from)) {
+    if (TERMINAL_LOOP_STATUSES.has(transitionError.from)) {
       return successResponse({
         received: true as const,
         ignored: true as const,

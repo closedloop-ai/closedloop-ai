@@ -10,7 +10,7 @@ import {
 } from "@closedloop-ai/loops-api/events";
 import { ArtifactType } from "@repo/api/src/types/artifact";
 import type { LoopEvent } from "@repo/api/src/types/loop";
-import { MAX_ADDITIONAL_REPOS } from "@repo/api/src/types/loop";
+import { LoopStatus, MAX_ADDITIONAL_REPOS } from "@repo/api/src/types/loop";
 import { z } from "zod";
 import { uuidOrSlug } from "@/lib/identifier-utils";
 
@@ -238,11 +238,11 @@ export const listLoopsQueryValidator = z.object({
 });
 
 /** Loop statuses that represent a terminal (finished) state. */
-export const TERMINAL_LOOP_STATUSES = new Set([
-  "COMPLETED",
-  "FAILED",
-  "CANCELLED",
-  "TIMED_OUT",
+export const TERMINAL_LOOP_STATUSES = new Set<string>([
+  LoopStatus.Completed,
+  LoopStatus.Failed,
+  LoopStatus.Cancelled,
+  LoopStatus.TimedOut,
 ]);
 
 /** Event types that transition a loop to a terminal state. */
