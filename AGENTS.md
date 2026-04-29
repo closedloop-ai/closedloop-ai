@@ -39,16 +39,18 @@ TypeScript and ESM are standard across the repo. Formatting and linting are enfo
 
 For API routes with fixed request/response/error contracts, wrap auth/session and other precondition helpers that can throw so the route still returns the declared contract shape instead of leaking a generic 500.
 - Prefer generated Prisma enums from `@repo/database` over duplicated string literals when a model field already has an enum type.
+- Use shared constants, generated enums, or exported enum-like objects for statuses, reasons, protocol modes, channel names, storage keys, and other contract values. Do not duplicate hardcoded strings when a constant or enum exists.
 - When multiple desktop route files share the same wire-contract types, define those types in `apps/api/app/desktop/contract.ts` instead of duplicating route-local copies.
 - Keep backend-only API metadata types in `apps/api`; `packages/api` should expose transport contracts and cross-process constants, not database provenance or auth-policy internals.
 - Keep PostHog/analytics runtime selection and feature-flag client compatibility inside `@repo/analytics`; app, auth, route, and service modules should consume analytics package APIs instead of switching between analytics runtimes directly.
 - For wire contracts crossing apps, packages, repos, or processes, define header names, reason strings, modes, and response-shape constants in one shared module and import them instead of duplicating literals.
 - For enum-like exported constants in `packages/api`, follow the local PascalCase object convention used by types such as `DesktopCommandStatus` and `ComputePreference`; do not introduce all-caps constant names for the same pattern.
-- When the same helper logic is introduced in multiple files in one change, extract it into the nearest shared module owned by that surface instead of committing parallel copies.
+- When the same helper logic, object shape, or protocol type appears in multiple files, extract it into the nearest shared module owned by that surface instead of committing parallel copies.
 - When route handlers, middleware, or internal routes enforce the same policy, extract a shared helper or add focused parity tests so their behavior cannot drift silently.
 - Keep route handlers thin: parse/auth at the boundary is fine, but multi-step business workflows, persistence orchestration, and cross-service validation should live in service/helper modules that the route delegates to.
 - For expected service outcomes such as conflicts, rate limits, or invalid state transitions, return typed domain results instead of throwing custom Error classes for control flow. Reserve thrown errors for unexpected failures.
-- Avoid unnecessary TypeScript casts in service modules. Prefer importing concrete shared types, narrowing with type guards, or shaping helper return types so call sites do not need `as` to satisfy the compiler.
+- Avoid `instanceof` and `in` checks for routine error/result handling when a typed result discriminant or shared error code can express the branch more clearly. Reserve thrown errors and exception-style narrowing for unexpected failures or third-party APIs that require it.
+- Avoid unnecessary TypeScript casts. Prefer importing concrete shared types, narrowing with type guards, or shaping helper return types so call sites do not need `as` to satisfy the compiler.
 - Prefer built-in Zod validators such as `z.uuid()` over custom refinements unless the route contract explicitly requires a narrower UUID version or format.
 - Prefer Zod schemas for object-shape validation and JSON boundary narrowing instead of ad hoc `Record<string, unknown>` casts or manual `typeof value === "object"` guards. Reuse or colocate schemas in validator modules when the shape is shared.
 - In `apps/api` serverless routes, do not fire-and-forget promises for response-path side effects. Await the work, pass the promise to `waitUntil`, or persist it for later processing.
