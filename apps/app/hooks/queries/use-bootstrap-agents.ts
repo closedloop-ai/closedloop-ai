@@ -76,25 +76,44 @@ export function useBootstrapAgents() {
 
       const controller = new AbortController();
       abortRef.current = controller;
+      const bootstrapRunId = crypto.randomUUID();
 
       setState({ status: BootstrapStatus.Running });
 
-      const bootstrapResult = await dispatchToGateway(
-        repos,
-        controller,
-        setState
-      );
-      if (!bootstrapResult) {
+      let bootstrapResult: BootstrapCommandResult;
+      try {
+        bootstrapResult = await dispatchToGateway(repos, controller);
+      } catch (err) {
+        if (abortRef.current !== controller) {
+          return;
+        }
+        setState({
+          status: BootstrapStatus.Error,
+          error: err instanceof Error ? err.message : "Bootstrap failed",
+        });
+        return;
+      }
+      if (abortRef.current !== controller) {
         return;
       }
 
       setState({ status: BootstrapStatus.Ingesting });
 
       try {
-        const result = await ingestResults(bootstrapResult.repos, apiClient);
+        const result = await ingestResults(
+          bootstrapResult.repos,
+          apiClient,
+          bootstrapRunId
+        );
+        if (abortRef.current !== controller) {
+          return;
+        }
         queryClient.invalidateQueries({ queryKey: agentKeys.lists() });
         setState({ status: BootstrapStatus.Completed, result });
       } catch (err) {
+        if (abortRef.current !== controller) {
+          return;
+        }
         setState({
           status: BootstrapStatus.Error,
           error: err instanceof Error ? err.message : "Failed to ingest agents",
@@ -117,46 +136,34 @@ export function useBootstrapAgents() {
 
 async function dispatchToGateway(
   repos: Array<{ fullName: string }>,
-  controller: AbortController,
-  setState: (state: BootstrapState) => void
-): Promise<BootstrapCommandResult | null> {
-  try {
-    const response = await fetch("/api/gateway/bootstrap", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        type: "bootstrap",
-        repos: repos.map((r) => ({ fullName: r.fullName })),
-        options: { depth: "medium" },
-      }),
-      signal: controller.signal,
-    });
+  controller: AbortController
+): Promise<BootstrapCommandResult> {
+  const response = await fetch("/api/gateway/bootstrap", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      type: "bootstrap",
+      repos: repos.map((r) => ({ fullName: r.fullName })),
+      options: { depth: "medium" },
+    }),
+    signal: controller.signal,
+  });
 
-    if (!response.ok) {
-      const data = await response.json().catch(() => ({}));
-      throw new Error(
-        (data as { error?: string }).error ??
-          `Bootstrap failed (${response.status})`
-      );
-    }
-
-    return (await response.json()) as BootstrapCommandResult;
-  } catch (err) {
-    if (controller.signal.aborted) {
-      setState({ status: BootstrapStatus.Idle });
-    } else {
-      setState({
-        status: BootstrapStatus.Error,
-        error: err instanceof Error ? err.message : "Bootstrap failed",
-      });
-    }
-    return null;
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new Error(
+      (data as { error?: string }).error ??
+        `Bootstrap failed (${response.status})`
+    );
   }
+
+  return (await response.json()) as BootstrapCommandResult;
 }
 
 async function ingestRepoAgents(
   repo: BootstrapRepoResult,
-  apiClient: ReturnType<typeof useApiClient>
+  apiClient: ReturnType<typeof useApiClient>,
+  bootstrapRunId: string
 ): Promise<BootstrapRepoSummary & { created: number; updated: number }> {
   if (!repo.success || repo.agents.length === 0) {
     return {
@@ -179,7 +186,7 @@ async function ingestRepoAgents(
           description: a.description ?? undefined,
           prompt: a.prompt,
         })),
-        bootstrapRunId: crypto.randomUUID(),
+        bootstrapRunId,
         sourceRepo: repo.fullName,
         criticGates: repo.criticGates ?? undefined,
       }
@@ -206,14 +213,15 @@ async function ingestRepoAgents(
 
 async function ingestResults(
   repos: BootstrapRepoResult[],
-  apiClient: ReturnType<typeof useApiClient>
+  apiClient: ReturnType<typeof useApiClient>,
+  bootstrapRunId: string
 ): Promise<BootstrapIngestResult> {
   const summaries: BootstrapRepoSummary[] = [];
   let totalCreated = 0;
   let totalUpdated = 0;
 
   for (const repo of repos) {
-    const result = await ingestRepoAgents(repo, apiClient);
+    const result = await ingestRepoAgents(repo, apiClient, bootstrapRunId);
     totalCreated += result.created;
     totalUpdated += result.updated;
     summaries.push({
