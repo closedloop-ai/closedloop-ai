@@ -47,6 +47,9 @@ describe("origin propagation into flushed log entry — three known paths", () =
     ["desktop", Origin.Desktop],
     ["api", Origin.Api],
     ["relay", Origin.Relay],
+    ["cl-api", Origin.Api],
+    ["cl-relay", Origin.Relay],
+    ["cl-desktop", Origin.Desktop],
   ];
 
   for (const [ddServiceValue, expectedOrigin] of cases) {
