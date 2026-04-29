@@ -222,6 +222,7 @@ noise).
 
 | Warning message | Condition |
 |---|---|
+| `telemetry.dd_service_fallback` | `DD_SERVICE` is unset or empty string; co-fires with `telemetry.origin_fallback` since both trigger when `DD_SERVICE` is absent |
 | `telemetry.origin_fallback` | `DD_SERVICE` is unset or not a known origin |
 | `telemetry.version_fallback` | `version` resolved to `"unknown"` |
 | `telemetry.git_sha_fallback` | `git_sha` resolved to `"unknown"` |
