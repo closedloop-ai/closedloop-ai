@@ -282,13 +282,20 @@ export async function launchLoopOnDesktop(
       parentBranchName: parentBranchName ?? null,
       parentSessionId: parentSessionId ?? null,
       localRepoPath: localRepoPath ?? null,
-      userContext: contextPack.userContext ?? null,
-      attachments: contextPack.attachments ?? null,
-      additionalRepos:
-        additionalRepos?.map((r) => ({
-          fullName: r.fullName,
-          branch: r.branch,
-        })) ?? null,
+      ...(contextPack.userContext === undefined
+        ? {}
+        : { userContext: contextPack.userContext }),
+      ...(contextPack.attachments === undefined
+        ? {}
+        : { attachments: contextPack.attachments }),
+      ...(additionalRepos === undefined
+        ? {}
+        : {
+            additionalRepos: additionalRepos.map((r) => ({
+              fullName: r.fullName,
+              branch: r.branch,
+            })),
+          }),
     } satisfies SymphonyLoopBody as JsonValue,
   };
 

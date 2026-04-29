@@ -202,7 +202,7 @@ describe("dispatchRelayOperation (via launchLoopOnDesktop)", () => {
     ).toEqual(VALID_LAUNCH_OPTS.contextPack.attachments);
   });
 
-  it("uses JSON nulls for absent optional desktop loop payload fields", async () => {
+  it("omits absent optional desktop loop payload fields", async () => {
     vi.spyOn(globalThis, "fetch").mockReturnValue(
       mockResponse(200, { delivered: true })
     );
@@ -217,16 +217,10 @@ describe("dispatchRelayOperation (via launchLoopOnDesktop)", () => {
     const toRelayOperationMock = vi.mocked(toRelayOperation);
     expect(toRelayOperationMock).toHaveBeenCalledOnce();
     const [, dispatchedInput] = toRelayOperationMock.mock.calls[0];
-    expect(
-      (dispatchedInput as { body: Record<string, unknown> }).body.attachments
-    ).toBeNull();
-    expect(
-      (dispatchedInput as { body: Record<string, unknown> }).body.userContext
-    ).toBeNull();
-    expect(
-      (dispatchedInput as { body: Record<string, unknown> }).body
-        .additionalRepos
-    ).toBeNull();
+    const body = (dispatchedInput as { body: Record<string, unknown> }).body;
+    expect(body).not.toHaveProperty("attachments");
+    expect(body).not.toHaveProperty("userContext");
+    expect(body).not.toHaveProperty("additionalRepos");
   });
 
   it("passes empty array to relay payload body when contextPack.attachments is []", async () => {

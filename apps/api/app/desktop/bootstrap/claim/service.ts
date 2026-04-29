@@ -209,7 +209,8 @@ export async function handleBootstrapClaim(request: Request) {
 
   try {
     const consumed = await desktopOnboardingAttemptsService.consume(
-      body.onboardingAttemptId
+      body.onboardingAttemptId,
+      { gatewayId: body.gatewayId }
     );
     if (!consumed) {
       return desktopContractError(
