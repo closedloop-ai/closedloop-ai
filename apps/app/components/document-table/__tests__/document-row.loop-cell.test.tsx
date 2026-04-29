@@ -16,6 +16,7 @@ import type {
   LoopSummariesResponse,
   LoopWithUser,
 } from "@repo/api/src/types/loop";
+import { LoopCommand, LoopStatus } from "@repo/api/src/types/loop";
 import { render } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
@@ -137,8 +138,8 @@ function activeEntry(
 ) {
   return {
     loopId: LOOP_ID_ACTIVE,
-    command: (overrides?.command ?? "PLAN") as never,
-    status: "RUNNING" as never,
+    command: (overrides?.command ?? LoopCommand.Plan) as never,
+    status: LoopStatus.Running as never,
     userName: "Ada Lovelace",
     isLocal: overrides?.isLocal ?? false,
     childSubtype: null,
@@ -155,8 +156,8 @@ function completedEntry(overrides?: {
 }) {
   return {
     loopId: LOOP_ID_COMPLETED,
-    command: (overrides?.command ?? "GENERATE_PRD") as never,
-    status: "COMPLETED" as never,
+    command: (overrides?.command ?? LoopCommand.GeneratePrd) as never,
+    status: LoopStatus.Completed as never,
     userName: "Ada Lovelace",
     isLocal: false,
     childSubtype: null,
@@ -171,18 +172,21 @@ function failedEntry(overrides?: {
   command?: string;
   status?: string;
   failedAt?: string;
+  completedAt?: string | null;
 }) {
+  const failedAt = overrides?.failedAt ?? "2026-04-28T10:00:00.000Z";
   return {
     loopId: LOOP_ID_FAILED,
-    command: (overrides?.command ?? "EXECUTE") as never,
-    status: (overrides?.status ?? "FAILED") as never,
+    command: (overrides?.command ?? LoopCommand.Execute) as never,
+    status: (overrides?.status ?? LoopStatus.Failed) as never,
     userName: "Ada Lovelace",
     isLocal: false,
     childSubtype: null,
     isDirectLoop: false,
     startedAt: null,
-    completedAt: overrides?.failedAt ?? "2026-04-28T10:00:00.000Z",
-    failedAt: overrides?.failedAt ?? "2026-04-28T10:00:00.000Z",
+    completedAt:
+      overrides?.completedAt === undefined ? null : overrides.completedAt,
+    failedAt,
   };
 }
 
@@ -260,7 +264,7 @@ describe("LoopCell — team variant", () => {
     const { container, getByText } = renderRow({
       loopVariant: "team",
       loopSummaries: summariesWith({
-        latestCompleted: completedEntry({ command: "PLAN" }),
+        latestCompleted: completedEntry({ command: LoopCommand.Plan }),
       }),
     });
     expect(getByText(ADA_NAME_REGEX)).toBeInTheDocument();
@@ -273,7 +277,10 @@ describe("LoopCell — team variant", () => {
     const { getByText, container } = renderRow({
       loopVariant: "team",
       loopSummaries: summariesWith({
-        latestFailed: failedEntry({ command: "EXECUTE", status: "FAILED" }),
+        latestFailed: failedEntry({
+          command: LoopCommand.Execute,
+          status: LoopStatus.Failed,
+        }),
       }),
     });
     expect(getByText("Code failed")).toBeInTheDocument();
@@ -300,7 +307,7 @@ describe("LoopCell — my-tasks variant", () => {
     const { getByText } = renderRow({
       loopVariant: "my-tasks",
       loopSummaries: summariesWith({
-        activeLoop: activeEntry({ command: "PLAN" }),
+        activeLoop: activeEntry({ command: LoopCommand.Plan }),
       }),
     });
     expect(getByText("Plan generating")).toBeInTheDocument();
@@ -310,7 +317,7 @@ describe("LoopCell — my-tasks variant", () => {
     const { getByText } = renderRow({
       loopVariant: "my-tasks",
       loopSummaries: summariesWith({
-        latestCompleted: completedEntry({ command: "GENERATE_PRD" }),
+        latestCompleted: completedEntry({ command: LoopCommand.GeneratePrd }),
       }),
     });
     expect(getByText("PRD generated")).toBeInTheDocument();
@@ -320,7 +327,10 @@ describe("LoopCell — my-tasks variant", () => {
     const { getByText } = renderRow({
       loopVariant: "my-tasks",
       loopSummaries: summariesWith({
-        latestFailed: failedEntry({ command: "EXECUTE", status: "FAILED" }),
+        latestFailed: failedEntry({
+          command: LoopCommand.Execute,
+          status: LoopStatus.Failed,
+        }),
       }),
     });
     expect(getByText("Code failed")).toBeInTheDocument();
@@ -331,12 +341,12 @@ describe("LoopCell — my-tasks variant", () => {
       loopVariant: "my-tasks",
       loopSummaries: summariesWith({
         activeLoop: activeEntry({
-          command: "PLAN",
+          command: LoopCommand.Plan,
           startedAt: "2026-04-28T08:00:00.000Z",
         }),
         latestFailed: failedEntry({
-          command: "EXECUTE",
-          status: "FAILED",
+          command: LoopCommand.Execute,
+          status: LoopStatus.Failed,
           failedAt: "2026-04-28T09:30:00.000Z",
         }),
       }),
@@ -350,11 +360,11 @@ describe("LoopCell — my-tasks variant", () => {
       loopVariant: "my-tasks",
       loopSummaries: summariesWith({
         activeLoop: activeEntry({
-          command: "PLAN",
+          command: LoopCommand.Plan,
           startedAt: "2026-04-28T09:00:00.000Z",
         }),
         latestCompleted: completedEntry({
-          command: "GENERATE_PRD",
+          command: LoopCommand.GeneratePrd,
           completedAt: "2026-04-28T11:00:00.000Z",
         }),
       }),
@@ -368,12 +378,12 @@ describe("LoopCell — my-tasks variant", () => {
       loopVariant: "my-tasks",
       loopSummaries: summariesWith({
         activeLoop: activeEntry({
-          command: "PLAN",
+          command: LoopCommand.Plan,
           startedAt: "2026-04-28T10:00:00.000Z",
         }),
         latestFailed: failedEntry({
-          command: "EXECUTE",
-          status: "FAILED",
+          command: LoopCommand.Execute,
+          status: LoopStatus.Failed,
           failedAt: "2026-04-28T08:00:00.000Z",
         }),
       }),
@@ -386,7 +396,10 @@ describe("LoopCell — my-tasks variant", () => {
     const { getByText } = renderRow({
       loopVariant: "my-tasks",
       loopSummaries: summariesWith({
-        latestFailed: failedEntry({ command: "EXECUTE", status: "CANCELLED" }),
+        latestFailed: failedEntry({
+          command: LoopCommand.Execute,
+          status: LoopStatus.Cancelled,
+        }),
       }),
     });
     expect(getByText("Code cancelled")).toBeInTheDocument();
@@ -396,7 +409,10 @@ describe("LoopCell — my-tasks variant", () => {
     const { getByText } = renderRow({
       loopVariant: "my-tasks",
       loopSummaries: summariesWith({
-        latestFailed: failedEntry({ command: "EXECUTE", status: "TIMED_OUT" }),
+        latestFailed: failedEntry({
+          command: LoopCommand.Execute,
+          status: LoopStatus.TimedOut,
+        }),
       }),
     });
     expect(getByText("Code timed out")).toBeInTheDocument();

@@ -14,15 +14,6 @@ vi.mock("@repo/database", () => ({
     BLOCKS: "BLOCKS",
     RELATES_TO: "RELATES_TO",
   },
-  LoopStatus: {
-    PENDING: "PENDING",
-    CLAIMED: "CLAIMED",
-    RUNNING: "RUNNING",
-    COMPLETED: "COMPLETED",
-    FAILED: "FAILED",
-    CANCELLED: "CANCELLED",
-    TIMED_OUT: "TIMED_OUT",
-  },
   Prisma: {
     sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({
       strings,
@@ -32,6 +23,7 @@ vi.mock("@repo/database", () => ({
   },
 }));
 
+import { LoopCommand, LoopStatus } from "@repo/api/src/types/loop";
 import { withDb } from "@repo/database";
 import { loopSummaryService } from "../loop-summary-service";
 
@@ -70,8 +62,8 @@ function makeLoop(overrides: Partial<LoopFixture>): LoopFixture {
   return {
     id: "loop-default",
     artifactId: ROOT_A,
-    command: "PLAN",
-    status: "RUNNING",
+    command: LoopCommand.Plan,
+    status: LoopStatus.Running,
     startedAt: new Date("2026-04-28T10:00:00Z"),
     completedAt: null,
     updatedAt: new Date("2026-04-28T10:00:00Z"),
@@ -158,8 +150,8 @@ describe("loopSummaryService.getSummariesForDocuments", () => {
         makeLoop({
           id: "loop-1",
           artifactId: ROOT_A,
-          status: "RUNNING",
-          command: "PLAN",
+          status: LoopStatus.Running,
+          command: LoopCommand.Plan,
           startedAt: new Date("2026-04-28T09:00:00Z"),
         }),
       ],
@@ -170,7 +162,7 @@ describe("loopSummaryService.getSummariesForDocuments", () => {
     ]);
     expect(result[ROOT_A].activeLoop).not.toBeNull();
     expect(result[ROOT_A].activeLoop?.loopId).toBe("loop-1");
-    expect(result[ROOT_A].activeLoop?.command).toBe("PLAN");
+    expect(result[ROOT_A].activeLoop?.command).toBe(LoopCommand.Plan);
     expect(result[ROOT_A].activeLoop?.isDirectLoop).toBe(true);
     expect(result[ROOT_A].activeLoop?.childSubtype).toBeNull();
   });
@@ -185,8 +177,8 @@ describe("loopSummaryService.getSummariesForDocuments", () => {
         makeLoop({
           id: "loop-child",
           artifactId: CHILD_A1,
-          status: "COMPLETED",
-          command: "GENERATE_PRD",
+          status: LoopStatus.Completed,
+          command: LoopCommand.GeneratePrd,
           completedAt: new Date("2026-04-28T11:00:00Z"),
         }),
       ],
@@ -213,8 +205,8 @@ describe("loopSummaryService.getSummariesForDocuments", () => {
         makeLoop({
           id: "loop-grandchild",
           artifactId: GRANDCHILD_A1,
-          status: "RUNNING",
-          command: "EXECUTE",
+          status: LoopStatus.Running,
+          command: LoopCommand.Execute,
         }),
       ],
       artifacts: [{ id: GRANDCHILD_A1, subtype: "FEATURE" }],
@@ -237,13 +229,13 @@ describe("loopSummaryService.getSummariesForDocuments", () => {
         makeLoop({
           id: "loop-active",
           artifactId: ROOT_A,
-          status: "RUNNING",
+          status: LoopStatus.Running,
           startedAt: new Date("2026-04-28T08:00:00Z"),
         }),
         makeLoop({
           id: "loop-failed",
           artifactId: CHILD_A1,
-          status: "FAILED",
+          status: LoopStatus.Failed,
           completedAt: new Date("2026-04-28T09:30:00Z"),
         }),
       ],
@@ -263,12 +255,12 @@ describe("loopSummaryService.getSummariesForDocuments", () => {
       loops: [
         makeLoop({
           id: "loop-cancelled",
-          status: "CANCELLED",
+          status: LoopStatus.Cancelled,
           completedAt: new Date("2026-04-28T08:00:00Z"),
         }),
         makeLoop({
           id: "loop-timed-out",
-          status: "TIMED_OUT",
+          status: LoopStatus.TimedOut,
           completedAt: new Date("2026-04-28T09:00:00Z"),
         }),
       ],
@@ -278,7 +270,7 @@ describe("loopSummaryService.getSummariesForDocuments", () => {
       ROOT_A,
     ]);
     expect(result[ROOT_A].latestFailed?.loopId).toBe("loop-timed-out");
-    expect(result[ROOT_A].latestFailed?.status).toBe("TIMED_OUT");
+    expect(result[ROOT_A].latestFailed?.status).toBe(LoopStatus.TimedOut);
   });
 
   it("falls back to updatedAt for failedAt when completedAt is null", async () => {
@@ -287,7 +279,7 @@ describe("loopSummaryService.getSummariesForDocuments", () => {
       loops: [
         makeLoop({
           id: "loop-timed-out-no-completed",
-          status: "TIMED_OUT",
+          status: LoopStatus.TimedOut,
           completedAt: null,
           updatedAt: new Date("2026-04-28T07:00:00Z"),
         }),
@@ -308,12 +300,12 @@ describe("loopSummaryService.getSummariesForDocuments", () => {
       loops: [
         makeLoop({
           id: "loop-old",
-          status: "COMPLETED",
+          status: LoopStatus.Completed,
           completedAt: new Date("2026-04-28T08:00:00Z"),
         }),
         makeLoop({
           id: "loop-new",
-          status: "COMPLETED",
+          status: LoopStatus.Completed,
           completedAt: new Date("2026-04-28T11:00:00Z"),
         }),
       ],
@@ -364,7 +356,7 @@ describe("loopSummaryService.getSummariesForDocuments", () => {
       descendants: [{ root_id: ROOT_A, descendant_id: ROOT_A }],
       loops: [
         makeLoop({
-          status: "RUNNING",
+          status: LoopStatus.Running,
           user: { firstName: "Ada", lastName: "Lovelace", email: "a@x.com" },
         }),
       ],
@@ -381,7 +373,7 @@ describe("loopSummaryService.getSummariesForDocuments", () => {
       descendants: [{ root_id: ROOT_A, descendant_id: ROOT_A }],
       loops: [
         makeLoop({
-          status: "RUNNING",
+          status: LoopStatus.Running,
           user: { firstName: null, lastName: null, email: "fallback@x.com" },
         }),
       ],
@@ -398,7 +390,7 @@ describe("loopSummaryService.getSummariesForDocuments", () => {
       descendants: [{ root_id: ROOT_A, descendant_id: ROOT_A }],
       loops: [
         makeLoop({
-          status: "RUNNING",
+          status: LoopStatus.Running,
           computeTargetId: "ct-1",
         }),
       ],

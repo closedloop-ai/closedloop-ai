@@ -340,14 +340,15 @@ export function useLoopSummaries(
   );
   const tooMany = sortedIds.length > LOOP_SUMMARIES_MAX_DOCUMENT_IDS;
   return useQuery({
+    // Caller options first; hook invariants (queryKey, queryFn, enabled) win.
+    ...options,
     queryKey: loopKeys.summaries(cacheKey),
     queryFn: () =>
       apiClient.post<LoopSummariesResponse>("/loops/summaries", {
         documentIds: sortedIds,
       }),
-    enabled: sortedIds.length > 0 && !tooMany,
-    refetchInterval: 10_000,
-    staleTime: 5000,
-    ...options,
+    enabled: sortedIds.length > 0 && !tooMany && options?.enabled !== false,
+    refetchInterval: options?.refetchInterval ?? 10_000,
+    staleTime: options?.staleTime ?? 5000,
   });
 }

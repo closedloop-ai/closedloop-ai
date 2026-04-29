@@ -148,6 +148,20 @@ describe("POST /loops/summaries", () => {
     expect(loopSummaryService.getSummariesForDocuments).not.toHaveBeenCalled();
   });
 
+  it("returns 400 when documentIds contains duplicates", async () => {
+    const response = await POST(
+      createMockRequest({
+        url: "http://localhost:3002/loops/summaries",
+        method: "POST",
+        body: { documentIds: [DOC_A, DOC_A] },
+      }),
+      createMockRouteContext({})
+    );
+
+    expect(response.status).toBe(400);
+    expect(loopSummaryService.getSummariesForDocuments).not.toHaveBeenCalled();
+  });
+
   it("returns 400 when documentIds exceeds the 100 ID limit", async () => {
     const tooMany = Array.from(
       { length: 101 },

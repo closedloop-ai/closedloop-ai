@@ -3,14 +3,8 @@ import type {
   LoopSummary,
   LoopSummaryEntry,
 } from "@repo/api/src/types/loop";
-import { LOOP_SUMMARIES_MAX_DEPTH } from "@repo/api/src/types/loop";
-import {
-  type ArtifactSubtype,
-  LinkType,
-  LoopStatus,
-  Prisma,
-  withDb,
-} from "@repo/database";
+import { LOOP_SUMMARIES_MAX_DEPTH, LoopStatus } from "@repo/api/src/types/loop";
+import { type ArtifactSubtype, LinkType, Prisma, withDb } from "@repo/database";
 
 function getUserDisplayName(user: {
   firstName: string | null;
@@ -22,15 +16,15 @@ function getUserDisplayName(user: {
 }
 
 const ACTIVE_STATUSES: LoopStatus[] = [
-  LoopStatus.PENDING,
-  LoopStatus.CLAIMED,
-  LoopStatus.RUNNING,
+  LoopStatus.Pending,
+  LoopStatus.Claimed,
+  LoopStatus.Running,
 ];
 
 const TERMINAL_FAILURE_STATUSES: LoopStatus[] = [
-  LoopStatus.FAILED,
-  LoopStatus.CANCELLED,
-  LoopStatus.TIMED_OUT,
+  LoopStatus.Failed,
+  LoopStatus.Cancelled,
+  LoopStatus.TimedOut,
 ];
 
 type DescendantRow = {
@@ -105,7 +99,7 @@ function pickActive(loops: LoopRow[]): LoopRow | null {
 function pickLatestCompleted(loops: LoopRow[]): LoopRow | null {
   let best: LoopRow | null = null;
   for (const loop of loops) {
-    if (loop.status !== LoopStatus.COMPLETED) {
+    if (loop.status !== LoopStatus.Completed) {
       continue;
     }
     const ts = loop.completedAt ?? loop.updatedAt;
@@ -178,6 +172,12 @@ async function collectDescendants(
   return { rootMap, allDescendants };
 }
 
+// Cap the loops we fetch for summary aggregation. Anything older than the
+// window is unlikely to be relevant, and fetching unbounded history is a
+// scaling risk in serverless. Cap matches the loop list endpoint convention.
+const LOOP_SUMMARY_RECENCY_DAYS = 30;
+const LOOP_SUMMARY_MAX_ROWS = 1000;
+
 async function fetchLoopsForDocuments(
   organizationId: string,
   documentIds: string[]
@@ -185,12 +185,17 @@ async function fetchLoopsForDocuments(
   if (documentIds.length === 0) {
     return [];
   }
+  const recencyCutoff = new Date(
+    Date.now() - LOOP_SUMMARY_RECENCY_DAYS * 24 * 60 * 60 * 1000
+  );
   const loops = await withDb((db) =>
     db.loop.findMany({
       where: {
         organizationId,
         artifactId: { in: documentIds },
+        updatedAt: { gte: recencyCutoff },
       },
+      take: LOOP_SUMMARY_MAX_ROWS,
       select: {
         id: true,
         artifactId: true,

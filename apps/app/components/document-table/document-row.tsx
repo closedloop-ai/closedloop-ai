@@ -66,7 +66,11 @@ import {
 } from "@/lib/date-utils";
 import { getDocumentRoute, getFeatureRoute } from "@/lib/document-navigation";
 import { deriveScoreDisplay } from "@/lib/evaluation-utils";
-import { getCommandLabels, terminalLabel } from "@/lib/loop-display";
+import {
+  deriveIsLocal,
+  getCommandLabels,
+  terminalLabel,
+} from "@/lib/loop-display";
 import {
   DOCUMENT_STATUS_LABELS,
   DOCUMENT_STATUS_TO_ICON,
@@ -687,13 +691,18 @@ function DefaultLoopCell({ item }: { item: DocumentRowItem }) {
     return <LoopCellDash />;
   }
 
-  const isLocal = loop.computeTarget != null;
-  const userName = getUserDisplayName(loop.user);
   return (
     <LoopLink loopId={loop.id}>
-      <LoopCellRunningContent isLocal={isLocal} label={userName} />
+      <LoopCellRunningContent
+        isLocal={deriveIsLocal(loop)}
+        label={getUserDisplayName(loop.user)}
+      />
     </LoopLink>
   );
+}
+
+function parseTs(value: string | null | undefined): number {
+  return value ? Date.parse(value) : 0;
 }
 
 // ---- Team variant ----
@@ -702,6 +711,24 @@ function DefaultLoopCell({ item }: { item: DocumentRowItem }) {
 // recursive). This preserves existing Team View behavior — the running indicator
 // matches the artifact you're looking at, not its children. Completed/failed
 // state comes from loopSummaries (recursive scope).
+
+function renderTeamCompleted(c: LoopSummaryEntry) {
+  const relativeTime = c.completedAt ? formatRelativeTime(c.completedAt) : null;
+  const label = relativeTime ? `${c.userName} · ${relativeTime}` : c.userName;
+  return (
+    <LoopLink loopId={c.loopId}>
+      <LoopCellCompletedContent label={label} />
+    </LoopLink>
+  );
+}
+
+function renderTeamFailed(f: LoopSummaryEntry) {
+  return (
+    <LoopLink loopId={f.loopId}>
+      <LoopCellFailedContent label={terminalLabel(f.status, f.command)} />
+    </LoopLink>
+  );
+}
 
 function TeamLoopCell({ item }: { item: DocumentRowItem }) {
   const { activeLoops, loopSummaries } = useContext(RowEditContext);
@@ -715,26 +742,32 @@ function TeamLoopCell({ item }: { item: DocumentRowItem }) {
 
   // Direct active loop wins (existing Team View behavior).
   if (directLoop) {
-    const userName = getUserDisplayName(directLoop.user);
     return (
       <LoopLink loopId={directLoop.id}>
         <LoopCellRunningContent
-          isLocal={directLoop.computeTarget != null}
-          label={userName}
+          isLocal={deriveIsLocal(directLoop)}
+          label={getUserDisplayName(directLoop.user)}
         />
       </LoopLink>
     );
   }
 
-  // Failed-newer-than-active priority. Active is null here, but check failed
-  // before completed regardless: failures should surface aggressively.
-  if (summary?.latestFailed) {
-    const f = summary.latestFailed;
-    return (
-      <LoopLink loopId={f.loopId}>
-        <LoopCellFailedContent label={terminalLabel(f.status, f.command)} />
-      </LoopLink>
-    );
+  // Compare timestamps when both terminal states exist — newest wins so a
+  // successful retry replaces a stale failure.
+  const latestFailed = summary?.latestFailed ?? null;
+  const latestCompleted = summary?.latestCompleted ?? null;
+  if (latestFailed && latestCompleted) {
+    const failedTs = parseTs(latestFailed.failedAt);
+    const completedTs = parseTs(latestCompleted.completedAt);
+    return completedTs > failedTs
+      ? renderTeamCompleted(latestCompleted)
+      : renderTeamFailed(latestFailed);
+  }
+  if (latestFailed) {
+    return renderTeamFailed(latestFailed);
+  }
+  if (latestCompleted) {
+    return renderTeamCompleted(latestCompleted);
   }
 
   if (isFailedGen) {
@@ -747,31 +780,18 @@ function TeamLoopCell({ item }: { item: DocumentRowItem }) {
     );
   }
 
-  if (summary?.latestCompleted) {
-    const c = summary.latestCompleted;
-    const userName = c.userName;
-    const relativeTime = c.completedAt
-      ? formatRelativeTime(c.completedAt)
-      : null;
-    const label = relativeTime ? `${userName} · ${relativeTime}` : userName;
-    return (
-      <LoopLink loopId={c.loopId}>
-        <LoopCellCompletedContent label={label} />
-      </LoopLink>
-    );
-  }
-
   return <LoopCellDash />;
 }
 
 // ---- My Tasks variant ----
 //
-// Reads exclusively from loopSummaries. Apply full priority logic:
-// 1. failed-newer-than-active wins
-// 2. else active
-// 3. else failed
-// 4. else completed
-// 5. else dash
+// Reads exclusively from loopSummaries. Priority logic (timestamp-aware):
+// 1. failed-newer-than-active.startedAt wins (surface failures aggressively
+//    while a new run is still queued/pending)
+// 2. else active wins (forward progress shown over older terminal states)
+// 3. else compare failed vs completed by timestamp — newest terminal wins
+//    (a successful retry after a failure must replace the stale "failed" state)
+// 4. else dash
 
 function pickMyTasksEntry(summary: LoopSummary): {
   kind: "active" | "failed" | "completed";
@@ -779,18 +799,21 @@ function pickMyTasksEntry(summary: LoopSummary): {
 } | null {
   const { activeLoop, latestFailed, latestCompleted } = summary;
   if (latestFailed && activeLoop) {
-    const failedTs = latestFailed.failedAt
-      ? Date.parse(latestFailed.failedAt)
-      : 0;
-    const activeStarted = activeLoop.startedAt
-      ? Date.parse(activeLoop.startedAt)
-      : 0;
+    const failedTs = parseTs(latestFailed.failedAt);
+    const activeStarted = parseTs(activeLoop.startedAt);
     if (failedTs > activeStarted) {
       return { kind: "failed", entry: latestFailed };
     }
   }
   if (activeLoop) {
     return { kind: "active", entry: activeLoop };
+  }
+  if (latestFailed && latestCompleted) {
+    const failedTs = parseTs(latestFailed.failedAt);
+    const completedTs = parseTs(latestCompleted.completedAt);
+    return completedTs > failedTs
+      ? { kind: "completed", entry: latestCompleted }
+      : { kind: "failed", entry: latestFailed };
   }
   if (latestFailed) {
     return { kind: "failed", entry: latestFailed };
