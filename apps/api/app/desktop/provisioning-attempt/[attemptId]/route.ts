@@ -1,6 +1,7 @@
 import type { DesktopProvisioningAttemptStatusResponse } from "@repo/api/src/types/electron";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import {
+  badRequestResponse,
   errorResponse,
   notFoundResponse,
   successResponse,
@@ -16,13 +17,14 @@ export const GET = withAnyAuth<
   "/desktop/provisioning-attempt/[attemptId]"
 >(async ({ user }, _request, params) => {
   const { attemptId } = await params;
-  if (!attemptId.trim()) {
-    return notFoundResponse("Desktop provisioning attempt");
+  const trimmedAttemptId = attemptId.trim();
+  if (!trimmedAttemptId) {
+    return badRequestResponse("Invalid attempt ID");
   }
 
   try {
     const status = await desktopOnboardingAttemptsService.getStatus(
-      attemptId,
+      trimmedAttemptId,
       user.organizationId,
       user.id
     );

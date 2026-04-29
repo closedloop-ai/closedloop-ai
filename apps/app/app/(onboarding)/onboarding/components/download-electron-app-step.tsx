@@ -31,14 +31,13 @@ export function DownloadElectronAppStep({
 }: DownloadElectronAppStepProps) {
   const { data: release, isLoading: isReleaseLoading } =
     useLatestElectronRelease();
-  const provisioningCapability = useDesktopProvisioningCapability();
+  const [desktopProvisioningPlatform, setDesktopProvisioningPlatform] =
+    useState<DesktopProvisioningPlatform>(DesktopProvisioningPlatform.Unknown);
+  const provisioningCapability = useDesktopProvisioningCapability(
+    desktopProvisioningPlatform
+  );
   const createProvisioningAttempt = useCreateDesktopProvisioningAttempt();
   const createApiKey = useCreatePlatformApiKey();
-  const desktopProvisioningPlatform = getClientDesktopProvisioningPlatform();
-  const defaultSetupMode =
-    desktopProvisioningPlatform === DesktopProvisioningPlatform.Darwin
-      ? "automated"
-      : "manual";
 
   const [generatedKey, setGeneratedKey] = useState<string | null>(null);
   const [provisioningCommand, setProvisioningCommand] = useState<string | null>(
@@ -51,9 +50,7 @@ export function DownloadElectronAppStep({
     null
   );
   const [sandboxBaseDirectory, setSandboxBaseDirectory] = useState("~/Source");
-  const [setupMode, setSetupMode] = useState<"automated" | "manual">(
-    defaultSetupMode
-  );
+  const [setupMode, setSetupMode] = useState<"automated" | "manual">("manual");
   const autoContinuedRef = useRef(false);
   const [copied, copyGeneratedKey] = useCopyToClipboard();
   const [commandCopied, copyProvisioningCommand] = useCopyToClipboard();
@@ -83,6 +80,14 @@ export function DownloadElectronAppStep({
 
   const automatedProvisioningEnabled =
     provisioningCapability.data?.automatedManagedProvisioningEnabled === true;
+
+  useEffect(() => {
+    const platform = getClientDesktopProvisioningPlatform();
+    setDesktopProvisioningPlatform(platform);
+    setSetupMode(
+      platform === DesktopProvisioningPlatform.Darwin ? "automated" : "manual"
+    );
+  }, []);
 
   useEffect(() => {
     if (!shouldAutoContinue || autoContinuedRef.current) {

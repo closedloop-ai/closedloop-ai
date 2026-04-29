@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useSyncExternalStore } from "react";
+import { z } from "zod";
 
 export type ElectronDetectionState = {
   detected: boolean;
@@ -37,6 +38,18 @@ let inFlight: Promise<ElectronDetectionState> | null = null;
 
 const listeners = new Set<() => void>();
 
+const HealthPayloadSchema = z
+  .object({
+    status: z.literal("ok"),
+    port: z.number().optional().catch(undefined),
+    version: z.string().optional().catch(undefined),
+    machineName: z.string().optional().catch(undefined),
+    gatewayId: z.string().optional().catch(undefined),
+    capabilities: z.record(z.string(), z.unknown()).optional().catch(undefined),
+    onboardingCompleted: z.boolean().optional().catch(undefined),
+  })
+  .passthrough();
+
 type ElectronProbeResult = Pick<
   ElectronDetectionState,
   | "detected"
@@ -54,20 +67,17 @@ function emitChange(): void {
   }
 }
 
-function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function parseHealthPayload(
-  payload: Record<string, unknown> | null,
+  payload: unknown,
   fallbackPort: number
 ): ElectronProbeResult | null {
-  if (!(payload && payload.status === "ok")) {
+  const result = HealthPayloadSchema.safeParse(payload);
+  if (!result.success) {
     return null;
   }
 
-  const reportedPort =
-    typeof payload.port === "number" ? payload.port : fallbackPort;
+  const health = result.data;
+  const reportedPort = health.port ?? fallbackPort;
   if (reportedPort !== fallbackPort) {
     return null;
   }
@@ -75,18 +85,11 @@ function parseHealthPayload(
   return {
     detected: true,
     port: reportedPort,
-    version: typeof payload.version === "string" ? payload.version : null,
-    machineName:
-      typeof payload.machineName === "string" ? payload.machineName : null,
-    gatewayId:
-      typeof payload.gatewayId === "string" && payload.gatewayId.trim()
-        ? payload.gatewayId
-        : null,
-    capabilities: isObject(payload.capabilities) ? payload.capabilities : {},
-    onboardingCompleted:
-      typeof payload.onboardingCompleted === "boolean"
-        ? payload.onboardingCompleted
-        : null,
+    version: health.version ?? null,
+    machineName: health.machineName ?? null,
+    gatewayId: health.gatewayId?.trim() ? health.gatewayId : null,
+    capabilities: health.capabilities ?? {},
+    onboardingCompleted: health.onboardingCompleted ?? null,
   };
 }
 
@@ -106,10 +109,7 @@ async function probeElectron(): Promise<ElectronProbeResult> {
         continue;
       }
 
-      const payload = (await response.json().catch(() => null)) as Record<
-        string,
-        unknown
-      > | null;
+      const payload = await response.json().catch(() => null);
       const result = parseHealthPayload(payload, port);
       if (result) {
         return result;

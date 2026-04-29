@@ -209,6 +209,58 @@ describe("desktopOnboardingAttemptsService", () => {
     });
   });
 
+  it("reports expired status for a claimed attempt after the TTL when no target is ready", async () => {
+    const currentTime = new Date("2026-04-27T18:00:00.000Z");
+    vi.useFakeTimers();
+    vi.setSystemTime(currentTime);
+
+    try {
+      mockWithDb
+        .mockImplementationOnce((callback: (db: unknown) => unknown) => {
+          const mockDb = {
+            desktopOnboardingAttempt: {
+              findFirst: vi.fn().mockResolvedValue({
+                attemptId: "attempt-123",
+                organizationId: "org-1",
+                userId: "user-1",
+                webAppOrigin: "https://app.closedloop.ai",
+                expiresAt: new Date(currentTime.getTime() - 1000),
+                consumedAt: new Date(currentTime.getTime() - 30_000),
+                gatewayId: "gateway-1",
+                computeTargetId: null,
+              }),
+            },
+          };
+          return callback(mockDb);
+        })
+        .mockImplementationOnce((callback: (db: unknown) => unknown) => {
+          const mockDb = {
+            computeTarget: {
+              findFirst: vi.fn().mockResolvedValue(null),
+            },
+            apiKey: {
+              findMany: vi.fn().mockResolvedValue([{ gatewayId: "gateway-1" }]),
+            },
+          };
+          return callback(mockDb);
+        });
+
+      await expect(
+        desktopOnboardingAttemptsService.getStatus(
+          "attempt-123",
+          "org-1",
+          "user-1"
+        )
+      ).resolves.toMatchObject({
+        onboardingAttemptId: "attempt-123",
+        status: DesktopProvisioningAttemptStatus.Expired,
+        gatewayId: "gateway-1",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("reports null status when an attempt is not owned by the user", async () => {
     mockWithDb.mockImplementation((callback: (db: unknown) => unknown) => {
       const mockDb = {

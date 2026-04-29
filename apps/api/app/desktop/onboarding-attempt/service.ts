@@ -180,6 +180,7 @@ export const desktopOnboardingAttemptsService = {
       return null;
     }
 
+    const now = new Date();
     const base = {
       onboardingAttemptId: attempt.attemptId,
       expiresAt: attempt.expiresAt.toISOString(),
@@ -189,7 +190,7 @@ export const desktopOnboardingAttemptsService = {
         : {}),
     };
     if (!(attempt.consumedAt && attempt.gatewayId)) {
-      if (attempt.expiresAt <= new Date()) {
+      if (attempt.expiresAt <= now) {
         return { ...base, status: DesktopProvisioningAttemptStatus.Expired };
       }
       return { ...base, status: DesktopProvisioningAttemptStatus.Pending };
@@ -207,6 +208,10 @@ export const desktopOnboardingAttemptsService = {
         status: DesktopProvisioningAttemptStatus.Complete,
         computeTargetId: attempt.computeTargetId ?? readyTarget.computeTargetId,
       };
+    }
+
+    if (attempt.expiresAt <= new Date()) {
+      return { ...base, status: DesktopProvisioningAttemptStatus.Expired };
     }
 
     return { ...base, status: DesktopProvisioningAttemptStatus.Claimed };

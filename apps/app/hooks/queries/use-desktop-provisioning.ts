@@ -4,16 +4,28 @@ import type {
   DesktopProvisioningAttempt,
   DesktopProvisioningAttemptStatusResponse,
   DesktopProvisioningCapability,
-  DesktopProvisioningPlatform,
   DesktopProvisioningReadinessResponse,
 } from "@repo/api/src/types/electron";
 import {
   DesktopProvisioningAttemptStatus,
+  DesktopProvisioningPlatform,
   DesktopProvisioningReadinessStatus,
 } from "@repo/api/src/types/electron";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useApiClient } from "@/hooks/use-api-client";
 import { getClientDesktopProvisioningPlatform } from "@/lib/desktop-provisioning-platform";
+
+const DESKTOP_PROVISIONING_ATTEMPT_POLL_INTERVAL_MS = 5000;
+const DESKTOP_PROVISIONING_READINESS_POLL_INTERVAL_MS = 10_000;
+
+type QueryStatus = "pending" | "error" | "success";
+
+type RefetchQueryState<TData> = {
+  readonly state: {
+    readonly status: QueryStatus;
+    readonly data?: TData;
+  };
+};
 
 export const desktopProvisioningKeys = {
   all: ["desktop-provisioning"] as const,
@@ -24,9 +36,10 @@ export const desktopProvisioningKeys = {
   readiness: () => [...desktopProvisioningKeys.all, "readiness"] as const,
 };
 
-export function useDesktopProvisioningCapability() {
+export function useDesktopProvisioningCapability(
+  platform = getClientDesktopProvisioningPlatform()
+) {
   const apiClient = useApiClient();
-  const platform = getClientDesktopProvisioningPlatform();
 
   return useQuery({
     queryKey: desktopProvisioningKeys.capability(platform),
@@ -34,6 +47,7 @@ export function useDesktopProvisioningCapability() {
       apiClient.get<DesktopProvisioningCapability>(
         `/desktop/provisioning-capability?platform=${encodeURIComponent(platform)}`
       ),
+    enabled: platform !== DesktopProvisioningPlatform.Unknown,
     staleTime: 60_000,
   });
 }
@@ -67,11 +81,7 @@ export function useDesktopProvisioningAttemptStatus(
         )}`
       ),
     enabled: onboardingAttemptId !== null,
-    refetchInterval: (query) =>
-      query.state.data?.status === DesktopProvisioningAttemptStatus.Complete ||
-      query.state.data?.status === DesktopProvisioningAttemptStatus.Expired
-        ? false
-        : 5000,
+    refetchInterval: getDesktopProvisioningAttemptRefetchInterval,
   });
 }
 
@@ -84,9 +94,44 @@ export function useDesktopProvisioningReadiness() {
       apiClient.get<DesktopProvisioningReadinessResponse>(
         "/desktop/provisioning-readiness"
       ),
-    refetchInterval: (query) =>
-      query.state.data?.status === DesktopProvisioningReadinessStatus.Complete
-        ? false
-        : 10_000,
+    refetchInterval: getDesktopProvisioningReadinessRefetchInterval,
   });
+}
+
+/**
+ * Returns the polling interval for attempt status requests.
+ * Stops on request errors and every terminal attempt state.
+ */
+export function getDesktopProvisioningAttemptRefetchInterval(
+  query: RefetchQueryState<DesktopProvisioningAttemptStatusResponse>
+): false | number {
+  if (query.state.status === "error") {
+    return false;
+  }
+
+  switch (query.state.data?.status) {
+    case DesktopProvisioningAttemptStatus.Claimed:
+    case DesktopProvisioningAttemptStatus.Complete:
+    case DesktopProvisioningAttemptStatus.Expired:
+      return false;
+    default:
+      return DESKTOP_PROVISIONING_ATTEMPT_POLL_INTERVAL_MS;
+  }
+}
+
+/**
+ * Returns the polling interval for account-level Desktop readiness requests.
+ * Stops once readiness is complete or the request itself fails.
+ */
+export function getDesktopProvisioningReadinessRefetchInterval(
+  query: RefetchQueryState<DesktopProvisioningReadinessResponse>
+): false | number {
+  if (
+    query.state.status === "error" ||
+    query.state.data?.status === DesktopProvisioningReadinessStatus.Complete
+  ) {
+    return false;
+  }
+
+  return DESKTOP_PROVISIONING_READINESS_POLL_INTERVAL_MS;
 }

@@ -5,7 +5,7 @@ import {
   DesktopProvisioningReadinessStatus,
 } from "@repo/api/src/types/electron";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DownloadElectronAppStep } from "../download-electron-app-step";
 
 const DOWNLOAD_FOR_MACOS = /download for macos/i;
@@ -38,6 +38,10 @@ const mockUseCreateDesktopProvisioningAttempt = vi.fn();
 const mockUseDesktopProvisioningAttemptStatus = vi.fn();
 const mockUseDesktopProvisioningReadiness = vi.fn();
 const mockUseComputeTargets = vi.fn();
+const originalNavigatorPlatformDescriptor = Object.getOwnPropertyDescriptor(
+  navigator,
+  "platform"
+);
 
 vi.mock("@/hooks/queries/use-electron-release", () => ({
   useLatestElectronRelease: () => mockUseLatestElectronRelease(),
@@ -156,6 +160,18 @@ describe("DownloadElectronAppStep", () => {
       isLoading: false,
       isPending: false,
     });
+  });
+
+  afterEach(() => {
+    if (originalNavigatorPlatformDescriptor) {
+      Object.defineProperty(
+        navigator,
+        "platform",
+        originalNavigatorPlatformDescriptor
+      );
+      return;
+    }
+    Reflect.deleteProperty(navigator, "platform");
   });
 
   describe("Download link", () => {

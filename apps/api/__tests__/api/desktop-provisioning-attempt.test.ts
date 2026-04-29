@@ -231,6 +231,23 @@ describe("GET /desktop/provisioning-attempt/:attemptId", () => {
 
     expect(response.status).toBe(404);
   });
+
+  it("returns 400 for blank attempt ids", async () => {
+    const response = await GET_STATUS(
+      createMockRequest({
+        method: "GET",
+        url: "https://api.closedloop.ai/desktop/provisioning-attempt/%20",
+      }),
+      { params: Promise.resolve({ attemptId: " " }) }
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      success: false,
+      error: "Invalid attempt ID",
+    });
+    expect(desktopOnboardingAttemptsService.getStatus).not.toHaveBeenCalled();
+  });
 });
 
 describe("GET /desktop/provisioning-readiness", () => {
