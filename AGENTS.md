@@ -41,6 +41,7 @@ For API routes with fixed request/response/error contracts, wrap auth/session an
 - Prefer generated Prisma enums from `@repo/database` over duplicated string literals when a model field already has an enum type.
 - When multiple desktop route files share the same wire-contract types, define those types in `apps/api/app/desktop/contract.ts` instead of duplicating route-local copies.
 - Keep backend-only API metadata types in `apps/api`; `packages/api` should expose transport contracts and cross-process constants, not database provenance or auth-policy internals.
+- Keep PostHog/analytics runtime selection and feature-flag client compatibility inside `@repo/analytics`; app, auth, route, and service modules should consume analytics package APIs instead of switching between analytics runtimes directly.
 - For wire contracts crossing apps, packages, repos, or processes, define header names, reason strings, modes, and response-shape constants in one shared module and import them instead of duplicating literals.
 - For enum-like exported constants in `packages/api`, follow the local PascalCase object convention used by types such as `DesktopCommandStatus` and `ComputePreference`; do not introduce all-caps constant names for the same pattern.
 - When the same helper logic is introduced in multiple files in one change, extract it into the nearest shared module owned by that surface instead of committing parallel copies.

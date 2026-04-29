@@ -10,10 +10,8 @@ import type { VerifiedApiKeyContextWithMetadata } from "../api-key-context";
 
 const mockIsFeatureEnabled = vi.hoisted(() => vi.fn());
 
-vi.mock("@repo/analytics/server", () => ({
-  analytics: {
-    isFeatureEnabled: mockIsFeatureEnabled,
-  },
+vi.mock("@repo/analytics/feature-flags", () => ({
+  isFeatureFlagEnabledForDistinctId: mockIsFeatureEnabled,
 }));
 
 import {

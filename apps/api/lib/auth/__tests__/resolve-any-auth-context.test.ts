@@ -11,10 +11,8 @@ vi.mock("@repo/auth/server", () => ({
   verifyToken: vi.fn(),
 }));
 
-vi.mock("@repo/analytics/server", () => ({
-  analytics: {
-    isFeatureEnabled: mockIsFeatureEnabled,
-  },
+vi.mock("@repo/analytics/feature-flags", () => ({
+  isFeatureFlagEnabledForDistinctId: mockIsFeatureEnabled,
 }));
 
 vi.mock("@repo/observability/log", () => ({

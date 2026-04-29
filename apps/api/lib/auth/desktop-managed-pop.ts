@@ -3,6 +3,7 @@ import {
   type KeyObject,
   verify as verifySignature,
 } from "node:crypto";
+import { isFeatureFlagEnabledForDistinctId } from "@repo/analytics/feature-flags";
 import {
   DESKTOP_POP_GATEWAY_ID_HEADER,
   DESKTOP_POP_SIGNATURE_HEADER,
@@ -58,13 +59,6 @@ type DesktopManagedPopVerificationInput = {
   mode?: DesktopManagedPopMode;
 };
 
-type FeatureFlagAnalyticsClient = {
-  isFeatureEnabled?: (
-    flag: string,
-    distinctId: string
-  ) => boolean | Promise<boolean>;
-};
-
 /**
  * Resolve the desktop-managed PoP rollout mode from the server-side feature
  * flag. Missing or unavailable flag evaluation defaults to monitor mode so
@@ -112,14 +106,12 @@ export async function isDesktopManagedFeatureFlagEnabled(
   flag: string,
   identity: DesktopManagedFeatureFlagIdentity
 ): Promise<boolean> {
-  const analytics = await loadFeatureFlagAnalyticsClient(flag);
-  if (typeof analytics?.isFeatureEnabled !== "function") {
-    return false;
-  }
   const distinctIds = resolveFeatureFlagDistinctIds(identity);
   try {
     for (const distinctId of distinctIds) {
-      if ((await analytics.isFeatureEnabled(flag, distinctId)) === true) {
+      if (
+        (await isFeatureFlagEnabledForDistinctId(flag, distinctId)) === true
+      ) {
         return true;
       }
     }
@@ -133,29 +125,6 @@ export async function isDesktopManagedFeatureFlagEnabled(
       }
     );
     return false;
-  }
-}
-
-async function loadFeatureFlagAnalyticsClient(
-  flag: string
-): Promise<FeatureFlagAnalyticsClient | null> {
-  try {
-    // Next server routes can load the server analytics module, while the custom
-    // API runtime needs the node client because server-only modules throw there.
-    const serverAnalytics = await import("@repo/analytics/server");
-    return serverAnalytics.analytics as FeatureFlagAnalyticsClient;
-  } catch (serverOnlyError) {
-    try {
-      const nodeAnalytics = await import("@repo/analytics/node");
-      return nodeAnalytics.nodeAnalytics as FeatureFlagAnalyticsClient;
-    } catch (nodeError) {
-      log.warn("desktop_managed_pop_feature_flag_client_unavailable", {
-        flag,
-        serverOnlyError: parseError(serverOnlyError),
-        nodeError: parseError(nodeError),
-      });
-      return null;
-    }
   }
 }
 
