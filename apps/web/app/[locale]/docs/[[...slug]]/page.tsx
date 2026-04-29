@@ -1,3 +1,4 @@
+import { Cards } from "fumadocs-ui/components/card";
 import {
   DocsBody,
   DocsDescription,
@@ -65,7 +66,7 @@ const DynamicDocsPage = async ({ params }: DocsPageProps) => {
       <DocsDescription>{page.data.description}</DocsDescription>
       <DocsBody>
         <MDXContent
-          components={{ ...defaultMdxComponents, a: LinkComponent }}
+          components={{ ...defaultMdxComponents, a: LinkComponent, CardGroup: Cards }}
         />
       </DocsBody>
     </DocsPage>
