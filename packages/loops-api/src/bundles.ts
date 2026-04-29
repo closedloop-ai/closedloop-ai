@@ -89,6 +89,10 @@ export const ResultBundle: Record<LoopCommand, ResultBundleManifest> = {
     required: [],
     optional: [],
   },
+  [LoopCommand.Manual]: {
+    required: [],
+    optional: [],
+  },
 };
 
 /**

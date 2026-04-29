@@ -334,6 +334,7 @@ export const loopCommandColors: Record<LoopCommand, string> = {
   [LoopCommand.EvaluateCode]: COLOR_AI,
   [LoopCommand.RequestPrdChanges]: COLOR_PENDING,
   [LoopCommand.Bootstrap]: COLOR_AI,
+  [LoopCommand.Manual]: COLOR_PENDING,
 };
 
 const loopCommandLabels: Record<LoopCommand, string> = {
@@ -349,6 +350,7 @@ const loopCommandLabels: Record<LoopCommand, string> = {
   [LoopCommand.EvaluateCode]: "Evaluate PR",
   [LoopCommand.RequestPrdChanges]: "Request PRD Changes",
   [LoopCommand.Bootstrap]: "Bootstrap",
+  [LoopCommand.Manual]: "Manual",
 };
 
 export function LoopCommandBadge({

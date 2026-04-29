@@ -7,10 +7,12 @@ import { loopEventBus } from "@/lib/loops/loop-event-bus";
 import {
   errorResponse,
   notFoundResponse,
+  parseBody,
   scheduleLogFlush,
   successResponse,
 } from "@/lib/route-utils";
 import { loopsService } from "../service";
+import { loopMetadataUpdateValidator } from "../validators";
 
 export const GET = withAnyAuth<LoopWithUser, "/loops/[id]">(
   async ({ user }, _, params) => {
@@ -79,4 +81,39 @@ export const DELETE = withAnyAuth<Loop, "/loops/[id]">(
     }
   },
   { requiredScopes: ["delete"] }
+);
+
+/**
+ * PATCH /loops/[id] — Update loop metadata (prUrl, branchName, summary).
+ * Used by MCP complete-loop to record final state on manual loops.
+ */
+export const PATCH = withAnyAuth<Loop, "/loops/[id]">(
+  async ({ user }, request, params) => {
+    try {
+      const { id } = await params;
+
+      const { body, errorResponse: parseError } = await parseBody(
+        request,
+        loopMetadataUpdateValidator
+      );
+      if (parseError) {
+        return parseError;
+      }
+
+      const updated = await loopsService.updateManualLoopFields(
+        id,
+        user.organizationId,
+        body
+      );
+
+      if (!updated) {
+        return notFoundResponse("Loop");
+      }
+
+      return successResponse(updated);
+    } catch (error) {
+      return errorResponse("Failed to update loop", error);
+    }
+  },
+  { requiredScopes: ["write"] }
 );

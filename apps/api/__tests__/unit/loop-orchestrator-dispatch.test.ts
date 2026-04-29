@@ -259,6 +259,16 @@ describe("handleLoopCompleted command dispatch", () => {
     expect(mockExecuteDownloadAndIngest).not.toHaveBeenCalled();
   });
 
+  it("MANUAL command: skips S3 ingestion entirely", async () => {
+    setupLoopForCompleted("MANUAL");
+
+    await handleLoopEvent("loop-1", "org-1", completedEvent);
+
+    expect(mockPlanDownloadAndIngest).not.toHaveBeenCalled();
+    expect(mockExecuteDownloadAndIngest).not.toHaveBeenCalled();
+    expect(mockDecomposeDownloadAndIngest).not.toHaveBeenCalled();
+  });
+
   it("unknown command: calls neither handler", async () => {
     setupLoopForCompleted("CHAT");
 

@@ -208,6 +208,7 @@ enum LoopCommand {
   EVALUATE_CODE
   REQUEST_PRD_CHANGES
   BOOTSTRAP
+  MANUAL
 }
 
 enum CustomFieldType {

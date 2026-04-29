@@ -14,6 +14,7 @@ import {
 import {
   isBranchNotFoundError,
   isConcurrentLoopLimitError,
+  isNestedManualLoopError,
   isUnauthorizedRepoError,
   loopsService,
 } from "./service";
@@ -80,6 +81,9 @@ export const POST = withAnyAuth<CreateLoopResponse, "/loops">(
     } catch (error) {
       if (isConcurrentLoopLimitError(error)) {
         return errorResponse(error.message, error, 429);
+      }
+      if (isNestedManualLoopError(error)) {
+        return errorResponse(error.message, error, 409);
       }
       if (isUnauthorizedRepoError(error)) {
         return errorResponse(error.message, error, 403);

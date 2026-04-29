@@ -28,6 +28,7 @@ export const LoopCommand = {
   EvaluatePlan: "EVALUATE_PLAN",
   EvaluateCode: "EVALUATE_CODE",
   Bootstrap: "BOOTSTRAP",
+  Manual: "MANUAL",
 } as const;
 export type LoopCommand = (typeof LoopCommand)[keyof typeof LoopCommand];
 
@@ -138,6 +139,11 @@ export const CommandInputRequirements: Record<LoopCommand, CommandInputSpec> = {
     prompt: "optional",
     artifacts: "optional",
     repo: "not_required",
+  },
+  [LoopCommand.Manual]: {
+    prompt: "optional",
+    artifacts: "optional",
+    repo: "optional",
   },
 };
 
