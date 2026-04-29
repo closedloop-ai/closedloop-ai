@@ -34,7 +34,7 @@ export type SymphonyLoopBody = {
   parentBranchName: string | null;
   parentSessionId: string | null;
   localRepoPath: string | null;
-  userContext?: string;
-  attachments?: ContextPackAttachment[];
-  additionalRepos?: AdditionalRepoRef[];
+  userContext: string | null;
+  attachments: ContextPackAttachment[] | null;
+  additionalRepos: AdditionalRepoRef[] | null;
 };
