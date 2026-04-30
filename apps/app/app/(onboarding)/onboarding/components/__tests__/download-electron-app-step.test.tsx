@@ -21,6 +21,10 @@ const UPDATE_AVAILABLE = /update available/i;
 const YOUR_API_KEY = /your api key/i;
 const CONTINUE_BTN = /continue/i;
 const SKIP_FOR_NOW = /skip for now/i;
+const SKIP_WARNING_TITLE = /skip desktop setup\?/i;
+const SKIP_WARNING_DESCRIPTION = /you won't be able to run any loops or jobs/i;
+const SKIP_ANYWAY = /skip anyway/i;
+const DOWNLOAD_NOW = /download now/i;
 const GENERATE_INSTALL_COMMAND = /generate install command/i;
 const INSTALL_COMMAND = /install command/i;
 const TERMINAL_INSTRUCTION = /paste it into macos terminal/i;
@@ -1032,12 +1036,69 @@ describe("DownloadElectronAppStep", () => {
       });
     });
 
-    it("calls onNext when Skip for now is clicked", () => {
+    it("opens the skip warning dialog instead of calling onNext when Skip for now is clicked", () => {
       render(<DownloadElectronAppStep onNext={mockOnNext} />);
 
       fireEvent.click(screen.getByRole("button", { name: SKIP_FOR_NOW }));
 
+      expect(mockOnNext).not.toHaveBeenCalled();
+      expect(screen.getByText(SKIP_WARNING_TITLE)).toBeInTheDocument();
+      expect(screen.getByText(SKIP_WARNING_DESCRIPTION)).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: SKIP_ANYWAY })
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: DOWNLOAD_NOW })
+      ).toBeInTheDocument();
+    });
+
+    it("calls onNext exactly once when Skip anyway is confirmed in the dialog", () => {
+      render(<DownloadElectronAppStep onNext={mockOnNext} />);
+
+      fireEvent.click(screen.getByRole("button", { name: SKIP_FOR_NOW }));
+      fireEvent.click(screen.getByRole("button", { name: SKIP_ANYWAY }));
+
       expect(mockOnNext).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not call onNext when Download now dismisses the dialog", async () => {
+      render(<DownloadElectronAppStep onNext={mockOnNext} />);
+
+      fireEvent.click(screen.getByRole("button", { name: SKIP_FOR_NOW }));
+      fireEvent.click(screen.getByRole("button", { name: DOWNLOAD_NOW }));
+
+      await waitFor(() => {
+        expect(screen.queryByText(SKIP_WARNING_TITLE)).not.toBeInTheDocument();
+      });
+      expect(mockOnNext).not.toHaveBeenCalled();
+    });
+
+    it("preserves sandbox directory state across opening and dismissing the dialog", async () => {
+      mockUseDesktopProvisioningCapability.mockReturnValue({
+        data: {
+          automatedManagedProvisioningEnabled: true,
+          supportedPlatform: DesktopProvisioningPlatform.Darwin,
+        },
+        isLoading: false,
+      });
+
+      render(<DownloadElectronAppStep onNext={mockOnNext} />);
+
+      const sandboxInput = screen.getByLabelText(
+        WORKSPACE_DIRECTORY
+      ) as HTMLInputElement;
+      fireEvent.change(sandboxInput, { target: { value: "~/Projects" } });
+      expect(sandboxInput.value).toBe("~/Projects");
+
+      fireEvent.click(screen.getByRole("button", { name: SKIP_FOR_NOW }));
+      fireEvent.click(screen.getByRole("button", { name: DOWNLOAD_NOW }));
+
+      await waitFor(() => {
+        expect(screen.queryByText(SKIP_WARNING_TITLE)).not.toBeInTheDocument();
+      });
+      expect(
+        (screen.getByLabelText(WORKSPACE_DIRECTORY) as HTMLInputElement).value
+      ).toBe("~/Projects");
     });
   });
 });

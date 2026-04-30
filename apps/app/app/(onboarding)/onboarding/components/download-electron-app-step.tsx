@@ -1,8 +1,10 @@
 "use client";
 
+import { useAnalytics } from "@repo/analytics/client";
 import { DesktopProvisioningPlatform } from "@repo/api/src/types/electron";
 import { Button } from "@repo/design-system/components/ui/button";
 import { useEffect, useRef, useState } from "react";
+import { ConfirmationDialog } from "@/components/confirmation-dialog";
 import {
   useCreateDesktopProvisioningAttempt,
   useDesktopProvisioningCapability,
@@ -19,6 +21,8 @@ import {
   ManualSetupSection,
 } from "./desktop-setup-sections";
 import { useDesktopSetupReadiness } from "./use-desktop-setup-readiness";
+
+const SKIP_WARNING_ANALYTICS_STEP = "download_electron_app";
 
 type DownloadElectronAppStepProps = {
   readonly onNext: () => void;
@@ -51,7 +55,10 @@ export function DownloadElectronAppStep({
   );
   const [sandboxBaseDirectory, setSandboxBaseDirectory] = useState("~/Source");
   const [setupMode, setSetupMode] = useState<"automated" | "manual">("manual");
+  const [isSkipWarningOpen, setIsSkipWarningOpen] = useState(false);
   const autoContinuedRef = useRef(false);
+  const skipConfirmedRef = useRef(false);
+  const analytics = useAnalytics();
   const [copied, copyGeneratedKey] = useCopyToClipboard();
   const [commandCopied, copyProvisioningCommand] = useCopyToClipboard();
   const { canContinue, desktopSetupStatus, electron, shouldAutoContinue } =
@@ -156,6 +163,32 @@ export function DownloadElectronAppStep({
     await copyProvisioningCommand(provisioningCommand);
   };
 
+  const handleSkipClick = () => {
+    skipConfirmedRef.current = false;
+    analytics.capture("onboarding_skip_warning_shown", {
+      step: SKIP_WARNING_ANALYTICS_STEP,
+    });
+    setIsSkipWarningOpen(true);
+  };
+
+  const handleSkipConfirm = () => {
+    skipConfirmedRef.current = true;
+    analytics.capture("onboarding_skip_confirmed", {
+      step: SKIP_WARNING_ANALYTICS_STEP,
+      electron_detected: electron.detected,
+    });
+    onNext();
+  };
+
+  const handleSkipWarningOpenChange = (open: boolean) => {
+    if (!(open || skipConfirmedRef.current)) {
+      analytics.capture("onboarding_skip_cancelled", {
+        step: SKIP_WARNING_ANALYTICS_STEP,
+      });
+    }
+    setIsSkipWarningOpen(open);
+  };
+
   return (
     <div className="space-y-6">
       <div>
@@ -217,7 +250,7 @@ export function DownloadElectronAppStep({
       <div className="flex items-center justify-between">
         <Button
           className="text-muted-foreground"
-          onClick={onNext}
+          onClick={handleSkipClick}
           size="sm"
           variant="ghost"
         >
@@ -227,6 +260,16 @@ export function DownloadElectronAppStep({
           Continue
         </Button>
       </div>
+
+      <ConfirmationDialog
+        cancelLabel="Download now"
+        confirmLabel="Skip anyway"
+        description="Without the ClosedLoop Desktop app, you won't be able to run any loops or jobs. You can always install it later from Settings."
+        onConfirm={handleSkipConfirm}
+        onOpenChange={handleSkipWarningOpenChange}
+        open={isSkipWarningOpen}
+        title="Skip desktop setup?"
+      />
     </div>
   );
 }
