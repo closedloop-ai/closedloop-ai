@@ -3,7 +3,7 @@
 import { useFeatureFlag } from "@repo/analytics/client";
 import type {
   DocumentWithWorkstream,
-  PullRequestState,
+  PullRequestInfo,
 } from "@repo/api/src/types/document";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
@@ -41,12 +41,7 @@ type PlanEditorHeaderProps = {
   canShowPanel?: boolean;
   isDraft: boolean;
   isApproved: boolean;
-  pullRequest?: {
-    htmlUrl: string;
-    number: number;
-    state: PullRequestState;
-    externalLinkId?: string | null;
-  } | null;
+  pullRequests?: PullRequestInfo[] | null;
   isExecuting: boolean;
   onToggleMetadataPanel: () => void;
   onApprove: () => void;
@@ -71,7 +66,7 @@ export function PlanEditorHeader({
   canShowPanel = true,
   isDraft,
   isApproved,
-  pullRequest,
+  pullRequests,
   isExecuting,
   onToggleMetadataPanel,
   onApprove,
@@ -91,9 +86,6 @@ export function PlanEditorHeader({
 }: PlanEditorHeaderProps) {
   const branchPrFlag = useFeatureFlag("branch-pr");
   const branchPrEnabled = branchPrFlag?.enabled === true;
-  const prUsesBranchView = Boolean(
-    pullRequest?.externalLinkId && branchPrEnabled
-  );
 
   const breadcrumbs: BreadcrumbEntry[] = plan.project?.teams?.[0]?.id
     ? [
@@ -119,27 +111,35 @@ export function PlanEditorHeader({
           <MoreHorizontalIcon className="h-4 w-4" />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-[180px]">
-        {pullRequest ? (
+      <DropdownMenuContent align="end" className="w-[280px]">
+        {pullRequests && pullRequests.length > 0 ? (
           <>
-            <DropdownMenuItem asChild>
-              {prUsesBranchView && pullRequest.externalLinkId ? (
-                <Link href={`/build/${pullRequest.externalLinkId}`}>
-                  <GitPullRequestIcon className="h-4 w-4" />
-                  PR #{pullRequest.number}
-                </Link>
-              ) : (
-                <a
-                  href={pullRequest.htmlUrl}
-                  rel="noopener noreferrer"
-                  target="_blank"
-                >
-                  <GitPullRequestIcon className="h-4 w-4" />
-                  PR #{pullRequest.number}
-                  <ExternalLinkIcon className="ml-auto h-3 w-3" />
-                </a>
-              )}
-            </DropdownMenuItem>
+            {pullRequests.map((pr) => (
+              <DropdownMenuItem asChild key={pr.id}>
+                {branchPrEnabled && pr.externalLinkId ? (
+                  <Link href={`/build/${pr.externalLinkId}`}>
+                    <GitPullRequestIcon className="h-4 w-4" />
+                    {pr.repoFullName && pr.repoFullName !== "unknown"
+                      ? `${pr.repoFullName} `
+                      : ""}
+                    PR #{pr.number}
+                  </Link>
+                ) : (
+                  <a
+                    href={pr.htmlUrl}
+                    rel="noopener noreferrer"
+                    target="_blank"
+                  >
+                    <GitPullRequestIcon className="h-4 w-4" />
+                    {pr.repoFullName && pr.repoFullName !== "unknown"
+                      ? `${pr.repoFullName} `
+                      : ""}
+                    PR #{pr.number}
+                    <ExternalLinkIcon className="ml-auto h-3 w-3" />
+                  </a>
+                )}
+              </DropdownMenuItem>
+            ))}
             <DropdownMenuSeparator />
           </>
         ) : null}

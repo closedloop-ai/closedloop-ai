@@ -41,7 +41,7 @@ import { usePlanActions } from "@/hooks/document-editing/use-plan-actions";
 import {
   useDismissDocumentGenerationStatus,
   useDocumentGenerationStatus,
-  useDocumentPullRequest,
+  useDocumentPullRequests,
 } from "@/hooks/queries/use-documents";
 import {
   useCodeJudgesFeedback,
@@ -156,7 +156,11 @@ export function PlanEditor({
   const { initialAdditionalRepos, isLoadingInitialAdditionalRepos } =
     useInitialAdditionalRepos(plan.id);
 
-  const { data: pullRequest } = useDocumentPullRequest(plan.id);
+  const { data: pullRequests = [] } = useDocumentPullRequests(plan.id);
+  const primaryPr =
+    pullRequests.find((pr) => pr.repoFullName === plan.targetRepo) ??
+    pullRequests[0] ??
+    null;
   const { data: judgesReport } = usePlanJudgesFeedback(plan.id);
   const { data: codeJudgesReport } = useCodeJudgesFeedback(plan.id);
 
@@ -174,16 +178,16 @@ export function PlanEditor({
     planActions.isEvaluatingCode;
 
   const canEvaluateCode =
-    pullRequest?.state === PullRequestState.Open &&
-    pullRequest.headBranch.length > 0;
+    primaryPr?.state === PullRequestState.Open &&
+    primaryPr.headBranch.length > 0;
   const evaluateCodeHandler = useCallback(() => {
-    if (!(canEvaluateCode && pullRequest)) {
+    if (!(canEvaluateCode && primaryPr)) {
       return;
     }
-    planActions.handleEvaluateCode(pullRequest.headBranch, plan.targetRepo);
+    planActions.handleEvaluateCode(primaryPr.headBranch, plan.targetRepo);
   }, [
     canEvaluateCode,
-    pullRequest,
+    primaryPr,
     plan.targetRepo,
     planActions.handleEvaluateCode,
   ]);
@@ -258,7 +262,7 @@ export function PlanEditor({
       onRestoreVersion={contentController.restoreVersion}
       onToggleMetadataPanel={uiState.toggleMetadataPanel}
       plan={plan}
-      pullRequest={pullRequest ?? null}
+      pullRequests={pullRequests}
       showRestore={session.isViewingHistorical}
     />
   ) : null;

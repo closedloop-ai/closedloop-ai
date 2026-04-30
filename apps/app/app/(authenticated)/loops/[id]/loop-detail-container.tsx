@@ -2,7 +2,7 @@
 
 import { useFeatureFlag } from "@repo/analytics/client";
 import type {
-  AdditionalRepoRef,
+  AdditionalRepoRefWithPr,
   LoopErrorCode,
   LoopEventError,
   TokensByModel,
@@ -116,11 +116,44 @@ function ModelTokenBreakdown({
   );
 }
 
+function renderPrLink(
+  pr: NonNullable<AdditionalRepoRefWithPr["pullRequest"]>,
+  branchPrEnabled: boolean
+) {
+  if (branchPrEnabled && pr.externalLinkId) {
+    return (
+      <Link
+        className="mt-1 inline-flex items-center gap-1.5 text-blue-600 text-xs hover:underline dark:text-blue-400"
+        href={`/build/${pr.externalLinkId}`}
+      >
+        <GitPullRequestIcon className="h-3.5 w-3.5" />
+        PR #{pr.number}
+        <ExternalLinkIcon className="h-3 w-3" />
+      </Link>
+    );
+  }
+  return (
+    <a
+      className="mt-1 inline-flex items-center gap-1.5 text-blue-600 text-xs hover:underline dark:text-blue-400"
+      href={pr.htmlUrl}
+      rel="noopener noreferrer"
+      target="_blank"
+    >
+      <GitPullRequestIcon className="h-3.5 w-3.5" />
+      PR #{pr.number}
+      <ExternalLinkIcon className="h-3 w-3" />
+    </a>
+  );
+}
+
 type MetadataCardsProps = {
   loop: Awaited<ReturnType<typeof useLoop>["data"]>;
 };
 
 function MetadataCards({ loop }: MetadataCardsProps) {
+  const branchPrFlag = useFeatureFlag("branch-pr");
+  const branchPrEnabled = branchPrFlag?.enabled === true;
+
   if (!loop) {
     return null;
   }
@@ -265,18 +298,20 @@ function MetadataCards({ loop }: MetadataCardsProps) {
               <p className="text-muted-foreground text-xs">
                 {loop.branchName || loop.repo.branch}
               </p>
-              {loop.prUrl && (
-                <a
-                  className="mt-2 inline-flex items-center gap-1.5 text-blue-600 text-xs hover:underline dark:text-blue-400"
-                  href={loop.prUrl}
-                  rel="noopener noreferrer"
-                  target="_blank"
-                >
-                  <GitPullRequestIcon className="h-3.5 w-3.5" />
-                  PR #{loop.prNumber}
-                  <ExternalLinkIcon className="h-3 w-3" />
-                </a>
-              )}
+              {loop.primaryPullRequest
+                ? renderPrLink(loop.primaryPullRequest, branchPrEnabled)
+                : loop.prUrl && (
+                    <a
+                      className="mt-2 inline-flex items-center gap-1.5 text-blue-600 text-xs hover:underline dark:text-blue-400"
+                      href={loop.prUrl}
+                      rel="noopener noreferrer"
+                      target="_blank"
+                    >
+                      <GitPullRequestIcon className="h-3.5 w-3.5" />
+                      PR #{loop.prNumber}
+                      <ExternalLinkIcon className="h-3 w-3" />
+                    </a>
+                  )}
             </>
           ) : (
             <p className="text-muted-foreground text-sm">-</p>
@@ -295,10 +330,12 @@ function MetadataCards({ loop }: MetadataCardsProps) {
           </CardHeader>
           <CardContent>
             <div className="space-y-2">
-              {loop.additionalRepos.map((repo: AdditionalRepoRef) => (
+              {loop.additionalRepos.map((repo: AdditionalRepoRefWithPr) => (
                 <div key={`${repo.fullName}:${repo.branch}`}>
                   <p className="font-medium text-sm">{repo.fullName}</p>
                   <p className="text-muted-foreground text-xs">{repo.branch}</p>
+                  {repo.pullRequest &&
+                    renderPrLink(repo.pullRequest, branchPrEnabled)}
                 </div>
               ))}
             </div>

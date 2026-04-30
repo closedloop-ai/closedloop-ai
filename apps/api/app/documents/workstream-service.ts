@@ -3,7 +3,7 @@ import {
   DocumentType,
   type PullRequestInfo,
 } from "@repo/api/src/types/document";
-import { ArtifactType, withDb } from "@repo/database";
+import { ArtifactType, type Prisma, withDb } from "@repo/database";
 import {
   pullRequestArtifactToInfo,
   pullRequestWhere,
@@ -17,6 +17,76 @@ import {
   workstreamToWithDocuments,
 } from "./document-utils";
 import { documentVersionService } from "./document-version-service";
+
+type PrArtifactRow = Prisma.ArtifactGetPayload<{
+  include: {
+    pullRequest: {
+      include: {
+        repository: { select: { fullName: true } };
+      };
+    };
+  };
+}>;
+
+/**
+ * Shared helper: verify the artifact is a DOCUMENT, find all PR artifacts
+ * linked via PRODUCES, and return them in `createdAt desc` order alongside
+ * the document's `targetRepo` for primary-repo sorting.
+ *
+ * Returns `{ rows: [], targetRepo: null }` when the artifact is not a
+ * DOCUMENT or no target links exist.
+ */
+type PrArtifactResult = {
+  rows: PrArtifactRow[];
+  targetRepo: string | null;
+};
+
+async function _queryPrArtifacts(
+  documentId: string,
+  organizationId: string
+): Promise<PrArtifactResult> {
+  const artifact = await withDb((db) =>
+    db.artifact.findUnique({
+      where: { id: documentId, organizationId },
+      select: { type: true, document: { select: { targetRepo: true } } },
+    })
+  );
+
+  if (artifact?.type !== ArtifactType.DOCUMENT) {
+    return { rows: [], targetRepo: null };
+  }
+
+  const targetRepo = artifact.document?.targetRepo ?? null;
+
+  const targetLinks = await artifactLinksService.findTargetLinks(
+    organizationId,
+    documentId,
+    LinkType.Produces
+  );
+
+  if (targetLinks.length === 0) {
+    return { rows: [], targetRepo };
+  }
+
+  const rows = await withDb((db) =>
+    db.artifact.findMany({
+      where: pullRequestWhere({
+        organizationId,
+        id: { in: targetLinks.map((l) => l.targetId) },
+      }),
+      include: {
+        pullRequest: {
+          include: {
+            repository: { select: { fullName: true } },
+          },
+        },
+      },
+      orderBy: { createdAt: "desc" },
+    })
+  );
+
+  return { rows, targetRepo };
+}
 
 /**
  * Document workstream service. Owns the "wire a document into a workstream"
@@ -226,55 +296,60 @@ export const documentWorkstreamService = {
   },
 
   /**
-   * Get the most recent pull request that this document produces. Resolved
-   * via artifact links (PRODUCES, document → PR), not via the document's
-   * workstream — workstreams are shared across documents (PRD + plan + …)
-   * so a workstream-scoped lookup would return the PR for any sibling
-   * document, not the one this document produced. Returns null when no
-   * such link exists.
+   * Get the most recent pull request that this document produces. Delegates
+   * to `_queryPrArtifacts` and returns the first row mapped to
+   * `PullRequestInfo`. Returns null when no linked PR artifact exists.
    */
   async getDocumentPullRequest(
     documentId: string,
     organizationId: string
   ): Promise<PullRequestInfo | null> {
-    const artifact = await withDb((db) =>
-      db.artifact.findUnique({
-        where: { id: documentId, organizationId },
-        select: { type: true },
-      })
-    );
-
-    if (artifact?.type !== ArtifactType.DOCUMENT) {
+    const { rows } = await _queryPrArtifacts(documentId, organizationId);
+    if (rows.length === 0) {
       return null;
     }
+    return _rowToInfo(rows[0]);
+  },
 
-    const targetLinks = await artifactLinksService.findTargetLinks(
-      organizationId,
+  /**
+   * Get all pull requests that this document produces, sorted so that the PR
+   * whose repo matches the document's `targetRepo` comes first, followed by
+   * the remaining PRs in `createdAt desc` order.
+   */
+  async getDocumentPullRequests(
+    documentId: string,
+    organizationId: string
+  ): Promise<PullRequestInfo[]> {
+    const { rows, targetRepo } = await _queryPrArtifacts(
       documentId,
-      LinkType.Produces
+      organizationId
     );
-
-    if (targetLinks.length === 0) {
-      return null;
+    if (rows.length === 0) {
+      return [];
     }
 
-    const prArtifact = await withDb((db) =>
-      db.artifact.findFirst({
-        where: pullRequestWhere({
-          organizationId,
-          id: { in: targetLinks.map((link) => link.targetId) },
-        }),
-        include: { pullRequest: true },
-        orderBy: { createdAt: "desc" },
-      })
-    );
+    const infos = rows
+      .map(_rowToInfo)
+      .filter((info): info is PullRequestInfo => info !== null);
 
-    if (!prArtifact) {
-      return null;
-    }
-
-    return pullRequestArtifactToInfo(prArtifact, {
-      externalLinkId: prArtifact.id,
+    infos.sort((a, b) => {
+      const aIsPrimary = targetRepo ? a.repoFullName === targetRepo : false;
+      const bIsPrimary = targetRepo ? b.repoFullName === targetRepo : false;
+      if (aIsPrimary && !bIsPrimary) {
+        return -1;
+      }
+      if (!aIsPrimary && bIsPrimary) {
+        return 1;
+      }
+      return 0;
     });
+
+    return infos;
   },
 };
+
+function _rowToInfo(row: PrArtifactRow): PullRequestInfo | null {
+  return pullRequestArtifactToInfo(row, {
+    externalLinkId: row.id,
+  });
+}

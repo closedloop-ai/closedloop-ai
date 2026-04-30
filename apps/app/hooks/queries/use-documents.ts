@@ -539,6 +539,26 @@ export function useDocumentPullRequest(
 }
 
 /**
+ * Fetch all pull requests associated with an artifact.
+ */
+export function useDocumentPullRequests(
+  documentId: string,
+  options?: Omit<UseQueryOptions<PullRequestInfo[]>, "queryKey" | "queryFn">
+) {
+  const apiClient = useApiClient();
+
+  return useQuery({
+    queryKey: [...documentKeys.detail(documentId), "pull-requests"] as const,
+    queryFn: () =>
+      apiClient.get<PullRequestInfo[]>(
+        `/documents/${documentId}/pull-requests`
+      ),
+    enabled: !!documentId,
+    ...options,
+  });
+}
+
+/**
  * Move multiple artifacts to a different project.
  */
 export function useBatchMoveDocuments() {

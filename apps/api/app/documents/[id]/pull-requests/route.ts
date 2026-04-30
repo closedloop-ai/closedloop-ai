@@ -7,8 +7,8 @@ import { resolveDocumentId } from "@/lib/identifier-utils";
 import { errorResponse, notFoundResponse } from "@/lib/route-utils";
 
 export const GET = withAnyAuth<
-  PullRequestInfo | null,
-  "/documents/[id]/pull-request"
+  PullRequestInfo[],
+  "/documents/[id]/pull-requests"
 >(async ({ user }, _request, params) => {
   try {
     const { id } = await params;
@@ -17,13 +17,14 @@ export const GET = withAnyAuth<
       return notFoundResponse("Artifact");
     }
 
-    const pullRequest = await documentWorkstreamService.getDocumentPullRequest(
-      resolvedId,
-      user.organizationId
-    );
+    const pullRequests =
+      await documentWorkstreamService.getDocumentPullRequests(
+        resolvedId,
+        user.organizationId
+      );
 
-    return NextResponse.json(success(pullRequest));
+    return NextResponse.json(success(pullRequests));
   } catch (error) {
-    return errorResponse("Failed to fetch PR", error);
+    return errorResponse("Failed to fetch PRs", error);
   }
 });

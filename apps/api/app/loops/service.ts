@@ -1,12 +1,15 @@
 import { createHash } from "node:crypto";
 import { AdditionalRepoRefSchema } from "@closedloop-ai/loops-api/context-pack";
 import type { JsonObject } from "@repo/api/src/types/common";
+import type { PullRequestInfo } from "@repo/api/src/types/document";
 import {
+  type AdditionalRepoRefWithPr,
   type ComputeTargetSummary,
   type CreateLoopRequest,
   type CreateLoopResponse,
   type Loop,
   LoopCommand,
+  type LoopDetail,
   type LoopEvent,
   type LoopEventsFilters,
   type LoopEventsPaginatedResponse,
@@ -29,6 +32,7 @@ import {
 import { verifyInstallationBranchExists } from "@repo/github";
 import { log } from "@repo/observability/log";
 import { z } from "zod";
+import { documentWorkstreamService } from "@/app/documents/workstream-service";
 import { basicUserSelect } from "@/lib/db-utils";
 import { extractUploadedPlanRaw } from "@/lib/loops/uploaded-plan-artifacts";
 
@@ -378,12 +382,12 @@ export const loopsService = {
 
   /**
    * Get a single Loop by ID (org-scoped).
-   * Includes associated user info for detail views.
+   * Includes associated user info for detail views, with PR-enriched additionalRepos.
    */
   async findById(
     id: string,
     organizationId: string
-  ): Promise<LoopWithUser | null> {
+  ): Promise<LoopDetail | null> {
     const loop = await withDb((db) =>
       db.loop.findUnique({
         where: { id, organizationId },
@@ -398,12 +402,23 @@ export const loopsService = {
       return null;
     }
 
-    return toLoopWithUser(
+    const result = toLoopWithUser(
       loop as PrismaLoop & {
         user: LoopWithUser["user"];
         computeTarget: ComputeTargetSummary | null;
       }
     );
+
+    const [additionalRepos, primaryPullRequest] = await Promise.all([
+      _enrichAdditionalReposWithPr(result),
+      _findPrimaryRepoPr(result),
+    ]);
+
+    return {
+      ...result,
+      additionalRepos,
+      primaryPullRequest,
+    };
   },
 
   /**
@@ -1393,6 +1408,52 @@ export const loopsService = {
     return result.count;
   },
 };
+
+/**
+ * Enrich each AdditionalRepoRef with its corresponding pull request (if any).
+ * Returns the original array unchanged when no enrichment is needed (null array,
+ * empty array, or no documentId to look up PRs against).
+ */
+async function _enrichAdditionalReposWithPr(
+  loop: LoopWithUser
+): Promise<AdditionalRepoRefWithPr[] | null> {
+  if (
+    loop.additionalRepos === null ||
+    loop.additionalRepos.length === 0 ||
+    loop.documentId === null
+  ) {
+    return loop.additionalRepos as AdditionalRepoRefWithPr[];
+  }
+
+  const prs = await documentWorkstreamService.getDocumentPullRequests(
+    loop.documentId,
+    loop.organizationId
+  );
+
+  return loop.additionalRepos.map((repo) => ({
+    ...repo,
+    pullRequest: prs.find((pr) => pr.repoFullName === repo.fullName) ?? null,
+  }));
+}
+
+/**
+ * Find the pull request for the primary repo of a loop (if any).
+ * Returns null when the loop has no documentId, no primary repo, or no matching PR.
+ */
+async function _findPrimaryRepoPr(
+  loop: LoopWithUser
+): Promise<PullRequestInfo | null> {
+  if (loop.documentId === null || loop.repo === null) {
+    return null;
+  }
+
+  const prs = await documentWorkstreamService.getDocumentPullRequests(
+    loop.documentId,
+    loop.organizationId
+  );
+
+  return prs.find((pr) => pr.repoFullName === loop.repo?.fullName) ?? null;
+}
 
 export class UnauthorizedRepoError extends Error {
   readonly unauthorizedRepos: string[];

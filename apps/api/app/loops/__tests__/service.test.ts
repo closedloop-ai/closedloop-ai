@@ -1,9 +1,16 @@
 /**
- * Unit tests for loopsService.resume method and authorizeAdditionalRepos.
+ * Unit tests for loopsService.resume method, authorizeAdditionalRepos, and
+ * the PR-enrichment path in loopsService.findById (_enrichAdditionalReposWithPr).
  *
  * Tests computeTargetId propagation, s3StateKey exclusion from resumed loops,
- * resumable-status validation, and additional repos authorization behaviors.
+ * resumable-status validation, additional repos authorization behaviors, and
+ * all four branches of the PR-enrichment helper:
+ *   - null additionalRepos → getDocumentPullRequests never called, returns null
+ *   - empty additionalRepos → getDocumentPullRequests never called, returns []
+ *   - documentId null → getDocumentPullRequests never called, repos returned as-is
+ *   - two repos where one matches a PR → matched repo gets pullRequest set, other gets null
  */
+import { PullRequestState } from "@repo/api/src/types/document";
 import { LoopStatus } from "@repo/api/src/types/loop";
 import {
   afterEach,
@@ -30,9 +37,20 @@ vi.mock("@repo/github", () => ({
   verifyInstallationBranchExists: vi.fn(),
 }));
 
+vi.mock("@/app/documents/workstream-service", () => ({
+  documentWorkstreamService: {
+    getDocumentPullRequests: vi.fn(),
+  },
+}));
+
+vi.mock("@/lib/loops/uploaded-plan-artifacts", () => ({
+  extractUploadedPlanRaw: vi.fn().mockReturnValue(null),
+}));
+
 // Import after mocking
 import { withDb } from "@repo/database";
 import { verifyInstallationBranchExists } from "@repo/github";
+import { documentWorkstreamService } from "@/app/documents/workstream-service";
 import {
   authorizeAdditionalRepos,
   BranchNotFoundError,
@@ -342,5 +360,185 @@ describe("authorizeAdditionalRepos", () => {
       });
       return true;
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// loopsService.findById — _enrichAdditionalReposWithPr
+// ---------------------------------------------------------------------------
+
+const mockGetDocumentPullRequests =
+  documentWorkstreamService.getDocumentPullRequests as unknown as Mock;
+
+/**
+ * Minimal Prisma loop row fixture returned by db.loop.findUnique in findById.
+ * Includes the `user` and `computeTarget` that are added via `include`.
+ */
+function makeLoopDbRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "loop-enrich-1",
+    organizationId: "org-enrich",
+    userId: "user-enrich",
+    command: "PLAN",
+    status: LoopStatus.Completed,
+    artifactId: "doc-enrich-1",
+    workstreamId: null,
+    prompt: null,
+    repo: null,
+    additionalRepos: null,
+    contextRefs: null,
+    error: null,
+    metadata: {},
+    uploadedArtifacts: null,
+    tokensByModel: null,
+    tokensInput: 0,
+    tokensOutput: 0,
+    estimatedCost: null,
+    branchName: null,
+    sessionId: null,
+    computeTargetId: null,
+    containerId: null,
+    s3StateKey: null,
+    prUrl: null,
+    prNumber: null,
+    parentLoopId: null,
+    artifactVersion: null,
+    startedAt: null,
+    completedAt: null,
+    createdAt: new Date("2026-01-01T00:00:00.000Z"),
+    updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+    user: {
+      id: "user-enrich",
+      email: "test@example.com",
+      firstName: "Test",
+      lastName: "User",
+      avatarUrl: null,
+    },
+    computeTarget: null,
+    ...overrides,
+  };
+}
+
+/** Minimal PullRequestInfo fixture that satisfies the type contract. */
+function makePrInfo(repoFullName: string) {
+  return {
+    id: `pr-${repoFullName}`,
+    number: 42,
+    title: "Test PR",
+    htmlUrl: `https://github.com/${repoFullName}/pull/42`,
+    state: PullRequestState.Open,
+    headBranch: "feature/test",
+    baseBranch: "main",
+    createdAt: new Date("2026-01-01T00:00:00.000Z"),
+    checksStatus: null,
+    reviewDecision: null,
+    externalLinkId: null,
+    repoFullName,
+  };
+}
+
+describe("loopsService.findById — _enrichAdditionalReposWithPr", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("returns null additionalRepos without calling getDocumentPullRequests when additionalRepos is null", async () => {
+    const dbRow = makeLoopDbRow({ additionalRepos: null });
+    const mockFindUnique = vi.fn().mockResolvedValue(dbRow);
+
+    (mockWithDb as Mock).mockImplementation(
+      (callback: (db: unknown) => unknown) => {
+        return callback({ loop: { findUnique: mockFindUnique } });
+      }
+    );
+
+    const result = await loopsService.findById("loop-enrich-1", "org-enrich");
+
+    expect(result).not.toBeNull();
+    expect(result?.additionalRepos).toBeNull();
+    expect(mockGetDocumentPullRequests).not.toHaveBeenCalled();
+  });
+
+  it("returns empty additionalRepos without calling getDocumentPullRequests when additionalRepos is []", async () => {
+    const dbRow = makeLoopDbRow({ additionalRepos: [] });
+    const mockFindUnique = vi.fn().mockResolvedValue(dbRow);
+
+    (mockWithDb as Mock).mockImplementation(
+      (callback: (db: unknown) => unknown) => {
+        return callback({ loop: { findUnique: mockFindUnique } });
+      }
+    );
+
+    const result = await loopsService.findById("loop-enrich-1", "org-enrich");
+
+    expect(result).not.toBeNull();
+    expect(result?.additionalRepos).toEqual([]);
+    expect(mockGetDocumentPullRequests).not.toHaveBeenCalled();
+  });
+
+  it("returns additionalRepos unchanged without calling getDocumentPullRequests when documentId is null", async () => {
+    const dbRow = makeLoopDbRow({
+      artifactId: null,
+      additionalRepos: [{ fullName: "acme/frontend", branch: "main" }],
+    });
+    const mockFindUnique = vi.fn().mockResolvedValue(dbRow);
+
+    (mockWithDb as Mock).mockImplementation(
+      (callback: (db: unknown) => unknown) => {
+        return callback({ loop: { findUnique: mockFindUnique } });
+      }
+    );
+
+    const result = await loopsService.findById("loop-enrich-1", "org-enrich");
+
+    expect(result).not.toBeNull();
+    expect(result?.additionalRepos).toEqual([
+      { fullName: "acme/frontend", branch: "main" },
+    ]);
+    expect(mockGetDocumentPullRequests).not.toHaveBeenCalled();
+  });
+
+  it("enriches matched repo with pullRequest and sets null for unmatched repo", async () => {
+    const dbRow = makeLoopDbRow({
+      artifactId: "doc-enrich-1",
+      additionalRepos: [
+        { fullName: "acme/frontend", branch: "main" },
+        { fullName: "acme/backend", branch: "main" },
+      ],
+    });
+    const mockFindUnique = vi.fn().mockResolvedValue(dbRow);
+
+    (mockWithDb as Mock).mockImplementation(
+      (callback: (db: unknown) => unknown) => {
+        return callback({ loop: { findUnique: mockFindUnique } });
+      }
+    );
+
+    const matchingPr = makePrInfo("acme/frontend");
+    mockGetDocumentPullRequests.mockResolvedValue([matchingPr]);
+
+    const result = await loopsService.findById("loop-enrich-1", "org-enrich");
+
+    expect(result).not.toBeNull();
+    expect(mockGetDocumentPullRequests).toHaveBeenCalledTimes(1);
+    expect(mockGetDocumentPullRequests).toHaveBeenCalledWith(
+      "doc-enrich-1",
+      "org-enrich"
+    );
+
+    const repos = result?.additionalRepos ?? [];
+    expect(repos).toHaveLength(2);
+
+    const frontend = repos.find((r) => r.fullName === "acme/frontend");
+    const backend = repos.find((r) => r.fullName === "acme/backend");
+
+    expect(frontend?.pullRequest).toMatchObject({
+      repoFullName: "acme/frontend",
+    });
+    expect(backend?.pullRequest).toBeNull();
   });
 });

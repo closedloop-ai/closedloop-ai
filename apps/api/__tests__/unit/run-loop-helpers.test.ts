@@ -631,6 +631,7 @@ function buildPullRequestInfo(
     checksStatus: null,
     reviewDecision: null,
     externalLinkId: null,
+    repoFullName: "o/r",
     ...overrides,
   };
 }

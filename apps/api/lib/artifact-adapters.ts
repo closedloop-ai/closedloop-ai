@@ -15,12 +15,17 @@ import {
   type Artifact,
   ArtifactType,
   type DeploymentDetail,
+  type GitHubInstallationRepository,
   type GitHubPRState,
   type PullRequestDetail,
 } from "@repo/database";
 
+type PullRequestDetailWithRepository = PullRequestDetail & {
+  repository?: Pick<GitHubInstallationRepository, "fullName"> | null;
+};
+
 type ArtifactWithPullRequestDetail = Artifact & {
-  pullRequest: PullRequestDetail | null;
+  pullRequest: PullRequestDetailWithRepository | null;
 };
 
 type ArtifactWithDeploymentDetail = Artifact & {
@@ -35,6 +40,10 @@ export type PullRequestInfoOptions = {
   /** Artifact id of the PR (preserved for backwards-compat with consumers
    * that still call this field `externalLinkId`). */
   externalLinkId?: string | null;
+  /** Fallback repo full name (e.g. "owner/repo") when the detail row is
+   * fetched without the repository relation. When `pullRequest.repository`
+   * is present it takes precedence over this value. */
+  repoFullName?: string | null;
 };
 
 export function pullRequestArtifactToInfo(
@@ -57,6 +66,8 @@ export function pullRequestArtifactToInfo(
     checksStatus: detail.checksStatus,
     reviewDecision: detail.reviewDecision,
     externalLinkId: options.externalLinkId ?? null,
+    repoFullName:
+      detail.repository?.fullName ?? options.repoFullName ?? "unknown",
   };
 }
 
