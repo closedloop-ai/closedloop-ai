@@ -6,6 +6,7 @@ import { documentTemplatesService } from "../templates/service";
 import { documentService } from "./document-service";
 import { documentVersionService } from "./document-version-service";
 import { deleteDocumentRoom } from "./room-utils";
+import { sanitizeAndLog } from "./sanitize-content";
 
 /**
  * System prompt for the LLM merge operation. Instructs the model to treat
@@ -150,6 +151,11 @@ export const documentMergeService = {
       throw new Error("LLM returned empty merged content");
     }
 
+    const sanitizedMergedContent = sanitizeAndLog(
+      mergedContent,
+      primaryDocumentId
+    );
+
     const txResult = await withDb.tx(async (tx) => {
       const currentDetail = await tx.documentDetail.findUnique({
         where: { artifactId: primary.id },
@@ -165,7 +171,7 @@ export const documentMergeService = {
           data: {
             documentId: primary.id,
             version: nextVersion,
-            content: mergedContent,
+            content: sanitizedMergedContent,
             createdById: userId,
           },
         }),
