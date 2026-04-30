@@ -81,6 +81,12 @@ const COMMAND_LABELS: Partial<Record<LoopCommand, CommandLabels>> = {
     completed: "Plan evaluated",
     failed: "Plan eval failed",
   },
+  [LoopCommand.EvaluateFeature]: {
+    noun: "Feature eval",
+    progress: "Evaluating feature",
+    completed: "Feature evaluated",
+    failed: "Feature eval failed",
+  },
   [LoopCommand.EvaluateCode]: {
     noun: "Code eval",
     progress: "Evaluating code",
