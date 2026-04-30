@@ -9,7 +9,7 @@
  *  - `getDocumentPullRequests` returns a correctly ordered array (primary-repo
  *    entry first) when multiple PR artifacts exist
  *  - `getDocumentPullRequest` (singular) returns a single PullRequestInfo with
- *    `repoFullName` populated via `_queryPrArtifacts` (post T-2.2 refactor)
+ *    `repoFullName` populated via the PR artifact query helper
  */
 
 import { type Mock, vi } from "vitest";
@@ -68,7 +68,7 @@ function makePrArtifactRow(overrides?: { id?: string; repoFullName?: string }) {
 }
 
 /**
- * Set up the two sequential `withDb` calls that `_queryPrArtifacts` makes:
+ * Set up the two sequential `withDb` calls that the PR artifact query helper makes:
  *   1. `artifact.findUnique` — returns the document artifact with targetRepo
  *   2. `artifact.findMany`  — returns the PR artifact rows
  */
@@ -191,7 +191,7 @@ describe("documentWorkstreamService.getDocumentPullRequests", () => {
 describe("documentWorkstreamService.getDocumentPullRequest (singular, post T-2.2 refactor)", () => {
   beforeEach(() => vi.resetAllMocks());
 
-  it("returns a PullRequestInfo with repoFullName from row.pullRequest.repository.fullName via _queryPrArtifacts", async () => {
+  it("returns a PullRequestInfo with repoFullName from row.pullRequest.repository.fullName", async () => {
     const prRow = makePrArtifactRow({
       id: "pr-art-1",
       repoFullName: "owner/repo",

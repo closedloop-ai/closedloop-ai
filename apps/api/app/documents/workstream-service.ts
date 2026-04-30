@@ -42,7 +42,7 @@ type PrArtifactResult = {
   targetRepo: string | null;
 };
 
-async function _queryPrArtifacts(
+async function queryPrArtifacts(
   documentId: string,
   organizationId: string
 ): Promise<PrArtifactResult> {
@@ -322,7 +322,7 @@ export const documentWorkstreamService = {
     documentId: string,
     organizationId: string
   ): Promise<PullRequestInfo[]> {
-    const { rows, targetRepo } = await _queryPrArtifacts(
+    const { rows, targetRepo } = await queryPrArtifacts(
       documentId,
       organizationId
     );
@@ -331,7 +331,7 @@ export const documentWorkstreamService = {
     }
 
     const infos = rows
-      .map(_rowToInfo)
+      .map(rowToInfo)
       .filter((info): info is PullRequestInfo => info !== null);
 
     const primary = pickPullRequestForRepo(infos, targetRepo);
@@ -343,7 +343,7 @@ export const documentWorkstreamService = {
   },
 };
 
-function _rowToInfo(row: PrArtifactRow): PullRequestInfo | null {
+function rowToInfo(row: PrArtifactRow): PullRequestInfo | null {
   return pullRequestArtifactToInfo(row, {
     externalLinkId: row.id,
   });
