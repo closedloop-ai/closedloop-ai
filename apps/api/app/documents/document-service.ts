@@ -34,6 +34,7 @@ import {
   withRunKey,
 } from "./generation-status-helpers";
 import { createDocumentRoom, deleteDocumentRoom } from "./room-utils";
+import { sanitizeAndLog } from "./sanitize-content";
 
 /**
  * Document general/CRUD service. Owns reads, writes, deletes, listing,
@@ -176,11 +177,13 @@ export async function createDocumentRecord(
     include: documentIncludeWithUser,
   });
 
+  const sanitizedContent = sanitizeAndLog(content ?? null, createdArtifact.id);
+
   await tx.documentVersion.create({
     data: {
       documentId: createdArtifact.id,
       version: 1,
-      content,
+      content: sanitizedContent,
       createdById: userId,
     },
   });
