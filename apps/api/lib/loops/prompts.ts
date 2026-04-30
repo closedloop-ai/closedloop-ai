@@ -43,7 +43,7 @@ Read the PRD provided in the artifacts directory (.closedloop-ai/context/artifac
    - Large enough to be meaningful to an end user
    - If a capability is too large, split it into incrementally valuable sub-features (e.g., "Basic search" then "Advanced filters" rather than one giant "Search" feature)
 
-6. **Target 3-8 features** for a typical PRD. A very large PRD might warrant up to 12. If you identify more than 8, merge the lowest-priority ones or note which could be deferred. Fewer well-defined features are better than many vague ones.
+6. **Let the PRD's scope drive the feature count — it is an output of decomposition, not a target.** A small, focused PRD with one user-facing capability should produce one feature; a PRD covering a few closely related capabilities may produce two or three. A typical mid-sized PRD lands in the 3-8 range, and a very large PRD might warrant up to 12. Do NOT fragment a single coherent capability across multiple features, invent capabilities the PRD does not describe, or promote sub-tasks (UI vs. API vs. data) into their own features just to reach a higher count. If your decomposition is producing awkward, thin, or overlapping features, the PRD is probably smaller than you assumed — collapse them back into fewer, well-defined features. Fewer well-defined features are always better than many vague or fragmented ones.
 
 ## Feature structure
 

@@ -62,6 +62,7 @@ enum EvaluationReportType {
   PLAN
   CODE
   PRD
+  FEATURE
 }
 
 enum EvalStatus {
@@ -208,6 +209,7 @@ enum LoopCommand {
   EVALUATE_CODE
   REQUEST_PRD_CHANGES
   BOOTSTRAP
+  EVALUATE_FEATURE
 }
 
 enum CustomFieldType {

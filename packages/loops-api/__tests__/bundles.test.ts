@@ -51,4 +51,16 @@ describe("validateResultBundle", () => {
     const missing = validateResultBundle("UNKNOWN_COMMAND", []);
     expect(missing).toHaveLength(0);
   });
+
+  it("returns empty array when feature-judges.json is present for EVALUATE_FEATURE", () => {
+    const missing = validateResultBundle(LoopCommand.EvaluateFeature, [
+      LoopArtifactFile.FeatureJudges,
+    ]);
+    expect(missing).toHaveLength(0);
+  });
+
+  it("returns missing file when feature-judges.json is absent for EVALUATE_FEATURE", () => {
+    const missing = validateResultBundle(LoopCommand.EvaluateFeature, []);
+    expect(missing).toContain(LoopArtifactFile.FeatureJudges);
+  });
 });

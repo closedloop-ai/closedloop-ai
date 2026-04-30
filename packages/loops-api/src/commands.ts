@@ -14,7 +14,7 @@ export type LoopStatus = (typeof LoopStatus)[keyof typeof LoopStatus];
 
 export const LoopStatusSchema = z.enum(LoopStatus);
 
-// Loop Command — all 11 commands across backend, ECS, and Electron
+// Loop Command — all commands across backend, ECS, and Electron
 export const LoopCommand = {
   Plan: "PLAN",
   Execute: "EXECUTE",
@@ -27,6 +27,7 @@ export const LoopCommand = {
   GeneratePrd: "GENERATE_PRD",
   EvaluatePlan: "EVALUATE_PLAN",
   EvaluateCode: "EVALUATE_CODE",
+  EvaluateFeature: "EVALUATE_FEATURE",
   Bootstrap: "BOOTSTRAP",
 } as const;
 export type LoopCommand = (typeof LoopCommand)[keyof typeof LoopCommand];
@@ -44,6 +45,7 @@ export const RunLoopCommand = {
   GeneratePrd: "generate_prd",
   EvaluatePlan: "evaluate_plan",
   EvaluateCode: "evaluate_code",
+  EvaluateFeature: "evaluate_feature",
 } as const;
 export type RunLoopCommand =
   (typeof RunLoopCommand)[keyof typeof RunLoopCommand];
@@ -133,6 +135,11 @@ export const CommandInputRequirements: Record<LoopCommand, CommandInputSpec> = {
     prompt: "optional",
     artifacts: "required",
     repo: "required",
+  },
+  [LoopCommand.EvaluateFeature]: {
+    prompt: "optional",
+    artifacts: "required",
+    repo: "optional",
   },
   [LoopCommand.Bootstrap]: {
     prompt: "optional",
