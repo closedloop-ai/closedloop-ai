@@ -93,22 +93,24 @@ jobs:
 
             core.setFailed("Timed out waiting for app-stage preview deployment");
 
-      - name: Resolve BASE_URL
+      - name: Resolve preview URLs
         id: base-url
         run: |
-          if [ -n "$INPUT_DEPLOY_URL" ]; then
-            BASE_URL="$INPUT_DEPLOY_URL"
-          else
-            BASE_URL="$WAIT_URL"
-          fi
-          if [ -z "$BASE_URL" ]; then
-            echo "::error::Failed to resolve a preview URL"
+          if [ -z "$REF_NAME" ]; then
+            echo "::error::Failed to resolve preview URLs from branch ref"
             exit 1
           fi
+
+          NORMALIZED_REF="$(printf '%s' "$REF_NAME" | tr '[:upper:]' '[:lower:]' | sed -E 's#[^a-z0-9]+#-#g; s#(^-+|-+$)##g')"
+          BASE_URL="https://app-stage-git-${NORMALIZED_REF}.preview.closedloop-stage.ai"
+          API_BASE_URL="https://api-stage-git-${NORMALIZED_REF}.preview.closedloop-stage.ai"
+
+          echo "Resolved BASE_URL=$BASE_URL"
+          echo "Resolved API_BASE_URL=$API_BASE_URL"
           echo "url=$BASE_URL" >> "$GITHUB_OUTPUT"
+          echo "api_url=$API_BASE_URL" >> "$GITHUB_OUTPUT"
         env:
-          INPUT_DEPLOY_URL: ${{ inputs.deployment_url }}
-          WAIT_URL: ${{ steps.wait.outputs.url }}
+          REF_NAME: ${{ github.event.pull_request.head.ref || inputs.ref || github.ref_name }}
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v5
@@ -146,6 +148,7 @@ jobs:
           CI: "true"
           PLAYWRIGHT_FORCE_TTY: "0"
           BASE_URL: ${{ steps.base-url.outputs.url }}
+          API_BASE_URL: ${{ steps.base-url.outputs.api_url }}
           NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${{ secrets.STAGING_NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
           CLERK_SECRET_KEY: ${{ secrets.STAGING_CLERK_SECRET_KEY }}
           DEVOPS_CLOSEDLOOP_APP_PWD: ${{ secrets.DEVOPS_CLOSEDLOOP_APP_PWD }}

@@ -58,6 +58,11 @@ type TeamModalProps = {
   onOpenChange?: (open: boolean) => void;
 };
 
+type PendingTeamMember = {
+  user: User;
+  role: TeamRole;
+};
+
 function getSubmitButtonText(
   isSubmitting: boolean,
   isEditMode: boolean
@@ -108,6 +113,235 @@ function UserSelectContent({
   );
 }
 
+type TeamMembersSectionProps = {
+  addingMember: boolean;
+  availableUsers: User[];
+  createModeMembers: PendingTeamMember[];
+  currentUser: User | undefined;
+  handleAddMember: () => void;
+  handlePendingRoleChange: (userId: string, newRole: TeamRole) => void;
+  handleRemoveMember: (member: TeamMember) => void;
+  handleRemovePendingMember: (userId: string) => void;
+  handleRoleChange: (member: TeamMember, newRole: TeamRole) => void;
+  isCreateOwnerPending: boolean;
+  isCurrentUserPending: boolean;
+  loadingMembers: boolean;
+  loadingUsers: boolean;
+  members: TeamMember[];
+  selectedRole: TeamRole;
+  selectedUserId: string;
+  setSelectedRole: (value: TeamRole) => void;
+  setSelectedUserId: (value: string) => void;
+};
+
+function TeamMembersSection({
+  addingMember,
+  availableUsers,
+  createModeMembers,
+  currentUser,
+  handleAddMember,
+  handlePendingRoleChange,
+  handleRemoveMember,
+  handleRemovePendingMember,
+  handleRoleChange,
+  isCreateOwnerPending,
+  isCurrentUserPending,
+  loadingMembers,
+  loadingUsers,
+  members,
+  selectedRole,
+  selectedUserId,
+  setSelectedRole,
+  setSelectedUserId,
+}: TeamMembersSectionProps) {
+  return (
+    <div className="grid gap-3">
+      <Label>Team Members</Label>
+
+      <div className="flex gap-2">
+        <Select onValueChange={setSelectedUserId} value={selectedUserId}>
+          <SelectTrigger className="flex-1">
+            <SelectValue placeholder="Select a user to add..." />
+          </SelectTrigger>
+          <SelectContent>
+            <UserSelectContent loading={loadingUsers} users={availableUsers} />
+          </SelectContent>
+        </Select>
+
+        <Select
+          onValueChange={(value) => setSelectedRole(value as TeamRole)}
+          value={selectedRole}
+        >
+          <SelectTrigger className="w-[110px]">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="MEMBER">Member</SelectItem>
+            <SelectItem value="ADMIN">Admin</SelectItem>
+            <SelectItem value="OWNER">Owner</SelectItem>
+          </SelectContent>
+        </Select>
+
+        <Button
+          disabled={!selectedUserId || addingMember}
+          onClick={handleAddMember}
+          size="icon"
+          type="button"
+          variant="outline"
+        >
+          {addingMember ? (
+            <LoaderIcon className="h-4 w-4 animate-spin" />
+          ) : (
+            <PlusIcon className="h-4 w-4" />
+          )}
+        </Button>
+      </div>
+
+      <div className="max-h-[200px] space-y-2 overflow-y-auto">
+        {isCreateOwnerPending ? (
+          <div className="flex items-center justify-center gap-2 py-4 text-muted-foreground text-sm">
+            {isCurrentUserPending ? (
+              <LoaderIcon className="h-4 w-4 animate-spin" />
+            ) : null}
+            <span>Loading your owner membership...</span>
+          </div>
+        ) : null}
+
+        {!isCreateOwnerPending && loadingMembers ? (
+          <div className="flex items-center justify-center py-4">
+            <LoaderIcon className="h-5 w-5 animate-spin text-muted-foreground" />
+          </div>
+        ) : null}
+
+        {isCreateOwnerPending || loadingMembers ? null : (
+          <>
+            {members.map((member) => (
+              <div
+                className="flex items-center justify-between rounded-md border p-2"
+                key={member.id}
+              >
+                <div className="flex items-center gap-2">
+                  <Avatar className="h-7 w-7">
+                    {member.user.avatarUrl ? (
+                      <AvatarImage src={member.user.avatarUrl} />
+                    ) : null}
+                    <AvatarFallback className="text-xs">
+                      {getUserInitials(
+                        member.user.firstName,
+                        member.user.lastName
+                      )}
+                    </AvatarFallback>
+                  </Avatar>
+                  <div className="flex flex-col">
+                    <span className="text-sm">
+                      {getUserDisplayName(member.user)}
+                    </span>
+                    <span className="text-muted-foreground text-xs">
+                      {member.user.email}
+                    </span>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Select
+                    onValueChange={(value) =>
+                      handleRoleChange(member, value as TeamRole)
+                    }
+                    value={member.role}
+                  >
+                    <SelectTrigger className="h-7 w-[90px] text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="MEMBER">Member</SelectItem>
+                      <SelectItem value="ADMIN">Admin</SelectItem>
+                      <SelectItem value="OWNER">Owner</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <Button
+                    className="h-7 w-7 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                    onClick={() => handleRemoveMember(member)}
+                    size="icon"
+                    type="button"
+                    variant="ghost"
+                  >
+                    <TrashIcon className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+              </div>
+            ))}
+
+            {createModeMembers.map((pending) => (
+              <div
+                className="flex items-center justify-between rounded-md border border-dashed p-2"
+                key={pending.user.id}
+              >
+                <div className="flex items-center gap-2">
+                  <Avatar className="h-7 w-7">
+                    {pending.user.avatarUrl ? (
+                      <AvatarImage src={pending.user.avatarUrl} />
+                    ) : null}
+                    <AvatarFallback className="text-xs">
+                      {getUserInitials(
+                        pending.user.firstName,
+                        pending.user.lastName
+                      )}
+                    </AvatarFallback>
+                  </Avatar>
+                  <div className="flex flex-col">
+                    <span className="text-sm">
+                      {getUserDisplayName(pending.user)}
+                    </span>
+                    <span className="text-muted-foreground text-xs">
+                      {pending.user.email}
+                    </span>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Select
+                    disabled={pending.user.id === currentUser?.id}
+                    onValueChange={(value) =>
+                      handlePendingRoleChange(
+                        pending.user.id,
+                        value as TeamRole
+                      )
+                    }
+                    value={pending.role}
+                  >
+                    <SelectTrigger className="h-7 w-[90px] text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="MEMBER">Member</SelectItem>
+                      <SelectItem value="ADMIN">Admin</SelectItem>
+                      <SelectItem value="OWNER">Owner</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <Button
+                    className="h-7 w-7 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                    disabled={pending.user.id === currentUser?.id}
+                    onClick={() => handleRemovePendingMember(pending.user.id)}
+                    size="icon"
+                    type="button"
+                    variant="ghost"
+                  >
+                    <XIcon className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+              </div>
+            ))}
+
+            {members.length === 0 && createModeMembers.length === 0 ? (
+              <p className="py-2 text-center text-muted-foreground text-sm">
+                No members yet. Add members above.
+              </p>
+            ) : null}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function TeamModal({
   trigger,
   team,
@@ -132,15 +366,15 @@ export function TeamModal({
   const [selectedRole, setSelectedRole] = useState<TeamRole>("MEMBER");
 
   // Pending members for create mode (not yet saved)
-  const [pendingMembers, setPendingMembers] = useState<
-    Array<{ user: User; role: TeamRole }>
-  >([]);
+  const [pendingMembers, setPendingMembers] = useState<PendingTeamMember[]>([]);
 
   // Delete team state
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
 
-  // Queries - only fetch when modal is open
-  const { data: currentUser } = useCurrentUser({ enabled: open });
+  // Create mode needs the current user ready to render the default owner row.
+  const { data: currentUser, isPending: isCurrentUserPending } = useCurrentUser(
+    { enabled: !isEditMode || open }
+  );
   const { data: orgUsers = [], isLoading: loadingUsers } = useOrganizationUsers(
     { enabled: open }
   );
@@ -157,14 +391,25 @@ export function TeamModal({
   const removeMemberMutation = useRemoveTeamMember();
   const updateRoleMutation = useUpdateTeamMemberRole();
 
+  const createModeMembers = useMemo(() => {
+    if (isEditMode || !currentUser) {
+      return pendingMembers;
+    }
+
+    return [
+      { user: currentUser, role: "OWNER" as TeamRole },
+      ...pendingMembers,
+    ];
+  }, [currentUser, isEditMode, pendingMembers]);
+
   // Get users that are not already members
   const availableUsers = useMemo(() => {
     const memberUserIds = new Set(members.map((m) => m.userId));
-    const pendingUserIds = new Set(pendingMembers.map((m) => m.user.id));
+    const pendingUserIds = new Set(createModeMembers.map((m) => m.user.id));
     return orgUsers.filter(
       (u) => !(memberUserIds.has(u.id) || pendingUserIds.has(u.id))
     );
-  }, [orgUsers, members, pendingMembers]);
+  }, [createModeMembers, members, orgUsers]);
 
   const handleAddMember = () => {
     if (!selectedUserId) {
@@ -256,12 +501,8 @@ export function TeamModal({
         { name: name.trim() },
         {
           onSuccess: async (newTeam) => {
-            // Add pending members (excluding current user - already added as owner by backend)
-            const membersToAdd = pendingMembers.filter(
-              (pending) => pending.user.id !== currentUser?.id
-            );
             await Promise.all(
-              membersToAdd.map(async (pending) => {
+              pendingMembers.map(async (pending) => {
                 await addMemberMutation.mutateAsync({
                   teamId: newTeam.id,
                   userId: pending.user.id,
@@ -297,6 +538,8 @@ export function TeamModal({
     createTeamMutation.isPending || updateTeamMutation.isPending;
   const isDeleting = deleteTeamMutation.isPending;
   const addingMember = addMemberMutation.isPending;
+  const isCreateOwnerPending = !(isEditMode || currentUser);
+  const disableSubmit = isSubmitting || !name.trim() || isCreateOwnerPending;
 
   const handleOpenChange = (newOpen: boolean) => {
     setOpen(newOpen);
@@ -304,13 +547,7 @@ export function TeamModal({
       // Reset form state when opening
       setName(team?.name || "");
       setError(null);
-      // In create mode, pre-populate with current user as OWNER
-      // In edit mode, start with empty list (members loaded from API)
-      if (!team && currentUser) {
-        setPendingMembers([{ user: currentUser, role: "OWNER" }]);
-      } else {
-        setPendingMembers([]);
-      }
+      setPendingMembers([]);
       setSelectedUserId("");
       setSelectedRole("MEMBER");
     }
@@ -359,191 +596,26 @@ export function TeamModal({
 
             <Separator />
 
-            {/* Members Section */}
-            <div className="grid gap-3">
-              <Label>Team Members</Label>
-
-              {/* Add Member Row */}
-              <div className="flex gap-2">
-                <Select
-                  onValueChange={setSelectedUserId}
-                  value={selectedUserId}
-                >
-                  <SelectTrigger className="flex-1">
-                    <SelectValue placeholder="Select a user to add..." />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <UserSelectContent
-                      loading={loadingUsers}
-                      users={availableUsers}
-                    />
-                  </SelectContent>
-                </Select>
-
-                <Select
-                  onValueChange={(v) => setSelectedRole(v as TeamRole)}
-                  value={selectedRole}
-                >
-                  <SelectTrigger className="w-[110px]">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="MEMBER">Member</SelectItem>
-                    <SelectItem value="ADMIN">Admin</SelectItem>
-                    <SelectItem value="OWNER">Owner</SelectItem>
-                  </SelectContent>
-                </Select>
-
-                <Button
-                  disabled={!selectedUserId || addingMember}
-                  onClick={handleAddMember}
-                  size="icon"
-                  type="button"
-                  variant="outline"
-                >
-                  {addingMember ? (
-                    <LoaderIcon className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <PlusIcon className="h-4 w-4" />
-                  )}
-                </Button>
-              </div>
-
-              {/* Members List */}
-              <div className="max-h-[200px] space-y-2 overflow-y-auto">
-                {loadingMembers ? (
-                  <div className="flex items-center justify-center py-4">
-                    <LoaderIcon className="h-5 w-5 animate-spin text-muted-foreground" />
-                  </div>
-                ) : (
-                  <>
-                    {/* Existing members (edit mode) */}
-                    {members.map((member) => (
-                      <div
-                        className="flex items-center justify-between rounded-md border p-2"
-                        key={member.id}
-                      >
-                        <div className="flex items-center gap-2">
-                          <Avatar className="h-7 w-7">
-                            {member.user.avatarUrl ? (
-                              <AvatarImage src={member.user.avatarUrl} />
-                            ) : null}
-                            <AvatarFallback className="text-xs">
-                              {getUserInitials(
-                                member.user.firstName,
-                                member.user.lastName
-                              )}
-                            </AvatarFallback>
-                          </Avatar>
-                          <div className="flex flex-col">
-                            <span className="text-sm">
-                              {getUserDisplayName(member.user)}
-                            </span>
-                            <span className="text-muted-foreground text-xs">
-                              {member.user.email}
-                            </span>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <Select
-                            onValueChange={(v) =>
-                              handleRoleChange(member, v as TeamRole)
-                            }
-                            value={member.role}
-                          >
-                            <SelectTrigger className="h-7 w-[90px] text-xs">
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="MEMBER">Member</SelectItem>
-                              <SelectItem value="ADMIN">Admin</SelectItem>
-                              <SelectItem value="OWNER">Owner</SelectItem>
-                            </SelectContent>
-                          </Select>
-                          <Button
-                            className="h-7 w-7 text-destructive hover:bg-destructive/10 hover:text-destructive"
-                            onClick={() => handleRemoveMember(member)}
-                            size="icon"
-                            type="button"
-                            variant="ghost"
-                          >
-                            <TrashIcon className="h-3.5 w-3.5" />
-                          </Button>
-                        </div>
-                      </div>
-                    ))}
-
-                    {/* Pending members (create mode) */}
-                    {pendingMembers.map((pending) => (
-                      <div
-                        className="flex items-center justify-between rounded-md border border-dashed p-2"
-                        key={pending.user.id}
-                      >
-                        <div className="flex items-center gap-2">
-                          <Avatar className="h-7 w-7">
-                            {pending.user.avatarUrl ? (
-                              <AvatarImage src={pending.user.avatarUrl} />
-                            ) : null}
-                            <AvatarFallback className="text-xs">
-                              {getUserInitials(
-                                pending.user.firstName,
-                                pending.user.lastName
-                              )}
-                            </AvatarFallback>
-                          </Avatar>
-                          <div className="flex flex-col">
-                            <span className="text-sm">
-                              {getUserDisplayName(pending.user)}
-                            </span>
-                            <span className="text-muted-foreground text-xs">
-                              {pending.user.email}
-                            </span>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <Select
-                            onValueChange={(v) =>
-                              handlePendingRoleChange(
-                                pending.user.id,
-                                v as TeamRole
-                              )
-                            }
-                            value={pending.role}
-                          >
-                            <SelectTrigger className="h-7 w-[90px] text-xs">
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="MEMBER">Member</SelectItem>
-                              <SelectItem value="ADMIN">Admin</SelectItem>
-                              <SelectItem value="OWNER">Owner</SelectItem>
-                            </SelectContent>
-                          </Select>
-                          <Button
-                            className="h-7 w-7 text-destructive hover:bg-destructive/10 hover:text-destructive"
-                            disabled={pending.user.id === currentUser?.id}
-                            onClick={() =>
-                              handleRemovePendingMember(pending.user.id)
-                            }
-                            size="icon"
-                            type="button"
-                            variant="ghost"
-                          >
-                            <XIcon className="h-3.5 w-3.5" />
-                          </Button>
-                        </div>
-                      </div>
-                    ))}
-
-                    {members.length === 0 && pendingMembers.length === 0 && (
-                      <p className="py-2 text-center text-muted-foreground text-sm">
-                        No members yet. Add members above.
-                      </p>
-                    )}
-                  </>
-                )}
-              </div>
-            </div>
+            <TeamMembersSection
+              addingMember={addingMember}
+              availableUsers={availableUsers}
+              createModeMembers={createModeMembers}
+              currentUser={currentUser}
+              handleAddMember={handleAddMember}
+              handlePendingRoleChange={handlePendingRoleChange}
+              handleRemoveMember={handleRemoveMember}
+              handleRemovePendingMember={handleRemovePendingMember}
+              handleRoleChange={handleRoleChange}
+              isCreateOwnerPending={isCreateOwnerPending}
+              isCurrentUserPending={isCurrentUserPending}
+              loadingMembers={loadingMembers}
+              loadingUsers={loadingUsers}
+              members={members}
+              selectedRole={selectedRole}
+              selectedUserId={selectedUserId}
+              setSelectedRole={setSelectedRole}
+              setSelectedUserId={setSelectedUserId}
+            />
 
             {error ? (
               <p className="rounded-md border border-destructive/20 bg-destructive/10 p-2 text-destructive text-sm">
@@ -568,7 +640,7 @@ export function TeamModal({
               <Button onClick={handleClose} type="button" variant="outline">
                 Cancel
               </Button>
-              <Button disabled={!name.trim() || isSubmitting} type="submit">
+              <Button disabled={disableSubmit} type="submit">
                 {getSubmitButtonText(isSubmitting, isEditMode)}
               </Button>
             </div>
