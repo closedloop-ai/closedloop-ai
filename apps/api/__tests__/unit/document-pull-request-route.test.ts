@@ -19,8 +19,8 @@ vi.mock("@/lib/identifier-utils", () => ({
   resolveDocumentId: vi.fn(),
 }));
 
-vi.mock("@/app/documents/workstream-service", () => ({
-  documentWorkstreamService: {
+vi.mock("@/app/documents/document-pull-request-service", () => ({
+  documentPullRequestService: {
     getDocumentPullRequests: vi.fn(),
   },
 }));
@@ -28,7 +28,7 @@ vi.mock("@/app/documents/workstream-service", () => ({
 // --- Imports (after mocks) ---
 
 import { GET as GETSingular } from "@/app/documents/[id]/pull-request/route";
-import { documentWorkstreamService } from "@/app/documents/workstream-service";
+import { documentPullRequestService } from "@/app/documents/document-pull-request-service";
 import { resolveDocumentId } from "@/lib/identifier-utils";
 import { buildPullRequestInfo } from "../fixtures/pull-request-info";
 import {
@@ -44,7 +44,7 @@ describe("GET /documents/[id]/pull-request", () => {
   it("returns 200 with { data: [] } when the document has no associated PRs", async () => {
     vi.mocked(resolveDocumentId).mockResolvedValue("artifact-uuid");
     vi.mocked(
-      documentWorkstreamService.getDocumentPullRequests
+      documentPullRequestService.getDocumentPullRequests
     ).mockResolvedValue([]);
 
     const request = createMockRequest({
@@ -61,14 +61,14 @@ describe("GET /documents/[id]/pull-request", () => {
     expect(json.data).toEqual([]);
     expect(resolveDocumentId).toHaveBeenCalledWith("doc-1", "org-1");
     expect(
-      documentWorkstreamService.getDocumentPullRequests
+      documentPullRequestService.getDocumentPullRequests
     ).toHaveBeenCalledWith("artifact-uuid", "org-1");
   });
 
   it("returns linked PRs as an array", async () => {
     vi.mocked(resolveDocumentId).mockResolvedValue("artifact-uuid");
     vi.mocked(
-      documentWorkstreamService.getDocumentPullRequests
+      documentPullRequestService.getDocumentPullRequests
     ).mockResolvedValue([
       buildPullRequestInfo({
         id: "pr-art-1",
@@ -103,7 +103,7 @@ describe("GET /documents/[id]/pull-request", () => {
     ]);
     expect(resolveDocumentId).toHaveBeenCalledWith("doc-1", "org-1");
     expect(
-      documentWorkstreamService.getDocumentPullRequests
+      documentPullRequestService.getDocumentPullRequests
     ).toHaveBeenCalledWith("artifact-uuid", "org-1");
   });
 
@@ -123,7 +123,7 @@ describe("GET /documents/[id]/pull-request", () => {
     expect(json.success).toBe(false);
     expect(resolveDocumentId).toHaveBeenCalledWith("unknown-doc", "org-1");
     expect(
-      documentWorkstreamService.getDocumentPullRequests
+      documentPullRequestService.getDocumentPullRequests
     ).not.toHaveBeenCalled();
   });
 });

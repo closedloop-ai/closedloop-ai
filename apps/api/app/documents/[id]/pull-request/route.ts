@@ -1,7 +1,7 @@
 import { success } from "@repo/api/src/types/common";
 import type { PullRequestInfo } from "@repo/api/src/types/document";
 import { NextResponse } from "next/server";
-import { documentWorkstreamService } from "@/app/documents/workstream-service";
+import { documentPullRequestService } from "@/app/documents/document-pull-request-service";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { resolveDocumentId } from "@/lib/identifier-utils";
 import { errorResponse, notFoundResponse } from "@/lib/route-utils";
@@ -18,7 +18,7 @@ export const GET = withAnyAuth<
     }
 
     const pullRequests =
-      await documentWorkstreamService.getDocumentPullRequests(
+      await documentPullRequestService.getDocumentPullRequests(
         resolvedId,
         user.organizationId
       );

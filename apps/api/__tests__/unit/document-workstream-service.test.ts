@@ -12,8 +12,6 @@
  *      • Source exists without workstreamId → auto-create a workstream and
  *        attach both.
  *      • Title fallback — when no source link, look up by stripped title.
- *  - `getDocumentPullRequest` — most recent PR that the document directly
- *    PRODUCES via an artifact link; null when no such link exists.
  */
 
 import { type Mock, vi } from "vitest";
@@ -42,26 +40,17 @@ vi.mock("@/app/documents/document-version-service", () => ({
   documentVersionService: { getLatest: vi.fn() },
 }));
 
-vi.mock("@/lib/artifact-adapters", () => ({
-  pullRequestArtifactToInfo: vi.fn(),
-  pullRequestWhere: (where: Record<string, unknown>) => where,
-}));
-
-import { LinkType } from "@repo/api/src/types/artifact";
 import { withDb } from "@repo/database";
 import { artifactLinksService } from "@/app/artifact-links/service";
 import type { DocumentWithRegenerationContext } from "@/app/documents/document-utils";
 import { documentVersionService } from "@/app/documents/document-version-service";
 import { documentWorkstreamService } from "@/app/documents/workstream-service";
-import { pullRequestArtifactToInfo } from "@/lib/artifact-adapters";
 
 const mockWithDb = withDb as unknown as Mock;
 const mockWithDbTx = (withDb as unknown as { tx: Mock }).tx;
 const mockFindSourceLinks = artifactLinksService.findSourceLinks as Mock;
-const mockFindTargetLinks = artifactLinksService.findTargetLinks as Mock;
 const mockCreateLink = artifactLinksService.createLink as Mock;
 const mockGetLatest = documentVersionService.getLatest as Mock;
-const mockPrToInfo = pullRequestArtifactToInfo as Mock;
 
 function mockDb(db: Record<string, unknown>) {
   mockWithDb.mockImplementation(
@@ -365,122 +354,5 @@ describe("documentWorkstreamService.findOrCreateWorkstream", () => {
     );
     expect(result.workstream).toBeNull();
     expect(result.source).toBeNull();
-  });
-});
-
-describe("documentWorkstreamService.getDocumentPullRequest", () => {
-  beforeEach(() => vi.resetAllMocks());
-
-  it("returns null when the document is not a DOCUMENT artifact", async () => {
-    mockDb({
-      artifact: {
-        findUnique: vi.fn().mockResolvedValue({ type: "PULL_REQUEST" }),
-      },
-    });
-
-    const result = await documentWorkstreamService.getDocumentPullRequest(
-      "doc-1",
-      "org-1"
-    );
-    expect(result).toBeNull();
-    expect(mockFindTargetLinks).not.toHaveBeenCalled();
-  });
-
-  it("returns null when the document does not produce any artifacts", async () => {
-    mockDb({
-      artifact: {
-        findUnique: vi.fn().mockResolvedValue({ type: "DOCUMENT" }),
-      },
-    });
-    mockFindTargetLinks.mockResolvedValue([]);
-
-    const result = await documentWorkstreamService.getDocumentPullRequest(
-      "doc-1",
-      "org-1"
-    );
-    expect(result).toBeNull();
-    expect(mockFindTargetLinks).toHaveBeenCalledWith(
-      "org-1",
-      "doc-1",
-      LinkType.Produces
-    );
-  });
-
-  it("returns the most recent PR among the document's PRODUCES links", async () => {
-    const findMany = vi.fn().mockResolvedValue([
-      {
-        id: "pr-art-1",
-        type: "PULL_REQUEST",
-        pullRequest: { number: 42, repository: { fullName: "owner/repo" } },
-      },
-    ]);
-    mockWithDb
-      .mockImplementationOnce((fn: (db: object) => unknown) =>
-        fn({
-          artifact: {
-            findUnique: vi.fn().mockResolvedValue({
-              type: "DOCUMENT",
-              document: { targetRepo: null },
-            }),
-          },
-        })
-      )
-      .mockImplementationOnce((fn: (db: object) => unknown) =>
-        fn({ artifact: { findMany } })
-      );
-    mockFindTargetLinks.mockResolvedValue([
-      { id: "link-1", sourceId: "doc-1", targetId: "pr-art-1" },
-      { id: "link-2", sourceId: "doc-1", targetId: "other-art-1" },
-    ]);
-    mockPrToInfo.mockReturnValue({
-      number: 42,
-      url: "https://github.com/owner/repo/pull/42",
-    });
-
-    const result = await documentWorkstreamService.getDocumentPullRequest(
-      "doc-1",
-      "org-1"
-    );
-
-    expect(findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({
-          organizationId: "org-1",
-          id: { in: ["pr-art-1", "other-art-1"] },
-        }),
-        orderBy: { createdAt: "desc" },
-      })
-    );
-    expect(result?.number).toBe(42);
-    expect(mockPrToInfo).toHaveBeenCalledWith(
-      expect.objectContaining({ id: "pr-art-1" }),
-      { externalLinkId: "pr-art-1" }
-    );
-  });
-
-  it("returns null when produced artifacts contain no PR", async () => {
-    mockWithDb
-      .mockImplementationOnce((fn: (db: object) => unknown) =>
-        fn({
-          artifact: {
-            findUnique: vi.fn().mockResolvedValue({
-              type: "DOCUMENT",
-              document: { targetRepo: null },
-            }),
-          },
-        })
-      )
-      .mockImplementationOnce((fn: (db: object) => unknown) =>
-        fn({ artifact: { findMany: vi.fn().mockResolvedValue([]) } })
-      );
-    mockFindTargetLinks.mockResolvedValue([
-      { id: "link-1", sourceId: "doc-1", targetId: "deploy-art-1" },
-    ]);
-
-    const result = await documentWorkstreamService.getDocumentPullRequest(
-      "doc-1",
-      "org-1"
-    );
-    expect(result).toBeNull();
   });
 });

@@ -15,6 +15,7 @@ import {
 } from "@repo/api/src/types/document";
 import { RunLoopCommand } from "@repo/api/src/types/loop";
 import { vi } from "vitest";
+import { documentPullRequestService } from "@/app/documents/document-pull-request-service";
 import { documentWorkstreamService } from "@/app/documents/workstream-service";
 
 // --- Mocks (must come before imports) ---
@@ -26,7 +27,11 @@ vi.mock("@repo/observability/log", () => ({
 vi.mock("@/app/documents/workstream-service", () => ({
   documentWorkstreamService: {
     findOrCreateWorkstream: vi.fn(),
-    getDocumentPullRequest: vi.fn(),
+  },
+}));
+
+vi.mock("@/app/documents/document-pull-request-service", () => ({
+  documentPullRequestService: {
     getDocumentPullRequests: vi.fn(),
   },
 }));
@@ -53,9 +58,11 @@ type MockFn = ReturnType<typeof vi.fn>;
 
 const mockArtifactsService = documentWorkstreamService as unknown as {
   findOrCreateWorkstream: MockFn;
-  getDocumentPullRequest: MockFn;
-  getDocumentPullRequests: MockFn;
 };
+const mockDocumentPullRequestService =
+  documentPullRequestService as unknown as {
+    getDocumentPullRequests: MockFn;
+  };
 const mockLoopsService = loopsService as unknown as {
   findLatestCompletedForArtifact: MockFn;
   findLatestStateBearingDesktopForArtifact: MockFn;
@@ -692,12 +699,13 @@ describe("resolveEvaluateCodeBranchForRunLoop", () => {
     if (result.ok) {
       expect(result.branch).toBe("main");
     }
-    expect(mockArtifactsService.getDocumentPullRequest).not.toHaveBeenCalled();
-    expect(mockArtifactsService.getDocumentPullRequests).not.toHaveBeenCalled();
+    expect(
+      mockDocumentPullRequestService.getDocumentPullRequests
+    ).not.toHaveBeenCalled();
   });
 
   it("loads open PR and returns head branch for evaluate_code", async () => {
-    mockArtifactsService.getDocumentPullRequests.mockResolvedValue([
+    mockDocumentPullRequestService.getDocumentPullRequests.mockResolvedValue([
       buildPullRequestInfo({ headBranch: "feature/pr-eval" }),
     ]);
     const result = await resolveEvaluateCodeBranchForRunLoop(
@@ -711,14 +719,13 @@ describe("resolveEvaluateCodeBranchForRunLoop", () => {
     if (result.ok) {
       expect(result.branch).toBe("feature/pr-eval");
     }
-    expect(mockArtifactsService.getDocumentPullRequests).toHaveBeenCalledWith(
-      "artifact-1",
-      "org-1"
-    );
+    expect(
+      mockDocumentPullRequestService.getDocumentPullRequests
+    ).toHaveBeenCalledWith("artifact-1", "org-1");
   });
 
   it("uses the PR branch for the requested repo when multiple PRs exist", async () => {
-    mockArtifactsService.getDocumentPullRequests.mockResolvedValue([
+    mockDocumentPullRequestService.getDocumentPullRequests.mockResolvedValue([
       buildPullRequestInfo({
         headBranch: "feature/secondary",
         repoFullName: "o/secondary",
@@ -744,7 +751,7 @@ describe("resolveEvaluateCodeBranchForRunLoop", () => {
   });
 
   it("rejects a fallback PR from another known repo", async () => {
-    mockArtifactsService.getDocumentPullRequests.mockResolvedValue([
+    mockDocumentPullRequestService.getDocumentPullRequests.mockResolvedValue([
       buildPullRequestInfo({
         headBranch: "feature/secondary",
         repoFullName: "o/secondary",
@@ -763,7 +770,9 @@ describe("resolveEvaluateCodeBranchForRunLoop", () => {
   });
 
   it("returns bad request when evaluate_code has no open PR", async () => {
-    mockArtifactsService.getDocumentPullRequests.mockResolvedValue([]);
+    mockDocumentPullRequestService.getDocumentPullRequests.mockResolvedValue(
+      []
+    );
     const result = await resolveEvaluateCodeBranchForRunLoop(
       RunLoopCommand.EvaluateCode,
       "artifact-1",

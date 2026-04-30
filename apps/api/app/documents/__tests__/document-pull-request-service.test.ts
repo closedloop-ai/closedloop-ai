@@ -1,6 +1,5 @@
 /**
- * Unit tests for `getDocumentPullRequests` and the refactored
- * `getDocumentPullRequest` in `documentWorkstreamService`.
+ * Unit tests for `documentPullRequestService`.
  *
  * Covers:
  *  - `getDocumentPullRequests` returns [] when `findTargetLinks` returns no links
@@ -28,14 +27,8 @@ vi.mock("@repo/database", () => {
 
 vi.mock("@/app/artifact-links/service", () => ({
   artifactLinksService: {
-    findSourceLinks: vi.fn(),
     findTargetLinks: vi.fn(),
-    createLink: vi.fn(),
   },
-}));
-
-vi.mock("@/app/documents/document-version-service", () => ({
-  documentVersionService: { getLatest: vi.fn() },
 }));
 
 vi.mock("@/lib/artifact-adapters", () => ({
@@ -43,9 +36,10 @@ vi.mock("@/lib/artifact-adapters", () => ({
   pullRequestWhere: (where: Record<string, unknown>) => where,
 }));
 
+import { LinkType } from "@repo/api/src/types/artifact";
 import { withDb } from "@repo/database";
 import { artifactLinksService } from "@/app/artifact-links/service";
-import { documentWorkstreamService } from "@/app/documents/workstream-service";
+import { documentPullRequestService } from "@/app/documents/document-pull-request-service";
 import { pullRequestArtifactToInfo } from "@/lib/artifact-adapters";
 import { buildPullRequestInfo } from "../../../__tests__/fixtures/pull-request-info";
 
@@ -96,8 +90,26 @@ function mockPrArtifactsDb(
     );
 }
 
-describe("documentWorkstreamService.getDocumentPullRequests", () => {
+describe("documentPullRequestService.getDocumentPullRequests", () => {
   beforeEach(() => vi.resetAllMocks());
+
+  it("returns [] when the artifact is not a document", async () => {
+    mockWithDb.mockImplementationOnce((fn: (db: object) => unknown) =>
+      fn({
+        artifact: {
+          findUnique: vi.fn().mockResolvedValue({ type: "PULL_REQUEST" }),
+        },
+      })
+    );
+
+    const result = await documentPullRequestService.getDocumentPullRequests(
+      "doc-1",
+      "org-1"
+    );
+
+    expect(result).toEqual([]);
+    expect(mockFindTargetLinks).not.toHaveBeenCalled();
+  });
 
   it("returns [] when findTargetLinks returns no links", async () => {
     mockWithDb.mockImplementationOnce((fn: (db: object) => unknown) =>
@@ -112,12 +124,17 @@ describe("documentWorkstreamService.getDocumentPullRequests", () => {
     );
     mockFindTargetLinks.mockResolvedValue([]);
 
-    const result = await documentWorkstreamService.getDocumentPullRequests(
+    const result = await documentPullRequestService.getDocumentPullRequests(
       "doc-1",
       "org-1"
     );
 
     expect(result).toEqual([]);
+    expect(mockFindTargetLinks).toHaveBeenCalledWith(
+      "org-1",
+      "doc-1",
+      LinkType.Produces
+    );
   });
 
   it("returns a single-element array with repoFullName from row.pullRequest.repository.fullName", async () => {
@@ -132,7 +149,7 @@ describe("documentWorkstreamService.getDocumentPullRequests", () => {
     const expectedInfo = buildPullRequestInfo({ repoFullName: "owner/repo" });
     mockPrToInfo.mockReturnValue(expectedInfo);
 
-    const result = await documentWorkstreamService.getDocumentPullRequests(
+    const result = await documentPullRequestService.getDocumentPullRequests(
       "doc-1",
       "org-1"
     );
@@ -176,7 +193,7 @@ describe("documentWorkstreamService.getDocumentPullRequests", () => {
       .mockReturnValueOnce(secondaryInfo)
       .mockReturnValueOnce(primaryInfo);
 
-    const result = await documentWorkstreamService.getDocumentPullRequests(
+    const result = await documentPullRequestService.getDocumentPullRequests(
       "doc-1",
       "org-1"
     );
@@ -186,9 +203,23 @@ describe("documentWorkstreamService.getDocumentPullRequests", () => {
     expect(result[0].repoFullName).toBe("owner/primary-repo");
     expect(result[1].repoFullName).toBe("owner/other-repo");
   });
+
+  it("returns [] when produced artifacts contain no PR", async () => {
+    mockPrArtifactsDb(null, []);
+    mockFindTargetLinks.mockResolvedValue([
+      { id: "link-1", sourceId: "doc-1", targetId: "deploy-art-1" },
+    ]);
+
+    const result = await documentPullRequestService.getDocumentPullRequests(
+      "doc-1",
+      "org-1"
+    );
+
+    expect(result).toEqual([]);
+  });
 });
 
-describe("documentWorkstreamService.getDocumentPullRequest (singular, post T-2.2 refactor)", () => {
+describe("documentPullRequestService.getDocumentPullRequest", () => {
   beforeEach(() => vi.resetAllMocks());
 
   it("returns a PullRequestInfo with repoFullName from row.pullRequest.repository.fullName", async () => {
@@ -203,7 +234,7 @@ describe("documentWorkstreamService.getDocumentPullRequest (singular, post T-2.2
     const expectedInfo = buildPullRequestInfo({ repoFullName: "owner/repo" });
     mockPrToInfo.mockReturnValue(expectedInfo);
 
-    const result = await documentWorkstreamService.getDocumentPullRequest(
+    const result = await documentPullRequestService.getDocumentPullRequest(
       "doc-1",
       "org-1"
     );
@@ -244,7 +275,7 @@ describe("documentWorkstreamService.getDocumentPullRequest (singular, post T-2.2
       .mockReturnValueOnce(secondaryInfo)
       .mockReturnValueOnce(primaryInfo);
 
-    const result = await documentWorkstreamService.getDocumentPullRequest(
+    const result = await documentPullRequestService.getDocumentPullRequest(
       "doc-1",
       "org-1",
       "owner/primary"

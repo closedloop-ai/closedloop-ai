@@ -25,8 +25,8 @@ vi.mock("@repo/github", () => ({
   verifyInstallationBranchExists: vi.fn(),
 }));
 
-vi.mock("@/app/documents/workstream-service", () => ({
-  documentWorkstreamService: {
+vi.mock("@/app/documents/document-pull-request-service", () => ({
+  documentPullRequestService: {
     getDocumentPullRequests: vi.fn(),
   },
 }));
@@ -38,7 +38,7 @@ vi.mock("@/lib/loops/uploaded-plan-artifacts", () => ({
 // Import after mocking
 import { withDb } from "@repo/database";
 import { verifyInstallationBranchExists } from "@repo/github";
-import { documentWorkstreamService } from "@/app/documents/workstream-service";
+import { documentPullRequestService } from "@/app/documents/document-pull-request-service";
 import {
   authorizeAdditionalRepos,
   BranchNotFoundError,
@@ -335,7 +335,7 @@ describe("authorizeAdditionalRepos", () => {
 // ---------------------------------------------------------------------------
 
 const mockGetDocumentPullRequests =
-  documentWorkstreamService.getDocumentPullRequests as unknown as Mock;
+  documentPullRequestService.getDocumentPullRequests as unknown as Mock;
 
 /**
  * Minimal Prisma loop row fixture returned by db.loop.findUnique in findById.

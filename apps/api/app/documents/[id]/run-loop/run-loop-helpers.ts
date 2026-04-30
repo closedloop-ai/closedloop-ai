@@ -15,6 +15,7 @@ import { getProjectSettings } from "@repo/api/src/types/project";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
 import { computeTargetsService } from "@/app/compute-targets/service";
+import { documentPullRequestService } from "@/app/documents/document-pull-request-service";
 import type { documentGenerationService } from "@/app/documents/generation-service";
 import { documentWorkstreamService } from "@/app/documents/workstream-service";
 import { loopsService } from "@/app/loops/service";
@@ -143,7 +144,7 @@ async function resolveParentLoopForRunContext({
 }
 
 /**
- * For EVALUATE_CODE loops: require an open PR linked to the artifact workstream
+ * For EVALUATE_CODE loops: require an open PR produced by the document
  * and return its head branch for the harness clone target.
  */
 export function resolveEvaluateCodeTargetBranch(
@@ -187,7 +188,7 @@ export async function resolveEvaluateCodeBranchForRunLoop(
     return { ok: true, branch: fallbackBranch };
   }
 
-  const pullRequests = await documentWorkstreamService.getDocumentPullRequests(
+  const pullRequests = await documentPullRequestService.getDocumentPullRequests(
     documentId,
     organizationId
   );
@@ -316,11 +317,7 @@ export async function checkBackendMismatch(
 }> | null> {
   let previousTargetId: string | null;
   let hasPriorLoop: boolean;
-  if (latestCompletedLoopComputeTargetId !== undefined) {
-    // Caller already resolved the parent loop: null = cloud, string = local target
-    previousTargetId = latestCompletedLoopComputeTargetId ?? null;
-    hasPriorLoop = true;
-  } else {
+  if (latestCompletedLoopComputeTargetId === undefined) {
     // Fallback: query the DB for the latest completed loop
     const latestLoop = await loopsService.findLatestCompletedForArtifact(
       documentId,
@@ -328,6 +325,10 @@ export async function checkBackendMismatch(
     );
     hasPriorLoop = latestLoop != null;
     previousTargetId = latestLoop?.computeTargetId ?? null;
+  } else {
+    // Caller already resolved the parent loop: null = cloud, string = local target
+    previousTargetId = latestCompletedLoopComputeTargetId ?? null;
+    hasPriorLoop = true;
   }
 
   // No prior loops at all — nothing to mismatch against

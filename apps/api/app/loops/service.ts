@@ -32,7 +32,7 @@ import {
 import { verifyInstallationBranchExists } from "@repo/github";
 import { log } from "@repo/observability/log";
 import { z } from "zod";
-import { documentWorkstreamService } from "@/app/documents/workstream-service";
+import { documentPullRequestService } from "@/app/documents/document-pull-request-service";
 import { basicUserSelect } from "@/lib/db-utils";
 import { extractUploadedPlanRaw } from "@/lib/loops/uploaded-plan-artifacts";
 
@@ -240,7 +240,7 @@ function toLoop(record: PrismaLoop): Loop {
     ...record,
     documentId: record.artifactId,
     estimatedCost:
-      record.estimatedCost != null ? Number(record.estimatedCost) : null,
+      record.estimatedCost == null ? null : Number(record.estimatedCost),
     repo: parseRepo(record.repo),
     additionalRepos: parseAdditionalRepos(record.additionalRepos),
     contextRefs: record.contextRefs as Loop["contextRefs"],
@@ -415,7 +415,7 @@ export const loopsService = {
       (result.repo !== null ||
         (result.additionalRepos !== null && result.additionalRepos.length > 0))
     ) {
-      pullRequests = await documentWorkstreamService.getDocumentPullRequests(
+      pullRequests = await documentPullRequestService.getDocumentPullRequests(
         result.documentId,
         result.organizationId
       );
