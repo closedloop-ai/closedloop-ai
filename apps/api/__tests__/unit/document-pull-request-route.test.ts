@@ -2,7 +2,6 @@
  * Route-level tests for GET /documents/[id]/pull-request.
  */
 
-import { PullRequestState } from "@repo/api/src/types/document";
 import { vi } from "vitest";
 
 // --- Mocks (must come before imports) ---
@@ -31,6 +30,7 @@ vi.mock("@/app/documents/workstream-service", () => ({
 import { GET as GETSingular } from "@/app/documents/[id]/pull-request/route";
 import { documentWorkstreamService } from "@/app/documents/workstream-service";
 import { resolveDocumentId } from "@/lib/identifier-utils";
+import { buildPullRequestInfo } from "../fixtures/pull-request-info";
 import {
   createMockRequest,
   createMockRouteContext,
@@ -70,20 +70,17 @@ describe("GET /documents/[id]/pull-request", () => {
     vi.mocked(
       documentWorkstreamService.getDocumentPullRequests
     ).mockResolvedValue([
-      {
+      buildPullRequestInfo({
         id: "pr-art-1",
         number: 42,
         title: "Implement multi-repo plan",
         htmlUrl: "https://github.com/acme/app/pull/42",
-        state: PullRequestState.Open,
         headBranch: "feature/multi-repo-plan",
         baseBranch: "main",
         createdAt: new Date("2026-04-30T12:00:00.000Z"),
-        checksStatus: null,
-        reviewDecision: null,
         externalLinkId: "pr-art-1",
         repoFullName: "acme/app",
-      },
+      }),
     ]);
 
     const request = createMockRequest({

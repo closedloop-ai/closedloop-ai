@@ -47,29 +47,11 @@ import { withDb } from "@repo/database";
 import { artifactLinksService } from "@/app/artifact-links/service";
 import { documentWorkstreamService } from "@/app/documents/workstream-service";
 import { pullRequestArtifactToInfo } from "@/lib/artifact-adapters";
+import { buildPullRequestInfo } from "../../../__tests__/fixtures/pull-request-info";
 
 const mockWithDb = withDb as unknown as Mock;
 const mockFindTargetLinks = artifactLinksService.findTargetLinks as Mock;
 const mockPrToInfo = pullRequestArtifactToInfo as Mock;
-
-/** Build a minimal PullRequestInfo fixture with repoFullName populated. */
-function makePrInfo(overrides?: Partial<Record<string, unknown>>) {
-  return {
-    id: "pr-art-1",
-    number: 1,
-    title: "feat: add something",
-    htmlUrl: "https://github.com/owner/repo/pull/1",
-    state: "OPEN",
-    headBranch: "feat/add-something",
-    baseBranch: "main",
-    createdAt: new Date("2024-01-01T00:00:00Z"),
-    checksStatus: null,
-    reviewDecision: null,
-    externalLinkId: "pr-art-1",
-    repoFullName: "owner/repo",
-    ...overrides,
-  };
-}
 
 /** Build a minimal PR artifact row (PrArtifactRow shape). */
 function makePrArtifactRow(overrides?: { id?: string; repoFullName?: string }) {
@@ -147,7 +129,7 @@ describe("documentWorkstreamService.getDocumentPullRequests", () => {
     mockFindTargetLinks.mockResolvedValue([
       { id: "link-1", sourceId: "doc-1", targetId: "pr-art-1" },
     ]);
-    const expectedInfo = makePrInfo({ repoFullName: "owner/repo" });
+    const expectedInfo = buildPullRequestInfo({ repoFullName: "owner/repo" });
     mockPrToInfo.mockReturnValue(expectedInfo);
 
     const result = await documentWorkstreamService.getDocumentPullRequests(
@@ -179,12 +161,12 @@ describe("documentWorkstreamService.getDocumentPullRequests", () => {
       { id: "link-2", sourceId: "doc-1", targetId: "pr-art-primary" },
     ]);
 
-    const primaryInfo = makePrInfo({
+    const primaryInfo = buildPullRequestInfo({
       id: "pr-art-primary",
       repoFullName: "owner/primary-repo",
       externalLinkId: "pr-art-primary",
     });
-    const secondaryInfo = makePrInfo({
+    const secondaryInfo = buildPullRequestInfo({
       id: "pr-art-secondary",
       repoFullName: "owner/other-repo",
       externalLinkId: "pr-art-secondary",
@@ -218,7 +200,7 @@ describe("documentWorkstreamService.getDocumentPullRequest (singular, post T-2.2
     mockFindTargetLinks.mockResolvedValue([
       { id: "link-1", sourceId: "doc-1", targetId: "pr-art-1" },
     ]);
-    const expectedInfo = makePrInfo({ repoFullName: "owner/repo" });
+    const expectedInfo = buildPullRequestInfo({ repoFullName: "owner/repo" });
     mockPrToInfo.mockReturnValue(expectedInfo);
 
     const result = await documentWorkstreamService.getDocumentPullRequest(
