@@ -38,6 +38,7 @@ export const COMMAND_MAP = {
   [RunLoopCommand.GeneratePrd]: LoopCommand.GeneratePrd,
   [RunLoopCommand.EvaluatePlan]: LoopCommand.EvaluatePlan,
   [RunLoopCommand.EvaluateCode]: LoopCommand.EvaluateCode,
+  [RunLoopCommand.EvaluateFeature]: LoopCommand.EvaluateFeature,
 } as const;
 
 type ParentLoopForRunContext = Awaited<
