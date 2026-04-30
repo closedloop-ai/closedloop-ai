@@ -1,12 +1,5 @@
 /**
- * Route-level tests for:
- *   GET /documents/[id]/pull-request   (returns all PRs as an array)
- *
- * Covers:
- *   - Endpoint returns 200 with { data: [] } when the document has no PRs
- *   - Endpoint returns linked PRs as an array
- *   - Endpoint accepts an API key client (authMethod: "api_key") after
- *     migrating from withAuth to withAnyAuth
+ * Route-level tests for GET /documents/[id]/pull-request.
  */
 
 import { PullRequestState } from "@repo/api/src/types/document";
@@ -43,10 +36,6 @@ import {
   createMockRouteContext,
 } from "../utils/auth-helpers";
 
-// ---------------------------------------------------------------------------
-// GET /documents/[id]/pull-request
-// ---------------------------------------------------------------------------
-
 describe("GET /documents/[id]/pull-request", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -70,6 +59,10 @@ describe("GET /documents/[id]/pull-request", () => {
     expect(response.status).toBe(200);
     expect(json.success).toBe(true);
     expect(json.data).toEqual([]);
+    expect(resolveDocumentId).toHaveBeenCalledWith("doc-1", "org-1");
+    expect(
+      documentWorkstreamService.getDocumentPullRequests
+    ).toHaveBeenCalledWith("artifact-uuid", "org-1");
   });
 
   it("returns linked PRs as an array", async () => {
@@ -111,31 +104,10 @@ describe("GET /documents/[id]/pull-request", () => {
         repoFullName: "acme/app",
       }),
     ]);
-  });
-
-  it("accepts an API key client (authMethod: api_key) via withAnyAuth and returns 200", async () => {
-    // The withAnyAuth mock above does not gate on authMethod — it passes any
-    // auth context through. This test exercises the full route handler path
-    // (resolve → service → response) confirming the route is reachable by
-    // API key clients now that it uses withAnyAuth instead of withAuth.
-    vi.mocked(resolveDocumentId).mockResolvedValue("artifact-uuid");
-    vi.mocked(
+    expect(resolveDocumentId).toHaveBeenCalledWith("doc-1", "org-1");
+    expect(
       documentWorkstreamService.getDocumentPullRequests
-    ).mockResolvedValue([]);
-
-    const request = createMockRequest({
-      url: "http://localhost:3002/api/documents/doc-1/pull-request",
-      headers: { authorization: "Bearer sk_live_test" },
-    });
-    const response = await GETSingular(
-      request,
-      createMockRouteContext({ id: "doc-1" })
-    );
-    const json = await response.json();
-
-    expect(response.status).toBe(200);
-    expect(json.success).toBe(true);
-    expect(json.data).toEqual([]);
+    ).toHaveBeenCalledWith("artifact-uuid", "org-1");
   });
 
   it("returns 404 when the document id does not resolve", async () => {
@@ -152,5 +124,9 @@ describe("GET /documents/[id]/pull-request", () => {
 
     expect(response.status).toBe(404);
     expect(json.success).toBe(false);
+    expect(resolveDocumentId).toHaveBeenCalledWith("unknown-doc", "org-1");
+    expect(
+      documentWorkstreamService.getDocumentPullRequests
+    ).not.toHaveBeenCalled();
   });
 });
