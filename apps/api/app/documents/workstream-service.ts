@@ -2,6 +2,7 @@ import { LinkType } from "@repo/api/src/types/artifact";
 import {
   DocumentType,
   type PullRequestInfo,
+  pickPullRequestForRepo,
 } from "@repo/api/src/types/document";
 import { ArtifactType, type Prisma, withDb } from "@repo/database";
 import {
@@ -296,19 +297,20 @@ export const documentWorkstreamService = {
   },
 
   /**
-   * Get the most recent pull request that this document produces. Delegates
-   * to `_queryPrArtifacts` and returns the first row mapped to
-   * `PullRequestInfo`. Returns null when no linked PR artifact exists.
+   * Get the pull request that this document produces for the requested repo.
+   * Falls back to the document's primary repo, then the newest linked PR.
+   * Returns null when no linked PR artifact exists.
    */
   async getDocumentPullRequest(
     documentId: string,
-    organizationId: string
+    organizationId: string,
+    repoFullName?: string | null
   ): Promise<PullRequestInfo | null> {
-    const { rows } = await _queryPrArtifacts(documentId, organizationId);
-    if (rows.length === 0) {
-      return null;
-    }
-    return _rowToInfo(rows[0]);
+    const pullRequests = await this.getDocumentPullRequests(
+      documentId,
+      organizationId
+    );
+    return pickPullRequestForRepo(pullRequests, repoFullName);
   },
 
   /**
@@ -332,19 +334,12 @@ export const documentWorkstreamService = {
       .map(_rowToInfo)
       .filter((info): info is PullRequestInfo => info !== null);
 
-    infos.sort((a, b) => {
-      const aIsPrimary = targetRepo ? a.repoFullName === targetRepo : false;
-      const bIsPrimary = targetRepo ? b.repoFullName === targetRepo : false;
-      if (aIsPrimary && !bIsPrimary) {
-        return -1;
-      }
-      if (!aIsPrimary && bIsPrimary) {
-        return 1;
-      }
-      return 0;
-    });
+    const primary = pickPullRequestForRepo(infos, targetRepo);
+    if (!primary) {
+      return infos;
+    }
 
-    return infos;
+    return [primary, ...infos.filter((info) => info.id !== primary.id)];
   },
 };
 

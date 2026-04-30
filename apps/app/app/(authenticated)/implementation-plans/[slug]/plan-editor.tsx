@@ -6,6 +6,7 @@ import {
   DocumentStatus,
   DocumentType,
   PullRequestState,
+  pickPullRequestForRepo,
 } from "@repo/api/src/types/document";
 import { InlinePresence, OptionalDocumentRoom } from "@repo/collaboration";
 import {
@@ -167,10 +168,7 @@ export function PlanEditor({
     useInitialAdditionalRepos(plan.id);
 
   const { data: pullRequests = [] } = useDocumentPullRequest(plan.id);
-  const primaryPr =
-    pullRequests.find((pr) => pr.repoFullName === plan.targetRepo) ??
-    pullRequests[0] ??
-    null;
+  const primaryPr = pickPullRequestForRepo(pullRequests, plan.targetRepo);
   const { data: judgesReport } = usePlanJudgesFeedback(plan.id);
   const { data: codeJudgesReport } = useCodeJudgesFeedback(plan.id);
 

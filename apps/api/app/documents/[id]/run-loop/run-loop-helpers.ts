@@ -3,6 +3,7 @@ import type { BackendMismatchBody } from "@repo/api/src/types/compute-target";
 import {
   type PullRequestInfo,
   PullRequestState,
+  pickPullRequestForRepo,
 } from "@repo/api/src/types/document";
 import {
   type AdditionalRepoRef,
@@ -146,13 +147,20 @@ async function resolveParentLoopForRunContext({
  * and return its head branch for the harness clone target.
  */
 export function resolveEvaluateCodeTargetBranch(
-  pr: PullRequestInfo | null
+  pr: PullRequestInfo | null,
+  repoFullName?: string | null
 ): { ok: true; branch: string } | { ok: false; message: string } {
   if (!pr || pr.state !== PullRequestState.Open) {
     return {
       ok: false,
       message:
         "No open pull request found. Execute the plan first to create a PR.",
+    };
+  }
+  if (repoFullName && pr.repoFullName && pr.repoFullName !== repoFullName) {
+    return {
+      ok: false,
+      message: `No open pull request found for repository ${repoFullName}.`,
     };
   }
   if (!pr.headBranch) {
@@ -169,6 +177,7 @@ export async function resolveEvaluateCodeBranchForRunLoop(
   command: keyof typeof COMMAND_MAP,
   documentId: string,
   organizationId: string,
+  repoFullName: string | null | undefined,
   fallbackBranch: string
 ): Promise<
   | { ok: true; branch: string }
@@ -178,11 +187,12 @@ export async function resolveEvaluateCodeBranchForRunLoop(
     return { ok: true, branch: fallbackBranch };
   }
 
-  const pr = await documentWorkstreamService.getDocumentPullRequest(
+  const pullRequests = await documentWorkstreamService.getDocumentPullRequests(
     documentId,
     organizationId
   );
-  const evaluateBranch = resolveEvaluateCodeTargetBranch(pr);
+  const pr = pickPullRequestForRepo(pullRequests, repoFullName);
+  const evaluateBranch = resolveEvaluateCodeTargetBranch(pr, repoFullName);
   if (!evaluateBranch.ok) {
     return { ok: false, response: badRequestResponse(evaluateBranch.message) };
   }

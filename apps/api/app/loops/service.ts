@@ -409,12 +409,12 @@ export const loopsService = {
       }
     );
 
-    const shouldLoadPullRequests =
+    let pullRequests: PullRequestInfo[] = [];
+    if (
       result.documentId !== null &&
       (result.repo !== null ||
-        (result.additionalRepos !== null && result.additionalRepos.length > 0));
-    let pullRequests: PullRequestInfo[] = [];
-    if (shouldLoadPullRequests && result.documentId !== null) {
+        (result.additionalRepos !== null && result.additionalRepos.length > 0))
+    ) {
       pullRequests = await documentWorkstreamService.getDocumentPullRequests(
         result.documentId,
         result.organizationId

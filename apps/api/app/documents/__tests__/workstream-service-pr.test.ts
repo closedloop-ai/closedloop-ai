@@ -215,4 +215,41 @@ describe("documentWorkstreamService.getDocumentPullRequest (singular, post T-2.2
       expect.objectContaining({ externalLinkId: "pr-art-1" })
     );
   });
+
+  it("returns the PR for the requested repo instead of the newest linked PR", async () => {
+    const newerSecondaryRow = makePrArtifactRow({
+      id: "pr-art-secondary",
+      repoFullName: "owner/secondary",
+    });
+    const olderPrimaryRow = makePrArtifactRow({
+      id: "pr-art-primary",
+      repoFullName: "owner/primary",
+    });
+    mockPrArtifactsDb("owner/primary", [newerSecondaryRow, olderPrimaryRow]);
+    mockFindTargetLinks.mockResolvedValue([
+      { id: "link-1", sourceId: "doc-1", targetId: "pr-art-secondary" },
+      { id: "link-2", sourceId: "doc-1", targetId: "pr-art-primary" },
+    ]);
+    const secondaryInfo = buildPullRequestInfo({
+      id: "pr-art-secondary",
+      repoFullName: "owner/secondary",
+      externalLinkId: "pr-art-secondary",
+    });
+    const primaryInfo = buildPullRequestInfo({
+      id: "pr-art-primary",
+      repoFullName: "owner/primary",
+      externalLinkId: "pr-art-primary",
+    });
+    mockPrToInfo
+      .mockReturnValueOnce(secondaryInfo)
+      .mockReturnValueOnce(primaryInfo);
+
+    const result = await documentWorkstreamService.getDocumentPullRequest(
+      "doc-1",
+      "org-1",
+      "owner/primary"
+    );
+
+    expect(result?.repoFullName).toBe("owner/primary");
+  });
 });

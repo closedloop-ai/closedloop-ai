@@ -124,7 +124,7 @@ export type AdditionalRepoRefWithPr = AdditionalRepoRef & {
 // Loop detail view — same as LoopWithUser but with PR-enriched additional repos
 export type LoopDetail = Omit<LoopWithUser, "additionalRepos"> & {
   additionalRepos: AdditionalRepoRefWithPr[] | null;
-  primaryPullRequest?: PullRequestInfo | null;
+  primaryPullRequest: PullRequestInfo | null;
 };
 
 // Additional repository references for multi-repo loop execution

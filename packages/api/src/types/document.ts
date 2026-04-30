@@ -188,6 +188,19 @@ export type PullRequestInfo = {
   repoFullName: string | null;
 };
 
+export function pickPullRequestForRepo(
+  pullRequests: PullRequestInfo[],
+  repoFullName: string | null | undefined
+): PullRequestInfo | null {
+  return (
+    (repoFullName
+      ? pullRequests.find((pr) => pr.repoFullName === repoFullName)
+      : undefined) ??
+    pullRequests[0] ??
+    null
+  );
+}
+
 // Generation status for documents being processed by GitHub Actions or Loops
 export type GenerationStatus = {
   status: "NONE" | "PENDING" | "QUEUED" | "RUNNING" | "SUCCESS" | "FAILURE";

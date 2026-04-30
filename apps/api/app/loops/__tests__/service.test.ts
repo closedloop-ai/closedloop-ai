@@ -1,4 +1,3 @@
-import { PullRequestState } from "@repo/api/src/types/document";
 import { LoopStatus } from "@repo/api/src/types/loop";
 import {
   afterEach,
@@ -9,6 +8,7 @@ import {
   type Mock,
   vi,
 } from "vitest";
+import { buildPullRequestInfo } from "../../../__tests__/fixtures/pull-request-info";
 
 // Mock modules before importing the service
 vi.mock("@repo/database", () => ({
@@ -386,22 +386,17 @@ function makeLoopDbRow(overrides: Record<string, unknown> = {}) {
   };
 }
 
-/** Minimal PullRequestInfo fixture that satisfies the type contract. */
 function makePrInfo(repoFullName: string) {
-  return {
+  return buildPullRequestInfo({
     id: `pr-${repoFullName}`,
     number: 42,
     title: "Test PR",
     htmlUrl: `https://github.com/${repoFullName}/pull/42`,
-    state: PullRequestState.Open,
     headBranch: "feature/test",
-    baseBranch: "main",
     createdAt: new Date("2026-01-01T00:00:00.000Z"),
-    checksStatus: null,
-    reviewDecision: null,
     externalLinkId: null,
     repoFullName,
-  };
+  });
 }
 
 describe("loopsService.findById — _enrichAdditionalReposWithPr", () => {
