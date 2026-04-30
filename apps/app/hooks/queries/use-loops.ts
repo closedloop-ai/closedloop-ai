@@ -6,6 +6,7 @@ import type {
   CreateLoopRequest,
   CreateLoopResponse,
   Loop,
+  LoopDetail,
   LoopEvent,
   LoopEventsFilters,
   LoopEventsPaginatedResponse,
@@ -68,13 +69,13 @@ export function useLoops(
 
 export function useLoop(
   id: string,
-  options?: Omit<UseQueryOptions<LoopWithUser>, "queryKey" | "queryFn">
+  options?: Omit<UseQueryOptions<LoopDetail>, "queryKey" | "queryFn">
 ) {
   const apiClient = useApiClient();
 
   return useQuery({
     queryKey: loopKeys.detail(id),
-    queryFn: () => apiClient.get<LoopWithUser>(`/loops/${id}`),
+    queryFn: () => apiClient.get<LoopDetail>(`/loops/${id}`),
     enabled: !!id,
     ...options,
   });

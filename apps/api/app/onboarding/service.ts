@@ -61,7 +61,6 @@ export const onboardingService = {
         select: {
           settings: true,
           claudeApiKeyEncrypted: true,
-          anthropicApiKey: true,
         },
       })
     );
@@ -107,8 +106,7 @@ export const onboardingService = {
       ),
     ]);
 
-    const hasAnthropicKey =
-      !!org?.claudeApiKeyEncrypted || !!org?.anthropicApiKey;
+    const hasAnthropicKey = !!org?.claudeApiKeyEncrypted;
 
     // Legacy orgs: if no wizard record but org already has teams+projects, treat as completed
     const wizardCompleted =

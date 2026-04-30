@@ -1,13 +1,6 @@
 import { LinkType } from "@repo/api/src/types/artifact";
-import {
-  DocumentType,
-  type PullRequestInfo,
-} from "@repo/api/src/types/document";
+import { DocumentType } from "@repo/api/src/types/document";
 import { ArtifactType, withDb } from "@repo/database";
-import {
-  pullRequestArtifactToInfo,
-  pullRequestWhere,
-} from "@/lib/artifact-adapters";
 import { artifactLinksService } from "../artifact-links/service";
 import {
   type DocumentWithRegenerationContext,
@@ -21,8 +14,7 @@ import { documentVersionService } from "./document-version-service";
 /**
  * Document workstream service. Owns the "wire a document into a workstream"
  * flows: resolve the source PRD/Feature via artifact links, attach the
- * document to that source's workstream (or auto-create one), and read the
- * most recent pull request for a document's workstream.
+ * document to that source's workstream (or auto-create one).
  *
  * Used by the generation/execution flows that need a workstream + source PRD
  * before triggering a workflow.
@@ -222,59 +214,6 @@ export const documentWorkstreamService = {
         workstream: workstreamToWithDocuments(workstream),
         source: foundSource,
       };
-    });
-  },
-
-  /**
-   * Get the most recent pull request that this document produces. Resolved
-   * via artifact links (PRODUCES, document → PR), not via the document's
-   * workstream — workstreams are shared across documents (PRD + plan + …)
-   * so a workstream-scoped lookup would return the PR for any sibling
-   * document, not the one this document produced. Returns null when no
-   * such link exists.
-   */
-  async getDocumentPullRequest(
-    documentId: string,
-    organizationId: string
-  ): Promise<PullRequestInfo | null> {
-    const artifact = await withDb((db) =>
-      db.artifact.findUnique({
-        where: { id: documentId, organizationId },
-        select: { type: true },
-      })
-    );
-
-    if (artifact?.type !== ArtifactType.DOCUMENT) {
-      return null;
-    }
-
-    const targetLinks = await artifactLinksService.findTargetLinks(
-      organizationId,
-      documentId,
-      LinkType.Produces
-    );
-
-    if (targetLinks.length === 0) {
-      return null;
-    }
-
-    const prArtifact = await withDb((db) =>
-      db.artifact.findFirst({
-        where: pullRequestWhere({
-          organizationId,
-          id: { in: targetLinks.map((link) => link.targetId) },
-        }),
-        include: { pullRequest: true },
-        orderBy: { createdAt: "desc" },
-      })
-    );
-
-    if (!prArtifact) {
-      return null;
-    }
-
-    return pullRequestArtifactToInfo(prArtifact, {
-      externalLinkId: prArtifact.id,
     });
   },
 };

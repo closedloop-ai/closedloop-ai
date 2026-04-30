@@ -61,6 +61,7 @@ export const createMockPullRequest = (
     checksStatus: null,
     reviewDecision: null,
     externalLinkId: null,
+    repoFullName: "org/repo",
     ...overrides,
   };
 };

@@ -6,6 +6,7 @@ import {
   DocumentStatus,
   DocumentType,
   PullRequestState,
+  pickPullRequestForRepo,
 } from "@repo/api/src/types/document";
 import { InlinePresence, OptionalDocumentRoom } from "@repo/collaboration";
 import {
@@ -156,7 +157,8 @@ export function PlanEditor({
   const { initialAdditionalRepos, isLoadingInitialAdditionalRepos } =
     useInitialAdditionalRepos(plan.id);
 
-  const { data: pullRequest } = useDocumentPullRequest(plan.id);
+  const { data: pullRequests = [] } = useDocumentPullRequest(plan.id);
+  const primaryPr = pickPullRequestForRepo(pullRequests, plan.targetRepo);
   const { data: judgesReport } = usePlanJudgesFeedback(plan.id);
   const { data: codeJudgesReport } = useCodeJudgesFeedback(plan.id);
 
@@ -174,19 +176,18 @@ export function PlanEditor({
     planActions.isEvaluatingCode;
 
   const canEvaluateCode =
-    pullRequest?.state === PullRequestState.Open &&
-    pullRequest.headBranch.length > 0;
+    primaryPr?.state === PullRequestState.Open &&
+    primaryPr.headBranch.length > 0 &&
+    Boolean(primaryPr.repoFullName);
   const evaluateCodeHandler = useCallback(() => {
-    if (!(canEvaluateCode && pullRequest)) {
+    if (!(canEvaluateCode && primaryPr?.repoFullName)) {
       return;
     }
-    planActions.handleEvaluateCode(pullRequest.headBranch, plan.targetRepo);
-  }, [
-    canEvaluateCode,
-    pullRequest,
-    plan.targetRepo,
-    planActions.handleEvaluateCode,
-  ]);
+    planActions.handleEvaluateCode(
+      primaryPr.headBranch,
+      primaryPr.repoFullName
+    );
+  }, [canEvaluateCode, primaryPr, planActions.handleEvaluateCode]);
 
   const handleRegenerate = useCallback(() => {
     if (multiRepoEnabled) {
@@ -258,7 +259,7 @@ export function PlanEditor({
       onRestoreVersion={contentController.restoreVersion}
       onToggleMetadataPanel={uiState.toggleMetadataPanel}
       plan={plan}
-      pullRequest={pullRequest ?? null}
+      pullRequests={pullRequests}
       showRestore={session.isViewingHistorical}
     />
   ) : null;

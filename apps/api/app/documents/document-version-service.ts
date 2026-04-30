@@ -2,6 +2,7 @@ import type { DocumentDetail } from "@repo/api/src/types/document";
 import type { DocumentVersion } from "@repo/api/src/types/document-version";
 import { ArtifactType, withDb } from "@repo/database";
 import { documentIncludeWithUser, toDocument } from "./document-utils";
+import { sanitizeAndLog } from "./sanitize-content";
 
 /**
  * Document version service. Owns version-row CRUD plus the higher-level
@@ -105,13 +106,14 @@ export const documentVersionService = {
       }
 
       const nextVersion = detail.latestVersion + 1;
+      const sanitizedContent = sanitizeAndLog(content, documentId);
 
       const [version] = await Promise.all([
         tx.documentVersion.create({
           data: {
             documentId,
             version: nextVersion,
-            content,
+            content: sanitizedContent,
             createdById: userId,
           },
         }),

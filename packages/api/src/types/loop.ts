@@ -14,6 +14,7 @@ import { TokensByModel } from "@closedloop-ai/loops-api/tokens";
 import type { ArtifactSubtype } from "./artifact";
 import { ArtifactType } from "./artifact";
 import type { JsonObject } from "./common";
+import type { PullRequestInfo } from "./document";
 import type { BasicUser } from "./user";
 
 // --- Re-exports from @closedloop-ai/loops-api ---
@@ -115,6 +116,17 @@ export type LoopWithUser = Loop & {
     email: string;
   };
   computeTarget: ComputeTargetSummary | null;
+};
+
+// AdditionalRepoRef augmented with an optional pull request (for loop detail views)
+export type AdditionalRepoRefWithPr = AdditionalRepoRef & {
+  pullRequest?: PullRequestInfo | null;
+};
+
+// Loop detail view — same as LoopWithUser but with PR-enriched additional repos
+export type LoopDetail = Omit<LoopWithUser, "additionalRepos"> & {
+  additionalRepos: AdditionalRepoRefWithPr[] | null;
+  primaryPullRequest: PullRequestInfo | null;
 };
 
 // Additional repository references for multi-repo loop execution
