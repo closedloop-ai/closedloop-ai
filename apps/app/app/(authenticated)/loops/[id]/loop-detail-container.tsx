@@ -128,7 +128,6 @@ function renderPrLink(
       >
         <GitPullRequestIcon className="h-3.5 w-3.5" />
         PR #{pr.number}
-        <ExternalLinkIcon className="h-3 w-3" />
       </Link>
     );
   }
