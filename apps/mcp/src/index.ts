@@ -40,7 +40,6 @@ import { registerGetLinearStatus } from "./tools/get-linear-status.js";
 import { registerGetLoop } from "./tools/get-loop.js";
 import { registerGetMe } from "./tools/get-me.js";
 import { registerGetProject } from "./tools/get-project.js";
-import { registerGetRelatedDocuments } from "./tools/get-related-documents.js";
 import { registerGetWorkstream } from "./tools/get-workstream.js";
 import { registerListArtifactLinks } from "./tools/list-artifact-links.js";
 import { registerListAttachments } from "./tools/list-attachments.js";
@@ -334,7 +333,6 @@ const TOOL_REGISTRATIONS: ToolRegistration[] = [
   { name: "list-document-versions", register: registerListDocumentVersions },
   { name: "list-attachments", register: registerListAttachments },
   { name: "download-attachment", register: registerDownloadAttachment },
-  { name: "get-related-documents", register: registerGetRelatedDocuments },
   { name: "get-me", register: registerGetMe },
   { name: "list-workstreams", register: registerListWorkstreams },
   { name: "get-workstream", register: registerGetWorkstream },

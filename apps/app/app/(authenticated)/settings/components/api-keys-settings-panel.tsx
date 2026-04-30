@@ -249,7 +249,6 @@ const MCP_TOOL_GROUPS = [
       "update-document",
       "create-document-version",
       "list-document-versions",
-      "get-related-documents",
     ],
   },
   {

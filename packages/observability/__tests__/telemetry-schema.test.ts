@@ -105,6 +105,25 @@ describe("telemetryDiagnosticsSchema", () => {
     expect(result.success).toBe(true);
   });
 
+  it("accepts EXECUTE plan source diagnostics", () => {
+    const result = telemetryDiagnosticsSchema.safeParse({
+      planSource: {
+        source: "imported-plan-compat",
+        rawPlanPayload: true,
+        rawPlanAligned: false,
+        localPlanJsonPresent: false,
+        localPlanJsonAligned: false,
+        importedPlanFileStaged: true,
+        closedLoopPlanFileSet: true,
+        planArtifactContentLength: 10_455,
+        rawPlanContentLength: 23_906,
+        planArtifactContentHash: "abc123def456",
+        rawPlanContentHash: "fed654cba321",
+      },
+    });
+    expect(result.success).toBe(true);
+  });
+
   it("accepts absence of ackLatencyMs (optional)", () => {
     const result = telemetryDiagnosticsSchema.safeParse({});
     expect(result.success).toBe(true);
@@ -276,6 +295,44 @@ describe("buildDesktopTelemetryPayload", () => {
     const trace = result.trace as Record<string, unknown>;
     expect(trace.loopSessionId).toBe(VALID_UUID_B);
     expect(trace.gatewaySessionId).toBe(VALID_UUID_A);
+  });
+
+  it("preserves desktop EXECUTE plan source diagnostics", () => {
+    const result = buildDesktopTelemetryPayload({
+      ...validDesktopWirePayload,
+      category: TelemetryCategory.JobPlanSourceResolved,
+      diagnostics: {
+        planSource: {
+          source: "imported-plan-compat",
+          rawPlanPayload: true,
+          rawPlanAligned: false,
+          localPlanJsonPresent: true,
+          localPlanJsonAligned: false,
+          importedPlanFileStaged: true,
+          closedLoopPlanFileSet: true,
+          planArtifactContentLength: 10_455,
+          rawPlanContentLength: 23_906,
+          planArtifactContentHash: "abc123def456",
+          rawPlanContentHash: "fed654cba321",
+        },
+      },
+    });
+
+    const diagnostics = result.diagnostics as Record<string, unknown>;
+    expect(result.category).toBe(TelemetryCategory.JobPlanSourceResolved);
+    expect(diagnostics.planSource).toEqual({
+      source: "imported-plan-compat",
+      rawPlanPayload: true,
+      rawPlanAligned: false,
+      localPlanJsonPresent: true,
+      localPlanJsonAligned: false,
+      importedPlanFileStaged: true,
+      closedLoopPlanFileSet: true,
+      planArtifactContentLength: 10_455,
+      rawPlanContentLength: 23_906,
+      planArtifactContentHash: "abc123def456",
+      rawPlanContentHash: "fed654cba321",
+    });
   });
 });
 

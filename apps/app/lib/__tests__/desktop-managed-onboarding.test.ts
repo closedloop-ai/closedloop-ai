@@ -109,6 +109,24 @@ describe("DESKTOP_INSTALLER_SCRIPT", () => {
     expect(copyIndex).toBeGreaterThan(replaceIndex);
   });
 
+  it("quits any running Desktop instance before replacing the app", () => {
+    const quitBody = DESKTOP_INSTALLER_SCRIPT.slice(
+      DESKTOP_INSTALLER_SCRIPT.indexOf("quit_running_desktop()"),
+      DESKTOP_INSTALLER_SCRIPT.indexOf("install_desktop_app()")
+    );
+    const mainBody = DESKTOP_INSTALLER_SCRIPT.slice(
+      DESKTOP_INSTALLER_SCRIPT.indexOf("main()")
+    );
+    const quitIndex = mainBody.indexOf("quit_running_desktop");
+    const installIndex = mainBody.indexOf("install_desktop_app");
+
+    expect(quitBody).toContain('osascript -e "quit app id \\"$BUNDLE_ID\\""');
+    expect(quitBody).toContain('pgrep -x "$APP_NAME"');
+    expect(quitBody).toContain('fail_step "desktop_quit"');
+    expect(quitIndex).toBeGreaterThanOrEqual(0);
+    expect(installIndex).toBeGreaterThan(quitIndex);
+  });
+
   it("uses per-run temp files for Desktop install error capture", () => {
     expect(DESKTOP_INSTALLER_SCRIPT).toContain('remove_err_file="$(mktemp)"');
     expect(DESKTOP_INSTALLER_SCRIPT).toContain('copy_err_file="$(mktemp)"');
@@ -133,10 +151,11 @@ describe("DESKTOP_INSTALLER_SCRIPT", () => {
     );
   });
 
-  it("dispatches through OS file-open and leaves manual instructions on dispatch failure", () => {
+  it("dispatches the handoff to the installed app path instead of bundle-id resolution", () => {
     expect(DESKTOP_INSTALLER_SCRIPT).toContain(
-      'open -b "$BUNDLE_ID" "$HANDOFF_FILE"'
+      'open -a "$APP_PATH" "$HANDOFF_FILE"'
     );
+    expect(DESKTOP_INSTALLER_SCRIPT).not.toContain('open -b "$BUNDLE_ID"');
     expect(DESKTOP_INSTALLER_SCRIPT).toContain(
       "automatic file-open dispatch failed"
     );

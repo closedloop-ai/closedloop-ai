@@ -1,5 +1,5 @@
 /**
- * Unit tests for documentsService.getEvaluationFeedback and getBatchJudgeScores.
+ * Unit tests for documentEvaluationService.getEvaluationFeedback and getBatchJudgeScores.
  *
  * Tests the artifactEvaluation read paths that use artifactId + organizationId
  * for org-scoped queries (single `artifactId` FK after artifact cutover).
@@ -45,7 +45,7 @@ vi.mock("@repo/database", () => ({
 
 // Import after mocking
 import { withDb } from "@repo/database";
-import { documentsService } from "@/app/documents/service";
+import { documentEvaluationService } from "@/app/documents/evaluation-service";
 import {
   createMockEvaluationRow,
   createMockJudgeScoreRow,
@@ -184,7 +184,7 @@ const SCENARIO_REGISTRY: ScenarioConfig[] = [
   },
 ];
 
-describe("documentsService.getEvaluationFeedback (PLAN)", () => {
+describe("documentEvaluationService.getEvaluationFeedback (PLAN)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -198,7 +198,7 @@ describe("documentsService.getEvaluationFeedback (PLAN)", () => {
     it(scenario.description, async () => {
       scenario.setupMocks();
 
-      const result = await documentsService.getEvaluationFeedback(
+      const result = await documentEvaluationService.getEvaluationFeedback(
         "artifact-123",
         "org-123",
         EvaluationReportType.Plan
@@ -222,7 +222,7 @@ describe("documentsService.getEvaluationFeedback (PLAN)", () => {
       callback({ artifactEvaluation: { findFirst } })
     );
 
-    const result = await documentsService.getEvaluationFeedback(
+    const result = await documentEvaluationService.getEvaluationFeedback(
       "artifact-123",
       "org-123",
       EvaluationReportType.Plan
@@ -252,7 +252,7 @@ describe("documentsService.getEvaluationFeedback (PLAN)", () => {
       callback({ artifactEvaluation: { findFirst } })
     );
 
-    const result = await documentsService.getEvaluationFeedback(
+    const result = await documentEvaluationService.getEvaluationFeedback(
       "artifact-123",
       "org-different",
       EvaluationReportType.Plan
@@ -277,7 +277,7 @@ describe("documentsService.getEvaluationFeedback (PLAN)", () => {
       })
     );
 
-    await documentsService.getEvaluationFeedback(
+    await documentEvaluationService.getEvaluationFeedback(
       "artifact-123",
       "org-123",
       EvaluationReportType.Plan
@@ -320,7 +320,7 @@ describe("documentsService.getEvaluationFeedback (PLAN)", () => {
       })
     );
 
-    const result = await documentsService.getEvaluationFeedback(
+    const result = await documentEvaluationService.getEvaluationFeedback(
       "artifact-123",
       "org-123",
       EvaluationReportType.Plan
@@ -338,7 +338,7 @@ describe("documentsService.getEvaluationFeedback (PLAN)", () => {
   });
 });
 
-describe("documentsService.getEvaluationFeedback (PRD)", () => {
+describe("documentEvaluationService.getEvaluationFeedback (PRD)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -355,7 +355,7 @@ describe("documentsService.getEvaluationFeedback (PRD)", () => {
       })
     );
 
-    await documentsService.getEvaluationFeedback(
+    await documentEvaluationService.getEvaluationFeedback(
       "artifact-123",
       "org-123",
       EvaluationReportType.Prd
@@ -400,7 +400,7 @@ describe("documentsService.getEvaluationFeedback (PRD)", () => {
       })
     );
 
-    const result = await documentsService.getEvaluationFeedback(
+    const result = await documentEvaluationService.getEvaluationFeedback(
       "artifact-prd-123",
       "org-123",
       EvaluationReportType.Prd
@@ -427,7 +427,7 @@ describe("documentsService.getEvaluationFeedback (PRD)", () => {
       })
     );
 
-    const result = await documentsService.getEvaluationFeedback(
+    const result = await documentEvaluationService.getEvaluationFeedback(
       "artifact-123",
       "org-123",
       EvaluationReportType.Prd
@@ -437,7 +437,7 @@ describe("documentsService.getEvaluationFeedback (PRD)", () => {
   });
 });
 
-describe("documentsService.getEvaluationFeedback (CODE)", () => {
+describe("documentEvaluationService.getEvaluationFeedback (CODE)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -454,7 +454,7 @@ describe("documentsService.getEvaluationFeedback (CODE)", () => {
       })
     );
 
-    await documentsService.getEvaluationFeedback(
+    await documentEvaluationService.getEvaluationFeedback(
       "artifact-123",
       "org-123",
       EvaluationReportType.Code
@@ -474,7 +474,7 @@ describe("documentsService.getEvaluationFeedback (CODE)", () => {
   });
 });
 
-describe("documentsService.getEvaluationFeedback (error path)", () => {
+describe("documentEvaluationService.getEvaluationFeedback (error path)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -492,7 +492,7 @@ describe("documentsService.getEvaluationFeedback (error path)", () => {
       })
     );
 
-    const result = await documentsService.getEvaluationFeedback(
+    const result = await documentEvaluationService.getEvaluationFeedback(
       "artifact-123",
       "org-123",
       EvaluationReportType.Plan
@@ -513,7 +513,7 @@ describe("documentsService.getEvaluationFeedback (error path)", () => {
       })
     );
 
-    const result = await documentsService.getEvaluationFeedback(
+    const result = await documentEvaluationService.getEvaluationFeedback(
       "artifact-123",
       "org-123",
       EvaluationReportType.Plan
@@ -526,7 +526,7 @@ describe("documentsService.getEvaluationFeedback (error path)", () => {
   });
 });
 
-describe("documentsService.getBatchJudgeScores", () => {
+describe("documentEvaluationService.getBatchJudgeScores", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -566,9 +566,11 @@ describe("documentsService.getBatchJudgeScores", () => {
       []
     );
 
-    await documentsService.getBatchJudgeScores("project-123", "org-123", [
-      EvaluationReportType.Plan,
-    ]);
+    await documentEvaluationService.getBatchJudgeScores(
+      "project-123",
+      "org-123",
+      [EvaluationReportType.Plan]
+    );
 
     // Step 1: fetch artifact IDs scoped to project + org + DOCUMENT type
     expect(artifactFindMany).toHaveBeenCalledWith(
@@ -639,7 +641,7 @@ describe("documentsService.getBatchJudgeScores", () => {
       olderEvaluation,
     ] as any);
 
-    const result = await documentsService.getBatchJudgeScores(
+    const result = await documentEvaluationService.getBatchJudgeScores(
       "project-123",
       "org-123",
       [EvaluationReportType.Plan]
@@ -662,9 +664,11 @@ describe("documentsService.getBatchJudgeScores", () => {
   it("org isolation: second query filters by organizationId directly (not via relation)", async () => {
     const { evaluationFindMany } = setupTwoStepMock(["artifact-123"], []);
 
-    await documentsService.getBatchJudgeScores("project-123", "org-456", [
-      EvaluationReportType.Plan,
-    ]);
+    await documentEvaluationService.getBatchJudgeScores(
+      "project-123",
+      "org-456",
+      [EvaluationReportType.Plan]
+    );
 
     // Step 1 scopes artifact IDs to org-456
     // Step 2 also filters by organizationId directly for defense in depth
@@ -680,11 +684,15 @@ describe("documentsService.getBatchJudgeScores", () => {
   it("forwards the provided reportTypes to the Prisma query", async () => {
     const { evaluationFindMany } = setupTwoStepMock(["artifact-123"], []);
 
-    await documentsService.getBatchJudgeScores("project-123", "org-123", [
-      EvaluationReportType.Plan,
-      EvaluationReportType.Prd,
-      EvaluationReportType.Code,
-    ]);
+    await documentEvaluationService.getBatchJudgeScores(
+      "project-123",
+      "org-123",
+      [
+        EvaluationReportType.Plan,
+        EvaluationReportType.Prd,
+        EvaluationReportType.Code,
+      ]
+    );
 
     expect(evaluationFindMany).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -747,7 +755,7 @@ describe("documentsService.getBatchJudgeScores", () => {
       prdEvaluation,
     ] as any);
 
-    const result = await documentsService.getBatchJudgeScores(
+    const result = await documentEvaluationService.getBatchJudgeScores(
       "project-123",
       "org-123",
       [EvaluationReportType.Plan, EvaluationReportType.Prd]
@@ -788,7 +796,7 @@ describe("documentsService.getBatchJudgeScores", () => {
 
     setupTwoStepMock(["artifact-prd-2"], [prdEvaluation] as any);
 
-    const result = await documentsService.getBatchJudgeScores(
+    const result = await documentEvaluationService.getBatchJudgeScores(
       "project-123",
       "org-123",
       [EvaluationReportType.Prd]
@@ -826,7 +834,7 @@ describe("documentsService.getBatchJudgeScores", () => {
 
     setupTwoStepMock(["artifact-code-1"], [codeEvaluation] as any);
 
-    const result = await documentsService.getBatchJudgeScores(
+    const result = await documentEvaluationService.getBatchJudgeScores(
       "project-123",
       "org-123",
       [EvaluationReportType.Code]
@@ -846,7 +854,7 @@ describe("documentsService.getBatchJudgeScores", () => {
   it("returns empty object when no evaluations exist for project", async () => {
     setupTwoStepMock([], []);
 
-    const result = await documentsService.getBatchJudgeScores(
+    const result = await documentEvaluationService.getBatchJudgeScores(
       "project-empty",
       "org-123",
       [EvaluationReportType.Plan, EvaluationReportType.Prd]
@@ -878,7 +886,7 @@ describe("documentsService.getBatchJudgeScores", () => {
 
     setupTwoStepMock(["artifact-plan-2"], [planEvaluation] as any);
 
-    const result = await documentsService.getBatchJudgeScores(
+    const result = await documentEvaluationService.getBatchJudgeScores(
       "project-123",
       "org-123",
       [EvaluationReportType.Plan]

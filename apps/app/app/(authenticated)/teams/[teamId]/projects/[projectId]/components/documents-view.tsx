@@ -1,15 +1,11 @@
 "use client";
 
+import { type Artifact, ArtifactType } from "@repo/api/src/types/artifact";
 import {
   DocumentType,
   type DocumentWithWorkstream,
-  getRoutePrefixForType,
 } from "@repo/api/src/types/document";
-import {
-  type TreeEntity,
-  TreeEntityType,
-  type TreeNode,
-} from "@repo/api/src/types/project-tree";
+import type { TreeNode } from "@repo/api/src/types/project-tree";
 import type { WorkstreamState } from "@repo/api/src/types/workstream";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
@@ -44,13 +40,13 @@ import { GroupSectionHeader } from "@/components/document-table/group-section-he
 import { DocumentTableHeader } from "@/components/document-table/table-header";
 import { EmptyState } from "@/components/empty-state";
 import { MoveEntityDialog } from "@/components/move-entity-dialog";
-import { useParentFallbackMap } from "@/hooks/queries/use-artifact-links";
 import { useMergeDocuments } from "@/hooks/queries/use-documents";
 import { useProjectTree } from "@/hooks/queries/use-project-tree";
 import type { DocumentColumn } from "@/hooks/use-column-visibility";
 import { useGroupExpansion } from "@/hooks/use-group-expansion";
 import { useSortParams } from "@/hooks/use-sort-params";
 import { matchesFilter } from "@/lib/document-filter";
+import { getArtifactRoute } from "@/lib/document-navigation";
 import {
   GroupByMode,
   type GroupByNonNone,
@@ -224,14 +220,14 @@ function toDisplayGroups(wsGroups: WorkstreamGroup[]): DisplayGroup[] {
 }
 
 function treeEntityToRowItem(
-  entity: TreeEntity,
+  entity: Artifact,
   documentMap: Map<string, DocumentWithWorkstream>
 ): DocumentRowItem | null {
-  if (isArtifactTreeEntity(entity)) {
+  if (isDocumentArtifact(entity)) {
     const doc = documentMap.get(entity.id);
     return doc ? toRowItem(doc) : null;
   }
-  return null; // ExternalLink — no row type yet
+  return null; // PR / Deployment artifact — no row type yet
 }
 
 function groupByProjectTree(
@@ -527,6 +523,8 @@ export function DocumentsView({
     useProjectTree(projectId);
 
   // Build parent map: child entity id → parent title + optional parent artifact route.
+  // In-project tree parents take precedence; cross-project parents (returned in
+  // `treeData.externalParents`) fill in for items whose parent lives elsewhere.
   const parentMap = useMemo((): Map<
     string,
     { title: string; href: string | null }
@@ -536,16 +534,22 @@ export function DocumentsView({
     }
     const map = new Map<string, { title: string; href: string | null }>();
     for (const node of treeData.nodes) {
-      let parentHref: string | null = null;
-      if (isArtifactTreeEntity(node.root)) {
-        const routePrefix = getRoutePrefixForType(node.root.type);
-        if (routePrefix) {
-          parentHref = `/${routePrefix}/${node.root.slug}`;
-        }
-      }
+      const parentHref = getArtifactRoute(node.root);
       for (const child of node.children) {
-        map.set(child.id, { title: node.root.title, href: parentHref });
+        map.set(child.id, { title: node.root.name, href: parentHref });
       }
+    }
+    for (const entry of treeData.externalParents) {
+      if (map.has(entry.childId)) {
+        continue;
+      }
+      if (!isDocumentArtifact(entry.parent)) {
+        continue;
+      }
+      map.set(entry.childId, {
+        title: entry.parent.name,
+        href: getArtifactRoute(entry.parent),
+      });
     }
     return map;
   }, [treeData]);
@@ -623,33 +627,6 @@ export function DocumentsView({
     groups,
     isGroupExpanded,
   ]);
-
-  // When a child entity is moved to a different project, it leaves its parent's
-  // project tree (parentMap is built from the current project's tree). To keep
-  // the "Parent" column populated after a cross-project move, we query
-  // entity-links for any item not already in parentMap and build a fallback
-  // that surfaces the parent's title and href in the new project's table.
-  const parentFallbackItems = useMemo(
-    () =>
-      renderedItems
-        .filter((item) => !parentMap.has(item.data.id))
-        .map((item) => ({
-          id: item.data.id,
-        })),
-    [renderedItems, parentMap]
-  );
-
-  const fallbackParentMap = useParentFallbackMap(parentFallbackItems);
-
-  const combinedParentMap = useMemo(() => {
-    const map = new Map(parentMap);
-    for (const [childId, parentInfo] of fallbackParentMap) {
-      if (!map.has(childId)) {
-        map.set(childId, parentInfo);
-      }
-    }
-    return map;
-  }, [parentMap, fallbackParentMap]);
 
   const isSourceEmpty = filteredDocuments.length === 0;
   const isPostFilterEmpty = renderedItems.length === 0;
@@ -828,13 +805,13 @@ export function DocumentsView({
               section.groups.map((group) =>
                 isGroupedView ? (
                   <TreeGroupRows
-                    combinedParentMap={combinedParentMap}
                     editHandlers={editHandlers}
                     group={group}
                     handleMoreMenu={handleMoreMenu}
                     handleSelectionChange={handleSelectionChange}
                     isGroupExpanded={isGroupExpanded}
                     key={group.groupKey}
+                    parentMap={parentMap}
                     selectedIds={selectedIds}
                     toggleGroup={toggleGroup}
                     visibleColumns={visibleColumns}
@@ -847,10 +824,8 @@ export function DocumentsView({
                     key={group.root.data.id}
                     onMoreMenu={handleMoreMenu}
                     onSelectionChange={handleSelectionChange}
-                    parentHref={combinedParentMap.get(group.root.data.id)?.href}
-                    parentTitle={
-                      combinedParentMap.get(group.root.data.id)?.title
-                    }
+                    parentHref={parentMap.get(group.root.data.id)?.href}
+                    parentTitle={parentMap.get(group.root.data.id)?.title}
                     showCheckbox={showCheckbox}
                     visibleColumns={visibleColumns}
                   />
@@ -864,13 +839,13 @@ export function DocumentsView({
     if (isGroupedView) {
       return groups.map((group) => (
         <TreeGroupRows
-          combinedParentMap={combinedParentMap}
           editHandlers={editHandlers}
           group={group}
           handleMoreMenu={handleMoreMenu}
           handleSelectionChange={handleSelectionChange}
           isGroupExpanded={isGroupExpanded}
           key={group.groupKey}
+          parentMap={parentMap}
           selectedIds={selectedIds}
           toggleGroup={toggleGroup}
           visibleColumns={visibleColumns}
@@ -886,8 +861,8 @@ export function DocumentsView({
         key={item.data.id}
         onMoreMenu={handleMoreMenu}
         onSelectionChange={handleSelectionChange}
-        parentHref={combinedParentMap.get(item.data.id)?.href}
-        parentTitle={combinedParentMap.get(item.data.id)?.title}
+        parentHref={parentMap.get(item.data.id)?.href}
+        parentTitle={parentMap.get(item.data.id)?.title}
         showCheckbox={showCheckbox}
         visibleColumns={visibleColumns}
       />
@@ -1084,10 +1059,8 @@ export function DocumentsView({
   );
 }
 
-function isArtifactTreeEntity(
-  entity: TreeEntity
-): entity is Extract<TreeEntity, { slug: string; type: DocumentType }> {
-  return "slug" in entity && "type" in entity;
+function isDocumentArtifact(artifact: Artifact): boolean {
+  return artifact.type === ArtifactType.Document;
 }
 
 // ---- Tree group rows (shared between grouped and status-grouped views) ----
@@ -1100,7 +1073,7 @@ function TreeGroupRows({
   selectedIds,
   handleSelectionChange,
   handleMoreMenu,
-  combinedParentMap,
+  parentMap,
   visibleColumns,
 }: {
   group: DisplayGroup;
@@ -1110,7 +1083,7 @@ function TreeGroupRows({
   selectedIds: Set<string>;
   handleSelectionChange: (id: string, checked: boolean) => void;
   handleMoreMenu: (item: DocumentRowItem, anchor: HTMLElement) => void;
-  combinedParentMap: Map<string, { title: string; href: string | null }>;
+  parentMap: Map<string, { title: string; href: string | null }>;
   visibleColumns: DocumentColumn[];
 }) {
   const { root, children } = group;
@@ -1128,8 +1101,8 @@ function TreeGroupRows({
         onToggleExpand={
           hasChildren ? () => toggleGroup(group.groupKey) : undefined
         }
-        parentHref={combinedParentMap.get(root.data.id)?.href}
-        parentTitle={combinedParentMap.get(root.data.id)?.title}
+        parentHref={parentMap.get(root.data.id)?.href}
+        parentTitle={parentMap.get(root.data.id)?.title}
         showCheckbox={false}
         visibleColumns={visibleColumns}
       />
@@ -1144,8 +1117,8 @@ function TreeGroupRows({
             key={child.data.id}
             onMoreMenu={handleMoreMenu}
             onSelectionChange={handleSelectionChange}
-            parentHref={combinedParentMap.get(child.data.id)?.href}
-            parentTitle={combinedParentMap.get(child.data.id)?.title}
+            parentHref={parentMap.get(child.data.id)?.href}
+            parentTitle={parentMap.get(child.data.id)?.title}
             showCheckbox={false}
             visibleColumns={visibleColumns}
           />
@@ -1154,7 +1127,7 @@ function TreeGroupRows({
   );
 }
 
-// ---- Branches list (ExternalLinks with type=PULL_REQUEST) ----
+// ---- Branches list (PR + Deployment artifacts) ----
 
 function BranchesList({
   isLoading,
@@ -1218,13 +1191,16 @@ function collectPullRequestTreeEntries(nodes: TreeNode[]): PrTreeEntry[] {
   const out: PrTreeEntry[] = [];
   for (const node of nodes) {
     for (const entity of [node.root, ...node.children]) {
-      if (!isPullRequestTreeEntity(entity) || seen.has(entity.id)) {
+      if (!isExternalLinkArtifact(entity)) {
+        continue;
+      }
+      if (seen.has(entity.id) || !entity.externalUrl) {
         continue;
       }
       seen.add(entity.id);
       out.push({
         id: entity.id,
-        title: entity.title,
+        title: entity.name,
         externalUrl: entity.externalUrl,
       });
     }
@@ -1232,10 +1208,11 @@ function collectPullRequestTreeEntries(nodes: TreeNode[]): PrTreeEntry[] {
   return out;
 }
 
-function isPullRequestTreeEntity(
-  entity: TreeEntity
-): entity is Extract<TreeEntity, { externalUrl: string }> {
-  return entity.entityType === TreeEntityType.ExternalLink;
+function isExternalLinkArtifact(artifact: Artifact): boolean {
+  return (
+    artifact.type === ArtifactType.PullRequest ||
+    artifact.type === ArtifactType.Deployment
+  );
 }
 
 function DocumentsEmptyState({

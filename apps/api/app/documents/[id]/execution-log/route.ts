@@ -2,7 +2,7 @@ import type { ExecutionTrace } from "@repo/api/src/types/execution-log";
 import { withAuth } from "@/lib/auth/with-auth";
 import { resolveDocumentId } from "@/lib/identifier-utils";
 import { notFoundResponse, successResponse } from "@/lib/route-utils";
-import { documentsService } from "../../service";
+import { documentPerformanceService } from "../../performance-service";
 
 export const GET = withAuth<ExecutionTrace, "/documents/[id]/execution-log">(
   async ({ user }, _request, params) => {
@@ -12,7 +12,7 @@ export const GET = withAuth<ExecutionTrace, "/documents/[id]/execution-log">(
       return notFoundResponse("Artifact");
     }
 
-    const trace = await documentsService.getExecutionLog(
+    const trace = await documentPerformanceService.getExecutionLog(
       resolvedId,
       user.organizationId
     );

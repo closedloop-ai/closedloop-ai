@@ -62,6 +62,7 @@ vi.mock("@/lib/desktop-gateway-wire", () => ({
 
 import { DocumentType } from "@repo/api/src/types/document";
 import { LoopCommand } from "@repo/api/src/types/loop";
+import { log } from "@repo/observability/log";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { toRelayOperation } from "@/app/compute-targets/relay-command-helpers";
 import {
@@ -201,7 +202,7 @@ describe("dispatchRelayOperation (via launchLoopOnDesktop)", () => {
     ).toEqual(VALID_LAUNCH_OPTS.contextPack.attachments);
   });
 
-  it("passes undefined to relay payload body when contextPack.attachments is absent", async () => {
+  it("omits absent optional desktop loop payload fields", async () => {
     vi.spyOn(globalThis, "fetch").mockReturnValue(
       mockResponse(200, { delivered: true })
     );
@@ -216,9 +217,10 @@ describe("dispatchRelayOperation (via launchLoopOnDesktop)", () => {
     const toRelayOperationMock = vi.mocked(toRelayOperation);
     expect(toRelayOperationMock).toHaveBeenCalledOnce();
     const [, dispatchedInput] = toRelayOperationMock.mock.calls[0];
-    expect(
-      (dispatchedInput as { body: Record<string, unknown> }).body.attachments
-    ).toBeUndefined();
+    const body = (dispatchedInput as { body: Record<string, unknown> }).body;
+    expect(body).not.toHaveProperty("attachments");
+    expect(body).not.toHaveProperty("userContext");
+    expect(body).not.toHaveProperty("additionalRepos");
   });
 
   it("passes empty array to relay payload body when contextPack.attachments is []", async () => {
@@ -287,6 +289,20 @@ describe("dispatchRelayOperation (via launchLoopOnDesktop)", () => {
         pendingTasks: ["task-1"],
       },
     });
+
+    expect(log.info).toHaveBeenCalledWith(
+      "[loop-desktop] Desktop loop command dispatched",
+      expect.objectContaining({
+        implementationPlanArtifactPresent: true,
+        implementationPlanRawContentPresent: true,
+        implementationPlanRawContentMatchesArtifact: false,
+        implementationPlanRawReusableByDesktop: false,
+        implementationPlanContentLength: "Latest markdown".length,
+        implementationPlanRawContentLength: "Older markdown".length,
+        implementationPlanContentHash: expect.any(String),
+        implementationPlanRawContentHash: expect.any(String),
+      })
+    );
   });
 
   it("does NOT throw when relay returns { delivered: false } on the kill (fire-and-forget) path", async () => {

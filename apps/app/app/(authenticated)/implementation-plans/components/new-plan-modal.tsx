@@ -1,6 +1,5 @@
 "use client";
 
-import { useFeatureFlag } from "@repo/analytics/client";
 import type { AdditionalRepoRef } from "@repo/api/src/types/loop";
 import { getProjectSettings } from "@repo/api/src/types/project";
 import { Button } from "@repo/design-system/components/ui/button";
@@ -25,6 +24,7 @@ import {
   useDocuments,
 } from "@/hooks/queries/use-documents";
 import { useProject, useProjects } from "@/hooks/queries/use-projects";
+import { useMultiRepoExecuteEnabled } from "@/hooks/use-multi-repo-execute-enabled";
 import { AdditionalReposPicker } from "./additional-repos-picker";
 import { PlanPreview, PrdSelector, ProjectSelector } from "./plan-form-fields";
 import {
@@ -125,7 +125,7 @@ export function NewPlanModal({
     controlledOnOpenChange
   );
   const [error, setError] = useState<string | null>(null);
-  const showPicker = useFeatureFlag("multi-repo-plan")?.enabled === true;
+  const showPicker = useMultiRepoExecuteEnabled();
 
   // Form state
   const [selectedSourceId, setSelectedSourceId] = useState(source?.id ?? "");

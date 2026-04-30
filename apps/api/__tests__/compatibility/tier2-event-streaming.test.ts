@@ -1,3 +1,4 @@
+import { DesktopCommandStatus } from "@repo/api/src/types/compute-target";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { POST } from "@/app/internal/relay/socket-event/route";
 import { desktopCommandStore } from "@/lib/desktop-command-store";
@@ -46,7 +47,7 @@ beforeEach(() => {
     commandId: "cmd-1",
     computeTargetId: "target-1",
     operationId: "op-1",
-    status: "running",
+    status: DesktopCommandStatus.Running,
     lastSequenceAcked: 0,
     createdAt: new Date().toISOString(),
   });

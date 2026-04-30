@@ -405,7 +405,7 @@ async function attemptArtifactLinkage(
 
 /**
  * Auto-create a workstream for an artifact that lacks one.
- * Follows the same pattern as documentsService.findOrCreateWorkstream.
+ * Follows the same pattern as documentWorkstreamService.findOrCreateWorkstream.
  * Returns the new workstreamId, or null if the artifact has no projectId.
  */
 async function autoCreateWorkstream(

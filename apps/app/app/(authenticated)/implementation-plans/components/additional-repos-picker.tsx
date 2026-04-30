@@ -4,7 +4,7 @@ import type { AdditionalRepoRef } from "@repo/api/src/types/loop";
 import { MAX_ADDITIONAL_REPOS } from "@repo/api/src/types/loop";
 import { Button } from "@repo/design-system/components/ui/button";
 import { PlusIcon, TrashIcon } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { RepoBranchSelector } from "./repo-branch-selector";
 
 // Internal type — repoId is needed for Select value binding but is not part of AdditionalRepoRef
@@ -23,6 +23,7 @@ type RepoRowFieldsProps = {
   onRepoChange: (id: string, repoId: string, fullName: string) => void;
   onRepoIdResolve: (id: string, repoId: string) => void;
   onBranchChange: (id: string, branch: string) => void;
+  onSeedResolutionFailed: (id: string) => void;
   onRemove: (id: string) => void;
 };
 
@@ -35,6 +36,7 @@ function RepoRowFields({
   onRepoChange,
   onRepoIdResolve,
   onBranchChange,
+  onSeedResolutionFailed,
   onRemove,
 }: RepoRowFieldsProps) {
   return (
@@ -60,13 +62,18 @@ function RepoRowFields({
           onRepoChange(row.id, repoId, fullName)
         }
         onSeedRepoResolved={(repoId) => onRepoIdResolve(row.id, repoId)}
+        onSeedResolutionFailed={() => onSeedResolutionFailed(row.id)}
         repoLabel="Repository"
         seedFullName={row.fullName}
         selectedBranch={row.branch}
         selectedRepoId={row.repoId}
       />
 
-      {error && <p className="text-destructive text-xs">{error}</p>}
+      {error && (
+        <p aria-live="polite" className="text-destructive text-xs">
+          {error}
+        </p>
+      )}
     </div>
   );
 }
@@ -100,6 +107,21 @@ export function AdditionalReposPicker({
     }))
   );
 
+  const [unavailableRowIds, setUnavailableRowIds] = useState<Set<string>>(
+    new Set()
+  );
+
+  // Report initial incomplete state once on mount. Parents that seed the
+  // picker with placeholder rows (e.g. inherited repos missing branch) would
+  // otherwise see hasIncomplete=false until the user interacts, leaving submit
+  // buttons enabled for invalid form state. `unavailableRowIds` is empty at
+  // mount (initial state), so it doesn't enter the calculation here — the
+  // seed-resolution path reports its own update via handleSeedResolutionFailed.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: mount-only on purpose
+  useEffect(() => {
+    onIncompleteChange?.(rows.some((r) => !isRowComplete(r)));
+  }, []);
+
   // Compute per-row validation errors (keyed by row.id)
   const rowErrors = useMemo<Record<string, string>>(() => {
     const errors: Record<string, string> = {};
@@ -113,7 +135,9 @@ export function AdditionalReposPicker({
 
       const lowerName = row.fullName.toLowerCase();
 
-      if (lowerName === targetRepo?.toLowerCase()) {
+      if (unavailableRowIds.has(row.id)) {
+        errors[row.id] = "Repository unavailable";
+      } else if (lowerName === targetRepo?.toLowerCase()) {
         errors[row.id] =
           "Cannot use the primary repository as an additional repository";
       } else if (seenFullNames.includes(lowerName)) {
@@ -124,14 +148,14 @@ export function AdditionalReposPicker({
     }
 
     return errors;
-  }, [rows, targetRepo]);
+  }, [rows, targetRepo, unavailableRowIds]);
 
   const handleRepoChange = (id: string, repoId: string, fullName: string) => {
     const next = rows.map((r) =>
       r.id === id ? { ...r, repoId, fullName, branch: "" } : r
     );
     setRows(next);
-    projectToParent(next, onChange, onIncompleteChange);
+    projectToParent(next, onChange, onIncompleteChange, unavailableRowIds);
   };
 
   // Resolves repoId without resetting branch — used when reconciling initialValue rows.
@@ -143,13 +167,45 @@ export function AdditionalReposPicker({
   const handleBranchChange = (id: string, branch: string) => {
     const next = rows.map((r) => (r.id === id ? { ...r, branch } : r));
     setRows(next);
-    projectToParent(next, onChange, onIncompleteChange);
+    projectToParent(next, onChange, onIncompleteChange, unavailableRowIds);
   };
+
+  const handleSeedResolutionFailed = useCallback(
+    (id: string) => {
+      // Early-return when this row is already known unavailable. Without this
+      // guard, RepoBranchSelector's seed-resolution effect re-fires on every
+      // re-render (the inline arrow passed as onSeedResolutionFailed gets a
+      // fresh identity each render), which would otherwise produce an infinite
+      // update loop on rows whose seeded fullName cannot be matched.
+      if (unavailableRowIds.has(id)) {
+        return;
+      }
+      setUnavailableRowIds((prev) =>
+        prev.has(id) ? prev : new Set([...prev, id])
+      );
+      // Treat unavailable rows as incomplete so the parent disables submit.
+      // Pass the new set explicitly to avoid stale closure on unavailableRowIds.
+      projectToParent(
+        rows,
+        onChange,
+        onIncompleteChange,
+        new Set([...unavailableRowIds, id])
+      );
+    },
+    [rows, onChange, onIncompleteChange, unavailableRowIds]
+  );
 
   const handleRemove = (id: string) => {
     const next = rows.filter((r) => r.id !== id);
     setRows(next);
-    projectToParent(next, onChange, onIncompleteChange);
+    setUnavailableRowIds((prev) => {
+      const s = new Set(prev);
+      s.delete(id);
+      return s;
+    });
+    const nextUnavailable = new Set(unavailableRowIds);
+    nextUnavailable.delete(id);
+    projectToParent(next, onChange, onIncompleteChange, nextUnavailable);
   };
 
   const handleAdd = () => {
@@ -161,7 +217,7 @@ export function AdditionalReposPicker({
       { id: crypto.randomUUID(), repoId: "", fullName: "", branch: "" },
     ];
     setRows(next);
-    projectToParent(next, onChange, onIncompleteChange);
+    projectToParent(next, onChange, onIncompleteChange, unavailableRowIds);
   };
 
   return (
@@ -175,6 +231,7 @@ export function AdditionalReposPicker({
           onRemove={handleRemove}
           onRepoChange={handleRepoChange}
           onRepoIdResolve={handleRepoIdResolve}
+          onSeedResolutionFailed={handleSeedResolutionFailed}
           row={row}
           targetRepo={targetRepo}
         />
@@ -211,12 +268,17 @@ function isRowComplete(row: AdditionalRepoRow): boolean {
 // never see an invalid { fullName: "", branch: "" } payload in their state.
 // Incompleteness is reported separately via onIncompleteChange so parents
 // can disable submit while the user is still filling rows in.
+// Rows in unavailableRowIds are treated as incomplete so unavailable repos
+// cannot sneak through to the parent onChange payload or unblock submit.
 function projectToParent(
   rows: AdditionalRepoRow[],
   onChange: (repos: AdditionalRepoRef[]) => void,
-  onIncompleteChange?: (hasIncomplete: boolean) => void
+  onIncompleteChange?: (hasIncomplete: boolean) => void,
+  unavailableRowIds: Set<string> = new Set()
 ) {
-  const completeRows = rows.filter(isRowComplete);
+  const completeRows = rows.filter(
+    (r) => isRowComplete(r) && !unavailableRowIds.has(r.id)
+  );
   onChange(completeRows.map(({ fullName, branch }) => ({ fullName, branch })));
   onIncompleteChange?.(completeRows.length !== rows.length);
 }

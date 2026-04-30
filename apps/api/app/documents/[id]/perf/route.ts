@@ -4,7 +4,7 @@ import { NextResponse } from "next/server";
 import { withAuth } from "@/lib/auth/with-auth";
 import { resolveDocumentId } from "@/lib/identifier-utils";
 import { notFoundResponse } from "@/lib/route-utils";
-import { documentsService } from "../../service";
+import { documentPerformanceService } from "../../performance-service";
 
 export const GET = withAuth<PerfSummary | null, "/documents/[id]/perf">(
   async ({ user }, _request, params) => {
@@ -14,7 +14,7 @@ export const GET = withAuth<PerfSummary | null, "/documents/[id]/perf">(
       return notFoundResponse("Artifact");
     }
 
-    const result = await documentsService.getPerformanceData(
+    const result = await documentPerformanceService.getPerformanceData(
       resolvedId,
       user.organizationId
     );

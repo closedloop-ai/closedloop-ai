@@ -2,6 +2,8 @@ import { isDesktopApiPath } from "@repo/api/src/desktop-api-namespace";
 import { z } from "zod";
 import { jsonObjectValidator } from "@/lib/validators/json";
 
+export const uuidValidator = z.uuid();
+
 export const registerComputeTargetValidator = z.object({
   machineName: z.string().trim().min(1).max(120),
   platform: z.string().trim().min(1).max(80),
@@ -9,6 +11,8 @@ export const registerComputeTargetValidator = z.object({
   supportedOperations: z.array(z.string().trim().min(1)),
   allowedDirectories: z.array(z.string().trim().min(1)).optional(),
   pluginVersion: z.string().trim().min(1).max(120).optional(),
+  gatewayId: uuidValidator.optional(),
+  desktopSecurityUpgradeProtocolVersion: z.literal(1).optional(),
 });
 
 export const updateComputeTargetValidator = z
@@ -17,6 +21,8 @@ export const updateComputeTargetValidator = z
     platform: z.string().trim().min(1).max(80).optional(),
     capabilities: jsonObjectValidator.optional(),
     supportedOperations: z.array(z.string().trim().min(1)).optional(),
+    gatewayId: uuidValidator.optional(),
+    desktopSecurityUpgradeProtocolVersion: z.literal(1).optional(),
   })
   .refine((payload) => Object.keys(payload).length > 0, {
     message: "At least one field must be provided",

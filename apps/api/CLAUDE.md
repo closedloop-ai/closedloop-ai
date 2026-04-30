@@ -15,9 +15,20 @@ No database operations in routes — delegate to services. No type definitions o
 
 All services follow these rules. New services MUST conform; relocated services convert as part of the move.
 
-**Location.** Services live next to their routes: `app/<resource>/service.ts`. When a resource has multiple responsibilities, split into sibling files. The module that owns the entity's general/CRUD surface is named after the entity (`<entity>-service.ts`); responsibility-specific siblings are named after the responsibility (`<responsibility>-service.ts`). Examples: `app/artifacts/artifact-service.ts` (general CRUD) + `app/artifacts/project-tree-service.ts` (graph traversal); `app/documents/document-service.ts` (general CRUD) + `app/documents/generation-service.ts` (AI generation) + `app/documents/evaluation-service.ts` (ratings + judge feedback). **Never use `crud-service.ts`** — name the file after the entity instead. Do not place services under `apps/api/lib/services/`; that location is being phased out.
+**Location.** Services live next to their routes: `app/<resource>/service.ts`. When a resource has multiple responsibilities, split into sibling files. The module that owns the entity's general/CRUD surface is named after the entity (`<entity>-service.ts`); responsibility-specific siblings are named after the responsibility (`<responsibility>-service.ts`).
 
-**Named export.** Each service file exports a single named object, e.g. `export const artifactService = { ... }` or `export const documentGenerationService = { ... }`. No default exports, no facades that re-export across modules, no barrel `index.ts` files. Callers import the specific service object they need.
+The `app/documents/` tree is the canonical example of a multi-responsibility split:
+- `document-service.ts` (general CRUD)
+- `generation-service.ts` (PRD/plan generation, regeneration, change requests)
+- `execution-service.ts` (plan execution, backend resolution, plan-loop launch)
+- `merge-service.ts` (LLM-driven document merge)
+- `evaluation-service.ts` (ratings + judge feedback)
+- `performance-service.ts` (perf summaries + execution-log download)
+- Private helpers shared across these modules live in co-located files (`document-utils.ts`, `generation-status-helpers.ts`).
+
+**Never use `crud-service.ts`** — name the file after the entity instead. Do not place services under `apps/api/lib/services/` (that location has been phased out).
+
+**Named export.** Each service file exports a single named object, e.g. `export const artifactService = { ... }` or `export const documentGenerationService = { ... }`. No default exports, no facades that re-export across modules, no barrel `index.ts` files. Callers import the specific service object they need. When a sibling service needs a helper, export it as a named function from the appropriate service file (e.g. `getCommitterInfo` from `document-service.ts`) — sibling-to-sibling imports are fine; cross-module facades that aggregate everything under one umbrella name are not.
 
 **Errors as values.** Service methods do not throw to communicate errors. Fallible writes return `Result<T>` (`@repo/api/src/types/result`). Reads that may return "not found" use a nullable return (`Promise<T | null>`). Routes translate `Status.NotFound` → 404, `Status.BadRequest` → 400, `Status.Forbidden` → 403, etc. via `route-utils` helpers. Internal invariants ("argument must be non-empty", programming errors) may still throw — but anything a route would map to a non-500 HTTP status is a `Result.err`, not a throw.
 

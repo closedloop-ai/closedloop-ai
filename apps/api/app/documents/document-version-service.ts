@@ -1,7 +1,13 @@
+import type { DocumentDetail } from "@repo/api/src/types/document";
 import type { DocumentVersion } from "@repo/api/src/types/document-version";
-import { withDb } from "@repo/database";
-import { DocumentNotFoundError } from "./document-utils";
+import { ArtifactType, withDb } from "@repo/database";
+import { documentIncludeWithUser, toDocument } from "./document-utils";
 
+/**
+ * Document version service. Owns version-row CRUD plus the higher-level
+ * "save edits" path that returns a refreshed `DocumentDetail` alongside the
+ * new version row.
+ */
 export const documentVersionService = {
   /**
    * Get the latest version for a document.
@@ -74,16 +80,20 @@ export const documentVersionService = {
   },
 
   /**
-   * Create a new version of a document with content.
-   * Atomically increments latestVersion on the documentDetail and inserts
-   * the DocumentVersion row.
+   * Create a new version of a document with content. Atomically increments
+   * `latestVersion` on the documentDetail and inserts the DocumentVersion
+   * row.
+   *
+   * Returns `null` when no documentDetail is found for `documentId` in the
+   * caller's organization (document missing or cross-org). Callers map that
+   * to a 404 / no-op as appropriate.
    */
   createVersion(
     documentId: string,
     organizationId: string,
     userId: string | null,
     content: string | null
-  ): Promise<DocumentVersion> {
+  ): Promise<DocumentVersion | null> {
     return withDb.tx(async (tx) => {
       const detail = await tx.documentDetail.findFirst({
         where: { artifactId: documentId, artifact: { organizationId } },
@@ -91,7 +101,7 @@ export const documentVersionService = {
       });
 
       if (!detail) {
-        throw new DocumentNotFoundError(documentId);
+        return null;
       }
 
       const nextVersion = detail.latestVersion + 1;
@@ -112,6 +122,38 @@ export const documentVersionService = {
       ]);
 
       return version;
+    });
+  },
+
+  /**
+   * Create a new version of a document and return the refreshed
+   * `DocumentDetail` (artifact + new version). Used by the "save edits" path
+   * — `versions/route.ts` POST. Returns `null` when the document is missing,
+   * not a DOCUMENT artifact, or version creation failed.
+   */
+  createNewVersion(
+    id: string,
+    organizationId: string,
+    userId: string | null,
+    content: string
+  ): Promise<DocumentDetail | null> {
+    return withDb.tx(async (tx) => {
+      const newVersion = await documentVersionService.createVersion(
+        id,
+        organizationId,
+        userId,
+        content
+      );
+
+      const artifact = await tx.artifact.findUnique({
+        where: { id, organizationId },
+        include: documentIncludeWithUser,
+      });
+
+      if (artifact?.type !== ArtifactType.DOCUMENT || !newVersion) {
+        return null;
+      }
+      return { ...toDocument(artifact), version: newVersion };
     });
   },
 };

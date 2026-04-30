@@ -6,8 +6,8 @@ import { DocumentStatus } from "@repo/api/src/types/document";
 import { ArtifactSubtype, ArtifactType, withDb } from "@repo/database";
 import { keys } from "@repo/database/keys";
 import { describe, expect, it } from "vitest";
+import { documentService } from "@/app/documents/document-service";
 import { generateSlug } from "@/app/documents/document-utils";
-import { documentsService } from "@/app/documents/service";
 import {
   autoRollbackTransaction,
   createTestOrganization,
@@ -73,7 +73,7 @@ describe.skipIf(!hasDatabase)("reorder artifacts", () => {
       );
 
       // Reorder: 3, 1, 2
-      await documentsService.reorder(
+      await documentService.reorder(
         [artifact3.id, artifact1.id, artifact2.id],
         orgId
       );
@@ -102,7 +102,7 @@ describe.skipIf(!hasDatabase)("reorder artifacts", () => {
   it("empty array returns without error", async () => {
     await autoRollbackTransaction(async () => {
       const orgId = await createTestOrganization();
-      await expect(documentsService.reorder([], orgId)).resolves.not.toThrow();
+      await expect(documentService.reorder([], orgId)).resolves.not.toThrow();
     });
   });
 
@@ -110,7 +110,7 @@ describe.skipIf(!hasDatabase)("reorder artifacts", () => {
     await autoRollbackTransaction(async () => {
       const orgId = await createTestOrganization();
       const fakeId = "01FAKE000000000000000000";
-      await expect(documentsService.reorder([fakeId], orgId)).rejects.toThrow();
+      await expect(documentService.reorder([fakeId], orgId)).rejects.toThrow();
     });
   });
 });

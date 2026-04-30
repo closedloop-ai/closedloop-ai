@@ -1,9 +1,6 @@
 import "server-only";
 
-import type {
-  ApiKeyScope,
-  VerifiedApiKeyContext,
-} from "@repo/api/src/types/api-key";
+import type { ApiKeyScope } from "@repo/api/src/types/api-key";
 import { failure } from "@repo/api/src/types/common";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
@@ -13,6 +10,7 @@ import { apiKeysService } from "@/app/api-keys/service";
 import { organizationsService } from "@/app/organizations/service";
 import { usersService } from "@/app/users/service";
 import { forbiddenResponse, unauthorizedResponse } from "../route-utils";
+import type { VerifiedApiKeyContextWithMetadata } from "./api-key-context";
 import { hasApiKeyScopes } from "./api-key-scopes";
 import { getDesktopManagedPopRequestFailure } from "./desktop-managed-pop";
 import type {
@@ -23,12 +21,16 @@ import type {
 } from "./with-auth";
 
 type ApiKeyAuthOptions = {
-  desktopManagedPop?: boolean;
   requiredScopes?: ApiKeyScope[];
 };
 
 type ResolveApiKeyResult =
-  | { context: VerifiedApiKeyContext; response: null }
+  | {
+      context: VerifiedApiKeyContextWithMetadata & {
+        clerkUserId?: string | null;
+      };
+      response: null;
+    }
   | { context: null; response: NextResponse };
 
 /**
@@ -66,7 +68,7 @@ export function withApiKeyAuth<TResponse, TRoute extends string = string>(
         return unauthorizedResponse();
       }
 
-      const apiKeyResult = await resolveApiKeyContext(token, request, options);
+      const apiKeyResult = await resolveApiKeyContext(token, options);
       if (apiKeyResult.response) {
         return apiKeyResult.response as AuthenticatedJsonResponse<TResponse>;
       }
@@ -80,6 +82,17 @@ export function withApiKeyAuth<TResponse, TRoute extends string = string>(
       if (!user?.active) {
         return unauthorizedResponse();
       }
+
+      const popFailure = await getDesktopManagedPopRequestFailure({
+        keyContext: { ...keyContext, clerkUserId: user.clerkId },
+        request,
+      });
+      if (popFailure) {
+        return NextResponse.json(failure(popFailure.message), {
+          status: popFailure.status,
+        });
+      }
+      waitUntil(apiKeysService.touchLastUsedAt(keyContext.apiKeyId));
 
       const organization = await organizationsService.findById(
         keyContext.organizationId
@@ -123,35 +136,14 @@ function getBearerToken(request: NextRequest): string | null {
 
 async function resolveApiKeyContext(
   token: string,
-  request: NextRequest,
-  options: ApiKeyAuthOptions | undefined
+  _options: ApiKeyAuthOptions | undefined
 ): Promise<ResolveApiKeyResult> {
-  if (!options?.desktopManagedPop) {
-    const context = await apiKeysService.verifyKey(token);
-    return context ? { context, response: null } : unauthorizedResult();
-  }
-
   const context = await apiKeysService.verifyKeyWithMetadata(token, {
     updateLastUsedAt: false,
   });
   if (!context) {
     return unauthorizedResult();
   }
-
-  const popFailure = await getDesktopManagedPopRequestFailure({
-    keyContext: context,
-    request,
-  });
-  if (popFailure) {
-    return {
-      context: null,
-      response: NextResponse.json(failure(popFailure.message), {
-        status: popFailure.status,
-      }),
-    };
-  }
-
-  waitUntil(apiKeysService.touchLastUsedAt(context.apiKeyId));
   return { context, response: null };
 }
 

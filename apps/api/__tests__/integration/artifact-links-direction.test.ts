@@ -58,7 +58,7 @@ import {
 } from "@repo/database";
 import { keys } from "@repo/database/keys";
 import { artifactLinksService } from "@/app/artifact-links/service";
-import { documentsService } from "@/app/documents/service";
+import { documentService } from "@/app/documents/document-service";
 import {
   autoRollbackTransaction,
   createTestOrganization,
@@ -147,7 +147,7 @@ async function createDocumentArtifact(
   projectId: string,
   overrides: { type: DocumentType; title: string }
 ): Promise<{ id: string }> {
-  const artifact = await documentsService.create(orgId, userId, {
+  const artifact = await documentService.create(orgId, userId, {
     projectId,
     type: overrides.type,
     title: overrides.title,

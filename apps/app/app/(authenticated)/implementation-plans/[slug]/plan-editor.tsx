@@ -29,7 +29,6 @@ import { InlineEditEditorShell } from "@/components/document-editor/inline-edit-
 import { BranchesSection } from "@/components/document-editor/relationships/branches-section";
 import { PreviewSection } from "@/components/document-editor/relationships/preview-section";
 import { LoopDispatchTargetSelector } from "@/components/engineer/LoopDispatchTargetSelector";
-import { ExecutionLogDialog } from "@/components/execution-log/execution-log-dialog";
 import { GenerationStatusBanner } from "@/components/generation-status-banner";
 import { MoveEntityDialog } from "@/components/move-entity-dialog";
 import { useDocumentActions } from "@/hooks/document-editing/use-document-actions";
@@ -43,15 +42,13 @@ import {
   useDismissDocumentGenerationStatus,
   useDocumentGenerationStatus,
   useDocumentPullRequest,
-  usePreviewDeployment,
 } from "@/hooks/queries/use-documents";
 import {
   useCodeJudgesFeedback,
   usePlanJudgesFeedback,
 } from "@/hooks/queries/use-judges";
-import { useLatestPlanLoopByDocument } from "@/hooks/queries/use-loops";
-import { useExecutionLogDialog } from "@/hooks/use-execution-log-dialog";
-import { usePreviewDeploymentPolling } from "@/hooks/use-preview-deployment-polling";
+import { useInitialAdditionalRepos } from "@/hooks/queries/use-loops";
+import { useMultiRepoExecuteEnabled } from "@/hooks/use-multi-repo-execute-enabled";
 import { ExecutePlanModal } from "../components/execute-plan-modal";
 import { RequestChangesModal } from "../components/request-changes-modal";
 import { VersionSelector } from "../components/version-selector";
@@ -76,8 +73,7 @@ export function PlanEditor({
   showHeader = true,
 }: Readonly<PlanEditorProps>) {
   const chatFlag = useFeatureFlag("interactive-chat");
-  const multiRepoEnabled = useFeatureFlag("multi-repo-plan")?.enabled === true;
-  const executionLogDialog = useExecutionLogDialog();
+  const multiRepoEnabled = useMultiRepoExecuteEnabled();
 
   const [showMoveDialog, setShowMoveDialog] = useState(false);
   const [showRegenerateModal, setShowRegenerateModal] = useState(false);
@@ -163,28 +159,6 @@ export function PlanEditor({
   const { data: pullRequest } = useDocumentPullRequest(plan.id);
   const { data: judgesReport } = usePlanJudgesFeedback(plan.id);
   const { data: codeJudgesReport } = useCodeJudgesFeedback(plan.id);
-
-  // Preview deployment artifact (Artifact of type DEPLOYMENT)
-  const {
-    data: previewDeployment = null,
-    refetch: refetchPreviewLinks,
-    isRefetching: isRefreshingPreviewDeployment,
-  } = usePreviewDeployment(plan.id);
-
-  // Adaptive polling for preview deployment status
-  const isGenerationRunning = !!(
-    generationStatus?.status &&
-    ["RUNNING", "QUEUED", "IN_PROGRESS", "PENDING"].includes(
-      generationStatus.status.toUpperCase()
-    )
-  );
-  usePreviewDeploymentPolling({
-    previewState: previewDeployment?.status ?? null,
-    hasPreviewRef: !!previewDeployment?.deployment.ref,
-    pullRequestNumber: pullRequest?.number,
-    isGenerationRunning,
-    refetch: refetchPreviewLinks,
-  });
 
   // Derived state
   const isDraft = metadata.status === DocumentStatus.Draft;
@@ -394,11 +368,7 @@ export function PlanEditor({
                     additionalRepos={initialAdditionalRepos}
                     codeJudgeItems={codeJudgesReport ?? null}
                     generationStatus={generationStatus ?? null}
-                    isPreviewRefreshing={isRefreshingPreviewDeployment}
-                    onPreviewRefresh={refetchPreviewLinks}
                     plan={plan}
-                    previewDeployment={previewDeployment}
-                    pullRequest={pullRequest ?? null}
                   />
                 </DocumentEditorDetails>
               </div>
@@ -408,7 +378,6 @@ export function PlanEditor({
 
         <DocumentChatPanel
           document={plan}
-          onViewFullTrace={executionLogDialog.handleViewFullTrace}
           visible={chatFlag?.enabled === true && uiState.showMetadataPanel}
         />
       </ResizablePanelGroup>
@@ -448,21 +417,17 @@ export function PlanEditor({
         open={showMoveDialog}
       />
 
-      {/* Execution Log Dialog */}
-      <ExecutionLogDialog
-        initialSessionId={executionLogDialog.selectedSessionId}
-        onOpenChange={executionLogDialog.setDialogOpen}
-        open={executionLogDialog.dialogOpen}
-        trace={executionLogDialog.dialogTrace}
-      />
-
-      {/* Execute Plan Modal */}
-      <ExecutePlanModal
-        isLoading={planActions.isExecuting}
-        onConfirm={planActions.handleExecute}
-        onOpenChange={setShowExecuteModal}
-        open={showExecuteModal}
-      />
+      {/* Execute Plan Modal — conditionally mounted so each open is a fresh
+          instance (no need to reset internal state on close). */}
+      {showExecuteModal && (
+        <ExecutePlanModal
+          isLoading={planActions.isExecuting}
+          onConfirm={planActions.handleExecute}
+          onOpenChange={setShowExecuteModal}
+          open={showExecuteModal}
+          planId={plan.id}
+        />
+      )}
 
       {/* Regenerate Plan Modal — prompts the user to confirm the additional
           repos selection before regeneration, avoiding the race where a
@@ -525,18 +490,6 @@ function FloatingTargetPicker({
       />
     </div>
   );
-}
-
-function useInitialAdditionalRepos(documentId: string | null | undefined) {
-  const enabled = Boolean(documentId);
-  const { data: loop, isLoading } = useLatestPlanLoopByDocument(
-    documentId ?? "",
-    { enabled }
-  );
-  return {
-    initialAdditionalRepos: loop?.additionalRepos ?? undefined,
-    isLoadingInitialAdditionalRepos: enabled && isLoading,
-  };
 }
 
 function getPlanRedirectPath(plan: DocumentDetail): string {

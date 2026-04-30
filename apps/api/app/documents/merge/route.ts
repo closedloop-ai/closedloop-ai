@@ -1,4 +1,6 @@
 import type { Document } from "@repo/api/src/types/document";
+import { Status } from "@repo/api/src/types/result";
+import { documentMergeService } from "@/app/documents/merge-service";
 import { withAuth } from "@/lib/auth/with-auth";
 import {
   badRequestResponse,
@@ -7,8 +9,6 @@ import {
   parseBody,
   successResponse,
 } from "@/lib/route-utils";
-import { DocumentNotFoundError } from "../document-utils";
-import { documentsService } from "../service";
 import { mergeDocumentsValidator } from "../validators";
 
 const SAME_PROJECT_ERROR_RE = /same project/i;
@@ -35,18 +35,22 @@ export const POST = withAuth<Document, "/documents/merge">(
         return parseError;
       }
 
-      const updatedArtifact = await documentsService.merge(
+      const result = await documentMergeService.merge(
         body.primaryDocumentId,
         body.secondaryDocumentId,
         user.organizationId,
         user.id
       );
 
-      return successResponse(updatedArtifact);
-    } catch (error) {
-      if (error instanceof DocumentNotFoundError) {
-        return notFoundResponse("Artifact");
+      if (!result.ok) {
+        if (result.error === Status.NotFound) {
+          return notFoundResponse("Artifact");
+        }
+        return errorResponse("Failed to merge artifacts", result.error);
       }
+
+      return successResponse(result.value);
+    } catch (error) {
       if (
         error instanceof Error &&
         (SAME_PROJECT_ERROR_RE.test(error.message) ||

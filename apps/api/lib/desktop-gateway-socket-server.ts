@@ -4,8 +4,12 @@ import { log } from "@repo/observability/log";
 import { buildTelemetryTraceContext } from "@repo/observability/telemetry/context";
 import { Server, type Socket } from "socket.io";
 import { apiKeysService } from "../app/api-keys/service";
-import { computeTargetsService } from "../app/compute-targets/service";
+import {
+  computeTargetsService,
+  isComputeTargetGatewayConflictResult,
+} from "../app/compute-targets/service";
 import { usersService } from "../app/users/service";
+import { getDesktopManagedPopRequestFailure } from "./auth/desktop-managed-pop";
 import { desktopCommandStore } from "./desktop-command-store";
 import {
   type DesktopAuthContext,
@@ -29,6 +33,7 @@ import { relayEventBus } from "./relay-event-bus";
 
 const SOCKET_NAMESPACE = "/desktop-gateway";
 const SOCKET_HEARTBEAT_INTERVAL_MS = 30_000;
+const DESKTOP_SOCKET_POP_VERIFICATION_PATH = "/internal/api-keys/verify";
 
 const serverInstances = new WeakMap<HttpServer, DesktopGatewaySocketServer>();
 const contextsBySocketId = new Map<string, SocketConnectionContext>();
@@ -94,7 +99,9 @@ async function resolveDesktopAuthContext(
     return null;
   }
 
-  const keyContext = await apiKeysService.verifyKey(apiKey);
+  const keyContext = await apiKeysService.verifyKeyWithMetadata(apiKey, {
+    updateLastUsedAt: false,
+  });
   if (!keyContext) {
     return null;
   }
@@ -111,10 +118,56 @@ async function resolveDesktopAuthContext(
     return null;
   }
 
+  const popFailure = await getDesktopManagedPopRequestFailure({
+    keyContext: { ...keyContext, clerkUserId: user.clerkId },
+    request: buildDesktopSocketPopVerificationRequest(socket),
+  });
+  if (popFailure) {
+    log.warn("Desktop gateway socket PoP auth rejected", {
+      socketId: socket.id,
+      status: popFailure.status,
+    });
+    return null;
+  }
+
+  apiKeysService.touchLastUsedAt(keyContext.apiKeyId).catch((error) => {
+    log.warn("Failed updating desktop socket API key last-used timestamp", {
+      socketId: socket.id,
+      apiKeyId: keyContext.apiKeyId,
+      error,
+    });
+  });
+
   return {
     organizationId: keyContext.organizationId,
     userId: keyContext.userId,
   };
+}
+
+function buildDesktopSocketPopVerificationRequest(socket: Socket): Request {
+  // Direct Socket.IO connects reuse the same PoP proof Desktop signs for relay
+  // API-key validation; relay and direct paths should accept the same handshake.
+  return new Request(
+    `https://desktop-gateway.local${DESKTOP_SOCKET_POP_VERIFICATION_PATH}`,
+    {
+      method: "POST",
+      headers: toRequestHeaders(socket.handshake.headers),
+    }
+  );
+}
+
+function toRequestHeaders(headers: Socket["handshake"]["headers"]): Headers {
+  const result = new Headers();
+  for (const [name, value] of Object.entries(headers)) {
+    if (Array.isArray(value)) {
+      for (const entry of value) {
+        result.append(name, entry);
+      }
+    } else if (typeof value === "string") {
+      result.set(name, value);
+    }
+  }
+  return result;
 }
 
 function removeSocketFromTarget(targetId: string, socketId: string): boolean {
@@ -146,6 +199,8 @@ async function handleSocketHello(
     allowedDirectoriesHash: payload.allowedDirectoriesHash ?? null,
     socketProtocolVersion: PROTOCOL_VERSION,
     pluginVersion: payload.pluginVersion,
+    desktopSecurityUpgradeProtocolVersion:
+      payload.desktopSecurityUpgradeProtocolVersion ?? null,
   };
 
   let targetId = payload.computeTargetId;
@@ -160,9 +215,16 @@ async function handleSocketHello(
         platform: payload.platform,
         capabilities: mergedCapabilities,
         supportedOperations: payload.supportedOperations,
+        gatewayId: payload.gatewayId,
+        desktopSecurityUpgradeProtocolVersion:
+          payload.desktopSecurityUpgradeProtocolVersion,
       }
     );
-    if (!updated) {
+    if (isComputeTargetGatewayConflictResult(updated)) {
+      socket.disconnect(true);
+      return;
+    }
+    if (!updated.value) {
       targetId = undefined;
     }
   }
@@ -177,9 +239,16 @@ async function handleSocketHello(
         capabilities: mergedCapabilities,
         supportedOperations: payload.supportedOperations,
         pluginVersion: payload.pluginVersion,
+        gatewayId: payload.gatewayId,
+        desktopSecurityUpgradeProtocolVersion:
+          payload.desktopSecurityUpgradeProtocolVersion,
       }
     );
-    targetId = target.id;
+    if (isComputeTargetGatewayConflictResult(target)) {
+      socket.disconnect(true);
+      return;
+    }
+    targetId = target.value.id;
     targetCreated = true;
   }
 
@@ -219,6 +288,7 @@ async function handleSocketHello(
         log.error("Failed socket heartbeat refresh for desktop target", {
           socketId: socket.id,
           targetId,
+          computeTargetId: targetId,
           organizationId: authContext.organizationId,
           userId: authContext.userId,
           error,
@@ -276,7 +346,7 @@ async function handleSocketHello(
       .catch((error) => {
         log.error(
           "Failed to compensate online state after disconnect during hello",
-          { socketId: socket.id, targetId, error }
+          { socketId: socket.id, targetId, computeTargetId: targetId, error }
         );
       });
     log.info(
@@ -284,6 +354,7 @@ async function handleSocketHello(
       {
         socketId: socket.id,
         targetId,
+        computeTargetId: targetId,
       }
     );
     return;
@@ -293,6 +364,7 @@ async function handleSocketHello(
     log.warn("Desktop target online-state update missed during hello", {
       socketId: socket.id,
       targetId,
+      computeTargetId: targetId,
       organizationId: authContext.organizationId,
       userId: authContext.userId,
     });
@@ -325,6 +397,7 @@ async function handleSocketHello(
   log.info("Desktop gateway hello acknowledged", {
     socketId: socket.id,
     targetId,
+    computeTargetId: targetId,
     organizationId: authContext.organizationId,
     userId: authContext.userId,
     authDurationMs: timing.authDurationMs,
@@ -396,6 +469,7 @@ function handleSocketConnection(socket: Socket): void {
           "Failed processing desktop.hello after authenticated connect",
           {
             socketId: socket.id,
+            computeTargetId: payload.computeTargetId ?? null,
             organizationId: authContext.organizationId,
             userId: authContext.userId,
             helloProcessingMs: Date.now() - helloStartedAt,
@@ -424,6 +498,7 @@ function handleSocketConnection(socket: Socket): void {
         log.error("Failed updating desktop presence heartbeat", {
           socketId: socket.id,
           targetId: context.targetId,
+          computeTargetId: context.targetId,
           error,
         });
       });
@@ -456,6 +531,7 @@ function handleSocketConnection(socket: Socket): void {
         log.error("Failed handling desktop.command.ack", {
           socketId: socket.id,
           commandId: payload.commandId,
+          computeTargetId: context.targetId,
           error,
         });
       });
@@ -518,6 +594,7 @@ function handleSocketConnection(socket: Socket): void {
         log.error("Failed handling desktop.command.event", {
           socketId: socket.id,
           commandId: payload.commandId,
+          computeTargetId: context.targetId,
           error,
         });
       }
@@ -547,6 +624,7 @@ function handleSocketConnection(socket: Socket): void {
       log.error("Failed handling desktop.telemetry", {
         socketId: socket.id,
         targetId: context.targetId,
+        computeTargetId: context.targetId,
         error,
       });
     }

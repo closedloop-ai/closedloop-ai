@@ -5,6 +5,7 @@ import {
   PullRequestState,
 } from "@repo/api/src/types/document";
 import {
+  type AdditionalRepoRef,
   type CreateLoopRequest,
   LoopCommand,
   RunLoopCommand,
@@ -13,6 +14,8 @@ import { getProjectSettings } from "@repo/api/src/types/project";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
 import { computeTargetsService } from "@/app/compute-targets/service";
+import type { documentGenerationService } from "@/app/documents/generation-service";
+import { documentWorkstreamService } from "@/app/documents/workstream-service";
 import { loopsService } from "@/app/loops/service";
 import {
   type ComputeTargetRouteResult,
@@ -21,7 +24,6 @@ import {
 import type { getCommandHandler } from "@/lib/loops/loop-commands";
 import { extractUploadedPlanRaw } from "@/lib/loops/uploaded-plan-artifacts";
 import { badRequestResponse } from "@/lib/route-utils";
-import { documentsService } from "../../service";
 
 /**
  * Map route body commands (lowercase) to LoopCommand enum values (uppercase).
@@ -176,7 +178,7 @@ export async function resolveEvaluateCodeBranchForRunLoop(
     return { ok: true, branch: fallbackBranch };
   }
 
-  const pr = await documentsService.getDocumentPullRequest(
+  const pr = await documentWorkstreamService.getDocumentPullRequest(
     documentId,
     organizationId
   );
@@ -193,11 +195,14 @@ export async function resolveEvaluateCodeBranchForRunLoop(
  */
 export async function resolveLoopContext(
   artifact: NonNullable<
-    Awaited<ReturnType<typeof documentsService.findWithRegenerationContext>>
+    Awaited<
+      ReturnType<typeof documentGenerationService.findWithRegenerationContext>
+    >
   >,
   body: {
     repo?: { fullName?: string; branch?: string };
     command: keyof typeof COMMAND_MAP;
+    additionalRepos?: AdditionalRepoRef[];
   },
   handler: ReturnType<typeof getCommandHandler>,
   organizationId: string,
@@ -206,7 +211,7 @@ export async function resolveLoopContext(
   resolvedComputeTargetId?: string
 ) {
   const { workstream: resolvedWorkstream, source } =
-    await documentsService.findOrCreateWorkstream(
+    await documentWorkstreamService.findOrCreateWorkstream(
       organizationId,
       artifact,
       userId
@@ -252,6 +257,22 @@ export async function resolveLoopContext(
     ? (parentLoop.computeTargetId ?? null)
     : undefined;
 
+  // For state-dependent commands (EXECUTE, REQUEST_CHANGES, etc.), inherit
+  // peer repos from the parent loop when the body omits them. Without this,
+  // a chained EXECUTE that doesn't re-supply additionalRepos would lose the
+  // peer set the PLAN was authored against, leaving the harness with only
+  // primary-repo access despite the orchestrator having cloned peers.
+  const inheritedAdditionalRepos =
+    handler?.requiresParent &&
+    !body.additionalRepos &&
+    parentLoop?.additionalRepos?.length
+      ? parentLoop.additionalRepos.map((repo) => ({
+          fullName: repo.fullName,
+          branch: repo.branch,
+        }))
+      : undefined;
+  const additionalRepos = body.additionalRepos ?? inheritedAdditionalRepos;
+
   return {
     workstream,
     targetRepo,
@@ -260,6 +281,7 @@ export async function resolveLoopContext(
     parentLoopId,
     parentLoopComputeTargetId,
     source,
+    additionalRepos,
   };
 }
 

@@ -21,7 +21,7 @@ function loadConfig() {
     return {
       apiKey: env.DD_API_KEY,
       site: env.DD_SITE ?? "datadoghq.com",
-      service: env.DD_SERVICE ?? "closedloop",
+      service: env.DD_SERVICE ?? "cl-unknown",
       env: env.DD_ENV ?? process.env.NODE_ENV ?? "development",
     };
   } catch {
@@ -30,7 +30,8 @@ function loadConfig() {
     return {
       apiKey: process.env.DD_API_KEY,
       site: process.env.DD_SITE ?? "datadoghq.com",
-      service: process.env.DD_SERVICE ?? "closedloop",
+      // "??" preserves ""; the "!"-falsy guard below catches empty DD_SERVICE (intentional asymmetry)
+      service: process.env.DD_SERVICE ?? "cl-unknown",
       env: process.env.DD_ENV ?? process.env.NODE_ENV ?? "development",
     };
   }
@@ -240,6 +241,18 @@ export const log = {
 // env vars are never defined, so emitting the warnings in browsers would
 // pollute every end-user's DevTools console on page load.
 if (typeof window === "undefined") {
+  // console.warn (not log.warn) — mirrors origin.ts; guarantees synchronous stdout delivery
+  if (!process.env.DD_SERVICE) {
+    console.warn(
+      JSON.stringify({
+        level: "warn",
+        event: "telemetry.dd_service_fallback",
+        message:
+          "observability: DD_SERVICE is not set; logs will be tagged service:cl-unknown. Set DD_SERVICE in your environment.",
+      })
+    );
+  }
+
   if (DD.version === "unknown") {
     log.warn("telemetry.version_fallback");
   }

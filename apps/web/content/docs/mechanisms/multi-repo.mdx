@@ -94,6 +94,17 @@ The desktop app auto-clones repositories that are referenced in a cloud command 
 
 `POST /loops/{id}/github-token` also accepts an optional `additionalRepos` body so a desktop harness can scope the token request to the actual peer set. When the body is omitted (or invalid), the route falls back to the loop record on file.
 
+## EXECUTE across peer repos
+
+EXECUTE loops receive the same peer-repo access as PLAN. The harness:
+
+1. Clones every `additionalRepos` entry into the workspace alongside the primary repo.
+2. Forwards `--add-dir` for each peer path to `run-loop.sh`, granting the loop's agents filesystem access to plan-tagged tasks in those peers.
+3. Inherits `additionalRepos` from the parent PLAN loop when an EXECUTE create call omits them — the control plane reads the parent loop record and propagates the peer set automatically. Callers can still override by supplying `additionalRepos` explicitly on the EXECUTE request body.
+4. Finalizes per-repo PRs when each peer has changes: clean peers are skipped (no empty PRs), and peers with commits get their own PR labelled `symphony` with a metadata footer linking back to the loop ID and command.
+
+A peer whose GitHub App installation has been revoked between PLAN and EXECUTE fails fast at loop create — `authorizeAdditionalRepos` runs unconditionally on every create.
+
 ## Multi-repo execution results (v2)
 
 When a multi-repo loop completes, the runtime publishes a v2 completion event whose `results[]` field is a discriminated union per peer:

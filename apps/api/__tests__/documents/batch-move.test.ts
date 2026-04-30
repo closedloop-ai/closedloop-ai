@@ -6,8 +6,8 @@ import { DocumentStatus } from "@repo/api/src/types/document";
 import { ArtifactSubtype, ArtifactType, withDb } from "@repo/database";
 import { keys } from "@repo/database/keys";
 import { describe, expect, it } from "vitest";
+import { documentService } from "@/app/documents/document-service";
 import { generateSlug } from "@/app/documents/document-utils";
-import { documentsService } from "@/app/documents/service";
 import {
   autoRollbackTransaction,
   createTestOrganization,
@@ -78,7 +78,7 @@ describe.skipIf(!hasDatabase)("batchMove artifacts", () => {
       );
 
       // Move all 3 to project B
-      await documentsService.batchMove(
+      await documentService.batchMove(
         [artifact1.id, artifact2.id, artifact3.id],
         projectBId,
         orgId
@@ -125,7 +125,7 @@ describe.skipIf(!hasDatabase)("batchMove artifacts", () => {
       );
 
       await expect(
-        documentsService.batchMove([artifact.id], fakeProjectId, orgId)
+        documentService.batchMove([artifact.id], fakeProjectId, orgId)
       ).rejects.toThrow();
     });
   });
@@ -138,7 +138,7 @@ describe.skipIf(!hasDatabase)("batchMove artifacts", () => {
         name: "Project B",
       });
       await expect(
-        documentsService.batchMove([], projectBId, orgId)
+        documentService.batchMove([], projectBId, orgId)
       ).resolves.not.toThrow();
     });
   });

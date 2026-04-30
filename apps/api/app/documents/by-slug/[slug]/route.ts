@@ -1,5 +1,6 @@
 import { CustomFieldEntityType } from "@repo/api/src/types/custom-field";
 import type { DocumentDetail } from "@repo/api/src/types/document";
+import { documentService } from "@/app/documents/document-service";
 import { withAuth } from "@/lib/auth/with-auth";
 import {
   errorResponse,
@@ -8,14 +9,13 @@ import {
 } from "@/lib/route-utils";
 import { mergeCustomFieldsIntoResponse } from "../../../custom-fields/route-helpers";
 import { documentVersionService } from "../../document-version-service";
-import { documentsService } from "../../service";
 
 export const GET = withAuth<DocumentDetail, "/documents/by-slug/[slug]">(
   async ({ user }, request, params) => {
     try {
       const { slug } = await params;
 
-      const artifact = await documentsService.findBySlug(
+      const artifact = await documentService.findBySlug(
         slug,
         user.organizationId
       );

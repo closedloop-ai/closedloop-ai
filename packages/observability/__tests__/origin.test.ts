@@ -64,6 +64,78 @@ describe("ORIGIN — fallback to Unknown with console.warn", () => {
   });
 });
 
+describe("ORIGIN — cl-* prefixed DD_SERVICE happy paths", () => {
+  it.each([
+    ["cl-api", Origin.Api],
+    ["cl-relay", Origin.Relay],
+    ["cl-desktop", Origin.Desktop],
+  ] as [
+    string,
+    Origin,
+  ][])("resolves %s to %s without warning", async (ddServiceValue, expected) => {
+    vi.resetModules();
+    vi.stubEnv("DD_SERVICE", ddServiceValue);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const mod = await import("../telemetry/origin");
+
+    expect(mod.ORIGIN).toBe(expected);
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("ORIGIN — cl-* prefixed DD_SERVICE fallback/edge cases", () => {
+  it("resolves cl-bogus to Origin.Unknown and warns", async () => {
+    vi.resetModules();
+    vi.stubEnv("DD_SERVICE", "cl-bogus");
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const mod = await import("../telemetry/origin");
+
+    expect(mod.ORIGIN).toBe(Origin.Unknown);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const firstArg: unknown = warnSpy.mock.calls[0][0];
+    expect(String(firstArg)).toContain("telemetry.origin_fallback");
+  });
+
+  it("resolves cl- (empty suffix) to Origin.Unknown and warns", async () => {
+    vi.resetModules();
+    vi.stubEnv("DD_SERVICE", "cl-");
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const mod = await import("../telemetry/origin");
+
+    expect(mod.ORIGIN).toBe(Origin.Unknown);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const firstArg: unknown = warnSpy.mock.calls[0][0];
+    expect(String(firstArg)).toContain("telemetry.origin_fallback");
+  });
+
+  it("resolves cl-cl-api to Origin.Unknown and warns", async () => {
+    vi.resetModules();
+    vi.stubEnv("DD_SERVICE", "cl-cl-api");
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const mod = await import("../telemetry/origin");
+
+    expect(mod.ORIGIN).toBe(Origin.Unknown);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const firstArg: unknown = warnSpy.mock.calls[0][0];
+    expect(String(firstArg)).toContain("telemetry.origin_fallback");
+  });
+
+  // Cross-PR composition guard: PLN-384's "cl-unknown" sentinel must NOT
+  // promote to a known origin via prefix-stripping. "unknown" is filtered
+  // out of KNOWN_ORIGINS (origin.ts:21), so it correctly falls through.
+  it("resolves cl-unknown to Origin.Unknown and warns", async () => {
+    vi.resetModules();
+    vi.stubEnv("DD_SERVICE", "cl-unknown");
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const mod = await import("../telemetry/origin");
+
+    expect(mod.ORIGIN).toBe(Origin.Unknown);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const firstArg: unknown = warnSpy.mock.calls[0][0];
+    expect(String(firstArg)).toContain("telemetry.origin_fallback");
+  });
+});
+
 describe("ORIGIN — immutability after module load", () => {
   it("does not change when process.env.DD_SERVICE is mutated after import", async () => {
     vi.resetModules();

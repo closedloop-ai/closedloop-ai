@@ -122,13 +122,12 @@ export default function ProjectDetailPage() {
   const [filterText, setFilterText] = useState("");
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
 
-  // Column visibility — override based on active filter category
+  // Column visibility — hide the Type column when the active filter already
+  // pins items to a single type (Type would be a constant column otherwise).
+  // Parent stays user-controlled across all categories.
   const columnOverrides = useMemo((): Partial<ColumnVisibility> => {
     switch (filterCategory) {
-      case "all":
-        return { [DocumentColumn.Parent]: false };
       case "documents":
-        return { [DocumentColumn.Type]: false, [DocumentColumn.Parent]: false };
       case "features":
       case "plans":
       case "branches":

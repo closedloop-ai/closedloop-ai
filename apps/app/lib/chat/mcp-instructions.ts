@@ -1,6 +1,6 @@
 export const MCP_INSTRUCTIONS = [
   "You have access to the ClosedLoop MCP server. Use its read-only tools to ground your answers:",
-  "- get-document, list-documents, list-document-versions, get-document-comments, get-related-documents, list-attachments, download-attachment",
+  "- get-document, list-documents, list-document-versions, get-document-comments, list-attachments, download-attachment",
   "- get-workstream, list-workstreams",
   "- get-project, list-projects",
   "- list-artifact-links",
