@@ -409,10 +409,19 @@ export const loopsService = {
       }
     );
 
-    const [additionalRepos, primaryPullRequest] = await Promise.all([
-      _enrichAdditionalReposWithPr(result),
-      _findPrimaryRepoPr(result),
-    ]);
+    const shouldLoadPullRequests =
+      result.documentId !== null &&
+      (result.repo !== null ||
+        (result.additionalRepos !== null && result.additionalRepos.length > 0));
+    let pullRequests: PullRequestInfo[] = [];
+    if (shouldLoadPullRequests && result.documentId !== null) {
+      pullRequests = await documentWorkstreamService.getDocumentPullRequests(
+        result.documentId,
+        result.organizationId
+      );
+    }
+    const additionalRepos = _enrichAdditionalReposWithPr(result, pullRequests);
+    const primaryPullRequest = _findPrimaryRepoPr(result, pullRequests);
 
     return {
       ...result,
@@ -1414,9 +1423,10 @@ export const loopsService = {
  * Returns the original array unchanged when no enrichment is needed (null array,
  * empty array, or no documentId to look up PRs against).
  */
-async function _enrichAdditionalReposWithPr(
-  loop: LoopWithUser
-): Promise<AdditionalRepoRefWithPr[] | null> {
+function _enrichAdditionalReposWithPr(
+  loop: LoopWithUser,
+  prs: PullRequestInfo[]
+): AdditionalRepoRefWithPr[] | null {
   if (
     loop.additionalRepos === null ||
     loop.additionalRepos.length === 0 ||
@@ -1424,11 +1434,6 @@ async function _enrichAdditionalReposWithPr(
   ) {
     return loop.additionalRepos as AdditionalRepoRefWithPr[];
   }
-
-  const prs = await documentWorkstreamService.getDocumentPullRequests(
-    loop.documentId,
-    loop.organizationId
-  );
 
   return loop.additionalRepos.map((repo) => ({
     ...repo,
@@ -1440,17 +1445,13 @@ async function _enrichAdditionalReposWithPr(
  * Find the pull request for the primary repo of a loop (if any).
  * Returns null when the loop has no documentId, no primary repo, or no matching PR.
  */
-async function _findPrimaryRepoPr(
-  loop: LoopWithUser
-): Promise<PullRequestInfo | null> {
+function _findPrimaryRepoPr(
+  loop: LoopWithUser,
+  prs: PullRequestInfo[]
+): PullRequestInfo | null {
   if (loop.documentId === null || loop.repo === null) {
     return null;
   }
-
-  const prs = await documentWorkstreamService.getDocumentPullRequests(
-    loop.documentId,
-    loop.organizationId
-  );
 
   return prs.find((pr) => pr.repoFullName === loop.repo?.fullName) ?? null;
 }

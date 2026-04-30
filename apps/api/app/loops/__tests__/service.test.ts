@@ -491,4 +491,46 @@ describe("loopsService.findById — _enrichAdditionalReposWithPr", () => {
     });
     expect(backend?.pullRequest).toBeNull();
   });
+
+  it("loads document PRs once when enriching both primary and additional repos", async () => {
+    const dbRow = makeLoopDbRow({
+      artifactId: "doc-enrich-1",
+      repo: { fullName: "acme/primary", branch: "main" },
+      additionalRepos: [
+        { fullName: "acme/frontend", branch: "main" },
+        { fullName: "acme/backend", branch: "main" },
+      ],
+    });
+    const mockFindUnique = vi.fn().mockResolvedValue(dbRow);
+
+    (mockWithDb as Mock).mockImplementation(
+      (callback: (db: unknown) => unknown) => {
+        return callback({ loop: { findUnique: mockFindUnique } });
+      }
+    );
+
+    const primaryPr = makePrInfo("acme/primary");
+    const frontendPr = makePrInfo("acme/frontend");
+    mockGetDocumentPullRequests.mockResolvedValue([primaryPr, frontendPr]);
+
+    const result = await loopsService.findById("loop-enrich-1", "org-enrich");
+
+    expect(result).not.toBeNull();
+    expect(mockGetDocumentPullRequests).toHaveBeenCalledTimes(1);
+    expect(mockGetDocumentPullRequests).toHaveBeenCalledWith(
+      "doc-enrich-1",
+      "org-enrich"
+    );
+    expect(result?.primaryPullRequest).toMatchObject({
+      repoFullName: "acme/primary",
+    });
+
+    const repos = result?.additionalRepos ?? [];
+    expect(
+      repos.find((r) => r.fullName === "acme/frontend")?.pullRequest
+    ).toMatchObject({ repoFullName: "acme/frontend" });
+    expect(
+      repos.find((r) => r.fullName === "acme/backend")?.pullRequest
+    ).toBeNull();
+  });
 });
