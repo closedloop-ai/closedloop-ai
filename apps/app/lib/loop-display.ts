@@ -11,7 +11,10 @@ type CommandLabels = {
   failed: string;
 };
 
-const COMMAND_LABELS: Record<LoopCommand, CommandLabels> = {
+// `Partial<>` is intentional: forward-compat with new LoopCommand values added
+// in upstream `@closedloop-ai/loops-api`. Unknown commands fall through to the
+// safe fallback in `getCommandLabels`. Known commands should be added explicitly.
+const COMMAND_LABELS: Partial<Record<LoopCommand, CommandLabels>> = {
   [LoopCommand.Plan]: {
     noun: "Plan",
     progress: "Plan generating",
