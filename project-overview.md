@@ -303,7 +303,7 @@ The most distinctive integration pattern is the GitHub Actions-based execution p
 ### Data Handling
 
 - **Multi-tenant isolation:** Organization-scoped queries throughout
-- **API key storage:** Organization `anthropicApiKey` stored in database (used for customer-provided keys)
+- **API key storage:** Customer-provided Claude API keys are stored encrypted at rest on `Organization.claudeApiKeyEncrypted` and `User.claudeApiKeyEncrypted` (KMS-encrypted via `apiKeyService`).
 - **OAuth tokens:** Linear and Slack access tokens stored in database; refresh token rotation implemented for Linear
 - **GitHub App credentials:** Private key and secrets stored as environment variables, not in database
 - **S3 artifact storage:** Plan artifacts and generated files stored in AWS S3 with presigned URLs for access
@@ -313,7 +313,6 @@ The most distinctive integration pattern is the GitHub Actions-based execution p
 - **TODO:** "Eventually we'll need to update the user's role and permissions here" (auth-hooks.ts line 243) - Role sync from Clerk to local DB is incomplete
 - **No granular backend authorization:** Beyond org-scoping, there is no role-based permission enforcement on API routes. Admin vs. member access is enforced only in the frontend UI.
 - **Team role enforcement:** Team roles (OWNER/ADMIN/MEMBER) are stored but not enforced in API routes
-- **API key in database:** Organization `anthropicApiKey` is stored as plaintext in the settings JSON field
 - **No explicit PII/GDPR handling:** No data retention policies, deletion workflows, or geographic restrictions documented in code
 - **Cascading deletion:** TODO on team deletion service (teams/service.ts line 150)
 
