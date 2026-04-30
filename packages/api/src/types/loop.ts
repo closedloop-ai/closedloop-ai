@@ -14,6 +14,7 @@ import { TokensByModel } from "@closedloop-ai/loops-api/tokens";
 import type { ArtifactSubtype } from "./artifact";
 import { ArtifactType } from "./artifact";
 import type { JsonObject } from "./common";
+import type { BasicUser } from "./user";
 
 // --- Re-exports from @closedloop-ai/loops-api ---
 
@@ -171,13 +172,16 @@ export type LoopSummaryEntry = {
   loopId: string;
   command: LoopCommand;
   status: LoopStatus;
-  userName: string;
+  user: BasicUser;
   isLocal: boolean;
   childSubtype: ArtifactSubtype | null;
   isDirectLoop: boolean;
-  startedAt: string | null;
-  completedAt: string | null;
-  failedAt: string | null;
+  startedAt: Date | null;
+  completedAt: Date | null;
+  failedAt: Date | null;
+  // updatedAt is used as the fallback "active timestamp" when comparing
+  // against latestFailed for PENDING/CLAIMED loops where startedAt is null.
+  updatedAt: Date;
 };
 
 export type LoopSummary = {

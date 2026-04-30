@@ -27,7 +27,7 @@ import { LoopCommand, LoopStatus } from "@repo/api/src/types/loop";
 import { withDb } from "@repo/database";
 import { loopSummaryService } from "../loop-summary-service";
 
-type DescendantRow = { root_id: string; descendant_id: string };
+type DescendantRow = { rootId: string; descendantId: string };
 
 type LoopFixture = {
   id: string;
@@ -39,9 +39,11 @@ type LoopFixture = {
   updatedAt: Date;
   computeTargetId: string | null;
   user: {
+    id: string;
     firstName: string | null;
     lastName: string | null;
     email: string;
+    avatarUrl: string | null;
   } | null;
 };
 
@@ -53,9 +55,11 @@ const CHILD_A1 = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
 const GRANDCHILD_A1 = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
 
 const TEST_USER = {
+  id: "user-test-1",
   firstName: "Test",
   lastName: "User",
   email: "test@example.com",
+  avatarUrl: null,
 };
 
 function makeLoop(overrides: Partial<LoopFixture>): LoopFixture {
@@ -110,8 +114,8 @@ describe("loopSummaryService.getSummariesForDocuments", () => {
   it("returns one empty entry per requested documentId when no loops exist", async () => {
     setupDb({
       descendants: [
-        { root_id: ROOT_A, descendant_id: ROOT_A },
-        { root_id: ROOT_B, descendant_id: ROOT_B },
+        { rootId: ROOT_A, descendantId: ROOT_A },
+        { rootId: ROOT_B, descendantId: ROOT_B },
       ],
       loops: [],
     });
@@ -145,7 +149,7 @@ describe("loopSummaryService.getSummariesForDocuments", () => {
 
   it("returns the active loop for a direct document", async () => {
     setupDb({
-      descendants: [{ root_id: ROOT_A, descendant_id: ROOT_A }],
+      descendants: [{ rootId: ROOT_A, descendantId: ROOT_A }],
       loops: [
         makeLoop({
           id: "loop-1",
@@ -170,8 +174,8 @@ describe("loopSummaryService.getSummariesForDocuments", () => {
   it("aggregates a loop on a direct child via PRODUCES link", async () => {
     setupDb({
       descendants: [
-        { root_id: ROOT_A, descendant_id: ROOT_A },
-        { root_id: ROOT_A, descendant_id: CHILD_A1 },
+        { rootId: ROOT_A, descendantId: ROOT_A },
+        { rootId: ROOT_A, descendantId: CHILD_A1 },
       ],
       loops: [
         makeLoop({
@@ -197,9 +201,9 @@ describe("loopSummaryService.getSummariesForDocuments", () => {
   it("aggregates a loop on a grandchild (recursive depth > 1)", async () => {
     setupDb({
       descendants: [
-        { root_id: ROOT_A, descendant_id: ROOT_A },
-        { root_id: ROOT_A, descendant_id: CHILD_A1 },
-        { root_id: ROOT_A, descendant_id: GRANDCHILD_A1 },
+        { rootId: ROOT_A, descendantId: ROOT_A },
+        { rootId: ROOT_A, descendantId: CHILD_A1 },
+        { rootId: ROOT_A, descendantId: GRANDCHILD_A1 },
       ],
       loops: [
         makeLoop({
@@ -222,8 +226,8 @@ describe("loopSummaryService.getSummariesForDocuments", () => {
   it("priority: failed wins when failedAt is newer than active.startedAt", async () => {
     setupDb({
       descendants: [
-        { root_id: ROOT_A, descendant_id: ROOT_A },
-        { root_id: ROOT_A, descendant_id: CHILD_A1 },
+        { rootId: ROOT_A, descendantId: ROOT_A },
+        { rootId: ROOT_A, descendantId: CHILD_A1 },
       ],
       loops: [
         makeLoop({
@@ -251,7 +255,7 @@ describe("loopSummaryService.getSummariesForDocuments", () => {
 
   it("classifies CANCELLED and TIMED_OUT alongside FAILED in latestFailed", async () => {
     setupDb({
-      descendants: [{ root_id: ROOT_A, descendant_id: ROOT_A }],
+      descendants: [{ rootId: ROOT_A, descendantId: ROOT_A }],
       loops: [
         makeLoop({
           id: "loop-cancelled",
@@ -275,7 +279,7 @@ describe("loopSummaryService.getSummariesForDocuments", () => {
 
   it("falls back to updatedAt for failedAt when completedAt is null", async () => {
     setupDb({
-      descendants: [{ root_id: ROOT_A, descendant_id: ROOT_A }],
+      descendants: [{ rootId: ROOT_A, descendantId: ROOT_A }],
       loops: [
         makeLoop({
           id: "loop-timed-out-no-completed",
@@ -289,14 +293,14 @@ describe("loopSummaryService.getSummariesForDocuments", () => {
     const result = await loopSummaryService.getSummariesForDocuments(ORG_ID, [
       ROOT_A,
     ]);
-    expect(result[ROOT_A].latestFailed?.failedAt).toBe(
-      new Date("2026-04-28T07:00:00Z").toISOString()
+    expect(result[ROOT_A].latestFailed?.failedAt).toEqual(
+      new Date("2026-04-28T07:00:00Z")
     );
   });
 
   it("picks most recent completed loop by completedAt", async () => {
     setupDb({
-      descendants: [{ root_id: ROOT_A, descendant_id: ROOT_A }],
+      descendants: [{ rootId: ROOT_A, descendantId: ROOT_A }],
       loops: [
         makeLoop({
           id: "loop-old",
@@ -319,7 +323,7 @@ describe("loopSummaryService.getSummariesForDocuments", () => {
 
   it("respects org scoping in the loop and artifact queries", async () => {
     const { mockLoopFindMany, mockArtifactFindMany } = setupDb({
-      descendants: [{ root_id: ROOT_A, descendant_id: ROOT_A }],
+      descendants: [{ rootId: ROOT_A, descendantId: ROOT_A }],
       loops: [],
     });
 
@@ -353,11 +357,17 @@ describe("loopSummaryService.getSummariesForDocuments", () => {
 
   it("returns the user's display name from firstName + lastName", async () => {
     setupDb({
-      descendants: [{ root_id: ROOT_A, descendant_id: ROOT_A }],
+      descendants: [{ rootId: ROOT_A, descendantId: ROOT_A }],
       loops: [
         makeLoop({
           status: LoopStatus.Running,
-          user: { firstName: "Ada", lastName: "Lovelace", email: "a@x.com" },
+          user: {
+            id: "u-ada",
+            firstName: "Ada",
+            lastName: "Lovelace",
+            email: "a@x.com",
+            avatarUrl: null,
+          },
         }),
       ],
     });
@@ -365,16 +375,24 @@ describe("loopSummaryService.getSummariesForDocuments", () => {
     const result = await loopSummaryService.getSummariesForDocuments(ORG_ID, [
       ROOT_A,
     ]);
-    expect(result[ROOT_A].activeLoop?.userName).toBe("Ada Lovelace");
+    expect(result[ROOT_A].activeLoop?.user.firstName).toBe("Ada");
+    expect(result[ROOT_A].activeLoop?.user.lastName).toBe("Lovelace");
+    expect(result[ROOT_A].activeLoop?.user.email).toBe("a@x.com");
   });
 
-  it("falls back to email when name fields are null", async () => {
+  it("returns the user object even when name fields are null (frontend formats)", async () => {
     setupDb({
-      descendants: [{ root_id: ROOT_A, descendant_id: ROOT_A }],
+      descendants: [{ rootId: ROOT_A, descendantId: ROOT_A }],
       loops: [
         makeLoop({
           status: LoopStatus.Running,
-          user: { firstName: null, lastName: null, email: "fallback@x.com" },
+          user: {
+            id: "u-fallback",
+            firstName: null,
+            lastName: null,
+            email: "fallback@x.com",
+            avatarUrl: null,
+          },
         }),
       ],
     });
@@ -382,12 +400,13 @@ describe("loopSummaryService.getSummariesForDocuments", () => {
     const result = await loopSummaryService.getSummariesForDocuments(ORG_ID, [
       ROOT_A,
     ]);
-    expect(result[ROOT_A].activeLoop?.userName).toBe("fallback@x.com");
+    expect(result[ROOT_A].activeLoop?.user.firstName).toBeNull();
+    expect(result[ROOT_A].activeLoop?.user.email).toBe("fallback@x.com");
   });
 
   it("derives isLocal=true when computeTargetId is set", async () => {
     setupDb({
-      descendants: [{ root_id: ROOT_A, descendant_id: ROOT_A }],
+      descendants: [{ rootId: ROOT_A, descendantId: ROOT_A }],
       loops: [
         makeLoop({
           status: LoopStatus.Running,

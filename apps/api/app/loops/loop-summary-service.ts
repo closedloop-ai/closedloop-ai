@@ -3,17 +3,14 @@ import type {
   LoopSummary,
   LoopSummaryEntry,
 } from "@repo/api/src/types/loop";
-import { LOOP_SUMMARIES_MAX_DEPTH, LoopStatus } from "@repo/api/src/types/loop";
+import {
+  LOOP_SUMMARIES_MAX_DEPTH,
+  type LoopCommand,
+  LoopStatus,
+} from "@repo/api/src/types/loop";
+import type { BasicUser } from "@repo/api/src/types/user";
 import { type ArtifactSubtype, LinkType, Prisma, withDb } from "@repo/database";
-
-function getUserDisplayName(user: {
-  firstName: string | null;
-  lastName: string | null;
-  email: string;
-}): string {
-  const name = [user.firstName, user.lastName].filter(Boolean).join(" ");
-  return name || user.email || "Unknown";
-}
+import { basicUserSelect } from "@/lib/db-utils";
 
 const ACTIVE_STATUSES: LoopStatus[] = [
   LoopStatus.Pending,
@@ -28,30 +25,34 @@ const TERMINAL_FAILURE_STATUSES: LoopStatus[] = [
 ];
 
 type DescendantRow = {
-  root_id: string;
-  descendant_id: string;
+  rootId: string;
+  descendantId: string;
 };
 
 type LoopRow = {
   id: string;
   artifactId: string | null;
-  command: string;
-  status: string;
+  command: LoopCommand;
+  status: LoopStatus;
   startedAt: Date | null;
   completedAt: Date | null;
   updatedAt: Date;
   computeTargetId: string | null;
-  user: {
-    firstName: string | null;
-    lastName: string | null;
-    email: string;
-  } | null;
+  user: BasicUser | null;
 };
 
 const EMPTY_SUMMARY: LoopSummary = {
   activeLoop: null,
   latestCompleted: null,
   latestFailed: null,
+};
+
+const UNKNOWN_USER: BasicUser = {
+  id: "",
+  email: "",
+  firstName: null,
+  lastName: null,
+  avatarUrl: null,
 };
 
 function failedAtFor(loop: LoopRow): Date {
@@ -69,24 +70,25 @@ function toEntry(
     : (childSubtypeMap.get(loop.artifactId ?? "") ?? null);
   return {
     loopId: loop.id,
-    command: loop.command as LoopSummaryEntry["command"],
-    status: loop.status as LoopSummaryEntry["status"],
-    userName: loop.user ? getUserDisplayName(loop.user) : "Unknown",
+    command: loop.command,
+    status: loop.status,
+    user: loop.user ?? UNKNOWN_USER,
     isLocal: loop.computeTargetId !== null,
     childSubtype,
     isDirectLoop,
-    startedAt: loop.startedAt ? loop.startedAt.toISOString() : null,
-    completedAt: loop.completedAt ? loop.completedAt.toISOString() : null,
-    failedAt: TERMINAL_FAILURE_STATUSES.includes(loop.status as LoopStatus)
-      ? failedAtFor(loop).toISOString()
+    startedAt: loop.startedAt,
+    completedAt: loop.completedAt,
+    failedAt: TERMINAL_FAILURE_STATUSES.includes(loop.status)
+      ? failedAtFor(loop)
       : null,
+    updatedAt: loop.updatedAt,
   };
 }
 
 function pickActive(loops: LoopRow[]): LoopRow | null {
   let best: LoopRow | null = null;
   for (const loop of loops) {
-    if (!ACTIVE_STATUSES.includes(loop.status as LoopStatus)) {
+    if (!ACTIVE_STATUSES.includes(loop.status)) {
       continue;
     }
     if (!best || loop.updatedAt > best.updatedAt) {
@@ -114,7 +116,7 @@ function pickLatestCompleted(loops: LoopRow[]): LoopRow | null {
 function pickLatestFailed(loops: LoopRow[]): LoopRow | null {
   let best: LoopRow | null = null;
   for (const loop of loops) {
-    if (!TERMINAL_FAILURE_STATUSES.includes(loop.status as LoopStatus)) {
+    if (!TERMINAL_FAILURE_STATUSES.includes(loop.status)) {
       continue;
     }
     const ts = failedAtFor(loop);
@@ -126,6 +128,25 @@ function pickLatestFailed(loops: LoopRow[]): LoopRow | null {
   return best;
 }
 
+/**
+ * Build the descendant map for a set of root document IDs by walking PRODUCES
+ * links recursively.
+ *
+ * The CTE has three parts:
+ *   1. Anchor — every requested root_id pairs with itself (depth 0). Org-scoped
+ *      so foreign-org IDs return zero rows.
+ *   2. Recursive step — for each (root, descendant) pair, find every PRODUCES
+ *      target where source_id = descendant. Carry along the path array so we
+ *      can detect cycles (`NOT (target_id = ANY(path))`) and bound depth
+ *      (`array_length(path, 1) < LOOP_SUMMARIES_MAX_DEPTH`).
+ *   3. Final select — DISTINCT (root, descendant) pairs deduped across all
+ *      paths leading to the same descendant.
+ *
+ * The path array doubles as a cycle guard: if A→B→A exists, the second visit
+ * to A is filtered by the ANY check, so the recursion terminates without
+ * looping. The depth bound prevents pathological deep trees from exploding
+ * the result set.
+ */
 async function collectDescendants(
   organizationId: string,
   documentIds: string[]
@@ -153,7 +174,7 @@ async function collectDescendants(
         WHERE NOT (al.target_id = ANY(d.path))
           AND array_length(d.path, 1) < ${LOOP_SUMMARIES_MAX_DEPTH}
       )
-      SELECT DISTINCT root_id::text AS "root_id", descendant_id::text AS "descendant_id"
+      SELECT DISTINCT root_id::text AS "rootId", descendant_id::text AS "descendantId"
       FROM descendants
     `)
   );
@@ -161,13 +182,13 @@ async function collectDescendants(
   const rootMap = new Map<string, Set<string>>();
   const allDescendants = new Set<string>();
   for (const row of rows) {
-    let set = rootMap.get(row.root_id);
+    let set = rootMap.get(row.rootId);
     if (!set) {
       set = new Set<string>();
-      rootMap.set(row.root_id, set);
+      rootMap.set(row.rootId, set);
     }
-    set.add(row.descendant_id);
-    allDescendants.add(row.descendant_id);
+    set.add(row.descendantId);
+    allDescendants.add(row.descendantId);
   }
   return { rootMap, allDescendants };
 }
@@ -205,13 +226,7 @@ async function fetchLoopsForDocuments(
         completedAt: true,
         updatedAt: true,
         computeTargetId: true,
-        user: {
-          select: {
-            firstName: true,
-            lastName: true,
-            email: true,
-          },
-        },
+        user: basicUserSelect,
       },
       orderBy: { updatedAt: "desc" },
     })

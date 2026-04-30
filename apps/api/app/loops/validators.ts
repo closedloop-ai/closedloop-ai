@@ -194,11 +194,5 @@ export const listLoopsQueryValidator = z.object({
 });
 
 export const loopSummariesBodyValidator = z.object({
-  documentIds: z
-    .array(z.uuid())
-    .min(1)
-    .max(LOOP_SUMMARIES_MAX_DOCUMENT_IDS)
-    .refine((ids) => new Set(ids).size === ids.length, {
-      message: "documentIds must be unique",
-    }),
+  documentIds: z.array(z.uuid()).min(1).max(LOOP_SUMMARIES_MAX_DOCUMENT_IDS),
 });

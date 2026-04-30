@@ -133,53 +133,62 @@ function summariesWith(
   };
 }
 
+const TEST_BASIC_USER = {
+  id: "user-ada",
+  email: "ada@example.com",
+  firstName: "Ada",
+  lastName: "Lovelace",
+  avatarUrl: null,
+};
+
 function activeEntry(
-  overrides?: Partial<{ command: string; startedAt: string; isLocal: boolean }>
+  overrides?: Partial<{ command: string; startedAt: Date; isLocal: boolean }>
 ) {
   return {
     loopId: LOOP_ID_ACTIVE,
     command: (overrides?.command ?? LoopCommand.Plan) as never,
     status: LoopStatus.Running as never,
-    userName: "Ada Lovelace",
+    user: TEST_BASIC_USER,
     isLocal: overrides?.isLocal ?? false,
     childSubtype: null,
     isDirectLoop: false,
-    startedAt: overrides?.startedAt ?? "2026-04-28T08:00:00.000Z",
+    startedAt: overrides?.startedAt ?? new Date("2026-04-28T08:00:00.000Z"),
     completedAt: null,
     failedAt: null,
+    updatedAt: overrides?.startedAt ?? new Date("2026-04-28T08:00:00.000Z"),
   };
 }
 
-function completedEntry(overrides?: {
-  command?: string;
-  completedAt?: string;
-}) {
+function completedEntry(overrides?: { command?: string; completedAt?: Date }) {
+  const completedAt =
+    overrides?.completedAt ?? new Date("2026-04-28T11:00:00.000Z");
   return {
     loopId: LOOP_ID_COMPLETED,
     command: (overrides?.command ?? LoopCommand.GeneratePrd) as never,
     status: LoopStatus.Completed as never,
-    userName: "Ada Lovelace",
+    user: TEST_BASIC_USER,
     isLocal: false,
     childSubtype: null,
     isDirectLoop: false,
     startedAt: null,
-    completedAt: overrides?.completedAt ?? "2026-04-28T11:00:00.000Z",
+    completedAt,
     failedAt: null,
+    updatedAt: completedAt,
   };
 }
 
 function failedEntry(overrides?: {
   command?: string;
   status?: string;
-  failedAt?: string;
-  completedAt?: string | null;
+  failedAt?: Date;
+  completedAt?: Date | null;
 }) {
-  const failedAt = overrides?.failedAt ?? "2026-04-28T10:00:00.000Z";
+  const failedAt = overrides?.failedAt ?? new Date("2026-04-28T10:00:00.000Z");
   return {
     loopId: LOOP_ID_FAILED,
     command: (overrides?.command ?? LoopCommand.Execute) as never,
     status: (overrides?.status ?? LoopStatus.Failed) as never,
-    userName: "Ada Lovelace",
+    user: TEST_BASIC_USER,
     isLocal: false,
     childSubtype: null,
     isDirectLoop: false,
@@ -187,6 +196,7 @@ function failedEntry(overrides?: {
     completedAt:
       overrides?.completedAt === undefined ? null : overrides.completedAt,
     failedAt,
+    updatedAt: failedAt,
   };
 }
 
@@ -342,12 +352,12 @@ describe("LoopCell — my-tasks variant", () => {
       loopSummaries: summariesWith({
         activeLoop: activeEntry({
           command: LoopCommand.Plan,
-          startedAt: "2026-04-28T08:00:00.000Z",
+          startedAt: new Date("2026-04-28T08:00:00.000Z"),
         }),
         latestFailed: failedEntry({
           command: LoopCommand.Execute,
           status: LoopStatus.Failed,
-          failedAt: "2026-04-28T09:30:00.000Z",
+          failedAt: new Date("2026-04-28T09:30:00.000Z"),
         }),
       }),
     });
@@ -361,11 +371,11 @@ describe("LoopCell — my-tasks variant", () => {
       loopSummaries: summariesWith({
         activeLoop: activeEntry({
           command: LoopCommand.Plan,
-          startedAt: "2026-04-28T09:00:00.000Z",
+          startedAt: new Date("2026-04-28T09:00:00.000Z"),
         }),
         latestCompleted: completedEntry({
           command: LoopCommand.GeneratePrd,
-          completedAt: "2026-04-28T11:00:00.000Z",
+          completedAt: new Date("2026-04-28T11:00:00.000Z"),
         }),
       }),
     });
@@ -379,12 +389,12 @@ describe("LoopCell — my-tasks variant", () => {
       loopSummaries: summariesWith({
         activeLoop: activeEntry({
           command: LoopCommand.Plan,
-          startedAt: "2026-04-28T10:00:00.000Z",
+          startedAt: new Date("2026-04-28T10:00:00.000Z"),
         }),
         latestFailed: failedEntry({
           command: LoopCommand.Execute,
           status: LoopStatus.Failed,
-          failedAt: "2026-04-28T08:00:00.000Z",
+          failedAt: new Date("2026-04-28T08:00:00.000Z"),
         }),
       }),
     });
