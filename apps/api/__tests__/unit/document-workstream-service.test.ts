@@ -407,21 +407,26 @@ describe("documentWorkstreamService.getDocumentPullRequest", () => {
   });
 
   it("returns the most recent PR among the document's PRODUCES links", async () => {
-    const findFirst = vi.fn().mockResolvedValue({
-      id: "pr-art-1",
-      type: "PULL_REQUEST",
-      pullRequest: { number: 42 },
-    });
+    const findMany = vi.fn().mockResolvedValue([
+      {
+        id: "pr-art-1",
+        type: "PULL_REQUEST",
+        pullRequest: { number: 42, repository: { fullName: "owner/repo" } },
+      },
+    ]);
     mockWithDb
       .mockImplementationOnce((fn: (db: object) => unknown) =>
         fn({
           artifact: {
-            findUnique: vi.fn().mockResolvedValue({ type: "DOCUMENT" }),
+            findUnique: vi.fn().mockResolvedValue({
+              type: "DOCUMENT",
+              document: { targetRepo: null },
+            }),
           },
         })
       )
       .mockImplementationOnce((fn: (db: object) => unknown) =>
-        fn({ artifact: { findFirst } })
+        fn({ artifact: { findMany } })
       );
     mockFindTargetLinks.mockResolvedValue([
       { id: "link-1", sourceId: "doc-1", targetId: "pr-art-1" },
@@ -437,7 +442,7 @@ describe("documentWorkstreamService.getDocumentPullRequest", () => {
       "org-1"
     );
 
-    expect(findFirst).toHaveBeenCalledWith(
+    expect(findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
           organizationId: "org-1",
@@ -458,12 +463,15 @@ describe("documentWorkstreamService.getDocumentPullRequest", () => {
       .mockImplementationOnce((fn: (db: object) => unknown) =>
         fn({
           artifact: {
-            findUnique: vi.fn().mockResolvedValue({ type: "DOCUMENT" }),
+            findUnique: vi.fn().mockResolvedValue({
+              type: "DOCUMENT",
+              document: { targetRepo: null },
+            }),
           },
         })
       )
       .mockImplementationOnce((fn: (db: object) => unknown) =>
-        fn({ artifact: { findFirst: vi.fn().mockResolvedValue(null) } })
+        fn({ artifact: { findMany: vi.fn().mockResolvedValue([]) } })
       );
     mockFindTargetLinks.mockResolvedValue([
       { id: "link-1", sourceId: "doc-1", targetId: "deploy-art-1" },
@@ -474,5 +482,134 @@ describe("documentWorkstreamService.getDocumentPullRequest", () => {
       "org-1"
     );
     expect(result).toBeNull();
+  });
+});
+
+describe("documentWorkstreamService.getDocumentPullRequests", () => {
+  beforeEach(() => vi.resetAllMocks());
+
+  it("returns empty array when the document has no PRODUCES links", async () => {
+    mockDb({
+      artifact: {
+        findUnique: vi.fn().mockResolvedValue({
+          type: "DOCUMENT",
+          document: { targetRepo: null },
+        }),
+      },
+    });
+    mockFindTargetLinks.mockResolvedValue([]);
+
+    const result = await documentWorkstreamService.getDocumentPullRequests(
+      "doc-1",
+      "org-1"
+    );
+    expect(result).toEqual([]);
+  });
+
+  it("returns single PR with repoFullName populated from repository.fullName", async () => {
+    mockWithDb
+      .mockImplementationOnce((fn: (db: object) => unknown) =>
+        fn({
+          artifact: {
+            findUnique: vi.fn().mockResolvedValue({
+              type: "DOCUMENT",
+              document: { targetRepo: null },
+            }),
+          },
+        })
+      )
+      .mockImplementationOnce((fn: (db: object) => unknown) =>
+        fn({
+          artifact: {
+            findMany: vi.fn().mockResolvedValue([
+              {
+                id: "pr-art-1",
+                type: "PULL_REQUEST",
+                pullRequest: {
+                  number: 10,
+                  repository: { fullName: "owner/repo" },
+                },
+              },
+            ]),
+          },
+        })
+      );
+    mockFindTargetLinks.mockResolvedValue([
+      { id: "link-1", sourceId: "doc-1", targetId: "pr-art-1" },
+    ]);
+    const prInfo = {
+      number: 10,
+      repoFullName: "owner/repo",
+      htmlUrl: "https://github.com/owner/repo/pull/10",
+    };
+    mockPrToInfo.mockReturnValue(prInfo);
+
+    const result = await documentWorkstreamService.getDocumentPullRequests(
+      "doc-1",
+      "org-1"
+    );
+
+    expect(result).toHaveLength(1);
+    expect(result[0].repoFullName).toBe("owner/repo");
+    expect(mockPrToInfo).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "pr-art-1" }),
+      { externalLinkId: "pr-art-1" }
+    );
+  });
+
+  it("sorts the primary-repo PR first when targetRepo matches", async () => {
+    mockWithDb
+      .mockImplementationOnce((fn: (db: object) => unknown) =>
+        fn({
+          artifact: {
+            findUnique: vi.fn().mockResolvedValue({
+              type: "DOCUMENT",
+              document: { targetRepo: "owner/primary" },
+            }),
+          },
+        })
+      )
+      .mockImplementationOnce((fn: (db: object) => unknown) =>
+        fn({
+          artifact: {
+            findMany: vi.fn().mockResolvedValue([
+              {
+                id: "pr-art-secondary",
+                type: "PULL_REQUEST",
+                pullRequest: {
+                  number: 5,
+                  repository: { fullName: "owner/secondary" },
+                },
+              },
+              {
+                id: "pr-art-primary",
+                type: "PULL_REQUEST",
+                pullRequest: {
+                  number: 7,
+                  repository: { fullName: "owner/primary" },
+                },
+              },
+            ]),
+          },
+        })
+      );
+    mockFindTargetLinks.mockResolvedValue([
+      { id: "link-1", sourceId: "doc-1", targetId: "pr-art-secondary" },
+      { id: "link-2", sourceId: "doc-1", targetId: "pr-art-primary" },
+    ]);
+    const secondaryPr = { number: 5, repoFullName: "owner/secondary" };
+    const primaryPr = { number: 7, repoFullName: "owner/primary" };
+    mockPrToInfo
+      .mockReturnValueOnce(secondaryPr)
+      .mockReturnValueOnce(primaryPr);
+
+    const result = await documentWorkstreamService.getDocumentPullRequests(
+      "doc-1",
+      "org-1"
+    );
+
+    expect(result).toHaveLength(2);
+    expect(result[0].repoFullName).toBe("owner/primary");
+    expect(result[1].repoFullName).toBe("owner/secondary");
   });
 });
