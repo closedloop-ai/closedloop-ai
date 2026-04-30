@@ -41,6 +41,12 @@ import { LoopCommand } from "@repo/api/src/types/loop";
 import { evaluateFeatureHandler } from "@/lib/loops/loop-commands/evaluate-feature-handler";
 import { registerEvaluationHandlerTests } from "../utils/evaluation-handler-test-factory";
 
+/**
+ * The intent of this test suite is to verify that the EVALUATE_FEATURE loop command handler
+ * behaves correctly, including interactions with all shared evaluation logic and mocks.
+ * This ensures consistency of the evaluation handling contract for the Feature report type.
+ */
+
 registerEvaluationHandlerTests({
   handler: evaluateFeatureHandler,
   reportType: EvaluationReportType.Feature,
