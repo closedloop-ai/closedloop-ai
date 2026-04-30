@@ -5,31 +5,66 @@
  * three artifact types are co-located here.
  */
 
-import type { DeploymentArtifact } from "@repo/api/src/types/artifact";
+import type {
+  Artifact as ApiArtifact,
+  DeploymentDetail as ApiDeploymentDetail,
+  PullRequestDetail as ApiPullRequestDetail,
+  DeploymentArtifact,
+} from "@repo/api/src/types/artifact";
 import { ArtifactType as ApiArtifactType } from "@repo/api/src/types/artifact";
 import type {
   PullRequestInfo,
   PullRequestState,
 } from "@repo/api/src/types/document";
-import {
-  type Artifact,
-  ArtifactType,
-  type DeploymentDetail,
-  type GitHubInstallationRepository,
-  type GitHubPRState,
-  type PullRequestDetail,
-} from "@repo/database";
+import type {
+  GitHubPRState,
+  GitHubRepository,
+} from "@repo/api/src/types/github";
+import { ArtifactType as DatabaseArtifactType } from "@repo/database";
 
-type PullRequestDetailWithRepository = PullRequestDetail & {
-  repository?: Pick<GitHubInstallationRepository, "fullName"> | null;
+type PullRequestArtifactScalars = Pick<
+  ApiArtifact,
+  "id" | "name" | "externalUrl" | "createdAt"
+>;
+
+type PullRequestDetailForInfo = Omit<
+  ApiPullRequestDetail,
+  "checksStatus" | "reviewDecision"
+> & {
+  prState: GitHubPRState;
+  checksStatus: PullRequestInfo["checksStatus"];
+  reviewDecision: PullRequestInfo["reviewDecision"];
 };
 
-type ArtifactWithPullRequestDetail = Artifact & {
+type PullRequestDetailWithRepository = PullRequestDetailForInfo & {
+  repository?: Pick<GitHubRepository, "fullName"> | null;
+};
+
+type ArtifactWithPullRequestDetail = PullRequestArtifactScalars & {
   pullRequest: PullRequestDetailWithRepository | null;
 };
 
-type ArtifactWithDeploymentDetail = Artifact & {
-  deployment: DeploymentDetail | null;
+type DeploymentArtifactScalars = Pick<
+  ApiArtifact,
+  | "id"
+  | "organizationId"
+  | "projectId"
+  | "workstreamId"
+  | "name"
+  | "slug"
+  | "status"
+  | "priority"
+  | "assigneeId"
+  | "dueDate"
+  | "externalUrl"
+  | "sortOrder"
+  | "createdAt"
+  | "createdById"
+  | "updatedAt"
+>;
+
+type ArtifactWithDeploymentDetail = DeploymentArtifactScalars & {
+  deployment: ApiDeploymentDetail | null;
 };
 
 // ---------------------------------------------------------------------------
@@ -128,13 +163,13 @@ export function deploymentArtifactToInfo(
 // ---------------------------------------------------------------------------
 
 export function documentWhere<T extends Record<string, unknown>>(where: T) {
-  return { ...where, type: ArtifactType.DOCUMENT };
+  return { ...where, type: DatabaseArtifactType.DOCUMENT };
 }
 
 export function pullRequestWhere<T extends Record<string, unknown>>(where: T) {
-  return { ...where, type: ArtifactType.PULL_REQUEST };
+  return { ...where, type: DatabaseArtifactType.PULL_REQUEST };
 }
 
 export function deploymentWhere<T extends Record<string, unknown>>(where: T) {
-  return { ...where, type: ArtifactType.DEPLOYMENT };
+  return { ...where, type: DatabaseArtifactType.DEPLOYMENT };
 }
