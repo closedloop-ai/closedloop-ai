@@ -21,15 +21,16 @@ export function getCommandHandler(
 
 const COMMAND_HANDLERS: Record<LoopCommand, LoopCommandHandler | undefined> = {
   [LoopCommand.Plan]: planHandler,
-  [LoopCommand.RequestChanges]: requestChangesHandler,
   [LoopCommand.Execute]: executeHandler,
   [LoopCommand.Chat]: undefined,
   [LoopCommand.Explore]: undefined,
+  [LoopCommand.RequestChanges]: requestChangesHandler,
+  [LoopCommand.RequestPrdChanges]: requestPrdChangesHandler,
   [LoopCommand.Decompose]: decomposeHandler,
   [LoopCommand.EvaluatePrd]: evaluatePrdHandler,
   [LoopCommand.GeneratePrd]: generatePrdHandler,
   [LoopCommand.EvaluatePlan]: evaluatePlanHandler,
   [LoopCommand.EvaluateCode]: evaluateCodeHandler,
-  [LoopCommand.RequestPrdChanges]: requestPrdChangesHandler,
+  [LoopCommand.EvaluateFeature]: undefined,
   [LoopCommand.Bootstrap]: undefined,
 };

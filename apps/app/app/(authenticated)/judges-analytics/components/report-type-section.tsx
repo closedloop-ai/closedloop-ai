@@ -11,6 +11,7 @@ const REPORT_TYPE_LABEL: Record<EvaluationReportType, string> = {
   [EvaluationReportType.Code]: "Code",
   [EvaluationReportType.Prd]: "PRD",
   [EvaluationReportType.Plan]: "Plan",
+  [EvaluationReportType.Feature]: "Feature",
 };
 
 const REPORT_TYPE_DESCRIPTION: Record<EvaluationReportType, string> = {
@@ -20,6 +21,8 @@ const REPORT_TYPE_DESCRIPTION: Record<EvaluationReportType, string> = {
     "LLM PRD-judge scores compared against artifact ratings.",
   [EvaluationReportType.Plan]:
     "LLM plan-judge scores compared against artifact ratings.",
+  [EvaluationReportType.Feature]:
+    "LLM feature-judge scores compared against artifact ratings.",
 };
 
 export function ReportTypeSection({
