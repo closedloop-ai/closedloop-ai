@@ -680,6 +680,17 @@ describe("resolveEvaluateCodeTargetBranch", () => {
       expect(result.branch).toBe("symphony/my-branch");
     }
   });
+
+  it("rejects PR with null repoFullName when a specific repo is requested", () => {
+    const result = resolveEvaluateCodeTargetBranch(
+      buildPullRequestInfo({ repoFullName: null }),
+      "owner/target-repo"
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.message).toContain("owner/target-repo");
+    }
+  });
 });
 
 describe("resolveEvaluateCodeBranchForRunLoop", () => {

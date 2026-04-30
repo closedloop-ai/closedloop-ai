@@ -158,7 +158,7 @@ export function resolveEvaluateCodeTargetBranch(
         "No open pull request found. Execute the plan first to create a PR.",
     };
   }
-  if (repoFullName && pr.repoFullName && pr.repoFullName !== repoFullName) {
+  if (repoFullName && pr.repoFullName !== repoFullName) {
     return {
       ok: false,
       message: `No open pull request found for repository ${repoFullName}.`,
