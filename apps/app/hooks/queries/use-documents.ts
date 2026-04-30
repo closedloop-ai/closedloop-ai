@@ -516,23 +516,18 @@ export function useDismissDocumentGenerationStatus() {
 }
 
 /**
- * Fetch the pull request associated with an artifact's workstream.
+ * Fetch the pull requests associated with an artifact.
  */
 export function useDocumentPullRequest(
   documentId: string,
-  options?: Omit<
-    UseQueryOptions<PullRequestInfo | null>,
-    "queryKey" | "queryFn"
-  >
+  options?: Omit<UseQueryOptions<PullRequestInfo[]>, "queryKey" | "queryFn">
 ) {
   const apiClient = useApiClient();
 
   return useQuery({
     queryKey: [...documentKeys.detail(documentId), "pull-request"] as const,
     queryFn: () =>
-      apiClient.get<PullRequestInfo | null>(
-        `/documents/${documentId}/pull-request`
-      ),
+      apiClient.get<PullRequestInfo[]>(`/documents/${documentId}/pull-request`),
     enabled: !!documentId,
     ...options,
   });

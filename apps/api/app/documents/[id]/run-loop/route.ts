@@ -162,6 +162,7 @@ export const POST = withAnyAuth<RunLoopResponse, "/documents/[id]/run-loop">(
         body.command,
         documentId,
         user.organizationId,
+        targetRepo,
         targetBranch
       );
       if (!evaluateBranchResult.ok) {
