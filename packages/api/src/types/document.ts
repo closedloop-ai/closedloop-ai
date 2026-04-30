@@ -185,7 +185,7 @@ export type PullRequestInfo = {
   checksStatus: ChecksStatus | null;
   reviewDecision: ReviewDecision | null;
   externalLinkId: string | null;
-  repoFullName: string;
+  repoFullName: string | null;
 };
 
 // Generation status for documents being processed by GitHub Actions or Loops

@@ -66,6 +66,16 @@ type PlanEditorProps = {
   showHeader?: boolean;
 };
 
+const LEGACY_UNKNOWN_REPO_FULL_NAME = "unknown";
+
+function isKnownRepoFullName(
+  repoFullName: string | null | undefined
+): repoFullName is string {
+  return (
+    Boolean(repoFullName) && repoFullName !== LEGACY_UNKNOWN_REPO_FULL_NAME
+  );
+}
+
 export function PlanEditor({
   plan,
   currentVersion,
@@ -179,18 +189,23 @@ export function PlanEditor({
 
   const canEvaluateCode =
     primaryPr?.state === PullRequestState.Open &&
-    primaryPr.headBranch.length > 0;
+    primaryPr.headBranch.length > 0 &&
+    isKnownRepoFullName(primaryPr.repoFullName);
   const evaluateCodeHandler = useCallback(() => {
-    if (!(canEvaluateCode && primaryPr)) {
+    if (
+      !(
+        canEvaluateCode &&
+        primaryPr &&
+        isKnownRepoFullName(primaryPr.repoFullName)
+      )
+    ) {
       return;
     }
-    planActions.handleEvaluateCode(primaryPr.headBranch, plan.targetRepo);
-  }, [
-    canEvaluateCode,
-    primaryPr,
-    plan.targetRepo,
-    planActions.handleEvaluateCode,
-  ]);
+    planActions.handleEvaluateCode(
+      primaryPr.headBranch,
+      primaryPr.repoFullName
+    );
+  }, [canEvaluateCode, primaryPr, planActions.handleEvaluateCode]);
 
   const handleRegenerate = useCallback(() => {
     if (multiRepoEnabled) {

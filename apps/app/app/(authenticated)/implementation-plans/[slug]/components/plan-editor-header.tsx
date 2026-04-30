@@ -119,9 +119,7 @@ export function PlanEditorHeader({
                 {branchPrEnabled && pr.externalLinkId ? (
                   <Link href={`/build/${pr.externalLinkId}`}>
                     <GitPullRequestIcon className="h-4 w-4" />
-                    {pr.repoFullName && pr.repoFullName !== "unknown"
-                      ? `${pr.repoFullName} `
-                      : ""}
+                    {pr.repoFullName ? `${pr.repoFullName} ` : ""}
                     PR #{pr.number}
                   </Link>
                 ) : (
@@ -131,9 +129,7 @@ export function PlanEditorHeader({
                     target="_blank"
                   >
                     <GitPullRequestIcon className="h-4 w-4" />
-                    {pr.repoFullName && pr.repoFullName !== "unknown"
-                      ? `${pr.repoFullName} `
-                      : ""}
+                    {pr.repoFullName ? `${pr.repoFullName} ` : ""}
                     PR #{pr.number}
                     <ExternalLinkIcon className="ml-auto h-3 w-3" />
                   </a>

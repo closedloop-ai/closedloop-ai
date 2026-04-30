@@ -66,8 +66,7 @@ export function pullRequestArtifactToInfo(
     checksStatus: detail.checksStatus,
     reviewDecision: detail.reviewDecision,
     externalLinkId: options.externalLinkId ?? null,
-    repoFullName:
-      detail.repository?.fullName ?? options.repoFullName ?? "unknown",
+    repoFullName: detail.repository?.fullName ?? options.repoFullName ?? null,
   };
 }
 

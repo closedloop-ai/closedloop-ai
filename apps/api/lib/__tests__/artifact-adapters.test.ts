@@ -86,7 +86,7 @@ describe("pullRequestArtifactToInfo", () => {
     expect(result?.repoFullName).toBe("owner/fallback-repo");
   });
 
-  it("returns repoFullName as 'unknown' when options.repoFullName is undefined and detail.repository is null", () => {
+  it("returns repoFullName as null when options.repoFullName is undefined and detail.repository is null", () => {
     const artifact = {
       ...makeBaseArtifact(),
       pullRequest: makeDetailRow(null),
@@ -95,7 +95,7 @@ describe("pullRequestArtifactToInfo", () => {
     const result = pullRequestArtifactToInfo(artifact);
 
     expect(result).not.toBeNull();
-    expect(result?.repoFullName).toBe("unknown");
+    expect(result?.repoFullName).toBeNull();
   });
 
   it("prefers detail.repository.fullName over options.repoFullName", () => {
