@@ -1,6 +1,7 @@
 "use client";
 
 import type { Priority } from "@repo/api/src/types/common";
+import { DocumentType } from "@repo/api/src/types/document";
 import { PriorityIcon } from "@repo/design-system/components/ui/priority-icon";
 import {
   Select,
@@ -10,6 +11,7 @@ import {
   SelectValue,
 } from "@repo/design-system/components/ui/select";
 import { AttachFilesButton } from "@/components/document-editor/attach-files-button";
+import { DocumentTypeBadge } from "@/components/document-editor/document-type-badge";
 import { MetadataPanel } from "@/components/document-editor/metadata-panel";
 import { StatusMetadataSection } from "@/components/document-editor/status-metadata-section";
 import type { useDocumentMetadata } from "@/hooks/document-editing/use-document-metadata";
@@ -32,6 +34,7 @@ export function FeatureMetadataBar({
 }: Readonly<FeatureMetadataBarProps>) {
   return (
     <MetadataPanel variant="bar">
+      <DocumentTypeBadge type={DocumentType.Feature} />
       <StatusMetadataSection
         assignee={metadata.assignee}
         layout="horizontal"

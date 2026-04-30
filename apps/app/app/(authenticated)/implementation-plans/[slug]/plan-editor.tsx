@@ -157,7 +157,8 @@ export function PlanEditor({
   const { initialAdditionalRepos, isLoadingInitialAdditionalRepos } =
     useInitialAdditionalRepos(plan.id);
 
-  const { data: pullRequests = [] } = useDocumentPullRequest(plan.id);
+  const { data: pullRequestsData } = useDocumentPullRequest(plan.id);
+  const pullRequests = pullRequestsData ?? [];
   const primaryPr = pickPullRequestForRepo(pullRequests, plan.targetRepo);
   const { data: judgesReport } = usePlanJudgesFeedback(plan.id);
   const { data: codeJudgesReport } = useCodeJudgesFeedback(plan.id);
