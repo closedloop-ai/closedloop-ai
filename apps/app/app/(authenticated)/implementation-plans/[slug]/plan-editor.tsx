@@ -41,7 +41,7 @@ import { usePlanActions } from "@/hooks/document-editing/use-plan-actions";
 import {
   useDismissDocumentGenerationStatus,
   useDocumentGenerationStatus,
-  useDocumentPullRequests,
+  useDocumentPullRequest,
 } from "@/hooks/queries/use-documents";
 import {
   useCodeJudgesFeedback,
@@ -156,7 +156,7 @@ export function PlanEditor({
   const { initialAdditionalRepos, isLoadingInitialAdditionalRepos } =
     useInitialAdditionalRepos(plan.id);
 
-  const { data: pullRequests = [] } = useDocumentPullRequests(plan.id);
+  const { data: pullRequests = [] } = useDocumentPullRequest(plan.id);
   const primaryPr =
     pullRequests.find((pr) => pr.repoFullName === plan.targetRepo) ??
     pullRequests[0] ??
