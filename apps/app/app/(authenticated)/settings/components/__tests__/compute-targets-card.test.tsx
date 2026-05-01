@@ -134,9 +134,9 @@ describe("ComputeTargetsCard", () => {
       computeTargetId: TEST_TARGET_ID,
     });
     globalThis.fetch = vi.fn(() => new Promise(() => {})) as typeof fetch;
-    // Seed cache using the same key the component will use (includes expectedMcpUrl)
+    // Seed cache using the same key the component will use.
     queryClient.setQueryData(
-      queryKeys.healthCheck(healthCheckTargetKey, expectedMcpUrl),
+      queryKeys.healthCheck(healthCheckTargetKey, expectedMcpUrl, "9.9.9"),
       {
         checks: [
           {
@@ -168,9 +168,9 @@ describe("ComputeTargetsCard", () => {
       mode: EngineerRoutingMode.CloudRelay,
       computeTargetId: TEST_TARGET_ID,
     });
-    // Seed cache using the same key the component will use (includes expectedMcpUrl)
+    // Seed cache using the same key the component will use.
     queryClient.setQueryData(
-      queryKeys.healthCheck(healthCheckTargetKey, expectedMcpUrl),
+      queryKeys.healthCheck(healthCheckTargetKey, expectedMcpUrl, "9.9.9"),
       {
         checks: [
           {
@@ -198,9 +198,9 @@ describe("ComputeTargetsCard", () => {
       computeTargetId: TEST_TARGET_ID,
     });
     globalThis.fetch = vi.fn(() => new Promise(() => {})) as typeof fetch;
-    // Seed cache using the same key the component will use (includes expectedMcpUrl)
+    // Seed cache using the same key the component will use.
     queryClient.setQueryData(
-      queryKeys.healthCheck(healthCheckTargetKey, expectedMcpUrl),
+      queryKeys.healthCheck(healthCheckTargetKey, expectedMcpUrl, "9.9.9"),
       {
         checks: [
           {
@@ -272,11 +272,36 @@ describe("ComputeTargetsCard", () => {
           },
         })
       );
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        expect.stringContaining("latestVersion=9.9.9"),
+        expect.objectContaining({
+          headers: {
+            [COMPUTE_TARGET_HEADER]: TEST_TARGET_ID,
+          },
+        })
+      );
     });
 
     await waitFor(() => {
       expect(screen.getByText("All checks passed")).toBeInTheDocument();
     });
+  });
+
+  it("waits for latest release data to settle before manual system checks can run", () => {
+    mockUseLatestElectronRelease.mockReturnValue({
+      data: undefined,
+      isLoading: true,
+    });
+
+    renderWithClient();
+
+    const runCheckButton = screen.getByRole("button", { name: RE_RUN_CHECK });
+
+    expect(runCheckButton).toBeDisabled();
+
+    fireEvent.click(runCheckButton);
+
+    expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
   it("keeps feature-disabled Standard targets eligible for system checks", async () => {
