@@ -26,6 +26,7 @@ Use Node 20+ with `pnpm`.
 - `pnpm build`, `pnpm typecheck`, `pnpm lint`, and `pnpm test` run workspace-wide checks.
 - `pnpm migrate` or `just db-migrate name=my_change` creates/applies Prisma migrations.
 - For Prisma schema changes, generate migrations with `prisma migrate dev` or `prisma migrate dev --create-only`; only hand-edit the generated SQL for constructs Prisma cannot express, such as partial unique indexes.
+- For pre-commit validation, prefer `just build` plus `git diff --check` when the change is ready for final verification. Do not also run separate workspace/app test, typecheck, or lint commands unless you are isolating a specific failure, need a faster focused loop while debugging, or the user explicitly requests those commands.
 
 ## Dockerized Workspace Apps
 Some apps, including `apps/mcp` and `apps/relay`, build from narrow Docker contexts instead of the full monorepo. When adding or changing any `@repo/*` import or `workspace:*` dependency in a Dockerized app, update that app's Dockerfile in the same change.
@@ -62,9 +63,12 @@ For API routes with fixed request/response/error contracts, wrap auth/session an
 - For TTL-backed state machines, check expiry at every non-terminal branch that can remain in progress, including after claim/consume transitions. A consumed, claimed, or in-progress record must not remain pollable forever after its TTL unless readiness has already been proven.
 - Define regex literals as module-level constants instead of inline inside functions or tests so Ultracite's `useTopLevelRegex` rule stays satisfied.
 - For generated shell commands or installer scripts, do not execute unchecked network downloads through command substitution. Download to a temporary file or otherwise make the download a checked step before executing the result, and preserve the nonzero exit status on network failure.
+- When form/input values are trimmed, parsed, normalized, or otherwise transformed before command generation or mutation submission, run validation against the exact transformed value that will be submitted. Add a test for harmless trim-only input and a test where invalid content remains after transformation.
 - React hooks, components, and utilities that schedule timers must clear superseded timers and clean them up on unmount or disposal.
 - Tests that mutate `process.env` must restore the exact previous state. If a variable was originally unset, remove the property, for example with `Reflect.deleteProperty(process.env, "KEY")`; assigning `undefined` creates the string value `"undefined"` in Node.
 - Tests that mutate browser globals or readonly-ish global properties such as `navigator.platform` must restore the original property descriptor in `afterEach`, or use test helpers that automatically unstub globals.
+- Test helpers that wrap `child_process.spawn` must handle the child's `error` event so spawn failures resolve or reject with a clear test failure instead of hanging.
+- Timing-sensitive integration tests must pass an explicit test timeout and make fallback behavior deterministic; do not rely on the test runner's default timeout to catch hangs.
 - Tests for ignored, optional, or compatibility-only request fields must assert the downstream call shape, not only that the downstream dependency was called.
 - Tests for feature-gated defaults must set mocks so the opposite/default branch would fail the assertion; avoid tests that pass only because the feature gate is disabled or unavailable.
 - When rendering nullable values behind a boolean flag, guard the actual render branch with the nullable values too, or encode the props as a discriminated union so the compiler enforces the required values.
