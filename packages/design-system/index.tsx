@@ -6,6 +6,7 @@ import { ThemeProvider } from "./providers/theme";
 
 type DesignSystemProviderProperties = ComponentProps<typeof ThemeProvider> & {
   children: ReactNode;
+  nonce?: string;
   privacyUrl?: string;
   termsUrl?: string;
   helpUrl?: string;
@@ -19,7 +20,12 @@ export const DesignSystemProvider = ({
   ...properties
 }: DesignSystemProviderProperties) => (
   <ThemeProvider {...properties}>
-    <AuthProvider helpUrl={helpUrl} privacyUrl={privacyUrl} termsUrl={termsUrl}>
+    <AuthProvider
+      helpUrl={helpUrl}
+      nonce={properties.nonce}
+      privacyUrl={privacyUrl}
+      termsUrl={termsUrl}
+    >
       <TooltipProvider>{children}</TooltipProvider>
       <Toaster />
     </AuthProvider>

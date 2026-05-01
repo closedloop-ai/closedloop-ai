@@ -6,7 +6,9 @@ import { fonts } from "@repo/design-system/lib/fonts";
 import { cn } from "@repo/design-system/lib/utils";
 import { RootProvider } from "fumadocs-ui/provider/next";
 import type { Metadata } from "next";
+import { headers } from "next/headers";
 import type { ReactNode } from "react";
+import { env } from "@/env";
 import { locales } from "@/lib/site";
 
 type RootLayoutProperties = {
@@ -34,16 +36,20 @@ export const metadata: Metadata = {
 const RootLayout = async ({ children, params }: RootLayoutProperties) => {
   const { locale } = await params;
 
+  const nonce = env.CSP_ENABLED
+    ? ((await headers()).get("x-nonce") ?? undefined)
+    : undefined;
+
   return (
     <html
       className={cn(fonts, "scroll-smooth", "light")}
       lang={locale}
       suppressHydrationWarning
     >
-      <GoogleTagManager gtmId="GTM-MV8VKHSF" />
+      <GoogleTagManager gtmId="GTM-MV8VKHSF" nonce={nonce} />
       <body className="min-h-screen bg-background text-foreground">
-        <AnalyticsProvider>
-          <DesignSystemProvider forcedTheme="light">
+        <AnalyticsProvider nonce={nonce}>
+          <DesignSystemProvider forcedTheme="light" nonce={nonce}>
             <RootProvider search={{ enabled: false }}>{children}</RootProvider>
           </DesignSystemProvider>
         </AnalyticsProvider>

@@ -94,8 +94,18 @@ function startFlushTimer(): void {
 }
 
 function flushToDatadog(): Promise<void> {
-  if (buffer.length === 0 || !DD.apiKey || flushInProgress) {
+  if (buffer.length === 0 || !DD.apiKey) {
     return flushInProgress ?? Promise.resolve();
+  }
+
+  // If a flush is already in flight, chain a follow-up after it completes so
+  // entries enqueued during that flush are also delivered. The returned
+  // promise resolves only after the buffer is fully drained — critical for
+  // `waitUntil(log.flush())` callers in serverless, where the runtime can
+  // freeze the function between batches and drop logs that haven't been
+  // chained into the awaited promise.
+  if (flushInProgress) {
+    return flushInProgress.then(() => flushToDatadog());
   }
 
   const batch = buffer.splice(0, MAX_BATCH_SIZE);
@@ -127,12 +137,17 @@ function flushToDatadog(): Promise<void> {
     })
     .finally(() => {
       flushInProgress = null;
-      if (buffer.length >= MAX_BATCH_SIZE) {
-        flushToDatadog();
-      }
     });
 
-  return flushInProgress;
+  // Chain the drain into the returned promise so it resolves only after the
+  // buffer is empty. Without this, callers awaiting log.flush() would resolve
+  // after the first batch completes and miss entries enqueued during the flush.
+  return flushInProgress.then(() => {
+    if (buffer.length > 0) {
+      return flushToDatadog();
+    }
+    return undefined;
+  });
 }
 
 function enqueue(entry: DatadogLogEntry): void {

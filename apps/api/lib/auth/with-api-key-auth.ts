@@ -9,7 +9,11 @@ import { type NextRequest, NextResponse } from "next/server";
 import { apiKeysService } from "@/app/api-keys/service";
 import { organizationsService } from "@/app/organizations/service";
 import { usersService } from "@/app/users/service";
-import { forbiddenResponse, unauthorizedResponse } from "../route-utils";
+import {
+  forbiddenResponse,
+  logRequestCompleted,
+  unauthorizedResponse,
+} from "../route-utils";
 import type { VerifiedApiKeyContextWithMetadata } from "./api-key-context";
 import { hasApiKeyScopes } from "./api-key-scopes";
 import { getDesktopManagedPopRequestFailure } from "./desktop-managed-pop";
@@ -61,16 +65,21 @@ export function withApiKeyAuth<TResponse, TRoute extends string = string>(
     request: NextRequest,
     routeContext: RouteContext<TRoute>
   ): Promise<AuthenticatedJsonResponse<TResponse>> => {
+    const startMs = globalThis.performance.now();
+    let response: AuthenticatedJsonResponse<TResponse> | undefined;
     try {
       const token = getBearerToken(request);
 
       if (!token?.startsWith("sk_live_")) {
-        return unauthorizedResponse();
+        response = unauthorizedResponse();
+        return response;
       }
 
       const apiKeyResult = await resolveApiKeyContext(token, options);
       if (apiKeyResult.response) {
-        return apiKeyResult.response as AuthenticatedJsonResponse<TResponse>;
+        response =
+          apiKeyResult.response as AuthenticatedJsonResponse<TResponse>;
+        return response;
       }
       const keyContext = apiKeyResult.context;
 
@@ -80,7 +89,8 @@ export function withApiKeyAuth<TResponse, TRoute extends string = string>(
       );
 
       if (!user?.active) {
-        return unauthorizedResponse();
+        response = unauthorizedResponse();
+        return response;
       }
 
       const popFailure = await getDesktopManagedPopRequestFailure({
@@ -88,9 +98,10 @@ export function withApiKeyAuth<TResponse, TRoute extends string = string>(
         request,
       });
       if (popFailure) {
-        return NextResponse.json(failure(popFailure.message), {
+        response = NextResponse.json(failure(popFailure.message), {
           status: popFailure.status,
         });
+        return response;
       }
       waitUntil(apiKeysService.touchLastUsedAt(keyContext.apiKeyId));
 
@@ -99,7 +110,8 @@ export function withApiKeyAuth<TResponse, TRoute extends string = string>(
       );
 
       if (!organization) {
-        return unauthorizedResponse();
+        response = unauthorizedResponse();
+        return response;
       }
 
       const authContext: AuthContext = {
@@ -115,16 +127,21 @@ export function withApiKeyAuth<TResponse, TRoute extends string = string>(
         options?.requiredScopes &&
         !hasApiKeyScopes(authContext, options.requiredScopes)
       ) {
-        return forbiddenResponse();
+        response = forbiddenResponse();
+        return response;
       }
 
-      return handler(authContext, request, routeContext.params);
+      response = await handler(authContext, request, routeContext.params);
+      return response;
     } catch (error) {
       const errorMessage = parseError(error);
       log.error("API key authentication failed", { error: errorMessage });
-      return NextResponse.json(failure("Authentication failed"), {
+      response = NextResponse.json(failure("Authentication failed"), {
         status: 500,
       });
+      return response;
+    } finally {
+      logRequestCompleted(request, startMs, response?.status ?? 500);
     }
   };
 }

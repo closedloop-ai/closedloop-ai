@@ -13,7 +13,12 @@ const mockIsFeatureEnabled = vi.hoisted(() => vi.fn());
 const mockWaitUntil = vi.hoisted(() => vi.fn());
 
 vi.mock("@repo/observability/log", () => ({
-  log: { error: vi.fn(), info: vi.fn(), warn: vi.fn() },
+  log: {
+    error: vi.fn(),
+    flush: vi.fn().mockResolvedValue(undefined),
+    info: vi.fn(),
+    warn: vi.fn(),
+  },
 }));
 vi.mock("@repo/observability/error", () => ({
   parseError: (e: unknown) => String(e),
@@ -220,7 +225,8 @@ describe("withApiKeyAuth", () => {
 
     expect(response.status).toBe(200);
     expect(handler).toHaveBeenCalledOnce();
-    expect(mockWaitUntil).toHaveBeenCalledOnce();
+    // Two waitUntils: apiKeysService.touchLastUsedAt + logRequestCompleted's scheduleLogFlush
+    expect(mockWaitUntil).toHaveBeenCalledTimes(2);
   });
 
   it("does not report non-PoP lookup exceptions as PoP verifier outages", async () => {
