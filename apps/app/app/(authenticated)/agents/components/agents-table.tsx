@@ -110,8 +110,9 @@ export function AgentsTable() {
   const electron = useElectronDetection();
   const bootstrap = useBootstrapAgents();
   const isBootstrapBusy =
-    bootstrap.state.status === BootstrapStatus.Running ||
-    bootstrap.state.status === BootstrapStatus.Ingesting;
+    bootstrap.state.status !== BootstrapStatus.Idle &&
+    bootstrap.state.status !== BootstrapStatus.Completed &&
+    bootstrap.state.status !== BootstrapStatus.Error;
 
   const handleGenerateClick = () => {
     if (!electron.detected) {

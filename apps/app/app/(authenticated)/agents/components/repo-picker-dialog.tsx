@@ -35,7 +35,7 @@ export function RepoPickerDialog({
   const [search, setSearch] = useState("");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
-  const { data: githubStatus } = useGitHubIntegrationStatus();
+  const { data: githubStatus } = useGitHubIntegrationStatus({ enabled: open });
   const { data: repositories, isLoading } = useGitHubRepositories({
     enabled: open && githubStatus?.connected === true,
   });

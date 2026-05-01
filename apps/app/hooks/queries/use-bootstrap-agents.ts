@@ -1,12 +1,17 @@
 "use client";
 
 import type { BulkIngestAgentResponse } from "@repo/api/src/types/agent";
-import { useQueryClient } from "@tanstack/react-query";
-import { useCallback, useRef, useState } from "react";
+import type { Loop } from "@repo/api/src/types/loop";
+import { LoopStatus } from "@repo/api/src/types/loop";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useApiClient } from "@/hooks/use-api-client";
 import { agentKeys } from "./use-agents";
+import { loopKeys } from "./use-loops";
 
-type BootstrapRepoResult = {
+// --- Bootstrap loop result shape (from uploadedArtifacts) ---
+
+type BootstrapLoopRepoResult = {
   fullName: string;
   success: boolean;
   error?: string;
@@ -22,12 +27,12 @@ type BootstrapRepoResult = {
   duration: number;
 };
 
-type BootstrapCommandResult = {
-  type: "bootstrap:result";
-  success: boolean;
-  repos: BootstrapRepoResult[];
+type BootstrapLoopResult = {
+  repos: BootstrapLoopRepoResult[];
   totalDuration: number;
 };
+
+// --- Public types ---
 
 export type BootstrapRepoSummary = {
   fullName: string;
@@ -44,6 +49,8 @@ export type BootstrapIngestResult = {
 
 export const BootstrapStatus = {
   Idle: "idle",
+  Creating: "creating",
+  Dispatched: "dispatched",
   Running: "running",
   Ingesting: "ingesting",
   Completed: "completed",
@@ -54,116 +61,160 @@ export type BootstrapStatus =
 
 export type BootstrapState =
   | { status: typeof BootstrapStatus.Idle }
-  | { status: typeof BootstrapStatus.Running }
-  | { status: typeof BootstrapStatus.Ingesting }
+  | { status: typeof BootstrapStatus.Creating }
+  | { status: typeof BootstrapStatus.Dispatched; loopId: string }
+  | { status: typeof BootstrapStatus.Running; loopId: string }
+  | { status: typeof BootstrapStatus.Ingesting; loopId: string }
   | {
       status: typeof BootstrapStatus.Completed;
+      loopId: string;
       result: BootstrapIngestResult;
     }
-  | { status: typeof BootstrapStatus.Error; error: string };
+  | { status: typeof BootstrapStatus.Error; error: string; loopId?: string };
+
+// --- Constants ---
+
+const POLL_INTERVAL_MS = 3000;
+
+const TERMINAL_STATUSES = new Set<LoopStatus>([
+  LoopStatus.Completed,
+  LoopStatus.Failed,
+  LoopStatus.Cancelled,
+  LoopStatus.TimedOut,
+]);
+
+// --- Hook ---
 
 export function useBootstrapAgents() {
   const [state, setState] = useState<BootstrapState>({
     status: BootstrapStatus.Idle,
   });
-  const abortRef = useRef<AbortController | null>(null);
   const apiClient = useApiClient();
   const queryClient = useQueryClient();
+  const ingestingRef = useRef(false);
+
+  // Derive loopId and polling eligibility from state
+  const loopId = "loopId" in state ? state.loopId : null;
+  const isPollingActive =
+    state.status === BootstrapStatus.Dispatched ||
+    state.status === BootstrapStatus.Running;
+
+  // Poll loop detail while active
+  const loopQuery = useQuery({
+    queryKey: loopKeys.detail(loopId ?? ""),
+    queryFn: () => apiClient.get<Loop>(`/loops/${loopId}`),
+    enabled: !!loopId && isPollingActive,
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+      if (status && TERMINAL_STATUSES.has(status)) {
+        return false;
+      }
+      return POLL_INTERVAL_MS;
+    },
+  });
+
+  // React to loop status changes
+  const loopData = loopQuery.data;
+  useEffect(() => {
+    if (!(loopData && loopId)) {
+      return;
+    }
+
+    // Map LoopStatus → BootstrapStatus
+    if (
+      loopData.status === LoopStatus.Running &&
+      state.status === BootstrapStatus.Dispatched
+    ) {
+      setState({ status: BootstrapStatus.Running, loopId });
+    }
+
+    // Terminal failure states
+    if (
+      loopData.status === LoopStatus.Failed ||
+      loopData.status === LoopStatus.Cancelled ||
+      loopData.status === LoopStatus.TimedOut
+    ) {
+      const message =
+        loopData.error?.message ?? `Bootstrap ${loopData.status.toLowerCase()}`;
+      setState({ status: BootstrapStatus.Error, error: message, loopId });
+    }
+
+    // Completion → trigger ingestion
+    if (loopData.status === LoopStatus.Completed && !ingestingRef.current) {
+      ingestingRef.current = true;
+      setState({ status: BootstrapStatus.Ingesting, loopId });
+
+      const bootstrapResult =
+        loopData.uploadedArtifacts as BootstrapLoopResult | null;
+      if (!bootstrapResult?.repos) {
+        setState({
+          status: BootstrapStatus.Error,
+          error: "Bootstrap completed but no results found",
+          loopId,
+        });
+        ingestingRef.current = false;
+        return;
+      }
+
+      ingestResults(bootstrapResult.repos, apiClient, loopId)
+        .then((result) => {
+          queryClient.invalidateQueries({ queryKey: agentKeys.lists() });
+          setState({ status: BootstrapStatus.Completed, loopId, result });
+        })
+        .catch((err) => {
+          setState({
+            status: BootstrapStatus.Error,
+            error:
+              err instanceof Error ? err.message : "Failed to ingest agents",
+            loopId,
+          });
+        })
+        .finally(() => {
+          ingestingRef.current = false;
+        });
+    }
+  }, [loopData, loopId, state.status, apiClient, queryClient]);
 
   const dispatch = useCallback(
-    async (repos: Array<{ fullName: string }>) => {
-      abortRef.current?.abort();
+    (repos: Array<{ fullName: string }>) => {
+      ingestingRef.current = false;
+      setState({ status: BootstrapStatus.Creating });
 
-      const controller = new AbortController();
-      abortRef.current = controller;
-      const bootstrapRunId = crypto.randomUUID();
-
-      setState({ status: BootstrapStatus.Running });
-
-      let bootstrapResult: BootstrapCommandResult;
-      try {
-        bootstrapResult = await dispatchToGateway(repos, controller);
-      } catch (err) {
-        if (abortRef.current !== controller) {
-          return;
-        }
-        setState({
-          status: BootstrapStatus.Error,
-          error: err instanceof Error ? err.message : "Bootstrap failed",
+      apiClient
+        .post<{ loopId: string }>("/agents/bootstrap/start", {
+          repos: repos.map((r) => ({ fullName: r.fullName })),
+        })
+        .then((data) => {
+          setState({
+            status: BootstrapStatus.Dispatched,
+            loopId: data.loopId,
+          });
+        })
+        .catch((err) => {
+          setState({
+            status: BootstrapStatus.Error,
+            error:
+              err instanceof Error ? err.message : "Failed to start bootstrap",
+          });
         });
-        return;
-      }
-      if (abortRef.current !== controller) {
-        return;
-      }
-
-      setState({ status: BootstrapStatus.Ingesting });
-
-      try {
-        const result = await ingestResults(
-          bootstrapResult.repos,
-          apiClient,
-          bootstrapRunId
-        );
-        if (abortRef.current !== controller) {
-          return;
-        }
-        queryClient.invalidateQueries({ queryKey: agentKeys.lists() });
-        setState({ status: BootstrapStatus.Completed, result });
-      } catch (err) {
-        if (abortRef.current !== controller) {
-          return;
-        }
-        setState({
-          status: BootstrapStatus.Error,
-          error: err instanceof Error ? err.message : "Failed to ingest agents",
-        });
-      }
     },
-    [apiClient, queryClient]
+    [apiClient]
   );
 
   const reset = useCallback(() => {
-    if (abortRef.current) {
-      abortRef.current.abort();
-      abortRef.current = null;
-    }
+    ingestingRef.current = false;
     setState({ status: BootstrapStatus.Idle });
   }, []);
 
   return { state, dispatch, reset };
 }
 
-async function dispatchToGateway(
-  repos: Array<{ fullName: string }>,
-  controller: AbortController
-): Promise<BootstrapCommandResult> {
-  const response = await fetch("/api/gateway/bootstrap", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      type: "bootstrap",
-      repos: repos.map((r) => ({ fullName: r.fullName })),
-      options: { depth: "medium" },
-    }),
-    signal: controller.signal,
-  });
-
-  if (!response.ok) {
-    const data = await response.json().catch(() => ({}));
-    throw new Error(
-      (data as { error?: string }).error ??
-        `Bootstrap failed (${response.status})`
-    );
-  }
-
-  return (await response.json()) as BootstrapCommandResult;
-}
+// --- Ingestion helpers ---
 
 async function ingestRepoAgents(
-  repo: BootstrapRepoResult,
+  repo: BootstrapLoopRepoResult,
   apiClient: ReturnType<typeof useApiClient>,
-  bootstrapRunId: string
+  loopId: string
 ): Promise<BootstrapRepoSummary & { created: number; updated: number }> {
   if (!repo.success || repo.agents.length === 0) {
     return {
@@ -186,7 +237,7 @@ async function ingestRepoAgents(
           description: a.description ?? undefined,
           prompt: a.prompt,
         })),
-        bootstrapRunId,
+        bootstrapRunId: loopId,
         sourceRepo: repo.fullName,
         criticGates: repo.criticGates ?? undefined,
       }
@@ -212,16 +263,16 @@ async function ingestRepoAgents(
 }
 
 async function ingestResults(
-  repos: BootstrapRepoResult[],
+  repos: BootstrapLoopRepoResult[],
   apiClient: ReturnType<typeof useApiClient>,
-  bootstrapRunId: string
+  loopId: string
 ): Promise<BootstrapIngestResult> {
   const summaries: BootstrapRepoSummary[] = [];
   let totalCreated = 0;
   let totalUpdated = 0;
 
   for (const repo of repos) {
-    const result = await ingestRepoAgents(repo, apiClient, bootstrapRunId);
+    const result = await ingestRepoAgents(repo, apiClient, loopId);
     totalCreated += result.created;
     totalUpdated += result.updated;
     summaries.push({

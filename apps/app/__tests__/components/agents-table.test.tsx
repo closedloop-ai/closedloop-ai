@@ -30,6 +30,8 @@ vi.mock("@/hooks/queries/use-agents", () => ({
 vi.mock("@/hooks/queries/use-bootstrap-agents", () => ({
   BootstrapStatus: {
     Idle: "idle",
+    Creating: "creating",
+    Dispatched: "dispatched",
     Running: "running",
     Ingesting: "ingesting",
     Completed: "completed",

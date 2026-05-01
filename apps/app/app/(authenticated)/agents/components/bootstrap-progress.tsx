@@ -27,18 +27,25 @@ export function BootstrapProgress({
   }
 
   if (
+    state.status === BootstrapStatus.Creating ||
+    state.status === BootstrapStatus.Dispatched ||
     state.status === BootstrapStatus.Running ||
     state.status === BootstrapStatus.Ingesting
   ) {
+    let message: string;
+    if (state.status === BootstrapStatus.Running) {
+      message = "Generating agents...";
+    } else if (state.status === BootstrapStatus.Ingesting) {
+      message = "Saving agents...";
+    } else {
+      message = "Starting bootstrap...";
+    }
+
     return (
       <div className="flex items-center gap-3 rounded-md border bg-muted/30 px-4 py-3">
         <Loader2Icon className="h-5 w-5 shrink-0 animate-spin text-primary" />
         <div>
-          <p className="font-medium text-sm">
-            {state.status === BootstrapStatus.Running
-              ? "Generating agents..."
-              : "Saving agents..."}
-          </p>
+          <p className="font-medium text-sm">{message}</p>
           <p className="text-muted-foreground text-xs">
             This may take several minutes depending on repository size.
           </p>
