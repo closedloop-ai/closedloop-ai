@@ -5,7 +5,7 @@ import { NextResponse } from "next/server";
 import { withAuth } from "@/lib/auth/with-auth";
 import { resolveDocumentId } from "@/lib/identifier-utils";
 import { notFoundResponse } from "@/lib/route-utils";
-import { documentsService } from "../../service";
+import { documentGenerationStatusService } from "../../generation-status-service";
 
 export const GET = withAuth<
   GenerationStatus,
@@ -23,7 +23,7 @@ export const GET = withAuth<
     }
 
     try {
-      const result = await documentsService.getGenerationStatus(
+      const result = await documentGenerationStatusService.getGenerationStatus(
         resolvedId,
         user.organizationId
       );

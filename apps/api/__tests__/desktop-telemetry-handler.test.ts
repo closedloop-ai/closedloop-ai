@@ -423,6 +423,49 @@ describe("handleTelemetryEvent — organizationId/userId enrichment", () => {
     expect(meta).not.toHaveProperty("organizationId");
     expect(meta).not.toHaveProperty("userId");
   });
+
+  it("includes EXECUTE plan source diagnostics in the Datadog log metadata", () => {
+    const infoSpy = vi.spyOn(log, "info").mockImplementation(() => {});
+    const result = handleTelemetryEvent(
+      {
+        ...validDesktopWirePayload,
+        category: TelemetryCategory.JobPlanSourceResolved,
+        diagnostics: {
+          planSource: {
+            source: "imported-plan-compat",
+            rawPlanPayload: true,
+            rawPlanAligned: false,
+            localPlanJsonPresent: true,
+            localPlanJsonAligned: false,
+            importedPlanFileStaged: true,
+            closedLoopPlanFileSet: true,
+            planArtifactContentLength: 10_455,
+            rawPlanContentLength: 23_906,
+            planArtifactContentHash: "abc123def456",
+            rawPlanContentHash: "fed654cba321",
+          },
+        },
+      },
+      defaultHandlerContext
+    );
+
+    expect(result.ok).toBe(true);
+    const infoCall = infoSpy.mock.calls.find(
+      (args) => args[0] === "Desktop telemetry event received"
+    );
+    expect(infoCall).toBeDefined();
+    const meta = infoCall?.[1] as Record<string, unknown>;
+    expect(meta.category).toBe(TelemetryCategory.JobPlanSourceResolved);
+    expect(meta.diagnostics).toMatchObject({
+      planSource: {
+        source: "imported-plan-compat",
+        rawPlanPayload: true,
+        rawPlanAligned: false,
+        importedPlanFileStaged: true,
+        closedLoopPlanFileSet: true,
+      },
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

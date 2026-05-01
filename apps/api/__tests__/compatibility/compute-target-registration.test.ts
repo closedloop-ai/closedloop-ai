@@ -6,6 +6,7 @@
  * the newly assigned computeTargetId.
  */
 
+import { Result } from "@repo/api/src/types/result";
 import { vi } from "vitest";
 
 // --- Mocks (must come before imports that transitively pull in the mocked modules) ---
@@ -107,8 +108,12 @@ beforeAll(() => {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.mocked(computeTargetsService.register).mockResolvedValue(newTarget);
-  vi.mocked(computeTargetsService.updateOwned).mockResolvedValue(null);
+  vi.mocked(computeTargetsService.register).mockResolvedValue(
+    Result.ok(newTarget)
+  );
+  vi.mocked(computeTargetsService.updateOwned).mockResolvedValue(
+    Result.ok(null)
+  );
   vi.mocked(
     desktopCommandStore.listNonTerminalDispatchCommands
   ).mockResolvedValue([]);

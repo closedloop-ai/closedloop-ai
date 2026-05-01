@@ -5,7 +5,6 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   createMockDocument,
   createMockGenerationStatus,
-  createMockPullRequest,
 } from "@/__tests__/fixtures/documents";
 import { createMockJudgeFeedbackItem } from "@/__tests__/fixtures/evaluation";
 import {
@@ -78,10 +77,6 @@ vi.mock("@/hooks/queries/use-pull-request-rating", () => ({
   }),
 }));
 
-// Regex patterns for testing (hoisted to module level per Biome lint rules)
-const PR_NUMBER_PATTERN = /#42:/i;
-const PR_TITLE_PATTERN = /add new feature/i;
-
 const createMockPlan = (overrides?: Partial<DocumentDetail>): DocumentDetail =>
   ({
     ...createMockDocument({ type: "IMPLEMENTATION_PLAN" }),
@@ -99,10 +94,6 @@ const createMockPlan = (overrides?: Partial<DocumentDetail>): DocumentDetail =>
 const defaultProps = {
   plan: createMockPlan(),
   generationStatus: null,
-  pullRequest: null,
-  previewDeployment: null,
-  onPreviewRefresh: vi.fn().mockResolvedValue(null),
-  isPreviewRefreshing: false,
   codeJudgeItems: null,
 };
 
@@ -303,17 +294,6 @@ describe("PlanMetadataPanel", () => {
         />
       );
       expect(screen.getByText("View loop details")).toBeDefined();
-    });
-
-    test("displays pull request info when pullRequest is provided", () => {
-      render(
-        <PlanMetadataPanel
-          {...defaultProps}
-          pullRequest={createMockPullRequest()}
-        />
-      );
-      expect(screen.getByText(PR_NUMBER_PATTERN)).toBeDefined();
-      expect(screen.getByText(PR_TITLE_PATTERN)).toBeDefined();
     });
   });
 

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useSyncExternalStore } from "react";
+import { z } from "zod";
 
 export type ElectronDetectionState = {
   detected: boolean;
@@ -8,14 +9,16 @@ export type ElectronDetectionState = {
   port: number | null;
   version: string | null;
   machineName: string | null;
+  gatewayId: string | null;
   capabilities: Record<string, unknown> | null;
+  onboardingCompleted: boolean | null;
   checkedAt: number | null;
 };
 
 const PROBE_PORTS = [19_432, 19_433, 19_434, 19_435] as const;
 const PROBE_TIMEOUT_MS = 2000;
 const CACHE_TTL_MS = 60_000;
-const POLL_INTERVAL_MS = 30_000;
+const POLL_INTERVAL_MS = 10_000;
 
 const DEFAULT_STATE: ElectronDetectionState = {
   detected: false,
@@ -23,7 +26,9 @@ const DEFAULT_STATE: ElectronDetectionState = {
   port: null,
   version: null,
   machineName: null,
+  gatewayId: null,
   capabilities: null,
+  onboardingCompleted: null,
   checkedAt: null,
 };
 
@@ -33,22 +38,62 @@ let inFlight: Promise<ElectronDetectionState> | null = null;
 
 const listeners = new Set<() => void>();
 
+const HealthPayloadSchema = z
+  .object({
+    status: z.literal("ok"),
+    port: z.number().optional().catch(undefined),
+    version: z.string().optional().catch(undefined),
+    machineName: z.string().optional().catch(undefined),
+    gatewayId: z.string().optional().catch(undefined),
+    capabilities: z.record(z.string(), z.unknown()).optional().catch(undefined),
+    onboardingCompleted: z.boolean().optional().catch(undefined),
+  })
+  .passthrough();
+
+type ElectronProbeResult = Pick<
+  ElectronDetectionState,
+  | "detected"
+  | "port"
+  | "version"
+  | "machineName"
+  | "gatewayId"
+  | "capabilities"
+  | "onboardingCompleted"
+>;
+
 function emitChange(): void {
   for (const listener of listeners) {
     listener();
   }
 }
 
-function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+function parseHealthPayload(
+  payload: unknown,
+  fallbackPort: number
+): ElectronProbeResult | null {
+  const result = HealthPayloadSchema.safeParse(payload);
+  if (!result.success) {
+    return null;
+  }
+
+  const health = result.data;
+  const reportedPort = health.port ?? fallbackPort;
+  if (reportedPort !== fallbackPort) {
+    return null;
+  }
+
+  return {
+    detected: true,
+    port: reportedPort,
+    version: health.version ?? null,
+    machineName: health.machineName ?? null,
+    gatewayId: health.gatewayId?.trim() ? health.gatewayId : null,
+    capabilities: health.capabilities ?? {},
+    onboardingCompleted: health.onboardingCompleted ?? null,
+  };
 }
 
-async function probeElectron(): Promise<
-  Pick<
-    ElectronDetectionState,
-    "detected" | "port" | "version" | "machineName" | "capabilities"
-  >
-> {
+async function probeElectron(): Promise<ElectronProbeResult> {
   for (const port of PROBE_PORTS) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
@@ -64,30 +109,11 @@ async function probeElectron(): Promise<
         continue;
       }
 
-      const payload = (await response.json().catch(() => null)) as Record<
-        string,
-        unknown
-      > | null;
-      if (!(payload && payload.status === "ok")) {
-        continue;
+      const payload = await response.json().catch(() => null);
+      const result = parseHealthPayload(payload, port);
+      if (result) {
+        return result;
       }
-
-      const reportedPort =
-        typeof payload.port === "number" ? payload.port : port;
-      if (reportedPort !== port) {
-        continue;
-      }
-
-      return {
-        detected: true,
-        port: reportedPort,
-        version: typeof payload.version === "string" ? payload.version : null,
-        machineName:
-          typeof payload.machineName === "string" ? payload.machineName : null,
-        capabilities: isObject(payload.capabilities)
-          ? payload.capabilities
-          : {},
-      };
     } catch {
       // Ignore probe errors and continue to next fallback port.
     } finally {
@@ -100,7 +126,9 @@ async function probeElectron(): Promise<
     port: null,
     version: null,
     machineName: null,
+    gatewayId: null,
     capabilities: null,
+    onboardingCompleted: null,
   };
 }
 
@@ -158,7 +186,9 @@ export function ensureElectronDetection(options?: {
         port: null,
         version: null,
         machineName: null,
+        gatewayId: null,
         capabilities: null,
+        onboardingCompleted: null,
         checkedAt,
       };
       expiresAt = checkedAt + CACHE_TTL_MS;
@@ -178,7 +208,9 @@ const DISABLED_STATE: ElectronDetectionState = {
   port: null,
   version: null,
   machineName: null,
+  gatewayId: null,
   capabilities: null,
+  onboardingCompleted: null,
   checkedAt: null,
 };
 

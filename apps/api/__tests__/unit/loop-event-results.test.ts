@@ -31,7 +31,7 @@ vi.mock("@repo/database", async () => {
   return createDatabaseMockModule();
 });
 
-vi.mock("@/app/documents/service", () => ({
+vi.mock("@/app/documents/document-service", () => ({
   getCommitterInfo: vi.fn(),
 }));
 

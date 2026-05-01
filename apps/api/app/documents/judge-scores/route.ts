@@ -8,7 +8,7 @@ import {
   errorResponse,
   successResponse,
 } from "@/lib/route-utils";
-import { documentsService } from "../service";
+import { documentEvaluationService } from "../evaluation-service";
 
 /**
  * GET /artifacts/judge-scores?projectId=<id>
@@ -27,7 +27,7 @@ export const GET = withAnyAuth<
       return badRequestResponse("projectId is required");
     }
 
-    const result = await documentsService.getBatchJudgeScores(
+    const result = await documentEvaluationService.getBatchJudgeScores(
       projectId,
       user.organizationId,
       Object.values(EvaluationReportType)

@@ -28,9 +28,14 @@ vi.mock("@/app/documents/document-version-service", () => ({
   },
 }));
 
-vi.mock("@/app/documents/service", () => ({
-  documentsService: {
+vi.mock("@/app/documents/document-service", () => ({
+  documentService: {
     findByIdSimple: vi.fn(),
+  },
+}));
+
+vi.mock("@/app/templates/service", () => ({
+  documentTemplatesService: {
     findOrgTemplate: vi.fn(),
     ensureDefaultTemplates: vi.fn(),
   },

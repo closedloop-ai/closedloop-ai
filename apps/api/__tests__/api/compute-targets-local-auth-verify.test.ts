@@ -25,24 +25,19 @@ vi.mock("@repo/observability/error", () => ({
 }));
 
 vi.mock("@/lib/auth/with-api-key-auth", () => ({
-  withApiKeyAuth:
-    (handler: any, options?: { desktopManagedPop?: boolean }) =>
-    (request: any, context: any) => {
-      if (
-        options?.desktopManagedPop &&
-        request.headers.get("x-test-pop-reject") === "true"
-      ) {
-        return Response.json(
-          {
-            success: false,
-            error: "Desktop managed PoP verification failed",
-          },
-          { status: 401 }
-        );
-      }
+  withApiKeyAuth: (handler: any) => (request: any, context: any) => {
+    if (request.headers.get("x-test-pop-reject") === "true") {
+      return Response.json(
+        {
+          success: false,
+          error: "Desktop managed PoP verification failed",
+        },
+        { status: 401 }
+      );
+    }
 
-      return handler(mockAuthContext, request, context?.params);
-    },
+    return handler(mockAuthContext, request, context?.params);
+  },
 }));
 
 vi.mock("@/lib/auth/local-gateway-jti-registry", () => ({

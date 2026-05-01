@@ -10,8 +10,7 @@ import {
   notFoundResponse,
   successResponse,
 } from "@/lib/route-utils";
-import { documentsService } from "../../documents/service";
-
+import { documentTemplatesService } from "../service";
 /**
  * GET /templates/[type] - Get a single template by document type
  * Ensures default templates exist (lazy seeding) before returning the requested template
@@ -27,13 +26,13 @@ export const GET = withAuth<Document, "/templates/[type]">(
       }
 
       // Lazy seeding: ensure default templates exist
-      await documentsService.ensureDefaultTemplates(
+      await documentTemplatesService.ensureDefaultTemplates(
         user.organizationId,
         user.id
       );
 
       // Fetch the template for this type
-      const template = await documentsService.findOrgTemplate(
+      const template = await documentTemplatesService.findOrgTemplate(
         user.organizationId,
         type as DocumentType
       );

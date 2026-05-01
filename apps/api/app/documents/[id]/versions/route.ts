@@ -1,6 +1,7 @@
 import type { DocumentDetail } from "@repo/api/src/types/document";
 import type { DocumentVersion } from "@repo/api/src/types/document-version";
 import { log } from "@repo/observability/log";
+import { documentService } from "@/app/documents/document-service";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { resolveDocumentId } from "@/lib/identifier-utils";
 import {
@@ -10,10 +11,8 @@ import {
   scheduleLogFlush,
   successResponse,
 } from "@/lib/route-utils";
-import { DocumentNotFoundError } from "../../document-utils";
 import { documentVersionService } from "../../document-version-service";
 import { resetDocumentRoom } from "../../room-utils";
-import { documentsService } from "../../service";
 import { newVersionValidator } from "../../validators";
 
 export const GET = withAnyAuth<
@@ -31,7 +30,7 @@ export const GET = withAnyAuth<
     }
 
     // Verify artifact exists and belongs to org
-    const artifact = await documentsService.findByIdSimple(
+    const artifact = await documentService.findByIdSimple(
       resolvedId,
       user.organizationId
     );
@@ -63,7 +62,7 @@ export const POST = withAnyAuth<DocumentDetail, "/documents/[id]/versions">(
         return parseError;
       }
 
-      const updatedArtifact = await documentsService.createNewVersion(
+      const updatedArtifact = await documentVersionService.createNewVersion(
         resolvedId,
         user.organizationId,
         user.id,
@@ -96,9 +95,6 @@ export const POST = withAnyAuth<DocumentDetail, "/documents/[id]/versions">(
       scheduleLogFlush();
       return successResponse(updatedArtifact);
     } catch (error) {
-      if (error instanceof DocumentNotFoundError) {
-        return notFoundResponse("Artifact");
-      }
       return errorResponse("Failed to create new version", error);
     }
   },

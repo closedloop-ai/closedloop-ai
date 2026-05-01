@@ -22,6 +22,7 @@ describe("PullRequestStatusBadge", () => {
           checksStatus: null,
           reviewDecision: null,
           externalLinkId: null,
+          repoFullName: "org/repo",
         }}
       />
     );
@@ -46,6 +47,7 @@ describe("PullRequestStatusBadge", () => {
           checksStatus: null,
           reviewDecision: null,
           externalLinkId: null,
+          repoFullName: "org/repo",
         }}
       />
     );
@@ -70,6 +72,7 @@ describe("PullRequestStatusBadge", () => {
           checksStatus: null,
           reviewDecision: null,
           externalLinkId: null,
+          repoFullName: "org/repo",
         }}
       />
     );
@@ -104,6 +107,7 @@ describe("CI status indicator", () => {
     createdAt: new Date("2024-01-01T00:00:00Z"),
     reviewDecision: null,
     externalLinkId: null,
+    repoFullName: "org/repo",
   };
 
   it("renders green checkmark for checksStatus PASSING", () => {

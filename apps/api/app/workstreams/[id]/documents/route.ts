@@ -1,4 +1,5 @@
 import type { Document, DocumentType } from "@repo/api/src/types/document";
+import { documentService } from "@/app/documents/document-service";
 import { withAuth } from "@/lib/auth/with-auth";
 import {
   resolveArtifactIdentifier,
@@ -12,7 +13,6 @@ import {
   parseBody,
   successResponse,
 } from "@/lib/route-utils";
-import { documentsService } from "../../../documents/service";
 import { createDocumentValidator } from "../../../documents/validators";
 
 export const GET = withAuth<Document[], "/workstreams/[id]/documents">(
@@ -27,7 +27,7 @@ export const GET = withAuth<Document[], "/workstreams/[id]/documents">(
       const searchParams = request.nextUrl.searchParams;
       const type = (searchParams.get("type") as DocumentType) ?? undefined;
 
-      const documents = await documentsService.findAll({
+      const documents = await documentService.findAll({
         organizationId: user.organizationId,
         workstreamId,
         type,
@@ -76,7 +76,7 @@ export const POST = withAuth<Document, "/workstreams/[id]/documents">(
         resolvedSourceId = sId;
       }
 
-      const document = await documentsService.create(
+      const document = await documentService.create(
         user.organizationId,
         user.id,
         {

@@ -62,6 +62,7 @@ enum EvaluationReportType {
   PLAN
   CODE
   PRD
+  FEATURE
 }
 
 enum EvalStatus {
@@ -209,6 +210,7 @@ enum LoopCommand {
   REQUEST_PRD_CHANGES
   BOOTSTRAP
   MANUAL
+  EVALUATE_FEATURE
 }
 
 enum CustomFieldType {
@@ -289,7 +291,6 @@ model Organization {
   active                Boolean   @default(true) @map("active")
   name                  String
   slug                  String    @unique
-  anthropicApiKey       String?   @map("anthropic_api_key") // @deprecated - auto-migrated to claudeApiKeyEncrypted on read (see apiKeyService.resolveApiKey)
   claudeApiKeyEncrypted String?   @map("claude_api_key_encrypted")
   claudeApiKeyLastFour  String?   @map("claude_api_key_last_four")
   claudeApiKeySetAt     DateTime? @map("claude_api_key_set_at")
@@ -333,7 +334,6 @@ model User {
   linearId                 String?               @map("linear_id")
   slackId                  String?               @map("slack_id")
   githubUsername           String?               @map("github_username")
-  anthropicApiKey          String?               @map("anthropic_api_key") // @deprecated - auto-migrated to claudeApiKeyEncrypted on read (see apiKeyService.resolveApiKey)
   claudeApiKeyEncrypted    String?               @map("claude_api_key_encrypted")
   claudeApiKeyLastFour     String?               @map("claude_api_key_last_four")
   claudeApiKeySetAt        DateTime?             @map("claude_api_key_set_at")
@@ -385,6 +385,7 @@ model ComputeTarget {
   lastSeenAt          DateTime @default(now()) @map("last_seen_at")
   isOnline            Boolean  @default(false) @map("is_online")
   isSharedWithOrg     Boolean  @default(false) @map("is_shared_with_org")
+  gatewayId           String?  @map("gateway_id")
   createdAt           DateTime @default(now()) @map("created_at")
   updatedAt           DateTime @updatedAt @map("updated_at")
 
@@ -396,6 +397,7 @@ model ComputeTarget {
 
   @@unique([userId, machineName])
   @@index([organizationId, userId])
+  @@index([organizationId, userId, gatewayId])
   @@index([userId, isOnline])
   @@index([organizationId, isSharedWithOrg])
   @@map("compute_targets")
@@ -1488,10 +1490,41 @@ model DesktopOnboardingAttempt {
   webAppOrigin   String    @map("web_app_origin")
   expiresAt      DateTime  @map("expires_at")
   consumedAt     DateTime? @map("consumed_at")
+  flowType       String?   @map("flow_type")
+  computeTargetId String?  @map("compute_target_id") @db.Uuid
+  gatewayId      String?   @map("gateway_id")
 
   @@index([organizationId, userId])
   @@index([expiresAt])
   @@map("desktop_onboarding_attempts")
+}
+
+model DesktopOnboardingDeviceSession {
+  id                                    String    @id @default(uuid(7)) @db.Uuid
+  deviceSessionSecretHash               String    @map("device_session_secret_hash")
+  userCode                              String    @unique @map("user_code")
+  requestIpHash                         String?   @map("request_ip_hash")
+  webAppOrigin                          String    @map("web_app_origin")
+  gatewayId                             String    @map("gateway_id")
+  gatewayPublicKeyPem                   String    @map("gateway_public_key_pem")
+  machineName                           String    @map("machine_name")
+  platform                              String
+  desktopVersion                        String    @map("desktop_version")
+  desktopSecurityUpgradeProtocolVersion Int       @map("desktop_security_upgrade_protocol_version")
+  status                                String    @default("pending")
+  userId                                String?   @map("user_id") @db.Uuid
+  organizationId                        String?   @map("organization_id") @db.Uuid
+  onboardingAttemptId                   String?   @map("onboarding_attempt_id")
+  deniedAt                              DateTime? @map("denied_at")
+  approvedAt                            DateTime? @map("approved_at")
+  expiresAt                             DateTime  @map("expires_at")
+  createdAt                             DateTime  @default(now()) @map("created_at")
+  updatedAt                             DateTime  @updatedAt @map("updated_at")
+
+  @@index([gatewayId, status, expiresAt], map: "desktop_device_sessions_gateway_status_exp_idx")
+  @@index([requestIpHash, status, expiresAt], map: "desktop_device_sessions_ip_status_exp_idx")
+  @@index([expiresAt])
+  @@map("desktop_onboarding_device_sessions")
 }
 
 // =============================================================================

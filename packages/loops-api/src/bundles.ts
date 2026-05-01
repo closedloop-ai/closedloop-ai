@@ -77,6 +77,10 @@ export const ResultBundle: Record<LoopCommand, ResultBundleManifest> = {
     required: [LoopArtifactFile.CodeJudges],
     optional: [],
   },
+  [LoopCommand.EvaluateFeature]: {
+    required: [LoopArtifactFile.FeatureJudges],
+    optional: [],
+  },
   [LoopCommand.Chat]: {
     required: [],
     optional: [],

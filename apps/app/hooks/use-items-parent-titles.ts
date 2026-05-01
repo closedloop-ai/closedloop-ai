@@ -1,15 +1,13 @@
 "use client";
 
-import { getRoutePrefixForType } from "@repo/api/src/types/document";
-import type {
-  ProjectTreeResponse,
-  TreeEntity,
-} from "@repo/api/src/types/project-tree";
+import { type Artifact, ArtifactType } from "@repo/api/src/types/artifact";
+import type { ProjectTreeResponse } from "@repo/api/src/types/project-tree";
 import { useQueries } from "@tanstack/react-query";
 import { useMemo } from "react";
 import type { DocumentRowItem } from "@/components/document-table/document-row";
 import { projectTreeKeys } from "@/hooks/queries/use-project-tree";
 import { useApiClient } from "@/hooks/use-api-client";
+import { getArtifactRoute } from "@/lib/document-navigation";
 
 function getProjectId(item: DocumentRowItem): string | undefined {
   if (item.kind === "project") {
@@ -21,6 +19,9 @@ function getProjectId(item: DocumentRowItem): string | undefined {
 /**
  * Fetches project trees for all projects represented in `items`, then returns
  * a map from child entity ID to its parent entity title.
+ *
+ * In-project tree parents take precedence; cross-project parents (returned in
+ * `treeData.externalParents`) fill in for items whose parent lives elsewhere.
  *
  * Used by team-level flat tables (Features, Plans, My Tasks) to populate the
  * Parent column when items span multiple projects.
@@ -58,26 +59,30 @@ export function useItemsParentTitles(
       continue;
     }
     for (const node of query.data.nodes) {
-      let parentHref: string | null = null;
-      if (isDocumentTreeEntity(node.root)) {
-        const routePrefix = getRoutePrefixForType(node.root.type);
-        if (routePrefix) {
-          parentHref = `/${routePrefix}/${node.root.slug}`;
-        }
-      }
+      const parentHref = getArtifactRoute(node.root);
       for (const child of node.children) {
         parentTitles.set(child.id, {
-          title: node.root.title,
+          title: node.root.name,
           href: parentHref,
         });
       }
+    }
+    for (const entry of query.data.externalParents) {
+      if (parentTitles.has(entry.childId)) {
+        continue;
+      }
+      if (!isDocumentArtifact(entry.parent)) {
+        continue;
+      }
+      parentTitles.set(entry.childId, {
+        title: entry.parent.name,
+        href: getArtifactRoute(entry.parent),
+      });
     }
   }
   return parentTitles;
 }
 
-function isDocumentTreeEntity(
-  entity: TreeEntity
-): entity is Extract<TreeEntity, { slug: string }> {
-  return "slug" in entity;
+function isDocumentArtifact(artifact: Artifact): boolean {
+  return artifact.type === ArtifactType.Document;
 }

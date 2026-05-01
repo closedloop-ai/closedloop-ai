@@ -26,9 +26,14 @@ vi.mock("@/app/documents/document-version-service", () => ({
   },
 }));
 
-vi.mock("@/app/documents/service", () => ({
-  documentsService: {
+vi.mock("@/app/documents/document-service", () => ({
+  documentService: {
     findByIdSimple: vi.fn(),
+  },
+}));
+
+vi.mock("@/app/templates/service", () => ({
+  documentTemplatesService: {
     findOrgTemplate: vi.fn(),
     ensureDefaultTemplates: vi.fn(),
   },
@@ -61,14 +66,14 @@ vi.mock("@/lib/loops/loop-state", () => ({
 import { DocumentType } from "@repo/api/src/types/document";
 import { LoopCommand } from "@repo/api/src/types/loop";
 import { documentVersionService } from "@/app/documents/document-version-service";
-import { documentsService } from "@/app/documents/service";
+import { documentTemplatesService } from "@/app/templates/service";
 import { getCommandHandler } from "@/lib/loops/loop-commands";
 import { buildContextPackInMemory } from "@/lib/loops/loop-context-pack";
 
 type MockFn = ReturnType<typeof vi.fn>;
-const mockFindOrgTemplate = documentsService.findOrgTemplate as MockFn;
+const mockFindOrgTemplate = documentTemplatesService.findOrgTemplate as MockFn;
 const mockEnsureDefaultTemplates =
-  documentsService.ensureDefaultTemplates as MockFn;
+  documentTemplatesService.ensureDefaultTemplates as MockFn;
 const mockGetLatest = documentVersionService.getLatest as MockFn;
 const mockGetCommandHandler = getCommandHandler as MockFn;
 

@@ -1,5 +1,5 @@
 /**
- * Unit tests for documentsService.batchFetchDocumentTitles method.
+ * Unit tests for documentService.batchFetchDocumentTitles method.
  *
  * Tests org-scoped slug-to-title lookups with mocked database.
  */
@@ -16,9 +16,9 @@ vi.mock("@repo/database", () => ({
 }));
 
 import { withDb } from "@repo/database";
-import { documentsService } from "@/app/documents/service";
+import { documentService } from "@/app/documents/document-service";
 
-describe("documentsService.batchFetchDocumentTitles", () => {
+describe("documentService.batchFetchDocumentTitles", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -34,7 +34,7 @@ describe("documentsService.batchFetchDocumentTitles", () => {
     };
     mockWithDbCall(mockDb);
 
-    const result = await documentsService.batchFetchDocumentTitles("org-1", [
+    const result = await documentService.batchFetchDocumentTitles("org-1", [
       "prd-abc",
       "plan-xyz",
     ]);
@@ -63,7 +63,7 @@ describe("documentsService.batchFetchDocumentTitles", () => {
     };
     mockWithDbCall(mockDb);
 
-    const result = await documentsService.batchFetchDocumentTitles("org-1", [
+    const result = await documentService.batchFetchDocumentTitles("org-1", [
       "prd-abc",
       "does-not-exist",
     ]);
@@ -73,7 +73,7 @@ describe("documentsService.batchFetchDocumentTitles", () => {
   });
 
   it("empty input returns empty object without DB query", async () => {
-    const result = await documentsService.batchFetchDocumentTitles("org-1", []);
+    const result = await documentService.batchFetchDocumentTitles("org-1", []);
 
     expect(result).toEqual({});
     expect(withDb).not.toHaveBeenCalled();
@@ -89,7 +89,7 @@ describe("documentsService.batchFetchDocumentTitles", () => {
     mockWithDbCall(mockDb);
 
     await expect(
-      documentsService.batchFetchDocumentTitles("org-1", slugs)
+      documentService.batchFetchDocumentTitles("org-1", slugs)
     ).rejects.toThrow("batchFetchDocumentTitles: too many slugs");
     expect(mockDb.artifact.findMany).not.toHaveBeenCalled();
   });
@@ -106,7 +106,7 @@ describe("documentsService.batchFetchDocumentTitles", () => {
     };
     mockWithDbCall(mockDb);
 
-    const result = await documentsService.batchFetchDocumentTitles("org-1", [
+    const result = await documentService.batchFetchDocumentTitles("org-1", [
       "prd-abc",
       "other-org-slug",
     ]);

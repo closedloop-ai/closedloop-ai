@@ -1,6 +1,7 @@
 import { CustomFieldEntityType } from "@repo/api/src/types/custom-field";
 import type { Document, DocumentDetail } from "@repo/api/src/types/document";
 import { AssignmentEntityType } from "@repo/collaboration/inbox-notifications";
+import { documentService } from "@/app/documents/document-service";
 import { dispatchAssignmentNotification } from "@/lib/assignment-notifications";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { resolveDocumentId, resolveProjectId } from "@/lib/identifier-utils";
@@ -16,7 +17,6 @@ import {
   mergeCustomFieldsIntoResponse,
 } from "../../custom-fields/route-helpers";
 import { documentVersionService } from "../document-version-service";
-import { documentsService } from "../service";
 import { updateDocumentValidator } from "../validators";
 
 export const GET = withAnyAuth<DocumentDetail, "/documents/[id]">(
@@ -28,7 +28,7 @@ export const GET = withAnyAuth<DocumentDetail, "/documents/[id]">(
         return notFoundResponse("Artifact");
       }
 
-      const artifact = await documentsService.findById(
+      const artifact = await documentService.findById(
         resolvedId,
         user.organizationId
       );
@@ -106,7 +106,7 @@ export const PUT = withAnyAuth<Document, "/documents/[id]">(
         artifactInput.projectId = pId;
       }
 
-      const existing = await documentsService.findById(
+      const existing = await documentService.findById(
         resolvedId,
         user.organizationId
       );
@@ -114,7 +114,7 @@ export const PUT = withAnyAuth<Document, "/documents/[id]">(
         return notFoundResponse("Artifact");
       }
 
-      const artifact = await documentsService.update(
+      const artifact = await documentService.update(
         resolvedId,
         user.organizationId,
         artifactInput
@@ -156,7 +156,7 @@ export const DELETE = withAnyAuth<{ deleted: true }, "/documents/[id]">(
       if (!resolvedId) {
         return notFoundResponse("Artifact");
       }
-      await documentsService.delete(resolvedId, user.organizationId);
+      await documentService.delete(resolvedId, user.organizationId);
       return deleteResponse();
     } catch (error) {
       return errorResponse("Failed to delete artifact", error);

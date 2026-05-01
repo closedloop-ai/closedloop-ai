@@ -11,20 +11,36 @@ const RE_RECHECK = /re-check/i;
 const RE_LAST_CHECKED = /Last checked /;
 const RE_SYSTEM_CHECKS_UNAVAILABLE =
   /System checks are available when the desktop client is connected\./;
+const RE_UPGRADE_SECURITY = /Upgrade security/i;
+const RE_DOWNLOAD_UPDATE = /Download update/i;
+const RE_DOWNLOAD_UNAVAILABLE = /Download unavailable/i;
+const RE_UPDATE_REQUIRED = /Update required/i;
+const TEST_DESKTOP_DOWNLOAD_URL = "https://example.com/closedloop.dmg";
 
 const mockUseComputeTargets = vi.fn();
 const mockUseDeleteComputeTarget = vi.fn();
 const mockUseSystemCheckEligibility = vi.fn();
 const mockDeleteMutate = vi.fn();
+const mockDispatchDesktopCommandMutate = vi.fn();
+const mockUseLatestElectronRelease = vi.fn();
 
 vi.mock("@/hooks/queries/use-compute-targets", () => ({
   useComputeTargets: (...args: unknown[]) => mockUseComputeTargets(...args),
   useDeleteComputeTarget: () => mockUseDeleteComputeTarget(),
+  useDesktopCommandStatus: () => ({ data: undefined, isError: false }),
+  useDispatchDesktopCommand: () => ({
+    isPending: false,
+    mutate: mockDispatchDesktopCommandMutate,
+  }),
   useToggleComputeTargetSharing: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 
 vi.mock("@/lib/system-check/use-system-check-eligibility", () => ({
   useSystemCheckEligibility: () => mockUseSystemCheckEligibility(),
+}));
+
+vi.mock("@/hooks/queries/use-electron-release", () => ({
+  useLatestElectronRelease: () => mockUseLatestElectronRelease(),
 }));
 
 // Resolve the expected MCP URL the same way the component does so that
@@ -55,6 +71,14 @@ describe("ComputeTargetsCard", () => {
     });
     mockUseSystemCheckEligibility.mockReturnValue({
       shouldRunSystemCheck: true,
+      isLoading: false,
+    });
+    mockUseLatestElectronRelease.mockReturnValue({
+      data: {
+        downloadUrl: TEST_DESKTOP_DOWNLOAD_URL,
+        version: "9.9.9",
+        releaseNotes: "",
+      },
       isLoading: false,
     });
 
@@ -266,5 +290,112 @@ describe("ComputeTargetsCard", () => {
     await waitFor(() => {
       expect(screen.getByText("All checks passed")).toBeInTheDocument();
     });
+  });
+
+  it("links eligible security upgrades to the target-specific upgrade page", () => {
+    mockUseComputeTargets.mockReturnValue({
+      data: [
+        {
+          id: "target-1",
+          machineName: "Daniel-MBP",
+          platform: "darwin",
+          lastSeenAt: new Date("2026-04-28T12:00:00.000Z"),
+          isOnline: true,
+          isSharedWithOrg: false,
+          supportedOperations: [],
+          capabilities: {},
+          security: {
+            status: "upgrade_available",
+            reason: "NO_BOUND_MANAGED_KEY",
+            upgradeSupported: true,
+          },
+          createdAt: new Date("2026-04-28T12:00:00.000Z"),
+          updatedAt: new Date("2026-04-28T12:00:00.000Z"),
+        },
+      ],
+      isLoading: false,
+    });
+
+    renderWithClient();
+
+    expect(
+      screen.getByRole("link", { name: RE_UPGRADE_SECURITY })
+    ).toHaveAttribute(
+      "href",
+      "/settings/compute-targets/target-1/security-upgrade"
+    );
+  });
+
+  it("links update-required targets to a desktop download", () => {
+    mockUseComputeTargets.mockReturnValue({
+      data: [
+        {
+          id: "target-1",
+          machineName: "Daniel-MBP",
+          platform: "darwin",
+          lastSeenAt: new Date("2026-04-28T12:00:00.000Z"),
+          isOnline: true,
+          isSharedWithOrg: false,
+          supportedOperations: [],
+          capabilities: {},
+          security: {
+            status: "update_required",
+            reason: "UNSUPPORTED_DESKTOP_VERSION",
+            upgradeSupported: false,
+          },
+          createdAt: new Date("2026-04-28T12:00:00.000Z"),
+          updatedAt: new Date("2026-04-28T12:00:00.000Z"),
+        },
+      ],
+      isLoading: false,
+    });
+
+    renderWithClient();
+
+    expect(screen.getByText(RE_UPDATE_REQUIRED)).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: RE_DOWNLOAD_UPDATE })
+    ).toHaveAttribute("href", TEST_DESKTOP_DOWNLOAD_URL);
+    expect(
+      screen.queryByRole("link", { name: RE_UPGRADE_SECURITY })
+    ).not.toBeInTheDocument();
+  });
+
+  it("does not fall back to a hardcoded update URL when release data is unavailable", () => {
+    mockUseLatestElectronRelease.mockReturnValue({
+      data: undefined,
+      isLoading: false,
+    });
+    mockUseComputeTargets.mockReturnValue({
+      data: [
+        {
+          id: "target-1",
+          machineName: "Daniel-MBP",
+          platform: "darwin",
+          lastSeenAt: new Date("2026-04-28T12:00:00.000Z"),
+          isOnline: true,
+          isSharedWithOrg: false,
+          supportedOperations: [],
+          capabilities: {},
+          security: {
+            status: "update_required",
+            reason: "MISSING_GATEWAY_ID",
+            upgradeSupported: false,
+          },
+          createdAt: new Date("2026-04-28T12:00:00.000Z"),
+          updatedAt: new Date("2026-04-28T12:00:00.000Z"),
+        },
+      ],
+      isLoading: false,
+    });
+
+    renderWithClient();
+
+    expect(
+      screen.queryByRole("link", { name: RE_DOWNLOAD_UPDATE })
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: RE_DOWNLOAD_UNAVAILABLE })
+    ).toBeDisabled();
   });
 });

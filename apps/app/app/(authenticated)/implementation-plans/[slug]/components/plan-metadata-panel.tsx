@@ -1,11 +1,9 @@
 "use client";
 
 import { FeatureFlagged } from "@repo/analytics/components/feature-flagged";
-import type { DeploymentArtifact } from "@repo/api/src/types/artifact";
 import type {
   DocumentDetail,
   GenerationStatus,
-  PullRequestInfo,
 } from "@repo/api/src/types/document";
 import type { JudgeFeedbackItem } from "@repo/api/src/types/evaluation";
 import type { AdditionalRepoRef } from "@repo/api/src/types/loop";
@@ -18,17 +16,10 @@ import { MetadataSection } from "@/components/document-editor/metadata-panel";
 import { RatingSection } from "@/components/document-editor/rating-section";
 import { getUserDisplayName } from "@/lib/user-utils";
 import { PerformanceSection } from "./performance-section";
-import { PreviewDeploymentSection } from "./preview-deployment-section";
-import { PullRequestFeedbackSection } from "./pull-request-feedback-section";
-import { PullRequestSection } from "./pull-request-section";
 
 export type PlanMetadataPanelProps = {
   plan: DocumentDetail;
   generationStatus: GenerationStatus | null;
-  pullRequest: PullRequestInfo | null;
-  previewDeployment: DeploymentArtifact | null;
-  onPreviewRefresh: () => void;
-  isPreviewRefreshing: boolean;
   codeJudgeItems: JudgeFeedbackItem[] | null;
   additionalRepos?: AdditionalRepoRef[] | null;
 };
@@ -41,10 +32,6 @@ export type PlanMetadataPanelProps = {
 export function PlanMetadataPanel({
   plan,
   generationStatus,
-  pullRequest,
-  previewDeployment,
-  onPreviewRefresh,
-  isPreviewRefreshing,
   codeJudgeItems,
   additionalRepos,
 }: PlanMetadataPanelProps) {
@@ -56,20 +43,6 @@ export function PlanMetadataPanel({
         additionalRepos={additionalRepos}
         generationStatus={generationStatus}
       />
-
-      {pullRequest ? <PullRequestSection pullRequest={pullRequest} /> : null}
-
-      {pullRequest ? (
-        <PullRequestFeedbackSection pullRequestId={pullRequest.id} />
-      ) : null}
-
-      {previewDeployment ? (
-        <PreviewDeploymentSection
-          isRefreshing={isPreviewRefreshing}
-          onRefresh={onPreviewRefresh}
-          previewDeployment={previewDeployment}
-        />
-      ) : null}
 
       <EvaluationSection
         documentId={plan.id}

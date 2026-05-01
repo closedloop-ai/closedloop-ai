@@ -67,6 +67,7 @@ export const relayEventBus = {
         } catch (error) {
           log.error("Failed replaying queued relay operation", {
             targetId,
+            computeTargetId: targetId,
             operationId: operation.operationId,
             error,
           });
@@ -76,6 +77,7 @@ export const relayEventBus = {
 
     log.info("Relay operation subscriber added", {
       targetId,
+      computeTargetId: targetId,
       subscriberCount: handlers.size,
     });
 
@@ -86,6 +88,7 @@ export const relayEventBus = {
       }
       log.info("Relay operation subscriber removed", {
         targetId,
+        computeTargetId: targetId,
         subscriberCount: handlers.size,
       });
     };
@@ -102,6 +105,7 @@ export const relayEventBus = {
       if (pending.length > MAX_PENDING_OPERATIONS) {
         log.warn("Relay operation backlog overflow, dropping oldest", {
           targetId,
+          computeTargetId: targetId,
           operationId: operation.operationId,
           backlogSize: pending.length,
         });
@@ -117,6 +121,7 @@ export const relayEventBus = {
       } catch (error) {
         log.error("Failed delivering relay operation", {
           targetId,
+          computeTargetId: targetId,
           operationId: operation.operationId,
           error,
         });
@@ -241,6 +246,7 @@ export const relayEventBus = {
       } catch (error) {
         log.error("Failed closing relay target connection", {
           targetId,
+          computeTargetId: targetId,
           error,
         });
       }

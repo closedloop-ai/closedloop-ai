@@ -1,7 +1,6 @@
 "use client";
 
 import { CURRENT_DESKTOP_API_NAMESPACE } from "@repo/api/src/desktop-api-namespace";
-import type { DeploymentArtifact } from "@repo/api/src/types/artifact";
 import type { ComputeTargetConflictBody } from "@repo/api/src/types/compute-target";
 import {
   type CreateDocumentInput,
@@ -34,8 +33,6 @@ import { resolveDesktopApiNamespaceHint } from "@/lib/engineer/local-gateway-api
 import { handleRunLoopResponse } from "@/lib/run-loop-response";
 import { invalidateArtifactLinkQueries } from "./use-artifact-links";
 import { dashboardKeys } from "./use-dashboard-stats";
-import { executionLogKeys } from "./use-execution-log";
-import { judgesKeys } from "./use-judges";
 import { projectTreeKeys } from "./use-project-tree";
 import { projectKeys, useProjectsByTeam } from "./use-projects";
 
@@ -372,70 +369,6 @@ export function useCreateDocumentVersion(documentId: string) {
   });
 }
 
-export function useRegenerateDocument() {
-  const queryClient = useQueryClient();
-  const apiClient = useApiClient();
-
-  return useMutation({
-    mutationFn: ({
-      id,
-      body,
-    }: {
-      id: string;
-      body?: { reverseSynthesisLink?: string };
-    }) => apiClient.post<Document>(`/documents/${id}/regenerate`, body ?? {}),
-    onSuccess: (_, { id }) => {
-      queryClient.invalidateQueries({ queryKey: documentKeys.detail(id) });
-      queryClient.invalidateQueries({ queryKey: documentKeys.bySlugs() });
-      queryClient.invalidateQueries({
-        queryKey: documentKeys.generationStatus(id),
-      });
-      queryClient.invalidateQueries({
-        queryKey: executionLogKeys.detail(id),
-      });
-      queryClient.invalidateQueries({
-        queryKey: judgesKeys.detail(id),
-      });
-      queryClient.invalidateQueries({ queryKey: documentKeys.lists() });
-    },
-  });
-}
-
-export function useRequestPlanChanges() {
-  const queryClient = useQueryClient();
-  const apiClient = useApiClient();
-
-  return useMutation({
-    mutationFn: ({
-      documentId,
-      changes,
-    }: {
-      documentId: string;
-      changes: string;
-    }) =>
-      apiClient.post<{ success: true; message: string; documentId: string }>(
-        `/documents/${documentId}/request-changes`,
-        { changes }
-      ),
-    onSuccess: (_, variables) => {
-      queryClient.invalidateQueries({
-        queryKey: documentKeys.detail(variables.documentId),
-      });
-      queryClient.invalidateQueries({ queryKey: documentKeys.bySlugs() });
-      queryClient.invalidateQueries({
-        queryKey: documentKeys.generationStatus(variables.documentId),
-      });
-      queryClient.invalidateQueries({
-        queryKey: executionLogKeys.detail(variables.documentId),
-      });
-      queryClient.invalidateQueries({
-        queryKey: judgesKeys.detail(variables.documentId),
-      });
-      queryClient.invalidateQueries({ queryKey: documentKeys.lists() });
-    },
-  });
-}
-
 /**
  * Create an artifact and immediately trigger generation workflow via Loops.
  * Used for implementation plans generated from a PRD.
@@ -546,35 +479,6 @@ export function useCreateAndGenerateDocument() {
   return { ...mutation, multiTargetState, selectTarget };
 }
 
-type ExecuteResult = {
-  success: true;
-  correlationId: string;
-};
-
-/**
- * Execute an approved implementation plan.
- * Triggers the symphony-dispatch workflow with command="execute" to generate code and create a PR.
- */
-export function useExecuteImplementationPlan() {
-  const queryClient = useQueryClient();
-  const apiClient = useApiClient();
-
-  return useMutation({
-    mutationFn: (documentId: string) =>
-      apiClient.post<ExecuteResult>(`/documents/${documentId}/execute`, {}),
-    onSuccess: (_, documentId) => {
-      queryClient.invalidateQueries({
-        queryKey: documentKeys.detail(documentId),
-      });
-      queryClient.invalidateQueries({ queryKey: documentKeys.bySlugs() });
-      queryClient.invalidateQueries({
-        queryKey: documentKeys.generationStatus(documentId),
-      });
-      queryClient.invalidateQueries({ queryKey: documentKeys.lists() });
-    },
-  });
-}
-
 /**
  * Dismiss the currently displayed generation status (shared across users).
  */
@@ -612,23 +516,18 @@ export function useDismissDocumentGenerationStatus() {
 }
 
 /**
- * Fetch the pull request associated with an artifact's workstream.
+ * Fetch the pull requests associated with an artifact.
  */
 export function useDocumentPullRequest(
   documentId: string,
-  options?: Omit<
-    UseQueryOptions<PullRequestInfo | null>,
-    "queryKey" | "queryFn"
-  >
+  options?: Omit<UseQueryOptions<PullRequestInfo[]>, "queryKey" | "queryFn">
 ) {
   const apiClient = useApiClient();
 
   return useQuery({
     queryKey: [...documentKeys.detail(documentId), "pull-request"] as const,
     queryFn: () =>
-      apiClient.get<PullRequestInfo | null>(
-        `/documents/${documentId}/pull-request`
-      ),
+      apiClient.get<PullRequestInfo[]>(`/documents/${documentId}/pull-request`),
     enabled: !!documentId,
     ...options,
   });
@@ -687,46 +586,5 @@ export function useMergeDocuments() {
       queryClient.invalidateQueries({ queryKey: documentKeys.all });
       queryClient.invalidateQueries({ queryKey: dashboardKeys.all });
     },
-  });
-}
-
-/**
- * Fetch related artifacts (parent/child chain) for an artifact.
- * Used to show "move all related artifacts?" confirmation dialog.
- */
-export function useRelatedDocuments(
-  documentId: string,
-  options?: { enabled?: boolean }
-) {
-  const apiClient = useApiClient();
-
-  return useQuery({
-    queryKey: documentKeys.related(documentId),
-    queryFn: () => apiClient.get<string[]>(`/documents/${documentId}/related`),
-    enabled: options?.enabled ?? !!documentId,
-  });
-}
-
-/**
- * Fetch the preview deployment artifact for a document's workstream.
- * Returns null if no preview deployment exists.
- */
-export function usePreviewDeployment(
-  documentId: string,
-  options?: Omit<
-    UseQueryOptions<DeploymentArtifact | null>,
-    "queryKey" | "queryFn"
-  >
-) {
-  const apiClient = useApiClient();
-
-  return useQuery({
-    queryKey: documentKeys.previewDeployment(documentId),
-    queryFn: () =>
-      apiClient.get<DeploymentArtifact | null>(
-        `/documents/${documentId}/preview-deployment`
-      ),
-    enabled: !!documentId,
-    ...options,
   });
 }

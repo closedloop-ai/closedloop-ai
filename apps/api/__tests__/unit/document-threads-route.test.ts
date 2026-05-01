@@ -20,8 +20,8 @@ vi.mock("@/lib/identifier-utils", () => ({
   resolveDocumentId: vi.fn(),
 }));
 
-vi.mock("@/app/documents/service", () => ({
-  documentsService: {
+vi.mock("@/app/documents/document-service", () => ({
+  documentService: {
     findById: vi.fn(),
   },
 }));
@@ -36,7 +36,7 @@ vi.mock("@/app/comments/service", () => ({
 
 import { commentsService } from "@/app/comments/service";
 import { POST } from "@/app/documents/[id]/threads/route";
-import { documentsService } from "@/app/documents/service";
+import { documentService } from "@/app/documents/document-service";
 import { resolveDocumentId } from "@/lib/identifier-utils";
 import {
   createMockRequest,
@@ -70,7 +70,7 @@ describe("POST /artifacts/:id/threads", () => {
 
   it("creates thread and returns threadId/commentId on valid request", async () => {
     vi.mocked(resolveDocumentId).mockResolvedValue("artifact-uuid");
-    vi.mocked(documentsService.findById).mockResolvedValue({
+    vi.mocked(documentService.findById).mockResolvedValue({
       slug: "PRD-7",
     } as never);
     vi.mocked(commentsService.createDocumentThread).mockResolvedValue({
@@ -114,7 +114,7 @@ describe("POST /artifacts/:id/threads", () => {
 
   it("forwards error status code from service", async () => {
     vi.mocked(resolveDocumentId).mockResolvedValue("artifact-uuid");
-    vi.mocked(documentsService.findById).mockResolvedValue({
+    vi.mocked(documentService.findById).mockResolvedValue({
       slug: "PRD-7",
     } as never);
     const lbError = Object.assign(new Error("Room not found"), { status: 404 });
@@ -132,7 +132,7 @@ describe("POST /artifacts/:id/threads", () => {
 
   it("defaults to 500 when error has no status code", async () => {
     vi.mocked(resolveDocumentId).mockResolvedValue("artifact-uuid");
-    vi.mocked(documentsService.findById).mockResolvedValue({
+    vi.mocked(documentService.findById).mockResolvedValue({
       slug: "PRD-7",
     } as never);
     vi.mocked(commentsService.createDocumentThread).mockRejectedValue(
@@ -149,7 +149,7 @@ describe("POST /artifacts/:id/threads", () => {
 
   it("ignores userId in request body and always uses authenticated user.id", async () => {
     vi.mocked(resolveDocumentId).mockResolvedValue("artifact-uuid");
-    vi.mocked(documentsService.findById).mockResolvedValue({
+    vi.mocked(documentService.findById).mockResolvedValue({
       slug: "PRD-7",
     } as never);
     vi.mocked(commentsService.createDocumentThread).mockResolvedValue({
@@ -177,7 +177,7 @@ describe("POST /artifacts/:id/threads", () => {
 
   it("returns 400 when anchorText is missing from request body", async () => {
     vi.mocked(resolveDocumentId).mockResolvedValue("artifact-uuid");
-    vi.mocked(documentsService.findById).mockResolvedValue({
+    vi.mocked(documentService.findById).mockResolvedValue({
       slug: "PRD-7",
     } as never);
 
@@ -190,7 +190,7 @@ describe("POST /artifacts/:id/threads", () => {
 
   it("returns 400 when service throws anchor-not-found error", async () => {
     vi.mocked(resolveDocumentId).mockResolvedValue("artifact-uuid");
-    vi.mocked(documentsService.findById).mockResolvedValue({
+    vi.mocked(documentService.findById).mockResolvedValue({
       slug: "PRD-7",
     } as never);
     vi.mocked(commentsService.createDocumentThread).mockRejectedValue({

@@ -6,6 +6,7 @@ import {
   DocumentStatus,
   DocumentType,
   PullRequestState,
+  pickPullRequestForRepo,
 } from "@repo/api/src/types/document";
 import { InlinePresence, OptionalDocumentRoom } from "@repo/collaboration";
 import {
@@ -29,7 +30,6 @@ import { InlineEditEditorShell } from "@/components/document-editor/inline-edit-
 import { BranchesSection } from "@/components/document-editor/relationships/branches-section";
 import { PreviewSection } from "@/components/document-editor/relationships/preview-section";
 import { LoopDispatchTargetSelector } from "@/components/engineer/LoopDispatchTargetSelector";
-import { ExecutionLogDialog } from "@/components/execution-log/execution-log-dialog";
 import { GenerationStatusBanner } from "@/components/generation-status-banner";
 import { MoveEntityDialog } from "@/components/move-entity-dialog";
 import { useDocumentActions } from "@/hooks/document-editing/use-document-actions";
@@ -43,16 +43,13 @@ import {
   useDismissDocumentGenerationStatus,
   useDocumentGenerationStatus,
   useDocumentPullRequest,
-  usePreviewDeployment,
 } from "@/hooks/queries/use-documents";
 import {
   useCodeJudgesFeedback,
   usePlanJudgesFeedback,
 } from "@/hooks/queries/use-judges";
 import { useInitialAdditionalRepos } from "@/hooks/queries/use-loops";
-import { useExecutionLogDialog } from "@/hooks/use-execution-log-dialog";
 import { useMultiRepoExecuteEnabled } from "@/hooks/use-multi-repo-execute-enabled";
-import { usePreviewDeploymentPolling } from "@/hooks/use-preview-deployment-polling";
 import { ExecutePlanModal } from "../components/execute-plan-modal";
 import { RequestChangesModal } from "../components/request-changes-modal";
 import { VersionSelector } from "../components/version-selector";
@@ -78,7 +75,6 @@ export function PlanEditor({
 }: Readonly<PlanEditorProps>) {
   const chatFlag = useFeatureFlag("interactive-chat");
   const multiRepoEnabled = useMultiRepoExecuteEnabled();
-  const executionLogDialog = useExecutionLogDialog();
 
   const [showMoveDialog, setShowMoveDialog] = useState(false);
   const [showRegenerateModal, setShowRegenerateModal] = useState(false);
@@ -161,31 +157,10 @@ export function PlanEditor({
   const { initialAdditionalRepos, isLoadingInitialAdditionalRepos } =
     useInitialAdditionalRepos(plan.id);
 
-  const { data: pullRequest } = useDocumentPullRequest(plan.id);
+  const { data: pullRequests = [] } = useDocumentPullRequest(plan.id);
+  const primaryPr = pickPullRequestForRepo(pullRequests, plan.targetRepo);
   const { data: judgesReport } = usePlanJudgesFeedback(plan.id);
   const { data: codeJudgesReport } = useCodeJudgesFeedback(plan.id);
-
-  // Preview deployment artifact (Artifact of type DEPLOYMENT)
-  const {
-    data: previewDeployment = null,
-    refetch: refetchPreviewLinks,
-    isRefetching: isRefreshingPreviewDeployment,
-  } = usePreviewDeployment(plan.id);
-
-  // Adaptive polling for preview deployment status
-  const isGenerationRunning = !!(
-    generationStatus?.status &&
-    ["RUNNING", "QUEUED", "IN_PROGRESS", "PENDING"].includes(
-      generationStatus.status.toUpperCase()
-    )
-  );
-  usePreviewDeploymentPolling({
-    previewState: previewDeployment?.status ?? null,
-    hasPreviewRef: !!previewDeployment?.deployment.ref,
-    pullRequestNumber: pullRequest?.number,
-    isGenerationRunning,
-    refetch: refetchPreviewLinks,
-  });
 
   // Derived state
   const isDraft = metadata.status === DocumentStatus.Draft;
@@ -201,19 +176,18 @@ export function PlanEditor({
     planActions.isEvaluatingCode;
 
   const canEvaluateCode =
-    pullRequest?.state === PullRequestState.Open &&
-    pullRequest.headBranch.length > 0;
+    primaryPr?.state === PullRequestState.Open &&
+    primaryPr.headBranch.length > 0 &&
+    Boolean(primaryPr.repoFullName);
   const evaluateCodeHandler = useCallback(() => {
-    if (!(canEvaluateCode && pullRequest)) {
+    if (!(canEvaluateCode && primaryPr?.repoFullName)) {
       return;
     }
-    planActions.handleEvaluateCode(pullRequest.headBranch, plan.targetRepo);
-  }, [
-    canEvaluateCode,
-    pullRequest,
-    plan.targetRepo,
-    planActions.handleEvaluateCode,
-  ]);
+    planActions.handleEvaluateCode(
+      primaryPr.headBranch,
+      primaryPr.repoFullName
+    );
+  }, [canEvaluateCode, primaryPr, planActions.handleEvaluateCode]);
 
   const handleRegenerate = useCallback(() => {
     if (multiRepoEnabled) {
@@ -285,7 +259,7 @@ export function PlanEditor({
       onRestoreVersion={contentController.restoreVersion}
       onToggleMetadataPanel={uiState.toggleMetadataPanel}
       plan={plan}
-      pullRequest={pullRequest ?? null}
+      pullRequests={pullRequests}
       showRestore={session.isViewingHistorical}
     />
   ) : null;
@@ -395,11 +369,7 @@ export function PlanEditor({
                     additionalRepos={initialAdditionalRepos}
                     codeJudgeItems={codeJudgesReport ?? null}
                     generationStatus={generationStatus ?? null}
-                    isPreviewRefreshing={isRefreshingPreviewDeployment}
-                    onPreviewRefresh={refetchPreviewLinks}
                     plan={plan}
-                    previewDeployment={previewDeployment}
-                    pullRequest={pullRequest ?? null}
                   />
                 </DocumentEditorDetails>
               </div>
@@ -409,7 +379,6 @@ export function PlanEditor({
 
         <DocumentChatPanel
           document={plan}
-          onViewFullTrace={executionLogDialog.handleViewFullTrace}
           visible={chatFlag?.enabled === true && uiState.showMetadataPanel}
         />
       </ResizablePanelGroup>
@@ -447,14 +416,6 @@ export function PlanEditor({
         }}
         onOpenChange={setShowMoveDialog}
         open={showMoveDialog}
-      />
-
-      {/* Execution Log Dialog */}
-      <ExecutionLogDialog
-        initialSessionId={executionLogDialog.selectedSessionId}
-        onOpenChange={executionLogDialog.setDialogOpen}
-        open={executionLogDialog.dialogOpen}
-        trace={executionLogDialog.dialogTrace}
       />
 
       {/* Execute Plan Modal — conditionally mounted so each open is a fresh

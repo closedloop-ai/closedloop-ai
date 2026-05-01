@@ -23,8 +23,11 @@ export const KNOWN_ORIGINS: readonly Origin[] = Object.values(Origin).filter(
 
 function resolveOrigin(): Origin {
   const ddService = process.env.DD_SERVICE;
+  const normalized = ddService?.startsWith("cl-")
+    ? ddService.slice(3)
+    : ddService;
 
-  const matched = KNOWN_ORIGINS.find((o) => o === ddService);
+  const matched = KNOWN_ORIGINS.find((o) => o === normalized);
 
   if (matched !== undefined) {
     return matched;
@@ -42,6 +45,7 @@ function resolveOrigin(): Origin {
         message:
           "observability: DD_SERVICE did not match a known origin; defaulting to 'unknown'",
         DD_SERVICE: ddService,
+        stripped: normalized,
       })
     );
   }

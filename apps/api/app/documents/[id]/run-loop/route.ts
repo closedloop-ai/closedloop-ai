@@ -15,6 +15,8 @@ import {
 } from "@repo/api/src/types/loop";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
+import { documentExecutionService } from "@/app/documents/execution-service";
+import { documentGenerationService } from "@/app/documents/generation-service";
 import {
   isBranchNotFoundError,
   isConcurrentLoopLimitError,
@@ -35,7 +37,6 @@ import {
   parseBody,
   scheduleLogFlushAfter,
 } from "@/lib/route-utils";
-import { documentsService } from "../../service";
 import {
   COMMAND_MAP,
   checkBackendMismatch,
@@ -92,10 +93,11 @@ export const POST = withAnyAuth<RunLoopResponse, "/documents/[id]/run-loop">(
         return parseError;
       }
 
-      const artifact = await documentsService.findWithRegenerationContext(
-        documentId,
-        user.organizationId
-      );
+      const artifact =
+        await documentGenerationService.findWithRegenerationContext(
+          documentId,
+          user.organizationId
+        );
       if (!artifact) {
         return notFoundResponse("Document");
       }
@@ -118,11 +120,12 @@ export const POST = withAnyAuth<RunLoopResponse, "/documents/[id]/run-loop">(
       // Commands that build on prior state (requiresParent) are locked to
       // the original backend. Fresh-start commands (like PLAN) are exempt.
       if (handler?.requiresParent) {
-        const rejection = await documentsService.assertLoopBackendAllowed(
-          documentId,
-          user.organizationId,
-          artifact.workstreamId
-        );
+        const rejection =
+          await documentExecutionService.assertLoopBackendAllowed(
+            documentId,
+            user.organizationId,
+            artifact.workstreamId
+          );
         if (rejection) {
           return conflictResponse(rejection);
         }
@@ -159,6 +162,7 @@ export const POST = withAnyAuth<RunLoopResponse, "/documents/[id]/run-loop">(
         body.command,
         documentId,
         user.organizationId,
+        targetRepo,
         targetBranch
       );
       if (!evaluateBranchResult.ok) {

@@ -16,6 +16,7 @@ import type { SymphonyLoopBody } from "@repo/api/src/types/symphony-loop-body";
 import { log } from "@repo/observability/log";
 import { toRelayOperation } from "@/app/compute-targets/relay-command-helpers";
 import { computeTargetsService } from "@/app/compute-targets/service";
+import { shortContentHash } from "@/lib/content-hash";
 import { desktopCommandStore } from "@/lib/desktop-command-store";
 import {
   toEnvelope,
@@ -30,7 +31,12 @@ import type { ContextPack } from "./loop-state";
  */
 async function assertDelivered(
   response: Response,
-  context: { label: string; loopId: string; commandId: string }
+  context: {
+    label: string;
+    loopId: string;
+    commandId: string;
+    computeTargetId: string;
+  }
 ): Promise<void> {
   const result = (await response.json().catch(() => null)) as {
     delivered?: boolean;
@@ -40,6 +46,7 @@ async function assertDelivered(
     log.error(`[loop-desktop] ${context.label} relay dispatch not delivered`, {
       loopId: context.loopId,
       commandId: context.commandId,
+      computeTargetId: context.computeTargetId,
       reason: result.reason,
     });
     throw new RelayDispatchNotDeliveredError(result.reason);
@@ -52,8 +59,11 @@ function getImplementationPlanPayloadDiagnostics(contextPack: ContextPack): {
   implementationPlanRawRecordPresent: boolean;
   implementationPlanRawContentPresent: boolean;
   implementationPlanRawContentMatchesArtifact: boolean | null;
+  implementationPlanRawReusableByDesktop: boolean | null;
   implementationPlanContentLength: number | null;
   implementationPlanRawContentLength: number | null;
+  implementationPlanContentHash: string | null;
+  implementationPlanRawContentHash: string | null;
 } {
   const planArtifact = contextPack.artifacts.find(
     (artifact) => artifact.type === DocumentType.ImplementationPlan
@@ -62,6 +72,13 @@ function getImplementationPlanPayloadDiagnostics(contextPack: ContextPack): {
     typeof planArtifact?.raw?.content === "string"
       ? planArtifact.raw.content
       : undefined;
+  let implementationPlanRawReusableByDesktop: boolean | null = null;
+  if (planArtifact && rawPlanContent !== undefined) {
+    implementationPlanRawReusableByDesktop =
+      rawPlanContent === planArtifact.content;
+  } else if (planArtifact) {
+    implementationPlanRawReusableByDesktop = false;
+  }
 
   return {
     artifactCount: contextPack.artifacts.length,
@@ -72,8 +89,11 @@ function getImplementationPlanPayloadDiagnostics(contextPack: ContextPack): {
       planArtifact && rawPlanContent !== undefined
         ? rawPlanContent === planArtifact.content
         : null,
+    implementationPlanRawReusableByDesktop,
     implementationPlanContentLength: planArtifact?.content.length ?? null,
     implementationPlanRawContentLength: rawPlanContent?.length ?? null,
+    implementationPlanContentHash: shortContentHash(planArtifact?.content),
+    implementationPlanRawContentHash: shortContentHash(rawPlanContent),
   };
 }
 
@@ -100,6 +120,7 @@ async function dispatchRelayOperation(
         log.error(`[loop-desktop] ${context.label} wire conversion failed`, {
           loopId: context.loopId,
           commandId: context.commandId,
+          computeTargetId,
         });
         if (throwOnFailure) {
           throw err;
@@ -125,6 +146,7 @@ async function dispatchRelayOperation(
         log.error(`[loop-desktop] ${context.label} relay dispatch failed`, {
           loopId: context.loopId,
           commandId: context.commandId,
+          computeTargetId,
           status: response.status,
           body,
         });
@@ -137,12 +159,13 @@ async function dispatchRelayOperation(
         // Check the delivered flag -- a 200 with delivered: false means the
         // target was offline or disconnected. Fail loudly so the caller
         // does not report success for a loop that never reached the desktop.
-        await assertDelivered(response, context);
+        await assertDelivered(response, { ...context, computeTargetId });
       }
     } catch (dispatchError) {
       log.error(`[loop-desktop] ${context.label} failed to dispatch to relay`, {
         loopId: context.loopId,
         commandId: context.commandId,
+        computeTargetId,
         error: dispatchError,
       });
       if (throwOnFailure) {
@@ -259,12 +282,20 @@ export async function launchLoopOnDesktop(
       parentBranchName: parentBranchName ?? null,
       parentSessionId: parentSessionId ?? null,
       localRepoPath: localRepoPath ?? null,
-      userContext: contextPack.userContext,
-      attachments: contextPack.attachments,
-      additionalRepos: additionalRepos?.map((r) => ({
-        fullName: r.fullName,
-        branch: r.branch,
-      })),
+      ...(contextPack.userContext === undefined
+        ? {}
+        : { userContext: contextPack.userContext }),
+      ...(contextPack.attachments === undefined
+        ? {}
+        : { attachments: contextPack.attachments }),
+      ...(additionalRepos === undefined
+        ? {}
+        : {
+            additionalRepos: additionalRepos.map((r) => ({
+              fullName: r.fullName,
+              branch: r.branch,
+            })),
+          }),
     } satisfies SymphonyLoopBody as JsonValue,
   };
 
@@ -298,6 +329,7 @@ export async function launchLoopOnDesktop(
     commandId,
     command,
     computeTargetId,
+    desktopApiNamespace: namespace,
     ...getImplementationPlanPayloadDiagnostics(contextPack),
   });
 

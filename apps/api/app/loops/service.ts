@@ -1,12 +1,15 @@
 import { createHash } from "node:crypto";
 import { AdditionalRepoRefSchema } from "@closedloop-ai/loops-api/context-pack";
 import type { JsonObject } from "@repo/api/src/types/common";
+import type { PullRequestInfo } from "@repo/api/src/types/document";
 import {
+  type AdditionalRepoRefWithPr,
   type ComputeTargetSummary,
   type CreateLoopRequest,
   type CreateLoopResponse,
   type Loop,
   LoopCommand,
+  type LoopDetail,
   type LoopEvent,
   type LoopEventsFilters,
   type LoopEventsPaginatedResponse,
@@ -29,6 +32,7 @@ import {
 import { verifyInstallationBranchExists } from "@repo/github";
 import { log } from "@repo/observability/log";
 import { z } from "zod";
+import { documentPullRequestService } from "@/app/documents/document-pull-request-service";
 import { basicUserSelect } from "@/lib/db-utils";
 import { extractUploadedPlanRaw } from "@/lib/loops/uploaded-plan-artifacts";
 
@@ -254,7 +258,7 @@ function toLoop(record: PrismaLoop): Loop {
     ...record,
     documentId: record.artifactId,
     estimatedCost:
-      record.estimatedCost != null ? Number(record.estimatedCost) : null,
+      record.estimatedCost == null ? null : Number(record.estimatedCost),
     repo: parseRepo(record.repo),
     additionalRepos: parseAdditionalRepos(record.additionalRepos),
     contextRefs: record.contextRefs as Loop["contextRefs"],
@@ -421,12 +425,12 @@ export const loopsService = {
 
   /**
    * Get a single Loop by ID (org-scoped).
-   * Includes associated user info for detail views.
+   * Includes associated user info for detail views, with PR-enriched additionalRepos.
    */
   async findById(
     id: string,
     organizationId: string
-  ): Promise<LoopWithUser | null> {
+  ): Promise<LoopDetail | null> {
     const loop = await withDb((db) =>
       db.loop.findUnique({
         where: { id, organizationId },
@@ -441,12 +445,32 @@ export const loopsService = {
       return null;
     }
 
-    return toLoopWithUser(
+    const result = toLoopWithUser(
       loop as PrismaLoop & {
         user: LoopWithUser["user"];
         computeTarget: ComputeTargetSummary | null;
       }
     );
+
+    let pullRequests: PullRequestInfo[] = [];
+    if (
+      result.documentId !== null &&
+      (result.repo !== null ||
+        (result.additionalRepos !== null && result.additionalRepos.length > 0))
+    ) {
+      pullRequests = await documentPullRequestService.getDocumentPullRequests(
+        result.documentId,
+        result.organizationId
+      );
+    }
+    const additionalRepos = _enrichAdditionalReposWithPr(result, pullRequests);
+    const primaryPullRequest = _findPrimaryRepoPr(result, pullRequests);
+
+    return {
+      ...result,
+      additionalRepos,
+      primaryPullRequest,
+    };
   },
 
   /**
@@ -1492,6 +1516,44 @@ export const loopsService = {
     return result.count;
   },
 };
+
+/**
+ * Enrich each AdditionalRepoRef with its corresponding pull request (if any).
+ * Returns the original array unchanged when no enrichment is needed (null array,
+ * empty array, or no documentId to look up PRs against).
+ */
+function _enrichAdditionalReposWithPr(
+  loop: LoopWithUser,
+  prs: PullRequestInfo[]
+): AdditionalRepoRefWithPr[] | null {
+  if (
+    loop.additionalRepos === null ||
+    loop.additionalRepos.length === 0 ||
+    loop.documentId === null
+  ) {
+    return loop.additionalRepos as AdditionalRepoRefWithPr[];
+  }
+
+  return loop.additionalRepos.map((repo) => ({
+    ...repo,
+    pullRequest: prs.find((pr) => pr.repoFullName === repo.fullName) ?? null,
+  }));
+}
+
+/**
+ * Find the pull request for the primary repo of a loop (if any).
+ * Returns null when the loop has no documentId, no primary repo, or no matching PR.
+ */
+function _findPrimaryRepoPr(
+  loop: LoopWithUser,
+  prs: PullRequestInfo[]
+): PullRequestInfo | null {
+  if (loop.documentId === null || loop.repo === null) {
+    return null;
+  }
+
+  return prs.find((pr) => pr.repoFullName === loop.repo?.fullName) ?? null;
+}
 
 export class UnauthorizedRepoError extends Error {
   readonly unauthorizedRepos: string[];
