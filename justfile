@@ -45,9 +45,6 @@ lint-fix:
 test:
     pnpm test
 
-test-e2e:
-    pnpm exec playwright test
-
 # Docker postgres -- explicit POSTGRES_USER avoids auth failures on fresh containers,
 # and the symphony DB must exist before Prisma migrations can run.
 db-start:
