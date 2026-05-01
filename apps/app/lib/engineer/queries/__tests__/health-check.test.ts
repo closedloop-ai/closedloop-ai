@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { getRenderableHealthChecks } from "../health-check";
+import {
+  COMPUTE_TARGET_HEADER,
+  GATEWAY_RELAY_HEALTH_CHECK_PATH,
+} from "@/lib/engineer/constants";
+import {
+  buildHealthCheckRequest,
+  getRenderableHealthChecks,
+  healthCheckOptions,
+} from "../health-check";
 
 describe("getRenderableHealthChecks", () => {
   it("appends Claude and Codex MCP rows from mcpServers", () => {
@@ -133,5 +141,35 @@ describe("getRenderableHealthChecks", () => {
           "Retry check. team-codex is configured for https://example.com/mcp",
       }),
     ]);
+  });
+});
+
+describe("healthCheckOptions", () => {
+  it("keys and builds the relay request when a relay target is supplied", () => {
+    const options = healthCheckOptions(
+      "cloud-relay:target-1",
+      "https://example.com/mcp",
+      { relayTargetId: "target-1" }
+    );
+
+    expect(options.queryKey).toEqual([
+      "health-check",
+      "cloud-relay:target-1",
+      "https://example.com/mcp",
+    ]);
+
+    const request = buildHealthCheckRequest({
+      expectedMcpUrl: "https://example.com/mcp",
+      relayTargetId: "target-1",
+    });
+
+    expect(request).toEqual({
+      url: `${GATEWAY_RELAY_HEALTH_CHECK_PATH}?expectedMcpUrl=https%3A%2F%2Fexample.com%2Fmcp`,
+      init: {
+        headers: {
+          [COMPUTE_TARGET_HEADER]: "target-1",
+        },
+      },
+    });
   });
 });

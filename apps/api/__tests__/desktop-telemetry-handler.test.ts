@@ -35,6 +35,27 @@ const validDesktopWirePayload = {
   },
 };
 
+const reportedDecisionTableVerification = {
+  telemetryStatus: "reported",
+  telemetryFilePath:
+    "/tmp/work/.closedloop-ai/decision-table-verifications.jsonl",
+  lineNumber: 3,
+  timestamp: "2026-05-01T13:20:06.234Z",
+  workdir: "/tmp/work",
+  decisionTablePath: ".closedloop-ai/decision-tables/pln-302.md",
+  finalStatus: "aligned",
+  iterations: 3,
+  driftKindCounts: {
+    codeDrift: 2,
+    testDrift: 1,
+    planAmbiguity: 0,
+  },
+  fixesAttempted: 3,
+  parseFailures: 0,
+  verifierInvocations: 3,
+  phaseDurationMs: 58_921,
+};
+
 const defaultHandlerContext: TelemetryHandlerContext = {
   authenticatedTargetId: COMPUTE_TARGET_ID,
 };
@@ -469,7 +490,72 @@ describe("handleTelemetryEvent — organizationId/userId enrichment", () => {
 });
 
 // ---------------------------------------------------------------------------
-// (h) sanitizeDesktopTelemetryDiagnostics — stderrTail ANSI + credential filter
+// (h) handleTelemetryEvent — decision-table verification diagnostics reach Datadog
+// ---------------------------------------------------------------------------
+
+describe("handleTelemetryEvent — decision-table verification telemetry", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("flushes decision-table verification diagnostics and telemetryMessage in Datadog metadata", async () => {
+    vi.stubEnv("DD_API_KEY", "test-key");
+    vi.stubEnv("DD_SERVICE", "api");
+    vi.stubEnv("RELEASE_VERSION", "1.0.0");
+    vi.stubEnv("VERCEL_GIT_COMMIT_SHA", "testsha");
+
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.resetModules();
+
+    const { log: freshLog } = await import("@repo/observability/log");
+    const { handleTelemetryEvent: freshHandler } = await import(
+      "@/lib/desktop-telemetry-handler"
+    );
+
+    const result = freshHandler(
+      {
+        ...validDesktopWirePayload,
+        category: TelemetryCategory.JobDecisionTableVerification,
+        message: "Decision-table verification aligned",
+        diagnostics: {
+          decisionTableVerification: reportedDecisionTableVerification,
+        },
+      },
+      defaultHandlerContext
+    );
+    expect(result.ok).toBe(true);
+
+    await freshLog.flush();
+    expect(fetchMock).toHaveBeenCalledOnce();
+
+    const body = JSON.parse(
+      fetchMock.mock.calls[0][1].body as string
+    ) as Array<{
+      category?: string;
+      diagnostics?: {
+        decisionTableVerification?: typeof reportedDecisionTableVerification;
+      };
+      message?: string;
+      telemetryMessage?: string;
+    }>;
+    const entry = body.find(
+      (e) => e.category === TelemetryCategory.JobDecisionTableVerification
+    );
+
+    expect(entry).toBeDefined();
+    expect(entry?.message).toBe("Desktop telemetry event received");
+    expect(entry?.telemetryMessage).toBe("Decision-table verification aligned");
+    expect(entry?.diagnostics?.decisionTableVerification).toEqual(
+      reportedDecisionTableVerification
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (i) sanitizeDesktopTelemetryDiagnostics — stderrTail ANSI + credential filter
 // ---------------------------------------------------------------------------
 
 describe("sanitizeDesktopTelemetryDiagnostics — stderrTail sanitization", () => {
@@ -511,7 +597,7 @@ describe("sanitizeDesktopTelemetryDiagnostics — stderrTail sanitization", () =
 });
 
 // ---------------------------------------------------------------------------
-// (i) sanitizeDesktopTelemetryDiagnostics — spawnMeta.envSnapshot allowlist
+// (j) sanitizeDesktopTelemetryDiagnostics — spawnMeta.envSnapshot allowlist
 // ---------------------------------------------------------------------------
 
 describe("sanitizeDesktopTelemetryDiagnostics — envSnapshot filtering", () => {
@@ -598,7 +684,7 @@ describe("sanitizeDesktopTelemetryDiagnostics — envSnapshot filtering", () => 
 });
 
 // ---------------------------------------------------------------------------
-// (j) validation-failure paths carry category: TelemetryValidationFailed
+// (k) validation-failure paths carry category: TelemetryValidationFailed
 //
 // The handler's two rejection sites (schema parse failure and
 // computeTargetId mismatch) both log.warn with category in meta so the

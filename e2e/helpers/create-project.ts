@@ -11,13 +11,30 @@ type ProjectSummary = {
   name: string;
 };
 
+type DefaultRepositoryStub = {
+  repoId: string;
+  repoFullName: string;
+  branch: string;
+};
+
 export async function createProject(
   request: APIRequestContext,
-  { teamIds, name }: { teamIds: string[]; name: string }
+  {
+    teamIds,
+    name,
+    defaultRepository,
+    token,
+  }: {
+    teamIds: string[];
+    name: string;
+    defaultRepository?: DefaultRepositoryStub;
+    token: string;
+  }
 ): Promise<ProjectSummary> {
   const api = getApiBaseUrl();
   const response = await request.post(`${api}/projects`, {
     data: { name, teamIds },
+    headers: { Authorization: `Bearer ${token}` },
   });
   const body = (await response.json()) as ApiResult<ProjectSummary>;
 
@@ -25,16 +42,52 @@ export async function createProject(
     throw new Error(body.error);
   }
 
-  return { id: body.data.id, slug: body.data.slug, name: body.data.name };
+  const project = {
+    id: body.data.id,
+    slug: body.data.slug,
+    name: body.data.name,
+  };
+
+  if (defaultRepository) {
+    await setProjectDefaultRepository(
+      request,
+      project.id,
+      defaultRepository,
+      token
+    );
+  }
+
+  return project;
+}
+
+async function setProjectDefaultRepository(
+  request: APIRequestContext,
+  projectId: string,
+  defaultRepository: DefaultRepositoryStub,
+  token: string
+): Promise<void> {
+  const api = getApiBaseUrl();
+  const response = await request.put(`${api}/projects/${projectId}`, {
+    data: { settings: { defaultRepository } },
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok()) {
+    throw new Error(
+      `Failed to set defaultRepository on project ${projectId}: ${response.status()} ${response.statusText()}`
+    );
+  }
 }
 
 export async function deleteProject(
   request: APIRequestContext,
-  projectId: string
+  projectId: string,
+  token: string
 ): Promise<void> {
   const api = getApiBaseUrl();
   try {
-    const response = await request.delete(`${api}/projects/${projectId}`);
+    const response = await request.delete(`${api}/projects/${projectId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
 
     if (!response.ok()) {
       console.error({
