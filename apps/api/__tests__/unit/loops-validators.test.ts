@@ -341,6 +341,18 @@ describe("normalizeLoopEvent", () => {
       tokensUsed: 100,
     });
   });
+
+  it("preserves outer type when data contains a conflicting type field", () => {
+    const body = {
+      type: "output",
+      data: { type: "evil", chunk: "hello" },
+    };
+    const result = normalizeLoopEvent(body);
+    expect(result).toMatchObject({
+      type: "output",
+      chunk: "hello",
+    });
+  });
 });
 
 describe("TERMINAL_LOOP_STATUSES", () => {

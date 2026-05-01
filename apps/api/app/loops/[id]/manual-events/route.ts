@@ -1,4 +1,5 @@
 import type { LoopEvent } from "@repo/api/src/types/loop";
+import { LoopCommand } from "@repo/api/src/types/loop";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { loopEventBus } from "@/lib/loops/loop-event-bus";
 import { handleLoopEvent } from "@/lib/loops/loop-orchestrator";
@@ -47,6 +48,14 @@ export const POST = withAnyAuth<
       const loop = await loopsService.findById(loopId, user.organizationId);
       if (!loop) {
         return errorResponse("Loop not found", new Error("Not Found"), 404);
+      }
+
+      if (loop.command !== LoopCommand.Manual) {
+        return errorResponse(
+          "Manual events are only accepted for MANUAL loops",
+          new Error("Forbidden"),
+          403
+        );
       }
 
       // Ignore non-terminal events after the loop is terminal.

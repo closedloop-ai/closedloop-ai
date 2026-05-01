@@ -35,7 +35,7 @@ export function registerAddLoopEvent(
           {
             type: "output",
             data: {
-              message,
+              chunk: message,
               timestamp: new Date().toISOString(),
             },
           }

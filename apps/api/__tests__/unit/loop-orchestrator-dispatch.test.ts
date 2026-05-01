@@ -159,6 +159,7 @@ vi.mock("@/lib/loops/loop-desktop", async (importActual) => {
 // --- Imports (after mocks) ---
 
 import {
+  LoopCommand,
   LoopErrorCode,
   LoopStatus,
   type LoopWithUser,
@@ -211,9 +212,9 @@ describe("handleLoopCompleted command dispatch", () => {
     timestamp: new Date().toISOString(),
   };
 
-  function setupLoopForCompleted(command: string) {
+  function setupLoopForCompleted(command: LoopCommand) {
     const loop = buildLoop({
-      command: command as "PLAN",
+      command,
       s3StateKey: "org/loops/loop-1/run-1",
       documentId: "artifact-1",
     });
@@ -223,7 +224,7 @@ describe("handleLoopCompleted command dispatch", () => {
   }
 
   it("PLAN command: calls plan handler", async () => {
-    setupLoopForCompleted("PLAN");
+    setupLoopForCompleted(LoopCommand.Plan);
 
     await handleLoopEvent("loop-1", "org-1", completedEvent);
 
@@ -232,7 +233,7 @@ describe("handleLoopCompleted command dispatch", () => {
   });
 
   it("REQUEST_CHANGES command: calls plan handler", async () => {
-    setupLoopForCompleted("REQUEST_CHANGES");
+    setupLoopForCompleted(LoopCommand.RequestChanges);
 
     await handleLoopEvent("loop-1", "org-1", completedEvent);
 
@@ -241,7 +242,7 @@ describe("handleLoopCompleted command dispatch", () => {
   });
 
   it("EXECUTE command: calls execute handler", async () => {
-    setupLoopForCompleted("EXECUTE");
+    setupLoopForCompleted(LoopCommand.Execute);
 
     await handleLoopEvent("loop-1", "org-1", completedEvent);
 
@@ -250,7 +251,7 @@ describe("handleLoopCompleted command dispatch", () => {
   });
 
   it("DECOMPOSE command: calls decompose handler", async () => {
-    setupLoopForCompleted("DECOMPOSE");
+    setupLoopForCompleted(LoopCommand.Decompose);
 
     await handleLoopEvent("loop-1", "org-1", completedEvent);
 
@@ -260,7 +261,7 @@ describe("handleLoopCompleted command dispatch", () => {
   });
 
   it("MANUAL command: skips S3 ingestion entirely", async () => {
-    setupLoopForCompleted("MANUAL");
+    setupLoopForCompleted(LoopCommand.Manual);
 
     await handleLoopEvent("loop-1", "org-1", completedEvent);
 
@@ -270,7 +271,7 @@ describe("handleLoopCompleted command dispatch", () => {
   });
 
   it("unknown command: calls neither handler", async () => {
-    setupLoopForCompleted("CHAT");
+    setupLoopForCompleted(LoopCommand.Chat);
 
     await handleLoopEvent("loop-1", "org-1", completedEvent);
 
@@ -281,7 +282,7 @@ describe("handleLoopCompleted command dispatch", () => {
 
   it("loop without s3StateKey: skips artifact ingestion entirely", async () => {
     const loop = buildLoop({
-      command: "PLAN" as const,
+      command: LoopCommand.Plan,
       s3StateKey: null,
       documentId: "artifact-1",
     });
@@ -294,7 +295,7 @@ describe("handleLoopCompleted command dispatch", () => {
 
   it("loop without documentId: skips artifact ingestion entirely", async () => {
     const loop = buildLoop({
-      command: "PLAN" as const,
+      command: LoopCommand.Plan,
       s3StateKey: "org/loops/loop-1/run-1",
       documentId: null,
     });
@@ -325,7 +326,7 @@ describe("launchLoop orphaned command cleanup on relay failure", () => {
 
   it("expires the orphaned command and cancels the loop when launchLoopOnDesktop throws a DispatchError", async () => {
     const loop = buildLoop({
-      status: "PENDING",
+      status: LoopStatus.Pending,
       computeTargetId: "target-1",
     });
     mockLoopsService.findById.mockResolvedValue(loop);
@@ -378,7 +379,7 @@ describe("PLAN_STATE_UNAVAILABLE pre-dispatch guard", () => {
 
   it("ECS EXECUTE loop with parent s3StateKey: null and computeTargetId: null — fails with PlanStateUnavailable, runEcsTask not called", async () => {
     const childLoop = buildLoop({
-      status: "PENDING",
+      status: LoopStatus.Pending,
       command: "EXECUTE",
       parentLoopId: "parent-1",
       computeTargetId: null,
@@ -412,7 +413,7 @@ describe("PLAN_STATE_UNAVAILABLE pre-dispatch guard", () => {
 
   it("Desktop EXECUTE loop with parent s3StateKey: null and computeTargetId: 'ct-parent' — launchLoopOnDesktop IS called", async () => {
     const childLoop = buildLoop({
-      status: "PENDING",
+      status: LoopStatus.Pending,
       command: "EXECUTE",
       parentLoopId: "parent-1",
       computeTargetId: "ct-child",
@@ -443,7 +444,7 @@ describe("PLAN_STATE_UNAVAILABLE pre-dispatch guard", () => {
 
   it("EXECUTE loop with no parentLoopId — launches normally (ECS path, guard does not fire)", async () => {
     const childLoop = buildLoop({
-      status: "PENDING",
+      status: LoopStatus.Pending,
       command: "EXECUTE",
       parentLoopId: null,
       computeTargetId: null,
@@ -471,7 +472,7 @@ describe("PLAN_STATE_UNAVAILABLE pre-dispatch guard", () => {
 
   it("PLAN loop with parentLoopId and parent s3StateKey: null — launches normally (requiresParent: false, guard does not fire)", async () => {
     const childLoop = buildLoop({
-      status: "PENDING",
+      status: LoopStatus.Pending,
       command: "PLAN",
       parentLoopId: "parent-1",
       computeTargetId: null,
@@ -506,7 +507,7 @@ describe("PLAN_STATE_UNAVAILABLE pre-dispatch guard", () => {
 
   it("parent findById returns null — PLAN_STATE_UNAVAILABLE triggered, no call to apiKeyService.resolveApiKey", async () => {
     const childLoop = buildLoop({
-      status: "PENDING",
+      status: LoopStatus.Pending,
       command: "EXECUTE",
       parentLoopId: "parent-1",
       computeTargetId: null,
@@ -551,8 +552,11 @@ describe("handleLoopEvent isOverridingFailure for CANCELLED loops", () => {
   });
 
   it("passes error: null to updateStatus when overriding a CANCELLED loop with a completed event", async () => {
-    const cancelledLoop = buildLoop({ status: "CANCELLED", s3StateKey: null });
-    const completedLoop = buildLoop({ status: "COMPLETED" });
+    const cancelledLoop = buildLoop({
+      status: LoopStatus.Cancelled,
+      s3StateKey: null,
+    });
+    const completedLoop = buildLoop({ status: LoopStatus.Completed });
 
     const updateStatusSpy = vi
       .spyOn(loopsService, "updateStatus")
@@ -575,7 +579,7 @@ describe("handleLoopEvent isOverridingFailure for CANCELLED loops", () => {
     expect(updateStatusSpy).toHaveBeenCalledWith(
       "loop-1",
       "org-1",
-      "COMPLETED",
+      LoopStatus.Completed,
       expect.objectContaining({ error: null })
     );
   });

@@ -6,8 +6,10 @@ import {
   LoopEventCompletedSchema,
   LoopEventErrorSchema,
   LoopEventOutputSchema,
+  LoopEventType,
   LoopEventTypeSchema,
 } from "@closedloop-ai/loops-api/events";
+import { BRANCH_NAME_REGEX } from "@closedloop-ai/loops-api/execution-result";
 import { ArtifactType } from "@repo/api/src/types/artifact";
 import type { LoopEvent } from "@repo/api/src/types/loop";
 import { LoopStatus, MAX_ADDITIONAL_REPOS } from "@repo/api/src/types/loop";
@@ -18,8 +20,6 @@ function jsonSizeWithinLimit(value: unknown, maxBytes: number): boolean {
   return Buffer.byteLength(JSON.stringify(value), "utf-8") <= maxBytes;
 }
 
-/** Git branch name — no shell metacharacters, no path traversal. */
-const BRANCH_NAME_REGEX = /^[a-zA-Z0-9._/-]+$/;
 const BRANCH_NAME_ERROR = "Branch name contains invalid characters";
 
 /** Validated repo schema — reuse wherever repo input is accepted. */
@@ -72,8 +72,8 @@ export const tokenRefreshAdditionalReposSchema =
 
 export const createLoopValidator = z.object({
   command: LoopCommandSchema,
-  documentId: z.uuid().optional(),
-  workstreamId: z.uuid().optional(),
+  documentId: uuidOrSlug().optional(),
+  workstreamId: uuidOrSlug().optional(),
   prompt: z.string().max(100_000).optional(),
   repo: repoSchema.optional(),
   additionalRepos: additionalReposSchema,
@@ -246,10 +246,10 @@ export const TERMINAL_LOOP_STATUSES = new Set<string>([
 ]);
 
 /** Event types that transition a loop to a terminal state. */
-export const TERMINAL_LOOP_EVENTS = new Set([
-  "completed",
-  "error",
-  "cancelled",
+export const TERMINAL_LOOP_EVENTS = new Set<string>([
+  LoopEventType.Completed,
+  LoopEventType.Error,
+  LoopEventType.Cancelled,
 ]);
 
 /**
@@ -269,7 +269,7 @@ export function normalizeLoopEvent(body: unknown): LoopEvent {
       type: LoopEvent["type"];
       data: Record<string, unknown>;
     };
-    return { type: b.type, ...b.data } as LoopEvent;
+    return { ...b.data, type: b.type } as LoopEvent;
   }
   return body as LoopEvent;
 }

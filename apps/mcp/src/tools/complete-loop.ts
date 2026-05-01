@@ -48,16 +48,14 @@ export function registerCompleteLoop(
     },
     ({ loopId, prUrl, branchName, summary, tokensInput, tokensOutput }) =>
       withErrorHandling(async () => {
-        // Send completed event
         const completedData: Record<string, unknown> = {
-          timestamp: new Date().toISOString(),
-        };
-        if (tokensInput !== undefined || tokensOutput !== undefined) {
-          completedData.tokensUsed = {
+          result: { exitCode: 0, summary: summary ?? "Manual loop completed" },
+          tokensUsed: {
             input: tokensInput ?? 0,
             output: tokensOutput ?? 0,
-          };
-        }
+          },
+          timestamp: new Date().toISOString(),
+        };
 
         await apiClient.post<unknown>(
           `/loops/${encodePathSegment(loopId)}/manual-events`,

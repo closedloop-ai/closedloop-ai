@@ -363,20 +363,23 @@ export const loopsService = {
     const isManual = input.command === LoopCommand.Manual;
 
     // Nested-loop prevention: reject manual loop creation when a platform-managed
-    // loop is already running for the same document + user.
+    // loop is active for the same document + user. Checks PENDING and CLAIMED in
+    // addition to RUNNING so a queued/claimed platform loop also blocks manual creation.
     if (isManual && input.documentId) {
-      const runningNonManual = await withDb((db) =>
+      const activeNonManual = await withDb((db) =>
         db.loop.count({
           where: {
             userId,
             organizationId,
             artifactId: input.documentId,
-            status: LoopStatus.Running,
+            status: {
+              in: [LoopStatus.Pending, LoopStatus.Claimed, LoopStatus.Running],
+            },
             command: { not: LoopCommand.Manual },
           },
         })
       );
-      if (runningNonManual > 0) {
+      if (activeNonManual > 0) {
         throw new NestedManualLoopError(input.documentId);
       }
     }

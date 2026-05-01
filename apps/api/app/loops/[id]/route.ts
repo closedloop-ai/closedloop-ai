@@ -1,4 +1,5 @@
 import type { Loop, LoopEvent, LoopWithUser } from "@repo/api/src/types/loop";
+import { LoopCommand } from "@repo/api/src/types/loop";
 import { log } from "@repo/observability/log";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { stopDesktopLoop } from "@/lib/loops/loop-desktop";
@@ -98,6 +99,19 @@ export const PATCH = withAnyAuth<Loop, "/loops/[id]">(
       );
       if (parseError) {
         return parseError;
+      }
+
+      const loop = await loopsService.findById(id, user.organizationId);
+      if (!loop) {
+        return notFoundResponse("Loop");
+      }
+
+      if (loop.command !== LoopCommand.Manual) {
+        return errorResponse(
+          "Metadata updates are only allowed for MANUAL loops",
+          new Error("Forbidden"),
+          403
+        );
       }
 
       const updated = await loopsService.updateManualLoopFields(

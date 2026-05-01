@@ -1,4 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { LoopCommand } from "@repo/api/src/types/loop";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
 import { describeIdOrSlug, withErrorHandling } from "./tool-utils.js";
@@ -50,7 +51,7 @@ export function registerCreateLoop(
     ({ documentId, workstreamId, prompt, repoFullName, repoBranch }) =>
       withErrorHandling(async () => {
         const body: Record<string, unknown> = {
-          command: "MANUAL",
+          command: LoopCommand.Manual,
           documentId,
         };
         if (workstreamId !== undefined) {
