@@ -1094,18 +1094,18 @@ function findExistingRunDir(workDir) {
  *
  * Without this, PLAN commands get no --prd flag and produce empty plans.
  */
-function writePrdFile(targetDir, contextPack) {
-  let prdContent = contextPack?.prompt ?? null;
+function writePrdFile(targetDir, contextPack, options = {}) {
+  const artifactTypes = options.artifactTypes ?? [
+    LoopArtifactType.Prd,
+    LoopArtifactType.Feature,
+  ];
+  let prdContent = options.allowPrompt === false ? null : contextPack?.prompt;
 
-  // Fall back to the first PRD-type artifact, then FEATURE-type
+  // Fall back to the first artifact matching the requested type priority.
   if (!prdContent && Array.isArray(contextPack?.artifacts)) {
-    const prdArtifact = contextPack.artifacts.find(
-      (a) => a.type === LoopArtifactType.Prd
-    );
-    const featureArtifact = prdArtifact
-      ? null
-      : contextPack.artifacts.find((a) => a.type === LoopArtifactType.Feature);
-    const source = prdArtifact || featureArtifact;
+    const source = artifactTypes
+      .map((type) => contextPack.artifacts.find((a) => a.type === type))
+      .find(Boolean);
 
     if (source?.content) {
       prdContent = source.content;
@@ -1123,6 +1123,25 @@ function writePrdFile(targetDir, contextPack) {
   fs.writeFileSync(prdPath, prdContent);
   log("info", `Wrote prd.md to ${prdPath}`);
   return prdPath;
+}
+
+function writeFeatureEvaluationPrdFile(targetDir, contextPack) {
+  return writePrdFile(targetDir, contextPack, {
+    allowPrompt: false,
+    artifactTypes: [LoopArtifactType.Feature],
+  });
+}
+
+function hasArtifactContent(contextPack, artifactType) {
+  return (
+    Array.isArray(contextPack?.artifacts) &&
+    contextPack.artifacts.some(
+      (artifact) =>
+        artifact.type === artifactType &&
+        typeof artifact.content === "string" &&
+        artifact.content.trim().length > 0
+    )
+  );
 }
 
 /**
@@ -3103,6 +3122,16 @@ function validatePreRunInputs(command, contextPack) {
       `Pre-run validation failed: ${error}`
     );
   }
+
+  if (
+    command === LoopCommand.EvaluateFeature &&
+    !hasArtifactContent(contextPack, LoopArtifactType.Feature)
+  ) {
+    throw new HarnessError(
+      ERROR_CODES.preRunValidation,
+      "Pre-run validation failed: EVALUATE_FEATURE requires a non-empty FEATURE artifact"
+    );
+  }
 }
 
 /**
@@ -3843,8 +3872,11 @@ async function main() {
       log("info", `Created new run directory: ${symphonyWorkDir}`);
     }
 
-    // Write PRD to the run directory (all commands that have a prompt)
-    const prdPath = writePrdFile(symphonyWorkDir, contextPack);
+    // Write PRD/feature prompt content to the run directory.
+    const prdPath =
+      config.command === LoopCommand.EvaluateFeature
+        ? writeFeatureEvaluationPrdFile(symphonyWorkDir, contextPack)
+        : writePrdFile(symphonyWorkDir, contextPack);
 
     // For child loops: write the latest plan content from the context pack to
     // plan.json in the run dir. This picks up manual edits the user made in
@@ -4081,6 +4113,7 @@ export {
   writeContextPackFiles,
   writeExecutionResult,
   writeExecutionResultV2,
+  writeFeatureEvaluationPrdFile,
   writePrdFile,
 };
 

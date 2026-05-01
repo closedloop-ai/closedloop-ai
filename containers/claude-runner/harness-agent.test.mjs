@@ -45,6 +45,7 @@ import {
   writeContextPackFiles,
   writeExecutionResult,
   writeExecutionResultV2,
+  writeFeatureEvaluationPrdFile,
   writePrdFile,
 } from "./harness-agent.mjs";
 
@@ -443,6 +444,41 @@ test("validatePreRunInputs does not throw for EVALUATE_PRD with non-empty artifa
   };
 
   assert.doesNotThrow(() => validatePreRunInputs("EVALUATE_PRD", contextPack));
+});
+
+test("validatePreRunInputs requires a non-empty FEATURE artifact for EVALUATE_FEATURE", () => {
+  assert.throws(
+    () =>
+      validatePreRunInputs("EVALUATE_FEATURE", {
+        artifacts: [
+          {
+            id: "prd-1",
+            type: LoopArtifactType.Prd,
+            content: "source prd content",
+          },
+        ],
+      }),
+    (err) => {
+      assert.ok(err instanceof HarnessError, "must be a HarnessError");
+      assert.equal(err.code, ERROR_CODES.preRunValidation);
+      assert.match(err.message, /FEATURE artifact/);
+      return true;
+    }
+  );
+});
+
+test("validatePreRunInputs accepts EVALUATE_FEATURE with a non-empty FEATURE artifact", () => {
+  assert.doesNotThrow(() =>
+    validatePreRunInputs("EVALUATE_FEATURE", {
+      artifacts: [
+        {
+          id: "feature-1",
+          type: LoopArtifactType.Feature,
+          content: "feature content",
+        },
+      ],
+    })
+  );
 });
 
 describe("writeContextPackFiles context directory", () => {
@@ -1132,6 +1168,36 @@ describe("writePrdFile", () => {
     });
     assert.ok(result);
     assert.equal(fs.readFileSync(result, "utf-8"), "PRD text");
+  });
+
+  test("feature evaluation writes FEATURE artifact even when a PRD artifact is present", () => {
+    const dir = makeTempDir();
+    const result = writeFeatureEvaluationPrdFile(dir, {
+      artifacts: [
+        { id: "prd-1", type: LoopArtifactType.Prd, content: "Source PRD" },
+        {
+          id: "feature-1",
+          type: LoopArtifactType.Feature,
+          content: "Feature artifact",
+        },
+      ],
+    });
+
+    assert.ok(result);
+    assert.equal(fs.readFileSync(result, "utf-8"), "Feature artifact");
+  });
+
+  test("feature evaluation ignores prompt and PRD fallback when selecting content", () => {
+    const dir = makeTempDir();
+    const result = writeFeatureEvaluationPrdFile(dir, {
+      prompt: "Prompt text",
+      artifacts: [
+        { id: "prd-1", type: LoopArtifactType.Prd, content: "Source PRD" },
+      ],
+    });
+
+    assert.equal(result, null);
+    assert.ok(!fs.existsSync(path.join(dir, LoopArtifactFile.Prd)));
   });
 
   test("prompt takes priority over PRD artifact", () => {
