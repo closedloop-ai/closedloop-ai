@@ -45,20 +45,20 @@ export const POST = withAnyAuth(async ({ user }, request) => {
 
   if (!result.ok) {
     if (result.error === "compute_target_not_found") {
-      return errorResponse("Compute target not found.", null, 409);
+      return errorResponse("Compute target not found.", null, 404);
     }
     if (result.error === "compute_target_offline") {
       return errorResponse(
         "Compute target is offline. Ensure the desktop app is running.",
         null,
-        409
+        400
       );
     }
     if (result.error === "no_online_targets") {
       return errorResponse(
         "No online compute targets found. Ensure the desktop app is running.",
         null,
-        409
+        400
       );
     }
     if (result.error === "multiple_targets") {
@@ -66,6 +66,13 @@ export const POST = withAnyAuth(async ({ user }, request) => {
         "Multiple compute targets are online. Specify a computeTargetId to select one.",
         null,
         409
+      );
+    }
+    if (result.error === "concurrent_limit_exceeded") {
+      return errorResponse(
+        "Too many concurrent loops. Wait for an existing loop to finish.",
+        null,
+        429
       );
     }
     if (result.error === "callback_unavailable") {

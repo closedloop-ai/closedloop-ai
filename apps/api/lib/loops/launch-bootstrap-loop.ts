@@ -6,14 +6,16 @@
  */
 
 import type { JsonObject } from "@repo/api/src/types/common";
+import type { CreateLoopResponse } from "@repo/api/src/types/loop";
 import { LoopCommand } from "@repo/api/src/types/loop";
 import { log } from "@repo/observability/log";
-import { loopsService } from "@/app/loops/service";
+import { ConcurrentLoopLimitError, loopsService } from "@/app/loops/service";
 import {
   fetchUserComputePreferences,
   resolveComputeTarget,
 } from "./compute-target-resolver";
 import { isDispatchError } from "./loop-desktop";
+import { classifyLaunchFailure } from "./loop-dispatch-utils";
 import { launchLoop } from "./loop-orchestrator";
 
 export type LaunchBootstrapLoopResult =
@@ -26,7 +28,8 @@ export type LaunchBootstrapLoopResult =
         | "no_online_targets"
         | "multiple_targets"
         | "callback_unavailable"
-        | "launch_failed";
+        | "launch_failed"
+        | "concurrent_limit_exceeded";
     };
 
 export type LaunchBootstrapLoopOptions = {
@@ -36,44 +39,6 @@ export type LaunchBootstrapLoopOptions = {
   options?: { depth?: string };
   computeTargetId?: string;
 };
-
-const CALLBACK_UNAVAILABLE_DISPATCH_REASONS = new Set([
-  "callback_unavailable",
-  "callback_unreachable",
-  "cloud_callback_unavailable",
-  "cloud_callback_unreachable",
-]);
-
-function isCallbackUnavailableDispatchReason(
-  reason: string | undefined
-): boolean {
-  if (!reason || typeof reason !== "string") {
-    return false;
-  }
-  const normalizedReason = reason.trim().toLowerCase();
-  if (CALLBACK_UNAVAILABLE_DISPATCH_REASONS.has(normalizedReason)) {
-    return true;
-  }
-  return (
-    normalizedReason.includes("callback") &&
-    (normalizedReason.includes("unavailable") ||
-      normalizedReason.includes("unreachable") ||
-      normalizedReason.includes("not_reachable") ||
-      normalizedReason.includes("not reachable"))
-  );
-}
-
-function classifyLaunchFailure(
-  error: unknown
-): "callback_unavailable" | "launch_failed" {
-  if (
-    isDispatchError(error) &&
-    isCallbackUnavailableDispatchReason(error.dispatchReason)
-  ) {
-    return "callback_unavailable";
-  }
-  return "launch_failed";
-}
 
 /**
  * Resolve compute target, create a BOOTSTRAP loop record, and dispatch it
@@ -131,11 +96,19 @@ export async function launchBootstrapLoop(
     metadata.options = options;
   }
 
-  const loopResponse = await loopsService.create(organizationId, userId, {
-    command: LoopCommand.Bootstrap,
-    computeTargetId: resolvedComputeTargetId,
-    metadata,
-  });
+  let loopResponse: CreateLoopResponse;
+  try {
+    loopResponse = await loopsService.create(organizationId, userId, {
+      command: LoopCommand.Bootstrap,
+      computeTargetId: resolvedComputeTargetId,
+      metadata,
+    });
+  } catch (error) {
+    if (error instanceof ConcurrentLoopLimitError) {
+      return { ok: false, error: "concurrent_limit_exceeded" };
+    }
+    throw error;
+  }
 
   try {
     await launchLoop(loopResponse.loopId, organizationId);

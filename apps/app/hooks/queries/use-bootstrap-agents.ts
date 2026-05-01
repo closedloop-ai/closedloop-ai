@@ -4,7 +4,8 @@ import type { BulkIngestAgentResponse } from "@repo/api/src/types/agent";
 import type { Loop } from "@repo/api/src/types/loop";
 import { LoopStatus } from "@repo/api/src/types/loop";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { z } from "zod";
 import { useApiClient } from "@/hooks/use-api-client";
 import { agentKeys } from "./use-agents";
 import { loopKeys } from "./use-loops";
@@ -27,10 +28,28 @@ type BootstrapLoopRepoResult = {
   duration: number;
 };
 
-type BootstrapLoopResult = {
-  repos: BootstrapLoopRepoResult[];
-  totalDuration: number;
-};
+const bootstrapLoopResultSchema = z.object({
+  repos: z.array(
+    z.object({
+      fullName: z.string(),
+      success: z.boolean(),
+      error: z.string().optional(),
+      agents: z.array(
+        z.object({
+          name: z.string(),
+          slug: z.string(),
+          role: z.string(),
+          description: z.string(),
+          prompt: z.string(),
+        })
+      ),
+      criticGates: z.record(z.string(), z.unknown()).nullable(),
+      metadata: z.record(z.string(), z.unknown()).nullable(),
+      duration: z.number(),
+    })
+  ),
+  totalDuration: z.number(),
+});
 
 // --- Public types ---
 
@@ -91,7 +110,6 @@ export function useBootstrapAgents() {
   });
   const apiClient = useApiClient();
   const queryClient = useQueryClient();
-  const ingestingRef = useRef(false);
 
   // Derive loopId and polling eligibility from state
   const loopId = "loopId" in state ? state.loopId : null;
@@ -116,6 +134,8 @@ export function useBootstrapAgents() {
   // React to loop status changes
   const loopData = loopQuery.data;
   useEffect(() => {
+    let cancelled = false;
+
     if (!(loopData && loopId)) {
       return;
     }
@@ -130,9 +150,10 @@ export function useBootstrapAgents() {
 
     // Terminal failure states
     if (
-      loopData.status === LoopStatus.Failed ||
-      loopData.status === LoopStatus.Cancelled ||
-      loopData.status === LoopStatus.TimedOut
+      (loopData.status === LoopStatus.Failed ||
+        loopData.status === LoopStatus.Cancelled ||
+        loopData.status === LoopStatus.TimedOut) &&
+      state.status !== BootstrapStatus.Error
     ) {
       const message =
         loopData.error?.message ?? `Bootstrap ${loopData.status.toLowerCase()}`;
@@ -140,49 +161,72 @@ export function useBootstrapAgents() {
     }
 
     // Completion → trigger ingestion
-    if (loopData.status === LoopStatus.Completed && !ingestingRef.current) {
-      ingestingRef.current = true;
+    if (
+      loopData.status === LoopStatus.Completed &&
+      state.status !== BootstrapStatus.Completed &&
+      state.status !== BootstrapStatus.Error &&
+      state.status !== BootstrapStatus.Ingesting
+    ) {
       setState({ status: BootstrapStatus.Ingesting, loopId });
 
-      const bootstrapResult =
-        loopData.uploadedArtifacts as BootstrapLoopResult | null;
-      if (!bootstrapResult?.repos) {
+      const parsed = bootstrapLoopResultSchema.safeParse(
+        loopData.uploadedArtifacts
+      );
+      if (!parsed.success) {
         setState({
           status: BootstrapStatus.Error,
-          error: "Bootstrap completed but no results found",
+          error: "Bootstrap completed but results could not be parsed",
           loopId,
         });
-        ingestingRef.current = false;
         return;
       }
+      const bootstrapResult = parsed.data;
 
       ingestResults(bootstrapResult.repos, apiClient, loopId)
         .then((result) => {
+          if (cancelled) {
+            return;
+          }
           queryClient.invalidateQueries({ queryKey: agentKeys.lists() });
-          setState({ status: BootstrapStatus.Completed, loopId, result });
+          if (
+            result.totalCreated === 0 &&
+            result.totalUpdated === 0 &&
+            result.repoSummaries.every((r) => !r.success)
+          ) {
+            setState({
+              status: BootstrapStatus.Error,
+              error: "All repositories failed to ingest agents",
+              loopId,
+            });
+          } else {
+            setState({ status: BootstrapStatus.Completed, loopId, result });
+          }
         })
         .catch((err) => {
+          if (cancelled) {
+            return;
+          }
           setState({
             status: BootstrapStatus.Error,
             error:
               err instanceof Error ? err.message : "Failed to ingest agents",
             loopId,
           });
-        })
-        .finally(() => {
-          ingestingRef.current = false;
         });
     }
+
+    return () => {
+      cancelled = true;
+    };
   }, [loopData, loopId, state.status, apiClient, queryClient]);
 
   const dispatch = useCallback(
     (repos: Array<{ fullName: string }>) => {
-      ingestingRef.current = false;
       setState({ status: BootstrapStatus.Creating });
 
       apiClient
         .post<{ loopId: string }>("/agents/bootstrap/start", {
-          repos: repos.map((r) => ({ fullName: r.fullName })),
+          repos,
         })
         .then((data) => {
           setState({
@@ -202,7 +246,6 @@ export function useBootstrapAgents() {
   );
 
   const reset = useCallback(() => {
-    ingestingRef.current = false;
     setState({ status: BootstrapStatus.Idle });
   }, []);
 
