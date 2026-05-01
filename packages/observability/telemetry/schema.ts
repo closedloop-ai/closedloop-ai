@@ -26,6 +26,7 @@ export const TelemetryCategory = {
   // Desktop-side categories
   JobStarted: "job.started",
   JobPlanSourceResolved: "job.plan_source_resolved",
+  JobDecisionTableVerification: "job.decision_table_verification",
   JobCompleted: "job.completed",
   JobFailed: "job.failed",
   CommandTimeout: "command.timeout",
@@ -103,6 +104,50 @@ export type TelemetryTraceContext = z.infer<typeof telemetryTraceContextSchema>;
 // Desktop-originated telemetry is parsed against this schema; any server-only
 // field (e.g. ackLatencyMs) carried in a desktop payload is stripped by Zod's
 // default `.strip` behavior before reaching the log emitter.
+const decisionTableVerificationDiagnosticsSchema = z.discriminatedUnion(
+  "telemetryStatus",
+  [
+    z.object({
+      telemetryStatus: z.literal("reported"),
+      telemetryFilePath: z.string(),
+      lineNumber: z.number().int().nonnegative(),
+      timestamp: z.string(),
+      workdir: z.string(),
+      decisionTablePath: z.string(),
+      finalStatus: z.enum([
+        "aligned",
+        "aligned_with_clarifications",
+        "verification_failed",
+      ]),
+      iterations: z.number().int().nonnegative(),
+      driftKindCounts: z.object({
+        codeDrift: z.number().int().nonnegative(),
+        testDrift: z.number().int().nonnegative(),
+        planAmbiguity: z.number().int().nonnegative(),
+      }),
+      fixesAttempted: z.number().int().nonnegative(),
+      parseFailures: z.number().int().nonnegative(),
+      verifierInvocations: z.number().int().nonnegative(),
+      phaseDurationMs: z.number().int().nonnegative(),
+    }),
+    z.object({
+      telemetryStatus: z.literal("missing"),
+      telemetryFilePath: z.string(),
+      filePresent: z.boolean(),
+      linesRead: z.number().int().nonnegative(),
+      invalidLines: z.number().int().nonnegative(),
+      missingReason: z.enum([
+        "file_not_found",
+        "empty",
+        "no_current_run_records",
+        "read_error",
+      ]),
+      sinceIso: z.string().optional(),
+      readError: z.string().optional(),
+    }),
+  ]
+);
+
 const desktopTelemetryDiagnosticsSchema = z.object({
   logTail: z.string().optional(),
   exitCode: z.number().optional(),
@@ -139,6 +184,8 @@ const desktopTelemetryDiagnosticsSchema = z.object({
   stdoutBytes: z.number().optional(),
   abortReason: z.string().optional(),
   diagnosticsVersion: z.number().optional(),
+  decisionTableVerification:
+    decisionTableVerificationDiagnosticsSchema.optional(),
   spawnMeta: z
     .object({
       command: z.string(),

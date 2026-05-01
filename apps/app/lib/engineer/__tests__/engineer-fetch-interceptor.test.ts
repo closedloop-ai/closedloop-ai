@@ -1,6 +1,10 @@
 import { EngineerRoutingMode } from "@repo/api/src/types/relay";
 import type { Mock } from "vitest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  COMPUTE_TARGET_HEADER,
+  GATEWAY_RELAY_PATH_PREFIX,
+} from "@/lib/engineer/constants";
 
 const mockEnsureElectronDetection = vi.fn();
 const mockGetElectronDetectionSnapshot = vi.fn();
@@ -36,12 +40,14 @@ vi.mock("@/lib/engineer/routing-store", () => ({
     mockGetEngineerRoutingSelection(...args),
 }));
 
-vi.mock("@/lib/engineer/constants", () => ({
-  CLOUD_RELAY_ENABLED: false,
-  DESKTOP_SETUP_URL: "https://closedloop.so/desktop",
-  VALID_PROVIDERS: new Set(["claude", "codex"]),
-  COMPUTE_TARGETS_QUERY_OPTIONS: { staleTime: 30_000, refetchInterval: 30_000 },
-}));
+vi.mock("@/lib/engineer/constants", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/lib/engineer/constants")>();
+  return {
+    ...actual,
+    CLOUD_RELAY_ENABLED: false,
+  };
+});
 
 import {
   installEngineerFetchInterceptor,
@@ -176,8 +182,10 @@ describe("engineer-fetch-interceptor", () => {
     const outboundUrl = new URL(outboundRequest.url);
     // With CLOUD_RELAY_ENABLED=false, the relay rewrite branch is skipped.
     // The catch-all sends the request as-is via originalFetch.
-    expect(outboundUrl.pathname.startsWith("/api/gateway-relay/")).toBe(false);
-    expect(outboundRequest.headers.get("x-compute-target")).toBeNull();
+    expect(outboundUrl.pathname.startsWith(GATEWAY_RELAY_PATH_PREFIX)).toBe(
+      false
+    );
+    expect(outboundRequest.headers.get(COMPUTE_TARGET_HEADER)).toBeNull();
 
     uninstall();
   });
@@ -322,13 +330,15 @@ describe("engineer-fetch-interceptor", () => {
     const outboundUrl = new URL(outboundRequest.url);
     // With CLOUD_RELAY_ENABLED=false, no relay rewrite occurs — the catch-all
     // sends the request as-is via originalFetch.
-    expect(outboundUrl.pathname.startsWith("/api/gateway-relay/")).toBe(false);
+    expect(outboundUrl.pathname.startsWith(GATEWAY_RELAY_PATH_PREFIX)).toBe(
+      false
+    );
     expect(outboundUrl.pathname).toBe(
       "/api/gateway/symphony/chat-history/pr-42"
     );
     expect(outboundUrl.searchParams.get("provider")).toBe("codex");
     expect(outboundUrl.searchParams.get("repo")).toBe("/tmp/repo");
-    expect(outboundRequest.headers.get("x-compute-target")).toBeNull();
+    expect(outboundRequest.headers.get(COMPUTE_TARGET_HEADER)).toBeNull();
 
     uninstall();
   });
@@ -391,15 +401,14 @@ describe("engineer-fetch-interceptor (CLOUD_RELAY_ENABLED=true)", () => {
 
     mockRoutingSelection = vi.fn();
 
-    vi.doMock("@/lib/engineer/constants", () => ({
-      CLOUD_RELAY_ENABLED: true,
-      DESKTOP_SETUP_URL: "https://closedloop.so/desktop",
-      VALID_PROVIDERS: new Set(["claude", "codex"]),
-      COMPUTE_TARGETS_QUERY_OPTIONS: {
-        staleTime: 30_000,
-        refetchInterval: 30_000,
-      },
-    }));
+    vi.doMock("@/lib/engineer/constants", async (importOriginal) => {
+      const actual =
+        await importOriginal<typeof import("@/lib/engineer/constants")>();
+      return {
+        ...actual,
+        CLOUD_RELAY_ENABLED: true,
+      };
+    });
 
     vi.doMock("@/lib/engineer/routing-store", () => ({
       getEngineerRoutingSelection: (...args: unknown[]) =>
@@ -452,8 +461,8 @@ describe("engineer-fetch-interceptor (CLOUD_RELAY_ENABLED=true)", () => {
 
     const outboundRequest = originalFetch.mock.calls[0][0] as Request;
     const outboundUrl = new URL(outboundRequest.url);
-    expect(outboundUrl.pathname).toBe("/api/gateway-relay/git");
-    expect(outboundRequest.headers.get("x-compute-target")).toBe("target-1");
+    expect(outboundUrl.pathname).toBe(`${GATEWAY_RELAY_PATH_PREFIX}git`);
+    expect(outboundRequest.headers.get(COMPUTE_TARGET_HEADER)).toBe("target-1");
 
     uninstall();
   });
@@ -482,11 +491,11 @@ describe("engineer-fetch-interceptor (CLOUD_RELAY_ENABLED=true)", () => {
     const outboundRequest = originalFetch.mock.calls[0][0] as Request;
     const outboundUrl = new URL(outboundRequest.url);
     expect(outboundUrl.pathname).toBe(
-      "/api/gateway-relay/symphony/chat-history/pr-10"
+      `${GATEWAY_RELAY_PATH_PREFIX}symphony/chat-history/pr-10`
     );
     expect(outboundUrl.searchParams.get("provider")).toBe("codex");
     expect(outboundUrl.searchParams.get("repo")).toBe("/tmp/repo");
-    expect(outboundRequest.headers.get("x-compute-target")).toBe("target-2");
+    expect(outboundRequest.headers.get(COMPUTE_TARGET_HEADER)).toBe("target-2");
 
     uninstall();
   });

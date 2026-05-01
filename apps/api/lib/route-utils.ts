@@ -187,3 +187,28 @@ export function scheduleLogFlush(): void {
 export function scheduleLogFlushAfter(promise: Promise<unknown>): void {
   waitUntil(promise.finally(() => log.flush().catch(() => {})));
 }
+
+/**
+ * Emit a single `request_completed` log line for the given request/response
+ * pair. Field names are the snake_case attributes the Datadog log-based
+ * generators (api.requests.count, api.errors.count, api.requests.latency)
+ * group on. `scheduleLogFlush()` is invoked so the log reaches Datadog before
+ * the serverless function freezes.
+ *
+ * Call this from a `finally` block in the auth wrappers so it fires whether
+ * the handler returned normally or threw.
+ */
+export function logRequestCompleted(
+  request: Request,
+  startMs: number,
+  statusCode: number
+): void {
+  const durationMs = Math.round(globalThis.performance.now() - startMs);
+  log.info("request_completed", {
+    path: new URL(request.url).pathname,
+    method: request.method,
+    status_code: statusCode,
+    duration_ms: durationMs,
+  });
+  scheduleLogFlush();
+}

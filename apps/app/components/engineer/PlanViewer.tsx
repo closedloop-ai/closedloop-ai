@@ -196,7 +196,7 @@ export function PlanViewer({
 /**
  * Transform local file paths to API URLs for attachments
  * Input: /Users/.../repoName-ticketId/.closedloop-ai/work/attachments/image-1.png
- * Output: /api/gateway/symphony/attachments/ticketId/image-1.png?repo=~/Source/repoName
+ * Output: /api/gateway/symphony/attachments/ticketId/image-1.png?repo=repoPath
  */
 function transformImageSrc(
   src: string,

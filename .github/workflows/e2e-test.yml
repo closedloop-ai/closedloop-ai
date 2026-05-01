@@ -156,7 +156,7 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v5
+        uses: pnpm/action-setup@v6
 
       - name: Setup Node.js
         uses: actions/setup-node@v6

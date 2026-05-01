@@ -7,6 +7,7 @@ import { keys } from "./keys";
 type AnalyticsProviderProps = {
   bootstrapFeatureFlags?: boolean;
   trackPageViews?: boolean;
+  nonce?: string;
   readonly children: ReactNode;
 };
 
@@ -15,6 +16,7 @@ const { NEXT_PUBLIC_GA_MEASUREMENT_ID, NEXT_PUBLIC_POSTHOG_KEY } = keys();
 export const AnalyticsProvider = ({
   bootstrapFeatureFlags,
   trackPageViews,
+  nonce,
   children,
 }: AnalyticsProviderProps) => {
   const posthogEnabled = !!NEXT_PUBLIC_POSTHOG_KEY;
@@ -31,7 +33,7 @@ export const AnalyticsProvider = ({
       )}
       <VercelAnalytics />
       {!!NEXT_PUBLIC_GA_MEASUREMENT_ID && (
-        <GoogleAnalytics gaId={NEXT_PUBLIC_GA_MEASUREMENT_ID} />
+        <GoogleAnalytics gaId={NEXT_PUBLIC_GA_MEASUREMENT_ID} nonce={nonce} />
       )}
     </>
   );
