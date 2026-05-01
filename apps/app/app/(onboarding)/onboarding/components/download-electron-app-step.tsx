@@ -49,7 +49,7 @@ export function DownloadElectronAppStep({
   const [provisioningError, setProvisioningError] = useState<string | null>(
     null
   );
-  const [sandboxBaseDirectory, setSandboxBaseDirectory] = useState("~/Source");
+  const [sandboxBaseDirectory, setSandboxBaseDirectory] = useState("");
   const [setupMode, setSetupMode] = useState<"automated" | "manual">("manual");
   const autoContinuedRef = useRef(false);
   const [copied, copyGeneratedKey] = useCopyToClipboard();
@@ -116,7 +116,14 @@ export function DownloadElectronAppStep({
     if (!(downloadUrl && automatedProvisioningEnabled)) {
       return;
     }
-    if (hasJsonControlCharacter(sandboxBaseDirectory)) {
+    const trimmedSandboxBaseDirectory = sandboxBaseDirectory.trim();
+    if (!trimmedSandboxBaseDirectory) {
+      setProvisioningCommand(null);
+      setProvisioningAttemptId(null);
+      setProvisioningError("Workspace directory is required.");
+      return;
+    }
+    if (hasJsonControlCharacter(trimmedSandboxBaseDirectory)) {
       setProvisioningCommand(null);
       setProvisioningAttemptId(null);
       setProvisioningError(
@@ -137,7 +144,7 @@ export function DownloadElectronAppStep({
               webAppOrigin,
               desktopDownloadUrl: downloadUrl,
               installerScriptUrl: `${webAppOrigin}/api/desktop/install.sh`,
-              sandboxBaseDirectory,
+              sandboxBaseDirectory: trimmedSandboxBaseDirectory,
             })
           );
         },

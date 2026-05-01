@@ -8,6 +8,7 @@ import type { ComponentProps } from "react";
 import { keys } from "./keys";
 
 type AuthProviderProperties = ComponentProps<typeof ClerkProvider> & {
+  nonce?: string;
   privacyUrl?: string;
   termsUrl?: string;
   helpUrl?: string;
@@ -15,6 +16,7 @@ type AuthProviderProperties = ComponentProps<typeof ClerkProvider> & {
 };
 
 export const AuthProvider = ({
+  nonce,
   privacyUrl,
   termsUrl,
   helpUrl,
@@ -66,6 +68,7 @@ export const AuthProvider = ({
     <ClerkProvider
       {...properties}
       appearance={{ options, theme, elements, variables }}
+      dynamic
       localization={{
         signIn: {
           start: {
@@ -81,6 +84,7 @@ export const AuthProvider = ({
           action__manageAccount: "Settings",
         },
       }}
+      nonce={nonce}
     />
   );
 };

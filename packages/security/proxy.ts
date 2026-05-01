@@ -7,10 +7,7 @@ export { createMiddleware as securityMiddleware } from "@nosecone/next";
 // https://docs.arcjet.com/nosecone/quick-start
 export const noseconeOptions: Options = {
   ...defaults,
-  // Content Security Policy (CSP) is disabled by default because the values
-  // depend on which Next Forge features are enabled. See
-  // https://www.next-forge.com/packages/security/headers for guidance on how
-  // to configure it.
+  // Our content security policy is handled by Clerk in the app and web proxies.
   contentSecurityPolicy: false,
   // "credentialless" allows cross-origin resources loaded without credentials
   // (e.g., S3 presigned URLs). The default "require-corp" blocks <img> loads

@@ -4,24 +4,53 @@ import type { ClerkMiddlewareAuth } from "@repo/auth/server";
 import { noseconeOptions, securityMiddleware } from "@repo/security/proxy";
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
+import { env } from "./env";
 import { resolveApiOrigin } from "./lib/api-origin";
+import { getPossibleElectronHostnames } from "./lib/engineer/electron-probe";
+
+const ELECTRON_HOSTNAMES = getPossibleElectronHostnames().map(
+  ({ hostname }) => hostname
+);
 
 // Clerk middleware wraps other middleware in its callback
-export default authMiddleware(async (auth, request) => {
-  const securityHeadersResponse = await securityHeaders();
+export default authMiddleware(
+  async (auth, request) => {
+    const securityHeadersResponse = await securityHeaders();
 
-  const guardResponse = await gatewayGuard(auth, request);
-  if (guardResponse) {
-    applySecurityHeaders(guardResponse, securityHeadersResponse);
-    return guardResponse;
+    const guardResponse = await gatewayGuard(auth, request);
+    if (guardResponse) {
+      applySecurityHeaders(guardResponse, securityHeadersResponse);
+      return guardResponse;
+    }
+
+    const response = NextResponse.next();
+    const analyticsResponse = await analyticsMiddleware(response)(request);
+    applySecurityHeaders(analyticsResponse, securityHeadersResponse);
+    return analyticsResponse;
+  },
+  {
+    contentSecurityPolicy:
+      env.CSP_ENABLED === "true"
+        ? {
+            strict: true,
+            reportOnly: true,
+            directives: {
+              "base-uri": ["none"],
+              "connect-src": [
+                env.NEXT_PUBLIC_API_URL!,
+                "https://api.liveblocks.io",
+                "wss://api.liveblocks.io",
+                "https://*.posthog.com",
+                "https://www.google-analytics.com/",
+                ...ELECTRON_HOSTNAMES,
+              ],
+              "img-src": ["data:"],
+            },
+            reportTo: env.CSP_REPORT_URI,
+          }
+        : undefined,
   }
-
-  const response = NextResponse.next();
-  const analyticsResponse = await analyticsMiddleware(response)(request);
-  applySecurityHeaders(analyticsResponse, securityHeadersResponse);
-
-  return analyticsResponse;
-});
+);
 
 export const config = {
   matcher: [

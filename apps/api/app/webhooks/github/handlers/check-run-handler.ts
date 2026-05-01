@@ -81,10 +81,10 @@ export async function handleCheckRun(event: CheckRunEvent): Promise<Response> {
   const headBranch = event.check_run.check_suite?.head_branch ?? null;
 
   log.info("[handleCheckRun] Processing check_run completed event", {
-    checkRunName: event.check_run.name,
+    check_run_name: event.check_run.name,
     conclusion: event.check_run.conclusion,
     headSha,
-    headBranch,
+    head_branch: headBranch,
     repositoryId: event.repository.id,
     installationId,
   });

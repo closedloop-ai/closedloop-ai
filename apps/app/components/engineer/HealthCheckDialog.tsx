@@ -61,7 +61,7 @@ export function HealthCheckDialog({
   const [failureDetected, setFailureDetected] = useState(false);
   const [closing, setClosing] = useState(false);
   const [removed, setRemoved] = useState(false);
-  const [worktreePath, setWorktreePath] = useState("~/Source");
+  const [worktreePath, setWorktreePath] = useState("");
   const [savingWorktree, setSavingWorktree] = useState(false);
   const [revealedCount, setRevealedCount] = useState(0);
   const [recheckKey, setRecheckKey] = useState(0);
@@ -381,7 +381,7 @@ function WorktreeInlineSetup({
           className="flex-1"
           onChange={onChange}
           onSelect={onChange}
-          placeholder="~/Source"
+          placeholder="Path to your workspace directory"
           value={value}
         />
         <Button
