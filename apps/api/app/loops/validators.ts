@@ -12,7 +12,11 @@ import {
 import { BRANCH_NAME_REGEX } from "@closedloop-ai/loops-api/execution-result";
 import { ArtifactType } from "@repo/api/src/types/artifact";
 import type { LoopEvent } from "@repo/api/src/types/loop";
-import { LoopStatus, MAX_ADDITIONAL_REPOS } from "@repo/api/src/types/loop";
+import {
+  LoopStatus,
+  MAX_ADDITIONAL_REPOS,
+  ManualLoopEventType,
+} from "@repo/api/src/types/loop";
 import { z } from "zod";
 import { uuidOrSlug } from "@/lib/identifier-utils";
 
@@ -198,13 +202,7 @@ export const listLoopEventsQueryValidator = z.object({
  * Manual loops support a subset of event types — no "started" (loop starts
  * in RUNNING) and no "tool_call" / "artifact_created" (those are runner-only).
  */
-const manualEventType = z.enum([
-  "output",
-  "progress",
-  "completed",
-  "error",
-  "cancelled",
-]);
+const manualEventType = z.enum(ManualLoopEventType);
 
 const manualEventValidators = buildEventPayloadValidators(manualEventType);
 export const manualEventValidator = manualEventValidators.envelopeValidator;
