@@ -253,6 +253,30 @@ test("buildClaudeDirectArgs with EVALUATE_FEATURE invokes judges:run-judges with
   );
 });
 
+test("buildClaudeDirectArgs with EVALUATE_FEATURE uses symphonyWD (run directory) for --workdir when provided", () => {
+  const workDir = makeTempDir();
+  const symphonyWD = makeTempDir();
+  resetConfig({ command: "EVALUATE_FEATURE" });
+
+  const { args } = buildClaudeDirectArgs(workDir, symphonyWD);
+
+  const prompt = args.find(
+    (a) => typeof a === "string" && a.includes("judges:run-judges")
+  );
+  assert.ok(
+    prompt !== undefined,
+    `args must contain a prompt referencing judges:run-judges; got: ${JSON.stringify(args)}`
+  );
+  assert.ok(
+    prompt.includes(`--workdir ${symphonyWD}`),
+    `prompt must contain --workdir <symphonyWD> when symphonyWD is provided; got: ${prompt}`
+  );
+  assert.ok(
+    !prompt.includes(`--workdir ${workDir}`),
+    `prompt must NOT contain --workdir <workDir> when symphonyWD is provided (symphonyWD is the run directory); got: ${prompt}`
+  );
+});
+
 // ---------------------------------------------------------------------------
 // EVALUATE_FEATURE — validateConfig and validateSecrets tests
 // ---------------------------------------------------------------------------
@@ -296,9 +320,20 @@ test("CLAUDE_PLUGIN_ARTIFACT_FILE_NAMES includes LoopArtifactFile.FeatureJudges"
     "utf-8"
   );
 
+  // Match the array literal body so we verify the identifier is inside this
+  // specific array, not elsewhere in the file (a comment, dead code, etc.).
+  const arrayMatch =
+    /const\s+CLAUDE_PLUGIN_ARTIFACT_FILE_NAMES\s*=\s*\[([\s\S]*?)\]/.exec(
+      harnessSource
+    );
   assert.ok(
-    harnessSource.includes("LoopArtifactFile.FeatureJudges"),
-    "harness-agent.mjs must reference LoopArtifactFile.FeatureJudges in CLAUDE_PLUGIN_ARTIFACT_FILE_NAMES"
+    arrayMatch !== null,
+    "harness-agent.mjs must declare const CLAUDE_PLUGIN_ARTIFACT_FILE_NAMES = [...]"
+  );
+  const arrayBody = arrayMatch[1];
+  assert.ok(
+    arrayBody.includes("LoopArtifactFile.FeatureJudges"),
+    "CLAUDE_PLUGIN_ARTIFACT_FILE_NAMES array body must contain LoopArtifactFile.FeatureJudges"
   );
 
   // Confirm the resolved file name matches what the backend expects.
