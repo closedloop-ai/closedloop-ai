@@ -1,7 +1,5 @@
-import { setupClerkTestingToken } from "@clerk/testing/playwright";
-import { expect, test } from "@playwright/test";
-
 import { performSignIn, requireEnvVar, TEST_EMAIL } from "./helpers/sign-in";
+import { expect, test } from "./test";
 
 const POST_LOGIN_URL = /\/(my-tasks|onboarding)/;
 
@@ -14,9 +12,6 @@ test("new user onboarding — login and reach authenticated page", async ({
   // Navigate to the app origin before clearing localStorage (not accessible on about:blank)
   await page.goto("/");
   await page.evaluate(() => localStorage.clear());
-
-  // Injects the testing token (fetched by clerkSetup in global.setup.ts) to bypass 2FA and bot detection.
-  await setupClerkTestingToken({ page });
 
   await performSignIn(page, TEST_EMAIL, password);
 

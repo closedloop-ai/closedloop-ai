@@ -83,8 +83,9 @@ export function AutomatedProvisioningCard({
           </span>
         </div>
         <p className="text-muted-foreground text-sm">
-          Generate a command that installs or updates Desktop, provisions your
-          account, and opens the app with the right configuration.
+          Generate a command that installs or updates Desktop, prepares required
+          command-line tools and ClosedLoop plugins, provisions your account,
+          and opens the app with the right configuration.
         </p>
       </button>
       {open ? (
@@ -98,6 +99,8 @@ export function AutomatedProvisioningCard({
               onChange={(event) =>
                 onSandboxBaseDirectoryChange(event.target.value)
               }
+              placeholder="Path to your workspace directory"
+              required
               value={sandboxBaseDirectory}
             />
             <p className="text-muted-foreground text-xs">
@@ -109,7 +112,10 @@ export function AutomatedProvisioningCard({
           <Button
             className="w-full sm:w-auto"
             disabled={
-              createProvisioningPending || isReleaseLoading || !downloadUrl
+              createProvisioningPending ||
+              isReleaseLoading ||
+              !downloadUrl ||
+              !sandboxBaseDirectory.trim()
             }
             onClick={onCreateCommand}
             size="default"
@@ -129,8 +135,10 @@ export function AutomatedProvisioningCard({
               <Label htmlFor="desktop-install-command">Install command</Label>
               <p className="text-muted-foreground text-xs">
                 Copy this command, paste it into macOS Terminal, and press
-                Return. Keep this page open; it will continue automatically
-                after Desktop completes setup.
+                Return. It may install CLI tooling and ClosedLoop plugins, and
+                may ask you to complete GitHub CLI authentication. Keep this
+                page open; it will continue automatically after Desktop
+                completes setup.
               </p>
               <div className="flex gap-2">
                 <Textarea
