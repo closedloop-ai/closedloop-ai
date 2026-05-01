@@ -79,7 +79,7 @@ jobs:
       - name: Check changed paths
         if: github.event_name == 'push' && github.ref_name == 'main'
         id: paths
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@v4
         with:
           base: ${{ github.event.before }}
           filters: |
