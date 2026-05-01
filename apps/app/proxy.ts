@@ -5,6 +5,10 @@ import { noseconeOptions, securityMiddleware } from "@repo/security/proxy";
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { resolveApiOrigin } from "./lib/api-origin";
+import {
+  GATEWAY_PATH_PREFIX,
+  GATEWAY_RELAY_PATH_PREFIX,
+} from "./lib/engineer/constants";
 
 // Clerk middleware wraps other middleware in its callback
 export default authMiddleware(async (auth, request) => {
@@ -93,11 +97,11 @@ async function gatewayGuard(
 const LOCALHOST_HOSTNAMES = new Set(["localhost", "127.0.0.1"]);
 
 function isGatewayLocalPath(pathname: string): boolean {
-  return pathname.startsWith("/api/gateway/");
+  return pathname.startsWith(GATEWAY_PATH_PREFIX);
 }
 
 function isGatewayRelayPath(pathname: string): boolean {
-  return pathname.startsWith("/api/gateway-relay/");
+  return pathname.startsWith(GATEWAY_RELAY_PATH_PREFIX);
 }
 
 async function fetchHasComputeTarget(

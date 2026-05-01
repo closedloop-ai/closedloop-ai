@@ -2,7 +2,12 @@
 
 import { rewriteDesktopApiPath } from "@repo/api/src/desktop-api-namespace";
 import { EngineerRoutingMode } from "@repo/api/src/types/relay";
-import { CLOUD_RELAY_ENABLED } from "./constants";
+import {
+  CLOUD_RELAY_ENABLED,
+  COMPUTE_TARGET_HEADER,
+  GATEWAY_PATH_PREFIX,
+  GATEWAY_RELAY_PATH_PREFIX,
+} from "./constants";
 import {
   ensureElectronDetection,
   getElectronDetectionSnapshot,
@@ -24,11 +29,8 @@ type InterceptorWindow = Window & {
   __engineerFetchInterceptorRefs?: number;
 };
 
-const GATEWAY_PREFIX = "/api/gateway/";
-const GATEWAY_RELAY_PREFIX = "/api/gateway-relay/";
-
 function isGatewayRequest(url: URL): boolean {
-  return url.pathname.startsWith(GATEWAY_PREFIX);
+  return url.pathname.startsWith(GATEWAY_PATH_PREFIX);
 }
 
 function stripAuthHeaders(headers: Headers): Headers {
@@ -92,13 +94,13 @@ function buildLocalhostRequest(
 
 function withComputeTargetHeader(headers: Headers, targetId: string): Headers {
   const next = new Headers(headers);
-  next.set("x-compute-target", targetId);
+  next.set(COMPUTE_TARGET_HEADER, targetId);
   return next;
 }
 
 function toRelayPath(pathname: string): string {
-  return pathname.startsWith(GATEWAY_PREFIX)
-    ? pathname.replace(GATEWAY_PREFIX, GATEWAY_RELAY_PREFIX)
+  return pathname.startsWith(GATEWAY_PATH_PREFIX)
+    ? pathname.replace(GATEWAY_PATH_PREFIX, GATEWAY_RELAY_PATH_PREFIX)
     : pathname;
 }
 
