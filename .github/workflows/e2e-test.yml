@@ -214,6 +214,12 @@ jobs:
           # prisma generate (runs via postinstall) only needs the URL format, not a live DB
           DATABASE_URL: postgresql://localhost:5432/placeholder
 
+      - name: Build workspace dependencies needed by E2E specs
+        # E2E specs import @repo/api/src/types/loop, which has value-level imports
+        # from @closedloop-ai/loops-api/* whose `exports.import` resolves to ./dist/*.js.
+        # That dist/ is gitignored, so it must be built before Playwright loads the specs.
+        run: pnpm turbo build --filter=@closedloop-ai/loops-api
+
       - name: Cache Playwright browsers
         id: playwright-cache
         uses: actions/cache@v5

@@ -11,11 +11,12 @@ type TeamSummary = {
 
 export async function createTeam(
   request: APIRequestContext,
-  { name }: { name: string }
+  { name, token }: { name: string; token: string }
 ): Promise<TeamSummary> {
   const api = getApiBaseUrl();
   const response = await request.post(`${api}/teams`, {
     data: { name },
+    headers: { Authorization: `Bearer ${token}` },
   });
   const body = (await response.json()) as ApiResult<TeamWithCounts>;
 
@@ -28,11 +29,14 @@ export async function createTeam(
 
 export async function deleteTeam(
   request: APIRequestContext,
-  teamId: string
+  teamId: string,
+  token: string
 ): Promise<void> {
   const api = getApiBaseUrl();
   try {
-    const response = await request.delete(`${api}/teams/${teamId}`);
+    const response = await request.delete(`${api}/teams/${teamId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
 
     if (!response.ok()) {
       console.error({
