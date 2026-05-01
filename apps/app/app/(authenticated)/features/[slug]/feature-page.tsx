@@ -37,6 +37,7 @@ import { useDocumentContent } from "@/hooks/document-editing/use-document-conten
 import { useDocumentMetadata } from "@/hooks/document-editing/use-document-metadata";
 import { useDocumentUIState } from "@/hooks/document-editing/use-document-ui-state";
 import { useEditorSession } from "@/hooks/document-editing/use-editor-session";
+import { useFeatureActions } from "@/hooks/document-editing/use-feature-actions";
 import { useInlineEditMode } from "@/hooks/document-editing/use-inline-edit-mode";
 import { usePlanActions } from "@/hooks/document-editing/use-plan-actions";
 import { useDocumentGenerationStatus } from "@/hooks/queries/use-documents";
@@ -89,6 +90,7 @@ export function FeaturePage({
     editor: session.editor,
   });
   const planActions = usePlanActions({ documentId: linkedPlanId });
+  const featureActions = useFeatureActions({ documentId: feature.id });
 
   const { data: generationStatus } = useDocumentGenerationStatus(
     linkedPlanId ?? "",
@@ -114,8 +116,10 @@ export function FeaturePage({
         displayTitle={feature.title}
         feature={feature}
         hasPlan={hasPlan}
+        isEvaluating={featureActions.isEvaluating}
         isReady={isReady}
         onDelete={uiState.openDeleteDialog}
+        onEvaluateFeature={featureActions.handleEvaluateFeature}
         onGeneratePlan={() => setShowGenerateModal(true)}
         onMoveToProject={() => setShowMoveDialog(true)}
         onStartBuild={() => setShowExecuteModal(true)}
@@ -301,6 +305,18 @@ export function FeaturePage({
         </div>
       )}
 
+      {featureActions.multiTargetState && (
+        <div className="fixed right-4 bottom-4 z-50 rounded-lg border bg-background p-4 shadow-lg">
+          <p className="mb-2 text-muted-foreground text-sm">
+            Multiple compute targets are online. Select one:
+          </p>
+          <LoopDispatchTargetSelector
+            availableTargets={featureActions.multiTargetState.availableTargets}
+            onSelect={featureActions.selectTarget}
+          />
+        </div>
+      )}
+
       <BackendMismatchModal
         mismatchData={planActions.backendMismatchState}
         onConfirmOriginal={planActions.confirmOriginalBackend}
@@ -311,6 +327,18 @@ export function FeaturePage({
           }
         }}
         open={!!planActions.backendMismatchState}
+      />
+
+      <BackendMismatchModal
+        mismatchData={featureActions.backendMismatchState}
+        onConfirmOriginal={featureActions.confirmOriginalBackend}
+        onConfirmPreferred={featureActions.confirmPreferredBackend}
+        onOpenChange={(open) => {
+          if (!open) {
+            featureActions.dismissBackendMismatch();
+          }
+        }}
+        open={!!featureActions.backendMismatchState}
       />
     </>
   );

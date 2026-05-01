@@ -11,6 +11,7 @@ import {
 import {
   ChevronDownIcon,
   FolderInputIcon,
+  GaugeIcon,
   MoreHorizontalIcon,
   PanelRightIcon,
   PlayIcon,
@@ -27,11 +28,13 @@ type FeatureEditorHeaderProps = {
   displayTitle: string;
   hasPlan: boolean;
   isReady: boolean;
+  isEvaluating?: boolean;
   onToggleMetadataPanel: () => void;
   onGeneratePlan: () => void;
   onStartBuild: () => void;
   onMoveToProject: () => void;
   onDelete: () => void;
+  onEvaluateFeature: () => void;
 };
 
 export function FeatureEditorHeader({
@@ -39,11 +42,13 @@ export function FeatureEditorHeader({
   displayTitle,
   hasPlan,
   isReady,
+  isEvaluating = false,
   onToggleMetadataPanel,
   onGeneratePlan,
   onStartBuild,
   onMoveToProject,
   onDelete,
+  onEvaluateFeature,
 }: Readonly<FeatureEditorHeaderProps>) {
   const teamId = feature.project?.teams?.[0]?.id;
   const projectId = feature.project?.id;
@@ -85,6 +90,13 @@ export function FeatureEditorHeader({
           <DropdownMenuItem disabled={!hasPlan} onClick={() => onStartBuild()}>
             <PlayIcon className="h-4 w-4" />
             Start Building
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            disabled={isEvaluating}
+            onClick={() => onEvaluateFeature()}
+          >
+            <GaugeIcon className="h-4 w-4" />
+            {isEvaluating ? "Evaluating Feature..." : "Evaluate Feature"}
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
