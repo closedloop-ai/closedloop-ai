@@ -244,7 +244,7 @@ function SystemCheckRow({
           <CheckCircle2 className="size-3.5 shrink-0 text-emerald-500" />
         )}
       </div>
-      {check.error && check.remediation && (
+      {(check.error || !check.passed) && check.remediation && (
         <p className="pl-6 text-muted-foreground text-xs">
           <span className="select-all font-mono text-[11px]">
             {check.remediation}
