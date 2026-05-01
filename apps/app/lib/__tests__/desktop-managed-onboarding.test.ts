@@ -1124,7 +1124,7 @@ exit 1
     const homeDir = join(tempDir, "home");
     const scriptPath = join(tempDir, "handoff-check.sh");
     const workspaceDir = join(homeDir, "workspace");
-    const rawWorkspacePath = join(homeDir, "workspace", "..", "workspace");
+    const rawWorkspacePath = `${workspaceDir}/../workspace`;
     const handoffScript = DESKTOP_INSTALLER_SCRIPT.replace(
       'main "$@"',
       "ensure_workspace_directory; write_handoff_file"

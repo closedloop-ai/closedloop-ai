@@ -13,11 +13,19 @@ COMMAND_CHECK_TIMEOUT_SECONDS=15
 REQUIRED_CLOSEDLOOP_PLUGINS=(code platform judges code-review self-learning)
 PREREQUISITE_FAILURES=()
 FAILED_PREREQUISITE_KEYS=()
+# Required prerequisite checks run in soft-fail mode so the script can report
+# every missing dependency in one pass. Fatal steps use the normal installer
+# failure copy and exit immediately.
 PREREQUISITE_CHECK_MODE="${SHELL_VAR}{PREREQUISITE_CHECK_MODE:-0}"
+# These install paths live at script scope because the EXIT trap can run after
+# install_desktop_app has aborted; local variables would no longer be visible to
+# the cleanup function on those error exits.
 DESKTOP_INSTALL_DMG_PATH=""
 DESKTOP_INSTALL_MOUNT_ROOT=""
 DESKTOP_INSTALL_STAGING_ROOT=""
 DESKTOP_INSTALL_BACKUP_APP=""
+# The handoff must contain the exact workspace path that passed the filesystem
+# checks, not the raw user spelling that may include ~, .., or trailing slashes.
 VALIDATED_SANDBOX_BASE_DIRECTORY=""
 
 fail_step() {
@@ -135,6 +143,9 @@ refresh_npm_global_path() {
 }
 
 refresh_installer_path() {
+  # Newly installed tools can land in Homebrew libexec paths or npm's global
+  # bin directory. Refreshing before and after prerequisite checks lets later
+  # checks see tools installed by earlier checks in the same shell.
   if command -v brew >/dev/null 2>&1; then
     eval_brew_shellenv brew || true
   elif [ -x /opt/homebrew/bin/brew ]; then
@@ -228,6 +239,9 @@ run_required_prerequisite() {
 
   refresh_installer_path
   set +e
+  # Run the check in a subshell so a prerequisite can use fail_step without
+  # aborting the whole installer. The parent records the failure, refreshes PATH
+  # after successes, and continues checking the remaining prerequisites.
   ( set -euo pipefail; PREREQUISITE_CHECK_MODE=1; refresh_installer_path; "$@" )
   local status=$?
   set -e
@@ -453,6 +467,9 @@ verify_desktop_app_bundle() {
 }
 
 cleanup_desktop_install() {
+  # This cleanup is shared by the normal path and the EXIT trap. Keep it
+  # best-effort so an already-unmounted DMG or partially moved app does not hide
+  # the original installation failure.
   if [ -n "$DESKTOP_INSTALL_MOUNT_ROOT" ] && [ -d "$DESKTOP_INSTALL_MOUNT_ROOT" ]; then
     hdiutil detach "$DESKTOP_INSTALL_MOUNT_ROOT" -quiet >/dev/null 2>&1 || true
     rmdir "$DESKTOP_INSTALL_MOUNT_ROOT" 2>/dev/null || true
@@ -478,6 +495,8 @@ install_desktop_app() {
   fi
   validate_desktop_download_url
 
+  # Start from a clean cleanup state in case a caller invokes this helper more
+  # than once in the same shell.
   DESKTOP_INSTALL_DMG_PATH=""
   DESKTOP_INSTALL_MOUNT_ROOT=""
   DESKTOP_INSTALL_STAGING_ROOT=""
@@ -576,6 +595,9 @@ ensure_workspace_directory() {
   reject_json_control_chars "CL_SANDBOX_BASE_DIRECTORY" "$CL_SANDBOX_BASE_DIRECTORY"
 
   local workspace_path probe_dir
+  # Expand and resolve the workspace before persisting it. Desktop later treats
+  # this value as the command sandbox, so the durable handoff must match the
+  # directory that was actually created and write-tested here.
   workspace_path="$(strip_trailing_slashes "$(expand_user_path "$CL_SANDBOX_BASE_DIRECTORY")")"
   if [ -z "$workspace_path" ] || [ "$workspace_path" = "/" ] || [ "$workspace_path" = "$HOME" ]; then
     fail_step "workspace_directory" "local" "Choose a dedicated workspace directory under your home folder, not the root or home directory."
@@ -606,6 +628,9 @@ write_handoff_file() {
   reject_json_control_chars "CL_WEB_APP_ORIGIN" "$CL_WEB_APP_ORIGIN"
 
   local previous_umask handoff_tmp
+  # The onboarding attempt ID is short-lived but credential-like, so write the
+  # handoff with restrictive permissions and atomically move it into place only
+  # after the JSON is complete.
   previous_umask="$(umask)"
   handoff_tmp=""
   cleanup_handoff_write() {
