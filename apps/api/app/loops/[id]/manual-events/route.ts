@@ -1,4 +1,7 @@
-import type { LoopEvent } from "@repo/api/src/types/loop";
+import type {
+  LoopEvent,
+  LoopEventReceivedResponse,
+} from "@repo/api/src/types/loop";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { loopEventBus } from "@/lib/loops/loop-event-bus";
 import { handleLoopEvent } from "@/lib/loops/loop-orchestrator";
@@ -25,7 +28,7 @@ import {
  * protection since manual events come from trusted MCP sessions.
  */
 export const POST = withAnyAuth<
-  { received: boolean },
+  LoopEventReceivedResponse,
   "/loops/[id]/manual-events"
 >(
   async ({ user }, request, params) => {

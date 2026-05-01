@@ -245,3 +245,8 @@ export {
   RepoExecutionResultsSchema,
   SUPPORTED_EXECUTION_RESULT_SCHEMA_VERSIONS,
 } from "@closedloop-ai/loops-api/execution-result";
+
+export type LoopEventReceivedResponse = {
+  received: true;
+  ignored?: true;
+};
