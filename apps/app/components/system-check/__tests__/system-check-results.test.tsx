@@ -104,6 +104,27 @@ describe("SystemCheckResults — required/optional partition", () => {
     ).toBeInTheDocument();
   });
 
+  test("failed rows display remediation even when the error field is absent", () => {
+    render(
+      <SystemCheckResults
+        checks={[
+          {
+            id: "worktree-dir",
+            label: "Worktree Directory",
+            required: true,
+            passed: false,
+            remediation: "Choose a writable worktree directory.",
+          },
+        ]}
+      />
+    );
+
+    expect(screen.getByText("Worktree Directory")).toBeInTheDocument();
+    expect(
+      screen.getByText("Choose a writable worktree directory.")
+    ).toBeInTheDocument();
+  });
+
   test("organizes system checks into category cards inside a four-column grid", () => {
     render(
       <SystemCheckResults
