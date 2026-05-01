@@ -3,6 +3,7 @@ import type {
   UpdateComputeTargetInput,
 } from "@repo/api/src/types/compute-target";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
+import { getPrismaErrorCode } from "@/lib/db-utils";
 import { relayEventBus } from "@/lib/relay-event-bus";
 import {
   conflictResponse,
@@ -12,16 +13,14 @@ import {
   parseBody,
   successResponse,
 } from "@/lib/route-utils";
-import { computeTargetsService } from "../service";
+import {
+  computeTargetsService,
+  isComputeTargetGatewayConflictResult,
+} from "../service";
 import { updateComputeTargetValidator } from "../validators";
 
 function isUniqueConstraintError(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    (error as { code?: string }).code === "P2002"
-  );
+  return getPrismaErrorCode(error) === "P2002";
 }
 
 /**
@@ -44,14 +43,21 @@ export const PUT = withAnyAuth<ComputeTarget, "/compute-targets/[id]">(
         id,
         user.organizationId,
         user.id,
-        body as UpdateComputeTargetInput
+        body as UpdateComputeTargetInput,
+        user.clerkId
       );
 
-      if (!target) {
+      if (isComputeTargetGatewayConflictResult(target)) {
+        return conflictResponse(
+          "That Desktop gateway is already registered to another compute target"
+        );
+      }
+
+      if (!target.value) {
         return notFoundResponse("Compute target");
       }
 
-      return successResponse(target);
+      return successResponse(target.value);
     } catch (error) {
       if (isUniqueConstraintError(error)) {
         return conflictResponse(

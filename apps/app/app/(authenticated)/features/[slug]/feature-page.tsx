@@ -31,7 +31,6 @@ import { InlineEditEditorShell } from "@/components/document-editor/inline-edit-
 import { BranchesSection } from "@/components/document-editor/relationships/branches-section";
 import { PreviewSection } from "@/components/document-editor/relationships/preview-section";
 import { LoopDispatchTargetSelector } from "@/components/engineer/LoopDispatchTargetSelector";
-import { ExecutionLogDialog } from "@/components/execution-log/execution-log-dialog";
 import { MoveEntityDialog } from "@/components/move-entity-dialog";
 import { useDocumentActions } from "@/hooks/document-editing/use-document-actions";
 import { useDocumentContent } from "@/hooks/document-editing/use-document-content";
@@ -41,7 +40,6 @@ import { useEditorSession } from "@/hooks/document-editing/use-editor-session";
 import { useInlineEditMode } from "@/hooks/document-editing/use-inline-edit-mode";
 import { usePlanActions } from "@/hooks/document-editing/use-plan-actions";
 import { useDocumentGenerationStatus } from "@/hooks/queries/use-documents";
-import { useExecutionLogDialog } from "@/hooks/use-execution-log-dialog";
 import { ContextSection } from "./components/context-section";
 import { FeatureEditorHeader } from "./components/feature-editor-header";
 import { FeatureMetadataBar } from "./components/feature-metadata-bar";
@@ -60,7 +58,6 @@ export function FeaturePage({
   onVersionChange,
 }: Readonly<FeaturePageProps>) {
   const chatFlag = useFeatureFlag("interactive-chat");
-  const executionLogDialog = useExecutionLogDialog();
 
   const [showMoveDialog, setShowMoveDialog] = useState(false);
   const [showGenerateModal, setShowGenerateModal] = useState(false);
@@ -259,17 +256,9 @@ export function FeaturePage({
 
         <DocumentChatPanel
           document={feature}
-          onViewFullTrace={executionLogDialog.handleViewFullTrace}
           visible={chatFlag?.enabled === true && uiState.showMetadataPanel}
         />
       </ResizablePanelGroup>
-
-      <ExecutionLogDialog
-        initialSessionId={executionLogDialog.selectedSessionId}
-        onOpenChange={executionLogDialog.setDialogOpen}
-        open={executionLogDialog.dialogOpen}
-        trace={executionLogDialog.dialogTrace}
-      />
 
       <DeleteConfirmationDialog
         isPending={actions.isDeleting}

@@ -317,14 +317,16 @@ function resolveCommandUpdate(
   if (eventType === "done") {
     const cancelled = isRecord(data) && data.cancelled === true;
     return {
-      status: cancelled ? "cancelled" : "done",
+      status: cancelled
+        ? DesktopCommandStatus.Cancelled
+        : DesktopCommandStatus.Done,
       finishedAt: new Date(),
     };
   }
 
   if (eventType === "error" && isRecord(data) && data.terminal === true) {
     return {
-      status: "failed",
+      status: DesktopCommandStatus.Failed,
       finishedAt: new Date(),
       error: typeof data.error === "string" ? data.error : "Command failed",
     };
@@ -333,14 +335,19 @@ function resolveCommandUpdate(
   if (eventType === "result" && isRecord(data) && data.terminal === true) {
     const cancelled = data.cancelled === true;
     return {
-      status: cancelled ? "cancelled" : "done",
+      status: cancelled
+        ? DesktopCommandStatus.Cancelled
+        : DesktopCommandStatus.Done,
       finishedAt: new Date(),
     };
   }
 
-  if (command.status === "queued" || command.status === "accepted") {
+  if (
+    command.status === DesktopCommandStatus.Queued ||
+    command.status === DesktopCommandStatus.Accepted
+  ) {
     return {
-      status: "running",
+      status: DesktopCommandStatus.Running,
       startedAt: command.startedAt ?? new Date(),
     };
   }
@@ -567,7 +574,7 @@ export const desktopCommandStore = {
             idempotencyKey: idempotencyKey ?? null,
             requestFingerprint: fingerprint,
             requestPayload: input as unknown as Prisma.InputJsonValue,
-            status: "queued",
+            status: DesktopCommandStatus.Queued,
             lastSequenceAcked: 0,
           },
         })
@@ -654,12 +661,12 @@ export const desktopCommandStore = {
       | Record<string, never>;
     if (!accepted) {
       data = {
-        status: "failed",
+        status: DesktopCommandStatus.Failed,
         error: reason || "Command rejected",
         finishedAt: now,
       };
-    } else if (command.status === "queued") {
-      data = { status: "accepted" };
+    } else if (command.status === DesktopCommandStatus.Queued) {
+      data = { status: DesktopCommandStatus.Accepted };
     } else {
       data = {};
     }
@@ -667,10 +674,18 @@ export const desktopCommandStore = {
     // Use conditional update to prevent overwriting a concurrent terminal transition.
     // When accepting a queued command, narrow the guard to "queued" to prevent
     // regressing a command that has already progressed to "running".
-    const statusGuard: string | { notIn: string[] } =
-      accepted && command.status === "queued"
-        ? "queued"
-        : { notIn: ["done", "failed", "cancelled", "expired"] };
+    const terminalStatuses = [
+      DesktopCommandStatus.Done,
+      DesktopCommandStatus.Failed,
+      DesktopCommandStatus.Cancelled,
+      DesktopCommandStatus.Expired,
+    ];
+    const statusGuard:
+      | DesktopCommandStatus
+      | { notIn: DesktopCommandStatus[] } =
+      accepted && command.status === DesktopCommandStatus.Queued
+        ? DesktopCommandStatus.Queued
+        : { notIn: terminalStatuses };
 
     const { count } = await withDb((db) =>
       db.desktopCommand.updateMany({
@@ -1065,10 +1080,17 @@ export const desktopCommandStore = {
       db.desktopCommand.updateMany({
         where: {
           id: commandId,
-          status: { notIn: ["done", "failed", "cancelled", "expired"] },
+          status: {
+            notIn: [
+              DesktopCommandStatus.Done,
+              DesktopCommandStatus.Failed,
+              DesktopCommandStatus.Cancelled,
+              DesktopCommandStatus.Expired,
+            ],
+          },
         },
         data: {
-          status: "expired",
+          status: DesktopCommandStatus.Expired,
           finishedAt: new Date(),
           error: reason || "Command expired",
         },

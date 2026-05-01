@@ -3,13 +3,13 @@ import {
   type DocumentTitleMap,
 } from "@repo/api/src/types/document";
 import { z } from "zod";
+import { documentService } from "@/app/documents/document-service";
 import { withAuth } from "@/lib/auth/with-auth";
 import {
   badRequestResponse,
   errorResponse,
   successResponse,
 } from "@/lib/route-utils";
-import { documentsService } from "../service";
 
 const MAX_SLUGS = BATCH_META_MAX_SLUGS;
 
@@ -59,7 +59,7 @@ export const GET = withAuth<DocumentTitleMap, "/documents/batch-meta">(
         );
       }
 
-      const titlesMap = await documentsService.batchFetchDocumentTitles(
+      const titlesMap = await documentService.batchFetchDocumentTitles(
         user.organizationId,
         slugs
       );

@@ -25,6 +25,7 @@ export const TelemetryCategory = {
   TelemetryValidationFailed: "telemetry.validation_failed",
   // Desktop-side categories
   JobStarted: "job.started",
+  JobPlanSourceResolved: "job.plan_source_resolved",
   JobCompleted: "job.completed",
   JobFailed: "job.failed",
   CommandTimeout: "command.timeout",
@@ -105,6 +106,25 @@ export type TelemetryTraceContext = z.infer<typeof telemetryTraceContextSchema>;
 const desktopTelemetryDiagnosticsSchema = z.object({
   logTail: z.string().optional(),
   exitCode: z.number().optional(),
+  planSource: z
+    .object({
+      source: z.enum([
+        "raw-artifact",
+        "local-plan-json",
+        "imported-plan-compat",
+      ]),
+      rawPlanPayload: z.boolean(),
+      rawPlanAligned: z.boolean(),
+      localPlanJsonPresent: z.boolean(),
+      localPlanJsonAligned: z.boolean(),
+      importedPlanFileStaged: z.boolean(),
+      closedLoopPlanFileSet: z.boolean(),
+      planArtifactContentLength: z.number(),
+      rawPlanContentLength: z.number().nullable().optional(),
+      planArtifactContentHash: z.string().nullable().optional(),
+      rawPlanContentHash: z.string().nullable().optional(),
+    })
+    .optional(),
   tokenUsage: z
     .object({
       inputTokens: z.number(),

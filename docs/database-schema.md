@@ -11,7 +11,6 @@
 │ id               │
 │ name             │
 │ slug (unique)    │
-│ anthropicApiKey  │
 │ settings         │
 └────────┬─────────┘
          │

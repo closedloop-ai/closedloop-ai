@@ -1,6 +1,7 @@
 import { keys } from "@repo/database/keys";
 import { v7 as uuidv7 } from "uuid";
-import { documentsService } from "@/app/documents/service";
+import { documentService } from "@/app/documents/document-service";
+import { documentVersionService } from "@/app/documents/document-version-service";
 import {
   autoRollbackTransaction,
   createTestOrganization,
@@ -20,7 +21,7 @@ describe.skipIf(!hasDatabase)("Artifacts Service Integration", () => {
       const testProjectId = await createTestProject(testOrgId, testUser.id);
       const testUserId = testUser.id;
 
-      const artifact = await documentsService.create(testOrgId, testUserId, {
+      const artifact = await documentService.create(testOrgId, testUserId, {
         projectId: testProjectId,
         type: "PRD",
         title: "My Feature Requirements",
@@ -42,11 +43,11 @@ describe.skipIf(!hasDatabase)("Artifacts Service Integration", () => {
     // Create artifact without projectId or workstreamId - should throw error
     // Type assertion needed to test runtime validation of missing projectId
     await expect(
-      documentsService.create(testOrgId, testUserId, {
+      documentService.create(testOrgId, testUserId, {
         type: "PRD",
         title: "Standalone Feature",
         content: "Feature details...",
-      } as Parameters<typeof documentsService.create>[2])
+      } as Parameters<typeof documentService.create>[2])
     ).rejects.toThrow(
       "Artifacts (except templates) must be associated with a project or workstream"
     );
@@ -60,7 +61,7 @@ describe.skipIf(!hasDatabase)("Artifacts Service Integration", () => {
       const testUserId = testUser.id;
 
       // Create first artifact
-      const a1 = await documentsService.create(testOrgId, testUserId, {
+      const a1 = await documentService.create(testOrgId, testUserId, {
         projectId: testProjectId,
         type: "PRD",
         title: "My Feature",
@@ -71,7 +72,7 @@ describe.skipIf(!hasDatabase)("Artifacts Service Integration", () => {
       expect(a1!.latestVersion).toBe(1);
 
       // Create second artifact - independent, also latestVersion 1
-      const a2 = await documentsService.create(testOrgId, testUserId, {
+      const a2 = await documentService.create(testOrgId, testUserId, {
         projectId: testProjectId,
         type: "PRD",
         title: "My Feature Updated",
@@ -91,7 +92,7 @@ describe.skipIf(!hasDatabase)("Artifacts Service Integration", () => {
       const testUserId = testUser.id;
 
       // Create original artifact
-      const original = await documentsService.create(testOrgId, testUserId, {
+      const original = await documentService.create(testOrgId, testUserId, {
         projectId: testProjectId,
         type: "IMPLEMENTATION_PLAN",
         title: "Original Plan",
@@ -102,7 +103,7 @@ describe.skipIf(!hasDatabase)("Artifacts Service Integration", () => {
       expect(original).not.toBeNull();
 
       // Create new version with updated content
-      const updated = await documentsService.createNewVersion(
+      const updated = await documentVersionService.createNewVersion(
         original!.id,
         testOrgId,
         testUserId,
@@ -115,7 +116,7 @@ describe.skipIf(!hasDatabase)("Artifacts Service Integration", () => {
       expect(updated!.type).toBe(original!.type);
 
       // Original should still exist
-      const originalAfter = await documentsService.findByIdSimple(
+      const originalAfter = await documentService.findByIdSimple(
         original!.id,
         testOrgId
       );
@@ -131,14 +132,14 @@ describe.skipIf(!hasDatabase)("Artifacts Service Integration", () => {
       const testUserId = testUser.id;
 
       // Create a PRD and a plan
-      await documentsService.create(testOrgId, testUserId, {
+      await documentService.create(testOrgId, testUserId, {
         projectId: testProjectId,
         type: "PRD",
         title: "Test PRD",
         content: "PRD content",
       });
 
-      await documentsService.create(testOrgId, testUserId, {
+      await documentService.create(testOrgId, testUserId, {
         projectId: testProjectId,
         type: "IMPLEMENTATION_PLAN",
         title: "Test Plan",
@@ -146,7 +147,7 @@ describe.skipIf(!hasDatabase)("Artifacts Service Integration", () => {
       });
 
       // Filter by type
-      const prds = await documentsService.findAll({
+      const prds = await documentService.findAll({
         organizationId: testOrgId,
         type: "PRD",
       });

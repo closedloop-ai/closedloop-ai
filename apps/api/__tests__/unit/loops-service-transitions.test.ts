@@ -19,7 +19,7 @@ vi.mock("@repo/observability/log", () => ({
   log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
-vi.mock("@/app/documents/service", () => ({
+vi.mock("@/app/documents/document-service", () => ({
   getCommitterInfo: vi.fn(),
 }));
 

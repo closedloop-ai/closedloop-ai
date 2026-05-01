@@ -11,11 +11,9 @@ import {
   LinkQueryMode,
   type LinkType,
 } from "@repo/api/src/types/artifact";
-import { getRoutePrefixForType } from "@repo/api/src/types/document";
 import {
   type UseQueryOptions,
   useMutation,
-  useQueries,
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
@@ -274,72 +272,4 @@ export function invalidateArtifactLinkQueries(
 
   // Artifact link changes affect the project tree hierarchy
   queryClient.invalidateQueries({ queryKey: projectTreeKeys.all });
-}
-
-type ParentFallbackItem = {
-  id: string;
-};
-
-/**
- * For items missing a parent in the tree, queries resolved artifact-links to
- * find the nearest parent (document or feature) and returns a map of child ID
- * → parent info.
- */
-export function useParentFallbackMap(items: ParentFallbackItem[]) {
-  const apiClient = useApiClient();
-
-  return useQueries({
-    queries: items.map((item) => ({
-      queryKey: artifactLinkKeys.list({
-        artifactId: item.id,
-        direction: LinkDirection.Source,
-        mode: LinkQueryMode.Direct,
-        resolved: true,
-        parentFallback: true,
-      }),
-      queryFn: () => {
-        const params = new URLSearchParams();
-        params.set("artifactId", item.id);
-        params.set("direction", LinkDirection.Source);
-        params.set("mode", LinkQueryMode.Direct);
-        return apiClient.get<ArtifactLinkWithEndpoints[]>(
-          `/artifact-links/resolved?${params.toString()}`
-        );
-      },
-    })),
-    combine: (results) => {
-      const map = new Map<string, { title: string; href: string | null }>();
-      for (const [index, query] of results.entries()) {
-        const item = items[index];
-        if (!(item && query.data?.length)) {
-          continue;
-        }
-        const parentLink = query.data.find(
-          (link) =>
-            link.targetId === item.id &&
-            link.source.type === ArtifactType.Document
-        );
-        if (!parentLink) {
-          continue;
-        }
-        map.set(item.id, {
-          title: parentLink.source.name,
-          href: resolveParentHref(parentLink),
-        });
-      }
-      return map;
-    },
-  });
-}
-
-function resolveParentHref(link: ArtifactLinkWithEndpoints): string | null {
-  const parent = link.source;
-  if (parent.type !== ArtifactType.Document || !parent.subtype) {
-    return null;
-  }
-  const routePrefix = getRoutePrefixForType(parent.subtype);
-  if (!(routePrefix && parent.slug)) {
-    return null;
-  }
-  return `/${routePrefix}/${parent.slug}`;
 }

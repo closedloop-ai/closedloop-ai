@@ -1,8 +1,91 @@
-import { describe, expect, it } from "vitest";
-import { GET } from "./route";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 describe("GET /.well-known/closedloop-desktop.json", () => {
+  afterEach(() => {
+    vi.doUnmock("@/env");
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
+  it("uses the local API origin as relay origin when no relay env is configured", async () => {
+    const { GET } = await importRouteWithEnv({
+      NEXT_PUBLIC_API_URL: "http://localhost:3002",
+      NEXT_PUBLIC_RELAY_ORIGIN: "",
+      CL_RELAY_ORIGIN: "",
+      RELAY_API_URL: "",
+    });
+
+    const response = GET(
+      new Request("http://localhost:3000/.well-known/closedloop-desktop.json")
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      apiOrigin: "http://localhost:3002",
+      relayOrigin: "http://localhost:3002",
+    });
+  });
+
+  it("treats blank relay env values as unset for local development", async () => {
+    const { GET } = await importRouteWithEnv({
+      NEXT_PUBLIC_API_URL: "http://localhost:3002",
+      NEXT_PUBLIC_RELAY_ORIGIN: "",
+      CL_RELAY_ORIGIN: "",
+      RELAY_API_URL: "",
+    });
+
+    const response = GET(
+      new Request("http://localhost:3000/.well-known/closedloop-desktop.json")
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      apiOrigin: "http://localhost:3002",
+      relayOrigin: "http://localhost:3002",
+    });
+  });
+
+  it("prefers the server-only relay override over the public fallback", async () => {
+    const { GET } = await importRouteWithEnv({
+      NEXT_PUBLIC_RELAY_ORIGIN: "https://public-relay.example.test",
+      CL_RELAY_ORIGIN: "https://server-relay.example.test",
+      RELAY_API_URL: "http://localhost:3020",
+    });
+
+    const response = GET(
+      new Request(
+        "https://app.closedloop.ai/.well-known/closedloop-desktop.json"
+      )
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      relayOrigin: "https://server-relay.example.test",
+    });
+  });
+
+  it("uses local RELAY_API_URL as the relay origin when app runs in local dev", async () => {
+    const { GET } = await importRouteWithEnv({
+      NEXT_PUBLIC_API_URL: "http://localhost:3002",
+      NEXT_PUBLIC_RELAY_ORIGIN: "",
+      CL_RELAY_ORIGIN: "",
+      RELAY_API_URL: "http://localhost:3020",
+    });
+
+    const response = GET(
+      new Request("http://localhost:3000/.well-known/closedloop-desktop.json")
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      apiOrigin: "http://localhost:3002",
+      relayOrigin: "http://localhost:3020",
+    });
+  });
+
   it("returns the exact trusted Desktop config contract", async () => {
+    const { GET } = await importRouteWithEnv();
+
     const response = GET(
       new Request(
         "https://app.closedloop.ai/.well-known/closedloop-desktop.json"
@@ -19,33 +102,47 @@ describe("GET /.well-known/closedloop-desktop.json", () => {
   });
 
   it("falls back to the default relay origin when relay env is malformed", async () => {
-    const originalPublicRelayOrigin = process.env.NEXT_PUBLIC_RELAY_ORIGIN;
-    const originalRelayOrigin = process.env.CL_RELAY_ORIGIN;
-    process.env.NEXT_PUBLIC_RELAY_ORIGIN = "relay.closedloop.ai";
-    Reflect.deleteProperty(process.env, "CL_RELAY_ORIGIN");
+    const { GET } = await importRouteWithEnv({
+      NEXT_PUBLIC_RELAY_ORIGIN: "relay.closedloop.ai",
+      CL_RELAY_ORIGIN: "",
+    });
 
-    try {
-      const response = GET(
-        new Request(
-          "https://app.closedloop.ai/.well-known/closedloop-desktop.json"
-        )
-      );
+    const response = GET(
+      new Request(
+        "https://app.closedloop.ai/.well-known/closedloop-desktop.json"
+      )
+    );
 
-      expect(response.status).toBe(200);
-      await expect(response.json()).resolves.toMatchObject({
-        relayOrigin: "https://relay.closedloop.ai",
-      });
-    } finally {
-      restoreProcessEnv("NEXT_PUBLIC_RELAY_ORIGIN", originalPublicRelayOrigin);
-      restoreProcessEnv("CL_RELAY_ORIGIN", originalRelayOrigin);
-    }
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      relayOrigin: "https://relay.closedloop.ai",
+    });
   });
 });
 
-function restoreProcessEnv(key: string, value: string | undefined) {
-  if (value === undefined) {
-    Reflect.deleteProperty(process.env, key);
-    return;
-  }
-  process.env[key] = value;
+async function importRouteWithEnv(
+  overrides: {
+    NEXT_PUBLIC_API_URL?: string;
+    NEXT_PUBLIC_RELAY_ORIGIN?: string;
+    CL_RELAY_ORIGIN?: string;
+    RELAY_API_URL?: string;
+  } = {}
+) {
+  vi.resetModules();
+  vi.stubEnv("NEXT_PUBLIC_API_URL", overrides.NEXT_PUBLIC_API_URL ?? undefined);
+  vi.stubEnv(
+    "NEXT_PUBLIC_RELAY_ORIGIN",
+    overrides.NEXT_PUBLIC_RELAY_ORIGIN ?? undefined
+  );
+  vi.stubEnv("CL_RELAY_ORIGIN", overrides.CL_RELAY_ORIGIN ?? undefined);
+  vi.stubEnv("RELAY_API_URL", overrides.RELAY_API_URL ?? undefined);
+  vi.doMock("@/env", () => ({
+    env: {
+      NEXT_PUBLIC_API_URL: overrides.NEXT_PUBLIC_API_URL,
+      NEXT_PUBLIC_RELAY_ORIGIN: overrides.NEXT_PUBLIC_RELAY_ORIGIN,
+      CL_RELAY_ORIGIN: overrides.CL_RELAY_ORIGIN,
+      RELAY_API_URL: overrides.RELAY_API_URL,
+    },
+  }));
+  return await import("./route");
 }

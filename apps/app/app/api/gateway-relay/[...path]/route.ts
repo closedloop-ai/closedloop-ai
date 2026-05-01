@@ -282,7 +282,10 @@ async function handleWithErrorBoundary(
 
     // Generic message to avoid leaking internal details (file paths,
     // connection strings) from unexpected exceptions. Real error is logged.
-    log.error("Engineer relay request failed", { error });
+    log.error("Engineer relay request failed", {
+      computeTargetId: request.headers.get("x-compute-target"),
+      error,
+    });
     return NextResponse.json(
       { error: "Relay request failed" },
       { status: 502 }

@@ -15,7 +15,10 @@ import {
   TelemetryCategory,
 } from "@repo/observability/telemetry/schema";
 import { waitUntil } from "@vercel/functions";
-import { computeTargetsService } from "@/app/compute-targets/service";
+import {
+  computeTargetsService,
+  isComputeTargetGatewayConflictResult,
+} from "@/app/compute-targets/service";
 import { desktopCommandStore } from "@/lib/desktop-command-store";
 import {
   PROTOCOL_VERSION,
@@ -123,6 +126,7 @@ export async function dispatchSocketEvent(
     default:
       log.warn("Unknown relay socket event", {
         event,
+        computeTargetId: targetId ?? correlation.computeTargetId ?? null,
         errorClass: ErrorClass.Protocol,
       });
       return { ok: true, response: { emit: [] } };
@@ -166,6 +170,116 @@ function wireCommand(command: WireCommandPayload): EmitInstruction {
   return { event: "desktop.command", payload: envelope(command) };
 }
 
+type RelayHelloInput = {
+  machineName: string;
+  platform: string;
+  capabilities: JsonObject;
+  supportedOperations: string[];
+  computeTargetId?: string;
+  pluginVersion?: string;
+  gatewayId?: string;
+  desktopSecurityUpgradeProtocolVersion?: 1;
+  maxInFlightCommands?: number;
+};
+
+function parseRelayHelloInput(payload: unknown): RelayHelloInput | null {
+  if (!isRecord(payload)) {
+    return null;
+  }
+  if (
+    typeof payload.machineName !== "string" ||
+    typeof payload.platform !== "string"
+  ) {
+    return null;
+  }
+
+  const desktopSecurityUpgradeProtocolVersion =
+    payload.desktopSecurityUpgradeProtocolVersion === 1 ? 1 : undefined;
+  return {
+    machineName: payload.machineName,
+    platform: payload.platform,
+    capabilities: {
+      ...(isRecord(payload.capabilities)
+        ? (payload.capabilities as JsonObject)
+        : {}),
+      maxInFlightCommands: (payload.maxInFlightCommands as JsonValue) ?? null,
+      allowedDirectoriesHash:
+        (payload.allowedDirectoriesHash as JsonValue) ?? null,
+      socketProtocolVersion: PROTOCOL_VERSION,
+      pluginVersion: (payload.pluginVersion as JsonValue) ?? null,
+      desktopSecurityUpgradeProtocolVersion:
+        desktopSecurityUpgradeProtocolVersion ?? null,
+    },
+    supportedOperations: Array.isArray(payload.supportedOperations)
+      ? payload.supportedOperations.filter(
+          (operation): operation is string => typeof operation === "string"
+        )
+      : [],
+    computeTargetId:
+      typeof payload.computeTargetId === "string"
+        ? payload.computeTargetId
+        : undefined,
+    pluginVersion:
+      typeof payload.pluginVersion === "string"
+        ? payload.pluginVersion
+        : undefined,
+    gatewayId:
+      typeof payload.gatewayId === "string" ? payload.gatewayId : undefined,
+    desktopSecurityUpgradeProtocolVersion,
+    maxInFlightCommands:
+      typeof payload.maxInFlightCommands === "number"
+        ? payload.maxInFlightCommands
+        : undefined,
+  };
+}
+
+async function resolveRelayHelloTarget(
+  input: RelayHelloInput,
+  auth: { organizationId: string; userId: string }
+): Promise<{ targetId: string; targetCreated: boolean }> {
+  if (input.computeTargetId) {
+    const updated = await computeTargetsService.updateOwned(
+      input.computeTargetId,
+      auth.organizationId,
+      auth.userId,
+      {
+        machineName: input.machineName,
+        platform: input.platform,
+        capabilities: input.capabilities,
+        supportedOperations: input.supportedOperations,
+        gatewayId: input.gatewayId,
+        desktopSecurityUpgradeProtocolVersion:
+          input.desktopSecurityUpgradeProtocolVersion,
+      }
+    );
+    if (isComputeTargetGatewayConflictResult(updated)) {
+      return { targetId: "", targetCreated: false };
+    }
+    if (updated.value) {
+      return { targetId: input.computeTargetId, targetCreated: false };
+    }
+  }
+
+  const target = await computeTargetsService.register(
+    auth.organizationId,
+    auth.userId,
+    {
+      machineName: input.machineName,
+      platform: input.platform,
+      capabilities: input.capabilities,
+      supportedOperations: input.supportedOperations,
+      pluginVersion: input.pluginVersion,
+      gatewayId: input.gatewayId,
+      desktopSecurityUpgradeProtocolVersion:
+        input.desktopSecurityUpgradeProtocolVersion,
+    }
+  );
+  if (isComputeTargetGatewayConflictResult(target)) {
+    return { targetId: "", targetCreated: false };
+  }
+  return { targetId: target.value.id, targetCreated: true };
+}
+
 // ---------------------------------------------------------------------------
 // Event handlers — each returns what the relay should emit back to the worker
 // ---------------------------------------------------------------------------
@@ -174,66 +288,20 @@ async function handleHello(
   payload: unknown,
   auth: { organizationId: string; userId: string }
 ): Promise<SocketEventResponse> {
-  if (!isRecord(payload)) {
+  const input = parseRelayHelloInput(payload);
+  if (!input) {
     return { emit: [], disconnect: true };
   }
 
-  if (
-    typeof payload.machineName !== "string" ||
-    typeof payload.platform !== "string"
-  ) {
+  const resolvedTarget = await resolveRelayHelloTarget(input, auth);
+  if (!resolvedTarget.targetId) {
+    log.warn("Relay hello rejected due to gateway conflict", {
+      gatewayId: input.gatewayId,
+      errorClass: ErrorClass.Protocol,
+    });
     return { emit: [], disconnect: true };
   }
-
-  const machineName = payload.machineName;
-  const platform = payload.platform;
-  const capabilities: JsonObject = {
-    ...(isRecord(payload.capabilities)
-      ? (payload.capabilities as JsonObject)
-      : {}),
-    maxInFlightCommands: (payload.maxInFlightCommands as JsonValue) ?? null,
-    allowedDirectoriesHash:
-      (payload.allowedDirectoriesHash as JsonValue) ?? null,
-    socketProtocolVersion: PROTOCOL_VERSION,
-    pluginVersion: (payload.pluginVersion as JsonValue) ?? null,
-  };
-  const supportedOperations = Array.isArray(payload.supportedOperations)
-    ? (payload.supportedOperations as string[])
-    : [];
-
-  let targetId = payload.computeTargetId as string | undefined;
-  let targetCreated = false;
-
-  if (targetId) {
-    const updated = await computeTargetsService.updateOwned(
-      targetId,
-      auth.organizationId,
-      auth.userId,
-      { machineName, platform, capabilities, supportedOperations }
-    );
-    if (!updated) {
-      targetId = undefined;
-    }
-  }
-
-  if (!targetId) {
-    const target = await computeTargetsService.register(
-      auth.organizationId,
-      auth.userId,
-      {
-        machineName,
-        platform,
-        capabilities,
-        supportedOperations,
-        pluginVersion:
-          typeof payload.pluginVersion === "string"
-            ? payload.pluginVersion
-            : undefined,
-      }
-    );
-    targetId = target.id;
-    targetCreated = true;
-  }
+  const { targetId, targetCreated } = resolvedTarget;
 
   const [pendingCommands] = await Promise.all([
     desktopCommandStore.listNonTerminalDispatchCommands(targetId),
@@ -288,10 +356,7 @@ async function handleHello(
   waitUntil(
     emitFleetCapacityMetrics({
       targetId,
-      maxInFlightCommands:
-        typeof payload.maxInFlightCommands === "number"
-          ? payload.maxInFlightCommands
-          : undefined,
+      maxInFlightCommands: input.maxInFlightCommands,
     })
   );
 

@@ -21,9 +21,9 @@ vi.mock("@repo/observability/log", () => ({
   },
 }));
 
-vi.mock("@/app/documents/service", () => {
+vi.mock("@/app/documents/execution-service", () => {
   return {
-    documentsService: {
+    documentExecutionService: {
       startPlanLoopFromLocal: mockState.startPlanLoopFromLocal,
     },
   };
@@ -36,7 +36,7 @@ vi.mock("@/lib/loops/launch-plan-loop", () => {
 });
 
 import { beforeEach, describe, expect, it } from "vitest";
-import { documentsService } from "@/app/documents/service";
+import { documentExecutionService } from "@/app/documents/execution-service";
 import { POST } from "@/app/plans/start-loop-from-local/route";
 import { launchPlanLoop } from "@/lib/loops/launch-plan-loop";
 import {
@@ -69,9 +69,9 @@ describe("POST /plans/start-loop-from-local", () => {
       user: { id: "user-1", organizationId: "org-1" } as any,
     });
 
-    vi.mocked(documentsService.startPlanLoopFromLocal).mockResolvedValue(
-      readyToLaunchResult as any
-    );
+    vi.mocked(
+      documentExecutionService.startPlanLoopFromLocal
+    ).mockResolvedValue(readyToLaunchResult as any);
   });
 
   it("returns a callback-specific actionable message for callback_unavailable failures", async () => {

@@ -1,9 +1,3 @@
-/**
- * Unit tests for loopsService.resume method and authorizeAdditionalRepos.
- *
- * Tests computeTargetId propagation, s3StateKey exclusion from resumed loops,
- * resumable-status validation, and additional repos authorization behaviors.
- */
 import { LoopStatus } from "@repo/api/src/types/loop";
 import {
   afterEach,
@@ -14,6 +8,7 @@ import {
   type Mock,
   vi,
 } from "vitest";
+import { buildPullRequestInfo } from "../../../__tests__/fixtures/pull-request-info";
 
 // Mock modules before importing the service
 vi.mock("@repo/database", () => ({
@@ -30,9 +25,20 @@ vi.mock("@repo/github", () => ({
   verifyInstallationBranchExists: vi.fn(),
 }));
 
+vi.mock("@/app/documents/document-pull-request-service", () => ({
+  documentPullRequestService: {
+    getDocumentPullRequests: vi.fn(),
+  },
+}));
+
+vi.mock("@/lib/loops/uploaded-plan-artifacts", () => ({
+  extractUploadedPlanRaw: vi.fn().mockReturnValue(null),
+}));
+
 // Import after mocking
 import { withDb } from "@repo/database";
 import { verifyInstallationBranchExists } from "@repo/github";
+import { documentPullRequestService } from "@/app/documents/document-pull-request-service";
 import {
   authorizeAdditionalRepos,
   BranchNotFoundError,
@@ -57,7 +63,7 @@ const makeParentFixture = (overrides?: Record<string, unknown>) => ({
   userId: TEST_USER_ID,
   command: "PLAN",
   status: LoopStatus.Completed,
-  documentId: "artifact-111",
+  artifactId: "artifact-111",
   workstreamId: null,
   prompt: "Original prompt",
   repo: null,
@@ -75,6 +81,28 @@ const NEW_LOOP_FIXTURE = {
 /** Mock org lookup — returns null settings so fetchOrgLoopLimit uses defaults. */
 const mockOrgFindUnique = vi.fn().mockResolvedValue({ settings: null });
 
+function mockResumeDb(parentOverrides?: Record<string, unknown>) {
+  const mockFindUnique = vi
+    .fn()
+    .mockResolvedValue(makeParentFixture(parentOverrides));
+  const mockCount = vi.fn().mockResolvedValue(0);
+  const mockCreate = vi.fn().mockResolvedValue(NEW_LOOP_FIXTURE);
+
+  mockWithDb.mockImplementation((callback: (db: unknown) => unknown) => {
+    const mockDb = {
+      loop: {
+        findUnique: mockFindUnique,
+        count: mockCount,
+        create: mockCreate,
+      },
+      organization: { findUnique: mockOrgFindUnique },
+    };
+    return callback(mockDb);
+  });
+
+  return { mockCreate, mockCount, mockFindUnique };
+}
+
 describe("loopsService.resume", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -84,21 +112,13 @@ describe("loopsService.resume", () => {
     vi.restoreAllMocks();
   });
 
-  it("passes computeTargetId to db.loop.create when provided", async () => {
-    const mockFindUnique = vi.fn().mockResolvedValue(makeParentFixture());
-    const mockCount = vi.fn().mockResolvedValue(0);
-    const mockCreate = vi.fn().mockResolvedValue(NEW_LOOP_FIXTURE);
-
-    mockWithDb.mockImplementation((callback: (db: unknown) => unknown) => {
-      const mockDb = {
-        loop: {
-          findUnique: mockFindUnique,
-          count: mockCount,
-          create: mockCreate,
-        },
-        organization: { findUnique: mockOrgFindUnique },
-      };
-      return callback(mockDb);
+  it("creates the resumed loop with copied context and an explicit compute target", async () => {
+    const { mockCreate } = mockResumeDb({
+      artifactId: "artifact-222",
+      workstreamId: "workstream-333",
+      repo: { fullName: "acme/frontend", branch: "main" },
+      contextRefs: [{ type: "document", id: "doc-1" }],
+      s3StateKey: "s3://bucket/key",
     });
 
     await loopsService.resume(
@@ -111,59 +131,20 @@ describe("loopsService.resume", () => {
 
     const createCall = mockCreate.mock.calls[0][0];
     expect(createCall.data).toMatchObject({
+      artifactId: "artifact-222",
+      workstreamId: "workstream-333",
+      parentLoopId: TEST_PARENT_LOOP_ID,
+      repo: { fullName: "acme/frontend", branch: "main" },
+      contextRefs: [{ type: "document", id: "doc-1" }],
       computeTargetId: TEST_COMPUTE_TARGET_ID,
+      status: LoopStatus.Pending,
     });
-  });
-
-  it("does not copy parent s3StateKey to the resumed loop", async () => {
-    const parentWithS3 = makeParentFixture({ s3StateKey: "s3://bucket/key" });
-    const mockFindUnique = vi.fn().mockResolvedValue(parentWithS3);
-    const mockCount = vi.fn().mockResolvedValue(0);
-    const mockCreate = vi.fn().mockResolvedValue(NEW_LOOP_FIXTURE);
-
-    mockWithDb.mockImplementation((callback: (db: unknown) => unknown) => {
-      const mockDb = {
-        loop: {
-          findUnique: mockFindUnique,
-          count: mockCount,
-          create: mockCreate,
-        },
-        organization: { findUnique: mockOrgFindUnique },
-      };
-      return callback(mockDb);
-    });
-
-    await loopsService.resume(
-      TEST_PARENT_LOOP_ID,
-      TEST_ORG_ID,
-      TEST_USER_ID,
-      {}
-    );
-
-    const createCall = mockCreate.mock.calls[0][0];
-    // s3StateKey is no longer copied from parent — the child gets its own
-    // during launch (ECS generates one, desktop has none)
-    expect(createCall.data.s3StateKey).toBeUndefined();
+    expect(createCall.data).not.toHaveProperty("s3StateKey");
   });
 
   it("does not inherit parent computeTargetId when none provided", async () => {
-    const parentWithTarget = makeParentFixture({
+    const { mockCreate } = mockResumeDb({
       computeTargetId: "parent-target-id",
-    });
-    const mockFindUnique = vi.fn().mockResolvedValue(parentWithTarget);
-    const mockCount = vi.fn().mockResolvedValue(0);
-    const mockCreate = vi.fn().mockResolvedValue(NEW_LOOP_FIXTURE);
-
-    mockWithDb.mockImplementation((callback: (db: unknown) => unknown) => {
-      const mockDb = {
-        loop: {
-          findUnique: mockFindUnique,
-          count: mockCount,
-          create: mockCreate,
-        },
-        organization: { findUnique: mockOrgFindUnique },
-      };
-      return callback(mockDb);
     });
 
     await loopsService.resume(
@@ -179,29 +160,33 @@ describe("loopsService.resume", () => {
     expect(createCall.data.computeTargetId).toBeNull();
   });
 
-  it("accepts a loop with status Failed as resumable without throwing", async () => {
-    const failedParent = makeParentFixture({ status: LoopStatus.Failed });
-    const mockFindUnique = vi.fn().mockResolvedValue(failedParent);
-    const mockCount = vi.fn().mockResolvedValue(0);
-    const mockCreate = vi.fn().mockResolvedValue(NEW_LOOP_FIXTURE);
-
-    mockWithDb.mockImplementation((callback: (db: unknown) => unknown) => {
-      const mockDb = {
-        loop: {
-          findUnique: mockFindUnique,
-          count: mockCount,
-          create: mockCreate,
-        },
-        organization: { findUnique: mockOrgFindUnique },
-      };
-      return callback(mockDb);
-    });
+  it.each([
+    LoopStatus.Cancelled,
+    LoopStatus.Completed,
+    LoopStatus.Failed,
+    LoopStatus.TimedOut,
+  ])("allows %s parent loops to be resumed", async (status) => {
+    const { mockCreate } = mockResumeDb({ status });
 
     await expect(
       loopsService.resume(TEST_PARENT_LOOP_ID, TEST_ORG_ID, TEST_USER_ID, {})
     ).resolves.not.toThrow();
 
     expect(mockCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    LoopStatus.Pending,
+    LoopStatus.Claimed,
+    LoopStatus.Running,
+  ])("rejects %s parent loops as non-resumable", async (status) => {
+    const { mockCreate } = mockResumeDb({ status });
+
+    await expect(
+      loopsService.resume(TEST_PARENT_LOOP_ID, TEST_ORG_ID, TEST_USER_ID, {})
+    ).rejects.toThrow("Cannot resume loop in");
+
+    expect(mockCreate).not.toHaveBeenCalled();
   });
 });
 
@@ -342,5 +327,205 @@ describe("authorizeAdditionalRepos", () => {
       });
       return true;
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// loopsService.findById — _enrichAdditionalReposWithPr
+// ---------------------------------------------------------------------------
+
+const mockGetDocumentPullRequests =
+  documentPullRequestService.getDocumentPullRequests as unknown as Mock;
+
+/**
+ * Minimal Prisma loop row fixture returned by db.loop.findUnique in findById.
+ * Includes the `user` and `computeTarget` that are added via `include`.
+ */
+function makeLoopDbRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "loop-enrich-1",
+    organizationId: "org-enrich",
+    userId: "user-enrich",
+    command: "PLAN",
+    status: LoopStatus.Completed,
+    artifactId: "doc-enrich-1",
+    workstreamId: null,
+    prompt: null,
+    repo: null,
+    additionalRepos: null,
+    contextRefs: null,
+    error: null,
+    metadata: {},
+    uploadedArtifacts: null,
+    tokensByModel: null,
+    tokensInput: 0,
+    tokensOutput: 0,
+    estimatedCost: null,
+    branchName: null,
+    sessionId: null,
+    computeTargetId: null,
+    containerId: null,
+    s3StateKey: null,
+    prUrl: null,
+    prNumber: null,
+    parentLoopId: null,
+    artifactVersion: null,
+    startedAt: null,
+    completedAt: null,
+    createdAt: new Date("2026-01-01T00:00:00.000Z"),
+    updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+    user: {
+      id: "user-enrich",
+      email: "test@example.com",
+      firstName: "Test",
+      lastName: "User",
+      avatarUrl: null,
+    },
+    computeTarget: null,
+    ...overrides,
+  };
+}
+
+function makePrInfo(repoFullName: string) {
+  return buildPullRequestInfo({
+    id: `pr-${repoFullName}`,
+    number: 42,
+    title: "Test PR",
+    htmlUrl: `https://github.com/${repoFullName}/pull/42`,
+    headBranch: "feature/test",
+    createdAt: new Date("2026-01-01T00:00:00.000Z"),
+    externalLinkId: null,
+    repoFullName,
+  });
+}
+
+describe("loopsService.findById — _enrichAdditionalReposWithPr", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it.each([
+    {
+      name: "additionalRepos is null",
+      row: { additionalRepos: null },
+      expected: null,
+    },
+    {
+      name: "additionalRepos is empty",
+      row: { additionalRepos: [] },
+      expected: [],
+    },
+    {
+      name: "documentId is null",
+      row: {
+        artifactId: null,
+        additionalRepos: [{ fullName: "acme/frontend", branch: "main" }],
+      },
+      expected: [{ fullName: "acme/frontend", branch: "main" }],
+    },
+  ])("returns additionalRepos unchanged without loading PRs when $name", async ({
+    row,
+    expected,
+  }) => {
+    const dbRow = makeLoopDbRow(row);
+    const mockFindUnique = vi.fn().mockResolvedValue(dbRow);
+
+    (mockWithDb as Mock).mockImplementation(
+      (callback: (db: unknown) => unknown) => {
+        return callback({ loop: { findUnique: mockFindUnique } });
+      }
+    );
+
+    const result = await loopsService.findById("loop-enrich-1", "org-enrich");
+
+    expect(result).not.toBeNull();
+    expect(result?.additionalRepos).toEqual(expected);
+    expect(mockGetDocumentPullRequests).not.toHaveBeenCalled();
+  });
+
+  it("enriches matched repo with pullRequest and sets null for unmatched repo", async () => {
+    const dbRow = makeLoopDbRow({
+      artifactId: "doc-enrich-1",
+      additionalRepos: [
+        { fullName: "acme/frontend", branch: "main" },
+        { fullName: "acme/backend", branch: "main" },
+      ],
+    });
+    const mockFindUnique = vi.fn().mockResolvedValue(dbRow);
+
+    (mockWithDb as Mock).mockImplementation(
+      (callback: (db: unknown) => unknown) => {
+        return callback({ loop: { findUnique: mockFindUnique } });
+      }
+    );
+
+    const matchingPr = makePrInfo("acme/frontend");
+    mockGetDocumentPullRequests.mockResolvedValue([matchingPr]);
+
+    const result = await loopsService.findById("loop-enrich-1", "org-enrich");
+
+    expect(result).not.toBeNull();
+    expect(mockGetDocumentPullRequests).toHaveBeenCalledTimes(1);
+    expect(mockGetDocumentPullRequests).toHaveBeenCalledWith(
+      "doc-enrich-1",
+      "org-enrich"
+    );
+
+    const repos = result?.additionalRepos ?? [];
+    expect(repos).toHaveLength(2);
+
+    const frontend = repos.find((r) => r.fullName === "acme/frontend");
+    const backend = repos.find((r) => r.fullName === "acme/backend");
+
+    expect(frontend?.pullRequest).toMatchObject({
+      repoFullName: "acme/frontend",
+    });
+    expect(backend?.pullRequest).toBeNull();
+  });
+
+  it("loads document PRs once when enriching both primary and additional repos", async () => {
+    const dbRow = makeLoopDbRow({
+      artifactId: "doc-enrich-1",
+      repo: { fullName: "acme/primary", branch: "main" },
+      additionalRepos: [
+        { fullName: "acme/frontend", branch: "main" },
+        { fullName: "acme/backend", branch: "main" },
+      ],
+    });
+    const mockFindUnique = vi.fn().mockResolvedValue(dbRow);
+
+    (mockWithDb as Mock).mockImplementation(
+      (callback: (db: unknown) => unknown) => {
+        return callback({ loop: { findUnique: mockFindUnique } });
+      }
+    );
+
+    const primaryPr = makePrInfo("acme/primary");
+    const frontendPr = makePrInfo("acme/frontend");
+    mockGetDocumentPullRequests.mockResolvedValue([primaryPr, frontendPr]);
+
+    const result = await loopsService.findById("loop-enrich-1", "org-enrich");
+
+    expect(result).not.toBeNull();
+    expect(mockGetDocumentPullRequests).toHaveBeenCalledTimes(1);
+    expect(mockGetDocumentPullRequests).toHaveBeenCalledWith(
+      "doc-enrich-1",
+      "org-enrich"
+    );
+    expect(result?.primaryPullRequest).toMatchObject({
+      repoFullName: "acme/primary",
+    });
+
+    const repos = result?.additionalRepos ?? [];
+    expect(
+      repos.find((r) => r.fullName === "acme/frontend")?.pullRequest
+    ).toMatchObject({ repoFullName: "acme/frontend" });
+    expect(
+      repos.find((r) => r.fullName === "acme/backend")?.pullRequest
+    ).toBeNull();
   });
 });

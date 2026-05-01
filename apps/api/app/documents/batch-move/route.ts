@@ -1,6 +1,6 @@
+import { documentService } from "@/app/documents/document-service";
 import { withAuth } from "@/lib/auth/with-auth";
 import { errorResponse, parseBody, successResponse } from "@/lib/route-utils";
-import { documentsService } from "../service";
 import { batchMoveDocumentsValidator } from "../validators";
 
 /**
@@ -19,7 +19,7 @@ export const POST = withAuth<string[], "/documents/batch-move">(
         return parseError;
       }
 
-      const movedIds = await documentsService.batchMove(
+      const movedIds = await documentService.batchMove(
         body.documentIds,
         body.targetProjectId,
         user.organizationId

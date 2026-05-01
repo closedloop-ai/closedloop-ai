@@ -32,7 +32,7 @@ vi.mock("@repo/database", () => ({
   EvaluationReportType: { PLAN: "PLAN", CODE: "CODE" },
 }));
 
-vi.mock("@/app/documents/service", () => ({
+vi.mock("@/app/documents/document-service", () => ({
   getCommitterInfo: vi.fn(),
 }));
 
@@ -547,9 +547,11 @@ describe("handleLoopEvent isOverridingFailure for CANCELLED loops", () => {
     const updateStatusSpy = vi
       .spyOn(loopsService, "updateStatus")
       .mockResolvedValue(completedLoop);
-    vi.spyOn(loopsService, "findById").mockResolvedValue(
-      cancelledLoop as LoopWithUser
-    );
+    vi.spyOn(loopsService, "findById").mockResolvedValue({
+      ...(cancelledLoop as LoopWithUser),
+      additionalRepos: null,
+      primaryPullRequest: null,
+    });
     vi.spyOn(loopsService, "addEvent").mockResolvedValue(true);
 
     const completedEvent = {

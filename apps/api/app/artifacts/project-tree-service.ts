@@ -1,20 +1,12 @@
 import { LinkType } from "@repo/api/src/types/artifact";
-import type { DocumentStatus } from "@repo/api/src/types/document";
-import {
-  type ProjectTreeResponse,
-  type TreeChild,
-  type TreeEntity,
-  TreeEntityType,
-  TreeExternalLinkType,
-  type TreeNode,
+import type {
+  ExternalParentLink,
+  ProjectTreeResponse,
+  TreeChild,
+  TreeNode,
 } from "@repo/api/src/types/project-tree";
 import type { BasicUser } from "@repo/api/src/types/user";
-import {
-  type Artifact,
-  type ArtifactLink,
-  ArtifactType,
-  withDb,
-} from "@repo/database";
+import { type Artifact, type ArtifactLink, withDb } from "@repo/database";
 import { basicUserSelect } from "@/lib/db-utils";
 
 type ArtifactWithAssignee = Artifact & {
@@ -26,8 +18,6 @@ export const projectTreeService = {
     projectId: string,
     organizationId: string
   ): Promise<ProjectTreeResponse> {
-    // Single unified read against the Artifact parent. Relationships live on
-    // `artifact_links` with real FKs.
     const artifacts = await withDb((db) =>
       db.artifact.findMany({
         where: {
@@ -40,145 +30,73 @@ export const projectTreeService = {
     );
 
     if (artifacts.length === 0) {
-      return { nodes: [] };
+      return { nodes: [], externalParents: [] };
     }
 
-    const entityMap = new Map<EntityKey, TreeEntity>();
+    const artifactsById = new Map<string, ArtifactWithAssignee>(
+      artifacts.map((a) => [a.id, a])
+    );
 
-    for (const artifact of artifacts) {
-      const entity = toTreeEntity(artifact);
-      if (entity) {
-        entityMap.set(entityKey(entity.id, entity.entityType), entity);
+    const links = await fetchArtifactLinks(
+      organizationId,
+      Array.from(artifactsById.keys())
+    );
+
+    const internalLinks: ArtifactLink[] = [];
+    const incomingExternalLinks: ArtifactLink[] = [];
+    for (const link of links) {
+      const sourceInProject = artifactsById.has(link.sourceId);
+      const targetInProject = artifactsById.has(link.targetId);
+      if (sourceInProject && targetInProject) {
+        internalLinks.push(link);
+      } else if (targetInProject && !sourceInProject) {
+        incomingExternalLinks.push(link);
       }
     }
 
-    const artifactIds = artifacts.map((a) => a.id);
-    const links = await fetchArtifactLinks(organizationId, artifactIds);
+    const externalParents = await buildExternalParents(
+      organizationId,
+      incomingExternalLinks
+    );
 
-    // Filter to links where both sides are in this project
-    const projectLinks = links.filter((link) => {
-      const sourceKey = entityKeyFromArtifactId(link.sourceId, artifacts);
-      const targetKey = entityKeyFromArtifactId(link.targetId, artifacts);
-      return Boolean(
-        sourceKey &&
-          targetKey &&
-          entityMap.has(sourceKey) &&
-          entityMap.has(targetKey)
-      );
-    });
-
-    const graph = buildGraph(projectLinks, artifacts);
-    const components = findConnectedComponents(graph.undirected, entityMap);
-    const linkedKeys = new Set<EntityKey>();
+    const graph = buildGraph(internalLinks);
+    const components = findConnectedComponents(graph.undirected, artifactsById);
+    const linkedIds = new Set<string>();
 
     const nodes: TreeNode[] = [];
 
     for (const component of components) {
-      for (const key of component) {
-        linkedKeys.add(key);
+      for (const id of component) {
+        linkedIds.add(id);
       }
 
-      const rootKey = findComponentRoot(
+      const rootId = findComponentRoot(
         component,
         graph.incomingCount,
-        entityMap
+        artifactsById
       );
-      const root = entityMap.get(rootKey)!;
+      const root = artifactsById.get(rootId)!;
       const children = dfsCollectChildren(
-        rootKey,
+        rootId,
         graph.adjacency,
-        entityMap,
+        artifactsById,
         component
       );
 
       nodes.push({ root, children });
     }
 
-    for (const [key, entity] of entityMap) {
-      if (!linkedKeys.has(key)) {
-        nodes.push({ root: entity, children: [] });
+    for (const [id, artifact] of artifactsById) {
+      if (!linkedIds.has(id)) {
+        nodes.push({ root: artifact, children: [] });
       }
     }
 
-    nodes.sort((a, b) => a.root.title.localeCompare(b.root.title));
+    nodes.sort((a, b) => a.root.name.localeCompare(b.root.name));
 
-    return { nodes };
+    return { nodes, externalParents };
   },
 };
-
-type EntityKey = string; // "id:entityType"
-
-function entityKey(id: string, type: string): EntityKey {
-  return `${id}:${type}`;
-}
-
-/**
- * Map an artifact to the legacy TreeEntity discriminated union so the public
- * API response shape stays stable. PULL_REQUEST and DEPLOYMENT artifacts
- * surface as EXTERNAL_LINK-typed entries, matching how today's frontend
- * renders them.
- */
-function toTreeEntity(artifact: ArtifactWithAssignee): TreeEntity | null {
-  if (artifact.type === ArtifactType.DOCUMENT) {
-    // Documents require a slug and a subtype in the legacy shape.
-    if (!(artifact.slug && artifact.subtype)) {
-      return null;
-    }
-    return {
-      entityType: TreeEntityType.Document,
-      id: artifact.id,
-      slug: artifact.slug,
-      title: artifact.name,
-      type: artifact.subtype,
-      status: artifact.status as DocumentStatus,
-      assignee: artifact.assignee,
-      createdAt: artifact.createdAt,
-    };
-  }
-
-  if (artifact.type === ArtifactType.PULL_REQUEST) {
-    return {
-      entityType: TreeEntityType.ExternalLink,
-      id: artifact.id,
-      title: artifact.name,
-      externalUrl: artifact.externalUrl!,
-      type: TreeExternalLinkType.PullRequest,
-      createdAt: artifact.createdAt,
-    };
-  }
-
-  if (artifact.type === ArtifactType.DEPLOYMENT) {
-    return {
-      entityType: TreeEntityType.ExternalLink,
-      id: artifact.id,
-      title: artifact.name,
-      externalUrl: artifact.externalUrl!,
-      type: TreeExternalLinkType.PreviewDeployment,
-      createdAt: artifact.createdAt,
-    };
-  }
-
-  return null;
-}
-
-/**
- * Re-derive the wire-level entity type from the artifact row so callers
- * don't need a second lookup.
- */
-function entityKeyFromArtifactId(
-  id: string,
-  artifacts: Artifact[]
-): EntityKey | null {
-  const match = artifacts.find((a) => a.id === id);
-  if (!match) {
-    return null;
-  }
-  const entityType =
-    match.type === ArtifactType.DOCUMENT
-      ? TreeEntityType.Document
-      : TreeEntityType.ExternalLink;
-  return entityKey(id, entityType);
-}
 
 function fetchArtifactLinks(
   organizationId: string,
@@ -202,105 +120,107 @@ function fetchArtifactLinks(
   );
 }
 
-// ---------------------------------------------------------------------------
-// Graph building — operates directly on artifact_links, with the entity-type
-// discriminator derived on the fly from the parent Artifact rows.
-// ---------------------------------------------------------------------------
+/**
+ * Resolve cross-project incoming links into `ExternalParentLink` entries by
+ * fetching each distinct external source artifact once and joining back to
+ * the link rows. Skips links whose source artifact cannot be located in the
+ * organization (defensive: handles soft-deletes or stale rows).
+ */
+async function buildExternalParents(
+  organizationId: string,
+  incomingExternalLinks: ArtifactLink[]
+): Promise<ExternalParentLink[]> {
+  if (incomingExternalLinks.length === 0) {
+    return [];
+  }
 
-type LegacyLink = {
-  sourceId: string;
-  sourceType: TreeEntityType;
-  targetId: string;
-  targetType: TreeEntityType;
-  linkType: LinkType;
-};
+  const externalSourceIds = Array.from(
+    new Set(incomingExternalLinks.map((link) => link.sourceId))
+  );
 
-function linksToLegacy(
-  links: ArtifactLink[],
-  artifacts: Artifact[]
-): LegacyLink[] {
-  const typeById = new Map(artifacts.map((a) => [a.id, a.type]));
-  const out: LegacyLink[] = [];
-  for (const link of links) {
-    const sourceArtifactType = typeById.get(link.sourceId);
-    const targetArtifactType = typeById.get(link.targetId);
-    if (!(sourceArtifactType && targetArtifactType)) {
+  const parents = await withDb((db) =>
+    db.artifact.findMany({
+      where: { id: { in: externalSourceIds }, organizationId },
+      include: { assignee: basicUserSelect },
+    })
+  );
+
+  const parentsById = new Map<string, ArtifactWithAssignee>(
+    parents.map((p) => [p.id, p])
+  );
+
+  const result: ExternalParentLink[] = [];
+  for (const link of incomingExternalLinks) {
+    const parent = parentsById.get(link.sourceId);
+    if (!parent) {
       continue;
     }
-    out.push({
-      sourceId: link.sourceId,
-      sourceType:
-        sourceArtifactType === ArtifactType.DOCUMENT
-          ? TreeEntityType.Document
-          : TreeEntityType.ExternalLink,
-      targetId: link.targetId,
-      targetType:
-        targetArtifactType === ArtifactType.DOCUMENT
-          ? TreeEntityType.Document
-          : TreeEntityType.ExternalLink,
-      linkType: link.linkType as LinkType,
+    result.push({
+      childId: link.targetId,
+      parent,
+      linkType: link.linkType,
     });
   }
-  return out;
+  return result;
 }
 
-type GraphEdge = { targetKey: EntityKey; linkType: LinkType };
+// ---------------------------------------------------------------------------
+// Graph building — operates directly on artifact_links keyed by artifact id.
+// ---------------------------------------------------------------------------
+
+type GraphEdge = { targetId: string; linkType: LinkType };
 
 type Graph = {
-  adjacency: Map<EntityKey, GraphEdge[]>;
-  undirected: Map<EntityKey, Set<EntityKey>>;
-  incomingCount: Map<EntityKey, number>;
+  adjacency: Map<string, GraphEdge[]>;
+  undirected: Map<string, Set<string>>;
+  incomingCount: Map<string, number>;
 };
 
-function buildGraph(
-  artifactLinks: ArtifactLink[],
-  artifacts: Artifact[]
-): Graph {
-  const links = linksToLegacy(artifactLinks, artifacts);
-  const adjacency = new Map<EntityKey, GraphEdge[]>();
-  const undirected = new Map<EntityKey, Set<EntityKey>>();
-  const incomingCount = new Map<EntityKey, number>();
+function buildGraph(artifactLinks: ArtifactLink[]): Graph {
+  const adjacency = new Map<string, GraphEdge[]>();
+  const undirected = new Map<string, Set<string>>();
+  const incomingCount = new Map<string, number>();
 
-  for (const link of links) {
-    const sourceKey = entityKey(link.sourceId, link.sourceType);
-    const targetKey = entityKey(link.targetId, link.targetType);
+  for (const link of artifactLinks) {
+    const edges = adjacency.get(link.sourceId) ?? [];
+    edges.push({ targetId: link.targetId, linkType: link.linkType });
+    adjacency.set(link.sourceId, edges);
 
-    const edges = adjacency.get(sourceKey) ?? [];
-    edges.push({ targetKey, linkType: link.linkType });
-    adjacency.set(sourceKey, edges);
-
-    incomingCount.set(targetKey, (incomingCount.get(targetKey) ?? 0) + 1);
-    if (!incomingCount.has(sourceKey)) {
-      incomingCount.set(sourceKey, 0);
+    incomingCount.set(
+      link.targetId,
+      (incomingCount.get(link.targetId) ?? 0) + 1
+    );
+    if (!incomingCount.has(link.sourceId)) {
+      incomingCount.set(link.sourceId, 0);
     }
 
-    const sourceNeighbors = undirected.get(sourceKey) ?? new Set();
-    sourceNeighbors.add(targetKey);
-    undirected.set(sourceKey, sourceNeighbors);
+    const sourceNeighbors = undirected.get(link.sourceId) ?? new Set();
+    sourceNeighbors.add(link.targetId);
+    undirected.set(link.sourceId, sourceNeighbors);
 
-    const targetNeighbors = undirected.get(targetKey) ?? new Set();
-    targetNeighbors.add(sourceKey);
-    undirected.set(targetKey, targetNeighbors);
+    const targetNeighbors = undirected.get(link.targetId) ?? new Set();
+    targetNeighbors.add(link.sourceId);
+    undirected.set(link.targetId, targetNeighbors);
   }
 
   return { adjacency, undirected, incomingCount };
 }
 
 function findConnectedComponents(
-  undirected: Map<EntityKey, Set<EntityKey>>,
-  entityMap: Map<EntityKey, TreeEntity>
-): EntityKey[][] {
-  const visited = new Set<EntityKey>();
-  const components: EntityKey[][] = [];
+  undirected: Map<string, Set<string>>,
+  artifactsById: Map<string, ArtifactWithAssignee>
+): string[][] {
+  const visited = new Set<string>();
+  const components: string[][] = [];
 
-  for (const key of undirected.keys()) {
-    if (visited.has(key) || !entityMap.has(key)) {
+  for (const id of undirected.keys()) {
+    if (visited.has(id) || !artifactsById.has(id)) {
       continue;
     }
 
-    const component: EntityKey[] = [];
-    const queue = [key];
-    visited.add(key);
+    const component: string[] = [];
+    const queue = [id];
+    visited.add(id);
 
     while (queue.length > 0) {
       const current = queue.shift()!;
@@ -309,7 +229,7 @@ function findConnectedComponents(
       const neighbors = undirected.get(current);
       if (neighbors) {
         for (const neighbor of neighbors) {
-          if (!visited.has(neighbor) && entityMap.has(neighbor)) {
+          if (!visited.has(neighbor) && artifactsById.has(neighbor)) {
             visited.add(neighbor);
             queue.push(neighbor);
           }
@@ -324,20 +244,20 @@ function findConnectedComponents(
 }
 
 function findComponentRoot(
-  component: EntityKey[],
-  incomingCount: Map<EntityKey, number>,
-  entityMap: Map<EntityKey, TreeEntity>
-): EntityKey {
+  component: string[],
+  incomingCount: Map<string, number>,
+  artifactsById: Map<string, ArtifactWithAssignee>
+): string {
   const candidates = component.filter(
-    (key) => (incomingCount.get(key) ?? 0) === 0
+    (id) => (incomingCount.get(id) ?? 0) === 0
   );
 
-  // Caller guarantees `component` only contains keys present in `entityMap`;
+  // Caller guarantees `component` only contains ids present in `artifactsById`;
   // `pool` is either a filtered subset or `component` itself.
   const pool = candidates.length > 0 ? candidates : component;
 
   let best = pool[0];
-  const initial = entityMap.get(best);
+  const initial = artifactsById.get(best);
   if (!initial) {
     return best;
   }
@@ -345,13 +265,13 @@ function findComponentRoot(
 
   for (let i = 1; i < pool.length; i++) {
     const candidate = pool[i];
-    const entity = entityMap.get(candidate);
-    if (!entity) {
+    const artifact = artifactsById.get(candidate);
+    if (!artifact) {
       continue;
     }
-    if (entity.createdAt < bestTime) {
+    if (artifact.createdAt < bestTime) {
       best = candidate;
-      bestTime = entity.createdAt;
+      bestTime = artifact.createdAt;
     }
   }
 
@@ -359,16 +279,16 @@ function findComponentRoot(
 }
 
 function dfsCollectChildren(
-  rootKey: EntityKey,
-  adjacency: Map<EntityKey, GraphEdge[]>,
-  entityMap: Map<EntityKey, TreeEntity>,
-  componentKeys: EntityKey[]
+  rootId: string,
+  adjacency: Map<string, GraphEdge[]>,
+  artifactsById: Map<string, ArtifactWithAssignee>,
+  componentIds: string[]
 ): TreeChild[] {
   const children: TreeChild[] = [];
-  const visited = new Set<EntityKey>([rootKey]);
+  const visited = new Set<string>([rootId]);
 
-  dfsStep(rootKey, 1, { adjacency, entityMap, visited, children });
-  collectUnreachableComponentMembers(componentKeys, adjacency, entityMap, {
+  dfsStep(rootId, 1, { adjacency, artifactsById, visited, children });
+  collectUnreachableComponentMembers(componentIds, adjacency, artifactsById, {
     visited,
     children,
   });
@@ -377,42 +297,42 @@ function dfsCollectChildren(
 }
 
 type DfsState = {
-  adjacency: Map<EntityKey, GraphEdge[]>;
-  entityMap: Map<EntityKey, TreeEntity>;
-  visited: Set<EntityKey>;
+  adjacency: Map<string, GraphEdge[]>;
+  artifactsById: Map<string, ArtifactWithAssignee>;
+  visited: Set<string>;
   children: TreeChild[];
 };
 
-function dfsStep(currentKey: EntityKey, depth: number, state: DfsState): void {
-  const edges = state.adjacency.get(currentKey) ?? [];
+function dfsStep(currentId: string, depth: number, state: DfsState): void {
+  const edges = state.adjacency.get(currentId) ?? [];
   for (const edge of edges) {
-    if (state.visited.has(edge.targetKey)) {
+    if (state.visited.has(edge.targetId)) {
       continue;
     }
-    state.visited.add(edge.targetKey);
-    const entity = state.entityMap.get(edge.targetKey);
-    if (entity) {
-      state.children.push({ ...entity, linkType: edge.linkType, depth });
-      dfsStep(edge.targetKey, depth + 1, state);
+    state.visited.add(edge.targetId);
+    const artifact = state.artifactsById.get(edge.targetId);
+    if (artifact) {
+      state.children.push({ ...artifact, linkType: edge.linkType, depth });
+      dfsStep(edge.targetId, depth + 1, state);
     }
   }
 }
 
 function collectUnreachableComponentMembers(
-  componentKeys: EntityKey[],
-  adjacency: Map<EntityKey, GraphEdge[]>,
-  entityMap: Map<EntityKey, TreeEntity>,
+  componentIds: string[],
+  adjacency: Map<string, GraphEdge[]>,
+  artifactsById: Map<string, ArtifactWithAssignee>,
   state: Pick<DfsState, "visited" | "children">
 ): void {
-  for (const key of componentKeys) {
-    if (state.visited.has(key)) {
+  for (const id of componentIds) {
+    if (state.visited.has(id)) {
       continue;
     }
-    const entity = entityMap.get(key);
-    if (entity) {
-      const edges = adjacency.get(key) ?? [];
+    const artifact = artifactsById.get(id);
+    if (artifact) {
+      const edges = adjacency.get(id) ?? [];
       const linkType = edges[0]?.linkType ?? LinkType.RelatesTo;
-      state.children.push({ ...entity, linkType, depth: 1 });
+      state.children.push({ ...artifact, linkType, depth: 1 });
     }
   }
 }

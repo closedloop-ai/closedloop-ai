@@ -101,15 +101,6 @@ export type DocumentWithWorkstream = Document & {
   } | null;
   /** The latest generation status for this document. Omitted when no generation status is available. */
   generationStatus?: GenerationStatus;
-  /**
-   * The pull request associated with this document's workstream.
-   * - `undefined`: field was not populated (findById/findBySlug do not batch-fetch PR data)
-   * - `null`: findAll ran and found no PR for this workstream
-   * - `PullRequestInfo`: a PR was found and linked to this workstream
-   */
-  pullRequest?: PullRequestInfo | null;
-  /** Plain-text snippet extracted from the latest version content. Omitted when no content exists. */
-  snippet?: string | null;
   /** Custom field values attached to this document. Omitted when not requested. */
   customFields?: CustomFieldValueDetail[];
 };
@@ -194,7 +185,21 @@ export type PullRequestInfo = {
   checksStatus: ChecksStatus | null;
   reviewDecision: ReviewDecision | null;
   externalLinkId: string | null;
+  repoFullName: string | null;
 };
+
+export function pickPullRequestForRepo(
+  pullRequests: PullRequestInfo[],
+  repoFullName: string | null | undefined
+): PullRequestInfo | null {
+  return (
+    (repoFullName
+      ? pullRequests.find((pr) => pr.repoFullName === repoFullName)
+      : undefined) ??
+    pullRequests[0] ??
+    null
+  );
+}
 
 // Generation status for documents being processed by GitHub Actions or Loops
 export type GenerationStatus = {

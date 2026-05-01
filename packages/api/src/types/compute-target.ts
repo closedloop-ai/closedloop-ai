@@ -6,15 +6,43 @@ export type ComputeTarget = {
   userId: string;
   machineName: string;
   platform: string;
+  gatewayId?: string;
   capabilities: JsonObject;
   supportedOperations: string[];
   lastSeenAt: Date;
   isOnline: boolean;
   isSharedWithOrg: boolean;
+  security?: ComputeTargetSecurity;
   /** Present when the target belongs to another user (shared target). */
   ownerName?: string;
   createdAt: Date;
   updatedAt: Date;
+};
+
+export const DesktopSecurityStatus = {
+  Protected: "protected",
+  UpgradeAvailable: "upgrade_available",
+  UpdateRequired: "update_required",
+  LegacyManual: "legacy_manual",
+  Unknown: "unknown",
+} as const;
+export type DesktopSecurityStatus =
+  (typeof DesktopSecurityStatus)[keyof typeof DesktopSecurityStatus];
+
+export type DesktopSecurityReason =
+  | "BOUND_DESKTOP_MANAGED_KEY"
+  | "NO_BOUND_MANAGED_KEY"
+  | "MISSING_GATEWAY_ID"
+  | "UNSUPPORTED_DESKTOP_VERSION"
+  | "TARGET_OFFLINE"
+  | "SHARED_TARGET"
+  | "FEATURE_DISABLED"
+  | "LOOKUP_FAILED";
+
+export type ComputeTargetSecurity = {
+  status: DesktopSecurityStatus;
+  reason: DesktopSecurityReason;
+  upgradeSupported: boolean;
 };
 
 export type RegisterComputeTargetInput = {
@@ -24,6 +52,8 @@ export type RegisterComputeTargetInput = {
   supportedOperations: string[];
   allowedDirectories?: string[];
   pluginVersion?: string;
+  gatewayId?: string;
+  desktopSecurityUpgradeProtocolVersion?: number;
 };
 
 export type RegisterComputeTargetResponse = {
@@ -37,6 +67,8 @@ export type UpdateComputeTargetInput = {
   platform?: string;
   capabilities?: JsonObject;
   supportedOperations?: string[];
+  gatewayId?: string;
+  desktopSecurityUpgradeProtocolVersion?: number;
 };
 
 export type ComputeTargetHeartbeatResponse = {
@@ -73,7 +105,6 @@ export const DesktopCommandStatus = {
   Cancelled: "cancelled",
   Expired: "expired",
 } as const;
-
 export type DesktopCommandStatus =
   (typeof DesktopCommandStatus)[keyof typeof DesktopCommandStatus];
 
@@ -158,7 +189,6 @@ export const ComputePreference = {
   Local: "LOCAL",
   Cloud: "CLOUD",
 } as const;
-
 export type ComputePreference =
   (typeof ComputePreference)[keyof typeof ComputePreference];
 
@@ -179,6 +209,30 @@ export type SetComputeTargetSharingRequest = {
 export type SetComputeTargetSharingResponse = {
   id: string;
   isSharedWithOrg: boolean;
+};
+
+export const DESKTOP_SECURITY_UPGRADE_OPERATION_ID =
+  "desktop_security_upgrade" as const;
+
+export type StartDesktopSecurityUpgradeRequest = {
+  webAppOrigin: string;
+};
+
+export type StartDesktopSecurityUpgradeResponse = {
+  commandId: string;
+  expiresAt: string;
+};
+
+export type DesktopSecurityUpgradeErrorCode =
+  | "SESSION_REQUIRED"
+  | "TARGET_NOT_FOUND"
+  | "TARGET_NOT_UPGRADEABLE"
+  | "UPGRADE_ATTEMPT_CREATE_FAILED"
+  | "UPGRADE_COMMAND_DISPATCH_FAILED";
+
+export type DesktopSecurityUpgradeErrorBody = {
+  code: DesktopSecurityUpgradeErrorCode;
+  retryable: boolean;
 };
 
 export const UPDATE_AND_RESTART_OPERATION_ID = "update-and-restart" as const;

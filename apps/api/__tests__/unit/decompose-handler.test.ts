@@ -6,6 +6,7 @@
  */
 
 import { vi } from "vitest";
+import { documentService } from "@/app/documents/document-service";
 
 // --- Mocks (must come before imports) ---
 
@@ -19,8 +20,8 @@ vi.mock("@repo/observability/log", () => ({
   log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
-vi.mock("@/app/documents/service", () => ({
-  documentsService: {
+vi.mock("@/app/documents/document-service", () => ({
+  documentService: {
     findByIdSimple: vi.fn(),
     create: vi.fn(),
   },
@@ -49,14 +50,14 @@ import type { DecomposeResult } from "@repo/api/src/types/loop";
 import { LoopCommand } from "@repo/database/generated/client";
 import { beforeEach, describe, expect, it } from "vitest";
 import { artifactLinksService } from "@/app/artifact-links/service";
-import { documentsService } from "@/app/documents/service";
+
 import { decomposeHandler } from "@/lib/loops/loop-commands/decompose-handler";
 import { parseJsonArtifact } from "@/lib/loops/loop-document-ingestion";
 import { downloadArtifactFile } from "@/lib/loops/loop-state";
 import { buildLoop } from "../fixtures/loop";
 
 type MockFn = ReturnType<typeof vi.fn>;
-const mockDocumentsService = documentsService as unknown as {
+const mockDocumentsService = documentService as unknown as {
   findByIdSimple: MockFn;
   create: MockFn;
 };

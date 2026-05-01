@@ -26,7 +26,6 @@ import { EditorToolbarRow } from "@/components/document-editor/editor-toolbar-ro
 import { EvaluationSection } from "@/components/document-editor/evaluation-section";
 import { InlineEditEditorShell } from "@/components/document-editor/inline-edit-editor-shell";
 import { LoopDispatchTargetSelector } from "@/components/engineer/LoopDispatchTargetSelector";
-import { ExecutionLogDialog } from "@/components/execution-log/execution-log-dialog";
 import { GenerationStatusBanner } from "@/components/generation-status-banner";
 import { MoveEntityDialog } from "@/components/move-entity-dialog";
 import { RenameDialog } from "@/components/rename-dialog";
@@ -42,7 +41,6 @@ import {
   useDocumentGenerationStatus,
 } from "@/hooks/queries/use-documents";
 import { usePrdJudgesFeedback } from "@/hooks/queries/use-judges";
-import { useExecutionLogDialog } from "@/hooks/use-execution-log-dialog";
 import { RequestChangesModal } from "../../implementation-plans/components/request-changes-modal";
 import { AssociatedArtifactsSection } from "./components/associated-artifacts-section";
 import { PRDEditorHeader } from "./components/prd-editor-header";
@@ -60,7 +58,6 @@ export function PRDEditor({
   onVersionChange,
 }: Readonly<PRDEditorProps>) {
   const chatFlag = useFeatureFlag("interactive-chat");
-  const executionLogDialog = useExecutionLogDialog();
 
   const [showMoveDialog, setShowMoveDialog] = useState(false);
   const [showComments, setShowComments] = useState(true);
@@ -289,7 +286,6 @@ export function PRDEditor({
 
         <DocumentChatPanel
           document={prd}
-          onViewFullTrace={executionLogDialog.handleViewFullTrace}
           visible={chatFlag?.enabled === true && uiState.showMetadataPanel}
         />
       </ResizablePanelGroup>
@@ -304,14 +300,6 @@ export function PRDEditor({
           }}
         />
       )}
-
-      {/* Execution Log Dialog */}
-      <ExecutionLogDialog
-        initialSessionId={executionLogDialog.selectedSessionId}
-        onOpenChange={executionLogDialog.setDialogOpen}
-        open={executionLogDialog.dialogOpen}
-        trace={executionLogDialog.dialogTrace}
-      />
 
       {/* Request Changes Modal */}
       <RequestChangesModal

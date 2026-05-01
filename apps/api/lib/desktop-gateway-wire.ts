@@ -6,6 +6,12 @@ import {
 import type { JsonValue } from "@repo/api/src/types/common";
 import type { DesktopCommandEventType } from "@repo/api/src/types/compute-target";
 import type { Socket } from "socket.io";
+import { z } from "zod";
+import {
+  jsonValueSchema,
+  parseJsonObject,
+  stringRecordSchema,
+} from "@/lib/json-schema";
 import { isRecord } from "@/lib/type-guards";
 import {
   type DesktopCommandAckPayload,
@@ -17,22 +23,47 @@ import {
   type WithCorrelation,
 } from "./desktop-gateway-types";
 
+const stringArraySchema = z.array(z.string());
+const desktopCommandEventTypeSchema = z.enum([
+  "status",
+  "chunk",
+  "result",
+  "error",
+  "done",
+]);
+const commandMethodSchema = z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]);
+const helloPayloadSchema = z.object({
+  computeTargetId: z.string().optional(),
+  gatewayId: z.string().optional(),
+  desktopSecurityUpgradeProtocolVersion: z.unknown().optional(),
+  machineName: z.string(),
+  platform: z.string(),
+  pluginVersion: z.string(),
+  supportedOperations: stringArraySchema,
+  maxInFlightCommands: z.number().finite().min(1),
+  allowedDirectoriesHash: z.string().optional(),
+  capabilities: z.unknown().optional(),
+});
+const commandAckPayloadSchema = z.object({
+  commandId: z.string(),
+  accepted: z.boolean(),
+  reason: z.string().optional(),
+});
+const commandEventPayloadSchema = z.object({
+  commandId: z.string(),
+  sequence: z.number().int().min(1),
+  eventType: desktopCommandEventTypeSchema,
+  data: jsonValueSchema.optional(),
+});
+
 export function isStringArray(value: unknown): value is string[] {
-  return (
-    Array.isArray(value) && value.every((entry) => typeof entry === "string")
-  );
+  return stringArraySchema.safeParse(value).success;
 }
 
 export function isDesktopCommandEventType(
   value: unknown
 ): value is DesktopCommandEventType {
-  return (
-    value === "status" ||
-    value === "chunk" ||
-    value === "result" ||
-    value === "error" ||
-    value === "done"
-  );
+  return desktopCommandEventTypeSchema.safeParse(value).success;
 }
 
 export function isTerminalEventData(data: JsonValue): boolean {
@@ -53,111 +84,62 @@ export function toEnvelope<T extends Record<string, unknown>>(
 export function parseHelloPayload(
   payload: unknown
 ): DesktopHelloPayload | null {
-  if (!isRecord(payload)) {
+  const parsed = helloPayloadSchema.safeParse(payload);
+  if (!parsed.success) {
     return null;
   }
-  if (
-    typeof payload.machineName !== "string" ||
-    typeof payload.platform !== "string" ||
-    typeof payload.pluginVersion !== "string" ||
-    !isStringArray(payload.supportedOperations) ||
-    typeof payload.maxInFlightCommands !== "number" ||
-    !Number.isFinite(payload.maxInFlightCommands) ||
-    payload.maxInFlightCommands < 1
-  ) {
-    return null;
-  }
+  const hello = parsed.data;
 
   return {
-    computeTargetId:
-      typeof payload.computeTargetId === "string"
-        ? payload.computeTargetId
-        : undefined,
-    machineName: payload.machineName,
-    platform: payload.platform,
-    pluginVersion: payload.pluginVersion,
-    supportedOperations: payload.supportedOperations,
-    maxInFlightCommands: Math.floor(payload.maxInFlightCommands),
-    allowedDirectoriesHash:
-      typeof payload.allowedDirectoriesHash === "string"
-        ? payload.allowedDirectoriesHash
-        : undefined,
-    capabilities: isRecord(payload.capabilities)
-      ? payload.capabilities
-      : undefined,
+    computeTargetId: hello.computeTargetId,
+    gatewayId: hello.gatewayId,
+    desktopSecurityUpgradeProtocolVersion:
+      hello.desktopSecurityUpgradeProtocolVersion === 1 ? 1 : undefined,
+    machineName: hello.machineName,
+    platform: hello.platform,
+    pluginVersion: hello.pluginVersion,
+    supportedOperations: hello.supportedOperations,
+    maxInFlightCommands: Math.floor(hello.maxInFlightCommands),
+    allowedDirectoriesHash: hello.allowedDirectoriesHash,
+    capabilities: parseJsonObject(hello.capabilities) ?? undefined,
   };
 }
 
 export function parseCommandAckPayload(
   payload: unknown
 ): DesktopCommandAckPayload | null {
-  if (!isRecord(payload)) {
-    return null;
-  }
-  if (
-    typeof payload.commandId !== "string" ||
-    typeof payload.accepted !== "boolean"
-  ) {
-    return null;
-  }
-  return {
-    commandId: payload.commandId,
-    accepted: payload.accepted,
-    reason: typeof payload.reason === "string" ? payload.reason : undefined,
-  };
+  const parsed = commandAckPayloadSchema.safeParse(payload);
+  return parsed.success ? parsed.data : null;
 }
 
 export function parseCommandEventPayload(
   payload: unknown
 ): DesktopCommandEventPayload | null {
-  if (!isRecord(payload)) {
+  const parsed = commandEventPayloadSchema.safeParse(payload);
+  if (!parsed.success) {
     return null;
   }
-  if (
-    typeof payload.commandId !== "string" ||
-    typeof payload.sequence !== "number" ||
-    payload.sequence < 1 ||
-    !Number.isInteger(payload.sequence) ||
-    !isDesktopCommandEventType(payload.eventType)
-  ) {
-    return null;
-  }
+  const event = parsed.data;
   return {
-    commandId: payload.commandId,
-    sequence: payload.sequence,
-    eventType: payload.eventType,
-    data: (payload.data as JsonValue | undefined) ?? null,
+    commandId: event.commandId,
+    sequence: event.sequence,
+    eventType: event.eventType,
+    data: event.data ?? null,
   };
 }
 
 export function normalizeMethod(
   value: unknown
 ): WireCommandPayload["method"] | null {
-  if (
-    value === "GET" ||
-    value === "POST" ||
-    value === "PUT" ||
-    value === "PATCH" ||
-    value === "DELETE"
-  ) {
-    return value;
-  }
-  return null;
+  const parsed = commandMethodSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
 }
 
 export function toStringRecord(
   value: unknown
 ): Record<string, string> | undefined {
-  if (!isRecord(value)) {
-    return undefined;
-  }
-  const entries = Object.entries(value).filter(
-    (entry): entry is [string, string] => typeof entry[1] === "string"
-  );
-  if (entries.length === 0) {
-    return undefined;
-  }
-  return Object.fromEntries(entries);
+  const parsed = stringRecordSchema.safeParse(value);
+  return parsed.success ? parsed.data : undefined;
 }
 
 export function splitPathAndQuery(pathWithQuery: string): {
@@ -224,8 +206,8 @@ export function toWireCommandFromRelayOperation(operation: {
   params: JsonValue;
   streaming?: boolean;
 }): WireCommandPayload | null {
-  const params = isRecord(operation.params) ? operation.params : {};
-  const request = isRecord(params.request) ? params.request : {};
+  const params = parseJsonObject(operation.params) ?? {};
+  const request = parseJsonObject(params.request) ?? {};
   const rawPath = typeof request.path === "string" ? request.path : null;
   const method = normalizeMethod(request.method);
   const commandId =
@@ -252,7 +234,7 @@ export function toWireCommandFromRelayOperation(operation: {
     path,
     headers: toStringRecord(request.headers),
     query,
-    body: ("body" in request ? (request.body as JsonValue) : null) as JsonValue,
+    body: jsonValueSchema.safeParse(request.body).data ?? null,
     timeoutMs:
       typeof params.timeoutMs === "number" ? params.timeoutMs : undefined,
     lockKey: typeof params.lockKey === "string" ? params.lockKey : undefined,

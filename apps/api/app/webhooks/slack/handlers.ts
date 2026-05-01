@@ -1,7 +1,7 @@
 import { DocumentType } from "@repo/api/src/types/document";
 import { ArtifactType, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
-import { documentsService } from "../../documents/service";
+import { documentService } from "@/app/documents/document-service";
 import { WHITESPACE_REGEX } from "./webhook-utils";
 
 export type SlackSlashCommandPayload = {
@@ -151,7 +151,7 @@ export async function handleCreateIdea(
 
   // Step 5: Create the artifact
   try {
-    const artifact = await documentsService.create(organizationId, userId, {
+    const artifact = await documentService.create(organizationId, userId, {
       type: DocumentType.Prd,
       title,
       content: "",
@@ -215,7 +215,7 @@ export async function handleGetStatus(
   }
 
   // Try to find artifact by ID first
-  const artifact = await documentsService.findById(identifier, organizationId);
+  const artifact = await documentService.findById(identifier, organizationId);
 
   if (artifact) {
     const statusText = [

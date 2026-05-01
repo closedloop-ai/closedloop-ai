@@ -21,7 +21,7 @@ function loadConfig() {
     return {
       apiKey: env.DD_API_KEY,
       site: env.DD_SITE ?? "datadoghq.com",
-      service: env.DD_SERVICE ?? "closedloop",
+      service: env.DD_SERVICE ?? "cl-unknown",
       env: env.DD_ENV ?? process.env.NODE_ENV ?? "development",
     };
   } catch {
@@ -30,7 +30,8 @@ function loadConfig() {
     return {
       apiKey: process.env.DD_API_KEY,
       site: process.env.DD_SITE ?? "datadoghq.com",
-      service: process.env.DD_SERVICE ?? "closedloop",
+      // "??" preserves ""; the "!"-falsy guard below catches empty DD_SERVICE (intentional asymmetry)
+      service: process.env.DD_SERVICE ?? "cl-unknown",
       env: process.env.DD_ENV ?? process.env.NODE_ENV ?? "development",
     };
   }
@@ -93,8 +94,18 @@ function startFlushTimer(): void {
 }
 
 function flushToDatadog(): Promise<void> {
-  if (buffer.length === 0 || !DD.apiKey || flushInProgress) {
+  if (buffer.length === 0 || !DD.apiKey) {
     return flushInProgress ?? Promise.resolve();
+  }
+
+  // If a flush is already in flight, chain a follow-up after it completes so
+  // entries enqueued during that flush are also delivered. The returned
+  // promise resolves only after the buffer is fully drained — critical for
+  // `waitUntil(log.flush())` callers in serverless, where the runtime can
+  // freeze the function between batches and drop logs that haven't been
+  // chained into the awaited promise.
+  if (flushInProgress) {
+    return flushInProgress.then(() => flushToDatadog());
   }
 
   const batch = buffer.splice(0, MAX_BATCH_SIZE);
@@ -126,12 +137,17 @@ function flushToDatadog(): Promise<void> {
     })
     .finally(() => {
       flushInProgress = null;
-      if (buffer.length >= MAX_BATCH_SIZE) {
-        flushToDatadog();
-      }
     });
 
-  return flushInProgress;
+  // Chain the drain into the returned promise so it resolves only after the
+  // buffer is empty. Without this, callers awaiting log.flush() would resolve
+  // after the first batch completes and miss entries enqueued during the flush.
+  return flushInProgress.then(() => {
+    if (buffer.length > 0) {
+      return flushToDatadog();
+    }
+    return undefined;
+  });
 }
 
 function enqueue(entry: DatadogLogEntry): void {
@@ -240,6 +256,18 @@ export const log = {
 // env vars are never defined, so emitting the warnings in browsers would
 // pollute every end-user's DevTools console on page load.
 if (typeof window === "undefined") {
+  // console.warn (not log.warn) — mirrors origin.ts; guarantees synchronous stdout delivery
+  if (!process.env.DD_SERVICE) {
+    console.warn(
+      JSON.stringify({
+        level: "warn",
+        event: "telemetry.dd_service_fallback",
+        message:
+          "observability: DD_SERVICE is not set; logs will be tagged service:cl-unknown. Set DD_SERVICE in your environment.",
+      })
+    );
+  }
+
   if (DD.version === "unknown") {
     log.warn("telemetry.version_fallback");
   }

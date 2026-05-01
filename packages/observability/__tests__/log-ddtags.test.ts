@@ -80,6 +80,90 @@ describe("ddtags fallback values — version and git_sha unknown", () => {
 });
 
 // ---------------------------------------------------------------------------
+// (b2) service fallback — DD_SERVICE unset → body[0].service === 'cl-unknown'
+// ---------------------------------------------------------------------------
+
+describe("service fallback — DD_SERVICE unset", () => {
+  it("sets top-level service field to 'cl-unknown' when DD_SERVICE is not set", async () => {
+    deleteEnvForTest("DD_SERVICE");
+    vi.stubEnv("DD_API_KEY", "test-key");
+
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    const log = await importLogWithFetch(fetchMock);
+
+    log.info("service fallback test");
+    await log.flush();
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const body = parseFlushedBody<{ service: string }>(fetchMock);
+    expect(body[0].service).toBe("cl-unknown");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (b3) service fallback via catch branch — keys() throws AND DD_SERVICE unset
+// ---------------------------------------------------------------------------
+
+describe("service fallback via catch branch — DD_SERVICE unset", () => {
+  it("falls back to 'cl-unknown' when keys() throws and DD_SERVICE is absent", async () => {
+    deleteEnvForTest("DD_SERVICE");
+    vi.stubEnv("DD_API_KEY", "test-key");
+
+    vi.doMock("../keys", () => ({
+      keys: () => {
+        throw new Error("Not a Next.js context");
+      },
+    }));
+
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    vi.resetModules();
+    vi.stubGlobal("fetch", fetchMock);
+    const { log } = await import("../log");
+
+    log.info("catch-branch service fallback");
+    await log.flush();
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const body = parseFlushedBody<{ service: string }>(fetchMock);
+    expect(body[0].service).toBe("cl-unknown");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (b4) DD_SERVICE empty-string asymmetry — warning fires, "" flows through
+// (pins documented intentional asymmetry between "??" and "!"-falsy guard)
+// ---------------------------------------------------------------------------
+
+describe("DD_SERVICE empty-string asymmetry — warning fires, '' passes through", () => {
+  it("warns when DD_SERVICE='' but service field stays as '' ('??' does not replace empty string)", async () => {
+    deleteEnvForTest("DD_SERVICE");
+    vi.resetModules();
+    vi.stubEnv("DD_SERVICE", "");
+    vi.stubEnv("DD_API_KEY", "test-key");
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    vi.stubGlobal("fetch", fetchMock);
+    const { log } = await import("../log");
+
+    log.info("empty service");
+    await log.flush();
+
+    // Warning guard uses "!process.env.DD_SERVICE" (falsy) → fires for ""
+    const calls = warnSpy.mock.calls.map((args) => String(args[0]));
+    expect(calls.filter((m) => m.includes("dd_service_fallback"))).toHaveLength(
+      1
+    );
+
+    // "??" only replaces null/undefined, not "" → empty string flows through
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const body = parseFlushedBody<{ service: string }>(fetchMock);
+    expect(body[0].service).toBe("");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // (c) Fallback warnings emitted exactly once at module load, not per log call
 // ---------------------------------------------------------------------------
 
@@ -133,6 +217,75 @@ describe("module-load warnings — emitted once regardless of log call count", (
 
     expect(versionWarningsAfter).toHaveLength(1);
     expect(gitShaWarningsAfter).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (c2) dd_service_fallback warning emitted once at module load, not per log call
+// ---------------------------------------------------------------------------
+
+describe("module-load warnings — dd_service_fallback emitted once", () => {
+  it("emits exactly one dd_service_fallback warning at load, not per log.info call", async () => {
+    // deleteEnvForTest registers a restore callback so parent-env values
+    // (CI, dev shell) do not leak into later tests in the same worker —
+    // vi.unstubAllEnvs() only reverts vi.stubEnv calls, not deletions.
+    deleteEnvForTest("DD_SERVICE");
+
+    vi.resetModules();
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await import("../log");
+
+    // Warnings must have fired during module evaluation.
+    // origin_fallback also fires here (DD_SERVICE absent triggers both warnings) — filter by event name, not total call count
+    const calls = warnSpy.mock.calls.map((args) => String(args[0]));
+    const serviceWarnings = calls.filter((m) =>
+      m.includes("dd_service_fallback")
+    );
+
+    expect(serviceWarnings).toHaveLength(1);
+
+    // Re-import the already-loaded module (same instance) and call log.info multiple times
+    const { log } = await import("../log");
+    log.info("a");
+    log.info("b");
+    log.info("c");
+
+    // Warning count must not grow — dd_service_fallback was only from module load
+    const callsAfter = warnSpy.mock.calls.map((args) => String(args[0]));
+    const serviceWarningsAfter = callsAfter.filter((m) =>
+      m.includes("dd_service_fallback")
+    );
+
+    expect(serviceWarningsAfter).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (c3) dd_service_fallback warning NOT emitted when DD_SERVICE is set
+// ---------------------------------------------------------------------------
+
+describe("module-load warnings — dd_service_fallback absent when DD_SERVICE is set", () => {
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
+  afterEach(() => {
+    warnSpy?.mockRestore();
+  });
+
+  it("does not emit dd_service_fallback when DD_SERVICE is set to a known origin", async () => {
+    deleteEnvForTest("DD_SERVICE");
+    vi.resetModules();
+    vi.stubEnv("DD_SERVICE", "api");
+
+    warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await import("../log");
+
+    const calls = warnSpy.mock.calls.map((args: unknown[]) => String(args[0]));
+    expect(
+      calls.filter((m: string) => m.includes("dd_service_fallback"))
+    ).toHaveLength(0);
   });
 });
 

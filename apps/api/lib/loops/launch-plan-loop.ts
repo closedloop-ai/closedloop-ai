@@ -13,7 +13,7 @@ import {
   COMMAND_MAP,
   resolveLoopContext,
 } from "@/app/documents/[id]/run-loop/run-loop-helpers";
-import type { StartPlanLoopFromLocalResult } from "@/app/documents/service";
+import type { StartPlanLoopFromLocalResult } from "@/app/documents/document-utils";
 import { loopsService } from "@/app/loops/service";
 import {
   fetchUserComputePreferences,

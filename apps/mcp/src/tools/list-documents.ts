@@ -94,7 +94,6 @@ export function registerListDocuments(
               slug: readString(row.slug),
               type: readString(row.type),
               status: readString(row.status),
-              snippet: readString(row.snippet),
               projectId: readString(row.projectId),
               workstreamId: readString(row.workstreamId),
               assigneeId: readString(row.assigneeId),

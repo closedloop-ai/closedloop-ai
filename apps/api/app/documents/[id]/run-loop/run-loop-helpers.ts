@@ -3,6 +3,7 @@ import type { BackendMismatchBody } from "@repo/api/src/types/compute-target";
 import {
   type PullRequestInfo,
   PullRequestState,
+  pickPullRequestForRepo,
 } from "@repo/api/src/types/document";
 import {
   type AdditionalRepoRef,
@@ -14,6 +15,9 @@ import { getProjectSettings } from "@repo/api/src/types/project";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
 import { computeTargetsService } from "@/app/compute-targets/service";
+import { documentPullRequestService } from "@/app/documents/document-pull-request-service";
+import type { documentGenerationService } from "@/app/documents/generation-service";
+import { documentWorkstreamService } from "@/app/documents/workstream-service";
 import { loopsService } from "@/app/loops/service";
 import {
   type ComputeTargetRouteResult,
@@ -22,7 +26,6 @@ import {
 import type { getCommandHandler } from "@/lib/loops/loop-commands";
 import { extractUploadedPlanRaw } from "@/lib/loops/uploaded-plan-artifacts";
 import { badRequestResponse } from "@/lib/route-utils";
-import { documentsService } from "../../service";
 
 /**
  * Map route body commands (lowercase) to LoopCommand enum values (uppercase).
@@ -37,6 +40,7 @@ export const COMMAND_MAP = {
   [RunLoopCommand.GeneratePrd]: LoopCommand.GeneratePrd,
   [RunLoopCommand.EvaluatePlan]: LoopCommand.EvaluatePlan,
   [RunLoopCommand.EvaluateCode]: LoopCommand.EvaluateCode,
+  [RunLoopCommand.EvaluateFeature]: LoopCommand.EvaluateFeature,
 } as const;
 
 type ParentLoopForRunContext = Awaited<
@@ -141,17 +145,24 @@ async function resolveParentLoopForRunContext({
 }
 
 /**
- * For EVALUATE_CODE loops: require an open PR linked to the artifact workstream
+ * For EVALUATE_CODE loops: require an open PR produced by the document
  * and return its head branch for the harness clone target.
  */
 export function resolveEvaluateCodeTargetBranch(
-  pr: PullRequestInfo | null
+  pr: PullRequestInfo | null,
+  repoFullName?: string | null
 ): { ok: true; branch: string } | { ok: false; message: string } {
   if (!pr || pr.state !== PullRequestState.Open) {
     return {
       ok: false,
       message:
         "No open pull request found. Execute the plan first to create a PR.",
+    };
+  }
+  if (repoFullName && pr.repoFullName !== repoFullName) {
+    return {
+      ok: false,
+      message: `No open pull request found for repository ${repoFullName}.`,
     };
   }
   if (!pr.headBranch) {
@@ -168,6 +179,7 @@ export async function resolveEvaluateCodeBranchForRunLoop(
   command: keyof typeof COMMAND_MAP,
   documentId: string,
   organizationId: string,
+  repoFullName: string | null | undefined,
   fallbackBranch: string
 ): Promise<
   | { ok: true; branch: string }
@@ -177,11 +189,12 @@ export async function resolveEvaluateCodeBranchForRunLoop(
     return { ok: true, branch: fallbackBranch };
   }
 
-  const pr = await documentsService.getDocumentPullRequest(
+  const pullRequests = await documentPullRequestService.getDocumentPullRequests(
     documentId,
     organizationId
   );
-  const evaluateBranch = resolveEvaluateCodeTargetBranch(pr);
+  const pr = pickPullRequestForRepo(pullRequests, repoFullName);
+  const evaluateBranch = resolveEvaluateCodeTargetBranch(pr, repoFullName);
   if (!evaluateBranch.ok) {
     return { ok: false, response: badRequestResponse(evaluateBranch.message) };
   }
@@ -194,7 +207,9 @@ export async function resolveEvaluateCodeBranchForRunLoop(
  */
 export async function resolveLoopContext(
   artifact: NonNullable<
-    Awaited<ReturnType<typeof documentsService.findWithRegenerationContext>>
+    Awaited<
+      ReturnType<typeof documentGenerationService.findWithRegenerationContext>
+    >
   >,
   body: {
     repo?: { fullName?: string; branch?: string };
@@ -208,7 +223,7 @@ export async function resolveLoopContext(
   resolvedComputeTargetId?: string
 ) {
   const { workstream: resolvedWorkstream, source } =
-    await documentsService.findOrCreateWorkstream(
+    await documentWorkstreamService.findOrCreateWorkstream(
       organizationId,
       artifact,
       userId
@@ -303,11 +318,7 @@ export async function checkBackendMismatch(
 }> | null> {
   let previousTargetId: string | null;
   let hasPriorLoop: boolean;
-  if (latestCompletedLoopComputeTargetId !== undefined) {
-    // Caller already resolved the parent loop: null = cloud, string = local target
-    previousTargetId = latestCompletedLoopComputeTargetId ?? null;
-    hasPriorLoop = true;
-  } else {
+  if (latestCompletedLoopComputeTargetId === undefined) {
     // Fallback: query the DB for the latest completed loop
     const latestLoop = await loopsService.findLatestCompletedForArtifact(
       documentId,
@@ -315,6 +326,10 @@ export async function checkBackendMismatch(
     );
     hasPriorLoop = latestLoop != null;
     previousTargetId = latestLoop?.computeTargetId ?? null;
+  } else {
+    // Caller already resolved the parent loop: null = cloud, string = local target
+    previousTargetId = latestCompletedLoopComputeTargetId ?? null;
+    hasPriorLoop = true;
   }
 
   // No prior loops at all — nothing to mismatch against

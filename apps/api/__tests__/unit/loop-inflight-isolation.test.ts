@@ -63,7 +63,7 @@ vi.mock("@/app/loops/service", () => ({
   InvalidStatusTransitionError: class extends Error {},
 }));
 
-vi.mock("@/app/documents/service", () => ({
+vi.mock("@/app/documents/document-service", () => ({
   getCommitterInfo: vi.fn().mockResolvedValue(null),
 }));
 

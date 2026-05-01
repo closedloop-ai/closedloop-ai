@@ -2,6 +2,7 @@ import type { DeploymentArtifact } from "@repo/api/src/types/artifact";
 import { success } from "@repo/api/src/types/common";
 import { withDb } from "@repo/database";
 import { NextResponse } from "next/server";
+import { documentService } from "@/app/documents/document-service";
 import {
   deploymentArtifactToInfo,
   deploymentWhere,
@@ -9,7 +10,6 @@ import {
 import { withAuth } from "@/lib/auth/with-auth";
 import { resolveDocumentId } from "@/lib/identifier-utils";
 import { errorResponse, notFoundResponse } from "@/lib/route-utils";
-import { documentsService } from "../../service";
 
 /**
  * Get the most recent preview-deployment artifact for a document's workstream.
@@ -25,7 +25,7 @@ export const GET = withAuth<
       return notFoundResponse("Artifact");
     }
 
-    const artifact = await documentsService.findByIdSimple(
+    const artifact = await documentService.findByIdSimple(
       resolvedId,
       user.organizationId
     );

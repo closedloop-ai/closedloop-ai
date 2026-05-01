@@ -1,13 +1,13 @@
 import { success } from "@repo/api/src/types/common";
 import type { PullRequestInfo } from "@repo/api/src/types/document";
 import { NextResponse } from "next/server";
-import { withAuth } from "@/lib/auth/with-auth";
+import { documentPullRequestService } from "@/app/documents/document-pull-request-service";
+import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { resolveDocumentId } from "@/lib/identifier-utils";
 import { errorResponse, notFoundResponse } from "@/lib/route-utils";
-import { documentsService } from "../../service";
 
-export const GET = withAuth<
-  PullRequestInfo | null,
+export const GET = withAnyAuth<
+  PullRequestInfo[],
   "/documents/[id]/pull-request"
 >(async ({ user }, _request, params) => {
   try {
@@ -17,13 +17,14 @@ export const GET = withAuth<
       return notFoundResponse("Artifact");
     }
 
-    const pullRequest = await documentsService.getDocumentPullRequest(
-      resolvedId,
-      user.organizationId
-    );
+    const pullRequests =
+      await documentPullRequestService.getDocumentPullRequests(
+        resolvedId,
+        user.organizationId
+      );
 
-    return NextResponse.json(success(pullRequest));
+    return NextResponse.json(success(pullRequests));
   } catch (error) {
-    return errorResponse("Failed to fetch PR", error);
+    return errorResponse("Failed to fetch PRs", error);
   }
 });

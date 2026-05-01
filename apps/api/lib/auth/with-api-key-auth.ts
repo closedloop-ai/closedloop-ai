@@ -1,9 +1,6 @@
 import "server-only";
 
-import type {
-  ApiKeyScope,
-  VerifiedApiKeyContext,
-} from "@repo/api/src/types/api-key";
+import type { ApiKeyScope } from "@repo/api/src/types/api-key";
 import { failure } from "@repo/api/src/types/common";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
@@ -12,7 +9,12 @@ import { type NextRequest, NextResponse } from "next/server";
 import { apiKeysService } from "@/app/api-keys/service";
 import { organizationsService } from "@/app/organizations/service";
 import { usersService } from "@/app/users/service";
-import { forbiddenResponse, unauthorizedResponse } from "../route-utils";
+import {
+  forbiddenResponse,
+  logRequestCompleted,
+  unauthorizedResponse,
+} from "../route-utils";
+import type { VerifiedApiKeyContextWithMetadata } from "./api-key-context";
 import { hasApiKeyScopes } from "./api-key-scopes";
 import { getDesktopManagedPopRequestFailure } from "./desktop-managed-pop";
 import type {
@@ -23,12 +25,16 @@ import type {
 } from "./with-auth";
 
 type ApiKeyAuthOptions = {
-  desktopManagedPop?: boolean;
   requiredScopes?: ApiKeyScope[];
 };
 
 type ResolveApiKeyResult =
-  | { context: VerifiedApiKeyContext; response: null }
+  | {
+      context: VerifiedApiKeyContextWithMetadata & {
+        clerkUserId?: string | null;
+      };
+      response: null;
+    }
   | { context: null; response: NextResponse };
 
 /**
@@ -59,16 +65,21 @@ export function withApiKeyAuth<TResponse, TRoute extends string = string>(
     request: NextRequest,
     routeContext: RouteContext<TRoute>
   ): Promise<AuthenticatedJsonResponse<TResponse>> => {
+    const startMs = globalThis.performance.now();
+    let response: AuthenticatedJsonResponse<TResponse> | undefined;
     try {
       const token = getBearerToken(request);
 
       if (!token?.startsWith("sk_live_")) {
-        return unauthorizedResponse();
+        response = unauthorizedResponse();
+        return response;
       }
 
-      const apiKeyResult = await resolveApiKeyContext(token, request, options);
+      const apiKeyResult = await resolveApiKeyContext(token, options);
       if (apiKeyResult.response) {
-        return apiKeyResult.response as AuthenticatedJsonResponse<TResponse>;
+        response =
+          apiKeyResult.response as AuthenticatedJsonResponse<TResponse>;
+        return response;
       }
       const keyContext = apiKeyResult.context;
 
@@ -78,15 +89,29 @@ export function withApiKeyAuth<TResponse, TRoute extends string = string>(
       );
 
       if (!user?.active) {
-        return unauthorizedResponse();
+        response = unauthorizedResponse();
+        return response;
       }
+
+      const popFailure = await getDesktopManagedPopRequestFailure({
+        keyContext: { ...keyContext, clerkUserId: user.clerkId },
+        request,
+      });
+      if (popFailure) {
+        response = NextResponse.json(failure(popFailure.message), {
+          status: popFailure.status,
+        });
+        return response;
+      }
+      waitUntil(apiKeysService.touchLastUsedAt(keyContext.apiKeyId));
 
       const organization = await organizationsService.findById(
         keyContext.organizationId
       );
 
       if (!organization) {
-        return unauthorizedResponse();
+        response = unauthorizedResponse();
+        return response;
       }
 
       const authContext: AuthContext = {
@@ -102,16 +127,21 @@ export function withApiKeyAuth<TResponse, TRoute extends string = string>(
         options?.requiredScopes &&
         !hasApiKeyScopes(authContext, options.requiredScopes)
       ) {
-        return forbiddenResponse();
+        response = forbiddenResponse();
+        return response;
       }
 
-      return handler(authContext, request, routeContext.params);
+      response = await handler(authContext, request, routeContext.params);
+      return response;
     } catch (error) {
       const errorMessage = parseError(error);
       log.error("API key authentication failed", { error: errorMessage });
-      return NextResponse.json(failure("Authentication failed"), {
+      response = NextResponse.json(failure("Authentication failed"), {
         status: 500,
       });
+      return response;
+    } finally {
+      logRequestCompleted(request, startMs, response?.status ?? 500);
     }
   };
 }
@@ -123,35 +153,14 @@ function getBearerToken(request: NextRequest): string | null {
 
 async function resolveApiKeyContext(
   token: string,
-  request: NextRequest,
-  options: ApiKeyAuthOptions | undefined
+  _options: ApiKeyAuthOptions | undefined
 ): Promise<ResolveApiKeyResult> {
-  if (!options?.desktopManagedPop) {
-    const context = await apiKeysService.verifyKey(token);
-    return context ? { context, response: null } : unauthorizedResult();
-  }
-
   const context = await apiKeysService.verifyKeyWithMetadata(token, {
     updateLastUsedAt: false,
   });
   if (!context) {
     return unauthorizedResult();
   }
-
-  const popFailure = await getDesktopManagedPopRequestFailure({
-    keyContext: context,
-    request,
-  });
-  if (popFailure) {
-    return {
-      context: null,
-      response: NextResponse.json(failure(popFailure.message), {
-        status: popFailure.status,
-      }),
-    };
-  }
-
-  waitUntil(apiKeysService.touchLastUsedAt(context.apiKeyId));
   return { context, response: null };
 }
 

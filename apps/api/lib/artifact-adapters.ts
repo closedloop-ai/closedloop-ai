@@ -5,26 +5,66 @@
  * three artifact types are co-located here.
  */
 
-import type { DeploymentArtifact } from "@repo/api/src/types/artifact";
+import type {
+  Artifact as ApiArtifact,
+  DeploymentDetail as ApiDeploymentDetail,
+  PullRequestDetail as ApiPullRequestDetail,
+  DeploymentArtifact,
+} from "@repo/api/src/types/artifact";
 import { ArtifactType as ApiArtifactType } from "@repo/api/src/types/artifact";
 import type {
   PullRequestInfo,
   PullRequestState,
 } from "@repo/api/src/types/document";
-import {
-  type Artifact,
-  ArtifactType,
-  type DeploymentDetail,
-  type GitHubPRState,
-  type PullRequestDetail,
-} from "@repo/database";
+import type {
+  GitHubPRState,
+  GitHubRepository,
+} from "@repo/api/src/types/github";
+import { ArtifactType as DatabaseArtifactType } from "@repo/database";
 
-type ArtifactWithPullRequestDetail = Artifact & {
-  pullRequest: PullRequestDetail | null;
+type PullRequestArtifactScalars = Pick<
+  ApiArtifact,
+  "id" | "name" | "externalUrl" | "createdAt"
+>;
+
+type PullRequestDetailForInfo = Omit<
+  ApiPullRequestDetail,
+  "checksStatus" | "reviewDecision"
+> & {
+  prState: GitHubPRState;
+  checksStatus: PullRequestInfo["checksStatus"];
+  reviewDecision: PullRequestInfo["reviewDecision"];
 };
 
-type ArtifactWithDeploymentDetail = Artifact & {
-  deployment: DeploymentDetail | null;
+type PullRequestDetailWithRepository = PullRequestDetailForInfo & {
+  repository?: Pick<GitHubRepository, "fullName"> | null;
+};
+
+type ArtifactWithPullRequestDetail = PullRequestArtifactScalars & {
+  pullRequest: PullRequestDetailWithRepository | null;
+};
+
+type DeploymentArtifactScalars = Pick<
+  ApiArtifact,
+  | "id"
+  | "organizationId"
+  | "projectId"
+  | "workstreamId"
+  | "name"
+  | "slug"
+  | "status"
+  | "priority"
+  | "assigneeId"
+  | "dueDate"
+  | "externalUrl"
+  | "sortOrder"
+  | "createdAt"
+  | "createdById"
+  | "updatedAt"
+>;
+
+type ArtifactWithDeploymentDetail = DeploymentArtifactScalars & {
+  deployment: ApiDeploymentDetail | null;
 };
 
 // ---------------------------------------------------------------------------
@@ -35,6 +75,10 @@ export type PullRequestInfoOptions = {
   /** Artifact id of the PR (preserved for backwards-compat with consumers
    * that still call this field `externalLinkId`). */
   externalLinkId?: string | null;
+  /** Fallback repo full name (e.g. "owner/repo") when the detail row is
+   * fetched without the repository relation. When `pullRequest.repository`
+   * is present it takes precedence over this value. */
+  repoFullName?: string | null;
 };
 
 export function pullRequestArtifactToInfo(
@@ -57,6 +101,7 @@ export function pullRequestArtifactToInfo(
     checksStatus: detail.checksStatus,
     reviewDecision: detail.reviewDecision,
     externalLinkId: options.externalLinkId ?? null,
+    repoFullName: detail.repository?.fullName ?? options.repoFullName ?? null,
   };
 }
 
@@ -118,13 +163,13 @@ export function deploymentArtifactToInfo(
 // ---------------------------------------------------------------------------
 
 export function documentWhere<T extends Record<string, unknown>>(where: T) {
-  return { ...where, type: ArtifactType.DOCUMENT };
+  return { ...where, type: DatabaseArtifactType.DOCUMENT };
 }
 
 export function pullRequestWhere<T extends Record<string, unknown>>(where: T) {
-  return { ...where, type: ArtifactType.PULL_REQUEST };
+  return { ...where, type: DatabaseArtifactType.PULL_REQUEST };
 }
 
 export function deploymentWhere<T extends Record<string, unknown>>(where: T) {
-  return { ...where, type: ArtifactType.DEPLOYMENT };
+  return { ...where, type: DatabaseArtifactType.DEPLOYMENT };
 }

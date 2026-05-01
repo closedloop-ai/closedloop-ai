@@ -28,18 +28,6 @@ describe("matchesFilter", () => {
     expect(matchesFilter(artifact, "   ")).toBe(true);
   });
 
-  test("null snippet does not throw and non-matching still returns false", () => {
-    const artifact = createMockDocument({ title: "No Snippet", snippet: null });
-    expect(matchesFilter(artifact, "zzznomatch")).toBe(false);
-  });
-
-  test("matches on snippet content", () => {
-    const artifact = createMockDocument({
-      snippet: "payment gateway integration",
-    });
-    expect(matchesFilter(artifact, "payment")).toBe(true);
-  });
-
   test("matches on workstream title", () => {
     const artifact = createMockDocument({
       workstream: { id: "ws-1", title: "Target Thread", state: "INITIATED" },
@@ -51,7 +39,6 @@ describe("matchesFilter", () => {
     // "endfoo" ends title, "barstart" starts snippet — query "foo bar" must NOT match
     const artifact = createMockDocument({
       title: "endfoo",
-      snippet: "barstart",
     });
     expect(matchesFilter(artifact, "foo bar")).toBe(false);
   });
@@ -59,7 +46,6 @@ describe("matchesFilter", () => {
   test("returns false when no field matches the term", () => {
     const artifact = createMockDocument({
       title: "Login Flow",
-      snippet: "some content",
       workstream: { id: "ws-1", title: "Feature A", state: "INITIATED" },
     });
     expect(matchesFilter(artifact, "zzznomatch")).toBe(false);

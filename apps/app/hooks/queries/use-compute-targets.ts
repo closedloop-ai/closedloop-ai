@@ -6,6 +6,7 @@ import type {
   CreateDesktopCommandResponse,
   DesktopCommandSummary,
   SetComputeTargetSharingResponse,
+  StartDesktopSecurityUpgradeResponse,
 } from "@repo/api/src/types/compute-target";
 import {
   isTerminalStatus,
@@ -152,6 +153,30 @@ export function useDispatchDesktopCommand(
       return apiClient.post<CreateDesktopCommandResponse>(
         `/compute-targets/${targetId}/commands`,
         payload
+      );
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: computeTargetKeys.list() });
+    },
+    retry: 0,
+  });
+}
+
+export function useStartDesktopSecurityUpgrade() {
+  const queryClient = useQueryClient();
+  const apiClient = useApiClient();
+
+  return useMutation({
+    mutationFn: ({
+      targetId,
+      webAppOrigin,
+    }: {
+      targetId: string;
+      webAppOrigin: string;
+    }) => {
+      return apiClient.postRaw<StartDesktopSecurityUpgradeResponse>(
+        `/compute-targets/${targetId}/security-upgrade-attempt`,
+        { webAppOrigin }
       );
     },
     onSuccess: () => {

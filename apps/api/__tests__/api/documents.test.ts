@@ -1,8 +1,8 @@
 import { DocumentType } from "@repo/api/src/types/document";
 import { v7 as uuidv7 } from "uuid";
 import { vi } from "vitest";
+import { documentService } from "@/app/documents/document-service";
 import { GET, POST } from "@/app/documents/route";
-import { documentsService } from "@/app/documents/service";
 import { projectsService } from "@/app/projects/service";
 import type { AuthContext } from "@/lib/auth/with-auth";
 import {
@@ -23,7 +23,7 @@ vi.mock("@/lib/auth/with-auth", () => ({
   withAuth: (handler: any) => async (request: any, context: any) =>
     handler(mockAuthContext, request, context.params),
 }));
-vi.mock("@/app/documents/service");
+vi.mock("@/app/documents/document-service");
 vi.mock("@/app/projects/service");
 vi.mock("@/app/custom-fields/values-service", () => ({
   customFieldValuesService: {
@@ -56,7 +56,7 @@ describe("GET /api/artifacts", () => {
       },
     ];
 
-    vi.mocked(documentsService.findAll).mockResolvedValue(mockArtifacts as any);
+    vi.mocked(documentService.findAll).mockResolvedValue(mockArtifacts as any);
 
     const request = createMockRequest({
       url: "http://localhost:3002/api/artifacts",
@@ -73,7 +73,7 @@ describe("GET /api/artifacts", () => {
   });
 
   it("filters by type query param", async () => {
-    vi.mocked(documentsService.findAll).mockResolvedValue([]);
+    vi.mocked(documentService.findAll).mockResolvedValue([]);
 
     const request = createMockRequest({
       url: "http://localhost:3002/api/artifacts?type=PRD",
@@ -81,13 +81,13 @@ describe("GET /api/artifacts", () => {
     const routeContext = createMockRouteContext({});
     await GET(request, routeContext);
 
-    expect(documentsService.findAll).toHaveBeenCalledWith(
+    expect(documentService.findAll).toHaveBeenCalledWith(
       expect.objectContaining({ type: "PRD" })
     );
   });
 
   it("filters by workstreamId", async () => {
-    vi.mocked(documentsService.findAll).mockResolvedValue([]);
+    vi.mocked(documentService.findAll).mockResolvedValue([]);
 
     const workstreamId = uuidv7();
     const request = createMockRequest({
@@ -96,13 +96,13 @@ describe("GET /api/artifacts", () => {
     const routeContext = createMockRouteContext({});
     await GET(request, routeContext);
 
-    expect(documentsService.findAll).toHaveBeenCalledWith(
+    expect(documentService.findAll).toHaveBeenCalledWith(
       expect.objectContaining({ workstreamId })
     );
   });
 
   it("returns error response on service failure", async () => {
-    vi.mocked(documentsService.findAll).mockRejectedValue(
+    vi.mocked(documentService.findAll).mockRejectedValue(
       new Error("Database connection failed")
     );
 
@@ -119,7 +119,7 @@ describe("GET /api/artifacts", () => {
   });
 
   it("returns empty array when no artifacts exist", async () => {
-    vi.mocked(documentsService.findAll).mockResolvedValue([]);
+    vi.mocked(documentService.findAll).mockResolvedValue([]);
 
     const request = createMockRequest({
       url: "http://localhost:3002/api/artifacts",
@@ -133,7 +133,7 @@ describe("GET /api/artifacts", () => {
   });
 
   it("validates response includes correct Content-Type header", async () => {
-    vi.mocked(documentsService.findAll).mockResolvedValue([]);
+    vi.mocked(documentService.findAll).mockResolvedValue([]);
 
     const request = createMockRequest({
       url: "http://localhost:3002/api/artifacts",
@@ -145,7 +145,7 @@ describe("GET /api/artifacts", () => {
   });
 
   it("filters by type and projectId together", async () => {
-    vi.mocked(documentsService.findAll).mockResolvedValue([]);
+    vi.mocked(documentService.findAll).mockResolvedValue([]);
 
     const projectId = uuidv7();
     const request = createMockRequest({
@@ -154,7 +154,7 @@ describe("GET /api/artifacts", () => {
     const routeContext = createMockRouteContext({});
     await GET(request, routeContext);
 
-    expect(documentsService.findAll).toHaveBeenCalledWith(
+    expect(documentService.findAll).toHaveBeenCalledWith(
       expect.objectContaining({
         type: "IMPLEMENTATION_PLAN",
         projectId,
@@ -180,7 +180,7 @@ describe("POST /api/artifacts", () => {
       type: "PRD",
     };
 
-    vi.mocked(documentsService.create).mockResolvedValue(mockArtifact as any);
+    vi.mocked(documentService.create).mockResolvedValue(mockArtifact as any);
 
     const request = createMockRequest({
       method: "POST",
@@ -217,7 +217,7 @@ describe("POST /api/artifacts", () => {
   });
 
   it("returns null when projectId does not exist", async () => {
-    vi.mocked(documentsService.create).mockResolvedValue(null);
+    vi.mocked(documentService.create).mockResolvedValue(null);
 
     const request = createMockRequest({
       method: "POST",
@@ -242,7 +242,7 @@ describe("POST /api/artifacts", () => {
       user: { id: "user-123", organizationId: "test-org-id" } as any,
     });
 
-    vi.mocked(documentsService.create).mockResolvedValue({
+    vi.mocked(documentService.create).mockResolvedValue({
       id: "artifact-id",
     } as any);
 
@@ -259,7 +259,7 @@ describe("POST /api/artifacts", () => {
     const routeContext = createMockRouteContext({});
     await POST(request, routeContext);
 
-    expect(documentsService.create).toHaveBeenCalledWith(
+    expect(documentService.create).toHaveBeenCalledWith(
       "test-org-id",
       "user-123",
       expect.objectContaining({
@@ -289,7 +289,7 @@ describe("POST /api/artifacts", () => {
   });
 
   it("returns 400 when service returns null", async () => {
-    vi.mocked(documentsService.create).mockResolvedValue(null);
+    vi.mocked(documentService.create).mockResolvedValue(null);
 
     const request = createMockRequest({
       method: "POST",
@@ -310,7 +310,7 @@ describe("POST /api/artifacts", () => {
   });
 
   it("returns 500 when service throws error", async () => {
-    vi.mocked(documentsService.create).mockRejectedValue(
+    vi.mocked(documentService.create).mockRejectedValue(
       new Error("Transaction deadlock detected")
     );
 
@@ -338,7 +338,7 @@ describe("POST /api/artifacts", () => {
       user: { id: "user-123", organizationId: "test-org-id" } as any,
     });
 
-    vi.mocked(documentsService.create).mockResolvedValue({
+    vi.mocked(documentService.create).mockResolvedValue({
       id: "artifact-id",
     } as any);
 
@@ -356,7 +356,7 @@ describe("POST /api/artifacts", () => {
 
     // Project ownership verification was removed - service handles validation
     expect(projectsService.findById).not.toHaveBeenCalled();
-    expect(documentsService.create).toHaveBeenCalledWith(
+    expect(documentService.create).toHaveBeenCalledWith(
       "test-org-id",
       "user-123",
       expect.objectContaining({

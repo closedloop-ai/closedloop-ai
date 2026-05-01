@@ -3,6 +3,58 @@ import { internationalizationMiddleware } from "@repo/internationalization/proxy
 import { noseconeOptions, securityMiddleware } from "@repo/security/proxy";
 import { createNEMO } from "@rescale/nemo";
 import { NextResponse } from "next/server";
+import { env } from "./env";
+
+// Clerk middleware wraps other middleware in its callback
+export default authMiddleware(
+  async (_auth, request, event) => {
+    const host = request.headers.get("host")?.split(":")[0] ?? "";
+
+    // Redirect old closedloop.ai sitemap paths to gethealthy.com
+    if (host === "www.closedloop.ai" || host === "closedloop.ai") {
+      const { pathname } = request.nextUrl;
+
+      if (isOldSitePath(pathname)) {
+        const url = new URL(request.url);
+        url.hostname = REDIRECT_HOST;
+        url.port = "";
+
+        return NextResponse.redirect(url.toString(), 302);
+      }
+    }
+
+    // Run security headers first
+    const securityHeaderResponse = await securityHeaders();
+
+    // Then run composed middleware (i18n)
+    const middlewareResponse = await composedMiddleware(request, event);
+
+    // If i18n middleware returned a response, merge security headers onto it
+    if (middlewareResponse) {
+      applySecurityHeaders(middlewareResponse, securityHeaderResponse);
+      return middlewareResponse;
+    }
+
+    return securityHeaderResponse;
+  },
+  {
+    contentSecurityPolicy:
+      env.CSP_ENABLED === "true"
+        ? {
+            strict: true,
+            reportOnly: true,
+            directives: {
+              "base-uri": ["none"],
+              "connect-src": [
+                "https://*.posthog.com",
+                "https://www.google-analytics.com/",
+              ],
+            },
+            reportTo: env.CSP_REPORT_URI,
+          }
+        : undefined,
+  }
+);
 
 export const config = {
   // matcher tells Next.js which routes to run the middleware on. This runs the
@@ -84,29 +136,15 @@ const composedMiddleware = createNEMO(
   }
 );
 
-// Clerk middleware wraps other middleware in its callback
-export default authMiddleware(async (_auth, request, event) => {
-  // Redirect old closedloop.ai sitemap paths to gethealthy.com
-  const host = request.headers.get("host")?.split(":")[0] ?? "";
-
-  if (host === "www.closedloop.ai" || host === "closedloop.ai") {
-    const { pathname } = request.nextUrl;
-
-    if (isOldSitePath(pathname)) {
-      const url = new URL(request.url);
-      url.hostname = REDIRECT_HOST;
-      url.port = "";
-
-      return NextResponse.redirect(url.toString(), 302);
+function applySecurityHeaders(
+  target: Response,
+  securityHeadersResponse: Response
+): void {
+  securityHeadersResponse.headers.forEach((value, key) => {
+    if (key.startsWith("x-middleware-")) {
+      return;
     }
-  }
 
-  // Run security headers first
-  const headersResponse = securityHeaders();
-
-  // Then run composed middleware (i18n)
-  const middlewareResponse = await composedMiddleware(request, event);
-
-  // Return middleware response if it exists, otherwise headers response
-  return middlewareResponse || headersResponse;
-});
+    target.headers.set(key, value);
+  });
+}
