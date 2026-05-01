@@ -668,6 +668,13 @@ echo 'gh version 2.0.0'
 `
       );
       await writeExecutable(
+        join(binDir, "python3"),
+        `#!/usr/bin/env bash
+printf 'python3 %s\\n' "$*" >> "$CALL_LOG"
+exit 1
+`
+      );
+      await writeExecutable(
         join(binDir, "jq"),
         `#!/usr/bin/env bash
 printf 'jq %s\\n' "$*" >> "$CALL_LOG"

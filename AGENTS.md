@@ -67,6 +67,7 @@ For API routes with fixed request/response/error contracts, wrap auth/session an
 - React hooks, components, and utilities that schedule timers must clear superseded timers and clean them up on unmount or disposal.
 - Tests that mutate `process.env` must restore the exact previous state. If a variable was originally unset, remove the property, for example with `Reflect.deleteProperty(process.env, "KEY")`; assigning `undefined` creates the string value `"undefined"` in Node.
 - Tests that mutate browser globals or readonly-ish global properties such as `navigator.platform` must restore the original property descriptor in `afterEach`, or use test helpers that automatically unstub globals.
+- Installer-script tests that assert a prerequisite is missing, installed, or added to `PATH` must stub that prerequisite in the test `PATH`. Do not let the test fall through to host tools such as `/usr/bin/python3` when the assertion depends on the tool being absent or unusable.
 - Test helpers that wrap `child_process.spawn` must handle the child's `error` event so spawn failures resolve or reject with a clear test failure instead of hanging.
 - Timing-sensitive integration tests must pass an explicit test timeout and make fallback behavior deterministic; do not rely on the test runner's default timeout to catch hangs.
 - Tests for ignored, optional, or compatibility-only request fields must assert the downstream call shape, not only that the downstream dependency was called.
