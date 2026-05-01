@@ -152,9 +152,7 @@ export async function POST(
 
     // Validate terminal event required fields post-normalization.
     // This catches malformed events from both envelope and flattened formats.
-    const normalizedError = validateNormalizedEvent(
-      event as unknown as Record<string, unknown>
-    );
+    const normalizedError = validateNormalizedEvent(event);
     if (normalizedError) {
       return errorResponse(normalizedError, new Error("Bad Request"), 400);
     }

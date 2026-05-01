@@ -171,7 +171,7 @@ const eventSchemaByType: Record<
 };
 
 export function validateNormalizedEvent(
-  event: Record<string, unknown>
+  event: LoopEvent | Record<string, unknown>
 ): string | null {
   const entry = eventSchemaByType[event.type as string];
   if (entry) {

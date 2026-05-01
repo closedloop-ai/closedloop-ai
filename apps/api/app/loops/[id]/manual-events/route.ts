@@ -1,9 +1,14 @@
 import type { LoopEvent } from "@repo/api/src/types/loop";
-import { LoopCommand } from "@repo/api/src/types/loop";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { loopEventBus } from "@/lib/loops/loop-event-bus";
 import { handleLoopEvent } from "@/lib/loops/loop-orchestrator";
-import { errorResponse, parseBody, successResponse } from "@/lib/route-utils";
+import {
+  badRequestResponse,
+  errorResponse,
+  notFoundResponse,
+  parseBody,
+  successResponse,
+} from "@/lib/route-utils";
 import { isInvalidStatusTransitionError, loopsService } from "../../service";
 import {
   manualEventPayloadValidator,
@@ -37,28 +42,27 @@ export const POST = withAnyAuth<
 
       const event = normalizeLoopEvent(body);
 
-      // Validate terminal event required fields post-normalization.
-      const normalizedError = validateNormalizedEvent(
-        event as unknown as Record<string, unknown>
-      );
+      const normalizedError = validateNormalizedEvent(event);
       if (normalizedError) {
-        return errorResponse(normalizedError, new Error("Bad Request"), 400);
+        return badRequestResponse(normalizedError);
       }
 
-      const loop = await loopsService.findById(loopId, user.organizationId);
-      if (!loop) {
-        return errorResponse("Loop not found", new Error("Not Found"), 404);
-      }
-
-      if (loop.command !== LoopCommand.Manual) {
+      const result = await loopsService.findManualLoopById(
+        loopId,
+        user.organizationId
+      );
+      if (result.error) {
+        if (result.error === "not_found") {
+          return notFoundResponse("Loop");
+        }
         return errorResponse(
           "Manual events are only accepted for MANUAL loops",
           new Error("Forbidden"),
           403
         );
       }
+      const { loop } = result;
 
-      // Ignore non-terminal events after the loop is terminal.
       if (
         TERMINAL_LOOP_STATUSES.has(loop.status) &&
         !TERMINAL_LOOP_EVENTS.has(event.type)
@@ -71,7 +75,6 @@ export const POST = withAnyAuth<
 
       let canonicalEvents: LoopEvent[];
       try {
-        // No replayContext for manual events (no runner JWT, no nonce)
         canonicalEvents = await handleLoopEvent(
           loopId,
           user.organizationId,
@@ -87,7 +90,6 @@ export const POST = withAnyAuth<
         throw eventError;
       }
 
-      // Publish canonical events to SSE subscribers
       for (const canonical of canonicalEvents) {
         loopEventBus.publish(loopId, canonical);
       }

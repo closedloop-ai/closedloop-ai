@@ -473,6 +473,23 @@ export const loopsService = {
     };
   },
 
+  async findManualLoopById(
+    id: string,
+    organizationId: string
+  ): Promise<
+    | { loop: LoopDetail; error?: undefined }
+    | { loop?: undefined; error: "not_found" | "not_manual" }
+  > {
+    const loop = await this.findById(id, organizationId);
+    if (!loop) {
+      return { error: "not_found" };
+    }
+    if (loop.command !== LoopCommand.Manual) {
+      return { error: "not_manual" };
+    }
+    return { loop };
+  },
+
   /**
    * List Loops with filters (org-scoped).
    * Returns loops with associated user info for list views.
