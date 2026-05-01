@@ -15,7 +15,11 @@ import type { APIRequestContext } from "@playwright/test";
 import { type ArtifactLink, LinkType } from "@repo/api/src/types/artifact";
 import type { ApiResult } from "@repo/api/src/types/common";
 import { DocumentType } from "@repo/api/src/types/document";
-import { LoopCommand, type LoopWithUser } from "@repo/api/src/types/loop";
+import {
+  LoopCommand,
+  type LoopWithUser,
+  RunLoopCommand,
+} from "@repo/api/src/types/loop";
 import { getApiBaseUrl } from "./helpers/api-url";
 import { createProject, deleteProject } from "./helpers/create-project";
 import { createTeam, deleteTeam } from "./helpers/create-team";
@@ -226,9 +230,22 @@ test("Generate Plan on a Feature sourced from a PRD does NOT create an EVALUATE_
     });
     await expect(submitButton).toBeVisible();
     await expect(submitButton).toBeEnabled();
-    await submitButton.click();
+    // The Radix DialogContent is position:fixed without max-height or
+    // overflow-y, so when the modal is taller than the viewport the footer
+    // renders below the fold and Playwright's auto-scroll cannot bring it in.
+    // Visibility and enabled-state are already asserted above, so force the
+    // click to bypass the viewport check.
+    await submitButton.click({ force: true });
 
     const planResponse = await planCreateResponse.catch(() => null);
+
+    expect(
+      planResponse,
+      "Plan creation POST was never observed — test did not exercise the regression path"
+    ).not.toBeNull();
+    expect(planResponse?.ok(), "Plan creation POST returned non-2xx").toBe(
+      true
+    );
 
     if (planResponse?.ok()) {
       try {
@@ -289,7 +306,7 @@ test("Evaluate PRD on a PRD document DOES trigger an evaluate_prd run-loop reque
       }
       try {
         const body = req.postData() ?? "";
-        if (body.includes("evaluate_prd")) {
+        if (body.includes(RunLoopCommand.EvaluatePrd)) {
           evaluatePrdRequests.push(`${req.method()} ${req.url()} body=${body}`);
         }
       } catch {
