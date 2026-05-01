@@ -29,6 +29,7 @@ const MANUAL_LAUNCH_HINT = /after installing, launch the app/i;
 const WORKSPACE_DIRECTORY = /workspace directory/i;
 const SANDBOX_CONTROL_CHARACTER_ERROR =
   /sandbox directory cannot contain control characters/i;
+const TEST_WORKSPACE_DIRECTORY = "~/workspace";
 
 const mockUseLatestElectronRelease = vi.fn();
 const mockUseElectronDetection = vi.fn();
@@ -42,6 +43,12 @@ const originalNavigatorPlatformDescriptor = Object.getOwnPropertyDescriptor(
   navigator,
   "platform"
 );
+
+function enterWorkspaceDirectory(value = TEST_WORKSPACE_DIRECTORY) {
+  fireEvent.change(screen.getByLabelText(WORKSPACE_DIRECTORY), {
+    target: { value },
+  });
+}
 
 vi.mock("@/hooks/queries/use-electron-release", () => ({
   useLatestElectronRelease: () => mockUseLatestElectronRelease(),
@@ -640,6 +647,20 @@ describe("DownloadElectronAppStep", () => {
       ).not.toBeInTheDocument();
     });
 
+    it("marks the workspace directory field as required", () => {
+      mockUseDesktopProvisioningCapability.mockReturnValue({
+        data: {
+          automatedManagedProvisioningEnabled: true,
+          supportedPlatform: DesktopProvisioningPlatform.Darwin,
+        },
+        isLoading: false,
+      });
+
+      render(<DownloadElectronAppStep onNext={mockOnNext} />);
+
+      expect(screen.getByLabelText(WORKSPACE_DIRECTORY)).toBeRequired();
+    });
+
     it("creates an attempt-backed command without API or relay origins", async () => {
       const mutate = vi.fn().mockImplementation((_input, options) => {
         options?.onSuccess?.({
@@ -661,6 +682,7 @@ describe("DownloadElectronAppStep", () => {
 
       render(<DownloadElectronAppStep onNext={mockOnNext} />);
 
+      enterWorkspaceDirectory();
       fireEvent.click(
         screen.getByRole("button", { name: GENERATE_INSTALL_COMMAND })
       );
@@ -721,6 +743,7 @@ describe("DownloadElectronAppStep", () => {
 
       render(<DownloadElectronAppStep onNext={mockOnNext} />);
 
+      enterWorkspaceDirectory();
       fireEvent.click(
         screen.getByRole("button", { name: GENERATE_INSTALL_COMMAND })
       );
@@ -764,9 +787,7 @@ describe("DownloadElectronAppStep", () => {
 
       render(<DownloadElectronAppStep onNext={mockOnNext} />);
 
-      fireEvent.change(screen.getByLabelText(WORKSPACE_DIRECTORY), {
-        target: { value: "~/Source\tsecrets" },
-      });
+      enterWorkspaceDirectory(`${TEST_WORKSPACE_DIRECTORY}\tsecrets`);
       fireEvent.click(
         screen.getByRole("button", { name: GENERATE_INSTALL_COMMAND })
       );
@@ -775,6 +796,45 @@ describe("DownloadElectronAppStep", () => {
       expect(
         screen.getByText(SANDBOX_CONTROL_CHARACTER_ERROR)
       ).toBeInTheDocument();
+    });
+
+    it("allows control characters trimmed from the workspace value", async () => {
+      const mutate = vi.fn().mockImplementation((_input, options) => {
+        options?.onSuccess?.({
+          onboardingAttemptId: "attempt-123",
+          expiresAt: "2026-04-27T18:00:00.000Z",
+        });
+      });
+      mockUseDesktopProvisioningCapability.mockReturnValue({
+        data: {
+          automatedManagedProvisioningEnabled: true,
+          supportedPlatform: DesktopProvisioningPlatform.Darwin,
+        },
+        isLoading: false,
+      });
+      mockUseCreateDesktopProvisioningAttempt.mockReturnValue({
+        mutate,
+        isPending: false,
+      });
+
+      render(<DownloadElectronAppStep onNext={mockOnNext} />);
+
+      enterWorkspaceDirectory(`\t${TEST_WORKSPACE_DIRECTORY}\n`);
+      fireEvent.click(
+        screen.getByRole("button", { name: GENERATE_INSTALL_COMMAND })
+      );
+
+      await waitFor(() => {
+        const command = screen.getByRole("textbox", {
+          name: INSTALL_COMMAND,
+        }) as HTMLTextAreaElement;
+        expect(command.value).toContain(
+          `CL_SANDBOX_BASE_DIRECTORY='${TEST_WORKSPACE_DIRECTORY}'`
+        );
+      });
+      expect(
+        screen.queryByText(SANDBOX_CONTROL_CHARACTER_ERROR)
+      ).not.toBeInTheDocument();
     });
   });
 
@@ -869,6 +929,7 @@ describe("DownloadElectronAppStep", () => {
 
       expect(screen.getByRole("button", { name: CONTINUE_BTN })).toBeDisabled();
 
+      enterWorkspaceDirectory();
       fireEvent.click(
         screen.getByRole("button", { name: GENERATE_INSTALL_COMMAND })
       );
@@ -917,6 +978,7 @@ describe("DownloadElectronAppStep", () => {
         <DownloadElectronAppStep onNext={mockOnNext} />
       );
 
+      enterWorkspaceDirectory();
       fireEvent.click(
         screen.getByRole("button", { name: GENERATE_INSTALL_COMMAND })
       );
@@ -982,6 +1044,7 @@ describe("DownloadElectronAppStep", () => {
         <DownloadElectronAppStep onNext={mockOnNext} />
       );
 
+      enterWorkspaceDirectory();
       fireEvent.click(
         screen.getByRole("button", { name: GENERATE_INSTALL_COMMAND })
       );
