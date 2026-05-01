@@ -131,7 +131,8 @@ describe("POST /desktop/bootstrap/claim contract compatibility", () => {
 
     expect(response.status).toBe(200);
     expect(desktopOnboardingAttemptsService.consume).toHaveBeenCalledWith(
-      "attempt-123"
+      "attempt-123",
+      { gatewayId: "550e8400-e29b-41d4-a716-446655440000" }
     );
     expect(apiKeysService.rotateDesktopManagedKey).toHaveBeenCalledWith({
       organizationId: "org-1",

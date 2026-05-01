@@ -769,6 +769,13 @@ exit 1
 `
       );
       await writeExecutable(
+        join(binDir, "claude"),
+        `#!/usr/bin/env bash
+printf 'claude %s\\n' "$*" >> "$CALL_LOG"
+exit 1
+`
+      );
+      await writeExecutable(
         join(binDir, "curl"),
         `#!/usr/bin/env bash
 printf 'curl %s\\n' "$*" >> "$CALL_LOG"
