@@ -1086,80 +1086,92 @@ exit 1
     expect(workspaceBody).toContain(".closedloop-write-test");
     expect(workspaceBody).toContain("not the root or home directory");
     expect(workspaceIndex).toBeGreaterThanOrEqual(0);
-    expect(finishIndex).toBeGreaterThan(workspaceIndex);
+    const captureIndex = mainBody.indexOf(
+      "capture_validated_workspace_directory"
+    );
+    expect(captureIndex).toBeGreaterThan(workspaceIndex);
+    expect(finishIndex).toBeGreaterThan(captureIndex);
   });
 
-  it("rejects root and home as automated setup workspace directories", async () => {
-    const tempDir = await mkdtemp(
-      join(tmpdir(), "closedloop-installer-workspace-root-")
-    );
-    const homeDir = join(tempDir, "home");
-    const scriptPath = join(tempDir, "workspace-check.sh");
-    const validatorScript = DESKTOP_INSTALLER_SCRIPT.replace(
-      'main "$@"',
-      "ensure_workspace_directory"
-    );
-    await mkdir(homeDir, { recursive: true });
-    await writeFile(scriptPath, validatorScript);
-    await chmod(scriptPath, 0o755);
+  it(
+    "rejects root and home as automated setup workspace directories",
+    async () => {
+      const tempDir = await mkdtemp(
+        join(tmpdir(), "closedloop-installer-workspace-root-")
+      );
+      const homeDir = join(tempDir, "home");
+      const scriptPath = join(tempDir, "workspace-check.sh");
+      const validatorScript = DESKTOP_INSTALLER_SCRIPT.replace(
+        'main "$@"',
+        "ensure_workspace_directory"
+      );
+      await mkdir(homeDir, { recursive: true });
+      await writeFile(scriptPath, validatorScript);
+      await chmod(scriptPath, 0o755);
 
-    for (const workspaceValue of ["~", "/"]) {
+      for (const workspaceValue of ["~", "/"]) {
+        const result = await runBashScript(scriptPath, {
+          ...process.env,
+          CL_SANDBOX_BASE_DIRECTORY: workspaceValue,
+          HOME: homeDir,
+          PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
+        });
+        const combinedOutput = `${result.stdout}\n${result.stderr}`;
+
+        expect(result.code).toBe(1);
+        expect(combinedOutput).toContain("not the root or home directory");
+      }
+    },
+    INSTALLER_SCRIPT_TEST_TIMEOUT_MS
+  );
+
+  it(
+    "writes the canonical validated workspace path into the handoff",
+    async () => {
+      const tempDir = await mkdtemp(
+        join(tmpdir(), "closedloop-installer-handoff-path-")
+      );
+      const homeDir = join(tempDir, "home");
+      const scriptPath = join(tempDir, "handoff-check.sh");
+      const workspaceDir = join(homeDir, "workspace");
+      const rawWorkspacePath = `${workspaceDir}/../workspace`;
+      const handoffScript = DESKTOP_INSTALLER_SCRIPT.replace(
+        'main "$@"',
+        'run_required_prerequisite "workspace_directory" "Workspace directory" ensure_workspace_directory; capture_validated_workspace_directory; finish_required_prerequisites; write_handoff_file'
+      );
+      await mkdir(homeDir, { recursive: true });
+      await writeFile(scriptPath, handoffScript);
+      await chmod(scriptPath, 0o755);
+
       const result = await runBashScript(scriptPath, {
         ...process.env,
-        CL_SANDBOX_BASE_DIRECTORY: workspaceValue,
+        CL_ONBOARDING_ATTEMPT_ID: "attempt-123",
+        CL_SANDBOX_BASE_DIRECTORY: rawWorkspacePath,
+        CL_WEB_APP_ORIGIN: "http://localhost:3000",
         HOME: homeDir,
         PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
       });
-      const combinedOutput = `${result.stdout}\n${result.stderr}`;
+      const handoff = JSON.parse(
+        await readFile(
+          join(
+            homeDir,
+            "Library",
+            "Application Support",
+            "ClosedLoop Desktop",
+            "pending-onboarding.json"
+          ),
+          "utf-8"
+        )
+      ) as { sandboxBaseDirectory?: string };
 
-      expect(result.code).toBe(1);
-      expect(combinedOutput).toContain("not the root or home directory");
-    }
-  });
-
-  it("writes the canonical validated workspace path into the handoff", async () => {
-    const tempDir = await mkdtemp(
-      join(tmpdir(), "closedloop-installer-handoff-path-")
-    );
-    const homeDir = join(tempDir, "home");
-    const scriptPath = join(tempDir, "handoff-check.sh");
-    const workspaceDir = join(homeDir, "workspace");
-    const rawWorkspacePath = `${workspaceDir}/../workspace`;
-    const handoffScript = DESKTOP_INSTALLER_SCRIPT.replace(
-      'main "$@"',
-      "ensure_workspace_directory; write_handoff_file"
-    );
-    await mkdir(homeDir, { recursive: true });
-    await writeFile(scriptPath, handoffScript);
-    await chmod(scriptPath, 0o755);
-
-    const result = await runBashScript(scriptPath, {
-      ...process.env,
-      CL_ONBOARDING_ATTEMPT_ID: "attempt-123",
-      CL_SANDBOX_BASE_DIRECTORY: rawWorkspacePath,
-      CL_WEB_APP_ORIGIN: "http://localhost:3000",
-      HOME: homeDir,
-      PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
-    });
-    const handoff = JSON.parse(
-      await readFile(
-        join(
-          homeDir,
-          "Library",
-          "Application Support",
-          "ClosedLoop Desktop",
-          "pending-onboarding.json"
-        ),
-        "utf-8"
-      )
-    ) as { sandboxBaseDirectory?: string };
-
-    expect(result.code).toBe(0);
-    await expect(realpath(workspaceDir)).resolves.toBe(
-      handoff.sandboxBaseDirectory
-    );
-    expect(handoff.sandboxBaseDirectory).not.toBe(rawWorkspacePath);
-  });
+      expect(result.code).toBe(0);
+      await expect(realpath(workspaceDir)).resolves.toBe(
+        handoff.sandboxBaseDirectory
+      );
+      expect(handoff.sandboxBaseDirectory).not.toBe(rawWorkspacePath);
+    },
+    INSTALLER_SCRIPT_TEST_TIMEOUT_MS
+  );
 
   it("dispatches the handoff to the installed app path instead of bundle-id resolution", () => {
     expect(DESKTOP_INSTALLER_SCRIPT).toContain(

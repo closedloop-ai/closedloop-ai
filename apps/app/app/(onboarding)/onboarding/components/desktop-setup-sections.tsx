@@ -100,6 +100,7 @@ export function AutomatedProvisioningCard({
                 onSandboxBaseDirectoryChange(event.target.value)
               }
               placeholder="Path to your workspace directory"
+              required
               value={sandboxBaseDirectory}
             />
             <p className="text-muted-foreground text-xs">

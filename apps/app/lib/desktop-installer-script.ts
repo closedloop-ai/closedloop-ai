@@ -620,6 +620,30 @@ ensure_workspace_directory() {
   printf 'Workspace directory is ready: %s\n' "$workspace_path"
 }
 
+capture_validated_workspace_directory() {
+  if has_failed_prerequisite "workspace_directory"; then
+    return 0
+  fi
+  if [ -z "${SHELL_VAR}{CL_SANDBOX_BASE_DIRECTORY:-}" ]; then
+    return 0
+  fi
+
+  local workspace_path
+  # The prerequisite check runs in a subshell so one missing prerequisite does
+  # not stop the rest of the checks. Re-resolve the already-created workspace in
+  # the parent shell so write_handoff_file can serialize the same canonical path.
+  workspace_path="$(strip_trailing_slashes "$(expand_user_path "$CL_SANDBOX_BASE_DIRECTORY")")"
+  if [ ! -d "$workspace_path" ]; then
+    record_prerequisite_failure "workspace_directory" "Workspace directory" "workspace disappeared before handoff capture: $workspace_path"
+    return 0
+  fi
+  workspace_path="$(cd "$workspace_path" && pwd -P)" || {
+    record_prerequisite_failure "workspace_directory" "Workspace directory" "could not resolve workspace before handoff capture: $workspace_path"
+    return 0
+  }
+  VALIDATED_SANDBOX_BASE_DIRECTORY="$workspace_path"
+}
+
 write_handoff_file() {
   if [ -z "${SHELL_VAR}{CL_ONBOARDING_ATTEMPT_ID:-}" ] || [ -z "${SHELL_VAR}{CL_WEB_APP_ORIGIN:-}" ]; then
     fail_step "handoff_write" "local" "CL_ONBOARDING_ATTEMPT_ID and CL_WEB_APP_ORIGIN are required."
@@ -681,6 +705,7 @@ main() {
   seed_base_path
   ensure_supported_platform
   run_required_prerequisite "workspace_directory" "Workspace directory" ensure_workspace_directory
+  capture_validated_workspace_directory
   run_required_prerequisite "git" "Git" ensure_brew_package git git --version
   run_required_prerequisite "gh" "GitHub CLI" ensure_brew_package gh gh --version
   if has_failed_prerequisite "gh"; then

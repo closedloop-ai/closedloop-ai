@@ -647,6 +647,20 @@ describe("DownloadElectronAppStep", () => {
       ).not.toBeInTheDocument();
     });
 
+    it("marks the workspace directory field as required", () => {
+      mockUseDesktopProvisioningCapability.mockReturnValue({
+        data: {
+          automatedManagedProvisioningEnabled: true,
+          supportedPlatform: DesktopProvisioningPlatform.Darwin,
+        },
+        isLoading: false,
+      });
+
+      render(<DownloadElectronAppStep onNext={mockOnNext} />);
+
+      expect(screen.getByLabelText(WORKSPACE_DIRECTORY)).toBeRequired();
+    });
+
     it("creates an attempt-backed command without API or relay origins", async () => {
       const mutate = vi.fn().mockImplementation((_input, options) => {
         options?.onSuccess?.({
