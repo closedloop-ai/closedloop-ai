@@ -51,7 +51,7 @@ jobs:
     steps:
       - name: Get PR info and check workflow status
         id: check
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           PR_NUMBER_INPUT: ${{ github.event.inputs.pr_number }}
         with:

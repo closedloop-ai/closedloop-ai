@@ -61,7 +61,7 @@ jobs:
       - name: Wait for Vercel app-stage preview deployment
         if: github.event_name != 'workflow_dispatch' || github.event.inputs.deployment_url == ''
         id: wait
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         with:
           script: |
             const sha = process.env.TARGET_SHA || context.payload.pull_request?.head?.sha || context.sha;
