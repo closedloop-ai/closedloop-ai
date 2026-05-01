@@ -19,13 +19,11 @@ export function DocumentTypeBadge({
   const label = DOCUMENT_TYPE_BADGE_LABELS[type];
   return (
     <span
-      aria-label={`Document type: ${label}`}
       className={cn(
         buttonVariants({ variant: "outline", size: "sm" }),
         "pointer-events-none cursor-default hover:bg-input hover:text-foreground dark:hover:bg-input",
         className
       )}
-      role="presentation"
     >
       <Icon aria-hidden />
       {label}
