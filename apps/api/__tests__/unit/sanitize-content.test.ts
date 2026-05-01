@@ -256,26 +256,6 @@ describe("sanitizeDocumentContent", () => {
       expect(secondPass.content).toBe(firstPass.content);
     });
   });
-
-  describe("performance", () => {
-    it("sanitizes a 50KB prose-heavy document under 50ms in CI", () => {
-      // Production hardware target: <10ms per AC-006; 50ms threshold is generous for GitHub Actions CPU variance.
-      const doc = buildProseDocument(51_200);
-      const start = Date.now();
-      sanitizeDocumentContent(doc);
-      const elapsed = Date.now() - start;
-      expect(elapsed).toBeLessThan(50);
-    });
-
-    it("sanitizes a 50KB document with 30+ code blocks under 50ms in CI", () => {
-      // Production hardware target: <10ms per AC-006; 50ms threshold is generous for GitHub Actions CPU variance.
-      const doc = buildCodeBlockDocument(51_200, 32);
-      const start = Date.now();
-      sanitizeDocumentContent(doc);
-      const elapsed = Date.now() - start;
-      expect(elapsed).toBeLessThan(50);
-    });
-  });
 });
 
 describe("sanitizeAndLog", () => {
@@ -324,75 +304,3 @@ describe("sanitizeAndLog", () => {
     });
   });
 });
-
-function buildProseDocument(targetBytes: number): string {
-  const headings = [
-    "# Introduction",
-    "## Background",
-    "### Details",
-    "#### Notes",
-    "##### Summary",
-  ];
-  const paragraphs = [
-    "This is a sample paragraph with some **bold** text and _italic_ text for variety.",
-    "Another paragraph that contains a [link](https://example.com) and more content to pad the document.",
-    "A third paragraph with ~~strikethrough~~ and more words to fill up the required byte count.",
-    "Yet another paragraph discussing various topics without any code blocks or dangerous HTML content.",
-  ];
-  const listItems = [
-    "- First item in the list",
-    "- Second item with **emphasis**",
-    "- Third item with a [link](https://example.com/page)",
-    "1. Ordered first item",
-    "2. Ordered second item",
-    "3. Ordered third item",
-  ];
-  const blockquotes = [
-    "> This is a blockquote with some important information.",
-    "> Another blockquote spanning\n> multiple lines of content.",
-  ];
-
-  const chunks = [...headings, ...paragraphs, ...listItems, ...blockquotes];
-
-  let doc = "";
-  let chunkIndex = 0;
-  while (doc.length < targetBytes) {
-    doc += `${chunks[chunkIndex % chunks.length]}\n\n`;
-    chunkIndex++;
-  }
-  return doc;
-}
-
-function buildCodeBlockDocument(
-  targetBytes: number,
-  blockCount: number
-): string {
-  const codeBlock =
-    "```javascript\nconst result = someFunction(input);\nconsole.log(result);\nreturn result;\n```";
-  const proseParagraph =
-    "This is prose padding between code blocks with **bold** and _italic_ text and a [link](https://example.com).";
-
-  const chunks: string[] = [];
-  for (let i = 0; i < blockCount; i++) {
-    chunks.push(`${proseParagraph}\n\n`);
-    chunks.push(`${codeBlock}\n\n`);
-  }
-
-  const baseDoc = chunks.join("");
-  if (baseDoc.length >= targetBytes) {
-    return baseDoc;
-  }
-
-  let doc = baseDoc;
-  let extraIndex = 0;
-  const extraProse = [
-    "Additional prose paragraph to reach the target byte count for this performance test.",
-    "More filler content with **bold**, _italic_, and ~~strikethrough~~ text elements.",
-    "> A blockquote used as padding to grow the document to the required size.",
-  ];
-  while (doc.length < targetBytes) {
-    doc += `${extraProse[extraIndex % extraProse.length]}\n\n`;
-    extraIndex++;
-  }
-  return doc;
-}

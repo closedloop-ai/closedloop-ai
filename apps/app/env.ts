@@ -7,6 +7,7 @@ import { keys as google } from "@repo/google/keys";
 import { keys as linear } from "@repo/linear/keys";
 import { keys as core } from "@repo/next-config/keys";
 import { keys as observability } from "@repo/observability/keys";
+import { keys as security } from "@repo/security/keys";
 import { keys as webhooks } from "@repo/webhooks/keys";
 import { createEnv } from "@t3-oss/env-nextjs";
 import { z } from "zod";
@@ -22,6 +23,7 @@ export const env = createEnv({
     google(),
     linear(),
     observability(),
+    security(),
     webhooks(),
   ],
   server: {

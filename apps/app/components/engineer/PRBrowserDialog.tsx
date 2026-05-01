@@ -1602,7 +1602,7 @@ export function PRBrowserDialog({
               autoFocus
               onChange={(value) => setNewRepoPath(value)}
               onSelect={(path) => setNewRepoPath(path)}
-              placeholder="~/Source/my-repo"
+              placeholder="Path to a local repository"
               value={newRepoPath}
             />
           </div>

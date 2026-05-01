@@ -1,0 +1,312 @@
+{
+  "data": [
+    {
+      "id": "api.requests.count",
+      "attributes": {
+        "filter": {
+          "query": "service:api \"request_completed\""
+        },
+        "group_by": [
+          {
+            "path": "@method",
+            "tag_name": "method"
+          },
+          {
+            "path": "@path",
+            "tag_name": "path"
+          },
+          {
+            "path": "@status_code",
+            "tag_name": "status_code"
+          }
+        ],
+        "compute": {
+          "aggregation_type": "count"
+        }
+      },
+      "type": "logs_metrics"
+    },
+    {
+      "id": "api.requests.latency",
+      "attributes": {
+        "filter": {
+          "query": "service:api-prod @lambda.billed_duration:>0 -@path:\"/_middleware\""
+        },
+        "group_by": [
+          {
+            "path": "@path",
+            "tag_name": "path"
+          },
+          {
+            "path": "@proxy.method",
+            "tag_name": "method"
+          }
+        ],
+        "compute": {
+          "aggregation_type": "distribution",
+          "path": "@lambda.billed_duration",
+          "include_percentiles": true
+        }
+      },
+      "type": "logs_metrics"
+    },
+    {
+      "id": "api.errors.count",
+      "attributes": {
+        "filter": {
+          "query": "service:api \"request_completed\" @status_code:>=400"
+        },
+        "group_by": [
+          {
+            "path": "@path",
+            "tag_name": "path"
+          },
+          {
+            "path": "@status_code",
+            "tag_name": "status_code"
+          }
+        ],
+        "compute": {
+          "aggregation_type": "count"
+        }
+      },
+      "type": "logs_metrics"
+    },
+    {
+      "id": "api.timeouts.count",
+      "attributes": {
+        "filter": {
+          "query": "service:api-prod \"Task timed out after 300 seconds\""
+        },
+        "group_by": [
+          {
+            "path": "@path",
+            "tag_name": "path"
+          }
+        ],
+        "compute": {
+          "aggregation_type": "count"
+        }
+      },
+      "type": "logs_metrics"
+    },
+    {
+      "id": "relay.heartbeats.count",
+      "attributes": {
+        "filter": {
+          "query": "service:api \"Relay presence heartbeat\""
+        },
+        "group_by": [
+          {
+            "path": "@computeTargetId",
+            "tag_name": "compute_target_id"
+          },
+          {
+            "path": "@gatewaySessionId",
+            "tag_name": "gateway_session_id"
+          }
+        ],
+        "compute": {
+          "aggregation_type": "count"
+        }
+      },
+      "type": "logs_metrics"
+    },
+    {
+      "id": "relay.socket_events.latency",
+      "attributes": {
+        "filter": {
+          "query": "service:api-prod @path:\"/internal/relay/socket-event\" @lambda.billed_duration:>0"
+        },
+        "group_by": [],
+        "compute": {
+          "aggregation_type": "distribution",
+          "path": "@lambda.billed_duration",
+          "include_percentiles": true
+        }
+      },
+      "type": "logs_metrics"
+    },
+    {
+      "id": "api.webhooks.github",
+      "attributes": {
+        "filter": {
+          "query": "service:api \"[webhook/github] Validating\""
+        },
+        "group_by": [
+          {
+            "path": "@eventType",
+            "tag_name": "event_type"
+          }
+        ],
+        "compute": {
+          "aggregation_type": "count"
+        }
+      },
+      "type": "logs_metrics"
+    },
+    {
+      "id": "relay.command_events",
+      "attributes": {
+        "filter": {
+          "query": "service:api \"Relay command event received\""
+        },
+        "group_by": [
+          {
+            "path": "@commandId",
+            "tag_name": "command_id"
+          },
+          {
+            "path": "@computeTargetId",
+            "tag_name": "compute_target_id"
+          },
+          {
+            "path": "@eventType",
+            "tag_name": "event_type"
+          }
+        ],
+        "compute": {
+          "aggregation_type": "count"
+        }
+      },
+      "type": "logs_metrics"
+    },
+    {
+      "id": "relay.disconnects",
+      "attributes": {
+        "filter": {
+          "query": "service:api \"Relay disconnect received\""
+        },
+        "group_by": [
+          {
+            "path": "@computeTargetId",
+            "tag_name": "compute_target_id"
+          },
+          {
+            "path": "@gatewaySessionId",
+            "tag_name": "gateway_session_id"
+          }
+        ],
+        "compute": {
+          "aggregation_type": "count"
+        }
+      },
+      "type": "logs_metrics"
+    },
+    {
+      "id": "api.webhooks.check_runs",
+      "attributes": {
+        "filter": {
+          "query": "service:api \"[handleCheckRun] Processing\""
+        },
+        "group_by": [
+          {
+            "path": "@check_run_name",
+            "tag_name": "check_run_name"
+          },
+          {
+            "path": "@conclusion",
+            "tag_name": "conclusion"
+          },
+          {
+            "path": "@head_branch",
+            "tag_name": "head_branch"
+          }
+        ],
+        "compute": {
+          "aggregation_type": "count"
+        }
+      },
+      "type": "logs_metrics"
+    },
+    {
+      "id": "relay.commands.dispatch",
+      "attributes": {
+        "filter": {
+          "query": "service:api \"Relay dispatch result\""
+        },
+        "group_by": [
+          {
+            "path": "@commandId",
+            "tag_name": "command_id"
+          },
+          {
+            "path": "@computeTargetId",
+            "tag_name": "compute_target_id"
+          },
+          {
+            "path": "@delivered",
+            "tag_name": "delivered"
+          },
+          {
+            "path": "@reason",
+            "tag_name": "reason"
+          }
+        ],
+        "compute": {
+          "aggregation_type": "count"
+        }
+      },
+      "type": "logs_metrics"
+    },
+    {
+      "id": "relay.command_acks",
+      "attributes": {
+        "filter": {
+          "query": "service:api \"Relay command ack received\""
+        },
+        "group_by": [
+          {
+            "path": "@accepted",
+            "tag_name": "accepted"
+          },
+          {
+            "path": "@commandId",
+            "tag_name": "command_id"
+          },
+          {
+            "path": "@computeTargetId",
+            "tag_name": "compute_target_id"
+          }
+        ],
+        "compute": {
+          "aggregation_type": "count"
+        }
+      },
+      "type": "logs_metrics"
+    },
+    {
+      "id": "api.requests.latency.app",
+      "attributes": {
+        "filter": {
+          "query": "service:api \"request_completed\" @duration_ms:>0"
+        },
+        "group_by": [
+          {
+            "path": "@method",
+            "tag_name": "method"
+          },
+          {
+            "path": "@path",
+            "tag_name": "path"
+          }
+        ],
+        "compute": {
+          "aggregation_type": "distribution",
+          "path": "@duration_ms",
+          "include_percentiles": true
+        }
+      },
+      "type": "logs_metrics"
+    }
+  ],
+  "_meta": {
+    "purpose": "Snapshot of all 13 ClosedLoop log-based metric generators (api.* and relay.*) as fetched from the Datadog API at the time PR #1021 shipped. Acts as the starting state for the PRD-159 OpenTofu import; redundant once HCL becomes the source of truth.",
+    "source_endpoint": "GET https://api.datadoghq.com/api/v2/logs/config/metrics",
+    "filtered_to": "ids matching api.* or relay.*",
+    "captured_at": "2026-05-01",
+    "captured_in_pr": "https://github.com/closedloop-ai/symphony-alpha/pull/1021",
+    "transitional": "PRD-159 will replace this file with HCL imports in cl-tofu-aws-live/prod/datadog/pipelines/. Delete this file when PRD-159 lands.",
+    "iterate_with": "jq .data[] <file>"
+  }
+}
