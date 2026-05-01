@@ -5,7 +5,10 @@ import os from "node:os";
 import path from "node:path";
 import { after, afterEach, beforeEach, describe, test } from "node:test";
 
-import { LoopArtifactType } from "@closedloop-ai/loops-api/artifacts";
+import {
+  LoopArtifactFile,
+  LoopArtifactType,
+} from "@closedloop-ai/loops-api/artifacts";
 
 import {
   buildClaudeDirectArgs,
@@ -42,6 +45,7 @@ import {
   writeContextPackFiles,
   writeExecutionResult,
   writeExecutionResultV2,
+  writeFeatureEvaluationPrdFile,
   writePrdFile,
 } from "./harness-agent.mjs";
 
@@ -211,6 +215,137 @@ test("buildClaudeDirectArgs with EVALUATE_PRD invokes judges:run-judges with art
 });
 
 // ---------------------------------------------------------------------------
+// EVALUATE_FEATURE — buildClaudeDirectArgs skill invocation tests
+// ---------------------------------------------------------------------------
+
+test("buildClaudeDirectArgs with EVALUATE_FEATURE invokes judges:run-judges with artifact-type feature", () => {
+  const workDir = makeTempDir();
+  resetConfig({ command: "EVALUATE_FEATURE" });
+
+  const { cmd, args } = buildClaudeDirectArgs(workDir, null);
+
+  assert.equal(cmd, "claude");
+
+  const prompt = args.find(
+    (a) => typeof a === "string" && a.includes("judges:run-judges")
+  );
+  assert.ok(
+    prompt !== undefined,
+    `args must contain a prompt referencing judges:run-judges; got: ${JSON.stringify(args)}`
+  );
+  assert.ok(
+    prompt.includes("--artifact-type feature"),
+    `prompt must contain --artifact-type feature; got: ${prompt}`
+  );
+  assert.ok(
+    prompt.includes(`--workdir ${workDir}`),
+    `prompt must contain --workdir <workDir>; got: ${prompt}`
+  );
+  // --artifact-type feature is embedded in the prompt string, not a separate argv entry
+  assert.equal(
+    args.indexOf("--artifact-type"),
+    -1,
+    "args must NOT contain --artifact-type as a separate flag (it belongs inside the prompt)"
+  );
+  // Feature evaluation is repo-less — no REPO_PATH= in the prompt
+  assert.ok(
+    !prompt.includes("REPO_PATH="),
+    `prompt must NOT contain REPO_PATH= for EVALUATE_FEATURE (feature evaluation is repo-less); got: ${prompt}`
+  );
+});
+
+test("buildClaudeDirectArgs with EVALUATE_FEATURE uses symphonyWD (run directory) for --workdir when provided", () => {
+  const workDir = makeTempDir();
+  const symphonyWD = makeTempDir();
+  resetConfig({ command: "EVALUATE_FEATURE" });
+
+  const { args } = buildClaudeDirectArgs(workDir, symphonyWD);
+
+  const prompt = args.find(
+    (a) => typeof a === "string" && a.includes("judges:run-judges")
+  );
+  assert.ok(
+    prompt !== undefined,
+    `args must contain a prompt referencing judges:run-judges; got: ${JSON.stringify(args)}`
+  );
+  assert.ok(
+    prompt.includes(`--workdir ${symphonyWD}`),
+    `prompt must contain --workdir <symphonyWD> when symphonyWD is provided; got: ${prompt}`
+  );
+  assert.ok(
+    !prompt.includes(`--workdir ${workDir}`),
+    `prompt must NOT contain --workdir <workDir> when symphonyWD is provided (symphonyWD is the run directory); got: ${prompt}`
+  );
+});
+
+// ---------------------------------------------------------------------------
+// EVALUATE_FEATURE — validateConfig and validateSecrets tests
+// ---------------------------------------------------------------------------
+
+describe("EVALUATE_FEATURE validation", () => {
+  for (const scenario of [
+    {
+      name: "validateConfig does not require targetRepo",
+      config: { command: "EVALUATE_FEATURE", targetRepo: undefined },
+      validate: validateConfig,
+    },
+    {
+      name: "validateSecrets does not require githubToken",
+      config: {
+        command: "EVALUATE_FEATURE",
+        targetRepo: null,
+        anthropicApiKey: "sk-test",
+        githubToken: null,
+      },
+      validate: validateSecrets,
+    },
+  ]) {
+    test(scenario.name, () => {
+      resetConfig(scenario.config);
+
+      assert.doesNotThrow(() => scenario.validate());
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// EVALUATE_FEATURE — artifact upload list includes FeatureJudges
+// ---------------------------------------------------------------------------
+
+// Verify LoopArtifactFile.FeatureJudges is referenced in the
+// CLAUDE_PLUGIN_ARTIFACT_FILE_NAMES array via source inspection
+// (the array is a local const, not exported).
+test("CLAUDE_PLUGIN_ARTIFACT_FILE_NAMES includes LoopArtifactFile.FeatureJudges", () => {
+  const harnessSource = fs.readFileSync(
+    new URL("./harness-agent.mjs", import.meta.url),
+    "utf-8"
+  );
+
+  // Match the array literal body so we verify the identifier is inside this
+  // specific array, not elsewhere in the file (a comment, dead code, etc.).
+  const arrayMatch =
+    /const\s+CLAUDE_PLUGIN_ARTIFACT_FILE_NAMES\s*=\s*\[([\s\S]*?)\]/.exec(
+      harnessSource
+    );
+  assert.ok(
+    arrayMatch !== null,
+    "harness-agent.mjs must declare const CLAUDE_PLUGIN_ARTIFACT_FILE_NAMES = [...]"
+  );
+  const arrayBody = arrayMatch[1];
+  assert.ok(
+    arrayBody.includes("LoopArtifactFile.FeatureJudges"),
+    "CLAUDE_PLUGIN_ARTIFACT_FILE_NAMES array body must contain LoopArtifactFile.FeatureJudges"
+  );
+
+  // Confirm the resolved file name matches what the backend expects.
+  assert.equal(
+    LoopArtifactFile.FeatureJudges,
+    "feature-judges.json",
+    "LoopArtifactFile.FeatureJudges must resolve to feature-judges.json"
+  );
+});
+
+// ---------------------------------------------------------------------------
 // (d) validateConfig does not push targetRepo to requiredEnv for EVALUATE_PRD
 // ---------------------------------------------------------------------------
 
@@ -309,6 +444,41 @@ test("validatePreRunInputs does not throw for EVALUATE_PRD with non-empty artifa
   };
 
   assert.doesNotThrow(() => validatePreRunInputs("EVALUATE_PRD", contextPack));
+});
+
+test("validatePreRunInputs requires a non-empty FEATURE artifact for EVALUATE_FEATURE", () => {
+  assert.throws(
+    () =>
+      validatePreRunInputs("EVALUATE_FEATURE", {
+        artifacts: [
+          {
+            id: "prd-1",
+            type: LoopArtifactType.Prd,
+            content: "source prd content",
+          },
+        ],
+      }),
+    (err) => {
+      assert.ok(err instanceof HarnessError, "must be a HarnessError");
+      assert.equal(err.code, ERROR_CODES.preRunValidation);
+      assert.match(err.message, /FEATURE artifact/);
+      return true;
+    }
+  );
+});
+
+test("validatePreRunInputs accepts EVALUATE_FEATURE with a non-empty FEATURE artifact", () => {
+  assert.doesNotThrow(() =>
+    validatePreRunInputs("EVALUATE_FEATURE", {
+      artifacts: [
+        {
+          id: "feature-1",
+          type: LoopArtifactType.Feature,
+          content: "feature content",
+        },
+      ],
+    })
+  );
 });
 
 describe("writeContextPackFiles context directory", () => {
@@ -998,6 +1168,36 @@ describe("writePrdFile", () => {
     });
     assert.ok(result);
     assert.equal(fs.readFileSync(result, "utf-8"), "PRD text");
+  });
+
+  test("feature evaluation writes FEATURE artifact even when a PRD artifact is present", () => {
+    const dir = makeTempDir();
+    const result = writeFeatureEvaluationPrdFile(dir, {
+      artifacts: [
+        { id: "prd-1", type: LoopArtifactType.Prd, content: "Source PRD" },
+        {
+          id: "feature-1",
+          type: LoopArtifactType.Feature,
+          content: "Feature artifact",
+        },
+      ],
+    });
+
+    assert.ok(result);
+    assert.equal(fs.readFileSync(result, "utf-8"), "Feature artifact");
+  });
+
+  test("feature evaluation ignores prompt and PRD fallback when selecting content", () => {
+    const dir = makeTempDir();
+    const result = writeFeatureEvaluationPrdFile(dir, {
+      prompt: "Prompt text",
+      artifacts: [
+        { id: "prd-1", type: LoopArtifactType.Prd, content: "Source PRD" },
+      ],
+    });
+
+    assert.equal(result, null);
+    assert.ok(!fs.existsSync(path.join(dir, LoopArtifactFile.Prd)));
   });
 
   test("prompt takes priority over PRD artifact", () => {
