@@ -144,7 +144,7 @@ export function handleTelemetryEvent(
       ...(sanitizedDiagnostics !== undefined && {
         diagnostics: sanitizedDiagnostics,
       }),
-      ...(event.message !== undefined && { message: event.message }),
+      ...(event.message !== undefined && { telemetryMessage: event.message }),
       ...(event.errorClass !== undefined && { errorClass: event.errorClass }),
       origin: Origin.Desktop,
       ...(context.organizationId !== undefined && {
@@ -166,7 +166,7 @@ export function handleTelemetryEvent(
       severity: event.severity,
       timestamp: event.timestamp,
       trace: event.trace,
-      ...(event.message !== undefined && { message: event.message }),
+      ...(event.message !== undefined && { telemetryMessage: event.message }),
       ...(event.errorClass !== undefined && { errorClass: event.errorClass }),
       origin: Origin.Desktop,
       ...(context.organizationId !== undefined && {

@@ -577,7 +577,7 @@ export function RepoPickerDialog({
                         autoFocus
                         onChange={setNewRepoPath}
                         onSelect={handleAddRepo}
-                        placeholder="~/Source/my-repo"
+                        placeholder="Path to a local repository"
                         value={newRepoPath}
                       />
 

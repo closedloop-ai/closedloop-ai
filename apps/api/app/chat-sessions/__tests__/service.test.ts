@@ -357,6 +357,35 @@ describe("chatSessionsService.create", () => {
     expect(mockUpdate).not.toHaveBeenCalled();
   });
 
+  it("creates a row with an empty messages array when the messages parameter is omitted", async () => {
+    const row = await createChat({
+      userId: USER_A,
+      organizationId: ORG_A,
+      chatKey: CHAT_KEY,
+      provider: "claude",
+      model: "claude-sonnet-4-5",
+    });
+
+    expect(msgs(row)).toEqual([]);
+    expect(mockCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it("stores an explicit context string on the created row", async () => {
+    const row = await createChat({
+      userId: USER_A,
+      organizationId: ORG_A,
+      chatKey: CHAT_KEY,
+      provider: "claude",
+      model: "claude-sonnet-4-5",
+      context: "You are a helpful assistant working on feature PLN-1.",
+    });
+
+    expect(row.context).toBe(
+      "You are a helpful assistant working on feature PLN-1."
+    );
+    expect(mockCreate).toHaveBeenCalledTimes(1);
+  });
+
   it("returns { conflict, boundProvider } when an existing chat was bound to a different provider", async () => {
     await createChat({
       userId: USER_A,
@@ -766,6 +795,29 @@ describe("chatSessionsService.upsertTurn", () => {
     expect(reread?.sessionId).toBe("sess-old");
     expect(reread?.sessionSourceId).toBe(GATEWAY_B);
   });
+
+  it("passes context through to the created row when supplied on a new chat", async () => {
+    const result = await chatSessionsService.upsertTurn(USER_A, ORG_A, {
+      chatKey: CHAT_KEY,
+      userMessage: u1,
+      provider: "claude",
+      model: "claude-sonnet-4-5",
+      sourceGatewayId: GATEWAY_A,
+      context: "You are a helpful assistant working on feature PLN-438.",
+    });
+
+    const value = unwrapOk(result);
+    expect(value.chat.context).toBe(
+      "You are a helpful assistant working on feature PLN-438."
+    );
+    expect(mockCreate).toHaveBeenCalledTimes(1);
+    const createCall = mockCreate.mock.calls[0][0] as {
+      data: Record<string, unknown>;
+    };
+    expect(createCall.data.context).toBe(
+      "You are a helpful assistant working on feature PLN-438."
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -877,5 +929,43 @@ describe("chatSessionsService.appendAssistantTurn", () => {
     const ids = reread ? msgs(reread).map((m) => m.id) : [];
     expect(ids).toEqual(["u1", "a1"]);
     expect(ids.filter((id: string) => id === "a1")).toHaveLength(1);
+  });
+
+  it("short-circuits without a DB write when sessionId, sessionSourceId, and messages are all unchanged", async () => {
+    // Seed a row that already has sessionId and sessionSourceId set plus the
+    // assistant message stored.
+    const storedUpdatedAt = nextDate();
+    const row: Row = {
+      id: "chat-seed",
+      chatKey: CHAT_KEY,
+      userId: USER_A,
+      organizationId: ORG_A,
+      provider: "claude",
+      model: "claude-sonnet-4-5",
+      messages: [u1, a1],
+      sessionId: "sess-xyz",
+      sessionSourceId: GATEWAY_A,
+      context: null,
+      createdAt: storedUpdatedAt,
+      updatedAt: storedUpdatedAt,
+    };
+    store.set(keyOf(USER_A, CHAT_KEY), row);
+    mockUpdate.mockClear();
+
+    const result = await chatSessionsService.appendAssistantTurn(USER_A, {
+      chatKey: CHAT_KEY,
+      provider: "claude",
+      messages: [a1],
+      sessionId: "sess-xyz",
+      sessionSourceId: GATEWAY_A,
+    });
+
+    const value = unwrapOk(result);
+    // No new messages and identical session fields — no DB write must occur.
+    expect(mockUpdate).not.toHaveBeenCalled();
+    // updatedAt must be exactly the value that was stored before the call.
+    expect(value.chat.updatedAt).toEqual(storedUpdatedAt);
+    // The returned messages should be identical to what was already stored.
+    expect(msgs(value.chat).map((m) => m.id)).toEqual(["u1", "a1"]);
   });
 });
