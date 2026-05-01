@@ -11,9 +11,23 @@ type ProjectSummary = {
   name: string;
 };
 
+type DefaultRepositoryStub = {
+  repoId: string;
+  repoFullName: string;
+  branch: string;
+};
+
 export async function createProject(
   request: APIRequestContext,
-  { teamIds, name }: { teamIds: string[]; name: string }
+  {
+    teamIds,
+    name,
+    defaultRepository,
+  }: {
+    teamIds: string[];
+    name: string;
+    defaultRepository?: DefaultRepositoryStub;
+  }
 ): Promise<ProjectSummary> {
   const api = getApiBaseUrl();
   const response = await request.post(`${api}/projects`, {
@@ -25,7 +39,33 @@ export async function createProject(
     throw new Error(body.error);
   }
 
-  return { id: body.data.id, slug: body.data.slug, name: body.data.name };
+  const project = {
+    id: body.data.id,
+    slug: body.data.slug,
+    name: body.data.name,
+  };
+
+  if (defaultRepository) {
+    await setProjectDefaultRepository(request, project.id, defaultRepository);
+  }
+
+  return project;
+}
+
+async function setProjectDefaultRepository(
+  request: APIRequestContext,
+  projectId: string,
+  defaultRepository: DefaultRepositoryStub
+): Promise<void> {
+  const api = getApiBaseUrl();
+  const response = await request.put(`${api}/projects/${projectId}`, {
+    data: { settings: { defaultRepository } },
+  });
+  if (!response.ok()) {
+    throw new Error(
+      `Failed to set defaultRepository on project ${projectId}: ${response.status()} ${response.statusText()}`
+    );
+  }
 }
 
 export async function deleteProject(

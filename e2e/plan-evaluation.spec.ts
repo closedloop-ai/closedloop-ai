@@ -153,6 +153,14 @@ test("Generate Plan on a Feature sourced from a PRD does NOT create an EVALUATE_
   const project = await createProject(request, {
     name: createUniqueName("e2e-plan-eval"),
     teamIds: [team.id],
+    // The Generate Plan submit button gates on project.settings.defaultRepository
+    // when a source document is selected (NewPlanModal isCreateSubmitDisabled).
+    // Stub a repository so the form is submittable in the test environment.
+    defaultRepository: {
+      repoId: "e2e-stub",
+      repoFullName: "e2e/stub",
+      branch: "main",
+    },
   });
 
   const prd = await createDocument(request, {
