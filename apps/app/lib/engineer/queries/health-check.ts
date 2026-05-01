@@ -8,6 +8,11 @@ import {
 import type { EngineerRoutingSelection } from "@/lib/engineer/routing-store";
 import { queryKeys } from "./keys";
 
+const APP_VERSION_CHECK_ID = "app-version";
+const APP_VERSION_CHECK_LABEL = "Gateway Version";
+const PLUGIN_VERSIONS_CHECK_ID = "plugin-versions";
+const PLUGIN_VERSIONS_CHECK_LABEL = "Plugin Updates";
+
 export type CheckResultDebug = {
   errorCode?: string;
   stderr?: string;
@@ -61,17 +66,39 @@ type HealthCheckTargetScope =
 
 type HealthCheckOptionsConfig = {
   relayTargetId?: string | null;
+  latestVersion?: string | null;
 };
 
 type HealthCheckRequestInput = {
   expectedMcpUrl: string | null;
   relayTargetId?: string | null;
+  latestVersion?: string | null;
 };
 
 export type HealthCheckRequestConfig = {
   url: string;
   init?: RequestInit;
 };
+
+function normalizeHealthCheck(check: CheckResult): CheckResult {
+  if (check.id === APP_VERSION_CHECK_ID) {
+    return {
+      ...check,
+      label: APP_VERSION_CHECK_LABEL,
+      passed: true,
+      required: true,
+    };
+  }
+
+  if (check.id === PLUGIN_VERSIONS_CHECK_ID) {
+    return {
+      ...check,
+      label: PLUGIN_VERSIONS_CHECK_LABEL,
+    };
+  }
+
+  return check;
+}
 
 export function getHealthCheckTargetKey(
   routing: Pick<EngineerRoutingSelection, "mode" | "computeTargetId">
@@ -190,7 +217,9 @@ export function getRenderableHealthChecks(
     return undefined;
   }
 
-  const checks = response?.checks ? [...response.checks] : [];
+  const checks = response?.checks
+    ? response.checks.map(normalizeHealthCheck)
+    : [];
   const claudeMcp = getMcpCheckResult(
     "claude",
     response.mcpServers?.claude,
@@ -213,14 +242,18 @@ export function getRenderableHealthChecks(
   return checks;
 }
 
-/** Builds the health-check request for either direct local-gateway or relay-target execution. */
+/** Builds the health-check request for direct local-gateway or relay-target execution. */
 export function buildHealthCheckRequest({
   expectedMcpUrl,
   relayTargetId = null,
+  latestVersion = null,
 }: HealthCheckRequestInput): HealthCheckRequestConfig {
   const params = new URLSearchParams();
   if (expectedMcpUrl) {
     params.set("expectedMcpUrl", expectedMcpUrl);
+  }
+  if (latestVersion) {
+    params.set("latestVersion", latestVersion);
   }
 
   const path =
@@ -251,13 +284,15 @@ export function healthCheckOptions(
   const targetKey =
     typeof routing === "string" ? routing : getHealthCheckTargetKey(routing);
   const relayTargetId = config.relayTargetId ?? null;
+  const latestVersion = config.latestVersion || null;
 
   return queryOptions<HealthCheckResponse>({
-    queryKey: queryKeys.healthCheck(targetKey, expectedMcpUrl),
+    queryKey: queryKeys.healthCheck(targetKey, expectedMcpUrl, latestVersion),
     queryFn: async () => {
       const request = buildHealthCheckRequest({
         expectedMcpUrl,
         relayTargetId,
+        latestVersion,
       });
       const res = await fetch(request.url, request.init);
       return res.json();

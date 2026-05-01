@@ -195,9 +195,13 @@ function getSummaryBadgeClassName({
 
 function ComputeTargetSystemCheck({
   expectedMcpUrl,
+  isLatestVersionLoading,
+  latestVersion,
   target,
 }: {
   expectedMcpUrl: string | null;
+  isLatestVersionLoading: boolean;
+  latestVersion: string | null;
   target: ComputeTarget;
 }) {
   const [open, setOpen] = useState(false);
@@ -207,7 +211,8 @@ function ComputeTargetSystemCheck({
   });
   const healthCheckQueryKey = queryKeys.healthCheck(
     healthCheckTargetKey,
-    expectedMcpUrl
+    expectedMcpUrl,
+    latestVersion
   );
   const {
     data: healthCheckData,
@@ -216,6 +221,7 @@ function ComputeTargetSystemCheck({
   } = useQuery({
     ...healthCheckOptions(healthCheckTargetKey, expectedMcpUrl, {
       relayTargetId: target.id,
+      latestVersion,
     }),
     enabled: false,
     refetchOnMount: false,
@@ -225,11 +231,12 @@ function ComputeTargetSystemCheck({
   const isHealthCheckFetching =
     useIsFetching({ queryKey: healthCheckQueryKey }) > 0;
   const isEligible = target.isOnline;
+  const canRunHealthCheck = isEligible && !isLatestVersionLoading;
 
   const handleRunCheck = async (event: MouseEvent<HTMLButtonElement>) => {
     event.stopPropagation();
 
-    if (!isEligible) {
+    if (!canRunHealthCheck) {
       return;
     }
 
@@ -293,7 +300,7 @@ function ComputeTargetSystemCheck({
 
           <Button
             className="w-full shrink-0 gap-1.5 md:w-auto"
-            disabled={!isEligible || isHealthCheckFetching}
+            disabled={!canRunHealthCheck || isHealthCheckFetching}
             onClick={handleRunCheck}
             size="sm"
             variant="outline"
@@ -335,6 +342,7 @@ export function LocalComputeTargetsCard() {
   const deleteTarget = useDeleteComputeTarget(userId);
   const toggleSharing = useToggleComputeTargetSharing();
   const desktopUpdateUrl = latestDesktopRelease?.downloadUrl ?? null;
+  const latestDesktopVersion = latestDesktopRelease?.version ?? null;
 
   const handleUpdateIsUpdatingChange = useCallback(
     (targetId: string, isUpdating: boolean) => {
@@ -530,6 +538,8 @@ export function LocalComputeTargetsCard() {
 
               <ComputeTargetSystemCheck
                 expectedMcpUrl={expectedMcpUrl}
+                isLatestVersionLoading={isDesktopReleaseLoading}
+                latestVersion={latestDesktopVersion}
                 target={target}
               />
             </div>
