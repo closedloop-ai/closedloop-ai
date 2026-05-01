@@ -182,7 +182,7 @@ test("Generate Plan on a Feature sourced from a PRD does NOT create an EVALUATE_
   let createdPlanId: string | null = null;
 
   try {
-    await authenticateToApp(page);
+    await authenticateToApp(page, { fresh: true });
     await page.goto(`/features/${feature.slug}`);
 
     const generatePlanButton = page.getByRole("button", {
@@ -289,7 +289,7 @@ test("Evaluate PRD on a PRD document DOES trigger an evaluate_prd run-loop reque
       }
     });
 
-    await authenticateToApp(page);
+    await authenticateToApp(page, { fresh: true });
     await page.goto(`/prds/${prd.slug}`);
 
     const actionsButton = page.getByRole("button", { name: RE_ACTIONS_BUTTON });
