@@ -2,18 +2,23 @@
  * E2E tests for PLN-442: plan generation and PRD evaluation run-loop routing.
  *
  * Test 1 (regression guard): When a user clicks "Generate Plan" on a Feature
- * document and submits the NewPlanModal, the run-loop endpoint must be called
- * with command="plan" only. An evaluate_prd command must never be dispatched as
- * a side effect of plan generation on a Feature.
+ * that is sourced from a PRD (PRODUCES link), submitting the NewPlanModal must
+ * NOT cause the server to dispatch an EVALUATE_PRD loop on the source PRD as a
+ * side effect. The check queries the loops API for EVALUATE_PRD loops on the
+ * source PRD and asserts none were created — this catches the actual server
+ * side effect (which the client never observes).
  *
  * Test 2 (positive case): When a user clicks "Evaluate PRD" on a PRD document,
  * the run-loop endpoint must be called with command="evaluate_prd".
  */
-import type { APIRequestContext, Page } from "@playwright/test";
+import type { APIRequestContext } from "@playwright/test";
+import { type ArtifactLink, LinkType } from "@repo/api/src/types/artifact";
 import type { ApiResult } from "@repo/api/src/types/common";
+import { DocumentType } from "@repo/api/src/types/document";
+import { LoopCommand, type LoopWithUser } from "@repo/api/src/types/loop";
 import { getApiBaseUrl } from "./helpers/api-url";
-import { createProject } from "./helpers/create-project";
-import { createTeam } from "./helpers/create-team";
+import { createProject, deleteProject } from "./helpers/create-project";
+import { createTeam, deleteTeam } from "./helpers/create-team";
 import { authenticateToApp } from "./helpers/sign-in";
 import { createUniqueName } from "./helpers/utils";
 import { expect, test } from "./test";
@@ -23,6 +28,9 @@ const RE_GENERATE_PLAN_BUTTON = /generate plan/i;
 const RE_PLAN_TITLE_INPUT = /title/i;
 const RE_ACTIONS_BUTTON = /^actions$/i;
 const RE_EVALUATE_PRD_BUTTON = /evaluate prd/i;
+
+const EVALUATE_PRD_POLL_TIMEOUT_MS = 5000;
+const EVALUATE_PRD_POLL_INTERVAL_MS = 500;
 
 type DocumentSummary = {
   id: string;
@@ -42,7 +50,7 @@ async function createDocument(
     content,
   }: {
     projectId: string;
-    type: string;
+    type: DocumentType;
     title: string;
     content: string;
   }
@@ -84,31 +92,58 @@ async function deleteDocument(
 }
 
 /**
- * Installs a request listener that captures run-loop POST requests containing
- * "evaluate_prd" in the body. Returns the captured entries array.
+ * Creates a PRODUCES artifact link from `sourceId` to `targetId`. Used to
+ * establish the PRD → Feature source relationship that the run-loop handler
+ * resolves via documentWorkstreamService.findSourceWithContent.
  */
-function captureEvaluatePrdRequests(page: Page): string[] {
-  const captured: string[] = [];
-
-  page.on("request", (req) => {
-    if (req.method() !== "POST" || !req.url().includes("/run-loop")) {
-      return;
-    }
-
-    try {
-      const body = req.postData() ?? "";
-      if (body.includes("evaluate_prd")) {
-        captured.push(`${req.method()} ${req.url()} body=${body}`);
-      }
-    } catch {
-      // postData() can throw for non-text bodies — ignore.
-    }
+async function createProducesLink(
+  request: APIRequestContext,
+  sourceId: string,
+  targetId: string
+): Promise<void> {
+  const api = getApiBaseUrl();
+  const response = await request.post(`${api}/artifact-links`, {
+    data: { sourceId, targetId, linkType: LinkType.Produces },
   });
-
-  return captured;
+  const body = (await response.json()) as ApiResult<ArtifactLink>;
+  if (!body.success) {
+    throw new Error(`Failed to create artifact link: ${body.error}`);
+  }
 }
 
-test("Generate Plan on a Feature does NOT trigger an evaluate_prd run-loop request", async ({
+/**
+ * Polls the loops API for any EVALUATE_PRD loops on the given document and
+ * returns the count once polling completes (success or timeout). Used to
+ * detect server-side side effects that the client cannot observe directly.
+ */
+async function countEvaluatePrdLoops(
+  request: APIRequestContext,
+  documentId: string
+): Promise<number> {
+  const api = getApiBaseUrl();
+  const deadline = Date.now() + EVALUATE_PRD_POLL_TIMEOUT_MS;
+  let lastCount = 0;
+  while (Date.now() < deadline) {
+    const response = await request.get(
+      `${api}/loops?documentId=${documentId}&command=${LoopCommand.EvaluatePrd}`
+    );
+    if (response.ok()) {
+      const body = (await response.json()) as ApiResult<LoopWithUser[]>;
+      if (body.success) {
+        lastCount = body.data.length;
+        if (lastCount > 0) {
+          return lastCount;
+        }
+      }
+    }
+    await new Promise((resolve) =>
+      setTimeout(resolve, EVALUATE_PRD_POLL_INTERVAL_MS)
+    );
+  }
+  return lastCount;
+}
+
+test("Generate Plan on a Feature sourced from a PRD does NOT create an EVALUATE_PRD loop on the source PRD", async ({
   page,
   request,
 }) => {
@@ -120,84 +155,98 @@ test("Generate Plan on a Feature does NOT trigger an evaluate_prd run-loop reque
     teamIds: [team.id],
   });
 
+  const prd = await createDocument(request, {
+    projectId: project.id,
+    type: DocumentType.Prd,
+    title: createUniqueName("e2e-source-prd"),
+    content: "Source PRD content for E2E plan-evaluation regression test.",
+  });
+
   const featureTitle = createUniqueName("e2e-feature");
   const feature = await createDocument(request, {
     projectId: project.id,
-    type: "FEATURE",
+    type: DocumentType.Feature,
     title: featureTitle,
     content: "Feature description for E2E plan-evaluation test.",
   });
 
+  // Establish the PRD → Feature source link so the regression condition
+  // (source?.type === ArtifactType.Document) would be satisfied if present.
+  await createProducesLink(request, prd.id, feature.id);
+
   test.info().annotations.push({
     type: "cleanup",
-    description: `feature=${feature.id}, project=${project.id}, team=${team.id}`,
+    description: `prd=${prd.id}, feature=${feature.id}, project=${project.id}, team=${team.id}`,
   });
 
-  // Set up network monitoring BEFORE navigating to capture any evaluate_prd
-  // requests dispatched as a side effect.
-  const evaluatePrdRequests = captureEvaluatePrdRequests(page);
+  let createdPlanId: string | null = null;
 
-  await authenticateToApp(page);
-  await page.goto(`/features/${feature.slug}`);
+  try {
+    await authenticateToApp(page);
+    await page.goto(`/features/${feature.slug}`);
 
-  const generatePlanButton = page.getByRole("button", {
-    name: RE_GENERATE_PLAN_BUTTON,
-  });
-  await expect(generatePlanButton).toBeVisible({ timeout: 30_000 });
-  await expect(generatePlanButton).toBeEnabled({ timeout: 10_000 });
+    const generatePlanButton = page.getByRole("button", {
+      name: RE_GENERATE_PLAN_BUTTON,
+    });
+    await expect(generatePlanButton).toBeVisible({ timeout: 30_000 });
+    await expect(generatePlanButton).toBeEnabled({ timeout: 10_000 });
 
-  await generatePlanButton.click();
+    await generatePlanButton.click();
 
-  const modal = page.getByRole("dialog", {
-    name: RE_GENERATE_PLAN_MODAL_TITLE,
-  });
-  await expect(modal).toBeVisible({ timeout: 10_000 });
+    const modal = page.getByRole("dialog", {
+      name: RE_GENERATE_PLAN_MODAL_TITLE,
+    });
+    await expect(modal).toBeVisible({ timeout: 10_000 });
 
-  // The modal pre-populates the title from the feature, but fill it if empty.
-  const titleInput = modal.getByLabel(RE_PLAN_TITLE_INPUT);
-  await expect(titleInput).toBeVisible();
-  const existingTitle = await titleInput.inputValue();
-  if (!existingTitle.trim()) {
-    await titleInput.fill(`Plan: ${featureTitle}`);
-  }
-
-  // Intercept the POST to /documents (plan creation) to capture the created
-  // document ID so we can clean it up.
-  const planCreateResponse = page.waitForResponse(
-    (response) =>
-      response.request().method() === "POST" &&
-      response.url().includes("/documents") &&
-      !response.url().includes("/run-loop"),
-    { timeout: 15_000 }
-  );
-
-  const submitButton = modal.getByRole("button", {
-    name: RE_GENERATE_PLAN_BUTTON,
-  });
-  await expect(submitButton).toBeVisible();
-  await expect(submitButton).toBeEnabled();
-  await submitButton.click();
-
-  const planResponse = await planCreateResponse.catch(() => null);
-
-  // Clean up the created plan document.
-  if (planResponse?.ok()) {
-    try {
-      const body = (await planResponse.json()) as ApiResult<DocumentSummary>;
-      if (body.success && body.data.id) {
-        await deleteDocument(request, body.data.id);
-      }
-    } catch {
-      // Ignore cleanup errors.
+    const titleInput = modal.getByLabel(RE_PLAN_TITLE_INPUT);
+    await expect(titleInput).toBeVisible();
+    const existingTitle = await titleInput.inputValue();
+    if (!existingTitle.trim()) {
+      await titleInput.fill(`Plan: ${featureTitle}`);
     }
+
+    const planCreateResponse = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        response.url().includes("/documents") &&
+        !response.url().includes("/run-loop"),
+      { timeout: 15_000 }
+    );
+
+    const submitButton = modal.getByRole("button", {
+      name: RE_GENERATE_PLAN_BUTTON,
+    });
+    await expect(submitButton).toBeVisible();
+    await expect(submitButton).toBeEnabled();
+    await submitButton.click();
+
+    const planResponse = await planCreateResponse.catch(() => null);
+
+    if (planResponse?.ok()) {
+      try {
+        const body = (await planResponse.json()) as ApiResult<DocumentSummary>;
+        if (body.success && body.data.id) {
+          createdPlanId = body.data.id;
+        }
+      } catch {
+        // Ignore parse errors — cleanup will still drop project/team.
+      }
+    }
+
+    // Server-side check: poll the loops API for any EVALUATE_PRD loop on the
+    // source PRD. If the regression returns, scheduleAutoEvaluatePrd would
+    // create one here.
+    const evaluatePrdLoopCount = await countEvaluatePrdLoops(request, prd.id);
+    expect(evaluatePrdLoopCount).toBe(0);
+  } finally {
+    if (createdPlanId) {
+      await deleteDocument(request, createdPlanId);
+    }
+    await deleteDocument(request, feature.id);
+    await deleteDocument(request, prd.id);
+    await deleteProject(request, project.id);
+    await deleteTeam(request, team.id);
   }
-
-  // Allow time for any async run-loop side effects to fire before asserting.
-  await page.waitForTimeout(2000).catch(() => null);
-
-  expect(evaluatePrdRequests).toHaveLength(0);
-
-  await deleteDocument(request, feature.id);
 });
 
 test("Evaluate PRD on a PRD document DOES trigger an evaluate_prd run-loop request", async ({
@@ -214,7 +263,7 @@ test("Evaluate PRD on a PRD document DOES trigger an evaluate_prd run-loop reque
 
   const prd = await createDocument(request, {
     projectId: project.id,
-    type: "PRD",
+    type: DocumentType.Prd,
     title: createUniqueName("e2e-prd"),
     content: "PRD content for E2E plan-evaluation test.",
   });
@@ -224,35 +273,51 @@ test("Evaluate PRD on a PRD document DOES trigger an evaluate_prd run-loop reque
     description: `prd=${prd.id}, project=${project.id}, team=${team.id}`,
   });
 
-  // Set up network monitoring BEFORE navigating.
-  const evaluatePrdRequests = captureEvaluatePrdRequests(page);
+  try {
+    const evaluatePrdRequests: string[] = [];
+    page.on("request", (req) => {
+      if (req.method() !== "POST" || !req.url().includes("/run-loop")) {
+        return;
+      }
+      try {
+        const body = req.postData() ?? "";
+        if (body.includes("evaluate_prd")) {
+          evaluatePrdRequests.push(`${req.method()} ${req.url()} body=${body}`);
+        }
+      } catch {
+        // postData() can throw for non-text bodies — ignore.
+      }
+    });
 
-  await authenticateToApp(page);
-  await page.goto(`/prds/${prd.slug}`);
+    await authenticateToApp(page);
+    await page.goto(`/prds/${prd.slug}`);
 
-  const actionsButton = page.getByRole("button", { name: RE_ACTIONS_BUTTON });
-  await expect(actionsButton).toBeVisible({ timeout: 30_000 });
-  await expect(actionsButton).toBeEnabled({ timeout: 10_000 });
+    const actionsButton = page.getByRole("button", { name: RE_ACTIONS_BUTTON });
+    await expect(actionsButton).toBeVisible({ timeout: 30_000 });
+    await expect(actionsButton).toBeEnabled({ timeout: 10_000 });
 
-  await actionsButton.click();
+    await actionsButton.click();
 
-  const evaluatePrdMenuItem = page.getByRole("menuitem", {
-    name: RE_EVALUATE_PRD_BUTTON,
-  });
-  await expect(evaluatePrdMenuItem).toBeVisible({ timeout: 10_000 });
+    const evaluatePrdMenuItem = page.getByRole("menuitem", {
+      name: RE_EVALUATE_PRD_BUTTON,
+    });
+    await expect(evaluatePrdMenuItem).toBeVisible({ timeout: 10_000 });
 
-  const runLoopResponse = page.waitForResponse(
-    (response) =>
-      response.request().method() === "POST" &&
-      response.url().includes("/run-loop"),
-    { timeout: 15_000 }
-  );
+    const runLoopResponse = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        response.url().includes("/run-loop"),
+      { timeout: 15_000 }
+    );
 
-  await evaluatePrdMenuItem.click();
+    await evaluatePrdMenuItem.click();
 
-  await runLoopResponse.catch(() => null);
+    await runLoopResponse.catch(() => null);
 
-  expect(evaluatePrdRequests).toHaveLength(1);
-
-  await deleteDocument(request, prd.id);
+    expect(evaluatePrdRequests).toHaveLength(1);
+  } finally {
+    await deleteDocument(request, prd.id);
+    await deleteProject(request, project.id);
+    await deleteTeam(request, team.id);
+  }
 });
