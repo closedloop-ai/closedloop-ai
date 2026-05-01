@@ -41,6 +41,7 @@ import { useFeatureActions } from "@/hooks/document-editing/use-feature-actions"
 import { useInlineEditMode } from "@/hooks/document-editing/use-inline-edit-mode";
 import { usePlanActions } from "@/hooks/document-editing/use-plan-actions";
 import { useDocumentGenerationStatus } from "@/hooks/queries/use-documents";
+import { useFeatureJudgesFeedback } from "@/hooks/queries/use-judges";
 import { ContextSection } from "./components/context-section";
 import { FeatureEditorHeader } from "./components/feature-editor-header";
 import { FeatureMetadataBar } from "./components/feature-metadata-bar";
@@ -91,6 +92,8 @@ export function FeaturePage({
   });
   const planActions = usePlanActions({ documentId: linkedPlanId });
   const featureActions = useFeatureActions({ documentId: feature.id });
+  const { data: judgesReport, refetch: refetchJudgesReport } =
+    useFeatureJudgesFeedback(feature.id);
 
   const { data: generationStatus } = useDocumentGenerationStatus(
     linkedPlanId ?? "",
@@ -99,6 +102,30 @@ export function FeaturePage({
       polling: true,
     }
   );
+  const { data: featureGenerationStatus } = useDocumentGenerationStatus(
+    feature.id,
+    { polling: true }
+  );
+
+  const latestRefetchedEvaluationRunKey = useRef<string | null>(null);
+  useEffect(() => {
+    const runKey =
+      featureGenerationStatus?.runKey ??
+      featureGenerationStatus?.loopId ??
+      featureGenerationStatus?.correlationId ??
+      null;
+    if (
+      featureGenerationStatus?.command !== "evaluate_feature" ||
+      featureGenerationStatus.status !== "SUCCESS" ||
+      !runKey ||
+      latestRefetchedEvaluationRunKey.current === runKey
+    ) {
+      return;
+    }
+
+    latestRefetchedEvaluationRunKey.current = runKey;
+    refetchJudgesReport().catch(() => undefined);
+  }, [featureGenerationStatus, refetchJudgesReport]);
 
   // Auto-reveal comments when threads reappear after being fully resolved.
   // Edge-triggered only (0 -> >0) so we don't override the user's manual toggle.
@@ -226,7 +253,7 @@ export function FeaturePage({
                 >
                   <EvaluationSection
                     documentId={feature.id}
-                    judgeItems={null}
+                    judgeItems={judgesReport ?? null}
                     title="Agent Evaluation"
                   />
                   <CustomFieldsSection

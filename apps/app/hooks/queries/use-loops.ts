@@ -321,6 +321,11 @@ export function useRunLoop() {
           queryKey: judgesKeys.codeDetail(documentId),
         });
       }
+      if (command === RunLoopCommand.EvaluateFeature) {
+        queryClient.invalidateQueries({
+          queryKey: judgesKeys.featureDetail(documentId),
+        });
+      }
     },
   });
 }

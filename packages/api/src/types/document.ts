@@ -213,6 +213,9 @@ export type GenerationStatus = {
     | "explore"
     | "decompose"
     | "evaluate_prd"
+    | "evaluate_plan"
+    | "evaluate_code"
+    | "evaluate_feature"
     | null;
   htmlUrl: string | null;
   startedAt: Date | null;
