@@ -31,15 +31,40 @@ jobs:
         with:
           ref: "${{ github.event.pull_request.head.sha || github.event.inputs.ref || github.ref }}"
 
+      - name: Resolve target ref
+        id: target-ref
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          INPUT_REF: ${{ inputs.ref }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          if [ "$EVENT_NAME" = "pull_request" ] && [ -n "$PR_HEAD_REF" ]; then
+            REF_NAME="$PR_HEAD_REF"
+          elif [ -n "$INPUT_REF" ]; then
+            REF_NAME="${INPUT_REF#refs/heads/}"
+            REF_NAME="${REF_NAME#origin/}"
+          else
+            REF_NAME="$GITHUB_REF_NAME"
+          fi
+
+          if [ -z "$REF_NAME" ] || [ "$REF_NAME" = "HEAD" ]; then
+            echo "::error::Failed to resolve target ref name"
+            exit 1
+          fi
+
+          SHA="$(git rev-parse HEAD)"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "ref_name=$REF_NAME" >> "$GITHUB_OUTPUT"
+
       - name: Wait for Vercel app-stage preview deployment
         if: github.event_name != 'workflow_dispatch' || github.event.inputs.deployment_url == ''
         id: wait
         uses: actions/github-script@v8
         with:
           script: |
-            const sha = context.payload.pull_request?.head?.sha
-              || context.payload.workflow_dispatch?.inputs?.ref
-              || context.sha;
+            const sha = process.env.TARGET_SHA || context.payload.pull_request?.head?.sha || context.sha;
             const MAX_ATTEMPTS = 60;      // 60 * 10s = 10 minutes
             const DELAY_MS = 10_000;
             const ALLOWLIST =
@@ -92,26 +117,46 @@ jobs:
             }
 
             core.setFailed("Timed out waiting for app-stage preview deployment");
+        env:
+          TARGET_SHA: ${{ steps.target-ref.outputs.sha }}
 
-      - name: Resolve BASE_URL
+      - name: Resolve preview URLs
         id: base-url
         run: |
-          if [ -n "$INPUT_DEPLOY_URL" ]; then
-            BASE_URL="$INPUT_DEPLOY_URL"
-          else
-            BASE_URL="$WAIT_URL"
-          fi
-          if [ -z "$BASE_URL" ]; then
-            echo "::error::Failed to resolve a preview URL"
+          if [ -z "$REF_NAME" ]; then
+            echo "::error::Failed to resolve preview URLs from branch ref"
             exit 1
           fi
+
+          if [ -n "$INPUT_DEPLOY_URL" ]; then
+            BASE_URL="${INPUT_DEPLOY_URL%/}"
+          elif [ "$REF_NAME" = "main" ] && [ "$EVENT_NAME" != "pull_request" ]; then
+            BASE_URL="https://app.closedloop-stage.ai"
+          else
+            NORMALIZED_REF="$(printf '%s' "$REF_NAME" | tr '[:upper:]' '[:lower:]' | sed -E 's#[^a-z0-9]+#-#g; s#(^-+|-+$)##g')"
+            BASE_URL="https://app-stage-git-${NORMALIZED_REF}.preview.closedloop-stage.ai"
+          fi
+
+          if [[ "$BASE_URL" =~ ^https://app-stage-git-([a-z0-9-]+)\.preview\.closedloop-stage\.ai$ ]]; then
+            API_BASE_URL="https://api-stage-git-${BASH_REMATCH[1]}.preview.closedloop-stage.ai"
+          elif [[ "$BASE_URL" = "https://app.closedloop-stage.ai" ]]; then
+            API_BASE_URL="https://api.closedloop-stage.ai"
+          else
+            echo "::error::Could not derive API_BASE_URL from BASE_URL=$BASE_URL"
+            exit 1
+          fi
+
+          echo "Resolved BASE_URL=$BASE_URL"
+          echo "Resolved API_BASE_URL=$API_BASE_URL"
           echo "url=$BASE_URL" >> "$GITHUB_OUTPUT"
+          echo "api_url=$API_BASE_URL" >> "$GITHUB_OUTPUT"
         env:
           INPUT_DEPLOY_URL: ${{ inputs.deployment_url }}
-          WAIT_URL: ${{ steps.wait.outputs.url }}
+          REF_NAME: ${{ steps.target-ref.outputs.ref_name }}
+          EVENT_NAME: ${{ github.event_name }}
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v5
+        uses: pnpm/action-setup@v6
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -146,6 +191,7 @@ jobs:
           CI: "true"
           PLAYWRIGHT_FORCE_TTY: "0"
           BASE_URL: ${{ steps.base-url.outputs.url }}
+          API_BASE_URL: ${{ steps.base-url.outputs.api_url }}
           NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${{ secrets.STAGING_NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
           CLERK_SECRET_KEY: ${{ secrets.STAGING_CLERK_SECRET_KEY }}
           DEVOPS_CLOSEDLOOP_APP_PWD: ${{ secrets.DEVOPS_CLOSEDLOOP_APP_PWD }}

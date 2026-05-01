@@ -1,0 +1,198 @@
+{
+  "_meta": {
+    "purpose": "7 PATCH bodies sent to /api/v2/logs/config/metrics/{id} on 2026-04-30 to recover relay/webhook log-metric generators after the Vercel→Datadog log-drain integration broke. Switched filter from service:api-prod to service:api and remapped group_by paths from nested @relay.* / @webhook.* (snake_case) to flat camelCase matching what the agentless logger emits.",
+    "verb": "PATCH",
+    "endpoint": "https://api.datadoghq.com/api/v2/logs/config/metrics/{id}",
+    "note": "Filters were further widened to service:(api OR cl-api) by harden-service-filter.json after this file was applied. The filter values shown here are the intermediate state, not the current live state. Use baseline.json for current state.",
+    "applied_at": "2026-04-30",
+    "applied_in_pr": "https://github.com/closedloop-ai/symphony-alpha/pull/1021",
+    "transitional": "PRD-159 will replace this file with HCL in cl-tofu-aws-live/prod/datadog/pipelines/. Delete this file when PRD-159 lands.",
+    "iterate_with": "jq -c .operations[] <file>"
+  },
+  "operations": [
+    {
+      "id": "relay.heartbeats.count",
+      "body": {
+        "data": {
+          "type": "logs_metrics",
+          "id": "relay.heartbeats.count",
+          "attributes": {
+            "filter": {
+              "query": "service:api \"Relay presence heartbeat\""
+            },
+            "group_by": [
+              {
+                "path": "@computeTargetId",
+                "tag_name": "compute_target_id"
+              },
+              {
+                "path": "@gatewaySessionId",
+                "tag_name": "gateway_session_id"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "relay.command_events",
+      "body": {
+        "data": {
+          "type": "logs_metrics",
+          "id": "relay.command_events",
+          "attributes": {
+            "filter": {
+              "query": "service:api \"Relay command event received\""
+            },
+            "group_by": [
+              {
+                "path": "@commandId",
+                "tag_name": "command_id"
+              },
+              {
+                "path": "@computeTargetId",
+                "tag_name": "compute_target_id"
+              },
+              {
+                "path": "@eventType",
+                "tag_name": "event_type"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "relay.commands.dispatch",
+      "body": {
+        "data": {
+          "type": "logs_metrics",
+          "id": "relay.commands.dispatch",
+          "attributes": {
+            "filter": {
+              "query": "service:api \"Relay dispatch result\""
+            },
+            "group_by": [
+              {
+                "path": "@commandId",
+                "tag_name": "command_id"
+              },
+              {
+                "path": "@delivered",
+                "tag_name": "delivered"
+              },
+              {
+                "path": "@reason",
+                "tag_name": "reason"
+              },
+              {
+                "path": "@computeTargetId",
+                "tag_name": "compute_target_id"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "relay.command_acks",
+      "body": {
+        "data": {
+          "type": "logs_metrics",
+          "id": "relay.command_acks",
+          "attributes": {
+            "filter": {
+              "query": "service:api \"Relay command ack received\""
+            },
+            "group_by": [
+              {
+                "path": "@accepted",
+                "tag_name": "accepted"
+              },
+              {
+                "path": "@commandId",
+                "tag_name": "command_id"
+              },
+              {
+                "path": "@computeTargetId",
+                "tag_name": "compute_target_id"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "relay.disconnects",
+      "body": {
+        "data": {
+          "type": "logs_metrics",
+          "id": "relay.disconnects",
+          "attributes": {
+            "filter": {
+              "query": "service:api \"Relay disconnect received\""
+            },
+            "group_by": [
+              {
+                "path": "@computeTargetId",
+                "tag_name": "compute_target_id"
+              },
+              {
+                "path": "@gatewaySessionId",
+                "tag_name": "gateway_session_id"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "api.webhooks.github",
+      "body": {
+        "data": {
+          "type": "logs_metrics",
+          "id": "api.webhooks.github",
+          "attributes": {
+            "filter": {
+              "query": "service:api \"[webhook/github] Validating\""
+            },
+            "group_by": [
+              {
+                "path": "@eventType",
+                "tag_name": "event_type"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "api.webhooks.check_runs",
+      "body": {
+        "data": {
+          "type": "logs_metrics",
+          "id": "api.webhooks.check_runs",
+          "attributes": {
+            "filter": {
+              "query": "service:api \"[handleCheckRun] Processing\""
+            },
+            "group_by": [
+              {
+                "path": "@check_run_name",
+                "tag_name": "check_run_name"
+              },
+              {
+                "path": "@conclusion",
+                "tag_name": "conclusion"
+              },
+              {
+                "path": "@head_branch",
+                "tag_name": "head_branch"
+              }
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

@@ -3,6 +3,12 @@ export const DESKTOP_SETUP_URL =
 
 export const VALID_PROVIDERS = new Set(["claude", "codex"]);
 
+export const GATEWAY_PATH_PREFIX = "/api/gateway/";
+export const GATEWAY_RELAY_PATH_PREFIX = "/api/gateway-relay/";
+export const GATEWAY_HEALTH_CHECK_PATH = `${GATEWAY_PATH_PREFIX}health-check`;
+export const GATEWAY_RELAY_HEALTH_CHECK_PATH = `${GATEWAY_RELAY_PATH_PREFIX}health-check`;
+export const COMPUTE_TARGET_HEADER = "x-compute-target";
+
 /**
  * Gates the /engineer fetch routing UI (ComputeTargetSelector dropdown in
  * apps/app/components/engineer/compute-target-selector.tsx).

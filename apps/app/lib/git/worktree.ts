@@ -3,7 +3,7 @@ const LAST_SEGMENT_RE = /\/[^/]+$/;
 /**
  * Construct worktree path from base repo path and ticket ID.
  *
- * @param worktreeParentDir - The configured worktree parent directory (e.g. "~/Source").
+ * @param worktreeParentDir - The configured worktree parent directory.
  *   When provided, the worktree is resolved as `{worktreeParentDir}/{repoName}-{ticketId}`.
  *   When omitted, falls back to assuming the worktree is a sibling of the repo (legacy behavior).
  */

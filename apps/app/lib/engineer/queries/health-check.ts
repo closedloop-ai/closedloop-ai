@@ -1,5 +1,10 @@
 import { queryOptions } from "@tanstack/react-query";
 import { env } from "@/env";
+import {
+  COMPUTE_TARGET_HEADER,
+  GATEWAY_HEALTH_CHECK_PATH,
+  GATEWAY_RELAY_HEALTH_CHECK_PATH,
+} from "@/lib/engineer/constants";
 import type { EngineerRoutingSelection } from "@/lib/engineer/routing-store";
 import { queryKeys } from "./keys";
 
@@ -53,6 +58,20 @@ export type HealthCheckResponse = {
 type HealthCheckTargetScope =
   | Pick<EngineerRoutingSelection, "mode" | "computeTargetId">
   | string;
+
+type HealthCheckOptionsConfig = {
+  relayTargetId?: string | null;
+};
+
+type HealthCheckRequestInput = {
+  expectedMcpUrl: string | null;
+  relayTargetId?: string | null;
+};
+
+export type HealthCheckRequestConfig = {
+  url: string;
+  init?: RequestInit;
+};
 
 export function getHealthCheckTargetKey(
   routing: Pick<EngineerRoutingSelection, "mode" | "computeTargetId">
@@ -194,25 +213,53 @@ export function getRenderableHealthChecks(
   return checks;
 }
 
-export function healthCheckOptions(
-  routing: HealthCheckTargetScope = "default",
-  expectedMcpUrl: string | null = env.NEXT_PUBLIC_MCP_SERVER_URL ?? null
-) {
-  const targetKey =
-    typeof routing === "string" ? routing : getHealthCheckTargetKey(routing);
+/** Builds the health-check request for either direct local-gateway or relay-target execution. */
+export function buildHealthCheckRequest({
+  expectedMcpUrl,
+  relayTargetId = null,
+}: HealthCheckRequestInput): HealthCheckRequestConfig {
   const params = new URLSearchParams();
-
   if (expectedMcpUrl) {
     params.set("expectedMcpUrl", expectedMcpUrl);
   }
 
+  const path =
+    relayTargetId === null
+      ? GATEWAY_HEALTH_CHECK_PATH
+      : GATEWAY_RELAY_HEALTH_CHECK_PATH;
+  const url = params.toString() ? `${path}?${params.toString()}` : path;
+
+  if (relayTargetId === null) {
+    return { url };
+  }
+
+  return {
+    url,
+    init: {
+      headers: {
+        [COMPUTE_TARGET_HEADER]: relayTargetId,
+      },
+    },
+  };
+}
+
+export function healthCheckOptions(
+  routing: HealthCheckTargetScope = "default",
+  expectedMcpUrl: string | null = env.NEXT_PUBLIC_MCP_SERVER_URL ?? null,
+  config: HealthCheckOptionsConfig = {}
+) {
+  const targetKey =
+    typeof routing === "string" ? routing : getHealthCheckTargetKey(routing);
+  const relayTargetId = config.relayTargetId ?? null;
+
   return queryOptions<HealthCheckResponse>({
     queryKey: queryKeys.healthCheck(targetKey, expectedMcpUrl),
     queryFn: async () => {
-      const url = params.toString()
-        ? `/api/gateway/health-check?${params.toString()}`
-        : "/api/gateway/health-check";
-      const res = await fetch(url);
+      const request = buildHealthCheckRequest({
+        expectedMcpUrl,
+        relayTargetId,
+      });
+      const res = await fetch(request.url, request.init);
       return res.json();
     },
     staleTime: 0,

@@ -1,0 +1,42 @@
+{
+  "_meta": {
+    "purpose": "1 POST body that created api.requests.latency.app — a new log-based metric (distribution on @duration_ms, group_by @path/@method) that replaces the original api.requests.latency. The original was locked to @lambda.billed_duration from Vercel runtime logs, which the broken log drain no longer delivers; api.requests.latency.app is fed by the new request_completed log line emitted from apps/api auth wrappers. The original api.requests.latency was intentionally left untouched to preserve historical data.",
+    "verb": "POST",
+    "endpoint": "https://api.datadoghq.com/api/v2/logs/config/metrics",
+    "applied_at": "2026-04-30",
+    "applied_in_pr": "https://github.com/closedloop-ai/symphony-alpha/pull/1021",
+    "transitional": "PRD-159 will replace this file with HCL in cl-tofu-aws-live/prod/datadog/pipelines/. Delete this file when PRD-159 lands.",
+    "iterate_with": "jq -c .operations[] <file>"
+  },
+  "operations": [
+    {
+      "id": "api.requests.latency.app",
+      "body": {
+        "data": {
+          "type": "logs_metrics",
+          "id": "api.requests.latency.app",
+          "attributes": {
+            "filter": {
+              "query": "service:api \"request_completed\" @duration_ms:>0"
+            },
+            "group_by": [
+              {
+                "path": "@path",
+                "tag_name": "path"
+              },
+              {
+                "path": "@method",
+                "tag_name": "method"
+              }
+            ],
+            "compute": {
+              "aggregation_type": "distribution",
+              "path": "@duration_ms",
+              "include_percentiles": true
+            }
+          }
+        }
+      }
+    }
+  ]
+}

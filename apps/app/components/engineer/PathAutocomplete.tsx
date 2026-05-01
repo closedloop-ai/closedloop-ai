@@ -36,7 +36,7 @@ export function PathAutocomplete({
   const itemRefs = useRef<(HTMLButtonElement | null)[]>([]);
 
   // Get the parent directory path to query
-  // For "~/Source/cla" we query "~/Source"
+  // For a partially typed path, query the parent directory.
   const getQueryPath = useCallback(() => {
     if (!value) {
       return "~";

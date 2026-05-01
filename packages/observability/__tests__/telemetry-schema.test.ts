@@ -44,6 +44,38 @@ const validDesktopWirePayload = {
   },
 };
 
+const reportedDecisionTableVerification = {
+  telemetryStatus: "reported",
+  telemetryFilePath:
+    "/tmp/work/.closedloop-ai/decision-table-verifications.jsonl",
+  lineNumber: 3,
+  timestamp: "2026-05-01T13:20:06.234Z",
+  workdir: "/tmp/work",
+  decisionTablePath: ".closedloop-ai/decision-tables/pln-302.md",
+  finalStatus: "aligned",
+  iterations: 3,
+  driftKindCounts: {
+    codeDrift: 2,
+    testDrift: 1,
+    planAmbiguity: 0,
+  },
+  fixesAttempted: 3,
+  parseFailures: 0,
+  verifierInvocations: 3,
+  phaseDurationMs: 58_921,
+};
+
+const missingDecisionTableVerification = {
+  telemetryStatus: "missing",
+  telemetryFilePath:
+    "/tmp/work/.closedloop-ai/decision-table-verifications.jsonl",
+  filePresent: true,
+  linesRead: 0,
+  invalidLines: 0,
+  missingReason: "no_current_run_records",
+  readError: "permission denied",
+};
+
 // ---------------------------------------------------------------------------
 // telemetryTraceContextSchema
 // ---------------------------------------------------------------------------
@@ -122,6 +154,61 @@ describe("telemetryDiagnosticsSchema", () => {
       },
     });
     expect(result.success).toBe(true);
+  });
+
+  it("accepts reported decision-table verification diagnostics", () => {
+    const result = telemetryDiagnosticsSchema.safeParse({
+      decisionTableVerification: reportedDecisionTableVerification,
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.decisionTableVerification?.telemetryStatus).toBe(
+        "reported"
+      );
+      if (
+        result.data.decisionTableVerification?.telemetryStatus === "reported"
+      ) {
+        expect(result.data.decisionTableVerification.finalStatus).toBe(
+          "aligned"
+        );
+        expect(result.data.decisionTableVerification.decisionTablePath).toBe(
+          ".closedloop-ai/decision-tables/pln-302.md"
+        );
+        expect(
+          result.data.decisionTableVerification.driftKindCounts.codeDrift
+        ).toBe(2);
+        expect(result.data.decisionTableVerification.fixesAttempted).toBe(3);
+        expect(result.data.decisionTableVerification.phaseDurationMs).toBe(
+          58_921
+        );
+      }
+    }
+  });
+
+  it("accepts missing decision-table verification diagnostics", () => {
+    const result = telemetryDiagnosticsSchema.safeParse({
+      decisionTableVerification: missingDecisionTableVerification,
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.decisionTableVerification?.telemetryStatus).toBe(
+        "missing"
+      );
+      if (
+        result.data.decisionTableVerification?.telemetryStatus === "missing"
+      ) {
+        expect(result.data.decisionTableVerification.missingReason).toBe(
+          "no_current_run_records"
+        );
+        expect(result.data.decisionTableVerification.filePresent).toBe(true);
+        expect(result.data.decisionTableVerification.linesRead).toBe(0);
+        expect(result.data.decisionTableVerification.readError).toBe(
+          "permission denied"
+        );
+      }
+    }
   });
 
   it("accepts absence of ackLatencyMs (optional)", () => {
@@ -223,6 +310,23 @@ describe("desktopTelemetryEventSchema", () => {
     if (result.success) {
       expect(result.data.diagnostics).toEqual({ exitCode: 0 });
       expect(result.data.diagnostics).not.toHaveProperty("ackLatencyMs");
+    }
+  });
+
+  it("preserves decision-table verification diagnostics from desktop wire payloads", () => {
+    const result = desktopTelemetryEventSchema.safeParse({
+      ...validDesktopWirePayload,
+      category: TelemetryCategory.JobDecisionTableVerification,
+      diagnostics: {
+        decisionTableVerification: reportedDecisionTableVerification,
+      },
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.diagnostics?.decisionTableVerification).toEqual(
+        reportedDecisionTableVerification
+      );
     }
   });
 });
@@ -333,6 +437,26 @@ describe("buildDesktopTelemetryPayload", () => {
       planArtifactContentHash: "abc123def456",
       rawPlanContentHash: "fed654cba321",
     });
+  });
+
+  it("preserves desktop decision-table verification diagnostics", () => {
+    const result = buildDesktopTelemetryPayload({
+      ...validDesktopWirePayload,
+      category: TelemetryCategory.JobDecisionTableVerification,
+      message: "Decision-table verification aligned",
+      diagnostics: {
+        decisionTableVerification: reportedDecisionTableVerification,
+      },
+    });
+
+    const diagnostics = result.diagnostics as Record<string, unknown>;
+    expect(result.category).toBe(
+      TelemetryCategory.JobDecisionTableVerification
+    );
+    expect(result.message).toBe("Decision-table verification aligned");
+    expect(diagnostics.decisionTableVerification).toEqual(
+      reportedDecisionTableVerification
+    );
   });
 });
 

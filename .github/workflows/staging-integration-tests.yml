@@ -79,7 +79,7 @@ jobs:
 
       - name: Setup pnpm
         if: env.SKIP_TESTS != 'true'
-        uses: pnpm/action-setup@v5
+        uses: pnpm/action-setup@v6
 
       - name: Setup Node.js
         if: env.SKIP_TESTS != 'true'

@@ -167,6 +167,7 @@ These arrive via `handleTelemetryEvent()` which sets `origin = Origin.Desktop`. 
 |---|---|
 | `@category:"job.started" @origin:"desktop"` | `TelemetryCategory.JobStarted` |
 | `@category:"job.plan_source_resolved" @origin:"desktop" @trace.loopId:"<loop-id>"` | `TelemetryCategory.JobPlanSourceResolved` — EXECUTE plan staging source plus safe plan hashes/lengths in `diagnostics.planSource` |
+| `@category:"job.decision_table_verification" @origin:"desktop" @trace.loopId:"<loop-id>"` | `TelemetryCategory.JobDecisionTableVerification` — EXECUTE decision-table verifier status plus safe counters in `diagnostics.decisionTableVerification`; Desktop event prose is exposed as `telemetryMessage` |
 | `@category:"job.completed" @origin:"desktop"` | `TelemetryCategory.JobCompleted` |
 | `@category:"job.failed" @origin:"desktop"` | `TelemetryCategory.JobFailed` |
 | `@category:"command.timeout" @origin:"desktop"` | `TelemetryCategory.CommandTimeout` |
