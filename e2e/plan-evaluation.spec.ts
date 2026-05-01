@@ -21,6 +21,7 @@ import {
   RunLoopCommand,
 } from "@repo/api/src/types/loop";
 import { getApiBaseUrl } from "./helpers/api-url";
+import { getClerkBearerToken } from "./helpers/clerk-token";
 import { createProject, deleteProject } from "./helpers/create-project";
 import { createTeam, deleteTeam } from "./helpers/create-team";
 import { authenticateToApp } from "./helpers/sign-in";
@@ -52,16 +53,19 @@ async function createDocument(
     type,
     title,
     content,
+    token,
   }: {
     projectId: string;
     type: DocumentType;
     title: string;
     content: string;
+    token: string;
   }
 ): Promise<DocumentSummary> {
   const api = getApiBaseUrl();
   const response = await request.post(`${api}/documents`, {
     data: { projectId, type, title, content },
+    headers: { Authorization: `Bearer ${token}` },
   });
   const body = (await response.json()) as ApiResult<DocumentSummary>;
 
@@ -78,11 +82,14 @@ async function createDocument(
  */
 async function deleteDocument(
   request: APIRequestContext,
-  documentId: string
+  documentId: string,
+  token: string
 ): Promise<void> {
   const api = getApiBaseUrl();
   try {
-    const response = await request.delete(`${api}/documents/${documentId}`);
+    const response = await request.delete(`${api}/documents/${documentId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
     if (!response.ok()) {
       console.error({
         documentId,
@@ -103,11 +110,13 @@ async function deleteDocument(
 async function createProducesLink(
   request: APIRequestContext,
   sourceId: string,
-  targetId: string
+  targetId: string,
+  token: string
 ): Promise<void> {
   const api = getApiBaseUrl();
   const response = await request.post(`${api}/artifact-links`, {
     data: { sourceId, targetId, linkType: LinkType.Produces },
+    headers: { Authorization: `Bearer ${token}` },
   });
   const body = (await response.json()) as ApiResult<ArtifactLink>;
   if (!body.success) {
@@ -122,14 +131,16 @@ async function createProducesLink(
  */
 async function countEvaluatePrdLoops(
   request: APIRequestContext,
-  documentId: string
+  documentId: string,
+  token: string
 ): Promise<number> {
   const api = getApiBaseUrl();
   const deadline = Date.now() + EVALUATE_PRD_POLL_TIMEOUT_MS;
   let lastCount = 0;
   while (Date.now() < deadline) {
     const response = await request.get(
-      `${api}/loops?documentId=${documentId}&command=${LoopCommand.EvaluatePrd}`
+      `${api}/loops?documentId=${documentId}&command=${LoopCommand.EvaluatePrd}`,
+      { headers: { Authorization: `Bearer ${token}` } }
     );
     if (response.ok()) {
       const body = (await response.json()) as ApiResult<LoopWithUser[]>;
@@ -151,8 +162,15 @@ test("Generate Plan on a Feature sourced from a PRD does NOT create an EVALUATE_
   page,
   request,
 }) => {
+  // Sign in before any API calls — the request fixture has no Clerk session
+  // for the cross-origin api-* subdomain, so helpers must attach a Bearer JWT
+  // pulled from the authenticated page.
+  await authenticateToApp(page, { fresh: true });
+  const token = await getClerkBearerToken(page);
+
   const team = await createTeam(request, {
     name: createUniqueName("e2e-plan-eval"),
+    token,
   });
   const project = await createProject(request, {
     name: createUniqueName("e2e-plan-eval"),
@@ -165,6 +183,7 @@ test("Generate Plan on a Feature sourced from a PRD does NOT create an EVALUATE_
       repoFullName: "e2e/stub",
       branch: "main",
     },
+    token,
   });
 
   const prd = await createDocument(request, {
@@ -172,6 +191,7 @@ test("Generate Plan on a Feature sourced from a PRD does NOT create an EVALUATE_
     type: DocumentType.Prd,
     title: createUniqueName("e2e-source-prd"),
     content: "Source PRD content for E2E plan-evaluation regression test.",
+    token,
   });
 
   const featureTitle = createUniqueName("e2e-feature");
@@ -180,11 +200,12 @@ test("Generate Plan on a Feature sourced from a PRD does NOT create an EVALUATE_
     type: DocumentType.Feature,
     title: featureTitle,
     content: "Feature description for E2E plan-evaluation test.",
+    token,
   });
 
   // Establish the PRD → Feature source link so the regression condition
   // (source?.type === ArtifactType.Document) would be satisfied if present.
-  await createProducesLink(request, prd.id, feature.id);
+  await createProducesLink(request, prd.id, feature.id, token);
 
   test.info().annotations.push({
     type: "cleanup",
@@ -194,7 +215,6 @@ test("Generate Plan on a Feature sourced from a PRD does NOT create an EVALUATE_
   let createdPlanId: string | null = null;
 
   try {
-    await authenticateToApp(page, { fresh: true });
     await page.goto(`/features/${feature.slug}`);
 
     const generatePlanButton = page.getByRole("button", {
@@ -261,16 +281,20 @@ test("Generate Plan on a Feature sourced from a PRD does NOT create an EVALUATE_
     // Server-side check: poll the loops API for any EVALUATE_PRD loop on the
     // source PRD. If the regression returns, scheduleAutoEvaluatePrd would
     // create one here.
-    const evaluatePrdLoopCount = await countEvaluatePrdLoops(request, prd.id);
+    const evaluatePrdLoopCount = await countEvaluatePrdLoops(
+      request,
+      prd.id,
+      token
+    );
     expect(evaluatePrdLoopCount).toBe(0);
   } finally {
     if (createdPlanId) {
-      await deleteDocument(request, createdPlanId);
+      await deleteDocument(request, createdPlanId, token);
     }
-    await deleteDocument(request, feature.id);
-    await deleteDocument(request, prd.id);
-    await deleteProject(request, project.id);
-    await deleteTeam(request, team.id);
+    await deleteDocument(request, feature.id, token);
+    await deleteDocument(request, prd.id, token);
+    await deleteProject(request, project.id, token);
+    await deleteTeam(request, team.id, token);
   }
 });
 
@@ -278,12 +302,18 @@ test("Evaluate PRD on a PRD document DOES trigger an evaluate_prd run-loop reque
   page,
   request,
 }) => {
+  // Sign in before any API calls — see comment in the previous test.
+  await authenticateToApp(page, { fresh: true });
+  const token = await getClerkBearerToken(page);
+
   const team = await createTeam(request, {
     name: createUniqueName("e2e-plan-eval"),
+    token,
   });
   const project = await createProject(request, {
     name: createUniqueName("e2e-plan-eval"),
     teamIds: [team.id],
+    token,
   });
 
   const prd = await createDocument(request, {
@@ -291,6 +321,7 @@ test("Evaluate PRD on a PRD document DOES trigger an evaluate_prd run-loop reque
     type: DocumentType.Prd,
     title: createUniqueName("e2e-prd"),
     content: "PRD content for E2E plan-evaluation test.",
+    token,
   });
 
   test.info().annotations.push({
@@ -314,7 +345,6 @@ test("Evaluate PRD on a PRD document DOES trigger an evaluate_prd run-loop reque
       }
     });
 
-    await authenticateToApp(page, { fresh: true });
     await page.goto(`/prds/${prd.slug}`);
 
     const actionsButton = page.getByRole("button", { name: RE_ACTIONS_BUTTON });
@@ -341,8 +371,8 @@ test("Evaluate PRD on a PRD document DOES trigger an evaluate_prd run-loop reque
 
     expect(evaluatePrdRequests).toHaveLength(1);
   } finally {
-    await deleteDocument(request, prd.id);
-    await deleteProject(request, project.id);
-    await deleteTeam(request, team.id);
+    await deleteDocument(request, prd.id, token);
+    await deleteProject(request, project.id, token);
+    await deleteTeam(request, team.id, token);
   }
 });

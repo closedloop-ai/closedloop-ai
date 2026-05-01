@@ -23,15 +23,18 @@ export async function createProject(
     teamIds,
     name,
     defaultRepository,
+    token,
   }: {
     teamIds: string[];
     name: string;
     defaultRepository?: DefaultRepositoryStub;
+    token: string;
   }
 ): Promise<ProjectSummary> {
   const api = getApiBaseUrl();
   const response = await request.post(`${api}/projects`, {
     data: { name, teamIds },
+    headers: { Authorization: `Bearer ${token}` },
   });
   const body = (await response.json()) as ApiResult<ProjectSummary>;
 
@@ -46,7 +49,12 @@ export async function createProject(
   };
 
   if (defaultRepository) {
-    await setProjectDefaultRepository(request, project.id, defaultRepository);
+    await setProjectDefaultRepository(
+      request,
+      project.id,
+      defaultRepository,
+      token
+    );
   }
 
   return project;
@@ -55,11 +63,13 @@ export async function createProject(
 async function setProjectDefaultRepository(
   request: APIRequestContext,
   projectId: string,
-  defaultRepository: DefaultRepositoryStub
+  defaultRepository: DefaultRepositoryStub,
+  token: string
 ): Promise<void> {
   const api = getApiBaseUrl();
   const response = await request.put(`${api}/projects/${projectId}`, {
     data: { settings: { defaultRepository } },
+    headers: { Authorization: `Bearer ${token}` },
   });
   if (!response.ok()) {
     throw new Error(
@@ -70,11 +80,14 @@ async function setProjectDefaultRepository(
 
 export async function deleteProject(
   request: APIRequestContext,
-  projectId: string
+  projectId: string,
+  token: string
 ): Promise<void> {
   const api = getApiBaseUrl();
   try {
-    const response = await request.delete(`${api}/projects/${projectId}`);
+    const response = await request.delete(`${api}/projects/${projectId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
 
     if (!response.ok()) {
       console.error({
