@@ -5,7 +5,10 @@ import os from "node:os";
 import path from "node:path";
 import { after, afterEach, beforeEach, describe, test } from "node:test";
 
-import { LoopArtifactType } from "@closedloop-ai/loops-api/artifacts";
+import {
+  LoopArtifactFile,
+  LoopArtifactType,
+} from "@closedloop-ai/loops-api/artifacts";
 
 import {
   buildClaudeDirectArgs,
@@ -207,6 +210,93 @@ test("buildClaudeDirectArgs with EVALUATE_PRD invokes judges:run-judges with art
     args.indexOf("--artifact-type"),
     -1,
     "args must NOT contain --artifact-type as a separate flag (it belongs inside the prompt)"
+  );
+});
+
+// ---------------------------------------------------------------------------
+// EVALUATE_FEATURE — buildClaudeDirectArgs skill invocation tests
+// ---------------------------------------------------------------------------
+
+test("buildClaudeDirectArgs with EVALUATE_FEATURE invokes judges:run-judges with artifact-type feature", () => {
+  const workDir = makeTempDir();
+  resetConfig({ command: "EVALUATE_FEATURE" });
+
+  const { cmd, args } = buildClaudeDirectArgs(workDir, null);
+
+  assert.equal(cmd, "claude");
+
+  const prompt = args.find(
+    (a) => typeof a === "string" && a.includes("judges:run-judges")
+  );
+  assert.ok(
+    prompt !== undefined,
+    `args must contain a prompt referencing judges:run-judges; got: ${JSON.stringify(args)}`
+  );
+  assert.ok(
+    prompt.includes("--artifact-type feature"),
+    `prompt must contain --artifact-type feature; got: ${prompt}`
+  );
+  assert.ok(
+    prompt.includes(`--workdir ${workDir}`),
+    `prompt must contain --workdir <workDir>; got: ${prompt}`
+  );
+  // --artifact-type feature is embedded in the prompt string, not a separate argv entry
+  assert.equal(
+    args.indexOf("--artifact-type"),
+    -1,
+    "args must NOT contain --artifact-type as a separate flag (it belongs inside the prompt)"
+  );
+  // Feature evaluation is repo-less — no REPO_PATH= in the prompt
+  assert.ok(
+    !prompt.includes("REPO_PATH="),
+    `prompt must NOT contain REPO_PATH= for EVALUATE_FEATURE (feature evaluation is repo-less); got: ${prompt}`
+  );
+});
+
+// ---------------------------------------------------------------------------
+// EVALUATE_FEATURE — validateConfig and validateSecrets tests
+// ---------------------------------------------------------------------------
+
+test("validateConfig does not require targetRepo for EVALUATE_FEATURE", () => {
+  resetConfig({ command: "EVALUATE_FEATURE", targetRepo: undefined });
+
+  assert.doesNotThrow(() => validateConfig());
+});
+
+test("validateSecrets does not require githubToken for EVALUATE_FEATURE", () => {
+  resetConfig({
+    command: "EVALUATE_FEATURE",
+    targetRepo: null,
+    anthropicApiKey: "sk-test",
+    githubToken: null,
+  });
+
+  assert.doesNotThrow(() => validateSecrets());
+});
+
+// ---------------------------------------------------------------------------
+// EVALUATE_FEATURE — artifact upload list includes FeatureJudges
+// ---------------------------------------------------------------------------
+
+// Verify LoopArtifactFile.FeatureJudges is referenced in the
+// CLAUDE_PLUGIN_ARTIFACT_FILE_NAMES array via source inspection
+// (the array is a local const, not exported).
+test("CLAUDE_PLUGIN_ARTIFACT_FILE_NAMES includes LoopArtifactFile.FeatureJudges", () => {
+  const harnessSource = fs.readFileSync(
+    new URL("./harness-agent.mjs", import.meta.url),
+    "utf-8"
+  );
+
+  assert.ok(
+    harnessSource.includes("LoopArtifactFile.FeatureJudges"),
+    "harness-agent.mjs must reference LoopArtifactFile.FeatureJudges in CLAUDE_PLUGIN_ARTIFACT_FILE_NAMES"
+  );
+
+  // Confirm the resolved file name matches what the backend expects.
+  assert.equal(
+    LoopArtifactFile.FeatureJudges,
+    "feature-judges.json",
+    "LoopArtifactFile.FeatureJudges must resolve to feature-judges.json"
   );
 });
 

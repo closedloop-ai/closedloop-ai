@@ -2522,6 +2522,7 @@ async function uploadState(workDir, output, runDir) {
     LoopArtifactFile.PrdJudges,
     LoopArtifactFile.PlanJudges,
     LoopArtifactFile.CodeJudges,
+    LoopArtifactFile.FeatureJudges,
     LoopArtifactFile.Perf,
     LoopArtifactFile.State,
   ];
@@ -2795,6 +2796,19 @@ function buildClaudeDirectArgs(workDir, symphonyWD) {
       const skillCall =
         `Activate judges:run-judges skill --artifact-type code --workdir ${runDir}.\n` +
         `REPO_PATH=${workDir} (search here for relevant code).\n`;
+
+      args.push(skillCall);
+      break;
+    }
+    case LoopCommand.EvaluateFeature: {
+      // Feature artifact (prd.md) is written to symphonyWD (the run directory) by writePrdFile().
+      // Use symphonyWD so the skill reads the feature body and writes feature-judges.json
+      // to the correct location.
+      // Feature evaluation is repo-less — do NOT append any REPO_PATH= line.
+      const runDir = symphonyWD ?? workDir;
+
+      // Build skill invocation with runDir containing feature artifact
+      const skillCall = `Activate judges:run-judges skill --artifact-type feature --workdir ${runDir}.\n`;
 
       args.push(skillCall);
       break;
