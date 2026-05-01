@@ -257,21 +257,30 @@ test("buildClaudeDirectArgs with EVALUATE_FEATURE invokes judges:run-judges with
 // EVALUATE_FEATURE — validateConfig and validateSecrets tests
 // ---------------------------------------------------------------------------
 
-test("validateConfig does not require targetRepo for EVALUATE_FEATURE", () => {
-  resetConfig({ command: "EVALUATE_FEATURE", targetRepo: undefined });
+describe("EVALUATE_FEATURE validation", () => {
+  for (const scenario of [
+    {
+      name: "validateConfig does not require targetRepo",
+      config: { command: "EVALUATE_FEATURE", targetRepo: undefined },
+      validate: validateConfig,
+    },
+    {
+      name: "validateSecrets does not require githubToken",
+      config: {
+        command: "EVALUATE_FEATURE",
+        targetRepo: null,
+        anthropicApiKey: "sk-test",
+        githubToken: null,
+      },
+      validate: validateSecrets,
+    },
+  ]) {
+    test(scenario.name, () => {
+      resetConfig(scenario.config);
 
-  assert.doesNotThrow(() => validateConfig());
-});
-
-test("validateSecrets does not require githubToken for EVALUATE_FEATURE", () => {
-  resetConfig({
-    command: "EVALUATE_FEATURE",
-    targetRepo: null,
-    anthropicApiKey: "sk-test",
-    githubToken: null,
-  });
-
-  assert.doesNotThrow(() => validateSecrets());
+      assert.doesNotThrow(() => scenario.validate());
+    });
+  }
 });
 
 // ---------------------------------------------------------------------------
