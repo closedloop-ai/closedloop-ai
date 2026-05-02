@@ -8,6 +8,30 @@ const EXIT_ANIMATION_MS = 250;
 
 const mockQueryFn = vi.fn();
 const mockSystemCheckResults = vi.fn();
+const mockLatestElectronReleaseOptions = vi.hoisted(() => vi.fn());
+const mockLatestElectronReleaseResult = vi.hoisted(
+  (): {
+    value: {
+      data:
+        | {
+            downloadUrl: string;
+            releaseNotes: string;
+            version: string;
+          }
+        | undefined;
+      isLoading: boolean;
+    };
+  } => ({
+    value: {
+      data: {
+        downloadUrl: "https://example.com/closedloop.dmg",
+        releaseNotes: "",
+        version: "1.0.0",
+      },
+      isLoading: false,
+    },
+  })
+);
 
 vi.mock("@/lib/engineer/queries/health-check", async (importOriginal) => {
   const actual =
@@ -44,6 +68,13 @@ vi.mock("@/components/engineer/PathAutocomplete", () => ({
   ),
 }));
 
+vi.mock("@/hooks/queries/use-electron-release", () => ({
+  useLatestElectronRelease: (options: unknown) => {
+    mockLatestElectronReleaseOptions(options);
+    return mockLatestElectronReleaseResult.value;
+  },
+}));
+
 vi.mock("@/lib/engineer/queries/keys", () => ({
   queryKeys: {
     healthCheck: () => ["health-check"],
@@ -73,6 +104,17 @@ const failingData = {
   allRequiredPassed: false,
 };
 
+beforeEach(() => {
+  mockLatestElectronReleaseResult.value = {
+    data: {
+      downloadUrl: "https://example.com/closedloop.dmg",
+      releaseNotes: "",
+      version: "1.0.0",
+    },
+    isLoading: false,
+  };
+});
+
 function createWrapper() {
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -86,6 +128,71 @@ function createWrapper() {
     );
   };
 }
+
+describe("Release gating", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.clearAllMocks();
+    resetHealthCheckDialogVisibilityForTests();
+    mockQueryFn.mockResolvedValue(failingData);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("waits for latest release data to settle before issuing the initial health check", async () => {
+    mockLatestElectronReleaseResult.value = {
+      data: undefined,
+      isLoading: true,
+    };
+
+    const Wrapper = createWrapper();
+    const { rerender } = render(
+      <Wrapper>
+        <HealthCheckDialog />
+      </Wrapper>
+    );
+
+    expect(mockLatestElectronReleaseOptions).toHaveBeenCalledWith(
+      expect.objectContaining({
+        enabled: false,
+        staleTime: 300_000,
+      })
+    );
+
+    await act(async () => {});
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+
+    expect(mockQueryFn).not.toHaveBeenCalled();
+    expect(mockLatestElectronReleaseOptions).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        enabled: true,
+        staleTime: 300_000,
+      })
+    );
+
+    mockLatestElectronReleaseResult.value = {
+      data: {
+        downloadUrl: "https://example.com/closedloop.dmg",
+        releaseNotes: "",
+        version: "1.0.0",
+      },
+      isLoading: false,
+    };
+
+    rerender(
+      <Wrapper>
+        <HealthCheckDialog />
+      </Wrapper>
+    );
+    await act(async () => {});
+
+    expect(mockQueryFn).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe("Dismissal behavior", () => {
   beforeEach(() => {

@@ -30,6 +30,7 @@ import { toast } from "sonner";
 import { PathAutocomplete } from "@/components/engineer/PathAutocomplete";
 import { SystemCheckResults } from "@/components/system-check/system-check-results";
 import { env } from "@/env";
+import { useLatestElectronRelease } from "@/hooks/queries/use-electron-release";
 import type { CheckResult } from "@/lib/engineer/queries/health-check";
 import {
   getRenderableHealthChecks,
@@ -46,8 +47,29 @@ const SUCCESS_SCREEN_DELAY = 300;
 const SUCCESS_DISMISS_DELAY = 1200;
 /** Duration of the Radix dialog exit animation (matches duration-200 on DialogContent) */
 const EXIT_ANIMATION_MS = 250;
+const LATEST_RELEASE_STALE_TIME_MS = 5 * 60 * 1000;
 
 const shownTargetKeys = new Set<string>();
+
+function shouldEnableLatestReleaseQuery({
+  canOpen,
+  mounted,
+}: Readonly<{
+  canOpen: boolean;
+  mounted: boolean;
+}>): boolean {
+  return mounted && canOpen;
+}
+
+function shouldEnableHealthCheckQuery({
+  latestReleaseLoading,
+  latestReleaseQueryEnabled,
+}: Readonly<{
+  latestReleaseLoading: boolean;
+  latestReleaseQueryEnabled: boolean;
+}>): boolean {
+  return latestReleaseQueryEnabled && !latestReleaseLoading;
+}
 
 export function resetHealthCheckDialogVisibilityForTests(): void {
   shownTargetKeys.clear();
@@ -70,6 +92,16 @@ export function HealthCheckDialog({
   const canOpenThisMount = useRef(!shownTargetKeys.has(targetKey));
   const queryClient = useQueryClient();
   const expectedMcpUrl = env.NEXT_PUBLIC_MCP_SERVER_URL ?? null;
+  const latestReleaseQueryEnabled = shouldEnableLatestReleaseQuery({
+    canOpen: canOpenThisMount.current,
+    mounted,
+  });
+  const { data: latestRelease, isLoading: isLatestReleaseLoading } =
+    useLatestElectronRelease({
+      enabled: latestReleaseQueryEnabled,
+      staleTime: LATEST_RELEASE_STALE_TIME_MS,
+    });
+  const latestVersion = latestRelease?.version ?? null;
 
   // Client-only mount flag — avoids SSR/hydration mismatch
   useEffect(() => {
@@ -93,8 +125,11 @@ export function HealthCheckDialog({
   const dialogOpen = alive && !closing && failureDetected;
 
   const { data, isLoading, refetch, isFetching } = useQuery({
-    ...healthCheckOptions(targetKey, expectedMcpUrl),
-    enabled: mounted && canOpenThisMount.current,
+    ...healthCheckOptions(targetKey, expectedMcpUrl, { latestVersion }),
+    enabled: shouldEnableHealthCheckQuery({
+      latestReleaseLoading: isLatestReleaseLoading,
+      latestReleaseQueryEnabled,
+    }),
     refetchOnMount: "always" as const,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
@@ -193,12 +228,12 @@ export function HealthCheckDialog({
     setRevealedCount(0);
     setShowSuccess(false);
     await queryClient.invalidateQueries({
-      queryKey: queryKeys.healthCheck(targetKey, expectedMcpUrl),
+      queryKey: queryKeys.healthCheck(targetKey, expectedMcpUrl, latestVersion),
     });
     await refetch();
     // Bump recheckKey to re-trigger stagger even if data is structurally identical
     setRecheckKey((k) => k + 1);
-  }, [expectedMcpUrl, queryClient, refetch, targetKey]);
+  }, [expectedMcpUrl, latestVersion, queryClient, refetch, targetKey]);
 
   const handleContinue = useCallback(() => {
     setClosing(true);
@@ -222,7 +257,11 @@ export function HealthCheckDialog({
       // Re-run health checks to pick up the change
       setRevealedCount(0);
       await queryClient.invalidateQueries({
-        queryKey: queryKeys.healthCheck(targetKey, expectedMcpUrl),
+        queryKey: queryKeys.healthCheck(
+          targetKey,
+          expectedMcpUrl,
+          latestVersion
+        ),
       });
       await refetch();
       setRecheckKey((k) => k + 1);
@@ -233,7 +272,14 @@ export function HealthCheckDialog({
     } finally {
       setSavingWorktree(false);
     }
-  }, [expectedMcpUrl, queryClient, refetch, targetKey, worktreePath]);
+  }, [
+    expectedMcpUrl,
+    latestVersion,
+    queryClient,
+    refetch,
+    targetKey,
+    worktreePath,
+  ]);
 
   if (!(alive && (canOpenThisMount.current || failureDetected))) {
     return null;
