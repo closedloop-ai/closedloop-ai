@@ -236,7 +236,7 @@ jobs:
         run: pnpm exec playwright install chromium
 
       - name: Run E2E tests
-        run: pnpm exec playwright test --workers=1
+        run: pnpm exec playwright test
         env:
           CI: "true"
           PLAYWRIGHT_FORCE_TTY: "0"
@@ -244,7 +244,6 @@ jobs:
           API_BASE_URL: ${{ steps.base-url.outputs.api_url }}
           NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${{ secrets.STAGING_NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
           CLERK_SECRET_KEY: ${{ secrets.STAGING_CLERK_SECRET_KEY }}
-          CLOSEDLOOP_RUNNER_JWT_SECRET: ${{ secrets.STAGING_CLOSEDLOOP_RUNNER_JWT_SECRET || secrets.CLOSEDLOOP_RUNNER_JWT_SECRET }}
           DEVOPS_CLOSEDLOOP_APP_PWD: ${{ secrets.DEVOPS_CLOSEDLOOP_APP_PWD }}
 
       - name: Upload test failure artifacts
