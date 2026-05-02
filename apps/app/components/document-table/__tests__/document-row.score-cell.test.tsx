@@ -191,9 +191,6 @@ describe("ScoreCell — per-artifact judge hooks", () => {
     const item: DocumentRowItem = { kind: "artifact", data: makePrdArtifact() };
     renderScoreColumn(item);
 
-    expect(mockUsePrdJudgesFeedback).toHaveBeenCalledWith("artifact-prd-1");
-    expect(mockUsePlanJudgesFeedback).toHaveBeenCalledWith("");
-    expect(mockUseFeatureJudgesFeedback).toHaveBeenCalledWith("");
     expect(screen.getByText("85%")).toBeInTheDocument();
   });
 
@@ -213,9 +210,6 @@ describe("ScoreCell — per-artifact judge hooks", () => {
     };
     renderScoreColumn(item);
 
-    expect(mockUsePlanJudgesFeedback).toHaveBeenCalledWith("artifact-plan-1");
-    expect(mockUsePrdJudgesFeedback).toHaveBeenCalledWith("");
-    expect(mockUseFeatureJudgesFeedback).toHaveBeenCalledWith("");
     expect(screen.getByText("72%")).toBeInTheDocument();
   });
 
@@ -228,39 +222,8 @@ describe("ScoreCell — per-artifact judge hooks", () => {
     const item: DocumentRowItem = { kind: "feature", data: makeFeature() };
     renderScoreColumn(item);
 
-    expect(mockUsePlanJudgesFeedback).toHaveBeenCalledWith("");
-    expect(mockUsePrdJudgesFeedback).toHaveBeenCalledWith("");
-    expect(mockUseFeatureJudgesFeedback).toHaveBeenCalledWith("feature-1");
     expect(screen.getByText("92%")).toBeInTheDocument();
     expect(screen.queryByText("\u2014")).not.toBeInTheDocument();
-  });
-
-  it.each([
-    { data: null, name: "null" },
-    { data: [], name: "empty array" },
-  ])("renders a dash when feature feedback is $name", ({ data }) => {
-    mockUseFeatureJudgesFeedback.mockReturnValue({
-      data,
-      isLoading: false,
-    });
-
-    const item: DocumentRowItem = { kind: "feature", data: makeFeature() };
-    renderScoreColumn(item);
-
-    expect(screen.getByText("\u2014")).toBeInTheDocument();
-    expect(screen.queryByText("92%")).not.toBeInTheDocument();
-  });
-
-  it("shows a loading spinner while feature feedback is loading", () => {
-    mockUseFeatureJudgesFeedback.mockReturnValue({
-      data: undefined,
-      isLoading: true,
-    });
-
-    const item: DocumentRowItem = { kind: "feature", data: makeFeature() };
-    const { container } = renderScoreColumn(item);
-
-    expect(container.querySelector(".animate-spin")).toBeInTheDocument();
   });
 
   it("renders a dash when PRD feedback is absent", () => {

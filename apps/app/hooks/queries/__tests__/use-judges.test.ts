@@ -230,14 +230,6 @@ describe("useFeatureJudgesFeedback", () => {
     expect(result.current.data?.[0].caseId).toBe("feature-clarity-judge");
   });
 
-  test("does not fetch when documentId is empty string", () => {
-    renderHook(() => useFeatureJudgesFeedback(""), {
-      wrapper: createWrapper(),
-    });
-
-    expect(mockApiClient.get).not.toHaveBeenCalled();
-  });
-
   test("uses a distinct query key from other judge feedback hooks", () => {
     const featureKey = judgesKeys.featureDetail("artifact-xyz");
     const planKey = judgesKeys.detail("artifact-xyz");

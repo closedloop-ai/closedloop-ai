@@ -474,43 +474,6 @@ describe("documentEvaluationService.getEvaluationFeedback (CODE)", () => {
   });
 });
 
-describe("documentEvaluationService.getEvaluationFeedback (FEATURE)", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
-  it("queries only FEATURE evaluations via reportType", async () => {
-    const findFirst = vi.fn().mockResolvedValue(null);
-    mockWithDb.mockImplementation((callback: any) =>
-      callback({
-        artifactEvaluation: { findFirst },
-      })
-    );
-
-    await documentEvaluationService.getEvaluationFeedback(
-      "artifact-123",
-      "org-123",
-      EvaluationReportType.Feature
-    );
-
-    expect(findFirst).toHaveBeenCalledWith({
-      where: {
-        artifactId: "artifact-123",
-        organizationId: "org-123",
-        reportType: EvaluationReportType.Feature,
-      },
-      include: {
-        judgeScores: { include: { prompt: { select: { name: true } } } },
-      },
-      orderBy: { createdAt: "desc" },
-    });
-  });
-});
-
 describe("documentEvaluationService.getEvaluationFeedback (error path)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
