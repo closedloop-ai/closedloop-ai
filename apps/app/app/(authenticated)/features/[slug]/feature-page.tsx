@@ -6,6 +6,7 @@ import {
   type DocumentDetail,
   DocumentType,
 } from "@repo/api/src/types/document";
+import { RunLoopCommand } from "@repo/api/src/types/loop";
 import { InlinePresence, OptionalDocumentRoom } from "@repo/collaboration";
 import {
   ResizablePanel,
@@ -128,7 +129,7 @@ export function FeaturePage({
       featureGenerationStatus?.correlationId ??
       null;
     if (
-      featureGenerationStatus?.command !== "evaluate_feature" ||
+      featureGenerationStatus?.command !== RunLoopCommand.EvaluateFeature ||
       featureGenerationStatus.status !== "SUCCESS" ||
       !runKey ||
       latestRefetchedEvaluationRunKey.current === runKey

@@ -7,11 +7,9 @@
  */
 import { randomUUID } from "node:crypto";
 import type { Page } from "@playwright/test";
-import type { ApiResult } from "@repo/api/src/types/common";
 import { ComputePreference } from "@repo/api/src/types/compute-target";
 import { DocumentType } from "@repo/api/src/types/document";
 import {
-  type CreateLoopResponse,
   LoopCommand,
   LoopStatus,
   RunLoopCommand,
@@ -29,6 +27,7 @@ import { createTeam, deleteTeam } from "./helpers/create-team";
 import { createDocument, deleteDocument } from "./helpers/documents";
 import {
   completeFeatureEvaluationLoop,
+  createEvaluateFeatureLoop,
   getLatestLoop,
   makeFeatureJudgesReport,
   waitForLoopStatus,
@@ -62,17 +61,6 @@ async function openAgentEvaluation(page: Page) {
   });
   await expect(evaluationButton).toBeVisible({ timeout: 30_000 });
   await evaluationButton.click();
-}
-
-function parseRunLoopResponseBody(
-  body: unknown,
-  context: string
-): CreateLoopResponse {
-  const result = body as ApiResult<CreateLoopResponse>;
-  if (!result.success) {
-    throw new Error(`${context}: ${result.error}`);
-  }
-  return result.data;
 }
 
 function createJudgeMetricName(prefix: string): string {
@@ -183,20 +171,13 @@ test("Feature judge results refetch after evaluation completes", async ({
       timeout: 30_000,
     });
 
-    const runLoopResponsePromise = page.waitForResponse(
-      (response) =>
-        response.request().method() === "POST" &&
-        response.url().includes(`/documents/${feature.id}/run-loop`),
-      { timeout: 15_000 }
-    );
-    const evaluateFeatureMenuItem = await openEvaluateFeatureAction(page);
-    await evaluateFeatureMenuItem.click();
-
-    const runLoopResponse = await runLoopResponsePromise;
-    const createdLoop = parseRunLoopResponseBody(
-      await runLoopResponse.json(),
-      "Feature evaluation run-loop failed"
-    );
+    // Same POST shape as Evaluate Feature in the UI; reload so generation-status polling picks up the new loop.
+    const createdLoop = await createEvaluateFeatureLoop(request, {
+      documentId: feature.id,
+      token,
+    });
+    await page.reload();
+    await openAgentEvaluation(page);
     const loop = await getLatestLoop(request, {
       documentId: feature.id,
       command: LoopCommand.EvaluateFeature,
