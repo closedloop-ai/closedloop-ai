@@ -1,5 +1,6 @@
 "use client";
 
+import { useTheme } from "@repo/design-system/providers/theme";
 import { mergeAttributes, Node } from "@tiptap/core";
 import {
   type NodeViewProps,
@@ -7,7 +8,6 @@ import {
   ReactNodeViewRenderer,
 } from "@tiptap/react";
 import mermaid from "mermaid";
-import { useTheme } from "next-themes";
 import { useEffect, useState } from "react";
 import { MermaidTransformPlugin } from "./mermaid-transform-plugin";
 import { MermaidViewer } from "./mermaid-viewer";

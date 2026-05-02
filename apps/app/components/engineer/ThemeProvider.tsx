@@ -1,9 +1,9 @@
 "use client";
 
-import { useTheme } from "next-themes";
+import { useTheme } from "@repo/design-system/providers/theme";
 
 /**
- * Thin adapter over next-themes for closedloop-dev components that
+ * Thin adapter over the design-system theme provider for closedloop-dev components that
  * import `useThemeContext` from `@/components/engineer/ThemeProvider`.
  */
 export function useThemeContext() {

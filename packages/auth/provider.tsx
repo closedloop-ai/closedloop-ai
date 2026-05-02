@@ -3,7 +3,6 @@
 import { ClerkProvider } from "@clerk/nextjs";
 import type { Appearance } from "@clerk/ui";
 import { dark } from "@clerk/ui/themes";
-import { useTheme } from "next-themes";
 import type { ComponentProps } from "react";
 import { keys } from "./keys";
 
@@ -13,6 +12,7 @@ type AuthProviderProperties = ComponentProps<typeof ClerkProvider> & {
   termsUrl?: string;
   helpUrl?: string;
   logoUrl?: string;
+  resolvedTheme?: string;
 };
 
 export const AuthProvider = ({
@@ -21,9 +21,9 @@ export const AuthProvider = ({
   termsUrl,
   helpUrl,
   logoUrl,
+  resolvedTheme,
   ...properties
 }: AuthProviderProperties) => {
-  const { resolvedTheme } = useTheme();
   const isDark = resolvedTheme === "dark";
   const theme = isDark ? dark : undefined;
 

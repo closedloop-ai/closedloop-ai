@@ -4,8 +4,8 @@ import { FileChangeStatus } from "@repo/api/src/types/branch-view";
 import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
 import { ScrollArea } from "@repo/design-system/components/ui/scroll-area";
+import { useTheme } from "@repo/design-system/providers/theme";
 import { ChevronLeft, ChevronRight, Loader2 } from "lucide-react";
-import { useTheme } from "next-themes";
 import type { ComponentType } from "react";
 import ReactDiffViewerBase, {
   DiffMethod,

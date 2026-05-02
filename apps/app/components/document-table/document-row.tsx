@@ -821,7 +821,7 @@ export function DocumentRow({
         {visibleColumns.map((column) => {
           const CellRenderer = CELL_RENDERERS[column];
           return (
-            <div key={column}>
+            <div data-document-column={column} key={column}>
               <CellRenderer item={item} />
             </div>
           );

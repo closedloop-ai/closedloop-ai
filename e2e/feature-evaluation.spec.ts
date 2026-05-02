@@ -58,7 +58,7 @@ function getDocumentRowByTitle(page: Page, title: string) {
 }
 
 function getScoreCell(row: Locator) {
-  return row.locator(":scope > div").nth(6);
+  return row.locator('[data-document-column="score"]');
 }
 
 async function showProjectArtifactScoreColumn(page: Page) {
