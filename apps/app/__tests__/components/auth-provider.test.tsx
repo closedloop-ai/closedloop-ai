@@ -23,6 +23,10 @@ vi.mock("@clerk/ui/themes", () => ({
   dark: undefined,
 }));
 
+vi.mock("next-themes", () => ({
+  useTheme: vi.fn(() => ({ resolvedTheme: "light" })),
+}));
+
 const { mockKeys } = vi.hoisted(() => ({
   mockKeys: vi.fn(),
 }));

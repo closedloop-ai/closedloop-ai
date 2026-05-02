@@ -1,8 +1,8 @@
+import { AuthProvider } from "@repo/auth/provider";
 import type { ComponentProps, ReactNode } from "react";
 import { Toaster } from "./components/ui/sonner";
 import { TooltipProvider } from "./components/ui/tooltip";
 import { ThemeProvider } from "./providers/theme";
-import { ThemedAuthProvider } from "./providers/themed-auth-provider";
 
 type DesignSystemProviderProperties = ComponentProps<typeof ThemeProvider> & {
   children: ReactNode;
@@ -20,7 +20,7 @@ export const DesignSystemProvider = ({
   ...properties
 }: DesignSystemProviderProperties) => (
   <ThemeProvider {...properties}>
-    <ThemedAuthProvider
+    <AuthProvider
       helpUrl={helpUrl}
       nonce={properties.nonce}
       privacyUrl={privacyUrl}
@@ -28,6 +28,6 @@ export const DesignSystemProvider = ({
     >
       <TooltipProvider>{children}</TooltipProvider>
       <Toaster />
-    </ThemedAuthProvider>
+    </AuthProvider>
   </ThemeProvider>
 );
