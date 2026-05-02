@@ -30,7 +30,10 @@ import { EvaluationSection } from "@/components/document-editor/evaluation-secti
 import { InlineEditEditorShell } from "@/components/document-editor/inline-edit-editor-shell";
 import { BranchesSection } from "@/components/document-editor/relationships/branches-section";
 import { PreviewSection } from "@/components/document-editor/relationships/preview-section";
-import { LoopDispatchTargetSelector } from "@/components/engineer/LoopDispatchTargetSelector";
+import {
+  FloatingTargetPicker,
+  resolveFloatingTargetPickerSource,
+} from "@/components/engineer/floating-target-picker";
 import { MoveEntityDialog } from "@/components/move-entity-dialog";
 import { useDocumentActions } from "@/hooks/document-editing/use-document-actions";
 import { useDocumentContent } from "@/hooks/document-editing/use-document-content";
@@ -105,6 +108,16 @@ export function FeaturePage({
   const { data: featureGenerationStatus } = useDocumentGenerationStatus(
     feature.id,
     { polling: true }
+  );
+  const activeTargetPicker = resolveFloatingTargetPickerSource(
+    {
+      multiTargetState: featureActions.multiTargetState,
+      onSelect: featureActions.selectTarget,
+    },
+    {
+      multiTargetState: planActions.multiTargetState,
+      onSelect: planActions.selectTarget,
+    }
   );
 
   const latestRefetchedEvaluationRunKey = useRef<string | null>(null);
@@ -320,29 +333,10 @@ export function FeaturePage({
         />
       )}
 
-      {planActions.multiTargetState && (
-        <div className="fixed right-4 bottom-4 z-50 rounded-lg border bg-background p-4 shadow-lg">
-          <p className="mb-2 text-muted-foreground text-sm">
-            Multiple compute targets are online. Select one:
-          </p>
-          <LoopDispatchTargetSelector
-            availableTargets={planActions.multiTargetState.availableTargets}
-            onSelect={planActions.selectTarget}
-          />
-        </div>
-      )}
-
-      {featureActions.multiTargetState && (
-        <div className="fixed right-4 bottom-4 z-50 rounded-lg border bg-background p-4 shadow-lg">
-          <p className="mb-2 text-muted-foreground text-sm">
-            Multiple compute targets are online. Select one:
-          </p>
-          <LoopDispatchTargetSelector
-            availableTargets={featureActions.multiTargetState.availableTargets}
-            onSelect={featureActions.selectTarget}
-          />
-        </div>
-      )}
+      <FloatingTargetPicker
+        multiTargetState={activeTargetPicker.multiTargetState}
+        onSelect={activeTargetPicker.onSelect}
+      />
 
       <BackendMismatchModal
         mismatchData={planActions.backendMismatchState}
