@@ -5,6 +5,7 @@ import { createMockJudgeFeedbackItem } from "@/__tests__/fixtures/evaluation";
 import {
   judgesKeys,
   useCodeJudgesFeedback,
+  useFeatureJudgesFeedback,
   usePlanJudgesFeedback,
   usePrdJudgesFeedback,
 } from "../use-judges";
@@ -189,14 +190,56 @@ describe("usePrdJudgesFeedback", () => {
     expect(mockApiClient.get).not.toHaveBeenCalled();
   });
 
-  test("uses a distinct query key from usePlanJudgesFeedback and useCodeJudgesFeedback", () => {
+  test("uses a distinct query key from usePlanJudgesFeedback, useFeatureJudgesFeedback, and useCodeJudgesFeedback", () => {
     const prdKey = judgesKeys.prdDetail("artifact-xyz");
     const planKey = judgesKeys.detail("artifact-xyz");
+    const featureKey = judgesKeys.featureDetail("artifact-xyz");
     const codeKey = judgesKeys.codeDetail("artifact-xyz");
 
     expect(prdKey).toEqual(["judges", "prd-detail", "artifact-xyz"]);
     expect(prdKey).not.toEqual(planKey);
+    expect(prdKey).not.toEqual(featureKey);
     expect(prdKey).not.toEqual(codeKey);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests — useFeatureJudgesFeedback
+// ---------------------------------------------------------------------------
+
+describe("useFeatureJudgesFeedback", () => {
+  test("fetches feature judge feedback using feature-judges endpoint", async () => {
+    const response = buildSuccessResponse({
+      caseId: "feature-clarity-judge",
+      score: 0.91,
+    });
+    mockApiClient.get.mockResolvedValueOnce(response);
+
+    const { result } = renderHook(
+      () => useFeatureJudgesFeedback("artifact-abc"),
+      {
+        wrapper: createWrapper(),
+      }
+    );
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(mockApiClient.get).toHaveBeenCalledWith(
+      "/documents/artifact-abc/feature-judges"
+    );
+    expect(result.current.data?.[0].caseId).toBe("feature-clarity-judge");
+  });
+
+  test("uses a distinct query key from other judge feedback hooks", () => {
+    const featureKey = judgesKeys.featureDetail("artifact-xyz");
+    const planKey = judgesKeys.detail("artifact-xyz");
+    const prdKey = judgesKeys.prdDetail("artifact-xyz");
+    const codeKey = judgesKeys.codeDetail("artifact-xyz");
+
+    expect(featureKey).toEqual(["judges", "feature-detail", "artifact-xyz"]);
+    expect(featureKey).not.toEqual(planKey);
+    expect(featureKey).not.toEqual(prdKey);
+    expect(featureKey).not.toEqual(codeKey);
   });
 });
 
@@ -232,11 +275,13 @@ describe("useCodeJudgesFeedback", () => {
     expect(mockApiClient.get).not.toHaveBeenCalled();
   });
 
-  test("uses a distinct query key from usePlanJudgesFeedback", () => {
+  test("uses a distinct query key from usePlanJudgesFeedback and useFeatureJudgesFeedback", () => {
     const codeKey = judgesKeys.codeDetail("artifact-xyz");
     const planKey = judgesKeys.detail("artifact-xyz");
+    const featureKey = judgesKeys.featureDetail("artifact-xyz");
 
     expect(codeKey).toEqual(["judges", "code-detail", "artifact-xyz"]);
     expect(codeKey).not.toEqual(planKey);
+    expect(codeKey).not.toEqual(featureKey);
   });
 });

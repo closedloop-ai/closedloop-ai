@@ -2,7 +2,6 @@ import type { Page } from "@playwright/test";
 import { gotoAuthenticatedApp } from "./app-bootstrap";
 
 const CONTINUE_BUTTON = /continue/i;
-const POST_LOGIN_URL = /\/(my-tasks|onboarding)/;
 const SKIP_FOR_NOW = /skip for now/i;
 const GET_STARTED = /get started/i;
 const TEAM_NAME = /team name/i;
@@ -10,6 +9,7 @@ const CREATE_TEAM = /create team/i;
 const PROJECT_NAME = /project name/i;
 const CREATE_PROJECT = /create project/i;
 const GO_TO_MY_TASKS = /go to my tasks/i;
+const SIGN_IN_PATH_PREFIX = "/sign-in";
 
 export async function performSignIn(
   page: Page,
@@ -39,7 +39,7 @@ export async function authenticateToApp(
 ) {
   if (options?.fresh) {
     await page.context().clearCookies();
-    await page.goto("/");
+    await page.goto("/", { waitUntil: "domcontentloaded" });
     await page.evaluate(() => {
       localStorage.clear();
       sessionStorage.clear();
@@ -49,7 +49,10 @@ export async function authenticateToApp(
   const password = requireEnvVar("DEVOPS_CLOSEDLOOP_APP_PWD");
 
   await performSignIn(page, TEST_EMAIL, password);
-  await page.waitForURL(POST_LOGIN_URL);
+  await page.waitForURL(
+    (url) => !url.pathname.startsWith(SIGN_IN_PATH_PREFIX),
+    { waitUntil: "domcontentloaded" }
+  );
 
   if (page.url().includes("/onboarding")) {
     const skip = page.getByRole("button", { name: SKIP_FOR_NOW });

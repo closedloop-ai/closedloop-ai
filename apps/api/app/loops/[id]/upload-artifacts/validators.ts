@@ -17,6 +17,7 @@ export const uploadArtifactsSchema = z.object({
       codeJudges: jsonObjectSchema.optional(),
       planJudges: jsonObjectSchema.optional(),
       prdJudges: jsonObjectSchema.optional(),
+      featureJudges: jsonObjectSchema.optional(),
       openQuestions: z.string().optional(),
     })
     .catchall(jsonValueSchema),
