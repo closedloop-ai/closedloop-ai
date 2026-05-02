@@ -48,6 +48,7 @@ import type { MouseEvent } from "react";
 import { createContext, useContext } from "react";
 import { AssigneeAvatar } from "@/components/assignee-avatar";
 import {
+  useFeatureJudgesFeedback,
   usePlanJudgesFeedback,
   usePrdJudgesFeedback,
 } from "@/hooks/queries/use-judges";
@@ -557,12 +558,16 @@ function ScoreCell({ item }: { item: DocumentRowItem }) {
   const isPlan =
     item.kind === "artifact" &&
     item.data.type === DocumentType.ImplementationPlan;
-  const documentId = item.kind === "artifact" ? item.data.id : "";
+  const isFeature = item.kind === "feature";
+  const documentId = item.kind === "project" ? "" : item.data.id;
 
   const prdJudgesQuery = usePrdJudgesFeedback(isPrd ? documentId : "");
   const planJudgesQuery = usePlanJudgesFeedback(isPlan ? documentId : "");
+  const featureJudgesQuery = useFeatureJudgesFeedback(
+    isFeature ? documentId : ""
+  );
 
-  if (item.kind !== "artifact") {
+  if (item.kind === "project") {
     return <ScoreCellDash />;
   }
   if (isPrd) {
@@ -570,6 +575,9 @@ function ScoreCell({ item }: { item: DocumentRowItem }) {
   }
   if (isPlan) {
     return <ScoreCellWithQuery queryResult={planJudgesQuery} />;
+  }
+  if (isFeature) {
+    return <ScoreCellWithQuery queryResult={featureJudgesQuery} />;
   }
   return <ScoreCellDash />;
 }

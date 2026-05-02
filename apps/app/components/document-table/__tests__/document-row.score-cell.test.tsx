@@ -1,7 +1,8 @@
 import { Priority } from "@repo/api/src/types/common";
 import { DocumentStatus, DocumentType } from "@repo/api/src/types/document";
 import { EvalStatus } from "@repo/api/src/types/evaluation";
-import { render, screen } from "@testing-library/react";
+import { ProjectStatus } from "@repo/api/src/types/project";
+import { cleanup, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock next/navigation — DocumentRow uses useRouter and useParams
@@ -19,8 +20,11 @@ vi.mock("next/navigation", () => ({
 
 const mockUsePlanJudgesFeedback = vi.fn();
 const mockUsePrdJudgesFeedback = vi.fn();
+const mockUseFeatureJudgesFeedback = vi.fn();
 
 vi.mock("@/hooks/queries/use-judges", () => ({
+  useFeatureJudgesFeedback: (...args: unknown[]) =>
+    mockUseFeatureJudgesFeedback(...args),
   usePlanJudgesFeedback: (...args: unknown[]) =>
     mockUsePlanJudgesFeedback(...args),
   usePrdJudgesFeedback: (...args: unknown[]) =>
@@ -30,6 +34,7 @@ vi.mock("@/hooks/queries/use-judges", () => ({
 
 // Import after mocks
 import type { DocumentWithWorkstream } from "@repo/api/src/types/document";
+import type { ProjectWithDetails } from "@repo/api/src/types/project";
 import type { DocumentRowItem } from "@/components/document-table/document-row";
 import { DocumentRow } from "@/components/document-table/document-row";
 import { DocumentColumn as Col } from "@/hooks/use-column-visibility";
@@ -91,6 +96,30 @@ const makeFeature = (
   ...overrides,
 });
 
+const makeProject = (
+  overrides?: Partial<ProjectWithDetails>
+): ProjectWithDetails => ({
+  id: "project-1",
+  organizationId: "org-1",
+  name: "Test Project",
+  description: null,
+  priority: Priority.Medium,
+  status: ProjectStatus.InProgress,
+  assigneeId: null,
+  createdById: "user-1",
+  slug: "project-1",
+  targetDate: null,
+  codebaseSummary: null,
+  lastIndexedAt: null,
+  settings: {},
+  sortOrder: null,
+  createdAt: new Date("2024-01-01"),
+  updatedAt: new Date("2024-01-02"),
+  completionPercentage: 0,
+  teams: [],
+  ...overrides,
+});
+
 const prdFeedbackItem = {
   judgeScoreId: "score-1",
   caseId: "case-1",
@@ -113,6 +142,17 @@ const planFeedbackItem = {
   metricName: "clarity",
 };
 
+const featureFeedbackItem = {
+  judgeScoreId: "score-3",
+  caseId: "case-3",
+  score: 0.92,
+  threshold: 0.7,
+  justification: "Strong feature",
+  finalStatus: EvalStatus.Passed,
+  promptName: null,
+  metricName: "feature_quality",
+};
+
 function renderScoreColumn(item: DocumentRowItem) {
   return render(<DocumentRow item={item} visibleColumns={[Col.Score]} />);
 }
@@ -129,6 +169,10 @@ describe("ScoreCell — per-artifact judge hooks", () => {
       isLoading: false,
     });
     mockUsePrdJudgesFeedback.mockReturnValue({
+      data: null,
+      isLoading: false,
+    });
+    mockUseFeatureJudgesFeedback.mockReturnValue({
       data: null,
       isLoading: false,
     });
@@ -149,6 +193,7 @@ describe("ScoreCell — per-artifact judge hooks", () => {
 
     expect(mockUsePrdJudgesFeedback).toHaveBeenCalledWith("artifact-prd-1");
     expect(mockUsePlanJudgesFeedback).toHaveBeenCalledWith("");
+    expect(mockUseFeatureJudgesFeedback).toHaveBeenCalledWith("");
     expect(screen.getByText("85%")).toBeInTheDocument();
   });
 
@@ -170,16 +215,13 @@ describe("ScoreCell — per-artifact judge hooks", () => {
 
     expect(mockUsePlanJudgesFeedback).toHaveBeenCalledWith("artifact-plan-1");
     expect(mockUsePrdJudgesFeedback).toHaveBeenCalledWith("");
+    expect(mockUseFeatureJudgesFeedback).toHaveBeenCalledWith("");
     expect(screen.getByText("72%")).toBeInTheDocument();
   });
 
-  it("renders a dash for a feature item; judge hooks run with empty id (disabled)", () => {
-    mockUsePlanJudgesFeedback.mockReturnValue({
-      data: null,
-      isLoading: false,
-    });
-    mockUsePrdJudgesFeedback.mockReturnValue({
-      data: null,
+  it("renders '92%' for a feature item from useFeatureJudgesFeedback data", () => {
+    mockUseFeatureJudgesFeedback.mockReturnValue({
+      data: [featureFeedbackItem],
       isLoading: false,
     });
 
@@ -188,7 +230,37 @@ describe("ScoreCell — per-artifact judge hooks", () => {
 
     expect(mockUsePlanJudgesFeedback).toHaveBeenCalledWith("");
     expect(mockUsePrdJudgesFeedback).toHaveBeenCalledWith("");
+    expect(mockUseFeatureJudgesFeedback).toHaveBeenCalledWith("feature-1");
+    expect(screen.getByText("92%")).toBeInTheDocument();
+    expect(screen.queryByText("\u2014")).not.toBeInTheDocument();
+  });
+
+  it.each([
+    { data: null, name: "null" },
+    { data: [], name: "empty array" },
+  ])("renders a dash when feature feedback is $name", ({ data }) => {
+    mockUseFeatureJudgesFeedback.mockReturnValue({
+      data,
+      isLoading: false,
+    });
+
+    const item: DocumentRowItem = { kind: "feature", data: makeFeature() };
+    renderScoreColumn(item);
+
     expect(screen.getByText("\u2014")).toBeInTheDocument();
+    expect(screen.queryByText("92%")).not.toBeInTheDocument();
+  });
+
+  it("shows a loading spinner while feature feedback is loading", () => {
+    mockUseFeatureJudgesFeedback.mockReturnValue({
+      data: undefined,
+      isLoading: true,
+    });
+
+    const item: DocumentRowItem = { kind: "feature", data: makeFeature() };
+    const { container } = renderScoreColumn(item);
+
+    expect(container.querySelector(".animate-spin")).toBeInTheDocument();
   });
 
   it("renders a dash when PRD feedback is absent", () => {
@@ -222,5 +294,50 @@ describe("ScoreCell — per-artifact judge hooks", () => {
     const { container } = renderScoreColumn(item);
 
     expect(container.querySelector(".animate-spin")).toBeInTheDocument();
+  });
+
+  it("enables only the judge hook that matches the row type", () => {
+    const cases: Array<{
+      item: DocumentRowItem;
+      prdId: string;
+      planId: string;
+      featureId: string;
+    }> = [
+      {
+        item: { kind: "artifact", data: makePrdArtifact() },
+        prdId: "artifact-prd-1",
+        planId: "",
+        featureId: "",
+      },
+      {
+        item: { kind: "artifact", data: makePlanArtifact() },
+        prdId: "",
+        planId: "artifact-plan-1",
+        featureId: "",
+      },
+      {
+        item: { kind: "feature", data: makeFeature() },
+        prdId: "",
+        planId: "",
+        featureId: "feature-1",
+      },
+      {
+        item: { kind: "project", data: makeProject() },
+        prdId: "",
+        planId: "",
+        featureId: "",
+      },
+    ];
+
+    for (const { item, prdId, planId, featureId } of cases) {
+      vi.clearAllMocks();
+      renderScoreColumn(item);
+
+      expect(mockUsePrdJudgesFeedback).toHaveBeenCalledWith(prdId);
+      expect(mockUsePlanJudgesFeedback).toHaveBeenCalledWith(planId);
+      expect(mockUseFeatureJudgesFeedback).toHaveBeenCalledWith(featureId);
+
+      cleanup();
+    }
   });
 });
