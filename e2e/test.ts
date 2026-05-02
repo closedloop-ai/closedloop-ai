@@ -241,7 +241,7 @@ export const test = base.extend<{
       await setupClerkTestingToken({
         context: context as BrowserContext,
       });
-      await use();
+      await use(undefined);
     },
     { auto: true },
   ],
@@ -302,7 +302,7 @@ export const test = base.extend<{
       page.on("response", onResponse);
 
       try {
-        await use();
+        await use(undefined);
       } finally {
         page.off("console", onConsole);
         page.off("pageerror", onPageError);

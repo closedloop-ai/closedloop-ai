@@ -11,19 +11,20 @@
  * Test 2 (positive case): When a user clicks "Evaluate PRD" on a PRD document,
  * the run-loop endpoint must be called with command="evaluate_prd".
  */
-import type { APIRequestContext } from "@playwright/test";
-import { type ArtifactLink, LinkType } from "@repo/api/src/types/artifact";
+import { LinkType } from "@repo/api/src/types/artifact";
 import type { ApiResult } from "@repo/api/src/types/common";
 import { DocumentType } from "@repo/api/src/types/document";
-import {
-  LoopCommand,
-  type LoopWithUser,
-  RunLoopCommand,
-} from "@repo/api/src/types/loop";
-import { getApiBaseUrl } from "./helpers/api-url";
+import { LoopCommand, RunLoopCommand } from "@repo/api/src/types/loop";
+import { createArtifactLink } from "./helpers/artifact-links";
 import { getClerkBearerToken } from "./helpers/clerk-token";
 import { createProject, deleteProject } from "./helpers/create-project";
 import { createTeam, deleteTeam } from "./helpers/create-team";
+import {
+  createDocument,
+  type DocumentSummary,
+  deleteDocument,
+} from "./helpers/documents";
+import { countLoops } from "./helpers/loops";
 import { authenticateToApp } from "./helpers/sign-in";
 import { createUniqueName } from "./helpers/utils";
 import { expect, test } from "./test";
@@ -33,130 +34,6 @@ const RE_GENERATE_PLAN_BUTTON = /generate plan/i;
 const RE_PLAN_TITLE_INPUT = /title/i;
 const RE_ACTIONS_BUTTON = /^actions$/i;
 const RE_EVALUATE_PRD_BUTTON = /evaluate prd/i;
-
-const EVALUATE_PRD_POLL_TIMEOUT_MS = 5000;
-const EVALUATE_PRD_POLL_INTERVAL_MS = 500;
-
-type DocumentSummary = {
-  id: string;
-  slug: string;
-  title: string;
-};
-
-/**
- * Creates a document via the API with the given type and content.
- */
-async function createDocument(
-  request: APIRequestContext,
-  {
-    projectId,
-    type,
-    title,
-    content,
-    token,
-  }: {
-    projectId: string;
-    type: DocumentType;
-    title: string;
-    content: string;
-    token: string;
-  }
-): Promise<DocumentSummary> {
-  const api = getApiBaseUrl();
-  const response = await request.post(`${api}/documents`, {
-    data: { projectId, type, title, content },
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  const body = (await response.json()) as ApiResult<DocumentSummary>;
-
-  if (!body.success) {
-    throw new Error(`Failed to create ${type} document: ${body.error}`);
-  }
-
-  const { id, slug } = body.data;
-  return { id, slug, title: body.data.title };
-}
-
-/**
- * Deletes a document by ID via the API. Used for cleanup.
- */
-async function deleteDocument(
-  request: APIRequestContext,
-  documentId: string,
-  token: string
-): Promise<void> {
-  const api = getApiBaseUrl();
-  try {
-    const response = await request.delete(`${api}/documents/${documentId}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (!response.ok()) {
-      console.error({
-        documentId,
-        status: response.status(),
-        statusText: response.statusText(),
-      });
-    }
-  } catch {
-    console.error({ documentId, status: 0, statusText: "request failed" });
-  }
-}
-
-/**
- * Creates a PRODUCES artifact link from `sourceId` to `targetId`. Used to
- * establish the PRD → Feature source relationship that the run-loop handler
- * resolves via documentWorkstreamService.findSourceWithContent.
- */
-async function createProducesLink(
-  request: APIRequestContext,
-  sourceId: string,
-  targetId: string,
-  token: string
-): Promise<void> {
-  const api = getApiBaseUrl();
-  const response = await request.post(`${api}/artifact-links`, {
-    data: { sourceId, targetId, linkType: LinkType.Produces },
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  const body = (await response.json()) as ApiResult<ArtifactLink>;
-  if (!body.success) {
-    throw new Error(`Failed to create artifact link: ${body.error}`);
-  }
-}
-
-/**
- * Polls the loops API for any EVALUATE_PRD loops on the given document and
- * returns the count once polling completes (success or timeout). Used to
- * detect server-side side effects that the client cannot observe directly.
- */
-async function countEvaluatePrdLoops(
-  request: APIRequestContext,
-  documentId: string,
-  token: string
-): Promise<number> {
-  const api = getApiBaseUrl();
-  const deadline = Date.now() + EVALUATE_PRD_POLL_TIMEOUT_MS;
-  let lastCount = 0;
-  while (Date.now() < deadline) {
-    const response = await request.get(
-      `${api}/loops?documentId=${documentId}&command=${LoopCommand.EvaluatePrd}`,
-      { headers: { Authorization: `Bearer ${token}` } }
-    );
-    if (response.ok()) {
-      const body = (await response.json()) as ApiResult<LoopWithUser[]>;
-      if (body.success) {
-        lastCount = body.data.length;
-        if (lastCount > 0) {
-          return lastCount;
-        }
-      }
-    }
-    await new Promise((resolve) =>
-      setTimeout(resolve, EVALUATE_PRD_POLL_INTERVAL_MS)
-    );
-  }
-  return lastCount;
-}
 
 test("Generate Plan on a Feature sourced from a PRD does NOT create an EVALUATE_PRD loop on the source PRD", async ({
   page,
@@ -205,7 +82,12 @@ test("Generate Plan on a Feature sourced from a PRD does NOT create an EVALUATE_
 
   // Establish the PRD → Feature source link so the regression condition
   // (source?.type === ArtifactType.Document) would be satisfied if present.
-  await createProducesLink(request, prd.id, feature.id, token);
+  await createArtifactLink(request, {
+    sourceId: prd.id,
+    targetId: feature.id,
+    linkType: LinkType.Produces,
+    token,
+  });
 
   test.info().annotations.push({
     type: "cleanup",
@@ -281,11 +163,11 @@ test("Generate Plan on a Feature sourced from a PRD does NOT create an EVALUATE_
     // Server-side check: poll the loops API for any EVALUATE_PRD loop on the
     // source PRD. If the regression returns, scheduleAutoEvaluatePrd would
     // create one here.
-    const evaluatePrdLoopCount = await countEvaluatePrdLoops(
-      request,
-      prd.id,
-      token
-    );
+    const evaluatePrdLoopCount = await countLoops(request, {
+      documentId: prd.id,
+      command: LoopCommand.EvaluatePrd,
+      token,
+    });
     expect(evaluatePrdLoopCount).toBe(0);
   } finally {
     if (createdPlanId) {
