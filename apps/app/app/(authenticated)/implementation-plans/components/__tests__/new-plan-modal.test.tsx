@@ -18,6 +18,7 @@ const mockUseCreateArtifact = vi.fn();
 const mockUseCreateAndGenerateArtifact = vi.fn();
 const mockUseProjects = vi.fn();
 const mockUseProject = vi.fn();
+const mockUsePreLoopGate = vi.fn();
 
 vi.mock("next/navigation", () => ({
   useRouter: () => mockUseRouter(),
@@ -50,6 +51,10 @@ vi.mock("@/hooks/queries/use-projects", async () => {
   };
 });
 
+vi.mock("@/lib/system-check/pre-loop-system-check-provider", () => ({
+  useOptionalPreLoopSystemCheckGate: () => mockUsePreLoopGate(),
+}));
+
 vi.mock("@/hooks/queries/use-github-integration", () => ({
   useGitHubIntegrationStatus: () => ({
     data: { connected: false },
@@ -78,6 +83,7 @@ const FILE_NAME_REGEX = /file name/i;
 const GENERATE_PLAN_REGEX = /generate plan/i;
 const NEW_PLAN_REGEX = /new plan/i;
 const CANCEL_REGEX = /cancel/i;
+const CHECKING_REGEX = /checking/i;
 const PLAN_CREATED_WITH_REGEX = /plan will be created with:/i;
 const TARGET_REPO_REGEX = /target repo:/i;
 const TARGET_BRANCH_REGEX = /target branch:/i;
@@ -111,6 +117,7 @@ describe("NewPlanModal", () => {
       data: null,
       isLoading: false,
     });
+    mockUsePreLoopGate.mockReturnValue(null);
   });
 
   afterEach(() => {
@@ -337,6 +344,107 @@ describe("NewPlanModal", () => {
         targetRepo: "org/repo",
         targetBranch: "main",
       });
+    });
+
+    it("does not create a generated plan until the pre-loop gate executes the callback", async () => {
+      const mockCreateAndGenerateMutate = vi.fn();
+      const mockRunWithPreLoopSystemCheck = vi
+        .fn()
+        .mockResolvedValue({ status: "blocked", attemptId: "attempt-1" });
+      mockUseCreateAndGenerateArtifact.mockReturnValue({
+        mutate: mockCreateAndGenerateMutate,
+        isPending: false,
+      });
+      mockUsePreLoopGate.mockReturnValue({
+        runWithPreLoopSystemCheck: mockRunWithPreLoopSystemCheck,
+        cancelPendingPreLoopAttempt: vi.fn(),
+        isChecking: false,
+        isDialogOpen: false,
+        pendingOwnerKey: null,
+        pendingCommand: null,
+      });
+
+      const mockSource = createMockSource({
+        id: "prd-1",
+        title: "Dashboard PRD",
+        projectId: "project-1",
+        targetRepo: "org/repo",
+      });
+
+      render(<NewPlanModal open={true} source={mockSource} />);
+
+      screen.getByRole("button", { name: GENERATE_PLAN_REGEX }).click();
+
+      await waitFor(() => {
+        expect(mockRunWithPreLoopSystemCheck).toHaveBeenCalledOnce();
+      });
+      expect(mockCreateAndGenerateMutate).not.toHaveBeenCalled();
+
+      const [metadata, execute] = mockRunWithPreLoopSystemCheck.mock.calls[0];
+      expect(metadata).toMatchObject({
+        command: "generate_plan",
+        documentType: "implementation_plan",
+        ownerKey: expect.stringContaining("new-plan:"),
+      });
+
+      execute();
+
+      expect(mockCreateAndGenerateMutate).toHaveBeenCalledOnce();
+      expect(mockCreateAndGenerateMutate.mock.calls[0][0].input).toMatchObject({
+        type: "IMPLEMENTATION_PLAN",
+        sourceId: "prd-1",
+        projectId: "project-1",
+        targetRepo: "org/repo",
+      });
+    });
+
+    it("cancels a pending pre-loop generate attempt when the modal closes", () => {
+      const mockCancelPending = vi.fn();
+      mockUsePreLoopGate.mockReturnValue({
+        runWithPreLoopSystemCheck: vi.fn(),
+        cancelPendingPreLoopAttempt: mockCancelPending,
+        isChecking: false,
+        isDialogOpen: true,
+        pendingOwnerKey: "some-owner",
+        pendingCommand: "generate_plan",
+      });
+
+      render(
+        <NewPlanModal
+          onOpenChange={vi.fn()}
+          open={true}
+          source={createMockSource({ id: "prd-1" })}
+        />
+      );
+
+      screen.getByRole("button", { name: CANCEL_REGEX }).click();
+
+      expect(mockCancelPending).toHaveBeenCalledWith(
+        expect.stringContaining("new-plan:")
+      );
+    });
+
+    it("disables Generate Plan while a pre-loop check is pending", () => {
+      mockUsePreLoopGate.mockReturnValue({
+        runWithPreLoopSystemCheck: vi.fn(),
+        cancelPendingPreLoopAttempt: vi.fn(),
+        isChecking: true,
+        isDialogOpen: false,
+        pendingOwnerKey: null,
+        pendingCommand: "generate_plan",
+      });
+
+      render(
+        <NewPlanModal
+          open={true}
+          source={createMockSource({ id: "prd-1", title: "Dashboard PRD" })}
+        />
+      );
+
+      const submitButton = screen.getByRole("button", {
+        name: CHECKING_REGEX,
+      });
+      expect(submitButton).toBeDisabled();
     });
   });
 

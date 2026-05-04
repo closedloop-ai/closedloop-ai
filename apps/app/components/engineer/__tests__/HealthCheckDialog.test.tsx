@@ -103,6 +103,10 @@ const failingData = {
   checks: [{ id: "cli", label: "CLI", required: true, passed: false }],
   allRequiredPassed: false,
 };
+const passingData = {
+  checks: [{ id: "cli", label: "CLI", required: true, passed: true }],
+  allRequiredPassed: true,
+};
 
 beforeEach(() => {
   mockLatestElectronReleaseResult.value = {
@@ -503,5 +507,174 @@ describe("Show-once behavior", () => {
 
     // Second mount sees shownTargetKeys = true and returns null
     expect(screen.queryByText("System Check")).toBeNull();
+  });
+});
+
+describe("Blocking pre-loop mode", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.clearAllMocks();
+    resetHealthCheckDialogVisibilityForTests();
+    mockQueryFn.mockResolvedValue(failingData);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("bypasses ambient show-once suppression and renders initial data without fetching", async () => {
+    const Wrapper = createWrapper();
+    const { unmount } = render(
+      <Wrapper>
+        <HealthCheckDialog />
+      </Wrapper>
+    );
+
+    await act(async () => {});
+    act(() => {
+      vi.advanceTimersByTime(2);
+    });
+    expect(screen.queryByText("System Check")).not.toBeNull();
+    unmount();
+    mockQueryFn.mockClear();
+
+    render(
+      <Wrapper>
+        <HealthCheckDialog
+          initialData={failingData}
+          mode="blocking-pre-loop"
+          onCancel={vi.fn()}
+          onContinue={vi.fn()}
+        />
+      </Wrapper>
+    );
+
+    await act(async () => {});
+
+    expect(screen.queryByText("System Check")).not.toBeNull();
+    expect(mockQueryFn).not.toHaveBeenCalled();
+  });
+
+  it("routes Escape through cancel instead of continue", async () => {
+    const onCancel = vi.fn();
+    const onContinue = vi.fn();
+    const Wrapper = createWrapper();
+    render(
+      <Wrapper>
+        <HealthCheckDialog
+          initialData={failingData}
+          mode="blocking-pre-loop"
+          onCancel={onCancel}
+          onContinue={onContinue}
+        />
+      </Wrapper>
+    );
+
+    await act(async () => {});
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Escape",
+          bubbles: true,
+          cancelable: true,
+        })
+      );
+    });
+
+    expect(onCancel).toHaveBeenCalledOnce();
+    expect(onContinue).not.toHaveBeenCalled();
+  });
+
+  it("uses Continue as the only manual execution callback", async () => {
+    const onCancel = vi.fn();
+    const onContinue = vi.fn();
+    const Wrapper = createWrapper();
+    render(
+      <Wrapper>
+        <HealthCheckDialog
+          initialData={failingData}
+          mode="blocking-pre-loop"
+          onCancel={onCancel}
+          onContinue={onContinue}
+        />
+      </Wrapper>
+    );
+
+    await act(async () => {});
+
+    act(() => {
+      screen.getByRole("button", { name: /continue/i }).click();
+    });
+
+    expect(onContinue).toHaveBeenCalledOnce();
+    expect(onCancel).not.toHaveBeenCalled();
+  });
+
+  it("calls the resolved callback after a passing Re-check success delay", async () => {
+    const onResolvedAfterRecheck = vi.fn();
+    mockQueryFn.mockResolvedValueOnce(passingData);
+    const Wrapper = createWrapper();
+    render(
+      <Wrapper>
+        <HealthCheckDialog
+          initialData={failingData}
+          mode="blocking-pre-loop"
+          onCancel={vi.fn()}
+          onContinue={vi.fn()}
+          onResolvedAfterRecheck={onResolvedAfterRecheck}
+        />
+      </Wrapper>
+    );
+
+    await act(async () => {});
+
+    act(() => {
+      screen.getByRole("button", { name: /re-check/i }).click();
+    });
+    await act(async () => {});
+    act(() => {
+      vi.advanceTimersByTime(120);
+    });
+    await act(async () => {});
+    act(() => {
+      vi.advanceTimersByTime(300);
+    });
+    await act(async () => {});
+    act(() => {
+      vi.advanceTimersByTime(1200);
+    });
+
+    expect(onResolvedAfterRecheck).toHaveBeenCalledOnce();
+  });
+
+  it("keeps blocking and reports result data when Re-check still has failures", async () => {
+    const onRecheckResult = vi.fn();
+    const changedFailure = {
+      checks: [{ id: "git", label: "Git", required: true, passed: false }],
+      allRequiredPassed: false,
+    };
+    mockQueryFn.mockResolvedValueOnce(changedFailure);
+    const Wrapper = createWrapper();
+    render(
+      <Wrapper>
+        <HealthCheckDialog
+          initialData={failingData}
+          mode="blocking-pre-loop"
+          onCancel={vi.fn()}
+          onContinue={vi.fn()}
+          onRecheckResult={onRecheckResult}
+        />
+      </Wrapper>
+    );
+
+    await act(async () => {});
+
+    act(() => {
+      screen.getByRole("button", { name: /re-check/i }).click();
+    });
+    await act(async () => {});
+
+    expect(onRecheckResult).toHaveBeenCalledWith(changedFailure);
+    expect(screen.queryByText("System Check")).not.toBeNull();
   });
 });

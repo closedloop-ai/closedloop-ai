@@ -1,0 +1,195 @@
+"use client";
+
+import type {
+  CheckResult,
+  HealthCheckResponse,
+} from "@/lib/engineer/queries/health-check";
+import { getRenderableHealthChecks } from "@/lib/engineer/queries/health-check";
+
+/** Maximum age for a cached selected-target health check before pre-loop code refetches. */
+export const PRE_LOOP_HEALTH_CHECK_FRESHNESS_MS = 30_000;
+/** Maximum time a pre-loop health-check fetch may block a command before fail-open. */
+export const PRE_LOOP_HEALTH_CHECK_TIMEOUT_MS = 5000;
+
+/** Launch commands currently protected by the pre-loop system-check gate. */
+export const PreLoopCommand = {
+  GeneratePlan: "generate_plan",
+  ExecutePlan: "execute_plan",
+} as const;
+export type PreLoopCommand =
+  (typeof PreLoopCommand)[keyof typeof PreLoopCommand];
+
+/** PostHog event names emitted by the pre-loop system-check funnel. */
+export const PreLoopAnalyticsEvent = {
+  CommandAttempted: "pre_loop_command_attempted",
+  SystemCheckBlocked: "pre_loop_system_check_blocked",
+  SystemCheckRecheckClicked: "pre_loop_system_check_recheck_clicked",
+  SystemCheckResolved: "pre_loop_system_check_resolved",
+  SystemCheckContinued: "pre_loop_system_check_continued",
+  SystemCheckAcknowledgementBypassed:
+    "pre_loop_system_check_acknowledgement_bypassed",
+  SystemCheckCancelled: "pre_loop_system_check_cancelled",
+  SystemCheckUnavailable: "pre_loop_system_check_unavailable",
+} as const;
+export type PreLoopAnalyticsEvent =
+  (typeof PreLoopAnalyticsEvent)[keyof typeof PreLoopAnalyticsEvent];
+
+/** Local compute target snapshot used for one pre-loop gate evaluation. */
+export type PreLoopTarget = {
+  targetKey: string;
+  computeTargetId: string;
+  label: string;
+  mode: "local_compute_target";
+};
+
+/** In-memory acknowledgement for a target's exact failing required-check fingerprint. */
+export type AcknowledgedFailure = {
+  fingerprint: string;
+  checkIds: string[];
+  acknowledgedAt: number;
+  acknowledgedByAttemptId: string;
+};
+
+/** Debug/test-visible outcome returned by a pre-loop gate attempt. */
+export type PreLoopHealthCheckOutcome =
+  | { status: "executed"; attemptId: string }
+  | { status: "blocked"; attemptId: string }
+  | { status: "duplicate_ignored"; attemptId: null }
+  | { status: "skipped_no_local_target"; attemptId: string }
+  | { status: "failed_open_unavailable"; attemptId: string }
+  | { status: "acknowledgement_bypassed"; attemptId: string }
+  | { status: "cancelled"; attemptId: string };
+
+/** Command metadata supplied by Generate Plan and Execute Plan callers. */
+export type PreLoopMetadata = {
+  command: PreLoopCommand;
+  documentType?: string;
+  documentId?: string | null;
+  ownerKey: string;
+};
+
+/** Stable required-failure summary used for blocking, acknowledgement, and analytics. */
+export type RequiredFailureSummary = {
+  checkIds: string[];
+  checks: CheckResult[];
+  fingerprint: string;
+};
+
+let fallbackAttemptCounter = 0;
+
+/** Creates a stable attempt id, with a deterministic fallback for test environments. */
+export function createPreLoopAttemptId(): string {
+  if (globalThis.crypto?.randomUUID) {
+    return globalThis.crypto.randomUUID();
+  }
+  fallbackAttemptCounter += 1;
+  return `pre-loop-attempt-${fallbackAttemptCounter}`;
+}
+
+export function getPreLoopTargetKey(computeTargetId: string): string {
+  return `compute-target:${computeTargetId}`;
+}
+
+/** Returns whether a cached health-check result is fresh enough for pre-loop use. */
+export function isPreLoopHealthCheckFresh({
+  dataUpdatedAt,
+  now = Date.now(),
+}: {
+  dataUpdatedAt: number;
+  now?: number;
+}): boolean {
+  return now - dataUpdatedAt <= PRE_LOOP_HEALTH_CHECK_FRESHNESS_MS;
+}
+
+/** Extracts required renderable checks that currently fail. */
+export function getFailingRequiredChecks(
+  response: HealthCheckResponse | undefined,
+  expectedMcpUrl: string | null
+): CheckResult[] {
+  return (
+    getRenderableHealthChecks(response, expectedMcpUrl)?.filter(
+      (check) => check.required && !check.passed
+    ) ?? []
+  );
+}
+
+/** Extracts sorted IDs for required renderable checks that currently fail. */
+export function getFailingRequiredCheckIds(
+  response: HealthCheckResponse | undefined,
+  expectedMcpUrl: string | null
+): string[] {
+  return getFailingRequiredChecks(response, expectedMcpUrl)
+    .map((check) => check.id)
+    .sort();
+}
+
+/** Creates the stable acknowledgement fingerprint from sorted failing check IDs. */
+export function getFailingRequiredFingerprint(checkIds: string[]): string {
+  return JSON.stringify([...checkIds].sort());
+}
+
+/** Builds the required-failure summary from a health-check response. */
+export function getRequiredFailureSummary(
+  response: HealthCheckResponse | undefined,
+  expectedMcpUrl: string | null
+): RequiredFailureSummary {
+  const checks = getFailingRequiredChecks(response, expectedMcpUrl);
+  const checkIds = checks.map((check) => check.id).sort();
+  return {
+    checks,
+    checkIds,
+    fingerprint: getFailingRequiredFingerprint(checkIds),
+  };
+}
+
+/** Shapes shared analytics properties for all pre-loop system-check events. */
+export function buildPreLoopAnalyticsProperties({
+  attemptId,
+  metadata,
+  target,
+  healthCheckCacheAgeMs,
+  usedCachedHealthCheck,
+  failingChecks,
+  failingRequiredFingerprint,
+  acknowledgement,
+  recheckAttempts,
+  reason,
+}: {
+  attemptId: string;
+  metadata: PreLoopMetadata;
+  target?: PreLoopTarget | null;
+  healthCheckCacheAgeMs?: number | null;
+  usedCachedHealthCheck?: boolean | null;
+  failingChecks?: CheckResult[];
+  failingRequiredFingerprint?: string;
+  acknowledgement?: AcknowledgedFailure;
+  recheckAttempts?: number;
+  reason?: string;
+}): Record<string, unknown> {
+  const sortedFailingChecks = failingChecks
+    ? [...failingChecks].sort((a, b) => a.id.localeCompare(b.id))
+    : undefined;
+  return {
+    attemptId,
+    loopCommand: metadata.command,
+    documentType: metadata.documentType,
+    documentId: metadata.documentId ?? undefined,
+    ownerKey: metadata.ownerKey,
+    computePreference: target ? "local" : undefined,
+    computeTargetId: target?.computeTargetId,
+    computeTargetLabel: target?.label,
+    healthCheckCacheAgeMs,
+    usedCachedHealthCheck,
+    failingCheckIds: sortedFailingChecks?.map((check) => check.id),
+    failingCheckLabels: sortedFailingChecks?.map((check) => check.label),
+    failingRequiredCount: sortedFailingChecks?.length,
+    failingRequiredFingerprint,
+    acknowledgedAt: acknowledgement?.acknowledgedAt,
+    acknowledgedByAttemptId: acknowledgement?.acknowledgedByAttemptId,
+    acknowledgementAgeMs: acknowledgement
+      ? Date.now() - acknowledgement.acknowledgedAt
+      : undefined,
+    recheckAttempts,
+    reason,
+  };
+}

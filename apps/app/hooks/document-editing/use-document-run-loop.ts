@@ -13,6 +13,8 @@ import { toast } from "@repo/design-system/components/ui/sonner";
 import { useCallback, useRef, useState } from "react";
 import { useRunLoop } from "@/hooks/queries/use-loops";
 import { handleRunLoopResponse } from "@/lib/run-loop-response";
+import { PreLoopCommand } from "@/lib/system-check/pre-loop-health-check";
+import { useOptionalPreLoopSystemCheckGate } from "@/lib/system-check/pre-loop-system-check-provider";
 
 type UseArtifactRunLoopConfig = {
   documentId: string | null;
@@ -26,6 +28,8 @@ export type RunLoopParams = {
   repo?: CreateLoopRequest["repo"];
   additionalRepos?: AdditionalRepoRef[];
 };
+
+type RunLoopMutationParams = RunLoopParams & { documentId: string };
 
 /**
  * Generic conflict-resolution machinery for run-loop operations.
@@ -61,6 +65,7 @@ export type RunLoopParams = {
 export function useDocumentRunLoop({ documentId }: UseArtifactRunLoopConfig) {
   // TanStack Query mutation — all loop operations route through run-loop
   const runLoop = useRunLoop();
+  const preLoopGate = useOptionalPreLoopSystemCheckGate();
 
   // Multi-target conflict state
   const [multiTargetState, setMultiTargetState] = useState<{
@@ -241,6 +246,46 @@ export function useDocumentRunLoop({ documentId }: UseArtifactRunLoopConfig) {
     setBackendMismatchState(null);
   }, []);
 
+  const executeOwnerKey = documentId
+    ? `run-loop:${RunLoopCommand.Execute}:${documentId}`
+    : null;
+  const isPreLoopExecutePending = Boolean(
+    executeOwnerKey &&
+      (preLoopGate?.isChecking ||
+        preLoopGate?.pendingOwnerKey === executeOwnerKey)
+  );
+  type RunLoopMutationOptions = Parameters<typeof runLoop.mutate>[1];
+
+  /**
+   * Runs Execute Plan through the pre-loop system-check gate while preserving
+   * the raw run-loop mutation path for every other command in this launch.
+   */
+  const runLoopWithPreLoopSystemCheck = useCallback(
+    (params: RunLoopMutationParams, options?: RunLoopMutationOptions): void => {
+      if (
+        params.command !== RunLoopCommand.Execute ||
+        !preLoopGate ||
+        !executeOwnerKey
+      ) {
+        runLoop.mutate(params, options);
+        return;
+      }
+
+      preLoopGate
+        .runWithPreLoopSystemCheck(
+          {
+            command: PreLoopCommand.ExecutePlan,
+            documentType: "implementation_plan",
+            documentId: params.documentId,
+            ownerKey: executeOwnerKey,
+          },
+          () => runLoop.mutate(params, options)
+        )
+        .catch(() => undefined);
+    },
+    [executeOwnerKey, preLoopGate, runLoop]
+  );
+
   /**
    * Factory that creates a `handleRequestChanges`-style handler for a given run-loop command.
    *
@@ -285,6 +330,8 @@ export function useDocumentRunLoop({ documentId }: UseArtifactRunLoopConfig) {
     confirmPreferredBackend,
     dismissBackendMismatch,
     makeRequestChangesHandler,
+    runLoopWithPreLoopSystemCheck,
+    isPreLoopExecutePending,
     multiTargetState,
     backendMismatchState,
     pendingConflictCommandRef,

@@ -31,7 +31,10 @@ import { PathAutocomplete } from "@/components/engineer/PathAutocomplete";
 import { SystemCheckResults } from "@/components/system-check/system-check-results";
 import { env } from "@/env";
 import { useLatestElectronRelease } from "@/hooks/queries/use-electron-release";
-import type { CheckResult } from "@/lib/engineer/queries/health-check";
+import type {
+  CheckResult,
+  HealthCheckResponse,
+} from "@/lib/engineer/queries/health-check";
 import {
   getRenderableHealthChecks,
   healthCheckOptions,
@@ -50,6 +53,23 @@ const EXIT_ANIMATION_MS = 250;
 const LATEST_RELEASE_STALE_TIME_MS = 5 * 60 * 1000;
 
 const shownTargetKeys = new Set<string>();
+
+type HealthCheckDialogMode = "ambient" | "blocking-pre-loop";
+
+type HealthCheckDialogProps = Readonly<{
+  targetKey?: string;
+  targetLabel?: string;
+  mode?: HealthCheckDialogMode;
+  initialData?: HealthCheckResponse;
+  relayTargetId?: string | null;
+  latestVersionOverride?: string | null;
+  onContinue?: () => void;
+  onCancel?: () => void;
+  onResolvedAfterRecheck?: () => void;
+  onRecheckClick?: () => void;
+  onRecheckResult?: (data: HealthCheckResponse) => void;
+  onRecheckUnavailable?: (reason: string) => void;
+}>;
 
 function shouldEnableLatestReleaseQuery({
   canOpen,
@@ -75,12 +95,24 @@ export function resetHealthCheckDialogVisibilityForTests(): void {
   shownTargetKeys.clear();
 }
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: This dialog coordinates the existing ambient system-check flow plus the new blocking pre-loop mode without splitting shared UI state.
 export function HealthCheckDialog({
   targetKey = "default",
   targetLabel,
-}: Readonly<{ targetKey?: string; targetLabel?: string }>) {
+  mode = "ambient",
+  initialData,
+  relayTargetId = null,
+  latestVersionOverride,
+  onContinue,
+  onCancel,
+  onResolvedAfterRecheck,
+  onRecheckClick,
+  onRecheckResult,
+  onRecheckUnavailable,
+}: HealthCheckDialogProps) {
+  const isBlockingMode = mode === "blocking-pre-loop";
   const [mounted, setMounted] = useState(false);
-  const [failureDetected, setFailureDetected] = useState(false);
+  const [failureDetected, setFailureDetected] = useState(isBlockingMode);
   const [closing, setClosing] = useState(false);
   const [removed, setRemoved] = useState(false);
   const [worktreePath, setWorktreePath] = useState("");
@@ -89,11 +121,14 @@ export function HealthCheckDialog({
   const [recheckKey, setRecheckKey] = useState(0);
   const [showSuccess, setShowSuccess] = useState(false);
   const revealTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
-  const canOpenThisMount = useRef(!shownTargetKeys.has(targetKey));
+  const resolvedCallbackFired = useRef(false);
+  const canOpenThisMount = useRef(
+    isBlockingMode || !shownTargetKeys.has(targetKey)
+  );
   const queryClient = useQueryClient();
   const expectedMcpUrl = env.NEXT_PUBLIC_MCP_SERVER_URL ?? null;
   const latestReleaseQueryEnabled = shouldEnableLatestReleaseQuery({
-    canOpen: canOpenThisMount.current,
+    canOpen: !isBlockingMode && canOpenThisMount.current,
     mounted,
   });
   const { data: latestRelease, isLoading: isLatestReleaseLoading } =
@@ -101,7 +136,10 @@ export function HealthCheckDialog({
       enabled: latestReleaseQueryEnabled,
       staleTime: LATEST_RELEASE_STALE_TIME_MS,
     });
-  const latestVersion = latestRelease?.version ?? null;
+  const latestVersion =
+    latestVersionOverride !== undefined
+      ? latestVersionOverride
+      : (latestRelease?.version ?? null);
 
   // Client-only mount flag — avoids SSR/hydration mismatch
   useEffect(() => {
@@ -125,11 +163,15 @@ export function HealthCheckDialog({
   const dialogOpen = alive && !closing && failureDetected;
 
   const { data, isLoading, refetch, isFetching } = useQuery({
-    ...healthCheckOptions(targetKey, expectedMcpUrl, { latestVersion }),
+    ...healthCheckOptions(targetKey, expectedMcpUrl, {
+      latestVersion,
+      relayTargetId: isBlockingMode ? relayTargetId : null,
+    }),
     enabled: shouldEnableHealthCheckQuery({
       latestReleaseLoading: isLatestReleaseLoading,
-      latestReleaseQueryEnabled,
+      latestReleaseQueryEnabled: latestReleaseQueryEnabled && !isBlockingMode,
     }),
+    initialData,
     refetchOnMount: "always" as const,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
@@ -150,6 +192,10 @@ export function HealthCheckDialog({
   // Defers the module-flag write so React StrictMode's throwaway mount
   // cannot consume the one-shot flag.
   useEffect(() => {
+    if (isBlockingMode) {
+      return;
+    }
+
     if (!canOpenThisMount.current) {
       return;
     }
@@ -165,7 +211,7 @@ export function HealthCheckDialog({
     setFailureDetected(true);
 
     return () => clearTimeout(timer);
-  }, [hasRequiredFailure, targetKey]);
+  }, [hasRequiredFailure, isBlockingMode, targetKey]);
 
   // Staggered reveal: only run when dialog is showing (failure detected).
   // recheckKey ensures the stagger re-triggers even when the response is
@@ -219,25 +265,60 @@ export function HealthCheckDialog({
 
     const timer = setTimeout(() => {
       setClosing(true);
+      if (isBlockingMode && !resolvedCallbackFired.current) {
+        resolvedCallbackFired.current = true;
+        onResolvedAfterRecheck?.();
+      }
     }, SUCCESS_DISMISS_DELAY);
 
     return () => clearTimeout(timer);
-  }, [failureDetected, showSuccess]);
+  }, [failureDetected, isBlockingMode, onResolvedAfterRecheck, showSuccess]);
 
   const handleRecheck = useCallback(async () => {
+    onRecheckClick?.();
     setRevealedCount(0);
     setShowSuccess(false);
     await queryClient.invalidateQueries({
       queryKey: queryKeys.healthCheck(targetKey, expectedMcpUrl, latestVersion),
     });
-    await refetch();
+    const result = await refetch();
+    if (result.error || !result.data) {
+      onRecheckUnavailable?.(
+        result.error instanceof Error
+          ? result.error.message
+          : "Health check returned no data"
+      );
+      return;
+    }
+    onRecheckResult?.(result.data);
     // Bump recheckKey to re-trigger stagger even if data is structurally identical
     setRecheckKey((k) => k + 1);
-  }, [expectedMcpUrl, latestVersion, queryClient, refetch, targetKey]);
+  }, [
+    expectedMcpUrl,
+    latestVersion,
+    onRecheckClick,
+    onRecheckResult,
+    onRecheckUnavailable,
+    queryClient,
+    refetch,
+    targetKey,
+  ]);
 
   const handleContinue = useCallback(() => {
+    if (isBlockingMode) {
+      onContinue?.();
+      return;
+    }
     setClosing(true);
-  }, []);
+  }, [isBlockingMode, onContinue]);
+
+  const handleCancel = useCallback(() => {
+    if (isBlockingMode) {
+      onCancel?.();
+      return;
+    }
+    setClosing(true);
+  }, [isBlockingMode, onCancel]);
 
   const handleSaveWorktree = useCallback(async () => {
     const trimmed = worktreePath.trim();
@@ -310,8 +391,8 @@ export function HealthCheckDialog({
     <Dialog open={dialogOpen}>
       <DialogContent
         className="max-w-md!"
-        onEscapeKeyDown={() => handleContinue()}
-        onInteractOutside={() => handleContinue()}
+        onEscapeKeyDown={() => handleCancel()}
+        onInteractOutside={() => handleCancel()}
         showCloseButton={false}
       >
         <DialogHeader>
@@ -363,6 +444,11 @@ export function HealthCheckDialog({
             </div>
 
             <DialogFooter className="gap-2">
+              {isBlockingMode ? (
+                <Button onClick={handleCancel} size="sm" variant="outline">
+                  Cancel
+                </Button>
+              ) : null}
               <Button
                 className="gap-1.5"
                 disabled={isFetching}

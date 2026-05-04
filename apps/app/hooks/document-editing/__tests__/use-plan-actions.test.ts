@@ -32,6 +32,7 @@ vi.mock("@/hooks/queries/use-loops", () => ({
 // Spies captured at module scope so handleRegenerate tests can assert on them
 const mockMutate = vi.fn();
 const mockPrepareConflictRefs = vi.fn();
+const mockRunLoopWithPreLoopSystemCheck = vi.fn();
 
 vi.mock("@/hooks/document-editing/use-document-run-loop", () => ({
   useDocumentRunLoop: () => ({
@@ -40,6 +41,8 @@ vi.mock("@/hooks/document-editing/use-document-run-loop", () => ({
       mutateAsync: vi.fn(),
       isPending: false,
     },
+    runLoopWithPreLoopSystemCheck: mockRunLoopWithPreLoopSystemCheck,
+    isPreLoopExecutePending: false,
     prepareConflictRefs: mockPrepareConflictRefs,
     routeConflictError: vi.fn(),
     makeRequestChangesHandler: vi.fn(() => vi.fn()),
@@ -155,6 +158,38 @@ describe("usePlanActions", () => {
       );
       expect(mockPrepareConflictRefs).not.toHaveBeenCalledWith(
         expect.objectContaining({ additionalRepos: expect.anything() })
+      );
+    });
+  });
+
+  describe("handleExecute", () => {
+    test("routes Execute through the pre-loop run-loop guard with additionalRepos", () => {
+      const additionalRepos: AdditionalRepoRef[] = [
+        { fullName: "org/other-repo", branch: "main" },
+      ];
+
+      const { result } = renderHook(
+        () => usePlanActions({ documentId: "artifact-123" }),
+        { wrapper: createWrapperWithClient(queryClient) }
+      );
+
+      act(() => {
+        result.current.handleExecute(additionalRepos);
+      });
+
+      const expectedParams = {
+        command: RunLoopCommand.Execute,
+        additionalRepos,
+      };
+
+      expect(mockPrepareConflictRefs).toHaveBeenCalledWith(expectedParams);
+      expect(mockRunLoopWithPreLoopSystemCheck).toHaveBeenCalledWith(
+        { documentId: "artifact-123", ...expectedParams },
+        expect.objectContaining({ onSuccess: expect.any(Function) })
+      );
+      expect(mockMutate).not.toHaveBeenCalledWith(
+        expect.objectContaining({ command: RunLoopCommand.Execute }),
+        expect.anything()
       );
     });
   });
