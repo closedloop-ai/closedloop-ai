@@ -3,6 +3,7 @@ import { gotoAuthenticatedApp } from "./app-bootstrap";
 
 const CONTINUE_BUTTON = /continue/i;
 const SKIP_FOR_NOW = /skip for now/i;
+const SKIP_ANYWAY = /skip anyway/i;
 const GET_STARTED = /get started/i;
 const TEAM_NAME = /team name/i;
 const CREATE_TEAM = /create team/i;
@@ -59,6 +60,7 @@ export async function authenticateToApp(
 
     await page.getByRole("button", { name: GET_STARTED }).click();
     await skip.click();
+    await page.getByRole("button", { name: SKIP_ANYWAY }).click();
 
     await page.getByLabel(TEAM_NAME).fill("E2E Test Team");
     await page.getByRole("button", { name: CREATE_TEAM }).click();
