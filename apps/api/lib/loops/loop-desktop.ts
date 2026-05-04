@@ -216,6 +216,7 @@ type LaunchDesktopOpts = {
   parentSessionId?: string;
   localRepoPath?: string;
   additionalRepos?: AdditionalRepoRef[];
+  documentId?: string;
 };
 
 async function resolveDesktopApiNamespace(
@@ -258,6 +259,7 @@ export async function launchLoopOnDesktop(
     parentSessionId,
     localRepoPath,
     additionalRepos,
+    documentId,
   } = opts;
   const namespace = await resolveDesktopApiNamespace(
     computeTargetId,
@@ -296,6 +298,7 @@ export async function launchLoopOnDesktop(
               branch: r.branch,
             })),
           }),
+      ...(documentId ? { primaryArtifactId: documentId } : {}),
     } satisfies SymphonyLoopBody as JsonValue,
   };
 

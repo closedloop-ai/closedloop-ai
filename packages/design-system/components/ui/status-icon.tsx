@@ -85,7 +85,10 @@ function getStatusConfig(status: StatusIconStatus): StatusConfig {
     case "wont-do": {
       return { percentage: 100, color: "var(--foreground)", dashed: false, filled: true, icon: "x" };
     }
-    case "decorative": {
+    default: {
+      // "decorative" plus the unknown-status fallback. Matches the visual
+      // for decorative icons so that an unrecognized status renders as a
+      // muted neutral marker rather than an empty "todo" circle.
       return { percentage: 48.5, color: "var(--muted-foreground)", dashed: false, filled: false, icon: null, trackColor: "var(--muted-foreground)", strokeWidth: 1.5 };
     }
   }

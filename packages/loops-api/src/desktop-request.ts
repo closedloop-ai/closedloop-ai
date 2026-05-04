@@ -44,6 +44,7 @@ export type LoopRequestBody = {
   >;
   userContext?: string;
   attachments?: ContextPackAttachment[];
+  primaryArtifactId?: string;
 };
 
 export const LoopRequestBodySchema = z.object({
@@ -99,4 +100,5 @@ export const LoopRequestBodySchema = z.object({
     )
     .optional(),
   attachments: z.array(ContextPackAttachmentSchema).optional(),
+  primaryArtifactId: z.string().optional(),
 });
