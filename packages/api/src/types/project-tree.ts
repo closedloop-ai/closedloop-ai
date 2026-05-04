@@ -9,6 +9,8 @@ export type TreeChild = Artifact & {
   linkType: LinkType;
   /** Depth in the original chain (1 = direct child of root, 2 = grandchild, etc.). */
   depth: number;
+  /** ID of the immediate parent artifact (the root's ID for depth-1 children). */
+  parentId: string;
 };
 
 /** A root entity with its flattened children in depth-first order. */

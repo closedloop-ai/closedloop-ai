@@ -1,18 +1,17 @@
 "use client";
 
 import { type Artifact, ArtifactType } from "@repo/api/src/types/artifact";
-import type {
-  ProjectTreeResponse,
-  TreeNode,
-} from "@repo/api/src/types/project-tree";
+import type { ProjectTreeResponse } from "@repo/api/src/types/project-tree";
 import { useQueries } from "@tanstack/react-query";
 import { useMemo } from "react";
 import type { DocumentRowItem } from "@/components/document-table/document-row";
 import { projectTreeKeys } from "@/hooks/queries/use-project-tree";
 import { useApiClient } from "@/hooks/use-api-client";
 import { getArtifactRoute } from "@/lib/document-navigation";
-
-type ParentEntry = { title: string; href: string | null };
+import {
+  addNodeParentEntries,
+  type ParentEntry,
+} from "@/lib/project-tree-utils";
 
 function getProjectId(item: DocumentRowItem): string | undefined {
   if (item.kind === "project") {
@@ -26,34 +25,6 @@ function getProjectId(item: DocumentRowItem): string | undefined {
 
 function isDocumentArtifact(artifact: Artifact): boolean {
   return artifact.type === ArtifactType.Document;
-}
-
-/**
- * Build depth-aware parent entries for a single tree node.
- * Uses the depth field on each child to identify the immediate parent,
- * not just the root.
- */
-function addNodeParentEntries(
-  node: TreeNode,
-  map: Map<string, ParentEntry>
-): void {
-  const parentStack: ParentEntry[] = [
-    { title: node.root.name, href: getArtifactRoute(node.root) },
-  ];
-  for (const child of node.children) {
-    const depth = child.depth;
-    if (depth < parentStack.length) {
-      parentStack.length = depth;
-    }
-    const immediateParent = parentStack[depth - 1];
-    if (immediateParent) {
-      map.set(child.id, immediateParent);
-    }
-    parentStack[depth] = {
-      title: child.name,
-      href: getArtifactRoute(child),
-    };
-  }
 }
 
 /** Merge a single project tree response into the parent map. */

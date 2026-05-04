@@ -59,6 +59,10 @@ import {
 } from "@/lib/group-by";
 import { comparePriorityValues } from "@/lib/priority-sort";
 import { DOCUMENT_STATUS_TO_ICON } from "@/lib/project-constants";
+import {
+  addNodeParentEntries,
+  type ParentEntry,
+} from "@/lib/project-tree-utils";
 import type { SortConfig } from "@/lib/table-utils";
 import { sortTableData } from "@/lib/table-utils";
 import { compareAssigneeNames } from "@/lib/user-utils";
@@ -245,60 +249,46 @@ function treeEntityToRowItem(
 }
 
 /**
- * Build a recursive tree from the flat DFS-ordered children array returned by the API.
- * Each TreeChild has a `depth` field (1 = direct child of root, 2 = grandchild, etc.).
- *
- * Uses a stack indexed by depth: stack[depth] = the children array that owns the
- * current node at that depth. stack[0] = root's direct children.
- * A visited-node set guards against cycles in malformed API data.
- *
- * Returns the direct children of the root, each of which may have nested children.
+ * Build a recursive tree from the flat children array returned by the API.
+ * Each TreeChild carries a `parentId` pointing to its immediate parent.
  */
 function buildNestedChildrenFromDFS(
+  rootId: string,
   treeChildren: TreeChild[],
   documentMap: Map<string, DocumentWithWorkstream>,
   seenIds: Set<string>
 ): DocumentRowItem[] {
-  const visitedInNode = new Set<string>();
-  const directChildren: DocumentRowItem[] = [];
-  const childrenStack: DocumentRowItem[][] = [directChildren];
-
+  // First pass: convert all children to row items, keyed by id.
+  const itemsById = new Map<string, DocumentRowItem>();
   for (const child of treeChildren) {
-    if (visitedInNode.has(child.id)) {
+    if (itemsById.has(child.id)) {
       continue;
     }
-    visitedInNode.add(child.id);
-
-    const depth = child.depth; // 1 = direct child, 2 = grandchild, etc.
-
-    // Truncate the stack to the level that will own this child.
-    // stack[depth - 1] is the children array of the parent at depth - 1.
-    if (depth < childrenStack.length) {
-      childrenStack.length = depth;
-    }
-
     const childItem = treeEntityToRowItem(child, documentMap);
-    if (!childItem) {
-      // When an intermediate child is filtered out, clear its stack slot
-      // so deeper descendants don't silently attach to the wrong parent.
-      childrenStack.length = depth;
+    if (childItem) {
+      childItem.children = [];
+      itemsById.set(child.id, childItem);
+      seenIds.add(child.id);
+    }
+  }
+
+  // Second pass: nest each item under its parent using parentId.
+  const directChildren: DocumentRowItem[] = [];
+  for (const child of treeChildren) {
+    const item = itemsById.get(child.id);
+    if (!item) {
       continue;
     }
-
-    // Only mark as seen after confirming the child is placeable.
-    seenIds.add(child.id);
-
-    // Append the child to its parent's children array.
-    const parentChildren = childrenStack[depth - 1];
-    if (parentChildren) {
-      parentChildren.push(childItem);
+    const parent =
+      child.parentId === rootId ? null : itemsById.get(child.parentId);
+    if (parent) {
+      if (!parent.children) {
+        parent.children = [];
+      }
+      parent.children.push(item);
+    } else {
+      directChildren.push(item);
     }
-
-    // Push this child's own children array onto the stack so that any
-    // subsequent deeper nodes become its children.
-    const ownChildren: DocumentRowItem[] = [];
-    childItem.children = ownChildren;
-    childrenStack[depth] = ownChildren;
   }
 
   pruneEmptyChildren(directChildren);
@@ -335,6 +325,7 @@ function groupByProjectTree(
     seenIds.add(node.root.id);
 
     const children = buildNestedChildrenFromDFS(
+      node.root.id,
       node.children,
       documentMap,
       seenIds
@@ -356,13 +347,10 @@ function groupByProjectTree(
   return groups;
 }
 
-type ParentEntry = { title: string; href: string | null };
-
 /**
  * Build a map from child entity id to its immediate parent's title and href.
- * Uses the depth field from TreeChild to identify the correct immediate parent
- * for each descendant. Cross-project parents fill in entries that are absent
- * from the in-project tree.
+ * Uses parentId from TreeChild to identify the correct immediate parent.
+ * Cross-project parents fill in entries absent from the in-project tree.
  */
 function buildParentMap(
   treeData: { nodes: TreeNode[]; externalParents: ExternalParentLink[] } | null
@@ -372,7 +360,7 @@ function buildParentMap(
     return map;
   }
   for (const node of treeData.nodes) {
-    buildNodeParentEntries(node, map);
+    addNodeParentEntries(node, map);
   }
   for (const entry of treeData.externalParents) {
     if (map.has(entry.childId) || !isDocumentArtifact(entry.parent)) {
@@ -384,29 +372,6 @@ function buildParentMap(
     });
   }
   return map;
-}
-
-function buildNodeParentEntries(
-  node: TreeNode,
-  map: Map<string, ParentEntry>
-): void {
-  // parentStack[depth] holds the artifact name/href at that depth.
-  // depth 0 = root, depth 1 = direct child, depth 2 = grandchild, etc.
-  const parentStack: ParentEntry[] = [
-    { title: node.root.name, href: getArtifactRoute(node.root) },
-  ];
-  for (const child of node.children) {
-    const depth = child.depth;
-    // Trim the stack so parentStack[depth - 1] is the immediate parent.
-    if (depth < parentStack.length) {
-      parentStack.length = depth;
-    }
-    const immediateParent = parentStack[depth - 1];
-    if (immediateParent) {
-      map.set(child.id, immediateParent);
-    }
-    parentStack[depth] = { title: child.name, href: getArtifactRoute(child) };
-  }
 }
 
 // ---- Filter items by category ----

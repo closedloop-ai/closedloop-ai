@@ -288,10 +288,13 @@ function dfsCollectChildren(
   const visited = new Set<string>([rootId]);
 
   dfsStep(rootId, 1, { adjacency, artifactsById, visited, children });
-  collectUnreachableComponentMembers(componentIds, adjacency, artifactsById, {
-    visited,
-    children,
-  });
+  collectUnreachableComponentMembers(
+    rootId,
+    componentIds,
+    adjacency,
+    artifactsById,
+    { visited, children }
+  );
 
   return children;
 }
@@ -312,13 +315,19 @@ function dfsStep(currentId: string, depth: number, state: DfsState): void {
     state.visited.add(edge.targetId);
     const artifact = state.artifactsById.get(edge.targetId);
     if (artifact) {
-      state.children.push({ ...artifact, linkType: edge.linkType, depth });
+      state.children.push({
+        ...artifact,
+        linkType: edge.linkType,
+        depth,
+        parentId: currentId,
+      });
       dfsStep(edge.targetId, depth + 1, state);
     }
   }
 }
 
 function collectUnreachableComponentMembers(
+  rootId: string,
   componentIds: string[],
   adjacency: Map<string, GraphEdge[]>,
   artifactsById: Map<string, ArtifactWithAssignee>,
@@ -332,7 +341,12 @@ function collectUnreachableComponentMembers(
     if (artifact) {
       const edges = adjacency.get(id) ?? [];
       const linkType = edges[0]?.linkType ?? LinkType.RelatesTo;
-      state.children.push({ ...artifact, linkType, depth: 1 });
+      state.children.push({
+        ...artifact,
+        linkType,
+        depth: 1,
+        parentId: rootId,
+      });
     }
   }
 }
