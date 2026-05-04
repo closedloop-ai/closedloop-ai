@@ -11,9 +11,11 @@ import type {
   AdditionalRepoRefWithToken,
 } from "@closedloop-ai/loops-api/context-pack";
 import { TokensByModel } from "@closedloop-ai/loops-api/tokens";
+import type { ArtifactSubtype } from "./artifact";
 import { ArtifactType } from "./artifact";
 import type { JsonObject } from "./common";
 import type { PullRequestInfo } from "./document";
+import type { BasicUser } from "./user";
 
 // --- Re-exports from @closedloop-ai/loops-api ---
 
@@ -175,6 +177,39 @@ export type LoopListFilters = {
   limit?: number;
   offset?: number;
 };
+
+// Loop summary types: aggregated loop state per document, recursive across
+// PRODUCES descendants. Powers the LoopCell variants in document tables.
+export type LoopSummaryEntry = {
+  loopId: string;
+  command: LoopCommand;
+  status: LoopStatus;
+  user: BasicUser;
+  isLocal: boolean;
+  childSubtype: ArtifactSubtype | null;
+  isDirectLoop: boolean;
+  startedAt: Date | null;
+  completedAt: Date | null;
+  failedAt: Date | null;
+  // updatedAt is used as the fallback "active timestamp" when comparing
+  // against latestFailed for PENDING/CLAIMED loops where startedAt is null.
+  updatedAt: Date;
+};
+
+export type LoopSummary = {
+  activeLoop: LoopSummaryEntry | null;
+  latestCompleted: LoopSummaryEntry | null;
+  latestFailed: LoopSummaryEntry | null;
+};
+
+export type LoopSummariesResponse = Record<string, LoopSummary>;
+
+export type LoopSummariesRequest = {
+  documentIds: string[];
+};
+
+export const LOOP_SUMMARIES_MAX_DOCUMENT_IDS = 100;
+export const LOOP_SUMMARIES_MAX_DEPTH = 10;
 
 // Usage/cost summary types
 export type LoopUsageByCommand = {

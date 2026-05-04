@@ -10,7 +10,10 @@ import {
   DocumentType,
 } from "@repo/api/src/types/document";
 import type { JudgeFeedbackItem } from "@repo/api/src/types/evaluation";
-import type { LoopWithUser } from "@repo/api/src/types/loop";
+import type {
+  LoopSummariesResponse,
+  LoopWithUser,
+} from "@repo/api/src/types/loop";
 import type { ProjectWithDetails } from "@repo/api/src/types/project";
 import { isDisplayableSlug } from "@repo/api/src/types/slug";
 import { Badge } from "@repo/design-system/components/ui/badge";
@@ -36,11 +39,8 @@ import type { UseQueryResult } from "@tanstack/react-query";
 import {
   CalendarIcon,
   ChevronRightIcon,
-  CloudIcon,
   EllipsisIcon,
   Loader2Icon,
-  MonitorIcon,
-  XCircleIcon,
 } from "lucide-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
@@ -69,6 +69,7 @@ import {
   PRIORITY_LABELS,
 } from "@/lib/project-constants";
 import { getUserDisplayName } from "@/lib/user-utils";
+import { LoopCell } from "./loop-cell";
 
 // ---- Unified row item type ----
 
@@ -92,6 +93,10 @@ export type RowEditHandlers = {
   parentTitle?: string;
   /** Parent entity route, injected per-row for the Parent column cell. */
   parentHref?: string | null;
+  /** Selects which LoopCell variant to render. Default = legacy behavior. */
+  loopVariant?: "team" | "my-tasks";
+  /** Per-document loop summaries (recursive descendant aggregation). */
+  loopSummaries?: LoopSummariesResponse;
 };
 
 export const RowEditContext = createContext<RowEditHandlers>({});
@@ -582,73 +587,8 @@ function ScoreCell({ item }: { item: DocumentRowItem }) {
   return <ScoreCellDash />;
 }
 
-function LoopCell({ item }: { item: DocumentRowItem }) {
-  const { activeLoops } = useContext(RowEditContext);
-  const documentId = item.data.id;
-
-  const genStatus =
-    item.kind === "artifact" ? item.data.generationStatus : undefined;
-  const isFailed = genStatus?.status === "FAILURE";
-
-  const loop = activeLoops?.find((l) => l.documentId === documentId);
-
-  if (isFailed) {
-    const failedLoopId = genStatus?.loopId;
-    const cellContent = (
-      <>
-        <XCircleIcon className="h-3.5 w-3.5 shrink-0 text-red-500" />
-        <span className="truncate font-medium text-red-500 text-xs">
-          Loop Failed
-        </span>
-      </>
-    );
-    if (failedLoopId) {
-      return (
-        <Link
-          className="flex h-11 w-[124px] shrink-0 items-center gap-1.5 border-l px-3 py-2 hover:bg-muted/50"
-          href={`/loops/${failedLoopId}`}
-          onClick={(e: MouseEvent<HTMLAnchorElement>) => e.stopPropagation()}
-        >
-          {cellContent}
-        </Link>
-      );
-    }
-    return (
-      <div className="flex h-11 w-[124px] shrink-0 items-center gap-1.5 border-l px-3 py-2">
-        {cellContent}
-      </div>
-    );
-  }
-
-  if (!loop) {
-    return (
-      <div className="flex h-11 w-[124px] shrink-0 items-center border-l px-3 py-2">
-        <span className="font-medium text-muted-foreground text-xs">—</span>
-      </div>
-    );
-  }
-
-  const isLocal = loop.computeTarget != null;
-  const userName = getUserDisplayName(loop.user);
-
-  return (
-    <Link
-      className="flex h-11 w-[124px] shrink-0 items-center gap-1.5 border-l px-3 py-2 hover:bg-muted/50"
-      href={`/loops/${loop.id}`}
-      onClick={(e: MouseEvent<HTMLAnchorElement>) => e.stopPropagation()}
-    >
-      <Loader2Icon className="h-3.5 w-3.5 shrink-0 animate-spin text-blue-500" />
-      {isLocal ? (
-        <MonitorIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-      ) : (
-        <CloudIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-      )}
-      <span className="truncate font-medium text-muted-foreground text-xs">
-        {userName}
-      </span>
-    </Link>
-  );
-}
+// LoopCell rendering lives in ./loop-cell.tsx — this file is the dispatcher
+// import site only.
 
 function ProjectCell({ item }: { item: DocumentRowItem }) {
   let project: {
