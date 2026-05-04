@@ -149,7 +149,7 @@ function SystemCheckSection({
   visibleCount: number;
 }>) {
   return (
-    <section>
+    <section className="@container/checks">
       <h4 className="mb-3 font-medium text-muted-foreground text-xs uppercase tracking-wider">
         {title}
       </h4>
@@ -179,7 +179,7 @@ function SystemCheckCardGrid({
 }>) {
   return (
     <div
-      className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4"
+      className="grid @3xl/checks:grid-cols-4 @sm/checks:grid-cols-2 grid-cols-1 gap-3"
       data-system-check-layout="card-grid"
     >
       {groups.map((group) => (

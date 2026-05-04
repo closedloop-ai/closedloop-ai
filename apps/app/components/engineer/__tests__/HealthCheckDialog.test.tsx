@@ -544,7 +544,6 @@ describe("Blocking pre-loop mode", () => {
           initialData={failingData}
           mode="blocking-pre-loop"
           onCancel={vi.fn()}
-          onContinue={vi.fn()}
         />
       </Wrapper>
     );
@@ -555,9 +554,8 @@ describe("Blocking pre-loop mode", () => {
     expect(mockQueryFn).not.toHaveBeenCalled();
   });
 
-  it("routes Escape through cancel instead of continue", async () => {
+  it("routes Escape through cancel", async () => {
     const onCancel = vi.fn();
-    const onContinue = vi.fn();
     const Wrapper = createWrapper();
     render(
       <Wrapper>
@@ -565,7 +563,6 @@ describe("Blocking pre-loop mode", () => {
           initialData={failingData}
           mode="blocking-pre-loop"
           onCancel={onCancel}
-          onContinue={onContinue}
         />
       </Wrapper>
     );
@@ -582,12 +579,10 @@ describe("Blocking pre-loop mode", () => {
     });
 
     expect(onCancel).toHaveBeenCalledOnce();
-    expect(onContinue).not.toHaveBeenCalled();
   });
 
-  it("uses Continue as the only manual execution callback", async () => {
+  it("disables Continue in blocking mode", async () => {
     const onCancel = vi.fn();
-    const onContinue = vi.fn();
     const Wrapper = createWrapper();
     render(
       <Wrapper>
@@ -595,19 +590,33 @@ describe("Blocking pre-loop mode", () => {
           initialData={failingData}
           mode="blocking-pre-loop"
           onCancel={onCancel}
-          onContinue={onContinue}
         />
       </Wrapper>
     );
 
     await act(async () => {});
 
-    act(() => {
-      screen.getByRole("button", { name: /continue/i }).click();
-    });
-
-    expect(onContinue).toHaveBeenCalledOnce();
+    expect(screen.getByRole("button", { name: /continue/i })).toBeDisabled();
     expect(onCancel).not.toHaveBeenCalled();
+  });
+
+  it("labels localhost targets as Local Gateway", async () => {
+    const Wrapper = createWrapper();
+    render(
+      <Wrapper>
+        <HealthCheckDialog
+          initialData={failingData}
+          mode="blocking-pre-loop"
+          onCancel={vi.fn()}
+          targetLabel="localhost"
+        />
+      </Wrapper>
+    );
+
+    await act(async () => {});
+
+    expect(screen.getByText(/Target: Local Gateway/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Target: localhost/i)).not.toBeInTheDocument();
   });
 
   it("calls the resolved callback after a passing Re-check success delay", async () => {
@@ -620,7 +629,6 @@ describe("Blocking pre-loop mode", () => {
           initialData={failingData}
           mode="blocking-pre-loop"
           onCancel={vi.fn()}
-          onContinue={vi.fn()}
           onResolvedAfterRecheck={onResolvedAfterRecheck}
         />
       </Wrapper>
@@ -661,7 +669,6 @@ describe("Blocking pre-loop mode", () => {
           initialData={failingData}
           mode="blocking-pre-loop"
           onCancel={vi.fn()}
-          onContinue={vi.fn()}
           onRecheckResult={onRecheckResult}
         />
       </Wrapper>
@@ -688,7 +695,6 @@ describe("Blocking pre-loop mode", () => {
           initialData={failingData}
           mode="blocking-pre-loop"
           onCancel={vi.fn()}
-          onContinue={vi.fn()}
           onRecheckUnavailable={onRecheckUnavailable}
         />
       </Wrapper>

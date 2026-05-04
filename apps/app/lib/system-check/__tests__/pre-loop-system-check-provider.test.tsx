@@ -57,17 +57,22 @@ vi.mock("@/hooks/queries/use-electron-release", () => ({
 vi.mock("@/components/engineer/HealthCheckDialog", () => ({
   HealthCheckDialog: ({
     onCancel,
-    onContinue,
+    onRecheckUnavailable,
+    onResolvedAfterRecheck,
   }: {
     onCancel: () => void;
-    onContinue: () => void;
+    onRecheckUnavailable: (reason: string) => void;
+    onResolvedAfterRecheck: () => void;
   }) => (
     <div data-testid="blocking-dialog">
       <button onClick={onCancel} type="button">
         Cancel
       </button>
-      <button onClick={onContinue} type="button">
-        Continue
+      <button onClick={onResolvedAfterRecheck} type="button">
+        Resolved
+      </button>
+      <button onClick={() => onRecheckUnavailable("offline")} type="button">
+        Recheck Unavailable
       </button>
     </div>
   ),
@@ -219,7 +224,30 @@ describe("PreLoopSystemCheckProvider", () => {
     );
   });
 
-  it("blocks on required failures, records Continue acknowledgement, and bypasses the same failure later", async () => {
+  it("opens the blocking dialog while the health check request is still running", async () => {
+    const queryClient = createQueryClient();
+    const execute = vi.fn();
+    let resolveFetch: ((response: Response) => void) | undefined;
+    vi.mocked(globalThis.fetch).mockReturnValue(
+      new Promise((resolve) => {
+        resolveFetch = resolve;
+      })
+    );
+
+    renderGate({ queryClient, execute });
+    fireEvent.click(screen.getByRole("button", { name: "Run" }));
+
+    await screen.findByTestId("blocking-dialog");
+    expect(screen.getByTestId("state")).toHaveTextContent("checking");
+    expect(execute).not.toHaveBeenCalled();
+
+    resolveFetch?.(Response.json(healthyResult));
+    await waitFor(() => {
+      expect(execute).toHaveBeenCalledOnce();
+    });
+  });
+
+  it("blocks on required failures until the dialog reports them resolved", async () => {
     const queryClient = createQueryClient();
     const execute = vi.fn();
     queryClient.setQueryData(
@@ -236,24 +264,19 @@ describe("PreLoopSystemCheckProvider", () => {
     await screen.findByTestId("blocking-dialog");
     expect(execute).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    fireEvent.click(screen.getByRole("button", { name: "Resolved" }));
     await waitFor(() => {
       expect(execute).toHaveBeenCalledOnce();
     });
-
-    fireEvent.click(screen.getByRole("button", { name: "Run" }));
-    await waitFor(() => {
-      expect(execute).toHaveBeenCalledTimes(2);
-    });
     expect(mockCapture).toHaveBeenCalledWith(
-      "pre_loop_system_check_acknowledgement_bypassed",
+      "pre_loop_system_check_resolved",
       expect.objectContaining({
-        failingRequiredFingerprint: JSON.stringify(["cli"]),
+        recheckAttempts: 0,
       })
     );
   });
 
-  it("loses acknowledgements after provider remount", async () => {
+  it("blocks the same required failure again after cancellation", async () => {
     const queryClient = createQueryClient();
     const execute = vi.fn();
     queryClient.setQueryData(
@@ -264,23 +287,22 @@ describe("PreLoopSystemCheckProvider", () => {
       failingResult
     );
 
-    const { unmount } = renderGate({ queryClient, execute });
-    fireEvent.click(screen.getByRole("button", { name: "Run" }));
-    await screen.findByTestId("blocking-dialog");
-    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-    await waitFor(() => {
-      expect(execute).toHaveBeenCalledOnce();
-    });
-
-    unmount();
     renderGate({ queryClient, execute });
     fireEvent.click(screen.getByRole("button", { name: "Run" }));
-
     await screen.findByTestId("blocking-dialog");
-    expect(execute).toHaveBeenCalledOnce();
+    expect(execute).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => {
+      expect(screen.queryByTestId("blocking-dialog")).not.toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Run" }));
+    await screen.findByTestId("blocking-dialog");
+    expect(execute).not.toHaveBeenCalled();
   });
 
-  it("cancel drops the pending command without acknowledging it", async () => {
+  it("cancel drops the pending command without executing it", async () => {
     const queryClient = createQueryClient();
     const execute = vi.fn();
     queryClient.setQueryData(
@@ -306,7 +328,43 @@ describe("PreLoopSystemCheckProvider", () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
-  it("fails open with a warning when the health check request is unavailable", async () => {
+  it("keeps blocking when a re-check is unavailable after a required failure", async () => {
+    const queryClient = createQueryClient();
+    const execute = vi.fn();
+    queryClient.setQueryData(
+      healthCheckOptions("compute-target:target-1", EXPECTED_MCP_URL, {
+        relayTargetId: "target-1",
+        latestVersion: "1.0.0",
+      }).queryKey,
+      failingResult
+    );
+
+    renderGate({ queryClient, execute });
+    fireEvent.click(screen.getByRole("button", { name: "Run" }));
+    await screen.findByTestId("blocking-dialog");
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Recheck Unavailable" })
+    );
+
+    expect(screen.getByTestId("blocking-dialog")).toBeInTheDocument();
+    expect(execute).not.toHaveBeenCalled();
+    expect(mockWarning).toHaveBeenCalledWith(
+      "System check unavailable",
+      expect.objectContaining({
+        description: expect.stringContaining("Fix the failing checks"),
+      })
+    );
+    expect(mockCapture).toHaveBeenCalledWith(
+      "pre_loop_system_check_unavailable",
+      expect.objectContaining({
+        reason: "recheck:offline",
+        recheckAttempts: 1,
+      })
+    );
+  });
+
+  it("does not execute when the initial health check request is unavailable", async () => {
     const queryClient = createQueryClient();
     const execute = vi.fn();
     vi.mocked(globalThis.fetch).mockRejectedValue(new Error("offline"));
@@ -315,14 +373,14 @@ describe("PreLoopSystemCheckProvider", () => {
     fireEvent.click(screen.getByRole("button", { name: "Run" }));
 
     await waitFor(() => {
-      expect(execute).toHaveBeenCalledOnce();
+      expect(mockWarning).toHaveBeenCalledWith(
+        "System check unavailable",
+        expect.objectContaining({
+          description: expect.stringContaining("was not started"),
+        })
+      );
     });
-    expect(mockWarning).toHaveBeenCalledWith(
-      "System check unavailable",
-      expect.objectContaining({
-        description: expect.stringContaining("will continue"),
-      })
-    );
+    expect(execute).not.toHaveBeenCalled();
     expect(mockCapture).toHaveBeenCalledWith(
       "pre_loop_system_check_unavailable",
       expect.objectContaining({ reason: expect.stringContaining("offline") })

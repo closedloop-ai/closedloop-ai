@@ -28,7 +28,6 @@ import { resolveEffectiveComputeTargetSelection } from "@/lib/compute-target-sel
 import type { HealthCheckResponse } from "@/lib/engineer/queries/health-check";
 import { healthCheckOptions } from "@/lib/engineer/queries/health-check";
 import {
-  type AcknowledgedFailure,
   buildPreLoopAnalyticsProperties,
   createPreLoopAttemptId,
   getPreLoopTargetKey,
@@ -47,9 +46,9 @@ type PendingPreLoopAttempt = {
   attemptId: string;
   metadata: PreLoopMetadata;
   target: PreLoopTarget;
-  healthCheckData: HealthCheckResponse;
+  healthCheckData?: HealthCheckResponse;
   latestVersion: string | null;
-  failingRequiredFingerprint: string;
+  failingRequiredFingerprint?: string;
   failingCheckIds: string[];
   recheckAttempts: number;
   execute: ExecuteCallback;
@@ -85,6 +84,22 @@ type PreLoopSystemCheckContextValue = {
 
 const PreLoopSystemCheckContext =
   createContext<PreLoopSystemCheckContextValue | null>(null);
+
+function buildUnavailableHealthCheck(reason: string): HealthCheckResponse {
+  return {
+    checks: [
+      {
+        id: "pre-loop-health-check",
+        label: "System Check",
+        required: true,
+        passed: false,
+        error: "Unavailable",
+        remediation: `Retry the system check. The command was not started. (${reason})`,
+      },
+    ],
+    allRequiredPassed: false,
+  };
+}
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -125,8 +140,7 @@ async function requireQueryData<T>(
 
 /**
  * Owns the global Generate/Execute pre-loop gate, pending command callback,
- * selected or explicitly requested target health lookup, and in-memory failure
- * acknowledgements.
+ * selected or explicitly requested target health lookup, and modal bridge.
  */
 export function PreLoopSystemCheckProvider({
   children,
@@ -136,7 +150,6 @@ export function PreLoopSystemCheckProvider({
   const { user } = useUser();
   const userId = user?.id ?? "";
   const expectedMcpUrl = env.NEXT_PUBLIC_MCP_SERVER_URL ?? null;
-  const acknowledgementsRef = useRef(new Map<string, AcknowledgedFailure>());
   const isCheckingRef = useRef(false);
   const pendingAttemptRef = useRef<PendingPreLoopAttempt | null>(null);
   const [isChecking, setIsChecking] = useState(false);
@@ -178,18 +191,16 @@ export function PreLoopSystemCheckProvider({
     attempt.execute();
   }, []);
 
-  const warnAndExecuteUnavailable = useCallback(
+  const warnAndBlockUnavailable = useCallback(
     ({
       attemptId,
       metadata,
       target,
-      execute,
       reason,
     }: {
       attemptId: string;
       metadata: PreLoopMetadata;
       target?: PreLoopTarget | null;
-      execute: ExecuteCallback;
       reason: string;
     }): PreLoopHealthCheckOutcome => {
       capture(PreLoopAnalyticsEvent.SystemCheckUnavailable, {
@@ -200,10 +211,9 @@ export function PreLoopSystemCheckProvider({
       });
       toast.warning("System check unavailable", {
         description:
-          "We could not verify the selected local compute target, so the command will continue.",
+          "We could not verify the selected local compute target, so the command was not started.",
       });
-      execute();
-      return { status: "failed_open_unavailable", attemptId };
+      return { status: "blocked_unavailable", attemptId };
     },
     [capture]
   );
@@ -346,7 +356,13 @@ export function PreLoopSystemCheckProvider({
   );
 
   const evaluatePreLoopTargetHealth = useCallback(
-    async (metadata: PreLoopMetadata): Promise<PreLoopHealthEvaluation> => {
+    async (
+      metadata: PreLoopMetadata,
+      onTargetReady?: (
+        target: PreLoopTarget,
+        latestVersion: string | null
+      ) => void
+    ): Promise<PreLoopHealthEvaluation> => {
       let target: PreLoopTarget | null = null;
       try {
         target = await resolveTarget(metadata.computeTargetId);
@@ -364,9 +380,12 @@ export function PreLoopSystemCheckProvider({
         return { status: "skip_no_local_target" };
       }
 
+      onTargetReady?.(target, null);
+
       let latestVersion: string | null = null;
       try {
         latestVersion = await getLatestVersion();
+        onTargetReady?.(target, latestVersion);
       } catch (error) {
         return {
           status: "unavailable",
@@ -416,7 +435,51 @@ export function PreLoopSystemCheckProvider({
         metadata,
       });
 
-      const evaluation = await evaluatePreLoopTargetHealth(metadata);
+      let openedDialog = false;
+      let latestVersionForAttempt: string | null = null;
+      const updatePendingAttempt = ({
+        target,
+        latestVersion,
+        healthCheckData,
+      }: {
+        target: PreLoopTarget;
+        latestVersion: string | null;
+        healthCheckData?: HealthCheckResponse;
+      }) => {
+        latestVersionForAttempt = latestVersion;
+        const current = pendingAttemptRef.current;
+        if (openedDialog && current?.attemptId !== attemptId) {
+          return;
+        }
+
+        const summary = healthCheckData
+          ? getRequiredFailureSummary(healthCheckData, expectedMcpUrl)
+          : null;
+        const nextAttempt = {
+          attemptId,
+          metadata,
+          target,
+          healthCheckData: healthCheckData ?? current?.healthCheckData,
+          latestVersion,
+          failingRequiredFingerprint:
+            summary?.fingerprint ?? current?.failingRequiredFingerprint,
+          failingCheckIds: summary?.checkIds ?? current?.failingCheckIds ?? [],
+          recheckAttempts: current?.recheckAttempts ?? 0,
+          execute,
+        };
+        openedDialog = true;
+        pendingAttemptRef.current = nextAttempt;
+        setPendingAttempt(nextAttempt);
+      };
+      const wasDialogCancelled = () =>
+        openedDialog && pendingAttemptRef.current?.attemptId !== attemptId;
+
+      const evaluation = await evaluatePreLoopTargetHealth(
+        metadata,
+        (target, latestVersion) => {
+          updatePendingAttempt({ target, latestVersion });
+        }
+      );
       if (evaluation.status === "skip_no_local_target") {
         clearChecking();
         execute();
@@ -424,13 +487,30 @@ export function PreLoopSystemCheckProvider({
       }
       if (evaluation.status === "unavailable") {
         clearChecking();
-        return warnAndExecuteUnavailable({
+        if (wasDialogCancelled()) {
+          return { status: "cancelled", attemptId };
+        }
+        if (evaluation.target) {
+          const healthCheckData = buildUnavailableHealthCheck(
+            evaluation.reason
+          );
+          updatePendingAttempt({
+            target: evaluation.target,
+            latestVersion: latestVersionForAttempt,
+            healthCheckData,
+          });
+        }
+        return warnAndBlockUnavailable({
           attemptId,
           metadata,
           target: evaluation.target,
-          execute,
           reason: evaluation.reason,
         });
+      }
+
+      if (wasDialogCancelled()) {
+        clearChecking();
+        return { status: "cancelled", attemptId };
       }
 
       const { healthResult, latestVersion, target } = evaluation;
@@ -449,37 +529,19 @@ export function PreLoopSystemCheckProvider({
       };
 
       if (summary.checkIds.length === 0) {
-        acknowledgementsRef.current.delete(target.targetKey);
+        pendingAttemptRef.current = null;
+        setPendingAttempt(null);
         clearChecking();
         execute();
         return { status: "executed", attemptId };
       }
 
-      const acknowledgement = acknowledgementsRef.current.get(target.targetKey);
-      if (acknowledgement?.fingerprint === summary.fingerprint) {
-        capture(PreLoopAnalyticsEvent.SystemCheckAcknowledgementBypassed, {
-          ...analyticsBase,
-          acknowledgement,
-        });
-        clearChecking();
-        execute();
-        return { status: "acknowledgement_bypassed", attemptId };
-      }
-
       clearChecking();
-      const nextPendingAttempt = {
-        attemptId,
-        metadata,
+      updatePendingAttempt({
         target,
         healthCheckData: healthResult.data,
         latestVersion,
-        failingRequiredFingerprint: summary.fingerprint,
-        failingCheckIds: summary.checkIds,
-        recheckAttempts: 0,
-        execute,
-      };
-      pendingAttemptRef.current = nextPendingAttempt;
-      setPendingAttempt(nextPendingAttempt);
+      });
       capture(PreLoopAnalyticsEvent.SystemCheckBlocked, analyticsBase);
       return { status: "blocked", attemptId };
     },
@@ -487,7 +549,7 @@ export function PreLoopSystemCheckProvider({
       capture,
       clearChecking,
       expectedMcpUrl,
-      warnAndExecuteUnavailable,
+      warnAndBlockUnavailable,
       evaluatePreLoopTargetHealth,
     ]
   );
@@ -518,32 +580,6 @@ export function PreLoopSystemCheckProvider({
     },
     [cancelPendingAttempt]
   );
-
-  const handleContinue = useCallback(() => {
-    const attempt = pendingAttemptRef.current;
-    if (!attempt) {
-      return;
-    }
-    const acknowledgement: AcknowledgedFailure = {
-      fingerprint: attempt.failingRequiredFingerprint,
-      checkIds: attempt.failingCheckIds,
-      acknowledgedAt: Date.now(),
-      acknowledgedByAttemptId: attempt.attemptId,
-    };
-    acknowledgementsRef.current.set(attempt.target.targetKey, acknowledgement);
-    capture(PreLoopAnalyticsEvent.SystemCheckContinued, {
-      attemptId: attempt.attemptId,
-      metadata: attempt.metadata,
-      target: attempt.target,
-      failingRequiredFingerprint: attempt.failingRequiredFingerprint,
-      failingChecks: getRequiredFailureSummary(
-        attempt.healthCheckData,
-        expectedMcpUrl
-      ).checks,
-      recheckAttempts: attempt.recheckAttempts,
-    });
-    executeAttempt(attempt);
-  }, [capture, executeAttempt, expectedMcpUrl]);
 
   const handleRecheckClick = useCallback(() => {
     const attempt = pendingAttemptRef.current;
@@ -585,17 +621,30 @@ export function PreLoopSystemCheckProvider({
       if (!attempt) {
         return;
       }
-      pendingAttemptRef.current = null;
-      setPendingAttempt(null);
-      warnAndExecuteUnavailable({
+      const nextAttempt = {
+        ...attempt,
+        recheckAttempts: attempt.recheckAttempts + 1,
+      };
+      pendingAttemptRef.current = nextAttempt;
+      setPendingAttempt(nextAttempt);
+      capture(PreLoopAnalyticsEvent.SystemCheckUnavailable, {
         attemptId: attempt.attemptId,
         metadata: attempt.metadata,
         target: attempt.target,
-        execute: attempt.execute,
-        reason,
+        failingRequiredFingerprint: attempt.failingRequiredFingerprint,
+        failingChecks: getRequiredFailureSummary(
+          attempt.healthCheckData,
+          expectedMcpUrl
+        ).checks,
+        recheckAttempts: nextAttempt.recheckAttempts,
+        reason: `recheck:${reason}`,
+      });
+      toast.warning("System check unavailable", {
+        description:
+          "We could not re-run the selected local compute target check. Fix the failing checks and try again.",
       });
     },
-    [warnAndExecuteUnavailable]
+    [capture, expectedMcpUrl]
   );
 
   const handleResolvedAfterRecheck = useCallback(() => {
@@ -603,7 +652,6 @@ export function PreLoopSystemCheckProvider({
     if (!attempt) {
       return;
     }
-    acknowledgementsRef.current.delete(attempt.target.targetKey);
     capture(PreLoopAnalyticsEvent.SystemCheckResolved, {
       attemptId: attempt.attemptId,
       metadata: attempt.metadata,
@@ -679,7 +727,6 @@ export function PreLoopSystemCheckProvider({
           latestVersionOverride={pendingAttempt.latestVersion}
           mode="blocking-pre-loop"
           onCancel={() => cancelPendingAttempt("dialog_cancelled")}
-          onContinue={handleContinue}
           onRecheckClick={handleRecheckClick}
           onRecheckResult={handleRecheckResult}
           onRecheckUnavailable={handleRecheckUnavailable}

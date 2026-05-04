@@ -63,7 +63,6 @@ type HealthCheckDialogProps = Readonly<{
   initialData?: HealthCheckResponse;
   relayTargetId?: string | null;
   latestVersionOverride?: string | null;
-  onContinue?: () => void;
   onCancel?: () => void;
   onResolvedAfterRecheck?: () => void;
   onRecheckClick?: () => void;
@@ -91,6 +90,16 @@ function shouldEnableHealthCheckQuery({
   return latestReleaseQueryEnabled && !latestReleaseLoading;
 }
 
+function getDisplayTargetLabel(targetLabel: string | undefined): string | null {
+  if (!targetLabel) {
+    return null;
+  }
+
+  return targetLabel.trim().toLowerCase() === "localhost"
+    ? "Local Gateway"
+    : targetLabel;
+}
+
 export function resetHealthCheckDialogVisibilityForTests(): void {
   shownTargetKeys.clear();
 }
@@ -103,7 +112,6 @@ export function HealthCheckDialog({
   initialData,
   relayTargetId = null,
   latestVersionOverride,
-  onContinue,
   onCancel,
   onResolvedAfterRecheck,
   onRecheckClick,
@@ -127,6 +135,7 @@ export function HealthCheckDialog({
   );
   const queryClient = useQueryClient();
   const expectedMcpUrl = env.NEXT_PUBLIC_MCP_SERVER_URL ?? null;
+  const displayTargetLabel = getDisplayTargetLabel(targetLabel);
   const latestReleaseQueryEnabled = shouldEnableLatestReleaseQuery({
     canOpen: !isBlockingMode && canOpenThisMount.current,
     mounted,
@@ -180,6 +189,8 @@ export function HealthCheckDialog({
     () => getRenderableHealthChecks(data, expectedMcpUrl),
     [data, expectedMcpUrl]
   );
+  const isBlockingInitialLoad = isBlockingMode && data === undefined;
+  const showLoadingChecks = isLoading || isBlockingInitialLoad;
 
   // Auto-dismiss after all checks are revealed and all required pass
   const allRevealed =
@@ -308,11 +319,10 @@ export function HealthCheckDialog({
 
   const handleContinue = useCallback(() => {
     if (isBlockingMode) {
-      onContinue?.();
       return;
     }
     setClosing(true);
-  }, [isBlockingMode, onContinue]);
+  }, [isBlockingMode]);
 
   const handleCancel = useCallback(() => {
     if (isBlockingMode) {
@@ -392,7 +402,7 @@ export function HealthCheckDialog({
   return (
     <Dialog open={dialogOpen}>
       <DialogContent
-        className="max-w-md!"
+        className="max-h-[calc(100dvh-2rem)] max-w-2xl! grid-rows-[auto_1fr_auto]"
         onEscapeKeyDown={() => handleCancel()}
         onInteractOutside={() => handleCancel()}
         showCloseButton={false}
@@ -406,11 +416,11 @@ export function HealthCheckDialog({
           </div>
           <DialogDescription>
             Verifying that all required tools and configuration are in place.
-            {targetLabel && (
+            {displayTargetLabel && (
               <>
                 {" "}
                 <span className="font-medium text-foreground">
-                  Target: {targetLabel}
+                  Target: {displayTargetLabel}
                 </span>
               </>
             )}
@@ -426,7 +436,7 @@ export function HealthCheckDialog({
           </div>
         ) : (
           <>
-            <div className="space-y-4 py-2">
+            <div className="min-h-0 space-y-4 overflow-y-auto py-2">
               <SystemCheckResults
                 afterRequired={AfterRequiredContent({
                   showWorktreeSetup,
@@ -440,7 +450,7 @@ export function HealthCheckDialog({
                     : undefined,
                 })}
                 checks={renderableChecks}
-                isLoading={isLoading}
+                isLoading={showLoadingChecks}
                 revealedCount={revealedCount}
               />
             </div>
@@ -453,7 +463,7 @@ export function HealthCheckDialog({
               ) : null}
               <Button
                 className="gap-1.5"
-                disabled={isFetching}
+                disabled={isFetching || isBlockingInitialLoad}
                 onClick={handleRecheck}
                 size="sm"
                 variant="outline"
@@ -463,7 +473,11 @@ export function HealthCheckDialog({
                 />
                 Re-check
               </Button>
-              <Button onClick={handleContinue} size="sm">
+              <Button
+                disabled={isBlockingMode}
+                onClick={handleContinue}
+                size="sm"
+              >
                 Continue
               </Button>
             </DialogFooter>

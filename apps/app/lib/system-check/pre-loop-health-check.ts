@@ -25,9 +25,6 @@ export const PreLoopAnalyticsEvent = {
   SystemCheckBlocked: "pre_loop_system_check_blocked",
   SystemCheckRecheckClicked: "pre_loop_system_check_recheck_clicked",
   SystemCheckResolved: "pre_loop_system_check_resolved",
-  SystemCheckContinued: "pre_loop_system_check_continued",
-  SystemCheckAcknowledgementBypassed:
-    "pre_loop_system_check_acknowledgement_bypassed",
   SystemCheckCancelled: "pre_loop_system_check_cancelled",
   SystemCheckUnavailable: "pre_loop_system_check_unavailable",
 } as const;
@@ -42,22 +39,13 @@ export type PreLoopTarget = {
   mode: "local_compute_target";
 };
 
-/** In-memory acknowledgement for a target's exact failing required-check fingerprint. */
-export type AcknowledgedFailure = {
-  fingerprint: string;
-  checkIds: string[];
-  acknowledgedAt: number;
-  acknowledgedByAttemptId: string;
-};
-
 /** Debug/test-visible outcome returned by a pre-loop gate attempt. */
 export type PreLoopHealthCheckOutcome =
   | { status: "executed"; attemptId: string }
   | { status: "blocked"; attemptId: string }
   | { status: "duplicate_ignored"; attemptId: null }
   | { status: "skipped_no_local_target"; attemptId: string }
-  | { status: "failed_open_unavailable"; attemptId: string }
-  | { status: "acknowledgement_bypassed"; attemptId: string }
+  | { status: "blocked_unavailable"; attemptId: string }
   | { status: "cancelled"; attemptId: string };
 
 /** Command metadata supplied by Generate Plan and Execute Plan callers. */
@@ -70,7 +58,7 @@ export type PreLoopMetadata = {
   ownerKey: string;
 };
 
-/** Stable required-failure summary used for blocking, acknowledgement, and analytics. */
+/** Stable required-failure summary used for blocking and analytics. */
 export type RequiredFailureSummary = {
   checkIds: string[];
   checks: CheckResult[];
@@ -125,7 +113,7 @@ export function getFailingRequiredCheckIds(
     .sort();
 }
 
-/** Creates the stable acknowledgement fingerprint from sorted failing check IDs. */
+/** Creates the stable failure fingerprint from sorted failing check IDs. */
 export function getFailingRequiredFingerprint(checkIds: string[]): string {
   return JSON.stringify([...checkIds].sort());
 }
@@ -153,7 +141,6 @@ export function buildPreLoopAnalyticsProperties({
   usedCachedHealthCheck,
   failingChecks,
   failingRequiredFingerprint,
-  acknowledgement,
   recheckAttempts,
   reason,
 }: {
@@ -164,7 +151,6 @@ export function buildPreLoopAnalyticsProperties({
   usedCachedHealthCheck?: boolean | null;
   failingChecks?: CheckResult[];
   failingRequiredFingerprint?: string;
-  acknowledgement?: AcknowledgedFailure;
   recheckAttempts?: number;
   reason?: string;
 }): Record<string, unknown> {
@@ -190,11 +176,6 @@ export function buildPreLoopAnalyticsProperties({
     failingCheckLabels: sortedFailingChecks?.map((check) => check.label),
     failingRequiredCount: sortedFailingChecks?.length,
     failingRequiredFingerprint,
-    acknowledgedAt: acknowledgement?.acknowledgedAt,
-    acknowledgedByAttemptId: acknowledgement?.acknowledgedByAttemptId,
-    acknowledgementAgeMs: acknowledgement
-      ? Date.now() - acknowledgement.acknowledgedAt
-      : undefined,
     recheckAttempts,
     reason,
   };
