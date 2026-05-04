@@ -161,7 +161,7 @@ export function ChatPanel({
         onChange={onInputChange}
         onSend={onSend}
         onStop={onStop}
-        placeholder={inputPlaceholder ?? "Ask anything"}
+        placeholder={inputPlaceholder ?? "Ask anything…"}
         value={inputValue}
       />
     </div>
